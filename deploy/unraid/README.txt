@@ -1129,15 +1129,17 @@ Packaged deployment-target containment gates:
   broker starts, the packaged deployment auditor captures all present canonical
   production/staging/rollback identities in one Docker inspect, verifies the
   target image, `unless-stopped`, host networking, matching GraphQL and durable
-  file autostart identity/state,
+  file autostart identity/state for every present canonical container,
   and exactly one running Butler, then repeats the canonical snapshot to reject
-  races. It binds the target PID and network namespace, walks children from every
-  process thread, and requires stable before/after process and owned-listener
-  inventories. It rejects every owned UDP listener and every externally reachable
-  owned TCP listener. Only loopback Mailbox port 6876 plus the fixed daemon and
-  acceptance Unix control paths are permitted; inherited descriptors for the same
+  races. It binds the target PID and exact Docker cgroup-v2 path to the inspected
+  container ID, scans every cgroup process, and requires stable before/after
+  process, owned-socket, and listener inventories. It rejects every owned UDP
+  listener and every externally reachable owned TCP listener. Only loopback
+  Mailbox port 6876 plus stream-listening endpoints at the fixed daemon and
+  acceptance Unix control paths are permitted; all other named Unix endpoint
+  types (including datagrams) fail closed. Inherited descriptors for the same
   socket inode are deduplicated, while unknown loopback ports, wildcard/host-address
-  listeners, process/listener drift, or ambiguous ownership fail closed.
+  listeners, process/socket/listener drift, or ambiguous ownership fail closed.
   Unit 18 uses the separately packaged fixed final command, after rollback has
   been retained stopped:
     UNIT18_TARGET_TMP=$(mktemp /run/sanctuary-unit18-target-audit.sh.XXXXXX)

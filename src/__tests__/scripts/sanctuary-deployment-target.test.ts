@@ -10,9 +10,11 @@ type TargetModule = {
   attestOwnedListeners(input: Record<string, unknown>): Record<string, unknown>
   runDeploymentTargetAudit(profile: string, expectedImageId: string, dependencies: Record<string, unknown>): Promise<Record<string, unknown>>
   captureCanonicalRecords(dependencies: Record<string, unknown>): Promise<Record<string, unknown>[]>
-  processTree(rootPid: number, dependencies: Record<string, unknown>): number[]
   parseProcUdp(content: string, ipv6: boolean): Array<{ inode: string; localAddress: string; port: number }>
-  queryGraphqlAutostart(fetchImpl: typeof fetch, readDescriptor: () => string): Promise<Map<string, { containerId: string; imageId: string }>>
+  parseProcUnix(content: string): Array<{ inode: string; path: string; flags: string; type: string; state: string }>
+  cgroupProcessIds(rootPid: number, containerId: string, dependencies: Record<string, unknown>): { path: string; processIds: number[]; threadIds: number[] }
+  ownedSocketInodes(threadIds: number[], dependencies?: Record<string, unknown>): string[]
+  queryGraphqlAutostart(fetchImpl: typeof fetch, readDescriptor: () => string): Promise<Map<string, { containerId: string; autoStart: boolean }>>
 }
 
 async function load(): Promise<TargetModule> {
@@ -78,11 +80,11 @@ describe("Sanctuary fixed deployment target", () => {
     await expect(runDeploymentTargetAudit("staging", imageId, {
       captureCanonicalRecords: () => snapshots.shift(),
       readNetns: () => "net:[42]",
-      processTree: () => [321],
+      cgroupProcessIds: () => ({ path: `/docker/${stagingId}`, processIds: [321], threadIds: [321, 401] }),
       ownedSocketInodes: () => ["900"],
       readTcpListeners: () => [],
       readUdpListeners: () => [],
-      readUnixSockets: () => [{ inode: "900", path: "/tmp/ouroboros-daemon.sock" }],
+      readUnixSockets: () => [{ inode: "900", path: "/tmp/ouroboros-daemon.sock", flags: "00010000", type: "0001", state: "01" }],
     })).resolves.toMatchObject({ deployment: { targetContainerId: stagingId }, listeners: { inboundTcpListenerCount: 0, inboundUdpListenerCount: 0 } })
     expect(snapshots).toHaveLength(0)
   })
@@ -97,7 +99,7 @@ describe("Sanctuary fixed deployment target", () => {
         return [{ Id: stagingId, Name: "/ouro-butler-staging", Image: imageId, State: { Running: true, Pid: 321 }, HostConfig: { RestartPolicy: { Name: "unless-stopped" }, NetworkMode: "host" } }]
       },
       autostartNames: () => ["ouro-butler-staging"],
-      graphqlAutostartNames: () => new Map([["ouro-butler-staging", { containerId: stagingId, imageId }]]),
+      graphqlAutostartNames: () => new Map([["ouro-butler-staging", { containerId: stagingId, autoStart: true }]]),
     })
     expect(inspectedIds).toEqual([[stagingId]])
     expect(result).toHaveLength(1)
@@ -105,7 +107,7 @@ describe("Sanctuary fixed deployment target", () => {
       dockerTopology: () => [{ id: stagingId, name: "ouro-butler-staging" }],
       inspectCanonical: () => [{ Id: stagingId, Name: "/ouro-butler", Image: imageId, State: { Running: true, Pid: 321 }, HostConfig: { RestartPolicy: { Name: "unless-stopped" }, NetworkMode: "host" } }],
       autostartNames: () => ["ouro-butler-staging"],
-      graphqlAutostartNames: () => new Map([["ouro-butler-staging", { containerId: stagingId, imageId }]]),
+      graphqlAutostartNames: () => new Map([["ouro-butler-staging", { containerId: stagingId, autoStart: true }]]),
     })).rejects.toThrow(/changed/u)
   })
 
@@ -116,7 +118,7 @@ describe("Sanctuary fixed deployment target", () => {
       inspectCanonical: () => [{ Id: stagingId, Name: "/ouro-butler-staging", Image: imageId, State: { Running: true, Pid: 321 }, HostConfig: { RestartPolicy: { Name: "unless-stopped" }, NetworkMode: "host" } }],
       autostartNames: () => ["ouro-butler-staging"],
       graphqlAutostartNames: () => new Map(),
-    })).rejects.toThrow(/autostart/u)
+    })).rejects.toThrow(/autostart|presence/u)
   })
 
   it("binds the GraphQL autostart record to the exact inspected Docker container ID", async () => {
@@ -125,7 +127,7 @@ describe("Sanctuary fixed deployment target", () => {
       dockerTopology: () => [{ id: stagingId, name: "ouro-butler-staging" }],
       inspectCanonical: () => [{ Id: stagingId, Name: "/ouro-butler-staging", Image: imageId, State: { Running: true, Pid: 321 }, HostConfig: { RestartPolicy: { Name: "unless-stopped" }, NetworkMode: "host" } }],
       autostartNames: () => ["ouro-butler-staging"],
-      graphqlAutostartNames: () => new Map([["ouro-butler-staging", { containerId: productionId, imageId }]]),
+      graphqlAutostartNames: () => new Map([["ouro-butler-staging", { containerId: productionId, autoStart: true }]]),
     })).rejects.toThrow(/identity/u)
   })
 
@@ -134,12 +136,34 @@ describe("Sanctuary fixed deployment target", () => {
     let captured: { input?: RequestInfo | URL; init?: RequestInit } = {}
     const fetchImpl: typeof fetch = async (input, init) => {
       captured = { input, init }
-      return new Response(JSON.stringify({ data: { docker: { containers: [{ id: `${"a".repeat(64)}:${stagingId}`, names: ["/ouro-butler-staging"], autoStart: true }] } } }), { status: 200, headers: { "content-type": "application/json" } })
+      return new Response(JSON.stringify({ data: { docker: { containers: [{ id: `${"f".repeat(64)}:${stagingId}`, names: ["/ouro-butler-staging"], autoStart: true }] } } }), { status: 200, headers: { "content-type": "application/json" } })
     }
-    await expect(queryGraphqlAutostart(fetchImpl, () => "private-descriptor")).resolves.toEqual(new Map([["ouro-butler-staging", { containerId: stagingId, imageId }]]))
+    await expect(queryGraphqlAutostart(fetchImpl, () => "private-descriptor")).resolves.toEqual(new Map([["ouro-butler-staging", { containerId: stagingId, autoStart: true }]]))
     expect(captured.input).toBe("http://127.0.0.1/graphql")
     expect(captured.init).toMatchObject({ method: "POST", headers: { "content-type": "application/json", "x-api-key": "private-descriptor" } })
     expect(JSON.parse(String(captured.init?.body))).toEqual({ query: "query AcceptanceContainerTopology { docker { containers(skipCache: true) { id names autoStart } } }", variables: {} })
+  })
+
+  it("requires GraphQL presence and exact false autostart for the retained rollback", async () => {
+    const { captureCanonicalRecords } = await load()
+    const finalRecords = [
+      { Id: productionId, Name: "/ouro-butler", Image: imageId, State: { Running: true, Pid: 321 }, HostConfig: { RestartPolicy: { Name: "unless-stopped" }, NetworkMode: "host" } },
+      { Id: rollbackId, Name: "/ouro-butler-rollback", Image: imageId, State: { Running: false, Pid: 0 }, HostConfig: { RestartPolicy: { Name: "unless-stopped" }, NetworkMode: "host" } },
+    ]
+    const base = {
+      dockerTopology: () => [{ id: productionId, name: "ouro-butler" }, { id: rollbackId, name: "ouro-butler-rollback" }],
+      inspectCanonical: () => finalRecords,
+      autostartNames: () => ["ouro-butler"],
+    }
+    await expect(captureCanonicalRecords({ ...base, graphqlAutostartNames: () => new Map([["ouro-butler", { containerId: productionId, autoStart: true }]]) })).rejects.toThrow(/topology|presence/u)
+    await expect(captureCanonicalRecords({ ...base, graphqlAutostartNames: () => new Map([
+      ["ouro-butler", { containerId: productionId, autoStart: true }],
+      ["ouro-butler-rollback", { containerId: rollbackId, autoStart: true }],
+    ]) })).rejects.toThrow(/autostart/u)
+    await expect(captureCanonicalRecords({ ...base, graphqlAutostartNames: () => new Map([
+      ["ouro-butler", { containerId: productionId, autoStart: true }],
+      ["ouro-butler-rollback", { containerId: rollbackId, autoStart: false }],
+    ]) })).resolves.toHaveLength(2)
   })
 
   it.each([
@@ -159,7 +183,8 @@ describe("Sanctuary fixed deployment target", () => {
 describe("Sanctuary effective listener containment", () => {
   it("accepts a stable target process tree with only Unix control sockets", async () => {
     const { attestOwnedListeners } = await load()
-    expect(attestOwnedListeners({ rootPid: 321, netnsBefore: "net:[42]", netnsAfter: "net:[42]", processIdsBefore: [321, 322], processIdsAfter: [321, 322], socketInodesBefore: ["900"], socketInodesAfter: ["900"], tcpListenersBefore: [], tcpListenersAfter: [], udpListenersBefore: [], udpListenersAfter: [], unixSocketsBefore: [{ inode: "900", path: "/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance/telegram-control.sock" }], unixSocketsAfter: [{ inode: "900", path: "/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance/telegram-control.sock" }] })).toMatchObject({ inboundTcpListenerCount: 0, inboundUdpListenerCount: 0, unixControlSocketCount: 1 })
+    const control = { inode: "900", path: "/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance/telegram-control.sock", flags: "00010000", type: "0001", state: "01" }
+    expect(attestOwnedListeners({ rootPid: 321, netnsBefore: "net:[42]", netnsAfter: "net:[42]", processIdsBefore: [321, 322], processIdsAfter: [321, 322], socketInodesBefore: ["900"], socketInodesAfter: ["900"], tcpListenersBefore: [], tcpListenersAfter: [], udpListenersBefore: [], udpListenersAfter: [], unixSocketsBefore: [control], unixSocketsAfter: [control] })).toMatchObject({ inboundTcpListenerCount: 0, inboundUdpListenerCount: 0, unixControlSocketCount: 1 })
   })
 
   it("allows only the documented loopback Mailbox control listener", async () => {
@@ -191,17 +216,58 @@ describe("Sanctuary effective listener containment", () => {
     expect(() => attestOwnedListeners({ rootPid: 321, netnsBefore: "net:[42]", netnsAfter: "net:[42]", processIdsBefore: [321], processIdsAfter: [321], socketInodesBefore: ["903"], socketInodesAfter: ["903"], tcpListenersBefore: [{ inode: "903", localAddress: "127.0.0.1", port: 6876 }], tcpListenersAfter: [{ inode: "903", localAddress: "127.0.0.1", port: 6877 }], udpListenersBefore: [], udpListenersAfter: [], unixSocketsBefore: [], unixSocketsAfter: [] })).toThrow(/changed/u)
   })
 
-  it("walks children reported by every thread and rejects process membership drift", async () => {
-    const { processTree, runDeploymentTargetAudit } = await load()
-    const tasks = new Map([[321, [321, 400]], [322, [322]], [323, [323]]])
-    const children = new Map([['321:321', '322'], ['321:400', '323'], ['322:322', ''], ['323:323', '']])
-    expect(processTree(321, { listTasks: (pid: number) => tasks.get(pid) ?? [], readChildren: (pid: number, tid: number) => children.get(`${pid}:${tid}`) ?? '' })).toEqual([321, 322, 323])
-
+  it("rejects cgroup process and thread membership drift", async () => {
+    const { runDeploymentTargetAudit } = await load()
     const snapshots = [input("staging").topologyBefore, input("staging").topologyAfter]
-    const trees = [[321], [321, 322]]
+    const memberships = [
+      { path: `/docker/${stagingId}`, processIds: [321], threadIds: [321, 401] },
+      { path: `/docker/${stagingId}`, processIds: [321, 322], threadIds: [321, 401, 322] },
+    ]
     await expect(runDeploymentTargetAudit("staging", imageId, {
-      captureCanonicalRecords: () => snapshots.shift(), readNetns: () => "net:[42]", processTree: () => trees.shift(), ownedSocketInodes: () => [], readTcpListeners: () => [], readUdpListeners: () => [], readUnixSockets: () => [],
-    })).rejects.toThrow(/process tree/u)
+      captureCanonicalRecords: () => snapshots.shift(), readNetns: () => "net:[42]", cgroupProcessIds: () => memberships.shift(), ownedSocketInodes: () => [], readTcpListeners: () => [], readUdpListeners: () => [], readUnixSockets: () => [],
+    })).rejects.toThrow(/cgroup process/u)
+  })
+
+  it("binds exact cgroup-v2 membership to the Docker container identity", async () => {
+    const { cgroupProcessIds } = await load()
+    const reads: string[] = []
+    expect(cgroupProcessIds(321, stagingId, {
+      readCgroup: (pid: number) => { expect(pid).toBe(321); return `0::/docker/${stagingId}\n` },
+      readCgroupMembership: (path: string) => { reads.push(path); return path.endsWith("cgroup.procs") ? "321\n322\n" : "321\n400\n322\n" },
+    })).toEqual({ path: `/docker/${stagingId}`, processIds: [321, 322], threadIds: [321, 322, 400] })
+    expect(reads).toEqual([`/sys/fs/cgroup/docker/${stagingId}/cgroup.procs`, `/sys/fs/cgroup/docker/${stagingId}/cgroup.threads`])
+    expect(() => cgroupProcessIds(321, stagingId, {
+      readCgroup: () => `0::/docker/${productionId}\n`, readCgroupMembership: () => "321\n",
+    })).toThrow(/cgroup/u)
+    expect(() => cgroupProcessIds(321, stagingId, {
+      readCgroup: () => `0::/docker/${stagingId}\n`, readCgroupMembership: () => "322\n",
+    })).toThrow(/root/u)
+  })
+
+  it("scans every cgroup thread FD table and deduplicates inherited sockets", async () => {
+    const { ownedSocketInodes } = await load()
+    const listed: number[] = []
+    const linked: string[] = []
+    expect(ownedSocketInodes([321, 400], {
+      listFileDescriptors: (tid: number) => { listed.push(tid); return tid === 321 ? ["3", "4"] : ["3", "7"] },
+      readDescriptorLink: (tid: number, fd: string) => { linked.push(`${tid}:${fd}`); return fd === "4" ? "/tmp/file" : fd === "7" ? "socket:[901]" : "socket:[900]" },
+    })).toEqual(["900", "900", "901"])
+    expect(listed).toEqual([321, 400])
+    expect(linked).toEqual(["321:3", "321:4", "400:3", "400:7"])
+  })
+
+  it("rejects deduplicated owned socket-set drift", async () => {
+    const { attestOwnedListeners } = await load()
+    expect(() => attestOwnedListeners({ rootPid: 321, targetContainerId: stagingId, cgroupPathBefore: `/docker/${stagingId}`, cgroupPathAfter: `/docker/${stagingId}`, netnsBefore: "net:[42]", netnsAfter: "net:[42]", processIdsBefore: [321], processIdsAfter: [321], socketInodesBefore: ["900", "900"], socketInodesAfter: ["900", "901"], tcpListenersBefore: [], tcpListenersAfter: [], udpListenersBefore: [], udpListenersAfter: [], unixSocketsBefore: [], unixSocketsAfter: [] })).toThrow(/socket ownership changed/u)
+  })
+
+  it("parses and rejects owned named Unix datagram endpoints", async () => {
+    const { attestOwnedListeners, parseProcUnix } = await load()
+    const header = "Num       RefCount Protocol Flags    Type St Inode Path"
+    const datagram = "0000000000000000: 00000002 00000000 00000000 0002 01 900 /tmp/undocumented-dgram.sock"
+    const parsed = parseProcUnix(`${header}\n${datagram}\n`)
+    expect(parsed).toEqual([{ inode: "900", path: "/tmp/undocumented-dgram.sock", flags: "00000000", type: "0002", state: "01" }])
+    expect(() => attestOwnedListeners({ rootPid: 321, netnsBefore: "net:[42]", netnsAfter: "net:[42]", processIdsBefore: [321], processIdsAfter: [321], socketInodesBefore: ["900"], socketInodesAfter: ["900"], tcpListenersBefore: [], tcpListenersAfter: [], udpListenersBefore: [], udpListenersAfter: [], unixSocketsBefore: parsed, unixSocketsAfter: parsed })).toThrow(/Unix/u)
   })
 
   it.each([

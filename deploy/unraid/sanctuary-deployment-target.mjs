@@ -81,9 +81,9 @@ async function queryGraphqlAutostart(fetchImpl = fetch, readDescriptor = readCan
     const identity = typeof container.id === "string" ? /^([0-9a-f]{64}):([0-9a-f]{64})$/u.exec(container.id) : null
     if (canonical.length > 1 || (canonical.length === 1 && !identity)) throw new Error("Unraid container topology identity is ambiguous")
     if (canonical.length === 1 && typeof container.autoStart !== "boolean") throw new Error("Unraid container autostart state is invalid")
-    if (canonical.length === 1 && container.autoStart === true) {
+    if (canonical.length === 1) {
       if (result.has(canonical[0])) throw new Error("Unraid autostart topology is ambiguous")
-      result.set(canonical[0], { imageId: `sha256:${identity[1]}`, containerId: identity[2] })
+      result.set(canonical[0], { containerId: identity[2], autoStart: container.autoStart })
     }
   }
   return result
@@ -137,7 +137,7 @@ function attestOwnedListeners(input) {
   const processIdsBefore = value.processIdsBefore
   const processIdsAfter = value.processIdsAfter
   const validProcesses = (pids) => Array.isArray(pids) && pids.length > 0 && pids.includes(value.rootPid) && pids.every((pid) => Number.isSafeInteger(pid) && pid > 0) && new Set(pids).size === pids.length
-  if (!validProcesses(processIdsBefore) || !validProcesses(processIdsAfter) || JSON.stringify([...processIdsBefore].sort((a, b) => a - b)) !== JSON.stringify([...processIdsAfter].sort((a, b) => a - b))) throw new Error("target process tree changed or is invalid")
+  if (!validProcesses(processIdsBefore) || !validProcesses(processIdsAfter) || JSON.stringify([...processIdsBefore].sort((a, b) => a - b)) !== JSON.stringify([...processIdsAfter].sort((a, b) => a - b))) throw new Error("target cgroup process membership changed or is invalid")
   const socketSet = (raw, label) => {
     if (!Array.isArray(raw) || raw.some((inode) => !/^[0-9]+$/u.test(inode))) throw new Error(`${label} is invalid`)
     return new Set(raw)
@@ -158,13 +158,16 @@ function attestOwnedListeners(input) {
   }
   const before = inventory("Before")
   const after = inventory("After")
+  if (!exactSet(before.owned, after.owned)) throw new Error("target socket ownership changed")
   if (before.signature !== after.signature) throw new Error("target listener inventory changed")
   const { owned, tcp, udp, unix } = after
   for (const listener of tcp) {
     if (listener.localAddress !== "127.0.0.1" || !DOCUMENTED_LOOPBACK_TCP_CONTROLS.has(listener.port)) throw new Error("target runtime owns an inbound TCP listener")
   }
   if (udp.length !== 0) throw new Error("target runtime owns an inbound UDP listener")
-  for (const socket of unix) if (!DOCUMENTED_UNIX_CONTROLS.includes(socket.path)) throw new Error("target runtime owns an undocumented Unix listener")
+  for (const socket of unix) {
+    if (!DOCUMENTED_UNIX_CONTROLS.includes(socket.path) || socket.flags !== "00010000" || socket.type !== "0001" || socket.state !== "01") throw new Error("target runtime owns an undocumented Unix endpoint")
+  }
   return { schemaVersion: "sanctuary-listener-containment-v1", targetRootPid: value.rootPid, networkNamespace: value.netnsBefore, processCount: processIdsAfter.length, ownedSocketCount: owned.size, inboundTcpListenerCount: 0, inboundUdpListenerCount: 0, loopbackTcpControlCount: tcp.length, unixControlSocketCount: unix.length }
 }
 
@@ -202,7 +205,6 @@ async function captureCanonicalRecords(dependencies = {}) {
   const starts = new Set((dependencies.autostartNames ?? (() => [...autostartNames()]))())
   const graphqlRecords = await (dependencies.graphqlAutostartNames ?? queryGraphqlAutostart)()
   if (!(graphqlRecords instanceof Map)) throw new Error("Unraid GraphQL autostart state is invalid")
-  if (!exactSet(starts, new Set(graphqlRecords.keys()))) throw new Error("Unraid GraphQL and durable autostart state disagree")
   const records = inspections.map((entry) => {
     const name = String(entry.Name).replace(/^\//u, "")
     const listedRecord = listed.find(({ id }) => id === entry.Id)
@@ -218,9 +220,13 @@ async function captureCanonicalRecords(dependencies = {}) {
       networkMode: entry.HostConfig?.NetworkMode,
     }
   })
+  const recordNames = new Set(records.map(({ names }) => names[0].replace(/^\//u, "")))
+  if (!exactSet(recordNames, new Set(graphqlRecords.keys()))) throw new Error("Unraid GraphQL canonical topology presence disagrees with Docker")
+  const graphqlStarts = new Set([...graphqlRecords].filter(([, identity]) => identity?.autoStart === true).map(([name]) => name))
+  if (!exactSet(starts, graphqlStarts)) throw new Error("Unraid GraphQL and durable autostart state disagree")
   for (const [name, identity] of graphqlRecords) {
     const record = records.find((candidate) => candidate.names[0].replace(/^\//u, "") === name)
-    if (!record || record.id !== identity?.containerId || record.imageId !== identity?.imageId) throw new Error("Unraid GraphQL autostart identity disagrees with Docker")
+    if (!record || record.id !== identity?.containerId || record.autoStart !== identity?.autoStart) throw new Error("Unraid GraphQL autostart identity disagrees with Docker")
   }
   return records
 }
@@ -241,29 +247,32 @@ function parseProcUdp(content, ipv6) {
   }).filter(({ port }) => port !== 0)
 }
 
-function processTree(rootPid, dependencies = {}) {
-  const pending = [rootPid]
-  const result = []
-  const listTasks = dependencies.listTasks ?? ((pid) => readdirSync(`/proc/${pid}/task`).map(Number))
-  const readChildren = dependencies.readChildren ?? ((pid, tid) => readFileSync(`/proc/${pid}/task/${tid}/children`, "utf8").trim())
-  while (pending.length) {
-    const pid = pending.shift()
-    if (result.includes(pid)) throw new Error("target process tree is ambiguous")
-    result.push(pid)
-    const tasks = listTasks(pid)
-    if (!Array.isArray(tasks) || tasks.length === 0 || tasks.some((tid) => !Number.isSafeInteger(tid) || tid <= 0) || new Set(tasks).size !== tasks.length) throw new Error("target thread inventory is invalid")
-    for (const tid of tasks) {
-      const children = readChildren(pid, tid)
-      if (children) pending.push(...children.split(/\s+/u).map(Number).filter((child) => !result.includes(child) && !pending.includes(child)))
-    }
+function cgroupProcessIds(rootPid, containerId, dependencies = {}) {
+  if (!Number.isSafeInteger(rootPid) || rootPid <= 0 || !CONTAINER_ID.test(containerId)) throw new Error("target cgroup identity is invalid")
+  const readCgroup = dependencies.readCgroup ?? ((pid) => readFileSync(`/proc/${pid}/cgroup`, "utf8"))
+  const readCgroupMembership = dependencies.readCgroupMembership ?? ((file) => readFileSync(file, "utf8"))
+  const lines = readCgroup(rootPid).split(/\r?\n/u).filter(Boolean)
+  const expectedPath = `/docker/${containerId}`
+  if (lines.length !== 1 || lines[0] !== `0::${expectedPath}`) throw new Error("target cgroup is not the exact Docker cgroup-v2 identity")
+  const membership = (file, label) => {
+    const raw = readCgroupMembership(`/sys/fs/cgroup${expectedPath}/${file}`).trim()
+    const ids = raw ? raw.split(/\s+/u).map(Number) : []
+    if (ids.length === 0 || ids.some((pid) => !Number.isSafeInteger(pid) || pid <= 0) || new Set(ids).size !== ids.length) throw new Error(`target cgroup ${label} membership is invalid`)
+    return ids.sort((left, right) => left - right)
   }
-  return result.sort((left, right) => left - right)
+  const processIds = membership("cgroup.procs", "process")
+  const threadIds = membership("cgroup.threads", "thread")
+  if (!processIds.includes(rootPid)) throw new Error("target root PID is absent from its cgroup")
+  if (!processIds.every((pid) => threadIds.includes(pid))) throw new Error("target cgroup thread membership is incomplete")
+  return { path: expectedPath, processIds, threadIds }
 }
 
-function ownedSocketInodes(processIds) {
+function ownedSocketInodes(threadIds, dependencies = {}) {
+  const listFileDescriptors = dependencies.listFileDescriptors ?? ((tid) => readdirSync(`/proc/${tid}/fd`))
+  const readDescriptorLink = dependencies.readDescriptorLink ?? ((tid, fd) => readlinkSync(`/proc/${tid}/fd/${fd}`))
   const inodes = []
-  for (const pid of processIds) for (const fd of readdirSync(`/proc/${pid}/fd`)) {
-    const match = /^socket:\[([0-9]+)\]$/u.exec(readlinkSync(`/proc/${pid}/fd/${fd}`))
+  for (const tid of threadIds) for (const fd of listFileDescriptors(tid)) {
+    const match = /^socket:\[([0-9]+)\]$/u.exec(readDescriptorLink(tid, fd))
     if (match) inodes.push(match[1])
   }
   return inodes
@@ -271,7 +280,9 @@ function ownedSocketInodes(processIds) {
 
 
 function parseProcUnix(content) {
-  return content.split(/\r?\n/u).slice(1).filter(Boolean).map((line) => line.trim().split(/\s+/u)).filter((fields) => fields[3] === "00010000" && fields[4] === "0001" && fields[5] === "01").map((fields) => ({ inode: fields[6], path: fields[7] ?? "" }))
+  return content.split(/\r?\n/u).slice(1).filter(Boolean).map((line) => line.trim().split(/\s+/u))
+    .filter((fields) => /^[0-9]+$/u.test(fields[6] ?? "") && typeof fields[7] === "string" && fields[7].length > 0)
+    .map((fields) => ({ inode: fields[6], path: fields.slice(7).join(" "), flags: fields[3], type: fields[4], state: fields[5] }))
 }
 
 async function runDeploymentTargetAudit(profileName, expectedImageId, dependencies = {}) {
@@ -279,26 +290,31 @@ async function runDeploymentTargetAudit(profileName, expectedImageId, dependenci
   const before = await capture()
   const provisional = attestDeploymentTarget({ profile: profileName, expectedImageId, topologyBefore: before, inspected: before, topologyAfter: before })
   const readNetns = dependencies.readNetns ?? ((pid) => readlinkSync(`/proc/${pid}/ns/net`))
-  const readTree = dependencies.processTree ?? processTree
+  const readMembership = dependencies.cgroupProcessIds ?? cgroupProcessIds
   const readSockets = dependencies.ownedSocketInodes ?? ownedSocketInodes
   const readTcp = dependencies.readTcpListeners ?? ((pid) => [...parseProcNet(readFileSync(`/proc/${pid}/net/tcp`, "utf8"), false), ...parseProcNet(readFileSync(`/proc/${pid}/net/tcp6`, "utf8"), true)])
   const readUdp = dependencies.readUdpListeners ?? ((pid) => [...parseProcUdp(readFileSync(`/proc/${pid}/net/udp`, "utf8"), false), ...parseProcUdp(readFileSync(`/proc/${pid}/net/udp6`, "utf8"), true)])
   const readUnix = dependencies.readUnixSockets ?? ((pid) => parseProcUnix(readFileSync(`/proc/${pid}/net/unix`, "utf8")))
   const netnsBefore = readNetns(provisional.targetPid)
-  const processIdsBefore = readTree(provisional.targetPid)
-  const socketInodesBefore = readSockets(processIdsBefore)
+  const membershipBefore = readMembership(provisional.targetPid, provisional.targetContainerId)
+  const processIdsBefore = membershipBefore.processIds
+  const socketInodesBefore = readSockets(membershipBefore.threadIds)
   const tcpListenersBefore = readTcp(provisional.targetPid)
   const udpListenersBefore = readUdp(provisional.targetPid)
   const unixSocketsBefore = readUnix(provisional.targetPid)
-  const processIdsAfter = readTree(provisional.targetPid)
-  const socketInodesAfter = readSockets(processIdsAfter)
+  const membershipAfter = readMembership(provisional.targetPid, provisional.targetContainerId)
+  if (membershipBefore.path !== membershipAfter.path) throw new Error("target cgroup changed")
+  if (JSON.stringify(processIdsBefore) !== JSON.stringify(membershipAfter.processIds)) throw new Error("target cgroup process membership changed")
+  if (JSON.stringify(membershipBefore.threadIds) !== JSON.stringify(membershipAfter.threadIds)) throw new Error("target cgroup thread membership changed")
+  const processIdsAfter = membershipAfter.processIds
+  const socketInodesAfter = readSockets(membershipAfter.threadIds)
   const tcpListenersAfter = readTcp(provisional.targetPid)
   const udpListenersAfter = readUdp(provisional.targetPid)
   const unixSocketsAfter = readUnix(provisional.targetPid)
   const netnsAfter = readNetns(provisional.targetPid)
   const after = await capture()
   const deployment = attestDeploymentTarget({ profile: profileName, expectedImageId, topologyBefore: before, inspected: before, topologyAfter: after })
-  const listeners = attestOwnedListeners({ rootPid: deployment.targetPid, netnsBefore, netnsAfter, processIdsBefore, processIdsAfter, socketInodesBefore, socketInodesAfter, tcpListenersBefore, tcpListenersAfter, udpListenersBefore, udpListenersAfter, unixSocketsBefore, unixSocketsAfter })
+  const listeners = { ...attestOwnedListeners({ rootPid: deployment.targetPid, netnsBefore, netnsAfter, processIdsBefore, processIdsAfter, socketInodesBefore, socketInodesAfter, tcpListenersBefore, tcpListenersAfter, udpListenersBefore, udpListenersAfter, unixSocketsBefore, unixSocketsAfter }), cgroupPath: membershipAfter.path, threadCount: membershipAfter.threadIds.length }
   return { schemaVersion: "sanctuary-effective-deployment-v1", deployment, listeners }
 }
 
@@ -311,4 +327,4 @@ if (process.argv[1]?.endsWith("sanctuary-deployment-target.mjs")) {
   }
 }
 
-export { attestDeploymentTarget, attestOwnedListeners, captureCanonicalRecords, dockerTopology, ownedSocketInodes, parseProcNet, parseProcUdp, parseProcUnix, processTree, queryGraphqlAutostart, runDeploymentTargetAudit, targetProfile }
+export { attestDeploymentTarget, attestOwnedListeners, captureCanonicalRecords, cgroupProcessIds, dockerTopology, ownedSocketInodes, parseProcNet, parseProcUdp, parseProcUnix, queryGraphqlAutostart, runDeploymentTargetAudit, targetProfile }
