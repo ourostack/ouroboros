@@ -80,6 +80,7 @@ function defaultFixture() {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  mocks.getAgentRoot.mockReturnValue("/tmp/telegram-agent")
   mocks.readRuntimeCredentialConfig.mockReturnValue({ ok: true, config: {
     telegramBotToken: ` ${credentials.botToken} `,
     telegramAuthorizedUserId: " 42 ",
@@ -542,8 +543,14 @@ describe("Telegram sense coverage contracts", () => {
     try {
       for (let index = 0; index < 1_000; index += 1) emitGlobal({ ...acceptanceEvent("daemon.unrelated_noise"), meta: { index } })
       expect(fs.readFileSync(ledgerPath, "utf8")).toBe("")
-      emitGlobal(acceptanceEvent())
-      expect(fs.readFileSync(ledgerPath, "utf8").trim().split("\n")).toHaveLength(1)
+      const requiredEvents = [
+        "approval.acceptance_transition", "senses.sanctuary_health_delivered", "senses.sanctuary_read_receipt",
+        "senses.telegram_approved_restart_end", "senses.telegram_approved_restart_error", "senses.telegram_approved_restart_start",
+        "senses.telegram_turn_end", "senses.telegram_turn_error", "senses.telegram_turn_start",
+        "telegram.approval_prompt_terminalized", "telegram.callback_settled", "telegram.update_dropped",
+      ]
+      for (const name of requiredEvents) emitGlobal(acceptanceEvent(name))
+      expect(fs.readFileSync(ledgerPath, "utf8").trim().split("\n")).toHaveLength(requiredEvents.length)
       await app.stop()
       expect(f.api.stop).toHaveBeenCalledOnce()
     } finally {

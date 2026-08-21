@@ -377,6 +377,7 @@ export interface TelegramLongPollOptions {
   onMessage: (message: TelegramInboundMessage) => Promise<void>
   onUpdate?: (update: TelegramUpdate) => Promise<boolean>
   acceptanceEventMeta?: (update?: TelegramUpdate, distinctAccount?: boolean) => Record<string, unknown>
+  onBeforeDispatch?: () => void
   onDispatchSettled?: () => void
 }
 
@@ -424,6 +425,7 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
   const pollOnce = async (signal?: AbortSignal): Promise<number> => {
     const requestSignal = signal ? AbortSignal.any([shutdown.signal, signal]) : shutdown.signal
     if (requestSignal.aborted) throw new Error("Telegram long poll stopped")
+    options.onBeforeDispatch?.()
     const stranded = options.inboxStore?.quarantineStranded?.() ?? options.inboxStore?.loadIndeterminate() ?? []
     for (const indeterminate of stranded) {
       emitNervesEvent({
@@ -443,22 +445,33 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
     if (!Array.isArray(updates)) throw new Error("Telegram getUpdates result must be an array")
     for (const update of updates) {
       if (!update || !Number.isSafeInteger(update.update_id) || update.update_id < nextUpdateId) continue
+      options.onBeforeDispatch?.()
       const next = update.update_id + 1
       const requiresDurableDispatch = Boolean(authorizedCallback(update) || authorizedMessage(update))
       const newlyCaptured = requiresDurableDispatch ? (options.inboxStore?.capture(update) ?? true) : true
       options.offsetStore.save(next)
       nextUpdateId = next
       if (newlyCaptured) {
-        if (requiresDurableDispatch && options.inboxStore && !options.inboxStore.claim(update)) continue
+        if (requiresDurableDispatch && options.inboxStore && !options.inboxStore.claim(update)) {
+          options.onDispatchSettled?.()
+          continue
+        }
+        let dispatchError: unknown
         try {
           await dispatch(update)
           if (requiresDurableDispatch) options.inboxStore?.complete(update)
-          options.onDispatchSettled?.()
         } catch (error) {
           options.inboxStore?.quarantineStranded?.()
-          throw error
+          dispatchError = error
         }
-      }
+        try {
+          options.onDispatchSettled?.()
+        } catch (auditError) {
+          if (dispatchError !== undefined) throw new AggregateError([dispatchError, auditError], "Telegram dispatch and acceptance audit verification failed")
+          throw auditError
+        }
+        if (dispatchError !== undefined) throw dispatchError
+      } else options.onDispatchSettled?.()
     }
     return nextUpdateId
   }
