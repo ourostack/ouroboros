@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto"
+import { createHash, createHmac } from "node:crypto"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
@@ -57,6 +57,71 @@ afterEach(() => {
 })
 
 describe("production-composed Telegram approval lifecycle", () => {
+  it("recovers a MAC-fenced pre-deadline tap through the real store after transport TTL", async () => {
+    const agentRoot = root()
+    const sessionPath = path.join(agentRoot, "state", "sessions", "telegram.json")
+    const emptyRevision = createHash("sha256").update("").digest("hex")
+    const clock = { value: 1_000_000 }
+    let messageId = 100
+    let mutationCount = 0
+    const api: TelegramBotApi = {
+      stop: vi.fn(),
+      request: vi.fn(async (method) => method === "sendMessage" ? { message_id: ++messageId } : true),
+    }
+    const dependencies = {
+      agentRoot,
+      now: () => clock.value,
+      acceptanceMarker: () => ({ scenarioHandleDigest }),
+      executeTool: async () => {
+        mutationCount += 1
+        return JSON.stringify({ ok: true, data: { container: { id: "container-1", name: "calibre-web" }, beforeState: "running", afterState: "running", observedRestart: true, degraded: false } })
+      },
+      runProvider: async (_messages: unknown, callbacks: { onTextChunk(text: string): void }) => {
+        callbacks.onTextChunk("Restart observed complete")
+        return { outcome: "settled" as const }
+      },
+    }
+    const first = createTelegramApprovalRuntime({
+      agentName: "sanctuary", api, authorizedUserId: "42", authorizedChatId: "43", subject, identityKey, toolContext: {}, dependencies,
+    })
+    const suspension = await first.coordinator({ sessionPath, baseSessionRevision: emptyRevision }).propose(proposalRequest() as never)
+    const approvalStateRoot = path.join(agentRoot, "state", "approvals")
+    const pendingPath = path.join(approvalStateRoot, "telegram-pending.json")
+    const records = pending(agentRoot)
+    const record = records[0]!
+    const decisionToken = JSON.parse(fs.readFileSync(path.join(approvalStateRoot, "tokens.json"), "utf8"))[suspension.approvalId] as string
+    const attemptedAt = Number(record.expiresAt) - 1
+    const unsigned = {
+      schemaVersion: "telegram-approval-decision-attempt-v1" as const,
+      decision: "approve" as const,
+      queryIdDigest: createHash("sha256").update("query-observed-before-deadline").digest("hex"),
+      attemptedAt,
+    }
+    const macPayload = {
+      approvalId: record.approvalId,
+      messageId: record.messageId,
+      expiresAt: record.expiresAt,
+      approveCallbackData: record.approveCallbackData,
+      denyCallbackData: record.denyCallbackData,
+      acceptanceBinding: record.acceptanceBinding,
+      ...unsigned,
+    }
+    records[0] = { ...record, decisionAttempt: { ...unsigned, evidenceMac: createHmac("sha256", decisionToken).update(JSON.stringify(macPayload)).digest("hex") } }
+    fs.writeFileSync(pendingPath, `${JSON.stringify(records)}\n`)
+    first.close()
+
+    clock.value = Number(record.expiresAt) + 1
+    const restarted = createTelegramApprovalRuntime({
+      agentName: "sanctuary", api, authorizedUserId: "42", authorizedChatId: "43", subject, identityKey, toolContext: {}, dependencies,
+    })
+    await restarted.recover()
+
+    expect(mutationCount).toBe(1)
+    expect(pending(agentRoot)).toEqual([])
+    expect(api.request).not.toHaveBeenCalledWith("answerCallbackQuery", expect.anything())
+    restarted.close()
+  })
+
   it("binds a delayed approval through real durable stores, executes once, resumes, delivers, and terminalizes causally", async () => {
     const agentRoot = root()
     const sessionPath = path.join(agentRoot, "state", "sessions", "telegram.json")

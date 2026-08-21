@@ -24,6 +24,7 @@ const runtimeMocks = vi.hoisted(() => {
   const transport = {
     handleUpdate: vi.fn(),
     listPendingDeliveries: vi.fn(),
+    recoverDecisionAttempt: vi.fn(),
     reconcileExpired: vi.fn(),
     sendApproval: vi.fn(),
     terminalizeOrphaned: vi.fn(),
@@ -152,6 +153,7 @@ beforeEach(() => {
     expiresAt: 1_300_000,
   })
   runtimeMocks.transport.listPendingDeliveries.mockReturnValue([])
+  runtimeMocks.transport.recoverDecisionAttempt.mockResolvedValue(true)
   runtimeMocks.transport.terminalizeOrphaned.mockResolvedValue({ terminalEditSucceeded: true })
   runtimeMocks.transport.terminalizeRecovered.mockResolvedValue(undefined)
   runtimeMocks.commitApprovalProposal.mockReturnValue({
@@ -570,6 +572,28 @@ describe("Telegram approval runtime orchestration", () => {
       meta: { failureCount: 1 },
     }))
     expect(JSON.stringify(runtimeMocks.emitNervesEvent.mock.calls)).not.toContain("private upstream detail")
+  })
+
+  it("fails startup when a fenced decision cannot be recovered instead of falling through to expiry", async () => {
+    const runtime = makeRuntime()
+    runtimeMocks.transport.listPendingDeliveries.mockReturnValue([{
+      approvalId: "fenced",
+      deliveryState: "bound",
+      messageId: "101",
+      decisionAttempt: { schemaVersion: "telegram-approval-decision-attempt-v1", decision: "approve", queryIdDigest: "a".repeat(64), attemptedAt: 1, evidenceMac: "b".repeat(64) },
+    }])
+    runtimeMocks.store.read.mockReturnValue({ ...baseRecord, approvalId: "fenced", state: "proposed" })
+    runtimeMocks.transport.recoverDecisionAttempt.mockRejectedValue(new Error("temporary decision recovery failure"))
+
+    await expect(runtime.recover()).rejects.toThrow("temporary decision recovery failure")
+
+    expect(runtimeMocks.transport.reconcileExpired).not.toHaveBeenCalled()
+    expect(runtimeMocks.transport.terminalizeRecovered).not.toHaveBeenCalled()
+    expect(runtimeMocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      level: "error",
+      event: "senses.telegram_approval_recovery_error",
+      meta: { failureCount: 1 },
+    }))
   })
 
   it("rebinds delivered prompts and leaves nonterminal proposal phases pending", async () => {

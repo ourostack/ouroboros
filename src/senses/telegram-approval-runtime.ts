@@ -360,6 +360,7 @@ export function createTelegramApprovalRuntime(options: {
 
   const recover = async (): Promise<void> => {
     let failureCount = 0
+    let fencedFailure: unknown
     for (const pending of transport.listPendingDeliveries()) {
       try {
         const existing = store.read(pending.approvalId)
@@ -382,6 +383,10 @@ export function createTelegramApprovalRuntime(options: {
         }
         if (pending.terminal) {
           await transport.terminalizeRecovered(pending.approvalId, pending.terminal.terminalText)
+          continue
+        }
+        if (pending.decisionAttempt && ["proposed", "claimed", "attempted"].includes(existing.state)) {
+          await transport.recoverDecisionAttempt(pending.approvalId)
           continue
         }
         const deliveryState = pending.deliveryState ?? "bound"
@@ -418,8 +423,9 @@ export function createTelegramApprovalRuntime(options: {
         }
         const outcome = await continueTerminalRecord(record)
         await transport.terminalizeRecovered(record.approvalId, outcome.terminalText)
-      } catch {
+      } catch (error) {
         failureCount += 1
+        if (pending.decisionAttempt) fencedFailure ??= error
       }
     }
     if (failureCount > 0) {
@@ -431,6 +437,7 @@ export function createTelegramApprovalRuntime(options: {
         meta: { failureCount },
       })
     }
+    if (fencedFailure !== undefined) throw fencedFailure
   }
 
   const legacySubjects = (): string[] => (store.listTelegramIdentitySubjects?.() ?? [])

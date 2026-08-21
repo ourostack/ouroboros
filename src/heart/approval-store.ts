@@ -124,6 +124,7 @@ export interface ApprovalStore {
     transportMessageId: string
     sessionKey: string
     ownerId: string
+    decisionAt?: number
   }): ApprovalRecord
   expire(input: { approvalId: string }): ApprovalRecord
   markAttempted(input: { approvalId: string; ownerId: string; epoch: number }): ApprovalRecord
@@ -774,10 +775,12 @@ export function openApprovalStore(options: ApprovalStoreOptions): ApprovalStore 
     decide(input) {
       return observeDecide(() => {
         const previous = requireRecord(input.approvalId)
+        const decisionAt = input.decisionAt ?? now().getTime()
+        if (!Number.isSafeInteger(decisionAt)) fail("invalid_decision_time")
         if (!sameDecisionBinding(previous, input)) fail("decision_binding_mismatch")
         if (previous.state === "denied" && input.decision === "deny") return previous
         if (previous.state !== "proposed") fail("decision_not_eligible")
-        if (now().getTime() >= Date.parse(previous.expiresAt)) {
+        if (decisionAt >= Date.parse(previous.expiresAt)) {
           return cas(previous, { ...previous, state: "expired", updatedAt: timestamp() })
         }
         if (input.decision === "deny") {
@@ -785,7 +788,7 @@ export function openApprovalStore(options: ApprovalStoreOptions): ApprovalStore 
         }
         if (!isNonEmpty(input.ownerId)) fail("invalid_owner")
         options.hooks?.beforeClaimCas?.()
-        if (now().getTime() >= Date.parse(previous.expiresAt)) {
+        if ((input.decisionAt ?? now().getTime()) >= Date.parse(previous.expiresAt)) {
           return cas(previous, { ...previous, state: "expired", updatedAt: timestamp() })
         }
         return cas(previous, { ...previous, state: "claimed", ownerId: input.ownerId, epoch: previous.epoch + 1, updatedAt: timestamp() })
