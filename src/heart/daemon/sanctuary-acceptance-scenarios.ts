@@ -26,7 +26,7 @@ export interface SanctuaryPostbootIntegritySnapshot {
   telegramNextUpdateId: number
   approvalCheckpoints: Array<{ idDigest: string; recordDigest: string }>
   approvalExecutionCount: number
-  restartAttempts: Array<{ idDigest: string; recordDigest: string; execution: boolean }>
+  restartAttempts: Array<{ idDigest: string; recordDigest: string; state: "attempt_not_started" | "attempting" | "succeeded" | "attempted_or_indeterminate" }>
   fingerprintDigest: string
   sweeps: Array<{ idDigest: string; recordDigest: string; scenarioHandleDigest: string | null; deliveryIdDigest: string | null }>
   deliveries: Array<{ idDigest: string; recordDigest: string }>
@@ -57,9 +57,17 @@ export function verifySanctuaryPostbootIntegrity(
   const rows = [...before.approvalCheckpoints, ...after.approvalCheckpoints, ...before.restartAttempts, ...after.restartAttempts,
     ...before.sweeps, ...after.sweeps, ...before.deliveries, ...after.deliveries, ...before.audits, ...after.audits]
   if (!rows.every((row) => SHA256.test(row.recordDigest))) return null
-  if (!preservedPrefix(before.restartAttempts, after.restartAttempts) || !preservedPrefix(before.sweeps, after.sweeps)
+  if (JSON.stringify(before.restartAttempts) !== JSON.stringify(after.restartAttempts) || !preservedPrefix(before.sweeps, after.sweeps)
     || !preservedPrefix(before.deliveries, after.deliveries) || !preservedPrefix(before.audits, after.audits)) return null
-  const executionCount = (snapshot: SanctuaryPostbootIntegritySnapshot) => snapshot.restartAttempts.filter((row) => row.execution).length
+  const executionCount = (snapshot: SanctuaryPostbootIntegritySnapshot) => new Set(snapshot.restartAttempts
+    .filter((row) => row.state !== "attempt_not_started").map((row) => row.idDigest)).size
+  const validAttemptLifecycles = (snapshot: SanctuaryPostbootIntegritySnapshot): boolean => {
+    const states = new Map<string, string[]>()
+    for (const row of snapshot.restartAttempts) states.set(row.idDigest, [...(states.get(row.idDigest) ?? []), row.state])
+    return [...states.values()].every((sequence) => sequence.length === 3 && sequence[0] === "attempt_not_started"
+      && sequence[1] === "attempting" && (sequence[2] === "succeeded" || sequence[2] === "attempted_or_indeterminate"))
+  }
+  if (!validAttemptLifecycles(before) || !validAttemptLifecycles(after)) return null
   if (before.approvalExecutionCount !== executionCount(before) || after.approvalExecutionCount !== executionCount(after)
     || after.approvalExecutionCount !== before.approvalExecutionCount) return null
   const newSweeps = after.sweeps.slice(before.sweeps.length)
@@ -190,6 +198,9 @@ export interface SanctuaryScenarioRestartAttempt {
   actionDigest: string
   argumentDigest: string
   target: string
+  targetId: string
+  beforeState: string
+  scenarioHandleDigest: string
   approvalId: string
   attemptId: string
   observedAt: number

@@ -136,7 +136,11 @@ const integritySnapshot = () => ({
   telegramNextUpdateId: 10,
   approvalCheckpoints: [{ idDigest: "1".repeat(64), recordDigest: "2".repeat(64) }],
   approvalExecutionCount: 1,
-  restartAttempts: [{ idDigest: "3".repeat(64), recordDigest: "4".repeat(64), execution: true }],
+  restartAttempts: [
+    { idDigest: "3".repeat(64), recordDigest: "4".repeat(64), state: "attempt_not_started" as const },
+    { idDigest: "3".repeat(64), recordDigest: "b".repeat(64), state: "attempting" as const },
+    { idDigest: "3".repeat(64), recordDigest: "c".repeat(64), state: "succeeded" as const },
+  ],
   fingerprintDigest: "3".repeat(64),
   sweeps: [{ idDigest: "5".repeat(64), recordDigest: "6".repeat(64), scenarioHandleDigest: null, deliveryIdDigest: null }],
   deliveries: [{ idDigest: "7".repeat(64), recordDigest: "8".repeat(64) }],
@@ -180,9 +184,23 @@ describe("Sanctuary postboot relational integrity", () => {
     expect(verifySanctuaryPostbootIntegrity(before, { ...bound, sweeps: [{ ...bound.sweeps[0]!, recordDigest: "f".repeat(64) }] }, handle)).toBeNull()
     expect(verifySanctuaryPostbootIntegrity(before, {
       ...bound,
-      approvalExecutionCount: 2,
-      restartAttempts: [...bound.restartAttempts, { ...bound.restartAttempts[0]!, recordDigest: "f".repeat(64) }],
+      restartAttempts: [...bound.restartAttempts, { ...bound.restartAttempts[2]!, recordDigest: "f".repeat(64) }],
     }, handle)).toBeNull()
+  })
+
+  it.each(["succeeded", "attempted_or_indeterminate"] as const)("rejects appended %s terminal replay without relying on a counter", (state) => {
+    const before = integritySnapshot()
+    const after = { ...before, activeScenarioHandleDigest: "a".repeat(64), restartAttempts: [
+      ...before.restartAttempts, { idDigest: "d".repeat(64), recordDigest: "e".repeat(64), state },
+    ] }
+    expect(verifySanctuaryPostbootIntegrity(before, after, "a".repeat(64))).toBeNull()
+  })
+
+  it("rejects restart-attempt reorder and any full-record digest change", () => {
+    const before = integritySnapshot()
+    const bound = { ...before, activeScenarioHandleDigest: "a".repeat(64) }
+    expect(verifySanctuaryPostbootIntegrity(before, { ...bound, restartAttempts: [...bound.restartAttempts].reverse() }, "a".repeat(64))).toBeNull()
+    expect(verifySanctuaryPostbootIntegrity(before, { ...bound, restartAttempts: bound.restartAttempts.map((row, index) => index === 1 ? { ...row, recordDigest: "f".repeat(64) } : row) }, "a".repeat(64))).toBeNull()
   })
 
   it("requires the live active scenario marker relation", () => {

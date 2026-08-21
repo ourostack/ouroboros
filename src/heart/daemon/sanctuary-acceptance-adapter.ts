@@ -555,7 +555,7 @@ function parseRestartAttempts(raw: string, scenarioHandleDigest: string | null):
       || typeof attempt.beforeState !== "string" || attempt.beforeState.length > 64 || typeof attempt.mutationAcknowledged !== "boolean"
       || (attempt.afterState !== null && (typeof attempt.afterState !== "string" || attempt.afterState.length > 64))) throw new Error("restart attempt ledger row is invalid")
     if (scenarioHandleDigest !== null && attempt.scenarioHandleDigest !== scenarioHandleDigest) return []
-    return [{ state: attempt.state as SanctuaryScenarioFacts["restartAttempts"][number]["state"], actionDigest: String(attempt.actionDigest), argumentDigest: String(attempt.argumentDigest), target: containerRecord.name, approvalId: attempt.approvalId, attemptId: attempt.attemptId, observedAt: Date.parse(attempt.observedAt), mutationAcknowledged: attempt.mutationAcknowledged, afterState: attempt.afterState as string | null }]
+    return [{ state: attempt.state as SanctuaryScenarioFacts["restartAttempts"][number]["state"], actionDigest: String(attempt.actionDigest), argumentDigest: String(attempt.argumentDigest), target: containerRecord.name, targetId: containerRecord.id, beforeState: attempt.beforeState, scenarioHandleDigest: attempt.scenarioHandleDigest, approvalId: attempt.approvalId, attemptId: attempt.attemptId, observedAt: Date.parse(attempt.observedAt), mutationAcknowledged: attempt.mutationAcknowledged, afterState: attempt.afterState as string | null }]
   })
 }
 
@@ -614,12 +614,12 @@ function buildPostbootIntegritySnapshot(input: {
   const deliveries = (input.health?.deliveredReceipts as JsonObject[] | undefined ?? []).map((row) => ({ idDigest: digest(row.deliveryId), recordDigest: digest(row) }))
   const scenarioRelevantEvents = new Set(["telegram.callback_settled", "telegram.update_dropped", "approval.acceptance_transition", "senses.sanctuary_read_receipt", "senses.telegram_approved_restart_end"])
   const restartAttempts = input.restartAttempts.map((row) => ({
-    idDigest: digest(row.attemptId), recordDigest: digest(row), execution: row.state === "attempting",
+    idDigest: digest(row.attemptId), recordDigest: digest(row), state: row.state,
   }))
   return {
     schemaVersion: "sanctuary-postboot-integrity-v2", activeScenarioHandleDigest: input.activeScenarioHandleDigest,
     telegramNextUpdateId: Number(offset.nextUpdateId), approvalCheckpoints,
-    approvalExecutionCount: restartAttempts.filter((row) => row.execution).length, restartAttempts,
+    approvalExecutionCount: new Set(restartAttempts.filter((row) => row.state !== "attempt_not_started").map((row) => row.idDigest)).size, restartAttempts,
     fingerprintDigest: digest(input.cronRaw), sweeps, deliveries,
     audits: input.auditLedgerEntries.map((row) => ({ idDigest: digest(row), recordDigest: digest(row), scenarioHandleDigest: typeof row.meta.scenarioHandleDigest === "string" ? row.meta.scenarioHandleDigest : null, scenarioRelevant: scenarioRelevantEvents.has(row.event) })),
   }

@@ -1152,6 +1152,27 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     expect(calls).toContainEqual({ operation: "request_reboot", targetId: "sanctuary", idempotencyKey: "c".repeat(32), preflightDigest: "e".repeat(64) })
   })
 
+  it("binds postboot continuity to every validated restart-attempt field and lifecycle row", async () => {
+    const attempt = (state: "attempt_not_started" | "attempting" | "succeeded", beforeState = "running") => ({
+      actionDigest: "1".repeat(64), afterState: state === "succeeded" ? "running" : null, approvalId: "approval-1",
+      argumentDigest: "2".repeat(64), attemptId: "attempt-1", beforeState,
+      container: { id: "Docker:calibre-web", name: "calibre-web" }, mutationAcknowledged: state === "succeeded",
+      observedAt: state === "attempt_not_started" ? "2026-08-20T01:00:00.000Z" : state === "attempting" ? "2026-08-20T01:00:01.000Z" : "2026-08-20T01:00:02.000Z",
+      scenarioHandleDigest: "a".repeat(64), state,
+    })
+    const snapshot = async (beforeState = "running") => executeSanctuaryAcceptanceAdapter({ operation: "postboot_integrity_snapshot" }, unit16Deps({
+      readFixedFile: (file) => {
+        if (file.endsWith("offset.json")) return '{"nextUpdateId":42}\n'
+        if (file.endsWith("restart-attempts.ndjson")) return [attempt("attempt_not_started", beforeState), attempt("attempting", beforeState), attempt("succeeded", beforeState)].map((row) => JSON.stringify(row)).join("\n") + "\n"
+        throw Object.assign(new Error("absent"), { code: "ENOENT" })
+      },
+    })) as Promise<{ restartAttempts: Array<{ recordDigest: string; state: string }> }>
+    const baseline = await snapshot()
+    const changed = await snapshot("exited")
+    expect(baseline.restartAttempts.map((row) => row.state)).toEqual(["attempt_not_started", "attempting", "succeeded"])
+    expect(changed.restartAttempts.map((row) => row.recordDigest)).not.toEqual(baseline.restartAttempts.map((row) => row.recordDigest))
+  })
+
   it("materializes executable configs from only fixed live state", async () => {
     const contract = fs.readFileSync("deploy/unraid/sanctuary-acceptance-contract.json", "utf8")
     const deps = unit16Deps({ readFixedFile: (file) => {
