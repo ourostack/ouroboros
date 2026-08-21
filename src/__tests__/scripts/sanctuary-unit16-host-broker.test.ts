@@ -4,12 +4,19 @@ import * as path from "node:path"
 
 import { describe, expect, it } from "vitest"
 
-interface BrokerDependencies { readBootId(): string; containerSnapshot(): unknown }
+interface BrokerDependencies {
+  readBootId(): string
+  containerSnapshot(): unknown
+  startHealthProbe?(input: Record<string, string>): unknown
+  healthProbeStatus?(input: Record<string, string>): unknown
+  recoverHealthProbe?(input: Record<string, string>): unknown
+}
 
 interface BrokerModule {
   dispatch(request: unknown, dependencies?: BrokerDependencies): Promise<unknown>
   parseVaultStatus(output: string, succeeded: boolean): { vaultUnlocked: boolean; manualAuthRequired: boolean }
   queryGraphqlAutostart(records: unknown[], fetchImpl: typeof fetch): Promise<boolean>
+  healthProbeDockerArgs(mode: "run" | "recover", input: Record<string, string>): string[]
 }
 
 async function broker(): Promise<BrokerModule> {
@@ -17,6 +24,7 @@ async function broker(): Promise<BrokerModule> {
     dispatch(request: unknown, dependencies?: BrokerDependencies): Promise<unknown>
     parseVaultStatus(output: string, succeeded: boolean): { vaultUnlocked: boolean; manualAuthRequired: boolean }
     queryGraphqlAutostart(records: unknown[], fetchImpl: typeof fetch): Promise<boolean>
+    healthProbeDockerArgs(mode: "run" | "recover", input: Record<string, string>): string[]
   }>
 }
 
@@ -56,6 +64,51 @@ describe("Sanctuary Unit 16 host broker", () => {
       readBootId: () => "unused",
       containerSnapshot: () => snapshot,
     })).rejects.toThrow(/shape is invalid/u)
+  })
+
+  it("starts, polls, and recovers only the fixed owner-bound health probe", async () => {
+    const { dispatch } = await broker()
+    const calls: Array<{ operation: string; input: Record<string, string> }> = []
+    const snapshot = { imageId: `sha256:${"b".repeat(64)}`, containerId: "c".repeat(64), running: true, health: "healthy" }
+    const dependencies: BrokerDependencies = {
+      readBootId: () => "unused",
+      containerSnapshot: () => snapshot,
+      startHealthProbe: (input) => { calls.push({ operation: "start", input }); return { state: "started", operationDigest: "d".repeat(64) } },
+      healthProbeStatus: (input) => { calls.push({ operation: "status", input }); return { state: "running" } },
+      recoverHealthProbe: (input) => { calls.push({ operation: "recover", input }); return { recovered: true } },
+    }
+    const coordinates = { targetId: "sanctuary", label: "unit-16g-health-transition", scenarioHandleDigest: "a".repeat(64) }
+    await expect(dispatch({ operation: "start_health_probe", ...coordinates }, dependencies)).resolves.toEqual({ state: "started", operationDigest: "d".repeat(64) })
+    await expect(dispatch({ operation: "health_probe_status", ...coordinates }, dependencies)).resolves.toEqual({ state: "running" })
+    await expect(dispatch({ operation: "recover_health_probe", ...coordinates }, dependencies)).resolves.toEqual({ recovered: true })
+    expect(calls).toEqual([
+      { operation: "start", input: { label: coordinates.label, scenarioHandleDigest: coordinates.scenarioHandleDigest, ownerImageDigest: "b".repeat(64), ownerContainerDigest: "c".repeat(64) } },
+      { operation: "status", input: { label: coordinates.label, scenarioHandleDigest: coordinates.scenarioHandleDigest, ownerImageDigest: "b".repeat(64), ownerContainerDigest: "c".repeat(64) } },
+      { operation: "recover", input: { label: coordinates.label, scenarioHandleDigest: coordinates.scenarioHandleDigest, ownerImageDigest: "b".repeat(64), ownerContainerDigest: "c".repeat(64) } },
+    ])
+  })
+
+  it("constructs an exact argv-only packaged probe invocation", async () => {
+    const { healthProbeDockerArgs } = await broker()
+    expect(healthProbeDockerArgs("run", {
+      label: "unit-16h-daily-digest", scenarioHandleDigest: "a".repeat(64), ownerImageDigest: "b".repeat(64), ownerContainerDigest: "c".repeat(64),
+    })).toEqual([
+      "exec", "ouro-butler", "/usr/local/bin/node", "/opt/ouro/dist/senses/sanctuary-health-acceptance-probe.js", "run",
+      "--label", "unit-16h-daily-digest", "--scenario", "a".repeat(64), "--owner-image", "b".repeat(64), "--owner-container", "c".repeat(64),
+    ])
+  })
+
+  it("rejects health probes for drifted owners and invalid labels before launch", async () => {
+    const { dispatch } = await broker()
+    const started: unknown[] = []
+    const dependencies: BrokerDependencies = {
+      readBootId: () => "unused",
+      containerSnapshot: () => ({ imageId: `sha256:${"b".repeat(64)}`, containerId: "c".repeat(64), running: false, health: "unhealthy" }),
+      startHealthProbe: (input) => { started.push(input); return {} },
+    }
+    await expect(dispatch({ operation: "start_health_probe", targetId: "sanctuary", label: "unit-16g-health-transition", scenarioHandleDigest: "a".repeat(64) }, dependencies)).rejects.toThrow(/healthy production owner/u)
+    await expect(dispatch({ operation: "start_health_probe", targetId: "sanctuary", label: "unit-14f-real-cron", scenarioHandleDigest: "a".repeat(64) }, dependencies)).rejects.toThrow(/label is invalid/u)
+    expect(started).toEqual([])
   })
 
   it("reads GraphQL autostart through the exact canonical RO credential and query", async () => {
