@@ -47,9 +47,15 @@ describe("package metadata", () => {
     expect(packageJob).toContain("docker build --pull --no-cache --file \"$PACKAGE_ROOT/package/deploy/unraid/Dockerfile\"")
     expect(packageJob).toContain("--tag ouro-butler-package-smoke")
     expect(packageJob).toContain("shrinkwrap.packages[\"\"].version !== expected")
+    expect(packageJob).toContain("docker run --rm --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m,mode=1777")
     expect(packageJob).toContain('test "$(id -u)" = 10001')
     expect(packageJob).toContain('test "$(id -g)" = 10001')
-    expect(packageJob).toContain('test "$(bw --version)" = 2026.8.0')
+    expect(packageJob).toContain('printf "%s" "{}" >"$BW_VERIFY_ROOT/appdata/data.json"')
+    expect(packageJob).toContain('BITWARDENCLI_APPDATA_DIR="$BW_VERIFY_ROOT/appdata" bw --version 2>"$BW_VERIFY_ROOT/stderr"')
+    expect(packageJob).toContain('test ! -s "$BW_VERIFY_ROOT/stderr"')
+    expect(packageJob).toContain('test "$BW_VERSION" = 2026.8.0')
+    expect(packageJob).toContain('test ! -e "/home/ouro/.config/Bitwarden CLI"')
+    expect(packageJob).not.toContain('$(bw --version)')
   })
 
   it("keeps current mail parsing fixes while overriding the vulnerable merge implementation", () => {
