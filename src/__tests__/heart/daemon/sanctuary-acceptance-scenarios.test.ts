@@ -22,6 +22,7 @@ const event = (name: string) => ({ event: name, at: 1, meta: {} })
 const groundingDigest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex")
 const systemGrounding = { serverName: "Sanctuary", unraidVersion: "7.2.3", apiVersion: "4.37.1", arrayState: "STARTED", degraded: false }
 const storageGrounding = { array: { state: "STARTED", usedBytes: 8_000_000_000_000, freeBytes: 2_000_000_000_000, usedPercent: 80, degraded: false }, shares: [], truncated: false }
+const groundingSource = "9".repeat(64)
 const groundedTurn = (toolName: "unraid_get_system" | "unraid_get_storage", facts: unknown, responseText: string) => {
   const resultDigest = "5".repeat(64)
   const factDigest = groundingDigest(facts)
@@ -29,7 +30,7 @@ const groundedTurn = (toolName: "unraid_get_system" | "unraid_get_storage", fact
     status: "success" as const, updateDigest: "1".repeat(64), sequenceDigest: "2".repeat(64), responseDigest: "3".repeat(64),
     toolResultDigests: [resultDigest], providerTurnCount: 1, toolInvocationCount: 1, deliveryCount: 1,
     telegramMessageIdDigests: ["4".repeat(64)], completedAt: 10_000, responseText, responseUtf16Units: responseText.length,
-    toolGroundings: [{ toolName, resultDigest, groundingDigest: factDigest, facts }],
+    toolGroundings: [{ toolName, resultDigest, groundingDigest: factDigest, sourceIdentityDigest: groundingSource, observedAt: "1970-01-01T00:00:09.000Z", facts }],
   }
 }
 const turnReceipt = (toolResultDigests: string[] = []) => ({ status: "success" as const, updateDigest: "1".repeat(64), sequenceDigest: "2".repeat(64), responseDigest: "3".repeat(64), toolResultDigests, providerTurnCount: 1, toolInvocationCount: toolResultDigests.length, deliveryCount: 1, telegramMessageIdDigests: ["4".repeat(64)], completedAt: 10_000 })
@@ -91,7 +92,7 @@ const healthProbe = (label: "unit-16f-cron-fingerprint" | "unit-16g-health-trans
   }
 }
 const validDenialReceiptForFacts = () => {
-  const boundary = { ownerSnapshotDigest: "1".repeat(64), targetSnapshotDigest: "2".repeat(64), targetRestartCount: 7, auditCursorDigest: "3".repeat(64), providerUsageCursorDigest: "4".repeat(64), sessionCursorDigest: "5".repeat(64), toolActionCursorDigest: "6".repeat(64) }
+  const boundary = { ownerSnapshotDigest: "1".repeat(64), targetSnapshotDigest: "2".repeat(64), targetRestartCount: 7, targetContainerIdDigest: "7".repeat(64), auditCursorDigest: "3".repeat(64), providerUsageCursorDigest: "4".repeat(64), sessionCursorDigest: "5".repeat(64), toolActionCursorDigest: "6".repeat(64) }
   return { schemaVersion: "sanctuary-read-only-denial-receipt-v1" as const, phase: "complete" as const, label: "unit-16e-1-stop-denial" as const, scenarioHandleDigest: "a".repeat(64), operation: "stop" as const, targetDigest: "7".repeat(64), attemptCount: 1, httpStatus: 403, errorCode: "FORBIDDEN", before: boundary, after: { ...boundary } }
 }
 const base = (): SanctuaryScenarioFacts => ({
@@ -116,10 +117,10 @@ const base = (): SanctuaryScenarioFacts => ({
     telegramProfileDigest: createHash("sha256").update(JSON.stringify(["unraid_list_containers", "unraid_get_container_logs", "unraid_get_storage", "unraid_get_disks", "unraid_get_notifications", "unraid_get_system", "unraid_restart_container", "ponder", "settle", "speak"])).digest("hex"),
     telegramSchemaDigest: "3c66299a5f70ec82f8795cae47659284e6dbc691ef49002c2fb22edba76c59b6", privateToolCount: 2,
     privateProfileDigest: createHash("sha256").update(JSON.stringify(["send_message", "rest"])).digest("hex"), privateSchemaDigest: "61b137b2467acbcf22ca7443ee01e71ed970a62728c42aabffbdcb562f4a6a70", resolvedHandlerCount: 12,
-    excludedToolCount: 7, excludedSchemaIntersectionCount: 0, fabricatedHandlerInvocationCount: 0,
+    excludedToolCount: 7, excludedSchemaIntersectionCount: 0, fabricatedHandlerInvocationCount: 0, excludedToolAttemptCount: 7, excludedToolRejectedCount: 7, excludedToolInvokedCount: 0, excludedToolSideEffectCount: 0, globallyResolvableExcludedToolCount: 4,
     auditPathDigest: createHash("sha256").update("/home/ouro/AgentBundles/sanctuary.ouro/state/daemon/logs/telegram.ndjson").digest("hex"),
     auditLedgerDigest: "4".repeat(64), auditRecordCount: 2, auditLifecyclePairCount: 1,
-    containerUser: "10001:10001", mountCount: 2, publishedPortCount: 0, networkMode: "host", readOnlyRoot: true, mountsExact: true, securityExact: true, updaterDisabled: true,
+    containerUser: "10001:10001", liveProcessUser: "10001:10001", mountCount: 2, publishedPortCount: 0, networkMode: "host", readOnlyRoot: true, mountsExact: true, securityExact: true, updaterDisabled: true,
     writableKeyExposure: false, rawWriteMaterialFieldCount: 0, typedWriteExecutorCount: 1,
     writeApprovalPolicyDigest: createHash("sha256").update(JSON.stringify({ kind: "required", policyId: "sanctuary.unraid.restart.v1", actionClass: "unraid.container.restart", requiresSoleCall: true })).digest("hex"),
     sensitiveMaterialObserved: false, stopDenied: true, restartDenied: true, denialAuditCount: 1, denialStateUnchanged: true, denialProbeCompleted: true,
@@ -160,8 +161,8 @@ describe("Sanctuary live scenario capture", () => {
         const responseText = system ? "Sanctuary is running Unraid 7.2.3 with the array STARTED and not degraded." : "There is 2 TB free and the array is 80% used."
         const factDigest = groundingDigest(facts)
         after.telegramTurns.push(groundedTurn(toolName, facts, responseText))
-        after.events.push({ ...event("senses.sanctuary_read_receipt"), meta: { toolName, success: true, resultDigest: "5".repeat(64), groundingDigest: factDigest } })
-        ;(after as any).liveGrounding = { toolName, groundingDigest: factDigest, facts }
+        after.events.push({ ...event("senses.sanctuary_read_receipt"), meta: { toolName, success: true, resultDigest: "5".repeat(64), groundingDigest: factDigest, sourceIdentityDigest: groundingSource, observedAt: "1970-01-01T00:00:09.000Z" } })
+        ;(after as any).liveGrounding = { toolName, groundingDigest: factDigest, sourceIdentityDigest: groundingSource, observedAt: "1970-01-01T00:00:11.000Z", facts }
       }
       if (label === "unit-16d-2-unauthorized") after.events.push({ ...event("telegram.update_dropped"), meta: { scenarioHandleDigest: "a".repeat(64), distinctAccount: true } })
       if (label === "unit-16e-2-restart-denial") after.denial = { ...after.denial!, label, operation: "restart" }
@@ -186,8 +187,8 @@ describe("Sanctuary live scenario capture", () => {
     const factDigest = groundingDigest(facts)
     const validTurn = groundedTurn(toolName, facts, responseText)
     after.telegramTurns = [validTurn]
-    after.events = [{ ...event("senses.sanctuary_read_receipt"), meta: { toolName, success: true, resultDigest: "5".repeat(64), groundingDigest: factDigest } }]
-    ;(after as any).liveGrounding = { toolName, groundingDigest: factDigest, facts }
+    after.events = [{ ...event("senses.sanctuary_read_receipt"), meta: { toolName, success: true, resultDigest: "5".repeat(64), groundingDigest: factDigest, sourceIdentityDigest: groundingSource, observedAt: "1970-01-01T00:00:09.000Z" } }]
+    ;(after as any).liveGrounding = { toolName, groundingDigest: factDigest, sourceIdentityDigest: groundingSource, observedAt: "1970-01-01T00:00:11.000Z", facts }
     expect(deriveSanctuaryScenarioAssertions(label, before, after, 400_000)).toMatchObject({ accurate: true, grounded: true, liveFactsMatched: true, responseWithinLimit: true })
 
     after.telegramTurns = [{ ...validTurn, responseText: "Everything looks fine.", responseUtf16Units: 22 }]
@@ -195,8 +196,29 @@ describe("Sanctuary live scenario capture", () => {
     after.telegramTurns = [{ ...validTurn, responseText: "x".repeat(1_201), responseUtf16Units: 1_201 }]
     expect(deriveSanctuaryScenarioAssertions(label, before, after, 400_000)).toBeNull()
     after.telegramTurns = [validTurn]
-    ;(after as any).liveGrounding = { toolName, groundingDigest: "f".repeat(64), facts }
+    ;(after as any).liveGrounding = { toolName, groundingDigest: "f".repeat(64), sourceIdentityDigest: groundingSource, observedAt: "1970-01-01T00:00:11.000Z", facts }
     expect(deriveSanctuaryScenarioAssertions(label, before, after, 400_000)).toBeNull()
+  })
+
+  it("accepts bounded same-source storage drift but rejects forged source and causal time", () => {
+    const before = base()
+    const after = base()
+    const turn = groundedTurn("unraid_get_storage", storageGrounding, "There is 2 TB free and the array is 80% used.")
+    const factDigest = groundingDigest(storageGrounding)
+    after.telegramTurns = [turn]
+    after.events = [{ ...event("senses.sanctuary_read_receipt"), meta: { toolName: "unraid_get_storage", success: true, resultDigest: "5".repeat(64), groundingDigest: factDigest, sourceIdentityDigest: groundingSource, observedAt: "1970-01-01T00:00:09.000Z" } }]
+    const drifted = { array: { ...storageGrounding.array, usedBytes: 8_100_000_000_000, freeBytes: 1_900_000_000_000, usedPercent: 81 }, shares: [], truncated: false }
+    after.liveGrounding = { toolName: "unraid_get_storage", groundingDigest: groundingDigest(drifted), sourceIdentityDigest: groundingSource, observedAt: "1970-01-01T00:00:11.000Z", facts: drifted } as never
+    expect(deriveSanctuaryScenarioAssertions("unit-16d-1-space", before, after, 400_000)).toMatchObject({ accurate: true, liveFactsMatched: true })
+    after.events = [{ ...after.events[0]!, meta: { ...after.events[0]!.meta, sourceIdentityDigest: "8".repeat(64) } }]
+    expect(deriveSanctuaryScenarioAssertions("unit-16d-1-space", before, after, 400_000)).toBeNull()
+    after.events = [{ ...after.events[0]!, meta: { ...after.events[0]!.meta, sourceIdentityDigest: groundingSource } }]
+    after.liveGrounding = { ...after.liveGrounding!, sourceIdentityDigest: "8".repeat(64) } as never
+    expect(deriveSanctuaryScenarioAssertions("unit-16d-1-space", before, after, 400_000)).toBeNull()
+    after.liveGrounding = { ...after.liveGrounding!, sourceIdentityDigest: groundingSource, observedAt: "1970-01-01T00:00:08.000Z" } as never
+    expect(deriveSanctuaryScenarioAssertions("unit-16d-1-space", before, after, 400_000)).toBeNull()
+    after.liveGrounding = { ...after.liveGrounding!, observedAt: "1970-01-01T00:20:00.000Z" } as never
+    expect(deriveSanctuaryScenarioAssertions("unit-16d-1-space", before, after, 400_000)).toBeNull()
   })
 
   it("requires independently attested butler restart and restored pending checkpoint for unit-16m", () => {
@@ -268,8 +290,8 @@ describe("Sanctuary live scenario capture", () => {
     const digest = groundingDigest(systemGrounding)
     facts = base()
     facts.telegramTurns.push(groundedTurn("unraid_get_system", systemGrounding, "Sanctuary is running Unraid 7.2.3 with the array STARTED and not degraded."))
-    facts.events.push({ ...event("senses.sanctuary_read_receipt"), meta: { toolName: "unraid_get_system", success: true, resultDigest: "5".repeat(64), groundingDigest: digest } })
-    facts.liveGrounding = { toolName: "unraid_get_system", groundingDigest: digest, facts: systemGrounding }
+    facts.events.push({ ...event("senses.sanctuary_read_receipt"), meta: { toolName: "unraid_get_system", success: true, resultDigest: "5".repeat(64), groundingDigest: digest, sourceIdentityDigest: groundingSource, observedAt: "1970-01-01T00:00:09.000Z" } })
+    facts.liveGrounding = { toolName: "unraid_get_system", groundingDigest: digest, sourceIdentityDigest: groundingSource, observedAt: "1970-01-01T00:00:11.000Z", facts: systemGrounding }
     const complete = await capture({ phase: "poll", label: "unit-16d-whats-up", externalGate: "authorized-telegram-message", sources, checkpointDigest: begin.checkpointDigest as string })
     expect(complete).toMatchObject({ state: "complete", checkpointDigest: begin.checkpointDigest, assertions: { responseCount: 1 }, sourceDigests: { "telegram-audit": expect.stringMatching(/^[0-9a-f]{64}$/u), "telegram-offset": expect.stringMatching(/^[0-9a-f]{64}$/u), "telegram-turn-receipts": expect.stringMatching(/^[0-9a-f]{64}$/u), "live-grounding-read": expect.stringMatching(/^[0-9a-f]{64}$/u) } })
     finalizeSanctuaryScenarioCapture(gate)

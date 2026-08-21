@@ -27,6 +27,11 @@ interface BrokerDependencies {
 }
 
 interface BrokerModule {
+  assertStableContainerProcess(before: Record<string, unknown>, after: Record<string, unknown>): void
+  readBoundedProcStatus(file: string): string
+  liveContainerProcessUser(pid: number, dependencies?: { readFile(file: string): string }): string
+  liveContainerProcessIdentity(pid: number, dependencies: { readFile(file: string): { content: string; inode: string } }): { user: string; processStartTime: string; processInode: string }
+  parseProcStartTime(raw: string): string
   createOwnerMutationCoordinator(): {
     healthStart<T>(scenario: string, operation: () => T | Promise<T>): Promise<T>
     healthRecover<T>(scenario: string, operation: () => T | Promise<T>): Promise<T>
@@ -126,6 +131,11 @@ async function broker(): Promise<BrokerModule> {
     parseVaultStatus(output: string, succeeded: boolean): { vaultUnlocked: boolean; manualAuthRequired: boolean }
     queryGraphqlAutostart(records: unknown[], fetchImpl: typeof fetch): Promise<boolean>
     denialTargetSnapshot: BrokerModule["denialTargetSnapshot"]
+    assertStableContainerProcess: BrokerModule["assertStableContainerProcess"]
+    readBoundedProcStatus: BrokerModule["readBoundedProcStatus"]
+    liveContainerProcessUser: BrokerModule["liveContainerProcessUser"]
+    liveContainerProcessIdentity: BrokerModule["liveContainerProcessIdentity"]
+    parseProcStartTime: BrokerModule["parseProcStartTime"]
     healthProbeDockerArgs(mode: "run" | "stop" | "recover", input: Record<string, string>): string[]
     healthProbeArtifactDisposition(artifacts: { receipt: unknown; workspace: unknown; pending: unknown }): "complete" | "recovery_required" | "absent"
     healthProbeOperationBudgets(): { startMaxMs: number; completeStatusMaxMs: number; recoveryMaxMs: number; composedCaptureMaxMs: number }
@@ -142,6 +152,45 @@ async function broker(): Promise<BrokerModule> {
 }
 
 describe("Sanctuary Unit 16 host broker", () => {
+  it("binds effective PID1 UID and GID to the inspected live container process", async () => {
+    const { assertStableContainerProcess, liveContainerProcessIdentity, liveContainerProcessUser, parseProcStartTime, readBoundedProcStatus } = await broker()
+    const reads: string[] = []
+    expect(liveContainerProcessUser(4321, { readFile: (file) => {
+      reads.push(file)
+      return "Name:\tnode\nUid:\t10000\t10001\t10002\t10003\nGid:\t10000\t10001\t10002\t10003\n"
+    } })).toBe("10001:10001")
+    expect(reads).toEqual(["/proc/4321/status"])
+    for (const status of [
+      "Uid:\t0\t0\t0\t0\nGid:\t0\t0\t0\t0\n",
+      "Uid:\t10001\t10001\t10001\t10001\nGid:\t10001\t0\t10001\t10001\n",
+      "Uid:\t10001\t10001\t10001\t10001\nUid:\t10001\t10001\t10001\t10001\nGid:\t10001\t10001\t10001\t10001\n",
+    ]) expect(() => liveContainerProcessUser(4321, { readFile: () => status })).toThrow()
+    for (const pid of [0, -1, 1.5]) expect(() => liveContainerProcessUser(pid, { readFile: () => "" })).toThrow()
+    const procStat = `4321 (node worker) S ${Array.from({ length: 18 }, (_, index) => index + 1).join(" ")} 987654 0 0`
+    expect(parseProcStartTime(procStat)).toBe("987654")
+    expect(() => parseProcStartTime("4321 malformed")).toThrow(/stat/u)
+    expect(liveContainerProcessIdentity(4321, { readFile: (file) => file.endsWith("/status")
+      ? { content: "Uid:\t10001\t10001\t10001\t10001\nGid:\t10001\t10001\t10001\t10001\n", inode: "11" }
+      : { content: procStat, inode: "12" } })).toEqual({ user: "10001:10001", processStartTime: "987654", processInode: "11:12" })
+    expect(() => liveContainerProcessIdentity(4321, { readFile: () => { throw Object.assign(new Error("gone"), { code: "ENOENT" }) } })).toThrow("gone")
+    expect(() => assertStableContainerProcess({ containerId: "a", pid: 4321, running: true }, { containerId: "b", pid: 4321, running: true })).toThrow(/changed/u)
+    expect(() => assertStableContainerProcess({ containerId: "a", pid: 4321, running: true }, { containerId: "a", pid: 4322, running: true })).toThrow(/changed/u)
+    expect(() => assertStableContainerProcess({ containerId: "a", pid: 4321, running: true }, { containerId: "a", pid: 4321, running: false })).toThrow(/changed/u)
+    const stable = { containerId: "a", imageId: "sha256:a", pid: 4321, running: true, restartCount: 4, startedAt: "2026-08-20T00:00:00.000Z", health: "healthy", processStartTime: "1234", processInode: "5678" }
+    expect(() => assertStableContainerProcess(stable, { ...stable })).not.toThrow()
+    for (const drift of [
+      { restartCount: 5 },
+      { startedAt: "2026-08-20T00:00:01.000Z" },
+      { imageId: "sha256:b" },
+      { health: "starting" },
+      { processStartTime: "9999" },
+      { processInode: "9999" },
+    ]) expect(() => assertStableContainerProcess(stable, { ...stable, ...drift })).toThrow(/changed/u)
+    const oversized = path.join(fs.mkdtempSync("/tmp/sanctuary-proc-status-"), "status")
+    fs.writeFileSync(oversized, "x".repeat(128 * 1024 + 1))
+    expect(() => readBoundedProcStatus(oversized)).toThrow(/bound/u)
+  })
+
   it("reads the exact denial target lifecycle without returning raw owner identifiers", async () => {
     const { denialTargetSnapshot, dispatch } = await broker()
     const raw = {
@@ -495,7 +544,7 @@ describe("Sanctuary Unit 16 host broker", () => {
     const { dispatch } = await broker()
     const snapshot = {
       schemaVersion: 1, containerId: "a".repeat(64), imageId: `sha256:${"b".repeat(64)}`,
-      running: true, health: "healthy", user: "10001:10001", readOnlyRoot: true,
+      running: true, health: "healthy", user: "10001:10001", liveProcessUser: "10001:10001", readOnlyRoot: true,
       mountCount: 2, mountsDigest: "c".repeat(64), publishedPortCount: 0,
       networkMode: "host", restartPolicy: "no", restartCount: 3,
       autostartExact: true, updaterDisabled: true, vaultUnlocked: true, manualAuthRequired: false,
@@ -945,7 +994,7 @@ describe("Sanctuary Unit 16 host broker", () => {
     expect(source).toContain('JSON.stringify(value.capDrop) === JSON.stringify(["ALL"])')
     expect(source).toContain('JSON.stringify(value.securityOpt) === JSON.stringify(["no-new-privileges"])')
     expect(source).toContain('"vault", "status", "--agent", "sanctuary"')
-    expect(source.match(/spawnSync\(DOCKER, \["inspect"/gu)).toHaveLength(3)
+    expect(source.match(/spawnSync\(DOCKER, \["inspect"/gu)).toHaveLength(4)
     expect(source).toContain('const GRAPHQL_ENDPOINT = "http://127.0.0.1/graphql"')
     expect(source).toContain('chownSync(socket, 0, 10001)')
     expect(source).toContain('chmodSync(socket, 0o660)')

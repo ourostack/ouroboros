@@ -420,6 +420,62 @@ describe("runAgent tool loop guard", () => {
     }))
   })
 
+  it("reports excluded and valid calls from the production Telegram batch boundary", async () => {
+    const { resolveToolDefinition } = await import("../../repertoire/tools")
+    const sanctuaryNames = new Set(["unraid_list_containers", "unraid_get_container_logs", "unraid_get_storage", "unraid_get_disks", "unraid_get_notifications", "unraid_get_system", "unraid_restart_container"])
+    const tools = [...sanctuaryNames].map((name) => resolveToolDefinition(name)!.tool)
+    const excluded = ["shell", "read_file", "edit_file", "vault_get", "mcp_call", "exec", "credential_get"]
+    const execTool = vi.fn(async (name: string) => name === "unraid_get_system" ? JSON.stringify({ ok: true }) : "unexpected")
+    const boundaryReceipts: unknown[] = []
+    const { runAgent } = await import("../../heart/core")
+    for (const [index, name] of excluded.entries()) {
+      mockCreate.mockReset()
+      mockCreate.mockReturnValueOnce(makeStream([makeChunk(undefined, [{ index: 0, id: `excluded-${index}`, function: { name, arguments: "{}" } }])]))
+      mockCreate.mockReturnValueOnce(makeStream([makeChunk(undefined, [{ index: 0, id: `settle-${index}`, function: { name: "settle", arguments: JSON.stringify({ answer: "rejected" }) } }])]))
+      await runAgent([{ role: "user", content: "probe the exact Sanctuary boundary" }], makeCallbacks(), "telegram", undefined, {
+        tools, execTool, toolContext: { signin: async () => undefined },
+        toolBoundaryObserver: (receipt: unknown) => boundaryReceipts.push(receipt),
+      } as any)
+    }
+    mockCreate.mockReset()
+    mockCreate.mockReturnValueOnce(makeStream([makeChunk(undefined, [{ index: 0, id: "valid-system", function: { name: "unraid_get_system", arguments: "{}" } }])]))
+    mockCreate.mockReturnValueOnce(makeStream([makeChunk(undefined, [{ index: 0, id: "final-settle", function: { name: "settle", arguments: JSON.stringify({ answer: "complete" }) } }])]))
+    await runAgent([{ role: "user", content: "run a valid Sanctuary read" }], makeCallbacks(), "telegram", undefined, {
+      tools, execTool, toolContext: { signin: async () => undefined },
+      toolBoundaryObserver: (receipt: unknown) => boundaryReceipts.push(receipt),
+    } as any)
+
+    expect(execTool).toHaveBeenCalledTimes(1)
+    expect(execTool).toHaveBeenCalledWith("unraid_get_system", {}, expect.anything())
+    expect(boundaryReceipts).toEqual([
+      ...excluded.map((name) => expect.objectContaining({ name, reason: "profile_excluded", invoked: false, sideEffect: false })),
+      expect.objectContaining({ name: "unraid_get_system", reason: "dispatched", invoked: true, sideEffect: false }),
+    ])
+  })
+
+  it("dispatches the valid Sanctuary control through the production repertoire executor", async () => {
+    const { resolveToolDefinition } = await import("../../repertoire/tools")
+    const systemTool = resolveToolDefinition("unraid_get_system")!.tool
+    const getSystem = vi.fn().mockResolvedValue({ ok: true, data: { serverName: "Sanctuary" } })
+    const boundaryReceipts: unknown[] = []
+    mockCreate.mockReset()
+    mockCreate.mockReturnValueOnce(makeStream([makeChunk(undefined, [{ index: 0, id: "valid-system-production", function: { name: "unraid_get_system", arguments: "{}" } }])]))
+    mockCreate.mockReturnValueOnce(makeStream([makeChunk(undefined, [{ index: 0, id: "settle-production", function: { name: "settle", arguments: JSON.stringify({ answer: "complete" }) } }])]))
+    const { runAgent } = await import("../../heart/core")
+
+    const result = await runAgent([{ role: "user", content: "run the production control" }], makeCallbacks(), "telegram", undefined, {
+      tools: [systemTool],
+      toolContext: { signin: async () => undefined, sanctuary: { getSystem } } as any,
+      toolBoundaryObserver: (receipt: unknown) => boundaryReceipts.push(receipt),
+    })
+
+    expect(result.outcome).toBe("settled")
+    expect(getSystem).toHaveBeenCalledOnce()
+    expect(boundaryReceipts).toContainEqual(expect.objectContaining({
+      name: "unraid_get_system", reason: "dispatched", globallyResolvable: true, invoked: true, sideEffect: false,
+    }))
+  })
+
   it("reports the generated assistant/tool tail independently of prompt-budget prefix replacement", async () => {
     mockCreate.mockImplementation(() => makeStream([
       makeChunk(undefined, [{

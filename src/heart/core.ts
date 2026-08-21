@@ -17,6 +17,21 @@ import { SettleFinalizationCallbackError } from "./streaming";
 import { emitNervesEvent } from "../nerves/runtime";
 import type { TurnResult } from "./streaming";
 import type { UsageData } from "../mind/context";
+
+export type ToolCallBoundaryCall = { id: string; name: string; arguments: string }
+export type ToolCallBoundaryReceipt = { name: string; reason: "profile_excluded" | "invalid_arguments" | "dispatched"; globallyResolvable: boolean; invoked: boolean; sideEffect: boolean }
+
+export function validateToolCallBatchAtProductionBoundary(calls: ToolCallBoundaryCall[], activeTools: OpenAI.ChatCompletionFunctionTool[]) {
+  const callIdCounts = new Map<string, number>()
+  for (const call of calls) callIdCounts.set(call.id, (callIdCounts.get(call.id) ?? 0) + 1)
+  return calls.map((call) => {
+    if (callIdCounts.get(call.id)! !== 1) return { call, error: "duplicate tool call id" } as const
+    const advertised = activeTools.find((tool) => tool.function.name === call.name)
+    if (!advertised || !advertised.function.parameters || typeof advertised.function.parameters !== "object") return { call, error: "tool was not advertised with a valid argument schema" } as const
+    const validated = validateAdvertisedToolArguments(call.arguments, advertised.function.parameters)
+    return validated.ok ? { call, advertised, validated: validated.value } as const : { call, error: validated.reason } as const
+  })
+}
 import { trimMessages } from "../mind/context";
 import {
   applyPromptBudget,
@@ -407,6 +422,10 @@ export interface RunAgentOptions {
   setMustResolveBeforeHandoff?: (value: boolean) => void;
   tools?: OpenAI.ChatCompletionFunctionTool[];
   execTool?: (name: string, args: Record<string, string>, ctx?: ToolContext) => Promise<string>;
+  /** Production batch-boundary observations. Emitted by the same runAgent path that authorizes and dispatches tools. */
+  toolBoundaryObserver?: (receipt: ToolCallBoundaryReceipt) => void;
+  /** Exact provider runtime injection for bounded production-path acceptance probes. */
+  providerRuntimeOverride?: ProviderRuntime;
   mcpManager?: McpManager;
   /** When true, the observe tool is available in 1:1 chats (normally group-only).
    *  Used for reaction/feedback signals where silence is natural even in DMs. */
@@ -1229,7 +1248,7 @@ export async function runAgent(
     generatedMessages.push(...structuredClone(next));
   };
   const facing = channelToFacing(channel);
-  let providerRuntime = await getProviderRuntime(facing);
+  let providerRuntime = options?.providerRuntimeOverride ?? await getProviderRuntime(facing);
   const provider = providerRuntime.id;
   const toolChoiceRequired = options?.toolChoiceRequired ?? true;
   const traceId = options?.traceId;
@@ -1858,22 +1877,7 @@ export async function runAgent(
         // Reset the retry counter on any successful tool call.
         noToolCallRetries = 0;
         const preCallMessages = structuredClone(messages.filter((message) => message.role !== "system"))
-        const callIdCounts = new Map<string, number>()
-        for (const call of result.toolCalls) callIdCounts.set(call.id, (callIdCounts.get(call.id) ?? 0) + 1)
-        const validatedCalls: Array<
-          | { call: (typeof result.toolCalls)[number]; advertised: OpenAI.ChatCompletionFunctionTool; validated: ValidatedToolArguments }
-          | { call: (typeof result.toolCalls)[number]; error: string }
-        > = result.toolCalls.map((call) => {
-          if (callIdCounts.get(call.id)! !== 1) return { call, error: "duplicate tool call id" } as const
-          const advertised = activeTools.find((tool) => tool.function.name === call.name)
-          if (!advertised || !advertised.function.parameters || typeof advertised.function.parameters !== "object") {
-            return { call, error: "tool was not advertised with a valid argument schema" } as const
-          }
-          const validated = validateAdvertisedToolArguments(call.arguments, advertised.function.parameters)
-          return validated.ok
-            ? { call, advertised, validated: validated.value } as const
-            : { call, error: validated.reason } as const
-        })
+        const validatedCalls = validateToolCallBatchAtProductionBoundary(result.toolCalls, activeTools)
         const invalidCall = validatedCalls.find((entry) => "error" in entry)
         if (invalidCall) {
           await streamCallbackBuffer?.flush()
@@ -1886,6 +1890,13 @@ export async function runAgent(
               : `invalid tool arguments: ${detail}`
             pushGenerated({ role: "tool", tool_call_id: entry.call.id, content: rejection })
             providerRuntime.appendToolOutput(entry.call.id, rejection)
+            options?.toolBoundaryObserver?.({
+              name: entry.call.name,
+              reason: activeToolNames.has(entry.call.name) ? "invalid_arguments" : "profile_excluded",
+              globallyResolvable: typeof resolveToolDefinition(entry.call.name)?.handler === "function",
+              invoked: false,
+              sideEffect: false,
+            })
           }
           if (unadvertisedCall) {
             emitNervesEvent({
@@ -2528,6 +2539,15 @@ export async function runAgent(
             success = false;
             augmentedToolContext?.habitSession?.recordError?.(toolResult);
           }
+          const resolvedRiskProfile = resolveToolDefinition(tc.name)?.riskProfile
+          const toolRiskProfile = typeof resolvedRiskProfile === "function" ? resolvedRiskProfile(args) : resolvedRiskProfile
+          options?.toolBoundaryObserver?.({
+            name: tc.name,
+            reason: "dispatched",
+            globallyResolvable: typeof resolveToolDefinition(tc.name)?.handler === "function",
+            invoked: true,
+            sideEffect: success && toolRiskProfile?.mutates !== "none",
+          })
           toolResult = rewriteToolResultForModel(tc.name, toolResult, toolFrictionLedger);
           recordToolOutcome(toolLoopState, tc.name, args, toolResult, success);
           callbacks.onToolEnd(tc.name, buildToolResultSummary(tc.name, args, toolResult, success), success);

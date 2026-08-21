@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { emitNervesEvent } from "../nerves/runtime"
 import { UnraidClient, UnraidClientError, type UnraidErrorCode } from "./unraid-client"
 import type { ToolDefinition } from "./tools-base"
@@ -9,6 +10,7 @@ export const SANCTUARY_CONTAINER_LOGS_QUERY = `query SanctuaryContainerLogs($id:
   docker { logs(id: $id, tail: $tail) { containerId lines { timestamp message } cursor } }
 }`
 export const SANCTUARY_STORAGE_QUERY = `query SanctuaryStorage {
+  vars { id }
   array { state capacity { kilobytes { used free total } } }
   shares { id name used free size }
 }`
@@ -20,7 +22,7 @@ export const SANCTUARY_NOTIFICATIONS_QUERY = `query SanctuaryNotifications {
   notifications { list(filter: {type: UNREAD, offset: 0, limit: 100}) { id timestamp importance title subject description type } }
 }`
 export const SANCTUARY_SYSTEM_QUERY = `query SanctuarySystem {
-  vars { name version }
+  vars { id name version }
   info { time os { uptime } versions { core { unraid api } } }
   array { state }
 }`
@@ -139,6 +141,12 @@ function validTimestamp(value: unknown): string | null {
   return Number.isFinite(time) ? new Date(time).toISOString() : null
 }
 
+function liveSourceIdentityDigest(value: unknown): string {
+  const prefixedId = identifier(value, "server identity", 129)
+  if (!/^[0-9a-f]{64}:[0-9a-f]{64}$/u.test(prefixedId)) throw new UnraidClientError("invalid_response", "server identity is invalid")
+  return createHash("sha256").update(prefixedId).digest("hex")
+}
+
 export function createUnraidReadTools(client: ReadClient) {
   const listContainers = async (): Promise<ToolResult<ReturnType<typeof mapContainers>>> => {
     try {
@@ -174,6 +182,7 @@ export function createUnraidReadTools(client: ReadClient) {
     async getStorage(): Promise<ToolResult<Record<string, unknown>>> {
       try {
         const data = await client.read<Record<string, unknown>>(SANCTUARY_STORAGE_QUERY, {})
+        const sourceIdentityDigest = liveSourceIdentityDigest(record(data.vars, "vars").id)
         const arrayRecord = record(data.array, "array")
         const kb = record(record(arrayRecord.capacity, "array capacity").kilobytes, "array capacity kilobytes")
         const usedKb = numberOrNull(kb.used); const freeKb = numberOrNull(kb.free)
@@ -185,7 +194,7 @@ export function createUnraidReadTools(client: ReadClient) {
           const used = numberOrNull(item.used); const free = numberOrNull(item.free)
           return { name, usedBytes: used, freeBytes: free, usedPercent: percent(used, free), degraded: used === null || free === null }
         }).sort((a, b) => a.name.localeCompare(b.name))
-        return { ok: true, data: { array: { state: state.value, usedBytes, freeBytes, usedPercent: percent(usedBytes, freeBytes), degraded: state.truncated || usedBytes === null || freeBytes === null }, shares, truncated } }
+        return { ok: true, data: { sourceIdentityDigest, array: { state: state.value, usedBytes, freeBytes, usedPercent: percent(usedBytes, freeBytes), degraded: state.truncated || usedBytes === null || freeBytes === null }, shares, truncated } }
       } catch (error) { return fail(error) }
     },
     async getDisks(): Promise<ToolResult<Record<string, unknown>>> {
@@ -234,9 +243,10 @@ export function createUnraidReadTools(client: ReadClient) {
       try {
         const data = await client.read<Record<string, unknown>>(SANCTUARY_SYSTEM_QUERY, {})
         const vars = record(data.vars, "vars"); const info = record(data.info, "info"); const versions = record(record(info.versions, "versions").core, "core versions")
+        const sourceIdentityDigest = liveSourceIdentityDigest(vars.id)
         const name = display(vars.name, 128); const unraid = display(versions.unraid ?? vars.version, 128); const api = display(versions.api, 128); const state = display(record(data.array, "array").state, 128)
         const uptimeSeconds = numberOrNull(record(info.os, "os").uptime)
-        return { ok: true, data: { serverName: name.value, unraidVersion: unraid.value, apiVersion: api.value, arrayState: state.value, uptimeSeconds, degraded: name.truncated || unraid.truncated || api.truncated || state.truncated || uptimeSeconds === null } }
+        return { ok: true, data: { sourceIdentityDigest, serverName: name.value, unraidVersion: unraid.value, apiVersion: api.value, arrayState: state.value, uptimeSeconds, degraded: name.truncated || unraid.truncated || api.truncated || state.truncated || uptimeSeconds === null } }
       } catch (error) { return fail(error) }
     },
   }

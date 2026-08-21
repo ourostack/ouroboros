@@ -6,6 +6,8 @@ export interface SanctuaryToolGrounding {
   toolName: SanctuaryGroundingToolName
   resultDigest: string
   groundingDigest: string
+  sourceIdentityDigest: string
+  observedAt: string
   facts: Record<string, unknown>
 }
 
@@ -24,20 +26,21 @@ export function projectSanctuaryGrounding(toolName: string, result: unknown): Re
   if (envelope.ok !== true) throw new Error("Sanctuary grounding result must succeed")
   const data = object(envelope.data, "Sanctuary grounding data")
   if (toolName === "unraid_get_system") {
-    const exact = ["apiVersion", "arrayState", "degraded", "serverName", "unraidVersion", "uptimeSeconds"]
+    const exact = ["apiVersion", "arrayState", "degraded", "serverName", "sourceIdentityDigest", "unraidVersion", "uptimeSeconds"]
     if (JSON.stringify(Object.keys(data).sort()) !== JSON.stringify(exact)) throw new Error("Sanctuary system grounding shape is invalid")
     for (const key of ["serverName", "unraidVersion", "apiVersion", "arrayState"]) if (typeof data[key] !== "string" || !data[key]) throw new Error("Sanctuary system grounding value is invalid")
     if (typeof data.degraded !== "boolean" || (data.uptimeSeconds !== null && (!Number.isSafeInteger(data.uptimeSeconds) || Number(data.uptimeSeconds) < 0))) throw new Error("Sanctuary system grounding value is invalid")
     return { serverName: data.serverName, unraidVersion: data.unraidVersion, apiVersion: data.apiVersion, arrayState: data.arrayState, degraded: data.degraded }
   }
-  const exact = ["array", "shares", "truncated"]
+  const exact = ["array", "shares", "sourceIdentityDigest", "truncated"]
   if (JSON.stringify(Object.keys(data).sort()) !== JSON.stringify(exact) || !Array.isArray(data.shares) || typeof data.truncated !== "boolean") throw new Error("Sanctuary storage grounding shape is invalid")
   const array = object(data.array, "Sanctuary storage array grounding")
   if (JSON.stringify(Object.keys(array).sort()) !== JSON.stringify(["degraded", "freeBytes", "state", "usedBytes", "usedPercent"])) throw new Error("Sanctuary storage array grounding shape is invalid")
   if (typeof array.state !== "string" || !array.state || typeof array.degraded !== "boolean"
     || ![array.usedBytes, array.freeBytes].every((value) => value === null || (Number.isSafeInteger(value) && Number(value) >= 0))
     || (array.usedPercent !== null && (typeof array.usedPercent !== "number" || !Number.isFinite(array.usedPercent)))) throw new Error("Sanctuary storage array grounding value is invalid")
-  return structuredClone(data)
+  const { sourceIdentityDigest: _sourceIdentityDigest, ...facts } = data
+  return structuredClone(facts)
 }
 
 function normalized(value: string): string {

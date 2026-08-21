@@ -424,9 +424,9 @@ export function validateSanctuaryUnit16EvidenceAssertions(label: SanctuaryUnit16
       exact([
         "schemaVersion", "keyCount", "keyInventoryDigest", "readScopeDigest", "writeScopeDigest", "keyRoleAssignmentCount",
         "telegramToolCount", "telegramProfileDigest", "telegramSchemaDigest", "privateToolCount", "privateProfileDigest", "privateSchemaDigest", "resolvedHandlerCount",
-        "excludedToolCount", "excludedSchemaIntersectionCount", "fabricatedHandlerInvocationCount",
+        "excludedToolCount", "excludedSchemaIntersectionCount", "fabricatedHandlerInvocationCount", "excludedToolAttemptCount", "excludedToolRejectedCount", "excludedToolInvokedCount", "excludedToolSideEffectCount", "globallyResolvableExcludedToolCount",
         "auditPathDigest", "auditLedgerDigest", "auditRecordCount", "auditLifecyclePairCount",
-        "containerUser", "mountCount", "publishedPortCount", "networkMode", "readOnlyRoot", "mountsExact", "securityExact", "updaterDisabled", "writableKeyExposure",
+        "containerUser", "liveProcessUser", "mountCount", "publishedPortCount", "networkMode", "readOnlyRoot", "mountsExact", "securityExact", "updaterDisabled", "writableKeyExposure",
         "rawWriteMaterialFieldCount", "typedWriteExecutorCount", "writeApprovalPolicyDigest", "sensitiveMaterialObserved", "mutationCount",
       ])
       if (text(value.schemaVersion, `${label} schemaVersion`) !== "sanctuary-containment-audit-v1") throw new Error(`${label} schemaVersion is invalid`)
@@ -447,11 +447,14 @@ export function validateSanctuaryUnit16EvidenceAssertions(label: SanctuaryUnit16
       requiredInteger(value, "privateToolCount", 2, label)
       requiredInteger(value, "resolvedHandlerCount", 12, label)
       requiredInteger(value, "excludedToolCount", 7, label)
-      allZero(["excludedSchemaIntersectionCount", "fabricatedHandlerInvocationCount", "publishedPortCount", "rawWriteMaterialFieldCount", "mutationCount"])
+      requiredInteger(value, "excludedToolAttemptCount", 7, label)
+      requiredInteger(value, "excludedToolRejectedCount", 7, label)
+      if (integer(value.globallyResolvableExcludedToolCount, `${label} globallyResolvableExcludedToolCount`, 1) < 1) throw new Error(`${label} globallyResolvableExcludedToolCount is invalid`)
+      allZero(["excludedSchemaIntersectionCount", "fabricatedHandlerInvocationCount", "excludedToolInvokedCount", "excludedToolSideEffectCount", "publishedPortCount", "rawWriteMaterialFieldCount", "mutationCount"])
       requiredFalse(value, "sensitiveMaterialObserved", label)
       requiredFalse(value, "writableKeyExposure", label)
       if (integer(value.auditRecordCount, `${label} auditRecordCount`, 2) < 2 || integer(value.auditLifecyclePairCount, `${label} auditLifecyclePairCount`, 1) < 1) throw new Error(`${label} audit lifecycle is incomplete`)
-      if (text(value.containerUser, `${label} containerUser`) !== "10001:10001" || text(value.networkMode, `${label} networkMode`) !== "host") throw new Error(`${label} container identity or network is invalid`)
+      if (text(value.containerUser, `${label} containerUser`) !== "10001:10001" || text(value.liveProcessUser, `${label} liveProcessUser`) !== "10001:10001" || text(value.networkMode, `${label} networkMode`) !== "host") throw new Error(`${label} container identity or network is invalid`)
       requiredInteger(value, "mountCount", 2, label)
       requiredInteger(value, "typedWriteExecutorCount", 1, label)
       allTrue(["readOnlyRoot", "mountsExact", "securityExact", "updaterDisabled"])

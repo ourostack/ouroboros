@@ -2,7 +2,7 @@
 
 import { spawn, spawnSync } from "node:child_process"
 import { createHash } from "node:crypto"
-import { chmodSync, chownSync, closeSync, constants, fstatSync, fsyncSync, mkdirSync, openSync, opendirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs"
+import { chmodSync, chownSync, closeSync, constants, fstatSync, fsyncSync, mkdirSync, openSync, opendirSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs"
 import { createServer } from "node:net"
 
 const KEY_ROOT = "/boot/config/plugins/dynamix.my.servers/keys"
@@ -218,9 +218,75 @@ function recoveryMilestones(running, healthy) {
   }
 }
 
+function readBoundedProcStatus(statusPath) {
+  const fd = openSync(statusPath, constants.O_RDONLY | constants.O_NOFOLLOW)
+  try {
+    const metadata = fstatSync(fd)
+    if (!metadata.isFile()) throw new Error("container PID1 status is invalid")
+    const buffer = Buffer.alloc(128 * 1024 + 1)
+    const length = readSync(fd, buffer, 0, buffer.length, 0)
+    if (length > 128 * 1024) throw new Error("container PID1 status exceeds its bound")
+    return buffer.subarray(0, length).toString("utf8")
+  } finally { closeSync(fd) }
+}
+
+function readBoundedProcIdentityFile(filePath) {
+  const fd = openSync(filePath, constants.O_RDONLY | constants.O_NOFOLLOW)
+  try {
+    const metadata = fstatSync(fd, { bigint: true })
+    if (!metadata.isFile()) throw new Error("container PID1 process file is invalid")
+    const buffer = Buffer.alloc(128 * 1024 + 1)
+    const length = readSync(fd, buffer, 0, buffer.length, 0)
+    if (length > 128 * 1024) throw new Error("container PID1 process file exceeds its bound")
+    return { content: buffer.subarray(0, length).toString("utf8"), inode: metadata.ino.toString() }
+  } finally { closeSync(fd) }
+}
+
+function parseProcStartTime(raw) {
+  if (typeof raw !== "string" || Buffer.byteLength(raw, "utf8") > 128 * 1024) throw new Error("container PID1 stat is invalid")
+  const close = raw.lastIndexOf(")")
+  if (close < 3) throw new Error("container PID1 stat is invalid")
+  const fields = raw.slice(close + 1).trim().split(/\s+/u)
+  const startTime = fields[19]
+  if (!startTime || !/^[0-9]+$/u.test(startTime)) throw new Error("container PID1 stat start time is invalid")
+  return startTime
+}
+
+function liveContainerProcessIdentity(pid, dependencies = { readFile: readBoundedProcIdentityFile }) {
+  if (!Number.isSafeInteger(pid) || pid <= 0 || pid > 4_194_304) throw new Error("container PID1 is invalid")
+  const status = dependencies.readFile(`/proc/${pid}/status`)
+  const stat = dependencies.readFile(`/proc/${pid}/stat`)
+  const user = liveContainerProcessUser(pid, { readFile: () => status.content })
+  return { user, processStartTime: parseProcStartTime(stat.content), processInode: `${status.inode}:${stat.inode}` }
+}
+
+function liveContainerProcessUser(pid, dependencies = { readFile: readBoundedProcStatus }) {
+  if (!Number.isSafeInteger(pid) || pid <= 0 || pid > 4_194_304) throw new Error("container PID1 is invalid")
+  const statusPath = `/proc/${pid}/status`
+  const status = dependencies.readFile(statusPath, "utf8")
+  if (typeof status !== "string" || Buffer.byteLength(status, "utf8") > 128 * 1024) throw new Error("container PID1 status is invalid")
+  const lines = status.split(/\r?\n/u)
+  const parseEffective = (key) => {
+    const matches = lines.filter((line) => line.startsWith(`${key}:`))
+    if (matches.length !== 1) throw new Error(`container PID1 ${key} status is invalid`)
+    const match = new RegExp(`^${key}:\\s+(\\d+)\\s+(\\d+)\\s+(\\d+)\\s+(\\d+)$`, "u").exec(matches[0])
+    if (!match) throw new Error(`container PID1 ${key} status is invalid`)
+    return Number(match[2])
+  }
+  const uid = parseEffective("Uid")
+  const gid = parseEffective("Gid")
+  if (uid !== 10001 || gid !== 10001) throw new Error("container PID1 effective identity is invalid")
+  return `${uid}:${gid}`
+}
+
+function assertStableContainerProcess(before, after) {
+  const stableFields = ["containerId", "imageId", "pid", "restartCount", "startedAt", "health", "processStartTime", "processInode"]
+  if (before.running !== true || after.running !== true || stableFields.some((field) => before[field] !== after[field])) throw new Error("production container PID1 changed during attestation")
+}
+
 async function containerSnapshot(expectedImage) {
   text(expectedImage, "expected image id", IMAGE_ID)
-  const template = '{"containerId":{{json .Id}},"imageId":{{json .Image}},"running":{{json .State.Running}},"health":{{json .State.Health.Status}},"user":{{json .Config.User}},"readOnlyRoot":{{json .HostConfig.ReadonlyRootfs}},"mounts":{{json .Mounts}},"ports":{{json .NetworkSettings.Ports}},"networkMode":{{json .HostConfig.NetworkMode}},"restartPolicy":{{json .HostConfig.RestartPolicy.Name}},"restartCount":{{json .RestartCount}},"privileged":{{json .HostConfig.Privileged}},"capAdd":{{json .HostConfig.CapAdd}},"capDrop":{{json .HostConfig.CapDrop}},"securityOpt":{{json .HostConfig.SecurityOpt}}}'
+  const template = '{"containerId":{{json .Id}},"imageId":{{json .Image}},"running":{{json .State.Running}},"pid":{{json .State.Pid}},"startedAt":{{json .State.StartedAt}},"health":{{json .State.Health.Status}},"user":{{json .Config.User}},"readOnlyRoot":{{json .HostConfig.ReadonlyRootfs}},"mounts":{{json .Mounts}},"ports":{{json .NetworkSettings.Ports}},"networkMode":{{json .HostConfig.NetworkMode}},"restartPolicy":{{json .HostConfig.RestartPolicy.Name}},"restartCount":{{json .RestartCount}},"privileged":{{json .HostConfig.Privileged}},"capAdd":{{json .HostConfig.CapAdd}},"capDrop":{{json .HostConfig.CapDrop}},"securityOpt":{{json .HostConfig.SecurityOpt}}}'
   const result = spawnSync(DOCKER, ["inspect", "--format", template, PRODUCTION_CONTAINER], {
     cwd: "/", encoding: "utf8", timeout: 20_000, maxBuffer: 1024 * 1024,
     env: { PATH: "/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin" },
@@ -228,7 +294,9 @@ async function containerSnapshot(expectedImage) {
   })
   if (result.error || result.status !== 0) throw new Error("bounded production container inspection failed")
   const value = object(JSON.parse(result.stdout), "production container inspection")
-  if (value.imageId !== expectedImage || !Number.isSafeInteger(value.restartCount) || value.restartCount < 0) {
+  if (value.imageId !== expectedImage || !Number.isSafeInteger(value.pid) || value.pid <= 0 || value.pid > 4_194_304
+    || !Number.isSafeInteger(value.restartCount) || value.restartCount < 0
+    || typeof value.startedAt !== "string" || !/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[^\s]{1,64}Z$/u.test(value.startedAt)) {
     throw new Error("production container identity is invalid")
   }
   const ports = object(value.ports ?? {}, "published ports")
@@ -246,6 +314,19 @@ async function containerSnapshot(expectedImage) {
     && JSON.stringify(value.capDrop) === JSON.stringify(["ALL"])
     && JSON.stringify(value.securityOpt) === JSON.stringify(["no-new-privileges"])
   const running = value.running === true
+  if (!running) throw new Error("production container is not running")
+  const configuredUser = text(value.user, "container user")
+  if (configuredUser !== "10001:10001") throw new Error("production container configured identity is invalid")
+  const processBefore = liveContainerProcessIdentity(value.pid)
+  const reboundResult = spawnSync(DOCKER, ["inspect", "--format", template, PRODUCTION_CONTAINER], {
+    cwd: "/", encoding: "utf8", timeout: 20_000, maxBuffer: 1024 * 1024,
+    env: { PATH: "/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin" }, stdio: ["ignore", "pipe", "ignore"],
+  })
+  if (reboundResult.error || reboundResult.status !== 0) throw new Error("bounded production container rebound inspection failed")
+  const rebound = object(JSON.parse(reboundResult.stdout ?? ""), "production container rebound inspection")
+  const processAfter = liveContainerProcessIdentity(rebound.pid)
+  assertStableContainerProcess({ ...value, ...processBefore }, { ...rebound, ...processAfter })
+  const liveProcessUser = processAfter.user
   const healthy = value.health === "healthy"
   const vault = vaultStatus(running, healthy)
   const milestones = recoveryMilestones(running, healthy)
@@ -255,7 +336,8 @@ async function containerSnapshot(expectedImage) {
     imageId: expectedImage,
     running,
     health: text(value.health, "container health", /^(?:healthy|starting|unhealthy|missing)$/u),
-    user: text(value.user, "container user"),
+    user: configuredUser,
+    liveProcessUser,
     readOnlyRoot: value.readOnlyRoot === true,
     mountCount: mounts.length,
     mountsDigest: createHash("sha256").update(JSON.stringify(mounts)).digest("hex"),
@@ -1132,6 +1214,9 @@ async function dispatch(request, dependencies = {
   ownerMutationCoordinator,
   interactiveRestartDriver,
   healthOwnerMutationActive,
+  liveContainerProcessUser,
+  liveContainerProcessIdentity,
+  parseProcStartTime,
 }) {
   const payload = object(request, "broker request")
   const operation = text(payload.operation, "operation")
@@ -1327,6 +1412,7 @@ if (process.argv[1]?.endsWith("sanctuary-unit16-host-broker.mjs")) {
 }
 
 export {
+  assertStableContainerProcess,
   attestHealthProbeProcessAbsent,
   armRestartAfterResponseClosed,
   completeHealthProbeFromReceipt,
@@ -1340,8 +1426,12 @@ export {
   healthProbeDockerArgs,
   healthProbeOperationBudgets,
   healthOwnerMutationActive,
+  liveContainerProcessUser,
+  liveContainerProcessIdentity,
+  parseProcStartTime,
   parseVaultStatus,
   queryGraphqlAutostart,
+  readBoundedProcStatus,
   driveDuplicateCallbacks,
   driveTimeoutStale,
   driveRestartContinuation,

@@ -26,15 +26,20 @@ export async function runWithSanctuaryToolReceiptCollection<T>(operation: () => 
   return { result, toolResultDigests: [...digests], ...(groundings.length > 0 ? { toolGroundings: structuredClone(groundings) } : {}) }
 }
 
-function collectToolResult(result: unknown, toolName?: string): { resultDigest: string; groundingDigest?: string } {
+function collectToolResult(result: unknown, toolName?: string): { resultDigest: string; groundingDigest?: string; sourceIdentityDigest?: string; observedAt?: string } {
   const digest = createHash("sha256").update(JSON.stringify(result)).digest("hex")
   sanctuaryToolReceipts.getStore()?.push(digest)
   let facts: Record<string, unknown> | null = null
   try { facts = toolName ? projectSanctuaryGrounding(toolName, result) : null } catch { /* validated tool adapters own malformed-result failure */ }
   if (!facts || (toolName !== "unraid_get_system" && toolName !== "unraid_get_storage")) return { resultDigest: digest }
   const groundingDigest = sanctuaryGroundingDigest(facts)
-  sanctuaryToolGroundings.getStore()?.push({ toolName, resultDigest: digest, groundingDigest, facts })
-  return { resultDigest: digest, groundingDigest }
+  const envelope = result as { data?: { sourceIdentityDigest?: unknown } }
+  const sourceIdentityDigest = envelope?.data?.sourceIdentityDigest
+  if (typeof sourceIdentityDigest !== "string" || !/^[0-9a-f]{64}$/u.test(sourceIdentityDigest)) throw new Error("Sanctuary grounding source identity is invalid")
+  const verifiedSourceIdentityDigest = sourceIdentityDigest
+  const observedAt = new Date().toISOString()
+  sanctuaryToolGroundings.getStore()?.push({ toolName, resultDigest: digest, groundingDigest, sourceIdentityDigest: verifiedSourceIdentityDigest, observedAt, facts })
+  return { resultDigest: digest, groundingDigest, sourceIdentityDigest: verifiedSourceIdentityDigest, observedAt }
 }
 
 function machineConfig(agentName: string): Record<string, unknown> {

@@ -166,8 +166,9 @@ function validateSanctuaryTurnReceipt(value: Record<string, unknown>): void {
     || (grounded && (!Array.isArray(value.toolGroundings) || value.toolGroundings.length !== 1 || !value.toolGroundings.every((raw) => {
       if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false
       const record = raw as Record<string, unknown>
-      if (JSON.stringify(Object.keys(record).sort()) !== JSON.stringify(["facts", "groundingDigest", "resultDigest", "toolName"]) || (record.toolName !== "unraid_get_system" && record.toolName !== "unraid_get_storage")
+      if (JSON.stringify(Object.keys(record).sort()) !== JSON.stringify(["facts", "groundingDigest", "observedAt", "resultDigest", "sourceIdentityDigest", "toolName"]) || (record.toolName !== "unraid_get_system" && record.toolName !== "unraid_get_storage")
         || typeof record.resultDigest !== "string" || !/^[0-9a-f]{64}$/u.test(record.resultDigest) || typeof record.groundingDigest !== "string" || !/^[0-9a-f]{64}$/u.test(record.groundingDigest)
+        || typeof record.sourceIdentityDigest !== "string" || !/^[0-9a-f]{64}$/u.test(record.sourceIdentityDigest) || typeof record.observedAt !== "string" || !Number.isFinite(Date.parse(record.observedAt)) || new Date(Date.parse(record.observedAt)).toISOString() !== record.observedAt
         || !record.facts || typeof record.facts !== "object" || Array.isArray(record.facts)) return false
       return sanctuaryGroundingDigest(record.facts as Record<string, unknown>) === record.groundingDigest && (value.toolResultDigests as string[]).includes(record.resultDigest)
     })))

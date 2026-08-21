@@ -16,6 +16,7 @@ import {
   createSanctuaryReadOnlyDenialScenarioDriver,
   createSanctuaryAcceptanceVaultProbeDependencies,
   auditContainsSensitiveMaterial,
+  canonicalDockerIdFromUnraidPrefixedId,
   executeSanctuaryAcceptanceCallbackProbe,
   executeSanctuaryInteractiveRuntimeOperation,
   executeSanctuaryAcceptanceAdapter,
@@ -23,6 +24,7 @@ import {
   executeSanctuaryAcceptanceVaultProbe,
   proveAttemptedRecoveryWithoutRetry,
   readDefaultSanctuaryScenarioFacts,
+  runSanctuaryProductionBoundaryProbe,
   type SanctuaryAcceptanceAdapterDependencies,
 } from "../../../heart/daemon/sanctuary-acceptance-adapter"
 
@@ -70,6 +72,7 @@ function validOwnerSnapshot(patch: Record<string, unknown> = {}) {
     running: true,
     health: "healthy",
     user: "10001:10001",
+    liveProcessUser: "10001:10001",
     readOnlyRoot: true,
     mountCount: 2,
     mountsDigest: "3".repeat(64),
@@ -90,14 +93,16 @@ function validOwnerSnapshot(patch: Record<string, unknown> = {}) {
 }
 
 function validDenialReceipt(label: "unit-16e-1-stop-denial" | "unit-16e-2-restart-denial", scenarioHandleDigest: string) {
+  const targetContainerIdDigest = "7".repeat(64)
   const boundary = {
     ownerSnapshotDigest: "1".repeat(64), targetSnapshotDigest: "2".repeat(64), targetRestartCount: 7,
+    targetContainerIdDigest,
     auditCursorDigest: "3".repeat(64), providerUsageCursorDigest: "4".repeat(64),
     sessionCursorDigest: "5".repeat(64), toolActionCursorDigest: "6".repeat(64),
   }
   return {
     schemaVersion: "sanctuary-read-only-denial-receipt-v1", phase: "complete", label, scenarioHandleDigest,
-    operation: label === "unit-16e-1-stop-denial" ? "stop" : "restart", targetDigest: "7".repeat(64),
+    operation: label === "unit-16e-1-stop-denial" ? "stop" : "restart", targetDigest: targetContainerIdDigest,
     attemptCount: 1, httpStatus: 403, errorCode: "FORBIDDEN", before: boundary, after: { ...boundary },
   }
 }
@@ -123,6 +128,21 @@ function validInteractiveReceipt(label: "unit-16k-timeout-stale" | "unit-16l-dup
 }
 
 describe("Sanctuary acceptance adapter semantic proofs", () => {
+  it("uses the production repertoire dispatcher for its valid boundary control", () => {
+    const source = runSanctuaryProductionBoundaryProbe.toString()
+    expect(source).not.toContain("execTool:")
+    expect(source).not.toContain("definition.handler")
+    expect(source).toContain("runWithSanctuaryToolReceiptCollection")
+  })
+
+  it("maps only the exact official Unraid PrefixedID to its underlying Docker ID", () => {
+    const serverId = "a".repeat(64)
+    const dockerId = "b".repeat(64)
+    expect(canonicalDockerIdFromUnraidPrefixedId(`${serverId}:${dockerId}`)).toBe(dockerId)
+    for (const invalid of [dockerId, `${dockerId}:${serverId}:extra`, `${serverId}:calibre-web`, `${serverId.toUpperCase()}:${dockerId}`, `:${dockerId}`]) {
+      expect(() => canonicalDockerIdFromUnraidPrefixedId(invalid)).toThrow(/PrefixedID/u)
+    }
+  })
   it("persists one denial attempt and never reissues it after success or an indeterminate interruption", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-denial-driver-"))
     const scenarioHandleDigest = "a".repeat(64)
@@ -159,6 +179,12 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       const drifted = { ...receipt, after: { ...receipt.after, targetRestartCount: 8 } }
       deps.readFixedFile = (file) => { if (file === receiptPath) return JSON.stringify(drifted); throw Object.assign(new Error("missing"), { code: "ENOENT" }) }
       await expect(readDefaultSanctuaryScenarioFacts("unit-16e-2-restart-denial", scenarioHandleDigest, deps, root)).rejects.toThrow(/boundary drift/u)
+      const mismatchedTarget = { ...receipt, targetDigest: "8".repeat(64) }
+      deps.readFixedFile = (file) => { if (file === receiptPath) return JSON.stringify(mismatchedTarget); throw Object.assign(new Error("missing"), { code: "ENOENT" }) }
+      await expect(readDefaultSanctuaryScenarioFacts("unit-16e-2-restart-denial", scenarioHandleDigest, deps, root)).rejects.toThrow(/target/u)
+      const changedTarget = { ...receipt, after: { ...receipt.after, targetContainerIdDigest: "8".repeat(64) } }
+      deps.readFixedFile = (file) => { if (file === receiptPath) return JSON.stringify(changedTarget); throw Object.assign(new Error("missing"), { code: "ENOENT" }) }
+      await expect(readDefaultSanctuaryScenarioFacts("unit-16e-2-restart-denial", scenarioHandleDigest, deps, root)).rejects.toThrow(/target|drift/u)
     } finally { fs.rmSync(root, { recursive: true, force: true }) }
   })
 
@@ -198,9 +224,9 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
         schemaVersion: "sanctuary-containment-audit-v1",
         keyCount: 2, keyRoleAssignmentCount: 0,
         telegramToolCount: 10, privateToolCount: 2, resolvedHandlerCount: 12,
-        excludedToolCount: 7, excludedSchemaIntersectionCount: 0, fabricatedHandlerInvocationCount: 0,
+        excludedToolCount: 7, excludedSchemaIntersectionCount: 0, fabricatedHandlerInvocationCount: 0, excludedToolAttemptCount: 7, excludedToolRejectedCount: 7, excludedToolInvokedCount: 0, excludedToolSideEffectCount: 0, globallyResolvableExcludedToolCount: expect.any(Number),
         auditRecordCount: 2, auditLifecyclePairCount: 1,
-        containerUser: "10001:10001", mountCount: 2, publishedPortCount: 0, networkMode: "host",
+        containerUser: "10001:10001", liveProcessUser: "10001:10001", mountCount: 2, publishedPortCount: 0, networkMode: "host",
         readOnlyRoot: true, mountsExact: true, securityExact: true, updaterDisabled: true, writableKeyExposure: false,
         rawWriteMaterialFieldCount: 0, typedWriteExecutorCount: 1, sensitiveMaterialObserved: false,
       })
@@ -208,6 +234,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
         expect(facts.containment?.[field]).toMatch(/^[0-9a-f]{64}$/u)
       }
       expect(facts.sourceValues["containment-audit"]).toEqual(facts.containment)
+      expect(facts.containment!.globallyResolvableExcludedToolCount).toBeGreaterThanOrEqual(1)
       expect(JSON.stringify(facts.sourceValues["containment-audit"])).not.toMatch(/ro-private-id|rw-private-id|read-only-key/u)
     } finally { fs.rmSync(agentRoot, { recursive: true, force: true }) }
   })
@@ -862,12 +889,14 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     const identityPath = `${agentRoot}/state/senses/telegram/identity.key`
     const facts = { serverName: "Sanctuary", unraidVersion: "7.2.3", apiVersion: "4.37.1", arrayState: "STARTED", degraded: false }
     const groundingDigest = createHash("sha256").update(JSON.stringify(facts)).digest("hex")
+    const sourceIdentityDigest = "9".repeat(64)
+    const observedAt = "2026-08-20T16:00:00.000Z"
     const text = "Sanctuary is running Unraid 7.2.3 with the array STARTED and not degraded."
     const deliveries = [{ messageIdDigest: "5".repeat(64), chunkDigest: sanctuaryTelegramTurnReceiptDigest(identityKey, "sanctuary-telegram-turn-receipt-v4", "chunk", text), redactedText: text, utf16Units: text.length }]
     const unsignedReceipt = {
       schemaVersion: "sanctuary-telegram-turn-receipt-v4", scenarioHandleDigest, status: "success", errorCategory: null,
       updateDigest: "1".repeat(64), sequenceDigest: "2".repeat(64), responseDigest: sanctuaryTelegramTurnReceiptDigest(identityKey, "sanctuary-telegram-turn-receipt-v4", "response", JSON.stringify(deliveries)), toolResultDigests: ["4".repeat(64)],
-      toolGroundings: [{ toolName: "unraid_get_system", resultDigest: "4".repeat(64), groundingDigest, facts }],
+      toolGroundings: [{ toolName: "unraid_get_system", resultDigest: "4".repeat(64), groundingDigest, sourceIdentityDigest, observedAt, facts }],
       providerInvocationCount: 1, toolInvocationCount: 1, deliveryCount: 1,
       deliveries,
       completedAt: "2026-08-20T16:00:01.000Z",
@@ -876,13 +905,13 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     const ledgerPath = `${agentRoot}/state/acceptance/telegram-turns.ndjson`
     const deps = unit16Deps({
       readFixedFile: (file) => { if (file === ledgerPath) return `${JSON.stringify(receipt)}\n`; if (file === identityPath) return identityKey; throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
-      readLiveGrounding: vi.fn(async () => ({ toolName: "unraid_get_system", groundingDigest, facts })),
+      readLiveGrounding: vi.fn(async () => ({ toolName: "unraid_get_system", groundingDigest, sourceIdentityDigest, observedAt: "2026-08-20T16:00:02.000Z", facts })),
       telegramCredentials: () => ({ botToken: "12345:synthetic-token", authorizedUserId: "123456789", authorizedChatId: "123456789" }),
       hostRequest: async () => ({ running: true, health: "healthy", imageId: "sha256:missing", user: "10001:10001", readOnlyRoot: true, mountCount: 2, publishedPortCount: 0, restartPolicy: "unless-stopped", restartCount: 0, autostartExact: true, updaterDisabled: true, vaultUnlocked: true, manualAuthRequired: false }),
     } as any)
     const observed = await readDefaultSanctuaryScenarioFacts("unit-16d-whats-up", scenarioHandleDigest, deps, agentRoot)
     expect(observed.telegramTurns[0]).toMatchObject({ responseText: text, responseUtf16Units: text.length, toolGroundings: receipt.toolGroundings })
-    expect((observed as any).liveGrounding).toEqual({ toolName: "unraid_get_system", groundingDigest, facts })
+    expect((observed as any).liveGrounding).toEqual({ toolName: "unraid_get_system", groundingDigest, sourceIdentityDigest, observedAt: "2026-08-20T16:00:02.000Z", facts })
 
     await expect(readDefaultSanctuaryScenarioFacts("unit-16d-whats-up", scenarioHandleDigest, unit16Deps({
       readFixedFile: (file) => { if (file === ledgerPath) return `${JSON.stringify(receipt)}\n`; if (file === identityPath) return "z".repeat(43); throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
@@ -898,6 +927,9 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       { completedAt: "2026-08-20T16:00:02.000Z" },
       { toolResultDigests: ["8".repeat(64)], toolGroundings: [{ ...receipt.toolGroundings[0], resultDigest: "8".repeat(64) }] },
       { toolGroundings: [{ ...receipt.toolGroundings[0], groundingDigest: "f".repeat(64) }] },
+      { toolGroundings: [{ ...receipt.toolGroundings[0], sourceIdentityDigest: "8".repeat(64) }] },
+      { toolGroundings: [{ ...receipt.toolGroundings[0], observedAt: "2026-08-20T16:00:00.001Z" }] },
+      { toolGroundings: [{ ...receipt.toolGroundings[0], facts: { ...facts, unraidVersion: "7.2.4" } }] },
       { toolGroundings: [{ ...receipt.toolGroundings[0], toolName: "unraid_restart_container" }] },
     ]) {
       await expect(readDefaultSanctuaryScenarioFacts("unit-16d-whats-up", scenarioHandleDigest, unit16Deps({
@@ -1372,6 +1404,10 @@ function unit16Deps(overrides: Partial<SanctuaryAcceptanceAdapterDependencies> =
     mergeMachine: async (_agent, _machine, patch) => refreshed(patch),
     callbackProbe: async () => ({ settled: true, claimed: false, mutated: false }),
     hostRequest: async () => ({}),
+    runProductionBoundaryProbe: async () => [
+      ...["shell", "read_file", "edit_file", "vault_get", "mcp_call", "exec", "credential_get"].map((name, index) => ({ name, reason: "profile_excluded" as const, globallyResolvable: index < 4, invoked: false, sideEffect: false })),
+      { name: "unraid_get_system", reason: "dispatched", globallyResolvable: true, invoked: true, sideEffect: false },
+    ],
     ...overrides,
   }
 }

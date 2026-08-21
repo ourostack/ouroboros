@@ -3,15 +3,17 @@ import { createHash, createHmac, timingSafeEqual } from "node:crypto"
 import { closeSync, constants, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs"
 import { createConnection } from "node:net"
 import * as path from "node:path"
+import type OpenAI from "openai"
 
 import { emitNervesEvent } from "../../nerves/runtime"
 import { createTelegramApprovalRuntime, type TelegramApprovalRuntime } from "../../senses/telegram-approval-runtime"
 import { createTelegramBotApi, type TelegramBotApi, type TelegramUpdate } from "../../senses/telegram-client"
 import { executeSanctuaryInteractiveEngine, proveSanctuaryAttemptedRecoveryWithoutRetry, type SanctuaryInteractiveEngineDependencies } from "../../senses/sanctuary-interactive-control"
 import { loadTelegramSenseCredentials, readOrCreateTelegramIdentityKey, sanctuaryTelegramTurnReceiptDigest, sanctuaryTelegramTurnReceiptMac, type TelegramSenseCredentials } from "../../senses/telegram"
-import { createSanctuaryToolContext } from "../../senses/sanctuary-runtime"
+import { createSanctuaryToolContext, runWithSanctuaryToolReceiptCollection } from "../../senses/sanctuary-runtime"
 import { projectSanctuaryGrounding, sanctuaryGroundingDigest, type SanctuaryGroundingToolName, type SanctuaryToolGrounding } from "../../senses/sanctuary-grounding"
 import { ponderTool, resolveToolDefinition, restTool, settleTool, speakTool } from "../../repertoire/tools"
+import { runAgent, type ProviderRuntime, type ToolCallBoundaryReceipt } from "../core"
 import { getAgentRoot } from "../identity"
 import { readApprovalsByScenarioHandleDigest, type ApprovalAcceptanceProjection } from "../approval-store"
 import { readProviderCredentialRecord } from "../provider-credentials"
@@ -60,7 +62,8 @@ export interface SanctuaryAcceptanceAdapterDependencies {
   telegramCredentials?(): TelegramSenseCredentials
   readProviderCredential?: typeof readProviderCredentialRecord
   providerPing?: typeof pingProvider
-  readLiveGrounding?(toolName: SanctuaryGroundingToolName): Promise<{ toolName: SanctuaryGroundingToolName; groundingDigest: string; facts: Record<string, unknown> }>
+  readLiveGrounding?(toolName: SanctuaryGroundingToolName): Promise<{ toolName: SanctuaryGroundingToolName; groundingDigest: string; sourceIdentityDigest: string; observedAt: string; facts: Record<string, unknown> }>
+  runProductionBoundaryProbe?(schemas: OpenAI.ChatCompletionFunctionTool[]): Promise<ToolCallBoundaryReceipt[]>
   now?(): number
 }
 
@@ -240,6 +243,7 @@ export function createSanctuaryAcceptanceAdapterDependencies(
     hostRequest: options.hostRequest ?? ((payload) => defaultHostRequest(payload, hostBrokerSocket, adapterTimeoutMs)),
     telegramCredentials: () => loadTelegramSenseCredentials(TARGET_ID),
     readLiveGrounding: readIndependentSanctuaryGrounding,
+    runProductionBoundaryProbe: runSanctuaryProductionBoundaryProbe,
   }
   const healthDriver = createSanctuaryHealthAcceptanceScenarioDriver(dependencies.hostRequest!)
   const scenarioAgentRoot = options.scenarioCapture?.agentRoot ?? getAgentRoot(TARGET_ID)
@@ -285,7 +289,7 @@ function healthScenarioCoordinates(label: string, scenarioHandleDigest: string):
 function ownerContainerSnapshot(value: unknown): JsonObject {
   const snapshot = object(value, "health probe owner snapshot")
   exactKeys(snapshot, [
-    "schemaVersion", "containerId", "imageId", "running", "health", "user", "readOnlyRoot", "mountCount",
+    "schemaVersion", "containerId", "imageId", "running", "health", "user", "liveProcessUser", "readOnlyRoot", "mountCount",
     "mountsDigest", "mountsExact", "publishedPortCount", "networkMode", "securityExact", "writableKeyExposure",
     "restartPolicy", "restartCount", "autostartExact", "updaterDisabled", "vaultUnlocked", "manualAuthRequired",
     "recoveryMilestones",
@@ -295,7 +299,7 @@ function ownerContainerSnapshot(value: unknown): JsonObject {
   if (snapshot.schemaVersion !== 1 || typeof snapshot.containerId !== "string" || !SHA256.test(snapshot.containerId)
     || typeof snapshot.imageId !== "string" || !/^sha256:[0-9a-f]{64}$/u.test(snapshot.imageId)
     || typeof snapshot.running !== "boolean" || typeof snapshot.health !== "string" || !["healthy", "starting", "unhealthy", "missing"].includes(snapshot.health)
-    || typeof snapshot.user !== "string" || snapshot.user.length < 1 || snapshot.user.length > 64
+    || typeof snapshot.user !== "string" || snapshot.user.length < 1 || snapshot.user.length > 64 || snapshot.liveProcessUser !== "10001:10001"
     || typeof snapshot.readOnlyRoot !== "boolean" || !Number.isSafeInteger(snapshot.mountCount) || Number(snapshot.mountCount) < 0
     || typeof snapshot.mountsDigest !== "string" || !SHA256.test(snapshot.mountsDigest) || typeof snapshot.mountsExact !== "boolean"
     || !Number.isSafeInteger(snapshot.publishedPortCount) || Number(snapshot.publishedPortCount) < 0
@@ -708,8 +712,9 @@ function parseTelegramTurnReceipts(raw: string, scenarioHandleDigest: string, id
       || (grounded && (typeof receipt.receiptMac !== "string" || !SHA256.test(receipt.receiptMac)))
       || (grounded && (!Array.isArray(receipt.toolGroundings) || receipt.toolGroundings.length !== 1 || !receipt.toolGroundings.every((raw) => {
         const grounding = object(raw, "Telegram tool grounding")
-        if (JSON.stringify(Object.keys(grounding).sort()) !== JSON.stringify(["facts", "groundingDigest", "resultDigest", "toolName"]) || (grounding.toolName !== "unraid_get_system" && grounding.toolName !== "unraid_get_storage")
+        if (JSON.stringify(Object.keys(grounding).sort()) !== JSON.stringify(["facts", "groundingDigest", "observedAt", "resultDigest", "sourceIdentityDigest", "toolName"]) || (grounding.toolName !== "unraid_get_system" && grounding.toolName !== "unraid_get_storage")
           || typeof grounding.resultDigest !== "string" || !SHA256.test(grounding.resultDigest) || typeof grounding.groundingDigest !== "string" || !SHA256.test(grounding.groundingDigest)
+          || typeof grounding.sourceIdentityDigest !== "string" || !SHA256.test(grounding.sourceIdentityDigest) || typeof grounding.observedAt !== "string" || !Number.isFinite(Date.parse(grounding.observedAt)) || new Date(Date.parse(grounding.observedAt)).toISOString() !== grounding.observedAt
           || !grounding.facts || typeof grounding.facts !== "object" || Array.isArray(grounding.facts)) return false
         return sanctuaryGroundingDigest(grounding.facts as Record<string, unknown>) === grounding.groundingDigest && (receipt.toolResultDigests as unknown[]).includes(grounding.resultDigest)
       })))
@@ -731,12 +736,57 @@ function parseTelegramTurnReceipts(raw: string, scenarioHandleDigest: string, id
   })
 }
 
-async function readIndependentSanctuaryGrounding(toolName: SanctuaryGroundingToolName): Promise<{ toolName: SanctuaryGroundingToolName; groundingDigest: string; facts: Record<string, unknown> }> {
+async function readIndependentSanctuaryGrounding(toolName: SanctuaryGroundingToolName): Promise<{ toolName: SanctuaryGroundingToolName; groundingDigest: string; sourceIdentityDigest: string; observedAt: string; facts: Record<string, unknown> }> {
   const sanctuary = createSanctuaryToolContext(TARGET_ID).sanctuary!
   const result = toolName === "unraid_get_system" ? await sanctuary.getSystem() : await sanctuary.getStorage()
   const facts = projectSanctuaryGrounding(toolName, result)
   if (!facts) throw new Error("independent Sanctuary grounding is unavailable")
-  return { toolName, groundingDigest: sanctuaryGroundingDigest(facts), facts }
+  const sourceIdentityDigest = (result as { data?: { sourceIdentityDigest?: unknown } }).data?.sourceIdentityDigest
+  if (typeof sourceIdentityDigest !== "string" || !SHA256.test(sourceIdentityDigest)) throw new Error("independent Sanctuary source identity is unavailable")
+  return { toolName, groundingDigest: sanctuaryGroundingDigest(facts), sourceIdentityDigest, observedAt: new Date().toISOString(), facts }
+}
+
+export function canonicalDockerIdFromUnraidPrefixedId(value: unknown): string {
+  if (typeof value !== "string" || !/^[0-9a-f]{64}:[0-9a-f]{64}$/u.test(value)) throw new Error("Unraid Docker PrefixedID is invalid")
+  return value.slice(65)
+}
+
+export async function runSanctuaryProductionBoundaryProbe(telegramSchemas: OpenAI.ChatCompletionFunctionTool[]): Promise<ToolCallBoundaryReceipt[]> {
+  const excludedNames = ["shell", "read_file", "edit_file", "vault_get", "mcp_call", "exec", "credential_get"]
+  const turns = [
+    { content: "", toolCalls: excludedNames.map((name, index) => ({ id: `sanctuary-excluded-${index}`, name, arguments: "{}" })), outputItems: [] },
+    { content: "", toolCalls: [{ id: "sanctuary-valid-system", name: "unraid_get_system", arguments: "{}" }], outputItems: [] },
+    { content: "", toolCalls: [{ id: "sanctuary-boundary-settle", name: "settle", arguments: JSON.stringify({ answer: "boundary complete" }) }], outputItems: [] },
+  ]
+  let turn = 0
+  const controlOutputs: string[] = []
+  const providerRuntime: ProviderRuntime = {
+    id: "minimax", model: "sanctuary-production-boundary-probe", client: null, capabilities: new Set(),
+    streamTurn: async () => turns[turn++] ?? (() => { throw new Error("production boundary probe exceeded its turn budget") })(),
+    appendToolOutput: (callId, output) => { if (callId === "sanctuary-valid-system") controlOutputs.push(output) }, resetTurnState: () => undefined, ping: async () => undefined, classifyError: () => "unknown",
+  }
+  const receipts: ToolCallBoundaryReceipt[] = []
+  const sanctuary = createSanctuaryToolContext(TARGET_ID).sanctuary
+  const observed = await runWithSanctuaryToolReceiptCollection(() => runAgent([{ role: "user", content: "Run the bounded production tool authorization probe." }], {
+      onModelStart: () => undefined, onModelStreamStart: () => undefined, onTextChunk: () => undefined, onReasoningChunk: () => undefined,
+      onToolStart: () => undefined, onToolEnd: () => undefined, onError: () => undefined, onClearText: () => undefined,
+    }, "telegram", undefined, {
+      tools: telegramSchemas, providerRuntimeOverride: providerRuntime, toolBoundaryObserver: (receipt) => receipts.push(receipt),
+      toolContext: { signin: async () => undefined, sanctuary },
+    }))
+  const controlReceipts = receipts.filter((receipt) => receipt.name === "unraid_get_system")
+  if (observed.result.outcome !== "settled" || controlReceipts.length !== 1
+    || controlReceipts[0]!.reason !== "dispatched" || !controlReceipts[0]!.invoked || controlReceipts[0]!.sideEffect
+    || observed.toolResultDigests.length !== 1 || controlOutputs.length !== 1
+    || createHash("sha256").update(controlOutputs[0]!).digest("hex") !== observed.toolResultDigests[0]) {
+    throw new Error("production boundary valid control did not dispatch with one live Sanctuary read receipt")
+  }
+  const controlResult = object(JSON.parse(controlOutputs[0]!) as unknown, "production boundary control result")
+  const controlData = object(controlResult.data, "production boundary control data")
+  if (controlResult.ok !== true || typeof controlData.sourceIdentityDigest !== "string" || !SHA256.test(controlData.sourceIdentityDigest)) {
+    throw new Error("production boundary valid control result is invalid")
+  }
+  return receipts.filter((receipt) => receipt.name !== "settle")
 }
 
 function parseInteractiveDriverReceipt(raw: string | null, label: SanctuaryUnit16EvidenceLabel, scenarioHandleDigest: string): SanctuaryInteractiveDriverReceipt | undefined {
@@ -786,11 +836,11 @@ function parseReadOnlyDenialReceipt(raw: string | null, label: SanctuaryUnit16Ev
     || ![200, 401, 403].includes(Number(receipt.httpStatus)) || (receipt.errorCode !== "FORBIDDEN" && receipt.errorCode !== "PERMISSION_DENIED")) {
     throw new Error("read-only denial receipt binding is invalid")
   }
-  const boundaryKeys = ["ownerSnapshotDigest", "targetSnapshotDigest", "targetRestartCount", "auditCursorDigest", "providerUsageCursorDigest", "sessionCursorDigest", "toolActionCursorDigest"]
+  const boundaryKeys = ["ownerSnapshotDigest", "targetSnapshotDigest", "targetRestartCount", "targetContainerIdDigest", "auditCursorDigest", "providerUsageCursorDigest", "sessionCursorDigest", "toolActionCursorDigest"]
   const parseBoundary = (rawBoundary: unknown, boundaryLabel: string) => {
     const boundary = object(rawBoundary, boundaryLabel)
     exactKeys(boundary, boundaryKeys, boundaryLabel)
-    if (![boundary.ownerSnapshotDigest, boundary.targetSnapshotDigest, boundary.auditCursorDigest, boundary.providerUsageCursorDigest, boundary.sessionCursorDigest, boundary.toolActionCursorDigest]
+    if (![boundary.ownerSnapshotDigest, boundary.targetSnapshotDigest, boundary.targetContainerIdDigest, boundary.auditCursorDigest, boundary.providerUsageCursorDigest, boundary.sessionCursorDigest, boundary.toolActionCursorDigest]
       .every((value) => typeof value === "string" && SHA256.test(value)) || !Number.isSafeInteger(boundary.targetRestartCount) || Number(boundary.targetRestartCount) < 0) {
       throw new Error(`${boundaryLabel} is invalid`)
     }
@@ -798,6 +848,7 @@ function parseReadOnlyDenialReceipt(raw: string | null, label: SanctuaryUnit16Ev
   }
   const before = parseBoundary(receipt.before, "read-only denial before boundary")
   const after = parseBoundary(receipt.after, "read-only denial after boundary")
+  if (receipt.targetDigest !== before.targetContainerIdDigest || receipt.targetDigest !== after.targetContainerIdDigest) throw new Error("read-only denial target binding is invalid")
   if (JSON.stringify(before) !== JSON.stringify(after)) throw new Error("read-only denial boundary drift was observed")
   return receipt as unknown as SanctuaryReadOnlyDenialReceipt
 }
@@ -894,6 +945,7 @@ async function captureReadOnlyDenialBoundary(agentRoot: string, deps: SanctuaryA
     ownerSnapshotDigest: createHash("sha256").update(JSON.stringify(ownerSnapshot)).digest("hex"),
     targetSnapshotDigest: createHash("sha256").update(JSON.stringify(targetSnapshot)).digest("hex"),
     targetRestartCount: Number(targetSnapshot.restartCount),
+    targetContainerIdDigest: String(targetSnapshot.containerIdDigest),
     auditCursorDigest: digestOptionalFiles([auditPath]),
     providerUsageCursorDigest: digestOptionalFiles([providerPath]),
     sessionCursorDigest: createHash("sha256").update(JSON.stringify(readBoundedIdentitySurfaces(agentRoot))).digest("hex"),
@@ -920,7 +972,9 @@ async function executeSanctuaryReadOnlyDenialProbe(
     .filter((entry) => Array.isArray(entry.names) && entry.names.some((name) => name === "calibre-web" || name === "/calibre-web"))
   if (matches.length !== 1 || typeof matches[0]!.id !== "string") throw new Error("read-only denial target is absent or ambiguous")
   const targetId = text(matches[0]!.id, "read-only denial target id")
+  const canonicalTargetId = canonicalDockerIdFromUnraidPrefixedId(targetId)
   const before = await captureReadOnlyDenialBoundary(agentRoot, deps)
+  if (before.targetContainerIdDigest !== createHash("sha256").update(canonicalTargetId).digest("hex")) throw new Error("read-only denial target identity is invalid")
   const query = label === "unit-16e-1-stop-denial"
     ? "mutation AcceptanceStopDenial($id: PrefixedID!) { docker { stop(id: $id) { id } } }"
     : WRITE_PROBE
@@ -932,10 +986,11 @@ async function executeSanctuaryReadOnlyDenialProbe(
   }) : []
   const errorCode = codes.includes("FORBIDDEN") ? "FORBIDDEN" : codes.includes("PERMISSION_DENIED") ? "PERMISSION_DENIED" : "UNCLASSIFIED"
   const after = await captureReadOnlyDenialBoundary(agentRoot, deps)
+  if (after.targetContainerIdDigest !== createHash("sha256").update(canonicalTargetId).digest("hex")) throw new Error("read-only denial target identity drifted")
   return {
     schemaVersion: "sanctuary-read-only-denial-receipt-v1", phase: "complete", label, scenarioHandleDigest,
     operation: label === "unit-16e-1-stop-denial" ? "stop" : "restart",
-    targetDigest: createHash("sha256").update(targetId).digest("hex"), attemptCount: 1,
+    targetDigest: createHash("sha256").update(canonicalTargetId).digest("hex"), attemptCount: 1,
     httpStatus: response.status, errorCode, before, after,
   }
 }
@@ -1158,6 +1213,8 @@ export async function readDefaultSanctuaryScenarioFacts(
     const handlerResolves = (name: string): boolean => typeof resolveToolDefinition(name)?.handler === "function" || flowSchemas.has(name)
     const excludedNames = ["shell", "read_file", "edit_file", "vault_get", "mcp_call", "exec", "credential_get"]
     const excludedSchemaIntersection = excludedNames.filter((name) => telegramNames.includes(name) || privateNames.includes(name))
+    const productionBoundaryReceipts = await dependency(deps.runProductionBoundaryProbe, "production tool boundary probe")(telegramSchemas)
+    const excludedAttempts = productionBoundaryReceipts.filter((receipt) => excludedNames.includes(receipt.name))
     const restartDefinition = resolveToolDefinition("unraid_restart_container")
     const writeApprovalPolicy = restartDefinition?.approvalPolicy?.({ container: "calibre-web" }) ?? { kind: "not_required" }
     let lifecycleBalance = 0
@@ -1185,11 +1242,17 @@ export async function readDefaultSanctuaryScenarioFacts(
       excludedToolCount: excludedNames.length,
       excludedSchemaIntersectionCount: excludedSchemaIntersection.length,
       fabricatedHandlerInvocationCount: excludedSchemaIntersection.filter(handlerResolves).length,
+      excludedToolAttemptCount: excludedAttempts.length,
+      excludedToolRejectedCount: excludedAttempts.filter((attempt) => attempt.reason === "profile_excluded").length,
+      excludedToolInvokedCount: excludedAttempts.filter((attempt) => attempt.invoked).length,
+      excludedToolSideEffectCount: excludedAttempts.filter((attempt) => attempt.sideEffect).length,
+      globallyResolvableExcludedToolCount: excludedAttempts.filter((attempt) => attempt.globallyResolvable).length,
       auditPathDigest: createHash("sha256").update(TELEGRAM_AUDIT).digest("hex"),
       auditLedgerDigest: createHash("sha256").update(JSON.stringify(auditLedgerEntries)).digest("hex"),
       auditRecordCount: auditLedgerEntries.length,
       auditLifecyclePairCount: lifecyclePairs,
       containerUser: typeof container?.user === "string" ? container.user : "",
+      liveProcessUser: typeof container?.liveProcessUser === "string" ? container.liveProcessUser : "",
       mountCount: Number(container?.mountCount ?? -1),
       publishedPortCount: Number(container?.publishedPortCount ?? -1),
       networkMode: typeof container?.networkMode === "string" ? container.networkMode : "",
@@ -1243,8 +1306,8 @@ export async function readDefaultSanctuaryScenarioFacts(
     containment: containment ?? {
       schemaVersion: "sanctuary-containment-audit-v1", keyCount: 0, keyInventoryDigest: "", readScopeDigest: "", writeScopeDigest: "", keyRoleAssignmentCount: 0,
       telegramToolCount: 0, telegramProfileDigest: "", telegramSchemaDigest: "", privateToolCount: 0, privateProfileDigest: "", privateSchemaDigest: "", resolvedHandlerCount: 0,
-      excludedToolCount: 0, excludedSchemaIntersectionCount: 0, fabricatedHandlerInvocationCount: 0, auditPathDigest: "", auditLedgerDigest: "", auditRecordCount: 0, auditLifecyclePairCount: 0,
-      containerUser: "", mountCount: 0, publishedPortCount: 0, networkMode: "", readOnlyRoot: false, mountsExact: false, securityExact: false, updaterDisabled: false,
+      excludedToolCount: 0, excludedSchemaIntersectionCount: 0, fabricatedHandlerInvocationCount: 0, excludedToolAttemptCount: 0, excludedToolRejectedCount: 0, excludedToolInvokedCount: 0, excludedToolSideEffectCount: 0, globallyResolvableExcludedToolCount: 0, auditPathDigest: "", auditLedgerDigest: "", auditRecordCount: 0, auditLifecyclePairCount: 0,
+      containerUser: "", liveProcessUser: "", mountCount: 0, publishedPortCount: 0, networkMode: "", readOnlyRoot: false, mountsExact: false, securityExact: false, updaterDisabled: false,
       writableKeyExposure: container?.writableKeyExposure === true, rawWriteMaterialFieldCount: 0, typedWriteExecutorCount: 0, writeApprovalPolicyDigest: "",
       sensitiveMaterialObserved: auditContainsSensitiveMaterial(auditRaw) || container?.writableKeyExposure === true,
       stopDenied, restartDenied, denialAuditCount, denialStateUnchanged, denialProbeCompleted,

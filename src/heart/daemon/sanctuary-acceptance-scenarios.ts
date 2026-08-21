@@ -112,6 +112,7 @@ export interface SanctuaryDenialBoundarySnapshot {
   ownerSnapshotDigest: string
   targetSnapshotDigest: string
   targetRestartCount: number
+  targetContainerIdDigest: string
   auditCursorDigest: string
   providerUsageCursorDigest: string
   sessionCursorDigest: string
@@ -222,7 +223,7 @@ export interface SanctuaryScenarioFacts {
   healthProbe?: SanctuaryHealthProbeReceipt
   interactiveDriver?: SanctuaryInteractiveDriverReceipt
   denial?: SanctuaryReadOnlyDenialReceipt
-  liveGrounding?: { toolName: SanctuaryGroundingToolName; groundingDigest: string; facts: Record<string, unknown> }
+  liveGrounding?: { toolName: SanctuaryGroundingToolName; groundingDigest: string; sourceIdentityDigest: string; observedAt: string; facts: Record<string, unknown> }
   reboot?: { phase: "preflight" | "requested" | "complete"; requestDigest: string; requestCount: number; checkpointPersisted: boolean; unrelatedHostOperations: number; bootIdentityChanged: boolean; hostReady: boolean; arrayReady: boolean; dockerReady: boolean; butlerReady: boolean; tailscaleReady: boolean; sshReady: boolean }
   containment?: SanctuaryContainmentAuditEvidence
 }
@@ -244,11 +245,17 @@ export interface SanctuaryContainmentAuditEvidence {
   excludedToolCount: number
   excludedSchemaIntersectionCount: number
   fabricatedHandlerInvocationCount: number
+  excludedToolAttemptCount: number
+  excludedToolRejectedCount: number
+  excludedToolInvokedCount: number
+  excludedToolSideEffectCount: number
+  globallyResolvableExcludedToolCount: number
   auditPathDigest: string
   auditLedgerDigest: string
   auditRecordCount: number
   auditLifecyclePairCount: number
   containerUser: string
+  liveProcessUser: string
   mountCount: number
   publishedPortCount: number
   networkMode: string
@@ -350,9 +357,13 @@ function exactContainmentAudit(evidence: SanctuaryContainmentAuditEvidence): boo
     && evidence.excludedToolCount === CONTAINMENT_EXCLUDED_TOOLS.length
     && evidence.excludedSchemaIntersectionCount === 0
     && evidence.fabricatedHandlerInvocationCount === 0
+    && evidence.excludedToolAttemptCount === CONTAINMENT_EXCLUDED_TOOLS.length
+    && evidence.excludedToolRejectedCount === CONTAINMENT_EXCLUDED_TOOLS.length
+    && evidence.excludedToolInvokedCount === 0 && evidence.excludedToolSideEffectCount === 0
+    && evidence.globallyResolvableExcludedToolCount >= 1
     && evidence.auditPathDigest === createHash("sha256").update(CONTAINMENT_AUDIT_PATH).digest("hex")
     && evidence.auditRecordCount >= 2 && evidence.auditLifecyclePairCount >= 1
-    && evidence.containerUser === "10001:10001" && evidence.mountCount === 2 && evidence.publishedPortCount === 0
+    && evidence.containerUser === "10001:10001" && evidence.liveProcessUser === "10001:10001" && evidence.mountCount === 2 && evidence.publishedPortCount === 0
     && evidence.networkMode === "host" && evidence.readOnlyRoot && evidence.mountsExact && evidence.securityExact && evidence.updaterDisabled
     && !evidence.writableKeyExposure && evidence.rawWriteMaterialFieldCount === 0 && evidence.typedWriteExecutorCount === 1
     && evidence.writeApprovalPolicyDigest === hash(CONTAINMENT_WRITE_POLICY) && !evidence.sensitiveMaterialObserved
@@ -384,10 +395,19 @@ function exactGroundedResponse(after: SanctuaryScenarioFacts, turn: SanctuarySce
   const grounding = turn.toolGroundings?.length === 1 ? turn.toolGroundings[0] : undefined
   const live = after.liveGrounding
   const audit = after.events.filter((entry) => entry.event === "senses.sanctuary_read_receipt" && entry.meta.toolName === toolName && entry.meta.success === true
-    && entry.meta.resultDigest === grounding?.resultDigest && entry.meta.groundingDigest === grounding?.groundingDigest)
+    && entry.meta.resultDigest === grounding?.resultDigest && entry.meta.groundingDigest === grounding?.groundingDigest
+    && entry.meta.sourceIdentityDigest === grounding?.sourceIdentityDigest && entry.meta.observedAt === grounding?.observedAt)
+  const turnObservedAt = Date.parse(grounding?.observedAt ?? "")
+  const liveObservedAt = Date.parse(live?.observedAt ?? "")
+  const timeBound = Number.isFinite(turnObservedAt) && Number.isFinite(liveObservedAt)
+    && turnObservedAt <= turn.completedAt && turn.completedAt - turnObservedAt <= 300_000
+    && liveObservedAt >= turnObservedAt && liveObservedAt - turnObservedAt <= 300_000
+  const liveFactsBound = toolName === "unraid_get_storage"
+    ? live?.groundingDigest === sanctuaryGroundingDigest(live?.facts ?? {})
+    : grounding?.groundingDigest === live?.groundingDigest && JSON.stringify(grounding?.facts) === JSON.stringify(live?.facts)
   return Boolean(grounding && live && grounding.toolName === toolName && live.toolName === toolName
     && grounding.groundingDigest === sanctuaryGroundingDigest(grounding.facts) && live.groundingDigest === sanctuaryGroundingDigest(live.facts)
-    && grounding.groundingDigest === live.groundingDigest && JSON.stringify(grounding.facts) === JSON.stringify(live.facts)
+    && grounding.sourceIdentityDigest === live.sourceIdentityDigest && SHA256.test(grounding.sourceIdentityDigest) && timeBound && liveFactsBound
     && audit.length === 1 && typeof turn.responseText === "string" && turn.responseText.length > 0
     && turn.responseUtf16Units === turn.responseText.length && turn.responseUtf16Units <= 1_200
     && sanctuaryGroundedResponseAccurate(toolName, grounding.facts, turn.responseText))
@@ -534,9 +554,12 @@ export function deriveSanctuaryScenarioAssertions(
         privateSchemaDigest: after.containment.privateSchemaDigest, resolvedHandlerCount: after.containment.resolvedHandlerCount,
         excludedToolCount: after.containment.excludedToolCount, excludedSchemaIntersectionCount: after.containment.excludedSchemaIntersectionCount,
         fabricatedHandlerInvocationCount: after.containment.fabricatedHandlerInvocationCount,
+        excludedToolAttemptCount: after.containment.excludedToolAttemptCount, excludedToolRejectedCount: after.containment.excludedToolRejectedCount,
+        excludedToolInvokedCount: after.containment.excludedToolInvokedCount, excludedToolSideEffectCount: after.containment.excludedToolSideEffectCount,
+        globallyResolvableExcludedToolCount: after.containment.globallyResolvableExcludedToolCount,
         auditPathDigest: after.containment.auditPathDigest, auditLedgerDigest: after.containment.auditLedgerDigest,
         auditRecordCount: after.containment.auditRecordCount, auditLifecyclePairCount: after.containment.auditLifecyclePairCount,
-        containerUser: after.containment.containerUser, mountCount: after.containment.mountCount,
+        containerUser: after.containment.containerUser, liveProcessUser: after.containment.liveProcessUser, mountCount: after.containment.mountCount,
         publishedPortCount: after.containment.publishedPortCount, networkMode: after.containment.networkMode,
         readOnlyRoot: after.containment.readOnlyRoot, mountsExact: after.containment.mountsExact,
         securityExact: after.containment.securityExact, updaterDisabled: after.containment.updaterDisabled,
@@ -554,6 +577,7 @@ export function deriveSanctuaryScenarioAssertions(
       if (!receipt || receipt.label !== label || receipt.operation !== expectedOperation || receipt.scenarioHandleDigest.length !== 64
         || receipt.attemptCount !== 1 || ![200, 401, 403].includes(receipt.httpStatus)
         || (receipt.errorCode !== "FORBIDDEN" && receipt.errorCode !== "PERMISSION_DENIED")
+        || receipt.targetDigest !== receipt.before.targetContainerIdDigest || receipt.targetDigest !== receipt.after.targetContainerIdDigest
         || JSON.stringify(receipt.before) !== JSON.stringify(receipt.after) || scenarioMutationCount !== 0) return null
       return { attemptCount: receipt.attemptCount, cursorBoundaryCount: 7, denied: true, mutationCount: 0, restartCountUnchanged: true, resumed: true }
     }

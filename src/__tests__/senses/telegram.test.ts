@@ -144,7 +144,7 @@ describe("Telegram sense", () => {
     const groundingHash = createHash("sha256").update(JSON.stringify(grounding)).digest("hex")
     const runWithToolReceiptCollection = async (operation: () => Promise<unknown>, observer: { toolResultDigests: string[]; toolGroundings?: unknown[] }) => {
       observer.toolResultDigests.push(HEX_DIGEST)
-      observer.toolGroundings?.push({ toolName: "unraid_get_system", resultDigest: HEX_DIGEST, groundingDigest: groundingHash, facts: grounding })
+      observer.toolGroundings?.push({ toolName: "unraid_get_system", resultDigest: HEX_DIGEST, groundingDigest: groundingHash, sourceIdentityDigest: "9".repeat(64), observedAt: "2026-08-20T16:00:00.000Z", facts: grounding })
       return { result: await operation(), toolResultDigests: [...observer.toolResultDigests], toolGroundings: [...(observer.toolGroundings ?? [])] }
     }
     const f = fixture({ acceptanceMarker: () => ({ scenarioHandleDigest: "a".repeat(64), label: "unit-16d-whats-up" }), acceptanceReceiptRoot: root, runTurn, runWithToolReceiptCollection })
@@ -155,7 +155,7 @@ describe("Telegram sense", () => {
     const v4Digest = (purpose: string, value: string) => sanctuaryTelegramTurnReceiptDigest(RECEIPT_KEY, "sanctuary-telegram-turn-receipt-v4", purpose, value)
     const canonicalText = "Sanctuary is running Unraid 7.2.3 with the array STARTED and not degraded."
     const deliveries = [{ messageIdDigest: v4Digest("delivery", "71"), chunkDigest: v4Digest("chunk", canonicalText), redactedText: canonicalText, utf16Units: canonicalText.length }]
-    expect(receipt).toMatchObject({ schemaVersion: "sanctuary-telegram-turn-receipt-v4", scenarioHandleDigest: "a".repeat(64), status: "success", errorCategory: null, providerInvocationCount: 2, toolInvocationCount: 1, deliveryCount: 1, updateDigest: v4Digest("update", ["9", "10"].join("\0")), sequenceDigest: v4Digest("sequence", "9"), responseDigest: v4Digest("response", JSON.stringify(deliveries)), deliveries, toolGroundings: [{ toolName: "unraid_get_system", resultDigest: HEX_DIGEST, groundingDigest: groundingHash, facts: grounding }], receiptMac: expect.stringMatching(/^[0-9a-f]{64}$/u) })
+    expect(receipt).toMatchObject({ schemaVersion: "sanctuary-telegram-turn-receipt-v4", scenarioHandleDigest: "a".repeat(64), status: "success", errorCategory: null, providerInvocationCount: 2, toolInvocationCount: 1, deliveryCount: 1, updateDigest: v4Digest("update", ["9", "10"].join("\0")), sequenceDigest: v4Digest("sequence", "9"), responseDigest: v4Digest("response", JSON.stringify(deliveries)), deliveries, toolGroundings: [{ toolName: "unraid_get_system", resultDigest: HEX_DIGEST, groundingDigest: groundingHash, sourceIdentityDigest: "9".repeat(64), observedAt: "2026-08-20T16:00:00.000Z", facts: grounding }], receiptMac: expect.stringMatching(/^[0-9a-f]{64}$/u) })
     expect(receipt.receiptMac).toBe(sanctuaryTelegramTurnReceiptMac(RECEIPT_KEY, receipt))
     expect(f.api.request).toHaveBeenCalledWith("sendMessage", { chat_id: "42", text: canonicalText, parse_mode: "HTML" }, undefined)
     expect(JSON.stringify(receipt)).not.toContain('"updateId":9')
@@ -167,7 +167,7 @@ describe("Telegram sense", () => {
     const groundingHash = createHash("sha256").update(JSON.stringify(grounding)).digest("hex")
     const collect = async (operation: () => Promise<unknown>, observer: { toolResultDigests: string[]; toolGroundings?: unknown[] }) => {
       observer.toolResultDigests.push(HEX_DIGEST)
-      observer.toolGroundings?.push({ toolName: "unraid_get_system", resultDigest: HEX_DIGEST, groundingDigest: groundingHash, facts: grounding })
+      observer.toolGroundings?.push({ toolName: "unraid_get_system", resultDigest: HEX_DIGEST, groundingDigest: groundingHash, sourceIdentityDigest: "9".repeat(64), observedAt: "2026-08-20T16:00:00.000Z", facts: grounding })
       return { result: await operation(), toolResultDigests: [...observer.toolResultDigests], toolGroundings: [...(observer.toolGroundings ?? [])] }
     }
     const ordinary = fixture({

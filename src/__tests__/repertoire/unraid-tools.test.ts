@@ -1,6 +1,9 @@
+import { createHash } from "node:crypto"
 import { describe, expect, it, vi } from "vitest"
 
 import { createUnraidReadTools, normalizeDockerStatus, unraidToolDefinitions } from "../../repertoire/tools-unraid"
+
+const LIVE_SERVER_ID = `${"a".repeat(64)}:${"b".repeat(64)}`
 
 describe("Unraid typed read tools", () => {
   it("normalizes only canonical Docker state/status pairs", () => {
@@ -57,16 +60,20 @@ describe("Unraid typed read tools", () => {
   })
 
   it("maps storage, disks, notifications, and system through fixed documents", async () => {
+    const serverPrefixedId = LIVE_SERVER_ID
+    const sourceIdentityDigest = createHash("sha256").update(serverPrefixedId).digest("hex")
     const read = vi.fn()
-      .mockResolvedValueOnce({ array: { state: "STARTED", capacity: { kilobytes: { used: 2, free: 3, total: 5 } } }, shares: [{ id: "s1", name: "media", used: 1024, free: 1024, size: 2048 }] })
+      .mockResolvedValueOnce({ vars: { id: serverPrefixedId }, array: { state: "STARTED", capacity: { kilobytes: { used: 2, free: 3, total: 5 } } }, shares: [{ id: "s1", name: "media", used: 1024, free: 1024, size: 2048 }] })
       .mockResolvedValueOnce({ disks: [{ id: "sanctuary:d1", name: "disk1", smartStatus: "PASSED", temperature: 38 }], array: { parityCheckStatus: { status: "COMPLETED", date: "2026-08-18T00:00:00Z", errors: 0, running: false } } })
       .mockResolvedValueOnce({ notifications: { list: [{ id: "n1", timestamp: "2026-08-18T00:00:00Z", importance: "WARNING", title: "Disk warm", subject: "disk1", description: "38C", type: "UNREAD" }] } })
-      .mockResolvedValueOnce({ vars: { name: "Sanctuary", version: "7.2.3" }, info: { os: { uptime: 1234 }, versions: { core: { unraid: "7.2.3", api: "4.37.1" } } }, array: { state: "STARTED" } })
+      .mockResolvedValueOnce({ vars: { id: serverPrefixedId, name: "Sanctuary", version: "7.2.3" }, info: { os: { uptime: 1234 }, versions: { core: { unraid: "7.2.3", api: "4.37.1" } } }, array: { state: "STARTED" } })
     const tools = createUnraidReadTools({ read } as any)
-    await expect(tools.getStorage()).resolves.toMatchObject({ ok: true, data: { array: { usedBytes: 2048, freeBytes: 3072, usedPercent: 40 }, shares: [{ name: "media", usedBytes: 1024, freeBytes: 1024, usedPercent: 50 }] } })
+    await expect(tools.getStorage()).resolves.toMatchObject({ ok: true, data: { sourceIdentityDigest, array: { usedBytes: 2048, freeBytes: 3072, usedPercent: 40 }, shares: [{ name: "media", usedBytes: 1024, freeBytes: 1024, usedPercent: 50 }] } })
     await expect(tools.getDisks()).resolves.toMatchObject({ ok: true, data: { disks: [{ id: "sanctuary:d1", name: "disk1", smart: "passed", temperatureC: 38, degraded: false }], parity: { result: "success" } } })
     await expect(tools.getNotifications()).resolves.toMatchObject({ ok: true, data: { unacknowledged: [{ id: "n1", createdAt: "2026-08-18T00:00:00.000Z", severity: "warning", title: "Disk warm", summary: "disk1\n38C", degraded: false }] } })
-    await expect(tools.getSystem()).resolves.toEqual({ ok: true, data: { serverName: "Sanctuary", unraidVersion: "7.2.3", apiVersion: "4.37.1", arrayState: "STARTED", uptimeSeconds: 1234, degraded: false } })
+    await expect(tools.getSystem()).resolves.toEqual({ ok: true, data: { sourceIdentityDigest, serverName: "Sanctuary", unraidVersion: "7.2.3", apiVersion: "4.37.1", arrayState: "STARTED", uptimeSeconds: 1234, degraded: false } })
+    expect(String(read.mock.calls[0]?.[0])).toContain("vars { id }")
+    expect(String(read.mock.calls[3]?.[0])).toContain("vars { id name version }")
   })
 
   it("fails closed when the parity completion timestamp is in the future", async () => {
@@ -147,7 +154,7 @@ describe("Unraid typed read tools", () => {
 
   it("maps degraded, bounded storage data and exact storage request", async () => {
     const shares = Array.from({ length: 257 }, (_, index) => ({ name: `share-${index}`, used: index === 0 ? "10" : "bad", free: index === 0 ? 0n : null }))
-    const read = vi.fn(async () => ({ array: { state: 42, capacity: { kilobytes: { used: "2", free: 0n } } }, shares }))
+    const read = vi.fn(async () => ({ vars: { id: LIVE_SERVER_ID }, array: { state: 42, capacity: { kilobytes: { used: "2", free: 0n } } }, shares }))
     const result = await createUnraidReadTools({ read } as any).getStorage()
     expect(result).toMatchObject({ ok: true, data: { array: { state: "", usedBytes: 2048, freeBytes: 0, usedPercent: 100, degraded: true }, shares: { length: 256 }, truncated: true } })
     expect((result as any).data.shares.find((share: any) => share.name === "share-0")).toMatchObject({ usedBytes: 10, freeBytes: 0, usedPercent: 100, degraded: false })
@@ -155,7 +162,7 @@ describe("Unraid typed read tools", () => {
   })
 
   it("returns null percentages for missing or zero capacity", async () => {
-    const read = vi.fn(async () => ({ array: { state: "STARTED", capacity: { kilobytes: { used: -1, free: "bad" } } }, shares: [{ name: "empty", used: 0, free: 0 }] }))
+    const read = vi.fn(async () => ({ vars: { id: LIVE_SERVER_ID }, array: { state: "STARTED", capacity: { kilobytes: { used: -1, free: "bad" } } }, shares: [{ name: "empty", used: 0, free: 0 }] }))
     await expect(createUnraidReadTools({ read } as any).getStorage()).resolves.toMatchObject({ ok: true, data: { array: { usedBytes: null, freeBytes: null, usedPercent: null, degraded: true }, shares: [{ usedPercent: null, degraded: false }] } })
   })
 
@@ -178,7 +185,7 @@ describe("Unraid typed read tools", () => {
   })
 
   it("falls back to vars version and degrades malformed system fields", async () => {
-    const read = vi.fn(async () => ({ vars: { name: 42, version: "7.2.3" }, info: { os: { uptime: "123" }, versions: { core: { api: null } } }, array: { state: "x".repeat(200) } }))
+    const read = vi.fn(async () => ({ vars: { id: LIVE_SERVER_ID, name: 42, version: "7.2.3" }, info: { os: { uptime: "123" }, versions: { core: { api: null } } }, array: { state: "x".repeat(200) } }))
     await expect(createUnraidReadTools({ read } as any).getSystem()).resolves.toMatchObject({ ok: true, data: { serverName: "", unraidVersion: "7.2.3", apiVersion: "", uptimeSeconds: 123, degraded: true } })
     expect(read).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("query SanctuarySystem"), {})
   })
