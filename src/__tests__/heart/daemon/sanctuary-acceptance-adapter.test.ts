@@ -22,6 +22,7 @@ import {
   executeSanctuaryAcceptanceAdapter,
   executeSanctuaryAcceptanceRevokedProbe,
   executeSanctuaryAcceptanceVaultProbe,
+  evaluateSanctuaryProviderReadinessContract,
   proveAttemptedRecoveryWithoutRetry,
   readDefaultSanctuaryScenarioFacts,
   runSanctuaryProductionBoundaryProbe,
@@ -981,6 +982,27 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     expect(facts.provider?.requestSemanticsExact).toBe(false)
     expect(facts.provider?.pingReceipts).toEqual(expect.arrayContaining([expect.objectContaining({ lane: "candidate", attempts: [expect.objectContaining({ provider: "openai-compatible" })] })]))
     fs.rmSync(agentRoot, { recursive: true, force: true })
+  })
+
+  it("requires the exact Sanctuary provider coordinates and distinct secret-derived identities without exposing secrets", () => {
+    const canonical = {
+      outward: { provider: "openai-compatible", model: "glm-5.2" },
+      inner: { provider: "openai-compatible", model: "glm-5.2" },
+      gemini: { provider: "openai-compatible-gemini", model: "gemini-3.6-flash", vaultItem: "providers/openai-compatible-gemini" },
+      glm: { baseUrl: "https://api.z.ai/api/paas/v4/", vaultItem: "providers/openai-compatible", apiKey: "glm-secret" },
+      geminiCredential: { baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai/", apiKey: "gemini-secret" },
+      selectionPolicy: "explicit-same-lane-only",
+      identityKey: "identity-key",
+    }
+    const result = evaluateSanctuaryProviderReadinessContract(canonical)
+    expect(result).toEqual({ baseUrlsExact: true, credentialIdentitiesDistinct: true, modelsExact: true, vaultCoordinatesExact: true })
+    expect(JSON.stringify(result)).not.toContain("glm-secret")
+    expect(JSON.stringify(result)).not.toContain("gemini-secret")
+    expect(evaluateSanctuaryProviderReadinessContract({ ...canonical, outward: { ...canonical.outward, model: "glm-5.1" } }).modelsExact).toBe(false)
+    expect(evaluateSanctuaryProviderReadinessContract({ ...canonical, gemini: { ...canonical.gemini, model: "gemini-3.5-flash" } }).modelsExact).toBe(false)
+    expect(evaluateSanctuaryProviderReadinessContract({ ...canonical, glm: { ...canonical.glm, baseUrl: "https://example.invalid" } }).baseUrlsExact).toBe(false)
+    expect(evaluateSanctuaryProviderReadinessContract({ ...canonical, gemini: { ...canonical.gemini, vaultItem: "providers/wrong" } }).vaultCoordinatesExact).toBe(false)
+    expect(evaluateSanctuaryProviderReadinessContract({ ...canonical, geminiCredential: { ...canonical.geminiCredential, apiKey: "glm-secret" } }).credentialIdentitiesDistinct).toBe(false)
   })
 
   it.each([

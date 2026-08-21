@@ -20,6 +20,7 @@ interface BrokerDependencies {
   ownerMutationCoordinator?: ReturnType<BrokerModule["createOwnerMutationCoordinator"]>
   interactiveRestartDriver?: ReturnType<BrokerModule["createInteractiveRestartDriver"]>
   healthOwnerMutationActive?(): boolean
+  rebootPreflightSnapshot?(): Record<string, unknown>
   healthProbeCoordinator?: {
     start<T>(scenario: string, operation: () => T | Promise<T>): Promise<T>
     recover<T>(scenario: string, operation: () => T | Promise<T>): Promise<T>
@@ -32,6 +33,11 @@ interface BrokerModule {
   liveContainerProcessUser(pid: number, dependencies?: { readFile(file: string): string }): string
   liveContainerProcessIdentity(pid: number, dependencies: { readFile(file: string): { content: string; inode: string } }): { user: string; processStartTime: string; processInode: string }
   parseProcStartTime(raw: string): string
+  observeRebootPreflight(dependencies?: {
+    readArrayStatus(): string
+    readMoverStatus(): { status: number | null; error?: Error }
+    mutationActive(): boolean
+  }): Record<string, unknown>
   createOwnerMutationCoordinator(): {
     healthStart<T>(scenario: string, operation: () => T | Promise<T>): Promise<T>
     healthRecover<T>(scenario: string, operation: () => T | Promise<T>): Promise<T>
@@ -191,6 +197,30 @@ describe("Sanctuary Unit 16 host broker", () => {
     expect(() => readBoundedProcStatus(oversized)).toThrow(/bound/u)
   })
 
+  it("observes an idle array/mover/mutation preflight and rejects active or unknown host operations", async () => {
+    const { observeRebootPreflight } = await broker()
+    const idle = observeRebootPreflight({
+      readArrayStatus: () => "mdState=STARTED\nmdResync=0\n",
+      readMoverStatus: () => ({ status: 1 }),
+      mutationActive: () => false,
+    })
+    expect(idle).toMatchObject({ arrayReady: true, moverActive: false, mutationActive: false, safe: true })
+    expect(idle.digest).toMatch(/^[0-9a-f]{64}$/u)
+    expect(() => observeRebootPreflight({ readArrayStatus: () => "mdState=STARTED\nmdResync=42\n", readMoverStatus: () => ({ status: 1 }), mutationActive: () => false })).toThrow(/host operation/u)
+    expect(() => observeRebootPreflight({ readArrayStatus: () => "mdState=STARTED\nmdResync=0\n", readMoverStatus: () => ({ status: 0 }), mutationActive: () => false })).toThrow(/host operation/u)
+    expect(() => observeRebootPreflight({ readArrayStatus: () => "mdState=MYSTERY\n", readMoverStatus: () => ({ status: 1 }), mutationActive: () => false })).toThrow(/preflight/u)
+    expect(() => observeRebootPreflight({ readArrayStatus: () => "mdState=STARTED\nmdResync=0\n", readMoverStatus: () => ({ status: 2 }), mutationActive: () => false })).toThrow(/preflight/u)
+  })
+
+  it("digest-binds request_reboot to a fresh unchanged broker preflight", async () => {
+    const { dispatch } = await broker()
+    const first = { arrayReady: true, moverActive: false, mutationActive: false, safe: true, digest: "a".repeat(64) }
+    const changed = { ...first, moverActive: true, safe: false, digest: "b".repeat(64) }
+    const request = { operation: "request_reboot", targetId: "sanctuary", idempotencyKey: "0123456789abcdef0123456789abcdef", preflightDigest: first.digest }
+    await expect(dispatch(request, { readBootId: () => "boot-id", containerSnapshot: () => ({}), rebootPreflightSnapshot: () => first })).resolves.toMatchObject({ accepted: true, preflightDigest: first.digest })
+    await expect(dispatch(request, { readBootId: () => "boot-id", containerSnapshot: () => ({}), rebootPreflightSnapshot: () => changed })).rejects.toThrow(/preflight changed/u)
+    await expect(dispatch({ ...request, preflightDigest: "b".repeat(64) }, { readBootId: () => "boot-id", containerSnapshot: () => ({}), rebootPreflightSnapshot: () => first })).rejects.toThrow(/preflight changed/u)
+  })
   it("reads the exact denial target lifecycle without returning raw owner identifiers", async () => {
     const { denialTargetSnapshot, dispatch } = await broker()
     const raw = {

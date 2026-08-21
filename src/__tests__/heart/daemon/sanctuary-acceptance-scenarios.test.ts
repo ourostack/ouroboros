@@ -11,6 +11,7 @@ vi.mock("../../../heart/identity", () => ({ getAgentRoot: () => path.join(root, 
 import {
   createSanctuaryScenarioCapture,
   deriveSanctuaryScenarioAssertions,
+  verifySanctuaryPostbootIntegrity,
   finalizeSanctuaryScenarioCapture,
   type SanctuaryScenarioFacts,
 } from "../../../heart/daemon/sanctuary-acceptance-scenarios"
@@ -125,6 +126,57 @@ const base = (): SanctuaryScenarioFacts => ({
     writeApprovalPolicyDigest: createHash("sha256").update(JSON.stringify({ kind: "required", policyId: "sanctuary.unraid.restart.v1", actionClass: "unraid.container.restart", requiresSoleCall: true })).digest("hex"),
     sensitiveMaterialObserved: false, stopDenied: true, restartDenied: true, denialAuditCount: 1, denialStateUnchanged: true, denialProbeCompleted: true,
   },
+})
+
+const integritySnapshot = () => ({
+  schemaVersion: "sanctuary-postboot-integrity-v1" as const,
+  telegramOffsetDigest: "1".repeat(64),
+  approvalStateDigest: "2".repeat(64),
+  approvalExecutionCount: 1,
+  fingerprintDigest: "3".repeat(64),
+  sweeps: [{ idDigest: "4".repeat(64), scenarioHandleDigest: null, deliveryIdDigest: null }],
+  deliveries: [{ idDigest: "5".repeat(64) }],
+  audits: [{ idDigest: "6".repeat(64), scenarioHandleDigest: null, scenarioRelevant: false }],
+})
+
+describe("Sanctuary postboot relational integrity", () => {
+  it("accepts unchanged cursors and scenario-bound, ordinally appended deltas", () => {
+    const scenarioHandleDigest = "a".repeat(64)
+    const before = integritySnapshot()
+    const after = {
+      ...before,
+      sweeps: [...before.sweeps, { idDigest: "7".repeat(64), scenarioHandleDigest, deliveryIdDigest: "8".repeat(64) }],
+      deliveries: [...before.deliveries, { idDigest: "8".repeat(64) }],
+      audits: [...before.audits, { idDigest: "9".repeat(64), scenarioHandleDigest, scenarioRelevant: true }],
+    }
+    expect(verifySanctuaryPostbootIntegrity(before, after, scenarioHandleDigest)).toEqual({
+      auditDeltaCount: 1, deliveryDeltaCount: 1, preserved: true, sweepDeltaCount: 1,
+    })
+  })
+
+  it.each([
+    ["offset replay", (value: ReturnType<typeof integritySnapshot>) => ({ ...value, telegramOffsetDigest: "f".repeat(64) })],
+    ["approval state replay", (value: ReturnType<typeof integritySnapshot>) => ({ ...value, approvalStateDigest: "f".repeat(64) })],
+    ["approval execution replay", (value: ReturnType<typeof integritySnapshot>) => ({ ...value, approvalExecutionCount: 2 })],
+    ["fingerprint mutation", (value: ReturnType<typeof integritySnapshot>) => ({ ...value, fingerprintDigest: "f".repeat(64) })],
+    ["sweep replay", (value: ReturnType<typeof integritySnapshot>) => ({ ...value, sweeps: [value.sweeps[0]!, value.sweeps[0]!] })],
+    ["delivery replay", (value: ReturnType<typeof integritySnapshot>) => ({ ...value, deliveries: [value.deliveries[0]!, value.deliveries[0]!] })],
+    ["audit replay", (value: ReturnType<typeof integritySnapshot>) => ({ ...value, audits: [value.audits[0]!, value.audits[0]!] })],
+  ])("rejects %s", (_name, mutate) => {
+    const before = integritySnapshot()
+    expect(verifySanctuaryPostbootIntegrity(before, mutate(before), "a".repeat(64))).toBeNull()
+  })
+
+  it("rejects new sweeps, deliveries, and relevant audit rows not bound to the active scenario", () => {
+    const before = integritySnapshot()
+    const after = {
+      ...before,
+      sweeps: [...before.sweeps, { idDigest: "7".repeat(64), scenarioHandleDigest: "b".repeat(64), deliveryIdDigest: "8".repeat(64) }],
+      deliveries: [...before.deliveries, { idDigest: "8".repeat(64) }],
+      audits: [...before.audits, { idDigest: "9".repeat(64), scenarioHandleDigest: "b".repeat(64), scenarioRelevant: true }],
+    }
+    expect(verifySanctuaryPostbootIntegrity(before, after, "a".repeat(64))).toBeNull()
+  })
 })
 
 afterEach(() => fs.rmSync(root, { recursive: true, force: true }))
