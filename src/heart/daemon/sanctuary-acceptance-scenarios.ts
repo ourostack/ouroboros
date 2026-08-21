@@ -601,7 +601,7 @@ function exactApprovalEvidence(
     || approval.expiresAt !== boundAt + SANCTUARY_APPROVAL_TTL_MS) return null
   if (approval.state === "expired") {
     if (expiryObservedAt === null || !Number.isSafeInteger(expiryObservedAt) || expiryObservedAt < boundAt
-      || expiryDeadlineAt !== approval.expiresAt || expiryObservation?.meta.expiryObservationSchemaVersion !== "telegram-approval-expiry-observation-v1"
+      || expiryObservation?.meta.expiryObservationSchemaVersion !== "telegram-approval-expiry-observation-v1"
       || expiryObservation.meta.boundAt !== boundAt
       || terminals[0]!.meta.expiryObservedAt !== expiryObservedAt || terminals[0]!.meta.expiryDeadlineAt !== expiryDeadlineAt
       || terminalEditStartedAt < expiryObservedAt || terminalizedAt - expiryObservedAt > SANCTUARY_APPROVAL_TERMINAL_EDIT_TIMEOUT_MS) return null
@@ -637,10 +637,13 @@ function exactApprovalEvidence(
   return { boundAt, callback, continuation, expiryObservedAt, expiryDeadlineAt, terminalizedAt, staleCallback }
 }
 
-export function terminalizedWithinTtlJitter(evidence: { boundAt: number; expiryObservedAt: number | null; expiryDeadlineAt: number | null }): boolean {
-  if (evidence.expiryObservedAt === null) return false
-  const elapsed = evidence.expiryObservedAt - evidence.boundAt
-  return elapsed >= SANCTUARY_APPROVAL_TTL_MS && elapsed <= SANCTUARY_APPROVAL_TTL_MS + SANCTUARY_APPROVAL_RECONCILIATION_JITTER_MS
+function terminalizedWithinTtlJitter(evidence: { boundAt: number; expiryObservedAt: number | null; expiryDeadlineAt: number | null } | null): boolean {
+  const expiryObservedAt = evidence?.expiryObservedAt ?? null
+  const expiryDeadlineAt = evidence?.expiryDeadlineAt ?? null
+  if ([expiryObservedAt, expiryDeadlineAt].some((value) => value === null)) return false
+  return expiryDeadlineAt === evidence!.boundAt + SANCTUARY_APPROVAL_TTL_MS
+    && expiryObservedAt! >= expiryDeadlineAt!
+    && expiryObservedAt! <= expiryDeadlineAt! + SANCTUARY_APPROVAL_RECONCILIATION_JITTER_MS
 }
 
 function interactiveReceiptBindsApproval(receipt: SanctuaryInteractiveDriverReceipt, approval: SanctuaryScenarioApproval): boolean {
@@ -713,7 +716,7 @@ export function deriveSanctuaryScenarioAssertions(
     case "unit-15c-1-no-callback-terminalization": {
       if (!intendedRestartApproval(approval) || approval.state !== "expired" || approval.createdAt < before.capturedAt) return null
       const evidence = exactApprovalEvidence(before, after, approval)
-      if (!evidence || evidence.callback !== null || evidence.continuation !== null || !terminalizedWithinTtlJitter(evidence)) return null
+      if (!terminalizedWithinTtlJitter(evidence) || !evidence || evidence.callback !== null || evidence.continuation !== null) return null
       const elapsedMs = evidence.terminalizedAt - evidence.boundAt
       if (!approval.buttonsRemoved || !approval.terminalPrompt) return null
       const baseline = before.sourceValues["no-callback-baseline"]
@@ -885,7 +888,7 @@ export function deriveSanctuaryScenarioAssertions(
       if (!intendedRestartApproval(approval) || !completeAttemptLedgerLinked || approval.state !== "expired" || scenarioMutationCount !== 0 || approval.replayMutationCount !== 0) return null
       if (!approval.buttonsRemoved || !approval.terminalPrompt || !approval.staleAcknowledged) return null
       const evidence = exactApprovalEvidence(before, after, approval)
-      if (!evidence || evidence.callback !== null || evidence.continuation !== null || evidence.staleCallback === null || !terminalizedWithinTtlJitter(evidence)) return null
+      if (!terminalizedWithinTtlJitter(evidence) || !evidence || evidence.callback !== null || evidence.continuation !== null || evidence.staleCallback === null) return null
       const driver = after.interactiveDriver
       if (!driver || driver.label !== "unit-16k-timeout-stale" || !interactiveReceiptBindsApproval(driver, approval)
         || driver.callbackAttempts !== 1 || driver.distinctQueryCount !== 1 || driver.settledCount !== 1

@@ -26,7 +26,6 @@ import {
   deriveSanctuaryScenarioAssertions,
   verifySanctuaryPostbootIntegrity,
   finalizeSanctuaryScenarioCapture,
-  terminalizedWithinTtlJitter,
   type SanctuaryScenarioFacts,
 } from "../../../heart/daemon/sanctuary-acceptance-scenarios"
 import { SANCTUARY_SCENARIO_SOURCES, SANCTUARY_UNIT_16_EVIDENCE_LABELS, validateSanctuaryUnit16EvidenceAssertions } from "../../../heart/daemon/sanctuary-acceptance-harness"
@@ -685,6 +684,15 @@ describe("Sanctuary live scenario capture", () => {
     const missingObservation = make(301_000)
     missingObservation.after.events = missingObservation.after.events.filter((entry) => entry.event !== "telegram.approval_expiry_observed")
     expect(deriveSanctuaryScenarioAssertions(label, missingObservation.before, missingObservation.after, 400_000)).toBeNull()
+    const beforeDeadline = make(300_999)
+    expect(deriveSanctuaryScenarioAssertions(label, beforeDeadline.before, beforeDeadline.after, 400_000)).toBeNull()
+    const mismatchedDeadline = make(301_001)
+    mismatchedDeadline.after.events = mismatchedDeadline.after.events.map((entry) => entry.event === "telegram.approval_expiry_observed"
+      ? { ...entry, meta: { ...entry.meta, expiryDeadlineAt: 301_001 } }
+      : entry.event === "telegram.approval_prompt_terminalized"
+        ? { ...entry, meta: { ...entry.meta, expiryDeadlineAt: 301_001 } }
+        : entry)
+    expect(deriveSanctuaryScenarioAssertions(label, mismatchedDeadline.before, mismatchedDeadline.after, 400_000)).toBeNull()
     const retryObservation = make(301_000)
     retryObservation.after.events.splice(2, 0, { ...expiryObservationEvidence(), at: 301_001 })
     expect(deriveSanctuaryScenarioAssertions(label, retryObservation.before, retryObservation.after, 400_000)).not.toBeNull()
@@ -833,7 +841,6 @@ describe("Sanctuary live scenario capture", () => {
     storageWithoutLiveFacts.liveGrounding = { toolName: "unraid_get_storage", groundingDigest: groundingDigest({}), sourceIdentityDigest: groundingSource, observedAt: "1970-01-01T00:00:11.000Z", facts: null as never }
     expect(deriveSanctuaryScenarioAssertions("unit-16d-1-space", base(), storageWithoutLiveFacts, 400_000)).toBeNull()
 
-    expect(terminalizedWithinTtlJitter({ boundAt: 1_000, expiryObservedAt: null, expiryDeadlineAt: 301_000 })).toBe(false)
   })
 
   it.each([

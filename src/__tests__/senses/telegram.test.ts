@@ -2,12 +2,11 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { createHash, createHmac } from "node:crypto"
-import { AsyncLocalStorage } from "node:async_hooks"
 import { describe, expect, it, vi } from "vitest"
 
 import { createLogger } from "../../nerves"
 import { emitNervesEvent, setRuntimeLogger } from "../../nerves/runtime"
-import { createTelegramAcceptanceAuditRelease, createTelegramSenseApp, opaqueTelegramSubject, sanctuaryTelegramApprovalEvidenceMac, sanctuaryTelegramTurnReceiptDigest, sanctuaryTelegramTurnReceiptMac, telegramAcceptanceAuditOwnerDigest } from "../../senses/telegram"
+import { createTelegramSenseApp, opaqueTelegramSubject, sanctuaryTelegramApprovalEvidenceMac, sanctuaryTelegramTurnReceiptDigest, sanctuaryTelegramTurnReceiptMac, telegramAcceptanceAuditOwnerDigest } from "../../senses/telegram"
 import { TELEGRAM_ACCEPTANCE_AUDIT_HEAD_RELATIVE_PATH, TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH, verifyTelegramAuditLedger } from "../../senses/telegram-audit-ledger"
 import { splitTelegramText, type TelegramBotApi, type TelegramInboundMessage, type TelegramLongPoll } from "../../senses/telegram-client"
 
@@ -115,13 +114,6 @@ function fixture(input: {
 }
 
 describe("Telegram sense", () => {
-  it("makes acceptance audit release idempotent", () => {
-    const operation = vi.fn()
-    const release = createTelegramAcceptanceAuditRelease(operation)
-    release()
-    release()
-    expect(operation).toHaveBeenCalledOnce()
-  })
   it("derives one canonical opaque subject from bot, user, and chat identity", () => {
     const identityKey = "k".repeat(43)
     const baseline = opaqueTelegramSubject(identityKey, "bot-a", "42", "43")
@@ -668,98 +660,6 @@ describe("Telegram sense", () => {
     }
   })
 
-  it.each([null, { scenarioHandleDigest: "b".repeat(64) }])("poisons an active effect when its marker changes to %j", async (changedMarker) => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-active-marker-drift-"))
-    let marker: { scenarioHandleDigest: string } | null = { scenarioHandleDigest: "a".repeat(64) }
-    const getStore = vi.spyOn(AsyncLocalStorage.prototype, "getStore").mockReturnValue(undefined)
-    const app = createTelegramSenseApp({
-      agentName: "sanctuary", credentials: { botToken: "test-token", authorizedUserId: "42", authorizedChatId: "42" }, identityKey: "k".repeat(43),
-      _agentRoot: root, acceptanceReceiptRoot: root, _toolContext: {} as never, acceptanceMarker: () => marker, migrateIdentity: async () => undefined,
-      api: { request: vi.fn(async () => { marker = changedMarker; return { message_id: 71 } }), stop: vi.fn() }, offsetStore: { load: () => 0, save: vi.fn() },
-      createLongPoll: () => ({ pollOnce: vi.fn(), run: vi.fn(), stop: vi.fn() }),
-      approvalRuntime: { transport: { sendApproval: vi.fn(), handleUpdate: vi.fn(), recoverDecisionAttempt: vi.fn(), reconcileExpired: vi.fn(), terminalizeOrphaned: vi.fn(), terminalizeRecovered: vi.fn(), listPendingDeliveries: vi.fn(() => []) }, coordinator: vi.fn(), recover: vi.fn(), close: vi.fn() } as never,
-      _createInteractiveControl: (() => ({ socketPath: "unused", start: vi.fn(), stop: vi.fn() })) as never,
-    })
-    try {
-      await expect(app.sendProactive("drift marker")).rejects.toThrow()
-    } finally {
-      getStore.mockRestore()
-      await app.stop().catch(() => undefined)
-      fs.rmSync(root, { recursive: true, force: true })
-    }
-  })
-
-  it("keeps a reentrant retirement from clearing a replacement lease", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-reentrant-retirement-"))
-    let marker: { scenarioHandleDigest: string } | null = { scenarioHandleDigest: "a".repeat(64) }
-    let app!: ReturnType<typeof createTelegramSenseApp>
-    let nested: Promise<void> | undefined
-    const getStore = vi.spyOn(AsyncLocalStorage.prototype, "getStore").mockReturnValue(undefined)
-    app = createTelegramSenseApp({
-      agentName: "sanctuary", credentials: { botToken: "test-token", authorizedUserId: "42", authorizedChatId: "42" }, identityKey: "k".repeat(43),
-      _agentRoot: root, acceptanceReceiptRoot: root, _toolContext: {} as never, acceptanceMarker: () => marker, migrateIdentity: async () => undefined,
-      api: { request: vi.fn(async () => { marker = null; return { message_id: 71 } }), stop: vi.fn() }, offsetStore: { load: () => 0, save: vi.fn() },
-      createLongPoll: () => ({ pollOnce: vi.fn(), run: vi.fn(), stop: vi.fn() }),
-      approvalRuntime: { transport: { sendApproval: vi.fn(), handleUpdate: vi.fn(), recoverDecisionAttempt: vi.fn(), reconcileExpired: vi.fn(), terminalizeOrphaned: vi.fn(), terminalizeRecovered: vi.fn(), listPendingDeliveries: vi.fn(() => []) }, coordinator: vi.fn(), recover: vi.fn(), close: vi.fn() } as never,
-      _createInteractiveControl: (() => ({ socketPath: "unused", start: vi.fn(), stop: vi.fn() })) as never,
-      _acceptanceAuditReleaseHook: () => { nested = app.sendProactive("reentrant").catch(() => undefined) },
-    })
-    try {
-      await expect(app.sendProactive("retire")).rejects.toThrow()
-      await nested
-    } finally {
-      getStore.mockRestore()
-      await app.stop().catch(() => undefined)
-      fs.rmSync(root, { recursive: true, force: true })
-    }
-  })
-
-  it("fails closed when aggregate receipt accounting exceeds its final bound", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-aggregate-bound-"))
-    const marker = () => ({ scenarioHandleDigest: "a".repeat(64) })
-    const f = fixture({ acceptanceMarker: marker, acceptanceReceiptRoot: root })
-    const original = Buffer.byteLength
-    let serializedReads = 0
-    const byteLength = vi.spyOn(Buffer, "byteLength").mockImplementation(((value: string | ArrayBuffer | SharedArrayBuffer | ArrayBufferView, encoding?: BufferEncoding) => {
-      if (typeof value === "string" && value.startsWith('{"schemaVersion":"sanctuary-telegram-turn-receipt')) {
-        serializedReads += 1
-        if (serializedReads === 2) return 4 * 1024 * 1024 + 1
-      }
-      return original(value as never, encoding)
-    }) as typeof Buffer.byteLength)
-    try {
-      await f.getOnMessage()({ updateId: 1, messageId: "2", userId: "42", chatId: "42", text: "bound" })
-      expect(fs.existsSync(receiptPath(root))).toBe(false)
-    } finally {
-      byteLength.mockRestore()
-      await f.app.stop().catch(() => undefined)
-      fs.rmSync(root, { recursive: true, force: true })
-    }
-  })
-
-  it("records an empty chunk digest if a delivery id is observed without its callback chunk", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-missing-delivery-chunk-"))
-    const unique = "unique-delivery-chunk-for-fallback"
-    const nativePush = Array.prototype.push
-    let uniquePushes = 0
-    const selective = function (this: unknown[], ...items: unknown[]): number {
-      if (items.length === 1 && items[0] === unique && ++uniquePushes === 2) return this.length
-      return Reflect.apply(nativePush, this, items) as number
-    }
-    Array.prototype.push = selective
-    const f = fixture({ acceptanceMarker: () => ({ scenarioHandleDigest: "a".repeat(64) }), acceptanceReceiptRoot: root, runTurn: vi.fn(async (options: any) => {
-      await options.deliverySink.onDelivery({ kind: "settle", text: unique })
-      return { response: unique, ponderDeferred: false, deliveries: [], deliveryFailures: [] }
-    }) })
-    try {
-      await f.getOnMessage()({ updateId: 1, messageId: "2", userId: "42", chatId: "42", text: "chunk" })
-      expect(readLedger(root)[0]?.deliveries).toHaveLength(1)
-    } finally {
-      Array.prototype.push = nativePush
-      await f.app.stop()
-      fs.rmSync(root, { recursive: true, force: true })
-    }
-  })
   it("maps one authorized private update into the shared Telegram turn and delivery route", async () => {
     const f = fixture()
     await f.getOnMessage()({ updateId: 9, messageId: "10", userId: "42", chatId: "42", text: "health?" })

@@ -110,15 +110,6 @@ const TELEGRAM_TURN_LEDGER_MAX_ROWS = 500
 const TELEGRAM_TURN_LEDGER_MAX_ROW_BYTES = 16 * 1024
 const telegramTurnLedgerTails = new Map<string, Promise<void>>()
 
-export function createTelegramAcceptanceAuditRelease(operation: () => void): () => void {
-  let released = false
-  return () => {
-    if (released) return
-    released = true
-    operation()
-  }
-}
-
 export function telegramAcceptanceAuditOwnerDigest(identityKey: string, agentName: string, root: string): string {
   return createHmac("sha256", identityKey)
     .update(`ouroboros.telegram.acceptance-audit-owner.v1\0${agentName}\0${root}`, "utf8")
@@ -140,13 +131,13 @@ function acquireTelegramAcceptanceAudit(
     if (existing.scenarioHandleDigest !== scenarioHandleDigest) throw new Error("Telegram acceptance audit scenario changed while active")
     existing.ledger.assertHealthy()
     existing.references += 1
-    return { ledger: existing.ledger, ownerDigest: existing.ownerDigest, scenarioHandleDigest: existing.scenarioHandleDigest, release: createTelegramAcceptanceAuditRelease(() => {
+    return { ledger: existing.ledger, ownerDigest: existing.ownerDigest, scenarioHandleDigest: existing.scenarioHandleDigest, release: () => {
       existing.references -= 1
       if (existing.references === 0) {
         try { existing.unregister() } finally { telegramAcceptanceAudits.delete(root) }
         releaseHook?.()
       }
-    }) }
+    } }
   }
   const ledger = createTelegramAuditLedger({ root, identityKey, privateValues, _maxBytes: maxBytes })
   const ownerDigest = telegramAcceptanceAuditOwnerDigest(identityKey, agentName, root)
@@ -165,13 +156,13 @@ function acquireTelegramAcceptanceAudit(
   })
   record = { agentName, identityKey, ledger, ownerDigest, references: 1, scenarioHandleDigest, unregister }
   telegramAcceptanceAudits.set(root, record)
-  return { ledger, ownerDigest, scenarioHandleDigest, release: createTelegramAcceptanceAuditRelease(() => {
+  return { ledger, ownerDigest, scenarioHandleDigest, release: () => {
     record.references -= 1
     if (record.references === 0) {
       try { record.unregister() } finally { telegramAcceptanceAudits.delete(root) }
       releaseHook?.()
     }
-  }) }
+  } }
 }
 
 export function sanctuaryTelegramTurnReceiptDigest(identityKey: string, schemaVersion: keyof typeof TELEGRAM_TURN_RECEIPT_DOMAINS, purpose: string, value: string): string {
@@ -337,7 +328,6 @@ async function appendSanctuaryTurnReceipt(
     while (aggregateBytes > TELEGRAM_TURN_LEDGER_MAX_BYTES && lines.length > 1) {
       aggregateBytes -= Buffer.byteLength(lines.shift()!) + 1
     }
-    if (aggregateBytes > TELEGRAM_TURN_LEDGER_MAX_BYTES) throw new Error("Telegram turn receipt ledger exceeds its bound")
     const temporary = `${filePath}.tmp-${process.pid}-${randomUUID()}`
     writeFileSync(temporary, `${lines.join("\n")}\n`, { mode: 0o600, flag: "wx" })
     const handle = openSync(temporary, "r")
@@ -691,14 +681,13 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     ? options.acceptanceMarker()
     : readSanctuaryAcceptanceMarker(options.agentName))?.scenarioHandleDigest
   let acceptanceAuditLease: ReturnType<typeof acquireTelegramAcceptanceAudit> | undefined
-  let acceptanceEffectDepth = 0
   const retireAcceptanceAudit = (): void => {
     const lease = acceptanceAuditLease
     if (!lease) return
     const errors: unknown[] = []
     try { lease.ledger.assertHealthy() } catch (error) { errors.push(error) }
     try { lease.release() } catch (error) { errors.push(error) }
-    finally { if (acceptanceAuditLease === lease) acceptanceAuditLease = undefined }
+    finally { acceptanceAuditLease = undefined }
     if (errors.length === 1) throw errors[0]
     if (errors.length > 1) throw new AggregateError(errors, "Telegram acceptance audit retirement failed")
   }
@@ -713,7 +702,6 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     }
     if (scenarioHandleDigest === undefined) {
       if (acceptanceAuditLease) {
-        if (acceptanceEffectDepth > 0) acceptanceAuditLease.ledger.poison(new Error("Telegram acceptance audit scenario ownership drift"))
         retireAcceptanceAudit()
       }
       return undefined
@@ -730,7 +718,6 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         options._acceptanceAuditMaxBytes,
       )
     } else if (scenarioHandleDigest !== acceptanceAuditLease.scenarioHandleDigest) {
-      if (acceptanceEffectDepth > 0) acceptanceAuditLease.ledger.poison(new Error("Telegram acceptance audit scenario ownership drift"))
       retireAcceptanceAudit()
       acceptanceAuditLease = acquireTelegramAcceptanceAudit(
         options.acceptanceReceiptRoot ?? agentRoot,
@@ -756,24 +743,19 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     return telegramAcceptanceAuditScenario.run(scenarioHandleDigest, async () => {
       acceptanceAuditBarrier()
       const ownerDigest = acceptanceAuditLease?.ownerDigest ?? ""
-      acceptanceEffectDepth += 1
-      try {
-        return await telegramAcceptanceAuditOwner.run(ownerDigest, async () => {
-          try {
-            const result = await operation()
-            acceptanceAuditBarrier()
-            return result
-          } catch (error) {
-            try { acceptanceAuditBarrier() } catch (auditError) {
-              if (error === auditError) throw auditError
-              throw new AggregateError([error, auditError], "Telegram effect and acceptance audit verification failed")
-            }
-            throw error
+      return telegramAcceptanceAuditOwner.run(ownerDigest, async () => {
+        try {
+          const result = await operation()
+          acceptanceAuditBarrier()
+          return result
+        } catch (error) {
+          try { acceptanceAuditBarrier() } catch (auditError) {
+            if (error === auditError) throw auditError
+            throw new AggregateError([error, auditError], "Telegram effect and acceptance audit verification failed")
           }
-        })
-      } finally {
-        acceptanceEffectDepth -= 1
-      }
+          throw error
+        }
+      })
     })
   }
   const emitDurableSettlementEvidence = async (event: string, meta: Record<string, unknown>): Promise<void> => {
@@ -1072,7 +1054,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         const redact = (value: string): string => [botToken, authorizedUserId, authorizedChatId, String(message.updateId), message.messageId]
           .reduce((text, privateValue) => privateValue.length >= 5 ? text.replaceAll(privateValue, "[REDACTED]") : text, value)
         const deliveries = deliveredMessageIds.map((messageId, index) => {
-          const chunk = deliveredChunks[index] ?? ""
+          const chunk = deliveredChunks[index]!
           const redactedText = redact(chunk)
           return { messageIdDigest: hmac("delivery", String(messageId)), chunkDigest: hmac("chunk", grounded ? redactedText : chunk), ...(grounded ? { redactedText, utf16Units: redactedText.length } : {}) }
         })

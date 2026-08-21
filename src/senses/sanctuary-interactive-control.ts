@@ -67,8 +67,8 @@ function exactTerminalTombstone(records: TelegramPersistedPendingApproval[], app
   return matches[0]!
 }
 
-export function sanctuaryPendingApprovalDigest(record: TelegramPersistedPendingApproval): string {
-  return sha256(JSON.stringify({ approvalId: record.approvalId, messageId: record.messageId, deliveryState: record.deliveryState ?? "bound", approveCallbackData: record.approveCallbackData, denyCallbackData: record.denyCallbackData, expiresAt: record.expiresAt }))
+function pendingDigest(record: TelegramPersistedPendingApproval): string {
+  return sha256(JSON.stringify({ approvalId: record.approvalId, messageId: record.messageId, deliveryState: record.deliveryState, approveCallbackData: record.approveCallbackData, denyCallbackData: record.denyCallbackData, expiresAt: record.expiresAt }))
 }
 
 export function proveSanctuaryAttemptedRecoveryWithoutRetry(
@@ -168,7 +168,7 @@ export async function executeSanctuaryInteractiveEngine(raw: unknown, deps: Sanc
       || recovery.attemptedRecordDigest === recovery.recoveredRecordDigest) throw new Error("isolated attempted recovery proof failed")
     return {
       schemaVersion: "sanctuary-interactive-driver-receipt-v2", phase: "prepared", label, scenarioHandleDigest, ...common,
-      pendingDigestBefore: sanctuaryPendingApprovalDigest(pending), indeterminateRecoveryObserved: true,
+      pendingDigestBefore: pendingDigest(pending), indeterminateRecoveryObserved: true,
       attemptedRecoveryReopened: true, attemptedRecordDigest: recovery.attemptedRecordDigest, recoveredRecordDigest: recovery.recoveredRecordDigest,
     }
   }
@@ -188,7 +188,7 @@ export async function executeSanctuaryInteractiveEngine(raw: unknown, deps: Sanc
     const result = await session.handle({ callbackData: pending.approveCallbackData, queryId: randomBytes(18).toString("base64url"), messageId: pending.messageId! })
     const after = exactApproval(deps.readApprovals(scenarioHandleDigest))
     if (!after.continuation || after.approval.state !== "succeeded") throw new Error("restart continuation did not complete")
-    return { approvalEpochAfterRestart: before.approval.epoch, continuationEpochAfter: after.continuation.continuationEpoch, pendingDigestAfter: sanctuaryPendingApprovalDigest(pending), pendingRestored: true, callbackAttempts: 1, mutationCount: result.accepted ? 1 : 0, indeterminateRetryCount: 0 }
+    return { approvalEpochAfterRestart: before.approval.epoch, continuationEpochAfter: after.continuation.continuationEpoch, pendingDigestAfter: pendingDigest(pending), pendingRestored: true, callbackAttempts: 1, mutationCount: result.accepted ? 1 : 0, indeterminateRetryCount: 0 }
   } finally { session.close() }
 }
 

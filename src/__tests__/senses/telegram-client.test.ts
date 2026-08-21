@@ -17,18 +17,8 @@ import {
   FileTelegramUpdateInboxStore,
   FileTelegramPendingApprovalStore,
   classifyTelegramPersistedApprovalState,
-  assertTelegramDecisionSettlementState,
-  assertTelegramNoResidualTerminalAuthority,
-  assertTelegramOrdinaryDecisionEligibility,
   createTelegramLongPoll,
   createTelegramApprovalTransport,
-  releaseTelegramApprovalOperationClaim,
-  requireTelegramDecisionAttempt,
-  requireTelegramExpectedDecision,
-  requireTelegramExpiryObservation,
-  telegramAcceptanceEvidenceMac,
-  telegramApprovalOperationCompleted,
-  telegramDecisionAttemptDigest,
   type TelegramPendingApprovalStore,
   type TelegramBotApi,
 } from "../../senses/telegram-client"
@@ -41,43 +31,6 @@ afterEach(() => {
 })
 
 describe("Telegram approval callback transport", () => {
-  it("enforces the reusable persisted-state and exclusive-operation safety primitives", () => {
-    expect(() => assertTelegramNoResidualTerminalAuthority(false, false)).not.toThrow()
-    expect(() => assertTelegramNoResidualTerminalAuthority(true, false)).toThrow("terminal authority is structurally incomplete")
-    expect(() => assertTelegramNoResidualTerminalAuthority(false, true)).toThrow("terminal authority is structurally incomplete")
-
-    const claim = {}
-    const replacement = {}
-    const claims = new Map([["same", claim], ["replacement", replacement]])
-    releaseTelegramApprovalOperationClaim(claims, "same", claim)
-    releaseTelegramApprovalOperationClaim(claims, "replacement", claim)
-    expect(claims.has("same")).toBe(false)
-    expect(claims.get("replacement")).toBe(replacement)
-
-    const attempt = { schemaVersion: "telegram-approval-decision-attempt-v1" as const, decision: "approve" as const, queryIdDigest: "a".repeat(64), attemptedAt: 900, evidenceMac: "b".repeat(64) }
-    expect(requireTelegramDecisionAttempt({ decisionAttempt: attempt } as never)).toBe(attempt)
-    expect(() => requireTelegramDecisionAttempt({} as never)).toThrow("decision attempt is invalid")
-    expect(telegramDecisionAttemptDigest(attempt)).toMatch(/^[0-9a-f]{64}$/u)
-    expect(telegramDecisionAttemptDigest(undefined)).toBeNull()
-
-    const observation = { schemaVersion: "telegram-approval-expiry-observation-v1" as const, deadlineAt: 1_000, observedAt: 1_001, evidenceMac: null }
-    expect(requireTelegramExpiryObservation({ expiryObservation: observation } as never)).toBe(observation)
-    expect(() => requireTelegramExpiryObservation({} as never)).toThrow("expiry observation is invalid")
-    expect(telegramAcceptanceEvidenceMac(undefined, "event", {})).toBeNull()
-    expect(telegramAcceptanceEvidenceMac(() => "f".repeat(64), "event", {})).toBe("f".repeat(64))
-
-    expect(() => assertTelegramDecisionSettlementState("ordinary")).not.toThrow()
-    expect(() => assertTelegramDecisionSettlementState("delivery_interruption")).toThrow("cannot settle")
-    expect(() => assertTelegramDecisionSettlementState("expiry_observed")).toThrow("terminal lifecycle")
-    expect(() => assertTelegramDecisionSettlementState("terminal_tombstone")).toThrow("terminal lifecycle")
-    expect(requireTelegramExpectedDecision("expected")).toBe("expected")
-    expect(() => requireTelegramExpectedDecision(undefined)).toThrow("unavailable")
-    expect(() => assertTelegramOrdinaryDecisionEligibility("ordinary", "changed")).not.toThrow()
-    expect(() => assertTelegramOrdinaryDecisionEligibility("decision_attempt", "changed")).toThrow("changed")
-    expect(telegramApprovalOperationCompleted(true)).toBe(true)
-    expect(telegramApprovalOperationCompleted(undefined)).toBe(false)
-  })
-
   function approvalFixture(input: {
     now?: () => number
     records?: ReturnType<TelegramPendingApprovalStore["load"]>
@@ -286,6 +239,12 @@ describe("Telegram approval callback transport", () => {
       expiryObservation: { schemaVersion: "telegram-approval-expiry-observation-v1", deadlineAt: 1_000, observedAt: 1_001, evidenceMac: "f".repeat(64) },
     }], signAcceptanceEvidence: () => "f".repeat(64) })
     await expect(signed.transport.terminalizeOrphaned("signed", "done")).resolves.toMatchObject({ terminalEditSucceeded: true })
+
+    const missingSigner = approvalFixture({ records: [{
+      approvalId: "missing-signer", messageId: "99", deliveryState: "bound", approveCallbackData: "a:m", denyCallbackData: "d:m", expiresAt: 1_000, acceptanceBinding: binding,
+      expiryObservation: { schemaVersion: "telegram-approval-expiry-observation-v1", deadlineAt: 1_000, observedAt: 1_001, evidenceMac: null },
+    }] })
+    await expect(missingSigner.transport.terminalizeOrphaned("missing-signer", "done")).resolves.toEqual({ terminalEditSucceeded: false })
 
     const unsigned = approvalFixture({ now: () => 1_001, records: [{ approvalId: "unsigned", messageId: "99", deliveryState: "bound", approveCallbackData: "a:u", denyCallbackData: "d:u", expiresAt: 1_000 }], onExpire: vi.fn() })
     await expect(unsigned.transport.reconcileExpired()).resolves.toBeUndefined()

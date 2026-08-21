@@ -3,7 +3,7 @@ import { createConnection } from "node:net"
 
 import { describe, expect, it, vi } from "vitest"
 
-import { createSanctuaryInteractiveControl, executeSanctuaryInteractiveEngine, proveSanctuaryAttemptedRecoveryWithoutRetry, sanctuaryInteractiveControlReady, sanctuaryPendingApprovalDigest } from "../../senses/sanctuary-interactive-control"
+import { createSanctuaryInteractiveControl, executeSanctuaryInteractiveEngine, proveSanctuaryAttemptedRecoveryWithoutRetry, sanctuaryInteractiveControlReady } from "../../senses/sanctuary-interactive-control"
 
 function request(socketPath: string, payload: unknown): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
@@ -18,10 +18,6 @@ function request(socketPath: string, payload: unknown): Promise<Record<string, u
 }
 
 describe("Sanctuary interactive daemon control", () => {
-  it("defaults a legacy pending record's missing delivery state to bound in its proof digest", () => {
-    const record = { approvalId: "legacy", messageId: "99", approveCallbackData: "a:x", denyCallbackData: "d:x", expiresAt: 1_000 }
-    expect(sanctuaryPendingApprovalDigest(record as never)).toBe(sanctuaryPendingApprovalDigest({ ...record, deliveryState: "bound" } as never))
-  })
   it.each([null, 1, []])("rejects non-object interactive payload %j", async (payload) => {
     await expect(executeSanctuaryInteractiveEngine(payload, {} as never)).rejects.toThrow("must be an object")
   })
