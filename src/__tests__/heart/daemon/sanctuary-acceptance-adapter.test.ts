@@ -169,7 +169,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
         auditRecordCount: 2, auditLifecyclePairCount: 1,
         containerUser: "10001:10001", mountCount: 2, publishedPortCount: 0, networkMode: "host",
         readOnlyRoot: true, mountsExact: true, securityExact: true, updaterDisabled: true, writableKeyExposure: false,
-        rawWriteCredentialFieldCount: 0, typedWriteExecutorCount: 1, sensitiveMaterialObserved: false,
+        rawWriteMaterialFieldCount: 0, typedWriteExecutorCount: 1, sensitiveMaterialObserved: false,
       })
       for (const field of ["keyInventoryDigest", "readScopeDigest", "writeScopeDigest", "telegramSchemaDigest", "privateSchemaDigest", "auditPathDigest", "auditLedgerDigest", "writeApprovalPolicyDigest"] as const) {
         expect(facts.containment?.[field]).toMatch(/^[0-9a-f]{64}$/u)
@@ -488,10 +488,10 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       phase: "begin",
       label: "unit-16d-whats-up",
       externalGate: "authorized-telegram-message",
-      sources: ["telegram-audit", "telegram-offset", "telegram-turn-receipts"],
+      sources: ["telegram-audit", "telegram-offset", "telegram-turn-receipts", "live-grounding-read"],
     }
     await expect(executeSanctuaryAcceptanceAdapter(payload, deps)).resolves.toMatchObject({ state: "waiting", checkpointDigest: "a".repeat(64) })
-    expect(captureScenario).toHaveBeenCalledWith({ phase: "begin", label: "unit-16d-whats-up", externalGate: "authorized-telegram-message", sources: ["telegram-audit", "telegram-offset", "telegram-turn-receipts"] })
+    expect(captureScenario).toHaveBeenCalledWith({ phase: "begin", label: "unit-16d-whats-up", externalGate: "authorized-telegram-message", sources: ["telegram-audit", "telegram-offset", "telegram-turn-receipts", "live-grounding-read"] })
     await expect(executeSanctuaryAcceptanceAdapter({ ...payload, externalGate: "none" }, deps)).rejects.toThrow("external gate")
     await expect(executeSanctuaryAcceptanceAdapter({ ...payload, sources: ["telegram-audit"] }, deps)).rejects.toThrow("sources")
     await expect(executeSanctuaryAcceptanceAdapter({ ...payload, label: "unknown" }, deps)).rejects.toThrow("label")

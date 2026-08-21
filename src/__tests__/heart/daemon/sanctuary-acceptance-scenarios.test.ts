@@ -92,7 +92,7 @@ const healthProbe = (label: "unit-16f-cron-fingerprint" | "unit-16g-health-trans
 }
 const base = (): SanctuaryScenarioFacts => ({
   capturedAt: 0,
-  sourceValues: Object.fromEntries(["identity-key", "telegram-audit", "telegram-offset", "approval-journal", "approval-checkpoints", "container-inspect", "provider-live-check", "cron-runtime", "health-runtime", "digest-runtime", "health-probe-receipt", "reboot-checkpoint"].map((key) => [key, { key }])),
+  sourceValues: Object.fromEntries(["identity-key", "telegram-audit", "telegram-offset", "telegram-turn-receipts", "live-grounding-read", "approval-journal", "approval-checkpoints", "container-inspect", "provider-live-check", "cron-runtime", "health-runtime", "digest-runtime", "health-probe-receipt", "reboot-checkpoint"].map((key) => [key, { key }])),
   events: [], approvals: [],
   restartAttempts: [],
   telegramTurns: [],
@@ -103,7 +103,22 @@ const base = (): SanctuaryScenarioFacts => ({
   health: { transitionCount: 0, alertCount: 0, productionRestored: true },
   digest: { scheduleObserved: true, messageCount: 0, firedWithinMs: 1_000, productionRestored: true },
   reboot: { phase: "complete", requestDigest: "c".repeat(64), requestCount: 1, checkpointPersisted: true, unrelatedHostOperations: 0, bootIdentityChanged: true, hostReady: true, arrayReady: true, dockerReady: true, butlerReady: true, tailscaleReady: true, sshReady: true },
-  containment: { auditComplete: true, readOnlyBoundaryHeld: true, sensitiveMaterialObserved: false, stopDenied: true, restartDenied: true, denialAuditCount: 1, denialStateUnchanged: true, denialProbeCompleted: true },
+  containment: {
+    schemaVersion: "sanctuary-containment-audit-v1", keyCount: 2, keyInventoryDigest: "1".repeat(64),
+    readScopeDigest: createHash("sha256").update(JSON.stringify(["ARRAY", "DASHBOARD", "DISK", "DOCKER", "INFO", "LOGS", "NOTIFICATIONS", "SHARE", "VARS"].map((resource) => `${resource}:READ_ANY`).sort())).digest("hex"),
+    writeScopeDigest: createHash("sha256").update(JSON.stringify([...(["ARRAY", "DASHBOARD", "DISK", "DOCKER", "INFO", "LOGS", "NOTIFICATIONS", "SHARE", "VARS"].map((resource) => `${resource}:READ_ANY`)), "DOCKER:UPDATE_ANY"].sort())).digest("hex"),
+    keyRoleAssignmentCount: 0, telegramToolCount: 10,
+    telegramProfileDigest: createHash("sha256").update(JSON.stringify(["unraid_list_containers", "unraid_get_container_logs", "unraid_get_storage", "unraid_get_disks", "unraid_get_notifications", "unraid_get_system", "unraid_restart_container", "ponder", "settle", "speak"])).digest("hex"),
+    telegramSchemaDigest: "3c66299a5f70ec82f8795cae47659284e6dbc691ef49002c2fb22edba76c59b6", privateToolCount: 2,
+    privateProfileDigest: createHash("sha256").update(JSON.stringify(["send_message", "rest"])).digest("hex"), privateSchemaDigest: "61b137b2467acbcf22ca7443ee01e71ed970a62728c42aabffbdcb562f4a6a70", resolvedHandlerCount: 12,
+    excludedToolCount: 7, excludedSchemaIntersectionCount: 0, fabricatedHandlerInvocationCount: 0,
+    auditPathDigest: createHash("sha256").update("/home/ouro/AgentBundles/sanctuary.ouro/state/daemon/logs/telegram.ndjson").digest("hex"),
+    auditLedgerDigest: "4".repeat(64), auditRecordCount: 2, auditLifecyclePairCount: 1,
+    containerUser: "10001:10001", mountCount: 2, publishedPortCount: 0, networkMode: "host", readOnlyRoot: true, mountsExact: true, securityExact: true, updaterDisabled: true,
+    writableKeyExposure: false, rawWriteMaterialFieldCount: 0, typedWriteExecutorCount: 1,
+    writeApprovalPolicyDigest: createHash("sha256").update(JSON.stringify({ kind: "required", policyId: "sanctuary.unraid.restart.v1", actionClass: "unraid.container.restart", requiresSoleCall: true })).digest("hex"),
+    sensitiveMaterialObserved: false, stopDenied: true, restartDenied: true, denialAuditCount: 1, denialStateUnchanged: true, denialProbeCompleted: true,
+  },
 })
 
 afterEach(() => fs.rmSync(root, { recursive: true, force: true }))
@@ -198,6 +213,17 @@ describe("Sanctuary live scenario capture", () => {
     expect(deriveSanctuaryScenarioAssertions("unit-16l-duplicate-callback", before, after, 400_000)).toBeNull()
   })
 
+  it("requires a daemon-retained stale callback settlement with zero claim and mutation for unit-16k", () => {
+    const before = base()
+    const after = base()
+    after.approvals = [approval("expired")]
+    after.interactiveDriver = timeoutStaleDriver()
+    after.events.push(event("telegram.update_dropped"))
+    expect(deriveSanctuaryScenarioAssertions("unit-16k-timeout-stale", before, after, 400_000)).toMatchObject({ staleAcknowledged: true, mutationCount: 0 })
+    after.interactiveDriver = { ...timeoutStaleDriver(), claimCount: 1 }
+    expect(deriveSanctuaryScenarioAssertions("unit-16k-timeout-stale", before, after, 400_000)).toBeNull()
+  })
+
   it.each([
     "unit-16f-cron-fingerprint",
     "unit-16g-health-transition",
@@ -215,13 +241,18 @@ describe("Sanctuary live scenario capture", () => {
     const gate = path.join(root, "evidence", "current-scenario-gate.json")
     let facts = base()
     const capture = createSanctuaryScenarioCapture({ now: () => 400_000, receiptRoot: receipts, gateStatusPath: gate, readFacts: async () => facts })
-    const begin = await capture({ phase: "begin", label: "unit-16d-whats-up", externalGate: "authorized-telegram-message", sources: ["telegram-audit", "telegram-offset"] })
+    const sources = ["telegram-audit", "telegram-offset", "telegram-turn-receipts", "live-grounding-read"]
+    const begin = await capture({ phase: "begin", label: "unit-16d-whats-up", externalGate: "authorized-telegram-message", sources })
     expect(begin).toEqual({ state: "waiting", checkpointDigest: expect.stringMatching(/^[0-9a-f]{64}$/u) })
     expect(fs.readFileSync(gate, "utf8")).not.toContain("scenarioHandleDigest")
-    expect(await capture({ phase: "poll", label: "unit-16d-whats-up", externalGate: "authorized-telegram-message", sources: ["telegram-audit", "telegram-offset"], checkpointDigest: begin.checkpointDigest as string })).toEqual(begin)
-    facts = base(); facts.telegramTurns.push(turnReceipt(["5".repeat(64)])); facts.events.push({ ...event("senses.sanctuary_read_receipt"), meta: { toolName: "unraid_get_system", success: true, resultDigest: "5".repeat(64) } })
-    const complete = await capture({ phase: "poll", label: "unit-16d-whats-up", externalGate: "authorized-telegram-message", sources: ["telegram-audit", "telegram-offset"], checkpointDigest: begin.checkpointDigest as string })
-    expect(complete).toMatchObject({ state: "complete", checkpointDigest: begin.checkpointDigest, assertions: { responseCount: 1 }, sourceDigests: { "telegram-audit": expect.stringMatching(/^[0-9a-f]{64}$/u), "telegram-offset": expect.stringMatching(/^[0-9a-f]{64}$/u) } })
+    expect(await capture({ phase: "poll", label: "unit-16d-whats-up", externalGate: "authorized-telegram-message", sources, checkpointDigest: begin.checkpointDigest as string })).toEqual(begin)
+    const digest = groundingDigest(systemGrounding)
+    facts = base()
+    facts.telegramTurns.push(groundedTurn("unraid_get_system", systemGrounding, "Sanctuary is running Unraid 7.2.3 with the array STARTED."))
+    facts.events.push({ ...event("senses.sanctuary_read_receipt"), meta: { toolName: "unraid_get_system", success: true, resultDigest: "5".repeat(64), groundingDigest: digest } })
+    facts.liveGrounding = { toolName: "unraid_get_system", groundingDigest: digest, facts: systemGrounding }
+    const complete = await capture({ phase: "poll", label: "unit-16d-whats-up", externalGate: "authorized-telegram-message", sources, checkpointDigest: begin.checkpointDigest as string })
+    expect(complete).toMatchObject({ state: "complete", checkpointDigest: begin.checkpointDigest, assertions: { responseCount: 1 }, sourceDigests: { "telegram-audit": expect.stringMatching(/^[0-9a-f]{64}$/u), "telegram-offset": expect.stringMatching(/^[0-9a-f]{64}$/u), "telegram-turn-receipts": expect.stringMatching(/^[0-9a-f]{64}$/u), "live-grounding-read": expect.stringMatching(/^[0-9a-f]{64}$/u) } })
     finalizeSanctuaryScenarioCapture(gate)
     expect(fs.existsSync(gate)).toBe(false)
   })

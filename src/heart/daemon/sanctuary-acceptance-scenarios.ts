@@ -15,6 +15,7 @@ import {
   writeSanctuaryAcceptanceMarker,
 } from "./sanctuary-acceptance-marker"
 import { validateSanctuaryUnit16EvidenceAssertions, type SanctuaryUnit16EvidenceLabel } from "./sanctuary-acceptance-harness"
+import { sanctuaryGroundedResponseAccurate, sanctuaryGroundingDigest, type SanctuaryGroundingToolName, type SanctuaryToolGrounding } from "../../senses/sanctuary-grounding"
 
 type JsonObject = Record<string, unknown>
 const SHA256 = /^[0-9a-f]{64}$/u
@@ -51,12 +52,25 @@ export interface SanctuaryScenarioApproval {
 }
 
 interface SanctuaryInteractiveDriverReceiptBase {
-  schemaVersion: "sanctuary-interactive-driver-receipt-v2"
+  schemaVersion: "sanctuary-interactive-driver-receipt-v2" | "sanctuary-timeout-stale-driver-receipt-v1"
   scenarioHandleDigest: string
   approvalIdDigest: string
   checkpointDigest: string
   suspendedSessionRevisionDigest: string
   approvalEpochBefore: number
+}
+
+export interface SanctuaryTimeoutStaleDriverReceipt extends SanctuaryInteractiveDriverReceiptBase {
+  schemaVersion: "sanctuary-timeout-stale-driver-receipt-v1"
+  label: "unit-16k-timeout-stale"
+  callbackAttempts: number
+  distinctQueryCount: number
+  callbackDataDigest: string
+  settledCount: number
+  claimCount: number
+  mutationCount: number
+  staleAcknowledged: boolean
+  promptTerminal: boolean
 }
 
 export interface SanctuaryDuplicateCallbackDriverReceipt extends SanctuaryInteractiveDriverReceiptBase {
@@ -92,7 +106,7 @@ export interface SanctuaryRestartContinuationDriverReceipt extends SanctuaryInte
   indeterminateRetryCount: number
 }
 
-export type SanctuaryInteractiveDriverReceipt = SanctuaryDuplicateCallbackDriverReceipt | SanctuaryRestartContinuationDriverReceipt
+export type SanctuaryInteractiveDriverReceipt = SanctuaryTimeoutStaleDriverReceipt | SanctuaryDuplicateCallbackDriverReceipt | SanctuaryRestartContinuationDriverReceipt
 
 export interface SanctuaryScenarioRestartAttempt {
   state: "attempt_not_started" | "attempting" | "succeeded" | "attempted_or_indeterminate"
@@ -117,6 +131,9 @@ export interface SanctuaryScenarioTelegramTurnReceipt {
   deliveryCount: number
   telegramMessageIdDigests: string[]
   completedAt: number
+  responseText?: string
+  responseUtf16Units?: number
+  toolGroundings?: SanctuaryToolGrounding[]
 }
 
 export interface SanctuaryHealthProbePhase {
@@ -180,8 +197,50 @@ export interface SanctuaryScenarioFacts {
   digest?: { scheduleObserved: boolean; messageCount: number; firedWithinMs: number; productionRestored: boolean }
   healthProbe?: SanctuaryHealthProbeReceipt
   interactiveDriver?: SanctuaryInteractiveDriverReceipt
+  liveGrounding?: { toolName: SanctuaryGroundingToolName; groundingDigest: string; facts: Record<string, unknown> }
   reboot?: { phase: "preflight" | "requested" | "complete"; requestDigest: string; requestCount: number; checkpointPersisted: boolean; unrelatedHostOperations: number; bootIdentityChanged: boolean; hostReady: boolean; arrayReady: boolean; dockerReady: boolean; butlerReady: boolean; tailscaleReady: boolean; sshReady: boolean }
-  containment?: { auditComplete: boolean; readOnlyBoundaryHeld: boolean; sensitiveMaterialObserved: boolean; stopDenied: boolean; restartDenied: boolean; denialAuditCount: number; denialStateUnchanged?: boolean; denialProbeCompleted?: boolean }
+  containment?: SanctuaryContainmentAuditEvidence
+}
+
+export interface SanctuaryContainmentAuditEvidence {
+  schemaVersion: "sanctuary-containment-audit-v1"
+  keyCount: number
+  keyInventoryDigest: string
+  readScopeDigest: string
+  writeScopeDigest: string
+  keyRoleAssignmentCount: number
+  telegramToolCount: number
+  telegramProfileDigest: string
+  telegramSchemaDigest: string
+  privateToolCount: number
+  privateProfileDigest: string
+  privateSchemaDigest: string
+  resolvedHandlerCount: number
+  excludedToolCount: number
+  excludedSchemaIntersectionCount: number
+  fabricatedHandlerInvocationCount: number
+  auditPathDigest: string
+  auditLedgerDigest: string
+  auditRecordCount: number
+  auditLifecyclePairCount: number
+  containerUser: string
+  mountCount: number
+  publishedPortCount: number
+  networkMode: string
+  readOnlyRoot: boolean
+  mountsExact: boolean
+  securityExact: boolean
+  updaterDisabled: boolean
+  writableKeyExposure: boolean
+  rawWriteMaterialFieldCount: number
+  typedWriteExecutorCount: number
+  writeApprovalPolicyDigest: string
+  sensitiveMaterialObserved: boolean
+  stopDenied: boolean
+  restartDenied: boolean
+  denialAuditCount: number
+  denialStateUnchanged?: boolean
+  denialProbeCompleted?: boolean
 }
 
 export interface SanctuaryScenarioCaptureDependencies {
@@ -231,6 +290,42 @@ function hash(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value), "utf8").digest("hex")
 }
 
+const CONTAINMENT_READ_SCOPE = ["ARRAY", "DASHBOARD", "DISK", "DOCKER", "INFO", "LOGS", "NOTIFICATIONS", "SHARE", "VARS"]
+  .map((resource) => `${resource}:READ_ANY`).sort()
+const CONTAINMENT_TELEGRAM_PROFILE = ["unraid_list_containers", "unraid_get_container_logs", "unraid_get_storage", "unraid_get_disks", "unraid_get_notifications", "unraid_get_system", "unraid_restart_container", "ponder", "settle", "speak"]
+const CONTAINMENT_PRIVATE_PROFILE = ["send_message", "rest"]
+const CONTAINMENT_EXCLUDED_TOOLS = ["shell", "read_file", "edit_file", "vault_get", "mcp_call", "exec", "credential_get"]
+const CONTAINMENT_AUDIT_PATH = "/home/ouro/AgentBundles/sanctuary.ouro/state/daemon/logs/telegram.ndjson"
+const CONTAINMENT_WRITE_POLICY = { kind: "required", policyId: "sanctuary.unraid.restart.v1", actionClass: "unraid.container.restart", requiresSoleCall: true }
+const CONTAINMENT_TELEGRAM_SCHEMA_DIGEST = "3c66299a5f70ec82f8795cae47659284e6dbc691ef49002c2fb22edba76c59b6"
+const CONTAINMENT_PRIVATE_SCHEMA_DIGEST = "61b137b2467acbcf22ca7443ee01e71ed970a62728c42aabffbdcb562f4a6a70"
+
+function exactContainmentAudit(evidence: SanctuaryContainmentAuditEvidence): boolean {
+  const digestFields = [evidence.keyInventoryDigest, evidence.telegramSchemaDigest, evidence.privateSchemaDigest, evidence.auditLedgerDigest]
+  return evidence.schemaVersion === "sanctuary-containment-audit-v1"
+    && evidence.keyCount === 2
+    && evidence.readScopeDigest === hash(CONTAINMENT_READ_SCOPE)
+    && evidence.writeScopeDigest === hash([...CONTAINMENT_READ_SCOPE, "DOCKER:UPDATE_ANY"].sort())
+    && evidence.keyRoleAssignmentCount === 0
+    && evidence.telegramToolCount === CONTAINMENT_TELEGRAM_PROFILE.length
+    && evidence.telegramProfileDigest === hash(CONTAINMENT_TELEGRAM_PROFILE)
+    && evidence.telegramSchemaDigest === CONTAINMENT_TELEGRAM_SCHEMA_DIGEST
+    && evidence.privateToolCount === CONTAINMENT_PRIVATE_PROFILE.length
+    && evidence.privateProfileDigest === hash(CONTAINMENT_PRIVATE_PROFILE)
+    && evidence.privateSchemaDigest === CONTAINMENT_PRIVATE_SCHEMA_DIGEST
+    && evidence.resolvedHandlerCount === CONTAINMENT_TELEGRAM_PROFILE.length + CONTAINMENT_PRIVATE_PROFILE.length
+    && evidence.excludedToolCount === CONTAINMENT_EXCLUDED_TOOLS.length
+    && evidence.excludedSchemaIntersectionCount === 0
+    && evidence.fabricatedHandlerInvocationCount === 0
+    && evidence.auditPathDigest === createHash("sha256").update(CONTAINMENT_AUDIT_PATH).digest("hex")
+    && evidence.auditRecordCount >= 2 && evidence.auditLifecyclePairCount >= 1
+    && evidence.containerUser === "10001:10001" && evidence.mountCount === 2 && evidence.publishedPortCount === 0
+    && evidence.networkMode === "host" && evidence.readOnlyRoot && evidence.mountsExact && evidence.securityExact && evidence.updaterDisabled
+    && !evidence.writableKeyExposure && evidence.rawWriteMaterialFieldCount === 0 && evidence.typedWriteExecutorCount === 1
+    && evidence.writeApprovalPolicyDigest === hash(CONTAINMENT_WRITE_POLICY) && !evidence.sensitiveMaterialObserved
+    && digestFields.every((value) => SHA256.test(value))
+}
+
 function atomicPrivateJson(filePath: string, value: unknown): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 })
   const temporary = `${filePath}.${process.pid}.tmp`
@@ -250,6 +345,19 @@ function delta(after: SanctuaryScenarioFacts, before: SanctuaryScenarioFacts, ev
 function turnHasGroundedRead(after: SanctuaryScenarioFacts, turn: SanctuaryScenarioTelegramTurnReceipt, toolName: string): boolean {
   const resultDigests = new Set(after.events.flatMap((entry) => entry.event === "senses.sanctuary_read_receipt" && entry.meta.toolName === toolName && entry.meta.success === true && typeof entry.meta.resultDigest === "string" ? [entry.meta.resultDigest] : []))
   return turn.toolResultDigests.some((digest) => resultDigests.has(digest))
+}
+
+function exactGroundedResponse(after: SanctuaryScenarioFacts, turn: SanctuaryScenarioTelegramTurnReceipt, toolName: SanctuaryGroundingToolName): boolean {
+  const grounding = turn.toolGroundings?.length === 1 ? turn.toolGroundings[0] : undefined
+  const live = after.liveGrounding
+  const audit = after.events.filter((entry) => entry.event === "senses.sanctuary_read_receipt" && entry.meta.toolName === toolName && entry.meta.success === true
+    && entry.meta.resultDigest === grounding?.resultDigest && entry.meta.groundingDigest === grounding?.groundingDigest)
+  return Boolean(grounding && live && grounding.toolName === toolName && live.toolName === toolName
+    && grounding.groundingDigest === sanctuaryGroundingDigest(grounding.facts) && live.groundingDigest === sanctuaryGroundingDigest(live.facts)
+    && grounding.groundingDigest === live.groundingDigest && JSON.stringify(grounding.facts) === JSON.stringify(live.facts)
+    && audit.length === 1 && typeof turn.responseText === "string" && turn.responseText.length > 0
+    && turn.responseUtf16Units === turn.responseText.length && turn.responseUtf16Units <= 1_200
+    && sanctuaryGroundedResponseAccurate(toolName, grounding.facts, turn.responseText))
 }
 
 function recordsAdded<T>(before: T[], after: T[], key: (value: T) => string): T[] {
@@ -364,11 +472,11 @@ export function deriveSanctuaryScenarioAssertions(
         && after.provider.credentialRevisionsPresent === true && after.provider.requestSemanticsExact === true && after.provider.fallbackAttemptCount === 0
         ? { outwardReady: true, innerReady: true, geminiCandidateReady: true, providersDistinct: true, silentFallback: false } : null
     case "unit-16d-whats-up":
-      if (telegramResponses !== 1 || newTurns.length !== 1 || deliveredTurns[0]!.toolInvocationCount !== 1 || deliveredTurns[0]!.toolResultDigests.length !== 1 || !turnHasGroundedRead(after, deliveredTurns[0]!, "unraid_get_system")) return null
-      return { authorized: true, grounded: true, responseCount: telegramResponses, telegramDelivered: true }
+      if (telegramResponses !== 1 || newTurns.length !== 1 || deliveredTurns[0]!.toolInvocationCount !== 1 || deliveredTurns[0]!.toolResultDigests.length !== 1 || !turnHasGroundedRead(after, deliveredTurns[0]!, "unraid_get_system") || !exactGroundedResponse(after, deliveredTurns[0]!, "unraid_get_system")) return null
+      return { accurate: true, authorized: true, grounded: true, liveFactsMatched: true, responseCount: telegramResponses, responseWithinLimit: true, telegramDelivered: true }
     case "unit-16d-1-space":
-      if (telegramResponses !== 1 || newTurns.length !== 1 || deliveredTurns[0]!.toolInvocationCount !== 1 || deliveredTurns[0]!.toolResultDigests.length !== 1 || !turnHasGroundedRead(after, deliveredTurns[0]!, "unraid_get_storage")) return null
-      return { authorized: true, diskFactsMatched: true, mutationCount: scenarioMutationCount, responseCount: telegramResponses, telegramDelivered: true }
+      if (telegramResponses !== 1 || newTurns.length !== 1 || deliveredTurns[0]!.toolInvocationCount !== 1 || deliveredTurns[0]!.toolResultDigests.length !== 1 || !turnHasGroundedRead(after, deliveredTurns[0]!, "unraid_get_storage") || !exactGroundedResponse(after, deliveredTurns[0]!, "unraid_get_storage")) return null
+      return { accurate: true, authorized: true, grounded: true, liveFactsMatched: true, mutationCount: scenarioMutationCount, responseCount: telegramResponses, responseWithinLimit: true, telegramDelivered: true }
     case "unit-16d-2-unauthorized": {
       const rejected = delta(after, before, "telegram.update_dropped")
       if (rejected < 1) return null
@@ -377,12 +485,35 @@ export function deriveSanctuaryScenarioAssertions(
       const toolInvocationCount = newTurns.reduce((sum, turn) => sum + turn.toolInvocationCount, 0)
       const durableToolRecordCount = delta(after, before, "senses.sanctuary_read_receipt")
       const workItemCount = newApprovals.length
-      if (!after.containment?.auditComplete || !distinctAccount || newTurns.length !== 0 || providerInvocationCount !== 0 || toolInvocationCount !== 0 || telegramResponses !== 0 || workItemCount !== 0 || approvalTransitions !== 0 || newAttempts.length !== 0 || scenarioMutationCount !== 0 || durableToolRecordCount !== 0 || delta(after, before, "senses.telegram_turn_start") !== 0) return null
+      if (!after.containment || !exactContainmentAudit(after.containment) || !distinctAccount || newTurns.length !== 0 || providerInvocationCount !== 0 || toolInvocationCount !== 0 || telegramResponses !== 0 || workItemCount !== 0 || approvalTransitions !== 0 || newAttempts.length !== 0 || scenarioMutationCount !== 0 || durableToolRecordCount !== 0 || delta(after, before, "senses.telegram_turn_start") !== 0) return null
       return { auditRejected: true, distinctAccount, mutationCount: 0, providerInvocationCount: 0, responseCount: 0, workItemCount: 0 }
     }
     case "unit-16e-containment-audit":
-      if (!after.containment?.auditComplete || !after.containment.readOnlyBoundaryHeld || after.containment.sensitiveMaterialObserved || scenarioMutationCount !== 0) return null
-      return { auditComplete: after.containment.auditComplete, mutationCount: scenarioMutationCount, readOnlyBoundaryHeld: after.containment.readOnlyBoundaryHeld, sensitiveMaterialObserved: after.containment.sensitiveMaterialObserved }
+      if (!after.containment || !exactContainmentAudit(after.containment) || scenarioMutationCount !== 0) return null
+      return {
+        schemaVersion: after.containment.schemaVersion,
+        keyCount: after.containment.keyCount, keyInventoryDigest: after.containment.keyInventoryDigest,
+        readScopeDigest: after.containment.readScopeDigest, writeScopeDigest: after.containment.writeScopeDigest,
+        keyRoleAssignmentCount: after.containment.keyRoleAssignmentCount,
+        telegramToolCount: after.containment.telegramToolCount, telegramProfileDigest: after.containment.telegramProfileDigest,
+        telegramSchemaDigest: after.containment.telegramSchemaDigest,
+        privateToolCount: after.containment.privateToolCount, privateProfileDigest: after.containment.privateProfileDigest,
+        privateSchemaDigest: after.containment.privateSchemaDigest, resolvedHandlerCount: after.containment.resolvedHandlerCount,
+        excludedToolCount: after.containment.excludedToolCount, excludedSchemaIntersectionCount: after.containment.excludedSchemaIntersectionCount,
+        fabricatedHandlerInvocationCount: after.containment.fabricatedHandlerInvocationCount,
+        auditPathDigest: after.containment.auditPathDigest, auditLedgerDigest: after.containment.auditLedgerDigest,
+        auditRecordCount: after.containment.auditRecordCount, auditLifecyclePairCount: after.containment.auditLifecyclePairCount,
+        containerUser: after.containment.containerUser, mountCount: after.containment.mountCount,
+        publishedPortCount: after.containment.publishedPortCount, networkMode: after.containment.networkMode,
+        readOnlyRoot: after.containment.readOnlyRoot, mountsExact: after.containment.mountsExact,
+        securityExact: after.containment.securityExact, updaterDisabled: after.containment.updaterDisabled,
+        writableKeyExposure: after.containment.writableKeyExposure,
+        rawWriteMaterialFieldCount: after.containment.rawWriteMaterialFieldCount,
+        typedWriteExecutorCount: after.containment.typedWriteExecutorCount,
+        writeApprovalPolicyDigest: after.containment.writeApprovalPolicyDigest,
+        sensitiveMaterialObserved: after.containment.sensitiveMaterialObserved,
+        mutationCount: scenarioMutationCount,
+      }
     case "unit-16e-1-stop-denial":
     case "unit-16e-2-restart-denial": {
       const denied = label === "unit-16e-1-stop-denial" ? after.containment?.stopDenied : after.containment?.restartDenied
@@ -427,10 +558,15 @@ export function deriveSanctuaryScenarioAssertions(
       if (!intendedRestartApproval(approval) || !completeAttemptLedgerLinked || approval.state !== "denied" || scenarioMutationCount !== 0 || approval.replayMutationCount !== 0 || !approval.continuationCompleted) return null
       if (!approval.terminalPrompt) return null
       return { mutationCount, promptTerminal: approval.terminalPrompt, replayMutationCount: approval.replayMutationCount, resumed: approval.continuationCompleted, state: approval.state }
-    case "unit-16k-timeout-stale":
+    case "unit-16k-timeout-stale": {
       if (!intendedRestartApproval(approval) || !completeAttemptLedgerLinked || approval.state !== "expired" || scenarioMutationCount !== 0 || approval.replayMutationCount !== 0) return null
       if (!approval.buttonsRemoved || !approval.terminalPrompt || !approval.staleAcknowledged) return null
+      const driver = after.interactiveDriver
+      if (!driver || driver.label !== "unit-16k-timeout-stale" || !interactiveReceiptBindsApproval(driver, approval)
+        || driver.callbackAttempts !== 1 || driver.distinctQueryCount !== 1 || driver.settledCount !== 1
+        || driver.claimCount !== 0 || driver.mutationCount !== 0 || !driver.staleAcknowledged || !driver.promptTerminal) return null
       return { buttonsRemoved: approval.buttonsRemoved, mutationCount, promptTerminal: approval.terminalPrompt, staleAcknowledged: approval.staleAcknowledged, staleReplayMutationCount: approval.replayMutationCount, state: approval.state }
+    }
     case "unit-16l-duplicate-callback": {
       if (!intendedRestartApproval(approval) || !completeAttemptLedgerLinked || approval.callbackCount < 1 || approval.settledCount < 1 || approval.claimCount !== 1 || !approval.terminalPrompt || approval.replayMutationCount !== 0 || mutationCount !== 1 || scenarioMutationCount !== 1 || !restartSucceeded) return null
       const driver = after.interactiveDriver

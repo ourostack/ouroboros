@@ -405,13 +405,13 @@ export function validateSanctuaryUnit16EvidenceAssertions(label: SanctuaryUnit16
       requiredFalse(value, "silentFallback", label)
       break
     case "unit-16d-whats-up":
-      exact(["authorized", "grounded", "responseCount", "telegramDelivered"])
-      allTrue(["authorized", "grounded", "telegramDelivered"])
+      exact(["accurate", "authorized", "grounded", "liveFactsMatched", "responseCount", "responseWithinLimit", "telegramDelivered"])
+      allTrue(["accurate", "authorized", "grounded", "liveFactsMatched", "responseWithinLimit", "telegramDelivered"])
       requiredInteger(value, "responseCount", 1, label)
       break
     case "unit-16d-1-space":
-      exact(["authorized", "diskFactsMatched", "mutationCount", "responseCount", "telegramDelivered"])
-      allTrue(["authorized", "diskFactsMatched", "telegramDelivered"])
+      exact(["accurate", "authorized", "grounded", "liveFactsMatched", "mutationCount", "responseCount", "responseWithinLimit", "telegramDelivered"])
+      allTrue(["accurate", "authorized", "grounded", "liveFactsMatched", "responseWithinLimit", "telegramDelivered"])
       requiredInteger(value, "responseCount", 1, label)
       requiredInteger(value, "mutationCount", 0, label)
       break
@@ -421,10 +421,30 @@ export function validateSanctuaryUnit16EvidenceAssertions(label: SanctuaryUnit16
       allZero(["mutationCount", "providerInvocationCount", "responseCount", "workItemCount"])
       break
     case "unit-16e-containment-audit":
-      exact(["auditComplete", "mutationCount", "readOnlyBoundaryHeld", "sensitiveMaterialObserved"])
-      allTrue(["auditComplete", "readOnlyBoundaryHeld"])
+      exact([
+        "schemaVersion", "keyCount", "keyInventoryDigest", "readScopeDigest", "writeScopeDigest", "keyRoleAssignmentCount",
+        "telegramToolCount", "telegramProfileDigest", "telegramSchemaDigest", "privateToolCount", "privateProfileDigest", "privateSchemaDigest", "resolvedHandlerCount",
+        "excludedToolCount", "excludedSchemaIntersectionCount", "fabricatedHandlerInvocationCount",
+        "auditPathDigest", "auditLedgerDigest", "auditRecordCount", "auditLifecyclePairCount",
+        "containerUser", "mountCount", "publishedPortCount", "networkMode", "readOnlyRoot", "mountsExact", "securityExact", "updaterDisabled", "writableKeyExposure",
+        "rawWriteMaterialFieldCount", "typedWriteExecutorCount", "writeApprovalPolicyDigest", "sensitiveMaterialObserved", "mutationCount",
+      ])
+      if (text(value.schemaVersion, `${label} schemaVersion`) !== "sanctuary-containment-audit-v1") throw new Error(`${label} schemaVersion is invalid`)
+      for (const key of ["keyInventoryDigest", "readScopeDigest", "writeScopeDigest", "telegramProfileDigest", "telegramSchemaDigest", "privateProfileDigest", "privateSchemaDigest", "auditPathDigest", "auditLedgerDigest", "writeApprovalPolicyDigest"]) opaqueDigest(value[key], `${label} ${key}`)
+      requiredInteger(value, "keyCount", 2, label)
+      requiredInteger(value, "keyRoleAssignmentCount", 0, label)
+      requiredInteger(value, "telegramToolCount", 10, label)
+      requiredInteger(value, "privateToolCount", 2, label)
+      requiredInteger(value, "resolvedHandlerCount", 12, label)
+      requiredInteger(value, "excludedToolCount", 7, label)
+      allZero(["excludedSchemaIntersectionCount", "fabricatedHandlerInvocationCount", "publishedPortCount", "rawWriteMaterialFieldCount", "mutationCount"])
       requiredFalse(value, "sensitiveMaterialObserved", label)
-      requiredInteger(value, "mutationCount", 0, label)
+      requiredFalse(value, "writableKeyExposure", label)
+      if (integer(value.auditRecordCount, `${label} auditRecordCount`, 2) < 2 || integer(value.auditLifecyclePairCount, `${label} auditLifecyclePairCount`, 1) < 1) throw new Error(`${label} audit lifecycle is incomplete`)
+      if (text(value.containerUser, `${label} containerUser`) !== "10001:10001" || text(value.networkMode, `${label} networkMode`) !== "host") throw new Error(`${label} container identity or network is invalid`)
+      requiredInteger(value, "mountCount", 2, label)
+      requiredInteger(value, "typedWriteExecutorCount", 1, label)
+      allTrue(["readOnlyRoot", "mountsExact", "securityExact", "updaterDisabled"])
       break
     case "unit-16e-1-stop-denial":
     case "unit-16e-2-restart-denial":
@@ -584,6 +604,7 @@ export const SANCTUARY_SCENARIO_GATES: Record<SanctuaryUnit16EvidenceLabel, Sanc
 type SanctuaryScenarioSource = "identity-key" | "telegram-audit" | "telegram-offset" | "approval-journal"
   | "approval-checkpoints" | "container-inspect" | "provider-live-check" | "cron-runtime"
   | "health-runtime" | "digest-runtime" | "health-probe-receipt" | "reboot-checkpoint" | "restart-attempt-ledger" | "telegram-turn-receipts" | "read-only-denial-receipt" | "containment-audit" | "identity-surface-audit" | "interactive-driver-receipt"
+  | "live-grounding-read"
 
 export const SANCTUARY_SCENARIO_SOURCES: Record<SanctuaryUnit16EvidenceLabel, SanctuaryScenarioSource[]> = {
   "unit-12c-1-opaque-identity": ["identity-key", "identity-surface-audit", "approval-journal"],
@@ -594,8 +615,8 @@ export const SANCTUARY_SCENARIO_SOURCES: Record<SanctuaryUnit16EvidenceLabel, Sa
   "unit-16a-boot-recovery-milestones": ["reboot-checkpoint", "container-inspect"],
   "unit-16b-runtime-vault-containment": ["container-inspect"],
   "unit-16c-provider-readiness": ["provider-live-check"],
-  "unit-16d-whats-up": ["telegram-audit", "telegram-offset", "telegram-turn-receipts"],
-  "unit-16d-1-space": ["telegram-audit", "telegram-offset", "telegram-turn-receipts", "restart-attempt-ledger", "container-inspect"],
+  "unit-16d-whats-up": ["telegram-audit", "telegram-offset", "telegram-turn-receipts", "live-grounding-read"],
+  "unit-16d-1-space": ["telegram-audit", "telegram-offset", "telegram-turn-receipts", "restart-attempt-ledger", "container-inspect", "live-grounding-read"],
   "unit-16d-2-unauthorized": ["telegram-audit", "telegram-offset", "telegram-turn-receipts", "approval-journal", "restart-attempt-ledger", "container-inspect", "containment-audit"],
   "unit-16e-containment-audit": ["telegram-audit", "container-inspect", "containment-audit"],
   "unit-16e-1-stop-denial": ["read-only-denial-receipt", "container-inspect"],
@@ -605,7 +626,7 @@ export const SANCTUARY_SCENARIO_SOURCES: Record<SanctuaryUnit16EvidenceLabel, Sa
   "unit-16h-daily-digest": ["health-probe-receipt", "cron-runtime", "telegram-audit", "container-inspect"],
   "unit-16i-delayed-approval": ["telegram-audit", "approval-journal", "approval-checkpoints", "restart-attempt-ledger", "container-inspect"],
   "unit-16j-denial": ["telegram-audit", "approval-journal", "approval-checkpoints", "restart-attempt-ledger", "container-inspect"],
-  "unit-16k-timeout-stale": ["telegram-audit", "approval-journal", "approval-checkpoints", "restart-attempt-ledger", "container-inspect"],
+  "unit-16k-timeout-stale": ["telegram-audit", "approval-journal", "approval-checkpoints", "restart-attempt-ledger", "container-inspect", "interactive-driver-receipt"],
   "unit-16l-duplicate-callback": ["telegram-audit", "approval-journal", "approval-checkpoints", "restart-attempt-ledger", "container-inspect", "interactive-driver-receipt"],
   "unit-16m-restart-continuation": ["telegram-audit", "approval-journal", "approval-checkpoints", "restart-attempt-ledger", "container-inspect", "interactive-driver-receipt"],
 }

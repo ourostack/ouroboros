@@ -130,10 +130,17 @@ describe("Sanctuary acceptance harness", () => {
       case "unit-16a-boot-recovery-milestones": return { arrayReady: true, bootIdentityChanged: true, butlerReady: true, dockerReady: true, hostReady: true, sshReady: true, tailscaleReady: true }
       case "unit-16b-runtime-vault-containment": return { autostartExact: true, exactImage: true, manualAuthRequired: false, mountCount: 2, nonRootUid: 10001, publishedPortCount: 0, readOnlyRoot: true, updaterDisabled: true, vaultUnlocked: true }
       case "unit-16c-provider-readiness": return { geminiCandidateReady: true, innerReady: true, outwardReady: true, providersDistinct: true, silentFallback: false }
-      case "unit-16d-whats-up": return { authorized: true, grounded: true, responseCount: 1, telegramDelivered: true }
-      case "unit-16d-1-space": return { authorized: true, diskFactsMatched: true, mutationCount: 0, responseCount: 1, telegramDelivered: true }
+      case "unit-16d-whats-up": return { accurate: true, authorized: true, grounded: true, liveFactsMatched: true, responseCount: 1, responseWithinLimit: true, telegramDelivered: true }
+      case "unit-16d-1-space": return { accurate: true, authorized: true, grounded: true, liveFactsMatched: true, mutationCount: 0, responseCount: 1, responseWithinLimit: true, telegramDelivered: true }
       case "unit-16d-2-unauthorized": return { auditRejected: true, distinctAccount: true, mutationCount: 0, providerInvocationCount: 0, responseCount: 0, workItemCount: 0 }
-      case "unit-16e-containment-audit": return { auditComplete: true, mutationCount: 0, readOnlyBoundaryHeld: true, sensitiveMaterialObserved: false }
+      case "unit-16e-containment-audit": return {
+        schemaVersion: "sanctuary-containment-audit-v1", keyCount: 2, keyInventoryDigest: "d".repeat(64), readScopeDigest: "d".repeat(64), writeScopeDigest: "d".repeat(64), keyRoleAssignmentCount: 0,
+        telegramToolCount: 10, telegramProfileDigest: "d".repeat(64), telegramSchemaDigest: "d".repeat(64), privateToolCount: 2, privateProfileDigest: "d".repeat(64), privateSchemaDigest: "d".repeat(64), resolvedHandlerCount: 12,
+        excludedToolCount: 7, excludedSchemaIntersectionCount: 0, fabricatedHandlerInvocationCount: 0,
+        auditPathDigest: "d".repeat(64), auditLedgerDigest: "d".repeat(64), auditRecordCount: 2, auditLifecyclePairCount: 1,
+        containerUser: "10001:10001", mountCount: 2, publishedPortCount: 0, networkMode: "host", readOnlyRoot: true, mountsExact: true, securityExact: true, updaterDisabled: true, writableKeyExposure: false,
+        rawWriteMaterialFieldCount: 0, typedWriteExecutorCount: 1, writeApprovalPolicyDigest: "d".repeat(64), sensitiveMaterialObserved: false, mutationCount: 0,
+      }
       case "unit-16e-1-stop-denial": case "unit-16e-2-restart-denial": return { auditDecisionCount: 1, denied: true, mutationCount: 0, resumed: true }
       case "unit-16f-cron-fingerprint": return { fingerprintUnchanged: true, messageCount: 0, providerInvocationCount: 0, receiptUnchanged: true, scheduleRegistered: true, sweepObserved: true }
       case "unit-16g-health-transition": return { alertCount: 3, productionRestored: true, transitionObserved: true }
@@ -294,6 +301,9 @@ describe("Sanctuary acceptance harness", () => {
     reject("unit-15c-1-no-callback-terminalization", { elapsedMs: 59_999 }, /reach ttlMs/u)
     reject("unit-16b-runtime-vault-containment", { manualAuthRequired: true }, /must be false/u)
     reject("unit-16d-whats-up", { responseCount: 0 }, /must equal 1/u)
+    reject("unit-16e-containment-audit", { fabricatedHandlerInvocationCount: 1 }, /must equal 0/u)
+    reject("unit-16e-containment-audit", { writableKeyExposure: true }, /must be false/u)
+    reject("unit-16e-containment-audit", { networkMode: "bridge" }, /network/u)
     reject("unit-16h-daily-digest", { firedWithinMs: 960_001 }, /16-minute/u)
     expect(() => validateSanctuaryUnit16EvidenceAssertions("unit-16h-daily-digest", {
       ...validAssertions("unit-16h-daily-digest"), firedWithinMs: 0,
