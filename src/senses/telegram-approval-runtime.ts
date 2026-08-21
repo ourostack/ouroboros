@@ -41,12 +41,13 @@ export async function executeApprovedTelegramTool(
   args: Record<string, unknown>,
   execute: (name: string, args: Record<string, unknown>) => Promise<string>,
   scenarioHandleDigest?: string,
+  approvalId?: string,
 ): Promise<string> {
   if (name === "unraid_restart_container") emitNervesEvent({
     component: "senses",
     event: "senses.telegram_approved_restart_start",
     message: "approved Sanctuary restart execution started",
-    meta: { ...(scenarioHandleDigest ? { scenarioHandleDigest } : {}) },
+    meta: { ...(scenarioHandleDigest ? { scenarioHandleDigest } : {}), ...(approvalId ? { approvalId } : {}) },
   })
   try {
   const result = await execute(name, args)
@@ -88,7 +89,7 @@ export async function executeApprovedTelegramTool(
     component: "senses",
     event: "senses.telegram_approved_restart_end",
     message: "approved Sanctuary restart execution completed",
-    meta: { ...(scenarioHandleDigest ? { scenarioHandleDigest } : {}), observedRestart: true },
+    meta: { ...(scenarioHandleDigest ? { scenarioHandleDigest } : {}), ...(approvalId ? { approvalId } : {}), observedRestart: true },
   })
   return result
   } catch (error) {
@@ -97,7 +98,7 @@ export async function executeApprovedTelegramTool(
       component: "senses",
       event: "senses.telegram_approved_restart_error",
       message: "approved Sanctuary restart execution failed",
-      meta: { ...(scenarioHandleDigest ? { scenarioHandleDigest } : {}), reason: error instanceof Error ? error.message.slice(0, 240) : "unknown" },
+      meta: { ...(scenarioHandleDigest ? { scenarioHandleDigest } : {}), ...(approvalId ? { approvalId } : {}), reason: error instanceof Error ? error.message.slice(0, 240) : "unknown" },
     })
     throw error
   }
@@ -280,6 +281,7 @@ export function createTelegramApprovalRuntime(options: {
                 args,
                 (toolName, toolArgs) => execTool(toolName, toolArgs as Record<string, string>, options.toolContext as ToolContext),
                 decisionScenarioDigest,
+                existing.approvalId,
               )
               return decisionScenarioDigest
                 ? runWithSanctuaryAcceptanceApproval(

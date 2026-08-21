@@ -179,6 +179,17 @@ describe("Telegram approval runtime safety", () => {
       .resolves.toBe(result)
   })
 
+  it("binds approved restart lifecycle events to the exact approval and scenario", async () => {
+    const result = '{"ok":true,"data":{"container":{"id":"abc","name":"calibre-web"},"beforeState":"running","afterState":"running","observedRestart":true,"degraded":false}}'
+    await executeApprovedTelegramTool("unraid_restart_container", { container: "calibre-web" }, vi.fn().mockResolvedValue(result), "a".repeat(64), "approval-1")
+    expect(runtimeMocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({ event: "senses.telegram_approved_restart_start", meta: { scenarioHandleDigest: "a".repeat(64), approvalId: "approval-1" } }))
+    expect(runtimeMocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({ event: "senses.telegram_approved_restart_end", meta: { scenarioHandleDigest: "a".repeat(64), approvalId: "approval-1", observedRestart: true } }))
+
+    runtimeMocks.emitNervesEvent.mockClear()
+    await expect(executeApprovedTelegramTool("unraid_restart_container", { container: "calibre-web" }, vi.fn().mockRejectedValue(new Error("failed")), "b".repeat(64), "approval-2")).rejects.toThrow("failed")
+    expect(runtimeMocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({ event: "senses.telegram_approved_restart_error", meta: expect.objectContaining({ scenarioHandleDigest: "b".repeat(64), approvalId: "approval-2" }) }))
+  })
+
   it.each([
     ['{"ok":false,"error":{"code":"ambiguous","message":"restart outcome is ambiguous","degraded":true}}', "restart outcome is ambiguous"],
     ['{"ok":false,"error":{"message":"' + "x".repeat(300) + '"}}', "x".repeat(240)],

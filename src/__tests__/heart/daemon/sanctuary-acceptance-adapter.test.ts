@@ -228,6 +228,16 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     await expect(readDefaultSanctuaryScenarioFacts("unit-16d-whats-up", "a".repeat(64), unit16Deps({ readFixedFile: () => { throw failure } }))).rejects.toBe(failure)
   })
 
+  it("preserves approval correlation on restart lifecycle audit evidence", async () => {
+    const scenarioHandleDigest = "a".repeat(64)
+    const audit = `${JSON.stringify({ ts: "2026-08-20T16:00:00.000Z", event: "senses.telegram_approved_restart_end", meta: { scenarioHandleDigest, approvalId: "approval-1", observedRestart: true } })}\n`
+    const facts = await readDefaultSanctuaryScenarioFacts("unit-16m-restart-continuation", scenarioHandleDigest, unit16Deps({
+      readFixedFile: (file) => { if (file === "/home/ouro/AgentBundles/sanctuary.ouro/state/daemon/logs/telegram.ndjson") return audit; throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
+      hostRequest: async () => ({ running: true, health: "healthy", imageId: "sha256:missing", user: "10001:10001", readOnlyRoot: true, mountCount: 2, publishedPortCount: 0, restartPolicy: "unless-stopped", restartCount: 0, autostartExact: true, updaterDisabled: true, vaultUnlocked: true, manualAuthRequired: false }),
+    }))
+    expect(facts.events).toEqual([{ event: "senses.telegram_approved_restart_end", at: Date.parse("2026-08-20T16:00:00.000Z"), meta: { scenarioHandleDigest, approvalId: "approval-1", observedRestart: true } }])
+  })
+
   it("parses the real reboot checkpoint schema and binds live host recovery milestones", async () => {
     const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-reboot-facts-"))
     const prebootDigest = "1".repeat(64)
