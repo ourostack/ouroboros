@@ -717,6 +717,8 @@ describe("Sanctuary live scenario capture", () => {
     after.identity = { ...before.identity }
     after.telegramNextUpdateId = before.telegramNextUpdateId
     expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unauthorized", before, after, 400_000)).toBeNull()
+    after.telegramNextUpdateId = Number(before.telegramNextUpdateId) + 2
+    expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unauthorized", before, after, 400_000)).toBeNull()
     after.telegramNextUpdateId = 11
     after.zeroWork = { ...after.zeroWork!, outwardDigest: "f".repeat(64) }
     expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unauthorized", before, after, 400_000)).toBeNull()

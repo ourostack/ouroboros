@@ -588,7 +588,7 @@ export function deriveSanctuaryScenarioAssertions(
         || entry.event === "senses.telegram_turn_error" || entry.event === "senses.sanctuary_read_receipt"
         || entry.event.startsWith("senses.telegram_approved_restart_") || entry.event === "senses.sanctuary_health_delivered")
       const offsetAdvanced = Number.isSafeInteger(before.telegramNextUpdateId) && Number.isSafeInteger(after.telegramNextUpdateId)
-        && Number(after.telegramNextUpdateId) > Number(before.telegramNextUpdateId)
+        && Number(after.telegramNextUpdateId) === Number(before.telegramNextUpdateId) + 1
       const zeroWorkUnchanged = Boolean(before.zeroWork && after.zeroWork
         && before.zeroWork.providerToolDigest === after.zeroWork.providerToolDigest
         && before.zeroWork.outwardDigest === after.zeroWork.outwardDigest
