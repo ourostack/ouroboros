@@ -114,6 +114,15 @@ export function createApprovedUnraidRestartExecutor(options: ApprovedUnraidResta
     const client = createClient({ endpoint: options.endpoint, apiKey })
     await options.persistAttempt?.({ ...attempt, observedAt: now().toISOString(), state: "attempting" })
     emitNervesEvent({ component: "repertoire", event: "repertoire.unraid_restart_start", message: "approved Unraid restart started", meta: { containerId: fresh.id, containerName: fresh.name } })
+    const persistTerminal = async (terminal: UnraidRestartAttempt): Promise<boolean> => {
+      try {
+        await options.persistAttempt?.(terminal)
+        return true
+      } catch (error) {
+        emitNervesEvent({ level: "error", component: "repertoire", event: "repertoire.unraid_restart_error", message: "approved Unraid restart terminal receipt persistence failed", meta: { containerId: fresh.id, category: error instanceof Error ? error.name : "unknown" } })
+        return false
+      }
+    }
 
     let acknowledged = false
     try {
@@ -126,25 +135,33 @@ export function createApprovedUnraidRestartExecutor(options: ApprovedUnraidResta
 
     const startedAt = now().getTime()
     let sawRestarting = false
-    do {
-      const observed = exactTarget(await options.listContainers(), args.container)
-      if (!("ok" in observed)) {
-        if (observed.id !== fresh.id) {
-          await options.persistAttempt?.({ ...attempt, observedAt: now().toISOString(), state: "attempted_or_indeterminate", mutationAcknowledged: acknowledged })
-          return failure("ambiguous", "container identity changed after restart attempt")
+    try {
+      do {
+        const observed = exactTarget(await options.listContainers(), args.container)
+        if (!("ok" in observed)) {
+          if (observed.id !== fresh.id) {
+            await persistTerminal({ ...attempt, observedAt: now().toISOString(), state: "attempted_or_indeterminate", mutationAcknowledged: acknowledged })
+            return failure("ambiguous", "container identity changed after restart attempt")
+          }
+          sawRestarting ||= observed.state === "restarting"
+          if (observed.state === "running" && !observed.degraded && (acknowledged || sawRestarting)) {
+            if (!await persistTerminal({ ...attempt, observedAt: now().toISOString(), state: "succeeded", mutationAcknowledged: acknowledged, afterState: observed.state })) {
+              return failure("ambiguous", "restart succeeded but its terminal receipt could not be persisted; it was not retried")
+            }
+            emitNervesEvent({ component: "repertoire", event: "repertoire.unraid_restart_end", message: "approved Unraid restart completed", meta: { containerId: fresh.id, observedRestart: true } })
+            return { ok: true, data: { container: { id: fresh.id, name: fresh.name }, beforeState: fresh.state, afterState: observed.state, observedRestart: true, degraded: false } }
+          }
         }
-        sawRestarting ||= observed.state === "restarting"
-        if (observed.state === "running" && !observed.degraded && (acknowledged || sawRestarting)) {
-          await options.persistAttempt?.({ ...attempt, observedAt: now().toISOString(), state: "succeeded", mutationAcknowledged: acknowledged, afterState: observed.state })
-          emitNervesEvent({ component: "repertoire", event: "repertoire.unraid_restart_end", message: "approved Unraid restart completed", meta: { containerId: fresh.id, observedRestart: true } })
-          return { ok: true, data: { container: { id: fresh.id, name: fresh.name }, beforeState: fresh.state, afterState: observed.state, observedRestart: true, degraded: false } }
-        }
-      }
-      if (now().getTime() - startedAt >= observationTimeoutMs) break
-      await sleep(1_000)
-    } while (true)
+        if (now().getTime() - startedAt >= observationTimeoutMs) break
+        await sleep(1_000)
+      } while (true)
+    } catch {
+      await persistTerminal({ ...attempt, observedAt: now().toISOString(), state: "attempted_or_indeterminate", mutationAcknowledged: acknowledged })
+      emitNervesEvent({ level: "error", component: "repertoire", event: "repertoire.unraid_restart_error", message: "approved Unraid restart observation failed", meta: { containerId: fresh.id, acknowledged } })
+      return failure("ambiguous", "restart was attempted but observation failed; it was not retried")
+    }
 
-    await options.persistAttempt?.({ ...attempt, observedAt: now().toISOString(), state: "attempted_or_indeterminate", mutationAcknowledged: acknowledged })
+    await persistTerminal({ ...attempt, observedAt: now().toISOString(), state: "attempted_or_indeterminate", mutationAcknowledged: acknowledged })
     emitNervesEvent({ level: "error", component: "repertoire", event: "repertoire.unraid_restart_error", message: "approved Unraid restart outcome was ambiguous", meta: { containerId: fresh.id, acknowledged } })
     return failure("ambiguous", "restart was attempted but could not be proven; it was not retried")
   }

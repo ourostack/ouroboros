@@ -64,6 +64,42 @@ describe("approved Unraid restart executor", () => {
     expect(result).toEqual(expect.objectContaining({ ok: false, error: expect.objectContaining({ code: "ambiguous" }) }))
   })
 
+  it("terminalizes an attempted mutation when post-mutation observation throws", async () => {
+    const persistAttempt = vi.fn()
+    const listContainers = vi.fn()
+      .mockResolvedValueOnce(running())
+      .mockResolvedValueOnce(running())
+      .mockRejectedValueOnce(new Error("observation transport failed"))
+    const mutate = vi.fn().mockResolvedValue({ docker: { restart: { id: "Docker:abc", names: ["/calibre-web"] } } })
+    const restart = createApprovedUnraidRestartExecutor({
+      endpoint: "https://host/graphql",
+      listContainers,
+      loadWriteApiKey: async () => "key",
+      createClient: () => ({ mutate }),
+      persistAttempt,
+    })
+
+    await expect(restart({ container: "calibre-web" })).resolves.toMatchObject({ ok: false, error: { code: "ambiguous", message: expect.stringContaining("not retried") } })
+    expect(mutate).toHaveBeenCalledOnce()
+    expect(persistAttempt.mock.calls.map(([attempt]) => attempt.state)).toEqual(["attempt_not_started", "attempting", "attempted_or_indeterminate"])
+  })
+
+  it("does not retry or mask ambiguity when terminal receipt persistence fails", async () => {
+    const persistAttempt = vi.fn()
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("disk full"))
+    const restart = createApprovedUnraidRestartExecutor({
+      endpoint: "https://host/graphql",
+      listContainers: vi.fn().mockResolvedValueOnce(running()).mockResolvedValueOnce(running()).mockRejectedValueOnce(new Error("offline")),
+      loadWriteApiKey: async () => "key",
+      createClient: () => ({ mutate: vi.fn().mockResolvedValue({ docker: { restart: { id: "Docker:abc", names: ["/calibre-web"] } } }) }),
+      persistAttempt,
+    })
+    await expect(restart({ container: "calibre-web" })).resolves.toMatchObject({ ok: false, error: { code: "ambiguous", message: expect.stringContaining("not retried") } })
+    expect(persistAttempt).toHaveBeenCalledTimes(3)
+  })
+
   it.each([
     ["", "invalid_response"],
     ["x".repeat(129), "invalid_response"],

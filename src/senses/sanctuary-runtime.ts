@@ -13,6 +13,7 @@ import { emitNervesEvent } from "../nerves/runtime"
 import { readSanctuaryAcceptanceApproval, readSanctuaryAcceptanceMarker, sanctuaryAcceptanceEventMeta } from "../heart/daemon/sanctuary-acceptance-marker"
 
 const sanctuaryToolReceipts = new AsyncLocalStorage<string[]>()
+const acceptanceLedgerTails = new Map<string, Promise<void>>()
 
 export async function runWithSanctuaryToolReceiptCollection<T>(operation: () => Promise<T>): Promise<{ result: T; toolResultDigests: string[] }> {
   const digests: string[] = []
@@ -45,18 +46,43 @@ function persistAttempt(filePath: string, attempt: UnraidRestartAttempt): void {
   fs.renameSync(temporary, filePath)
 }
 
-function appendAcceptanceAttempt(agentName: string, attempt: UnraidRestartAttempt): void {
+async function appendAcceptanceAttempt(agentName: string, attempt: UnraidRestartAttempt): Promise<void> {
   if (!attempt.scenarioHandleDigest) return
   const filePath = path.join(getAgentRoot(agentName), "state", "acceptance", "restart-attempts.ndjson")
-  fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 })
-  let existing: string[] = []
-  try { existing = fs.readFileSync(filePath, "utf8").split("\n").filter(Boolean) }
-  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error }
-  const entries = [...existing, JSON.stringify(attempt)].slice(-500)
-  const temporary = `${filePath}.tmp-${process.pid}-${randomUUID()}`
-  fs.writeFileSync(temporary, `${entries.join("\n")}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" })
-  fs.renameSync(temporary, filePath)
-  fs.chmodSync(filePath, 0o600)
+  const previous = acceptanceLedgerTails.get(filePath) ?? Promise.resolve()
+  const current = previous.catch(() => undefined).then(() => {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 })
+    let existing: string[] = []
+    try {
+      if (fs.statSync(filePath).size > 4 * 1024 * 1024) throw new Error("restart ledger exceeds its bound")
+      existing = fs.readFileSync(filePath, "utf8").split("\n").filter(Boolean)
+      if (existing.length > 500 || existing.some((line) => Buffer.byteLength(line) > 8 * 1024)) throw new Error("restart ledger rows exceed their bound")
+      for (const line of existing) {
+        const value = JSON.parse(line) as Partial<UnraidRestartAttempt>
+        if (!value || typeof value !== "object" || !value.container || typeof value.container.id !== "string" || !value.container.id || value.container.id.length > 128
+          || typeof value.container.name !== "string" || !value.container.name || value.container.name.length > 128
+          || !["attempt_not_started", "attempting", "succeeded", "attempted_or_indeterminate"].includes(String(value.state))
+          || typeof value.observedAt !== "string" || !Number.isFinite(Date.parse(value.observedAt)) || new Date(Date.parse(value.observedAt)).toISOString() !== value.observedAt
+          || !/^[0-9a-f]{64}$/u.test(String(value.actionDigest)) || !/^[0-9a-f]{64}$/u.test(String(value.argumentDigest))
+          || !/^[0-9a-f]{64}$/u.test(String(value.scenarioHandleDigest)) || typeof value.approvalId !== "string" || !value.approvalId || value.approvalId.length > 128
+          || typeof value.attemptId !== "string" || !value.attemptId || value.attemptId.length > 128 || typeof value.mutationAcknowledged !== "boolean"
+          || (value.afterState !== null && (typeof value.afterState !== "string" || value.afterState.length > 64))) throw new Error("restart ledger row is invalid")
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Error("Sanctuary acceptance restart ledger is corrupt", { cause: error })
+    }
+    const entries = [...existing, JSON.stringify(attempt)].slice(-500)
+    const temporary = `${filePath}.tmp-${process.pid}-${randomUUID()}`
+    fs.writeFileSync(temporary, `${entries.join("\n")}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" })
+    const handle = fs.openSync(temporary, "r")
+    try { fs.fsyncSync(handle) } finally { fs.closeSync(handle) }
+    fs.renameSync(temporary, filePath)
+    fs.chmodSync(filePath, 0o600)
+    const directory = fs.openSync(path.dirname(filePath), "r")
+    try { fs.fsyncSync(directory) } finally { fs.closeSync(directory) }
+  })
+  acceptanceLedgerTails.set(filePath, current)
+  try { await current } finally { if (acceptanceLedgerTails.get(filePath) === current) acceptanceLedgerTails.delete(filePath) }
 }
 
 export function createSanctuaryToolContext(agentName: string): Pick<ToolContext, "sanctuary"> {
@@ -84,9 +110,9 @@ export function createSanctuaryToolContext(agentName: string): Pick<ToolContext,
     endpoint,
     listContainers: reads.listContainers,
     loadWriteApiKey: async () => required(machineConfig(agentName), "unraidWriteApiKey"),
-    persistAttempt: (attempt) => {
+    persistAttempt: async (attempt) => {
       persistAttempt(path.join(getAgentRoot(agentName), "state", "approvals", "unraid-restart-attempt.json"), attempt)
-      appendAcceptanceAttempt(agentName, attempt)
+      await appendAcceptanceAttempt(agentName, attempt)
     },
     acceptanceScenarioHandleDigest: () => readSanctuaryAcceptanceMarker(agentName)?.scenarioHandleDigest,
     acceptanceApproval: readSanctuaryAcceptanceApproval,

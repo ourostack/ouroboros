@@ -154,6 +154,11 @@ describe("Sanctuary runtime tool context", () => {
       container: { id: "docker:plex", name: "plex" },
       beforeState: "exited",
       observedAt: "2026-08-20T00:00:00.000Z",
+      actionDigest: "a".repeat(64),
+      argumentDigest: "b".repeat(64),
+      attemptId: "attempt-1",
+      mutationAcknowledged: false,
+      afterState: null,
     }
 
     await persistAttempt(attempt)
@@ -164,5 +169,41 @@ describe("Sanctuary runtime tool context", () => {
     expect(fs.statSync(receiptPath).mode & 0o777).toBe(0o600)
     expect(fs.readdirSync(approvalDir)).toEqual(["unraid-restart-attempt.json"])
     expect(runtimeMocks.getAgentRoot).toHaveBeenCalledWith("slugger")
+  })
+
+  it("serializes and bounds scenario restart ledger appends", async () => {
+    const agentRoot = runtimeMocks.getAgentRoot()
+    createSanctuaryToolContext("slugger")
+    const persistAttempt = runtimeMocks.state.restartOptions?.persistAttempt as (attempt: UnraidRestartAttempt) => Promise<void>
+    const ledgerPath = path.join(agentRoot, "state", "acceptance", "restart-attempts.ndjson")
+    const attempt = (attemptId: string): UnraidRestartAttempt => ({
+      state: "attempting", container: { id: `docker:${attemptId}`, name: "calibre-web" }, beforeState: "running",
+      observedAt: "2026-08-20T00:00:00.000Z", actionDigest: "a".repeat(64), argumentDigest: "b".repeat(64),
+      scenarioHandleDigest: "c".repeat(64), approvalId: "approval-1", attemptId, mutationAcknowledged: false, afterState: null,
+    })
+    fs.mkdirSync(path.dirname(ledgerPath), { recursive: true })
+    fs.writeFileSync(ledgerPath, Array.from({ length: 499 }, (_, index) => JSON.stringify(attempt(`seed-${index}`))).join("\n") + "\n")
+
+    await Promise.all([persistAttempt(attempt("one")), persistAttempt(attempt("two")), persistAttempt(attempt("three"))])
+
+    const lines = fs.readFileSync(ledgerPath, "utf8").trim().split("\n").map((line) => JSON.parse(line))
+    expect(lines).toHaveLength(500)
+    expect(lines.slice(-3).map((entry) => entry.attemptId)).toEqual(["one", "two", "three"])
+    expect(fs.statSync(ledgerPath).mode & 0o777).toBe(0o600)
+    expect(fs.readdirSync(path.dirname(ledgerPath))).toEqual(["restart-attempts.ndjson"])
+  })
+
+  it("rejects corrupt restart rows and recovers the per-path append chain", async () => {
+    const agentRoot = runtimeMocks.getAgentRoot()
+    createSanctuaryToolContext("slugger")
+    const persistAttempt = runtimeMocks.state.restartOptions?.persistAttempt as (attempt: UnraidRestartAttempt) => Promise<void>
+    const ledgerPath = path.join(agentRoot, "state", "acceptance", "restart-attempts.ndjson")
+    fs.mkdirSync(path.dirname(ledgerPath), { recursive: true })
+    fs.writeFileSync(ledgerPath, "{\"invalid\":true}\n")
+    const valid: UnraidRestartAttempt = { state: "attempting", container: { id: "docker:a", name: "calibre-web" }, beforeState: "running", observedAt: "2026-08-20T00:00:00.000Z", actionDigest: "a".repeat(64), argumentDigest: "b".repeat(64), scenarioHandleDigest: "c".repeat(64), approvalId: "approval-1", attemptId: "attempt-1", mutationAcknowledged: false, afterState: null }
+    await expect(persistAttempt(valid)).rejects.toThrow("corrupt")
+    fs.writeFileSync(ledgerPath, "")
+    await expect(persistAttempt(valid)).resolves.toBeUndefined()
+    expect(JSON.parse(fs.readFileSync(ledgerPath, "utf8"))).toMatchObject({ attemptId: "attempt-1" })
   })
 })
