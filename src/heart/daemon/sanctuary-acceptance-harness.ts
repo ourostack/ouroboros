@@ -32,6 +32,7 @@ type JsonObject = Record<string, unknown>
 export interface AcceptanceHarnessDependencies {
   readSecret(): string
   runAdapter(executable: string, payload: unknown, timeoutMs?: number): Promise<unknown>
+  realpath(filePath: string): string
   fetch: typeof fetch
   now(): number
   randomBytes(size: number): Buffer
@@ -73,6 +74,7 @@ export function createSanctuaryAcceptanceHarnessDependencies(
         throw new Error("Sanctuary acceptance adapter returned invalid JSON")
       }
     },
+    realpath: realpathSync,
     fetch,
     now: Date.now,
     randomBytes: nodeRandomBytes,
@@ -651,7 +653,7 @@ export const SANCTUARY_SCENARIO_SOURCES: Record<SanctuaryUnit16EvidenceLabel, Sa
   "unit-16m-restart-continuation": ["identity-key", "telegram-audit", "approval-journal", "approval-checkpoints", "restart-attempt-ledger", "container-inspect", "interactive-driver-receipt"],
 }
 
-function packagedHarnessSha256(value: unknown): string {
+function packagedHarnessSha256(value: unknown, deps: AcceptanceHarnessDependencies): string {
   const configured = text(value, "harnessPath")
   if (!path.isAbsolute(configured)) throw new Error("harnessPath must be absolute")
   const resolved = path.resolve(configured)
@@ -660,7 +662,7 @@ function packagedHarnessSha256(value: unknown): string {
     const metadata = fstatSync(handle)
     if (!metadata.isFile()) throw new Error("packaged harness must be a regular file")
     if ((metadata.mode & 0o022) !== 0) throw new Error("packaged harness must not be group- or world-writable")
-    if (realpathSync(resolved) !== resolved) throw new Error("packaged harness path must be canonical")
+    if (deps.realpath(resolved) !== resolved) throw new Error("packaged harness path must be canonical")
     return createHash("sha256").update(readFileSync(handle)).digest("hex")
   } finally {
     closeSync(handle)
@@ -744,7 +746,7 @@ async function evidenceBundleIndex(config: JsonObject, deps: AcceptanceHarnessDe
   if (!exactEvidenceLabels(requested) || new Set(requested.map((entry) => entry.label)).size !== requested.length) {
     throw new Error("evidence entries must equal the complete Unit 16 evidence matrix")
   }
-  const harnessSha256 = packagedHarnessSha256(config.harnessPath)
+  const harnessSha256 = packagedHarnessSha256(config.harnessPath, deps)
   const byLabel = new Map(requested.map((entry) => [entry.label, entry.path]))
   let continuity: EvidenceProvenance | undefined
   let latest: EvidenceProvenance | undefined
@@ -780,7 +782,7 @@ async function evidenceBundleIndex(config: JsonObject, deps: AcceptanceHarnessDe
 async function verifyEvidenceBundle(config: JsonObject, deps: AcceptanceHarnessDependencies): Promise<void> {
   const root = privateAllowedRoot(config)
   const bundle = readCheckpoint(root, config.evidencePath)
-  const harnessSha256 = packagedHarnessSha256(config.harnessPath)
+  const harnessSha256 = packagedHarnessSha256(config.harnessPath, deps)
   if (bundle.schemaVersion !== 1 || bundle.operation !== "sanctuary-unit-16-evidence-bundle" || bundle.phase !== "complete") {
     throw new Error("evidence bundle header is invalid")
   }
@@ -1376,7 +1378,7 @@ async function scenarioMatrixSnapshot(config: JsonObject, deps: AcceptanceHarnes
   const timeoutMs = integer(config.timeoutMs, "scenario total timeoutMs", 1)
   const intervalMs = integer(config.intervalMs, "scenario intervalMs", 1)
   if (timeoutMs > MAX_MATRIX_TIMEOUT_MS || intervalMs > MAX_SCENARIO_INTERVAL_MS) throw new Error("scenario timing bound is invalid")
-  const harnessSha256 = packagedHarnessSha256(config.harnessPath)
+  const harnessSha256 = packagedHarnessSha256(config.harnessPath, deps)
   const totalDeadline = deps.now() + timeoutMs
   for (const label of REBOOT_SCENARIO_LABELS) {
     const value = object(JSON.parse(readFileSync(requirePrivateRegularFile(root, path.join(root, `${label}.json`), `${label} phase evidence`), "utf8")) as unknown, `${label} phase evidence`)
@@ -1422,7 +1424,7 @@ async function captureRebootScenario(
   if (executable !== PACKAGED_PROVENANCE_ADAPTER || config.provenanceAdapter !== PACKAGED_PROVENANCE_ADAPTER) {
     throw new Error("reboot scenario capture requires the fixed packaged acceptance adapter")
   }
-  const harnessSha256 = packagedHarnessSha256(config.harnessPath)
+  const harnessSha256 = packagedHarnessSha256(config.harnessPath, deps)
   const intervalMs = integer(config.scenarioIntervalMs, "reboot scenario intervalMs", 1)
   const timeoutMs = integer(config.scenarioTimeoutMs, "reboot scenario timeoutMs", 1)
   if (timeoutMs > sanctuaryScenarioTimeoutBudget(label) || intervalMs > MAX_SCENARIO_INTERVAL_MS) throw new Error("reboot scenario timing bound is invalid")

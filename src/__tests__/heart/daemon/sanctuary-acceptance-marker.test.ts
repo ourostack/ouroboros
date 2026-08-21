@@ -87,15 +87,19 @@ afterEach(() => {
 })
 
 describe("Sanctuary acceptance marker", () => {
-  it("validates bound entry basenames", () => {
-    expect(boundDirectoryEntryPath(7, "/tmp/safe", "entry")).toMatch(/entry$/u)
+  it("validates bound entry basenames and preserves platform-specific binding", () => {
     for (const name of ["", ".", "..", "a/b", "/", "a\0b"]) {
       expect(() => boundDirectoryEntryPath(7, "/tmp/safe", name)).toThrow("basenames")
     }
     const descriptor = Object.getOwnPropertyDescriptor(process, "platform")!
-    Object.defineProperty(process, "platform", { value: "linux", configurable: true })
-    expect(boundDirectoryEntryPath(7, "/tmp/safe", "entry")).toBe("/proc/self/fd/7/entry")
-    Object.defineProperty(process, "platform", descriptor)
+    try {
+      Object.defineProperty(process, "platform", { ...descriptor, value: "linux" })
+      expect(boundDirectoryEntryPath(7, "/tmp/safe", "entry")).toBe("/proc/self/fd/7/entry")
+      Object.defineProperty(process, "platform", { ...descriptor, value: "darwin" })
+      expect(boundDirectoryEntryPath(7, "/tmp/safe", "entry")).toBe(path.join("/tmp/safe", "entry"))
+    } finally {
+      Object.defineProperty(process, "platform", descriptor)
+    }
   })
 
   it.each(["error", "status"] as const)("fails closed when the bound rename helper reports %s", (mode) => {

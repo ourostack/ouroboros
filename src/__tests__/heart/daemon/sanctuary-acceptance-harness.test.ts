@@ -42,6 +42,7 @@ function dependencies(input: {
   secret?: string
   adapter?: (executable: string, payload: unknown, timeoutMs?: number) => Promise<unknown>
   fetch?: typeof fetch
+  realpath?: (filePath: string) => string
   now?: () => number
   sleep?: (milliseconds: number) => Promise<void>
 } = {}): AcceptanceHarnessDependencies {
@@ -54,6 +55,7 @@ function dependencies(input: {
       if (operation === "postboot_integrity_snapshot") return emptyIntegrity
       return input.adapter ? input.adapter(executable, payload, timeoutMs) : { ok: true }
     },
+    realpath: input.realpath ?? fs.realpathSync,
     fetch: input.fetch ?? (async () => jsonResponse({ ok: true, result: [] })),
     now: input.now ?? (() => 1_800_000_000_000),
     randomBytes: () => Buffer.from("0123456789abcdef0123456789abcdef", "hex"),
@@ -557,7 +559,12 @@ describe("Sanctuary acceptance harness", () => {
       fs.writeFileSync(file, `${JSON.stringify(value)}\n`, { mode: 0o600 })
       return { label, path: file }
     })
-    const run = (name: string, entries: Array<{ label: string; path: string }>, packagedHarness = harnessPath) => executeSanctuaryAcceptanceHarness("evidence-bundle-index", {
+    const run = (
+      name: string,
+      entries: Array<{ label: string; path: string }>,
+      packagedHarness = harnessPath,
+      deps = liveProvenanceDependencies(),
+    ) => executeSanctuaryAcceptanceHarness("evidence-bundle-index", {
       allowedRoot: dir,
       evidencePath: path.join(dir, `${name}.json`),
       entries,
@@ -566,7 +573,7 @@ describe("Sanctuary acceptance harness", () => {
       imageDigest: "d".repeat(64),
       containerDigest: "e".repeat(64),
       cursorDigest: "f".repeat(64),
-    }, liveProvenanceDependencies())
+    }, deps)
 
     for (const [name, mutate] of [
       ["schema", (value: Record<string, any>, index: number) => { if (index === 0) value.schemaVersion = 2 }],
@@ -623,6 +630,15 @@ describe("Sanctuary acceptance harness", () => {
     if (harnessAlias !== harnessPath) {
       await expect(run("alias-harness", createEntries(() => {}), harnessAlias)).rejects.toThrow(/canonical/u)
     }
+    await expect(run(
+      "noncanonical-harness",
+      createEntries(() => {}),
+      harnessPath,
+      dependencies({
+        adapter: async () => evidenceProvenance,
+        realpath: () => path.join(dir, "canonical-packaged-harness.js"),
+      }),
+    )).rejects.toThrow(/canonical/u)
   })
 
   it("redacts neutral-key Telegram IDs without rejecting counters or timestamps", async () => {

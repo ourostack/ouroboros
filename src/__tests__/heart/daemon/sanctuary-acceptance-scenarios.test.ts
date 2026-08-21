@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 const fsFaults = vi.hoisted(() => ({
   lstatSync: null as null | ((actual: typeof import("node:fs").lstatSync, target: import("node:fs").PathLike, options?: unknown) => import("node:fs").Stats),
+  closeSync: null as null | ((actual: typeof import("node:fs").closeSync, fileDescriptor: number) => void),
   unlinkSync: null as null | ((actual: typeof import("node:fs").unlinkSync, target: import("node:fs").PathLike) => void),
 }))
 vi.mock("node:fs", async (importOriginal) => {
@@ -14,6 +15,9 @@ vi.mock("node:fs", async (importOriginal) => {
   return {
     ...actual,
     lstatSync: (target: fs.PathLike, options?: unknown) => fsFaults.lstatSync?.(actual.lstatSync, target, options) ?? actual.lstatSync(target, options as never),
+    closeSync: (fileDescriptor: number) => fsFaults.closeSync
+      ? fsFaults.closeSync(actual.closeSync, fileDescriptor)
+      : actual.closeSync(fileDescriptor),
     unlinkSync: (target: fs.PathLike) => fsFaults.unlinkSync?.(actual.unlinkSync, target) ?? actual.unlinkSync(target),
   }
 })
@@ -370,6 +374,7 @@ describe("Sanctuary postboot relational integrity", () => {
 
 afterEach(() => {
   fsFaults.lstatSync = null
+  fsFaults.closeSync = null
   fsFaults.unlinkSync = null
   fs.rmSync(root, { recursive: true, force: true })
 })
@@ -1378,6 +1383,71 @@ describe("Sanctuary live scenario capture", () => {
     expect(helper).toContain("markerMetadata.ino !== markerPathMetadata.ino")
     expect(helper.indexOf("secureRenameBoundInodeSync(")).toBeLessThan(helper.indexOf("fs.fsyncSync(markerHandle)"))
     expect(helper.match(/fs\.fsyncSync\(/gu)?.length).toBeGreaterThanOrEqual(3)
+  })
+
+  it("closes an opened quarantine handle when deterministic validation fails", () => {
+    const parent = path.join(root, "injected-quarantine-validation")
+    const receipts = path.join(parent, "receipts")
+    fs.mkdirSync(receipts, { recursive: true, mode: 0o700 })
+    fs.writeFileSync(path.join(receipts, "noncanonical"), "evidence\n", { mode: 0o600 })
+    let quarantineStats = 0
+    let quarantineIdentity: Pick<fs.Stats, "dev" | "ino"> | null = null
+    const closedQuarantineHandles: number[] = []
+    fsFaults.lstatSync = (actualLstat, target, options) => {
+      const stats = actualLstat(target, options as never)
+      if (path.basename(String(target)) === "quarantine") {
+        quarantineStats += 1
+        if (quarantineStats === 1) {
+          quarantineIdentity = stats
+          return Object.assign(Object.create(Object.getPrototypeOf(stats)), stats, { ino: stats.ino + 1 })
+        }
+      }
+      return stats
+    }
+    fsFaults.closeSync = (actualClose, fileDescriptor) => {
+      const metadata = fs.fstatSync(fileDescriptor)
+      if (quarantineIdentity && metadata.dev === quarantineIdentity.dev && metadata.ino === quarantineIdentity.ino) {
+        closedQuarantineHandles.push(fileDescriptor)
+      }
+      actualClose(fileDescriptor)
+    }
+
+    let thrown: unknown
+    try {
+      finalizeSanctuaryScenarioCapture(undefined, receipts)
+    } catch (error) { thrown = error }
+
+    expect(thrown).toBeInstanceOf(AggregateError)
+    expect((thrown as AggregateError).errors).toContainEqual(expect.objectContaining({ message: "acceptance quarantine root changed" }))
+    expect(closedQuarantineHandles).toHaveLength(1)
+    expect(() => fs.fstatSync(closedQuarantineHandles[0]!)).toThrow()
+    expect(fs.readFileSync(path.join(receipts, "noncanonical"), "utf8")).toBe("evidence\n")
+  })
+
+  it("fails closed when deterministic post-move receipt identity changes", () => {
+    const parent = path.join(root, "injected-moved-receipt-validation")
+    const receipts = path.join(parent, "receipts")
+    fs.mkdirSync(receipts, { recursive: true, mode: 0o700 })
+    fs.writeFileSync(path.join(receipts, "noncanonical"), "evidence\n", { mode: 0o600 })
+    fsFaults.lstatSync = (actualLstat, target, options) => {
+      const stats = actualLstat(target, options as never)
+      if (path.basename(String(target)).startsWith("receipts-")) {
+        return Object.assign(Object.create(Object.getPrototypeOf(stats)), stats, { ino: stats.ino + 1 })
+      }
+      return stats
+    }
+
+    let thrown: unknown
+    try {
+      finalizeSanctuaryScenarioCapture(undefined, receipts)
+    } catch (error) { thrown = error }
+
+    expect(thrown).toBeInstanceOf(AggregateError)
+    expect((thrown as AggregateError).errors).toContainEqual(expect.objectContaining({ message: "acceptance receipt quarantine changed during move" }))
+    expect(fs.existsSync(receipts)).toBe(false)
+    const quarantined = fs.readdirSync(path.join(parent, "quarantine")).find((entry) => entry.startsWith("receipts-"))
+    expect(quarantined).toBeDefined()
+    expect(fs.readFileSync(path.join(parent, "quarantine", quarantined!, "noncanonical"), "utf8")).toBe("evidence\n")
   })
 
   it("fails closed when the receipt root inode changes during initial or final enumeration", () => {
