@@ -6,6 +6,8 @@ import { createHash } from "node:crypto"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { openApprovalStore, type ApprovalStore, type PrepareApprovalInput } from "../../heart/approval-store"
+import { FileApprovalCheckpointStore, FileApprovalTokenStore } from "../../heart/approval-files"
+import { telegramApprovalCommitBarrierHooks } from "../../senses/telegram-approval-runtime"
 import {
   commitApprovalProposal,
   digestApprovalSuspensionCheckpointPayload,
@@ -102,6 +104,38 @@ afterEach(() => {
 })
 
 describe("approval proposal commit recovery", () => {
+  it.each([
+    [2, false, false],
+    [3, true, false],
+    [4, true, true],
+  ] as const)("halts proposal durability after barrier failure at phase %i", (failAt, hasToken, hasCheckpoint) => {
+    const directory = root()
+    const approvals = store(directory)
+    const checkpoints = new FileApprovalCheckpointStore(path.join(directory, "checkpoints.json"))
+    const tokens = new FileApprovalTokenStore(path.join(directory, "tokens.json"))
+    let calls = 0
+    const failure = new Error(`audit barrier ${failAt}`)
+    const barrier = () => { calls += 1; if (calls === failAt) throw failure }
+
+    barrier()
+    expect(() => commitApprovalProposal({
+      approvalStore: approvals,
+      checkpointStore: checkpoints,
+      tokenStore: tokens,
+      proposal: proposal(),
+      preCallMessages: [{ role: "user", content: "restart calibre-web" }],
+      hooks: telegramApprovalCommitBarrierHooks(barrier),
+    })).toThrow(failure)
+
+    expect(approvals.read(UUID)?.state).toBe("preparing")
+    expect(tokens.has(UUID)).toBe(hasToken)
+    expect(checkpoints.read(UUID) !== null).toBe(hasCheckpoint)
+    const recovered = recoverApprovalProposals({ approvalStore: approvals, checkpointStore: checkpoints, tokenStore: tokens })
+    expect(recovered).toHaveLength(1)
+    expect(approvals.read(UUID)?.state).toBe(hasToken && hasCheckpoint ? "awaiting_prompt_binding" : "abandoned_before_attempt")
+    approvals.close()
+  })
+
   it("commits token mapping and full pre-call transcript checkpoint before activation", () => {
     const approvals = store()
     const checkpoints = checkpointStore()

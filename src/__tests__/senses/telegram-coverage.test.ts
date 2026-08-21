@@ -4,6 +4,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { createLogger } from "../../nerves"
 import { TELEGRAM_ACCEPTANCE_AUDIT_HEAD_RELATIVE_PATH, TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH } from "../../senses/telegram-audit-ledger"
+import { createTelegramLongPoll } from "../../senses/telegram-client"
 
 const mocks = vi.hoisted(() => ({
   getAgentRoot: vi.fn(),
@@ -800,6 +801,49 @@ describe("Telegram sense coverage contracts", () => {
     expect(mocks.runSenseTurn).not.toHaveBeenCalled()
     expect(mocks.sendTelegramText).not.toHaveBeenCalled()
     await app.stop()
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+
+  it("reserves audit capacity before real poll inbox and offset mutations", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-audit-poll-capacity-"))
+    mocks.getAgentRoot.mockReturnValueOnce(root)
+    const identityKey = "k".repeat(43)
+    const scenarioHandleDigest = "a".repeat(64)
+    const offsetStore = { load: vi.fn(() => 0), save: vi.fn() }
+    const inboxStore = {
+      load: vi.fn(() => []), loadPending: vi.fn(() => []), loadIndeterminate: vi.fn(() => []),
+      quarantineStranded: vi.fn(() => []), acknowledgeIndeterminateWarning: vi.fn(() => true),
+      capture: vi.fn(() => true), claim: vi.fn(() => true), complete: vi.fn(),
+    }
+    const owner = telegramAcceptanceAuditOwnerDigest(identityKey, "sanctuary", root)
+    const api = {
+      request: vi.fn(async (method: string) => {
+        if (method === "getUpdates") {
+          emitGlobal({
+            ...acceptanceEvent(),
+            message: "x".repeat(512),
+            meta: { scenarioHandleDigest, acceptanceAuditOwnerDigest: owner },
+          })
+          return [{ update_id: 7, message: { message_id: 8, from: { id: 42 }, chat: { id: 43, type: "private" }, text: "status" } }]
+        }
+        return { message_id: 71 }
+      }),
+      stop: vi.fn(),
+    }
+    mocks.createTelegramBotApi.mockReturnValue(api)
+    mocks.createTelegramLongPoll.mockImplementationOnce(createTelegramLongPoll)
+    const app = createTelegramSenseApp({
+      agentName: "sanctuary", credentials, identityKey, offsetStore, inboxStore,
+      acceptanceMarker: () => ({ scenarioHandleDigest }),
+      _acceptanceAuditMaxBytes: 8 * (64 * 1024 + 1) + 256,
+    })
+
+    await expect(app.run()).rejects.toThrow("reserved capacity")
+    expect(offsetStore.save).not.toHaveBeenCalled()
+    expect(inboxStore.capture).not.toHaveBeenCalled()
+    expect(inboxStore.claim).not.toHaveBeenCalled()
+    expect(inboxStore.complete).not.toHaveBeenCalled()
+    await app.stop().catch(() => undefined)
     fs.rmSync(root, { recursive: true, force: true })
   })
 
