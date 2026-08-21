@@ -294,6 +294,13 @@ function snapshotDigest(snapshot: HealthSnapshot): string {
   return digestBytes(snapshot.exists ? Buffer.from(snapshot.bytes, "base64") : "sanctuary-health-state:absent")
 }
 
+function cursorFromSnapshot(snapshot: HealthSnapshot): { sweepCount: number; deliveryCount: number } {
+  if (!snapshot.exists) throw new Error("Sanctuary health acceptance observer state is absent")
+  const state = JSON.parse(Buffer.from(snapshot.bytes, "base64").toString("utf8")) as HealthStateRecord
+  if (!Array.isArray(state.sweepReceipts) || !Array.isArray(state.deliveredReceipts)) throw new Error("Sanctuary health acceptance observer state is invalid")
+  return { sweepCount: state.sweepReceipts.length, deliveryCount: state.deliveredReceipts.length }
+}
+
 function restoreState(statePath: string, snapshot: HealthSnapshot): void {
   if (!snapshot.exists) {
     try { fs.unlinkSync(statePath) } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error }
@@ -520,14 +527,14 @@ export async function runSanctuaryHealthAcceptanceProbe(
   emitNervesEvent({ component: "senses", event: "senses.sanctuary_health_acceptance_start", message: "Sanctuary health acceptance probe started", meta: { label: input.label, scenarioHandleDigest: input.scenarioHandleDigest } })
   try {
     if (input.label === "unit-16f-cron-fingerprint") {
-      const initialState = readHealthState(statePath)
+      const initialCursor = cursorFromSnapshot(snapshot)
       const waitForSchedulerReceipt = dependencies.waitForSchedulerReceipt ?? defaultDependencies().waitForSchedulerReceipt!
       schedulerReceipt = await waitForSchedulerReceipt(dependencies.agentRoot, input.scenarioHandleDigest)
       const identityKey = (dependencies.identityKey ?? readOrCreateTelegramIdentityKey)(dependencies.agentRoot)
       if (!verifySanctuarySchedulerLivenessReceiptMac(identityKey, schedulerReceipt as unknown as Record<string, unknown>)
         || schedulerReceipt.schemaVersion !== "sanctuary-scheduler-liveness-receipt-v1" || schedulerReceipt.label !== input.label
         || schedulerReceipt.scenarioHandleDigest !== input.scenarioHandleDigest || schedulerReceipt.trigger !== "cron"
-        || schedulerReceipt.before.sweepCount !== initialState.sweepReceipts.length || schedulerReceipt.before.deliveryCount !== initialState.deliveredReceipts.length
+        || schedulerReceipt.before.sweepCount !== initialCursor.sweepCount || schedulerReceipt.before.deliveryCount !== initialCursor.deliveryCount
         || schedulerReceipt.sweepDelta !== 1 || schedulerReceipt.deliveryDelta !== 0 || schedulerReceipt.providerInvocationCount !== 0
         || schedulerReceipt.privateTurnCount !== 0 || schedulerReceipt.nonReplay !== true
         || schedulerReceipt.schedulerOrigin.scenarioHandleDigest !== input.scenarioHandleDigest
@@ -626,7 +633,7 @@ export async function runSanctuaryHealthAcceptanceProbe(
     return receipt
   } catch (error) {
     try { if (fixture?.server.listening) await closeServer(fixture.server) } catch { /* restoration remains authoritative */ }
-    try { restoreState(statePath, snapshot) } catch { /* recovery checkpoint remains for the fixed recovery operation */ }
+    if (input.label !== "unit-16f-cron-fingerprint") try { restoreState(statePath, snapshot) } catch { /* recovery checkpoint remains for the fixed recovery operation */ }
     try { removeProbeWorkspace(workspace) } catch { /* retain checkpoint for recovery */ }
     emitNervesEvent({ level: "error", component: "senses", event: "senses.sanctuary_health_acceptance_error", message: "Sanctuary health acceptance probe failed", meta: { label: input.label, scenarioHandleDigest: input.scenarioHandleDigest, error: error instanceof Error ? error.message : String(error) } })
     throw error
@@ -687,7 +694,7 @@ export async function recoverSanctuaryHealthAcceptanceProbe(
     throw new Error("Sanctuary health acceptance recovery owner binding is invalid")
   }
   const snapshot = JSON.parse(fs.readFileSync(path.join(workspace, "snapshot.json"), "utf8")) as HealthSnapshot
-  await withSanctuaryHealthStateLease(statePath, async () => restoreState(statePath, snapshot))
+  if (input.label !== "unit-16f-cron-fingerprint") await withSanctuaryHealthStateLease(statePath, async () => restoreState(statePath, snapshot))
   removeProbeWorkspace(workspace)
   if (fs.existsSync(pendingPath)) fs.unlinkSync(pendingPath)
   emitNervesEvent({ component: "senses", event: "senses.sanctuary_health_acceptance_recovered", message: "Sanctuary health acceptance probe state was restored", meta: { label: input.label, scenarioHandleDigest: input.scenarioHandleDigest } })

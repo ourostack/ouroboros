@@ -75,8 +75,35 @@ export function readSanctuaryHealthCursor(agentRoot: string): SanctuaryScheduler
 
 type DurableFs = Pick<typeof fs, "mkdirSync" | "openSync" | "writeFileSync" | "fsyncSync" | "closeSync" | "linkSync" | "unlinkSync">
 
+function fsyncDirectory(directory: string, deps: DurableFs): void {
+  const descriptor = deps.openSync(directory, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
+  try { deps.fsyncSync(descriptor) } finally { deps.closeSync(descriptor) }
+}
+
+function ensureDurableDirectory(directory: string, deps: DurableFs): void {
+  try {
+    deps.mkdirSync(directory, { mode: 0o700 })
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === "EEXIST") {
+      fsyncDirectory(directory, deps)
+      fsyncDirectory(path.dirname(directory), deps)
+      return
+    }
+    if (code !== "ENOENT") throw error
+    const parent = path.dirname(directory)
+    if (parent === directory) throw error
+    ensureDurableDirectory(parent, deps)
+    try { deps.mkdirSync(directory, { mode: 0o700 }) }
+    catch (retryError) { if ((retryError as NodeJS.ErrnoException).code !== "EEXIST") throw retryError }
+  }
+  fsyncDirectory(directory, deps)
+  fsyncDirectory(path.dirname(directory), deps)
+}
+
 export function durableExclusiveJson(filePath: string, value: unknown, deps: DurableFs = fs): void {
-  deps.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 })
+  const directory = path.dirname(filePath)
+  ensureDurableDirectory(directory, deps)
   const temporary = `${filePath}.tmp-${process.pid}-${randomUUID()}`
   let handle: number | null = null
   try {
@@ -86,12 +113,28 @@ export function durableExclusiveJson(filePath: string, value: unknown, deps: Dur
     deps.closeSync(handle)
     handle = null
     deps.linkSync(temporary, filePath)
-    const directory = deps.openSync(path.dirname(filePath), fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
-    try { deps.fsyncSync(directory) } finally { deps.closeSync(directory) }
+    fsyncDirectory(directory, deps)
   } finally {
     if (handle !== null) deps.closeSync(handle)
     try { deps.unlinkSync(temporary) } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error }
+    finally { fsyncDirectory(directory, deps) }
   }
+}
+
+export function consumeSanctuarySchedulerFire(agentRoot: string, origin: SanctuarySchedulerOrigin): void {
+  if (!UUID.test(origin.schedulerRunId) || origin.occurrenceId !== `cron:${origin.slot}`) throw new Error("Sanctuary scheduler fire claim is invalid")
+  const claimId = createHash("sha256").update(`sanctuary\0sanctuary-health\0${origin.slot}\0${origin.occurrenceId}`).digest("hex")
+  const claimPath = path.join(agentRoot, "state", "scheduler", "sanctuary-fire-claims", `${claimId}.json`)
+  try {
+    durableExclusiveJson(claimPath, { schemaVersion: "sanctuary-scheduler-fire-claim-v1", ...origin })
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      emitNervesEvent({ level: "warn", component: "daemon", event: "daemon.sanctuary_scheduler_fire_rejected", message: "Rejected replayed Sanctuary scheduler fire", meta: { occurrenceId: origin.occurrenceId, schedulerRunId: origin.schedulerRunId } })
+      throw new Error("Sanctuary scheduler fire replay rejected")
+    }
+    throw error
+  }
+  emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_scheduler_fire_consumed", message: "Consumed Sanctuary scheduler fire before execution", meta: { occurrenceId: origin.occurrenceId, schedulerRunId: origin.schedulerRunId } })
 }
 
 export function publishSanctuarySchedulerReceipt(filePath: string, value: unknown, deps: DurableFs = fs): void {

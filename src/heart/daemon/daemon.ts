@@ -582,6 +582,7 @@ export interface OuroDaemonOptions {
   nativeHabitRunner?: (input: { agent: string; habitName: string; trigger: HabitRunTrigger; occurrenceId?: string; runnerId: string; schedulerOrigin?: SanctuarySchedulerOrigin }) => Promise<DaemonResponse | null>
   nativeHabitMatch?: (agent: string, habitName: string) => boolean
   schedulerFireVerifier?: (command: SanctuarySchedulerFireCommand) => SanctuarySchedulerOrigin & { occurrenceId: string }
+  schedulerFireConsumer?: (origin: SanctuarySchedulerOrigin & { occurrenceId: string }) => void
   /** Startup barrier that proves no prior Ouro daemon/worker remains before
    *  this daemon opens its socket or autostarts any replacement. */
   orphanStartupDrain?: (socketPath: string) => Promise<void>
@@ -869,6 +870,7 @@ export class OuroDaemon {
   private readonly nativeHabitClaims = new Set<string>()
   private readonly authenticatedSchedulerPokes = new WeakMap<object, SanctuarySchedulerOrigin>()
   private readonly schedulerFireVerifier?: OuroDaemonOptions["schedulerFireVerifier"]
+  private readonly schedulerFireConsumer?: OuroDaemonOptions["schedulerFireConsumer"]
   private readonly orphanStartupDrain: (socketPath: string) => Promise<void>
 
   constructor(options: OuroDaemonOptions) {
@@ -888,6 +890,7 @@ export class OuroDaemon {
     this.nativeHabitRunner = options.nativeHabitRunner
     this.nativeHabitMatch = options.nativeHabitMatch
     this.schedulerFireVerifier = options.schedulerFireVerifier
+    this.schedulerFireConsumer = options.schedulerFireConsumer
     this.orphanStartupDrain = options.orphanStartupDrain ?? drainOrphanProcessesBeforeStartup
   }
 
@@ -2245,9 +2248,12 @@ export class OuroDaemon {
         }
       }
       case "habit.scheduler-fire": {
-        if (!this.schedulerFireVerifier) return { ok: false, error: "authenticated scheduler fire is unavailable" }
+        if (!this.schedulerFireVerifier || !this.schedulerFireConsumer) return { ok: false, error: "authenticated scheduler fire is unavailable" }
         let origin: SanctuarySchedulerOrigin & { occurrenceId: string }
-        try { origin = this.schedulerFireVerifier(command) }
+        try {
+          origin = this.schedulerFireVerifier(command)
+          this.schedulerFireConsumer(origin)
+        }
         catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) } }
         const poke = { kind: "habit.poke", agent: command.agent, habitName: command.habitName, trigger: "cron", occurrenceId: origin.occurrenceId } as const
         this.authenticatedSchedulerPokes.set(poke, origin)

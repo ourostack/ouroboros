@@ -56,7 +56,7 @@ import type { AgentProvider } from "../identity"
 import type { HabitRunTrigger } from "../../arc/flight-recorder"
 import { runSanctuaryHealthHabit } from "../../senses/sanctuary-health-runner"
 import { readSanctuaryAcceptanceMarker } from "./sanctuary-acceptance-marker"
-import { readSanctuaryHealthCursor, recordSanctuarySchedulerLivenessReceipt } from "./sanctuary-scheduler-liveness"
+import { consumeSanctuarySchedulerFire, readSanctuaryHealthCursor, recordSanctuarySchedulerLivenessReceipt } from "./sanctuary-scheduler-liveness"
 import { verifySanctuarySchedulerFireCommand } from "./sanctuary-scheduler-origin"
 import { readOrCreateTelegramIdentityKey } from "../../senses/telegram"
 
@@ -413,6 +413,7 @@ const daemon = new OuroDaemon({
       readFile: (target) => fs.readFileSync(target, "utf8"), readLink: (target) => fs.readlinkSync(target),
     })
   },
+  schedulerFireConsumer: (origin) => consumeSanctuarySchedulerFire(path.join(getAgentBundlesRoot(), "sanctuary.ouro"), origin),
   nativeHabitRunner: async ({ agent, habitName, trigger, occurrenceId, runnerId, schedulerOrigin }) => {
     if (agent !== "sanctuary" || habitName !== "sanctuary-health") return null
     const marker = readSanctuaryAcceptanceMarker(agent)
