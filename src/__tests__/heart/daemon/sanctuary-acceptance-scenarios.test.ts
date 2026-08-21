@@ -343,7 +343,17 @@ describe("Sanctuary live scenario capture", () => {
       if (label === "unit-16i-delayed-approval") { after.approvals = [approval("succeeded")]; after.restartAttempts = successfulRestart(); after.events.push(...auditTurn(), ...approvalEvidence("approve")) }
       if (label === "unit-16k-timeout-stale") { after.approvals = [approval("expired")]; after.interactiveDriver = timeoutStaleDriver(); after.events.push(approvalAuditEvent("senses.telegram_approval_prompt_bound", 1_000, { boundAt: 1_000 }), expiryObservationEvidence(), approvalAuditEvent("telegram.approval_prompt_terminalized", 301_000, { boundAt: 1_000, expiryDeadlineAt: 301_000, expiryObservedAt: 301_000, terminalEditStartedAt: 301_000, terminalizedAt: 301_000, buttonsRemoved: true }), staleCallbackEvidence(), event("telegram.update_dropped")) }
       if (label === "unit-16l-duplicate-callback") { after.approvals = [{ ...approval("succeeded"), callbackCount: 2, settledCount: 2, claimCount: 1 }]; after.restartAttempts = successfulRestart(); after.interactiveDriver = duplicateCallbackDriver(); after.events.push(...approvalEvidence("approve"), event("telegram.callback_settled"), event("telegram.callback_settled"), event("approval.acceptance_transition")) }
-      if (label === "unit-16m-restart-continuation") { after.approvals = [approval("succeeded")]; after.restartAttempts = successfulRestart(); after.interactiveDriver = restartContinuationDriver(); after.events.push(...approvalEvidence("approve"), { ...event("senses.telegram_approved_restart_end"), meta: { approvalId: "approval-1" } }) }
+      if (label === "unit-16m-restart-continuation") {
+        after.approvals = [approval("succeeded")]
+        after.restartAttempts = successfulRestart()
+        after.interactiveDriver = restartContinuationDriver()
+        after.events.push(...approvalEvidence("approve").map((entry) => entry.event === "telegram.callback_settled" ? {
+          ...entry,
+          event: "telegram.callback_recovery_settled",
+          at: 121_002,
+          meta: { ...entry.meta, acknowledged: undefined, acknowledgementState: "indeterminate_after_restart", recoveredAt: 121_001, decisionAttemptDigest: "6".repeat(64) },
+        } : entry), { ...event("senses.telegram_approved_restart_end"), meta: { approvalId: "approval-1" } })
+      }
       const assertions = deriveSanctuaryScenarioAssertions(label, before, after, 400_000, "a".repeat(64))
       expect(assertions, label).not.toBeNull()
       expect(validateSanctuaryUnit16EvidenceAssertions(label, assertions)).toEqual(assertions)
@@ -401,18 +411,22 @@ describe("Sanctuary live scenario capture", () => {
     after.events.push(...approvalEvidence("approve"), { ...event("senses.telegram_approved_restart_end"), meta: { approvalId: "approval-1" } })
     expect(deriveSanctuaryScenarioAssertions("unit-16m-restart-continuation", before, after, 400_000)).toBeNull()
     after.interactiveDriver = restartContinuationDriver()
+    expect(deriveSanctuaryScenarioAssertions("unit-16m-restart-continuation", before, after, 400_000)).toBeNull()
+    after.events = after.events.map((entry) => entry.event === "telegram.callback_settled" ? {
+      ...entry,
+      event: "telegram.callback_recovery_settled",
+      at: 121_002,
+      meta: { ...entry.meta, acknowledged: undefined, acknowledgementState: "indeterminate_after_restart", recoveredAt: 121_001, decisionAttemptDigest: "6".repeat(64) },
+    } : entry)
     expect(deriveSanctuaryScenarioAssertions("unit-16m-restart-continuation", before, after, 400_000)).toMatchObject({
       preAttemptResumed: true,
       checkpointEpochPreserved: true,
       continuationEpochAdvanced: true,
       butlerRestartObserved: true,
     })
-    after.events = after.events.map((entry) => entry.event === "telegram.callback_settled" ? {
-      ...entry,
-      event: "telegram.callback_recovery_settled",
-      meta: { ...entry.meta, acknowledged: undefined, acknowledgementState: "indeterminate_after_restart", recoveredAt: 121_001, decisionAttemptDigest: "6".repeat(64) },
-    } : entry)
-    expect(deriveSanctuaryScenarioAssertions("unit-16m-restart-continuation", before, after, 400_000)).toMatchObject({ preAttemptResumed: true })
+    after.events = after.events.map((entry) => entry.event === "telegram.callback_recovery_settled" ? { ...entry, meta: { ...entry.meta, recoveredAt: 121_002 } } : entry)
+    expect(deriveSanctuaryScenarioAssertions("unit-16m-restart-continuation", before, after, 400_000)).toBeNull()
+    after.events = after.events.map((entry) => entry.event === "telegram.callback_recovery_settled" ? { ...entry, meta: { ...entry.meta, recoveredAt: 121_001 } } : entry)
     expect(deriveSanctuaryScenarioAssertions("unit-16i-delayed-approval", before, after, 400_000)).toBeNull()
     after.interactiveDriver = { ...restartContinuationDriver(), pendingRestored: false }
     expect(deriveSanctuaryScenarioAssertions("unit-16m-restart-continuation", before, after, 400_000)).toBeNull()

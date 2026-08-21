@@ -163,6 +163,23 @@ describe("Telegram sense", () => {
         identityKey: "k".repeat(43),
       })
       expect(events.map(({ event }) => event)).toEqual(expect.arrayContaining(["senses.telegram_turn_start", "senses.telegram_turn_end"]))
+      const firstScenarioRows = events.length
+      marker = null
+      await onMessage({ updateId: 5, messageId: "6", userId: "42", chatId: "42", text: "ordinary again" })
+      expect(verifyTelegramAuditLedger({
+        ledgerRaw: fs.readFileSync(path.join(root, TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH), "utf8"),
+        headRaw: fs.readFileSync(path.join(root, TELEGRAM_ACCEPTANCE_AUDIT_HEAD_RELATIVE_PATH), "utf8"),
+        identityKey: "k".repeat(43),
+      })).toHaveLength(firstScenarioRows)
+      marker = { scenarioHandleDigest: "b".repeat(64) }
+      await onMessage({ updateId: 7, messageId: "8", userId: "42", chatId: "42", text: "second scenario" })
+      const bothScenarios = verifyTelegramAuditLedger({
+        ledgerRaw: fs.readFileSync(path.join(root, TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH), "utf8"),
+        headRaw: fs.readFileSync(path.join(root, TELEGRAM_ACCEPTANCE_AUDIT_HEAD_RELATIVE_PATH), "utf8"),
+        identityKey: "k".repeat(43),
+      })
+      expect(bothScenarios.length).toBeGreaterThan(firstScenarioRows)
+      expect(new Set(bothScenarios.map(({ meta }) => meta.scenarioHandleDigest).filter(Boolean))).toEqual(new Set(["a".repeat(64), "b".repeat(64)]))
     } finally {
       await app.stop()
       fs.rmSync(root, { recursive: true, force: true })
@@ -189,9 +206,9 @@ describe("Telegram sense", () => {
       approvalRuntime: approvalRuntime as never,
     })
     scenario = "b".repeat(64)
-    expect(() => onMessage({ updateId: 1, messageId: "2", userId: "42", chatId: "42", text: "status" }))
-      .toThrow("scenario ownership drift")
-    await expect(app.stop()).rejects.toThrow("scenario ownership drift")
+    await expect(onMessage({ updateId: 1, messageId: "2", userId: "42", chatId: "42", text: "status" }))
+      .rejects.toThrow("scenario ownership drift")
+    await expect(app.stop()).rejects.toThrow("Telegram sense cleanup failed")
     fs.rmSync(root, { recursive: true, force: true })
   })
 
@@ -228,6 +245,50 @@ describe("Telegram sense", () => {
     fs.rmSync(root, { recursive: true, force: true })
   })
 
+  it("dynamically binds a lazily activated scenario owner to timer expiry reconciliation", async () => {
+    vi.useFakeTimers()
+    const root = fs.mkdtempSync("/tmp/tgt-")
+    const identityKey = "k".repeat(43)
+    let marker: { scenarioHandleDigest: string } | null = null
+    let finishPolling!: () => void
+    const reconcileExpired = vi.fn(async () => {
+      if (!marker) return
+      const common = { scenarioHandleDigest: marker.scenarioHandleDigest, approvalId: "approval-1", evidenceMac: "f".repeat(64) }
+      emitNervesEvent({ component: "senses", event: "telegram.approval_expiry_observed", message: "expired", meta: { ...common, expiryObservedAt: Date.now() } })
+      emitNervesEvent({ component: "senses", event: "telegram.approval_prompt_terminalized", message: "terminal", meta: { ...common, buttonsRemoved: true, terminalizedAt: Date.now() } })
+    })
+    const approvalRuntime = {
+      transport: { sendApproval: vi.fn(), handleUpdate: vi.fn(), recoverDecisionAttempt: vi.fn(), reconcileExpired, terminalizeOrphaned: vi.fn(), terminalizeRecovered: vi.fn(), listPendingDeliveries: vi.fn(() => []) },
+      coordinator: vi.fn(), recover: vi.fn(), close: vi.fn(),
+    }
+    const app = createTelegramSenseApp({
+      agentName: "sanctuary", credentials: { botToken: "test-token", authorizedUserId: "42", authorizedChatId: "42" },
+      identityKey, _agentRoot: root, _toolContext: {} as never, acceptanceReceiptRoot: root, acceptanceMarker: () => marker,
+      migrateIdentity: async () => undefined, api: { request: vi.fn(), stop: vi.fn() }, offsetStore: { load: () => 0, save: vi.fn() },
+      createLongPoll: () => ({ pollOnce: vi.fn(), run: vi.fn(() => new Promise<void>((resolve) => { finishPolling = resolve })), stop: vi.fn() }),
+      approvalRuntime: approvalRuntime as never,
+      _createInteractiveControl: (() => ({ start: vi.fn(async () => undefined), stop: vi.fn(async () => undefined) })) as never,
+    })
+    try {
+      const running = app.run()
+      await vi.waitFor(() => expect(reconcileExpired).toHaveBeenCalledOnce())
+      marker = { scenarioHandleDigest: "a".repeat(64) }
+      await vi.advanceTimersByTimeAsync(1_000)
+      await vi.waitFor(() => expect(reconcileExpired.mock.calls.length).toBeGreaterThanOrEqual(2))
+      const events = verifyTelegramAuditLedger({
+        ledgerRaw: fs.readFileSync(path.join(root, TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH), "utf8"),
+        headRaw: fs.readFileSync(path.join(root, TELEGRAM_ACCEPTANCE_AUDIT_HEAD_RELATIVE_PATH), "utf8"), identityKey,
+      })
+      expect(events.map(({ event }) => event)).toEqual(expect.arrayContaining(["telegram.approval_expiry_observed", "telegram.approval_prompt_terminalized"]))
+      finishPolling()
+      await running
+      await app.stop()
+    } finally {
+      vi.useRealTimers()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it("propagates a live chained-ledger append failure before settlement cleanup", async () => {
     const root = fs.mkdtempSync("/tmp/tgf-")
     const scenarioHandleDigest = "a".repeat(64)
@@ -258,7 +319,7 @@ describe("Telegram sense", () => {
     try {
       await expect(runtimeInput.dependencies.commitAcceptanceEvidence("telegram.callback_settled", meta))
         .rejects.toThrow(/EACCES|permission denied/iu)
-      await expect(app.stop()).rejects.toThrow(/EACCES|permission denied/iu)
+      await expect(app.stop()).rejects.toThrow("Telegram sense cleanup failed")
     } finally {
       setRuntimeLogger(null)
       fs.chmodSync(ledgerPath, 0o600)

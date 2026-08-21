@@ -1,4 +1,6 @@
 import { describe, it, expect } from "vitest"
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
 
 /**
  * Tests for the static source scanner that extracts component:event keys
@@ -35,6 +37,32 @@ emitNervesEvent({
 `
     const keys = scanSourceForNervesKeys(source)
     expect(keys).toContain("mind:mind.step_start")
+  })
+
+  it("extracts static keys from emitNervesEventDurable calls", () => {
+    const source = `
+await emitNervesEventDurable({
+  component: "senses",
+  event: "telegram.callback_recovery_settled",
+  message: "recovered",
+})
+`
+    expect(scanSourceForNervesKeys(source)).toEqual(["senses:telegram.callback_recovery_settled"])
+  })
+
+  it("retains literal enforcement for emitNervesEventDurable calls", () => {
+    const source = `
+await emitNervesEventDurable({ component: "senses", event, message: "dynamic" })
+await emitNervesEventDurable({ component: componentName, event: "telegram.callback_recovery_settled", message: "dynamic" })
+`
+    expect(scanSourceForNervesKeys(source)).toEqual([])
+  })
+
+  it("discovers both production Telegram settlement keys through their durable emitters", () => {
+    const source = readFileSync(join(process.cwd(), "src", "senses", "telegram-approval-runtime.ts"), "utf8")
+    const keys = scanSourceForNervesKeys(source)
+    expect(keys).toContain("senses:telegram.callback_settled")
+    expect(keys).toContain("senses:telegram.callback_recovery_settled")
   })
 
   it("extracts multiple keys from one file", () => {

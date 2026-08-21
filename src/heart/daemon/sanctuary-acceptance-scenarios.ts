@@ -616,6 +616,8 @@ function exactApprovalEvidence(
     || (callback.event === "telegram.callback_settled" && (callback.meta.acknowledged !== true || callback.meta.acknowledgementState !== "acknowledged"))
     || (callback.event === "telegram.callback_recovery_settled" && (callback.meta.acknowledgementState !== "indeterminate_after_restart"
       || !Number.isSafeInteger(Number(callback.meta.recoveredAt)) || Number(callback.meta.recoveredAt) < callbackAt
+      || Number(callback.meta.recoveredAt) > terminalEditStartedAt
+      || callback.at < Number(callback.meta.recoveredAt)
       || typeof callback.meta.decisionAttemptDigest !== "string" || !SHA256.test(callback.meta.decisionAttemptDigest)))) return null
   }
   const continuation = continuations[0] ?? null
@@ -907,7 +909,13 @@ export function deriveSanctuaryScenarioAssertions(
     }
     case "unit-16m-restart-continuation":
       if (!intendedRestartApproval(approval) || !completeAttemptLedgerLinked || approval.state !== "succeeded" || mutationCount !== 1 || scenarioMutationCount !== 1 || !restartSucceeded || attemptedIndeterminateRetryCount !== 0) return null
-      if (!exactApprovalEvidence(before, after, approval)?.continuation) return null
+      {
+        const evidence = exactApprovalEvidence(before, after, approval)
+        if (!evidence?.continuation || !evidence.callback || evidence.callback.event !== "telegram.callback_recovery_settled"
+          || evidence.callback.meta.acknowledgementState !== "indeterminate_after_restart"
+          || evidence.callback.meta.accepted !== true || evidence.callback.meta.reason !== "accepted"
+          || typeof evidence.callback.meta.decisionAttemptDigest !== "string" || !SHA256.test(evidence.callback.meta.decisionAttemptDigest)) return null
+      }
       if (!after.interactiveDriver || after.interactiveDriver.label !== "unit-16m-restart-continuation"
         || !interactiveReceiptBindsApproval(after.interactiveDriver, approval)
         || !after.interactiveDriver.pendingRestored || after.interactiveDriver.pendingDigestBefore !== after.interactiveDriver.pendingDigestAfter || after.interactiveDriver.callbackAttempts !== 1 || after.interactiveDriver.mutationCount !== 1

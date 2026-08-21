@@ -628,7 +628,7 @@ describe("Telegram sense coverage contracts", () => {
     const ledgerPath = path.join(root, TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH)
     const headPath = path.join(root, TELEGRAM_ACCEPTANCE_AUDIT_HEAD_RELATIVE_PATH)
     fs.writeFileSync(headPath, "{}\n")
-    await expect(app.stop()).rejects.toThrow("audit head")
+    await expect(app.stop()).rejects.toThrow("Telegram sense cleanup failed")
     fs.rmSync(ledgerPath, { force: true })
     fs.rmSync(headPath, { force: true })
 
@@ -775,11 +775,11 @@ describe("Telegram sense coverage contracts", () => {
     })
     fs.writeFileSync(path.join(root, TELEGRAM_ACCEPTANCE_AUDIT_HEAD_RELATIVE_PATH), "{}\n")
 
-    expect(() => f.getOnMessage()({ updateId: 1, messageId: "2", userId: "42", chatId: "43", text: "status" }))
-      .toThrow("audit head")
+    await expect(f.getOnMessage()({ updateId: 1, messageId: "2", userId: "42", chatId: "43", text: "status" }))
+      .rejects.toThrow("audit head")
     expect(mocks.runSenseTurn).not.toHaveBeenCalled()
     expect(mocks.sendTelegramText).not.toHaveBeenCalled()
-    await expect(app.stop()).rejects.toThrow("audit head")
+    await expect(app.stop()).rejects.toThrow("Telegram sense cleanup failed")
     fs.rmSync(root, { recursive: true, force: true })
   })
 
@@ -878,11 +878,11 @@ describe("Telegram sense coverage contracts", () => {
       _acceptanceAuditMaxBytes: 1,
     })
 
-    expect(() => f.getOnMessage()({ updateId: 1, messageId: "2", userId: "42", chatId: "43", text: "status" }))
-      .toThrow(/exceeds its bound|reserved capacity/u)
+    await expect(f.getOnMessage()({ updateId: 1, messageId: "2", userId: "42", chatId: "43", text: "status" }))
+      .rejects.toThrow(/exceeds its bound|reserved capacity/u)
     expect(mocks.runSenseTurn).not.toHaveBeenCalled()
     expect(mocks.sendTelegramText).not.toHaveBeenCalled()
-    await app.stop()
+    await expect(app.stop()).rejects.toThrow(/reserved capacity|cleanup failed/u)
     fs.rmSync(root, { recursive: true, force: true })
   })
 

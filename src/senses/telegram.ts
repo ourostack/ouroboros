@@ -380,6 +380,8 @@ export interface CreateTelegramSenseAppOptions {
   _toolContext?: ReturnType<typeof createSanctuaryToolContext>
   /** Test seam for exercising default Sanctuary selection with a deterministic turn body. */
   _runTurn?: TelegramTurnRunner
+  /** Test seam for avoiding a real Unix control socket in lifecycle tests. */
+  _createInteractiveControl?: typeof createSanctuaryInteractiveControl
 }
 
 function requiredText(value: unknown, label: string): string {
@@ -684,11 +686,25 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     ? options.acceptanceMarker()
     : readSanctuaryAcceptanceMarker(options.agentName))?.scenarioHandleDigest
   let acceptanceAuditLease: ReturnType<typeof acquireTelegramAcceptanceAudit> | undefined
+  let acceptanceEffectDepth = 0
+  const retireAcceptanceAudit = (): void => {
+    const lease = acceptanceAuditLease
+    if (!lease) return
+    const errors: unknown[] = []
+    try { lease.ledger.assertHealthy() } catch (error) { errors.push(error) }
+    try { lease.release() } catch (error) { errors.push(error) }
+    finally { if (acceptanceAuditLease === lease) acceptanceAuditLease = undefined }
+    if (errors.length === 1) throw errors[0]
+    if (errors.length > 1) throw new AggregateError(errors, "Telegram acceptance audit retirement failed")
+  }
   const ensureAcceptanceAudit = (): ReturnType<typeof acquireTelegramAcceptanceAudit> | undefined => {
     if (!useSanctuaryRuntime) return undefined
     const scenarioHandleDigest = readScenarioHandleDigest()
     if (scenarioHandleDigest === undefined) {
-      if (acceptanceAuditLease) acceptanceAuditLease.ledger.poison(new Error("Telegram acceptance audit scenario ownership drift"))
+      if (acceptanceAuditLease) {
+        if (acceptanceEffectDepth > 0) acceptanceAuditLease.ledger.poison(new Error("Telegram acceptance audit scenario ownership drift"))
+        retireAcceptanceAudit()
+      }
       return undefined
     }
     if (!/^[0-9a-f]{64}$/u.test(scenarioHandleDigest)) throw new Error("Telegram acceptance audit scenario handle is invalid")
@@ -713,6 +729,24 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     if (!lease) return
     lease.ledger.assertHealthy()
     lease.ledger.assertCapacity(8)
+  }
+  const runWithAcceptanceAuditOwner = async <T>(operation: () => T | Promise<T>): Promise<T> => {
+    acceptanceAuditBarrier()
+    const ownerDigest = acceptanceAuditLease?.ownerDigest ?? ""
+    acceptanceEffectDepth += 1
+    try {
+      const result = await telegramAcceptanceAuditOwner.run(ownerDigest, operation)
+      acceptanceAuditBarrier()
+      return result
+    } catch (error) {
+      try { acceptanceAuditBarrier() } catch (auditError) {
+        if (error === auditError) throw auditError
+        throw new AggregateError([error, auditError], "Telegram effect and acceptance audit verification failed")
+      }
+      throw error
+    } finally {
+      acceptanceEffectDepth -= 1
+    }
   }
   const emitDurableSettlementEvidence = async (event: string, meta: Record<string, unknown>): Promise<void> => {
       if (event === "telegram.callback_settled") {
@@ -789,7 +823,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     }) : undefined)
     approvalTransport = options.approvalTransport ?? approvalRuntime?.transport
     interactiveControl = useSanctuaryRuntime && approvalTransport
-      ? createSanctuaryInteractiveControl({ agentRoot, transport: approvalTransport, authorizedUserId, authorizedChatId })
+      ? (options._createInteractiveControl ?? createSanctuaryInteractiveControl)({ agentRoot, transport: approvalTransport, authorizedUserId, authorizedChatId })
       : undefined
   } catch (error) {
     releaseAcceptanceAudit(error)
@@ -839,7 +873,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     approvalReconcileTimer = setTimeout(() => {
       approvalReconcileTimer = undefined
       scheduleApprovalReconcile()
-      const reconciliation = approvalTransport.reconcileExpired().catch((error) => {
+      const reconciliation = runWithAcceptanceAuditOwner(() => approvalTransport.reconcileExpired()).catch((error) => {
         acceptanceAuditBarrier()
         emitNervesEvent({
           level: "error",
@@ -1035,19 +1069,11 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     }
   }
 
-  const onMessage = (message: TelegramInboundMessage): Promise<void> => {
-    acceptanceAuditBarrier()
-    return telegramAcceptanceAuditOwner.run(acceptanceAuditLease?.ownerDigest ?? "", () => onMessageBody(message))
-  }
+  const onMessage = (message: TelegramInboundMessage): Promise<void> => runWithAcceptanceAuditOwner(() => onMessageBody(message))
 
   const onUpdate = async (update: TelegramUpdate): Promise<boolean> => {
     if (!update.callback_query || !approvalTransport) return false
-    acceptanceAuditBarrier()
-    return telegramAcceptanceAuditOwner.run(acceptanceAuditLease?.ownerDigest ?? "", async () => {
-      const result = await approvalTransport.handleUpdate(update)
-      acceptanceAuditBarrier()
-      return result.handled
-    })
+    return runWithAcceptanceAuditOwner(async () => (await approvalTransport.handleUpdate(update)).handled)
   }
 
   let poll: TelegramLongPoll
@@ -1083,7 +1109,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         return { ...binding, ...auditOwnerMeta, dropMac: sanctuaryTelegramUnauthorizedDropMac(identityKey, schemaVersion, binding) }
       },
       onBeforeDispatch: acceptanceAuditBarrier,
-      onDispatchSettled: () => acceptanceAuditLease?.ledger.assertHealthy(),
+      onDispatchSettled: acceptanceAuditBarrier,
     })
   } catch (error) {
     releaseAcceptanceAudit(error)
@@ -1092,17 +1118,12 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   return {
     run(signal) {
       if (runPromise) return runPromise
-      runPromise = telegramAcceptanceAuditOwner.run(acceptanceAuditLease?.ownerDigest ?? "", async () => {
-        acceptanceAuditLease?.ledger.assertHealthy()
-        acceptanceAuditBarrier()
-        await migrateIdentity()
-        acceptanceAuditBarrier()
-        await approvalRuntime?.recover()
-        acceptanceAuditBarrier()
-        await interactiveControl?.start()
-        acceptanceAuditBarrier()
+      runPromise = (async () => {
+        await runWithAcceptanceAuditOwner(migrateIdentity)
+        await runWithAcceptanceAuditOwner(async () => { await approvalRuntime?.recover() })
+        await runWithAcceptanceAuditOwner(async () => { await interactiveControl?.start() })
         try {
-          await approvalTransport?.reconcileExpired()
+          await runWithAcceptanceAuditOwner(async () => { await approvalTransport?.reconcileExpired() })
         } catch (error) {
           acceptanceAuditBarrier()
           emitNervesEvent({
@@ -1113,7 +1134,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
             meta: { agentName: options.agentName, subject, error: transportError(error) },
           })
         }
-        await runHealthSweep()
+        await runWithAcceptanceAuditOwner(runHealthSweep)
         emitNervesEvent({
           component: "senses",
           event: "senses.telegram_poll_start",
@@ -1131,7 +1152,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
           clearApprovalReconcileTimer()
           await Promise.all([...approvalReconciliationsInFlight])
           try {
-            await approvalTransport?.reconcileExpired()
+            await runWithAcceptanceAuditOwner(async () => { await approvalTransport?.reconcileExpired() })
           } catch (error) {
             acceptanceAuditBarrier()
             emitNervesEvent({
@@ -1144,15 +1165,15 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
           }
           await interactiveControl?.stop()
         }
-      })
+      })()
       return runPromise
     },
     async sendProactive(text, signal) {
-      await telegramAcceptanceAuditOwner.run(acceptanceAuditLease?.ownerDigest ?? "", () => deliver(requiredText(text, "proactive message"), signal))
+      await runWithAcceptanceAuditOwner(() => deliver(requiredText(text, "proactive message"), signal))
     },
     stop() {
       if (stopPromise) return stopPromise
-      stopPromise = telegramAcceptanceAuditOwner.run(acceptanceAuditLease?.ownerDigest ?? "", async () => {
+      stopPromise = (async () => {
         const errors: unknown[] = []
         const attempt = async (operation: () => void | Promise<void>): Promise<void> => {
           try { await operation() } catch (error) { errors.push(error) }
@@ -1163,19 +1184,18 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         await attempt(async () => { await interactiveControl?.stop() })
         await attempt(() => api.stop())
         await attempt(() => approvalRuntime?.close())
-        await attempt(() => {
+        await attempt(() => runWithAcceptanceAuditOwner(() => {
           emitNervesEvent({
             component: "senses",
             event: "senses.telegram_poll_end",
             message: "Telegram long poll stopped",
             meta: { agentName: options.agentName, subject },
           })
-        })
-        await attempt(() => acceptanceAuditLease?.ledger.assertHealthy())
-        await attempt(() => acceptanceAuditLease?.release())
+        }))
+        await attempt(retireAcceptanceAudit)
         if (errors.length === 1) throw errors[0]
         if (errors.length > 1) throw new AggregateError(errors, "Telegram sense cleanup failed")
-      })
+      })()
       return stopPromise
     },
   }
