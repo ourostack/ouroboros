@@ -16,6 +16,7 @@ import {
   readAutonomyBudgetState,
   readAutonomyStormBreakers,
   recordAutonomyFailure,
+  resolveAutonomyBudgetPolicy,
   reserveAutonomyBudget,
 } from "../../heart/autonomy-budget"
 
@@ -39,6 +40,45 @@ function baseRequest(overrides: Record<string, unknown> = {}) {
 describe("autonomy budget", () => {
   beforeEach(() => {
     mockEmitNervesEvent.mockReset()
+  })
+
+  it("resolves the per-agent habit budget from validated agent config", () => {
+    const sanctuaryRoot = tempAgentRoot()
+    fs.writeFileSync(path.join(sanctuaryRoot, "agent.json"), JSON.stringify({ habitPaidTurnsPerDay: 24 }))
+    expect(resolveAutonomyBudgetPolicy(sanctuaryRoot, "sanctuary").habitPaidTurnsPerDay).toBe(24)
+
+    const genericRoot = tempAgentRoot()
+    expect(resolveAutonomyBudgetPolicy(genericRoot, "slugger").habitPaidTurnsPerDay).toBe(4)
+    expect(() => resolveAutonomyBudgetPolicy(genericRoot, "sanctuary")).toThrow("must explicitly set")
+  })
+
+  it.each([
+    ["fractional", 1.5],
+    ["negative", -1],
+    ["above the maximum", 97],
+  ])("rejects a %s per-agent habit budget", (_label, value) => {
+    const agentRoot = tempAgentRoot()
+    const configPath = path.join(agentRoot, "agent.json")
+    fs.writeFileSync(configPath, JSON.stringify({ habitPaidTurnsPerDay: value }))
+
+    expect(() => resolveAutonomyBudgetPolicy(agentRoot, "slugger")).toThrow("integer from 0 through 96")
+    expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      level: "error",
+      event: "config_identity.error",
+      meta: { path: configPath, value },
+    }))
+  })
+
+  it.each([
+    ["malformed JSON", "{", "failed to read autonomy budget"],
+    ["null", "null", "must be an object"],
+    ["a primitive", "42", "must be an object"],
+    ["an array", "[]", "must be an object"],
+  ])("fails closed when agent config contains %s", (_label, contents, message) => {
+    const agentRoot = tempAgentRoot()
+    fs.writeFileSync(path.join(agentRoot, "agent.json"), contents)
+
+    expect(() => resolveAutonomyBudgetPolicy(agentRoot, "slugger")).toThrow(message)
   })
 
   it("allows a first recovery reservation and stores only content-free budget state", () => {
@@ -256,6 +296,35 @@ describe("autonomy budget", () => {
 
     expect(duplicate.status).toBe("duplicate")
     expect(fs.readFileSync(path.join(autonomyReceiptsDir(agentRoot), `${duplicate.receiptId}.json`), "utf-8")).not.toContain("never store habit text")
+  })
+
+  it("enforces the per-habit daily paid-turn budget", () => {
+    const agentRoot = tempAgentRoot()
+    const policy = {
+      ...AUTONOMY_BUDGET_DEFAULT_POLICY,
+      agentProactivePaidTurnsPerHour: 10,
+      agentProactivePaidTurnsPerDay: 10,
+      habitPaidTurnsPerDay: 1,
+    }
+    const request = {
+      agent: "slugger",
+      triggerType: "habit" as const,
+      sourceKind: "private-runtime" as const,
+      senseOrHabit: "rsvp",
+      target: { habitName: "rsvp" },
+      idempotencyKey: "habit:rsvp:first",
+      now: "2026-07-09T17:00:00.000Z",
+    }
+
+    expect(reserveAutonomyBudget(agentRoot, request, policy).allowed).toBe(true)
+    expect(reserveAutonomyBudget(agentRoot, {
+      ...request,
+      idempotencyKey: "habit:rsvp:second",
+      now: "2026-07-09T18:00:00.000Z",
+    }, policy)).toMatchObject({
+      allowed: false,
+      reason: "habit paid turn budget exceeded for day",
+    })
   })
 
   it("marks failed reservations retryable while still counting the attempted turn", () => {

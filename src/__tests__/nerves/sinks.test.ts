@@ -1,6 +1,7 @@
-import { mkdtempSync, readFileSync } from "fs"
+import { mkdtempSync, readFileSync, renameSync, rmSync } from "fs"
 import { join } from "path"
 import { tmpdir } from "os"
+import { gunzipSync } from "zlib"
 
 import { describe, expect, it } from "vitest"
 
@@ -45,5 +46,58 @@ describe("observability/sinks", () => {
     expect(lines).toHaveLength(2)
     expect(JSON.parse(lines[0] as string).event).toBe("turn.start")
     expect(JSON.parse(lines[1] as string).event).toBe("turn.end")
+  })
+
+  it("resolves its durability barrier only after prior NDJSON appends are readable", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ouro-observability-barrier-"))
+    const filePath = join(dir, "events.ndjson")
+    const sink = createNdjsonFileSink(filePath)
+    sink({ ts: "2026-03-02T17:00:00.000Z", level: "info", event: "durable.event", trace_id: "trace-1", component: "entrypoints", message: "durable", meta: {} })
+
+    await sink.barrier()
+
+    expect(JSON.parse(readFileSync(filePath, "utf8")).event).toBe("durable.event")
+  })
+
+  it("rejects the durability barrier when a prior append fails", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ouro-observability-barrier-failure-"))
+    const sink = createNdjsonFileSink(join(dir, "events.ndjson"))
+    rmSync(dir, { recursive: true, force: true })
+    sink({ ts: "2026-03-02T17:00:00.000Z", level: "info", event: "durable.failure", trace_id: "trace-1", component: "entrypoints", message: "durable", meta: {} })
+
+    await expect(sink.barrier()).rejects.toThrow()
+  })
+
+  it("rejects the durability barrier when the containing directory cannot be fsynced", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ouro-observability-barrier-directory-failure-"))
+    const movedDir = `${dir}-moved`
+    const filePath = join(dir, "events.ndjson")
+    const sink = createNdjsonFileSink(filePath)
+    sink({ ts: "2026-03-02T17:00:00.000Z", level: "info", event: "durable.directory_failure", trace_id: "trace-1", component: "entrypoints", message: "durable", meta: {} })
+
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      try {
+        if (readFileSync(filePath, "utf8").length > 0) break
+      } catch {
+        // File write is asynchronous; retry briefly.
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    }
+    renameSync(dir, movedDir)
+
+    await expect(sink.barrier()).rejects.toThrow()
+    rmSync(movedDir, { recursive: true, force: true })
+  })
+
+  it("does not resolve a barrier until a post-append rotation preserves the event", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ouro-observability-barrier-rotation-"))
+    const filePath = join(dir, "events.ndjson")
+    const sink = createNdjsonFileSink(filePath, { maxSizeBytes: 1, rotationCheckIntervalBytes: 1 })
+    sink({ ts: "2026-03-02T17:00:00.000Z", level: "info", event: "durable.rotated", trace_id: "trace-1", component: "entrypoints", message: "durable", meta: {} })
+
+    await sink.barrier()
+
+    const rotated = gunzipSync(readFileSync(join(dir, "events.1.ndjson.gz"))).toString("utf8")
+    expect(JSON.parse(rotated).event).toBe("durable.rotated")
   })
 })

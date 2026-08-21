@@ -1774,6 +1774,7 @@ describe("HabitScheduler", () => {
         osCronManager: cronManager,
         onHabitFire,
         deps,
+        platform: "darwin",
       })
 
       scheduler.start()
@@ -2598,6 +2599,48 @@ describe("HabitScheduler", () => {
 
       return { scheduler, execForVerify, readdir }
     }
+
+    it.each(["linux", "darwin"])("accepts injected %s cron verification using platform labels", (platform) => {
+      deps = makeDeps({ readdir: vi.fn(() => ["heartbeat.md"]), readFile: vi.fn(() => "content") })
+      mockParseHabitFile.mockReturnValue(makeHeartbeatHabit())
+      const verifyJobs = vi.fn(() => true)
+      const scheduler = new HabitScheduler({
+        agent: "slugger",
+        habitsDir: "/habits",
+        osCronManager: cronManager,
+        onHabitFire,
+        deps,
+        verifyJobs,
+        platform,
+      })
+
+      scheduler.start()
+
+      expect(verifyJobs).toHaveBeenCalledWith([
+        expect.objectContaining({ taskId: "heartbeat" }),
+      ])
+      expect(scheduler.getDegradedHabits()).toEqual([])
+    })
+
+    it("falls back safely when injected verification rejects and no shell verifier exists", () => {
+      deps = makeDeps({ readdir: vi.fn(() => ["heartbeat.md"]), readFile: vi.fn(() => "content") })
+      mockParseHabitFile.mockReturnValue(makeHeartbeatHabit())
+      const scheduler = new HabitScheduler({
+        agent: "slugger",
+        habitsDir: "/habits",
+        osCronManager: cronManager,
+        onHabitFire,
+        deps,
+        verifyJobs: () => false,
+        platform: "linux",
+      })
+
+      scheduler.start()
+      expect(scheduler.getDegradedHabits()).toEqual([
+        expect.objectContaining({ name: "heartbeat", reason: "cron registration failed — using timer fallback" }),
+      ])
+      scheduler.stop()
+    })
 
     it("calls execForVerify after osCronManager.sync() to verify cron entries", () => {
       const execForVerify = vi.fn(() => "bot.ouro.slugger.heartbeat\n")

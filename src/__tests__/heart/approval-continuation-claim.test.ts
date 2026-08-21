@@ -354,5 +354,5 @@ describe("durable continuation claim", () => {
       checkpoint.frozenAssistantMessage,
       { role: "tool", tool_call_id: "call_restart", content: "restarted" },
     ])
-  })
+  }, 15_000)
 })

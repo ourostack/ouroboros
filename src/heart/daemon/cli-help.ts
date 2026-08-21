@@ -463,6 +463,11 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
     usage: "ouro connect a2a [--agent <name>]",
     example: "ouro connect a2a --agent <agent>",
   },
+  "connect telegram": {
+    description: "Connect a private Telegram bot and enable the Telegram sense",
+    usage: "ouro connect telegram [--agent <name>]",
+    example: "ouro connect telegram --agent <agent>",
+  },
   "connect workbench": {
     description: "Verify native Ouro Workbench runtime injection and clean stale bundle entries",
     usage: "ouro connect workbench [--agent <name>]",

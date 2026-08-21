@@ -18,6 +18,11 @@ function buildSteps(repoRoot, deps = defaultDeps()) {
       args: [deps.resolveTypeScriptTsc()],
     },
     {
+      label: "smoke Sanctuary health acceptance probe entry",
+      command: deps.execPath,
+      args: [deps.join(repoRoot, "scripts", "sanctuary-health-acceptance-probe-entry-smoke.cjs")],
+    },
+    {
       label: "install Mailbox UI dependencies",
       command: deps.npmExecutable(),
       args: ["install", "--prefix", "packages/mailbox-ui", "--ignore-scripts"],

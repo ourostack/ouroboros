@@ -2,6 +2,7 @@ import * as fs from "fs"
 import * as net from "net"
 import * as os from "os"
 import * as path from "path"
+import { randomUUID } from "node:crypto"
 import { getAgentBundlesRoot, getRepoRoot, setAgentName } from "../identity"
 import {
   listAllBundleAgents,
@@ -52,7 +53,10 @@ import { createDegradedHabitFile, parseHabitFile, type HabitFile } from "../habi
 import { applyHabitRuntimeState } from "../habits/habit-runtime-state"
 import { buildExternalEventMessage, recordExternalEvent, type ExternalEventRecord } from "../external-events/router"
 import { isRsvpHabitName } from "../../rsvp/habit-policy"
+import { readContainerRuntimePolicy } from "./container-runtime"
 import type { RunNativeRsvpHabitInput, RunNativeRsvpHabitResult } from "../../rsvp/native-habit-runner"
+import { completeHabitRun } from "../habits/habit-session"
+import type { SanctuarySchedulerFireCommand, SanctuarySchedulerOrigin } from "./sanctuary-scheduler-origin"
 
 const PIDFILE_PATH = path.join(os.homedir(), ".ouro-cli", "daemon.pids")
 
@@ -108,6 +112,7 @@ export function parseOrphanPidsFromPs(psOutput: string, selfPid: number): number
       && !line.includes("mail-entry.js")
       && !line.includes("teams-entry.js")
       && !line.includes("a2a-entry.js")
+      && !line.includes("telegram-entry.js")
       && !line.includes("voice-entry.js")
     ) continue
     // Parse `<pid> <ppid> <command...>`. ps pads these with leading spaces.
@@ -526,6 +531,7 @@ export type DaemonCommand =
   | { kind: "chat.connect"; agent: string }
   | { kind: "task.poke"; agent: string; taskId: string }
   | { kind: "habit.poke"; agent: string; habitName: string; trigger?: HabitRunTrigger; occurrenceId?: string }
+  | SanctuarySchedulerFireCommand
   | { kind: "habit.probe"; agent: string; habitName: string; noSend?: true }
   | { kind: "await.poke"; agent: string; awaitName: string }
   | { kind: "external.event.submit"; agent: string; source: string; eventType: string; eventId: string; summary?: string; evidence?: string[]; payloadPath?: string; priority?: string; sessionId?: string; taskRef?: string; wake?: boolean }
@@ -568,11 +574,15 @@ export interface OuroDaemonOptions {
    * use this to schedule process-level shutdown without putting process.exit()
    * in the daemon core.
    */
-  onStopCommandComplete?: () => void
+  onStopCommandComplete?: () => void | Promise<void>
   /** Test seam for external-event receipts. Defaults to ~/.ouro-cli/daemon/external-events. */
   externalEventRoot?: string
   /** Test seam for typed native RSVP habit execution. Defaults to the real native runner. */
   rsvpHabitRunner?: (input: RunNativeRsvpHabitInput) => Promise<RunNativeRsvpHabitResult>
+  nativeHabitRunner?: (input: { agent: string; habitName: string; trigger: HabitRunTrigger; occurrenceId?: string; runnerId: string; schedulerOrigin?: SanctuarySchedulerOrigin }) => Promise<DaemonResponse | null>
+  nativeHabitMatch?: (agent: string, habitName: string) => boolean
+  schedulerFireVerifier?: (command: SanctuarySchedulerFireCommand) => SanctuarySchedulerOrigin & { occurrenceId: string }
+  schedulerFireConsumer?: (origin: SanctuarySchedulerOrigin & { occurrenceId: string }) => void
   /** Startup barrier that proves no prior Ouro daemon/worker remains before
    *  this daemon opens its socket or autostarts any replacement. */
   orphanStartupDrain?: (socketPath: string) => Promise<void>
@@ -852,9 +862,15 @@ export class OuroDaemon {
   private senseAutostartTimer: ReturnType<typeof setTimeout> | null = null
   private readonly mailboxServerFactory: () => Promise<MailboxHttpServerHandle>
   private readonly privateRuntimePolicyDeps: PrivateTurnPolicyDeps
-  private readonly onStopCommandComplete: (() => void) | null
+  private readonly onStopCommandComplete: (() => void | Promise<void>) | null
   private readonly externalEventRoot: string | null
   private readonly rsvpHabitRunner?: (input: RunNativeRsvpHabitInput) => Promise<RunNativeRsvpHabitResult>
+  private readonly nativeHabitRunner?: OuroDaemonOptions["nativeHabitRunner"]
+  private readonly nativeHabitMatch?: OuroDaemonOptions["nativeHabitMatch"]
+  private readonly nativeHabitClaims = new Set<string>()
+  private readonly authenticatedSchedulerPokes = new WeakMap<object, SanctuarySchedulerOrigin>()
+  private readonly schedulerFireVerifier?: OuroDaemonOptions["schedulerFireVerifier"]
+  private readonly schedulerFireConsumer?: OuroDaemonOptions["schedulerFireConsumer"]
   private readonly orphanStartupDrain: (socketPath: string) => Promise<void>
 
   constructor(options: OuroDaemonOptions) {
@@ -871,6 +887,10 @@ export class OuroDaemon {
     this.onStopCommandComplete = options.onStopCommandComplete ?? null
     this.externalEventRoot = options.externalEventRoot ?? null
     this.rsvpHabitRunner = options.rsvpHabitRunner
+    this.nativeHabitRunner = options.nativeHabitRunner
+    this.nativeHabitMatch = options.nativeHabitMatch
+    this.schedulerFireVerifier = options.schedulerFireVerifier
+    this.schedulerFireConsumer = options.schedulerFireConsumer
     this.orphanStartupDrain = options.orphanStartupDrain ?? drainOrphanProcessesBeforeStartup
   }
 
@@ -999,20 +1019,21 @@ export class OuroDaemon {
   }
 
   private async startInner(): Promise<void> {
+    const containerPolicy = readContainerRuntimePolicy()
     // Register update hooks and apply pending updates before starting agents
     registerUpdateHook(bundleMetaHook)
     registerUpdateHook(agentConfigV2Hook)
     const currentVersion = getPackageVersion()
-    await applyPendingUpdates(this.bundlesRoot, currentVersion)
+    if (containerPolicy?.updates !== "disabled") await applyPendingUpdates(this.bundlesRoot, currentVersion)
 
     // Start periodic update checker (polls npm registry every 30 minutes)
     // Skip in dev mode — dev builds should not auto-update from npm
-    if (this.mode === "dev") {
+    if (this.mode === "dev" || containerPolicy?.updates === "disabled") {
       emitNervesEvent({
         component: "daemon",
         event: "daemon.update_checker_skip",
         message: "skipping update checker in dev mode",
-        meta: { reason: "dev mode" },
+        meta: { reason: this.mode === "dev" ? "dev mode" : "container policy" },
       })
     } else {
       startUpdateChecker({
@@ -1887,7 +1908,7 @@ export class OuroDaemon {
         try {
           await this.stop()
         } finally {
-          this.onStopCommandComplete?.()
+          await this.onStopCommandComplete?.()
         }
         return { ok: true, message: "daemon stopped" }
       case "daemon.restart": {
@@ -1907,7 +1928,7 @@ export class OuroDaemon {
         try {
           await this.stop()
         } finally {
-          this.onStopCommandComplete?.()
+          await this.onStopCommandComplete?.()
         }
         return {
           ok: true,
@@ -2226,6 +2247,18 @@ export class OuroDaemon {
           data: receipt,
         }
       }
+      case "habit.scheduler-fire": {
+        if (!this.schedulerFireVerifier || !this.schedulerFireConsumer) return { ok: false, error: "authenticated scheduler fire is unavailable" }
+        let origin: SanctuarySchedulerOrigin & { occurrenceId: string }
+        try {
+          origin = this.schedulerFireVerifier(command)
+          this.schedulerFireConsumer(origin)
+        }
+        catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) } }
+        const poke = { kind: "habit.poke", agent: command.agent, habitName: command.habitName, trigger: "cron", occurrenceId: origin.occurrenceId } as const
+        this.authenticatedSchedulerPokes.set(poke, origin)
+        try { return await this.handleCommand(poke) } finally { this.authenticatedSchedulerPokes.delete(poke) }
+      }
       case "habit.poke": {
         if (!isValidHabitPokeCommand(command)) {
           return {
@@ -2237,6 +2270,10 @@ export class OuroDaemon {
         const trigger = command.trigger ?? "poke"
         if (!isHabitRunTrigger(trigger)) {
           return { ok: false, error: `invalid habit trigger: ${String(trigger)}` }
+        }
+        const schedulerOrigin = this.authenticatedSchedulerPokes.get(command)
+        if (command.agent === "sanctuary" && command.habitName === "sanctuary-health" && trigger === "cron" && !schedulerOrigin) {
+          return { ok: false, error: "Sanctuary cron habit requires authenticated Supercronic provenance" }
         }
         if (!isRsvpHabitName(command.habitName) && !this.hasManagedPrivateRuntime(command.agent)) {
           return {
@@ -2270,6 +2307,51 @@ export class OuroDaemon {
           trigger,
           resolution,
         })
+        if (this.nativeHabitRunner && this.nativeHabitMatch?.(command.agent, command.habitName)) {
+          const occurrenceId = resolution.occurrenceId ?? `${trigger}:${command.agent}:${command.habitName}`
+          const claimKey = `${command.agent}:${command.habitName}`
+          if (this.nativeHabitClaims.has(claimKey)) {
+            return { ok: true, message: `skipped overlapping native habit occurrence ${occurrenceId}` }
+          }
+          this.nativeHabitClaims.add(claimKey)
+          const startedAt = new Date().toISOString()
+          const runnerId = randomUUID()
+          let nativeResult: DaemonResponse
+          try {
+            nativeResult = await this.nativeHabitRunner({
+              agent: command.agent,
+              habitName: command.habitName,
+              trigger,
+              occurrenceId,
+              runnerId,
+              ...(schedulerOrigin ? { schedulerOrigin } : {}),
+            }) ?? { ok: false, error: "native habit runner declined a matched habit" }
+          } catch (error) {
+            nativeResult = { ok: false, error: error instanceof Error ? error.message : String(error) }
+          }
+          const endedAt = new Date().toISOString()
+          let completion
+          try {
+            completion = completeHabitRun({
+              agentRoot: path.join(this.bundlesRoot, `${command.agent}.ouro`),
+              habit: resolution.habit,
+              runId: runnerId,
+              trigger,
+              startedAt,
+              endedAt,
+              operationId: occurrenceId,
+              permissionEnvelope: { schemaVersion: 1, canMessageOutward: true, returnRoutes: [], deniedTools: [], warnings: [] },
+              toolPolicy: { requestedTools: null, grantedTools: [], deniedTools: [], outwardMessagingAllowed: true },
+              ...(nativeResult.ok ? {} : { errors: [nativeResult.error ?? nativeResult.message ?? "native habit failed"] }),
+            })
+          } finally {
+            this.nativeHabitClaims.delete(claimKey)
+          }
+          if (!completion.receiptWritten || !completion.runtimeStateRecorded) {
+            return { ok: false, error: "native habit completed but its durable receipt or cursor could not be recorded", data: nativeResult }
+          }
+          return nativeResult
+        }
         if (isRsvpHabitName(command.habitName)) {
           return this.runNativeRsvpHabit(command, trigger, resolution.occurrenceId)
         }

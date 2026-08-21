@@ -10,6 +10,7 @@ vi.mock("../../../nerves/runtime", () => ({
 
 import {
   DaemonHealthWriter,
+  startDaemonHealthHeartbeat,
   readHealth,
   getDefaultHealthPath,
   type DaemonHealthState,
@@ -22,6 +23,7 @@ describe("daemon-health", () => {
   let tmpDir: string
 
   afterEach(() => {
+    vi.useRealTimers()
     if (tmpDir) {
       fs.rmSync(tmpDir, { recursive: true, force: true })
     }
@@ -59,6 +61,27 @@ describe("daemon-health", () => {
   })
 
   describe("DaemonHealthWriter", () => {
+    it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])("rejects invalid heartbeat interval %s", (intervalMs) => {
+      expect(() => startDaemonHealthHeartbeat({ writeHealth: vi.fn() }, () => makeHealthState(), intervalMs)).toThrow(
+        "health heartbeat interval must be positive",
+      )
+    })
+
+    it("refreshes the health receipt on a fixed heartbeat", () => {
+      vi.useFakeTimers()
+      const writer = { writeHealth: vi.fn() }
+      const getState = vi.fn(() => makeHealthState())
+
+      const stop = startDaemonHealthHeartbeat(writer, getState, 30_000)
+      expect(writer.writeHealth).toHaveBeenCalledTimes(1)
+      vi.advanceTimersByTime(60_000)
+      expect(writer.writeHealth).toHaveBeenCalledTimes(3)
+      stop()
+      vi.advanceTimersByTime(30_000)
+      expect(writer.writeHealth).toHaveBeenCalledTimes(3)
+      vi.useRealTimers()
+    })
+
     it("writes daemon-health.json to the configured path", () => {
       const dir = makeTmpDir()
       const healthPath = path.join(dir, "daemon-health.json")

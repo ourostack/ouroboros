@@ -18,6 +18,13 @@ describe("detectRuntimeMode", () => {
     expect(result).toBe("production")
   })
 
+  it("returns 'production' for the pinned container runtime marker", () => {
+    const existsSync = vi.fn((path: string) => path === "/opt/ouro/container-runtime.json")
+
+    expect(detectRuntimeMode("/opt/ouro", { existsSync })).toBe("production")
+    expect(existsSync).toHaveBeenCalledWith("/opt/ouro/container-runtime.json")
+  })
+
   it("returns 'dev' when path is a git repo (has .git at root)", () => {
     const existsSync = vi.fn(() => true)
     const result = detectRuntimeMode("/Users/ari/Projects/repo", { existsSync })

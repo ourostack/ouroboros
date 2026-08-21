@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "profiles": {
+    "sanctuary-telegram": [
+      "unraid_list_containers",
+      "unraid_get_container_logs",
+      "unraid_get_storage",
+      "unraid_get_disks",
+      "unraid_get_notifications",
+      "unraid_get_system",
+      "unraid_restart_container",
+      "ponder",
+      "settle",
+      "speak"
+    ],
+    "sanctuary-health-private": [
+      "send_message",
+      "rest"
+    ]
+  }
+}

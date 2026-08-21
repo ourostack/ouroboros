@@ -3,8 +3,11 @@ import * as os from "os"
 import * as path from "path"
 import { emitNervesEvent } from "../nerves/runtime"
 import { migrateAgentConfigV1ToV2 } from "./migrate-config"
+import { DEFAULT_HABIT_PAID_TURNS_PER_DAY, normalizeHabitPaidTurnsPerDay } from "./autonomy-budget"
 
-export type AgentProvider = "azure" | "minimax" | "anthropic" | "openai-codex" | "github-copilot"
+export { normalizeHabitPaidTurnsPerDay } from "./autonomy-budget"
+
+export type AgentProvider = "azure" | "minimax" | "anthropic" | "openai-codex" | "github-copilot" | "openai-compatible" | "openai-compatible-gemini"
 
 /** Single source of truth for per-provider credential field names, env var mappings, and prompt labels. */
 export const PROVIDER_CREDENTIALS: Record<AgentProvider, {
@@ -17,8 +20,10 @@ export const PROVIDER_CREDENTIALS: Record<AgentProvider, {
   azure:            { required: ["apiKey", "endpoint", "deployment"],   envVars: { AZURE_OPENAI_API_KEY: "apiKey", AZURE_OPENAI_KEY: "apiKey", AZURE_OPENAI_ENDPOINT: "endpoint", AZURE_OPENAI_DEPLOYMENT: "deployment" }, promptLabels: { apiKey: "Azure API key", endpoint: "Azure endpoint", deployment: "Azure deployment" } },
   minimax:          { required: ["apiKey"],                             envVars: { MINIMAX_API_KEY: "apiKey" },                                                                                              promptLabels: { apiKey: "MiniMax API key" } },
   "github-copilot": { required: ["githubToken", "baseUrl"],             envVars: { GH_TOKEN: "githubToken", GITHUB_TOKEN: "githubToken" },                                                                   promptLabels: { githubToken: "GitHub token" } },
+  "openai-compatible": { required: ["apiKey", "baseUrl"], envVars: {}, promptLabels: { apiKey: "Z.ai API key", baseUrl: "Z.ai canonical base URL" } },
+  "openai-compatible-gemini": { required: ["apiKey", "baseUrl"], envVars: {}, promptLabels: { apiKey: "Gemini API key", baseUrl: "Gemini canonical base URL" } },
 }
-export type SenseName = "cli" | "teams" | "bluebubbles" | "mail" | "voice" | "a2a" | "workbench"
+export type SenseName = "cli" | "teams" | "bluebubbles" | "mail" | "voice" | "a2a" | "telegram" | "workbench"
 
 export type LogLevel = "debug" | "info" | "warn" | "error"
 export type LogSinkType = "terminal" | "ndjson"
@@ -33,6 +38,7 @@ export interface AgentSensesConfig {
   mail: AgentSenseConfig
   voice: AgentSenseConfig
   a2a: AgentSenseConfig
+  telegram: AgentSenseConfig
   workbench: AgentSenseConfig
 }
 
@@ -59,6 +65,7 @@ export interface AgentConfig {
     maxTokens?: number
     contextMargin?: number
   }
+  habitPaidTurnsPerDay?: number
   logging?: {
     level?: LogLevel
     sinks?: LogSinkType[]
@@ -180,6 +187,7 @@ export const DEFAULT_AGENT_SENSES: AgentSensesConfig = {
   mail: { enabled: false },
   voice: { enabled: false },
   a2a: { enabled: false },
+  telegram: { enabled: false },
   workbench: { enabled: false },
 }
 
@@ -191,6 +199,7 @@ export function normalizeSenses(value: unknown, configFile: string): AgentSenses
     mail: { ...DEFAULT_AGENT_SENSES.mail },
     voice: { ...DEFAULT_AGENT_SENSES.voice },
     a2a: { ...DEFAULT_AGENT_SENSES.a2a },
+    telegram: { ...DEFAULT_AGENT_SENSES.telegram },
     workbench: { ...DEFAULT_AGENT_SENSES.workbench },
   }
 
@@ -209,7 +218,7 @@ export function normalizeSenses(value: unknown, configFile: string): AgentSenses
   }
 
   const raw = value as Record<string, unknown>
-  const senseNames: SenseName[] = ["cli", "teams", "bluebubbles", "mail", "voice", "a2a", "workbench"]
+  const senseNames: SenseName[] = ["cli", "teams", "bluebubbles", "mail", "voice", "a2a", "telegram", "workbench"]
   for (const senseName of senseNames) {
     const rawSense = raw[senseName]
     if (rawSense === undefined) {
@@ -249,6 +258,7 @@ export function buildDefaultAgentTemplate(_agentName: string): AgentConfig {
     humanFacing: { provider: "anthropic", model: "claude-opus-4-6" },
     agentFacing: { provider: "anthropic", model: "claude-opus-4-6" },
     context: { ...DEFAULT_AGENT_CONTEXT },
+    habitPaidTurnsPerDay: DEFAULT_HABIT_PAID_TURNS_PER_DAY,
     senses: {
       cli: { ...DEFAULT_AGENT_SENSES.cli },
       teams: { ...DEFAULT_AGENT_SENSES.teams },
@@ -256,6 +266,7 @@ export function buildDefaultAgentTemplate(_agentName: string): AgentConfig {
       mail: { ...DEFAULT_AGENT_SENSES.mail },
       voice: { ...DEFAULT_AGENT_SENSES.voice },
       a2a: { ...DEFAULT_AGENT_SENSES.a2a },
+      telegram: { ...DEFAULT_AGENT_SENSES.telegram },
       workbench: { ...DEFAULT_AGENT_SENSES.workbench },
     },
     phrases: {
@@ -366,7 +377,7 @@ export function getAgentToolsRoot(agentName?: string): string {
   return path.join(getAgentStateRoot(resolveOptionalAgentName(agentName)), "tools")
 }
 
-const VALID_PROVIDERS: readonly string[] = ["azure", "minimax", "anthropic", "openai-codex", "github-copilot"]
+const VALID_PROVIDERS: readonly string[] = ["azure", "minimax", "anthropic", "openai-codex", "github-copilot", "openai-compatible", "openai-compatible-gemini"]
 
 function isValidProvider(value: unknown): value is AgentProvider {
   return typeof value === "string" && VALID_PROVIDERS.includes(value)
@@ -562,6 +573,7 @@ export function loadAgentConfig(): AgentConfig {
     enabled,
     humanFacing,
     agentFacing,
+    habitPaidTurnsPerDay: normalizeHabitPaidTurnsPerDay(getAgentName(), parsed.habitPaidTurnsPerDay, configFile),
     senses: normalizeSenses(parsed.senses, configFile),
     phrases: parsed.phrases as AgentConfig["phrases"],
   }

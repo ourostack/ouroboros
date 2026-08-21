@@ -46,6 +46,7 @@ describe("readAgentConfigForAgent structural contract", () => {
       expect(config.vault).toEqual(FULL_AGENT_JSON.vault)
       expect(config.sync).toEqual(FULL_AGENT_JSON.sync)
       expect(config.plugins).toEqual(FULL_AGENT_JSON.plugins)
+      expect(config.habitPaidTurnsPerDay).toBe(4)
     } finally {
       tmp.cleanup()
     }
@@ -99,6 +100,7 @@ describe("readAgentConfigForAgent structural contract", () => {
         mail: { enabled: false },
         voice: { enabled: false },
         a2a: { enabled: false },
+        telegram: { enabled: false },
         workbench: { enabled: false },
       })
     } finally {

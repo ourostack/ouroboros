@@ -371,8 +371,9 @@ describe("ponder packets in runAgent", () => {
       .mockReturnValueOnce(makeStream(restChunks({ status: "HEARTBEAT_OK" })))
 
     const callbacks = makeCallbacks()
+    const messages: any[] = [{ role: "user", content: "probe only" }]
     const result = await runAgent(
-      [{ role: "user", content: "probe only" }],
+      messages,
       callbacks,
       "inner",
       undefined,
@@ -390,6 +391,11 @@ describe("ponder packets in runAgent", () => {
     expect(mockCreatePonderPacket).not.toHaveBeenCalled()
     expect(mockRevisePonderPacket).not.toHaveBeenCalled()
     expectNoPonderWake()
+    expect(messages).toContainEqual(expect.objectContaining({
+      role: "tool",
+      tool_call_id: "call_ponder",
+      content: expect.stringContaining("was not advertised"),
+    }))
     expect(callbacks.onToolStart).not.toHaveBeenCalledWith("ponder", expect.anything())
     expect(callbacks.onToolEnd).not.toHaveBeenCalledWith("ponder", expect.any(String), expect.any(Boolean))
   })
@@ -1084,7 +1090,7 @@ describe("ponder packets in runAgent", () => {
       success_criteria: "- no self-return loop",
       payload_json: "{}",
     })))
-    mockCreate.mockReturnValueOnce(makeStream(settleChunks("rested")))
+    mockCreate.mockReturnValueOnce(makeStream(restChunks({ status: "done" })))
 
     await runAgent(
       [{ role: "user", content: "heartbeat" }],
@@ -1220,27 +1226,63 @@ describe("ponder packets in runAgent", () => {
     )
   })
 
-  it("normalizes legacy thought with a non-string say into an empty summary", async () => {
+  it("normalizes legacy thought without optional say text", async () => {
+    mockCreate.mockReturnValueOnce(makeStream(ponderCreateChunks({
+      thought: "Think quietly through the attachment architecture",
+    })))
+    mockCreate.mockReturnValueOnce(makeStream(settleChunks("done")))
+
+    await runAgent([{ role: "user", content: "hi" }], makeCallbacks(), "cli")
+
+    expect(mockCreatePonderPacket).toHaveBeenCalledWith(
+      "/mock/repo/testagent",
+      expect.objectContaining({
+        objective: "Think quietly through the attachment architecture",
+        summary: "",
+      }),
+    )
+  })
+
+  it("defaults an omitted ponder action to create and accepts an omitted summary", async () => {
+    mockCreate.mockReturnValueOnce(makeStream(ponderCreateChunks({
+      kind: "reflection",
+      objective: "Use the default create action",
+      success_criteria: "- packet created",
+      payload_json: "{}",
+    })))
+    mockCreate.mockReturnValueOnce(makeStream(settleChunks("done")))
+
+    await runAgent([{ role: "user", content: "hi" }], makeCallbacks(), "cli")
+
+    expect(mockCreatePonderPacket).toHaveBeenCalledWith(
+      "/mock/repo/testagent",
+      expect.objectContaining({
+        objective: "Use the default create action",
+        summary: "",
+      }),
+    )
+  })
+
+  it("rejects a legacy ponder packet with a non-string say before handling", async () => {
     mockCreate.mockReturnValueOnce(makeStream(ponderCreateChunks({
       thought: "Think through the attachment architecture",
       say: 42 as any,
     })))
     mockCreate.mockReturnValueOnce(makeStream(settleChunks("done")))
 
+    const messages: any[] = [{ role: "user", content: "hi" }]
     await runAgent(
-      [{ role: "user", content: "hi" }],
+      messages,
       makeCallbacks(),
       "cli",
     )
 
-    expect(mockCreatePonderPacket).toHaveBeenCalledWith(
-      "/mock/repo/testagent",
-      expect.objectContaining({
-        kind: "reflection",
-        objective: "Think through the attachment architecture",
-        summary: "",
-      }),
-    )
+    expect(mockCreatePonderPacket).not.toHaveBeenCalled()
+    expect(messages).toContainEqual(expect.objectContaining({
+      role: "tool",
+      tool_call_id: "call_ponder",
+      content: expect.stringContaining("invalid tool arguments"),
+    }))
   })
 
   it("rejects create when the packet spec is incomplete", async () => {
@@ -1262,6 +1304,31 @@ describe("ponder packets in runAgent", () => {
 
     expect(mockCreatePonderPacket).not.toHaveBeenCalled()
     expect(callbacks.onToolEnd).toHaveBeenCalledWith("ponder", expect.any(String), false)
+  })
+
+  it("rejects create when success criteria or payload_json are omitted", async () => {
+    mockCreate
+      .mockReturnValueOnce(makeStream(ponderCreateChunks({
+        action: "create",
+        kind: "reflection",
+        objective: "Missing criteria",
+        summary: "oops",
+        payload_json: "{}",
+      })))
+      .mockReturnValueOnce(makeStream(ponderCreateChunks({
+        action: "create",
+        kind: "reflection",
+        objective: "Missing payload",
+        summary: "oops",
+        success_criteria: "- one",
+      })))
+      .mockReturnValueOnce(makeStream(settleChunks("done")))
+
+    const callbacks = makeCallbacks()
+    await runAgent([{ role: "user", content: "hi" }], callbacks, "cli")
+
+    expect(mockCreatePonderPacket).not.toHaveBeenCalled()
+    expect((callbacks.onToolEnd as any).mock.calls.filter((call: any[]) => call[0] === "ponder" && call[2] === false)).toHaveLength(2)
   })
 
   it("rejects create when success criteria collapse to empty lines or payload_json is not an object", async () => {
@@ -1306,7 +1373,7 @@ describe("ponder packets in runAgent", () => {
       success_criteria: "- one\n- two",
       payload_json: "{\"source\":\"revised\"}",
     })))
-    mockCreate.mockReturnValueOnce(makeStream(settleChunks("done")))
+    mockCreate.mockReturnValueOnce(makeStream(restChunks({ status: "done" })))
 
     const callbacks = makeCallbacks()
     const result = await runAgent(
@@ -1321,7 +1388,7 @@ describe("ponder packets in runAgent", () => {
       },
     )
 
-    expect(result.outcome).toBe("settled")
+    expect(result.outcome).toBe("rested")
     expect(mockRevisePonderPacket).toHaveBeenCalledWith(
       "/mock/repo/testagent",
       "pkt-test-123",
@@ -1329,6 +1396,41 @@ describe("ponder packets in runAgent", () => {
         objective: "Refined objective",
         payload: { source: "revised" },
       }),
+    )
+  })
+
+  it("rejects revise without an objective and accepts an omitted summary", async () => {
+    mockRevisePonderPacket.mockReturnValue({
+      id: "pkt-test-123",
+      status: "drafting",
+    })
+    mockCreate
+      .mockReturnValueOnce(makeStream(ponderCreateChunks({
+        action: "revise",
+        packet_id: "pkt-test-123",
+        kind: "research",
+        summary: "missing objective",
+        success_criteria: "- one",
+        payload_json: "{}",
+      })))
+      .mockReturnValueOnce(makeStream(ponderCreateChunks({
+        action: "revise",
+        packet_id: "pkt-test-123",
+        kind: "research",
+        objective: "Objective without summary",
+        success_criteria: "- one",
+        payload_json: "{}",
+      })))
+      .mockReturnValueOnce(makeStream(restChunks({ status: "done" })))
+
+    const callbacks = makeCallbacks()
+    await runAgent([{ role: "user", content: "heartbeat" }], callbacks, "inner")
+
+    expect(callbacks.onToolEnd).toHaveBeenCalledWith("ponder", expect.any(String), false)
+    expect(mockRevisePonderPacket).toHaveBeenCalledWith(
+      "/mock/repo/testagent",
+      "pkt-test-123",
+      expect.objectContaining({ objective: "Objective without summary", summary: "" }),
     )
   })
 
@@ -1405,7 +1507,7 @@ describe("ponder packets in runAgent", () => {
       success_criteria: "- Stay internal",
       payload_json: "{}",
     })))
-    mockCreate.mockReturnValueOnce(makeStream(settleChunks("done")))
+    mockCreate.mockReturnValueOnce(makeStream(restChunks({ status: "done" })))
 
     const result = await runAgent(
       [{ role: "user", content: "heartbeat" }],
@@ -1419,7 +1521,7 @@ describe("ponder packets in runAgent", () => {
       },
     )
 
-    expect(result.outcome).toBe("settled")
+    expect(result.outcome).toBe("rested")
     expectNoPonderWake()
   })
 
@@ -1436,7 +1538,7 @@ describe("ponder packets in runAgent", () => {
       success_criteria: "- one",
       payload_json: "{}",
     })))
-    mockCreate.mockReturnValueOnce(makeStream(settleChunks("done")))
+    mockCreate.mockReturnValueOnce(makeStream(restChunks({ status: "done" })))
 
     const callbacks = makeCallbacks()
     await runAgent(
@@ -1464,13 +1566,18 @@ describe("ponder packets in runAgent", () => {
       success_criteria: "- one",
       payload_json: "{}",
     })))
-    mockCreate.mockReturnValueOnce(makeStream(settleChunks("done")))
+    mockCreate.mockReturnValueOnce(makeStream(restChunks({ status: "done" })))
 
     const callbacks = makeCallbacks()
-    await runAgent([{ role: "user", content: "heartbeat" }], callbacks, "inner")
+    const messages: any[] = [{ role: "user", content: "heartbeat" }]
+    await runAgent(messages, callbacks, "inner")
 
     expect(mockRevisePonderPacket).not.toHaveBeenCalled()
-    expect(callbacks.onToolEnd).toHaveBeenCalledWith("ponder", expect.any(String), false)
+    expect(callbacks.onToolEnd).not.toHaveBeenCalledWith("ponder", expect.any(String), expect.any(Boolean))
+    expect(messages).toContainEqual(expect.objectContaining({
+      tool_call_id: "call_ponder",
+      content: expect.stringContaining("invalid tool arguments"),
+    }))
   })
 
   it("treats malformed ponder JSON and invalid revise specs as tool failures", async () => {
@@ -1487,11 +1594,12 @@ describe("ponder packets in runAgent", () => {
       .mockReturnValueOnce(makeStream(settleChunks("done")))
 
     const callbacks = makeCallbacks()
-    const result = await runAgent([{ role: "user", content: "hi" }], callbacks, "cli")
+    const messages: any[] = [{ role: "user", content: "hi" }]
+    const result = await runAgent(messages, callbacks, "cli")
 
     expect(result.outcome).toBe("settled")
-    expect((callbacks.onToolEnd as any).mock.calls[0][2]).toBe(false)
-    expect((callbacks.onToolEnd as any).mock.calls[1][2]).toBe(false)
+    expect(messages).toContainEqual(expect.objectContaining({ tool_call_id: "call_ponder", content: expect.stringContaining("malformed JSON") }))
+    expect(callbacks.onToolEnd).toHaveBeenCalledWith("ponder", expect.any(String), false)
   })
 
   it("treats valid non-object ponder JSON as a tool failure", async () => {
@@ -1500,10 +1608,12 @@ describe("ponder packets in runAgent", () => {
       .mockReturnValueOnce(makeStream(settleChunks("done")))
 
     const callbacks = makeCallbacks()
-    const result = await runAgent([{ role: "user", content: "hi" }], callbacks, "cli")
+    const messages: any[] = [{ role: "user", content: "hi" }]
+    const result = await runAgent(messages, callbacks, "cli")
 
     expect(result.outcome).toBe("settled")
-    expect((callbacks.onToolEnd as any).mock.calls[0][2]).toBe(false)
+    expect(callbacks.onToolEnd).not.toHaveBeenCalledWith("ponder", expect.any(String), expect.any(Boolean))
+    expect(messages).toContainEqual(expect.objectContaining({ tool_call_id: "call_ponder", content: expect.stringContaining("JSON object") }))
   })
 
   it("coerces non-Error ponder failures into tool output text", async () => {
@@ -1550,10 +1660,11 @@ describe("ponder packets in runAgent", () => {
       .mockReturnValueOnce(makeStream(settleChunks("done")))
 
     const callbacks = makeCallbacks()
-    await runAgent([{ role: "user", content: "hi" }], callbacks, "cli")
+    const messages: any[] = [{ role: "user", content: "hi" }]
+    await runAgent(messages, callbacks, "cli")
 
-    expect((callbacks.onToolEnd as any).mock.calls[0][2]).toBe(false)
-    expect((callbacks.onToolEnd as any).mock.calls[1][2]).toBe(false)
+    expect(messages).toContainEqual(expect.objectContaining({ tool_call_id: "call_ponder", content: expect.stringContaining("invalid tool arguments") }))
+    expect(callbacks.onToolEnd).toHaveBeenCalledWith("ponder", expect.any(String), false)
   })
 
   it("revises an existing drafting harness_friction packet instead of creating a duplicate", async () => {
@@ -1703,7 +1814,7 @@ describe("ponder packets in runAgent", () => {
       success_criteria: "- New",
       payload_json: JSON.stringify({ frictionSignature: "inner-private-loop-repeat" }),
     })))
-    mockCreate.mockReturnValueOnce(makeStream(settleChunks("done")))
+    mockCreate.mockReturnValueOnce(makeStream(restChunks({ status: "done" })))
 
     await runAgent(
       [{ role: "user", content: "heartbeat" }],

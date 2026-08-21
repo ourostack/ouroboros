@@ -1,0 +1,200 @@
+{
+  "schemaVersion": 1,
+  "harnessExecutable": "/opt/ouro/deploy/unraid/sanctuary-acceptance-harness.sh",
+  "adapterExecutable": "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
+  "adapterTimeoutMs": 240000,
+  "telegramTimeoutMs": 10000,
+  "deploymentTargetProfiles": {
+    "staging": { "command": "sanctuary-unit16-run.sh", "containerName": "ouro-butler-staging", "requiredRunning": 1, "restartPolicy": "unless-stopped", "networkMode": "host", "inboundTcpListeners": 0, "inboundUdpListeners": 0, "loopbackTcpControls": [6876] },
+    "final": { "command": "sanctuary-unit18-target-audit.sh", "containerName": "ouro-butler", "requiredRunning": 1, "requiredStopped": "ouro-butler-rollback", "restartPolicy": "unless-stopped", "networkMode": "host", "inboundTcpListeners": 0, "inboundUdpListeners": 0, "loopbackTcpControls": [6876] }
+  },
+  "configMaterializer": {
+    "invocation": "sanctuary-acceptance-adapter.sh materialize-config <command> [before|after]",
+    "output": "complete harness config JSON on stdout",
+    "authority": "fixed-contract-offset-inventory-evidence-read",
+    "modelReachable": false,
+    "timeoutMs": 15000
+  },
+  "commands": {
+    "telegram-bootstrap": { "invocation": "sanctuary-acceptance-harness.sh telegram-bootstrap --config <private-json>" },
+    "cursor-snapshot": { "invocation": "sanctuary-acceptance-harness.sh cursor-snapshot --config <private-json>" },
+    "cursor-delta": { "invocation": "sanctuary-acceptance-harness.sh cursor-delta --config <private-json>" },
+    "callback-inject": { "invocation": "sanctuary-acceptance-harness.sh callback-inject --config <private-json>" },
+    "unraid-key-rotate": { "invocation": "sanctuary-acceptance-harness.sh unraid-key-rotate --config <private-json>" },
+    "evidence-snapshot": { "invocation": "sanctuary-acceptance-harness.sh evidence-snapshot --config <private-json>" },
+    "reboot-request": { "invocation": "sanctuary-acceptance-harness.sh reboot-request --config <private-json>" },
+    "reboot-resume": { "invocation": "sanctuary-acceptance-harness.sh reboot-resume --config <private-json>" },
+    "evidence-bundle-index": { "invocation": "sanctuary-acceptance-harness.sh evidence-bundle-index --config <private-json>" },
+    "evidence-bundle-verify": { "invocation": "sanctuary-acceptance-harness.sh evidence-bundle-verify --config <private-json>" }
+  },
+  "adapters": {
+    "telegram-poller-quiescence": { "operation": "quiesce_telegram_poller", "authority": "fixed-managed-telegram-poller-stop-and-count", "modelReachable": false, "timeoutMs": 15000 },
+    "telegram-vault-store": { "operation": "store_telegram_bootstrap", "authority": "fixed-runtime-vault-merge", "modelReachable": false, "timeoutMs": 15000 },
+    "cursor-snapshot": { "operation": "snapshot", "authority": "fixed-telegram-state-read", "modelReachable": false, "timeoutMs": 15000 },
+    "callback-live": { "operation": "inject_callbacks_concurrently|inject_callback_replay", "authority": "fixed-live-telegram-callback-probe", "modelReachable": false, "timeoutMs": 15000 },
+    "key-inventory": { "operation": "inventory_keys", "authority": "fixed-unraid-key-directory-read", "modelReachable": false, "timeoutMs": 15000 },
+    "key-create": { "operation": "create_key", "authority": "fixed-unraid-cli-create-and-vault-store", "modelReachable": false, "timeoutMs": 15000 },
+    "key-store": { "operation": "store_key", "authority": "fixed-machine-vault-readback", "modelReachable": false, "timeoutMs": 15000 },
+    "key-probe": { "operation": "probe_new_key", "authority": "fixed-loopback-readiness-probe", "modelReachable": false, "timeoutMs": 15000 },
+    "key-read-old": { "operation": "read_old_key", "authority": "fixed-unraid-key-record-read", "modelReachable": false, "timeoutMs": 15000 },
+    "key-revoke": { "operation": "revoke_key", "authority": "fixed-unraid-cli-delete", "modelReachable": false, "timeoutMs": 15000 },
+    "evidence-snapshot": { "operation": "evidence_snapshot", "authority": "fixed-postboot-state-read", "modelReachable": false, "timeoutMs": 15000 },
+    "capture-evidence-provenance": { "operation": "capture_evidence_provenance", "authority": "fixed-live-continuity-read", "modelReachable": false, "timeoutMs": 15000 },
+    "reboot-live-request": { "operation": "request_reboot", "authority": "fixed-sanctuary-host-reboot", "modelReachable": false, "timeoutMs": 15000 },
+    "reboot-owner-stop": { "operation": "stop_reboot_owner", "authority": "exclusive-reserved-process-generation-bound-production-owner-stop", "modelReachable": false, "timeoutMs": 60000 },
+    "reboot-final-commit": { "operation": "commit_reboot", "authority": "exclusive-drained-final-preflight-and-fixed-sanctuary-host-reboot", "modelReachable": false, "timeoutMs": 15000 },
+    "reboot-poll": { "operation": "poll_reboot", "authority": "fixed-linux-boot-identity-read", "modelReachable": false, "timeoutMs": 15000 },
+    "vault-backed-capability-verify": { "operation": "vault-backed-capability-verify", "authority": "fixed-container-vault-probe", "modelReachable": false, "timeoutMs": 15000 },
+    "closed-inventory": { "operation": "closed-inventory", "authority": "fixed-unraid-key-directory-read", "modelReachable": false, "timeoutMs": 15000 },
+    "exact-id-revoke": { "operation": "exact-id-revoke", "authority": "fixed-unraid-cli-delete", "modelReachable": false, "timeoutMs": 15000 },
+    "revoked-key-auth-rejection": { "operation": "revoked-key-auth-rejection", "authority": "fixed-loopback-auth-probe", "modelReachable": false, "timeoutMs": 15000 },
+    "callback-inject": { "operation": "callback-inject", "authority": "fixed-harness-orchestration", "modelReachable": false, "timeoutMs": 120000 },
+    "reboot-request": { "operation": "reboot-request", "authority": "fixed-harness-orchestration", "modelReachable": false, "timeoutMs": 120000 },
+    "unraid-key-rotate": { "operation": "unraid-key-rotate", "authority": "fixed-harness-orchestration", "modelReachable": false, "timeoutMs": 120000 },
+    "config-materializer": { "operation": "materialize_config", "authority": "fixed-contract-offset-inventory-evidence-read", "modelReachable": false, "timeoutMs": 120000 },
+    "scenario-capture": { "operation": "capture_acceptance_scenario", "authority": "fixed-runtime-audit-telegram-container-scenario", "modelReachable": false, "timeoutMs": 210000, "phases": ["begin", "poll"], "publicGateStatus": "/evidence/current-scenario-gate.json contains only label,gate,phase,startedAt", "response": "waiting:{state,checkpointDigest}|complete:{state,checkpointDigest,sourceDigests,assertions}" },
+    "scenario-finalize": { "operation": "finalize_acceptance_scenarios", "authority": "fixed-public-gate-private-marker-receipt-cleanup", "modelReachable": false, "timeoutMs": 120000, "response": "{finalized:true}" },
+    "health-probe-start": { "operation": "start_health_probe", "authority": "fixed-owner-bound-packaged-health-probe-start", "modelReachable": false, "timeoutMs": 170000, "response": "{state:started,operationDigest}" },
+    "health-probe-status": { "operation": "health_probe_status", "authority": "fixed-fast-running-state-or-full-owner-reobservation-and-final-attestation", "modelReachable": false, "timeoutMs": 170000, "response": "{state:running|failed|recovery_required|absent}|{state:complete,containerSnapshot}" },
+    "health-probe-recovery": { "operation": "recover_health_probe", "authority": "fixed-fast-owner-bound-health-snapshot-restore", "modelReachable": false, "timeoutMs": 90000, "response": "{recovered:boolean}" },
+    "interactive-timeout-stale-driver": { "operation": "drive_timeout_stale", "authority": "fixed-operator-only-production-runtime-retained-timeout-callback-drive", "modelReachable": false, "timeoutMs": 170000, "request": "{targetId,label,scenarioHandleDigest}", "response": "{state:waiting}|sanctuary-timeout-stale-driver-receipt-v1" },
+    "interactive-duplicate-driver": { "operation": "drive_duplicate_callbacks", "authority": "fixed-operator-only-production-runtime-duplicate-callback-drive", "modelReachable": false, "timeoutMs": 170000, "request": "{targetId,label,scenarioHandleDigest}", "response": "sanctuary-interactive-driver-receipt-v2" },
+    "interactive-restart-driver": { "operation": "drive_restart_continuation", "authority": "fixed-operator-only-asynchronous-two-phase-production-owner-restart-and-reconciliation", "modelReachable": false, "timeoutMs": 240000, "request": "{targetId,label,scenarioHandleDigest}", "response": "{state:waiting}|{state:complete,receipt:sanctuary-interactive-driver-receipt-v2}|{state:failed,errorDigest}" }
+  },
+  "scenarioSources": {
+    "identity-key": { "kind": "fixed-file", "path": "/home/ouro/AgentBundles/sanctuary.ouro/state/senses/telegram/identity.key", "redaction": "sha256-only" },
+    "identity-surface-audit": { "kind": "bounded-bundle-surface-audit", "path": "/home/ouro/AgentBundles/sanctuary.ouro", "redaction": "record-match-raw-leak-counts-and-surface-digest-only" },
+    "telegram-audit": { "kind": "fixed-mac-chain", "path": "/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance/telegram-audit-chain.ndjson", "headPath": "/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance/telegram-audit-chain.head.json", "redaction": "canonical-redacted-rows-with-hmac-chain" },
+    "telegram-offset": { "kind": "fixed-json", "path": "/home/ouro/AgentBundles/sanctuary.ouro/state/senses/telegram/offset.json", "redaction": "sha256-only" },
+    "approval-journal": { "kind": "fixed-sqlite", "path": "/home/ouro/AgentBundles/sanctuary.ouro/state/approvals/approvals.sqlite", "redaction": "typed-state-counters-and-digests-only" },
+    "approval-checkpoints": { "kind": "fixed-json", "path": "/home/ouro/AgentBundles/sanctuary.ouro/state/approvals/checkpoints.json", "redaction": "typed-state-counters-and-digests-only" },
+    "restart-attempt-ledger": { "kind": "fixed-ndjson", "path": "/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance/restart-attempts.ndjson", "redaction": "scenario-action-target-digests-and-state-only" },
+    "telegram-turn-receipts": { "kind": "fixed-ndjson", "path": "/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance/telegram-turns.ndjson", "redaction": "scenario-update-tool-response-and-delivery-digests-only" },
+    "read-only-denial-receipt": { "kind": "persisted-one-shot-live-graphql-denial", "schemaVersion": "sanctuary-read-only-denial-receipt-v1", "path": "/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance/denial-receipts/<scenario-handle-digest>.json", "attemptPath": "/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance/denial-attempts/<scenario-handle-digest>.json", "endpoint": "http://127.0.0.1/graphql", "targetSnapshotOperation": "denial_target_snapshot", "resumePolicy": "attempted-or-indeterminate-inspect-before-retry", "redaction": "schema-binding-api-classification-counts-restart-count-and-seven-boundary-digests-only" },
+    "containment-audit": { "kind": "effective-container-key-tool-and-audit-boundary", "schemaVersion": "sanctuary-containment-audit-v1", "path": "/opt/ouro/deploy/unraid/sanctuary.ouro/tool-profiles.json", "auditPath": "/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance/telegram-audit-chain.ndjson", "producers": ["container_snapshot", "inventory_keys", "packaged-tool-profiles", "runtime-tool-resolver", "telegram-audit-mac-chain"], "redaction": "counts-static-policy-values-and-sha256-digests-only" },
+    "container-inspect": { "kind": "fixed-host-snapshot", "path": "/run/ouro-acceptance/container-inspect.json", "redaction": "typed-facts-and-digests-only" },
+    "provider-live-check": { "kind": "fixed-runtime-api", "operation": "sanctuary-provider-readiness", "redaction": "booleans-and-distinctness-only" },
+    "live-grounding-read": { "kind": "fixed-runtime-api", "operation": "sanctuary-independent-system-or-storage-read", "redaction": "bounded-system-or-storage-facts-and-digest-only" },
+    "cron-runtime": { "kind": "fixed-runtime-api", "operation": "sanctuary-cron-readiness", "redaction": "typed-counters-and-digests-only" },
+    "health-runtime": { "kind": "fixed-runtime-api", "operation": "sanctuary-health-transition", "redaction": "typed-counters-and-digests-only" },
+    "digest-runtime": { "kind": "fixed-runtime-api", "operation": "sanctuary-daily-digest", "redaction": "typed-counters-and-digests-only" },
+    "health-probe-receipt": { "kind": "fixed-private-json", "path": "/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance/health-probe-receipts/<scenarioHandleDigest>.json", "redaction": "typed-phase-counters-owner-state-and-cleanup-digests-only" },
+    "scheduler-liveness-receipt": { "kind": "fixed-private-json", "path": "/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance/scheduler-liveness-receipts/<scenarioHandleDigest>.json", "redaction": "daemon-runner-supervisor-manifest-and-cursor-attestation-only" },
+    "interactive-driver-receipt": { "kind": "fixed-private-json", "path": "/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance/interactive-driver-receipts/<scenarioHandleDigest>.json", "redaction": "digested-approval-checkpoint-session-callback-and-owner-coordinates-only" },
+    "reboot-checkpoint": { "kind": "fixed-json", "path": "/evidence/reboot.json", "redaction": "typed-state-and-digests-only" }
+  },
+  "configTemplates": {
+    "telegram-bootstrap": {
+      "fixed": {
+        "allowedRoot": "/evidence",
+        "evidencePath": "/evidence/telegram-bootstrap.json",
+        "offsetPath": "/evidence/telegram-bootstrap-offset.json",
+        "noncePath": "/evidence/telegram-bootstrap-nonce.txt",
+        "pollerAdapter": "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
+        "vaultAdapter": "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
+        "deadlineMs": 600000,
+        "pollTimeoutSeconds": 20
+      },
+      "dynamic": ["expectedBotId:getMe.id", "expectedUsername:getMe.username", "currentOffset:fixed-cursor-read"],
+      "privateInputFd": 3
+    },
+    "cursor-snapshot": {
+      "fixed": {
+        "allowedRoot": "/evidence",
+        "evidencePath": "/evidence/cursor-snapshot.json",
+        "adapters": [{ "schema": "telegram-cursor-v1", "executable": "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh" }]
+      }
+    },
+    "cursor-delta": {
+      "fixed": {
+        "allowedRoot": "/evidence",
+        "evidencePath": "/evidence/cursor-delta.json",
+        "beforePath": "/evidence/cursor-before.json",
+        "afterPath": "/evidence/cursor-after.json"
+      }
+    },
+    "callback-inject": {
+      "fixed": {
+        "allowedRoot": "/evidence",
+        "evidencePath": "/evidence/callback-inject.json",
+        "adapter": "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
+        "concurrency": 2
+      },
+      "privateInputFd": 3
+    },
+    "unraid-key-rotate": {
+      "fixed": {
+        "allowedRoot": "/evidence",
+        "evidencePath": "/evidence/unraid-key-rotate.json",
+        "targetServerId": "sanctuary-unraid",
+        "inventoryAdapter": "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
+        "createAdapter": "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
+        "storeAdapter": "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
+        "revokeAdapter": "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
+        "probeAdapter": "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
+        "keys": [
+          { "name": "Butler RO", "vaultField": "unraidReadApiKey", "permissions": ["ARRAY:READ_ANY", "DASHBOARD:READ_ANY", "DISK:READ_ANY", "DOCKER:READ_ANY", "INFO:READ_ANY", "LOGS:READ_ANY", "NOTIFICATIONS:READ_ANY", "SHARE:READ_ANY", "VARS:READ_ANY"] },
+          { "name": "Butler RW", "vaultField": "unraidWriteApiKey", "permissions": ["ARRAY:READ_ANY", "DASHBOARD:READ_ANY", "DISK:READ_ANY", "DOCKER:READ_ANY", "DOCKER:UPDATE_ANY", "INFO:READ_ANY", "LOGS:READ_ANY", "NOTIFICATIONS:READ_ANY", "SHARE:READ_ANY", "VARS:READ_ANY"] }
+        ]
+      },
+      "dynamic": ["oldKeys:closed-inventory.exactCompromisedIds"],
+      "oldKeyTemplate": { "secretAdapter": "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh" }
+    },
+    "evidence-snapshot": {
+      "fixed": {
+        "allowedRoot": "/evidence",
+        "schema": "sanctuary-unit-16-matrix-v1",
+        "adapter": "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
+        "provenanceAdapter": "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
+        "harnessPath": "/opt/ouro/deploy/unraid/sanctuary-acceptance-harness.sh",
+        "timeoutMs": 5610000,
+        "intervalMs": 2000
+      },
+      "timing": { "execution": "sequential", "cleanupReservePerScenarioMs": 5000, "approvalReconciliationJitterMs": 1000, "approvalTerminalEditMaxMs": 30000, "noneMs": 35000, "externalGateMs": 305000, "cronLivenessMs": 1025000, "noCallbackMs": 365000, "dailyDigestMs": 1025000, "delayedApprovalMs": 185000, "timeoutStaleMs": 875000, "timeoutStaleBreakdown": { "promptCreationAdapterMs": 210000, "approvalTtlMs": 300000, "staleCallbackInjectionMs": 120000, "pollIntervalReserveMs": 30000, "reconciliationPollAdapterMs": 210000, "cleanupReserveMs": 5000 }, "scenarioSumMs": 5585000, "totalMs": 5610000 }
+    },
+    "reboot-request": {
+      "fixed": {
+        "allowedRoot": "/evidence",
+        "evidencePath": "/evidence/reboot.json",
+        "targetId": "sanctuary",
+        "adapter": "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
+        "scenarioAdapter": "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
+        "provenanceAdapter": "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
+        "harnessPath": "/opt/ouro/deploy/unraid/sanctuary-acceptance-harness.sh",
+        "scenarioTimeoutMs": 125000,
+        "scenarioIntervalMs": 2000
+      }
+    },
+    "reboot-resume": {
+      "fixed": {
+        "allowedRoot": "/evidence",
+        "evidencePath": "/evidence/reboot.json",
+        "adapter": "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
+        "timeoutMs": 600000,
+        "intervalMs": 5000,
+        "scenarioAdapter": "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
+        "provenanceAdapter": "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
+        "harnessPath": "/opt/ouro/deploy/unraid/sanctuary-acceptance-harness.sh",
+        "scenarioTimeoutMs": 125000,
+        "scenarioIntervalMs": 2000
+      }
+    },
+    "evidence-bundle-index": {
+      "fixed": {
+        "allowedRoot": "/evidence",
+        "evidencePath": "/evidence/unit-16-evidence-bundle.json",
+        "harnessPath": "/opt/ouro/deploy/unraid/sanctuary-acceptance-harness.sh",
+        "provenanceAdapter": "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh"
+      },
+      "dynamic": ["entries:exact-unit-16-evidence-matrix"]
+    },
+    "evidence-bundle-verify": {
+      "fixed": {
+        "allowedRoot": "/evidence",
+        "evidencePath": "/evidence/unit-16-evidence-bundle.json",
+        "harnessPath": "/opt/ouro/deploy/unraid/sanctuary-acceptance-harness.sh",
+        "provenanceAdapter": "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh"
+      }
+    }
+  }
+}

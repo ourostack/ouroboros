@@ -346,6 +346,7 @@ const PROCESS_TYPE_LABELS: Record<Channel, string> = {
   voice: "voice handler",
   a2a: "a2a handler",
   mcp: "mcp bridge",
+  telegram: "telegram handler",
 }
 
 function processTypeLabel(channel: Channel): string {
@@ -494,6 +495,7 @@ function localSenseStatusLines(): string[] {
     mail: configuredSenses.mail ?? { enabled: false },
     voice: configuredSenses.voice ?? { enabled: false },
     a2a: configuredSenses.a2a ?? { enabled: false },
+    telegram: configuredSenses.telegram ?? { enabled: false },
     workbench: configuredSenses.workbench ?? { enabled: false },
   }
   const payload = loadConfig() as unknown as Record<string, unknown>
@@ -519,6 +521,9 @@ function localSenseStatusLines(): string[] {
       && hasTextField(voice, "whisperCliPath")
       && hasTextField(voice, "whisperModelPath"),
     a2a: true,
+    telegram: hasTextField(runtimePayload, "telegramBotToken")
+      && hasTextField(runtimePayload, "telegramAuthorizedUserId")
+      && hasTextField(runtimePayload, "telegramAuthorizedChatId"),
     workbench: false,
   }
 
@@ -543,6 +548,10 @@ function localSenseStatusLines(): string[] {
     {
       label: "A2A",
       status: senses.a2a.enabled ? "ready" : "disabled",
+    },
+    {
+      label: "Telegram",
+      status: !senses.telegram.enabled ? "disabled" : configured.telegram ? "ready" : "needs_config",
     },
     {
       label: "Workbench",

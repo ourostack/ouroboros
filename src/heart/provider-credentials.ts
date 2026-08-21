@@ -84,7 +84,7 @@ interface ProviderCredentialVaultPayload {
   }
 }
 
-const VALID_PROVIDERS: AgentProvider[] = ["azure", "minimax", "anthropic", "openai-codex", "github-copilot"]
+const VALID_PROVIDERS: AgentProvider[] = ["azure", "minimax", "anthropic", "openai-codex", "github-copilot", "openai-compatible", "openai-compatible-gemini"]
 const VALID_PROVENANCE_SOURCES: ProviderCredentialProvenanceSource[] = ["auth-flow", "manual"]
 const VAULT_ITEM_PREFIX = "providers/"
 export const PROVIDER_CREDENTIAL_POOL_NOT_LOADED_ERROR = "provider credentials have not been loaded from vault"
@@ -108,6 +108,14 @@ const PROVIDER_FIELD_SPLITS: Record<AgentProvider, { credentials: string[]; conf
   },
   "github-copilot": {
     credentials: ["githubToken"],
+    config: ["baseUrl"],
+  },
+  "openai-compatible": {
+    credentials: ["apiKey"],
+    config: ["baseUrl"],
+  },
+  "openai-compatible-gemini": {
+    credentials: ["apiKey"],
     config: ["baseUrl"],
   },
 }

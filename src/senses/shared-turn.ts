@@ -26,7 +26,7 @@ import { getSharedMcpManager } from "../repertoire/mcp-manager"
 import type { RuntimeMcpServers } from "../repertoire/mcp-manager"
 import { emitNervesEvent } from "../nerves/runtime"
 import type { ToolContext } from "../repertoire/tools-base"
-import { withSessionTurnLease, type SessionTurnLease } from "../mind/session-transaction"
+import { readSessionTransaction, withSessionTurnLease, type SessionTurnLease } from "../mind/session-transaction"
 
 const RESPONSE_CAP = 50_000
 const OUTWARD_DELIVERY_TOOL_ACKS = new Map([
@@ -180,6 +180,8 @@ export interface RunSenseTurnOptions {
   deliverySink?: OutwardSenseDeliverySink
   /** Optional transport-specific controls surfaced to tools during this turn. */
   toolContext?: Partial<ToolContext>
+  /** Builds a durable approval coordinator after the exact leased session path/revision are known. */
+  approvalCoordinatorFactory?: (context: { sessionPath: string; baseSessionRevision: string }) => import("../heart/core").ApprovalCoordinator
   /**
    * Per-turn, per-agent runtime MCP server overrides (e.g. Workbench's
    * `ouro_workbench`). Merged into the agent's toolset with highest precedence
@@ -190,6 +192,8 @@ export interface RunSenseTurnOptions {
   runtimeMcpServers?: RuntimeMcpServers
   /** Test seam for the same production whole-turn lease wrapper. */
   _withSessionTurnLease?: <T>(sessionPath: string, work: (lease: SessionTurnLease) => Promise<T>) => Promise<T>
+  /** Mutable per-turn metrics survive a rejected turn for durable transport receipts. */
+  turnMetricsObserver?: { providerInvocationCount: number; toolInvocationCount: number }
 }
 
 export type OutwardSenseDeliveryKind = "speak" | "settle" | "text"
@@ -216,6 +220,10 @@ export interface RunSenseTurnResult {
   deliveries: OutwardSenseDelivery[]
   /** Delivery failures observed after the model's terminal answer. Mid-turn `speak` failures are returned to the model immediately. */
   deliveryFailures: OutwardSenseDeliveryFailure[]
+  /** Actual model invocation callbacks observed during this turn. */
+  providerInvocationCount?: number
+  /** Actual tool invocation callbacks observed during this turn. */
+  toolInvocationCount?: number
 }
 
 /**
@@ -284,6 +292,7 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
   const sessPath = path.join(sessionDir, `${sanitizeKey(sessionKey)}.json`)
   const runWithLease = options._withSessionTurnLease ?? withSessionTurnLease
   return runWithLease(sessPath, async (sessionTurnLease) => {
+  const baseSessionRevision = readSessionTransaction(sessPath, sessionTurnLease).revision
   const existing = loadSession(sessPath)
   let sessionState = existing?.state
   let persistPromise: Promise<unknown> | undefined
@@ -302,6 +311,8 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
   let terminalDeliveryKind: OutwardSenseDeliveryKind = "text"
   const deliveries: OutwardSenseDelivery[] = []
   const deliveryFailures: OutwardSenseDeliveryFailure[] = []
+  let providerInvocationCount = 0
+  let toolInvocationCount = 0
 
   const commitResponseText = (text: string): void => {
     const cleaned = stripThinkBlocks(text)
@@ -345,11 +356,11 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
   /* v8 ignore start — no-op callback stubs; only onTextChunk does real work (covered via mock) */
   const callbacks: ChannelCallbacks = {
     settleOutputMode: "retractable_buffer",
-    onModelStart: () => {},
+    onModelStart: () => { providerInvocationCount += 1; if (options.turnMetricsObserver) options.turnMetricsObserver.providerInvocationCount += 1 },
     onModelStreamStart: () => {},
     onTextChunk: (chunk: string) => { pendingResponseText += chunk },
     onReasoningChunk: () => {},
-    onToolStart: () => {},
+    onToolStart: () => { toolInvocationCount += 1; if (options.turnMetricsObserver) options.turnMetricsObserver.toolInvocationCount += 1 },
     onToolEnd: (name: string, _summary: string, success: boolean) => {
       if (name === "settle" && success) terminalDeliveryKind = "settle"
     },
@@ -391,6 +402,7 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
     drainPending,
     runAgentOptions: {
       mcpManager,
+      ...(options.approvalCoordinatorFactory ? { approvalCoordinator: options.approvalCoordinatorFactory({ sessionPath: sessPath, baseSessionRevision }) } : {}),
       ...(options.latencyMode === "live" ? { skipKeptNotes: true } : {}),
       toolContext: {
         signin: async () => undefined,
@@ -418,6 +430,8 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
       ponderDeferred: false,
       deliveries,
       deliveryFailures,
+      providerInvocationCount,
+      toolInvocationCount,
     }
   }
 
@@ -476,6 +490,6 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
     meta: { agentName, channel, sessionKey, friendId, ponderDeferred, responseLength: finalResponse.length },
   })
 
-  return { response: finalResponse, ponderDeferred, deliveries, deliveryFailures }
+  return { response: finalResponse, ponderDeferred, deliveries, deliveryFailures, providerInvocationCount, toolInvocationCount }
   })
 }

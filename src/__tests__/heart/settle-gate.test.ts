@@ -135,7 +135,7 @@ function makeCallbacks(overrides: Partial<ChannelCallbacks> = {}): ChannelCallba
   }
 }
 
-describe("settle gate in private runtime", () => {
+describe("rest gate in private runtime", () => {
   let runAgent: (
     messages: any[],
     callbacks: ChannelCallbacks,
@@ -154,21 +154,21 @@ describe("settle gate in private runtime", () => {
     runAgent = core.runAgent
   })
 
-  it("rejects settle when attention queue is non-empty in private runtime", async () => {
+  it("rejects rest when attention queue is non-empty in private runtime", async () => {
     let callCount = 0
     mockCreate.mockImplementation(() => {
       callCount++
       if (callCount === 1) {
         return makeStream([
           makeChunk(undefined, [
-            { index: 0, id: "call_1", function: { name: "settle", arguments: '{"answer":"done"}' } },
+            { index: 0, id: "call_1", function: { name: "rest", arguments: '{"status":"done"}' } },
           ]),
         ])
       }
-      // Second call: settle succeeds (queue was emptied externally for test)
+      // Second call: rest succeeds (queue was emptied externally for test)
       return makeStream([
         makeChunk(undefined, [
-          { index: 0, id: "call_2", function: { name: "settle", arguments: '{"answer":"really done"}' } },
+          { index: 0, id: "call_2", function: { name: "rest", arguments: '{"status":"really done"}' } },
         ]),
       ])
     })
@@ -178,13 +178,13 @@ describe("settle gate in private runtime", () => {
     ]
 
     const messages: any[] = [{ role: "user", content: "heartbeat" }]
-    // After first settle rejection, empty queue so second settle succeeds
+    // After first rest rejection, empty queue so second rest succeeds
     mockCreate.mockImplementation(() => {
       callCount++
       if (callCount === 1) {
         return makeStream([
           makeChunk(undefined, [
-            { index: 0, id: "call_1", function: { name: "settle", arguments: '{"answer":"done"}' } },
+            { index: 0, id: "call_1", function: { name: "rest", arguments: '{"status":"done"}' } },
           ]),
         ])
       }
@@ -192,7 +192,7 @@ describe("settle gate in private runtime", () => {
       queue.splice(0, queue.length)
       return makeStream([
         makeChunk(undefined, [
-          { index: 0, id: "call_2", function: { name: "settle", arguments: '{"answer":"really done"}' } },
+          { index: 0, id: "call_2", function: { name: "rest", arguments: '{"status":"really done"}' } },
         ]),
       ])
     })
@@ -210,11 +210,11 @@ describe("settle gate in private runtime", () => {
     expect(rejectionResult).toBeDefined()
   })
 
-  it("settle succeeds when attention queue is empty", async () => {
+  it("rest succeeds when attention queue is empty", async () => {
     mockCreate.mockReturnValue(
       makeStream([
         makeChunk(undefined, [
-          { index: 0, id: "call_1", function: { name: "settle", arguments: '{"answer":"done"}' } },
+          { index: 0, id: "call_1", function: { name: "rest", arguments: '{"status":"done"}' } },
         ]),
       ])
     )
@@ -233,14 +233,14 @@ describe("settle gate in private runtime", () => {
       },
     )
 
-    expect(result.outcome).toBe("settled")
+    expect(result.outcome).toBe("rested")
   })
 
-  it("settle in private runtime does NOT produce CompletionMetadata", async () => {
+  it("rest in private runtime does NOT produce CompletionMetadata", async () => {
     mockCreate.mockReturnValue(
       makeStream([
         makeChunk(undefined, [
-          { index: 0, id: "call_1", function: { name: "settle", arguments: '{"answer":"done"}' } },
+          { index: 0, id: "call_1", function: { name: "rest", arguments: '{"status":"done"}' } },
         ]),
       ])
     )
@@ -262,11 +262,11 @@ describe("settle gate in private runtime", () => {
     expect(result.completion).toBeUndefined()
   })
 
-  it("settle tool result in private runtime is '(settled)' not '(delivered)'", async () => {
+  it("rest tool result in private runtime is '(resting)'", async () => {
     mockCreate.mockReturnValue(
       makeStream([
         makeChunk(undefined, [
-          { index: 0, id: "call_1", function: { name: "settle", arguments: '{"answer":"done"}' } },
+          { index: 0, id: "call_1", function: { name: "rest", arguments: '{"status":"done"}' } },
         ]),
       ])
     )
@@ -281,8 +281,8 @@ describe("settle gate in private runtime", () => {
     })
 
     const toolResults = messages.filter((m: any) => m.role === "tool")
-    const settledResult = toolResults.find((m: any) => m.content === "(settled)")
-    expect(settledResult).toBeDefined()
+    const restedResult = toolResults.find((m: any) => m.content === "(resting)")
+    expect(restedResult).toBeDefined()
   })
 
   it("settle in outer sessions still produces CompletionMetadata", async () => {

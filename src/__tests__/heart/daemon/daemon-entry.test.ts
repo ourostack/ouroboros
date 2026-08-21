@@ -9,6 +9,68 @@ const { listEnabledBundleAgentsMock, readPrivateRuntimeConfigMock } = vi.hoisted
   readPrivateRuntimeConfigMock: vi.fn(() => ({ autoStart: false, source: "default" })),
 }))
 
+const { runSanctuaryHealthHabitMock } = vi.hoisted(() => ({
+  runSanctuaryHealthHabitMock: vi.fn(async (agent: string) => ({ ok: true, message: `health:${agent}` })),
+}))
+
+const sanctuaryAcceptanceMocks = vi.hoisted(() => ({
+  marker: null as null | { label: string; scenarioHandleDigest: string },
+  readCursor: vi.fn(() => ({ sweepCount: 1, deliveryCount: 0 })),
+  recordReceipt: vi.fn(),
+  verifyFire: vi.fn((_command: unknown, options: { readFile(path: string): string; readLink(path: string): string; now(): Date }) => {
+    options.readFile("/dev/null")
+    options.readLink("/dev/stdin")
+    options.now()
+    return { schedulerRunId: "run-1", occurrenceId: "occurrence-1" }
+  }),
+  consumeFire: vi.fn(() => ({ schedulerRunId: "run-1", occurrenceId: "occurrence-1" })),
+}))
+
+vi.mock("../../../senses/sanctuary-health-runner", () => ({
+  runSanctuaryHealthHabit: runSanctuaryHealthHabitMock,
+}))
+
+vi.mock("../../../heart/daemon/sanctuary-acceptance-marker", () => ({
+  readSanctuaryAcceptanceMarker: () => sanctuaryAcceptanceMocks.marker,
+}))
+
+vi.mock("../../../heart/daemon/sanctuary-scheduler-liveness", () => ({
+  readSanctuaryHealthCursor: sanctuaryAcceptanceMocks.readCursor,
+  recordSanctuarySchedulerLivenessReceipt: sanctuaryAcceptanceMocks.recordReceipt,
+  consumeSanctuarySchedulerFire: sanctuaryAcceptanceMocks.consumeFire,
+}))
+
+vi.mock("../../../heart/daemon/sanctuary-scheduler-origin", () => ({
+  verifySanctuarySchedulerFireCommand: sanctuaryAcceptanceMocks.verifyFire,
+}))
+
+vi.mock("../../../senses/telegram", () => ({ readOrCreateTelegramIdentityKey: () => "k".repeat(43) }))
+
+const supercronicMocks = vi.hoisted(() => ({
+  policy: null as null | { scheduler: "supercronic"; updates: "disabled" },
+  options: vi.fn(),
+  start: vi.fn(),
+  stop: vi.fn(async () => undefined),
+}))
+
+vi.mock("../../../heart/daemon/container-runtime", () => ({
+  readContainerRuntimePolicy: () => supercronicMocks.policy,
+}))
+
+vi.mock("../../../heart/daemon/supercronic-supervisor", () => ({
+  SupercronicSupervisor: class MockSupercronicSupervisor {
+    constructor(options: unknown) {
+      supercronicMocks.options(options)
+    }
+    start = supercronicMocks.start
+    stop = supercronicMocks.stop
+    namespace = vi.fn(() => ({}))
+    verificationOutput = vi.fn(() => "supercronic verification")
+    verifyNamespace = vi.fn(() => ({ ok: true, output: "ok" }))
+    authenticatedSnapshot = vi.fn(() => ({ childPid: 42, schemaVersion: "supercronic-supervisor-snapshot-v1" }))
+  },
+}))
+
 vi.mock("../../../heart/daemon/agent-discovery", () => ({
   listEnabledBundleAgents: listEnabledBundleAgentsMock,
   readPrivateRuntimeConfig: readPrivateRuntimeConfigMock,
@@ -190,6 +252,13 @@ describe("daemon entrypoint", () => {
     habitSchedulerGetDegradedHabitsMock.mockReturnValue([])
     awaitSchedulerGetDegradedAwaitsMock.mockReturnValue([])
     habitSchedulerTriggerJobMock.mockResolvedValue({ ok: false, message: "unhandled habit trigger" })
+    supercronicMocks.policy = null
+    sanctuaryAcceptanceMocks.marker = null
+    sanctuaryAcceptanceMocks.readCursor.mockReset()
+    sanctuaryAcceptanceMocks.readCursor.mockReturnValue({ sweepCount: 1, deliveryCount: 0 })
+    sanctuaryAcceptanceMocks.recordReceipt.mockReset()
+    sanctuaryAcceptanceMocks.verifyFire.mockClear()
+    sanctuaryAcceptanceMocks.consumeFire.mockClear()
   })
 
   afterEach(() => {
@@ -219,6 +288,9 @@ describe("daemon entrypoint", () => {
     migrateHabitsFromTaskSystemMock.mockReset()
     writeDaemonTombstoneMock.mockReset()
     createMcpStatusCanaryProbeMock.mockReset()
+    supercronicMocks.options.mockReset()
+    supercronicMocks.start.mockReset()
+    supercronicMocks.stop.mockReset()
     vi.doUnmock("os")
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
@@ -315,8 +387,14 @@ describe("daemon entrypoint", () => {
     expect(processManagerCtor).toHaveBeenCalledTimes(1)
 
     return {
+      emitNervesEvent,
       checkAgentConfig,
       checkAgentConfigWithProviderHealth,
+      daemonOptions: daemonCtor.mock.calls[0]?.[0] as {
+        schedulerFireVerifier: (command: unknown) => unknown
+        schedulerFireConsumer: (origin: unknown) => unknown
+        nativeHabitRunner: (input: { agent: string; habitName: string; trigger?: string; occurrenceId?: string; runnerId?: string; schedulerOrigin?: unknown }) => Promise<unknown>
+      },
       processManagerOptions: processManagerCtor.mock.calls[0]?.[0] as {
         agents: Array<{
           name: string
@@ -431,9 +509,11 @@ describe("daemon entrypoint", () => {
   async function importDaemonEntryWithHabitDispatch(options: {
     socketPath: string
     sendDaemonCommand?: ReturnType<typeof vi.fn>
+    agent?: string
   }) {
     vi.resetModules()
-    listEnabledBundleAgentsMock.mockReturnValue(["slugger"])
+    const agent = options.agent ?? "slugger"
+    listEnabledBundleAgentsMock.mockReturnValue([agent])
 
     const start = vi.fn(async () => undefined)
     const stop = vi.fn(async () => undefined)
@@ -456,7 +536,7 @@ describe("daemon entrypoint", () => {
     vi.doMock("../../../heart/daemon/process-manager", () => ({
       DaemonProcessManager: class MockProcessManager {
         listAgentSnapshots = vi.fn(() => [{
-          name: "slugger",
+          name: agent,
           channel: "private-runtime",
           autoStart: false,
           status: "running",
@@ -599,7 +679,17 @@ describe("daemon entrypoint", () => {
         send: (message: { from: string; to: string; content: string; priority?: string }) => Promise<{ id: string; queuedAt: string }>
         pollInbox: (agent: string) => unknown[]
       }
+      nativeHabitRunner: (input: { agent: string; habitName: string }) => Promise<unknown>
+      nativeHabitMatch: (agent: string, habitName: string) => boolean
+      schedulerFireVerifier: (command: unknown) => unknown
     }
+    expect(daemonOptions.nativeHabitMatch("sanctuary", "sanctuary-health")).toBe(true)
+    expect(daemonOptions.nativeHabitMatch("slugger", "sanctuary-health")).toBe(false)
+    expect(daemonOptions.nativeHabitMatch("sanctuary", "other")).toBe(false)
+    await expect(daemonOptions.nativeHabitRunner({ agent: "slugger", habitName: "sanctuary-health" })).resolves.toBeNull()
+    await expect(daemonOptions.nativeHabitRunner({ agent: "sanctuary", habitName: "other" })).resolves.toBeNull()
+    await expect(daemonOptions.nativeHabitRunner({ agent: "sanctuary", habitName: "sanctuary-health" })).resolves.toEqual({ ok: true, message: "health:sanctuary" })
+    expect(() => daemonOptions.schedulerFireVerifier({ kind: "scheduler.fire" })).toThrow("Supercronic scheduler is unavailable")
     expect(daemonOptions.senseManager.listSenseRows()).toEqual([])
     expect(daemonOptions.scheduler.listJobs()).toEqual([])
     await expect(daemonOptions.scheduler.triggerJob("nightly")).resolves.toEqual({
@@ -697,18 +787,19 @@ describe("daemon entrypoint", () => {
     const forcedExitTimers: Array<ReturnType<typeof setTimeout>> = []
     vi.spyOn(globalThis, "setTimeout").mockImplementation(((handler: any, timeout?: any, ...args: any[]) => {
       const timer = originalSetTimeout(handler, timeout, ...args)
-      if (timeout === 5_000) forcedExitTimers.push(timer)
+      if (timeout === 12_000) forcedExitTimers.push(timer)
       return timer
     }) as typeof setTimeout)
     const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout")
     onHandlers.SIGINT?.()
-    await Promise.resolve()
-    expect(stop).toHaveBeenCalled()
+    await vi.waitFor(() => expect(stop).toHaveBeenCalled())
     // HabitScheduler should be stopped on SIGINT
     expect(habitSchedulerStopMock).toHaveBeenCalled()
-    expect(exitSpy).toHaveBeenCalledWith(0)
     expect(forcedExitTimers).toHaveLength(1)
-    expect(clearTimeoutSpy).toHaveBeenCalledWith(forcedExitTimers[0])
+    await vi.waitFor(() => {
+      expect(exitSpy).toHaveBeenCalledWith(0)
+      expect(clearTimeoutSpy).toHaveBeenCalledWith(forcedExitTimers[0])
+    })
     // Tombstone is now written on SIGINT (regression: previous behavior was
     // to set _gracefulShutdown=true and skip the tombstone, leaving signal-driven
     // shutdowns invisible in the death log)
@@ -718,10 +809,11 @@ describe("daemon entrypoint", () => {
     clearTimeoutSpy.mockClear()
     forcedExitTimers.splice(0)
     onHandlers.SIGTERM?.()
-    await Promise.resolve()
-    expect(exitSpy).toHaveBeenCalledWith(0)
     expect(forcedExitTimers).toHaveLength(1)
-    expect(clearTimeoutSpy).toHaveBeenCalledWith(forcedExitTimers[0])
+    await vi.waitFor(() => {
+      expect(exitSpy).toHaveBeenCalledWith(0)
+      expect(clearTimeoutSpy).toHaveBeenCalledWith(forcedExitTimers[0])
+    })
     // Same fix for SIGTERM — was the more common silent-death cause because
     // killOrphanProcesses, launchd policies, and the OOM killer all use SIGTERM
     expect(writeDaemonTombstoneMock).toHaveBeenCalledWith("sigterm", expect.any(Error))
@@ -730,7 +822,8 @@ describe("daemon entrypoint", () => {
   }, 10_000)
 
   it("wires private-runtime workers as passive by default and uses offline config validation", async () => {
-    const { checkAgentConfig, checkAgentConfigWithProviderHealth, processManagerOptions } =
+    supercronicMocks.policy = { scheduler: "supercronic", updates: "disabled" }
+    const { emitNervesEvent, checkAgentConfig, checkAgentConfigWithProviderHealth, daemonOptions, processManagerOptions } =
       await importDaemonEntryWithPrivateRuntimeConfig({ autoStart: false, source: "default" })
 
     expect(processManagerOptions.agents).toEqual([expect.objectContaining({
@@ -744,6 +837,40 @@ describe("daemon entrypoint", () => {
     await expect(processManagerOptions.configCheck("slugger")).resolves.toEqual({ ok: true })
     expect(checkAgentConfig).toHaveBeenCalledWith("slugger", expect.any(String))
     expect(checkAgentConfigWithProviderHealth).not.toHaveBeenCalled()
+    const supervisorOptions = supercronicMocks.options.mock.calls[0]?.[0] as { onFatal: (error: Error) => void }
+    supervisorOptions.onFatal(new Error("restart budget exhausted in test"))
+    expect(emitNervesEvent).toHaveBeenCalledWith({
+      level: "error",
+      component: "daemon",
+      event: "daemon.supercronic_state",
+      message: "Supercronic restart budget exhausted",
+      meta: { error: "restart budget exhausted in test" },
+    })
+    expect(process.exit).toHaveBeenCalledWith(1)
+
+    const schedulerCommand = { kind: "scheduler.fire" }
+    expect(daemonOptions.schedulerFireVerifier(schedulerCommand)).toEqual({ schedulerRunId: "run-1", occurrenceId: "occurrence-1" })
+    expect(sanctuaryAcceptanceMocks.verifyFire).toHaveBeenCalledWith(schedulerCommand, expect.objectContaining({ childPid: 42, scenarioHandleDigest: null, identityKey: "k".repeat(43) }))
+    const schedulerOrigin = { schedulerRunId: "run-1", occurrenceId: "occurrence-1" }
+    expect(daemonOptions.schedulerFireConsumer(schedulerOrigin)).toEqual(schedulerOrigin)
+
+    sanctuaryAcceptanceMocks.marker = { label: "unit-16f-cron-fingerprint", scenarioHandleDigest: "a".repeat(64) }
+    expect(daemonOptions.schedulerFireVerifier(schedulerCommand)).toEqual({ schedulerRunId: "run-1", occurrenceId: "occurrence-1" })
+    runSanctuaryHealthHabitMock.mockImplementationOnce(async (_agent, options: any) => {
+      options.acceptanceMetrics.onPrivateTurnStart()
+      options.acceptanceMetrics.onProviderInvocation()
+      return { ok: true, message: "acceptance health" }
+    })
+    await expect(daemonOptions.nativeHabitRunner({
+      agent: "sanctuary", habitName: "sanctuary-health", trigger: "cron", occurrenceId: "occurrence-1", runnerId: "runner-1", schedulerOrigin,
+    })).resolves.toEqual({ ok: true, message: "acceptance health" })
+    expect(sanctuaryAcceptanceMocks.recordReceipt).toHaveBeenCalledWith(expect.objectContaining({ occurrenceId: "occurrence-1", runnerId: "runner-1", providerInvocationCount: 1, privateTurnCount: 1 }))
+
+    sanctuaryAcceptanceMocks.readCursor.mockReturnValueOnce(null)
+    await expect(daemonOptions.nativeHabitRunner({
+      agent: "sanctuary", habitName: "sanctuary-health", trigger: "cron", occurrenceId: "occurrence-2", runnerId: "runner-2", schedulerOrigin,
+    })).rejects.toThrow("supervisor provenance is unavailable")
+    sanctuaryAcceptanceMocks.marker = null
     await vi.waitFor(() => {
       expect(refreshProviderCredentialPoolMock).toHaveBeenCalledWith("slugger", {
         preserveCachedOnFailure: true,
@@ -1356,6 +1483,24 @@ describe("daemon entrypoint", () => {
     expect(processManagerSendToAgent).not.toHaveBeenCalled()
   })
 
+  it("routes every Sanctuary health scheduler source through the native habit command", async () => {
+    const { schedulerOptions, sendDaemonCommand } = await importDaemonEntryWithHabitDispatch({
+      socketPath: "/tmp/ouro-sanctuary-health-poke.sock",
+      agent: "sanctuary",
+    })
+
+    schedulerOptions.onHabitFire("sanctuary-health", "overdue", { occurrenceId: "overdue:first-run:15m" })
+
+    expect(sendDaemonCommand).toHaveBeenCalledWith("/tmp/ouro-sanctuary-health-poke.sock", {
+      kind: "habit.poke",
+      agent: "sanctuary",
+      habitName: "sanctuary-health",
+      trigger: "overdue",
+      occurrenceId: "overdue:first-run:15m",
+    })
+    expect(sendDaemonCommand).not.toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ kind: "private.wake" }))
+  })
+
   it("lets privateRuntime explicitly allow autonomous private-runtime startup", async () => {
     const { processManagerOptions } =
       await importDaemonEntryWithPrivateRuntimeConfig({ autoStart: true, source: "privateRuntime" })
@@ -1433,12 +1578,11 @@ describe("daemon entrypoint", () => {
       await Promise.resolve()
 
       const daemonOptions = daemonCtor.mock.calls[0]?.[0] as {
-        onStopCommandComplete: () => void
+        onStopCommandComplete: () => Promise<void>
       }
       expect(typeof daemonOptions.onStopCommandComplete).toBe("function")
 
-      daemonOptions.onStopCommandComplete()
-      daemonOptions.onStopCommandComplete()
+      await Promise.all([daemonOptions.onStopCommandComplete(), daemonOptions.onStopCommandComplete()])
 
       expect(habitSchedulerStopWatchMock).toHaveBeenCalledTimes(1)
       expect(habitSchedulerStopMock).toHaveBeenCalledTimes(1)

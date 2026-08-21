@@ -572,6 +572,7 @@ describe("buildTurnContext", () => {
       "- Mail: ready",
       "- Voice: ready",
       "- A2A: ready",
+      "- Telegram: disabled",
       "- Workbench: stale_bundle_entry (runtime-injected when launched by Workbench app; run ouro connect workbench to clean agent.json)",
     ])
   })
@@ -652,6 +653,7 @@ describe("buildTurnContext", () => {
       "- Mail: disabled",
       "- Voice: ready",
       "- A2A: disabled",
+      "- Telegram: disabled",
       "- Workbench: disabled (runtime-injected when launched by Workbench app)",
     ])
   })
@@ -693,6 +695,7 @@ describe("buildTurnContext", () => {
       "- Mail: disabled",
       "- Voice: ready",
       "- A2A: disabled",
+      "- Telegram: disabled",
       "- Workbench: disabled (runtime-injected when launched by Workbench app)",
     ])
   })
@@ -723,6 +726,7 @@ describe("buildTurnContext", () => {
       "- Mail: ready",
       "- Voice: disabled",
       "- A2A: disabled",
+      "- Telegram: disabled",
       "- Workbench: disabled (runtime-injected when launched by Workbench app)",
     ])
   })
@@ -753,6 +757,7 @@ describe("buildTurnContext", () => {
       "- Mail: disabled",
       "- Voice: disabled",
       "- A2A: disabled",
+      "- Telegram: disabled",
       "- Workbench: disabled (runtime-injected when launched by Workbench app)",
     ])
   })
@@ -771,8 +776,39 @@ describe("buildTurnContext", () => {
       "- Mail: needs_config",
       "- Voice: needs_config",
       "- A2A: disabled",
+      "- Telegram: disabled",
       "- Workbench: disabled (runtime-injected when launched by Workbench app)",
     ])
+  })
+
+  it("distinguishes complete and partially configured Telegram coordinates", async () => {
+    mockLoadAgentConfig.mockReturnValue({
+      senses: { telegram: { enabled: true } },
+    })
+    mockReadRuntimeCredentialConfig.mockReturnValue({
+      ok: true,
+      itemPath: "vault:test-agent:runtime/config",
+      revision: "runtime_telegram",
+      updatedAt: "2026-08-20T00:00:00.000Z",
+      config: {
+        telegramBotToken: "token",
+        telegramAuthorizedUserId: "42",
+        telegramAuthorizedChatId: "7",
+      },
+    })
+    expect((await buildTurnContext(makeInput())).senseStatusLines).toContain("- Telegram: ready")
+
+    mockReadRuntimeCredentialConfig.mockReturnValue({
+      ok: true,
+      itemPath: "vault:test-agent:runtime/config",
+      revision: "runtime_telegram_partial",
+      updatedAt: "2026-08-20T00:00:01.000Z",
+      config: {
+        telegramBotToken: "token",
+        telegramAuthorizedUserId: "42",
+      },
+    })
+    expect((await buildTurnContext(makeInput())).senseStatusLines).toContain("- Telegram: needs_config")
   })
 
   it("uses fallback senses config when config.senses is undefined", async () => {
@@ -786,6 +822,7 @@ describe("buildTurnContext", () => {
       "- Mail: disabled",
       "- Voice: disabled",
       "- A2A: disabled",
+      "- Telegram: disabled",
       "- Workbench: disabled (runtime-injected when launched by Workbench app)",
     ])
   })

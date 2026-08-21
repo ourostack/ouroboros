@@ -686,6 +686,38 @@ describe("buildSystem", () => {
     expect(result).toContain("Voice: ready")
   })
 
+  it("reports Telegram ready only when every authorized coordinate is cached", async () => {
+    setupReadFileSync()
+    vi.mocked(identity.loadAgentConfig).mockReturnValue({
+      name: "testagent",
+      provider: "minimax",
+      humanFacing: { provider: "minimax", model: "minimax-text-01" },
+      agentFacing: { provider: "minimax", model: "minimax-text-01" },
+      context: { maxTokens: 80000, contextMargin: 20 },
+      senses: { telegram: { enabled: true } },
+      phrases: { thinking: ["working"], tool: ["running tool"], followup: ["processing"] },
+    })
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    const { cacheRuntimeCredentialConfig } = await import("../../heart/runtime-credentials")
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    cacheRuntimeCredentialConfig("testagent", {
+      telegramBotToken: "token",
+      telegramAuthorizedUserId: "42",
+    })
+    resetPsycheCache()
+    expect(flattenSystemPrompt(await buildSystem("cli"))).toContain("Telegram: needs_config")
+
+    cacheRuntimeCredentialConfig("testagent", {
+      telegramBotToken: "token",
+      telegramAuthorizedUserId: "42",
+      telegramAuthorizedChatId: "7",
+    })
+    resetPsycheCache()
+    expect(flattenSystemPrompt(await buildSystem("cli"))).toContain("Telegram: ready")
+  })
+
   it("marks Voice ready when the ElevenLabs voice id is stored in voice config", async () => {
     setupReadFileSync()
     vi.mocked(identity.loadAgentConfig).mockReturnValue({

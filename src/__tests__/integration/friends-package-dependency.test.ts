@@ -23,6 +23,9 @@ import {
   accumulateFriendTokens,
   describeTrustContext,
   isTrustedLevel,
+  isIdentityProvider,
+  getAlwaysOnSenseNames,
+  getChannelCapabilities,
   setNervesEmitter,
   _setMachineOwnerUsernameForTest,
   type FriendRecord,
@@ -50,6 +53,27 @@ describe("friend flow through the @ouro.bot/friends dependency", () => {
     _setMachineOwnerUsernameForTest(undefined)
     setNervesEmitter(null)
     rmSync(friendsDir, { recursive: true, force: true })
+  })
+
+  it("consumes the exact released Telegram-capable Friends package", () => {
+    const packageJson = JSON.parse(
+      readFileSync(join(process.cwd(), "node_modules", "@ouro.bot", "friends", "package.json"), "utf8"),
+    ) as { version: string }
+
+    expect(packageJson.version).toBe("0.1.0-alpha.9")
+    expect(getChannelCapabilities("telegram")).toMatchObject({
+      channel: "telegram",
+      senseType: "open",
+      supportsHtml: true,
+      chatStyle: true,
+      supportsStreaming: false,
+      maxMessageLength: 4096,
+    })
+    expect(getAlwaysOnSenseNames()).toContain("telegram")
+    expect(isIdentityProvider("telegram-user")).toBe(true)
+    for (const channel of ["cli", "teams", "voice"]) {
+      expect(getChannelCapabilities(channel).chatStyle, channel).toBe(true)
+    }
   })
 
   it("resolves a first-imprint friend as trusted and persists it to disk", async () => {

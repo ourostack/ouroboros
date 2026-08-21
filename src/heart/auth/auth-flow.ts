@@ -3,7 +3,7 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { getAgentBundlesRoot, normalizeSenses, PROVIDER_CREDENTIALS, type AgentConfig, type AgentProvider } from "../identity"
+import { getAgentBundlesRoot, normalizeHabitPaidTurnsPerDay, normalizeSenses, PROVIDER_CREDENTIALS, type AgentConfig, type AgentProvider } from "../identity"
 import { migrateAgentConfigV1ToV2 } from "../migrate-config"
 import { resolveModelForProviderSelection } from "../provider-models"
 import type { Facing } from "@ouro.bot/friends"
@@ -24,6 +24,7 @@ export interface RuntimeAuthInput {
   agentName: string
   provider: AgentProvider
   promptInput?: (question: string) => Promise<string>
+  promptSecret?: (question: string) => Promise<string>
   onProgress?: (message: string) => void
 }
 
@@ -97,7 +98,9 @@ export function readAgentConfigForAgent(
     provider !== "anthropic" &&
     provider !== "minimax" &&
     provider !== "openai-codex" &&
-    provider !== "github-copilot"
+    provider !== "github-copilot" &&
+    provider !== "openai-compatible" &&
+    provider !== "openai-compatible-gemini"
   ) {
     throw new Error(`agent.json at ${configPath} has unsupported provider '${String(provider)}'`)
   }
@@ -113,6 +116,7 @@ export function readAgentConfigForAgent(
   const config: AgentConfig = {
     ...(parsed as unknown as AgentConfig),
     senses: normalizeSenses(parsed.senses, configPath),
+    habitPaidTurnsPerDay: normalizeHabitPaidTurnsPerDay(agentName, parsed.habitPaidTurnsPerDay, configPath),
   }
 
   return {
@@ -310,6 +314,18 @@ export async function collectRuntimeAuthCredentials(
   const spawnSync = deps.spawnSync ?? defaultSpawnSync
   const homeDir = deps.homeDir ?? os.homedir()
   const now = deps.now ?? (() => new Date())
+
+  if (input.provider === "openai-compatible" || input.provider === "openai-compatible-gemini") {
+    if (!input.promptSecret) throw new Error(`${input.provider} API key entry requires an interactive terminal so the secret can be hidden.`)
+    const apiKey = (await input.promptSecret(`${input.provider === "openai-compatible" ? "Z.ai" : "Gemini"} API key: `)).trim()
+    if (!apiKey) throw new Error(`${input.provider} API key is required.`)
+    return {
+      apiKey,
+      baseUrl: input.provider === "openai-compatible"
+        ? "https://api.z.ai/api/paas/v4/"
+        : "https://generativelanguage.googleapis.com/v1beta/openai/",
+    }
+  }
 
   if (input.provider === "github-copilot") {
     let token = process.env.GH_TOKEN?.trim() || process.env.GITHUB_TOKEN?.trim() || ""

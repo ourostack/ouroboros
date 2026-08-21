@@ -6,12 +6,14 @@ import type {
   GithubCopilotProviderConfig,
   MinimaxProviderConfig,
   OpenAICodexProviderConfig,
+  OpenAICompatibleProviderConfig,
 } from "./config"
 import { createAnthropicProviderRuntime } from "./providers/anthropic"
 import { createAzureProviderRuntime } from "./providers/azure"
 import { createMinimaxProviderRuntime } from "./providers/minimax"
 import { createOpenAICodexProviderRuntime } from "./providers/openai-codex"
 import { classifyGithubCopilotError, createGithubCopilotProviderRuntime } from "./providers/github-copilot"
+import { createOpenAICompatibleProviderRuntime } from "./providers/openai-compatible"
 import { getDefaultModelForProvider } from "./provider-models"
 import { emitNervesEvent } from "../nerves/runtime"
 import {
@@ -35,6 +37,7 @@ export type ProviderRuntimeConfig =
   | GithubCopilotProviderConfig
   | MinimaxProviderConfig
   | OpenAICodexProviderConfig
+  | OpenAICompatibleProviderConfig
 
 export interface ProviderPingOptions {
   model?: string
@@ -227,7 +230,9 @@ export function createProviderRuntimeForConfig(
       return createOpenAICodexProviderRuntime(resolvedModel, config as OpenAICodexProviderConfig)
     case "github-copilot":
       return createGithubCopilotProviderRuntime(resolvedModel, config as GithubCopilotProviderConfig)
-    /* v8 ignore next 2 -- exhaustive: all providers handled above @preserve */
+    case "openai-compatible":
+    case "openai-compatible-gemini":
+      return createOpenAICompatibleProviderRuntime(provider, resolvedModel, config as OpenAICompatibleProviderConfig)
     default:
       throw new Error(`unsupported provider for ping: ${provider}`)
   }
@@ -299,7 +304,7 @@ export interface HealthInventoryDeps {
   ping?: typeof pingProvider
 }
 
-const PINGABLE_PROVIDERS: AgentProvider[] = ["anthropic", "openai-codex", "azure", "minimax", "github-copilot"]
+const PINGABLE_PROVIDERS: AgentProvider[] = ["anthropic", "openai-codex", "azure", "minimax", "github-copilot", "openai-compatible", "openai-compatible-gemini"]
 
 export async function runHealthInventory(
   agentName: string,

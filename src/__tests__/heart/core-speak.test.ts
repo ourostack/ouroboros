@@ -228,9 +228,10 @@ describe("speak interception in runAgent", () => {
       }),
     ]))
     expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
-      event: "engine.unadvertised_speak_blocked",
+      event: "engine.unadvertised_tool_blocked",
       component: "engine",
       level: "warn",
+      meta: expect.objectContaining({ toolName: "speak" }),
     }))
   })
 
@@ -312,7 +313,7 @@ describe("speak interception in runAgent", () => {
     }))
   })
 
-  it("missing message: no onTextChunk, no flushNow, error result", async () => {
+  it("missing message: schema validation rejects before speak handling", async () => {
     mockCreate.mockReturnValueOnce(makeStream(speakChunkRaw("{}")))
     mockCreate.mockReturnValueOnce(makeStream(settleChunks("done")))
 
@@ -324,12 +325,13 @@ describe("speak interception in runAgent", () => {
 
     expect(callbacks.flushNow).not.toHaveBeenCalled()
     const errMsg = messages.find((m: any) =>
-      m.role === "tool" && m.content === "speak requires a non-empty `message` string."
+      m.role === "tool" && m.content.includes("invalid tool arguments") && m.content.includes("message")
     )
     expect(errMsg).toBeDefined()
+    expect(callbacks.onToolStart).not.toHaveBeenCalledWith("speak", expect.anything())
   })
 
-  it("malformed JSON args: no onTextChunk, no flushNow, error result", async () => {
+  it("malformed JSON args: validation rejects before speak handling", async () => {
     mockCreate.mockReturnValueOnce(makeStream(speakChunkRaw("not-json")))
     mockCreate.mockReturnValueOnce(makeStream(settleChunks("done")))
 
@@ -341,9 +343,10 @@ describe("speak interception in runAgent", () => {
 
     expect(callbacks.flushNow).not.toHaveBeenCalled()
     const errMsg = messages.find((m: any) =>
-      m.role === "tool" && m.content === "speak requires a non-empty `message` string."
+      m.role === "tool" && m.content.includes("invalid tool arguments: malformed JSON")
     )
     expect(errMsg).toBeDefined()
+    expect(callbacks.onToolStart).not.toHaveBeenCalledWith("speak", expect.anything())
   })
 
   it("flushNow undefined: no error thrown; onTextChunk still called; (spoken) result still pushed", async () => {

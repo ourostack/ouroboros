@@ -190,6 +190,21 @@ describe("pingProvider", () => {
     })
   })
 
+  it("fails closed when runtime construction receives an unsupported provider", () => {
+    expect(() => createProviderRuntimeForConfig("unsupported" as never, {} as never)).toThrow(
+      "unsupported provider for ping: unsupported",
+    )
+  })
+
+  it.each([
+    ["openai-compatible", "https://api.z.ai/api/paas/v4/"],
+    ["openai-compatible-gemini", "https://generativelanguage.googleapis.com/v1beta/openai/"],
+  ] as const)("constructs the %s runtime from explicit credentials", (provider, baseUrl) => {
+    const runtime = createProviderRuntimeForConfig(provider, { apiKey: "key", baseUrl })
+
+    expect(runtime.id).toBe(provider)
+  })
+
   it("returns ok: true when ping succeeds for anthropic", async () => {
     mockAnthropicCreate.mockResolvedValue({ content: [{ text: "hi" }] })
     const result = await pingProvider("anthropic", {

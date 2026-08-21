@@ -168,6 +168,17 @@ describe("runtimeInfoSection mcp channel", () => {
     expect(result).toContain("text transcript")
   })
 
+  it("telegram channel includes its managed-handler process label", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "test-model" } } })
+    const { runtimeInfoSection, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = runtimeInfoSection("telegram")
+    expect(result).toContain("telegram handler")
+  })
+
   it("a2a channel includes agent-peer trust guidance", async () => {
     setupReadFileSync()
     const identity = await import("../../heart/identity")

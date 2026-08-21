@@ -13,6 +13,7 @@ import {
   canonicalApprovalArguments,
   openApprovalStore,
   parseApprovalRecord,
+  readApprovalsByScenarioHandleDigest,
   type ApprovalStore,
 } from "../../heart/approval-store"
 
@@ -106,6 +107,201 @@ afterEach(() => {
 })
 
 describe("approval store", () => {
+  it("rejects fractional decision timestamps before inspecting the decision binding", () => {
+    const store = open()
+    const proposed = makeProposed(store)
+    expect(() => store.decide(decisionInput(proposed.decisionToken, { decisionAt: 1.5 })))
+      .toThrowError(new ApprovalStoreError("invalid_decision_time"))
+    store.close()
+  })
+
+  it("projects both absent and claimed continuations from a scenario-bound database", () => {
+    const root = makeRoot()
+    const databasePath = path.join(root, "approvals.sqlite")
+    const store = openApprovalStore({
+      databasePath,
+      now: () => new Date(NOW),
+      randomUUID: () => UUID,
+      randomBytes: (size) => Buffer.alloc(size, 0xab),
+    })
+    const scenarioHandleDigest = "9".repeat(64)
+    const prepared = store.prepare(proposalInput({ scenarioHandleDigest }))
+    expect(readApprovalsByScenarioHandleDigest(databasePath, scenarioHandleDigest)).toEqual([
+      { approval: prepared.record, continuation: null },
+    ])
+    store.activate({ approvalId: UUID, checkpointDigest: prepared.record.checkpointDigest, suspendedSessionRevision: "f".repeat(64) })
+    store.bindPrompt({ approvalId: UUID, transport: "telegram", transportChatId: "7", transportMessageId: "99" })
+    const claimed = store.decide(decisionInput(prepared.decisionToken))
+    store.markAttempted({ approvalId: UUID, ownerId: claimed.ownerId!, epoch: claimed.epoch })
+    store.complete({ approvalId: UUID, ownerId: claimed.ownerId!, epoch: claimed.epoch, state: "succeeded", result: "ok" })
+    const continuation = store.claimContinuation({ approvalId: UUID, ownerId: "continuation-a", ownerPid: 42 })
+    expect(continuation.claimed).toBe(true)
+    expect(readApprovalsByScenarioHandleDigest(databasePath, scenarioHandleDigest)[0]?.continuation).toMatchObject({
+      continuationOwnerId: "continuation-a",
+      continuationOwnerPid: 42,
+      continuationState: "claimed",
+    })
+    store.close()
+  })
+  it("binds approvals to an opaque acceptance scenario digest and supports read-only lookup", () => {
+    const store = open()
+    const scenarioHandleDigest = "9".repeat(64)
+    const prepared = store.prepare(proposalInput({ scenarioHandleDigest }))
+
+    expect(store.readByScenarioHandleDigest(scenarioHandleDigest)).toEqual([prepared.record])
+    expect(store.readByScenarioHandleDigest("8".repeat(64))).toEqual([])
+    expect(() => store.readByScenarioHandleDigest("not-a-digest")).toThrowError(ApprovalStoreError)
+    store.close()
+  })
+
+  it("discovers distinct opaque Telegram identity subjects from live approval records only", () => {
+    const root = makeRoot()
+    const store = openApprovalStore({
+      databasePath: path.join(root, "approvals.sqlite"),
+      now: () => new Date(NOW),
+      randomUUID: (() => {
+        const values = [UUID, "33333333-3333-4333-8333-333333333333", "44444444-4444-4444-8444-444444444444"]
+        return () => values.shift()!
+      })(),
+      randomBytes: (size) => Buffer.alloc(size, 0xab),
+    })
+    const first = `tg_${"a".repeat(43)}`
+    const second = `tg_${"b".repeat(43)}`
+    store.prepare(proposalInput({
+      requesterId: first,
+      transportUserId: first,
+      transportChatId: first,
+      sessionKey: `telegram:${first}`,
+      sessionPath: `/bundle/state/sessions/telegram-user:${first}/telegram/telegram_${first}.json`,
+    }))
+    store.prepare(proposalInput({
+      requesterId: "raw-requester",
+      transportUserId: second,
+      transportChatId: "raw-chat",
+      sessionKey: "other:session",
+      sessionPath: `/bundle/state/sessions/telegram-user:${second}/telegram/telegram_${second}.json`,
+    }))
+    store.prepare(proposalInput({
+      transport: "cli",
+      requesterId: `tg_${"c".repeat(43)}`,
+      transportUserId: `tg_${"c".repeat(43)}`,
+      transportChatId: `tg_${"c".repeat(43)}`,
+      sessionKey: `telegram:tg_${"c".repeat(43)}`,
+    }))
+
+    expect(store.listTelegramIdentitySubjects?.()).toEqual([first, second])
+    store.close()
+  })
+
+  it("migrates legacy Telegram identity bindings without retaining raw user or chat IDs", () => {
+    const root = makeRoot()
+    const databasePath = path.join(root, "approvals.sqlite")
+    const store = openApprovalStore({
+      databasePath,
+      now: () => new Date(NOW),
+      randomUUID: () => UUID,
+      randomBytes: (size) => Buffer.alloc(size, 0xab),
+    })
+    const rawUser = "918273645012345678"
+    const rawChat = "817263540123456789"
+    const rawMessage = "716253401234567891"
+    const subject = `tg_${"a".repeat(43)}`
+    const prepared = store.prepare(proposalInput({
+      requesterId: rawUser,
+      transportUserId: rawUser,
+      transportChatId: rawChat,
+      sessionKey: `telegram:${rawChat}`,
+      sessionPath: `/bundle/state/sessions/telegram-user:${rawUser}/telegram/telegram_${rawChat}.json`,
+    }))
+    store.activate({
+      approvalId: prepared.record.approvalId,
+      checkpointDigest: prepared.record.checkpointDigest,
+      suspendedSessionRevision: "f".repeat(64),
+    })
+    store.bindPrompt({
+      approvalId: prepared.record.approvalId,
+      transport: "telegram",
+      transportChatId: rawChat,
+      transportMessageId: rawMessage,
+    })
+
+    expect(store.migrateTelegramIdentity?.({ legacyUserId: rawUser, legacyChatId: rawChat, subject })).toBe(1)
+    expect(store.read(prepared.record.approvalId)).toMatchObject({
+      requesterId: subject,
+      transportUserId: subject,
+      transportChatId: subject,
+      sessionKey: `telegram:${subject}`,
+      sessionPath: `/bundle/state/sessions/telegram-user:${subject}/telegram/telegram_${subject}.json`,
+      transportMessageId: expect.stringMatching(/^tgm_[A-Za-z0-9_-]{43}$/u),
+    })
+    store.close()
+    const persisted = fs.readFileSync(databasePath)
+    expect(persisted.includes(Buffer.from(rawUser))).toBe(false)
+    expect(persisted.includes(Buffer.from(rawChat))).toBe(false)
+    expect(persisted.includes(Buffer.from(rawMessage))).toBe(false)
+  })
+
+  it("leaves unrelated and already-opaque approval identity records unchanged", () => {
+    const root = makeRoot()
+    const store = openApprovalStore({
+      databasePath: path.join(root, "approvals.sqlite"), now: () => new Date(NOW),
+      randomUUID: (() => {
+        const values = [UUID, "33333333-3333-4333-8333-333333333333"]
+        return () => values.shift()!
+      })(),
+      randomBytes: (size) => Buffer.alloc(size, 0xab),
+    })
+    const subject = `tg_${"a".repeat(43)}`
+    store.prepare(proposalInput({
+      transport: "cli", requesterId: "legacy-user", transportUserId: "legacy-user", transportChatId: "legacy-chat",
+      sessionKey: "cli:session", sessionPath: "/bundle/state/sessions/cli.json",
+    }))
+    store.prepare(proposalInput({
+      requesterId: subject, transportUserId: subject, transportChatId: subject,
+      sessionKey: `telegram:${subject}`, sessionPath: `/bundle/state/sessions/telegram-user:${subject}/telegram/telegram_${subject}.json`,
+    }))
+
+    expect(store.migrateTelegramIdentity?.({ legacyUserId: "legacy-user", legacyChatId: "legacy-chat", subject })).toBe(0)
+    store.close()
+  })
+
+  it("fails closed if a Telegram identity migration loses its compare-and-swap update", () => {
+    const root = makeRoot()
+    const databasePath = path.join(root, "approvals.sqlite")
+    const store = openApprovalStore({
+      databasePath, now: () => new Date(NOW), randomUUID: () => UUID,
+      randomBytes: (size) => Buffer.alloc(size, 0xab),
+    })
+    const rawUser = "918273645012345678"
+    const rawChat = "817263540123456789"
+    const subject = `tg_${"a".repeat(43)}`
+    store.prepare(proposalInput({
+      requesterId: rawUser, transportUserId: rawUser, transportChatId: rawChat,
+      sessionKey: `telegram:${rawChat}`, sessionPath: `/bundle/state/sessions/telegram-user:${rawUser}/telegram/telegram_${rawChat}.json`,
+    }))
+    const adversary = new Database(databasePath)
+    adversary.exec("CREATE TRIGGER ignore_identity_migration BEFORE UPDATE OF record_json ON approval_actions BEGIN SELECT RAISE(IGNORE); END")
+    adversary.close()
+
+    expect(() => store.migrateTelegramIdentity?.({ legacyUserId: rawUser, legacyChatId: rawChat, subject })).toThrowError(
+      new ApprovalStoreError("telegram_identity_migration_conflict"),
+    )
+    store.close()
+  })
+
+  it.each([
+    { legacyUserId: "", legacyChatId: "817263540123456789", subject: `tg_${"a".repeat(43)}` },
+    { legacyUserId: "918273645012345678", legacyChatId: "", subject: `tg_${"a".repeat(43)}` },
+    { legacyUserId: "918273645012345678", legacyChatId: "817263540123456789", subject: "raw-subject" },
+  ])("rejects invalid Telegram identity migration coordinates", (input) => {
+    const store = open()
+
+    expect(() => store.migrateTelegramIdentity?.(input)).toThrowError(
+      new ApprovalStoreError("invalid_telegram_identity_migration"),
+    )
+    store.close()
+  })
+
   it("canonicalizes JSON object keys recursively before hashing", () => {
     const left = canonicalApprovalArguments({ z: [3, { b: true, a: null }], a: "x" })
     const right = canonicalApprovalArguments({ a: "x", z: [3, { a: null, b: true }] })
@@ -346,8 +542,9 @@ describe("approval store", () => {
       transport: "telegram",
       transportChatId: "7",
       transportMessageId: "99",
+      expiresAt: "2026-08-17T17:25:01.000Z",
     })
-    expect(proposed).toMatchObject({ state: "proposed", transportMessageId: "99" })
+    expect(proposed).toMatchObject({ state: "proposed", transportMessageId: "99", expiresAt: "2026-08-17T17:25:01.000Z" })
     expect(() => store.bindPrompt({
       approvalId: record.approvalId,
       transport: "telegram",
@@ -368,6 +565,33 @@ describe("approval store", () => {
 
     expect(() => store.decide(decisionInput(prepared.decisionToken))).toThrowError(ApprovalStoreError)
     expect(store.read(UUID)?.state).toBe("awaiting_prompt_binding")
+    store.close()
+  })
+
+  it("abandons an approval whose prompt delivery became indeterminate before binding", () => {
+    const store = open()
+    const prepared = store.prepare(proposalInput())
+    store.activate({
+      approvalId: prepared.record.approvalId,
+      checkpointDigest: prepared.record.checkpointDigest,
+      suspendedSessionRevision: "f".repeat(64),
+    })
+
+    const abandoned = store.abandonPromptBinding({
+      approvalId: prepared.record.approvalId,
+      reason: "approval prompt delivery was indeterminate; action was not executed",
+    })
+
+    expect(abandoned).toMatchObject({
+      state: "abandoned_before_attempt",
+      reason: "approval prompt delivery was indeterminate; action was not executed",
+    })
+    expect(store.abandonPromptBinding({
+      approvalId: prepared.record.approvalId,
+      reason: "approval prompt delivery was indeterminate; action was not executed",
+    })).toEqual(abandoned)
+    expect(() => store.abandonPromptBinding({ approvalId: prepared.record.approvalId, reason: "different" }))
+      .toThrowError(ApprovalStoreError)
     store.close()
   })
 

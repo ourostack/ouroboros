@@ -89,6 +89,7 @@ import { discoverMailImportFilePath } from "../mail-import-discovery"
 import { listSessionActivity } from "../session-activity"
 import { listTargetSessionCandidates } from "../target-resolution"
 import type { HabitSessionSummary } from "../habits/habit-session-summary"
+import { createSanctuarySchedulerFireCommand } from "./sanctuary-scheduler-origin"
 
 import type {
   OuroCliCommand,
@@ -1912,6 +1913,7 @@ function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } 
       noSend: true,
     }
   }
+  if (command.kind === "habit.poke") return createSanctuarySchedulerFireCommand(command) ?? command
   return command
 }
 
@@ -2770,7 +2772,7 @@ const DEFAULT_RUNTIME_APPLY_TIMEOUT_MS = 15_000
 const DEFAULT_RUNTIME_APPLY_POLL_INTERVAL_MS = 500
 const DEFAULT_DAEMON_STATUS_TIMEOUT_MS = 4_000
 const DEFAULT_AGENT_RESTART_TIMEOUT_MS = 8_000
-const CONNECT_PROVIDER_CHOICES: AgentProvider[] = ["openai-codex", "anthropic", "minimax", "azure", "github-copilot"]
+const CONNECT_PROVIDER_CHOICES: AgentProvider[] = ["openai-compatible", "openai-compatible-gemini", "openai-codex", "anthropic", "minimax", "azure", "github-copilot"]
 
 function hasRuntimeConfigValue(config: RuntimeCredentialConfig, key: string): boolean {
   return readRuntimeConfigString(config, key) !== null
@@ -3439,7 +3441,7 @@ function normalizeWebhookPath(value: string, fallback: string): string {
   return trimmed.startsWith("/") ? trimmed : `/${trimmed}`
 }
 
-function enableAgentSense(agent: string, sense: "bluebubbles" | "teams" | "mail" | "voice" | "a2a", deps: OuroCliDeps): void {
+function enableAgentSense(agent: string, sense: "bluebubbles" | "teams" | "mail" | "voice" | "a2a" | "telegram", deps: OuroCliDeps): void {
   const { configPath } = readAgentConfigForAgent(agent, deps.bundlesRoot)
   const raw = JSON.parse(fs.readFileSync(configPath, "utf-8")) as Record<string, unknown>
   const senses = raw.senses && typeof raw.senses === "object" && !Array.isArray(raw.senses)
@@ -3456,6 +3458,7 @@ function enableAgentSense(agent: string, sense: "bluebubbles" | "teams" | "mail"
     mail: senses.mail ?? { enabled: false },
     voice: senses.voice ?? { enabled: false },
     a2a: senses.a2a ?? { enabled: false },
+    telegram: senses.telegram ?? { enabled: false },
     [sense]: { ...existing, enabled: true },
   }
   fs.writeFileSync(configPath, `${JSON.stringify(raw, null, 2)}\n`, "utf-8")
@@ -5928,6 +5931,83 @@ async function executeConnectA2A(agent: string, deps: OuroCliDeps): Promise<stri
   return message
 }
 
+function parseCanonicalTelegramId(value: string, label: string): string {
+  const trimmed = value.trim()
+  if (!/^[1-9][0-9]*$/u.test(trimmed)) {
+    throw new Error(`${label} must be a canonical positive decimal string`)
+  }
+  return trimmed
+}
+
+async function executeConnectTelegram(agent: string, deps: OuroCliDeps): Promise<string> {
+  if (agent === "SerpentGuide") {
+    throw new Error("SerpentGuide has no persistent runtime credentials. Connect Telegram on the hatchling agent instead.")
+  }
+  const promptInput = requirePromptInput(deps, "Telegram setup")
+  const promptSecret = requirePromptSecret(deps, "Telegram bot token entry")
+  const botToken = (await promptSecret("Telegram bot token: ")).trim()
+  if (!/^[0-9]+:[A-Za-z0-9_-]+$/u.test(botToken)) throw new Error("Telegram bot token has an invalid format")
+  const authorizedUserId = parseCanonicalTelegramId(
+    await promptInput("Authorized Telegram user ID: "),
+    "Telegram authorized user ID",
+  )
+  const authorizedChatId = parseCanonicalTelegramId(
+    await promptInput("Authorized private Telegram chat ID: "),
+    "Telegram authorized chat ID",
+  )
+
+  const progress = createHumanCommandProgress(deps, "connect telegram")
+  let stored: { revision: string; itemPath: string }
+  try {
+    stored = await runCommandProgressPhase(
+      progress,
+      "saving Telegram setup",
+      async () => {
+        progress.updateDetail("checking existing runtime config")
+        const current = await refreshRuntimeCredentialConfig(agent, { preserveCachedOnFailure: true })
+        if (!current.ok && current.reason !== "missing") {
+          throw new Error(`cannot read existing runtime credentials from ${current.itemPath}: ${current.error}`)
+        }
+        progress.updateDetail("storing private Telegram coordinates in the agent vault")
+        return upsertRuntimeCredentialConfig(agent, {
+          ...(current.ok ? current.config : {}),
+          telegramBotToken: botToken,
+          telegramAuthorizedUserId: authorizedUserId,
+          telegramAuthorizedChatId: authorizedChatId,
+        }, providerCliNow(deps))
+      },
+      () => "private Telegram coordinates stored",
+    )
+    progress.updateDetail("enabling Telegram in agent.json")
+    enableAgentSense(agent, "telegram", deps)
+  } finally {
+    progress.end()
+  }
+  const syncSummary = pushAgentBundleAfterCliMutation(agent, deps)
+  return writeCapabilityOutcome(deps, {
+    subtitle: `${agent}'s private Telegram sense is configured.`,
+    summary: `Telegram is ready for ${agent}.`,
+    whatChanged: [
+      "Capability: private Telegram sense",
+      `Stored: ${stored.itemPath}`,
+      "agent.json: senses.telegram.enabled = true",
+      "token and numeric IDs were not printed",
+      ...(syncSummary ? [syncSummary] : []),
+    ],
+    nextMoves: ["Run ouro up so the daemon starts the Telegram long poll."],
+    fallbackLines: [
+      `Telegram connected for ${agent}`,
+      "capability: private Telegram sense",
+      `stored: ${stored.itemPath}`,
+      "agent.json: senses.telegram.enabled = true",
+      "token and numeric IDs were not printed",
+      "",
+      "Next: run `ouro up` so the daemon starts the Telegram long poll.",
+      ...(syncSummary ? [syncSummary] : []),
+    ],
+  })
+}
+
 async function executeConnectWorkbench(agent: string, deps: OuroCliDeps): Promise<string> {
   const { workbenchMcpCommand, workbenchHasStaleBundleEntry } = readConnectBaySenseFlags(agent, deps)
   const changed = removeWorkbenchMcpRegistration(agent, deps)
@@ -5973,6 +6053,7 @@ async function executeConnect(
   if (command.target === "mail") return executeConnectMail(command.agent, deps, command)
   if (command.target === "voice") return executeConnectVoice(command.agent, deps)
   if (command.target === "a2a") return executeConnectA2A(command.agent, deps)
+  if (command.target === "telegram") return executeConnectTelegram(command.agent, deps)
   if (command.target === "workbench") return executeConnectWorkbench(command.agent, deps)
 
   const progress = createHumanCommandProgress(deps, "connect")
@@ -6406,6 +6487,7 @@ async function executeAuthRun(
       agentName: command.agent,
       provider,
       promptInput: deps.promptInput,
+      promptSecret: deps.promptSecret,
       onProgress: (message) => progress.updateDetail(message),
     })
   } catch (error) {

@@ -34,6 +34,7 @@ describe("package metadata", () => {
     expect([...packageJson.files].sort()).toEqual([
       ...PACKAGE_PAYLOAD_PATH_PREFIXES,
       "changelog.json",
+      "npm-shrinkwrap.json",
     ].sort())
   })
 

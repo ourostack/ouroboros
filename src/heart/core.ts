@@ -17,6 +17,21 @@ import { SettleFinalizationCallbackError } from "./streaming";
 import { emitNervesEvent } from "../nerves/runtime";
 import type { TurnResult } from "./streaming";
 import type { UsageData } from "../mind/context";
+
+export type ToolCallBoundaryCall = { id: string; name: string; arguments: string }
+export type ToolCallBoundaryReceipt = { name: string; reason: "profile_excluded" | "invalid_arguments" | "dispatched"; globallyResolvable: boolean; invoked: boolean; sideEffect: boolean }
+
+export function validateToolCallBatchAtProductionBoundary(calls: ToolCallBoundaryCall[], activeTools: OpenAI.ChatCompletionFunctionTool[]) {
+  const callIdCounts = new Map<string, number>()
+  for (const call of calls) callIdCounts.set(call.id, (callIdCounts.get(call.id) ?? 0) + 1)
+  return calls.map((call) => {
+    if (callIdCounts.get(call.id)! !== 1) return { call, error: "duplicate tool call id" } as const
+    const advertised = activeTools.find((tool) => tool.function.name === call.name)
+    if (!advertised || !advertised.function.parameters || typeof advertised.function.parameters !== "object") return { call, error: "tool was not advertised with a valid argument schema" } as const
+    const validated = validateAdvertisedToolArguments(call.arguments, advertised.function.parameters)
+    return validated.ok ? { call, advertised, validated: validated.value } as const : { call, error: validated.reason } as const
+  })
+}
 import { trimMessages } from "../mind/context";
 import {
   applyPromptBudget,
@@ -34,6 +49,7 @@ import { createAzureProviderRuntime } from "./providers/azure";
 import { createMinimaxProviderRuntime } from "./providers/minimax";
 import { createOpenAICodexProviderRuntime } from "./providers/openai-codex";
 import { createGithubCopilotProviderRuntime } from "./providers/github-copilot";
+import { createOpenAICompatibleProviderRuntime } from "./providers/openai-compatible";
 import type { SteeringFollowUpEffect } from "./turn-coordinator";
 import type { ActiveWorkFrame } from "./active-work";
 import {
@@ -64,7 +80,7 @@ import {
 import type { AgentProviderVisibility } from "./provider-visibility";
 import { refreshOpenAICodexProviderCredentials } from "./providers/openai-codex-token";
 
-export type ProviderId = "azure" | "anthropic" | "minimax" | "openai-codex" | "github-copilot";
+export type ProviderId = "azure" | "anthropic" | "minimax" | "openai-codex" | "github-copilot" | "openai-compatible" | "openai-compatible-gemini";
 
 export type ProviderCapability = "reasoning-effort" | "phase-annotation";
 
@@ -192,6 +208,9 @@ export function createProviderRegistry(): ProviderRegistry {
           return createOpenAICodexProviderRuntime(model, providerConfig as unknown as Parameters<typeof createOpenAICodexProviderRuntime>[1]);
         case "github-copilot":
           return createGithubCopilotProviderRuntime(model, providerConfig as unknown as Parameters<typeof createGithubCopilotProviderRuntime>[1]);
+        case "openai-compatible":
+        case "openai-compatible-gemini":
+          return createOpenAICompatibleProviderRuntime(provider, model, providerConfig as unknown as Parameters<typeof createOpenAICompatibleProviderRuntime>[2]);
       }
     },
   };
@@ -286,6 +305,8 @@ export function getProviderDisplayLabel(facing: Facing = "human"): string {
     "openai-codex": () => `openai codex (${model})`,
     /* v8 ignore next -- branch: tested via display label unit test @preserve */
     "github-copilot": () => `github copilot (${model})`,
+    "openai-compatible": () => `z.ai openai-compatible (${model})`,
+    "openai-compatible-gemini": () => `gemini openai-compatible (${model})`,
   };
   return providerLabelBuilders[provider]();
 }
@@ -401,6 +422,10 @@ export interface RunAgentOptions {
   setMustResolveBeforeHandoff?: (value: boolean) => void;
   tools?: OpenAI.ChatCompletionFunctionTool[];
   execTool?: (name: string, args: Record<string, string>, ctx?: ToolContext) => Promise<string>;
+  /** Production batch-boundary observations. Emitted by the same runAgent path that authorizes and dispatches tools. */
+  toolBoundaryObserver?: (receipt: ToolCallBoundaryReceipt) => void;
+  /** Exact provider runtime injection for bounded production-path acceptance probes. */
+  providerRuntimeOverride?: ProviderRuntime;
   mcpManager?: McpManager;
   /** When true, the observe tool is available in 1:1 chats (normally group-only).
    *  Used for reaction/feedback signals where silence is natural even in DMs. */
@@ -433,6 +458,8 @@ export interface RunAgentOptions {
    */
   captureGeneratedMessages?: (messages: OpenAI.ChatCompletionMessageParam[]) => void;
   approvalCoordinator?: ApprovalCoordinator;
+  /** Exact runtime-owned profile for deterministic private work. */
+  toolProfile?: "sanctuary-health-private";
 
   // ── Pre-read state from TurnContext ─────────────────────────────
   /** Whether the daemon socket is alive. When provided, skips the fs check. */
@@ -446,6 +473,8 @@ export interface RunAgentOptions {
   /** Pre-read Arc flight-recorder resume. When provided, renders deterministic continuation state. */
   flightRecorderResume?: import("../arc/flight-recorder").FlightRecorderResume;
 }
+
+export const MAX_PROVIDER_ITERATIONS = 8
 
 export interface ApprovalProposalRequest {
   toolCall: OpenAI.ChatCompletionMessageToolCall
@@ -625,18 +654,6 @@ function hasFreshPendingWork(options?: RunAgentOptions): boolean {
 
 const HABIT_CONTROL_TOOLS = new Set(["rest", "ponder", "observe"])
 
-function habitToolArgs(call: { name: string; arguments: string }): { ok: true; args: Record<string, string> } | { ok: false; reason: string } {
-  try {
-    const parsed = JSON.parse(call.arguments)
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return { ok: false, reason: `habit tool '${call.name}' arguments must be a JSON object` }
-    }
-    return { ok: true, args: parsed as Record<string, string> }
-  } catch {
-    return { ok: false, reason: `habit tool '${call.name}' has malformed JSON arguments` }
-  }
-}
-
 function highRiskExternalMutation(profile: ToolRiskProfile): string | null {
   if (profile.risk !== "high") return null
   const mutates = typeof profile.mutates === "string" ? [profile.mutates] : [...profile.mutates]
@@ -654,8 +671,8 @@ function recordBlockedHabitSurfaceAttempts(
   if (!habitSession?.recordSurfaceAttempt) return
   for (const call of toolCalls) {
     if (call.name !== "send_message" && call.name !== "surface") continue
-    const parsed = habitToolArgs(call)
-    const args = parsed.ok ? parsed.args : {}
+    // The canonical pre-batch schema gate guarantees object arguments here.
+    const args = JSON.parse(call.arguments) as Record<string, string>
     habitSession.recordSurfaceAttempt({
       recipient: String(args.friendId ?? args.delegationId ?? "unknown"),
       channel: String(args.channel ?? call.name),
@@ -671,23 +688,17 @@ async function habitToolBatchBlockReason(
   habitSession: HabitSessionToolContext | undefined,
   toolCalls: Array<{ name: string; arguments: string }>,
   delegatedOrigins: ToolContext["delegatedOrigins"] | undefined,
-  activeToolNames: ReadonlySet<string>,
-  noSend: boolean,
 ): Promise<string | null> {
-  if (noSend && toolCalls.some((call) => call.name === "ponder")) {
-    return "habit tool 'ponder' cannot create continuations under immutable no-send authority"
-  }
   if (!habitSession) return null
   const granted = new Set(habitSession.toolPolicy.grantedTools)
   const denied = new Set(habitSession.toolPolicy.deniedTools)
   for (const call of toolCalls) {
     if (denied.has(call.name)) return `habit tool '${call.name}' is denied by this habit session`
-    if (!activeToolNames.has(call.name)) return `habit tool '${call.name}' was not advertised to this model turn`
     if (HABIT_CONTROL_TOOLS.has(call.name)) continue
     if (!granted.has(call.name)) return `habit tool '${call.name}' was not granted to this habit session`
-    const parsed = habitToolArgs(call)
-    if (!parsed.ok) return parsed.reason
-    const riskProfile = riskProfileForToolName(call.name, parsed.args)
+    // The canonical pre-batch schema gate guarantees object arguments here.
+    const args = JSON.parse(call.arguments) as Record<string, string>
+    const riskProfile = riskProfileForToolName(call.name, args)
     if (!riskProfile) return `habit tool '${call.name}' does not have a known executable risk profile`
     const externalMutation = highRiskExternalMutation(riskProfile)
     if (externalMutation && call.name !== "send_message" && call.name !== "surface") {
@@ -698,7 +709,7 @@ async function habitToolBatchBlockReason(
         agentRoot: getAgentRoot(),
         envelope: habitSession.permissionEnvelope,
         toolName: call.name,
-        args: parsed.args,
+        args,
         friendStore: habitSession.friendStore,
         delegatedOrigins,
       })
@@ -722,7 +733,7 @@ export type RunAgentOutcome =
  *  BlueBubbles is final-only: its adapter owns one accepted visibility boundary.
  *  The private runtime has `ponder`; MCP returns synchronously; mail is batch. */
 export function isChatStyleChannel(channel: string): boolean {
-  return channel === "cli" || channel === "teams" || channel === "voice";
+  return getChannelCapabilities(channel).chatStyle;
 }
 
 function bindCurrentIngressEvidenceLocator(
@@ -798,12 +809,8 @@ function parseSettlePayload(argumentsText: string): { answer: string; intent?: S
 }
 
 function parsePonderPayload(argumentsText: string): ParsedPonderArgs {
-  try {
-    const parsed = JSON.parse(argumentsText)
-    return parsed && typeof parsed === "object" ? parsed as ParsedPonderArgs : {}
-  } catch {
-    return {}
-  }
+  // The canonical pre-batch schema gate guarantees a valid object payload.
+  return JSON.parse(argumentsText) as ParsedPonderArgs
 }
 
 function parseSuccessCriteria(raw: string | undefined): string[] | null {
@@ -1241,7 +1248,7 @@ export async function runAgent(
     generatedMessages.push(...structuredClone(next));
   };
   const facing = channelToFacing(channel);
-  let providerRuntime = await getProviderRuntime(facing);
+  let providerRuntime = options?.providerRuntimeOverride ?? await getProviderRuntime(facing);
   const provider = providerRuntime.id;
   const toolChoiceRequired = options?.toolChoiceRequired ?? true;
   const traceId = options?.traceId;
@@ -1412,6 +1419,7 @@ export async function runAgent(
   // a ponder packet created the return obligation in this turn.
   let noToolCallRetries = 0;
   const NO_TOOL_CALL_MAX_RETRIES = 2;
+  let providerIterations = 0;
   const toolLoopState = createToolLoopState();
   const toolFrictionLedger = createToolFrictionLedger();
   const finishTerminalProviderError = (error: Error, classification: ProviderErrorClassification): void => {
@@ -1520,7 +1528,7 @@ export async function runAgent(
     const filteredBaseTools = isPrivateRuntimeChannel
       ? baseTools.filter((t) => privateRuntimeHabitCanSendMessage || t.function.name !== "send_message")
       : baseTools;
-    const activeTools = [
+    const ordinaryActiveTools = [
         ...filteredBaseTools,
         ...(augmentedToolContext?.noSend === true ? [] : [ponderTool]),
         ...(isPrivateRuntimeChannel && privateRuntimeHabitCanSurface ? [surfaceToolDef] : []),
@@ -1529,6 +1537,15 @@ export async function runAgent(
         ...(!isPrivateRuntimeChannel ? [settleTool] : []),
         ...(isChatStyleChannel(channel ?? "") ? [speakTool] : []),
       ];
+    const activeTools = options?.toolProfile === "sanctuary-health-private"
+      ? (() => {
+          const sendTools = baseTools.filter((tool) => tool.function.name === "send_message")
+          if (channel !== "inner" || sendTools.length !== 1 || baseTools.length !== 1) {
+            throw new Error("sanctuary-health-private requires inner channel with exactly one canonical send_message definition")
+          }
+          return [sendTools[0]!, restTool]
+        })()
+      : ordinaryActiveTools;
     const activeToolNames = new Set(activeTools.map((tool) => tool.function.name));
     const steeringFollowUps = options?.drainSteeringFollowUps?.() ?? [];
     if (steeringFollowUps.length > 0) {
@@ -1671,6 +1688,10 @@ export async function runAgent(
       }
 
       const result = attempt.value;
+      providerIterations += 1
+      if (providerIterations === MAX_PROVIDER_ITERATIONS && result.toolCalls.length > 0) {
+        throw new Error(`provider iteration limit exhausted at response ${MAX_PROVIDER_ITERATIONS} before tool execution`)
+      }
       const streamCallbackBuffer = turnCallbackBufferRef.current;
       turnCallbackBufferRef.current = null;
 
@@ -1855,12 +1876,60 @@ export async function runAgent(
       } else {
         // Reset the retry counter on any successful tool call.
         noToolCallRetries = 0;
+        const preCallMessages = structuredClone(messages.filter((message) => message.role !== "system"))
+        const validatedCalls = validateToolCallBatchAtProductionBoundary(result.toolCalls, activeTools)
+        const invalidCall = validatedCalls.find((entry) => "error" in entry)
+        if (invalidCall) {
+          await streamCallbackBuffer?.flush()
+          pushGenerated(msg)
+          const unadvertisedCall = validatedCalls.find((entry) => !activeToolNames.has(entry.call.name))
+          for (const entry of validatedCalls) {
+            const detail = "error" in entry ? entry.error : "another call in this batch had invalid arguments"
+            const rejection = unadvertisedCall
+              ? `rejected: ${entry.call.name} was not advertised for this channel; no handler was executed.`
+              : `invalid tool arguments: ${detail}`
+            pushGenerated({ role: "tool", tool_call_id: entry.call.id, content: rejection })
+            providerRuntime.appendToolOutput(entry.call.id, rejection)
+            options?.toolBoundaryObserver?.({
+              name: entry.call.name,
+              reason: activeToolNames.has(entry.call.name) ? "invalid_arguments" : "profile_excluded",
+              globallyResolvable: typeof resolveToolDefinition(entry.call.name)?.handler === "function",
+              invoked: false,
+              sideEffect: false,
+            })
+          }
+          if (unadvertisedCall) {
+            emitNervesEvent({
+              level: "warn",
+              component: "engine",
+              event: "engine.unadvertised_tool_blocked",
+              message: "blocked an unadvertised tool call before batch execution",
+              meta: { channel: String(channel), toolName: unadvertisedCall.call.name },
+            })
+          } else {
+            emitNervesEvent({
+              level: "warn",
+              component: "engine",
+              event: "engine.tool_arguments_rejected",
+              message: "tool batch rejected before execution because arguments were invalid",
+              meta: { toolCallId: invalidCall.call.id, toolName: invalidCall.call.name },
+            })
+          }
+          continue
+        }
+        const validCalls = validatedCalls as Array<{
+          call: (typeof result.toolCalls)[number]
+          advertised: OpenAI.ChatCompletionFunctionTool
+          validated: ValidatedToolArguments
+        }>
+        const validatedCallArguments = new Map(validCalls.map((entry) => [
+          entry.call,
+          entry.validated.arguments as Record<string, string>,
+        ]))
         const habitBlockReason = await habitToolBatchBlockReason(
           habitSession,
           result.toolCalls,
           augmentedToolContext?.delegatedOrigins,
-          activeToolNames,
-          augmentedToolContext?.noSend === true,
         )
         if (habitBlockReason) {
           streamCallbackBuffer?.discard();
@@ -1887,15 +1956,7 @@ export async function runAgent(
           ? resolveToolDefinition(soleTerminalCall.name)?.terminalProjection
           : undefined
         if (soleTerminalCall && soleTerminalProjection?.mode === "verbatim") {
-          let terminalArgs: Record<string, string> = {}
-          try {
-            const parsed = JSON.parse(soleTerminalCall.arguments)
-            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-              terminalArgs = parsed as Record<string, string>
-            }
-          } catch {
-            // The registered handler owns exact argument validation.
-          }
+          const terminalArgs = validatedCallArguments.get(soleTerminalCall)!
           if (
             soleTerminalProjection.clearBufferedText
             || callbacks.settleOutputMode === "final_only"
@@ -1946,8 +2007,7 @@ export async function runAgent(
         }
         // Check for settle sole call: intercept before tool execution
         if (isSoleSettle) {
-          /* v8 ignore next -- defensive: JSON.parse catch for malformed settle args @preserve */
-          const settleArgs = (() => { try { return JSON.parse(result.toolCalls[0].arguments) } catch { return {} } })();
+          const settleArgs = validatedCallArguments.get(result.toolCalls[0])!
           callbacks.onToolStart("settle", settleArgs);
           // Private-runtime attention queue gate: reject settle if items remain
           const attentionQueue = augmentedToolContext?.delegatedOrigins;
@@ -2055,8 +2115,7 @@ export async function runAgent(
         const isSoleObserve = result.toolCalls.length === 1 && result.toolCalls[0].name === "observe";
         if (isSoleObserve) {
           streamCallbackBuffer?.discard();
-          /* v8 ignore next -- defensive: JSON.parse catch for malformed observe args @preserve */
-          const observeArgs = (() => { try { return JSON.parse(result.toolCalls[0].arguments) } catch { return {} } })();
+          const observeArgs = validatedCallArguments.get(result.toolCalls[0])!
           let reason: string | undefined;
           if (typeof observeArgs?.reason === "string") reason = observeArgs.reason;
           callbacks.onToolStart("observe", observeArgs);
@@ -2080,7 +2139,7 @@ export async function runAgent(
         const isSoleRest = result.toolCalls.length === 1 && result.toolCalls[0].name === "rest";
         if (isSoleRest) {
           streamCallbackBuffer?.discard();
-          const restArgs = (() => { try { return JSON.parse(result.toolCalls[0].arguments) } catch { return {} } })();
+          const restArgs = validatedCallArguments.get(result.toolCalls[0])!
           callbacks.onToolStart("rest", restArgs);
 
           // Attention queue gate: reject rest if items remain
@@ -2129,50 +2188,10 @@ export async function runAgent(
           continue;
         }
 
-        const preCallMessages = structuredClone(messages.filter((message) => message.role !== "system"))
-        const validatedCalls: Array<
-          | { call: (typeof result.toolCalls)[number]; advertised: OpenAI.ChatCompletionFunctionTool; validated: ValidatedToolArguments }
-          | { call: (typeof result.toolCalls)[number]; error: string }
-        > | null = options?.approvalCoordinator
-          ? result.toolCalls.map((call) => {
-              const advertised = activeTools.find((tool) => tool.function.name === call.name)
-              if (!advertised || !advertised.function.parameters || typeof advertised.function.parameters !== "object") {
-                return { call, error: "tool was not advertised with a valid argument schema" } as const
-              }
-              const validated = validateAdvertisedToolArguments(call.arguments, advertised.function.parameters)
-              return validated.ok
-                ? { call, advertised, validated: validated.value } as const
-                : { call, error: validated.reason } as const
-            })
-          : null
-        const invalidApprovalCall = validatedCalls?.find((entry) => "error" in entry)
-        if (invalidApprovalCall) {
-          await streamCallbackBuffer?.flush()
-          pushGenerated(msg)
-          for (const entry of validatedCalls!) {
-            const detail = "error" in entry ? entry.error : "another call in this batch had invalid arguments"
-            const rejection = `invalid tool arguments: ${detail}`
-            pushGenerated({ role: "tool", tool_call_id: entry.call.id, content: rejection })
-            providerRuntime.appendToolOutput(entry.call.id, rejection)
-          }
-          emitNervesEvent({
-            level: "warn",
-            component: "engine",
-            event: "engine.tool_arguments_rejected",
-            message: "tool batch rejected before execution because arguments were invalid",
-            meta: { toolCallId: invalidApprovalCall.call.id, toolName: invalidApprovalCall.call.name },
-          })
-          continue
-        }
-
-        const approvalCalls = (validatedCalls as Array<{
-          call: (typeof result.toolCalls)[number]
-          advertised: OpenAI.ChatCompletionFunctionTool
-          validated: ValidatedToolArguments
-        }> | null)?.map((entry) => ({
+        const approvalCalls = options?.approvalCoordinator ? validCalls.map((entry) => ({
           ...entry,
           policy: approvalPolicyForToolName(entry.call.name, entry.validated.arguments),
-        })) ?? []
+        })) : []
         const protectedCall = approvalCalls.find((entry) => entry.policy.kind === "required")
         if (protectedCall && result.toolCalls.length !== 1) {
           streamCallbackBuffer?.discard()
@@ -2247,21 +2266,6 @@ export async function runAgent(
         // Execute tools (sole-call tools in mixed calls are rejected inline)
         for (const tc of result.toolCalls) {
           if (signal?.aborted) break;
-          if (tc.name === "speak" && !activeToolNames.has("speak")) {
-            const rejection = "rejected: speak was not advertised for this channel; no outward message was sent."
-            callbacks.onToolStart(tc.name, {})
-            callbacks.onToolEnd(tc.name, "", false)
-            pushGenerated({ role: "tool", tool_call_id: tc.id, content: rejection })
-            providerRuntime.appendToolOutput(tc.id, rejection)
-            emitNervesEvent({
-              level: "warn",
-              component: "engine",
-              event: "engine.unadvertised_speak_blocked",
-              message: "blocked an unadvertised speak tool call",
-              meta: { channel: String(channel) },
-            })
-            continue
-          }
           // Reject sole-call tools when mixed with other tool calls
           const terminalProjection = resolveToolDefinition(tc.name)?.terminalProjection
           const soleCallRejection = SOLE_CALL_REJECTION[tc.name]
@@ -2273,12 +2277,7 @@ export async function runAgent(
             providerRuntime.appendToolOutput(tc.id, soleCallRejection);
             continue;
           }
-          let args: Record<string, string> = {};
-          try {
-            args = JSON.parse(tc.arguments);
-          } catch {
-            /* ignore */
-          }
+          const args = validatedCallArguments.get(tc)!
           if (tc.name === "send_message" && args.friendId === "self") {
             const latestUserText = latestUserMessageText(messages)
             if (!isPrivateRuntimeChannel && looksLikePrivateReturnRequest(latestUserText)) {
@@ -2293,9 +2292,9 @@ export async function runAgent(
             sawSendMessageSelf = true;
           }
           if (tc.name === "speak") {
-            let speakArgs: { message?: unknown } = {};
-            try { speakArgs = JSON.parse(tc.arguments) as { message?: unknown }; } catch { /* malformed */ }
-            const speakMessage = typeof speakArgs.message === "string" ? speakArgs.message : "";
+            // The canonical pre-batch schema gate guarantees a required string.
+            const speakArgs = JSON.parse(tc.arguments) as { message: string };
+            const speakMessage = speakArgs.message;
             const argSummary = summarizeArgs("speak", { message: speakMessage });
             callbacks.onToolStart("speak", { message: speakMessage });
             if (speakMessage.trim().length === 0) {
@@ -2455,7 +2454,7 @@ export async function runAgent(
                     createLinkedReturnObligation(returnObligationId, packet.id)
                   }
                 }
-              } else if (action === "revise") {
+              } else {
                 const packetId = typeof parsedArgs.packet_id === "string" ? parsedArgs.packet_id.trim() : "";
                 const kind = parsedArgs.kind;
                 const objective = typeof parsedArgs.objective === "string" ? parsedArgs.objective.trim() : "";
@@ -2475,8 +2474,6 @@ export async function runAgent(
                   ? packet.relatedReturnObligationId
                   : null;
                 resultAction = "revised";
-              } else {
-                throw new Error("ponder requires action=create or revise.")
               }
 
               if (returnObligationId) {
@@ -2542,6 +2539,15 @@ export async function runAgent(
             success = false;
             augmentedToolContext?.habitSession?.recordError?.(toolResult);
           }
+          const resolvedRiskProfile = resolveToolDefinition(tc.name)?.riskProfile
+          const toolRiskProfile = typeof resolvedRiskProfile === "function" ? resolvedRiskProfile(args) : resolvedRiskProfile
+          options?.toolBoundaryObserver?.({
+            name: tc.name,
+            reason: "dispatched",
+            globallyResolvable: typeof resolveToolDefinition(tc.name)?.handler === "function",
+            invoked: true,
+            sideEffect: success && toolRiskProfile?.mutates !== "none",
+          })
           toolResult = rewriteToolResultForModel(tc.name, toolResult, toolFrictionLedger);
           recordToolOutcome(toolLoopState, tc.name, args, toolResult, success);
           callbacks.onToolEnd(tc.name, buildToolResultSummary(tc.name, args, toolResult, success), success);

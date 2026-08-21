@@ -7,6 +7,7 @@ import type { InboundTurnResult } from "../../senses/pipeline"
 // ── Mocks ──────────────────────────────────────────────────────
 
 const mockHandleInboundTurn = vi.fn()
+const mockReadSessionTransaction = vi.fn(() => ({ bytes: "", value: null, revision: "revision-a" }))
 const mockWithSessionTurnLease = vi.fn(async (_sessionPath: string, work: (lease: any) => Promise<any>) => work({
   sessionPath: "/tmp/session.json",
   ownerId: "owner-a",
@@ -16,6 +17,7 @@ const mockWithSessionTurnLease = vi.fn(async (_sessionPath: string, work: (lease
 
 vi.mock("../../mind/session-transaction", () => ({
   withSessionTurnLease: (...args: any[]) => mockWithSessionTurnLease(...args),
+  readSessionTransaction: (...args: any[]) => mockReadSessionTransaction(...args),
 }))
 
 vi.mock("../../senses/pipeline", async () => {
@@ -370,6 +372,28 @@ describe("runSenseTurn", () => {
     expect(result.ponderDeferred).toBe(false)
   })
 
+  it("preserves observed provider and tool counts when the shared turn rejects", async () => {
+    mockHandleInboundTurn.mockImplementationOnce(async (input: any) => {
+      input.callbacks.onModelStart()
+      input.callbacks.onToolStart()
+      input.callbacks.onToolStart()
+      throw new Error("provider failed")
+    })
+    const observer = { providerInvocationCount: 0, toolInvocationCount: 0 }
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+
+    await expect(runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "hello",
+      turnMetricsObserver: observer,
+    })).rejects.toThrow("provider failed")
+
+    expect(observer).toEqual({ providerInvocationCount: 1, toolInvocationCount: 2 })
+  })
+
   it("declares shared-turn settle output as retractable before outward delivery", async () => {
     const { runSenseTurn } = await import("../../senses/shared-turn")
     await runSenseTurn({
@@ -658,6 +682,28 @@ describe("runSenseTurn", () => {
     const input = mockHandleInboundTurn.mock.calls[0][0]
     expect(input.latencyMode).toBe("live")
     expect(input.runAgentOptions.skipKeptNotes).toBe(true)
+  })
+
+  it("builds an approval coordinator from the leased session checkpoint", async () => {
+    const approvalCoordinator = { coordinate: vi.fn() }
+    const approvalCoordinatorFactory = vi.fn(() => approvalCoordinator)
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+
+    await runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "approval-session",
+      friendId: "friend-1",
+      userMessage: "restart it",
+      approvalCoordinatorFactory: approvalCoordinatorFactory as never,
+    })
+
+    expect(approvalCoordinatorFactory).toHaveBeenCalledWith({
+      sessionPath: "/tmp/test-agent/state/sessions/friend-1/mcp/approval-session.json",
+      baseSessionRevision: "revision-a",
+    })
+    expect(mockHandleInboundTurn.mock.calls[0][0].runAgentOptions.approvalCoordinator)
+      .toBe(approvalCoordinator)
   })
 
   it("handles null mcpManager gracefully (no MCP servers)", async () => {

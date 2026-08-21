@@ -29,6 +29,7 @@ export interface AwaitSchedulerOptions {
   onAwaitExpire: (awaitName: string) => void
   deps: AwaitSchedulerDeps
   execForVerify?: (cmd: string) => string
+  verifyJobs?: (jobs: ScheduledTaskJob[]) => boolean
   platform?: string
 }
 
@@ -57,6 +58,7 @@ export class AwaitScheduler {
   private readonly onAwaitExpire: (awaitName: string) => void
   private readonly deps: AwaitSchedulerDeps
   private readonly execForVerify?: (cmd: string) => string
+  private readonly verifyJobs?: (jobs: ScheduledTaskJob[]) => boolean
   private readonly platform: string
   private watcher: FsWatcher | null = null
   private debounceTimer: ReturnType<typeof setTimeout> | null = null
@@ -73,6 +75,7 @@ export class AwaitScheduler {
     this.onAwaitExpire = options.onAwaitExpire
     this.deps = options.deps
     this.execForVerify = options.execForVerify
+    this.verifyJobs = options.verifyJobs
     this.platform = options.platform ?? process.platform
   }
 
@@ -263,9 +266,11 @@ export class AwaitScheduler {
   }
 
   private verifyCronAndCreateFallbacks(jobs: ScheduledTaskJob[]): void {
-    if (!this.execForVerify) return
+    if (!this.execForVerify && !this.verifyJobs) return
 
-    const verifiedLabels = this.verifyCronEntries()
+    const verifiedLabels = this.verifyJobs?.(jobs)
+      ? new Set(jobs.map((job) => this.platform === "darwin" ? `bot.ouro.${job.agent}.${job.taskId}` : job.taskId.replace(/^await\./u, "")))
+      : this.execForVerify ? this.verifyCronEntries() : new Set<string>()
 
     for (const job of jobs) {
       // job.taskId is already namespaced as "await.<name>". The bare name is

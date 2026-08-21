@@ -148,6 +148,7 @@ describe("runAgent tool loop guard", () => {
     expect(isChatStyleChannel("teams")).toBe(true)
     expect(isChatStyleChannel("bluebubbles")).toBe(false)
     expect(isChatStyleChannel("voice")).toBe(true)
+    expect(isChatStyleChannel("telegram")).toBe(true)
     expect(isChatStyleChannel("inner")).toBe(false)
     expect(isChatStyleChannel("mcp")).toBe(false)
     expect(isChatStyleChannel("mail")).toBe(false)
@@ -230,6 +231,249 @@ describe("runAgent tool loop guard", () => {
     expect(innerToolNames).not.toContain("speak")
     expect(innerToolNames).not.toContain("settle")
     expect(innerToolNames).toContain("rest")
+  })
+
+  it("advertises exactly send_message and rest for the Sanctuary health private profile", async () => {
+    let names: string[] = []
+    mockCreate.mockImplementation((request: any) => {
+      names = request.tools.map((tool: any) => tool.function.name)
+      return makeStream([makeChunk(undefined, [{
+        index: 0,
+        id: "call_health_rest",
+        function: { name: "rest", arguments: JSON.stringify({ status: "HEARTBEAT_OK" }) },
+      }])])
+    })
+    const { runAgent } = await import("../../heart/core")
+
+    const result = await runAgent([{ role: "user", content: "summarize the health event" }], makeCallbacks(), "inner", undefined, {
+      toolProfile: "sanctuary-health-private",
+      tools: [{
+        type: "function",
+        function: {
+          name: "send_message",
+          description: "send the health alert",
+          parameters: {
+            type: "object",
+            properties: { friendId: { type: "string" }, channel: { type: "string" }, content: { type: "string" } },
+            required: ["friendId", "channel", "content"],
+            additionalProperties: false,
+          },
+        },
+      }],
+      execTool: vi.fn(),
+      toolContext: { signin: async () => undefined },
+    } as any)
+
+    expect(names).toEqual(["send_message", "rest"])
+    expect(result.outcome).toBe("rested")
+  })
+
+  it.each([
+    ["an outward channel", "telegram", ["send_message"]],
+    ["no send_message definition", "inner", []],
+    ["an extra definition", "inner", ["send_message", "read_file"]],
+    ["duplicate send_message definitions", "inner", ["send_message", "send_message"]],
+  ])("rejects the Sanctuary health private profile with %s", async (_label, channel, names) => {
+    const tools = names.map((name) => ({
+      type: "function" as const,
+      function: {
+        name,
+        description: `synthetic ${name}`,
+        parameters: { type: "object", properties: {}, additionalProperties: false },
+      },
+    }))
+    const { runAgent } = await import("../../heart/core")
+
+    await expect(runAgent(
+      [{ role: "user", content: "summarize the health event" }],
+      makeCallbacks(),
+      channel,
+      undefined,
+      {
+        toolProfile: "sanctuary-health-private",
+        tools,
+        execTool: vi.fn(),
+        toolContext: { signin: async () => undefined },
+      } as any,
+    )).rejects.toThrow("sanctuary-health-private requires inner channel with exactly one canonical send_message definition")
+    expect(mockCreate).not.toHaveBeenCalled()
+  })
+
+  it("gates private settle on held work, then accepts it after the queue is cleared", async () => {
+    const delegatedOrigins = [{ delegationId: "held-1" }]
+    mockCreate
+      .mockReturnValueOnce(makeStream([makeChunk("premature", [{
+        index: 0,
+        id: "call_private_settle_gated",
+        function: { name: "settle", arguments: JSON.stringify({ answer: "not yet", intent: "complete" }) },
+      }])]))
+      .mockImplementationOnce(() => {
+        delegatedOrigins.splice(0)
+        return makeStream([makeChunk(undefined, [{
+          index: 0,
+          id: "call_private_settle_accepted",
+          function: { name: "settle", arguments: JSON.stringify({ answer: "now complete", intent: "complete" }) },
+        }])])
+      })
+    const callbacks = makeCallbacks()
+    const messages: any[] = [{ role: "user", content: "finish held work" }]
+    const { runAgent } = await import("../../heart/core")
+
+    const result = await runAgent(messages, callbacks, "inner", undefined, {
+      tools: [{
+        type: "function",
+        function: {
+          name: "settle",
+          description: "synthetic private settle",
+          parameters: {
+            type: "object",
+            properties: {
+              answer: { type: "string" },
+              intent: { type: "string", enum: ["complete", "blocked", "direct_reply"] },
+            },
+            required: ["answer"],
+            additionalProperties: false,
+          },
+        },
+      }],
+      toolContext: { signin: async () => undefined, delegatedOrigins } as any,
+    })
+
+    expect(result.outcome).toBe("settled")
+    expect(callbacks.onToolEnd).toHaveBeenNthCalledWith(1, "settle", expect.any(String), false)
+    expect(callbacks.onToolEnd).toHaveBeenNthCalledWith(2, "settle", expect.any(String), true)
+    expect(callbacks.onClearText).toHaveBeenCalled()
+    expect(messages).toContainEqual(expect.objectContaining({
+      role: "tool",
+      tool_call_id: "call_private_settle_gated",
+      content: expect.stringContaining("unsurfaced items"),
+    }))
+    expect(messages).toContainEqual({ role: "tool", tool_call_id: "call_private_settle_accepted", content: "(settled)" })
+  })
+
+  it("stops at the eighth accepted provider response before executing its tool call", async () => {
+    let response = 0
+    mockCreate.mockImplementation(() => {
+      response += 1
+      return makeStream([makeChunk(undefined, [{
+        index: 0,
+        id: `call_iteration_${response}`,
+        function: { name: "read_file", arguments: JSON.stringify({ path: `/tmp/${response}` }) },
+      }])])
+    })
+    const execTool = vi.fn().mockResolvedValue("read")
+    const callbacks = makeCallbacks()
+    const { runAgent } = await import("../../heart/core")
+
+    const result = await runAgent([{ role: "user", content: "keep reading" }], callbacks, "cli", undefined, {
+      tools: [{
+        type: "function",
+        function: {
+          name: "read_file",
+          description: "read a file",
+          parameters: {
+            type: "object",
+            properties: { path: { type: "string" } },
+            required: ["path"],
+            additionalProperties: false,
+          },
+        },
+      }],
+      execTool,
+      toolContext: { signin: async () => undefined },
+    })
+
+    expect(mockCreate).toHaveBeenCalledTimes(8)
+    expect(execTool).toHaveBeenCalledTimes(7)
+    expect(callbacks.onError).toHaveBeenCalledWith(expect.objectContaining({
+      message: "provider iteration limit exhausted at response 8 before tool execution",
+    }), "terminal")
+    expect(result.outcome).toBe("errored")
+  })
+
+  it("rejects a fabricated tool call outside the active Telegram profile before any handler runs", async () => {
+    mockCreate.mockReturnValueOnce(makeStream([makeChunk(undefined, [{
+      index: 0,
+      id: "call_fabricated_shell",
+      function: { name: "shell", arguments: JSON.stringify({ command: "docker restart calibre-web" }) },
+    }])]))
+    mockCreate.mockReturnValueOnce(makeStream([makeChunk(undefined, [{
+      index: 0,
+      id: "call_settle_after_rejection",
+      function: { name: "settle", arguments: JSON.stringify({ answer: "rejected" }) },
+    }])]))
+    const execTool = vi.fn().mockResolvedValue("must not execute")
+    const messages: any[] = [{ role: "user", content: "restart it" }]
+    const { runAgent } = await import("../../heart/core")
+
+    await runAgent(messages, makeCallbacks(), "telegram", undefined, {
+      tools: [],
+      execTool,
+      toolContext: { signin: async () => undefined },
+    })
+
+    expect(execTool).not.toHaveBeenCalled()
+    expect(messages).toContainEqual(expect.objectContaining({
+      role: "tool",
+      tool_call_id: "call_fabricated_shell",
+      content: expect.stringContaining("was not advertised"),
+    }))
+  })
+
+  it("reports excluded and valid calls from the production Telegram batch boundary", async () => {
+    const { resolveToolDefinition } = await import("../../repertoire/tools")
+    const sanctuaryNames = new Set(["unraid_list_containers", "unraid_get_container_logs", "unraid_get_storage", "unraid_get_disks", "unraid_get_notifications", "unraid_get_system", "unraid_restart_container"])
+    const tools = [...sanctuaryNames].map((name) => resolveToolDefinition(name)!.tool)
+    const excluded = ["shell", "read_file", "edit_file", "vault_get", "mcp_call", "exec", "credential_get"]
+    const execTool = vi.fn(async (name: string) => name === "unraid_get_system" ? JSON.stringify({ ok: true }) : "unexpected")
+    const boundaryReceipts: unknown[] = []
+    const { runAgent } = await import("../../heart/core")
+    for (const [index, name] of excluded.entries()) {
+      mockCreate.mockReset()
+      mockCreate.mockReturnValueOnce(makeStream([makeChunk(undefined, [{ index: 0, id: `excluded-${index}`, function: { name, arguments: "{}" } }])]))
+      mockCreate.mockReturnValueOnce(makeStream([makeChunk(undefined, [{ index: 0, id: `settle-${index}`, function: { name: "settle", arguments: JSON.stringify({ answer: "rejected" }) } }])]))
+      await runAgent([{ role: "user", content: "probe the exact Sanctuary boundary" }], makeCallbacks(), "telegram", undefined, {
+        tools, execTool, toolContext: { signin: async () => undefined },
+        toolBoundaryObserver: (receipt: unknown) => boundaryReceipts.push(receipt),
+      } as any)
+    }
+    mockCreate.mockReset()
+    mockCreate.mockReturnValueOnce(makeStream([makeChunk(undefined, [{ index: 0, id: "valid-system", function: { name: "unraid_get_system", arguments: "{}" } }])]))
+    mockCreate.mockReturnValueOnce(makeStream([makeChunk(undefined, [{ index: 0, id: "final-settle", function: { name: "settle", arguments: JSON.stringify({ answer: "complete" }) } }])]))
+    await runAgent([{ role: "user", content: "run a valid Sanctuary read" }], makeCallbacks(), "telegram", undefined, {
+      tools, execTool, toolContext: { signin: async () => undefined },
+      toolBoundaryObserver: (receipt: unknown) => boundaryReceipts.push(receipt),
+    } as any)
+
+    expect(execTool).toHaveBeenCalledTimes(1)
+    expect(execTool).toHaveBeenCalledWith("unraid_get_system", {}, expect.anything())
+    expect(boundaryReceipts).toEqual([
+      ...excluded.map((name) => expect.objectContaining({ name, reason: "profile_excluded", invoked: false, sideEffect: false })),
+      expect.objectContaining({ name: "unraid_get_system", reason: "dispatched", invoked: true, sideEffect: false }),
+    ])
+  })
+
+  it("dispatches the valid Sanctuary control through the production repertoire executor", async () => {
+    const { resolveToolDefinition } = await import("../../repertoire/tools")
+    const systemTool = resolveToolDefinition("unraid_get_system")!.tool
+    const getSystem = vi.fn().mockResolvedValue({ ok: true, data: { serverName: "Sanctuary" } })
+    const boundaryReceipts: unknown[] = []
+    mockCreate.mockReset()
+    mockCreate.mockReturnValueOnce(makeStream([makeChunk(undefined, [{ index: 0, id: "valid-system-production", function: { name: "unraid_get_system", arguments: "{}" } }])]))
+    mockCreate.mockReturnValueOnce(makeStream([makeChunk(undefined, [{ index: 0, id: "settle-production", function: { name: "settle", arguments: JSON.stringify({ answer: "complete" }) } }])]))
+    const { runAgent } = await import("../../heart/core")
+
+    const result = await runAgent([{ role: "user", content: "run the production control" }], makeCallbacks(), "telegram", undefined, {
+      tools: [systemTool],
+      toolContext: { signin: async () => undefined, sanctuary: { getSystem } } as any,
+      toolBoundaryObserver: (receipt: unknown) => boundaryReceipts.push(receipt),
+    })
+
+    expect(result.outcome).toBe("settled")
+    expect(getSystem).toHaveBeenCalledOnce()
+    expect(boundaryReceipts).toContainEqual(expect.objectContaining({
+      name: "unraid_get_system", reason: "dispatched", globallyResolvable: true, invoked: true, sideEffect: false,
+    }))
   })
 
   it("reports the generated assistant/tool tail independently of prompt-budget prefix replacement", async () => {
@@ -1018,9 +1262,10 @@ describe("runAgent tool loop guard", () => {
     })
   })
 
-  it("fails a default-handler terminal projection safely for non-object arguments and non-Error rejection", async () => {
+  it("rejects non-object terminal arguments before a default handler", async () => {
     const terminalToolName = "synthetic_terminal_projection_default_failure"
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const handler = vi.fn(async () => Promise.reject("opaque terminal failure"))
     baseToolDefinitions.push({
       tool: {
         type: "function",
@@ -1030,20 +1275,24 @@ describe("runAgent tool loop guard", () => {
           parameters: { type: "object", properties: {}, additionalProperties: false },
         },
       },
-      handler: async () => Promise.reject("opaque terminal failure"),
+      handler,
       terminalProjection: {
         mode: "verbatim",
         requiresSoleCall: true,
         clearBufferedText: false,
       },
     })
-    mockCreate.mockReturnValueOnce(makeStream([
-      makeChunk(undefined, [{
+    mockCreate
+      .mockReturnValueOnce(makeStream([makeChunk(undefined, [{
         index: 0,
         id: "call_terminal_default_failure",
         function: { name: terminalToolName, arguments: "[]" },
-      }]),
-    ]))
+      }])]))
+      .mockReturnValueOnce(makeStream([makeChunk(undefined, [{
+        index: 0,
+        id: "call_observe_after_terminal_rejection",
+        function: { name: "observe", arguments: JSON.stringify({ reason: "rejected" }) },
+      }])]))
 
     const { runAgent } = await import("../../heart/core")
     const callbacks = makeCallbacks()
@@ -1066,10 +1315,66 @@ describe("runAgent tool loop guard", () => {
       },
     )
 
+    expect(handler).not.toHaveBeenCalled()
     expect(callbacks.onClearText).not.toHaveBeenCalled()
-    expect(callbacks.onToolStart).toHaveBeenCalledWith(terminalToolName, {})
+    expect(callbacks.onToolStart).not.toHaveBeenCalledWith(terminalToolName, expect.anything())
+    expect(result.outcome).toBe("observed")
+  })
+
+  it("flushes ordinary buffered output and reports a string rejection from a terminal default handler", async () => {
+    const terminalToolName = "synthetic_terminal_projection_string_failure"
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const handler = vi.fn(async () => Promise.reject("opaque terminal failure"))
+    baseToolDefinitions.push({
+      tool: {
+        type: "function",
+        function: {
+          name: terminalToolName,
+          description: "synthetic terminal string failure",
+          parameters: { type: "object", properties: {}, additionalProperties: false },
+        },
+      },
+      handler,
+      terminalProjection: {
+        mode: "verbatim",
+        requiresSoleCall: true,
+        clearBufferedText: false,
+      },
+    })
+    mockCreate.mockReturnValueOnce(makeStream([
+      makeChunk("ordinary buffered prose"),
+      makeChunk(undefined, [{
+        index: 0,
+        id: "call_terminal_string_failure",
+        function: { name: terminalToolName, arguments: "{}" },
+      }]),
+    ]))
+    const callbacks = makeCallbacks()
+    const { runAgent } = await import("../../heart/core")
+
+    const result = await runAgent(
+      [{ role: "user", content: "run it" }],
+      callbacks,
+      "bluebubbles",
+      undefined,
+      {
+        toolChoiceRequired: true,
+        tools: [{
+          type: "function",
+          function: {
+            name: terminalToolName,
+            description: "synthetic terminal string failure",
+            parameters: { type: "object", properties: {}, additionalProperties: false },
+          },
+        }],
+        toolContext: { signin: async () => undefined },
+      },
+    )
+
+    expect(handler).toHaveBeenCalledTimes(1)
+    expect(callbacks.onClearText).not.toHaveBeenCalled()
     expect(callbacks.onToolEnd).toHaveBeenCalledWith(terminalToolName, expect.any(String), false)
-    expect(callbacks.onTextChunk).toHaveBeenCalledWith("error: opaque terminal failure")
+    expect(callbacks.onTextChunk).toHaveBeenLastCalledWith("error: opaque terminal failure")
     expect(result).toMatchObject({
       outcome: "blocked",
       completion: { answer: "error: opaque terminal failure", intent: "blocked" },
@@ -1200,7 +1505,12 @@ describe("runAgent tool loop guard", () => {
             function: {
               name: terminalToolName,
               description: "cancel a habit",
-              parameters: { type: "object", properties: {}, additionalProperties: false },
+              parameters: {
+                type: "object",
+                properties: { habit: { type: "string" }, evidence: { type: "string" } },
+                required: ["habit", "evidence"],
+                additionalProperties: false,
+              },
             },
           },
           {
@@ -1225,6 +1535,154 @@ describe("runAgent tool loop guard", () => {
     )
     expect(execTool).not.toHaveBeenCalledWith(terminalToolName, expect.anything(), expect.anything())
     expect(result).toMatchObject({ outcome: "observed" })
+  })
+
+  it("rejects an entire malformed tool batch before any handler without an approval coordinator", async () => {
+    mockCreate.mockReturnValueOnce(makeStream([makeChunk(undefined, [
+      { index: 0, id: "call_valid_probe", function: { name: "probe", arguments: JSON.stringify({ value: "safe" }) } },
+      { index: 1, id: "call_invalid_probe", function: { name: "probe", arguments: "{" } },
+    ])]))
+    mockCreate.mockReturnValueOnce(makeStream([makeChunk(undefined, [{
+      index: 0,
+      id: "call_settle_after_invalid_batch",
+      function: { name: "settle", arguments: JSON.stringify({ answer: "rejected", intent: "complete" }) },
+    }])]))
+    const execTool = vi.fn()
+    const messages: any[] = [{ role: "user", content: "run both" }]
+    const { runAgent } = await import("../../heart/core")
+
+    const boundaryReceipts: unknown[] = []
+    const result = await runAgent(messages, makeCallbacks(), "cli", undefined, {
+      tools: [{
+        type: "function",
+        function: {
+          name: "probe",
+          description: "test probe",
+          parameters: {
+            type: "object",
+            properties: { value: { type: "string" } },
+            required: ["value"],
+            additionalProperties: false,
+          },
+        },
+      }],
+      execTool,
+      toolContext: { signin: async () => undefined },
+      toolBoundaryObserver: (receipt) => boundaryReceipts.push(receipt),
+    })
+
+    expect(result.outcome).toBe("settled")
+    expect(execTool).not.toHaveBeenCalled()
+    expect(messages).toContainEqual(expect.objectContaining({
+      role: "tool",
+      tool_call_id: "call_valid_probe",
+      content: expect.stringContaining("another call in this batch had invalid arguments"),
+    }))
+    expect(boundaryReceipts).toEqual([
+      expect.objectContaining({ name: "probe", reason: "invalid_arguments", invoked: false }),
+      expect.objectContaining({ name: "probe", reason: "invalid_arguments", invoked: false }),
+    ])
+  })
+
+  it("rejects duplicate provider tool-call ids before argument lookup or handlers", async () => {
+    mockCreate.mockReturnValueOnce(makeStream([makeChunk(undefined, [
+      { index: 0, id: "duplicate", function: { name: "probe", arguments: JSON.stringify({ value: "first" }) } },
+      { index: 1, id: "duplicate", function: { name: "probe", arguments: JSON.stringify({ value: "second" }) } },
+    ])]))
+    mockCreate.mockReturnValueOnce(makeStream([makeChunk(undefined, [{
+      index: 0,
+      id: "call_settle_after_duplicate",
+      function: { name: "settle", arguments: JSON.stringify({ answer: "rejected", intent: "complete" }) },
+    }])]))
+    const execTool = vi.fn()
+    const messages: any[] = [{ role: "user", content: "run probes" }]
+    const { runAgent } = await import("../../heart/core")
+
+    await runAgent(messages, makeCallbacks(), "cli", undefined, {
+      tools: [{
+        type: "function",
+        function: {
+          name: "probe",
+          description: "test probe",
+          parameters: { type: "object", properties: { value: { type: "string" } }, required: ["value"] },
+        },
+      }],
+      execTool,
+      toolContext: { signin: async () => undefined },
+    })
+
+    expect(execTool).not.toHaveBeenCalled()
+    expect(messages.filter((message) => message.role === "tool" && message.tool_call_id === "duplicate"))
+      .toHaveLength(2)
+    expect(JSON.stringify(messages)).toContain("duplicate tool call id")
+  })
+
+  it.each([
+    ["observe", "bluebubbles", "{"] as const,
+    ["rest", "inner", "null"] as const,
+  ])("validates malformed terminal %s arguments before terminal handling", async (name, channel, rawArguments) => {
+    mockCreate.mockReturnValueOnce(makeStream([makeChunk(undefined, [{
+      index: 0,
+      id: `call_invalid_${name}`,
+      function: { name, arguments: rawArguments },
+    }])]))
+    mockCreate.mockReturnValueOnce(makeStream([makeChunk(undefined, [{
+      index: 0,
+      id: channel === "inner" ? "call_valid_rest" : "call_valid_observe",
+      function: channel === "inner"
+        ? { name: "rest", arguments: "{}" }
+        : { name: "observe", arguments: JSON.stringify({ reason: "done" }) },
+    }])]))
+    const messages: any[] = [{ role: "user", content: "finish" }]
+    const { runAgent } = await import("../../heart/core")
+
+    const result = await runAgent(messages, makeCallbacks(), channel, undefined, {
+      toolContext: { signin: async () => undefined },
+    })
+
+    expect(messages).toContainEqual(expect.objectContaining({
+      role: "tool",
+      tool_call_id: `call_invalid_${name}`,
+      content: expect.stringContaining("invalid tool arguments"),
+    }))
+    expect(result.outcome).toBe(channel === "inner" ? "rested" : "observed")
+  })
+
+  it("stops at eight accepted provider responses before resolving the eighth tool handler", async () => {
+    let response = 0
+    mockCreate.mockImplementation(() => {
+      response += 1
+      return makeStream([makeChunk(undefined, [{
+        index: 0,
+        id: `call_probe_${response}`,
+        function: { name: "probe", arguments: JSON.stringify({ value: `iteration-${response}` }) },
+      }])])
+    })
+    const execTool = vi.fn().mockResolvedValue("ok")
+    const { runAgent } = await import("../../heart/core")
+
+    const result = await runAgent([{ role: "user", content: "keep probing" }], makeCallbacks(), "cli", undefined, {
+      tools: [{
+        type: "function",
+        function: {
+          name: "probe",
+          description: "test probe",
+          parameters: {
+            type: "object",
+            properties: { value: { type: "string" } },
+            required: ["value"],
+            additionalProperties: false,
+          },
+        },
+      }],
+      execTool,
+      toolContext: { signin: async () => undefined },
+    })
+
+    expect(mockCreate).toHaveBeenCalledTimes(8)
+    expect(execTool).toHaveBeenCalledTimes(7)
+    expect(execTool).not.toHaveBeenCalledWith("probe", { value: "iteration-8" }, expect.anything())
+    expect(result).toMatchObject({ outcome: "errored", error: expect.objectContaining({ message: expect.stringContaining("8") }) })
   })
 
   describe("approval suspension boundary", () => {
@@ -1370,7 +1828,7 @@ describe("runAgent tool loop guard", () => {
     })
 
     it.each([
-      ["unadvertised tool", "not_advertised", [], JSON.stringify({ command: "docker restart calibre-web" })],
+      ["unadvertised tool", "not_advertised", [], JSON.stringify({ command: "docker restart calibre-web" }), "was not advertised"],
       ["invalid advertised schema", "shell", [{
         type: "function",
         function: {
@@ -1378,8 +1836,8 @@ describe("runAgent tool loop guard", () => {
           description: "invalid schema fixture",
           parameters: { type: "not-a-json-schema-type" },
         },
-      }], JSON.stringify({ command: "docker restart calibre-web" })],
-    ])("fails closed for %s before proposal or execution", async (_label, name, tools, rawArguments) => {
+      }], JSON.stringify({ command: "docker restart calibre-web" }), "invalid tool arguments"],
+    ])("fails closed for %s before proposal or execution", async (_label, name, tools, rawArguments, expectedFragment) => {
       mockCreate.mockReset()
       mockCreate.mockReturnValueOnce(streamedCall(name, rawArguments, "call_schema_drift"))
       mockCreate.mockReturnValueOnce(settled("schema rejected"))
@@ -1401,7 +1859,7 @@ describe("runAgent tool loop guard", () => {
       expect(messages).toContainEqual(expect.objectContaining({
         role: "tool",
         tool_call_id: "call_schema_drift",
-        content: expect.stringContaining("invalid tool arguments"),
+        content: expect.stringContaining(expectedFragment),
       }))
     })
 

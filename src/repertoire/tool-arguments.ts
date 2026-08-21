@@ -15,6 +15,29 @@ const ajv = new Ajv({
 
 const validators = new WeakMap<object, ValidateFunction>()
 
+function unsupportedSchemaFeature(value: unknown, seen = new WeakSet<object>()): string | undefined {
+  if (value === null) return "null schema values are unsupported"
+  if (typeof value !== "object") return undefined
+  if (seen.has(value)) return "cyclic schemas are unsupported"
+  seen.add(value)
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const reason = unsupportedSchemaFeature(entry, seen)
+      if (reason) return reason
+    }
+    return undefined
+  }
+  for (const [key, entry] of Object.entries(value)) {
+    if (key === "patternProperties") return "patternProperties is unsupported"
+    if (key === "type" && (entry === "null" || (Array.isArray(entry) && entry.includes("null")))) {
+      return "null schema types are unsupported"
+    }
+    const reason = unsupportedSchemaFeature(entry, seen)
+    if (reason) return reason
+  }
+  return undefined
+}
+
 function canonicalize(value: JsonValue): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value)
   if (Array.isArray(value)) return `[${value.map(canonicalize).join(",")}]`
@@ -48,6 +71,17 @@ export function validateAdvertisedToolArguments(
   rawArguments: string,
   schema: object,
 ): ToolArgumentValidationResult {
+  const unsupported = unsupportedSchemaFeature(schema)
+  if (unsupported) {
+    emitNervesEvent({
+      level: "error",
+      component: "repertoire",
+      event: "repertoire.tool_schema_unsupported",
+      message: "advertised tool schema used an unsupported feature",
+      meta: { reason: unsupported },
+    })
+    return { ok: false, reason: `advertised schema is unsupported: ${unsupported}` }
+  }
   let parsed: unknown
   try {
     parsed = JSON.parse(rawArguments)

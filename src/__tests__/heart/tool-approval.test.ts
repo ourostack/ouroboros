@@ -21,6 +21,7 @@ import {
 import { digestJson } from "../../repertoire/tool-arguments"
 import { approvalPolicyForToolName } from "../../repertoire/tools"
 import { shellToolDefinitions } from "../../repertoire/tools-shell"
+import { telegramApprovalDecisionBarrierHooks } from "../../senses/telegram-approval-runtime"
 
 const UUID = "11111111-1111-4111-8111-111111111111"
 const BASE_REVISION = "d".repeat(64)
@@ -209,6 +210,31 @@ afterEach(() => {
 })
 
 describe("approval decision and crash-safe execution", () => {
+  it.each([
+    [2, "claimed", false],
+    [3, "attempted", false],
+    [4, "attempted", true],
+  ] as const)("halts decision effects after barrier failure at phase %i", async (failAt, state, toolRan) => {
+    const fixture = ready()
+    const execute = vi.fn(async () => "restarted")
+    let calls = 0
+    const failure = new Error(`audit barrier ${failAt}`)
+    const barrier = () => { calls += 1; if (calls === failAt) throw failure }
+
+    barrier()
+    await expect(executeApprovalDecision(executionOptions(fixture, execute, {
+      hooks: telegramApprovalDecisionBarrierHooks(barrier),
+    }) as any)).rejects.toBe(failure)
+    expect(fixture.approvalStore.read(UUID)?.state).toBe(state)
+    expect(execute).toHaveBeenCalledTimes(toolRan ? 1 : 0)
+
+    const recovered = state === "claimed"
+      ? recoverClaimedApproval({ approvalStore: fixture.approvalStore, approvalId: UUID, reason: "audit barrier interrupted decision" })
+      : recoverAttemptedApproval({ approvalStore: fixture.approvalStore, approvalId: UUID })
+    expect(recovered.state).toBe(state === "claimed" ? "abandoned_before_attempt" : "attempted_indeterminate")
+    fixture.approvalStore.close()
+  })
+
   it("marks attempted before invoking the frozen handler and records success", async () => {
     const fixture = ready()
     const resolveTool = vi.fn((name: string) => {

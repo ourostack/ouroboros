@@ -10,6 +10,29 @@ const REQUIRED_PACKAGE_ASSET_PATHS = [
   "RepairGuide.ouro/skills/diagnose-stacked-typed-issues.md",
   "RepairGuide.ouro/skills/diagnose-sync-blocked.md",
   "RepairGuide.ouro/skills/diagnose-vault-expired.md",
+  "deploy/unraid/Dockerfile",
+  "deploy/unraid/audit-container-spec.sh",
+  "deploy/unraid/README.txt",
+  "deploy/unraid/container-runtime.json",
+  "deploy/unraid/sanctuary-acceptance-harness.sh",
+  "deploy/unraid/sanctuary-unit16-host-broker.mjs",
+  "deploy/unraid/sanctuary-deployment-target.mjs",
+  "deploy/unraid/sanctuary-unit18-target-audit.sh",
+  "deploy/unraid/sanctuary-unit16-run.sh",
+  "deploy/unraid/sanctuary-acceptance-adapter.sh",
+  "deploy/unraid/sanctuary-acceptance-contract.json",
+  "deploy/unraid/sanctuary.xml",
+  "deploy/unraid/sanctuary.ouro/agent.json",
+  "deploy/unraid/sanctuary.ouro/bundle-meta.json",
+  "deploy/unraid/sanctuary.ouro/provider-readiness.json",
+  "deploy/unraid/sanctuary.ouro/tool-profiles.json",
+  "deploy/unraid/sanctuary.ouro/arc/README.md",
+  "deploy/unraid/sanctuary.ouro/habits/sanctuary-health.md",
+  "deploy/unraid/sanctuary.ouro/psyche/ASPIRATIONS.md",
+  "deploy/unraid/sanctuary.ouro/psyche/IDENTITY.md",
+  "deploy/unraid/sanctuary.ouro/psyche/LORE.md",
+  "deploy/unraid/sanctuary.ouro/psyche/SOUL.md",
+  "deploy/unraid/sanctuary.ouro/psyche/TACIT.md",
 ]
 
 const DISALLOWED_PACKAGE_ASSET_PATH_PREFIXES = [
@@ -19,6 +42,7 @@ const DISALLOWED_PACKAGE_ASSET_PATH_PREFIXES = [
 
 const PACKAGE_PAYLOAD_PATH_PREFIXES = [
   "assets/",
+  "deploy/unraid/",
   "dist/",
   "RepairGuide.ouro/",
   "SerpentGuide.ouro/",
@@ -27,6 +51,7 @@ const PACKAGE_PAYLOAD_PATH_PREFIXES = [
 
 const PACKAGE_PAYLOAD_FILE_PATHS = [
   "changelog.json",
+  "npm-shrinkwrap.json",
   "package.json",
 ]
 

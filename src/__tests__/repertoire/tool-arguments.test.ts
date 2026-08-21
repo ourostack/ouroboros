@@ -21,6 +21,18 @@ describe("strict advertised tool arguments", () => {
     })
   })
 
+  it.each([
+    ["patternProperties", { type: "object", patternProperties: { ".*": { type: "string" } } }],
+    ["null literal", { type: "object", properties: { value: null } }],
+    ["null type", { type: "object", properties: { value: { type: "null" } } }],
+    ["nullable union", { type: "object", properties: { value: { type: ["string", "null"] } } }],
+  ])("rejects unsupported %s schemas before argument validation", (_label, schema) => {
+    expect(validateAdvertisedToolArguments("{}", schema)).toEqual({
+      ok: false,
+      reason: expect.stringContaining("unsupported"),
+    })
+  })
+
   it("reuses a compiled schema without coercing values", () => {
     const schema = {
       type: "object",
@@ -33,6 +45,22 @@ describe("strict advertised tool arguments", () => {
     expect(validateAdvertisedToolArguments('{"command":3}', schema)).toMatchObject({
       ok: false,
       reason: expect.stringContaining("/command"),
+    })
+  })
+
+  it("rejects cycles reached through object properties and array entries", () => {
+    const objectCycle: Record<string, unknown> = { type: "object" }
+    objectCycle.properties = { self: objectCycle }
+    expect(validateAdvertisedToolArguments("{}", objectCycle)).toEqual({
+      ok: false,
+      reason: expect.stringContaining("cyclic schemas are unsupported"),
+    })
+
+    const arrayCycle: unknown[] = []
+    arrayCycle.push(arrayCycle)
+    expect(validateAdvertisedToolArguments("{}", arrayCycle)).toEqual({
+      ok: false,
+      reason: expect.stringContaining("cyclic schemas are unsupported"),
     })
   })
 })

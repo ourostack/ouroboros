@@ -10,13 +10,15 @@ import type { ChannelCapabilities, ResolvedContext } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../nerves/runtime";
 import type { ProviderCapability } from "../heart/core";
 import { guardInvocation } from "./guardrails";
-import { getAgentRoot } from "../heart/identity";
+import { getAgentName, getAgentRoot } from "../heart/identity";
 import { releaseReservedCommerceAuthority, reserveCommerceAuthority } from "../commerce/store";
 import { surfaceToolDefinition } from "./tools-surface";
 import type { McpManager } from "./mcp-manager";
 import { mcpToolsAsDefinitions } from "./mcp-tools";
 import { voiceToolDefinitions } from "./tools-voice";
 import { detectDestructivePatterns } from "./shell-sessions";
+import { unraidToolDefinitions } from "./tools-unraid";
+import { ponderTool, settleTool, speakTool } from "./tools-flow";
 import type { ToolHighRiskMutationKind, ToolRiskProfile } from "./tools-base";
 
 function safeGetAgentRoot(): string | undefined {
@@ -24,6 +26,14 @@ function safeGetAgentRoot(): string | undefined {
     return getAgentRoot()
   } catch {
     return undefined
+  }
+}
+
+function isSanctuaryAgent(): boolean {
+  try {
+    return getAgentName() === "sanctuary"
+  } catch {
+    return false
   }
 }
 
@@ -35,7 +45,7 @@ export type { ToolContext, ToolHandler, ToolDefinition } from "./tools-base";
 export { surfaceToolDef } from "./tools-surface";
 
 // All tool definitions in a single registry
-const allDefinitions: ToolDefinition[] = [...baseToolDefinitions, ...bluebubblesToolDefinitions, ...teamsToolDefinitions, ...adoSemanticToolDefinitions, ...githubToolDefinitions, ...bundleToolDefinitions, ...voiceToolDefinitions, surfaceToolDefinition];
+const allDefinitions: ToolDefinition[] = [...baseToolDefinitions, ...bluebubblesToolDefinitions, ...teamsToolDefinitions, ...adoSemanticToolDefinitions, ...githubToolDefinitions, ...bundleToolDefinitions, ...voiceToolDefinitions, ...unraidToolDefinitions, surfaceToolDefinition];
 const COMMERCE_AUTHORITY_TOOLS = new Set(["stripe_create_card", "flight_hold", "flight_book"])
 
 // MCP tool definitions — populated each time getToolsForChannel() is called with an mcpManager.
@@ -90,6 +100,14 @@ export function getToolsForChannel(
   mcpManager?: McpManager,
   _chatModel?: string,
 ): OpenAI.ChatCompletionFunctionTool[] {
+  if (capabilities?.channel === "telegram" && isSanctuaryAgent()) {
+    return [
+      ...unraidToolDefinitions.map((definition) => definition.tool),
+      ponderTool,
+      settleTool,
+      speakTool,
+    ]
+  }
   const baseTools = baseToolsForCapabilities();
   const bluebubblesTools = capabilities?.channel === "bluebubbles"
     ? bluebubblesToolDefinitions.map((d) => d.tool)

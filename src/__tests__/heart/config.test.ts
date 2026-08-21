@@ -1157,6 +1157,44 @@ describe("provider configs are credentials-only (no model fields)", () => {
     expect(cfg).not.toHaveProperty("model")
   })
 
+  it("reads both openai-compatible credential classes from the provider cache", async () => {
+    const { getOpenAICompatibleConfig, patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({
+      providers: {
+        "openai-compatible": { apiKey: "z-key", baseUrl: "https://z.example/v1" },
+        "openai-compatible-gemini": { apiKey: "g-key", baseUrl: "https://g.example/v1" },
+      },
+    })
+
+    expect(getOpenAICompatibleConfig("openai-compatible")).toEqual({
+      apiKey: "z-key",
+      baseUrl: "https://z.example/v1",
+    })
+    expect(getOpenAICompatibleConfig("openai-compatible-gemini")).toEqual({
+      apiKey: "g-key",
+      baseUrl: "https://g.example/v1",
+    })
+  })
+
+  it("fails closed on non-string openai-compatible credential fields", async () => {
+    const { getOpenAICompatibleConfig, resetConfigCache } = await import("../../heart/config")
+    const { cacheProviderCredentialRecords } = await import("../../heart/provider-credentials")
+    resetConfigCache()
+    cacheProviderCredentialRecords("testagent", [{
+      schemaVersion: 1,
+      kind: "provider-credential",
+      provider: "openai-compatible",
+      revision: "provider_test",
+      updatedAt: "2026-08-20T00:00:00.000Z",
+      credentials: { apiKey: 42 },
+      config: { baseUrl: false },
+      provenance: { source: "manual", updatedAt: "2026-08-20T00:00:00.000Z" },
+    } as never], new Date("2026-08-20T00:00:00.000Z"))
+
+    expect(getOpenAICompatibleConfig("openai-compatible")).toEqual({ apiKey: "", baseUrl: "" })
+  })
+
   it("DEFAULT_LOCAL_RUNTIME_CONFIG does not write provider credentials", async () => {
     const { loadConfig } = await importConfigModule()
     const config = loadConfig()

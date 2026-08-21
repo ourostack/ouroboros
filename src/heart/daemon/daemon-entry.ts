@@ -12,6 +12,7 @@ import {
   DaemonHealthWriter,
   createHealthNervesSink,
   getDefaultHealthPath,
+  startDaemonHealthHeartbeat,
   type DaemonHealthState,
   type DegradedComponent,
 } from "./daemon-health"
@@ -28,6 +29,8 @@ import { AwaitScheduler } from "../awaiting/await-scheduler"
 import { archiveAndAlertExpiredAwait } from "../awaiting/await-expiry"
 import { createRealOsCronDeps, resolveOuroBinaryPath } from "./os-cron-deps"
 import { LaunchdCronManager } from "./os-cron"
+import { readContainerRuntimePolicy } from "./container-runtime"
+import { SupercronicSupervisor } from "./supercronic-supervisor"
 import { writeDaemonTombstone } from "./daemon-tombstone"
 import { checkAgentConfig } from "./agent-config-check"
 import { flushPulse, type PulsePrivateWakeRequest } from "./pulse"
@@ -46,9 +49,16 @@ import {
 } from "../provider-credentials"
 import { readMachineRuntimeCredentialConfig, readRuntimeCredentialConfig } from "../runtime-credentials"
 import { loadOrCreateMachineIdentity } from "../machine-identity"
+import { loadContainerCredentialBootstrap } from "./container-credential-bootstrap"
+import { startDaemonAfterContainerCredentialBootstrap } from "./daemon-bootstrap-startup"
 import { readAgentConfigForAgent } from "../auth/auth-flow"
 import type { AgentProvider } from "../identity"
 import type { HabitRunTrigger } from "../../arc/flight-recorder"
+import { runSanctuaryHealthHabit } from "../../senses/sanctuary-health-runner"
+import { readSanctuaryAcceptanceMarker } from "./sanctuary-acceptance-marker"
+import { consumeSanctuarySchedulerFire, readSanctuaryHealthCursor, recordSanctuarySchedulerLivenessReceipt } from "./sanctuary-scheduler-liveness"
+import { verifySanctuarySchedulerFireCommand } from "./sanctuary-scheduler-origin"
+import { readOrCreateTelegramIdentityKey } from "../../senses/telegram"
 
 function parseSocketPath(argv: string[]): string {
   const socketIndex = argv.indexOf("--socket")
@@ -255,6 +265,17 @@ const taskScheduler = new TaskDrivenScheduler({
 
 const habitSchedulers: HabitScheduler[] = []
 const awaitSchedulers: AwaitScheduler[] = []
+const containerRuntimePolicy = readContainerRuntimePolicy()
+const supercronicSupervisor = containerRuntimePolicy?.scheduler === "supercronic"
+  ? new SupercronicSupervisor({
+      binaryPath: "/usr/local/bin/supercronic",
+      crontabPath: path.join(getAgentBundlesRoot(), "..", ".ouro-cli", "scheduler", "sanctuary.crontab"),
+      onFatal: (error) => {
+        emitNervesEvent({ level: "error", component: "daemon", event: "daemon.supercronic_state", message: "Supercronic restart budget exhausted", meta: { error: error.message } })
+        process.exit(1)
+      },
+    })
+  : null
 
 function habitCronLabelOwner(agent: string): (label: string) => boolean {
   const agentPrefix = `bot.ouro.${agent}.`
@@ -350,15 +371,19 @@ const healthMonitor = new HealthMonitor({
   },
 })
 
-let entryRuntimeStopping = false
+let entryRuntimeStopPromise: Promise<void> | null = null
 let stopCommandExitScheduled = false
 
-function stopEntryRuntime(): void {
-  if (entryRuntimeStopping) return
-  entryRuntimeStopping = true
-  for (const s of habitSchedulers) { s.stopWatching(); s.stop() }
-  for (const s of awaitSchedulers) { s.stopWatching(); s.stop() }
-  healthMonitor.stopPeriodicChecks()
+function stopEntryRuntime(): Promise<void> {
+  if (entryRuntimeStopPromise) return entryRuntimeStopPromise
+  entryRuntimeStopPromise = (async () => {
+    stopHealthHeartbeat()
+    for (const s of habitSchedulers) { s.stopWatching(); s.stop() }
+    for (const s of awaitSchedulers) { s.stopWatching(); s.stop() }
+    await supercronicSupervisor?.stop()
+    healthMonitor.stopPeriodicChecks()
+  })()
+  return entryRuntimeStopPromise
 }
 
 function scheduleCleanProcessExitAfterStopCommand(): void {
@@ -378,9 +403,53 @@ const daemon = new OuroDaemon({
   scheduler,
   healthMonitor,
   router,
+  schedulerFireVerifier: (command) => {
+    if (!supercronicSupervisor) throw new Error("Supercronic scheduler is unavailable")
+    const marker = readSanctuaryAcceptanceMarker("sanctuary")
+    return verifySanctuarySchedulerFireCommand(command, {
+      childPid: supercronicSupervisor.authenticatedSnapshot("habit:sanctuary").childPid,
+      identityKey: readOrCreateTelegramIdentityKey(path.join(getAgentBundlesRoot(), "sanctuary.ouro")),
+      scenarioHandleDigest: marker?.label === "unit-16f-cron-fingerprint" ? marker.scenarioHandleDigest : null, now: () => new Date(),
+      readFile: (target) => fs.readFileSync(target, "utf8"), readLink: (target) => fs.readlinkSync(target),
+    })
+  },
+  schedulerFireConsumer: (origin) => consumeSanctuarySchedulerFire(path.join(getAgentBundlesRoot(), "sanctuary.ouro"), origin),
+  nativeHabitRunner: async ({ agent, habitName, trigger, occurrenceId, runnerId, schedulerOrigin }) => {
+    if (agent !== "sanctuary" || habitName !== "sanctuary-health") return null
+    const marker = readSanctuaryAcceptanceMarker(agent)
+    const schedulerScenario = marker?.label === "unit-16f-cron-fingerprint" ? marker : null
+    const agentRoot = path.join(getAgentBundlesRoot(), `${agent}.ouro`)
+    const before = schedulerScenario ? readSanctuaryHealthCursor(agentRoot) : null
+    let providerInvocationCount = 0
+    let privateTurnCount = 0
+    const result = await runSanctuaryHealthHabit(agent, schedulerScenario ? {
+      acceptanceMetrics: {
+        onPrivateTurnStart: () => { privateTurnCount += 1 },
+        onProviderInvocation: () => { providerInvocationCount += 1 },
+      },
+    } : {})
+    if (schedulerScenario) {
+      if (!supercronicSupervisor || !before || !occurrenceId || !schedulerOrigin) throw new Error("Sanctuary scheduler liveness supervisor provenance is unavailable")
+      recordSanctuarySchedulerLivenessReceipt({
+        agentRoot,
+        trigger,
+        occurrenceId,
+        runnerId,
+        scenario: schedulerScenario,
+        supervisor: supercronicSupervisor.authenticatedSnapshot("habit:sanctuary"),
+        before,
+        providerInvocationCount,
+        privateTurnCount,
+        schedulerOrigin,
+        identityKey: readOrCreateTelegramIdentityKey(agentRoot),
+      })
+    }
+    return result
+  },
+  nativeHabitMatch: (agent, habitName) => agent === "sanctuary" && habitName === "sanctuary-health",
   mode,
-  onStopCommandComplete: () => {
-    stopEntryRuntime()
+  onStopCommandComplete: async () => {
+    await stopEntryRuntime()
     scheduleCleanProcessExitAfterStopCommand()
   },
 })
@@ -521,6 +590,7 @@ function emitAwaitSetupError(agent: string, error: unknown): void {
 const healthWriter = new DaemonHealthWriter(getDefaultHealthPath())
 const healthSink = createHealthNervesSink(healthWriter, buildDaemonHealthState)
 registerGlobalLogSink(healthSink)
+const stopHealthHeartbeat = startDaemonHealthHeartbeat(healthWriter, buildDaemonHealthState)
 /* v8 ignore stop */
 
 function writeStopCommandHealthState(): void {
@@ -644,10 +714,19 @@ function scheduleStartupSentinelAfterProviderPreload(agent: string, preload: Pro
 }
 
 /* v8 ignore start -- habit wiring: lambdas delegate to processManager/fs; tested via HabitScheduler unit tests @preserve */
-void daemon.start().then(async () => {
+void startDaemonAfterContainerCredentialBootstrap({
+  loadBootstrap: () => loadContainerCredentialBootstrap(managedAgents),
+  startDaemon: () => daemon.start(),
+  markStartupFailure: () => { _tombstoneWritten = true },
+  exit: (code) => process.exit(code),
+}).then(async (started) => {
+  if (!started) return
+  supercronicSupervisor?.start()
   const providerPreload = startProviderCredentialPoolPreload()
   const bundlesRoot = getAgentBundlesRoot()
-  const ouroPath = resolveOuroBinaryPath()
+  const ouroPath = supercronicSupervisor
+    ? "/usr/local/bin/node /opt/ouro/dist/heart/daemon/ouro-entry.js"
+    : resolveOuroBinaryPath()
   const osCronDeps = createRealOsCronDeps()
 
   for (const agent of managedAgents) {
@@ -660,13 +739,15 @@ void daemon.start().then(async () => {
       // Migrate old tasks/habits/ to habits/ at bundle root
       migrateHabitsFromTaskSystem(bundleRoot)
 
-      const osCronManager = new LaunchdCronManager(osCronDeps, { ownsLabel: habitCronLabelOwner(agent) })
+      const osCronManager = supercronicSupervisor
+        ? supercronicSupervisor.namespace(`habit:${agent}`)
+        : new LaunchdCronManager(osCronDeps, { ownsLabel: habitCronLabelOwner(agent) })
       const scheduler = new HabitScheduler({
         agent,
         habitsDir,
         osCronManager,
         onHabitFire: (habitName, trigger, context) => {
-          if (isRsvpHabitName(habitName)) {
+          if (isRsvpHabitName(habitName) || (agent === "sanctuary" && habitName === "sanctuary-health")) {
             sendDaemonCommand(socketPath, {
               kind: "habit.poke",
               agent,
@@ -712,7 +793,9 @@ void daemon.start().then(async () => {
           ouroPath,
           watch: (dir, cb) => fs.watch(dir, cb),
         },
-        execForVerify: verifyOsCron,
+        execForVerify: supercronicSupervisor ? () => supercronicSupervisor.verificationOutput() : verifyOsCron,
+        verifyJobs: supercronicSupervisor ? (jobs) => supercronicSupervisor.verifyNamespace(`habit:${agent}`, jobs) : undefined,
+        platform: supercronicSupervisor ? "linux" : undefined,
       })
 
       try {
@@ -754,7 +837,9 @@ void daemon.start().then(async () => {
     const awaitsDir = path.join(bundleRoot, "awaiting")
     const awaitDegradedComponent = `awaits:${agent}`
     try {
-      const awaitOsCronManager = new LaunchdCronManager(osCronDeps, { ownsLabel: awaitCronLabelOwner(agent) })
+      const awaitOsCronManager = supercronicSupervisor
+        ? supercronicSupervisor.namespace(`await:${agent}`)
+        : new LaunchdCronManager(osCronDeps, { ownsLabel: awaitCronLabelOwner(agent) })
       const awaitScheduler = new AwaitScheduler({
         agent,
         awaitsDir,
@@ -817,7 +902,9 @@ void daemon.start().then(async () => {
           ouroPath,
           watch: (dir, cb) => fs.watch(dir, cb),
         },
-        execForVerify: verifyOsCron,
+        execForVerify: supercronicSupervisor ? () => supercronicSupervisor.verificationOutput() : verifyOsCron,
+        verifyJobs: supercronicSupervisor ? (jobs) => supercronicSupervisor.verifyNamespace(`await:${agent}`, jobs) : undefined,
+        platform: supercronicSupervisor ? "linux" : undefined,
       })
       try {
         awaitScheduler.start()
@@ -886,10 +973,9 @@ process.on("SIGINT", () => {
   // tombstone is strictly better than silence.
   _tombstoneWritten = true
   writeDaemonTombstone("sigint", new Error("daemon received SIGINT"))
-  stopEntryRuntime()
-  const forcedExit = setTimeout(() => process.exit(1), 5_000)
+  const forcedExit = setTimeout(() => process.exit(1), 12_000)
   forcedExit.unref()
-  void daemon.stop().then(
+  void stopEntryRuntime().then(() => daemon.stop()).then(
     () => {
       clearTimeout(forcedExit)
       process.exit(0)
@@ -904,10 +990,9 @@ process.on("SIGINT", () => {
 process.on("SIGTERM", () => {
   _tombstoneWritten = true
   writeDaemonTombstone("sigterm", new Error("daemon received SIGTERM"))
-  stopEntryRuntime()
-  const forcedExit = setTimeout(() => process.exit(1), 5_000)
+  const forcedExit = setTimeout(() => process.exit(1), 12_000)
   forcedExit.unref()
-  void daemon.stop().then(
+  void stopEntryRuntime().then(() => daemon.stop()).then(
     () => {
       clearTimeout(forcedExit)
       process.exit(0)

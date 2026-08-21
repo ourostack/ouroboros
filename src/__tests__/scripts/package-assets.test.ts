@@ -49,6 +49,19 @@ describe("package asset validation", () => {
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("RepairGuide.ouro/psyche/IDENTITY.md")
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("RepairGuide.ouro/psyche/SOUL.md")
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("RepairGuide.ouro/skills/diagnose-vault-expired.md")
+    expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary.ouro/agent.json")
+    expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary.ouro/bundle-meta.json")
+    expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary.ouro/provider-readiness.json")
+    expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary.ouro/tool-profiles.json")
+    expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary.xml")
+    expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary-acceptance-harness.sh")
+    expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary-unit16-host-broker.mjs")
+    expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary-deployment-target.mjs")
+    expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary-unit18-target-audit.sh")
+    expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary-unit16-run.sh")
+    expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/README.txt")
+    expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary.ouro/psyche/SOUL.md")
+    expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary.ouro/psyche/IDENTITY.md")
   })
 
   it("declares stale nested Mailbox UI dist as disallowed", () => {
@@ -76,6 +89,7 @@ describe("package asset validation", () => {
   it("declares package payload roots that are safe to scan before npm pack", () => {
     expect(PACKAGE_PAYLOAD_PATH_PREFIXES).toEqual([
       "assets/",
+      "deploy/unraid/",
       "dist/",
       "RepairGuide.ouro/",
       "SerpentGuide.ouro/",
@@ -83,6 +97,7 @@ describe("package asset validation", () => {
     ])
     expect(PACKAGE_PAYLOAD_FILE_PATHS).toEqual([
       "changelog.json",
+      "npm-shrinkwrap.json",
       "package.json",
     ])
   })

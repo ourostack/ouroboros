@@ -308,4 +308,19 @@ describe("daemon runtime logging", () => {
       .toContain("\"event\":\"daemon.bluebubbles_runtime_default\"")
     expect(stderrChunks.join("")).toContain("WARN [daemon] bluebubbles logger default")
   })
+
+  it("persists info-level Telegram audit events by default", async () => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-logging-"))
+    configureDaemonRuntimeLogger("telegram", { homeDir: tmpRoot, agentName: "sanctuary" })
+    emitNervesEvent({
+      component: "senses",
+      event: "senses.telegram_turn_end",
+      message: "Telegram authorized turn completed",
+      meta: { scenarioHandleDigest: "a".repeat(64), deliveryCount: 1 },
+    })
+
+    const logFile = path.join(tmpRoot, "AgentBundles", "sanctuary.ouro", "state", "daemon", "logs", "telegram.ndjson")
+    expect(await waitForLogContent(logFile, '"event":"senses.telegram_turn_end"'))
+      .toContain('"scenarioHandleDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"')
+  })
 })

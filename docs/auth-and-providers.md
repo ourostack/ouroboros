@@ -49,6 +49,13 @@ ouro auth --agent <agent> --provider <provider>
 
 `ouro auth` stores credentials in that agent's vault. It does not switch a provider lane. In a human terminal it keeps a visible checklist for the auth attempt, vault write, refresh, and verification steps so browser login or vault IO never looks like a dead cursor.
 
+The two generic Chat Completions identities are deliberately separate vault items and provider identities:
+
+- `openai-compatible` uses `providers/openai-compatible`, the canonical base URL `https://api.z.ai/api/paas/v4/`, and GLM models (`glm-5.2` by default; `glm-5-turbo` is an explicit same-lane alternative).
+- `openai-compatible-gemini` uses `providers/openai-compatible-gemini`, the canonical base URL `https://generativelanguage.googleapis.com/v1beta/openai/`, and `gemini-3.6-flash`.
+
+Both items store `apiKey` as credential material and `baseUrl` as provider configuration. The base URL is exact after trailing-slash normalization; arbitrary compatible hosts are rejected. API keys are collected through hidden input only. Neither provider is a silent fallback for the other or for another lane.
+
 Credential verification is explicit:
 
 ```bash
