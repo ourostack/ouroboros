@@ -47,13 +47,18 @@ function input(profile: "staging" | "final") {
 const quiesceTarget = <T>(_target: unknown, operation: () => T) => operation()
 
 describe("Sanctuary fixed deployment target", () => {
-  it("packages Unit 16 with the fixed staging profile and no caller-selected container", () => {
+  it("packages fixed-name staging and final behavioral launchers with no caller-selected container", () => {
     const source = fs.readFileSync("deploy/unraid/sanctuary-unit16-run.sh", "utf8")
+    expect(source).toContain("sanctuary-unit16-run.sh)")
     expect(source).toContain("TARGET_PROFILE=staging")
     expect(source).toContain("PRODUCTION_CONTAINER=ouro-butler-staging")
+    expect(source).toContain("sanctuary-unit18-run.sh)")
+    expect(source).toContain("TARGET_PROFILE=final")
+    expect(source).toContain("PRODUCTION_CONTAINER=ouro-butler")
     expect(source).toContain('"$TARGET_AUDITOR" "$TARGET_PROFILE" "$IMAGE_ID"')
     expect(source).toContain('"$BROKER_PROGRAM" "$TARGET_PROFILE" "$TARGET_CONTAINER_ID"')
     expect(source).not.toMatch(/TARGET_CONTAINER=\$\{/u)
+    expect(source).not.toMatch(/TARGET_PROFILE=\$\{/u)
   })
 
   it("packages Unit 18 with a fixed final profile and no caller-selected container", () => {

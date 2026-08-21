@@ -47,6 +47,9 @@ describe("package metadata", () => {
     expect(packageJob).toContain("docker build --pull --no-cache --file \"$PACKAGE_ROOT/package/deploy/unraid/Dockerfile\"")
     expect(packageJob).toContain("--tag ouro-butler-package-smoke")
     expect(packageJob).toContain("shrinkwrap.packages[\"\"].version !== expected")
+    expect(packageJob).toContain('test "$(id -u)" = 10001')
+    expect(packageJob).toContain('test "$(id -g)" = 10001')
+    expect(packageJob).toContain('test "$(bw --version)" = 2026.8.0')
   })
 
   it("keeps current mail parsing fixes while overriding the vulnerable merge implementation", () => {

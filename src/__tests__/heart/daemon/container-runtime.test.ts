@@ -43,7 +43,7 @@ describe("container runtime policy", () => {
 
   it("ships a released-package Docker build context", () => {
     const dockerfile = fs.readFileSync("deploy/unraid/Dockerfile", "utf8")
-    const packageJson = JSON.parse(fs.readFileSync("package.json", "utf8")) as { files: string[] }
+    const packageJson = JSON.parse(fs.readFileSync("package.json", "utf8")) as { files: string[]; dependencies: Record<string, string> }
 
     expect(packageJson.files).toContain("deploy/unraid/")
     expect(packageJson.files).toContain("npm-shrinkwrap.json")
@@ -51,6 +51,17 @@ describe("container runtime policy", () => {
     expect(dockerfile).toContain("COPY package.json npm-shrinkwrap.json ./")
     expect(dockerfile).toContain("npm ci --omit=dev --legacy-peer-deps")
     expect(dockerfile).not.toContain("npm install")
+  })
+
+  it("pins and exposes the Bitwarden CLI before the image drops privileges", () => {
+    const dockerfile = fs.readFileSync("deploy/unraid/Dockerfile", "utf8")
+    const packageJson = JSON.parse(fs.readFileSync("package.json", "utf8")) as { dependencies: Record<string, string> }
+
+    expect(packageJson.dependencies["@bitwarden/cli"]).toMatch(/^\d+\.\d+\.\d+$/u)
+    expect(dockerfile).toContain("test -x /opt/ouro/node_modules/.bin/bw")
+    expect(dockerfile).toContain("ln -s /opt/ouro/node_modules/.bin/bw /usr/local/bin/bw")
+    expect(dockerfile).toContain('test "$(bw --version)" = "2026.8.0"')
+    expect(dockerfile.indexOf("test -x /opt/ouro/node_modules/.bin/bw")).toBeLessThan(dockerfile.indexOf("USER 10001:10001"))
   })
 
   it("keeps Workbench out and ships the Supercronic-owned health habit", () => {

@@ -826,6 +826,9 @@ describe("Sanctuary acceptance harness", () => {
       provenanceAdapter: contract.adapterExecutable,
     })
     const runner = fs.readFileSync("deploy/unraid/sanctuary-unit16-run.sh", "utf8")
+    expect(runner).toContain("sanctuary-unit18-run.sh)")
+    expect(runner).toContain("TARGET_PROFILE=final")
+    expect(runner).toContain("PRODUCTION_CONTAINER=ouro-butler")
     expect(runner).toContain("evidence-snapshot) TIME_LIMIT=4950; NETWORK=host; INPUT=no; BUNDLE_MODE=readonly; BROKER=yes ;;")
     expect(runner).toContain("reboot-resume) TIME_LIMIT=780; NETWORK=host; INPUT=no; BUNDLE_MODE=readonly; BROKER=yes ;;")
     expect(runner).toContain('test "$COMMAND" = evidence-snapshot || test "$COMMAND" = reboot-request || test "$COMMAND" = reboot-resume')
