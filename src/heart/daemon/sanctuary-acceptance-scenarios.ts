@@ -375,8 +375,13 @@ export interface SanctuaryScenarioCaptureDependencies {
     poll(label: SanctuaryUnit16EvidenceLabel, scenarioHandleDigest: string): Promise<{ state: "waiting" | "driven" }>
     complete(label: SanctuaryUnit16EvidenceLabel, scenarioHandleDigest: string): void | Promise<void>
   }
+  agentRoot?: string
   receiptRoot?: string
   gateStatusPath?: string
+  markerStore?: {
+    write(marker: { schemaVersion: "sanctuary-acceptance-marker-v1"; label: string; scenarioHandleDigest: string; startedAt: string }): void
+    clear(expectedScenarioHandleDigest: string): void
+  }
 }
 
 const HEALTH_SCENARIO_LABELS = new Set<SanctuaryUnit16EvidenceLabel>([
@@ -937,7 +942,11 @@ export function deriveSanctuaryScenarioAssertions(
 }
 
 export function createSanctuaryScenarioCapture(deps: SanctuaryScenarioCaptureDependencies) {
-  const receiptRoot = deps.receiptRoot ?? path.join(getAgentRoot("sanctuary"), "state", "acceptance", "receipts")
+  const receiptRoot = deps.receiptRoot ?? path.join(deps.agentRoot ?? getAgentRoot("sanctuary"), "state", "acceptance", "receipts")
+  const markerStore = deps.markerStore ?? {
+    write: (marker) => { writeSanctuaryAcceptanceMarker("sanctuary", marker) },
+    clear: (expectedScenarioHandleDigest) => { clearSanctuaryAcceptanceMarker("sanctuary", expectedScenarioHandleDigest) },
+  }
   const receiptPath = (checkpointDigest: string): string => path.join(receiptRoot, `${checkpointDigest}.json`)
   return async (input: { phase: "begin" | "poll"; label: SanctuaryUnit16EvidenceLabel; externalGate: string; sources: string[]; checkpointDigest?: string }): Promise<JsonObject> => {
     if (input.phase === "begin") {
@@ -948,7 +957,7 @@ export function createSanctuaryScenarioCapture(deps: SanctuaryScenarioCaptureDep
       const capturedBefore = await deps.readFacts(input.label, scenarioHandleDigest, healthScenario ? { skipContainerSnapshot: true } : undefined)
       const before = { ...capturedBefore, sourceValues: Object.fromEntries(Object.entries(capturedBefore.sourceValues).map(([source, value]) => [source, hash(value)])) }
       const receipt: Receipt = { schemaVersion: "sanctuary-acceptance-receipt-v1", label: input.label, gate: input.externalGate, sources: [...input.sources], checkpointDigest, scenarioHandleDigest, startedAt, before }
-      writeSanctuaryAcceptanceMarker("sanctuary", { schemaVersion: "sanctuary-acceptance-marker-v1", label: input.label, scenarioHandleDigest, startedAt })
+      markerStore.write({ schemaVersion: "sanctuary-acceptance-marker-v1", label: input.label, scenarioHandleDigest, startedAt })
       atomicPrivateJson(receiptPath(checkpointDigest), receipt)
       publishSanctuaryAcceptanceGateStatus({ label: input.label, gate: input.externalGate, phase: "waiting", startedAt }, deps.gateStatusPath)
       if (healthScenario) {
@@ -1005,7 +1014,7 @@ export function createSanctuaryScenarioCapture(deps: SanctuaryScenarioCaptureDep
     if (INTERACTIVE_DRIVER_LABELS.has(input.label)) await deps.interactiveDriver!.cleanup(input.label, receipt.scenarioHandleDigest)
     if (READ_ONLY_DENIAL_LABELS.has(input.label)) await deps.denialDriver!.complete(input.label, receipt.scenarioHandleDigest)
     publishSanctuaryAcceptanceGateStatus({ label: input.label, gate: input.externalGate, phase: "complete", startedAt: receipt.startedAt }, deps.gateStatusPath)
-    clearSanctuaryAcceptanceMarker("sanctuary", receipt.scenarioHandleDigest)
+    markerStore.clear(receipt.scenarioHandleDigest)
     fs.unlinkSync(filePath)
     emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_acceptance_scenario_end", message: "Sanctuary live acceptance scenario completed", meta: { label: input.label, scenarioHandleDigest: receipt.scenarioHandleDigest } })
     return { state: "complete", checkpointDigest: receipt.checkpointDigest, sourceDigests, assertions }

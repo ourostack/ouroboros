@@ -1009,7 +1009,12 @@ describe("Sanctuary live scenario capture", () => {
   })
 
   it("covers default paths, invalid checkpoints, checkpoint rebinding, claimed baselines, and absent baselines", async () => {
-    const defaultCapture = createSanctuaryScenarioCapture({ now: () => 400_000, readFacts: async () => base() })
+    const defaultCapture = createSanctuaryScenarioCapture({
+      now: () => 400_000,
+      readFacts: async () => base(),
+      agentRoot: path.join(root, "default-agent-root"),
+      markerStore: { write: vi.fn(), clear: vi.fn() },
+    })
     await expect(defaultCapture({ phase: "begin", label: "unit-16d-whats-up", externalGate: "telegram", sources: ["telegram-audit"] })).rejects.toMatchObject({ code: "ENOENT" })
 
     const receipts = path.join(root, "capture-branches")
