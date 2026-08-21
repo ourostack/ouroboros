@@ -1,6 +1,6 @@
 import { pathToFileURL } from "node:url"
 import { EventEmitter } from "node:events"
-import { createHmac } from "node:crypto"
+import { createHash, createHmac } from "node:crypto"
 import * as fs from "node:fs"
 import * as path from "node:path"
 
@@ -847,15 +847,20 @@ describe("Sanctuary Unit 16 host broker", () => {
         manifest: [{ id: "sanctuary:sanctuary-health", agent: "sanctuary", taskId: "sanctuary-health", schedule: "*/15 * * * *", lastRun: null, command, taskPath: "/home/ouro/AgentBundles/sanctuary.ouro/habits/sanctuary-health.md" }],
         renderedCrontab: `# ouro:habit:sanctuary:sanctuary:sanctuary-health\n*/15 * * * * ${command}\n`,
       },
-      schedulerOrigin: { slot, occurrenceId, schedulerRunId: "22222222-2222-4222-8222-222222222222", invocationPid: 43, parentPid: 42, parentStartTime: "8001", invocationStartTime: "9001", proofMac: "c".repeat(64), scenarioHandleDigest: request.scenarioHandleDigest },
+      schedulerOrigin: { slot, occurrenceId, schedulerRunId: "22222222-2222-4222-8222-222222222222", invocationPid: 43, parentPid: 42, parentStartTime: "8001", invocationStartTime: "9001", proofMac: "", scenarioHandleDigest: request.scenarioHandleDigest },
     }
+    const { proofMac: _proofMac, ...originWithoutProof } = unsignedScheduler.schedulerOrigin
+    const schedulerCommand = { kind: "habit.scheduler-fire", agent: "sanctuary", habitName: "sanctuary-health", trigger: "cron", ...originWithoutProof }
+    unsignedScheduler.schedulerOrigin.proofMac = createHmac("sha256", key).update(JSON.stringify(schedulerCommand)).digest("hex")
     const receiptMac = createHmac("sha256", key).update(`sanctuary-scheduler-liveness-receipt-v2\0${JSON.stringify(unsignedScheduler)}`).digest("hex")
     const receipt = {
       schemaVersion: "sanctuary-health-probe-receipt-v1", label: request.label, scenarioHandleDigest: request.scenarioHandleDigest,
       ownerImageDigestBefore: "b".repeat(64), ownerImageDigestAfter: "b".repeat(64), ownerContainerDigestBefore: "c".repeat(64), ownerContainerDigestAfter: "c".repeat(64),
       beforeStateDigest: "d".repeat(64), restoredStateDigest: "d".repeat(64), cronFingerprintBefore: "e".repeat(64), cronFingerprintAfter: "e".repeat(64),
-      cronRegisteredBefore: true, cronRegisteredAfter: true, cronDegradedBefore: false, cronDegradedAfter: false, fixtureSequenceDigest: "f".repeat(64),
-      clockMode: "ambient", effectiveNow: "2026-08-20T17:00:00.000Z", phases: [], providerInvocationCount: 0, privateTurnCount: 0, deliveryCount: 0,
+      cronRegisteredBefore: true, cronRegisteredAfter: true, cronDegradedBefore: false, cronDegradedAfter: false, fixtureSequenceDigest: createHash("sha256").update(JSON.stringify([])).digest("hex"),
+      clockMode: "ambient", effectiveNow: "2026-08-20T17:00:00.000Z",
+      phases: [{ ordinal: 1, name: "cron-unchanged", trigger: "cron", fixtureStatus: null, opened: 0, recovered: 0, digestDue: false, deliveryKind: null, sweepReceiptDigest: "d".repeat(64), deliveryReceiptDigest: null }],
+      providerInvocationCount: 0, privateTurnCount: 0, deliveryCount: 0,
       workspaceAbsent: true, socketAbsent: true, snapshotAbsent: true, realCheckEquivalent: true, productionRestored: true,
       schedulerReceipt: { ...unsignedScheduler, receiptMac },
     }

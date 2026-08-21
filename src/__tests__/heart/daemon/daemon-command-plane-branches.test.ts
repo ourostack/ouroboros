@@ -55,6 +55,7 @@ describe("daemon command plane branches", () => {
       nativeHabitRunner?: unknown
       nativeHabitMatch?: unknown
       schedulerFireVerifier?: unknown
+      schedulerFireConsumer?: unknown
       orphanStartupDrain?: (socketPath: string) => Promise<void>
     },
   ) => {
@@ -106,6 +107,7 @@ describe("daemon command plane branches", () => {
       nativeHabitRunner: options?.nativeHabitRunner,
       nativeHabitMatch: options?.nativeHabitMatch,
       schedulerFireVerifier: options?.schedulerFireVerifier,
+      schedulerFireConsumer: options?.schedulerFireConsumer,
       externalEventRoot: options?.externalEventRoot,
       mailboxServerFactory: vi.fn(async () => ({
         url: "http://127.0.0.1:6876",
@@ -1410,12 +1412,20 @@ describe("daemon command plane branches", () => {
     const origin = { slot: "2026-08-21T07:15:00.000Z", schedulerRunId: "11111111-1111-4111-8111-111111111111", invocationPid: 101, parentPid: 42, parentStartTime: "8001", invocationStartTime: "9001", proofMac: "a".repeat(64), occurrenceId: "cron:2026-08-21T07:15:00.000Z", scenarioHandleDigest: null }
     const nativeHabitRunner = vi.fn(async () => ({ ok: true, message: "health sweep complete" }))
     const schedulerFireVerifier = vi.fn(() => origin)
-    const { daemon, processManager } = make(socketPath, bundlesRoot, { nativeHabitRunner, nativeHabitMatch: () => true, schedulerFireVerifier })
+    let consumed = false
+    const schedulerFireConsumer = vi.fn(() => {
+      if (consumed) throw new Error("scheduler fire replay rejected")
+      consumed = true
+    })
+    const { daemon, processManager } = make(socketPath, bundlesRoot, { nativeHabitRunner, nativeHabitMatch: () => true, schedulerFireVerifier, schedulerFireConsumer })
     processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot("sanctuary")])
     await expect(daemon.handleCommand({ kind: "habit.poke", agent: "sanctuary", habitName: "sanctuary-health", trigger: "cron" })).resolves.toEqual({ ok: false, error: "Sanctuary cron habit requires authenticated Supercronic provenance" })
     const privateCommand = { kind: "habit.scheduler-fire", agent: "sanctuary", habitName: "sanctuary-health", trigger: "cron", occurrenceId: origin.occurrenceId, scenarioHandleDigest: "b".repeat(64), ...origin } as const
     await expect(daemon.handleCommand(privateCommand)).resolves.toEqual({ ok: true, message: "health sweep complete" })
+    await expect(daemon.handleCommand(privateCommand)).resolves.toEqual({ ok: false, error: "scheduler fire replay rejected" })
     expect(schedulerFireVerifier).toHaveBeenCalledWith(privateCommand)
+    expect(schedulerFireConsumer).toHaveBeenCalledTimes(2)
+    expect(nativeHabitRunner).toHaveBeenCalledOnce()
     expect(nativeHabitRunner).toHaveBeenCalledWith(expect.objectContaining({ trigger: "cron", occurrenceId: origin.occurrenceId, schedulerOrigin: expect.objectContaining({ schedulerRunId: origin.schedulerRunId }) }))
   })
 
