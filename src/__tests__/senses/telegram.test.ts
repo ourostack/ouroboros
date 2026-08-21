@@ -507,7 +507,7 @@ describe("Telegram sense", () => {
     expect(readLedger(root)[0]).toMatchObject({ status: "error", errorCategory: "Error", providerInvocationCount: 1, toolInvocationCount: 1, deliveryCount: 0, deliveries: [] })
   })
 
-  it("keeps the same opaque friend and session identity across bot-token rotation", async () => {
+  it("separates opaque friend and session identity across bot-token rotation", async () => {
     const first = fixture({ botToken: "old-token" })
     const rotated = fixture({ botToken: "rotated-token" })
     await first.getOnMessage()({ updateId: 1, messageId: "1", userId: "42", chatId: "42", text: "before" })
@@ -515,9 +515,9 @@ describe("Telegram sense", () => {
 
     const firstTurn = first.runTurn.mock.calls[0]![0]
     const rotatedTurn = rotated.runTurn.mock.calls[0]![0]
-    expect(rotatedTurn.friendId).toBe(firstTurn.friendId)
-    expect(rotatedTurn.sessionKey).toBe(firstTurn.sessionKey)
-    expect(rotatedTurn.identity).toEqual(firstTurn.identity)
+    expect(rotatedTurn.friendId).not.toBe(firstTurn.friendId)
+    expect(rotatedTurn.sessionKey).not.toBe(firstTurn.sessionKey)
+    expect(rotatedTurn.identity).not.toEqual(firstTurn.identity)
   })
 
   it("routes callback updates only through the approval transport", async () => {

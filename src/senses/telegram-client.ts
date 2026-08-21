@@ -435,6 +435,7 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
         message: "Telegram update dispatch outcome is indeterminate after restart",
         meta: { updateClass: indeterminate.updateClass, reason: "dispatch_indeterminate", ...options.acceptanceEventMeta?.() },
       })
+      options.onDispatchSettled?.()
       options.inboxStore?.acknowledgeIndeterminateWarning(indeterminate)
     }
     const updates = await options.api.request<TelegramUpdate[]>("getUpdates", {
@@ -567,6 +568,7 @@ export interface TelegramApprovalTransportOptions {
   resolveDecisionToken?: (approvalId: string) => Promise<string>
   now?: () => number
   acceptanceEventMeta?: () => Record<string, string>
+  effectBarrier?: () => void
 }
 
 function assertTelegramCallbackData(value: string): void {
@@ -576,10 +578,14 @@ function assertTelegramCallbackData(value: string): void {
 
 export function createTelegramApprovalTransport(options: TelegramApprovalTransportOptions): TelegramApprovalTransport {
   const now = options.now ?? Date.now
+  const effectBarrier = options.effectBarrier ?? (() => undefined)
   const pendingByCallback = new Map<string, TelegramPendingApproval>()
 
   const uniquePending = (): TelegramPendingApproval[] => [...new Set(pendingByCallback.values())]
-  const persist = (): void => options.pendingStore.save(uniquePending().map(({ decisionToken: _secret, ...record }) => record))
+  const persist = (): void => {
+    effectBarrier()
+    options.pendingStore.save(uniquePending().map(({ decisionToken: _secret, ...record }) => record))
+  }
   const add = (pending: TelegramPendingApproval): void => {
     pendingByCallback.set(pending.approveCallbackData, pending)
     pendingByCallback.set(pending.denyCallbackData, pending)
@@ -610,12 +616,14 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
       reply_markup: { inline_keyboard: [] as never[] },
     }
     try {
+      effectBarrier()
       await options.api.request("editMessageText", { ...base, text: escapeTelegramHtml(terminalText), parse_mode: "HTML" })
     } catch (error) {
       const alreadyTerminal = error instanceof TelegramApiError && error.status === 400 && /message is not modified/i.test(error.message)
       if (!alreadyTerminal) {
         if (!(error instanceof TelegramApiError) || error.status !== 400) throw error
         try {
+          effectBarrier()
           await options.api.request("editMessageText", { ...base, text: terminalText })
         } catch (fallbackError) {
           if (!(fallbackError instanceof TelegramApiError) || fallbackError.status !== 400 || !/message is not modified/i.test(fallbackError.message)) {
@@ -629,6 +637,7 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
 
   const acknowledge = async (callbackQueryId: string, invalid: boolean): Promise<void> => {
     try {
+      effectBarrier()
       await options.api.request("answerCallbackQuery", invalid ? {
         callback_query_id: callbackQueryId,
         text: "This approval is no longer valid.",
@@ -666,6 +675,7 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
 
   return {
     async sendApproval(input) {
+      effectBarrier()
       const approveCallbackData = `a:${options.createOpaqueHandle()}`
       const denyCallbackData = `d:${options.createOpaqueHandle()}`
       assertTelegramCallbackData(approveCallbackData)
@@ -711,9 +721,11 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
       try {
         let result: unknown
         try {
+          effectBarrier()
           result = await options.api.request("sendMessage", htmlBody)
         } catch (error) {
           if (!(error instanceof TelegramApiError) || error.status !== 400) throw error
+          effectBarrier()
           result = await options.api.request("sendMessage", {
             chat_id: options.expectedChatId,
             text: input.prompt,
@@ -737,6 +749,7 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
     },
 
     async handleUpdate(update) {
+      effectBarrier()
       const callback = update.callback_query
       if (!callback) return { handled: false, accepted: false, reason: "not_callback" }
       const pending = pendingByCallback.get(callback.data ?? "")
@@ -779,6 +792,7 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
           if (!decisionToken) throw new Error("Telegram approval restart requires a decision token resolver")
           pending!.decisionToken = undefined
           decisionStarted = true
+          effectBarrier()
           outcome = await options.onDecision({
             approvalId: pending!.approvalId,
             decisionToken,

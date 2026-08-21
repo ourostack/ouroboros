@@ -94,4 +94,11 @@ describe("Telegram acceptance audit ledger", () => {
     expect(() => ledger.append(event("two", "2026-08-20T20:00:01.000Z"))).toThrow("exceeds its bound")
     expect(() => ledger.assertHealthy()).toThrow("exceeds its bound")
   })
+
+  it("reserves bounded capacity before effects and rejects invalid reservations", () => {
+    const ledger = createTelegramAuditLedger({ root, identityKey, privateValues, _maxBytes: 2 * 64 * 1024 })
+    expect(() => ledger.assertCapacity()).not.toThrow()
+    expect(() => ledger.assertCapacity(0)).toThrow("reservation is invalid")
+    expect(() => ledger.assertCapacity(2)).toThrow("lacks reserved capacity")
+  })
 })

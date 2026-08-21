@@ -154,6 +154,7 @@ export interface TelegramAuditLedger {
   headPath: string
   append(event: LogEvent): void
   assertHealthy(): void
+  assertCapacity(additionalRows?: number): void
 }
 
 export function createTelegramAuditLedger(options: {
@@ -227,6 +228,14 @@ export function createTelegramAuditLedger(options: {
       if (failure) throw failure
       records = verifyTelegramAuditLedger({ ledgerRaw: readFileSync(ledgerPath, "utf8"), headRaw: readFileSync(headPath, "utf8"), identityKey: options.identityKey, privateValues: options.privateValues })
       currentHead = parseHead(readFileSync(headPath, "utf8"), options.identityKey)
+    },
+    assertCapacity(additionalRows = 1) {
+      if (!Number.isSafeInteger(additionalRows) || additionalRows < 1) throw new Error("Telegram audit capacity reservation is invalid")
+      if (failure) throw failure
+      if (currentHead.recordCount + additionalRows > MAX_ROWS
+        || Buffer.byteLength(readFileSync(ledgerPath)) + additionalRows * (MAX_ROW_BYTES + 1) > maxBytes) {
+        throw new Error("Telegram audit ledger lacks reserved capacity")
+      }
     },
   }
 }

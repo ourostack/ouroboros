@@ -342,11 +342,19 @@ describe("Telegram sense coverage contracts", () => {
       }).run()
       const indexPath = path.join(root, "state", "senses", "telegram", "identity-subjects.json")
       const canonical = JSON.parse(fs.readFileSync(indexPath, "utf8")) as { subject: string }
+      const oldSessionRoot = path.join(root, "state", "sessions", `telegram-user:${canonical.subject}`)
+      fs.mkdirSync(oldSessionRoot, { recursive: true })
 
       const validFixture = defaultFixture()
       await expect(createTelegramSenseApp({
         agentName: "butler", credentials: { ...credentials, botToken: "rotated-again" }, identityKey: "k".repeat(43), approvalRuntime: validFixture.runtime,
       }).run()).resolves.toBeUndefined()
+      const rotatedIndex = JSON.parse(fs.readFileSync(indexPath, "utf8")) as { subject: string; legacySubjects: string[] }
+      expect(rotatedIndex.subject).not.toBe(canonical.subject)
+      expect(rotatedIndex.legacySubjects).toContain(canonical.subject)
+      expect(fs.existsSync(oldSessionRoot)).toBe(false)
+      expect(fs.existsSync(path.join(root, "state", "sessions", `telegram-user:${rotatedIndex.subject}`))).toBe(true)
+      expect(validFixture.runtime.migrateIdentity).toHaveBeenCalledWith([canonical.subject])
 
       const invalidRecords: unknown[] = [
         null,
@@ -539,7 +547,12 @@ describe("Telegram sense coverage contracts", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-audit-filter-"))
     mocks.getAgentRoot.mockReturnValueOnce(root)
     const f = defaultFixture()
-    const app = createTelegramSenseApp({ agentName: "sanctuary", credentials, identityKey: "k".repeat(43) })
+    const app = createTelegramSenseApp({
+      agentName: "sanctuary",
+      credentials,
+      identityKey: "k".repeat(43),
+      acceptanceMarker: () => ({ scenarioHandleDigest: "a".repeat(64) }),
+    })
     const ledgerPath = path.join(root, TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH)
     try {
       for (let index = 0; index < 1_000; index += 1) emitGlobal({ ...acceptanceEvent("daemon.unrelated_noise"), meta: { index } })
@@ -550,7 +563,10 @@ describe("Telegram sense coverage contracts", () => {
         "senses.telegram_turn_end", "senses.telegram_turn_error", "senses.telegram_turn_start",
         "telegram.approval_prompt_terminalized", "telegram.callback_settled", "telegram.update_dropped",
       ]
-      for (const name of requiredEvents) emitGlobal(acceptanceEvent(name))
+      emitGlobal(acceptanceEvent())
+      expect(fs.readFileSync(ledgerPath, "utf8")).toBe("")
+      const owner = telegramAcceptanceAuditOwnerDigest("k".repeat(43), "sanctuary", root)
+      for (const name of requiredEvents) emitGlobal({ ...acceptanceEvent(name), meta: { scenarioHandleDigest: "a".repeat(64), acceptanceAuditOwnerDigest: owner } })
       expect(fs.readFileSync(ledgerPath, "utf8").trim().split("\n")).toHaveLength(requiredEvents.length)
       await app.stop()
       expect(f.api.stop).toHaveBeenCalledOnce()
@@ -757,6 +773,26 @@ describe("Telegram sense coverage contracts", () => {
     fs.rmSync(root, { recursive: true, force: true })
   })
 
+  it("fails closed before a turn or delivery when the acceptance audit has no reserved capacity", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-audit-exhausted-"))
+    mocks.getAgentRoot.mockReturnValueOnce(root)
+    const f = defaultFixture()
+    const app = createTelegramSenseApp({
+      agentName: "sanctuary",
+      credentials,
+      identityKey: "k".repeat(43),
+      acceptanceMarker: () => ({ scenarioHandleDigest: "a".repeat(64) }),
+      _acceptanceAuditMaxBytes: 1,
+    })
+
+    await expect(f.getOnMessage()({ updateId: 1, messageId: "2", userId: "42", chatId: "43", text: "status" }))
+      .rejects.toThrow(/exceeds its bound|reserved capacity/u)
+    expect(mocks.runSenseTurn).not.toHaveBeenCalled()
+    expect(mocks.sendTelegramText).not.toHaveBeenCalled()
+    await app.stop()
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+
   it("routes scenario audit events only to the exact owning app root", async () => {
     const firstRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-audit-root-a-"))
     const secondRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-audit-root-b-"))
@@ -770,11 +806,12 @@ describe("Telegram sense coverage contracts", () => {
       acceptanceMarker: () => ({ scenarioHandleDigest: "a".repeat(64) }),
     })
     defaultFixture()
+    let secondScenario = "a".repeat(64)
     const second = createTelegramSenseApp({
       agentName: "sanctuary",
       credentials,
       identityKey,
-      acceptanceMarker: () => ({ scenarioHandleDigest: "a".repeat(64) }),
+      acceptanceMarker: () => ({ scenarioHandleDigest: secondScenario }),
     })
     const firstOwner = telegramAcceptanceAuditOwnerDigest(identityKey, "sanctuary", firstRoot)
     emitGlobal({ ...acceptanceEvent(), meta: { scenarioHandleDigest: "a".repeat(64), acceptanceAuditOwnerDigest: firstOwner } })
@@ -783,6 +820,11 @@ describe("Telegram sense coverage contracts", () => {
     const secondLedger = fs.readFileSync(path.join(secondRoot, TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH), "utf8").trim().split("\n").filter(Boolean)
     expect(firstLedger).toHaveLength(1)
     expect(secondLedger).toHaveLength(0)
+    secondScenario = "b".repeat(64)
+    const secondOwner = telegramAcceptanceAuditOwnerDigest(identityKey, "sanctuary", secondRoot)
+    emitGlobal({ ...acceptanceEvent(), meta: { scenarioHandleDigest: secondScenario, acceptanceAuditOwnerDigest: secondOwner } })
+    expect(fs.readFileSync(path.join(firstRoot, TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH), "utf8").trim().split("\n").filter(Boolean)).toHaveLength(1)
+    expect(fs.readFileSync(path.join(secondRoot, TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH), "utf8").trim().split("\n").filter(Boolean)).toHaveLength(1)
     await first.stop()
     await second.stop()
     fs.rmSync(firstRoot, { recursive: true, force: true })

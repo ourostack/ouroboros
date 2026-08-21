@@ -36,6 +36,7 @@ describe("Telegram approval callback transport", () => {
     save?: (records: ReturnType<TelegramPendingApprovalStore["load"]>, call: number) => void
     handles?: string[]
     resolveDecisionToken?: () => Promise<string | undefined>
+    effectBarrier?: () => void
   } = {}) {
     let records = structuredClone(input.records ?? [])
     const saves: ReturnType<TelegramPendingApprovalStore["load"]>[] = []
@@ -68,6 +69,7 @@ describe("Telegram approval callback transport", () => {
       onExpire: input.onExpire,
       resolveDecisionToken: input.resolveDecisionToken ?? (async () => "restored-secret-token"),
       now: input.now ?? (() => 1_000_000),
+      effectBarrier: input.effectBarrier,
     })
     return { transport, calls, onDecision, records: () => records, saves }
   }
@@ -104,6 +106,21 @@ describe("Telegram approval callback transport", () => {
     expect(JSON.stringify(fixture.records())).not.toContain("secret-token")
     expect(fixture.saves.slice(0, 3).map((save) => save[0]?.deliveryState)).toEqual(["pending", "send_attempting", "bound"])
     expect(fixture.saves[0]?.[0]?.messageId).toBeNull()
+  })
+
+  it("blocks approval persistence, delivery, and callback mutation when the audit barrier fails", async () => {
+    const failure = new Error("Telegram audit ledger lacks reserved capacity")
+    const send = approvalFixture({ effectBarrier: () => { throw failure } })
+    await expect(send.transport.sendApproval({ approvalId: "approval-1", decisionToken: "secret", prompt: "Restart?" }))
+      .rejects.toBe(failure)
+    expect(send.calls).toEqual([])
+    expect(send.saves).toEqual([])
+
+    const callback = approvalFixture({ effectBarrier: () => { throw failure } })
+    await expect(callback.transport.handleUpdate(approvalCallback("a:approve"))).rejects.toBe(failure)
+    expect(callback.calls).toEqual([])
+    expect(callback.onDecision).not.toHaveBeenCalled()
+    expect(callback.saves).toEqual([])
   })
 
   it("persists an indeterminate prompt delivery when sendMessage may have escaped", async () => {
