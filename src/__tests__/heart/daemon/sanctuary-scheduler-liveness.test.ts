@@ -68,6 +68,16 @@ describe("Sanctuary scheduler liveness receipt", () => {
     } finally { fs.rmSync(f.agentRoot, { recursive: true, force: true }) }
   })
 
+  it("fails closed when a scheduler claim cannot be durably created", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-scheduler-claim-error-"))
+    const nonDirectoryRoot = path.join(root, "not-a-directory")
+    fs.writeFileSync(nonDirectoryRoot, "occupied")
+    try {
+      expect(() => consumeSanctuarySchedulerFire(nonDirectoryRoot, authenticated.schedulerOrigin)).toThrow()
+      expect(() => consumeSanctuarySchedulerFire(root, { ...authenticated.schedulerOrigin, schedulerRunId: "invalid" })).toThrow(/claim is invalid/u)
+    } finally { fs.rmSync(root, { recursive: true, force: true }) }
+  })
+
   it("reads and validates the durable cursor", () => {
     const f = setup()
     try {
@@ -223,6 +233,46 @@ describe("Sanctuary scheduler liveness receipt", () => {
       expect(events.filter((event) => event === `fsync:${child}`).length).toBeGreaterThanOrEqual(3)
       const unlinkIndex = events.findIndex((event) => event.startsWith("unlink:"))
       expect(events.slice(unlinkIndex + 1)).toContain(`fsync:${child}`)
+    } finally { fs.rmSync(f.agentRoot, { recursive: true, force: true }) }
+  })
+
+  it("propagates a non-collision mkdir race failure before publication", () => {
+    const f = setup()
+    const receiptPath = path.join(f.agentRoot, "missing", "receipt.json")
+    const failure = Object.assign(new Error("mkdir retry failed"), { code: "EIO" })
+    const target = path.dirname(receiptPath)
+    let targetAttempts = 0
+    const deps = { ...durableFs, mkdirSync: ((directory: fs.PathLike, options?: fs.MakeDirectoryOptions) => {
+      if (String(directory) === target) {
+        targetAttempts += 1
+        if (targetAttempts === 1) throw Object.assign(new Error("parent missing"), { code: "ENOENT" })
+        throw failure
+      }
+      return fs.mkdirSync(directory, options)
+    }) as typeof fs.mkdirSync }
+    try { expect(() => durableExclusiveJson(receiptPath, {}, deps)).toThrow(failure) }
+    finally { fs.rmSync(f.agentRoot, { recursive: true, force: true }) }
+  })
+
+  it("accepts a concurrent mkdir winner and rejects an impossible missing filesystem root", () => {
+    const f = setup()
+    const receiptPath = path.join(f.agentRoot, "raced", "receipt.json")
+    const target = path.dirname(receiptPath)
+    let targetAttempts = 0
+    const racedDeps = { ...durableFs, mkdirSync: ((directory: fs.PathLike, options?: fs.MakeDirectoryOptions) => {
+      if (String(directory) === target) {
+        targetAttempts += 1
+        if (targetAttempts === 1) throw Object.assign(new Error("parent missing"), { code: "ENOENT" })
+        fs.mkdirSync(directory, options)
+        throw Object.assign(new Error("concurrent creator won"), { code: "EEXIST" })
+      }
+      return fs.mkdirSync(directory, options)
+    }) as typeof fs.mkdirSync }
+    const missingRootDeps = { ...durableFs, mkdirSync: (() => { throw Object.assign(new Error("root missing"), { code: "ENOENT" }) }) as typeof fs.mkdirSync }
+    try {
+      expect(() => durableExclusiveJson(receiptPath, { ok: true }, racedDeps)).not.toThrow()
+      expect(JSON.parse(fs.readFileSync(receiptPath, "utf8"))).toEqual({ ok: true })
+      expect(() => durableExclusiveJson("/receipt.json", {}, missingRootDeps)).toThrow(/root missing/u)
     } finally { fs.rmSync(f.agentRoot, { recursive: true, force: true }) }
   })
 

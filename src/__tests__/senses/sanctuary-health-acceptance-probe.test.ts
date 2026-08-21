@@ -317,6 +317,15 @@ describe("packaged Sanctuary health acceptance probe", () => {
     } finally { fs.rmSync(fixture.agentRoot, { recursive: true, force: true }) }
   })
 
+  it("fails closed without fabricating or restoring an absent Unit16f observer state", async () => {
+    const fixture = setup("unit-16f-cron-fingerprint")
+    fs.unlinkSync(fixture.statePath)
+    try {
+      await expect(runSanctuaryHealthAcceptanceProbe(fixture.input, fixture.deps)).rejects.toThrow(/observer state is absent/u)
+      expect(fs.existsSync(fixture.statePath)).toBe(false)
+    } finally { fs.rmSync(fixture.agentRoot, { recursive: true, force: true }) }
+  })
+
   it("withholds the final receipt until an independently observed owner is attested", async () => {
     const fixture = setup("unit-16f-cron-fingerprint")
     const receiptPath = path.join(fixture.agentRoot, "state", "acceptance", "health-probe-receipts", `${fixture.input.scenarioHandleDigest}.json`)
