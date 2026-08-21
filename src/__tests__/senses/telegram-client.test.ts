@@ -312,8 +312,9 @@ describe("Telegram approval callback transport", () => {
 
   it("never emits stale-tap success when durable consumption cannot be persisted", async () => {
     const evidence: Array<{ event: string; meta: Record<string, unknown> }> = []
-    const tombstone = { approvalId: "approval-1", messageId: "99", deliveryState: "terminal_tombstone" as const, approveCallbackData: "a:approve", denyCallbackData: "d:deny", expiresAt: 1_000, terminalizedAt: 2_000, tombstoneExpiresAt: 20_000,
-      acceptanceBinding: { scenarioHandleDigest: "a".repeat(64), actionDigest: "b".repeat(64), targetDigest: "c".repeat(64), checkpointDigest: "d".repeat(64), suspendedSessionRevisionDigest: "e".repeat(64), messageIdDigest: "f".repeat(64), boundAt: 0 } }
+    const tombstone = { approvalId: "approval-1", messageId: "99", deliveryState: "terminal_tombstone" as const, approveCallbackData: "a:approve", denyCallbackData: "d:deny", expiresAt: 1_000, terminalizedAt: 2_000, tombstoneExpiresAt: 602_000,
+      acceptanceBinding: { scenarioHandleDigest: "a".repeat(64), actionDigest: "b".repeat(64), targetDigest: "c".repeat(64), checkpointDigest: "d".repeat(64), suspendedSessionRevisionDigest: "e".repeat(64), messageIdDigest: "f".repeat(64), boundAt: 0 },
+      expiryObservation: { schemaVersion: "telegram-approval-expiry-observation-v1" as const, deadlineAt: 1_000, observedAt: 2_000, evidenceMac: "f".repeat(64) } }
     const transport = createTelegramApprovalTransport({
       api: { stop: vi.fn(), request: vi.fn(async () => true) }, expectedUserId: "10", expectedChatId: "10",
       pendingStore: { load: () => [structuredClone(tombstone)], save: () => { throw new Error("disk unavailable") } },
@@ -328,7 +329,7 @@ describe("Telegram approval callback transport", () => {
     const queryId = "stale-resume"
     let records: ReturnType<TelegramPendingApprovalStore["load"]> = [{
       approvalId: "approval-1", messageId: "99", deliveryState: "terminal_tombstone", approveCallbackData: "a:approve", denyCallbackData: "d:deny",
-      expiresAt: 1_000, terminalizedAt: 2_000, tombstoneExpiresAt: 20_000,
+      expiresAt: 1_000, terminalizedAt: 2_000, tombstoneExpiresAt: 602_000,
       acceptanceBinding: { scenarioHandleDigest: "a".repeat(64), actionDigest: "b".repeat(64), targetDigest: "c".repeat(64), checkpointDigest: "d".repeat(64), suspendedSessionRevisionDigest: "e".repeat(64), messageIdDigest: "f".repeat(64), boundAt: 0 },
       expiryObservation: { schemaVersion: "telegram-approval-expiry-observation-v1", deadlineAt: 1_000, observedAt: 2_000, evidenceMac: "f".repeat(64) },
       staleTap: { schemaVersion: "telegram-approval-stale-tap-v1", state: "attempted", queryIdDigest: createHash("sha256").update(queryId).digest("hex"), attemptedAt: 2_100, consumedAt: null },
@@ -351,12 +352,12 @@ describe("Telegram approval callback transport", () => {
   })
 
   it.each([
-    { patch: { expiryObservation: { schemaVersion: "telegram-approval-expiry-observation-v1", deadlineAt: 1_000, observedAt: 2_000, evidenceMac: "e".repeat(64) } }, error: "expiry observation" },
-    { patch: { staleTap: { schemaVersion: "telegram-approval-stale-tap-v1", state: "attempted", queryIdDigest: "invalid", attemptedAt: 2_100, consumedAt: null } }, error: "stale-tap record" },
+    { patch: { expiryObservation: { schemaVersion: "telegram-approval-expiry-observation-v1", deadlineAt: 1_000, observedAt: 2_000, evidenceMac: "e".repeat(64) } }, error: "terminal tombstone" },
+    { patch: { staleTap: { schemaVersion: "telegram-approval-stale-tap-v1", state: "attempted", queryIdDigest: "invalid", attemptedAt: 2_100, consumedAt: null } }, error: "terminal tombstone" },
   ])("fails closed on invalid persisted tombstone evidence: $error", async ({ patch, error }) => {
     const record = {
       approvalId: "approval-1", messageId: "99", deliveryState: "terminal_tombstone" as const, approveCallbackData: "a:approve", denyCallbackData: "d:deny",
-      expiresAt: 1_000, terminalizedAt: 2_000, tombstoneExpiresAt: 20_000,
+      expiresAt: 1_000, terminalizedAt: 2_000, tombstoneExpiresAt: 602_000,
       acceptanceBinding: { scenarioHandleDigest: "a".repeat(64), actionDigest: "b".repeat(64), targetDigest: "c".repeat(64), checkpointDigest: "d".repeat(64), suspendedSessionRevisionDigest: "e".repeat(64), messageIdDigest: "f".repeat(64), boundAt: 0 },
       expiryObservation: { schemaVersion: "telegram-approval-expiry-observation-v1" as const, deadlineAt: 1_000, observedAt: 2_000, evidenceMac: "f".repeat(64) },
       ...patch,
@@ -414,11 +415,13 @@ describe("Telegram approval callback transport", () => {
     const transport = createTelegramApprovalTransport({
       api: { stop: vi.fn(), request: vi.fn() }, expectedUserId: "10", expectedChatId: "10",
       pendingStore: {
-        load: () => [{ approvalId: "expired", messageId: "99", deliveryState: "terminal_tombstone", approveCallbackData: "a:expired", denyCallbackData: "d:expired", expiresAt: 1_000_000, terminalizedAt: 1_000_000, tombstoneExpiresAt: 2_000_000 }],
+        load: () => [{ approvalId: "expired", messageId: "99", deliveryState: "terminal_tombstone", approveCallbackData: "a:expired", denyCallbackData: "d:expired", expiresAt: 1_000_000, terminalizedAt: 1_400_000, tombstoneExpiresAt: 2_000_000,
+          acceptanceBinding: { scenarioHandleDigest: "a".repeat(64), actionDigest: "b".repeat(64), targetDigest: "c".repeat(64), checkpointDigest: "d".repeat(64), suspendedSessionRevisionDigest: "e".repeat(64), messageIdDigest: "f".repeat(64), boundAt: 700_000 },
+          expiryObservation: { schemaVersion: "telegram-approval-expiry-observation-v1", deadlineAt: 1_000_000, observedAt: 1_000_000, evidenceMac: "f".repeat(64) } }],
         save: (records) => { saves.push(structuredClone(records)) },
       },
-      createOpaqueHandle: vi.fn(), onDecision: vi.fn(), onExpire: vi.fn(), now: () => clock,
-    })
+      createOpaqueHandle: vi.fn(), onDecision: vi.fn(), onExpire: vi.fn(), now: () => clock, signAcceptanceEvidence: () => "f".repeat(64),
+    } as never)
     await transport.reconcileExpired()
     expect(saves).toEqual([[]])
     expect(transport.listPendingDeliveries()).toEqual([])
