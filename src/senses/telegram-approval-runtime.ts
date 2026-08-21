@@ -1,5 +1,5 @@
 import * as path from "node:path"
-import { createHmac, randomBytes, randomUUID } from "node:crypto"
+import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto"
 
 import { FileApprovalCheckpointStore, FileApprovalTokenStore } from "../heart/approval-files"
 import { openApprovalStore, type ApprovalRecord } from "../heart/approval-store"
@@ -7,13 +7,15 @@ import { ApprovalExecutionFailedError, commitApprovalProposal, executeApprovalDe
 import { resumeApprovalContinuation, runAgent, type ApprovalCoordinator, type RunAgentOptions } from "../heart/core"
 import { getAgentRoot } from "../heart/identity"
 import { readSanctuaryAcceptanceMarker, runWithSanctuaryAcceptanceApproval } from "../heart/daemon/sanctuary-acceptance-marker"
+import { sanctuaryTelegramApprovalEvidenceMac } from "./telegram"
 import { saveSession } from "../mind/context"
 import { readSessionTransaction, withSessionTurnLease } from "../mind/session-transaction"
 import { execTool, resolveToolDefinition } from "../repertoire/tools"
 import type { ToolContext } from "../repertoire/tools-base"
-import { emitNervesEvent } from "../nerves/runtime"
+import { emitNervesEvent, emitNervesEventDurable } from "../nerves/runtime"
 import {
   createTelegramApprovalTransport,
+  classifyTelegramPersistedApprovalState,
   FileTelegramPendingApprovalStore,
   sendTelegramText,
   type TelegramApprovalTransport,
@@ -132,8 +134,18 @@ export function createTelegramApprovalRuntime(options: {
   authorizedUserId: string
   authorizedChatId: string
   subject: string
+  identityKey: string
   toolContext: Partial<ToolContext>
   effectBarrier?: () => void
+  dependencies?: {
+    agentRoot?: string
+    now?: () => number
+    acceptanceMarker?: () => { scenarioHandleDigest: string } | null
+    runProvider?: typeof runAgent
+    resolveTool?: typeof resolveToolDefinition
+    executeTool?: typeof execTool
+    commitAcceptanceEvidence?: (event: string, meta: Record<string, unknown>) => void | Promise<void>
+  }
 }): TelegramApprovalRuntime {
   const effectBarrier = options.effectBarrier ?? (() => undefined)
   emitNervesEvent({
@@ -142,8 +154,13 @@ export function createTelegramApprovalRuntime(options: {
     message: "creating durable Telegram approval runtime",
     meta: { agentName: options.agentName },
   })
-  const stateRoot = path.join(getAgentRoot(options.agentName), "state", "approvals")
-  const store = openApprovalStore({ databasePath: path.join(stateRoot, "approvals.sqlite") })
+  const now = options.dependencies?.now ?? Date.now
+  const acceptanceMarker = options.dependencies?.acceptanceMarker ?? (() => readSanctuaryAcceptanceMarker(options.agentName))
+  const provider = options.dependencies?.runProvider ?? runAgent
+  const resolveTool = options.dependencies?.resolveTool ?? resolveToolDefinition
+  const executeTool = options.dependencies?.executeTool ?? execTool
+  const stateRoot = path.join(options.dependencies?.agentRoot ?? getAgentRoot(options.agentName), "state", "approvals")
+  const store = openApprovalStore({ databasePath: path.join(stateRoot, "approvals.sqlite"), now: () => new Date(now()) })
   const checkpoints = new FileApprovalCheckpointStore(path.join(stateRoot, "checkpoints.json"))
   const tokens = new FileApprovalTokenStore(path.join(stateRoot, "tokens.json"))
   const pendingStore = new FileTelegramPendingApprovalStore(path.join(stateRoot, "telegram-pending.json"))
@@ -153,7 +170,7 @@ export function createTelegramApprovalRuntime(options: {
     propose: async (request) => {
       if (request.toolCall.type !== "function") throw new Error("approval requires a function tool call")
       effectBarrier()
-      const scenarioHandleDigest = readSanctuaryAcceptanceMarker(options.agentName)?.scenarioHandleDigest
+      const scenarioHandleDigest = acceptanceMarker()?.scenarioHandleDigest
       const committed = commitApprovalProposal({
         approvalStore: store,
         checkpointStore: checkpoints,
@@ -174,7 +191,7 @@ export function createTelegramApprovalRuntime(options: {
           transport: "telegram",
           transportUserId: options.subject,
           transportChatId: options.subject,
-          expiresAt: new Date(Date.now() + 300_000).toISOString(),
+          expiresAt: new Date(now() + 300_000).toISOString(),
           frozenAssistantMessage: request.frozenAssistantMessage as never,
           ...(scenarioHandleDigest ? { scenarioHandleDigest } : {}),
         },
@@ -183,13 +200,27 @@ export function createTelegramApprovalRuntime(options: {
       })
       const prompt = `Approve ${request.toolCall.function.name} with exact arguments ${JSON.stringify(request.arguments)}?`
       effectBarrier()
-      const sent = await transport.sendApproval({ approvalId: committed.record.approvalId, decisionToken: committed.decisionToken, prompt })
+      const actionDigest = createHash("sha256").update(JSON.stringify({ toolName: committed.record.toolName, argumentDigest: committed.record.argumentDigest })).digest("hex")
+      const targetDigest = createHash("sha256").update(JSON.stringify({ container: committed.record.arguments.container })).digest("hex")
+      const sent = await transport.sendApproval({
+        approvalId: committed.record.approvalId,
+        decisionToken: committed.decisionToken,
+        prompt,
+        ...(scenarioHandleDigest ? { acceptanceBinding: {
+          scenarioHandleDigest,
+          actionDigest,
+          targetDigest,
+          checkpointDigest: committed.record.checkpointDigest,
+          suspendedSessionRevisionDigest: createHash("sha256").update(committed.record.suspendedSessionRevision!, "utf8").digest("hex"),
+        } } : {}),
+      })
       effectBarrier()
       store.bindPrompt({
         approvalId: committed.record.approvalId,
         transport: "telegram",
         transportChatId: options.subject,
         transportMessageId: opaqueTelegramMessageBinding(options.subject, sent.messageId),
+        expiresAt: new Date(sent.expiresAt).toISOString(),
       })
       emitNervesEvent({
         component: "senses",
@@ -219,10 +250,9 @@ export function createTelegramApprovalRuntime(options: {
     }
   }
 
-  const continueTerminalRecord = (record: ApprovalRecord): Promise<{ accepted: boolean; terminalText: string }> => {
-    effectBarrier()
-    tokens.remove(record.approvalId)
-    effectBarrier()
+  const continueTerminalRecord = (record: ApprovalRecord, acceptanceBinding?: {
+    scenarioHandleDigest: string; actionDigest: string; targetDigest: string; checkpointDigest: string; suspendedSessionRevisionDigest: string; messageIdDigest: string; boundAt: number
+  }): Promise<{ accepted: boolean; terminalText: string }> => {
     return withSessionTurnLease(record.sessionPath, async (lease) => {
       const checkpoint = checkpoints.read(record.approvalId)
       if (!checkpoint) return { accepted: false, terminalText: "⚠️ Approval checkpoint is unavailable" }
@@ -251,10 +281,30 @@ export function createTelegramApprovalRuntime(options: {
         markContinuationMaterialized: () => { effectBarrier(); store.markContinuationMaterialized({ approvalId: record.approvalId, ownerId: continuationOwnerId, epoch: continuationEpoch }) },
         markContinuationAttempted: () => { effectBarrier(); store.markContinuationAttempted({ approvalId: record.approvalId, ownerId: continuationOwnerId, epoch: continuationEpoch }) },
         completeContinuation: () => { effectBarrier(); store.completeContinuation({ approvalId: record.approvalId, ownerId: continuationOwnerId, epoch: continuationEpoch }) },
-        runAgent,
+        runAgent: provider,
         runAgentOptions: approvalContinuationRunAgentOptions(options.toolContext, continuationCoordinator),
         persist: (messages, result) => { effectBarrier(); saveSession(record.sessionPath, messages, result?.usage, undefined, lease) },
-        deliver: async (text) => { effectBarrier(); await sendTelegramText(options.api, options.authorizedChatId, text) },
+        deliver: async (text) => {
+          effectBarrier()
+          const messageIds = await sendTelegramText(options.api, options.authorizedChatId, text)
+          effectBarrier()
+          if (acceptanceBinding) {
+            const unsigned = {
+              approvalId: record.approvalId,
+              ...acceptanceBinding,
+              deliveredAt: now(),
+              resultDigest: createHash("sha256").update(JSON.stringify({ state: record.state, result: record.result })).digest("hex"),
+              deliveryDigest: createHash("sha256").update(text, "utf8").digest("hex"),
+              deliveryMessageIdDigest: createHash("sha256").update(JSON.stringify(messageIds ?? [])).digest("hex"),
+            }
+            emitNervesEvent({
+              component: "senses",
+              event: "senses.telegram_approval_continuation_delivered",
+              message: "Telegram approval continuation result was delivered",
+              meta: { ...unsigned, evidenceMac: sanctuaryTelegramApprovalEvidenceMac(options.identityKey, "senses.telegram_approval_continuation_delivered", unsigned) },
+            })
+          }
+        },
       })
       return terminalOutcome(record)
     })
@@ -267,11 +317,21 @@ export function createTelegramApprovalRuntime(options: {
     pendingStore,
     createOpaqueHandle: () => randomBytes(12).toString("base64url"),
     acceptanceEventMeta: () => {
-      const scenarioHandleDigest = readSanctuaryAcceptanceMarker(options.agentName)?.scenarioHandleDigest
+      const scenarioHandleDigest = acceptanceMarker()?.scenarioHandleDigest
       const meta: Record<string, string> = scenarioHandleDigest ? { scenarioHandleDigest } : {}
       return meta
     },
     effectBarrier,
+    signAcceptanceEvidence: (event, meta) => sanctuaryTelegramApprovalEvidenceMac(options.identityKey, event, meta),
+    commitAcceptanceEvidence: options.dependencies?.commitAcceptanceEvidence ?? ((event, meta) => emitNervesEventDurable({
+      component: "senses",
+      event,
+      message: "Telegram approval acceptance evidence durably recorded",
+      meta,
+    })),
+    onSettlementComplete: async (approvalId) => { tokens.remove(approvalId) },
+    acceptanceMessageIdDigest: (messageId) => createHash("sha256").update(opaqueTelegramMessageBinding(options.subject, messageId), "utf8").digest("hex"),
+    now,
     resolveDecisionToken: async (approvalId) => tokens.get(approvalId) ?? "",
     onExpire: async (approvalId) => {
       effectBarrier()
@@ -281,7 +341,7 @@ export function createTelegramApprovalRuntime(options: {
     },
     onDecision: async (decision) => {
       effectBarrier()
-      const decisionScenarioDigest = readSanctuaryAcceptanceMarker(options.agentName)?.scenarioHandleDigest
+      const decisionScenarioDigest = acceptanceMarker()?.scenarioHandleDigest
       const existing = store.read(decision.approvalId)
       if (!existing) return { accepted: false, terminalText: "⚠️ Approval is no longer valid" }
       let record: ApprovalRecord
@@ -306,7 +366,7 @@ export function createTelegramApprovalRuntime(options: {
             },
             ownerId,
             currentSessionRevision: readSessionTransaction(existing.sessionPath, lease).revision,
-            resolveTool: resolveToolDefinition,
+            resolveTool,
             liveGuard: async () => ({ ok: true }),
             liveRisk: async () => ({ ok: true }),
             hooks: telegramApprovalDecisionBarrierHooks(effectBarrier),
@@ -314,7 +374,7 @@ export function createTelegramApprovalRuntime(options: {
               const execute = () => executeApprovedTelegramTool(
                 name,
                 args,
-                (toolName, toolArgs) => execTool(toolName, toolArgs as Record<string, string>, options.toolContext as ToolContext),
+                (toolName, toolArgs) => executeTool(toolName, toolArgs as Record<string, string>, options.toolContext as ToolContext),
                 decisionScenarioDigest,
                 existing.approvalId,
                 effectBarrier,
@@ -338,16 +398,27 @@ export function createTelegramApprovalRuntime(options: {
         message: "Telegram approval reached a terminal decision state",
         meta: { state: record.state, ...(decisionScenarioDigest ? { scenarioHandleDigest: decisionScenarioDigest } : {}) },
       })
-      return continueTerminalRecord(record)
+      return continueTerminalRecord(record, decision.acceptanceBinding)
     },
   })
 
   const recover = async (): Promise<void> => {
     let failureCount = 0
+    let fencedFailure: unknown
     for (const pending of transport.listPendingDeliveries()) {
+      let persistedState: ReturnType<typeof classifyTelegramPersistedApprovalState>
+      try {
+        persistedState = classifyTelegramPersistedApprovalState(pending)
+      } catch (error) {
+        failureCount += 1
+        fencedFailure ??= error
+        continue
+      }
+      const mustFailClosed = persistedState === "decision_attempt" || persistedState === "action_terminal"
       try {
         const existing = store.read(pending.approvalId)
         if (!existing) {
+          if (mustFailClosed) throw new Error("Telegram fenced approval journal is unavailable")
           const orphanRecovery = await transport.terminalizeOrphaned(
             pending.approvalId,
             "⚠️ Approval record is unavailable — no action was taken",
@@ -364,8 +435,16 @@ export function createTelegramApprovalRuntime(options: {
           })
           continue
         }
-        if (pending.terminal) {
-          await transport.terminalizeRecovered(pending.approvalId, pending.terminal.terminalText)
+        if (mustFailClosed) {
+          await transport.recoverDecisionAttempt(pending.approvalId)
+          continue
+        }
+        if (persistedState === "expiry_observed") {
+          await transport.reconcileExpired()
+          continue
+        }
+        if (persistedState === "delivery_interruption") {
+          await transport.terminalizeRecovered(pending.approvalId, pending.terminal!.terminalText)
           continue
         }
         const deliveryState = pending.deliveryState ?? "bound"
@@ -392,6 +471,10 @@ export function createTelegramApprovalRuntime(options: {
           continue
         }
         if (existing.state === "proposed" || existing.state === "preparing" || existing.state === "awaiting_prompt_binding") continue
+        if (existing.state === "expired" && !pending.terminal) {
+          await transport.reconcileExpired()
+          continue
+        }
         let record = existing
         if (record.state === "claimed") {
           effectBarrier()
@@ -402,8 +485,9 @@ export function createTelegramApprovalRuntime(options: {
         }
         const outcome = await continueTerminalRecord(record)
         await transport.terminalizeRecovered(record.approvalId, outcome.terminalText)
-      } catch {
+      } catch (error) {
         failureCount += 1
+        if (mustFailClosed) fencedFailure ??= error
       }
     }
     if (failureCount > 0) {
@@ -415,6 +499,7 @@ export function createTelegramApprovalRuntime(options: {
         meta: { failureCount },
       })
     }
+    if (fencedFailure !== undefined) throw fencedFailure
   }
 
   const legacySubjects = (): string[] => (store.listTelegramIdentitySubjects?.() ?? [])

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { createHash } from "node:crypto"
 
 const runtimeMocks = vi.hoisted(() => {
   const store = {
@@ -23,6 +24,7 @@ const runtimeMocks = vi.hoisted(() => {
   const transport = {
     handleUpdate: vi.fn(),
     listPendingDeliveries: vi.fn(),
+    recoverDecisionAttempt: vi.fn(),
     reconcileExpired: vi.fn(),
     sendApproval: vi.fn(),
     terminalizeOrphaned: vi.fn(),
@@ -48,6 +50,7 @@ const runtimeMocks = vi.hoisted(() => {
     execTool: vi.fn(),
     resolveToolDefinition: vi.fn(),
     emitNervesEvent: vi.fn(),
+    readSanctuaryAcceptanceMarker: vi.fn(),
     createTelegramApprovalTransport: vi.fn(() => transport),
     sendTelegramText: vi.fn(),
   }
@@ -93,7 +96,12 @@ vi.mock("../../repertoire/tools", () => ({
   resolveToolDefinition: runtimeMocks.resolveToolDefinition,
 }))
 vi.mock("../../nerves/runtime", () => ({ emitNervesEvent: runtimeMocks.emitNervesEvent }))
-vi.mock("../../senses/telegram-client", () => ({
+vi.mock("../../heart/daemon/sanctuary-acceptance-marker", () => ({
+  readSanctuaryAcceptanceMarker: runtimeMocks.readSanctuaryAcceptanceMarker,
+  runWithSanctuaryAcceptanceApproval: (_binding: unknown, operation: () => unknown) => operation(),
+}))
+vi.mock("../../senses/telegram-client", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../senses/telegram-client")>(),
   createTelegramApprovalTransport: runtimeMocks.createTelegramApprovalTransport,
   FileTelegramPendingApprovalStore: class {},
   sendTelegramText: runtimeMocks.sendTelegramText,
@@ -108,6 +116,9 @@ import { ApprovalExecutionFailedError } from "../../heart/tool-approval"
 
 const baseRecord = {
   approvalId: "approval-1",
+  toolName: "unraid_restart_container",
+  arguments: { container: "calibre-web" },
+  argumentDigest: "d".repeat(64),
   state: "succeeded",
   sessionPath: "/sessions/telegram.json",
   sessionKey: "telegram:tg_stable-subject",
@@ -123,6 +134,7 @@ function makeRuntime(effectBarrier: () => void = vi.fn()) {
     authorizedUserId: "10",
     authorizedChatId: "20",
     subject: "tg_stable-subject",
+    identityKey: "k".repeat(43),
     toolContext: { agentName: "sanctuary" },
     effectBarrier,
   })
@@ -136,8 +148,14 @@ beforeEach(() => {
   vi.clearAllMocks()
   runtimeMocks.openApprovalStore.mockReturnValue(runtimeMocks.store)
   runtimeMocks.createTelegramApprovalTransport.mockReturnValue(runtimeMocks.transport)
-  runtimeMocks.transport.sendApproval.mockResolvedValue({ messageId: "99" })
+  runtimeMocks.transport.sendApproval.mockResolvedValue({
+    messageId: "99",
+    approveCallbackData: "a:callback-token",
+    denyCallbackData: "d:callback-token",
+    expiresAt: 1_300_000,
+  })
   runtimeMocks.transport.listPendingDeliveries.mockReturnValue([])
+  runtimeMocks.transport.recoverDecisionAttempt.mockResolvedValue(true)
   runtimeMocks.transport.terminalizeOrphaned.mockResolvedValue({ terminalEditSucceeded: true })
   runtimeMocks.transport.terminalizeRecovered.mockResolvedValue(undefined)
   runtimeMocks.commitApprovalProposal.mockReturnValue({
@@ -159,6 +177,7 @@ beforeEach(() => {
   runtimeMocks.resumeApprovalContinuation.mockResolvedValue(undefined)
   runtimeMocks.saveSession.mockReturnValue(undefined)
   runtimeMocks.sendTelegramText.mockResolvedValue(undefined)
+  runtimeMocks.readSanctuaryAcceptanceMarker.mockReturnValue(null)
 })
 
 describe("Telegram approval runtime safety", () => {
@@ -283,7 +302,7 @@ describe("Telegram approval runtime orchestration", () => {
     })
 
     expect(runtimeMocks.getAgentRoot).toHaveBeenCalledWith("sanctuary")
-    expect(runtimeMocks.openApprovalStore).toHaveBeenCalledWith({ databasePath: "/agents/sanctuary.ouro/state/approvals/approvals.sqlite" })
+    expect(runtimeMocks.openApprovalStore).toHaveBeenCalledWith({ databasePath: "/agents/sanctuary.ouro/state/approvals/approvals.sqlite", now: expect.any(Function) })
     expect(runtimeMocks.store.migrateTelegramIdentity).not.toHaveBeenCalled()
     runtimeMocks.store.listTelegramIdentitySubjects.mockReturnValue([`tg_${"l".repeat(43)}`, "tg_stable-subject"])
     expect(runtime.legacySubjects()).toEqual([`tg_${"l".repeat(43)}`])
@@ -323,6 +342,36 @@ describe("Telegram approval runtime orchestration", () => {
     }))
     runtime.close()
     expect(runtimeMocks.store.close).toHaveBeenCalledOnce()
+  })
+
+  it("binds acceptance prompts and resumed observed-result delivery to authenticated action evidence", async () => {
+    const scenarioHandleDigest = "a".repeat(64)
+    runtimeMocks.readSanctuaryAcceptanceMarker.mockReturnValue({ scenarioHandleDigest })
+    runtimeMocks.sendTelegramText.mockResolvedValue([77])
+    runtimeMocks.resumeApprovalContinuation.mockImplementation(async (options) => { await options.deliver("observed restart result") })
+    const runtime = makeRuntime()
+    const coordinator = runtime.coordinator({ sessionPath: "/sessions/telegram.json", baseSessionRevision: "base-revision" })
+    await coordinator.propose({
+      toolCall: { id: "call-1", type: "function", function: { name: "unraid_restart_container", arguments: "{}" } },
+      arguments: { container: "calibre-web" }, schemaDigest: "schema", toolDigest: "tool", policyDigest: "policy", policyId: "restart-policy",
+      frozenAssistantMessage: { role: "assistant", content: null }, preCallMessages: [{ role: "user", content: "restart calibre-web" }],
+    } as never)
+    const sent = runtimeMocks.transport.sendApproval.mock.calls.at(-1)![0]
+    expect(sent.acceptanceBinding).toEqual({
+      scenarioHandleDigest,
+      actionDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      targetDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      checkpointDigest: baseRecord.checkpointDigest,
+      suspendedSessionRevisionDigest: createHash("sha256").update(baseRecord.suspendedSessionRevision!, "utf8").digest("hex"),
+    })
+
+    runtimeMocks.store.read.mockReturnValue({ ...baseRecord, state: "succeeded" })
+    const acceptanceBinding = { ...sent.acceptanceBinding, messageIdDigest: "4".repeat(64), boundAt: 1_000 }
+    await transportOptions().onDecision({ approvalId: "approval-1", acceptanceBinding })
+    expect(runtimeMocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.telegram_approval_continuation_delivered",
+      meta: expect.objectContaining({ approvalId: "approval-1", ...acceptanceBinding, resultDigest: expect.stringMatching(/^[0-9a-f]{64}$/u), deliveryMessageIdDigest: expect.stringMatching(/^[0-9a-f]{64}$/u), evidenceMac: expect.stringMatching(/^[0-9a-f]{64}$/u) }),
+    }))
   })
 
   it("expires approvals and resolves decision tokens without exposing missing secrets", async () => {
@@ -406,10 +455,10 @@ describe("Telegram approval runtime orchestration", () => {
     runtimeMocks.store.read.mockReturnValue({ ...baseRecord, state })
 
     await expect(transportOptions().onDecision({ approvalId: "approval-1" })).resolves.toEqual({ accepted, terminalText })
-    expect(runtimeMocks.tokens.remove).toHaveBeenCalledWith("approval-1")
+    expect(runtimeMocks.tokens.remove).not.toHaveBeenCalled()
   })
 
-  it("consumes the decision token before reporting a missing continuation checkpoint", async () => {
+  it("retains the decision token while reporting a missing continuation checkpoint", async () => {
     makeRuntime()
     const options = transportOptions()
     runtimeMocks.store.read.mockReturnValue({ ...baseRecord, state: "failed" })
@@ -420,19 +469,25 @@ describe("Telegram approval runtime orchestration", () => {
       terminalText: "⚠️ Approval checkpoint is unavailable",
     })
     expect(runtimeMocks.resumeApprovalContinuation).not.toHaveBeenCalled()
-    expect(runtimeMocks.tokens.remove).toHaveBeenCalledWith("approval-1")
-    await expect(options.resolveDecisionToken("approval-1")).resolves.toBe("")
+    expect(runtimeMocks.tokens.remove).not.toHaveBeenCalled()
+    await expect(options.resolveDecisionToken("approval-1")).resolves.toBe("server-secret")
   })
 
-  it("consumes the decision token before a continuation attempt that fails", async () => {
+  it("retains the decision token when a continuation attempt fails", async () => {
     makeRuntime()
     const options = transportOptions()
     runtimeMocks.store.read.mockReturnValue({ ...baseRecord, state: "failed" })
     runtimeMocks.resumeApprovalContinuation.mockRejectedValueOnce(new Error("resume state is unavailable"))
 
     await expect(options.onDecision({ approvalId: "approval-1" })).rejects.toThrow("resume state is unavailable")
+    expect(runtimeMocks.tokens.remove).not.toHaveBeenCalled()
+    await expect(options.resolveDecisionToken("approval-1")).resolves.toBe("server-secret")
+  })
+
+  it("consumes the decision token only after durable settlement completes", async () => {
+    makeRuntime()
+    await transportOptions().onSettlementComplete("approval-1")
     expect(runtimeMocks.tokens.remove).toHaveBeenCalledWith("approval-1")
-    await expect(options.resolveDecisionToken("approval-1")).resolves.toBe("")
   })
 
   it("wires continuation claims, persistence, delivery, and recursively gated proposals", async () => {
@@ -477,9 +532,9 @@ describe("Telegram approval runtime orchestration", () => {
   it("reconciles terminal tombstones, missing journals, and interrupted prompt deliveries", async () => {
     const runtime = makeRuntime()
     runtimeMocks.transport.listPendingDeliveries.mockReturnValue([
-      { approvalId: "terminal", terminal: { terminalText: "already terminal" } },
+      { approvalId: "terminal", messageId: null, deliveryState: "delivery_indeterminate", terminalKind: "delivery_interruption", terminal: { accepted: false, terminalText: "already terminal" } },
       { approvalId: "missing" },
-      { approvalId: "missing-terminal", deliveryState: "delivery_indeterminate", terminal: { terminalText: "interrupted" } },
+      { approvalId: "missing-terminal", messageId: null, deliveryState: "delivery_indeterminate", terminalKind: "delivery_interruption", terminal: { accepted: false, terminalText: "interrupted" } },
       { approvalId: "pending-prompt", deliveryState: "pending" },
       { approvalId: "indeterminate-prompt", deliveryState: "delivery_indeterminate" },
     ])
@@ -523,8 +578,8 @@ describe("Telegram approval runtime orchestration", () => {
   it("isolates every startup recovery record and surfaces one sanitized aggregate after processing later work", async () => {
     const runtime = makeRuntime()
     runtimeMocks.transport.listPendingDeliveries.mockReturnValue([
-      { approvalId: "first", terminal: { terminalText: "first terminal" } },
-      { approvalId: "second", terminal: { terminalText: "second terminal" } },
+      { approvalId: "first", messageId: null, deliveryState: "delivery_indeterminate", terminalKind: "delivery_interruption", terminal: { accepted: false, terminalText: "first terminal" } },
+      { approvalId: "second", messageId: null, deliveryState: "delivery_indeterminate", terminalKind: "delivery_interruption", terminal: { accepted: false, terminalText: "second terminal" } },
       { approvalId: "bound", deliveryState: "bound", messageId: "101" },
     ])
     runtimeMocks.store.read.mockImplementation((approvalId) => ({
@@ -546,6 +601,100 @@ describe("Telegram approval runtime orchestration", () => {
       meta: { failureCount: 1 },
     }))
     expect(JSON.stringify(runtimeMocks.emitNervesEvent.mock.calls)).not.toContain("private upstream detail")
+  })
+
+  it("fails startup when a fenced decision cannot be recovered instead of falling through to expiry", async () => {
+    const runtime = makeRuntime()
+    runtimeMocks.transport.listPendingDeliveries.mockReturnValue([{
+      approvalId: "fenced",
+      deliveryState: "bound",
+      messageId: "101",
+      decisionAttempt: { schemaVersion: "telegram-approval-decision-attempt-v1", decision: "approve", queryIdDigest: "a".repeat(64), attemptedAt: 1, evidenceMac: "b".repeat(64) },
+    }])
+    runtimeMocks.store.read.mockReturnValue({ ...baseRecord, approvalId: "fenced", state: "proposed" })
+    runtimeMocks.transport.recoverDecisionAttempt.mockRejectedValue(new Error("temporary decision recovery failure"))
+
+    await expect(runtime.recover()).rejects.toThrow("temporary decision recovery failure")
+
+    expect(runtimeMocks.transport.reconcileExpired).not.toHaveBeenCalled()
+    expect(runtimeMocks.transport.terminalizeRecovered).not.toHaveBeenCalled()
+    expect(runtimeMocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      level: "error",
+      event: "senses.telegram_approval_recovery_error",
+      meta: { failureCount: 1 },
+    }))
+  })
+
+  it("fails startup and preserves transport state when a fenced decision has no canonical journal row", async () => {
+    const runtime = makeRuntime()
+    runtimeMocks.transport.listPendingDeliveries.mockReturnValue([{
+      approvalId: "missing-fenced", deliveryState: "bound", messageId: "101",
+      decisionAttempt: { schemaVersion: "telegram-approval-decision-attempt-v1", decision: "approve", queryIdDigest: "a".repeat(64), attemptedAt: 1, evidenceMac: "b".repeat(64) },
+    }])
+    runtimeMocks.store.read.mockReturnValue(undefined)
+
+    await expect(runtime.recover()).rejects.toThrow("fenced approval journal")
+
+    expect(runtimeMocks.transport.terminalizeOrphaned).not.toHaveBeenCalled()
+    expect(runtimeMocks.transport.recoverDecisionAttempt).not.toHaveBeenCalled()
+  })
+
+  it.each(["terminalMac", "settlementReceipt"] as const)("fails startup and preserves a partial %s authority record without a canonical journal", async (field) => {
+    const runtime = makeRuntime()
+    runtimeMocks.transport.listPendingDeliveries.mockReturnValue([{
+      approvalId: "partial-authority", deliveryState: "bound", messageId: "101",
+      terminal: { accepted: true, terminalText: "tampered" },
+      ...(field === "terminalMac" ? { terminalMac: "a".repeat(64) } : { settlementReceipt: { schemaVersion: "telegram-approval-settlement-receipt-v1" } }),
+    }])
+    runtimeMocks.store.read.mockReturnValue(undefined)
+
+    await expect(runtime.recover()).rejects.toThrow("structurally incomplete")
+
+    expect(runtimeMocks.transport.terminalizeOrphaned).not.toHaveBeenCalled()
+    expect(runtimeMocks.transport.terminalizeRecovered).not.toHaveBeenCalled()
+  })
+
+  it("rejects a partial authority record structurally before routing even when its journal exists", async () => {
+    const runtime = makeRuntime()
+    runtimeMocks.transport.listPendingDeliveries.mockReturnValue([{
+      approvalId: "partial-authority", deliveryState: "bound", messageId: "101",
+      terminal: { accepted: false, terminalText: "altered" }, terminalMac: "a".repeat(64),
+    }])
+    runtimeMocks.store.read.mockReturnValue({ ...baseRecord, approvalId: "partial-authority", state: "succeeded" })
+
+    await expect(runtime.recover()).rejects.toThrow("structurally incomplete")
+
+    expect(runtimeMocks.transport.recoverDecisionAttempt).not.toHaveBeenCalled()
+    expect(runtimeMocks.transport.terminalizeRecovered).not.toHaveBeenCalled()
+  })
+
+  it.each(["", "x".repeat(4_097)])("fails startup for a typed delivery interruption with invalid terminal text length", async (terminalText) => {
+    const runtime = makeRuntime()
+    runtimeMocks.transport.listPendingDeliveries.mockReturnValue([{
+      approvalId: "invalid-interruption", messageId: null, deliveryState: "delivery_indeterminate",
+      terminalKind: "delivery_interruption", terminal: { accepted: false, terminalText },
+    }])
+    runtimeMocks.store.read.mockReturnValue(undefined)
+
+    await expect(runtime.recover()).rejects.toThrow("delivery-interruption terminal state is invalid")
+
+    expect(runtimeMocks.transport.terminalizeOrphaned).not.toHaveBeenCalled()
+    expect(runtimeMocks.transport.terminalizeRecovered).not.toHaveBeenCalled()
+  })
+
+  it.each(["succeeded", "denied"])("routes a persisted decision attempt through authenticated recovery even when the journal is already %s", async (state) => {
+    const runtime = makeRuntime()
+    runtimeMocks.transport.listPendingDeliveries.mockReturnValue([{
+      approvalId: "late-terminal", deliveryState: "bound", messageId: "101", terminal: { accepted: state === "succeeded", terminalText: "terminal" },
+      terminalMac: "c".repeat(64),
+      decisionAttempt: { schemaVersion: "telegram-approval-decision-attempt-v1", decision: state === "succeeded" ? "approve" : "deny", queryIdDigest: "a".repeat(64), attemptedAt: 1, evidenceMac: "b".repeat(64) },
+    }])
+    runtimeMocks.store.read.mockReturnValue({ ...baseRecord, approvalId: "late-terminal", state })
+
+    await runtime.recover()
+
+    expect(runtimeMocks.transport.recoverDecisionAttempt).toHaveBeenCalledWith("late-terminal")
+    expect(runtimeMocks.transport.terminalizeRecovered).not.toHaveBeenCalled()
   })
 
   it("rebinds delivered prompts and leaves nonterminal proposal phases pending", async () => {

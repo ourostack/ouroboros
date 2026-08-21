@@ -111,7 +111,7 @@ export interface ApprovalContinuationClaim {
 export interface ApprovalStore {
   prepare(input: PrepareApprovalInput): { record: ApprovalRecord; decisionToken: string }
   activate(input: { approvalId: string; checkpointDigest: string; suspendedSessionRevision: string }): ApprovalRecord
-  bindPrompt(input: { approvalId: string; transport: string; transportChatId: string; transportMessageId: string }): ApprovalRecord
+  bindPrompt(input: { approvalId: string; transport: string; transportChatId: string; transportMessageId: string; expiresAt?: string }): ApprovalRecord
   abandonPromptBinding(input: { approvalId: string; reason: string }): ApprovalRecord
   decide(input: {
     approvalId: string
@@ -124,6 +124,7 @@ export interface ApprovalStore {
     transportMessageId: string
     sessionKey: string
     ownerId: string
+    decisionAt?: number
   }): ApprovalRecord
   expire(input: { approvalId: string }): ApprovalRecord
   markAttempted(input: { approvalId: string; ownerId: string; epoch: number }): ApprovalRecord
@@ -750,8 +751,9 @@ export function openApprovalStore(options: ApprovalStoreOptions): ApprovalStore 
       return observeBindPrompt(() => {
         const previous = requireRecord(input.approvalId)
         if (previous.state !== "awaiting_prompt_binding" || input.transport !== previous.transport
-          || input.transportChatId !== previous.transportChatId || !isNonEmpty(input.transportMessageId)) fail("invalid_prompt_binding")
-        return cas(previous, { ...previous, state: "proposed", transportMessageId: input.transportMessageId, updatedAt: timestamp() })
+          || input.transportChatId !== previous.transportChatId || !isNonEmpty(input.transportMessageId)
+          || (input.expiresAt !== undefined && !isTimestamp(input.expiresAt))) fail("invalid_prompt_binding")
+        return cas(previous, { ...previous, state: "proposed", transportMessageId: input.transportMessageId, expiresAt: input.expiresAt ?? previous.expiresAt, updatedAt: timestamp() })
       })
     },
 
@@ -773,10 +775,12 @@ export function openApprovalStore(options: ApprovalStoreOptions): ApprovalStore 
     decide(input) {
       return observeDecide(() => {
         const previous = requireRecord(input.approvalId)
+        const decisionAt = input.decisionAt ?? now().getTime()
+        if (!Number.isSafeInteger(decisionAt)) fail("invalid_decision_time")
         if (!sameDecisionBinding(previous, input)) fail("decision_binding_mismatch")
         if (previous.state === "denied" && input.decision === "deny") return previous
         if (previous.state !== "proposed") fail("decision_not_eligible")
-        if (now().getTime() >= Date.parse(previous.expiresAt)) {
+        if (decisionAt >= Date.parse(previous.expiresAt)) {
           return cas(previous, { ...previous, state: "expired", updatedAt: timestamp() })
         }
         if (input.decision === "deny") {
@@ -784,7 +788,7 @@ export function openApprovalStore(options: ApprovalStoreOptions): ApprovalStore 
         }
         if (!isNonEmpty(input.ownerId)) fail("invalid_owner")
         options.hooks?.beforeClaimCas?.()
-        if (now().getTime() >= Date.parse(previous.expiresAt)) {
+        if ((input.decisionAt ?? now().getTime()) >= Date.parse(previous.expiresAt)) {
           return cas(previous, { ...previous, state: "expired", updatedAt: timestamp() })
         }
         return cas(previous, { ...previous, state: "claimed", ownerId: input.ownerId, epoch: previous.epoch + 1, updatedAt: timestamp() })

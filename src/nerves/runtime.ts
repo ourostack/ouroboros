@@ -48,3 +48,15 @@ export function emitNervesEvent(event: NervesEvent): void {
     logger.info(payload)
   }
 }
+
+export async function emitNervesEventDurable(event: NervesEvent): Promise<void> {
+  const logger = getRuntimeLogger()
+  logger.emitDurable(event.level ?? "info", {
+    event: event.event,
+    trace_id: ensureTraceId(event.trace_id),
+    component: event.component,
+    message: event.message,
+    meta: event.meta ?? {},
+  })
+  await logger.durabilityBarrier()
+}

@@ -629,7 +629,7 @@ type SanctuaryScenarioSource = "identity-key" | "telegram-audit" | "telegram-off
 export const SANCTUARY_SCENARIO_SOURCES: Record<SanctuaryUnit16EvidenceLabel, SanctuaryScenarioSource[]> = {
   "unit-12c-1-opaque-identity": ["identity-key", "identity-surface-audit", "approval-journal"],
   "unit-14b-3-opaque-identity-live": ["identity-key", "identity-surface-audit", "telegram-audit", "approval-journal", "telegram-turn-receipts"],
-  "unit-15c-1-no-callback-terminalization": ["telegram-audit", "telegram-offset", "approval-journal", "approval-checkpoints", "container-inspect"],
+  "unit-15c-1-no-callback-terminalization": ["identity-key", "telegram-audit", "telegram-offset", "approval-journal", "approval-checkpoints", "container-inspect"],
   "unit-16a-pre-reboot-checkpoint": ["telegram-audit", "telegram-offset", "approval-journal", "container-inspect", "cron-runtime", "reboot-checkpoint"],
   "unit-16a-reboot-request": ["reboot-checkpoint"],
   "unit-16a-boot-recovery-milestones": ["reboot-checkpoint", "container-inspect"],
@@ -644,11 +644,11 @@ export const SANCTUARY_SCENARIO_SOURCES: Record<SanctuaryUnit16EvidenceLabel, Sa
   "unit-16f-cron-fingerprint": ["health-probe-receipt", "scheduler-liveness-receipt", "cron-runtime", "telegram-audit", "container-inspect"],
   "unit-16g-health-transition": ["health-probe-receipt", "telegram-audit", "container-inspect"],
   "unit-16h-daily-digest": ["health-probe-receipt", "cron-runtime", "telegram-audit", "container-inspect"],
-  "unit-16i-delayed-approval": ["telegram-audit", "approval-journal", "approval-checkpoints", "restart-attempt-ledger", "container-inspect"],
-  "unit-16j-denial": ["telegram-audit", "approval-journal", "approval-checkpoints", "restart-attempt-ledger", "container-inspect"],
-  "unit-16k-timeout-stale": ["telegram-audit", "approval-journal", "approval-checkpoints", "restart-attempt-ledger", "container-inspect", "interactive-driver-receipt"],
-  "unit-16l-duplicate-callback": ["telegram-audit", "approval-journal", "approval-checkpoints", "restart-attempt-ledger", "container-inspect", "interactive-driver-receipt"],
-  "unit-16m-restart-continuation": ["telegram-audit", "approval-journal", "approval-checkpoints", "restart-attempt-ledger", "container-inspect", "interactive-driver-receipt"],
+  "unit-16i-delayed-approval": ["identity-key", "telegram-audit", "approval-journal", "approval-checkpoints", "restart-attempt-ledger", "container-inspect"],
+  "unit-16j-denial": ["identity-key", "telegram-audit", "approval-journal", "approval-checkpoints", "restart-attempt-ledger", "container-inspect"],
+  "unit-16k-timeout-stale": ["identity-key", "telegram-audit", "approval-journal", "approval-checkpoints", "restart-attempt-ledger", "container-inspect", "interactive-driver-receipt"],
+  "unit-16l-duplicate-callback": ["identity-key", "telegram-audit", "approval-journal", "approval-checkpoints", "restart-attempt-ledger", "container-inspect", "interactive-driver-receipt"],
+  "unit-16m-restart-continuation": ["identity-key", "telegram-audit", "approval-journal", "approval-checkpoints", "restart-attempt-ledger", "container-inspect", "interactive-driver-receipt"],
 }
 
 function packagedHarnessSha256(value: unknown): string {

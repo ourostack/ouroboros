@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync, unlinkSync } from "node:fs"
 import { createConnection, createServer, type Server } from "node:net"
 import * as path from "node:path"
 
-import { readApprovalsByScenarioHandleDigest, type ApprovalAcceptanceProjection, type ApprovalRecord, type ApprovalStore } from "../heart/approval-store"
+import { openApprovalStore, readApprovalsByScenarioHandleDigest, type ApprovalAcceptanceProjection, type ApprovalRecord } from "../heart/approval-store"
 import { recoverAttemptedApproval } from "../heart/tool-approval"
 import { emitNervesEvent } from "../nerves/runtime"
 import { FileTelegramPendingApprovalStore, type TelegramApprovalTransport, type TelegramPersistedPendingApproval } from "./telegram-client"
@@ -24,9 +24,8 @@ export interface SanctuaryInteractiveEngineDependencies {
   readApprovals(scenarioHandleDigest: string): ApprovalAcceptanceProjection[]
   readPending(): TelegramPersistedPendingApproval[]
   createSession(): Promise<CallbackSession>
-  proveIndeterminateRecovery(approval: ApprovalRecord): { observed: boolean; retryCount: number }
+  proveIndeterminateRecovery(approval: ApprovalRecord, scenarioHandleDigest: string): { observed: boolean; retryCount: number; reopened: boolean; attemptedRecordDigest: string; recoveredRecordDigest: string }
   writeCredentialObserved(): boolean
-  timeoutCoordinates: Map<string, TelegramPersistedPendingApproval>
 }
 
 function object(value: unknown, label: string): JsonObject {
@@ -56,26 +55,69 @@ function exactPending(records: TelegramPersistedPendingApproval[], approvalId: s
   return matches[0]!
 }
 
+function exactTerminalTombstone(records: TelegramPersistedPendingApproval[], approvalId: string): TelegramPersistedPendingApproval {
+  const validCallback = (value: unknown): value is string => typeof value === "string" && Buffer.byteLength(value) >= 1 && Buffer.byteLength(value) <= 64
+  const matches = records.filter((record) => record.approvalId === approvalId && record.deliveryState === "terminal_tombstone" && record.messageId !== null
+    && validCallback(record.approveCallbackData) && validCallback(record.denyCallbackData)
+    && record.expiryObservation?.schemaVersion === "telegram-approval-expiry-observation-v1"
+    && record.expiryObservation.deadlineAt === record.expiresAt && Number.isSafeInteger(record.expiryObservation.observedAt)
+    && record.expiryObservation.observedAt >= record.expiresAt && typeof record.expiryObservation.evidenceMac === "string" && SHA256.test(record.expiryObservation.evidenceMac)
+    && Number.isSafeInteger(record.terminalizedAt) && Number(record.terminalizedAt) >= record.expiryObservation.observedAt)
+  if (matches.length !== 1) throw new Error("interactive production terminal tombstone is absent or ambiguous")
+  return matches[0]!
+}
+
 function pendingDigest(record: TelegramPersistedPendingApproval): string {
   return sha256(JSON.stringify({ approvalId: record.approvalId, messageId: record.messageId, deliveryState: record.deliveryState ?? "bound", approveCallbackData: record.approveCallbackData, denyCallbackData: record.denyCallbackData, expiresAt: record.expiresAt }))
 }
 
-export function proveSanctuaryAttemptedRecoveryWithoutRetry(approval: ApprovalRecord): { observed: boolean; retryCount: number } {
-  let record: ApprovalRecord = { ...approval, state: "attempted", ownerId: "acceptance-isolated-recovery", epoch: 1, attemptedAt: new Date().toISOString() }
-  let completionCount = 0
-  const store = {
-    read: (approvalId: string) => approvalId === record.approvalId ? record : null,
-    complete: (input: { approvalId: string; ownerId: string; epoch: number; state: "attempted_indeterminate"; result: string }) => {
-      if (input.approvalId !== record.approvalId || input.ownerId !== record.ownerId || input.epoch !== record.epoch || record.state !== "attempted") throw new Error("isolated attempted recovery was invalid")
-      completionCount += 1
-      record = { ...record, state: input.state, result: input.result, updatedAt: new Date().toISOString() }
-      return record
-    },
-  } as unknown as ApprovalStore
-  const recovered = recoverAttemptedApproval({ approvalStore: store, approvalId: record.approvalId })
+export function proveSanctuaryAttemptedRecoveryWithoutRetry(
+  agentRoot: string,
+  scenarioHandleDigest: string,
+  approval: ApprovalRecord,
+): { observed: boolean; retryCount: number; reopened: boolean; attemptedRecordDigest: string; recoveredRecordDigest: string } {
+  if (!SHA256.test(scenarioHandleDigest)) throw new Error("attempted recovery scenario is invalid")
+  const databaseRoot = path.join(agentRoot, "state", "acceptance", "attempted-recovery-probes")
+  mkdirSync(databaseRoot, { recursive: true, mode: 0o700 })
+  const databasePath = path.join(databaseRoot, `${scenarioHandleDigest}.sqlite`)
+  if (existsSync(databasePath)) throw new Error("attempted recovery proof requires inspect-before-retry")
+  const instant = new Date("2026-08-21T00:00:00.000Z")
+  const first = openApprovalStore({ databasePath, now: () => instant })
+  const ownerId = "acceptance-attempted-recovery"
+  const toolCallId = `acceptance-${approval.toolCallId}`
+  const frozenAssistantMessage = structuredClone(approval.frozenAssistantMessage)
+  const toolCalls = frozenAssistantMessage.tool_calls
+  if (!Array.isArray(toolCalls) || toolCalls.length !== 1 || !toolCalls[0] || typeof toolCalls[0] !== "object" || Array.isArray(toolCalls[0])) {
+    first.close()
+    throw new Error("attempted recovery frozen tool call is invalid")
+  }
+  toolCalls[0].id = toolCallId
+  const prepared = first.prepare({
+    toolCallId, toolName: approval.toolName, arguments: approval.arguments,
+    schemaDigest: approval.schemaDigest, toolDigest: approval.toolDigest, policyDigest: approval.policyDigest, policyId: approval.policyId,
+    sessionKey: "acceptance:attempted-recovery", sessionPath: path.join(databaseRoot, `${scenarioHandleDigest}.session.json`),
+    baseSessionRevision: approval.baseSessionRevision, checkpointDigest: approval.checkpointDigest,
+    requesterId: "acceptance-probe", transport: "telegram", transportUserId: "acceptance-probe", transportChatId: "acceptance-probe",
+    expiresAt: "2099-01-01T00:00:00.000Z", frozenAssistantMessage,
+  })
+  first.activate({ approvalId: prepared.record.approvalId, checkpointDigest: prepared.record.checkpointDigest, suspendedSessionRevision: approval.suspendedSessionRevision! })
+  first.bindPrompt({ approvalId: prepared.record.approvalId, transport: "telegram", transportChatId: "acceptance-probe", transportMessageId: "acceptance-message" })
+  const claimed = first.decide({
+    approvalId: prepared.record.approvalId, decisionToken: prepared.decisionToken, decision: "approve", requesterId: "acceptance-probe",
+    transport: "telegram", transportUserId: "acceptance-probe", transportChatId: "acceptance-probe", transportMessageId: "acceptance-message",
+    sessionKey: "acceptance:attempted-recovery", ownerId,
+  })
+  const attempted = first.markAttempted({ approvalId: claimed.approvalId, ownerId, epoch: claimed.epoch })
+  first.close()
+  const attemptedRecordDigest = sha256(JSON.stringify(attempted))
+  const reopened = openApprovalStore({ databasePath, now: () => instant })
+  const durableAttempted = reopened.read(attempted.approvalId)
+  if (!durableAttempted || durableAttempted.state !== "attempted") { reopened.close(); throw new Error("attempted recovery record was not durable across reopen") }
+  const recovered = recoverAttemptedApproval({ approvalStore: reopened, approvalId: durableAttempted.approvalId })
   let retryCount = 0
-  try { recoverAttemptedApproval({ approvalStore: store, approvalId: record.approvalId }); retryCount += 1 } catch { /* expected */ }
-  return { observed: recovered.state === "attempted_indeterminate" && completionCount === 1, retryCount }
+  try { recoverAttemptedApproval({ approvalStore: reopened, approvalId: durableAttempted.approvalId }); retryCount += 1 } catch { /* expected */ }
+  reopened.close()
+  return { observed: recovered.state === "attempted_indeterminate", retryCount, reopened: true, attemptedRecordDigest, recoveredRecordDigest: sha256(JSON.stringify(recovered)) }
 }
 
 export async function executeSanctuaryInteractiveEngine(raw: unknown, deps: SanctuaryInteractiveEngineDependencies): Promise<unknown> {
@@ -93,15 +135,11 @@ export async function executeSanctuaryInteractiveEngine(raw: unknown, deps: Sanc
   if (!before.approval.suspendedSessionRevision) throw new Error("interactive production approval checkpoint is unavailable")
   if (operation === "drive_timeout_stale") {
     if (before.approval.state === "proposed") {
-      const pending = exactPending(deps.readPending(), before.approval.approvalId)
-      const existing = deps.timeoutCoordinates.get(scenarioHandleDigest)
-      if (existing && pendingDigest(existing) !== pendingDigest(pending)) throw new Error("timeout stale callback coordinates drifted")
-      deps.timeoutCoordinates.set(scenarioHandleDigest, structuredClone(pending))
+      exactPending(deps.readPending(), before.approval.approvalId)
       return { state: "waiting" }
     }
     if (before.approval.state !== "expired" || before.approval.epoch !== 0) throw new Error("timeout stale approval is not expired without a claim")
-    const captured = deps.timeoutCoordinates.get(scenarioHandleDigest)
-    if (!captured || captured.approvalId !== before.approval.approvalId) throw new Error("timeout stale callback coordinates were not retained by this daemon")
+    const captured = exactTerminalTombstone(deps.readPending(), before.approval.approvalId)
     const session = await deps.createSession()
     try {
       const queryId = randomBytes(18).toString("base64url")
@@ -111,7 +149,6 @@ export async function executeSanctuaryInteractiveEngine(raw: unknown, deps: Sanc
       if (!result.handled || result.accepted || result.reason !== "stale_callback" || after.approval.state !== "expired" || after.approval.epoch !== 0 || !promptTerminal) {
         throw new Error("timeout stale callback proof failed")
       }
-      deps.timeoutCoordinates.delete(scenarioHandleDigest)
       return {
         schemaVersion: "sanctuary-timeout-stale-driver-receipt-v1", phase: "complete", label, scenarioHandleDigest,
         approvalIdDigest: sha256(before.approval.approvalId), checkpointDigest: before.approval.checkpointDigest,
@@ -125,9 +162,15 @@ export async function executeSanctuaryInteractiveEngine(raw: unknown, deps: Sanc
   const pending = exactPending(deps.readPending(), before.approval.approvalId)
   const common = { approvalIdDigest: sha256(before.approval.approvalId), checkpointDigest: before.approval.checkpointDigest, suspendedSessionRevisionDigest: sha256(before.approval.suspendedSessionRevision), approvalEpochBefore: before.approval.epoch }
   if (operation === "prepare_restart_continuation") {
-    const recovery = deps.proveIndeterminateRecovery(before.approval)
-    if (!recovery.observed || recovery.retryCount !== 0) throw new Error("isolated attempted recovery proof failed")
-    return { schemaVersion: "sanctuary-interactive-driver-receipt-v2", phase: "prepared", label, scenarioHandleDigest, ...common, pendingDigestBefore: pendingDigest(pending), indeterminateRecoveryObserved: true }
+    const recovery = deps.proveIndeterminateRecovery(before.approval, scenarioHandleDigest)
+    if (!recovery.observed || recovery.retryCount !== 0 || !recovery.reopened
+      || !SHA256.test(recovery.attemptedRecordDigest) || !SHA256.test(recovery.recoveredRecordDigest)
+      || recovery.attemptedRecordDigest === recovery.recoveredRecordDigest) throw new Error("isolated attempted recovery proof failed")
+    return {
+      schemaVersion: "sanctuary-interactive-driver-receipt-v2", phase: "prepared", label, scenarioHandleDigest, ...common,
+      pendingDigestBefore: pendingDigest(pending), indeterminateRecoveryObserved: true,
+      attemptedRecoveryReopened: true, attemptedRecordDigest: recovery.attemptedRecordDigest, recoveredRecordDigest: recovery.recoveredRecordDigest,
+    }
   }
   const session = await deps.createSession()
   try {
@@ -153,7 +196,6 @@ export function createSanctuaryInteractiveControl(options: { agentRoot: string; 
   const socketPath = path.join(options.agentRoot, "state", "acceptance", "telegram-control.sock")
   let server: Server | undefined
   let updateId = 2_100_000_000
-  const timeoutCoordinates = new Map<string, TelegramPersistedPendingApproval>()
   return {
     socketPath,
     async start() {
@@ -180,9 +222,8 @@ export function createSanctuaryInteractiveControl(options: { agentRoot: string; 
               readApprovals: (digest) => readApprovalsByScenarioHandleDigest(path.join(options.agentRoot, "state", "approvals", "approvals.sqlite"), digest),
               readPending: () => new FileTelegramPendingApprovalStore(path.join(options.agentRoot, "state", "approvals", "telegram-pending.json")).load(),
               createSession: async () => ({ handle: ({ callbackData, queryId, messageId }) => options.transport.handleUpdate({ update_id: updateId++, callback_query: { id: queryId, from: { id: Number(options.authorizedUserId) }, data: callbackData, message: { message_id: Number(messageId), chat: { id: Number(options.authorizedChatId) } } } }), pendingApprovalIds: () => options.transport.listPendingDeliveries().map(({ approvalId }) => approvalId), close: () => undefined }),
-              proveIndeterminateRecovery: proveSanctuaryAttemptedRecoveryWithoutRetry,
+              proveIndeterminateRecovery: (approval, digest) => proveSanctuaryAttemptedRecoveryWithoutRetry(options.agentRoot, digest, approval),
               writeCredentialObserved: () => /credential|api[_-]?key|token|secret/iu.test(raw),
-              timeoutCoordinates,
             })
             connection.end(`${JSON.stringify({ ok: true, result })}\n`)
           } catch { connection.end(`${JSON.stringify({ ok: false, error: "interactive runtime operation failed" })}\n`) }

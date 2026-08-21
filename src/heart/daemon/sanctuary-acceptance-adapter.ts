@@ -9,7 +9,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { createTelegramApprovalRuntime, type TelegramApprovalRuntime } from "../../senses/telegram-approval-runtime"
 import { createTelegramBotApi, type TelegramBotApi, type TelegramUpdate } from "../../senses/telegram-client"
 import { executeSanctuaryInteractiveEngine, proveSanctuaryAttemptedRecoveryWithoutRetry, type SanctuaryInteractiveEngineDependencies } from "../../senses/sanctuary-interactive-control"
-import { loadTelegramSenseCredentials, readOrCreateTelegramIdentityKey, sanctuaryTelegramAuditLifecycleMac, sanctuaryTelegramTurnReceiptDigest, sanctuaryTelegramTurnReceiptMac, sanctuaryTelegramUnauthorizedDropMac, type TelegramSenseCredentials } from "../../senses/telegram"
+import { loadTelegramSenseCredentials, readOrCreateTelegramIdentityKey, sanctuaryTelegramApprovalEvidenceMac, sanctuaryTelegramAuditLifecycleMac, sanctuaryTelegramTurnReceiptDigest, sanctuaryTelegramTurnReceiptMac, sanctuaryTelegramUnauthorizedDropMac, type TelegramSenseCredentials } from "../../senses/telegram"
 import { TELEGRAM_ACCEPTANCE_AUDIT_HEAD_RELATIVE_PATH, TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH, verifyTelegramAuditLedger } from "../../senses/telegram-audit-ledger"
 import { createSanctuaryToolContext, runWithSanctuaryToolReceiptCollection } from "../../senses/sanctuary-runtime"
 import { projectSanctuaryGrounding, sanctuaryGroundingDigest, type SanctuaryGroundingToolName, type SanctuaryToolGrounding } from "../../senses/sanctuary-grounding"
@@ -132,6 +132,10 @@ const MAX_BROKER_RESPONSE = 256 * 1024
 const TARGET_SERVER_ID = "sanctuary-unraid"
 const TARGET_ID = "sanctuary"
 const SHA256 = /^[0-9a-f]{64}$/u
+const APPROVAL_EVIDENCE_LABELS = new Set<SanctuaryUnit16EvidenceLabel>([
+  "unit-15c-1-no-callback-terminalization", "unit-16i-delayed-approval", "unit-16j-denial",
+  "unit-16k-timeout-stale", "unit-16l-duplicate-callback", "unit-16m-restart-continuation",
+])
 const HEALTH_ACCEPTANCE_LABELS = new Set<SanctuaryUnit16EvidenceLabel>([
   "unit-16f-cron-fingerprint",
   "unit-16g-health-transition",
@@ -914,11 +918,12 @@ function parseInteractiveDriverReceipt(raw: string | null, label: SanctuaryUnit1
       || receipt.staleReplayAttempts !== 1 || receipt.staleReplaySettled !== true || receipt.staleReplayMutationCount !== 0
       || receipt.promptTerminal !== true || receipt.writeCredentialObserved !== false) throw new Error("duplicate callback driver receipt is invalid")
   } else if (label === "unit-16m-restart-continuation") {
-    exactKeys(receipt, [...common, "approvalEpochAfterRestart", "continuationEpochAfter", "ownerImageDigest", "ownerContainerDigest", "restartCountBefore", "restartCountAfter", "pendingDigestBefore", "pendingDigestAfter", "pendingRestored", "callbackAttempts", "mutationCount", "indeterminateRecoveryObserved", "indeterminateRetryCount"], "restart continuation driver receipt")
-    if (![receipt.ownerImageDigest, receipt.ownerContainerDigest, receipt.pendingDigestBefore, receipt.pendingDigestAfter].every((value) => typeof value === "string" && SHA256.test(value))
+    exactKeys(receipt, [...common, "approvalEpochAfterRestart", "continuationEpochAfter", "ownerImageDigest", "ownerContainerDigest", "restartCountBefore", "restartCountAfter", "pendingDigestBefore", "pendingDigestAfter", "pendingRestored", "callbackAttempts", "mutationCount", "indeterminateRecoveryObserved", "attemptedRecoveryReopened", "attemptedRecordDigest", "recoveredRecordDigest", "indeterminateRetryCount"], "restart continuation driver receipt")
+    if (![receipt.ownerImageDigest, receipt.ownerContainerDigest, receipt.pendingDigestBefore, receipt.pendingDigestAfter, receipt.attemptedRecordDigest, receipt.recoveredRecordDigest].every((value) => typeof value === "string" && SHA256.test(value))
       || ![receipt.approvalEpochAfterRestart, receipt.continuationEpochAfter, receipt.restartCountBefore, receipt.restartCountAfter].every((value) => Number.isSafeInteger(value) && Number(value) >= 0)
       || receipt.pendingRestored !== true || receipt.callbackAttempts !== 1 || receipt.mutationCount !== 1
-      || receipt.indeterminateRecoveryObserved !== true || receipt.indeterminateRetryCount !== 0) throw new Error("restart continuation driver receipt is invalid")
+      || receipt.indeterminateRecoveryObserved !== true || receipt.attemptedRecoveryReopened !== true
+      || receipt.attemptedRecordDigest === receipt.recoveredRecordDigest || receipt.indeterminateRetryCount !== 0) throw new Error("restart continuation driver receipt is invalid")
   } else return undefined
   const { phase: _phase, ...validated } = receipt
   return validated as unknown as SanctuaryInteractiveDriverReceipt
@@ -1151,9 +1156,23 @@ export async function readDefaultSanctuaryScenarioFacts(
   const approvals = approvalRecords.map(({ approval: record, continuation }) => {
     const boundEvents = auditEntries.filter((entry) => entry.meta.approvalId === record.approvalId)
     const terminalized = boundEvents.some((entry) => entry.event === "telegram.approval_prompt_terminalized" && entry.meta.buttonsRemoved === true)
-    const callbackEvents = boundEvents.filter((entry) => entry.event === "telegram.callback_settled")
+    const callbackEvents = boundEvents.filter((entry) => entry.event === "telegram.callback_settled" || entry.event === "telegram.callback_recovery_settled")
+    const staleCallbackEvents = boundEvents.filter((entry) => entry.event === "telegram.approval_stale_callback_settled")
     const claimCount = boundEvents.filter((entry) => entry.event === "approval.acceptance_transition" && entry.meta.state === "claimed").length
     const restartExecutionCount = boundEvents.filter((entry) => entry.event === "senses.telegram_approved_restart_end").length
+    const resultDigest = createHash("sha256").update(JSON.stringify({ state: record.state, result: record.result })).digest("hex")
+    let resultTargetId: string | null = null
+    if (record.toolName === "unraid_restart_container" && record.state === "succeeded") {
+      let parsed: unknown
+      try { parsed = JSON.parse(text(record.result, "approved restart result")) } catch { throw new Error("approved restart result binding is invalid") }
+      const result = object(parsed, "approved restart result")
+      const data = object(result.data, "approved restart result data")
+      const container = object(data.container, "approved restart result container")
+      if (result.ok !== true || container.name !== "calibre-web" || typeof data.beforeState !== "string" || typeof data.afterState !== "string"
+        || data.observedRestart !== true || data.degraded !== false) throw new Error("approved restart result binding is invalid")
+      resultTargetId = text(container.id, "approved restart result target id")
+      if (resultTargetId.length > 128) throw new Error("approved restart result binding is invalid")
+    }
     return ({
     approvalId: record.approvalId,
     state: record.state,
@@ -1169,9 +1188,11 @@ export async function readDefaultSanctuaryScenarioFacts(
     settledCount: callbackEvents.length,
     claimCount,
     replayMutationCount: Math.max(0, restartExecutionCount - (record.state === "succeeded" ? 1 : 0)),
-    staleAcknowledged: callbackEvents.some((entry) => entry.meta.reason === "stale_callback" || entry.meta.reason === "expired"),
+    staleAcknowledged: [...callbackEvents, ...staleCallbackEvents].some((entry) => entry.meta.acknowledged === true && (entry.meta.reason === "stale_callback" || entry.meta.reason === "expired")),
     argumentDigest: record.argumentDigest,
     target: typeof record.arguments.container === "string" ? record.arguments.container : null,
+    resultDigest,
+    resultTargetId,
     checkpointDigest: record.checkpointDigest,
     approvalEpoch: record.epoch,
     continuationEpoch: continuation?.continuationEpoch ?? null,
@@ -1188,6 +1209,9 @@ export async function readDefaultSanctuaryScenarioFacts(
   const groundingTool = label === "unit-16d-whats-up" ? "unraid_get_system" : label === "unit-16d-1-space" ? "unraid_get_storage" : null
   const liveGrounding = groundingTool && deps.readLiveGrounding ? await deps.readLiveGrounding(groundingTool) : undefined
   let identity: SanctuaryScenarioFacts["identity"]
+  if (APPROVAL_EVIDENCE_LABELS.has(label) && (!identityRaw || !/^[A-Za-z0-9_-]{43}\n?$/u.test(identityRaw))) {
+    throw new Error("Telegram approval identity key is missing or malformed")
+  }
   if (identityRaw && /^[A-Za-z0-9_-]{43}\n?$/u.test(identityRaw)) {
     const credentials = deps.telegramCredentials ? deps.telegramCredentials() : loadTelegramSenseCredentials(TARGET_ID)
     const identityKey = identityRaw.trim()
@@ -1222,6 +1246,26 @@ export async function readDefaultSanctuaryScenarioFacts(
           || entry.meta.dropMac !== sanctuaryTelegramUnauthorizedDropMac(identityKey, auditSchema, binding as {
             scenarioHandleDigest: string; updateDigest: string; senderIdentityDigest: string; authorizedIdentityDigest: string; senderDistinct: boolean; nextOffsetDigest: string
           })) throw new Error("Telegram unauthorized sender binding MAC is invalid")
+      }
+    }
+    const approvalEvidenceKeys: Record<string, string[][]> = {
+      "senses.telegram_approval_prompt_bound": [["actionDigest", "approvalId", "boundAt", "checkpointDigest", "evidenceMac", "messageIdDigest", "scenarioHandleDigest", "suspendedSessionRevisionDigest", "targetDigest"]],
+      "telegram.callback_settled": [["accepted", "acknowledged", "acknowledgementState", "actionDigest", "approvalId", "boundAt", "callbackAt", "checkpointDigest", "decisionAttemptDigest", "evidenceMac", "messageIdDigest", "reason", "scenarioHandleDigest", "suspendedSessionRevisionDigest", "targetDigest"]],
+      "telegram.callback_recovery_settled": [["accepted", "acknowledgementState", "actionDigest", "approvalId", "boundAt", "callbackAt", "checkpointDigest", "decisionAttemptDigest", "evidenceMac", "messageIdDigest", "reason", "recoveredAt", "scenarioHandleDigest", "suspendedSessionRevisionDigest", "targetDigest"]],
+      "telegram.approval_stale_callback_settled": [["accepted", "acknowledged", "actionDigest", "approvalId", "boundAt", "checkpointDigest", "evidenceMac", "messageIdDigest", "reason", "scenarioHandleDigest", "staleAt", "suspendedSessionRevisionDigest", "targetDigest"]],
+      "telegram.approval_expiry_observed": [["actionDigest", "approvalId", "boundAt", "checkpointDigest", "evidenceMac", "expiryDeadlineAt", "expiryObservationSchemaVersion", "expiryObservedAt", "messageIdDigest", "scenarioHandleDigest", "suspendedSessionRevisionDigest", "targetDigest"]],
+      "telegram.approval_prompt_terminalized": [
+        ["actionDigest", "approvalId", "boundAt", "buttonsRemoved", "checkpointDigest", "evidenceMac", "messageIdDigest", "scenarioHandleDigest", "suspendedSessionRevisionDigest", "targetDigest", "terminalEditStartedAt", "terminalizedAt"],
+        ["actionDigest", "approvalId", "boundAt", "buttonsRemoved", "checkpointDigest", "evidenceMac", "expiryDeadlineAt", "expiryObservedAt", "messageIdDigest", "scenarioHandleDigest", "suspendedSessionRevisionDigest", "targetDigest", "terminalEditStartedAt", "terminalizedAt"],
+      ],
+      "senses.telegram_approval_continuation_delivered": [["actionDigest", "approvalId", "boundAt", "checkpointDigest", "deliveredAt", "deliveryDigest", "deliveryMessageIdDigest", "evidenceMac", "messageIdDigest", "resultDigest", "scenarioHandleDigest", "suspendedSessionRevisionDigest", "targetDigest"]],
+    }
+    for (const entry of auditEntries.filter((candidate) => candidate.event in approvalEvidenceKeys
+      && candidate.meta.scenarioHandleDigest === scenarioHandleDigest && typeof candidate.meta.approvalId === "string")) {
+      if (!approvalEvidenceKeys[entry.event]!.some((keys) => JSON.stringify(Object.keys(entry.meta).sort()) === JSON.stringify([...keys].sort()))
+        || typeof entry.meta.evidenceMac !== "string" || !SHA256.test(entry.meta.evidenceMac)
+        || entry.meta.evidenceMac !== sanctuaryTelegramApprovalEvidenceMac(identityKey, entry.event, entry.meta)) {
+        throw new Error("Telegram approval evidence MAC is invalid")
       }
     }
     const identityPayload = [
@@ -2177,9 +2221,9 @@ export async function executeSanctuaryInteractiveRuntimeOperation(
     readApprovals: supplied.readApprovals ?? ((digest) => readApprovalsByScenarioHandleDigest(path.join(agentRoot, "state", "approvals", "approvals.sqlite"), digest)),
     readPending: dependency(supplied.readPending, "daemon-owned pending approval reader"),
     createSession: supplied.createSession ?? (async () => { throw new Error("daemon-owned interactive callback session is unavailable") }),
-    proveIndeterminateRecovery: supplied.proveIndeterminateRecovery ?? proveSanctuaryAttemptedRecoveryWithoutRetry,
+    proveIndeterminateRecovery: supplied.proveIndeterminateRecovery
+      ?? ((approval, scenarioHandleDigest) => proveSanctuaryAttemptedRecoveryWithoutRetry(agentRoot, scenarioHandleDigest, approval)),
     writeCredentialObserved: supplied.writeCredentialObserved ?? (() => /credential|api[_-]?key|token|secret/iu.test(JSON.stringify(rawPayload))),
-    timeoutCoordinates: supplied.timeoutCoordinates ?? new Map(),
   }
   return executeSanctuaryInteractiveEngine(rawPayload, deps)
 }
@@ -2214,6 +2258,7 @@ export async function executeSanctuaryAcceptanceCallbackProbe(
     authorizedUserId: credentials.authorizedUserId,
     authorizedChatId: credentials.authorizedChatId,
     subject,
+    identityKey,
     toolContext: deps.toolContext(TARGET_ID),
   })
   try {

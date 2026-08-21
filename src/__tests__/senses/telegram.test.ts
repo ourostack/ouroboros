@@ -554,7 +554,35 @@ describe("Telegram sense", () => {
 
     const stopping = f.app.stop()
     await vi.advanceTimersByTimeAsync(2_000)
-    expect(f.approvalTransport.reconcileExpired).toHaveBeenCalledTimes(4)
+    expect(f.approvalTransport.reconcileExpired).toHaveBeenCalledTimes(6)
+    finishPolling()
+    await stopping
+    await running
+    expect(f.approvalTransport.reconcileExpired).toHaveBeenCalledTimes(7)
+    vi.useRealTimers()
+  })
+
+  it("keeps reconciliation on absolute one-second deadlines after a delayed prior pass", async () => {
+    vi.useFakeTimers()
+    let releaseReconcile!: () => void
+    let finishPolling!: () => void
+    const f = fixture({ pollRun: () => new Promise<void>((resolve) => { finishPolling = resolve }) })
+    f.approvalTransport.reconcileExpired
+      .mockResolvedValueOnce(undefined)
+      .mockImplementationOnce(() => new Promise<void>((resolve) => { releaseReconcile = resolve }))
+      .mockResolvedValue(undefined)
+
+    const running = f.app.run()
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(f.approvalTransport.reconcileExpired).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(800)
+    releaseReconcile()
+    await vi.advanceTimersByTimeAsync(199)
+    expect(f.approvalTransport.reconcileExpired).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(f.approvalTransport.reconcileExpired).toHaveBeenCalledTimes(3)
+
+    const stopping = f.app.stop()
     finishPolling()
     await stopping
     await running
@@ -573,8 +601,44 @@ describe("Telegram sense", () => {
 
     const running = f.app.run()
     await vi.advanceTimersByTimeAsync(3_000)
-    expect(f.approvalTransport.reconcileExpired).toHaveBeenCalledTimes(3)
+    expect(f.approvalTransport.reconcileExpired).toHaveBeenCalledTimes(4)
 
+    const stopping = f.app.stop()
+    finishPolling()
+    await stopping
+    await running
+    vi.useRealTimers()
+  })
+
+  it("keeps the absolute one-second observer cadence through repeated reconciliation failures", async () => {
+    vi.useFakeTimers()
+    let finishPolling!: () => void
+    const f = fixture({ pollRun: () => new Promise<void>((resolve) => { finishPolling = resolve }) })
+    f.approvalTransport.reconcileExpired
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValue(new Error("one approval terminalization remains unavailable"))
+
+    const running = f.app.run()
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(f.approvalTransport.reconcileExpired).toHaveBeenCalledTimes(6)
+
+    const stopping = f.app.stop()
+    finishPolling()
+    await stopping
+    await running
+    vi.useRealTimers()
+  })
+
+  it("starts polling and the absolute observer when startup reconciliation fails", async () => {
+    vi.useFakeTimers()
+    let finishPolling!: () => void
+    const f = fixture({ pollRun: () => new Promise<void>((resolve) => { finishPolling = resolve }) })
+    f.approvalTransport.reconcileExpired.mockRejectedValueOnce(new Error("startup edit unavailable")).mockResolvedValue(undefined)
+    const running = f.app.run()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(f.poll.run).toHaveBeenCalledOnce()
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(f.approvalTransport.reconcileExpired).toHaveBeenCalledTimes(3)
     const stopping = f.app.stop()
     finishPolling()
     await stopping
@@ -606,6 +670,22 @@ describe("Telegram sense", () => {
     await stopping
     expect(approvalRuntime.close).toHaveBeenCalledOnce()
     await running
+    vi.useRealTimers()
+  })
+
+  it("keeps the one-second expiry observer alive until polling shutdown joins and performs a final pass", async () => {
+    vi.useFakeTimers()
+    let finishPolling!: () => void
+    const f = fixture({ pollRun: () => new Promise<void>((resolve) => { finishPolling = resolve }) })
+    const running = f.app.run()
+    await vi.advanceTimersByTimeAsync(0)
+    const stopping = f.app.stop()
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(f.approvalTransport.reconcileExpired.mock.calls.length).toBeGreaterThanOrEqual(3)
+    finishPolling()
+    await stopping
+    await running
+    expect(f.approvalTransport.reconcileExpired.mock.calls.length).toBeGreaterThanOrEqual(4)
     vi.useRealTimers()
   })
 
@@ -676,7 +756,7 @@ describe("Telegram sense", () => {
     expect(neverStarted.api.stop).toHaveBeenCalledOnce()
   })
 
-  it("caps persistent reconciliation retries with exponential backoff", async () => {
+  it("never stops the one-second observer after persistent reconciliation failures", async () => {
     vi.useFakeTimers()
     let finishPolling!: () => void
     const f = fixture({ pollRun: () => new Promise<void>((resolve) => { finishPolling = resolve }) })
@@ -685,7 +765,7 @@ describe("Telegram sense", () => {
       .mockRejectedValue(new Error("persistent failure"))
     const running = f.app.run()
     await vi.advanceTimersByTimeAsync(40_000)
-    expect(f.approvalTransport.reconcileExpired).toHaveBeenCalledTimes(6)
+    expect(f.approvalTransport.reconcileExpired).toHaveBeenCalledTimes(41)
     const stopping = f.app.stop()
     finishPolling()
     await stopping
@@ -711,7 +791,7 @@ describe("Telegram sense", () => {
 
     await f.app.run()
 
-    expect(order).toEqual(["recover", "reconcile", "poll"])
+    expect(order).toEqual(["recover", "reconcile", "poll", "reconcile"])
   })
 
   it("supports proactive private delivery through the same bounded formatter", async () => {

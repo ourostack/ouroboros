@@ -418,7 +418,8 @@ describe("Sanctuary Unit 16 host broker", () => {
       approvalEpochBefore: 0, approvalEpochAfterRestart: 0, continuationEpochAfter: 1,
       ownerImageDigest: "e".repeat(64), ownerContainerDigest: "f".repeat(64), restartCountBefore: 4, restartCountAfter: 5,
       pendingDigestBefore: "1".repeat(64), pendingDigestAfter: "1".repeat(64), pendingRestored: true,
-      callbackAttempts: 1, mutationCount: 1, indeterminateRecoveryObserved: true, indeterminateRetryCount: 0,
+      callbackAttempts: 1, mutationCount: 1, indeterminateRecoveryObserved: true, attemptedRecoveryReopened: true,
+      attemptedRecordDigest: "7".repeat(64), recoveredRecordDigest: "8".repeat(64), indeterminateRetryCount: 0,
     }
     const asyncDriver = createInteractiveRestartDriver()
     const dependencies: BrokerDependencies = {
@@ -615,6 +616,7 @@ describe("Sanctuary Unit 16 host broker", () => {
       schemaVersion: "sanctuary-interactive-driver-receipt-v2", phase: "prepared", ...input,
       approvalIdDigest: "b".repeat(64), checkpointDigest: "c".repeat(64), suspendedSessionRevisionDigest: "d".repeat(64),
       approvalEpochBefore: 0, pendingDigestBefore: "1".repeat(64), indeterminateRecoveryObserved: true,
+      attemptedRecoveryReopened: true, attemptedRecordDigest: "7".repeat(64), recoveredRecordDigest: "8".repeat(64),
     }
     const reconciled = {
       approvalEpochAfterRestart: 0, continuationEpochAfter: 1, pendingDigestAfter: "1".repeat(64), pendingRestored: true,

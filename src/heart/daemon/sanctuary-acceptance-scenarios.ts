@@ -17,9 +17,14 @@ import {
 } from "./sanctuary-acceptance-marker"
 import { validateSanctuaryUnit16EvidenceAssertions, type SanctuaryUnit16EvidenceLabel } from "./sanctuary-acceptance-harness"
 import { sanctuaryGroundedResponseAccurate, sanctuaryGroundingDigest, type SanctuaryGroundingToolName, type SanctuaryToolGrounding } from "../../senses/sanctuary-grounding"
+import { TELEGRAM_APPROVAL_TERMINAL_EDIT_TIMEOUT_MS, TELEGRAM_APPROVAL_TTL_MS } from "../../senses/telegram-client"
 
 type JsonObject = Record<string, unknown>
 const SHA256 = /^[0-9a-f]{64}$/u
+export const SANCTUARY_APPROVAL_TTL_MS = TELEGRAM_APPROVAL_TTL_MS
+export const SANCTUARY_APPROVAL_RECONCILIATION_JITTER_MS = 1_000
+export const SANCTUARY_APPROVAL_TERMINAL_EDIT_TIMEOUT_MS = TELEGRAM_APPROVAL_TERMINAL_EDIT_TIMEOUT_MS
+const CANONICAL_RESTART_TARGET = "calibre-web"
 
 export interface SanctuaryPostbootIntegritySnapshot {
   schemaVersion: "sanctuary-postboot-integrity-v2"
@@ -105,6 +110,8 @@ export interface SanctuaryScenarioApproval {
   staleAcknowledged: boolean
   argumentDigest: string
   target: string | null
+  resultDigest: string
+  resultTargetId: string | null
   checkpointDigest?: string
   approvalEpoch?: number
   continuationEpoch?: number | null
@@ -164,6 +171,9 @@ export interface SanctuaryRestartContinuationDriverReceipt extends SanctuaryInte
   callbackAttempts: number
   mutationCount: number
   indeterminateRecoveryObserved: boolean
+  attemptedRecoveryReopened: boolean
+  attemptedRecordDigest: string
+  recoveredRecordDigest: string
   indeterminateRetryCount: number
 }
 
@@ -527,7 +537,111 @@ function intendedApproval(before: SanctuaryScenarioFacts, after: SanctuaryScenar
 }
 
 function intendedRestartApproval(approval: SanctuaryScenarioApproval | null): approval is SanctuaryScenarioApproval {
-  return approval?.toolName === "unraid_restart_container" && typeof approval.target === "string" && approval.target.length > 0
+  const argumentDigest = createHash("sha256").update(JSON.stringify({ container: CANONICAL_RESTART_TARGET })).digest("hex")
+  return approval?.toolName === "unraid_restart_container"
+    && approval.target === CANONICAL_RESTART_TARGET
+    && approval.argumentDigest === argumentDigest
+}
+
+function approvalEvidenceCoordinates(approval: SanctuaryScenarioApproval): { actionDigest: string; targetDigest: string } {
+  return {
+    actionDigest: createHash("sha256").update(JSON.stringify({ toolName: approval.toolName, argumentDigest: approval.argumentDigest })).digest("hex"),
+    targetDigest: createHash("sha256").update(JSON.stringify({ container: CANONICAL_RESTART_TARGET })).digest("hex"),
+  }
+}
+
+function exactApprovalEvidence(
+  before: SanctuaryScenarioFacts,
+  after: SanctuaryScenarioFacts,
+  approval: SanctuaryScenarioApproval,
+): {
+  boundAt: number
+  callback: SanctuaryScenarioEvent | null
+  continuation: SanctuaryScenarioEvent | null
+  expiryObservedAt: number | null
+  expiryDeadlineAt: number | null
+  terminalizedAt: number
+  staleCallback: SanctuaryScenarioEvent | null
+} | null {
+  const fresh = recordsAdded(before.events, after.events, (entry) => hash(entry))
+  const prompt = fresh.filter((entry) => entry.event === "senses.telegram_approval_prompt_bound" && entry.meta.approvalId === approval.approvalId)
+  const terminals = fresh.filter((entry) => entry.event === "telegram.approval_prompt_terminalized" && entry.meta.approvalId === approval.approvalId)
+  const callbackCandidates = fresh.filter((entry) => ["telegram.callback_settled", "telegram.callback_recovery_settled"].includes(entry.event) && entry.meta.approvalId === approval.approvalId)
+  const callbacks = [...new Map(callbackCandidates.map((entry) => [hash({ event: entry.event, meta: entry.meta }), entry])).values()]
+  const continuations = fresh.filter((entry) => entry.event === "senses.telegram_approval_continuation_delivered" && entry.meta.approvalId === approval.approvalId)
+  const staleCallbacks = fresh.filter((entry) => entry.event === "telegram.approval_stale_callback_settled" && entry.meta.approvalId === approval.approvalId)
+  const expiryObservations = fresh.filter((entry) => entry.event === "telegram.approval_expiry_observed" && entry.meta.approvalId === approval.approvalId)
+  if (prompt.length !== 1 || terminals.length !== 1 || callbacks.length > 1 || continuations.length > 1 || staleCallbacks.length > 1) return null
+  if ((approval.state === "expired" && (expiryObservations.length < 1
+      || new Set(expiryObservations.map((entry) => hash({ event: entry.event, meta: entry.meta }))).size !== 1))
+    || (approval.state !== "expired" && expiryObservations.length !== 0)) return null
+  const expected = approvalEvidenceCoordinates(approval)
+  const coordinatesMatch = (entry: SanctuaryScenarioEvent): boolean => entry.meta.scenarioHandleDigest !== undefined
+    && typeof entry.meta.scenarioHandleDigest === "string" && SHA256.test(entry.meta.scenarioHandleDigest)
+    && entry.meta.actionDigest === expected.actionDigest && entry.meta.targetDigest === expected.targetDigest
+    && entry.meta.checkpointDigest === approval.checkpointDigest
+    && typeof approval.suspendedSessionRevision === "string"
+    && entry.meta.suspendedSessionRevisionDigest === createHash("sha256").update(approval.suspendedSessionRevision, "utf8").digest("hex")
+    && typeof entry.meta.messageIdDigest === "string" && SHA256.test(entry.meta.messageIdDigest)
+    && typeof entry.meta.evidenceMac === "string" && SHA256.test(entry.meta.evidenceMac)
+  if (![...prompt, ...terminals, ...callbacks, ...continuations, ...staleCallbacks, ...expiryObservations].every(coordinatesMatch)) return null
+  const promptScenarioHandleDigest = prompt[0]!.meta.scenarioHandleDigest
+  const promptMessageIdDigest = prompt[0]!.meta.messageIdDigest
+  if (![...terminals, ...callbacks, ...continuations, ...staleCallbacks, ...expiryObservations].every((entry) => entry.meta.scenarioHandleDigest === promptScenarioHandleDigest
+    && entry.meta.messageIdDigest === promptMessageIdDigest)) return null
+  const boundAt = Number(prompt[0]!.meta.boundAt)
+  const terminalEditStartedAt = Number(terminals[0]!.meta.terminalEditStartedAt)
+  const terminalizedAt = Number(terminals[0]!.meta.terminalizedAt)
+  const expiryObservation = expiryObservations[0] ?? null
+  const expiryObservedAt = expiryObservation === null ? null : Number(expiryObservation.meta.expiryObservedAt)
+  const expiryDeadlineAt = expiryObservation === null ? null : Number(expiryObservation.meta.expiryDeadlineAt)
+  if (!Number.isSafeInteger(boundAt) || boundAt < 0
+    || !Number.isSafeInteger(terminalEditStartedAt) || terminalEditStartedAt < boundAt
+    || !Number.isSafeInteger(terminalizedAt) || terminalizedAt < terminalEditStartedAt
+    || terminalizedAt - terminalEditStartedAt > SANCTUARY_APPROVAL_TERMINAL_EDIT_TIMEOUT_MS
+    || terminals[0]!.meta.boundAt !== boundAt || terminals[0]!.meta.buttonsRemoved !== true
+    || approval.expiresAt !== boundAt + SANCTUARY_APPROVAL_TTL_MS) return null
+  if (approval.state === "expired") {
+    if (expiryObservedAt === null || !Number.isSafeInteger(expiryObservedAt) || expiryObservedAt < boundAt
+      || expiryDeadlineAt !== approval.expiresAt || expiryObservation?.meta.expiryObservationSchemaVersion !== "telegram-approval-expiry-observation-v1"
+      || expiryObservation.meta.boundAt !== boundAt
+      || terminals[0]!.meta.expiryObservedAt !== expiryObservedAt || terminals[0]!.meta.expiryDeadlineAt !== expiryDeadlineAt
+      || terminalEditStartedAt < expiryObservedAt || terminalizedAt - expiryObservedAt > SANCTUARY_APPROVAL_TERMINAL_EDIT_TIMEOUT_MS) return null
+  } else if (expiryObservedAt !== null || terminals[0]!.meta.expiryObservedAt !== undefined || terminals[0]!.meta.expiryDeadlineAt !== undefined) return null
+  const callback = callbacks[0] ?? null
+  if (callback) {
+    const callbackAt = Number(callback.meta.callbackAt)
+    if (!Number.isSafeInteger(callbackAt) || callbackAt < boundAt || callbackAt > terminalEditStartedAt
+    || callback.meta.boundAt !== boundAt
+    || (callback.event === "telegram.callback_settled" && (callback.meta.acknowledged !== true || callback.meta.acknowledgementState !== "acknowledged"))
+    || (callback.event === "telegram.callback_recovery_settled" && (callback.meta.acknowledgementState !== "indeterminate_after_restart"
+      || !Number.isSafeInteger(Number(callback.meta.recoveredAt)) || Number(callback.meta.recoveredAt) < callbackAt
+      || typeof callback.meta.decisionAttemptDigest !== "string" || !SHA256.test(callback.meta.decisionAttemptDigest)))) return null
+  }
+  const continuation = continuations[0] ?? null
+  if (continuation) {
+    const deliveredAt = Number(continuation.meta.deliveredAt)
+    const callbackAt = callback === null ? null : Number(callback.meta.callbackAt)
+    if (!Number.isSafeInteger(deliveredAt) || deliveredAt < boundAt || deliveredAt > terminalEditStartedAt
+      || callbackAt !== null && deliveredAt < callbackAt
+      || continuation.meta.boundAt !== boundAt || typeof continuation.meta.resultDigest !== "string" || !SHA256.test(continuation.meta.resultDigest)
+      || continuation.meta.resultDigest !== approval.resultDigest
+      || typeof continuation.meta.deliveryDigest !== "string" || !SHA256.test(continuation.meta.deliveryDigest)
+      || typeof continuation.meta.deliveryMessageIdDigest !== "string" || !SHA256.test(continuation.meta.deliveryMessageIdDigest)) return null
+  }
+  const staleCallback = staleCallbacks[0] ?? null
+  if (staleCallback) {
+    const staleAt = Number(staleCallback.meta.staleAt)
+    if (!Number.isSafeInteger(staleAt) || staleAt < terminalizedAt || staleCallback.meta.acknowledged !== true
+      || staleCallback.meta.accepted !== false || staleCallback.meta.reason !== "stale_callback") return null
+  }
+  return { boundAt, callback, continuation, expiryObservedAt, expiryDeadlineAt, terminalizedAt, staleCallback }
+}
+
+function terminalizedWithinTtlJitter(evidence: { boundAt: number; expiryObservedAt: number | null; expiryDeadlineAt: number | null }): boolean {
+  if (evidence.expiryObservedAt === null) return false
+  const elapsed = evidence.expiryObservedAt - evidence.boundAt
+  return elapsed >= SANCTUARY_APPROVAL_TTL_MS && elapsed <= SANCTUARY_APPROVAL_TTL_MS + SANCTUARY_APPROVAL_RECONCILIATION_JITTER_MS
 }
 
 function interactiveReceiptBindsApproval(receipt: SanctuaryInteractiveDriverReceipt, approval: SanctuaryScenarioApproval): boolean {
@@ -553,7 +667,7 @@ export function deriveSanctuaryScenarioAssertions(
   label: SanctuaryUnit16EvidenceLabel,
   before: SanctuaryScenarioFacts,
   after: SanctuaryScenarioFacts,
-  now: number,
+  _now: number,
   scenarioHandleDigest?: string,
 ): JsonObject | null {
   const approval = intendedApproval(before, after)
@@ -563,9 +677,16 @@ export function deriveSanctuaryScenarioAssertions(
   const linkedAttempts = approval ? after.restartAttempts
     .filter((attempt) => approval.toolName === "unraid_restart_container" && attempt.approvalId === approval.approvalId && attempt.argumentDigest === approval.argumentDigest && attempt.target === approval.target)
     .sort((left, right) => left.observedAt - right.observedAt) : []
-  const attemptIsLinked = (attempt: SanctuaryScenarioRestartAttempt): boolean => Boolean(approval && approval.toolName === "unraid_restart_container"
-    && attempt.approvalId === approval.approvalId && attempt.argumentDigest === approval.argumentDigest && attempt.target === approval.target)
+  const attemptIsLinked = (attempt: SanctuaryScenarioRestartAttempt): boolean => {
+    if (!approval || !intendedRestartApproval(approval) || attempt.approvalId !== approval.approvalId
+      || attempt.argumentDigest !== approval.argumentDigest || attempt.target !== CANONICAL_RESTART_TARGET
+      || typeof attempt.targetId !== "string" || attempt.targetId.length < 1 || attempt.targetId.length > 128
+      || approval.resultTargetId === null || attempt.targetId !== approval.resultTargetId) return false
+    const expectedActionDigest = createHash("sha256").update(JSON.stringify({ operation: "restart", container: { id: attempt.targetId, name: CANONICAL_RESTART_TARGET } })).digest("hex")
+    return attempt.actionDigest === expectedActionDigest
+  }
   const completeAttemptLedgerLinked = newAttempts.every(attemptIsLinked) && linkedAttempts.length === newAttempts.length
+    && new Set(linkedAttempts.map((attempt) => attempt.targetId)).size <= 1
   const mutationAttemptIds = new Set(linkedAttempts.filter((attempt) => attempt.state === "attempting").map((attempt) => attempt.attemptId))
   const mutationCount = mutationAttemptIds.size
   const unsafeAttemptStates = new Set(["attempting", "succeeded", "attempted_or_indeterminate"])
@@ -591,19 +712,21 @@ export function deriveSanctuaryScenarioAssertions(
           || !exactFreshTelegramLifecycle(before, after, newTurns[0]?.updateDigest)))) return null
       return { identityBound: after.identity.keyPresent, opaqueSubject: after.identity.subjectOpaque, rawIdentityAbsent: after.identity.rawIdentityAbsent }
     case "unit-15c-1-no-callback-terminalization": {
-      if (!intendedRestartApproval(approval) || approval.state !== "expired" || approval.createdAt < before.capturedAt || approval.expiresAt - approval.createdAt !== 300_000) return null
-      const elapsedMs = approval.updatedAt - approval.createdAt
+      if (!intendedRestartApproval(approval) || approval.state !== "expired" || approval.createdAt < before.capturedAt) return null
+      const evidence = exactApprovalEvidence(before, after, approval)
+      if (!evidence || evidence.callback !== null || evidence.continuation !== null || !terminalizedWithinTtlJitter(evidence)) return null
+      const elapsedMs = evidence.terminalizedAt - evidence.boundAt
       if (!approval.buttonsRemoved || !approval.terminalPrompt) return null
       const baseline = before.sourceValues["no-callback-baseline"]
       if (!baseline || typeof baseline !== "object" || Array.isArray(baseline)) return null
       const baselineRecord = baseline as { approvalId?: unknown; offsetDigest?: unknown; inboundEventCount?: unknown }
-      const inboundEventCount = after.events.filter((entry) => entry.event === "telegram.callback_settled" || entry.event === "telegram.update_dropped").length
+      const inboundEventCount = after.events.filter((entry) => entry.event === "telegram.callback_settled" || entry.event === "telegram.callback_recovery_settled" || entry.event === "telegram.update_dropped").length
       const noInboundUpdate = baselineRecord.approvalId === approval.approvalId
         && baselineRecord.offsetDigest === hash(after.sourceValues["telegram-offset"])
         && baselineRecord.inboundEventCount === inboundEventCount
         && approval.callbackCount === 0
       if (!noInboundUpdate || scenarioMutationCount !== 0 || !completeAttemptLedgerLinked) return null
-      return { buttonsRemoved: approval.buttonsRemoved, elapsedMs, mutationCount: 0, noInboundUpdate, replayMutationCount: approval.replayMutationCount, terminalExpired: approval.state === "expired", ttlMs: approval.expiresAt - approval.createdAt }
+      return { buttonsRemoved: approval.buttonsRemoved, elapsedMs, mutationCount: 0, noInboundUpdate, replayMutationCount: approval.replayMutationCount, terminalExpired: approval.state === "expired", ttlMs: SANCTUARY_APPROVAL_TTL_MS }
     }
     case "unit-16a-pre-reboot-checkpoint":
       if (!after.reboot || after.reboot.phase !== "preflight" || !SHA256.test(after.reboot.processBindingDigest) || after.reboot.requestCount !== 0 || !after.container?.running || !after.container.healthy || after.reboot.unrelatedHostOperations !== 0) return null
@@ -743,16 +866,27 @@ export function deriveSanctuaryScenarioAssertions(
       return { firedWithinMs: 0, messageCount: 1, productionRestored: true, scheduleObserved: true }
     }
     case "unit-16i-delayed-approval":
-      if (!exactFreshTelegramLifecycle(before, after) || !intendedRestartApproval(approval) || !completeAttemptLedgerLinked || approval.state !== "succeeded" || now - approval.createdAt < 120_000 || mutationCount !== 1 || scenarioMutationCount !== 1 || !restartSucceeded || approval.replayMutationCount !== 0 || !approval.continuationCompleted) return null
+      if (!exactFreshTelegramLifecycle(before, after) || !intendedRestartApproval(approval) || !completeAttemptLedgerLinked || approval.state !== "succeeded" || mutationCount !== 1 || scenarioMutationCount !== 1 || !restartSucceeded || approval.replayMutationCount !== 0 || !approval.continuationCompleted) return null
       if (!approval.terminalPrompt) return null
-      return { elapsedMs: approval.updatedAt - approval.createdAt, mutationCount, promptTerminal: approval.terminalPrompt, replayMutationCount: approval.replayMutationCount, resumed: approval.continuationCompleted, state: approval.state }
-    case "unit-16j-denial":
+      {
+        const evidence = exactApprovalEvidence(before, after, approval)
+        const callbackAt = Number(evidence?.callback?.meta.callbackAt)
+        if (!evidence || !evidence.callback || !evidence.continuation || callbackAt - evidence.boundAt < 120_000
+        || evidence.callback.event !== "telegram.callback_settled" || evidence.callback.meta.accepted !== true || evidence.callback.meta.reason !== "accepted") return null
+        return { elapsedMs: callbackAt - evidence.boundAt, mutationCount, promptTerminal: approval.terminalPrompt, replayMutationCount: approval.replayMutationCount, resumed: approval.continuationCompleted, state: approval.state }
+      }
+    case "unit-16j-denial": {
       if (!exactFreshTelegramLifecycle(before, after) || !intendedRestartApproval(approval) || !completeAttemptLedgerLinked || approval.state !== "denied" || scenarioMutationCount !== 0 || approval.replayMutationCount !== 0 || !approval.continuationCompleted) return null
       if (!approval.terminalPrompt) return null
+      const evidence = exactApprovalEvidence(before, after, approval)
+      if (!evidence?.callback || evidence.callback.event !== "telegram.callback_settled" || !evidence.continuation || evidence.callback.meta.accepted !== false || evidence.callback.meta.reason !== "decision_refused") return null
       return { mutationCount, promptTerminal: approval.terminalPrompt, replayMutationCount: approval.replayMutationCount, resumed: approval.continuationCompleted, state: approval.state }
+    }
     case "unit-16k-timeout-stale": {
       if (!intendedRestartApproval(approval) || !completeAttemptLedgerLinked || approval.state !== "expired" || scenarioMutationCount !== 0 || approval.replayMutationCount !== 0) return null
       if (!approval.buttonsRemoved || !approval.terminalPrompt || !approval.staleAcknowledged) return null
+      const evidence = exactApprovalEvidence(before, after, approval)
+      if (!evidence || evidence.callback !== null || evidence.continuation !== null || evidence.staleCallback === null || !terminalizedWithinTtlJitter(evidence)) return null
       const driver = after.interactiveDriver
       if (!driver || driver.label !== "unit-16k-timeout-stale" || !interactiveReceiptBindsApproval(driver, approval)
         || driver.callbackAttempts !== 1 || driver.distinctQueryCount !== 1 || driver.settledCount !== 1
@@ -761,6 +895,8 @@ export function deriveSanctuaryScenarioAssertions(
     }
     case "unit-16l-duplicate-callback": {
       if (!intendedRestartApproval(approval) || !completeAttemptLedgerLinked || approval.callbackCount < 1 || approval.settledCount < 1 || approval.claimCount !== 1 || !approval.terminalPrompt || approval.replayMutationCount !== 0 || mutationCount !== 1 || scenarioMutationCount !== 1 || !restartSucceeded) return null
+      const evidence = exactApprovalEvidence(before, after, approval)
+      if (!evidence?.callback || evidence.callback.event !== "telegram.callback_settled" || !evidence.continuation || evidence.callback.meta.accepted !== true || evidence.callback.meta.reason !== "accepted") return null
       const driver = after.interactiveDriver
       if (!driver || driver.label !== "unit-16l-duplicate-callback"
         || !interactiveReceiptBindsApproval(driver, approval) || driver.callbackAttempts !== 2 || driver.distinctQueryCount !== 2
@@ -771,6 +907,7 @@ export function deriveSanctuaryScenarioAssertions(
     }
     case "unit-16m-restart-continuation":
       if (!intendedRestartApproval(approval) || !completeAttemptLedgerLinked || approval.state !== "succeeded" || mutationCount !== 1 || scenarioMutationCount !== 1 || !restartSucceeded || attemptedIndeterminateRetryCount !== 0) return null
+      if (!exactApprovalEvidence(before, after, approval)?.continuation) return null
       if (!after.interactiveDriver || after.interactiveDriver.label !== "unit-16m-restart-continuation"
         || !interactiveReceiptBindsApproval(after.interactiveDriver, approval)
         || !after.interactiveDriver.pendingRestored || after.interactiveDriver.pendingDigestBefore !== after.interactiveDriver.pendingDigestAfter || after.interactiveDriver.callbackAttempts !== 1 || after.interactiveDriver.mutationCount !== 1
@@ -778,7 +915,10 @@ export function deriveSanctuaryScenarioAssertions(
         || after.interactiveDriver.continuationEpochAfter <= after.interactiveDriver.approvalEpochAfterRestart
         || approval.continuationEpoch !== after.interactiveDriver.continuationEpochAfter || approval.continuationState !== "completed"
         || after.interactiveDriver.restartCountAfter !== after.interactiveDriver.restartCountBefore + 1
-        || !after.interactiveDriver.indeterminateRecoveryObserved || after.interactiveDriver.indeterminateRetryCount !== 0) return null
+        || !after.interactiveDriver.indeterminateRecoveryObserved || !after.interactiveDriver.attemptedRecoveryReopened
+        || !SHA256.test(after.interactiveDriver.attemptedRecordDigest) || !SHA256.test(after.interactiveDriver.recoveredRecordDigest)
+        || after.interactiveDriver.attemptedRecordDigest === after.interactiveDriver.recoveredRecordDigest
+        || after.interactiveDriver.indeterminateRetryCount !== 0) return null
       return {
         attemptedIndeterminateRetryCount, mutationCount, preAttemptResumed: after.interactiveDriver.pendingRestored,
         butlerRestartObserved: true, checkpointEpochPreserved: true, continuationEpochAdvanced: true,
@@ -838,7 +978,7 @@ export function createSanctuaryScenarioCapture(deps: SanctuaryScenarioCaptureDep
         const baseline = {
           approvalId: activeApproval.approvalId,
           offsetDigest: hash(after.sourceValues["telegram-offset"]),
-          inboundEventCount: after.events.filter((entry) => entry.event === "telegram.callback_settled" || entry.event === "telegram.update_dropped").length,
+          inboundEventCount: after.events.filter((entry) => entry.event === "telegram.callback_settled" || entry.event === "telegram.callback_recovery_settled" || entry.event === "telegram.update_dropped").length,
         }
         receipt.noCallbackBaseline = baseline
         receipt.before.sourceValues["no-callback-baseline"] = baseline
