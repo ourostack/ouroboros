@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process"
 import { createHash, createHmac, timingSafeEqual } from "node:crypto"
-import { existsSync, readFileSync, readdirSync } from "node:fs"
+import { existsSync, readFileSync, readdirSync, unlinkSync } from "node:fs"
 import { createConnection } from "node:net"
 import * as path from "node:path"
 
@@ -11,12 +11,12 @@ import { loadTelegramSenseCredentials, readOrCreateTelegramIdentityKey, type Tel
 import { createSanctuaryToolContext } from "../../senses/sanctuary-runtime"
 import { resolveToolDefinition } from "../../repertoire/tools"
 import { getAgentRoot } from "../identity"
-import { readApprovalsByScenarioHandleDigest } from "../approval-store"
+import { readApprovalsByScenarioHandleDigest, type ApprovalAcceptanceProjection } from "../approval-store"
 import { readProviderCredentialRecord } from "../provider-credentials"
 import { pingProvider, type PingResult } from "../provider-ping"
 import { SANCTUARY_SCENARIO_GATES, SANCTUARY_SCENARIO_SOURCES, SANCTUARY_UNIT_16_EVIDENCE_LABELS, type SanctuaryUnit16EvidenceLabel } from "./sanctuary-acceptance-harness"
 import { readSanctuaryAcceptanceMarker } from "./sanctuary-acceptance-marker"
-import { createSanctuaryScenarioCapture, finalizeSanctuaryScenarioCapture, type SanctuaryHealthProbeReceipt, type SanctuaryScenarioFacts } from "./sanctuary-acceptance-scenarios"
+import { createSanctuaryScenarioCapture, finalizeSanctuaryScenarioCapture, type SanctuaryHealthProbeReceipt, type SanctuaryInteractiveDriverReceipt, type SanctuaryScenarioFacts } from "./sanctuary-acceptance-scenarios"
 import {
   mergeMachineRuntimeCredentialConfig,
   mergeRuntimeCredentialConfig,
@@ -236,16 +236,22 @@ export function createSanctuaryAcceptanceAdapterDependencies(
     telegramCredentials: () => loadTelegramSenseCredentials(TARGET_ID),
   }
   const healthDriver = createSanctuaryHealthAcceptanceScenarioDriver(dependencies.hostRequest!)
+  const interactiveDriver = createSanctuaryInteractiveAcceptanceScenarioDriver({
+    agentRoot: options.scenarioCapture?.agentRoot ?? getAgentRoot(TARGET_ID),
+    hostRequest: dependencies.hostRequest!,
+  })
   dependencies.captureScenario = createSanctuaryScenarioCapture({
     now: Date.now,
     readFacts: (label, scenarioHandleDigest, readOptions) => readDefaultSanctuaryScenarioFacts(label, scenarioHandleDigest, dependencies, options.scenarioCapture?.agentRoot, readOptions),
     healthDriver,
+    interactiveDriver,
     receiptRoot: options.scenarioCapture?.receiptRoot,
     gateStatusPath: options.scenarioCapture?.gateStatusPath,
   }) as (payload: JsonObject) => Promise<unknown>
   dependencies.finalizeScenarios = createSanctuaryAcceptanceScenarioFinalizer({
     readActiveScenario: () => readSanctuaryAcceptanceMarker(TARGET_ID),
     recoverHealthScenario: healthDriver.recover,
+    finalizeInteractiveScenario: interactiveDriver.complete,
     finalizeLocal: finalizeSanctuaryScenarioCapture,
   })
   return dependencies
@@ -327,9 +333,78 @@ export function createSanctuaryHealthAcceptanceScenarioDriver(
   }
 }
 
+type InteractiveLabel = "unit-16l-duplicate-callback" | "unit-16m-restart-continuation"
+
+function isInteractiveLabel(label: string): label is InteractiveLabel {
+  return label === "unit-16l-duplicate-callback" || label === "unit-16m-restart-continuation"
+}
+
+function currentInteractiveProposal(records: ApprovalAcceptanceProjection[]): ApprovalAcceptanceProjection | null {
+  const matches = records.filter(({ approval }) => approval.state === "proposed" && approval.toolName === "unraid_restart_container"
+    && approval.arguments.container === "calibre-web" && approval.transport === "telegram")
+  if (matches.length > 1) throw new Error("interactive acceptance proposal is ambiguous")
+  return matches[0] ?? null
+}
+
+export function createSanctuaryInteractiveAcceptanceScenarioDriver(options: {
+  agentRoot: string
+  readApprovals?: (databasePath: string, scenarioHandleDigest: string) => ApprovalAcceptanceProjection[]
+  readPending?: () => unknown[]
+  hostRequest: (payload: JsonObject) => Promise<unknown>
+}): {
+  poll(label: SanctuaryUnit16EvidenceLabel, scenarioHandleDigest: string): Promise<{ state: "waiting" | "driven" }>
+  complete(label: SanctuaryUnit16EvidenceLabel, scenarioHandleDigest: string): "complete" | "preserve"
+  cleanup(label: SanctuaryUnit16EvidenceLabel, scenarioHandleDigest: string): void
+} {
+  const receiptRoot = path.join(options.agentRoot, "state/acceptance/interactive-driver-receipts")
+  const receiptPath = (scenarioHandleDigest: string): string => path.join(receiptRoot, `${scenarioHandleDigest}.json`)
+  const approvals = options.readApprovals ?? readApprovalsByScenarioHandleDigest
+  return {
+    async poll(label, scenarioHandleDigest) {
+      if (!isInteractiveLabel(label)) return { state: "waiting" }
+      const filePath = receiptPath(scenarioHandleDigest)
+      if (existsSync(filePath)) {
+        const existing = object(JSON.parse(readFileSync(filePath, "utf8")) as unknown, "interactive driver receipt")
+        if (existing.label !== label || existing.scenarioHandleDigest !== scenarioHandleDigest) throw new Error("interactive driver receipt binding mismatch")
+        if (existing.phase === "complete") return { state: "driven" }
+      }
+      const projection = currentInteractiveProposal(approvals(path.join(options.agentRoot, "state/approvals/approvals.sqlite"), scenarioHandleDigest))
+      if (!projection) return { state: "waiting" }
+      const { approval } = projection
+      if (!approval.suspendedSessionRevision || !SHA256.test(approval.checkpointDigest)) throw new Error("interactive acceptance checkpoint is invalid")
+      const operation = label === "unit-16l-duplicate-callback" ? "drive_duplicate_callbacks" : "drive_restart_continuation"
+      const response = object(await options.hostRequest({ operation, targetId: TARGET_ID, label, scenarioHandleDigest }), "interactive scenario driver response")
+      exactKeys(response, ["state"], "interactive scenario driver response")
+      if (response.state !== "waiting" && response.state !== "complete") throw new Error("interactive scenario driver state is invalid")
+      return { state: response.state === "complete" ? "driven" : "waiting" }
+    },
+    complete(label, scenarioHandleDigest) {
+      if (!isInteractiveLabel(label)) return "complete"
+      const filePath = receiptPath(scenarioHandleDigest)
+      if (existsSync(filePath)) {
+        const existing = object(JSON.parse(readFileSync(filePath, "utf8")) as unknown, "interactive driver receipt")
+        if (existing.label !== label || existing.scenarioHandleDigest !== scenarioHandleDigest) throw new Error("interactive driver receipt binding mismatch")
+        if (existing.phase !== "complete") return "preserve"
+      }
+      return "complete"
+    },
+    cleanup(label, scenarioHandleDigest) {
+      if (!isInteractiveLabel(label)) return
+      const filePath = receiptPath(scenarioHandleDigest)
+      if (!existsSync(filePath)) return
+      const existing = object(JSON.parse(readFileSync(filePath, "utf8")) as unknown, "interactive driver receipt")
+      if (existing.label !== label || existing.scenarioHandleDigest !== scenarioHandleDigest || existing.phase !== "complete") {
+        throw new Error("interactive driver receipt is not cleanup-ready")
+      }
+      unlinkSync(filePath)
+    },
+  }
+}
+
 export function createSanctuaryAcceptanceScenarioFinalizer(dependencies: {
   readActiveScenario(): { label: string; scenarioHandleDigest: string } | null
   recoverHealthScenario(label: string, scenarioHandleDigest: string): Promise<void>
+  finalizeInteractiveScenario?(label: SanctuaryUnit16EvidenceLabel, scenarioHandleDigest: string): "complete" | "preserve" | Promise<"complete" | "preserve">
   finalizeLocal(): void
 }): () => Promise<void> {
   const appendErrorLeaves = (errors: unknown[], error: unknown): void => {
@@ -344,8 +419,15 @@ export function createSanctuaryAcceptanceScenarioFinalizer(dependencies: {
     if (active && HEALTH_ACCEPTANCE_LABELS.has(active.label as SanctuaryUnit16EvidenceLabel)) {
       try { await dependencies.recoverHealthScenario(active.label, active.scenarioHandleDigest) } catch (error) { appendErrorLeaves(errors, error) }
     }
-    try { dependencies.finalizeLocal() } catch (error) { appendErrorLeaves(errors, error) }
-    if (errors.length > 0) throw new AggregateError(errors, "Sanctuary scenario recovery and finalization failed")
+    let preserveInteractive = false
+    if (active && isInteractiveLabel(active.label) && dependencies.finalizeInteractiveScenario) {
+      try { preserveInteractive = await dependencies.finalizeInteractiveScenario(active.label, active.scenarioHandleDigest) === "preserve" } catch (error) { appendErrorLeaves(errors, error) }
+    }
+    if (preserveInteractive) errors.push(new Error("interactive scenario requires inspect-before-retry"))
+    else try { dependencies.finalizeLocal() } catch (error) { appendErrorLeaves(errors, error) }
+    if (errors.length > 0) throw new AggregateError(errors, preserveInteractive
+      ? "Sanctuary scenario recovery and finalization failed: interactive scenario requires inspect-before-retry"
+      : "Sanctuary scenario recovery and finalization failed")
   }
 }
 
@@ -584,6 +666,33 @@ function parseTelegramTurnReceipts(raw: string, scenarioHandleDigest: string): S
   })
 }
 
+function parseInteractiveDriverReceipt(raw: string | null, label: SanctuaryUnit16EvidenceLabel, scenarioHandleDigest: string): SanctuaryInteractiveDriverReceipt | undefined {
+  if (raw === null) return undefined
+  const receipt = object(JSON.parse(raw) as unknown, "interactive driver receipt")
+  if (receipt.schemaVersion !== "sanctuary-interactive-driver-receipt-v1" || receipt.phase !== "complete"
+    || receipt.label !== label || receipt.scenarioHandleDigest !== scenarioHandleDigest) throw new Error("interactive driver receipt binding is invalid")
+  const common = ["schemaVersion", "phase", "label", "scenarioHandleDigest", "approvalIdDigest", "checkpointDigest", "suspendedSessionRevisionDigest", "approvalEpochBefore"]
+  const digests = [receipt.approvalIdDigest, receipt.checkpointDigest, receipt.suspendedSessionRevisionDigest]
+  if (!digests.every((value) => typeof value === "string" && SHA256.test(value)) || !Number.isSafeInteger(receipt.approvalEpochBefore) || Number(receipt.approvalEpochBefore) < 0) {
+    throw new Error("interactive driver receipt common coordinates are invalid")
+  }
+  if (label === "unit-16l-duplicate-callback") {
+    exactKeys(receipt, [...common, "callbackAttempts", "distinctQueryCount", "callbackDataDigest", "barrierObserved", "settledCount", "claimCount", "mutationCount", "staleReplayAttempts", "staleReplaySettled", "staleReplayMutationCount", "promptTerminal", "writeCredentialObserved"], "duplicate callback driver receipt")
+    if (receipt.callbackAttempts !== 2 || receipt.distinctQueryCount !== 2 || typeof receipt.callbackDataDigest !== "string" || !SHA256.test(receipt.callbackDataDigest)
+      || receipt.barrierObserved !== true || receipt.settledCount !== 2 || receipt.claimCount !== 1 || receipt.mutationCount !== 1
+      || receipt.staleReplayAttempts !== 1 || receipt.staleReplaySettled !== true || receipt.staleReplayMutationCount !== 0
+      || receipt.promptTerminal !== true || receipt.writeCredentialObserved !== false) throw new Error("duplicate callback driver receipt is invalid")
+  } else if (label === "unit-16m-restart-continuation") {
+    exactKeys(receipt, [...common, "approvalEpochAfterRestart", "continuationEpochAfter", "ownerImageDigest", "ownerContainerDigest", "restartCountBefore", "restartCountAfter", "pendingDigestBefore", "pendingDigestAfter", "pendingRestored", "callbackAttempts", "mutationCount", "indeterminateRecoveryObserved", "indeterminateRetryCount"], "restart continuation driver receipt")
+    if (![receipt.ownerImageDigest, receipt.ownerContainerDigest, receipt.pendingDigestBefore, receipt.pendingDigestAfter].every((value) => typeof value === "string" && SHA256.test(value))
+      || ![receipt.approvalEpochAfterRestart, receipt.continuationEpochAfter, receipt.restartCountBefore, receipt.restartCountAfter].every((value) => Number.isSafeInteger(value) && Number(value) >= 0)
+      || receipt.pendingRestored !== true || receipt.callbackAttempts !== 1 || receipt.mutationCount !== 1
+      || receipt.indeterminateRecoveryObserved !== true || receipt.indeterminateRetryCount !== 0) throw new Error("restart continuation driver receipt is invalid")
+  } else return undefined
+  const { phase: _phase, ...validated } = receipt
+  return validated as unknown as SanctuaryInteractiveDriverReceipt
+}
+
 export async function readDefaultSanctuaryScenarioFacts(
   label: (typeof SANCTUARY_UNIT_16_EVIDENCE_LABELS)[number],
   scenarioHandleDigest: string,
@@ -602,6 +711,7 @@ export async function readDefaultSanctuaryScenarioFacts(
   const cronRaw = optionalFixedFile(deps, "/home/ouro/.ouro-cli/scheduler/sanctuary.crontab")
   const healthRaw = optionalFixedFile(deps, pathFor(agentRoot, "state/health/sanctuary-health.json"))
   const healthProbeRaw = optionalFixedFile(deps, pathFor(agentRoot, `state/acceptance/health-probe-receipts/${scenarioHandleDigest}.json`))
+  const interactiveDriverRaw = optionalFixedFile(deps, pathFor(agentRoot, `state/acceptance/interactive-driver-receipts/${scenarioHandleDigest}.json`))
   const agentConfig = parsedJson(optionalFixedFile(deps, pathFor(agentRoot, "agent.json")))
   const readinessPolicy = parsedJson(optionalFixedFile(deps, pathFor(agentRoot, "provider-readiness.json")))
   const rebootRaw = optionalFixedFile(deps, "/evidence/reboot.json")
@@ -684,6 +794,11 @@ export async function readDefaultSanctuaryScenarioFacts(
     staleAcknowledged: callbackEvents.some((entry) => entry.meta.reason === "stale_callback" || entry.meta.reason === "expired"),
     argumentDigest: record.argumentDigest,
     target: typeof record.arguments.container === "string" ? record.arguments.container : null,
+    checkpointDigest: record.checkpointDigest,
+    approvalEpoch: record.epoch,
+    continuationEpoch: continuation?.continuationEpoch ?? null,
+    continuationState: continuation?.continuationState ?? null,
+    suspendedSessionRevision: record.suspendedSessionRevision,
     })
   })
   const restartAttempts = parseRestartAttempts(restartAttemptsRaw, scenarioHandleDigest)
@@ -747,6 +862,7 @@ export async function readDefaultSanctuaryScenarioFacts(
   }
   const health = parseHealthAcceptanceState(healthRaw)
   const healthProbe = parseHealthProbeReceipt(healthProbeRaw, label, scenarioHandleDigest)
+  const interactiveDriver = parseInteractiveDriverReceipt(interactiveDriverRaw, label, scenarioHandleDigest)
   const healthSweeps = health ? (health.sweepReceipts as JsonObject[]).filter((receipt) => receipt.scenarioHandleDigest === scenarioHandleDigest) : []
   const healthDeliveries = health ? health.deliveredReceipts as JsonObject[] : []
   const scenarioDeliveryIds = new Set(healthSweeps.flatMap((receipt) => typeof receipt.deliveryId === "string" ? [receipt.deliveryId] : []))
@@ -806,6 +922,7 @@ export async function readDefaultSanctuaryScenarioFacts(
     "identity-surface-audit": identity ? { inspectedRecordCount: identity.inspectedRecordCount, opaqueSubjectCount: identity.opaqueSubjectCount, mismatchCount: identity.mismatchCount, rawLeakCount: identity.rawLeakCount, surfaceDigest: identity.surfaceDigest } : null,
     "containment-audit": { toolSurfaceExact, mountsExact: container?.mountsExact, securityExact: container?.securityExact, networkMode: container?.networkMode, writableKeyExposure: container?.writableKeyExposure },
     "health-probe-receipt": healthProbe ?? null,
+    "interactive-driver-receipt": parsedJson(interactiveDriverRaw),
   }
   return {
     capturedAt: deps.now?.() ?? Date.now(),
@@ -824,6 +941,7 @@ export async function readDefaultSanctuaryScenarioFacts(
     } : undefined,
     provider: liveProvider,
     healthProbe,
+    interactiveDriver,
     cron: cronRaw ? { registered: canonicalSanctuaryHealthCronRegistered(cronRaw), fingerprint: createHash("sha256").update(cronRaw).digest("hex"), receiptDigest: createHash("sha256").update(JSON.stringify(health?.deliveredReceipts ?? null)).digest("hex"), sweepCount: healthSweeps.length } : undefined,
     health: health ? { transitionCount: healthSweeps.filter((receipt) => Number(receipt.opened) > 0 || Number(receipt.recovered) > 0).length, alertCount: scenarioDeliveries.filter((receipt) => receipt.kind === "transition" || receipt.kind === "transition_and_digest").length, productionRestored: container?.running === true && container.health === "healthy" } : undefined,
     digest: health && digestFiredWithinMs !== null ? { scheduleObserved: Boolean(cronRaw && canonicalSanctuaryHealthCronRegistered(cronRaw)), messageCount: scenarioDeliveries.filter((receipt) => receipt.kind === "digest" || receipt.kind === "transition_and_digest").length, firedWithinMs: digestFiredWithinMs, productionRestored: container?.running === true && container.health === "healthy" } : undefined,

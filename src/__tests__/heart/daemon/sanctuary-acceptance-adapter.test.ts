@@ -90,7 +90,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     const scenarioHandleDigest = "a".repeat(64)
     const approvalRecord = {
       approvalId: "approval-1", state: "proposed", toolName: "unraid_restart_container", arguments: { container: "calibre-web" },
-      checkpointDigest: "b".repeat(64), epoch: 0, suspendedSessionRevision: "c".repeat(64),
+      checkpointDigest: "b".repeat(64), epoch: 0, suspendedSessionRevision: "c".repeat(64), transport: "telegram",
     }
     const pending = [{ approvalId: "approval-1", messageId: "42", deliveryState: "bound", approveCallbackData: "a:opaque", denyCallbackData: "d:opaque", expiresAt: Date.now() + 300_000 }]
     const hostRequests: Array<Record<string, unknown>> = []

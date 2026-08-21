@@ -43,7 +43,56 @@ export interface SanctuaryScenarioApproval {
   staleAcknowledged: boolean
   argumentDigest: string
   target: string | null
+  checkpointDigest?: string
+  approvalEpoch?: number
+  continuationEpoch?: number | null
+  continuationState?: string | null
+  suspendedSessionRevision?: string | null
 }
+
+interface SanctuaryInteractiveDriverReceiptBase {
+  schemaVersion: "sanctuary-interactive-driver-receipt-v1"
+  scenarioHandleDigest: string
+  approvalIdDigest: string
+  checkpointDigest: string
+  suspendedSessionRevisionDigest: string
+  approvalEpochBefore: number
+}
+
+export interface SanctuaryDuplicateCallbackDriverReceipt extends SanctuaryInteractiveDriverReceiptBase {
+  label: "unit-16l-duplicate-callback"
+  callbackAttempts: number
+  distinctQueryCount: number
+  callbackDataDigest: string
+  barrierObserved: boolean
+  settledCount: number
+  claimCount: number
+  mutationCount: number
+  staleReplayAttempts: number
+  staleReplaySettled: boolean
+  staleReplayMutationCount: number
+  promptTerminal: boolean
+  writeCredentialObserved: boolean
+}
+
+export interface SanctuaryRestartContinuationDriverReceipt extends SanctuaryInteractiveDriverReceiptBase {
+  label: "unit-16m-restart-continuation"
+  approvalEpochAfterRestart: number
+  continuationEpochAfter: number
+  ownerImageDigest: string
+  ownerContainerDigest: string
+  restartCountBefore: number
+  restartCountAfter: number
+  pendingDigestBefore: string
+  pendingDigestAfter: string
+  pendingRestored: boolean
+  callbackAttempts: number
+  mutationCount: number
+  indeterminateRecoveryObserved: boolean
+  indeterminateRetryCount: number
+}
+
+export type SanctuaryInteractiveDriverReceipt = SanctuaryDuplicateCallbackDriverReceipt | SanctuaryRestartContinuationDriverReceipt
 
 export interface SanctuaryScenarioRestartAttempt {
   state: "attempt_not_started" | "attempting" | "succeeded" | "attempted_or_indeterminate"
@@ -130,6 +179,7 @@ export interface SanctuaryScenarioFacts {
   health?: { transitionCount: number; alertCount: number; productionRestored: boolean }
   digest?: { scheduleObserved: boolean; messageCount: number; firedWithinMs: number; productionRestored: boolean }
   healthProbe?: SanctuaryHealthProbeReceipt
+  interactiveDriver?: SanctuaryInteractiveDriverReceipt
   reboot?: { phase: "preflight" | "requested" | "complete"; requestDigest: string; requestCount: number; checkpointPersisted: boolean; unrelatedHostOperations: number; bootIdentityChanged: boolean; hostReady: boolean; arrayReady: boolean; dockerReady: boolean; butlerReady: boolean; tailscaleReady: boolean; sshReady: boolean }
   containment?: { auditComplete: boolean; readOnlyBoundaryHeld: boolean; sensitiveMaterialObserved: boolean; stopDenied: boolean; restartDenied: boolean; denialAuditCount: number; denialStateUnchanged?: boolean; denialProbeCompleted?: boolean }
 }
@@ -146,6 +196,11 @@ export interface SanctuaryScenarioCaptureDependencies {
     poll(label: SanctuaryUnit16EvidenceLabel, scenarioHandleDigest: string): Promise<{ state: "waiting" } | { state: "ready"; containerSnapshot: JsonObject }>
     recover(label: SanctuaryUnit16EvidenceLabel, scenarioHandleDigest: string): Promise<void>
   }
+  interactiveDriver?: {
+    poll(label: SanctuaryUnit16EvidenceLabel, scenarioHandleDigest: string): Promise<{ state: "waiting" | "driven" }>
+    complete(label: SanctuaryUnit16EvidenceLabel, scenarioHandleDigest: string): "complete" | "preserve" | Promise<"complete" | "preserve">
+    cleanup(label: SanctuaryUnit16EvidenceLabel, scenarioHandleDigest: string): void | Promise<void>
+  }
   receiptRoot?: string
   gateStatusPath?: string
 }
@@ -154,6 +209,10 @@ const HEALTH_SCENARIO_LABELS = new Set<SanctuaryUnit16EvidenceLabel>([
   "unit-16f-cron-fingerprint",
   "unit-16g-health-transition",
   "unit-16h-daily-digest",
+])
+const INTERACTIVE_DRIVER_LABELS = new Set<SanctuaryUnit16EvidenceLabel>([
+  "unit-16l-duplicate-callback",
+  "unit-16m-restart-continuation",
 ])
 
 interface Receipt {
@@ -213,6 +272,14 @@ function intendedApproval(before: SanctuaryScenarioFacts, after: SanctuaryScenar
 
 function intendedRestartApproval(approval: SanctuaryScenarioApproval | null): approval is SanctuaryScenarioApproval {
   return approval?.toolName === "unraid_restart_container" && typeof approval.target === "string" && approval.target.length > 0
+}
+
+function interactiveReceiptBindsApproval(receipt: SanctuaryInteractiveDriverReceipt, approval: SanctuaryScenarioApproval): boolean {
+  return receipt.approvalIdDigest === hash(approval.approvalId)
+    && receipt.checkpointDigest === approval.checkpointDigest
+    && receipt.approvalEpochBefore === approval.approvalEpoch
+    && typeof approval.suspendedSessionRevision === "string"
+    && receipt.suspendedSessionRevisionDigest === hash(approval.suspendedSessionRevision)
 }
 
 function healthProbeRestored(probe: SanctuaryHealthProbeReceipt, currentCron: SanctuaryScenarioFacts["cron"]): boolean {
@@ -365,11 +432,30 @@ export function deriveSanctuaryScenarioAssertions(
       return { buttonsRemoved: approval.buttonsRemoved, mutationCount, promptTerminal: approval.terminalPrompt, staleAcknowledged: approval.staleAcknowledged, staleReplayMutationCount: approval.replayMutationCount, state: approval.state }
     case "unit-16l-duplicate-callback": {
       if (!intendedRestartApproval(approval) || !completeAttemptLedgerLinked || approval.callbackCount !== 2 || approval.settledCount !== 2 || approval.claimCount !== 1 || !approval.terminalPrompt || approval.replayMutationCount !== 0 || mutationCount !== 1 || scenarioMutationCount !== 1 || !restartSucceeded) return null
-      return { callbackCount: approval.callbackCount, claimCount: approval.claimCount, mutationCount, promptTerminal: approval.terminalPrompt, replayMutationCount: approval.replayMutationCount, settledCount: approval.settledCount }
+      const driver = after.interactiveDriver
+      if (!driver || driver.label !== "unit-16l-duplicate-callback"
+        || !interactiveReceiptBindsApproval(driver, approval) || driver.callbackAttempts !== 2 || driver.distinctQueryCount !== 2
+        || !driver.barrierObserved || driver.settledCount !== 2 || driver.claimCount !== 1 || driver.mutationCount !== 1
+        || driver.staleReplayAttempts !== 1 || !driver.staleReplaySettled || driver.staleReplayMutationCount !== 0
+        || !driver.promptTerminal || driver.writeCredentialObserved) return null
+      return { callbackCount: approval.callbackCount, claimCount: approval.claimCount, mutationCount, promptTerminal: approval.terminalPrompt, replayMutationCount: approval.replayMutationCount, settledCount: approval.settledCount, staleReplaySettled: true, writeCredentialAbsent: true }
     }
     case "unit-16m-restart-continuation":
       if (!intendedRestartApproval(approval) || !completeAttemptLedgerLinked || approval.state !== "succeeded" || mutationCount !== 1 || scenarioMutationCount !== 1 || !restartSucceeded || attemptedIndeterminateRetryCount !== 0) return null
-      return { attemptedIndeterminateRetryCount, mutationCount, preAttemptResumed: approval.continuationCompleted, restartObserved: restartSucceeded && after.events.filter((entry) => entry.event === "senses.telegram_approved_restart_end" && entry.meta.approvalId === approval.approvalId).length - before.events.filter((entry) => entry.event === "senses.telegram_approved_restart_end" && entry.meta.approvalId === approval.approvalId).length === 1, state: approval.state }
+      if (!after.interactiveDriver || after.interactiveDriver.label !== "unit-16m-restart-continuation"
+        || !interactiveReceiptBindsApproval(after.interactiveDriver, approval)
+        || !after.interactiveDriver.pendingRestored || after.interactiveDriver.pendingDigestBefore !== after.interactiveDriver.pendingDigestAfter || after.interactiveDriver.callbackAttempts !== 1 || after.interactiveDriver.mutationCount !== 1
+        || after.interactiveDriver.approvalEpochBefore !== after.interactiveDriver.approvalEpochAfterRestart
+        || after.interactiveDriver.continuationEpochAfter <= after.interactiveDriver.approvalEpochAfterRestart
+        || approval.continuationEpoch !== after.interactiveDriver.continuationEpochAfter || approval.continuationState !== "completed"
+        || after.interactiveDriver.restartCountAfter !== after.interactiveDriver.restartCountBefore + 1
+        || !after.interactiveDriver.indeterminateRecoveryObserved || after.interactiveDriver.indeterminateRetryCount !== 0) return null
+      return {
+        attemptedIndeterminateRetryCount, mutationCount, preAttemptResumed: after.interactiveDriver.pendingRestored,
+        butlerRestartObserved: true, checkpointEpochPreserved: true, continuationEpochAdvanced: true,
+        restartObserved: restartSucceeded && after.events.filter((entry) => entry.event === "senses.telegram_approved_restart_end" && entry.meta.approvalId === approval.approvalId).length - before.events.filter((entry) => entry.event === "senses.telegram_approved_restart_end" && entry.meta.approvalId === approval.approvalId).length === 1,
+        state: approval.state,
+      }
   }
 }
 
@@ -406,6 +492,11 @@ export function createSanctuaryScenarioCapture(deps: SanctuaryScenarioCaptureDep
       if (probe.state === "waiting") return { state: "waiting", checkpointDigest: receipt.checkpointDigest }
       factOptions = { containerSnapshot: probe.containerSnapshot }
     }
+    if (INTERACTIVE_DRIVER_LABELS.has(input.label)) {
+      if (!deps.interactiveDriver) throw new Error("interactive scenario driver is unavailable")
+      const driven = await deps.interactiveDriver.poll(input.label, receipt.scenarioHandleDigest)
+      if (driven.state === "waiting") return { state: "waiting", checkpointDigest: receipt.checkpointDigest }
+    }
     const after = await deps.readFacts(input.label, receipt.scenarioHandleDigest, factOptions)
     if (input.label === "unit-15c-1-no-callback-terminalization" && !receipt.noCallbackBaseline) {
       const activeApproval = after.approvals.find((approval) => approval.state === "proposed" || approval.state === "claimed")
@@ -426,9 +517,13 @@ export function createSanctuaryScenarioCapture(deps: SanctuaryScenarioCaptureDep
     const assertions = validateSanctuaryUnit16EvidenceAssertions(input.label, candidate)
     const sourceDigests = Object.fromEntries(input.sources.map((source) => [source, hash(after.sourceValues[source])]))
     if (HEALTH_SCENARIO_LABELS.has(input.label)) await deps.healthDriver!.recover(input.label, receipt.scenarioHandleDigest)
+    if (INTERACTIVE_DRIVER_LABELS.has(input.label) && await deps.interactiveDriver!.complete(input.label, receipt.scenarioHandleDigest) !== "complete") {
+      throw new Error("interactive scenario requires inspect-before-retry")
+    }
     publishSanctuaryAcceptanceGateStatus({ label: input.label, gate: input.externalGate, phase: "complete", startedAt: receipt.startedAt }, deps.gateStatusPath)
     clearSanctuaryAcceptanceMarker("sanctuary", receipt.scenarioHandleDigest)
     fs.unlinkSync(filePath)
+    if (INTERACTIVE_DRIVER_LABELS.has(input.label)) await deps.interactiveDriver!.cleanup(input.label, receipt.scenarioHandleDigest)
     emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_acceptance_scenario_end", message: "Sanctuary live acceptance scenario completed", meta: { label: input.label, scenarioHandleDigest: receipt.scenarioHandleDigest } })
     return { state: "complete", checkpointDigest: receipt.checkpointDigest, sourceDigests, assertions }
   }

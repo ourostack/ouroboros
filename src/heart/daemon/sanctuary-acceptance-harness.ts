@@ -470,17 +470,17 @@ export function validateSanctuaryUnit16EvidenceAssertions(label: SanctuaryUnit16
       if (value.state !== "expired") throw new Error(`${label} state must be expired`)
       break
     case "unit-16l-duplicate-callback":
-      exact(["callbackCount", "claimCount", "mutationCount", "promptTerminal", "replayMutationCount", "settledCount"])
+      exact(["callbackCount", "claimCount", "mutationCount", "promptTerminal", "replayMutationCount", "settledCount", "staleReplaySettled", "writeCredentialAbsent"])
       requiredInteger(value, "callbackCount", 2, label)
       requiredInteger(value, "claimCount", 1, label)
       requiredInteger(value, "mutationCount", 1, label)
       requiredInteger(value, "settledCount", 2, label)
       requiredInteger(value, "replayMutationCount", 0, label)
-      requiredTrue(value, "promptTerminal", label)
+      allTrue(["promptTerminal", "staleReplaySettled", "writeCredentialAbsent"])
       break
     case "unit-16m-restart-continuation":
-      exact(["attemptedIndeterminateRetryCount", "checkpointEpochPreserved", "continuationEpochAdvanced", "mutationCount", "ownerContainerChanged", "preAttemptResumed", "restartObserved", "state"])
-      allTrue(["checkpointEpochPreserved", "continuationEpochAdvanced", "ownerContainerChanged", "preAttemptResumed", "restartObserved"])
+      exact(["attemptedIndeterminateRetryCount", "butlerRestartObserved", "checkpointEpochPreserved", "continuationEpochAdvanced", "mutationCount", "preAttemptResumed", "restartObserved", "state"])
+      allTrue(["butlerRestartObserved", "checkpointEpochPreserved", "continuationEpochAdvanced", "preAttemptResumed", "restartObserved"])
       requiredInteger(value, "attemptedIndeterminateRetryCount", 0, label)
       requiredInteger(value, "mutationCount", 1, label)
       if (value.state !== "succeeded") throw new Error(`${label} state must be succeeded`)
