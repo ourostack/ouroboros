@@ -834,6 +834,39 @@ describe("Telegram durable authorized long poll", () => {
     await expect(poll.pollOnce()).rejects.toThrow("stopped")
   })
 
+  it.each([
+    ["authorized message", { update_id: 7, message: { message_id: 8, from: { id: 10 }, chat: { id: 10, type: "private" }, text: "restart" } }],
+    ["authorized callback", { update_id: 7, callback_query: { id: "query", from: { id: 10 }, data: "a:opaque", message: { message_id: 8, chat: { id: 10 } } } }],
+    ["unauthorized drop", { update_id: 7, message: { message_id: 8, from: { id: 99 }, chat: { id: 99, type: "private" }, text: "foreign" } }],
+  ] as const)("checks acceptance audit exhaustion before any %s effect", async (_label, update) => {
+    const offsetStore = { load: () => 0, save: vi.fn() }
+    const inboxStore = {
+      quarantineStranded: vi.fn(() => []), loadIndeterminate: vi.fn(() => []), loadPending: vi.fn(() => []),
+      acknowledgeIndeterminateWarning: vi.fn(() => true), capture: vi.fn(() => true), claim: vi.fn(() => true),
+      complete: vi.fn(), discardCompletedBefore: vi.fn(), load: vi.fn(),
+    }
+    const onMessage = vi.fn(async () => undefined)
+    const onUpdate = vi.fn(async () => true)
+    const acceptanceEventMeta = vi.fn(() => ({}))
+    const onBeforeDispatch = vi.fn(() => { throw new Error("Telegram audit ledger exceeds its bound") })
+    const onDispatchSettled = vi.fn()
+    const poll = createTelegramLongPoll({
+      api: { stop: vi.fn(), request: vi.fn(async () => [update]) }, expectedUserId: "10", expectedChatId: "10",
+      offsetStore, inboxStore, onMessage, onUpdate, acceptanceEventMeta, onBeforeDispatch, onDispatchSettled,
+    })
+
+    await expect(poll.pollOnce()).rejects.toThrow("Telegram audit ledger exceeds its bound")
+    expect(onBeforeDispatch).toHaveBeenCalledOnce()
+    expect(offsetStore.save).not.toHaveBeenCalled()
+    expect(inboxStore.capture).not.toHaveBeenCalled()
+    expect(inboxStore.claim).not.toHaveBeenCalled()
+    expect(inboxStore.complete).not.toHaveBeenCalled()
+    expect(onMessage).not.toHaveBeenCalled()
+    expect(onUpdate).not.toHaveBeenCalled()
+    expect(acceptanceEventMeta).not.toHaveBeenCalled()
+    expect(onDispatchSettled).not.toHaveBeenCalled()
+  })
+
   it("propagates a non-shutdown polling failure from the joined run lifecycle", async () => {
     const poll = createTelegramLongPoll({
       api: { request: vi.fn(async () => { throw new Error("synthetic poll failure") }), stop: vi.fn() },

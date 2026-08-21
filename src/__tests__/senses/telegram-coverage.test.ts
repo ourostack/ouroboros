@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
+import { createLogger } from "../../nerves"
+import { TELEGRAM_ACCEPTANCE_AUDIT_HEAD_RELATIVE_PATH, TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH } from "../../senses/telegram-audit-ledger"
 
 const mocks = vi.hoisted(() => ({
   getAgentRoot: vi.fn(() => "/tmp/telegram-agent"),
@@ -86,6 +88,18 @@ beforeEach(() => {
 })
 
 describe("Telegram sense coverage contracts", () => {
+  const acceptanceEvent = (name = "senses.telegram_turn_start") => ({
+    event: name,
+    trace_id: "acceptance-trace",
+    component: "senses",
+    message: "scenario-bound Telegram event",
+    meta: { scenarioHandleDigest: "a".repeat(64) },
+  })
+
+  const emitGlobal = (entry: ReturnType<typeof acceptanceEvent>) => {
+    createLogger({ level: "info", sinks: [() => undefined], now: () => new Date("2026-08-20T20:00:00.000Z") }).info(entry)
+  }
+
   it("creates one durable mode-0600 identity key in a repaired mode-0700 directory and rejects corrupt or permissive keys", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-identity-"))
     try {
@@ -517,6 +531,77 @@ describe("Telegram sense coverage contracts", () => {
     expect(f.transport.reconcileExpired).toHaveBeenCalledBefore(f.poll.run)
     await app.stop()
     expect(f.runtime.close).toHaveBeenCalledOnce()
+  })
+
+  it("keeps unrelated global log volume out of the dedicated scenario-bound Telegram ledger", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-audit-filter-"))
+    mocks.getAgentRoot.mockReturnValueOnce(root)
+    const f = defaultFixture()
+    const app = createTelegramSenseApp({ agentName: "sanctuary", credentials, identityKey: "k".repeat(43) })
+    const ledgerPath = path.join(root, TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH)
+    try {
+      for (let index = 0; index < 1_000; index += 1) emitGlobal({ ...acceptanceEvent("daemon.unrelated_noise"), meta: { index } })
+      expect(fs.readFileSync(ledgerPath, "utf8")).toBe("")
+      emitGlobal(acceptanceEvent())
+      expect(fs.readFileSync(ledgerPath, "utf8").trim().split("\n")).toHaveLength(1)
+      await app.stop()
+      expect(f.api.stop).toHaveBeenCalledOnce()
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it("rolls back the audit lease after a corrupt-offset constructor failure and retry", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-audit-constructor-"))
+    mocks.getAgentRoot.mockReturnValue(root)
+    defaultFixture()
+    mocks.createTelegramLongPoll.mockImplementationOnce(() => { throw new Error("Telegram offset state is corrupt") })
+    expect(() => createTelegramSenseApp({ agentName: "sanctuary", credentials, identityKey: "k".repeat(43) })).toThrow("Telegram offset state is corrupt")
+    const ledgerPath = path.join(root, TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH)
+    emitGlobal(acceptanceEvent())
+    expect(fs.readFileSync(ledgerPath, "utf8")).toBe("")
+
+    const retry = defaultFixture()
+    const app = createTelegramSenseApp({ agentName: "sanctuary", credentials, identityKey: "k".repeat(43) })
+    await app.stop()
+    const stopped = fs.readFileSync(ledgerPath, "utf8")
+    emitGlobal(acceptanceEvent())
+    expect(fs.readFileSync(ledgerPath, "utf8")).toBe(stopped)
+    expect(retry.api.stop).toHaveBeenCalledOnce()
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+
+  it("releases the audit sink in finally while preserving a primary stop failure", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-audit-stop-"))
+    mocks.getAgentRoot.mockReturnValueOnce(root)
+    const f = defaultFixture()
+    const primary = new Error("approval runtime close failed")
+    f.runtime.close.mockImplementationOnce(() => { throw primary })
+    const app = createTelegramSenseApp({ agentName: "sanctuary", credentials, identityKey: "k".repeat(43) })
+    await expect(app.stop()).rejects.toBe(primary)
+    const ledgerPath = path.join(root, TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH)
+    const stopped = fs.readFileSync(ledgerPath, "utf8")
+    emitGlobal(acceptanceEvent())
+    expect(fs.readFileSync(ledgerPath, "utf8")).toBe(stopped)
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+
+  it("unregisters a failed-integrity audit lease so a repaired retry can start cleanly", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-audit-integrity-"))
+    mocks.getAgentRoot.mockReturnValue(root)
+    defaultFixture()
+    const app = createTelegramSenseApp({ agentName: "sanctuary", credentials, identityKey: "k".repeat(43) })
+    const ledgerPath = path.join(root, TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH)
+    const headPath = path.join(root, TELEGRAM_ACCEPTANCE_AUDIT_HEAD_RELATIVE_PATH)
+    fs.writeFileSync(headPath, "{}\n")
+    await expect(app.stop()).rejects.toThrow("audit head")
+    fs.rmSync(ledgerPath, { force: true })
+    fs.rmSync(headPath, { force: true })
+
+    defaultFixture()
+    const repaired = createTelegramSenseApp({ agentName: "sanctuary", credentials, identityKey: "k".repeat(43) })
+    await expect(repaired.stop()).resolves.toBeUndefined()
+    fs.rmSync(root, { recursive: true, force: true })
   })
 
   it("supplies an empty tool context if context construction yields no value", () => {
