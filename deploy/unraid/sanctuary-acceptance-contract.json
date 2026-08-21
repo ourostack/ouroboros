@@ -50,7 +50,9 @@
     "scenario-finalize": { "operation": "finalize_acceptance_scenarios", "authority": "fixed-public-gate-private-marker-receipt-cleanup", "modelReachable": false, "timeoutMs": 120000, "response": "{finalized:true}" },
     "health-probe-start": { "operation": "start_health_probe", "authority": "fixed-owner-bound-packaged-health-probe-start", "modelReachable": false, "timeoutMs": 170000, "response": "{state:started,operationDigest}" },
     "health-probe-status": { "operation": "health_probe_status", "authority": "fixed-fast-running-state-or-full-owner-reobservation-and-final-attestation", "modelReachable": false, "timeoutMs": 170000, "response": "{state:running|failed|recovery_required|absent}|{state:complete,containerSnapshot}" },
-    "health-probe-recovery": { "operation": "recover_health_probe", "authority": "fixed-fast-owner-bound-health-snapshot-restore", "modelReachable": false, "timeoutMs": 90000, "response": "{recovered:boolean}" }
+    "health-probe-recovery": { "operation": "recover_health_probe", "authority": "fixed-fast-owner-bound-health-snapshot-restore", "modelReachable": false, "timeoutMs": 90000, "response": "{recovered:boolean}" },
+    "interactive-duplicate-driver": { "operation": "drive_duplicate_callbacks", "authority": "fixed-operator-only-production-runtime-duplicate-callback-drive", "modelReachable": false, "timeoutMs": 170000, "request": "{targetId,label,scenarioHandleDigest}", "response": "sanctuary-interactive-driver-receipt-v2" },
+    "interactive-restart-driver": { "operation": "drive_restart_continuation", "authority": "fixed-operator-only-two-phase-production-owner-restart-and-reconciliation", "modelReachable": false, "timeoutMs": 240000, "request": "{targetId,label,scenarioHandleDigest}", "response": "sanctuary-interactive-driver-receipt-v2" }
   },
   "scenarioSources": {
     "identity-key": { "kind": "fixed-file", "path": "/home/ouro/AgentBundles/sanctuary.ouro/state/senses/telegram/identity.key", "redaction": "sha256-only" },
@@ -69,6 +71,7 @@
     "health-runtime": { "kind": "fixed-runtime-api", "operation": "sanctuary-health-transition", "redaction": "typed-counters-and-digests-only" },
     "digest-runtime": { "kind": "fixed-runtime-api", "operation": "sanctuary-daily-digest", "redaction": "typed-counters-and-digests-only" },
     "health-probe-receipt": { "kind": "fixed-private-json", "path": "/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance/health-probe-receipts/<scenarioHandleDigest>.json", "redaction": "typed-phase-counters-owner-state-and-cleanup-digests-only" },
+    "interactive-driver-receipt": { "kind": "fixed-private-json", "path": "/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance/interactive-driver-receipts/<scenarioHandleDigest>.json", "redaction": "digested-approval-checkpoint-session-callback-and-owner-coordinates-only" },
     "reboot-checkpoint": { "kind": "fixed-json", "path": "/evidence/reboot.json", "redaction": "typed-state-and-digests-only" }
   },
   "configTemplates": {

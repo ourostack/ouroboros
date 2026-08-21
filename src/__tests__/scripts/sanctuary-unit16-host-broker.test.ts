@@ -31,6 +31,18 @@ interface BrokerModule {
   runInteractiveDriver(input: Record<string, string>, dependencies?: {
     run(executable: string, args: string[], options: Record<string, unknown>): { error?: Error; status: number | null; stdout?: string }
   }): Record<string, unknown>
+  driveRestartContinuation(input: Record<string, string>, dependencies: {
+    readReceipt(input: Record<string, string>): Record<string, unknown> | null
+    persistReceipt(input: Record<string, string>, receipt: Record<string, unknown>): void
+    runtime(operation: string, input: Record<string, string>): Record<string, unknown> | Promise<Record<string, unknown>>
+    restart(input: Record<string, string>): Record<string, unknown> | Promise<Record<string, unknown>>
+    snapshot(): Record<string, unknown> | Promise<Record<string, unknown>>
+  }): Promise<Record<string, unknown>>
+  driveDuplicateCallbacks(input: Record<string, string>, dependencies: {
+    readReceipt(input: Record<string, string>): Record<string, unknown> | null
+    persistReceipt(input: Record<string, string>, receipt: Record<string, unknown>): void
+    runtime(input: Record<string, string>): Record<string, unknown> | Promise<Record<string, unknown>>
+  }): Promise<Record<string, unknown>>
   createHealthProbeOperationCoordinator(): {
     start<T>(scenario: string, operation: () => T | Promise<T>): Promise<T>
     recover<T>(scenario: string, operation: () => T | Promise<T>): Promise<T>
@@ -78,6 +90,8 @@ async function broker(): Promise<BrokerModule> {
   return import(pathToFileURL(path.resolve("deploy/unraid/sanctuary-unit16-host-broker.mjs")).href) as Promise<{
     createOwnerMutationCoordinator(): ReturnType<BrokerModule["createOwnerMutationCoordinator"]>
     runInteractiveDriver(input: Record<string, string>, dependencies?: { run(executable: string, args: string[], options: Record<string, unknown>): { error?: Error; status: number | null; stdout?: string } }): Record<string, unknown>
+    driveRestartContinuation: BrokerModule["driveRestartContinuation"]
+    driveDuplicateCallbacks: BrokerModule["driveDuplicateCallbacks"]
     createHealthProbeOperationCoordinator(): { start<T>(scenario: string, operation: () => T | Promise<T>): Promise<T>; recover<T>(scenario: string, operation: () => T | Promise<T>): Promise<T> }
     completeHealthProbeFromReceipt(request: Record<string, string>, snapshot: Record<string, unknown>, readReceipt: () => Record<string, unknown>): { state: "complete"; containerSnapshot: Record<string, unknown> }
     attestHealthProbeProcessAbsent(input: Record<string, string>, dependencies?: {
@@ -146,16 +160,16 @@ describe("Sanctuary Unit 16 host broker", () => {
   it("coordinates owner mutation across health and interactive operations in both orderings", async () => {
     const { createOwnerMutationCoordinator } = await broker()
     const coordinator = createOwnerMutationCoordinator()
-    await coordinator.healthStart("health-a", () => "started")
+    await coordinator.healthStart("a".repeat(64), () => "started")
     await expect(coordinator.interactive(() => "restart")).rejects.toThrow(/health probe is active/u)
-    await coordinator.healthRecover("health-a", () => "recovered")
+    await coordinator.healthRecover("a".repeat(64), () => "recovered")
 
     let release!: () => void
     const blocked = new Promise<void>((resolve) => { release = resolve })
     const events: string[] = []
     const restarting = coordinator.interactive(async () => { events.push("restart-start"); await blocked; events.push("restart-end") })
     await Promise.resolve()
-    const starting = coordinator.healthStart("health-b", () => { events.push("health-start") })
+    const starting = coordinator.healthStart("b".repeat(64), () => { events.push("health-start") })
     await Promise.resolve()
     expect(events).toEqual(["restart-start"])
     release()
@@ -188,19 +202,91 @@ describe("Sanctuary Unit 16 host broker", () => {
     }
   })
 
+  it("persists duplicate-callback uncertainty and refuses an unsafe retry", async () => {
+    const { driveDuplicateCallbacks } = await broker()
+    const input = { label: "unit-16l-duplicate-callback", scenarioHandleDigest: "a".repeat(64) }
+    const writes: Record<string, unknown>[] = []
+    await expect(driveDuplicateCallbacks(input, {
+      readReceipt: () => null,
+      persistReceipt: (_coordinates, receipt) => { writes.push(receipt) },
+      runtime: () => { throw new Error("runtime transport severed") },
+    })).rejects.toThrow(/transport severed/u)
+    expect(writes.map((receipt) => receipt.phase)).toEqual(["attempting", "attempted_or_indeterminate"])
+    await expect(driveDuplicateCallbacks(input, {
+      readReceipt: () => writes.at(-1)!, persistReceipt: () => {}, runtime: () => { throw new Error("must not retry") },
+    })).rejects.toThrow(/inspect-before-retry/u)
+  })
+
   it("releases failed interactive ownership but preserves active health ownership until recovery", async () => {
     const { createOwnerMutationCoordinator } = await broker()
     const coordinator = createOwnerMutationCoordinator()
     await expect(coordinator.interactive(() => { throw new Error("crash") })).rejects.toThrow("crash")
     await expect(coordinator.interactive(() => "retry")).resolves.toBe("retry")
-    await expect(coordinator.healthStart("health-a", () => { throw new Error("start crash") })).rejects.toThrow("start crash")
+    await expect(coordinator.healthStart("a".repeat(64), () => { throw new Error("start crash") })).rejects.toThrow("start crash")
     await expect(coordinator.interactive(() => "after failed start")).resolves.toBe("after failed start")
-    await coordinator.healthStart("health-b", () => "started")
+    await coordinator.healthStart("b".repeat(64), () => "started")
     await expect(coordinator.interactive(() => "unsafe")).rejects.toThrow(/health probe is active/u)
-    await expect(coordinator.healthRecover("health-b", () => { throw new Error("recovery crash") })).rejects.toThrow("recovery crash")
+    await expect(coordinator.healthRecover("b".repeat(64), () => { throw new Error("recovery crash") })).rejects.toThrow("recovery crash")
     await expect(coordinator.interactive(() => "still unsafe")).rejects.toThrow(/health probe is active/u)
-    await coordinator.healthRecover("health-b", () => "recovered")
+    await coordinator.healthRecover("b".repeat(64), () => "recovered")
     await expect(coordinator.interactive(() => "safe")).resolves.toBe("safe")
+  })
+
+  it("does not overlap interactive mutation with an asynchronous health start", async () => {
+    const { createOwnerMutationCoordinator } = await broker()
+    const coordinator = createOwnerMutationCoordinator()
+    let release!: () => void
+    const barrier = new Promise<void>((resolve) => { release = resolve })
+    const events: string[] = []
+    const starting = coordinator.healthStart("a".repeat(64), async () => { events.push("health-entered"); await barrier; events.push("health-started") })
+    await Promise.resolve()
+    const interactive = coordinator.interactive(() => { events.push("interactive") })
+    await Promise.resolve()
+    expect(events).toEqual(["health-entered"])
+    release()
+    await starting
+    await expect(interactive).rejects.toThrow(/health probe is active/u)
+    expect(events).toEqual(["health-entered", "health-started"])
+  })
+
+  it("persists restart preparation, re-enters after the exact owner restart, and never retries the action", async () => {
+    const { driveRestartContinuation } = await broker()
+    const input = { label: "unit-16m-restart-continuation", scenarioHandleDigest: "a".repeat(64) }
+    const writes: Record<string, unknown>[] = []
+    const operations: string[] = []
+    const prepared = {
+      schemaVersion: "sanctuary-interactive-driver-receipt-v2", phase: "prepared", ...input,
+      approvalIdDigest: "b".repeat(64), checkpointDigest: "c".repeat(64), suspendedSessionRevisionDigest: "d".repeat(64),
+      approvalEpochBefore: 0, pendingDigestBefore: "1".repeat(64), indeterminateRecoveryObserved: true,
+    }
+    const reconciled = {
+      approvalEpochAfterRestart: 0, continuationEpochAfter: 1, pendingDigestAfter: "1".repeat(64), pendingRestored: true,
+      callbackAttempts: 1, mutationCount: 1, indeterminateRetryCount: 0,
+    }
+    const result = await driveRestartContinuation(input, {
+      readReceipt: () => null,
+      persistReceipt: (_coordinates, receipt) => { writes.push(receipt) },
+      runtime: (operation) => { operations.push(operation); return operation === "prepare_restart_continuation" ? prepared : reconciled },
+      snapshot: () => ({ imageId: `sha256:${"e".repeat(64)}`, containerId: "f".repeat(64), running: true, health: "healthy", restartCount: 4 }),
+      restart: () => ({ restarted: true, restartInvocationCount: 1, ownerImageDigest: "e".repeat(64), ownerContainerDigest: "f".repeat(64), restartCountBefore: 4, restartCountAfter: 5 }),
+    })
+    expect(operations).toEqual(["prepare_restart_continuation", "reconcile_restart_continuation"])
+    expect(writes.map((receipt) => receipt.phase)).toEqual(["attempting", "prepared", "complete"])
+    expect(result).toMatchObject({ phase: "complete", callbackAttempts: 1, mutationCount: 1, indeterminateRetryCount: 0, restartCountBefore: 4, restartCountAfter: 5 })
+
+    await expect(driveRestartContinuation(input, {
+      readReceipt: () => prepared, persistReceipt: () => {}, runtime: () => { throw new Error("must not retry") }, restart: () => { throw new Error("must not restart") }, snapshot: () => { throw new Error("must not inspect incomplete coordinates") },
+    })).rejects.toThrow(/inspect-before-retry/u)
+
+    const recoveredWrites: Record<string, unknown>[] = []
+    await expect(driveRestartContinuation(input, {
+      readReceipt: () => ({ ...prepared, ownerImageDigest: "e".repeat(64), ownerContainerDigest: "f".repeat(64), restartCountBefore: 4 }),
+      persistReceipt: (_coordinates, receipt) => { recoveredWrites.push(receipt) },
+      runtime: (operation) => { operations.push(operation); return reconciled },
+      restart: () => { throw new Error("recovery must not restart") },
+      snapshot: () => ({ imageId: `sha256:${"e".repeat(64)}`, containerId: "f".repeat(64), running: true, health: "healthy", restartCount: 5 }),
+    })).resolves.toMatchObject({ phase: "complete", restartCountBefore: 4, restartCountAfter: 5, indeterminateRetryCount: 0 })
+    expect(recoveredWrites).toHaveLength(1)
   })
   it("stages a bounded host reboot attestation without executing reboot", async () => {
     const { dispatch } = await broker()
@@ -239,7 +325,7 @@ describe("Sanctuary Unit 16 host broker", () => {
     })).rejects.toThrow(/shape is invalid/u)
   })
 
-  it("restarts only the production butler for an exact owner-bound continuation request", async () => {
+  it("rejects raw approval coordinates at the broker boundary", async () => {
     const { dispatch } = await broker()
     const calls: Record<string, unknown>[] = []
     const request = {
@@ -250,11 +336,11 @@ describe("Sanctuary Unit 16 host broker", () => {
     await expect(dispatch(request, {
       readBootId: () => "unused", containerSnapshot: () => { throw new Error("unexpected snapshot") },
       restartButlerForAcceptance: (input) => { calls.push(input); return result },
-    })).resolves.toEqual(result)
-    expect(calls).toEqual([{ label: request.label, scenarioHandleDigest: request.scenarioHandleDigest, approvalId: request.approvalId, checkpointDigest: request.checkpointDigest, approvalEpoch: 0 }])
+    })).rejects.toThrow(/not whitelisted/u)
+    expect(calls).toEqual([])
     await expect(dispatch({ ...request, label: "unit-16l-duplicate-callback" }, {
       readBootId: () => "unused", containerSnapshot: () => ({}), restartButlerForAcceptance: () => result,
-    })).rejects.toThrow(/label is invalid/u)
+    })).rejects.toThrow(/not whitelisted/u)
   })
 
   it("executes one exact docker restart argv and waits for a changed healthy owner", async () => {
@@ -262,19 +348,22 @@ describe("Sanctuary Unit 16 host broker", () => {
     const calls: Array<{ executable: string; args: string[] }> = []
     let snapshots = 0
     const result = await restartButlerForAcceptance({
-      label: "unit-16m-restart-continuation", scenarioHandleDigest: "a".repeat(64), approvalId: "approval-1", checkpointDigest: "b".repeat(64), approvalEpoch: 0,
+      label: "unit-16m-restart-continuation", scenarioHandleDigest: "a".repeat(64),
     }, {
       snapshot: async () => {
         snapshots += 1
         return snapshots === 1
-          ? { lifecycleDigest: "1".repeat(64), running: true, health: "healthy" }
-          : { lifecycleDigest: "2".repeat(64), running: true, health: "healthy" }
+          ? { lifecycleDigest: "1".repeat(64), containerId: "c".repeat(64), imageId: `sha256:${"d".repeat(64)}`, restartCount: 4, running: true, health: "healthy" }
+          : { lifecycleDigest: "2".repeat(64), containerId: "c".repeat(64), imageId: `sha256:${"d".repeat(64)}`, restartCount: 5, running: true, health: "healthy" }
       },
       run: (executable, args) => { calls.push({ executable, args }); return { status: 0 } },
       sleep: async () => {},
     })
     expect(calls).toEqual([{ executable: "/usr/bin/docker", args: ["restart", "ouro-butler"] }])
-    expect(result).toEqual({ restarted: true, beforeLifecycleDigest: "1".repeat(64), afterLifecycleDigest: "2".repeat(64), restartInvocationCount: 1 })
+    expect(result).toMatchObject({ restarted: true, restartInvocationCount: 1, ownerImageDigest: "d".repeat(64), ownerContainerDigest: "c".repeat(64), restartCountBefore: 4, restartCountAfter: 5 })
+    expect(result.beforeLifecycleDigest).toMatch(/^[0-9a-f]{64}$/u)
+    expect(result.afterLifecycleDigest).toMatch(/^[0-9a-f]{64}$/u)
+    expect(result.beforeLifecycleDigest).not.toBe(result.afterLifecycleDigest)
   })
 
   it("starts, polls, and recovers only the fixed owner-bound health probe", async () => {

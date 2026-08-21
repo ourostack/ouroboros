@@ -28,6 +28,7 @@ const MAX_REQUEST = 256 * 1024
 const IMAGE_ID = /^sha256:[0-9a-f]{64}$/u
 const SHA256 = /^[0-9a-f]{64}$/u
 const HEALTH_PROBE_ENTRY = "/opt/ouro/dist/senses/sanctuary-health-acceptance-probe.js"
+const ACCEPTANCE_ADAPTER = "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh"
 const HEALTH_PROBE_TERM_GRACE_MS = 5_000
 const HEALTH_PROBE_KILL_GRACE_MS = 5_000
 const HEALTH_PROBE_LABELS = new Set(["unit-16f-cron-fingerprint", "unit-16g-health-transition", "unit-16h-daily-digest"])
@@ -43,7 +44,11 @@ const RO_PERMISSIONS = ["ARRAY", "DASHBOARD", "DISK", "DOCKER", "INFO", "LOGS", 
   .map((resource) => `${resource}:READ_ANY`).sort()
 let expectedImageId = ""
 const activeHealthProbes = new Map()
-const healthProbeCoordinator = createHealthProbeOperationCoordinator()
+const ownerMutationCoordinator = createOwnerMutationCoordinator()
+const healthProbeCoordinator = {
+  start: (scenario, operation) => ownerMutationCoordinator.healthStart(scenario, operation),
+  recover: (scenario, operation) => ownerMutationCoordinator.healthRecover(scenario, operation),
+}
 
 function object(value, label) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`)
@@ -661,6 +666,252 @@ function createHealthProbeOperationCoordinator() {
   }
 }
 
+function createOwnerMutationCoordinator() {
+  let ownerTail = Promise.resolve()
+  const activeHealth = new Set()
+  const enqueue = (operation) => {
+    const task = ownerTail.catch(() => {}).then(operation)
+    ownerTail = task.then(() => {}, () => {})
+    return task
+  }
+  return {
+    healthStart(scenario, operation) {
+      text(scenario, "health owner scenario", SHA256)
+      return enqueue(async () => {
+        if (activeHealth.has(scenario)) throw new Error("health probe scenario is already active")
+        activeHealth.add(scenario)
+        try { return await operation() } catch (error) { activeHealth.delete(scenario); throw error }
+      })
+    },
+    healthRecover(scenario, operation) {
+      text(scenario, "health owner scenario", SHA256)
+      return enqueue(async () => {
+        try { const result = await operation(); activeHealth.delete(scenario); return result } catch (error) { throw error }
+      })
+    },
+    interactive(operation) {
+      return enqueue(async () => {
+        if (activeHealth.size > 0) throw new Error("owner mutation refused while health probe is active")
+        return await operation()
+      })
+    },
+  }
+}
+
+function canonicalInteractiveRequest(input, expectedLabel) {
+  const value = object(input, "interactive driver input")
+  exactKeys(value, ["label", "scenarioHandleDigest"], "interactive driver input")
+  if (value.label !== expectedLabel) throw new Error("interactive driver label is invalid")
+  text(value.scenarioHandleDigest, "interactive driver scenario digest", SHA256)
+  return value
+}
+
+const DUPLICATE_RECEIPT_KEYS = [
+  "schemaVersion", "phase", "label", "scenarioHandleDigest", "approvalIdDigest", "checkpointDigest",
+  "suspendedSessionRevisionDigest", "approvalEpochBefore", "callbackAttempts", "distinctQueryCount",
+  "callbackDataDigest", "barrierObserved", "settledCount", "claimCount", "mutationCount",
+  "staleReplayAttempts", "staleReplaySettled", "staleReplayMutationCount", "promptTerminal",
+  "writeCredentialObserved",
+]
+
+const RESTART_RECEIPT_KEYS = [
+  "schemaVersion", "phase", "label", "scenarioHandleDigest", "approvalIdDigest", "checkpointDigest",
+  "suspendedSessionRevisionDigest", "approvalEpochBefore", "approvalEpochAfterRestart", "continuationEpochAfter",
+  "ownerImageDigest", "ownerContainerDigest", "restartCountBefore", "restartCountAfter", "pendingDigestBefore",
+  "pendingDigestAfter", "pendingRestored", "callbackAttempts", "mutationCount", "indeterminateRecoveryObserved",
+  "indeterminateRetryCount",
+]
+
+function requireInteractiveReceipt(receipt, input) {
+  const value = object(receipt, "interactive driver receipt")
+  const duplicate = input.label === "unit-16l-duplicate-callback"
+  exactKeys(value, duplicate ? DUPLICATE_RECEIPT_KEYS : RESTART_RECEIPT_KEYS, "interactive driver receipt")
+  if (value.schemaVersion !== "sanctuary-interactive-driver-receipt-v2" || value.phase !== "complete"
+    || value.label !== input.label || value.scenarioHandleDigest !== input.scenarioHandleDigest
+    || ![value.approvalIdDigest, value.checkpointDigest, value.suspendedSessionRevisionDigest].every((item) => typeof item === "string" && SHA256.test(item))
+    || !Number.isSafeInteger(value.approvalEpochBefore) || value.approvalEpochBefore < 0) {
+    throw new Error("interactive driver receipt is invalid")
+  }
+  if (duplicate) {
+    if (!SHA256.test(value.callbackDataDigest) || value.callbackAttempts !== 2 || value.distinctQueryCount !== 2
+      || value.barrierObserved !== true || value.settledCount !== 2 || value.claimCount !== 1 || value.mutationCount !== 1
+      || value.staleReplayAttempts !== 1 || value.staleReplaySettled !== true || value.staleReplayMutationCount !== 0
+      || value.promptTerminal !== true || value.writeCredentialObserved !== false) throw new Error("interactive driver receipt is invalid")
+  } else if (!SHA256.test(value.ownerImageDigest) || !SHA256.test(value.ownerContainerDigest)
+    || !SHA256.test(value.pendingDigestBefore) || value.pendingDigestAfter !== value.pendingDigestBefore
+    || value.approvalEpochAfterRestart !== value.approvalEpochBefore || !Number.isSafeInteger(value.continuationEpochAfter)
+    || value.continuationEpochAfter <= value.approvalEpochAfterRestart || !Number.isSafeInteger(value.restartCountBefore)
+    || value.restartCountAfter !== value.restartCountBefore + 1 || value.pendingRestored !== true || value.callbackAttempts !== 1
+    || value.mutationCount !== 1 || value.indeterminateRecoveryObserved !== true || value.indeterminateRetryCount !== 0) {
+    throw new Error("interactive driver receipt is invalid")
+  }
+  return value
+}
+
+function runInteractiveRuntimeOperation(operation, value, dependencies = { run: spawnSync }) {
+  const result = dependencies.run(DOCKER, ["exec", "-i", PRODUCTION_CONTAINER, ACCEPTANCE_ADAPTER], {
+    cwd: "/", encoding: "utf8", timeout: 120_000, maxBuffer: MAX_REQUEST,
+    env: { PATH: "/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin" }, stdio: ["pipe", "pipe", "ignore"],
+    input: JSON.stringify({ operation, ...value }),
+  })
+  if (result.error || result.status !== 0) throw new Error("interactive production runtime driver failed")
+  try { return object(JSON.parse(result.stdout ?? ""), "interactive driver receipt") } catch { throw new Error("interactive driver receipt is invalid") }
+}
+
+function runInteractiveDriver(input, dependencies = { run: spawnSync }) {
+  const value = canonicalInteractiveRequest(input, "unit-16l-duplicate-callback")
+  return requireInteractiveReceipt(runInteractiveRuntimeOperation("drive_duplicate_callbacks", value, dependencies), value)
+}
+
+async function restartButlerForAcceptance(input, dependencies = {
+  snapshot: () => containerSnapshot(expectedImageId), run: spawnSync,
+  sleep: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+}) {
+  canonicalInteractiveRequest(input, "unit-16m-restart-continuation")
+  const before = object(await dependencies.snapshot(), "restart owner before")
+  const result = dependencies.run(DOCKER, ["restart", PRODUCTION_CONTAINER], {
+    cwd: "/", encoding: "utf8", timeout: 120_000, maxBuffer: 64 * 1024,
+    env: { PATH: "/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin" }, stdio: ["ignore", "ignore", "ignore"],
+  })
+  if (result.error || result.status !== 0) throw new Error("production butler restart failed")
+  const ownerImage = text(before.imageId, "restart owner image", IMAGE_ID)
+  const ownerContainer = text(before.containerId, "restart owner container", SHA256)
+  if (!Number.isSafeInteger(before.restartCount) || before.restartCount < 0) throw new Error("restart owner count is invalid")
+  const beforeLifecycleDigest = createHash("sha256").update(JSON.stringify(before)).digest("hex")
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    const after = object(await dependencies.snapshot(), "restart owner after")
+    const afterLifecycleDigest = createHash("sha256").update(JSON.stringify(after)).digest("hex")
+    if (after.running === true && after.health === "healthy" && after.containerId === ownerContainer && after.imageId === ownerImage
+      && after.restartCount === before.restartCount + 1 && afterLifecycleDigest !== beforeLifecycleDigest) {
+      return {
+        restarted: true,
+        beforeLifecycleDigest,
+        afterLifecycleDigest,
+        restartInvocationCount: 1,
+        ownerImageDigest: ownerImage.slice(7), ownerContainerDigest: ownerContainer,
+        restartCountBefore: before.restartCount, restartCountAfter: after.restartCount,
+      }
+    }
+    await dependencies.sleep(1_000)
+  }
+  throw new Error("production butler did not return with exact restart identity")
+}
+
+function interactiveReceiptPath(scenarioHandleDigest) {
+  return `${PRODUCTION_BUNDLE_SOURCE}/state/acceptance/interactive-driver-receipts/${scenarioHandleDigest}.json`
+}
+
+function readInteractiveReceipt(input) {
+  const file = interactiveReceiptPath(input.scenarioHandleDigest)
+  let fd
+  try { fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW) } catch (error) { if (error.code === "ENOENT") return null; throw error }
+  try {
+    const metadata = fstatSync(fd)
+    if (!metadata.isFile() || metadata.uid !== 10001 || (metadata.mode & 0o777) !== 0o600 || metadata.size > MAX_REQUEST) throw new Error("interactive driver receipt metadata is invalid")
+    return object(JSON.parse(readFileSync(fd, "utf8")), "interactive driver receipt")
+  } finally { closeSync(fd) }
+}
+
+function persistInteractiveReceipt(input, receipt) {
+  const root = `${PRODUCTION_BUNDLE_SOURCE}/state/acceptance/interactive-driver-receipts`
+  mkdirSync(root, { recursive: true, mode: 0o700 })
+  chownSync(root, 10001, 10001)
+  chmodSync(root, 0o700)
+  const directory = openSync(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
+  const directoryMetadata = fstatSync(directory)
+  if (!directoryMetadata.isDirectory() || directoryMetadata.uid !== 10001 || (directoryMetadata.mode & 0o777) !== 0o700) {
+    closeSync(directory)
+    throw new Error("interactive driver receipt directory metadata is invalid")
+  }
+  const file = interactiveReceiptPath(input.scenarioHandleDigest)
+  const temporary = `${file}.${process.pid}.${Date.now()}.tmp`
+  try {
+    const fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
+    try { chownSync(temporary, 10001, 10001); writeFileSync(fd, `${JSON.stringify(receipt)}\n`); fsyncSync(fd) } finally { closeSync(fd) }
+    renameSync(temporary, file)
+    fsyncSync(directory)
+  } finally { closeSync(directory) }
+}
+
+async function driveDuplicateCallbacks(input, dependencies = {
+  readReceipt: readInteractiveReceipt,
+  persistReceipt: persistInteractiveReceipt,
+  runtime: runInteractiveDriver,
+}) {
+  const value = canonicalInteractiveRequest(input, "unit-16l-duplicate-callback")
+  const existing = dependencies.readReceipt(value)
+  if (existing) {
+    if (existing.phase === "complete") return requireInteractiveReceipt(existing, value)
+    throw new Error("duplicate callback drive requires inspect-before-retry")
+  }
+  dependencies.persistReceipt(value, { schemaVersion: "sanctuary-interactive-driver-receipt-v2", phase: "attempting", ...value })
+  try {
+    const receipt = requireInteractiveReceipt(await dependencies.runtime(value), value)
+    dependencies.persistReceipt(value, receipt)
+    return receipt
+  } catch (error) {
+    dependencies.persistReceipt(value, { schemaVersion: "sanctuary-interactive-driver-receipt-v2", phase: "attempted_or_indeterminate", ...value })
+    throw error
+  }
+}
+
+async function driveRestartContinuation(input, dependencies = {
+  readReceipt: readInteractiveReceipt,
+  persistReceipt: persistInteractiveReceipt,
+  runtime: runInteractiveRuntimeOperation,
+  restart: restartButlerForAcceptance,
+  snapshot: () => containerSnapshot(expectedImageId),
+}) {
+  const value = canonicalInteractiveRequest(input, "unit-16m-restart-continuation")
+  const existing = dependencies.readReceipt(value)
+  if (existing) {
+    if (existing.phase === "complete") return requireInteractiveReceipt(existing, value)
+    if ((existing.phase !== "prepared" && existing.phase !== "attempted_or_indeterminate")
+      || !SHA256.test(existing.ownerImageDigest) || !SHA256.test(existing.ownerContainerDigest) || !Number.isSafeInteger(existing.restartCountBefore)) {
+      throw new Error("restart continuation requires inspect-before-retry")
+    }
+    const observed = object(await dependencies.snapshot(), "restart continuation recovery owner")
+    if (observed.imageId !== `sha256:${existing.ownerImageDigest}` || observed.containerId !== existing.ownerContainerDigest
+      || observed.running !== true || observed.health !== "healthy" || observed.restartCount !== existing.restartCountBefore + 1) {
+      throw new Error("restart continuation requires inspect-before-retry")
+    }
+    const reconciled = object(await dependencies.runtime("reconcile_restart_continuation", value), "restart continuation reconciliation")
+    const receipt = { ...existing, ...reconciled, phase: "complete", restartCountAfter: observed.restartCount }
+    delete receipt.restarted
+    requireInteractiveReceipt(receipt, value)
+    dependencies.persistReceipt(value, receipt)
+    return receipt
+  }
+  const attempting = { schemaVersion: "sanctuary-interactive-driver-receipt-v2", phase: "attempting", ...value }
+  dependencies.persistReceipt(value, attempting)
+  let prepared
+  try {
+    prepared = object(await dependencies.runtime("prepare_restart_continuation", value), "restart continuation prepared receipt")
+    const expected = ["schemaVersion", "phase", "label", "scenarioHandleDigest", "approvalIdDigest", "checkpointDigest", "suspendedSessionRevisionDigest", "approvalEpochBefore", "pendingDigestBefore", "indeterminateRecoveryObserved"]
+    exactKeys(prepared, expected, "restart continuation prepared receipt")
+    if (prepared.schemaVersion !== "sanctuary-interactive-driver-receipt-v2" || prepared.phase !== "prepared" || prepared.label !== value.label
+      || prepared.scenarioHandleDigest !== value.scenarioHandleDigest || ![prepared.approvalIdDigest, prepared.checkpointDigest, prepared.suspendedSessionRevisionDigest, prepared.pendingDigestBefore].every((item) => typeof item === "string" && SHA256.test(item))
+      || !Number.isSafeInteger(prepared.approvalEpochBefore) || prepared.approvalEpochBefore < 0 || prepared.indeterminateRecoveryObserved !== true) throw new Error("restart continuation prepared receipt is invalid")
+    const ownerBefore = object(await dependencies.snapshot(), "restart continuation owner before")
+    if (!IMAGE_ID.test(ownerBefore.imageId) || !SHA256.test(ownerBefore.containerId) || ownerBefore.running !== true || ownerBefore.health !== "healthy"
+      || !Number.isSafeInteger(ownerBefore.restartCount) || ownerBefore.restartCount < 0) throw new Error("restart continuation owner before is invalid")
+    prepared = { ...prepared, ownerImageDigest: ownerBefore.imageId.slice(7), ownerContainerDigest: ownerBefore.containerId, restartCountBefore: ownerBefore.restartCount }
+    dependencies.persistReceipt(value, prepared)
+    const restarted = object(await dependencies.restart(value), "restart continuation owner restart")
+    if (restarted.restarted !== true || restarted.restartInvocationCount !== 1 || !SHA256.test(restarted.ownerImageDigest) || !SHA256.test(restarted.ownerContainerDigest)
+      || restarted.ownerImageDigest !== prepared.ownerImageDigest || restarted.ownerContainerDigest !== prepared.ownerContainerDigest
+      || restarted.restartCountBefore !== prepared.restartCountBefore || restarted.restartCountAfter !== restarted.restartCountBefore + 1) throw new Error("restart continuation owner restart is invalid")
+    const reconciled = object(await dependencies.runtime("reconcile_restart_continuation", value), "restart continuation reconciliation")
+    const receipt = { ...prepared, ...reconciled, phase: "complete", ownerImageDigest: restarted.ownerImageDigest, ownerContainerDigest: restarted.ownerContainerDigest, restartCountBefore: restarted.restartCountBefore, restartCountAfter: restarted.restartCountAfter }
+    requireInteractiveReceipt(receipt, value)
+    dependencies.persistReceipt(value, receipt)
+    return receipt
+  } catch (error) {
+    dependencies.persistReceipt(value, { ...(prepared ?? { schemaVersion: "sanctuary-interactive-driver-receipt-v2", ...value }), phase: "attempted_or_indeterminate" })
+    throw error
+  }
+}
+
 async function dispatch(request, dependencies = {
   readBootId: () => readFileSync(BOOT_ID, "utf8"),
   containerSnapshot: () => containerSnapshot(expectedImageId),
@@ -669,6 +920,9 @@ async function dispatch(request, dependencies = {
   healthProbeStatus,
   recoverHealthProbe,
   healthProbeCoordinator,
+  driveDuplicateCallbacks,
+  driveRestartContinuation,
+  ownerMutationCoordinator,
 }) {
   const payload = object(request, "broker request")
   const operation = text(payload.operation, "operation")
@@ -771,6 +1025,18 @@ async function dispatch(request, dependencies = {
     return dependencies.healthProbeCoordinator
       ? await dependencies.healthProbeCoordinator.recover(request.scenarioHandleDigest, recover) : await recover()
   }
+  if (operation === "drive_duplicate_callbacks" || operation === "drive_restart_continuation") {
+    exactKeys(payload, ["operation", "targetId", "label", "scenarioHandleDigest"], operation)
+    if (payload.targetId !== TARGET_HOST) throw new Error("target host is invalid")
+    const expectedLabel = operation === "drive_duplicate_callbacks" ? "unit-16l-duplicate-callback" : "unit-16m-restart-continuation"
+    const input = canonicalInteractiveRequest({ label: payload.label, scenarioHandleDigest: payload.scenarioHandleDigest }, expectedLabel)
+    const drive = operation === "drive_duplicate_callbacks" ? dependencies.driveDuplicateCallbacks : dependencies.driveRestartContinuation
+    if (!drive) throw new Error("interactive production runtime driver is unavailable")
+    const execute = async () => requireInteractiveReceipt(await drive(input), input)
+    return dependencies.ownerMutationCoordinator
+      ? await dependencies.ownerMutationCoordinator.interactive(execute)
+      : await execute()
+  }
   throw new Error("host broker operation is not whitelisted")
 }
 
@@ -836,12 +1102,17 @@ export {
   completeHealthProbeFromReceipt,
   createDispatchDrain,
   createHealthProbeOperationCoordinator,
+  createOwnerMutationCoordinator,
   dispatch,
   healthProbeArtifactDisposition,
   healthProbeDockerArgs,
   healthProbeOperationBudgets,
   parseVaultStatus,
   queryGraphqlAutostart,
+  driveDuplicateCallbacks,
+  driveRestartContinuation,
+  restartButlerForAcceptance,
+  runInteractiveDriver,
   recoverAfterHealthProbeTermination,
   requireStableHealthProbeOwner,
   requireHealthProbeCompleteAttestation,
