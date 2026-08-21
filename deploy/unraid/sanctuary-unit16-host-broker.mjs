@@ -706,6 +706,10 @@ function createOwnerMutationCoordinator() {
         try { const result = await operation(); activeHealth.delete(scenario); return result } catch (error) { throw error }
       })
     },
+    healthOperation(scenario, operation) {
+      text(scenario, "health owner scenario", SHA256)
+      return enqueue(operation)
+    },
     interactive(operation) {
       return enqueue(async () => {
         if (activeHealth.size > 0) throw new Error("owner mutation refused while health probe is active")
@@ -1026,12 +1030,13 @@ async function dispatch(request, dependencies = {
         if (!dependencies.startHealthProbe) throw new Error("health probe start is unavailable")
         return await dependencies.startHealthProbe(coordinates)
       }
-      return dependencies.healthProbeCoordinator
-        ? await dependencies.healthProbeCoordinator.start(request.scenarioHandleDigest, start) : await start()
+      if (dependencies.ownerMutationCoordinator) return await dependencies.ownerMutationCoordinator.healthStart(request.scenarioHandleDigest, start)
+      return dependencies.healthProbeCoordinator ? await dependencies.healthProbeCoordinator.start(request.scenarioHandleDigest, start) : await start()
     }
     if (operation === "health_probe_status") {
       if (!dependencies.healthProbeStatus) throw new Error("health probe status is unavailable")
-      return await dependencies.healthProbeStatus(request)
+      const status = () => dependencies.healthProbeStatus(request)
+      return dependencies.ownerMutationCoordinator ? await dependencies.ownerMutationCoordinator.healthOperation(request.scenarioHandleDigest, status) : await status()
     }
     const recover = async () => {
       if (!dependencies.recoverHealthProbe) throw new Error("health probe recovery is unavailable")
@@ -1039,8 +1044,8 @@ async function dispatch(request, dependencies = {
       const coordinates = healthProbeCoordinates(payload, ownerSnapshot)
       return await dependencies.recoverHealthProbe(coordinates)
     }
-    return dependencies.healthProbeCoordinator
-      ? await dependencies.healthProbeCoordinator.recover(request.scenarioHandleDigest, recover) : await recover()
+    if (dependencies.ownerMutationCoordinator) return await dependencies.ownerMutationCoordinator.healthRecover(request.scenarioHandleDigest, recover)
+    return dependencies.healthProbeCoordinator ? await dependencies.healthProbeCoordinator.recover(request.scenarioHandleDigest, recover) : await recover()
   }
   if (operation === "drive_duplicate_callbacks" || operation === "drive_restart_continuation") {
     exactKeys(payload, ["operation", "targetId", "label", "scenarioHandleDigest"], operation)
