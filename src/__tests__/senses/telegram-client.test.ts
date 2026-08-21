@@ -173,6 +173,38 @@ describe("Telegram approval callback transport", () => {
     } })
   })
 
+  it("observes a second expiry on time while an earlier approval terminal edit is still retrying", async () => {
+    let clock = 1_000
+    let releaseFirst!: () => void
+    const firstEdit = new Promise<void>((resolve) => { releaseFirst = resolve })
+    const onExpire = vi.fn()
+    const records = [
+      { approvalId: "first", messageId: "91", deliveryState: "bound" as const, approveCallbackData: "a:first", denyCallbackData: "d:first", expiresAt: 1_000 },
+      { approvalId: "second", messageId: "92", deliveryState: "bound" as const, approveCallbackData: "a:second", denyCallbackData: "d:second", expiresAt: 2_000 },
+    ]
+    const transport = createTelegramApprovalTransport({
+      api: { stop: vi.fn(), request: vi.fn(async (method: string, body: Record<string, unknown>) => {
+        if (method === "editMessageText" && body.message_id === 91) await firstEdit
+        return true
+      }) },
+      expectedUserId: "10", expectedChatId: "10",
+      pendingStore: { load: () => structuredClone(records), save: vi.fn() },
+      createOpaqueHandle: vi.fn(), onDecision: vi.fn(), onExpire, now: () => clock,
+    })
+
+    const firstPass = transport.reconcileExpired()
+    await vi.waitFor(() => expect(onExpire).toHaveBeenCalledWith("first"))
+    clock = 2_000
+    const secondPass = transport.reconcileExpired()
+    try {
+      await vi.waitFor(() => expect(onExpire).toHaveBeenCalledWith("second"))
+    } finally {
+      releaseFirst()
+      await Promise.allSettled([firstPass, secondPass])
+    }
+    expect(onExpire.mock.calls.filter(([approvalId]) => approvalId === "first")).toHaveLength(1)
+  })
+
   it("retains one authenticated callback tombstone after expiry and consumes it without replay", async () => {
     let clock = 1_000_000
     let records: ReturnType<TelegramPendingApprovalStore["load"]> = []
