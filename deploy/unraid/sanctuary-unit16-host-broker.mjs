@@ -28,6 +28,8 @@ const MAX_REQUEST = 256 * 1024
 const IMAGE_ID = /^sha256:[0-9a-f]{64}$/u
 const SHA256 = /^[0-9a-f]{64}$/u
 const HEALTH_PROBE_ENTRY = "/opt/ouro/dist/senses/sanctuary-health-acceptance-probe.js"
+const HEALTH_PROBE_TERM_GRACE_MS = 5_000
+const HEALTH_PROBE_KILL_GRACE_MS = 5_000
 const HEALTH_PROBE_LABELS = new Set(["unit-16f-cron-fingerprint", "unit-16g-health-transition", "unit-16h-daily-digest"])
 const RO_PERMISSIONS = ["ARRAY", "DASHBOARD", "DISK", "DOCKER", "INFO", "LOGS", "NOTIFICATIONS", "SHARE", "VARS"]
   .map((resource) => `${resource}:READ_ANY`).sort()
@@ -339,7 +341,7 @@ function healthProbePendingPath(scenarioHandleDigest) {
 function startHealthProbe(input) {
   const value = canonicalHealthProbeInput(input)
   const existing = activeHealthProbes.get(value.scenarioHandleDigest)
-  if (existing?.state === "running" || statIfPresent(healthProbeReceiptPath(value.scenarioHandleDigest)) || statIfPresent(healthProbeWorkspacePath(value.scenarioHandleDigest))) {
+  if (existing || statIfPresent(healthProbeReceiptPath(value.scenarioHandleDigest)) || statIfPresent(healthProbeWorkspacePath(value.scenarioHandleDigest))) {
     throw new Error("health probe requires inspect-before-retry")
   }
   const child = spawn(DOCKER, healthProbeDockerArgs("run", value), {
@@ -347,8 +349,14 @@ function startHealthProbe(input) {
   })
   const record = { input: value, child, state: "running", exitCode: null }
   activeHealthProbes.set(value.scenarioHandleDigest, record)
-  child.once("error", () => { record.state = "failed"; record.exitCode = -1 })
-  child.once("exit", (code) => { record.state = code === 0 ? "exited" : "failed"; record.exitCode = code })
+  child.once("error", () => {
+    if (record.state !== "terminating") record.state = "failed"
+    record.exitCode = -1
+  })
+  child.once("exit", (code) => {
+    record.state = record.state === "terminating" ? "terminated" : code === 0 ? "exited" : "failed"
+    record.exitCode = code
+  })
   child.unref()
   return {
     state: "started",
@@ -372,6 +380,7 @@ function healthProbeStatus(input) {
   requireStableHealthProbeOwner(record.input, value)
   if (record.state === "failed") return { state: "failed" }
   if (record.state === "running") return { state: "running" }
+  if (record.state === "terminating" || record.state === "terminated" || record.state === "recovering") return { state: "recovery_required" }
   const finalized = spawnSync(DOCKER, healthProbeFinalizeDockerArgs(record.input, value), {
     cwd: "/", encoding: "utf8", timeout: 20_000, maxBuffer: 64 * 1024,
     env: { PATH: "/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin" }, stdio: ["ignore", "ignore", "ignore"],
@@ -385,26 +394,87 @@ function healthProbeStatus(input) {
   return { state: "complete" }
 }
 
-function recoverHealthProbe(input) {
+function healthProbeChildExited(child) {
+  return child.exitCode !== null || child.signalCode !== null
+}
+
+function waitForHealthProbeChildExit(child, timeoutMs) {
+  if (healthProbeChildExited(child)) return Promise.resolve(true)
+  return new Promise((resolve) => {
+    let settled = false
+    let timer
+    const finish = (exited) => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      child.removeListener("exit", onExit)
+      resolve(exited)
+    }
+    const onExit = () => finish(true)
+    child.once("exit", onExit)
+    timer = setTimeout(() => finish(healthProbeChildExited(child)), timeoutMs)
+    if (healthProbeChildExited(child)) finish(true)
+  })
+}
+
+function terminateHealthProbeChild(record, options = {}) {
+  if (record.terminationPromise) return record.terminationPromise
+  if (record.state !== "running" && record.state !== "terminating") return Promise.resolve()
+  const termGraceMs = options.termGraceMs ?? HEALTH_PROBE_TERM_GRACE_MS
+  const killGraceMs = options.killGraceMs ?? HEALTH_PROBE_KILL_GRACE_MS
+  record.state = "terminating"
+  const termination = (async () => {
+    try {
+      if (!healthProbeChildExited(record.child)) record.child.kill("SIGTERM")
+      if (!await waitForHealthProbeChildExit(record.child, termGraceMs)) {
+        record.child.kill("SIGKILL")
+        if (!await waitForHealthProbeChildExit(record.child, killGraceMs)) throw new Error("health probe child did not exit")
+      }
+      record.state = "terminated"
+    } catch (error) {
+      record.state = "failed"
+      throw error
+    }
+  })()
+  record.terminationPromise = termination
+  return termination
+}
+
+async function recoverAfterHealthProbeTermination(record, recovery, options = {}) {
+  if (record) await terminateHealthProbeChild(record, options)
+  return await recovery()
+}
+
+async function recoverHealthProbe(input) {
   const value = canonicalHealthProbeInput(input)
   const record = activeHealthProbes.get(value.scenarioHandleDigest)
   if (record && JSON.stringify(record.input) !== JSON.stringify(value)) throw new Error("health probe owner binding drifted")
-  if (record?.state === "running") record.child.kill("SIGTERM")
-  const workspace = statIfPresent(healthProbeWorkspacePath(value.scenarioHandleDigest))
-  const pending = statIfPresent(healthProbePendingPath(value.scenarioHandleDigest))
-  if (!workspace && !pending) {
+  if (record?.recoveryPromise) return await record.recoveryPromise
+  const recovery = recoverAfterHealthProbeTermination(record, () => {
+    if (record) record.state = "recovering"
+    const workspace = statIfPresent(healthProbeWorkspacePath(value.scenarioHandleDigest))
+    const pending = statIfPresent(healthProbePendingPath(value.scenarioHandleDigest))
+    if (!workspace && !pending) {
+      activeHealthProbes.delete(value.scenarioHandleDigest)
+      return { recovered: false }
+    }
+    const result = spawnSync(DOCKER, healthProbeDockerArgs("recover", value), {
+      cwd: "/", encoding: "utf8", timeout: 45_000, maxBuffer: 64 * 1024,
+      env: { PATH: "/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin" }, stdio: ["ignore", "ignore", "ignore"],
+    })
+    if (result.error || result.status !== 0 || statIfPresent(healthProbeWorkspacePath(value.scenarioHandleDigest)) || statIfPresent(healthProbePendingPath(value.scenarioHandleDigest))) {
+      throw new Error("health probe recovery failed")
+    }
     activeHealthProbes.delete(value.scenarioHandleDigest)
-    return { recovered: false }
-  }
-  const result = spawnSync(DOCKER, healthProbeDockerArgs("recover", value), {
-    cwd: "/", encoding: "utf8", timeout: 45_000, maxBuffer: 64 * 1024,
-    env: { PATH: "/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin" }, stdio: ["ignore", "ignore", "ignore"],
+    return { recovered: true }
   })
-  if (result.error || result.status !== 0 || statIfPresent(healthProbeWorkspacePath(value.scenarioHandleDigest)) || statIfPresent(healthProbePendingPath(value.scenarioHandleDigest))) {
-    throw new Error("health probe recovery failed")
+  if (record) record.recoveryPromise = recovery
+  try {
+    return await recovery
+  } catch (error) {
+    if (record) record.recoveryPromise = undefined
+    throw error
   }
-  activeHealthProbes.delete(value.scenarioHandleDigest)
-  return { recovered: true }
 }
 
 function healthProbeCoordinates(payload, snapshot) {
@@ -555,22 +625,30 @@ async function main() {
     chmodSync(socket, 0o660)
   })
   let shuttingDown = false
-  const shutdown = () => {
+  const shutdown = async () => {
     if (shuttingDown) return
     shuttingDown = true
     server.close()
     let failed = false
-    for (const record of activeHealthProbes.values()) {
-      try { recoverHealthProbe(record.input) } catch { failed = true }
+    for (const record of [...activeHealthProbes.values()]) {
+      try { await recoverHealthProbe(record.input) } catch { failed = true }
     }
     process.exitCode = failed ? 1 : 0
   }
-  process.once("SIGTERM", shutdown)
-  process.once("SIGINT", shutdown)
+  process.once("SIGTERM", () => { void shutdown() })
+  process.once("SIGINT", () => { void shutdown() })
 }
 
 if (process.argv[1]?.endsWith("sanctuary-unit16-host-broker.mjs")) {
   main().catch(() => { process.exitCode = 1 })
 }
 
-export { dispatch, healthProbeDockerArgs, parseVaultStatus, queryGraphqlAutostart, requireStableHealthProbeOwner }
+export {
+  dispatch,
+  healthProbeDockerArgs,
+  parseVaultStatus,
+  queryGraphqlAutostart,
+  recoverAfterHealthProbeTermination,
+  requireStableHealthProbeOwner,
+  terminateHealthProbeChild,
+}
