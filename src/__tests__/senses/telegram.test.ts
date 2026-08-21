@@ -101,8 +101,9 @@ describe("Telegram sense", () => {
     await f.getOnMessage()({ updateId: 9, messageId: "10", userId: "42", chatId: "42", text: "status" })
 
     const receipt = JSON.parse(fs.readFileSync(path.join(root, "state", "acceptance", "telegram-turns.ndjson"), "utf8"))
-    const digest = (purpose: string, value: string) => createHmac("sha256", "k".repeat(43)).update(`ouroboros.telegram.turn-receipt.v2\0${purpose}\0${value}`).digest("hex")
-    expect(receipt).toMatchObject({ schemaVersion: "sanctuary-telegram-turn-receipt-v2", scenarioHandleDigest: "a".repeat(64), status: "success", errorCategory: null, providerInvocationCount: 2, toolInvocationCount: 1, deliveryCount: 1, updateDigest: digest("update", ["9", "10"].join("\0")), sequenceDigest: digest("sequence", "9"), responseDigest: digest("response", "grounded answer"), telegramMessageIdDigests: [digest("delivery", "71")] })
+    const digest = (purpose: string, value: string) => createHmac("sha256", "k".repeat(43)).update(`ouroboros.telegram.turn-receipt.v3\0${purpose}\0${value}`).digest("hex")
+    const deliveries = [{ messageIdDigest: digest("delivery", "71"), chunkDigest: digest("chunk", "grounded answer") }]
+    expect(receipt).toMatchObject({ schemaVersion: "sanctuary-telegram-turn-receipt-v3", scenarioHandleDigest: "a".repeat(64), status: "success", errorCategory: null, providerInvocationCount: 2, toolInvocationCount: 1, deliveryCount: 1, updateDigest: digest("update", ["9", "10"].join("\0")), sequenceDigest: digest("sequence", "9"), responseDigest: digest("response", JSON.stringify(deliveries)), deliveries })
     expect(JSON.stringify(receipt)).not.toContain('"updateId":9')
   })
 
@@ -111,6 +112,8 @@ describe("Telegram sense", () => {
     const api: TelegramBotApi = { request: vi.fn().mockResolvedValueOnce({ message_id: 71 }).mockRejectedValueOnce(new Error("second chunk failed")), stop: vi.fn() }
     const long = "x".repeat(7_000)
     const runTurn = vi.fn(async (options: any) => {
+      options.turnMetricsObserver.providerInvocationCount += 1
+      options.turnMetricsObserver.toolInvocationCount += 1
       await options.deliverySink.onDelivery({ kind: "settle", text: long })
       return { response: long, ponderDeferred: false, deliveries: [], deliveryFailures: [], providerInvocationCount: 1, toolInvocationCount: 0 }
     })
@@ -120,8 +123,8 @@ describe("Telegram sense", () => {
 
     expect(api.request).toHaveBeenCalledTimes(2)
     const receipt = JSON.parse(fs.readFileSync(path.join(root, "state", "acceptance", "telegram-turns.ndjson"), "utf8"))
-    expect(receipt).toMatchObject({ status: "error", errorCategory: "Error", deliveryCount: 1, providerInvocationCount: null, toolInvocationCount: null })
-    expect(receipt.telegramMessageIdDigests).toHaveLength(1)
+    expect(receipt).toMatchObject({ status: "error", errorCategory: "Error", deliveryCount: 1, providerInvocationCount: 1, toolInvocationCount: 1 })
+    expect(receipt.deliveries).toHaveLength(1)
   })
 
   it("does not turn an acceptance receipt write failure into another Telegram reply", async () => {

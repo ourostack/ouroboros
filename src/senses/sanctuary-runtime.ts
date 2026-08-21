@@ -15,8 +15,8 @@ import { readSanctuaryAcceptanceApproval, readSanctuaryAcceptanceMarker, sanctua
 const sanctuaryToolReceipts = new AsyncLocalStorage<string[]>()
 const acceptanceLedgerTails = new Map<string, Promise<void>>()
 
-export async function runWithSanctuaryToolReceiptCollection<T>(operation: () => Promise<T>): Promise<{ result: T; toolResultDigests: string[] }> {
-  const digests: string[] = []
+export async function runWithSanctuaryToolReceiptCollection<T>(operation: () => Promise<T>, observer?: { toolResultDigests: string[] }): Promise<{ result: T; toolResultDigests: string[] }> {
+  const digests = observer?.toolResultDigests ?? []
   const result = await sanctuaryToolReceipts.run(digests, operation)
   return { result, toolResultDigests: [...digests] }
 }

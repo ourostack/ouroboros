@@ -63,13 +63,33 @@ const TELEGRAM_SUBJECT_DOMAIN = "ouroboros.telegram.subject.v1"
 const TELEGRAM_IDENTITY_KEY = /^[A-Za-z0-9_-]{43}$/u
 const TELEGRAM_SUBJECT = /^tg_[A-Za-z0-9_-]{43}$/u
 const TELEGRAM_SUBJECT_INDEX = "identity-subjects.json"
-const TELEGRAM_TURN_RECEIPT_DOMAIN = "ouroboros.telegram.turn-receipt.v2"
+const TELEGRAM_TURN_RECEIPT_DOMAIN = "ouroboros.telegram.turn-receipt.v3"
 const telegramTurnLedgerTails = new Map<string, Promise<void>>()
+
+function validateSanctuaryTurnReceipt(value: Record<string, unknown>): void {
+  const exactKeys = ["completedAt", "deliveries", "deliveryCount", "errorCategory", "providerInvocationCount", "responseDigest", "scenarioHandleDigest", "schemaVersion", "sequenceDigest", "status", "toolInvocationCount", "toolResultDigests", "updateDigest"].sort()
+  const deliveries = value.deliveries
+  if (JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(exactKeys)
+    || value.schemaVersion !== "sanctuary-telegram-turn-receipt-v3" || !/^[0-9a-f]{64}$/u.test(String(value.scenarioHandleDigest))
+    || !["success", "error"].includes(String(value.status)) || (value.errorCategory !== null && (typeof value.errorCategory !== "string" || value.errorCategory.length > 128))
+    || ![value.updateDigest, value.sequenceDigest, value.responseDigest].every((digest) => typeof digest === "string" && /^[0-9a-f]{64}$/u.test(digest))
+    || !Array.isArray(value.toolResultDigests) || value.toolResultDigests.length > 100 || !value.toolResultDigests.every((digest) => typeof digest === "string" && /^[0-9a-f]{64}$/u.test(digest))
+    || !Array.isArray(deliveries) || deliveries.length > 100 || !deliveries.every((delivery) => {
+      if (!delivery || typeof delivery !== "object" || Array.isArray(delivery)) return false
+      const record = delivery as Record<string, unknown>
+      return JSON.stringify(Object.keys(record).sort()) === JSON.stringify(["chunkDigest", "messageIdDigest"])
+        && typeof record.chunkDigest === "string" && /^[0-9a-f]{64}$/u.test(record.chunkDigest)
+        && typeof record.messageIdDigest === "string" && /^[0-9a-f]{64}$/u.test(record.messageIdDigest)
+    })
+    || ![value.providerInvocationCount, value.toolInvocationCount].every((count) => Number.isSafeInteger(count) && Number(count) >= 0 && Number(count) <= 1_000)
+    || !Number.isSafeInteger(value.deliveryCount) || value.deliveryCount !== deliveries.length
+    || typeof value.completedAt !== "string" || value.completedAt.length > 30 || !Number.isFinite(Date.parse(value.completedAt)) || new Date(Date.parse(value.completedAt)).toISOString() !== value.completedAt) throw new Error("Telegram turn receipt ledger row is invalid")
+}
 
 async function appendSanctuaryTurnReceipt(agentRoot: string, receipt: Record<string, unknown>): Promise<void> {
   const filePath = path.join(agentRoot, "state", "acceptance", "telegram-turns.ndjson")
   const previous = telegramTurnLedgerTails.get(filePath) ?? Promise.resolve()
-  const current = previous.then(() => {
+  const current = previous.catch(() => undefined).then(() => {
     mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 })
     let existing: string[] = []
     try {
@@ -78,18 +98,10 @@ async function appendSanctuaryTurnReceipt(agentRoot: string, receipt: Record<str
       existing = raw.split("\n").filter(Boolean)
       if (existing.length > 500 || existing.some((line) => Buffer.byteLength(line) > 16 * 1024)) throw new Error("Telegram turn receipt ledger is invalid")
       for (const line of existing) {
-        const value = JSON.parse(line) as Record<string, unknown>
-        if (JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(["completedAt", "deliveryCount", "errorCategory", "providerInvocationCount", "responseDigest", "scenarioHandleDigest", "schemaVersion", "sequenceDigest", "status", "telegramMessageIdDigests", "toolInvocationCount", "toolResultDigests", "updateDigest"].sort())
-          || value.schemaVersion !== "sanctuary-telegram-turn-receipt-v2" || !/^[0-9a-f]{64}$/u.test(String(value.scenarioHandleDigest))
-          || !["success", "error"].includes(String(value.status)) || (value.errorCategory !== null && (typeof value.errorCategory !== "string" || value.errorCategory.length > 128))
-          || ![value.updateDigest, value.sequenceDigest, value.responseDigest].every((digest) => /^[0-9a-f]{64}$/u.test(String(digest)))
-          || !Array.isArray(value.toolResultDigests) || value.toolResultDigests.length > 100 || !value.toolResultDigests.every((digest) => /^[0-9a-f]{64}$/u.test(String(digest)))
-          || !Array.isArray(value.telegramMessageIdDigests) || value.telegramMessageIdDigests.length > 100 || !value.telegramMessageIdDigests.every((digest) => /^[0-9a-f]{64}$/u.test(String(digest)))
-          || ![value.providerInvocationCount, value.toolInvocationCount].every((count) => count === null || (Number.isSafeInteger(count) && Number(count) >= 0 && Number(count) <= 1_000))
-          || !Number.isSafeInteger(value.deliveryCount) || Number(value.deliveryCount) < 0 || Number(value.deliveryCount) > 100
-          || typeof value.completedAt !== "string" || value.completedAt.length > 30 || !Number.isFinite(Date.parse(value.completedAt)) || new Date(Date.parse(value.completedAt)).toISOString() !== value.completedAt) throw new Error("Telegram turn receipt ledger row is invalid")
+        validateSanctuaryTurnReceipt(JSON.parse(line) as Record<string, unknown>)
       }
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error }
+    validateSanctuaryTurnReceipt(receipt)
     const serialized = JSON.stringify(receipt)
     if (Buffer.byteLength(serialized) > 16 * 1024) throw new Error("Telegram turn receipt exceeds its bound")
     const lines = [...existing, serialized].slice(-500)
@@ -532,9 +544,8 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     const deliveredChunks: string[] = []
     let receiptStatus: "success" | "error" = "success"
     let errorCategory: string | null = null
-    let providerInvocationCount: number | null = null
-    let toolInvocationCount: number | null = null
-    let toolResultDigests: string[] = []
+    const turnMetricsObserver = { providerInvocationCount: 0, toolInvocationCount: 0 }
+    const toolReceiptObserver = { toolResultDigests: [] as string[] }
     try {
       const collected = await runWithSanctuaryToolReceiptCollection(() => runTurn({
         agentName: options.agentName,
@@ -547,6 +558,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
           displayName: `Telegram user ${subject}`,
         },
         userMessage: message.text,
+        turnMetricsObserver,
         deliverySink: {
           onDelivery: async (delivery) => {
             await deliver(delivery.text, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) })
@@ -555,11 +567,10 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         },
         ...(toolContext ? { toolContext } : {}),
         ...(approvalRuntime ? { approvalCoordinatorFactory: approvalRuntime.coordinator } : {}),
-      }))
+      }), toolReceiptObserver)
       const result = collected.result
-      providerInvocationCount = result.providerInvocationCount ?? null
-      toolInvocationCount = result.toolInvocationCount ?? null
-      toolResultDigests = collected.toolResultDigests
+      turnMetricsObserver.providerInvocationCount = Math.max(turnMetricsObserver.providerInvocationCount, result.providerInvocationCount ?? 0)
+      turnMetricsObserver.toolInvocationCount = Math.max(turnMetricsObserver.toolInvocationCount, result.toolInvocationCount ?? 0)
       if (deliveryCount === 0 && result.response.trim()) {
         await deliver(result.response, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) })
       }
@@ -571,7 +582,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       })
     } catch (error) {
       receiptStatus = "error"
-      errorCategory = error instanceof Error ? error.name : "unknown"
+      errorCategory = (error instanceof Error ? error.name : "unknown").slice(0, 128)
       emitNervesEvent({
         level: "error",
         component: "senses",
@@ -592,20 +603,21 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     } finally {
       if (acceptanceMarker) {
         const hmac = (purpose: string, value: string): string => createHmac("sha256", identityKey).update(`${TELEGRAM_TURN_RECEIPT_DOMAIN}\0${purpose}\0${value}`, "utf8").digest("hex")
+        const deliveries = deliveredMessageIds.map((messageId, index) => ({ messageIdDigest: hmac("delivery", String(messageId)), chunkDigest: hmac("chunk", deliveredChunks[index] ?? "") }))
         try {
           await appendSanctuaryTurnReceipt(options.acceptanceReceiptRoot ?? agentRoot, {
-            schemaVersion: "sanctuary-telegram-turn-receipt-v2",
+            schemaVersion: "sanctuary-telegram-turn-receipt-v3",
             scenarioHandleDigest: acceptanceMarker.scenarioHandleDigest,
             status: receiptStatus,
             errorCategory,
             updateDigest: hmac("update", `${message.updateId}\0${message.messageId}`),
             sequenceDigest: hmac("sequence", String(message.updateId)),
-            responseDigest: hmac("response", deliveredChunks.join("\n")),
-            toolResultDigests,
-            providerInvocationCount,
-            toolInvocationCount,
-            deliveryCount: deliveredMessageIds.length,
-            telegramMessageIdDigests: deliveredMessageIds.map((id) => hmac("delivery", String(id))),
+            responseDigest: hmac("response", JSON.stringify(deliveries)),
+            toolResultDigests: toolReceiptObserver.toolResultDigests,
+            providerInvocationCount: turnMetricsObserver.providerInvocationCount,
+            toolInvocationCount: turnMetricsObserver.toolInvocationCount,
+            deliveryCount: deliveries.length,
+            deliveries,
             completedAt: new Date().toISOString(),
           })
         } catch (error) {

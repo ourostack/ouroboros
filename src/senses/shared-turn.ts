@@ -192,6 +192,8 @@ export interface RunSenseTurnOptions {
   runtimeMcpServers?: RuntimeMcpServers
   /** Test seam for the same production whole-turn lease wrapper. */
   _withSessionTurnLease?: <T>(sessionPath: string, work: (lease: SessionTurnLease) => Promise<T>) => Promise<T>
+  /** Mutable per-turn metrics survive a rejected turn for durable transport receipts. */
+  turnMetricsObserver?: { providerInvocationCount: number; toolInvocationCount: number }
 }
 
 export type OutwardSenseDeliveryKind = "speak" | "settle" | "text"
@@ -354,11 +356,11 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
   /* v8 ignore start — no-op callback stubs; only onTextChunk does real work (covered via mock) */
   const callbacks: ChannelCallbacks = {
     settleOutputMode: "retractable_buffer",
-    onModelStart: () => { providerInvocationCount += 1 },
+    onModelStart: () => { providerInvocationCount += 1; if (options.turnMetricsObserver) options.turnMetricsObserver.providerInvocationCount += 1 },
     onModelStreamStart: () => {},
     onTextChunk: (chunk: string) => { pendingResponseText += chunk },
     onReasoningChunk: () => {},
-    onToolStart: () => { toolInvocationCount += 1 },
+    onToolStart: () => { toolInvocationCount += 1; if (options.turnMetricsObserver) options.turnMetricsObserver.toolInvocationCount += 1 },
     onToolEnd: (name: string, _summary: string, success: boolean) => {
       if (name === "settle" && success) terminalDeliveryKind = "settle"
     },
