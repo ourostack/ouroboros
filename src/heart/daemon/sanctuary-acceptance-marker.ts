@@ -2,6 +2,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { AsyncLocalStorage } from "node:async_hooks"
 import { randomUUID } from "node:crypto"
+import { spawnSync } from "node:child_process"
 
 import { getAgentRoot } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
@@ -24,6 +25,34 @@ export interface SanctuaryAcceptanceGateStatus {
 }
 
 const DEFAULT_GATE_STATUS_PATH = "/evidence/current-scenario-gate.json"
+const SAFE_RENAME_HELPER = path.resolve(__dirname, "../../../deploy/unraid/sanctuary-safe-rename.py")
+
+function requireBasename(name: string): void {
+  if (name.length === 0 || name === "." || name === ".." || path.basename(name) !== name || name.includes("/") || name.includes("\0")) {
+    throw new Error("acceptance quarantine coordinates must be basenames")
+  }
+}
+
+export function boundDirectoryEntryPath(directoryHandle: number, directoryPath: string, name: string): string {
+  requireBasename(name)
+  return process.platform === "linux" ? `/proc/self/fd/${directoryHandle}/${name}` : path.join(directoryPath, name)
+}
+
+export function secureRenameBoundInodeSync(
+  sourceDirectoryHandle: number,
+  sourceName: string,
+  destinationDirectoryHandle: number,
+  destinationName: string,
+  expected: Pick<fs.Stats, "dev" | "ino">,
+): void {
+  requireBasename(sourceName)
+  requireBasename(destinationName)
+  const result = spawnSync("/usr/bin/python3", [SAFE_RENAME_HELPER, sourceName, destinationName, String(expected.dev), String(expected.ino)], {
+    cwd: "/", encoding: "utf8", timeout: 5_000, maxBuffer: 16 * 1024,
+    env: { PATH: "/usr/bin:/bin" }, stdio: ["ignore", "ignore", "pipe", sourceDirectoryHandle, destinationDirectoryHandle],
+  })
+  if (result.error || result.status !== 0) throw new Error("acceptance quarantine bound rename failed")
+}
 
 function markerPath(agentName: string): string {
   return path.join(getAgentRoot(agentName), "state", "acceptance", "active-scenario.json")
@@ -100,33 +129,40 @@ export function quarantineSanctuaryAcceptanceMarker(agentName: string): string |
     const sourceParentPathMetadata = fs.lstatSync(sourceParent)
     if (!sourceParentMetadata.isDirectory() || !sourceParentPathMetadata.isDirectory()
       || sourceParentMetadata.dev !== sourceParentPathMetadata.dev || sourceParentMetadata.ino !== sourceParentPathMetadata.ino) throw new Error("acceptance marker parent changed during quarantine")
-    if (markerPathMetadata.isFile()) markerHandle = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+    const boundMarkerPath = boundDirectoryEntryPath(sourceParentHandle, sourceParent, path.basename(filePath))
+    const boundQuarantineRoot = boundDirectoryEntryPath(sourceParentHandle, sourceParent, path.basename(quarantineRoot))
+    const boundRejectedPath = boundDirectoryEntryPath(sourceParentHandle, sourceParent, path.basename(rejectedPath))
+    if (markerPathMetadata.isFile()) markerHandle = fs.openSync(boundMarkerPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
     if (markerHandle !== null) {
       const markerMetadata = fs.fstatSync(markerHandle)
-      markerPathMetadata = fs.lstatSync(filePath)
+      markerPathMetadata = fs.lstatSync(boundMarkerPath)
       if (!markerMetadata.isFile() || !markerPathMetadata.isFile() || markerMetadata.dev !== markerPathMetadata.dev || markerMetadata.ino !== markerPathMetadata.ino) throw new Error("acceptance marker changed during quarantine")
     }
     let quarantineExists = false
+    let rejectedMetadata: fs.Stats | null = null
     try {
-      const existing = fs.lstatSync(quarantineRoot)
+      const existing = fs.lstatSync(boundQuarantineRoot)
       if (!existing.isDirectory()) {
-        fs.renameSync(quarantineRoot, rejectedPath)
-        const rejected = fs.lstatSync(rejectedPath)
+        secureRenameBoundInodeSync(sourceParentHandle, path.basename(quarantineRoot), sourceParentHandle, path.basename(rejectedPath), existing)
+        const rejected = fs.lstatSync(boundRejectedPath)
         if (rejected.dev !== existing.dev || rejected.ino !== existing.ino) throw new Error("acceptance marker quarantine rejection changed during move")
+        rejectedMetadata = rejected
       } else quarantineExists = true
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error }
-    if (!quarantineExists) fs.mkdirSync(quarantineRoot, { mode: 0o700 })
-    quarantineHandle = fs.openSync(quarantineRoot, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
+    if (!quarantineExists) fs.mkdirSync(boundQuarantineRoot, { mode: 0o700 })
+    quarantineHandle = fs.openSync(boundQuarantineRoot, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
     const quarantineMetadata = fs.fstatSync(quarantineHandle)
-    const quarantinePathMetadata = fs.lstatSync(quarantineRoot)
+    const quarantinePathMetadata = fs.lstatSync(boundQuarantineRoot)
     if (!quarantineMetadata.isDirectory() || !quarantinePathMetadata.isDirectory()
       || quarantineMetadata.dev !== quarantinePathMetadata.dev || quarantineMetadata.ino !== quarantinePathMetadata.ino) throw new Error("acceptance marker quarantine root changed")
     fs.fchmodSync(quarantineHandle, 0o700)
-    if (fs.existsSync(rejectedPath)) fs.renameSync(rejectedPath, path.join(quarantineRoot, path.basename(rejectedPath).slice(1)))
-    const finalMarkerPathMetadata = fs.lstatSync(filePath)
+    if (rejectedMetadata) {
+      secureRenameBoundInodeSync(sourceParentHandle, path.basename(rejectedPath), quarantineHandle, path.basename(rejectedPath).slice(1), rejectedMetadata)
+    }
+    const finalMarkerPathMetadata = fs.lstatSync(boundMarkerPath)
     if (finalMarkerPathMetadata.dev !== markerPathMetadata.dev || finalMarkerPathMetadata.ino !== markerPathMetadata.ino) throw new Error("acceptance marker changed before quarantine move")
-    fs.renameSync(filePath, quarantinePath)
-    const movedMarkerMetadata = fs.lstatSync(quarantinePath)
+    secureRenameBoundInodeSync(sourceParentHandle, path.basename(filePath), quarantineHandle, path.basename(quarantinePath), markerPathMetadata)
+    const movedMarkerMetadata = fs.lstatSync(boundDirectoryEntryPath(quarantineHandle, quarantineRoot, path.basename(quarantinePath)))
     if (movedMarkerMetadata.dev !== markerPathMetadata.dev || movedMarkerMetadata.ino !== markerPathMetadata.ino) throw new Error("acceptance marker changed during quarantine move")
     if (markerHandle !== null) fs.fsyncSync(markerHandle)
     fs.fsyncSync(sourceParentHandle)
