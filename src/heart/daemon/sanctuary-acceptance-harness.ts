@@ -431,6 +431,16 @@ export function validateSanctuaryUnit16EvidenceAssertions(label: SanctuaryUnit16
       ])
       if (text(value.schemaVersion, `${label} schemaVersion`) !== "sanctuary-containment-audit-v1") throw new Error(`${label} schemaVersion is invalid`)
       for (const key of ["keyInventoryDigest", "readScopeDigest", "writeScopeDigest", "telegramProfileDigest", "telegramSchemaDigest", "privateProfileDigest", "privateSchemaDigest", "auditPathDigest", "auditLedgerDigest", "writeApprovalPolicyDigest"]) opaqueDigest(value[key], `${label} ${key}`)
+      for (const [key, expected] of Object.entries({
+        readScopeDigest: "9914469afdcb574937d1020a03faa82e3c02d767169d3eccae4b81863dafa06e",
+        writeScopeDigest: "1de873b2bc3c7769010c32c69fcc8ea55343a5647cfdb0294769e831142945ec",
+        telegramProfileDigest: "a7f26934c5e60737582b9d13c78944b8bcbb941366899d82d58c01ca296e14e2",
+        telegramSchemaDigest: "3c66299a5f70ec82f8795cae47659284e6dbc691ef49002c2fb22edba76c59b6",
+        privateProfileDigest: "a100ffcaf436842bf9fceaf3d2fd1a1b766c04238300487474d6e9fcb7946369",
+        privateSchemaDigest: "61b137b2467acbcf22ca7443ee01e71ed970a62728c42aabffbdcb562f4a6a70",
+        auditPathDigest: "2c69993987cd9d9a32ff64447d403044bbfd14b0fcbd0db3fbb78391d3320505",
+        writeApprovalPolicyDigest: "24b1726edf1a2bbd524e9be63d3f0f726d996a8a009425462e01a5c4916ef42b",
+      })) if (value[key] !== expected) throw new Error(`${label} ${key} does not match the canonical contract`)
       requiredInteger(value, "keyCount", 2, label)
       requiredInteger(value, "keyRoleAssignmentCount", 0, label)
       requiredInteger(value, "telegramToolCount", 10, label)
@@ -448,9 +458,10 @@ export function validateSanctuaryUnit16EvidenceAssertions(label: SanctuaryUnit16
       break
     case "unit-16e-1-stop-denial":
     case "unit-16e-2-restart-denial":
-      exact(["auditDecisionCount", "denied", "mutationCount", "resumed"])
-      allTrue(["denied", "resumed"])
-      requiredInteger(value, "auditDecisionCount", 1, label)
+      exact(["attemptCount", "cursorBoundaryCount", "denied", "mutationCount", "restartCountUnchanged", "resumed"])
+      allTrue(["denied", "restartCountUnchanged", "resumed"])
+      requiredInteger(value, "attemptCount", 1, label)
+      requiredInteger(value, "cursorBoundaryCount", 7, label)
       requiredInteger(value, "mutationCount", 0, label)
       break
     case "unit-16f-cron-fingerprint":

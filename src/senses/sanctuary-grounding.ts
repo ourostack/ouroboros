@@ -44,26 +44,56 @@ function normalized(value: string): string {
   return value.normalize("NFKC").toLocaleLowerCase("en-US")
 }
 
-function numericTokens(value: number, divisors: Array<[number, string[]]>): string[] {
-  const tokens = new Set([String(value)])
-  for (const [divisor, units] of divisors) {
-    const amount = value / divisor
-    for (const precision of [0, 1, 2]) {
-      const rendered = amount.toFixed(precision).replace(/\.0+$/u, "").replace(/(\.\d*?)0+$/u, "$1")
-      for (const unit of units) tokens.add(`${rendered} ${unit}`)
-    }
+function regexEscape(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")
+}
+
+function systemResponseAccurate(facts: Record<string, unknown>, response: string): boolean {
+  if (typeof facts.serverName !== "string" || typeof facts.unraidVersion !== "string" || typeof facts.arrayState !== "string" || typeof facts.degraded !== "boolean") return false
+  const pattern = new RegExp(`^${regexEscape(normalized(facts.serverName))} is running unraid ${regexEscape(normalized(facts.unraidVersion))}(?:; the array is| with the array) ${regexEscape(normalized(facts.arrayState))} and (not degraded|healthy|nominal|degraded|unhealthy)\\.?$`, "u")
+  const match = pattern.exec(response)
+  if (!match) return false
+  return facts.degraded ? match[1] === "degraded" || match[1] === "unhealthy" : match[1] === "not degraded" || match[1] === "healthy" || match[1] === "nominal"
+}
+
+function byteAmount(amount: string, unit: string): number {
+  const divisors: Record<string, number> = { tb: 1_000_000_000_000, tib: 1_099_511_627_776, gb: 1_000_000_000, gib: 1_073_741_824, byte: 1, bytes: 1 }
+  return Number(amount) * divisors[unit]!
+}
+
+function storageResponseAccurate(facts: Record<string, unknown>, response: string): boolean {
+  const array = object(facts.array, "Sanctuary response storage facts")
+  if (typeof array.freeBytes !== "number" || typeof array.usedPercent !== "number" || typeof array.state !== "string" || typeof array.degraded !== "boolean") return false
+  const pattern = /^(?:there is|about) (\d+(?:\.\d+)?)\s*(tb|tib|gb|gib|bytes?) (?:is )?(?:available|free|left)(?:;|,| and) (?:(?:the array is )(\d+(?:\.\d+)?)\s*%\s*(?:used|full)|(?:usage is )(\d+(?:\.\d+)?)\s*%)\.(?: the array is ([\p{L}\p{N}_-]+) and (not degraded|healthy|nominal|degraded|unhealthy)\.)?$/u
+  const match = pattern.exec(response)
+  if (!match) return false
+  const bytesAccurate = Math.abs(byteAmount(match[1]!, match[2]!) - array.freeBytes) <= Math.max(1, array.freeBytes * 0.025)
+  const percentAccurate = Math.abs(Number(match[3] ?? match[4]) - array.usedPercent) <= 0.51
+  if (!bytesAccurate || !percentAccurate) return false
+  if (match[5] === undefined && match[6] === undefined) return true
+  const healthAccurate = array.degraded ? match[6] === "degraded" || match[6] === "unhealthy" : match[6] === "not degraded" || match[6] === "healthy" || match[6] === "nominal"
+  return normalized(String(match[5])) === normalized(array.state) && healthAccurate
+}
+
+function compactNumber(value: number): string {
+  return value.toFixed(2).replace(/\.0+$/u, "").replace(/(\.\d*?)0+$/u, "$1")
+}
+
+export function renderSanctuaryGroundedResponse(toolName: SanctuaryGroundingToolName, facts: Record<string, unknown>): string {
+  if (toolName === "unraid_get_system") {
+    if (typeof facts.serverName !== "string" || typeof facts.unraidVersion !== "string" || typeof facts.arrayState !== "string" || typeof facts.degraded !== "boolean") throw new Error("Sanctuary system response facts are invalid")
+    return `${facts.serverName} is running Unraid ${facts.unraidVersion} with the array ${facts.arrayState} and ${facts.degraded ? "degraded" : "not degraded"}.`
   }
-  return [...tokens]
+  const array = object(facts.array, "Sanctuary storage response facts")
+  if (typeof array.freeBytes !== "number" || typeof array.usedPercent !== "number") throw new Error("Sanctuary storage response facts are invalid")
+  const units: Array<[number, string]> = [[1_000_000_000_000, "TB"], [1_000_000_000, "GB"], [1, "bytes"]]
+  const freeBytes = Number(array.freeBytes)
+  const usedPercent = Number(array.usedPercent)
+  const [divisor, unit] = units.find(([candidate]) => freeBytes >= candidate) ?? units[units.length - 1]!
+  return `There is ${compactNumber(freeBytes / divisor)} ${unit} free and the array is ${compactNumber(usedPercent)}% used.`
 }
 
 export function sanctuaryGroundedResponseAccurate(toolName: SanctuaryGroundingToolName, facts: Record<string, unknown>, responseText: string): boolean {
   const response = normalized(responseText)
-  if (toolName === "unraid_get_system") {
-    return [facts.serverName, facts.unraidVersion, facts.arrayState].every((value) => typeof value === "string" && response.includes(normalized(value)))
-  }
-  const array = object(facts.array, "Sanctuary response storage facts")
-  if (typeof array.freeBytes !== "number" || typeof array.usedPercent !== "number") return false
-  const freeTokens = numericTokens(array.freeBytes, [[1_000_000_000_000, ["tb"]], [1_099_511_627_776, ["tib"]], [1_000_000_000, ["gb"]], [1_073_741_824, ["gib"]]])
-  const percentTokens = [String(array.usedPercent), array.usedPercent.toFixed(1), String(Math.round(array.usedPercent))].map((value) => `${value.replace(/\.0$/u, "")}%`)
-  return freeTokens.some((token) => response.includes(normalized(token))) && percentTokens.some((token) => response.includes(token))
+  return toolName === "unraid_get_system" ? systemResponseAccurate(facts, response) : storageResponseAccurate(facts, response)
 }

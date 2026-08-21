@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process"
 import { createHash, createHmac, timingSafeEqual } from "node:crypto"
-import { closeSync, existsSync, fsyncSync, openSync, readFileSync, readdirSync, unlinkSync } from "node:fs"
+import { closeSync, constants, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs"
 import { createConnection } from "node:net"
 import * as path from "node:path"
 
@@ -8,7 +8,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { createTelegramApprovalRuntime, type TelegramApprovalRuntime } from "../../senses/telegram-approval-runtime"
 import { createTelegramBotApi, type TelegramBotApi, type TelegramUpdate } from "../../senses/telegram-client"
 import { executeSanctuaryInteractiveEngine, proveSanctuaryAttemptedRecoveryWithoutRetry, type SanctuaryInteractiveEngineDependencies } from "../../senses/sanctuary-interactive-control"
-import { loadTelegramSenseCredentials, readOrCreateTelegramIdentityKey, type TelegramSenseCredentials } from "../../senses/telegram"
+import { loadTelegramSenseCredentials, readOrCreateTelegramIdentityKey, sanctuaryTelegramTurnReceiptDigest, sanctuaryTelegramTurnReceiptMac, type TelegramSenseCredentials } from "../../senses/telegram"
 import { createSanctuaryToolContext } from "../../senses/sanctuary-runtime"
 import { projectSanctuaryGrounding, sanctuaryGroundingDigest, type SanctuaryGroundingToolName, type SanctuaryToolGrounding } from "../../senses/sanctuary-grounding"
 import { ponderTool, resolveToolDefinition, restTool, settleTool, speakTool } from "../../repertoire/tools"
@@ -18,7 +18,7 @@ import { readProviderCredentialRecord } from "../provider-credentials"
 import { pingProvider, type PingResult } from "../provider-ping"
 import { SANCTUARY_SCENARIO_GATES, SANCTUARY_SCENARIO_SOURCES, SANCTUARY_UNIT_16_EVIDENCE_LABELS, type SanctuaryUnit16EvidenceLabel } from "./sanctuary-acceptance-harness"
 import { readSanctuaryAcceptanceMarker } from "./sanctuary-acceptance-marker"
-import { createSanctuaryScenarioCapture, finalizeSanctuaryScenarioCapture, type SanctuaryHealthProbeReceipt, type SanctuaryInteractiveDriverReceipt, type SanctuaryScenarioFacts } from "./sanctuary-acceptance-scenarios"
+import { createSanctuaryScenarioCapture, finalizeSanctuaryScenarioCapture, type SanctuaryHealthProbeReceipt, type SanctuaryInteractiveDriverReceipt, type SanctuaryReadOnlyDenialReceipt, type SanctuaryScenarioFacts } from "./sanctuary-acceptance-scenarios"
 import {
   mergeMachineRuntimeCredentialConfig,
   mergeRuntimeCredentialConfig,
@@ -242,15 +242,21 @@ export function createSanctuaryAcceptanceAdapterDependencies(
     readLiveGrounding: readIndependentSanctuaryGrounding,
   }
   const healthDriver = createSanctuaryHealthAcceptanceScenarioDriver(dependencies.hostRequest!)
+  const scenarioAgentRoot = options.scenarioCapture?.agentRoot ?? getAgentRoot(TARGET_ID)
   const interactiveDriver = createSanctuaryInteractiveAcceptanceScenarioDriver({
-    agentRoot: options.scenarioCapture?.agentRoot ?? getAgentRoot(TARGET_ID),
+    agentRoot: scenarioAgentRoot,
     hostRequest: dependencies.hostRequest!,
+  })
+  const denialDriver = createSanctuaryReadOnlyDenialScenarioDriver({
+    agentRoot: scenarioAgentRoot,
+    runProbe: (label, scenarioHandleDigest) => executeSanctuaryReadOnlyDenialProbe(label, scenarioHandleDigest, scenarioAgentRoot, dependencies),
   })
   dependencies.captureScenario = createSanctuaryScenarioCapture({
     now: Date.now,
     readFacts: (label, scenarioHandleDigest, readOptions) => readDefaultSanctuaryScenarioFacts(label, scenarioHandleDigest, dependencies, options.scenarioCapture?.agentRoot, readOptions),
     healthDriver,
     interactiveDriver,
+    denialDriver,
     receiptRoot: options.scenarioCapture?.receiptRoot,
     gateStatusPath: options.scenarioCapture?.gateStatusPath,
   }) as (payload: JsonObject) => Promise<unknown>
@@ -598,10 +604,14 @@ function parseHealthProbeReceipt(raw: string | null, label: SanctuaryUnit16Evide
   return { ...validated, phases } as SanctuaryHealthProbeReceipt
 }
 
-function auditContainsSensitiveMaterial(raw: string): boolean {
-  return /\b\d{5,16}:[A-Za-z0-9_-]{20,}\b/u.test(raw)
-    || /"(?:authorizedUserId|authorizedChatId|transportUserId|transportChatId|userId|chatId)"\s*:\s*"?\d{5,16}"?/u.test(raw)
+export function auditContainsSensitiveMaterial(raw: string, credentials?: TelegramSenseCredentials): boolean {
+  const knownValues = credentials ? [credentials.botToken, credentials.authorizedUserId, credentials.authorizedChatId] : []
+  return knownValues.some((value) => value.length > 0 && raw.includes(value))
+    || /\b\d{5,16}:[A-Za-z0-9_-]{20,}\b/u.test(raw)
+    || /"(?:authorized_?user_?id|authorized_?chat_?id|transport_?user_?id|transport_?chat_?id|user_?id|chat_?id|update_?id|message_?id)"\s*:\s*"?\d{5,16}"?/iu.test(raw)
     || /"(?:botToken|apiKey|password|secret)"\s*:\s*"(?!\[REDACTED\])[^"\n]+"/u.test(raw)
+    || /\b(?:bearer\s+|sk-|AIza|xox[baprs]-)[A-Za-z0-9_-]{10,}\b/iu.test(raw)
+    || /\b(?:api[_ -]?key|token|secret|password)\s*[:=]\s*(?!\[REDACTED\])\S{8,}/iu.test(raw)
 }
 
 function millisecondsAfterLocalNine(timestamp: number): number | null {
@@ -664,15 +674,22 @@ function readBoundedIdentitySurfaces(agentRoot: string): string[] {
   return records
 }
 
-function parseTelegramTurnReceipts(raw: string, scenarioHandleDigest: string): SanctuaryScenarioFacts["telegramTurns"] {
+function parseTelegramTurnReceipts(raw: string, scenarioHandleDigest: string, identityKey: string | null): SanctuaryScenarioFacts["telegramTurns"] {
   if (Buffer.byteLength(raw) > 4 * 1024 * 1024) throw new Error("Telegram turn receipt ledger exceeds its bound")
   const lines = raw.split("\n").filter(Boolean)
   if (lines.length > 500 || lines.some((line) => Buffer.byteLength(line) > 16 * 1024)) throw new Error("Telegram turn receipt ledger exceeds its bound")
   return lines.flatMap((line) => {
     const receipt = object(JSON.parse(line) as unknown, "Telegram turn receipt")
     const grounded = receipt.schemaVersion === "sanctuary-telegram-turn-receipt-v4"
-    const exactKeys = ["completedAt", "deliveries", "deliveryCount", "errorCategory", "providerInvocationCount", "responseDigest", "scenarioHandleDigest", "schemaVersion", "sequenceDigest", "status", "toolInvocationCount", "toolResultDigests", "updateDigest", ...(grounded ? ["toolGroundings"] : [])].sort()
+    const exactKeys = ["completedAt", "deliveries", "deliveryCount", "errorCategory", "providerInvocationCount", "responseDigest", "scenarioHandleDigest", "schemaVersion", "sequenceDigest", "status", "toolInvocationCount", "toolResultDigests", "updateDigest", ...(grounded ? ["receiptMac", "toolGroundings"] : [])].sort()
     const deliveries = receipt.deliveries
+    const authenticatedDeliveries = grounded && typeof identityKey === "string" && /^[A-Za-z0-9_-]{43}$/u.test(identityKey) && Array.isArray(deliveries)
+      && deliveries.every((value) => {
+        const delivery = object(value, "Telegram authenticated delivery receipt")
+        return typeof delivery.redactedText === "string" && delivery.chunkDigest === sanctuaryTelegramTurnReceiptDigest(identityKey, "sanctuary-telegram-turn-receipt-v4", "chunk", delivery.redactedText)
+      })
+      && receipt.responseDigest === sanctuaryTelegramTurnReceiptDigest(identityKey, "sanctuary-telegram-turn-receipt-v4", "response", JSON.stringify(deliveries))
+      && receipt.receiptMac === sanctuaryTelegramTurnReceiptMac(identityKey, receipt)
     if (JSON.stringify(Object.keys(receipt).sort()) !== JSON.stringify(exactKeys)
       || (!grounded && receipt.schemaVersion !== "sanctuary-telegram-turn-receipt-v3")
       || typeof receipt.scenarioHandleDigest !== "string" || !SHA256.test(receipt.scenarioHandleDigest)
@@ -687,6 +704,8 @@ function parseTelegramTurnReceipts(raw: string, scenarioHandleDigest: string): S
           && typeof delivery.chunkDigest === "string" && SHA256.test(delivery.chunkDigest)
           && (!grounded || (typeof delivery.redactedText === "string" && delivery.redactedText.length === delivery.utf16Units && Number(delivery.utf16Units) <= 1_200))
       })
+      || (grounded && !authenticatedDeliveries)
+      || (grounded && (typeof receipt.receiptMac !== "string" || !SHA256.test(receipt.receiptMac)))
       || (grounded && (!Array.isArray(receipt.toolGroundings) || receipt.toolGroundings.length !== 1 || !receipt.toolGroundings.every((raw) => {
         const grounding = object(raw, "Telegram tool grounding")
         if (JSON.stringify(Object.keys(grounding).sort()) !== JSON.stringify(["facts", "groundingDigest", "resultDigest", "toolName"]) || (grounding.toolName !== "unraid_get_system" && grounding.toolName !== "unraid_get_storage")
@@ -754,42 +773,170 @@ function parseInteractiveDriverReceipt(raw: string | null, label: SanctuaryUnit1
   return validated as unknown as SanctuaryInteractiveDriverReceipt
 }
 
-export async function probeSanctuaryReadOnlyMutationDenial(
-  label: "unit-16e-1-stop-denial" | "unit-16e-2-restart-denial",
-  endpoint: URL,
-  readKey: string,
-  fetchImpl: typeof fetch,
-): Promise<JsonObject> {
-  const topologyQuery = "query AcceptanceDenialTarget { docker { containers(skipCache: true) { id names state status } } }"
-  const readTarget = async (): Promise<JsonObject> => {
-    const targetResponse = await fetchImpl(endpoint.href, { method: "POST", headers: { "content-type": "application/json", "x-api-key": readKey }, body: JSON.stringify({ query: topologyQuery, variables: {} }), signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS) })
-    const targetEnvelope = object(await targetResponse.json(), "read-only denial target response")
-    const docker = object(object(targetEnvelope.data, "read-only denial target data").docker, "read-only denial target docker")
-    if (!Array.isArray(docker.containers)) throw new Error("read-only denial target list is invalid")
-    const matches = docker.containers.map((entry) => object(entry, "read-only denial target"))
-      .filter((entry) => Array.isArray(entry.names) && entry.names.some((name) => name === "calibre-web" || name === "/calibre-web"))
-    if (matches.length !== 1 || typeof matches[0]!.id !== "string") throw new Error("read-only denial target is absent or ambiguous")
-    return matches[0]!
+type SanctuaryReadOnlyDenialLabel = "unit-16e-1-stop-denial" | "unit-16e-2-restart-denial"
+
+function parseReadOnlyDenialReceipt(raw: string | null, label: SanctuaryUnit16EvidenceLabel, scenarioHandleDigest: string): SanctuaryReadOnlyDenialReceipt | undefined {
+  if (raw === null) return undefined
+  const receipt = object(JSON.parse(raw) as unknown, "read-only denial receipt")
+  exactKeys(receipt, ["schemaVersion", "phase", "label", "scenarioHandleDigest", "operation", "targetDigest", "attemptCount", "httpStatus", "errorCode", "before", "after"], "read-only denial receipt")
+  const expectedOperation = label === "unit-16e-1-stop-denial" ? "stop" : label === "unit-16e-2-restart-denial" ? "restart" : null
+  if (receipt.schemaVersion !== "sanctuary-read-only-denial-receipt-v1" || receipt.phase !== "complete" || receipt.label !== label
+    || receipt.scenarioHandleDigest !== scenarioHandleDigest || expectedOperation === null || receipt.operation !== expectedOperation
+    || typeof receipt.targetDigest !== "string" || !SHA256.test(receipt.targetDigest) || receipt.attemptCount !== 1
+    || ![200, 401, 403].includes(Number(receipt.httpStatus)) || (receipt.errorCode !== "FORBIDDEN" && receipt.errorCode !== "PERMISSION_DENIED")) {
+    throw new Error("read-only denial receipt binding is invalid")
   }
-  const beforeTarget = await readTarget()
-  const targetId = text(beforeTarget.id, "read-only denial target id")
+  const boundaryKeys = ["ownerSnapshotDigest", "targetSnapshotDigest", "targetRestartCount", "auditCursorDigest", "providerUsageCursorDigest", "sessionCursorDigest", "toolActionCursorDigest"]
+  const parseBoundary = (rawBoundary: unknown, boundaryLabel: string) => {
+    const boundary = object(rawBoundary, boundaryLabel)
+    exactKeys(boundary, boundaryKeys, boundaryLabel)
+    if (![boundary.ownerSnapshotDigest, boundary.targetSnapshotDigest, boundary.auditCursorDigest, boundary.providerUsageCursorDigest, boundary.sessionCursorDigest, boundary.toolActionCursorDigest]
+      .every((value) => typeof value === "string" && SHA256.test(value)) || !Number.isSafeInteger(boundary.targetRestartCount) || Number(boundary.targetRestartCount) < 0) {
+      throw new Error(`${boundaryLabel} is invalid`)
+    }
+    return boundary
+  }
+  const before = parseBoundary(receipt.before, "read-only denial before boundary")
+  const after = parseBoundary(receipt.after, "read-only denial after boundary")
+  if (JSON.stringify(before) !== JSON.stringify(after)) throw new Error("read-only denial boundary drift was observed")
+  return receipt as unknown as SanctuaryReadOnlyDenialReceipt
+}
+
+function durablePrivateJson(filePath: string, value: unknown): void {
+  const directory = path.dirname(filePath)
+  mkdirSync(directory, { recursive: true, mode: 0o700 })
+  const directoryFd = openSync(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
+  const temporary = `${filePath}.${process.pid}.${Date.now()}.tmp`
+  let fileFd: number | null = null
+  try {
+    fileFd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
+    writeFileSync(fileFd, `${JSON.stringify(value)}\n`)
+    fsyncSync(fileFd)
+    closeSync(fileFd)
+    fileFd = null
+    renameSync(temporary, filePath)
+    fsyncSync(directoryFd)
+  } finally {
+    if (fileFd !== null) closeSync(fileFd)
+    if (existsSync(temporary)) unlinkSync(temporary)
+    closeSync(directoryFd)
+  }
+}
+
+export function createSanctuaryReadOnlyDenialScenarioDriver(options: {
+  agentRoot: string
+  runProbe(label: SanctuaryReadOnlyDenialLabel, scenarioHandleDigest: string): Promise<SanctuaryReadOnlyDenialReceipt>
+}) {
+  const receiptPath = (scenarioHandleDigest: string) => pathFor(options.agentRoot, `state/acceptance/denial-receipts/${scenarioHandleDigest}.json`)
+  const attemptPath = (scenarioHandleDigest: string) => pathFor(options.agentRoot, `state/acceptance/denial-attempts/${scenarioHandleDigest}.json`)
+  const attemptsRoot = pathFor(options.agentRoot, "state/acceptance/denial-attempts")
+  const assertNoIndeterminateAttempt = (label: SanctuaryReadOnlyDenialLabel): void => {
+    try {
+      const entries = readdirSync(attemptsRoot, { withFileTypes: true })
+      if (entries.length > 100) throw new Error("read-only denial attempt inventory exceeds its bound")
+      for (const entry of entries) {
+        if (!entry.isFile() || !entry.name.endsWith(".json")) throw new Error("read-only denial attempt inventory is invalid")
+        const attempt = object(JSON.parse(readFileSync(pathFor(attemptsRoot, entry.name), "utf8")) as unknown, "read-only denial attempt")
+        exactKeys(attempt, ["schemaVersion", "phase", "label", "scenarioHandleDigest"], "read-only denial attempt")
+        if (attempt.schemaVersion !== "sanctuary-read-only-denial-attempt-v1" || attempt.phase !== "attempting"
+          || typeof attempt.scenarioHandleDigest !== "string" || !SHA256.test(attempt.scenarioHandleDigest)) throw new Error("read-only denial attempt is invalid")
+        if (attempt.label === label) throw new Error("read-only denial attempt is attempted or indeterminate; inspect-before-retry is required")
+      }
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error }
+  }
+  return {
+    async poll(rawLabel: SanctuaryUnit16EvidenceLabel, scenarioHandleDigest: string): Promise<{ state: "driven" }> {
+      if (rawLabel !== "unit-16e-1-stop-denial" && rawLabel !== "unit-16e-2-restart-denial") throw new Error("read-only denial label is invalid")
+      const label = rawLabel as SanctuaryReadOnlyDenialLabel
+      const existingReceipt = receiptPath(scenarioHandleDigest)
+      if (existsSync(existingReceipt)) {
+        parseReadOnlyDenialReceipt(readFileSync(existingReceipt, "utf8"), label, scenarioHandleDigest)
+        return { state: "driven" }
+      }
+      assertNoIndeterminateAttempt(label)
+      const attempt = attemptPath(scenarioHandleDigest)
+      durablePrivateJson(attempt, { schemaVersion: "sanctuary-read-only-denial-attempt-v1", phase: "attempting", label, scenarioHandleDigest })
+      const receipt = await options.runProbe(label, scenarioHandleDigest)
+      parseReadOnlyDenialReceipt(JSON.stringify(receipt), label, scenarioHandleDigest)
+      durablePrivateJson(existingReceipt, receipt)
+      return { state: "driven" }
+    },
+    complete(_label: SanctuaryUnit16EvidenceLabel, scenarioHandleDigest: string): void {
+      for (const filePath of [receiptPath(scenarioHandleDigest), attemptPath(scenarioHandleDigest)]) if (existsSync(filePath)) unlinkSync(filePath)
+    },
+  }
+}
+
+function digestOptionalFiles(filePaths: string[]): string {
+  const digest = createHash("sha256")
+  for (const filePath of filePaths) {
+    digest.update(filePath)
+    try { digest.update(readFileSync(filePath)) } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+      digest.update("[absent]")
+    }
+  }
+  return digest.digest("hex")
+}
+
+async function captureReadOnlyDenialBoundary(agentRoot: string, deps: SanctuaryAcceptanceAdapterDependencies) {
+  const ownerSnapshot = object(await dependency(deps.hostRequest, "Sanctuary host broker")({ operation: "container_snapshot", targetId: TARGET_ID }), "denial owner snapshot")
+  const targetSnapshot = object(await dependency(deps.hostRequest, "Sanctuary host broker")({ operation: "denial_target_snapshot", targetId: TARGET_ID }), "denial target snapshot")
+  exactKeys(targetSnapshot, ["containerIdDigest", "imageDigest", "running", "status", "restartCount", "startedAtDigest"], "denial target snapshot")
+  if (![targetSnapshot.containerIdDigest, targetSnapshot.imageDigest, targetSnapshot.startedAtDigest].every((value) => typeof value === "string" && SHA256.test(value))
+    || typeof targetSnapshot.running !== "boolean" || typeof targetSnapshot.status !== "string"
+    || !Number.isSafeInteger(targetSnapshot.restartCount) || Number(targetSnapshot.restartCount) < 0) throw new Error("denial target snapshot is invalid")
+  const auditPath = TELEGRAM_AUDIT
+  const providerPath = pathFor(agentRoot, "state/acceptance/telegram-turns.ndjson")
+  const toolPath = pathFor(agentRoot, "state/acceptance/restart-attempts.ndjson")
+  const approvalDatabase = pathFor(agentRoot, "state/approvals/approvals.sqlite")
+  return {
+    ownerSnapshotDigest: createHash("sha256").update(JSON.stringify(ownerSnapshot)).digest("hex"),
+    targetSnapshotDigest: createHash("sha256").update(JSON.stringify(targetSnapshot)).digest("hex"),
+    targetRestartCount: Number(targetSnapshot.restartCount),
+    auditCursorDigest: digestOptionalFiles([auditPath]),
+    providerUsageCursorDigest: digestOptionalFiles([providerPath]),
+    sessionCursorDigest: createHash("sha256").update(JSON.stringify(readBoundedIdentitySurfaces(agentRoot))).digest("hex"),
+    toolActionCursorDigest: digestOptionalFiles([toolPath, approvalDatabase, `${approvalDatabase}-wal`, `${approvalDatabase}-shm`]),
+  }
+}
+
+async function executeSanctuaryReadOnlyDenialProbe(
+  label: SanctuaryReadOnlyDenialLabel,
+  scenarioHandleDigest: string,
+  agentRoot: string,
+  deps: SanctuaryAcceptanceAdapterDependencies,
+): Promise<SanctuaryReadOnlyDenialReceipt> {
+  const runtime = readMachineRuntimeCredentialConfig(TARGET_ID)
+  if (!runtime.ok) throw new Error("read-only denial probe requires an unlocked machine runtime credential")
+  const endpoint = exactLoopbackGraphqlEndpoint(runtime.config.unraidGraphqlUrl)
+  const readKey = text(runtime.config.unraidReadApiKey, "read-only Unraid credential")
+  const topologyQuery = "query AcceptanceDenialTarget { docker { containers(skipCache: true) { id names state status } } }"
+  const topologyResponse = await deps.fetch(endpoint.href, { method: "POST", headers: { "content-type": "application/json", "x-api-key": readKey }, body: JSON.stringify({ query: topologyQuery, variables: {} }), signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS) })
+  const topologyEnvelope = object(await topologyResponse.json(), "read-only denial target response")
+  const docker = object(object(topologyEnvelope.data, "read-only denial target data").docker, "read-only denial target docker")
+  if (!Array.isArray(docker.containers)) throw new Error("read-only denial target list is invalid")
+  const matches = docker.containers.map((entry) => object(entry, "read-only denial target"))
+    .filter((entry) => Array.isArray(entry.names) && entry.names.some((name) => name === "calibre-web" || name === "/calibre-web"))
+  if (matches.length !== 1 || typeof matches[0]!.id !== "string") throw new Error("read-only denial target is absent or ambiguous")
+  const targetId = text(matches[0]!.id, "read-only denial target id")
+  const before = await captureReadOnlyDenialBoundary(agentRoot, deps)
   const query = label === "unit-16e-1-stop-denial"
     ? "mutation AcceptanceStopDenial($id: PrefixedID!) { docker { stop(id: $id) { id } } }"
     : WRITE_PROBE
-  const response = await fetchImpl(endpoint.href, { method: "POST", headers: { "content-type": "application/json", "x-api-key": readKey }, body: JSON.stringify({ query, variables: { id: targetId } }), signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS) })
+  const response = await deps.fetch(endpoint.href, { method: "POST", headers: { "content-type": "application/json", "x-api-key": readKey }, body: JSON.stringify({ query, variables: { id: targetId } }), signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS) })
   const envelope = object(await response.json(), "read-only mutation denial response")
-  const codes = Array.isArray(envelope.errors) ? envelope.errors.map((raw) => object(raw, "read-only denial error")).map((error) => {
+  const codes = Array.isArray(envelope.errors) ? envelope.errors.map((raw) => object(raw, "read-only denial error")).flatMap((error) => {
     const extensions = error.extensions && typeof error.extensions === "object" && !Array.isArray(error.extensions) ? error.extensions as JsonObject : {}
-    return extensions.code
+    return typeof extensions.code === "string" ? [extensions.code] : []
   }) : []
-  const denied = !envelope.data && (response.status === 403 || codes.includes("FORBIDDEN") || codes.includes("PERMISSION_DENIED"))
-  const afterTarget = await readTarget()
-  const beforeDigest = createHash("sha256").update(JSON.stringify(beforeTarget)).digest("hex")
-  const afterDigest = createHash("sha256").update(JSON.stringify(afterTarget)).digest("hex")
+  const errorCode = codes.includes("FORBIDDEN") ? "FORBIDDEN" : codes.includes("PERMISSION_DENIED") ? "PERMISSION_DENIED" : "UNCLASSIFIED"
+  const after = await captureReadOnlyDenialBoundary(agentRoot, deps)
   return {
+    schemaVersion: "sanctuary-read-only-denial-receipt-v1", phase: "complete", label, scenarioHandleDigest,
     operation: label === "unit-16e-1-stop-denial" ? "stop" : "restart",
-    targetDigest: createHash("sha256").update(targetId).digest("hex"),
-    beforeDigest, afterDigest, denied, probeCompleted: true,
+    targetDigest: createHash("sha256").update(targetId).digest("hex"), attemptCount: 1,
+    httpStatus: response.status, errorCode, before, after,
   }
 }
 
@@ -812,6 +959,7 @@ export async function readDefaultSanctuaryScenarioFacts(
   const healthRaw = optionalFixedFile(deps, pathFor(agentRoot, "state/health/sanctuary-health.json"))
   const healthProbeRaw = optionalFixedFile(deps, pathFor(agentRoot, `state/acceptance/health-probe-receipts/${scenarioHandleDigest}.json`))
   const interactiveDriverRaw = optionalFixedFile(deps, pathFor(agentRoot, `state/acceptance/interactive-driver-receipts/${scenarioHandleDigest}.json`))
+  const denialReceiptRaw = optionalFixedFile(deps, pathFor(agentRoot, `state/acceptance/denial-receipts/${scenarioHandleDigest}.json`))
   const agentConfig = parsedJson(optionalFixedFile(deps, pathFor(agentRoot, "agent.json")))
   const readinessPolicy = parsedJson(optionalFixedFile(deps, pathFor(agentRoot, "provider-readiness.json")))
   const rebootRaw = optionalFixedFile(deps, "/evidence/reboot.json")
@@ -821,20 +969,13 @@ export async function readDefaultSanctuaryScenarioFacts(
   let denialAuditCount = 0
   let denialStateUnchanged = false
   let denialProbeCompleted = false
-  let denialReceipt: JsonObject | null = null
-  if (label === "unit-16e-1-stop-denial" || label === "unit-16e-2-restart-denial") {
-    const runtime = readMachineRuntimeCredentialConfig(TARGET_ID)
-    if (runtime.ok) {
-      const endpoint = exactLoopbackGraphqlEndpoint(runtime.config.unraidGraphqlUrl)
-      const readKey = text(runtime.config.unraidReadApiKey, "read-only Unraid credential")
-      denialReceipt = await probeSanctuaryReadOnlyMutationDenial(label, endpoint, readKey, deps.fetch)
-      const denied = denialReceipt.denied === true
-      denialStateUnchanged = denialReceipt.beforeDigest === denialReceipt.afterDigest
-      denialProbeCompleted = denialReceipt.probeCompleted === true
-      if (label === "unit-16e-1-stop-denial") stopDenied = denied
-      else restartDenied = denied
-      denialAuditCount = denied ? 1 : 0
-    }
+  const denialReceipt = parseReadOnlyDenialReceipt(denialReceiptRaw, label, scenarioHandleDigest)
+  if (denialReceipt) {
+    denialStateUnchanged = JSON.stringify(denialReceipt.before) === JSON.stringify(denialReceipt.after)
+    denialProbeCompleted = true
+    denialAuditCount = denialReceipt.attemptCount
+    if (label === "unit-16e-1-stop-denial") stopDenied = true
+    else if (label === "unit-16e-2-restart-denial") restartDenied = true
   }
   const auditLedgerEntries = parseAuditLedger(auditRaw)
   const auditEntries = auditLedgerEntries.filter((entry) => entry.meta.scenarioHandleDigest === scenarioHandleDigest)
@@ -876,7 +1017,7 @@ export async function readDefaultSanctuaryScenarioFacts(
     })
   })
   const restartAttempts = parseRestartAttempts(restartAttemptsRaw, scenarioHandleDigest)
-  const telegramTurns = parseTelegramTurnReceipts(telegramTurnsRaw, scenarioHandleDigest)
+  const telegramTurns = parseTelegramTurnReceipts(telegramTurnsRaw, scenarioHandleDigest, identityRaw?.trim() ?? null)
   const groundingTool = label === "unit-16d-whats-up" ? "unraid_get_system" : label === "unit-16d-1-space" ? "unraid_get_storage" : null
   const liveGrounding = groundingTool && deps.readLiveGrounding ? await deps.readLiveGrounding(groundingTool) : undefined
   let identity: SanctuaryScenarioFacts["identity"]
@@ -1056,11 +1197,11 @@ export async function readDefaultSanctuaryScenarioFacts(
       mountsExact: container?.mountsExact === true,
       securityExact: container?.securityExact === true,
       updaterDisabled: container?.updaterDisabled === true,
-      writableKeyExposure: container?.writableKeyExposure === true,
+      writableKeyExposure: container?.writableKeyExposure !== false,
       rawWriteMaterialFieldCount,
       typedWriteExecutorCount: telegramNames.filter((name) => name === "unraid_restart_container" && writeApprovalPolicy.kind === "required").length,
       writeApprovalPolicyDigest: createHash("sha256").update(JSON.stringify(writeApprovalPolicy)).digest("hex"),
-      sensitiveMaterialObserved: auditContainsSensitiveMaterial(auditRaw) || rawWriteMaterialFieldCount > 0 || container?.writableKeyExposure === true,
+      sensitiveMaterialObserved: auditContainsSensitiveMaterial(auditRaw, deps.telegramCredentials?.()) || rawWriteMaterialFieldCount > 0 || container?.writableKeyExposure === true,
       stopDenied, restartDenied, denialAuditCount, denialStateUnchanged, denialProbeCompleted,
     }
   }
@@ -1068,7 +1209,7 @@ export async function readDefaultSanctuaryScenarioFacts(
     "identity-key": identityRaw, "telegram-audit": auditEntries, "telegram-offset": offsetRaw,
     "approval-journal": approvals, "approval-checkpoints": checkpointsRaw, "container-inspect": container,
     "provider-live-check": liveProvider ?? null, "cron-runtime": cronRaw, "health-runtime": health, "restart-attempt-ledger": restartAttempts,
-    "digest-runtime": health, "reboot-checkpoint": rebootCheckpoint, "telegram-turn-receipts": telegramTurns, "read-only-denial-receipt": denialReceipt,
+    "digest-runtime": health, "reboot-checkpoint": rebootCheckpoint, "telegram-turn-receipts": telegramTurns, "read-only-denial-receipt": denialReceipt ?? null,
     "identity-surface-audit": identity ? { inspectedRecordCount: identity.inspectedRecordCount, opaqueSubjectCount: identity.opaqueSubjectCount, mismatchCount: identity.mismatchCount, rawLeakCount: identity.rawLeakCount, surfaceDigest: identity.surfaceDigest } : null,
     "containment-audit": containment ?? null,
     "health-probe-receipt": healthProbe ?? null,
@@ -1094,6 +1235,7 @@ export async function readDefaultSanctuaryScenarioFacts(
     provider: liveProvider,
     healthProbe,
     interactiveDriver,
+    denial: denialReceipt,
     cron: cronRaw ? { registered: canonicalSanctuaryHealthCronRegistered(cronRaw), fingerprint: createHash("sha256").update(cronRaw).digest("hex"), receiptDigest: createHash("sha256").update(JSON.stringify(health?.deliveredReceipts ?? null)).digest("hex"), sweepCount: healthSweeps.length } : undefined,
     health: health ? { transitionCount: healthSweeps.filter((receipt) => Number(receipt.opened) > 0 || Number(receipt.recovered) > 0).length, alertCount: scenarioDeliveries.filter((receipt) => receipt.kind === "transition" || receipt.kind === "transition_and_digest").length, productionRestored: container?.running === true && container.health === "healthy" } : undefined,
     digest: health && digestFiredWithinMs !== null ? { scheduleObserved: Boolean(cronRaw && canonicalSanctuaryHealthCronRegistered(cronRaw)), messageCount: scenarioDeliveries.filter((receipt) => receipt.kind === "digest" || receipt.kind === "transition_and_digest").length, firedWithinMs: digestFiredWithinMs, productionRestored: container?.running === true && container.health === "healthy" } : undefined,

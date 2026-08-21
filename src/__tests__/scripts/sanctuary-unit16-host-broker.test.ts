@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest"
 interface BrokerDependencies {
   readBootId(): string
   containerSnapshot(): unknown | Promise<unknown>
+  denialTargetSnapshot?(): unknown | Promise<unknown>
   containerOwnerSnapshot?(): unknown | Promise<unknown>
   startHealthProbe?(input: Record<string, string>): unknown
   healthProbeStatus?(input: Record<string, string>): unknown
@@ -75,6 +76,9 @@ interface BrokerModule {
   dispatch(request: unknown, dependencies?: BrokerDependencies): Promise<unknown>
   parseVaultStatus(output: string, succeeded: boolean): { vaultUnlocked: boolean; manualAuthRequired: boolean }
   queryGraphqlAutostart(records: unknown[], fetchImpl: typeof fetch): Promise<boolean>
+  denialTargetSnapshot(dependencies?: {
+    run(executable: string, args: string[], options: unknown): { error?: Error; status: number | null; stdout?: string }
+  }): Record<string, unknown>
   healthProbeDockerArgs(mode: "run" | "stop" | "recover", input: Record<string, string>): string[]
   healthProbeArtifactDisposition(artifacts: { receipt: unknown; workspace: unknown; pending: unknown }): "complete" | "recovery_required" | "absent"
   healthProbeOperationBudgets(): { startMaxMs: number; completeStatusMaxMs: number; recoveryMaxMs: number; composedCaptureMaxMs: number }
@@ -121,6 +125,7 @@ async function broker(): Promise<BrokerModule> {
     dispatch(request: unknown, dependencies?: BrokerDependencies): Promise<unknown>
     parseVaultStatus(output: string, succeeded: boolean): { vaultUnlocked: boolean; manualAuthRequired: boolean }
     queryGraphqlAutostart(records: unknown[], fetchImpl: typeof fetch): Promise<boolean>
+    denialTargetSnapshot: BrokerModule["denialTargetSnapshot"]
     healthProbeDockerArgs(mode: "run" | "stop" | "recover", input: Record<string, string>): string[]
     healthProbeArtifactDisposition(artifacts: { receipt: unknown; workspace: unknown; pending: unknown }): "complete" | "recovery_required" | "absent"
     healthProbeOperationBudgets(): { startMaxMs: number; completeStatusMaxMs: number; recoveryMaxMs: number; composedCaptureMaxMs: number }
@@ -137,6 +142,31 @@ async function broker(): Promise<BrokerModule> {
 }
 
 describe("Sanctuary Unit 16 host broker", () => {
+  it("reads the exact denial target lifecycle without returning raw owner identifiers", async () => {
+    const { denialTargetSnapshot, dispatch } = await broker()
+    const raw = {
+      containerId: "a".repeat(64), imageId: `sha256:${"b".repeat(64)}`, running: true,
+      status: "running", restartCount: 7, startedAt: "2026-08-20T01:02:03.000000000Z",
+    }
+    const calls: Array<{ executable: string; args: string[] }> = []
+    const snapshot = denialTargetSnapshot({ run: (executable, args) => {
+      calls.push({ executable, args }); return { status: 0, stdout: JSON.stringify(raw) }
+    } })
+    expect(snapshot).toEqual({
+      containerIdDigest: expect.stringMatching(/^[0-9a-f]{64}$/u), imageDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      running: true, status: "running", restartCount: 7, startedAtDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
+    })
+    expect(JSON.stringify(snapshot)).not.toContain(raw.containerId)
+    expect(JSON.stringify(snapshot)).not.toContain(raw.imageId)
+    expect(calls).toEqual([{ executable: "/usr/bin/docker", args: expect.arrayContaining(["inspect", "calibre-web"]) }])
+    await expect(dispatch({ operation: "denial_target_snapshot", targetId: "sanctuary" }, {
+      readBootId: () => "unused", containerSnapshot: () => ({}), denialTargetSnapshot: () => snapshot,
+    })).resolves.toEqual(snapshot)
+    await expect(dispatch({ operation: "denial_target_snapshot", targetId: "sanctuary", container: "other" }, {
+      readBootId: () => "unused", containerSnapshot: () => ({}), denialTargetSnapshot: () => snapshot,
+    })).rejects.toThrow(/shape/u)
+  })
+
   it("captures then settles one stale timeout callback through the production runtime", async () => {
     const { dispatch } = await broker()
     const coordinates = { targetId: "sanctuary", label: "unit-16k-timeout-stale", scenarioHandleDigest: "a".repeat(64) }

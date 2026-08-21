@@ -90,9 +90,13 @@ const healthProbe = (label: "unit-16f-cron-fingerprint" | "unit-16g-health-trans
     workspaceAbsent: true, socketAbsent: true, snapshotAbsent: true, realCheckEquivalent: true, productionRestored: true,
   }
 }
+const validDenialReceiptForFacts = () => {
+  const boundary = { ownerSnapshotDigest: "1".repeat(64), targetSnapshotDigest: "2".repeat(64), targetRestartCount: 7, auditCursorDigest: "3".repeat(64), providerUsageCursorDigest: "4".repeat(64), sessionCursorDigest: "5".repeat(64), toolActionCursorDigest: "6".repeat(64) }
+  return { schemaVersion: "sanctuary-read-only-denial-receipt-v1" as const, phase: "complete" as const, label: "unit-16e-1-stop-denial" as const, scenarioHandleDigest: "a".repeat(64), operation: "stop" as const, targetDigest: "7".repeat(64), attemptCount: 1, httpStatus: 403, errorCode: "FORBIDDEN", before: boundary, after: { ...boundary } }
+}
 const base = (): SanctuaryScenarioFacts => ({
   capturedAt: 0,
-  sourceValues: Object.fromEntries(["identity-key", "telegram-audit", "telegram-offset", "telegram-turn-receipts", "live-grounding-read", "approval-journal", "approval-checkpoints", "container-inspect", "provider-live-check", "cron-runtime", "health-runtime", "digest-runtime", "health-probe-receipt", "reboot-checkpoint"].map((key) => [key, { key }])),
+  sourceValues: Object.fromEntries(["identity-key", "telegram-audit", "telegram-offset", "telegram-turn-receipts", "live-grounding-read", "approval-journal", "approval-checkpoints", "container-inspect", "provider-live-check", "cron-runtime", "health-runtime", "digest-runtime", "health-probe-receipt", "reboot-checkpoint", "read-only-denial-receipt"].map((key) => [key, { key }])),
   events: [], approvals: [],
   restartAttempts: [],
   telegramTurns: [],
@@ -103,6 +107,7 @@ const base = (): SanctuaryScenarioFacts => ({
   health: { transitionCount: 0, alertCount: 0, productionRestored: true },
   digest: { scheduleObserved: true, messageCount: 0, firedWithinMs: 1_000, productionRestored: true },
   reboot: { phase: "complete", requestDigest: "c".repeat(64), requestCount: 1, checkpointPersisted: true, unrelatedHostOperations: 0, bootIdentityChanged: true, hostReady: true, arrayReady: true, dockerReady: true, butlerReady: true, tailscaleReady: true, sshReady: true },
+  denial: validDenialReceiptForFacts(),
   containment: {
     schemaVersion: "sanctuary-containment-audit-v1", keyCount: 2, keyInventoryDigest: "1".repeat(64),
     readScopeDigest: createHash("sha256").update(JSON.stringify(["ARRAY", "DASHBOARD", "DISK", "DOCKER", "INFO", "LOGS", "NOTIFICATIONS", "SHARE", "VARS"].map((resource) => `${resource}:READ_ANY`).sort())).digest("hex"),
@@ -152,13 +157,14 @@ describe("Sanctuary live scenario capture", () => {
         const system = label === "unit-16d-whats-up"
         const toolName = system ? "unraid_get_system" : "unraid_get_storage"
         const facts = system ? systemGrounding : storageGrounding
-        const responseText = system ? "Sanctuary is running Unraid 7.2.3 with the array STARTED." : "There is 2 TB free and the array is 80% used."
+        const responseText = system ? "Sanctuary is running Unraid 7.2.3 with the array STARTED and not degraded." : "There is 2 TB free and the array is 80% used."
         const factDigest = groundingDigest(facts)
         after.telegramTurns.push(groundedTurn(toolName, facts, responseText))
         after.events.push({ ...event("senses.sanctuary_read_receipt"), meta: { toolName, success: true, resultDigest: "5".repeat(64), groundingDigest: factDigest } })
         ;(after as any).liveGrounding = { toolName, groundingDigest: factDigest, facts }
       }
       if (label === "unit-16d-2-unauthorized") after.events.push({ ...event("telegram.update_dropped"), meta: { scenarioHandleDigest: "a".repeat(64), distinctAccount: true } })
+      if (label === "unit-16e-2-restart-denial") after.denial = { ...after.denial!, label, operation: "restart" }
       if (label === "unit-16j-denial") after.approvals = [approval("denied")]
       if (label === "unit-16f-cron-fingerprint" || label === "unit-16g-health-transition" || label === "unit-16h-daily-digest") after.healthProbe = healthProbe(label)
       if (label === "unit-16i-delayed-approval") { after.approvals = [approval("succeeded")]; after.restartAttempts = successfulRestart() }
@@ -172,7 +178,7 @@ describe("Sanctuary live scenario capture", () => {
   })
 
   it.each([
-    ["unit-16d-whats-up", "unraid_get_system", systemGrounding, "Sanctuary is running Unraid 7.2.3 with the array STARTED."],
+    ["unit-16d-whats-up", "unraid_get_system", systemGrounding, "Sanctuary is running Unraid 7.2.3 with the array STARTED and not degraded."],
     ["unit-16d-1-space", "unraid_get_storage", storageGrounding, "There is 2 TB free and the array is 80% used."],
   ] as const)("requires bounded accurate response content bound to an independent live read for %s", (label, toolName, facts, responseText) => {
     const before = base()
@@ -261,7 +267,7 @@ describe("Sanctuary live scenario capture", () => {
     expect(await capture({ phase: "poll", label: "unit-16d-whats-up", externalGate: "authorized-telegram-message", sources, checkpointDigest: begin.checkpointDigest as string })).toEqual(begin)
     const digest = groundingDigest(systemGrounding)
     facts = base()
-    facts.telegramTurns.push(groundedTurn("unraid_get_system", systemGrounding, "Sanctuary is running Unraid 7.2.3 with the array STARTED."))
+    facts.telegramTurns.push(groundedTurn("unraid_get_system", systemGrounding, "Sanctuary is running Unraid 7.2.3 with the array STARTED and not degraded."))
     facts.events.push({ ...event("senses.sanctuary_read_receipt"), meta: { toolName: "unraid_get_system", success: true, resultDigest: "5".repeat(64), groundingDigest: digest } })
     facts.liveGrounding = { toolName: "unraid_get_system", groundingDigest: digest, facts: systemGrounding }
     const complete = await capture({ phase: "poll", label: "unit-16d-whats-up", externalGate: "authorized-telegram-message", sources, checkpointDigest: begin.checkpointDigest as string })

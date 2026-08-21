@@ -42,7 +42,7 @@ import {
   type TelegramUpdate,
 } from "./telegram-client"
 import { createSanctuaryToolContext, runWithSanctuaryToolReceiptCollection, type SanctuaryToolReceiptObserver } from "./sanctuary-runtime"
-import { sanctuaryGroundingDigest } from "./sanctuary-grounding"
+import { renderSanctuaryGroundedResponse, sanctuaryGroundingDigest } from "./sanctuary-grounding"
 import { createTelegramApprovalRuntime, type TelegramApprovalRuntime } from "./telegram-approval-runtime"
 import type { SanctuaryHealthSweepResult } from "./sanctuary-health"
 
@@ -66,11 +66,34 @@ const TELEGRAM_SUBJECT_DOMAIN = "ouroboros.telegram.subject.v1"
 const TELEGRAM_IDENTITY_KEY = /^[A-Za-z0-9_-]{43}$/u
 const TELEGRAM_SUBJECT = /^tg_[A-Za-z0-9_-]{43}$/u
 const TELEGRAM_SUBJECT_INDEX = "identity-subjects.json"
-const TELEGRAM_TURN_RECEIPT_DOMAIN = "ouroboros.telegram.turn-receipt.v3"
+const TELEGRAM_TURN_RECEIPT_DOMAINS = {
+  "sanctuary-telegram-turn-receipt-v3": "ouroboros.telegram.turn-receipt.v3",
+  "sanctuary-telegram-turn-receipt-v4": "ouroboros.telegram.turn-receipt.v4",
+} as const
 const TELEGRAM_TURN_LEDGER_MAX_BYTES = 4 * 1024 * 1024
 const TELEGRAM_TURN_LEDGER_MAX_ROWS = 500
 const TELEGRAM_TURN_LEDGER_MAX_ROW_BYTES = 16 * 1024
 const telegramTurnLedgerTails = new Map<string, Promise<void>>()
+
+export function sanctuaryTelegramTurnReceiptDigest(identityKey: string, schemaVersion: keyof typeof TELEGRAM_TURN_RECEIPT_DOMAINS, purpose: string, value: string): string {
+  return createHmac("sha256", identityKey).update(`${TELEGRAM_TURN_RECEIPT_DOMAINS[schemaVersion]}\0${purpose}\0${value}`, "utf8").digest("hex")
+}
+
+function canonicalReceiptJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalReceiptJson).join(",")}]`
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>
+    return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonicalReceiptJson(record[key])}`).join(",")}}`
+  }
+  const rendered = JSON.stringify(value)
+  if (rendered === undefined) throw new Error("Telegram receipt contains an unsupported value")
+  return rendered
+}
+
+export function sanctuaryTelegramTurnReceiptMac(identityKey: string, value: Record<string, unknown>): string {
+  const unsigned = Object.fromEntries(Object.entries(value).filter(([key]) => key !== "receiptMac"))
+  return sanctuaryTelegramTurnReceiptDigest(identityKey, "sanctuary-telegram-turn-receipt-v4", "receipt", canonicalReceiptJson(unsigned))
+}
 
 function sameTelegramLedgerMetadata(left: import("node:fs").BigIntStats, right: import("node:fs").BigIntStats): boolean {
   return left.dev === right.dev
@@ -121,7 +144,7 @@ function readStableBoundedTelegramLedger(filePath: string, afterPreReadStat?: (f
 
 function validateSanctuaryTurnReceipt(value: Record<string, unknown>): void {
   const grounded = value.schemaVersion === "sanctuary-telegram-turn-receipt-v4"
-  const exactKeys = ["completedAt", "deliveries", "deliveryCount", "errorCategory", "providerInvocationCount", "responseDigest", "scenarioHandleDigest", "schemaVersion", "sequenceDigest", "status", "toolInvocationCount", "toolResultDigests", "updateDigest", ...(grounded ? ["toolGroundings"] : [])].sort()
+  const exactKeys = ["completedAt", "deliveries", "deliveryCount", "errorCategory", "providerInvocationCount", "responseDigest", "scenarioHandleDigest", "schemaVersion", "sequenceDigest", "status", "toolInvocationCount", "toolResultDigests", "updateDigest", ...(grounded ? ["receiptMac", "toolGroundings"] : [])].sort()
   const deliveries = value.deliveries
   if (JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(exactKeys)
     || (!grounded && value.schemaVersion !== "sanctuary-telegram-turn-receipt-v3")
@@ -148,6 +171,7 @@ function validateSanctuaryTurnReceipt(value: Record<string, unknown>): void {
         || !record.facts || typeof record.facts !== "object" || Array.isArray(record.facts)) return false
       return sanctuaryGroundingDigest(record.facts as Record<string, unknown>) === record.groundingDigest && (value.toolResultDigests as string[]).includes(record.resultDigest)
     })))
+    || (grounded && (typeof value.receiptMac !== "string" || !/^[0-9a-f]{64}$/u.test(value.receiptMac)))
     || ![value.providerInvocationCount, value.toolInvocationCount].every((count) => Number.isSafeInteger(count) && Number(count) >= 0 && Number(count) <= 1_000)
     || !Number.isSafeInteger(value.deliveryCount) || value.deliveryCount !== deliveries.length
     || typeof value.completedAt !== "string" || value.completedAt.length > 30 || !Number.isFinite(Date.parse(value.completedAt)) || new Date(Date.parse(value.completedAt)).toISOString() !== value.completedAt) throw new Error("Telegram turn receipt ledger row is invalid")
@@ -629,6 +653,11 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     let errorCategory: string | null = null
     const turnMetricsObserver = { providerInvocationCount: 0, toolInvocationCount: 0 }
     const toolReceiptObserver: SanctuaryToolReceiptObserver = { toolResultDigests: [], toolGroundings: [] }
+    const normalizedRequest = message.text.normalize("NFKC").trim().toLocaleLowerCase("en-US")
+    const groundingIntentTool = /^(?:what['’]?s up|status)\??$/u.test(normalizedRequest) ? "unraid_get_system"
+      : /^how much (?:space|storage) is left\??$/u.test(normalizedRequest) ? "unraid_get_storage"
+        : null
+    const bufferedGroundedDeliveries: string[] = []
     try {
       const collected = await collectToolReceipts(() => runTurn({
         agentName: options.agentName,
@@ -644,8 +673,12 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         turnMetricsObserver,
         deliverySink: {
           onDelivery: async (delivery) => {
-            await deliver(delivery.text, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) })
-            deliveryCount += 1
+            if (groundingIntentTool) {
+              bufferedGroundedDeliveries.push(delivery.kind)
+            } else {
+              await deliver(delivery.text, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) })
+              deliveryCount += 1
+            }
           },
         },
         ...(toolContext ? { toolContext } : {}),
@@ -654,7 +687,14 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       const result = collected.result
       turnMetricsObserver.providerInvocationCount = Math.max(turnMetricsObserver.providerInvocationCount, result.providerInvocationCount ?? 0)
       turnMetricsObserver.toolInvocationCount = Math.max(turnMetricsObserver.toolInvocationCount, result.toolInvocationCount ?? 0)
-      if (deliveryCount === 0 && result.response.trim()) {
+      if (groundingIntentTool) {
+        const grounding = toolReceiptObserver.toolGroundings?.length === 1 ? toolReceiptObserver.toolGroundings[0] : undefined
+        if (!grounding || grounding.toolName !== groundingIntentTool || bufferedGroundedDeliveries.length > 1
+          || (bufferedGroundedDeliveries.length === 1 && bufferedGroundedDeliveries[0] !== "settle")) throw new Error("Canonical Sanctuary query did not produce exactly one matching grounded settle")
+        const canonical = renderSanctuaryGroundedResponse(grounding.toolName, grounding.facts)
+        await deliver(canonical, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) })
+        deliveryCount = 1
+      } else if (deliveryCount === 0 && result.response.trim()) {
         await deliver(result.response, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) })
       }
       emitNervesEvent({
@@ -685,17 +725,19 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       if (deliveredMessageIds.length === 0) await deliver(fallback, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) })
     } finally {
       if (acceptanceMarker) {
-        const hmac = (purpose: string, value: string): string => createHmac("sha256", identityKey).update(`${TELEGRAM_TURN_RECEIPT_DOMAIN}\0${purpose}\0${value}`, "utf8").digest("hex")
         const grounded = acceptanceMarker.label === "unit-16d-whats-up" || acceptanceMarker.label === "unit-16d-1-space"
+        const schemaVersion = grounded ? "sanctuary-telegram-turn-receipt-v4" : "sanctuary-telegram-turn-receipt-v3"
+        const hmac = (purpose: string, value: string): string => sanctuaryTelegramTurnReceiptDigest(identityKey, schemaVersion, purpose, value)
         const redact = (value: string): string => [botToken, authorizedUserId, authorizedChatId, String(message.updateId), message.messageId]
           .reduce((text, privateValue) => privateValue.length >= 5 ? text.replaceAll(privateValue, "[REDACTED]") : text, value)
         const deliveries = deliveredMessageIds.map((messageId, index) => {
           const chunk = deliveredChunks[index] ?? ""
-          return { messageIdDigest: hmac("delivery", String(messageId)), chunkDigest: hmac("chunk", chunk), ...(grounded ? { redactedText: redact(chunk), utf16Units: redact(chunk).length } : {}) }
+          const redactedText = redact(chunk)
+          return { messageIdDigest: hmac("delivery", String(messageId)), chunkDigest: hmac("chunk", grounded ? redactedText : chunk), ...(grounded ? { redactedText, utf16Units: redactedText.length } : {}) }
         })
         try {
-          await appendSanctuaryTurnReceipt(options.acceptanceReceiptRoot ?? agentRoot, {
-            schemaVersion: grounded ? "sanctuary-telegram-turn-receipt-v4" : "sanctuary-telegram-turn-receipt-v3",
+          const receipt: Record<string, unknown> = {
+            schemaVersion,
             scenarioHandleDigest: acceptanceMarker.scenarioHandleDigest,
             status: receiptStatus,
             errorCategory,
@@ -709,7 +751,9 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
             deliveryCount: deliveries.length,
             deliveries,
             completedAt: new Date().toISOString(),
-          }, options._afterAcceptanceLedgerPreReadStat)
+          }
+          if (grounded) receipt.receiptMac = sanctuaryTelegramTurnReceiptMac(identityKey, receipt)
+          await appendSanctuaryTurnReceipt(options.acceptanceReceiptRoot ?? agentRoot, receipt, options._afterAcceptanceLedgerPreReadStat)
         } catch (error) {
           emitNervesEvent({ level: "error", component: "senses", event: "senses.telegram_acceptance_receipt_error", message: "Telegram acceptance receipt persistence failed", meta: { agentName: options.agentName, scenarioHandleDigest: acceptanceMarker.scenarioHandleDigest, category: error instanceof Error ? error.name : "unknown" } })
         }

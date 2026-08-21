@@ -220,7 +220,7 @@ function recoveryMilestones(running, healthy) {
 
 async function containerSnapshot(expectedImage) {
   text(expectedImage, "expected image id", IMAGE_ID)
-  const template = '{"containerId":{{json .Id}},"imageId":{{json .Image}},"running":{{json .State.Running}},"health":{{json .State.Health.Status}},"user":{{json .Config.User}},"readOnlyRoot":{{json .HostConfig.ReadonlyRootfs}},"mounts":{{json .Mounts}},"ports":{{json .NetworkSettings.Ports}},"networkMode":{{json .HostConfig.NetworkMode}},"restartPolicy":{{json .HostConfig.RestartPolicy.Name}},"restartCount":{{json .RestartCount}},"privileged":{{json .HostConfig.Privileged}},"capAdd":{{json .HostConfig.CapAdd}},"securityOpt":{{json .HostConfig.SecurityOpt}}}'
+  const template = '{"containerId":{{json .Id}},"imageId":{{json .Image}},"running":{{json .State.Running}},"health":{{json .State.Health.Status}},"user":{{json .Config.User}},"readOnlyRoot":{{json .HostConfig.ReadonlyRootfs}},"mounts":{{json .Mounts}},"ports":{{json .NetworkSettings.Ports}},"networkMode":{{json .HostConfig.NetworkMode}},"restartPolicy":{{json .HostConfig.RestartPolicy.Name}},"restartCount":{{json .RestartCount}},"privileged":{{json .HostConfig.Privileged}},"capAdd":{{json .HostConfig.CapAdd}},"capDrop":{{json .HostConfig.CapDrop}},"securityOpt":{{json .HostConfig.SecurityOpt}}}'
   const result = spawnSync(DOCKER, ["inspect", "--format", template, PRODUCTION_CONTAINER], {
     cwd: "/", encoding: "utf8", timeout: 20_000, maxBuffer: 1024 * 1024,
     env: { PATH: "/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin" },
@@ -238,12 +238,13 @@ async function containerSnapshot(expectedImage) {
     return { destination: mount.Destination, source: mount.Source, mode: mount.Mode, propagation: mount.Propagation, rw: mount.RW, type: mount.Type }
   }).sort((left, right) => String(left.destination).localeCompare(String(right.destination))) : []
   const expectedMounts = [
-    { destination: "/home/ouro/.ouro-cli", source: PRODUCTION_RUNTIME_SOURCE, rw: true, type: "bind" },
-    { destination: "/home/ouro/AgentBundles/sanctuary.ouro", source: PRODUCTION_BUNDLE_SOURCE, rw: true, type: "bind" },
+    { destination: "/home/ouro/.ouro-cli", source: PRODUCTION_RUNTIME_SOURCE, mode: "rw", propagation: "rprivate", rw: true, type: "bind" },
+    { destination: "/home/ouro/AgentBundles/sanctuary.ouro", source: PRODUCTION_BUNDLE_SOURCE, mode: "rw", propagation: "rprivate", rw: true, type: "bind" },
   ]
-  const mountsExact = mounts.length === expectedMounts.length && expectedMounts.every((expected) => mounts.some((mount) => mount.destination === expected.destination && mount.source === expected.source && mount.rw === expected.rw && mount.type === expected.type))
+  const mountsExact = mounts.length === expectedMounts.length && expectedMounts.every((expected) => mounts.some((mount) => mount.destination === expected.destination && mount.source === expected.source && mount.mode === expected.mode && mount.propagation === expected.propagation && mount.rw === expected.rw && mount.type === expected.type))
   const securityExact = value.privileged === false && (value.capAdd === null || (Array.isArray(value.capAdd) && value.capAdd.length === 0))
-    && Array.isArray(value.securityOpt) && value.securityOpt.includes("no-new-privileges")
+    && JSON.stringify(value.capDrop) === JSON.stringify(["ALL"])
+    && JSON.stringify(value.securityOpt) === JSON.stringify(["no-new-privileges"])
   const running = value.running === true
   const healthy = value.health === "healthy"
   const vault = vaultStatus(running, healthy)
@@ -269,6 +270,32 @@ async function containerSnapshot(expectedImage) {
     updaterDisabled: updaterDisabled(expectedImage),
     ...vault,
     recoveryMilestones: milestones,
+  }
+}
+
+function denialTargetSnapshot(dependencies = { run: spawnSync }) {
+  const template = '{"containerId":{{json .Id}},"imageId":{{json .Image}},"running":{{json .State.Running}},"status":{{json .State.Status}},"restartCount":{{json .RestartCount}},"startedAt":{{json .State.StartedAt}}}'
+  const result = dependencies.run(DOCKER, ["inspect", "--format", template, "calibre-web"], {
+    cwd: "/", encoding: "utf8", timeout: 10_000, maxBuffer: 64 * 1024,
+    env: { PATH: "/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin" }, stdio: ["ignore", "pipe", "ignore"],
+  })
+  if (result.error || result.status !== 0) throw new Error("bounded denial target inspection failed")
+  const value = object(JSON.parse(result.stdout ?? ""), "denial target inspection")
+  exactKeys(value, ["containerId", "imageId", "running", "status", "restartCount", "startedAt"], "denial target inspection")
+  const containerId = text(value.containerId, "denial target container id", SHA256)
+  const imageId = text(value.imageId, "denial target image id", IMAGE_ID)
+  const status = text(value.status, "denial target status", /^(?:created|running|paused|restarting|removing|exited|dead)$/u)
+  const startedAt = text(value.startedAt, "denial target started at", /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[^\s]{1,64}Z$/u)
+  if (typeof value.running !== "boolean" || !Number.isSafeInteger(value.restartCount) || value.restartCount < 0) {
+    throw new Error("denial target lifecycle is invalid")
+  }
+  return {
+    containerIdDigest: createHash("sha256").update(containerId).digest("hex"),
+    imageDigest: createHash("sha256").update(imageId).digest("hex"),
+    running: value.running,
+    status,
+    restartCount: value.restartCount,
+    startedAtDigest: createHash("sha256").update(startedAt).digest("hex"),
   }
 }
 
@@ -1093,6 +1120,7 @@ async function driveRestartContinuation(input, dependencies = {
 async function dispatch(request, dependencies = {
   readBootId: () => readFileSync(BOOT_ID, "utf8"),
   containerSnapshot: () => containerSnapshot(expectedImageId),
+  denialTargetSnapshot,
   containerOwnerSnapshot: () => containerOwnerSnapshot(expectedImageId),
   startHealthProbe,
   healthProbeStatus,
@@ -1177,6 +1205,12 @@ async function dispatch(request, dependencies = {
     exactKeys(payload, ["operation", "targetId"], operation)
     if (payload.targetId !== TARGET_HOST) throw new Error("target host is invalid")
     return await dependencies.containerSnapshot()
+  }
+  if (operation === "denial_target_snapshot") {
+    exactKeys(payload, ["operation", "targetId"], operation)
+    if (payload.targetId !== TARGET_HOST) throw new Error("target host is invalid")
+    if (!dependencies.denialTargetSnapshot) throw new Error("denial target snapshot is unavailable")
+    return await dependencies.denialTargetSnapshot()
   }
   if (operation === "start_health_probe" || operation === "health_probe_status" || operation === "recover_health_probe") {
     exactKeys(payload, ["operation", "targetId", "label", "scenarioHandleDigest"], operation)
@@ -1301,6 +1335,7 @@ export {
   createOwnerMutationCoordinator,
   createInteractiveRestartDriver,
   dispatch,
+  denialTargetSnapshot,
   healthProbeArtifactDisposition,
   healthProbeDockerArgs,
   healthProbeOperationBudgets,

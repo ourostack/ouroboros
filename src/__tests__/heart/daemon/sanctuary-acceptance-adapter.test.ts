@@ -6,6 +6,7 @@ import { createHash, createHmac } from "node:crypto"
 
 import { describe, expect, it, vi } from "vitest"
 import { openApprovalStore } from "../../../heart/approval-store"
+import { sanctuaryTelegramTurnReceiptDigest, sanctuaryTelegramTurnReceiptMac } from "../../../senses/telegram"
 import * as sanctuaryAcceptanceAdapter from "../../../heart/daemon/sanctuary-acceptance-adapter"
 import { SANCTUARY_SCENARIO_GATES, SANCTUARY_SCENARIO_SOURCES } from "../../../heart/daemon/sanctuary-acceptance-harness"
 
@@ -21,7 +22,6 @@ import {
   executeSanctuaryAcceptanceRevokedProbe,
   executeSanctuaryAcceptanceVaultProbe,
   proveAttemptedRecoveryWithoutRetry,
-  probeSanctuaryReadOnlyMutationDenial,
   readDefaultSanctuaryScenarioFacts,
   type SanctuaryAcceptanceAdapterDependencies,
 } from "../../../heart/daemon/sanctuary-acceptance-adapter"
@@ -139,6 +139,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       const interrupted = createSanctuaryReadOnlyDenialScenarioDriver({ agentRoot: root, runProbe: interruptedProbe })
       await expect(interrupted.poll("unit-16e-2-restart-denial", interruptedDigest)).rejects.toThrow("transport interrupted")
       await expect(interrupted.poll("unit-16e-2-restart-denial", interruptedDigest)).rejects.toThrow(/inspect-before-retry/u)
+      await expect(interrupted.poll("unit-16e-2-restart-denial", "c".repeat(64))).rejects.toThrow(/inspect-before-retry/u)
       expect(interruptedProbe).toHaveBeenCalledOnce()
     } finally { fs.rmSync(root, { recursive: true, force: true }) }
   })
@@ -168,36 +169,6 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     ['{"meta":{"note":"authorized subject 123456789"}}', { botToken: "12345:private-token-value", authorizedUserId: "123456789", authorizedChatId: "987654321" }],
   ] as const)("detects forbidden Telegram/provider material in audit text %#", (raw, credentials) => {
     expect(auditContainsSensitiveMaterial(raw, credentials)).toBe(true)
-  })
-
-  it.each([
-    ["unit-16e-1-stop-denial", "mutation AcceptanceStopDenial"],
-    ["unit-16e-2-restart-denial", "mutation AcceptanceWriteProbe"],
-  ] as const)("targets only exact calibre-web for %s read-only denial probes", async (label, mutationName) => {
-    const fetchImpl = vi.fn()
-      .mockResolvedValueOnce(jsonResponse({ data: { docker: { containers: [
-        { id: "Docker:ouro-butler", names: ["/ouro-butler"], state: "started", status: "Up" },
-        { id: "Docker:calibre-web-shadow", names: ["/calibre-web-shadow"], state: "started", status: "Up" },
-        { id: "Docker:calibre-web", names: ["/calibre-web"], state: "started", status: "Up" },
-      ] } } }))
-      .mockResolvedValueOnce(jsonResponse({ data: null, errors: [{ extensions: { code: "FORBIDDEN" } }] }, 403))
-      .mockResolvedValueOnce(jsonResponse({ data: { docker: { containers: [
-        { id: "Docker:ouro-butler", names: ["/ouro-butler"], state: "started", status: "Up" },
-        { id: "Docker:calibre-web-shadow", names: ["/calibre-web-shadow"], state: "started", status: "Up" },
-        { id: "Docker:calibre-web", names: ["/calibre-web"], state: "started", status: "Up" },
-      ] } } }))
-
-    await expect(probeSanctuaryReadOnlyMutationDenial(
-      label,
-      new URL("http://127.0.0.1:2378/graphql"),
-      "read-only-key",
-      fetchImpl,
-    )).resolves.toMatchObject({ denied: true, operation: label === "unit-16e-1-stop-denial" ? "stop" : "restart", probeCompleted: true })
-
-    const mutation = JSON.parse(String(fetchImpl.mock.calls[1]?.[1]?.body)) as { query: string; variables: { id: string } }
-    expect(mutation.query).toContain(mutationName)
-    expect(mutation.variables).toEqual({ id: "Docker:calibre-web" })
-    expect(JSON.stringify(fetchImpl.mock.calls)).not.toContain("Docker:ouro-butler\"}")
   })
 
   it("captures exact redacted Unit-16e containment evidence from packaged profiles, host inventory, audit, and container policy", async () => {
@@ -887,35 +858,50 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
   it("parses bounded redacted grounding receipts and binds them to an independent live read", async () => {
     const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-turn-grounding-"))
     const scenarioHandleDigest = "a".repeat(64)
+    const identityKey = "k".repeat(43)
+    const identityPath = `${agentRoot}/state/senses/telegram/identity.key`
     const facts = { serverName: "Sanctuary", unraidVersion: "7.2.3", apiVersion: "4.37.1", arrayState: "STARTED", degraded: false }
     const groundingDigest = createHash("sha256").update(JSON.stringify(facts)).digest("hex")
-    const text = "Sanctuary is running Unraid 7.2.3 with the array STARTED."
-    const receipt = {
+    const text = "Sanctuary is running Unraid 7.2.3 with the array STARTED and not degraded."
+    const deliveries = [{ messageIdDigest: "5".repeat(64), chunkDigest: sanctuaryTelegramTurnReceiptDigest(identityKey, "sanctuary-telegram-turn-receipt-v4", "chunk", text), redactedText: text, utf16Units: text.length }]
+    const unsignedReceipt = {
       schemaVersion: "sanctuary-telegram-turn-receipt-v4", scenarioHandleDigest, status: "success", errorCategory: null,
-      updateDigest: "1".repeat(64), sequenceDigest: "2".repeat(64), responseDigest: "3".repeat(64), toolResultDigests: ["4".repeat(64)],
+      updateDigest: "1".repeat(64), sequenceDigest: "2".repeat(64), responseDigest: sanctuaryTelegramTurnReceiptDigest(identityKey, "sanctuary-telegram-turn-receipt-v4", "response", JSON.stringify(deliveries)), toolResultDigests: ["4".repeat(64)],
       toolGroundings: [{ toolName: "unraid_get_system", resultDigest: "4".repeat(64), groundingDigest, facts }],
       providerInvocationCount: 1, toolInvocationCount: 1, deliveryCount: 1,
-      deliveries: [{ messageIdDigest: "5".repeat(64), chunkDigest: "6".repeat(64), redactedText: text, utf16Units: text.length }],
+      deliveries,
       completedAt: "2026-08-20T16:00:01.000Z",
     }
+    const receipt = { ...unsignedReceipt, receiptMac: sanctuaryTelegramTurnReceiptMac(identityKey, unsignedReceipt) }
     const ledgerPath = `${agentRoot}/state/acceptance/telegram-turns.ndjson`
     const deps = unit16Deps({
-      readFixedFile: (file) => { if (file === ledgerPath) return `${JSON.stringify(receipt)}\n`; throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
+      readFixedFile: (file) => { if (file === ledgerPath) return `${JSON.stringify(receipt)}\n`; if (file === identityPath) return identityKey; throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
       readLiveGrounding: vi.fn(async () => ({ toolName: "unraid_get_system", groundingDigest, facts })),
+      telegramCredentials: () => ({ botToken: "12345:synthetic-token", authorizedUserId: "123456789", authorizedChatId: "123456789" }),
       hostRequest: async () => ({ running: true, health: "healthy", imageId: "sha256:missing", user: "10001:10001", readOnlyRoot: true, mountCount: 2, publishedPortCount: 0, restartPolicy: "unless-stopped", restartCount: 0, autostartExact: true, updaterDisabled: true, vaultUnlocked: true, manualAuthRequired: false }),
     } as any)
     const observed = await readDefaultSanctuaryScenarioFacts("unit-16d-whats-up", scenarioHandleDigest, deps, agentRoot)
     expect(observed.telegramTurns[0]).toMatchObject({ responseText: text, responseUtf16Units: text.length, toolGroundings: receipt.toolGroundings })
     expect((observed as any).liveGrounding).toEqual({ toolName: "unraid_get_system", groundingDigest, facts })
 
+    await expect(readDefaultSanctuaryScenarioFacts("unit-16d-whats-up", scenarioHandleDigest, unit16Deps({
+      readFixedFile: (file) => { if (file === ledgerPath) return `${JSON.stringify(receipt)}\n`; if (file === identityPath) return "z".repeat(43); throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
+    }), agentRoot)).rejects.toThrow("Telegram turn receipt ledger row is invalid")
+
     for (const patch of [
       { deliveries: [{ ...receipt.deliveries[0], utf16Units: text.length + 1 }] },
       { deliveries: [{ ...receipt.deliveries[0], redactedText: "x".repeat(1_201), utf16Units: 1_201 }] },
+      { deliveries: [{ ...receipt.deliveries[0], redactedText: "Sanctuary runs Unraid 7.2.3; the array is STARTED and healthy.", utf16Units: 62 }] },
+      { deliveries: [{ ...receipt.deliveries[0], chunkDigest: "f".repeat(64) }] },
+      { responseDigest: "f".repeat(64) },
+      { providerInvocationCount: 2 },
+      { completedAt: "2026-08-20T16:00:02.000Z" },
+      { toolResultDigests: ["8".repeat(64)], toolGroundings: [{ ...receipt.toolGroundings[0], resultDigest: "8".repeat(64) }] },
       { toolGroundings: [{ ...receipt.toolGroundings[0], groundingDigest: "f".repeat(64) }] },
       { toolGroundings: [{ ...receipt.toolGroundings[0], toolName: "unraid_restart_container" }] },
     ]) {
       await expect(readDefaultSanctuaryScenarioFacts("unit-16d-whats-up", scenarioHandleDigest, unit16Deps({
-        readFixedFile: (file) => { if (file === ledgerPath) return `${JSON.stringify({ ...receipt, ...patch })}\n`; throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
+        readFixedFile: (file) => { if (file === ledgerPath) return `${JSON.stringify({ ...receipt, ...patch })}\n`; if (file === identityPath) return identityKey; throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
       }), agentRoot)).rejects.toThrow("Telegram turn receipt ledger row is invalid")
     }
     fs.rmSync(agentRoot, { recursive: true, force: true })

@@ -141,7 +141,7 @@ describe("Sanctuary acceptance harness", () => {
         containerUser: "10001:10001", mountCount: 2, publishedPortCount: 0, networkMode: "host", readOnlyRoot: true, mountsExact: true, securityExact: true, updaterDisabled: true, writableKeyExposure: false,
         rawWriteMaterialFieldCount: 0, typedWriteExecutorCount: 1, writeApprovalPolicyDigest: "24b1726edf1a2bbd524e9be63d3f0f726d996a8a009425462e01a5c4916ef42b", sensitiveMaterialObserved: false, mutationCount: 0,
       }
-      case "unit-16e-1-stop-denial": case "unit-16e-2-restart-denial": return { auditDecisionCount: 1, denied: true, mutationCount: 0, resumed: true }
+      case "unit-16e-1-stop-denial": case "unit-16e-2-restart-denial": return { attemptCount: 1, cursorBoundaryCount: 7, denied: true, mutationCount: 0, restartCountUnchanged: true, resumed: true }
       case "unit-16f-cron-fingerprint": return { fingerprintUnchanged: true, messageCount: 0, providerInvocationCount: 0, receiptUnchanged: true, scheduleRegistered: true, sweepObserved: true }
       case "unit-16g-health-transition": return { alertCount: 3, productionRestored: true, transitionObserved: true }
       case "unit-16h-daily-digest": return { firedWithinMs: 900_000, messageCount: 1, productionRestored: true, scheduleObserved: true }

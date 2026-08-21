@@ -108,6 +108,30 @@ export interface SanctuaryRestartContinuationDriverReceipt extends SanctuaryInte
 
 export type SanctuaryInteractiveDriverReceipt = SanctuaryTimeoutStaleDriverReceipt | SanctuaryDuplicateCallbackDriverReceipt | SanctuaryRestartContinuationDriverReceipt
 
+export interface SanctuaryDenialBoundarySnapshot {
+  ownerSnapshotDigest: string
+  targetSnapshotDigest: string
+  targetRestartCount: number
+  auditCursorDigest: string
+  providerUsageCursorDigest: string
+  sessionCursorDigest: string
+  toolActionCursorDigest: string
+}
+
+export interface SanctuaryReadOnlyDenialReceipt {
+  schemaVersion: "sanctuary-read-only-denial-receipt-v1"
+  phase: "complete"
+  label: "unit-16e-1-stop-denial" | "unit-16e-2-restart-denial"
+  scenarioHandleDigest: string
+  operation: "stop" | "restart"
+  targetDigest: string
+  attemptCount: number
+  httpStatus: number
+  errorCode: string
+  before: SanctuaryDenialBoundarySnapshot
+  after: SanctuaryDenialBoundarySnapshot
+}
+
 export interface SanctuaryScenarioRestartAttempt {
   state: "attempt_not_started" | "attempting" | "succeeded" | "attempted_or_indeterminate"
   actionDigest: string
@@ -197,6 +221,7 @@ export interface SanctuaryScenarioFacts {
   digest?: { scheduleObserved: boolean; messageCount: number; firedWithinMs: number; productionRestored: boolean }
   healthProbe?: SanctuaryHealthProbeReceipt
   interactiveDriver?: SanctuaryInteractiveDriverReceipt
+  denial?: SanctuaryReadOnlyDenialReceipt
   liveGrounding?: { toolName: SanctuaryGroundingToolName; groundingDigest: string; facts: Record<string, unknown> }
   reboot?: { phase: "preflight" | "requested" | "complete"; requestDigest: string; requestCount: number; checkpointPersisted: boolean; unrelatedHostOperations: number; bootIdentityChanged: boolean; hostReady: boolean; arrayReady: boolean; dockerReady: boolean; butlerReady: boolean; tailscaleReady: boolean; sshReady: boolean }
   containment?: SanctuaryContainmentAuditEvidence
@@ -260,6 +285,10 @@ export interface SanctuaryScenarioCaptureDependencies {
     complete(label: SanctuaryUnit16EvidenceLabel, scenarioHandleDigest: string): "complete" | "preserve" | Promise<"complete" | "preserve">
     cleanup(label: SanctuaryUnit16EvidenceLabel, scenarioHandleDigest: string): void | Promise<void>
   }
+  denialDriver?: {
+    poll(label: SanctuaryUnit16EvidenceLabel, scenarioHandleDigest: string): Promise<{ state: "waiting" | "driven" }>
+    complete(label: SanctuaryUnit16EvidenceLabel, scenarioHandleDigest: string): void | Promise<void>
+  }
   receiptRoot?: string
   gateStatusPath?: string
 }
@@ -272,6 +301,10 @@ const HEALTH_SCENARIO_LABELS = new Set<SanctuaryUnit16EvidenceLabel>([
 const INTERACTIVE_DRIVER_LABELS = new Set<SanctuaryUnit16EvidenceLabel>([
   "unit-16l-duplicate-callback",
   "unit-16m-restart-continuation",
+])
+const READ_ONLY_DENIAL_LABELS = new Set<SanctuaryUnit16EvidenceLabel>([
+  "unit-16e-1-stop-denial",
+  "unit-16e-2-restart-denial",
 ])
 
 interface Receipt {
@@ -516,9 +549,13 @@ export function deriveSanctuaryScenarioAssertions(
       }
     case "unit-16e-1-stop-denial":
     case "unit-16e-2-restart-denial": {
-      const denied = label === "unit-16e-1-stop-denial" ? after.containment?.stopDenied : after.containment?.restartDenied
-      if (denied !== true || after.containment?.denialAuditCount !== 1 || after.containment.denialStateUnchanged !== true || after.containment.denialProbeCompleted !== true || scenarioMutationCount !== 0) return null
-      return { auditDecisionCount: after.containment.denialAuditCount, denied, mutationCount: scenarioMutationCount, resumed: after.containment.denialProbeCompleted }
+      const receipt = after.denial
+      const expectedOperation = label === "unit-16e-1-stop-denial" ? "stop" : "restart"
+      if (!receipt || receipt.label !== label || receipt.operation !== expectedOperation || receipt.scenarioHandleDigest.length !== 64
+        || receipt.attemptCount !== 1 || ![200, 401, 403].includes(receipt.httpStatus)
+        || (receipt.errorCode !== "FORBIDDEN" && receipt.errorCode !== "PERMISSION_DENIED")
+        || JSON.stringify(receipt.before) !== JSON.stringify(receipt.after) || scenarioMutationCount !== 0) return null
+      return { attemptCount: receipt.attemptCount, cursorBoundaryCount: 7, denied: true, mutationCount: 0, restartCountUnchanged: true, resumed: true }
     }
     case "unit-16f-cron-fingerprint":
       if (!after.container?.running || !after.container.healthy || !after.healthProbe || !healthProbeRestored(after.healthProbe, after.cron) || after.healthProbe.clockMode !== "ambient" || after.healthProbe.phases.length !== 1
@@ -634,6 +671,11 @@ export function createSanctuaryScenarioCapture(deps: SanctuaryScenarioCaptureDep
       const driven = await deps.interactiveDriver.poll(input.label, receipt.scenarioHandleDigest)
       if (driven.state === "waiting") return { state: "waiting", checkpointDigest: receipt.checkpointDigest }
     }
+    if (READ_ONLY_DENIAL_LABELS.has(input.label)) {
+      if (!deps.denialDriver) throw new Error("read-only denial scenario driver is unavailable")
+      const driven = await deps.denialDriver.poll(input.label, receipt.scenarioHandleDigest)
+      if (driven.state === "waiting") return { state: "waiting", checkpointDigest: receipt.checkpointDigest }
+    }
     const after = await deps.readFacts(input.label, receipt.scenarioHandleDigest, factOptions)
     if (input.label === "unit-15c-1-no-callback-terminalization" && !receipt.noCallbackBaseline) {
       const activeApproval = after.approvals.find((approval) => approval.state === "proposed" || approval.state === "claimed")
@@ -658,6 +700,7 @@ export function createSanctuaryScenarioCapture(deps: SanctuaryScenarioCaptureDep
       throw new Error("interactive scenario requires inspect-before-retry")
     }
     if (INTERACTIVE_DRIVER_LABELS.has(input.label)) await deps.interactiveDriver!.cleanup(input.label, receipt.scenarioHandleDigest)
+    if (READ_ONLY_DENIAL_LABELS.has(input.label)) await deps.denialDriver!.complete(input.label, receipt.scenarioHandleDigest)
     publishSanctuaryAcceptanceGateStatus({ label: input.label, gate: input.externalGate, phase: "complete", startedAt: receipt.startedAt }, deps.gateStatusPath)
     clearSanctuaryAcceptanceMarker("sanctuary", receipt.scenarioHandleDigest)
     fs.unlinkSync(filePath)
