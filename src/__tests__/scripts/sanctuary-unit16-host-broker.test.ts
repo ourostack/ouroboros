@@ -37,7 +37,7 @@ interface BrokerModule {
   queryGraphqlAutostart(records: unknown[], fetchImpl: typeof fetch): Promise<boolean>
   healthProbeDockerArgs(mode: "run" | "stop" | "recover", input: Record<string, string>): string[]
   healthProbeArtifactDisposition(artifacts: { receipt: unknown; workspace: unknown; pending: unknown }): "complete" | "recovery_required" | "absent"
-  healthProbeOperationBudgets(): { startMaxMs: number; completeStatusMaxMs: number; recoveryMaxMs: number }
+  healthProbeOperationBudgets(): { startMaxMs: number; completeStatusMaxMs: number; recoveryMaxMs: number; composedCaptureMaxMs: number }
   requireHealthProbeCompleteAttestation(receipt: Record<string, unknown>, snapshot: Record<string, unknown>, request: Record<string, string>): void
   requireStableHealthProbeOwner(before: Record<string, string>, after: Record<string, string>): void
   terminateHealthProbeChild(record: HealthProbeRecord, options?: { termGraceMs?: number; killGraceMs?: number }): Promise<void>
@@ -71,7 +71,7 @@ async function broker(): Promise<BrokerModule> {
     queryGraphqlAutostart(records: unknown[], fetchImpl: typeof fetch): Promise<boolean>
     healthProbeDockerArgs(mode: "run" | "stop" | "recover", input: Record<string, string>): string[]
     healthProbeArtifactDisposition(artifacts: { receipt: unknown; workspace: unknown; pending: unknown }): "complete" | "recovery_required" | "absent"
-    healthProbeOperationBudgets(): { startMaxMs: number; completeStatusMaxMs: number; recoveryMaxMs: number }
+    healthProbeOperationBudgets(): { startMaxMs: number; completeStatusMaxMs: number; recoveryMaxMs: number; composedCaptureMaxMs: number }
     requireHealthProbeCompleteAttestation(receipt: Record<string, unknown>, snapshot: Record<string, unknown>, request: Record<string, string>): void
     requireStableHealthProbeOwner(before: Record<string, string>, after: Record<string, string>): void
     terminateHealthProbeChild(record: HealthProbeRecord, options?: { termGraceMs?: number; killGraceMs?: number }): Promise<void>
@@ -171,11 +171,13 @@ describe("Sanctuary Unit 16 host broker", () => {
     const { healthProbeOperationBudgets } = await broker()
     const contract = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary-acceptance-contract.json", "utf8")) as any
     const budgets = healthProbeOperationBudgets()
-    expect(budgets).toEqual({ startMaxMs: 115_000, completeStatusMaxMs: 130_000, recoveryMaxMs: 85_000 })
+    expect(budgets).toEqual({ startMaxMs: 115_000, completeStatusMaxMs: 130_000, recoveryMaxMs: 85_000, composedCaptureMaxMs: 165_000 })
     expect(contract.adapters["health-probe-start"].timeoutMs).toBeGreaterThan(budgets.startMaxMs)
     expect(contract.adapters["health-probe-status"].timeoutMs).toBeGreaterThan(budgets.completeStatusMaxMs)
     expect(contract.adapters["health-probe-recovery"].timeoutMs).toBeGreaterThan(budgets.recoveryMaxMs)
     expect(contract.adapterTimeoutMs).toBeGreaterThan(contract.adapters["health-probe-status"].timeoutMs)
+    expect(contract.adapters["scenario-capture"].timeoutMs).toBeGreaterThan(budgets.composedCaptureMaxMs)
+    expect(contract.adapterTimeoutMs).toBeGreaterThan(contract.adapters["scenario-capture"].timeoutMs)
   })
 
   it.each([
@@ -303,6 +305,25 @@ describe("Sanctuary Unit 16 host broker", () => {
     expect(events).toEqual(["snapshot", "launch", "recover"])
     await expect(dispatch({ operation: "start_health_probe", ...payload }, dependencies)).rejects.toThrow(/recovered scenario/u)
     expect(events).toEqual(["snapshot", "launch", "recover"])
+  })
+
+  it.each([
+    ["wrong target", { targetId: "another-host", scenarioHandleDigest: "a".repeat(64) }],
+    ["malformed handle", { targetId: "sanctuary", scenarioHandleDigest: "wrong" }],
+  ])("validates %s before recovery can tombstone a scenario", async (_case, invalid) => {
+    const { createHealthProbeOperationCoordinator, dispatch } = await broker()
+    const coordinator = createHealthProbeOperationCoordinator()
+    const valid = { targetId: "sanctuary", label: "unit-16g-health-transition", scenarioHandleDigest: "a".repeat(64) }
+    const dependencies: BrokerDependencies = {
+      readBootId: () => "unused",
+      healthProbeCoordinator: coordinator,
+      containerSnapshot: () => ({ imageId: `sha256:${"b".repeat(64)}`, containerId: "c".repeat(64), running: true, health: "healthy" }),
+      containerOwnerSnapshot: () => ({ imageId: `sha256:${"b".repeat(64)}`, containerId: "c".repeat(64) }),
+      startHealthProbe: () => ({ state: "started", operationDigest: "d".repeat(64) }),
+      recoverHealthProbe: () => ({ recovered: true }),
+    }
+    await expect(dispatch({ operation: "recover_health_probe", label: valid.label, ...invalid }, dependencies)).rejects.toThrow(/target|digest/u)
+    await expect(dispatch({ operation: "start_health_probe", ...valid }, dependencies)).resolves.toMatchObject({ state: "started" })
   })
 
   it("classifies a pending-only probe as recovery-required and fail-closed", async () => {

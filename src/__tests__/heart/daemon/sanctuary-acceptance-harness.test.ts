@@ -658,7 +658,7 @@ describe("Sanctuary acceptance harness", () => {
       schemaVersion: 1,
       harnessExecutable: "/opt/ouro/deploy/unraid/sanctuary-acceptance-harness.sh",
       adapterExecutable: "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
-      adapterTimeoutMs: 180_000,
+      adapterTimeoutMs: 240_000,
       telegramTimeoutMs: 10_000,
     })
     expect(Object.keys(contract.commands).sort()).toEqual([
@@ -678,7 +678,7 @@ describe("Sanctuary acceptance harness", () => {
     expect(contract.adapters["health-probe-status"].timeoutMs).toBe(170_000)
     expect(contract.adapters["health-probe-recovery"].timeoutMs).toBe(90_000)
     expect(contract.adapters["health-probe-recovery"].timeoutMs).toBeLessThan(contract.adapterTimeoutMs)
-    expect(contract.adapters["scenario-capture"].timeoutMs).toBe(170_000)
+    expect(contract.adapters["scenario-capture"].timeoutMs).toBe(210_000)
     expect(contract.scenarioSources).toEqual(expect.objectContaining({
       "telegram-audit": expect.objectContaining({ kind: "fixed-ndjson", path: expect.stringContaining("telegram.ndjson") }),
       "container-inspect": expect.objectContaining({ kind: "fixed-host-snapshot", path: "/run/ouro-acceptance/container-inspect.json" }),
@@ -719,10 +719,10 @@ describe("Sanctuary acceptance harness", () => {
   })
 
   it("applies the raised outer adapter default while still clamping to the remaining deadline", () => {
-    expect(resolveSanctuaryAdapterTimeoutMs(undefined, undefined)).toBe(180_000)
+    expect(resolveSanctuaryAdapterTimeoutMs(undefined, undefined)).toBe(240_000)
     expect(resolveSanctuaryAdapterTimeoutMs(undefined, 150_000)).toBe(150_000)
-    expect(resolveSanctuaryAdapterTimeoutMs(170_000, 175_000)).toBe(170_000)
-    expect(resolveSanctuaryAdapterTimeoutMs(170_000, 130_001)).toBe(130_001)
+    expect(resolveSanctuaryAdapterTimeoutMs(210_000, 220_000)).toBe(210_000)
+    expect(resolveSanctuaryAdapterTimeoutMs(210_000, 165_001)).toBe(165_001)
   })
 
   it("hard-times-out packaged adapters and Telegram network requests", async () => {
