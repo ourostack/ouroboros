@@ -657,7 +657,9 @@ describe("Telegram approval callback transport", () => {
   })
 
   it("rolls back a transient terminal cleanup failure for same-instance recovery without replaying authority", async () => {
-    let durable: ReturnType<TelegramPendingApprovalStore["load"]> = [{ approvalId: "approval-1", messageId: "99", deliveryState: "bound", approveCallbackData: "a:approve", denyCallbackData: "d:deny", expiresAt: 10_000 }]
+    const acceptanceBinding = { scenarioHandleDigest: "a".repeat(64), actionDigest: "b".repeat(64), targetDigest: "c".repeat(64), checkpointDigest: "d".repeat(64), suspendedSessionRevisionDigest: "e".repeat(64), messageIdDigest: "f".repeat(64), boundAt: 0 }
+    const evidence: Array<{ event: string; meta: Record<string, unknown> }> = []
+    let durable: ReturnType<TelegramPendingApprovalStore["load"]> = [{ approvalId: "approval-1", messageId: "99", deliveryState: "bound", approveCallbackData: "a:approve", denyCallbackData: "d:deny", expiresAt: 10_000, acceptanceBinding }]
     let cleanupFailed = false
     const pendingStore = {
       load: () => structuredClone(durable),
@@ -670,7 +672,8 @@ describe("Telegram approval callback transport", () => {
     const transport = createTelegramApprovalTransport({
       api: { stop: vi.fn(), request: vi.fn(async () => true) }, expectedUserId: "10", expectedChatId: "10", pendingStore,
       createOpaqueHandle: vi.fn(), onDecision, resolveDecisionToken: async () => "token", now: () => 1_000,
-    })
+      signAcceptanceEvidence: () => "f".repeat(64), onAcceptanceEvidence: (event, meta) => { evidence.push({ event, meta }) },
+    } as never)
 
     await expect(transport.handleUpdate(approvalCallback("a:approve", { id: "decision-query" }))).rejects.toThrow("cleanup save unavailable")
     expect(transport.listPendingDeliveries()).toHaveLength(1)
@@ -678,6 +681,9 @@ describe("Telegram approval callback transport", () => {
 
     expect(onDecision).toHaveBeenCalledOnce()
     expect(durable).toEqual([])
+    const settlements = evidence.filter((entry) => entry.event === "telegram.callback_settled")
+    expect(settlements).toHaveLength(2)
+    expect(settlements[0]!.meta).toEqual(settlements[1]!.meta)
   })
 
   it("acknowledges, decides once, terminalizes, removes buttons, and refuses replay", async () => {

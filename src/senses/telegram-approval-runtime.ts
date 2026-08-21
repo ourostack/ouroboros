@@ -381,6 +381,10 @@ export function createTelegramApprovalRuntime(options: {
           })
           continue
         }
+        if (pending.settlementReceipt) {
+          await transport.recoverDecisionAttempt(pending.approvalId)
+          continue
+        }
         if (pending.terminal) {
           await transport.terminalizeRecovered(pending.approvalId, pending.terminal.terminalText)
           continue

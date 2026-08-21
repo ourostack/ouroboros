@@ -530,6 +530,17 @@ export interface TelegramPersistedPendingApproval {
     attemptedAt: number
     evidenceMac: string
   }
+  settlementReceipt?: {
+    schemaVersion: "telegram-approval-settlement-receipt-v1"
+    kind: "live" | "recovery"
+    callbackAt: number
+    accepted: boolean
+    reason: "accepted" | "decision_refused"
+    acknowledgementState: "acknowledged" | "indeterminate_after_restart"
+    recoveredAt: number | null
+    decisionAttemptDigest: string
+    evidenceMac: string | null
+  }
 }
 
 interface TelegramPendingApproval extends TelegramPersistedPendingApproval {
@@ -626,6 +637,10 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
   const remove = (pending: TelegramPendingApproval): void => {
     pendingByCallback.delete(pending.approveCallbackData)
     pendingByCallback.delete(pending.denyCallbackData)
+  }
+  const persistRemoval = (pending: TelegramPendingApproval): void => {
+    options.pendingStore.save(uniquePending().filter((record) => record !== pending).map(({ decisionToken: _secret, ...record }) => record))
+    remove(pending)
   }
   const acceptanceEvidenceUnsigned = (pending: TelegramPendingApproval, fields: Record<string, unknown>): Record<string, unknown> => (
     { ...options.acceptanceEventMeta?.(), approvalId: pending.approvalId, ...pending.acceptanceBinding, ...fields }
@@ -731,6 +746,49 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
       throw new Error("Telegram persisted decision attempt is invalid")
     }
     return attempt
+  }
+
+  const settlementReceiptFields = (
+    receipt: NonNullable<TelegramPersistedPendingApproval["settlementReceipt"]>,
+  ): Record<string, unknown> => ({
+    settlementReceiptSchemaVersion: receipt.schemaVersion,
+    settlementKind: receipt.kind,
+    callbackAt: receipt.callbackAt,
+    accepted: receipt.accepted,
+    reason: receipt.reason,
+    acknowledgementState: receipt.acknowledgementState,
+    recoveredAt: receipt.recoveredAt,
+    decisionAttemptDigest: receipt.decisionAttemptDigest,
+  })
+
+  const validateSettlementReceipt = (pending: TelegramPendingApproval): NonNullable<TelegramPersistedPendingApproval["settlementReceipt"]> => {
+    const receipt = pending.settlementReceipt
+    const decisionAttemptDigest = pending.decisionAttempt
+      ? createHash("sha256").update(JSON.stringify(pending.decisionAttempt)).digest("hex")
+      : null
+    if (!receipt || !pending.terminal || !pending.decisionAttempt || receipt.schemaVersion !== "telegram-approval-settlement-receipt-v1"
+      || !["live", "recovery"].includes(receipt.kind)
+      || !Number.isSafeInteger(receipt.callbackAt)
+      || typeof receipt.accepted !== "boolean"
+      || receipt.reason !== (receipt.accepted ? "accepted" : "decision_refused")
+      || receipt.acknowledgementState !== (receipt.kind === "live" ? "acknowledged" : "indeterminate_after_restart")
+      || (receipt.kind === "live" ? receipt.recoveredAt !== null : !Number.isSafeInteger(receipt.recoveredAt))
+      || receipt.callbackAt !== pending.decisionAttempt.attemptedAt
+      || !/^[0-9a-f]{64}$/u.test(receipt.decisionAttemptDigest) || receipt.decisionAttemptDigest !== decisionAttemptDigest
+      || receipt.evidenceMac !== signState("telegram.approval_settlement_receipt_state", pending, settlementReceiptFields(receipt))) {
+      throw new Error("Telegram persisted settlement receipt is invalid")
+    }
+    return receipt
+  }
+
+  const emitSettlementReceipt = (pending: TelegramPendingApproval): void => {
+    const receipt = validateSettlementReceipt(pending)
+    const fields = receipt.kind === "live"
+      ? { callbackAt: receipt.callbackAt, acknowledged: true, accepted: receipt.accepted, reason: receipt.reason, decisionAttemptDigest: receipt.decisionAttemptDigest }
+      : { callbackAt: receipt.callbackAt, acknowledgementState: receipt.acknowledgementState, accepted: receipt.accepted, reason: receipt.reason, recoveredAt: receipt.recoveredAt!, decisionAttemptDigest: receipt.decisionAttemptDigest }
+    const event = receipt.kind === "live" ? "telegram.callback_settled" : "telegram.callback_recovery_settled"
+    if (pending.acceptanceBinding) emitAcceptanceEvidence(event, pending, fields)
+    else emitNervesEvent({ component: "senses", event, message: "Telegram approval callback settled", meta: { approvalId: pending.approvalId, ...fields, ...options.acceptanceEventMeta?.() } })
   }
 
   const validateExpiryObservation = (pending: TelegramPendingApproval): NonNullable<TelegramPersistedPendingApproval["expiryObservation"]> => {
@@ -864,12 +922,17 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
     pending: TelegramPendingApproval,
     expected?: { decision: "approve" | "deny"; queryIdDigest: string; callbackQueryId: string; observedAt: number },
   ): Promise<{ accepted: boolean; terminalText: string; callbackAt: number }> => {
+    if (pending.settlementReceipt) {
+      const receipt = validateSettlementReceipt(pending)
+      emitSettlementReceipt(pending)
+      persistRemoval(pending)
+      return { accepted: receipt.accepted, terminalText: pending.terminal!.terminalText, callbackAt: receipt.callbackAt }
+    }
     if (pending.terminal && !pending.decisionAttempt) {
       if (!expected) throw new Error("Telegram persisted decision attempt is unavailable")
       await acknowledge(expected.callbackQueryId, false)
       await editTerminal(pending, pending.terminal.terminalText)
-      remove(pending)
-      persist()
+      persistRemoval(pending)
       return { ...pending.terminal, callbackAt: expected.observedAt }
     }
     const decisionToken = await resolveDecisionToken(pending)
@@ -902,14 +965,29 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
         ...(pending.acceptanceBinding ? { acceptanceBinding: pending.acceptanceBinding } : {}),
       })
       persistMutation(pending, () => {
-        pending.decisionToken = undefined
         pending.terminal = outcome
       })
     }
     if (expected) await acknowledge(expected.callbackQueryId, false)
     await editTerminal(pending, outcome.terminalText)
-    remove(pending)
-    persist()
+    const reason = outcome.accepted ? "accepted" : "decision_refused"
+    persistMutation(pending, () => {
+      const receipt: NonNullable<TelegramPersistedPendingApproval["settlementReceipt"]> = {
+        schemaVersion: "telegram-approval-settlement-receipt-v1",
+        kind: expected ? "live" : "recovery",
+        callbackAt: attempt.attemptedAt,
+        accepted: outcome.accepted,
+        reason,
+        acknowledgementState: expected ? "acknowledged" : "indeterminate_after_restart",
+        recoveredAt: expected ? null : now(),
+        decisionAttemptDigest: createHash("sha256").update(JSON.stringify(attempt)).digest("hex"),
+        evidenceMac: null,
+      }
+      receipt.evidenceMac = signState("telegram.approval_settlement_receipt_state", pending, settlementReceiptFields(receipt))
+      pending.settlementReceipt = receipt
+    })
+    emitSettlementReceipt(pending)
+    persistRemoval(pending)
     return { ...outcome, callbackAt: attempt.attemptedAt }
   }
 
@@ -929,7 +1007,10 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
             }
             return
           }
-          if (current.decisionAttempt) return
+          if (current.decisionAttempt) {
+            await settleDecisionAttempt(current)
+            return
+          }
           if (!current.terminal && now() < current.expiresAt) return
           if (current.terminal) {
             await editTerminal(current, current.terminal.terminalText)
@@ -1180,8 +1261,6 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
       const queryIdDigest = createHash("sha256").update(callback.id).digest("hex")
       const outcome = await settleDecisionAttempt(pending!, { decision, queryIdDigest, callbackQueryId: callback.id, observedAt })
       const reason = outcome.accepted ? "accepted" : "decision_refused"
-      if (pending!.acceptanceBinding) emitAcceptanceEvidence("telegram.callback_settled", pending!, { callbackAt: outcome.callbackAt, acknowledged: true, accepted: outcome.accepted, reason })
-      else emitNervesEvent({ component: "senses", event: "telegram.callback_settled", message: "Telegram approval callback settled", meta: { approvalId: pending!.approvalId, reason, accepted: outcome.accepted, ...options.acceptanceEventMeta?.() } })
       return { handled: true, accepted: outcome.accepted, reason }
   }
 }

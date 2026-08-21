@@ -1048,7 +1048,7 @@ export async function readDefaultSanctuaryScenarioFacts(
   const approvals = approvalRecords.map(({ approval: record, continuation }) => {
     const boundEvents = auditEntries.filter((entry) => entry.meta.approvalId === record.approvalId)
     const terminalized = boundEvents.some((entry) => entry.event === "telegram.approval_prompt_terminalized" && entry.meta.buttonsRemoved === true)
-    const callbackEvents = boundEvents.filter((entry) => entry.event === "telegram.callback_settled")
+    const callbackEvents = boundEvents.filter((entry) => entry.event === "telegram.callback_settled" || entry.event === "telegram.callback_recovery_settled")
     const staleCallbackEvents = boundEvents.filter((entry) => entry.event === "telegram.approval_stale_callback_settled")
     const claimCount = boundEvents.filter((entry) => entry.event === "approval.acceptance_transition" && entry.meta.state === "claimed").length
     const restartExecutionCount = boundEvents.filter((entry) => entry.event === "senses.telegram_approved_restart_end").length
@@ -1106,6 +1106,7 @@ export async function readDefaultSanctuaryScenarioFacts(
     const approvalEvidenceKeys: Record<string, string[][]> = {
       "senses.telegram_approval_prompt_bound": [["actionDigest", "approvalId", "boundAt", "checkpointDigest", "evidenceMac", "messageIdDigest", "scenarioHandleDigest", "suspendedSessionRevisionDigest", "targetDigest"]],
       "telegram.callback_settled": [["accepted", "acknowledged", "actionDigest", "approvalId", "boundAt", "callbackAt", "checkpointDigest", "evidenceMac", "messageIdDigest", "reason", "scenarioHandleDigest", "suspendedSessionRevisionDigest", "targetDigest"]],
+      "telegram.callback_recovery_settled": [["accepted", "acknowledgementState", "actionDigest", "approvalId", "boundAt", "callbackAt", "checkpointDigest", "decisionAttemptDigest", "evidenceMac", "messageIdDigest", "reason", "recoveredAt", "scenarioHandleDigest", "suspendedSessionRevisionDigest", "targetDigest"]],
       "telegram.approval_stale_callback_settled": [["accepted", "acknowledged", "actionDigest", "approvalId", "boundAt", "checkpointDigest", "evidenceMac", "messageIdDigest", "reason", "scenarioHandleDigest", "staleAt", "suspendedSessionRevisionDigest", "targetDigest"]],
       "telegram.approval_expiry_observed": [["actionDigest", "approvalId", "boundAt", "checkpointDigest", "evidenceMac", "expiryDeadlineAt", "expiryObservationSchemaVersion", "expiryObservedAt", "messageIdDigest", "scenarioHandleDigest", "suspendedSessionRevisionDigest", "targetDigest"]],
       "telegram.approval_prompt_terminalized": [
