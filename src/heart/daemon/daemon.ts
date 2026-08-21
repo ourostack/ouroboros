@@ -577,7 +577,7 @@ export interface OuroDaemonOptions {
   externalEventRoot?: string
   /** Test seam for typed native RSVP habit execution. Defaults to the real native runner. */
   rsvpHabitRunner?: (input: RunNativeRsvpHabitInput) => Promise<RunNativeRsvpHabitResult>
-  nativeHabitRunner?: (input: { agent: string; habitName: string; trigger: HabitRunTrigger; occurrenceId?: string }) => Promise<DaemonResponse | null>
+  nativeHabitRunner?: (input: { agent: string; habitName: string; trigger: HabitRunTrigger; occurrenceId?: string; runnerId: string }) => Promise<DaemonResponse | null>
   nativeHabitMatch?: (agent: string, habitName: string) => boolean
   /** Startup barrier that proves no prior Ouro daemon/worker remains before
    *  this daemon opens its socket or autostarts any replacement. */
@@ -2290,6 +2290,7 @@ export class OuroDaemon {
           }
           this.nativeHabitClaims.add(claimKey)
           const startedAt = new Date().toISOString()
+          const runnerId = randomUUID()
           let nativeResult: DaemonResponse
           try {
             nativeResult = await this.nativeHabitRunner({
@@ -2297,6 +2298,7 @@ export class OuroDaemon {
               habitName: command.habitName,
               trigger,
               occurrenceId,
+              runnerId,
             }) ?? { ok: false, error: "native habit runner declined a matched habit" }
           } catch (error) {
             nativeResult = { ok: false, error: error instanceof Error ? error.message : String(error) }
@@ -2307,7 +2309,7 @@ export class OuroDaemon {
             completion = completeHabitRun({
               agentRoot: path.join(this.bundlesRoot, `${command.agent}.ouro`),
               habit: resolution.habit,
-              runId: randomUUID(),
+              runId: runnerId,
               trigger,
               startedAt,
               endedAt,
