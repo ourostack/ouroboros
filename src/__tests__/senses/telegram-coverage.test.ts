@@ -4,7 +4,6 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { createLogger } from "../../nerves"
 import { TELEGRAM_ACCEPTANCE_AUDIT_HEAD_RELATIVE_PATH, TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH } from "../../senses/telegram-audit-ledger"
-import { createTelegramLongPoll } from "../../senses/telegram-client"
 
 const mocks = vi.hoisted(() => ({
   getAgentRoot: vi.fn(),
@@ -805,6 +804,7 @@ describe("Telegram sense coverage contracts", () => {
   })
 
   it("reserves audit capacity before real poll inbox and offset mutations", async () => {
+    const { createTelegramLongPoll } = await vi.importActual<typeof import("../../senses/telegram-client")>("../../senses/telegram-client")
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-audit-poll-capacity-"))
     mocks.getAgentRoot.mockReturnValueOnce(root)
     const identityKey = "k".repeat(43)

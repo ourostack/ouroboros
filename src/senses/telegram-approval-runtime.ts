@@ -29,6 +29,22 @@ export interface TelegramApprovalRuntime {
   close(): void
 }
 
+export function telegramApprovalCommitBarrierHooks(effectBarrier: () => void): NonNullable<Parameters<typeof commitApprovalProposal>[0]["hooks"]> {
+  return {
+    afterJournalPrepare: effectBarrier,
+    afterTokenPersist: effectBarrier,
+    afterCheckpointWrite: effectBarrier,
+  }
+}
+
+export function telegramApprovalDecisionBarrierHooks(effectBarrier: () => void): NonNullable<Parameters<typeof executeApprovalDecision>[0]["hooks"]> {
+  return {
+    afterClaim: effectBarrier,
+    afterAttempt: effectBarrier,
+    afterHandler: effectBarrier,
+  }
+}
+
 export function approvalContinuationRunAgentOptions(
   toolContext: Partial<ToolContext>,
   approvalCoordinator: ApprovalCoordinator,
@@ -163,6 +179,7 @@ export function createTelegramApprovalRuntime(options: {
           ...(scenarioHandleDigest ? { scenarioHandleDigest } : {}),
         },
         preCallMessages: request.preCallMessages,
+        hooks: telegramApprovalCommitBarrierHooks(effectBarrier),
       })
       const prompt = `Approve ${request.toolCall.function.name} with exact arguments ${JSON.stringify(request.arguments)}?`
       effectBarrier()
@@ -259,6 +276,7 @@ export function createTelegramApprovalRuntime(options: {
     onExpire: async (approvalId) => {
       effectBarrier()
       store.expire({ approvalId })
+      effectBarrier()
       tokens.remove(approvalId)
     },
     onDecision: async (decision) => {
@@ -268,8 +286,10 @@ export function createTelegramApprovalRuntime(options: {
       if (!existing) return { accepted: false, terminalText: "⚠️ Approval is no longer valid" }
       let record: ApprovalRecord
       if (existing.state === "claimed") {
+        effectBarrier()
         record = recoverClaimedApproval({ approvalStore: store, approvalId: existing.approvalId, reason: "decision interrupted before action attempt; action was not executed" })
       } else if (existing.state === "attempted") {
+        effectBarrier()
         record = recoverAttemptedApproval({ approvalStore: store, approvalId: existing.approvalId })
       } else if (existing.state === "proposed") {
         const ownerId = `telegram-decision-${randomUUID()}`
@@ -289,6 +309,7 @@ export function createTelegramApprovalRuntime(options: {
             resolveTool: resolveToolDefinition,
             liveGuard: async () => ({ ok: true }),
             liveRisk: async () => ({ ok: true }),
+            hooks: telegramApprovalDecisionBarrierHooks(effectBarrier),
             execute: (name, args) => {
               const execute = () => executeApprovedTelegramTool(
                 name,
@@ -349,6 +370,7 @@ export function createTelegramApprovalRuntime(options: {
         }
         const deliveryState = pending.deliveryState ?? "bound"
         if (existing.state === "awaiting_prompt_binding" && deliveryState !== "bound") {
+          effectBarrier()
           const record = store.abandonPromptBinding({
             approvalId: existing.approvalId,
             reason: deliveryState === "pending"
@@ -360,6 +382,7 @@ export function createTelegramApprovalRuntime(options: {
           continue
         }
         if (existing.state === "awaiting_prompt_binding" && deliveryState === "bound" && pending.messageId) {
+          effectBarrier()
           store.bindPrompt({
             approvalId: existing.approvalId,
             transport: "telegram",
@@ -371,8 +394,10 @@ export function createTelegramApprovalRuntime(options: {
         if (existing.state === "proposed" || existing.state === "preparing" || existing.state === "awaiting_prompt_binding") continue
         let record = existing
         if (record.state === "claimed") {
+          effectBarrier()
           record = recoverClaimedApproval({ approvalStore: store, approvalId: record.approvalId, reason: "decision interrupted before action attempt; action was not executed" })
         } else if (record.state === "attempted") {
+          effectBarrier()
           record = recoverAttemptedApproval({ approvalStore: store, approvalId: record.approvalId })
         }
         const outcome = await continueTerminalRecord(record)
@@ -397,12 +422,14 @@ export function createTelegramApprovalRuntime(options: {
 
   const migrateIdentity = (subjects: readonly string[]): void => {
     for (const legacySubject of subjects) {
+      effectBarrier()
       store.migrateTelegramIdentity?.({
         legacyUserId: legacySubject,
         legacyChatId: legacySubject,
         subject: options.subject,
       })
     }
+    effectBarrier()
     store.migrateTelegramIdentity?.({
       legacyUserId: options.authorizedUserId,
       legacyChatId: options.authorizedChatId,

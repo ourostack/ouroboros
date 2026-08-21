@@ -992,7 +992,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         }
         return { ...binding, ...auditOwnerMeta, dropMac: sanctuaryTelegramUnauthorizedDropMac(identityKey, schemaVersion, binding) }
       },
-      onBeforeDispatch: () => acceptanceAudit?.assertHealthy(),
+      onBeforeDispatch: acceptanceAuditBarrier,
       onDispatchSettled: () => acceptanceAudit?.assertHealthy(),
     })
   } catch (error) {
