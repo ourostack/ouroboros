@@ -25,9 +25,19 @@ RUN chown -R 10001:10001 /opt/ouro /home/ouro
 
 USER 10001:10001
 ENV HOME=/home/ouro
-RUN test "$(id -u)" = "10001" \
+RUN BW_VERIFY_ROOT="$(mktemp -d)" \
+  && trap 'rm -rf -- "$BW_VERIFY_ROOT"' 0 \
+  && mkdir "$BW_VERIFY_ROOT/appdata" \
+  && printf '%s' '{}' >"$BW_VERIFY_ROOT/appdata/data.json" \
+  && test ! -e "/home/ouro/.config/Bitwarden CLI" \
+  && test "$(id -u)" = "10001" \
   && test "$(id -g)" = "10001" \
   && command -v bw >/dev/null \
-  && test "$(bw --version)" = "2026.8.0"
+  && BW_VERSION="$(BITWARDENCLI_APPDATA_DIR="$BW_VERIFY_ROOT/appdata" bw --version 2>"$BW_VERIFY_ROOT/stderr")" \
+  && test ! -s "$BW_VERIFY_ROOT/stderr" \
+  && test "$BW_VERSION" = "2026.8.0" \
+  && rm -rf -- "$BW_VERIFY_ROOT" \
+  && trap - 0 \
+  && test ! -e "/home/ouro/.config/Bitwarden CLI"
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 CMD ["node","/opt/ouro/dist/heart/daemon/container-healthcheck.js","--agent","sanctuary"]
 ENTRYPOINT ["node","/opt/ouro/dist/heart/daemon/daemon-entry.js"]
