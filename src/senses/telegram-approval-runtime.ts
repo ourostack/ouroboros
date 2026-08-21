@@ -372,6 +372,7 @@ export function createTelegramApprovalRuntime(options: {
       try {
         const existing = store.read(pending.approvalId)
         if (!existing) {
+          if (pending.decisionAttempt) throw new Error("Telegram fenced approval journal is unavailable")
           const orphanRecovery = await transport.terminalizeOrphaned(
             pending.approvalId,
             "⚠️ Approval record is unavailable — no action was taken",

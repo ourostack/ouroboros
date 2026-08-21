@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { emitNervesEvent, emitNervesEventDurable, setRuntimeLogger } from "../../nerves/runtime"
+import { createLogger, type DurableLogSink, type LogEvent } from "../../nerves"
 
 describe("observability/runtime", () => {
   afterEach(() => {
@@ -87,10 +88,23 @@ describe("observability/runtime", () => {
 
   it("awaits the configured durable logger barrier", async () => {
     const barrier = vi.fn(async () => undefined)
-    setRuntimeLogger({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), durabilityBarrier: barrier })
+    setRuntimeLogger({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), durabilityBarrier: barrier, emitDurable: vi.fn() })
 
     await emitNervesEventDurable({ event: "runtime.durable", component: "observability", message: "durable event" })
 
     expect(barrier).toHaveBeenCalledOnce()
+  })
+
+  it("bypasses ordinary level filtering for durable evidence", async () => {
+    const events: LogEvent[] = []
+    const sink = ((event: LogEvent) => { events.push(event) }) as DurableLogSink
+    sink.barrier = vi.fn(async () => undefined)
+    setRuntimeLogger(createLogger({ level: "error", sinks: [sink] }))
+
+    await emitNervesEventDurable({ event: "runtime.durable_info", component: "observability", message: "durable info" })
+
+    expect(events).toHaveLength(1)
+    expect(events[0]?.event).toBe("runtime.durable_info")
+    expect(sink.barrier).toHaveBeenCalledOnce()
   })
 })

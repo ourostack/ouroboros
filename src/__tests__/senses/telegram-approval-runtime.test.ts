@@ -602,6 +602,20 @@ describe("Telegram approval runtime orchestration", () => {
     }))
   })
 
+  it("fails startup and preserves transport state when a fenced decision has no canonical journal row", async () => {
+    const runtime = makeRuntime()
+    runtimeMocks.transport.listPendingDeliveries.mockReturnValue([{
+      approvalId: "missing-fenced", deliveryState: "bound", messageId: "101",
+      decisionAttempt: { schemaVersion: "telegram-approval-decision-attempt-v1", decision: "approve", queryIdDigest: "a".repeat(64), attemptedAt: 1, evidenceMac: "b".repeat(64) },
+    }])
+    runtimeMocks.store.read.mockReturnValue(undefined)
+
+    await expect(runtime.recover()).rejects.toThrow("fenced approval journal")
+
+    expect(runtimeMocks.transport.terminalizeOrphaned).not.toHaveBeenCalled()
+    expect(runtimeMocks.transport.recoverDecisionAttempt).not.toHaveBeenCalled()
+  })
+
   it.each(["succeeded", "denied"])("routes a persisted decision attempt through authenticated recovery even when the journal is already %s", async (state) => {
     const runtime = makeRuntime()
     runtimeMocks.transport.listPendingDeliveries.mockReturnValue([{

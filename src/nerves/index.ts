@@ -33,6 +33,7 @@ export interface Logger {
   warn(entry: LogEventInput): void
   error(entry: LogEventInput): void
   durabilityBarrier(): Promise<void>
+  emitDurable(level: LogLevel, entry: LogEventInput): void
 }
 
 export interface LoggerOptions {
@@ -46,6 +47,15 @@ const LEVEL_PRIORITY: Record<LogLevel, number> = {
   info: 20,
   warn: 30,
   error: 40,
+}
+
+function fsyncFileAndDirectory(filePath: string): void {
+  if (existsSync(filePath)) {
+    const fileDescriptor = openSync(filePath, "r")
+    try { fsyncSync(fileDescriptor) } finally { closeSync(fileDescriptor) }
+  }
+  const directoryDescriptor = openSync(dirname(filePath), "r")
+  try { fsyncSync(directoryDescriptor) } finally { closeSync(directoryDescriptor) }
 }
 const GLOBAL_SINKS_KEY = Symbol.for("ouroboros.nerves.global-sinks")
 
@@ -279,6 +289,7 @@ export function rotateIfNeeded(
     if (existsSync(plain1)) {
       unlinkSync(plain1)
     }
+    fsyncFileAndDirectory(filePath)
     renameSync(filePath, plain1)
 
     // Step 3: gzip (or keep plain) the renamed file into the .1 generation.
@@ -291,8 +302,11 @@ export function rotateIfNeeded(
       const buf = readFileSync(plain1)
       const compressed = zlib.gzipSync(buf)
       writeFileSync(gz1, compressed)
+      fsyncFileAndDirectory(gz1)
       unlinkSync(plain1)
     }
+
+    fsyncFileAndDirectory(compress ? generationGzPath(base, ext, 1) : plain1)
 
     completed = true
     emitNervesEvent({
@@ -349,8 +363,7 @@ export function createNdjsonFileSink(
       return
     }
     try {
-      const descriptor = openSync(filePath, "r")
-      try { fsyncSync(descriptor) } finally { closeSync(descriptor) }
+      fsyncFileAndDirectory(filePath)
       for (const barrier of ready) barrier.resolve()
     } catch (error) {
       const failure = error instanceof Error ? error : new Error(String(error))
@@ -370,22 +383,23 @@ export function createNdjsonFileSink(
       bytesSinceCheck = 0
       try {
         rotateIfNeeded(filePath, options)
-      } catch {
-        // Rotation errors are surfaced via nerves events; never block writes.
+      } catch (rotationError) {
+        appendFailure ??= rotationError instanceof Error ? rotationError : new Error(String(rotationError))
       }
     }
 
     appendFile(filePath, line, "utf8", (error) => {
       completed += 1
       if (error) appendFailure ??= error
-      settleBarriers()
       if (checkAfterAppend) {
         try {
+          fsyncFileAndDirectory(filePath)
           rotateIfNeeded(filePath, options)
-        } catch {
-          // Rotation errors are surfaced via nerves events; never block writes.
+        } catch (rotationError) {
+          appendFailure ??= rotationError instanceof Error ? rotationError : new Error(String(rotationError))
         }
       }
+      settleBarriers()
       flushing = false
       flush()
     })
@@ -431,8 +445,8 @@ export function createLogger(options: LoggerOptions = {}): Logger {
   const durableSinks = sinks.filter((candidate): candidate is DurableLogSink => "barrier" in candidate && typeof candidate.barrier === "function")
   const now = options.now ?? (() => new Date())
 
-  function emit(level: LogLevel, entry: LogEventInput): void {
-    if (!shouldEmit(configuredLevel, level)) {
+  function emit(level: LogLevel, entry: LogEventInput, force = false): void {
+    if (!force && !shouldEmit(configuredLevel, level)) {
       return
     }
 
@@ -459,5 +473,6 @@ export function createLogger(options: LoggerOptions = {}): Logger {
       if (durableSinks.length === 0) throw new Error("No durable Nerves sink is configured")
       await Promise.all(durableSinks.map((durableSink) => durableSink.barrier()))
     },
+    emitDurable: (level, entry) => emit(level, entry, true),
   }
 }

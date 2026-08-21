@@ -1,6 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync } from "fs"
 import { join } from "path"
 import { tmpdir } from "os"
+import { gunzipSync } from "zlib"
 
 import { describe, expect, it } from "vitest"
 
@@ -65,5 +66,17 @@ describe("observability/sinks", () => {
     sink({ ts: "2026-03-02T17:00:00.000Z", level: "info", event: "durable.failure", trace_id: "trace-1", component: "entrypoints", message: "durable", meta: {} })
 
     await expect(sink.barrier()).rejects.toThrow()
+  })
+
+  it("does not resolve a barrier until a post-append rotation preserves the event", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ouro-observability-barrier-rotation-"))
+    const filePath = join(dir, "events.ndjson")
+    const sink = createNdjsonFileSink(filePath, { maxSizeBytes: 1, rotationCheckIntervalBytes: 1 })
+    sink({ ts: "2026-03-02T17:00:00.000Z", level: "info", event: "durable.rotated", trace_id: "trace-1", component: "entrypoints", message: "durable", meta: {} })
+
+    await sink.barrier()
+
+    const rotated = gunzipSync(readFileSync(join(dir, "events.1.ndjson.gz"))).toString("utf8")
+    expect(JSON.parse(rotated).event).toBe("durable.rotated")
   })
 })
