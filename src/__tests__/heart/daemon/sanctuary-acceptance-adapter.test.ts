@@ -341,7 +341,41 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     }), agentRoot)
     expect(peak).toBe(3)
     expect(facts.provider?.fallbackAttemptCount).toBe(1)
+    expect(facts.provider?.requestSemanticsExact).toBe(false)
     expect(facts.provider?.pingReceipts).toEqual(expect.arrayContaining([expect.objectContaining({ lane: "candidate", attempts: [expect.objectContaining({ provider: "openai-compatible" })] })]))
+    fs.rmSync(agentRoot, { recursive: true, force: true })
+  })
+
+  it.each([
+    ["empty attempts", () => []],
+    ["wrong operation", (provider: string, model: string) => [{ attempt: 1, provider, model, operation: "completion", ok: true, willRetry: false }]],
+    ["wrong model", (provider: string) => [{ attempt: 1, provider, model: "wrong-model", operation: "ping", ok: true, willRetry: false }]],
+    ["non-successful final attempt", (provider: string, model: string) => [{ attempt: 1, provider, model, operation: "ping", ok: false, willRetry: false }]],
+    ["overbound attempts", (provider: string, model: string) => Array.from({ length: 4 }, (_, index) => ({ attempt: index + 1, provider, model, operation: "ping", ok: true, willRetry: false }))],
+  ] as const)("rejects ok provider pings with %s", async (_case, attempts) => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-provider-attempt-binding-"))
+    const files: Record<string, string> = {
+      [`${agentRoot}/agent.json`]: JSON.stringify({ humanFacing: { provider: "openai-compatible", model: "glm-out" }, agentFacing: { provider: "openai-compatible", model: "glm-in" } }),
+      [`${agentRoot}/provider-readiness.json`]: JSON.stringify({ selectionPolicy: "explicit-same-lane-only", providers: [{ provider: "openai-compatible-gemini", model: "gemini-candidate" }] }),
+    }
+    const facts = await readDefaultSanctuaryScenarioFacts("unit-16c-provider-readiness", "a".repeat(64), unit16Deps({
+      readFixedFile: (file) => { if (!(file in files)) throw Object.assign(new Error("missing"), { code: "ENOENT" }); return files[file]! },
+      readProviderCredential: async (_agent, provider) => ({
+        ok: true,
+        poolPath: "vault:opaque",
+        record: {
+          provider,
+          revision: `rev-${provider}`,
+          updatedAt: "2026-08-20T00:00:00.000Z",
+          credentials: { apiKey: "secret" },
+          config: {},
+          provenance: { source: "manual", updatedAt: "2026-08-20T00:00:00.000Z" },
+        },
+      }),
+      providerPing: async (provider, _config, options) => ({ ok: true, attempts: attempts(provider, options.model!) as never }),
+      hostRequest: async () => ({ running: true, health: "healthy", imageId: "sha256:missing", user: "10001:10001", readOnlyRoot: true, mountCount: 2, publishedPortCount: 0, restartPolicy: "unless-stopped", restartCount: 0, autostartExact: true, updaterDisabled: true, vaultUnlocked: true, manualAuthRequired: false }),
+    }), agentRoot)
+    expect(facts.provider?.requestSemanticsExact).toBe(false)
     fs.rmSync(agentRoot, { recursive: true, force: true })
   })
 

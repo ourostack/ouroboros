@@ -43,7 +43,7 @@ const healthProbe = (label: "unit-16f-cron-fingerprint" | "unit-16g-health-trans
   const fixtureSequence = phases.flatMap((phase) => phase.fixtureStatus === null ? [] : [phase.fixtureStatus])
   return {
     label, scenarioHandleDigest: "a".repeat(64), ownerImageDigestBefore: "1".repeat(64), ownerImageDigestAfter: "1".repeat(64), ownerContainerDigestBefore: "2".repeat(64), ownerContainerDigestAfter: "2".repeat(64),
-    beforeStateDigest: "3".repeat(64), restoredStateDigest: "3".repeat(64), cronFingerprintBefore: "4".repeat(64), cronFingerprintAfter: "4".repeat(64), cronRegisteredBefore: true, cronRegisteredAfter: true,
+    beforeStateDigest: "3".repeat(64), restoredStateDigest: "3".repeat(64), cronFingerprintBefore: "a".repeat(64), cronFingerprintAfter: "a".repeat(64), cronRegisteredBefore: true, cronRegisteredAfter: true,
     cronDegradedBefore: false, cronDegradedAfter: false, fixtureSequenceDigest: probeDigest(fixtureSequence), clockMode: label === "unit-16h-daily-digest" ? "local-daily-boundary" as const : "ambient" as const,
     effectiveNow: label === "unit-16h-daily-digest" ? "2026-08-20T16:00:00.000Z" : "2026-08-20T15:00:00.000Z", phases,
     privateTurnCount: label === "unit-16f-cron-fingerprint" ? 0 : label === "unit-16g-health-transition" ? 3 : 1,
@@ -172,6 +172,44 @@ describe("Sanctuary live scenario capture", () => {
     expect(fs.readdirSync(path.join(acceptanceRoot, "quarantine", quarantinedReceiptRoot!))).toHaveLength(2)
   })
 
+  it("stops receipt inspection at the thirty-third entry and quarantines the complete set", () => {
+    const acceptanceRoot = path.join(root, "sanctuary.ouro", "state", "acceptance")
+    const receipts = path.join(acceptanceRoot, "receipts")
+    fs.mkdirSync(receipts, { recursive: true, mode: 0o700 })
+    for (let index = 0; index < 40; index += 1) fs.writeFileSync(path.join(receipts, `entry-${index}`), "evidence\n", { mode: 0o600 })
+
+    expect(() => finalizeSanctuaryScenarioCapture(undefined, receipts)).toThrow("Sanctuary scenario finalization failed")
+
+    expect(fs.readdirSync(receipts)).toEqual([])
+    const quarantinedReceiptRoot = fs.readdirSync(path.join(acceptanceRoot, "quarantine"))
+      .find((entry) => entry.startsWith("receipts-"))
+    expect(fs.readdirSync(path.join(acceptanceRoot, "quarantine", quarantinedReceiptRoot!))).toHaveLength(40)
+  })
+
+  it("refuses a symlink receipt root without moving or traversing its target", () => {
+    const acceptanceRoot = path.join(root, "sanctuary.ouro", "state", "acceptance")
+    const receipts = path.join(acceptanceRoot, "receipts")
+    const outside = path.join(root, "outside-receipts")
+    fs.mkdirSync(acceptanceRoot, { recursive: true, mode: 0o700 })
+    fs.mkdirSync(outside, { mode: 0o700 })
+    fs.writeFileSync(path.join(outside, "preserved"), "evidence\n", { mode: 0o600 })
+    fs.symlinkSync(outside, receipts)
+
+    expect(() => finalizeSanctuaryScenarioCapture(undefined, receipts)).toThrow("Sanctuary scenario finalization failed")
+
+    expect(fs.lstatSync(receipts).isSymbolicLink()).toBe(true)
+    expect(fs.readFileSync(path.join(outside, "preserved"), "utf8")).toBe("evidence\n")
+  })
+
+  it("keeps quarantine rename durability and inode checks structurally explicit", () => {
+    const source = fs.readFileSync(path.resolve(process.cwd(), "src/heart/daemon/sanctuary-acceptance-scenarios.ts"), "utf8")
+    const helper = source.slice(source.indexOf("function durableQuarantineReceiptRoot"), source.indexOf("export function finalizeSanctuaryScenarioCapture"))
+    expect(helper).toContain("fs.constants.O_NOFOLLOW")
+    expect(helper).toContain("rootMetadata.ino !== rootPathMetadata.ino")
+    expect(helper.indexOf("fs.renameSync(receiptRoot, quarantinePath)")).toBeLessThan(helper.indexOf("fs.fsyncSync(rootHandle)"))
+    expect(helper.match(/fs\.fsyncSync\(/gu)).toHaveLength(5)
+  })
+
   it("waits instead of self-attesting absent negative and containment facts", () => {
     const before = base()
     const containment = base(); containment.container!.updaterDisabled = false
@@ -186,6 +224,8 @@ describe("Sanctuary live scenario capture", () => {
     expect(deriveSanctuaryScenarioAssertions("unit-16e-containment-audit", before, unlinkedMutation, 400_000)).toBeNull()
     const wrongApproval = base(); wrongApproval.approvals = [{ ...approval("denied"), toolName: "ponder", target: null }]
     expect(deriveSanctuaryScenarioAssertions("unit-16j-denial", before, wrongApproval, 400_000)).toBeNull()
+    const unobservedProvider = base(); unobservedProvider.provider!.requestSemanticsExact = false
+    expect(deriveSanctuaryScenarioAssertions("unit-16c-provider-readiness", before, unobservedProvider, 400_000)).toBeNull()
   })
 
   it("binds positive turns and approvals to one new scenario record", () => {
@@ -212,6 +252,43 @@ describe("Sanctuary live scenario capture", () => {
     after.events.push({ ...event("telegram.update_dropped"), meta: { scenarioHandleDigest: "a".repeat(64), distinctAccount: true } })
     after.telegramTurns.push({ ...turnReceipt(), status: "error", deliveryCount: 0, telegramMessageIdDigests: [], providerTurnCount: 1 })
     expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unauthorized", before, after, 400_000)).toBeNull()
+  })
+
+  it("treats lone indeterminate attempts as unsafe across negative approval and containment gates", () => {
+    const unsafe = { ...successfulRestart()[0]!, state: "attempted_or_indeterminate" as const, approvalId: "unlinked", attemptId: "unlinked-attempt" }
+    const noCallbackBefore = base()
+    const noCallback = base(); noCallback.approvals = [approval("expired")]; noCallback.restartAttempts = [unsafe]
+    noCallbackBefore.sourceValues["no-callback-baseline"] = { approvalId: "approval-1", offsetDigest: probeDigest(noCallback.sourceValues["telegram-offset"]), inboundEventCount: 0 }
+    expect(deriveSanctuaryScenarioAssertions("unit-15c-1-no-callback-terminalization", noCallbackBefore, noCallback, 400_000)).toBeNull()
+
+    for (const [label, state] of [["unit-16j-denial", "denied"], ["unit-16k-timeout-stale", "expired"]] as const) {
+      const after = base(); after.approvals = [approval(state)]; after.restartAttempts = [unsafe]
+      expect(deriveSanctuaryScenarioAssertions(label, base(), after, 400_000)).toBeNull()
+    }
+    const containment = base(); containment.restartAttempts = [unsafe]
+    expect(deriveSanctuaryScenarioAssertions("unit-16e-containment-audit", base(), containment, 400_000)).toBeNull()
+  })
+
+  it("rejects extra unlinked attempts from every positive approval proof", () => {
+    const unsafe = { ...successfulRestart()[0]!, state: "attempted_or_indeterminate" as const, approvalId: "unlinked", attemptId: "unlinked-attempt" }
+    for (const label of ["unit-16i-delayed-approval", "unit-16l-duplicate-callback", "unit-16m-restart-continuation"] as const) {
+      const after = base()
+      after.approvals = [{ ...approval("succeeded"), ...(label === "unit-16l-duplicate-callback" ? { callbackCount: 2, settledCount: 2, claimCount: 1 } : {}) }]
+      after.restartAttempts = [...successfulRestart(), unsafe]
+      if (label === "unit-16m-restart-continuation") after.events.push({ ...event("senses.telegram_approved_restart_end"), meta: { approvalId: "approval-1" } })
+      expect(deriveSanctuaryScenarioAssertions(label, base(), after, 400_000)).toBeNull()
+    }
+  })
+
+  it("rejects a second linked indeterminate attempt from every positive exactly-once proof", () => {
+    const extra = { ...successfulRestart()[0]!, state: "attempted_or_indeterminate" as const, attemptId: "attempt-2", observedAt: 4_000 }
+    for (const label of ["unit-16i-delayed-approval", "unit-16l-duplicate-callback", "unit-16m-restart-continuation"] as const) {
+      const after = base()
+      after.approvals = [{ ...approval("succeeded"), ...(label === "unit-16l-duplicate-callback" ? { callbackCount: 2, settledCount: 2, claimCount: 1 } : {}) }]
+      after.restartAttempts = [...successfulRestart(), extra]
+      if (label === "unit-16m-restart-continuation") after.events.push({ ...event("senses.telegram_approved_restart_end"), meta: { approvalId: "approval-1" } })
+      expect(deriveSanctuaryScenarioAssertions(label, base(), after, 400_000)).toBeNull()
+    }
   })
 
   it("accepts a daily digest fired exactly at the local boundary", () => {
@@ -252,5 +329,12 @@ describe("Sanctuary live scenario capture", () => {
     expect(deriveSanctuaryScenarioAssertions("unit-16h-daily-digest", before, digest, 400_000)).toBeNull()
     digest.healthProbe = { ...healthProbe("unit-16h-daily-digest"), restoredStateDigest: "9".repeat(64) }
     expect(deriveSanctuaryScenarioAssertions("unit-16h-daily-digest", before, digest, 400_000)).toBeNull()
+  })
+
+  it.each(["unit-16f-cron-fingerprint", "unit-16g-health-transition", "unit-16h-daily-digest"] as const)("binds %s restoration to the independently observed current cron", (label) => {
+    const fingerprintDrift = base(); fingerprintDrift.healthProbe = healthProbe(label); fingerprintDrift.cron!.fingerprint = "9".repeat(64)
+    expect(deriveSanctuaryScenarioAssertions(label, base(), fingerprintDrift, 400_000)).toBeNull()
+    const registrationDrift = base(); registrationDrift.healthProbe = healthProbe(label); registrationDrift.cron!.registered = false
+    expect(deriveSanctuaryScenarioAssertions(label, base(), registrationDrift, 400_000)).toBeNull()
   })
 })

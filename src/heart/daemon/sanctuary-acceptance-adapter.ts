@@ -657,6 +657,9 @@ export async function readDefaultSanctuaryScenarioFacts(
         { lane: "inner", provider: "openai-compatible", model: innerModel, credentialRevision: glmRecord.ok ? glmRecord.record.revision : null, ok: innerPing.ok, attempts: innerPing.attempts?.map(({ provider, model, operation, ok }) => ({ provider, model, operation, ok })) ?? [] },
         { lane: "candidate", provider: "openai-compatible-gemini", model: geminiModel, credentialRevision: geminiRecord.ok ? geminiRecord.record.revision : null, ok: geminiPing.ok, attempts: geminiPing.attempts?.map(({ provider, model, operation, ok }) => ({ provider, model, operation, ok })) ?? [] },
       ]
+      const requestSemanticsExact = pingReceipts.every((receipt) => receipt.ok && receipt.attempts.length >= 1 && receipt.attempts.length <= 3
+        && receipt.attempts.every((attempt) => attempt.provider === receipt.provider && attempt.model === receipt.model && attempt.operation === "ping" && typeof attempt.ok === "boolean")
+        && receipt.attempts.at(-1)?.ok === true)
       const fallbackAttemptCount = pingReceipts.reduce((count, receipt) => count + receipt.attempts.filter((attempt) => attempt.provider !== receipt.provider || attempt.model !== receipt.model).length, 0)
       liveProvider = {
         outwardReady: outwardPing.ok,
@@ -665,7 +668,7 @@ export async function readDefaultSanctuaryScenarioFacts(
         providersDistinct: candidate.provider !== outwardConfig.provider,
         silentFallback: readinessPolicy.selectionPolicy !== "explicit-same-lane-only",
         credentialRevisionsPresent: glmRecord.ok && geminiRecord.ok && Boolean(glmRecord.record.revision) && Boolean(geminiRecord.record.revision),
-        requestSemanticsExact: outwardConfig.provider === "openai-compatible" && innerConfig.provider === "openai-compatible" && candidate.provider === "openai-compatible-gemini",
+        requestSemanticsExact,
         fallbackAttemptCount,
         pingReceipts,
       }

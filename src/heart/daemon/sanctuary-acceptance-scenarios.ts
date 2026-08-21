@@ -198,12 +198,13 @@ function intendedRestartApproval(approval: SanctuaryScenarioApproval | null): ap
   return approval?.toolName === "unraid_restart_container" && typeof approval.target === "string" && approval.target.length > 0
 }
 
-function healthProbeRestored(probe: SanctuaryHealthProbeReceipt): boolean {
+function healthProbeRestored(probe: SanctuaryHealthProbeReceipt, currentCron: SanctuaryScenarioFacts["cron"]): boolean {
   return probe.ownerImageDigestBefore === probe.ownerImageDigestAfter
     && probe.ownerContainerDigestBefore === probe.ownerContainerDigestAfter
     && probe.beforeStateDigest === probe.restoredStateDigest
     && probe.cronFingerprintBefore === probe.cronFingerprintAfter
     && probe.cronRegisteredBefore && probe.cronRegisteredAfter && !probe.cronDegradedBefore && !probe.cronDegradedAfter
+    && currentCron?.fingerprint === probe.cronFingerprintAfter && currentCron.registered === probe.cronRegisteredAfter
     && probe.workspaceAbsent && probe.socketAbsent && probe.snapshotAbsent && probe.realCheckEquivalent && probe.productionRestored
 }
 
@@ -220,9 +221,13 @@ export function deriveSanctuaryScenarioAssertions(
   const linkedAttempts = approval ? after.restartAttempts
     .filter((attempt) => approval.toolName === "unraid_restart_container" && attempt.approvalId === approval.approvalId && attempt.argumentDigest === approval.argumentDigest && attempt.target === approval.target)
     .sort((left, right) => left.observedAt - right.observedAt) : []
+  const attemptIsLinked = (attempt: SanctuaryScenarioRestartAttempt): boolean => Boolean(approval && approval.toolName === "unraid_restart_container"
+    && attempt.approvalId === approval.approvalId && attempt.argumentDigest === approval.argumentDigest && attempt.target === approval.target)
+  const completeAttemptLedgerLinked = newAttempts.every(attemptIsLinked) && linkedAttempts.length === newAttempts.length
   const mutationAttemptIds = new Set(linkedAttempts.filter((attempt) => attempt.state === "attempting").map((attempt) => attempt.attemptId))
   const mutationCount = mutationAttemptIds.size
-  const scenarioMutationCount = new Set(after.restartAttempts.filter((attempt) => attempt.state === "attempting").map((attempt) => attempt.attemptId)).size
+  const unsafeAttemptStates = new Set(["attempting", "succeeded", "attempted_or_indeterminate"])
+  const scenarioMutationCount = new Set(after.restartAttempts.filter((attempt) => unsafeAttemptStates.has(attempt.state)).map((attempt) => attempt.attemptId)).size
   const restartSucceeded = linkedAttempts.some((attempt) => attempt.state === "succeeded" && mutationAttemptIds.has(attempt.attemptId)
     && (attempt.mutationAcknowledged || attempt.afterState === "running"))
   const firstIndeterminate = linkedAttempts.find((attempt) => attempt.state === "attempted_or_indeterminate")
@@ -250,8 +255,8 @@ export function deriveSanctuaryScenarioAssertions(
         && baselineRecord.offsetDigest === hash(after.sourceValues["telegram-offset"])
         && baselineRecord.inboundEventCount === inboundEventCount
         && approval.callbackCount === 0
-      if (!noInboundUpdate) return null
-      return { buttonsRemoved: approval.buttonsRemoved, elapsedMs, mutationCount, noInboundUpdate, replayMutationCount: approval.replayMutationCount, terminalExpired: approval.state === "expired", ttlMs: approval.expiresAt - approval.createdAt }
+      if (!noInboundUpdate || scenarioMutationCount !== 0 || !completeAttemptLedgerLinked) return null
+      return { buttonsRemoved: approval.buttonsRemoved, elapsedMs, mutationCount: 0, noInboundUpdate, replayMutationCount: approval.replayMutationCount, terminalExpired: approval.state === "expired", ttlMs: approval.expiresAt - approval.createdAt }
     }
     case "unit-16a-pre-reboot-checkpoint":
       if (!after.reboot || after.reboot.phase !== "preflight" || after.reboot.requestCount !== 0 || !after.container?.running || !after.container.healthy || after.reboot.unrelatedHostOperations !== 0) return null
@@ -300,7 +305,7 @@ export function deriveSanctuaryScenarioAssertions(
       return { auditDecisionCount: after.containment.denialAuditCount, denied, mutationCount: scenarioMutationCount, resumed: after.containment.denialProbeCompleted }
     }
     case "unit-16f-cron-fingerprint":
-      if (!after.healthProbe || !healthProbeRestored(after.healthProbe) || after.healthProbe.clockMode !== "ambient" || after.healthProbe.phases.length !== 1
+      if (!after.healthProbe || !healthProbeRestored(after.healthProbe, after.cron) || after.healthProbe.clockMode !== "ambient" || after.healthProbe.phases.length !== 1
         || after.healthProbe.phases[0]?.name !== "cron-unchanged" || after.healthProbe.phases[0].trigger !== "cron" || after.healthProbe.phases[0].fixtureStatus !== null
         || after.healthProbe.phases[0].opened !== 0 || after.healthProbe.phases[0].recovered !== 0 || after.healthProbe.phases[0].digestDue
         || after.healthProbe.phases[0].deliveryKind !== null || after.healthProbe.phases[0].deliveryReceiptDigest !== null
@@ -312,7 +317,7 @@ export function deriveSanctuaryScenarioAssertions(
         ["live-baseline", null, 0, 0, null], ["live-repeat", null, 0, 0, null], ["fixture-fail", 503, 1, 0, "transition"],
         ["fixture-repeat", 503, 0, 0, null], ["fixture-recover", 200, 0, 1, "transition"], ["fixture-refail", 503, 1, 0, "transition"],
       ] as const
-      if (!probe || !healthProbeRestored(probe) || probe.clockMode !== "ambient" || probe.privateTurnCount !== 3
+      if (!probe || !healthProbeRestored(probe, after.cron) || probe.clockMode !== "ambient" || probe.privateTurnCount !== 3
         || probe.providerInvocationCount < probe.privateTurnCount || probe.providerInvocationCount > 1_000 || probe.deliveryCount !== 3 || probe.phases.length !== exactPhases.length
         || !probe.phases.every((phase, index) => phase.ordinal === index + 1 && phase.name === exactPhases[index]![0] && phase.trigger === "acceptance"
           && phase.fixtureStatus === exactPhases[index]![1] && phase.opened === exactPhases[index]![2] && phase.recovered === exactPhases[index]![3]
@@ -321,7 +326,7 @@ export function deriveSanctuaryScenarioAssertions(
     }
     case "unit-16h-daily-digest": {
       const probe = after.healthProbe
-      if (!probe || !healthProbeRestored(probe) || probe.clockMode !== "local-daily-boundary" || probe.privateTurnCount !== 1
+      if (!probe || !healthProbeRestored(probe, after.cron) || probe.clockMode !== "local-daily-boundary" || probe.privateTurnCount !== 1
         || probe.providerInvocationCount < probe.privateTurnCount || probe.providerInvocationCount > 1_000 || probe.deliveryCount !== 1 || probe.phases.length !== 2
         || probe.phases[0]?.ordinal !== 1 || probe.phases[0].name !== "digest-first" || probe.phases[0].trigger !== "acceptance" || probe.phases[0].fixtureStatus !== 503
         || !probe.phases[0].digestDue || probe.phases[0].deliveryKind !== "digest" || probe.phases[0].deliveryReceiptDigest === null
@@ -330,23 +335,23 @@ export function deriveSanctuaryScenarioAssertions(
       return { firedWithinMs: 0, messageCount: 1, productionRestored: true, scheduleObserved: true }
     }
     case "unit-16i-delayed-approval":
-      if (!intendedRestartApproval(approval) || approval.state !== "succeeded" || now - approval.createdAt < 120_000 || mutationCount !== 1 || !restartSucceeded || approval.replayMutationCount !== 0 || !approval.continuationCompleted) return null
+      if (!intendedRestartApproval(approval) || !completeAttemptLedgerLinked || approval.state !== "succeeded" || now - approval.createdAt < 120_000 || mutationCount !== 1 || scenarioMutationCount !== 1 || !restartSucceeded || approval.replayMutationCount !== 0 || !approval.continuationCompleted) return null
       if (!approval.terminalPrompt) return null
       return { elapsedMs: approval.updatedAt - approval.createdAt, mutationCount, promptTerminal: approval.terminalPrompt, replayMutationCount: approval.replayMutationCount, resumed: approval.continuationCompleted, state: approval.state }
     case "unit-16j-denial":
-      if (!intendedRestartApproval(approval) || approval.state !== "denied" || mutationCount !== 0 || approval.replayMutationCount !== 0 || !approval.continuationCompleted) return null
+      if (!intendedRestartApproval(approval) || !completeAttemptLedgerLinked || approval.state !== "denied" || scenarioMutationCount !== 0 || approval.replayMutationCount !== 0 || !approval.continuationCompleted) return null
       if (!approval.terminalPrompt) return null
       return { mutationCount, promptTerminal: approval.terminalPrompt, replayMutationCount: approval.replayMutationCount, resumed: approval.continuationCompleted, state: approval.state }
     case "unit-16k-timeout-stale":
-      if (!intendedRestartApproval(approval) || approval.state !== "expired" || mutationCount !== 0 || approval.replayMutationCount !== 0) return null
+      if (!intendedRestartApproval(approval) || !completeAttemptLedgerLinked || approval.state !== "expired" || scenarioMutationCount !== 0 || approval.replayMutationCount !== 0) return null
       if (!approval.buttonsRemoved || !approval.terminalPrompt || !approval.staleAcknowledged) return null
       return { buttonsRemoved: approval.buttonsRemoved, mutationCount, promptTerminal: approval.terminalPrompt, staleAcknowledged: approval.staleAcknowledged, staleReplayMutationCount: approval.replayMutationCount, state: approval.state }
     case "unit-16l-duplicate-callback": {
-      if (!intendedRestartApproval(approval) || approval.callbackCount !== 2 || approval.settledCount !== 2 || approval.claimCount !== 1 || !approval.terminalPrompt || approval.replayMutationCount !== 0 || mutationCount !== 1 || !restartSucceeded) return null
+      if (!intendedRestartApproval(approval) || !completeAttemptLedgerLinked || approval.callbackCount !== 2 || approval.settledCount !== 2 || approval.claimCount !== 1 || !approval.terminalPrompt || approval.replayMutationCount !== 0 || mutationCount !== 1 || scenarioMutationCount !== 1 || !restartSucceeded) return null
       return { callbackCount: approval.callbackCount, claimCount: approval.claimCount, mutationCount, promptTerminal: approval.terminalPrompt, replayMutationCount: approval.replayMutationCount, settledCount: approval.settledCount }
     }
     case "unit-16m-restart-continuation":
-      if (!intendedRestartApproval(approval) || approval.state !== "succeeded" || mutationCount !== 1 || !restartSucceeded || attemptedIndeterminateRetryCount !== 0) return null
+      if (!intendedRestartApproval(approval) || !completeAttemptLedgerLinked || approval.state !== "succeeded" || mutationCount !== 1 || scenarioMutationCount !== 1 || !restartSucceeded || attemptedIndeterminateRetryCount !== 0) return null
       return { attemptedIndeterminateRetryCount, mutationCount, preAttemptResumed: approval.continuationCompleted, restartObserved: restartSucceeded && after.events.filter((entry) => entry.event === "senses.telegram_approved_restart_end" && entry.meta.approvalId === approval.approvalId).length - before.events.filter((entry) => entry.event === "senses.telegram_approved_restart_end" && entry.meta.approvalId === approval.approvalId).length === 1, state: approval.state }
   }
 }
@@ -399,6 +404,69 @@ export function createSanctuaryScenarioCapture(deps: SanctuaryScenarioCaptureDep
   }
 }
 
+function boundedReceiptEntries(receiptRoot: string): fs.Dirent[] {
+  const rootHandle = fs.openSync(receiptRoot, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
+  try {
+    const rootMetadata = fs.fstatSync(rootHandle)
+    const pathMetadata = fs.lstatSync(receiptRoot)
+    if (!rootMetadata.isDirectory() || !pathMetadata.isDirectory() || rootMetadata.dev !== pathMetadata.dev || rootMetadata.ino !== pathMetadata.ino) {
+      throw new Error("acceptance receipt root changed during cleanup")
+    }
+    const directory = fs.opendirSync(receiptRoot)
+    const entries: fs.Dirent[] = []
+    try {
+      for (;;) {
+        const entry = directory.readSync()
+        if (!entry) break
+        entries.push(entry)
+        if (entries.length === 33) throw new Error("acceptance receipt cleanup exceeds its bound")
+      }
+    } finally { directory.closeSync() }
+    const finalMetadata = fs.lstatSync(receiptRoot)
+    if (!finalMetadata.isDirectory() || rootMetadata.dev !== finalMetadata.dev || rootMetadata.ino !== finalMetadata.ino) {
+      throw new Error("acceptance receipt root changed during cleanup")
+    }
+    return entries
+  } finally { fs.closeSync(rootHandle) }
+}
+
+function durableQuarantineReceiptRoot(receiptRoot: string): void {
+  const sourceParent = path.dirname(receiptRoot)
+  const quarantineRoot = path.join(sourceParent, "quarantine")
+  fs.mkdirSync(quarantineRoot, { recursive: true, mode: 0o700 })
+  fs.chmodSync(quarantineRoot, 0o700)
+  const rootHandle = fs.openSync(receiptRoot, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
+  const quarantineHandle = fs.openSync(quarantineRoot, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
+  const sourceParentHandle = fs.openSync(sourceParent, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
+  const quarantinePath = path.join(quarantineRoot, `receipts-${randomUUID()}`)
+  try {
+    const rootMetadata = fs.fstatSync(rootHandle)
+    const rootPathMetadata = fs.lstatSync(receiptRoot)
+    const quarantineMetadata = fs.fstatSync(quarantineHandle)
+    const quarantinePathMetadata = fs.lstatSync(quarantineRoot)
+    if (!rootMetadata.isDirectory() || !rootPathMetadata.isDirectory() || rootMetadata.dev !== rootPathMetadata.dev || rootMetadata.ino !== rootPathMetadata.ino
+      || !quarantineMetadata.isDirectory() || !quarantinePathMetadata.isDirectory() || quarantineMetadata.dev !== quarantinePathMetadata.dev || quarantineMetadata.ino !== quarantinePathMetadata.ino) {
+      throw new Error("acceptance receipt quarantine ownership is invalid")
+    }
+    fs.renameSync(receiptRoot, quarantinePath)
+    const movedMetadata = fs.lstatSync(quarantinePath)
+    if (!movedMetadata.isDirectory() || movedMetadata.dev !== rootMetadata.dev || movedMetadata.ino !== rootMetadata.ino) {
+      throw new Error("acceptance receipt quarantine changed during move")
+    }
+    fs.fsyncSync(rootHandle)
+    fs.fsyncSync(sourceParentHandle)
+    fs.fsyncSync(quarantineHandle)
+    fs.mkdirSync(receiptRoot, { mode: 0o700 })
+    const replacementHandle = fs.openSync(receiptRoot, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
+    try { fs.fsyncSync(replacementHandle) } finally { fs.closeSync(replacementHandle) }
+    fs.fsyncSync(sourceParentHandle)
+  } finally {
+    fs.closeSync(sourceParentHandle)
+    fs.closeSync(quarantineHandle)
+    fs.closeSync(rootHandle)
+  }
+}
+
 export function finalizeSanctuaryScenarioCapture(gateStatusPath?: string, configuredReceiptRoot?: string): void {
   const receiptRoot = configuredReceiptRoot ?? path.join(getAgentRoot("sanctuary"), "state", "acceptance", "receipts")
   const errors: unknown[] = []
@@ -409,8 +477,7 @@ export function finalizeSanctuaryScenarioCapture(gateStatusPath?: string, config
   let activeReceipt: string | null = null
   let receiptSetCanonical = true
   try {
-    const entries = fs.readdirSync(receiptRoot, { withFileTypes: true })
-    if (entries.length > 32) throw new Error("acceptance receipt cleanup exceeds its bound")
+    const entries = boundedReceiptEntries(receiptRoot)
     if (entries.length !== (marker ? 1 : 0)) throw new Error(marker ? "active acceptance receipt is absent or ambiguous" : "acceptance receipt exists without an active marker")
     if (marker) {
       const entry = entries[0]!
@@ -440,12 +507,7 @@ export function finalizeSanctuaryScenarioCapture(gateStatusPath?: string, config
   }
   if (!markerReadable || !receiptSetCanonical || (marker && activeReceipt === null) || normalCleanupFailed) {
     try {
-      const quarantineRoot = path.join(path.dirname(receiptRoot), "quarantine")
-      fs.mkdirSync(quarantineRoot, { recursive: true, mode: 0o700 })
-      fs.chmodSync(quarantineRoot, 0o700)
-      fs.renameSync(receiptRoot, path.join(quarantineRoot, `receipts-${randomUUID()}`))
-      fs.mkdirSync(receiptRoot, { recursive: true, mode: 0o700 })
-      fs.chmodSync(receiptRoot, 0o700)
+      durableQuarantineReceiptRoot(receiptRoot)
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") errors.push(error) }
     try { quarantineSanctuaryAcceptanceMarker("sanctuary") } catch (error) { errors.push(error) }
   }
