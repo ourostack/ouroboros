@@ -173,6 +173,20 @@ describe("SupercronicSupervisor", () => {
     expect(healthy.supervisor.verificationOutput()).toBe("")
   })
 
+  it("fails closed when an authenticated snapshot lacks an exact verified namespace", () => {
+    const f = fixture()
+    const view = f.supervisor.namespace("habit:sanctuary")
+    view.sync([job("sanctuary", "z-last"), job("sanctuary", "a-first")])
+    f.supervisor.start()
+    expect(f.supervisor.authenticatedSnapshot("habit:sanctuary").manifest.map((entry) => entry.taskId)).toEqual(["a-first", "z-last"])
+
+    expect(() => f.supervisor.authenticatedSnapshot("habit:../escape")).toThrow("invalid Supercronic namespace")
+    expect(() => f.supervisor.authenticatedSnapshot("await:sanctuary")).toThrow("has no manifest")
+
+    f.files.set("/scheduler/sanctuary.crontab", "drifted\n")
+    expect(() => f.supervisor.authenticatedSnapshot("habit:sanctuary")).toThrow("crontab is not verified")
+  })
+
   it("rejects invalid child PIDs and safely handles dead prior owners", () => {
     const dead = fixture(() => false)
     dead.files.set("/scheduler/sanctuary.pid", "not-a-pid\n")

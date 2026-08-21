@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { describe, expect, it, vi } from "vitest"
 
 import { createApprovedUnraidRestartExecutor, SANCTUARY_RESTART_MUTATION } from "../../repertoire/unraid-restart"
@@ -88,7 +89,7 @@ describe("approved Unraid restart executor", () => {
     const persistAttempt = vi.fn()
       .mockResolvedValueOnce(undefined)
       .mockResolvedValueOnce(undefined)
-      .mockRejectedValueOnce(new Error("disk full"))
+      .mockRejectedValueOnce("disk full")
     const restart = createApprovedUnraidRestartExecutor({
       endpoint: "https://host/graphql",
       listContainers: vi.fn().mockResolvedValueOnce(running()).mockResolvedValueOnce(running()).mockRejectedValueOnce(new Error("offline")),
@@ -98,6 +99,50 @@ describe("approved Unraid restart executor", () => {
     })
     await expect(restart({ container: "calibre-web" })).resolves.toMatchObject({ ok: false, error: { code: "ambiguous", message: expect.stringContaining("not retried") } })
     expect(persistAttempt).toHaveBeenCalledTimes(3)
+  })
+
+  it("fails closed when a proven restart terminal receipt cannot be persisted", async () => {
+    const persistAttempt = vi.fn()
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("disk full"))
+    const restart = createApprovedUnraidRestartExecutor({
+      endpoint: "https://host/graphql",
+      listContainers: vi.fn().mockResolvedValue(running()),
+      loadWriteApiKey: async () => "key",
+      createClient: () => ({ mutate: vi.fn().mockResolvedValue({ docker: { restart: { id: "Docker:abc", names: ["/calibre-web"] } } }) }),
+      persistAttempt,
+    })
+
+    await expect(restart({ container: "calibre-web" })).resolves.toMatchObject({
+      ok: false,
+      error: { code: "ambiguous", message: expect.stringContaining("terminal receipt") },
+    })
+    expect(persistAttempt).toHaveBeenCalledTimes(3)
+  })
+
+  it("binds optional acceptance coordinates and rejects changed approved arguments", async () => {
+    const argumentDigest = createHash("sha256").update(JSON.stringify({ container: "calibre-web" })).digest("hex")
+    const persistAttempt = vi.fn()
+    const restart = createApprovedUnraidRestartExecutor({
+      endpoint: "https://host/graphql",
+      listContainers: vi.fn().mockResolvedValue(running()),
+      loadWriteApiKey: async () => "key",
+      acceptanceScenarioHandleDigest: () => "a".repeat(64),
+      acceptanceApproval: () => ({ approvalId: "approval-1", argumentDigest }),
+      persistAttempt,
+      createClient: () => ({ mutate: vi.fn().mockResolvedValue({ docker: { restart: { id: "Docker:abc", names: ["/calibre-web"] } } }) }),
+    })
+    await expect(restart({ container: "calibre-web" })).resolves.toMatchObject({ ok: true })
+    expect(persistAttempt).toHaveBeenCalledWith(expect.objectContaining({ scenarioHandleDigest: "a".repeat(64), approvalId: "approval-1" }))
+
+    const rejected = createApprovedUnraidRestartExecutor({
+      endpoint: "https://host/graphql",
+      listContainers: vi.fn().mockResolvedValue(running()),
+      loadWriteApiKey: vi.fn(),
+      acceptanceApproval: () => ({ approvalId: "approval-2", argumentDigest: "b".repeat(64) }),
+    })
+    await expect(rejected({ container: "calibre-web" })).resolves.toMatchObject({ ok: false, error: { code: "stale_target" } })
   })
 
   it.each([

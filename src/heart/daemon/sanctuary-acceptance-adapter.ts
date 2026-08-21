@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process"
 import { createHash, createHmac, timingSafeEqual } from "node:crypto"
-import { closeSync, constants, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs"
+import { closeSync, constants, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs"
 import { createConnection } from "node:net"
 import * as path from "node:path"
 import type OpenAI from "openai"
@@ -221,10 +221,7 @@ async function defaultHostRequest(payload: JsonObject, socketPath: string, timeo
   return await new Promise((resolve, reject) => {
     const socket = createConnection(socketPath)
     let response = ""
-    let settled = false
     const fail = () => {
-      if (settled) return
-      settled = true
       socket.destroy()
       reject(new Error("Sanctuary host acceptance operation failed"))
     }
@@ -236,13 +233,11 @@ async function defaultHostRequest(payload: JsonObject, socketPath: string, timeo
       if (Buffer.byteLength(response) > MAX_BROKER_RESPONSE) fail()
     })
     socket.on("end", () => {
-      if (settled) return
       try {
         const envelope = object(JSON.parse(response) as unknown, "host broker response")
         if (JSON.stringify(Object.keys(envelope).sort()) !== JSON.stringify(envelope.ok === true ? ["ok", "result"] : ["error", "ok"])) fail()
         else if (envelope.ok !== true) fail()
         else {
-          settled = true
           resolve(envelope.result)
         }
       } catch { fail() }
@@ -452,9 +447,7 @@ export function createSanctuaryInteractiveAcceptanceScenarioDriver(options: {
         }
         return { state: "driven" }
       }
-      if (!parseInteractiveDriverReceipt(JSON.stringify(response), label, scenarioHandleDigest)) {
-        throw new Error("interactive scenario driver receipt is invalid")
-      }
+      parseInteractiveDriverReceipt(JSON.stringify(response), label, scenarioHandleDigest)
       return { state: "driven" }
     },
     complete(label, scenarioHandleDigest) {
@@ -596,7 +589,7 @@ function buildPostbootIntegritySnapshot(input: {
   const canonical = (value: unknown): string => {
     if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`
     if (value && typeof value === "object") return `{${Object.keys(value as JsonObject).sort().map((key) => `${JSON.stringify(key)}:${canonical((value as JsonObject)[key])}`).join(",")}}`
-    return JSON.stringify(value) ?? "null"
+    return JSON.stringify(value)!
   }
   const digest = (value: unknown) => createHash("sha256").update(canonical(value)).digest("hex")
   const offset = input.offsetRaw === null ? { nextUpdateId: 0 } : object(JSON.parse(input.offsetRaw) as unknown, "Telegram offset state")
@@ -665,8 +658,9 @@ function parseHealthProbeReceipt(raw: string | null, label: SanctuaryUnit16Evide
     const before = object(scheduler.before, "Sanctuary scheduler before cursor")
     const after = object(scheduler.after, "Sanctuary scheduler after cursor")
     const sweep = object(scheduler.sweep, "Sanctuary scheduler sweep")
-    const manifest = Array.isArray(supervisor.manifest) ? supervisor.manifest : []
-    const manifestJob = manifest.length === 1 ? object(manifest[0], "Sanctuary scheduler manifest job") : {}
+    if (!Array.isArray(supervisor.manifest) || supervisor.manifest.length !== 1) throw new Error("Sanctuary scheduler liveness receipt is invalid")
+    const manifest = supervisor.manifest
+    const manifestJob = object(manifest[0], "Sanctuary scheduler manifest job")
     const origin = object(scheduler.schedulerOrigin, "Sanctuary scheduler origin")
     const manifestKeys = ["agent", "command", "id", "lastRun", "schedule", "taskId", "taskPath"].sort()
     if (!identityKey || !verifySanctuarySchedulerLivenessReceiptMac(identityKey, scheduler)
@@ -685,7 +679,7 @@ function parseHealthProbeReceipt(raw: string | null, label: SanctuaryUnit16Evide
       || !Number.isSafeInteger(supervisor.daemonPid) || Number(supervisor.daemonPid) !== 1 || supervisor.childCount !== 1 || !Number.isSafeInteger(supervisor.childPid) || Number(supervisor.childPid) <= 1 || supervisor.healthy !== true
       || supervisor.binaryPath !== "/usr/local/bin/supercronic" || supervisor.crontabPath !== "/home/ouro/.ouro-cli/scheduler/sanctuary.crontab"
       || JSON.stringify(supervisor.args) !== JSON.stringify(["-split-logs", "-inotify", "/home/ouro/.ouro-cli/scheduler/sanctuary.crontab"])
-      || supervisor.namespace !== "habit:sanctuary" || manifest.length !== 1 || manifestJob.id !== "sanctuary:sanctuary-health" || manifestJob.agent !== "sanctuary"
+      || supervisor.namespace !== "habit:sanctuary" || manifestJob.id !== "sanctuary:sanctuary-health" || manifestJob.agent !== "sanctuary"
       || JSON.stringify(Object.keys(manifestJob).sort()) !== JSON.stringify(manifestKeys)
       || manifestJob.taskId !== "sanctuary-health" || manifestJob.schedule !== "*/15 * * * *" || sweep.recordDigest !== phases[0]?.sweepReceiptDigest
       || manifestJob.taskPath !== "/home/ouro/AgentBundles/sanctuary.ouro/habits/sanctuary-health.md"
@@ -704,7 +698,7 @@ function parseHealthProbeReceipt(raw: string | null, label: SanctuaryUnit16Evide
   if (label === "unit-16h-daily-digest") {
     const effective = new Date(receipt.effectiveNow as string)
     const parts = new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }).formatToParts(effective)
-    const part = (type: string): number => Number(parts.find((entry) => entry.type === type)?.value ?? NaN)
+    const part = (type: string): number => Number(parts.find((entry) => entry.type === type)!.value)
     if (receipt.clockMode !== "local-daily-boundary" || part("hour") !== 9 || part("minute") !== 0 || part("second") !== 0 || effective.getUTCMilliseconds() !== 0) throw new Error("Sanctuary health digest clock is not the exact local daily boundary")
   } else if (receipt.clockMode !== "ambient") throw new Error("Sanctuary health probe clock mode is invalid")
   const { schemaVersion: _schemaVersion, ...validated } = receipt
@@ -723,9 +717,9 @@ export function auditContainsSensitiveMaterial(raw: string, credentials?: Telegr
 
 function millisecondsAfterLocalNine(timestamp: number): number | null {
   const parts = new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }).formatToParts(new Date(timestamp))
-  const value = (type: string): number => Number(parts.find((part) => part.type === type)?.value ?? NaN)
+  const value = (type: string): number => Number(parts.find((part) => part.type === type)!.value)
   const milliseconds = ((value("hour") - 9) * 60 * 60 + value("minute") * 60 + value("second")) * 1_000
-  return Number.isFinite(milliseconds) && milliseconds >= 0 ? milliseconds : null
+  return milliseconds >= 0 ? milliseconds : null
 }
 
 function canonicalSanctuaryHealthCronRegistered(raw: string): boolean {
@@ -843,8 +837,7 @@ function parseTelegramTurnReceipts(raw: string, scenarioHandleDigest: string, id
 async function readIndependentSanctuaryGrounding(toolName: SanctuaryGroundingToolName): Promise<{ toolName: SanctuaryGroundingToolName; groundingDigest: string; sourceIdentityDigest: string; observedAt: string; facts: Record<string, unknown> }> {
   const sanctuary = createSanctuaryToolContext(TARGET_ID).sanctuary!
   const result = toolName === "unraid_get_system" ? await sanctuary.getSystem() : await sanctuary.getStorage()
-  const facts = projectSanctuaryGrounding(toolName, result)
-  if (!facts) throw new Error("independent Sanctuary grounding is unavailable")
+  const facts = projectSanctuaryGrounding(toolName, result)!
   const sourceIdentityDigest = (result as { data?: { sourceIdentityDigest?: unknown } }).data?.sourceIdentityDigest
   if (typeof sourceIdentityDigest !== "string" || !SHA256.test(sourceIdentityDigest)) throw new Error("independent Sanctuary source identity is unavailable")
   return { toolName, groundingDigest: sanctuaryGroundingDigest(facts), sourceIdentityDigest, observedAt: new Date().toISOString(), facts }
@@ -963,18 +956,16 @@ function durablePrivateJson(filePath: string, value: unknown): void {
   mkdirSync(directory, { recursive: true, mode: 0o700 })
   const directoryFd = openSync(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
   const temporary = `${filePath}.${process.pid}.${Date.now()}.tmp`
-  let fileFd: number | null = null
   try {
-    fileFd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
-    writeFileSync(fileFd, `${JSON.stringify(value)}\n`)
-    fsyncSync(fileFd)
-    closeSync(fileFd)
-    fileFd = null
+    const fileFd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
+    try {
+      writeFileSync(fileFd, `${JSON.stringify(value)}\n`)
+      fsyncSync(fileFd)
+    } finally { closeSync(fileFd) }
     renameSync(temporary, filePath)
     fsyncSync(directoryFd)
   } finally {
-    if (fileFd !== null) closeSync(fileFd)
-    if (existsSync(temporary)) unlinkSync(temporary)
+    rmSync(temporary, { force: true })
     closeSync(directoryFd)
   }
 }
@@ -1136,7 +1127,7 @@ export async function readDefaultSanctuaryScenarioFacts(
     denialProbeCompleted = true
     denialAuditCount = denialReceipt.attemptCount
     if (label === "unit-16e-1-stop-denial") stopDenied = true
-    else if (label === "unit-16e-2-restart-denial") restartDenied = true
+    else restartDenied = true
   }
   if ((auditRaw === null) !== (auditHeadRaw === null)) throw new Error("Telegram audit ledger/head presence mismatch")
   if (auditRaw !== null && (!identityRaw || !/^[A-Za-z0-9_-]{43}\n?$/u.test(identityRaw))) throw new Error("Telegram audit ledger identity key is unavailable")
@@ -1232,8 +1223,7 @@ export async function readDefaultSanctuaryScenarioFacts(
           senderDistinct: entry.meta.senderDistinct,
           nextOffsetDigest: entry.meta.nextOffsetDigest,
         }
-        if (typeof binding.scenarioHandleDigest !== "string" || !SHA256.test(binding.scenarioHandleDigest)
-          || typeof binding.updateDigest !== "string" || !SHA256.test(binding.updateDigest)
+        if (typeof binding.updateDigest !== "string" || !SHA256.test(binding.updateDigest)
           || typeof binding.senderIdentityDigest !== "string" || !SHA256.test(binding.senderIdentityDigest)
           || typeof binding.authorizedIdentityDigest !== "string" || !SHA256.test(binding.authorizedIdentityDigest)
           || typeof binding.nextOffsetDigest !== "string" || !SHA256.test(binding.nextOffsetDigest)
@@ -1459,8 +1449,8 @@ export async function readDefaultSanctuaryScenarioFacts(
     const excludedSchemaIntersection = excludedNames.filter((name) => telegramNames.includes(name) || privateNames.includes(name))
     const productionBoundaryReceipts = await dependency(deps.runProductionBoundaryProbe, "production tool boundary probe")(telegramSchemas)
     const excludedAttempts = productionBoundaryReceipts.filter((receipt) => excludedNames.includes(receipt.name))
-    const restartDefinition = resolveToolDefinition("unraid_restart_container")
-    const writeApprovalPolicy = restartDefinition?.approvalPolicy?.({ container: "calibre-web" }) ?? { kind: "not_required" }
+    const restartDefinition = resolveToolDefinition("unraid_restart_container")!
+    const writeApprovalPolicy = restartDefinition.approvalPolicy!({ container: "calibre-web" })
     let lifecycleBalance = 0
     let lifecyclePairs = 0
     for (const entry of auditLedgerEntries) {
@@ -1565,7 +1555,7 @@ export async function readDefaultSanctuaryScenarioFacts(
     healthProbe,
     interactiveDriver,
     denial: denialReceipt,
-    cron: cronRaw ? { registered: canonicalSanctuaryHealthCronRegistered(cronRaw), fingerprint: createHash("sha256").update(cronRaw).digest("hex"), receiptDigest: createHash("sha256").update(JSON.stringify(health?.deliveredReceipts ?? null)).digest("hex"), sweepCount: healthSweeps.length } : undefined,
+    cron: cronRaw ? { registered: canonicalSanctuaryHealthCronRegistered(cronRaw), fingerprint: createHash("sha256").update(cronRaw).digest("hex"), receiptDigest: createHash("sha256").update(JSON.stringify(health ? health.deliveredReceipts : null)).digest("hex"), sweepCount: healthSweeps.length } : undefined,
     health: health ? { transitionCount: healthSweeps.filter((receipt) => Number(receipt.opened) > 0 || Number(receipt.recovered) > 0).length, alertCount: scenarioDeliveries.filter((receipt) => receipt.kind === "transition" || receipt.kind === "transition_and_digest").length, productionRestored: container?.running === true && container.health === "healthy" } : undefined,
     digest: health && digestFiredWithinMs !== null ? { scheduleObserved: Boolean(cronRaw && canonicalSanctuaryHealthCronRegistered(cronRaw)), messageCount: scenarioDeliveries.filter((receipt) => receipt.kind === "digest" || receipt.kind === "transition_and_digest").length, firedWithinMs: digestFiredWithinMs, productionRestored: container?.running === true && container.health === "healthy" } : undefined,
     reboot,

@@ -921,13 +921,13 @@ describe("Sanctuary Unit 16 host broker", () => {
     expect(healthProbeDockerArgs("run", {
       label: "unit-16h-daily-digest", scenarioHandleDigest: "a".repeat(64), ownerImageDigest: "b".repeat(64), ownerContainerDigest: "c".repeat(64),
     })).toEqual([
-      "exec", defaultTargetId, "/usr/local/bin/node", "/opt/ouro/dist/senses/sanctuary-health-acceptance-probe.js", "run",
+      "exec", defaultTargetId, "/usr/local/bin/node", "/opt/ouro/dist/senses/sanctuary-health-acceptance-probe-entry.js", "run",
       "--label", "unit-16h-daily-digest", "--scenario", "a".repeat(64), "--owner-image", "b".repeat(64), "--owner-container", "c".repeat(64),
     ])
     expect(healthProbeDockerArgs("stop", {
       label: "unit-16h-daily-digest", scenarioHandleDigest: "a".repeat(64), ownerImageDigest: "b".repeat(64), ownerContainerDigest: "c".repeat(64),
     })).toEqual([
-      "exec", defaultTargetId, "/usr/local/bin/node", "/opt/ouro/dist/senses/sanctuary-health-acceptance-probe.js", "stop",
+      "exec", defaultTargetId, "/usr/local/bin/node", "/opt/ouro/dist/senses/sanctuary-health-acceptance-probe-entry.js", "stop",
       "--label", "unit-16h-daily-digest", "--scenario", "a".repeat(64), "--owner-image", "b".repeat(64), "--owner-container", "c".repeat(64),
     ])
   })
@@ -1040,7 +1040,7 @@ describe("Sanctuary Unit 16 host broker", () => {
       markerPresent: () => false,
     })).not.toThrow()
     expect(calls).toEqual([{ executable: "/usr/bin/docker", args: [
-      "exec", defaultTargetId, "/usr/local/bin/node", "/opt/ouro/dist/senses/sanctuary-health-acceptance-probe.js", "stop",
+      "exec", defaultTargetId, "/usr/local/bin/node", "/opt/ouro/dist/senses/sanctuary-health-acceptance-probe-entry.js", "stop",
       "--label", input.label, "--scenario", input.scenarioHandleDigest, "--owner-image", input.ownerImageDigest, "--owner-container", input.ownerContainerDigest,
     ] }])
   })

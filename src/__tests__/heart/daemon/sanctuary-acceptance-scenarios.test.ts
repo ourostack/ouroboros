@@ -1160,6 +1160,52 @@ describe("Sanctuary live scenario capture", () => {
     expect(fs.existsSync(gate)).toBe(false)
   })
 
+  it("quarantines the capture if normal marker deletion fails after receipt cleanup", async () => {
+    const receipts = path.join(root, "marker-delete-failure-receipts")
+    const gate = path.join(root, "marker-delete-failure-gate.json")
+    const capture = createSanctuaryScenarioCapture({ now: () => 400_000, receiptRoot: receipts, gateStatusPath: gate, readFacts: async () => base() })
+    await capture({ phase: "begin", label: "unit-16d-whats-up", externalGate: "telegram", sources: ["telegram-audit"] })
+    const marker = path.join(root, "sanctuary.ouro", "state", "acceptance", "active-scenario.json")
+    fsFaults.unlinkSync = (actual, target) => {
+      if (String(target) === marker) throw Object.assign(new Error("injected marker delete failure"), { code: "EIO" })
+      actual(target)
+      return true as never
+    }
+
+    expect(() => finalizeSanctuaryScenarioCapture(gate, receipts)).toThrow(AggregateError)
+    expect(fs.existsSync(marker)).toBe(false)
+  })
+
+  it("records marker quarantine failure after unreadable private state", () => {
+    const acceptanceRoot = path.join(root, "sanctuary.ouro", "state", "acceptance")
+    const marker = path.join(acceptanceRoot, "active-scenario.json")
+    const receipts = path.join(acceptanceRoot, "quarantine-marker-failure-receipts")
+    fs.mkdirSync(receipts, { recursive: true, mode: 0o700 })
+    fs.mkdirSync(path.dirname(marker), { recursive: true, mode: 0o700 })
+    fs.writeFileSync(marker, "{}\n", { mode: 0o600 })
+    fsFaults.lstatSync = (actual, target, options) => {
+      if (String(target) === marker) throw Object.assign(new Error("injected marker lstat failure"), { code: "EIO" })
+      return actual(target, options as never)
+    }
+
+    expect(() => finalizeSanctuaryScenarioCapture(undefined, receipts)).toThrow(AggregateError)
+  })
+
+  it("records public gate deletion failure after private cleanup succeeds", async () => {
+    const receipts = path.join(root, "gate-delete-failure-receipts")
+    const gate = path.join(root, "gate-delete-failure", "current-scenario-gate.json")
+    const capture = createSanctuaryScenarioCapture({ now: () => 400_000, receiptRoot: receipts, gateStatusPath: gate, readFacts: async () => base() })
+    await capture({ phase: "begin", label: "unit-16d-whats-up", externalGate: "telegram", sources: ["telegram-audit"] })
+    fsFaults.unlinkSync = (actual, target) => {
+      if (String(target) === gate) throw Object.assign(new Error("injected gate delete failure"), { code: "EIO" })
+      actual(target)
+      return true as never
+    }
+
+    expect(() => finalizeSanctuaryScenarioCapture(gate, receipts)).toThrow(AggregateError)
+    expect(readSanctuaryAcceptanceMarker("sanctuary")).toBeNull()
+  })
+
   it("quarantines corrupt marker and receipt state before surfacing cleanup failure", () => {
     const acceptanceRoot = path.join(root, "sanctuary.ouro", "state", "acceptance")
     const receipts = path.join(acceptanceRoot, "receipts")

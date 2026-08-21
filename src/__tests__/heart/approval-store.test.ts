@@ -241,6 +241,54 @@ describe("approval store", () => {
     expect(persisted.includes(Buffer.from(rawMessage))).toBe(false)
   })
 
+  it("leaves unrelated and already-opaque approval identity records unchanged", () => {
+    const root = makeRoot()
+    const store = openApprovalStore({
+      databasePath: path.join(root, "approvals.sqlite"), now: () => new Date(NOW),
+      randomUUID: (() => {
+        const values = [UUID, "33333333-3333-4333-8333-333333333333"]
+        return () => values.shift()!
+      })(),
+      randomBytes: (size) => Buffer.alloc(size, 0xab),
+    })
+    const subject = `tg_${"a".repeat(43)}`
+    store.prepare(proposalInput({
+      transport: "cli", requesterId: "legacy-user", transportUserId: "legacy-user", transportChatId: "legacy-chat",
+      sessionKey: "cli:session", sessionPath: "/bundle/state/sessions/cli.json",
+    }))
+    store.prepare(proposalInput({
+      requesterId: subject, transportUserId: subject, transportChatId: subject,
+      sessionKey: `telegram:${subject}`, sessionPath: `/bundle/state/sessions/telegram-user:${subject}/telegram/telegram_${subject}.json`,
+    }))
+
+    expect(store.migrateTelegramIdentity?.({ legacyUserId: "legacy-user", legacyChatId: "legacy-chat", subject })).toBe(0)
+    store.close()
+  })
+
+  it("fails closed if a Telegram identity migration loses its compare-and-swap update", () => {
+    const root = makeRoot()
+    const databasePath = path.join(root, "approvals.sqlite")
+    const store = openApprovalStore({
+      databasePath, now: () => new Date(NOW), randomUUID: () => UUID,
+      randomBytes: (size) => Buffer.alloc(size, 0xab),
+    })
+    const rawUser = "918273645012345678"
+    const rawChat = "817263540123456789"
+    const subject = `tg_${"a".repeat(43)}`
+    store.prepare(proposalInput({
+      requesterId: rawUser, transportUserId: rawUser, transportChatId: rawChat,
+      sessionKey: `telegram:${rawChat}`, sessionPath: `/bundle/state/sessions/telegram-user:${rawUser}/telegram/telegram_${rawChat}.json`,
+    }))
+    const adversary = new Database(databasePath)
+    adversary.exec("CREATE TRIGGER ignore_identity_migration BEFORE UPDATE OF record_json ON approval_actions BEGIN SELECT RAISE(IGNORE); END")
+    adversary.close()
+
+    expect(() => store.migrateTelegramIdentity?.({ legacyUserId: rawUser, legacyChatId: rawChat, subject })).toThrowError(
+      new ApprovalStoreError("telegram_identity_migration_conflict"),
+    )
+    store.close()
+  })
+
   it.each([
     { legacyUserId: "", legacyChatId: "817263540123456789", subject: `tg_${"a".repeat(43)}` },
     { legacyUserId: "918273645012345678", legacyChatId: "", subject: `tg_${"a".repeat(43)}` },

@@ -24,7 +24,7 @@ const SHA256 = /^[0-9a-f]{64}$/u
 const TARGET_ENDPOINT = "https://books.mendelow.cloud/"
 const CRON_MARKER = "# ouro:habit:sanctuary:sanctuary:sanctuary-health"
 const CRON_COMMAND = "*/15 * * * * /usr/local/bin/node /opt/ouro/dist/heart/daemon/ouro-entry.js poke sanctuary --habit sanctuary-health --trigger cron"
-const PROCESS_ENTRY = "/opt/ouro/dist/senses/sanctuary-health-acceptance-probe.js"
+const PROCESS_ENTRY = "/opt/ouro/dist/senses/sanctuary-health-acceptance-probe-entry.js"
 const LABELS = ["unit-16f-cron-fingerprint", "unit-16g-health-transition", "unit-16h-daily-digest"] as const
 
 export type SanctuaryHealthAcceptanceProbeLabel = typeof LABELS[number]
@@ -80,7 +80,7 @@ export interface SanctuaryHealthAcceptanceProbeReceipt {
   schedulerReceipt: SanctuarySchedulerLivenessReceipt | null
 }
 
-interface ProbeDependencies {
+export interface SanctuaryHealthAcceptanceProbeDependencies {
   agentRoot: string
   runtimeRoot: string
   toolContext: ReturnType<typeof createSanctuaryToolContext>
@@ -88,13 +88,18 @@ interface ProbeDependencies {
   now(): Date
   runnerOptions?: SanctuaryHealthHabitRunnerOptions
   deferOwnerAttestation?: boolean
-  waitForSchedulerReceipt?: (agentRoot: string, scenarioHandleDigest: string) => Promise<SanctuarySchedulerLivenessReceipt>
-  identityKey?: (agentRoot: string) => string
+  waitForSchedulerReceipt(agentRoot: string, scenarioHandleDigest: string): Promise<SanctuarySchedulerLivenessReceipt>
+  identityKey(agentRoot: string): string
+  acceptanceFs?: {
+    copyFile(source: string, destination: string): void
+    readFile(statePath: string): string
+  }
+  createLoopbackServer?: typeof createServer
 }
 
 interface HealthSnapshot { exists: boolean; bytes: string }
 
-interface ProbeProcessDependencies {
+export interface SanctuaryHealthAcceptanceProbeProcessDependencies {
   agentRoot: string
   listPids(): number[]
   processAlive(pid: number): boolean
@@ -177,17 +182,24 @@ function unregisterSanctuaryHealthAcceptanceProbeProcess(input: SanctuaryHealthA
   }
 }
 
-function defaultProbeProcessDependencies(): ProbeProcessDependencies {
+export function createSanctuaryHealthAcceptanceProbeProcessDependencies(options: {
+  agentRoot?: string
+  listProcEntries?: () => string[]
+  kill?: (pid: number, signal: 0 | NodeJS.Signals) => void
+  readCommandLine?: (pid: number) => string
+  sleep?: (ms: number) => Promise<void>
+} = {}): SanctuaryHealthAcceptanceProbeProcessDependencies {
+  const kill = options.kill ?? ((pid: number, signal: 0 | NodeJS.Signals) => { process.kill(pid, signal) })
   return {
-    agentRoot: getAgentRoot("sanctuary"),
-    listPids: () => fs.readdirSync("/proc").filter((entry) => /^[0-9]+$/u.test(entry)).map(Number),
+    agentRoot: options.agentRoot ?? getAgentRoot("sanctuary"),
+    listPids: () => (options.listProcEntries?.() ?? fs.readdirSync("/proc")).filter((entry) => /^[0-9]+$/u.test(entry)).map(Number),
     processAlive: (pid) => {
-      try { process.kill(pid, 0); return true }
+      try { kill(pid, 0); return true }
       catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return false; throw error }
     },
-    readCommandLine: (pid) => fs.readFileSync(`/proc/${pid}/cmdline`, "utf8"),
-    signal: (pid, signal) => { process.kill(pid, signal) },
-    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    readCommandLine: options.readCommandLine ?? ((pid) => fs.readFileSync(`/proc/${pid}/cmdline`, "utf8")),
+    signal: (pid, signal) => { kill(pid, signal) },
+    sleep: options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
   }
 }
 
@@ -207,7 +219,7 @@ function parsedCommandLine(raw: string): string[] {
   return parts
 }
 
-function probeProcessScan(input: SanctuaryHealthAcceptanceProbeInput, dependencies: ProbeProcessDependencies): { candidates: number[]; exact: number[] } {
+function probeProcessScan(input: SanctuaryHealthAcceptanceProbeInput, dependencies: SanctuaryHealthAcceptanceProbeProcessDependencies): { candidates: number[]; exact: number[] } {
   const expected = JSON.stringify(expectedProbeCommandLine(input))
   const candidates: number[] = []
   const exact: number[] = []
@@ -225,7 +237,7 @@ function probeProcessScan(input: SanctuaryHealthAcceptanceProbeInput, dependenci
   return { candidates, exact }
 }
 
-function exactProbeProcessAtPid(input: SanctuaryHealthAcceptanceProbeInput, dependencies: ProbeProcessDependencies, pid: number): boolean {
+function exactProbeProcessAtPid(input: SanctuaryHealthAcceptanceProbeInput, dependencies: SanctuaryHealthAcceptanceProbeProcessDependencies, pid: number): boolean {
   if (!dependencies.processAlive(pid)) return false
   try { return JSON.stringify(parsedCommandLine(dependencies.readCommandLine(pid))) === JSON.stringify(expectedProbeCommandLine(input)) }
   catch (error) {
@@ -234,7 +246,7 @@ function exactProbeProcessAtPid(input: SanctuaryHealthAcceptanceProbeInput, depe
   }
 }
 
-async function waitForExactProcessAbsent(input: SanctuaryHealthAcceptanceProbeInput, pid: number, dependencies: ProbeProcessDependencies, timeoutMs: number): Promise<boolean> {
+async function waitForExactProcessAbsent(input: SanctuaryHealthAcceptanceProbeInput, pid: number, dependencies: SanctuaryHealthAcceptanceProbeProcessDependencies, timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs
   while (exactProbeProcessAtPid(input, dependencies, pid) && Date.now() < deadline) await dependencies.sleep(Math.min(50, Math.max(1, deadline - Date.now())))
   return !exactProbeProcessAtPid(input, dependencies, pid)
@@ -242,7 +254,7 @@ async function waitForExactProcessAbsent(input: SanctuaryHealthAcceptanceProbeIn
 
 export async function stopSanctuaryHealthAcceptanceProbeProcess(
   input: SanctuaryHealthAcceptanceProbeInput,
-  dependencies: ProbeProcessDependencies = defaultProbeProcessDependencies(),
+  dependencies: SanctuaryHealthAcceptanceProbeProcessDependencies = createSanctuaryHealthAcceptanceProbeProcessDependencies(),
   options: { termGraceMs?: number; killGraceMs?: number } = {},
 ): Promise<{ stopped: boolean }> {
   canonicalInput(input)
@@ -309,8 +321,8 @@ function restoreState(statePath: string, snapshot: HealthSnapshot): void {
   atomicPrivateFile(statePath, Buffer.from(snapshot.bytes, "base64").toString("utf8"))
 }
 
-function readHealthState(statePath: string): HealthStateRecord {
-  const value = JSON.parse(fs.readFileSync(statePath, "utf8")) as HealthStateRecord
+function readHealthState(statePath: string, readFile?: (statePath: string) => string): HealthStateRecord {
+  const value = JSON.parse(readFile ? readFile(statePath) : fs.readFileSync(statePath, "utf8")) as HealthStateRecord
   if (!value || typeof value !== "object" || Array.isArray(value.incidents) || !Array.isArray(value.sweepReceipts) || !Array.isArray(value.deliveredReceipts)) {
     throw new Error("Sanctuary health acceptance working state is invalid")
   }
@@ -361,14 +373,18 @@ async function closeServer(server: Server): Promise<void> {
   await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
 }
 
-async function loopbackFixture(statuses: Array<200 | 503>, ambientFetch: typeof fetch): Promise<{
+export async function createSanctuaryHealthAcceptanceLoopbackFixture(
+  statuses: Array<200 | 503>,
+  ambientFetch: typeof fetch,
+  createLoopbackServer: typeof createServer = createServer,
+): Promise<{
   fetch: typeof fetch
   server: Server
   observed: Array<200 | 503>
 }> {
   let cursor = 0
   const observed: Array<200 | 503> = []
-  const server = createServer((_request, response) => {
+  const server = createLoopbackServer((_request, response) => {
     const status = statuses[cursor]
     if (status === undefined) { response.writeHead(500); response.end(); return }
     cursor += 1
@@ -390,26 +406,30 @@ async function loopbackFixture(statuses: Array<200 | 503>, ambientFetch: typeof 
   return { fetch: fixtureFetch, server, observed }
 }
 
-function defaultDependencies(): ProbeDependencies {
-  return {
-    agentRoot: getAgentRoot("sanctuary"),
-    runtimeRoot: path.join(os.homedir(), ".ouro-cli"),
-    toolContext: createSanctuaryToolContext("sanctuary"),
-    ambientFetch: fetch,
-    now: () => new Date(),
-    deferOwnerAttestation: true,
-    identityKey: readOrCreateTelegramIdentityKey,
-    waitForSchedulerReceipt: async (agentRoot, scenarioHandleDigest) => {
+export function createSanctuaryHealthAcceptanceProbeDependencies(
+  overrides: Partial<SanctuaryHealthAcceptanceProbeDependencies> = {},
+  schedulerWait: { timeoutMs?: number; pollMs?: number } = {},
+): SanctuaryHealthAcceptanceProbeDependencies {
+  const defaults: SanctuaryHealthAcceptanceProbeDependencies = {
+    agentRoot: overrides.agentRoot ?? getAgentRoot("sanctuary"),
+    runtimeRoot: overrides.runtimeRoot ?? path.join(os.homedir(), ".ouro-cli"),
+    ambientFetch: overrides.ambientFetch ?? fetch,
+    now: overrides.now ?? (() => new Date()),
+    deferOwnerAttestation: overrides.deferOwnerAttestation ?? true,
+    identityKey: overrides.identityKey ?? readOrCreateTelegramIdentityKey,
+    waitForSchedulerReceipt: overrides.waitForSchedulerReceipt ?? (async (agentRoot, scenarioHandleDigest) => {
       const receiptPath = path.join(agentRoot, "state", "acceptance", "scheduler-liveness-receipts", `${scenarioHandleDigest}.json`)
-      const deadline = Date.now() + 16 * 60 * 1_000
+      const deadline = Date.now() + (schedulerWait.timeoutMs ?? 16 * 60 * 1_000)
       while (Date.now() <= deadline) {
         try { return JSON.parse(fs.readFileSync(receiptPath, "utf8")) as SanctuarySchedulerLivenessReceipt }
         catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error }
-        await new Promise((resolve) => setTimeout(resolve, Math.min(1_000, Math.max(1, deadline - Date.now()))))
+        await new Promise((resolve) => setTimeout(resolve, Math.min(schedulerWait.pollMs ?? 1_000, Math.max(1, deadline - Date.now()))))
       }
       throw new Error("Sanctuary scheduler liveness receipt timed out")
-    },
+    }),
+    toolContext: overrides.toolContext ?? createSanctuaryToolContext("sanctuary"),
   }
+  return { ...defaults, ...overrides }
 }
 
 function removeProbeWorkspace(workspace: string): void {
@@ -423,11 +443,12 @@ function removeProbeWorkspace(workspace: string): void {
 async function normalizeWorkingState(input: {
   workspace: string
   statePath: string
-  deps: ProbeDependencies
+  deps: SanctuaryHealthAcceptanceProbeDependencies
   effectiveNow: Date
 }): Promise<string> {
   const temporaryState = path.join(input.workspace, "normalization.json")
-  try { fs.copyFileSync(input.statePath, temporaryState) }
+  const copyFile = input.deps.acceptanceFs?.copyFile ?? fs.copyFileSync
+  try { copyFile(input.statePath, temporaryState) }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error }
   const sweep = createSanctuaryHealthSweep({
     toolContext: input.deps.toolContext,
@@ -437,7 +458,7 @@ async function normalizeWorkingState(input: {
     acceptanceEventMeta: () => ({}),
   })
   await sweep()
-  const state = readHealthState(temporaryState)
+  const state = readHealthState(temporaryState, input.deps.acceptanceFs?.readFile)
   state.outbox = null
   state.indeterminateDeliveries = []
   state.lastDigestDay = localDay(input.effectiveNow)
@@ -478,22 +499,23 @@ function phaseFromState(
 async function verifyRealCheckEquivalent(input: {
   workspace: string
   statePath: string
-  deps: ProbeDependencies
+  deps: SanctuaryHealthAcceptanceProbeDependencies
   effectiveNow: Date
   expectedIncidentDigest: string
 }): Promise<boolean> {
   const verifyState = path.join(input.workspace, "verify.json")
-  try { fs.copyFileSync(input.statePath, verifyState) }
+  const copyFile = input.deps.acceptanceFs?.copyFile ?? fs.copyFileSync
+  try { copyFile(input.statePath, verifyState) }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error }
   const sweep = createSanctuaryHealthSweep({ toolContext: input.deps.toolContext, statePath: verifyState, fetch: input.deps.ambientFetch, now: () => input.effectiveNow })
   await sweep()
-  const receipt = readHealthState(verifyState).sweepReceipts.at(-1)
+  const receipt = readHealthState(verifyState, input.deps.acceptanceFs?.readFile).sweepReceipts.at(-1)
   return Boolean(receipt && receipt.incidentDigest === input.expectedIncidentDigest)
 }
 
 export async function runSanctuaryHealthAcceptanceProbe(
   input: SanctuaryHealthAcceptanceProbeInput,
-  dependencies: ProbeDependencies = defaultDependencies(),
+  dependencies: SanctuaryHealthAcceptanceProbeDependencies = createSanctuaryHealthAcceptanceProbeDependencies(),
 ): Promise<SanctuaryHealthAcceptanceProbeReceipt> {
   canonicalInput(input)
   const statePath = path.join(dependencies.agentRoot, "state", "health", "sanctuary-health.json")
@@ -515,7 +537,7 @@ export async function runSanctuaryHealthAcceptanceProbe(
   const cronFingerprintBefore = digestBytes(cronBefore)
   const cronRegisteredBefore = canonicalCron(cronBefore)
   const effectiveNow = input.label === "unit-16h-daily-digest" ? exactLocalDailyBoundary(dependencies.now()) : dependencies.now()
-  let fixture: Awaited<ReturnType<typeof loopbackFixture>> | undefined
+  let fixture: Awaited<ReturnType<typeof createSanctuaryHealthAcceptanceLoopbackFixture>> | undefined
   let expectedIncidentDigest = ""
   let realCheckEquivalent = false
   let restoredStateDigest = ""
@@ -528,9 +550,8 @@ export async function runSanctuaryHealthAcceptanceProbe(
   try {
     if (input.label === "unit-16f-cron-fingerprint") {
       const initialCursor = cursorFromSnapshot(snapshot)
-      const waitForSchedulerReceipt = dependencies.waitForSchedulerReceipt ?? defaultDependencies().waitForSchedulerReceipt!
-      schedulerReceipt = await waitForSchedulerReceipt(dependencies.agentRoot, input.scenarioHandleDigest)
-      const identityKey = (dependencies.identityKey ?? readOrCreateTelegramIdentityKey)(dependencies.agentRoot)
+      schedulerReceipt = await dependencies.waitForSchedulerReceipt(dependencies.agentRoot, input.scenarioHandleDigest)
+      const identityKey = dependencies.identityKey(dependencies.agentRoot)
       if (!verifySanctuarySchedulerLivenessReceiptMac(identityKey, schedulerReceipt as unknown as Record<string, unknown>)
         || schedulerReceipt.schemaVersion !== "sanctuary-scheduler-liveness-receipt-v1" || schedulerReceipt.label !== input.label
         || schedulerReceipt.scenarioHandleDigest !== input.scenarioHandleDigest || schedulerReceipt.trigger !== "cron"
@@ -571,16 +592,17 @@ export async function runSanctuaryHealthAcceptanceProbe(
       if (input.label === "unit-16g-health-transition") {
         await runPhase("live-baseline", "acceptance", null, dependencies.ambientFetch, effectiveNow)
         await runPhase("live-repeat", "acceptance", null, dependencies.ambientFetch, effectiveNow)
-        fixture = await loopbackFixture([503, 503, 200, 503], dependencies.ambientFetch)
+        fixture = await createSanctuaryHealthAcceptanceLoopbackFixture([503, 503, 200, 503], dependencies.ambientFetch, dependencies.createLoopbackServer)
         for (const [name, status] of [["fixture-fail", 503], ["fixture-repeat", 503], ["fixture-recover", 200], ["fixture-refail", 503]] as const) {
           await runPhase(name, "acceptance", status, fixture.fetch, effectiveNow)
         }
       } else {
-        fixture = await loopbackFixture([503, 503], dependencies.ambientFetch)
+        fixture = await createSanctuaryHealthAcceptanceLoopbackFixture([503, 503], dependencies.ambientFetch, dependencies.createLoopbackServer)
         await runPhase("digest-boundary", "acceptance", 503, fixture.fetch, effectiveNow)
         await runPhase("digest-repeat", "acceptance", 503, fixture.fetch, effectiveNow)
       }
-      if (fixture) { await closeServer(fixture.server); socketAbsent = fixture.server.address() === null }
+      await closeServer(fixture!.server)
+      socketAbsent = fixture!.server.address() === null
       restoreState(statePath, snapshot)
       realCheckEquivalent = await verifyRealCheckEquivalent({ workspace, statePath, deps: dependencies, effectiveNow, expectedIncidentDigest })
       restoreState(statePath, snapshot)
@@ -643,7 +665,7 @@ export async function runSanctuaryHealthAcceptanceProbe(
 export function finalizeSanctuaryHealthAcceptanceProbe(
   input: SanctuaryHealthAcceptanceProbeInput,
   after: { ownerImageDigest: string; ownerContainerDigest: string },
-  dependencies: Pick<ProbeDependencies, "agentRoot"> = { agentRoot: getAgentRoot("sanctuary") },
+  dependencies: Pick<SanctuaryHealthAcceptanceProbeDependencies, "agentRoot"> = { agentRoot: getAgentRoot("sanctuary") },
 ): SanctuaryHealthAcceptanceProbeReceipt {
   canonicalInput(input)
   if (!SHA256.test(after.ownerImageDigest) || !SHA256.test(after.ownerContainerDigest)) throw new Error("Sanctuary health acceptance final owner is invalid")
@@ -673,7 +695,7 @@ export function finalizeSanctuaryHealthAcceptanceProbe(
 
 export async function recoverSanctuaryHealthAcceptanceProbe(
   input: SanctuaryHealthAcceptanceProbeInput,
-  dependencies: ProbeDependencies = defaultDependencies(),
+  dependencies: SanctuaryHealthAcceptanceProbeDependencies = createSanctuaryHealthAcceptanceProbeDependencies(),
 ): Promise<{ recovered: boolean }> {
   canonicalInput(input)
   const statePath = path.join(dependencies.agentRoot, "state", "health", "sanctuary-health.json")
@@ -716,35 +738,76 @@ function parseCli(argv: string[]): { mode: "run" | "stop" | "recover" | "finaliz
   return { mode: argv[0], input }
 }
 
-async function runCliProbe(input: SanctuaryHealthAcceptanceProbeInput): Promise<SanctuaryHealthAcceptanceProbeReceipt> {
-  const agentRoot = getAgentRoot("sanctuary")
-  registerSanctuaryHealthAcceptanceProbeProcess(input, { agentRoot, pid: process.pid })
-  const interrupted = (signal: NodeJS.Signals): void => {
-    unregisterSanctuaryHealthAcceptanceProbeProcess(input, agentRoot, process.pid)
-    process.removeListener("SIGTERM", onTerm)
-    process.removeListener("SIGINT", onInterrupt)
-    process.kill(process.pid, signal)
-  }
-  const onTerm = (): void => interrupted("SIGTERM")
-  const onInterrupt = (): void => interrupted("SIGINT")
-  process.once("SIGTERM", onTerm)
-  process.once("SIGINT", onInterrupt)
-  try { return await runSanctuaryHealthAcceptanceProbe(input) }
-  finally {
-    process.removeListener("SIGTERM", onTerm)
-    process.removeListener("SIGINT", onInterrupt)
-    unregisterSanctuaryHealthAcceptanceProbeProcess(input, agentRoot, process.pid)
+export interface SanctuaryHealthAcceptanceProbeCliHost {
+  pid: number
+  once(signal: "SIGTERM" | "SIGINT", listener: () => void): void
+  removeListener(signal: "SIGTERM" | "SIGINT", listener: () => void): void
+  signalSelf(signal: NodeJS.Signals): void
+}
+
+export function createSanctuaryHealthAcceptanceProbeCliHost(
+  target: Pick<NodeJS.Process, "pid" | "once" | "removeListener" | "kill"> = process,
+): SanctuaryHealthAcceptanceProbeCliHost {
+  return {
+    pid: target.pid,
+    once: (signal, listener) => { target.once(signal, listener) },
+    removeListener: (signal, listener) => { target.removeListener(signal, listener) },
+    signalSelf: (signal) => { target.kill(target.pid, signal) },
   }
 }
 
-if (require.main === module) {
-  const { mode, input, after } = parseCli(process.argv.slice(2))
-  const operation = mode === "run"
-    ? runCliProbe(input)
-    : mode === "stop" ? stopSanctuaryHealthAcceptanceProbeProcess(input)
-      : mode === "recover" ? recoverSanctuaryHealthAcceptanceProbe(input) : Promise.resolve(finalizeSanctuaryHealthAcceptanceProbe(input, after!))
-  void operation.catch((error) => {
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
-    process.exitCode = 1
+export async function runSanctuaryHealthAcceptanceProbeCli(
+  argv: string[],
+  options: {
+    dependencies?: SanctuaryHealthAcceptanceProbeDependencies
+    processDependencies?: SanctuaryHealthAcceptanceProbeProcessDependencies
+    host?: SanctuaryHealthAcceptanceProbeCliHost
+  } = {},
+): Promise<SanctuaryHealthAcceptanceProbeReceipt | { stopped: boolean } | { recovered: boolean }> {
+  const { mode, input, after } = parseCli(argv)
+  const host = options.host ?? createSanctuaryHealthAcceptanceProbeCliHost()
+  if (mode === "stop") return stopSanctuaryHealthAcceptanceProbeProcess(input, options.processDependencies)
+  if (mode === "recover") return recoverSanctuaryHealthAcceptanceProbe(input, options.dependencies)
+  if (mode === "finalize") return finalizeSanctuaryHealthAcceptanceProbe(input, after!, options.dependencies)
+  const dependencies = options.dependencies ?? createSanctuaryHealthAcceptanceProbeDependencies()
+  registerSanctuaryHealthAcceptanceProbeProcess(input, { agentRoot: dependencies.agentRoot, pid: host.pid })
+  const interrupted = (signal: NodeJS.Signals): void => {
+    unregisterSanctuaryHealthAcceptanceProbeProcess(input, dependencies.agentRoot, host.pid)
+    host.removeListener("SIGTERM", onTerm)
+    host.removeListener("SIGINT", onInterrupt)
+    host.signalSelf(signal)
+  }
+  const onTerm = (): void => interrupted("SIGTERM")
+  const onInterrupt = (): void => interrupted("SIGINT")
+  host.once("SIGTERM", onTerm)
+  host.once("SIGINT", onInterrupt)
+  try { return await runSanctuaryHealthAcceptanceProbe(input, dependencies) }
+  finally {
+    host.removeListener("SIGTERM", onTerm)
+    host.removeListener("SIGINT", onInterrupt)
+    unregisterSanctuaryHealthAcceptanceProbeProcess(input, dependencies.agentRoot, host.pid)
+  }
+}
+
+export interface SanctuaryHealthAcceptanceProbeCliOutput {
+  writeError(message: string): void
+  setExitCode(code: number): void
+}
+
+export function createSanctuaryHealthAcceptanceProbeCliOutput(target: Pick<NodeJS.Process, "stderr" | "exitCode"> = process): SanctuaryHealthAcceptanceProbeCliOutput {
+  return {
+    writeError: (message) => { target.stderr.write(message) },
+    setExitCode: (code) => { target.exitCode = code },
+  }
+}
+
+export function startSanctuaryHealthAcceptanceProbeCli(
+  argv: string[],
+  output: SanctuaryHealthAcceptanceProbeCliOutput,
+  options: Parameters<typeof runSanctuaryHealthAcceptanceProbeCli>[1] = {},
+): void {
+  void runSanctuaryHealthAcceptanceProbeCli(argv, options).catch((error) => {
+    output.writeError(`${error instanceof Error ? error.message : String(error)}\n`)
+    output.setExitCode(1)
   })
 }
