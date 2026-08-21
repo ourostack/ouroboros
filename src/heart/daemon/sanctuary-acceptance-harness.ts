@@ -438,7 +438,7 @@ export function validateSanctuaryUnit16EvidenceAssertions(label: SanctuaryUnit16
         telegramSchemaDigest: "3c66299a5f70ec82f8795cae47659284e6dbc691ef49002c2fb22edba76c59b6",
         privateProfileDigest: "a100ffcaf436842bf9fceaf3d2fd1a1b766c04238300487474d6e9fcb7946369",
         privateSchemaDigest: "61b137b2467acbcf22ca7443ee01e71ed970a62728c42aabffbdcb562f4a6a70",
-        auditPathDigest: "2c69993987cd9d9a32ff64447d403044bbfd14b0fcbd0db3fbb78391d3320505",
+        auditPathDigest: "1cb8f1a00c544a5d10b0577090dbf070a07a5b6a99de13ccd27c11a257f84b75",
         writeApprovalPolicyDigest: "24b1726edf1a2bbd524e9be63d3f0f726d996a8a009425462e01a5c4916ef42b",
       })) if (value[key] !== expected) throw new Error(`${label} ${key} does not match the canonical contract`)
       requiredInteger(value, "keyCount", 2, label)

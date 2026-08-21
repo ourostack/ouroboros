@@ -137,7 +137,7 @@ describe("Sanctuary acceptance harness", () => {
         schemaVersion: "sanctuary-containment-audit-v1", keyCount: 2, keyInventoryDigest: "d".repeat(64), readScopeDigest: "9914469afdcb574937d1020a03faa82e3c02d767169d3eccae4b81863dafa06e", writeScopeDigest: "1de873b2bc3c7769010c32c69fcc8ea55343a5647cfdb0294769e831142945ec", keyRoleAssignmentCount: 0,
         telegramToolCount: 10, telegramProfileDigest: "a7f26934c5e60737582b9d13c78944b8bcbb941366899d82d58c01ca296e14e2", telegramSchemaDigest: "3c66299a5f70ec82f8795cae47659284e6dbc691ef49002c2fb22edba76c59b6", privateToolCount: 2, privateProfileDigest: "a100ffcaf436842bf9fceaf3d2fd1a1b766c04238300487474d6e9fcb7946369", privateSchemaDigest: "61b137b2467acbcf22ca7443ee01e71ed970a62728c42aabffbdcb562f4a6a70", resolvedHandlerCount: 12,
         excludedToolCount: 7, excludedSchemaIntersectionCount: 0, fabricatedHandlerInvocationCount: 0, excludedToolAttemptCount: 7, excludedToolRejectedCount: 7, excludedToolInvokedCount: 0, excludedToolSideEffectCount: 0, globallyResolvableExcludedToolCount: 4,
-        auditPathDigest: "2c69993987cd9d9a32ff64447d403044bbfd14b0fcbd0db3fbb78391d3320505", auditLedgerDigest: "d".repeat(64), auditRecordCount: 2, auditLifecyclePairCount: 1,
+        auditPathDigest: "1cb8f1a00c544a5d10b0577090dbf070a07a5b6a99de13ccd27c11a257f84b75", auditLedgerDigest: "d".repeat(64), auditRecordCount: 2, auditLifecyclePairCount: 1,
         containerUser: "10001:10001", liveProcessUser: "10001:10001", mountCount: 2, publishedPortCount: 0, networkMode: "host", readOnlyRoot: true, mountsExact: true, securityExact: true, updaterDisabled: true, writableKeyExposure: false,
         rawWriteMaterialFieldCount: 0, typedWriteExecutorCount: 1, writeApprovalPolicyDigest: "24b1726edf1a2bbd524e9be63d3f0f726d996a8a009425462e01a5c4916ef42b", sensitiveMaterialObserved: false, mutationCount: 0,
       }
@@ -701,7 +701,7 @@ describe("Sanctuary acceptance harness", () => {
     expect(contract.adapters["health-probe-recovery"].timeoutMs).toBeLessThan(contract.adapterTimeoutMs)
     expect(contract.adapters["scenario-capture"].timeoutMs).toBe(210_000)
     expect(contract.scenarioSources).toEqual(expect.objectContaining({
-      "telegram-audit": expect.objectContaining({ kind: "fixed-ndjson", path: expect.stringContaining("telegram.ndjson") }),
+      "telegram-audit": expect.objectContaining({ kind: "fixed-mac-chain", path: expect.stringContaining("telegram-audit-chain.ndjson"), headPath: expect.stringContaining("telegram-audit-chain.head.json") }),
       "container-inspect": expect.objectContaining({ kind: "fixed-host-snapshot", path: "/run/ouro-acceptance/container-inspect.json" }),
       "provider-live-check": expect.objectContaining({ kind: "fixed-runtime-api", operation: "sanctuary-provider-readiness" }),
       "health-probe-receipt": expect.objectContaining({ kind: "fixed-private-json", path: expect.stringContaining("health-probe-receipts") }),

@@ -377,6 +377,7 @@ export interface TelegramLongPollOptions {
   onMessage: (message: TelegramInboundMessage) => Promise<void>
   onUpdate?: (update: TelegramUpdate) => Promise<boolean>
   acceptanceEventMeta?: (update?: TelegramUpdate, distinctAccount?: boolean) => Record<string, unknown>
+  onDispatchSettled?: () => void
 }
 
 export function createTelegramLongPoll(options: TelegramLongPollOptions): TelegramLongPoll {
@@ -452,6 +453,7 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
         try {
           await dispatch(update)
           if (requiresDurableDispatch) options.inboxStore?.complete(update)
+          options.onDispatchSettled?.()
         } catch (error) {
           options.inboxStore?.quarantineStranded?.()
           throw error

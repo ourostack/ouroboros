@@ -10,6 +10,7 @@ import { createTelegramApprovalRuntime, type TelegramApprovalRuntime } from "../
 import { createTelegramBotApi, type TelegramBotApi, type TelegramUpdate } from "../../senses/telegram-client"
 import { executeSanctuaryInteractiveEngine, proveSanctuaryAttemptedRecoveryWithoutRetry, type SanctuaryInteractiveEngineDependencies } from "../../senses/sanctuary-interactive-control"
 import { loadTelegramSenseCredentials, readOrCreateTelegramIdentityKey, sanctuaryTelegramAuditLifecycleMac, sanctuaryTelegramTurnReceiptDigest, sanctuaryTelegramTurnReceiptMac, sanctuaryTelegramUnauthorizedDropMac, type TelegramSenseCredentials } from "../../senses/telegram"
+import { TELEGRAM_ACCEPTANCE_AUDIT_HEAD_RELATIVE_PATH, TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH, verifyTelegramAuditLedger } from "../../senses/telegram-audit-ledger"
 import { createSanctuaryToolContext, runWithSanctuaryToolReceiptCollection } from "../../senses/sanctuary-runtime"
 import { projectSanctuaryGrounding, sanctuaryGroundingDigest, type SanctuaryGroundingToolName, type SanctuaryToolGrounding } from "../../senses/sanctuary-grounding"
 import { ponderTool, resolveToolDefinition, restTool, settleTool, speakTool } from "../../repertoire/tools"
@@ -84,7 +85,8 @@ const NETWORK_TIMEOUT_MS = 10_000
 const KEY_DIRECTORY = "/boot/config/plugins/dynamix.my.servers/keys"
 const SELECTED_KEY_RECORD = "/run/ouro-acceptance/unraid-key.json"
 const TELEGRAM_OFFSET = "/home/ouro/AgentBundles/sanctuary.ouro/state/senses/telegram/offset.json"
-const TELEGRAM_AUDIT = "/home/ouro/AgentBundles/sanctuary.ouro/state/daemon/logs/telegram.ndjson"
+const TELEGRAM_AUDIT = `/home/ouro/AgentBundles/sanctuary.ouro/${TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH}`
+const TELEGRAM_AUDIT_HEAD = `/home/ouro/AgentBundles/sanctuary.ouro/${TELEGRAM_ACCEPTANCE_AUDIT_HEAD_RELATIVE_PATH}`
 const IMAGE_DIGEST_FILE = "/run/ouro-acceptance/image-digest"
 const CONTAINER_DIGEST_FILE = "/run/ouro-acceptance/container-digest"
 const POSTBOOT_HEALTH_FILE = "/run/ouro-acceptance/postboot-health.json"
@@ -497,15 +499,6 @@ function boundedLines(raw: string, label: string, limits: { bytes: number; rows:
   const lines = raw.split("\n").filter(Boolean)
   if (lines.length > limits.rows || lines.some((line) => Buffer.byteLength(line) > limits.rowBytes)) throw new Error(`${label} exceeds its bound`)
   return lines
-}
-
-function parseAuditLedger(raw: string): SanctuaryScenarioFacts["events"] {
-  return boundedLines(raw, "Telegram audit ledger", { bytes: 32 * 1024 * 1024, rows: 100_000, rowBytes: 64 * 1024 }).map((line) => {
-    const entry = object(JSON.parse(line) as unknown, "Telegram audit entry")
-    const meta = object(entry.meta, "Telegram audit meta")
-    if (!canonicalIso(entry.ts) || typeof entry.event !== "string" || entry.event.length < 1 || entry.event.length > 256) throw new Error("Telegram audit ledger row is invalid")
-    return { event: entry.event, at: Date.parse(entry.ts), meta }
-  })
 }
 
 function parseRestartAttempts(raw: string, scenarioHandleDigest: string): SanctuaryScenarioFacts["restartAttempts"] {
@@ -947,7 +940,7 @@ async function captureReadOnlyDenialBoundary(agentRoot: string, deps: SanctuaryA
     targetSnapshotDigest: createHash("sha256").update(JSON.stringify(targetSnapshot)).digest("hex"),
     targetRestartCount: Number(targetSnapshot.restartCount),
     targetContainerIdDigest: String(targetSnapshot.containerIdDigest),
-    auditCursorDigest: digestOptionalFiles([auditPath]),
+    auditCursorDigest: digestOptionalFiles([auditPath, TELEGRAM_AUDIT_HEAD]),
     providerUsageCursorDigest: digestOptionalFiles([providerPath]),
     sessionCursorDigest: createHash("sha256").update(JSON.stringify(readBoundedIdentitySurfaces(agentRoot))).digest("hex"),
     toolActionCursorDigest: digestOptionalFiles([toolPath, approvalDatabase, `${approvalDatabase}-wal`, `${approvalDatabase}-shm`]),
@@ -1006,7 +999,8 @@ export async function readDefaultSanctuaryScenarioFacts(
   if (options.skipContainerSnapshot === true && options.containerSnapshot !== undefined) throw new Error("container snapshot options are mutually exclusive")
   const agentRoot = configuredAgentRoot
   const identityRaw = optionalFixedFile(deps, pathFor(agentRoot, "state/senses/telegram/identity.key"))
-  const auditRaw = optionalFixedFile(deps, TELEGRAM_AUDIT) ?? ""
+  const auditRaw = optionalFixedFile(deps, TELEGRAM_AUDIT)
+  const auditHeadRaw = optionalFixedFile(deps, TELEGRAM_AUDIT_HEAD)
   const offsetRaw = optionalFixedFile(deps, TELEGRAM_OFFSET)
   const checkpointsRaw = optionalFixedFile(deps, pathFor(agentRoot, "state/approvals/checkpoints.json"))
   const restartAttemptsRaw = optionalFixedFile(deps, pathFor(agentRoot, "state/acceptance/restart-attempts.ndjson")) ?? ""
@@ -1033,7 +1027,13 @@ export async function readDefaultSanctuaryScenarioFacts(
     if (label === "unit-16e-1-stop-denial") stopDenied = true
     else if (label === "unit-16e-2-restart-denial") restartDenied = true
   }
-  const auditLedgerEntries = parseAuditLedger(auditRaw)
+  if ((auditRaw === null) !== (auditHeadRaw === null)) throw new Error("Telegram audit ledger/head presence mismatch")
+  if (auditRaw !== null && (!identityRaw || !/^[A-Za-z0-9_-]{43}\n?$/u.test(identityRaw))) throw new Error("Telegram audit ledger identity key is unavailable")
+  const auditLedgerEntries = auditRaw === null ? [] : verifyTelegramAuditLedger({
+    ledgerRaw: auditRaw,
+    headRaw: auditHeadRaw!,
+    identityKey: identityRaw!.trim(),
+  })
   const auditEntries = auditLedgerEntries.filter((entry) => entry.meta.scenarioHandleDigest === scenarioHandleDigest)
   const toolProfiles = parsedJson(optionalFixedFile(deps, SANCTUARY_TOOL_PROFILES_FILE))
   const profiles = toolProfiles ? object(toolProfiles.profiles, "Sanctuary tool profiles") : null
@@ -1153,7 +1153,7 @@ export async function readDefaultSanctuaryScenarioFacts(
         return identity.provider === "telegram-user" && identity.externalId === expectedSubject
       }).length
     }, 0)
-    const surfaceRecords = [...persistedIdentitySurfaces, auditRaw, JSON.stringify(approvalRecords)]
+    const surfaceRecords = [...persistedIdentitySurfaces, auditRaw ?? "", auditHeadRaw ?? "", JSON.stringify(approvalRecords)]
     const surfaceSubjects = surfaceRecords.flatMap((raw) => raw.match(/tg_[A-Za-z0-9_-]{43}/gu) ?? [])
     const structuredRawId = /"(?:authorizedUserId|authorizedChatId|transportUserId|transportChatId|userId|chatId|updateId|messageId)"\s*:\s*"?\d{1,20}"?/gu
     const rawLeakCount = surfaceRecords.reduce((count, raw) => count + rawValues.filter((value) => raw.includes(value)).length + (raw.match(structuredRawId)?.length ?? 0), 0)
@@ -1333,7 +1333,7 @@ export async function readDefaultSanctuaryScenarioFacts(
       rawWriteMaterialFieldCount,
       typedWriteExecutorCount: telegramNames.filter((name) => name === "unraid_restart_container" && writeApprovalPolicy.kind === "required").length,
       writeApprovalPolicyDigest: createHash("sha256").update(JSON.stringify(writeApprovalPolicy)).digest("hex"),
-      sensitiveMaterialObserved: auditContainsSensitiveMaterial(auditRaw, deps.telegramCredentials?.()) || rawWriteMaterialFieldCount > 0 || container?.writableKeyExposure === true,
+      sensitiveMaterialObserved: auditContainsSensitiveMaterial(auditRaw ?? "", deps.telegramCredentials?.()) || rawWriteMaterialFieldCount > 0 || container?.writableKeyExposure === true,
       stopDenied, restartDenied, denialAuditCount, denialStateUnchanged, denialProbeCompleted,
     }
   }
@@ -1397,7 +1397,7 @@ export async function readDefaultSanctuaryScenarioFacts(
       excludedToolCount: 0, excludedSchemaIntersectionCount: 0, fabricatedHandlerInvocationCount: 0, excludedToolAttemptCount: 0, excludedToolRejectedCount: 0, excludedToolInvokedCount: 0, excludedToolSideEffectCount: 0, globallyResolvableExcludedToolCount: 0, auditPathDigest: "", auditLedgerDigest: "", auditRecordCount: 0, auditLifecyclePairCount: 0,
       containerUser: "", liveProcessUser: "", mountCount: 0, publishedPortCount: 0, networkMode: "", readOnlyRoot: false, mountsExact: false, securityExact: false, updaterDisabled: false,
       writableKeyExposure: container?.writableKeyExposure === true, rawWriteMaterialFieldCount: 0, typedWriteExecutorCount: 0, writeApprovalPolicyDigest: "",
-      sensitiveMaterialObserved: auditContainsSensitiveMaterial(auditRaw) || container?.writableKeyExposure === true,
+      sensitiveMaterialObserved: auditContainsSensitiveMaterial(auditRaw ?? "") || container?.writableKeyExposure === true,
       stopDenied, restartDenied, denialAuditCount, denialStateUnchanged, denialProbeCompleted,
     },
   }
@@ -1578,11 +1578,13 @@ async function storeTelegramBootstrap(payload: JsonObject, deps: SanctuaryAccept
 
 function cursorSnapshot(deps: SanctuaryAcceptanceAdapterDependencies): { offsetDigest: string; auditCursorDigest: string } {
   const offsetRaw = fixedFile(deps, TELEGRAM_OFFSET)
+  const auditRaw = fixedFile(deps, TELEGRAM_AUDIT)
+  const auditHeadRaw = fixedFile(deps, TELEGRAM_AUDIT_HEAD)
   const offset = object(JSON.parse(offsetRaw) as unknown, "Telegram offset")
   if (!Number.isSafeInteger(offset.nextUpdateId) || (offset.nextUpdateId as number) < 0) throw new Error("Telegram offset is invalid")
   return {
     offsetDigest: sha256(JSON.stringify({ nextUpdateId: offset.nextUpdateId })),
-    auditCursorDigest: sha256(fixedFile(deps, TELEGRAM_AUDIT)),
+    auditCursorDigest: sha256(`${auditRaw}\0${auditHeadRaw}`),
   }
 }
 

@@ -24,6 +24,7 @@ import { getAgentRoot } from "../heart/identity"
 import { readSanctuaryAcceptanceMarker, sanctuaryAcceptanceEventMeta } from "../heart/daemon/sanctuary-acceptance-marker"
 import { readRuntimeCredentialConfig } from "../heart/runtime-credentials"
 import { emitNervesEvent } from "../nerves/runtime"
+import { registerGlobalLogSink } from "../nerves"
 import { createSanctuaryInteractiveControl } from "./sanctuary-interactive-control"
 import { runSenseTurn, type RunSenseTurnOptions, type RunSenseTurnResult } from "./shared-turn"
 import {
@@ -45,6 +46,7 @@ import { createSanctuaryToolContext, runWithSanctuaryToolReceiptCollection, type
 import { renderSanctuaryGroundedResponse, sanctuaryGroundingDigest } from "./sanctuary-grounding"
 import { createTelegramApprovalRuntime, type TelegramApprovalRuntime } from "./telegram-approval-runtime"
 import type { SanctuaryHealthSweepResult } from "./sanctuary-health"
+import { createTelegramAuditLedger, type TelegramAuditLedger } from "./telegram-audit-ledger"
 
 export interface TelegramSenseCredentials {
   botToken: string
@@ -66,6 +68,7 @@ const TELEGRAM_SUBJECT_DOMAIN = "ouroboros.telegram.subject.v1"
 const TELEGRAM_IDENTITY_KEY = /^[A-Za-z0-9_-]{43}$/u
 const TELEGRAM_SUBJECT = /^tg_[A-Za-z0-9_-]{43}$/u
 const TELEGRAM_SUBJECT_INDEX = "identity-subjects.json"
+const telegramAcceptanceAudits = new Map<string, { identityKey: string; ledger: TelegramAuditLedger; references: number; unregister: () => void }>()
 const TELEGRAM_TURN_RECEIPT_DOMAINS = {
   "sanctuary-telegram-turn-receipt-v3": "ouroboros.telegram.turn-receipt.v3",
   "sanctuary-telegram-turn-receipt-v4": "ouroboros.telegram.turn-receipt.v4",
@@ -74,6 +77,33 @@ const TELEGRAM_TURN_LEDGER_MAX_BYTES = 4 * 1024 * 1024
 const TELEGRAM_TURN_LEDGER_MAX_ROWS = 500
 const TELEGRAM_TURN_LEDGER_MAX_ROW_BYTES = 16 * 1024
 const telegramTurnLedgerTails = new Map<string, Promise<void>>()
+
+function acquireTelegramAcceptanceAudit(root: string, identityKey: string, privateValues: readonly string[]): { ledger: TelegramAuditLedger; release(): void } {
+  const existing = telegramAcceptanceAudits.get(root)
+  if (existing) {
+    if (existing.identityKey !== identityKey) throw new Error("Telegram acceptance audit identity changed while active")
+    existing.ledger.assertHealthy()
+    existing.references += 1
+    let released = false
+    return { ledger: existing.ledger, release: () => {
+      if (released) return
+      released = true
+      existing.references -= 1
+      if (existing.references === 0) { existing.unregister(); telegramAcceptanceAudits.delete(root) }
+    } }
+  }
+  const ledger = createTelegramAuditLedger({ root, identityKey, privateValues })
+  const record: { identityKey: string; ledger: TelegramAuditLedger; references: number; unregister: () => void } = { identityKey, ledger, references: 1, unregister: () => undefined }
+  record.unregister = registerGlobalLogSink((event) => ledger.append(event))
+  telegramAcceptanceAudits.set(root, record)
+  let released = false
+  return { ledger, release: () => {
+    if (released) return
+    released = true
+    record.references -= 1
+    if (record.references === 0) { record.unregister(); telegramAcceptanceAudits.delete(root) }
+  } }
+}
 
 export function sanctuaryTelegramTurnReceiptDigest(identityKey: string, schemaVersion: keyof typeof TELEGRAM_TURN_RECEIPT_DOMAINS, purpose: string, value: string): string {
   return createHmac("sha256", identityKey).update(`${TELEGRAM_TURN_RECEIPT_DOMAINS[schemaVersion]}\0${purpose}\0${value}`, "utf8").digest("hex")
@@ -564,6 +594,10 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   const runTurn = options.runTurn ?? runSenseTurn
   const collectToolReceipts = options._runWithToolReceiptCollection ?? runWithSanctuaryToolReceiptCollection
   const useSanctuaryRuntime = options.agentName === "sanctuary" && !options.runTurn
+  const acceptanceAuditLease = useSanctuaryRuntime
+    ? acquireTelegramAcceptanceAudit(agentRoot, identityKey, [botToken, authorizedUserId, authorizedChatId])
+    : undefined
+  const acceptanceAudit = acceptanceAuditLease?.ledger
   const toolContext = useSanctuaryRuntime ? createSanctuaryToolContext(options.agentName) : undefined
   const approvalRuntime = options.approvalRuntime ?? (useSanctuaryRuntime ? createTelegramApprovalRuntime({
     agentName: options.agentName,
@@ -840,12 +874,14 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       }
       return { ...binding, dropMac: sanctuaryTelegramUnauthorizedDropMac(identityKey, schemaVersion, binding) }
     },
+    onDispatchSettled: () => acceptanceAudit?.assertHealthy(),
   })
 
   return {
     run(signal) {
       if (runPromise) return runPromise
       runPromise = (async () => {
+        acceptanceAudit?.assertHealthy()
         await migrateIdentity()
         await approvalRuntime?.recover()
         await interactiveControl?.start()
@@ -890,6 +926,8 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
           message: "Telegram long poll stopped",
           meta: { agentName: options.agentName, subject },
         })
+        acceptanceAudit?.assertHealthy()
+        acceptanceAuditLease?.release()
       })()
       return stopPromise
     },
