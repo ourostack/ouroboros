@@ -20,21 +20,23 @@ import { createSanctuaryAcceptanceScenarioFinalizer } from "../../../heart/daemo
 
 const event = (name: string) => ({ event: name, at: 1, meta: {} })
 const turnReceipt = (toolResultDigests: string[] = []) => ({ status: "success" as const, updateDigest: "1".repeat(64), sequenceDigest: "2".repeat(64), responseDigest: "3".repeat(64), toolResultDigests, providerTurnCount: 1, toolInvocationCount: toolResultDigests.length, deliveryCount: 1, telegramMessageIdDigests: ["4".repeat(64)], completedAt: 10_000 })
-const approval = (state: string) => ({ approvalId: "approval-1", state, toolName: "unraid_restart_container", createdAt: 1_000, expiresAt: 301_000, updatedAt: 302_000, attempted: state === "succeeded", continuationCompleted: true, buttonsRemoved: true, terminalPrompt: true, callbackCount: 0, settledCount: 0, claimCount: state === "succeeded" ? 1 : 0, replayMutationCount: 0, staleAcknowledged: true, argumentDigest: "d".repeat(64), target: "calibre-web" })
+const approval = (state: string) => ({ approvalId: "approval-1", state, toolName: "unraid_restart_container", createdAt: 1_000, expiresAt: 301_000, updatedAt: 302_000, attempted: state === "succeeded", continuationCompleted: true, buttonsRemoved: true, terminalPrompt: true, callbackCount: 0, settledCount: 0, claimCount: state === "succeeded" ? 1 : 0, replayMutationCount: 0, staleAcknowledged: true, argumentDigest: "d".repeat(64), target: "calibre-web", checkpointDigest: "2".repeat(64), approvalEpoch: 0, continuationEpoch: 1, continuationState: "completed", suspendedSessionRevision: "c".repeat(64) })
 const restartContinuationDriver = () => ({
   schemaVersion: "sanctuary-interactive-driver-receipt-v1" as const,
   label: "unit-16m-restart-continuation" as const,
-  scenarioHandleDigest: "a".repeat(64), approvalIdDigest: "1".repeat(64), checkpointDigest: "2".repeat(64),
+  scenarioHandleDigest: "a".repeat(64), approvalIdDigest: probeDigest("approval-1"), checkpointDigest: "2".repeat(64),
+  suspendedSessionRevisionDigest: probeDigest("c".repeat(64)),
   approvalEpochBefore: 0, approvalEpochAfterRestart: 0, continuationEpochAfter: 1,
-  ownerLifecycleDigestBefore: "3".repeat(64), ownerLifecycleDigestAfter: "4".repeat(64),
-  restartInvocationCount: 1, pendingRestored: true, callbackAttempts: 1,
+  ownerImageDigest: "3".repeat(64), ownerContainerDigest: "4".repeat(64), restartCountBefore: 7, restartCountAfter: 8,
+  pendingDigestBefore: "6".repeat(64), pendingDigestAfter: "6".repeat(64), pendingRestored: true, callbackAttempts: 1, mutationCount: 1,
   indeterminateRecoveryObserved: true, indeterminateRetryCount: 0,
 })
 const duplicateCallbackDriver = () => ({
   schemaVersion: "sanctuary-interactive-driver-receipt-v1" as const,
   label: "unit-16l-duplicate-callback" as const, scenarioHandleDigest: "a".repeat(64),
-  approvalIdDigest: "1".repeat(64), checkpointDigest: "2".repeat(64), approvalEpochBefore: 0,
-  callbackAttempts: 2, settledCount: 2, claimCount: 1, mutationCount: 1,
+  approvalIdDigest: probeDigest("approval-1"), checkpointDigest: "2".repeat(64), suspendedSessionRevisionDigest: probeDigest("c".repeat(64)), approvalEpochBefore: 0,
+  callbackAttempts: 2, distinctQueryCount: 2, callbackDataDigest: "6".repeat(64), barrierObserved: true,
+  settledCount: 2, claimCount: 1, mutationCount: 1, staleReplayAttempts: 1,
   staleReplaySettled: true, staleReplayMutationCount: 0, promptTerminal: true, writeCredentialObserved: false,
 })
 const successfulRestart = () => ([
