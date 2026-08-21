@@ -191,6 +191,25 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     fs.rmSync(agentRoot, { recursive: true, force: true })
   })
 
+  it("detects raw Telegram credentials in persisted session paths as well as contents", async () => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-identity-path-leak-"))
+    const scenarioHandleDigest = "a".repeat(64)
+    const identityKey = "k".repeat(43)
+    const credentials = { botToken: "12345:private-token-value", authorizedUserId: "123456789", authorizedChatId: "987654321" }
+    const leakedDirectory = path.join(agentRoot, "state", "sessions", credentials.authorizedUserId)
+    fs.mkdirSync(leakedDirectory, { recursive: true })
+    fs.writeFileSync(path.join(leakedDirectory, "session.json"), "{}\n")
+    const identityPath = `${agentRoot}/state/senses/telegram/identity.key`
+    const facts = await readDefaultSanctuaryScenarioFacts("unit-12c-1-opaque-identity", scenarioHandleDigest, unit16Deps({
+      readFixedFile: (file) => { if (file === identityPath) return `${identityKey}\n`; throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
+      telegramCredentials: () => credentials,
+      hostRequest: async () => ({ running: true, health: "healthy", imageId: "sha256:missing", user: "10001:10001", readOnlyRoot: true, mountCount: 2, publishedPortCount: 0, restartPolicy: "unless-stopped", restartCount: 0, autostartExact: true, updaterDisabled: true, vaultUnlocked: true, manualAuthRequired: false }),
+    }), agentRoot)
+    expect(facts.identity).toMatchObject({ rawIdentityAbsent: false })
+    expect(facts.identity?.rawLeakCount).toBeGreaterThan(0)
+    fs.rmSync(agentRoot, { recursive: true, force: true })
+  })
+
   it("parses the real reboot checkpoint schema and binds live host recovery milestones", async () => {
     const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-reboot-facts-"))
     const prebootDigest = "1".repeat(64)
@@ -207,7 +226,35 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       now: () => 123_456,
     }), agentRoot)
     expect(facts.capturedAt).toBe(123_456)
-    expect(facts.reboot).toEqual({ requestDigest: createHash("sha256").update(requestId).digest("hex"), requestCount: 1, checkpointPersisted: true, unrelatedHostOperations: 0, bootIdentityChanged: true, hostReady: true, arrayReady: true, dockerReady: true, butlerReady: true, tailscaleReady: true, sshReady: true })
+    expect(facts.reboot).toEqual({ phase: "complete", requestDigest: createHash("sha256").update(requestId).digest("hex"), requestCount: 1, checkpointPersisted: true, unrelatedHostOperations: 0, bootIdentityChanged: true, hostReady: true, arrayReady: true, dockerReady: true, butlerReady: true, tailscaleReady: true, sshReady: true })
+    fs.rmSync(agentRoot, { recursive: true, force: true })
+  })
+
+  it("parses a preflight reboot checkpoint without fabricating a reboot request", async () => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-reboot-preflight-"))
+    const idempotencyDigest = "4".repeat(64)
+    const files: Record<string, string> = {
+      "/evidence/reboot.json": JSON.stringify({ schemaVersion: 1, operation: "reboot", phase: "preflight", targetId: "sanctuary", idempotencyDigest, requestedAt: 123 }),
+    }
+    const facts = await readDefaultSanctuaryScenarioFacts("unit-16a-pre-reboot-checkpoint", "a".repeat(64), unit16Deps({
+      readFixedFile: (file) => { if (!(file in files)) throw Object.assign(new Error("missing"), { code: "ENOENT" }); return files[file]! },
+      hostRequest: async () => ({ running: true, health: "healthy", imageId: "sha256:missing", user: "10001:10001", readOnlyRoot: true, mountCount: 2, publishedPortCount: 0, restartPolicy: "unless-stopped", restartCount: 0, autostartExact: true, updaterDisabled: true, vaultUnlocked: true, manualAuthRequired: false }),
+    }), agentRoot)
+    expect(facts.reboot).toMatchObject({ phase: "preflight", requestDigest: idempotencyDigest, requestCount: 0, checkpointPersisted: true, bootIdentityChanged: false })
+    fs.rmSync(agentRoot, { recursive: true, force: true })
+  })
+
+  it.each([
+    ["delivery count mismatch", { deliveryCount: 1, deliveries: [] }],
+    ["extra field", { extra: true }],
+  ])("fails closed on a Telegram turn receipt with %s", async (_label, patch) => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-turn-receipt-invalid-"))
+    const scenarioHandleDigest = "a".repeat(64)
+    const receipt = { schemaVersion: "sanctuary-telegram-turn-receipt-v3", scenarioHandleDigest, status: "success", errorCategory: null, updateDigest: "1".repeat(64), sequenceDigest: "2".repeat(64), responseDigest: "3".repeat(64), toolResultDigests: [], providerInvocationCount: 1, toolInvocationCount: 0, deliveryCount: 0, deliveries: [], completedAt: "2026-08-20T16:00:01.000Z", ...patch }
+    const ledgerPath = `${agentRoot}/state/acceptance/telegram-turns.ndjson`
+    await expect(readDefaultSanctuaryScenarioFacts("unit-16d-whats-up", scenarioHandleDigest, unit16Deps({
+      readFixedFile: (file) => { if (file === ledgerPath) return `${JSON.stringify(receipt)}\n`; throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
+    }), agentRoot)).rejects.toThrow("Telegram turn receipt ledger row is invalid")
     fs.rmSync(agentRoot, { recursive: true, force: true })
   })
 

@@ -36,7 +36,7 @@ const base = (): SanctuaryScenarioFacts => ({
   cron: { registered: true, fingerprint: "a".repeat(64), receiptDigest: "b".repeat(64), sweepCount: 0 },
   health: { transitionCount: 0, alertCount: 0, productionRestored: true },
   digest: { scheduleObserved: true, messageCount: 0, firedWithinMs: 1_000, productionRestored: true },
-  reboot: { requestDigest: "c".repeat(64), requestCount: 1, checkpointPersisted: true, unrelatedHostOperations: 0, bootIdentityChanged: true, hostReady: true, arrayReady: true, dockerReady: true, butlerReady: true, tailscaleReady: true, sshReady: true },
+  reboot: { phase: "complete", requestDigest: "c".repeat(64), requestCount: 1, checkpointPersisted: true, unrelatedHostOperations: 0, bootIdentityChanged: true, hostReady: true, arrayReady: true, dockerReady: true, butlerReady: true, tailscaleReady: true, sshReady: true },
   containment: { auditComplete: true, readOnlyBoundaryHeld: true, sensitiveMaterialObserved: false, stopDenied: true, restartDenied: true, denialAuditCount: 1, denialStateUnchanged: true, denialProbeCompleted: true },
 })
 
@@ -47,6 +47,8 @@ describe("Sanctuary live scenario capture", () => {
     for (const label of SANCTUARY_UNIT_16_EVIDENCE_LABELS) {
       const before = base()
       const after = base()
+      if (label === "unit-16a-pre-reboot-checkpoint") after.reboot = { ...after.reboot!, phase: "preflight", requestCount: 0, bootIdentityChanged: false }
+      if (label === "unit-16a-reboot-request") after.reboot = { ...after.reboot!, phase: "requested", bootIdentityChanged: false }
       if (label.includes("opaque-identity-live")) after.telegramTurns.push(turnReceipt())
       if (label === "unit-15c-1-no-callback-terminalization") {
         after.approvals = [approval("expired")]
@@ -65,7 +67,7 @@ describe("Sanctuary live scenario capture", () => {
       if (label === "unit-16i-delayed-approval") { after.approvals = [approval("succeeded")]; after.restartAttempts = successfulRestart() }
       if (label === "unit-16k-timeout-stale") { after.approvals = [approval("expired")]; after.events.push(event("telegram.update_dropped")) }
       if (label === "unit-16l-duplicate-callback") { after.approvals = [{ ...approval("succeeded"), callbackCount: 2, settledCount: 2, claimCount: 1 }]; after.restartAttempts = successfulRestart(); after.events.push(event("telegram.callback_settled"), event("telegram.callback_settled"), event("approval.acceptance_transition")) }
-      if (label === "unit-16m-restart-continuation") { after.approvals = [approval("succeeded")]; after.restartAttempts = successfulRestart(); after.events.push(event("senses.telegram_approved_restart_end")) }
+      if (label === "unit-16m-restart-continuation") { after.approvals = [approval("succeeded")]; after.restartAttempts = successfulRestart(); after.events.push({ ...event("senses.telegram_approved_restart_end"), meta: { approvalId: "approval-1" } }) }
       const assertions = deriveSanctuaryScenarioAssertions(label, before, after, 400_000)
       expect(assertions, label).not.toBeNull()
       expect(validateSanctuaryUnit16EvidenceAssertions(label, assertions)).toEqual(assertions)
@@ -98,5 +100,33 @@ describe("Sanctuary live scenario capture", () => {
     expect(deriveSanctuaryScenarioAssertions("unit-16j-denial", before, denial, 400_000)).toBeNull()
     const audit = base(); audit.containment!.sensitiveMaterialObserved = true
     expect(deriveSanctuaryScenarioAssertions("unit-16e-containment-audit", before, audit, 400_000)).toBeNull()
+  })
+
+  it("binds positive turns and approvals to one new scenario record", () => {
+    const before = base()
+    const decoy = turnReceipt(["6".repeat(64)])
+    const after = base()
+    after.telegramTurns.push(decoy, turnReceipt(["5".repeat(64)]))
+    after.events.push({ ...event("senses.sanctuary_read_receipt"), meta: { toolName: "unraid_get_system", success: true, resultDigest: "5".repeat(64) } })
+    expect(deriveSanctuaryScenarioAssertions("unit-16d-whats-up", before, after, 400_000)).toBeNull()
+
+    const ambiguous = base()
+    ambiguous.approvals = [approval("denied"), { ...approval("denied"), approvalId: "approval-2" }]
+    expect(deriveSanctuaryScenarioAssertions("unit-16j-denial", before, ambiguous, 400_000)).toBeNull()
+  })
+
+  it("requires unauthorized traffic to leave every scenario work ledger empty", () => {
+    const before = base()
+    const after = base()
+    after.events.push({ ...event("telegram.update_dropped"), meta: { scenarioHandleDigest: "a".repeat(64), distinctAccount: true } })
+    after.telegramTurns.push({ ...turnReceipt(), status: "error", deliveryCount: 0, telegramMessageIdDigests: [], providerTurnCount: 1 })
+    expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unauthorized", before, after, 400_000)).toBeNull()
+  })
+
+  it("accepts a daily digest fired exactly at the local boundary", () => {
+    const before = base()
+    const after = base()
+    after.digest = { ...after.digest!, messageCount: 1, firedWithinMs: 0 }
+    expect(deriveSanctuaryScenarioAssertions("unit-16h-daily-digest", before, after, 400_000)).toMatchObject({ firedWithinMs: 0 })
   })
 })

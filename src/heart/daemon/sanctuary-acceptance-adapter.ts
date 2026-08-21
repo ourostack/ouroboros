@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process"
 import { createHash, createHmac, timingSafeEqual } from "node:crypto"
 import { existsSync, readFileSync, readdirSync } from "node:fs"
 import { createConnection } from "node:net"
+import * as path from "node:path"
 
 import { emitNervesEvent } from "../../nerves/runtime"
 import { createTelegramApprovalRuntime, type TelegramApprovalRuntime } from "../../senses/telegram-approval-runtime"
@@ -263,13 +264,14 @@ function readBoundedIdentitySurfaces(agentRoot: string): string[] {
     pathFor(agentRoot, "friends"),
     pathFor(agentRoot, "state/sessions"),
     pathFor(agentRoot, "state/pending"),
+    pathFor(agentRoot, "state/daemon/logs"),
   ]
   const records: string[] = []
   let totalBytes = 0
   const visit = (target: string, depth: number): void => {
     if (depth > 6 || records.length >= 2_000) return
     try {
-      const entries = readdirSync(target, { withFileTypes: true })
+      const entries = readdirSync(target, { withFileTypes: true }).sort((left, right) => left.name.localeCompare(right.name))
       for (const entry of entries) {
         if (records.length >= 2_000 || entry.isSymbolicLink()) continue
         const child = pathFor(target, entry.name)
@@ -279,7 +281,7 @@ function readBoundedIdentitySurfaces(agentRoot: string): string[] {
           totalBytes += Buffer.byteLength(raw)
           if (totalBytes > 16 * 1024 * 1024 || Buffer.byteLength(raw) > 1024 * 1024) throw new Error("identity surface audit exceeds its bound")
           JSON.parse(raw)
-          records.push(raw)
+          records.push(path.relative(agentRoot, child), raw)
         }
       }
     } catch (error) {
@@ -289,13 +291,49 @@ function readBoundedIdentitySurfaces(agentRoot: string): string[] {
           totalBytes += Buffer.byteLength(raw)
           if (totalBytes > 16 * 1024 * 1024 || Buffer.byteLength(raw) > 1024 * 1024) throw new Error("identity surface audit exceeds its bound")
           JSON.parse(raw)
-          records.push(raw)
+          records.push(path.relative(agentRoot, target), raw)
         } catch (fileError) { if ((fileError as NodeJS.ErrnoException).code !== "ENOENT") throw fileError }
       } else throw error
     }
   }
   for (const root of roots) visit(root, 0)
   return records
+}
+
+function parseTelegramTurnReceipts(raw: string, scenarioHandleDigest: string): SanctuaryScenarioFacts["telegramTurns"] {
+  if (Buffer.byteLength(raw) > 4 * 1024 * 1024) throw new Error("Telegram turn receipt ledger exceeds its bound")
+  const lines = raw.split("\n").filter(Boolean)
+  if (lines.length > 500 || lines.some((line) => Buffer.byteLength(line) > 16 * 1024)) throw new Error("Telegram turn receipt ledger exceeds its bound")
+  const exactKeys = ["completedAt", "deliveries", "deliveryCount", "errorCategory", "providerInvocationCount", "responseDigest", "scenarioHandleDigest", "schemaVersion", "sequenceDigest", "status", "toolInvocationCount", "toolResultDigests", "updateDigest"].sort()
+  return lines.flatMap((line) => {
+    const receipt = object(JSON.parse(line) as unknown, "Telegram turn receipt")
+    const deliveries = receipt.deliveries
+    if (JSON.stringify(Object.keys(receipt).sort()) !== JSON.stringify(exactKeys)
+      || receipt.schemaVersion !== "sanctuary-telegram-turn-receipt-v3"
+      || typeof receipt.scenarioHandleDigest !== "string" || !SHA256.test(receipt.scenarioHandleDigest)
+      || (receipt.status !== "success" && receipt.status !== "error")
+      || (receipt.status === "success" ? receipt.errorCategory !== null : typeof receipt.errorCategory !== "string" || receipt.errorCategory.length < 1 || receipt.errorCategory.length > 128)
+      || ![receipt.updateDigest, receipt.sequenceDigest, receipt.responseDigest].every((value) => typeof value === "string" && SHA256.test(value))
+      || !Array.isArray(receipt.toolResultDigests) || receipt.toolResultDigests.length > 100 || !receipt.toolResultDigests.every((value) => typeof value === "string" && SHA256.test(value))
+      || !Array.isArray(deliveries) || deliveries.length > 100 || !deliveries.every((value) => {
+        const delivery = object(value, "Telegram delivery receipt")
+        return JSON.stringify(Object.keys(delivery).sort()) === JSON.stringify(["chunkDigest", "messageIdDigest"])
+          && typeof delivery.messageIdDigest === "string" && SHA256.test(delivery.messageIdDigest)
+          && typeof delivery.chunkDigest === "string" && SHA256.test(delivery.chunkDigest)
+      })
+      || ![receipt.providerInvocationCount, receipt.toolInvocationCount].every((value) => Number.isSafeInteger(value) && Number(value) >= 0 && Number(value) <= 1_000)
+      || !Number.isSafeInteger(receipt.deliveryCount) || receipt.deliveryCount !== deliveries.length
+      || typeof receipt.completedAt !== "string" || receipt.completedAt.length > 30 || !Number.isFinite(Date.parse(receipt.completedAt)) || new Date(Date.parse(receipt.completedAt)).toISOString() !== receipt.completedAt) {
+      throw new Error("Telegram turn receipt ledger row is invalid")
+    }
+    if (receipt.scenarioHandleDigest !== scenarioHandleDigest) return []
+    return [{
+      status: receipt.status, updateDigest: String(receipt.updateDigest), sequenceDigest: String(receipt.sequenceDigest), responseDigest: String(receipt.responseDigest),
+      toolResultDigests: receipt.toolResultDigests as string[], providerTurnCount: Number(receipt.providerInvocationCount),
+      toolInvocationCount: Number(receipt.toolInvocationCount), deliveryCount: Number(receipt.deliveryCount),
+      telegramMessageIdDigests: deliveries.map((delivery) => String((delivery as JsonObject).messageIdDigest)), completedAt: Date.parse(receipt.completedAt),
+    }]
+  })
 }
 
 export async function readDefaultSanctuaryScenarioFacts(
@@ -379,12 +417,12 @@ export async function readDefaultSanctuaryScenarioFacts(
   let approvalRecords = [] as ReturnType<typeof readApprovalsByScenarioHandleDigest>
   const approvalDatabasePath = pathFor(agentRoot, "state/approvals/approvals.sqlite")
   if (existsSync(approvalDatabasePath)) approvalRecords = readApprovalsByScenarioHandleDigest(approvalDatabasePath, scenarioHandleDigest)
-  const restartExecutionCount = auditEntries.filter((entry) => entry.event === "senses.telegram_approved_restart_end").length
   const approvals = approvalRecords.map(({ approval: record, continuation }) => {
     const boundEvents = auditEntries.filter((entry) => entry.meta.approvalId === record.approvalId)
     const terminalized = boundEvents.some((entry) => entry.event === "telegram.approval_prompt_terminalized" && entry.meta.buttonsRemoved === true)
     const callbackEvents = boundEvents.filter((entry) => entry.event === "telegram.callback_settled")
     const claimCount = boundEvents.filter((entry) => entry.event === "approval.acceptance_transition" && entry.meta.state === "claimed").length
+    const restartExecutionCount = boundEvents.filter((entry) => entry.event === "senses.telegram_approved_restart_end").length
     return ({
     approvalId: record.approvalId,
     state: record.state,
@@ -416,27 +454,7 @@ export async function readDefaultSanctuaryScenarioFacts(
       return [{ state: attempt.state as "attempt_not_started" | "attempting" | "succeeded" | "attempted_or_indeterminate", actionDigest: String(attempt.actionDigest), argumentDigest: String(attempt.argumentDigest), target: containerRecord.name, approvalId: attempt.approvalId, attemptId: attempt.attemptId, observedAt, mutationAcknowledged: attempt.mutationAcknowledged === true, afterState: typeof attempt.afterState === "string" ? attempt.afterState : null }]
     } catch { return [] }
   })
-  const telegramTurns = telegramTurnsRaw.split("\n").filter(Boolean).flatMap((line) => {
-    try {
-      const receipt = object(JSON.parse(line) as unknown, "Telegram turn receipt")
-      if (receipt.scenarioHandleDigest !== scenarioHandleDigest || receipt.schemaVersion !== "sanctuary-telegram-turn-receipt-v3" || !["success", "error"].includes(String(receipt.status))) return []
-      const digests = [receipt.updateDigest, receipt.sequenceDigest, receipt.responseDigest]
-      if (!digests.every((value) => typeof value === "string" && SHA256.test(value))
-        || !Array.isArray(receipt.toolResultDigests) || !receipt.toolResultDigests.every((value) => typeof value === "string" && SHA256.test(value))
-        || !Array.isArray(receipt.deliveries) || !receipt.deliveries.every((value) => {
-          try { const delivery = object(value, "Telegram delivery receipt"); return SHA256.test(String(delivery.messageIdDigest)) && SHA256.test(String(delivery.chunkDigest)) } catch { return false }
-        })) return []
-      const completedAt = Date.parse(String(receipt.completedAt))
-      const counts = [receipt.providerInvocationCount, receipt.toolInvocationCount, receipt.deliveryCount]
-      if (!Number.isFinite(completedAt) || !counts.every((value) => Number.isSafeInteger(value) && Number(value) >= 0)) return []
-      return [{
-        status: receipt.status as "success" | "error", updateDigest: String(receipt.updateDigest), sequenceDigest: String(receipt.sequenceDigest), responseDigest: String(receipt.responseDigest),
-        toolResultDigests: receipt.toolResultDigests as string[], providerTurnCount: Number(receipt.providerInvocationCount),
-        toolInvocationCount: Number(receipt.toolInvocationCount), deliveryCount: Number(receipt.deliveryCount),
-        telegramMessageIdDigests: (receipt.deliveries as JsonObject[]).map((delivery) => String(delivery.messageIdDigest)), completedAt,
-      }]
-    } catch { return [] }
-  })
+  const telegramTurns = parseTelegramTurnReceipts(telegramTurnsRaw, scenarioHandleDigest)
   let identity: SanctuaryScenarioFacts["identity"]
   if (identityRaw && /^[A-Za-z0-9_-]{43}\n?$/u.test(identityRaw)) {
     const credentials = deps.telegramCredentials ? deps.telegramCredentials() : loadTelegramSenseCredentials(TARGET_ID)
@@ -449,10 +467,10 @@ export async function readDefaultSanctuaryScenarioFacts(
     const expectedSubject = `tg_${createHmac("sha256", identityKey).update(identityPayload, "utf8").digest("base64url")}`
     const observedSubjects = auditEntries.flatMap((entry) => typeof entry.meta.subject === "string" ? [entry.meta.subject] : [])
     const approvalSubjects = approvalRecords.map((projection) => projection.approval).filter((record) => record.transport === "telegram").map((record) => record.requesterId)
-    const rawValues = [credentials.authorizedUserId, credentials.authorizedChatId]
+    const rawValues = [...new Set([credentials.botToken, credentials.authorizedUserId, credentials.authorizedChatId])]
     const surfaceRecords = [...readBoundedIdentitySurfaces(agentRoot), auditRaw, JSON.stringify(approvalRecords)]
     const surfaceSubjects = surfaceRecords.flatMap((raw) => raw.match(/tg_[A-Za-z0-9_-]{43}/gu) ?? [])
-    const rawLeakCount = surfaceRecords.reduce((count, raw) => count + rawValues.filter((value) => raw.includes(`"${value}"`)).length, 0)
+    const rawLeakCount = surfaceRecords.reduce((count, raw) => count + rawValues.filter((value) => raw.includes(value)).length, 0)
     const mismatchCount = [...surfaceSubjects, ...observedSubjects, ...approvalSubjects].filter((subject) => subject !== expectedSubject).length
     identity = {
       keyPresent: true,
@@ -470,14 +488,20 @@ export async function readDefaultSanctuaryScenarioFacts(
   const container = deps.hostRequest ? object(await deps.hostRequest({ operation: "container_snapshot", targetId: TARGET_ID }), "container snapshot") : null
   const rebootCheckpoint = parsedJson(rebootRaw)
   let reboot: SanctuaryScenarioFacts["reboot"]
-  if (rebootCheckpoint?.operation === "reboot" && ["requested", "complete"].includes(String(rebootCheckpoint.phase))
+  if (rebootCheckpoint?.operation === "reboot" && rebootCheckpoint.phase === "preflight" && rebootCheckpoint.targetId === TARGET_ID
+    && typeof rebootCheckpoint.idempotencyDigest === "string" && SHA256.test(rebootCheckpoint.idempotencyDigest)) {
+    reboot = {
+      phase: "preflight", requestDigest: rebootCheckpoint.idempotencyDigest, requestCount: 0, checkpointPersisted: true, unrelatedHostOperations: 0,
+      bootIdentityChanged: false, hostReady: false, arrayReady: false, dockerReady: false, butlerReady: false, tailscaleReady: false, sshReady: false,
+    }
+  } else if (rebootCheckpoint?.operation === "reboot" && ["requested", "complete"].includes(String(rebootCheckpoint.phase))
     && typeof rebootCheckpoint.requestId === "string" && SHA256.test(rebootCheckpoint.requestId)
     && typeof rebootCheckpoint.prebootDigest === "string" && SHA256.test(rebootCheckpoint.prebootDigest)) {
     const milestones = container && container.recoveryMilestones && typeof container.recoveryMilestones === "object" && !Array.isArray(container.recoveryMilestones)
       ? container.recoveryMilestones as JsonObject : {}
     const complete = rebootCheckpoint.phase === "complete" && typeof rebootCheckpoint.postbootDigest === "string" && SHA256.test(rebootCheckpoint.postbootDigest)
     reboot = {
-      requestDigest: createHash("sha256").update(rebootCheckpoint.requestId).digest("hex"), requestCount: 1, checkpointPersisted: true, unrelatedHostOperations: 0,
+      phase: rebootCheckpoint.phase as "requested" | "complete", requestDigest: createHash("sha256").update(rebootCheckpoint.requestId).digest("hex"), requestCount: 1, checkpointPersisted: true, unrelatedHostOperations: 0,
       bootIdentityChanged: complete && rebootCheckpoint.postbootDigest !== rebootCheckpoint.prebootDigest,
       hostReady: milestones.hostReady === true, arrayReady: milestones.arrayReady === true, dockerReady: milestones.dockerReady === true,
       butlerReady: milestones.butlerReady === true, tailscaleReady: milestones.tailscaleReady === true, sshReady: milestones.sshReady === true,
@@ -504,14 +528,18 @@ export async function readDefaultSanctuaryScenarioFacts(
     const candidate = readinessPolicy.providers.map((entry) => object(entry, "provider readiness candidate"))
       .find((entry) => entry.provider === "openai-compatible-gemini")
     if (candidate && outwardConfig.provider === "openai-compatible" && innerConfig.provider === "openai-compatible") {
-      const glmRecord = await readProviderCredentialRecord(TARGET_ID, "openai-compatible", { refreshIfMissing: false })
-      const geminiRecord = await readProviderCredentialRecord(TARGET_ID, "openai-compatible-gemini", { refreshIfMissing: false })
+      const [glmRecord, geminiRecord] = await Promise.all([
+        readProviderCredentialRecord(TARGET_ID, "openai-compatible", { refreshIfMissing: false }),
+        readProviderCredentialRecord(TARGET_ID, "openai-compatible-gemini", { refreshIfMissing: false }),
+      ])
       const outwardModel = text(outwardConfig.model, "outward model")
       const innerModel = text(innerConfig.model, "inner model")
       const glmConfig = glmRecord.ok ? { ...glmRecord.record.credentials, ...glmRecord.record.config } as unknown as Parameters<typeof pingProvider>[1] : null
-      const outwardPing = glmConfig ? await pingProvider("openai-compatible", glmConfig, { model: outwardModel, timeoutMs: 10_000 }) : { ok: false as const }
-      const innerPing = glmConfig ? await pingProvider("openai-compatible", glmConfig, { model: innerModel, timeoutMs: 10_000 }) : { ok: false as const }
-      const geminiPing = geminiRecord.ok ? await pingProvider("openai-compatible-gemini", { ...geminiRecord.record.credentials, ...geminiRecord.record.config } as unknown as Parameters<typeof pingProvider>[1], { model: text(candidate.model, "Gemini candidate model"), timeoutMs: 10_000 }) : { ok: false as const }
+      const [outwardPing, innerPing, geminiPing] = await Promise.all([
+        glmConfig ? pingProvider("openai-compatible", glmConfig, { model: outwardModel, timeoutMs: 10_000 }) : Promise.resolve({ ok: false as const }),
+        glmConfig ? pingProvider("openai-compatible", glmConfig, { model: innerModel, timeoutMs: 10_000 }) : Promise.resolve({ ok: false as const }),
+        geminiRecord.ok ? pingProvider("openai-compatible-gemini", { ...geminiRecord.record.credentials, ...geminiRecord.record.config } as unknown as Parameters<typeof pingProvider>[1], { model: text(candidate.model, "Gemini candidate model"), timeoutMs: 10_000 }) : Promise.resolve({ ok: false as const }),
+      ])
       const pingReceipts = [
         { lane: "outward", provider: "openai-compatible", model: outwardModel, credentialRevision: glmRecord.ok ? glmRecord.record.revision : null, ok: outwardPing.ok, fallbackAttempted: false },
         { lane: "inner", provider: "openai-compatible", model: innerModel, credentialRevision: glmRecord.ok ? glmRecord.record.revision : null, ok: innerPing.ok, fallbackAttempted: false },
