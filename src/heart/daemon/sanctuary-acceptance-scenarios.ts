@@ -531,7 +531,7 @@ function exactApprovalEvidence(
 
 function terminalizedWithinTtlJitter(evidence: { boundAt: number; expiryObservedAt: number | null; expiryDeadlineAt: number | null }): boolean {
   if (evidence.expiryObservedAt === null) return false
-  const elapsed = (evidence.expiryDeadlineAt ?? evidence.expiryObservedAt) - evidence.boundAt
+  const elapsed = evidence.expiryObservedAt - evidence.boundAt
   return elapsed >= SANCTUARY_APPROVAL_TTL_MS && elapsed <= SANCTUARY_APPROVAL_TTL_MS + SANCTUARY_APPROVAL_RECONCILIATION_JITTER_MS
 }
 
