@@ -6,7 +6,7 @@
   "telegramTimeoutMs": 10000,
   "deploymentTargetProfiles": {
     "staging": { "command": "sanctuary-unit16-run.sh", "acceptanceInvocation": "sanctuary-unit16-run.sh <image-id> ...", "containerName": "ouro-butler-staging", "requiredRunning": 1, "restartPolicy": "unless-stopped", "networkMode": "host", "inboundTcpListeners": 0, "inboundUdpListeners": 0, "loopbackTcpControls": [6876] },
-    "final": { "command": "sanctuary-unit18-target-audit.sh", "acceptanceInvocation": "sanctuary-unit16-run.sh <image-id> --profile final ...", "containerName": "ouro-butler", "requiredRunning": 1, "requiredStopped": "ouro-butler-rollback", "restartPolicy": "unless-stopped", "networkMode": "host", "inboundTcpListeners": 0, "inboundUdpListeners": 0, "loopbackTcpControls": [6876] }
+    "final": { "command": "sanctuary-unit18-target-audit.sh", "acceptanceInvocation": "sanctuary-unit16-run.sh <image-id> --profile final ...", "containerName": "ouro-butler", "requiredRunning": 1, "optionalStopped": "ouro-butler-rollback", "restartPolicy": "unless-stopped", "networkMode": "host", "inboundTcpListeners": 0, "inboundUdpListeners": 0, "loopbackTcpControls": [6876] }
   },
   "configMaterializer": {
     "invocation": "sanctuary-acceptance-adapter.sh materialize-config <command> [before|after]",

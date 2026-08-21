@@ -200,12 +200,14 @@ async function queryGraphqlAutostart(records = inventoryRecords(), fetchImpl = f
     if (!identity || identity[1] !== serverIdentity[1] || typeof container.autoStart !== "boolean" || topology.has(canonical[0])) return false
     topology.set(canonical[0], { containerId: identity[2], autoStart: container.autoStart })
   }
-  const expectedNames = new Set([profile.containerName, ...profile.requiredStopped])
-  if (topology.size !== expectedNames.size || [...expectedNames].some((name) => !topology.has(name))
+  const requiredNames = new Set([profile.containerName, ...profile.requiredStopped])
+  const allowedNames = new Set([...requiredNames, ...profile.optionalStopped])
+  if ([...requiredNames].some((name) => !topology.has(name)) || [...topology.keys()].some((name) => !allowedNames.has(name))
     || profile.forbidden.some((name) => topology.has(name))) return false
   const target = topology.get(profile.containerName)
   if (!target || target.containerId !== expectedContainerId || target.autoStart !== true) return false
-  return profile.requiredStopped.every((name) => topology.get(name)?.autoStart === false)
+  return [...profile.requiredStopped, ...profile.optionalStopped]
+    .every((name) => !topology.has(name) || topology.get(name)?.autoStart === false)
 }
 
 function updaterDisabled(expectedImage) {

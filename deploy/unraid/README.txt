@@ -1386,8 +1386,10 @@ Packaged deployment-target containment gates:
   types (including datagrams) fail closed. Inherited descriptors for the same
   socket inode are deduplicated, while unknown loopback ports, wildcard/host-address
   listeners, process/socket/listener drift, or ambiguous ownership fail closed.
-  Unit 18 uses the separately packaged fixed final command, after rollback has
-  been retained stopped:
+  Unit 18 uses the separately packaged fixed final command after activation.
+  It accepts either the legacy-adoption topology with no canonical rollback or
+  exactly one stopped, non-autostarted rollback; running/autostarted rollback,
+  staging presence, and ambiguous canonical identities always fail closed:
     UNIT18_TARGET_TMP=$(mktemp /run/sanctuary-unit18-target-audit.sh.XXXXXX)
     /usr/bin/timeout -s KILL 20 /usr/bin/docker run --rm --pull=never --network none \
       --entrypoint /bin/cat "$IMAGE_ID" /opt/ouro/deploy/unraid/sanctuary-unit18-target-audit.sh >"$UNIT18_TARGET_TMP"
