@@ -42,7 +42,7 @@ const approvalAuditEvent = (eventName: string, at: number, patch: Record<string,
 })
 const approvalEvidence = (decision: "approve" | "deny", boundAt = 1_000, callbackAt = 121_000) => [
   approvalAuditEvent("senses.telegram_approval_prompt_bound", boundAt, { boundAt }),
-  approvalAuditEvent("telegram.callback_settled", callbackAt, { boundAt, callbackAt, acknowledged: true, accepted: decision === "approve", reason: decision === "approve" ? "accepted" : "decision_refused" }),
+  approvalAuditEvent("telegram.callback_settled", callbackAt, { boundAt, callbackAt, acknowledged: true, acknowledgementState: "acknowledged", decisionAttemptDigest: "6".repeat(64), accepted: decision === "approve", reason: decision === "approve" ? "accepted" : "decision_refused" }),
   approvalAuditEvent("senses.telegram_approval_continuation_delivered", callbackAt + 1, { boundAt, deliveredAt: callbackAt + 1, resultDigest: approvalResultDigest(decision === "approve" ? "succeeded" : "denied"), deliveryDigest: "8".repeat(64), deliveryMessageIdDigest: "7".repeat(64) }),
   approvalAuditEvent("telegram.approval_prompt_terminalized", callbackAt + 2, { boundAt, terminalEditStartedAt: callbackAt + 1, terminalizedAt: callbackAt + 2, buttonsRemoved: true }),
 ]

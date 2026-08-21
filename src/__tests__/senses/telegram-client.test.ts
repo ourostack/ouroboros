@@ -626,6 +626,39 @@ describe("Telegram approval callback transport", () => {
     expect(onDecision).not.toHaveBeenCalled()
   })
 
+  it.each(["approve", "deny"] as const)("recovers a tokenless late-terminal %s using independently signed attempt evidence", async (decision) => {
+    const acceptanceBinding = { scenarioHandleDigest: "a".repeat(64), actionDigest: "b".repeat(64), targetDigest: "c".repeat(64), checkpointDigest: "d".repeat(64), suspendedSessionRevisionDigest: "e".repeat(64), messageIdDigest: "f".repeat(64), boundAt: 0 }
+    const attemptedAt = 900
+    const attempt = { schemaVersion: "telegram-approval-decision-attempt-v1" as const, decision, queryIdDigest: "a".repeat(64), attemptedAt, evidenceMac: "b".repeat(64), recoveryMac: "c".repeat(64) }
+    let durable: ReturnType<TelegramPendingApprovalStore["load"]> = [{
+      approvalId: "approval-1", messageId: "99", deliveryState: "bound", approveCallbackData: "a:approve", denyCallbackData: "d:deny", expiresAt: 1_000,
+      acceptanceBinding, decisionAttempt: attempt, terminal: { accepted: decision === "approve", terminalText: "done" },
+    }]
+    const onDecision = vi.fn()
+    const transport = createTelegramApprovalTransport({
+      api: { stop: vi.fn(), request: vi.fn(async () => true) }, expectedUserId: "10", expectedChatId: "10",
+      pendingStore: { load: () => structuredClone(durable), save: (next) => { durable = structuredClone(next) } }, createOpaqueHandle: vi.fn(), onDecision,
+      resolveDecisionToken: async () => "", now: () => 1_100, signAcceptanceEvidence: (event: string) => event === "telegram.approval_decision_attempt_recovery_state" ? "c".repeat(64) : "f".repeat(64),
+      commitAcceptanceEvidence: vi.fn(),
+    } as never)
+
+    await expect(transport.recoverDecisionAttempt("approval-1")).resolves.toBe(true)
+    expect(onDecision).not.toHaveBeenCalled()
+    expect(durable).toEqual([])
+  })
+
+  it("fails closed on tampered tokenless late-terminal recovery evidence", async () => {
+    const acceptanceBinding = { scenarioHandleDigest: "a".repeat(64), actionDigest: "b".repeat(64), targetDigest: "c".repeat(64), checkpointDigest: "d".repeat(64), suspendedSessionRevisionDigest: "e".repeat(64), messageIdDigest: "f".repeat(64), boundAt: 0 }
+    const record = { approvalId: "approval-1", messageId: "99", deliveryState: "bound" as const, approveCallbackData: "a:approve", denyCallbackData: "d:deny", expiresAt: 1_000, acceptanceBinding,
+      decisionAttempt: { schemaVersion: "telegram-approval-decision-attempt-v1" as const, decision: "approve" as const, queryIdDigest: "a".repeat(64), attemptedAt: 900, evidenceMac: "b".repeat(64), recoveryMac: "d".repeat(64) }, terminal: { accepted: true, terminalText: "done" } }
+    const transport = createTelegramApprovalTransport({
+      api: { stop: vi.fn(), request: vi.fn(async () => true) }, expectedUserId: "10", expectedChatId: "10", pendingStore: { load: () => [record], save: vi.fn() }, createOpaqueHandle: vi.fn(), onDecision: vi.fn(),
+      resolveDecisionToken: async () => "", now: () => 1_100, signAcceptanceEvidence: () => "c".repeat(64), commitAcceptanceEvidence: vi.fn(),
+    } as never)
+    await expect(transport.recoverDecisionAttempt("approval-1")).rejects.toThrow("decision attempt")
+    expect(transport.listPendingDeliveries()).toHaveLength(1)
+  })
+
   it.each(["approve", "deny"] as const)("recovers a poll-quarantined %s decision attempt at startup without Telegram redispatch", async (decision) => {
     const directory = mkdtempSync(join(tmpdir(), "telegram-decision-recovery-")); tempDirectories.push(directory)
     const pendingStore = new FileTelegramPendingApprovalStore(join(directory, "pending.json"))

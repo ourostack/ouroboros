@@ -519,7 +519,7 @@ function exactApprovalEvidence(
     const callbackAt = Number(callback.meta.callbackAt)
     if (!Number.isSafeInteger(callbackAt) || callbackAt < boundAt || callbackAt > terminalEditStartedAt
     || callback.meta.boundAt !== boundAt
-    || (callback.event === "telegram.callback_settled" && callback.meta.acknowledged !== true)
+    || (callback.event === "telegram.callback_settled" && (callback.meta.acknowledged !== true || callback.meta.acknowledgementState !== "acknowledged"))
     || (callback.event === "telegram.callback_recovery_settled" && (callback.meta.acknowledgementState !== "indeterminate_after_restart"
       || !Number.isSafeInteger(Number(callback.meta.recoveredAt)) || Number(callback.meta.recoveredAt) < callbackAt
       || typeof callback.meta.decisionAttemptDigest !== "string" || !SHA256.test(callback.meta.decisionAttemptDigest)))) return null

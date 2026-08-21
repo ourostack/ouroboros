@@ -432,10 +432,10 @@ describe("Telegram approval runtime orchestration", () => {
     runtimeMocks.store.read.mockReturnValue({ ...baseRecord, state })
 
     await expect(transportOptions().onDecision({ approvalId: "approval-1" })).resolves.toEqual({ accepted, terminalText })
-    expect(runtimeMocks.tokens.remove).toHaveBeenCalledWith("approval-1")
+    expect(runtimeMocks.tokens.remove).not.toHaveBeenCalled()
   })
 
-  it("consumes the decision token before reporting a missing continuation checkpoint", async () => {
+  it("retains the decision token while reporting a missing continuation checkpoint", async () => {
     makeRuntime()
     const options = transportOptions()
     runtimeMocks.store.read.mockReturnValue({ ...baseRecord, state: "failed" })
@@ -446,19 +446,25 @@ describe("Telegram approval runtime orchestration", () => {
       terminalText: "⚠️ Approval checkpoint is unavailable",
     })
     expect(runtimeMocks.resumeApprovalContinuation).not.toHaveBeenCalled()
-    expect(runtimeMocks.tokens.remove).toHaveBeenCalledWith("approval-1")
-    await expect(options.resolveDecisionToken("approval-1")).resolves.toBe("")
+    expect(runtimeMocks.tokens.remove).not.toHaveBeenCalled()
+    await expect(options.resolveDecisionToken("approval-1")).resolves.toBe("server-secret")
   })
 
-  it("consumes the decision token before a continuation attempt that fails", async () => {
+  it("retains the decision token when a continuation attempt fails", async () => {
     makeRuntime()
     const options = transportOptions()
     runtimeMocks.store.read.mockReturnValue({ ...baseRecord, state: "failed" })
     runtimeMocks.resumeApprovalContinuation.mockRejectedValueOnce(new Error("resume state is unavailable"))
 
     await expect(options.onDecision({ approvalId: "approval-1" })).rejects.toThrow("resume state is unavailable")
+    expect(runtimeMocks.tokens.remove).not.toHaveBeenCalled()
+    await expect(options.resolveDecisionToken("approval-1")).resolves.toBe("server-secret")
+  })
+
+  it("consumes the decision token only after durable settlement completes", async () => {
+    makeRuntime()
+    await transportOptions().onSettlementComplete("approval-1")
     expect(runtimeMocks.tokens.remove).toHaveBeenCalledWith("approval-1")
-    await expect(options.resolveDecisionToken("approval-1")).resolves.toBe("")
   })
 
   it("wires continuation claims, persistence, delivery, and recursively gated proposals", async () => {
@@ -594,6 +600,20 @@ describe("Telegram approval runtime orchestration", () => {
       event: "senses.telegram_approval_recovery_error",
       meta: { failureCount: 1 },
     }))
+  })
+
+  it.each(["succeeded", "denied"])("routes a persisted decision attempt through authenticated recovery even when the journal is already %s", async (state) => {
+    const runtime = makeRuntime()
+    runtimeMocks.transport.listPendingDeliveries.mockReturnValue([{
+      approvalId: "late-terminal", deliveryState: "bound", messageId: "101", terminal: { accepted: state === "succeeded", terminalText: "terminal" },
+      decisionAttempt: { schemaVersion: "telegram-approval-decision-attempt-v1", decision: state === "succeeded" ? "approve" : "deny", queryIdDigest: "a".repeat(64), attemptedAt: 1, evidenceMac: "b".repeat(64) },
+    }])
+    runtimeMocks.store.read.mockReturnValue({ ...baseRecord, approvalId: "late-terminal", state })
+
+    await runtime.recover()
+
+    expect(runtimeMocks.transport.recoverDecisionAttempt).toHaveBeenCalledWith("late-terminal")
+    expect(runtimeMocks.transport.terminalizeRecovered).not.toHaveBeenCalled()
   })
 
   it("rebinds delivered prompts and leaves nonterminal proposal phases pending", async () => {

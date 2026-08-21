@@ -1,4 +1,4 @@
-import { appendFile, existsSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "fs"
+import { appendFile, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "fs"
 import { dirname } from "path"
 import { randomUUID } from "crypto"
 import * as zlib from "zlib"
@@ -25,12 +25,14 @@ export interface LogEvent extends LogEventInput {
 }
 
 export type LogSink = (entry: LogEvent) => void
+export type DurableLogSink = LogSink & { barrier(): Promise<void> }
 
 export interface Logger {
   debug(entry: LogEventInput): void
   info(entry: LogEventInput): void
   warn(entry: LogEventInput): void
   error(entry: LogEventInput): void
+  durabilityBarrier(): Promise<void>
 }
 
 export interface LoggerOptions {
@@ -322,7 +324,7 @@ export function rotateIfNeeded(
 export function createNdjsonFileSink(
   filePath: string,
   optionsOrMaxSize?: NdjsonSinkOptions | number,
-): LogSink {
+): DurableLogSink {
   mkdirSync(dirname(filePath), { recursive: true })
   const options: NdjsonSinkOptions =
     typeof optionsOrMaxSize === "number"
@@ -333,6 +335,29 @@ export function createNdjsonFileSink(
   const queue: string[] = []
   let flushing = false
   let bytesSinceCheck = 0
+  let enqueued = 0
+  let completed = 0
+  let appendFailure: Error | null = null
+  const barriers: Array<{ target: number; resolve(): void; reject(error: Error): void }> = []
+
+  function settleBarriers(): void {
+    const ready = barriers.filter((barrier) => barrier.target <= completed)
+    if (ready.length === 0) return
+    for (const barrier of ready) barriers.splice(barriers.indexOf(barrier), 1)
+    if (appendFailure) {
+      for (const barrier of ready) barrier.reject(appendFailure)
+      return
+    }
+    try {
+      const descriptor = openSync(filePath, "r")
+      try { fsyncSync(descriptor) } finally { closeSync(descriptor) }
+      for (const barrier of ready) barrier.resolve()
+    } catch (error) {
+      const failure = error instanceof Error ? error : new Error(String(error))
+      appendFailure = failure
+      for (const barrier of ready) barrier.reject(failure)
+    }
+  }
 
   function flush(): void {
     if (flushing || queue.length === 0) return
@@ -350,7 +375,10 @@ export function createNdjsonFileSink(
       }
     }
 
-    appendFile(filePath, line, "utf8", () => {
+    appendFile(filePath, line, "utf8", (error) => {
+      completed += 1
+      if (error) appendFailure ??= error
+      settleBarriers()
       if (checkAfterAppend) {
         try {
           rotateIfNeeded(filePath, options)
@@ -363,14 +391,20 @@ export function createNdjsonFileSink(
     })
   }
 
-  return (entry: LogEvent): void => {
+  const sink = ((entry: LogEvent): void => {
     const line = verbose
       ? `${JSON.stringify(entry)}\n`
       : `${redactString(JSON.stringify(redactLogEntry(entry)))}\n`
     bytesSinceCheck += line.length
+    enqueued += 1
     queue.push(line)
     flush()
-  }
+  }) as DurableLogSink
+  sink.barrier = () => new Promise<void>((resolve, reject) => {
+    barriers.push({ target: enqueued, resolve, reject })
+    settleBarriers()
+  })
+  return sink
 }
 
 export function registerGlobalLogSink(sink: LogSink): () => void {
@@ -394,6 +428,7 @@ export function createLogger(options: LoggerOptions = {}): Logger {
   const configuredLevel = options.level ?? "info"
   const sinks = options.sinks ?? [createStderrSink()]
   const sink = createFanoutSink(sinks)
+  const durableSinks = sinks.filter((candidate): candidate is DurableLogSink => "barrier" in candidate && typeof candidate.barrier === "function")
   const now = options.now ?? (() => new Date())
 
   function emit(level: LogLevel, entry: LogEventInput): void {
@@ -420,5 +455,9 @@ export function createLogger(options: LoggerOptions = {}): Logger {
     info: (entry: LogEventInput) => emit("info", entry),
     warn: (entry: LogEventInput) => emit("warn", entry),
     error: (entry: LogEventInput) => emit("error", entry),
+    durabilityBarrier: async () => {
+      if (durableSinks.length === 0) throw new Error("No durable Nerves sink is configured")
+      await Promise.all(durableSinks.map((durableSink) => durableSink.barrier()))
+    },
   }
 }

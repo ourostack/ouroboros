@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { emitNervesEvent, setRuntimeLogger } from "../../nerves/runtime"
+import { emitNervesEvent, emitNervesEventDurable, setRuntimeLogger } from "../../nerves/runtime"
 
 describe("observability/runtime", () => {
   afterEach(() => {
@@ -83,5 +83,14 @@ describe("observability/runtime", () => {
     expect(chunks).toHaveLength(0)
 
     stderrSpy.mockRestore()
+  })
+
+  it("awaits the configured durable logger barrier", async () => {
+    const barrier = vi.fn(async () => undefined)
+    setRuntimeLogger({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), durabilityBarrier: barrier })
+
+    await emitNervesEventDurable({ event: "runtime.durable", component: "observability", message: "durable event" })
+
+    expect(barrier).toHaveBeenCalledOnce()
   })
 })

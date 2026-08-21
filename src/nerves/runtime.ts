@@ -48,3 +48,8 @@ export function emitNervesEvent(event: NervesEvent): void {
     logger.info(payload)
   }
 }
+
+export async function emitNervesEventDurable(event: NervesEvent): Promise<void> {
+  emitNervesEvent(event)
+  await getRuntimeLogger().durabilityBarrier()
+}

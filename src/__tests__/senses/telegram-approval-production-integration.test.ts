@@ -5,7 +5,7 @@ import * as path from "node:path"
 
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { createLogger, type LogEvent } from "../../nerves"
+import { createLogger, createNdjsonFileSink, type LogEvent } from "../../nerves"
 import { setRuntimeLogger } from "../../nerves/runtime"
 import { digestJson, validateAdvertisedToolArguments } from "../../repertoire/tool-arguments"
 import { resolveToolDefinition } from "../../repertoire/tools"
@@ -63,7 +63,7 @@ describe("production-composed Telegram approval lifecycle", () => {
     const emptyRevision = createHash("sha256").update("").digest("hex")
     const clock = { value: 1_000_000 }
     const events: LogEvent[] = []
-    setRuntimeLogger(createLogger({ sinks: [(event) => events.push(event)], now: () => new Date(clock.value) }))
+    setRuntimeLogger(createLogger({ sinks: [(event) => events.push(event), createNdjsonFileSink(path.join(agentRoot, "telegram-audit.ndjson"))], now: () => new Date(clock.value) }))
     let messageId = 100
     let mutationCount = 0
     const api: TelegramBotApi = {
@@ -142,7 +142,7 @@ describe("production-composed Telegram approval lifecycle", () => {
     const emptyRevision = createHash("sha256").update("").digest("hex")
     const clock = { value: 1_000_000 }
     const events: LogEvent[] = []
-    setRuntimeLogger(createLogger({ sinks: [(event) => events.push(event)], now: () => new Date(clock.value) }))
+    setRuntimeLogger(createLogger({ sinks: [(event) => events.push(event), createNdjsonFileSink(path.join(agentRoot, "telegram-audit.ndjson"))], now: () => new Date(clock.value) }))
     let messageId = 100
     let mutationCount = 0
     const api: TelegramBotApi = {

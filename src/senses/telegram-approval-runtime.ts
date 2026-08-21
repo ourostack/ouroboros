@@ -12,7 +12,7 @@ import { saveSession } from "../mind/context"
 import { readSessionTransaction, withSessionTurnLease } from "../mind/session-transaction"
 import { execTool, resolveToolDefinition } from "../repertoire/tools"
 import type { ToolContext } from "../repertoire/tools-base"
-import { emitNervesEvent } from "../nerves/runtime"
+import { emitNervesEvent, emitNervesEventDurable } from "../nerves/runtime"
 import {
   createTelegramApprovalTransport,
   FileTelegramPendingApprovalStore,
@@ -124,6 +124,7 @@ export function createTelegramApprovalRuntime(options: {
     runProvider?: typeof runAgent
     resolveTool?: typeof resolveToolDefinition
     executeTool?: typeof execTool
+    commitAcceptanceEvidence?: (event: string, meta: Record<string, unknown>) => void | Promise<void>
   }
 }): TelegramApprovalRuntime {
   emitNervesEvent({
@@ -227,7 +228,6 @@ export function createTelegramApprovalRuntime(options: {
   const continueTerminalRecord = (record: ApprovalRecord, acceptanceBinding?: {
     scenarioHandleDigest: string; actionDigest: string; targetDigest: string; checkpointDigest: string; suspendedSessionRevisionDigest: string; messageIdDigest: string; boundAt: number
   }): Promise<{ accepted: boolean; terminalText: string }> => {
-    tokens.remove(record.approvalId)
     return withSessionTurnLease(record.sessionPath, async (lease) => {
       const checkpoint = checkpoints.read(record.approvalId)
       if (!checkpoint) return { accepted: false, terminalText: "⚠️ Approval checkpoint is unavailable" }
@@ -293,6 +293,13 @@ export function createTelegramApprovalRuntime(options: {
       return meta
     },
     signAcceptanceEvidence: (event, meta) => sanctuaryTelegramApprovalEvidenceMac(options.identityKey, event, meta),
+    commitAcceptanceEvidence: options.dependencies?.commitAcceptanceEvidence ?? ((event, meta) => emitNervesEventDurable({
+      component: "senses",
+      event,
+      message: "Telegram approval acceptance evidence durably recorded",
+      meta,
+    })),
+    onSettlementComplete: async (approvalId) => { tokens.remove(approvalId) },
     acceptanceMessageIdDigest: (messageId) => createHash("sha256").update(opaqueTelegramMessageBinding(options.subject, messageId), "utf8").digest("hex"),
     now,
     resolveDecisionToken: async (approvalId) => tokens.get(approvalId) ?? "",
@@ -381,16 +388,12 @@ export function createTelegramApprovalRuntime(options: {
           })
           continue
         }
-        if (pending.settlementReceipt) {
+        if (pending.decisionAttempt) {
           await transport.recoverDecisionAttempt(pending.approvalId)
           continue
         }
         if (pending.terminal) {
           await transport.terminalizeRecovered(pending.approvalId, pending.terminal.terminalText)
-          continue
-        }
-        if (pending.decisionAttempt && ["proposed", "claimed", "attempted"].includes(existing.state)) {
-          await transport.recoverDecisionAttempt(pending.approvalId)
           continue
         }
         const deliveryState = pending.deliveryState ?? "bound"
