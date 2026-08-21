@@ -81,15 +81,60 @@ export function clearSanctuaryAcceptanceMarker(agentName: string, scenarioHandle
 export function quarantineSanctuaryAcceptanceMarker(agentName: string): string | null {
   if (agentName !== "sanctuary") throw new Error("acceptance markers are restricted to Sanctuary")
   const filePath = markerPath(agentName)
-  const quarantineRoot = path.join(path.dirname(filePath), "quarantine")
-  const quarantinePath = path.join(quarantineRoot, `active-scenario-${randomUUID()}.json`)
-  fs.mkdirSync(quarantineRoot, { recursive: true, mode: 0o700 })
-  fs.chmodSync(quarantineRoot, 0o700)
+  const sourceParent = path.dirname(filePath)
+  const quarantineRoot = path.join(sourceParent, "quarantine")
+  let markerPathMetadata: fs.Stats
   try {
-    fs.renameSync(filePath, quarantinePath)
+    markerPathMetadata = fs.lstatSync(filePath)
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null
     throw error
+  }
+  const sourceParentHandle = fs.openSync(sourceParent, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
+  let markerHandle: number | null = null
+  let quarantineHandle: number | null = null
+  const rejectedPath = path.join(sourceParent, `.quarantine-rejected-${randomUUID()}`)
+  const quarantinePath = path.join(quarantineRoot, `active-scenario-${randomUUID()}.json`)
+  try {
+    const sourceParentMetadata = fs.fstatSync(sourceParentHandle)
+    const sourceParentPathMetadata = fs.lstatSync(sourceParent)
+    if (!sourceParentMetadata.isDirectory() || !sourceParentPathMetadata.isDirectory()
+      || sourceParentMetadata.dev !== sourceParentPathMetadata.dev || sourceParentMetadata.ino !== sourceParentPathMetadata.ino) throw new Error("acceptance marker parent changed during quarantine")
+    if (markerPathMetadata.isFile()) markerHandle = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+    if (markerHandle !== null) {
+      const markerMetadata = fs.fstatSync(markerHandle)
+      markerPathMetadata = fs.lstatSync(filePath)
+      if (!markerMetadata.isFile() || !markerPathMetadata.isFile() || markerMetadata.dev !== markerPathMetadata.dev || markerMetadata.ino !== markerPathMetadata.ino) throw new Error("acceptance marker changed during quarantine")
+    }
+    let quarantineExists = false
+    try {
+      const existing = fs.lstatSync(quarantineRoot)
+      if (!existing.isDirectory()) {
+        fs.renameSync(quarantineRoot, rejectedPath)
+        const rejected = fs.lstatSync(rejectedPath)
+        if (rejected.dev !== existing.dev || rejected.ino !== existing.ino) throw new Error("acceptance marker quarantine rejection changed during move")
+      } else quarantineExists = true
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error }
+    if (!quarantineExists) fs.mkdirSync(quarantineRoot, { mode: 0o700 })
+    quarantineHandle = fs.openSync(quarantineRoot, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
+    const quarantineMetadata = fs.fstatSync(quarantineHandle)
+    const quarantinePathMetadata = fs.lstatSync(quarantineRoot)
+    if (!quarantineMetadata.isDirectory() || !quarantinePathMetadata.isDirectory()
+      || quarantineMetadata.dev !== quarantinePathMetadata.dev || quarantineMetadata.ino !== quarantinePathMetadata.ino) throw new Error("acceptance marker quarantine root changed")
+    fs.fchmodSync(quarantineHandle, 0o700)
+    if (fs.existsSync(rejectedPath)) fs.renameSync(rejectedPath, path.join(quarantineRoot, path.basename(rejectedPath).slice(1)))
+    const finalMarkerPathMetadata = fs.lstatSync(filePath)
+    if (finalMarkerPathMetadata.dev !== markerPathMetadata.dev || finalMarkerPathMetadata.ino !== markerPathMetadata.ino) throw new Error("acceptance marker changed before quarantine move")
+    fs.renameSync(filePath, quarantinePath)
+    const movedMarkerMetadata = fs.lstatSync(quarantinePath)
+    if (movedMarkerMetadata.dev !== markerPathMetadata.dev || movedMarkerMetadata.ino !== markerPathMetadata.ino) throw new Error("acceptance marker changed during quarantine move")
+    if (markerHandle !== null) fs.fsyncSync(markerHandle)
+    fs.fsyncSync(sourceParentHandle)
+    fs.fsyncSync(quarantineHandle)
+  } finally {
+    if (quarantineHandle !== null) fs.closeSync(quarantineHandle)
+    if (markerHandle !== null) fs.closeSync(markerHandle)
+    fs.closeSync(sourceParentHandle)
   }
   emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_acceptance_marker_quarantined", message: "Sanctuary acceptance marker was quarantined", meta: { quarantinePath } })
   return quarantinePath

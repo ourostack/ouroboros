@@ -430,30 +430,68 @@ function boundedReceiptEntries(receiptRoot: string): fs.Dirent[] {
   } finally { fs.closeSync(rootHandle) }
 }
 
+function prepareSafeQuarantineRoot(sourceParent: string, sourceParentHandle: number): { quarantineRoot: string; quarantineHandle: number } {
+  const quarantineRoot = path.join(sourceParent, "quarantine")
+  const rejectedPath = path.join(sourceParent, `.quarantine-rejected-${randomUUID()}`)
+  let quarantineExists = false
+  try {
+    const existing = fs.lstatSync(quarantineRoot)
+    if (existing.isDirectory()) quarantineExists = true
+    else {
+      fs.renameSync(quarantineRoot, rejectedPath)
+      const rejected = fs.lstatSync(rejectedPath)
+      if (rejected.dev !== existing.dev || rejected.ino !== existing.ino) throw new Error("acceptance quarantine rejection changed during move")
+    }
+  } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error }
+  if (!quarantineExists) fs.mkdirSync(quarantineRoot, { mode: 0o700 })
+  const quarantineHandle = fs.openSync(quarantineRoot, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
+  try {
+    const metadata = fs.fstatSync(quarantineHandle)
+    const pathMetadata = fs.lstatSync(quarantineRoot)
+    if (!metadata.isDirectory() || !pathMetadata.isDirectory() || metadata.dev !== pathMetadata.dev || metadata.ino !== pathMetadata.ino) {
+      throw new Error("acceptance quarantine root changed")
+    }
+    fs.fchmodSync(quarantineHandle, 0o700)
+    if (fs.existsSync(rejectedPath)) fs.renameSync(rejectedPath, path.join(quarantineRoot, path.basename(rejectedPath).slice(1)))
+    fs.fsyncSync(quarantineHandle)
+    fs.fsyncSync(sourceParentHandle)
+    return { quarantineRoot, quarantineHandle }
+  } catch (error) {
+    fs.closeSync(quarantineHandle)
+    throw error
+  }
+}
+
 function durableQuarantineReceiptRoot(receiptRoot: string): void {
   const sourceParent = path.dirname(receiptRoot)
-  const quarantineRoot = path.join(sourceParent, "quarantine")
-  fs.mkdirSync(quarantineRoot, { recursive: true, mode: 0o700 })
-  fs.chmodSync(quarantineRoot, 0o700)
-  const rootHandle = fs.openSync(receiptRoot, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
-  const quarantineHandle = fs.openSync(quarantineRoot, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
   const sourceParentHandle = fs.openSync(sourceParent, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
-  const quarantinePath = path.join(quarantineRoot, `receipts-${randomUUID()}`)
+  let rootHandle: number | null = null
+  let quarantineHandle: number | null = null
+  let quarantineRoot = ""
   try {
-    const rootMetadata = fs.fstatSync(rootHandle)
+    const sourceParentMetadata = fs.fstatSync(sourceParentHandle)
+    const sourceParentPathMetadata = fs.lstatSync(sourceParent)
+    if (!sourceParentMetadata.isDirectory() || !sourceParentPathMetadata.isDirectory()
+      || sourceParentMetadata.dev !== sourceParentPathMetadata.dev || sourceParentMetadata.ino !== sourceParentPathMetadata.ino) throw new Error("acceptance receipt parent changed during quarantine")
+    const prepared = prepareSafeQuarantineRoot(sourceParent, sourceParentHandle)
+    quarantineRoot = prepared.quarantineRoot
+    quarantineHandle = prepared.quarantineHandle
     const rootPathMetadata = fs.lstatSync(receiptRoot)
-    const quarantineMetadata = fs.fstatSync(quarantineHandle)
-    const quarantinePathMetadata = fs.lstatSync(quarantineRoot)
-    if (!rootMetadata.isDirectory() || !rootPathMetadata.isDirectory() || rootMetadata.dev !== rootPathMetadata.dev || rootMetadata.ino !== rootPathMetadata.ino
-      || !quarantineMetadata.isDirectory() || !quarantinePathMetadata.isDirectory() || quarantineMetadata.dev !== quarantinePathMetadata.dev || quarantineMetadata.ino !== quarantinePathMetadata.ino) {
-      throw new Error("acceptance receipt quarantine ownership is invalid")
+    if (!rootPathMetadata.isSymbolicLink()) rootHandle = fs.openSync(receiptRoot, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+    if (rootHandle !== null) {
+      const rootMetadata = fs.fstatSync(rootHandle)
+      const reboundMetadata = fs.lstatSync(receiptRoot)
+      if (rootMetadata.dev !== reboundMetadata.dev || rootMetadata.ino !== reboundMetadata.ino) throw new Error("acceptance receipt root changed during cleanup")
     }
+    const finalRootPathMetadata = fs.lstatSync(receiptRoot)
+    if (finalRootPathMetadata.dev !== rootPathMetadata.dev || finalRootPathMetadata.ino !== rootPathMetadata.ino) throw new Error("acceptance receipt root changed before quarantine move")
+    const quarantinePath = path.join(quarantineRoot, `receipts-${randomUUID()}`)
     fs.renameSync(receiptRoot, quarantinePath)
     const movedMetadata = fs.lstatSync(quarantinePath)
-    if (!movedMetadata.isDirectory() || movedMetadata.dev !== rootMetadata.dev || movedMetadata.ino !== rootMetadata.ino) {
+    if (movedMetadata.dev !== rootPathMetadata.dev || movedMetadata.ino !== rootPathMetadata.ino) {
       throw new Error("acceptance receipt quarantine changed during move")
     }
-    fs.fsyncSync(rootHandle)
+    if (rootHandle !== null) fs.fsyncSync(rootHandle)
     fs.fsyncSync(sourceParentHandle)
     fs.fsyncSync(quarantineHandle)
     fs.mkdirSync(receiptRoot, { mode: 0o700 })
@@ -462,8 +500,8 @@ function durableQuarantineReceiptRoot(receiptRoot: string): void {
     fs.fsyncSync(sourceParentHandle)
   } finally {
     fs.closeSync(sourceParentHandle)
-    fs.closeSync(quarantineHandle)
-    fs.closeSync(rootHandle)
+    if (quarantineHandle !== null) fs.closeSync(quarantineHandle)
+    if (rootHandle !== null) fs.closeSync(rootHandle)
   }
 }
 

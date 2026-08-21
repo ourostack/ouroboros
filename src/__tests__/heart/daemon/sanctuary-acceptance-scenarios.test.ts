@@ -186,7 +186,7 @@ describe("Sanctuary live scenario capture", () => {
     expect(fs.readdirSync(path.join(acceptanceRoot, "quarantine", quarantinedReceiptRoot!))).toHaveLength(40)
   })
 
-  it("refuses a symlink receipt root without moving or traversing its target", () => {
+  it("quarantines a symlink receipt root by inode without traversing its target", () => {
     const acceptanceRoot = path.join(root, "sanctuary.ouro", "state", "acceptance")
     const receipts = path.join(acceptanceRoot, "receipts")
     const outside = path.join(root, "outside-receipts")
@@ -197,17 +197,53 @@ describe("Sanctuary live scenario capture", () => {
 
     expect(() => finalizeSanctuaryScenarioCapture(undefined, receipts)).toThrow("Sanctuary scenario finalization failed")
 
-    expect(fs.lstatSync(receipts).isSymbolicLink()).toBe(true)
+    expect(fs.lstatSync(receipts).isDirectory()).toBe(true)
+    expect(fs.statSync(receipts).mode & 0o777).toBe(0o700)
     expect(fs.readFileSync(path.join(outside, "preserved"), "utf8")).toBe("evidence\n")
+    const quarantined = fs.readdirSync(path.join(acceptanceRoot, "quarantine")).find((entry) => entry.startsWith("receipts-"))
+    expect(quarantined).toBeDefined()
+    expect(fs.lstatSync(path.join(acceptanceRoot, "quarantine", quarantined!)).isSymbolicLink()).toBe(true)
+    expect(fs.readlinkSync(path.join(acceptanceRoot, "quarantine", quarantined!))).toBe(outside)
+  })
+
+  it("moves a quarantine-root symlink aside without touching its external target", () => {
+    const acceptanceRoot = path.join(root, "sanctuary.ouro", "state", "acceptance")
+    const receipts = path.join(acceptanceRoot, "receipts")
+    const quarantine = path.join(acceptanceRoot, "quarantine")
+    const outside = path.join(root, "outside-quarantine")
+    fs.mkdirSync(receipts, { recursive: true, mode: 0o700 })
+    fs.mkdirSync(outside, { mode: 0o700 })
+    fs.writeFileSync(path.join(outside, "preserved"), "external\n", { mode: 0o600 })
+    fs.symlinkSync(outside, quarantine)
+    fs.writeFileSync(path.join(acceptanceRoot, "active-scenario.json"), "{}\n", { mode: 0o600 })
+
+    expect(() => finalizeSanctuaryScenarioCapture(undefined, receipts)).toThrow("Sanctuary scenario finalization failed")
+
+    expect(readSanctuaryAcceptanceMarker("sanctuary")).toBeNull()
+    expect(fs.lstatSync(quarantine).isDirectory()).toBe(true)
+    expect(fs.readFileSync(path.join(outside, "preserved"), "utf8")).toBe("external\n")
+    expect(fs.readdirSync(outside)).toEqual(["preserved"])
+    const entries = fs.readdirSync(quarantine)
+    expect(entries.some((entry) => entry.startsWith("quarantine-rejected-"))).toBe(true)
+    expect(entries.some((entry) => entry.startsWith("active-scenario-"))).toBe(true)
   })
 
   it("keeps quarantine rename durability and inode checks structurally explicit", () => {
     const source = fs.readFileSync(path.resolve(process.cwd(), "src/heart/daemon/sanctuary-acceptance-scenarios.ts"), "utf8")
     const helper = source.slice(source.indexOf("function durableQuarantineReceiptRoot"), source.indexOf("export function finalizeSanctuaryScenarioCapture"))
     expect(helper).toContain("fs.constants.O_NOFOLLOW")
-    expect(helper).toContain("rootMetadata.ino !== rootPathMetadata.ino")
+    expect(helper).toContain("rootMetadata.ino !== reboundMetadata.ino")
     expect(helper.indexOf("fs.renameSync(receiptRoot, quarantinePath)")).toBeLessThan(helper.indexOf("fs.fsyncSync(rootHandle)"))
     expect(helper.match(/fs\.fsyncSync\(/gu)).toHaveLength(5)
+  })
+
+  it("keeps marker quarantine inode binding and durability structurally explicit", () => {
+    const source = fs.readFileSync(path.resolve(process.cwd(), "src/heart/daemon/sanctuary-acceptance-marker.ts"), "utf8")
+    const helper = source.slice(source.indexOf("export function quarantineSanctuaryAcceptanceMarker"), source.indexOf("export function sanctuaryAcceptanceEventMeta"))
+    expect(helper).toContain("fs.constants.O_NOFOLLOW")
+    expect(helper).toContain("markerMetadata.ino !== markerPathMetadata.ino")
+    expect(helper.indexOf("fs.renameSync(filePath, quarantinePath)")).toBeLessThan(helper.indexOf("fs.fsyncSync(markerHandle)"))
+    expect(helper.match(/fs\.fsyncSync\(/gu)?.length).toBeGreaterThanOrEqual(3)
   })
 
   it("waits instead of self-attesting absent negative and containment facts", () => {
