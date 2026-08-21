@@ -748,27 +748,29 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     lease.ledger.assertCapacity(8)
   }
   const runWithAcceptanceAuditOwner = async <T>(operation: () => T | Promise<T>): Promise<T> => {
-    acceptanceAuditBarrier()
     const scenarioHandleDigest = readScenarioHandleDigest() ?? null
-    const ownerDigest = acceptanceAuditLease?.ownerDigest ?? ""
-    acceptanceEffectDepth += 1
-    try {
-      return await telegramAcceptanceAuditScenario.run(scenarioHandleDigest, () => telegramAcceptanceAuditOwner.run(ownerDigest, async () => {
-        try {
-          const result = await operation()
-          acceptanceAuditBarrier()
-          return result
-        } catch (error) {
-          try { acceptanceAuditBarrier() } catch (auditError) {
-            if (error === auditError) throw auditError
-            throw new AggregateError([error, auditError], "Telegram effect and acceptance audit verification failed")
+    return telegramAcceptanceAuditScenario.run(scenarioHandleDigest, async () => {
+      acceptanceAuditBarrier()
+      const ownerDigest = acceptanceAuditLease?.ownerDigest ?? ""
+      acceptanceEffectDepth += 1
+      try {
+        return await telegramAcceptanceAuditOwner.run(ownerDigest, async () => {
+          try {
+            const result = await operation()
+            acceptanceAuditBarrier()
+            return result
+          } catch (error) {
+            try { acceptanceAuditBarrier() } catch (auditError) {
+              if (error === auditError) throw auditError
+              throw new AggregateError([error, auditError], "Telegram effect and acceptance audit verification failed")
+            }
+            throw error
           }
-          throw error
-        }
-      }))
-    } finally {
-      acceptanceEffectDepth -= 1
-    }
+        })
+      } finally {
+        acceptanceEffectDepth -= 1
+      }
+    })
   }
   const emitDurableSettlementEvidence = async (event: string, meta: Record<string, unknown>): Promise<void> => {
       if (event === "telegram.callback_settled") {

@@ -269,6 +269,41 @@ describe("Telegram sense", () => {
     }
   })
 
+  it("pins one scenario read before the initial barrier so marker races cannot acquire an unaudited owner", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-scenario-pin-race-"))
+    const scenarioHandleDigest = "a".repeat(64)
+    let markerReadCount = 0
+    let onMessage!: (message: TelegramInboundMessage) => Promise<void>
+    const runTurn = vi.fn()
+    const api = { request: vi.fn(async () => ({ message_id: 71 })), stop: vi.fn() }
+    const approvalRuntime = {
+      transport: { sendApproval: vi.fn(), handleUpdate: vi.fn(), recoverDecisionAttempt: vi.fn(), reconcileExpired: vi.fn(), terminalizeOrphaned: vi.fn(), terminalizeRecovered: vi.fn(), listPendingDeliveries: vi.fn(() => []) },
+      coordinator: vi.fn(), recover: vi.fn(), close: vi.fn(),
+    }
+    const app = createTelegramSenseApp({
+      agentName: "sanctuary",
+      credentials: { botToken: "test-token", authorizedUserId: "42", authorizedChatId: "42" },
+      identityKey: "k".repeat(43), _agentRoot: root, acceptanceReceiptRoot: root,
+      _toolContext: {} as never,
+      acceptanceMarker: () => (++markerReadCount <= 2 ? null : { scenarioHandleDigest }),
+      migrateIdentity: async () => undefined, _runTurn: runTurn,
+      api, offsetStore: { load: () => 0, save: vi.fn() },
+      createLongPoll: (options) => { onMessage = options.onMessage; return { pollOnce: vi.fn(), run: vi.fn(), stop: vi.fn() } },
+      approvalRuntime: approvalRuntime as never,
+    })
+    try {
+      await expect(onMessage({ updateId: 1, messageId: "2", userId: "42", chatId: "42", text: "hello" }))
+        .rejects.toThrow("scenario ownership drift")
+      expect(markerReadCount).toBe(3)
+      expect(runTurn).not.toHaveBeenCalled()
+      expect(api.request).not.toHaveBeenCalled()
+      expect(fs.existsSync(path.join(root, TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH))).toBe(false)
+    } finally {
+      await app.stop()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it("binds interactive control callbacks to the scenario active when each request arrives", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-interactive-owner-"))
     let marker: { scenarioHandleDigest: string } | null = null
