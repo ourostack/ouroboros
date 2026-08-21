@@ -17,6 +17,7 @@ interface BrokerModule {
   parseVaultStatus(output: string, succeeded: boolean): { vaultUnlocked: boolean; manualAuthRequired: boolean }
   queryGraphqlAutostart(records: unknown[], fetchImpl: typeof fetch): Promise<boolean>
   healthProbeDockerArgs(mode: "run" | "recover", input: Record<string, string>): string[]
+  requireStableHealthProbeOwner(before: Record<string, string>, after: Record<string, string>): void
 }
 
 async function broker(): Promise<BrokerModule> {
@@ -25,6 +26,7 @@ async function broker(): Promise<BrokerModule> {
     parseVaultStatus(output: string, succeeded: boolean): { vaultUnlocked: boolean; manualAuthRequired: boolean }
     queryGraphqlAutostart(records: unknown[], fetchImpl: typeof fetch): Promise<boolean>
     healthProbeDockerArgs(mode: "run" | "recover", input: Record<string, string>): string[]
+    requireStableHealthProbeOwner(before: Record<string, string>, after: Record<string, string>): void
   }>
 }
 
@@ -109,6 +111,14 @@ describe("Sanctuary Unit 16 host broker", () => {
     await expect(dispatch({ operation: "start_health_probe", targetId: "sanctuary", label: "unit-16g-health-transition", scenarioHandleDigest: "a".repeat(64) }, dependencies)).rejects.toThrow(/healthy production owner/u)
     await expect(dispatch({ operation: "start_health_probe", targetId: "sanctuary", label: "unit-14f-real-cron", scenarioHandleDigest: "a".repeat(64) }, dependencies)).rejects.toThrow(/label is invalid/u)
     expect(started).toEqual([])
+  })
+
+  it("rejects independently re-observed image or container drift before final attestation", async () => {
+    const { requireStableHealthProbeOwner } = await broker()
+    const before = { label: "unit-16g-health-transition", scenarioHandleDigest: "a".repeat(64), ownerImageDigest: "b".repeat(64), ownerContainerDigest: "c".repeat(64) }
+    expect(() => requireStableHealthProbeOwner(before, { ...before, ownerImageDigest: "d".repeat(64) })).toThrow(/owner binding drifted/u)
+    expect(() => requireStableHealthProbeOwner(before, { ...before, ownerContainerDigest: "e".repeat(64) })).toThrow(/owner binding drifted/u)
+    expect(() => requireStableHealthProbeOwner(before, before)).not.toThrow()
   })
 
   it("reads GraphQL autostart through the exact canonical RO credential and query", async () => {

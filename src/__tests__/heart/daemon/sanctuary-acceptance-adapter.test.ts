@@ -95,7 +95,8 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     const contract = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary-acceptance-contract.json", "utf8")) as any
     expect(Object.keys(contract.adapters).sort()).toEqual([
       "callback-inject", "callback-live", "capture-evidence-provenance", "closed-inventory", "config-materializer", "cursor-snapshot",
-      "evidence-snapshot", "exact-id-revoke", "key-create", "key-inventory", "key-probe", "key-read-old", "key-revoke", "key-store",
+      "evidence-snapshot", "exact-id-revoke", "health-probe-recovery", "health-probe-start", "health-probe-status",
+      "key-create", "key-inventory", "key-probe", "key-read-old", "key-revoke", "key-store",
       "reboot-live-request", "reboot-poll", "reboot-request", "revoked-key-auth-rejection", "scenario-capture", "scenario-finalize",
       "telegram-poller-quiescence", "telegram-vault-store", "unraid-key-rotate", "vault-backed-capability-verify",
     ])
