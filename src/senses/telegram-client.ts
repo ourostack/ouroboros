@@ -120,6 +120,7 @@ export interface TelegramUpdateInboxStore {
   capture(update: TelegramUpdate): boolean
   claim(update: TelegramUpdate): boolean
   complete(update: TelegramUpdate): void
+  commit?(update: TelegramUpdate): void
 }
 
 export interface TelegramUpdateReceipt {
@@ -134,9 +135,10 @@ interface TelegramIndeterminateUpdateReceipt extends TelegramUpdateReceipt {
 }
 
 interface TelegramUpdateInboxState {
-  version: 3
+  version: 4
   pending: TelegramUpdateReceipt[]
   dispatching: TelegramUpdateReceipt[]
+  settled: TelegramUpdateReceipt[]
   indeterminate: TelegramIndeterminateUpdateReceipt[]
 }
 
@@ -221,10 +223,12 @@ export class FileTelegramUpdateInboxStore implements TelegramUpdateInboxStore {
         && Number.isSafeInteger((record as TelegramIndeterminateUpdateReceipt).quarantinedAt)
         && (record as TelegramIndeterminateUpdateReceipt).quarantinedAt >= 0
         && typeof (record as TelegramIndeterminateUpdateReceipt).warningAcknowledged === "boolean"
-      if (value.version === 3) {
-        if (Object.keys(value).sort().join(",") !== "dispatching,indeterminate,pending,version"
+      if (value.version === 4) {
+        if (Object.keys(value).sort().join(",") !== "dispatching,indeterminate,pending,settled,version"
           || !Array.isArray(value.pending) || !Array.isArray(value.dispatching) || !Array.isArray(value.indeterminate)
+          || !Array.isArray(value.settled)
           || !value.pending.every(validReceipt) || !value.dispatching.every(validReceipt)
+          || !value.settled.every(validReceipt)
           || !value.indeterminate.every(validIndeterminate)) throw new Error("invalid bounded inbox shape")
         const state = structuredClone(value) as unknown as TelegramUpdateInboxState
         const pruned = this.prune(state.indeterminate, this.timestamp())
@@ -234,6 +238,22 @@ export class FileTelegramUpdateInboxStore implements TelegramUpdateInboxStore {
         }
         return state
       }
+      if (value.version === 3) {
+        if (Object.keys(value).sort().join(",") !== "dispatching,indeterminate,pending,version"
+          || !Array.isArray(value.pending) || !Array.isArray(value.dispatching) || !Array.isArray(value.indeterminate)
+          || !value.pending.every(validReceipt) || !value.dispatching.every(validReceipt)
+          || !value.indeterminate.every(validIndeterminate)) throw new Error("invalid bounded inbox shape")
+        const timestamp = this.timestamp()
+        const migrated: TelegramUpdateInboxState = {
+          version: 4,
+          pending: structuredClone(value.pending) as TelegramUpdateReceipt[],
+          dispatching: structuredClone(value.dispatching) as TelegramUpdateReceipt[],
+          settled: [],
+          indeterminate: this.prune(structuredClone(value.indeterminate) as TelegramIndeterminateUpdateReceipt[], timestamp),
+        }
+        this.write(migrated)
+        return migrated
+      }
       if (value.version === 2) {
         if (Object.keys(value).sort().join(",") !== "dispatching,indeterminate,pending,version") throw new Error("invalid opaque inbox shape")
         const arrays = [value.pending, value.dispatching, value.indeterminate]
@@ -241,9 +261,10 @@ export class FileTelegramUpdateInboxStore implements TelegramUpdateInboxStore {
         if (!arrays.flat().every(validReceipt)) throw new Error("invalid opaque inbox receipt")
         const timestamp = this.timestamp()
         const migrated: TelegramUpdateInboxState = {
-          version: 3,
+          version: 4,
           pending: structuredClone(value.pending) as TelegramUpdateReceipt[],
           dispatching: structuredClone(value.dispatching) as TelegramUpdateReceipt[],
+          settled: [],
           indeterminate: this.prune((value.indeterminate as TelegramUpdateReceipt[]).map((record) => ({
             ...record,
             quarantinedAt: timestamp,
@@ -265,9 +286,10 @@ export class FileTelegramUpdateInboxStore implements TelegramUpdateInboxStore {
         || !completed.every((id) => Number.isSafeInteger(id) && (id as number) >= 0)) throw new Error("invalid legacy inbox record")
       const timestamp = this.timestamp()
       const migrated: TelegramUpdateInboxState = {
-        version: 3,
+        version: 4,
         pending: [],
         dispatching: [],
+        settled: [],
         indeterminate: this.prune(uniqueReceipts([...pending, ...dispatching].map(updateReceipt)).map((record) => ({
           ...record,
           quarantinedAt: timestamp,
@@ -277,7 +299,7 @@ export class FileTelegramUpdateInboxStore implements TelegramUpdateInboxStore {
       this.write(migrated)
       return migrated
     } catch (error) {
-      if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return { version: 3, pending: [], dispatching: [], indeterminate: [] }
+      if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return { version: 4, pending: [], dispatching: [], settled: [], indeterminate: [] }
       throw new Error("Telegram update inbox state is corrupt", { cause: error })
     }
   }
@@ -288,7 +310,7 @@ export class FileTelegramUpdateInboxStore implements TelegramUpdateInboxStore {
 
   load(): TelegramUpdateReceipt[] {
     const state = this.read()
-    return [...state.pending, ...state.dispatching, ...state.indeterminate]
+    return [...state.pending, ...state.dispatching, ...state.settled, ...state.indeterminate]
   }
 
   loadPending(): TelegramUpdateReceipt[] {
@@ -330,7 +352,7 @@ export class FileTelegramUpdateInboxStore implements TelegramUpdateInboxStore {
   capture(update: TelegramUpdate): boolean {
     const state = this.read()
     const receipt = updateReceipt(update)
-    const existing = [...state.pending, ...state.dispatching, ...state.indeterminate]
+    const existing = [...state.pending, ...state.dispatching, ...state.settled, ...state.indeterminate]
       .find((candidate) => candidate.sequenceDigest === receipt.sequenceDigest)
     if (existing) {
       if (!sameReceipt(existing, receipt)) throw new Error("Telegram update inbox has a conflicting opaque receipt")
@@ -356,8 +378,19 @@ export class FileTelegramUpdateInboxStore implements TelegramUpdateInboxStore {
   complete(update: TelegramUpdate): void {
     const state = this.read()
     const receipt = updateReceipt(update)
+    const completed = [...state.pending, ...state.dispatching].some((candidate) => sameReceipt(candidate, receipt))
     state.pending = state.pending.filter((candidate) => !sameReceipt(candidate, receipt))
     state.dispatching = state.dispatching.filter((candidate) => !sameReceipt(candidate, receipt))
+    if (completed && !state.settled.some((candidate) => sameReceipt(candidate, receipt))) state.settled.push(receipt)
+    if (completed) this.write(state)
+  }
+
+  commit(update: TelegramUpdate): void {
+    const state = this.read()
+    const receipt = updateReceipt(update)
+    const settled = state.settled.filter((candidate) => !sameReceipt(candidate, receipt))
+    if (settled.length === state.settled.length) return
+    state.settled = settled
     this.write(state)
   }
 }
@@ -450,11 +483,12 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
       const next = update.update_id + 1
       const requiresDurableDispatch = Boolean(authorizedCallback(update) || authorizedMessage(update))
       const newlyCaptured = requiresDurableDispatch ? (options.inboxStore?.capture(update) ?? true) : true
-      options.offsetStore.save(next)
-      nextUpdateId = next
       if (newlyCaptured) {
         if (requiresDurableDispatch && options.inboxStore && !options.inboxStore.claim(update)) {
           options.onDispatchSettled?.()
+          options.offsetStore.save(next)
+          nextUpdateId = next
+          options.inboxStore.commit?.(update)
           continue
         }
         let dispatchError: unknown
@@ -473,6 +507,9 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
         }
         if (dispatchError !== undefined) throw dispatchError
       } else options.onDispatchSettled?.()
+      options.offsetStore.save(next)
+      nextUpdateId = next
+      if (requiresDurableDispatch) options.inboxStore?.commit?.(update)
     }
     return nextUpdateId
   }

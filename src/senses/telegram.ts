@@ -139,12 +139,15 @@ function acquireTelegramAcceptanceAudit(
   const ownerDigest = telegramAcceptanceAuditOwnerDigest(identityKey, agentName, root)
   const record: TelegramAcceptanceAuditRecord = { agentName, identityKey, ledger, ownerDigest, references: 1, scenarioHandleDigest, unregister: () => undefined }
   record.unregister = registerGlobalLogSink((event) => {
-    const scenario = event.meta.scenarioHandleDigest
-    if (!TELEGRAM_ACCEPTANCE_AUDIT_EVENTS.has(event.event) || typeof scenario !== "string" || !/^[0-9a-f]{64}$/u.test(scenario)) return
-    if (record.scenarioHandleDigest() !== scenario) return
+    if (!TELEGRAM_ACCEPTANCE_AUDIT_EVENTS.has(event.event)) return
     const explicitOwner = event.meta.acceptanceAuditOwnerDigest
     const contextualOwner = telegramAcceptanceAuditOwner.getStore()
-    if (explicitOwner === ownerDigest || contextualOwner === ownerDigest) ledger.append(event)
+    if (explicitOwner !== ownerDigest && contextualOwner !== ownerDigest) return
+    const scenario = event.meta.scenarioHandleDigest
+    if (typeof scenario !== "string" || !/^[0-9a-f]{64}$/u.test(scenario) || record.scenarioHandleDigest() !== scenario) {
+      ledger.poison(new Error("Telegram acceptance audit scenario ownership drift"))
+    }
+    ledger.append(event)
   })
   telegramAcceptanceAudits.set(root, record)
   let released = false

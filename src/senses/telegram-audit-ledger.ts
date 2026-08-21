@@ -153,6 +153,7 @@ export interface TelegramAuditLedger {
   ledgerPath: string
   headPath: string
   append(event: LogEvent): void
+  poison(error: Error): void
   assertHealthy(): void
   assertCapacity(additionalRows?: number): void
 }
@@ -223,6 +224,10 @@ export function createTelegramAuditLedger(options: {
         failure = error instanceof Error ? error : new Error(String(error))
         throw failure
       }
+    },
+    poison(error) {
+      failure ??= error
+      throw failure
     },
     assertHealthy() {
       if (failure) throw failure
