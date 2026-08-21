@@ -546,7 +546,7 @@ export interface TelegramPersistedPendingApproval {
   }
 }
 
-export type TelegramPersistedApprovalStateKind = "ordinary" | "decision_attempt" | "action_terminal" | "delivery_interruption"
+export type TelegramPersistedApprovalStateKind = "ordinary" | "decision_attempt" | "action_terminal" | "delivery_interruption" | "expiry_observed" | "terminal_tombstone"
 
 export function classifyTelegramPersistedApprovalState(
   pending: TelegramPersistedPendingApproval,
@@ -611,6 +611,13 @@ export function classifyTelegramPersistedApprovalState(
     return "action_terminal"
   }
   if (hasReceipt || hasTerminalMac) throw new Error("Telegram persisted terminal authority is structurally incomplete")
+  if (pending.deliveryState === "terminal_tombstone") return "terminal_tombstone"
+  if (pending.expiryObservation !== undefined) {
+    if (pending.deliveryState !== "bound" || !hasCanonicalMessageId) {
+      throw new Error("Telegram persisted expiry observation has invalid delivery routing")
+    }
+    return "expiry_observed"
+  }
   return hasAttempt ? "decision_attempt" : "ordinary"
 }
 
@@ -1024,6 +1031,7 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
   ): Promise<{ accepted: boolean; terminalText: string; callbackAt: number }> => {
     const persistedState = classifyTelegramPersistedApprovalState(pending)
     if (persistedState === "delivery_interruption") throw new Error("Telegram delivery-interruption state cannot settle a decision")
+    if (persistedState === "expiry_observed" || persistedState === "terminal_tombstone") throw new Error("Telegram terminal lifecycle state cannot settle a decision")
     if (pending.settlementReceipt) {
       const receipt = validateSettlementReceipt(pending)
       await emitSettlementReceipt(pending)
@@ -1034,6 +1042,7 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
     let decisionToken: string | undefined
     if (!pending.decisionAttempt) {
       if (!expected) throw new Error("Telegram persisted decision attempt is unavailable")
+      if (classifyTelegramPersistedApprovalState(pending) !== "ordinary") throw new Error("Telegram approval is no longer eligible for a decision attempt")
       decisionToken = await resolveDecisionToken(pending)
       const fencingToken = decisionToken
       const unsigned = {
@@ -1044,6 +1053,7 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
       }
       if (unsigned.attemptedAt < (pending.acceptanceBinding?.boundAt ?? pending.expiresAt - TELEGRAM_APPROVAL_TTL_MS)
         || unsigned.attemptedAt >= pending.expiresAt) throw new Error("Telegram decision attempt was observed outside its deadline")
+      if (classifyTelegramPersistedApprovalState(pending) !== "ordinary") throw new Error("Telegram approval lifecycle changed before decision fencing")
       persistMutation(pending, () => {
         pending.decisionAttempt = {
           ...unsigned,
@@ -1119,7 +1129,7 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
             await settleDecisionAttempt(current)
             return
           }
-          if (!current.terminal && now() < current.expiresAt) return
+          if (persistedState === "ordinary" && !current.terminal && now() < current.expiresAt) return
           if (current.terminal) {
             await editTerminal(current, current.terminal.terminalText)
             remove(current)
@@ -1253,6 +1263,7 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
         const pending = uniquePending().find((record) => record.approvalId === approvalId)
         if (!pending) return { terminalEditSucceeded: true }
         const persistedState = classifyTelegramPersistedApprovalState(pending)
+        if (persistedState === "expiry_observed") validateExpiryObservation(pending)
         if (persistedState === "decision_attempt" || persistedState === "action_terminal") {
           throw new Error("Telegram persisted approval authority cannot be orphan-cleaned")
         }
@@ -1269,6 +1280,7 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
         const pending = uniquePending().find((record) => record.approvalId === approvalId)
         if (!pending) return
         const persistedState = classifyTelegramPersistedApprovalState(pending)
+        if (persistedState === "expiry_observed") validateExpiryObservation(pending)
         if (persistedState === "decision_attempt" || persistedState === "action_terminal") {
           await settleDecisionAttempt(pending)
           return
@@ -1297,10 +1309,14 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
       const userId = String(callback.from.id)
       const chatId = callback.message ? String(callback.message.chat.id) : ""
       const messageId = callback.message ? String(callback.message.message_id) : ""
-      if (pending) classifyTelegramPersistedApprovalState(pending)
+      const persistedState = pending ? classifyTelegramPersistedApprovalState(pending) : undefined
       let invalidReason: string | null = null
       let expiryObservedAt: number | undefined
       let expiryObservation: NonNullable<TelegramPersistedPendingApproval["expiryObservation"]> | undefined
+      if (pending && persistedState === "expiry_observed") {
+        expiryObservation = validateExpiryObservation(pending)
+        expiryObservedAt = expiryObservation.observedAt
+      }
       if (!pending) invalidReason = "stale_callback"
       else if (userId !== options.expectedUserId) invalidReason = "foreign_user"
       else if (chatId !== options.expectedChatId) invalidReason = "foreign_chat"
@@ -1311,6 +1327,7 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
       else if (pending.deliveryState === "send_attempting" || pending.deliveryState === "delivery_indeterminate") invalidReason = "delivery_indeterminate"
       else if (pending.deliveryState !== "bound" || pending.messageId === null) invalidReason = "prompt_not_bound"
       else if (messageId !== pending.messageId) invalidReason = "foreign_message"
+      else if (persistedState === "expiry_observed") invalidReason = "expired"
       else {
         if (!pending.decisionAttempt && observedAt >= pending.expiresAt) {
           invalidReason = "expired"

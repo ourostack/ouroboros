@@ -403,6 +403,10 @@ export function createTelegramApprovalRuntime(options: {
           await transport.recoverDecisionAttempt(pending.approvalId)
           continue
         }
+        if (persistedState === "expiry_observed") {
+          await transport.reconcileExpired()
+          continue
+        }
         if (persistedState === "delivery_interruption") {
           await transport.terminalizeRecovered(pending.approvalId, pending.terminal!.terminalText)
           continue

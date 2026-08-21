@@ -230,6 +230,39 @@ describe("Telegram approval callback transport", () => {
     expect(evidence.findLast(({ event }) => event === "telegram.approval_prompt_terminalized")?.meta).toMatchObject({ expiryObservedAt: 301_000, expiryDeadlineAt: 300_000 })
   })
 
+  it("keeps a durable expiry observation terminal across wall-clock rollback", async () => {
+    const record = {
+      approvalId: "approval-1", messageId: "99", deliveryState: "bound" as const,
+      approveCallbackData: "a:approve", denyCallbackData: "d:deny", expiresAt: 1_000,
+      expiryObservation: { schemaVersion: "telegram-approval-expiry-observation-v1" as const, deadlineAt: 1_000, observedAt: 1_000, evidenceMac: null },
+    }
+    const onDecision = vi.fn()
+    const onExpire = vi.fn()
+    const fixture = approvalFixture({ records: [record], now: () => 900, onDecision, onExpire })
+
+    await expect(fixture.transport.handleUpdate(approvalCallback("a:approve"))).resolves.toMatchObject({ accepted: false, reason: "expired" })
+
+    expect(onDecision).not.toHaveBeenCalled()
+    expect(onExpire).toHaveBeenCalledWith("approval-1")
+    expect(fixture.calls[0]?.method).toBe("answerCallbackQuery")
+    expect(fixture.records()).toEqual([])
+  })
+
+  it("validates a durable expiry observation before acknowledging after wall-clock rollback", async () => {
+    const record = {
+      approvalId: "approval-1", messageId: "99", deliveryState: "bound" as const,
+      approveCallbackData: "a:approve", denyCallbackData: "d:deny", expiresAt: 1_000,
+      expiryObservation: { schemaVersion: "telegram-approval-expiry-observation-v1" as const, deadlineAt: 999, observedAt: 1_000, evidenceMac: null },
+    }
+    const fixture = approvalFixture({ records: [record], now: () => 900 })
+
+    await expect(fixture.transport.handleUpdate(approvalCallback("a:approve"))).rejects.toThrow("expiry observation is invalid")
+
+    expect(fixture.onDecision).not.toHaveBeenCalled()
+    expect(fixture.calls).toEqual([])
+    expect(fixture.records()).toEqual([record])
+  })
+
   it("persists the callback's exact first expiry observation before acknowledging it", async () => {
     let clock = 1_000
     let records: ReturnType<TelegramPendingApprovalStore["load"]> = [{
