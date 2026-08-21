@@ -22,7 +22,7 @@ assert_health_probe_cleanup() {
     const fs = require("node:fs");
     const path = require("node:path");
     const acceptance = process.argv[1];
-    for (const name of ["health-probe-workspaces", "health-probe-pending"]) {
+    for (const name of ["health-probe-workspaces", "health-probe-pending", "health-probe-processes"]) {
       const target = path.join(acceptance, name);
       if (fs.existsSync(target) && fs.readdirSync(target).length !== 0) process.exit(1);
     }
