@@ -97,6 +97,13 @@ describe("Sanctuary runtime tool context", () => {
       result: { ok: true, data: { uptime: 11 } },
       toolResultDigests: [expect.stringMatching(/^[0-9a-f]{64}$/u)],
     })
+    const rejectedObserver = { toolResultDigests: [] as string[] }
+    runtimeMocks.readTools.getSystem.mockResolvedValueOnce({ ok: true, data: { uptime: 12 } })
+    await expect(runWithSanctuaryToolReceiptCollection(async () => {
+      await context.sanctuary!.getSystem()
+      throw new Error("turn failed after tool result")
+    }, rejectedObserver)).rejects.toThrow("turn failed after tool result")
+    expect(rejectedObserver.toolResultDigests).toEqual([expect.stringMatching(/^[0-9a-f]{64}$/u)])
     runtimeMocks.restart.mockResolvedValueOnce({ ok: true, data: { container: { id: "Docker:a", name: "calibre-web" }, beforeState: "running", afterState: "running", observedRestart: true, degraded: false } })
     await expect(context.sanctuary!.restartContainer({ container: "calibre-web" })).resolves.toMatchObject({ ok: true })
     expect(runtimeMocks.restart).toHaveBeenCalledWith({ container: "calibre-web" })

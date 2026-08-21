@@ -64,14 +64,21 @@ const TELEGRAM_IDENTITY_KEY = /^[A-Za-z0-9_-]{43}$/u
 const TELEGRAM_SUBJECT = /^tg_[A-Za-z0-9_-]{43}$/u
 const TELEGRAM_SUBJECT_INDEX = "identity-subjects.json"
 const TELEGRAM_TURN_RECEIPT_DOMAIN = "ouroboros.telegram.turn-receipt.v3"
+const TELEGRAM_TURN_LEDGER_MAX_BYTES = 4 * 1024 * 1024
+const TELEGRAM_TURN_LEDGER_MAX_ROWS = 500
+const TELEGRAM_TURN_LEDGER_MAX_ROW_BYTES = 16 * 1024
 const telegramTurnLedgerTails = new Map<string, Promise<void>>()
 
 function validateSanctuaryTurnReceipt(value: Record<string, unknown>): void {
   const exactKeys = ["completedAt", "deliveries", "deliveryCount", "errorCategory", "providerInvocationCount", "responseDigest", "scenarioHandleDigest", "schemaVersion", "sequenceDigest", "status", "toolInvocationCount", "toolResultDigests", "updateDigest"].sort()
   const deliveries = value.deliveries
   if (JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(exactKeys)
-    || value.schemaVersion !== "sanctuary-telegram-turn-receipt-v3" || !/^[0-9a-f]{64}$/u.test(String(value.scenarioHandleDigest))
-    || !["success", "error"].includes(String(value.status)) || (value.errorCategory !== null && (typeof value.errorCategory !== "string" || value.errorCategory.length > 128))
+    || value.schemaVersion !== "sanctuary-telegram-turn-receipt-v3"
+    || typeof value.scenarioHandleDigest !== "string" || !/^[0-9a-f]{64}$/u.test(value.scenarioHandleDigest)
+    || (value.status !== "success" && value.status !== "error")
+    || (value.status === "success"
+      ? value.errorCategory !== null
+      : typeof value.errorCategory !== "string" || value.errorCategory.length < 1 || value.errorCategory.length > 128)
     || ![value.updateDigest, value.sequenceDigest, value.responseDigest].every((digest) => typeof digest === "string" && /^[0-9a-f]{64}$/u.test(digest))
     || !Array.isArray(value.toolResultDigests) || value.toolResultDigests.length > 100 || !value.toolResultDigests.every((digest) => typeof digest === "string" && /^[0-9a-f]{64}$/u.test(digest))
     || !Array.isArray(deliveries) || deliveries.length > 100 || !deliveries.every((delivery) => {
@@ -94,17 +101,22 @@ async function appendSanctuaryTurnReceipt(agentRoot: string, receipt: Record<str
     let existing: string[] = []
     try {
       const raw = readFileSync(filePath, "utf8")
-      if (Buffer.byteLength(raw) > 4 * 1024 * 1024) throw new Error("Telegram turn receipt ledger exceeds its bound")
+      if (Buffer.byteLength(raw) > TELEGRAM_TURN_LEDGER_MAX_BYTES) throw new Error("Telegram turn receipt ledger exceeds its bound")
       existing = raw.split("\n").filter(Boolean)
-      if (existing.length > 500 || existing.some((line) => Buffer.byteLength(line) > 16 * 1024)) throw new Error("Telegram turn receipt ledger is invalid")
+      if (existing.length > TELEGRAM_TURN_LEDGER_MAX_ROWS || existing.some((line) => Buffer.byteLength(line) > TELEGRAM_TURN_LEDGER_MAX_ROW_BYTES)) throw new Error("Telegram turn receipt ledger is invalid")
       for (const line of existing) {
         validateSanctuaryTurnReceipt(JSON.parse(line) as Record<string, unknown>)
       }
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error }
     validateSanctuaryTurnReceipt(receipt)
     const serialized = JSON.stringify(receipt)
-    if (Buffer.byteLength(serialized) > 16 * 1024) throw new Error("Telegram turn receipt exceeds its bound")
-    const lines = [...existing, serialized].slice(-500)
+    if (Buffer.byteLength(serialized) > TELEGRAM_TURN_LEDGER_MAX_ROW_BYTES) throw new Error("Telegram turn receipt exceeds its bound")
+    const lines = [...existing, serialized].slice(-TELEGRAM_TURN_LEDGER_MAX_ROWS)
+    let aggregateBytes = lines.reduce((total, line) => total + Buffer.byteLength(line) + 1, 0)
+    while (aggregateBytes > TELEGRAM_TURN_LEDGER_MAX_BYTES && lines.length > 1) {
+      aggregateBytes -= Buffer.byteLength(lines.shift()!) + 1
+    }
+    if (aggregateBytes > TELEGRAM_TURN_LEDGER_MAX_BYTES) throw new Error("Telegram turn receipt ledger exceeds its bound")
     const temporary = `${filePath}.tmp-${process.pid}-${randomUUID()}`
     writeFileSync(temporary, `${lines.join("\n")}\n`, { mode: 0o600, flag: "wx" })
     const handle = openSync(temporary, "r")
@@ -136,6 +148,8 @@ export interface CreateTelegramSenseAppOptions {
   subjectIndexHooks?: { afterCreateTemporary?: (temporaryPath: string) => void }
   acceptanceMarker?: () => { scenarioHandleDigest: string } | null
   acceptanceReceiptRoot?: string
+  /** Test seam for observing receipt evidence across a rejected turn. */
+  _runWithToolReceiptCollection?: typeof runWithSanctuaryToolReceiptCollection
 }
 
 function requiredText(value: unknown, label: string): string {
@@ -433,6 +447,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     path.join(agentRoot, "state", "senses", "telegram", "inbox.json"),
   )
   const runTurn = options.runTurn ?? runSenseTurn
+  const collectToolReceipts = options._runWithToolReceiptCollection ?? runWithSanctuaryToolReceiptCollection
   const useSanctuaryRuntime = options.agentName === "sanctuary" && !options.runTurn
   const toolContext = useSanctuaryRuntime ? createSanctuaryToolContext(options.agentName) : undefined
   const approvalRuntime = options.approvalRuntime ?? (useSanctuaryRuntime ? createTelegramApprovalRuntime({
@@ -547,7 +562,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     const turnMetricsObserver = { providerInvocationCount: 0, toolInvocationCount: 0 }
     const toolReceiptObserver = { toolResultDigests: [] as string[] }
     try {
-      const collected = await runWithSanctuaryToolReceiptCollection(() => runTurn({
+      const collected = await collectToolReceipts(() => runTurn({
         agentName: options.agentName,
         channel: "telegram",
         sessionKey: `telegram:${subject}`,
@@ -582,7 +597,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       })
     } catch (error) {
       receiptStatus = "error"
-      errorCategory = (error instanceof Error ? error.name : "unknown").slice(0, 128)
+      errorCategory = (error instanceof Error && error.name.trim() ? error.name : "unknown").slice(0, 128)
       emitNervesEvent({
         level: "error",
         component: "senses",
