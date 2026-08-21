@@ -108,9 +108,9 @@ describe("Sanctuary fixed deployment target", () => {
       quiesceTarget: <T>(_target: unknown, operation: () => T) => { events.push("pause"); try { return operation() } finally { events.push("unpause") } },
     })
     expect(events.filter((event) => event === "topology")).toHaveLength(2)
-    expect(events.lastIndexOf("topology")).toBeLessThan(events.lastIndexOf("membership"))
+    const boundedInitialScan = ["netns", "membership", "fds", "tcp", "udp", "unix", "membership", "fds", "tcp", "udp", "unix", "netns"]
     const completeTerminalSample = ["netns", "membership", "fds", "tcp", "udp", "unix", "membership", "fds", "netns"]
-    expect(events.slice(events.lastIndexOf("topology") + 1)).toEqual(["pause", ...completeTerminalSample, ...completeTerminalSample, "unpause"])
+    expect(events).toEqual(["topology", "pause", ...boundedInitialScan, ...completeTerminalSample, ...completeTerminalSample, "unpause", "topology"])
   })
 
   it("cannot discard a listener opened by a target thread between FD and protocol sampling", async () => {
@@ -197,19 +197,15 @@ describe("Sanctuary fixed deployment target", () => {
       readNetns: () => "net:[42]",
       cgroupProcessIds: () => {
         membershipReads += 1
-        if (membershipReads > 2) {
-          expect(paused).toBe(true)
-          blockedTransientSchedules += 1
-        }
+        expect(paused).toBe(true)
+        blockedTransientSchedules += 1
         return { path: `/docker/${stagingId}`, processIds: [321], threadIds: [321] }
       },
       ownedSocketInodes: () => [],
       readTcpListeners: () => {
         tcpReads += 1
-        if (tcpReads > 2) {
-          expect(paused).toBe(true)
-          blockedTransientSchedules += 1
-        }
+        expect(paused).toBe(true)
+        blockedTransientSchedules += 1
         return []
       },
       readUdpListeners: () => [],
@@ -225,7 +221,7 @@ describe("Sanctuary fixed deployment target", () => {
       }),
     })
     expect(result).toMatchObject({ deployment: { targetContainerId: stagingId } })
-    expect(blockedTransientSchedules).toBe(6)
+    expect(blockedTransientSchedules).toBe(10)
     expect(paused).toBe(false)
   })
 
