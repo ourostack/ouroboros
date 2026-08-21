@@ -109,8 +109,8 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       currentLabel = "unit-16m-restart-continuation"
       await expect(driver.poll(currentLabel as never, scenarioHandleDigest)).resolves.toEqual({ state: "driven" })
       expect(hostRequests).toEqual([
-        { operation: "drive_duplicate_callbacks", targetId: "sanctuary", label: "unit-16l-duplicate-callback", scenarioHandleDigest, approvalId: "approval-1", checkpointDigest: "b".repeat(64), approvalEpoch: 0 },
-        { operation: "drive_restart_continuation", targetId: "sanctuary", label: "unit-16m-restart-continuation", scenarioHandleDigest, approvalId: "approval-1", checkpointDigest: "b".repeat(64), approvalEpoch: 0 },
+        { operation: "drive_duplicate_callbacks", targetId: "sanctuary", label: "unit-16l-duplicate-callback", scenarioHandleDigest },
+        { operation: "drive_restart_continuation", targetId: "sanctuary", label: "unit-16m-restart-continuation", scenarioHandleDigest },
       ])
     } finally { fs.rmSync(root, { recursive: true, force: true }) }
   })
