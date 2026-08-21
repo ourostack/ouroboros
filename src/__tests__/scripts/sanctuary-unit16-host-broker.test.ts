@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest"
 interface BrokerDependencies {
   readBootId(): string
   containerSnapshot(): unknown
+  containerOwnerSnapshot?(): unknown
   startHealthProbe?(input: Record<string, string>): unknown
   healthProbeStatus?(input: Record<string, string>): unknown
   recoverHealthProbe?(input: Record<string, string>): unknown
@@ -121,6 +122,34 @@ describe("Sanctuary Unit 16 host broker", () => {
       { operation: "status", input: { label: coordinates.label, scenarioHandleDigest: coordinates.scenarioHandleDigest, ownerImageDigest: "b".repeat(64), ownerContainerDigest: "c".repeat(64) } },
       { operation: "recover", input: { label: coordinates.label, scenarioHandleDigest: coordinates.scenarioHandleDigest, ownerImageDigest: "b".repeat(64), ownerContainerDigest: "c".repeat(64) } },
     ])
+  })
+
+  it("keeps running status on the fast path and returns the exact independently attested complete snapshot", async () => {
+    const { dispatch } = await broker()
+    const coordinates = { targetId: "sanctuary", label: "unit-16g-health-transition", scenarioHandleDigest: "a".repeat(64) }
+    const snapshot = { schemaVersion: 1, imageId: `sha256:${"b".repeat(64)}`, containerId: "c".repeat(64), running: true, health: "healthy" }
+    let state: "running" | "complete" = "running"
+    const dependencies: BrokerDependencies = {
+      readBootId: () => "unused",
+      containerSnapshot: () => { throw new Error("full snapshot must not run before completion") },
+      healthProbeStatus: () => state === "running" ? { state } : { state, containerSnapshot: snapshot },
+    }
+    await expect(dispatch({ operation: "health_probe_status", ...coordinates }, dependencies)).resolves.toEqual({ state: "running" })
+    state = "complete"
+    await expect(dispatch({ operation: "health_probe_status", ...coordinates }, dependencies)).resolves.toEqual({ state: "complete", containerSnapshot: snapshot })
+  })
+
+  it("uses only the bounded owner identity path before health recovery", async () => {
+    const { dispatch } = await broker()
+    const calls: string[] = []
+    const coordinates = { targetId: "sanctuary", label: "unit-16g-health-transition", scenarioHandleDigest: "a".repeat(64) }
+    await expect(dispatch({ operation: "recover_health_probe", ...coordinates }, {
+      readBootId: () => "unused",
+      containerSnapshot: () => { throw new Error("full snapshot is too slow for recovery") },
+      containerOwnerSnapshot: () => { calls.push("owner"); return { imageId: `sha256:${"b".repeat(64)}`, containerId: "c".repeat(64) } },
+      recoverHealthProbe: (input) => { calls.push(`recover:${input.ownerImageDigest}`); return { recovered: true } },
+    })).resolves.toEqual({ recovered: true })
+    expect(calls).toEqual(["owner", `recover:${"b".repeat(64)}`])
   })
 
   it("constructs an exact argv-only packaged probe invocation", async () => {
