@@ -626,13 +626,13 @@ describe("Telegram approval callback transport", () => {
     expect(onDecision).not.toHaveBeenCalled()
   })
 
-  it("recovers a poll-quarantined decision attempt at startup without Telegram redispatch", async () => {
+  it.each(["approve", "deny"] as const)("recovers a poll-quarantined %s decision attempt at startup without Telegram redispatch", async (decision) => {
     const directory = mkdtempSync(join(tmpdir(), "telegram-decision-recovery-")); tempDirectories.push(directory)
     const pendingStore = new FileTelegramPendingApprovalStore(join(directory, "pending.json"))
     pendingStore.save([{ approvalId: "approval-1", messageId: "99", deliveryState: "bound", approveCallbackData: "a:approve", denyCallbackData: "d:deny", expiresAt: 10_000 }])
     const offsetStore = new FileTelegramOffsetStore(join(directory, "offset.json"))
     const inboxStore = new FileTelegramUpdateInboxStore(join(directory, "inbox.json"))
-    const update = approvalCallback("a:approve", { id: "decision-query" })
+    const update = approvalCallback(decision === "approve" ? "a:approve" : "d:deny", { id: "decision-query" })
     const firstTransport = createTelegramApprovalTransport({
       api: { stop: vi.fn(), request: vi.fn(async () => true) }, expectedUserId: "10", expectedChatId: "10", pendingStore, createOpaqueHandle: vi.fn(),
       onDecision: vi.fn(async () => { throw new Error("crash after poll offset commit") }), resolveDecisionToken: async () => "token", now: () => 1_000,
@@ -646,13 +646,14 @@ describe("Telegram approval callback transport", () => {
     expect(inboxStore.loadIndeterminate()).toHaveLength(1)
     expect(pendingStore.load()[0]).toMatchObject({ decisionAttempt: expect.objectContaining({ attemptedAt: 1_000 }) })
 
-    const onDecision = vi.fn(async () => ({ accepted: true, terminalText: "done" }))
+    const onDecision = vi.fn(async () => ({ accepted: decision === "approve", terminalText: "done" }))
     const restarted = createTelegramApprovalTransport({
       api: { stop: vi.fn(), request: vi.fn(async () => true) }, expectedUserId: "10", expectedChatId: "10", pendingStore, createOpaqueHandle: vi.fn(),
       onDecision, resolveDecisionToken: async () => "token", now: () => 2_000,
     }) as ReturnType<typeof createTelegramApprovalTransport> & { recoverDecisionAttempt(approvalId: string): Promise<boolean> }
     await expect(restarted.recoverDecisionAttempt("approval-1")).resolves.toBe(true)
     expect(onDecision).toHaveBeenCalledOnce()
+    expect(onDecision).toHaveBeenCalledWith(expect.objectContaining({ decision }))
     expect(pendingStore.load()).toEqual([])
   })
 
