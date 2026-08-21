@@ -43,6 +43,11 @@ interface BrokerModule {
   requireStableHealthProbeOwner(before: Record<string, string>, after: Record<string, string>): void
   terminateHealthProbeChild(record: HealthProbeRecord, options?: { termGraceMs?: number; killGraceMs?: number }): Promise<void>
   recoverAfterHealthProbeTermination<T>(record: HealthProbeRecord, recovery: () => T | Promise<T>, options?: { termGraceMs?: number; killGraceMs?: number }): Promise<T>
+  restartButlerForAcceptance(input: Record<string, unknown>, dependencies?: {
+    snapshot(): Record<string, unknown> | Promise<Record<string, unknown>>
+    run(executable: string, args: string[], options: unknown): { error?: Error; status: number | null }
+    sleep(milliseconds: number): Promise<void>
+  }): Promise<Record<string, unknown>>
 }
 
 interface HealthProbeChild extends EventEmitter {
@@ -77,6 +82,11 @@ async function broker(): Promise<BrokerModule> {
     requireStableHealthProbeOwner(before: Record<string, string>, after: Record<string, string>): void
     terminateHealthProbeChild(record: HealthProbeRecord, options?: { termGraceMs?: number; killGraceMs?: number }): Promise<void>
     recoverAfterHealthProbeTermination<T>(record: HealthProbeRecord, recovery: () => T | Promise<T>, options?: { termGraceMs?: number; killGraceMs?: number }): Promise<T>
+    restartButlerForAcceptance(input: Record<string, unknown>, dependencies?: {
+      snapshot(): Record<string, unknown> | Promise<Record<string, unknown>>
+      run(executable: string, args: string[], options: unknown): { error?: Error; status: number | null }
+      sleep(milliseconds: number): Promise<void>
+    }): Promise<Record<string, unknown>>
   }>
 }
 
@@ -134,6 +144,26 @@ describe("Sanctuary Unit 16 host broker", () => {
     await expect(dispatch({ ...request, label: "unit-16l-duplicate-callback" }, {
       readBootId: () => "unused", containerSnapshot: () => ({}), restartButlerForAcceptance: () => result,
     })).rejects.toThrow(/label is invalid/u)
+  })
+
+  it("executes one exact docker restart argv and waits for a changed healthy owner", async () => {
+    const { restartButlerForAcceptance } = await broker()
+    const calls: Array<{ executable: string; args: string[] }> = []
+    let snapshots = 0
+    const result = await restartButlerForAcceptance({
+      label: "unit-16m-restart-continuation", scenarioHandleDigest: "a".repeat(64), approvalId: "approval-1", checkpointDigest: "b".repeat(64), approvalEpoch: 0,
+    }, {
+      snapshot: async () => {
+        snapshots += 1
+        return snapshots === 1
+          ? { containerId: "1".repeat(64), restartCount: 7, running: true, health: "healthy" }
+          : { containerId: "2".repeat(64), restartCount: 8, running: true, health: "healthy" }
+      },
+      run: (executable, args) => { calls.push({ executable, args }); return { status: 0 } },
+      sleep: async () => {},
+    })
+    expect(calls).toEqual([{ executable: "/usr/bin/docker", args: ["restart", "ouro-butler"] }])
+    expect(result).toEqual({ restarted: true, beforeContainerDigest: "1".repeat(64), afterContainerDigest: "2".repeat(64), restartCountBefore: 7, restartCountAfter: 8 })
   })
 
   it("starts, polls, and recovers only the fixed owner-bound health probe", async () => {
