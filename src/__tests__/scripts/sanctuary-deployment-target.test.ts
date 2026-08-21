@@ -538,6 +538,43 @@ describe("Sanctuary fixed deployment target", () => {
     expect(Date.now() - startedAt).toBeLessThan(1_000)
   })
 
+  it("reaps a real TERM-ignoring leader and descendant after bounded recovery kills their process group", async () => {
+    const { runKillableCommand } = await load()
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-killable-group-"))
+    const receipt = path.join(root, "pids.json")
+    let descendantPid = 0
+    const processState = (pid: number): string => pid > 0
+      ? spawnSync("ps", ["-o", "stat=", "-p", String(pid)]).stdout.toString().trim()
+      : ""
+    const awaitGone = async (pid: number): Promise<string> => {
+      let state = processState(pid)
+      for (let attempt = 0; attempt < 200 && state; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 10))
+        state = processState(pid)
+      }
+      return state
+    }
+    const descendantProgram = "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"
+    const leaderProgram = [
+      "const fs = require('node:fs')",
+      "const { spawn } = require('node:child_process')",
+      `const child = spawn(process.execPath, ["-e", ${JSON.stringify(descendantProgram)}], { stdio: "ignore" })`,
+      `fs.writeFileSync(${JSON.stringify(receipt)}, JSON.stringify({ leaderPid: process.pid, descendantPid: child.pid }))`,
+      "process.on('SIGTERM', () => {})",
+      "setInterval(() => {}, 1000)",
+    ].join(";")
+    try {
+      await expect(runKillableCommand(process.execPath, ["-e", leaderProgram], 300)).rejects.toThrow(/deadline|timed out/u)
+      const pids = JSON.parse(fs.readFileSync(receipt, "utf8")) as { leaderPid: number; descendantPid: number }
+      descendantPid = pids.descendantPid
+      await expect(awaitGone(pids.leaderPid)).resolves.toBe("")
+      await expect(awaitGone(pids.descendantPid)).resolves.toBe("")
+    } finally {
+      if (processState(descendantPid) && !processState(descendantPid).startsWith("Z")) process.kill(descendantPid, "SIGKILL")
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it("never writes a successful recovery receipt after a late blocked inspection return", async () => {
     const { runThawWatchdog } = await load()
     const bootId = "11111111-2222-4333-8444-555555555555"
