@@ -182,9 +182,17 @@ describe("Sanctuary Unit 16 host broker", () => {
     expect(driver.poll(input, () => { calls += 1; throw new Error("secret raw failure") })).toEqual({ state: "waiting" })
     begin()
     await driver.stopAndDrain()
-    expect(driver.poll(input, () => { calls += 1 })).toEqual({ state: "failed", errorDigest: expect.stringMatching(/^[0-9a-f]{64}$/u) })
+    const failed = driver.poll(input, () => { calls += 1 })
+    expect(failed).toEqual({ state: "failed", errorDigest: expect.stringMatching(/^[0-9a-f]{64}$/u) })
     expect(calls).toBe(1)
     expect(JSON.stringify(driver.poll(input, () => {}))).not.toContain("secret raw failure")
+    let beginRestart!: () => void
+    const restartDriver = createInteractiveRestartDriver({ defer: (operation) => { beginRestart = operation } })
+    const restartInput = { ...input, scenarioHandleDigest: "b".repeat(64) }
+    restartDriver.poll(restartInput, () => { throw new Error("production butler restart failed") })
+    beginRestart()
+    await restartDriver.stopAndDrain()
+    expect((restartDriver.poll(restartInput, () => {}) as { errorDigest: string }).errorDigest).not.toBe((failed as { errorDigest: string }).errorDigest)
   })
 
   it("coordinates owner mutation across health and interactive operations in both orderings", async () => {

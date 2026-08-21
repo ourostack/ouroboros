@@ -745,7 +745,7 @@ function createInteractiveRestartDriver(options = {}) {
       records.set(key, { state: "waiting" })
       const task = new Promise((resolve) => defer(resolve)).then(operation).then(
           (receipt) => { records.set(key, { state: "complete", receipt }) },
-          (error) => { records.set(key, { state: "failed", errorDigest: createHash("sha256").update(error instanceof Error ? error.name : "unknown").digest("hex") }) },
+          (error) => { records.set(key, { state: "failed", errorDigest: createHash("sha256").update(interactiveFailureCategory(error)).digest("hex") }) },
       )
       tasks.add(task)
       void task.finally(() => tasks.delete(task)).catch(() => {})
@@ -753,6 +753,17 @@ function createInteractiveRestartDriver(options = {}) {
     },
     async stopAndDrain() { await Promise.allSettled([...tasks]) },
   }
+}
+
+function interactiveFailureCategory(error) {
+  const message = error instanceof Error ? error.message : ""
+  if (/inspect-before-retry/u.test(message)) return "inspect-before-retry"
+  if (/production runtime/u.test(message)) return "production-runtime"
+  if (/owner restart|did not return|restart failed/u.test(message)) return "owner-restart"
+  if (/prepared receipt/u.test(message)) return "prepared-receipt"
+  if (/reconciliation/u.test(message)) return "reconciliation"
+  if (/receipt/u.test(message)) return "receipt-validation"
+  return "unknown"
 }
 
 function canonicalInteractiveRequest(input, expectedLabel) {
