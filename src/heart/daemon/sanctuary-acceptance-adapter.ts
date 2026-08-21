@@ -264,7 +264,7 @@ function ownerContainerSnapshot(value: unknown): JsonObject {
   exactKeys(milestones, ["hostReady", "arrayReady", "dockerReady", "butlerReady", "tailscaleReady", "sshReady"], "health probe owner recovery milestones")
   if (snapshot.schemaVersion !== 1 || typeof snapshot.containerId !== "string" || !SHA256.test(snapshot.containerId)
     || typeof snapshot.imageId !== "string" || !/^sha256:[0-9a-f]{64}$/u.test(snapshot.imageId)
-    || typeof snapshot.running !== "boolean" || typeof snapshot.health !== "string" || snapshot.health.length > 64
+    || typeof snapshot.running !== "boolean" || typeof snapshot.health !== "string" || !["healthy", "starting", "unhealthy", "missing"].includes(snapshot.health)
     || typeof snapshot.user !== "string" || snapshot.user.length < 1 || snapshot.user.length > 64
     || typeof snapshot.readOnlyRoot !== "boolean" || !Number.isSafeInteger(snapshot.mountCount) || Number(snapshot.mountCount) < 0
     || typeof snapshot.mountsDigest !== "string" || !SHA256.test(snapshot.mountsDigest) || typeof snapshot.mountsExact !== "boolean"
@@ -323,14 +323,19 @@ export function createSanctuaryAcceptanceScenarioFinalizer(dependencies: {
   recoverHealthScenario(label: string, scenarioHandleDigest: string): Promise<void>
   finalizeLocal(): void
 }): () => Promise<void> {
+  const appendErrorLeaves = (errors: unknown[], error: unknown): void => {
+    if (error instanceof AggregateError) {
+      for (const nested of error.errors) appendErrorLeaves(errors, nested)
+    } else errors.push(error)
+  }
   return async () => {
     const errors: unknown[] = []
     let active: { label: string; scenarioHandleDigest: string } | null = null
-    try { active = dependencies.readActiveScenario() } catch (error) { errors.push(error) }
+    try { active = dependencies.readActiveScenario() } catch (error) { appendErrorLeaves(errors, error) }
     if (active && HEALTH_ACCEPTANCE_LABELS.has(active.label as SanctuaryUnit16EvidenceLabel)) {
-      try { await dependencies.recoverHealthScenario(active.label, active.scenarioHandleDigest) } catch (error) { errors.push(error) }
+      try { await dependencies.recoverHealthScenario(active.label, active.scenarioHandleDigest) } catch (error) { appendErrorLeaves(errors, error) }
     }
-    try { dependencies.finalizeLocal() } catch (error) { errors.push(error) }
+    try { dependencies.finalizeLocal() } catch (error) { appendErrorLeaves(errors, error) }
     if (errors.length > 0) throw new AggregateError(errors, "Sanctuary scenario recovery and finalization failed")
   }
 }

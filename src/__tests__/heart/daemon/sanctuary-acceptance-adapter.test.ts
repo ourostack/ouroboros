@@ -239,6 +239,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     ["running status with extra fields", { state: "running", extra: true }],
     ["complete status without owner snapshot", { state: "complete" }],
     ["complete status with malformed owner snapshot", { state: "complete", containerSnapshot: { imageId: "wrong" } }],
+    ["complete status with an unknown owner health state", { state: "complete", containerSnapshot: validOwnerSnapshot({ health: "mysterious" }) }],
   ])("rejects %s from the health probe broker", async (_case, response) => {
     const hostRequest = vi.fn(async () => response)
     const factory = (sanctuaryAcceptanceAdapter as unknown as {
@@ -339,6 +340,28 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     expect(thrown).toBeInstanceOf(AggregateError)
     expect((thrown as AggregateError).errors).toEqual([recoveryError, cleanupError])
     expect(order).toEqual(["read", "recover", "local"])
+  })
+
+  it("recursively flattens ordered AggregateError leaves from recovery and local cleanup", async () => {
+    const recoveryLeaf = new Error("recovery leaf")
+    const cleanupLeafOne = new Error("cleanup leaf one")
+    const cleanupLeafTwo = new Error("cleanup leaf two")
+    const factory = (sanctuaryAcceptanceAdapter as unknown as {
+      createSanctuaryAcceptanceScenarioFinalizer(dependencies: {
+        readActiveScenario(): { label: string; scenarioHandleDigest: string }
+        recoverHealthScenario(): Promise<void>
+        finalizeLocal(): void
+      }): () => Promise<void>
+    }).createSanctuaryAcceptanceScenarioFinalizer
+    const finalize = factory({
+      readActiveScenario: () => ({ label: "unit-16g-health-transition", scenarioHandleDigest: "a".repeat(64) }),
+      recoverHealthScenario: async () => { throw new AggregateError([new AggregateError([recoveryLeaf], "nested recovery")], "recovery") },
+      finalizeLocal: () => { throw new AggregateError([cleanupLeafOne, new AggregateError([cleanupLeafTwo], "nested cleanup")], "cleanup") },
+    })
+
+    const thrown = await finalize().catch((error) => error as unknown)
+    expect(thrown).toBeInstanceOf(AggregateError)
+    expect((thrown as AggregateError).errors).toEqual([recoveryLeaf, cleanupLeafOne, cleanupLeafTwo])
   })
 
   it("reads actual persisted source schemas and exact host facts without exposing raw Telegram identity", async () => {
