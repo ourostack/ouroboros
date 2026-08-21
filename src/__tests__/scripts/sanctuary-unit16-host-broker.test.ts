@@ -15,6 +15,11 @@ interface BrokerDependencies {
 }
 
 interface BrokerModule {
+  createHealthProbeOperationCoordinator(): {
+    start<T>(scenario: string, operation: () => T | Promise<T>): Promise<T>
+    recover<T>(scenario: string, operation: () => T | Promise<T>): Promise<T>
+  }
+  completeHealthProbeFromReceipt(request: Record<string, string>, snapshot: Record<string, unknown>, readReceipt: () => Record<string, unknown>): { state: "complete"; containerSnapshot: Record<string, unknown> }
   attestHealthProbeProcessAbsent(input: Record<string, string>, dependencies?: {
     run(executable: string, args: string[], options: unknown): { error?: Error; status: number | null }
     markerPresent(): boolean
@@ -50,6 +55,8 @@ interface HealthProbeRecord {
 
 async function broker(): Promise<BrokerModule> {
   return import(pathToFileURL(path.resolve("deploy/unraid/sanctuary-unit16-host-broker.mjs")).href) as Promise<{
+    createHealthProbeOperationCoordinator(): { start<T>(scenario: string, operation: () => T | Promise<T>): Promise<T>; recover<T>(scenario: string, operation: () => T | Promise<T>): Promise<T> }
+    completeHealthProbeFromReceipt(request: Record<string, string>, snapshot: Record<string, unknown>, readReceipt: () => Record<string, unknown>): { state: "complete"; containerSnapshot: Record<string, unknown> }
     attestHealthProbeProcessAbsent(input: Record<string, string>, dependencies?: {
       run(executable: string, args: string[], options: unknown): { error?: Error; status: number | null }
       markerPresent(): boolean
@@ -188,6 +195,25 @@ describe("Sanctuary Unit 16 host broker", () => {
     expect(() => requireHealthProbeCompleteAttestation(receipt, { imageId: `sha256:${"b".repeat(64)}`, containerId: "c".repeat(64), running: true, health: "healthy" }, request)).not.toThrow()
   })
 
+  it.each([
+    ["before image drift", { ownerImageDigestBefore: "d".repeat(64) }],
+    ["before container drift", { ownerContainerDigestBefore: "d".repeat(64) }],
+  ])("rejects receipt-first complete retries with %s", async (_case, mutation) => {
+    const { completeHealthProbeFromReceipt } = await broker()
+    const request = { label: "unit-16f-cron-fingerprint", scenarioHandleDigest: "a".repeat(64) }
+    const receipt = {
+      schemaVersion: "sanctuary-health-probe-receipt-v1", label: request.label, scenarioHandleDigest: request.scenarioHandleDigest,
+      ownerImageDigestBefore: "b".repeat(64), ownerImageDigestAfter: "b".repeat(64), ownerContainerDigestBefore: "c".repeat(64), ownerContainerDigestAfter: "c".repeat(64),
+      beforeStateDigest: "d".repeat(64), restoredStateDigest: "d".repeat(64), cronFingerprintBefore: "e".repeat(64), cronFingerprintAfter: "e".repeat(64),
+      cronRegisteredBefore: true, cronRegisteredAfter: true, cronDegradedBefore: false, cronDegradedAfter: false, fixtureSequenceDigest: "f".repeat(64),
+      clockMode: "ambient", effectiveNow: "2026-08-20T17:00:00.000Z", phases: [], providerInvocationCount: 0, privateTurnCount: 0, deliveryCount: 0,
+      workspaceAbsent: true, socketAbsent: true, snapshotAbsent: true, realCheckEquivalent: true, productionRestored: true, ...mutation,
+    }
+    expect(() => completeHealthProbeFromReceipt(request, {
+      imageId: `sha256:${"b".repeat(64)}`, containerId: "c".repeat(64), running: true, health: "healthy",
+    }, () => receipt)).toThrow(/complete attestation/u)
+  })
+
   it("constructs an exact argv-only packaged probe invocation", async () => {
     const { healthProbeDockerArgs } = await broker()
     expect(healthProbeDockerArgs("run", {
@@ -222,6 +248,26 @@ describe("Sanctuary Unit 16 host broker", () => {
     releaseSnapshot()
     await Promise.all([accepted, draining])
     expect(events).toEqual(["snapshot-start", "probe-started", "recovery-snapshot"])
+  })
+
+  it("serializes recovery behind an entered delayed start and tombstones later starts", async () => {
+    const { createHealthProbeOperationCoordinator } = await broker()
+    const coordinator = createHealthProbeOperationCoordinator()
+    let releaseSnapshot!: () => void
+    const delayedSnapshot = new Promise<void>((resolve) => { releaseSnapshot = resolve })
+    const events: string[] = []
+    const started = coordinator.start("a".repeat(64), async () => {
+      events.push("snapshot")
+      await delayedSnapshot
+      events.push("launch")
+    })
+    await Promise.resolve()
+    const recovered = coordinator.recover("a".repeat(64), () => { events.push("recover") })
+    await expect(coordinator.start("a".repeat(64), () => { events.push("orphan") })).rejects.toThrow(/recovered scenario/u)
+    expect(events).toEqual(["snapshot"])
+    releaseSnapshot()
+    await Promise.all([started, recovered])
+    expect(events).toEqual(["snapshot", "launch", "recover"])
   })
 
   it("classifies a pending-only probe as recovery-required and fail-closed", async () => {

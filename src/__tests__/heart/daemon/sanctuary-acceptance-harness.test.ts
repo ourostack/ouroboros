@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import {
   createSanctuaryAcceptanceHarnessDependencies,
   executeSanctuaryAcceptanceHarness as executeHarness,
+  resolveSanctuaryAdapterTimeoutMs,
   validateSanctuaryUnit16EvidenceAssertions,
   type AcceptanceHarnessDependencies,
 } from "../../../heart/daemon/sanctuary-acceptance-harness"
@@ -714,6 +715,13 @@ describe("Sanctuary acceptance harness", () => {
     ]))
     expect(stringValues({ telegramCredentialField: "8541786263:abcdefghijklmnopqrstuvwxyzABCDE" }))
       .toEqual(expect.arrayContaining([expect.stringMatching(secretShapedValue)]))
+  })
+
+  it("applies the raised outer adapter default while still clamping to the remaining deadline", () => {
+    expect(resolveSanctuaryAdapterTimeoutMs(undefined, undefined)).toBe(180_000)
+    expect(resolveSanctuaryAdapterTimeoutMs(undefined, 150_000)).toBe(150_000)
+    expect(resolveSanctuaryAdapterTimeoutMs(170_000, 175_000)).toBe(170_000)
+    expect(resolveSanctuaryAdapterTimeoutMs(170_000, 130_001)).toBe(130_001)
   })
 
   it("hard-times-out packaged adapters and Telegram network requests", async () => {
