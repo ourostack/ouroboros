@@ -854,7 +854,7 @@ describe("Telegram approval callback transport", () => {
     }
     const fixture = approvalFixture({ records: [record], onExpire })
 
-    await expect(fixture.transport.reconcileExpired()).rejects.toThrow("not a typed delivery interruption")
+    await expect(fixture.transport.reconcileExpired()).rejects.toThrow("structurally incomplete")
 
     expect(onExpire).not.toHaveBeenCalled()
     expect(fixture.records()).toEqual([record])
@@ -1061,7 +1061,7 @@ describe("Telegram approval callback transport", () => {
     expect(missing.transport.listPendingDeliveries()).toHaveLength(1)
 
     const refused = approvalFixture({ records: [{ ...record, terminal: { accepted: false, terminalText: "refused" } }] })
-    await expect(refused.transport.handleUpdate(approvalCallback("a:x"))).rejects.toThrow("authority-bearing terminal state is incomplete")
+    await expect(refused.transport.handleUpdate(approvalCallback("a:x"))).rejects.toThrow("structurally incomplete")
     expect(refused.onDecision).not.toHaveBeenCalled()
     expect(refused.records()).toHaveLength(1)
   })
@@ -1094,7 +1094,7 @@ describe("Telegram approval callback transport", () => {
     const fixture = approvalFixture({ records: [record] })
 
     await expect(fixture.transport.terminalizeRecovered("partial", "canonical terminal"))
-      .rejects.toThrow("authority-bearing terminal state is incomplete")
+      .rejects.toThrow("structurally incomplete")
 
     expect(fixture.records()).toEqual([record])
     expect(fixture.calls).toEqual([])
@@ -1102,7 +1102,7 @@ describe("Telegram approval callback transport", () => {
 
     const expiryFixture = approvalFixture({ records: [{ ...record, expiresAt: 999_999 }] })
     await expect(expiryFixture.transport.reconcileExpired())
-      .rejects.toThrow("authority-bearing terminal state is incomplete")
+      .rejects.toThrow("structurally incomplete")
     expect(expiryFixture.records()).toEqual([{ ...record, expiresAt: 999_999 }])
     expect(expiryFixture.calls).toEqual([])
   })
@@ -1116,10 +1116,36 @@ describe("Telegram approval callback transport", () => {
     const fixture = approvalFixture({ records: [record] })
 
     await expect(fixture.transport.terminalizeOrphaned("partial", "missing journal"))
-      .rejects.toThrow("cannot be orphan-cleaned")
+      .rejects.toThrow("structurally incomplete")
 
     expect(fixture.records()).toEqual([record])
     expect(fixture.calls).toEqual([])
+  })
+
+  it.each([
+    { name: "authenticated terminal with terminal deleted", extra: {
+      decisionAttempt: { schemaVersion: "telegram-approval-decision-attempt-v1" as const, decision: "approve" as const, queryIdDigest: "a".repeat(64), attemptedAt: 900, evidenceMac: "b".repeat(64) },
+      terminalMac: "c".repeat(64),
+    } },
+    { name: "delivery-interruption tag without terminal", extra: { terminalKind: "delivery_interruption" as const } },
+    { name: "delivery-interruption tag coexisting with authority", extra: {
+      terminalKind: "delivery_interruption" as const,
+      terminal: { accepted: false, terminalText: "interrupted" },
+      decisionAttempt: { schemaVersion: "telegram-approval-decision-attempt-v1" as const, decision: "deny" as const, queryIdDigest: "a".repeat(64), attemptedAt: 900, evidenceMac: "b".repeat(64) },
+    } },
+  ])("preserves invalid cross-field shape: $name", async ({ extra }) => {
+    const record = {
+      approvalId: "invalid-shape", messageId: null, deliveryState: "delivery_indeterminate" as const,
+      approveCallbackData: "a:invalid", denyCallbackData: "d:invalid", expiresAt: 2_000_000,
+      ...extra,
+    }
+    const fixture = approvalFixture({ records: [record] })
+
+    await expect(fixture.transport.recoverDecisionAttempt("invalid-shape")).rejects.toThrow(/invalid|incomplete/u)
+
+    expect(fixture.records()).toEqual([record])
+    expect(fixture.calls).toEqual([])
+    expect(fixture.onDecision).not.toHaveBeenCalled()
   })
 
   it("removes an orphaned transport row without invoking canonical expiry", async () => {

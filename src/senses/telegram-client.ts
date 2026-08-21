@@ -546,6 +546,48 @@ export interface TelegramPersistedPendingApproval {
   }
 }
 
+export type TelegramPersistedApprovalStateKind = "ordinary" | "decision_attempt" | "action_terminal" | "delivery_interruption"
+
+export function classifyTelegramPersistedApprovalState(
+  pending: TelegramPersistedPendingApproval,
+): TelegramPersistedApprovalStateKind {
+  const hasAttempt = pending.decisionAttempt !== undefined
+  const hasTerminal = pending.terminal !== undefined
+  const hasTerminalMac = pending.terminalMac !== undefined
+  const hasReceipt = pending.settlementReceipt !== undefined
+  const hasAuthority = hasAttempt || hasTerminalMac || hasReceipt
+  const validTerminal = hasTerminal
+    && typeof pending.terminal!.accepted === "boolean"
+    && typeof pending.terminal!.terminalText === "string"
+    && pending.terminal!.terminalText.length > 0
+    && pending.terminal!.terminalText.length <= 4_096
+  const exactDeliveryInterruption = pending.terminalKind === "delivery_interruption"
+    && pending.deliveryState === "delivery_indeterminate"
+    && pending.messageId === null
+    && validTerminal
+    && pending.terminal!.accepted === false
+    && !hasAuthority
+
+  if (pending.terminalKind !== undefined) {
+    if (!exactDeliveryInterruption) throw new Error("Telegram persisted delivery-interruption terminal state is invalid")
+    return "delivery_interruption"
+  }
+  if (hasReceipt && (!hasAttempt || !hasTerminal || !hasTerminalMac)) {
+    throw new Error("Telegram persisted settlement receipt is structurally incomplete")
+  }
+  if (hasTerminalMac && (!hasAttempt || !hasTerminal)) {
+    throw new Error("Telegram persisted terminal authentication is structurally incomplete")
+  }
+  if (hasTerminal) {
+    if (!validTerminal || !hasAttempt || !hasTerminalMac) {
+      throw new Error("Telegram persisted action terminal state is structurally incomplete")
+    }
+    return "action_terminal"
+  }
+  if (hasReceipt || hasTerminalMac) throw new Error("Telegram persisted terminal authority is structurally incomplete")
+  return hasAttempt ? "decision_attempt" : "ordinary"
+}
+
 interface TelegramPendingApproval extends TelegramPersistedPendingApproval {
   deliveryState: "pending" | "send_attempting" | "bound" | "delivery_indeterminate" | "terminal_tombstone"
   decisionToken?: string
@@ -699,23 +741,6 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
     const evidenceMac = options.signAcceptanceEvidence?.(event, acceptanceEvidenceUnsigned(pending, fields)) ?? null
     return evidenceMac
   }
-
-  const hasAuthorityBearingTerminalState = (pending: TelegramPendingApproval): boolean => (
-    pending.decisionAttempt !== undefined
-    || pending.terminalMac !== undefined
-    || pending.settlementReceipt !== undefined
-  )
-
-  const isTypedDeliveryInterruption = (pending: TelegramPendingApproval): boolean => (
-    pending.terminalKind === "delivery_interruption"
-    && pending.deliveryState === "delivery_indeterminate"
-    && pending.messageId === null
-    && pending.terminal?.accepted === false
-    && typeof pending.terminal.terminalText === "string"
-    && pending.terminal.terminalText.length > 0
-    && pending.terminal.terminalText.length <= 4_096
-    && !hasAuthorityBearingTerminalState(pending)
-  )
 
   const decisionAttemptPayload = (
     pending: TelegramPendingApproval,
@@ -971,9 +996,8 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
     pending: TelegramPendingApproval,
     expected?: { decision: "approve" | "deny"; queryIdDigest: string; callbackQueryId: string; observedAt: number },
   ): Promise<{ accepted: boolean; terminalText: string; callbackAt: number }> => {
-    if (!pending.decisionAttempt && (pending.terminal !== undefined || pending.terminalMac !== undefined || pending.settlementReceipt !== undefined)) {
-      throw new Error("Telegram persisted authority-bearing terminal state is incomplete")
-    }
+    const persistedState = classifyTelegramPersistedApprovalState(pending)
+    if (persistedState === "delivery_interruption") throw new Error("Telegram delivery-interruption state cannot settle a decision")
     if (pending.settlementReceipt) {
       const receipt = validateSettlementReceipt(pending)
       await emitSettlementReceipt(pending)
@@ -1063,13 +1087,13 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
             }
             return
           }
-          if (hasAuthorityBearingTerminalState(current)) {
+          const persistedState = classifyTelegramPersistedApprovalState(current)
+          if (persistedState === "decision_attempt" || persistedState === "action_terminal") {
             await settleDecisionAttempt(current)
             return
           }
           if (!current.terminal && now() < current.expiresAt) return
           if (current.terminal) {
-            if (!isTypedDeliveryInterruption(current)) throw new Error("Telegram persisted terminal state is not a typed delivery interruption")
             await editTerminal(current, current.terminal.terminalText)
             remove(current)
             persist()
@@ -1190,10 +1214,8 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
       const result = await withApprovalExclusive(approvalId, true, async () => {
         const pending = uniquePending().find((record) => record.approvalId === approvalId)
         if (!pending) return false
-        if (!hasAuthorityBearingTerminalState(pending)) {
-          if (pending.terminal && !isTypedDeliveryInterruption(pending)) throw new Error("Telegram persisted terminal state is not a typed delivery interruption")
-          return false
-        }
+        const persistedState = classifyTelegramPersistedApprovalState(pending)
+        if (persistedState !== "decision_attempt" && persistedState !== "action_terminal") return false
         await settleDecisionAttempt(pending)
         return true
       })
@@ -1203,7 +1225,8 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
       const result = await withApprovalExclusive(approvalId, true, async () => {
         const pending = uniquePending().find((record) => record.approvalId === approvalId)
         if (!pending) return { terminalEditSucceeded: true }
-        if (hasAuthorityBearingTerminalState(pending) || (pending.terminal && !isTypedDeliveryInterruption(pending))) {
+        const persistedState = classifyTelegramPersistedApprovalState(pending)
+        if (persistedState === "decision_attempt" || persistedState === "action_terminal") {
           throw new Error("Telegram persisted approval authority cannot be orphan-cleaned")
         }
         let terminalEditSucceeded = true
@@ -1218,12 +1241,10 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
       await withApprovalExclusive(approvalId, true, async () => {
         const pending = uniquePending().find((record) => record.approvalId === approvalId)
         if (!pending) return
-        if (hasAuthorityBearingTerminalState(pending)) {
+        const persistedState = classifyTelegramPersistedApprovalState(pending)
+        if (persistedState === "decision_attempt" || persistedState === "action_terminal") {
           await settleDecisionAttempt(pending)
           return
-        }
-        if (pending.terminal && !isTypedDeliveryInterruption(pending)) {
-          throw new Error("Telegram persisted terminal state is not a typed delivery interruption")
         }
         if (pending.messageId === null && (pending.deliveryState === "send_attempting" || pending.deliveryState === "delivery_indeterminate")) {
           pending.deliveryState = "delivery_indeterminate"
