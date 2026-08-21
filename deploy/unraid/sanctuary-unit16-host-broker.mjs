@@ -256,6 +256,22 @@ async function containerSnapshot(expectedImage) {
   }
 }
 
+function containerOwnerSnapshot(expectedImage) {
+  text(expectedImage, "expected image id", IMAGE_ID)
+  const template = '{"containerId":{{json .Id}},"imageId":{{json .Image}}}'
+  const result = spawnSync(DOCKER, ["inspect", "--format", template, PRODUCTION_CONTAINER], {
+    cwd: "/", encoding: "utf8", timeout: 10_000, maxBuffer: 64 * 1024,
+    env: { PATH: "/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin" }, stdio: ["ignore", "pipe", "ignore"],
+  })
+  if (result.error || result.status !== 0) throw new Error("bounded production owner inspection failed")
+  const value = object(JSON.parse(result.stdout), "production owner inspection")
+  if (value.imageId !== expectedImage) throw new Error("production owner identity is invalid")
+  return {
+    imageId: expectedImage,
+    containerId: text(value.containerId, "container id", /^[0-9a-f]{64}$/u),
+  }
+}
+
 function recoveryPath(id) { return `${RECOVERY_ROOT}/${id}.json` }
 
 function persistRecovery(record) {
@@ -290,6 +306,14 @@ function canonicalHealthProbeInput(input) {
   exactKeys(value, ["label", "scenarioHandleDigest", "ownerImageDigest", "ownerContainerDigest"], "health probe input")
   if (!HEALTH_PROBE_LABELS.has(value.label)) throw new Error("health probe label is invalid")
   for (const key of ["scenarioHandleDigest", "ownerImageDigest", "ownerContainerDigest"]) text(value[key], `health probe ${key}`, SHA256)
+  return value
+}
+
+function canonicalHealthProbeRequest(input) {
+  const value = object(input, "health probe request")
+  exactKeys(value, ["label", "scenarioHandleDigest"], "health probe request")
+  if (!HEALTH_PROBE_LABELS.has(value.label)) throw new Error("health probe label is invalid")
+  text(value.scenarioHandleDigest, "health probe scenario digest", SHA256)
   return value
 }
 
@@ -412,23 +436,26 @@ function statIfPresent(file) {
   try { return statSync(file) } catch (error) { if (error.code === "ENOENT") return null; throw error }
 }
 
-function healthProbeStatus(input) {
-  const value = canonicalHealthProbeInput(input)
-  const receipt = statIfPresent(healthProbeReceiptPath(value.scenarioHandleDigest))
+async function healthProbeStatus(input, fullSnapshot = () => containerSnapshot(expectedImageId)) {
+  const request = canonicalHealthProbeRequest(input)
+  const receipt = statIfPresent(healthProbeReceiptPath(request.scenarioHandleDigest))
   if (receipt) {
     if (!receipt.isFile() || receipt.uid !== 10001 || (receipt.mode & 0o777) !== 0o600) throw new Error("health probe receipt metadata is invalid")
-    return { state: "complete" }
+    return { state: "complete", containerSnapshot: await fullSnapshot() }
   }
-  const record = activeHealthProbes.get(value.scenarioHandleDigest)
+  const record = activeHealthProbes.get(request.scenarioHandleDigest)
   if (!record) return { state: healthProbeArtifactDisposition({
     receipt: null,
-    workspace: statIfPresent(healthProbeWorkspacePath(value.scenarioHandleDigest)),
-    pending: statIfPresent(healthProbePendingPath(value.scenarioHandleDigest)),
+    workspace: statIfPresent(healthProbeWorkspacePath(request.scenarioHandleDigest)),
+    pending: statIfPresent(healthProbePendingPath(request.scenarioHandleDigest)),
   }) }
-  requireStableHealthProbeOwner(record.input, value)
+  if (record.input.label !== request.label) throw new Error("health probe scenario binding drifted")
   if (record.state === "failed") return { state: "failed" }
   if (record.state === "running") return { state: "running" }
   if (record.state === "terminating" || record.state === "terminated" || record.state === "recovering") return { state: "recovery_required" }
+  const snapshot = object(await fullSnapshot(), "health probe production owner")
+  const value = healthProbeCoordinates({ targetId: TARGET_HOST, ...request }, snapshot)
+  requireStableHealthProbeOwner(record.input, value)
   const finalized = spawnSync(DOCKER, healthProbeFinalizeDockerArgs(record.input, value), {
     cwd: "/", encoding: "utf8", timeout: 20_000, maxBuffer: 64 * 1024,
     env: { PATH: "/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin" }, stdio: ["ignore", "ignore", "ignore"],
@@ -439,7 +466,7 @@ function healthProbeStatus(input) {
     throw new Error("health probe final receipt is absent or invalid")
   }
   activeHealthProbes.delete(value.scenarioHandleDigest)
-  return { state: "complete" }
+  return { state: "complete", containerSnapshot: snapshot }
 }
 
 function healthProbeChildExited(child) {
@@ -513,7 +540,7 @@ async function recoverHealthProbe(input) {
       const pending = statIfPresent(healthProbePendingPath(value.scenarioHandleDigest))
       if (!workspace && !pending) {
         activeHealthProbes.delete(value.scenarioHandleDigest)
-        return { recovered: false }
+        return { recovered: true }
       }
       const result = spawnSync(DOCKER, healthProbeDockerArgs("recover", value), {
         cwd: "/", encoding: "utf8", timeout: 45_000, maxBuffer: 64 * 1024,
@@ -567,6 +594,7 @@ function createDispatchDrain() {
 async function dispatch(request, dependencies = {
   readBootId: () => readFileSync(BOOT_ID, "utf8"),
   containerSnapshot: () => containerSnapshot(expectedImageId),
+  containerOwnerSnapshot: () => containerOwnerSnapshot(expectedImageId),
   startHealthProbe,
   healthProbeStatus,
   recoverHealthProbe,
@@ -647,18 +675,20 @@ async function dispatch(request, dependencies = {
   if (operation === "start_health_probe" || operation === "health_probe_status" || operation === "recover_health_probe") {
     exactKeys(payload, ["operation", "targetId", "label", "scenarioHandleDigest"], operation)
     if (!HEALTH_PROBE_LABELS.has(payload.label)) throw new Error("health probe label is invalid")
-    const snapshot = object(await dependencies.containerSnapshot(), "health probe production owner")
-    if (operation === "start_health_probe" && (snapshot.running !== true || snapshot.health !== "healthy")) throw new Error("health probe requires a healthy production owner")
-    const coordinates = healthProbeCoordinates(payload, snapshot)
     if (operation === "start_health_probe") {
+      const snapshot = object(await dependencies.containerSnapshot(), "health probe production owner")
+      if (snapshot.running !== true || snapshot.health !== "healthy") throw new Error("health probe requires a healthy production owner")
+      const coordinates = healthProbeCoordinates(payload, snapshot)
       if (!dependencies.startHealthProbe) throw new Error("health probe start is unavailable")
       return await dependencies.startHealthProbe(coordinates)
     }
     if (operation === "health_probe_status") {
       if (!dependencies.healthProbeStatus) throw new Error("health probe status is unavailable")
-      return await dependencies.healthProbeStatus(coordinates)
+      return await dependencies.healthProbeStatus({ label: payload.label, scenarioHandleDigest: payload.scenarioHandleDigest })
     }
     if (!dependencies.recoverHealthProbe) throw new Error("health probe recovery is unavailable")
+    const ownerSnapshot = object(await (dependencies.containerOwnerSnapshot ?? dependencies.containerSnapshot)(), "health probe production owner")
+    const coordinates = healthProbeCoordinates(payload, ownerSnapshot)
     return await dependencies.recoverHealthProbe(coordinates)
   }
   throw new Error("host broker operation is not whitelisted")
