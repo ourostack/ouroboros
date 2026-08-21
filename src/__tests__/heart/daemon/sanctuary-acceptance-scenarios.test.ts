@@ -15,7 +15,7 @@ import {
   type SanctuaryScenarioFacts,
 } from "../../../heart/daemon/sanctuary-acceptance-scenarios"
 import { SANCTUARY_UNIT_16_EVIDENCE_LABELS, validateSanctuaryUnit16EvidenceAssertions } from "../../../heart/daemon/sanctuary-acceptance-harness"
-import { readSanctuaryAcceptanceMarker } from "../../../heart/daemon/sanctuary-acceptance-marker"
+import { readSanctuaryAcceptanceMarker, secureRenameBoundInodeSync } from "../../../heart/daemon/sanctuary-acceptance-marker"
 
 const event = (name: string) => ({ event: name, at: 1, meta: {} })
 const turnReceipt = (toolResultDigests: string[] = []) => ({ status: "success" as const, updateDigest: "1".repeat(64), sequenceDigest: "2".repeat(64), responseDigest: "3".repeat(64), toolResultDigests, providerTurnCount: 1, toolInvocationCount: toolResultDigests.length, deliveryCount: 1, telegramMessageIdDigests: ["4".repeat(64)], completedAt: 10_000 })
@@ -226,6 +226,56 @@ describe("Sanctuary live scenario capture", () => {
     const entries = fs.readdirSync(quarantine)
     expect(entries.some((entry) => entry.startsWith("quarantine-rejected-"))).toBe(true)
     expect(entries.some((entry) => entry.startsWith("active-scenario-"))).toBe(true)
+  })
+
+  it("moves a dangling quarantine-root symlink by inode without following it", () => {
+    const acceptanceRoot = path.join(root, "sanctuary.ouro", "state", "acceptance")
+    const receipts = path.join(acceptanceRoot, "receipts")
+    const quarantine = path.join(acceptanceRoot, "quarantine")
+    const missing = path.join(root, "missing-quarantine-target")
+    fs.mkdirSync(receipts, { recursive: true, mode: 0o700 })
+    fs.symlinkSync(missing, quarantine)
+    fs.writeFileSync(path.join(acceptanceRoot, "active-scenario.json"), "{}\n", { mode: 0o600 })
+
+    expect(() => finalizeSanctuaryScenarioCapture(undefined, receipts)).toThrow("Sanctuary scenario finalization failed")
+
+    expect(fs.existsSync(missing)).toBe(false)
+    expect(fs.readdirSync(acceptanceRoot).some((entry) => entry.startsWith(".quarantine-rejected-"))).toBe(false)
+    const rejected = fs.readdirSync(quarantine).find((entry) => entry.startsWith("quarantine-rejected-"))
+    expect(rejected).toBeDefined()
+    expect(fs.lstatSync(path.join(quarantine, rejected!)).isSymbolicLink()).toBe(true)
+    expect(fs.readlinkSync(path.join(quarantine, rejected!))).toBe(missing)
+  })
+
+  it("anchors quarantine mutation to opened directory descriptors across pathname exchange", () => {
+    const source = path.join(root, "bound-source")
+    const quarantine = path.join(root, "bound-quarantine")
+    const rebound = path.join(root, "rebound-quarantine")
+    const outside = path.join(root, "outside-bound-quarantine")
+    fs.mkdirSync(source, { recursive: true, mode: 0o700 })
+    fs.mkdirSync(quarantine, { mode: 0o700 })
+    fs.mkdirSync(outside, { mode: 0o700 })
+    fs.writeFileSync(path.join(source, "evidence"), "evidence\n", { mode: 0o600 })
+    const expected = fs.lstatSync(path.join(source, "evidence"))
+    const sourceHandle = fs.openSync(source, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
+    const quarantineHandle = fs.openSync(quarantine, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
+    try {
+      fs.renameSync(quarantine, rebound)
+      fs.symlinkSync(outside, quarantine)
+      secureRenameBoundInodeSync(sourceHandle, "evidence", quarantineHandle, "captured", expected)
+    } finally {
+      fs.closeSync(quarantineHandle)
+      fs.closeSync(sourceHandle)
+    }
+    expect(fs.readFileSync(path.join(rebound, "captured"), "utf8")).toBe("evidence\n")
+    expect(fs.readdirSync(outside)).toEqual([])
+    expect(() => secureRenameBoundInodeSync(-1, "../escape", -1, "captured", expected)).toThrow(/basename/u)
+  })
+
+  it("does not perform a blocking open when a receipt root is a FIFO", () => {
+    const source = fs.readFileSync(path.resolve(process.cwd(), "src/heart/daemon/sanctuary-acceptance-scenarios.ts"), "utf8")
+    const helper = source.slice(source.indexOf("function durableQuarantineReceiptRoot"), source.indexOf("export function finalizeSanctuaryScenarioCapture"))
+    expect(helper).toContain("fs.constants.O_NONBLOCK")
   })
 
   it("keeps quarantine rename durability and inode checks structurally explicit", () => {
