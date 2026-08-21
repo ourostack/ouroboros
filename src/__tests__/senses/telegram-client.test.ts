@@ -329,7 +329,7 @@ describe("Telegram approval callback transport", () => {
 
   it("never emits stale-tap success when durable consumption cannot be persisted", async () => {
     const evidence: Array<{ event: string; meta: Record<string, unknown> }> = []
-    const tombstone = { approvalId: "approval-1", messageId: "99", deliveryState: "terminal_tombstone" as const, approveCallbackData: "a:approve", denyCallbackData: "d:deny", expiresAt: 1_000, terminalizedAt: 2_000, tombstoneExpiresAt: 602_000,
+    const tombstone = { approvalId: "approval-1", messageId: "99", deliveryState: "terminal_tombstone" as const, approveCallbackData: "a:approve", denyCallbackData: "d:deny", expiresAt: 1_000, terminalizedAt: 2_000, tombstoneExpiresAt: 602_000, tombstoneMac: "f".repeat(64),
       acceptanceBinding: { scenarioHandleDigest: "a".repeat(64), actionDigest: "b".repeat(64), targetDigest: "c".repeat(64), checkpointDigest: "d".repeat(64), suspendedSessionRevisionDigest: "e".repeat(64), messageIdDigest: "f".repeat(64), boundAt: 0 },
       expiryObservation: { schemaVersion: "telegram-approval-expiry-observation-v1" as const, deadlineAt: 1_000, observedAt: 2_000, evidenceMac: "f".repeat(64) } }
     const transport = createTelegramApprovalTransport({
@@ -346,10 +346,10 @@ describe("Telegram approval callback transport", () => {
     const queryId = "stale-resume"
     let records: ReturnType<TelegramPendingApprovalStore["load"]> = [{
       approvalId: "approval-1", messageId: "99", deliveryState: "terminal_tombstone", approveCallbackData: "a:approve", denyCallbackData: "d:deny",
-      expiresAt: 1_000, terminalizedAt: 2_000, tombstoneExpiresAt: 602_000,
+      expiresAt: 1_000, terminalizedAt: 2_000, tombstoneExpiresAt: 602_000, tombstoneMac: "f".repeat(64),
       acceptanceBinding: { scenarioHandleDigest: "a".repeat(64), actionDigest: "b".repeat(64), targetDigest: "c".repeat(64), checkpointDigest: "d".repeat(64), suspendedSessionRevisionDigest: "e".repeat(64), messageIdDigest: "f".repeat(64), boundAt: 0 },
       expiryObservation: { schemaVersion: "telegram-approval-expiry-observation-v1", deadlineAt: 1_000, observedAt: 2_000, evidenceMac: "f".repeat(64) },
-      staleTap: { schemaVersion: "telegram-approval-stale-tap-v1", state: "attempted", queryIdDigest: createHash("sha256").update(queryId).digest("hex"), attemptedAt: 2_100, consumedAt: null },
+      staleTap: { schemaVersion: "telegram-approval-stale-tap-v1", state: "attempted", queryIdDigest: createHash("sha256").update(queryId).digest("hex"), attemptedAt: 2_100, consumedAt: null, evidenceMac: "f".repeat(64) },
     }]
     const evidence: string[] = []
     let stateAtAck: unknown
@@ -372,7 +372,7 @@ describe("Telegram approval callback transport", () => {
     const queryId = "stale-retry"
     let durable: ReturnType<TelegramPendingApprovalStore["load"]> = [{
       approvalId: "approval-1", messageId: "99", deliveryState: "terminal_tombstone", approveCallbackData: "a:approve", denyCallbackData: "d:deny",
-      expiresAt: 1_000, terminalizedAt: 2_000, tombstoneExpiresAt: 602_000,
+      expiresAt: 1_000, terminalizedAt: 2_000, tombstoneExpiresAt: 602_000, tombstoneMac: "f".repeat(64),
       acceptanceBinding: { scenarioHandleDigest: "a".repeat(64), actionDigest: "b".repeat(64), targetDigest: "c".repeat(64), checkpointDigest: "d".repeat(64), suspendedSessionRevisionDigest: "e".repeat(64), messageIdDigest: "f".repeat(64), boundAt: 0 },
       expiryObservation: { schemaVersion: "telegram-approval-expiry-observation-v1", deadlineAt: 1_000, observedAt: 2_000, evidenceMac: "f".repeat(64) },
     }]
@@ -402,10 +402,10 @@ describe("Telegram approval callback transport", () => {
     const transport = createTelegramApprovalTransport({
       api, expectedUserId: "10", expectedChatId: "10", pendingStore: { load: () => [{
         approvalId: "approval-1", messageId: "99", deliveryState: "terminal_tombstone", approveCallbackData: "a:approve", denyCallbackData: "d:deny",
-        expiresAt: 1_000, terminalizedAt: 2_000, tombstoneExpiresAt: 602_000,
+        expiresAt: 1_000, terminalizedAt: 2_000, tombstoneExpiresAt: 602_000, tombstoneMac: "f".repeat(64),
         acceptanceBinding: { scenarioHandleDigest: "a".repeat(64), actionDigest: "b".repeat(64), targetDigest: "c".repeat(64), checkpointDigest: "d".repeat(64), suspendedSessionRevisionDigest: "e".repeat(64), messageIdDigest: "f".repeat(64), boundAt: 0 },
         expiryObservation: { schemaVersion: "telegram-approval-expiry-observation-v1", deadlineAt: 1_000, observedAt: 2_000, evidenceMac: "f".repeat(64) },
-        staleTap: { schemaVersion: "telegram-approval-stale-tap-v1", state: "attempted", queryIdDigest: createHash("sha256").update(queryId).digest("hex"), attemptedAt: 2_100, consumedAt: null },
+        staleTap: { schemaVersion: "telegram-approval-stale-tap-v1", state: "attempted", queryIdDigest: createHash("sha256").update(queryId).digest("hex"), attemptedAt: 2_100, consumedAt: null, evidenceMac: "f".repeat(64) },
       }], save: vi.fn() }, createOpaqueHandle: vi.fn(), onDecision: vi.fn(), now: () => 2_200, signAcceptanceEvidence: () => "f".repeat(64),
     } as never)
     await expect(transport.handleUpdate(approvalCallback("a:approve", { id: "different-query" }))).rejects.toThrow("query mismatch")
@@ -418,7 +418,7 @@ describe("Telegram approval callback transport", () => {
   ])("fails closed on invalid persisted tombstone evidence: $error", async ({ patch, error }) => {
     const record = {
       approvalId: "approval-1", messageId: "99", deliveryState: "terminal_tombstone" as const, approveCallbackData: "a:approve", denyCallbackData: "d:deny",
-      expiresAt: 1_000, terminalizedAt: 2_000, tombstoneExpiresAt: 602_000,
+      expiresAt: 1_000, terminalizedAt: 2_000, tombstoneExpiresAt: 602_000, tombstoneMac: "f".repeat(64),
       acceptanceBinding: { scenarioHandleDigest: "a".repeat(64), actionDigest: "b".repeat(64), targetDigest: "c".repeat(64), checkpointDigest: "d".repeat(64), suspendedSessionRevisionDigest: "e".repeat(64), messageIdDigest: "f".repeat(64), boundAt: 0 },
       expiryObservation: { schemaVersion: "telegram-approval-expiry-observation-v1" as const, deadlineAt: 1_000, observedAt: 2_000, evidenceMac: "f".repeat(64) },
       ...patch,
@@ -461,7 +461,7 @@ describe("Telegram approval callback transport", () => {
   it("keeps terminal tombstone purge inside the callback claim and rejects tampered tombstones", async () => {
     const base = {
       approvalId: "approval-1", messageId: "99", deliveryState: "terminal_tombstone" as const, approveCallbackData: "a:approve", denyCallbackData: "d:deny",
-      expiresAt: 1_000, terminalizedAt: 2_000, tombstoneExpiresAt: 602_000,
+      expiresAt: 1_000, terminalizedAt: 2_000, tombstoneExpiresAt: 602_000, tombstoneMac: "f".repeat(64),
       acceptanceBinding: { scenarioHandleDigest: "a".repeat(64), actionDigest: "b".repeat(64), targetDigest: "c".repeat(64), checkpointDigest: "d".repeat(64), suspendedSessionRevisionDigest: "e".repeat(64), messageIdDigest: "f".repeat(64), boundAt: 0 },
       expiryObservation: { schemaVersion: "telegram-approval-expiry-observation-v1" as const, deadlineAt: 1_000, observedAt: 2_000, evidenceMac: "f".repeat(64) },
     }
@@ -503,7 +503,7 @@ describe("Telegram approval callback transport", () => {
     const transport = createTelegramApprovalTransport({
       api: { stop: vi.fn(), request: vi.fn() }, expectedUserId: "10", expectedChatId: "10",
       pendingStore: {
-        load: () => [{ approvalId: "expired", messageId: "99", deliveryState: "terminal_tombstone", approveCallbackData: "a:expired", denyCallbackData: "d:expired", expiresAt: 1_000_000, terminalizedAt: 1_400_000, tombstoneExpiresAt: 2_000_000,
+        load: () => [{ approvalId: "expired", messageId: "99", deliveryState: "terminal_tombstone", approveCallbackData: "a:expired", denyCallbackData: "d:expired", expiresAt: 1_000_000, terminalizedAt: 1_400_000, tombstoneExpiresAt: 2_000_000, tombstoneMac: "f".repeat(64),
           acceptanceBinding: { scenarioHandleDigest: "a".repeat(64), actionDigest: "b".repeat(64), targetDigest: "c".repeat(64), checkpointDigest: "d".repeat(64), suspendedSessionRevisionDigest: "e".repeat(64), messageIdDigest: "f".repeat(64), boundAt: 700_000 },
           expiryObservation: { schemaVersion: "telegram-approval-expiry-observation-v1", deadlineAt: 1_000_000, observedAt: 1_000_000, evidenceMac: "f".repeat(64) } }],
         save: (records) => { saves.push(structuredClone(records)) },
@@ -716,8 +716,10 @@ describe("Telegram approval callback transport", () => {
     await expect(second).resolves.toMatchObject({ accepted: false, reason: "stale_callback" })
   })
 
-  it("terminally fences a decision token after onDecision rejects", async () => {
-    const onDecision = vi.fn(async () => { throw new Error("continuation unavailable") })
+  it("preserves a durable decision attempt after onDecision rejects and retries only the same query", async () => {
+    const onDecision = vi.fn()
+      .mockRejectedValueOnce(new Error("continuation unavailable"))
+      .mockResolvedValueOnce({ accepted: false, terminalText: "⚠️ Approval did not complete" })
     const resolveDecisionToken = vi.fn(async () => "must-not-be-reused")
     const fixture = approvalFixture({ onDecision, resolveDecisionToken })
     const sent = await fixture.transport.sendApproval({ approvalId: "approval-1", decisionToken: "one-shot-token", prompt: "Restart?" })
@@ -726,13 +728,14 @@ describe("Telegram approval callback transport", () => {
       .rejects.toThrow("continuation unavailable")
     expect(fixture.records()).toEqual([expect.objectContaining({
       approvalId: "approval-1",
-      terminal: { accepted: false, terminalText: "⚠️ Approval did not complete" },
+      deliveryState: "bound",
+      decisionAttempt: expect.objectContaining({ schemaVersion: "telegram-approval-decision-attempt-v1", decision: "approve" }),
     })])
     expect(JSON.stringify(fixture.records())).not.toContain("one-shot-token")
 
-    await expect(fixture.transport.handleUpdate(approvalCallback(sent.approveCallbackData, { id: "query-2" })))
+    await expect(fixture.transport.handleUpdate(approvalCallback(sent.approveCallbackData, { id: "query-1" })))
       .resolves.toEqual({ handled: true, accepted: false, reason: "decision_refused" })
-    expect(onDecision).toHaveBeenCalledOnce()
+    expect(onDecision).toHaveBeenCalledTimes(2)
     expect(resolveDecisionToken).not.toHaveBeenCalled()
   })
 

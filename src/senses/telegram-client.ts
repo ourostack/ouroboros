@@ -507,6 +507,7 @@ export interface TelegramPersistedPendingApproval {
   terminal?: { accepted: boolean; terminalText: string }
   terminalizedAt?: number
   tombstoneExpiresAt?: number
+  tombstoneMac?: string
   expiryObservation?: {
     schemaVersion: "telegram-approval-expiry-observation-v1"
     deadlineAt: number
@@ -519,6 +520,13 @@ export interface TelegramPersistedPendingApproval {
     queryIdDigest: string
     attemptedAt: number
     consumedAt: number | null
+    evidenceMac: string | null
+  }
+  decisionAttempt?: {
+    schemaVersion: "telegram-approval-decision-attempt-v1"
+    decision: "approve" | "deny"
+    queryIdDigest: string
+    attemptedAt: number
   }
 }
 
@@ -597,6 +605,17 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
 
   const uniquePending = (): TelegramPendingApproval[] => [...new Set(pendingByCallback.values())]
   const persist = (): void => options.pendingStore.save(uniquePending().map(({ decisionToken: _secret, ...record }) => record))
+  const persistMutation = (pending: TelegramPendingApproval, mutate: () => void): void => {
+    const before = structuredClone(pending)
+    try {
+      mutate()
+      persist()
+    } catch (error) {
+      for (const key of Object.keys(pending)) delete (pending as unknown as Record<string, unknown>)[key]
+      Object.assign(pending, before)
+      throw error
+    }
+  }
   const add = (pending: TelegramPendingApproval): void => {
     pendingByCallback.set(pending.approveCallbackData, pending)
     pendingByCallback.set(pending.denyCallbackData, pending)
@@ -638,6 +657,28 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
     expiryObservedAt: observedAt,
   })
 
+  const terminalTombstoneFields = (pending: TelegramPendingApproval): Record<string, unknown> => ({
+    ...expiryObservationFields(pending, pending.expiryObservation!.observedAt),
+    terminalizedAt: pending.terminalizedAt,
+    tombstoneExpiresAt: pending.tombstoneExpiresAt,
+  })
+
+  const staleTapFields = (pending: TelegramPendingApproval, staleTap: NonNullable<TelegramPersistedPendingApproval["staleTap"]>): Record<string, unknown> => ({
+    ...terminalTombstoneFields(pending),
+    staleTapSchemaVersion: staleTap.schemaVersion,
+    staleTapState: staleTap.state,
+    queryIdDigest: staleTap.queryIdDigest,
+    attemptedAt: staleTap.attemptedAt,
+    consumedAt: staleTap.consumedAt,
+  })
+
+  const signState = (event: string, pending: TelegramPendingApproval, fields: Record<string, unknown>): string | null => {
+    if (!pending.acceptanceBinding) return null
+    const evidenceMac = options.signAcceptanceEvidence?.(event, acceptanceEvidenceUnsigned(pending, fields)) ?? null
+    if (evidenceMac === null) throw new Error("Telegram acceptance evidence signer is unavailable")
+    return evidenceMac
+  }
+
   const validateExpiryObservation = (pending: TelegramPendingApproval): NonNullable<TelegramPersistedPendingApproval["expiryObservation"]> => {
     const observation = pending.expiryObservation
     if (!observation) throw new Error("Telegram persisted expiry observation is invalid")
@@ -660,8 +701,7 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
         : null
       if (pending.acceptanceBinding && evidenceMac === null) throw new Error("Telegram acceptance evidence signer is unavailable")
       observation = { schemaVersion: "telegram-approval-expiry-observation-v1", deadlineAt: pending.expiresAt, observedAt, evidenceMac }
-      pending.expiryObservation = observation
-      persist()
+      persistMutation(pending, () => { pending.expiryObservation = observation })
     }
     observation = validateExpiryObservation(pending)
     const fields = expiryObservationFields(pending, observation.observedAt)
@@ -677,7 +717,8 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
       || !Number.isSafeInteger(pending.staleTap.attemptedAt)
       || (pending.staleTap.state === "attempted" && pending.staleTap.consumedAt !== null)
       || (pending.staleTap.state === "consumed" && (!Number.isSafeInteger(pending.staleTap.consumedAt)
-        || Number(pending.staleTap.consumedAt) < pending.staleTap.attemptedAt))) {
+        || Number(pending.staleTap.consumedAt) < pending.staleTap.attemptedAt))
+      || pending.staleTap.evidenceMac !== signState("telegram.approval_stale_tap_state", pending, staleTapFields(pending, pending.staleTap))) {
       throw new Error("Telegram persisted stale-tap record is invalid")
     }
   }
@@ -691,7 +732,8 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
         throw new Error("shape")
       }
       const observation = validateExpiryObservation(pending)
-      if (Number(pending.terminalizedAt) < observation.observedAt) throw new Error("order")
+      if (Number(pending.terminalizedAt) < observation.observedAt
+        || pending.tombstoneMac !== signState("telegram.approval_terminal_tombstone_state", pending, terminalTombstoneFields(pending))) throw new Error("order")
       validateStaleTap(pending)
     } catch {
       throw new Error("Telegram persisted terminal tombstone is invalid")
@@ -746,6 +788,7 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
     pending.decisionToken = undefined
     pending.terminalizedAt = terminalizedAt
     pending.tombstoneExpiresAt = terminalizedAt + TELEGRAM_APPROVAL_TOMBSTONE_TTL_MS
+    pending.tombstoneMac = signState("telegram.approval_terminal_tombstone_state", pending, terminalTombstoneFields(pending)) ?? undefined
   }
 
   const acknowledge = async (callbackQueryId: string, invalid: boolean): Promise<void> => {
@@ -960,9 +1003,13 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
           if (pending.staleTap) {
             validateStaleTap(pending)
             if (pending.staleTap.state === "attempted") {
+              if (pending.staleTap.queryIdDigest !== queryIdDigest) throw new Error("Telegram stale-tap recovery query mismatch")
               const staleAt = pending.staleTap.attemptedAt
-              pending.staleTap = { ...pending.staleTap, state: "consumed", consumedAt: now() }
-              persist()
+              persistMutation(pending, () => {
+                const consumed: NonNullable<TelegramPersistedPendingApproval["staleTap"]> = { ...pending.staleTap!, state: "consumed", consumedAt: now(), evidenceMac: null }
+                consumed.evidenceMac = signState("telegram.approval_stale_tap_state", pending, staleTapFields(pending, consumed))
+                pending.staleTap = consumed
+              })
               await acknowledge(callback.id, true)
               emitAcceptanceEvidence("telegram.approval_stale_callback_settled", pending, { staleAt, acknowledged: true, accepted: false, reason: "stale_callback" })
             } else {
@@ -971,10 +1018,16 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
             return { handled: true, accepted: false, reason: invalidReason }
           }
           const staleAt = now()
-          pending.staleTap = { schemaVersion: "telegram-approval-stale-tap-v1", state: "attempted", queryIdDigest, attemptedAt: staleAt, consumedAt: null }
-          persist()
-          pending.staleTap = { ...pending.staleTap, state: "consumed", consumedAt: now() }
-          persist()
+          persistMutation(pending, () => {
+            const attempted = { schemaVersion: "telegram-approval-stale-tap-v1" as const, state: "attempted" as const, queryIdDigest, attemptedAt: staleAt, consumedAt: null, evidenceMac: null as string | null }
+            attempted.evidenceMac = signState("telegram.approval_stale_tap_state", pending, staleTapFields(pending, attempted))
+            pending.staleTap = attempted
+          })
+          persistMutation(pending, () => {
+            const consumed: NonNullable<TelegramPersistedPendingApproval["staleTap"]> = { ...pending.staleTap!, state: "consumed", consumedAt: now(), evidenceMac: null }
+            consumed.evidenceMac = signState("telegram.approval_stale_tap_state", pending, staleTapFields(pending, consumed))
+            pending.staleTap = consumed
+          })
           await acknowledge(callback.id, true)
           emitAcceptanceEvidence("telegram.approval_stale_callback_settled", pending, { staleAt, acknowledged: true, accepted: false, reason: "stale_callback" })
           return { handled: true, accepted: false, reason: invalidReason }
@@ -1002,31 +1055,39 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
         return { handled: true, accepted: false, reason: invalidReason }
       }
 
-      remove(pending!)
-      let decisionStarted = false
-      const callbackAt = now()
+      const decision = callback.data === pending!.approveCallbackData ? "approve" : "deny"
+      const queryIdDigest = createHash("sha256").update(callback.id).digest("hex")
+      if (pending!.decisionAttempt) {
+        if (pending!.decisionAttempt.schemaVersion !== "telegram-approval-decision-attempt-v1"
+          || pending!.decisionAttempt.decision !== decision || pending!.decisionAttempt.queryIdDigest !== queryIdDigest
+          || !Number.isSafeInteger(pending!.decisionAttempt.attemptedAt)) throw new Error("Telegram persisted decision attempt is invalid")
+      } else {
+        persistMutation(pending!, () => {
+          pending!.decisionAttempt = { schemaVersion: "telegram-approval-decision-attempt-v1", decision, queryIdDigest, attemptedAt: now() }
+        })
+      }
+      const callbackAt = pending!.decisionAttempt!.attemptedAt
       try {
-        await acknowledge(callback.id, false)
         let outcome = pending!.terminal
         if (!outcome) {
           const decisionToken = pending!.decisionToken ?? await options.resolveDecisionToken?.(pending!.approvalId)
           if (!decisionToken) throw new Error("Telegram approval restart requires a decision token resolver")
-          pending!.decisionToken = undefined
-          decisionStarted = true
           outcome = await options.onDecision({
             approvalId: pending!.approvalId,
             decisionToken,
-            decision: callback.data === pending!.approveCallbackData ? "approve" : "deny",
+            decision,
             requesterId: options.expectedUserId,
             transport: "telegram",
             transportChatId: options.expectedChatId,
             transportMessageId: messageId,
             ...(pending!.acceptanceBinding ? { acceptanceBinding: pending!.acceptanceBinding } : {}),
           })
-          pending!.terminal = outcome
+          persistMutation(pending!, () => {
+            pending!.decisionToken = undefined
+            pending!.terminal = outcome
+          })
         }
-        add(pending!)
-        persist()
+        await acknowledge(callback.id, false)
         await editTerminal(pending!, outcome.terminalText)
         remove(pending!)
         persist()
@@ -1035,14 +1096,6 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
         else emitNervesEvent({ component: "senses", event: "telegram.callback_settled", message: "Telegram approval callback settled", meta: { approvalId: pending!.approvalId, reason, accepted: outcome.accepted, ...options.acceptanceEventMeta?.() } })
         return { handled: true, accepted: outcome.accepted, reason }
       } catch (error) {
-        if (decisionStarted && !pending!.terminal) {
-          pending!.terminal = {
-            accepted: false,
-            terminalText: "⚠️ Approval did not complete",
-          }
-        }
-        add(pending!)
-        if (decisionStarted) persist()
         throw error
       }
   }
