@@ -670,6 +670,7 @@ function parseHealthProbeReceipt(raw: string | null, label: SanctuaryUnit16Evide
     const sweep = object(scheduler.sweep, "Sanctuary scheduler sweep")
     const manifest = Array.isArray(supervisor.manifest) ? supervisor.manifest : []
     const manifestJob = manifest.length === 1 ? object(manifest[0], "Sanctuary scheduler manifest job") : {}
+    const manifestKeys = ["agent", "command", "id", "lastRun", "schedule", "taskId", "taskPath"].sort()
     if (JSON.stringify(Object.keys(scheduler).sort()) !== JSON.stringify(schedulerKeys)
       || scheduler.schemaVersion !== "sanctuary-scheduler-liveness-receipt-v1" || scheduler.label !== label || scheduler.scenarioHandleDigest !== scenarioHandleDigest
       || scheduler.trigger !== "cron" || typeof scheduler.occurrenceId !== "string" || scheduler.occurrenceId.length === 0
@@ -686,7 +687,9 @@ function parseHealthProbeReceipt(raw: string | null, label: SanctuaryUnit16Evide
       || supervisor.binaryPath !== "/usr/local/bin/supercronic" || supervisor.crontabPath !== "/home/ouro/.ouro-cli/scheduler/sanctuary.crontab"
       || JSON.stringify(supervisor.args) !== JSON.stringify(["-split-logs", "-inotify", "/home/ouro/.ouro-cli/scheduler/sanctuary.crontab"])
       || supervisor.namespace !== "habit:sanctuary" || manifest.length !== 1 || manifestJob.id !== "sanctuary:sanctuary-health" || manifestJob.agent !== "sanctuary"
+      || JSON.stringify(Object.keys(manifestJob).sort()) !== JSON.stringify(manifestKeys)
       || manifestJob.taskId !== "sanctuary-health" || manifestJob.schedule !== "*/15 * * * *" || sweep.recordDigest !== phases[0]?.sweepReceiptDigest
+      || manifestJob.taskPath !== "/home/ouro/AgentBundles/sanctuary.ouro/habits/sanctuary-health.md"
       || manifestJob.command !== "/usr/local/bin/node /opt/ouro/dist/heart/daemon/ouro-entry.js poke sanctuary --habit sanctuary-health --trigger cron") throw new Error("Sanctuary scheduler liveness receipt is invalid")
   } else if (receipt.schedulerReceipt !== null) throw new Error("Sanctuary health probe has an unexpected scheduler receipt")
   if (receipt.ownerImageDigestBefore !== receipt.ownerImageDigestAfter || receipt.ownerContainerDigestBefore !== receipt.ownerContainerDigestAfter

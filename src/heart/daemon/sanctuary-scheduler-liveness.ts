@@ -89,6 +89,7 @@ function validateSupervisor(snapshot: SupercronicSupervisorSnapshot): void {
     || snapshot.namespace !== "habit:sanctuary" || manifest.length !== 1
     || manifest[0]?.id !== "sanctuary:sanctuary-health" || manifest[0].agent !== "sanctuary"
     || manifest[0].taskId !== "sanctuary-health" || manifest[0].schedule !== "*/15 * * * *"
+    || manifest[0].taskPath !== "/home/ouro/AgentBundles/sanctuary.ouro/habits/sanctuary-health.md"
     || manifest[0].command !== COMMAND || !snapshot.renderedCrontab.includes(`# ouro:habit:sanctuary:sanctuary:sanctuary-health\n*/15 * * * * ${COMMAND}\n`)) {
     throw new Error("Sanctuary scheduler supervisor attestation is invalid")
   }

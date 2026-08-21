@@ -333,6 +333,7 @@ describe("Sanctuary acceptance harness", () => {
 
   it("fails closed on scenario authority, timing, timeout, state, and checkpoint drift", async () => {
     expect(sanctuaryScenarioTimeoutBudget("unit-16k-timeout-stale")).toBe(875_000)
+    expect(sanctuaryScenarioTimeoutBudget("unit-16f-cron-fingerprint")).toBe(1_025_000)
 
     const config = (dir: string, overrides: Record<string, unknown> = {}) => {
       const harnessPath = path.join(dir, "harness.sh")

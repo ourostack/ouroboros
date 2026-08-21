@@ -65,6 +65,28 @@ function validHealthProbeReceipt(scenarioHandleDigest: string, patch: Record<str
   }
 }
 
+function validCronHealthProbeReceipt(scenarioHandleDigest: string) {
+  const phase = { ordinal: 1, name: "cron-unchanged", trigger: "cron", fixtureStatus: null, opened: 0, recovered: 0, digestDue: false, deliveryKind: null, sweepReceiptDigest: "5".repeat(64), deliveryReceiptDigest: null }
+  return validHealthProbeReceipt(scenarioHandleDigest, {
+    label: "unit-16f-cron-fingerprint", clockMode: "ambient", effectiveNow: "2026-08-20T15:00:00.000Z", phases: [phase],
+    fixtureSequenceDigest: createHash("sha256").update(JSON.stringify([])).digest("hex"), privateTurnCount: 0, providerInvocationCount: 0, deliveryCount: 0,
+    schedulerReceipt: {
+      schemaVersion: "sanctuary-scheduler-liveness-receipt-v1", label: "unit-16f-cron-fingerprint", scenarioHandleDigest, trigger: "cron",
+      occurrenceId: "cron:slot-1", runnerId: "11111111-1111-4111-8111-111111111111", recordedAt: "2026-08-20T15:00:01.000Z",
+      before: { sweepCount: 0, deliveryCount: 0 }, after: { sweepCount: 1, deliveryCount: 0 }, sweepDelta: 1, deliveryDelta: 0,
+      providerInvocationCount: 0, privateTurnCount: 0, sweep: { recordDigest: phase.sweepReceiptDigest, opened: 0, recovered: 0, digestDue: false, deliveryId: null },
+      supervisor: {
+        schemaVersion: "supercronic-supervisor-snapshot-v1", daemonPid: 1, childCount: 1, childPid: 42, healthy: true,
+        binaryPath: "/usr/local/bin/supercronic", args: ["-split-logs", "-inotify", "/home/ouro/.ouro-cli/scheduler/sanctuary.crontab"],
+        crontabPath: "/home/ouro/.ouro-cli/scheduler/sanctuary.crontab", namespace: "habit:sanctuary",
+        manifest: [{ id: "sanctuary:sanctuary-health", agent: "sanctuary", taskId: "sanctuary-health", schedule: "*/15 * * * *", lastRun: null, command: "/usr/local/bin/node /opt/ouro/dist/heart/daemon/ouro-entry.js poke sanctuary --habit sanctuary-health --trigger cron", taskPath: "/home/ouro/AgentBundles/sanctuary.ouro/habits/sanctuary-health.md" }],
+        renderedCrontab: "# ouro:habit:sanctuary:sanctuary:sanctuary-health\n",
+      },
+      nonReplay: true,
+    },
+  })
+}
+
 function validOwnerSnapshot(patch: Record<string, unknown> = {}) {
   return {
     schemaVersion: 1,
@@ -1056,6 +1078,20 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     expect(facts.healthProbe).toMatchObject({ label: "unit-16h-daily-digest", scenarioHandleDigest, clockMode: "local-daily-boundary", privateTurnCount: 1, providerInvocationCount: 2, deliveryCount: 1 })
     expect(facts.sourceValues["health-probe-receipt"]).toEqual(facts.healthProbe)
     fs.rmSync(agentRoot, { recursive: true, force: true })
+  })
+
+  it("parses a strict scheduler-origin Unit16f receipt with PID1 and canonical habit provenance", async () => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-scheduler-health-receipt-"))
+    const scenarioHandleDigest = "a".repeat(64)
+    const receiptPath = `${agentRoot}/state/acceptance/health-probe-receipts/${scenarioHandleDigest}.json`
+    try {
+      const facts = await readDefaultSanctuaryScenarioFacts("unit-16f-cron-fingerprint", scenarioHandleDigest, unit16Deps({
+        readFixedFile: (file) => { if (file === receiptPath) return JSON.stringify(validCronHealthProbeReceipt(scenarioHandleDigest)); throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
+        hostRequest: async () => ({ running: true, health: "healthy", imageId: "sha256:missing", user: "10001:10001", readOnlyRoot: true, mountCount: 2, publishedPortCount: 0, restartPolicy: "unless-stopped", restartCount: 0, autostartExact: true, updaterDisabled: true, vaultUnlocked: true, manualAuthRequired: false }),
+      }), agentRoot)
+      expect(facts.healthProbe?.schedulerReceipt).toMatchObject({ trigger: "cron", sweepDelta: 1, deliveryDelta: 0, nonReplay: true, supervisor: { daemonPid: 1, childCount: 1, healthy: true, namespace: "habit:sanctuary" } })
+      expect(facts.sourceValues["scheduler-liveness-receipt"]).toEqual(facts.healthProbe?.schedulerReceipt)
+    } finally { fs.rmSync(agentRoot, { recursive: true, force: true }) }
   })
 
   it.each([

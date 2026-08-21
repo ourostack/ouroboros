@@ -65,4 +65,21 @@ describe("Sanctuary scheduler liveness receipt", () => {
       })).toThrow(/cron/u)
     } finally { fs.rmSync(f.agentRoot, { recursive: true, force: true }) }
   })
+
+  it.each([0, 2])("rejects %i scheduler sweeps after the checkpoint", (sweepCount) => {
+    const f = setup()
+    const state = JSON.parse(fs.readFileSync(f.statePath, "utf8"))
+    for (let index = 0; index < sweepCount; index += 1) state.sweepReceipts.push({
+      sweepId: `sweep-${index}`, startedAt: "2026-08-18T17:00:00.000Z", completedAt: "2026-08-18T17:00:01.000Z",
+      incidentDigest: "b".repeat(64), opened: 0, recovered: 0, digestDue: false, scenarioHandleDigest,
+    })
+    fs.writeFileSync(f.statePath, `${JSON.stringify(state)}\n`)
+    try {
+      expect(() => recordSanctuarySchedulerLivenessReceipt({
+        agentRoot: f.agentRoot, trigger: "cron", occurrenceId: "cron:slot-1", runnerId: "11111111-1111-4111-8111-111111111111",
+        scenario: { label: "unit-16f-cron-fingerprint", scenarioHandleDigest }, supervisor: f.supervisor.authenticatedSnapshot("habit:sanctuary"),
+        before: { sweepCount: 0, deliveryCount: 0 }, providerInvocationCount: 0, privateTurnCount: 0,
+      })).toThrow(/exactly one unchanged sweep/u)
+    } finally { fs.rmSync(f.agentRoot, { recursive: true, force: true }) }
+  })
 })
