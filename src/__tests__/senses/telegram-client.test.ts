@@ -166,10 +166,10 @@ describe("Telegram approval callback transport", () => {
     } as never)
     const binding = { scenarioHandleDigest: "a".repeat(64), actionDigest: "b".repeat(64), targetDigest: "c".repeat(64), checkpointDigest: "d".repeat(64), suspendedSessionRevisionDigest: "e".repeat(64) }
     const sent = await transport.sendApproval({ approvalId: "approval-1", decisionToken: "secret", prompt: "Restart?", acceptanceBinding: binding } as never)
-    clock = 1_305_900
+    clock = 1_300_900
     await transport.reconcileExpired()
     expect(evidence.at(-1)).toMatchObject({ event: "telegram.approval_prompt_terminalized", meta: {
-      ...binding, boundAt: 1_000_000, expiryDeadlineAt: sent.expiresAt, expiryObservedAt: 1_305_900, terminalEditStartedAt: 1_305_900, terminalizedAt: fallback ? 1_315_900 : 1_310_900, buttonsRemoved: true,
+      ...binding, boundAt: 1_000_000, expiryDeadlineAt: sent.expiresAt, expiryObservedAt: 1_300_900, terminalEditStartedAt: 1_300_900, terminalizedAt: fallback ? 1_310_900 : 1_305_900, buttonsRemoved: true,
     } })
   })
 

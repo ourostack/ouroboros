@@ -561,6 +561,33 @@ describe("Telegram sense", () => {
     vi.useRealTimers()
   })
 
+  it("keeps reconciliation on absolute one-second deadlines after a delayed prior pass", async () => {
+    vi.useFakeTimers()
+    let releaseReconcile!: () => void
+    let finishPolling!: () => void
+    const f = fixture({ pollRun: () => new Promise<void>((resolve) => { finishPolling = resolve }) })
+    f.approvalTransport.reconcileExpired
+      .mockResolvedValueOnce(undefined)
+      .mockImplementationOnce(() => new Promise<void>((resolve) => { releaseReconcile = resolve }))
+      .mockResolvedValue(undefined)
+
+    const running = f.app.run()
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(f.approvalTransport.reconcileExpired).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(800)
+    releaseReconcile()
+    await vi.advanceTimersByTimeAsync(199)
+    expect(f.approvalTransport.reconcileExpired).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(f.approvalTransport.reconcileExpired).toHaveBeenCalledTimes(3)
+
+    const stopping = f.app.stop()
+    finishPolling()
+    await stopping
+    await running
+    vi.useRealTimers()
+  })
+
   it("keeps expiry reconciliation alive after redacted Error and non-Error failures", async () => {
     vi.useFakeTimers()
     let finishPolling!: () => void
