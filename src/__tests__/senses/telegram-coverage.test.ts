@@ -554,6 +554,9 @@ describe("Telegram sense coverage contracts", () => {
     const coordinates = ["scenarioHandleDigest", "turnDigest", "updateDigest", "subject", "identityDigest", "sessionDigest", "argumentDigest"]
     for (const key of coordinates) expect(end.meta[key]).toBe(start.meta[key])
     expect(start.meta).toMatchObject({ scenarioHandleDigest: "a".repeat(64), subject: expect.stringMatching(/^tg_[A-Za-z0-9_-]{43}$/u) })
+    expect(start.meta.lifecycleAt).toEqual(expect.any(Number))
+    expect(end.meta.lifecycleAt).toEqual(expect.any(Number))
+    expect(end.meta.lifecycleAt).toBeGreaterThan(start.meta.lifecycleAt)
     for (const key of ["turnDigest", "updateDigest", "identityDigest", "sessionDigest", "argumentDigest"]) expect(start.meta[key]).toMatch(/^[0-9a-f]{64}$/u)
     expect(end.meta).toMatchObject({ outcome: "success", errorDigest: null, deliveryCount: 1 })
     expect(JSON.stringify(lifecycle)).not.toMatch(/918273645|817263540|"42"|"43"/u)
@@ -565,6 +568,7 @@ describe("Telegram sense coverage contracts", () => {
       senderIdentityDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
       authorizedIdentityDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
       senderDistinct: true,
+      nextOffsetDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
       dropMac: expect.stringMatching(/^[0-9a-f]{64}$/u),
     })
     expect(droppedMeta.senderIdentityDigest).not.toBe(droppedMeta.authorizedIdentityDigest)

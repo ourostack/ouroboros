@@ -740,11 +740,11 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     fs.mkdirSync(path.join(agentRoot, "friends"), { recursive: true })
     fs.writeFileSync(path.join(agentRoot, "friends", "friend-1.json"), JSON.stringify(canonicalFriend))
     const lifecycleCoordinates = { scenarioHandleDigest, turnDigest: "7".repeat(64), updateDigest: "1".repeat(64), subject, identityDigest: "8".repeat(64), sessionDigest: "9".repeat(64), argumentDigest: "a".repeat(64) }
-    const lifecycle = (event: string, ts: string, meta: Record<string, unknown>) => {
-      const combined = { ...lifecycleCoordinates, ...meta }
+    const lifecycle = (event: string, ts: string, lifecycleAt: number, meta: Record<string, unknown>) => {
+      const combined = { ...lifecycleCoordinates, ...meta, lifecycleAt }
       return { ts, event, meta: { ...combined, lifecycleMac: sanctuaryTelegramAuditLifecycleMac(identityKey, "sanctuary-telegram-turn-receipt-v3", event, combined) } }
     }
-    const audit = `${JSON.stringify(lifecycle("senses.telegram_turn_start", "2026-08-20T16:00:00.000Z", {}))}\n${JSON.stringify(lifecycle("senses.telegram_turn_end", "2026-08-20T16:00:01.000Z", { deliveryCount: 1, outcome: "success", errorDigest: null }))}\n`
+    const audit = `${JSON.stringify(lifecycle("senses.telegram_turn_start", "2026-08-20T16:00:00.000Z", 1_000, {}))}\n${JSON.stringify(lifecycle("senses.telegram_turn_end", "2026-08-20T16:00:01.000Z", 2_000, { deliveryCount: 1, outcome: "success", errorDigest: null }))}\n`
     const cron = "# ouro:habit:sanctuary:sanctuary:sanctuary-health\n*/15 * * * * /usr/local/bin/node /opt/ouro/dist/heart/daemon/ouro-entry.js poke sanctuary --habit sanctuary-health --trigger cron\n"
     const files: Record<string, string> = {
       [`${agentRoot}/state/senses/telegram/identity.key`]: `${identityKey}\n`,
@@ -770,6 +770,16 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     expect(facts.cron?.registered).toBe(true)
     expect(facts.containment?.sensitiveMaterialObserved).toBe(false)
     expect(JSON.stringify(facts.sourceValues)).not.toContain(credentials.botToken)
+    const tamperedLifecycle = audit.trim().split("\n").map((line, index) => {
+      const record = JSON.parse(line) as { meta: Record<string, unknown> }
+      return JSON.stringify(index === 1 ? { ...record, meta: { ...record.meta, lifecycleAt: 500 } } : record)
+    }).join("\n")
+    files["/home/ouro/AgentBundles/sanctuary.ouro/state/daemon/logs/telegram.ndjson"] = `${tamperedLifecycle}\n`
+    await expect(readDefaultSanctuaryScenarioFacts("unit-14b-3-opaque-identity-live", scenarioHandleDigest, unit16Deps({
+      readFixedFile: (file) => { if (!(file in files)) throw Object.assign(new Error("missing fixture"), { code: "ENOENT" }); return files[file]! },
+      telegramCredentials: () => credentials,
+    }), agentRoot, { skipContainerSnapshot: true })).rejects.toThrow("lifecycle MAC")
+    files["/home/ouro/AgentBundles/sanctuary.ouro/state/daemon/logs/telegram.ndjson"] = audit
     const replaySession = path.join(path.dirname(canonicalSession), "replay.json")
     fs.writeFileSync(replaySession, "{}\n")
     const duplicateSession = await readDefaultSanctuaryScenarioFacts("unit-14b-3-opaque-identity-live", scenarioHandleDigest, unit16Deps({
@@ -777,8 +787,14 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       telegramCredentials: () => credentials,
       hostRequest: async () => ({ imageId: `sha256:${"b".repeat(64)}`, running: true, health: "healthy", user: "10001:10001", readOnlyRoot: true, mountCount: 2, publishedPortCount: 0, restartPolicy: "unless-stopped", restartCount: 0, autostartExact: true, updaterDisabled: true, vaultUnlocked: true, manualAuthRequired: false }),
     }), agentRoot)
-    expect(duplicateSession.identity?.canonicalSessionCount).toBe(2)
+    expect(duplicateSession.identity?.canonicalSessionCount).toBe(1)
     fs.unlinkSync(replaySession)
+    fs.renameSync(canonicalSession, replaySession)
+    const wrongSession = await readDefaultSanctuaryScenarioFacts("unit-14b-3-opaque-identity-live", scenarioHandleDigest, unit16Deps({
+      readFixedFile: (file) => { if (!(file in files)) throw Object.assign(new Error("missing fixture"), { code: "ENOENT" }); return files[file]! }, telegramCredentials: () => credentials,
+    }), agentRoot, { skipContainerSnapshot: true })
+    expect(wrongSession.identity?.canonicalSessionCount).toBe(0)
+    fs.renameSync(replaySession, canonicalSession)
     fs.writeFileSync(path.join(agentRoot, "friends", "friend-2.json"), JSON.stringify({ ...canonicalFriend, id: "friend-2" }))
     const duplicate = await readDefaultSanctuaryScenarioFacts("unit-14b-3-opaque-identity-live", scenarioHandleDigest, unit16Deps({
       readFixedFile: (file) => { if (!(file in files)) throw Object.assign(new Error("missing fixture"), { code: "ENOENT" }); return files[file]! },
@@ -786,6 +802,12 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       hostRequest: async () => ({ imageId: `sha256:${"b".repeat(64)}`, running: true, health: "healthy", user: "10001:10001", readOnlyRoot: true, mountCount: 2, publishedPortCount: 0, restartPolicy: "unless-stopped", restartCount: 0, autostartExact: true, updaterDisabled: true, vaultUnlocked: true, manualAuthRequired: false }),
     }), agentRoot)
     expect(duplicate.identity?.canonicalFriendCount).toBe(2)
+    fs.unlinkSync(path.join(agentRoot, "friends", "friend-2.json"))
+    fs.writeFileSync(path.join(agentRoot, "friends", "friend-1.json"), JSON.stringify({ ...canonicalFriend, externalIds: [...canonicalFriend.externalIds, ...canonicalFriend.externalIds] }))
+    const duplicatedIdentity = await readDefaultSanctuaryScenarioFacts("unit-14b-3-opaque-identity-live", scenarioHandleDigest, unit16Deps({
+      readFixedFile: (file) => { if (!(file in files)) throw Object.assign(new Error("missing fixture"), { code: "ENOENT" }); return files[file]! }, telegramCredentials: () => credentials,
+    }), agentRoot, { skipContainerSnapshot: true })
+    expect(duplicatedIdentity.identity?.canonicalFriendCount).toBe(2)
     fs.rmSync(agentRoot, { recursive: true, force: true })
   })
 
@@ -800,17 +822,22 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       senderIdentityDigest: "d".repeat(64),
       authorizedIdentityDigest: sanctuaryTelegramTurnReceiptDigest(identityKey, "sanctuary-telegram-turn-receipt-v3", "sender-identity", credentials.authorizedUserId),
       senderDistinct: true,
+      nextOffsetDigest: sanctuaryTelegramTurnReceiptDigest(identityKey, "sanctuary-telegram-turn-receipt-v3", "next-update-id", "124"),
     }
     const drop = { ts: "2026-08-20T16:00:00.000Z", event: "telegram.update_dropped", meta: { ...binding, distinctAccount: true, dropMac: sanctuaryTelegramUnauthorizedDropMac(identityKey, "sanctuary-telegram-turn-receipt-v3", binding) } }
     const files: Record<string, string> = {
       [`${agentRoot}/state/senses/telegram/identity.key`]: `${identityKey}\n`,
       "/home/ouro/AgentBundles/sanctuary.ouro/state/daemon/logs/telegram.ndjson": `${JSON.stringify(drop)}\n`,
+      "/home/ouro/AgentBundles/sanctuary.ouro/state/senses/telegram/offset.json": '{"nextUpdateId":124}\n',
     }
     const deps = unit16Deps({
       readFixedFile: (file) => { if (!(file in files)) throw Object.assign(new Error("missing fixture"), { code: "ENOENT" }); return files[file]! },
       telegramCredentials: () => credentials,
     })
     files["/home/ouro/AgentBundles/sanctuary.ouro/state/daemon/logs/telegram.ndjson"] = `${JSON.stringify({ ...drop, meta: { ...drop.meta, senderIdentityDigest: "c".repeat(64) } })}\n`
+    await expect(readDefaultSanctuaryScenarioFacts("unit-16d-2-unauthorized", scenarioHandleDigest, deps, agentRoot, { skipContainerSnapshot: true })).rejects.toThrow("sender binding MAC")
+    files["/home/ouro/AgentBundles/sanctuary.ouro/state/daemon/logs/telegram.ndjson"] = `${JSON.stringify(drop)}\n`
+    files["/home/ouro/AgentBundles/sanctuary.ouro/state/senses/telegram/offset.json"] = '{"nextUpdateId":125}\n'
     await expect(readDefaultSanctuaryScenarioFacts("unit-16d-2-unauthorized", scenarioHandleDigest, deps, agentRoot, { skipContainerSnapshot: true })).rejects.toThrow("sender binding MAC")
     fs.rmSync(agentRoot, { recursive: true, force: true })
   })

@@ -29,6 +29,7 @@ const auditTurn = (outcome: "success" | "error" = "success") => {
     identityDigest: "8".repeat(64),
     sessionDigest: "9".repeat(64),
     argumentDigest: "a".repeat(64),
+    lifecycleAt: 9_000,
     lifecycleMac: "c".repeat(64),
   }
   return [
@@ -38,6 +39,7 @@ const auditTurn = (outcome: "success" | "error" = "success") => {
       outcome,
       errorDigest: outcome === "success" ? null : "b".repeat(64),
       deliveryCount: outcome === "success" ? 1 : 0,
+      lifecycleAt: 10_000,
       lifecycleMac: "d".repeat(64),
     } },
   ]
@@ -124,6 +126,8 @@ const base = (): SanctuaryScenarioFacts => ({
   events: [], approvals: [],
   restartAttempts: [],
   telegramTurns: [],
+  telegramNextUpdateId: 10,
+  zeroWork: { providerToolDigest: "1".repeat(64), outwardDigest: "2".repeat(64), approvalMutationDigest: "3".repeat(64) },
   identity: { keyPresent: true, subjectOpaque: true, rawIdentityAbsent: true, liveSubjectObserved: true, inspectedRecordCount: 1, opaqueSubjectCount: 1, mismatchCount: 0, rawLeakCount: 0, surfaceDigest: "a".repeat(64), canonicalSessionCount: 1, canonicalFriendCount: 1, sessionSurfaceDigest: "b".repeat(64), friendSurfaceDigest: "c".repeat(64) },
   container: { exactImage: true, running: true, healthy: true, user: "10001:10001", readOnlyRoot: true, mountCount: 2, publishedPortCount: 0, restartPolicy: "unless-stopped", restartCount: 0, autostartExact: true, updaterDisabled: true, vaultUnlocked: true, manualAuthRequired: false },
   provider: { outwardReady: true, innerReady: true, geminiCandidateReady: true, providersDistinct: true, silentFallback: false, credentialRevisionsPresent: true, requestSemanticsExact: true, fallbackAttemptCount: 0 },
@@ -190,8 +194,9 @@ describe("Sanctuary live scenario capture", () => {
       }
       if (label === "unit-16d-2-unauthorized") after.events.push({ ...event("telegram.update_dropped"), meta: {
         scenarioHandleDigest, updateDigest: "1".repeat(64), distinctAccount: true,
-        senderIdentityDigest: "d".repeat(64), authorizedIdentityDigest: "e".repeat(64), senderDistinct: true, dropMac: "f".repeat(64),
-      } })
+        senderIdentityDigest: "d".repeat(64), authorizedIdentityDigest: "e".repeat(64), senderDistinct: true,
+        nextOffsetDigest: "9".repeat(64), dropMac: "f".repeat(64),
+      } }); after.telegramNextUpdateId = 11
       if (label === "unit-16e-2-restart-denial") after.denial = { ...after.denial!, label, operation: "restart" }
       if (label === "unit-16j-denial") { after.approvals = [approval("denied")]; after.events.push(...auditTurn()) }
       if (label === "unit-16f-cron-fingerprint" || label === "unit-16g-health-transition" || label === "unit-16h-daily-digest") after.healthProbe = healthProbe(label)
@@ -685,11 +690,11 @@ describe("Sanctuary live scenario capture", () => {
   })
 
   it("requires exactly one fresh scenario-bound distinct-account drop", () => {
-    const binding = { senderIdentityDigest: "d".repeat(64), authorizedIdentityDigest: "e".repeat(64), senderDistinct: true, dropMac: "f".repeat(64) }
+    const binding = { senderIdentityDigest: "d".repeat(64), authorizedIdentityDigest: "e".repeat(64), senderDistinct: true, nextOffsetDigest: "9".repeat(64), dropMac: "f".repeat(64) }
     const historical = { ...event("telegram.update_dropped"), meta: { scenarioHandleDigest, updateDigest: "0".repeat(64), distinctAccount: true, ...binding } }
     const freshDistinct = { ...event("telegram.update_dropped"), at: 2, meta: { scenarioHandleDigest, updateDigest: "1".repeat(64), distinctAccount: true, ...binding } }
     const before = base(); before.events = [historical]
-    const after = base(); after.events = [historical, freshDistinct]
+    const after = base(); after.events = [historical, freshDistinct]; after.telegramNextUpdateId = 11
     expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unauthorized", before, after, 400_000)).toMatchObject({ auditRejected: true, distinctAccount: true })
 
     after.events = [historical, { ...freshDistinct, meta: { ...freshDistinct.meta, distinctAccount: false } }]
@@ -708,6 +713,12 @@ describe("Sanctuary live scenario capture", () => {
     expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unauthorized", before, after, 400_000)).toBeNull()
     after.events = [historical, freshDistinct]
     after.identity = { ...after.identity!, sessionSurfaceDigest: "d".repeat(64) }
+    expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unauthorized", before, after, 400_000)).toBeNull()
+    after.identity = { ...before.identity }
+    after.telegramNextUpdateId = before.telegramNextUpdateId
+    expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unauthorized", before, after, 400_000)).toBeNull()
+    after.telegramNextUpdateId = 11
+    after.zeroWork = { ...after.zeroWork!, outwardDigest: "f".repeat(64) }
     expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unauthorized", before, after, 400_000)).toBeNull()
   })
 
@@ -733,6 +744,14 @@ describe("Sanctuary live scenario capture", () => {
     after.events = valid.map((entry) => entry.event === "senses.telegram_turn_end" ? { ...entry, meta: { ...entry.meta, errorDigest: undefined } } : entry)
     expect(deriveSanctuaryScenarioAssertions(label, before, after, 400_000)).toBeNull()
     after.events = valid.map((entry) => entry.event === "senses.telegram_turn_end" ? { ...entry, meta: { ...entry.meta, sessionDigest: "c".repeat(64) } } : entry)
+    expect(deriveSanctuaryScenarioAssertions(label, before, after, 400_000)).toBeNull()
+    after.events = valid.map((entry) => entry.event === "senses.telegram_turn_end" ? { ...entry, meta: { ...entry.meta, lifecycleAt: 8_000 } } : entry)
+    expect(deriveSanctuaryScenarioAssertions(label, before, after, 400_000)).toBeNull()
+    before.events = [valid[0]!]
+    after.events = [valid[1]!]
+    expect(deriveSanctuaryScenarioAssertions(label, before, after, 400_000)).toBeNull()
+    before.events = valid
+    after.events = [valid[1]!, valid[0]!]
     expect(deriveSanctuaryScenarioAssertions(label, before, after, 400_000)).toBeNull()
     before.events = auditTurn()
     after.events = auditTurn()

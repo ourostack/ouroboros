@@ -210,6 +210,8 @@ export interface SanctuaryScenarioFacts {
   approvals: SanctuaryScenarioApproval[]
   restartAttempts: SanctuaryScenarioRestartAttempt[]
   telegramTurns: SanctuaryScenarioTelegramTurnReceipt[]
+  telegramNextUpdateId?: number
+  zeroWork?: { providerToolDigest: string; outwardDigest: string; approvalMutationDigest: string }
   identity?: { keyPresent: boolean; subjectOpaque: boolean; rawIdentityAbsent: boolean; liveSubjectObserved: boolean; inspectedRecordCount?: number; opaqueSubjectCount?: number; mismatchCount?: number; rawLeakCount?: number; surfaceDigest?: string; canonicalSessionCount?: number; canonicalFriendCount?: number; sessionSurfaceDigest?: string; friendSurfaceDigest?: string }
   container?: {
     exactImage: boolean; running: boolean; healthy: boolean; user: string; readOnlyRoot: boolean
@@ -431,6 +433,7 @@ function exactFreshTelegramLifecycle(
   expectedUpdateDigest?: string,
   expectedOutcome: "success" | "error" = "success",
 ): boolean {
+  if (before.events.length > after.events.length || before.events.some((entry, index) => hash(entry) !== hash(after.events[index]))) return false
   const fresh = recordsAdded(before.events, after.events, (entry) => hash(entry))
   const starts = fresh.filter((entry) => entry.event === "senses.telegram_turn_start")
   const terminals = fresh.filter((entry) => entry.event === "senses.telegram_turn_end" || entry.event === "senses.telegram_turn_error")
@@ -444,6 +447,8 @@ function exactFreshTelegramLifecycle(
     || typeof start.meta.subject !== "string" || !/^tg_[A-Za-z0-9_-]{43}$/u.test(start.meta.subject)
     || ![start.meta.identityDigest, start.meta.sessionDigest, start.meta.argumentDigest, start.meta.lifecycleMac, terminal.meta.lifecycleMac].every((value) => typeof value === "string" && SHA256.test(value))) return false
   if (!Number.isSafeInteger(terminal.meta.deliveryCount) || Number(terminal.meta.deliveryCount) < 0) return false
+  if (!Number.isSafeInteger(start.meta.lifecycleAt) || !Number.isSafeInteger(terminal.meta.lifecycleAt)
+    || Number(start.meta.lifecycleAt) < 0 || Number(start.meta.lifecycleAt) >= Number(terminal.meta.lifecycleAt)) return false
   if (expectedOutcome === "success") return terminal.event === "senses.telegram_turn_end" && terminal.meta.outcome === "success" && terminal.meta.errorDigest === null
   return terminal.event === "senses.telegram_turn_error" && terminal.meta.outcome === "error" && typeof terminal.meta.errorDigest === "string" && SHA256.test(terminal.meta.errorDigest)
 }
@@ -556,6 +561,7 @@ export function deriveSanctuaryScenarioAssertions(
       if (telegramResponses !== 1 || newTurns.length !== 1 || !exactFreshTelegramLifecycle(before, after, newTurns[0]!.updateDigest) || deliveredTurns[0]!.toolInvocationCount !== 1 || deliveredTurns[0]!.toolResultDigests.length !== 1 || !turnHasGroundedRead(after, deliveredTurns[0]!, "unraid_get_storage") || !exactGroundedResponse(after, deliveredTurns[0]!, "unraid_get_storage")) return null
       return { accurate: true, authorized: true, grounded: true, liveFactsMatched: true, mutationCount: scenarioMutationCount, responseCount: telegramResponses, responseWithinLimit: true, telegramDelivered: true }
     case "unit-16d-2-unauthorized": {
+      if (before.events.length > after.events.length || before.events.some((entry, index) => hash(entry) !== hash(after.events[index]))) return null
       const freshEvents = recordsAdded(before.events, after.events, (entry) => hash(entry))
       const freshDrops = freshEvents.filter((entry) => entry.event === "telegram.update_dropped")
       if (freshDrops.length !== 1) return null
@@ -567,6 +573,7 @@ export function deriveSanctuaryScenarioAssertions(
         && typeof drop.meta.authorizedIdentityDigest === "string" && SHA256.test(drop.meta.authorizedIdentityDigest)
         && drop.meta.senderIdentityDigest !== drop.meta.authorizedIdentityDigest
         && drop.meta.senderDistinct === true
+        && typeof drop.meta.nextOffsetDigest === "string" && SHA256.test(drop.meta.nextOffsetDigest)
         && typeof drop.meta.dropMac === "string" && SHA256.test(drop.meta.dropMac)
       const providerInvocationCount = newTurns.reduce((sum, turn) => sum + turn.providerTurnCount, 0)
       const toolInvocationCount = newTurns.reduce((sum, turn) => sum + turn.toolInvocationCount, 0)
@@ -580,7 +587,13 @@ export function deriveSanctuaryScenarioAssertions(
       const forbiddenWorkEvent = freshEvents.some((entry) => entry.event === "senses.telegram_turn_start" || entry.event === "senses.telegram_turn_end"
         || entry.event === "senses.telegram_turn_error" || entry.event === "senses.sanctuary_read_receipt"
         || entry.event.startsWith("senses.telegram_approved_restart_") || entry.event === "senses.sanctuary_health_delivered")
-      if (!after.containment || !exactContainmentAudit(after.containment) || !distinctAccount || !sessionStateUnchanged || newTurns.length !== 0 || providerInvocationCount !== 0 || toolInvocationCount !== 0 || telegramResponses !== 0 || workItemCount !== 0 || approvalTransitions !== 0 || newAttempts.length !== 0 || scenarioMutationCount !== 0 || durableToolRecordCount !== 0 || forbiddenWorkEvent) return null
+      const offsetAdvanced = Number.isSafeInteger(before.telegramNextUpdateId) && Number.isSafeInteger(after.telegramNextUpdateId)
+        && Number(after.telegramNextUpdateId) > Number(before.telegramNextUpdateId)
+      const zeroWorkUnchanged = Boolean(before.zeroWork && after.zeroWork
+        && before.zeroWork.providerToolDigest === after.zeroWork.providerToolDigest
+        && before.zeroWork.outwardDigest === after.zeroWork.outwardDigest
+        && before.zeroWork.approvalMutationDigest === after.zeroWork.approvalMutationDigest)
+      if (!after.containment || !exactContainmentAudit(after.containment) || !distinctAccount || !offsetAdvanced || !zeroWorkUnchanged || !sessionStateUnchanged || newTurns.length !== 0 || providerInvocationCount !== 0 || toolInvocationCount !== 0 || telegramResponses !== 0 || workItemCount !== 0 || approvalTransitions !== 0 || newAttempts.length !== 0 || scenarioMutationCount !== 0 || durableToolRecordCount !== 0 || forbiddenWorkEvent) return null
       return { auditRejected: true, distinctAccount, mutationCount: 0, providerInvocationCount: 0, responseCount: 0, workItemCount: 0 }
     }
     case "unit-16e-containment-audit":

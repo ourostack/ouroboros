@@ -114,6 +114,7 @@ export function sanctuaryTelegramUnauthorizedDropMac(
     senderIdentityDigest: string
     authorizedIdentityDigest: string
     senderDistinct: boolean
+    nextOffsetDigest: string
   },
 ): string {
   return sanctuaryTelegramTurnReceiptDigest(identityKey, schemaVersion, "unauthorized-drop", canonicalReceiptJson(value))
@@ -677,14 +678,15 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       sessionDigest: auditDigest("session", `telegram:${subject}`),
       argumentDigest: auditDigest("argument", message.text),
     } : {}
-    const lifecycleMeta = (event: string, meta: Record<string, unknown>): Record<string, unknown> => acceptanceMarker
-      ? { ...meta, lifecycleMac: sanctuaryTelegramAuditLifecycleMac(identityKey, acceptanceSchema, event, meta) }
+    const lifecycleStartedAt = Date.now()
+    const lifecycleMeta = (event: string, meta: Record<string, unknown>, lifecycleAt: number): Record<string, unknown> => acceptanceMarker
+      ? { ...meta, lifecycleAt, lifecycleMac: sanctuaryTelegramAuditLifecycleMac(identityKey, acceptanceSchema, event, { ...meta, lifecycleAt }) }
       : meta
     emitNervesEvent({
       component: "senses",
       event: "senses.telegram_turn_start",
       message: "Telegram authorized turn started",
-      meta: lifecycleMeta("senses.telegram_turn_start", { agentName: options.agentName, subject, ...acceptanceMeta, ...lifecycleCoordinates }),
+      meta: lifecycleMeta("senses.telegram_turn_start", { agentName: options.agentName, subject, ...acceptanceMeta, ...lifecycleCoordinates }, lifecycleStartedAt),
     })
     let deliveryCount = 0
     const deliveredMessageIds: number[] = []
@@ -741,7 +743,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         component: "senses",
         event: "senses.telegram_turn_end",
         message: "Telegram authorized turn completed",
-        meta: lifecycleMeta("senses.telegram_turn_end", { agentName: options.agentName, subject, deliveryCount: Math.max(deliveryCount, result.response.trim() ? 1 : 0), ...acceptanceMeta, ...lifecycleCoordinates, ...(acceptanceMarker ? { outcome: "success", errorDigest: null } : {}) }),
+        meta: lifecycleMeta("senses.telegram_turn_end", { agentName: options.agentName, subject, deliveryCount: Math.max(deliveryCount, result.response.trim() ? 1 : 0), ...acceptanceMeta, ...lifecycleCoordinates, ...(acceptanceMarker ? { outcome: "success", errorDigest: null } : {}) }, Math.max(Date.now(), lifecycleStartedAt + 1)),
       })
     } catch (error) {
       receiptStatus = "error"
@@ -761,7 +763,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
             errorDigest: auditDigest("error", redactTelegramPrivateValues(error, [botToken, authorizedUserId, authorizedChatId, String(message.updateId), message.messageId])),
             deliveryCount: deliveredMessageIds.length,
           } : { error: redactTelegramPrivateValues(error, [botToken, authorizedUserId, authorizedChatId, String(message.updateId), message.messageId]) }),
-        }),
+        }, Math.max(Date.now(), lifecycleStartedAt + 1)),
       })
       const fallback = "I couldn't complete that turn. The failure was recorded; please try again."
       if (deliveredMessageIds.length === 0) await deliver(fallback, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) })
@@ -834,6 +836,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         senderIdentityDigest: digest("sender-identity", String(senderId)),
         authorizedIdentityDigest: digest("sender-identity", authorizedUserId),
         senderDistinct,
+        nextOffsetDigest: digest("next-update-id", String(update.update_id + 1)),
       }
       return { ...binding, dropMac: sanctuaryTelegramUnauthorizedDropMac(identityKey, schemaVersion, binding) }
     },
