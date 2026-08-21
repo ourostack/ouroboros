@@ -15,6 +15,7 @@ import { readApprovalsByScenarioHandleDigest } from "../approval-store"
 import { readProviderCredentialRecord } from "../provider-credentials"
 import { pingProvider, type PingResult } from "../provider-ping"
 import { SANCTUARY_SCENARIO_GATES, SANCTUARY_SCENARIO_SOURCES, SANCTUARY_UNIT_16_EVIDENCE_LABELS, type SanctuaryUnit16EvidenceLabel } from "./sanctuary-acceptance-harness"
+import { readSanctuaryAcceptanceMarker } from "./sanctuary-acceptance-marker"
 import { createSanctuaryScenarioCapture, finalizeSanctuaryScenarioCapture, type SanctuaryHealthProbeReceipt, type SanctuaryScenarioFacts } from "./sanctuary-acceptance-scenarios"
 import {
   mergeMachineRuntimeCredentialConfig,
@@ -52,7 +53,7 @@ export interface SanctuaryAcceptanceAdapterDependencies {
   callbackProbe?(update: JsonObject, replay: boolean): Promise<{ settled: boolean; claimed: boolean; mutated: boolean }>
   hostRequest?(payload: JsonObject): Promise<unknown>
   captureScenario?(payload: JsonObject): Promise<unknown>
-  finalizeScenarios?(): void
+  finalizeScenarios?(): void | Promise<void>
   telegramCredentials?(): TelegramSenseCredentials
   readProviderCredential?: typeof readProviderCredentialRecord
   providerPing?: typeof pingProvider
@@ -90,6 +91,11 @@ const MAX_BROKER_RESPONSE = 256 * 1024
 const TARGET_SERVER_ID = "sanctuary-unraid"
 const TARGET_ID = "sanctuary"
 const SHA256 = /^[0-9a-f]{64}$/u
+const HEALTH_ACCEPTANCE_LABELS = new Set<SanctuaryUnit16EvidenceLabel>([
+  "unit-16f-cron-fingerprint",
+  "unit-16g-health-transition",
+  "unit-16h-daily-digest",
+])
 const TELEGRAM_SUBJECT_DOMAIN = "ouroboros.telegram.subject.v1"
 const PERMISSION_RESOURCES = new Set([
   "ACTIVATION_CODE", "API_KEY", "ARRAY", "CLOUD", "CONFIG", "CONNECT", "CONNECT__REMOTE_ACCESS",
@@ -227,8 +233,106 @@ export function createSanctuaryAcceptanceAdapterDependencies(
     now: Date.now,
     readFacts: (label, scenarioHandleDigest) => readDefaultSanctuaryScenarioFacts(label, scenarioHandleDigest, dependencies),
   }) as (payload: JsonObject) => Promise<unknown>
-  dependencies.finalizeScenarios = finalizeSanctuaryScenarioCapture
+  const healthDriver = createSanctuaryHealthAcceptanceScenarioDriver(dependencies.hostRequest!)
+  dependencies.finalizeScenarios = createSanctuaryAcceptanceScenarioFinalizer({
+    readActiveScenario: () => readSanctuaryAcceptanceMarker(TARGET_ID),
+    recoverHealthScenario: healthDriver.recover,
+    finalizeLocal: finalizeSanctuaryScenarioCapture,
+  })
   return dependencies
+}
+
+function healthScenarioCoordinates(label: string, scenarioHandleDigest: string): {
+  label: SanctuaryUnit16EvidenceLabel
+  scenarioHandleDigest: string
+} {
+  if (!SANCTUARY_UNIT_16_EVIDENCE_LABELS.includes(label as SanctuaryUnit16EvidenceLabel)
+    || !HEALTH_ACCEPTANCE_LABELS.has(label as SanctuaryUnit16EvidenceLabel)) throw new Error("health probe label is invalid")
+  if (!SHA256.test(scenarioHandleDigest)) throw new Error("health probe scenario handle is invalid")
+  return { label: label as SanctuaryUnit16EvidenceLabel, scenarioHandleDigest }
+}
+
+function ownerContainerSnapshot(value: unknown): JsonObject {
+  const snapshot = object(value, "health probe owner snapshot")
+  exactKeys(snapshot, [
+    "schemaVersion", "containerId", "imageId", "running", "health", "user", "readOnlyRoot", "mountCount",
+    "mountsDigest", "mountsExact", "publishedPortCount", "networkMode", "securityExact", "writableKeyExposure",
+    "restartPolicy", "restartCount", "autostartExact", "updaterDisabled", "vaultUnlocked", "manualAuthRequired",
+    "recoveryMilestones",
+  ], "health probe owner snapshot")
+  const milestones = object(snapshot.recoveryMilestones, "health probe owner recovery milestones")
+  exactKeys(milestones, ["hostReady", "arrayReady", "dockerReady", "butlerReady", "tailscaleReady", "sshReady"], "health probe owner recovery milestones")
+  if (snapshot.schemaVersion !== 1 || typeof snapshot.containerId !== "string" || !SHA256.test(snapshot.containerId)
+    || typeof snapshot.imageId !== "string" || !/^sha256:[0-9a-f]{64}$/u.test(snapshot.imageId)
+    || typeof snapshot.running !== "boolean" || typeof snapshot.health !== "string" || snapshot.health.length > 64
+    || typeof snapshot.user !== "string" || snapshot.user.length < 1 || snapshot.user.length > 64
+    || typeof snapshot.readOnlyRoot !== "boolean" || !Number.isSafeInteger(snapshot.mountCount) || Number(snapshot.mountCount) < 0
+    || typeof snapshot.mountsDigest !== "string" || !SHA256.test(snapshot.mountsDigest) || typeof snapshot.mountsExact !== "boolean"
+    || !Number.isSafeInteger(snapshot.publishedPortCount) || Number(snapshot.publishedPortCount) < 0
+    || typeof snapshot.networkMode !== "string" || snapshot.networkMode.length < 1 || snapshot.networkMode.length > 64
+    || typeof snapshot.securityExact !== "boolean" || typeof snapshot.writableKeyExposure !== "boolean"
+    || typeof snapshot.restartPolicy !== "string" || snapshot.restartPolicy.length < 1 || snapshot.restartPolicy.length > 64
+    || !Number.isSafeInteger(snapshot.restartCount) || Number(snapshot.restartCount) < 0
+    || typeof snapshot.autostartExact !== "boolean" || typeof snapshot.updaterDisabled !== "boolean"
+    || typeof snapshot.vaultUnlocked !== "boolean" || typeof snapshot.manualAuthRequired !== "boolean"
+    || Object.values(milestones).some((entry) => typeof entry !== "boolean")) throw new Error("health probe owner snapshot schema is invalid")
+  return snapshot
+}
+
+export function createSanctuaryHealthAcceptanceScenarioDriver(
+  hostRequest: (payload: JsonObject) => Promise<unknown>,
+): {
+  begin(label: string, scenarioHandleDigest: string): Promise<void>
+  poll(label: string, scenarioHandleDigest: string): Promise<{ state: "waiting" } | { state: "ready"; containerSnapshot: JsonObject }>
+  recover(label: string, scenarioHandleDigest: string): Promise<void>
+} {
+  const payload = (operation: "start_health_probe" | "health_probe_status" | "recover_health_probe", label: string, scenarioHandleDigest: string): JsonObject => {
+    const coordinates = healthScenarioCoordinates(label, scenarioHandleDigest)
+    return { operation, targetId: TARGET_ID, ...coordinates }
+  }
+  return {
+    begin: async (label, scenarioHandleDigest) => {
+      const response = object(await hostRequest(payload("start_health_probe", label, scenarioHandleDigest)), "health probe start response")
+      exactKeys(response, ["state", "operationDigest"], "health probe start response")
+      if (response.state !== "started" || typeof response.operationDigest !== "string" || !SHA256.test(response.operationDigest)) {
+        throw new Error("health probe start response is invalid")
+      }
+    },
+    poll: async (label, scenarioHandleDigest) => {
+      const response = object(await hostRequest(payload("health_probe_status", label, scenarioHandleDigest)), "health probe status response")
+      if (response.state === "running") {
+        exactKeys(response, ["state"], "health probe status response")
+        return { state: "waiting" }
+      }
+      if (response.state === "complete") {
+        exactKeys(response, ["state", "containerSnapshot"], "health probe status response")
+        return { state: "ready", containerSnapshot: ownerContainerSnapshot(response.containerSnapshot) }
+      }
+      throw new Error("health probe status state is invalid")
+    },
+    recover: async (label, scenarioHandleDigest) => {
+      const response = object(await hostRequest(payload("recover_health_probe", label, scenarioHandleDigest)), "health probe recovery response")
+      exactKeys(response, ["recovered"], "health probe recovery response")
+      if (response.recovered !== true) throw new Error("health probe recovery response is invalid")
+    },
+  }
+}
+
+export function createSanctuaryAcceptanceScenarioFinalizer(dependencies: {
+  readActiveScenario(): { label: string; scenarioHandleDigest: string } | null
+  recoverHealthScenario(label: string, scenarioHandleDigest: string): Promise<void>
+  finalizeLocal(): void
+}): () => Promise<void> {
+  return async () => {
+    const errors: unknown[] = []
+    let active: { label: string; scenarioHandleDigest: string } | null = null
+    try { active = dependencies.readActiveScenario() } catch (error) { errors.push(error) }
+    if (active && HEALTH_ACCEPTANCE_LABELS.has(active.label as SanctuaryUnit16EvidenceLabel)) {
+      try { await dependencies.recoverHealthScenario(active.label, active.scenarioHandleDigest) } catch (error) { errors.push(error) }
+    }
+    try { dependencies.finalizeLocal() } catch (error) { errors.push(error) }
+    if (errors.length > 0) throw new AggregateError(errors, "Sanctuary scenario recovery and finalization failed")
+  }
 }
 
 function optionalFixedFile(deps: SanctuaryAcceptanceAdapterDependencies, filePath: string): string | null {
@@ -471,7 +575,9 @@ export async function readDefaultSanctuaryScenarioFacts(
   scenarioHandleDigest: string,
   deps: SanctuaryAcceptanceAdapterDependencies,
   configuredAgentRoot = getAgentRoot(TARGET_ID),
+  options: { skipContainerSnapshot?: boolean; containerSnapshot?: JsonObject } = {},
 ): Promise<SanctuaryScenarioFacts> {
+  if (options.skipContainerSnapshot === true && options.containerSnapshot !== undefined) throw new Error("container snapshot options are mutually exclusive")
   const agentRoot = configuredAgentRoot
   const identityRaw = optionalFixedFile(deps, pathFor(agentRoot, "state/senses/telegram/identity.key"))
   const auditRaw = optionalFixedFile(deps, TELEGRAM_AUDIT) ?? ""
@@ -599,7 +705,11 @@ export async function readDefaultSanctuaryScenarioFacts(
       surfaceDigest: createHash("sha256").update(JSON.stringify(surfaceRecords)).digest("hex"),
     }
   }
-  const container = deps.hostRequest ? object(await deps.hostRequest({ operation: "container_snapshot", targetId: TARGET_ID }), "container snapshot") : null
+  const container = options.skipContainerSnapshot === true
+    ? null
+    : options.containerSnapshot !== undefined
+      ? ownerContainerSnapshot(options.containerSnapshot)
+      : deps.hostRequest ? object(await deps.hostRequest({ operation: "container_snapshot", targetId: TARGET_ID }), "container snapshot") : null
   const rebootCheckpoint = parsedJson(rebootRaw)
   let reboot: SanctuaryScenarioFacts["reboot"]
   if (rebootCheckpoint?.operation === "reboot" && rebootCheckpoint.phase === "preflight" && rebootCheckpoint.targetId === TARGET_ID
@@ -1163,7 +1273,7 @@ export async function executeSanctuaryAcceptanceAdapter(
       case "finalize_acceptance_scenarios":
         exactKeys(payload, ["operation"], "scenario finalization payload")
         if (!deps.finalizeScenarios) throw new Error("scenario finalization is unavailable")
-        deps.finalizeScenarios()
+        await deps.finalizeScenarios()
         result = { finalized: true }
         break
       case "request_reboot": result = await requestReboot(payload, deps); break
