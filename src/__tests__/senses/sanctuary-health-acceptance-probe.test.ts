@@ -60,6 +60,19 @@ function setup(label: SanctuaryHealthAcceptanceProbeInput["label"]) {
     toolContext: healthyContext(),
     ambientFetch: vi.fn().mockResolvedValue(new Response(null, { status: 204 })) as typeof fetch,
     now: () => new Date("2026-08-18T17:00:00.000Z"),
+    waitForSchedulerReceipt: async () => {
+      const state = JSON.parse(fs.readFileSync(statePath, "utf8"))
+      state.sweepReceipts.push({ sweepId: "scheduler-sweep", startedAt: "2026-08-18T17:00:00.000Z", completedAt: "2026-08-18T17:00:01.000Z", incidentDigest: sha({}), opened: 0, recovered: 0, digestDue: false, scenarioHandleDigest: input.scenarioHandleDigest })
+      fs.writeFileSync(statePath, `${JSON.stringify(state)}\n`)
+      return {
+        schemaVersion: "sanctuary-scheduler-liveness-receipt-v1" as const, label: "unit-16f-cron-fingerprint" as const,
+        scenarioHandleDigest: input.scenarioHandleDigest, trigger: "cron" as const, occurrenceId: "cron:slot-1", runnerId: "11111111-1111-4111-8111-111111111111", recordedAt: "2026-08-18T17:00:01.000Z",
+        before: { sweepCount: 0, deliveryCount: 0 }, after: { sweepCount: 1, deliveryCount: 0 }, sweepDelta: 1 as const, deliveryDelta: 0 as const,
+        providerInvocationCount: 0 as const, privateTurnCount: 0 as const, sweep: { recordDigest: "d".repeat(64), opened: 0 as const, recovered: 0 as const, digestDue: false as const, deliveryId: null },
+        supervisor: { schemaVersion: "supercronic-supervisor-snapshot-v1" as const, daemonPid: 1, childCount: 1 as const, childPid: 42, healthy: true as const, binaryPath: "/usr/local/bin/supercronic", args: ["-split-logs", "-inotify", "/home/ouro/.ouro-cli/scheduler/sanctuary.crontab"] as ["-split-logs", "-inotify", string], crontabPath: "/home/ouro/.ouro-cli/scheduler/sanctuary.crontab", namespace: "habit:sanctuary", manifest: [], renderedCrontab: "canonical" },
+        nonReplay: true as const,
+      }
+    },
     runnerOptions: {
       credentials: () => ({ botToken: "test-token", authorizedChatId: "42" }),
       createApi: () => ({ request: vi.fn(async () => ({ message_id: ++messageId })), stop: vi.fn() }),
@@ -218,11 +231,13 @@ describe("packaged Sanctuary health acceptance probe", () => {
         snapshotAbsent: true,
         realCheckEquivalent: true,
         productionRestored: true,
+        schedulerReceipt: label === "unit-16f-cron-fingerprint" ? expect.objectContaining({ trigger: "cron", sweepDelta: 1, deliveryDelta: 0, nonReplay: true }) : null,
       })
       expect(receipt.phases).toHaveLength(phaseCount)
       expect(receipt.fixtureSequenceDigest).toBe(sha(receipt.phases.flatMap((phase) => phase.fixtureStatus === null ? [] : [phase.fixtureStatus])))
       expect(fixture.privateTurns()).toBe(providers)
-      expect(fs.readFileSync(fixture.statePath, "utf8")).toBe(fixture.before)
+      if (label === "unit-16f-cron-fingerprint") expect(JSON.parse(fs.readFileSync(fixture.statePath, "utf8")).sweepReceipts).toHaveLength(1)
+      else expect(fs.readFileSync(fixture.statePath, "utf8")).toBe(fixture.before)
       expect(fs.statSync(path.join(fixture.agentRoot, "state", "acceptance", "health-probe-receipts", `${fixture.input.scenarioHandleDigest}.json`)).mode & 0o777).toBe(0o600)
       expect(fs.existsSync(path.join(fixture.agentRoot, "state", "acceptance", "health-probe-workspaces", fixture.input.scenarioHandleDigest))).toBe(false)
       if (label === "unit-16f-cron-fingerprint") expect(receipt.phases[0]).toMatchObject({ name: "cron-unchanged", trigger: "cron", fixtureStatus: null, opened: 0, recovered: 0, digestDue: false, deliveryKind: null, deliveryReceiptDigest: null })
