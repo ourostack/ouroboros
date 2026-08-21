@@ -141,8 +141,8 @@ describe("Sanctuary acceptance harness", () => {
       case "unit-16i-delayed-approval": return { elapsedMs: 120_000, mutationCount: 1, promptTerminal: true, replayMutationCount: 0, resumed: true, state: "succeeded" }
       case "unit-16j-denial": return { mutationCount: 0, promptTerminal: true, replayMutationCount: 0, resumed: true, state: "denied" }
       case "unit-16k-timeout-stale": return { buttonsRemoved: true, mutationCount: 0, promptTerminal: true, staleAcknowledged: true, staleReplayMutationCount: 0, state: "expired" }
-      case "unit-16l-duplicate-callback": return { callbackCount: 2, claimCount: 1, mutationCount: 1, promptTerminal: true, replayMutationCount: 0, settledCount: 2 }
-      case "unit-16m-restart-continuation": return { attemptedIndeterminateRetryCount: 0, mutationCount: 1, preAttemptResumed: true, restartObserved: true, state: "succeeded" }
+      case "unit-16l-duplicate-callback": return { callbackCount: 2, claimCount: 1, mutationCount: 1, promptTerminal: true, replayMutationCount: 0, settledCount: 2, staleReplaySettled: true, writeCredentialAbsent: true }
+      case "unit-16m-restart-continuation": return { attemptedIndeterminateRetryCount: 0, butlerRestartObserved: true, checkpointEpochPreserved: true, continuationEpochAdvanced: true, mutationCount: 1, preAttemptResumed: true, restartObserved: true, state: "succeeded" }
       default: throw new Error(`unknown label ${label}`)
     }
   }

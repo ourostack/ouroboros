@@ -14,9 +14,11 @@ import {
   createSanctuaryInteractiveAcceptanceScenarioDriver,
   createSanctuaryAcceptanceVaultProbeDependencies,
   executeSanctuaryAcceptanceCallbackProbe,
+  executeSanctuaryInteractiveRuntimeOperation,
   executeSanctuaryAcceptanceAdapter,
   executeSanctuaryAcceptanceRevokedProbe,
   executeSanctuaryAcceptanceVaultProbe,
+  proveAttemptedRecoveryWithoutRetry,
   readDefaultSanctuaryScenarioFacts,
   type SanctuaryAcceptanceAdapterDependencies,
 } from "../../../heart/daemon/sanctuary-acceptance-adapter"
@@ -84,6 +86,22 @@ function validOwnerSnapshot(patch: Record<string, unknown> = {}) {
   }
 }
 
+function validInteractiveReceipt(label: "unit-16l-duplicate-callback" | "unit-16m-restart-continuation", scenarioHandleDigest: string) {
+  const common = {
+    schemaVersion: "sanctuary-interactive-driver-receipt-v2", phase: "complete", label, scenarioHandleDigest,
+    approvalIdDigest: "1".repeat(64), checkpointDigest: "2".repeat(64), suspendedSessionRevisionDigest: "3".repeat(64), approvalEpochBefore: 0,
+  }
+  return label === "unit-16l-duplicate-callback" ? {
+    ...common, callbackAttempts: 2, distinctQueryCount: 2, callbackDataDigest: "4".repeat(64), barrierObserved: true,
+    settledCount: 2, claimCount: 1, mutationCount: 1, staleReplayAttempts: 1, staleReplaySettled: true,
+    staleReplayMutationCount: 0, promptTerminal: true, writeCredentialObserved: false,
+  } : {
+    ...common, approvalEpochAfterRestart: 0, continuationEpochAfter: 1, ownerImageDigest: "4".repeat(64), ownerContainerDigest: "5".repeat(64),
+    restartCountBefore: 7, restartCountAfter: 8, pendingDigestBefore: "6".repeat(64), pendingDigestAfter: "6".repeat(64), pendingRestored: true,
+    callbackAttempts: 1, mutationCount: 1, indeterminateRecoveryObserved: true, indeterminateRetryCount: 0,
+  }
+}
+
 describe("Sanctuary acceptance adapter semantic proofs", () => {
   it("delegates exact current duplicate and restart-continuation proposals to the production-owner broker", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-interactive-driver-"))
@@ -94,6 +112,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     }
     const pending = [{ approvalId: "approval-1", messageId: "42", deliveryState: "bound", approveCallbackData: "a:opaque", denyCallbackData: "d:opaque", expiresAt: Date.now() + 300_000 }]
     const hostRequests: Array<Record<string, unknown>> = []
+    let restartPolls = 0
     let currentLabel = "unit-16l-duplicate-callback"
     const driver = createSanctuaryInteractiveAcceptanceScenarioDriver({
       agentRoot: root,
@@ -101,18 +120,93 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       readPending: () => pending,
       hostRequest: async (payload) => {
         hostRequests.push(payload)
-        return { state: "complete" }
+        if (payload.label === "unit-16m-restart-continuation") {
+          restartPolls += 1
+          return restartPolls === 1 ? { state: "waiting" } : { state: "complete", receipt: validInteractiveReceipt(payload.label, scenarioHandleDigest) }
+        }
+        return validInteractiveReceipt(payload.label as never, scenarioHandleDigest)
       },
     })
     try {
       await expect(driver.poll(currentLabel as never, scenarioHandleDigest)).resolves.toEqual({ state: "driven" })
       currentLabel = "unit-16m-restart-continuation"
+      await expect(driver.poll(currentLabel as never, scenarioHandleDigest)).resolves.toEqual({ state: "waiting" })
       await expect(driver.poll(currentLabel as never, scenarioHandleDigest)).resolves.toEqual({ state: "driven" })
       expect(hostRequests).toEqual([
         { operation: "drive_duplicate_callbacks", targetId: "sanctuary", label: "unit-16l-duplicate-callback", scenarioHandleDigest },
         { operation: "drive_restart_continuation", targetId: "sanctuary", label: "unit-16m-restart-continuation", scenarioHandleDigest },
+        { operation: "drive_restart_continuation", targetId: "sanctuary", label: "unit-16m-restart-continuation", scenarioHandleDigest },
       ])
     } finally { fs.rmSync(root, { recursive: true, force: true }) }
+  })
+
+  it("uses one production callback session for two barrier-released queries and a terminal stale replay", async () => {
+    const scenarioHandleDigest = "a".repeat(64)
+    const approval = {
+      approvalId: "approval-1", state: "proposed", toolName: "unraid_restart_container", arguments: { container: "calibre-web" },
+      checkpointDigest: "b".repeat(64), epoch: 0, suspendedSessionRevision: "c".repeat(64), transport: "telegram",
+    }
+    let terminal = false
+    const queries: string[] = []
+    const close = vi.fn()
+    const createSession = vi.fn(async () => ({
+      handle: async ({ queryId }: { queryId: string }) => {
+        queries.push(queryId)
+        if (!terminal) { terminal = true; return { handled: true, accepted: true, reason: "accepted" } }
+        return { handled: true, accepted: false, reason: "stale_callback" }
+      },
+      pendingApprovalIds: () => terminal ? [] : ["approval-1"],
+      close,
+    }))
+    const receipt = await executeSanctuaryInteractiveRuntimeOperation({
+      operation: "drive_duplicate_callbacks", label: "unit-16l-duplicate-callback", scenarioHandleDigest,
+    }, {
+      agentRoot: "/unused",
+      readApprovals: () => [{ approval: { ...approval, ...(terminal ? { state: "succeeded", epoch: 1 } : {}) } as never, continuation: null }],
+      readPending: () => [{ approvalId: "approval-1", messageId: "42", deliveryState: "bound", approveCallbackData: "a:opaque", denyCallbackData: "d:opaque", expiresAt: Date.now() + 300_000 }],
+      createSession,
+    }) as Record<string, unknown>
+
+    expect(receipt).toMatchObject({ callbackAttempts: 2, distinctQueryCount: 2, barrierObserved: true, settledCount: 2, claimCount: 1, mutationCount: 1, staleReplayAttempts: 1, staleReplaySettled: true, staleReplayMutationCount: 0, promptTerminal: true, writeCredentialObserved: false })
+    expect(createSession).toHaveBeenCalledOnce()
+    expect(new Set(queries.slice(0, 2)).size).toBe(2)
+    expect(queries).toHaveLength(3)
+    expect(close).toHaveBeenCalledOnce()
+  })
+
+  it("prepares an isolated attempted recovery proof and reconciles the restored pending approval once", async () => {
+    const scenarioHandleDigest = "a".repeat(64)
+    let terminal = false
+    const approval = {
+      approvalId: "approval-1", state: "proposed", toolName: "unraid_restart_container", arguments: { container: "calibre-web" },
+      checkpointDigest: "b".repeat(64), epoch: 0, suspendedSessionRevision: "c".repeat(64), transport: "telegram",
+    }
+    const common = {
+      agentRoot: "/unused",
+      readApprovals: () => [{ approval: { ...approval, ...(terminal ? { state: "succeeded", epoch: 1 } : {}) } as never, continuation: terminal ? { continuationEpoch: 1, continuationState: "completed" } as never : null }],
+      readPending: () => [{ approvalId: "approval-1", messageId: "42", deliveryState: "bound" as const, approveCallbackData: "a:opaque", denyCallbackData: "d:opaque", expiresAt: Date.now() + 300_000 }],
+    }
+    const proveIndeterminateRecovery = vi.fn(() => ({ observed: true, retryCount: 0 }))
+    await expect(executeSanctuaryInteractiveRuntimeOperation({
+      operation: "prepare_restart_continuation", label: "unit-16m-restart-continuation", scenarioHandleDigest,
+    }, { ...common, proveIndeterminateRecovery })).resolves.toMatchObject({ phase: "prepared", pendingDigestBefore: expect.stringMatching(/^[0-9a-f]{64}$/u), indeterminateRecoveryObserved: true })
+    expect(proveIndeterminateRecovery).toHaveBeenCalledOnce()
+
+    const handle = vi.fn(async () => { terminal = true; return { handled: true, accepted: true, reason: "accepted" } })
+    await expect(executeSanctuaryInteractiveRuntimeOperation({
+      operation: "reconcile_restart_continuation", label: "unit-16m-restart-continuation", scenarioHandleDigest,
+    }, { ...common, createSession: async () => ({ handle, pendingApprovalIds: () => [], close: vi.fn() }) })).resolves.toMatchObject({
+      approvalEpochAfterRestart: 0, continuationEpochAfter: 1, pendingRestored: true, callbackAttempts: 1, mutationCount: 1, indeterminateRetryCount: 0,
+    })
+    expect(handle).toHaveBeenCalledOnce()
+  })
+
+  it("proves attempted recovery with the production transition and makes the second recovery ineligible", () => {
+    const result = proveAttemptedRecoveryWithoutRetry({
+      approvalId: "approval-isolated", state: "proposed", ownerId: null, epoch: 0, attemptedAt: null,
+      updatedAt: "2026-08-20T00:00:00.000Z",
+    } as never)
+    expect(result).toEqual({ observed: true, retryCount: 0 })
   })
 
   it("executes the fixed in-container interactive operations without accepting extra coordinates", async () => {
@@ -129,6 +223,9 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     await expect(executeSanctuaryAcceptanceAdapter({
       operation: "reconcile_restart_continuation", label: "unit-16m-restart-continuation", scenarioHandleDigest,
     }, deps)).resolves.toEqual({ phase: "reconcile_restart_continuation" })
+    await expect(executeSanctuaryAcceptanceAdapter({
+      operation: "interactive_runtime_ready", label: "unit-16m-restart-continuation", scenarioHandleDigest,
+    }, deps)).resolves.toEqual({ ready: false })
     expect(interactiveRuntime.mock.calls.map(([payload]) => payload)).toEqual([
       { operation: "drive_duplicate_callbacks", label: "unit-16l-duplicate-callback", scenarioHandleDigest },
       { operation: "prepare_restart_continuation", label: "unit-16m-restart-continuation", scenarioHandleDigest },

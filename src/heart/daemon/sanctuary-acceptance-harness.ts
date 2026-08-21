@@ -516,6 +516,7 @@ function assertRedactedEvidence(value: unknown, label: string, key = ""): void {
       return
     }
     for (const [key, item] of Object.entries(value as JsonObject)) {
+      if (key === "writeCredentialAbsent" && item === true) continue
       if (/(?:telegram)?(?:user|chat|update|message)[_-]?id|token|secret|password|credential|api[_-]?key/iu.test(key)) {
         throw new Error(`${label} contains a sensitive or raw Telegram identity field`)
       }

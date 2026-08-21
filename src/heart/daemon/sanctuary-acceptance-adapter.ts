@@ -1,12 +1,13 @@
 import { spawnSync } from "node:child_process"
 import { createHash, createHmac, timingSafeEqual } from "node:crypto"
-import { existsSync, readFileSync, readdirSync, unlinkSync } from "node:fs"
+import { closeSync, existsSync, fsyncSync, openSync, readFileSync, readdirSync, unlinkSync } from "node:fs"
 import { createConnection } from "node:net"
 import * as path from "node:path"
 
 import { emitNervesEvent } from "../../nerves/runtime"
 import { createTelegramApprovalRuntime, type TelegramApprovalRuntime } from "../../senses/telegram-approval-runtime"
 import { createTelegramBotApi, type TelegramBotApi, type TelegramUpdate } from "../../senses/telegram-client"
+import { executeSanctuaryInteractiveEngine, proveSanctuaryAttemptedRecoveryWithoutRetry, type SanctuaryInteractiveEngineDependencies } from "../../senses/sanctuary-interactive-control"
 import { loadTelegramSenseCredentials, readOrCreateTelegramIdentityKey, type TelegramSenseCredentials } from "../../senses/telegram"
 import { createSanctuaryToolContext } from "../../senses/sanctuary-runtime"
 import { resolveToolDefinition } from "../../repertoire/tools"
@@ -51,6 +52,7 @@ export interface SanctuaryAcceptanceAdapterDependencies {
   refreshMachine?(agentName: string, machineId: string): Promise<RuntimeCredentialConfigReadResult>
   mergeMachine?(agentName: string, machineId: string, patch: JsonObject): Promise<RuntimeCredentialConfigReadResult>
   callbackProbe?(update: JsonObject, replay: boolean): Promise<{ settled: boolean; claimed: boolean; mutated: boolean }>
+  interactiveRuntime?(payload: JsonObject): Promise<unknown>
   hostRequest?(payload: JsonObject): Promise<unknown>
   captureScenario?(payload: JsonObject): Promise<unknown>
   finalizeScenarios?(): void | Promise<void>
@@ -232,6 +234,7 @@ export function createSanctuaryAcceptanceAdapterDependencies(
     refreshMachine: refreshMachineRuntimeCredentialConfig,
     mergeMachine: mergeMachineRuntimeCredentialConfig,
     callbackProbe: executeSanctuaryAcceptanceCallbackProbe,
+    interactiveRuntime: executeSanctuaryInteractiveRuntimeOperation,
     hostRequest: options.hostRequest ?? ((payload) => defaultHostRequest(payload, hostBrokerSocket, adapterTimeoutMs)),
     telegramCredentials: () => loadTelegramSenseCredentials(TARGET_ID),
   }
@@ -251,7 +254,10 @@ export function createSanctuaryAcceptanceAdapterDependencies(
   dependencies.finalizeScenarios = createSanctuaryAcceptanceScenarioFinalizer({
     readActiveScenario: () => readSanctuaryAcceptanceMarker(TARGET_ID),
     recoverHealthScenario: healthDriver.recover,
-    finalizeInteractiveScenario: interactiveDriver.complete,
+    finalizeInteractiveScenario: (label, scenarioHandleDigest) => {
+      interactiveDriver.complete(label, scenarioHandleDigest)
+      return "preserve"
+    },
     finalizeLocal: finalizeSanctuaryScenarioCapture,
   })
   return dependencies
@@ -374,9 +380,26 @@ export function createSanctuaryInteractiveAcceptanceScenarioDriver(options: {
       if (!approval.suspendedSessionRevision || !SHA256.test(approval.checkpointDigest)) throw new Error("interactive acceptance checkpoint is invalid")
       const operation = label === "unit-16l-duplicate-callback" ? "drive_duplicate_callbacks" : "drive_restart_continuation"
       const response = object(await options.hostRequest({ operation, targetId: TARGET_ID, label, scenarioHandleDigest }), "interactive scenario driver response")
-      exactKeys(response, ["state"], "interactive scenario driver response")
-      if (response.state !== "waiting" && response.state !== "complete") throw new Error("interactive scenario driver state is invalid")
-      return { state: response.state === "complete" ? "driven" : "waiting" }
+      if (label === "unit-16m-restart-continuation") {
+        if (response.state === "waiting") {
+          exactKeys(response, ["state"], "interactive scenario driver response")
+          return { state: "waiting" }
+        }
+        if (response.state === "failed") {
+          exactKeys(response, ["state", "errorDigest"], "interactive scenario driver response")
+          if (typeof response.errorDigest !== "string" || !SHA256.test(response.errorDigest)) throw new Error("interactive scenario driver failure is invalid")
+          throw new Error(`interactive scenario driver failed (${response.errorDigest})`)
+        }
+        exactKeys(response, ["state", "receipt"], "interactive scenario driver response")
+        if (response.state !== "complete" || !parseInteractiveDriverReceipt(JSON.stringify(response.receipt), label, scenarioHandleDigest)) {
+          throw new Error("interactive scenario driver receipt is invalid")
+        }
+        return { state: "driven" }
+      }
+      if (!parseInteractiveDriverReceipt(JSON.stringify(response), label, scenarioHandleDigest)) {
+        throw new Error("interactive scenario driver receipt is invalid")
+      }
+      return { state: "driven" }
     },
     complete(label, scenarioHandleDigest) {
       if (!isInteractiveLabel(label)) return "complete"
@@ -397,6 +420,8 @@ export function createSanctuaryInteractiveAcceptanceScenarioDriver(options: {
         throw new Error("interactive driver receipt is not cleanup-ready")
       }
       unlinkSync(filePath)
+      const directory = openSync(receiptRoot, "r")
+      try { fsyncSync(directory) } finally { closeSync(directory) }
     },
   }
 }
@@ -421,7 +446,8 @@ export function createSanctuaryAcceptanceScenarioFinalizer(dependencies: {
     }
     let preserveInteractive = false
     if (active && isInteractiveLabel(active.label) && dependencies.finalizeInteractiveScenario) {
-      try { preserveInteractive = await dependencies.finalizeInteractiveScenario(active.label, active.scenarioHandleDigest) === "preserve" } catch (error) { appendErrorLeaves(errors, error) }
+      preserveInteractive = true
+      try { await dependencies.finalizeInteractiveScenario(active.label, active.scenarioHandleDigest) } catch (error) { appendErrorLeaves(errors, error) }
     }
     if (preserveInteractive) errors.push(new Error("interactive scenario requires inspect-before-retry"))
     else try { dependencies.finalizeLocal() } catch (error) { appendErrorLeaves(errors, error) }
@@ -669,7 +695,7 @@ function parseTelegramTurnReceipts(raw: string, scenarioHandleDigest: string): S
 function parseInteractiveDriverReceipt(raw: string | null, label: SanctuaryUnit16EvidenceLabel, scenarioHandleDigest: string): SanctuaryInteractiveDriverReceipt | undefined {
   if (raw === null) return undefined
   const receipt = object(JSON.parse(raw) as unknown, "interactive driver receipt")
-  if (receipt.schemaVersion !== "sanctuary-interactive-driver-receipt-v1" || receipt.phase !== "complete"
+  if (receipt.schemaVersion !== "sanctuary-interactive-driver-receipt-v2" || receipt.phase !== "complete"
     || receipt.label !== label || receipt.scenarioHandleDigest !== scenarioHandleDigest) throw new Error("interactive driver receipt binding is invalid")
   const common = ["schemaVersion", "phase", "label", "scenarioHandleDigest", "approvalIdDigest", "checkpointDigest", "suspendedSessionRevisionDigest", "approvalEpochBefore"]
   const digests = [receipt.approvalIdDigest, receipt.checkpointDigest, receipt.suspendedSessionRevisionDigest]
@@ -1168,6 +1194,35 @@ async function callbackReplay(payload: JsonObject, deps: SanctuaryAcceptanceAdap
   return dependency(deps.callbackProbe, "callback probe")(callbackUpdate(payload.update), true)
 }
 
+async function interactiveRuntimeOperation(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDependencies): Promise<unknown> {
+  exactKeys(payload, ["operation", "label", "scenarioHandleDigest"], "interactive runtime payload")
+  const operation = text(payload.operation, "interactive runtime operation")
+  const label = text(payload.label, "interactive runtime label")
+  const scenarioHandleDigest = text(payload.scenarioHandleDigest, "interactive runtime scenario digest")
+  if (!SHA256.test(scenarioHandleDigest)) throw new Error("interactive runtime scenario digest is invalid")
+  const expectedLabel = operation === "drive_duplicate_callbacks"
+    ? "unit-16l-duplicate-callback"
+    : "unit-16m-restart-continuation"
+  if (label !== expectedLabel) throw new Error("interactive runtime label is invalid")
+  return dependency(deps.interactiveRuntime, "interactive production runtime")({ operation, label, scenarioHandleDigest })
+}
+
+async function interactiveRuntimeReady(payload: JsonObject): Promise<unknown> {
+  exactKeys(payload, ["operation", "label", "scenarioHandleDigest"], "interactive readiness payload")
+  if (payload.label !== "unit-16m-restart-continuation" || typeof payload.scenarioHandleDigest !== "string" || !SHA256.test(payload.scenarioHandleDigest)) {
+    throw new Error("interactive readiness coordinates are invalid")
+  }
+  const agentRoot = getAgentRoot(TARGET_ID)
+  const socketPath = path.join(agentRoot, "state", "acceptance", "telegram-control.sock")
+  try {
+    const response = object(await defaultHostRequest(payload, socketPath, 2_000), "interactive readiness response")
+    exactKeys(response, ["ready"], "interactive readiness response")
+    return { ready: response.ready === true }
+  } catch {
+    return { ready: false }
+  }
+}
+
 function requireTargetServer(payload: JsonObject): void {
   if (text(payload.targetServerId, "targetServerId") !== TARGET_SERVER_ID) throw new Error("targetServerId is invalid")
 }
@@ -1392,6 +1447,10 @@ export async function executeSanctuaryAcceptanceAdapter(
       case "snapshot": result = cursorSnapshot(deps); break
       case "inject_callbacks_concurrently": result = await concurrentCallbackProbe(payload, deps); break
       case "inject_callback_replay": result = await callbackReplay(payload, deps); break
+      case "drive_duplicate_callbacks": result = await interactiveRuntimeOperation(payload, deps); break
+      case "prepare_restart_continuation": result = await interactiveRuntimeOperation(payload, deps); break
+      case "reconcile_restart_continuation": result = await interactiveRuntimeOperation(payload, deps); break
+      case "interactive_runtime_ready": result = await interactiveRuntimeReady(payload); break
       case "inventory_keys": result = await keyInventory(payload, deps); break
       case "create_key": result = await createKey(payload, deps); break
       case "store_key": result = await storeKey(payload, deps); break
@@ -1500,6 +1559,28 @@ export interface SanctuaryAcceptanceCallbackProbeDependencies {
   createApi(options: { token: string }): TelegramBotApi
   createRuntime(input: Parameters<typeof createTelegramApprovalRuntime>[0]): Pick<TelegramApprovalRuntime, "transport" | "close">
   toolContext(agentName: string): ReturnType<typeof createSanctuaryToolContext>
+}
+
+export type SanctuaryInteractiveRuntimeDependencies = SanctuaryInteractiveEngineDependencies
+
+export const proveAttemptedRecoveryWithoutRetry = proveSanctuaryAttemptedRecoveryWithoutRetry
+
+export async function executeSanctuaryInteractiveRuntimeOperation(
+  rawPayload: JsonObject,
+  supplied?: Partial<SanctuaryInteractiveRuntimeDependencies>,
+): Promise<unknown> {
+  exactKeys(rawPayload, ["operation", "label", "scenarioHandleDigest"], "interactive runtime payload")
+  const agentRoot = supplied?.agentRoot ?? getAgentRoot(TARGET_ID)
+  if (!supplied) return defaultHostRequest(rawPayload, path.join(agentRoot, "state", "acceptance", "telegram-control.sock"), ADAPTER_TIMEOUT_MS)
+  const deps: SanctuaryInteractiveEngineDependencies = {
+    agentRoot,
+    readApprovals: supplied.readApprovals ?? ((digest) => readApprovalsByScenarioHandleDigest(path.join(agentRoot, "state", "approvals", "approvals.sqlite"), digest)),
+    readPending: dependency(supplied.readPending, "daemon-owned pending approval reader"),
+    createSession: supplied.createSession ?? (async () => { throw new Error("daemon-owned interactive callback session is unavailable") }),
+    proveIndeterminateRecovery: supplied.proveIndeterminateRecovery ?? proveSanctuaryAttemptedRecoveryWithoutRetry,
+    writeCredentialObserved: supplied.writeCredentialObserved ?? (() => /credential|api[_-]?key|token|secret/iu.test(JSON.stringify(rawPayload))),
+  }
+  return executeSanctuaryInteractiveEngine(rawPayload, deps)
 }
 
 export async function executeSanctuaryAcceptanceCallbackProbe(

@@ -24,6 +24,7 @@ import { getAgentRoot } from "../heart/identity"
 import { readSanctuaryAcceptanceMarker, sanctuaryAcceptanceEventMeta } from "../heart/daemon/sanctuary-acceptance-marker"
 import { readRuntimeCredentialConfig } from "../heart/runtime-credentials"
 import { emitNervesEvent } from "../nerves/runtime"
+import { createSanctuaryInteractiveControl } from "./sanctuary-interactive-control"
 import { runSenseTurn, type RunSenseTurnOptions, type RunSenseTurnResult } from "./shared-turn"
 import {
   createTelegramBotApi,
@@ -512,6 +513,9 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     toolContext: toolContext ?? {},
   }) : undefined)
   const approvalTransport = options.approvalTransport ?? approvalRuntime?.transport
+  const interactiveControl = useSanctuaryRuntime && approvalTransport
+    ? createSanctuaryInteractiveControl({ agentRoot, transport: approvalTransport, authorizedUserId, authorizedChatId })
+    : undefined
   const healthSweep = options.healthSweep
   const migrateIdentity = options.migrateIdentity ?? (async () => {
     const legacySubjects = new Set([
@@ -718,6 +722,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       runPromise = (async () => {
         await migrateIdentity()
         await approvalRuntime?.recover()
+        await interactiveControl?.start()
         await approvalTransport?.reconcileExpired()
         await runHealthSweep()
         emitNervesEvent({
@@ -734,6 +739,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
           approvalReconciliationActive = false
           clearApprovalReconcileTimer()
           await approvalReconcileInFlight
+          await interactiveControl?.stop()
         }
       })()
       return runPromise
@@ -749,6 +755,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         poll.stop()
         await runPromise?.catch(() => undefined)
         await approvalReconcileInFlight
+        await interactiveControl?.stop()
         api.stop()
         approvalRuntime?.close()
         emitNervesEvent({
