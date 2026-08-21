@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
@@ -6,13 +6,14 @@ import { createLogger } from "../../nerves"
 import { TELEGRAM_ACCEPTANCE_AUDIT_HEAD_RELATIVE_PATH, TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH } from "../../senses/telegram-audit-ledger"
 
 const mocks = vi.hoisted(() => ({
-  getAgentRoot: vi.fn(() => "/tmp/telegram-agent"),
+  getAgentRoot: vi.fn(),
   readRuntimeCredentialConfig: vi.fn(),
   runSenseTurn: vi.fn(),
   createTelegramBotApi: vi.fn(),
   createTelegramLongPoll: vi.fn(),
   sendTelegramText: vi.fn(),
   createSanctuaryToolContext: vi.fn(() => ({ sanctuary: true })),
+  createSanctuaryInteractiveControl: vi.fn(() => ({ start: vi.fn(async () => undefined), stop: vi.fn(async () => undefined) })),
   runWithSanctuaryToolReceiptCollection: vi.fn(async (operation: () => Promise<unknown>, observer?: { toolResultDigests: string[] }) => {
     const result = await operation()
     return { result, toolResultDigests: [...(observer?.toolResultDigests ?? [])] }
@@ -28,6 +29,7 @@ vi.mock("../../senses/sanctuary-runtime", () => ({
   createSanctuaryToolContext: mocks.createSanctuaryToolContext,
   runWithSanctuaryToolReceiptCollection: mocks.runWithSanctuaryToolReceiptCollection,
 }))
+vi.mock("../../senses/sanctuary-interactive-control", () => ({ createSanctuaryInteractiveControl: mocks.createSanctuaryInteractiveControl }))
 vi.mock("../../senses/telegram-approval-runtime", () => ({ createTelegramApprovalRuntime: mocks.createTelegramApprovalRuntime }))
 vi.mock("../../nerves/runtime", () => ({ emitNervesEvent: mocks.emitNervesEvent }))
 vi.mock("../../senses/telegram-client", async (importActual) => ({
@@ -49,6 +51,8 @@ import {
 } from "../../senses/telegram"
 
 const credentials = { botToken: "synthetic-test-token", authorizedUserId: "42", authorizedChatId: "43" }
+const isolatedRoots: string[] = []
+let isolatedRoot = ""
 
 function defaultFixture() {
   let onMessage: ((message: any) => Promise<void>) | undefined
@@ -81,12 +85,18 @@ function defaultFixture() {
 
 beforeEach(() => {
   vi.clearAllMocks()
-  mocks.getAgentRoot.mockReturnValue("/tmp/telegram-agent")
+  isolatedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-coverage-"))
+  isolatedRoots.push(isolatedRoot)
+  mocks.getAgentRoot.mockReturnValue(isolatedRoot)
   mocks.readRuntimeCredentialConfig.mockReturnValue({ ok: true, config: {
     telegramBotToken: ` ${credentials.botToken} `,
     telegramAuthorizedUserId: " 42 ",
     telegramAuthorizedChatId: "43",
   } })
+})
+
+afterEach(() => {
+  for (const root of isolatedRoots.splice(0)) fs.rmSync(root, { recursive: true, force: true })
 })
 
 describe("Telegram sense coverage contracts", () => {
@@ -325,7 +335,7 @@ describe("Telegram sense coverage contracts", () => {
         `telegram-user:${secondLegacySubject}`,
       ].sort())
     } finally {
-      mocks.getAgentRoot.mockReturnValue("/tmp/telegram-agent")
+      mocks.getAgentRoot.mockReturnValue(isolatedRoot)
       fs.rmSync(root, { recursive: true, force: true })
       fs.rmSync(ambiguousRoot, { recursive: true, force: true })
     }
@@ -386,7 +396,7 @@ describe("Telegram sense coverage contracts", () => {
       await expect(createTelegramSenseApp({ agentName: "butler", credentials, identityKey: "k".repeat(43) }).run())
         .rejects.toThrow()
     } finally {
-      mocks.getAgentRoot.mockReturnValue("/tmp/telegram-agent")
+      mocks.getAgentRoot.mockReturnValue(isolatedRoot)
       fs.rmSync(root, { recursive: true, force: true })
     }
   })
@@ -417,7 +427,7 @@ describe("Telegram sense coverage contracts", () => {
       expect(friend).not.toContain(legacySubject)
       expect(fixture.runtime.migrateIdentity).toHaveBeenCalledWith([legacySubject])
     } finally {
-      mocks.getAgentRoot.mockReturnValue("/tmp/telegram-agent")
+      mocks.getAgentRoot.mockReturnValue(isolatedRoot)
       fs.rmSync(root, { recursive: true, force: true })
     }
   })
@@ -447,7 +457,7 @@ describe("Telegram sense coverage contracts", () => {
       }).run()).rejects.toThrow("synthetic index write failure")
       expect(fs.readdirSync(path.join(indexRoot, "state", "senses", "telegram"))).toEqual([])
     } finally {
-      mocks.getAgentRoot.mockReturnValue("/tmp/telegram-agent")
+      mocks.getAgentRoot.mockReturnValue(isolatedRoot)
       for (const root of [sessionRoot, friendsRoot, indexRoot]) fs.rmSync(root, { recursive: true, force: true })
     }
   })
@@ -468,7 +478,7 @@ describe("Telegram sense coverage contracts", () => {
         fs.rmSync(root, { recursive: true, force: true })
       }
     }
-    mocks.getAgentRoot.mockReturnValue("/tmp/telegram-agent")
+    mocks.getAgentRoot.mockReturnValue(isolatedRoot)
   })
 
   it("migrates a Friend already linked to both identities and rejects colliding session artifacts", async () => {
