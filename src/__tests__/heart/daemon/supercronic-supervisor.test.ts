@@ -55,6 +55,19 @@ describe("SupercronicSupervisor", () => {
     expect(habits.list()).toEqual(["sanctuary-health"])
     expect(f.supervisor.verifyNamespace("habit:sanctuary", [job("sanctuary", "sanctuary-health")])).toBe(true)
     expect(f.supervisor.verificationOutput()).toBe(f.files.get("/scheduler/sanctuary.crontab"))
+    expect(f.supervisor.authenticatedSnapshot("habit:sanctuary")).toEqual({
+      schemaVersion: "supercronic-supervisor-snapshot-v1",
+      daemonPid: process.pid,
+      childCount: 1,
+      childPid: 42,
+      healthy: true,
+      binaryPath: "/usr/local/bin/supercronic",
+      args: ["-split-logs", "-inotify", "/scheduler/sanctuary.crontab"],
+      crontabPath: "/scheduler/sanctuary.crontab",
+      namespace: "habit:sanctuary",
+      manifest: [job("sanctuary", "sanctuary-health")],
+      renderedCrontab: f.files.get("/scheduler/sanctuary.crontab"),
+    })
 
     habits.removeAll()
     expect(f.files.get("/scheduler/sanctuary.crontab")).toContain("--await disk")
@@ -87,6 +100,7 @@ describe("SupercronicSupervisor", () => {
     await f.supervisor.stop()
     expect(f.child.kill).toHaveBeenCalledWith("SIGTERM")
     expect(f.files.has("/scheduler/sanctuary.pid")).toBe(false)
+    expect(() => f.supervisor.authenticatedSnapshot("habit:sanctuary")).toThrow(/healthy child/u)
   })
 
   it("uses the production filesystem, process, child, and timer adapters safely", async () => {
