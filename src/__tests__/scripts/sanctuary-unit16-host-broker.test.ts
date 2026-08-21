@@ -28,6 +28,9 @@ interface BrokerModule {
     healthRecover<T>(scenario: string, operation: () => T | Promise<T>): Promise<T>
     interactive<T>(operation: () => T | Promise<T>): Promise<T>
   }
+  runInteractiveDriver(input: Record<string, string>, dependencies?: {
+    run(executable: string, args: string[], options: Record<string, unknown>): { error?: Error; status: number | null; stdout?: string }
+  }): Record<string, unknown>
   createHealthProbeOperationCoordinator(): {
     start<T>(scenario: string, operation: () => T | Promise<T>): Promise<T>
     recover<T>(scenario: string, operation: () => T | Promise<T>): Promise<T>
@@ -74,6 +77,7 @@ interface HealthProbeRecord {
 async function broker(): Promise<BrokerModule> {
   return import(pathToFileURL(path.resolve("deploy/unraid/sanctuary-unit16-host-broker.mjs")).href) as Promise<{
     createOwnerMutationCoordinator(): ReturnType<BrokerModule["createOwnerMutationCoordinator"]>
+    runInteractiveDriver(input: Record<string, string>, dependencies?: { run(executable: string, args: string[], options: Record<string, unknown>): { error?: Error; status: number | null; stdout?: string } }): Record<string, unknown>
     createHealthProbeOperationCoordinator(): { start<T>(scenario: string, operation: () => T | Promise<T>): Promise<T>; recover<T>(scenario: string, operation: () => T | Promise<T>): Promise<T> }
     completeHealthProbeFromReceipt(request: Record<string, string>, snapshot: Record<string, unknown>, readReceipt: () => Record<string, unknown>): { state: "complete"; containerSnapshot: Record<string, unknown> }
     attestHealthProbeProcessAbsent(input: Record<string, string>, dependencies?: {
@@ -105,9 +109,9 @@ describe("Sanctuary Unit 16 host broker", () => {
     const calls: Record<string, string>[] = []
     const coordinates = { targetId: "sanctuary", label: "unit-16l-duplicate-callback", scenarioHandleDigest: "a".repeat(64) }
     const result = {
-      schemaVersion: "sanctuary-interactive-driver-receipt-v2", phase: "complete", ...coordinates,
+      schemaVersion: "sanctuary-interactive-driver-receipt-v2", phase: "complete", label: coordinates.label, scenarioHandleDigest: coordinates.scenarioHandleDigest,
       approvalIdDigest: "b".repeat(64), checkpointDigest: "c".repeat(64), suspendedSessionRevisionDigest: "d".repeat(64),
-      approvalEpochBefore: 0, callbackAttempts: 2, distinctQueryCount: 2, callbackDataDigest: "e".repeat(64),
+      approvalEpochBefore: 0, callbackAttempts: 2, distinctQueryCount: 2, callbackDataDigest: "e".repeat(64), barrierObserved: true,
       settledCount: 2, claimCount: 1, mutationCount: 1, staleReplayAttempts: 1, staleReplaySettled: true,
       staleReplayMutationCount: 0, promptTerminal: true, writeCredentialObserved: false,
     }
@@ -124,7 +128,7 @@ describe("Sanctuary Unit 16 host broker", () => {
     const calls: Record<string, string>[] = []
     const coordinates = { targetId: "sanctuary", label: "unit-16m-restart-continuation", scenarioHandleDigest: "a".repeat(64) }
     const result = {
-      schemaVersion: "sanctuary-interactive-driver-receipt-v2", phase: "complete", ...coordinates,
+      schemaVersion: "sanctuary-interactive-driver-receipt-v2", phase: "complete", label: coordinates.label, scenarioHandleDigest: coordinates.scenarioHandleDigest,
       approvalIdDigest: "b".repeat(64), checkpointDigest: "c".repeat(64), suspendedSessionRevisionDigest: "d".repeat(64),
       approvalEpochBefore: 0, approvalEpochAfterRestart: 0, continuationEpochAfter: 1,
       ownerImageDigest: "e".repeat(64), ownerContainerDigest: "f".repeat(64), restartCountBefore: 4, restartCountAfter: 5,
@@ -157,6 +161,46 @@ describe("Sanctuary Unit 16 host broker", () => {
     release()
     await Promise.all([restarting, starting])
     expect(events).toEqual(["restart-start", "restart-end", "health-start"])
+  })
+
+  it("runs Unit-16l once in the production runtime and rejects vacuous callback evidence", async () => {
+    const { runInteractiveDriver } = await broker()
+    const calls: Array<{ executable: string; args: string[]; options: Record<string, unknown> }> = []
+    const input = { label: "unit-16l-duplicate-callback", scenarioHandleDigest: "a".repeat(64) }
+    const receipt = {
+      schemaVersion: "sanctuary-interactive-driver-receipt-v2", phase: "complete", ...input,
+      approvalIdDigest: "b".repeat(64), checkpointDigest: "c".repeat(64), suspendedSessionRevisionDigest: "d".repeat(64), approvalEpochBefore: 0,
+      callbackAttempts: 2, distinctQueryCount: 2, callbackDataDigest: "e".repeat(64), barrierObserved: true,
+      settledCount: 2, claimCount: 1, mutationCount: 1, staleReplayAttempts: 1, staleReplaySettled: true,
+      staleReplayMutationCount: 0, promptTerminal: true, writeCredentialObserved: false,
+    }
+    const result = runInteractiveDriver(input, { run: (executable, args, options) => {
+      calls.push({ executable, args, options }); return { status: 0, stdout: JSON.stringify(receipt) }
+    } })
+    expect(result).toEqual(receipt)
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.executable).toBe("/usr/bin/docker")
+    expect(calls[0]?.args).toEqual(["exec", "-i", "ouro-butler", "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh"])
+    expect(JSON.parse(String(calls[0]?.options.input))).toEqual({ operation: "drive_duplicate_callbacks", ...input })
+    expect(String(calls[0]?.options.input)).not.toMatch(/approval-|query-|callback_data|credential/iu)
+    for (const mutation of [{ distinctQueryCount: 1 }, { barrierObserved: false }, { staleReplayAttempts: 0 }, { writeCredentialObserved: true }]) {
+      expect(() => runInteractiveDriver(input, { run: () => ({ status: 0, stdout: JSON.stringify({ ...receipt, ...mutation }) }) })).toThrow(/interactive driver receipt/u)
+    }
+  })
+
+  it("releases failed interactive ownership but preserves active health ownership until recovery", async () => {
+    const { createOwnerMutationCoordinator } = await broker()
+    const coordinator = createOwnerMutationCoordinator()
+    await expect(coordinator.interactive(() => { throw new Error("crash") })).rejects.toThrow("crash")
+    await expect(coordinator.interactive(() => "retry")).resolves.toBe("retry")
+    await expect(coordinator.healthStart("health-a", () => { throw new Error("start crash") })).rejects.toThrow("start crash")
+    await expect(coordinator.interactive(() => "after failed start")).resolves.toBe("after failed start")
+    await coordinator.healthStart("health-b", () => "started")
+    await expect(coordinator.interactive(() => "unsafe")).rejects.toThrow(/health probe is active/u)
+    await expect(coordinator.healthRecover("health-b", () => { throw new Error("recovery crash") })).rejects.toThrow("recovery crash")
+    await expect(coordinator.interactive(() => "still unsafe")).rejects.toThrow(/health probe is active/u)
+    await coordinator.healthRecover("health-b", () => "recovered")
+    await expect(coordinator.interactive(() => "safe")).resolves.toBe("safe")
   })
   it("stages a bounded host reboot attestation without executing reboot", async () => {
     const { dispatch } = await broker()
