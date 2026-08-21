@@ -314,40 +314,176 @@ Effective-spec audit helper:
       PREPARE_WRONG_FILE_MODE=$(find "$PREPARE_RUNTIME_ROOT" "$PREPARE_AGENT_ROOT" -type f ! -perm 0600 -print -quit) || return $?
       test -z "$PREPARE_WRONG_FILE_MODE" || return $?
     }
-    install_from_legacy_staging() {
-      ADOPTION_CONTAINER_NAMES=$(docker container ls -a --format '{{.Names}}') || return $?
-      ADOPTION_NAME_COUNTS=$(printf '%s\n' "$ADOPTION_CONTAINER_NAMES" | awk '
-        $0 == "ouro-butler" { production++ }
+    validate_sanctuary_legacy_staging() {
+      EXPECTED_LEGACY_CONTAINER_ID=${1-}
+      EXPECTED_LEGACY_IMAGE_ID=${2-}
+      LEGACY_CONTAINER_NAMES=$(docker container ls -a --format '{{.Names}}') || return $?
+      LEGACY_NAME_COUNTS=$(printf '%s\n' "$LEGACY_CONTAINER_NAMES" | awk '
+        /butler/ { butlers++ }
         $0 == "ouro-butler-staging" { staging++ }
-        $0 == "ouro-butler-rollback" { rollback++ }
-        $0 == "ouro-butler-legacy-evidence" { legacy++ }
-        END {
-          printf "%d %d %d %d", production + 0, staging + 0, rollback + 0, legacy + 0
-        }
+        END { printf "%d %d", butlers + 0, staging + 0 }
       ') || return $?
-      test "$ADOPTION_NAME_COUNTS" = "0 1 0 0" || return $?
+      test "$LEGACY_NAME_COUNTS" = "1 1" || return $?
       assert_only_running_butler ouro-butler-staging || return $?
+      LEGACY_STAGING_RUNNING=$(docker inspect --format '{{.State.Running}}' ouro-butler-staging) || return $?
+      test "$LEGACY_STAGING_RUNNING" = true || return $?
+      LEGACY_STAGING_CONTAINER_ID=$(docker inspect --format '{{.Id}}' ouro-butler-staging) || return $?
+      case "$LEGACY_STAGING_CONTAINER_ID" in *[!0-9a-f]*|'') return 1 ;; esac
+      test "${#LEGACY_STAGING_CONTAINER_ID}" -eq 64 || return 1
       LEGACY_STAGING_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler-staging) || return $?
       validate_exact_image_id "$LEGACY_STAGING_IMAGE_ID" || return $?
+      if test -n "$EXPECTED_LEGACY_CONTAINER_ID"; then
+        test "$LEGACY_STAGING_CONTAINER_ID" = "$EXPECTED_LEGACY_CONTAINER_ID" || return 1
+        test "$LEGACY_STAGING_IMAGE_ID" = "$EXPECTED_LEGACY_IMAGE_ID" || return 1
+      fi
+    }
+    prepare_sanctuary_legacy_adoption() {
+      IMAGE_ID=$1
       validate_exact_image_id "$IMAGE_ID" || return $?
+      validate_sanctuary_legacy_staging || return $?
+      PREPARED_LEGACY_CONTAINER_ID=$LEGACY_STAGING_CONTAINER_ID
+      PREPARED_LEGACY_IMAGE_ID=$LEGACY_STAGING_IMAGE_ID
       prepare_canonical_sanctuary_roots "$IMAGE_ID" || return $?
-      bootstrap_sanctuary_vault "$IMAGE_ID" /mnt/user/appdata/ouro-butler/runtime/container-credentials.json || return $?
-      LEGACY_EVIDENCE_ROOT=/mnt/user/appdata/ouro-butler/legacy-evidence
-      LEGACY_EVIDENCE_DIR="$LEGACY_EVIDENCE_ROOT/${LEGACY_STAGING_IMAGE_ID#sha256:}"
-      install -d -m 0700 -o 0 -g 0 "$LEGACY_EVIDENCE_ROOT" || return $?
-      mkdir -m 0700 "$LEGACY_EVIDENCE_DIR" || return $?
-      docker container inspect ouro-butler-staging >"$LEGACY_EVIDENCE_DIR/container.json" || return $?
-      docker image inspect "$LEGACY_STAGING_IMAGE_ID" >"$LEGACY_EVIDENCE_DIR/image.json" || return $?
-      chmod 0600 "$LEGACY_EVIDENCE_DIR/container.json" "$LEGACY_EVIDENCE_DIR/image.json" || return $?
-      sync -f "$LEGACY_EVIDENCE_DIR/container.json" || return $?
-      sync -f "$LEGACY_EVIDENCE_DIR/image.json" || return $?
+      bootstrap_sanctuary_vault "$IMAGE_ID" \
+        /mnt/user/appdata/ouro-butler/runtime/container-credentials.json \
+        sanctuary-unraid sanctuary || return $?
+      validate_sanctuary_legacy_staging "$PREPARED_LEGACY_CONTAINER_ID" "$PREPARED_LEGACY_IMAGE_ID" || return $?
+      LEGACY_STAGING_CONTAINER_ID=$PREPARED_LEGACY_CONTAINER_ID
+      LEGACY_STAGING_IMAGE_ID=$PREPARED_LEGACY_IMAGE_ID
+    }
+    capture_sanctuary_legacy_evidence() {
+      CAPTURED_LEGACY_CONTAINER_ID=$1
+      CAPTURED_LEGACY_IMAGE_ID=$2
+      LEGACY_EVIDENCE_ROOT=$3
+      case "$CAPTURED_LEGACY_CONTAINER_ID" in *[!0-9a-f]*|'') return 1 ;; esac
+      test "${#CAPTURED_LEGACY_CONTAINER_ID}" -eq 64 || return 1
+      validate_exact_image_id "$CAPTURED_LEGACY_IMAGE_ID" || return $?
+      case "$LEGACY_EVIDENCE_ROOT" in /*) ;; *) return 1 ;; esac
+      if test -e "$LEGACY_EVIDENCE_ROOT" || test -L "$LEGACY_EVIDENCE_ROOT"; then
+        /usr/local/bin/node -e '
+          const fs = require("node:fs");
+          const root = fs.lstatSync(process.argv[1]);
+          if (!root.isDirectory() || root.isSymbolicLink() || (root.mode & 0o777) !== 0o700) process.exit(1);
+          if (root.uid !== process.geteuid() || root.gid !== process.getegid()) process.exit(1);
+        ' "$LEGACY_EVIDENCE_ROOT" || return $?
+      else
+        install -d -m 0700 -o 0 -g 0 "$LEGACY_EVIDENCE_ROOT" || return $?
+      fi
+      LEGACY_EVIDENCE_DIR="$LEGACY_EVIDENCE_ROOT/${CAPTURED_LEGACY_IMAGE_ID#sha256:}"
+      if test -e "$LEGACY_EVIDENCE_DIR" || test -L "$LEGACY_EVIDENCE_DIR"; then
+        test -d "$LEGACY_EVIDENCE_DIR" && test ! -L "$LEGACY_EVIDENCE_DIR" || return 1
+      else
+        mkdir -m 0700 "$LEGACY_EVIDENCE_DIR" || return $?
+      fi
+      /usr/local/bin/node -e '
+        const fs = require("node:fs");
+        const [rootPath, directoryPath] = process.argv.slice(1);
+        const root = fs.lstatSync(rootPath);
+        const directory = fs.lstatSync(directoryPath);
+        const privateDirectory = value => value.isDirectory() && !value.isSymbolicLink() && (value.mode & 0o777) === 0o700;
+        if (!privateDirectory(root) || !privateDirectory(directory)) process.exit(1);
+        if (root.uid !== process.geteuid() || root.gid !== process.getegid()) process.exit(1);
+        if (root.uid !== directory.uid || root.gid !== directory.gid) process.exit(1);
+        const allowed = new Set(["container.json", "image.json"]);
+        if (fs.readdirSync(directoryPath).some(name => !allowed.has(name))) process.exit(1);
+      ' "$LEGACY_EVIDENCE_ROOT" "$LEGACY_EVIDENCE_DIR" || return $?
+      validate_legacy_evidence_entry() {
+        VALIDATED_EVIDENCE_KIND=$1
+        VALIDATED_EVIDENCE_PATH=$2
+        /usr/local/bin/node -e '
+          const fs = require("node:fs");
+          const [kind, filePath, rootPath, containerId, imageId] = process.argv.slice(1);
+          const root = fs.lstatSync(rootPath);
+          const entry = fs.lstatSync(filePath);
+          if (!entry.isFile() || entry.isSymbolicLink() || entry.uid !== root.uid || entry.gid !== root.gid) process.exit(1);
+          const mode = entry.mode & 0o777;
+          if (mode !== 0o600 && mode !== 0o644) process.exit(1);
+          const value = JSON.parse(fs.readFileSync(filePath, "utf8"));
+          if (!Array.isArray(value) || value.length !== 1 || !value[0] || typeof value[0] !== "object") process.exit(1);
+          if (kind === "container" && (value[0].Id !== containerId || value[0].Image !== imageId)) process.exit(1);
+          if (kind === "image" && value[0].Id !== imageId) process.exit(1);
+        ' "$VALIDATED_EVIDENCE_KIND" "$VALIDATED_EVIDENCE_PATH" "$LEGACY_EVIDENCE_ROOT" "$CAPTURED_LEGACY_CONTAINER_ID" "$CAPTURED_LEGACY_IMAGE_ID"
+      }
+      capture_missing_legacy_evidence_entry() {
+        MISSING_EVIDENCE_KIND=$1
+        MISSING_EVIDENCE_PATH=$2
+        LEGACY_EVIDENCE_TMP=$(mktemp "$LEGACY_EVIDENCE_ROOT/.capture.XXXXXXXX") || return $?
+        if test "$MISSING_EVIDENCE_KIND" = container; then
+          docker container inspect "$CAPTURED_LEGACY_CONTAINER_ID" >"$LEGACY_EVIDENCE_TMP" || {
+            CAPTURE_STATUS=$?
+            rm -f "$LEGACY_EVIDENCE_TMP"
+            return "$CAPTURE_STATUS"
+          }
+        else
+          docker image inspect "$CAPTURED_LEGACY_IMAGE_ID" >"$LEGACY_EVIDENCE_TMP" || {
+            CAPTURE_STATUS=$?
+            rm -f "$LEGACY_EVIDENCE_TMP"
+            return "$CAPTURE_STATUS"
+          }
+        fi
+        chmod 0600 "$LEGACY_EVIDENCE_TMP" || {
+          CAPTURE_STATUS=$?
+          rm -f "$LEGACY_EVIDENCE_TMP"
+          return "$CAPTURE_STATUS"
+        }
+        validate_legacy_evidence_entry "$MISSING_EVIDENCE_KIND" "$LEGACY_EVIDENCE_TMP" || {
+          CAPTURE_STATUS=$?
+          rm -f "$LEGACY_EVIDENCE_TMP"
+          return "$CAPTURE_STATUS"
+        }
+        sync -f "$LEGACY_EVIDENCE_TMP" || {
+          CAPTURE_STATUS=$?
+          rm -f "$LEGACY_EVIDENCE_TMP"
+          return "$CAPTURE_STATUS"
+        }
+        if ln "$LEGACY_EVIDENCE_TMP" "$MISSING_EVIDENCE_PATH"; then
+          rm -f "$LEGACY_EVIDENCE_TMP" || return $?
+        else
+          rm -f "$LEGACY_EVIDENCE_TMP" || return $?
+          validate_legacy_evidence_entry "$MISSING_EVIDENCE_KIND" "$MISSING_EVIDENCE_PATH" || return $?
+        fi
+      }
+      for LEGACY_EVIDENCE_KIND in container image; do
+        LEGACY_EVIDENCE_PATH="$LEGACY_EVIDENCE_DIR/$LEGACY_EVIDENCE_KIND.json"
+        if test -e "$LEGACY_EVIDENCE_PATH" || test -L "$LEGACY_EVIDENCE_PATH"; then
+          validate_legacy_evidence_entry "$LEGACY_EVIDENCE_KIND" "$LEGACY_EVIDENCE_PATH" || return $?
+        else
+          capture_missing_legacy_evidence_entry "$LEGACY_EVIDENCE_KIND" "$LEGACY_EVIDENCE_PATH" || return $?
+        fi
+        chmod 0600 "$LEGACY_EVIDENCE_PATH" || return $?
+        validate_legacy_evidence_entry "$LEGACY_EVIDENCE_KIND" "$LEGACY_EVIDENCE_PATH" || return $?
+      done
       sync -f "$LEGACY_EVIDENCE_DIR" || return $?
+    }
+    install_from_legacy_staging() {
+      prepare_sanctuary_legacy_adoption "$IMAGE_ID" || return $?
+      ADOPTION_PREPARED_CONTAINER_ID=$LEGACY_STAGING_CONTAINER_ID
+      ADOPTION_PREPARED_IMAGE_ID=$LEGACY_STAGING_IMAGE_ID
+      verify_sanctuary_provider_readiness "$IMAGE_ID" || return $?
+      ADOPTION_CONTAINER_NAMES=$(docker container ls -a --format '{{.Names}}') || return $?
+      ADOPTION_NAME_COUNTS=$(printf '%s\n' "$ADOPTION_CONTAINER_NAMES" | awk '
+        /butler/ { butlers++ }
+        $0 == "ouro-butler-staging" { staging++ }
+        END { printf "%d %d", butlers + 0, staging + 0 }
+      ') || return $?
+      test "$ADOPTION_NAME_COUNTS" = "1 1" || return $?
+      assert_only_running_butler ouro-butler-staging || return $?
+      test "$(docker inspect --format '{{.State.Running}}' ouro-butler-staging)" = true || return $?
+      test "$(docker inspect --format '{{.Id}}' ouro-butler-staging)" = "$ADOPTION_PREPARED_CONTAINER_ID" || return $?
+      test "$(docker inspect --format '{{.Image}}' ouro-butler-staging)" = "$ADOPTION_PREPARED_IMAGE_ID" || return $?
+      LEGACY_STAGING_CONTAINER_ID=$ADOPTION_PREPARED_CONTAINER_ID
+      LEGACY_STAGING_IMAGE_ID=$ADOPTION_PREPARED_IMAGE_ID
+      LEGACY_EVIDENCE_ROOT=/mnt/user/appdata/ouro-butler/legacy-evidence
+      capture_sanctuary_legacy_evidence "$LEGACY_STAGING_CONTAINER_ID" "$LEGACY_STAGING_IMAGE_ID" "$LEGACY_EVIDENCE_ROOT" || return $?
+      validate_sanctuary_legacy_staging "$ADOPTION_PREPARED_CONTAINER_ID" "$ADOPTION_PREPARED_IMAGE_ID" || return $?
+      LEGACY_STAGING_CONTAINER_ID=$ADOPTION_PREPARED_CONTAINER_ID
+      LEGACY_STAGING_IMAGE_ID=$ADOPTION_PREPARED_IMAGE_ID
       disable_butler_autostart || return $?
-      if docker stop ouro-butler-staging \
-        && CURRENT_LEGACY_STAGING_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler-staging) \
+      if docker stop "$LEGACY_STAGING_CONTAINER_ID" \
+        && CURRENT_LEGACY_STAGING_IMAGE_ID=$(docker inspect --format '{{.Image}}' "$LEGACY_STAGING_CONTAINER_ID") \
         && test "$CURRENT_LEGACY_STAGING_IMAGE_ID" = "$LEGACY_STAGING_IMAGE_ID" \
-        && test "$(docker inspect --format '{{.State.Running}}' ouro-butler-staging)" = false \
-        && docker rename ouro-butler-staging ouro-butler-legacy-evidence \
+        && test "$(docker inspect --format '{{.State.Running}}' "$LEGACY_STAGING_CONTAINER_ID")" = false \
+        && docker rename "$LEGACY_STAGING_CONTAINER_ID" ouro-butler-legacy-evidence \
         && CURRENT_LEGACY_EVIDENCE_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler-legacy-evidence) \
         && test "$CURRENT_LEGACY_EVIDENCE_IMAGE_ID" = "$LEGACY_STAGING_IMAGE_ID" \
         && test "$(docker inspect --format '{{.State.Running}}' ouro-butler-legacy-evidence)" = false \
@@ -395,6 +531,9 @@ $ADOPTION_RECOVERY_NAMES
         *"
 ouro-butler-staging
 "*)
+          CURRENT_LEGACY_STAGING_CONTAINER_ID=$(docker inspect --format '{{.Id}}' ouro-butler-staging) || return $?
+          case "$CURRENT_LEGACY_STAGING_CONTAINER_ID" in *[!0-9a-f]*|'') return 1 ;; esac
+          test "${#CURRENT_LEGACY_STAGING_CONTAINER_ID}" -eq 64 || return 1
           CURRENT_LEGACY_STAGING_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler-staging) || return $?
           case "$CURRENT_LEGACY_STAGING_IMAGE_ID" in
             "$IMAGE_ID")
@@ -402,9 +541,10 @@ ouro-butler-staging
               docker rm --force ouro-butler-staging || return $?
               ;;
             "$LEGACY_STAGING_IMAGE_ID")
-              docker stop ouro-butler-staging >/dev/null 2>&1 || return $?
-              test "$(docker inspect --format '{{.State.Running}}' ouro-butler-staging)" = false || return $?
-              docker rename ouro-butler-staging ouro-butler-legacy-evidence || return $?
+              test "$CURRENT_LEGACY_STAGING_CONTAINER_ID" = "$LEGACY_STAGING_CONTAINER_ID" || return 1
+              docker stop "$LEGACY_STAGING_CONTAINER_ID" >/dev/null 2>&1 || return $?
+              test "$(docker inspect --format '{{.State.Running}}' "$LEGACY_STAGING_CONTAINER_ID")" = false || return $?
+              docker rename "$LEGACY_STAGING_CONTAINER_ID" ouro-butler-legacy-evidence || return $?
               ;;
             *) return 1 ;;
           esac
@@ -453,9 +593,18 @@ ouro-butler-staging
     bootstrap_sanctuary_vault() {
       BOOTSTRAP_IMAGE_ID=$1
       BOOTSTRAP_LEGACY_CREDENTIAL_SOURCE=${2-}
+      BOOTSTRAP_SOURCE_MACHINE_ID=${3-}
+      BOOTSTRAP_TARGET_MACHINE_ID=${4-}
       validate_exact_image_id "$BOOTSTRAP_IMAGE_ID" || return $?
       case "$BOOTSTRAP_LEGACY_CREDENTIAL_SOURCE" in
-        ""|/mnt/user/appdata/ouro-butler/runtime/container-credentials.json) ;;
+        "")
+          test -z "$BOOTSTRAP_SOURCE_MACHINE_ID" || return 1
+          test -z "$BOOTSTRAP_TARGET_MACHINE_ID" || return 1
+          ;;
+        /mnt/user/appdata/ouro-butler/runtime/container-credentials.json)
+          test "$BOOTSTRAP_SOURCE_MACHINE_ID" = sanctuary-unraid || return 1
+          test "$BOOTSTRAP_TARGET_MACHINE_ID" = sanctuary || return 1
+          ;;
         *) return 1 ;;
       esac
       BOOTSTRAP_RUNTIME_ROOT=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli
@@ -560,11 +709,16 @@ local unlock: available
           --mount "type=bind,src=$BOOTSTRAP_AGENT_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
           --entrypoint node "$BOOTSTRAP_IMAGE_ID" -e '
             const { loadContainerCredentialBootstrap } = require("/opt/ouro/dist/heart/daemon/container-credential-bootstrap.js")
-            loadContainerCredentialBootstrap(["sanctuary"]).then(
+            loadContainerCredentialBootstrap(["sanctuary"], {
+              machineIdMigration: {
+                sourceMachineId: process.argv[1],
+                targetMachineId: process.argv[2],
+              },
+            }).then(
               () => process.exit(0),
               () => { process.stderr.write("credential bootstrap failed\n"); process.exit(1) },
             )
-          ' || return $?
+          ' "$BOOTSTRAP_SOURCE_MACHINE_ID" "$BOOTSTRAP_TARGET_MACHINE_ID" || return $?
         ! docker container inspect ouro-butler-credential-bootstrap >/dev/null 2>&1 || return 1
         test ! -e "$BOOTSTRAP_CREDENTIAL_SOURCE" || return $?
         test ! -e "$BOOTSTRAP_CREDENTIAL_CLAIM" || return $?
@@ -575,35 +729,107 @@ local unlock: available
         test ! -L "$BOOTSTRAP_LEGACY_CREDENTIAL_SOURCE" || return $?
         test "$(stat -c '%u:%g %a' "$BOOTSTRAP_LEGACY_CREDENTIAL_SOURCE")" = "$BOOTSTRAP_LEGACY_METADATA" || return $?
       fi
+      validate_sanctuary_roots "$BOOTSTRAP_RUNTIME_ROOT" "$BOOTSTRAP_AGENT_ROOT" || return $?
+    }
+    authenticate_sanctuary_provider() {
+      AUTH_IMAGE_ID=$1
+      AUTH_PROVIDER=${2-}
+      validate_exact_image_id "$AUTH_IMAGE_ID" || return $?
+      case "$AUTH_PROVIDER" in
+        openai-compatible) AUTH_CONTAINER=ouro-butler-provider-auth-glm ;;
+        openai-compatible-gemini) AUTH_CONTAINER=ouro-butler-provider-auth-gemini ;;
+        *) return 1 ;;
+      esac
+      AUTH_RUNTIME_ROOT=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli
+      AUTH_AGENT_ROOT=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro
+      ! docker container inspect "$AUTH_CONTAINER" >/dev/null 2>&1 || return 1
+      docker run --rm -it --pull=never --network host --name "$AUTH_CONTAINER" --user 10001:10001 \
+        --mount "type=bind,src=$AUTH_RUNTIME_ROOT,dst=/home/ouro/.ouro-cli" \
+        --mount "type=bind,src=$AUTH_AGENT_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
+        --entrypoint node "$AUTH_IMAGE_ID" /opt/ouro/dist/heart/daemon/ouro-entry.js \
+        auth --agent sanctuary --provider "$AUTH_PROVIDER" || return $?
+      ! docker container inspect "$AUTH_CONTAINER" >/dev/null 2>&1 || return 1
+    }
+    verify_sanctuary_provider_readiness() {
+      READINESS_IMAGE_ID=$1
+      validate_exact_image_id "$READINESS_IMAGE_ID" || return $?
+      READINESS_RUNTIME_ROOT=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli
+      READINESS_AGENT_ROOT=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro
+      ! docker container inspect ouro-butler-provider-readiness >/dev/null 2>&1 || return 1
       docker run --rm --pull=never --network host --name ouro-butler-provider-readiness --user 10001:10001 \
-        --mount "type=bind,src=$BOOTSTRAP_RUNTIME_ROOT,dst=/home/ouro/.ouro-cli" \
-        --mount "type=bind,src=$BOOTSTRAP_AGENT_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
-        --entrypoint /bin/sh "$BOOTSTRAP_IMAGE_ID" -ceu '
+        --mount "type=bind,src=$READINESS_RUNTIME_ROOT,dst=/home/ouro/.ouro-cli" \
+        --mount "type=bind,src=$READINESS_AGENT_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
+        --entrypoint /bin/sh "$READINESS_IMAGE_ID" -ceu '
           umask 077
-          READINESS_STARTED_AT=$(node -e "process.stdout.write(new Date().toISOString())")
           node /opt/ouro/dist/heart/daemon/ouro-entry.js check --agent sanctuary --lane outward
           node /opt/ouro/dist/heart/daemon/ouro-entry.js check --agent sanctuary --lane inner
-          node -e "
-            const fs = require(\"node:fs\");
-            const agentPath = process.argv[2];
-            const readinessPath = process.argv[3];
-            const agent = JSON.parse(fs.readFileSync(agentPath, \"utf8\"));
-            const readiness = JSON.parse(fs.readFileSync(readinessPath, \"utf8\"));
-            if (readiness.schemaVersion !== 1 || !readiness.lanes || typeof readiness.lanes !== \"object\") process.exit(1);
-            for (const [lane, facing] of [[\"outward\", \"humanFacing\"], [\"inner\", \"agentFacing\"]]) {
-              const entry = readiness.lanes[lane];
-              const binding = agent[facing];
-              if (!entry || !binding || entry.agentName !== \"sanctuary\" || entry.lane !== lane) process.exit(1);
-              if (entry.status !== \"ready\" || entry.provider !== binding.provider || entry.model !== binding.model) process.exit(1);
-              if (!Number.isFinite(Date.parse(entry.checkedAt)) || Date.parse(entry.checkedAt) < Date.parse(process.argv[1])) process.exit(1);
-              if (typeof entry.credentialRevision !== \"string\" || entry.credentialRevision.length === 0) process.exit(1);
-            }
-          " "$READINESS_STARTED_AT" \
-            /home/ouro/AgentBundles/sanctuary.ouro/agent.json \
-            /home/ouro/AgentBundles/sanctuary.ouro/state/providers/readiness.json
+          node - <<'"'"'NODE'"'"'
+            (async () => {
+              try {
+                const fs = require("node:fs");
+                const root = "/home/ouro/AgentBundles/sanctuary.ouro";
+                const agent = JSON.parse(fs.readFileSync(`${root}/agent.json`, "utf8"));
+                const policy = JSON.parse(fs.readFileSync(`${root}/provider-readiness.json`, "utf8"));
+                const expectedPolicy = { version: 1, selectionPolicy: "explicit-same-lane-only" };
+                const expected = new Map([
+                  ["openai-compatible", { provider: "openai-compatible", model: "glm-5.2", vaultItem: "providers/openai-compatible", baseUrl: "https://api.z.ai/api/paas/v4/" }],
+                  ["openai-compatible-gemini", { provider: "openai-compatible-gemini", model: "gemini-3.6-flash", vaultItem: "providers/openai-compatible-gemini", baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai/" }],
+                ]);
+                const exactLane = value => value && value.provider === "openai-compatible" && value.model === "glm-5.2";
+                if (!exactLane(agent.humanFacing) || !exactLane(agent.agentFacing)
+                  || policy.version !== expectedPolicy.version || policy.selectionPolicy !== expectedPolicy.selectionPolicy
+                  || !Array.isArray(policy.providers) || policy.providers.length !== expected.size) throw new Error();
+                for (const entry of policy.providers) {
+                  const wanted = expected.get(entry.provider);
+                  if (!wanted || entry.model !== wanted.model || entry.vaultItem !== wanted.vaultItem || entry.baseUrl !== wanted.baseUrl) throw new Error();
+                  expected.delete(entry.provider);
+                }
+                if (expected.size !== 0) throw new Error();
+                const { refreshProviderCredentialPool } = require("/opt/ouro/dist/heart/provider-credentials.js");
+                const { pingProvider } = require("/opt/ouro/dist/heart/provider-ping.js");
+                const refreshed = await refreshProviderCredentialPool("sanctuary", {
+                  providers: ["openai-compatible", "openai-compatible-gemini"],
+                  skipCache: true,
+                });
+                if (!refreshed.ok) throw new Error();
+                const glm = refreshed.pool.providers["openai-compatible"];
+                const gemini = refreshed.pool.providers["openai-compatible-gemini"];
+                const exactRecord = (record, provider, baseUrl) => record && record.provider === provider
+                  && typeof record.revision === "string" && record.revision.length > 0
+                  && typeof record.credentials?.apiKey === "string" && record.credentials.apiKey.trim().length > 0
+                  && record.config?.baseUrl === baseUrl;
+                if (!exactRecord(glm, "openai-compatible", "https://api.z.ai/api/paas/v4/")
+                  || !exactRecord(gemini, "openai-compatible-gemini", "https://generativelanguage.googleapis.com/v1beta/openai/")
+                  || glm.credentials.apiKey === gemini.credentials.apiKey
+                  || new Set([glm.revision, gemini.revision]).size !== 2) throw new Error();
+                const probes = [
+                  { provider: "openai-compatible", model: "glm-5.2", credentialRevision: glm.revision, record: glm },
+                  { provider: "openai-compatible", model: "glm-5.2", credentialRevision: glm.revision, record: glm },
+                  { provider: "openai-compatible-gemini", model: "gemini-3.6-flash", credentialRevision: gemini.revision, record: gemini },
+                ];
+                const results = await Promise.all(probes.map(({ provider, model, record }) => pingProvider(
+                  provider,
+                  { ...record.credentials, ...record.config },
+                  { model, timeoutMs: 10000, attemptPolicy: { baseDelayMs: 0 } },
+                )));
+                for (let index = 0; index < results.length; index += 1) {
+                  const result = results[index];
+                  const probe = probes[index];
+                  if (!result.ok || !Array.isArray(result.attempts) || result.attempts.length < 1 || result.attempts.length > 3
+                    || !result.attempts.every(attempt => attempt.provider === probe.provider && attempt.model === probe.model
+                      && attempt.operation === "ping" && typeof attempt.ok === "boolean")
+                    || result.attempts.at(-1)?.ok !== true) throw new Error();
+                }
+                process.stdout.write("Sanctuary provider readiness verified.\n");
+              } catch {
+                process.stderr.write("Sanctuary provider readiness verification failed.\n");
+                process.exitCode = 1;
+              }
+            })();
+NODE
         ' || return $?
       ! docker container inspect ouro-butler-provider-readiness >/dev/null 2>&1 || return 1
-      validate_sanctuary_roots "$BOOTSTRAP_RUNTIME_ROOT" "$BOOTSTRAP_AGENT_ROOT" || return $?
+      validate_sanctuary_roots "$READINESS_RUNTIME_ROOT" "$READINESS_AGENT_ROOT" || return $?
     }
     run_sanctuary_docker() {
       /usr/bin/timeout -s KILL 20 /usr/bin/docker "$@"
@@ -806,9 +1032,20 @@ Update:
     docker image inspect "$IMAGE_ID" >/dev/null
   Initial install/adoption is a separate terminal path for the verified live
   legacy state: no production or rollback, exactly one running (possibly
-  unhealthy) ouro-butler-staging, and no legacy-evidence container. Run this and
-  stop; do not continue into the normal update below:
+  unhealthy) ouro-butler-staging, and no legacy-evidence container. After the
+  helper definitions above are loaded and IMAGE_ID is resolved, run this exact
+  sequence. The two authentication commands prompt through the runtime's hidden
+  terminal input; do not place credentials in arguments, shell variables, or
+  history.
+  Sanctuary legacy adoption commands:
+    prepare_sanctuary_legacy_adoption "$IMAGE_ID"
+    authenticate_sanctuary_provider "$IMAGE_ID" openai-compatible
+    authenticate_sanctuary_provider "$IMAGE_ID" openai-compatible-gemini
+    verify_sanctuary_provider_readiness "$IMAGE_ID"
     install_from_legacy_staging
+  These commands are one terminal path; after install succeeds, stop and do not
+  continue into the normal update below. The final install is noninteractive:
+  it reruns resumable preparation plus fresh readiness, but never authentication.
   That function never applies the canonical auditor to the known-noncanonical
   legacy container or restarts it. It verifies and pins the legacy image,
   provisions the absent canonical roots from the exact target image's packaged

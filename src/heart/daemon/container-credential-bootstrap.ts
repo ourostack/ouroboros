@@ -20,6 +20,10 @@ export interface ContainerCredentialBootstrapOptions {
   path?: string
   apply?: (message: unknown) => boolean
   persist?: (message: unknown) => Promise<boolean>
+  machineIdMigration?: {
+    sourceMachineId: string
+    targetMachineId: string
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -124,9 +128,33 @@ export async function loadContainerCredentialBootstrap(
   }
 
   const machineId = loadOrCreateMachineIdentity().machineId
-  for (const message of envelope.credentials) {
-    if (isRecord(message) && typeof message.machineId === "string" && message.machineId.trim() !== machineId) {
-      throw new Error("container credential bootstrap machineId does not match this machine")
+  const migration = options.machineIdMigration
+  let messages = envelope.credentials
+  if (migration) {
+    const { sourceMachineId, targetMachineId } = migration
+    if (
+      !sourceMachineId
+      || !targetMachineId
+      || sourceMachineId !== sourceMachineId.trim()
+      || targetMachineId !== targetMachineId.trim()
+      || sourceMachineId === targetMachineId
+    ) {
+      throw new Error("container credential bootstrap machineId migration is invalid")
+    }
+    if (machineId !== targetMachineId) {
+      throw new Error("container credential bootstrap machineId migration target does not match this machine")
+    }
+    for (const message of messages) {
+      if (!isRecord(message) || message.machineId !== sourceMachineId) {
+        throw new Error("container credential bootstrap machineId migration source does not match")
+      }
+    }
+    messages = messages.map((message) => ({ ...(message as Record<string, unknown>), machineId: targetMachineId }))
+  } else {
+    for (const message of messages) {
+      if (isRecord(message) && typeof message.machineId === "string" && message.machineId !== machineId) {
+        throw new Error("container credential bootstrap machineId does not match this machine")
+      }
     }
   }
 
@@ -134,7 +162,7 @@ export async function loadContainerCredentialBootstrap(
     machineId,
   }))
   try {
-    for (const message of envelope.credentials) {
+    for (const message of messages) {
       if (!await persist(message)) throw new Error("invalid bootstrap message")
     }
   } catch {
@@ -149,7 +177,7 @@ export async function loadContainerCredentialBootstrap(
   }
 
   if (options.apply) {
-    for (const message of envelope.credentials) {
+    for (const message of messages) {
       if (!options.apply(message)) throw new Error("container credential bootstrap message is invalid")
     }
   }

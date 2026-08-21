@@ -133,7 +133,7 @@ describe("Sanctuary pre-activation container auditor", () => {
 
   it.each([
     "ouro-butler:latest",
-    "ouro-butler:0.1.0-alpha.734",
+    "ouro-butler:0.1.0-alpha.735",
     "ouro-butler@sha256:" + "a".repeat(64),
     "sha256:" + "A".repeat(64),
     "sha256:" + "a".repeat(63),
