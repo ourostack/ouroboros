@@ -556,6 +556,10 @@ export function classifyTelegramPersistedApprovalState(
   const hasTerminalMac = pending.terminalMac !== undefined
   const hasReceipt = pending.settlementReceipt !== undefined
   const hasAuthority = hasAttempt || hasTerminalMac || hasReceipt
+  const hasTombstoneState = pending.terminalizedAt !== undefined
+    || pending.tombstoneExpiresAt !== undefined
+    || pending.tombstoneMac !== undefined
+    || pending.staleTap !== undefined
   const validTerminal = hasTerminal
     && typeof pending.terminal!.accepted === "boolean"
     && typeof pending.terminal!.terminalText === "string"
@@ -571,6 +575,12 @@ export function classifyTelegramPersistedApprovalState(
   if (pending.terminalKind !== undefined) {
     if (!exactDeliveryInterruption) throw new Error("Telegram persisted delivery-interruption terminal state is invalid")
     return "delivery_interruption"
+  }
+  if (hasAuthority && hasTombstoneState) {
+    throw new Error("Telegram persisted action authority cannot coexist with tombstone state")
+  }
+  if (hasAttempt && (pending.deliveryState !== "bound" || typeof pending.messageId !== "string" || pending.messageId.length === 0)) {
+    throw new Error("Telegram persisted decision attempt has invalid delivery routing")
   }
   if (hasReceipt && (!hasAttempt || !hasTerminal || !hasTerminalMac)) {
     throw new Error("Telegram persisted settlement receipt is structurally incomplete")
@@ -1074,8 +1084,9 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
   const reconcileExpired = async (): Promise<void> => {
     let firstFailure: unknown
     for (const pending of uniquePending()) {
-      if (pending.deliveryState !== "terminal_tombstone" && !pending.terminal && now() < pending.expiresAt) continue
       try {
+        const persistedState = classifyTelegramPersistedApprovalState(pending)
+        if (persistedState === "ordinary" && pending.deliveryState !== "terminal_tombstone" && now() < pending.expiresAt) continue
         await withApprovalExclusive(pending.approvalId, false, async () => {
           const current = uniquePending().find((candidate) => candidate.approvalId === pending.approvalId)
           if (!current) return
@@ -1270,6 +1281,7 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
       const userId = String(callback.from.id)
       const chatId = callback.message ? String(callback.message.chat.id) : ""
       const messageId = callback.message ? String(callback.message.message_id) : ""
+      if (pending) classifyTelegramPersistedApprovalState(pending)
       let invalidReason: string | null = null
       let expiryObservedAt: number | undefined
       let expiryObservation: NonNullable<TelegramPersistedPendingApproval["expiryObservation"]> | undefined

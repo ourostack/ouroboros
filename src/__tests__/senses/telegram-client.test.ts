@@ -854,7 +854,7 @@ describe("Telegram approval callback transport", () => {
     }
     const fixture = approvalFixture({ records: [record], onExpire })
 
-    await expect(fixture.transport.reconcileExpired()).rejects.toThrow("structurally incomplete")
+    await expect(fixture.transport.reconcileExpired()).rejects.toThrow(/incomplete|invalid|cannot coexist/u)
 
     expect(onExpire).not.toHaveBeenCalled()
     expect(fixture.records()).toEqual([record])
@@ -1146,6 +1146,61 @@ describe("Telegram approval callback transport", () => {
     expect(fixture.records()).toEqual([record])
     expect(fixture.calls).toEqual([])
     expect(fixture.onDecision).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { name: "terminal MAC only", deliveryState: "delivery_indeterminate" as const, messageId: null, extra: { terminalMac: "a".repeat(64) } },
+    { name: "delivery-interruption tag only", deliveryState: "delivery_indeterminate" as const, messageId: null, extra: { terminalKind: "delivery_interruption" as const } },
+    { name: "decision attempt on interrupted delivery", deliveryState: "delivery_indeterminate" as const, messageId: null, extra: {
+      decisionAttempt: { schemaVersion: "telegram-approval-decision-attempt-v1" as const, decision: "approve" as const, queryIdDigest: "a".repeat(64), attemptedAt: 900, evidenceMac: "b".repeat(64) },
+    } },
+    { name: "decision attempt while send is unresolved", deliveryState: "send_attempting" as const, messageId: null, extra: {
+      decisionAttempt: { schemaVersion: "telegram-approval-decision-attempt-v1" as const, decision: "approve" as const, queryIdDigest: "a".repeat(64), attemptedAt: 900, evidenceMac: "b".repeat(64) },
+    } },
+    { name: "decision attempt grafted onto tombstone", deliveryState: "terminal_tombstone" as const, messageId: "99", extra: {
+      terminalizedAt: 950, tombstoneExpiresAt: 1_550, tombstoneMac: "c".repeat(64),
+      decisionAttempt: { schemaVersion: "telegram-approval-decision-attempt-v1" as const, decision: "deny" as const, queryIdDigest: "a".repeat(64), attemptedAt: 900, evidenceMac: "b".repeat(64) },
+    } },
+    { name: "expired partial authority", deliveryState: "bound" as const, messageId: "99", extra: { terminalMac: "a".repeat(64) } },
+  ])("classifies malformed callback state before acknowledgement: $name", async ({ deliveryState, messageId, extra }) => {
+    const record = {
+      approvalId: "invalid-callback", messageId, deliveryState,
+      approveCallbackData: "a:invalid", denyCallbackData: "d:invalid",
+      expiresAt: 999_999, ...extra,
+    }
+    const fixture = approvalFixture({ records: [record] })
+
+    await expect(fixture.transport.handleUpdate(approvalCallback("a:invalid"))).rejects.toThrow()
+
+    expect(fixture.records()).toEqual([record])
+    expect(fixture.calls).toEqual([])
+    expect(fixture.onDecision).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { deliveryState: "bound" as const, messageId: "99", extra: { terminalMac: "a".repeat(64) } },
+    { deliveryState: "delivery_indeterminate" as const, messageId: null, extra: {
+      decisionAttempt: { schemaVersion: "telegram-approval-decision-attempt-v1" as const, decision: "approve" as const, queryIdDigest: "a".repeat(64), attemptedAt: 900, evidenceMac: "b".repeat(64) },
+    } },
+    { deliveryState: "send_attempting" as const, messageId: null, extra: {
+      decisionAttempt: { schemaVersion: "telegram-approval-decision-attempt-v1" as const, decision: "approve" as const, queryIdDigest: "a".repeat(64), attemptedAt: 900, evidenceMac: "b".repeat(64) },
+    } },
+    { deliveryState: "terminal_tombstone" as const, messageId: "99", extra: {
+      terminalizedAt: 950, tombstoneExpiresAt: 1_550, tombstoneMac: "c".repeat(64),
+      decisionAttempt: { schemaVersion: "telegram-approval-decision-attempt-v1" as const, decision: "deny" as const, queryIdDigest: "a".repeat(64), attemptedAt: 900, evidenceMac: "b".repeat(64) },
+    } },
+  ])("classifies malformed pre-expiry authority before reconcile early return", async ({ deliveryState, messageId, extra }) => {
+    const record = {
+      approvalId: "invalid-reconcile", messageId, deliveryState,
+      approveCallbackData: "a:invalid", denyCallbackData: "d:invalid", expiresAt: 2_000_000,
+      ...extra,
+    }
+    const fixture = approvalFixture({ records: [record] })
+
+    await expect(fixture.transport.reconcileExpired()).rejects.toThrow(/incomplete|invalid|cannot coexist/u)
+
+    expect(fixture.records()).toEqual([record])
+    expect(fixture.calls).toEqual([])
   })
 
   it("removes an orphaned transport row without invoking canonical expiry", async () => {
