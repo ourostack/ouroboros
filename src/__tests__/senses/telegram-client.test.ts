@@ -673,7 +673,7 @@ describe("Telegram durable authorized long poll", () => {
     expect(migrated.acknowledgeIndeterminateWarning(migratedWarning)).toBe(true)
     expect(migrated.quarantineStranded()).toEqual([])
     expect(JSON.parse(readFileSync(inboxPath, "utf8"))).toMatchObject({
-      version: 3,
+      version: 4,
       indeterminate: [expect.objectContaining({ quarantinedAt: 2_000, warningAcknowledged: true })],
     })
 
@@ -1042,6 +1042,9 @@ describe("Telegram durable authorized long poll", () => {
     expect(inbox.claim(zero)).toBe(false)
     inbox.complete(zero)
     inbox.complete(zero)
+    expect(inbox.capture(zero)).toBe(false)
+    inbox.commit(zero)
+    inbox.commit(zero)
     expect(inbox.capture(zero)).toBe(true)
     expect(inbox.load()).toHaveLength(2)
 
