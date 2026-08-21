@@ -57,6 +57,7 @@ function fixture(input: {
   runTurn?: any
   api?: TelegramBotApi
   runWithToolReceiptCollection?: any
+  afterAcceptanceLedgerPreReadStat?: (filePath: string) => void
 } = {}) {
   let onMessage: ((message: TelegramInboundMessage) => Promise<void>) | undefined
   let onUpdate: ((update: any) => Promise<boolean>) | undefined
@@ -104,6 +105,7 @@ function fixture(input: {
     acceptanceMarker: input.acceptanceMarker,
     acceptanceReceiptRoot: input.acceptanceReceiptRoot,
     _runWithToolReceiptCollection: input.runWithToolReceiptCollection,
+    _afterAcceptanceLedgerPreReadStat: input.afterAcceptanceLedgerPreReadStat,
   })
   return { app, api, poll, runTurn, approvalTransport, getOnMessage: () => onMessage!, getOnUpdate: () => onUpdate! }
 }
@@ -231,9 +233,87 @@ describe("Telegram sense", () => {
     const oversizedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-oversized-ledger-"))
     fs.mkdirSync(path.dirname(receiptPath(oversizedRoot)), { recursive: true })
     fs.writeFileSync(receiptPath(oversizedRoot), "x".repeat(4 * 1024 * 1024 + 1), "utf8")
-    const oversized = fixture({ acceptanceMarker: () => ({ scenarioHandleDigest: HEX_DIGEST }), acceptanceReceiptRoot: oversizedRoot })
+    const afterPreReadStat = vi.fn()
+    const oversized = fixture({ acceptanceMarker: () => ({ scenarioHandleDigest: HEX_DIGEST }), acceptanceReceiptRoot: oversizedRoot, afterAcceptanceLedgerPreReadStat: afterPreReadStat })
     await oversized.getOnMessage()({ updateId: 24, messageId: "25", userId: "42", chatId: "42", text: "status" })
     expect(fs.statSync(receiptPath(oversizedRoot)).size).toBe(4 * 1024 * 1024 + 1)
+    expect(afterPreReadStat).not.toHaveBeenCalled()
+  })
+
+  it.each(["symbolic link", "directory"])("refuses a non-regular existing ledger: %s", async (kind) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-nonregular-ledger-"))
+    fs.mkdirSync(path.dirname(receiptPath(root)), { recursive: true })
+    const target = path.join(root, "target.ndjson")
+    const original = `${JSON.stringify(validTurnReceipt())}\n`
+    if (kind === "symbolic link") {
+      fs.writeFileSync(target, original, "utf8")
+      fs.symlinkSync(target, receiptPath(root))
+    } else {
+      fs.mkdirSync(receiptPath(root))
+    }
+    const f = fixture({ acceptanceMarker: () => ({ scenarioHandleDigest: HEX_DIGEST }), acceptanceReceiptRoot: root })
+
+    await f.getOnMessage()({ updateId: 25, messageId: "26", userId: "42", chatId: "42", text: "status" })
+
+    if (kind === "symbolic link") {
+      expect(fs.lstatSync(receiptPath(root)).isSymbolicLink()).toBe(true)
+      expect(fs.readFileSync(target, "utf8")).toBe(original)
+    } else {
+      expect(fs.statSync(receiptPath(root)).isDirectory()).toBe(true)
+    }
+  })
+
+  it("refuses to append when a regular ledger changes during its bounded read", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-changing-ledger-"))
+    const original = JSON.stringify(validTurnReceipt({ scenarioHandleDigest: "b".repeat(64) }))
+    const replacement = JSON.stringify(validTurnReceipt({ scenarioHandleDigest: "c".repeat(64) }))
+    expect(replacement).toHaveLength(original.length)
+    writeLedger(root, [original])
+    const f = fixture({
+      acceptanceMarker: () => ({ scenarioHandleDigest: HEX_DIGEST }),
+      acceptanceReceiptRoot: root,
+      afterAcceptanceLedgerPreReadStat: (filePath) => fs.writeFileSync(filePath, `${replacement}\n`, "utf8"),
+    })
+
+    await f.getOnMessage()({ updateId: 27, messageId: "28", userId: "42", chatId: "42", text: "status" })
+
+    expect(fs.readFileSync(receiptPath(root), "utf8")).toBe(`${replacement}\n`)
+  })
+
+  it("refuses to append when a regular ledger is truncated during its bounded read", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-truncated-ledger-"))
+    writeLedger(root, [JSON.stringify(validTurnReceipt())])
+    const f = fixture({
+      acceptanceMarker: () => ({ scenarioHandleDigest: HEX_DIGEST }),
+      acceptanceReceiptRoot: root,
+      afterAcceptanceLedgerPreReadStat: (filePath) => fs.truncateSync(filePath, 0),
+    })
+
+    await f.getOnMessage()({ updateId: 28, messageId: "29", userId: "42", chatId: "42", text: "status" })
+
+    expect(fs.readFileSync(receiptPath(root), "utf8")).toBe("")
+  })
+
+  it("rejects a newly generated schema-valid receipt above the row-byte bound", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-oversized-incoming-receipt-"))
+    const text = "x".repeat(120_000)
+    expect(splitTelegramText(text)).toHaveLength(100)
+    let messageId = 100
+    const api: TelegramBotApi = { request: vi.fn(async () => ({ message_id: ++messageId })), stop: vi.fn() }
+    const runTurn = vi.fn(async (options: any) => {
+      await options.deliverySink.onDelivery({ kind: "settle", text })
+      return { response: text, ponderDeferred: false, deliveries: [{ kind: "settle", text }], deliveryFailures: [], providerInvocationCount: 1, toolInvocationCount: 100 }
+    })
+    const runWithToolReceiptCollection = async (operation: () => Promise<unknown>, observer: { toolResultDigests: string[] }) => {
+      observer.toolResultDigests.push(...Array(100).fill(HEX_DIGEST))
+      return { result: await operation(), toolResultDigests: [...observer.toolResultDigests] }
+    }
+    const f = fixture({ api, runTurn, runWithToolReceiptCollection, acceptanceMarker: () => ({ scenarioHandleDigest: HEX_DIGEST }), acceptanceReceiptRoot: root })
+
+    await f.getOnMessage()({ updateId: 30, messageId: "31", userId: "42", chatId: "42", text: "large" })
+
+    expect(api.request).toHaveBeenCalledTimes(100)
+    expect(fs.existsSync(receiptPath(root))).toBe(false)
   })
 
   it("retains exactly the newest 500 valid receipts", async () => {

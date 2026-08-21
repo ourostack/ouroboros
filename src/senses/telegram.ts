@@ -10,6 +10,7 @@ import {
   lstatSync,
   mkdirSync,
   openSync,
+  readSync,
   readFileSync,
   readdirSync,
   renameSync,
@@ -69,6 +70,53 @@ const TELEGRAM_TURN_LEDGER_MAX_ROWS = 500
 const TELEGRAM_TURN_LEDGER_MAX_ROW_BYTES = 16 * 1024
 const telegramTurnLedgerTails = new Map<string, Promise<void>>()
 
+function sameTelegramLedgerMetadata(left: import("node:fs").BigIntStats, right: import("node:fs").BigIntStats): boolean {
+  return left.dev === right.dev
+    && left.ino === right.ino
+    && left.mode === right.mode
+    && left.nlink === right.nlink
+    && left.uid === right.uid
+    && left.gid === right.gid
+    && left.size === right.size
+    && left.mtimeNs === right.mtimeNs
+    && left.ctimeNs === right.ctimeNs
+}
+
+function readStableBoundedTelegramLedger(filePath: string, afterPreReadStat?: (filePath: string) => void): string | null {
+  let handle: number
+  try {
+    handle = openSync(filePath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null
+    throw error
+  }
+  try {
+    const before = fstatSync(handle, { bigint: true })
+    if (!before.isFile()) throw new Error("Telegram turn receipt ledger must be a regular file")
+    if (before.size > BigInt(TELEGRAM_TURN_LEDGER_MAX_BYTES)) throw new Error("Telegram turn receipt ledger exceeds its bound")
+    afterPreReadStat?.(filePath)
+    const expectedBytes = Number(before.size)
+    const content = Buffer.allocUnsafe(expectedBytes)
+    let offset = 0
+    while (offset < expectedBytes) {
+      const bytesRead = readSync(handle, content, offset, expectedBytes - offset, offset)
+      if (bytesRead === 0) throw new Error("Telegram turn receipt ledger changed during read")
+      offset += bytesRead
+    }
+    const overflow = Buffer.allocUnsafe(1)
+    const overflowBytes = readSync(handle, overflow, 0, 1, expectedBytes)
+    const after = fstatSync(handle, { bigint: true })
+    const pathAfter = lstatSync(filePath, { bigint: true })
+    if (overflowBytes !== 0 || !sameTelegramLedgerMetadata(before, after)
+      || !pathAfter.isFile() || pathAfter.dev !== before.dev || pathAfter.ino !== before.ino) {
+      throw new Error("Telegram turn receipt ledger changed during read")
+    }
+    return content.toString("utf8")
+  } finally {
+    closeSync(handle)
+  }
+}
+
 function validateSanctuaryTurnReceipt(value: Record<string, unknown>): void {
   const exactKeys = ["completedAt", "deliveries", "deliveryCount", "errorCategory", "providerInvocationCount", "responseDigest", "scenarioHandleDigest", "schemaVersion", "sequenceDigest", "status", "toolInvocationCount", "toolResultDigests", "updateDigest"].sort()
   const deliveries = value.deliveries
@@ -93,21 +141,24 @@ function validateSanctuaryTurnReceipt(value: Record<string, unknown>): void {
     || typeof value.completedAt !== "string" || value.completedAt.length > 30 || !Number.isFinite(Date.parse(value.completedAt)) || new Date(Date.parse(value.completedAt)).toISOString() !== value.completedAt) throw new Error("Telegram turn receipt ledger row is invalid")
 }
 
-async function appendSanctuaryTurnReceipt(agentRoot: string, receipt: Record<string, unknown>): Promise<void> {
+async function appendSanctuaryTurnReceipt(
+  agentRoot: string,
+  receipt: Record<string, unknown>,
+  afterPreReadStat?: (filePath: string) => void,
+): Promise<void> {
   const filePath = path.join(agentRoot, "state", "acceptance", "telegram-turns.ndjson")
   const previous = telegramTurnLedgerTails.get(filePath) ?? Promise.resolve()
   const current = previous.catch(() => undefined).then(() => {
     mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 })
     let existing: string[] = []
-    try {
-      const raw = readFileSync(filePath, "utf8")
-      if (Buffer.byteLength(raw) > TELEGRAM_TURN_LEDGER_MAX_BYTES) throw new Error("Telegram turn receipt ledger exceeds its bound")
+    const raw = readStableBoundedTelegramLedger(filePath, afterPreReadStat)
+    if (raw !== null) {
       existing = raw.split("\n").filter(Boolean)
       if (existing.length > TELEGRAM_TURN_LEDGER_MAX_ROWS || existing.some((line) => Buffer.byteLength(line) > TELEGRAM_TURN_LEDGER_MAX_ROW_BYTES)) throw new Error("Telegram turn receipt ledger is invalid")
       for (const line of existing) {
         validateSanctuaryTurnReceipt(JSON.parse(line) as Record<string, unknown>)
       }
-    } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error }
+    }
     validateSanctuaryTurnReceipt(receipt)
     const serialized = JSON.stringify(receipt)
     if (Buffer.byteLength(serialized) > TELEGRAM_TURN_LEDGER_MAX_ROW_BYTES) throw new Error("Telegram turn receipt exceeds its bound")
@@ -150,6 +201,8 @@ export interface CreateTelegramSenseAppOptions {
   acceptanceReceiptRoot?: string
   /** Test seam for observing receipt evidence across a rejected turn. */
   _runWithToolReceiptCollection?: typeof runWithSanctuaryToolReceiptCollection
+  /** Test seam for simulating a ledger mutation after its pre-read metadata check. */
+  _afterAcceptanceLedgerPreReadStat?: (filePath: string) => void
 }
 
 function requiredText(value: unknown, label: string): string {
@@ -634,7 +687,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
             deliveryCount: deliveries.length,
             deliveries,
             completedAt: new Date().toISOString(),
-          })
+          }, options._afterAcceptanceLedgerPreReadStat)
         } catch (error) {
           emitNervesEvent({ level: "error", component: "senses", event: "senses.telegram_acceptance_receipt_error", message: "Telegram acceptance receipt persistence failed", meta: { agentName: options.agentName, scenarioHandleDigest: acceptanceMarker.scenarioHandleDigest, category: error instanceof Error ? error.name : "unknown" } })
         }
