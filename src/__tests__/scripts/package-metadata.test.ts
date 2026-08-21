@@ -44,8 +44,9 @@ describe("package metadata", () => {
     const packageJob = workflow.slice(workflow.indexOf("  package-e2e:"), workflow.indexOf("  publish:"))
     expect(packageJob).toContain("npm run test:e2e:package")
     expect(packageJob).toContain("npm run test:e2e:ouro-bot-package")
-    expect(packageJob).toContain("docker build --pull --file \"$PACKAGE_ROOT/package/deploy/unraid/Dockerfile\"")
+    expect(packageJob).toContain("docker build --pull --no-cache --file \"$PACKAGE_ROOT/package/deploy/unraid/Dockerfile\"")
     expect(packageJob).toContain("--tag ouro-butler-package-smoke")
+    expect(packageJob).toContain("shrinkwrap.packages[\"\"].version !== expected")
   })
 
   it("keeps current mail parsing fixes while overriding the vulnerable merge implementation", () => {

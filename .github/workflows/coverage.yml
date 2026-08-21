@@ -109,7 +109,13 @@ jobs:
           tar -xzf "$PACKAGE_TARBALL" -C "$PACKAGE_ROOT"
           node scripts/package-assets.cjs "$PACKAGE_ROOT/package"
           PACKAGE_VERSION="$(node -p "require('./package.json').version")"
-          docker build --pull --file "$PACKAGE_ROOT/package/deploy/unraid/Dockerfile" --tag ouro-butler-package-smoke:"$PACKAGE_VERSION" "$PACKAGE_ROOT/package"
+          docker build --pull --no-cache --file "$PACKAGE_ROOT/package/deploy/unraid/Dockerfile" --tag ouro-butler-package-smoke:"$PACKAGE_VERSION" "$PACKAGE_ROOT/package"
+          docker run --rm --entrypoint node ouro-butler-package-smoke:"$PACKAGE_VERSION" -e '
+            const expected = process.argv[1]
+            const packageVersion = require("/opt/ouro/package.json").version
+            const shrinkwrap = require("/opt/ouro/npm-shrinkwrap.json")
+            if (packageVersion !== expected || shrinkwrap.version !== expected || shrinkwrap.packages[""].version !== expected) process.exit(1)
+          ' "$PACKAGE_VERSION"
 
   publish:
     needs:
