@@ -108,6 +108,13 @@ export interface SanctuaryHealthAcceptanceProbeProcessDependencies {
   sleep(ms: number): Promise<void>
 }
 
+export interface SanctuaryHealthAcceptanceProbeProcessHost {
+  listProcEntries(): string[]
+  kill(pid: number, signal: 0 | NodeJS.Signals): void
+  readCommandLine(pid: number): string
+  sleep(ms: number): Promise<void>
+}
+
 type HealthStateRecord = {
   incidents: Record<string, { id: string; summary: string }>
   lastDigestDay: string | null
@@ -182,24 +189,43 @@ function unregisterSanctuaryHealthAcceptanceProbeProcess(input: SanctuaryHealthA
   }
 }
 
+export function createSanctuaryHealthAcceptanceProbeProcessHost(raw: {
+  readDirectory(path: string): string[]
+  kill(pid: number, signal: 0 | NodeJS.Signals): void
+  readFile(path: string, encoding: "utf8"): string
+  setTimeout(callback: () => void, ms: number): unknown
+} = {
+  readDirectory: fs.readdirSync as (path: string) => string[],
+  kill: process.kill.bind(process),
+  readFile: fs.readFileSync as (path: string, encoding: "utf8") => string,
+  setTimeout,
+}): SanctuaryHealthAcceptanceProbeProcessHost {
+  return {
+    listProcEntries: () => raw.readDirectory("/proc"),
+    kill: (pid, signal) => { raw.kill(pid, signal) },
+    readCommandLine: (pid) => raw.readFile(`/proc/${pid}/cmdline`, "utf8"),
+    sleep: (ms) => new Promise((resolve) => { raw.setTimeout(resolve, ms) }),
+  }
+}
+
 export function createSanctuaryHealthAcceptanceProbeProcessDependencies(options: {
   agentRoot?: string
   listProcEntries?: () => string[]
   kill?: (pid: number, signal: 0 | NodeJS.Signals) => void
   readCommandLine?: (pid: number) => string
   sleep?: (ms: number) => Promise<void>
-} = {}): SanctuaryHealthAcceptanceProbeProcessDependencies {
-  const kill = options.kill ?? ((pid: number, signal: 0 | NodeJS.Signals) => { process.kill(pid, signal) })
+} = {}, host: SanctuaryHealthAcceptanceProbeProcessHost = createSanctuaryHealthAcceptanceProbeProcessHost()): SanctuaryHealthAcceptanceProbeProcessDependencies {
+  const kill = options.kill ?? host.kill
   return {
     agentRoot: options.agentRoot ?? getAgentRoot("sanctuary"),
-    listPids: () => (options.listProcEntries?.() ?? fs.readdirSync("/proc")).filter((entry) => /^[0-9]+$/u.test(entry)).map(Number),
+    listPids: () => (options.listProcEntries?.() ?? host.listProcEntries()).filter((entry) => /^[0-9]+$/u.test(entry)).map(Number),
     processAlive: (pid) => {
       try { kill(pid, 0); return true }
       catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return false; throw error }
     },
-    readCommandLine: options.readCommandLine ?? ((pid) => fs.readFileSync(`/proc/${pid}/cmdline`, "utf8")),
+    readCommandLine: options.readCommandLine ?? host.readCommandLine,
     signal: (pid, signal) => { kill(pid, signal) },
-    sleep: options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
+    sleep: options.sleep ?? host.sleep,
   }
 }
 
@@ -429,7 +455,7 @@ export function createSanctuaryHealthAcceptanceProbeDependencies(
     }),
     toolContext: overrides.toolContext ?? createSanctuaryToolContext("sanctuary"),
   }
-  return { ...defaults, ...overrides }
+  return defaults
 }
 
 function removeProbeWorkspace(workspace: string): void {

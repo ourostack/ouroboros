@@ -53,6 +53,11 @@ describe("build script", () => {
         options: { cwd: "/repo", stdio: "inherit" },
       },
       {
+        command: "/node",
+        args: ["/repo/scripts/sanctuary-health-acceptance-probe-entry-smoke.cjs"],
+        options: { cwd: "/repo", stdio: "inherit" },
+      },
+      {
         command: "npm",
         args: ["install", "--prefix", "packages/mailbox-ui", "--ignore-scripts"],
         options: { cwd: "/repo", stdio: "inherit" },
@@ -72,13 +77,14 @@ describe("build script", () => {
   })
 
   it("stops at the first failing step instead of skipping Mailbox UI assets", () => {
-    const { calls, deps, stderr } = makeDeps([0, 0, 7, 0, 0])
+    const { calls, deps, stderr } = makeDeps([0, 0, 0, 7, 0, 0])
 
     expect(runBuildCli([], deps)).toBe(7)
 
     expect(calls.map((call) => call.args.join(" "))).toEqual([
       "/repo/scripts/clean-dist.cjs",
       "/repo/node_modules/typescript/bin/tsc",
+      "/repo/scripts/sanctuary-health-acceptance-probe-entry-smoke.cjs",
       "install --prefix packages/mailbox-ui --ignore-scripts",
     ])
     expect(stderr.join("")).toContain("build failed during install Mailbox UI dependencies with exit code 7")
@@ -104,6 +110,7 @@ describe("build script", () => {
     expect(buildSteps("/repo", deps).map((step: { label: string }) => step.label)).toEqual([
       "clean dist",
       "compile TypeScript",
+      "smoke Sanctuary health acceptance probe entry",
       "install Mailbox UI dependencies",
       "build Mailbox UI",
       "copy Mailbox UI assets",

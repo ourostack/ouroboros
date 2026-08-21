@@ -9,6 +9,7 @@ import {
   createSanctuaryHealthAcceptanceProbeCliHost,
   createSanctuaryHealthAcceptanceProbeCliOutput,
   createSanctuaryHealthAcceptanceProbeDependencies,
+  createSanctuaryHealthAcceptanceProbeProcessHost,
   createSanctuaryHealthAcceptanceProbeProcessDependencies,
   createSanctuaryHealthAcceptanceLoopbackFixture,
   exactLocalDailyBoundary,
@@ -241,7 +242,29 @@ describe("packaged Sanctuary health acceptance probe", () => {
     await expect(stopSanctuaryHealthAcceptanceProbeProcess(invalid)).rejects.toThrow(/input is invalid/u)
   })
 
-  it("exercises the production process dependency factory through safe host operations", async () => {
+  it("exercises the production process adapters through deterministic host seams", async () => {
+    const rawKill = vi.fn((pid: number) => {
+      if (pid === 404) throw Object.assign(new Error("gone"), { code: "ESRCH" })
+      if (pid === 403) throw Object.assign(new Error("denied"), { code: "EPERM" })
+    })
+    const rawReadDirectory = vi.fn(() => ["1", "22", "not-a-pid"])
+    const rawReadFile = vi.fn((filePath: string) => `command:${filePath}`)
+    const rawSetTimeout = vi.fn((callback: () => void) => { callback(); return 1 })
+    const host = createSanctuaryHealthAcceptanceProbeProcessHost({
+      readDirectory: rawReadDirectory,
+      kill: rawKill,
+      readFile: rawReadFile,
+      setTimeout: rawSetTimeout,
+    })
+    expect(host.listProcEntries()).toEqual(["1", "22", "not-a-pid"])
+    expect(host.readCommandLine(22)).toBe("command:/proc/22/cmdline")
+    host.kill(22, "SIGTERM")
+    await host.sleep(7)
+    expect(rawReadDirectory).toHaveBeenCalledWith("/proc")
+    expect(rawReadFile).toHaveBeenCalledWith("/proc/22/cmdline", "utf8")
+    expect(rawKill).toHaveBeenCalledWith(22, "SIGTERM")
+    expect(rawSetTimeout).toHaveBeenCalledWith(expect.any(Function), 7)
+
     const customKill = vi.fn((pid: number) => { if (pid === 404) throw Object.assign(new Error("gone"), { code: "ESRCH" }); if (pid === 403) throw Object.assign(new Error("denied"), { code: "EPERM" }) })
     const dependencies = createSanctuaryHealthAcceptanceProbeProcessDependencies({
       agentRoot: "/agent",
@@ -258,12 +281,14 @@ describe("packaged Sanctuary health acceptance probe", () => {
     dependencies.signal(22, "SIGTERM")
     await dependencies.sleep(1)
 
-    const defaults = createSanctuaryHealthAcceptanceProbeProcessDependencies()
-    expect(defaults.processAlive(process.pid)).toBe(true)
-    expect(defaults.processAlive(2_147_483_647)).toBe(false)
+    const defaults = createSanctuaryHealthAcceptanceProbeProcessDependencies({ agentRoot: "/agent" }, host)
+    expect(defaults.listPids()).toEqual([1, 22])
+    expect(defaults.processAlive(22)).toBe(true)
+    expect(defaults.processAlive(404)).toBe(false)
+    expect(() => defaults.processAlive(403)).toThrow("denied")
+    expect(defaults.readCommandLine(22)).toBe("command:/proc/22/cmdline")
+    defaults.signal(22, "SIGTERM")
     await defaults.sleep(0)
-    try { defaults.readCommandLine(process.pid) } catch (error) { expect((error as NodeJS.ErrnoException).code).toBe("ENOENT") }
-    try { defaults.signal(2_147_483_647, "SIGTERM") } catch (error) { expect((error as NodeJS.ErrnoException).code).toBe("ESRCH") }
   })
 
   it("constructs configurable production probe dependencies and waits for exact receipt files", async () => {
@@ -292,16 +317,32 @@ describe("packaged Sanctuary health acceptance probe", () => {
 
       const timeout = createSanctuaryHealthAcceptanceProbeDependencies(overrides, { timeoutMs: -1, pollMs: 1 })
       await expect(timeout.waitForSchedulerReceipt!(fixture.agentRoot, "d".repeat(64))).rejects.toThrow(/timed out/u)
-      try { createSanctuaryHealthAcceptanceProbeDependencies() } catch { /* local runtime config may be intentionally absent */ }
+
+      const normalized = createSanctuaryHealthAcceptanceProbeDependencies({
+        ...overrides,
+        now: undefined,
+        identityKey: undefined,
+        waitForSchedulerReceipt: undefined,
+        deferOwnerAttestation: undefined,
+      })
+      expect(normalized.now()).toBeInstanceOf(Date)
+      expect(normalized.identityKey).toEqual(expect.any(Function))
+      expect(normalized.waitForSchedulerReceipt).toEqual(expect.any(Function))
+      expect(normalized.deferOwnerAttestation).toBe(true)
     } finally { fs.rmSync(fixture.agentRoot, { recursive: true, force: true }) }
   })
 
-  it("uses the host process scanner without assuming procfs exists", async () => {
+  it("propagates deterministic procfs scanner failures", async () => {
     const fixture = setup("unit-16g-health-transition")
     try {
-      const outcome = await stopSanctuaryHealthAcceptanceProbeProcess(fixture.input).catch((error: unknown) => error)
-      if (outcome instanceof Error) expect((outcome as NodeJS.ErrnoException).code).toBe("ENOENT")
-      else expect(outcome).toEqual({ stopped: false })
+      const dependencies = createSanctuaryHealthAcceptanceProbeProcessDependencies({
+        agentRoot: fixture.agentRoot,
+        listProcEntries: () => { throw Object.assign(new Error("procfs absent"), { code: "ENOENT" }) },
+        kill: vi.fn(),
+        readCommandLine: vi.fn(),
+        sleep: async () => {},
+      })
+      await expect(stopSanctuaryHealthAcceptanceProbeProcess(fixture.input, dependencies)).rejects.toMatchObject({ code: "ENOENT" })
     } finally { fs.rmSync(fixture.agentRoot, { recursive: true, force: true }) }
   })
 
