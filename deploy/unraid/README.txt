@@ -351,6 +351,110 @@ Effective-spec audit helper:
       LEGACY_STAGING_CONTAINER_ID=$PREPARED_LEGACY_CONTAINER_ID
       LEGACY_STAGING_IMAGE_ID=$PREPARED_LEGACY_IMAGE_ID
     }
+    capture_sanctuary_legacy_evidence() {
+      CAPTURED_LEGACY_CONTAINER_ID=$1
+      CAPTURED_LEGACY_IMAGE_ID=$2
+      LEGACY_EVIDENCE_ROOT=$3
+      case "$CAPTURED_LEGACY_CONTAINER_ID" in *[!0-9a-f]*|'') return 1 ;; esac
+      test "${#CAPTURED_LEGACY_CONTAINER_ID}" -eq 64 || return 1
+      validate_exact_image_id "$CAPTURED_LEGACY_IMAGE_ID" || return $?
+      case "$LEGACY_EVIDENCE_ROOT" in /*) ;; *) return 1 ;; esac
+      if test -e "$LEGACY_EVIDENCE_ROOT" || test -L "$LEGACY_EVIDENCE_ROOT"; then
+        /usr/local/bin/node -e '
+          const fs = require("node:fs");
+          const root = fs.lstatSync(process.argv[1]);
+          if (!root.isDirectory() || root.isSymbolicLink() || (root.mode & 0o777) !== 0o700) process.exit(1);
+          if (root.uid !== process.geteuid() || root.gid !== process.getegid()) process.exit(1);
+        ' "$LEGACY_EVIDENCE_ROOT" || return $?
+      else
+        install -d -m 0700 -o 0 -g 0 "$LEGACY_EVIDENCE_ROOT" || return $?
+      fi
+      LEGACY_EVIDENCE_DIR="$LEGACY_EVIDENCE_ROOT/${CAPTURED_LEGACY_IMAGE_ID#sha256:}"
+      if test -e "$LEGACY_EVIDENCE_DIR" || test -L "$LEGACY_EVIDENCE_DIR"; then
+        test -d "$LEGACY_EVIDENCE_DIR" && test ! -L "$LEGACY_EVIDENCE_DIR" || return 1
+      else
+        mkdir -m 0700 "$LEGACY_EVIDENCE_DIR" || return $?
+      fi
+      /usr/local/bin/node -e '
+        const fs = require("node:fs");
+        const [rootPath, directoryPath] = process.argv.slice(1);
+        const root = fs.lstatSync(rootPath);
+        const directory = fs.lstatSync(directoryPath);
+        const privateDirectory = value => value.isDirectory() && !value.isSymbolicLink() && (value.mode & 0o777) === 0o700;
+        if (!privateDirectory(root) || !privateDirectory(directory)) process.exit(1);
+        if (root.uid !== process.geteuid() || root.gid !== process.getegid()) process.exit(1);
+        if (root.uid !== directory.uid || root.gid !== directory.gid) process.exit(1);
+        const allowed = new Set(["container.json", "image.json"]);
+        if (fs.readdirSync(directoryPath).some(name => !allowed.has(name))) process.exit(1);
+      ' "$LEGACY_EVIDENCE_ROOT" "$LEGACY_EVIDENCE_DIR" || return $?
+      validate_legacy_evidence_entry() {
+        VALIDATED_EVIDENCE_KIND=$1
+        VALIDATED_EVIDENCE_PATH=$2
+        /usr/local/bin/node -e '
+          const fs = require("node:fs");
+          const [kind, filePath, rootPath, containerId, imageId] = process.argv.slice(1);
+          const root = fs.lstatSync(rootPath);
+          const entry = fs.lstatSync(filePath);
+          if (!entry.isFile() || entry.isSymbolicLink() || entry.uid !== root.uid || entry.gid !== root.gid) process.exit(1);
+          const mode = entry.mode & 0o777;
+          if (mode !== 0o600 && mode !== 0o644) process.exit(1);
+          const value = JSON.parse(fs.readFileSync(filePath, "utf8"));
+          if (!Array.isArray(value) || value.length !== 1 || !value[0] || typeof value[0] !== "object") process.exit(1);
+          if (kind === "container" && (value[0].Id !== containerId || value[0].Image !== imageId)) process.exit(1);
+          if (kind === "image" && value[0].Id !== imageId) process.exit(1);
+        ' "$VALIDATED_EVIDENCE_KIND" "$VALIDATED_EVIDENCE_PATH" "$LEGACY_EVIDENCE_ROOT" "$CAPTURED_LEGACY_CONTAINER_ID" "$CAPTURED_LEGACY_IMAGE_ID"
+      }
+      capture_missing_legacy_evidence_entry() {
+        MISSING_EVIDENCE_KIND=$1
+        MISSING_EVIDENCE_PATH=$2
+        LEGACY_EVIDENCE_TMP=$(mktemp "$LEGACY_EVIDENCE_ROOT/.capture.XXXXXXXX") || return $?
+        if test "$MISSING_EVIDENCE_KIND" = container; then
+          docker container inspect "$CAPTURED_LEGACY_CONTAINER_ID" >"$LEGACY_EVIDENCE_TMP" || {
+            CAPTURE_STATUS=$?
+            rm -f "$LEGACY_EVIDENCE_TMP"
+            return "$CAPTURE_STATUS"
+          }
+        else
+          docker image inspect "$CAPTURED_LEGACY_IMAGE_ID" >"$LEGACY_EVIDENCE_TMP" || {
+            CAPTURE_STATUS=$?
+            rm -f "$LEGACY_EVIDENCE_TMP"
+            return "$CAPTURE_STATUS"
+          }
+        fi
+        chmod 0600 "$LEGACY_EVIDENCE_TMP" || {
+          CAPTURE_STATUS=$?
+          rm -f "$LEGACY_EVIDENCE_TMP"
+          return "$CAPTURE_STATUS"
+        }
+        validate_legacy_evidence_entry "$MISSING_EVIDENCE_KIND" "$LEGACY_EVIDENCE_TMP" || {
+          CAPTURE_STATUS=$?
+          rm -f "$LEGACY_EVIDENCE_TMP"
+          return "$CAPTURE_STATUS"
+        }
+        sync -f "$LEGACY_EVIDENCE_TMP" || {
+          CAPTURE_STATUS=$?
+          rm -f "$LEGACY_EVIDENCE_TMP"
+          return "$CAPTURE_STATUS"
+        }
+        if ln "$LEGACY_EVIDENCE_TMP" "$MISSING_EVIDENCE_PATH"; then
+          rm -f "$LEGACY_EVIDENCE_TMP" || return $?
+        else
+          rm -f "$LEGACY_EVIDENCE_TMP" || return $?
+          validate_legacy_evidence_entry "$MISSING_EVIDENCE_KIND" "$MISSING_EVIDENCE_PATH" || return $?
+        fi
+      }
+      for LEGACY_EVIDENCE_KIND in container image; do
+        LEGACY_EVIDENCE_PATH="$LEGACY_EVIDENCE_DIR/$LEGACY_EVIDENCE_KIND.json"
+        if test -e "$LEGACY_EVIDENCE_PATH" || test -L "$LEGACY_EVIDENCE_PATH"; then
+          validate_legacy_evidence_entry "$LEGACY_EVIDENCE_KIND" "$LEGACY_EVIDENCE_PATH" || return $?
+        else
+          capture_missing_legacy_evidence_entry "$LEGACY_EVIDENCE_KIND" "$LEGACY_EVIDENCE_PATH" || return $?
+        fi
+        chmod 0600 "$LEGACY_EVIDENCE_PATH" || return $?
+        validate_legacy_evidence_entry "$LEGACY_EVIDENCE_KIND" "$LEGACY_EVIDENCE_PATH" || return $?
+      done
+      sync -f "$LEGACY_EVIDENCE_DIR" || return $?
+    }
     install_from_legacy_staging() {
       prepare_sanctuary_legacy_adoption "$IMAGE_ID" || return $?
       ADOPTION_PREPARED_CONTAINER_ID=$LEGACY_STAGING_CONTAINER_ID
@@ -370,15 +474,7 @@ Effective-spec audit helper:
       LEGACY_STAGING_CONTAINER_ID=$ADOPTION_PREPARED_CONTAINER_ID
       LEGACY_STAGING_IMAGE_ID=$ADOPTION_PREPARED_IMAGE_ID
       LEGACY_EVIDENCE_ROOT=/mnt/user/appdata/ouro-butler/legacy-evidence
-      LEGACY_EVIDENCE_DIR="$LEGACY_EVIDENCE_ROOT/${LEGACY_STAGING_IMAGE_ID#sha256:}"
-      install -d -m 0700 -o 0 -g 0 "$LEGACY_EVIDENCE_ROOT" || return $?
-      mkdir -m 0700 "$LEGACY_EVIDENCE_DIR" || return $?
-      docker container inspect "$LEGACY_STAGING_CONTAINER_ID" >"$LEGACY_EVIDENCE_DIR/container.json" || return $?
-      docker image inspect "$LEGACY_STAGING_IMAGE_ID" >"$LEGACY_EVIDENCE_DIR/image.json" || return $?
-      chmod 0600 "$LEGACY_EVIDENCE_DIR/container.json" "$LEGACY_EVIDENCE_DIR/image.json" || return $?
-      sync -f "$LEGACY_EVIDENCE_DIR/container.json" || return $?
-      sync -f "$LEGACY_EVIDENCE_DIR/image.json" || return $?
-      sync -f "$LEGACY_EVIDENCE_DIR" || return $?
+      capture_sanctuary_legacy_evidence "$LEGACY_STAGING_CONTAINER_ID" "$LEGACY_STAGING_IMAGE_ID" "$LEGACY_EVIDENCE_ROOT" || return $?
       validate_sanctuary_legacy_staging "$ADOPTION_PREPARED_CONTAINER_ID" "$ADOPTION_PREPARED_IMAGE_ID" || return $?
       LEGACY_STAGING_CONTAINER_ID=$ADOPTION_PREPARED_CONTAINER_ID
       LEGACY_STAGING_IMAGE_ID=$ADOPTION_PREPARED_IMAGE_ID

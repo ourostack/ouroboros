@@ -386,6 +386,7 @@ prepare_canonical_sanctuary_roots() { return 0; }
 bootstrap_sanctuary_vault() { return 0; }
 prepare_sanctuary_legacy_adoption() { LEGACY_STAGING_CONTAINER_ID=$(command printf '%064d' 1); LEGACY_STAGING_IMAGE_ID=$LEGACY_IMAGE; }
 verify_sanctuary_provider_readiness() { return 0; }
+capture_sanctuary_legacy_evidence() { return 0; }
 ${imageValidator}
 ${onlyRunning}
 ${validateLegacy}
@@ -950,6 +951,130 @@ install_from_legacy_staging`
     expect(install).not.toMatch(/receipt|READINESS_OK|READY_MARKER/iu)
   })
 
+  it.each([
+    ["empty", "empty"],
+    ["partial", "partial"],
+    ["complete", "complete"],
+  ])("resumes exact legacy evidence capture from a %s evidence directory", (_label, scenario) => {
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const capture = extractRunbookFunction(runbook, "capture_sanctuary_legacy_evidence").replaceAll("/usr/local/bin/node", "node")
+    const containerId = "0".repeat(63) + "1"
+    const imageId = `sha256:${"a".repeat(64)}`
+    const containerJson = `${JSON.stringify([{ Id: containerId, Image: imageId }])}\n`
+    const imageJson = `${JSON.stringify([{ Id: imageId }])}\n`
+    const script = String.raw`set -u
+docker() {
+  command printf '%s\n' "$*" >>"$CALL_LOG"
+  case "$*" in
+    "container inspect $CONTAINER_ID") command printf '%s' "$CONTAINER_JSON" ;;
+    "image inspect $IMAGE_ID") command printf '%s' "$IMAGE_JSON" ;;
+    *) return 23 ;;
+  esac
+}
+install() { eval "TARGET=\${$#}"; command mkdir -p "$TARGET"; command chmod 0700 "$TARGET"; }
+sync() { return 0; }
+validate_exact_image_id() { return 0; }
+${capture}
+EVIDENCE_DIR="$EVIDENCE_ROOT/${imageId.slice("sha256:".length)}"
+command mkdir -p "$EVIDENCE_DIR"
+command chmod 0700 "$EVIDENCE_ROOT" "$EVIDENCE_DIR"
+case "$SCENARIO" in
+  partial) command printf '%s' "$CONTAINER_JSON" >"$EVIDENCE_DIR/container.json" ;;
+  complete)
+    command printf '%s' "$CONTAINER_JSON" >"$EVIDENCE_DIR/container.json"
+    command printf '%s' "$IMAGE_JSON" >"$EVIDENCE_DIR/image.json"
+    ;;
+esac
+test ! -e "$EVIDENCE_DIR/container.json" || test "$SCENARIO" = partial || command chmod 0600 "$EVIDENCE_DIR/container.json"
+test ! -e "$EVIDENCE_DIR/image.json" || command chmod 0600 "$EVIDENCE_DIR/image.json"
+BEFORE_CONTAINER_INODE=$(test -e "$EVIDENCE_DIR/container.json" && command stat -f '%i' "$EVIDENCE_DIR/container.json" || command printf missing)
+BEFORE_IMAGE_INODE=$(test -e "$EVIDENCE_DIR/image.json" && command stat -f '%i' "$EVIDENCE_DIR/image.json" || command printf missing)
+capture_sanctuary_legacy_evidence "$CONTAINER_ID" "$IMAGE_ID" "$EVIDENCE_ROOT" || exit $?
+command printf 'container-inode:%s:%s\n' "$BEFORE_CONTAINER_INODE" "$(command stat -f '%i' "$EVIDENCE_DIR/container.json")"
+command printf 'image-inode:%s:%s\n' "$BEFORE_IMAGE_INODE" "$(command stat -f '%i' "$EVIDENCE_DIR/image.json")"`
+    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-legacy-evidence-resume-"))
+    try {
+      const evidenceRoot = path.join(testRoot, "legacy-evidence")
+      const callLog = path.join(testRoot, "calls.log")
+      const result = runConditionalHelper(script, scenario, {
+        SCENARIO: scenario, EVIDENCE_ROOT: evidenceRoot, CALL_LOG: callLog,
+        CONTAINER_ID: containerId, IMAGE_ID: imageId, CONTAINER_JSON: containerJson, IMAGE_JSON: imageJson,
+      })
+      expect(result.status, result.stderr).toBe(0)
+      const evidenceDir = path.join(evidenceRoot, imageId.slice("sha256:".length))
+      expect(fs.readFileSync(path.join(evidenceDir, "container.json"), "utf8")).toBe(containerJson)
+      expect(fs.readFileSync(path.join(evidenceDir, "image.json"), "utf8")).toBe(imageJson)
+      expect(fs.statSync(path.join(evidenceDir, "container.json")).mode & 0o777).toBe(0o600)
+      expect(fs.statSync(path.join(evidenceDir, "image.json")).mode & 0o777).toBe(0o600)
+      const calls = fs.existsSync(callLog) ? fs.readFileSync(callLog, "utf8").trim().split("\n") : []
+      expect(calls.filter(call => call.startsWith("container inspect"))).toHaveLength(scenario === "empty" ? 1 : 0)
+      expect(calls.filter(call => call.startsWith("image inspect"))).toHaveLength(scenario === "complete" ? 0 : 1)
+      if (scenario === "partial") expect(result.stdout).toMatch(/container-inode:(\d+):\1/u)
+      if (scenario === "complete") {
+        expect(result.stdout).toMatch(/container-inode:(\d+):\1/u)
+        expect(result.stdout).toMatch(/image-inode:(\d+):\1/u)
+      }
+    } finally {
+      fs.rmSync(testRoot, { recursive: true, force: true })
+    }
+  })
+
+  it.each([
+    ["mismatched container evidence", "mismatch"],
+    ["symbolic-link evidence", "symlink"],
+    ["unexpected evidence entry", "extra"],
+    ["failed fresh evidence capture", "capture-failure"],
+  ])("fails closed without overwriting or mutating legacy for %s", (_label, scenario) => {
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const capture = extractRunbookFunction(runbook, "capture_sanctuary_legacy_evidence").replaceAll("/usr/local/bin/node", "node")
+    const containerId = "0".repeat(63) + "1"
+    const imageId = `sha256:${"a".repeat(64)}`
+    const conflicting = `${JSON.stringify([{ Id: "0".repeat(63) + "2", Image: imageId }])}\n`
+    const validImage = `${JSON.stringify([{ Id: imageId }])}\n`
+    const script = String.raw`set -u
+docker() { command printf 'INSPECT:%s\n' "$*" >>"$CALL_LOG"; return 23; }
+install() { eval "TARGET=\${$#}"; command mkdir -p "$TARGET"; command chmod 0700 "$TARGET"; }
+sync() { return 0; }
+validate_exact_image_id() { return 0; }
+${capture}
+EVIDENCE_DIR="$EVIDENCE_ROOT/${imageId.slice("sha256:".length)}"
+command mkdir -p "$EVIDENCE_DIR"
+command chmod 0700 "$EVIDENCE_ROOT" "$EVIDENCE_DIR"
+command printf '%s' "$CONFLICTING" >"$PRESERVED"
+case "$SCENARIO" in
+  mismatch) command cp "$PRESERVED" "$EVIDENCE_DIR/container.json" ;;
+  symlink) command ln -s "$PRESERVED" "$EVIDENCE_DIR/container.json" ;;
+  extra)
+    command printf '%s' "$VALID_IMAGE" >"$EVIDENCE_DIR/image.json"
+    command printf 'unexpected\n' >"$EVIDENCE_DIR/unexpected"
+    ;;
+esac
+test ! -L "$EVIDENCE_DIR/container.json" && test -e "$EVIDENCE_DIR/container.json" && command chmod 0600 "$EVIDENCE_DIR/container.json" || true
+test ! -L "$EVIDENCE_DIR/image.json" && test -e "$EVIDENCE_DIR/image.json" && command chmod 0600 "$EVIDENCE_DIR/image.json" || true
+capture_sanctuary_legacy_evidence "$CONTAINER_ID" "$IMAGE_ID" "$EVIDENCE_ROOT"`
+    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-legacy-evidence-reject-"))
+    try {
+      const evidenceRoot = path.join(testRoot, "legacy-evidence")
+      const callLog = path.join(testRoot, "calls.log")
+      const preserved = path.join(testRoot, "preserved.json")
+      const result = runConditionalHelper(script, scenario, {
+        SCENARIO: scenario, EVIDENCE_ROOT: evidenceRoot, CALL_LOG: callLog, PRESERVED: preserved,
+        CONTAINER_ID: containerId, IMAGE_ID: imageId, CONFLICTING: conflicting, VALID_IMAGE: validImage,
+      })
+      expect(result.status, result.stderr).not.toBe(0)
+      expect(fs.readFileSync(preserved, "utf8")).toBe(conflicting)
+      const evidenceDir = path.join(evidenceRoot, imageId.slice("sha256:".length))
+      if (scenario === "mismatch") expect(fs.readFileSync(path.join(evidenceDir, "container.json"), "utf8")).toBe(conflicting)
+      if (scenario === "symlink") expect(fs.lstatSync(path.join(evidenceDir, "container.json")).isSymbolicLink()).toBe(true)
+      const calls = fs.existsSync(callLog) ? fs.readFileSync(callLog, "utf8") : ""
+      if (scenario === "capture-failure") expect(calls).toContain("INSPECT:container inspect")
+      else expect(calls).toBe("")
+      expect(fs.readdirSync(evidenceRoot).some(name => name.startsWith(".capture."))).toBe(false)
+    } finally {
+      fs.rmSync(testRoot, { recursive: true, force: true })
+    }
+  })
+
   it("documents the executable noninteractive adoption phase order", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     const heading = "Sanctuary legacy adoption commands:"
@@ -988,6 +1113,7 @@ prepare_sanctuary_legacy_adoption() {
   LEGACY_STAGING_IMAGE_ID=$LEGACY_IMAGE
 }
 verify_sanctuary_provider_readiness() { return 0; }
+capture_sanctuary_legacy_evidence() { return 0; }
 docker() {
   command printf '%s\n' "$*" >>"$CALL_LOG"
   case "$*" in
@@ -1065,6 +1191,7 @@ install_from_legacy_staging`
     const script = String.raw`set -u
 prepare_sanctuary_legacy_adoption() { LEGACY_STAGING_CONTAINER_ID=$ORIGINAL_ID; LEGACY_STAGING_IMAGE_ID=$LEGACY_IMAGE; }
 verify_sanctuary_provider_readiness() { return 0; }
+capture_sanctuary_legacy_evidence() { return 0; }
 docker() {
   command printf '%s\n' "$*" >>"$CALL_LOG"
   case "$*" in
@@ -1163,6 +1290,7 @@ verify_sanctuary_provider_readiness() {
   COUNT=$(command cat "$VERIFY_COUNT"); COUNT=$((COUNT + 1)); command printf '%s' "$COUNT" >"$VERIFY_COUNT"
   test "$COUNT" -gt 1
 }
+capture_sanctuary_legacy_evidence() { return 0; }
 docker() {
   case "$*" in
     "container ls -a --format {{.Names}}"|"container ls --format {{.Names}}") command printf 'ouro-butler-staging\n' ;;
