@@ -7,8 +7,10 @@ import { describe, expect, it, vi } from "vitest"
 
 import {
   finalizeSanctuaryHealthAcceptanceProbe,
+  registerSanctuaryHealthAcceptanceProbeProcess,
   recoverSanctuaryHealthAcceptanceProbe,
   runSanctuaryHealthAcceptanceProbe,
+  stopSanctuaryHealthAcceptanceProbeProcess,
   type SanctuaryHealthAcceptanceProbeInput,
 } from "../../senses/sanctuary-health-acceptance-probe"
 
@@ -73,6 +75,48 @@ function setup(label: SanctuaryHealthAcceptanceProbeInput["label"]) {
 }
 
 describe("packaged Sanctuary health acceptance probe", () => {
+  it("stops and verifies the exact scenario-bound in-container process before recovery", async () => {
+    const fixture = setup("unit-16g-health-transition")
+    const processPath = path.join(fixture.agentRoot, "state", "acceptance", "health-probe-processes", `${fixture.input.scenarioHandleDigest}.json`)
+    let alive = true
+    const signals: NodeJS.Signals[] = []
+    try {
+      registerSanctuaryHealthAcceptanceProbeProcess(fixture.input, { agentRoot: fixture.agentRoot, pid: 4321 })
+      expect(fs.statSync(processPath).mode & 0o777).toBe(0o600)
+      const record = JSON.parse(fs.readFileSync(processPath, "utf8")) as Record<string, unknown>
+      expect(record).toMatchObject({ schemaVersion: "sanctuary-health-probe-process-v1", pid: 4321, ...fixture.input })
+      await expect(stopSanctuaryHealthAcceptanceProbeProcess(fixture.input, {
+        agentRoot: fixture.agentRoot,
+        processAlive: () => alive,
+        readCommandLine: () => ["/usr/local/bin/node", "/opt/ouro/dist/senses/sanctuary-health-acceptance-probe.js", "run", "--scenario", fixture.input.scenarioHandleDigest].join("\0"),
+        signal: (_pid, signal) => { signals.push(signal); alive = false },
+        sleep: async () => {},
+      })).resolves.toEqual({ stopped: true })
+      expect(signals).toEqual(["SIGTERM"])
+      expect(fs.existsSync(processPath)).toBe(false)
+    } finally {
+      fs.rmSync(fixture.agentRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("rejects a stale or substituted process identity without signalling it", async () => {
+    const fixture = setup("unit-16g-health-transition")
+    const signals: NodeJS.Signals[] = []
+    try {
+      registerSanctuaryHealthAcceptanceProbeProcess(fixture.input, { agentRoot: fixture.agentRoot, pid: 4321 })
+      await expect(stopSanctuaryHealthAcceptanceProbeProcess(fixture.input, {
+        agentRoot: fixture.agentRoot,
+        processAlive: () => true,
+        readCommandLine: () => "/usr/local/bin/node\0another-program.js\0run",
+        signal: (_pid, signal) => { signals.push(signal) },
+        sleep: async () => {},
+      })).rejects.toThrow(/process identity/u)
+      expect(signals).toEqual([])
+    } finally {
+      fs.rmSync(fixture.agentRoot, { recursive: true, force: true })
+    }
+  })
+
   it.each([
     ["unit-16f-cron-fingerprint", 1, 0, 0, "ambient"],
     ["unit-16g-health-transition", 6, 3, 3, "ambient"],
