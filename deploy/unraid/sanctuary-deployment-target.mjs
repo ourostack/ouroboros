@@ -19,6 +19,7 @@ const DOCUMENTED_UNIX_CONTROLS = [
 ]
 const DOCUMENTED_LOOPBACK_TCP_CONTROLS = new Set([6876])
 const TERMINAL_CONTAINMENT_MAX_SAMPLES = 8
+const TARGET_THAW_MAX_ATTEMPTS = 3
 const RO_PERMISSIONS = ["ARRAY", "DASHBOARD", "DISK", "DOCKER", "INFO", "LOGS", "NOTIFICATIONS", "SHARE", "VARS"]
   .map((resource) => `${resource}:READ_ANY`).sort()
 
@@ -186,6 +187,58 @@ function runDocker(args) {
   const result = spawnSync(DOCKER, args, { cwd: "/", encoding: "utf8", timeout: 20_000, maxBuffer: 1024 * 1024, env: { PATH: "/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin" }, stdio: ["ignore", "pipe", "ignore"] })
   if (result.error || result.status !== 0) throw new Error("bounded deployment target inspection failed")
   return result.stdout
+}
+
+function pausedTargetState(target, run) {
+  const template = '{"containerId":{{json .Id}},"running":{{json .State.Running}},"paused":{{json .State.Paused}},"restarting":{{json .State.Restarting}},"dead":{{json .State.Dead}},"pid":{{json .State.Pid}}}'
+  const state = object(JSON.parse(run(["inspect", "--format", template, target.targetContainerId])), "target pause state")
+  if (!CONTAINER_ID.test(state.containerId) || typeof state.running !== "boolean" || typeof state.paused !== "boolean"
+    || typeof state.restarting !== "boolean" || typeof state.dead !== "boolean" || !Number.isSafeInteger(state.pid) || state.pid < 0) {
+    throw new Error("target pause state is invalid")
+  }
+  if (state.containerId !== target.targetContainerId || state.pid !== target.targetPid) throw new Error("target pause identity changed")
+  return state
+}
+
+function restorePausedTarget(target, run) {
+  let lastError
+  for (let attempt = 0; attempt < TARGET_THAW_MAX_ATTEMPTS; attempt += 1) {
+    try { run(["unpause", target.targetContainerId]) } catch (error) { lastError = error }
+    try {
+      const resumed = pausedTargetState(target, run)
+      if (resumed.running && !resumed.paused && !resumed.restarting && !resumed.dead) return
+      lastError = new Error("target resumed state is invalid")
+    } catch (error) {
+      lastError = error
+    }
+  }
+  throw new Error("target did not resume after bounded thaw attempts", { cause: lastError })
+}
+
+function withPausedTarget(target, operation, dependencies = {}) {
+  const run = dependencies.runDocker ?? runDocker
+  const original = pausedTargetState(target, run)
+  if (!original.running || original.paused || original.restarting || original.dead) throw new Error("target original running state is invalid")
+  let result
+  let operationError
+  let restoreError
+  try {
+    run(["pause", target.targetContainerId])
+    const paused = pausedTargetState(target, run)
+    if (!paused.running || !paused.paused || paused.restarting || paused.dead) throw new Error("target paused state is invalid")
+    result = operation()
+  } catch (error) {
+    operationError = error
+  } finally {
+    try {
+      restorePausedTarget(target, run)
+    } catch (error) {
+      restoreError = error
+    }
+  }
+  if (restoreError) throw new Error("target failed to restore its original running state", { cause: operationError ?? restoreError })
+  if (operationError) throw operationError
+  return result
 }
 
 function dockerTopology() {
@@ -371,7 +424,8 @@ async function runDeploymentTargetAudit(profileName, expectedImageId, dependenci
   const unixSocketsAfter = readUnix(provisional.targetPid)
   const netnsAfter = readNetns(provisional.targetPid)
   const after = await capture()
-  const terminal = convergedTerminalContainment(provisional, { readNetns, readMembership, readSockets, readTcp, readUdp, readUnix })
+  const quiesceTarget = dependencies.quiesceTarget ?? withPausedTarget
+  const terminal = quiesceTarget(provisional, () => convergedTerminalContainment(provisional, { readNetns, readMembership, readSockets, readTcp, readUdp, readUnix }))
   const membershipTerminal = terminal.membership
   const socketInodesTerminal = terminal.socketInodes
   const tcpListenersTerminal = terminal.tcpListeners
@@ -397,4 +451,4 @@ if (process.argv[1]?.endsWith("sanctuary-deployment-target.mjs")) {
   }
 }
 
-export { attestDeploymentTarget, attestOwnedListeners, captureCanonicalRecords, cgroupProcessIds, dockerTopology, ownedSocketInodes, parseProcNet, parseProcUdp, parseProcUnix, queryGraphqlAutostart, runDeploymentTargetAudit, targetProfile }
+export { attestDeploymentTarget, attestOwnedListeners, captureCanonicalRecords, cgroupProcessIds, dockerTopology, ownedSocketInodes, parseProcNet, parseProcUdp, parseProcUnix, queryGraphqlAutostart, runDeploymentTargetAudit, targetProfile, withPausedTarget }
