@@ -1,7 +1,7 @@
 #!/usr/local/bin/node
 
 import { spawn, spawnSync } from "node:child_process"
-import { createHash } from "node:crypto"
+import { createHash, createHmac, timingSafeEqual } from "node:crypto"
 import { chmodSync, chownSync, closeSync, constants, fstatSync, fsyncSync, mkdirSync, openSync, opendirSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs"
 import { createServer } from "node:net"
 import { targetProfile } from "./sanctuary-deployment-target.mjs"
@@ -43,7 +43,7 @@ const HEALTH_PROBE_RECEIPT_KEYS = [
   "cronFingerprintBefore", "cronFingerprintAfter", "cronRegisteredBefore", "cronRegisteredAfter",
   "cronDegradedBefore", "cronDegradedAfter", "fixtureSequenceDigest", "clockMode", "effectiveNow", "phases",
   "providerInvocationCount", "privateTurnCount", "deliveryCount", "workspaceAbsent", "socketAbsent",
-  "snapshotAbsent", "realCheckEquivalent", "productionRestored",
+  "snapshotAbsent", "realCheckEquivalent", "productionRestored", "schedulerReceipt",
 ]
 const RO_PERMISSIONS = ["ARRAY", "DASHBOARD", "DISK", "DOCKER", "INFO", "LOGS", "NOTIFICATIONS", "SHARE", "VARS"]
   .map((resource) => `${resource}:READ_ANY`).sort()
@@ -639,20 +639,113 @@ function healthProbeOperationBudgets() {
   return { startMaxMs: 115_000, completeStatusMaxMs: 130_000, recoveryMaxMs: 85_000, composedCaptureMaxMs: 165_000 }
 }
 
-function requireHealthProbeCompleteAttestation(receipt, snapshot, input) {
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
+const SCHEDULER_COMMAND = "/usr/local/bin/node /opt/ouro/dist/heart/daemon/ouro-entry.js poke sanctuary --habit sanctuary-health --trigger cron"
+const SCHEDULER_CRONTAB = "/home/ouro/.ouro-cli/scheduler/sanctuary.crontab"
+
+function canonicalIso(value) {
+  if (typeof value !== "string") return false
+  const date = new Date(value)
+  return Number.isFinite(date.getTime()) && date.toISOString() === value
+}
+
+function safeMacEqual(observed, expected) {
+  return typeof observed === "string" && SHA256.test(observed) && timingSafeEqual(Buffer.from(observed, "hex"), Buffer.from(expected, "hex"))
+}
+
+function requireExactSchedulerReceipt(scheduler, request, identityKey, phases) {
+  exactKeys(scheduler, ["after", "before", "deliveryDelta", "label", "nonReplay", "occurrenceId", "privateTurnCount", "providerInvocationCount", "receiptMac", "recordedAt", "runnerId", "scenarioHandleDigest", "schedulerOrigin", "schemaVersion", "supervisor", "sweep", "sweepDelta", "trigger"], "scheduler receipt")
+  const before = object(scheduler.before, "scheduler before cursor")
+  const after = object(scheduler.after, "scheduler after cursor")
+  const sweep = object(scheduler.sweep, "scheduler sweep")
+  const supervisor = object(scheduler.supervisor, "scheduler supervisor")
+  const origin = object(scheduler.schedulerOrigin, "scheduler origin")
+  exactKeys(before, ["deliveryCount", "sweepCount"], "scheduler before cursor")
+  exactKeys(after, ["deliveryCount", "sweepCount"], "scheduler after cursor")
+  exactKeys(sweep, ["deliveryId", "digestDue", "opened", "recordDigest", "recovered"], "scheduler sweep")
+  exactKeys(supervisor, ["args", "binaryPath", "childCount", "childPid", "crontabPath", "daemonPid", "healthy", "manifest", "namespace", "renderedCrontab", "schemaVersion"], "scheduler supervisor")
+  exactKeys(origin, ["invocationPid", "invocationStartTime", "occurrenceId", "parentPid", "parentStartTime", "proofMac", "scenarioHandleDigest", "schedulerRunId", "slot"], "scheduler origin")
+  const manifest = Array.isArray(supervisor.manifest) ? supervisor.manifest : []
+  if (manifest.length !== 1) throw new Error("scheduler manifest is invalid")
+  const job = object(manifest[0], "scheduler manifest job")
+  exactKeys(job, ["agent", "command", "id", "lastRun", "schedule", "taskId", "taskPath"], "scheduler manifest job")
+  const unsignedScheduler = Object.fromEntries(Object.entries(scheduler).filter(([key]) => key !== "receiptMac"))
+  const expectedReceiptMac = createHmac("sha256", identityKey).update(`sanctuary-scheduler-liveness-receipt-v2\0${JSON.stringify(unsignedScheduler)}`).digest("hex")
+  const proofCommand = {
+    kind: "habit.scheduler-fire", agent: "sanctuary", habitName: "sanctuary-health", trigger: "cron",
+    slot: origin.slot, occurrenceId: origin.occurrenceId, schedulerRunId: origin.schedulerRunId,
+    invocationPid: origin.invocationPid, parentPid: origin.parentPid, parentStartTime: origin.parentStartTime,
+    invocationStartTime: origin.invocationStartTime, scenarioHandleDigest: origin.scenarioHandleDigest,
+  }
+  const expectedProofMac = createHmac("sha256", identityKey).update(JSON.stringify(proofCommand)).digest("hex")
+  if (scheduler.schemaVersion !== "sanctuary-scheduler-liveness-receipt-v1" || scheduler.label !== request.label
+    || scheduler.scenarioHandleDigest !== request.scenarioHandleDigest || scheduler.trigger !== "cron"
+    || !UUID.test(scheduler.runnerId) || !canonicalIso(scheduler.recordedAt)
+    || !Number.isSafeInteger(before.sweepCount) || before.sweepCount < 0 || !Number.isSafeInteger(before.deliveryCount) || before.deliveryCount < 0
+    || after.sweepCount !== before.sweepCount + 1 || after.deliveryCount !== before.deliveryCount
+    || scheduler.sweepDelta !== 1 || scheduler.deliveryDelta !== 0 || scheduler.providerInvocationCount !== 0 || scheduler.privateTurnCount !== 0 || scheduler.nonReplay !== true
+    || !SHA256.test(sweep.recordDigest) || sweep.opened !== 0 || sweep.recovered !== 0 || sweep.digestDue !== false || sweep.deliveryId !== null
+    || phases.length !== 1 || sweep.recordDigest !== phases[0]?.sweepReceiptDigest
+    || supervisor.schemaVersion !== "supercronic-supervisor-snapshot-v1" || supervisor.daemonPid !== 1 || supervisor.childCount !== 1
+    || !Number.isSafeInteger(supervisor.childPid) || supervisor.childPid <= 1 || supervisor.healthy !== true
+    || supervisor.binaryPath !== "/usr/local/bin/supercronic" || supervisor.crontabPath !== SCHEDULER_CRONTAB
+    || JSON.stringify(supervisor.args) !== JSON.stringify(["-split-logs", "-inotify", SCHEDULER_CRONTAB]) || supervisor.namespace !== "habit:sanctuary"
+    || job.id !== "sanctuary:sanctuary-health" || job.agent !== "sanctuary" || job.taskId !== "sanctuary-health" || job.schedule !== "*/15 * * * *"
+    || (job.lastRun !== null && !canonicalIso(job.lastRun)) || job.command !== SCHEDULER_COMMAND || job.taskPath !== "/home/ouro/AgentBundles/sanctuary.ouro/habits/sanctuary-health.md"
+    || typeof supervisor.renderedCrontab !== "string" || !supervisor.renderedCrontab.includes(`# ouro:habit:sanctuary:sanctuary:sanctuary-health\n*/15 * * * * ${SCHEDULER_COMMAND}\n`)
+    || typeof origin.slot !== "string" || !canonicalIso(origin.slot) || scheduler.occurrenceId !== `cron:${origin.slot}` || origin.occurrenceId !== scheduler.occurrenceId
+    || !UUID.test(origin.schedulerRunId) || origin.scenarioHandleDigest !== request.scenarioHandleDigest
+    || !Number.isSafeInteger(origin.invocationPid) || origin.invocationPid <= 1 || !Number.isSafeInteger(origin.parentPid) || origin.parentPid !== supervisor.childPid
+    || typeof origin.parentStartTime !== "string" || !/^[0-9]+$/u.test(origin.parentStartTime)
+    || typeof origin.invocationStartTime !== "string" || !/^[0-9]+$/u.test(origin.invocationStartTime)
+    || !safeMacEqual(origin.proofMac, expectedProofMac) || !safeMacEqual(scheduler.receiptMac, expectedReceiptMac)) {
+    throw new Error("scheduler receipt semantics are invalid")
+  }
+}
+
+function requireHealthProbeCompleteAttestationUnchecked(receipt, snapshot, input, readSchedulerIdentityKey = () => readFileSync(`${PRODUCTION_BUNDLE_SOURCE}/state/senses/telegram/identity.key`, "utf8").trim()) {
   const request = canonicalHealthProbeRequest(input)
   const value = object(receipt, "health probe receipt")
   exactKeys(value, HEALTH_PROBE_RECEIPT_KEYS, "health probe receipt")
   const observed = object(snapshot, "health probe complete owner")
+  const phases = Array.isArray(value.phases) ? value.phases.map((phase) => object(phase, "health probe phase")) : []
+  const digestFields = ["ownerImageDigestBefore", "ownerImageDigestAfter", "ownerContainerDigestBefore", "ownerContainerDigestAfter", "beforeStateDigest", "restoredStateDigest", "cronFingerprintBefore", "cronFingerprintAfter", "fixtureSequenceDigest"]
+  const booleanFields = ["cronRegisteredBefore", "cronRegisteredAfter", "cronDegradedBefore", "cronDegradedAfter", "workspaceAbsent", "socketAbsent", "snapshotAbsent", "realCheckEquivalent", "productionRestored"]
+  for (const phase of phases) exactKeys(phase, ["deliveryKind", "deliveryReceiptDigest", "digestDue", "fixtureStatus", "name", "opened", "ordinal", "recovered", "sweepReceiptDigest", "trigger"], "health probe phase")
+  const scheduler = request.label === "unit-16f-cron-fingerprint" ? object(value.schedulerReceipt, "scheduler receipt") : null
+  if (scheduler) requireExactSchedulerReceipt(scheduler, request, readSchedulerIdentityKey(), phases)
+  const unit16fPhase = phases.length === 1 && phases[0].ordinal === 1 && phases[0].name === "cron-unchanged" && phases[0].trigger === "cron"
+    && phases[0].fixtureStatus === null && phases[0].opened === 0 && phases[0].recovered === 0 && phases[0].digestDue === false
+    && phases[0].deliveryKind === null && phases[0].deliveryReceiptDigest === null && SHA256.test(phases[0].sweepReceiptDigest)
+  const unit16fEvidence = request.label !== "unit-16f-cron-fingerprint" || (
+    digestFields.every((field) => typeof value[field] === "string" && SHA256.test(value[field]))
+    && booleanFields.every((field) => typeof value[field] === "boolean") && canonicalIso(value.effectiveNow)
+    && value.clockMode === "ambient" && value.providerInvocationCount === 0 && value.privateTurnCount === 0 && value.deliveryCount === 0
+    && value.fixtureSequenceDigest === createHash("sha256").update(JSON.stringify([])).digest("hex")
+    && value.cronFingerprintBefore === value.cronFingerprintAfter && value.cronRegisteredBefore === true && value.cronRegisteredAfter === true
+    && value.cronDegradedBefore === false && value.cronDegradedAfter === false && value.workspaceAbsent === true && value.socketAbsent === true
+    && value.snapshotAbsent === true && value.realCheckEquivalent === true && value.productionRestored === true && unit16fPhase
+  )
   if (value.schemaVersion !== "sanctuary-health-probe-receipt-v1" || value.label !== request.label
     || value.scenarioHandleDigest !== request.scenarioHandleDigest
     || !SHA256.test(value.ownerImageDigestBefore) || !SHA256.test(value.ownerContainerDigestBefore)
     || !SHA256.test(value.ownerImageDigestAfter) || !SHA256.test(value.ownerContainerDigestAfter)
     || value.ownerImageDigestBefore !== value.ownerImageDigestAfter || value.ownerContainerDigestBefore !== value.ownerContainerDigestAfter
     || observed.imageId !== `sha256:${value.ownerImageDigestAfter}` || observed.containerId !== value.ownerContainerDigestAfter
-    || observed.running !== true || observed.health !== "healthy") {
+    || observed.running !== true || observed.health !== "healthy" || !unit16fEvidence
+    || (request.label !== "unit-16f-cron-fingerprint" && value.schedulerReceipt !== null)) {
     throw new Error("health probe complete attestation is invalid")
   }
+}
+
+function requireHealthProbeCompleteAttestation(receipt, snapshot, input, readSchedulerIdentityKey) {
+  try { requireHealthProbeCompleteAttestationUnchecked(receipt, snapshot, input, readSchedulerIdentityKey) }
+  catch { throw new Error("health probe complete attestation is invalid") }
+}
+
+function finalizeHealthProbeAfterAttestation(receipt, snapshot, request, finalize, readSchedulerIdentityKey) {
+  requireHealthProbeCompleteAttestation(receipt, snapshot, request, readSchedulerIdentityKey)
+  return finalize()
 }
 
 function completeHealthProbeFromReceipt(request, snapshot, readReceipt) {
@@ -670,6 +763,13 @@ function readHealthProbeReceipt(file) {
     }
     return object(JSON.parse(readFileSync(fd, "utf8")), "health probe receipt")
   } finally { closeSync(fd) }
+}
+
+function readHealthProbePendingReceipt(file) {
+  const envelope = readHealthProbeReceipt(file)
+  exactKeys(envelope, ["receipt", "schemaVersion"], "health probe pending envelope")
+  if (envelope.schemaVersion !== "sanctuary-health-probe-pending-v1") throw new Error("health probe pending envelope is invalid")
+  return object(envelope.receipt, "health probe pending receipt")
 }
 
 function attestHealthProbeProcessAbsent(input, dependencies = {
@@ -757,10 +857,13 @@ async function healthProbeStatus(input, fullSnapshot = () => containerSnapshot(e
   const snapshot = object(await fullSnapshot(), "health probe production owner")
   const value = healthProbeCoordinates({ targetId: TARGET_HOST, ...request }, snapshot)
   requireStableHealthProbeOwner(record.input, value)
-  const finalized = spawnSync(DOCKER, healthProbeFinalizeDockerArgs(record.input, value), {
-    cwd: "/", encoding: "utf8", timeout: 20_000, maxBuffer: 64 * 1024,
-    env: { PATH: "/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin" }, stdio: ["ignore", "ignore", "ignore"],
-  })
+  const finalized = finalizeHealthProbeAfterAttestation(
+    readHealthProbePendingReceipt(healthProbePendingPath(value.scenarioHandleDigest)), snapshot, request,
+    () => spawnSync(DOCKER, healthProbeFinalizeDockerArgs(record.input, value), {
+      cwd: "/", encoding: "utf8", timeout: 20_000, maxBuffer: 64 * 1024,
+      env: { PATH: "/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin" }, stdio: ["ignore", "ignore", "ignore"],
+    }),
+  )
   if (finalized.error || finalized.status !== 0) throw new Error("health probe final attestation failed")
   const finalReceipt = statIfPresent(healthProbeReceiptPath(value.scenarioHandleDigest))
   if (!finalReceipt || !finalReceipt.isFile() || finalReceipt.uid !== 10001 || (finalReceipt.mode & 0o777) !== 0o600) {
@@ -1646,6 +1749,7 @@ export {
   healthProbeArtifactDisposition,
   healthProbeDockerArgs,
   healthProbeOperationBudgets,
+  finalizeHealthProbeAfterAttestation,
   healthOwnerMutationActive,
   liveContainerProcessUser,
   liveContainerProcessIdentity,

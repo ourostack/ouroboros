@@ -79,6 +79,7 @@
     "health-runtime": { "kind": "fixed-runtime-api", "operation": "sanctuary-health-transition", "redaction": "typed-counters-and-digests-only" },
     "digest-runtime": { "kind": "fixed-runtime-api", "operation": "sanctuary-daily-digest", "redaction": "typed-counters-and-digests-only" },
     "health-probe-receipt": { "kind": "fixed-private-json", "path": "/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance/health-probe-receipts/<scenarioHandleDigest>.json", "redaction": "typed-phase-counters-owner-state-and-cleanup-digests-only" },
+    "scheduler-liveness-receipt": { "kind": "fixed-private-json", "path": "/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance/scheduler-liveness-receipts/<scenarioHandleDigest>.json", "redaction": "daemon-runner-supervisor-manifest-and-cursor-attestation-only" },
     "interactive-driver-receipt": { "kind": "fixed-private-json", "path": "/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance/interactive-driver-receipts/<scenarioHandleDigest>.json", "redaction": "digested-approval-checkpoint-session-callback-and-owner-coordinates-only" },
     "reboot-checkpoint": { "kind": "fixed-json", "path": "/evidence/reboot.json", "redaction": "typed-state-and-digests-only" }
   },
@@ -146,10 +147,10 @@
         "adapter": "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
         "provenanceAdapter": "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
         "harnessPath": "/opt/ouro/deploy/unraid/sanctuary-acceptance-harness.sh",
-        "timeoutMs": 4890000,
+        "timeoutMs": 5610000,
         "intervalMs": 2000
       },
-      "timing": { "execution": "sequential", "cleanupReservePerScenarioMs": 5000, "noneMs": 35000, "externalGateMs": 305000, "noCallbackMs": 365000, "dailyDigestMs": 1025000, "delayedApprovalMs": 185000, "timeoutStaleMs": 875000, "timeoutStaleBreakdown": { "promptCreationAdapterMs": 210000, "approvalTtlMs": 300000, "staleCallbackInjectionMs": 120000, "pollIntervalReserveMs": 30000, "reconciliationPollAdapterMs": 210000, "cleanupReserveMs": 5000 }, "scenarioSumMs": 4865000, "totalMs": 4890000 }
+      "timing": { "execution": "sequential", "cleanupReservePerScenarioMs": 5000, "noneMs": 35000, "externalGateMs": 305000, "cronLivenessMs": 1025000, "noCallbackMs": 365000, "dailyDigestMs": 1025000, "delayedApprovalMs": 185000, "timeoutStaleMs": 875000, "timeoutStaleBreakdown": { "promptCreationAdapterMs": 210000, "approvalTtlMs": 300000, "staleCallbackInjectionMs": 120000, "pollIntervalReserveMs": 30000, "reconciliationPollAdapterMs": 210000, "cleanupReserveMs": 5000 }, "scenarioSumMs": 5585000, "totalMs": 5610000 }
     },
     "reboot-request": {
       "fixed": {

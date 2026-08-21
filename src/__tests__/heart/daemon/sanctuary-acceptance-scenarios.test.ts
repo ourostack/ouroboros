@@ -90,6 +90,14 @@ const healthProbe = (label: "unit-16f-cron-fingerprint" | "unit-16g-health-trans
     privateTurnCount: label === "unit-16f-cron-fingerprint" ? 0 : label === "unit-16g-health-transition" ? 3 : 1,
     providerInvocationCount: label === "unit-16f-cron-fingerprint" ? 0 : label === "unit-16g-health-transition" ? 5 : 2, deliveryCount: phases.filter((phase) => phase.deliveryReceiptDigest !== null).length,
     workspaceAbsent: true, socketAbsent: true, snapshotAbsent: true, realCheckEquivalent: true, productionRestored: true,
+    schedulerReceipt: label === "unit-16f-cron-fingerprint" ? {
+      schemaVersion: "sanctuary-scheduler-liveness-receipt-v1" as const, label, scenarioHandleDigest: "a".repeat(64), trigger: "cron" as const,
+      occurrenceId: "cron:slot-1", runnerId: "11111111-1111-4111-8111-111111111111", recordedAt: "2026-08-20T15:00:00.000Z",
+      before: { sweepCount: 0, deliveryCount: 0 }, after: { sweepCount: 1, deliveryCount: 0 }, sweepDelta: 1 as const, deliveryDelta: 0 as const,
+      providerInvocationCount: 0 as const, privateTurnCount: 0 as const, sweep: { recordDigest: phases[0]!.sweepReceiptDigest, opened: 0 as const, recovered: 0 as const, digestDue: false as const, deliveryId: null },
+      supervisor: { schemaVersion: "supercronic-supervisor-snapshot-v1" as const, daemonPid: 1, childCount: 1 as const, childPid: 42, healthy: true as const, binaryPath: "/usr/local/bin/supercronic", args: ["-split-logs", "-inotify", "/home/ouro/.ouro-cli/scheduler/sanctuary.crontab"] as ["-split-logs", "-inotify", string], crontabPath: "/home/ouro/.ouro-cli/scheduler/sanctuary.crontab", namespace: "habit:sanctuary", manifest: [], renderedCrontab: "canonical" },
+      nonReplay: true as const,
+    } : null,
   }
 }
 const validDenialReceiptForFacts = () => {
@@ -98,7 +106,7 @@ const validDenialReceiptForFacts = () => {
 }
 const base = (): SanctuaryScenarioFacts => ({
   capturedAt: 0,
-  sourceValues: Object.fromEntries(["identity-key", "telegram-audit", "telegram-offset", "telegram-turn-receipts", "live-grounding-read", "approval-journal", "approval-checkpoints", "container-inspect", "provider-live-check", "cron-runtime", "health-runtime", "digest-runtime", "health-probe-receipt", "reboot-checkpoint", "read-only-denial-receipt"].map((key) => [key, { key }])),
+  sourceValues: Object.fromEntries(["identity-key", "telegram-audit", "telegram-offset", "telegram-turn-receipts", "live-grounding-read", "approval-journal", "approval-checkpoints", "container-inspect", "provider-live-check", "cron-runtime", "health-runtime", "digest-runtime", "health-probe-receipt", "scheduler-liveness-receipt", "reboot-checkpoint", "read-only-denial-receipt"].map((key) => [key, { key }])),
   events: [], approvals: [],
   restartAttempts: [],
   telegramTurns: [],

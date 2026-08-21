@@ -27,6 +27,20 @@ export interface SupercronicSupervisorOptions {
   onFatal?: (error: Error) => void
 }
 
+export interface SupercronicSupervisorSnapshot {
+  schemaVersion: "supercronic-supervisor-snapshot-v1"
+  daemonPid: number
+  childCount: 1
+  childPid: number
+  healthy: true
+  binaryPath: string
+  args: ["-split-logs", "-inotify", string]
+  crontabPath: string
+  namespace: string
+  manifest: ScheduledTaskJob[]
+  renderedCrontab: string
+}
+
 const NAMESPACE = /^(?:habit|await):[a-z0-9](?:[a-z0-9._-]{0,62})$/u
 const SAFE_JOB = /^[^\r\n\0]+$/u
 const RESTART_DELAYS_MS = [1_000, 5_000, 15_000] as const
@@ -130,6 +144,28 @@ export class SupercronicSupervisor {
     if (!this.isHealthy()) return ""
     const expected = this.renderedContent()
     try { return this.deps.readFile(this.crontabPath) === expected ? expected : "" } catch { return "" }
+  }
+
+  authenticatedSnapshot(namespace: string): SupercronicSupervisorSnapshot {
+    if (!NAMESPACE.test(namespace)) throw new Error(`invalid Supercronic namespace: ${namespace}`)
+    if (!this.isHealthy() || typeof this.child?.pid !== "number") throw new Error("Supercronic supervisor has no healthy child")
+    const manifest = this.manifests.get(namespace)
+    if (!manifest) throw new Error(`Supercronic supervisor has no manifest for ${namespace}`)
+    const renderedCrontab = this.verificationOutput()
+    if (renderedCrontab.length === 0) throw new Error("Supercronic supervisor crontab is not verified")
+    return {
+      schemaVersion: "supercronic-supervisor-snapshot-v1",
+      daemonPid: process.pid,
+      childCount: 1,
+      childPid: this.child.pid,
+      healthy: true,
+      binaryPath: this.binaryPath,
+      args: ["-split-logs", "-inotify", this.crontabPath],
+      crontabPath: this.crontabPath,
+      namespace,
+      manifest: [...manifest.values()].sort((left, right) => left.id.localeCompare(right.id)).map((job) => structuredClone(job)),
+      renderedCrontab,
+    }
   }
 
   isHealthy(): boolean {

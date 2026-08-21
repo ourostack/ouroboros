@@ -1,5 +1,6 @@
 import { pathToFileURL } from "node:url"
 import { EventEmitter } from "node:events"
+import { createHash, createHmac } from "node:crypto"
 import * as fs from "node:fs"
 import * as path from "node:path"
 
@@ -103,7 +104,8 @@ interface BrokerModule {
   healthProbeDockerArgs(mode: "run" | "stop" | "recover", input: Record<string, string>): string[]
   healthProbeArtifactDisposition(artifacts: { receipt: unknown; workspace: unknown; pending: unknown }): "complete" | "recovery_required" | "absent"
   healthProbeOperationBudgets(): { startMaxMs: number; completeStatusMaxMs: number; recoveryMaxMs: number; composedCaptureMaxMs: number }
-  requireHealthProbeCompleteAttestation(receipt: Record<string, unknown>, snapshot: Record<string, unknown>, request: Record<string, string>): void
+  requireHealthProbeCompleteAttestation(receipt: Record<string, unknown>, snapshot: Record<string, unknown>, request: Record<string, string>, readIdentityKey?: () => string): void
+  finalizeHealthProbeAfterAttestation(receipt: Record<string, unknown>, snapshot: Record<string, unknown>, request: Record<string, string>, finalize: () => void, readIdentityKey?: () => string): void
   requireStableHealthProbeOwner(before: Record<string, string>, after: Record<string, string>): void
   terminateHealthProbeChild(record: HealthProbeRecord, options?: { termGraceMs?: number; killGraceMs?: number }): Promise<void>
   recoverAfterHealthProbeTermination<T>(record: HealthProbeRecord, recovery: () => T | Promise<T>, options?: { termGraceMs?: number; killGraceMs?: number }): Promise<T>
@@ -156,7 +158,8 @@ async function broker(): Promise<BrokerModule> {
     healthProbeDockerArgs(mode: "run" | "stop" | "recover", input: Record<string, string>): string[]
     healthProbeArtifactDisposition(artifacts: { receipt: unknown; workspace: unknown; pending: unknown }): "complete" | "recovery_required" | "absent"
     healthProbeOperationBudgets(): { startMaxMs: number; completeStatusMaxMs: number; recoveryMaxMs: number; composedCaptureMaxMs: number }
-    requireHealthProbeCompleteAttestation(receipt: Record<string, unknown>, snapshot: Record<string, unknown>, request: Record<string, string>): void
+    requireHealthProbeCompleteAttestation(receipt: Record<string, unknown>, snapshot: Record<string, unknown>, request: Record<string, string>, readIdentityKey?: () => string): void
+    finalizeHealthProbeAfterAttestation(receipt: Record<string, unknown>, snapshot: Record<string, unknown>, request: Record<string, string>, finalize: () => void, readIdentityKey?: () => string): void
     requireStableHealthProbeOwner(before: Record<string, string>, after: Record<string, string>): void
     terminateHealthProbeChild(record: HealthProbeRecord, options?: { termGraceMs?: number; killGraceMs?: number }): Promise<void>
     recoverAfterHealthProbeTermination<T>(record: HealthProbeRecord, recovery: () => T | Promise<T>, options?: { termGraceMs?: number; killGraceMs?: number }): Promise<T>
@@ -819,11 +822,77 @@ describe("Sanctuary Unit 16 host broker", () => {
       beforeStateDigest: "d".repeat(64), restoredStateDigest: "d".repeat(64), cronFingerprintBefore: "e".repeat(64), cronFingerprintAfter: "e".repeat(64),
       cronRegisteredBefore: true, cronRegisteredAfter: true, cronDegradedBefore: false, cronDegradedAfter: false, fixtureSequenceDigest: "f".repeat(64),
       clockMode: "ambient", effectiveNow: "2026-08-20T17:00:00.000Z", phases: [], providerInvocationCount: 0, privateTurnCount: 0, deliveryCount: 0,
-      workspaceAbsent: true, socketAbsent: true, snapshotAbsent: true, realCheckEquivalent: true, productionRestored: true,
+      workspaceAbsent: true, socketAbsent: true, snapshotAbsent: true, realCheckEquivalent: true, productionRestored: true, schedulerReceipt: null,
     }
     const snapshot = { imageId: `sha256:${"b".repeat(64)}`, containerId: "c".repeat(64), running: true, health: "healthy", ...mutation }
     expect(() => requireHealthProbeCompleteAttestation(receipt, snapshot, request)).toThrow(/complete attestation/u)
     expect(() => requireHealthProbeCompleteAttestation(receipt, { imageId: `sha256:${"b".repeat(64)}`, containerId: "c".repeat(64), running: true, health: "healthy" }, request)).not.toThrow()
+  })
+
+  it("verifies the scheduler receipt MAC before accepting complete Unit16f evidence", async () => {
+    const { requireHealthProbeCompleteAttestation } = await broker()
+    const key = "k".repeat(43)
+    const request = { label: "unit-16f-cron-fingerprint", scenarioHandleDigest: "a".repeat(64) }
+    const slot = "2026-08-20T17:00:00.000Z"
+    const occurrenceId = `cron:${slot}`
+    const command = "/usr/local/bin/node /opt/ouro/dist/heart/daemon/ouro-entry.js poke sanctuary --habit sanctuary-health --trigger cron"
+    const unsignedScheduler = {
+      schemaVersion: "sanctuary-scheduler-liveness-receipt-v1", label: request.label, trigger: "cron", scenarioHandleDigest: request.scenarioHandleDigest,
+      occurrenceId, runnerId: "11111111-1111-4111-8111-111111111111", recordedAt: "2026-08-20T17:00:01.000Z",
+      before: { sweepCount: 10, deliveryCount: 4 }, after: { sweepCount: 11, deliveryCount: 4 }, sweepDelta: 1, deliveryDelta: 0,
+      providerInvocationCount: 0, privateTurnCount: 0, nonReplay: true,
+      sweep: { recordDigest: "d".repeat(64), opened: 0, recovered: 0, digestDue: false, deliveryId: null },
+      supervisor: {
+        schemaVersion: "supercronic-supervisor-snapshot-v1", daemonPid: 1, childCount: 1, childPid: 42, healthy: true,
+        binaryPath: "/usr/local/bin/supercronic", args: ["-split-logs", "-inotify", "/home/ouro/.ouro-cli/scheduler/sanctuary.crontab"],
+        crontabPath: "/home/ouro/.ouro-cli/scheduler/sanctuary.crontab", namespace: "habit:sanctuary",
+        manifest: [{ id: "sanctuary:sanctuary-health", agent: "sanctuary", taskId: "sanctuary-health", schedule: "*/15 * * * *", lastRun: null, command, taskPath: "/home/ouro/AgentBundles/sanctuary.ouro/habits/sanctuary-health.md" }],
+        renderedCrontab: `# ouro:habit:sanctuary:sanctuary:sanctuary-health\n*/15 * * * * ${command}\n`,
+      },
+      schedulerOrigin: { slot, occurrenceId, schedulerRunId: "22222222-2222-4222-8222-222222222222", invocationPid: 43, parentPid: 42, parentStartTime: "8001", invocationStartTime: "9001", proofMac: "", scenarioHandleDigest: request.scenarioHandleDigest },
+    }
+    const { proofMac: _proofMac, ...originWithoutProof } = unsignedScheduler.schedulerOrigin
+    const schedulerCommand = { kind: "habit.scheduler-fire", agent: "sanctuary", habitName: "sanctuary-health", trigger: "cron", ...originWithoutProof }
+    unsignedScheduler.schedulerOrigin.proofMac = createHmac("sha256", key).update(JSON.stringify(schedulerCommand)).digest("hex")
+    const receiptMac = createHmac("sha256", key).update(`sanctuary-scheduler-liveness-receipt-v2\0${JSON.stringify(unsignedScheduler)}`).digest("hex")
+    const receipt = {
+      schemaVersion: "sanctuary-health-probe-receipt-v1", label: request.label, scenarioHandleDigest: request.scenarioHandleDigest,
+      ownerImageDigestBefore: "b".repeat(64), ownerImageDigestAfter: "b".repeat(64), ownerContainerDigestBefore: "c".repeat(64), ownerContainerDigestAfter: "c".repeat(64),
+      beforeStateDigest: "d".repeat(64), restoredStateDigest: "d".repeat(64), cronFingerprintBefore: "e".repeat(64), cronFingerprintAfter: "e".repeat(64),
+      cronRegisteredBefore: true, cronRegisteredAfter: true, cronDegradedBefore: false, cronDegradedAfter: false, fixtureSequenceDigest: createHash("sha256").update(JSON.stringify([])).digest("hex"),
+      clockMode: "ambient", effectiveNow: "2026-08-20T17:00:00.000Z",
+      phases: [{ ordinal: 1, name: "cron-unchanged", trigger: "cron", fixtureStatus: null, opened: 0, recovered: 0, digestDue: false, deliveryKind: null, sweepReceiptDigest: "d".repeat(64), deliveryReceiptDigest: null }],
+      providerInvocationCount: 0, privateTurnCount: 0, deliveryCount: 0,
+      workspaceAbsent: true, socketAbsent: true, snapshotAbsent: true, realCheckEquivalent: true, productionRestored: true,
+      schedulerReceipt: { ...unsignedScheduler, receiptMac },
+    }
+    const snapshot = { imageId: `sha256:${"b".repeat(64)}`, containerId: "c".repeat(64), running: true, health: "healthy" }
+    expect(() => requireHealthProbeCompleteAttestation(receipt, snapshot, request, () => key)).not.toThrow()
+    ;(receipt.schedulerReceipt as Record<string, unknown>).runnerId = "33333333-3333-4333-8333-333333333333"
+    expect(() => requireHealthProbeCompleteAttestation(receipt, snapshot, request, () => key)).toThrow(/complete attestation/u)
+  })
+
+  it("rejects signed sparse or semantically inconsistent scheduler evidence before finalization", async () => {
+    const { finalizeHealthProbeAfterAttestation, requireHealthProbeCompleteAttestation } = await broker()
+    const key = "k".repeat(43)
+    const request = { label: "unit-16f-cron-fingerprint", scenarioHandleDigest: "a".repeat(64) }
+    const slot = "2026-08-20T17:00:00.000Z"
+    const occurrenceId = `cron:${slot}`
+    const sparse = { schemaVersion: "sanctuary-scheduler-liveness-receipt-v1", trigger: "cron", scenarioHandleDigest: request.scenarioHandleDigest, occurrenceId, sweepDelta: 1, deliveryDelta: 0, nonReplay: true, runnerId: "11111111-1111-4111-8111-111111111111", schedulerOrigin: { slot, occurrenceId, schedulerRunId: "22222222-2222-4222-8222-222222222222", scenarioHandleDigest: request.scenarioHandleDigest } }
+    const schedulerReceipt = { ...sparse, receiptMac: createHmac("sha256", key).update(`sanctuary-scheduler-liveness-receipt-v2\0${JSON.stringify(sparse)}`).digest("hex") }
+    const receipt = {
+      schemaVersion: "sanctuary-health-probe-receipt-v1", label: request.label, scenarioHandleDigest: request.scenarioHandleDigest,
+      ownerImageDigestBefore: "b".repeat(64), ownerImageDigestAfter: "b".repeat(64), ownerContainerDigestBefore: "c".repeat(64), ownerContainerDigestAfter: "c".repeat(64),
+      beforeStateDigest: "d".repeat(64), restoredStateDigest: "d".repeat(64), cronFingerprintBefore: "e".repeat(64), cronFingerprintAfter: "e".repeat(64),
+      cronRegisteredBefore: true, cronRegisteredAfter: true, cronDegradedBefore: false, cronDegradedAfter: false, fixtureSequenceDigest: "f".repeat(64),
+      clockMode: "ambient", effectiveNow: "2026-08-20T17:00:00.000Z", phases: [], providerInvocationCount: 0, privateTurnCount: 0, deliveryCount: 0,
+      workspaceAbsent: true, socketAbsent: true, snapshotAbsent: true, realCheckEquivalent: true, productionRestored: true, schedulerReceipt,
+    }
+    const snapshot = { imageId: `sha256:${"b".repeat(64)}`, containerId: "c".repeat(64), running: true, health: "healthy" }
+    const finalize = vi.fn()
+    expect(() => requireHealthProbeCompleteAttestation(receipt, snapshot, request, () => key)).toThrow(/complete attestation/u)
+    expect(() => finalizeHealthProbeAfterAttestation(receipt, snapshot, request, finalize, () => key)).toThrow(/complete attestation/u)
+    expect(finalize).not.toHaveBeenCalled()
   })
 
   it.each([
@@ -838,7 +907,7 @@ describe("Sanctuary Unit 16 host broker", () => {
       beforeStateDigest: "d".repeat(64), restoredStateDigest: "d".repeat(64), cronFingerprintBefore: "e".repeat(64), cronFingerprintAfter: "e".repeat(64),
       cronRegisteredBefore: true, cronRegisteredAfter: true, cronDegradedBefore: false, cronDegradedAfter: false, fixtureSequenceDigest: "f".repeat(64),
       clockMode: "ambient", effectiveNow: "2026-08-20T17:00:00.000Z", phases: [], providerInvocationCount: 0, privateTurnCount: 0, deliveryCount: 0,
-      workspaceAbsent: true, socketAbsent: true, snapshotAbsent: true, realCheckEquivalent: true, productionRestored: true, ...mutation,
+      workspaceAbsent: true, socketAbsent: true, snapshotAbsent: true, realCheckEquivalent: true, productionRestored: true, schedulerReceipt: null, ...mutation,
     }
     expect(() => completeHealthProbeFromReceipt(request, {
       imageId: `sha256:${"b".repeat(64)}`, containerId: "c".repeat(64), running: true, health: "healthy",

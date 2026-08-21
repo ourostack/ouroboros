@@ -13,6 +13,7 @@ import {
   stopSanctuaryHealthAcceptanceProbeProcess,
   type SanctuaryHealthAcceptanceProbeInput,
 } from "../../senses/sanctuary-health-acceptance-probe"
+import { sanctuarySchedulerLivenessReceiptMac } from "../../heart/daemon/sanctuary-scheduler-liveness"
 
 const sha = (value: unknown): string => createHash("sha256").update(JSON.stringify(value)).digest("hex")
 const shaBytes = (value: string): string => createHash("sha256").update(value).digest("hex")
@@ -60,6 +61,22 @@ function setup(label: SanctuaryHealthAcceptanceProbeInput["label"]) {
     toolContext: healthyContext(),
     ambientFetch: vi.fn().mockResolvedValue(new Response(null, { status: 204 })) as typeof fetch,
     now: () => new Date("2026-08-18T17:00:00.000Z"),
+    identityKey: () => "k".repeat(43),
+    waitForSchedulerReceipt: async () => {
+      const state = JSON.parse(fs.readFileSync(statePath, "utf8"))
+      state.sweepReceipts.push({ sweepId: "scheduler-sweep", startedAt: "2026-08-18T17:00:00.000Z", completedAt: "2026-08-18T17:00:01.000Z", incidentDigest: sha({}), opened: 0, recovered: 0, digestDue: false, scenarioHandleDigest: input.scenarioHandleDigest })
+      fs.writeFileSync(statePath, `${JSON.stringify(state)}\n`)
+      const unsigned = {
+        schemaVersion: "sanctuary-scheduler-liveness-receipt-v1" as const, label: "unit-16f-cron-fingerprint" as const,
+        scenarioHandleDigest: input.scenarioHandleDigest, trigger: "cron" as const, occurrenceId: "cron:2026-08-18T17:00:00.000Z", runnerId: "11111111-1111-4111-8111-111111111111", recordedAt: "2026-08-18T17:00:01.000Z",
+        before: { sweepCount: 0, deliveryCount: 0 }, after: { sweepCount: 1, deliveryCount: 0 }, sweepDelta: 1 as const, deliveryDelta: 0 as const,
+        providerInvocationCount: 0 as const, privateTurnCount: 0 as const, sweep: { recordDigest: "d".repeat(64), opened: 0 as const, recovered: 0 as const, digestDue: false as const, deliveryId: null },
+        supervisor: { schemaVersion: "supercronic-supervisor-snapshot-v1" as const, daemonPid: 1, childCount: 1 as const, childPid: 42, healthy: true as const, binaryPath: "/usr/local/bin/supercronic", args: ["-split-logs", "-inotify", "/home/ouro/.ouro-cli/scheduler/sanctuary.crontab"] as ["-split-logs", "-inotify", string], crontabPath: "/home/ouro/.ouro-cli/scheduler/sanctuary.crontab", namespace: "habit:sanctuary", manifest: [], renderedCrontab: "canonical" },
+        schedulerOrigin: { slot: "2026-08-18T17:00:00.000Z", occurrenceId: "cron:2026-08-18T17:00:00.000Z", schedulerRunId: "22222222-2222-4222-8222-222222222222", invocationPid: 43, parentPid: 42, parentStartTime: "8001", invocationStartTime: "9001", proofMac: "c".repeat(64), scenarioHandleDigest: input.scenarioHandleDigest },
+        nonReplay: true as const,
+      }
+      return { ...unsigned, receiptMac: sanctuarySchedulerLivenessReceiptMac("k".repeat(43), unsigned) }
+    },
     runnerOptions: {
       credentials: () => ({ botToken: "test-token", authorizedChatId: "42" }),
       createApi: () => ({ request: vi.fn(async () => ({ message_id: ++messageId })), stop: vi.fn() }),
@@ -204,7 +221,7 @@ describe("packaged Sanctuary health acceptance probe", () => {
         ownerContainerDigestBefore: fixture.input.ownerContainerDigest,
         ownerContainerDigestAfter: fixture.input.ownerContainerDigest,
         beforeStateDigest: shaBytes(fixture.before),
-        restoredStateDigest: shaBytes(fixture.before),
+        restoredStateDigest: label === "unit-16f-cron-fingerprint" ? expect.stringMatching(/^[0-9a-f]{64}$/u) : shaBytes(fixture.before),
         clockMode,
         providerInvocationCount: providers,
         privateTurnCount: providers,
@@ -218,11 +235,13 @@ describe("packaged Sanctuary health acceptance probe", () => {
         snapshotAbsent: true,
         realCheckEquivalent: true,
         productionRestored: true,
+        schedulerReceipt: label === "unit-16f-cron-fingerprint" ? expect.objectContaining({ trigger: "cron", sweepDelta: 1, deliveryDelta: 0, nonReplay: true }) : null,
       })
       expect(receipt.phases).toHaveLength(phaseCount)
       expect(receipt.fixtureSequenceDigest).toBe(sha(receipt.phases.flatMap((phase) => phase.fixtureStatus === null ? [] : [phase.fixtureStatus])))
       expect(fixture.privateTurns()).toBe(providers)
-      expect(fs.readFileSync(fixture.statePath, "utf8")).toBe(fixture.before)
+      if (label === "unit-16f-cron-fingerprint") expect(JSON.parse(fs.readFileSync(fixture.statePath, "utf8")).sweepReceipts).toHaveLength(1)
+      else expect(fs.readFileSync(fixture.statePath, "utf8")).toBe(fixture.before)
       expect(fs.statSync(path.join(fixture.agentRoot, "state", "acceptance", "health-probe-receipts", `${fixture.input.scenarioHandleDigest}.json`)).mode & 0o777).toBe(0o600)
       expect(fs.existsSync(path.join(fixture.agentRoot, "state", "acceptance", "health-probe-workspaces", fixture.input.scenarioHandleDigest))).toBe(false)
       if (label === "unit-16f-cron-fingerprint") expect(receipt.phases[0]).toMatchObject({ name: "cron-unchanged", trigger: "cron", fixtureStatus: null, opened: 0, recovered: 0, digestDue: false, deliveryKind: null, deliveryReceiptDigest: null })
@@ -265,6 +284,46 @@ describe("packaged Sanctuary health acceptance probe", () => {
     } finally {
       fs.rmSync(fixture.agentRoot, { recursive: true, force: true })
     }
+  })
+
+  it("never rolls back a Unit16f scheduler sweep when receipt verification fails after the wait", async () => {
+    const fixture = setup("unit-16f-cron-fingerprint")
+    const originalWait = fixture.deps.waitForSchedulerReceipt
+    fixture.deps.waitForSchedulerReceipt = async (...args) => ({
+      ...await originalWait(...args),
+      providerInvocationCount: 1 as 0,
+    })
+    try {
+      await expect(runSanctuaryHealthAcceptanceProbe(fixture.input, fixture.deps)).rejects.toThrow(/receipt is invalid/u)
+      const state = JSON.parse(fs.readFileSync(fixture.statePath, "utf8"))
+      expect(state.sweepReceipts).toHaveLength(1)
+      expect(state.sweepReceipts[0]).toMatchObject({ sweepId: "scheduler-sweep", scenarioHandleDigest: fixture.input.scenarioHandleDigest })
+    } finally { fs.rmSync(fixture.agentRoot, { recursive: true, force: true }) }
+  })
+
+  it("recovers a crashed Unit16f waiter without restoring its stale shared-state snapshot", async () => {
+    const fixture = setup("unit-16f-cron-fingerprint")
+    const workspace = path.join(fixture.agentRoot, "state", "acceptance", "health-probe-workspaces", fixture.input.scenarioHandleDigest)
+    fs.mkdirSync(workspace, { recursive: true, mode: 0o700 })
+    fs.writeFileSync(path.join(workspace, "snapshot.json"), `${JSON.stringify({ exists: true, bytes: Buffer.from(fixture.before).toString("base64") })}\n`, { mode: 0o600 })
+    fs.writeFileSync(path.join(workspace, "checkpoint.json"), `${JSON.stringify({ schemaVersion: 1, ownerImageDigest: fixture.input.ownerImageDigest, ownerContainerDigest: fixture.input.ownerContainerDigest })}\n`, { mode: 0o600 })
+    const state = initialState()
+    state.sweepReceipts.push({ sweepId: "scheduler-sweep", opened: 0, recovered: 0, digestDue: false, scenarioHandleDigest: fixture.input.scenarioHandleDigest } as never)
+    fs.writeFileSync(fixture.statePath, `${JSON.stringify(state)}\n`)
+    try {
+      await expect(recoverSanctuaryHealthAcceptanceProbe(fixture.input, fixture.deps)).resolves.toEqual({ recovered: true })
+      expect(JSON.parse(fs.readFileSync(fixture.statePath, "utf8")).sweepReceipts).toHaveLength(1)
+      expect(fs.existsSync(workspace)).toBe(false)
+    } finally { fs.rmSync(fixture.agentRoot, { recursive: true, force: true }) }
+  })
+
+  it("fails closed without fabricating or restoring an absent Unit16f observer state", async () => {
+    const fixture = setup("unit-16f-cron-fingerprint")
+    fs.unlinkSync(fixture.statePath)
+    try {
+      await expect(runSanctuaryHealthAcceptanceProbe(fixture.input, fixture.deps)).rejects.toThrow(/observer state is absent/u)
+      expect(fs.existsSync(fixture.statePath)).toBe(false)
+    } finally { fs.rmSync(fixture.agentRoot, { recursive: true, force: true }) }
   })
 
   it("withholds the final receipt until an independently observed owner is attested", async () => {
