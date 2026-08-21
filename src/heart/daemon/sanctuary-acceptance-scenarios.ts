@@ -73,18 +73,18 @@ export interface SanctuaryScenarioFacts {
   approvals: SanctuaryScenarioApproval[]
   restartAttempts: SanctuaryScenarioRestartAttempt[]
   telegramTurns: SanctuaryScenarioTelegramTurnReceipt[]
-  identity?: { keyPresent: boolean; subjectOpaque: boolean; rawIdentityAbsent: boolean; liveSubjectObserved: boolean; inspectedRecordCount?: number; opaqueSubjectCount?: number; mismatchCount?: number; rawLeakCount?: number }
+  identity?: { keyPresent: boolean; subjectOpaque: boolean; rawIdentityAbsent: boolean; liveSubjectObserved: boolean; inspectedRecordCount?: number; opaqueSubjectCount?: number; mismatchCount?: number; rawLeakCount?: number; surfaceDigest?: string }
   container?: {
     exactImage: boolean; running: boolean; healthy: boolean; user: string; readOnlyRoot: boolean
     mountCount: number; publishedPortCount: number; restartPolicy: string; restartCount: number
     autostartExact: boolean; updaterDisabled: boolean; vaultUnlocked: boolean; manualAuthRequired: boolean
   }
-  provider?: { outwardReady: boolean; innerReady: boolean; geminiCandidateReady: boolean; providersDistinct: boolean; silentFallback: boolean; credentialRevisionsPresent?: boolean; requestSemanticsExact?: boolean; fallbackAttemptCount?: number }
+  provider?: { outwardReady: boolean; innerReady: boolean; geminiCandidateReady: boolean; providersDistinct: boolean; silentFallback: boolean; credentialRevisionsPresent?: boolean; requestSemanticsExact?: boolean; fallbackAttemptCount?: number; pingReceipts?: Array<Record<string, unknown>> }
   cron?: { registered: boolean; fingerprint: string; receiptDigest: string; sweepCount: number }
   health?: { transitionCount: number; alertCount: number; productionRestored: boolean }
   digest?: { scheduleObserved: boolean; messageCount: number; firedWithinMs: number; productionRestored: boolean }
   reboot?: { requestDigest: string; requestCount: number; checkpointPersisted: boolean; unrelatedHostOperations: number; bootIdentityChanged: boolean; hostReady: boolean; arrayReady: boolean; dockerReady: boolean; butlerReady: boolean; tailscaleReady: boolean; sshReady: boolean }
-  containment?: { auditComplete: boolean; readOnlyBoundaryHeld: boolean; sensitiveMaterialObserved: boolean; stopDenied: boolean; restartDenied: boolean; denialAuditCount: number }
+  containment?: { auditComplete: boolean; readOnlyBoundaryHeld: boolean; sensitiveMaterialObserved: boolean; stopDenied: boolean; restartDenied: boolean; denialAuditCount: number; denialStateUnchanged?: boolean; denialProbeCompleted?: boolean }
 }
 
 export interface SanctuaryScenarioCaptureDependencies {
@@ -216,8 +216,8 @@ export function deriveSanctuaryScenarioAssertions(
     case "unit-16e-1-stop-denial":
     case "unit-16e-2-restart-denial": {
       const denied = label === "unit-16e-1-stop-denial" ? after.containment?.stopDenied : after.containment?.restartDenied
-      if (denied !== true || after.containment?.denialAuditCount !== 1 || mutationCount !== 0) return null
-      return { auditDecisionCount: after.containment.denialAuditCount, denied, mutationCount, resumed: true }
+      if (denied !== true || after.containment?.denialAuditCount !== 1 || after.containment.denialStateUnchanged !== true || after.containment.denialProbeCompleted !== true || scenarioMutationCount !== 0) return null
+      return { auditDecisionCount: after.containment.denialAuditCount, denied, mutationCount, resumed: after.containment.denialProbeCompleted }
     }
     case "unit-16f-cron-fingerprint":
       if (!before.cron || !after.cron || after.cron.sweepCount <= before.cron.sweepCount || before.cron.fingerprint !== after.cron.fingerprint || before.cron.receiptDigest !== after.cron.receiptDigest || telegramResponses !== 0 || delta(after, before, "senses.telegram_turn_start") !== 0 || !after.cron.registered) return null

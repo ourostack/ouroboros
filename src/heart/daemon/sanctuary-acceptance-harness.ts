@@ -550,11 +550,11 @@ export const SANCTUARY_SCENARIO_GATES: Record<SanctuaryUnit16EvidenceLabel, Sanc
 
 type SanctuaryScenarioSource = "identity-key" | "telegram-audit" | "telegram-offset" | "approval-journal"
   | "approval-checkpoints" | "container-inspect" | "provider-live-check" | "cron-runtime"
-  | "health-runtime" | "digest-runtime" | "reboot-checkpoint" | "restart-attempt-ledger" | "telegram-turn-receipts"
+  | "health-runtime" | "digest-runtime" | "reboot-checkpoint" | "restart-attempt-ledger" | "telegram-turn-receipts" | "read-only-denial-receipt" | "containment-audit" | "identity-surface-audit"
 
 export const SANCTUARY_SCENARIO_SOURCES: Record<SanctuaryUnit16EvidenceLabel, SanctuaryScenarioSource[]> = {
-  "unit-12c-1-opaque-identity": ["identity-key", "approval-journal"],
-  "unit-14b-3-opaque-identity-live": ["identity-key", "telegram-audit", "approval-journal", "telegram-turn-receipts"],
+  "unit-12c-1-opaque-identity": ["identity-key", "identity-surface-audit", "approval-journal"],
+  "unit-14b-3-opaque-identity-live": ["identity-key", "identity-surface-audit", "telegram-audit", "approval-journal", "telegram-turn-receipts"],
   "unit-15c-1-no-callback-terminalization": ["telegram-audit", "approval-journal", "approval-checkpoints", "container-inspect"],
   "unit-16a-pre-reboot-checkpoint": ["telegram-audit", "telegram-offset", "approval-journal", "container-inspect", "cron-runtime"],
   "unit-16a-reboot-request": ["reboot-checkpoint"],
@@ -564,9 +564,9 @@ export const SANCTUARY_SCENARIO_SOURCES: Record<SanctuaryUnit16EvidenceLabel, Sa
   "unit-16d-whats-up": ["telegram-audit", "telegram-offset", "telegram-turn-receipts"],
   "unit-16d-1-space": ["telegram-audit", "telegram-offset", "telegram-turn-receipts", "restart-attempt-ledger", "container-inspect"],
   "unit-16d-2-unauthorized": ["telegram-audit", "telegram-offset", "telegram-turn-receipts", "approval-journal", "restart-attempt-ledger", "container-inspect"],
-  "unit-16e-containment-audit": ["telegram-audit", "container-inspect"],
-  "unit-16e-1-stop-denial": ["telegram-audit", "approval-journal", "container-inspect"],
-  "unit-16e-2-restart-denial": ["telegram-audit", "approval-journal", "container-inspect"],
+  "unit-16e-containment-audit": ["telegram-audit", "container-inspect", "containment-audit"],
+  "unit-16e-1-stop-denial": ["read-only-denial-receipt", "container-inspect"],
+  "unit-16e-2-restart-denial": ["read-only-denial-receipt", "container-inspect"],
   "unit-16f-cron-fingerprint": ["cron-runtime", "telegram-audit"],
   "unit-16g-health-transition": ["health-runtime", "telegram-audit", "container-inspect"],
   "unit-16h-daily-digest": ["digest-runtime", "cron-runtime", "telegram-audit"],

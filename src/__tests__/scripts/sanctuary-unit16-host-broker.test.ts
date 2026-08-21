@@ -45,6 +45,8 @@ describe("Sanctuary Unit 16 host broker", () => {
       mountCount: 2, mountsDigest: "c".repeat(64), publishedPortCount: 0,
       networkMode: "host", restartPolicy: "no", restartCount: 3,
       autostartExact: true, updaterDisabled: true, vaultUnlocked: true, manualAuthRequired: false,
+      mountsExact: true, securityExact: true, writableKeyExposure: false,
+      recoveryMilestones: { hostReady: true, arrayReady: true, dockerReady: true, butlerReady: true, tailscaleReady: true, sshReady: true },
     }
     await expect(dispatch({ operation: "container_snapshot", targetId: "sanctuary" }, {
       readBootId: () => { throw new Error("unexpected boot read") },

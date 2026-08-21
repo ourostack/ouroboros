@@ -107,12 +107,16 @@ prepare_live_facts() {
   /usr/local/bin/node -e '
       const fs = require("node:fs");
       const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-      const expectedKeys = ["autostartExact", "containerId", "health", "imageId", "manualAuthRequired", "mountCount", "mountsDigest", "networkMode", "publishedPortCount", "readOnlyRoot", "restartCount", "restartPolicy", "running", "schemaVersion", "updaterDisabled", "user", "vaultUnlocked"];
+      const expectedKeys = ["autostartExact", "containerId", "health", "imageId", "manualAuthRequired", "mountCount", "mountsDigest", "mountsExact", "networkMode", "publishedPortCount", "readOnlyRoot", "recoveryMilestones", "restartCount", "restartPolicy", "running", "schemaVersion", "securityExact", "updaterDisabled", "user", "vaultUnlocked", "writableKeyExposure"];
       if (JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(expectedKeys) || value.schemaVersion !== 1
         || value.imageId !== process.argv[2] || !/^[0-9a-f]{64}$/.test(value.containerId)
         || !/^[0-9a-f]{64}$/.test(value.mountsDigest) || !Number.isSafeInteger(value.restartCount) || value.restartCount < 0
         || typeof value.autostartExact !== "boolean" || typeof value.updaterDisabled !== "boolean"
-        || typeof value.vaultUnlocked !== "boolean" || typeof value.manualAuthRequired !== "boolean") process.exit(1);
+        || typeof value.vaultUnlocked !== "boolean" || typeof value.manualAuthRequired !== "boolean"
+        || typeof value.mountsExact !== "boolean" || typeof value.securityExact !== "boolean" || typeof value.writableKeyExposure !== "boolean") process.exit(1);
+      const milestones = value.recoveryMilestones;
+      if (!milestones || JSON.stringify(Object.keys(milestones).sort()) !== JSON.stringify(["arrayReady", "butlerReady", "dockerReady", "hostReady", "sshReady", "tailscaleReady"])
+        || !Object.values(milestones).every((entry) => typeof entry === "boolean")) process.exit(1);
       fs.writeFileSync(process.argv[3], `${value.imageId.slice("sha256:".length)}\n`);
       fs.writeFileSync(process.argv[4], `${value.containerId}\n`);
       fs.writeFileSync(process.argv[5], `${JSON.stringify({ healthy: value.health === "healthy" })}\n`);

@@ -14,6 +14,9 @@ const AUTOSTART_FILE = "/var/lib/docker/unraid-autostart"
 const RUNTIME_POLICY_FILE = "/opt/ouro/container-runtime.json"
 const GRAPHQL_ENDPOINT = "http://127.0.0.1/graphql"
 const BOOT_ID = "/proc/sys/kernel/random/boot_id"
+const MDCMD = "/usr/local/sbin/mdcmd"
+const TAILSCALE = "/usr/bin/tailscale"
+const PGREP = "/usr/bin/pgrep"
 const TARGET_SERVER = "sanctuary-unraid"
 const TARGET_HOST = "sanctuary"
 const KEY_ID = /^[A-Za-z0-9._:-]+$/u
@@ -172,9 +175,28 @@ function vaultStatus(running, healthy) {
   return parseVaultStatus(result.stdout ?? "", !result.error && result.status === 0)
 }
 
+function recoveryMilestones(running, healthy) {
+  const array = spawnSync(MDCMD, ["status"], { cwd: "/", encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "ignore"] })
+  const tailscale = spawnSync(TAILSCALE, ["status", "--json"], { cwd: "/", encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "ignore"] })
+  const ssh = spawnSync(PGREP, ["-x", "sshd"], { cwd: "/", encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "ignore"] })
+  let tailscaleReady = false
+  try {
+    const status = object(JSON.parse(tailscale.stdout), "Tailscale status")
+    tailscaleReady = !tailscale.error && tailscale.status === 0 && status.BackendState === "Running"
+  } catch { tailscaleReady = false }
+  return {
+    hostReady: /^[A-Za-z0-9-]{4,128}$/u.test(readFileSync(BOOT_ID, "utf8").trim()),
+    arrayReady: !array.error && array.status === 0 && /^mdState=STARTED$/mu.test(array.stdout),
+    dockerReady: true,
+    butlerReady: running && healthy,
+    tailscaleReady,
+    sshReady: !ssh.error && ssh.status === 0 && ssh.stdout.trim().length > 0,
+  }
+}
+
 async function containerSnapshot(expectedImage) {
   text(expectedImage, "expected image id", IMAGE_ID)
-  const template = '{"containerId":{{json .Id}},"imageId":{{json .Image}},"running":{{json .State.Running}},"health":{{json .State.Health.Status}},"user":{{json .Config.User}},"readOnlyRoot":{{json .HostConfig.ReadonlyRootfs}},"mounts":{{json .Mounts}},"ports":{{json .NetworkSettings.Ports}},"networkMode":{{json .HostConfig.NetworkMode}},"restartPolicy":{{json .HostConfig.RestartPolicy.Name}},"restartCount":{{json .RestartCount}}}'
+  const template = '{"containerId":{{json .Id}},"imageId":{{json .Image}},"running":{{json .State.Running}},"health":{{json .State.Health.Status}},"user":{{json .Config.User}},"readOnlyRoot":{{json .HostConfig.ReadonlyRootfs}},"mounts":{{json .Mounts}},"ports":{{json .NetworkSettings.Ports}},"networkMode":{{json .HostConfig.NetworkMode}},"restartPolicy":{{json .HostConfig.RestartPolicy.Name}},"restartCount":{{json .RestartCount}},"privileged":{{json .HostConfig.Privileged}},"capAdd":{{json .HostConfig.CapAdd}},"securityOpt":{{json .HostConfig.SecurityOpt}}}'
   const result = spawnSync(DOCKER, ["inspect", "--format", template, PRODUCTION_CONTAINER], {
     cwd: "/", encoding: "utf8", timeout: 20_000, maxBuffer: 1024 * 1024,
     env: { PATH: "/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin" },
@@ -191,9 +213,17 @@ async function containerSnapshot(expectedImage) {
     const mount = object(raw, "container mount")
     return { destination: mount.Destination, mode: mount.Mode, propagation: mount.Propagation, rw: mount.RW, type: mount.Type }
   }).sort((left, right) => String(left.destination).localeCompare(String(right.destination))) : []
+  const expectedMounts = [
+    { destination: "/home/ouro/.ouro-cli", rw: true, type: "bind" },
+    { destination: "/home/ouro/AgentBundles/sanctuary.ouro", rw: true, type: "bind" },
+  ]
+  const mountsExact = mounts.length === expectedMounts.length && expectedMounts.every((expected) => mounts.some((mount) => mount.destination === expected.destination && mount.rw === expected.rw && mount.type === expected.type))
+  const securityExact = value.privileged === false && (value.capAdd === null || (Array.isArray(value.capAdd) && value.capAdd.length === 0))
+    && Array.isArray(value.securityOpt) && value.securityOpt.includes("no-new-privileges")
   const running = value.running === true
   const healthy = value.health === "healthy"
   const vault = vaultStatus(running, healthy)
+  const milestones = recoveryMilestones(running, healthy)
   return {
     schemaVersion: 1,
     containerId: text(value.containerId, "container id", /^[0-9a-f]{64}$/u),
@@ -204,13 +234,17 @@ async function containerSnapshot(expectedImage) {
     readOnlyRoot: value.readOnlyRoot === true,
     mountCount: mounts.length,
     mountsDigest: createHash("sha256").update(JSON.stringify(mounts)).digest("hex"),
+    mountsExact,
     publishedPortCount,
     networkMode: text(value.networkMode, "container network mode"),
+    securityExact,
+    writableKeyExposure: mounts.some((mount) => String(mount.destination).endsWith("docker.sock") || mount.destination === KEY_ROOT),
     restartPolicy: text(value.restartPolicy, "container restart policy"),
     restartCount: value.restartCount,
     autostartExact: autostartFileExact() && await queryGraphqlAutostart(),
     updaterDisabled: updaterDisabled(expectedImage),
     ...vault,
+    recoveryMilestones: milestones,
   }
 }
 

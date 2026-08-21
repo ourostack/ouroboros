@@ -2,7 +2,7 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { createServer } from "node:net"
-import { createHmac } from "node:crypto"
+import { createHash, createHmac } from "node:crypto"
 
 import { describe, expect, it, vi } from "vitest"
 import { openApprovalStore } from "../../../heart/approval-store"
@@ -188,6 +188,26 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     expect(facts.cron?.registered).toBe(true)
     expect(facts.containment?.sensitiveMaterialObserved).toBe(false)
     expect(JSON.stringify(facts.sourceValues)).not.toContain(credentials.botToken)
+    fs.rmSync(agentRoot, { recursive: true, force: true })
+  })
+
+  it("parses the real reboot checkpoint schema and binds live host recovery milestones", async () => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-reboot-facts-"))
+    const prebootDigest = "1".repeat(64)
+    const postbootDigest = "2".repeat(64)
+    const requestId = "3".repeat(64)
+    const files: Record<string, string> = {
+      "/evidence/reboot.json": JSON.stringify({ schemaVersion: 1, operation: "reboot", phase: "complete", targetId: "sanctuary", requestId, prebootDigest, postbootDigest, completedAt: 1 }),
+      "/run/ouro-acceptance/image-digest": "b".repeat(64),
+      "/opt/ouro/deploy/unraid/sanctuary.ouro/tool-profiles.json": JSON.stringify({ version: 1, profiles: { "sanctuary-telegram": ["unraid_list_containers", "unraid_get_container_logs", "unraid_get_storage", "unraid_get_disks", "unraid_get_notifications", "unraid_get_system", "unraid_restart_container", "ponder", "settle", "speak"] } }),
+    }
+    const facts = await readDefaultSanctuaryScenarioFacts("unit-16a-boot-recovery-milestones", "a".repeat(64), unit16Deps({
+      readFixedFile: (file) => { if (!(file in files)) throw Object.assign(new Error("missing"), { code: "ENOENT" }); return files[file]! },
+      hostRequest: async () => ({ imageId: `sha256:${"b".repeat(64)}`, running: true, health: "healthy", user: "10001:10001", readOnlyRoot: true, mountCount: 2, publishedPortCount: 0, restartPolicy: "unless-stopped", restartCount: 0, autostartExact: true, updaterDisabled: true, vaultUnlocked: true, manualAuthRequired: false, mountsExact: true, securityExact: true, networkMode: "host", writableKeyExposure: false, recoveryMilestones: { hostReady: true, arrayReady: true, dockerReady: true, butlerReady: true, tailscaleReady: true, sshReady: true } }),
+      now: () => 123_456,
+    }), agentRoot)
+    expect(facts.capturedAt).toBe(123_456)
+    expect(facts.reboot).toEqual({ requestDigest: createHash("sha256").update(requestId).digest("hex"), requestCount: 1, checkpointPersisted: true, unrelatedHostOperations: 0, bootIdentityChanged: true, hostReady: true, arrayReady: true, dockerReady: true, butlerReady: true, tailscaleReady: true, sshReady: true })
     fs.rmSync(agentRoot, { recursive: true, force: true })
   })
 

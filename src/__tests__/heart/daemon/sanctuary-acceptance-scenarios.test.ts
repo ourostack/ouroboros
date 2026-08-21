@@ -30,14 +30,14 @@ const base = (): SanctuaryScenarioFacts => ({
   events: [], approvals: [],
   restartAttempts: [],
   telegramTurns: [],
-  identity: { keyPresent: true, subjectOpaque: true, rawIdentityAbsent: true, liveSubjectObserved: true, inspectedRecordCount: 1, opaqueSubjectCount: 1, mismatchCount: 0, rawLeakCount: 0 },
+  identity: { keyPresent: true, subjectOpaque: true, rawIdentityAbsent: true, liveSubjectObserved: true, inspectedRecordCount: 1, opaqueSubjectCount: 1, mismatchCount: 0, rawLeakCount: 0, surfaceDigest: "a".repeat(64) },
   container: { exactImage: true, running: true, healthy: true, user: "10001:10001", readOnlyRoot: true, mountCount: 2, publishedPortCount: 0, restartPolicy: "unless-stopped", restartCount: 0, autostartExact: true, updaterDisabled: true, vaultUnlocked: true, manualAuthRequired: false },
   provider: { outwardReady: true, innerReady: true, geminiCandidateReady: true, providersDistinct: true, silentFallback: false, credentialRevisionsPresent: true, requestSemanticsExact: true, fallbackAttemptCount: 0 },
   cron: { registered: true, fingerprint: "a".repeat(64), receiptDigest: "b".repeat(64), sweepCount: 0 },
   health: { transitionCount: 0, alertCount: 0, productionRestored: true },
   digest: { scheduleObserved: true, messageCount: 0, firedWithinMs: 1_000, productionRestored: true },
   reboot: { requestDigest: "c".repeat(64), requestCount: 1, checkpointPersisted: true, unrelatedHostOperations: 0, bootIdentityChanged: true, hostReady: true, arrayReady: true, dockerReady: true, butlerReady: true, tailscaleReady: true, sshReady: true },
-  containment: { auditComplete: true, readOnlyBoundaryHeld: true, sensitiveMaterialObserved: false, stopDenied: true, restartDenied: true, denialAuditCount: 1 },
+  containment: { auditComplete: true, readOnlyBoundaryHeld: true, sensitiveMaterialObserved: false, stopDenied: true, restartDenied: true, denialAuditCount: 1, denialStateUnchanged: true, denialProbeCompleted: true },
 })
 
 afterEach(() => fs.rmSync(root, { recursive: true, force: true }))

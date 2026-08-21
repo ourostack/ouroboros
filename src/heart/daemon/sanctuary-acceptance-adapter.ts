@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process"
 import { createHash, createHmac, timingSafeEqual } from "node:crypto"
-import { readFileSync, readdirSync } from "node:fs"
+import { existsSync, readFileSync, readdirSync } from "node:fs"
 import { createConnection } from "node:net"
 
 import { emitNervesEvent } from "../../nerves/runtime"
@@ -8,6 +8,7 @@ import { createTelegramApprovalRuntime, type TelegramApprovalRuntime } from "../
 import { createTelegramBotApi, type TelegramBotApi, type TelegramUpdate } from "../../senses/telegram-client"
 import { loadTelegramSenseCredentials, readOrCreateTelegramIdentityKey, type TelegramSenseCredentials } from "../../senses/telegram"
 import { createSanctuaryToolContext } from "../../senses/sanctuary-runtime"
+import { resolveToolDefinition } from "../../repertoire/tools"
 import { getAgentRoot } from "../identity"
 import { readApprovalsByScenarioHandleDigest } from "../approval-store"
 import { readProviderCredentialRecord } from "../provider-credentials"
@@ -52,6 +53,7 @@ export interface SanctuaryAcceptanceAdapterDependencies {
   captureScenario?(payload: JsonObject): Promise<unknown>
   finalizeScenarios?(): void
   telegramCredentials?(): TelegramSenseCredentials
+  now?(): number
 }
 
 export interface SanctuaryAcceptanceVaultProbeDependencies {
@@ -76,6 +78,7 @@ const POSTBOOT_HEALTH_FILE = "/run/ouro-acceptance/postboot-health.json"
 const BOOT_ID_FILE = "/run/ouro-acceptance/boot-id"
 const TELEGRAM_POLLER_COUNT_FILE = "/run/ouro-acceptance/telegram-poller-count.json"
 const CONTRACT_FILE = "/opt/ouro/deploy/unraid/sanctuary-acceptance-contract.json"
+const SANCTUARY_TOOL_PROFILES_FILE = "/opt/ouro/deploy/unraid/sanctuary.ouro/tool-profiles.json"
 const CLOSED_INVENTORY_FILE = "/run/ouro-acceptance/closed-inventory.json"
 const HOST_BROKER_SOCKET = "/run/ouro-host-acceptance/adapter.sock"
 const MAX_BROKER_RESPONSE = 256 * 1024
@@ -310,7 +313,6 @@ export async function readDefaultSanctuaryScenarioFacts(
   const telegramTurnsRaw = optionalFixedFile(deps, pathFor(agentRoot, "state/acceptance/telegram-turns.ndjson")) ?? ""
   const cronRaw = optionalFixedFile(deps, "/home/ouro/.ouro-cli/scheduler/sanctuary.crontab")
   const healthRaw = optionalFixedFile(deps, pathFor(agentRoot, "state/health/sanctuary-health.json"))
-  const providerRaw = optionalFixedFile(deps, pathFor(agentRoot, "state/providers/readiness.json"))
   const agentConfig = parsedJson(optionalFixedFile(deps, pathFor(agentRoot, "agent.json")))
   const readinessPolicy = parsedJson(optionalFixedFile(deps, pathFor(agentRoot, "provider-readiness.json")))
   const rebootRaw = optionalFixedFile(deps, "/evidence/reboot.json")
@@ -318,28 +320,48 @@ export async function readDefaultSanctuaryScenarioFacts(
   let stopDenied = false
   let restartDenied = false
   let denialAuditCount = 0
+  let denialStateUnchanged = false
+  let denialProbeCompleted = false
+  let denialReceipt: JsonObject | null = null
   if (label === "unit-16e-1-stop-denial" || label === "unit-16e-2-restart-denial") {
     const runtime = readMachineRuntimeCredentialConfig(TARGET_ID)
     if (runtime.ok) {
       const endpoint = exactLoopbackGraphqlEndpoint(runtime.config.unraidGraphqlUrl)
       const readKey = text(runtime.config.unraidReadApiKey, "read-only Unraid credential")
+      const topologyQuery = "query AcceptanceDenialTarget { docker { containers(skipCache: true) { id names state status } } }"
+      const readTarget = async (): Promise<JsonObject> => {
+        const targetResponse = await deps.fetch(endpoint.href, { method: "POST", headers: { "content-type": "application/json", "x-api-key": readKey }, body: JSON.stringify({ query: topologyQuery, variables: {} }), signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS) })
+        const targetEnvelope = object(await targetResponse.json(), "read-only denial target response")
+        const docker = object(object(targetEnvelope.data, "read-only denial target data").docker, "read-only denial target docker")
+        if (!Array.isArray(docker.containers)) throw new Error("read-only denial target list is invalid")
+        const matches = docker.containers.map((entry) => object(entry, "read-only denial target")).filter((entry) => Array.isArray(entry.names) && entry.names.some((name) => name === "ouro-butler" || name === "/ouro-butler"))
+        if (matches.length !== 1 || typeof matches[0]!.id !== "string") throw new Error("read-only denial target is absent or ambiguous")
+        return matches[0]!
+      }
+      const beforeTarget = await readTarget()
+      const targetId = text(beforeTarget.id, "read-only denial target id")
       const query = label === "unit-16e-1-stop-denial"
         ? "mutation AcceptanceStopDenial($id: PrefixedID!) { docker { stop(id: $id) { id } } }"
         : WRITE_PROBE
-      const response = await deps.fetch(endpoint.href, { method: "POST", headers: { "content-type": "application/json", "x-api-key": readKey }, body: JSON.stringify({ query, variables: { id: MISSING_CONTAINER_ID } }), signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS) })
+      const response = await deps.fetch(endpoint.href, { method: "POST", headers: { "content-type": "application/json", "x-api-key": readKey }, body: JSON.stringify({ query, variables: { id: targetId } }), signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS) })
       const envelope = object(await response.json(), "read-only mutation denial response")
       const codes = Array.isArray(envelope.errors) ? envelope.errors.map((raw) => object(raw, "read-only denial error")).map((error) => {
         const extensions = error.extensions && typeof error.extensions === "object" && !Array.isArray(error.extensions) ? error.extensions as JsonObject : {}
         return extensions.code
       }) : []
       const denied = !envelope.data && (response.status === 403 || codes.includes("FORBIDDEN") || codes.includes("PERMISSION_DENIED"))
+      const afterTarget = await readTarget()
+      const beforeDigest = createHash("sha256").update(JSON.stringify(beforeTarget)).digest("hex")
+      const afterDigest = createHash("sha256").update(JSON.stringify(afterTarget)).digest("hex")
+      denialStateUnchanged = beforeDigest === afterDigest
+      denialProbeCompleted = true
+      denialReceipt = { operation: label === "unit-16e-1-stop-denial" ? "stop" : "restart", targetDigest: createHash("sha256").update(targetId).digest("hex"), beforeDigest, afterDigest, denied, probeCompleted: denialProbeCompleted }
       if (label === "unit-16e-1-stop-denial") stopDenied = denied
       else restartDenied = denied
       denialAuditCount = denied ? 1 : 0
     }
   }
   const auditLines = auditRaw.split("\n").filter(Boolean)
-  const auditComplete = auditLines.length > 0 && auditLines.every((line) => { try { object(JSON.parse(line) as unknown, "Telegram audit entry"); return true } catch { return false } })
   const auditEntries = auditLines.flatMap((line) => {
     try {
       const entry = object(JSON.parse(line) as unknown, "Telegram audit entry")
@@ -348,9 +370,15 @@ export async function readDefaultSanctuaryScenarioFacts(
       return [{ event: text(entry.event, "Telegram audit event"), at: Date.parse(text(entry.ts, "Telegram audit timestamp")), meta }]
     } catch { return [] }
   })
+  const expectedTelegramTools = ["unraid_list_containers", "unraid_get_container_logs", "unraid_get_storage", "unraid_get_disks", "unraid_get_notifications", "unraid_get_system", "unraid_restart_container", "ponder", "settle", "speak"]
+  const toolProfiles = parsedJson(optionalFixedFile(deps, SANCTUARY_TOOL_PROFILES_FILE))
+  const profiles = toolProfiles ? object(toolProfiles.profiles, "Sanctuary tool profiles") : null
+  const telegramProfile = profiles?.["sanctuary-telegram"]
+  const toolSurfaceExact = Array.isArray(telegramProfile) && JSON.stringify(telegramProfile) === JSON.stringify(expectedTelegramTools)
+    && expectedTelegramTools.every((name) => resolveToolDefinition(name) !== undefined)
   let approvalRecords = [] as ReturnType<typeof readApprovalsByScenarioHandleDigest>
-  try { approvalRecords = readApprovalsByScenarioHandleDigest(pathFor(agentRoot, "state/approvals/approvals.sqlite"), scenarioHandleDigest) }
-  catch (error) { if ((error as NodeJS.ErrnoException).code !== "SQLITE_CANTOPEN") throw error }
+  const approvalDatabasePath = pathFor(agentRoot, "state/approvals/approvals.sqlite")
+  if (existsSync(approvalDatabasePath)) approvalRecords = readApprovalsByScenarioHandleDigest(approvalDatabasePath, scenarioHandleDigest)
   const restartExecutionCount = auditEntries.filter((entry) => entry.event === "senses.telegram_approved_restart_end").length
   const approvals = approvalRecords.map(({ approval: record, continuation }) => {
     const boundEvents = auditEntries.filter((entry) => entry.meta.approvalId === record.approvalId)
@@ -436,11 +464,26 @@ export async function readDefaultSanctuaryScenarioFacts(
       opaqueSubjectCount: [...surfaceSubjects, ...observedSubjects, ...approvalSubjects].filter((subject) => subject === expectedSubject).length,
       mismatchCount,
       rawLeakCount,
+      surfaceDigest: createHash("sha256").update(JSON.stringify(surfaceRecords)).digest("hex"),
     }
   }
   const container = deps.hostRequest ? object(await deps.hostRequest({ operation: "container_snapshot", targetId: TARGET_ID }), "container snapshot") : null
+  const rebootCheckpoint = parsedJson(rebootRaw)
+  let reboot: SanctuaryScenarioFacts["reboot"]
+  if (rebootCheckpoint?.operation === "reboot" && ["requested", "complete"].includes(String(rebootCheckpoint.phase))
+    && typeof rebootCheckpoint.requestId === "string" && SHA256.test(rebootCheckpoint.requestId)
+    && typeof rebootCheckpoint.prebootDigest === "string" && SHA256.test(rebootCheckpoint.prebootDigest)) {
+    const milestones = container && container.recoveryMilestones && typeof container.recoveryMilestones === "object" && !Array.isArray(container.recoveryMilestones)
+      ? container.recoveryMilestones as JsonObject : {}
+    const complete = rebootCheckpoint.phase === "complete" && typeof rebootCheckpoint.postbootDigest === "string" && SHA256.test(rebootCheckpoint.postbootDigest)
+    reboot = {
+      requestDigest: createHash("sha256").update(rebootCheckpoint.requestId).digest("hex"), requestCount: 1, checkpointPersisted: true, unrelatedHostOperations: 0,
+      bootIdentityChanged: complete && rebootCheckpoint.postbootDigest !== rebootCheckpoint.prebootDigest,
+      hostReady: milestones.hostReady === true, arrayReady: milestones.arrayReady === true, dockerReady: milestones.dockerReady === true,
+      butlerReady: milestones.butlerReady === true, tailscaleReady: milestones.tailscaleReady === true, sshReady: milestones.sshReady === true,
+    }
+  }
   const health = parsedJson(healthRaw)
-  const provider = parsedJson(providerRaw)
   const healthSweeps = Array.isArray(health?.sweepReceipts) ? health.sweepReceipts.flatMap((raw) => {
     try {
       const receipt = object(raw, "health sweep receipt")
@@ -469,6 +512,11 @@ export async function readDefaultSanctuaryScenarioFacts(
       const outwardPing = glmConfig ? await pingProvider("openai-compatible", glmConfig, { model: outwardModel, timeoutMs: 10_000 }) : { ok: false as const }
       const innerPing = glmConfig ? await pingProvider("openai-compatible", glmConfig, { model: innerModel, timeoutMs: 10_000 }) : { ok: false as const }
       const geminiPing = geminiRecord.ok ? await pingProvider("openai-compatible-gemini", { ...geminiRecord.record.credentials, ...geminiRecord.record.config } as unknown as Parameters<typeof pingProvider>[1], { model: text(candidate.model, "Gemini candidate model"), timeoutMs: 10_000 }) : { ok: false as const }
+      const pingReceipts = [
+        { lane: "outward", provider: "openai-compatible", model: outwardModel, credentialRevision: glmRecord.ok ? glmRecord.record.revision : null, ok: outwardPing.ok, fallbackAttempted: false },
+        { lane: "inner", provider: "openai-compatible", model: innerModel, credentialRevision: glmRecord.ok ? glmRecord.record.revision : null, ok: innerPing.ok, fallbackAttempted: false },
+        { lane: "candidate", provider: "openai-compatible-gemini", model: text(candidate.model, "Gemini candidate model"), credentialRevision: geminiRecord.ok ? geminiRecord.record.revision : null, ok: geminiPing.ok, fallbackAttempted: false },
+      ]
       liveProvider = {
         outwardReady: outwardPing.ok,
         innerReady: innerPing.ok,
@@ -477,18 +525,21 @@ export async function readDefaultSanctuaryScenarioFacts(
         silentFallback: readinessPolicy.selectionPolicy !== "explicit-same-lane-only",
         credentialRevisionsPresent: glmRecord.ok && geminiRecord.ok && Boolean(glmRecord.record.revision) && Boolean(geminiRecord.record.revision),
         requestSemanticsExact: outwardConfig.provider === "openai-compatible" && innerConfig.provider === "openai-compatible" && candidate.provider === "openai-compatible-gemini",
-        fallbackAttemptCount: 0,
+        fallbackAttemptCount: pingReceipts.filter((receipt) => receipt.fallbackAttempted).length,
+        pingReceipts,
       }
     }
   }
   const sourceValues: Record<string, unknown> = {
     "identity-key": identityRaw, "telegram-audit": auditEntries, "telegram-offset": offsetRaw,
     "approval-journal": approvals, "approval-checkpoints": checkpointsRaw, "container-inspect": container,
-    "provider-live-check": provider, "cron-runtime": cronRaw, "health-runtime": health, "restart-attempt-ledger": restartAttempts,
-    "digest-runtime": health, "reboot-checkpoint": parsedJson(rebootRaw), "telegram-turn-receipts": telegramTurns,
+    "provider-live-check": liveProvider, "cron-runtime": cronRaw, "health-runtime": health, "restart-attempt-ledger": restartAttempts,
+    "digest-runtime": health, "reboot-checkpoint": rebootCheckpoint, "telegram-turn-receipts": telegramTurns, "read-only-denial-receipt": denialReceipt,
+    "identity-surface-audit": identity ? { inspectedRecordCount: identity.inspectedRecordCount, opaqueSubjectCount: identity.opaqueSubjectCount, mismatchCount: identity.mismatchCount, rawLeakCount: identity.rawLeakCount, surfaceDigest: identity.surfaceDigest } : null,
+    "containment-audit": { toolSurfaceExact, mountsExact: container?.mountsExact, securityExact: container?.securityExact, networkMode: container?.networkMode, writableKeyExposure: container?.writableKeyExposure },
   }
   return {
-    capturedAt: Date.now(),
+    capturedAt: deps.now?.() ?? Date.now(),
     sourceValues,
     events: auditEntries,
     approvals,
@@ -506,8 +557,13 @@ export async function readDefaultSanctuaryScenarioFacts(
     cron: cronRaw ? { registered: canonicalSanctuaryHealthCronRegistered(cronRaw), fingerprint: createHash("sha256").update(cronRaw).digest("hex"), receiptDigest: createHash("sha256").update(JSON.stringify(health?.deliveredReceipts ?? null)).digest("hex"), sweepCount: healthSweeps.length } : undefined,
     health: health ? { transitionCount: healthSweeps.filter((receipt) => Number(receipt.opened) > 0 || Number(receipt.recovered) > 0).length, alertCount: scenarioDeliveries.filter((receipt) => receipt.kind === "transition" || receipt.kind === "transition_and_digest").length, productionRestored: container?.running === true && container.health === "healthy" } : undefined,
     digest: health && digestFiredWithinMs !== null ? { scheduleObserved: Boolean(cronRaw && canonicalSanctuaryHealthCronRegistered(cronRaw)), messageCount: scenarioDeliveries.filter((receipt) => receipt.kind === "digest" || receipt.kind === "transition_and_digest").length, firedWithinMs: digestFiredWithinMs, productionRestored: container?.running === true && container.health === "healthy" } : undefined,
-    reboot: parsedJson(rebootRaw) as SanctuaryScenarioFacts["reboot"],
-    containment: { auditComplete, readOnlyBoundaryHeld: container?.readOnlyRoot === true, sensitiveMaterialObserved: auditContainsSensitiveMaterial(auditRaw), stopDenied, restartDenied, denialAuditCount },
+    reboot,
+    containment: {
+      auditComplete: Boolean(container && toolSurfaceExact && container.mountsExact === true && container.securityExact === true && container.networkMode === "host" && container.writableKeyExposure === false),
+      readOnlyBoundaryHeld: Boolean(container?.readOnlyRoot === true && container.mountsExact === true && container.securityExact === true),
+      sensitiveMaterialObserved: auditContainsSensitiveMaterial(auditRaw) || container?.writableKeyExposure === true,
+      stopDenied, restartDenied, denialAuditCount, denialStateUnchanged, denialProbeCompleted,
+    },
   }
 }
 
