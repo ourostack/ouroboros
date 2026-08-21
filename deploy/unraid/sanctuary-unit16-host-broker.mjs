@@ -286,6 +286,23 @@ function containerOwnerSnapshot(expectedImage) {
   }
 }
 
+function containerRestartSnapshot(expectedImage) {
+  text(expectedImage, "expected image id", IMAGE_ID)
+  const template = '{"containerId":{{json .Id}},"imageId":{{json .Image}},"running":{{json .State.Running}},"health":{{json .State.Health.Status}},"restartCount":{{json .RestartCount}}}'
+  const result = spawnSync(DOCKER, ["inspect", "--format", template, PRODUCTION_CONTAINER], {
+    cwd: "/", encoding: "utf8", timeout: 10_000, maxBuffer: 64 * 1024,
+    env: { PATH: "/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin" }, stdio: ["ignore", "pipe", "ignore"],
+  })
+  if (result.error || result.status !== 0) throw new Error("bounded production restart inspection failed")
+  const value = object(JSON.parse(result.stdout), "production restart inspection")
+  if (value.imageId !== expectedImage || !Number.isSafeInteger(value.restartCount) || value.restartCount < 0) throw new Error("production restart identity is invalid")
+  return {
+    imageId: expectedImage, containerId: text(value.containerId, "container id", SHA256),
+    running: value.running === true, health: text(value.health, "container health", /^(?:healthy|starting|unhealthy|missing)$/u),
+    restartCount: value.restartCount,
+  }
+}
+
 function recoveryPath(id) { return `${RECOVERY_ROOT}/${id}.json` }
 
 function persistRecovery(record) {
@@ -764,7 +781,7 @@ function runInteractiveDriver(input, dependencies = { run: spawnSync }) {
 }
 
 async function restartButlerForAcceptance(input, dependencies = {
-  snapshot: () => containerSnapshot(expectedImageId), run: spawnSync,
+  snapshot: () => containerRestartSnapshot(expectedImageId), run: spawnSync,
   sleep: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
 }) {
   canonicalInteractiveRequest(input, "unit-16m-restart-continuation")
@@ -860,7 +877,7 @@ async function driveRestartContinuation(input, dependencies = {
   persistReceipt: persistInteractiveReceipt,
   runtime: runInteractiveRuntimeOperation,
   restart: restartButlerForAcceptance,
-  snapshot: () => containerSnapshot(expectedImageId),
+  snapshot: () => containerRestartSnapshot(expectedImageId),
 }) {
   const value = canonicalInteractiveRequest(input, "unit-16m-restart-continuation")
   const existing = dependencies.readReceipt(value)

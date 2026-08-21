@@ -753,7 +753,7 @@ describe("Sanctuary Unit 16 host broker", () => {
     expect(source).toContain('const PRODUCTION_BUNDLE_SOURCE = "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro"')
     expect(source).toContain("mount.source === expected.source")
     expect(source).toContain('"vault", "status", "--agent", "sanctuary"')
-    expect(source.match(/spawnSync\(DOCKER, \["inspect"/gu)).toHaveLength(2)
+    expect(source.match(/spawnSync\(DOCKER, \["inspect"/gu)).toHaveLength(3)
     expect(source).toContain('const GRAPHQL_ENDPOINT = "http://127.0.0.1/graphql"')
     expect(source).toContain('chownSync(socket, 0, 10001)')
     expect(source).toContain('chmodSync(socket, 0o660)')
