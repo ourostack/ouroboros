@@ -69,6 +69,7 @@ const TELEGRAM_IDENTITY_KEY = /^[A-Za-z0-9_-]{43}$/u
 const TELEGRAM_SUBJECT = /^tg_[A-Za-z0-9_-]{43}$/u
 const TELEGRAM_SUBJECT_INDEX = "identity-subjects.json"
 const TELEGRAM_ACCEPTANCE_AUDIT_EVENTS = new Set([
+  "approval.acceptance_continuation_transition",
   "approval.acceptance_transition",
   "senses.sanctuary_health_delivered",
   "senses.sanctuary_read_receipt",
