@@ -43,7 +43,7 @@ describe("Sanctuary fixed deployment target", () => {
     expect(source).toContain("TARGET_PROFILE=staging")
     expect(source).toContain("PRODUCTION_CONTAINER=ouro-butler-staging")
     expect(source).toContain('"$TARGET_AUDITOR" "$TARGET_PROFILE" "$IMAGE_ID"')
-    expect(source).toContain('"$BROKER_PROGRAM" "$TARGET_PROFILE"')
+    expect(source).toContain('"$BROKER_PROGRAM" "$TARGET_PROFILE" "$TARGET_CONTAINER_ID"')
     expect(source).not.toMatch(/TARGET_CONTAINER=\$\{/u)
   })
 
@@ -87,6 +87,24 @@ describe("Sanctuary fixed deployment target", () => {
       readUnixSockets: () => [{ inode: "900", path: "/tmp/ouroboros-daemon.sock", flags: "00010000", type: "0001", state: "01" }],
     })).resolves.toMatchObject({ deployment: { targetContainerId: stagingId }, listeners: { inboundTcpListenerCount: 0, inboundUdpListenerCount: 0 } })
     expect(snapshots).toHaveLength(0)
+  })
+
+  it("makes the cgroup, descriptor, and protocol inventories the terminal observations", async () => {
+    const { runDeploymentTargetAudit } = await load()
+    const events: string[] = []
+    const records = input("staging").topologyBefore
+    await runDeploymentTargetAudit("staging", imageId, {
+      captureCanonicalRecords: () => { events.push("topology"); return records },
+      readNetns: () => { events.push("netns"); return "net:[42]" },
+      cgroupProcessIds: () => { events.push("membership"); return { path: `/docker/${stagingId}`, processIds: [321], threadIds: [321] } },
+      ownedSocketInodes: () => { events.push("fds"); return [] },
+      readTcpListeners: () => { events.push("tcp"); return [] },
+      readUdpListeners: () => { events.push("udp"); return [] },
+      readUnixSockets: () => { events.push("unix"); return [] },
+    })
+    expect(events.filter((event) => event === "topology")).toHaveLength(2)
+    expect(events.lastIndexOf("topology")).toBeLessThan(events.lastIndexOf("membership"))
+    expect(events.slice(events.lastIndexOf("topology") + 1)).toEqual(["membership", "fds", "tcp", "udp", "unix"])
   })
 
   it("pins canonical names to list-time IDs before the single inspect", async () => {

@@ -322,6 +322,7 @@ async function runDeploymentTargetAudit(profileName, expectedImageId, dependenci
   const udpListenersAfter = readUdp(provisional.targetPid)
   const unixSocketsAfter = readUnix(provisional.targetPid)
   const netnsAfter = readNetns(provisional.targetPid)
+  const after = await capture()
   const membershipTerminal = readMembership(provisional.targetPid, provisional.targetContainerId)
   const socketInodesTerminal = readSockets(membershipTerminal.threadIds)
   const tcpListenersTerminal = readTcp(provisional.targetPid)
@@ -332,7 +333,6 @@ async function runDeploymentTargetAudit(profileName, expectedImageId, dependenci
   if (!sameIds(processIdsBefore, membershipTerminal.processIds) || !sameIds(processIdsAfter, membershipTerminal.processIds)) throw new Error("target cgroup process membership changed")
   if (!sameIds(membershipBefore.threadIds, membershipTerminal.threadIds) || !sameIds(membershipAfter.threadIds, membershipTerminal.threadIds)) throw new Error("target cgroup thread membership changed")
   if (!exactSet(new Set(socketInodesBefore), new Set(socketInodesTerminal)) || !exactSet(new Set(socketInodesAfter), new Set(socketInodesTerminal))) throw new Error("target socket ownership changed")
-  const after = await capture()
   const deployment = attestDeploymentTarget({ profile: profileName, expectedImageId, topologyBefore: before, inspected: before, topologyAfter: after })
   const listeners = { ...attestOwnedListeners({ rootPid: deployment.targetPid, netnsBefore, netnsAfter, processIdsBefore, processIdsAfter, socketInodesBefore, socketInodesAfter, socketInodesTerminal, tcpListenersBefore, tcpListenersAfter, tcpListenersTerminal, udpListenersBefore, udpListenersAfter, udpListenersTerminal, unixSocketsBefore, unixSocketsAfter, unixSocketsTerminal }), cgroupPath: membershipTerminal.path, threadCount: membershipTerminal.threadIds.length }
   return { schemaVersion: "sanctuary-effective-deployment-v1", deployment, listeners }

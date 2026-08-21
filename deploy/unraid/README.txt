@@ -1132,8 +1132,11 @@ Packaged deployment-target containment gates:
   file autostart identity/state for every present canonical container,
   and exactly one running Butler, then repeats the canonical snapshot to reject
   races. It binds the target PID and exact Docker cgroup-v2 path to the inspected
-  container ID, scans every cgroup process, and requires stable before/after
-  process, owned-socket, and listener inventories. It rejects every owned UDP
+  container ID; Unit 16 carries that immutable ID into every launcher and broker
+  Docker operation and binds it to the GraphQL PrefixedID suffix. It scans every
+  cgroup process and requires stable before/after process, owned-socket, and
+  listener inventories. After the final topology capture, it repeats cgroup,
+  descriptor, TCP, UDP, and Unix inventories as the terminal observations. It rejects every owned UDP
   listener and every externally reachable owned TCP listener. Only loopback
   Mailbox port 6876 plus stream-listening endpoints at the fixed daemon and
   acceptance Unix control paths are permitted; all other named Unix endpoint

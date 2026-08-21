@@ -11,6 +11,7 @@ const RECOVERY_ROOT = "/mnt/user/appdata/ouro-butler/acceptance/revoked-key-proo
 const UNRAID_API = "/usr/local/sbin/unraid-api"
 const DOCKER = "/usr/bin/docker"
 let activeContainer = "ouro-butler"
+let activeContainerId = "0".repeat(64)
 let activeProfile = targetProfile("final")
 const AUTOSTART_FILE = "/var/lib/docker/unraid-autostart"
 const RUNTIME_POLICY_FILE = "/opt/ouro/container-runtime.json"
@@ -143,7 +144,8 @@ function autostartFileExact() {
     : counts.production === 1 && counts.staging === 0 && counts.rollback === 0 && counts.legacy === 0
 }
 
-async function queryGraphqlAutostart(records = inventoryRecords(), fetchImpl = fetch) {
+async function queryGraphqlAutostart(records = inventoryRecords(), fetchImpl = fetch, expectedContainerId = activeContainerId) {
+  text(expectedContainerId, "attested target container id", SHA256)
   const matches = records.filter((record) => record.name === "Butler RO" && record.roles.length === 0
     && JSON.stringify(flattened(record)) === JSON.stringify(RO_PERMISSIONS))
   if (matches.length !== 1) throw new Error("canonical read-only Unraid key is absent or ambiguous")
@@ -151,19 +153,24 @@ async function queryGraphqlAutostart(records = inventoryRecords(), fetchImpl = f
   const response = await fetchImpl(GRAPHQL_ENDPOINT, {
     method: "POST",
     headers: { "content-type": "application/json", "x-api-key": descriptor },
-    body: JSON.stringify({ query: "query AcceptanceContainerTopology { docker { containers(skipCache: true) { id names autoStart } } }", variables: {} }),
+    body: JSON.stringify({ query: "query AcceptanceContainerTopology { vars { id } docker { containers(skipCache: true) { id names autoStart } } }", variables: {} }),
     signal: AbortSignal.timeout(10_000),
   })
   if (!response.ok) throw new Error("Unraid container topology query failed")
   const envelope = object(await response.json(), "Unraid container topology response")
   if (envelope.errors || !envelope.data) throw new Error("Unraid container topology query was rejected")
-  const containers = object(object(envelope.data, "Unraid topology data").docker, "Unraid topology docker").containers
+  const data = object(envelope.data, "Unraid topology data")
+  const serverIdentity = /^([0-9a-f]{64}):vars$/u.exec(object(data.vars, "Unraid topology vars").id)
+  if (!serverIdentity) throw new Error("Unraid server identity is invalid")
+  const containers = object(data.docker, "Unraid topology docker").containers
   if (!Array.isArray(containers)) throw new Error("Unraid container topology is invalid")
   const production = containers.filter((raw) => {
     const container = object(raw, "Unraid topology container")
     return Array.isArray(container.names) && container.names.some((name) => name === activeContainer || name === `/${activeContainer}`)
   })
-  return production.length === 1 && production[0].autoStart === true
+  if (production.length !== 1) return false
+  const identity = typeof production[0].id === "string" ? /^([0-9a-f]{64}):([0-9a-f]{64})$/u.exec(production[0].id) : null
+  return Boolean(identity && identity[1] === serverIdentity[1] && identity[2] === expectedContainerId && production[0].autoStart === true)
 }
 
 function updaterDisabled(expectedImage) {
@@ -196,7 +203,7 @@ function parseVaultStatus(output, succeeded) {
 
 function vaultStatus(running, healthy) {
   if (!running || !healthy) return { vaultUnlocked: false, manualAuthRequired: true }
-  const result = spawnSync(DOCKER, ["exec", activeContainer, "node", "/opt/ouro/dist/heart/daemon/ouro-entry.js", "vault", "status", "--agent", "sanctuary", "--store", "plaintext-file"], {
+  const result = spawnSync(DOCKER, ["exec", activeContainerId, "node", "/opt/ouro/dist/heart/daemon/ouro-entry.js", "vault", "status", "--agent", "sanctuary", "--store", "plaintext-file"], {
     cwd: "/", encoding: "utf8", timeout: 30_000, maxBuffer: 1024 * 1024,
     env: { PATH: "/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin" }, stdio: ["ignore", "pipe", "ignore"],
   })
@@ -225,14 +232,14 @@ function recoveryMilestones(running, healthy) {
 async function containerSnapshot(expectedImage) {
   text(expectedImage, "expected image id", IMAGE_ID)
   const template = '{"containerId":{{json .Id}},"imageId":{{json .Image}},"running":{{json .State.Running}},"health":{{json .State.Health.Status}},"user":{{json .Config.User}},"readOnlyRoot":{{json .HostConfig.ReadonlyRootfs}},"mounts":{{json .Mounts}},"ports":{{json .NetworkSettings.Ports}},"networkMode":{{json .HostConfig.NetworkMode}},"restartPolicy":{{json .HostConfig.RestartPolicy.Name}},"restartCount":{{json .RestartCount}},"privileged":{{json .HostConfig.Privileged}},"capAdd":{{json .HostConfig.CapAdd}},"capDrop":{{json .HostConfig.CapDrop}},"securityOpt":{{json .HostConfig.SecurityOpt}}}'
-  const result = spawnSync(DOCKER, ["inspect", "--format", template, activeContainer], {
+  const result = spawnSync(DOCKER, ["inspect", "--format", template, activeContainerId], {
     cwd: "/", encoding: "utf8", timeout: 20_000, maxBuffer: 1024 * 1024,
     env: { PATH: "/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin" },
     stdio: ["ignore", "pipe", "ignore"],
   })
   if (result.error || result.status !== 0) throw new Error("bounded production container inspection failed")
   const value = object(JSON.parse(result.stdout), "production container inspection")
-  if (value.imageId !== expectedImage || !Number.isSafeInteger(value.restartCount) || value.restartCount < 0) {
+  if (value.containerId !== activeContainerId || value.imageId !== expectedImage || !Number.isSafeInteger(value.restartCount) || value.restartCount < 0) {
     throw new Error("production container identity is invalid")
   }
   const ports = object(value.ports ?? {}, "published ports")
@@ -306,13 +313,13 @@ function denialTargetSnapshot(dependencies = { run: spawnSync }) {
 function containerOwnerSnapshot(expectedImage) {
   text(expectedImage, "expected image id", IMAGE_ID)
   const template = '{"containerId":{{json .Id}},"imageId":{{json .Image}}}'
-  const result = spawnSync(DOCKER, ["inspect", "--format", template, activeContainer], {
+  const result = spawnSync(DOCKER, ["inspect", "--format", template, activeContainerId], {
     cwd: "/", encoding: "utf8", timeout: 10_000, maxBuffer: 64 * 1024,
     env: { PATH: "/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin" }, stdio: ["ignore", "pipe", "ignore"],
   })
   if (result.error || result.status !== 0) throw new Error("bounded production owner inspection failed")
   const value = object(JSON.parse(result.stdout), "production owner inspection")
-  if (value.imageId !== expectedImage) throw new Error("production owner identity is invalid")
+  if (value.containerId !== activeContainerId || value.imageId !== expectedImage) throw new Error("production owner identity is invalid")
   return {
     imageId: expectedImage,
     containerId: text(value.containerId, "container id", /^[0-9a-f]{64}$/u),
@@ -322,13 +329,13 @@ function containerOwnerSnapshot(expectedImage) {
 function containerRestartSnapshot(expectedImage) {
   text(expectedImage, "expected image id", IMAGE_ID)
   const template = '{"containerId":{{json .Id}},"imageId":{{json .Image}},"running":{{json .State.Running}},"health":{{json .State.Health.Status}},"restartCount":{{json .RestartCount}}}'
-  const result = spawnSync(DOCKER, ["inspect", "--format", template, activeContainer], {
+  const result = spawnSync(DOCKER, ["inspect", "--format", template, activeContainerId], {
     cwd: "/", encoding: "utf8", timeout: 10_000, maxBuffer: 64 * 1024,
     env: { PATH: "/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin" }, stdio: ["ignore", "pipe", "ignore"],
   })
   if (result.error || result.status !== 0) throw new Error("bounded production restart inspection failed")
   const value = object(JSON.parse(result.stdout), "production restart inspection")
-  if (value.imageId !== expectedImage || !Number.isSafeInteger(value.restartCount) || value.restartCount < 0) throw new Error("production restart identity is invalid")
+  if (value.containerId !== activeContainerId || value.imageId !== expectedImage || !Number.isSafeInteger(value.restartCount) || value.restartCount < 0) throw new Error("production restart identity is invalid")
   return {
     imageId: expectedImage, containerId: text(value.containerId, "container id", SHA256),
     running: value.running === true, health: text(value.health, "container health", /^(?:healthy|starting|unhealthy|missing)$/u),
@@ -385,7 +392,7 @@ function healthProbeDockerArgs(mode, input) {
   if (mode !== "run" && mode !== "stop" && mode !== "recover") throw new Error("health probe mode is invalid")
   const value = canonicalHealthProbeInput(input)
   return [
-    "exec", activeContainer, "/usr/local/bin/node", HEALTH_PROBE_ENTRY, mode,
+    "exec", activeContainerId, "/usr/local/bin/node", HEALTH_PROBE_ENTRY, mode,
     "--label", value.label,
     "--scenario", value.scenarioHandleDigest,
     "--owner-image", value.ownerImageDigest,
@@ -397,7 +404,7 @@ function healthProbeFinalizeDockerArgs(before, after) {
   const initial = canonicalHealthProbeInput(before)
   const observed = canonicalHealthProbeInput(after)
   return [
-    "exec", activeContainer, "/usr/local/bin/node", HEALTH_PROBE_ENTRY, "finalize",
+    "exec", activeContainerId, "/usr/local/bin/node", HEALTH_PROBE_ENTRY, "finalize",
     "--label", initial.label,
     "--scenario", initial.scenarioHandleDigest,
     "--owner-image", initial.ownerImageDigest,
@@ -913,7 +920,7 @@ function requirePreparedRestartReceipt(receipt, input) {
 }
 
 function runInteractiveRuntimeOperation(operation, value, dependencies = { run: spawnSync }) {
-  const result = dependencies.run(DOCKER, ["exec", "-i", activeContainer, ACCEPTANCE_ADAPTER], {
+  const result = dependencies.run(DOCKER, ["exec", "-i", activeContainerId, ACCEPTANCE_ADAPTER], {
     cwd: "/", encoding: "utf8", timeout: 120_000, maxBuffer: MAX_REQUEST,
     env: { PATH: "/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin" }, stdio: ["pipe", "pipe", "ignore"],
     input: JSON.stringify({ operation, ...value }),
@@ -943,7 +950,7 @@ async function restartButlerForAcceptance(input, dependencies = {
 }) {
   canonicalInteractiveRequest(input, "unit-16m-restart-continuation")
   const before = object(await dependencies.snapshot(), "restart owner before")
-  const result = dependencies.run(DOCKER, ["restart", activeContainer], {
+  const result = dependencies.run(DOCKER, ["restart", activeContainerId], {
     cwd: "/", encoding: "utf8", timeout: 120_000, maxBuffer: 64 * 1024,
     env: { PATH: "/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin" }, stdio: ["ignore", "ignore", "ignore"],
   })
@@ -1279,10 +1286,11 @@ function writeClosedInventory(file) {
 
 async function main() {
   if (process.getuid?.() !== 0) throw new Error("host broker must run as root")
-  const [profileName, socket, closedInventory, expectedImage, initialSnapshot] = process.argv.slice(2)
-  if (!profileName || !socket || !closedInventory || !expectedImage || !initialSnapshot || process.argv.length !== 7) throw new Error("usage: broker <staging|final> <socket> <closed-inventory> <expected-image-id> <initial-snapshot>")
+  const [profileName, targetContainerId, socket, closedInventory, expectedImage, initialSnapshot] = process.argv.slice(2)
+  if (!profileName || !targetContainerId || !socket || !closedInventory || !expectedImage || !initialSnapshot || process.argv.length !== 8) throw new Error("usage: broker <staging|final> <target-container-id> <socket> <closed-inventory> <expected-image-id> <initial-snapshot>")
   activeProfile = targetProfile(profileName)
   activeContainer = activeProfile.containerName
+  activeContainerId = text(targetContainerId, "attested target container id", SHA256)
   expectedImageId = text(expectedImage, "expected image id", IMAGE_ID)
   rmSync(socket, { force: true })
   writeClosedInventory(closedInventory)

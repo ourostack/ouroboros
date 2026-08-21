@@ -7,6 +7,7 @@ RUNTIME_ROOT=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli
 BUNDLE_ROOT=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro
 TARGET_PROFILE=staging
 PRODUCTION_CONTAINER=ouro-butler-staging
+TARGET_CONTAINER_ID=
 IMAGE_ID=${1:-}
 MODE=${2:-}
 BROKER_PID=
@@ -109,7 +110,15 @@ start_broker() {
   /usr/local/bin/node "$TARGET_AUDITOR" "$TARGET_PROFILE" "$IMAGE_ID" >"$PRIVATE_ROOT/deployment-target.json"
   chmod 0400 "$PRIVATE_ROOT/deployment-target.json"
   chown 0:0 "$PRIVATE_ROOT/deployment-target.json"
-  /usr/local/bin/node "$BROKER_PROGRAM" "$TARGET_PROFILE" "$BROKER_SOCKET" "$CLOSED_INVENTORY" "$IMAGE_ID" "$BROKER_SNAPSHOT" </dev/null >/dev/null 2>&1 &
+  TARGET_CONTAINER_ID=$(/usr/local/bin/node -e '
+    const fs = require("node:fs"); const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); const deployment = value && value.deployment;
+    if (value?.schemaVersion !== "sanctuary-effective-deployment-v1" || deployment?.schemaVersion !== "sanctuary-deployment-target-v1"
+      || deployment.profile !== "staging" || deployment.targetContainerName !== "ouro-butler-staging"
+      || deployment.targetImageId !== process.argv[2] || !/^[0-9a-f]{64}$/.test(deployment.targetContainerId)) process.exit(1);
+    process.stdout.write(deployment.targetContainerId);
+  ' "$PRIVATE_ROOT/deployment-target.json" "$IMAGE_ID")
+  test -n "$TARGET_CONTAINER_ID" || return 1
+  /usr/local/bin/node "$BROKER_PROGRAM" "$TARGET_PROFILE" "$TARGET_CONTAINER_ID" "$BROKER_SOCKET" "$CLOSED_INVENTORY" "$IMAGE_ID" "$BROKER_SNAPSHOT" </dev/null >/dev/null 2>&1 &
   BROKER_PID=$!
   ATTEMPT=0
   while test "$ATTEMPT" -lt 600 && { test ! -S "$BROKER_SOCKET" || test ! -f "$CLOSED_INVENTORY" || test ! -f "$BROKER_SNAPSHOT"; }; do
@@ -147,13 +156,13 @@ prepare_live_facts() {
 }
 
 restore_production_container() {
-  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.Image}}' "$PRODUCTION_CONTAINER")" = "$IMAGE_ID" || return 1
-  /usr/bin/timeout -s KILL 30 /usr/bin/docker start "$PRODUCTION_CONTAINER" >/dev/null || return 1
+  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.Name}} {{.Image}}' "$TARGET_CONTAINER_ID")" = "/$PRODUCTION_CONTAINER $IMAGE_ID" || return 1
+  /usr/bin/timeout -s KILL 30 /usr/bin/docker start "$TARGET_CONTAINER_ID" >/dev/null || return 1
   RESTORE_ATTEMPT=0
   while test "$RESTORE_ATTEMPT" -lt 120; do
-    test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.Image}}' "$PRODUCTION_CONTAINER")" = "$IMAGE_ID" || return 1
-    RESTORE_RUNNING=$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.State.Running}}' "$PRODUCTION_CONTAINER") || return 1
-    RESTORE_HEALTH=$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$PRODUCTION_CONTAINER") || return 1
+    test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.Name}} {{.Image}}' "$TARGET_CONTAINER_ID")" = "/$PRODUCTION_CONTAINER $IMAGE_ID" || return 1
+    RESTORE_RUNNING=$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.State.Running}}' "$TARGET_CONTAINER_ID") || return 1
+    RESTORE_HEALTH=$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$TARGET_CONTAINER_ID") || return 1
     if test "$RESTORE_RUNNING" = true && test "$RESTORE_HEALTH" = healthy; then return 0; fi
     RESTORE_ATTEMPT=$((RESTORE_ATTEMPT + 1))
     sleep 1
@@ -162,14 +171,14 @@ restore_production_container() {
 }
 
 stop_exact_production_container() {
-  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.Image}}' "$PRODUCTION_CONTAINER")" = "$IMAGE_ID" || return 1
-  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.State.Running}}' "$PRODUCTION_CONTAINER")" = true || return 1
-  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$PRODUCTION_CONTAINER")" = healthy || return 1
+  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.Name}} {{.Image}}' "$TARGET_CONTAINER_ID")" = "/$PRODUCTION_CONTAINER $IMAGE_ID" || return 1
+  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.State.Running}}' "$TARGET_CONTAINER_ID")" = true || return 1
+  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$TARGET_CONTAINER_ID")" = healthy || return 1
   PRODUCTION_STOPPED=yes
-  /usr/bin/timeout -s KILL 45 /usr/bin/docker stop --time 30 "$PRODUCTION_CONTAINER" >/dev/null
-  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.Image}}' "$PRODUCTION_CONTAINER")" = "$IMAGE_ID" || return 1
-  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.State.Running}}' "$PRODUCTION_CONTAINER")" = false || return 1
-  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.State.Pid}}' "$PRODUCTION_CONTAINER")" = 0 || return 1
+  /usr/bin/timeout -s KILL 45 /usr/bin/docker stop --time 30 "$TARGET_CONTAINER_ID" >/dev/null
+  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.Name}} {{.Image}}' "$TARGET_CONTAINER_ID")" = "/$PRODUCTION_CONTAINER $IMAGE_ID" || return 1
+  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.State.Running}}' "$TARGET_CONTAINER_ID")" = false || return 1
+  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.State.Pid}}' "$TARGET_CONTAINER_ID")" = 0 || return 1
 }
 
 quiesce_production_telegram_poller() {
@@ -269,8 +278,8 @@ esac
 assert_acceptance_state_inode() {
   ACCEPTANCE_PIN_INODE=$(stat -Lc '%d:%i' "$ACCEPTANCE_PIN_ROOT") || return 1
   test "$(stat -Lc '%d:%i' "$ACCEPTANCE_STATE_ROOT")" = "$ACCEPTANCE_PIN_INODE" || return 1
-  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.Image}}' "$PRODUCTION_CONTAINER")" = "$IMAGE_ID" || return 1
-  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker exec "$PRODUCTION_CONTAINER" stat -Lc '%d:%i' /home/ouro/AgentBundles/sanctuary.ouro/state/acceptance)" = "$ACCEPTANCE_PIN_INODE" || return 1
+  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.Name}} {{.Image}}' "$TARGET_CONTAINER_ID")" = "/$PRODUCTION_CONTAINER $IMAGE_ID" || return 1
+  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker exec "$TARGET_CONTAINER_ID" stat -Lc '%d:%i' /home/ouro/AgentBundles/sanctuary.ouro/state/acceptance)" = "$ACCEPTANCE_PIN_INODE" || return 1
 }
 
 if test "$COMMAND" = evidence-snapshot || test "$COMMAND" = reboot-request || test "$COMMAND" = reboot-resume; then
