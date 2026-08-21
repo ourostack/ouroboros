@@ -47,11 +47,13 @@ describe("Sanctuary scheduler liveness receipt", () => {
       const receipt = recordSanctuarySchedulerLivenessReceipt({
         agentRoot: f.agentRoot, trigger: "cron", occurrenceId: "cron:slot-1", runnerId: "11111111-1111-4111-8111-111111111111",
         scenario: { label: "unit-16f-cron-fingerprint", scenarioHandleDigest }, supervisor: f.supervisor.authenticatedSnapshot("habit:sanctuary"),
-        before: { sweepCount: 0, deliveryCount: 0 }, providerInvocationCount: 0, privateTurnCount: 0,
+        before: { sweepCount: 0, deliveryCount: 0 }, providerInvocationCount: 0, privateTurnCount: 0, identityKey: "k".repeat(43),
+        schedulerOrigin: { slot: "2026-08-18T17:00:00.000Z", schedulerRunId: "22222222-2222-4222-8222-222222222222", invocationPid: 43, parentPid: 42, parentStartTime: "8001", invocationStartTime: "9001", proofMac: "c".repeat(64) },
       })
       expect(receipt).toMatchObject({ schemaVersion: "sanctuary-scheduler-liveness-receipt-v1", trigger: "cron", occurrenceId: "cron:slot-1", scenarioHandleDigest, sweepDelta: 1, deliveryDelta: 0, providerInvocationCount: 0, privateTurnCount: 0, nonReplay: true })
       expect(receipt.supervisor).toMatchObject({ daemonPid: process.pid, childCount: 1, childPid: 42, healthy: true, namespace: "habit:sanctuary", args: ["-split-logs", "-inotify", "/home/ouro/.ouro-cli/scheduler/sanctuary.crontab"] })
       expect(receipt.sweep).toMatchObject({ opened: 0, recovered: 0, digestDue: false })
+      expect(receipt.receiptMac).toMatch(/^[0-9a-f]{64}$/u)
     } finally { fs.rmSync(f.agentRoot, { recursive: true, force: true }) }
   })
 
