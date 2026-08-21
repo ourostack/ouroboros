@@ -49,7 +49,7 @@ describe("container runtime policy", () => {
     expect(packageJson.files).toContain("npm-shrinkwrap.json")
     expect(fs.existsSync("npm-shrinkwrap.json")).toBe(true)
     expect(dockerfile).toContain("COPY package.json npm-shrinkwrap.json ./")
-    expect(dockerfile).toContain("npm ci --omit=dev")
+    expect(dockerfile).toContain("npm ci --omit=dev --legacy-peer-deps")
     expect(dockerfile).not.toContain("npm install")
   })
 

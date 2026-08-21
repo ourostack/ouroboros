@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.736",
+      "changes": [
+        "Fix the packaged Unraid image build to honor the repository peer dependency install contract."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.735",
       "changes": [
         "Repair Mendelow Cloud Butler for Sanctuary's Unraid legacy adoption with an explicit source-to-target machine identity migration that validates the complete credential envelope before applying only in-memory canonical clones while preserving the original source for recovery and the shipped durable approvals contract.",
