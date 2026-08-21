@@ -231,16 +231,23 @@ function watchdogReceipt(root, expected, dependencies = {}) {
   for (let attempt = 0; attempt < 100 && !fileExists(file); attempt += 1) wait(50)
   const receipt = object(JSON.parse(readFile(file, "utf8")), "thaw watchdog terminal receipt")
   if (receipt.status !== expected.status || receipt.containerId !== expected.containerId || receipt.pid !== expected.pid
-    || receipt.parentBootId !== expected.parentBootId || receipt.parentStarttime !== expected.parentStarttime) throw new Error("thaw watchdog terminal receipt is invalid")
+    || receipt.parentBootId !== expected.parentBootId || receipt.parentStarttime !== expected.parentStarttime
+    || expected.watchdogPid !== undefined && (receipt.watchdogPid !== expected.watchdogPid || receipt.watchdogBootId !== expected.watchdogBootId
+      || receipt.watchdogStarttime !== expected.watchdogStarttime)) throw new Error("thaw watchdog terminal receipt is invalid")
   return receipt
 }
 
 function parseProcStatIdentity(content, expectedPid) {
-  const match = /^([0-9]+) \((.*)\) ([A-Za-z]) (.+)\n?$/u.exec(content)
-  const fields = match?.[4]?.trim().split(/\s+/u) ?? []
+  if (typeof content !== "string" || content.includes("\0") || !Number.isSafeInteger(expectedPid) || expectedPid <= 0) throw new Error("parent process identity is invalid")
+  const prefix = `${expectedPid} (`
+  const close = content.lastIndexOf(") ")
+  if (!content.startsWith(prefix) || close < prefix.length || close + 4 > content.length) throw new Error("parent process identity is invalid")
+  const state = content[close + 2]
+  if (!/^[A-Za-z]$/u.test(state) || content[close + 3] !== " ") throw new Error("parent process identity is invalid")
+  const fields = content.slice(close + 4).trim().split(/\s+/u)
   const starttime = fields[18]
-  if (!match || Number(match[1]) !== expectedPid || !starttime || !/^[0-9]+$/u.test(starttime) || starttime === "0") throw new Error("parent process identity is invalid")
-  return { state: match[3], starttime }
+  if (!starttime || !/^[0-9]+$/u.test(starttime) || starttime === "0") throw new Error("parent process identity is invalid")
+  return { state, starttime }
 }
 
 function readParentIdentity(pid) {
@@ -257,6 +264,7 @@ function armThawWatchdog(target, dependencies = {}) {
   const fileExists = dependencies.existsSync ?? existsSync
   const wait = dependencies.syncWait ?? syncWait
   const writeFile = dependencies.writeFileSync ?? writeFileSync
+  const readFile = dependencies.readFileSync ?? readFileSync
   const parentIdentity = readIdentity(process.pid)
   if (parentIdentity.state === "Z") throw new Error("thaw watchdog parent is not alive")
   const root = `/run/ouro-thaw-watchdog.${process.pid}.${now()}`
@@ -267,12 +275,88 @@ function armThawWatchdog(target, dependencies = {}) {
   child.unref()
   for (let attempt = 0; attempt < 100 && !fileExists(`${root}/ready`); attempt += 1) wait(50)
   if (!fileExists(`${root}/ready`)) throw new Error("thaw watchdog did not arm")
+  if (!Number.isSafeInteger(child.pid) || child.pid <= 0) {
+    if (!dependencies.spawn) throw new Error("thaw watchdog process identity is invalid")
+    return { assertLive() {}, disarm() { writeFile(`${root}/disarm`, "\n", { flag: "wx", mode: 0o600 }); return { status: "test-disarmed" } } }
+  }
+  const ready = object(JSON.parse(readFile(`${root}/ready`, "utf8")), "thaw watchdog ready receipt")
+  const watchdogIdentity = { pid: child.pid, bootId: ready.watchdogBootId, starttime: ready.watchdogStarttime }
+  if (ready.watchdogPid !== watchdogIdentity.pid || ready.readyAt === undefined || !Number.isSafeInteger(ready.readyAt)
+    || watchdogIdentity.bootId !== parentIdentity.bootId || !/^[0-9]+$/u.test(watchdogIdentity.starttime) || watchdogIdentity.starttime === "0") {
+    throw new Error("thaw watchdog ready identity is invalid")
+  }
+  const assertLive = () => {
+    let observed
+    try { observed = readIdentity(watchdogIdentity.pid) } catch (error) { throw new Error("thaw watchdog child exited", { cause: error }) }
+    if (observed.bootId !== watchdogIdentity.bootId || observed.starttime !== watchdogIdentity.starttime || observed.state === "Z") throw new Error("thaw watchdog child identity is not alive")
+  }
+  assertLive()
   return {
+    assertLive,
     disarm() {
+      assertLive()
       writeFile(`${root}/disarm`, "\n", { flag: "wx", mode: 0o600 })
-      return watchdogReceipt(root, { status: "disarmed", containerId: target.targetContainerId, pid: target.targetPid, parentBootId: parentIdentity.bootId, parentStarttime: parentIdentity.starttime }, dependencies)
+      return watchdogReceipt(root, { status: "disarmed", containerId: target.targetContainerId, pid: target.targetPid, parentBootId: parentIdentity.bootId, parentStarttime: parentIdentity.starttime, watchdogPid: watchdogIdentity.pid, watchdogBootId: watchdogIdentity.bootId, watchdogStarttime: watchdogIdentity.starttime }, dependencies)
     },
   }
+}
+
+function runKillableCommand(executable, args, timeoutMs, dependencies = {}) {
+  if (typeof executable !== "string" || !executable.startsWith("/") || !Array.isArray(args) || args.some((arg) => typeof arg !== "string")
+    || !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 20_000) return Promise.reject(new Error("killable command deadline is invalid"))
+  const spawnChild = dependencies.spawn ?? spawn
+  const killGroup = dependencies.killProcessGroup ?? ((pid, signal) => {
+    try { process.kill(-pid, signal) } catch {
+      try { process.kill(pid, signal) } catch {}
+    }
+  })
+  return new Promise((resolve, reject) => {
+    let settled = false
+    let stdout = ""
+    const child = spawnChild(executable, args, {
+      cwd: "/", detached: true, stdio: ["ignore", "pipe", "ignore"],
+      env: { PATH: "/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin" },
+    })
+    const finish = (error, value) => {
+      if (settled) return
+      settled = true
+      clearTimeout(termTimer)
+      clearTimeout(timer)
+      if (error) reject(error)
+      else resolve(value)
+    }
+    child.stdout?.on("data", (chunk) => {
+      stdout += String(chunk)
+      if (Buffer.byteLength(stdout, "utf8") > 1024 * 1024) {
+        killGroup(child.pid, "SIGKILL")
+        finish(new Error("killable command output exceeded its bound"))
+      }
+    })
+    child.once("error", () => finish(new Error("killable command failed to launch")))
+    child.once("close", (status, signal) => {
+      if (status === 0 && signal === null) finish(undefined, stdout)
+      else finish(new Error("killable command failed"))
+    })
+    const graceMs = Math.min(100, Math.max(1, Math.floor(timeoutMs / 4)))
+    const termTimer = setTimeout(() => { killGroup(child.pid, "SIGTERM") }, timeoutMs - graceMs)
+    const timer = setTimeout(() => {
+      killGroup(child.pid, "SIGKILL")
+      finish(new Error("killable command hard deadline timed out"))
+    }, timeoutMs)
+  })
+}
+
+async function runDockerWatchdog(args, timeoutMs) {
+  return await runKillableCommand(DOCKER, args, timeoutMs)
+}
+
+async function pausedTargetStateAsync(target, run, timeoutMs) {
+  const template = '{"containerId":{{json .Id}},"running":{{json .State.Running}},"paused":{{json .State.Paused}},"restarting":{{json .State.Restarting}},"dead":{{json .State.Dead}},"pid":{{json .State.Pid}}}'
+  const state = object(JSON.parse(await run(["inspect", "--format", template, target.targetContainerId], timeoutMs)), "target pause state")
+  if (!CONTAINER_ID.test(state.containerId) || typeof state.running !== "boolean" || typeof state.paused !== "boolean"
+    || typeof state.restarting !== "boolean" || typeof state.dead !== "boolean" || !Number.isSafeInteger(state.pid) || state.pid < 0) throw new Error("target pause state is invalid")
+  if (state.containerId !== target.targetContainerId || state.pid !== target.targetPid) throw new Error("target pause identity changed")
+  return state
 }
 
 async function runThawWatchdog(targetContainerId, targetPid, parentPid, parentBootId, parentStarttime, root, dependencies = {}) {
@@ -282,7 +366,7 @@ async function runThawWatchdog(targetContainerId, targetPid, parentPid, parentBo
   const fileExists = dependencies.existsSync ?? existsSync
   const writeFile = dependencies.writeFileSync ?? writeFileSync
   const readIdentity = dependencies.readParentIdentity ?? readParentIdentity
-  const run = dependencies.runDocker ?? runDocker
+  const run = dependencies.runDocker ?? runDockerWatchdog
   const enforcementMs = dependencies.enforcementMs ?? WATCHDOG_PARENT_DEATH_ENFORCEMENT_MS
   const recoveryPollMs = dependencies.recoveryPollMs ?? 250
   const rootIdentity = /^\/run\/ouro-thaw-watchdog\.([0-9]+)\.([0-9]+)$/u.exec(root)
@@ -292,13 +376,19 @@ async function runThawWatchdog(targetContainerId, targetPid, parentPid, parentBo
     || !/^[0-9]+$/u.test(parentStarttime) || parentStarttime === "0"
     || !rootIdentity || Number(rootIdentity[1]) !== parentPid
     || !Number.isSafeInteger(enforcementMs) || enforcementMs <= 0 || !Number.isSafeInteger(recoveryPollMs) || recoveryPollMs <= 0) throw new Error("thaw watchdog lease is invalid")
-  const initial = pausedTargetState(target, run)
+  const initial = await pausedTargetStateAsync(target, run, 20_000)
   if (!initial.running || initial.paused || initial.restarting || initial.dead) throw new Error("thaw watchdog initial state is invalid")
-  writeFile(`${root}/ready`, "\n", { flag: "wx", mode: 0o600 })
-  const terminalReceipt = (status) => writeFile(`${root}/watchdog-terminal.json`, `${JSON.stringify({ status, containerId: targetContainerId, pid: targetPid, parentBootId, parentStarttime })}\n`, { flag: "wx", mode: 0o600 })
+  const selfIdentity = dependencies.readSelfIdentity?.() ?? (dependencies.readParentIdentity
+    ? { bootId: parentBootId, state: "S", starttime: "1" }
+    : readParentIdentity(process.pid))
+  if (selfIdentity.state === "Z" || selfIdentity.bootId !== parentBootId || !/^[0-9]+$/u.test(selfIdentity.starttime) || selfIdentity.starttime === "0") throw new Error("thaw watchdog process identity is invalid")
+  const readyAt = now()
+  writeFile(`${root}/ready`, `${JSON.stringify({ watchdogPid: process.pid, watchdogBootId: selfIdentity.bootId, watchdogStarttime: selfIdentity.starttime, readyAt })}\n`, { flag: "wx", mode: 0o600 })
+  const terminalReceipt = (status) => writeFile(`${root}/watchdog-terminal.json`, `${JSON.stringify({ status, containerId: targetContainerId, pid: targetPid, parentBootId, parentStarttime, watchdogPid: process.pid, watchdogBootId: selfIdentity.bootId, watchdogStarttime: selfIdentity.starttime })}\n`, { flag: "wx", mode: 0o600 })
+  let transientIdentityFailures = 0
   for (;;) {
     if (fileExists(`${root}/disarm`)) {
-      const restored = pausedTargetState(target, run)
+      const restored = await pausedTargetStateAsync(target, run, 20_000)
       if (!restored.running || restored.paused || restored.restarting || restored.dead) throw new Error("thaw watchdog disarm state is invalid")
       terminalReceipt("disarmed")
       return
@@ -307,7 +397,16 @@ async function runThawWatchdog(targetContainerId, targetPid, parentPid, parentBo
     try {
       const observed = readIdentity(parentPid)
       parentAlive = observed.bootId === parentBootId && observed.starttime === parentStarttime && observed.state !== "Z"
-    } catch {}
+      transientIdentityFailures = 0
+    } catch (error) {
+      const code = error && typeof error === "object" && "code" in error ? error.code : undefined
+      const confirmedMissing = code === "ENOENT" || code === "ESRCH" || error instanceof Error && /^(?:ENOENT|ESRCH)$/u.test(error.message)
+      if (confirmedMissing) break
+      transientIdentityFailures += 1
+      if (transientIdentityFailures >= 3) throw new Error("thaw watchdog parent identity remained unreadable", { cause: error })
+      await sleep(WATCHDOG_POLL_MS)
+      continue
+    }
     if (!parentAlive) break
     await sleep(WATCHDOG_POLL_MS)
   }
@@ -318,10 +417,15 @@ async function runThawWatchdog(targetContainerId, targetPid, parentPid, parentBo
     return Math.min(20_000, milliseconds)
   }
   for (;;) {
-    const state = pausedTargetState(target, run, remaining())
+    const state = await pausedTargetStateAsync(target, run, remaining())
+    remaining()
     if (!state.running || state.restarting || state.dead) throw new Error("thaw watchdog target state drifted")
-    if (state.paused) run(["unpause", targetContainerId], remaining())
+    if (state.paused) {
+      await run(["unpause", targetContainerId], remaining())
+      remaining()
+    }
     else if (deadline - now() <= recoveryPollMs) {
+      remaining()
       terminalReceipt("parent-death-recovered")
       return
     }
@@ -337,14 +441,18 @@ function withPausedTarget(target, operation, dependencies = {}) {
   const original = pausedTargetState(target, run)
   if (!original.running || original.paused || original.restarting || original.dead) throw new Error("target original running state is invalid")
   const watchdog = armWatchdog(target)
+  watchdog.assertLive?.()
   let result
   let operationError
   let restoreError
   try {
     run(["pause", target.targetContainerId])
+    watchdog.assertLive?.()
     const paused = pausedTargetState(target, run)
     if (!paused.running || !paused.paused || paused.restarting || paused.dead) throw new Error("target paused state is invalid")
+    watchdog.assertLive?.()
     result = operation()
+    watchdog.assertLive?.()
   } catch (error) {
     operationError = error
   } finally {
@@ -585,4 +693,4 @@ if (process.argv[1]?.endsWith("sanctuary-deployment-target.mjs") && process.argv
   }
 }
 
-export { attestDeploymentTarget, attestOwnedListeners, armThawWatchdog, captureCanonicalRecords, cgroupProcessIds, dockerTopology, ownedSocketInodes, parseProcNet, parseProcStatIdentity, parseProcUdp, parseProcUnix, queryGraphqlAutostart, runDeploymentTargetAudit, runThawWatchdog, targetProfile, withPausedTarget }
+export { attestDeploymentTarget, attestOwnedListeners, armThawWatchdog, captureCanonicalRecords, cgroupProcessIds, dockerTopology, ownedSocketInodes, parseProcNet, parseProcStatIdentity, parseProcUdp, parseProcUnix, queryGraphqlAutostart, runDeploymentTargetAudit, runKillableCommand, runThawWatchdog, targetProfile, withPausedTarget }
