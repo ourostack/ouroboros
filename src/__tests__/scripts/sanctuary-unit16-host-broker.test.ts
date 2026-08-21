@@ -13,6 +13,9 @@ interface BrokerDependencies {
   healthProbeStatus?(input: Record<string, string>): unknown
   recoverHealthProbe?(input: Record<string, string>): unknown
   restartButlerForAcceptance?(input: Record<string, unknown>): unknown
+  driveDuplicateCallbacks?(input: Record<string, string>): unknown
+  driveRestartContinuation?(input: Record<string, string>): unknown
+  ownerMutationCoordinator?: ReturnType<BrokerModule["createOwnerMutationCoordinator"]>
   healthProbeCoordinator?: {
     start<T>(scenario: string, operation: () => T | Promise<T>): Promise<T>
     recover<T>(scenario: string, operation: () => T | Promise<T>): Promise<T>
@@ -20,6 +23,11 @@ interface BrokerDependencies {
 }
 
 interface BrokerModule {
+  createOwnerMutationCoordinator(): {
+    healthStart<T>(scenario: string, operation: () => T | Promise<T>): Promise<T>
+    healthRecover<T>(scenario: string, operation: () => T | Promise<T>): Promise<T>
+    interactive<T>(operation: () => T | Promise<T>): Promise<T>
+  }
   createHealthProbeOperationCoordinator(): {
     start<T>(scenario: string, operation: () => T | Promise<T>): Promise<T>
     recover<T>(scenario: string, operation: () => T | Promise<T>): Promise<T>
@@ -65,6 +73,7 @@ interface HealthProbeRecord {
 
 async function broker(): Promise<BrokerModule> {
   return import(pathToFileURL(path.resolve("deploy/unraid/sanctuary-unit16-host-broker.mjs")).href) as Promise<{
+    createOwnerMutationCoordinator(): ReturnType<BrokerModule["createOwnerMutationCoordinator"]>
     createHealthProbeOperationCoordinator(): { start<T>(scenario: string, operation: () => T | Promise<T>): Promise<T>; recover<T>(scenario: string, operation: () => T | Promise<T>): Promise<T> }
     completeHealthProbeFromReceipt(request: Record<string, string>, snapshot: Record<string, unknown>, readReceipt: () => Record<string, unknown>): { state: "complete"; containerSnapshot: Record<string, unknown> }
     attestHealthProbeProcessAbsent(input: Record<string, string>, dependencies?: {
@@ -91,6 +100,64 @@ async function broker(): Promise<BrokerModule> {
 }
 
 describe("Sanctuary Unit 16 host broker", () => {
+  it("drives duplicate callbacks through one fixed runtime operation with distinct opaque queries and a stale replay", async () => {
+    const { dispatch } = await broker()
+    const calls: Record<string, string>[] = []
+    const coordinates = { targetId: "sanctuary", label: "unit-16l-duplicate-callback", scenarioHandleDigest: "a".repeat(64) }
+    const result = {
+      schemaVersion: "sanctuary-interactive-driver-receipt-v2", phase: "complete", ...coordinates,
+      approvalIdDigest: "b".repeat(64), checkpointDigest: "c".repeat(64), suspendedSessionRevisionDigest: "d".repeat(64),
+      approvalEpochBefore: 0, callbackAttempts: 2, distinctQueryCount: 2, callbackDataDigest: "e".repeat(64),
+      settledCount: 2, claimCount: 1, mutationCount: 1, staleReplayAttempts: 1, staleReplaySettled: true,
+      staleReplayMutationCount: 0, promptTerminal: true, writeCredentialObserved: false,
+    }
+    await expect(dispatch({ operation: "drive_duplicate_callbacks", ...coordinates }, {
+      readBootId: () => "unused", containerSnapshot: () => ({}),
+      driveDuplicateCallbacks: (input) => { calls.push(input); return result },
+    })).resolves.toEqual(result)
+    expect(calls).toEqual([{ label: coordinates.label, scenarioHandleDigest: coordinates.scenarioHandleDigest }])
+    expect(JSON.stringify(calls)).not.toMatch(/approval-|query-|callback-/u)
+  })
+
+  it("drives a crash-safe restart continuation without raw approval coordinates crossing the broker", async () => {
+    const { dispatch } = await broker()
+    const calls: Record<string, string>[] = []
+    const coordinates = { targetId: "sanctuary", label: "unit-16m-restart-continuation", scenarioHandleDigest: "a".repeat(64) }
+    const result = {
+      schemaVersion: "sanctuary-interactive-driver-receipt-v2", phase: "complete", ...coordinates,
+      approvalIdDigest: "b".repeat(64), checkpointDigest: "c".repeat(64), suspendedSessionRevisionDigest: "d".repeat(64),
+      approvalEpochBefore: 0, approvalEpochAfterRestart: 0, continuationEpochAfter: 1,
+      ownerImageDigest: "e".repeat(64), ownerContainerDigest: "f".repeat(64), restartCountBefore: 4, restartCountAfter: 5,
+      pendingDigestBefore: "1".repeat(64), pendingDigestAfter: "1".repeat(64), pendingRestored: true,
+      callbackAttempts: 1, mutationCount: 1, indeterminateRecoveryObserved: true, indeterminateRetryCount: 0,
+    }
+    await expect(dispatch({ operation: "drive_restart_continuation", ...coordinates }, {
+      readBootId: () => "unused", containerSnapshot: () => ({}),
+      driveRestartContinuation: (input) => { calls.push(input); return result },
+    })).resolves.toEqual(result)
+    expect(calls).toEqual([{ label: coordinates.label, scenarioHandleDigest: coordinates.scenarioHandleDigest }])
+    expect(JSON.stringify(calls)).not.toMatch(/approval-|session-/u)
+  })
+
+  it("coordinates owner mutation across health and interactive operations in both orderings", async () => {
+    const { createOwnerMutationCoordinator } = await broker()
+    const coordinator = createOwnerMutationCoordinator()
+    await coordinator.healthStart("health-a", () => "started")
+    await expect(coordinator.interactive(() => "restart")).rejects.toThrow(/health probe is active/u)
+    await coordinator.healthRecover("health-a", () => "recovered")
+
+    let release!: () => void
+    const blocked = new Promise<void>((resolve) => { release = resolve })
+    const events: string[] = []
+    const restarting = coordinator.interactive(async () => { events.push("restart-start"); await blocked; events.push("restart-end") })
+    await Promise.resolve()
+    const starting = coordinator.healthStart("health-b", () => { events.push("health-start") })
+    await Promise.resolve()
+    expect(events).toEqual(["restart-start"])
+    release()
+    await Promise.all([restarting, starting])
+    expect(events).toEqual(["restart-start", "restart-end", "health-start"])
+  })
   it("stages a bounded host reboot attestation without executing reboot", async () => {
     const { dispatch } = await broker()
     const result = await dispatch({
