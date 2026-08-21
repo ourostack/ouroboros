@@ -17,6 +17,7 @@ import {
   type SanctuaryHealthHabitRunnerOptions,
 } from "./sanctuary-health-runner"
 import { createSanctuaryToolContext } from "./sanctuary-runtime"
+import type { SanctuarySchedulerLivenessReceipt } from "../heart/daemon/sanctuary-scheduler-liveness"
 
 const SHA256 = /^[0-9a-f]{64}$/u
 const TARGET_ENDPOINT = "https://books.mendelow.cloud/"
@@ -75,6 +76,7 @@ export interface SanctuaryHealthAcceptanceProbeReceipt {
   snapshotAbsent: boolean
   realCheckEquivalent: boolean
   productionRestored: boolean
+  schedulerReceipt: SanctuarySchedulerLivenessReceipt | null
 }
 
 interface ProbeDependencies {
@@ -85,6 +87,7 @@ interface ProbeDependencies {
   now(): Date
   runnerOptions?: SanctuaryHealthHabitRunnerOptions
   deferOwnerAttestation?: boolean
+  waitForSchedulerReceipt?: (agentRoot: string, scenarioHandleDigest: string) => Promise<SanctuarySchedulerLivenessReceipt>
 }
 
 interface HealthSnapshot { exists: boolean; bytes: string }
@@ -386,6 +389,16 @@ function defaultDependencies(): ProbeDependencies {
     ambientFetch: fetch,
     now: () => new Date(),
     deferOwnerAttestation: true,
+    waitForSchedulerReceipt: async (agentRoot, scenarioHandleDigest) => {
+      const receiptPath = path.join(agentRoot, "state", "acceptance", "scheduler-liveness-receipts", `${scenarioHandleDigest}.json`)
+      const deadline = Date.now() + 16 * 60 * 1_000
+      while (Date.now() <= deadline) {
+        try { return JSON.parse(fs.readFileSync(receiptPath, "utf8")) as SanctuarySchedulerLivenessReceipt }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error }
+        await new Promise((resolve) => setTimeout(resolve, Math.min(1_000, Math.max(1, deadline - Date.now()))))
+      }
+      throw new Error("Sanctuary scheduler liveness receipt timed out")
+    },
   }
 }
 
@@ -500,9 +513,24 @@ export async function runSanctuaryHealthAcceptanceProbe(
   const phases: SanctuaryHealthAcceptanceProbePhase[] = []
   let providerInvocationCount = 0
   let privateTurnCount = 0
+  let schedulerReceipt: SanctuarySchedulerLivenessReceipt | null = null
   emitNervesEvent({ component: "senses", event: "senses.sanctuary_health_acceptance_start", message: "Sanctuary health acceptance probe started", meta: { label: input.label, scenarioHandleDigest: input.scenarioHandleDigest } })
   try {
-    await withSanctuaryHealthStateLease(statePath, async (lease: SanctuaryHealthStateLease) => {
+    if (input.label === "unit-16f-cron-fingerprint") {
+      const initialState = readHealthState(statePath)
+      const waitForSchedulerReceipt = dependencies.waitForSchedulerReceipt ?? defaultDependencies().waitForSchedulerReceipt!
+      schedulerReceipt = await waitForSchedulerReceipt(dependencies.agentRoot, input.scenarioHandleDigest)
+      if (schedulerReceipt.schemaVersion !== "sanctuary-scheduler-liveness-receipt-v1" || schedulerReceipt.label !== input.label
+        || schedulerReceipt.scenarioHandleDigest !== input.scenarioHandleDigest || schedulerReceipt.trigger !== "cron"
+        || schedulerReceipt.before.sweepCount !== initialState.sweepReceipts.length || schedulerReceipt.before.deliveryCount !== initialState.deliveredReceipts.length
+        || schedulerReceipt.sweepDelta !== 1 || schedulerReceipt.deliveryDelta !== 0 || schedulerReceipt.providerInvocationCount !== 0
+        || schedulerReceipt.privateTurnCount !== 0 || schedulerReceipt.nonReplay !== true) {
+        throw new Error("Sanctuary scheduler liveness receipt is invalid")
+      }
+      phases.push(phaseFromState(statePath, input.scenarioHandleDigest, 1, "cron-unchanged", "cron", null))
+      realCheckEquivalent = true
+      restoredStateDigest = snapshotDigest(snapshotState(statePath))
+    } else await withSanctuaryHealthStateLease(statePath, async (lease: SanctuaryHealthStateLease) => {
       expectedIncidentDigest = await normalizeWorkingState({ workspace, statePath, deps: dependencies, effectiveNow })
       if (input.label === "unit-16h-daily-digest") {
         const state = readHealthState(statePath)
@@ -525,9 +553,7 @@ export async function runSanctuaryHealthAcceptanceProbe(
         })
         phases.push(phaseFromState(statePath, input.scenarioHandleDigest, phases.length + 1, name, trigger, fixtureStatus))
       }
-      if (input.label === "unit-16f-cron-fingerprint") {
-        await runPhase("cron-unchanged", "cron", null, dependencies.ambientFetch, effectiveNow)
-      } else if (input.label === "unit-16g-health-transition") {
+      if (input.label === "unit-16g-health-transition") {
         await runPhase("live-baseline", "acceptance", null, dependencies.ambientFetch, effectiveNow)
         await runPhase("live-repeat", "acceptance", null, dependencies.ambientFetch, effectiveNow)
         fixture = await loopbackFixture([503, 503, 200, 503], dependencies.ambientFetch)
@@ -579,7 +605,10 @@ export async function runSanctuaryHealthAcceptanceProbe(
       realCheckEquivalent,
       productionRestored: beforeStateDigest === restoredStateDigest && cronFingerprintBefore === cronFingerprintAfter
         && cronRegisteredBefore && cronRegisteredAfter && socketAbsent && realCheckEquivalent,
+      schedulerReceipt,
     }
+    if (input.label === "unit-16f-cron-fingerprint") receipt.productionRestored = cronFingerprintBefore === cronFingerprintAfter
+      && cronRegisteredBefore && cronRegisteredAfter && socketAbsent && realCheckEquivalent && schedulerReceipt !== null
     if (dependencies.deferOwnerAttestation) {
       atomicPrivateFile(pendingPath, `${JSON.stringify({ schemaVersion: "sanctuary-health-probe-pending-v1", receipt })}\n`)
     } else {
