@@ -10,6 +10,7 @@ import {
   createSanctuaryAcceptanceHarnessDependencies,
   executeSanctuaryAcceptanceHarness as executeHarness,
   resolveSanctuaryAdapterTimeoutMs,
+  sanctuaryScenarioTimeoutBudget,
   validateSanctuaryUnit16EvidenceAssertions,
   type AcceptanceHarnessDependencies,
 } from "../../../heart/daemon/sanctuary-acceptance-harness"
@@ -307,6 +308,8 @@ describe("Sanctuary acceptance harness", () => {
   })
 
   it("fails closed on scenario authority, timing, timeout, state, and checkpoint drift", async () => {
+    expect(sanctuaryScenarioTimeoutBudget("unit-16k-timeout-stale")).toBe(875_000)
+
     const config = (dir: string, overrides: Record<string, unknown> = {}) => {
       const harnessPath = path.join(dir, "harness.sh")
       fs.writeFileSync(harnessPath, "harness\n", { mode: 0o700 })
@@ -686,8 +689,22 @@ describe("Sanctuary acceptance harness", () => {
       "health-probe-receipt": expect.objectContaining({ kind: "fixed-private-json", path: expect.stringContaining("health-probe-receipts") }),
     }))
     expect(contract.configTemplates["evidence-snapshot"]).toMatchObject({
-      fixed: { timeoutMs: 4_320_000 },
-      timing: { execution: "sequential", totalMs: 4_320_000 },
+      fixed: { timeoutMs: 4_890_000 },
+      timing: {
+        execution: "sequential",
+        cleanupReservePerScenarioMs: 5_000,
+        timeoutStaleMs: 875_000,
+        timeoutStaleBreakdown: {
+          promptCreationAdapterMs: 210_000,
+          approvalTtlMs: 300_000,
+          staleCallbackInjectionMs: 120_000,
+          pollIntervalReserveMs: 30_000,
+          reconciliationPollAdapterMs: 210_000,
+          cleanupReserveMs: 5_000,
+        },
+        scenarioSumMs: 4_865_000,
+        totalMs: 4_890_000,
+      },
     })
     expect(contract.configTemplates["reboot-request"].fixed).toMatchObject({
       scenarioTimeoutMs: 125_000,
@@ -695,7 +712,7 @@ describe("Sanctuary acceptance harness", () => {
       provenanceAdapter: contract.adapterExecutable,
     })
     const runner = fs.readFileSync("deploy/unraid/sanctuary-unit16-run.sh", "utf8")
-    expect(runner).toContain("evidence-snapshot) TIME_LIMIT=4380; NETWORK=host; INPUT=no; BUNDLE_MODE=readonly; BROKER=yes ;;")
+    expect(runner).toContain("evidence-snapshot) TIME_LIMIT=4950; NETWORK=host; INPUT=no; BUNDLE_MODE=readonly; BROKER=yes ;;")
     expect(runner).toContain("reboot-resume) TIME_LIMIT=780; NETWORK=host; INPUT=no; BUNDLE_MODE=readonly; BROKER=yes ;;")
     expect(runner).toContain('test "$COMMAND" = evidence-snapshot || test "$COMMAND" = reboot-request || test "$COMMAND" = reboot-resume')
     expect(runner).toContain("assert_health_probe_cleanup")
