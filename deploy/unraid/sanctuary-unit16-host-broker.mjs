@@ -382,7 +382,7 @@ function healthProbeArtifactDisposition({ receipt, workspace, pending }) {
 }
 
 function healthProbeOperationBudgets() {
-  return { startMaxMs: 115_000, completeStatusMaxMs: 130_000, recoveryMaxMs: 85_000 }
+  return { startMaxMs: 115_000, completeStatusMaxMs: 130_000, recoveryMaxMs: 85_000, composedCaptureMaxMs: 165_000 }
 }
 
 function requireHealthProbeCompleteAttestation(receipt, snapshot, input) {
@@ -745,7 +745,8 @@ async function dispatch(request, dependencies = {
   }
   if (operation === "start_health_probe" || operation === "health_probe_status" || operation === "recover_health_probe") {
     exactKeys(payload, ["operation", "targetId", "label", "scenarioHandleDigest"], operation)
-    if (!HEALTH_PROBE_LABELS.has(payload.label)) throw new Error("health probe label is invalid")
+    if (payload.targetId !== TARGET_HOST) throw new Error("target host is invalid")
+    const request = canonicalHealthProbeRequest({ label: payload.label, scenarioHandleDigest: payload.scenarioHandleDigest })
     if (operation === "start_health_probe") {
       const start = async () => {
         const snapshot = object(await dependencies.containerSnapshot(), "health probe production owner")
@@ -755,11 +756,11 @@ async function dispatch(request, dependencies = {
         return await dependencies.startHealthProbe(coordinates)
       }
       return dependencies.healthProbeCoordinator
-        ? await dependencies.healthProbeCoordinator.start(payload.scenarioHandleDigest, start) : await start()
+        ? await dependencies.healthProbeCoordinator.start(request.scenarioHandleDigest, start) : await start()
     }
     if (operation === "health_probe_status") {
       if (!dependencies.healthProbeStatus) throw new Error("health probe status is unavailable")
-      return await dependencies.healthProbeStatus({ label: payload.label, scenarioHandleDigest: payload.scenarioHandleDigest })
+      return await dependencies.healthProbeStatus(request)
     }
     const recover = async () => {
       if (!dependencies.recoverHealthProbe) throw new Error("health probe recovery is unavailable")
@@ -768,7 +769,7 @@ async function dispatch(request, dependencies = {
       return await dependencies.recoverHealthProbe(coordinates)
     }
     return dependencies.healthProbeCoordinator
-      ? await dependencies.healthProbeCoordinator.recover(payload.scenarioHandleDigest, recover) : await recover()
+      ? await dependencies.healthProbeCoordinator.recover(request.scenarioHandleDigest, recover) : await recover()
   }
   throw new Error("host broker operation is not whitelisted")
 }

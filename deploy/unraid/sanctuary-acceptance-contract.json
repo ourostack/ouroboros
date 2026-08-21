@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "harnessExecutable": "/opt/ouro/deploy/unraid/sanctuary-acceptance-harness.sh",
   "adapterExecutable": "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
-  "adapterTimeoutMs": 180000,
+  "adapterTimeoutMs": 240000,
   "telegramTimeoutMs": 10000,
   "configMaterializer": {
     "invocation": "sanctuary-acceptance-adapter.sh materialize-config <command> [before|after]",
@@ -46,7 +46,7 @@
     "reboot-request": { "operation": "reboot-request", "authority": "fixed-harness-orchestration", "modelReachable": false, "timeoutMs": 120000 },
     "unraid-key-rotate": { "operation": "unraid-key-rotate", "authority": "fixed-harness-orchestration", "modelReachable": false, "timeoutMs": 120000 },
     "config-materializer": { "operation": "materialize_config", "authority": "fixed-contract-offset-inventory-evidence-read", "modelReachable": false, "timeoutMs": 120000 },
-    "scenario-capture": { "operation": "capture_acceptance_scenario", "authority": "fixed-runtime-audit-telegram-container-scenario", "modelReachable": false, "timeoutMs": 170000, "phases": ["begin", "poll"], "publicGateStatus": "/evidence/current-scenario-gate.json contains only label,gate,phase,startedAt", "response": "waiting:{state,checkpointDigest}|complete:{state,checkpointDigest,sourceDigests,assertions}" },
+    "scenario-capture": { "operation": "capture_acceptance_scenario", "authority": "fixed-runtime-audit-telegram-container-scenario", "modelReachable": false, "timeoutMs": 210000, "phases": ["begin", "poll"], "publicGateStatus": "/evidence/current-scenario-gate.json contains only label,gate,phase,startedAt", "response": "waiting:{state,checkpointDigest}|complete:{state,checkpointDigest,sourceDigests,assertions}" },
     "scenario-finalize": { "operation": "finalize_acceptance_scenarios", "authority": "fixed-public-gate-private-marker-receipt-cleanup", "modelReachable": false, "timeoutMs": 120000, "response": "{finalized:true}" },
     "health-probe-start": { "operation": "start_health_probe", "authority": "fixed-owner-bound-packaged-health-probe-start", "modelReachable": false, "timeoutMs": 170000, "response": "{state:started,operationDigest}" },
     "health-probe-status": { "operation": "health_probe_status", "authority": "fixed-fast-running-state-or-full-owner-reobservation-and-final-attestation", "modelReachable": false, "timeoutMs": 170000, "response": "{state:running|failed|recovery_required|absent}|{state:complete,containerSnapshot}" },

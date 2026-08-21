@@ -21,7 +21,7 @@ import * as path from "node:path"
 import { emitNervesEvent } from "../../nerves/runtime"
 
 const MAX_ADAPTER_OUTPUT = 1_048_576
-const DEFAULT_ADAPTER_TIMEOUT_MS = 180_000
+const DEFAULT_ADAPTER_TIMEOUT_MS = 240_000
 const DEFAULT_TELEGRAM_TIMEOUT_MS = 10_000
 const PACKAGED_PROVENANCE_ADAPTER = "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh"
 const OPAQUE_DIGEST = /^[0-9a-f]{64}$/u
