@@ -1510,7 +1510,8 @@ describe("Sanctuary live scenario capture", () => {
       }
       const stats = actualLstat(target, options as never)
       const changed = () => Object.assign(Object.create(Object.getPrototypeOf(stats)), stats, { ino: stats.ino + 1 })
-      if (targetText === receipts) {
+      const isReceiptRoot = targetText === receipts || /^\/proc\/self\/fd\/[0-9]+\/receipts$/u.test(targetText)
+      if (isReceiptRoot) {
         receiptLstats += 1
         if (mode === "opened-receipt-rebind" && receiptLstats === 4) return changed()
         if (mode === "final-receipt-rebind" && receiptLstats === 5) return changed()
