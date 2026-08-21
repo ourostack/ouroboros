@@ -6,7 +6,7 @@ import { createHash, createHmac } from "node:crypto"
 
 import { describe, expect, it, vi } from "vitest"
 import { openApprovalStore } from "../../../heart/approval-store"
-import { sanctuaryTelegramTurnReceiptDigest, sanctuaryTelegramTurnReceiptMac } from "../../../senses/telegram"
+import { sanctuaryTelegramAuditLifecycleMac, sanctuaryTelegramTurnReceiptDigest, sanctuaryTelegramTurnReceiptMac } from "../../../senses/telegram"
 import * as sanctuaryAcceptanceAdapter from "../../../heart/daemon/sanctuary-acceptance-adapter"
 import { SANCTUARY_SCENARIO_GATES, SANCTUARY_SCENARIO_SOURCES } from "../../../heart/daemon/sanctuary-acceptance-harness"
 
@@ -733,7 +733,18 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     const credentials = { botToken: "12345:private-token-value", authorizedUserId: "123456789", authorizedChatId: "123456789" }
     const subjectPayload = ["ouroboros.telegram.subject.v1", `user:${credentials.authorizedUserId.length}:${credentials.authorizedUserId}`, `chat:${credentials.authorizedChatId.length}:${credentials.authorizedChatId}`].join("\0")
     const subject = `tg_${createHmac("sha256", identityKey).update(subjectPayload).digest("base64url")}`
-    const audit = `${JSON.stringify({ ts: "2026-08-20T16:00:00.000Z", event: "senses.telegram_turn_end", meta: { scenarioHandleDigest, subject, deliveryCount: 1 } })}\n`
+    const canonicalSession = path.join(agentRoot, "state", "sessions", `telegram-user:${subject}`, "telegram", `telegram_${subject}.json`)
+    fs.mkdirSync(path.dirname(canonicalSession), { recursive: true })
+    fs.writeFileSync(canonicalSession, "{}\n")
+    const canonicalFriend = { id: "friend-1", name: `Telegram user ${subject}`, role: "friend", trustLevel: "family", externalIds: [{ provider: "telegram-user", externalId: subject, linkedAt: "2026-08-20T00:00:00.000Z" }] }
+    fs.mkdirSync(path.join(agentRoot, "friends"), { recursive: true })
+    fs.writeFileSync(path.join(agentRoot, "friends", "friend-1.json"), JSON.stringify(canonicalFriend))
+    const lifecycleCoordinates = { scenarioHandleDigest, turnDigest: "7".repeat(64), updateDigest: "1".repeat(64), subject, identityDigest: "8".repeat(64), sessionDigest: "9".repeat(64), argumentDigest: "a".repeat(64) }
+    const lifecycle = (event: string, ts: string, meta: Record<string, unknown>) => {
+      const combined = { ...lifecycleCoordinates, ...meta }
+      return { ts, event, meta: { ...combined, lifecycleMac: sanctuaryTelegramAuditLifecycleMac(identityKey, "sanctuary-telegram-turn-receipt-v3", event, combined) } }
+    }
+    const audit = `${JSON.stringify(lifecycle("senses.telegram_turn_start", "2026-08-20T16:00:00.000Z", {}))}\n${JSON.stringify(lifecycle("senses.telegram_turn_end", "2026-08-20T16:00:01.000Z", { deliveryCount: 1, outcome: "success", errorDigest: null }))}\n`
     const cron = "# ouro:habit:sanctuary:sanctuary:sanctuary-health\n*/15 * * * * /usr/local/bin/node /opt/ouro/dist/heart/daemon/ouro-entry.js poke sanctuary --habit sanctuary-health --trigger cron\n"
     const files: Record<string, string> = {
       [`${agentRoot}/state/senses/telegram/identity.key`]: `${identityKey}\n`,
@@ -752,13 +763,29 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       telegramCredentials: () => credentials,
       hostRequest: async () => ({ imageId: `sha256:${"b".repeat(64)}`, running: true, health: "healthy", user: "10001:10001", readOnlyRoot: true, mountCount: 2, publishedPortCount: 0, restartPolicy: "unless-stopped", restartCount: 0, autostartExact: true, updaterDisabled: true, vaultUnlocked: true, manualAuthRequired: false }),
     }), agentRoot)
-    expect(facts.identity).toMatchObject({ keyPresent: true, subjectOpaque: true, rawIdentityAbsent: true, liveSubjectObserved: true, mismatchCount: 0, rawLeakCount: 0 })
+    expect(facts.identity).toMatchObject({ keyPresent: true, subjectOpaque: true, rawIdentityAbsent: true, liveSubjectObserved: true, mismatchCount: 0, rawLeakCount: 0, canonicalSessionCount: 1, canonicalFriendCount: 1 })
     expect(facts.identity?.inspectedRecordCount).toBeGreaterThan(0)
     expect(facts.identity?.opaqueSubjectCount).toBeGreaterThan(0)
     expect(facts.container).toMatchObject({ exactImage: true, autostartExact: true, updaterDisabled: true, vaultUnlocked: true, manualAuthRequired: false })
     expect(facts.cron?.registered).toBe(true)
     expect(facts.containment?.sensitiveMaterialObserved).toBe(false)
     expect(JSON.stringify(facts.sourceValues)).not.toContain(credentials.botToken)
+    const replaySession = path.join(path.dirname(canonicalSession), "replay.json")
+    fs.writeFileSync(replaySession, "{}\n")
+    const duplicateSession = await readDefaultSanctuaryScenarioFacts("unit-14b-3-opaque-identity-live", scenarioHandleDigest, unit16Deps({
+      readFixedFile: (file) => { if (!(file in files)) throw Object.assign(new Error("missing fixture"), { code: "ENOENT" }); return files[file]! },
+      telegramCredentials: () => credentials,
+      hostRequest: async () => ({ imageId: `sha256:${"b".repeat(64)}`, running: true, health: "healthy", user: "10001:10001", readOnlyRoot: true, mountCount: 2, publishedPortCount: 0, restartPolicy: "unless-stopped", restartCount: 0, autostartExact: true, updaterDisabled: true, vaultUnlocked: true, manualAuthRequired: false }),
+    }), agentRoot)
+    expect(duplicateSession.identity?.canonicalSessionCount).toBe(2)
+    fs.unlinkSync(replaySession)
+    fs.writeFileSync(path.join(agentRoot, "friends", "friend-2.json"), JSON.stringify({ ...canonicalFriend, id: "friend-2" }))
+    const duplicate = await readDefaultSanctuaryScenarioFacts("unit-14b-3-opaque-identity-live", scenarioHandleDigest, unit16Deps({
+      readFixedFile: (file) => { if (!(file in files)) throw Object.assign(new Error("missing fixture"), { code: "ENOENT" }); return files[file]! },
+      telegramCredentials: () => credentials,
+      hostRequest: async () => ({ imageId: `sha256:${"b".repeat(64)}`, running: true, health: "healthy", user: "10001:10001", readOnlyRoot: true, mountCount: 2, publishedPortCount: 0, restartPolicy: "unless-stopped", restartCount: 0, autostartExact: true, updaterDisabled: true, vaultUnlocked: true, manualAuthRequired: false }),
+    }), agentRoot)
+    expect(duplicate.identity?.canonicalFriendCount).toBe(2)
     fs.rmSync(agentRoot, { recursive: true, force: true })
   })
 

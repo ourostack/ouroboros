@@ -9,7 +9,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { createTelegramApprovalRuntime, type TelegramApprovalRuntime } from "../../senses/telegram-approval-runtime"
 import { createTelegramBotApi, type TelegramBotApi, type TelegramUpdate } from "../../senses/telegram-client"
 import { executeSanctuaryInteractiveEngine, proveSanctuaryAttemptedRecoveryWithoutRetry, type SanctuaryInteractiveEngineDependencies } from "../../senses/sanctuary-interactive-control"
-import { loadTelegramSenseCredentials, readOrCreateTelegramIdentityKey, sanctuaryTelegramTurnReceiptDigest, sanctuaryTelegramTurnReceiptMac, type TelegramSenseCredentials } from "../../senses/telegram"
+import { loadTelegramSenseCredentials, readOrCreateTelegramIdentityKey, sanctuaryTelegramAuditLifecycleMac, sanctuaryTelegramTurnReceiptDigest, sanctuaryTelegramTurnReceiptMac, type TelegramSenseCredentials } from "../../senses/telegram"
 import { createSanctuaryToolContext, runWithSanctuaryToolReceiptCollection } from "../../senses/sanctuary-runtime"
 import { projectSanctuaryGrounding, sanctuaryGroundingDigest, type SanctuaryGroundingToolName, type SanctuaryToolGrounding } from "../../senses/sanctuary-grounding"
 import { ponderTool, resolveToolDefinition, restTool, settleTool, speakTool } from "../../repertoire/tools"
@@ -1079,6 +1079,13 @@ export async function readDefaultSanctuaryScenarioFacts(
   if (identityRaw && /^[A-Za-z0-9_-]{43}\n?$/u.test(identityRaw)) {
     const credentials = deps.telegramCredentials ? deps.telegramCredentials() : loadTelegramSenseCredentials(TARGET_ID)
     const identityKey = identityRaw.trim()
+    const auditSchema = label === "unit-16d-whats-up" || label === "unit-16d-1-space" ? "sanctuary-telegram-turn-receipt-v4" : "sanctuary-telegram-turn-receipt-v3"
+    for (const entry of auditEntries.filter((candidate) => candidate.event === "senses.telegram_turn_start" || candidate.event === "senses.telegram_turn_end" || candidate.event === "senses.telegram_turn_error")) {
+      if (typeof entry.meta.lifecycleMac !== "string" || !SHA256.test(entry.meta.lifecycleMac)
+        || entry.meta.lifecycleMac !== sanctuaryTelegramAuditLifecycleMac(identityKey, auditSchema, entry.event, entry.meta)) {
+        throw new Error("Telegram audit lifecycle MAC is invalid")
+      }
+    }
     const identityPayload = [
       TELEGRAM_SUBJECT_DOMAIN,
       `user:${credentials.authorizedUserId.length}:${credentials.authorizedUserId}`,
@@ -1088,7 +1095,25 @@ export async function readDefaultSanctuaryScenarioFacts(
     const observedSubjects = auditEntries.flatMap((entry) => typeof entry.meta.subject === "string" ? [entry.meta.subject] : [])
     const approvalSubjects = approvalRecords.map((projection) => projection.approval).filter((record) => record.transport === "telegram").map((record) => record.requesterId)
     const rawValues = [...new Set([credentials.botToken, credentials.authorizedUserId, credentials.authorizedChatId])]
-    const surfaceRecords = [...readBoundedIdentitySurfaces(agentRoot), auditRaw, JSON.stringify(approvalRecords)]
+    const persistedIdentitySurfaces = readBoundedIdentitySurfaces(agentRoot)
+    const surfacePairs = Array.from({ length: Math.floor(persistedIdentitySurfaces.length / 2) }, (_, index) => ({
+      relativePath: persistedIdentitySurfaces[index * 2]!,
+      raw: persistedIdentitySurfaces[index * 2 + 1]!,
+    }))
+    const canonicalSessionRoot = path.join("state", "sessions", `telegram-user:${expectedSubject}`, "telegram")
+    const canonicalSessionCount = surfacePairs.filter(({ relativePath }) => relativePath.startsWith(`${canonicalSessionRoot}${path.sep}`)).length
+    const sessionSurfaceDigest = createHash("sha256").update(JSON.stringify(surfacePairs.filter(({ relativePath }) => relativePath.startsWith(`state${path.sep}sessions${path.sep}`)))).digest("hex")
+    const friendSurfaceDigest = createHash("sha256").update(JSON.stringify(surfacePairs.filter(({ relativePath }) => relativePath.startsWith(`friends${path.sep}`)))).digest("hex")
+    const canonicalFriendCount = surfacePairs.filter(({ relativePath, raw }) => {
+      if (!relativePath.startsWith(`friends${path.sep}`) || !relativePath.endsWith(".json")) return false
+      const record = object(JSON.parse(raw) as unknown, "Telegram Friend identity")
+      if (!Array.isArray(record.externalIds)) return false
+      return record.externalIds.some((value) => {
+        const identity = object(value, "Telegram Friend external identity")
+        return identity.provider === "telegram-user" && identity.externalId === expectedSubject
+      })
+    }).length
+    const surfaceRecords = [...persistedIdentitySurfaces, auditRaw, JSON.stringify(approvalRecords)]
     const surfaceSubjects = surfaceRecords.flatMap((raw) => raw.match(/tg_[A-Za-z0-9_-]{43}/gu) ?? [])
     const structuredRawId = /"(?:authorizedUserId|authorizedChatId|transportUserId|transportChatId|userId|chatId|updateId|messageId)"\s*:\s*"?\d{1,20}"?/gu
     const rawLeakCount = surfaceRecords.reduce((count, raw) => count + rawValues.filter((value) => raw.includes(value)).length + (raw.match(structuredRawId)?.length ?? 0), 0)
@@ -1103,6 +1128,10 @@ export async function readDefaultSanctuaryScenarioFacts(
       opaqueSubjectCount: [...surfaceSubjects, ...observedSubjects, ...approvalSubjects].filter((subject) => subject === expectedSubject).length,
       mismatchCount,
       rawLeakCount,
+      canonicalSessionCount,
+      canonicalFriendCount,
+      sessionSurfaceDigest,
+      friendSurfaceDigest,
       surfaceDigest: createHash("sha256").update(JSON.stringify(surfaceRecords)).digest("hex"),
     }
   }
@@ -1273,7 +1302,7 @@ export async function readDefaultSanctuaryScenarioFacts(
     "approval-journal": approvals, "approval-checkpoints": checkpointsRaw, "container-inspect": container,
     "provider-live-check": liveProvider ?? null, "cron-runtime": cronRaw, "health-runtime": health, "restart-attempt-ledger": restartAttempts,
     "digest-runtime": health, "reboot-checkpoint": rebootCheckpoint, "telegram-turn-receipts": telegramTurns, "read-only-denial-receipt": denialReceipt ?? null,
-    "identity-surface-audit": identity ? { inspectedRecordCount: identity.inspectedRecordCount, opaqueSubjectCount: identity.opaqueSubjectCount, mismatchCount: identity.mismatchCount, rawLeakCount: identity.rawLeakCount, surfaceDigest: identity.surfaceDigest } : null,
+    "identity-surface-audit": identity ? { inspectedRecordCount: identity.inspectedRecordCount, opaqueSubjectCount: identity.opaqueSubjectCount, mismatchCount: identity.mismatchCount, rawLeakCount: identity.rawLeakCount, canonicalSessionCount: identity.canonicalSessionCount, canonicalFriendCount: identity.canonicalFriendCount, sessionSurfaceDigest: identity.sessionSurfaceDigest, friendSurfaceDigest: identity.friendSurfaceDigest, surfaceDigest: identity.surfaceDigest } : null,
     "containment-audit": containment ?? null,
     "health-probe-receipt": healthProbe ?? null,
     "interactive-driver-receipt": parsedJson(interactiveDriverRaw),

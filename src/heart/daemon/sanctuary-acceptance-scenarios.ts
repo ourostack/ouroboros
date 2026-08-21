@@ -210,7 +210,7 @@ export interface SanctuaryScenarioFacts {
   approvals: SanctuaryScenarioApproval[]
   restartAttempts: SanctuaryScenarioRestartAttempt[]
   telegramTurns: SanctuaryScenarioTelegramTurnReceipt[]
-  identity?: { keyPresent: boolean; subjectOpaque: boolean; rawIdentityAbsent: boolean; liveSubjectObserved: boolean; inspectedRecordCount?: number; opaqueSubjectCount?: number; mismatchCount?: number; rawLeakCount?: number; surfaceDigest?: string }
+  identity?: { keyPresent: boolean; subjectOpaque: boolean; rawIdentityAbsent: boolean; liveSubjectObserved: boolean; inspectedRecordCount?: number; opaqueSubjectCount?: number; mismatchCount?: number; rawLeakCount?: number; surfaceDigest?: string; canonicalSessionCount?: number; canonicalFriendCount?: number; sessionSurfaceDigest?: string; friendSurfaceDigest?: string }
   container?: {
     exactImage: boolean; running: boolean; healthy: boolean; user: string; readOnlyRoot: boolean
     mountCount: number; publishedPortCount: number; restartPolicy: string; restartCount: number
@@ -425,6 +425,29 @@ function recordsAdded<T>(before: T[], after: T[], key: (value: T) => string): T[
   })
 }
 
+function exactFreshTelegramLifecycle(
+  before: SanctuaryScenarioFacts,
+  after: SanctuaryScenarioFacts,
+  expectedUpdateDigest?: string,
+  expectedOutcome: "success" | "error" = "success",
+): boolean {
+  const fresh = recordsAdded(before.events, after.events, (entry) => hash(entry))
+  const starts = fresh.filter((entry) => entry.event === "senses.telegram_turn_start")
+  const terminals = fresh.filter((entry) => entry.event === "senses.telegram_turn_end" || entry.event === "senses.telegram_turn_error")
+  if (starts.length !== 1 || terminals.length !== 1) return false
+  const start = starts[0]!
+  const terminal = terminals[0]!
+  const coordinateKeys = ["scenarioHandleDigest", "turnDigest", "updateDigest", "subject", "identityDigest", "sessionDigest", "argumentDigest"] as const
+  if (coordinateKeys.some((key) => start.meta[key] !== terminal.meta[key])) return false
+  if (!SHA256.test(String(start.meta.scenarioHandleDigest)) || !SHA256.test(String(start.meta.turnDigest))
+    || !SHA256.test(String(start.meta.updateDigest)) || (expectedUpdateDigest !== undefined && start.meta.updateDigest !== expectedUpdateDigest)
+    || typeof start.meta.subject !== "string" || !/^tg_[A-Za-z0-9_-]{43}$/u.test(start.meta.subject)
+    || ![start.meta.identityDigest, start.meta.sessionDigest, start.meta.argumentDigest, start.meta.lifecycleMac, terminal.meta.lifecycleMac].every((value) => typeof value === "string" && SHA256.test(value))) return false
+  if (!Number.isSafeInteger(terminal.meta.deliveryCount) || Number(terminal.meta.deliveryCount) < 0) return false
+  if (expectedOutcome === "success") return terminal.event === "senses.telegram_turn_end" && terminal.meta.outcome === "success" && terminal.meta.errorDigest === null
+  return terminal.event === "senses.telegram_turn_error" && terminal.meta.outcome === "error" && typeof terminal.meta.errorDigest === "string" && SHA256.test(terminal.meta.errorDigest)
+}
+
 function intendedApproval(before: SanctuaryScenarioFacts, after: SanctuaryScenarioFacts): SanctuaryScenarioApproval | null {
   const previous = new Set(before.approvals.map((record) => record.approvalId))
   const candidates = after.approvals.filter((record) => !previous.has(record.approvalId) && record.createdAt >= before.capturedAt)
@@ -487,7 +510,9 @@ export function deriveSanctuaryScenarioAssertions(
     case "unit-12c-1-opaque-identity":
     case "unit-14b-3-opaque-identity-live":
       if (!after.identity || (after.identity.inspectedRecordCount ?? 0) < 1 || (after.identity.opaqueSubjectCount ?? 0) < 1 || after.identity.mismatchCount !== 0 || after.identity.rawLeakCount !== 0
-        || (label.includes("live") && (telegramResponses < 1 || !after.identity.liveSubjectObserved))) return null
+        || (label.includes("live") && (telegramResponses !== 1 || newTurns.length !== 1 || !after.identity.liveSubjectObserved
+          || after.identity.canonicalSessionCount !== 1 || after.identity.canonicalFriendCount !== 1
+          || !exactFreshTelegramLifecycle(before, after, newTurns[0]?.updateDigest)))) return null
       return { identityBound: after.identity.keyPresent, opaqueSubject: after.identity.subjectOpaque, rawIdentityAbsent: after.identity.rawIdentityAbsent }
     case "unit-15c-1-no-callback-terminalization": {
       if (!intendedRestartApproval(approval) || approval.state !== "expired" || approval.createdAt < before.capturedAt || approval.expiresAt - approval.createdAt !== 300_000) return null
@@ -525,20 +550,32 @@ export function deriveSanctuaryScenarioAssertions(
         && after.provider.credentialRevisionsPresent === true && after.provider.requestSemanticsExact === true && after.provider.fallbackAttemptCount === 0
         ? { outwardReady: true, innerReady: true, geminiCandidateReady: true, providersDistinct: true, silentFallback: false } : null
     case "unit-16d-whats-up":
-      if (telegramResponses !== 1 || newTurns.length !== 1 || deliveredTurns[0]!.toolInvocationCount !== 1 || deliveredTurns[0]!.toolResultDigests.length !== 1 || !turnHasGroundedRead(after, deliveredTurns[0]!, "unraid_get_system") || !exactGroundedResponse(after, deliveredTurns[0]!, "unraid_get_system")) return null
+      if (telegramResponses !== 1 || newTurns.length !== 1 || !exactFreshTelegramLifecycle(before, after, newTurns[0]!.updateDigest) || deliveredTurns[0]!.toolInvocationCount !== 1 || deliveredTurns[0]!.toolResultDigests.length !== 1 || !turnHasGroundedRead(after, deliveredTurns[0]!, "unraid_get_system") || !exactGroundedResponse(after, deliveredTurns[0]!, "unraid_get_system")) return null
       return { accurate: true, authorized: true, grounded: true, liveFactsMatched: true, responseCount: telegramResponses, responseWithinLimit: true, telegramDelivered: true }
     case "unit-16d-1-space":
-      if (telegramResponses !== 1 || newTurns.length !== 1 || deliveredTurns[0]!.toolInvocationCount !== 1 || deliveredTurns[0]!.toolResultDigests.length !== 1 || !turnHasGroundedRead(after, deliveredTurns[0]!, "unraid_get_storage") || !exactGroundedResponse(after, deliveredTurns[0]!, "unraid_get_storage")) return null
+      if (telegramResponses !== 1 || newTurns.length !== 1 || !exactFreshTelegramLifecycle(before, after, newTurns[0]!.updateDigest) || deliveredTurns[0]!.toolInvocationCount !== 1 || deliveredTurns[0]!.toolResultDigests.length !== 1 || !turnHasGroundedRead(after, deliveredTurns[0]!, "unraid_get_storage") || !exactGroundedResponse(after, deliveredTurns[0]!, "unraid_get_storage")) return null
       return { accurate: true, authorized: true, grounded: true, liveFactsMatched: true, mutationCount: scenarioMutationCount, responseCount: telegramResponses, responseWithinLimit: true, telegramDelivered: true }
     case "unit-16d-2-unauthorized": {
-      const rejected = delta(after, before, "telegram.update_dropped")
-      if (rejected < 1) return null
-      const distinctAccount = after.events.some((entry) => entry.event === "telegram.update_dropped" && entry.meta.scenarioHandleDigest && entry.meta.distinctAccount === true)
+      const freshEvents = recordsAdded(before.events, after.events, (entry) => hash(entry))
+      const freshDrops = freshEvents.filter((entry) => entry.event === "telegram.update_dropped")
+      if (freshDrops.length !== 1) return null
+      const drop = freshDrops[0]!
+      const distinctAccount = drop.meta.distinctAccount === true
+        && typeof drop.meta.scenarioHandleDigest === "string" && SHA256.test(drop.meta.scenarioHandleDigest)
+        && typeof drop.meta.updateDigest === "string" && SHA256.test(drop.meta.updateDigest)
       const providerInvocationCount = newTurns.reduce((sum, turn) => sum + turn.providerTurnCount, 0)
       const toolInvocationCount = newTurns.reduce((sum, turn) => sum + turn.toolInvocationCount, 0)
       const durableToolRecordCount = delta(after, before, "senses.sanctuary_read_receipt")
       const workItemCount = newApprovals.length
-      if (!after.containment || !exactContainmentAudit(after.containment) || !distinctAccount || newTurns.length !== 0 || providerInvocationCount !== 0 || toolInvocationCount !== 0 || telegramResponses !== 0 || workItemCount !== 0 || approvalTransitions !== 0 || newAttempts.length !== 0 || scenarioMutationCount !== 0 || durableToolRecordCount !== 0 || delta(after, before, "senses.telegram_turn_start") !== 0) return null
+      const sessionStateUnchanged = Boolean(before.identity && after.identity
+        && typeof before.identity.sessionSurfaceDigest === "string" && SHA256.test(before.identity.sessionSurfaceDigest)
+        && before.identity.sessionSurfaceDigest === after.identity.sessionSurfaceDigest
+        && typeof before.identity.friendSurfaceDigest === "string" && SHA256.test(before.identity.friendSurfaceDigest)
+        && before.identity.friendSurfaceDigest === after.identity.friendSurfaceDigest)
+      const forbiddenWorkEvent = freshEvents.some((entry) => entry.event === "senses.telegram_turn_start" || entry.event === "senses.telegram_turn_end"
+        || entry.event === "senses.telegram_turn_error" || entry.event === "senses.sanctuary_read_receipt"
+        || entry.event.startsWith("senses.telegram_approved_restart_") || entry.event === "senses.sanctuary_health_delivered")
+      if (!after.containment || !exactContainmentAudit(after.containment) || !distinctAccount || !sessionStateUnchanged || newTurns.length !== 0 || providerInvocationCount !== 0 || toolInvocationCount !== 0 || telegramResponses !== 0 || workItemCount !== 0 || approvalTransitions !== 0 || newAttempts.length !== 0 || scenarioMutationCount !== 0 || durableToolRecordCount !== 0 || forbiddenWorkEvent) return null
       return { auditRejected: true, distinctAccount, mutationCount: 0, providerInvocationCount: 0, responseCount: 0, workItemCount: 0 }
     }
     case "unit-16e-containment-audit":
@@ -612,11 +649,11 @@ export function deriveSanctuaryScenarioAssertions(
       return { firedWithinMs: 0, messageCount: 1, productionRestored: true, scheduleObserved: true }
     }
     case "unit-16i-delayed-approval":
-      if (!intendedRestartApproval(approval) || !completeAttemptLedgerLinked || approval.state !== "succeeded" || now - approval.createdAt < 120_000 || mutationCount !== 1 || scenarioMutationCount !== 1 || !restartSucceeded || approval.replayMutationCount !== 0 || !approval.continuationCompleted) return null
+      if (!exactFreshTelegramLifecycle(before, after) || !intendedRestartApproval(approval) || !completeAttemptLedgerLinked || approval.state !== "succeeded" || now - approval.createdAt < 120_000 || mutationCount !== 1 || scenarioMutationCount !== 1 || !restartSucceeded || approval.replayMutationCount !== 0 || !approval.continuationCompleted) return null
       if (!approval.terminalPrompt) return null
       return { elapsedMs: approval.updatedAt - approval.createdAt, mutationCount, promptTerminal: approval.terminalPrompt, replayMutationCount: approval.replayMutationCount, resumed: approval.continuationCompleted, state: approval.state }
     case "unit-16j-denial":
-      if (!intendedRestartApproval(approval) || !completeAttemptLedgerLinked || approval.state !== "denied" || scenarioMutationCount !== 0 || approval.replayMutationCount !== 0 || !approval.continuationCompleted) return null
+      if (!exactFreshTelegramLifecycle(before, after) || !intendedRestartApproval(approval) || !completeAttemptLedgerLinked || approval.state !== "denied" || scenarioMutationCount !== 0 || approval.replayMutationCount !== 0 || !approval.continuationCompleted) return null
       if (!approval.terminalPrompt) return null
       return { mutationCount, promptTerminal: approval.terminalPrompt, replayMutationCount: approval.replayMutationCount, resumed: approval.continuationCompleted, state: approval.state }
     case "unit-16k-timeout-stale": {

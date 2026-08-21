@@ -19,6 +19,29 @@ import { readSanctuaryAcceptanceMarker, secureRenameBoundInodeSync } from "../..
 import { createSanctuaryAcceptanceScenarioFinalizer } from "../../../heart/daemon/sanctuary-acceptance-adapter"
 
 const event = (name: string) => ({ event: name, at: 1, meta: {} })
+const scenarioHandleDigest = "a".repeat(64)
+const auditTurn = (outcome: "success" | "error" = "success") => {
+  const coordinates = {
+    scenarioHandleDigest,
+    turnDigest: "7".repeat(64),
+    updateDigest: "1".repeat(64),
+    subject: `tg_${"s".repeat(43)}`,
+    identityDigest: "8".repeat(64),
+    sessionDigest: "9".repeat(64),
+    argumentDigest: "a".repeat(64),
+    lifecycleMac: "c".repeat(64),
+  }
+  return [
+    { event: "senses.telegram_turn_start", at: 9_000, meta: coordinates },
+    { event: outcome === "success" ? "senses.telegram_turn_end" : "senses.telegram_turn_error", at: 10_000, meta: {
+      ...coordinates,
+      outcome,
+      errorDigest: outcome === "success" ? null : "b".repeat(64),
+      deliveryCount: outcome === "success" ? 1 : 0,
+      lifecycleMac: "d".repeat(64),
+    } },
+  ]
+}
 const groundingDigest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex")
 const systemGrounding = { serverName: "Sanctuary", unraidVersion: "7.2.3", apiVersion: "4.37.1", arrayState: "STARTED", degraded: false }
 const storageGrounding = { array: { state: "STARTED", usedBytes: 8_000_000_000_000, freeBytes: 2_000_000_000_000, usedPercent: 80, degraded: false }, shares: [], truncated: false }
@@ -101,7 +124,7 @@ const base = (): SanctuaryScenarioFacts => ({
   events: [], approvals: [],
   restartAttempts: [],
   telegramTurns: [],
-  identity: { keyPresent: true, subjectOpaque: true, rawIdentityAbsent: true, liveSubjectObserved: true, inspectedRecordCount: 1, opaqueSubjectCount: 1, mismatchCount: 0, rawLeakCount: 0, surfaceDigest: "a".repeat(64) },
+  identity: { keyPresent: true, subjectOpaque: true, rawIdentityAbsent: true, liveSubjectObserved: true, inspectedRecordCount: 1, opaqueSubjectCount: 1, mismatchCount: 0, rawLeakCount: 0, surfaceDigest: "a".repeat(64), canonicalSessionCount: 1, canonicalFriendCount: 1, sessionSurfaceDigest: "b".repeat(64), friendSurfaceDigest: "c".repeat(64) },
   container: { exactImage: true, running: true, healthy: true, user: "10001:10001", readOnlyRoot: true, mountCount: 2, publishedPortCount: 0, restartPolicy: "unless-stopped", restartCount: 0, autostartExact: true, updaterDisabled: true, vaultUnlocked: true, manualAuthRequired: false },
   provider: { outwardReady: true, innerReady: true, geminiCandidateReady: true, providersDistinct: true, silentFallback: false, credentialRevisionsPresent: true, requestSemanticsExact: true, fallbackAttemptCount: 0 },
   cron: { registered: true, fingerprint: "a".repeat(64), receiptDigest: "b".repeat(64), sweepCount: 0 },
@@ -149,7 +172,7 @@ describe("Sanctuary live scenario capture", () => {
       const after = base()
       if (label === "unit-16a-pre-reboot-checkpoint") after.reboot = { ...after.reboot!, phase: "preflight", requestCount: 0, bootIdentityChanged: false }
       if (label === "unit-16a-reboot-request") after.reboot = { ...after.reboot!, phase: "requested", bootIdentityChanged: false }
-      if (label.includes("opaque-identity-live")) after.telegramTurns.push(turnReceipt())
+      if (label.includes("opaque-identity-live")) { after.telegramTurns.push(turnReceipt()); after.events.push(...auditTurn()) }
       if (label === "unit-15c-1-no-callback-terminalization") {
         after.approvals = [approval("expired")]
         before.sourceValues["no-callback-baseline"] = { approvalId: "approval-1", offsetDigest: createHash("sha256").update(JSON.stringify(after.sourceValues["telegram-offset"])).digest("hex"), inboundEventCount: 0 }
@@ -161,14 +184,15 @@ describe("Sanctuary live scenario capture", () => {
         const responseText = system ? "Sanctuary is running Unraid 7.2.3 with the array STARTED and not degraded." : "There is 2 TB free and the array is 80% used."
         const factDigest = groundingDigest(facts)
         after.telegramTurns.push(groundedTurn(toolName, facts, responseText))
+        after.events.push(...auditTurn())
         after.events.push({ ...event("senses.sanctuary_read_receipt"), meta: { toolName, success: true, resultDigest: "5".repeat(64), groundingDigest: factDigest, sourceIdentityDigest: groundingSource, observedAt: "1970-01-01T00:00:09.000Z" } })
         ;(after as any).liveGrounding = { toolName, groundingDigest: factDigest, sourceIdentityDigest: groundingSource, observedAt: "1970-01-01T00:00:11.000Z", facts }
       }
-      if (label === "unit-16d-2-unauthorized") after.events.push({ ...event("telegram.update_dropped"), meta: { scenarioHandleDigest: "a".repeat(64), distinctAccount: true } })
+      if (label === "unit-16d-2-unauthorized") after.events.push({ ...event("telegram.update_dropped"), meta: { scenarioHandleDigest, updateDigest: "1".repeat(64), distinctAccount: true } })
       if (label === "unit-16e-2-restart-denial") after.denial = { ...after.denial!, label, operation: "restart" }
-      if (label === "unit-16j-denial") after.approvals = [approval("denied")]
+      if (label === "unit-16j-denial") { after.approvals = [approval("denied")]; after.events.push(...auditTurn()) }
       if (label === "unit-16f-cron-fingerprint" || label === "unit-16g-health-transition" || label === "unit-16h-daily-digest") after.healthProbe = healthProbe(label)
-      if (label === "unit-16i-delayed-approval") { after.approvals = [approval("succeeded")]; after.restartAttempts = successfulRestart() }
+      if (label === "unit-16i-delayed-approval") { after.approvals = [approval("succeeded")]; after.restartAttempts = successfulRestart(); after.events.push(...auditTurn()) }
       if (label === "unit-16k-timeout-stale") { after.approvals = [approval("expired")]; after.interactiveDriver = timeoutStaleDriver(); after.events.push(event("telegram.update_dropped")) }
       if (label === "unit-16l-duplicate-callback") { after.approvals = [{ ...approval("succeeded"), callbackCount: 2, settledCount: 2, claimCount: 1 }]; after.restartAttempts = successfulRestart(); after.interactiveDriver = duplicateCallbackDriver(); after.events.push(event("telegram.callback_settled"), event("telegram.callback_settled"), event("approval.acceptance_transition")) }
       if (label === "unit-16m-restart-continuation") { after.approvals = [approval("succeeded")]; after.restartAttempts = successfulRestart(); after.interactiveDriver = restartContinuationDriver(); after.events.push({ ...event("senses.telegram_approved_restart_end"), meta: { approvalId: "approval-1" } }) }
@@ -187,7 +211,7 @@ describe("Sanctuary live scenario capture", () => {
     const factDigest = groundingDigest(facts)
     const validTurn = groundedTurn(toolName, facts, responseText)
     after.telegramTurns = [validTurn]
-    after.events = [{ ...event("senses.sanctuary_read_receipt"), meta: { toolName, success: true, resultDigest: "5".repeat(64), groundingDigest: factDigest, sourceIdentityDigest: groundingSource, observedAt: "1970-01-01T00:00:09.000Z" } }]
+    after.events = [...auditTurn(), { ...event("senses.sanctuary_read_receipt"), meta: { toolName, success: true, resultDigest: "5".repeat(64), groundingDigest: factDigest, sourceIdentityDigest: groundingSource, observedAt: "1970-01-01T00:00:09.000Z" } }]
     ;(after as any).liveGrounding = { toolName, groundingDigest: factDigest, sourceIdentityDigest: groundingSource, observedAt: "1970-01-01T00:00:11.000Z", facts }
     expect(deriveSanctuaryScenarioAssertions(label, before, after, 400_000)).toMatchObject({ accurate: true, grounded: true, liveFactsMatched: true, responseWithinLimit: true })
 
@@ -206,13 +230,13 @@ describe("Sanctuary live scenario capture", () => {
     const turn = groundedTurn("unraid_get_storage", storageGrounding, "There is 2 TB free and the array is 80% used.")
     const factDigest = groundingDigest(storageGrounding)
     after.telegramTurns = [turn]
-    after.events = [{ ...event("senses.sanctuary_read_receipt"), meta: { toolName: "unraid_get_storage", success: true, resultDigest: "5".repeat(64), groundingDigest: factDigest, sourceIdentityDigest: groundingSource, observedAt: "1970-01-01T00:00:09.000Z" } }]
+    after.events = [...auditTurn(), { ...event("senses.sanctuary_read_receipt"), meta: { toolName: "unraid_get_storage", success: true, resultDigest: "5".repeat(64), groundingDigest: factDigest, sourceIdentityDigest: groundingSource, observedAt: "1970-01-01T00:00:09.000Z" } }]
     const drifted = { array: { ...storageGrounding.array, usedBytes: 8_100_000_000_000, freeBytes: 1_900_000_000_000, usedPercent: 81 }, shares: [], truncated: false }
     after.liveGrounding = { toolName: "unraid_get_storage", groundingDigest: groundingDigest(drifted), sourceIdentityDigest: groundingSource, observedAt: "1970-01-01T00:00:11.000Z", facts: drifted } as never
     expect(deriveSanctuaryScenarioAssertions("unit-16d-1-space", before, after, 400_000)).toMatchObject({ accurate: true, liveFactsMatched: true })
-    after.events = [{ ...after.events[0]!, meta: { ...after.events[0]!.meta, sourceIdentityDigest: "8".repeat(64) } }]
+    after.events = after.events.map((entry) => entry.event === "senses.sanctuary_read_receipt" ? { ...entry, meta: { ...entry.meta, sourceIdentityDigest: "8".repeat(64) } } : entry)
     expect(deriveSanctuaryScenarioAssertions("unit-16d-1-space", before, after, 400_000)).toBeNull()
-    after.events = [{ ...after.events[0]!, meta: { ...after.events[0]!.meta, sourceIdentityDigest: groundingSource } }]
+    after.events = after.events.map((entry) => entry.event === "senses.sanctuary_read_receipt" ? { ...entry, meta: { ...entry.meta, sourceIdentityDigest: groundingSource } } : entry)
     after.liveGrounding = { ...after.liveGrounding!, sourceIdentityDigest: "8".repeat(64) } as never
     expect(deriveSanctuaryScenarioAssertions("unit-16d-1-space", before, after, 400_000)).toBeNull()
     after.liveGrounding = { ...after.liveGrounding!, sourceIdentityDigest: groundingSource, observedAt: "1970-01-01T00:00:08.000Z" } as never
@@ -290,6 +314,7 @@ describe("Sanctuary live scenario capture", () => {
     const digest = groundingDigest(systemGrounding)
     facts = base()
     facts.telegramTurns.push(groundedTurn("unraid_get_system", systemGrounding, "Sanctuary is running Unraid 7.2.3 with the array STARTED and not degraded."))
+    facts.events.push(...auditTurn())
     facts.events.push({ ...event("senses.sanctuary_read_receipt"), meta: { toolName: "unraid_get_system", success: true, resultDigest: "5".repeat(64), groundingDigest: digest, sourceIdentityDigest: groundingSource, observedAt: "1970-01-01T00:00:09.000Z" } })
     facts.liveGrounding = { toolName: "unraid_get_system", groundingDigest: digest, sourceIdentityDigest: groundingSource, observedAt: "1970-01-01T00:00:11.000Z", facts: systemGrounding }
     const complete = await capture({ phase: "poll", label: "unit-16d-whats-up", externalGate: "authorized-telegram-message", sources, checkpointDigest: begin.checkpointDigest as string })
@@ -654,6 +679,69 @@ describe("Sanctuary live scenario capture", () => {
     after.events.push({ ...event("telegram.update_dropped"), meta: { scenarioHandleDigest: "a".repeat(64), distinctAccount: true } })
     after.telegramTurns.push({ ...turnReceipt(), status: "error", deliveryCount: 0, telegramMessageIdDigests: [], providerTurnCount: 1 })
     expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unauthorized", before, after, 400_000)).toBeNull()
+  })
+
+  it("requires exactly one fresh scenario-bound distinct-account drop", () => {
+    const historical = { ...event("telegram.update_dropped"), meta: { scenarioHandleDigest, updateDigest: "0".repeat(64), distinctAccount: true } }
+    const freshDistinct = { ...event("telegram.update_dropped"), at: 2, meta: { scenarioHandleDigest, updateDigest: "1".repeat(64), distinctAccount: true } }
+    const before = base(); before.events = [historical]
+    const after = base(); after.events = [historical, freshDistinct]
+    expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unauthorized", before, after, 400_000)).toMatchObject({ auditRejected: true, distinctAccount: true })
+
+    after.events = [historical, { ...freshDistinct, meta: { ...freshDistinct.meta, distinctAccount: false } }]
+    expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unauthorized", before, after, 400_000)).toBeNull()
+    after.events = [historical, freshDistinct, { ...freshDistinct, at: 3, meta: { ...freshDistinct.meta, updateDigest: "2".repeat(64) } }]
+    expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unauthorized", before, after, 400_000)).toBeNull()
+    after.events = [historical, { ...freshDistinct, meta: { ...freshDistinct.meta, updateDigest: "not-a-digest" } }]
+    expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unauthorized", before, after, 400_000)).toBeNull()
+    after.events = [historical, freshDistinct, { ...event("senses.sanctuary_health_delivered"), at: 3, meta: { scenarioHandleDigest, deliveryCount: 1 } }]
+    expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unauthorized", before, after, 400_000)).toBeNull()
+    after.events = [historical, freshDistinct]
+    after.identity = { ...after.identity!, sessionSurfaceDigest: "d".repeat(64) }
+    expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unauthorized", before, after, 400_000)).toBeNull()
+  })
+
+  it.each(["unit-16d-whats-up", "unit-16i-delayed-approval", "unit-16j-denial"] as const)("requires one fresh exact audit lifecycle for %s", (label) => {
+    const before = base()
+    const after = base()
+    if (label === "unit-16d-whats-up") {
+      after.telegramTurns = [groundedTurn("unraid_get_system", systemGrounding, "Sanctuary is running Unraid 7.2.3 with the array STARTED and not degraded.")]
+      after.events.push({ ...event("senses.sanctuary_read_receipt"), meta: { toolName: "unraid_get_system", success: true, resultDigest: "5".repeat(64), groundingDigest: groundingDigest(systemGrounding), sourceIdentityDigest: groundingSource, observedAt: "1970-01-01T00:00:09.000Z" } })
+      after.liveGrounding = { toolName: "unraid_get_system", groundingDigest: groundingDigest(systemGrounding), sourceIdentityDigest: groundingSource, observedAt: "1970-01-01T00:00:11.000Z", facts: systemGrounding }
+    } else {
+      after.approvals = [approval(label === "unit-16i-delayed-approval" ? "succeeded" : "denied")]
+      if (label === "unit-16i-delayed-approval") after.restartAttempts = successfulRestart()
+    }
+    after.events.push(...auditTurn())
+    expect(deriveSanctuaryScenarioAssertions(label, before, after, 400_000)).not.toBeNull()
+
+    const valid = [...after.events]
+    after.events = valid.filter((entry) => entry.event !== "senses.telegram_turn_end")
+    expect(deriveSanctuaryScenarioAssertions(label, before, after, 400_000)).toBeNull()
+    after.events = valid.map((entry) => entry.event === "senses.telegram_turn_end" ? { ...entry, meta: { ...entry.meta, outcome: undefined } } : entry)
+    expect(deriveSanctuaryScenarioAssertions(label, before, after, 400_000)).toBeNull()
+    after.events = valid.map((entry) => entry.event === "senses.telegram_turn_end" ? { ...entry, meta: { ...entry.meta, errorDigest: undefined } } : entry)
+    expect(deriveSanctuaryScenarioAssertions(label, before, after, 400_000)).toBeNull()
+    after.events = valid.map((entry) => entry.event === "senses.telegram_turn_end" ? { ...entry, meta: { ...entry.meta, sessionDigest: "c".repeat(64) } } : entry)
+    expect(deriveSanctuaryScenarioAssertions(label, before, after, 400_000)).toBeNull()
+    before.events = auditTurn()
+    after.events = auditTurn()
+    expect(deriveSanctuaryScenarioAssertions(label, before, after, 400_000)).toBeNull()
+  })
+
+  it("requires one new turn with exactly one canonical session and Friends identity", () => {
+    const before = base()
+    const after = base()
+    after.telegramTurns = [turnReceipt()]
+    after.events = auditTurn()
+    expect(deriveSanctuaryScenarioAssertions("unit-14b-3-opaque-identity-live", before, after, 400_000)).not.toBeNull()
+    after.telegramTurns.push({ ...turnReceipt(), updateDigest: "2".repeat(64) })
+    expect(deriveSanctuaryScenarioAssertions("unit-14b-3-opaque-identity-live", before, after, 400_000)).toBeNull()
+    after.telegramTurns = [turnReceipt()]
+    after.identity = { ...after.identity!, canonicalSessionCount: 2 }
+    expect(deriveSanctuaryScenarioAssertions("unit-14b-3-opaque-identity-live", before, after, 400_000)).toBeNull()
+    after.identity = { ...after.identity!, canonicalSessionCount: 1, canonicalFriendCount: 2 }
+    expect(deriveSanctuaryScenarioAssertions("unit-14b-3-opaque-identity-live", before, after, 400_000)).toBeNull()
   })
 
   it("treats lone indeterminate attempts as unsafe across negative approval and containment gates", () => {

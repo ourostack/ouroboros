@@ -539,6 +539,30 @@ describe("Telegram sense coverage contracts", () => {
     expect(mocks.sendTelegramText).toHaveBeenCalledExactlyOnceWith(f.api, "43", "fallback", undefined, expect.any(Function))
   })
 
+  it("emits scenario-bound hashed turn lifecycle coordinates without raw transport identity", async () => {
+    const f = defaultFixture()
+    createTelegramSenseApp({
+      agentName: "butler",
+      credentials,
+      identityKey: "k".repeat(43),
+      acceptanceMarker: () => ({ schemaVersion: "sanctuary-acceptance-marker-v1", label: "unit-16d-whats-up", scenarioHandleDigest: "a".repeat(64), startedAt: "2026-08-20T00:00:00.000Z" }),
+    })
+    await f.getOnMessage()({ updateId: 918273645, messageId: "817263540", userId: "42", chatId: "43", text: "restart calibre-web" })
+    const lifecycle = mocks.emitNervesEvent.mock.calls.map(([entry]) => entry).filter((entry) => entry.event === "senses.telegram_turn_start" || entry.event === "senses.telegram_turn_end")
+    expect(lifecycle).toHaveLength(2)
+    const [start, end] = lifecycle
+    const coordinates = ["scenarioHandleDigest", "turnDigest", "updateDigest", "subject", "identityDigest", "sessionDigest", "argumentDigest"]
+    for (const key of coordinates) expect(end.meta[key]).toBe(start.meta[key])
+    expect(start.meta).toMatchObject({ scenarioHandleDigest: "a".repeat(64), subject: expect.stringMatching(/^tg_[A-Za-z0-9_-]{43}$/u) })
+    for (const key of ["turnDigest", "updateDigest", "identityDigest", "sessionDigest", "argumentDigest"]) expect(start.meta[key]).toMatch(/^[0-9a-f]{64}$/u)
+    expect(end.meta).toMatchObject({ outcome: "success", errorDigest: null, deliveryCount: 1 })
+    expect(JSON.stringify(lifecycle)).not.toMatch(/918273645|817263540|"42"|"43"/u)
+    const longPollOptions = mocks.createTelegramLongPoll.mock.calls.at(-1)![0]
+    const droppedMeta = longPollOptions.acceptanceEventMeta({ update_id: 123456789, message: { message_id: 987654321, from: { id: 99 }, chat: { id: 99, type: "private" }, text: "unauthorized" } })
+    expect(droppedMeta).toEqual({ scenarioHandleDigest: "a".repeat(64), updateDigest: expect.stringMatching(/^[0-9a-f]{64}$/u) })
+    expect(JSON.stringify(droppedMeta)).not.toMatch(/123456789|987654321|"99"/u)
+  })
+
   it("uses one deterministic domain-safe opaque subject for turn, friend, identity, and log surfaces", async () => {
     const privateCredentials = {
       botToken: "privacy-test-bot-token",

@@ -376,7 +376,7 @@ export interface TelegramLongPollOptions {
   inboxStore?: TelegramUpdateInboxStore
   onMessage: (message: TelegramInboundMessage) => Promise<void>
   onUpdate?: (update: TelegramUpdate) => Promise<boolean>
-  acceptanceEventMeta?: () => Record<string, string>
+  acceptanceEventMeta?: (update?: TelegramUpdate) => Record<string, string>
 }
 
 export function createTelegramLongPoll(options: TelegramLongPollOptions): TelegramLongPoll {
@@ -414,7 +414,7 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
         updateClass: update.message ? "message" : "other",
         reason: "unauthorized_or_unsupported",
         distinctAccount: Boolean(update.message?.from && (String(update.message.from.id) !== options.expectedUserId || String(update.message.chat.id) !== options.expectedChatId)),
-        ...options.acceptanceEventMeta?.(),
+        ...options.acceptanceEventMeta?.(update),
       },
     })
   }

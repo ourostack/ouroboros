@@ -95,6 +95,16 @@ export function sanctuaryTelegramTurnReceiptMac(identityKey: string, value: Reco
   return sanctuaryTelegramTurnReceiptDigest(identityKey, "sanctuary-telegram-turn-receipt-v4", "receipt", canonicalReceiptJson(unsigned))
 }
 
+export function sanctuaryTelegramAuditLifecycleMac(
+  identityKey: string,
+  schemaVersion: keyof typeof TELEGRAM_TURN_RECEIPT_DOMAINS,
+  event: string,
+  meta: Record<string, unknown>,
+): string {
+  const unsigned = Object.fromEntries(Object.entries(meta).filter(([key]) => key !== "lifecycleMac"))
+  return sanctuaryTelegramTurnReceiptDigest(identityKey, schemaVersion, "audit-lifecycle", canonicalReceiptJson({ event, meta: unsigned }))
+}
+
 function sameTelegramLedgerMetadata(left: import("node:fs").BigIntStats, right: import("node:fs").BigIntStats): boolean {
   return left.dev === right.dev
     && left.ino === right.ino
@@ -641,11 +651,26 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   const onMessage = async (message: TelegramInboundMessage): Promise<void> => {
     const acceptanceMarker = options.acceptanceMarker ? options.acceptanceMarker() : readSanctuaryAcceptanceMarker(options.agentName)
     const acceptanceMeta = sanctuaryAcceptanceEventMeta(options.agentName)
+    const groundedAcceptance = acceptanceMarker?.label === "unit-16d-whats-up" || acceptanceMarker?.label === "unit-16d-1-space"
+    const acceptanceSchema = groundedAcceptance ? "sanctuary-telegram-turn-receipt-v4" : "sanctuary-telegram-turn-receipt-v3"
+    const auditDigest = (purpose: string, value: string): string => sanctuaryTelegramTurnReceiptDigest(identityKey, acceptanceSchema, purpose, value)
+    const lifecycleCoordinates = acceptanceMarker ? {
+      scenarioHandleDigest: acceptanceMarker.scenarioHandleDigest,
+      turnDigest: auditDigest("turn", `${message.updateId}\0${message.messageId}`),
+      updateDigest: auditDigest("update", `${message.updateId}\0${message.messageId}`),
+      subject,
+      identityDigest: auditDigest("identity", subject),
+      sessionDigest: auditDigest("session", `telegram:${subject}`),
+      argumentDigest: auditDigest("argument", message.text),
+    } : {}
+    const lifecycleMeta = (event: string, meta: Record<string, unknown>): Record<string, unknown> => acceptanceMarker
+      ? { ...meta, lifecycleMac: sanctuaryTelegramAuditLifecycleMac(identityKey, acceptanceSchema, event, meta) }
+      : meta
     emitNervesEvent({
       component: "senses",
       event: "senses.telegram_turn_start",
       message: "Telegram authorized turn started",
-      meta: { agentName: options.agentName, subject, ...acceptanceMeta },
+      meta: lifecycleMeta("senses.telegram_turn_start", { agentName: options.agentName, subject, ...acceptanceMeta, ...lifecycleCoordinates }),
     })
     let deliveryCount = 0
     const deliveredMessageIds: number[] = []
@@ -702,7 +727,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         component: "senses",
         event: "senses.telegram_turn_end",
         message: "Telegram authorized turn completed",
-        meta: { agentName: options.agentName, subject, deliveryCount: Math.max(deliveryCount, result.response.trim() ? 1 : 0), ...acceptanceMeta },
+        meta: lifecycleMeta("senses.telegram_turn_end", { agentName: options.agentName, subject, deliveryCount: Math.max(deliveryCount, result.response.trim() ? 1 : 0), ...acceptanceMeta, ...lifecycleCoordinates, ...(acceptanceMarker ? { outcome: "success", errorDigest: null } : {}) }),
       })
     } catch (error) {
       receiptStatus = "error"
@@ -712,21 +737,23 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         component: "senses",
         event: "senses.telegram_turn_error",
         message: "Telegram authorized turn failed",
-        meta: {
+        meta: lifecycleMeta("senses.telegram_turn_error", {
           agentName: options.agentName,
           subject,
           ...acceptanceMeta,
-          error: redactTelegramPrivateValues(
-            error,
-            [botToken, authorizedUserId, authorizedChatId, String(message.updateId), message.messageId],
-          ),
-        },
+          ...lifecycleCoordinates,
+          ...(acceptanceMarker ? {
+            outcome: "error",
+            errorDigest: auditDigest("error", redactTelegramPrivateValues(error, [botToken, authorizedUserId, authorizedChatId, String(message.updateId), message.messageId])),
+            deliveryCount: deliveredMessageIds.length,
+          } : { error: redactTelegramPrivateValues(error, [botToken, authorizedUserId, authorizedChatId, String(message.updateId), message.messageId]) }),
+        }),
       })
       const fallback = "I couldn't complete that turn. The failure was recorded; please try again."
       if (deliveredMessageIds.length === 0) await deliver(fallback, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) })
     } finally {
       if (acceptanceMarker) {
-        const grounded = acceptanceMarker.label === "unit-16d-whats-up" || acceptanceMarker.label === "unit-16d-1-space"
+        const grounded = groundedAcceptance
         const schemaVersion = grounded ? "sanctuary-telegram-turn-receipt-v4" : "sanctuary-telegram-turn-receipt-v3"
         const hmac = (purpose: string, value: string): string => sanctuaryTelegramTurnReceiptDigest(identityKey, schemaVersion, purpose, value)
         const redact = (value: string): string => [botToken, authorizedUserId, authorizedChatId, String(message.updateId), message.messageId]
@@ -776,7 +803,17 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     inboxStore,
     onMessage,
     onUpdate,
-    acceptanceEventMeta: () => sanctuaryAcceptanceEventMeta(options.agentName),
+    acceptanceEventMeta: (update) => {
+      const marker = options.acceptanceMarker ? options.acceptanceMarker() : readSanctuaryAcceptanceMarker(options.agentName)
+      if (!marker) return {}
+      const messageId = update?.message?.message_id ?? update?.callback_query?.message?.message_id
+      const updateDigest = update && messageId !== undefined
+        ? sanctuaryTelegramTurnReceiptDigest(identityKey,
+          marker.label === "unit-16d-whats-up" || marker.label === "unit-16d-1-space" ? "sanctuary-telegram-turn-receipt-v4" : "sanctuary-telegram-turn-receipt-v3",
+          "update", `${update.update_id}\0${messageId}`)
+        : undefined
+      return { scenarioHandleDigest: marker.scenarioHandleDigest, ...(updateDigest ? { updateDigest } : {}) }
+    },
   })
 
   return {
