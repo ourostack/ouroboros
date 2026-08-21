@@ -22,6 +22,7 @@ const SHA256 = /^[0-9a-f]{64}$/u
 const TARGET_ENDPOINT = "https://books.mendelow.cloud/"
 const CRON_MARKER = "# ouro:habit:sanctuary:sanctuary:sanctuary-health"
 const CRON_COMMAND = "*/15 * * * * /usr/local/bin/node /opt/ouro/dist/heart/daemon/ouro-entry.js poke sanctuary --habit sanctuary-health --trigger cron"
+const PROCESS_ENTRY = "/opt/ouro/dist/senses/sanctuary-health-acceptance-probe.js"
 const LABELS = ["unit-16f-cron-fingerprint", "unit-16g-health-transition", "unit-16h-daily-digest"] as const
 
 export type SanctuaryHealthAcceptanceProbeLabel = typeof LABELS[number]
@@ -88,6 +89,14 @@ interface ProbeDependencies {
 
 interface HealthSnapshot { exists: boolean; bytes: string }
 
+interface ProbeProcessDependencies {
+  agentRoot: string
+  processAlive(pid: number): boolean
+  readCommandLine(pid: number): string
+  signal(pid: number, signal: NodeJS.Signals): void
+  sleep(ms: number): Promise<void>
+}
+
 type HealthStateRecord = {
   incidents: Record<string, { id: string; summary: string }>
   lastDigestDay: string | null
@@ -127,6 +136,89 @@ function atomicPrivateFile(filePath: string, contents: string): void {
   } finally {
     if (fs.existsSync(temporary)) fs.unlinkSync(temporary)
   }
+}
+
+function probeProcessPath(agentRoot: string, scenarioHandleDigest: string): string {
+  return path.join(agentRoot, "state", "acceptance", "health-probe-processes", `${scenarioHandleDigest}.json`)
+}
+
+function processRecord(input: SanctuaryHealthAcceptanceProbeInput, pid: number): Record<string, unknown> {
+  return { schemaVersion: "sanctuary-health-probe-process-v1", pid, ...input }
+}
+
+function sameProcessRecord(value: Record<string, unknown>, input: SanctuaryHealthAcceptanceProbeInput): value is Record<string, unknown> & { pid: number } {
+  return value.schemaVersion === "sanctuary-health-probe-process-v1" && Number.isSafeInteger(value.pid) && Number(value.pid) > 1
+    && value.label === input.label && value.scenarioHandleDigest === input.scenarioHandleDigest
+    && value.ownerImageDigest === input.ownerImageDigest && value.ownerContainerDigest === input.ownerContainerDigest
+}
+
+export function registerSanctuaryHealthAcceptanceProbeProcess(
+  input: SanctuaryHealthAcceptanceProbeInput,
+  dependencies: { agentRoot: string; pid: number },
+): void {
+  canonicalInput(input)
+  if (!Number.isSafeInteger(dependencies.pid) || dependencies.pid <= 1) throw new Error("Sanctuary health acceptance process pid is invalid")
+  atomicPrivateFile(probeProcessPath(dependencies.agentRoot, input.scenarioHandleDigest), `${JSON.stringify(processRecord(input, dependencies.pid))}\n`)
+}
+
+function unregisterSanctuaryHealthAcceptanceProbeProcess(input: SanctuaryHealthAcceptanceProbeInput, agentRoot: string, pid: number): void {
+  const marker = probeProcessPath(agentRoot, input.scenarioHandleDigest)
+  try {
+    const value = JSON.parse(fs.readFileSync(marker, "utf8")) as Record<string, unknown>
+    if (sameProcessRecord(value, input) && value.pid === pid) fs.unlinkSync(marker)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+  }
+}
+
+function defaultProbeProcessDependencies(): ProbeProcessDependencies {
+  return {
+    agentRoot: getAgentRoot("sanctuary"),
+    processAlive: (pid) => {
+      try { process.kill(pid, 0); return true }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return false; throw error }
+    },
+    readCommandLine: (pid) => fs.readFileSync(`/proc/${pid}/cmdline`, "utf8"),
+    signal: (pid, signal) => { process.kill(pid, signal) },
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  }
+}
+
+async function waitForProcessAbsent(pid: number, dependencies: ProbeProcessDependencies, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  while (dependencies.processAlive(pid) && Date.now() < deadline) await dependencies.sleep(Math.min(50, Math.max(1, deadline - Date.now())))
+  return !dependencies.processAlive(pid)
+}
+
+export async function stopSanctuaryHealthAcceptanceProbeProcess(
+  input: SanctuaryHealthAcceptanceProbeInput,
+  dependencies: ProbeProcessDependencies = defaultProbeProcessDependencies(),
+  options: { termGraceMs?: number; killGraceMs?: number } = {},
+): Promise<{ stopped: boolean }> {
+  canonicalInput(input)
+  const marker = probeProcessPath(dependencies.agentRoot, input.scenarioHandleDigest)
+  let value: Record<string, unknown>
+  try { value = JSON.parse(fs.readFileSync(marker, "utf8")) as Record<string, unknown> }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { stopped: false }
+    throw error
+  }
+  if (!sameProcessRecord(value, input)) throw new Error("Sanctuary health acceptance process identity is invalid")
+  const pid = value.pid
+  if (dependencies.processAlive(pid)) {
+    const commandLine = dependencies.readCommandLine(pid).split("\0")
+    if (!commandLine.includes(PROCESS_ENTRY) || !commandLine.includes("run") || !commandLine.includes(input.scenarioHandleDigest)) {
+      throw new Error("Sanctuary health acceptance process identity is invalid")
+    }
+    dependencies.signal(pid, "SIGTERM")
+    if (!await waitForProcessAbsent(pid, dependencies, options.termGraceMs ?? 5_000)) {
+      dependencies.signal(pid, "SIGKILL")
+      if (!await waitForProcessAbsent(pid, dependencies, options.killGraceMs ?? 5_000)) throw new Error("Sanctuary health acceptance process did not stop")
+    }
+  }
+  unregisterSanctuaryHealthAcceptanceProbeProcess(input, dependencies.agentRoot, pid)
+  if (dependencies.processAlive(pid) || fs.existsSync(marker)) throw new Error("Sanctuary health acceptance process absence was not verified")
+  return { stopped: true }
 }
 
 function snapshotState(statePath: string): HealthSnapshot {
@@ -501,10 +593,10 @@ export async function recoverSanctuaryHealthAcceptanceProbe(
   return { recovered: true }
 }
 
-function parseCli(argv: string[]): { mode: "run" | "recover" | "finalize"; input: SanctuaryHealthAcceptanceProbeInput; after?: { ownerImageDigest: string; ownerContainerDigest: string } } {
-  if ((argv.length !== 9 && argv.length !== 13) || (argv[0] !== "run" && argv[0] !== "recover" && argv[0] !== "finalize")
+function parseCli(argv: string[]): { mode: "run" | "stop" | "recover" | "finalize"; input: SanctuaryHealthAcceptanceProbeInput; after?: { ownerImageDigest: string; ownerContainerDigest: string } } {
+  if ((argv.length !== 9 && argv.length !== 13) || (argv[0] !== "run" && argv[0] !== "stop" && argv[0] !== "recover" && argv[0] !== "finalize")
     || argv[1] !== "--label" || argv[3] !== "--scenario" || argv[5] !== "--owner-image" || argv[7] !== "--owner-container") {
-    throw new Error("usage: sanctuary-health-acceptance-probe <run|recover|finalize> --label <label> --scenario <digest> --owner-image <digest> --owner-container <digest> [--owner-image-after <digest> --owner-container-after <digest>]")
+    throw new Error("usage: sanctuary-health-acceptance-probe <run|stop|recover|finalize> --label <label> --scenario <digest> --owner-image <digest> --owner-container <digest> [--owner-image-after <digest> --owner-container-after <digest>]")
   }
   const input = { label: argv[2] as SanctuaryHealthAcceptanceProbeLabel, scenarioHandleDigest: argv[4]!, ownerImageDigest: argv[6]!, ownerContainerDigest: argv[8]! }
   canonicalInput(input)
@@ -516,11 +608,33 @@ function parseCli(argv: string[]): { mode: "run" | "recover" | "finalize"; input
   return { mode: argv[0], input }
 }
 
+async function runCliProbe(input: SanctuaryHealthAcceptanceProbeInput): Promise<SanctuaryHealthAcceptanceProbeReceipt> {
+  const agentRoot = getAgentRoot("sanctuary")
+  registerSanctuaryHealthAcceptanceProbeProcess(input, { agentRoot, pid: process.pid })
+  const interrupted = (signal: NodeJS.Signals): void => {
+    unregisterSanctuaryHealthAcceptanceProbeProcess(input, agentRoot, process.pid)
+    process.removeListener("SIGTERM", onTerm)
+    process.removeListener("SIGINT", onInterrupt)
+    process.kill(process.pid, signal)
+  }
+  const onTerm = (): void => interrupted("SIGTERM")
+  const onInterrupt = (): void => interrupted("SIGINT")
+  process.once("SIGTERM", onTerm)
+  process.once("SIGINT", onInterrupt)
+  try { return await runSanctuaryHealthAcceptanceProbe(input) }
+  finally {
+    process.removeListener("SIGTERM", onTerm)
+    process.removeListener("SIGINT", onInterrupt)
+    unregisterSanctuaryHealthAcceptanceProbeProcess(input, agentRoot, process.pid)
+  }
+}
+
 if (require.main === module) {
   const { mode, input, after } = parseCli(process.argv.slice(2))
   const operation = mode === "run"
-    ? runSanctuaryHealthAcceptanceProbe(input)
-    : mode === "recover" ? recoverSanctuaryHealthAcceptanceProbe(input) : Promise.resolve(finalizeSanctuaryHealthAcceptanceProbe(input, after!))
+    ? runCliProbe(input)
+    : mode === "stop" ? stopSanctuaryHealthAcceptanceProbeProcess(input)
+      : mode === "recover" ? recoverSanctuaryHealthAcceptanceProbe(input) : Promise.resolve(finalizeSanctuaryHealthAcceptanceProbe(input, after!))
   void operation.catch((error) => {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
     process.exitCode = 1
