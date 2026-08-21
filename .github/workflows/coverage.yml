@@ -109,7 +109,7 @@ jobs:
           tar -xzf "$PACKAGE_TARBALL" -C "$PACKAGE_ROOT"
           node scripts/package-assets.cjs "$PACKAGE_ROOT/package"
           PACKAGE_VERSION="$(node -p "require('./package.json').version")"
-          docker build --pull --tag ouro-butler-package-smoke:"$PACKAGE_VERSION" "$PACKAGE_ROOT/package"
+          docker build --pull --file "$PACKAGE_ROOT/package/deploy/unraid/Dockerfile" --tag ouro-butler-package-smoke:"$PACKAGE_VERSION" "$PACKAGE_ROOT/package"
 
   publish:
     needs:
