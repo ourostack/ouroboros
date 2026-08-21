@@ -809,6 +809,11 @@ const DUPLICATE_RECEIPT_KEYS = [
   "staleReplayAttempts", "staleReplaySettled", "staleReplayMutationCount", "promptTerminal",
   "writeCredentialObserved",
 ]
+const TIMEOUT_RECEIPT_KEYS = [
+  "schemaVersion", "phase", "label", "scenarioHandleDigest", "approvalIdDigest", "checkpointDigest",
+  "suspendedSessionRevisionDigest", "approvalEpochBefore", "callbackAttempts", "distinctQueryCount",
+  "callbackDataDigest", "settledCount", "claimCount", "mutationCount", "staleAcknowledged", "promptTerminal",
+]
 
 const RESTART_RECEIPT_KEYS = [
   "schemaVersion", "phase", "label", "scenarioHandleDigest", "approvalIdDigest", "checkpointDigest",
@@ -849,6 +854,21 @@ function requireInteractiveReceipt(receipt, input) {
   return value
 }
 
+function requireTimeoutReceipt(receipt, input) {
+  const value = object(receipt, "timeout stale driver receipt")
+  exactKeys(value, TIMEOUT_RECEIPT_KEYS, "timeout stale driver receipt")
+  if (value.schemaVersion !== "sanctuary-timeout-stale-driver-receipt-v1" || value.phase !== "complete"
+    || value.label !== input.label || value.scenarioHandleDigest !== input.scenarioHandleDigest
+    || ![value.approvalIdDigest, value.checkpointDigest, value.suspendedSessionRevisionDigest, value.callbackDataDigest]
+      .every((item) => typeof item === "string" && SHA256.test(item))
+    || !Number.isSafeInteger(value.approvalEpochBefore) || value.approvalEpochBefore < 0
+    || value.callbackAttempts !== 1 || value.distinctQueryCount !== 1 || value.settledCount !== 1
+    || value.claimCount !== 0 || value.mutationCount !== 0 || value.staleAcknowledged !== true || value.promptTerminal !== true) {
+    throw new Error("timeout stale driver receipt is invalid")
+  }
+  return value
+}
+
 function requirePreparedRestartReceipt(receipt, input) {
   const value = object(receipt, "restart continuation prepared receipt")
   exactKeys(value, PREPARED_RESTART_RECEIPT_KEYS, "restart continuation prepared receipt")
@@ -874,6 +894,16 @@ function runInteractiveRuntimeOperation(operation, value, dependencies = { run: 
 function runInteractiveDriver(input, dependencies = { run: spawnSync }) {
   const value = canonicalInteractiveRequest(input, "unit-16l-duplicate-callback")
   return requireInteractiveReceipt(runInteractiveRuntimeOperation("drive_duplicate_callbacks", value, dependencies), value)
+}
+
+function runTimeoutStaleDriver(input, dependencies = { run: spawnSync }) {
+  const value = canonicalInteractiveRequest(input, "unit-16k-timeout-stale")
+  const response = runInteractiveRuntimeOperation("drive_timeout_stale", value, dependencies)
+  if (response.state === "waiting") {
+    exactKeys(response, ["state"], "timeout stale waiting response")
+    return response
+  }
+  return requireTimeoutReceipt(response, value)
 }
 
 async function restartButlerForAcceptance(input, dependencies = {
@@ -968,6 +998,40 @@ async function driveDuplicateCallbacks(input, dependencies = {
   }
 }
 
+async function driveTimeoutStale(input, dependencies = {
+  readReceipt: readInteractiveReceipt,
+  persistReceipt: persistInteractiveReceipt,
+  runtime: runTimeoutStaleDriver,
+}) {
+  const value = canonicalInteractiveRequest(input, "unit-16k-timeout-stale")
+  const existing = dependencies.readReceipt(value)
+  if (existing?.phase === "complete") return requireTimeoutReceipt(existing, value)
+  if (existing && existing.phase !== "waiting") throw new Error("timeout stale drive requires inspect-before-retry")
+  dependencies.persistReceipt(value, {
+    schemaVersion: "sanctuary-timeout-stale-driver-receipt-v1",
+    phase: existing ? "attempting" : "preparing",
+    ...value,
+  })
+  try {
+    const response = await dependencies.runtime(value)
+    if (response.state === "waiting") {
+      exactKeys(response, ["state"], "timeout stale waiting response")
+      dependencies.persistReceipt(value, { schemaVersion: "sanctuary-timeout-stale-driver-receipt-v1", phase: "waiting", ...value })
+      return response
+    }
+    const receipt = requireTimeoutReceipt(response, value)
+    dependencies.persistReceipt(value, receipt)
+    return receipt
+  } catch (error) {
+    dependencies.persistReceipt(value, {
+      schemaVersion: "sanctuary-timeout-stale-driver-receipt-v1",
+      phase: existing ? "attempted_or_indeterminate" : "preparation_indeterminate",
+      ...value,
+    })
+    throw error
+  }
+}
+
 async function driveRestartContinuation(input, dependencies = {
   readReceipt: readInteractiveReceipt,
   persistReceipt: persistInteractiveReceipt,
@@ -1034,6 +1098,7 @@ async function dispatch(request, dependencies = {
   healthProbeStatus,
   recoverHealthProbe,
   healthProbeCoordinator,
+  driveTimeoutStale,
   driveDuplicateCallbacks,
   driveRestartContinuation,
   ownerMutationCoordinator,
@@ -1142,15 +1207,19 @@ async function dispatch(request, dependencies = {
     if (dependencies.ownerMutationCoordinator) return await dependencies.ownerMutationCoordinator.healthRecover(request.scenarioHandleDigest, recover)
     return dependencies.healthProbeCoordinator ? await dependencies.healthProbeCoordinator.recover(request.scenarioHandleDigest, recover) : await recover()
   }
-  if (operation === "drive_duplicate_callbacks" || operation === "drive_restart_continuation") {
+  if (operation === "drive_timeout_stale" || operation === "drive_duplicate_callbacks" || operation === "drive_restart_continuation") {
     exactKeys(payload, ["operation", "targetId", "label", "scenarioHandleDigest"], operation)
     if (payload.targetId !== TARGET_HOST) throw new Error("target host is invalid")
-    const expectedLabel = operation === "drive_duplicate_callbacks" ? "unit-16l-duplicate-callback" : "unit-16m-restart-continuation"
+    const expectedLabel = operation === "drive_timeout_stale" ? "unit-16k-timeout-stale"
+      : operation === "drive_duplicate_callbacks" ? "unit-16l-duplicate-callback" : "unit-16m-restart-continuation"
     const input = canonicalInteractiveRequest({ label: payload.label, scenarioHandleDigest: payload.scenarioHandleDigest }, expectedLabel)
     if (dependencies.healthOwnerMutationActive?.()) throw new Error("owner mutation refused while durable health probe artifacts are active")
-    const drive = operation === "drive_duplicate_callbacks" ? dependencies.driveDuplicateCallbacks : dependencies.driveRestartContinuation
+    const drive = operation === "drive_timeout_stale" ? dependencies.driveTimeoutStale
+      : operation === "drive_duplicate_callbacks" ? dependencies.driveDuplicateCallbacks : dependencies.driveRestartContinuation
     if (!drive) throw new Error("interactive production runtime driver is unavailable")
-    const execute = async () => requireInteractiveReceipt(await drive(input), input)
+    const execute = async () => operation === "drive_timeout_stale"
+      ? await drive(input)
+      : requireInteractiveReceipt(await drive(input), input)
     if (operation === "drive_restart_continuation") {
       if (!dependencies.interactiveRestartDriver) throw new Error("interactive restart driver is unavailable")
       const owned = () => dependencies.ownerMutationCoordinator ? dependencies.ownerMutationCoordinator.interactive(execute) : execute()
@@ -1239,6 +1308,7 @@ export {
   parseVaultStatus,
   queryGraphqlAutostart,
   driveDuplicateCallbacks,
+  driveTimeoutStale,
   driveRestartContinuation,
   restartButlerForAcceptance,
   runInteractiveDriver,

@@ -294,6 +294,9 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     const scenarioHandleDigest = "a".repeat(64)
 
     await expect(executeSanctuaryAcceptanceAdapter({
+      operation: "drive_timeout_stale", label: "unit-16k-timeout-stale", scenarioHandleDigest,
+    }, deps)).resolves.toEqual({ phase: "drive_timeout_stale" })
+    await expect(executeSanctuaryAcceptanceAdapter({
       operation: "drive_duplicate_callbacks", label: "unit-16l-duplicate-callback", scenarioHandleDigest,
     }, deps)).resolves.toEqual({ phase: "drive_duplicate_callbacks" })
     await expect(executeSanctuaryAcceptanceAdapter({
@@ -306,6 +309,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       operation: "interactive_runtime_ready", label: "unit-16m-restart-continuation", scenarioHandleDigest,
     }, deps)).resolves.toEqual({ ready: false })
     expect(interactiveRuntime.mock.calls.map(([payload]) => payload)).toEqual([
+      { operation: "drive_timeout_stale", label: "unit-16k-timeout-stale", scenarioHandleDigest },
       { operation: "drive_duplicate_callbacks", label: "unit-16l-duplicate-callback", scenarioHandleDigest },
       { operation: "prepare_restart_continuation", label: "unit-16m-restart-continuation", scenarioHandleDigest },
       { operation: "reconcile_restart_continuation", label: "unit-16m-restart-continuation", scenarioHandleDigest },
@@ -420,7 +424,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     expect(Object.keys(contract.adapters).sort()).toEqual([
       "callback-inject", "callback-live", "capture-evidence-provenance", "closed-inventory", "config-materializer", "cursor-snapshot",
       "evidence-snapshot", "exact-id-revoke", "health-probe-recovery", "health-probe-start", "health-probe-status",
-      "interactive-duplicate-driver", "interactive-restart-driver",
+      "interactive-duplicate-driver", "interactive-restart-driver", "interactive-timeout-stale-driver",
       "key-create", "key-inventory", "key-probe", "key-read-old", "key-revoke", "key-store",
       "reboot-live-request", "reboot-poll", "reboot-request", "revoked-key-auth-rejection", "scenario-capture", "scenario-finalize",
       "telegram-poller-quiescence", "telegram-vault-store", "unraid-key-rotate", "vault-backed-capability-verify",

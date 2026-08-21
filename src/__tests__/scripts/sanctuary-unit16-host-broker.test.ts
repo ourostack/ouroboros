@@ -14,6 +14,7 @@ interface BrokerDependencies {
   recoverHealthProbe?(input: Record<string, string>): unknown
   restartButlerForAcceptance?(input: Record<string, unknown>): unknown
   driveDuplicateCallbacks?(input: Record<string, string>): unknown
+  driveTimeoutStale?(input: Record<string, string>): unknown
   driveRestartContinuation?(input: Record<string, string>): unknown
   ownerMutationCoordinator?: ReturnType<BrokerModule["createOwnerMutationCoordinator"]>
   interactiveRestartDriver?: ReturnType<BrokerModule["createInteractiveRestartDriver"]>
@@ -49,6 +50,11 @@ interface BrokerModule {
     sleep(milliseconds: number): Promise<void>
   }): Promise<Record<string, unknown>>
   driveDuplicateCallbacks(input: Record<string, string>, dependencies: {
+    readReceipt(input: Record<string, string>): Record<string, unknown> | null
+    persistReceipt(input: Record<string, string>, receipt: Record<string, unknown>): void
+    runtime(input: Record<string, string>): Record<string, unknown> | Promise<Record<string, unknown>>
+  }): Promise<Record<string, unknown>>
+  driveTimeoutStale(input: Record<string, string>, dependencies: {
     readReceipt(input: Record<string, string>): Record<string, unknown> | null
     persistReceipt(input: Record<string, string>, receipt: Record<string, unknown>): void
     runtime(input: Record<string, string>): Record<string, unknown> | Promise<Record<string, unknown>>
@@ -104,6 +110,7 @@ async function broker(): Promise<BrokerModule> {
     runInteractiveDriver(input: Record<string, string>, dependencies?: { run(executable: string, args: string[], options: Record<string, unknown>): { error?: Error; status: number | null; stdout?: string } }): Record<string, unknown>
     driveRestartContinuation: BrokerModule["driveRestartContinuation"]
     driveDuplicateCallbacks: BrokerModule["driveDuplicateCallbacks"]
+    driveTimeoutStale: BrokerModule["driveTimeoutStale"]
     createHealthProbeOperationCoordinator(): { start<T>(scenario: string, operation: () => T | Promise<T>): Promise<T>; recover<T>(scenario: string, operation: () => T | Promise<T>): Promise<T> }
     completeHealthProbeFromReceipt(request: Record<string, string>, snapshot: Record<string, unknown>, readReceipt: () => Record<string, unknown>): { state: "complete"; containerSnapshot: Record<string, unknown> }
     attestHealthProbeProcessAbsent(input: Record<string, string>, dependencies?: {
@@ -130,6 +137,40 @@ async function broker(): Promise<BrokerModule> {
 }
 
 describe("Sanctuary Unit 16 host broker", () => {
+  it("captures then settles one stale timeout callback through the production runtime", async () => {
+    const { dispatch } = await broker()
+    const coordinates = { targetId: "sanctuary", label: "unit-16k-timeout-stale", scenarioHandleDigest: "a".repeat(64) }
+    const receipt = {
+      schemaVersion: "sanctuary-timeout-stale-driver-receipt-v1", phase: "complete", label: coordinates.label, scenarioHandleDigest: coordinates.scenarioHandleDigest,
+      approvalIdDigest: "b".repeat(64), checkpointDigest: "c".repeat(64), suspendedSessionRevisionDigest: "d".repeat(64), approvalEpochBefore: 0,
+      callbackAttempts: 1, distinctQueryCount: 1, callbackDataDigest: "e".repeat(64), settledCount: 1, claimCount: 0, mutationCount: 0,
+      staleAcknowledged: true, promptTerminal: true,
+    }
+    let calls = 0
+    const dependencies: BrokerDependencies = {
+      readBootId: () => "unused", containerSnapshot: () => ({}),
+      driveTimeoutStale: () => { calls += 1; return calls === 1 ? { state: "waiting" } : receipt },
+    }
+    await expect(dispatch({ operation: "drive_timeout_stale", ...coordinates }, dependencies)).resolves.toEqual({ state: "waiting" })
+    await expect(dispatch({ operation: "drive_timeout_stale", ...coordinates }, dependencies)).resolves.toEqual(receipt)
+    expect(calls).toBe(2)
+  })
+
+  it("persists timeout arming and refuses retry after an indeterminate stale callback", async () => {
+    const { driveTimeoutStale } = await broker()
+    const input = { label: "unit-16k-timeout-stale", scenarioHandleDigest: "a".repeat(64) }
+    const writes: Record<string, unknown>[] = []
+    const dependencies = {
+      readReceipt: () => writes.at(-1) ?? null,
+      persistReceipt: (_coordinates: Record<string, string>, receipt: Record<string, unknown>) => { writes.push(receipt) },
+      runtime: () => writes.length === 1 ? { state: "waiting" } : (() => { throw new Error("runtime transport severed") })(),
+    }
+    await expect(driveTimeoutStale(input, dependencies)).resolves.toEqual({ state: "waiting" })
+    await expect(driveTimeoutStale(input, dependencies)).rejects.toThrow(/transport severed/u)
+    expect(writes.map(({ phase }) => phase)).toEqual(["preparing", "waiting", "attempting", "attempted_or_indeterminate"])
+    await expect(driveTimeoutStale(input, { ...dependencies, runtime: () => { throw new Error("must not retry") } })).rejects.toThrow(/inspect-before-retry/u)
+  })
+
   it("drives duplicate callbacks through one fixed runtime operation with distinct opaque queries and a stale replay", async () => {
     const { dispatch } = await broker()
     const calls: Record<string, string>[] = []

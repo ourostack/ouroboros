@@ -1329,9 +1329,9 @@ async function interactiveRuntimeOperation(payload: JsonObject, deps: SanctuaryA
   const label = text(payload.label, "interactive runtime label")
   const scenarioHandleDigest = text(payload.scenarioHandleDigest, "interactive runtime scenario digest")
   if (!SHA256.test(scenarioHandleDigest)) throw new Error("interactive runtime scenario digest is invalid")
-  const expectedLabel = operation === "drive_duplicate_callbacks"
-    ? "unit-16l-duplicate-callback"
-    : "unit-16m-restart-continuation"
+  const expectedLabel = operation === "drive_timeout_stale" ? "unit-16k-timeout-stale"
+    : operation === "drive_duplicate_callbacks" ? "unit-16l-duplicate-callback"
+      : "unit-16m-restart-continuation"
   if (label !== expectedLabel) throw new Error("interactive runtime label is invalid")
   return dependency(deps.interactiveRuntime, "interactive production runtime")({ operation, label, scenarioHandleDigest })
 }
@@ -1576,6 +1576,7 @@ export async function executeSanctuaryAcceptanceAdapter(
       case "snapshot": result = cursorSnapshot(deps); break
       case "inject_callbacks_concurrently": result = await concurrentCallbackProbe(payload, deps); break
       case "inject_callback_replay": result = await callbackReplay(payload, deps); break
+      case "drive_timeout_stale": result = await interactiveRuntimeOperation(payload, deps); break
       case "drive_duplicate_callbacks": result = await interactiveRuntimeOperation(payload, deps); break
       case "prepare_restart_continuation": result = await interactiveRuntimeOperation(payload, deps); break
       case "reconcile_restart_continuation": result = await interactiveRuntimeOperation(payload, deps); break
