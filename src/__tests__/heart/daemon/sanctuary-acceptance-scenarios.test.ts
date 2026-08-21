@@ -283,7 +283,7 @@ describe("Sanctuary live scenario capture", () => {
     const helper = source.slice(source.indexOf("function durableQuarantineReceiptRoot"), source.indexOf("export function finalizeSanctuaryScenarioCapture"))
     expect(helper).toContain("fs.constants.O_NOFOLLOW")
     expect(helper).toContain("rootMetadata.ino !== reboundMetadata.ino")
-    expect(helper.indexOf("fs.renameSync(receiptRoot, quarantinePath)")).toBeLessThan(helper.indexOf("fs.fsyncSync(rootHandle)"))
+    expect(helper.indexOf("secureRenameBoundInodeSync(")).toBeLessThan(helper.indexOf("fs.fsyncSync(rootHandle)"))
     expect(helper.match(/fs\.fsyncSync\(/gu)).toHaveLength(5)
   })
 
@@ -292,7 +292,7 @@ describe("Sanctuary live scenario capture", () => {
     const helper = source.slice(source.indexOf("export function quarantineSanctuaryAcceptanceMarker"), source.indexOf("export function sanctuaryAcceptanceEventMeta"))
     expect(helper).toContain("fs.constants.O_NOFOLLOW")
     expect(helper).toContain("markerMetadata.ino !== markerPathMetadata.ino")
-    expect(helper.indexOf("fs.renameSync(filePath, quarantinePath)")).toBeLessThan(helper.indexOf("fs.fsyncSync(markerHandle)"))
+    expect(helper.indexOf("secureRenameBoundInodeSync(")).toBeLessThan(helper.indexOf("fs.fsyncSync(markerHandle)"))
     expect(helper.match(/fs\.fsyncSync\(/gu)?.length).toBeGreaterThanOrEqual(3)
   })
 
