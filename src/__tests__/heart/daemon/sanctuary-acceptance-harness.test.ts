@@ -677,7 +677,7 @@ describe("Sanctuary acceptance harness", () => {
       "telegram-audit": expect.objectContaining({ kind: "fixed-ndjson", path: expect.stringContaining("telegram.ndjson") }),
       "container-inspect": expect.objectContaining({ kind: "fixed-host-snapshot", path: "/run/ouro-acceptance/container-inspect.json" }),
       "provider-live-check": expect.objectContaining({ kind: "fixed-runtime-api", operation: "sanctuary-provider-readiness" }),
-      "health-probe-receipt": expect.objectContaining({ kind: "fixed-json", path: expect.stringContaining("health-probe-receipts") }),
+      "health-probe-receipt": expect.objectContaining({ kind: "fixed-private-json", path: expect.stringContaining("health-probe-receipts") }),
     }))
     expect(contract.configTemplates["evidence-snapshot"]).toMatchObject({
       fixed: { timeoutMs: 4_320_000 },
