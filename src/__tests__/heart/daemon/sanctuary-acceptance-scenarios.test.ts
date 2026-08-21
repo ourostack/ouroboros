@@ -175,7 +175,7 @@ describe("Sanctuary live scenario capture", () => {
         after.approvals = [approval("expired")]
         after.events.push(
           approvalAuditEvent("senses.telegram_approval_prompt_bound", 1_000, { boundAt: 1_000 }),
-          approvalAuditEvent("telegram.approval_prompt_terminalized", 301_000, { boundAt: 1_000, terminalizedAt: 301_000, buttonsRemoved: true }),
+          approvalAuditEvent("telegram.approval_prompt_terminalized", 301_000, { boundAt: 1_000, expiryObservedAt: 301_000, terminalizedAt: 301_000, buttonsRemoved: true }),
         )
         before.sourceValues["no-callback-baseline"] = { approvalId: "approval-1", offsetDigest: createHash("sha256").update(JSON.stringify(after.sourceValues["telegram-offset"])).digest("hex"), inboundEventCount: 0 }
       }
@@ -194,7 +194,7 @@ describe("Sanctuary live scenario capture", () => {
       if (label === "unit-16j-denial") { after.approvals = [approval("denied")]; after.events.push(...approvalEvidence("deny", 1_000, 2_000)) }
       if (label === "unit-16f-cron-fingerprint" || label === "unit-16g-health-transition" || label === "unit-16h-daily-digest") after.healthProbe = healthProbe(label)
       if (label === "unit-16i-delayed-approval") { after.approvals = [approval("succeeded")]; after.restartAttempts = successfulRestart(); after.events.push(...approvalEvidence("approve")) }
-      if (label === "unit-16k-timeout-stale") { after.approvals = [approval("expired")]; after.interactiveDriver = timeoutStaleDriver(); after.events.push(approvalAuditEvent("senses.telegram_approval_prompt_bound", 1_000, { boundAt: 1_000 }), approvalAuditEvent("telegram.approval_prompt_terminalized", 301_000, { boundAt: 1_000, terminalizedAt: 301_000, buttonsRemoved: true }), event("telegram.update_dropped")) }
+      if (label === "unit-16k-timeout-stale") { after.approvals = [approval("expired")]; after.interactiveDriver = timeoutStaleDriver(); after.events.push(approvalAuditEvent("senses.telegram_approval_prompt_bound", 1_000, { boundAt: 1_000 }), approvalAuditEvent("telegram.approval_prompt_terminalized", 301_000, { boundAt: 1_000, expiryObservedAt: 301_000, terminalizedAt: 301_000, buttonsRemoved: true }), event("telegram.update_dropped")) }
       if (label === "unit-16l-duplicate-callback") { after.approvals = [{ ...approval("succeeded"), callbackCount: 2, settledCount: 2, claimCount: 1 }]; after.restartAttempts = successfulRestart(); after.interactiveDriver = duplicateCallbackDriver(); after.events.push(...approvalEvidence("approve"), event("telegram.callback_settled"), event("telegram.callback_settled"), event("approval.acceptance_transition")) }
       if (label === "unit-16m-restart-continuation") { after.approvals = [approval("succeeded")]; after.restartAttempts = successfulRestart(); after.interactiveDriver = restartContinuationDriver(); after.events.push(...approvalEvidence("approve"), { ...event("senses.telegram_approved_restart_end"), meta: { approvalId: "approval-1" } }) }
       const assertions = deriveSanctuaryScenarioAssertions(label, before, after, 400_000)
@@ -284,7 +284,7 @@ describe("Sanctuary live scenario capture", () => {
     const after = base()
     after.approvals = [approval("expired")]
     after.interactiveDriver = timeoutStaleDriver()
-    after.events.push(approvalAuditEvent("senses.telegram_approval_prompt_bound", 1_000, { boundAt: 1_000 }), approvalAuditEvent("telegram.approval_prompt_terminalized", 301_000, { boundAt: 1_000, terminalizedAt: 301_000, buttonsRemoved: true }), event("telegram.update_dropped"))
+    after.events.push(approvalAuditEvent("senses.telegram_approval_prompt_bound", 1_000, { boundAt: 1_000 }), approvalAuditEvent("telegram.approval_prompt_terminalized", 301_000, { boundAt: 1_000, expiryObservedAt: 301_000, terminalizedAt: 301_000, buttonsRemoved: true }), event("telegram.update_dropped"))
     expect(deriveSanctuaryScenarioAssertions("unit-16k-timeout-stale", before, after, 400_000)).toMatchObject({ staleAcknowledged: true, mutationCount: 0 })
     after.interactiveDriver = { ...timeoutStaleDriver(), claimCount: 1 }
     expect(deriveSanctuaryScenarioAssertions("unit-16k-timeout-stale", before, after, 400_000)).toBeNull()
@@ -369,15 +369,15 @@ describe("Sanctuary live scenario capture", () => {
     expect(deriveSanctuaryScenarioAssertions("unit-16j-denial", base(), after, 400_000)).toBeNull()
   })
 
-  it.each(["unit-15c-1-no-callback-terminalization", "unit-16k-timeout-stale"] as const)("bounds %s terminalization to the exact TTL plus one reconciliation interval", (label) => {
-    const make = (terminalizedAt: number) => {
+  it.each(["unit-15c-1-no-callback-terminalization", "unit-16k-timeout-stale"] as const)("bounds %s expiry observation while permitting bounded terminal edit completion", (label) => {
+    const make = (expiryObservedAt: number, terminalizedAt = expiryObservedAt) => {
       const before = base()
       const after = base()
       after.approvals = [approval("expired")]
       after.approvals[0]!.updatedAt = terminalizedAt
       after.events = [
         approvalAuditEvent("senses.telegram_approval_prompt_bound", 1_000, { boundAt: 1_000 }),
-        approvalAuditEvent("telegram.approval_prompt_terminalized", terminalizedAt, { boundAt: 1_000, terminalizedAt, buttonsRemoved: true }),
+        approvalAuditEvent("telegram.approval_prompt_terminalized", terminalizedAt, { boundAt: 1_000, expiryObservedAt, terminalizedAt, buttonsRemoved: true }),
       ]
       if (label === "unit-15c-1-no-callback-terminalization") {
         before.sourceValues["no-callback-baseline"] = { approvalId: "approval-1", offsetDigest: probeDigest(after.sourceValues["telegram-offset"]), inboundEventCount: 0 }
@@ -391,8 +391,14 @@ describe("Sanctuary live scenario capture", () => {
       const { before, after } = make(1_000 + elapsed)
       expect(deriveSanctuaryScenarioAssertions(label, before, after, 400_000), String(elapsed)).not.toBeNull()
     }
-    const { before, after } = make(302_001)
-    expect(deriveSanctuaryScenarioAssertions(label, before, after, 400_000)).toBeNull()
+    const lateObservation = make(302_001)
+    expect(deriveSanctuaryScenarioAssertions(label, lateObservation.before, lateObservation.after, 400_000)).toBeNull()
+    const delayed = make(302_000, 327_000)
+    expect(deriveSanctuaryScenarioAssertions(label, delayed.before, delayed.after, 400_000)).not.toBeNull()
+    const reversed = make(302_000, 301_999)
+    expect(deriveSanctuaryScenarioAssertions(label, reversed.before, reversed.after, 400_000)).toBeNull()
+    const unbounded = make(302_000, 332_001)
+    expect(deriveSanctuaryScenarioAssertions(label, unbounded.before, unbounded.after, 400_000)).toBeNull()
   })
 
   it.each([

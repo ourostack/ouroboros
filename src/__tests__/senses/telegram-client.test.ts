@@ -144,12 +144,17 @@ describe("Telegram approval callback transport", () => {
     expect(evidence[2]!.meta).toMatchObject({ callbackAt: 1_120_037, acknowledged: true, accepted: true, reason: "accepted", evidenceMac: expect.stringMatching(/^mac:/u) })
   })
 
-  it("terminalizes expiry within the documented one-interval reconciliation jitter", async () => {
+  it.each([false, true])("authenticates expiry observation before a delayed%s terminal edit", async (fallback) => {
     let clock = 1_000_000
     let records: ReturnType<TelegramPendingApprovalStore["load"]> = []
     const evidence: Array<{ event: string; meta: Record<string, unknown> }> = []
     const transport = createTelegramApprovalTransport({
-      api: { stop: vi.fn(), request: vi.fn(async (method: string) => method === "sendMessage" ? { message_id: 99 } : true) },
+      api: { stop: vi.fn(), request: vi.fn(async (method: string, body: Record<string, unknown>) => {
+        if (method === "sendMessage") return { message_id: 99 }
+        clock += 5_000
+        if (fallback && body.parse_mode === "HTML") throw new TelegramApiError("format rejected", { status: 400 })
+        return true
+      }) },
       expectedUserId: "10", expectedChatId: "10",
       pendingStore: { load: () => structuredClone(records), save: (next) => { records = structuredClone(next) } },
       createOpaqueHandle: (() => { const values = ["approve", "deny"]; return () => values.shift()! })(),
@@ -158,9 +163,11 @@ describe("Telegram approval callback transport", () => {
       onAcceptanceEvidence: (event: string, meta: Record<string, unknown>) => { evidence.push({ event, meta }) },
     } as never)
     await transport.sendApproval({ approvalId: "approval-1", decisionToken: "secret", prompt: "Restart?", acceptanceBinding: { scenarioHandleDigest: "a".repeat(64), actionDigest: "b".repeat(64), targetDigest: "c".repeat(64) } } as never)
-    clock = 1_301_000
+    clock = 1_300_900
     await transport.reconcileExpired()
-    expect(evidence.at(-1)).toMatchObject({ event: "telegram.approval_prompt_terminalized", meta: { boundAt: 1_000_000, terminalizedAt: 1_301_000, buttonsRemoved: true } })
+    expect(evidence.at(-1)).toMatchObject({ event: "telegram.approval_prompt_terminalized", meta: {
+      boundAt: 1_000_000, expiryObservedAt: 1_300_900, terminalizedAt: fallback ? 1_310_900 : 1_305_900, buttonsRemoved: true,
+    } })
   })
 
   it("persists an indeterminate prompt delivery when sendMessage may have escaped", async () => {

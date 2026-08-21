@@ -150,6 +150,12 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       await expect(readDefaultSanctuaryScenarioFacts("unit-16i-delayed-approval", scenarioHandleDigest, deps, agentRoot, { skipContainerSnapshot: true })).rejects.toThrow("evidence MAC")
       files[auditPath] = `${JSON.stringify({ ...entry, meta: { ...entry.meta, action: "restart" } })}\n`
       await expect(readDefaultSanctuaryScenarioFacts("unit-16i-delayed-approval", scenarioHandleDigest, deps, agentRoot, { skipContainerSnapshot: true })).rejects.toThrow("evidence MAC")
+      const expiryUnsigned = { ...unsigned, expiryObservedAt: 301_000, terminalizedAt: 306_000, buttonsRemoved: true }
+      const expiryEvent = "telegram.approval_prompt_terminalized"
+      files[auditPath] = `${JSON.stringify({ ts: "2026-08-20T16:05:06.000Z", event: expiryEvent, meta: { ...expiryUnsigned, evidenceMac: sanctuaryTelegramApprovalEvidenceMac(identityKey, expiryEvent, expiryUnsigned) } })}\n`
+      await expect(readDefaultSanctuaryScenarioFacts("unit-16k-timeout-stale", scenarioHandleDigest, deps, agentRoot, { skipContainerSnapshot: true })).resolves.toMatchObject({ events: [{ event: expiryEvent }] })
+      files[auditPath] = `${JSON.stringify({ ts: "2026-08-20T16:05:06.000Z", event: expiryEvent, meta: { ...expiryUnsigned, expiryObservedAt: 301_001, evidenceMac: sanctuaryTelegramApprovalEvidenceMac(identityKey, expiryEvent, expiryUnsigned) } })}\n`
+      await expect(readDefaultSanctuaryScenarioFacts("unit-16k-timeout-stale", scenarioHandleDigest, deps, agentRoot, { skipContainerSnapshot: true })).rejects.toThrow("evidence MAC")
       delete files[identityPath]
       await expect(readDefaultSanctuaryScenarioFacts("unit-16i-delayed-approval", scenarioHandleDigest, deps, agentRoot, { skipContainerSnapshot: true })).rejects.toThrow(/identity key/u)
       files[identityPath] = "malformed\n"
