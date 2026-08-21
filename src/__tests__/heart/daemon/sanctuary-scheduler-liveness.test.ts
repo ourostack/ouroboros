@@ -5,7 +5,7 @@ import * as path from "node:path"
 
 import { describe, expect, it, vi } from "vitest"
 
-import { durableExclusiveJson, publishSanctuarySchedulerReceipt, readSanctuaryHealthCursor, recordSanctuarySchedulerLivenessReceipt, verifySanctuarySchedulerLivenessReceiptMac } from "../../../heart/daemon/sanctuary-scheduler-liveness"
+import { consumeSanctuarySchedulerFire, durableExclusiveJson, publishSanctuarySchedulerReceipt, readSanctuaryHealthCursor, recordSanctuarySchedulerLivenessReceipt, verifySanctuarySchedulerLivenessReceiptMac } from "../../../heart/daemon/sanctuary-scheduler-liveness"
 import { SupercronicSupervisor } from "../../../heart/daemon/supercronic-supervisor"
 
 const scenarioHandleDigest = "a".repeat(64)
@@ -49,6 +49,25 @@ function readyInput(f: ReturnType<typeof setup>) {
 }
 
 describe("Sanctuary scheduler liveness receipt", () => {
+  it("durably consumes one scheduler occurrence before effect and rejects run or occurrence replay across restarts", () => {
+    const f = setup()
+    try {
+      consumeSanctuarySchedulerFire(f.agentRoot, authenticated.schedulerOrigin)
+      expect(() => consumeSanctuarySchedulerFire(f.agentRoot, authenticated.schedulerOrigin)).toThrow(/replay/u)
+      expect(() => consumeSanctuarySchedulerFire(f.agentRoot, {
+        ...authenticated.schedulerOrigin,
+        schedulerRunId: "33333333-3333-4333-8333-333333333333",
+      })).toThrow(/replay/u)
+      expect(() => consumeSanctuarySchedulerFire(f.agentRoot, {
+        ...authenticated.schedulerOrigin,
+        slot: "2026-08-18T17:15:00.000Z",
+        occurrenceId: "cron:2026-08-18T17:15:00.000Z",
+        schedulerRunId: "44444444-4444-4444-8444-444444444444",
+      })).not.toThrow()
+      expect(fs.readdirSync(path.join(f.agentRoot, "state/scheduler/sanctuary-fire-claims"))).toHaveLength(2)
+    } finally { fs.rmSync(f.agentRoot, { recursive: true, force: true }) }
+  })
+
   it("reads and validates the durable cursor", () => {
     const f = setup()
     try {
@@ -166,6 +185,45 @@ describe("Sanctuary scheduler liveness receipt", () => {
     const failure = Object.assign(new Error("link failed"), { code: "EIO" })
     try { expect(() => publishSanctuarySchedulerReceipt(path.join(f.agentRoot, "receipt.json"), {}, { ...durableFs, linkSync: () => { throw failure } })).toThrow(failure) }
     finally { fs.rmSync(f.agentRoot, { recursive: true, force: true }) }
+  })
+
+  it("fsyncs every newly created directory entry and the receipt directory after temporary cleanup", () => {
+    const f = setup()
+    const receiptPath = path.join(f.agentRoot, "new-parent", "new-child", "receipt.json")
+    const descriptorPaths = new Map<number, string>()
+    const events: string[] = []
+    const deps = {
+      ...durableFs,
+      mkdirSync: ((target: fs.PathLike, options?: fs.MakeDirectoryOptions & { recursive?: false }) => {
+        const existed = fs.existsSync(target)
+        const result = fs.mkdirSync(target, options)
+        if (!existed) events.push(`mkdir:${String(target)}`)
+        return result
+      }) as typeof fs.mkdirSync,
+      openSync: ((target: fs.PathLike, flags: fs.OpenMode, mode?: fs.Mode) => {
+        const descriptor = fs.openSync(target, flags, mode)
+        descriptorPaths.set(descriptor, String(target))
+        return descriptor
+      }) as typeof fs.openSync,
+      fsyncSync: (descriptor: number) => {
+        events.push(`fsync:${descriptorPaths.get(descriptor)}`)
+        fs.fsyncSync(descriptor)
+      },
+      unlinkSync: (target: fs.PathLike) => {
+        events.push(`unlink:${String(target)}`)
+        fs.unlinkSync(target)
+      },
+    }
+    try {
+      durableExclusiveJson(receiptPath, { ok: true }, deps)
+      const parent = path.join(f.agentRoot, "new-parent")
+      const child = path.join(parent, "new-child")
+      expect(events).toContain(`fsync:${f.agentRoot}`)
+      expect(events).toContain(`fsync:${parent}`)
+      expect(events.filter((event) => event === `fsync:${child}`).length).toBeGreaterThanOrEqual(3)
+      const unlinkIndex = events.findIndex((event) => event.startsWith("unlink:"))
+      expect(events.slice(unlinkIndex + 1)).toContain(`fsync:${child}`)
+    } finally { fs.rmSync(f.agentRoot, { recursive: true, force: true }) }
   })
 
   it.each(["manual", "poke"])("rejects %s provenance", (trigger) => {

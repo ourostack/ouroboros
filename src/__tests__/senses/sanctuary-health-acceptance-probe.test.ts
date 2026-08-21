@@ -286,6 +286,37 @@ describe("packaged Sanctuary health acceptance probe", () => {
     }
   })
 
+  it("never rolls back a Unit16f scheduler sweep when receipt verification fails after the wait", async () => {
+    const fixture = setup("unit-16f-cron-fingerprint")
+    const originalWait = fixture.deps.waitForSchedulerReceipt
+    fixture.deps.waitForSchedulerReceipt = async (...args) => ({
+      ...await originalWait(...args),
+      providerInvocationCount: 1 as 0,
+    })
+    try {
+      await expect(runSanctuaryHealthAcceptanceProbe(fixture.input, fixture.deps)).rejects.toThrow(/receipt is invalid/u)
+      const state = JSON.parse(fs.readFileSync(fixture.statePath, "utf8"))
+      expect(state.sweepReceipts).toHaveLength(1)
+      expect(state.sweepReceipts[0]).toMatchObject({ sweepId: "scheduler-sweep", scenarioHandleDigest: fixture.input.scenarioHandleDigest })
+    } finally { fs.rmSync(fixture.agentRoot, { recursive: true, force: true }) }
+  })
+
+  it("recovers a crashed Unit16f waiter without restoring its stale shared-state snapshot", async () => {
+    const fixture = setup("unit-16f-cron-fingerprint")
+    const workspace = path.join(fixture.agentRoot, "state", "acceptance", "health-probe-workspaces", fixture.input.scenarioHandleDigest)
+    fs.mkdirSync(workspace, { recursive: true, mode: 0o700 })
+    fs.writeFileSync(path.join(workspace, "snapshot.json"), `${JSON.stringify({ exists: true, bytes: Buffer.from(fixture.before).toString("base64") })}\n`, { mode: 0o600 })
+    fs.writeFileSync(path.join(workspace, "checkpoint.json"), `${JSON.stringify({ schemaVersion: 1, ownerImageDigest: fixture.input.ownerImageDigest, ownerContainerDigest: fixture.input.ownerContainerDigest })}\n`, { mode: 0o600 })
+    const state = initialState()
+    state.sweepReceipts.push({ sweepId: "scheduler-sweep", opened: 0, recovered: 0, digestDue: false, scenarioHandleDigest: fixture.input.scenarioHandleDigest } as never)
+    fs.writeFileSync(fixture.statePath, `${JSON.stringify(state)}\n`)
+    try {
+      await expect(recoverSanctuaryHealthAcceptanceProbe(fixture.input, fixture.deps)).resolves.toEqual({ recovered: true })
+      expect(JSON.parse(fs.readFileSync(fixture.statePath, "utf8")).sweepReceipts).toHaveLength(1)
+      expect(fs.existsSync(workspace)).toBe(false)
+    } finally { fs.rmSync(fixture.agentRoot, { recursive: true, force: true }) }
+  })
+
   it("withholds the final receipt until an independently observed owner is attested", async () => {
     const fixture = setup("unit-16f-cron-fingerprint")
     const receiptPath = path.join(fixture.agentRoot, "state", "acceptance", "health-probe-receipts", `${fixture.input.scenarioHandleDigest}.json`)
