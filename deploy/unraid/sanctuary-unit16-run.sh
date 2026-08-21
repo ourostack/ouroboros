@@ -11,7 +11,7 @@ MODE=${2:-}
 BROKER_PID=
 PRIVATE_ROOT=
 PRODUCTION_STOPPED=no
-HOST_REBOOT_COMMITTED=no
+HOST_REBOOT_COMMIT_STATE=not_sent
 ACCEPTANCE_ALIAS_MOUNTED=no
 ACCEPTANCE_CANONICAL_PINNED=no
 ACCEPTANCE_PIN_ROOT=
@@ -34,7 +34,7 @@ cleanup_unit16() {
   CLEANUP_STATUS=$?
   if test -n "$BROKER_PID"; then kill "$BROKER_PID" 2>/dev/null || true; wait "$BROKER_PID" 2>/dev/null || true; fi
   if test "$ACCEPTANCE_CANONICAL_PINNED" = yes && ! assert_health_probe_cleanup; then CLEANUP_STATUS=1; fi
-  if test "$PRODUCTION_STOPPED" = yes && test "$HOST_REBOOT_COMMITTED" = no; then
+  if test "$PRODUCTION_STOPPED" = yes && test "$HOST_REBOOT_COMMIT_STATE" = not_sent; then
     if ! restore_production_container; then CLEANUP_STATUS=1; fi
     PRODUCTION_STOPPED=no
   fi
@@ -140,13 +140,18 @@ prepare_live_facts() {
 }
 
 restore_production_container() {
-  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.Image}}' "$PRODUCTION_CONTAINER")" = "$IMAGE_ID" || return 1
-  /usr/bin/timeout -s KILL 30 /usr/bin/docker start "$PRODUCTION_CONTAINER" >/dev/null || return 1
+  EXPECTED_CONTAINER_ID=$(cat "$CONTAINER_FACT") || return 1
+  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.Id}}' "$EXPECTED_CONTAINER_ID")" = "$EXPECTED_CONTAINER_ID" || return 1
+  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.Name}}' "$EXPECTED_CONTAINER_ID")" = "/$PRODUCTION_CONTAINER" || return 1
+  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.Image}}' "$EXPECTED_CONTAINER_ID")" = "$IMAGE_ID" || return 1
+  if test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.State.Running}}' "$EXPECTED_CONTAINER_ID")" = false; then
+    /usr/bin/timeout -s KILL 30 /usr/bin/docker start "$EXPECTED_CONTAINER_ID" >/dev/null || return 1
+  fi
   RESTORE_ATTEMPT=0
   while test "$RESTORE_ATTEMPT" -lt 120; do
-    test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.Image}}' "$PRODUCTION_CONTAINER")" = "$IMAGE_ID" || return 1
-    RESTORE_RUNNING=$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.State.Running}}' "$PRODUCTION_CONTAINER") || return 1
-    RESTORE_HEALTH=$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$PRODUCTION_CONTAINER") || return 1
+    test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.Id}}' "$EXPECTED_CONTAINER_ID")" = "$EXPECTED_CONTAINER_ID" || return 1
+    RESTORE_RUNNING=$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.State.Running}}' "$EXPECTED_CONTAINER_ID") || return 1
+    RESTORE_HEALTH=$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$EXPECTED_CONTAINER_ID") || return 1
     if test "$RESTORE_RUNNING" = true && test "$RESTORE_HEALTH" = healthy; then return 0; fi
     RESTORE_ATTEMPT=$((RESTORE_ATTEMPT + 1))
     sleep 1
@@ -155,14 +160,18 @@ restore_production_container() {
 }
 
 stop_exact_production_container() {
-  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.Image}}' "$PRODUCTION_CONTAINER")" = "$IMAGE_ID" || return 1
-  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.State.Running}}' "$PRODUCTION_CONTAINER")" = true || return 1
-  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$PRODUCTION_CONTAINER")" = healthy || return 1
+  EXPECTED_CONTAINER_ID=$(cat "$CONTAINER_FACT") || return 1
+  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.Id}}' "$EXPECTED_CONTAINER_ID")" = "$EXPECTED_CONTAINER_ID" || return 1
+  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.Name}}' "$EXPECTED_CONTAINER_ID")" = "/$PRODUCTION_CONTAINER" || return 1
+  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.Image}}' "$EXPECTED_CONTAINER_ID")" = "$IMAGE_ID" || return 1
+  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.State.Running}}' "$EXPECTED_CONTAINER_ID")" = true || return 1
+  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$EXPECTED_CONTAINER_ID")" = healthy || return 1
   PRODUCTION_STOPPED=yes
-  /usr/bin/timeout -s KILL 45 /usr/bin/docker stop --time 30 "$PRODUCTION_CONTAINER" >/dev/null
-  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.Image}}' "$PRODUCTION_CONTAINER")" = "$IMAGE_ID" || return 1
-  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.State.Running}}' "$PRODUCTION_CONTAINER")" = false || return 1
-  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.State.Pid}}' "$PRODUCTION_CONTAINER")" = 0 || return 1
+  /usr/bin/timeout -s KILL 45 /usr/bin/docker stop --time 30 "$EXPECTED_CONTAINER_ID" >/dev/null || true
+  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.Id}}' "$EXPECTED_CONTAINER_ID")" = "$EXPECTED_CONTAINER_ID" || return 1
+  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.Image}}' "$EXPECTED_CONTAINER_ID")" = "$IMAGE_ID" || return 1
+  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.State.Running}}' "$EXPECTED_CONTAINER_ID")" = false || return 1
+  test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.State.Pid}}' "$EXPECTED_CONTAINER_ID")" = 0 || return 1
 }
 
 quiesce_production_telegram_poller() {
@@ -395,8 +404,10 @@ if test "$COMMAND" = reboot-request; then
     const fs = require("node:fs"); const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
     if (value.operation !== "reboot" || value.phase !== "requested" || !/^[0-9a-f]{64}$/.test(value.requestId)) process.exit(1);
   ' "$EVIDENCE_ROOT/reboot.json"
+  stop_exact_production_container
   sync -f "$EVIDENCE_ROOT/reboot.json"
   sync -f "$EVIDENCE_ROOT"
+  HOST_REBOOT_COMMIT_STATE=attempting
   /usr/bin/timeout -s KILL 20 /usr/local/bin/node -e '
     const fs = require("node:fs"); const net = require("node:net");
     const checkpoint = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
@@ -414,7 +425,7 @@ if test "$COMMAND" = reboot-request; then
     });
     socket.on("error", () => { process.exitCode = 1; });
   ' "$BROKER_SOCKET" "$EVIDENCE_ROOT/reboot.json"
-  HOST_REBOOT_COMMITTED=yes
+  HOST_REBOOT_COMMIT_STATE=confirmed
   cleanup_unit16
   BROKER_PID=
   PRIVATE_ROOT=
