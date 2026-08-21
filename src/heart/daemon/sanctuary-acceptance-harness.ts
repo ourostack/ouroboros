@@ -21,7 +21,7 @@ import * as path from "node:path"
 import { emitNervesEvent } from "../../nerves/runtime"
 
 const MAX_ADAPTER_OUTPUT = 1_048_576
-const DEFAULT_ADAPTER_TIMEOUT_MS = 120_000
+const DEFAULT_ADAPTER_TIMEOUT_MS = 180_000
 const DEFAULT_TELEGRAM_TIMEOUT_MS = 10_000
 const PACKAGED_PROVENANCE_ADAPTER = "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh"
 const OPAQUE_DIGEST = /^[0-9a-f]{64}$/u
@@ -39,6 +39,11 @@ export interface AcceptanceHarnessDependencies {
   telegramTimeoutMs?: number
 }
 
+export function resolveSanctuaryAdapterTimeoutMs(configured?: number, remaining?: number): number {
+  const maximum = configured ?? DEFAULT_ADAPTER_TIMEOUT_MS
+  return Math.max(1, Math.min(maximum, remaining ?? maximum))
+}
+
 export function createSanctuaryAcceptanceHarnessDependencies(
   secretFd = 3,
   options: { adapterTimeoutMs?: number; telegramTimeoutMs?: number } = {},
@@ -53,7 +58,7 @@ export function createSanctuaryAcceptanceHarnessDependencies(
         input: `${JSON.stringify(payload)}\n`,
         encoding: "utf8",
         maxBuffer: MAX_ADAPTER_OUTPUT,
-        timeout: Math.max(1, Math.min(adapterTimeoutMs, remainingMs ?? adapterTimeoutMs)),
+        timeout: resolveSanctuaryAdapterTimeoutMs(adapterTimeoutMs, remainingMs),
         cwd: "/",
         env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
         stdio: ["pipe", "pipe", "ignore"],

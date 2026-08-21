@@ -43,6 +43,7 @@ const RO_PERMISSIONS = ["ARRAY", "DASHBOARD", "DISK", "DOCKER", "INFO", "LOGS", 
   .map((resource) => `${resource}:READ_ANY`).sort()
 let expectedImageId = ""
 const activeHealthProbes = new Map()
+const healthProbeCoordinator = createHealthProbeOperationCoordinator()
 
 function object(value, label) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`)
@@ -391,11 +392,19 @@ function requireHealthProbeCompleteAttestation(receipt, snapshot, input) {
   const observed = object(snapshot, "health probe complete owner")
   if (value.schemaVersion !== "sanctuary-health-probe-receipt-v1" || value.label !== request.label
     || value.scenarioHandleDigest !== request.scenarioHandleDigest
+    || !SHA256.test(value.ownerImageDigestBefore) || !SHA256.test(value.ownerContainerDigestBefore)
     || !SHA256.test(value.ownerImageDigestAfter) || !SHA256.test(value.ownerContainerDigestAfter)
+    || value.ownerImageDigestBefore !== value.ownerImageDigestAfter || value.ownerContainerDigestBefore !== value.ownerContainerDigestAfter
     || observed.imageId !== `sha256:${value.ownerImageDigestAfter}` || observed.containerId !== value.ownerContainerDigestAfter
     || observed.running !== true || observed.health !== "healthy") {
     throw new Error("health probe complete attestation is invalid")
   }
+}
+
+function completeHealthProbeFromReceipt(request, snapshot, readReceipt) {
+  const value = object(snapshot, "health probe complete owner")
+  requireHealthProbeCompleteAttestation(readReceipt(), value, request)
+  return { state: "complete", containerSnapshot: value }
 }
 
 function readHealthProbeReceipt(file) {
@@ -479,8 +488,7 @@ async function healthProbeStatus(input, fullSnapshot = () => containerSnapshot(e
   if (receipt) {
     if (!receipt.isFile() || receipt.uid !== 10001 || (receipt.mode & 0o777) !== 0o600) throw new Error("health probe receipt metadata is invalid")
     const snapshot = object(await fullSnapshot(), "health probe complete owner")
-    requireHealthProbeCompleteAttestation(readHealthProbeReceipt(healthProbeReceiptPath(request.scenarioHandleDigest)), snapshot, request)
-    return { state: "complete", containerSnapshot: snapshot }
+    return completeHealthProbeFromReceipt(request, snapshot, () => readHealthProbeReceipt(healthProbeReceiptPath(request.scenarioHandleDigest)))
   }
   const record = activeHealthProbes.get(request.scenarioHandleDigest)
   if (!record) return { state: healthProbeArtifactDisposition({
@@ -631,6 +639,28 @@ function createDispatchDrain() {
   }
 }
 
+function createHealthProbeOperationCoordinator() {
+  const tails = new Map()
+  const recovered = new Set()
+  const enqueue = (scenario, operation) => {
+    const prior = tails.get(scenario) ?? Promise.resolve()
+    const task = prior.catch(() => {}).then(operation)
+    tails.set(scenario, task)
+    void task.finally(() => { if (tails.get(scenario) === task) tails.delete(scenario) }).catch(() => {})
+    return task
+  }
+  return {
+    start(scenario, operation) {
+      if (recovered.has(scenario)) return Promise.reject(new Error("health probe recovered scenario cannot restart"))
+      return enqueue(scenario, operation)
+    },
+    recover(scenario, operation) {
+      recovered.add(scenario)
+      return enqueue(scenario, operation)
+    },
+  }
+}
+
 async function dispatch(request, dependencies = {
   readBootId: () => readFileSync(BOOT_ID, "utf8"),
   containerSnapshot: () => containerSnapshot(expectedImageId),
@@ -638,6 +668,7 @@ async function dispatch(request, dependencies = {
   startHealthProbe,
   healthProbeStatus,
   recoverHealthProbe,
+  healthProbeCoordinator,
 }) {
   const payload = object(request, "broker request")
   const operation = text(payload.operation, "operation")
@@ -716,20 +747,28 @@ async function dispatch(request, dependencies = {
     exactKeys(payload, ["operation", "targetId", "label", "scenarioHandleDigest"], operation)
     if (!HEALTH_PROBE_LABELS.has(payload.label)) throw new Error("health probe label is invalid")
     if (operation === "start_health_probe") {
-      const snapshot = object(await dependencies.containerSnapshot(), "health probe production owner")
-      if (snapshot.running !== true || snapshot.health !== "healthy") throw new Error("health probe requires a healthy production owner")
-      const coordinates = healthProbeCoordinates(payload, snapshot)
-      if (!dependencies.startHealthProbe) throw new Error("health probe start is unavailable")
-      return await dependencies.startHealthProbe(coordinates)
+      const start = async () => {
+        const snapshot = object(await dependencies.containerSnapshot(), "health probe production owner")
+        if (snapshot.running !== true || snapshot.health !== "healthy") throw new Error("health probe requires a healthy production owner")
+        const coordinates = healthProbeCoordinates(payload, snapshot)
+        if (!dependencies.startHealthProbe) throw new Error("health probe start is unavailable")
+        return await dependencies.startHealthProbe(coordinates)
+      }
+      return dependencies.healthProbeCoordinator
+        ? await dependencies.healthProbeCoordinator.start(payload.scenarioHandleDigest, start) : await start()
     }
     if (operation === "health_probe_status") {
       if (!dependencies.healthProbeStatus) throw new Error("health probe status is unavailable")
       return await dependencies.healthProbeStatus({ label: payload.label, scenarioHandleDigest: payload.scenarioHandleDigest })
     }
-    if (!dependencies.recoverHealthProbe) throw new Error("health probe recovery is unavailable")
-    const ownerSnapshot = object(await (dependencies.containerOwnerSnapshot ?? dependencies.containerSnapshot)(), "health probe production owner")
-    const coordinates = healthProbeCoordinates(payload, ownerSnapshot)
-    return await dependencies.recoverHealthProbe(coordinates)
+    const recover = async () => {
+      if (!dependencies.recoverHealthProbe) throw new Error("health probe recovery is unavailable")
+      const ownerSnapshot = object(await (dependencies.containerOwnerSnapshot ?? dependencies.containerSnapshot)(), "health probe production owner")
+      const coordinates = healthProbeCoordinates(payload, ownerSnapshot)
+      return await dependencies.recoverHealthProbe(coordinates)
+    }
+    return dependencies.healthProbeCoordinator
+      ? await dependencies.healthProbeCoordinator.recover(payload.scenarioHandleDigest, recover) : await recover()
   }
   throw new Error("host broker operation is not whitelisted")
 }
@@ -793,7 +832,9 @@ if (process.argv[1]?.endsWith("sanctuary-unit16-host-broker.mjs")) {
 
 export {
   attestHealthProbeProcessAbsent,
+  completeHealthProbeFromReceipt,
   createDispatchDrain,
+  createHealthProbeOperationCoordinator,
   dispatch,
   healthProbeArtifactDisposition,
   healthProbeDockerArgs,
