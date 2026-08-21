@@ -1128,13 +1128,16 @@ Packaged deployment-target containment gates:
   `ouro-butler-staging`; it does not require `ouro-butler` to exist. Before the
   broker starts, the packaged deployment auditor captures all present canonical
   production/staging/rollback identities in one Docker inspect, verifies the
-  target image, `unless-stopped`, host networking, exact Unraid autostart state,
+  target image, `unless-stopped`, host networking, matching GraphQL and durable
+  file autostart identity/state,
   and exactly one running Butler, then repeats the canonical snapshot to reject
-  races. It binds the target PID and network namespace, walks its process tree
-  and socket descriptors, and rejects every externally reachable owned TCP
-  listener. Only loopback Mailbox port 6876 plus the fixed daemon and acceptance
-  Unix control paths are permitted; unknown loopback ports, wildcard/host-address
-  listeners, duplicate descriptors, or ambiguous ownership fail closed.
+  races. It binds the target PID and network namespace, walks children from every
+  process thread, and requires stable before/after process and owned-listener
+  inventories. It rejects every owned UDP listener and every externally reachable
+  owned TCP listener. Only loopback Mailbox port 6876 plus the fixed daemon and
+  acceptance Unix control paths are permitted; inherited descriptors for the same
+  socket inode are deduplicated, while unknown loopback ports, wildcard/host-address
+  listeners, process/listener drift, or ambiguous ownership fail closed.
   Unit 18 uses the separately packaged fixed final command, after rollback has
   been retained stopped:
     UNIT18_TARGET_TMP=$(mktemp /run/sanctuary-unit18-target-audit.sh.XXXXXX)

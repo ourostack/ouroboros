@@ -1,9 +1,11 @@
 #!/usr/local/bin/node
 
 import { spawnSync } from "node:child_process"
-import { readFileSync, readlinkSync, readdirSync } from "node:fs"
+import { closeSync, constants, fstatSync, openSync, readFileSync, readlinkSync, readdirSync, statSync } from "node:fs"
 
 const DOCKER = "/usr/bin/docker"
+const KEY_ROOT = "/boot/config/plugins/dynamix.my.servers/keys"
+const GRAPHQL_ENDPOINT = "http://127.0.0.1/graphql"
 const IMAGE_ID = /^sha256:[0-9a-f]{64}$/u
 const CONTAINER_ID = /^[0-9a-f]{64}$/u
 const CANONICAL_NAMES = ["ouro-butler", "ouro-butler-staging", "ouro-butler-rollback"]
@@ -16,6 +18,8 @@ const DOCUMENTED_UNIX_CONTROLS = [
   "/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance/telegram-control.sock",
 ]
 const DOCUMENTED_LOOPBACK_TCP_CONTROLS = new Set([6876])
+const RO_PERMISSIONS = ["ARRAY", "DASHBOARD", "DISK", "DOCKER", "INFO", "LOGS", "NOTIFICATIONS", "SHARE", "VARS"]
+  .map((resource) => `${resource}:READ_ANY`).sort()
 
 function object(value, label) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`)
@@ -26,6 +30,63 @@ function targetProfile(name) {
   const profile = PROFILES[name]
   if (!profile) throw new Error("deployment target profile is invalid")
   return profile
+}
+
+function exactSet(left, right) {
+  return left.size === right.size && [...left].every((entry) => right.has(entry))
+}
+
+function readCanonicalReadDescriptor() {
+  const root = statSync(KEY_ROOT)
+  if (!root.isDirectory() || root.uid !== 0 || (root.mode & 0o077) !== 0) throw new Error("Unraid key directory metadata is invalid")
+  const matches = []
+  for (const entry of readdirSync(KEY_ROOT, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) throw new Error("unexpected Unraid key directory entry")
+    const fd = openSync(`${KEY_ROOT}/${entry.name}`, constants.O_RDONLY | constants.O_NOFOLLOW)
+    let record
+    try {
+      const metadata = fstatSync(fd)
+      if (!metadata.isFile() || metadata.uid !== 0 || (metadata.mode & 0o777) !== 0o600) throw new Error("Unraid key file metadata is invalid")
+      record = object(JSON.parse(readFileSync(fd, "utf8")), "Unraid key record")
+    } finally { closeSync(fd) }
+    const permissions = Array.isArray(record.permissions)
+      ? record.permissions.flatMap((raw) => {
+        const permission = object(raw, "Unraid key permission")
+        return Array.isArray(permission.actions) ? permission.actions.map((action) => `${permission.resource}:${action}`) : []
+      }).sort()
+      : []
+    if (record.name === "Butler RO" && Array.isArray(record.roles) && record.roles.length === 0 && JSON.stringify(permissions) === JSON.stringify(RO_PERMISSIONS) && typeof record.key === "string" && record.key) matches.push(record.key)
+  }
+  if (matches.length !== 1) throw new Error("canonical read-only Unraid key is absent or ambiguous")
+  return matches[0]
+}
+
+async function queryGraphqlAutostart(fetchImpl = fetch, readDescriptor = readCanonicalReadDescriptor) {
+  const response = await fetchImpl(GRAPHQL_ENDPOINT, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-api-key": readDescriptor() },
+    body: JSON.stringify({ query: "query AcceptanceContainerTopology { docker { containers(skipCache: true) { id names autoStart } } }", variables: {} }),
+    signal: AbortSignal.timeout(10_000),
+  })
+  if (!response.ok) throw new Error("Unraid container topology query failed")
+  const envelope = object(await response.json(), "Unraid container topology response")
+  if (envelope.errors || !envelope.data) throw new Error("Unraid container topology query was rejected")
+  const containers = object(object(envelope.data, "Unraid topology data").docker, "Unraid topology docker").containers
+  if (!Array.isArray(containers)) throw new Error("Unraid container topology is invalid")
+  const result = new Map()
+  for (const raw of containers) {
+    const container = object(raw, "Unraid topology container")
+    if (!Array.isArray(container.names) || container.names.some((name) => typeof name !== "string")) throw new Error("Unraid container topology identity is invalid")
+    const canonical = container.names.map((name) => name.replace(/^\//u, "")).filter((name) => CANONICAL_NAMES.includes(name))
+    const identity = typeof container.id === "string" ? /^([0-9a-f]{64}):([0-9a-f]{64})$/u.exec(container.id) : null
+    if (canonical.length > 1 || (canonical.length === 1 && !identity)) throw new Error("Unraid container topology identity is ambiguous")
+    if (canonical.length === 1 && typeof container.autoStart !== "boolean") throw new Error("Unraid container autostart state is invalid")
+    if (canonical.length === 1 && container.autoStart === true) {
+      if (result.has(canonical[0])) throw new Error("Unraid autostart topology is ambiguous")
+      result.set(canonical[0], { imageId: `sha256:${identity[1]}`, containerId: identity[2] })
+    }
+  }
+  return result
 }
 
 function normalizeRecord(raw, label) {
@@ -73,17 +134,38 @@ function attestDeploymentTarget(input) {
 function attestOwnedListeners(input) {
   const value = object(input, "listener ownership input")
   if (!Number.isSafeInteger(value.rootPid) || value.rootPid <= 0 || !/^net:\[[0-9]+\]$/u.test(value.netnsBefore) || value.netnsBefore !== value.netnsAfter) throw new Error("target network namespace is invalid or changed")
-  if (!Array.isArray(value.processIds) || value.processIds.length === 0 || !value.processIds.includes(value.rootPid) || value.processIds.some((pid) => !Number.isSafeInteger(pid) || pid <= 0) || new Set(value.processIds).size !== value.processIds.length) throw new Error("target process tree is invalid")
-  if (!Array.isArray(value.socketInodes) || value.socketInodes.some((inode) => !/^[0-9]+$/u.test(inode)) || new Set(value.socketInodes).size !== value.socketInodes.length) throw new Error("target socket ownership is ambiguous")
-  const owned = new Set(value.socketInodes)
-  if (!Array.isArray(value.tcpListeners) || !Array.isArray(value.unixSockets)) throw new Error("listener inventory is invalid")
-  const tcp = value.tcpListeners.filter((raw) => owned.has(object(raw, "TCP listener").inode))
+  const processIdsBefore = value.processIdsBefore
+  const processIdsAfter = value.processIdsAfter
+  const validProcesses = (pids) => Array.isArray(pids) && pids.length > 0 && pids.includes(value.rootPid) && pids.every((pid) => Number.isSafeInteger(pid) && pid > 0) && new Set(pids).size === pids.length
+  if (!validProcesses(processIdsBefore) || !validProcesses(processIdsAfter) || JSON.stringify([...processIdsBefore].sort((a, b) => a - b)) !== JSON.stringify([...processIdsAfter].sort((a, b) => a - b))) throw new Error("target process tree changed or is invalid")
+  const socketSet = (raw, label) => {
+    if (!Array.isArray(raw) || raw.some((inode) => !/^[0-9]+$/u.test(inode))) throw new Error(`${label} is invalid`)
+    return new Set(raw)
+  }
+  const inventory = (suffix) => {
+    const owned = socketSet(value[`socketInodes${suffix}`], `socket ownership ${suffix.toLowerCase()}`)
+    const select = (kind, fallback) => value[kind] ?? value[`${fallback}${suffix}`]
+    const tcpRaw = select("tcpListeners", "tcpListeners")
+    const udpRaw = select("udpListeners", "udpListeners")
+    const unixRaw = select("unixSockets", "unixSockets")
+    if (!Array.isArray(tcpRaw) || !Array.isArray(udpRaw) || !Array.isArray(unixRaw)) throw new Error("listener inventory is invalid")
+    const tcp = tcpRaw.filter((raw) => owned.has(object(raw, "TCP listener").inode))
+    const udp = udpRaw.filter((raw) => owned.has(object(raw, "UDP listener").inode))
+    const unix = unixRaw.filter((raw) => owned.has(object(raw, "Unix socket").inode))
+    const sortRecords = (records) => [...records].sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)))
+    const signature = JSON.stringify({ tcp: sortRecords(tcp), udp: sortRecords(udp), unix: sortRecords(unix) })
+    return { owned, tcp, udp, unix, signature }
+  }
+  const before = inventory("Before")
+  const after = inventory("After")
+  if (before.signature !== after.signature) throw new Error("target listener inventory changed")
+  const { owned, tcp, udp, unix } = after
   for (const listener of tcp) {
     if (listener.localAddress !== "127.0.0.1" || !DOCUMENTED_LOOPBACK_TCP_CONTROLS.has(listener.port)) throw new Error("target runtime owns an inbound TCP listener")
   }
-  const unix = value.unixSockets.filter((raw) => owned.has(object(raw, "Unix socket").inode))
+  if (udp.length !== 0) throw new Error("target runtime owns an inbound UDP listener")
   for (const socket of unix) if (!DOCUMENTED_UNIX_CONTROLS.includes(socket.path)) throw new Error("target runtime owns an undocumented Unix listener")
-  return { schemaVersion: "sanctuary-listener-containment-v1", targetRootPid: value.rootPid, networkNamespace: value.netnsBefore, processCount: value.processIds.length, ownedSocketCount: owned.size, inboundTcpListenerCount: 0, loopbackTcpControlCount: tcp.length, unixControlSocketCount: unix.length }
+  return { schemaVersion: "sanctuary-listener-containment-v1", targetRootPid: value.rootPid, networkNamespace: value.netnsBefore, processCount: processIdsAfter.length, ownedSocketCount: owned.size, inboundTcpListenerCount: 0, inboundUdpListenerCount: 0, loopbackTcpControlCount: tcp.length, unixControlSocketCount: unix.length }
 }
 
 function runDocker(args) {
@@ -109,7 +191,7 @@ function autostartNames() {
   return new Set(names)
 }
 
-function captureCanonicalRecords(dependencies = {}) {
+async function captureCanonicalRecords(dependencies = {}) {
   const listed = (dependencies.dockerTopology ?? dockerTopology)()
   if (new Set(listed.map(({ name }) => name)).size !== listed.length || new Set(listed.map(({ id }) => id)).size !== listed.length) throw new Error("canonical Butler topology is ambiguous")
   if (listed.length === 0) throw new Error("canonical Butler topology is empty")
@@ -118,7 +200,10 @@ function captureCanonicalRecords(dependencies = {}) {
     : JSON.parse(runDocker(["inspect", ...listed.map(({ id }) => id)]).trim())
   if (!Array.isArray(inspections) || inspections.length !== listed.length) throw new Error("canonical Butler inspection is incomplete")
   const starts = new Set((dependencies.autostartNames ?? (() => [...autostartNames()]))())
-  return inspections.map((entry) => {
+  const graphqlRecords = await (dependencies.graphqlAutostartNames ?? queryGraphqlAutostart)()
+  if (!(graphqlRecords instanceof Map)) throw new Error("Unraid GraphQL autostart state is invalid")
+  if (!exactSet(starts, new Set(graphqlRecords.keys()))) throw new Error("Unraid GraphQL and durable autostart state disagree")
+  const records = inspections.map((entry) => {
     const name = String(entry.Name).replace(/^\//u, "")
     const listedRecord = listed.find(({ id }) => id === entry.Id)
     if (!listedRecord || listedRecord.name !== name) throw new Error("canonical Butler identity changed during atomic inspection")
@@ -133,6 +218,11 @@ function captureCanonicalRecords(dependencies = {}) {
       networkMode: entry.HostConfig?.NetworkMode,
     }
   })
+  for (const [name, identity] of graphqlRecords) {
+    const record = records.find((candidate) => candidate.names[0].replace(/^\//u, "") === name)
+    if (!record || record.id !== identity?.containerId || record.imageId !== identity?.imageId) throw new Error("Unraid GraphQL autostart identity disagrees with Docker")
+  }
+  return records
 }
 
 function parseProcNet(content, ipv6) {
@@ -143,17 +233,31 @@ function parseProcNet(content, ipv6) {
   })
 }
 
-function processTree(rootPid) {
+function parseProcUdp(content, ipv6) {
+  return content.split(/\r?\n/u).slice(1).filter(Boolean).map((line) => line.trim().split(/\s+/u)).filter((fields) => fields[3] === "07" && fields[2].endsWith(":0000")).map((fields) => {
+    const [address, portHex] = fields[1].split(":")
+    const localAddress = ipv6 ? address : [6, 4, 2, 0].map((offset) => Number.parseInt(address.slice(offset, offset + 2), 16)).join(".")
+    return { inode: fields[9], localAddress, port: Number.parseInt(portHex, 16) }
+  }).filter(({ port }) => port !== 0)
+}
+
+function processTree(rootPid, dependencies = {}) {
   const pending = [rootPid]
   const result = []
+  const listTasks = dependencies.listTasks ?? ((pid) => readdirSync(`/proc/${pid}/task`).map(Number))
+  const readChildren = dependencies.readChildren ?? ((pid, tid) => readFileSync(`/proc/${pid}/task/${tid}/children`, "utf8").trim())
   while (pending.length) {
     const pid = pending.shift()
     if (result.includes(pid)) throw new Error("target process tree is ambiguous")
     result.push(pid)
-    const children = readFileSync(`/proc/${pid}/task/${pid}/children`, "utf8").trim()
-    if (children) pending.push(...children.split(/\s+/u).map(Number))
+    const tasks = listTasks(pid)
+    if (!Array.isArray(tasks) || tasks.length === 0 || tasks.some((tid) => !Number.isSafeInteger(tid) || tid <= 0) || new Set(tasks).size !== tasks.length) throw new Error("target thread inventory is invalid")
+    for (const tid of tasks) {
+      const children = readChildren(pid, tid)
+      if (children) pending.push(...children.split(/\s+/u).map(Number).filter((child) => !result.includes(child) && !pending.includes(child)))
+    }
   }
-  return result
+  return result.sort((left, right) => left - right)
 }
 
 function ownedSocketInodes(processIds) {
@@ -170,24 +274,31 @@ function parseProcUnix(content) {
   return content.split(/\r?\n/u).slice(1).filter(Boolean).map((line) => line.trim().split(/\s+/u)).filter((fields) => fields[3] === "00010000" && fields[4] === "0001" && fields[5] === "01").map((fields) => ({ inode: fields[6], path: fields[7] ?? "" }))
 }
 
-function runDeploymentTargetAudit(profileName, expectedImageId, dependencies = {}) {
+async function runDeploymentTargetAudit(profileName, expectedImageId, dependencies = {}) {
   const capture = dependencies.captureCanonicalRecords ?? captureCanonicalRecords
-  const before = capture()
+  const before = await capture()
   const provisional = attestDeploymentTarget({ profile: profileName, expectedImageId, topologyBefore: before, inspected: before, topologyAfter: before })
   const readNetns = dependencies.readNetns ?? ((pid) => readlinkSync(`/proc/${pid}/ns/net`))
   const readTree = dependencies.processTree ?? processTree
   const readSockets = dependencies.ownedSocketInodes ?? ownedSocketInodes
   const readTcp = dependencies.readTcpListeners ?? ((pid) => [...parseProcNet(readFileSync(`/proc/${pid}/net/tcp`, "utf8"), false), ...parseProcNet(readFileSync(`/proc/${pid}/net/tcp6`, "utf8"), true)])
+  const readUdp = dependencies.readUdpListeners ?? ((pid) => [...parseProcUdp(readFileSync(`/proc/${pid}/net/udp`, "utf8"), false), ...parseProcUdp(readFileSync(`/proc/${pid}/net/udp6`, "utf8"), true)])
   const readUnix = dependencies.readUnixSockets ?? ((pid) => parseProcUnix(readFileSync(`/proc/${pid}/net/unix`, "utf8")))
   const netnsBefore = readNetns(provisional.targetPid)
-  const processIds = readTree(provisional.targetPid)
-  const socketInodes = readSockets(processIds)
-  const tcpListeners = readTcp(provisional.targetPid)
-  const unixSockets = readUnix(provisional.targetPid)
+  const processIdsBefore = readTree(provisional.targetPid)
+  const socketInodesBefore = readSockets(processIdsBefore)
+  const tcpListenersBefore = readTcp(provisional.targetPid)
+  const udpListenersBefore = readUdp(provisional.targetPid)
+  const unixSocketsBefore = readUnix(provisional.targetPid)
+  const processIdsAfter = readTree(provisional.targetPid)
+  const socketInodesAfter = readSockets(processIdsAfter)
+  const tcpListenersAfter = readTcp(provisional.targetPid)
+  const udpListenersAfter = readUdp(provisional.targetPid)
+  const unixSocketsAfter = readUnix(provisional.targetPid)
   const netnsAfter = readNetns(provisional.targetPid)
-  const after = capture()
+  const after = await capture()
   const deployment = attestDeploymentTarget({ profile: profileName, expectedImageId, topologyBefore: before, inspected: before, topologyAfter: after })
-  const listeners = attestOwnedListeners({ rootPid: deployment.targetPid, netnsBefore, netnsAfter, processIds, socketInodes, tcpListeners, unixSockets })
+  const listeners = attestOwnedListeners({ rootPid: deployment.targetPid, netnsBefore, netnsAfter, processIdsBefore, processIdsAfter, socketInodesBefore, socketInodesAfter, tcpListenersBefore, tcpListenersAfter, udpListenersBefore, udpListenersAfter, unixSocketsBefore, unixSocketsAfter })
   return { schemaVersion: "sanctuary-effective-deployment-v1", deployment, listeners }
 }
 
@@ -195,9 +306,9 @@ if (process.argv[1]?.endsWith("sanctuary-deployment-target.mjs")) {
   const [profile, expectedImageId] = process.argv.slice(2)
   if (process.argv.length !== 4) process.exitCode = 2
   else {
-    try { process.stdout.write(`${JSON.stringify(runDeploymentTargetAudit(profile, expectedImageId))}\n`) }
+    try { process.stdout.write(`${JSON.stringify(await runDeploymentTargetAudit(profile, expectedImageId))}\n`) }
     catch { process.exitCode = 1 }
   }
 }
 
-export { attestDeploymentTarget, attestOwnedListeners, captureCanonicalRecords, dockerTopology, ownedSocketInodes, parseProcNet, parseProcUnix, processTree, runDeploymentTargetAudit, targetProfile }
+export { attestDeploymentTarget, attestOwnedListeners, captureCanonicalRecords, dockerTopology, ownedSocketInodes, parseProcNet, parseProcUdp, parseProcUnix, processTree, queryGraphqlAutostart, runDeploymentTargetAudit, targetProfile }
