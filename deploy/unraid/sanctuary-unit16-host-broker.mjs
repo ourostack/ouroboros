@@ -1,6 +1,6 @@
 #!/usr/local/bin/node
 
-import { spawnSync } from "node:child_process"
+import { spawn, spawnSync } from "node:child_process"
 import { createHash } from "node:crypto"
 import { chmodSync, chownSync, closeSync, constants, fstatSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs"
 import { createServer } from "node:net"
@@ -26,9 +26,13 @@ const KEY_NAME = /^Butler (?:RO|RW)(?: Rotation [0-9a-f]{16})?$/u
 const PERMISSION = /^[A-Z_]+:(?:CREATE|READ|UPDATE|DELETE)_(?:ANY|OWN)$/u
 const MAX_REQUEST = 256 * 1024
 const IMAGE_ID = /^sha256:[0-9a-f]{64}$/u
+const SHA256 = /^[0-9a-f]{64}$/u
+const HEALTH_PROBE_ENTRY = "/opt/ouro/dist/senses/sanctuary-health-acceptance-probe.js"
+const HEALTH_PROBE_LABELS = new Set(["unit-16f-cron-fingerprint", "unit-16g-health-transition", "unit-16h-daily-digest"])
 const RO_PERMISSIONS = ["ARRAY", "DASHBOARD", "DISK", "DOCKER", "INFO", "LOGS", "NOTIFICATIONS", "SHARE", "VARS"]
   .map((resource) => `${resource}:READ_ANY`).sort()
 let expectedImageId = ""
+const activeHealthProbes = new Map()
 
 function object(value, label) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`)
@@ -279,9 +283,147 @@ function permissions(value) {
   return result
 }
 
+function canonicalHealthProbeInput(input) {
+  const value = object(input, "health probe input")
+  exactKeys(value, ["label", "scenarioHandleDigest", "ownerImageDigest", "ownerContainerDigest"], "health probe input")
+  if (!HEALTH_PROBE_LABELS.has(value.label)) throw new Error("health probe label is invalid")
+  for (const key of ["scenarioHandleDigest", "ownerImageDigest", "ownerContainerDigest"]) text(value[key], `health probe ${key}`, SHA256)
+  return value
+}
+
+function healthProbeDockerArgs(mode, input) {
+  if (mode !== "run" && mode !== "recover") throw new Error("health probe mode is invalid")
+  const value = canonicalHealthProbeInput(input)
+  return [
+    "exec", PRODUCTION_CONTAINER, "/usr/local/bin/node", HEALTH_PROBE_ENTRY, mode,
+    "--label", value.label,
+    "--scenario", value.scenarioHandleDigest,
+    "--owner-image", value.ownerImageDigest,
+    "--owner-container", value.ownerContainerDigest,
+  ]
+}
+
+function healthProbeFinalizeDockerArgs(before, after) {
+  const initial = canonicalHealthProbeInput(before)
+  const observed = canonicalHealthProbeInput(after)
+  return [
+    "exec", PRODUCTION_CONTAINER, "/usr/local/bin/node", HEALTH_PROBE_ENTRY, "finalize",
+    "--label", initial.label,
+    "--scenario", initial.scenarioHandleDigest,
+    "--owner-image", initial.ownerImageDigest,
+    "--owner-container", initial.ownerContainerDigest,
+    "--owner-image-after", observed.ownerImageDigest,
+    "--owner-container-after", observed.ownerContainerDigest,
+  ]
+}
+
+function requireStableHealthProbeOwner(before, after) {
+  const initial = canonicalHealthProbeInput(before)
+  const observed = canonicalHealthProbeInput(after)
+  if (initial.label !== observed.label || initial.scenarioHandleDigest !== observed.scenarioHandleDigest) throw new Error("health probe scenario binding drifted")
+  if (initial.ownerImageDigest !== observed.ownerImageDigest || initial.ownerContainerDigest !== observed.ownerContainerDigest) throw new Error("health probe owner binding drifted")
+}
+
+function healthProbeReceiptPath(scenarioHandleDigest) {
+  return `${PRODUCTION_BUNDLE_SOURCE}/state/acceptance/health-probe-receipts/${scenarioHandleDigest}.json`
+}
+
+function healthProbeWorkspacePath(scenarioHandleDigest) {
+  return `${PRODUCTION_BUNDLE_SOURCE}/state/acceptance/health-probe-workspaces/${scenarioHandleDigest}`
+}
+
+function healthProbePendingPath(scenarioHandleDigest) {
+  return `${PRODUCTION_BUNDLE_SOURCE}/state/acceptance/health-probe-pending/${scenarioHandleDigest}.json`
+}
+
+function startHealthProbe(input) {
+  const value = canonicalHealthProbeInput(input)
+  const existing = activeHealthProbes.get(value.scenarioHandleDigest)
+  if (existing?.state === "running" || statIfPresent(healthProbeReceiptPath(value.scenarioHandleDigest)) || statIfPresent(healthProbeWorkspacePath(value.scenarioHandleDigest))) {
+    throw new Error("health probe requires inspect-before-retry")
+  }
+  const child = spawn(DOCKER, healthProbeDockerArgs("run", value), {
+    cwd: "/", env: { PATH: "/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin" }, stdio: "ignore",
+  })
+  const record = { input: value, child, state: "running", exitCode: null }
+  activeHealthProbes.set(value.scenarioHandleDigest, record)
+  child.once("error", () => { record.state = "failed"; record.exitCode = -1 })
+  child.once("exit", (code) => { record.state = code === 0 ? "exited" : "failed"; record.exitCode = code })
+  child.unref()
+  return {
+    state: "started",
+    operationDigest: createHash("sha256").update(JSON.stringify({ operation: "start_health_probe", ...value })).digest("hex"),
+  }
+}
+
+function statIfPresent(file) {
+  try { return statSync(file) } catch (error) { if (error.code === "ENOENT") return null; throw error }
+}
+
+function healthProbeStatus(input) {
+  const value = canonicalHealthProbeInput(input)
+  const receipt = statIfPresent(healthProbeReceiptPath(value.scenarioHandleDigest))
+  if (receipt) {
+    if (!receipt.isFile() || receipt.uid !== 10001 || (receipt.mode & 0o777) !== 0o600) throw new Error("health probe receipt metadata is invalid")
+    return { state: "complete" }
+  }
+  const record = activeHealthProbes.get(value.scenarioHandleDigest)
+  if (!record) return { state: statIfPresent(healthProbeWorkspacePath(value.scenarioHandleDigest)) ? "recovery_required" : "absent" }
+  requireStableHealthProbeOwner(record.input, value)
+  if (record.state === "failed") return { state: "failed" }
+  if (record.state === "running") return { state: "running" }
+  const finalized = spawnSync(DOCKER, healthProbeFinalizeDockerArgs(record.input, value), {
+    cwd: "/", encoding: "utf8", timeout: 20_000, maxBuffer: 64 * 1024,
+    env: { PATH: "/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin" }, stdio: ["ignore", "ignore", "ignore"],
+  })
+  if (finalized.error || finalized.status !== 0) throw new Error("health probe final attestation failed")
+  const finalReceipt = statIfPresent(healthProbeReceiptPath(value.scenarioHandleDigest))
+  if (!finalReceipt || !finalReceipt.isFile() || finalReceipt.uid !== 10001 || (finalReceipt.mode & 0o777) !== 0o600) {
+    throw new Error("health probe final receipt is absent or invalid")
+  }
+  activeHealthProbes.delete(value.scenarioHandleDigest)
+  return { state: "complete" }
+}
+
+function recoverHealthProbe(input) {
+  const value = canonicalHealthProbeInput(input)
+  const record = activeHealthProbes.get(value.scenarioHandleDigest)
+  if (record && JSON.stringify(record.input) !== JSON.stringify(value)) throw new Error("health probe owner binding drifted")
+  if (record?.state === "running") record.child.kill("SIGTERM")
+  const workspace = statIfPresent(healthProbeWorkspacePath(value.scenarioHandleDigest))
+  const pending = statIfPresent(healthProbePendingPath(value.scenarioHandleDigest))
+  if (!workspace && !pending) {
+    activeHealthProbes.delete(value.scenarioHandleDigest)
+    return { recovered: false }
+  }
+  const result = spawnSync(DOCKER, healthProbeDockerArgs("recover", value), {
+    cwd: "/", encoding: "utf8", timeout: 45_000, maxBuffer: 64 * 1024,
+    env: { PATH: "/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin" }, stdio: ["ignore", "ignore", "ignore"],
+  })
+  if (result.error || result.status !== 0 || statIfPresent(healthProbeWorkspacePath(value.scenarioHandleDigest)) || statIfPresent(healthProbePendingPath(value.scenarioHandleDigest))) {
+    throw new Error("health probe recovery failed")
+  }
+  activeHealthProbes.delete(value.scenarioHandleDigest)
+  return { recovered: true }
+}
+
+function healthProbeCoordinates(payload, snapshot) {
+  if (payload.targetId !== TARGET_HOST) throw new Error("target host is invalid")
+  const label = text(payload.label, "health probe label")
+  if (!HEALTH_PROBE_LABELS.has(label)) throw new Error("health probe label is invalid")
+  const scenarioHandleDigest = text(payload.scenarioHandleDigest, "health probe scenario digest", SHA256)
+  const ownerImage = text(snapshot.imageId, "health probe owner image", IMAGE_ID)
+  const ownerContainerDigest = text(snapshot.containerId, "health probe owner container", SHA256)
+  if (expectedImageId && ownerImage !== expectedImageId) throw new Error("health probe production owner drifted")
+  return { label, scenarioHandleDigest, ownerImageDigest: ownerImage.slice("sha256:".length), ownerContainerDigest }
+}
+
 async function dispatch(request, dependencies = {
   readBootId: () => readFileSync(BOOT_ID, "utf8"),
   containerSnapshot: () => containerSnapshot(expectedImageId),
+  startHealthProbe,
+  healthProbeStatus,
+  recoverHealthProbe,
 }) {
   const payload = object(request, "broker request")
   const operation = text(payload.operation, "operation")
@@ -356,6 +498,23 @@ async function dispatch(request, dependencies = {
     if (payload.targetId !== TARGET_HOST) throw new Error("target host is invalid")
     return await dependencies.containerSnapshot()
   }
+  if (operation === "start_health_probe" || operation === "health_probe_status" || operation === "recover_health_probe") {
+    exactKeys(payload, ["operation", "targetId", "label", "scenarioHandleDigest"], operation)
+    if (!HEALTH_PROBE_LABELS.has(payload.label)) throw new Error("health probe label is invalid")
+    const snapshot = object(await dependencies.containerSnapshot(), "health probe production owner")
+    if (operation === "start_health_probe" && (snapshot.running !== true || snapshot.health !== "healthy")) throw new Error("health probe requires a healthy production owner")
+    const coordinates = healthProbeCoordinates(payload, snapshot)
+    if (operation === "start_health_probe") {
+      if (!dependencies.startHealthProbe) throw new Error("health probe start is unavailable")
+      return await dependencies.startHealthProbe(coordinates)
+    }
+    if (operation === "health_probe_status") {
+      if (!dependencies.healthProbeStatus) throw new Error("health probe status is unavailable")
+      return await dependencies.healthProbeStatus(coordinates)
+    }
+    if (!dependencies.recoverHealthProbe) throw new Error("health probe recovery is unavailable")
+    return await dependencies.recoverHealthProbe(coordinates)
+  }
   throw new Error("host broker operation is not whitelisted")
 }
 
@@ -395,10 +554,23 @@ async function main() {
     chownSync(socket, 0, 10001)
     chmodSync(socket, 0o660)
   })
+  let shuttingDown = false
+  const shutdown = () => {
+    if (shuttingDown) return
+    shuttingDown = true
+    server.close()
+    let failed = false
+    for (const record of activeHealthProbes.values()) {
+      try { recoverHealthProbe(record.input) } catch { failed = true }
+    }
+    process.exitCode = failed ? 1 : 0
+  }
+  process.once("SIGTERM", shutdown)
+  process.once("SIGINT", shutdown)
 }
 
 if (process.argv[1]?.endsWith("sanctuary-unit16-host-broker.mjs")) {
   main().catch(() => { process.exitCode = 1 })
 }
 
-export { dispatch, parseVaultStatus, queryGraphqlAutostart }
+export { dispatch, healthProbeDockerArgs, parseVaultStatus, queryGraphqlAutostart, requireStableHealthProbeOwner }

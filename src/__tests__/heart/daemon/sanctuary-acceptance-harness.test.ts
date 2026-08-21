@@ -669,11 +669,15 @@ describe("Sanctuary acceptance harness", () => {
       "reboot-request": expect.objectContaining({ operation: "reboot-request" }),
       "unraid-key-rotate": expect.objectContaining({ operation: "unraid-key-rotate" }),
       "scenario-capture": expect.objectContaining({ operation: "capture_acceptance_scenario", modelReachable: false }),
+      "health-probe-start": expect.objectContaining({ operation: "start_health_probe", modelReachable: false }),
+      "health-probe-status": expect.objectContaining({ operation: "health_probe_status", modelReachable: false }),
+      "health-probe-recovery": expect.objectContaining({ operation: "recover_health_probe", modelReachable: false }),
     }))
     expect(contract.scenarioSources).toEqual(expect.objectContaining({
       "telegram-audit": expect.objectContaining({ kind: "fixed-ndjson", path: expect.stringContaining("telegram.ndjson") }),
       "container-inspect": expect.objectContaining({ kind: "fixed-host-snapshot", path: "/run/ouro-acceptance/container-inspect.json" }),
       "provider-live-check": expect.objectContaining({ kind: "fixed-runtime-api", operation: "sanctuary-provider-readiness" }),
+      "health-probe-receipt": expect.objectContaining({ kind: "fixed-json", path: expect.stringContaining("health-probe-receipts") }),
     }))
     expect(contract.configTemplates["evidence-snapshot"]).toMatchObject({
       fixed: { timeoutMs: 4_320_000 },
@@ -688,6 +692,7 @@ describe("Sanctuary acceptance harness", () => {
     expect(runner).toContain("evidence-snapshot) TIME_LIMIT=4380; NETWORK=host; INPUT=no; BUNDLE_MODE=readonly; BROKER=yes ;;")
     expect(runner).toContain("reboot-resume) TIME_LIMIT=780; NETWORK=host; INPUT=no; BUNDLE_MODE=readonly; BROKER=yes ;;")
     expect(runner).toContain('test "$COMMAND" = evidence-snapshot || test "$COMMAND" = reboot-request || test "$COMMAND" = reboot-resume')
+    expect(runner).toContain("assert_health_probe_cleanup")
     expect(wrapper).toContain("--config")
     expect(wrapper).toContain("--contract")
     expect(adapterWrapper).toContain("sanctuary-acceptance-adapter.js")
