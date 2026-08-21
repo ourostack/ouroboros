@@ -263,6 +263,22 @@ describe("Sanctuary fixed deployment target", () => {
     })).toThrow(/watchdog.*(?:alive|identity|exited)/u)
   })
 
+  it.each(["X", "x"])("rejects watchdog children in Linux terminal state %s", async (state) => {
+    const { armThawWatchdog } = await load()
+    const bootId = "11111111-2222-4333-8444-555555555555"
+    const childPid = 7654
+    expect(() => armThawWatchdog({ targetContainerId: stagingId, targetPid: 321 }, {
+      now: () => 1_000,
+      mkdirSync: () => undefined,
+      spawn: () => ({ pid: childPid, unref: () => undefined }),
+      existsSync: (file: string) => file.endsWith("/ready"),
+      readFileSync: () => `${JSON.stringify({ watchdogPid: childPid, watchdogBootId: bootId, watchdogStarttime: "555", readyAt: 1_000 })}\n`,
+      readParentIdentity: (pid: number) => pid === process.pid
+        ? { bootId, state: "S", starttime: "987654" }
+        : { bootId, state, starttime: "555" },
+    })).toThrow(/watchdog.*(?:alive|identity|exited)/u)
+  })
+
   it.each(["before-pause", "during-pause"])("restores and fails when a real watchdog child dies %s", async (phase) => {
     const { withPausedTarget } = await load()
     const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" })
@@ -402,6 +418,89 @@ describe("Sanctuary fixed deployment target", () => {
     expect(paused).toBe(false)
     expect(clock).toBeLessThanOrEqual(1_000)
     expect(JSON.parse(files.get(`${root}/watchdog-terminal.json`)!)).toMatchObject({ status: "parent-death-recovered", containerId: stagingId, pid: 321 })
+  })
+
+  it.each(["X", "x"])("treats Linux parent terminal state %s as immediate death", async (state) => {
+    const { runThawWatchdog } = await load()
+    const bootId = "11111111-2222-4333-8444-555555555555"
+    let elapsed = 0
+    let paused = false
+    let parentReads = 0
+    await runThawWatchdog(stagingId, 321, 42, bootId, "987654", "/run/ouro-thaw-watchdog.42.1000", {
+      now: () => 1_000,
+      monotonicNow: () => elapsed,
+      sleep: async (milliseconds: number) => {
+        elapsed += milliseconds
+        if (elapsed > 2_000) throw new Error("terminal parent state was retried")
+      },
+      existsSync: () => false,
+      writeFileSync: (file: string) => { if (file.endsWith("/ready")) paused = true },
+      readParentIdentity: () => { parentReads += 1; return { bootId, state, starttime: "987654" } },
+      runDocker: (args: string[]) => {
+        if (args[0] === "unpause") { paused = false; return "" }
+        return JSON.stringify({ containerId: stagingId, running: true, paused, restarting: false, dead: false, pid: 321 })
+      },
+      enforcementMs: 1_000,
+      recoveryPollMs: 250,
+    })
+    expect(parentReads).toBe(1)
+    expect(paused).toBe(false)
+  })
+
+  it.each([
+    ["backward", -1_000_000],
+    ["forward", 1_000_000],
+  ])("keeps the recovery budget monotonic across a %s wall-clock jump", async (_label, jumpedWallClock) => {
+    const { runThawWatchdog } = await load()
+    const bootId = "11111111-2222-4333-8444-555555555555"
+    let elapsed = 0
+    let paused = false
+    let wallReads = 0
+    const timeouts: number[] = []
+    await runThawWatchdog(stagingId, 321, 42, bootId, "987654", "/run/ouro-thaw-watchdog.42.1000", {
+      now: () => wallReads++ === 0 ? 10_000 : jumpedWallClock,
+      monotonicNow: () => elapsed,
+      sleep: async (milliseconds: number) => {
+        elapsed += milliseconds
+        if (elapsed > 2_000) throw new Error("wall clock controlled the recovery loop")
+      },
+      existsSync: () => false,
+      writeFileSync: (file: string) => { if (file.endsWith("/ready")) paused = true },
+      readParentIdentity: () => { throw Object.assign(new Error("gone"), { code: "ENOENT" }) },
+      runDocker: (args: string[], timeoutMs: number) => {
+        timeouts.push(timeoutMs)
+        if (args[0] === "unpause") { paused = false; return "" }
+        return JSON.stringify({ containerId: stagingId, running: true, paused, restarting: false, dead: false, pid: 321 })
+      },
+      enforcementMs: 1_000,
+      recoveryPollMs: 250,
+    })
+    expect(paused).toBe(false)
+    expect(elapsed).toBe(1_000)
+    expect(timeouts.every((timeoutMs) => timeoutMs > 0 && timeoutMs <= 1_000)).toBe(true)
+  })
+
+  it("refuses late recovery success using monotonic elapsed time despite a backward wall-clock jump", async () => {
+    const { runThawWatchdog } = await load()
+    const bootId = "11111111-2222-4333-8444-555555555555"
+    let elapsed = 0
+    let calls = 0
+    const terminalWrites: string[] = []
+    await expect(runThawWatchdog(stagingId, 321, 42, bootId, "987654", "/run/ouro-thaw-watchdog.42.1000", {
+      now: () => -1_000_000,
+      monotonicNow: () => elapsed,
+      sleep: async () => { throw new Error("wall clock admitted late success") },
+      existsSync: () => false,
+      writeFileSync: (file: string) => { if (file.endsWith("watchdog-terminal.json")) terminalWrites.push(file) },
+      readParentIdentity: () => { throw Object.assign(new Error("gone"), { code: "ENOENT" }) },
+      runDocker: async () => {
+        calls += 1
+        if (calls > 1) elapsed = 1_001
+        return JSON.stringify({ containerId: stagingId, running: true, paused: false, restarting: false, dead: false, pid: 321 })
+      },
+      enforcementMs: 1_000,
+    })).rejects.toThrow(/deadline/u)
+    expect(terminalWrites).toEqual([])
   })
 
   it("never starts another Docker call after the parent-death wall-clock budget is exhausted", async () => {
