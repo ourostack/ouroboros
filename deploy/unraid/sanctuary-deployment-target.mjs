@@ -250,6 +250,14 @@ function parseProcStatIdentity(content, expectedPid) {
   return { state, starttime }
 }
 
+function terminalProcState(state) {
+  return state === "Z" || state === "X" || state === "x"
+}
+
+function monotonicMilliseconds() {
+  return Number(process.hrtime.bigint() / 1_000_000n)
+}
+
 function readParentIdentity(pid) {
   const bootId = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim()
   if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/u.test(bootId)) throw new Error("parent boot identity is invalid")
@@ -266,7 +274,7 @@ function armThawWatchdog(target, dependencies = {}) {
   const writeFile = dependencies.writeFileSync ?? writeFileSync
   const readFile = dependencies.readFileSync ?? readFileSync
   const parentIdentity = readIdentity(process.pid)
-  if (parentIdentity.state === "Z") throw new Error("thaw watchdog parent is not alive")
+  if (terminalProcState(parentIdentity.state)) throw new Error("thaw watchdog parent is not alive")
   const root = `/run/ouro-thaw-watchdog.${process.pid}.${now()}`
   makeDirectory(root, { mode: 0o700 })
   const child = spawnChild(process.execPath, [fileURLToPath(import.meta.url), "--thaw-watchdog", target.targetContainerId, String(target.targetPid), String(process.pid), parentIdentity.bootId, parentIdentity.starttime, root], {
@@ -288,7 +296,7 @@ function armThawWatchdog(target, dependencies = {}) {
   const assertLive = () => {
     let observed
     try { observed = readIdentity(watchdogIdentity.pid) } catch (error) { throw new Error("thaw watchdog child exited", { cause: error }) }
-    if (observed.bootId !== watchdogIdentity.bootId || observed.starttime !== watchdogIdentity.starttime || observed.state === "Z") throw new Error("thaw watchdog child identity is not alive")
+    if (observed.bootId !== watchdogIdentity.bootId || observed.starttime !== watchdogIdentity.starttime || terminalProcState(observed.state)) throw new Error("thaw watchdog child identity is not alive")
   }
   assertLive()
   return {
@@ -361,7 +369,8 @@ async function pausedTargetStateAsync(target, run, timeoutMs) {
 
 async function runThawWatchdog(targetContainerId, targetPid, parentPid, parentBootId, parentStarttime, root, dependencies = {}) {
   const target = { targetContainerId, targetPid }
-  const now = dependencies.now ?? Date.now
+  const wallNow = dependencies.now ?? Date.now
+  const monotonicNow = dependencies.monotonicNow ?? monotonicMilliseconds
   const sleep = dependencies.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)))
   const fileExists = dependencies.existsSync ?? existsSync
   const writeFile = dependencies.writeFileSync ?? writeFileSync
@@ -381,8 +390,8 @@ async function runThawWatchdog(targetContainerId, targetPid, parentPid, parentBo
   const selfIdentity = dependencies.readSelfIdentity?.() ?? (dependencies.readParentIdentity
     ? { bootId: parentBootId, state: "S", starttime: "1" }
     : readParentIdentity(process.pid))
-  if (selfIdentity.state === "Z" || selfIdentity.bootId !== parentBootId || !/^[0-9]+$/u.test(selfIdentity.starttime) || selfIdentity.starttime === "0") throw new Error("thaw watchdog process identity is invalid")
-  const readyAt = now()
+  if (terminalProcState(selfIdentity.state) || selfIdentity.bootId !== parentBootId || !/^[0-9]+$/u.test(selfIdentity.starttime) || selfIdentity.starttime === "0") throw new Error("thaw watchdog process identity is invalid")
+  const readyAt = wallNow()
   writeFile(`${root}/ready`, `${JSON.stringify({ watchdogPid: process.pid, watchdogBootId: selfIdentity.bootId, watchdogStarttime: selfIdentity.starttime, readyAt })}\n`, { flag: "wx", mode: 0o600 })
   const terminalReceipt = (status) => writeFile(`${root}/watchdog-terminal.json`, `${JSON.stringify({ status, containerId: targetContainerId, pid: targetPid, parentBootId, parentStarttime, watchdogPid: process.pid, watchdogBootId: selfIdentity.bootId, watchdogStarttime: selfIdentity.starttime })}\n`, { flag: "wx", mode: 0o600 })
   let transientIdentityFailures = 0
@@ -396,7 +405,7 @@ async function runThawWatchdog(targetContainerId, targetPid, parentPid, parentBo
     let parentAlive = false
     try {
       const observed = readIdentity(parentPid)
-      parentAlive = observed.bootId === parentBootId && observed.starttime === parentStarttime && observed.state !== "Z"
+      parentAlive = observed.bootId === parentBootId && observed.starttime === parentStarttime && !terminalProcState(observed.state)
       transientIdentityFailures = 0
     } catch (error) {
       const code = error && typeof error === "object" && "code" in error ? error.code : undefined
@@ -410,9 +419,9 @@ async function runThawWatchdog(targetContainerId, targetPid, parentPid, parentBo
     if (!parentAlive) break
     await sleep(WATCHDOG_POLL_MS)
   }
-  const deadline = now() + enforcementMs
+  const deadline = monotonicNow() + enforcementMs
   const remaining = () => {
-    const milliseconds = deadline - now()
+    const milliseconds = deadline - monotonicNow()
     if (!Number.isSafeInteger(milliseconds) || milliseconds <= 0) throw new Error("thaw watchdog recovery deadline expired")
     return Math.min(20_000, milliseconds)
   }
@@ -424,12 +433,12 @@ async function runThawWatchdog(targetContainerId, targetPid, parentPid, parentBo
       await run(["unpause", targetContainerId], remaining())
       remaining()
     }
-    else if (deadline - now() <= recoveryPollMs) {
+    else if (deadline - monotonicNow() <= recoveryPollMs) {
       remaining()
       terminalReceipt("parent-death-recovered")
       return
     }
-    const sleepMs = Math.min(recoveryPollMs, deadline - now())
+    const sleepMs = Math.min(recoveryPollMs, deadline - monotonicNow())
     if (sleepMs <= 0) throw new Error("thaw watchdog recovery deadline expired")
     await sleep(sleepMs)
   }

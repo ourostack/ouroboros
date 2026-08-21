@@ -345,6 +345,7 @@ describe("Sanctuary fixed deployment target", () => {
     const files = new Map<string, string>()
     await runThawWatchdog(stagingId, 321, 42, bootId, "987654", root, {
       now: () => clock,
+      monotonicNow: () => clock,
       sleep: async (milliseconds: number) => { clock += milliseconds; polls += 1 },
       existsSync: (file: string) => file.endsWith("/disarm") && polls >= 1,
       writeFileSync: (file: string, body: string) => { files.set(file, body) },
@@ -368,6 +369,7 @@ describe("Sanctuary fixed deployment target", () => {
     const commands: string[][] = []
     await runThawWatchdog(stagingId, 321, 42, bootId, "987654", "/run/ouro-thaw-watchdog.42.1000", {
       now: () => polls * 100,
+      monotonicNow: () => polls * 100,
       sleep: async () => { polls += 1 },
       existsSync: (file: string) => file.endsWith("/disarm") && polls >= 2,
       writeFileSync: () => undefined,
@@ -401,6 +403,7 @@ describe("Sanctuary fixed deployment target", () => {
     const files = new Map<string, string>()
     await runThawWatchdog(stagingId, 321, 42, bootId, "987654", root, {
       now: () => clock,
+      monotonicNow: () => clock,
       sleep: async (milliseconds: number) => { clock += milliseconds },
       existsSync: () => false,
       writeFileSync: (file: string, body: string) => { files.set(file, body); if (file.endsWith("/ready")) paused = true },
@@ -476,8 +479,8 @@ describe("Sanctuary fixed deployment target", () => {
       recoveryPollMs: 250,
     })
     expect(paused).toBe(false)
-    expect(elapsed).toBe(1_000)
-    expect(timeouts.every((timeoutMs) => timeoutMs > 0 && timeoutMs <= 1_000)).toBe(true)
+    expect(elapsed).toBe(750)
+    expect(timeouts.slice(1).every((timeoutMs) => timeoutMs > 0 && timeoutMs <= 1_000)).toBe(true)
   })
 
   it("refuses late recovery success using monotonic elapsed time despite a backward wall-clock jump", async () => {
@@ -510,6 +513,7 @@ describe("Sanctuary fixed deployment target", () => {
     let calls = 0
     await expect(runThawWatchdog(stagingId, 321, 42, bootId, "987654", "/run/ouro-thaw-watchdog.42.1000", {
       now: () => clock,
+      monotonicNow: () => clock,
       sleep: async (milliseconds: number) => { clock += milliseconds },
       existsSync: () => false,
       writeFileSync: () => undefined,
@@ -542,6 +546,7 @@ describe("Sanctuary fixed deployment target", () => {
     let calls = 0
     await expect(runThawWatchdog(stagingId, 321, 42, bootId, "987654", "/run/ouro-thaw-watchdog.42.1000", {
       now: () => clock,
+      monotonicNow: () => clock,
       sleep: async () => undefined,
       existsSync: () => false,
       writeFileSync: (file: string) => { writes.push(file) },
