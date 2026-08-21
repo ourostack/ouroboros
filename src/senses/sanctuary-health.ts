@@ -25,12 +25,14 @@ function canonicalIsoTimestamp(value: unknown): value is string {
 
 function boundedHealthText(value: string): string {
   if (Buffer.byteLength(value) <= MAX_HEALTH_TEXT_BYTES) return value
+  const ellipsis = "…"
+  const contentByteLimit = MAX_HEALTH_TEXT_BYTES - Buffer.byteLength(ellipsis)
   let output = ""
   for (const character of value) {
-    if (Buffer.byteLength(output) + Buffer.byteLength(character) > MAX_HEALTH_TEXT_BYTES - 1) break
+    if (Buffer.byteLength(output) + Buffer.byteLength(character) > contentByteLimit) break
     output += character
   }
-  return `${output}…`
+  return `${output}${ellipsis}`
 }
 
 interface Incident { id: string; summary: string }

@@ -32,6 +32,36 @@ function validState(overrides: Record<string, unknown> = {}) {
   }
 }
 
+const validDelivery = (overrides: Record<string, unknown> = {}) => ({
+  id: "delivery-1",
+  message: "health",
+  status: "pending",
+  createdAt: "2026-08-18T18:00:00.000Z",
+  kind: "transition",
+  ...overrides,
+})
+
+const validDeliveredReceipt = (overrides: Record<string, unknown> = {}) => ({
+  deliveryId: "delivery-1",
+  kind: "transition",
+  messageIds: [1],
+  deliveredAt: "2026-08-18T18:00:00.000Z",
+  ...overrides,
+})
+
+const validSweepReceipt = (overrides: Record<string, unknown> = {}) => ({
+  sweepId: "12345678-1234-4567-8123-123456789abc",
+  startedAt: "2026-08-18T18:00:00.000Z",
+  completedAt: "2026-08-18T18:00:00.000Z",
+  incidentDigest: "a".repeat(64),
+  opened: 1,
+  recovered: 0,
+  digestDue: false,
+  deliveryId: "delivery-1",
+  scenarioHandleDigest: "b".repeat(64),
+  ...overrides,
+})
+
 function writeState(filePath: string, state: unknown): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true })
   fs.writeFileSync(filePath, `${JSON.stringify(state)}\n`, "utf8")
@@ -177,6 +207,72 @@ describe("Sanctuary deterministic health sweep", () => {
     })
 
     await expect(sweep()).rejects.toThrow("Sanctuary health state is corrupt")
+  })
+
+  it.each([
+    ["outbox id length", validState({ outbox: validDelivery({ id: "x".repeat(129) }) })],
+    ["outbox UTF-8 message bytes", validState({ outbox: validDelivery({ message: "é".repeat(25_001) }) })],
+    ["outbox canonical timestamp", validState({ outbox: validDelivery({ createdAt: "yesterday" }) })],
+    ["outbox delivery kind", validState({ outbox: validDelivery({ kind: "other" }) })],
+    ["outbox cached UTF-8 bytes", validState({ outbox: validDelivery({ summarizedMessage: "é".repeat(25_001) }) })],
+    ["delivered receipt count", validState({ deliveredReceipts: Array.from({ length: 101 }, () => validDeliveredReceipt()) })],
+    ["delivered receipt id length", validState({ deliveredReceipts: [validDeliveredReceipt({ deliveryId: "x".repeat(129) })] })],
+    ["delivered receipt canonical timestamp", validState({ deliveredReceipts: [validDeliveredReceipt({ deliveredAt: "yesterday" })] })],
+    ["delivered receipt kind", validState({ deliveredReceipts: [validDeliveredReceipt({ kind: "other" })] })],
+    ["delivered receipt message-id count", validState({ deliveredReceipts: [validDeliveredReceipt({ messageIds: Array.from({ length: 101 }, (_, index) => index + 1) })] })],
+    ["sweep receipt collection type", validState({ sweepReceipts: {} })],
+    ["sweep receipt count", validState({ sweepReceipts: Array.from({ length: 501 }, () => validSweepReceipt()) })],
+    ["sweep UUID", validState({ sweepReceipts: [validSweepReceipt({ sweepId: "not-a-v4-uuid" })] })],
+    ["sweep start timestamp", validState({ sweepReceipts: [validSweepReceipt({ startedAt: "yesterday" })] })],
+    ["sweep completion timestamp", validState({ sweepReceipts: [validSweepReceipt({ completedAt: "yesterday" })] })],
+    ["sweep incident digest", validState({ sweepReceipts: [validSweepReceipt({ incidentDigest: "bad" })] })],
+    ["sweep opened count", validState({ sweepReceipts: [validSweepReceipt({ opened: -1 })] })],
+    ["sweep recovered count", validState({ sweepReceipts: [validSweepReceipt({ recovered: 0.5 })] })],
+    ["sweep digest flag", validState({ sweepReceipts: [validSweepReceipt({ digestDue: "false" })] })],
+    ["sweep delivery id", validState({ sweepReceipts: [validSweepReceipt({ deliveryId: "x".repeat(129) })] })],
+    ["sweep scenario digest", validState({ sweepReceipts: [validSweepReceipt({ scenarioHandleDigest: "bad" })] })],
+  ])("fails closed for bounded receipt schema violation: %s", async (_label, state) => {
+    const filePath = statePath("sanctuary-health-schema-bound-")
+    writeState(filePath, state)
+    const sweep = createSanctuaryHealthSweep({
+      toolContext: context("running"),
+      statePath: filePath,
+      fetch: vi.fn().mockResolvedValue(new Response(null, { status: 204 })),
+    })
+
+    await expect(sweep()).rejects.toThrow("Sanctuary health state is corrupt")
+  })
+
+  it("rejects a durable health file above four MiB before parsing", async () => {
+    const filePath = statePath("sanctuary-health-file-bound-")
+    fs.writeFileSync(filePath, " ".repeat(4 * 1024 * 1024 + 1), "utf8")
+    const sweep = createSanctuaryHealthSweep({
+      toolContext: context("running"),
+      statePath: filePath,
+      fetch: vi.fn().mockResolvedValue(new Response(null, { status: 204 })),
+    })
+
+    await expect(sweep()).rejects.toThrow("Sanctuary health state is corrupt")
+  })
+
+  it("keeps truncated multi-byte health text inside the exact UTF-8 byte bound", async () => {
+    const toolContext = context("running")
+    toolContext.sanctuary.getNotifications.mockResolvedValue({ ok: true, data: { unacknowledged: [
+      { id: "large", title: "é".repeat(30_000) },
+    ] } })
+    const filePath = statePath("sanctuary-health-utf8-bound-")
+    const sweep = createSanctuaryHealthSweep({
+      toolContext,
+      statePath: filePath,
+      fetch: vi.fn().mockResolvedValue(new Response(null, { status: 204 })),
+      now: () => new Date("2026-08-18T15:00:00.000Z"),
+    })
+
+    const opened = await sweep()
+    expect(opened.message).toBeTypeOf("string")
+    expect(Buffer.byteLength(opened.message!)).toBeLessThanOrEqual(50_000)
+    expect(opened.message).toMatch(/…$/u)
+    await expect(sweep.markDeliveryAttempting(opened.deliveryId!)).resolves.toBeUndefined()
   })
 
   it("alerts once on transition, suppresses unchanged, and emits one recovery", async () => {
@@ -420,6 +516,28 @@ describe("Sanctuary deterministic health sweep", () => {
     expect(saved.deliveredReceipts.at(-1)).toMatchObject({ deliveryId: "new", kind: "legacy_unknown", messageIds: [9001, 9002] })
     expect(fs.statSync(filePath).mode & 0o777).toBe(0o600)
     expect(fs.readdirSync(path.dirname(filePath))).toEqual(["state.json"])
+  })
+
+  it("migrates a legacy indeterminate delivery without a kind into a tagged digest", async () => {
+    const filePath = statePath("sanctuary-health-legacy-indeterminate-")
+    writeState(filePath, validState({
+      indeterminateDeliveries: [{
+        id: "legacy-delivery",
+        message: "prior health warning",
+        status: "attempting",
+        createdAt: "2026-08-17T18:00:00.000Z",
+      }],
+    }))
+    const sweep = createSanctuaryHealthSweep({
+      toolContext: context("running"),
+      statePath: filePath,
+      fetch: vi.fn().mockResolvedValue(new Response(null, { status: 204 })),
+      now: () => new Date("2026-08-18T18:00:00.000Z"),
+    })
+
+    const result = await sweep()
+    expect(result.message).toContain("prior health warning")
+    expect(JSON.parse(fs.readFileSync(filePath, "utf8")).outbox).toMatchObject({ kind: "digest" })
   })
 
   it("defaults omitted durable collections and the runtime clock", async () => {
