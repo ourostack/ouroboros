@@ -57,11 +57,13 @@ afterEach(() => {
 })
 
 describe("production-composed Telegram approval lifecycle", () => {
-  it("recovers a MAC-fenced pre-deadline tap through the real store after transport TTL", async () => {
+  it.each(["approve", "deny"] as const)("recovers a MAC-fenced pre-deadline %s through the real store after transport TTL with signed settlement evidence", async (decision) => {
     const agentRoot = root()
     const sessionPath = path.join(agentRoot, "state", "sessions", "telegram.json")
     const emptyRevision = createHash("sha256").update("").digest("hex")
     const clock = { value: 1_000_000 }
+    const events: LogEvent[] = []
+    setRuntimeLogger(createLogger({ sinks: [(event) => events.push(event)], now: () => new Date(clock.value) }))
     let messageId = 100
     let mutationCount = 0
     const api: TelegramBotApi = {
@@ -93,7 +95,7 @@ describe("production-composed Telegram approval lifecycle", () => {
     const attemptedAt = Number(record.expiresAt) - 1
     const unsigned = {
       schemaVersion: "telegram-approval-decision-attempt-v1" as const,
-      decision: "approve" as const,
+      decision,
       queryIdDigest: createHash("sha256").update("query-observed-before-deadline").digest("hex"),
       attemptedAt,
     }
@@ -116,9 +118,21 @@ describe("production-composed Telegram approval lifecycle", () => {
     })
     await restarted.recover()
 
-    expect(mutationCount).toBe(1)
+    expect(mutationCount).toBe(decision === "approve" ? 1 : 0)
     expect(pending(agentRoot)).toEqual([])
     expect(api.request).not.toHaveBeenCalledWith("answerCallbackQuery", expect.anything())
+    const settled = events.find((event) => event.event === "telegram.callback_recovery_settled")
+    expect(settled?.meta).toMatchObject({
+      approvalId: suspension.approvalId,
+      callbackAt: attemptedAt,
+      acknowledgementState: "indeterminate_after_restart",
+      recoveredAt: expect.any(Number),
+      decisionAttemptDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      accepted: decision === "approve",
+      reason: decision === "approve" ? "accepted" : "decision_refused",
+      evidenceMac: expect.stringMatching(/^[0-9a-f]{64}$/u),
+    })
+    expect(settled?.meta.evidenceMac).toBe(sanctuaryTelegramApprovalEvidenceMac(identityKey, "telegram.callback_recovery_settled", settled!.meta))
     restarted.close()
   })
 

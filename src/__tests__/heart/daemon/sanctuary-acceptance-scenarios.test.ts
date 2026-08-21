@@ -271,6 +271,13 @@ describe("Sanctuary live scenario capture", () => {
       continuationEpochAdvanced: true,
       butlerRestartObserved: true,
     })
+    after.events = after.events.map((entry) => entry.event === "telegram.callback_settled" ? {
+      ...entry,
+      event: "telegram.callback_recovery_settled",
+      meta: { ...entry.meta, acknowledged: undefined, acknowledgementState: "indeterminate_after_restart", recoveredAt: 121_001, decisionAttemptDigest: "6".repeat(64) },
+    } : entry)
+    expect(deriveSanctuaryScenarioAssertions("unit-16m-restart-continuation", before, after, 400_000)).toMatchObject({ preAttemptResumed: true })
+    expect(deriveSanctuaryScenarioAssertions("unit-16i-delayed-approval", before, after, 400_000)).toBeNull()
     after.interactiveDriver = { ...restartContinuationDriver(), pendingRestored: false }
     expect(deriveSanctuaryScenarioAssertions("unit-16m-restart-continuation", before, after, 400_000)).toBeNull()
     after.interactiveDriver = { ...restartContinuationDriver(), indeterminateRecoveryObserved: false }

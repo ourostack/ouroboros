@@ -656,6 +656,30 @@ describe("Telegram approval callback transport", () => {
     expect(pendingStore.load()).toEqual([])
   })
 
+  it("rolls back a transient terminal cleanup failure for same-instance recovery without replaying authority", async () => {
+    let durable: ReturnType<TelegramPendingApprovalStore["load"]> = [{ approvalId: "approval-1", messageId: "99", deliveryState: "bound", approveCallbackData: "a:approve", denyCallbackData: "d:deny", expiresAt: 10_000 }]
+    let cleanupFailed = false
+    const pendingStore = {
+      load: () => structuredClone(durable),
+      save: (next: typeof durable) => {
+        if (next.length === 0 && !cleanupFailed) { cleanupFailed = true; throw new Error("cleanup save unavailable") }
+        durable = structuredClone(next)
+      },
+    }
+    const onDecision = vi.fn(async () => ({ accepted: true, terminalText: "done" }))
+    const transport = createTelegramApprovalTransport({
+      api: { stop: vi.fn(), request: vi.fn(async () => true) }, expectedUserId: "10", expectedChatId: "10", pendingStore,
+      createOpaqueHandle: vi.fn(), onDecision, resolveDecisionToken: async () => "token", now: () => 1_000,
+    })
+
+    await expect(transport.handleUpdate(approvalCallback("a:approve", { id: "decision-query" }))).rejects.toThrow("cleanup save unavailable")
+    expect(transport.listPendingDeliveries()).toHaveLength(1)
+    await expect(transport.recoverDecisionAttempt("approval-1")).resolves.toBe(true)
+
+    expect(onDecision).toHaveBeenCalledOnce()
+    expect(durable).toEqual([])
+  })
+
   it("acknowledges, decides once, terminalizes, removes buttons, and refuses replay", async () => {
     const fixture = approvalFixture()
     const sent = await fixture.transport.sendApproval({ approvalId: "approval-1", decisionToken: "secret-token", prompt: "Restart?" })
