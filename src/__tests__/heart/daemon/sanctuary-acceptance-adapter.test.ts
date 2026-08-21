@@ -133,7 +133,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     const identityKey = "k".repeat(43)
     const scenarioHandleDigest = "a".repeat(64)
     const eventName = "senses.telegram_approval_prompt_bound"
-    const unsigned = { scenarioHandleDigest, approvalId: "approval-1", actionDigest: "b".repeat(64), targetDigest: "c".repeat(64), messageIdDigest: "d".repeat(64), boundAt: 1_000 }
+    const unsigned = { scenarioHandleDigest, approvalId: "approval-1", actionDigest: "b".repeat(64), targetDigest: "c".repeat(64), checkpointDigest: "e".repeat(64), suspendedSessionRevisionDigest: "f".repeat(64), messageIdDigest: "d".repeat(64), boundAt: 1_000 }
     const entry = { ts: "2026-08-20T16:00:00.000Z", event: eventName, meta: { ...unsigned, evidenceMac: sanctuaryTelegramApprovalEvidenceMac(identityKey, eventName, unsigned) } }
     const identityPath = `${agentRoot}/state/senses/telegram/identity.key`
     const auditPath = "/home/ouro/AgentBundles/sanctuary.ouro/state/daemon/logs/telegram.ndjson"
@@ -150,7 +150,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       await expect(readDefaultSanctuaryScenarioFacts("unit-16i-delayed-approval", scenarioHandleDigest, deps, agentRoot, { skipContainerSnapshot: true })).rejects.toThrow("evidence MAC")
       files[auditPath] = `${JSON.stringify({ ...entry, meta: { ...entry.meta, action: "restart" } })}\n`
       await expect(readDefaultSanctuaryScenarioFacts("unit-16i-delayed-approval", scenarioHandleDigest, deps, agentRoot, { skipContainerSnapshot: true })).rejects.toThrow("evidence MAC")
-      const expiryUnsigned = { ...unsigned, expiryObservedAt: 301_000, terminalEditStartedAt: 302_000, terminalizedAt: 306_000, buttonsRemoved: true }
+      const expiryUnsigned = { ...unsigned, expiryDeadlineAt: 301_000, expiryObservedAt: 301_000, terminalEditStartedAt: 302_000, terminalizedAt: 306_000, buttonsRemoved: true }
       const expiryEvent = "telegram.approval_prompt_terminalized"
       files[auditPath] = `${JSON.stringify({ ts: "2026-08-20T16:05:06.000Z", event: expiryEvent, meta: { ...expiryUnsigned, evidenceMac: sanctuaryTelegramApprovalEvidenceMac(identityKey, expiryEvent, expiryUnsigned) } })}\n`
       await expect(readDefaultSanctuaryScenarioFacts("unit-16k-timeout-stale", scenarioHandleDigest, deps, agentRoot, { skipContainerSnapshot: true })).resolves.toMatchObject({ events: [{ event: expiryEvent }] })

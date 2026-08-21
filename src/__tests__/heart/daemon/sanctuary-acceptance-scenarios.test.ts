@@ -30,12 +30,14 @@ const approvalResultDigest = (state: string) => createHash("sha256").update(JSON
 const restartActionDigest = createHash("sha256").update(JSON.stringify({ operation: "restart", container: { id: canonicalTargetId, name: "calibre-web" } })).digest("hex")
 const promptActionDigest = createHash("sha256").update(JSON.stringify({ toolName: "unraid_restart_container", argumentDigest: approvalArgumentDigest })).digest("hex")
 const targetDigest = createHash("sha256").update(JSON.stringify({ container: "calibre-web" })).digest("hex")
+const checkpointDigest = "2".repeat(64)
+const suspendedSessionRevisionDigest = createHash("sha256").update("c".repeat(64)).digest("hex")
 const approvalAuditEvent = (eventName: string, at: number, patch: Record<string, unknown> = {}) => ({
   event: eventName,
   at,
   meta: {
     scenarioHandleDigest: "a".repeat(64), approvalId: "approval-1", actionDigest: promptActionDigest,
-    targetDigest, messageIdDigest: "4".repeat(64), evidenceMac: "5".repeat(64), ...patch,
+    targetDigest, checkpointDigest, suspendedSessionRevisionDigest, messageIdDigest: "4".repeat(64), evidenceMac: "5".repeat(64), ...patch,
   },
 })
 const approvalEvidence = (decision: "approve" | "deny", boundAt = 1_000, callbackAt = 121_000) => [
@@ -44,6 +46,9 @@ const approvalEvidence = (decision: "approve" | "deny", boundAt = 1_000, callbac
   approvalAuditEvent("senses.telegram_approval_continuation_delivered", callbackAt + 1, { boundAt, deliveredAt: callbackAt + 1, resultDigest: approvalResultDigest(decision === "approve" ? "succeeded" : "denied"), deliveryDigest: "8".repeat(64), deliveryMessageIdDigest: "7".repeat(64) }),
   approvalAuditEvent("telegram.approval_prompt_terminalized", callbackAt + 2, { boundAt, terminalEditStartedAt: callbackAt + 1, terminalizedAt: callbackAt + 2, buttonsRemoved: true }),
 ]
+const staleCallbackEvidence = (staleAt = 301_001) => approvalAuditEvent("telegram.approval_stale_callback_settled", staleAt, {
+  boundAt: 1_000, staleAt, acknowledged: true, accepted: false, reason: "stale_callback",
+})
 const groundedTurn = (toolName: "unraid_get_system" | "unraid_get_storage", facts: unknown, responseText: string) => {
   const resultDigest = "5".repeat(64)
   const factDigest = groundingDigest(facts)
@@ -194,7 +199,7 @@ describe("Sanctuary live scenario capture", () => {
       if (label === "unit-16j-denial") { after.approvals = [approval("denied")]; after.events.push(...approvalEvidence("deny", 1_000, 2_000)) }
       if (label === "unit-16f-cron-fingerprint" || label === "unit-16g-health-transition" || label === "unit-16h-daily-digest") after.healthProbe = healthProbe(label)
       if (label === "unit-16i-delayed-approval") { after.approvals = [approval("succeeded")]; after.restartAttempts = successfulRestart(); after.events.push(...approvalEvidence("approve")) }
-      if (label === "unit-16k-timeout-stale") { after.approvals = [approval("expired")]; after.interactiveDriver = timeoutStaleDriver(); after.events.push(approvalAuditEvent("senses.telegram_approval_prompt_bound", 1_000, { boundAt: 1_000 }), approvalAuditEvent("telegram.approval_prompt_terminalized", 301_000, { boundAt: 1_000, expiryObservedAt: 301_000, terminalEditStartedAt: 301_000, terminalizedAt: 301_000, buttonsRemoved: true }), event("telegram.update_dropped")) }
+      if (label === "unit-16k-timeout-stale") { after.approvals = [approval("expired")]; after.interactiveDriver = timeoutStaleDriver(); after.events.push(approvalAuditEvent("senses.telegram_approval_prompt_bound", 1_000, { boundAt: 1_000 }), approvalAuditEvent("telegram.approval_prompt_terminalized", 301_000, { boundAt: 1_000, expiryObservedAt: 301_000, terminalEditStartedAt: 301_000, terminalizedAt: 301_000, buttonsRemoved: true }), staleCallbackEvidence(), event("telegram.update_dropped")) }
       if (label === "unit-16l-duplicate-callback") { after.approvals = [{ ...approval("succeeded"), callbackCount: 2, settledCount: 2, claimCount: 1 }]; after.restartAttempts = successfulRestart(); after.interactiveDriver = duplicateCallbackDriver(); after.events.push(...approvalEvidence("approve"), event("telegram.callback_settled"), event("telegram.callback_settled"), event("approval.acceptance_transition")) }
       if (label === "unit-16m-restart-continuation") { after.approvals = [approval("succeeded")]; after.restartAttempts = successfulRestart(); after.interactiveDriver = restartContinuationDriver(); after.events.push(...approvalEvidence("approve"), { ...event("senses.telegram_approved_restart_end"), meta: { approvalId: "approval-1" } }) }
       const assertions = deriveSanctuaryScenarioAssertions(label, before, after, 400_000)
@@ -284,8 +289,11 @@ describe("Sanctuary live scenario capture", () => {
     const after = base()
     after.approvals = [approval("expired")]
     after.interactiveDriver = timeoutStaleDriver()
-    after.events.push(approvalAuditEvent("senses.telegram_approval_prompt_bound", 1_000, { boundAt: 1_000 }), approvalAuditEvent("telegram.approval_prompt_terminalized", 301_000, { boundAt: 1_000, expiryObservedAt: 301_000, terminalEditStartedAt: 301_000, terminalizedAt: 301_000, buttonsRemoved: true }), event("telegram.update_dropped"))
+    after.events.push(approvalAuditEvent("senses.telegram_approval_prompt_bound", 1_000, { boundAt: 1_000 }), approvalAuditEvent("telegram.approval_prompt_terminalized", 301_000, { boundAt: 1_000, expiryObservedAt: 301_000, terminalEditStartedAt: 301_000, terminalizedAt: 301_000, buttonsRemoved: true }), staleCallbackEvidence(), event("telegram.update_dropped"))
     expect(deriveSanctuaryScenarioAssertions("unit-16k-timeout-stale", before, after, 400_000)).toMatchObject({ staleAcknowledged: true, mutationCount: 0 })
+    after.events = after.events.filter((entry) => entry.event !== "telegram.approval_stale_callback_settled")
+    expect(deriveSanctuaryScenarioAssertions("unit-16k-timeout-stale", before, after, 400_000)).toBeNull()
+    after.events.push(staleCallbackEvidence())
     after.interactiveDriver = { ...timeoutStaleDriver(), claimCount: 1 }
     expect(deriveSanctuaryScenarioAssertions("unit-16k-timeout-stale", before, after, 400_000)).toBeNull()
   })
@@ -347,6 +355,13 @@ describe("Sanctuary live scenario capture", () => {
       ? { ...entry, meta: { ...entry.meta, messageIdDigest: "9".repeat(64) } }
       : entry)
     expect(deriveSanctuaryScenarioAssertions("unit-16i-delayed-approval", base(), reboundMessage, 400_000)).toBeNull()
+    for (const field of ["checkpointDigest", "suspendedSessionRevisionDigest"] as const) {
+      const reboundSession = structuredClone(after)
+      reboundSession.events = reboundSession.events.map((entry) => entry.event === "telegram.callback_settled"
+        ? { ...entry, meta: { ...entry.meta, [field]: "9".repeat(64) } }
+        : entry)
+      expect(deriveSanctuaryScenarioAssertions("unit-16i-delayed-approval", base(), reboundSession, 400_000), field).toBeNull()
+    }
     const wrongResult = structuredClone(after)
     wrongResult.events = wrongResult.events.map((entry) => entry.event === "senses.telegram_approval_continuation_delivered"
       ? { ...entry, meta: { ...entry.meta, resultDigest: "9".repeat(64) } }
@@ -401,7 +416,7 @@ describe("Sanctuary live scenario capture", () => {
         before.sourceValues["no-callback-baseline"] = { approvalId: "approval-1", offsetDigest: probeDigest(after.sourceValues["telegram-offset"]), inboundEventCount: 0 }
       } else {
         after.interactiveDriver = timeoutStaleDriver()
-        after.events.push(event("telegram.update_dropped"))
+        after.events.push(staleCallbackEvidence(terminalizedAt + 1), event("telegram.update_dropped"))
       }
       return { before, after }
     }

@@ -127,7 +127,7 @@ describe("Telegram approval callback transport", () => {
       signAcceptanceEvidence: (_event: string, meta: Record<string, unknown>) => `mac:${JSON.stringify(meta)}`,
       onAcceptanceEvidence: (event: string, meta: Record<string, unknown>) => { evidence.push({ event, meta }) },
     } as never)
-    const binding = { scenarioHandleDigest: "a".repeat(64), actionDigest: "b".repeat(64), targetDigest: "c".repeat(64) }
+    const binding = { scenarioHandleDigest: "a".repeat(64), actionDigest: "b".repeat(64), targetDigest: "c".repeat(64), checkpointDigest: "d".repeat(64), suspendedSessionRevisionDigest: "e".repeat(64) }
     const sent = await transport.sendApproval({ approvalId: "approval-1", decisionToken: "secret", prompt: "Restart?", acceptanceBinding: binding } as never)
     expect(sent.expiresAt).toBe(1_300_037)
     expect(records[0]).toMatchObject({ expiresAt: 1_300_037, acceptanceBinding: { ...binding, boundAt: 1_000_037, messageIdDigest: expect.stringMatching(/^[0-9a-f]{64}$/u) } })
@@ -142,6 +142,8 @@ describe("Telegram approval callback transport", () => {
     ])
     expect(evidence[1]!.meta).toMatchObject({ terminalEditStartedAt: 1_125_037, terminalizedAt: 1_125_037, buttonsRemoved: true, evidenceMac: expect.stringMatching(/^mac:/u) })
     expect(evidence[2]!.meta).toMatchObject({ callbackAt: 1_120_037, acknowledged: true, accepted: true, reason: "accepted", evidenceMac: expect.stringMatching(/^mac:/u) })
+    expect(evidence.every((entry) => entry.meta.checkpointDigest === binding.checkpointDigest
+      && entry.meta.suspendedSessionRevisionDigest === binding.suspendedSessionRevisionDigest)).toBe(true)
   })
 
   it.each([false, true])("authenticates expiry observation before a delayed%s terminal edit", async (fallback) => {
@@ -162,12 +164,45 @@ describe("Telegram approval callback transport", () => {
       signAcceptanceEvidence: () => "f".repeat(64),
       onAcceptanceEvidence: (event: string, meta: Record<string, unknown>) => { evidence.push({ event, meta }) },
     } as never)
-    await transport.sendApproval({ approvalId: "approval-1", decisionToken: "secret", prompt: "Restart?", acceptanceBinding: { scenarioHandleDigest: "a".repeat(64), actionDigest: "b".repeat(64), targetDigest: "c".repeat(64) } } as never)
-    clock = 1_300_900
+    const binding = { scenarioHandleDigest: "a".repeat(64), actionDigest: "b".repeat(64), targetDigest: "c".repeat(64), checkpointDigest: "d".repeat(64), suspendedSessionRevisionDigest: "e".repeat(64) }
+    const sent = await transport.sendApproval({ approvalId: "approval-1", decisionToken: "secret", prompt: "Restart?", acceptanceBinding: binding } as never)
+    clock = 1_305_900
     await transport.reconcileExpired()
     expect(evidence.at(-1)).toMatchObject({ event: "telegram.approval_prompt_terminalized", meta: {
-      boundAt: 1_000_000, expiryObservedAt: 1_300_900, terminalEditStartedAt: 1_300_900, terminalizedAt: fallback ? 1_310_900 : 1_305_900, buttonsRemoved: true,
+      ...binding, boundAt: 1_000_000, expiryDeadlineAt: sent.expiresAt, expiryObservedAt: 1_305_900, terminalEditStartedAt: 1_305_900, terminalizedAt: fallback ? 1_315_900 : 1_310_900, buttonsRemoved: true,
     } })
+  })
+
+  it("retains one authenticated callback tombstone after expiry and consumes it without replay", async () => {
+    let clock = 1_000_000
+    let records: ReturnType<TelegramPendingApprovalStore["load"]> = []
+    const evidence: Array<{ event: string; meta: Record<string, unknown> }> = []
+    const onDecision = vi.fn()
+    const transport = createTelegramApprovalTransport({
+      api: { stop: vi.fn(), request: vi.fn(async (method: string) => method === "sendMessage" ? { message_id: 99 } : true) },
+      expectedUserId: "10", expectedChatId: "10",
+      pendingStore: { load: () => structuredClone(records), save: (next) => { records = structuredClone(next) } },
+      createOpaqueHandle: (() => { const values = ["approve", "deny"]; return () => values.shift()! })(),
+      onDecision, onExpire: vi.fn(), now: () => clock,
+      signAcceptanceEvidence: () => "f".repeat(64),
+      onAcceptanceEvidence: (event: string, meta: Record<string, unknown>) => { evidence.push({ event, meta }) },
+    } as never)
+    const binding = { scenarioHandleDigest: "a".repeat(64), actionDigest: "b".repeat(64), targetDigest: "c".repeat(64), checkpointDigest: "d".repeat(64), suspendedSessionRevisionDigest: "e".repeat(64) }
+    const sent = await transport.sendApproval({ approvalId: "approval-1", decisionToken: "secret", prompt: "Restart?", acceptanceBinding: binding } as never)
+    clock = sent.expiresAt
+    await transport.reconcileExpired()
+    expect(records).toEqual([expect.objectContaining({ approvalId: "approval-1", deliveryState: "terminal_tombstone" })])
+    expect(transport.listPendingDeliveries()).toEqual([])
+
+    clock += 10
+    await transport.handleUpdate(approvalCallback(sent.approveCallbackData))
+    expect(evidence.at(-1)).toMatchObject({ event: "telegram.approval_stale_callback_settled", meta: {
+      ...binding, approvalId: "approval-1", staleAt: clock, acknowledged: true, accepted: false, reason: "stale_callback", evidenceMac: "f".repeat(64),
+    } })
+    expect(records).toEqual([])
+    await transport.handleUpdate(approvalCallback(sent.approveCallbackData, { id: "query-2" }))
+    expect(evidence.filter((entry) => entry.event === "telegram.approval_stale_callback_settled")).toHaveLength(1)
+    expect(onDecision).not.toHaveBeenCalled()
   })
 
   it("persists an indeterminate prompt delivery when sendMessage may have escaped", async () => {

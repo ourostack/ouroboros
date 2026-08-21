@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { createHash } from "node:crypto"
 
 const runtimeMocks = vi.hoisted(() => {
   const store = {
@@ -331,7 +332,13 @@ describe("Telegram approval runtime orchestration", () => {
       frozenAssistantMessage: { role: "assistant", content: null }, preCallMessages: [{ role: "user", content: "restart calibre-web" }],
     } as never)
     const sent = runtimeMocks.transport.sendApproval.mock.calls.at(-1)![0]
-    expect(sent.acceptanceBinding).toEqual({ scenarioHandleDigest, actionDigest: expect.stringMatching(/^[0-9a-f]{64}$/u), targetDigest: expect.stringMatching(/^[0-9a-f]{64}$/u) })
+    expect(sent.acceptanceBinding).toEqual({
+      scenarioHandleDigest,
+      actionDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      targetDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      checkpointDigest: baseRecord.checkpointDigest,
+      suspendedSessionRevisionDigest: createHash("sha256").update(baseRecord.suspendedSessionRevision!, "utf8").digest("hex"),
+    })
 
     runtimeMocks.store.read.mockReturnValue({ ...baseRecord, state: "succeeded" })
     const acceptanceBinding = { ...sent.acceptanceBinding, messageIdDigest: "4".repeat(64), boundAt: 1_000 }
