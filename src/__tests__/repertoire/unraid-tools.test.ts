@@ -161,6 +161,19 @@ describe("Unraid typed read tools", () => {
     expect(read).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("query SanctuaryStorage"), {})
   })
 
+  it("rejects a live source identity that is bounded but not the canonical digest pair", async () => {
+    const read = vi.fn(async () => ({
+      vars: { id: "a".repeat(64) },
+      array: { state: "STARTED", capacity: { kilobytes: { used: 1, free: 1 } } },
+      shares: [],
+    }))
+
+    await expect(createUnraidReadTools({ read } as any).getStorage()).resolves.toMatchObject({
+      ok: false,
+      error: { code: "invalid_response", message: "server identity is invalid" },
+    })
+  })
+
   it("returns null percentages for missing or zero capacity", async () => {
     const read = vi.fn(async () => ({ vars: { id: LIVE_SERVER_ID }, array: { state: "STARTED", capacity: { kilobytes: { used: -1, free: "bad" } } }, shares: [{ name: "empty", used: 0, free: 0 }] }))
     await expect(createUnraidReadTools({ read } as any).getStorage()).resolves.toMatchObject({ ok: true, data: { array: { usedBytes: null, freeBytes: null, usedPercent: null, degraded: true }, shares: [{ usedPercent: null, degraded: false }] } })

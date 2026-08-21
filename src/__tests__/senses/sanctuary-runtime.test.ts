@@ -27,6 +27,7 @@ const runtimeMocks = vi.hoisted(() => {
       return restart
     }),
     emitNervesEvent: vi.fn(),
+    forceUnexpectedGrounding: false,
   }
 })
 
@@ -40,6 +41,15 @@ vi.mock("../../repertoire/unraid-restart", () => ({
   createApprovedUnraidRestartExecutor: runtimeMocks.createApprovedUnraidRestartExecutor,
 }))
 vi.mock("../../nerves/runtime", () => ({ emitNervesEvent: runtimeMocks.emitNervesEvent }))
+vi.mock("../../senses/sanctuary-grounding", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../senses/sanctuary-grounding")>()
+  return {
+    ...actual,
+    projectSanctuaryGrounding: (toolName: string, result: unknown) => runtimeMocks.forceUnexpectedGrounding
+      ? { synthetic: true }
+      : actual.projectSanctuaryGrounding(toolName, result),
+  }
+})
 
 import type { UnraidRestartAttempt } from "../../repertoire/unraid-restart"
 import { createSanctuaryToolContext, runWithSanctuaryToolReceiptCollection } from "../../senses/sanctuary-runtime"
@@ -67,6 +77,7 @@ describe("Sanctuary runtime tool context", () => {
   beforeEach(() => {
     vi.clearAllMocks()
     runtimeMocks.state.restartOptions = undefined
+    runtimeMocks.forceUnexpectedGrounding = false
     runtimeMocks.readMachineRuntimeCredentialConfig.mockReturnValue(configured())
     runtimeMocks.getAgentRoot.mockReturnValue(fs.mkdtempSync(path.join(os.tmpdir(), "ouro-sanctuary-runtime-")))
   })
@@ -120,6 +131,41 @@ describe("Sanctuary runtime tool context", () => {
     expect(runtimeMocks.state.restartOptions).toMatchObject({
       endpoint: "https://sanctuary.invalid/graphql",
       listContainers: runtimeMocks.readTools.listContainers,
+    })
+    const acceptanceScenarioHandleDigest = runtimeMocks.state.restartOptions?.acceptanceScenarioHandleDigest as () => string | undefined
+    expect(acceptanceScenarioHandleDigest()).toBeUndefined()
+  })
+
+  it("records a sanitized unknown category when a read rejects with a non-Error", async () => {
+    const context = createSanctuaryToolContext("slugger")
+    runtimeMocks.readTools.getSystem.mockRejectedValueOnce("private-string-failure")
+
+    await expect(context.sanctuary!.getSystem()).rejects.toBe("private-string-failure")
+    expect(runtimeMocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.sanctuary_read_receipt_error",
+      meta: expect.objectContaining({ toolName: "unraid_get_system", success: false, category: "unknown" }),
+    }))
+    expect(JSON.stringify(runtimeMocks.emitNervesEvent.mock.calls)).not.toContain("private-string-failure")
+  })
+
+  it("fails grounded reads with an invalid source identity and omits grounding for non-grounded tools", async () => {
+    const context = createSanctuaryToolContext("slugger")
+    runtimeMocks.readTools.getSystem.mockResolvedValueOnce({ ok: true, data: {
+      sourceIdentityDigest: "invalid", serverName: "Sanctuary", unraidVersion: "7.2.3", apiVersion: "4.37.1", arrayState: "STARTED", uptimeSeconds: 11, degraded: false,
+    } })
+    await expect(context.sanctuary!.getSystem()).rejects.toThrow("source identity is invalid")
+
+    runtimeMocks.readTools.getDisks.mockResolvedValueOnce({ ok: true, data: { disks: [], parity: {}, truncated: false } })
+    await expect(runWithSanctuaryToolReceiptCollection(() => context.sanctuary!.getDisks())).resolves.toEqual({
+      result: { ok: true, data: { disks: [], parity: {}, truncated: false } },
+      toolResultDigests: [expect.stringMatching(/^[0-9a-f]{64}$/u)],
+    })
+
+    runtimeMocks.forceUnexpectedGrounding = true
+    runtimeMocks.readTools.getDisks.mockResolvedValueOnce({ ok: true, data: { sourceIdentityDigest: "9".repeat(64) } })
+    await expect(runWithSanctuaryToolReceiptCollection(() => context.sanctuary!.getDisks())).resolves.toEqual({
+      result: { ok: true, data: { sourceIdentityDigest: "9".repeat(64) } },
+      toolResultDigests: [expect.stringMatching(/^[0-9a-f]{64}$/u)],
     })
   })
 
@@ -211,9 +257,40 @@ describe("Sanctuary runtime tool context", () => {
     fs.mkdirSync(path.dirname(ledgerPath), { recursive: true })
     fs.writeFileSync(ledgerPath, "{\"invalid\":true}\n")
     const valid: UnraidRestartAttempt = { state: "attempting", container: { id: "docker:a", name: "calibre-web" }, beforeState: "running", observedAt: "2026-08-20T00:00:00.000Z", actionDigest: "a".repeat(64), argumentDigest: "b".repeat(64), scenarioHandleDigest: "c".repeat(64), approvalId: "approval-1", attemptId: "attempt-1", mutationAcknowledged: false, afterState: null }
-    await expect(persistAttempt(valid)).rejects.toThrow("corrupt")
+    const first = persistAttempt(valid)
+    const queued = persistAttempt({ ...valid, attemptId: "attempt-queued" })
+    await expect(first).rejects.toThrow("corrupt")
+    await expect(queued).rejects.toThrow("corrupt")
     fs.writeFileSync(ledgerPath, "")
     await expect(persistAttempt(valid)).resolves.toBeUndefined()
     expect(JSON.parse(fs.readFileSync(ledgerPath, "utf8"))).toMatchObject({ attemptId: "attempt-1" })
+  })
+
+  it("creates a missing scenario ledger through the canonical ENOENT path", async () => {
+    const agentRoot = runtimeMocks.getAgentRoot()
+    createSanctuaryToolContext("slugger")
+    const persist = runtimeMocks.state.restartOptions?.persistAttempt as (attempt: UnraidRestartAttempt) => Promise<void>
+    const attempt: UnraidRestartAttempt = { state: "attempting", container: { id: "docker:a", name: "calibre-web" }, beforeState: "running", observedAt: "2026-08-20T00:00:00.000Z", actionDigest: "a".repeat(64), argumentDigest: "b".repeat(64), scenarioHandleDigest: "c".repeat(64), approvalId: "approval-1", attemptId: "attempt-1", mutationAcknowledged: false, afterState: null }
+
+    await expect(persist(attempt)).resolves.toBeUndefined()
+    expect(fs.existsSync(path.join(agentRoot, "state", "acceptance", "restart-attempts.ndjson"))).toBe(true)
+  })
+
+  it.each([
+    ["oversized file", "x".repeat(4 * 1024 * 1024 + 1)],
+    ["too many rows", Array.from({ length: 501 }, () => "{}").join("\n") + "\n"],
+    ["oversized row", `${JSON.stringify({ padding: "x".repeat(8 * 1024) })}\n`],
+    ["invalid after-state type", `${JSON.stringify({ state: "attempting", container: { id: "docker:a", name: "calibre-web" }, observedAt: "2026-08-20T00:00:00.000Z", actionDigest: "a".repeat(64), argumentDigest: "b".repeat(64), scenarioHandleDigest: "c".repeat(64), approvalId: "approval-1", attemptId: "attempt-1", mutationAcknowledged: false, afterState: 1 })}\n`],
+    ["overlong after-state", `${JSON.stringify({ state: "attempting", container: { id: "docker:a", name: "calibre-web" }, observedAt: "2026-08-20T00:00:00.000Z", actionDigest: "a".repeat(64), argumentDigest: "b".repeat(64), scenarioHandleDigest: "c".repeat(64), approvalId: "approval-1", attemptId: "attempt-1", mutationAcknowledged: false, afterState: "x".repeat(65) })}\n`],
+  ])("rejects a bounded-ledger violation: %s", async (_label, content) => {
+    const agentRoot = runtimeMocks.getAgentRoot()
+    createSanctuaryToolContext("slugger")
+    const persist = runtimeMocks.state.restartOptions?.persistAttempt as (attempt: UnraidRestartAttempt) => Promise<void>
+    const ledgerPath = path.join(agentRoot, "state", "acceptance", "restart-attempts.ndjson")
+    fs.mkdirSync(path.dirname(ledgerPath), { recursive: true })
+    fs.writeFileSync(ledgerPath, content)
+    const attempt: UnraidRestartAttempt = { state: "attempting", container: { id: "docker:b", name: "calibre-web" }, beforeState: "running", observedAt: "2026-08-20T00:00:00.000Z", actionDigest: "a".repeat(64), argumentDigest: "b".repeat(64), scenarioHandleDigest: "c".repeat(64), approvalId: "approval-2", attemptId: "attempt-2", mutationAcknowledged: false, afterState: null }
+
+    await expect(persist(attempt)).rejects.toThrow("corrupt")
   })
 })

@@ -1444,6 +1444,21 @@ describe("daemon command plane branches", () => {
     expect(nativeHabitRunner).not.toHaveBeenCalled()
   })
 
+  it("redacts a non-Error scheduler authentication failure into its exact public message", async () => {
+    const socketPath = tmpSocketPath("daemon-scheduler-non-error")
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-scheduler-non-error-bundles-"))
+    const schedulerFireVerifier = vi.fn(() => { throw "scheduler proof rejected" })
+    const schedulerFireConsumer = vi.fn()
+    const { daemon } = make(socketPath, bundlesRoot, { schedulerFireVerifier, schedulerFireConsumer })
+
+    await expect(daemon.handleCommand({
+      kind: "habit.scheduler-fire", agent: "sanctuary", habitName: "sanctuary-health", trigger: "cron",
+      slot: "2026-08-21T07:15:00.000Z", occurrenceId: "cron:2026-08-21T07:15:00.000Z", schedulerRunId: "11111111-1111-4111-8111-111111111111",
+      invocationPid: 101, parentPid: 42, parentStartTime: "8001", invocationStartTime: "9001", proofMac: "a".repeat(64), scenarioHandleDigest: null,
+    })).resolves.toEqual({ ok: false, error: "scheduler proof rejected" })
+    expect(schedulerFireConsumer).not.toHaveBeenCalled()
+  })
+
   it("derives a fallback occurrence for an ad-hoc native habit and records a declined run", async () => {
     const socketPath = tmpSocketPath("daemon-native-habit-fallback")
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-native-habit-fallback-bundles-"))

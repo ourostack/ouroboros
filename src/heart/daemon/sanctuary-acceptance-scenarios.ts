@@ -508,7 +508,6 @@ function exactFreshTelegramLifecycle(
   before: SanctuaryScenarioFacts,
   after: SanctuaryScenarioFacts,
   expectedUpdateDigest?: string,
-  expectedOutcome: "success" | "error" = "success",
 ): boolean {
   if (before.events.length > after.events.length || before.events.some((entry, index) => hash(entry) !== hash(after.events[index]))) return false
   const fresh = recordsAdded(before.events, after.events, (entry) => hash(entry))
@@ -526,8 +525,7 @@ function exactFreshTelegramLifecycle(
   if (!Number.isSafeInteger(terminal.meta.deliveryCount) || Number(terminal.meta.deliveryCount) < 0) return false
   if (!Number.isSafeInteger(start.meta.lifecycleAt) || !Number.isSafeInteger(terminal.meta.lifecycleAt)
     || Number(start.meta.lifecycleAt) < 0 || Number(start.meta.lifecycleAt) >= Number(terminal.meta.lifecycleAt)) return false
-  if (expectedOutcome === "success") return terminal.event === "senses.telegram_turn_end" && terminal.meta.outcome === "success" && terminal.meta.errorDigest === null
-  return terminal.event === "senses.telegram_turn_error" && terminal.meta.outcome === "error" && typeof terminal.meta.errorDigest === "string" && SHA256.test(terminal.meta.errorDigest)
+  return terminal.event === "senses.telegram_turn_end" && terminal.meta.outcome === "success" && terminal.meta.errorDigest === null
 }
 
 function intendedApproval(before: SanctuaryScenarioFacts, after: SanctuaryScenarioFacts): SanctuaryScenarioApproval | null {
@@ -593,7 +591,7 @@ function exactApprovalEvidence(
   const terminalEditStartedAt = Number(terminals[0]!.meta.terminalEditStartedAt)
   const terminalizedAt = Number(terminals[0]!.meta.terminalizedAt)
   const expiryObservation = expiryObservations[0] ?? null
-  const expiryObservedAt = expiryObservation === null ? null : Number(expiryObservation.meta.expiryObservedAt)
+  const expiryObservedAt = expiryObservation === null || expiryObservation.meta.expiryObservedAt === null ? null : Number(expiryObservation.meta.expiryObservedAt)
   const expiryDeadlineAt = expiryObservation === null ? null : Number(expiryObservation.meta.expiryDeadlineAt)
   if (!Number.isSafeInteger(boundAt) || boundAt < 0
     || !Number.isSafeInteger(terminalEditStartedAt) || terminalEditStartedAt < boundAt
@@ -639,7 +637,7 @@ function exactApprovalEvidence(
   return { boundAt, callback, continuation, expiryObservedAt, expiryDeadlineAt, terminalizedAt, staleCallback }
 }
 
-function terminalizedWithinTtlJitter(evidence: { boundAt: number; expiryObservedAt: number | null; expiryDeadlineAt: number | null }): boolean {
+export function terminalizedWithinTtlJitter(evidence: { boundAt: number; expiryObservedAt: number | null; expiryDeadlineAt: number | null }): boolean {
   if (evidence.expiryObservedAt === null) return false
   const elapsed = evidence.expiryObservedAt - evidence.boundAt
   return elapsed >= SANCTUARY_APPROVAL_TTL_MS && elapsed <= SANCTUARY_APPROVAL_TTL_MS + SANCTUARY_APPROVAL_RECONCILIATION_JITTER_MS

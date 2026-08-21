@@ -5,6 +5,19 @@ import { createHash } from "node:crypto"
 
 import { afterEach, describe, expect, it, vi } from "vitest"
 
+const fsFaults = vi.hoisted(() => ({
+  lstatSync: null as null | ((actual: typeof import("node:fs").lstatSync, target: import("node:fs").PathLike, options?: unknown) => import("node:fs").Stats),
+  unlinkSync: null as null | ((actual: typeof import("node:fs").unlinkSync, target: import("node:fs").PathLike) => void),
+}))
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>()
+  return {
+    ...actual,
+    lstatSync: (target: fs.PathLike, options?: unknown) => fsFaults.lstatSync?.(actual.lstatSync, target, options) ?? actual.lstatSync(target, options as never),
+    unlinkSync: (target: fs.PathLike) => fsFaults.unlinkSync?.(actual.unlinkSync, target) ?? actual.unlinkSync(target),
+  }
+})
+
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-scenarios-"))
 vi.mock("../../../heart/identity", () => ({ getAgentRoot: () => path.join(root, "sanctuary.ouro") }))
 
@@ -13,6 +26,7 @@ import {
   deriveSanctuaryScenarioAssertions,
   verifySanctuaryPostbootIntegrity,
   finalizeSanctuaryScenarioCapture,
+  terminalizedWithinTtlJitter,
   type SanctuaryScenarioFacts,
 } from "../../../heart/daemon/sanctuary-acceptance-scenarios"
 import { SANCTUARY_SCENARIO_SOURCES, SANCTUARY_UNIT_16_EVIDENCE_LABELS, validateSanctuaryUnit16EvidenceAssertions } from "../../../heart/daemon/sanctuary-acceptance-harness"
@@ -286,9 +300,75 @@ describe("Sanctuary postboot relational integrity", () => {
     }
     expect(verifySanctuaryPostbootIntegrity(before, after, "a".repeat(64))).toBeNull()
   })
+
+  it("rejects each independent postboot relation at the exact failing boundary", () => {
+    const handle = "a".repeat(64)
+    const before = integritySnapshot()
+    const bound = { ...before, activeScenarioHandleDigest: handle }
+    const newSweep = { idDigest: "b".repeat(64), recordDigest: "c".repeat(64), scenarioHandleDigest: handle, deliveryIdDigest: "d".repeat(64) }
+
+    expect(verifySanctuaryPostbootIntegrity(before, {
+      ...bound,
+      sweeps: [...before.sweeps, { ...newSweep, recordDigest: "invalid" }],
+    }, handle)).toBeNull()
+    expect(verifySanctuaryPostbootIntegrity(before, {
+      ...bound,
+      restartAttempts: bound.restartAttempts.map((row, index) => index === 1 ? { ...row, state: "succeeded" as const } : row),
+    }, handle)).toBeNull()
+    expect(verifySanctuaryPostbootIntegrity(before, {
+      ...bound,
+      approvalExecutionCount: 0,
+    }, handle, { preserveCursors: false })).toBeNull()
+    expect(verifySanctuaryPostbootIntegrity(before, {
+      ...bound,
+      sweeps: [...before.sweeps, newSweep],
+      deliveries: [...before.deliveries, { idDigest: "e".repeat(64), recordDigest: "f".repeat(64) }],
+    }, handle)).toBeNull()
+    expect(verifySanctuaryPostbootIntegrity(before, {
+      ...bound,
+      audits: [...before.audits, { idDigest: "e".repeat(64), recordDigest: "f".repeat(64), scenarioHandleDigest: "b".repeat(64), scenarioRelevant: true }],
+    }, handle)).toBeNull()
+  })
+
+  it("covers alternate valid and invalid postboot lifecycle and delivery bindings", () => {
+    const indeterminate = integritySnapshot()
+    indeterminate.restartAttempts[2] = { ...indeterminate.restartAttempts[2]!, state: "attempted_or_indeterminate" }
+    const afterIndeterminate = structuredClone(indeterminate)
+    afterIndeterminate.activeScenarioHandleDigest = scenarioHandleDigest
+    expect(verifySanctuaryPostbootIntegrity(indeterminate, afterIndeterminate, scenarioHandleDigest)).not.toBeNull()
+
+    const invalidAfter = integritySnapshot()
+    invalidAfter.activeScenarioHandleDigest = scenarioHandleDigest
+    invalidAfter.restartAttempts = invalidAfter.restartAttempts.slice(0, 2)
+    expect(verifySanctuaryPostbootIntegrity(integritySnapshot(), invalidAfter, scenarioHandleDigest)).toBeNull()
+
+    const invalidBoth = integritySnapshot()
+    invalidBoth.restartAttempts = invalidBoth.restartAttempts.slice(0, 2)
+    const invalidBothAfter = structuredClone(invalidBoth)
+    invalidBothAfter.activeScenarioHandleDigest = scenarioHandleDigest
+    expect(verifySanctuaryPostbootIntegrity(invalidBoth, invalidBothAfter, scenarioHandleDigest)).toBeNull()
+
+    const changingAfter = integritySnapshot() as ReturnType<typeof integritySnapshot>
+    const validAttempts = structuredClone(changingAfter.restartAttempts)
+    const invalidAttempts = validAttempts.slice(0, 2)
+    let reads = 0
+    Object.defineProperty(changingAfter, "restartAttempts", { configurable: true, get: () => ++reads <= 2 ? validAttempts : invalidAttempts })
+    changingAfter.activeScenarioHandleDigest = scenarioHandleDigest
+    expect(verifySanctuaryPostbootIntegrity(integritySnapshot(), changingAfter, scenarioHandleDigest)).toBeNull()
+
+    const nullDelivery = integritySnapshot()
+    const afterNullDelivery = structuredClone(nullDelivery)
+    afterNullDelivery.activeScenarioHandleDigest = scenarioHandleDigest
+    afterNullDelivery.sweeps.push({ idDigest: "d".repeat(64), recordDigest: "e".repeat(64), scenarioHandleDigest, deliveryIdDigest: null })
+    expect(verifySanctuaryPostbootIntegrity(nullDelivery, afterNullDelivery, scenarioHandleDigest)).toMatchObject({ sweepDeltaCount: 1, deliveryDeltaCount: 0 })
+  })
 })
 
-afterEach(() => fs.rmSync(root, { recursive: true, force: true }))
+afterEach(() => {
+  fsFaults.lstatSync = null
+  fsFaults.unlinkSync = null
+  fs.rmSync(root, { recursive: true, force: true })
+})
 
 describe("Sanctuary live scenario capture", () => {
   it("captures a denial baseline without mutation and drives exactly one persisted denial attempt on poll", async () => {
@@ -548,6 +628,12 @@ describe("Sanctuary live scenario capture", () => {
       ? { ...entry, at: 151_002, meta: { ...entry.meta, terminalizedAt: 151_002 } }
       : entry)
     expect(deriveSanctuaryScenarioAssertions("unit-16i-delayed-approval", base(), unboundedTerminalEdit, 400_000)).toBeNull()
+
+    const unexpectedExpiryMetadata = structuredClone(after)
+    unexpectedExpiryMetadata.events = unexpectedExpiryMetadata.events.map((entry) => entry.event === "telegram.approval_prompt_terminalized"
+      ? { ...entry, meta: { ...entry.meta, expiryObservedAt: 121_000 } }
+      : entry)
+    expect(deriveSanctuaryScenarioAssertions("unit-16i-delayed-approval", base(), unexpectedExpiryMetadata, 400_000)).toBeNull()
   })
 
   it("requires identity-key provenance for every approval scenario", () => {
@@ -605,6 +691,149 @@ describe("Sanctuary live scenario capture", () => {
     const conflictingRetry = make(301_000)
     conflictingRetry.after.events.splice(2, 0, expiryObservationEvidence(301_001))
     expect(deriveSanctuaryScenarioAssertions(label, conflictingRetry.before, conflictingRetry.after, 400_000)).toBeNull()
+
+    if (label === "unit-15c-1-no-callback-terminalization") {
+      const changingState = make(301_000)
+      let stateReads = 0
+      Object.defineProperty(changingState.after.approvals[0]!, "state", { configurable: true, get: () => ++stateReads <= 2 ? "expired" : "succeeded" })
+      expect(deriveSanctuaryScenarioAssertions(label, changingState.before, changingState.after, 400_000)).toBeNull()
+    }
+
+    const editStartedBeforeObservation = make(301_000)
+    editStartedBeforeObservation.after.events = editStartedBeforeObservation.after.events.map((entry) => entry.event === "telegram.approval_prompt_terminalized"
+      ? { ...entry, meta: { ...entry.meta, terminalEditStartedAt: 300_999 } }
+      : entry)
+    expect(deriveSanctuaryScenarioAssertions(label, editStartedBeforeObservation.before, editStartedBeforeObservation.after, 400_000)).toBeNull()
+
+    if (label === "unit-16k-timeout-stale") {
+      const wronglyAcceptedStale = make(301_000)
+      wronglyAcceptedStale.after.events = wronglyAcceptedStale.after.events.map((entry) => entry.event === "telegram.approval_stale_callback_settled"
+        ? { ...entry, meta: { ...entry.meta, accepted: true } }
+        : entry)
+      expect(deriveSanctuaryScenarioAssertions(label, wronglyAcceptedStale.before, wronglyAcceptedStale.after, 400_000)).toBeNull()
+    }
+  })
+
+  it("rejects denial boundary drift after evaluating both immutable snapshots", () => {
+    const after = base()
+    after.denial = structuredClone(after.denial!)
+    after.denial.after = { ...after.denial.after, auditCursorDigest: "f".repeat(64) }
+    expect(deriveSanctuaryScenarioAssertions("unit-16e-1-stop-denial", base(), after, 400_000)).toBeNull()
+  })
+
+  it("evaluates prior approval identity, indeterminate retry, and unrelated restart audit filters", () => {
+    const prior = base()
+    prior.approvals = [approval("succeeded")]
+    const sameApproval = base()
+    sameApproval.approvals = [approval("succeeded")]
+    expect(deriveSanctuaryScenarioAssertions("unit-16i-delayed-approval", prior, sameApproval, 400_000)).toBeNull()
+
+    const retried = base()
+    retried.approvals = [approval("succeeded")]
+    retried.restartAttempts = [
+      ...successfulRestart().slice(0, 2),
+      { ...successfulRestart()[1]!, state: "attempted_or_indeterminate", observedAt: 2_500 },
+      { ...successfulRestart()[1]!, attemptId: "attempt-2", observedAt: 2_600 },
+    ]
+    expect(deriveSanctuaryScenarioAssertions("unit-16m-restart-continuation", base(), retried, 400_000, scenarioHandleDigest)).toBeNull()
+
+    const continuedBefore = base()
+    continuedBefore.events = [{ ...event("senses.telegram_approved_restart_end"), meta: { approvalId: "unrelated-before" } }]
+    const continued = base()
+    continued.approvals = [approval("succeeded")]
+    continued.restartAttempts = successfulRestart()
+    continued.interactiveDriver = restartContinuationDriver()
+    continued.events = [
+      ...continuedBefore.events,
+      ...approvalEvidence("approve", 1_000, 2_000).map((entry) => entry.event === "telegram.callback_settled"
+        ? { ...entry, event: "telegram.callback_recovery_settled", at: 3_001, meta: { ...entry.meta, acknowledgementState: "indeterminate_after_restart", recoveredAt: 3_000 } }
+        : entry),
+      { ...event("senses.telegram_approved_restart_end"), meta: { approvalId: "unrelated" } },
+      { ...event("senses.telegram_approved_restart_end"), meta: { approvalId: "approval-1" } },
+    ]
+    expect(deriveSanctuaryScenarioAssertions("unit-16m-restart-continuation", continuedBefore, continued, 400_000, scenarioHandleDigest)).toMatchObject({ restartObserved: true })
+  })
+
+  it("exercises independent negative gates after their preceding invariants pass", () => {
+    const whatsUp = () => {
+      const facts = base()
+      facts.telegramTurns = [groundedTurn("unraid_get_system", systemGrounding, "Sanctuary is running Unraid 7.2.3 with the array STARTED and not degraded.")]
+      facts.events = [
+        ...auditTurn(),
+        { ...event("senses.sanctuary_read_receipt"), meta: { toolName: "unraid_get_system", success: true, resultDigest: "5".repeat(64), groundingDigest: groundingDigest(systemGrounding), sourceIdentityDigest: groundingSource, observedAt: "1970-01-01T00:00:09.000Z" } },
+      ]
+      facts.liveGrounding = { toolName: "unraid_get_system", groundingDigest: groundingDigest(systemGrounding), sourceIdentityDigest: groundingSource, observedAt: "1970-01-01T00:00:11.000Z", facts: systemGrounding }
+      return facts
+    }
+    const missingGrounding = whatsUp()
+    delete missingGrounding.telegramTurns[0]!.toolGroundings
+    expect(deriveSanctuaryScenarioAssertions("unit-16d-whats-up", base(), missingGrounding, 400_000)).toBeNull()
+    const missingLive = whatsUp(); missingLive.liveGrounding = undefined
+    expect(deriveSanctuaryScenarioAssertions("unit-16d-whats-up", base(), missingLive, 400_000)).toBeNull()
+    const invalidScenarioCoordinate = whatsUp()
+    invalidScenarioCoordinate.events = invalidScenarioCoordinate.events.map((entry) => entry.event === "senses.telegram_turn_start" || entry.event === "senses.telegram_turn_end" ? { ...entry, meta: { ...entry.meta, scenarioHandleDigest: "invalid" } } : entry)
+    expect(deriveSanctuaryScenarioAssertions("unit-16d-whats-up", base(), invalidScenarioCoordinate, 400_000)).toBeNull()
+    const negativeDelivery = whatsUp()
+    negativeDelivery.events = negativeDelivery.events.map((entry) => entry.event === "senses.telegram_turn_end" ? { ...entry, meta: { ...entry.meta, deliveryCount: -1 } } : entry)
+    expect(deriveSanctuaryScenarioAssertions("unit-16d-whats-up", base(), negativeDelivery, 400_000)).toBeNull()
+    const unacknowledgedRestart = base()
+    unacknowledgedRestart.approvals = [approval("succeeded")]
+    unacknowledgedRestart.restartAttempts = successfulRestart().map((entry) => entry.state === "succeeded" ? { ...entry, mutationAcknowledged: false } : entry)
+    unacknowledgedRestart.events = [...auditTurn(), ...approvalEvidence("approve", 1_000, 121_000)]
+    expect(deriveSanctuaryScenarioAssertions("unit-16i-delayed-approval", base(), unacknowledgedRestart, 400_000)).not.toBeNull()
+
+    const oldApproval = base(); oldApproval.capturedAt = 2_000
+    const expired = base(); expired.approvals = [approval("expired")]
+    expect(deriveSanctuaryScenarioAssertions("unit-15c-1-no-callback-terminalization", oldApproval, expired, 400_000)).toBeNull()
+    const missingButtons = base(); missingButtons.approvals = [{ ...approval("expired"), buttonsRemoved: false }]
+    missingButtons.events = [approvalAuditEvent("senses.telegram_approval_prompt_bound", 1_000, { boundAt: 1_000 }), expiryObservationEvidence(), approvalAuditEvent("telegram.approval_prompt_terminalized", 301_000, { boundAt: 1_000, expiryDeadlineAt: 301_000, expiryObservedAt: 301_000, terminalEditStartedAt: 301_000, terminalizedAt: 301_000, buttonsRemoved: true })]
+    const missingButtonsBefore = base(); missingButtonsBefore.sourceValues["no-callback-baseline"] = { approvalId: "approval-1", offsetDigest: probeDigest(missingButtons.sourceValues["telegram-offset"]), inboundEventCount: 0 }
+    expect(deriveSanctuaryScenarioAssertions("unit-15c-1-no-callback-terminalization", missingButtonsBefore, missingButtons, 400_000)).toBeNull()
+    const arrayBaseline = structuredClone(missingButtonsBefore); arrayBaseline.sourceValues["no-callback-baseline"] = []
+    missingButtons.approvals[0]!.buttonsRemoved = true
+    expect(deriveSanctuaryScenarioAssertions("unit-15c-1-no-callback-terminalization", arrayBaseline, missingButtons, 400_000)).toBeNull()
+    const callbackBaseline = structuredClone(missingButtonsBefore)
+    const callbackAfter = structuredClone(missingButtons); callbackAfter.approvals[0]!.callbackCount = 1
+    expect(deriveSanctuaryScenarioAssertions("unit-15c-1-no-callback-terminalization", callbackBaseline, callbackAfter, 400_000)).toBeNull()
+
+    for (const label of ["unit-16a-pre-reboot-checkpoint", "unit-16a-reboot-request", "unit-16a-boot-recovery-milestones"] as const) {
+      const noReboot = base(); noReboot.reboot = undefined
+      expect(deriveSanctuaryScenarioAssertions(label, base(), noReboot, 400_000, scenarioHandleDigest)).toBeNull()
+    }
+    const noContainer = base(); noContainer.container = undefined
+    expect(deriveSanctuaryScenarioAssertions("unit-16b-runtime-vault-containment", base(), noContainer, 400_000)).toBeNull()
+
+    const expiredApproval = base(); expiredApproval.approvals = [{ ...approval("succeeded"), terminalPrompt: false }]
+    expiredApproval.restartAttempts = successfulRestart(); expiredApproval.events = [...auditTurn(), ...approvalEvidence("approve", 1_000, 121_000)]
+    expect(deriveSanctuaryScenarioAssertions("unit-16i-delayed-approval", base(), expiredApproval, 400_000)).toBeNull()
+    const deniedNoPrompt = base(); deniedNoPrompt.approvals = [{ ...approval("denied"), terminalPrompt: false }]; deniedNoPrompt.events = [...auditTurn(), ...approvalEvidence("deny", 1_000, 2_000)]
+    expect(deriveSanctuaryScenarioAssertions("unit-16j-denial", base(), deniedNoPrompt, 400_000)).toBeNull()
+    const staleNoAck = base(); staleNoAck.approvals = [{ ...approval("expired"), staleAcknowledged: false }]
+    expect(deriveSanctuaryScenarioAssertions("unit-16k-timeout-stale", base(), staleNoAck, 400_000)).toBeNull()
+    const duplicateWithoutEvidence = base(); duplicateWithoutEvidence.approvals = [{ ...approval("succeeded"), callbackCount: 2, settledCount: 2 }]; duplicateWithoutEvidence.restartAttempts = successfulRestart()
+    expect(deriveSanctuaryScenarioAssertions("unit-16l-duplicate-callback", base(), duplicateWithoutEvidence, 400_000)).toBeNull()
+
+    const prefixedBefore = base(); prefixedBefore.events = [event("existing")]
+    const truncatedAfter = base()
+    expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unauthorized", prefixedBefore, truncatedAfter, 400_000)).toBeNull()
+    const http401 = base(); http401.denial = { ...http401.denial!, httpStatus: 401 }
+    expect(deriveSanctuaryScenarioAssertions("unit-16e-1-stop-denial", base(), http401, 400_000)).not.toBeNull()
+    const http200 = base(); http200.denial = { ...http200.denial!, httpStatus: 200 }
+    expect(deriveSanctuaryScenarioAssertions("unit-16e-1-stop-denial", base(), http200, 400_000)).not.toBeNull()
+    const permissionDenied = base(); permissionDenied.denial = { ...permissionDenied.denial!, errorCode: "PERMISSION_DENIED" }
+    expect(deriveSanctuaryScenarioAssertions("unit-16e-1-stop-denial", base(), permissionDenied, 400_000)).not.toBeNull()
+    const shortScenarioHandle = base(); shortScenarioHandle.denial = { ...shortScenarioHandle.denial!, scenarioHandleDigest: "short" }
+    expect(deriveSanctuaryScenarioAssertions("unit-16e-1-stop-denial", base(), shortScenarioHandle, 400_000)).toBeNull()
+    const missingDenial = base(); missingDenial.denial = undefined
+    expect(deriveSanctuaryScenarioAssertions("unit-16e-1-stop-denial", base(), missingDenial, 400_000)).toBeNull()
+
+    const storageWithoutLiveFacts = base()
+    storageWithoutLiveFacts.telegramTurns = [groundedTurn("unraid_get_storage", storageGrounding, "Sanctuary storage is 80% used with 2 TB free; the array is STARTED and not degraded.")]
+    storageWithoutLiveFacts.events = [...auditTurn(), { ...event("senses.sanctuary_read_receipt"), meta: { toolName: "unraid_get_storage", success: true, resultDigest: "5".repeat(64), groundingDigest: groundingDigest(storageGrounding), sourceIdentityDigest: groundingSource, observedAt: "1970-01-01T00:00:09.000Z" } }]
+    storageWithoutLiveFacts.liveGrounding = { toolName: "unraid_get_storage", groundingDigest: groundingDigest({}), sourceIdentityDigest: groundingSource, observedAt: "1970-01-01T00:00:11.000Z", facts: null as never }
+    expect(deriveSanctuaryScenarioAssertions("unit-16d-1-space", base(), storageWithoutLiveFacts, 400_000)).toBeNull()
+
+    expect(terminalizedWithinTtlJitter({ boundAt: 1_000, expiryObservedAt: null, expiryDeadlineAt: 301_000 })).toBe(false)
   })
 
   it.each([
@@ -694,6 +923,118 @@ describe("Sanctuary live scenario capture", () => {
     expect(JSON.parse(fs.readFileSync(gate, "utf8"))).toMatchObject({ phase: "complete" })
   })
 
+  it.each([
+    ["unit-16l-duplicate-callback", "interactiveDriver", "interactive scenario driver is unavailable"],
+    ["unit-16e-1-stop-denial", "denialDriver", "read-only denial scenario driver is unavailable"],
+  ] as const)("fails closed when %s has no required driver", async (label, _driver, message) => {
+    const receipts = path.join(root, `missing-${label}`)
+    const capture = createSanctuaryScenarioCapture({
+      now: () => 400_000,
+      receiptRoot: receipts,
+      gateStatusPath: path.join(root, `missing-${label}-gate.json`),
+      readFacts: async () => base(),
+    })
+    const begin = await capture({ phase: "begin", label, externalGate: "test", sources: ["telegram-audit"] })
+    await expect(capture({ phase: "poll", label, externalGate: "test", sources: ["telegram-audit"], checkpointDigest: begin.checkpointDigest as string })).rejects.toThrow(message)
+  })
+
+  it.each([
+    ["unit-16l-duplicate-callback", "interactive"],
+    ["unit-16e-1-stop-denial", "denial"],
+  ] as const)("keeps %s waiting while its %s driver is waiting", async (label, kind) => {
+    const poll = vi.fn(async () => ({ state: "waiting" as const }))
+    const capture = createSanctuaryScenarioCapture({
+      now: () => 400_000,
+      receiptRoot: path.join(root, `waiting-${label}`),
+      gateStatusPath: path.join(root, `waiting-${label}-gate.json`),
+      readFacts: async () => base(),
+      ...(kind === "interactive"
+        ? { interactiveDriver: { poll, complete: vi.fn(), cleanup: vi.fn() } }
+        : { denialDriver: { poll, complete: vi.fn() } }),
+    })
+    const begin = await capture({ phase: "begin", label, externalGate: "test", sources: ["telegram-audit"] })
+    await expect(capture({ phase: "poll", label, externalGate: "test", sources: ["telegram-audit"], checkpointDigest: begin.checkpointDigest as string })).resolves.toEqual(begin)
+    expect(poll).toHaveBeenCalledOnce()
+  })
+
+  it("persists the no-callback baseline once an active approval becomes observable", async () => {
+    let facts = base()
+    const receiptRoot = path.join(root, "no-callback-baseline")
+    const capture = createSanctuaryScenarioCapture({
+      now: () => 400_000,
+      receiptRoot,
+      gateStatusPath: path.join(root, "no-callback-baseline-gate.json"),
+      readFacts: async () => facts,
+    })
+    const input = { phase: "begin" as const, label: "unit-15c-1-no-callback-terminalization" as const, externalGate: "expiry", sources: ["telegram-offset", "telegram-audit"] }
+    const begin = await capture(input)
+    facts = base()
+    facts.approvals.push(approval("proposed"))
+    facts.events.push(event("telegram.callback_settled"), event("telegram.update_dropped"))
+    const pollInput = { ...input, phase: "poll" as const, checkpointDigest: begin.checkpointDigest as string }
+    await expect(capture(pollInput)).resolves.toEqual(begin)
+    const stored = JSON.parse(fs.readFileSync(path.join(receiptRoot, `${begin.checkpointDigest as string}.json`), "utf8"))
+    expect(stored.noCallbackBaseline).toMatchObject({ approvalId: "approval-1", inboundEventCount: 2, offsetDigest: expect.stringMatching(/^[0-9a-f]{64}$/u) })
+    expect(stored.before.sourceValues["no-callback-baseline"]).toEqual(stored.noCallbackBaseline)
+  })
+
+  it("refuses to publish completion when an interactive driver requests inspect-before-retry", async () => {
+    let facts = base()
+    const complete = vi.fn(async () => "preserve" as const)
+    const cleanup = vi.fn()
+    const capture = createSanctuaryScenarioCapture({
+      now: () => 400_000,
+      receiptRoot: path.join(root, "interactive-preserve"),
+      gateStatusPath: path.join(root, "interactive-preserve-gate.json"),
+      readFacts: async () => facts,
+      interactiveDriver: { poll: async () => ({ state: "driven" }), complete, cleanup },
+    })
+    const input = { phase: "begin" as const, label: "unit-16l-duplicate-callback" as const, externalGate: "callback", sources: ["approval-journal", "telegram-audit"] }
+    const begin = await capture(input)
+    facts = base()
+    facts.approvals = [{ ...approval("succeeded"), callbackCount: 2, settledCount: 2 }]
+    facts.restartAttempts = successfulRestart()
+    facts.events = approvalEvidence("approve", 1_000, 2_000)
+    facts.interactiveDriver = duplicateCallbackDriver()
+    await expect(capture({ ...input, phase: "poll", checkpointDigest: begin.checkpointDigest as string })).rejects.toThrow(/inspect-before-retry/u)
+    expect(complete).toHaveBeenCalledOnce()
+    expect(cleanup).not.toHaveBeenCalled()
+  })
+
+  it("covers default paths, invalid checkpoints, checkpoint rebinding, claimed baselines, and absent baselines", async () => {
+    const defaultCapture = createSanctuaryScenarioCapture({ now: () => 400_000, readFacts: async () => base() })
+    await expect(defaultCapture({ phase: "begin", label: "unit-16d-whats-up", externalGate: "telegram", sources: ["telegram-audit"] })).rejects.toMatchObject({ code: "ENOENT" })
+
+    const receipts = path.join(root, "capture-branches")
+    let facts = base()
+    const capture = createSanctuaryScenarioCapture({ now: () => 400_000, receiptRoot: receipts, gateStatusPath: path.join(root, "capture-branches-gate.json"), readFacts: async () => facts })
+    await expect(capture({ phase: "poll", label: "unit-16d-whats-up", externalGate: "telegram", sources: [], checkpointDigest: undefined })).rejects.toThrow(/checkpoint digest/u)
+    const begin = await capture({ phase: "begin", label: "unit-15c-1-no-callback-terminalization", externalGate: "expiry", sources: ["telegram-offset"] })
+    await expect(capture({ phase: "poll", label: "unit-15c-1-no-callback-terminalization", externalGate: "changed", sources: ["telegram-offset"], checkpointDigest: begin.checkpointDigest as string })).rejects.toThrow(/binding mismatch/u)
+    await expect(capture({ phase: "poll", label: "unit-15c-1-no-callback-terminalization", externalGate: "expiry", sources: ["telegram-offset"], checkpointDigest: begin.checkpointDigest as string })).resolves.toEqual(begin)
+    facts = base(); facts.approvals = [approval("claimed")]
+    await expect(capture({ phase: "poll", label: "unit-15c-1-no-callback-terminalization", externalGate: "expiry", sources: ["telegram-offset"], checkpointDigest: begin.checkpointDigest as string })).resolves.toEqual(begin)
+  })
+
+  it("cleans up a successfully completed interactive capture", async () => {
+    let facts = base()
+    const cleanup = vi.fn()
+    const complete = vi.fn(async () => "complete" as const)
+    const capture = createSanctuaryScenarioCapture({
+      now: () => 400_000,
+      receiptRoot: path.join(root, "interactive-complete"),
+      gateStatusPath: path.join(root, "interactive-complete-gate.json"),
+      readFacts: async () => facts,
+      interactiveDriver: { poll: async () => ({ state: "driven" }), complete, cleanup },
+    })
+    const input = { phase: "begin" as const, label: "unit-16l-duplicate-callback" as const, externalGate: "callback", sources: ["approval-journal"] }
+    const begin = await capture(input)
+    facts = base(); facts.approvals = [{ ...approval("succeeded"), callbackCount: 2, settledCount: 2 }]; facts.restartAttempts = successfulRestart(); facts.events = approvalEvidence("approve", 1_000, 2_000); facts.interactiveDriver = duplicateCallbackDriver()
+    await expect(capture({ ...input, phase: "poll", checkpointDigest: begin.checkpointDigest as string })).resolves.toMatchObject({ state: "complete" })
+    expect(complete).toHaveBeenCalledOnce()
+    expect(cleanup).toHaveBeenCalledOnce()
+  })
+
   it("retains durable health cleanup coordinates when broker start fails", async () => {
     const receipts = path.join(root, "failed-start-receipts")
     const gate = path.join(root, "failed-start-gate.json")
@@ -720,6 +1061,27 @@ describe("Sanctuary live scenario capture", () => {
     expect(fs.existsSync(marker)).toBe(false)
     expect(fs.readdirSync(receipts)).toEqual([])
     expect(fs.existsSync(gate)).toBe(false)
+  })
+
+  it("requires a health driver independently at begin and poll", async () => {
+    const beginMissing = createSanctuaryScenarioCapture({
+      now: () => 400_000,
+      receiptRoot: path.join(root, "health-driver-missing-begin"),
+      gateStatusPath: path.join(root, "health-driver-missing-begin-gate.json"),
+      readFacts: async () => base(),
+    })
+    await expect(beginMissing({ phase: "begin", label: "unit-16g-health-transition", externalGate: "health", sources: ["health-probe-receipt"] })).rejects.toThrow(/health scenario driver is unavailable/u)
+
+    const receipts = path.join(root, "health-driver-missing-poll")
+    const gate = path.join(root, "health-driver-missing-poll-gate.json")
+    const withDriver = createSanctuaryScenarioCapture({
+      now: () => 400_000, receiptRoot: receipts, gateStatusPath: gate, readFacts: async () => base(),
+      healthDriver: { begin: async () => {}, poll: async () => ({ state: "waiting" }), recover: async () => {} },
+    })
+    const input = { phase: "begin" as const, label: "unit-16g-health-transition" as const, externalGate: "health", sources: ["health-probe-receipt"] }
+    const begin = await withDriver(input)
+    const withoutDriver = createSanctuaryScenarioCapture({ now: () => 400_000, receiptRoot: receipts, gateStatusPath: gate, readFacts: async () => base() })
+    await expect(withoutDriver({ ...input, phase: "poll", checkpointDigest: begin.checkpointDigest as string })).rejects.toThrow(/health scenario driver is unavailable/u)
   })
 
   it("preserves an incomplete interactive receipt and active marker for inspect-before-retry", async () => {
@@ -953,6 +1315,104 @@ describe("Sanctuary live scenario capture", () => {
     expect(helper).toContain("markerMetadata.ino !== markerPathMetadata.ino")
     expect(helper.indexOf("secureRenameBoundInodeSync(")).toBeLessThan(helper.indexOf("fs.fsyncSync(markerHandle)"))
     expect(helper.match(/fs\.fsyncSync\(/gu)?.length).toBeGreaterThanOrEqual(3)
+  })
+
+  it("fails closed when the receipt root inode changes during initial or final enumeration", () => {
+    for (const changedCall of [1, 2]) {
+      const receipts = path.join(root, `enumeration-race-${changedCall}`)
+      fs.mkdirSync(receipts, { recursive: true })
+      let receiptStats = 0
+      fsFaults.lstatSync = (actualLstat, target, options) => {
+        const stats = actualLstat(target, options as never)
+        if (String(target) === receipts && ++receiptStats === changedCall) return Object.assign(Object.create(Object.getPrototypeOf(stats)), stats, { ino: stats.ino + 1 })
+        return stats
+      }
+      try {
+        expect(() => finalizeSanctuaryScenarioCapture(undefined, receipts)).toThrow(AggregateError)
+      } finally { fsFaults.lstatSync = null }
+    }
+  })
+
+  it("rejects a receipt whose contents drift from the active marker", async () => {
+    const receipts = path.join(root, "binding-race-receipts")
+    const gate = path.join(root, "binding-race-gate.json")
+    const capture = createSanctuaryScenarioCapture({ now: () => 400_000, receiptRoot: receipts, gateStatusPath: gate, readFacts: async () => base() })
+    await capture({ phase: "begin", label: "unit-16d-whats-up", externalGate: "telegram", sources: ["telegram-audit"] })
+    const receiptPath = path.join(receipts, fs.readdirSync(receipts)[0]!)
+    const receipt = JSON.parse(fs.readFileSync(receiptPath, "utf8"))
+    fs.writeFileSync(receiptPath, `${JSON.stringify({ ...receipt, label: "unit-16d-1-space" })}\n`, { mode: 0o600 })
+    expect(() => finalizeSanctuaryScenarioCapture(gate, receipts)).toThrow(AggregateError)
+  })
+
+  it("records a missing quarantine parent as inspectable cleanup failure when a marker remains", async () => {
+    const receipts = path.join(root, "vanished-parent", "receipts")
+    const gate = path.join(root, "vanished-parent-gate.json")
+    const capture = createSanctuaryScenarioCapture({ now: () => 400_000, receiptRoot: receipts, gateStatusPath: gate, readFacts: async () => base() })
+    await capture({ phase: "begin", label: "unit-16d-whats-up", externalGate: "telegram", sources: ["telegram-audit"] })
+    fs.renameSync(path.dirname(receipts), `${path.dirname(receipts)}-moved`)
+    expect(() => finalizeSanctuaryScenarioCapture(gate, receipts)).toThrow(AggregateError)
+  })
+
+  it.each([
+    "quarantine-validation",
+    "parent-validation",
+    "opened-receipt-rebind",
+    "final-receipt-rebind",
+    "moved-receipt-rebind",
+    "rejected-quarantine-rebind",
+    "quarantine-lstat-error",
+  ] as const)("fails closed for the %s inode race", (mode) => {
+    const parent = path.join(root, `quarantine-race-${mode}`)
+    const receipts = path.join(parent, "receipts")
+    fs.mkdirSync(receipts, { recursive: true })
+    fs.writeFileSync(path.join(receipts, "noncanonical"), "evidence", { mode: 0o600 })
+    if (mode === "rejected-quarantine-rebind") fs.writeFileSync(path.join(parent, "quarantine"), "not-a-directory", { mode: 0o600 })
+    let receiptLstats = 0
+    let quarantineLstats = 0
+    fsFaults.lstatSync = (actualLstat, target, options) => {
+      const targetText = String(target)
+      if (targetText === path.join(parent, "quarantine")) {
+        quarantineLstats += 1
+        if (mode === "quarantine-lstat-error" && quarantineLstats === 1) throw Object.assign(new Error("injected lstat failure"), { code: "EIO" })
+      }
+      const stats = actualLstat(target, options as never)
+      const changed = () => Object.assign(Object.create(Object.getPrototypeOf(stats)), stats, { ino: stats.ino + 1 })
+      if (targetText === receipts) {
+        receiptLstats += 1
+        if (mode === "opened-receipt-rebind" && receiptLstats === 4) return changed()
+        if (mode === "final-receipt-rebind" && receiptLstats === 5) return changed()
+      }
+      if (mode === "parent-validation" && targetText === parent) return changed()
+      if (mode === "quarantine-validation" && targetText === path.join(parent, "quarantine") && quarantineLstats === 2) return changed()
+      if (mode === "moved-receipt-rebind" && targetText.startsWith(`${path.join(parent, "quarantine", "receipts-")}`)) return changed()
+      if (mode === "rejected-quarantine-rebind" && targetText.includes(".quarantine-rejected-")) return changed()
+      return stats
+    }
+    expect(() => finalizeSanctuaryScenarioCapture(undefined, receipts)).toThrow(AggregateError)
+  })
+
+  it.each(["directory-entry", "oversized-file", "path-rebind", "unlink-failure"] as const)("fails closed for invalid active receipt state: %s", async (mode) => {
+    const receipts = path.join(root, `active-receipt-${mode}`)
+    const gate = path.join(root, `active-receipt-${mode}-gate.json`)
+    const capture = createSanctuaryScenarioCapture({ now: () => 400_000, receiptRoot: receipts, gateStatusPath: gate, readFacts: async () => base() })
+    await capture({ phase: "begin", label: "unit-16d-whats-up", externalGate: "telegram", sources: ["telegram-audit"] })
+    const receiptPath = path.join(receipts, fs.readdirSync(receipts)[0]!)
+    if (mode === "directory-entry") {
+      fs.unlinkSync(receiptPath)
+      fs.mkdirSync(receiptPath)
+    } else if (mode === "oversized-file") {
+      fs.writeFileSync(receiptPath, "x".repeat(4 * 1024 * 1024 + 1), { mode: 0o600 })
+    } else if (mode === "path-rebind") {
+      fsFaults.lstatSync = (actualLstat, target, options) => {
+        const stats = actualLstat(target, options as never)
+        return String(target) === receiptPath ? Object.assign(Object.create(Object.getPrototypeOf(stats)), stats, { ino: stats.ino + 1 }) : stats
+      }
+    } else {
+      fsFaults.unlinkSync = (_actual, target) => {
+        if (String(target) === receiptPath) throw Object.assign(new Error("injected unlink failure"), { code: "EIO" })
+      }
+    }
+    expect(() => finalizeSanctuaryScenarioCapture(gate, receipts)).toThrow(AggregateError)
   })
 
   it("waits instead of self-attesting absent negative and containment facts", () => {

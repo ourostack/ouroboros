@@ -2151,6 +2151,27 @@ executeSanctuaryAcceptanceHarness("reboot-request", {
     expect(evidence(evidencePath)).toMatchObject({ operation: "reboot", phase: "requested" })
   })
 
+  it.each([
+    ["invalid", { arrayReady: false, parityActive: false, moverActive: false, mutationActive: false, safe: true }, "reboot preflight is invalid"],
+    ["unsafe", { arrayReady: true, parityActive: true, moverActive: false, mutationActive: false, safe: true }, "reboot preflight is unsafe"],
+  ] as const)("rejects an %s reboot preflight before writing a checkpoint", async (_case, preflight, message) => {
+    const dir = root()
+    const evidencePath = path.join(dir, "reboot.json")
+    const runAdapter = vi.fn(async (_executable: string, payload: Record<string, unknown>) => {
+      if (payload.operation === "reboot_preflight_snapshot") {
+        return { ...preflight, digest: "e".repeat(64), processBindingDigest: "f".repeat(64) }
+      }
+      throw new Error("must not advance beyond preflight")
+    })
+
+    await expect(executeSanctuaryAcceptanceHarness("reboot-request", {
+      allowedRoot: dir, evidencePath, targetId: "sanctuary", adapter: "/reboot",
+    }, { ...dependencies(), runAdapter })).rejects.toThrow(message)
+
+    expect(runAdapter).toHaveBeenCalledTimes(1)
+    expect(fs.existsSync(evidencePath)).toBe(false)
+  })
+
   it("rejects a dangling checkpoint target before invoking an adapter", async () => {
     const dir = root()
     const evidencePath = path.join(dir, "dangling.json")

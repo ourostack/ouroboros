@@ -1551,6 +1551,7 @@ describe("runAgent tool loop guard", () => {
     const messages: any[] = [{ role: "user", content: "run both" }]
     const { runAgent } = await import("../../heart/core")
 
+    const boundaryReceipts: unknown[] = []
     const result = await runAgent(messages, makeCallbacks(), "cli", undefined, {
       tools: [{
         type: "function",
@@ -1567,6 +1568,7 @@ describe("runAgent tool loop guard", () => {
       }],
       execTool,
       toolContext: { signin: async () => undefined },
+      toolBoundaryObserver: (receipt) => boundaryReceipts.push(receipt),
     })
 
     expect(result.outcome).toBe("settled")
@@ -1576,6 +1578,10 @@ describe("runAgent tool loop guard", () => {
       tool_call_id: "call_valid_probe",
       content: expect.stringContaining("another call in this batch had invalid arguments"),
     }))
+    expect(boundaryReceipts).toEqual([
+      expect.objectContaining({ name: "probe", reason: "invalid_arguments", invoked: false }),
+      expect.objectContaining({ name: "probe", reason: "invalid_arguments", invoked: false }),
+    ])
   })
 
   it("rejects duplicate provider tool-call ids before argument lookup or handlers", async () => {

@@ -110,6 +110,15 @@ const TELEGRAM_TURN_LEDGER_MAX_ROWS = 500
 const TELEGRAM_TURN_LEDGER_MAX_ROW_BYTES = 16 * 1024
 const telegramTurnLedgerTails = new Map<string, Promise<void>>()
 
+export function createTelegramAcceptanceAuditRelease(operation: () => void): () => void {
+  let released = false
+  return () => {
+    if (released) return
+    released = true
+    operation()
+  }
+}
+
 export function telegramAcceptanceAuditOwnerDigest(identityKey: string, agentName: string, root: string): string {
   return createHmac("sha256", identityKey)
     .update(`ouroboros.telegram.acceptance-audit-owner.v1\0${agentName}\0${root}`, "utf8")
@@ -131,21 +140,18 @@ function acquireTelegramAcceptanceAudit(
     if (existing.scenarioHandleDigest !== scenarioHandleDigest) throw new Error("Telegram acceptance audit scenario changed while active")
     existing.ledger.assertHealthy()
     existing.references += 1
-    let released = false
-    return { ledger: existing.ledger, ownerDigest: existing.ownerDigest, scenarioHandleDigest: existing.scenarioHandleDigest, release: () => {
-      if (released) return
-      released = true
+    return { ledger: existing.ledger, ownerDigest: existing.ownerDigest, scenarioHandleDigest: existing.scenarioHandleDigest, release: createTelegramAcceptanceAuditRelease(() => {
       existing.references -= 1
       if (existing.references === 0) {
         try { existing.unregister() } finally { telegramAcceptanceAudits.delete(root) }
         releaseHook?.()
       }
-    } }
+    }) }
   }
   const ledger = createTelegramAuditLedger({ root, identityKey, privateValues, _maxBytes: maxBytes })
   const ownerDigest = telegramAcceptanceAuditOwnerDigest(identityKey, agentName, root)
-  const record: TelegramAcceptanceAuditRecord = { agentName, identityKey, ledger, ownerDigest, references: 1, scenarioHandleDigest, unregister: () => undefined }
-  record.unregister = registerGlobalLogSink((event) => {
+  let record!: TelegramAcceptanceAuditRecord
+  const unregister = registerGlobalLogSink((event) => {
     if (!TELEGRAM_ACCEPTANCE_AUDIT_EVENTS.has(event.event)) return
     if (telegramAcceptanceAuditExplicitCommit.getStore()) return
     const explicitOwner = event.meta.acceptanceAuditOwnerDigest
@@ -157,17 +163,15 @@ function acquireTelegramAcceptanceAudit(
     }
     ledger.append(event)
   })
+  record = { agentName, identityKey, ledger, ownerDigest, references: 1, scenarioHandleDigest, unregister }
   telegramAcceptanceAudits.set(root, record)
-  let released = false
-  return { ledger, ownerDigest, scenarioHandleDigest, release: () => {
-    if (released) return
-    released = true
+  return { ledger, ownerDigest, scenarioHandleDigest, release: createTelegramAcceptanceAuditRelease(() => {
     record.references -= 1
     if (record.references === 0) {
       try { record.unregister() } finally { telegramAcceptanceAudits.delete(root) }
       releaseHook?.()
     }
-  } }
+  }) }
 }
 
 export function sanctuaryTelegramTurnReceiptDigest(identityKey: string, schemaVersion: keyof typeof TELEGRAM_TURN_RECEIPT_DOMAINS, purpose: string, value: string): string {
@@ -813,14 +817,13 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     })
     lease.ledger.assertHealthy()
   } : undefined
-  const releaseAcceptanceAudit = (primaryError?: unknown): void => {
+  const releaseAcceptanceAudit = (primaryError: unknown): never => {
     try {
       acceptanceAuditLease?.release()
     } catch (releaseError) {
-      if (primaryError !== undefined) throw new AggregateError([primaryError, releaseError], "Telegram sense construction and audit release failed")
-      throw releaseError
+      throw new AggregateError([primaryError, releaseError], "Telegram sense construction and audit release failed")
     }
-    if (primaryError !== undefined) throw primaryError
+    throw primaryError
   }
   let toolContext: ReturnType<typeof createSanctuaryToolContext> | undefined
   let approvalRuntime: TelegramApprovalRuntime | undefined

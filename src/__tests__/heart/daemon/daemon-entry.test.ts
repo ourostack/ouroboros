@@ -13,9 +13,38 @@ const { runSanctuaryHealthHabitMock } = vi.hoisted(() => ({
   runSanctuaryHealthHabitMock: vi.fn(async (agent: string) => ({ ok: true, message: `health:${agent}` })),
 }))
 
+const sanctuaryAcceptanceMocks = vi.hoisted(() => ({
+  marker: null as null | { label: string; scenarioHandleDigest: string },
+  readCursor: vi.fn(() => ({ sweepCount: 1, deliveryCount: 0 })),
+  recordReceipt: vi.fn(),
+  verifyFire: vi.fn((_command: unknown, options: { readFile(path: string): string; readLink(path: string): string; now(): Date }) => {
+    options.readFile("/dev/null")
+    options.readLink("/dev/stdin")
+    options.now()
+    return { schedulerRunId: "run-1", occurrenceId: "occurrence-1" }
+  }),
+  consumeFire: vi.fn(() => ({ schedulerRunId: "run-1", occurrenceId: "occurrence-1" })),
+}))
+
 vi.mock("../../../senses/sanctuary-health-runner", () => ({
   runSanctuaryHealthHabit: runSanctuaryHealthHabitMock,
 }))
+
+vi.mock("../../../heart/daemon/sanctuary-acceptance-marker", () => ({
+  readSanctuaryAcceptanceMarker: () => sanctuaryAcceptanceMocks.marker,
+}))
+
+vi.mock("../../../heart/daemon/sanctuary-scheduler-liveness", () => ({
+  readSanctuaryHealthCursor: sanctuaryAcceptanceMocks.readCursor,
+  recordSanctuarySchedulerLivenessReceipt: sanctuaryAcceptanceMocks.recordReceipt,
+  consumeSanctuarySchedulerFire: sanctuaryAcceptanceMocks.consumeFire,
+}))
+
+vi.mock("../../../heart/daemon/sanctuary-scheduler-origin", () => ({
+  verifySanctuarySchedulerFireCommand: sanctuaryAcceptanceMocks.verifyFire,
+}))
+
+vi.mock("../../../senses/telegram", () => ({ readOrCreateTelegramIdentityKey: () => "k".repeat(43) }))
 
 const supercronicMocks = vi.hoisted(() => ({
   policy: null as null | { scheduler: "supercronic"; updates: "disabled" },
@@ -38,6 +67,7 @@ vi.mock("../../../heart/daemon/supercronic-supervisor", () => ({
     namespace = vi.fn(() => ({}))
     verificationOutput = vi.fn(() => "supercronic verification")
     verifyNamespace = vi.fn(() => ({ ok: true, output: "ok" }))
+    authenticatedSnapshot = vi.fn(() => ({ childPid: 42, schemaVersion: "supercronic-supervisor-snapshot-v1" }))
   },
 }))
 
@@ -223,6 +253,12 @@ describe("daemon entrypoint", () => {
     awaitSchedulerGetDegradedAwaitsMock.mockReturnValue([])
     habitSchedulerTriggerJobMock.mockResolvedValue({ ok: false, message: "unhandled habit trigger" })
     supercronicMocks.policy = null
+    sanctuaryAcceptanceMocks.marker = null
+    sanctuaryAcceptanceMocks.readCursor.mockReset()
+    sanctuaryAcceptanceMocks.readCursor.mockReturnValue({ sweepCount: 1, deliveryCount: 0 })
+    sanctuaryAcceptanceMocks.recordReceipt.mockReset()
+    sanctuaryAcceptanceMocks.verifyFire.mockClear()
+    sanctuaryAcceptanceMocks.consumeFire.mockClear()
   })
 
   afterEach(() => {
@@ -354,6 +390,11 @@ describe("daemon entrypoint", () => {
       emitNervesEvent,
       checkAgentConfig,
       checkAgentConfigWithProviderHealth,
+      daemonOptions: daemonCtor.mock.calls[0]?.[0] as {
+        schedulerFireVerifier: (command: unknown) => unknown
+        schedulerFireConsumer: (origin: unknown) => unknown
+        nativeHabitRunner: (input: { agent: string; habitName: string; trigger?: string; occurrenceId?: string; runnerId?: string; schedulerOrigin?: unknown }) => Promise<unknown>
+      },
       processManagerOptions: processManagerCtor.mock.calls[0]?.[0] as {
         agents: Array<{
           name: string
@@ -640,6 +681,7 @@ describe("daemon entrypoint", () => {
       }
       nativeHabitRunner: (input: { agent: string; habitName: string }) => Promise<unknown>
       nativeHabitMatch: (agent: string, habitName: string) => boolean
+      schedulerFireVerifier: (command: unknown) => unknown
     }
     expect(daemonOptions.nativeHabitMatch("sanctuary", "sanctuary-health")).toBe(true)
     expect(daemonOptions.nativeHabitMatch("slugger", "sanctuary-health")).toBe(false)
@@ -647,6 +689,7 @@ describe("daemon entrypoint", () => {
     await expect(daemonOptions.nativeHabitRunner({ agent: "slugger", habitName: "sanctuary-health" })).resolves.toBeNull()
     await expect(daemonOptions.nativeHabitRunner({ agent: "sanctuary", habitName: "other" })).resolves.toBeNull()
     await expect(daemonOptions.nativeHabitRunner({ agent: "sanctuary", habitName: "sanctuary-health" })).resolves.toEqual({ ok: true, message: "health:sanctuary" })
+    expect(() => daemonOptions.schedulerFireVerifier({ kind: "scheduler.fire" })).toThrow("Supercronic scheduler is unavailable")
     expect(daemonOptions.senseManager.listSenseRows()).toEqual([])
     expect(daemonOptions.scheduler.listJobs()).toEqual([])
     await expect(daemonOptions.scheduler.triggerJob("nightly")).resolves.toEqual({
@@ -780,7 +823,7 @@ describe("daemon entrypoint", () => {
 
   it("wires private-runtime workers as passive by default and uses offline config validation", async () => {
     supercronicMocks.policy = { scheduler: "supercronic", updates: "disabled" }
-    const { emitNervesEvent, checkAgentConfig, checkAgentConfigWithProviderHealth, processManagerOptions } =
+    const { emitNervesEvent, checkAgentConfig, checkAgentConfigWithProviderHealth, daemonOptions, processManagerOptions } =
       await importDaemonEntryWithPrivateRuntimeConfig({ autoStart: false, source: "default" })
 
     expect(processManagerOptions.agents).toEqual([expect.objectContaining({
@@ -804,6 +847,30 @@ describe("daemon entrypoint", () => {
       meta: { error: "restart budget exhausted in test" },
     })
     expect(process.exit).toHaveBeenCalledWith(1)
+
+    const schedulerCommand = { kind: "scheduler.fire" }
+    expect(daemonOptions.schedulerFireVerifier(schedulerCommand)).toEqual({ schedulerRunId: "run-1", occurrenceId: "occurrence-1" })
+    expect(sanctuaryAcceptanceMocks.verifyFire).toHaveBeenCalledWith(schedulerCommand, expect.objectContaining({ childPid: 42, scenarioHandleDigest: null, identityKey: "k".repeat(43) }))
+    const schedulerOrigin = { schedulerRunId: "run-1", occurrenceId: "occurrence-1" }
+    expect(daemonOptions.schedulerFireConsumer(schedulerOrigin)).toEqual(schedulerOrigin)
+
+    sanctuaryAcceptanceMocks.marker = { label: "unit-16f-cron-fingerprint", scenarioHandleDigest: "a".repeat(64) }
+    expect(daemonOptions.schedulerFireVerifier(schedulerCommand)).toEqual({ schedulerRunId: "run-1", occurrenceId: "occurrence-1" })
+    runSanctuaryHealthHabitMock.mockImplementationOnce(async (_agent, options: any) => {
+      options.acceptanceMetrics.onPrivateTurnStart()
+      options.acceptanceMetrics.onProviderInvocation()
+      return { ok: true, message: "acceptance health" }
+    })
+    await expect(daemonOptions.nativeHabitRunner({
+      agent: "sanctuary", habitName: "sanctuary-health", trigger: "cron", occurrenceId: "occurrence-1", runnerId: "runner-1", schedulerOrigin,
+    })).resolves.toEqual({ ok: true, message: "acceptance health" })
+    expect(sanctuaryAcceptanceMocks.recordReceipt).toHaveBeenCalledWith(expect.objectContaining({ occurrenceId: "occurrence-1", runnerId: "runner-1", providerInvocationCount: 1, privateTurnCount: 1 }))
+
+    sanctuaryAcceptanceMocks.readCursor.mockReturnValueOnce(null)
+    await expect(daemonOptions.nativeHabitRunner({
+      agent: "sanctuary", habitName: "sanctuary-health", trigger: "cron", occurrenceId: "occurrence-2", runnerId: "runner-2", schedulerOrigin,
+    })).rejects.toThrow("supervisor provenance is unavailable")
+    sanctuaryAcceptanceMocks.marker = null
     await vi.waitFor(() => {
       expect(refreshProviderCredentialPoolMock).toHaveBeenCalledWith("slugger", {
         preserveCachedOnFailure: true,

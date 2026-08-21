@@ -50,6 +50,7 @@ const runtimeMocks = vi.hoisted(() => {
     execTool: vi.fn(),
     resolveToolDefinition: vi.fn(),
     emitNervesEvent: vi.fn(),
+    emitNervesEventDurable: vi.fn(async () => undefined),
     readSanctuaryAcceptanceMarker: vi.fn(),
     createTelegramApprovalTransport: vi.fn(() => transport),
     sendTelegramText: vi.fn(),
@@ -95,7 +96,7 @@ vi.mock("../../repertoire/tools", () => ({
   execTool: runtimeMocks.execTool,
   resolveToolDefinition: runtimeMocks.resolveToolDefinition,
 }))
-vi.mock("../../nerves/runtime", () => ({ emitNervesEvent: runtimeMocks.emitNervesEvent }))
+vi.mock("../../nerves/runtime", () => ({ emitNervesEvent: runtimeMocks.emitNervesEvent, emitNervesEventDurable: runtimeMocks.emitNervesEventDurable }))
 vi.mock("../../heart/daemon/sanctuary-acceptance-marker", () => ({
   readSanctuaryAcceptanceMarker: runtimeMocks.readSanctuaryAcceptanceMarker,
   runWithSanctuaryAcceptanceApproval: (_binding: unknown, operation: () => unknown) => operation(),
@@ -266,9 +267,42 @@ describe("Telegram approval runtime safety", () => {
 
     await expect(executeApprovedTelegramTool("ponder", {}, execute)).resolves.toBe("ordinary output")
   })
+
+  it("rethrows ordinary and non-Error restart failures without misclassifying private detail", async () => {
+    await expect(executeApprovedTelegramTool("ponder", {}, vi.fn().mockRejectedValue(new Error("ordinary failure"))))
+      .rejects.toThrow("ordinary failure")
+    await expect(executeApprovedTelegramTool("unraid_restart_container", {}, vi.fn().mockRejectedValue("private failure")))
+      .rejects.toBe("private failure")
+    expect(runtimeMocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.telegram_approved_restart_error",
+      meta: expect.objectContaining({ reason: "unknown" }),
+    }))
+  })
 })
 
 describe("Telegram approval runtime orchestration", () => {
+  it("executes every default transport adapter and both durable settlement emitters", async () => {
+    makeRuntime()
+    const options = transportOptions()
+    const storeOptions = runtimeMocks.openApprovalStore.mock.calls.at(-1)?.[0]
+    expect(storeOptions.now()).toBeInstanceOf(Date)
+    expect(options.acceptanceEventMeta()).toEqual({})
+    runtimeMocks.readSanctuaryAcceptanceMarker.mockReturnValue({ scenarioHandleDigest: "a".repeat(64) })
+    expect(options.acceptanceEventMeta()).toEqual({ scenarioHandleDigest: "a".repeat(64) })
+    expect(options.signAcceptanceEvidence("event", { value: true })).toMatch(/^[0-9a-f]{64}$/u)
+    expect(options.acceptanceMessageIdDigest("101")).toMatch(/^[0-9a-f]{64}$/u)
+    runtimeMocks.tokenState.value = undefined
+    await expect(options.resolveDecisionToken("missing")).resolves.toBe("")
+    await options.commitAcceptanceEvidence("telegram.callback_settled", { kind: "live" })
+    await options.commitAcceptanceEvidence("telegram.callback_recovery_settled", { kind: "recovery" })
+    expect(runtimeMocks.emitNervesEventDurable).toHaveBeenCalledTimes(2)
+
+    createTelegramApprovalRuntime({
+      agentName: "sanctuary", api: { request: vi.fn(), stop: vi.fn() }, authorizedUserId: "10", authorizedChatId: "20",
+      subject: "tg_stable-subject", identityKey: "k".repeat(43), toolContext: { agentName: "sanctuary" },
+    })
+    expect(() => transportOptions().effectBarrier()).not.toThrow()
+  })
   it("defaults legacy approval subjects to empty for a compatibility store without discovery", () => {
     const discover = runtimeMocks.store.listTelegramIdentitySubjects
     ;(runtimeMocks.store as any).listTelegramIdentitySubjects = undefined
@@ -372,6 +406,8 @@ describe("Telegram approval runtime orchestration", () => {
       event: "senses.telegram_approval_continuation_delivered",
       meta: expect.objectContaining({ approvalId: "approval-1", ...acceptanceBinding, resultDigest: expect.stringMatching(/^[0-9a-f]{64}$/u), deliveryMessageIdDigest: expect.stringMatching(/^[0-9a-f]{64}$/u), evidenceMac: expect.stringMatching(/^[0-9a-f]{64}$/u) }),
     }))
+    runtimeMocks.sendTelegramText.mockResolvedValueOnce(undefined)
+    await transportOptions().onDecision({ approvalId: "approval-1", acceptanceBinding })
   })
 
   it("expires approvals and resolves decision tokens without exposing missing secrets", async () => {
@@ -492,6 +528,7 @@ describe("Telegram approval runtime orchestration", () => {
 
   it("wires continuation claims, persistence, delivery, and recursively gated proposals", async () => {
     makeRuntime()
+    runtimeMocks.sendTelegramText.mockResolvedValueOnce([])
     runtimeMocks.store.read.mockReturnValue({ ...baseRecord, state: "succeeded" })
     runtimeMocks.resumeApprovalContinuation.mockImplementation(async (options) => {
       expect(options.claimContinuation()).toEqual(expect.objectContaining({ claimed: true }))
@@ -737,5 +774,26 @@ describe("Telegram approval runtime orchestration", () => {
     expect(runtimeMocks.recoverAttemptedApproval).toHaveBeenCalled()
     expect(runtimeMocks.resumeApprovalContinuation).toHaveBeenCalledTimes(3)
     expect(runtimeMocks.transport.terminalizeRecovered).toHaveBeenCalledTimes(3)
+  })
+
+  it("reconciles an expired nonterminal pending prompt during startup", async () => {
+    const runtime = makeRuntime()
+    runtimeMocks.transport.listPendingDeliveries.mockReturnValue([{ approvalId: "expired", deliveryState: "bound", messageId: "101" }])
+    runtimeMocks.store.read.mockReturnValue({ ...baseRecord, approvalId: "expired", state: "expired" })
+
+    await runtime.recover()
+
+    expect(runtimeMocks.transport.reconcileExpired).toHaveBeenCalledOnce()
+    expect(runtimeMocks.resumeApprovalContinuation).not.toHaveBeenCalled()
+  })
+
+  it("rejects unsupported durable settlement evidence before emitting it", async () => {
+    makeRuntime()
+    const transportOptions = runtimeMocks.createTelegramApprovalTransport.mock.calls.at(-1)?.[0] as {
+      commitAcceptanceEvidence(event: string, meta: Record<string, unknown>): Promise<void>
+    }
+
+    await expect(transportOptions.commitAcceptanceEvidence("telegram.unsupported", {}))
+      .rejects.toThrow("unsupported")
   })
 })

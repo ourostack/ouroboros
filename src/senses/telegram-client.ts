@@ -602,6 +602,62 @@ export interface TelegramPersistedPendingApproval {
 
 export type TelegramPersistedApprovalStateKind = "ordinary" | "decision_attempt" | "action_terminal" | "delivery_interruption" | "expiry_observed" | "terminal_tombstone"
 
+export function assertTelegramNoResidualTerminalAuthority(hasReceipt: boolean, hasTerminalMac: boolean): void {
+  if (hasReceipt || hasTerminalMac) throw new Error("Telegram persisted terminal authority is structurally incomplete")
+}
+
+export function releaseTelegramApprovalOperationClaim<T>(claims: Map<string, T>, approvalId: string, claim: T): void {
+  if (claims.get(approvalId) === claim) claims.delete(approvalId)
+}
+
+export function requireTelegramDecisionAttempt(
+  pending: TelegramPersistedPendingApproval,
+): NonNullable<TelegramPersistedPendingApproval["decisionAttempt"]> {
+  const attempt = pending.decisionAttempt
+  if (!attempt) throw new Error("Telegram persisted decision attempt is invalid")
+  return attempt
+}
+
+export function telegramDecisionAttemptDigest(
+  attempt: TelegramPersistedPendingApproval["decisionAttempt"],
+): string | null {
+  return attempt ? createHash("sha256").update(JSON.stringify(attempt)).digest("hex") : null
+}
+
+export function requireTelegramExpiryObservation(
+  pending: TelegramPersistedPendingApproval,
+): NonNullable<TelegramPersistedPendingApproval["expiryObservation"]> {
+  const observation = pending.expiryObservation
+  if (!observation) throw new Error("Telegram persisted expiry observation is invalid")
+  return observation
+}
+
+export function telegramAcceptanceEvidenceMac(
+  signer: TelegramApprovalTransportOptions["signAcceptanceEvidence"],
+  event: string,
+  meta: Record<string, unknown>,
+): string | null {
+  return signer?.(event, meta) ?? null
+}
+
+export function assertTelegramDecisionSettlementState(state: TelegramPersistedApprovalStateKind): void {
+  if (state === "delivery_interruption") throw new Error("Telegram delivery-interruption state cannot settle a decision")
+  if (state === "expiry_observed" || state === "terminal_tombstone") throw new Error("Telegram terminal lifecycle state cannot settle a decision")
+}
+
+export function requireTelegramExpectedDecision<T>(expected: T | undefined): T {
+  if (!expected) throw new Error("Telegram persisted decision attempt is unavailable")
+  return expected
+}
+
+export function assertTelegramOrdinaryDecisionEligibility(state: TelegramPersistedApprovalStateKind, message: string): void {
+  if (state !== "ordinary") throw new Error(message)
+}
+
+export function telegramApprovalOperationCompleted(result: boolean | undefined): boolean {
+  return result ?? false
+}
+
 export function classifyTelegramPersistedApprovalState(
   pending: TelegramPersistedPendingApproval,
 ): TelegramPersistedApprovalStateKind {
@@ -664,7 +720,7 @@ export function classifyTelegramPersistedApprovalState(
     }
     return "action_terminal"
   }
-  if (hasReceipt || hasTerminalMac) throw new Error("Telegram persisted terminal authority is structurally incomplete")
+  assertTelegramNoResidualTerminalAuthority(hasReceipt, hasTerminalMac)
   if (pending.deliveryState === "terminal_tombstone") return "terminal_tombstone"
   if (pending.expiryObservation !== undefined) {
     if (pending.deliveryState !== "bound" || !hasCanonicalMessageId) {
@@ -803,7 +859,7 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
     const claim = { done, release }
     approvalOperations.set(approvalId, claim)
     try { return await operation() } finally {
-      if (approvalOperations.get(approvalId) === claim) approvalOperations.delete(approvalId)
+      releaseTelegramApprovalOperationClaim(approvalOperations, approvalId, claim)
       release()
     }
   }
@@ -866,8 +922,7 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
     pending: TelegramPendingApproval,
     expected?: { decision: "approve" | "deny"; queryIdDigest: string },
   ): Promise<NonNullable<TelegramPersistedPendingApproval["decisionAttempt"]>> => {
-    const attempt = pending.decisionAttempt
-    if (!attempt) throw new Error("Telegram persisted decision attempt is invalid")
+    const attempt = requireTelegramDecisionAttempt(pending)
     const lowerBound = pending.acceptanceBinding?.boundAt ?? pending.expiresAt - TELEGRAM_APPROVAL_TTL_MS
     const unsigned = { schemaVersion: attempt.schemaVersion, decision: attempt.decision, queryIdDigest: attempt.queryIdDigest, attemptedAt: attempt.attemptedAt }
     const token = pending.decisionToken ?? await options.resolveDecisionToken?.(pending.approvalId)
@@ -908,7 +963,7 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
   const terminalOutcomeFields = (pending: TelegramPendingApproval): Record<string, unknown> => ({
     accepted: pending.terminal?.accepted,
     terminalText: pending.terminal?.terminalText,
-    decisionAttemptDigest: pending.decisionAttempt ? createHash("sha256").update(JSON.stringify(pending.decisionAttempt)).digest("hex") : null,
+    decisionAttemptDigest: telegramDecisionAttemptDigest(pending.decisionAttempt),
   })
 
   const validateTerminalOutcome = (pending: TelegramPendingApproval): void => {
@@ -922,9 +977,7 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
   const validateSettlementReceipt = (pending: TelegramPendingApproval): NonNullable<TelegramPersistedPendingApproval["settlementReceipt"]> => {
     const receipt = pending.settlementReceipt
     validateTerminalOutcome(pending)
-    const decisionAttemptDigest = pending.decisionAttempt
-      ? createHash("sha256").update(JSON.stringify(pending.decisionAttempt)).digest("hex")
-      : null
+    const decisionAttemptDigest = telegramDecisionAttemptDigest(pending.decisionAttempt)
     if (!receipt || !pending.terminal || !pending.decisionAttempt || receipt.schemaVersion !== "telegram-approval-settlement-receipt-v1"
       || !["live", "recovery"].includes(receipt.kind)
       || !Number.isSafeInteger(receipt.callbackAt)
@@ -956,11 +1009,10 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
   }
 
   const validateExpiryObservation = (pending: TelegramPendingApproval): NonNullable<TelegramPersistedPendingApproval["expiryObservation"]> => {
-    const observation = pending.expiryObservation
-    if (!observation) throw new Error("Telegram persisted expiry observation is invalid")
+    const observation = requireTelegramExpiryObservation(pending)
     const fields = expiryObservationFields(pending, observation.observedAt)
     const expectedMac = pending.acceptanceBinding
-      ? options.signAcceptanceEvidence?.("telegram.approval_expiry_observed", acceptanceEvidenceUnsigned(pending, fields)) ?? null
+      ? telegramAcceptanceEvidenceMac(options.signAcceptanceEvidence, "telegram.approval_expiry_observed", acceptanceEvidenceUnsigned(pending, fields))
       : null
     if (observation.schemaVersion !== "telegram-approval-expiry-observation-v1" || observation.deadlineAt !== pending.expiresAt
       || !Number.isSafeInteger(observation.observedAt) || observation.observedAt < observation.deadlineAt
@@ -1092,8 +1144,7 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
     expected?: { decision: "approve" | "deny"; queryIdDigest: string; callbackQueryId: string; observedAt: number },
   ): Promise<{ accepted: boolean; terminalText: string; callbackAt: number }> => {
     const persistedState = classifyTelegramPersistedApprovalState(pending)
-    if (persistedState === "delivery_interruption") throw new Error("Telegram delivery-interruption state cannot settle a decision")
-    if (persistedState === "expiry_observed" || persistedState === "terminal_tombstone") throw new Error("Telegram terminal lifecycle state cannot settle a decision")
+    assertTelegramDecisionSettlementState(persistedState)
     if (pending.settlementReceipt) {
       const receipt = validateSettlementReceipt(pending)
       await emitSettlementReceipt(pending)
@@ -1103,19 +1154,19 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
     }
     let decisionToken: string | undefined
     if (!pending.decisionAttempt) {
-      if (!expected) throw new Error("Telegram persisted decision attempt is unavailable")
-      if (classifyTelegramPersistedApprovalState(pending) !== "ordinary") throw new Error("Telegram approval is no longer eligible for a decision attempt")
+      const observed = requireTelegramExpectedDecision(expected)
+      assertTelegramOrdinaryDecisionEligibility(classifyTelegramPersistedApprovalState(pending), "Telegram approval is no longer eligible for a decision attempt")
       decisionToken = await resolveDecisionToken(pending)
       const fencingToken = decisionToken
       const unsigned = {
         schemaVersion: "telegram-approval-decision-attempt-v1" as const,
-        decision: expected.decision,
-        queryIdDigest: expected.queryIdDigest,
-        attemptedAt: expected.observedAt,
+        decision: observed.decision,
+        queryIdDigest: observed.queryIdDigest,
+        attemptedAt: observed.observedAt,
       }
       if (unsigned.attemptedAt < (pending.acceptanceBinding?.boundAt ?? pending.expiresAt - TELEGRAM_APPROVAL_TTL_MS)
         || unsigned.attemptedAt >= pending.expiresAt) throw new Error("Telegram decision attempt was observed outside its deadline")
-      if (classifyTelegramPersistedApprovalState(pending) !== "ordinary") throw new Error("Telegram approval lifecycle changed before decision fencing")
+      assertTelegramOrdinaryDecisionEligibility(classifyTelegramPersistedApprovalState(pending), "Telegram approval lifecycle changed before decision fencing")
       persistMutation(pending, () => {
         pending.decisionAttempt = {
           ...unsigned,
@@ -1322,7 +1373,7 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
         await settleDecisionAttempt(pending)
         return true
       })
-      return result ?? false
+      return telegramApprovalOperationCompleted(result)
     },
     async terminalizeOrphaned(approvalId, terminalText) {
       const result = await withApprovalExclusive(approvalId, true, async () => {

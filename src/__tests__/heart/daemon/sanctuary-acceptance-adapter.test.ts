@@ -378,6 +378,66 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     } finally { fs.rmSync(root, { recursive: true, force: true }) }
   })
 
+  it("honors durable interactive receipts across poll, preserve, cleanup, and binding failures", async () => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-interactive-receipt-lifecycle-"))
+    const handle = "a".repeat(64)
+    const receiptRoot = path.join(agentRoot, "state/acceptance/interactive-driver-receipts")
+    const filePath = path.join(receiptRoot, `${handle}.json`)
+    fs.mkdirSync(receiptRoot, { recursive: true })
+    const readApprovals = vi.fn(() => [])
+    const hostRequest = vi.fn()
+    const driver = createSanctuaryInteractiveAcceptanceScenarioDriver({ agentRoot, readApprovals, hostRequest })
+    try {
+      expect(await driver.poll("unit-16d-whats-up", handle)).toEqual({ state: "waiting" })
+      expect(driver.complete("unit-16d-whats-up", handle)).toBe("complete")
+      driver.cleanup("unit-16d-whats-up", handle)
+
+      fs.writeFileSync(filePath, JSON.stringify({ ...validInteractiveReceipt("unit-16l-duplicate-callback", handle), phase: "prepared" }))
+      expect(await driver.poll("unit-16l-duplicate-callback", handle)).toEqual({ state: "waiting" })
+      expect(driver.complete("unit-16l-duplicate-callback", handle)).toBe("preserve")
+      expect(() => driver.cleanup("unit-16l-duplicate-callback", handle)).toThrow("not cleanup-ready")
+
+      fs.writeFileSync(filePath, JSON.stringify(validInteractiveReceipt("unit-16l-duplicate-callback", handle)))
+      expect(await driver.poll("unit-16l-duplicate-callback", handle)).toEqual({ state: "driven" })
+      expect(driver.complete("unit-16l-duplicate-callback", handle)).toBe("complete")
+      driver.cleanup("unit-16l-duplicate-callback", handle)
+      expect(fs.existsSync(filePath)).toBe(false)
+
+      fs.writeFileSync(filePath, JSON.stringify({ ...validInteractiveReceipt("unit-16l-duplicate-callback", handle), label: "unit-16k-timeout-stale" }))
+      await expect(driver.poll("unit-16l-duplicate-callback", handle)).rejects.toThrow("binding mismatch")
+      expect(() => driver.complete("unit-16l-duplicate-callback", handle)).toThrow("binding mismatch")
+    } finally { fs.rmSync(agentRoot, { recursive: true, force: true }) }
+  })
+
+  it("fails closed on ambiguous proposals and restart-driver failure envelopes", async () => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-interactive-driver-errors-"))
+    const handle = "a".repeat(64)
+    const approval = {
+      approvalId: "approval-1", state: "proposed", toolName: "unraid_restart_container", arguments: { container: "calibre-web" },
+      checkpointDigest: "b".repeat(64), epoch: 0, suspendedSessionRevision: "c".repeat(64), transport: "telegram",
+    }
+    try {
+      const ambiguous = createSanctuaryInteractiveAcceptanceScenarioDriver({
+        agentRoot,
+        readApprovals: () => [{ approval: approval as never, continuation: null }, { approval: { ...approval, approvalId: "approval-2" } as never, continuation: null }],
+        hostRequest: vi.fn(),
+      })
+      await expect(ambiguous.poll("unit-16l-duplicate-callback", handle)).rejects.toThrow("ambiguous")
+
+      for (const [response, message] of [
+        [{ state: "failed", errorDigest: "bad" }, "failure is invalid"],
+        [{ state: "failed", errorDigest: "d".repeat(64) }, "driver failed"],
+      ] as const) {
+        const driver = createSanctuaryInteractiveAcceptanceScenarioDriver({
+          agentRoot,
+          readApprovals: () => [{ approval: approval as never, continuation: null }],
+          hostRequest: async () => response,
+        })
+        await expect(driver.poll("unit-16m-restart-continuation", handle)).rejects.toThrow(message)
+      }
+    } finally { fs.rmSync(agentRoot, { recursive: true, force: true }) }
+  })
+
   it("uses one production callback session for two barrier-released queries and a terminal stale replay", async () => {
     const scenarioHandleDigest = "a".repeat(64)
     const approval = {
@@ -582,6 +642,14 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     } finally {
       fs.rmSync(root, { recursive: true, force: true })
     }
+  })
+
+  it("fails closed for nonzero and timed-out default adapter subprocesses", async () => {
+    const failed = createSanctuaryAcceptanceAdapterDependencies(3, { adapterTimeoutMs: 200 })
+    await expect(failed.execFile("/usr/bin/false", [])).rejects.toThrow("acceptance adapter subprocess failed")
+
+    const timedOut = createSanctuaryAcceptanceAdapterDependencies(3, { adapterTimeoutMs: 1 })
+    await expect(timedOut.execFile("/bin/sleep", ["1"])).rejects.toThrow("acceptance adapter subprocess timed out")
   })
 
   it("packages every Unit 16 harness operation with a fixed operator-only authority", () => {

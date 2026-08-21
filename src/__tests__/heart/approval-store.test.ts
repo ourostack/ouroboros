@@ -13,6 +13,7 @@ import {
   canonicalApprovalArguments,
   openApprovalStore,
   parseApprovalRecord,
+  readApprovalsByScenarioHandleDigest,
   type ApprovalStore,
 } from "../../heart/approval-store"
 
@@ -106,6 +107,42 @@ afterEach(() => {
 })
 
 describe("approval store", () => {
+  it("rejects fractional decision timestamps before inspecting the decision binding", () => {
+    const store = open()
+    const proposed = makeProposed(store)
+    expect(() => store.decide(decisionInput(proposed.decisionToken, { decisionAt: 1.5 })))
+      .toThrowError(new ApprovalStoreError("invalid_decision_time"))
+    store.close()
+  })
+
+  it("projects both absent and claimed continuations from a scenario-bound database", () => {
+    const root = makeRoot()
+    const databasePath = path.join(root, "approvals.sqlite")
+    const store = openApprovalStore({
+      databasePath,
+      now: () => new Date(NOW),
+      randomUUID: () => UUID,
+      randomBytes: (size) => Buffer.alloc(size, 0xab),
+    })
+    const scenarioHandleDigest = "9".repeat(64)
+    const prepared = store.prepare(proposalInput({ scenarioHandleDigest }))
+    expect(readApprovalsByScenarioHandleDigest(databasePath, scenarioHandleDigest)).toEqual([
+      { approval: prepared.record, continuation: null },
+    ])
+    store.activate({ approvalId: UUID, checkpointDigest: prepared.record.checkpointDigest, suspendedSessionRevision: "f".repeat(64) })
+    store.bindPrompt({ approvalId: UUID, transport: "telegram", transportChatId: "7", transportMessageId: "99" })
+    const claimed = store.decide(decisionInput(prepared.decisionToken))
+    store.markAttempted({ approvalId: UUID, ownerId: claimed.ownerId!, epoch: claimed.epoch })
+    store.complete({ approvalId: UUID, ownerId: claimed.ownerId!, epoch: claimed.epoch, state: "succeeded", result: "ok" })
+    const continuation = store.claimContinuation({ approvalId: UUID, ownerId: "continuation-a", ownerPid: 42 })
+    expect(continuation.claimed).toBe(true)
+    expect(readApprovalsByScenarioHandleDigest(databasePath, scenarioHandleDigest)[0]?.continuation).toMatchObject({
+      continuationOwnerId: "continuation-a",
+      continuationOwnerPid: 42,
+      continuationState: "claimed",
+    })
+    store.close()
+  })
   it("binds approvals to an opaque acceptance scenario digest and supports read-only lookup", () => {
     const store = open()
     const scenarioHandleDigest = "9".repeat(64)

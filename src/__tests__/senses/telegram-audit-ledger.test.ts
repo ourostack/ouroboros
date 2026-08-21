@@ -110,4 +110,93 @@ describe("Telegram acceptance audit ledger", () => {
     expect(() => ledger.assertCapacity(0)).toThrow("reservation is invalid")
     expect(() => ledger.assertCapacity(2)).toThrow("lacks reserved capacity")
   })
+
+  it("exercises canonical arrays and rejects unsupported canonical values", () => {
+    const ledger = createTelegramAuditLedger({ root, identityKey })
+    ledger.append({ ...event("array", "2026-08-20T20:00:00.000Z"), meta: { values: [1, 2] } })
+    expect(() => ledger.append({ ...event("undefined", "2026-08-20T20:00:01.000Z"), ts: undefined as never })).toThrow("unsupported value")
+  })
+
+  it("rejects independently bounded or malformed head and ledger envelopes", () => {
+    const ledger = createTelegramAuditLedger({ root, identityKey })
+    const validHead = fs.readFileSync(ledger.headPath, "utf8")
+    expect(() => verifyTelegramAuditLedger({ ledgerRaw: "", headRaw: "x".repeat(4 * 1024 + 1), identityKey })).toThrow("head exceeds")
+    expect(() => verifyTelegramAuditLedger({ ledgerRaw: "", headRaw: "null", identityKey })).toThrow("head is invalid")
+    expect(() => verifyTelegramAuditLedger({ ledgerRaw: "x".repeat(32 * 1024 * 1024 + 1), headRaw: validHead, identityKey })).toThrow("ledger exceeds")
+    expect(() => verifyTelegramAuditLedger({ ledgerRaw: `${"x".repeat(64 * 1024 + 1)}\n`, headRaw: validHead, identityKey })).toThrow("ledger exceeds")
+    expect(() => verifyTelegramAuditLedger({ ledgerRaw: `${Array(100_001).fill("x").join("\n")}\n`, headRaw: validHead, identityKey })).toThrow("ledger exceeds")
+  })
+
+  it("rejects every independently malformed authenticated head field", () => {
+    const ledger = createTelegramAuditLedger({ root, identityKey })
+    const valid = JSON.parse(fs.readFileSync(ledger.headPath, "utf8")) as Record<string, unknown>
+    const mutations: Array<(head: Record<string, unknown>) => void> = [
+      (head) => { head.extra = true },
+      (head) => { head.schemaVersion = "wrong" },
+      (head) => { head.recordCount = 0.5 },
+      (head) => { head.recordCount = -1 },
+      (head) => { head.recordCount = 100_001 },
+      (head) => { head.lastMac = 1 },
+      (head) => { head.lastMac = "bad" },
+      (head) => { head.headMac = 1 },
+      (head) => { head.headMac = "bad" },
+    ]
+    for (const mutate of mutations) {
+      const head = structuredClone(valid); mutate(head)
+      expect(() => verifyTelegramAuditLedger({ ledgerRaw: "", headRaw: JSON.stringify(head), identityKey })).toThrow("head MAC is invalid")
+    }
+  })
+
+  it("rejects every independently malformed row field before MAC trust", () => {
+    const ledger = createTelegramAuditLedger({ root, identityKey })
+    ledger.append(event("valid", "2026-08-20T20:00:00.000Z"))
+    const validRow = JSON.parse(fs.readFileSync(ledger.ledgerPath, "utf8")) as Record<string, unknown>
+    const headRaw = fs.readFileSync(ledger.headPath, "utf8")
+    const mutations: Array<(row: Record<string, unknown>) => void> = [
+      (row) => { row.extra = true },
+      (row) => { row.schemaVersion = "wrong" },
+      (row) => { row.sequence = 2 },
+      (row) => { row.previousMac = "f".repeat(64) },
+      (row) => { row.ts = 1 },
+      (row) => { row.ts = "x".repeat(31) },
+      (row) => { row.ts = "invalid" },
+      (row) => { row.ts = "2026-08-20T20:00:00Z" },
+      (row) => { row.level = 1 },
+      (row) => { row.level = "fatal" },
+      (row) => { row.event = 1 },
+      (row) => { row.event = "" },
+      (row) => { row.event = "x".repeat(257) },
+      (row) => { row.component = 1 },
+      (row) => { row.component = "" },
+      (row) => { row.component = "x".repeat(129) },
+      (row) => { row.trace_id = 1 },
+      (row) => { row.trace_id = "" },
+      (row) => { row.trace_id = "x".repeat(257) },
+      (row) => { row.message = 1 },
+      (row) => { row.message = "x".repeat(4_097) },
+      (row) => { row.meta = null },
+      (row) => { row.meta = "bad" },
+      (row) => { row.meta = [] },
+      (row) => { row.rowMac = 1 },
+      (row) => { row.rowMac = "bad" },
+    ]
+    for (const mutate of mutations) {
+      const row = structuredClone(validRow); mutate(row)
+      expect(() => verifyTelegramAuditLedger({ ledgerRaw: `${JSON.stringify(row)}\n`, headRaw, identityKey })).toThrow("row is invalid")
+    }
+  })
+
+  it("rejects default-detected private material, split presence, and non-Error append failures", () => {
+    const ledger = createTelegramAuditLedger({ root, identityKey })
+    const rawIdentity = JSON.stringify({ authorizedUserId: "123456789" })
+    expect(() => verifyTelegramAuditLedger({ ledgerRaw: `${rawIdentity}\n`, headRaw: fs.readFileSync(ledger.headPath, "utf8"), identityKey })).toThrow("private material")
+
+    fs.unlinkSync(ledger.headPath)
+    expect(() => createTelegramAuditLedger({ root, identityKey })).toThrow("presence mismatch")
+    fs.rmSync(root, { recursive: true, force: true }); fs.mkdirSync(root)
+    const fresh = createTelegramAuditLedger({ root, identityKey })
+    const throwing = { ...event("throwing", "2026-08-20T20:00:00.000Z"), toJSON: () => { throw "non-error" } }
+    expect(() => fresh.append(throwing)).toThrow("non-error")
+    expect(() => fresh.assertHealthy()).toThrow("non-error")
+  })
 })

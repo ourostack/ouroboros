@@ -16,8 +16,19 @@ import {
   FileTelegramOffsetStore,
   FileTelegramUpdateInboxStore,
   FileTelegramPendingApprovalStore,
+  classifyTelegramPersistedApprovalState,
+  assertTelegramDecisionSettlementState,
+  assertTelegramNoResidualTerminalAuthority,
+  assertTelegramOrdinaryDecisionEligibility,
   createTelegramLongPoll,
   createTelegramApprovalTransport,
+  releaseTelegramApprovalOperationClaim,
+  requireTelegramDecisionAttempt,
+  requireTelegramExpectedDecision,
+  requireTelegramExpiryObservation,
+  telegramAcceptanceEvidenceMac,
+  telegramApprovalOperationCompleted,
+  telegramDecisionAttemptDigest,
   type TelegramPendingApprovalStore,
   type TelegramBotApi,
 } from "../../senses/telegram-client"
@@ -30,6 +41,43 @@ afterEach(() => {
 })
 
 describe("Telegram approval callback transport", () => {
+  it("enforces the reusable persisted-state and exclusive-operation safety primitives", () => {
+    expect(() => assertTelegramNoResidualTerminalAuthority(false, false)).not.toThrow()
+    expect(() => assertTelegramNoResidualTerminalAuthority(true, false)).toThrow("terminal authority is structurally incomplete")
+    expect(() => assertTelegramNoResidualTerminalAuthority(false, true)).toThrow("terminal authority is structurally incomplete")
+
+    const claim = {}
+    const replacement = {}
+    const claims = new Map([["same", claim], ["replacement", replacement]])
+    releaseTelegramApprovalOperationClaim(claims, "same", claim)
+    releaseTelegramApprovalOperationClaim(claims, "replacement", claim)
+    expect(claims.has("same")).toBe(false)
+    expect(claims.get("replacement")).toBe(replacement)
+
+    const attempt = { schemaVersion: "telegram-approval-decision-attempt-v1" as const, decision: "approve" as const, queryIdDigest: "a".repeat(64), attemptedAt: 900, evidenceMac: "b".repeat(64) }
+    expect(requireTelegramDecisionAttempt({ decisionAttempt: attempt } as never)).toBe(attempt)
+    expect(() => requireTelegramDecisionAttempt({} as never)).toThrow("decision attempt is invalid")
+    expect(telegramDecisionAttemptDigest(attempt)).toMatch(/^[0-9a-f]{64}$/u)
+    expect(telegramDecisionAttemptDigest(undefined)).toBeNull()
+
+    const observation = { schemaVersion: "telegram-approval-expiry-observation-v1" as const, deadlineAt: 1_000, observedAt: 1_001, evidenceMac: null }
+    expect(requireTelegramExpiryObservation({ expiryObservation: observation } as never)).toBe(observation)
+    expect(() => requireTelegramExpiryObservation({} as never)).toThrow("expiry observation is invalid")
+    expect(telegramAcceptanceEvidenceMac(undefined, "event", {})).toBeNull()
+    expect(telegramAcceptanceEvidenceMac(() => "f".repeat(64), "event", {})).toBe("f".repeat(64))
+
+    expect(() => assertTelegramDecisionSettlementState("ordinary")).not.toThrow()
+    expect(() => assertTelegramDecisionSettlementState("delivery_interruption")).toThrow("cannot settle")
+    expect(() => assertTelegramDecisionSettlementState("expiry_observed")).toThrow("terminal lifecycle")
+    expect(() => assertTelegramDecisionSettlementState("terminal_tombstone")).toThrow("terminal lifecycle")
+    expect(requireTelegramExpectedDecision("expected")).toBe("expected")
+    expect(() => requireTelegramExpectedDecision(undefined)).toThrow("unavailable")
+    expect(() => assertTelegramOrdinaryDecisionEligibility("ordinary", "changed")).not.toThrow()
+    expect(() => assertTelegramOrdinaryDecisionEligibility("decision_attempt", "changed")).toThrow("changed")
+    expect(telegramApprovalOperationCompleted(true)).toBe(true)
+    expect(telegramApprovalOperationCompleted(undefined)).toBe(false)
+  })
+
   function approvalFixture(input: {
     now?: () => number
     records?: ReturnType<TelegramPendingApprovalStore["load"]>
@@ -40,6 +88,7 @@ describe("Telegram approval callback transport", () => {
     handles?: string[]
     resolveDecisionToken?: () => Promise<string | undefined>
     effectBarrier?: () => void
+    signAcceptanceEvidence?: () => string
   } = {}) {
     let records = structuredClone(input.records ?? [])
     const saves: ReturnType<TelegramPendingApprovalStore["load"]>[] = []
@@ -73,6 +122,7 @@ describe("Telegram approval callback transport", () => {
       resolveDecisionToken: input.resolveDecisionToken ?? (async () => "restored-secret-token"),
       now: input.now ?? (() => 1_000_000),
       effectBarrier: input.effectBarrier,
+      signAcceptanceEvidence: input.signAcceptanceEvidence,
     })
     return { transport, calls, onDecision, records: () => records, saves }
   }
@@ -124,6 +174,156 @@ describe("Telegram approval callback transport", () => {
     expect(callback.calls).toEqual([])
     expect(callback.onDecision).not.toHaveBeenCalled()
     expect(callback.saves).toEqual([])
+  })
+
+  it("rejects invalid v4 inbox state instead of silently dropping it", () => {
+    const directory = mkdtempSync(join(tmpdir(), "telegram-invalid-v4-inbox-")); tempDirectories.push(directory)
+    const filePath = join(directory, "inbox.json")
+    writeFileSync(filePath, JSON.stringify({ version: 4, pending: [], dispatching: [], indeterminate: [], settled: {} }))
+    expect(() => new FileTelegramUpdateInboxStore(filePath).load()).toThrow("state is corrupt")
+  })
+
+  it("checks existing settled receipts while completing a different captured update", () => {
+    const directory = mkdtempSync(join(tmpdir(), "telegram-settled-scan-")); tempDirectories.push(directory)
+    const store = new FileTelegramUpdateInboxStore(join(directory, "inbox.json"))
+    const first = { update_id: 1, message: { message_id: 1, from: { id: 10 }, chat: { id: 10 }, text: "first" } }
+    const second = { update_id: 2, message: { message_id: 2, from: { id: 10 }, chat: { id: 10 }, text: "second" } }
+    expect(store.capture(first)).toBe(true); expect(store.claim(first)).toBe(true); store.complete(first)
+    expect(store.capture(second)).toBe(true); expect(store.claim(second)).toBe(true); store.complete(second)
+    expect(store.load()).toHaveLength(2)
+  })
+
+  it("redacts the surviving pending record while removing a settled sibling", async () => {
+    const fixture = approvalFixture({ handles: ["first-a", "first-d", "second-a", "second-d"] })
+    const first = await fixture.transport.sendApproval({ approvalId: "first", decisionToken: "secret-1", prompt: "First?" })
+    await fixture.transport.sendApproval({ approvalId: "second", decisionToken: "secret-2", prompt: "Second?" })
+    await fixture.transport.handleUpdate(approvalCallback(first.approveCallbackData))
+    expect(fixture.records()).toHaveLength(1)
+    expect(JSON.stringify(fixture.records())).not.toContain("secret-2")
+  })
+
+  it("rejects expiry state routed outside a bound canonical prompt", async () => {
+    const fixture = approvalFixture({ records: [{
+      approvalId: "approval-1", messageId: "99", deliveryState: "pending", approveCallbackData: "a:approve", denyCallbackData: "d:deny", expiresAt: 1_000,
+      expiryObservation: { schemaVersion: "telegram-approval-expiry-observation-v1", deadlineAt: 1_000, observedAt: 1_001, evidenceMac: null },
+    }] })
+    await expect(fixture.transport.handleUpdate(approvalCallback("a:approve"))).rejects.toThrow("expiry observation has invalid delivery routing")
+  })
+
+  it("rejects a decision observed before its authenticated binding window", async () => {
+    const fixture = approvalFixture({ now: () => 1_000, records: [{
+      approvalId: "approval-1", messageId: "99", deliveryState: "bound", approveCallbackData: "a:approve", denyCallbackData: "d:deny", expiresAt: 2_000,
+      acceptanceBinding: { scenarioHandleDigest: "a".repeat(64), actionDigest: "b".repeat(64), targetDigest: "c".repeat(64), checkpointDigest: "d".repeat(64), suspendedSessionRevisionDigest: "e".repeat(64), messageIdDigest: "f".repeat(64), boundAt: 1_100 },
+    }] })
+    await expect(fixture.transport.handleUpdate(approvalCallback("a:approve"))).rejects.toThrow("outside its deadline")
+  })
+
+  it("rejects malformed authenticated settlement and tombstone records at their consumers", async () => {
+    const attempt = { schemaVersion: "telegram-approval-decision-attempt-v1" as const, decision: "approve" as const, queryIdDigest: "a".repeat(64), attemptedAt: 900, evidenceMac: "b".repeat(64), recoveryMac: "c".repeat(64) }
+    const digest = createHash("sha256").update(JSON.stringify(attempt)).digest("hex")
+    const authority = approvalFixture({ records: [{
+      approvalId: "authority", messageId: "99", deliveryState: "bound", approveCallbackData: "a:authority", denyCallbackData: "d:authority", expiresAt: 1_000,
+      decisionAttempt: attempt, terminal: { accepted: true, terminalText: "done" }, terminalMac: "f".repeat(64),
+      settlementReceipt: { schemaVersion: "telegram-approval-settlement-receipt-v1", kind: "recovery", callbackAt: 900, accepted: true, reason: "decision_refused", acknowledgementState: "indeterminate_after_restart", recoveredAt: 1_000, decisionAttemptDigest: digest, evidenceMac: "f".repeat(64) },
+    }], resolveDecisionToken: async () => undefined, signAcceptanceEvidence: () => "f".repeat(64) })
+    await expect(authority.transport.recoverDecisionAttempt("authority")).rejects.toThrow("settlement receipt is invalid")
+
+    const tombstone = approvalFixture({ records: [{
+      approvalId: "tombstone", messageId: "99", deliveryState: "terminal_tombstone", approveCallbackData: "a:tombstone", denyCallbackData: "d:tombstone", expiresAt: 1_000,
+      terminalizedAt: 1_001, tombstoneExpiresAt: 1_002, tombstoneMac: "f".repeat(64),
+      expiryObservation: { schemaVersion: "telegram-approval-expiry-observation-v1", deadlineAt: 1_000, observedAt: 1_001, evidenceMac: null },
+    }] })
+    await expect(tombstone.transport.handleUpdate(approvalCallback("a:tombstone"))).rejects.toThrow("terminal tombstone is invalid")
+  })
+
+  it.each(["reconcile", "orphan", "recovered"] as const)("routes a durable decision attempt through %s handling", async (route) => {
+    let clock = 900
+    const onDecision = vi.fn().mockRejectedValueOnce(new Error("crash after fence")).mockResolvedValue({ accepted: true, terminalText: "done" })
+    const fixture = approvalFixture({ now: () => clock, onDecision, records: [{
+      approvalId: "approval-1", messageId: "99", deliveryState: "bound", approveCallbackData: "a:approve", denyCallbackData: "d:deny", expiresAt: 1_000,
+    }] })
+    await expect(fixture.transport.handleUpdate(approvalCallback("a:approve", { id: "durable-query" }))).rejects.toThrow("crash after fence")
+    clock = 1_001
+    if (route === "reconcile") await expect(fixture.transport.reconcileExpired()).resolves.toBeUndefined()
+    else if (route === "orphan") await expect(fixture.transport.terminalizeOrphaned("approval-1", "orphaned")).rejects.toThrow("cannot be orphan-cleaned")
+    else await expect(fixture.transport.terminalizeRecovered("approval-1", "recovered")).resolves.toBeUndefined()
+  })
+
+  it("covers non-authority recovery, live expiry, missing signer, and tombstone foreign-message outcomes", async () => {
+    const ordinary = approvalFixture({ records: [{ approvalId: "ordinary", messageId: "99", deliveryState: "bound", approveCallbackData: "a:o", denyCallbackData: "d:o", expiresAt: 2_000_000 }] })
+    await expect(ordinary.transport.recoverDecisionAttempt("missing")).resolves.toBe(false)
+    await expect(ordinary.transport.recoverDecisionAttempt("ordinary")).resolves.toBe(false)
+    await expect(ordinary.transport.reconcileExpired()).resolves.toBeUndefined()
+
+    const unsignedBinding = { scenarioHandleDigest: "a".repeat(64), actionDigest: "b".repeat(64), targetDigest: "c".repeat(64), checkpointDigest: "d".repeat(64), suspendedSessionRevisionDigest: "e".repeat(64), messageIdDigest: "f".repeat(64), boundAt: 0 }
+    const missingSigner = approvalFixture({ now: () => 1_001, records: [{ approvalId: "signed", messageId: "99", deliveryState: "bound", approveCallbackData: "a:s", denyCallbackData: "d:s", expiresAt: 1_000, acceptanceBinding: unsignedBinding }] })
+    await expect(missingSigner.transport.reconcileExpired()).rejects.toThrow("signer is unavailable")
+
+    const tombstone = approvalFixture({ records: [{
+      approvalId: "tombstone", messageId: "99", deliveryState: "terminal_tombstone", approveCallbackData: "a:t", denyCallbackData: "d:t", expiresAt: 1_000,
+      terminalizedAt: 1_001, tombstoneExpiresAt: 601_001, tombstoneMac: "f".repeat(64),
+      expiryObservation: { schemaVersion: "telegram-approval-expiry-observation-v1", deadlineAt: 1_000, observedAt: 1_001, evidenceMac: null },
+    }], signAcceptanceEvidence: () => "f".repeat(64) })
+    await expect(tombstone.transport.handleUpdate(approvalCallback("a:t", { messageId: 100 }))).resolves.toMatchObject({ reason: "foreign_message" })
+  })
+
+  it("rejects acceptance emission without a signer and non-string attempt MACs", async () => {
+    const binding = { scenarioHandleDigest: "a".repeat(64), actionDigest: "b".repeat(64), targetDigest: "c".repeat(64), checkpointDigest: "d".repeat(64), suspendedSessionRevisionDigest: "e".repeat(64), messageIdDigest: "f".repeat(64), boundAt: 0 }
+    const noSigner = approvalFixture({ now: () => 900, records: [{ approvalId: "signed", messageId: "99", deliveryState: "bound", approveCallbackData: "a:s", denyCallbackData: "d:s", expiresAt: 1_000, acceptanceBinding: binding }] })
+    await expect(noSigner.transport.handleUpdate(approvalCallback("a:s"))).rejects.toThrow("signer is unavailable")
+
+    const invalidMac = approvalFixture({ records: [{
+      approvalId: "attempt", messageId: "99", deliveryState: "bound", approveCallbackData: "a:a", denyCallbackData: "d:a", expiresAt: 1_000,
+      decisionAttempt: { schemaVersion: "telegram-approval-decision-attempt-v1", decision: "approve", queryIdDigest: "a".repeat(64), attemptedAt: 900, evidenceMac: 1 as never },
+    }] })
+    await expect(invalidMac.transport.recoverDecisionAttempt("attempt")).rejects.toThrow("decision attempt is invalid")
+  })
+
+  it("validates signed expiry and retains an unsigned expiry tombstone", async () => {
+    const binding = { scenarioHandleDigest: "a".repeat(64), actionDigest: "b".repeat(64), targetDigest: "c".repeat(64), checkpointDigest: "d".repeat(64), suspendedSessionRevisionDigest: "e".repeat(64), messageIdDigest: "f".repeat(64), boundAt: 0 }
+    const signed = approvalFixture({ records: [{
+      approvalId: "signed", messageId: "99", deliveryState: "bound", approveCallbackData: "a:s", denyCallbackData: "d:s", expiresAt: 1_000, acceptanceBinding: binding,
+      expiryObservation: { schemaVersion: "telegram-approval-expiry-observation-v1", deadlineAt: 1_000, observedAt: 1_001, evidenceMac: "f".repeat(64) },
+    }], signAcceptanceEvidence: () => "f".repeat(64) })
+    await expect(signed.transport.terminalizeOrphaned("signed", "done")).resolves.toMatchObject({ terminalEditSucceeded: true })
+
+    const unsigned = approvalFixture({ now: () => 1_001, records: [{ approvalId: "unsigned", messageId: "99", deliveryState: "bound", approveCallbackData: "a:u", denyCallbackData: "d:u", expiresAt: 1_000 }], onExpire: vi.fn() })
+    await expect(unsigned.transport.reconcileExpired()).resolves.toBeUndefined()
+  })
+
+  it("rechecks an ordinary approval after a wall-clock rollback inside reconciliation", async () => {
+    const times = [1_001, 999]
+    const fixture = approvalFixture({ now: () => times.shift() ?? 999, records: [{ approvalId: "rollback", messageId: "99", deliveryState: "bound", approveCallbackData: "a:r", denyCallbackData: "d:r", expiresAt: 1_000 }] })
+    await expect(fixture.transport.reconcileExpired()).resolves.toBeUndefined()
+    expect(fixture.records()).toHaveLength(1)
+  })
+
+  it("validates expiry state before orphan and recovered terminalization", async () => {
+    const record = {
+      approvalId: "expired", messageId: "99", deliveryState: "bound" as const, approveCallbackData: "a:e", denyCallbackData: "d:e", expiresAt: 1_000,
+      expiryObservation: { schemaVersion: "telegram-approval-expiry-observation-v1" as const, deadlineAt: 1_000, observedAt: 1_001, evidenceMac: null },
+    }
+    const orphan = approvalFixture({ records: [record] })
+    await expect(orphan.transport.terminalizeOrphaned("expired", "done")).resolves.toMatchObject({ terminalEditSucceeded: true })
+    const recovered = approvalFixture({ records: [record] })
+    await expect(recovered.transport.terminalizeRecovered("expired", "done")).resolves.toBeUndefined()
+  })
+
+  it("rejects structurally incomplete tombstone and residual terminal authority classifications", () => {
+    expect(() => createTelegramApprovalTransport({
+      api: { stop: vi.fn(), request: vi.fn() }, expectedUserId: "10", expectedChatId: "10",
+      pendingStore: { load: () => [], save: vi.fn() }, createOpaqueHandle: vi.fn(), onDecision: vi.fn(),
+    }).listPendingDeliveries()).not.toThrow()
+    const incomplete = { approvalId: "x", messageId: "99", deliveryState: "terminal_tombstone" as const, approveCallbackData: "a:x", denyCallbackData: "d:x", expiresAt: 1_000 }
+    expect(() => classifyTelegramPersistedApprovalState(incomplete)).toThrow("structurally incomplete")
+
+  })
+
+  it("retains a deliberately unsigned terminal tombstone", async () => {
+    const binding = { scenarioHandleDigest: "a".repeat(64), actionDigest: "b".repeat(64), targetDigest: "c".repeat(64), checkpointDigest: "d".repeat(64), suspendedSessionRevisionDigest: "e".repeat(64), messageIdDigest: "f".repeat(64), boundAt: 0 }
+    const signed = approvalFixture({ now: () => 1_001, records: [{ approvalId: "tomb", messageId: "99", deliveryState: "bound", approveCallbackData: "a:t", denyCallbackData: "d:t", expiresAt: 1_000, acceptanceBinding: binding }], signAcceptanceEvidence: ((event: string) => event === "telegram.approval_terminal_tombstone_state" ? undefined : "f".repeat(64)) as never })
+    await expect(signed.transport.reconcileExpired()).resolves.toBeUndefined()
+    expect(signed.records()[0]?.tombstoneMac).toBeUndefined()
   })
 
   it("durably signs prompt binding, callback acknowledgement, and terminalization from the bound-message clock", async () => {
