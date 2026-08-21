@@ -24,9 +24,34 @@ const successfulRestart = () => ([
   { state: "attempting" as const, actionDigest: "e".repeat(64), argumentDigest: "d".repeat(64), target: "calibre-web", approvalId: "approval-1", attemptId: "attempt-1", observedAt: 2_000, mutationAcknowledged: false, afterState: null },
   { state: "succeeded" as const, actionDigest: "e".repeat(64), argumentDigest: "d".repeat(64), target: "calibre-web", approvalId: "approval-1", attemptId: "attempt-1", observedAt: 3_000, mutationAcknowledged: true, afterState: "running" },
 ])
+const probeDigest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex")
+const probePhase = (ordinal: number, name: string, trigger: "cron" | "acceptance", fixtureStatus: 200 | 503 | null, opened: number, recovered: number, digestDue: boolean, deliveryKind: "transition" | "digest" | null) => ({
+  ordinal, name, trigger, fixtureStatus, opened, recovered, digestDue, deliveryKind,
+  sweepReceiptDigest: probeDigest({ ordinal, name }), deliveryReceiptDigest: deliveryKind === null ? null : probeDigest({ ordinal, deliveryKind }),
+})
+const healthProbe = (label: "unit-16f-cron-fingerprint" | "unit-16g-health-transition" | "unit-16h-daily-digest") => {
+  const phases = label === "unit-16f-cron-fingerprint"
+    ? [probePhase(1, "cron-unchanged", "cron", null, 0, 0, false, null)]
+    : label === "unit-16g-health-transition"
+      ? [
+          probePhase(1, "live-baseline", "acceptance", null, 0, 0, false, null), probePhase(2, "live-repeat", "acceptance", null, 0, 0, false, null),
+          probePhase(3, "fixture-fail", "acceptance", 503, 1, 0, false, "transition"), probePhase(4, "fixture-repeat", "acceptance", 503, 0, 0, false, null),
+          probePhase(5, "fixture-recover", "acceptance", 200, 0, 1, false, "transition"), probePhase(6, "fixture-refail", "acceptance", 503, 1, 0, false, "transition"),
+        ]
+      : [probePhase(1, "digest-first", "acceptance", 503, 0, 0, true, "digest"), probePhase(2, "digest-repeat", "acceptance", 503, 0, 0, false, null)]
+  const fixtureSequence = phases.flatMap((phase) => phase.fixtureStatus === null ? [] : [phase.fixtureStatus])
+  return {
+    label, scenarioHandleDigest: "a".repeat(64), ownerImageDigestBefore: "1".repeat(64), ownerImageDigestAfter: "1".repeat(64), ownerContainerDigestBefore: "2".repeat(64), ownerContainerDigestAfter: "2".repeat(64),
+    beforeStateDigest: "3".repeat(64), restoredStateDigest: "3".repeat(64), cronFingerprintBefore: "4".repeat(64), cronFingerprintAfter: "4".repeat(64), cronRegisteredBefore: true, cronRegisteredAfter: true,
+    cronDegradedBefore: false, cronDegradedAfter: false, fixtureSequenceDigest: probeDigest(fixtureSequence), clockMode: label === "unit-16h-daily-digest" ? "local-daily-boundary" as const : "ambient" as const,
+    effectiveNow: label === "unit-16h-daily-digest" ? "2026-08-20T16:00:00.000Z" : "2026-08-20T15:00:00.000Z", phases,
+    providerInvocationCount: label === "unit-16f-cron-fingerprint" ? 0 : label === "unit-16g-health-transition" ? 3 : 1, deliveryCount: phases.filter((phase) => phase.deliveryReceiptDigest !== null).length,
+    workspaceAbsent: true, socketAbsent: true, snapshotAbsent: true, realCheckEquivalent: true, productionRestored: true,
+  }
+}
 const base = (): SanctuaryScenarioFacts => ({
   capturedAt: 0,
-  sourceValues: Object.fromEntries(["identity-key", "telegram-audit", "telegram-offset", "approval-journal", "approval-checkpoints", "container-inspect", "provider-live-check", "cron-runtime", "health-runtime", "digest-runtime", "reboot-checkpoint"].map((key) => [key, { key }])),
+  sourceValues: Object.fromEntries(["identity-key", "telegram-audit", "telegram-offset", "approval-journal", "approval-checkpoints", "container-inspect", "provider-live-check", "cron-runtime", "health-runtime", "digest-runtime", "health-probe-receipt", "reboot-checkpoint"].map((key) => [key, { key }])),
   events: [], approvals: [],
   restartAttempts: [],
   telegramTurns: [],
@@ -61,9 +86,7 @@ describe("Sanctuary live scenario capture", () => {
       }
       if (label === "unit-16d-2-unauthorized") after.events.push({ ...event("telegram.update_dropped"), meta: { scenarioHandleDigest: "a".repeat(64), distinctAccount: true } })
       if (label === "unit-16j-denial") after.approvals = [approval("denied")]
-      if (label === "unit-16f-cron-fingerprint") after.cron!.sweepCount = 1
-      if (label === "unit-16g-health-transition") { after.health!.transitionCount = 1; after.health!.alertCount = 1 }
-      if (label === "unit-16h-daily-digest") after.digest!.messageCount = 1
+      if (label === "unit-16f-cron-fingerprint" || label === "unit-16g-health-transition" || label === "unit-16h-daily-digest") after.healthProbe = healthProbe(label)
       if (label === "unit-16i-delayed-approval") { after.approvals = [approval("succeeded")]; after.restartAttempts = successfulRestart() }
       if (label === "unit-16k-timeout-stale") { after.approvals = [approval("expired")]; after.events.push(event("telegram.update_dropped")) }
       if (label === "unit-16l-duplicate-callback") { after.approvals = [{ ...approval("succeeded"), callbackCount: 2, settledCount: 2, claimCount: 1 }]; after.restartAttempts = successfulRestart(); after.events.push(event("telegram.callback_settled"), event("telegram.callback_settled"), event("approval.acceptance_transition")) }
@@ -135,7 +158,34 @@ describe("Sanctuary live scenario capture", () => {
   it("accepts a daily digest fired exactly at the local boundary", () => {
     const before = base()
     const after = base()
-    after.digest = { ...after.digest!, messageCount: 1, firedWithinMs: 0 }
+    after.healthProbe = healthProbe("unit-16h-daily-digest")
     expect(deriveSanctuaryScenarioAssertions("unit-16h-daily-digest", before, after, 400_000)).toMatchObject({ firedWithinMs: 0 })
+  })
+
+  it("derives the exact production health-probe counts for cron, transitions, and digest", () => {
+    const before = base()
+    const cron = base(); cron.healthProbe = healthProbe("unit-16f-cron-fingerprint")
+    const transitions = base(); transitions.healthProbe = healthProbe("unit-16g-health-transition")
+    const digest = base(); digest.healthProbe = healthProbe("unit-16h-daily-digest")
+    expect(deriveSanctuaryScenarioAssertions("unit-16f-cron-fingerprint", before, cron, 400_000)).toMatchObject({ providerInvocationCount: 0, messageCount: 0 })
+    expect(deriveSanctuaryScenarioAssertions("unit-16g-health-transition", before, transitions, 400_000)).toEqual({ alertCount: 3, productionRestored: true, transitionObserved: true })
+    expect(deriveSanctuaryScenarioAssertions("unit-16h-daily-digest", before, digest, 400_000)).toMatchObject({ firedWithinMs: 0, messageCount: 1 })
+  })
+
+  it("rejects health-probe phase, provider-count, and restoration drift", () => {
+    const before = base()
+    const cron = base(); cron.healthProbe = { ...healthProbe("unit-16f-cron-fingerprint"), providerInvocationCount: 1 }
+    expect(deriveSanctuaryScenarioAssertions("unit-16f-cron-fingerprint", before, cron, 400_000)).toBeNull()
+
+    const transitions = base(); transitions.healthProbe = healthProbe("unit-16g-health-transition")
+    transitions.healthProbe.phases[4] = { ...transitions.healthProbe.phases[4]!, recovered: 0 }
+    expect(deriveSanctuaryScenarioAssertions("unit-16g-health-transition", before, transitions, 400_000)).toBeNull()
+    transitions.healthProbe = { ...healthProbe("unit-16g-health-transition"), providerInvocationCount: 2 }
+    expect(deriveSanctuaryScenarioAssertions("unit-16g-health-transition", before, transitions, 400_000)).toBeNull()
+
+    const digest = base(); digest.healthProbe = { ...healthProbe("unit-16h-daily-digest"), providerInvocationCount: 0 }
+    expect(deriveSanctuaryScenarioAssertions("unit-16h-daily-digest", before, digest, 400_000)).toBeNull()
+    digest.healthProbe = { ...healthProbe("unit-16h-daily-digest"), restoredStateDigest: "9".repeat(64) }
+    expect(deriveSanctuaryScenarioAssertions("unit-16h-daily-digest", before, digest, 400_000)).toBeNull()
   })
 })

@@ -66,6 +66,47 @@ export interface SanctuaryScenarioTelegramTurnReceipt {
   completedAt: number
 }
 
+export interface SanctuaryHealthProbePhase {
+  ordinal: number
+  name: string
+  trigger: "cron" | "acceptance"
+  fixtureStatus: 200 | 503 | null
+  opened: number
+  recovered: number
+  digestDue: boolean
+  deliveryKind: "transition" | "digest" | "transition_and_digest" | null
+  sweepReceiptDigest: string
+  deliveryReceiptDigest: string | null
+}
+
+export interface SanctuaryHealthProbeReceipt {
+  label: "unit-16f-cron-fingerprint" | "unit-16g-health-transition" | "unit-16h-daily-digest"
+  scenarioHandleDigest: string
+  ownerImageDigestBefore: string
+  ownerImageDigestAfter: string
+  ownerContainerDigestBefore: string
+  ownerContainerDigestAfter: string
+  beforeStateDigest: string
+  restoredStateDigest: string
+  cronFingerprintBefore: string
+  cronFingerprintAfter: string
+  cronRegisteredBefore: boolean
+  cronRegisteredAfter: boolean
+  cronDegradedBefore: boolean
+  cronDegradedAfter: boolean
+  fixtureSequenceDigest: string
+  clockMode: "ambient" | "local-daily-boundary"
+  effectiveNow: string
+  phases: SanctuaryHealthProbePhase[]
+  providerInvocationCount: number
+  deliveryCount: number
+  workspaceAbsent: boolean
+  socketAbsent: boolean
+  snapshotAbsent: boolean
+  realCheckEquivalent: boolean
+  productionRestored: boolean
+}
+
 export interface SanctuaryScenarioFacts {
   capturedAt: number
   sourceValues: Record<string, unknown>
@@ -83,6 +124,7 @@ export interface SanctuaryScenarioFacts {
   cron?: { registered: boolean; fingerprint: string; receiptDigest: string; sweepCount: number }
   health?: { transitionCount: number; alertCount: number; productionRestored: boolean }
   digest?: { scheduleObserved: boolean; messageCount: number; firedWithinMs: number; productionRestored: boolean }
+  healthProbe?: SanctuaryHealthProbeReceipt
   reboot?: { phase: "preflight" | "requested" | "complete"; requestDigest: string; requestCount: number; checkpointPersisted: boolean; unrelatedHostOperations: number; bootIdentityChanged: boolean; hostReady: boolean; arrayReady: boolean; dockerReady: boolean; butlerReady: boolean; tailscaleReady: boolean; sshReady: boolean }
   containment?: { auditComplete: boolean; readOnlyBoundaryHeld: boolean; sensitiveMaterialObserved: boolean; stopDenied: boolean; restartDenied: boolean; denialAuditCount: number; denialStateUnchanged?: boolean; denialProbeCompleted?: boolean }
 }
@@ -151,6 +193,15 @@ function intendedApproval(before: SanctuaryScenarioFacts, after: SanctuaryScenar
 
 function intendedRestartApproval(approval: SanctuaryScenarioApproval | null): approval is SanctuaryScenarioApproval {
   return approval?.toolName === "unraid_restart_container" && typeof approval.target === "string" && approval.target.length > 0
+}
+
+function healthProbeRestored(probe: SanctuaryHealthProbeReceipt): boolean {
+  return probe.ownerImageDigestBefore === probe.ownerImageDigestAfter
+    && probe.ownerContainerDigestBefore === probe.ownerContainerDigestAfter
+    && probe.beforeStateDigest === probe.restoredStateDigest
+    && probe.cronFingerprintBefore === probe.cronFingerprintAfter
+    && probe.cronRegisteredBefore && probe.cronRegisteredAfter && !probe.cronDegradedBefore && !probe.cronDegradedAfter
+    && probe.workspaceAbsent && probe.socketAbsent && probe.snapshotAbsent && probe.realCheckEquivalent && probe.productionRestored
 }
 
 export function deriveSanctuaryScenarioAssertions(
@@ -246,14 +297,33 @@ export function deriveSanctuaryScenarioAssertions(
       return { auditDecisionCount: after.containment.denialAuditCount, denied, mutationCount: scenarioMutationCount, resumed: after.containment.denialProbeCompleted }
     }
     case "unit-16f-cron-fingerprint":
-      if (!before.cron || !after.cron || after.cron.sweepCount <= before.cron.sweepCount || before.cron.fingerprint !== after.cron.fingerprint || before.cron.receiptDigest !== after.cron.receiptDigest || telegramResponses !== 0 || delta(after, before, "senses.telegram_turn_start") !== 0 || !after.cron.registered) return null
-      return { fingerprintUnchanged: before.cron.fingerprint === after.cron.fingerprint, messageCount: telegramResponses, providerInvocationCount: delta(after, before, "senses.telegram_turn_start"), receiptUnchanged: before.cron.receiptDigest === after.cron.receiptDigest, scheduleRegistered: after.cron.registered, sweepObserved: true }
-    case "unit-16g-health-transition":
-      if (!after.health || after.health.transitionCount <= (before.health?.transitionCount ?? 0) || after.health.alertCount - (before.health?.alertCount ?? 0) !== 1 || !after.health.productionRestored) return null
-      return { alertCount: after.health.alertCount - (before.health?.alertCount ?? 0), productionRestored: after.health.productionRestored, transitionObserved: true }
-    case "unit-16h-daily-digest":
-      if (!after.digest || after.digest.messageCount - (before.digest?.messageCount ?? 0) !== 1 || after.digest.firedWithinMs < 0 || after.digest.firedWithinMs > 960_000 || !after.digest.productionRestored || !after.digest.scheduleObserved) return null
-      return { firedWithinMs: after.digest.firedWithinMs, messageCount: after.digest.messageCount - (before.digest?.messageCount ?? 0), productionRestored: after.digest.productionRestored, scheduleObserved: after.digest.scheduleObserved }
+      if (!after.healthProbe || !healthProbeRestored(after.healthProbe) || after.healthProbe.clockMode !== "ambient" || after.healthProbe.phases.length !== 1
+        || after.healthProbe.phases[0]?.name !== "cron-unchanged" || after.healthProbe.phases[0].trigger !== "cron" || after.healthProbe.phases[0].fixtureStatus !== null
+        || after.healthProbe.phases[0].opened !== 0 || after.healthProbe.phases[0].recovered !== 0 || after.healthProbe.phases[0].digestDue
+        || after.healthProbe.phases[0].deliveryKind !== null || after.healthProbe.phases[0].deliveryReceiptDigest !== null
+        || after.healthProbe.providerInvocationCount !== 0 || after.healthProbe.deliveryCount !== 0 || telegramResponses !== 0 || delta(after, before, "senses.telegram_turn_start") !== 0) return null
+      return { fingerprintUnchanged: true, messageCount: 0, providerInvocationCount: 0, receiptUnchanged: true, scheduleRegistered: true, sweepObserved: true }
+    case "unit-16g-health-transition": {
+      const probe = after.healthProbe
+      const exactPhases = [
+        ["live-baseline", null, 0, 0, null], ["live-repeat", null, 0, 0, null], ["fixture-fail", 503, 1, 0, "transition"],
+        ["fixture-repeat", 503, 0, 0, null], ["fixture-recover", 200, 0, 1, "transition"], ["fixture-refail", 503, 1, 0, "transition"],
+      ] as const
+      if (!probe || !healthProbeRestored(probe) || probe.clockMode !== "ambient" || probe.providerInvocationCount !== 3 || probe.deliveryCount !== 3 || probe.phases.length !== exactPhases.length
+        || !probe.phases.every((phase, index) => phase.ordinal === index + 1 && phase.name === exactPhases[index]![0] && phase.trigger === "acceptance"
+          && phase.fixtureStatus === exactPhases[index]![1] && phase.opened === exactPhases[index]![2] && phase.recovered === exactPhases[index]![3]
+          && phase.deliveryKind === exactPhases[index]![4] && phase.digestDue === false && (phase.deliveryKind === null) === (phase.deliveryReceiptDigest === null))) return null
+      return { alertCount: 3, productionRestored: true, transitionObserved: true }
+    }
+    case "unit-16h-daily-digest": {
+      const probe = after.healthProbe
+      if (!probe || !healthProbeRestored(probe) || probe.clockMode !== "local-daily-boundary" || probe.providerInvocationCount !== 1 || probe.deliveryCount !== 1 || probe.phases.length !== 2
+        || probe.phases[0]?.ordinal !== 1 || probe.phases[0].name !== "digest-first" || probe.phases[0].trigger !== "acceptance" || probe.phases[0].fixtureStatus !== 503
+        || !probe.phases[0].digestDue || probe.phases[0].deliveryKind !== "digest" || probe.phases[0].deliveryReceiptDigest === null
+        || probe.phases[1]?.ordinal !== 2 || probe.phases[1].name !== "digest-repeat" || probe.phases[1].trigger !== "acceptance" || probe.phases[1].fixtureStatus !== 503
+        || probe.phases[1].digestDue || probe.phases[1].deliveryKind !== null || probe.phases[1].deliveryReceiptDigest !== null) return null
+      return { firedWithinMs: 0, messageCount: 1, productionRestored: true, scheduleObserved: true }
+    }
     case "unit-16i-delayed-approval":
       if (!intendedRestartApproval(approval) || approval.state !== "succeeded" || now - approval.createdAt < 120_000 || mutationCount !== 1 || !restartSucceeded || approval.replayMutationCount !== 0 || !approval.continuationCompleted) return null
       if (!approval.terminalPrompt) return null

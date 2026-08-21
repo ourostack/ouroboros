@@ -65,6 +65,7 @@
     "cron-runtime": { "kind": "fixed-runtime-api", "operation": "sanctuary-cron-readiness", "redaction": "typed-counters-and-digests-only" },
     "health-runtime": { "kind": "fixed-runtime-api", "operation": "sanctuary-health-transition", "redaction": "typed-counters-and-digests-only" },
     "digest-runtime": { "kind": "fixed-runtime-api", "operation": "sanctuary-daily-digest", "redaction": "typed-counters-and-digests-only" },
+    "health-probe-receipt": { "kind": "fixed-private-json", "path": "/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance/health-probe-receipts/<scenarioHandleDigest>.json", "redaction": "typed-phase-counters-owner-state-and-cleanup-digests-only" },
     "reboot-checkpoint": { "kind": "fixed-json", "path": "/evidence/reboot.json", "redaction": "typed-state-and-digests-only" }
   },
   "configTemplates": {

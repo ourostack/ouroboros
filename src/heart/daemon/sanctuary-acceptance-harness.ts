@@ -422,7 +422,7 @@ export function validateSanctuaryUnit16EvidenceAssertions(label: SanctuaryUnit16
     case "unit-16g-health-transition":
       exact(["alertCount", "productionRestored", "transitionObserved"])
       allTrue(["productionRestored", "transitionObserved"])
-      requiredInteger(value, "alertCount", 1, label)
+      requiredInteger(value, "alertCount", 3, label)
       break
     case "unit-16h-daily-digest":
       exact(["firedWithinMs", "messageCount", "productionRestored", "scheduleObserved"])
@@ -563,7 +563,7 @@ export const SANCTUARY_SCENARIO_GATES: Record<SanctuaryUnit16EvidenceLabel, Sanc
 
 type SanctuaryScenarioSource = "identity-key" | "telegram-audit" | "telegram-offset" | "approval-journal"
   | "approval-checkpoints" | "container-inspect" | "provider-live-check" | "cron-runtime"
-  | "health-runtime" | "digest-runtime" | "reboot-checkpoint" | "restart-attempt-ledger" | "telegram-turn-receipts" | "read-only-denial-receipt" | "containment-audit" | "identity-surface-audit"
+  | "health-runtime" | "digest-runtime" | "health-probe-receipt" | "reboot-checkpoint" | "restart-attempt-ledger" | "telegram-turn-receipts" | "read-only-denial-receipt" | "containment-audit" | "identity-surface-audit"
 
 export const SANCTUARY_SCENARIO_SOURCES: Record<SanctuaryUnit16EvidenceLabel, SanctuaryScenarioSource[]> = {
   "unit-12c-1-opaque-identity": ["identity-key", "identity-surface-audit", "approval-journal"],
@@ -580,9 +580,9 @@ export const SANCTUARY_SCENARIO_SOURCES: Record<SanctuaryUnit16EvidenceLabel, Sa
   "unit-16e-containment-audit": ["telegram-audit", "container-inspect", "containment-audit"],
   "unit-16e-1-stop-denial": ["read-only-denial-receipt", "container-inspect"],
   "unit-16e-2-restart-denial": ["read-only-denial-receipt", "container-inspect"],
-  "unit-16f-cron-fingerprint": ["cron-runtime", "telegram-audit"],
-  "unit-16g-health-transition": ["health-runtime", "telegram-audit", "container-inspect"],
-  "unit-16h-daily-digest": ["digest-runtime", "cron-runtime", "telegram-audit"],
+  "unit-16f-cron-fingerprint": ["health-probe-receipt", "cron-runtime", "telegram-audit"],
+  "unit-16g-health-transition": ["health-probe-receipt", "telegram-audit", "container-inspect"],
+  "unit-16h-daily-digest": ["health-probe-receipt", "cron-runtime", "telegram-audit"],
   "unit-16i-delayed-approval": ["telegram-audit", "approval-journal", "approval-checkpoints", "restart-attempt-ledger", "container-inspect"],
   "unit-16j-denial": ["telegram-audit", "approval-journal", "approval-checkpoints", "restart-attempt-ledger", "container-inspect"],
   "unit-16k-timeout-stale": ["telegram-audit", "approval-journal", "approval-checkpoints", "restart-attempt-ledger", "container-inspect"],

@@ -38,6 +38,22 @@ function refreshed(config: Record<string, unknown>) {
   }
 }
 
+function validHealthProbeReceipt(scenarioHandleDigest: string, patch: Record<string, unknown> = {}) {
+  const phases = [
+    { ordinal: 1, name: "digest-first", trigger: "acceptance", fixtureStatus: 503, opened: 0, recovered: 0, digestDue: true, deliveryKind: "digest", sweepReceiptDigest: "5".repeat(64), deliveryReceiptDigest: "6".repeat(64) },
+    { ordinal: 2, name: "digest-repeat", trigger: "acceptance", fixtureStatus: 503, opened: 0, recovered: 0, digestDue: false, deliveryKind: null, sweepReceiptDigest: "7".repeat(64), deliveryReceiptDigest: null },
+  ]
+  return {
+    schemaVersion: "sanctuary-health-probe-receipt-v1", label: "unit-16h-daily-digest", scenarioHandleDigest,
+    ownerImageDigestBefore: "1".repeat(64), ownerImageDigestAfter: "1".repeat(64), ownerContainerDigestBefore: "2".repeat(64), ownerContainerDigestAfter: "2".repeat(64),
+    beforeStateDigest: "3".repeat(64), restoredStateDigest: "3".repeat(64), cronFingerprintBefore: "4".repeat(64), cronFingerprintAfter: "4".repeat(64),
+    cronRegisteredBefore: true, cronRegisteredAfter: true, cronDegradedBefore: false, cronDegradedAfter: false,
+    fixtureSequenceDigest: createHash("sha256").update(JSON.stringify([503, 503])).digest("hex"), clockMode: "local-daily-boundary", effectiveNow: "2026-08-20T16:00:00.000Z",
+    phases, providerInvocationCount: 1, deliveryCount: 1, workspaceAbsent: true, socketAbsent: true, snapshotAbsent: true, realCheckEquivalent: true, productionRestored: true,
+    ...patch,
+  }
+}
+
 describe("Sanctuary acceptance adapter semantic proofs", () => {
   it("uses one bounded redacted request over the private host broker socket", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-unit16-broker-client-"))
@@ -326,6 +342,50 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     expect(peak).toBe(3)
     expect(facts.provider?.fallbackAttemptCount).toBe(1)
     expect(facts.provider?.pingReceipts).toEqual(expect.arrayContaining([expect.objectContaining({ lane: "candidate", attempts: [expect.objectContaining({ provider: "openai-compatible" })] })]))
+    fs.rmSync(agentRoot, { recursive: true, force: true })
+  })
+
+  it("parses a strict restored health probe receipt at the exact local digest boundary", async () => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-health-probe-receipt-"))
+    const scenarioHandleDigest = "a".repeat(64)
+    const receiptPath = `${agentRoot}/state/acceptance/health-probe-receipts/${scenarioHandleDigest}.json`
+    const facts = await readDefaultSanctuaryScenarioFacts("unit-16h-daily-digest", scenarioHandleDigest, unit16Deps({
+      readFixedFile: (file) => { if (file === receiptPath) return JSON.stringify(validHealthProbeReceipt(scenarioHandleDigest)); throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
+      hostRequest: async () => ({ running: true, health: "healthy", imageId: "sha256:missing", user: "10001:10001", readOnlyRoot: true, mountCount: 2, publishedPortCount: 0, restartPolicy: "unless-stopped", restartCount: 0, autostartExact: true, updaterDisabled: true, vaultUnlocked: true, manualAuthRequired: false }),
+    }), agentRoot)
+    expect(facts.healthProbe).toMatchObject({ label: "unit-16h-daily-digest", scenarioHandleDigest, clockMode: "local-daily-boundary", providerInvocationCount: 1, deliveryCount: 1 })
+    expect(facts.sourceValues["health-probe-receipt"]).toEqual(facts.healthProbe)
+    fs.rmSync(agentRoot, { recursive: true, force: true })
+  })
+
+  it.each([
+    ["stale scenario binding", { scenarioHandleDigest: "b".repeat(64) }],
+    ["wrong label", { label: "unit-16g-health-transition" }],
+    ["unrestored state", { restoredStateDigest: "8".repeat(64) }],
+    ["non-boundary clock", { effectiveNow: "2026-08-20T16:00:00.001Z" }],
+    ["mismatched delivery count", { deliveryCount: 2 }],
+    ["mismatched fixture sequence", { fixtureSequenceDigest: "9".repeat(64) }],
+    ["malformed phase", { phases: [{ ordinal: 1, name: "digest-first", trigger: "acceptance", fixtureStatus: 503, opened: 0, recovered: 0, digestDue: true, deliveryKind: "digest", sweepReceiptDigest: "5".repeat(64), deliveryReceiptDigest: "6".repeat(64), extra: true }] }],
+  ])("rejects a health probe receipt with %s", async (_label, patch) => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-health-probe-invalid-"))
+    const scenarioHandleDigest = "a".repeat(64)
+    const receiptPath = `${agentRoot}/state/acceptance/health-probe-receipts/${scenarioHandleDigest}.json`
+    await expect(readDefaultSanctuaryScenarioFacts("unit-16h-daily-digest", scenarioHandleDigest, unit16Deps({
+      readFixedFile: (file) => { if (file === receiptPath) return JSON.stringify(validHealthProbeReceipt(scenarioHandleDigest, patch)); throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
+    }), agentRoot)).rejects.toThrow()
+    fs.rmSync(agentRoot, { recursive: true, force: true })
+  })
+
+  it.each([
+    ["malformed JSON", "{"],
+    ["oversized bytes", "x".repeat(128 * 1024 + 1)],
+  ])("rejects a %s health probe receipt", async (_label, raw) => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-health-probe-invalid-raw-"))
+    const scenarioHandleDigest = "a".repeat(64)
+    const receiptPath = `${agentRoot}/state/acceptance/health-probe-receipts/${scenarioHandleDigest}.json`
+    await expect(readDefaultSanctuaryScenarioFacts("unit-16h-daily-digest", scenarioHandleDigest, unit16Deps({
+      readFixedFile: (file) => { if (file === receiptPath) return raw; throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
+    }), agentRoot)).rejects.toThrow()
     fs.rmSync(agentRoot, { recursive: true, force: true })
   })
 

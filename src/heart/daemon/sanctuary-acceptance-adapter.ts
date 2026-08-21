@@ -15,7 +15,7 @@ import { readApprovalsByScenarioHandleDigest } from "../approval-store"
 import { readProviderCredentialRecord } from "../provider-credentials"
 import { pingProvider, type PingResult } from "../provider-ping"
 import { SANCTUARY_SCENARIO_GATES, SANCTUARY_SCENARIO_SOURCES, SANCTUARY_UNIT_16_EVIDENCE_LABELS, type SanctuaryUnit16EvidenceLabel } from "./sanctuary-acceptance-harness"
-import { createSanctuaryScenarioCapture, finalizeSanctuaryScenarioCapture, type SanctuaryScenarioFacts } from "./sanctuary-acceptance-scenarios"
+import { createSanctuaryScenarioCapture, finalizeSanctuaryScenarioCapture, type SanctuaryHealthProbeReceipt, type SanctuaryScenarioFacts } from "./sanctuary-acceptance-scenarios"
 import {
   mergeMachineRuntimeCredentialConfig,
   mergeRuntimeCredentialConfig,
@@ -315,6 +315,54 @@ function parseHealthAcceptanceState(raw: string | null): JsonObject | null {
   return health
 }
 
+function parseHealthProbeReceipt(raw: string | null, label: SanctuaryUnit16EvidenceLabel, scenarioHandleDigest: string): SanctuaryHealthProbeReceipt | undefined {
+  if (raw === null) return undefined
+  if (Buffer.byteLength(raw) > 128 * 1024) throw new Error("Sanctuary health probe receipt exceeds its bound")
+  const receipt = object(JSON.parse(raw) as unknown, "Sanctuary health probe receipt")
+  const exactKeys = ["beforeStateDigest", "clockMode", "cronDegradedAfter", "cronDegradedBefore", "cronFingerprintAfter", "cronFingerprintBefore", "cronRegisteredAfter", "cronRegisteredBefore", "deliveryCount", "effectiveNow", "fixtureSequenceDigest", "label", "ownerContainerDigestAfter", "ownerContainerDigestBefore", "ownerImageDigestAfter", "ownerImageDigestBefore", "phases", "productionRestored", "providerInvocationCount", "realCheckEquivalent", "restoredStateDigest", "scenarioHandleDigest", "schemaVersion", "snapshotAbsent", "socketAbsent", "workspaceAbsent"].sort()
+  const supportedLabel = label === "unit-16f-cron-fingerprint" || label === "unit-16g-health-transition" || label === "unit-16h-daily-digest"
+  const digestFields = ["ownerImageDigestBefore", "ownerImageDigestAfter", "ownerContainerDigestBefore", "ownerContainerDigestAfter", "beforeStateDigest", "restoredStateDigest", "cronFingerprintBefore", "cronFingerprintAfter", "fixtureSequenceDigest"] as const
+  const booleanFields = ["cronRegisteredBefore", "cronRegisteredAfter", "cronDegradedBefore", "cronDegradedAfter", "workspaceAbsent", "socketAbsent", "snapshotAbsent", "realCheckEquivalent", "productionRestored"] as const
+  if (!supportedLabel || JSON.stringify(Object.keys(receipt).sort()) !== JSON.stringify(exactKeys) || receipt.schemaVersion !== "sanctuary-health-probe-receipt-v1"
+    || receipt.label !== label || receipt.scenarioHandleDigest !== scenarioHandleDigest || !SHA256.test(scenarioHandleDigest)
+    || !digestFields.every((field) => typeof receipt[field] === "string" && SHA256.test(receipt[field]))
+    || !booleanFields.every((field) => typeof receipt[field] === "boolean") || !canonicalIso(receipt.effectiveNow)
+    || (receipt.clockMode !== "ambient" && receipt.clockMode !== "local-daily-boundary")
+    || !Number.isSafeInteger(receipt.providerInvocationCount) || Number(receipt.providerInvocationCount) < 0
+    || !Number.isSafeInteger(receipt.deliveryCount) || Number(receipt.deliveryCount) < 0
+    || !Array.isArray(receipt.phases) || receipt.phases.length < 1 || receipt.phases.length > 8) throw new Error("Sanctuary health probe receipt schema is invalid")
+  const phases = receipt.phases.map((rawPhase, index) => {
+    const phase = object(rawPhase, "Sanctuary health probe phase")
+    const phaseKeys = ["deliveryKind", "deliveryReceiptDigest", "digestDue", "fixtureStatus", "name", "opened", "ordinal", "recovered", "sweepReceiptDigest", "trigger"].sort()
+    if (JSON.stringify(Object.keys(phase).sort()) !== JSON.stringify(phaseKeys) || phase.ordinal !== index + 1
+      || typeof phase.name !== "string" || phase.name.length < 1 || phase.name.length > 64 || (phase.trigger !== "cron" && phase.trigger !== "acceptance")
+      || (phase.fixtureStatus !== null && phase.fixtureStatus !== 200 && phase.fixtureStatus !== 503)
+      || !Number.isSafeInteger(phase.opened) || Number(phase.opened) < 0 || !Number.isSafeInteger(phase.recovered) || Number(phase.recovered) < 0
+      || typeof phase.digestDue !== "boolean" || (phase.deliveryKind !== null && !["transition", "digest", "transition_and_digest"].includes(String(phase.deliveryKind)))
+      || typeof phase.sweepReceiptDigest !== "string" || !SHA256.test(phase.sweepReceiptDigest)
+      || (phase.deliveryReceiptDigest !== null && (typeof phase.deliveryReceiptDigest !== "string" || !SHA256.test(phase.deliveryReceiptDigest)))) throw new Error("Sanctuary health probe phase is invalid")
+    return phase as unknown as SanctuaryHealthProbeReceipt["phases"][number]
+  })
+  const fixtureSequence = phases.flatMap((phase) => phase.fixtureStatus === null ? [] : [phase.fixtureStatus])
+  const expectedSequenceDigest = createHash("sha256").update(JSON.stringify(fixtureSequence)).digest("hex")
+  const deliveryCount = phases.filter((phase) => phase.deliveryReceiptDigest !== null).length
+  if (receipt.fixtureSequenceDigest !== expectedSequenceDigest || receipt.deliveryCount !== deliveryCount) throw new Error("Sanctuary health probe receipt counters are invalid")
+  if (receipt.ownerImageDigestBefore !== receipt.ownerImageDigestAfter || receipt.ownerContainerDigestBefore !== receipt.ownerContainerDigestAfter
+    || receipt.beforeStateDigest !== receipt.restoredStateDigest || receipt.cronFingerprintBefore !== receipt.cronFingerprintAfter
+    || receipt.cronRegisteredBefore !== true || receipt.cronRegisteredAfter !== true || receipt.cronDegradedBefore !== false || receipt.cronDegradedAfter !== false
+    || receipt.workspaceAbsent !== true || receipt.socketAbsent !== true || receipt.snapshotAbsent !== true || receipt.realCheckEquivalent !== true || receipt.productionRestored !== true) {
+    throw new Error("Sanctuary health probe did not restore its exact production owner and state")
+  }
+  if (label === "unit-16h-daily-digest") {
+    const effective = new Date(receipt.effectiveNow as string)
+    const parts = new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }).formatToParts(effective)
+    const part = (type: string): number => Number(parts.find((entry) => entry.type === type)?.value ?? NaN)
+    if (receipt.clockMode !== "local-daily-boundary" || part("hour") !== 9 || part("minute") !== 0 || part("second") !== 0 || effective.getUTCMilliseconds() !== 0) throw new Error("Sanctuary health digest clock is not the exact local daily boundary")
+  } else if (receipt.clockMode !== "ambient") throw new Error("Sanctuary health probe clock mode is invalid")
+  const { schemaVersion: _schemaVersion, ...validated } = receipt
+  return { ...validated, phases } as SanctuaryHealthProbeReceipt
+}
+
 function auditContainsSensitiveMaterial(raw: string): boolean {
   return /\b\d{5,16}:[A-Za-z0-9_-]{20,}\b/u.test(raw)
     || /"(?:authorizedUserId|authorizedChatId|transportUserId|transportChatId|userId|chatId)"\s*:\s*"?\d{5,16}"?/u.test(raw)
@@ -432,6 +480,7 @@ export async function readDefaultSanctuaryScenarioFacts(
   const telegramTurnsRaw = optionalFixedFile(deps, pathFor(agentRoot, "state/acceptance/telegram-turns.ndjson")) ?? ""
   const cronRaw = optionalFixedFile(deps, "/home/ouro/.ouro-cli/scheduler/sanctuary.crontab")
   const healthRaw = optionalFixedFile(deps, pathFor(agentRoot, "state/health/sanctuary-health.json"))
+  const healthProbeRaw = optionalFixedFile(deps, pathFor(agentRoot, `state/acceptance/health-probe-receipts/${scenarioHandleDigest}.json`))
   const agentConfig = parsedJson(optionalFixedFile(deps, pathFor(agentRoot, "agent.json")))
   const readinessPolicy = parsedJson(optionalFixedFile(deps, pathFor(agentRoot, "provider-readiness.json")))
   const rebootRaw = optionalFixedFile(deps, "/evidence/reboot.json")
@@ -572,6 +621,7 @@ export async function readDefaultSanctuaryScenarioFacts(
     }
   }
   const health = parseHealthAcceptanceState(healthRaw)
+  const healthProbe = parseHealthProbeReceipt(healthProbeRaw, label, scenarioHandleDigest)
   const healthSweeps = health ? (health.sweepReceipts as JsonObject[]).filter((receipt) => receipt.scenarioHandleDigest === scenarioHandleDigest) : []
   const healthDeliveries = health ? health.deliveredReceipts as JsonObject[] : []
   const scenarioDeliveryIds = new Set(healthSweeps.flatMap((receipt) => typeof receipt.deliveryId === "string" ? [receipt.deliveryId] : []))
@@ -627,6 +677,7 @@ export async function readDefaultSanctuaryScenarioFacts(
     "digest-runtime": health, "reboot-checkpoint": rebootCheckpoint, "telegram-turn-receipts": telegramTurns, "read-only-denial-receipt": denialReceipt,
     "identity-surface-audit": identity ? { inspectedRecordCount: identity.inspectedRecordCount, opaqueSubjectCount: identity.opaqueSubjectCount, mismatchCount: identity.mismatchCount, rawLeakCount: identity.rawLeakCount, surfaceDigest: identity.surfaceDigest } : null,
     "containment-audit": { toolSurfaceExact, mountsExact: container?.mountsExact, securityExact: container?.securityExact, networkMode: container?.networkMode, writableKeyExposure: container?.writableKeyExposure },
+    "health-probe-receipt": healthProbe,
   }
   return {
     capturedAt: deps.now?.() ?? Date.now(),
@@ -644,6 +695,7 @@ export async function readDefaultSanctuaryScenarioFacts(
       vaultUnlocked: container.vaultUnlocked === true, manualAuthRequired: container.manualAuthRequired === true,
     } : undefined,
     provider: liveProvider,
+    healthProbe,
     cron: cronRaw ? { registered: canonicalSanctuaryHealthCronRegistered(cronRaw), fingerprint: createHash("sha256").update(cronRaw).digest("hex"), receiptDigest: createHash("sha256").update(JSON.stringify(health?.deliveredReceipts ?? null)).digest("hex"), sweepCount: healthSweeps.length } : undefined,
     health: health ? { transitionCount: healthSweeps.filter((receipt) => Number(receipt.opened) > 0 || Number(receipt.recovered) > 0).length, alertCount: scenarioDeliveries.filter((receipt) => receipt.kind === "transition" || receipt.kind === "transition_and_digest").length, productionRestored: container?.running === true && container.health === "healthy" } : undefined,
     digest: health && digestFiredWithinMs !== null ? { scheduleObserved: Boolean(cronRaw && canonicalSanctuaryHealthCronRegistered(cronRaw)), messageCount: scenarioDeliveries.filter((receipt) => receipt.kind === "digest" || receipt.kind === "transition_and_digest").length, firedWithinMs: digestFiredWithinMs, productionRestored: container?.running === true && container.health === "healthy" } : undefined,

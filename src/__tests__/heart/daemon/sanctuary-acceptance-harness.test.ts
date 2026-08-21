@@ -134,7 +134,7 @@ describe("Sanctuary acceptance harness", () => {
       case "unit-16e-containment-audit": return { auditComplete: true, mutationCount: 0, readOnlyBoundaryHeld: true, sensitiveMaterialObserved: false }
       case "unit-16e-1-stop-denial": case "unit-16e-2-restart-denial": return { auditDecisionCount: 1, denied: true, mutationCount: 0, resumed: true }
       case "unit-16f-cron-fingerprint": return { fingerprintUnchanged: true, messageCount: 0, providerInvocationCount: 0, receiptUnchanged: true, scheduleRegistered: true, sweepObserved: true }
-      case "unit-16g-health-transition": return { alertCount: 1, productionRestored: true, transitionObserved: true }
+      case "unit-16g-health-transition": return { alertCount: 3, productionRestored: true, transitionObserved: true }
       case "unit-16h-daily-digest": return { firedWithinMs: 900_000, messageCount: 1, productionRestored: true, scheduleObserved: true }
       case "unit-16i-delayed-approval": return { elapsedMs: 120_000, mutationCount: 1, promptTerminal: true, replayMutationCount: 0, resumed: true, state: "succeeded" }
       case "unit-16j-denial": return { mutationCount: 0, promptTerminal: true, replayMutationCount: 0, resumed: true, state: "denied" }
@@ -302,6 +302,7 @@ describe("Sanctuary acceptance harness", () => {
     reject("unit-16k-timeout-stale", { state: "denied" }, /expired/u)
     reject("unit-16m-restart-continuation", { state: "failed" }, /succeeded/u)
     reject("unit-16g-health-transition", { unexpected: true }, /fields/u)
+    reject("unit-16g-health-transition", { alertCount: 1 }, /alertCount/u)
   })
 
   it("fails closed on scenario authority, timing, timeout, state, and checkpoint drift", async () => {
@@ -880,7 +881,8 @@ describe("Sanctuary acceptance harness", () => {
     const descriptorPath = path.join(dir, "descriptor.json")
     fs.writeFileSync(descriptorPath, JSON.stringify({ keyId: "key-id", descriptor: "descriptor" }), { mode: 0o600 })
     const descriptorFd = fs.openSync(descriptorPath, "r")
-    const defaults = createSanctuaryAcceptanceAdapterDependencies(descriptorFd, { keyDirectory, adapterTimeoutMs: 25 })
+    const defaults = createSanctuaryAcceptanceAdapterDependencies(descriptorFd, { keyDirectory })
+    const timeoutDefaults = createSanctuaryAcceptanceAdapterDependencies(descriptorFd, { keyDirectory, adapterTimeoutMs: 1 })
     createSanctuaryAcceptanceAdapterDependencies()
     try {
       await expect(executeSanctuaryAcceptanceAdapter({ operation: "closed-inventory" }, defaults)).resolves.toMatchObject({ keys: [{ id: "key-id" }] })
@@ -894,7 +896,7 @@ describe("Sanctuary acceptance harness", () => {
     fs.writeFileSync(sleeping, "#!/bin/sh\nsleep 2\n", { mode: 0o700 })
     await expect(defaults.execFile(success, [])).resolves.toMatchObject({ status: 0, stdout: "{}\n" })
     await expect(defaults.execFile(failed, [])).rejects.toThrow(/failed/u)
-    await expect(defaults.execFile(sleeping, [])).rejects.toThrow(/timed out/u)
+    await expect(timeoutDefaults.execFile(sleeping, [])).rejects.toThrow(/timed out/u)
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "closed-inventory" }, deps([{ ...valid, roles: ["ADMIN"] }]))).resolves.toMatchObject({ keys: [{ roles: "present" }] })
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "closed-inventory" }, deps([], { readKeyFiles: () => { throw "opaque" } }))).rejects.toBe("opaque")
 
