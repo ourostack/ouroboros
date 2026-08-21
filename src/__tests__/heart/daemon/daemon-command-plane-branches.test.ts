@@ -1380,6 +1380,10 @@ describe("daemon command plane branches", () => {
 
     const first = daemon.handleCommand(command)
     await vi.waitFor(() => expect(nativeHabitRunner).toHaveBeenCalledOnce())
+    expect(nativeHabitRunner).toHaveBeenCalledWith(expect.objectContaining({
+      occurrenceId: "cron:slot-1",
+      runnerId: expect.stringMatching(/^[0-9a-f-]{36}$/u),
+    }))
     await expect(daemon.handleCommand({ ...command, trigger: "overdue", occurrenceId: "overdue:slot-1" })).resolves.toEqual({
       ok: true,
       message: "skipped overlapping native habit occurrence overdue:slot-1",
@@ -1419,6 +1423,7 @@ describe("daemon command plane branches", () => {
       habitName: "sanctuary-health",
       trigger: "poke",
       occurrenceId: "poke:sanctuary:sanctuary-health",
+      runnerId: expect.stringMatching(/^[0-9a-f-]{36}$/u),
     })
     expect(listHabitRunReceipts(path.join(bundlesRoot, "sanctuary.ouro"))).toEqual([
       expect.objectContaining({
