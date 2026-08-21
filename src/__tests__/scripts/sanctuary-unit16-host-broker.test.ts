@@ -97,7 +97,8 @@ interface BrokerModule {
   }
   dispatch(request: unknown, dependencies?: BrokerDependencies): Promise<unknown>
   parseVaultStatus(output: string, succeeded: boolean): { vaultUnlocked: boolean; manualAuthRequired: boolean }
-  queryGraphqlAutostart(records: unknown[], fetchImpl: typeof fetch, expectedContainerId?: string, profile?: { containerName: string; requiredStopped: string[]; optionalStopped: string[]; forbidden: string[] }): Promise<boolean>
+  queryGraphqlAutostart(records: unknown[], fetchImpl: typeof fetch, expectedContainerId?: string, profile?: { containerName: string; requiredStopped: string[]; optionalStopped: string[]; forbidden: string[] }, inspectOptionalStopped?: (name: string, id: string) => boolean): Promise<boolean>
+  optionalStoppedContainerExact(name: string, id: string, run?: (executable: string, args: string[], options: unknown) => { error?: Error; status: number | null; stdout?: string }): boolean
   denialTargetSnapshot(dependencies?: {
     run(executable: string, args: string[], options: unknown): { error?: Error; status: number | null; stdout?: string }
   }): Record<string, unknown>
@@ -147,7 +148,8 @@ async function broker(): Promise<BrokerModule> {
     createDispatchDrain(): { run<T>(operation: () => T | Promise<T>): Promise<T>; stopAndDrain(): Promise<void> }
     dispatch(request: unknown, dependencies?: BrokerDependencies): Promise<unknown>
     parseVaultStatus(output: string, succeeded: boolean): { vaultUnlocked: boolean; manualAuthRequired: boolean }
-    queryGraphqlAutostart(records: unknown[], fetchImpl: typeof fetch, expectedContainerId?: string, profile?: { containerName: string; requiredStopped: string[]; optionalStopped: string[]; forbidden: string[] }): Promise<boolean>
+    queryGraphqlAutostart(records: unknown[], fetchImpl: typeof fetch, expectedContainerId?: string, profile?: { containerName: string; requiredStopped: string[]; optionalStopped: string[]; forbidden: string[] }, inspectOptionalStopped?: (name: string, id: string) => boolean): Promise<boolean>
+    optionalStoppedContainerExact: BrokerModule["optionalStoppedContainerExact"]
     denialTargetSnapshot: BrokerModule["denialTargetSnapshot"]
     assertStableContainerProcess: BrokerModule["assertStableContainerProcess"]
     readBoundedProcStatus: BrokerModule["readBoundedProcStatus"]
@@ -1153,7 +1155,8 @@ describe("Sanctuary Unit 16 host broker", () => {
     }) as typeof fetch
     const permissions = ["ARRAY", "DASHBOARD", "DISK", "DOCKER", "INFO", "LOGS", "NOTIFICATIONS", "SHARE", "VARS"]
       .map((resource) => ({ resource, actions: ["READ_ANY"] }))
-    await expect(queryGraphqlAutostart([{ id: "ro-id", name: "Butler RO", permissions, roles: [], key: "private-descriptor" }], fetchImpl, productionId)).resolves.toBe(true)
+    const finalProfile = { containerName: "ouro-butler", requiredStopped: [], optionalStopped: ["ouro-butler-rollback"], forbidden: ["ouro-butler-staging"] }
+    await expect(queryGraphqlAutostart([{ id: "ro-id", name: "Butler RO", permissions, roles: [], key: "private-descriptor" }], fetchImpl, productionId, finalProfile, () => true)).resolves.toBe(true)
     expect(calls).toHaveLength(1)
     expect(calls[0]?.input).toBe("http://127.0.0.1/graphql")
     expect(calls[0]?.init?.method).toBe("POST")
@@ -1172,7 +1175,15 @@ describe("Sanctuary Unit 16 host broker", () => {
       [{ id: "ro-id", name: "Butler RO", permissions, roles: [], key: "private-descriptor" }],
       responseWith([{ id: `${serverId}:${productionId}`, names: ["/ouro-butler"], autoStart: true }]),
       productionId,
+      finalProfile,
     )).resolves.toBe(true)
+    await expect(queryGraphqlAutostart(
+      [{ id: "ro-id", name: "Butler RO", permissions, roles: [], key: "private-descriptor" }],
+      fetchImpl,
+      productionId,
+      finalProfile,
+      () => false,
+    )).resolves.toBe(false)
     for (const invalidTopology of [
       [
         { id: `${serverId}:${productionId}`, names: ["/ouro-butler"], autoStart: true },
@@ -1202,6 +1213,26 @@ describe("Sanctuary Unit 16 host broker", () => {
       stagingId,
       stagingProfile,
     )).resolves.toBe(false)
+  })
+
+  it("inspects an optional rollback by immutable ID and proves it is stopped", async () => {
+    const { optionalStoppedContainerExact } = await broker()
+    const rollbackId = "d".repeat(64)
+    const calls: Array<{ executable: string; args: string[]; options: unknown }> = []
+    const run = (executable: string, args: string[], options: unknown) => {
+      calls.push({ executable, args, options })
+      return { status: 0, stdout: JSON.stringify({ containerId: rollbackId, name: "/ouro-butler-rollback", running: false }) }
+    }
+    expect(optionalStoppedContainerExact("ouro-butler-rollback", rollbackId, run)).toBe(true)
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.executable).toBe("/usr/bin/docker")
+    expect(calls[0]?.args.slice(0, 3)).toEqual(["inspect", "--format", expect.stringContaining("State.Running")])
+    expect(calls[0]?.args.at(-1)).toBe(rollbackId)
+    for (const bad of [
+      { containerId: rollbackId, name: "/ouro-butler-rollback", running: true },
+      { containerId: "e".repeat(64), name: "/ouro-butler-rollback", running: false },
+      { containerId: rollbackId, name: "/ouro-butler", running: false },
+    ]) expect(optionalStoppedContainerExact("ouro-butler-rollback", rollbackId, () => ({ status: 0, stdout: JSON.stringify(bad) }))).toBe(false)
   })
 
   it("requires successful live runtime and both provider vault reads", async () => {
