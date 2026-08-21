@@ -974,6 +974,7 @@ docker() {
 install() { eval "TARGET=\${$#}"; command mkdir -p "$TARGET"; command chmod 0700 "$TARGET"; }
 sync() { return 0; }
 validate_exact_image_id() { return 0; }
+file_inode() { node -e 'const fs = require("node:fs"); process.stdout.write(String(fs.statSync(process.argv[1]).ino))' "$1"; }
 ${capture}
 EVIDENCE_DIR="$EVIDENCE_ROOT/${imageId.slice("sha256:".length)}"
 command mkdir -p "$EVIDENCE_DIR"
@@ -987,11 +988,11 @@ case "$SCENARIO" in
 esac
 test ! -e "$EVIDENCE_DIR/container.json" || test "$SCENARIO" = partial || command chmod 0600 "$EVIDENCE_DIR/container.json"
 test ! -e "$EVIDENCE_DIR/image.json" || command chmod 0600 "$EVIDENCE_DIR/image.json"
-BEFORE_CONTAINER_INODE=$(test -e "$EVIDENCE_DIR/container.json" && command stat -f '%i' "$EVIDENCE_DIR/container.json" || command printf missing)
-BEFORE_IMAGE_INODE=$(test -e "$EVIDENCE_DIR/image.json" && command stat -f '%i' "$EVIDENCE_DIR/image.json" || command printf missing)
+BEFORE_CONTAINER_INODE=$(test -e "$EVIDENCE_DIR/container.json" && file_inode "$EVIDENCE_DIR/container.json" || command printf missing)
+BEFORE_IMAGE_INODE=$(test -e "$EVIDENCE_DIR/image.json" && file_inode "$EVIDENCE_DIR/image.json" || command printf missing)
 capture_sanctuary_legacy_evidence "$CONTAINER_ID" "$IMAGE_ID" "$EVIDENCE_ROOT" || exit $?
-command printf 'container-inode:%s:%s\n' "$BEFORE_CONTAINER_INODE" "$(command stat -f '%i' "$EVIDENCE_DIR/container.json")"
-command printf 'image-inode:%s:%s\n' "$BEFORE_IMAGE_INODE" "$(command stat -f '%i' "$EVIDENCE_DIR/image.json")"`
+command printf 'container-inode:%s:%s\n' "$BEFORE_CONTAINER_INODE" "$(file_inode "$EVIDENCE_DIR/container.json")"
+command printf 'image-inode:%s:%s\n' "$BEFORE_IMAGE_INODE" "$(file_inode "$EVIDENCE_DIR/image.json")"`
     const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-legacy-evidence-resume-"))
     try {
       const evidenceRoot = path.join(testRoot, "legacy-evidence")
