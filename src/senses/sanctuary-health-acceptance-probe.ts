@@ -91,6 +91,7 @@ interface HealthSnapshot { exists: boolean; bytes: string }
 
 interface ProbeProcessDependencies {
   agentRoot: string
+  listPids(): number[]
   processAlive(pid: number): boolean
   readCommandLine(pid: number): string
   signal(pid: number, signal: NodeJS.Signals): void
@@ -174,6 +175,7 @@ function unregisterSanctuaryHealthAcceptanceProbeProcess(input: SanctuaryHealthA
 function defaultProbeProcessDependencies(): ProbeProcessDependencies {
   return {
     agentRoot: getAgentRoot("sanctuary"),
+    listPids: () => fs.readdirSync("/proc").filter((entry) => /^[0-9]+$/u.test(entry)).map(Number),
     processAlive: (pid) => {
       try { process.kill(pid, 0); return true }
       catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return false; throw error }
@@ -182,6 +184,34 @@ function defaultProbeProcessDependencies(): ProbeProcessDependencies {
     signal: (pid, signal) => { process.kill(pid, signal) },
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   }
+}
+
+function expectedProbeCommandLine(input: SanctuaryHealthAcceptanceProbeInput): string[] {
+  return [
+    "/usr/local/bin/node", PROCESS_ENTRY, "run",
+    "--label", input.label,
+    "--scenario", input.scenarioHandleDigest,
+    "--owner-image", input.ownerImageDigest,
+    "--owner-container", input.ownerContainerDigest,
+  ]
+}
+
+function parsedCommandLine(raw: string): string[] {
+  const parts = raw.split("\0")
+  if (parts.at(-1) === "") parts.pop()
+  return parts
+}
+
+function exactProbeProcessPids(input: SanctuaryHealthAcceptanceProbeInput, dependencies: ProbeProcessDependencies): number[] {
+  const expected = JSON.stringify(expectedProbeCommandLine(input))
+  return dependencies.listPids().filter((pid) => {
+    if (!dependencies.processAlive(pid)) return false
+    try { return JSON.stringify(parsedCommandLine(dependencies.readCommandLine(pid))) === expected }
+    catch (error) {
+      if (["ENOENT", "ESRCH"].includes(String((error as NodeJS.ErrnoException).code))) return false
+      throw error
+    }
+  })
 }
 
 async function waitForProcessAbsent(pid: number, dependencies: ProbeProcessDependencies, timeoutMs: number): Promise<boolean> {
@@ -197,28 +227,34 @@ export async function stopSanctuaryHealthAcceptanceProbeProcess(
 ): Promise<{ stopped: boolean }> {
   canonicalInput(input)
   const marker = probeProcessPath(dependencies.agentRoot, input.scenarioHandleDigest)
-  let value: Record<string, unknown>
-  try { value = JSON.parse(fs.readFileSync(marker, "utf8")) as Record<string, unknown> }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { stopped: false }
-    throw error
+  let markerPid: number | null = null
+  try {
+    const value = JSON.parse(fs.readFileSync(marker, "utf8")) as Record<string, unknown>
+    if (!sameProcessRecord(value, input)) throw new Error("Sanctuary health acceptance process identity is invalid")
+    markerPid = value.pid
   }
-  if (!sameProcessRecord(value, input)) throw new Error("Sanctuary health acceptance process identity is invalid")
-  const pid = value.pid
-  if (dependencies.processAlive(pid)) {
-    const commandLine = dependencies.readCommandLine(pid).split("\0")
-    if (!commandLine.includes(PROCESS_ENTRY) || !commandLine.includes("run") || !commandLine.includes(input.scenarioHandleDigest)) {
-      throw new Error("Sanctuary health acceptance process identity is invalid")
-    }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+  }
+  const exactPids = exactProbeProcessPids(input, dependencies)
+  if (exactPids.length > 1) throw new Error("Sanctuary health acceptance process identity is ambiguous")
+  if (markerPid !== null && dependencies.processAlive(markerPid) && exactPids[0] !== markerPid) {
+    throw new Error("Sanctuary health acceptance process identity is invalid")
+  }
+  if (markerPid !== null && !dependencies.processAlive(markerPid) && exactPids.length !== 0) {
+    throw new Error("Sanctuary health acceptance process identity is invalid")
+  }
+  const pid = markerPid !== null && dependencies.processAlive(markerPid) ? markerPid : exactPids[0] ?? null
+  if (pid !== null) {
     dependencies.signal(pid, "SIGTERM")
     if (!await waitForProcessAbsent(pid, dependencies, options.termGraceMs ?? 5_000)) {
       dependencies.signal(pid, "SIGKILL")
       if (!await waitForProcessAbsent(pid, dependencies, options.killGraceMs ?? 5_000)) throw new Error("Sanctuary health acceptance process did not stop")
     }
   }
-  unregisterSanctuaryHealthAcceptanceProbeProcess(input, dependencies.agentRoot, pid)
-  if (dependencies.processAlive(pid) || fs.existsSync(marker)) throw new Error("Sanctuary health acceptance process absence was not verified")
-  return { stopped: true }
+  if (markerPid !== null) unregisterSanctuaryHealthAcceptanceProbeProcess(input, dependencies.agentRoot, markerPid)
+  if (exactProbeProcessPids(input, dependencies).length !== 0 || fs.existsSync(marker)) throw new Error("Sanctuary health acceptance process absence was not verified")
+  return { stopped: pid !== null }
 }
 
 function snapshotState(statePath: string): HealthSnapshot {

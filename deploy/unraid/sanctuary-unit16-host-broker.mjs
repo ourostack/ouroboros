@@ -348,6 +348,18 @@ function healthProbeArtifactDisposition({ receipt, workspace, pending }) {
   return "absent"
 }
 
+function attestHealthProbeProcessAbsent(input, dependencies = {
+  run: spawnSync,
+  markerPresent: () => Boolean(statIfPresent(healthProbeProcessPath(input.scenarioHandleDigest))),
+}) {
+  const value = canonicalHealthProbeInput(input)
+  const stopped = dependencies.run(DOCKER, healthProbeDockerArgs("stop", value), {
+    cwd: "/", encoding: "utf8", timeout: 15_000, maxBuffer: 64 * 1024,
+    env: { PATH: "/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin" }, stdio: ["ignore", "ignore", "ignore"],
+  })
+  if (stopped.error || stopped.status !== 0 || dependencies.markerPresent()) throw new Error("health probe in-container process termination failed")
+}
+
 async function waitForHealthProbeProcessMarker(record, timeoutMs = 5_000) {
   const marker = healthProbeProcessPath(record.input.scenarioHandleDigest)
   const deadline = Date.now() + timeoutMs
@@ -493,14 +505,8 @@ async function recoverHealthProbe(input) {
     const processMarker = statIfPresent(healthProbeProcessPath(value.scenarioHandleDigest))
     if (processMarker) {
       if (!processMarker.isFile() || processMarker.uid !== 10001 || (processMarker.mode & 0o777) !== 0o600) throw new Error("health probe process marker metadata is invalid")
-      const stopped = spawnSync(DOCKER, healthProbeDockerArgs("stop", value), {
-        cwd: "/", encoding: "utf8", timeout: 15_000, maxBuffer: 64 * 1024,
-        env: { PATH: "/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin" }, stdio: ["ignore", "ignore", "ignore"],
-      })
-      if (stopped.error || stopped.status !== 0 || statIfPresent(healthProbeProcessPath(value.scenarioHandleDigest))) {
-        throw new Error("health probe in-container process termination failed")
-      }
     }
+    attestHealthProbeProcessAbsent(value)
     return await recoverAfterHealthProbeTermination(record, () => {
       if (record) record.state = "recovering"
       const workspace = statIfPresent(healthProbeWorkspacePath(value.scenarioHandleDigest))
@@ -716,6 +722,7 @@ if (process.argv[1]?.endsWith("sanctuary-unit16-host-broker.mjs")) {
 }
 
 export {
+  attestHealthProbeProcessAbsent,
   createDispatchDrain,
   dispatch,
   healthProbeArtifactDisposition,
