@@ -339,14 +339,14 @@ export function createSanctuaryHealthAcceptanceScenarioDriver(
   }
 }
 
-type InteractiveLabel = "unit-16l-duplicate-callback" | "unit-16m-restart-continuation"
+type InteractiveLabel = "unit-16k-timeout-stale" | "unit-16l-duplicate-callback" | "unit-16m-restart-continuation"
 
 function isInteractiveLabel(label: string): label is InteractiveLabel {
-  return label === "unit-16l-duplicate-callback" || label === "unit-16m-restart-continuation"
+  return label === "unit-16k-timeout-stale" || label === "unit-16l-duplicate-callback" || label === "unit-16m-restart-continuation"
 }
 
-function currentInteractiveProposal(records: ApprovalAcceptanceProjection[]): ApprovalAcceptanceProjection | null {
-  const matches = records.filter(({ approval }) => approval.state === "proposed" && approval.toolName === "unraid_restart_container"
+function currentInteractiveProposal(records: ApprovalAcceptanceProjection[], label: InteractiveLabel): ApprovalAcceptanceProjection | null {
+  const matches = records.filter(({ approval }) => (approval.state === "proposed" || (label === "unit-16k-timeout-stale" && approval.state === "expired")) && approval.toolName === "unraid_restart_container"
     && approval.arguments.container === "calibre-web" && approval.transport === "telegram")
   if (matches.length > 1) throw new Error("interactive acceptance proposal is ambiguous")
   return matches[0] ?? null
@@ -374,12 +374,17 @@ export function createSanctuaryInteractiveAcceptanceScenarioDriver(options: {
         if (existing.label !== label || existing.scenarioHandleDigest !== scenarioHandleDigest) throw new Error("interactive driver receipt binding mismatch")
         if (existing.phase === "complete") return { state: "driven" }
       }
-      const projection = currentInteractiveProposal(approvals(path.join(options.agentRoot, "state/approvals/approvals.sqlite"), scenarioHandleDigest))
+      const projection = currentInteractiveProposal(approvals(path.join(options.agentRoot, "state/approvals/approvals.sqlite"), scenarioHandleDigest), label)
       if (!projection) return { state: "waiting" }
       const { approval } = projection
       if (!approval.suspendedSessionRevision || !SHA256.test(approval.checkpointDigest)) throw new Error("interactive acceptance checkpoint is invalid")
-      const operation = label === "unit-16l-duplicate-callback" ? "drive_duplicate_callbacks" : "drive_restart_continuation"
+      const operation = label === "unit-16k-timeout-stale" ? "drive_timeout_stale"
+        : label === "unit-16l-duplicate-callback" ? "drive_duplicate_callbacks" : "drive_restart_continuation"
       const response = object(await options.hostRequest({ operation, targetId: TARGET_ID, label, scenarioHandleDigest }), "interactive scenario driver response")
+      if (label === "unit-16k-timeout-stale" && response.state === "waiting") {
+        exactKeys(response, ["state"], "interactive scenario driver response")
+        return { state: "waiting" }
+      }
       if (label === "unit-16m-restart-continuation") {
         if (response.state === "waiting") {
           exactKeys(response, ["state"], "interactive scenario driver response")
@@ -695,14 +700,21 @@ function parseTelegramTurnReceipts(raw: string, scenarioHandleDigest: string): S
 function parseInteractiveDriverReceipt(raw: string | null, label: SanctuaryUnit16EvidenceLabel, scenarioHandleDigest: string): SanctuaryInteractiveDriverReceipt | undefined {
   if (raw === null) return undefined
   const receipt = object(JSON.parse(raw) as unknown, "interactive driver receipt")
-  if (receipt.schemaVersion !== "sanctuary-interactive-driver-receipt-v2" || receipt.phase !== "complete"
+  const expectedSchema = label === "unit-16k-timeout-stale" ? "sanctuary-timeout-stale-driver-receipt-v1" : "sanctuary-interactive-driver-receipt-v2"
+  if (receipt.schemaVersion !== expectedSchema || receipt.phase !== "complete"
     || receipt.label !== label || receipt.scenarioHandleDigest !== scenarioHandleDigest) throw new Error("interactive driver receipt binding is invalid")
   const common = ["schemaVersion", "phase", "label", "scenarioHandleDigest", "approvalIdDigest", "checkpointDigest", "suspendedSessionRevisionDigest", "approvalEpochBefore"]
   const digests = [receipt.approvalIdDigest, receipt.checkpointDigest, receipt.suspendedSessionRevisionDigest]
   if (!digests.every((value) => typeof value === "string" && SHA256.test(value)) || !Number.isSafeInteger(receipt.approvalEpochBefore) || Number(receipt.approvalEpochBefore) < 0) {
     throw new Error("interactive driver receipt common coordinates are invalid")
   }
-  if (label === "unit-16l-duplicate-callback") {
+  if (label === "unit-16k-timeout-stale") {
+    exactKeys(receipt, [...common, "callbackAttempts", "distinctQueryCount", "callbackDataDigest", "settledCount", "claimCount", "mutationCount", "staleAcknowledged", "promptTerminal"], "timeout stale driver receipt")
+    if (receipt.callbackAttempts !== 1 || receipt.distinctQueryCount !== 1 || typeof receipt.callbackDataDigest !== "string" || !SHA256.test(receipt.callbackDataDigest)
+      || receipt.settledCount !== 1 || receipt.claimCount !== 0 || receipt.mutationCount !== 0 || receipt.staleAcknowledged !== true || receipt.promptTerminal !== true) {
+      throw new Error("timeout stale driver receipt is invalid")
+    }
+  } else if (label === "unit-16l-duplicate-callback") {
     exactKeys(receipt, [...common, "callbackAttempts", "distinctQueryCount", "callbackDataDigest", "barrierObserved", "settledCount", "claimCount", "mutationCount", "staleReplayAttempts", "staleReplaySettled", "staleReplayMutationCount", "promptTerminal", "writeCredentialObserved"], "duplicate callback driver receipt")
     if (receipt.callbackAttempts !== 2 || receipt.distinctQueryCount !== 2 || typeof receipt.callbackDataDigest !== "string" || !SHA256.test(receipt.callbackDataDigest)
       || receipt.barrierObserved !== true || receipt.settledCount !== 2 || receipt.claimCount !== 1 || receipt.mutationCount !== 1
@@ -1579,6 +1591,7 @@ export async function executeSanctuaryInteractiveRuntimeOperation(
     createSession: supplied.createSession ?? (async () => { throw new Error("daemon-owned interactive callback session is unavailable") }),
     proveIndeterminateRecovery: supplied.proveIndeterminateRecovery ?? proveSanctuaryAttemptedRecoveryWithoutRetry,
     writeCredentialObserved: supplied.writeCredentialObserved ?? (() => /credential|api[_-]?key|token|secret/iu.test(JSON.stringify(rawPayload))),
+    timeoutCoordinates: supplied.timeoutCoordinates ?? new Map(),
   }
   return executeSanctuaryInteractiveEngine(rawPayload, deps)
 }
