@@ -628,6 +628,23 @@ describe("Telegram sense", () => {
     vi.useRealTimers()
   })
 
+  it("starts polling and the absolute observer when startup reconciliation fails", async () => {
+    vi.useFakeTimers()
+    let finishPolling!: () => void
+    const f = fixture({ pollRun: () => new Promise<void>((resolve) => { finishPolling = resolve }) })
+    f.approvalTransport.reconcileExpired.mockRejectedValueOnce(new Error("startup edit unavailable")).mockResolvedValue(undefined)
+    const running = f.app.run()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(f.poll.run).toHaveBeenCalledOnce()
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(f.approvalTransport.reconcileExpired).toHaveBeenCalledTimes(3)
+    const stopping = f.app.stop()
+    finishPolling()
+    await stopping
+    await running
+    vi.useRealTimers()
+  })
+
   it("joins an in-flight reconciliation before closing transport resources", async () => {
     vi.useFakeTimers()
     let releaseReconcile!: () => void

@@ -237,6 +237,25 @@ describe("Telegram approval callback transport", () => {
     expect(onDecision).not.toHaveBeenCalled()
   })
 
+  it("durably retires an unclaimed terminal tombstone at its bounded deadline", async () => {
+    let clock = 2_000_000
+    const saves: unknown[] = []
+    const transport = createTelegramApprovalTransport({
+      api: { stop: vi.fn(), request: vi.fn() }, expectedUserId: "10", expectedChatId: "10",
+      pendingStore: {
+        load: () => [{ approvalId: "expired", messageId: "99", deliveryState: "terminal_tombstone", approveCallbackData: "a:expired", denyCallbackData: "d:expired", expiresAt: 1_000_000, terminalizedAt: 1_000_000, tombstoneExpiresAt: 2_000_000 }],
+        save: (records) => { saves.push(structuredClone(records)) },
+      },
+      createOpaqueHandle: vi.fn(), onDecision: vi.fn(), onExpire: vi.fn(), now: () => clock,
+    })
+    await transport.reconcileExpired()
+    expect(saves).toEqual([[]])
+    expect(transport.listPendingDeliveries()).toEqual([])
+    clock += 1
+    await transport.reconcileExpired()
+    expect(saves).toHaveLength(1)
+  })
+
   it("persists an indeterminate prompt delivery when sendMessage may have escaped", async () => {
     const fixture = approvalFixture({ apiRequest: async () => { throw new Error("connection reset after write") } })
 
