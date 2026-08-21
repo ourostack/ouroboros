@@ -566,7 +566,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     })
     const deps = createSanctuaryAcceptanceAdapterDependencies(3, {
       hostRequest,
-      scenarioCapture: { agentRoot, receiptRoot, gateStatusPath },
+      scenarioCapture: { agentRoot, gateStatusPath },
     })
     const healthState = '{"incidents":{},"lastDigestDay":null,"updatedAt":"1970-01-01T00:00:00.000Z","outbox":null,"indeterminateDeliveries":[],"deliveredReceipts":[],"sweepReceipts":[]}\n'
     const cron = "# ouro:habit:sanctuary:sanctuary:sanctuary-health\n*/15 * * * * /usr/local/bin/node /opt/ouro/dist/heart/daemon/ouro-entry.js poke sanctuary --habit sanctuary-health --trigger cron\n"
@@ -587,6 +587,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
         externalGate: SANCTUARY_SCENARIO_GATES["unit-16h-daily-digest"], sources: SANCTUARY_SCENARIO_SOURCES["unit-16h-daily-digest"],
       }
       const begin = await executeSanctuaryAcceptanceAdapter(payload, deps) as Record<string, unknown>
+      expect(fs.existsSync(receiptRoot)).toBe(true)
       const checkpointDigest = begin.checkpointDigest as string
       await expect(executeSanctuaryAcceptanceAdapter({ ...payload, phase: "poll", checkpointDigest }, deps)).resolves.toEqual(begin)
       const result = await executeSanctuaryAcceptanceAdapter({ ...payload, phase: "poll", checkpointDigest }, deps)

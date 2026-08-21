@@ -54,8 +54,8 @@ export function secureRenameBoundInodeSync(
   if (result.error || result.status !== 0) throw new Error("acceptance quarantine bound rename failed")
 }
 
-function markerPath(agentName: string): string {
-  return path.join(getAgentRoot(agentName), "state", "acceptance", "active-scenario.json")
+function markerPath(agentName: string, configuredAgentRoot?: string): string {
+  return path.join(configuredAgentRoot ?? getAgentRoot(agentName), "state", "acceptance", "active-scenario.json")
 }
 
 function parseMarker(value: unknown): SanctuaryAcceptanceMarker {
@@ -73,9 +73,9 @@ function parseMarker(value: unknown): SanctuaryAcceptanceMarker {
   return marker as unknown as SanctuaryAcceptanceMarker
 }
 
-export function readSanctuaryAcceptanceMarker(agentName: string): SanctuaryAcceptanceMarker | null {
+export function readSanctuaryAcceptanceMarker(agentName: string, configuredAgentRoot?: string): SanctuaryAcceptanceMarker | null {
   if (agentName !== "sanctuary") return null
-  const filePath = markerPath(agentName)
+  const filePath = markerPath(agentName, configuredAgentRoot)
   let raw: string
   try {
     raw = fs.readFileSync(filePath, "utf8")
@@ -86,10 +86,10 @@ export function readSanctuaryAcceptanceMarker(agentName: string): SanctuaryAccep
   return parseMarker(JSON.parse(raw) as unknown)
 }
 
-export function writeSanctuaryAcceptanceMarker(agentName: string, marker: SanctuaryAcceptanceMarker): void {
+export function writeSanctuaryAcceptanceMarker(agentName: string, marker: SanctuaryAcceptanceMarker, configuredAgentRoot?: string): void {
   if (agentName !== "sanctuary") throw new Error("acceptance markers are restricted to Sanctuary")
   const parsed = parseMarker(marker)
-  const filePath = markerPath(agentName)
+  const filePath = markerPath(agentName, configuredAgentRoot)
   fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 })
   const temporary = `${filePath}.${process.pid}.tmp`
   fs.writeFileSync(temporary, `${JSON.stringify(parsed)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" })
@@ -98,18 +98,18 @@ export function writeSanctuaryAcceptanceMarker(agentName: string, marker: Sanctu
   emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_acceptance_marker_written", message: "Sanctuary acceptance marker published", meta: { label: parsed.label, scenarioHandleDigest: parsed.scenarioHandleDigest } })
 }
 
-export function clearSanctuaryAcceptanceMarker(agentName: string, scenarioHandleDigest: string): void {
+export function clearSanctuaryAcceptanceMarker(agentName: string, scenarioHandleDigest: string, configuredAgentRoot?: string): void {
   if (!SHA256.test(scenarioHandleDigest)) throw new Error("scenario handle digest is invalid")
-  const current = readSanctuaryAcceptanceMarker(agentName)
+  const current = readSanctuaryAcceptanceMarker(agentName, configuredAgentRoot)
   if (!current) return
   if (current.scenarioHandleDigest !== scenarioHandleDigest) throw new Error("acceptance marker ownership mismatch")
-  fs.unlinkSync(markerPath(agentName))
+  fs.unlinkSync(markerPath(agentName, configuredAgentRoot))
   emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_acceptance_marker_cleared", message: "Sanctuary acceptance marker cleared", meta: { scenarioHandleDigest } })
 }
 
-export function quarantineSanctuaryAcceptanceMarker(agentName: string): string | null {
+export function quarantineSanctuaryAcceptanceMarker(agentName: string, configuredAgentRoot?: string): string | null {
   if (agentName !== "sanctuary") throw new Error("acceptance markers are restricted to Sanctuary")
-  const filePath = markerPath(agentName)
+  const filePath = markerPath(agentName, configuredAgentRoot)
   const sourceParent = path.dirname(filePath)
   const quarantineRoot = path.join(sourceParent, "quarantine")
   let markerPathMetadata: fs.Stats

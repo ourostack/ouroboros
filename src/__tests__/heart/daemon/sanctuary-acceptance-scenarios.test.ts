@@ -22,15 +22,20 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-scenarios-"))
 vi.mock("../../../heart/identity", () => ({ getAgentRoot: () => path.join(root, "sanctuary.ouro") }))
 
 import {
-  createSanctuaryScenarioCapture,
+  createSanctuaryScenarioCapture as createSanctuaryScenarioCaptureWithRoot,
   deriveSanctuaryScenarioAssertions,
   verifySanctuaryPostbootIntegrity,
   finalizeSanctuaryScenarioCapture,
+  type SanctuaryScenarioCaptureDependencies,
   type SanctuaryScenarioFacts,
 } from "../../../heart/daemon/sanctuary-acceptance-scenarios"
 import { SANCTUARY_SCENARIO_SOURCES, SANCTUARY_UNIT_16_EVIDENCE_LABELS, validateSanctuaryUnit16EvidenceAssertions } from "../../../heart/daemon/sanctuary-acceptance-harness"
 import { readSanctuaryAcceptanceMarker, secureRenameBoundInodeSync } from "../../../heart/daemon/sanctuary-acceptance-marker"
 import { createSanctuaryAcceptanceScenarioFinalizer } from "../../../heart/daemon/sanctuary-acceptance-adapter"
+
+const createSanctuaryScenarioCapture = (
+  dependencies: Omit<SanctuaryScenarioCaptureDependencies, "agentRoot"> & { agentRoot?: string },
+) => createSanctuaryScenarioCaptureWithRoot({ agentRoot: path.join(root, "sanctuary.ouro"), ...dependencies })
 
 const event = (name: string) => ({ event: name, at: 1, meta: {} })
 const scenarioHandleDigest = "a".repeat(64)
@@ -1013,9 +1018,9 @@ describe("Sanctuary live scenario capture", () => {
       now: () => 400_000,
       readFacts: async () => base(),
       agentRoot: path.join(root, "default-agent-root"),
-      markerStore: { write: vi.fn(), clear: vi.fn() },
+      gateStatusPath: path.join(root, "default-gate.json"),
     })
-    await expect(defaultCapture({ phase: "begin", label: "unit-16d-whats-up", externalGate: "telegram", sources: ["telegram-audit"] })).rejects.toMatchObject({ code: "ENOENT" })
+    await expect(defaultCapture({ phase: "begin", label: "unit-16d-whats-up", externalGate: "telegram", sources: ["telegram-audit"] })).resolves.toMatchObject({ state: "waiting" })
 
     const receipts = path.join(root, "capture-branches")
     let facts = base()

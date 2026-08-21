@@ -289,6 +289,7 @@ export function createSanctuaryAcceptanceAdapterDependencies(
   })
   dependencies.captureScenario = createSanctuaryScenarioCapture({
     now: Date.now,
+    agentRoot: scenarioAgentRoot,
     readFacts: (label, scenarioHandleDigest, readOptions) => readDefaultSanctuaryScenarioFacts(label, scenarioHandleDigest, dependencies, options.scenarioCapture?.agentRoot, readOptions),
     healthDriver,
     interactiveDriver,
@@ -297,13 +298,17 @@ export function createSanctuaryAcceptanceAdapterDependencies(
     gateStatusPath: options.scenarioCapture?.gateStatusPath,
   }) as (payload: JsonObject) => Promise<unknown>
   dependencies.finalizeScenarios = createSanctuaryAcceptanceScenarioFinalizer({
-    readActiveScenario: () => readSanctuaryAcceptanceMarker(TARGET_ID),
+    readActiveScenario: () => readSanctuaryAcceptanceMarker(TARGET_ID, scenarioAgentRoot),
     recoverHealthScenario: healthDriver.recover,
     finalizeInteractiveScenario: (label, scenarioHandleDigest) => {
       interactiveDriver.complete(label, scenarioHandleDigest)
       return "preserve"
     },
-    finalizeLocal: finalizeSanctuaryScenarioCapture,
+    finalizeLocal: () => finalizeSanctuaryScenarioCapture(
+      options.scenarioCapture?.gateStatusPath,
+      options.scenarioCapture?.receiptRoot,
+      scenarioAgentRoot,
+    ),
   })
   return dependencies
 }
