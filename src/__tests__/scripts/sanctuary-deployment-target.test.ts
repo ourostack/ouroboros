@@ -15,6 +15,8 @@ type TargetModule = {
   cgroupProcessIds(rootPid: number, containerId: string, dependencies: Record<string, unknown>): { path: string; processIds: number[]; threadIds: number[] }
   ownedSocketInodes(threadIds: number[], dependencies?: Record<string, unknown>): string[]
   queryGraphqlAutostart(fetchImpl: typeof fetch, readDescriptor: () => string): Promise<Map<string, { containerId: string; autoStart: boolean }>>
+  parseProcStatIdentity(content: string, expectedPid: number): { state: string; starttime: string }
+  runThawWatchdog(targetContainerId: string, targetPid: number, parentPid: number, parentBootId: string, parentStarttime: string, root: string, dependencies: Record<string, unknown>): Promise<void>
   withPausedTarget<T>(target: { targetContainerId: string; targetPid: number }, operation: () => T, dependencies: Record<string, unknown>): T
 }
 
@@ -226,16 +228,94 @@ describe("Sanctuary fixed deployment target", () => {
     })).toThrow(AggregateError)
   })
 
-  it("ships a detached parent-death watchdog with exact-ID/PID refusal and no lifecycle mutation", () => {
-    const source = fs.readFileSync(path.join(process.cwd(), "deploy/unraid/sanctuary-deployment-target.mjs"), "utf8")
-    expect(source).toContain("--thaw-watchdog")
-    expect(source).toContain("detached: true")
-    expect(source).toContain("parentPid")
-    expect(source).toContain("targetPid")
-    expect(source).toContain("watchdog-terminal.json")
-    const watchdog = source.slice(source.indexOf("async function runThawWatchdog"), source.indexOf("async function runDeploymentTargetAudit"))
-    expect(watchdog).toContain('["unpause", targetContainerId]')
-    expect(watchdog).not.toMatch(/\["(?:start|restart|update)"/u)
+  it("parses Linux parent starttime when comm contains spaces and parentheses", async () => {
+    const { parseProcStatIdentity } = await load()
+    const fieldsFromPpidThroughStarttime = ["1", ...Array.from({ length: 17 }, () => "0"), "987654"]
+    expect(parseProcStatIdentity(`42 (auditor worker (phase two)) S ${fieldsFromPpidThroughStarttime.join(" ")} 0 0\n`, 42))
+      .toEqual({ state: "S", starttime: "987654" })
+    expect(() => parseProcStatIdentity(`43 (auditor) S ${fieldsFromPpidThroughStarttime.join(" ")}\n`, 42)).toThrow(/identity/u)
+  })
+
+  it("does not thaw while the exact parent boot/start identity remains alive and then disarms", async () => {
+    const { runThawWatchdog } = await load()
+    const bootId = "11111111-2222-4333-8444-555555555555"
+    const root = "/run/ouro-thaw-watchdog.42.1000"
+    let clock = 0
+    let polls = 0
+    const calls: Array<{ args: string[]; timeoutMs: number }> = []
+    const files = new Map<string, string>()
+    await runThawWatchdog(stagingId, 321, 42, bootId, "987654", root, {
+      now: () => clock,
+      sleep: async (milliseconds: number) => { clock += milliseconds; polls += 1 },
+      existsSync: (file: string) => file.endsWith("/disarm") && polls >= 1,
+      writeFileSync: (file: string, body: string) => { files.set(file, body) },
+      readParentIdentity: () => ({ bootId, state: "S", starttime: "987654" }),
+      runDocker: (args: string[], timeoutMs: number) => {
+        calls.push({ args, timeoutMs })
+        return JSON.stringify({ containerId: stagingId, running: true, paused: false, restarting: false, dead: false, pid: 321 })
+      },
+      enforcementMs: 1_000,
+    })
+    expect(calls.map(({ args }) => args[0])).toEqual(["inspect", "inspect"])
+    expect(calls.every(({ timeoutMs }) => timeoutMs > 0 && timeoutMs <= 20_000)).toBe(true)
+    expect(JSON.parse(files.get(`${root}/watchdog-terminal.json`)!)).toMatchObject({ status: "disarmed", containerId: stagingId, pid: 321, parentBootId: bootId, parentStarttime: "987654" })
+  })
+
+  it.each([
+    ["missing after signal death", () => { throw new Error("ENOENT") }],
+    ["zombie", () => ({ bootId: "11111111-2222-4333-8444-555555555555", state: "Z", starttime: "987654" })],
+    ["reused PID", () => ({ bootId: "11111111-2222-4333-8444-555555555555", state: "S", starttime: "987655" })],
+    ["changed boot", () => ({ bootId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", state: "S", starttime: "987654" })],
+  ])("thaws the exact target after parent identity becomes %s without lifecycle mutation", async (_label, parentIdentity) => {
+    const { runThawWatchdog } = await load()
+    const bootId = "11111111-2222-4333-8444-555555555555"
+    const root = "/run/ouro-thaw-watchdog.42.1000"
+    let clock = 0
+    let paused = false
+    const commands: string[][] = []
+    const files = new Map<string, string>()
+    await runThawWatchdog(stagingId, 321, 42, bootId, "987654", root, {
+      now: () => clock,
+      sleep: async (milliseconds: number) => { clock += milliseconds },
+      existsSync: () => false,
+      writeFileSync: (file: string, body: string) => { files.set(file, body); if (file.endsWith("/ready")) paused = true },
+      readParentIdentity: parentIdentity,
+      runDocker: (args: string[]) => {
+        commands.push(args)
+        if (args[0] === "unpause") { paused = false; return "" }
+        return JSON.stringify({ containerId: stagingId, running: true, paused, restarting: false, dead: false, pid: 321 })
+      },
+      enforcementMs: 1_000,
+      recoveryPollMs: 250,
+    })
+    expect(commands).toContainEqual(["unpause", stagingId])
+    expect(commands.some(([command]) => ["start", "restart", "update"].includes(command!))).toBe(false)
+    expect(paused).toBe(false)
+    expect(clock).toBeLessThanOrEqual(1_000)
+    expect(JSON.parse(files.get(`${root}/watchdog-terminal.json`)!)).toMatchObject({ status: "parent-death-recovered", containerId: stagingId, pid: 321 })
+  })
+
+  it("never starts another Docker call after the parent-death wall-clock budget is exhausted", async () => {
+    const { runThawWatchdog } = await load()
+    const bootId = "11111111-2222-4333-8444-555555555555"
+    let clock = 0
+    let calls = 0
+    await expect(runThawWatchdog(stagingId, 321, 42, bootId, "987654", "/run/ouro-thaw-watchdog.42.1000", {
+      now: () => clock,
+      sleep: async (milliseconds: number) => { clock += milliseconds },
+      existsSync: () => false,
+      writeFileSync: () => undefined,
+      readParentIdentity: () => { throw new Error("ENOENT") },
+      runDocker: (_args: string[], timeoutMs: number) => {
+        calls += 1
+        if (calls === 1) return JSON.stringify({ containerId: stagingId, running: true, paused: false, restarting: false, dead: false, pid: 321 })
+        clock += timeoutMs
+        throw new Error("command timed out")
+      },
+      enforcementMs: 1_000,
+    })).rejects.toThrow(/timed out|deadline/u)
+    expect(calls).toBe(2)
+    expect(clock).toBe(1_000)
   })
 
   it("prevents the target from executing inter-scan process, thread, and socket birth/death schedules", async () => {
