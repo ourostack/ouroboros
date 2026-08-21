@@ -171,13 +171,13 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       [`${agentRoot}/state/approvals/checkpoints.json`]: "{}\n",
       [`${agentRoot}/state/acceptance/telegram-turns.ndjson`]: `${JSON.stringify({ schemaVersion: "sanctuary-telegram-turn-receipt-v3", scenarioHandleDigest, status: "success", errorCategory: null, updateDigest: "1".repeat(64), sequenceDigest: "2".repeat(64), responseDigest: "3".repeat(64), toolResultDigests: [], providerInvocationCount: 1, toolInvocationCount: 0, deliveryCount: 1, deliveries: [{ messageIdDigest: "4".repeat(64), chunkDigest: "5".repeat(64) }], completedAt: "2026-08-20T16:00:01.000Z" })}\n`,
       "/home/ouro/.ouro-cli/scheduler/sanctuary.crontab": cron,
-      [`${agentRoot}/state/health/sanctuary-health.json`]: '{"deliveredReceipts":[]}\n',
+      [`${agentRoot}/state/health/sanctuary-health.json`]: '{"incidents":{},"lastDigestDay":null,"updatedAt":"1970-01-01T00:00:00.000Z","outbox":null,"indeterminateDeliveries":[],"deliveredReceipts":[],"sweepReceipts":[]}\n',
       "/run/ouro-acceptance/image-digest": "b".repeat(64),
     }
     const approvalDatabase = path.join(agentRoot, "state", "approvals", "approvals.sqlite")
     openApprovalStore({ databasePath: approvalDatabase }).close()
     const facts = await readDefaultSanctuaryScenarioFacts("unit-14b-3-opaque-identity-live", scenarioHandleDigest, unit16Deps({
-      readFixedFile: (file) => { if (!(file in files)) throw new Error("missing fixture"); return files[file]! },
+      readFixedFile: (file) => { if (!(file in files)) throw Object.assign(new Error("missing fixture"), { code: "ENOENT" }); return files[file]! },
       telegramCredentials: () => credentials,
       hostRequest: async () => ({ imageId: `sha256:${"b".repeat(64)}`, running: true, health: "healthy", user: "10001:10001", readOnlyRoot: true, mountCount: 2, publishedPortCount: 0, restartPolicy: "unless-stopped", restartCount: 0, autostartExact: true, updaterDisabled: true, vaultUnlocked: true, manualAuthRequired: false }),
     }), agentRoot)
@@ -208,6 +208,24 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     expect(facts.identity).toMatchObject({ rawIdentityAbsent: false })
     expect(facts.identity?.rawLeakCount).toBeGreaterThan(0)
     fs.rmSync(agentRoot, { recursive: true, force: true })
+  })
+
+  it("fails identity attestation instead of silently skipping an unaudited filesystem surface", async () => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-identity-surface-symlink-"))
+    const friendsRoot = path.join(agentRoot, "friends")
+    fs.mkdirSync(friendsRoot, { recursive: true })
+    fs.symlinkSync(path.join(agentRoot, "outside"), path.join(friendsRoot, "uninspected"))
+    const identityPath = `${agentRoot}/state/senses/telegram/identity.key`
+    await expect(readDefaultSanctuaryScenarioFacts("unit-12c-1-opaque-identity", "a".repeat(64), unit16Deps({
+      readFixedFile: (file) => { if (file === identityPath) return `${"k".repeat(43)}\n`; throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
+      telegramCredentials: () => ({ botToken: "123:token", authorizedUserId: "123456789", authorizedChatId: "987654321" }),
+    }), agentRoot)).rejects.toThrow("refuses symbolic links")
+    fs.rmSync(agentRoot, { recursive: true, force: true })
+  })
+
+  it("propagates non-absence source read failures", async () => {
+    const failure = Object.assign(new Error("permission denied"), { code: "EACCES" })
+    await expect(readDefaultSanctuaryScenarioFacts("unit-16d-whats-up", "a".repeat(64), unit16Deps({ readFixedFile: () => { throw failure } }))).rejects.toBe(failure)
   })
 
   it("parses the real reboot checkpoint schema and binds live host recovery milestones", async () => {
@@ -255,6 +273,49 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     await expect(readDefaultSanctuaryScenarioFacts("unit-16d-whats-up", scenarioHandleDigest, unit16Deps({
       readFixedFile: (file) => { if (file === ledgerPath) return `${JSON.stringify(receipt)}\n`; throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
     }), agentRoot)).rejects.toThrow("Telegram turn receipt ledger row is invalid")
+    fs.rmSync(agentRoot, { recursive: true, force: true })
+  })
+
+  it.each([
+    ["audit", "state/daemon/logs/telegram.ndjson", `${JSON.stringify({ ts: "2026-08-20T16:00:00.000Z", event: "telegram.update_dropped", meta: {} })}\n{\n`],
+    ["restart", "state/acceptance/restart-attempts.ndjson", `${JSON.stringify({ container: { id: "Docker:test", name: "test" }, beforeState: "running", observedAt: "2026-08-20T16:00:00.000Z", actionDigest: "1".repeat(64), argumentDigest: "2".repeat(64), scenarioHandleDigest: "b".repeat(64), approvalId: "approval", attemptId: "attempt", mutationAcknowledged: false, afterState: null, state: "attempt_not_started" })}\n{}\n`],
+    ["health", "state/health/sanctuary-health.json", JSON.stringify({ incidents: {}, lastDigestDay: null, updatedAt: "1970-01-01T00:00:00.000Z", outbox: null, indeterminateDeliveries: [], deliveredReceipts: [], sweepReceipts: [{ sweepId: "not-a-uuid" }] })],
+  ])("fails closed when a decisive %s source contains mixed corruption", async (_label, suffix, contents) => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-decisive-source-invalid-"))
+    const sourcePath = suffix.startsWith("state/daemon") ? "/home/ouro/AgentBundles/sanctuary.ouro/state/daemon/logs/telegram.ndjson" : `${agentRoot}/${suffix}`
+    await expect(readDefaultSanctuaryScenarioFacts("unit-16g-health-transition", "a".repeat(64), unit16Deps({
+      readFixedFile: (file) => { if (file === sourcePath) return contents; throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
+    }), agentRoot)).rejects.toThrow()
+    fs.rmSync(agentRoot, { recursive: true, force: true })
+  })
+
+  it("runs provider checks concurrently and derives fallback count from observed attempts", async () => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-provider-observation-"))
+    const files: Record<string, string> = {
+      [`${agentRoot}/agent.json`]: JSON.stringify({ humanFacing: { provider: "openai-compatible", model: "glm-out" }, agentFacing: { provider: "openai-compatible", model: "glm-in" } }),
+      [`${agentRoot}/provider-readiness.json`]: JSON.stringify({ selectionPolicy: "explicit-same-lane-only", providers: [{ provider: "openai-compatible-gemini", model: "gemini-candidate" }] }),
+    }
+    let active = 0
+    let peak = 0
+    const facts = await readDefaultSanctuaryScenarioFacts("unit-16c-provider-readiness", "a".repeat(64), unit16Deps({
+      readFixedFile: (file) => { if (!(file in files)) throw Object.assign(new Error("missing"), { code: "ENOENT" }); return files[file]! },
+      readProviderCredential: async (_agent, provider) => ({
+        ok: true,
+        poolPath: "vault:opaque",
+        record: { provider, revision: `rev-${provider}`, updatedAt: "2026-08-20T00:00:00.000Z", credentials: { apiKey: "secret" }, config: { baseUrl: "https://example.invalid" }, provenance: { source: "manual", updatedAt: "2026-08-20T00:00:00.000Z" } },
+      }),
+      providerPing: async (provider, _config, options) => {
+        active += 1; peak = Math.max(peak, active)
+        await Promise.resolve()
+        active -= 1
+        const observedProvider = options.model === "gemini-candidate" ? "openai-compatible" : provider
+        return { ok: true, attempts: [{ attempt: 1, provider: observedProvider, model: options.model!, operation: "ping", ok: true, willRetry: false }] }
+      },
+      hostRequest: async () => ({ running: true, health: "healthy", imageId: "sha256:missing", user: "10001:10001", readOnlyRoot: true, mountCount: 2, publishedPortCount: 0, restartPolicy: "unless-stopped", restartCount: 0, autostartExact: true, updaterDisabled: true, vaultUnlocked: true, manualAuthRequired: false }),
+    }), agentRoot)
+    expect(peak).toBe(3)
+    expect(facts.provider?.fallbackAttemptCount).toBe(1)
+    expect(facts.provider?.pingReceipts).toEqual(expect.arrayContaining([expect.objectContaining({ lane: "candidate", attempts: [expect.objectContaining({ provider: "openai-compatible" })] })]))
     fs.rmSync(agentRoot, { recursive: true, force: true })
   })
 

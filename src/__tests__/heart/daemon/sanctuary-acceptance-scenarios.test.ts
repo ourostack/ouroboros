@@ -100,6 +100,10 @@ describe("Sanctuary live scenario capture", () => {
     expect(deriveSanctuaryScenarioAssertions("unit-16j-denial", before, denial, 400_000)).toBeNull()
     const audit = base(); audit.containment!.sensitiveMaterialObserved = true
     expect(deriveSanctuaryScenarioAssertions("unit-16e-containment-audit", before, audit, 400_000)).toBeNull()
+    const unlinkedMutation = base(); unlinkedMutation.restartAttempts = successfulRestart().map((attempt) => ({ ...attempt, approvalId: "unlinked" }))
+    expect(deriveSanctuaryScenarioAssertions("unit-16e-containment-audit", before, unlinkedMutation, 400_000)).toBeNull()
+    const wrongApproval = base(); wrongApproval.approvals = [{ ...approval("denied"), toolName: "ponder", target: null }]
+    expect(deriveSanctuaryScenarioAssertions("unit-16j-denial", before, wrongApproval, 400_000)).toBeNull()
   })
 
   it("binds positive turns and approvals to one new scenario record", () => {
@@ -109,6 +113,11 @@ describe("Sanctuary live scenario capture", () => {
     after.telegramTurns.push(decoy, turnReceipt(["5".repeat(64)]))
     after.events.push({ ...event("senses.sanctuary_read_receipt"), meta: { toolName: "unraid_get_system", success: true, resultDigest: "5".repeat(64) } })
     expect(deriveSanctuaryScenarioAssertions("unit-16d-whats-up", before, after, 400_000)).toBeNull()
+
+    const overbroad = base()
+    overbroad.telegramTurns.push({ ...turnReceipt(["5".repeat(64), "6".repeat(64)]), toolInvocationCount: 2 })
+    overbroad.events.push({ ...event("senses.sanctuary_read_receipt"), meta: { toolName: "unraid_get_system", success: true, resultDigest: "5".repeat(64) } })
+    expect(deriveSanctuaryScenarioAssertions("unit-16d-whats-up", before, overbroad, 400_000)).toBeNull()
 
     const ambiguous = base()
     ambiguous.approvals = [approval("denied"), { ...approval("denied"), approvalId: "approval-2" }]

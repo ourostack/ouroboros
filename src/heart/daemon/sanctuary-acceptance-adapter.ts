@@ -13,7 +13,7 @@ import { resolveToolDefinition } from "../../repertoire/tools"
 import { getAgentRoot } from "../identity"
 import { readApprovalsByScenarioHandleDigest } from "../approval-store"
 import { readProviderCredentialRecord } from "../provider-credentials"
-import { pingProvider } from "../provider-ping"
+import { pingProvider, type PingResult } from "../provider-ping"
 import { SANCTUARY_SCENARIO_GATES, SANCTUARY_SCENARIO_SOURCES, SANCTUARY_UNIT_16_EVIDENCE_LABELS, type SanctuaryUnit16EvidenceLabel } from "./sanctuary-acceptance-harness"
 import { createSanctuaryScenarioCapture, finalizeSanctuaryScenarioCapture, type SanctuaryScenarioFacts } from "./sanctuary-acceptance-scenarios"
 import {
@@ -54,6 +54,8 @@ export interface SanctuaryAcceptanceAdapterDependencies {
   captureScenario?(payload: JsonObject): Promise<unknown>
   finalizeScenarios?(): void
   telegramCredentials?(): TelegramSenseCredentials
+  readProviderCredential?: typeof readProviderCredentialRecord
+  providerPing?: typeof pingProvider
   now?(): number
 }
 
@@ -67,7 +69,9 @@ const KEY_ID = /^[A-Za-z0-9._:-]+$/u
 const AUTH_PROBE = "query AcceptanceAuthProbe { info { os { hostname } } }"
 const WRITE_PROBE = "mutation AcceptanceWriteProbe($id: PrefixedID!) { docker { restart(id: $id) { id } } }"
 const MISSING_CONTAINER_ID = "Docker:ouro-acceptance-guaranteed-missing"
-const ADAPTER_TIMEOUT_MS = 15_000
+// container_snapshot may execute bounded 20s inspect + 30s vault + 30s recovery
+// probes + 10s GraphQL + 20s image-policy checks sequentially in the host broker.
+const ADAPTER_TIMEOUT_MS = 120_000
 const NETWORK_TIMEOUT_MS = 10_000
 const KEY_DIRECTORY = "/boot/config/plugins/dynamix.my.servers/keys"
 const SELECTED_KEY_RECORD = "/run/ouro-acceptance/unraid-key.json"
@@ -229,12 +233,86 @@ export function createSanctuaryAcceptanceAdapterDependencies(
 
 function optionalFixedFile(deps: SanctuaryAcceptanceAdapterDependencies, filePath: string): string | null {
   try { return deps.readFixedFile ? deps.readFixedFile(filePath) : readFileSync(filePath, "utf8") }
-  catch { return null }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null
+    throw error
+  }
 }
 
 function parsedJson(raw: string | null): JsonObject | null {
   if (raw === null) return null
-  try { return object(JSON.parse(raw) as unknown, "scenario source") } catch { return null }
+  return object(JSON.parse(raw) as unknown, "scenario source")
+}
+
+function canonicalIso(value: unknown): value is string {
+  return typeof value === "string" && value.length <= 30 && Number.isFinite(Date.parse(value)) && new Date(Date.parse(value)).toISOString() === value
+}
+
+function boundedLines(raw: string, label: string, limits: { bytes: number; rows: number; rowBytes: number }): string[] {
+  if (Buffer.byteLength(raw) > limits.bytes) throw new Error(`${label} exceeds its bound`)
+  const lines = raw.split("\n").filter(Boolean)
+  if (lines.length > limits.rows || lines.some((line) => Buffer.byteLength(line) > limits.rowBytes)) throw new Error(`${label} exceeds its bound`)
+  return lines
+}
+
+function parseScenarioAudit(raw: string, scenarioHandleDigest: string): SanctuaryScenarioFacts["events"] {
+  return boundedLines(raw, "Telegram audit ledger", { bytes: 32 * 1024 * 1024, rows: 100_000, rowBytes: 64 * 1024 }).flatMap((line) => {
+    const entry = object(JSON.parse(line) as unknown, "Telegram audit entry")
+    const meta = object(entry.meta, "Telegram audit meta")
+    if (!canonicalIso(entry.ts) || typeof entry.event !== "string" || entry.event.length < 1 || entry.event.length > 256) throw new Error("Telegram audit ledger row is invalid")
+    return meta.scenarioHandleDigest === scenarioHandleDigest ? [{ event: entry.event, at: Date.parse(entry.ts), meta }] : []
+  })
+}
+
+function parseRestartAttempts(raw: string, scenarioHandleDigest: string): SanctuaryScenarioFacts["restartAttempts"] {
+  const exactKeys = ["actionDigest", "afterState", "approvalId", "argumentDigest", "attemptId", "beforeState", "container", "mutationAcknowledged", "observedAt", "scenarioHandleDigest", "state"].sort()
+  return boundedLines(raw, "restart attempt ledger", { bytes: 4 * 1024 * 1024, rows: 500, rowBytes: 8 * 1024 }).flatMap((line) => {
+    const attempt = object(JSON.parse(line) as unknown, "restart attempt")
+    const containerRecord = object(attempt.container, "restart target")
+    if (JSON.stringify(Object.keys(attempt).sort()) !== JSON.stringify(exactKeys)
+      || JSON.stringify(Object.keys(containerRecord).sort()) !== JSON.stringify(["id", "name"])
+      || typeof containerRecord.id !== "string" || containerRecord.id.length < 1 || containerRecord.id.length > 128
+      || typeof containerRecord.name !== "string" || containerRecord.name.length < 1 || containerRecord.name.length > 128
+      || !["attempt_not_started", "attempting", "succeeded", "attempted_or_indeterminate"].includes(String(attempt.state))
+      || !canonicalIso(attempt.observedAt) || !SHA256.test(String(attempt.actionDigest)) || !SHA256.test(String(attempt.argumentDigest))
+      || typeof attempt.scenarioHandleDigest !== "string" || !SHA256.test(attempt.scenarioHandleDigest)
+      || typeof attempt.approvalId !== "string" || attempt.approvalId.length < 1 || attempt.approvalId.length > 128
+      || typeof attempt.attemptId !== "string" || attempt.attemptId.length < 1 || attempt.attemptId.length > 128
+      || typeof attempt.beforeState !== "string" || attempt.beforeState.length > 64 || typeof attempt.mutationAcknowledged !== "boolean"
+      || (attempt.afterState !== null && (typeof attempt.afterState !== "string" || attempt.afterState.length > 64))) throw new Error("restart attempt ledger row is invalid")
+    if (attempt.scenarioHandleDigest !== scenarioHandleDigest) return []
+    return [{ state: attempt.state as SanctuaryScenarioFacts["restartAttempts"][number]["state"], actionDigest: String(attempt.actionDigest), argumentDigest: String(attempt.argumentDigest), target: containerRecord.name, approvalId: attempt.approvalId, attemptId: attempt.attemptId, observedAt: Date.parse(attempt.observedAt), mutationAcknowledged: attempt.mutationAcknowledged, afterState: attempt.afterState as string | null }]
+  })
+}
+
+function parseHealthAcceptanceState(raw: string | null): JsonObject | null {
+  if (raw === null) return null
+  if (Buffer.byteLength(raw) > 4 * 1024 * 1024) throw new Error("Sanctuary health state exceeds its bound")
+  const health = object(JSON.parse(raw) as unknown, "Sanctuary health state")
+  const rootKeys = ["deliveredReceipts", "incidents", "indeterminateDeliveries", "lastDigestDay", "outbox", "sweepReceipts", "updatedAt"].sort()
+  if (JSON.stringify(Object.keys(health).sort()) !== JSON.stringify(rootKeys)
+    || !health.incidents || typeof health.incidents !== "object" || Array.isArray(health.incidents)
+    || (health.lastDigestDay !== null && typeof health.lastDigestDay !== "string") || !canonicalIso(health.updatedAt)
+    || (health.outbox !== null && (typeof health.outbox !== "object" || Array.isArray(health.outbox)))
+    || !Array.isArray(health.indeterminateDeliveries)) throw new Error("Sanctuary health state schema is invalid")
+  if (!Array.isArray(health.deliveredReceipts) || health.deliveredReceipts.length > 100 || !health.deliveredReceipts.every((rawReceipt) => {
+    const receipt = object(rawReceipt, "health delivery receipt")
+    return JSON.stringify(Object.keys(receipt).sort()) === JSON.stringify(["deliveredAt", "deliveryId", "kind", "messageIds"])
+      && typeof receipt.deliveryId === "string" && receipt.deliveryId.length > 0 && receipt.deliveryId.length <= 128
+      && ["transition", "digest", "transition_and_digest", "legacy_unknown"].includes(String(receipt.kind)) && canonicalIso(receipt.deliveredAt)
+      && Array.isArray(receipt.messageIds) && receipt.messageIds.length > 0 && receipt.messageIds.length <= 100 && receipt.messageIds.every((id) => Number.isSafeInteger(id) && Number(id) > 0)
+  })) throw new Error("Sanctuary health delivery receipts are invalid")
+  if (!Array.isArray(health.sweepReceipts) || health.sweepReceipts.length > 500 || !health.sweepReceipts.every((rawReceipt) => {
+    const receipt = object(rawReceipt, "health sweep receipt")
+    const expectedKeys = ["completedAt", "digestDue", "incidentDigest", "opened", "recovered", "startedAt", "sweepId", ...(receipt.deliveryId === undefined ? [] : ["deliveryId"]), ...(receipt.scenarioHandleDigest === undefined ? [] : ["scenarioHandleDigest"])].sort()
+    return JSON.stringify(Object.keys(receipt).sort()) === JSON.stringify(expectedKeys)
+      && typeof receipt.sweepId === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(receipt.sweepId)
+      && canonicalIso(receipt.startedAt) && canonicalIso(receipt.completedAt) && typeof receipt.incidentDigest === "string" && SHA256.test(receipt.incidentDigest)
+      && Number.isSafeInteger(receipt.opened) && Number(receipt.opened) >= 0 && Number.isSafeInteger(receipt.recovered) && Number(receipt.recovered) >= 0 && typeof receipt.digestDue === "boolean"
+      && (receipt.deliveryId === undefined || (typeof receipt.deliveryId === "string" && receipt.deliveryId.length > 0 && receipt.deliveryId.length <= 128))
+      && (receipt.scenarioHandleDigest === undefined || (typeof receipt.scenarioHandleDigest === "string" && SHA256.test(receipt.scenarioHandleDigest)))
+  })) throw new Error("Sanctuary health sweep receipts are invalid")
+  return health
 }
 
 function auditContainsSensitiveMaterial(raw: string): boolean {
@@ -268,21 +346,24 @@ function readBoundedIdentitySurfaces(agentRoot: string): string[] {
   ]
   const records: string[] = []
   let totalBytes = 0
+  let visitedFiles = 0
   const visit = (target: string, depth: number): void => {
-    if (depth > 6 || records.length >= 2_000) return
+    if (depth > 6) throw new Error("identity surface audit exceeds its depth bound")
     try {
       const entries = readdirSync(target, { withFileTypes: true }).sort((left, right) => left.name.localeCompare(right.name))
       for (const entry of entries) {
-        if (records.length >= 2_000 || entry.isSymbolicLink()) continue
+        if (entry.isSymbolicLink()) throw new Error("identity surface audit refuses symbolic links")
         const child = pathFor(target, entry.name)
         if (entry.isDirectory()) visit(child, depth + 1)
-        else if (entry.isFile() && entry.name.endsWith(".json")) {
+        else if (entry.isFile()) {
+          visitedFiles += 1
+          if (visitedFiles > 2_000) throw new Error("identity surface audit exceeds its file-count bound")
           const raw = readFileSync(child, "utf8")
           totalBytes += Buffer.byteLength(raw)
           if (totalBytes > 16 * 1024 * 1024 || Buffer.byteLength(raw) > 1024 * 1024) throw new Error("identity surface audit exceeds its bound")
-          JSON.parse(raw)
+          if (entry.name.endsWith(".json")) JSON.parse(raw)
           records.push(path.relative(agentRoot, child), raw)
-        }
+        } else throw new Error("identity surface audit found an unsupported filesystem entry")
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT" || (error as NodeJS.ErrnoException).code === "ENOTDIR") {
@@ -399,15 +480,7 @@ export async function readDefaultSanctuaryScenarioFacts(
       denialAuditCount = denied ? 1 : 0
     }
   }
-  const auditLines = auditRaw.split("\n").filter(Boolean)
-  const auditEntries = auditLines.flatMap((line) => {
-    try {
-      const entry = object(JSON.parse(line) as unknown, "Telegram audit entry")
-      const meta = object(entry.meta ?? {}, "Telegram audit meta")
-      if (meta.scenarioHandleDigest !== scenarioHandleDigest) return []
-      return [{ event: text(entry.event, "Telegram audit event"), at: Date.parse(text(entry.ts, "Telegram audit timestamp")), meta }]
-    } catch { return [] }
-  })
+  const auditEntries = parseScenarioAudit(auditRaw, scenarioHandleDigest)
   const expectedTelegramTools = ["unraid_list_containers", "unraid_get_container_logs", "unraid_get_storage", "unraid_get_disks", "unraid_get_notifications", "unraid_get_system", "unraid_restart_container", "ponder", "settle", "speak"]
   const toolProfiles = parsedJson(optionalFixedFile(deps, SANCTUARY_TOOL_PROFILES_FILE))
   const profiles = toolProfiles ? object(toolProfiles.profiles, "Sanctuary tool profiles") : null
@@ -443,17 +516,7 @@ export async function readDefaultSanctuaryScenarioFacts(
     target: typeof record.arguments.container === "string" ? record.arguments.container : null,
     })
   })
-  const restartAttempts = restartAttemptsRaw.split("\n").filter(Boolean).flatMap((line) => {
-    try {
-      const attempt = object(JSON.parse(line) as unknown, "restart attempt")
-      if (attempt.scenarioHandleDigest !== scenarioHandleDigest || !["attempt_not_started", "attempting", "succeeded", "attempted_or_indeterminate"].includes(String(attempt.state))) return []
-      const containerRecord = object(attempt.container, "restart target")
-      if (!SHA256.test(String(attempt.actionDigest)) || !SHA256.test(String(attempt.argumentDigest)) || typeof containerRecord.name !== "string" || typeof attempt.approvalId !== "string" || typeof attempt.attemptId !== "string") return []
-      const observedAt = Date.parse(String(attempt.observedAt))
-      if (!Number.isFinite(observedAt)) return []
-      return [{ state: attempt.state as "attempt_not_started" | "attempting" | "succeeded" | "attempted_or_indeterminate", actionDigest: String(attempt.actionDigest), argumentDigest: String(attempt.argumentDigest), target: containerRecord.name, approvalId: attempt.approvalId, attemptId: attempt.attemptId, observedAt, mutationAcknowledged: attempt.mutationAcknowledged === true, afterState: typeof attempt.afterState === "string" ? attempt.afterState : null }]
-    } catch { return [] }
-  })
+  const restartAttempts = parseRestartAttempts(restartAttemptsRaw, scenarioHandleDigest)
   const telegramTurns = parseTelegramTurnReceipts(telegramTurnsRaw, scenarioHandleDigest)
   let identity: SanctuaryScenarioFacts["identity"]
   if (identityRaw && /^[A-Za-z0-9_-]{43}\n?$/u.test(identityRaw)) {
@@ -470,7 +533,8 @@ export async function readDefaultSanctuaryScenarioFacts(
     const rawValues = [...new Set([credentials.botToken, credentials.authorizedUserId, credentials.authorizedChatId])]
     const surfaceRecords = [...readBoundedIdentitySurfaces(agentRoot), auditRaw, JSON.stringify(approvalRecords)]
     const surfaceSubjects = surfaceRecords.flatMap((raw) => raw.match(/tg_[A-Za-z0-9_-]{43}/gu) ?? [])
-    const rawLeakCount = surfaceRecords.reduce((count, raw) => count + rawValues.filter((value) => raw.includes(value)).length, 0)
+    const structuredRawId = /"(?:authorizedUserId|authorizedChatId|transportUserId|transportChatId|userId|chatId|updateId|messageId)"\s*:\s*"?\d{1,20}"?/gu
+    const rawLeakCount = surfaceRecords.reduce((count, raw) => count + rawValues.filter((value) => raw.includes(value)).length + (raw.match(structuredRawId)?.length ?? 0), 0)
     const mismatchCount = [...surfaceSubjects, ...observedSubjects, ...approvalSubjects].filter((subject) => subject !== expectedSubject).length
     identity = {
       keyPresent: true,
@@ -507,16 +571,9 @@ export async function readDefaultSanctuaryScenarioFacts(
       butlerReady: milestones.butlerReady === true, tailscaleReady: milestones.tailscaleReady === true, sshReady: milestones.sshReady === true,
     }
   }
-  const health = parsedJson(healthRaw)
-  const healthSweeps = Array.isArray(health?.sweepReceipts) ? health.sweepReceipts.flatMap((raw) => {
-    try {
-      const receipt = object(raw, "health sweep receipt")
-      return receipt.scenarioHandleDigest === scenarioHandleDigest ? [receipt] : []
-    } catch { return [] }
-  }) : []
-  const healthDeliveries = Array.isArray(health?.deliveredReceipts) ? health.deliveredReceipts.flatMap((raw) => {
-    try { return [object(raw, "health delivery receipt")] } catch { return [] }
-  }) : []
+  const health = parseHealthAcceptanceState(healthRaw)
+  const healthSweeps = health ? (health.sweepReceipts as JsonObject[]).filter((receipt) => receipt.scenarioHandleDigest === scenarioHandleDigest) : []
+  const healthDeliveries = health ? health.deliveredReceipts as JsonObject[] : []
   const scenarioDeliveryIds = new Set(healthSweeps.flatMap((receipt) => typeof receipt.deliveryId === "string" ? [receipt.deliveryId] : []))
   const scenarioDeliveries = healthDeliveries.filter((receipt) => typeof receipt.deliveryId === "string" && scenarioDeliveryIds.has(receipt.deliveryId))
   const digestSweep = healthSweeps.findLast((receipt) => receipt.digestDue === true && typeof receipt.completedAt === "string")
@@ -528,23 +585,28 @@ export async function readDefaultSanctuaryScenarioFacts(
     const candidate = readinessPolicy.providers.map((entry) => object(entry, "provider readiness candidate"))
       .find((entry) => entry.provider === "openai-compatible-gemini")
     if (candidate && outwardConfig.provider === "openai-compatible" && innerConfig.provider === "openai-compatible") {
+      const readCredential = deps.readProviderCredential ?? readProviderCredentialRecord
+      const checkProvider = deps.providerPing ?? pingProvider
       const [glmRecord, geminiRecord] = await Promise.all([
-        readProviderCredentialRecord(TARGET_ID, "openai-compatible", { refreshIfMissing: false }),
-        readProviderCredentialRecord(TARGET_ID, "openai-compatible-gemini", { refreshIfMissing: false }),
+        readCredential(TARGET_ID, "openai-compatible", { refreshIfMissing: false }),
+        readCredential(TARGET_ID, "openai-compatible-gemini", { refreshIfMissing: false }),
       ])
       const outwardModel = text(outwardConfig.model, "outward model")
       const innerModel = text(innerConfig.model, "inner model")
       const glmConfig = glmRecord.ok ? { ...glmRecord.record.credentials, ...glmRecord.record.config } as unknown as Parameters<typeof pingProvider>[1] : null
+      const unavailablePing: PingResult = { ok: false, classification: "auth-failure", message: "credential unavailable", attempts: [] }
       const [outwardPing, innerPing, geminiPing] = await Promise.all([
-        glmConfig ? pingProvider("openai-compatible", glmConfig, { model: outwardModel, timeoutMs: 10_000 }) : Promise.resolve({ ok: false as const }),
-        glmConfig ? pingProvider("openai-compatible", glmConfig, { model: innerModel, timeoutMs: 10_000 }) : Promise.resolve({ ok: false as const }),
-        geminiRecord.ok ? pingProvider("openai-compatible-gemini", { ...geminiRecord.record.credentials, ...geminiRecord.record.config } as unknown as Parameters<typeof pingProvider>[1], { model: text(candidate.model, "Gemini candidate model"), timeoutMs: 10_000 }) : Promise.resolve({ ok: false as const }),
+        glmConfig ? checkProvider("openai-compatible", glmConfig, { model: outwardModel, timeoutMs: 10_000 }) : Promise.resolve(unavailablePing),
+        glmConfig ? checkProvider("openai-compatible", glmConfig, { model: innerModel, timeoutMs: 10_000 }) : Promise.resolve(unavailablePing),
+        geminiRecord.ok ? checkProvider("openai-compatible-gemini", { ...geminiRecord.record.credentials, ...geminiRecord.record.config } as unknown as Parameters<typeof pingProvider>[1], { model: text(candidate.model, "Gemini candidate model"), timeoutMs: 10_000 }) : Promise.resolve(unavailablePing),
       ])
+      const geminiModel = text(candidate.model, "Gemini candidate model")
       const pingReceipts = [
-        { lane: "outward", provider: "openai-compatible", model: outwardModel, credentialRevision: glmRecord.ok ? glmRecord.record.revision : null, ok: outwardPing.ok, fallbackAttempted: false },
-        { lane: "inner", provider: "openai-compatible", model: innerModel, credentialRevision: glmRecord.ok ? glmRecord.record.revision : null, ok: innerPing.ok, fallbackAttempted: false },
-        { lane: "candidate", provider: "openai-compatible-gemini", model: text(candidate.model, "Gemini candidate model"), credentialRevision: geminiRecord.ok ? geminiRecord.record.revision : null, ok: geminiPing.ok, fallbackAttempted: false },
+        { lane: "outward", provider: "openai-compatible", model: outwardModel, credentialRevision: glmRecord.ok ? glmRecord.record.revision : null, ok: outwardPing.ok, attempts: outwardPing.attempts?.map(({ provider, model, operation, ok }) => ({ provider, model, operation, ok })) ?? [] },
+        { lane: "inner", provider: "openai-compatible", model: innerModel, credentialRevision: glmRecord.ok ? glmRecord.record.revision : null, ok: innerPing.ok, attempts: innerPing.attempts?.map(({ provider, model, operation, ok }) => ({ provider, model, operation, ok })) ?? [] },
+        { lane: "candidate", provider: "openai-compatible-gemini", model: geminiModel, credentialRevision: geminiRecord.ok ? geminiRecord.record.revision : null, ok: geminiPing.ok, attempts: geminiPing.attempts?.map(({ provider, model, operation, ok }) => ({ provider, model, operation, ok })) ?? [] },
       ]
+      const fallbackAttemptCount = pingReceipts.reduce((count, receipt) => count + receipt.attempts.filter((attempt) => attempt.provider !== receipt.provider || attempt.model !== receipt.model).length, 0)
       liveProvider = {
         outwardReady: outwardPing.ok,
         innerReady: innerPing.ok,
@@ -553,7 +615,7 @@ export async function readDefaultSanctuaryScenarioFacts(
         silentFallback: readinessPolicy.selectionPolicy !== "explicit-same-lane-only",
         credentialRevisionsPresent: glmRecord.ok && geminiRecord.ok && Boolean(glmRecord.record.revision) && Boolean(geminiRecord.record.revision),
         requestSemanticsExact: outwardConfig.provider === "openai-compatible" && innerConfig.provider === "openai-compatible" && candidate.provider === "openai-compatible-gemini",
-        fallbackAttemptCount: pingReceipts.filter((receipt) => receipt.fallbackAttempted).length,
+        fallbackAttemptCount,
         pingReceipts,
       }
     }

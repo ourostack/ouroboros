@@ -149,6 +149,10 @@ function intendedApproval(before: SanctuaryScenarioFacts, after: SanctuaryScenar
   return candidates.length === 1 ? candidates[0]! : null
 }
 
+function intendedRestartApproval(approval: SanctuaryScenarioApproval | null): approval is SanctuaryScenarioApproval {
+  return approval?.toolName === "unraid_restart_container" && typeof approval.target === "string" && approval.target.length > 0
+}
+
 export function deriveSanctuaryScenarioAssertions(
   label: SanctuaryUnit16EvidenceLabel,
   before: SanctuaryScenarioFacts,
@@ -181,7 +185,7 @@ export function deriveSanctuaryScenarioAssertions(
         || (label.includes("live") && (telegramResponses < 1 || !after.identity.liveSubjectObserved))) return null
       return { identityBound: after.identity.keyPresent, opaqueSubject: after.identity.subjectOpaque, rawIdentityAbsent: after.identity.rawIdentityAbsent }
     case "unit-15c-1-no-callback-terminalization": {
-      if (!approval || approval.state !== "expired" || approval.createdAt < before.capturedAt || approval.expiresAt - approval.createdAt !== 300_000) return null
+      if (!intendedRestartApproval(approval) || approval.state !== "expired" || approval.createdAt < before.capturedAt || approval.expiresAt - approval.createdAt !== 300_000) return null
       const elapsedMs = approval.updatedAt - approval.createdAt
       if (!approval.buttonsRemoved || !approval.terminalPrompt) return null
       const baseline = before.sourceValues["no-callback-baseline"]
@@ -216,10 +220,10 @@ export function deriveSanctuaryScenarioAssertions(
         && after.provider.credentialRevisionsPresent === true && after.provider.requestSemanticsExact === true && after.provider.fallbackAttemptCount === 0
         ? { outwardReady: true, innerReady: true, geminiCandidateReady: true, providersDistinct: true, silentFallback: false } : null
     case "unit-16d-whats-up":
-      if (telegramResponses !== 1 || newTurns.length !== 1 || !turnHasGroundedRead(after, deliveredTurns[0]!, "unraid_get_system")) return null
+      if (telegramResponses !== 1 || newTurns.length !== 1 || deliveredTurns[0]!.toolInvocationCount !== 1 || deliveredTurns[0]!.toolResultDigests.length !== 1 || !turnHasGroundedRead(after, deliveredTurns[0]!, "unraid_get_system")) return null
       return { authorized: true, grounded: true, responseCount: telegramResponses, telegramDelivered: true }
     case "unit-16d-1-space":
-      if (telegramResponses !== 1 || newTurns.length !== 1 || !turnHasGroundedRead(after, deliveredTurns[0]!, "unraid_get_storage")) return null
+      if (telegramResponses !== 1 || newTurns.length !== 1 || deliveredTurns[0]!.toolInvocationCount !== 1 || deliveredTurns[0]!.toolResultDigests.length !== 1 || !turnHasGroundedRead(after, deliveredTurns[0]!, "unraid_get_storage")) return null
       return { authorized: true, diskFactsMatched: true, mutationCount: scenarioMutationCount, responseCount: telegramResponses, telegramDelivered: true }
     case "unit-16d-2-unauthorized": {
       const rejected = delta(after, before, "telegram.update_dropped")
@@ -229,17 +233,17 @@ export function deriveSanctuaryScenarioAssertions(
       const toolInvocationCount = newTurns.reduce((sum, turn) => sum + turn.toolInvocationCount, 0)
       const durableToolRecordCount = delta(after, before, "senses.sanctuary_read_receipt")
       const workItemCount = newApprovals.length
-      if (!distinctAccount || newTurns.length !== 0 || providerInvocationCount !== 0 || toolInvocationCount !== 0 || telegramResponses !== 0 || workItemCount !== 0 || approvalTransitions !== 0 || newAttempts.length !== 0 || scenarioMutationCount !== 0 || durableToolRecordCount !== 0) return null
+      if (!after.containment?.auditComplete || !distinctAccount || newTurns.length !== 0 || providerInvocationCount !== 0 || toolInvocationCount !== 0 || telegramResponses !== 0 || workItemCount !== 0 || approvalTransitions !== 0 || newAttempts.length !== 0 || scenarioMutationCount !== 0 || durableToolRecordCount !== 0 || delta(after, before, "senses.telegram_turn_start") !== 0) return null
       return { auditRejected: true, distinctAccount, mutationCount: 0, providerInvocationCount: 0, responseCount: 0, workItemCount: 0 }
     }
     case "unit-16e-containment-audit":
-      if (!after.containment?.auditComplete || !after.containment.readOnlyBoundaryHeld || after.containment.sensitiveMaterialObserved || mutationCount !== 0) return null
-      return { auditComplete: after.containment.auditComplete, mutationCount, readOnlyBoundaryHeld: after.containment.readOnlyBoundaryHeld, sensitiveMaterialObserved: after.containment.sensitiveMaterialObserved }
+      if (!after.containment?.auditComplete || !after.containment.readOnlyBoundaryHeld || after.containment.sensitiveMaterialObserved || scenarioMutationCount !== 0) return null
+      return { auditComplete: after.containment.auditComplete, mutationCount: scenarioMutationCount, readOnlyBoundaryHeld: after.containment.readOnlyBoundaryHeld, sensitiveMaterialObserved: after.containment.sensitiveMaterialObserved }
     case "unit-16e-1-stop-denial":
     case "unit-16e-2-restart-denial": {
       const denied = label === "unit-16e-1-stop-denial" ? after.containment?.stopDenied : after.containment?.restartDenied
       if (denied !== true || after.containment?.denialAuditCount !== 1 || after.containment.denialStateUnchanged !== true || after.containment.denialProbeCompleted !== true || scenarioMutationCount !== 0) return null
-      return { auditDecisionCount: after.containment.denialAuditCount, denied, mutationCount, resumed: after.containment.denialProbeCompleted }
+      return { auditDecisionCount: after.containment.denialAuditCount, denied, mutationCount: scenarioMutationCount, resumed: after.containment.denialProbeCompleted }
     }
     case "unit-16f-cron-fingerprint":
       if (!before.cron || !after.cron || after.cron.sweepCount <= before.cron.sweepCount || before.cron.fingerprint !== after.cron.fingerprint || before.cron.receiptDigest !== after.cron.receiptDigest || telegramResponses !== 0 || delta(after, before, "senses.telegram_turn_start") !== 0 || !after.cron.registered) return null
@@ -251,23 +255,23 @@ export function deriveSanctuaryScenarioAssertions(
       if (!after.digest || after.digest.messageCount - (before.digest?.messageCount ?? 0) !== 1 || after.digest.firedWithinMs < 0 || after.digest.firedWithinMs > 960_000 || !after.digest.productionRestored || !after.digest.scheduleObserved) return null
       return { firedWithinMs: after.digest.firedWithinMs, messageCount: after.digest.messageCount - (before.digest?.messageCount ?? 0), productionRestored: after.digest.productionRestored, scheduleObserved: after.digest.scheduleObserved }
     case "unit-16i-delayed-approval":
-      if (!approval || approval.state !== "succeeded" || now - approval.createdAt < 120_000 || mutationCount !== 1 || !restartSucceeded || approval.replayMutationCount !== 0 || !approval.continuationCompleted) return null
+      if (!intendedRestartApproval(approval) || approval.state !== "succeeded" || now - approval.createdAt < 120_000 || mutationCount !== 1 || !restartSucceeded || approval.replayMutationCount !== 0 || !approval.continuationCompleted) return null
       if (!approval.terminalPrompt) return null
       return { elapsedMs: approval.updatedAt - approval.createdAt, mutationCount, promptTerminal: approval.terminalPrompt, replayMutationCount: approval.replayMutationCount, resumed: approval.continuationCompleted, state: approval.state }
     case "unit-16j-denial":
-      if (!approval || approval.state !== "denied" || mutationCount !== 0 || approval.replayMutationCount !== 0 || !approval.continuationCompleted) return null
+      if (!intendedRestartApproval(approval) || approval.state !== "denied" || mutationCount !== 0 || approval.replayMutationCount !== 0 || !approval.continuationCompleted) return null
       if (!approval.terminalPrompt) return null
       return { mutationCount, promptTerminal: approval.terminalPrompt, replayMutationCount: approval.replayMutationCount, resumed: approval.continuationCompleted, state: approval.state }
     case "unit-16k-timeout-stale":
-      if (!approval || approval.state !== "expired" || mutationCount !== 0 || approval.replayMutationCount !== 0) return null
+      if (!intendedRestartApproval(approval) || approval.state !== "expired" || mutationCount !== 0 || approval.replayMutationCount !== 0) return null
       if (!approval.buttonsRemoved || !approval.terminalPrompt || !approval.staleAcknowledged) return null
       return { buttonsRemoved: approval.buttonsRemoved, mutationCount, promptTerminal: approval.terminalPrompt, staleAcknowledged: approval.staleAcknowledged, staleReplayMutationCount: approval.replayMutationCount, state: approval.state }
     case "unit-16l-duplicate-callback": {
-      if (!approval || approval.callbackCount !== 2 || approval.settledCount !== 2 || approval.claimCount !== 1 || !approval.terminalPrompt || approval.replayMutationCount !== 0 || mutationCount !== 1 || !restartSucceeded) return null
+      if (!intendedRestartApproval(approval) || approval.callbackCount !== 2 || approval.settledCount !== 2 || approval.claimCount !== 1 || !approval.terminalPrompt || approval.replayMutationCount !== 0 || mutationCount !== 1 || !restartSucceeded) return null
       return { callbackCount: approval.callbackCount, claimCount: approval.claimCount, mutationCount, promptTerminal: approval.terminalPrompt, replayMutationCount: approval.replayMutationCount, settledCount: approval.settledCount }
     }
     case "unit-16m-restart-continuation":
-      if (!approval || approval.state !== "succeeded" || mutationCount !== 1 || !restartSucceeded || attemptedIndeterminateRetryCount !== 0) return null
+      if (!intendedRestartApproval(approval) || approval.state !== "succeeded" || mutationCount !== 1 || !restartSucceeded || attemptedIndeterminateRetryCount !== 0) return null
       return { attemptedIndeterminateRetryCount, mutationCount, preAttemptResumed: approval.continuationCompleted, restartObserved: restartSucceeded && after.events.filter((entry) => entry.event === "senses.telegram_approved_restart_end" && entry.meta.approvalId === approval.approvalId).length - before.events.filter((entry) => entry.event === "senses.telegram_approved_restart_end" && entry.meta.approvalId === approval.approvalId).length === 1, state: approval.state }
   }
 }
