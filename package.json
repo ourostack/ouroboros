@@ -1,6 +1,6 @@
 {
   "name": "@ouro.bot/cli",
-  "version": "0.1.0-alpha.736",
+  "version": "0.1.0-alpha.737",
   "engines": {
     "node": ">=22"
   },
@@ -58,6 +58,7 @@
     "@anthropic-ai/sdk": "^0.78.0",
     "@azure/identity": "^4.13.0",
     "@azure/storage-blob": "^12.31.0",
+    "@bitwarden/cli": "2026.8.0",
     "@microsoft/teams.api": "2.0.11",
     "@microsoft/teams.apps": "2.0.11",
     "@microsoft/teams.cards": "2.0.11",
@@ -98,6 +99,7 @@
   },
   "overrides": {
     "deepmerge-ts": "^8.0.1",
+    "tmp": "0.2.7",
     "@microsoft/teams.apps": {
       "@azure/msal-node": "^5.2.2"
     },

@@ -110,6 +110,22 @@ jobs:
           node scripts/package-assets.cjs "$PACKAGE_ROOT/package"
           PACKAGE_VERSION="$(node -p "require('./package.json').version")"
           docker build --pull --no-cache --file "$PACKAGE_ROOT/package/deploy/unraid/Dockerfile" --tag ouro-butler-package-smoke:"$PACKAGE_VERSION" "$PACKAGE_ROOT/package"
+          docker run --rm --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m,mode=1777 --entrypoint /bin/sh ouro-butler-package-smoke:"$PACKAGE_VERSION" -ceu '
+            BW_VERIFY_ROOT="$(mktemp -d)"
+            trap '\''rm -rf -- "$BW_VERIFY_ROOT"'\'' 0
+            mkdir "$BW_VERIFY_ROOT/appdata"
+            printf "%s" "{}" >"$BW_VERIFY_ROOT/appdata/data.json"
+            test ! -e "/home/ouro/.config/Bitwarden CLI"
+            test "$(id -u)" = 10001
+            test "$(id -g)" = 10001
+            command -v bw >/dev/null
+            BW_VERSION="$(BITWARDENCLI_APPDATA_DIR="$BW_VERIFY_ROOT/appdata" bw --version 2>"$BW_VERIFY_ROOT/stderr")"
+            test ! -s "$BW_VERIFY_ROOT/stderr"
+            test "$BW_VERSION" = 2026.8.0
+            rm -rf -- "$BW_VERIFY_ROOT"
+            trap - 0
+            test ! -e "/home/ouro/.config/Bitwarden CLI"
+          '
           docker run --rm --entrypoint node ouro-butler-package-smoke:"$PACKAGE_VERSION" -e '
             const expected = process.argv[1]
             const packageVersion = require("/opt/ouro/package.json").version

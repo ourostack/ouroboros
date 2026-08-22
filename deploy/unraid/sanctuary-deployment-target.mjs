@@ -11,8 +11,8 @@ const IMAGE_ID = /^sha256:[0-9a-f]{64}$/u
 const CONTAINER_ID = /^[0-9a-f]{64}$/u
 const CANONICAL_NAMES = ["ouro-butler", "ouro-butler-staging", "ouro-butler-rollback"]
 const PROFILES = Object.freeze({
-  staging: Object.freeze({ name: "staging", containerName: "ouro-butler-staging", requiredStopped: [], forbidden: ["ouro-butler", "ouro-butler-rollback"] }),
-  final: Object.freeze({ name: "final", containerName: "ouro-butler", requiredStopped: ["ouro-butler-rollback"], forbidden: ["ouro-butler-staging"] }),
+  staging: Object.freeze({ name: "staging", containerName: "ouro-butler-staging", requiredStopped: [], optionalStopped: [], forbidden: ["ouro-butler", "ouro-butler-rollback"] }),
+  final: Object.freeze({ name: "final", containerName: "ouro-butler", requiredStopped: [], optionalStopped: ["ouro-butler-rollback"], forbidden: ["ouro-butler-staging"] }),
 })
 const DOCUMENTED_UNIX_CONTROLS = [
   "/tmp/ouroboros-daemon.sock",
@@ -132,6 +132,10 @@ function attestDeploymentTarget(input) {
   for (const name of profile.requiredStopped) {
     const stopped = byName.get(name)
     if (!stopped || stopped.running || stopped.autoStart) throw new Error("required rollback target state is invalid")
+  }
+  for (const name of profile.optionalStopped) {
+    const stopped = byName.get(name)
+    if (stopped && (stopped.running || stopped.autoStart)) throw new Error("optional rollback target state is invalid")
   }
   for (const name of profile.forbidden) if (byName.has(name)) throw new Error("mixed deployment target state is invalid")
   const activeRunningCardinality = inspected.filter(({ running }) => running).length

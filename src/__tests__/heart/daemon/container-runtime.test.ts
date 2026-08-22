@@ -43,7 +43,7 @@ describe("container runtime policy", () => {
 
   it("ships a released-package Docker build context", () => {
     const dockerfile = fs.readFileSync("deploy/unraid/Dockerfile", "utf8")
-    const packageJson = JSON.parse(fs.readFileSync("package.json", "utf8")) as { files: string[] }
+    const packageJson = JSON.parse(fs.readFileSync("package.json", "utf8")) as { files: string[]; dependencies: Record<string, string> }
 
     expect(packageJson.files).toContain("deploy/unraid/")
     expect(packageJson.files).toContain("npm-shrinkwrap.json")
@@ -51,6 +51,24 @@ describe("container runtime policy", () => {
     expect(dockerfile).toContain("COPY package.json npm-shrinkwrap.json ./")
     expect(dockerfile).toContain("npm ci --omit=dev --legacy-peer-deps")
     expect(dockerfile).not.toContain("npm install")
+  })
+
+  it("pins and exposes the Bitwarden CLI before the image drops privileges", () => {
+    const dockerfile = fs.readFileSync("deploy/unraid/Dockerfile", "utf8")
+    const packageJson = JSON.parse(fs.readFileSync("package.json", "utf8")) as { dependencies: Record<string, string> }
+
+    expect(packageJson.dependencies["@bitwarden/cli"]).toMatch(/^\d+\.\d+\.\d+$/u)
+    expect(dockerfile).toContain("test -x /opt/ouro/node_modules/.bin/bw")
+    expect(dockerfile).toContain("ln -s /opt/ouro/node_modules/.bin/bw /usr/local/bin/bw")
+    expect(dockerfile).toContain('BW_VERIFY_ROOT="$(mktemp -d)"')
+    expect(dockerfile).toContain('printf \'%s\' \'{}\' >"$BW_VERIFY_ROOT/appdata/data.json"')
+    expect(dockerfile).toContain('BITWARDENCLI_APPDATA_DIR="$BW_VERIFY_ROOT/appdata" bw --version 2>"$BW_VERIFY_ROOT/stderr"')
+    expect(dockerfile).toContain('test ! -s "$BW_VERIFY_ROOT/stderr"')
+    expect(dockerfile).toContain('test "$BW_VERSION" = "2026.8.0"')
+    expect(dockerfile).toContain('rm -rf -- "$BW_VERIFY_ROOT"')
+    expect(dockerfile).toContain('test ! -e "/home/ouro/.config/Bitwarden CLI"')
+    expect(dockerfile).not.toContain('$(bw --version)')
+    expect(dockerfile.indexOf("test -x /opt/ouro/node_modules/.bin/bw")).toBeLessThan(dockerfile.indexOf("USER 10001:10001"))
   })
 
   it("keeps Workbench out and ships the Supercronic-owned health habit", () => {
@@ -1463,7 +1481,7 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
     expect(launcher).toContain("/opt/ouro/deploy/unraid/sanctuary-acceptance-harness.sh")
     expect(launcher).toContain('"$COMMAND" --config /run/ouro-acceptance/config.json')
     expect(launcher).toContain('3<&3')
-    expect(launcher).toContain('MODE=${2:-}')
+    expect(launcher).toContain('MODE=${1:-}')
     expect(launcher).toContain('if test "$MODE" = materialize; then')
     expect(launcher).toContain('dst=/run/ouro-acceptance/closed-inventory.json,readonly')
     expect(launcher).toContain('dst=/run/ouro-host-acceptance,readonly')

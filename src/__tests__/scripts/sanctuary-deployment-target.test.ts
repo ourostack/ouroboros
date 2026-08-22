@@ -47,13 +47,26 @@ function input(profile: "staging" | "final") {
 const quiesceTarget = <T>(_target: unknown, operation: () => T) => operation()
 
 describe("Sanctuary fixed deployment target", () => {
-  it("packages Unit 16 with the fixed staging profile and no caller-selected container", () => {
+  it("packages exact staging and final behavioral profiles with no caller-selected container", () => {
     const source = fs.readFileSync("deploy/unraid/sanctuary-unit16-run.sh", "utf8")
     expect(source).toContain("TARGET_PROFILE=staging")
     expect(source).toContain("PRODUCTION_CONTAINER=ouro-butler-staging")
+    expect(source).toContain('test "${1:-}" = --profile')
+    expect(source).toContain("  final)")
+    expect(source).toContain("PRODUCTION_CONTAINER=ouro-butler")
+    expect(source).toContain("acceptance/final/configs")
+    expect(source).toContain("acceptance/final/evidence")
     expect(source).toContain('"$TARGET_AUDITOR" "$TARGET_PROFILE" "$IMAGE_ID"')
     expect(source).toContain('"$BROKER_PROGRAM" "$TARGET_PROFILE" "$TARGET_CONTAINER_ID"')
     expect(source).not.toMatch(/TARGET_CONTAINER=\$\{/u)
+
+    for (const args of [
+      [imageId, "--profile"],
+      [imageId, "--profile", "production", "cursor-snapshot", "cursor-snapshot.json"],
+      [imageId, "--profile", "ouro-butler", "cursor-snapshot", "cursor-snapshot.json"],
+      [imageId, "--profile", "", "cursor-snapshot", "cursor-snapshot.json"],
+      [imageId, "--profile", "final", "--profile", "staging", "cursor-snapshot", "cursor-snapshot.json"],
+    ]) expect(spawnSync("/bin/sh", ["deploy/unraid/sanctuary-unit16-run.sh", ...args]).status).toBe(2)
   })
 
   it("packages Unit 18 with a fixed final profile and no caller-selected container", () => {
@@ -72,8 +85,8 @@ describe("Sanctuary fixed deployment target", () => {
   it("publishes the same two fixed profiles in the packaged acceptance contract", () => {
     const contract = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary-acceptance-contract.json", "utf8"))
     expect(contract.deploymentTargetProfiles).toEqual({
-      staging: { command: "sanctuary-unit16-run.sh", containerName: "ouro-butler-staging", requiredRunning: 1, restartPolicy: "unless-stopped", networkMode: "host", inboundTcpListeners: 0, inboundUdpListeners: 0, loopbackTcpControls: [6876] },
-      final: { command: "sanctuary-unit18-target-audit.sh", containerName: "ouro-butler", requiredRunning: 1, requiredStopped: "ouro-butler-rollback", restartPolicy: "unless-stopped", networkMode: "host", inboundTcpListeners: 0, inboundUdpListeners: 0, loopbackTcpControls: [6876] },
+      staging: { command: "sanctuary-unit16-run.sh", acceptanceInvocation: "sanctuary-unit16-run.sh <image-id> ...", containerName: "ouro-butler-staging", requiredRunning: 1, restartPolicy: "unless-stopped", networkMode: "host", inboundTcpListeners: 0, inboundUdpListeners: 0, loopbackTcpControls: [6876] },
+      final: { command: "sanctuary-unit18-target-audit.sh", acceptanceInvocation: "sanctuary-unit16-run.sh <image-id> --profile final ...", containerName: "ouro-butler", requiredRunning: 1, optionalStopped: "ouro-butler-rollback", restartPolicy: "unless-stopped", networkMode: "host", inboundTcpListeners: 0, inboundUdpListeners: 0, loopbackTcpControls: [6876] },
     })
   })
 
@@ -81,6 +94,13 @@ describe("Sanctuary fixed deployment target", () => {
     const { attestDeploymentTarget } = await load()
     expect(attestDeploymentTarget(input("staging"))).toMatchObject({ profile: "staging", targetContainerId: stagingId, activeRunningCardinality: 1 })
     expect(attestDeploymentTarget(input("final"))).toMatchObject({ profile: "final", targetContainerId: productionId, activeRunningCardinality: 1 })
+    const finalWithoutRollback = [record("ouro-butler", productionId, true, true)]
+    expect(attestDeploymentTarget({ profile: "final", expectedImageId: imageId, topologyBefore: finalWithoutRollback, inspected: finalWithoutRollback, topologyAfter: finalWithoutRollback }))
+      .toMatchObject({ profile: "final", targetContainerId: productionId, activeRunningCardinality: 1 })
+    for (const invalidRollback of [record("ouro-butler-rollback", rollbackId, true, false), record("ouro-butler-rollback", rollbackId, false, true)]) {
+      const invalidFinal = [record("ouro-butler", productionId, true, true), invalidRollback]
+      expect(() => attestDeploymentTarget({ profile: "final", expectedImageId: imageId, topologyBefore: invalidFinal, inspected: invalidFinal, topologyAfter: invalidFinal })).toThrow(/rollback|state|cardinality/u)
+    }
   })
 
   it("binds the live audit to one fixed target PID and stable network namespace", async () => {

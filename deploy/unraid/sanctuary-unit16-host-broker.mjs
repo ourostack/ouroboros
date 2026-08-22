@@ -168,7 +168,21 @@ function autostartFileExact() {
     : counts.production === 1 && counts.staging === 0 && counts.rollback === 0 && counts.legacy === 0
 }
 
-async function queryGraphqlAutostart(records = inventoryRecords(), fetchImpl = fetch, expectedContainerId = activeContainerId, profile = activeProfile) {
+function optionalStoppedContainerExact(name, containerId, run = spawnSync) {
+  if (name !== "ouro-butler-rollback" || !SHA256.test(containerId)) return false
+  const template = '{"containerId":{{json .Id}},"name":{{json .Name}},"running":{{json .State.Running}}}'
+  const result = run(DOCKER, ["inspect", "--format", template, containerId], {
+    cwd: "/", encoding: "utf8", timeout: 20_000, maxBuffer: 64 * 1024,
+    env: { PATH: "/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin" }, stdio: ["ignore", "pipe", "ignore"],
+  })
+  if (result.error || result.status !== 0) return false
+  try {
+    const value = object(JSON.parse(result.stdout ?? ""), "optional rollback inspection")
+    return value.containerId === containerId && value.name === `/${name}` && value.running === false
+  } catch { return false }
+}
+
+async function queryGraphqlAutostart(records = inventoryRecords(), fetchImpl = fetch, expectedContainerId = activeContainerId, profile = activeProfile, inspectOptionalStopped = optionalStoppedContainerExact) {
   text(expectedContainerId, "attested target container id", SHA256)
   const matches = records.filter((record) => record.name === "Butler RO" && record.roles.length === 0
     && JSON.stringify(flattened(record)) === JSON.stringify(RO_PERMISSIONS))
@@ -200,12 +214,16 @@ async function queryGraphqlAutostart(records = inventoryRecords(), fetchImpl = f
     if (!identity || identity[1] !== serverIdentity[1] || typeof container.autoStart !== "boolean" || topology.has(canonical[0])) return false
     topology.set(canonical[0], { containerId: identity[2], autoStart: container.autoStart })
   }
-  const expectedNames = new Set([profile.containerName, ...profile.requiredStopped])
-  if (topology.size !== expectedNames.size || [...expectedNames].some((name) => !topology.has(name))
+  const requiredNames = new Set([profile.containerName, ...profile.requiredStopped])
+  const allowedNames = new Set([...requiredNames, ...profile.optionalStopped])
+  if ([...requiredNames].some((name) => !topology.has(name)) || [...topology.keys()].some((name) => !allowedNames.has(name))
     || profile.forbidden.some((name) => topology.has(name))) return false
   const target = topology.get(profile.containerName)
   if (!target || target.containerId !== expectedContainerId || target.autoStart !== true) return false
-  return profile.requiredStopped.every((name) => topology.get(name)?.autoStart === false)
+  return [...profile.requiredStopped, ...profile.optionalStopped].every((name) => {
+    const stopped = topology.get(name)
+    return !stopped || (stopped.autoStart === false && inspectOptionalStopped(name, stopped.containerId))
+  })
 }
 
 function updaterDisabled(expectedImage) {
@@ -1763,6 +1781,7 @@ export {
   productionProcessBindingDigest,
   observeRebootPreflight,
   parseVaultStatus,
+  optionalStoppedContainerExact,
   queryGraphqlAutostart,
   readBoundedProcStatus,
   driveDuplicateCallbacks,
