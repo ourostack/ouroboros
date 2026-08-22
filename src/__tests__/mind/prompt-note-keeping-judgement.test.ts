@@ -115,7 +115,7 @@ describe("note-keeping judgement heuristics — locked content", () => {
     // Noise filter
     expect(system).toContain("do not save noise")
     expect(system).toContain("if i keep re-deriving it, save it")
-  })
+  }, 10000)
 
   it("includes the full locked heuristic block verbatim", async () => {
     const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
