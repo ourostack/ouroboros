@@ -453,6 +453,7 @@ if install_from_legacy_staging; then command printf 'ADOPTED\n'; else exit $?; f
     expect(prepare).toBeGreaterThan(-1)
     expect(bootstrap).toBeGreaterThan(prepare)
     expect(stopLegacy).toBeGreaterThan(bootstrap)
+    expect(runbook).toContain('discardProviderCredentialRecords: { providers: ["minimax"] }')
 
     const script = String.raw`set -u
 SCENARIO=$1

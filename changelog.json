@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.738",
+      "changes": [
+        "Allow the path-locked Sanctuary legacy adoption to discard only the exact obsolete MiniMax provider record in memory while preserving the original envelope and keeping canonical credential validation strict.",
+        "Validate the complete provider discard allowlist and every projected runtime message before the first vault write, with recoverable retry semantics and counts-only audit evidence."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.737",
       "changes": [
         "Ship the integrity-locked Bitwarden CLI in the non-root Unraid runtime so fresh Sanctuary vault access never depends on an impossible runtime install.",

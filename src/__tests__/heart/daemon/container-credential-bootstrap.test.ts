@@ -53,7 +53,11 @@ describe("container credential bootstrap", () => {
     return file
   }
 
-  type MachineIdMigration = { sourceMachineId: string; targetMachineId: string }
+  type MachineIdMigration = {
+    sourceMachineId: string
+    targetMachineId: string
+    discardProviderCredentialRecords?: { providers: string[] }
+  }
 
   async function loadWithMigration(
     enabledAgents: string[],
@@ -301,6 +305,221 @@ describe("container credential bootstrap", () => {
     expect(first.machineId).toBe("sanctuary-unraid")
     expect(second.machineId).toBe("sanctuary-unraid")
     expect(digest(original)).toBe(originalDigest)
+  })
+
+  it("discards only the exact allowlisted legacy provider set from in-memory migration clones", async () => {
+    bootstrapMocks.machineIdentity.mockReturnValue({ machineId: "sanctuary" })
+    const runtimeCredentials = await vi.importActual<typeof import("../../../heart/runtime-credentials")>(
+      "../../../heart/runtime-credentials",
+    )
+    bootstrapMocks.validate.mockImplementationOnce(runtimeCredentials.isRuntimeCredentialBootstrapMessage)
+    const legacy = {
+      type: "ouro.runtimeCredentialBootstrap",
+      agentName: "sanctuary",
+      machineId: "sanctuary-unraid",
+      runtimeConfig: { telegramBotToken: "secret" },
+      machineRuntimeConfig: { unraidReadApiKey: "read-secret" },
+      providerCredentialRecords: [{
+        provider: "minimax",
+        revision: "legacy-revision-that-current-validation-rejects",
+        credentials: { apiKey: "obsolete-secret" },
+      }],
+    }
+    const file = fixture(legacy)
+    const original = fs.readFileSync(file)
+    const persist = vi.fn(async () => true)
+    const apply = vi.fn(() => true)
+
+    await expect(loadWithMigration(["sanctuary"], {
+      path: file,
+      machineIdMigration: {
+        sourceMachineId: "sanctuary-unraid",
+        targetMachineId: "sanctuary",
+        discardProviderCredentialRecords: { providers: ["minimax"] },
+      },
+      persist,
+      apply,
+    })).resolves.toEqual(["sanctuary"])
+
+    const projected = {
+      type: "ouro.runtimeCredentialBootstrap",
+      agentName: "sanctuary",
+      machineId: "sanctuary",
+      runtimeConfig: { telegramBotToken: "secret" },
+      machineRuntimeConfig: { unraidReadApiKey: "read-secret" },
+    }
+    expect(bootstrapMocks.validate).toHaveBeenCalledWith(projected)
+    expect(persist).toHaveBeenCalledWith(projected)
+    expect(apply).toHaveBeenCalledWith(projected)
+    expect(legacy.machineId).toBe("sanctuary-unraid")
+    expect(legacy.providerCredentialRecords).toHaveLength(1)
+    expect(digest(original)).toBe(digest(Buffer.from(JSON.stringify({ schemaVersion: 1, credentials: [legacy] }))))
+  })
+
+  it("validates every discard projection before the first persist", async () => {
+    bootstrapMocks.machineIdentity.mockReturnValue({ machineId: "sanctuary" })
+    const runtimeCredentials = await vi.importActual<typeof import("../../../heart/runtime-credentials")>(
+      "../../../heart/runtime-credentials",
+    )
+    bootstrapMocks.validate
+      .mockImplementationOnce(runtimeCredentials.isRuntimeCredentialBootstrapMessage)
+      .mockImplementationOnce(runtimeCredentials.isRuntimeCredentialBootstrapMessage)
+    const file = envelopeFixture([
+      {
+        type: "ouro.runtimeCredentialBootstrap",
+        agentName: "sanctuary",
+        machineId: "sanctuary-unraid",
+        runtimeConfig: { telegramBotToken: "secret" },
+        providerCredentialRecords: [{ provider: "minimax", revision: "legacy-revision" }],
+      },
+      {
+        type: "ouro.runtimeCredentialBootstrap",
+        agentName: "other",
+        machineId: "sanctuary-unraid",
+        runtimeConfig: {},
+      },
+    ])
+    const original = fs.readFileSync(file)
+    const persist = vi.fn(async () => true)
+
+    await expect(loadWithMigration(["sanctuary", "other"], {
+      path: file,
+      machineIdMigration: {
+        sourceMachineId: "sanctuary-unraid",
+        targetMachineId: "sanctuary",
+        discardProviderCredentialRecords: { providers: ["minimax"] },
+      },
+      persist,
+    })).rejects.toThrow("message is invalid")
+
+    expect(persist).not.toHaveBeenCalled()
+    expect(fs.readFileSync(`${file}.consuming`)).toEqual(original)
+  })
+
+  it("retains the original discard claim across a failed persist and resumes idempotently", async () => {
+    bootstrapMocks.machineIdentity.mockReturnValue({ machineId: "sanctuary" })
+    const runtimeCredentials = await vi.importActual<typeof import("../../../heart/runtime-credentials")>(
+      "../../../heart/runtime-credentials",
+    )
+    bootstrapMocks.validate
+      .mockImplementationOnce(runtimeCredentials.isRuntimeCredentialBootstrapMessage)
+      .mockImplementationOnce(runtimeCredentials.isRuntimeCredentialBootstrapMessage)
+    const file = fixture({
+      type: "ouro.runtimeCredentialBootstrap",
+      agentName: "sanctuary",
+      machineId: "sanctuary-unraid",
+      runtimeConfig: { telegramBotToken: "secret" },
+      machineRuntimeConfig: { unraidReadApiKey: "read-secret" },
+      providerCredentialRecords: [{ provider: "minimax", revision: "legacy-revision" }],
+    })
+    const original = fs.readFileSync(file)
+    const migration = {
+      sourceMachineId: "sanctuary-unraid",
+      targetMachineId: "sanctuary",
+      discardProviderCredentialRecords: { providers: ["minimax"] },
+    }
+    const failedPersist = vi.fn(async () => false)
+
+    await expect(loadWithMigration(["sanctuary"], {
+      path: file,
+      machineIdMigration: migration,
+      persist: failedPersist,
+    })).rejects.toThrow("persistence failed")
+    expect(fs.readFileSync(`${file}.consuming`)).toEqual(original)
+
+    const successfulPersist = vi.fn(async () => true)
+    await expect(loadWithMigration(["sanctuary"], {
+      path: file,
+      machineIdMigration: migration,
+      persist: successfulPersist,
+    })).resolves.toEqual(["sanctuary"])
+    expect(successfulPersist).toHaveBeenCalledWith(expect.not.objectContaining({ providerCredentialRecords: expect.anything() }))
+    expect(fs.existsSync(`${file}.consuming`)).toBe(false)
+  })
+
+  it("keeps the default path strict for the same obsolete provider bytes", async () => {
+    bootstrapMocks.machineIdentity.mockReturnValue({ machineId: "sanctuary" })
+    bootstrapMocks.validate.mockReturnValueOnce(false)
+    const file = fixture({
+      type: "ouro.runtimeCredentialBootstrap",
+      agentName: "sanctuary",
+      machineId: "sanctuary-unraid",
+      runtimeConfig: { telegramBotToken: "secret" },
+      providerCredentialRecords: [{ provider: "minimax", revision: "legacy-revision" }],
+    })
+    const original = fs.readFileSync(file)
+    const persist = vi.fn(async () => true)
+    const apply = vi.fn(() => true)
+
+    await expect(loadContainerCredentialBootstrap(["sanctuary"], { path: file, persist, apply }))
+      .rejects.toThrow("message is invalid")
+
+    expect(persist).not.toHaveBeenCalled()
+    expect(apply).not.toHaveBeenCalled()
+    expect(fs.readFileSync(`${file}.consuming`)).toEqual(original)
+  })
+
+  it.each([
+    ["malformed policy", [], [{ provider: "minimax" }]],
+    ["empty allowlist", { providers: [] }, [{ provider: "minimax" }]],
+    ["duplicate allowlist", { providers: ["minimax", "minimax"] }, [{ provider: "minimax" }]],
+    ["wrong allowlist", { providers: ["openai-compatible"] }, [{ provider: "minimax" }]],
+    ["extra legacy provider", { providers: ["minimax"] }, [{ provider: "minimax" }, { provider: "gemini" }]],
+    ["duplicate legacy provider", { providers: ["minimax"] }, [{ provider: "minimax" }, { provider: "minimax" }]],
+    ["missing provider name", { providers: ["minimax"] }, [{}]],
+    ["empty provider records", { providers: ["minimax"] }, []],
+    ["non-object provider", { providers: ["minimax"] }, ["minimax"]],
+  ])("rejects %s discard authority before the first persist/apply", async (_name, discard, providerCredentialRecords) => {
+    bootstrapMocks.machineIdentity.mockReturnValue({ machineId: "sanctuary" })
+    bootstrapMocks.validate.mockReturnValue(true)
+    const file = fixture({
+      type: "ouro.runtimeCredentialBootstrap",
+      agentName: "sanctuary",
+      machineId: "sanctuary-unraid",
+      runtimeConfig: { telegramBotToken: "secret" },
+      providerCredentialRecords,
+    })
+    const original = fs.readFileSync(file)
+    const persist = vi.fn(async () => true)
+    const apply = vi.fn(() => true)
+
+    await expect(loadWithMigration(["sanctuary"], {
+      path: file,
+      machineIdMigration: {
+        sourceMachineId: "sanctuary-unraid",
+        targetMachineId: "sanctuary",
+        discardProviderCredentialRecords: discard as { providers: string[] },
+      },
+      persist,
+      apply,
+    })).rejects.toThrow(/discard|provider/i)
+
+    expect(persist).not.toHaveBeenCalled()
+    expect(apply).not.toHaveBeenCalled()
+    expect(fs.readFileSync(`${file}.consuming`)).toEqual(original)
+  })
+
+  it("rejects a provider-only message whose discard projection would contain no credential fields", async () => {
+    bootstrapMocks.machineIdentity.mockReturnValue({ machineId: "sanctuary" })
+    bootstrapMocks.validate.mockReturnValueOnce(false)
+    const file = fixture({
+      type: "ouro.runtimeCredentialBootstrap",
+      agentName: "sanctuary",
+      machineId: "sanctuary-unraid",
+      providerCredentialRecords: [{ provider: "minimax", revision: "legacy-revision" }],
+    })
+    const persist = vi.fn(async () => true)
+
+    await expect(loadWithMigration(["sanctuary"], {
+      path: file,
+      machineIdMigration: {
+        sourceMachineId: "sanctuary-unraid",
+        targetMachineId: "sanctuary",
+        discardProviderCredentialRecords: { providers: ["minimax"] },
+      },
+      persist,
+    })).rejects.toThrow("message is invalid")
+    expect(persist).not.toHaveBeenCalled()
   })
 
   it.each([
