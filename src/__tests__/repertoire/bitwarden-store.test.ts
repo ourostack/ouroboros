@@ -1521,6 +1521,67 @@ describe("BitwardenCredentialStore", () => {
       expect(decoded.login).not.toHaveProperty("uris")
     })
 
+    it("defaults optional login fields without emitting Bitwarden URI metadata", async () => {
+      const stdinWrites: string[] = []
+      let savedItem: Record<string, unknown> | null = null
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return { stdin: { end: vi.fn() } }
+        }
+        if (args[0] === "unlock") {
+          cb(null, "session-token", "")
+          return { stdin: { end: vi.fn() } }
+        }
+        if (args[0] === "list") {
+          cb(null, "[]", "")
+          return { stdin: { end: vi.fn() } }
+        }
+        if (args[0] === "get") {
+          cb(null, JSON.stringify(savedItem), "")
+          return { stdin: { end: vi.fn() } }
+        }
+        if (args[0] === "create") {
+          return {
+            stdin: {
+              end: vi.fn((value: string) => {
+                stdinWrites.push(value)
+                const decoded = JSON.parse(Buffer.from(value, "base64").toString("utf8")) as {
+                  name: string
+                  login?: { username?: string; password?: string }
+                  notes?: string | null
+                }
+                savedItem = {
+                  id: "new-item-1",
+                  name: decoded.name,
+                  login: decoded.login,
+                  notes: decoded.notes ?? null,
+                  revisionDate: "2026-04-15T23:00:00.000Z",
+                }
+                cb(null, '{"id":"new-item-1"}', "")
+              }),
+            },
+          }
+        }
+        cb(null, "", "")
+        return { stdin: { end: vi.fn() } }
+      })
+
+      await store.store("runtime/config", {
+        password: "runtime-secret",
+      })
+
+      expect(stdinWrites).toHaveLength(1)
+      const decoded = JSON.parse(Buffer.from(stdinWrites[0]!, "base64").toString("utf8")) as {
+        login: { username: string; password: string; uris?: Array<Record<string, unknown>> }
+        notes: string | null
+      }
+      expect(decoded.login.username).toBe("")
+      expect(decoded.login.password).toBe("runtime-secret")
+      expect(decoded.login).not.toHaveProperty("uris")
+      expect(decoded.notes).toBeNull()
+    })
+
     it("edits an existing vault item instead of creating a duplicate", async () => {
       const calls: string[][] = []
       const stdinWrites: string[] = []
