@@ -1307,6 +1307,26 @@ describe("BitwardenCredentialStore", () => {
       await expect(store.getRawSecret("runtime/config", "password")).rejects.toThrow("bw CLI error: invalid item from bw list items")
     })
 
+    it("throws when a full-list structured result has malformed Bitwarden URI metadata", async () => {
+      mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args[0] === "status") {
+          cb(null, JSON.stringify({ status: "unlocked" }), "")
+          return
+        }
+        if (args[0] === "list" && args[1] === "items") {
+          cb(null, JSON.stringify([{
+            id: "runtime-config",
+            name: "runtime/config",
+            login: { username: "runtime/config", password: "runtime-secret", uris: [{ uri: 123 }] },
+          }]), "")
+          return
+        }
+        cb(null, "", "")
+      })
+
+      await expect(store.getRawSecret("runtime/config", "password")).rejects.toThrow("bw CLI error: invalid item from bw list items")
+    })
+
     it("throws when a malformed exact structured result is duplicated by a valid exact result", async () => {
       mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
         if (args[0] === "status") {
@@ -2867,6 +2887,24 @@ describe("BitwardenCredentialStore", () => {
       })
 
       await expect(store.list()).rejects.toThrow("bw CLI error: invalid item from bw list items")
+    })
+
+    it("accepts structured items with Bitwarden URI entries that omit uri", async () => {
+      setupExecMock({
+        stdout: JSON.stringify([
+          {
+            id: "1",
+            name: "site.com",
+            login: { username: "user", uris: [{}] },
+            revisionDate: "2026-01-01T00:00:00.000Z",
+          },
+        ]),
+      })
+
+      const results = await store.list()
+
+      expect(results).toHaveLength(1)
+      expect(results[0].domain).toBe("site.com")
     })
   })
 
