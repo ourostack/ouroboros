@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.741",
       "changes": [
-        "Pin the packaged Bitwarden CLI to the Vaultwarden-compatible 2026.6.0 client so container credential bootstrap can write vault items."
+        "Pin the packaged Bitwarden CLI to the Vaultwarden-compatible 2026.7.0 client so container credential bootstrap can write vault items without the 2026.8 cache decode regression."
       ]
     },
     {

@@ -35,7 +35,7 @@ RUN BW_VERIFY_ROOT="$(mktemp -d)" \
   && command -v bw >/dev/null \
   && BW_VERSION="$(BITWARDENCLI_APPDATA_DIR="$BW_VERIFY_ROOT/appdata" bw --version 2>"$BW_VERIFY_ROOT/stderr")" \
   && test ! -s "$BW_VERIFY_ROOT/stderr" \
-  && test "$BW_VERSION" = "2026.6.0" \
+  && test "$BW_VERSION" = "2026.7.0" \
   && rm -rf -- "$BW_VERIFY_ROOT" \
   && trap - 0 \
   && test ! -e "/home/ouro/.config/Bitwarden CLI"

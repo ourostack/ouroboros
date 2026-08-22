@@ -64,7 +64,7 @@ describe("container runtime policy", () => {
     expect(dockerfile).toContain('printf \'%s\' \'{}\' >"$BW_VERIFY_ROOT/appdata/data.json"')
     expect(dockerfile).toContain('BITWARDENCLI_APPDATA_DIR="$BW_VERIFY_ROOT/appdata" bw --version 2>"$BW_VERIFY_ROOT/stderr"')
     expect(dockerfile).toContain('test ! -s "$BW_VERIFY_ROOT/stderr"')
-    expect(dockerfile).toContain('test "$BW_VERSION" = "2026.6.0"')
+    expect(dockerfile).toContain('test "$BW_VERSION" = "2026.7.0"')
     expect(dockerfile).toContain('rm -rf -- "$BW_VERIFY_ROOT"')
     expect(dockerfile).toContain('test ! -e "/home/ouro/.config/Bitwarden CLI"')
     expect(dockerfile).not.toContain('$(bw --version)')
