@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.740",
+      "changes": [
+        "Omit null Bitwarden URI match values so runtime credential bootstrap can persist through Bitwarden CLI 2026.8."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.739",
       "changes": [
         "Allow Linux auto vault unlock reads to reuse an already-approved plaintext fallback when no secure local store has usable material."
