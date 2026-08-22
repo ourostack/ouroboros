@@ -1515,10 +1515,10 @@ describe("BitwardenCredentialStore", () => {
       expect(createCall?.join(" ")).not.toContain("newpass")
       expect(stdinWrites).toHaveLength(1)
       const decoded = JSON.parse(Buffer.from(stdinWrites[0]!, "base64").toString("utf8")) as {
-        login: { password: string; uris: Array<Record<string, unknown>> }
+        login: { password: string; uris?: Array<Record<string, unknown>> }
       }
       expect(decoded.login.password).toBe("newpass")
-      expect(decoded.login.uris).toEqual([{ uri: "https://newsite.com" }])
+      expect(decoded.login).not.toHaveProperty("uris")
     })
 
     it("edits an existing vault item instead of creating a duplicate", async () => {

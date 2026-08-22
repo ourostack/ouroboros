@@ -998,7 +998,6 @@ export class BitwardenCredentialStore implements CredentialStore {
         login: {
           username: data.username ?? "",
           password: data.password,
-          uris: [{ uri: `https://${domain}` }],
         },
         notes: data.notes ?? null,
       }
