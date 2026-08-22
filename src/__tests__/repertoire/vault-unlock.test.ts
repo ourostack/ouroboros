@@ -302,6 +302,75 @@ describe("vault unlock local stores", () => {
     }))
   })
 
+  it("lets auto use an already-approved plaintext unlock fallback when no secure Linux store exists", () => {
+    emitTestEvent("vault unlock auto plaintext fallback")
+    const homeDir = tempHome()
+    const plaintextDeps: VaultUnlockDeps = { store: "plaintext-file", homeDir, platform: "linux" }
+    const store = storeVaultUnlockSecret(config, "local-unlock-material", plaintextDeps)
+
+    const loaded = readVaultUnlockSecret(config, {
+      homeDir,
+      platform: "linux",
+      spawnSync: vi.fn(() => fail("")) as VaultUnlockDeps["spawnSync"],
+    })
+
+    expect(loaded).toMatchObject({
+      secret: "local-unlock-material",
+      store,
+    })
+    expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "repertoire.vault_unlock_loaded",
+      meta: expect.objectContaining({ store: "plaintext-file", secure: false, hasAgentName: true }),
+    }))
+  })
+
+  it("lets auto use an already-approved plaintext unlock fallback when Linux Secret Service is unavailable", () => {
+    emitTestEvent("vault unlock auto plaintext fallback when secret service is unavailable")
+    const homeDir = tempHome()
+    const plaintextDeps: VaultUnlockDeps = { store: "plaintext-file", homeDir, platform: "linux" }
+    const store = storeVaultUnlockSecret(config, "local-unlock-material", plaintextDeps)
+
+    const loaded = readVaultUnlockSecret(config, {
+      homeDir,
+      platform: "linux",
+      spawnSync: vi.fn(() => missingCommand()) as VaultUnlockDeps["spawnSync"],
+    })
+
+    expect(loaded).toMatchObject({
+      secret: "local-unlock-material",
+      store,
+    })
+    expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "repertoire.vault_unlock_loaded",
+      meta: expect.objectContaining({ store: "plaintext-file", secure: false, hasAgentName: true }),
+    }))
+  })
+
+  it("keeps auto strict when Linux Secret Service is unavailable and no plaintext fallback exists", () => {
+    emitTestEvent("vault unlock auto plaintext fallback missing")
+    const homeDir = tempHome()
+
+    expect(() => readVaultUnlockSecret(config, {
+      homeDir,
+      platform: "linux",
+      spawnSync: vi.fn(() => missingCommand()) as VaultUnlockDeps["spawnSync"],
+    })).toThrow("No supported secure local secret store was found")
+  })
+
+  it("keeps auto strict when an existing plaintext fallback has broad permissions", () => {
+    emitTestEvent("vault unlock auto plaintext fallback permissions")
+    const homeDir = tempHome()
+    const plaintextDeps: VaultUnlockDeps = { store: "plaintext-file", homeDir, platform: "linux" }
+    const store = storeVaultUnlockSecret(config, "local-unlock-material", plaintextDeps)
+    fs.chmodSync(store.location, 0o644)
+
+    expect(() => readVaultUnlockSecret(config, {
+      homeDir,
+      platform: "linux",
+      spawnSync: vi.fn(() => fail("")) as VaultUnlockDeps["spawnSync"],
+    })).toThrow("permissions are too broad")
+  })
+
   it("reports missing plaintext material, empty input, and broad local file permissions", () => {
     emitTestEvent("vault unlock plaintext guards")
     const homeDir = tempHome()

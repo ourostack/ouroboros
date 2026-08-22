@@ -588,6 +588,17 @@ function deleteFromStoreExact(
   return deleteFromPlaintextFileExact(config, deps)
 }
 
+function readFromAutoPlaintextFallback(
+  config: VaultUnlockConfig,
+  deps: VaultUnlockDeps,
+): (VaultUnlockReadResult & { source: VaultUnlockConfig }) | null {
+  if (deps.store !== undefined && deps.store !== "auto") return null
+  const store = resolveVaultUnlockStore(config, { ...deps, store: "plaintext-file" })
+  const loaded = readFromStore(config, store, deps)
+  if (!loaded) return null
+  return { secret: loaded.secret, store, source: loaded.source }
+}
+
 export function clearVaultUnlockSecret(
   config: VaultUnlockConfig,
   deps: VaultUnlockDeps = {},
@@ -618,9 +629,32 @@ export function readVaultUnlockSecret(
   deps: VaultUnlockDeps = {},
 ): VaultUnlockReadResult {
   const canonicalConfig = canonicalizeVaultUnlockConfig(config)
-  const store = resolveVaultUnlockStore(canonicalConfig, deps)
+  let store: VaultUnlockStoreSelection
+  try {
+    store = resolveVaultUnlockStore(canonicalConfig, deps)
+  } catch (error) {
+    const fallback = readFromAutoPlaintextFallback(canonicalConfig, deps)
+    if (!fallback) throw error
+    emitNervesEvent({
+      component: "repertoire",
+      event: "repertoire.vault_unlock_loaded",
+      message: "loaded vault unlock material from local store",
+      meta: { store: fallback.store.kind, secure: fallback.store.secure, hasAgentName: !!config.agentName, sourceServerUrl: fallback.source.serverUrl },
+    })
+    return fallback
+  }
   const loaded = readFromStore(canonicalConfig, store, deps)
   if (!loaded) {
+    const fallback = readFromAutoPlaintextFallback(canonicalConfig, deps)
+    if (fallback) {
+      emitNervesEvent({
+        component: "repertoire",
+        event: "repertoire.vault_unlock_loaded",
+        message: "loaded vault unlock material from local store",
+        meta: { store: fallback.store.kind, secure: fallback.store.secure, hasAgentName: !!config.agentName, sourceServerUrl: fallback.source.serverUrl },
+      })
+      return fallback
+    }
     throw new Error(lockedMessage(canonicalConfig, store))
   }
 
