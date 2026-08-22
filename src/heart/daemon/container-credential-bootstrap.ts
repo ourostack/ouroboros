@@ -23,6 +23,9 @@ export interface ContainerCredentialBootstrapOptions {
   machineIdMigration?: {
     sourceMachineId: string
     targetMachineId: string
+    discardProviderCredentialRecords?: {
+      providers: string[]
+    }
   }
 }
 
@@ -123,13 +126,21 @@ export async function loadContainerCredentialBootstrap(
       throw new Error("container credential bootstrap agent is not enabled")
     }
     if (loaded.has(message.agentName)) throw new Error("container credential bootstrap contains a duplicate agent")
-    if (!isRuntimeCredentialBootstrapMessage(message)) throw new Error("container credential bootstrap message is invalid")
     loaded.add(message.agentName)
   }
 
-  const machineId = loadOrCreateMachineIdentity().machineId
   const migration = options.machineIdMigration
+  const discardProviderCredentialRecords = migration?.discardProviderCredentialRecords
+  if (discardProviderCredentialRecords === undefined) {
+    for (const message of envelope.credentials) {
+      if (!isRuntimeCredentialBootstrapMessage(message)) {
+        throw new Error("container credential bootstrap message is invalid")
+      }
+    }
+  }
+  const machineId = loadOrCreateMachineIdentity().machineId
   let messages = envelope.credentials
+  let discardedProviderRecordCount = 0
   if (migration) {
     const { sourceMachineId, targetMachineId } = migration
     if (
@@ -149,11 +160,61 @@ export async function loadContainerCredentialBootstrap(
         throw new Error("container credential bootstrap machineId migration source does not match")
       }
     }
-    messages = messages.map((message) => ({ ...(message as Record<string, unknown>), machineId: targetMachineId }))
+    if (discardProviderCredentialRecords !== undefined) {
+      if (!isRecord(discardProviderCredentialRecords) || !Array.isArray(discardProviderCredentialRecords.providers)) {
+        throw new Error("container credential bootstrap provider discard policy is invalid")
+      }
+      const configuredProviders = discardProviderCredentialRecords.providers
+      if (
+        configuredProviders.length === 0
+        || configuredProviders.some((provider) => (
+          typeof provider !== "string" || provider.length === 0 || provider !== provider.trim()
+        ))
+        || new Set(configuredProviders).size !== configuredProviders.length
+      ) {
+        throw new Error("container credential bootstrap provider discard allowlist is invalid")
+      }
+      const legacyProviders: string[] = []
+      for (const message of messages) {
+        const records = (message as Record<string, unknown>).providerCredentialRecords
+        if (records === undefined) continue
+        if (!Array.isArray(records) || records.length === 0) {
+          throw new Error("container credential bootstrap discarded provider records are invalid")
+        }
+        for (const record of records) {
+          if (!isRecord(record) || typeof record.provider !== "string" || record.provider.length === 0) {
+            throw new Error("container credential bootstrap discarded provider record is invalid")
+          }
+          legacyProviders.push(record.provider)
+        }
+      }
+      if (new Set(legacyProviders).size !== legacyProviders.length) {
+        throw new Error("container credential bootstrap discarded providers contain duplicates")
+      }
+      if (
+        [...legacyProviders].sort().join(",")
+        !== [...configuredProviders].sort().join(",")
+      ) {
+        throw new Error("container credential bootstrap discarded providers do not match the allowlist")
+      }
+      discardedProviderRecordCount = legacyProviders.length
+    }
+    messages = messages.map((message) => {
+      const projected: Record<string, unknown> = { ...(message as Record<string, unknown>), machineId: targetMachineId }
+      if (discardProviderCredentialRecords !== undefined) delete projected.providerCredentialRecords
+      return projected
+    })
   } else {
     for (const message of messages) {
       if (isRecord(message) && typeof message.machineId === "string" && message.machineId !== machineId) {
         throw new Error("container credential bootstrap machineId does not match this machine")
+      }
+    }
+  }
+  if (discardProviderCredentialRecords !== undefined) {
+    for (const message of messages) {
+      if (!isRuntimeCredentialBootstrapMessage(message)) {
+        throw new Error("container credential bootstrap message is invalid")
       }
     }
   }
@@ -182,6 +243,18 @@ export async function loadContainerCredentialBootstrap(
     }
   }
   deleteDurably(consumingPath)
+  if (discardedProviderRecordCount > 0) {
+    emitNervesEvent({
+      component: "config/identity",
+      event: "config.container_provider_credentials_discarded",
+      message: "discarded allowlisted legacy provider credentials during container migration",
+      meta: {
+        agentCount: loaded.size,
+        recordCount: discardedProviderRecordCount,
+        mode: "machine-id-migration",
+      },
+    })
+  }
   emitNervesEvent({
     component: "config/identity",
     event: "config.container_credentials_loaded",

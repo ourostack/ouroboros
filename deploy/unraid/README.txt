@@ -713,12 +713,18 @@ local unlock: available
               machineIdMigration: {
                 sourceMachineId: process.argv[1],
                 targetMachineId: process.argv[2],
+                discardProviderCredentialRecords: { providers: ["minimax"] },
               },
             }).then(
               () => process.exit(0),
               () => { process.stderr.write("credential bootstrap failed\n"); process.exit(1) },
             )
           ' "$BOOTSTRAP_SOURCE_MACHINE_ID" "$BOOTSTRAP_TARGET_MACHINE_ID" || return $?
+        # The path-locked Sanctuary migration projects the exact obsolete Minimax
+        # provider record out of memory before strict validation and persistence.
+        # The original legacy envelope remains byte-for-byte unchanged and is the
+        # sole digest authority; current GLM and Gemini credentials are established
+        # only by the separate hidden-input authentication commands below.
         ! docker container inspect ouro-butler-credential-bootstrap >/dev/null 2>&1 || return 1
         test ! -e "$BOOTSTRAP_CREDENTIAL_SOURCE" || return $?
         test ! -e "$BOOTSTRAP_CREDENTIAL_CLAIM" || return $?
