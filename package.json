@@ -58,7 +58,7 @@
     "@anthropic-ai/sdk": "^0.78.0",
     "@azure/identity": "^4.13.0",
     "@azure/storage-blob": "^12.31.0",
-    "@bitwarden/cli": "2026.7.0",
+    "@bitwarden/cli": "2026.6.0",
     "@microsoft/teams.api": "2.0.11",
     "@microsoft/teams.apps": "2.0.11",
     "@microsoft/teams.cards": "2.0.11",
@@ -99,6 +99,8 @@
   },
   "overrides": {
     "deepmerge-ts": "^8.0.1",
+    "form-data": "4.0.6",
+    "multer": "2.2.0",
     "tmp": "0.2.7",
     "@microsoft/teams.apps": {
       "@azure/msal-node": "^5.2.2"
