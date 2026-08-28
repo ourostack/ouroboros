@@ -13,7 +13,7 @@
   <WebUI/>
   <TemplateURL/>
   <Icon/>
-  <ExtraParams>--restart=unless-stopped --user=10001:10001</ExtraParams>
+  <ExtraParams>--restart=unless-stopped --user=10001:10001 --dns=1.1.1.1</ExtraParams>
   <PostArgs/>
   <CPUset/>
   <DateInstalled>0</DateInstalled>

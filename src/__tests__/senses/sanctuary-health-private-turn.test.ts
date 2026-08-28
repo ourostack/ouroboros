@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 
 const mocks = vi.hoisted(() => ({
   getAgentRoot: vi.fn(),
+  setAgentName: vi.fn(),
   runAgent: vi.fn(),
   reserveAutonomyBudget: vi.fn(),
   resolveAutonomyBudgetPolicy: vi.fn(),
@@ -11,9 +12,12 @@ const mocks = vi.hoisted(() => ({
   createSanctuaryHealthSweep: vi.fn(),
   createSanctuaryToolContext: vi.fn(),
   loadTelegramSenseCredentials: vi.fn(),
+  loadOrCreateMachineIdentity: vi.fn(),
+  readMachineRuntimeCredentialConfig: vi.fn(),
+  refreshMachineRuntimeCredentialConfig: vi.fn(),
 }))
 
-vi.mock("../../heart/identity", () => ({ getAgentRoot: mocks.getAgentRoot }))
+vi.mock("../../heart/identity", () => ({ getAgentRoot: mocks.getAgentRoot, setAgentName: mocks.setAgentName }))
 vi.mock("../../heart/core", () => ({ runAgent: mocks.runAgent }))
 vi.mock("../../heart/autonomy-budget", () => ({
   reserveAutonomyBudget: mocks.reserveAutonomyBudget,
@@ -27,6 +31,11 @@ vi.mock("../../senses/telegram-client", () => ({
 vi.mock("../../senses/sanctuary-health", () => ({ createSanctuaryHealthSweep: mocks.createSanctuaryHealthSweep }))
 vi.mock("../../senses/sanctuary-runtime", () => ({ createSanctuaryToolContext: mocks.createSanctuaryToolContext }))
 vi.mock("../../senses/telegram", () => ({ loadTelegramSenseCredentials: mocks.loadTelegramSenseCredentials }))
+vi.mock("../../heart/machine-identity", () => ({ loadOrCreateMachineIdentity: mocks.loadOrCreateMachineIdentity }))
+vi.mock("../../heart/runtime-credentials", () => ({
+  readMachineRuntimeCredentialConfig: mocks.readMachineRuntimeCredentialConfig,
+  refreshMachineRuntimeCredentialConfig: mocks.refreshMachineRuntimeCredentialConfig,
+}))
 
 import { runSanctuaryHealthHabit, runSanctuaryHealthPrivateTurn } from "../../senses/sanctuary-health-runner"
 
@@ -40,6 +49,9 @@ describe("Sanctuary health private turn", () => {
     mocks.reserveAutonomyBudget.mockReturnValue({ allowed: true, status: "reserved" })
     mocks.resolveToolDefinition.mockReturnValue({ tool: { name: "send_message" } })
     mocks.runAgent.mockResolvedValue(completed())
+    mocks.loadOrCreateMachineIdentity.mockReturnValue({ machineId: "sanctuary" })
+    mocks.readMachineRuntimeCredentialConfig.mockReturnValue({ ok: false, error: "missing" })
+    mocks.refreshMachineRuntimeCredentialConfig.mockResolvedValue({ ok: true, credentials: {} })
   })
 
   it("runs the bounded profile and delivers exactly once", async () => {
@@ -60,6 +72,7 @@ describe("Sanctuary health private turn", () => {
     })
 
     await expect(runSanctuaryHealthPrivateTurn({ agentName: "sanctuary", eventId: "evt-1", payload: "degraded", deliver })).resolves.toEqual({ delivered: true })
+    expect(mocks.setAgentName).toHaveBeenCalledWith("sanctuary")
     expect(deliver).toHaveBeenCalledWith(" alert ")
   })
 
@@ -108,6 +121,8 @@ describe("Sanctuary health private turn", () => {
     })
 
     await expect(runSanctuaryHealthHabit("sanctuary")).resolves.toMatchObject({ ok: true, data: { delivered: true } })
+    expect(mocks.refreshMachineRuntimeCredentialConfig).toHaveBeenCalledWith("sanctuary", "sanctuary", { preserveCachedOnFailure: true })
+    expect(mocks.refreshMachineRuntimeCredentialConfig).toHaveBeenCalledBefore(mocks.createSanctuaryToolContext)
     expect(mocks.createTelegramBotApi).toHaveBeenCalledWith({ token: "secret" })
     expect(mocks.sendTelegramText).toHaveBeenCalledWith(api, "42", "summary")
     expect(api.stop).toHaveBeenCalledOnce()

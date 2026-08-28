@@ -290,17 +290,21 @@ describe("Sanctuary deterministic health sweep", () => {
     expect(await broken()).toMatchObject({ deliveryId: opened.deliveryId, cachedMessage: "cached private summary" })
     await broken.markDeliveryAttempting(opened.deliveryId!)
     const restarted = createSanctuaryHealthSweep({ toolContext: context("exited"), statePath, fetch, now })
-    expect((await restarted()).message).toBeNull()
+    const retried = await restarted()
+    expect(retried).toMatchObject({ message: opened.message, deliveryId: opened.deliveryId, cachedMessage: "cached private summary" })
+    await restarted.markDeliveryAttempting(retried.deliveryId!)
+    await restarted.markDelivered(retried.deliveryId!, [7001])
+    expect(JSON.parse(fs.readFileSync(statePath, "utf8")).deliveredReceipts).toEqual([
+      expect.objectContaining({ deliveryId: retried.deliveryId, kind: "transition_and_digest", messageIds: [7001] }),
+    ])
+    expect((await broken()).message).toBeNull()
+
     clock = new Date("2026-08-19T18:00:00.000Z")
     const nextDigest = await restarted()
     expect(nextDigest.deliveryId).not.toBe(opened.deliveryId)
-    expect(nextDigest.message).toContain("prior Telegram delivery was indeterminate")
+    expect(nextDigest.message).toContain("still broken")
     await restarted.markDeliveryAttempting(nextDigest.deliveryId!)
-    await restarted.markDelivered(nextDigest.deliveryId!, [7001])
-    expect(JSON.parse(fs.readFileSync(statePath, "utf8")).deliveredReceipts).toEqual([
-      expect.objectContaining({ deliveryId: nextDigest.deliveryId, kind: "digest", messageIds: [7001] }),
-    ])
-    expect((await broken()).message).toBeNull()
+    await restarted.markDelivered(nextDigest.deliveryId!, [7003])
 
     const healthy = createSanctuaryHealthSweep({ toolContext: context("running"), statePath, fetch, now })
     const recovered = await healthy()
@@ -326,6 +330,20 @@ describe("Sanctuary deterministic health sweep", () => {
     const [left, right] = await Promise.all([first, second])
     expect(right.deliveryId).toBe(left.deliveryId)
     expect(toolContext.sanctuary.listContainers).toHaveBeenCalledTimes(1)
+  })
+
+  it("creates the health state directory before acquiring the first lease", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-health-first-"))
+    const statePath = path.join(root, "missing", "health", "state.json")
+    const sweep = createSanctuaryHealthSweep({
+      toolContext: context("running"),
+      statePath,
+      fetch: vi.fn().mockResolvedValue(new Response("ok", { status: 200 })),
+      now: () => new Date("2026-08-18T18:00:00.000Z"),
+    })
+
+    await expect(sweep()).resolves.toMatchObject({ message: null })
+    expect(fs.existsSync(path.dirname(statePath))).toBe(true)
   })
 
   it("reports a named mandate container down even when Unraid autostart is disabled", async () => {

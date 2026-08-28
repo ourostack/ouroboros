@@ -122,6 +122,7 @@ async function acquireHealthFileLease(statePath: string, timeoutMs: number): Pro
   const ownerPath = path.join(leasePath, "owner.json")
   const deadline = Date.now() + timeoutMs
   const nonce = createHash("sha256").update(randomUUID()).digest("hex")
+  fs.mkdirSync(path.dirname(statePath), { recursive: true })
   for (;;) {
     try {
       fs.mkdirSync(leasePath, { recursive: false, mode: 0o700 })
@@ -313,6 +314,18 @@ export function createSanctuaryHealthSweep(options: {
         incidents: Object.values(pendingState.incidents),
         deliveryId: pendingState.outbox.id,
         ...(pendingState.outbox.summarizedMessage ? { cachedMessage: pendingState.outbox.summarizedMessage } : {}),
+      }
+    }
+    if (pendingState.outbox?.status === "attempting" && pendingState.outbox.summarizedMessage) {
+      pendingState.outbox.status = "pending"
+      pendingState.updatedAt = now().toISOString()
+      save(options.statePath, pendingState)
+      emitNervesEvent({ component: "senses", event: "senses.sanctuary_health_end", message: "Sanctuary health delivery retry recovered from durable outbox", meta: { incidentCount: Object.keys(pendingState.incidents).length, deliveryId: pendingState.outbox.id, deliveryStatus: pendingState.outbox.status, ...acceptanceEventMeta() } })
+      return {
+        message: pendingState.outbox.message,
+        incidents: Object.values(pendingState.incidents),
+        deliveryId: pendingState.outbox.id,
+        cachedMessage: pendingState.outbox.summarizedMessage,
       }
     }
     if (pendingState.outbox?.status === "attempting") {

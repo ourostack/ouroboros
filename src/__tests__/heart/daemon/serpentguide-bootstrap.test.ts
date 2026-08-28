@@ -129,8 +129,8 @@ describe("SerpentGuide bootstrap credentials", () => {
       const result = await defaultRunSerpentGuide()
 
       expect(result).toBe("Hatchling")
-      expect(pingProvider).toHaveBeenNthCalledWith(1, "minimax", { model: "MiniMax-M2.7", apiKey: "mm-stale" })
-      expect(pingProvider).toHaveBeenNthCalledWith(2, "minimax", { model: "MiniMax-M2.7", apiKey: "mm-good" })
+      expect(pingProvider).toHaveBeenNthCalledWith(1, "minimax", { model: "MiniMax-M3", apiKey: "mm-stale" })
+      expect(pingProvider).toHaveBeenNthCalledWith(2, "minimax", { model: "MiniMax-M3", apiKey: "mm-good" })
       expect(collectRuntimeAuthCredentials).toHaveBeenCalledWith(
         expect.objectContaining({ agentName: "SerpentGuide", provider: "minimax" }),
         {},

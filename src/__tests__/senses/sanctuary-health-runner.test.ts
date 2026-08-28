@@ -99,15 +99,21 @@ describe("native Sanctuary health habit", () => {
     expect(order).toEqual(["cache-confirmed", "attempting", "send", "delivered"])
   })
 
-  it("keeps an undelivered private event pending", async () => {
-    const sweep = vi.fn(async () => ({ message: "degraded", incidents: [], deliveryId: "delivery-4" }))
-    const api = { request: vi.fn(), stop: vi.fn() }
+  it("falls back to the deterministic payload when the private turn completes without delivery", async () => {
+    const sweep = Object.assign(
+      vi.fn(async () => ({ message: "degraded", incidents: [], deliveryId: "delivery-4" })),
+      { cacheDeliveryPayload: vi.fn(), markDeliveryAttempting: vi.fn(), markDelivered: vi.fn() },
+    )
+    const api = { request: vi.fn(async () => ({ message_id: 74 })), stop: vi.fn() }
     await expect(runSanctuaryHealthHabit("sanctuary", {
       createSweep: () => sweep,
       createApi: () => api,
       credentials: () => ({ botToken: "token", authorizedChatId: "42" }),
       runPrivateTurn: async () => ({ delivered: false }),
-    })).resolves.toMatchObject({ message: "health event remains pending", data: { delivered: false } })
+    })).resolves.toMatchObject({ message: "health sweep completed and delivered", data: { delivered: true } })
+    expect(api.request).toHaveBeenCalledOnce()
+    expect(sweep.cacheDeliveryPayload).toHaveBeenCalledWith("delivery-4", "degraded")
+    expect(sweep.markDelivered).toHaveBeenCalledWith("delivery-4", [74])
     expect(api.stop).toHaveBeenCalledOnce()
   })
 
