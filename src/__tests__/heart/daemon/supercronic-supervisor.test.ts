@@ -40,6 +40,22 @@ function fixture(
 }
 
 describe("SupercronicSupervisor", () => {
+  it("treats missing default procfs command lines as absent prior Supercronic processes", () => {
+    const supervisor = new SupercronicSupervisor({
+      binaryPath: "/usr/local/bin/supercronic",
+      crontabPath: "/tmp/sanctuary.crontab",
+    })
+    expect(supervisor.deps.processCommand(-999999)).toBeNull()
+  })
+
+  it("drops stale pid files for processes that are no longer alive", () => {
+    const f = fixture(() => false)
+    f.files.set("/scheduler/sanctuary.pid", "42")
+    f.supervisor.start()
+    expect(f.files.get("/scheduler/sanctuary.pid")).toBe("42\n")
+    expect(f.spawn).toHaveBeenCalledOnce()
+  })
+
   it("owns one child and deterministically merges isolated namespace views", () => {
     const f = fixture()
     f.supervisor.start()

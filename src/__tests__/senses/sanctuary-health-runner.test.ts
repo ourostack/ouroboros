@@ -117,6 +117,26 @@ describe("native Sanctuary health habit", () => {
     expect(api.stop).toHaveBeenCalledOnce()
   })
 
+  it("keeps the event pending when a private turn swallows a failed Telegram attempt", async () => {
+    const sweep = Object.assign(
+      vi.fn(async () => ({ message: "degraded", incidents: [], deliveryId: "delivery-failed-send" })),
+      { cacheDeliveryPayload: vi.fn(), markDeliveryAttempting: vi.fn(), markDelivered: vi.fn() },
+    )
+    const api = { request: vi.fn(async () => { throw new Error("telegram timeout") }), stop: vi.fn() }
+    await expect(runSanctuaryHealthHabit("sanctuary", {
+      createSweep: () => sweep,
+      createApi: () => api,
+      credentials: () => ({ botToken: "token", authorizedChatId: "42" }),
+      runPrivateTurn: async ({ deliver }) => {
+        await expect(deliver("summary")).rejects.toThrow("telegram timeout")
+        return { delivered: false }
+      },
+    })).resolves.toMatchObject({ message: "health event remains pending", data: { delivered: false } })
+    expect(sweep.markDeliveryAttempting).toHaveBeenCalledWith("delivery-failed-send")
+    expect(sweep.markDelivered).not.toHaveBeenCalled()
+    expect(api.stop).toHaveBeenCalledOnce()
+  })
+
   it("observes private turns and every provider invocation independently from delivery", async () => {
     const sweep = Object.assign(
       vi.fn(async () => ({ message: "degraded", incidents: [], deliveryId: "delivery-metrics" })),

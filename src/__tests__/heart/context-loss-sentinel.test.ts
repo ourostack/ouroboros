@@ -2639,6 +2639,26 @@ describe("context-loss Sentinel core", () => {
     })
   })
 
+  it("surfaces default git status execution failures for git-backed bundles", async () => {
+    const agentRoot = makeAgentRoot()
+    fs.mkdirSync(path.join(agentRoot, ".git"))
+    const originalPath = process.env.PATH
+    process.env.PATH = fs.mkdtempSync(path.join(os.tmpdir(), "context-loss-no-git-path-"))
+    try {
+      const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
+        trigger: "daemon_health",
+        now: () => new Date("2026-06-08T20:16:30.000Z"),
+        createReceiptId: () => "sentinel-default-git-error",
+        providerVisibility: providerVisibility(),
+        daemonHealthResults: okHealth(),
+      })
+      expect(receipt.verdict).toBe("watch")
+      expect(signal(receipt.signals, "bundle:git").summary).toContain("bundle git status unavailable:")
+    } finally {
+      process.env.PATH = originalPath
+    }
+  })
+
   it("reads empty Sentinel state and formats null/unavailable views without creating files", () => {
     const agentRoot = makeAgentRoot()
     const paths = contextLossSentinelPaths(agentRoot)

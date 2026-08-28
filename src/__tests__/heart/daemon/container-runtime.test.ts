@@ -3,7 +3,7 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { spawnSync } from "node:child_process"
-import { hasManagedSupercronicProcess, hasManagedTelegramProcess, readContainerRuntimePolicy } from "../../../heart/daemon/container-runtime"
+import { hasManagedAgentProcess, hasManagedSupercronicProcess, hasManagedTelegramProcess, readContainerRuntimePolicy } from "../../../heart/daemon/container-runtime"
 
 function extractRunbookFunction(runbook: string, name: string): string {
   const marker = `    ${name}() {`
@@ -1872,6 +1872,7 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
 
   it("requires exactly one matching managed Telegram process", () => {
     const telegram = "node /opt/ouro/dist/senses/telegram-entry.js --agent sanctuary"
+    expect(hasManagedAgentProcess(telegram, "  ")).toBe(false)
     expect(hasManagedTelegramProcess(`node daemon-entry.js\n${telegram}\n`, "sanctuary")).toBe(true)
     expect(hasManagedTelegramProcess("node daemon-entry.js\n", "sanctuary")).toBe(false)
     expect(hasManagedTelegramProcess(`${telegram}\n${telegram}\n`, "sanctuary")).toBe(false)

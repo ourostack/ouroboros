@@ -127,6 +127,8 @@ describe("Sanctuary scheduler origin", () => {
     const proofMac = createHmac("sha256", identityKey).update(JSON.stringify(unsigned)).digest("hex")
     expect(() => verifySanctuarySchedulerFireCommand({ ...command, proofMac }, { ...deps, now: () => new Date("2026-08-21T07:45:01.000Z") })).toThrow(/slot/u)
     expect(() => verifySanctuarySchedulerFireCommand({ ...command, proofMac }, { ...deps, readFile: (file) => file === "/proc/101/stat" ? procStat(101, 77, "9001") : deps.readFile(file) })).toThrow(/ancestry/u)
+    expect(() => verifySanctuarySchedulerFireCommand({ ...command, proofMac }, { ...deps, childPid: 900 })).toThrow(/ancestry/u)
+    expect(() => verifySanctuarySchedulerFireCommand({ ...command, proofMac }, { ...deps, readLink: () => "/bin/sh" })).toThrow(/ancestry/u)
     expect(() => verifySanctuarySchedulerFireCommand({ ...command, proofMac }, { ...deps, readFile: (file) => file === "/proc/101/stat" ? "invalid" : deps.readFile(file) })).toThrow(/process identity/u)
     expect(() => verifySanctuarySchedulerFireCommand({ ...command, proofMac }, { ...deps, readFile: (file) => file === "/proc/101/stat" ? "101 (x) S invalid" : deps.readFile(file) })).toThrow(/process identity/u)
   })

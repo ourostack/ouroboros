@@ -536,6 +536,34 @@ describe("Sanctuary deterministic health sweep", () => {
     expect(fs.readdirSync(path.dirname(filePath))).toEqual(["state.json"])
   })
 
+  it("moves an attempting delivery without a cached summary into the next indeterminate digest", async () => {
+    const filePath = statePath("sanctuary-health-indeterminate-retry-")
+    writeState(filePath, validState({
+      incidents: { previous: { id: "previous", summary: "prior health alert" } },
+      outbox: {
+        id: "uncached-attempt",
+        message: "prior uncached delivery",
+        status: "attempting",
+        createdAt: "2026-08-18T18:00:00.000Z",
+        kind: "transition",
+      },
+      lastDigestDay: null,
+    }))
+    const sweep = createSanctuaryHealthSweep({
+      toolContext: context("running"),
+      statePath: filePath,
+      fetch: vi.fn().mockResolvedValue(new Response("ok", { status: 200 })),
+      now: () => new Date("2026-08-18T19:00:00.000Z"),
+    })
+
+    const result = await sweep()
+
+    expect(result.message).toContain("prior Telegram delivery was indeterminate")
+    const saved = JSON.parse(fs.readFileSync(filePath, "utf8"))
+    expect(saved.outbox).toMatchObject({ message: expect.stringContaining("prior Telegram delivery was indeterminate"), status: "pending", kind: "transition_and_digest" })
+    expect(saved.indeterminateDeliveries).toHaveLength(0)
+  })
+
   it("migrates a legacy indeterminate delivery without a kind into a tagged digest", async () => {
     const filePath = statePath("sanctuary-health-legacy-indeterminate-")
     writeState(filePath, validState({
