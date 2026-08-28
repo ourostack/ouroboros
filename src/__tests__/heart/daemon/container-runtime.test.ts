@@ -79,24 +79,23 @@ describe("container runtime policy", () => {
     expect(habit).toContain("status: active")
   })
 
-  it("ships Sanctuary on the Flash-first Z.ai provider instead of MiniMax", () => {
+  it("ships Sanctuary on the cost-effective MiniMax provider", () => {
     const agent = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/agent.json", "utf8")) as {
       humanFacing: { provider: string; model: string }
       agentFacing: { provider: string; model: string }
     }
 
-    expect(agent.humanFacing).toEqual({ provider: "openai-compatible", model: "glm-4.7-flash" })
-    expect(agent.agentFacing).toEqual({ provider: "openai-compatible", model: "glm-4.7-flash" })
+    expect(agent.humanFacing).toEqual({ provider: "minimax", model: "MiniMax-M3" })
+    expect(agent.agentFacing).toEqual({ provider: "minimax", model: "MiniMax-M3" })
     const readiness = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/provider-readiness.json", "utf8"))
     expect(readiness).toEqual({
       version: 1,
       selectionPolicy: "explicit-same-lane-only",
       providers: [
         {
-          provider: "openai-compatible",
-          model: "glm-4.7-flash",
-          vaultItem: "providers/openai-compatible",
-          baseUrl: "https://api.z.ai/api/paas/v4/",
+          provider: "minimax",
+          model: "MiniMax-M3",
+          vaultItem: "providers/minimax",
         },
       ],
     })
@@ -447,7 +446,7 @@ if install_from_legacy_staging; then command printf 'ADOPTED\n'; else exit $?; f
     expect(prepare).toBeGreaterThan(-1)
     expect(bootstrap).toBeGreaterThan(prepare)
     expect(stopLegacy).toBeGreaterThan(bootstrap)
-    expect(runbook).toContain('discardProviderCredentialRecords: { providers: ["minimax"] }')
+    expect(runbook).not.toContain('discardProviderCredentialRecords: { providers: ["minimax"] }')
 
     const script = String.raw`set -u
 SCENARIO=$1
@@ -703,7 +702,7 @@ fi`
     expect(helper).toContain('validate_sanctuary_roots "$READINESS_RUNTIME_ROOT" "$READINESS_AGENT_ROOT"')
     expect(helper).toContain("refreshProviderCredentialPool")
     expect(helper).not.toContain("pingProvider")
-    expect(helper.match(/provider: "openai-compatible", model: "glm-4\.7-flash"/gu)).toHaveLength(1)
+    expect(helper.match(/provider: "minimax", model: "MiniMax-M3"/gu)).toHaveLength(1)
     expect(helper).not.toContain('provider: "openai-compatible-gemini", model: "gemini-3.6-flash"')
     expect(helper).not.toContain("ouro-entry.js auth verify --agent sanctuary")
   })
@@ -763,14 +762,13 @@ authenticate_sanctuary_provider "$IMAGE_ID" "$PROVIDER"`
     }
   })
 
-  it("requires exact Flash lane bindings and live primary Z.ai lane checks", () => {
+  it("requires exact MiniMax lane bindings and live primary lane checks", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     const readiness = extractRunbookFunction(runbook, "verify_sanctuary_provider_readiness")
 
-    expect(readiness).toContain('provider: "openai-compatible"')
-    expect(readiness).toContain('model: "glm-4.7-flash"')
-    expect(readiness).toContain('baseUrl: "https://api.z.ai/api/paas/v4/"')
-    expect(readiness).toContain('vaultItem: "providers/openai-compatible"')
+    expect(readiness).toContain('provider: "minimax"')
+    expect(readiness).toContain('model: "MiniMax-M3"')
+    expect(readiness).toContain('vaultItem: "providers/minimax"')
     expect(readiness).toContain('selectionPolicy: "explicit-same-lane-only"')
     expect(readiness).toContain("policy.selectionPolicy !== expectedPolicy.selectionPolicy")
     expect(readiness).toContain("revision")
@@ -794,23 +792,23 @@ authenticate_sanctuary_provider "$IMAGE_ID" "$PROVIDER"`
       .replace('const root = "/home/ouro/AgentBundles/sanctuary.ouro";', `const root = ${JSON.stringify(testRoot)};`)
       .replace('require("/opt/ouro/dist/heart/provider-credentials.js")', `require(${JSON.stringify(credentialModule)})`)
     const exactAgent = {
-      humanFacing: { provider: "openai-compatible", model: "glm-4.7-flash" },
-      agentFacing: { provider: "openai-compatible", model: "glm-4.7-flash" },
+      humanFacing: { provider: "minimax", model: "MiniMax-M3" },
+      agentFacing: { provider: "minimax", model: "MiniMax-M3" },
     }
     const exactContract = {
       version: 1,
       selectionPolicy: "explicit-same-lane-only",
       providers: [
         {
-          provider: "openai-compatible", model: "glm-4.7-flash",
-          vaultItem: "providers/openai-compatible", baseUrl: "https://api.z.ai/api/paas/v4/",
+          provider: "minimax", model: "MiniMax-M3",
+          vaultItem: "providers/minimax",
         },
       ],
     }
     const exactCredentials = { ok: true, pool: { providers: {
-      "openai-compatible": {
-        provider: "openai-compatible", revision: "sha256:glm",
-        credentials: { apiKey: "glm-secret" }, config: { baseUrl: "https://api.z.ai/api/paas/v4/" },
+      minimax: {
+        provider: "minimax", revision: "sha256:minimax",
+        credentials: { apiKey: "minimax-secret" }, config: {},
       },
     } } }
     const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T
@@ -831,12 +829,11 @@ authenticate_sanctuary_provider "$IMAGE_ID" "$PROVIDER"`
       fs.writeFileSync(credentialModule, 'const fs=require("node:fs");module.exports.refreshProviderCredentialPool=async()=>JSON.parse(fs.readFileSync(process.env.PROVIDER_FIXTURE,"utf8"));\n')
       expect(run(exactAgent, exactContract, exactCredentials).status).toBe(0)
       const failures: Array<[string, typeof exactAgent, typeof exactContract, typeof exactCredentials]> = []
-      const missingGlm = clone(exactCredentials); delete (missingGlm.pool.providers as Record<string, unknown>)["openai-compatible"]
-      failures.push(["missing GLM", exactAgent, exactContract, missingGlm])
+      const missingMiniMax = clone(exactCredentials); delete (missingMiniMax.pool.providers as Record<string, unknown>)["minimax"]
+      failures.push(["missing MiniMax", exactAgent, exactContract, missingMiniMax])
       for (const [field, value] of [
         ["provider", "other-provider"],
         ["model", "other-model"],
-        ["baseUrl", "https://wrong.invalid/"],
         ["vaultItem", "providers/wrong"],
       ] as const) {
         const contract = clone(exactContract)
@@ -849,10 +846,8 @@ authenticate_sanctuary_provider "$IMAGE_ID" "$PROVIDER"`
       failures.push(["wrong outward binding", badOutward, exactContract, exactCredentials])
       const badInner = clone(exactAgent); badInner.agentFacing.model = "gemini-3.6-flash"
       failures.push(["wrong inner binding", badInner, exactContract, exactCredentials])
-      const wrongRecordProvider = clone(exactCredentials); wrongRecordProvider.pool.providers["openai-compatible"].provider = "other-provider"
+      const wrongRecordProvider = clone(exactCredentials); wrongRecordProvider.pool.providers.minimax.provider = "other-provider"
       failures.push(["wrong credential provider", exactAgent, exactContract, wrongRecordProvider])
-      const wrongRecordBase = clone(exactCredentials); wrongRecordBase.pool.providers["openai-compatible"].config.baseUrl = "https://wrong.invalid/"
-      failures.push(["wrong credential base URL", exactAgent, exactContract, wrongRecordBase])
       for (const [name, agent, contract, credentials] of failures) {
         const result = run(agent, contract, credentials)
         expect(result.status, `${name}\n${result.stderr}`).not.toBe(0)
@@ -1065,12 +1060,11 @@ capture_sanctuary_legacy_evidence "$CONTAINER_ID" "$IMAGE_ID" "$EVIDENCE_ROOT"`
 
     expect(start).toBeGreaterThan(-1)
     const prepare = commands.indexOf('prepare_sanctuary_legacy_adoption "$IMAGE_ID"')
-    const glmAuth = commands.indexOf('authenticate_sanctuary_provider "$IMAGE_ID" openai-compatible')
     const verify = commands.indexOf('verify_sanctuary_provider_readiness "$IMAGE_ID"')
     const install = commands.indexOf("install_from_legacy_staging")
     expect(prepare).toBeGreaterThan(-1)
-    expect(glmAuth).toBeGreaterThan(prepare)
-    expect(verify).toBeGreaterThan(glmAuth)
+    expect(commands).not.toContain('authenticate_sanctuary_provider "$IMAGE_ID" openai-compatible')
+    expect(verify).toBeGreaterThan(prepare)
     expect(install).toBeGreaterThan(verify)
     expect(commands).not.toMatch(/(?:api[-_]?key|secret|token)=/iu)
   })

@@ -4,7 +4,7 @@ import { emitNervesEvent } from "../nerves/runtime"
 export const DEFAULT_PROVIDER_MODELS: Record<AgentProvider, string> = {
   anthropic: "claude-opus-4-6",
   azure: "gpt-4o-mini",
-  minimax: "MiniMax-M2.7",
+  minimax: "MiniMax-M3",
   "openai-codex": "gpt-5.4",
   "github-copilot": "claude-sonnet-4.6",
   "openai-compatible": "glm-5.3-flash",

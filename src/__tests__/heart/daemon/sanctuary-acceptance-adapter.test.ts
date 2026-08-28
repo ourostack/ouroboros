@@ -1242,14 +1242,11 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
   it("binds provider checks to observed attempts and derives fallback count", async () => {
     const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-provider-observation-"))
     const files: Record<string, string> = {
-      [`${agentRoot}/agent.json`]: JSON.stringify({ humanFacing: { provider: "openai-compatible", model: "glm-out" }, agentFacing: { provider: "openai-compatible", model: "glm-in" } }),
+      [`${agentRoot}/agent.json`]: JSON.stringify({ humanFacing: { provider: "minimax", model: "MiniMax-M3" }, agentFacing: { provider: "minimax", model: "MiniMax-M3" } }),
       [`${agentRoot}/provider-readiness.json`]: JSON.stringify({ selectionPolicy: "explicit-same-lane-only", providers: [
-        { provider: "openai-compatible", model: "glm-out", vaultItem: "providers/openai-compatible" },
-        { provider: "openai-compatible-gemini", model: "gemini-candidate", vaultItem: "providers/openai-compatible-gemini" },
+        { provider: "minimax", model: "MiniMax-M3", vaultItem: "providers/minimax" },
       ] }),
     }
-    let active = 0
-    let peak = 0
     const facts = await readDefaultSanctuaryScenarioFacts("unit-16c-provider-readiness", "a".repeat(64), unit16Deps({
       readFixedFile: (file) => { if (!(file in files)) throw Object.assign(new Error("missing"), { code: "ENOENT" }); return files[file]! },
       readProviderCredential: async (_agent, provider) => ({
@@ -1258,49 +1255,31 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
         record: { provider, revision: `rev-${provider}`, updatedAt: "2026-08-20T00:00:00.000Z", credentials: { apiKey: "secret" }, config: { baseUrl: "https://example.invalid" }, provenance: { source: "manual", updatedAt: "2026-08-20T00:00:00.000Z" } },
       }),
       providerPing: async (provider, _config, options) => {
-        active += 1; peak = Math.max(peak, active)
-        await Promise.resolve()
-        active -= 1
-        const observedProvider = options.model === "gemini-candidate" ? "openai-compatible" : provider
-        return { ok: true, attempts: [{ attempt: 1, provider: observedProvider, model: options.model!, operation: "ping", ok: true, willRetry: false }] }
+        return { ok: true, attempts: [{ attempt: 1, provider, model: `${options.model!}-fallback`, operation: "ping", ok: true, willRetry: false }] }
       },
       hostRequest: async () => ({ running: true, health: "healthy", imageId: "sha256:missing", user: "10001:10001", readOnlyRoot: true, mountCount: 2, publishedPortCount: 0, restartPolicy: "unless-stopped", restartCount: 0, autostartExact: true, updaterDisabled: true, vaultUnlocked: true, manualAuthRequired: false }),
     }), agentRoot)
-    expect(peak).toBe(1)
-    expect(facts.provider?.fallbackAttemptCount).toBe(1)
+    expect(facts.provider?.fallbackAttemptCount).toBe(2)
     expect(facts.provider?.requestSemanticsExact).toBe(false)
-    expect(facts.provider?.pingReceipts).toEqual(expect.arrayContaining([expect.objectContaining({ lane: "candidate", attempts: [expect.objectContaining({ provider: "openai-compatible" })] })]))
+    expect(facts.provider?.pingReceipts).toEqual(expect.arrayContaining([expect.objectContaining({ lane: "outward", attempts: [expect.objectContaining({ model: "MiniMax-M3-fallback" })] })]))
     fs.rmSync(agentRoot, { recursive: true, force: true })
   })
 
-  it("requires the exact Sanctuary provider coordinates and distinct secret-derived identities without exposing secrets", () => {
+  it("requires the exact Sanctuary provider coordinates without exposing secrets", () => {
     const canonical = {
-      outward: { provider: "openai-compatible", model: "glm-4.7-flash" },
-      inner: { provider: "openai-compatible", model: "glm-4.7-flash" },
-      gemini: { provider: "openai-compatible-gemini", model: "gemini-3.6-flash", vaultItem: "providers/openai-compatible-gemini" },
-      glm: { baseUrl: "https://api.z.ai/api/paas/v4/", vaultItem: "providers/openai-compatible", apiKey: "glm-secret" },
-      geminiCredential: { baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai/", apiKey: "gemini-secret" },
+      outward: { provider: "minimax", model: "MiniMax-M3" },
+      inner: { provider: "minimax", model: "MiniMax-M3" },
+      minimax: { vaultItem: "providers/minimax", apiKey: "minimax-secret" },
       selectionPolicy: "explicit-same-lane-only",
-      identityKey: "identity-key",
     }
     const result = evaluateSanctuaryProviderReadinessContract(canonical)
     expect(result).toEqual({ baseUrlsExact: true, credentialIdentitiesDistinct: true, modelsExact: true, vaultCoordinatesExact: true })
     expect(JSON.stringify(result)).not.toContain("glm-secret")
     expect(JSON.stringify(result)).not.toContain("gemini-secret")
-    expect(evaluateSanctuaryProviderReadinessContract({ ...canonical, outward: { ...canonical.outward, model: "glm-5.1" } }).modelsExact).toBe(false)
-    expect(evaluateSanctuaryProviderReadinessContract({ ...canonical, gemini: { ...canonical.gemini, model: "gemini-3.5-flash" } }).modelsExact).toBe(false)
-    expect(evaluateSanctuaryProviderReadinessContract({ ...canonical, glm: { ...canonical.glm, baseUrl: "https://example.invalid" } }).baseUrlsExact).toBe(false)
-    expect(evaluateSanctuaryProviderReadinessContract({ ...canonical, gemini: { ...canonical.gemini, vaultItem: "providers/wrong" } }).vaultCoordinatesExact).toBe(false)
-    expect(evaluateSanctuaryProviderReadinessContract({ ...canonical, geminiCredential: { ...canonical.geminiCredential, apiKey: "glm-secret" } }).credentialIdentitiesDistinct).toBe(false)
-
-    const primaryOnly = {
-      outward: canonical.outward,
-      inner: canonical.inner,
-      glm: canonical.glm,
-      selectionPolicy: canonical.selectionPolicy,
-      identityKey: canonical.identityKey,
-    }
-    expect(evaluateSanctuaryProviderReadinessContract(primaryOnly)).toEqual({ baseUrlsExact: true, credentialIdentitiesDistinct: true, modelsExact: true, vaultCoordinatesExact: true })
+    expect(JSON.stringify(result)).not.toContain("minimax-secret")
+    expect(evaluateSanctuaryProviderReadinessContract({ ...canonical, outward: { ...canonical.outward, model: "MiniMax-M2.7" } }).modelsExact).toBe(false)
+    expect(evaluateSanctuaryProviderReadinessContract({ ...canonical, inner: { ...canonical.inner, provider: "openai-compatible" } }).modelsExact).toBe(false)
+    expect(evaluateSanctuaryProviderReadinessContract({ ...canonical, minimax: { ...canonical.minimax, vaultItem: "providers/wrong" } }).vaultCoordinatesExact).toBe(false)
   })
 
   it.each([
@@ -1312,10 +1291,9 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
   ] as const)("rejects ok provider pings with %s", async (_case, attempts) => {
     const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-provider-attempt-binding-"))
     const files: Record<string, string> = {
-      [`${agentRoot}/agent.json`]: JSON.stringify({ humanFacing: { provider: "openai-compatible", model: "glm-out" }, agentFacing: { provider: "openai-compatible", model: "glm-in" } }),
+      [`${agentRoot}/agent.json`]: JSON.stringify({ humanFacing: { provider: "minimax", model: "MiniMax-M3" }, agentFacing: { provider: "minimax", model: "MiniMax-M3" } }),
       [`${agentRoot}/provider-readiness.json`]: JSON.stringify({ selectionPolicy: "explicit-same-lane-only", providers: [
-        { provider: "openai-compatible", model: "glm-out", vaultItem: "providers/openai-compatible" },
-        { provider: "openai-compatible-gemini", model: "gemini-candidate", vaultItem: "providers/openai-compatible-gemini" },
+        { provider: "minimax", model: "MiniMax-M3", vaultItem: "providers/minimax" },
       ] }),
     }
     const facts = await readDefaultSanctuaryScenarioFacts("unit-16c-provider-readiness", "a".repeat(64), unit16Deps({

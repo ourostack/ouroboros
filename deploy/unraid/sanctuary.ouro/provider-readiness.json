@@ -4,7 +4,7 @@
   "providers": [
     {
       "provider": "openai-compatible",
-      "model": "glm-4.7-flash",
+      "model": "glm-4.5-flash",
       "vaultItem": "providers/openai-compatible",
       "baseUrl": "https://api.z.ai/api/paas/v4/"
     }
