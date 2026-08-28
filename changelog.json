@@ -4,8 +4,9 @@
     {
       "version": "0.1.0-alpha.742",
       "changes": [
-        "Ship Sanctuary on the verified zero-cost Z.ai Flash provider path, with GLM-5.3-Flash documented as the cost-effective paid upgrade and optional Gemini no longer required for readiness.",
-        "Update the packaged Unraid readiness/adoption checks to require only the production Z.ai credential and live Flash lane checks before cutover.",
+        "Ship Sanctuary on the cost-effective MiniMax-M3 provider path after live vault readiness proved both outward and inner lanes, with optional Gemini no longer required for readiness.",
+        "Keep the packaged Unraid bundle on the same MiniMax-M3 lane the live Sanctuary vault uses.",
+        "Update the packaged Unraid readiness/adoption checks to require only the production MiniMax credential and live MiniMax lane checks before cutover.",
         "Sequence same-provider Flash acceptance probes to avoid provider-side rate-limit flakiness while preserving exact provider/model attempt binding."
       ]
     },

@@ -12,7 +12,10 @@ function job(agent: string, taskId: string, command = `/usr/local/bin/node /opt/
   return { id: `${agent}:${taskId}`, agent, taskId, schedule: "*/15 * * * *", lastRun: null, command, taskPath: `/tmp/${taskId}.md` }
 }
 
-function fixture(processAlive: (pid: number) => boolean = (pid) => pid === 42) {
+function fixture(
+  processAlive: (pid: number) => boolean = (pid) => pid === 42,
+  processCommand: (pid: number) => string | null = (pid) => pid === 42 ? "/usr/local/bin/supercronic -split-logs -inotify /scheduler/sanctuary.crontab" : null,
+) {
   const files = new Map<string, string>()
   const child = Object.assign(new EventEmitter(), { pid: 42, kill: vi.fn() })
   child.kill.mockImplementation(() => { queueMicrotask(() => child.emit("exit", 0, "SIGTERM")); return true })
@@ -27,6 +30,7 @@ function fixture(processAlive: (pid: number) => boolean = (pid) => pid === 42) {
       durableWrite: (path, content) => { files.set(path, content) },
       removeFile: (path) => { files.delete(path) },
       processAlive,
+      processCommand,
       spawn,
       setTimer: vi.fn(() => ({ fixture: true }) as unknown as ReturnType<typeof setTimeout>),
       clearTimer: vi.fn(),
@@ -88,9 +92,19 @@ describe("SupercronicSupervisor", () => {
     expect(() => f.supervisor.namespace("habit:../escape")).toThrow("invalid Supercronic namespace")
     expect(() => f.supervisor.namespace("habit:sanctuary").sync([job("sanctuary", "bad\njob")])).toThrow("invalid Supercronic job")
 
-    const live = fixture(() => true)
+    const live = fixture(() => true, () => "/usr/local/bin/supercronic -split-logs -inotify /scheduler/sanctuary.crontab")
     live.files.set("/scheduler/sanctuary.pid", "123\n")
     expect(() => live.supervisor.start()).toThrow("already running")
+  })
+
+  it("removes stale prior pid files when the pid belongs to another process", () => {
+    const f = fixture((pid) => pid === 123 || pid === 42, (pid) => pid === 123 ? "/opt/ouro/node dist/heart/daemon/daemon-entry.js" : "/usr/local/bin/supercronic -split-logs -inotify /scheduler/sanctuary.crontab")
+    f.files.set("/scheduler/sanctuary.pid", "123\n")
+
+    expect(() => f.supervisor.start()).not.toThrow()
+
+    expect(f.spawn).toHaveBeenCalledTimes(1)
+    expect(f.files.get("/scheduler/sanctuary.pid")).toBe("42\n")
   })
 
   it("marks child health and stops only the owned child", async () => {
@@ -211,6 +225,7 @@ describe("SupercronicSupervisor", () => {
         durableWrite: (target, content) => { files.set(target, content) },
         removeFile: (target) => { files.delete(target) },
         processAlive: () => true,
+        processCommand: () => "/usr/local/bin/supercronic -split-logs -inotify /scheduler/sanctuary.crontab",
         spawn: vi.fn(() => {
           const child = Object.assign(new EventEmitter(), { pid: 100 + children.length, kill: vi.fn(() => true) })
           children.push(child)
@@ -254,6 +269,7 @@ describe("SupercronicSupervisor", () => {
         durableWrite: (target, content) => { files.set(target, content) },
         removeFile: (target) => { files.delete(target) },
         processAlive: () => true,
+        processCommand: () => "/usr/local/bin/supercronic -split-logs -inotify /scheduler/sanctuary.crontab",
         spawn: vi.fn(() => {
           const child = Object.assign(new EventEmitter(), { pid: 200 + children.length, kill: vi.fn(() => true) })
           children.push(child)
@@ -294,6 +310,7 @@ describe("SupercronicSupervisor", () => {
         durableWrite: (target, content) => { files.set(target, content) },
         removeFile: (target) => { files.delete(target) },
         processAlive: () => true,
+        processCommand: () => "/usr/local/bin/supercronic -split-logs -inotify /scheduler/sanctuary.crontab",
         spawn: () => child,
         setTimer: (callback, delay) => {
           const token = { id: timers.length } as unknown as ReturnType<typeof setTimeout>

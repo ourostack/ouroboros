@@ -2619,6 +2619,26 @@ describe("context-loss Sentinel core", () => {
     })
   })
 
+  it("treats packaged non-git bundles as clean for default bundle checks", async () => {
+    const agentRoot = makeAgentRoot()
+    expect(fs.existsSync(path.join(agentRoot, ".git"))).toBe(false)
+    const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:16:30.000Z"),
+      createReceiptId: () => "sentinel-packaged-no-git",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+    })
+
+    expect(receipt.verdict).toBe("ready")
+    expect(signal(receipt.signals, "bundle:git")).toMatchObject({
+      status: "pass",
+      severity: "info",
+      verdictImpact: "none",
+      summary: "bundle git status clean",
+    })
+  })
+
   it("reads empty Sentinel state and formats null/unavailable views without creating files", () => {
     const agentRoot = makeAgentRoot()
     const paths = contextLossSentinelPaths(agentRoot)
@@ -2697,7 +2717,7 @@ describe("context-loss Sentinel core", () => {
     expect(sessionReceipt.verdict).toBe("watch")
     expect(signal(sessionReceipt.signals, "provider:outward").summary).toBe("outward credentials not loaded for minimax")
     expect(signal(sessionReceipt.signals, "provider:inner").summary).toBe("inner credentials not loaded for anthropic")
-    expect(signal(sessionReceipt.signals, "bundle:git").summary).toContain("bundle git status unavailable")
+    expect(signal(sessionReceipt.signals, "bundle:git").summary).toBe("bundle git status clean")
     expect(readContextLossSentinelView(agentRoot, { limit: 1 }).latest?.trigger).toBe("session_start")
 
     const manualReceipt = await refreshContextLossSentinel("slugger", agentRoot, {

@@ -752,6 +752,7 @@ function healthSignals(results: DaemonHealthResult[]): ContextLossSentinelSignal
 
 function defaultGitStatus(agentRoot: string): ContextLossSentinelGitStatus {
   try {
+    if (!fs.existsSync(path.join(agentRoot, ".git"))) return { ok: true, porcelain: "" }
     const porcelain = execFileSync("git", ["status", "--porcelain=v1", "-uall"], {
       cwd: agentRoot,
       encoding: "utf-8",

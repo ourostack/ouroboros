@@ -17,12 +17,14 @@ describe("Sanctuary provider identities", () => {
   })
 
   it("locks default models and provider/model compatibility", () => {
+    expect(DEFAULT_PROVIDER_MODELS.minimax).toBe("MiniMax-M3")
     expect(DEFAULT_PROVIDER_MODELS["openai-compatible"]).toBe("glm-5.3-flash")
     expect(DEFAULT_PROVIDER_MODELS["openai-compatible-gemini"]).toBe("gemini-3.6-flash")
     expect(getProviderDisplayName("openai-compatible")).toBe("Z.ai OpenAI-compatible")
     expect(getProviderDisplayName("openai-compatible-gemini")).toBe("Gemini OpenAI-compatible")
     expect(isModelClearlyIncompatibleWithProvider("openai-compatible", "glm-5.2")).toBe(false)
     expect(isModelClearlyIncompatibleWithProvider("openai-compatible", "glm-5.3-flash")).toBe(false)
+    expect(isModelClearlyIncompatibleWithProvider("openai-compatible", "glm-4.5-flash")).toBe(false)
     expect(isModelClearlyIncompatibleWithProvider("openai-compatible", "glm-4.7-flash")).toBe(false)
     expect(isModelClearlyIncompatibleWithProvider("openai-compatible", "gemini-3.6-flash")).toBe(true)
     expect(isModelClearlyIncompatibleWithProvider("openai-compatible-gemini", "gemini-3.6-flash")).toBe(false)
