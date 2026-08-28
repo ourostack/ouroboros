@@ -3,16 +3,9 @@
   "selectionPolicy": "explicit-same-lane-only",
   "providers": [
     {
-      "provider": "openai-compatible",
-      "model": "glm-5.2",
-      "vaultItem": "providers/openai-compatible",
-      "baseUrl": "https://api.z.ai/api/paas/v4/"
-    },
-    {
-      "provider": "openai-compatible-gemini",
-      "model": "gemini-3.6-flash",
-      "vaultItem": "providers/openai-compatible-gemini",
-      "baseUrl": "https://generativelanguage.googleapis.com/v1beta/openai/"
+      "provider": "minimax",
+      "model": "MiniMax-M3",
+      "vaultItem": "providers/minimax"
     }
   ]
 }

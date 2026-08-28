@@ -15,6 +15,7 @@ vi.mock("node:child_process", () => ({ execFileSync }))
 import { runContainerHealthcheck, runContainerHealthcheckMain } from "../../../heart/daemon/container-healthcheck"
 
 const NOW = 1_800_000_000_000
+const AGENT = "node /opt/ouro/dist/heart/agent-entry.js --agent sanctuary"
 const TELEGRAM = "node /opt/ouro/dist/senses/telegram-entry.js --agent sanctuary"
 const SUPERCRONIC = "/usr/local/bin/supercronic -split-logs -inotify /home/ouro/.ouro-cli/scheduler/sanctuary.crontab"
 
@@ -37,7 +38,7 @@ describe("container healthcheck", () => {
     statSync.mockReset().mockReturnValue({ mtimeMs: NOW - 1_000 })
     readFileSync.mockReset().mockReturnValue(JSON.stringify(healthyState()))
     existsSync.mockReset().mockReturnValue(true)
-    execFileSync.mockReset().mockReturnValue(`${TELEGRAM}\n${SUPERCRONIC}\n`)
+    execFileSync.mockReset().mockReturnValue(`${AGENT}\n${TELEGRAM}\n${SUPERCRONIC}\n`)
     process.exitCode = undefined
   })
 
@@ -59,10 +60,10 @@ describe("container healthcheck", () => {
     ["managed agent is not running", () => { readFileSync.mockReturnValue(JSON.stringify(healthyState({ agents: { sanctuary: { status: "stopped", pid: 22 } } }))); run() }],
     ["managed agent is not running", () => { readFileSync.mockReturnValue(JSON.stringify(healthyState({ agents: { sanctuary: { status: "running", pid: "22" } } }))); run() }],
     ["managed agent is not running", () => { readFileSync.mockReturnValue(JSON.stringify(healthyState({ agents: { sanctuary: { status: "running", pid: 0 } } }))); run() }],
-    ["managed agent is not running", () => { existsSync.mockImplementation((value: string) => value !== "/proc/22"); run() }],
     ["managed process inventory is unavailable", () => { execFileSync.mockImplementation(() => { throw new Error("ps failed") }); run() }],
-    ["managed Telegram sense is not running exactly once", () => { execFileSync.mockReturnValue(SUPERCRONIC); run() }],
-    ["managed Supercronic scheduler is not running exactly once", () => { execFileSync.mockReturnValue(TELEGRAM); run() }],
+    ["managed agent is not running exactly once", () => { execFileSync.mockReturnValue(`${TELEGRAM}\n${SUPERCRONIC}\n`); run() }],
+    ["managed Telegram sense is not running exactly once", () => { execFileSync.mockReturnValue(`${AGENT}\n${SUPERCRONIC}\n`); run() }],
+    ["managed Supercronic scheduler is not running exactly once", () => { execFileSync.mockReturnValue(`${AGENT}\n${TELEGRAM}\n`); run() }],
   ])("fails closed when %s", (reason, action) => {
     expect(action).toThrow(reason)
     expect(process.exitCode).toBe(1)

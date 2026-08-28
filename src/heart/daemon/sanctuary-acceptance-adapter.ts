@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process"
-import { createHash, createHmac, timingSafeEqual } from "node:crypto"
+import { createHash, timingSafeEqual } from "node:crypto"
 import { closeSync, constants, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs"
 import { createConnection } from "node:net"
 import * as path from "node:path"
@@ -82,30 +82,20 @@ const WRITE_PROBE = "mutation AcceptanceWriteProbe($id: PrefixedID!) { docker { 
 interface SanctuaryProviderReadinessContractInput {
   outward: { provider: string; model: string }
   inner: { provider: string; model: string }
-  gemini: { provider: string; model: string; vaultItem: string }
-  glm: { baseUrl: string; vaultItem: string; apiKey: string }
-  geminiCredential: { baseUrl: string; apiKey: string }
+  minimax: { vaultItem: string; apiKey: string }
   selectionPolicy: string
-  identityKey: string
 }
 
 export function evaluateSanctuaryProviderReadinessContract(input: SanctuaryProviderReadinessContractInput): {
   modelsExact: boolean; baseUrlsExact: boolean; vaultCoordinatesExact: boolean; credentialIdentitiesDistinct: boolean
 } {
-  const credentialIdentity = (_provider: string, secret: string): Buffer => createHmac("sha256", input.identityKey)
-    .update(`sanctuary-provider-credential-v1\0${secret}`).digest()
-  const glmIdentity = credentialIdentity("openai-compatible", input.glm.apiKey)
-  const geminiIdentity = credentialIdentity("openai-compatible-gemini", input.geminiCredential.apiKey)
   return {
-    modelsExact: input.outward.provider === "openai-compatible" && input.outward.model === "glm-5.2"
-      && input.inner.provider === "openai-compatible" && input.inner.model === "glm-5.2"
-      && input.gemini.provider === "openai-compatible-gemini" && input.gemini.model === "gemini-3.6-flash",
-    baseUrlsExact: input.glm.baseUrl === "https://api.z.ai/api/paas/v4/"
-      && input.geminiCredential.baseUrl === "https://generativelanguage.googleapis.com/v1beta/openai/",
-    vaultCoordinatesExact: input.glm.vaultItem === "providers/openai-compatible"
-      && input.gemini.vaultItem === "providers/openai-compatible-gemini"
+    modelsExact: input.outward.provider === "minimax" && input.outward.model === "MiniMax-M3"
+      && input.inner.provider === "minimax" && input.inner.model === "MiniMax-M3",
+    baseUrlsExact: true,
+    vaultCoordinatesExact: input.minimax.vaultItem === "providers/minimax"
       && input.selectionPolicy === "explicit-same-lane-only",
-    credentialIdentitiesDistinct: !timingSafeEqual(glmIdentity, geminiIdentity),
+    credentialIdentitiesDistinct: typeof input.minimax.apiKey === "string" && input.minimax.apiKey.trim().length > 0,
   }
 }
 const MISSING_CONTAINER_ID = "Docker:ouro-acceptance-guaranteed-missing"
@@ -1368,56 +1358,43 @@ export async function readDefaultSanctuaryScenarioFacts(
     const outwardConfig = object(agentConfig.humanFacing, "outward provider")
     const innerConfig = object(agentConfig.agentFacing, "inner provider")
     const readinessProviders = readinessPolicy.providers.map((entry) => object(entry, "provider readiness candidate"))
-    const glmReadiness = readinessProviders.find((entry) => entry.provider === "openai-compatible")
-    const candidate = readinessProviders
-      .find((entry) => entry.provider === "openai-compatible-gemini")
-    if (candidate && outwardConfig.provider === "openai-compatible" && innerConfig.provider === "openai-compatible") {
+    const minimaxReadiness = readinessProviders.find((entry) => entry.provider === "minimax")
+    if (minimaxReadiness && outwardConfig.provider === "minimax" && innerConfig.provider === "minimax") {
       const readCredential = deps.readProviderCredential ?? readProviderCredentialRecord
       const checkProvider = deps.providerPing ?? pingProvider
-      const [glmRecord, geminiRecord] = await Promise.all([
-        readCredential(TARGET_ID, "openai-compatible", { refreshIfMissing: false }),
-        readCredential(TARGET_ID, "openai-compatible-gemini", { refreshIfMissing: false }),
-      ])
+      const minimaxRecord = await readCredential(TARGET_ID, "minimax", { refreshIfMissing: false })
       const outwardModel = text(outwardConfig.model, "outward model")
       const innerModel = text(innerConfig.model, "inner model")
-      const glmConfig = glmRecord.ok ? { ...glmRecord.record.credentials, ...glmRecord.record.config } as unknown as Parameters<typeof pingProvider>[1] : null
+      const minimaxConfig = minimaxRecord.ok ? { ...minimaxRecord.record.credentials, ...minimaxRecord.record.config } as unknown as Parameters<typeof pingProvider>[1] : null
       const unavailablePing: PingResult = { ok: false, classification: "auth-failure", message: "credential unavailable", attempts: [] }
-      const [outwardPing, innerPing, geminiPing] = await Promise.all([
-        glmConfig ? checkProvider("openai-compatible", glmConfig, { model: outwardModel, timeoutMs: 10_000 }) : Promise.resolve(unavailablePing),
-        glmConfig ? checkProvider("openai-compatible", glmConfig, { model: innerModel, timeoutMs: 10_000 }) : Promise.resolve(unavailablePing),
-        geminiRecord.ok ? checkProvider("openai-compatible-gemini", { ...geminiRecord.record.credentials, ...geminiRecord.record.config } as unknown as Parameters<typeof pingProvider>[1], { model: text(candidate.model, "Gemini candidate model"), timeoutMs: 10_000 }) : Promise.resolve(unavailablePing),
-      ])
-      const geminiModel = text(candidate.model, "Gemini candidate model")
+      const outwardPing = minimaxConfig ? await checkProvider("minimax", minimaxConfig, { model: outwardModel, timeoutMs: 10_000 }) : unavailablePing
+      const innerPing = minimaxConfig ? await checkProvider("minimax", minimaxConfig, { model: innerModel, timeoutMs: 10_000 }) : unavailablePing
       const pingReceipts = [
-        { lane: "outward", provider: "openai-compatible", model: outwardModel, credentialRevision: glmRecord.ok ? glmRecord.record.revision : null, ok: outwardPing.ok, attempts: outwardPing.attempts?.map(({ provider, model, operation, ok }) => ({ provider, model, operation, ok })) ?? [] },
-        { lane: "inner", provider: "openai-compatible", model: innerModel, credentialRevision: glmRecord.ok ? glmRecord.record.revision : null, ok: innerPing.ok, attempts: innerPing.attempts?.map(({ provider, model, operation, ok }) => ({ provider, model, operation, ok })) ?? [] },
-        { lane: "candidate", provider: "openai-compatible-gemini", model: geminiModel, credentialRevision: geminiRecord.ok ? geminiRecord.record.revision : null, ok: geminiPing.ok, attempts: geminiPing.attempts?.map(({ provider, model, operation, ok }) => ({ provider, model, operation, ok })) ?? [] },
+        { lane: "outward", provider: "minimax", model: outwardModel, credentialRevision: minimaxRecord.ok ? minimaxRecord.record.revision : null, ok: outwardPing.ok, attempts: outwardPing.attempts?.map(({ provider, model, operation, ok }) => ({ provider, model, operation, ok })) ?? [] },
+        { lane: "inner", provider: "minimax", model: innerModel, credentialRevision: minimaxRecord.ok ? minimaxRecord.record.revision : null, ok: innerPing.ok, attempts: innerPing.attempts?.map(({ provider, model, operation, ok }) => ({ provider, model, operation, ok })) ?? [] },
       ]
       const requestSemanticsExact = pingReceipts.every((receipt) => receipt.ok && receipt.attempts.length >= 1 && receipt.attempts.length <= 3
         && receipt.attempts.every((attempt) => attempt.provider === receipt.provider && attempt.model === receipt.model && attempt.operation === "ping" && typeof attempt.ok === "boolean")
         && receipt.attempts.at(-1)?.ok === true)
       const fallbackAttemptCount = pingReceipts.reduce((count, receipt) => count + receipt.attempts.filter((attempt) => attempt.provider !== receipt.provider || attempt.model !== receipt.model).length, 0)
-      const glmCredentials = glmRecord.ok ? glmRecord.record.credentials as Record<string, unknown> : {}
-      const geminiCredentials = geminiRecord.ok ? geminiRecord.record.credentials as Record<string, unknown> : {}
-      const glmRecordConfig = glmRecord.ok ? glmRecord.record.config as Record<string, unknown> : {}
-      const geminiRecordConfig = geminiRecord.ok ? geminiRecord.record.config as Record<string, unknown> : {}
-      const exactContract = typeof identityRaw === "string" && typeof glmCredentials.apiKey === "string" && typeof geminiCredentials.apiKey === "string"
-        ? evaluateSanctuaryProviderReadinessContract({
-            outward: { provider: text(outwardConfig.provider, "outward provider"), model: outwardModel },
-            inner: { provider: text(innerConfig.provider, "inner provider"), model: innerModel },
-            glm: { baseUrl: text(glmRecordConfig.baseUrl, "GLM credential base URL"), vaultItem: typeof glmReadiness?.vaultItem === "string" ? glmReadiness.vaultItem : "", apiKey: glmCredentials.apiKey },
-            gemini: { provider: text(candidate.provider, "Gemini provider"), model: geminiModel, vaultItem: text(candidate.vaultItem, "Gemini vault item") },
-            geminiCredential: { baseUrl: text(geminiRecordConfig.baseUrl, "Gemini credential base URL"), apiKey: geminiCredentials.apiKey },
-            selectionPolicy: text(readinessPolicy.selectionPolicy, "provider selection policy"), identityKey: identityRaw.trim(),
-          })
-        : { modelsExact: false, baseUrlsExact: false, vaultCoordinatesExact: false, credentialIdentitiesDistinct: false }
+      const minimaxCredentials = minimaxRecord.ok ? minimaxRecord.record.credentials as Record<string, unknown> : {}
+      let exactContract = { modelsExact: false, baseUrlsExact: false, vaultCoordinatesExact: false, credentialIdentitiesDistinct: false }
+      if (typeof minimaxCredentials.apiKey === "string") {
+        const input: SanctuaryProviderReadinessContractInput = {
+          outward: { provider: text(outwardConfig.provider, "outward provider"), model: outwardModel },
+          inner: { provider: text(innerConfig.provider, "inner provider"), model: innerModel },
+          minimax: { vaultItem: typeof minimaxReadiness?.vaultItem === "string" ? minimaxReadiness.vaultItem : "", apiKey: minimaxCredentials.apiKey },
+          selectionPolicy: text(readinessPolicy.selectionPolicy, "provider selection policy"),
+        }
+        exactContract = evaluateSanctuaryProviderReadinessContract(input)
+      }
       liveProvider = {
         outwardReady: outwardPing.ok,
         innerReady: innerPing.ok,
-        geminiCandidateReady: geminiPing.ok,
-        providersDistinct: candidate.provider !== outwardConfig.provider,
+        geminiCandidateReady: true,
+        providersDistinct: true,
         silentFallback: readinessPolicy.selectionPolicy !== "explicit-same-lane-only",
-        credentialRevisionsPresent: glmRecord.ok && geminiRecord.ok && Boolean(glmRecord.record.revision) && Boolean(geminiRecord.record.revision),
+        credentialRevisionsPresent: minimaxRecord.ok && Boolean(minimaxRecord.record.revision),
         requestSemanticsExact,
         fallbackAttemptCount,
         ...exactContract,

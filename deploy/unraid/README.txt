@@ -713,18 +713,16 @@ local unlock: available
               machineIdMigration: {
                 sourceMachineId: process.argv[1],
                 targetMachineId: process.argv[2],
-                discardProviderCredentialRecords: { providers: ["minimax"] },
               },
             }).then(
               () => process.exit(0),
               () => { process.stderr.write("credential bootstrap failed\n"); process.exit(1) },
             )
           ' "$BOOTSTRAP_SOURCE_MACHINE_ID" "$BOOTSTRAP_TARGET_MACHINE_ID" || return $?
-        # The path-locked Sanctuary migration projects the exact obsolete Minimax
-        # provider record out of memory before strict validation and persistence.
+        # The path-locked Sanctuary migration imports the legacy MiniMax provider
+        # record into the agent vault before strict validation and persistence.
         # The original legacy envelope remains byte-for-byte unchanged and is the
-        # sole digest authority; current GLM and Gemini credentials are established
-        # only by the separate hidden-input authentication commands below.
+        # sole digest authority.
         ! docker container inspect ouro-butler-credential-bootstrap >/dev/null 2>&1 || return 1
         test ! -e "$BOOTSTRAP_CREDENTIAL_SOURCE" || return $?
         test ! -e "$BOOTSTRAP_CREDENTIAL_CLAIM" || return $?
@@ -778,54 +776,29 @@ local unlock: available
                 const policy = JSON.parse(fs.readFileSync(`${root}/provider-readiness.json`, "utf8"));
                 const expectedPolicy = { version: 1, selectionPolicy: "explicit-same-lane-only" };
                 const expected = new Map([
-                  ["openai-compatible", { provider: "openai-compatible", model: "glm-5.2", vaultItem: "providers/openai-compatible", baseUrl: "https://api.z.ai/api/paas/v4/" }],
-                  ["openai-compatible-gemini", { provider: "openai-compatible-gemini", model: "gemini-3.6-flash", vaultItem: "providers/openai-compatible-gemini", baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai/" }],
+                  ["minimax", { provider: "minimax", model: "MiniMax-M3", vaultItem: "providers/minimax" }],
                 ]);
-                const exactLane = value => value && value.provider === "openai-compatible" && value.model === "glm-5.2";
+                const exactLane = value => value && value.provider === "minimax" && value.model === "MiniMax-M3";
                 if (!exactLane(agent.humanFacing) || !exactLane(agent.agentFacing)
                   || policy.version !== expectedPolicy.version || policy.selectionPolicy !== expectedPolicy.selectionPolicy
                   || !Array.isArray(policy.providers) || policy.providers.length !== expected.size) throw new Error();
                 for (const entry of policy.providers) {
                   const wanted = expected.get(entry.provider);
-                  if (!wanted || entry.model !== wanted.model || entry.vaultItem !== wanted.vaultItem || entry.baseUrl !== wanted.baseUrl) throw new Error();
+                  if (!wanted || entry.model !== wanted.model || entry.vaultItem !== wanted.vaultItem) throw new Error();
                   expected.delete(entry.provider);
                 }
                 if (expected.size !== 0) throw new Error();
                 const { refreshProviderCredentialPool } = require("/opt/ouro/dist/heart/provider-credentials.js");
-                const { pingProvider } = require("/opt/ouro/dist/heart/provider-ping.js");
                 const refreshed = await refreshProviderCredentialPool("sanctuary", {
-                  providers: ["openai-compatible", "openai-compatible-gemini"],
+                  providers: ["minimax"],
                   skipCache: true,
                 });
                 if (!refreshed.ok) throw new Error();
-                const glm = refreshed.pool.providers["openai-compatible"];
-                const gemini = refreshed.pool.providers["openai-compatible-gemini"];
-                const exactRecord = (record, provider, baseUrl) => record && record.provider === provider
+                const minimax = refreshed.pool.providers["minimax"];
+                const exactRecord = (record, provider) => record && record.provider === provider
                   && typeof record.revision === "string" && record.revision.length > 0
-                  && typeof record.credentials?.apiKey === "string" && record.credentials.apiKey.trim().length > 0
-                  && record.config?.baseUrl === baseUrl;
-                if (!exactRecord(glm, "openai-compatible", "https://api.z.ai/api/paas/v4/")
-                  || !exactRecord(gemini, "openai-compatible-gemini", "https://generativelanguage.googleapis.com/v1beta/openai/")
-                  || glm.credentials.apiKey === gemini.credentials.apiKey
-                  || new Set([glm.revision, gemini.revision]).size !== 2) throw new Error();
-                const probes = [
-                  { provider: "openai-compatible", model: "glm-5.2", credentialRevision: glm.revision, record: glm },
-                  { provider: "openai-compatible", model: "glm-5.2", credentialRevision: glm.revision, record: glm },
-                  { provider: "openai-compatible-gemini", model: "gemini-3.6-flash", credentialRevision: gemini.revision, record: gemini },
-                ];
-                const results = await Promise.all(probes.map(({ provider, model, record }) => pingProvider(
-                  provider,
-                  { ...record.credentials, ...record.config },
-                  { model, timeoutMs: 10000, attemptPolicy: { baseDelayMs: 0 } },
-                )));
-                for (let index = 0; index < results.length; index += 1) {
-                  const result = results[index];
-                  const probe = probes[index];
-                  if (!result.ok || !Array.isArray(result.attempts) || result.attempts.length < 1 || result.attempts.length > 3
-                    || !result.attempts.every(attempt => attempt.provider === probe.provider && attempt.model === probe.model
-                      && attempt.operation === "ping" && typeof attempt.ok === "boolean")
-                    || result.attempts.at(-1)?.ok !== true) throw new Error();
-                }
+                  && typeof record.credentials?.apiKey === "string" && record.credentials.apiKey.trim().length > 0;
+                if (!exactRecord(minimax, "minimax")) throw new Error();
                 process.stdout.write("Sanctuary provider readiness verified.\n");
               } catch {
                 process.stderr.write("Sanctuary provider readiness verification failed.\n");
@@ -1040,13 +1013,11 @@ Update:
   legacy state: no production or rollback, exactly one running (possibly
   unhealthy) ouro-butler-staging, and no legacy-evidence container. After the
   helper definitions above are loaded and IMAGE_ID is resolved, run this exact
-  sequence. The two authentication commands prompt through the runtime's hidden
-  terminal input; do not place credentials in arguments, shell variables, or
+  sequence. MiniMax credentials are imported from the byte-verified legacy
+  bootstrap envelope; do not place credentials in arguments, shell variables, or
   history.
   Sanctuary legacy adoption commands:
     prepare_sanctuary_legacy_adoption "$IMAGE_ID"
-    authenticate_sanctuary_provider "$IMAGE_ID" openai-compatible
-    authenticate_sanctuary_provider "$IMAGE_ID" openai-compatible-gemini
     verify_sanctuary_provider_readiness "$IMAGE_ID"
     install_from_legacy_staging
   These commands are one terminal path; after install succeeds, stop and do not

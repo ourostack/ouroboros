@@ -3,6 +3,18 @@ import { emitNervesEvent } from "../../nerves/runtime"
 
 export interface ContainerRuntimePolicy { scheduler: "supercronic"; updates: "disabled" }
 
+export function hasManagedAgentProcess(processArguments: string, agent: string): boolean {
+  const wanted = agent.trim()
+  if (!wanted) return false
+  const matches = processArguments.split("\n").filter((line) => {
+    const fields = line.trim().split(/\s+/u)
+    const entryIndex = fields.findIndex((field) => field === "/opt/ouro/dist/heart/agent-entry.js")
+    const agentIndex = fields.findIndex((field) => field === "--agent")
+    return entryIndex >= 0 && agentIndex >= 0 && fields[agentIndex + 1] === wanted
+  })
+  return matches.length === 1
+}
+
 export function hasManagedTelegramProcess(processArguments: string, agent: string): boolean {
   const wanted = agent.trim()
   if (!wanted) return false

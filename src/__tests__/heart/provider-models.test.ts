@@ -79,7 +79,7 @@ describe("provider model helpers", () => {
       preserved: false,
     })
     expect(resolveModelForProviderSelection("minimax", "")).toEqual({
-      model: "MiniMax-M2.7",
+      model: "MiniMax-M3",
       preserved: false,
     })
   })
@@ -89,7 +89,7 @@ describe("provider model helpers", () => {
 
     expect(resolveModelForProviderDisplay("anthropic", "claude-opus-4-6")).toBe("claude-opus-4-6")
     expect(resolveModelForProviderDisplay("anthropic", "gpt-5.4")).toBe("claude-opus-4-6")
-    expect(resolveModelForProviderDisplay("minimax")).toBe("MiniMax-M2.7")
+    expect(resolveModelForProviderDisplay("minimax")).toBe("MiniMax-M3")
   })
 
   it("describes model mismatch repairs", () => {

@@ -2619,6 +2619,46 @@ describe("context-loss Sentinel core", () => {
     })
   })
 
+  it("treats packaged non-git bundles as clean for default bundle checks", async () => {
+    const agentRoot = makeAgentRoot()
+    expect(fs.existsSync(path.join(agentRoot, ".git"))).toBe(false)
+    const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "daemon_health",
+      now: () => new Date("2026-06-08T20:16:30.000Z"),
+      createReceiptId: () => "sentinel-packaged-no-git",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+    })
+
+    expect(receipt.verdict).toBe("ready")
+    expect(signal(receipt.signals, "bundle:git")).toMatchObject({
+      status: "pass",
+      severity: "info",
+      verdictImpact: "none",
+      summary: "bundle git status clean",
+    })
+  })
+
+  it("surfaces default git status execution failures for git-backed bundles", async () => {
+    const agentRoot = makeAgentRoot()
+    fs.mkdirSync(path.join(agentRoot, ".git"))
+    const originalPath = process.env.PATH
+    process.env.PATH = fs.mkdtempSync(path.join(os.tmpdir(), "context-loss-no-git-path-"))
+    try {
+      const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
+        trigger: "daemon_health",
+        now: () => new Date("2026-06-08T20:16:30.000Z"),
+        createReceiptId: () => "sentinel-default-git-error",
+        providerVisibility: providerVisibility(),
+        daemonHealthResults: okHealth(),
+      })
+      expect(receipt.verdict).toBe("watch")
+      expect(signal(receipt.signals, "bundle:git").summary).toContain("bundle git status unavailable:")
+    } finally {
+      process.env.PATH = originalPath
+    }
+  })
+
   it("reads empty Sentinel state and formats null/unavailable views without creating files", () => {
     const agentRoot = makeAgentRoot()
     const paths = contextLossSentinelPaths(agentRoot)
@@ -2697,7 +2737,7 @@ describe("context-loss Sentinel core", () => {
     expect(sessionReceipt.verdict).toBe("watch")
     expect(signal(sessionReceipt.signals, "provider:outward").summary).toBe("outward credentials not loaded for minimax")
     expect(signal(sessionReceipt.signals, "provider:inner").summary).toBe("inner credentials not loaded for anthropic")
-    expect(signal(sessionReceipt.signals, "bundle:git").summary).toContain("bundle git status unavailable")
+    expect(signal(sessionReceipt.signals, "bundle:git").summary).toBe("bundle git status clean")
     expect(readContextLossSentinelView(agentRoot, { limit: 1 }).latest?.trigger).toBe("session_start")
 
     const manualReceipt = await refreshContextLossSentinel("slugger", agentRoot, {
@@ -2764,6 +2804,39 @@ describe("context-loss Sentinel core", () => {
       verdictImpact: "blocked",
     })
     expect(formatContextLossSentinelText(blockedReceipt)).toContain("latest-ready: unavailable")
+  })
+
+  it("treats a completed turn waiting for new input as ready instead of blocked", async () => {
+    const agentRoot = makeAgentRoot()
+    writeFlightRecorderResume(agentRoot, {
+      ...readyResume(),
+      canContinue: false,
+      nextSafeAction: {
+        value: "inspect the latest session and wait for new input before acting",
+        stopBefore: ["acting on stale context"],
+        sourceEventIds: ["fr-settled-turn"],
+      },
+      blockedBecause: ["turn outcome settled; wait for new input before acting"],
+      lastSafeCheckpoint: {
+        turnId: null,
+        sessionRef: "telegram/session",
+        recordedAt: "2026-08-28T01:45:34.331Z",
+        sourceEventIds: ["fr-settled-turn"],
+      },
+    })
+
+    const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "post_turn",
+      now: () => new Date("2026-08-28T01:45:40.000Z"),
+      createReceiptId: () => "sentinel-settled-turn-ready",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+
+    expect(receipt.verdict).toBe("ready")
+    expect(receipt.gauntlet.failedChecks).not.toContain("next_safe_action")
+    expect(receipt.gauntlet.failedChecks).not.toContain("stale_guard")
   })
 
   it("records blocked Sentinel receipts as flight-recorder blocker events", async () => {

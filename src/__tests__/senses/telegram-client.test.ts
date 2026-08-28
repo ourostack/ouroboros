@@ -2189,6 +2189,22 @@ describe("Telegram durable authorized long poll", () => {
     expect(request).toHaveBeenCalledOnce()
   })
 
+  it("keeps running after a transient Telegram API long-poll failure", async () => {
+    vi.useFakeTimers()
+    const controller = new AbortController()
+    const request = vi.fn()
+      .mockRejectedValueOnce(new TelegramApiError("network blip"))
+      .mockImplementationOnce(async () => { controller.abort(); return [] })
+    const poll = createTelegramLongPoll({ api: { request, stop: vi.fn() }, expectedUserId: "10", expectedChatId: "10", offsetStore: { load: () => 0, save: vi.fn() }, onMessage: vi.fn() })
+
+    const running = poll.run(controller.signal)
+    await vi.advanceTimersByTimeAsync(1_000)
+    await running
+
+    expect(request).toHaveBeenCalledTimes(2)
+    vi.useRealTimers()
+  })
+
   it("runs without a caller signal until stopped", async () => {
     let poll!: ReturnType<typeof createTelegramLongPoll>
     const request = vi.fn(async () => { poll.stop(); return [] })

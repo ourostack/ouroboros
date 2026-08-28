@@ -28,6 +28,8 @@ describe("Telegram sense registration", () => {
     expect(fs.existsSync(entry)).toBe(true)
     const source = fs.readFileSync(entry, "utf8")
     expect(source).toContain("waitForRuntimeCredentialBootstrap")
+    expect(source).toContain("refreshMachineRuntimeCredentialConfig")
+    expect(source.indexOf("refreshMachineRuntimeCredentialConfig")).toBeLessThan(source.indexOf("startTelegramSenseApp"))
     expect(source).toContain("await app.run()")
   })
 })

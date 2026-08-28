@@ -92,8 +92,27 @@ function currentAskCheck(card: WorkCard): ContextLossGauntletCheck {
   })
 }
 
-function nextSafeActionCheck(card: WorkCard): ContextLossGauntletCheck {
+function isSettledTurnWait(resume: FlightRecorderResume): boolean {
+  return resume.hasCompleteState
+    && resume.recorderHealth.status === "ok"
+    && resume.blockedBecause.length === 1
+    && resume.blockedBecause[0] === "turn outcome settled; wait for new input before acting"
+    && resume.nextSafeAction.value === "inspect the latest session and wait for new input before acting"
+}
+
+function nextSafeActionCheck(card: WorkCard, resume: FlightRecorderResume): ContextLossGauntletCheck {
   const evidence = card.nextAction.source ? [card.nextAction.source] : []
+  if (isSettledTurnWait(resume)) {
+    return makeCheck({
+      id: "next_safe_action",
+      label: "Next safe action",
+      status: "pass",
+      score: 20,
+      maxScore: 20,
+      detail: "idle: turn is settled and waiting for new input.",
+      evidence: flightRecorderEvidence(card),
+    })
+  }
   if (card.nextAction.actor === "unknown") {
     return makeCheck({
       id: "next_safe_action",
@@ -126,6 +145,17 @@ function staleGuardCheck(resume: FlightRecorderResume, card: WorkCard): ContextL
       score: 15,
       maxScore: 15,
       detail: "Flight recorder permits continuation with complete state.",
+      evidence,
+    })
+  }
+  if (isSettledTurnWait(resume)) {
+    return makeCheck({
+      id: "stale_guard",
+      label: "Stale-state guard",
+      status: "pass",
+      score: 15,
+      maxScore: 15,
+      detail: "Flight recorder has complete settled-turn state and is safely waiting for new input.",
       evidence,
     })
   }
@@ -309,7 +339,7 @@ export function runContextLossGauntlet(
   const generatedAt = (options.now ?? (() => new Date()))().toISOString()
   const checks = [
     currentAskCheck(card),
-    nextSafeActionCheck(card),
+    nextSafeActionCheck(card, flightRecorderResume),
     staleGuardCheck(flightRecorderResume, card),
     obligationsCheck(card),
     returnRoutesCheck(card),

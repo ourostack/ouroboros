@@ -4,10 +4,10 @@ import { emitNervesEvent } from "../nerves/runtime"
 export const DEFAULT_PROVIDER_MODELS: Record<AgentProvider, string> = {
   anthropic: "claude-opus-4-6",
   azure: "gpt-4o-mini",
-  minimax: "MiniMax-M2.7",
+  minimax: "MiniMax-M3",
   "openai-codex": "gpt-5.4",
   "github-copilot": "claude-sonnet-4.6",
-  "openai-compatible": "glm-5.2",
+  "openai-compatible": "glm-5.3-flash",
   "openai-compatible-gemini": "gemini-3.6-flash",
 }
 
@@ -49,7 +49,14 @@ export function isModelClearlyIncompatibleWithProvider(provider: AgentProvider, 
     case "github-copilot":
       return false
     case "openai-compatible":
-      return value !== "glm-5.2" && value !== "glm-5-turbo"
+      return ![
+        "glm-5.3-flash",
+        "glm-5.3",
+        "glm-5.2",
+        "glm-5-turbo",
+        "glm-4.7-flash",
+        "glm-4.5-flash",
+      ].includes(value)
     case "openai-compatible-gemini":
       return value !== "gemini-3.6-flash"
   }

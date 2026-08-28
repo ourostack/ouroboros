@@ -417,6 +417,13 @@ export interface TelegramLongPollOptions {
 export function createTelegramLongPoll(options: TelegramLongPollOptions): TelegramLongPoll {
   let nextUpdateId = options.offsetStore.load()
   const shutdown = new AbortController()
+  const retryAfterPollError = (signal: AbortSignal): Promise<void> => new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, 1_000)
+    signal.addEventListener("abort", () => {
+      clearTimeout(timer)
+      reject(signal.reason)
+    }, { once: true })
+  })
 
   const authorizedMessage = (update: TelegramUpdate): TelegramInboundMessage | null => {
     const message = update.message
@@ -518,10 +525,21 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
     pollOnce,
     async run(signal?: AbortSignal) {
       const runSignal = signal ? AbortSignal.any([shutdown.signal, signal]) : shutdown.signal
-      try {
-        while (!runSignal.aborted) await pollOnce(runSignal)
-      } catch (error) {
-        if (!shutdown.signal.aborted && !signal?.aborted) throw error
+      while (!runSignal.aborted) {
+        try {
+          await pollOnce(runSignal)
+        } catch (error) {
+          if (shutdown.signal.aborted || signal?.aborted) return
+          if (!(error instanceof TelegramApiError)) throw error
+          emitNervesEvent({
+            level: "warn",
+            component: "senses",
+            event: "telegram.poll_retry",
+            message: "Telegram long poll request failed; retrying",
+            meta: { status: error.status, errorCode: error.errorCode },
+          })
+          await retryAfterPollError(runSignal)
+        }
       }
     },
     stop() {

@@ -1,6 +1,6 @@
 import * as path from "node:path"
 
-import { getAgentRoot } from "../heart/identity"
+import { getAgentRoot, setAgentName } from "../heart/identity"
 import { runAgent, type ChannelCallbacks } from "../heart/core"
 import { reserveAutonomyBudget, resolveAutonomyBudgetPolicy } from "../heart/autonomy-budget"
 import { emitNervesEvent } from "../nerves/runtime"
@@ -9,6 +9,8 @@ import { createTelegramBotApi, sendTelegramText, type TelegramBotApi } from "./t
 import { createSanctuaryHealthSweep, type SanctuaryHealthSweepResult } from "./sanctuary-health"
 import { createSanctuaryToolContext } from "./sanctuary-runtime"
 import { loadTelegramSenseCredentials } from "./telegram"
+import { loadOrCreateMachineIdentity } from "../heart/machine-identity"
+import { readMachineRuntimeCredentialConfig, refreshMachineRuntimeCredentialConfig } from "../heart/runtime-credentials"
 
 export interface SanctuaryHealthHabitResult {
   ok: boolean
@@ -47,6 +49,7 @@ function privateTurnCallbacks(onProviderInvocation?: () => void): ChannelCallbac
 }
 
 export async function runSanctuaryHealthPrivateTurn(input: SanctuaryHealthPrivateTurnInput): Promise<{ delivered: boolean }> {
+  setAgentName(input.agentName)
   const definition = resolveToolDefinition("send_message")
   if (!definition) throw new Error("canonical send_message definition is unavailable")
   const agentRoot = getAgentRoot(input.agentName)
@@ -96,6 +99,10 @@ export async function runSanctuaryHealthHabit(
   agentName: string,
   options: SanctuaryHealthHabitRunnerOptions = {},
 ): Promise<SanctuaryHealthHabitResult> {
+  if (!options.createSweep && !readMachineRuntimeCredentialConfig(agentName).ok) {
+    const machine = loadOrCreateMachineIdentity()
+    await refreshMachineRuntimeCredentialConfig(agentName, machine.machineId, { preserveCachedOnFailure: true })
+  }
   const sweep = options.createSweep?.(agentName) ?? createSanctuaryHealthSweep({
     toolContext: createSanctuaryToolContext(agentName),
     statePath: path.join(getAgentRoot(agentName), "state", "health", "sanctuary-health.json"),
@@ -131,6 +138,10 @@ export async function runSanctuaryHealthHabit(
           onProviderInvocation: options.acceptanceMetrics?.onProviderInvocation,
         })
       })()
+    if (!privateResult.delivered && !attempted) {
+      await deliver(payload)
+      privateResult.delivered = true
+    }
     emitNervesEvent({ component: "senses", event: "senses.sanctuary_health_habit", message: "Sanctuary native health habit completed", meta: { agentName, incidentCount: result.incidents.length, delivered: privateResult.delivered } })
     return { ok: true, message: privateResult.delivered ? "health sweep completed and delivered" : "health event remains pending", data: { incidentCount: result.incidents.length, delivered: privateResult.delivered } }
   } finally {

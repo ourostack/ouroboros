@@ -80,6 +80,10 @@ function safeEqual(left: string, right: string): boolean {
   return timingSafeEqual(Buffer.from(left, "hex"), Buffer.from(right, "hex"))
 }
 
+function isSupercronicProcess(pid: number, deps: Pick<CreateDeps | VerifyDeps, "readFile" | "readLink">): boolean {
+  return deps.readLink(`/proc/${pid}/exe`) === SUPERCRONIC && deps.readFile(`/proc/${pid}/cmdline`) === SUPERCRONIC_CMDLINE
+}
+
 export function defaultSanctuarySchedulerOriginDeps(
   agentRoot = getAgentRoot("sanctuary"),
   markerReader: () => SanctuaryAcceptanceMarker | null = () => readSanctuaryAcceptanceMarker("sanctuary"),
@@ -97,9 +101,9 @@ export function createSanctuarySchedulerFireCommand(
 ): SanctuarySchedulerFireCommand | null {
   if (command.agent !== "sanctuary" || command.habitName !== "sanctuary-health" || command.trigger !== "cron" || deps.platform !== "linux") return null
   try {
-    if (deps.readLink(`/proc/${deps.ppid}/exe`) !== SUPERCRONIC || deps.readFile(`/proc/${deps.ppid}/cmdline`) !== SUPERCRONIC_CMDLINE) return null
     const invocation = processIdentity(deps.readFile(`/proc/${deps.pid}/stat`))
     const parent = processIdentity(deps.readFile(`/proc/${deps.ppid}/stat`))
+    if (!isSupercronicProcess(deps.ppid, deps) && !isSupercronicProcess(parent.parentPid, deps)) return null
     const marker = deps.marker()
     if (invocation.parentPid !== deps.ppid) return null
     const slot = slotFor(deps.now())
@@ -122,9 +126,10 @@ export function verifySanctuarySchedulerFireCommand(command: SanctuarySchedulerF
   if (!safeEqual(command.proofMac, mac(deps.identityKey, command))) throw new Error("scheduler fire authentication failed")
   const invocation = processIdentity(deps.readFile(`/proc/${command.invocationPid}/stat`))
   const parent = processIdentity(deps.readFile(`/proc/${command.parentPid}/stat`))
-  if (command.parentPid !== deps.childPid || invocation.parentPid !== command.parentPid || invocation.startTime !== command.invocationStartTime
-    || parent.startTime !== command.parentStartTime || deps.readLink(`/proc/${command.parentPid}/exe`) !== SUPERCRONIC
-    || deps.readFile(`/proc/${command.parentPid}/cmdline`) !== SUPERCRONIC_CMDLINE) throw new Error("scheduler fire ancestry is invalid")
+  if (invocation.parentPid !== command.parentPid || invocation.startTime !== command.invocationStartTime
+    || parent.startTime !== command.parentStartTime) throw new Error("scheduler fire ancestry is invalid")
+  if (command.parentPid !== deps.childPid && parent.parentPid !== deps.childPid) throw new Error("scheduler fire ancestry is invalid")
+  if (command.parentPid === deps.childPid ? !isSupercronicProcess(command.parentPid, deps) : !isSupercronicProcess(parent.parentPid, deps)) throw new Error("scheduler fire ancestry is invalid")
   emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_scheduler_origin_authenticated", message: "Sanctuary scheduler origin authenticated", meta: { schedulerRunId: command.schedulerRunId, slot: command.slot } })
   return {
     slot: command.slot, schedulerRunId: command.schedulerRunId, invocationPid: command.invocationPid, parentPid: command.parentPid,

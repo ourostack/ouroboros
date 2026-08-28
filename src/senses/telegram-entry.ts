@@ -22,13 +22,16 @@ emitNervesEvent({
 
 Promise.all([
   import("../heart/runtime-credentials"),
+  import("../heart/machine-identity"),
   import("./telegram"),
 ])
-  .then(async ([{ waitForRuntimeCredentialBootstrap, readRuntimeCredentialConfig, refreshRuntimeCredentialConfig }, { startTelegramSenseApp }]) => {
+  .then(async ([{ waitForRuntimeCredentialBootstrap, readRuntimeCredentialConfig, refreshRuntimeCredentialConfig, refreshMachineRuntimeCredentialConfig }, { loadOrCreateMachineIdentity }, { startTelegramSenseApp }]) => {
     const bootstrapped = await waitForRuntimeCredentialBootstrap(agentName)
     if (!bootstrapped && !readRuntimeCredentialConfig(agentName).ok) {
       await refreshRuntimeCredentialConfig(agentName)
     }
+    const machine = loadOrCreateMachineIdentity()
+    await refreshMachineRuntimeCredentialConfig(agentName, machine.machineId, { preserveCachedOnFailure: true }).catch(() => undefined)
     const app = await startTelegramSenseApp(agentName)
     let stopping: Promise<void> | undefined
     const stop = (): void => { stopping ??= app.stop() }

@@ -14,6 +14,7 @@ export interface SupercronicSupervisorDeps {
   durableWrite(path: string, content: string, mode: number): void
   removeFile(path: string): void
   processAlive(pid: number): boolean
+  processCommand(pid: number): string | null
   spawn(binary: string, args: string[]): SupercronicChild
   setTimer(callback: () => void, delayMs: number): ReturnType<typeof setTimeout>
   clearTimer(timer: ReturnType<typeof setTimeout>): void
@@ -68,6 +69,9 @@ function defaultDeps(): SupercronicSupervisorDeps {
     durableWrite: defaultDurableWrite,
     removeFile: (target) => { try { fs.unlinkSync(target) } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error } },
     processAlive: (pid) => { try { process.kill(pid, 0); return true } catch { return false } },
+    processCommand: (pid) => {
+      try { return fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").filter(Boolean).join(" ") } catch { return null }
+    },
     spawn: (binary, args) => spawn(binary, args, { stdio: ["ignore", "inherit", "inherit"] }),
     setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
     clearTimer: (timer) => clearTimeout(timer),
@@ -98,7 +102,8 @@ export class SupercronicSupervisor {
     if (this.child || this.restartTimer) return
     this.deps.mkdir(path.dirname(this.crontabPath))
     const priorPid = this.readPriorPid()
-    if (priorPid !== null && this.deps.processAlive(priorPid)) throw new Error(`Supercronic is already running with PID ${priorPid}`)
+    if (priorPid !== null && this.isPriorSupercronic(priorPid)) throw new Error(`Supercronic is already running with PID ${priorPid}`)
+    if (priorPid !== null) this.deps.removeFile(this.pidPath)
     this.render()
     this.stopping = false
     this.spawnChild()
@@ -196,6 +201,11 @@ export class SupercronicSupervisor {
       const value = Number(this.deps.readFile(this.pidPath).trim())
       return Number.isSafeInteger(value) && value > 0 ? value : null
     } catch { return null }
+  }
+
+  private isPriorSupercronic(pid: number): boolean {
+    if (!this.deps.processAlive(pid)) return false
+    return this.deps.processCommand(pid) === `${this.binaryPath} -split-logs -inotify ${this.crontabPath}`
   }
 
   private renderedContent(): string {

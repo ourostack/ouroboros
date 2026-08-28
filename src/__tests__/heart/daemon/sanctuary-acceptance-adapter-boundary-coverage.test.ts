@@ -796,6 +796,62 @@ describe("Sanctuary production boundary adapter coverage", () => {
     } finally { fs.rmSync(root, { recursive: true, force: true }) }
   })
 
+  it("covers MiniMax provider readiness credential branches", async () => {
+    const digest = "a".repeat(64)
+    const missing = Object.assign(new Error("missing"), { code: "ENOENT" })
+    for (const variant of [
+      { credentials: { apiKey: "minimax-secret" }, credentialOk: true, attempts: "present", readinessVaultItem: "providers/minimax" },
+      { credentials: {}, credentialOk: true, attempts: "present", readinessVaultItem: "providers/minimax" },
+      { credentials: { apiKey: "minimax-secret" }, credentialOk: false, attempts: "present", readinessVaultItem: "providers/minimax" },
+      { credentials: { apiKey: "minimax-secret" }, credentialOk: true, attempts: "missing", readinessVaultItem: "providers/minimax" },
+      { credentials: { apiKey: "minimax-secret" }, credentialOk: true, attempts: "present", readinessVaultItem: undefined },
+    ]) {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-minimax-provider-matrix-"))
+      const files: Record<string, string> = {
+        [`${root}/agent.json`]: JSON.stringify({ humanFacing: { provider: "minimax", model: "MiniMax-M3" }, agentFacing: { provider: "minimax", model: "MiniMax-M3" } }),
+        [`${root}/provider-readiness.json`]: JSON.stringify({ selectionPolicy: "explicit-same-lane-only", providers: [{ provider: "minimax", model: "MiniMax-M3", ...(variant.readinessVaultItem ? { vaultItem: variant.readinessVaultItem } : {}) }] }),
+        [`${root}/state/senses/telegram/identity.key`]: `${"k".repeat(43)}\n`,
+      }
+      try {
+        const facts = await readDefaultSanctuaryScenarioFacts("unit-16c-provider-readiness", digest, {
+          readKeyFiles: () => [], readDescriptor: () => "", execFile: async () => ({ status: 0, stdout: "" }), fetch,
+          readFixedFile: (file) => file in files ? files[file]! : (() => { throw missing })(),
+          telegramCredentials: () => ({ botToken: "12345:abcdefghijklmnopqrst", authorizedUserId: "42", authorizedChatId: "42" }),
+          readProviderCredential: async (_agent, provider) => variant.credentialOk
+            ? { ok: true, record: { provider, revision: "minimax-rev", credentials: variant.credentials, config: { baseUrl: "https://api.minimax.io/v1" } } }
+            : { ok: false },
+          providerPing: async (provider, _config, options) => ({ ok: true, ...(variant.attempts === "present" ? { attempts: [{ provider, model: options.model!, operation: "ping", ok: true }] } : {}) }),
+        } as never, root, { skipContainerSnapshot: true })
+        expect(facts.provider?.pingReceipts).toHaveLength(2)
+        expect(facts.provider?.modelsExact).toBe(Boolean(("apiKey" in variant.credentials) && variant.credentials.apiKey && variant.credentialOk))
+      } finally { fs.rmSync(root, { recursive: true, force: true }) }
+    }
+  })
+
+  it("covers MiniMax provider readiness default dependency wiring", async () => {
+    const digest = "a".repeat(64)
+    const missing = Object.assign(new Error("missing"), { code: "ENOENT" })
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-minimax-provider-default-deps-"))
+    const files: Record<string, string> = {
+      [`${root}/agent.json`]: JSON.stringify({ humanFacing: { provider: "minimax", model: "MiniMax-M3" }, agentFacing: { provider: "minimax", model: "MiniMax-M3" } }),
+      [`${root}/provider-readiness.json`]: JSON.stringify({ selectionPolicy: "explicit-same-lane-only", providers: [{ provider: "minimax", model: "MiniMax-M3", vaultItem: "providers/minimax" }] }),
+      [`${root}/state/senses/telegram/identity.key`]: `${"k".repeat(43)}\n`,
+    }
+    try {
+      const facts = await readDefaultSanctuaryScenarioFacts("unit-16c-provider-readiness", digest, {
+        readKeyFiles: () => [],
+        readDescriptor: () => "",
+        execFile: async () => ({ status: 0, stdout: "" }),
+        fetch,
+        readFixedFile: (file) => file in files ? files[file]! : (() => { throw missing })(),
+        telegramCredentials: () => ({ botToken: "12345:abcdefghijklmnopqrst", authorizedUserId: "42", authorizedChatId: "42" }),
+      } as never, root, { skipContainerSnapshot: true })
+      expect(facts.provider).toMatchObject({ outwardReady: false, innerReady: false, modelsExact: false })
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it("covers sparse and adversarial containment projections", async () => {
     const digest = "a".repeat(64)
     const missing = Object.assign(new Error("missing"), { code: "ENOENT" })

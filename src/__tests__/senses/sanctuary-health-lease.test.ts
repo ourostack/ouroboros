@@ -19,12 +19,14 @@ function healthyContext() {
 }
 
 describe("Sanctuary cross-process health lease", () => {
-  it("surfaces lease creation failures when the state parent is absent", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-health-missing-parent-"))
-    const statePath = path.join(root, "absent", "state.json")
+  it("surfaces real lease parent creation failures", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-health-bad-parent-"))
+    const blocked = path.join(root, "blocked")
+    fs.writeFileSync(blocked, "not a directory")
+    const statePath = path.join(blocked, "health", "state.json")
     try {
       await expect(withSanctuaryHealthStateLease(statePath, async () => undefined, { timeoutMs: 0 }))
-        .rejects.toMatchObject({ code: "ENOENT" })
+        .rejects.toMatchObject({ code: "ENOTDIR" })
       expect(fs.existsSync(`${statePath}.lease`)).toBe(false)
     } finally {
       fs.rmSync(root, { recursive: true, force: true })
