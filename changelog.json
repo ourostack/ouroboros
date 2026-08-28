@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.742",
+      "changes": [
+        "Ship Sanctuary on the verified zero-cost Z.ai Flash provider path, with GLM-5.3-Flash documented as the cost-effective paid upgrade and optional Gemini no longer required for readiness.",
+        "Update the packaged Unraid readiness/adoption checks to require only the production Z.ai credential and two live Flash lane pings before cutover."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.741",
       "changes": [
         "Pin the packaged Bitwarden CLI to the Vaultwarden-compatible 2026.6.0 client so container credential bootstrap can write vault items, while overriding vulnerable transitive packages to audited fixed versions."

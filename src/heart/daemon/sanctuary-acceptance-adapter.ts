@@ -82,9 +82,9 @@ const WRITE_PROBE = "mutation AcceptanceWriteProbe($id: PrefixedID!) { docker { 
 interface SanctuaryProviderReadinessContractInput {
   outward: { provider: string; model: string }
   inner: { provider: string; model: string }
-  gemini: { provider: string; model: string; vaultItem: string }
+  gemini?: { provider: string; model: string; vaultItem: string }
   glm: { baseUrl: string; vaultItem: string; apiKey: string }
-  geminiCredential: { baseUrl: string; apiKey: string }
+  geminiCredential?: { baseUrl: string; apiKey: string }
   selectionPolicy: string
   identityKey: string
 }
@@ -95,17 +95,18 @@ export function evaluateSanctuaryProviderReadinessContract(input: SanctuaryProvi
   const credentialIdentity = (_provider: string, secret: string): Buffer => createHmac("sha256", input.identityKey)
     .update(`sanctuary-provider-credential-v1\0${secret}`).digest()
   const glmIdentity = credentialIdentity("openai-compatible", input.glm.apiKey)
-  const geminiIdentity = credentialIdentity("openai-compatible-gemini", input.geminiCredential.apiKey)
+  const geminiIdentity = input.geminiCredential ? credentialIdentity("openai-compatible-gemini", input.geminiCredential.apiKey) : null
+  const geminiConfigured = Boolean(input.gemini && input.geminiCredential)
   return {
-    modelsExact: input.outward.provider === "openai-compatible" && input.outward.model === "glm-5.2"
-      && input.inner.provider === "openai-compatible" && input.inner.model === "glm-5.2"
-      && input.gemini.provider === "openai-compatible-gemini" && input.gemini.model === "gemini-3.6-flash",
+    modelsExact: input.outward.provider === "openai-compatible" && input.outward.model === "glm-4.7-flash"
+      && input.inner.provider === "openai-compatible" && input.inner.model === "glm-4.7-flash"
+      && (!input.gemini || (input.gemini.provider === "openai-compatible-gemini" && input.gemini.model === "gemini-3.6-flash")),
     baseUrlsExact: input.glm.baseUrl === "https://api.z.ai/api/paas/v4/"
-      && input.geminiCredential.baseUrl === "https://generativelanguage.googleapis.com/v1beta/openai/",
+      && (!input.geminiCredential || input.geminiCredential.baseUrl === "https://generativelanguage.googleapis.com/v1beta/openai/"),
     vaultCoordinatesExact: input.glm.vaultItem === "providers/openai-compatible"
-      && input.gemini.vaultItem === "providers/openai-compatible-gemini"
+      && (!input.gemini || input.gemini.vaultItem === "providers/openai-compatible-gemini")
       && input.selectionPolicy === "explicit-same-lane-only",
-    credentialIdentitiesDistinct: !timingSafeEqual(glmIdentity, geminiIdentity),
+    credentialIdentitiesDistinct: !geminiConfigured || (geminiIdentity !== null && !timingSafeEqual(glmIdentity, geminiIdentity)),
   }
 }
 const MISSING_CONTAINER_ID = "Docker:ouro-acceptance-guaranteed-missing"
@@ -1371,12 +1372,12 @@ export async function readDefaultSanctuaryScenarioFacts(
     const glmReadiness = readinessProviders.find((entry) => entry.provider === "openai-compatible")
     const candidate = readinessProviders
       .find((entry) => entry.provider === "openai-compatible-gemini")
-    if (candidate && outwardConfig.provider === "openai-compatible" && innerConfig.provider === "openai-compatible") {
+    if (glmReadiness && outwardConfig.provider === "openai-compatible" && innerConfig.provider === "openai-compatible") {
       const readCredential = deps.readProviderCredential ?? readProviderCredentialRecord
       const checkProvider = deps.providerPing ?? pingProvider
       const [glmRecord, geminiRecord] = await Promise.all([
         readCredential(TARGET_ID, "openai-compatible", { refreshIfMissing: false }),
-        readCredential(TARGET_ID, "openai-compatible-gemini", { refreshIfMissing: false }),
+        candidate ? readCredential(TARGET_ID, "openai-compatible-gemini", { refreshIfMissing: false }) : Promise.resolve({ ok: false } as Awaited<ReturnType<typeof readCredential>>),
       ])
       const outwardModel = text(outwardConfig.model, "outward model")
       const innerModel = text(innerConfig.model, "inner model")
@@ -1385,13 +1386,13 @@ export async function readDefaultSanctuaryScenarioFacts(
       const [outwardPing, innerPing, geminiPing] = await Promise.all([
         glmConfig ? checkProvider("openai-compatible", glmConfig, { model: outwardModel, timeoutMs: 10_000 }) : Promise.resolve(unavailablePing),
         glmConfig ? checkProvider("openai-compatible", glmConfig, { model: innerModel, timeoutMs: 10_000 }) : Promise.resolve(unavailablePing),
-        geminiRecord.ok ? checkProvider("openai-compatible-gemini", { ...geminiRecord.record.credentials, ...geminiRecord.record.config } as unknown as Parameters<typeof pingProvider>[1], { model: text(candidate.model, "Gemini candidate model"), timeoutMs: 10_000 }) : Promise.resolve(unavailablePing),
+        candidate && geminiRecord.ok ? checkProvider("openai-compatible-gemini", { ...geminiRecord.record.credentials, ...geminiRecord.record.config } as unknown as Parameters<typeof pingProvider>[1], { model: text(candidate.model, "Gemini candidate model"), timeoutMs: 10_000 }) : Promise.resolve({ ok: true, attempts: [] } as PingResult),
       ])
-      const geminiModel = text(candidate.model, "Gemini candidate model")
+      const geminiModel = candidate ? text(candidate.model, "Gemini candidate model") : ""
       const pingReceipts = [
         { lane: "outward", provider: "openai-compatible", model: outwardModel, credentialRevision: glmRecord.ok ? glmRecord.record.revision : null, ok: outwardPing.ok, attempts: outwardPing.attempts?.map(({ provider, model, operation, ok }) => ({ provider, model, operation, ok })) ?? [] },
         { lane: "inner", provider: "openai-compatible", model: innerModel, credentialRevision: glmRecord.ok ? glmRecord.record.revision : null, ok: innerPing.ok, attempts: innerPing.attempts?.map(({ provider, model, operation, ok }) => ({ provider, model, operation, ok })) ?? [] },
-        { lane: "candidate", provider: "openai-compatible-gemini", model: geminiModel, credentialRevision: geminiRecord.ok ? geminiRecord.record.revision : null, ok: geminiPing.ok, attempts: geminiPing.attempts?.map(({ provider, model, operation, ok }) => ({ provider, model, operation, ok })) ?? [] },
+        ...(candidate ? [{ lane: "candidate", provider: "openai-compatible-gemini", model: geminiModel, credentialRevision: geminiRecord.ok ? geminiRecord.record.revision : null, ok: geminiPing.ok, attempts: geminiPing.attempts?.map(({ provider, model, operation, ok }) => ({ provider, model, operation, ok })) ?? [] }] : []),
       ]
       const requestSemanticsExact = pingReceipts.every((receipt) => receipt.ok && receipt.attempts.length >= 1 && receipt.attempts.length <= 3
         && receipt.attempts.every((attempt) => attempt.provider === receipt.provider && attempt.model === receipt.model && attempt.operation === "ping" && typeof attempt.ok === "boolean")
@@ -1401,23 +1402,28 @@ export async function readDefaultSanctuaryScenarioFacts(
       const geminiCredentials = geminiRecord.ok ? geminiRecord.record.credentials as Record<string, unknown> : {}
       const glmRecordConfig = glmRecord.ok ? glmRecord.record.config as Record<string, unknown> : {}
       const geminiRecordConfig = geminiRecord.ok ? geminiRecord.record.config as Record<string, unknown> : {}
-      const exactContract = typeof identityRaw === "string" && typeof glmCredentials.apiKey === "string" && typeof geminiCredentials.apiKey === "string"
-        ? evaluateSanctuaryProviderReadinessContract({
-            outward: { provider: text(outwardConfig.provider, "outward provider"), model: outwardModel },
-            inner: { provider: text(innerConfig.provider, "inner provider"), model: innerModel },
-            glm: { baseUrl: text(glmRecordConfig.baseUrl, "GLM credential base URL"), vaultItem: typeof glmReadiness?.vaultItem === "string" ? glmReadiness.vaultItem : "", apiKey: glmCredentials.apiKey },
-            gemini: { provider: text(candidate.provider, "Gemini provider"), model: geminiModel, vaultItem: text(candidate.vaultItem, "Gemini vault item") },
-            geminiCredential: { baseUrl: text(geminiRecordConfig.baseUrl, "Gemini credential base URL"), apiKey: geminiCredentials.apiKey },
-            selectionPolicy: text(readinessPolicy.selectionPolicy, "provider selection policy"), identityKey: identityRaw.trim(),
-          })
-        : { modelsExact: false, baseUrlsExact: false, vaultCoordinatesExact: false, credentialIdentitiesDistinct: false }
+      let exactContract = { modelsExact: false, baseUrlsExact: false, vaultCoordinatesExact: false, credentialIdentitiesDistinct: false }
+      if (typeof identityRaw === "string" && typeof glmCredentials.apiKey === "string") {
+        const input: SanctuaryProviderReadinessContractInput = {
+          outward: { provider: text(outwardConfig.provider, "outward provider"), model: outwardModel },
+          inner: { provider: text(innerConfig.provider, "inner provider"), model: innerModel },
+          glm: { baseUrl: text(glmRecordConfig.baseUrl, "GLM credential base URL"), vaultItem: typeof glmReadiness?.vaultItem === "string" ? glmReadiness.vaultItem : "", apiKey: glmCredentials.apiKey },
+          selectionPolicy: text(readinessPolicy.selectionPolicy, "provider selection policy"),
+          identityKey: identityRaw.trim(),
+        }
+        if (candidate && typeof geminiCredentials.apiKey === "string") {
+          input.gemini = { provider: text(candidate.provider, "Gemini provider"), model: geminiModel, vaultItem: text(candidate.vaultItem, "Gemini vault item") }
+          input.geminiCredential = { baseUrl: text(geminiRecordConfig.baseUrl, "Gemini credential base URL"), apiKey: geminiCredentials.apiKey }
+        }
+        exactContract = evaluateSanctuaryProviderReadinessContract(input)
+      }
       liveProvider = {
         outwardReady: outwardPing.ok,
         innerReady: innerPing.ok,
         geminiCandidateReady: geminiPing.ok,
-        providersDistinct: candidate.provider !== outwardConfig.provider,
+        providersDistinct: !candidate || candidate.provider !== outwardConfig.provider,
         silentFallback: readinessPolicy.selectionPolicy !== "explicit-same-lane-only",
-        credentialRevisionsPresent: glmRecord.ok && geminiRecord.ok && Boolean(glmRecord.record.revision) && Boolean(geminiRecord.record.revision),
+        credentialRevisionsPresent: glmRecord.ok && Boolean(glmRecord.record.revision) && (!candidate || (geminiRecord.ok && Boolean(geminiRecord.record.revision))),
         requestSemanticsExact,
         fallbackAttemptCount,
         ...exactContract,

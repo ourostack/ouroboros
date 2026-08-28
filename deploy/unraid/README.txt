@@ -778,10 +778,9 @@ local unlock: available
                 const policy = JSON.parse(fs.readFileSync(`${root}/provider-readiness.json`, "utf8"));
                 const expectedPolicy = { version: 1, selectionPolicy: "explicit-same-lane-only" };
                 const expected = new Map([
-                  ["openai-compatible", { provider: "openai-compatible", model: "glm-5.2", vaultItem: "providers/openai-compatible", baseUrl: "https://api.z.ai/api/paas/v4/" }],
-                  ["openai-compatible-gemini", { provider: "openai-compatible-gemini", model: "gemini-3.6-flash", vaultItem: "providers/openai-compatible-gemini", baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai/" }],
+                  ["openai-compatible", { provider: "openai-compatible", model: "glm-4.7-flash", vaultItem: "providers/openai-compatible", baseUrl: "https://api.z.ai/api/paas/v4/" }],
                 ]);
-                const exactLane = value => value && value.provider === "openai-compatible" && value.model === "glm-5.2";
+                const exactLane = value => value && value.provider === "openai-compatible" && value.model === "glm-4.7-flash";
                 if (!exactLane(agent.humanFacing) || !exactLane(agent.agentFacing)
                   || policy.version !== expectedPolicy.version || policy.selectionPolicy !== expectedPolicy.selectionPolicy
                   || !Array.isArray(policy.providers) || policy.providers.length !== expected.size) throw new Error();
@@ -794,24 +793,19 @@ local unlock: available
                 const { refreshProviderCredentialPool } = require("/opt/ouro/dist/heart/provider-credentials.js");
                 const { pingProvider } = require("/opt/ouro/dist/heart/provider-ping.js");
                 const refreshed = await refreshProviderCredentialPool("sanctuary", {
-                  providers: ["openai-compatible", "openai-compatible-gemini"],
+                  providers: ["openai-compatible"],
                   skipCache: true,
                 });
                 if (!refreshed.ok) throw new Error();
                 const glm = refreshed.pool.providers["openai-compatible"];
-                const gemini = refreshed.pool.providers["openai-compatible-gemini"];
                 const exactRecord = (record, provider, baseUrl) => record && record.provider === provider
                   && typeof record.revision === "string" && record.revision.length > 0
                   && typeof record.credentials?.apiKey === "string" && record.credentials.apiKey.trim().length > 0
                   && record.config?.baseUrl === baseUrl;
-                if (!exactRecord(glm, "openai-compatible", "https://api.z.ai/api/paas/v4/")
-                  || !exactRecord(gemini, "openai-compatible-gemini", "https://generativelanguage.googleapis.com/v1beta/openai/")
-                  || glm.credentials.apiKey === gemini.credentials.apiKey
-                  || new Set([glm.revision, gemini.revision]).size !== 2) throw new Error();
+                if (!exactRecord(glm, "openai-compatible", "https://api.z.ai/api/paas/v4/")) throw new Error();
                 const probes = [
-                  { provider: "openai-compatible", model: "glm-5.2", credentialRevision: glm.revision, record: glm },
-                  { provider: "openai-compatible", model: "glm-5.2", credentialRevision: glm.revision, record: glm },
-                  { provider: "openai-compatible-gemini", model: "gemini-3.6-flash", credentialRevision: gemini.revision, record: gemini },
+                  { provider: "openai-compatible", model: "glm-4.7-flash", credentialRevision: glm.revision, record: glm },
+                  { provider: "openai-compatible", model: "glm-4.7-flash", credentialRevision: glm.revision, record: glm },
                 ];
                 const results = await Promise.all(probes.map(({ provider, model, record }) => pingProvider(
                   provider,
@@ -1040,13 +1034,12 @@ Update:
   legacy state: no production or rollback, exactly one running (possibly
   unhealthy) ouro-butler-staging, and no legacy-evidence container. After the
   helper definitions above are loaded and IMAGE_ID is resolved, run this exact
-  sequence. The two authentication commands prompt through the runtime's hidden
+  sequence. The authentication command prompts through the runtime's hidden
   terminal input; do not place credentials in arguments, shell variables, or
   history.
   Sanctuary legacy adoption commands:
     prepare_sanctuary_legacy_adoption "$IMAGE_ID"
     authenticate_sanctuary_provider "$IMAGE_ID" openai-compatible
-    authenticate_sanctuary_provider "$IMAGE_ID" openai-compatible-gemini
     verify_sanctuary_provider_readiness "$IMAGE_ID"
     install_from_legacy_staging
   These commands are one terminal path; after install succeeds, stop and do not

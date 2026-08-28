@@ -1,8 +1,8 @@
 {
   "version": 2,
   "enabled": true,
-  "humanFacing": { "provider": "openai-compatible", "model": "glm-5.2" },
-  "agentFacing": { "provider": "openai-compatible", "model": "glm-5.2" },
+  "humanFacing": { "provider": "openai-compatible", "model": "glm-4.7-flash" },
+  "agentFacing": { "provider": "openai-compatible", "model": "glm-4.7-flash" },
   "context": { "maxTokens": 80000, "contextMargin": 20 },
   "privateRuntime": { "autoStart": true },
   "habitPaidTurnsPerDay": 24,

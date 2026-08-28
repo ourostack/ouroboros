@@ -79,14 +79,14 @@ describe("container runtime policy", () => {
     expect(habit).toContain("status: active")
   })
 
-  it("ships Sanctuary on the locked GLM provider instead of MiniMax", () => {
+  it("ships Sanctuary on the Flash-first Z.ai provider instead of MiniMax", () => {
     const agent = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/agent.json", "utf8")) as {
       humanFacing: { provider: string; model: string }
       agentFacing: { provider: string; model: string }
     }
 
-    expect(agent.humanFacing).toEqual({ provider: "openai-compatible", model: "glm-5.2" })
-    expect(agent.agentFacing).toEqual({ provider: "openai-compatible", model: "glm-5.2" })
+    expect(agent.humanFacing).toEqual({ provider: "openai-compatible", model: "glm-4.7-flash" })
+    expect(agent.agentFacing).toEqual({ provider: "openai-compatible", model: "glm-4.7-flash" })
     const readiness = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/provider-readiness.json", "utf8"))
     expect(readiness).toEqual({
       version: 1,
@@ -94,15 +94,9 @@ describe("container runtime policy", () => {
       providers: [
         {
           provider: "openai-compatible",
-          model: "glm-5.2",
+          model: "glm-4.7-flash",
           vaultItem: "providers/openai-compatible",
           baseUrl: "https://api.z.ai/api/paas/v4/",
-        },
-        {
-          provider: "openai-compatible-gemini",
-          model: "gemini-3.6-flash",
-          vaultItem: "providers/openai-compatible-gemini",
-          baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai/",
         },
       ],
     })
@@ -700,7 +694,7 @@ fi`
     expect(bootstrap).not.toContain("ouro-entry.js check --agent sanctuary")
   })
 
-  it("requires fresh live checks for both configured provider lanes and the independent candidate", () => {
+  it("requires fresh live checks for both configured provider lanes", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     const helper = extractRunbookFunction(runbook, "verify_sanctuary_provider_readiness")
     expect(helper).toContain("ouro-entry.js check --agent sanctuary --lane outward")
@@ -709,8 +703,8 @@ fi`
     expect(helper).toContain('validate_sanctuary_roots "$READINESS_RUNTIME_ROOT" "$READINESS_AGENT_ROOT"')
     expect(helper).toContain("refreshProviderCredentialPool")
     expect(helper).toContain("pingProvider")
-    expect(helper.match(/provider: "openai-compatible", model: "glm-5\.2"/gu)).toHaveLength(3)
-    expect(helper).toContain('provider: "openai-compatible-gemini", model: "gemini-3.6-flash"')
+    expect(helper.match(/provider: "openai-compatible", model: "glm-4\.7-flash"/gu)).toHaveLength(3)
+    expect(helper).not.toContain('provider: "openai-compatible-gemini", model: "gemini-3.6-flash"')
     expect(helper).not.toContain("ouro-entry.js auth verify --agent sanctuary")
   })
 
@@ -769,26 +763,19 @@ authenticate_sanctuary_provider "$IMAGE_ID" "$PROVIDER"`
     }
   })
 
-  it("requires exact GLM lane bindings and a distinct Gemini credential with three live pings", () => {
+  it("requires exact Flash lane bindings and live primary Z.ai pings", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     const readiness = extractRunbookFunction(runbook, "verify_sanctuary_provider_readiness")
 
     expect(readiness).toContain('provider: "openai-compatible"')
-    expect(readiness).toContain('model: "glm-5.2"')
+    expect(readiness).toContain('model: "glm-4.7-flash"')
     expect(readiness).toContain('baseUrl: "https://api.z.ai/api/paas/v4/"')
     expect(readiness).toContain('vaultItem: "providers/openai-compatible"')
-    expect(readiness).toContain('provider: "openai-compatible-gemini"')
-    expect(readiness).toContain('model: "gemini-3.6-flash"')
-    expect(readiness).toContain('baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai/"')
-    expect(readiness).toContain('vaultItem: "providers/openai-compatible-gemini"')
     expect(readiness).toContain('selectionPolicy: "explicit-same-lane-only"')
     expect(readiness).toContain("policy.selectionPolicy !== expectedPolicy.selectionPolicy")
     expect(readiness).toContain("credentialRevision")
-    expect(readiness).toMatch(/glm\.revision === gemini\.revision|new Set\(\[glm\.revision, gemini\.revision\]\)\.size !== 2/u)
-    expect(readiness).toContain("glm.credentials.apiKey === gemini.credentials.apiKey")
     expect(readiness).toContain("ouro-entry.js check --agent sanctuary --lane outward")
     expect(readiness).toContain("ouro-entry.js check --agent sanctuary --lane inner")
-    expect(readiness).toMatch(/openai-compatible-gemini[\s\S]*gemini-3\.6-flash/u)
     expect(readiness).not.toContain("ouro-entry.js auth verify")
     expect(readiness).not.toMatch(/AUTH_VERIFY|verify output/iu)
   })
@@ -810,20 +797,16 @@ authenticate_sanctuary_provider "$IMAGE_ID" "$PROVIDER"`
       .replace('require("/opt/ouro/dist/heart/provider-credentials.js")', `require(${JSON.stringify(credentialModule)})`)
       .replace('require("/opt/ouro/dist/heart/provider-ping.js")', `require(${JSON.stringify(pingModule)})`)
     const exactAgent = {
-      humanFacing: { provider: "openai-compatible", model: "glm-5.2" },
-      agentFacing: { provider: "openai-compatible", model: "glm-5.2" },
+      humanFacing: { provider: "openai-compatible", model: "glm-4.7-flash" },
+      agentFacing: { provider: "openai-compatible", model: "glm-4.7-flash" },
     }
     const exactContract = {
       version: 1,
       selectionPolicy: "explicit-same-lane-only",
       providers: [
         {
-          provider: "openai-compatible", model: "glm-5.2",
+          provider: "openai-compatible", model: "glm-4.7-flash",
           vaultItem: "providers/openai-compatible", baseUrl: "https://api.z.ai/api/paas/v4/",
-        },
-        {
-          provider: "openai-compatible-gemini", model: "gemini-3.6-flash",
-          vaultItem: "providers/openai-compatible-gemini", baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai/",
         },
       ],
     }
@@ -832,12 +815,8 @@ authenticate_sanctuary_provider "$IMAGE_ID" "$PROVIDER"`
         provider: "openai-compatible", revision: "sha256:glm",
         credentials: { apiKey: "glm-secret" }, config: { baseUrl: "https://api.z.ai/api/paas/v4/" },
       },
-      "openai-compatible-gemini": {
-        provider: "openai-compatible-gemini", revision: "sha256:gemini",
-        credentials: { apiKey: "gemini-secret" }, config: { baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai/" },
-      },
     } } }
-    const exactPings = [true, true, true]
+    const exactPings = [true, true]
     const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T
     const run = (
       agent: typeof exactAgent,
@@ -861,8 +840,6 @@ authenticate_sanctuary_provider "$IMAGE_ID" "$PROVIDER"`
       const failures: Array<[string, typeof exactAgent, typeof exactContract, typeof exactCredentials, boolean[]]> = []
       const missingGlm = clone(exactCredentials); delete (missingGlm.pool.providers as Record<string, unknown>)["openai-compatible"]
       failures.push(["missing GLM", exactAgent, exactContract, missingGlm, exactPings])
-      const missingGemini = clone(exactCredentials); delete (missingGemini.pool.providers as Record<string, unknown>)["openai-compatible-gemini"]
-      failures.push(["missing Gemini", exactAgent, exactContract, missingGemini, exactPings])
       for (const [field, value] of [
         ["provider", "other-provider"],
         ["model", "other-model"],
@@ -883,10 +860,6 @@ authenticate_sanctuary_provider "$IMAGE_ID" "$PROVIDER"`
       failures.push(["wrong credential provider", exactAgent, exactContract, wrongRecordProvider, exactPings])
       const wrongRecordBase = clone(exactCredentials); wrongRecordBase.pool.providers["openai-compatible"].config.baseUrl = "https://wrong.invalid/"
       failures.push(["wrong credential base URL", exactAgent, exactContract, wrongRecordBase, exactPings])
-      const identicalRevision = clone(exactCredentials); identicalRevision.pool.providers["openai-compatible-gemini"].revision = "sha256:glm"
-      failures.push(["identical credential revision", exactAgent, exactContract, identicalRevision, exactPings])
-      const identicalSecret = clone(exactCredentials); identicalSecret.pool.providers["openai-compatible-gemini"].credentials.apiKey = "glm-secret"
-      failures.push(["identical credential secret", exactAgent, exactContract, identicalSecret, exactPings])
       for (let index = 0; index < exactPings.length; index += 1) {
         const pings = clone(exactPings)
         pings[index] = false
@@ -1105,13 +1078,11 @@ capture_sanctuary_legacy_evidence "$CONTAINER_ID" "$IMAGE_ID" "$EVIDENCE_ROOT"`
     expect(start).toBeGreaterThan(-1)
     const prepare = commands.indexOf('prepare_sanctuary_legacy_adoption "$IMAGE_ID"')
     const glmAuth = commands.indexOf('authenticate_sanctuary_provider "$IMAGE_ID" openai-compatible')
-    const geminiAuth = commands.indexOf('authenticate_sanctuary_provider "$IMAGE_ID" openai-compatible-gemini')
     const verify = commands.indexOf('verify_sanctuary_provider_readiness "$IMAGE_ID"')
     const install = commands.indexOf("install_from_legacy_staging")
     expect(prepare).toBeGreaterThan(-1)
     expect(glmAuth).toBeGreaterThan(prepare)
-    expect(geminiAuth).toBeGreaterThan(glmAuth)
-    expect(verify).toBeGreaterThan(geminiAuth)
+    expect(verify).toBeGreaterThan(glmAuth)
     expect(install).toBeGreaterThan(verify)
     expect(commands).not.toMatch(/(?:api[-_]?key|secret|token)=/iu)
   })

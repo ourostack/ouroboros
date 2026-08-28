@@ -51,7 +51,7 @@ ouro auth --agent <agent> --provider <provider>
 
 The two generic Chat Completions identities are deliberately separate vault items and provider identities:
 
-- `openai-compatible` uses `providers/openai-compatible`, the canonical base URL `https://api.z.ai/api/paas/v4/`, and GLM models (`glm-5.2` by default; `glm-5-turbo` is an explicit same-lane alternative).
+- `openai-compatible` uses `providers/openai-compatible`, the canonical base URL `https://api.z.ai/api/paas/v4/`, and GLM models (`glm-5.3-flash` by default; `glm-4.7-flash` is the zero-cost Sanctuary bootstrap model; `glm-5.2` and `glm-5-turbo` remain explicit same-lane alternatives).
 - `openai-compatible-gemini` uses `providers/openai-compatible-gemini`, the canonical base URL `https://generativelanguage.googleapis.com/v1beta/openai/`, and `gemini-3.6-flash`.
 
 Both items store `apiKey` as credential material and `baseUrl` as provider configuration. The base URL is exact after trailing-slash normalization; arbitrary compatible hosts are rejected. API keys are collected through hidden input only. Neither provider is a silent fallback for the other or for another lane.

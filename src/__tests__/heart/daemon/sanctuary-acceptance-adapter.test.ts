@@ -1243,7 +1243,10 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-provider-observation-"))
     const files: Record<string, string> = {
       [`${agentRoot}/agent.json`]: JSON.stringify({ humanFacing: { provider: "openai-compatible", model: "glm-out" }, agentFacing: { provider: "openai-compatible", model: "glm-in" } }),
-      [`${agentRoot}/provider-readiness.json`]: JSON.stringify({ selectionPolicy: "explicit-same-lane-only", providers: [{ provider: "openai-compatible-gemini", model: "gemini-candidate" }] }),
+      [`${agentRoot}/provider-readiness.json`]: JSON.stringify({ selectionPolicy: "explicit-same-lane-only", providers: [
+        { provider: "openai-compatible", model: "glm-out", vaultItem: "providers/openai-compatible" },
+        { provider: "openai-compatible-gemini", model: "gemini-candidate", vaultItem: "providers/openai-compatible-gemini" },
+      ] }),
     }
     let active = 0
     let peak = 0
@@ -1272,8 +1275,8 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
 
   it("requires the exact Sanctuary provider coordinates and distinct secret-derived identities without exposing secrets", () => {
     const canonical = {
-      outward: { provider: "openai-compatible", model: "glm-5.2" },
-      inner: { provider: "openai-compatible", model: "glm-5.2" },
+      outward: { provider: "openai-compatible", model: "glm-4.7-flash" },
+      inner: { provider: "openai-compatible", model: "glm-4.7-flash" },
       gemini: { provider: "openai-compatible-gemini", model: "gemini-3.6-flash", vaultItem: "providers/openai-compatible-gemini" },
       glm: { baseUrl: "https://api.z.ai/api/paas/v4/", vaultItem: "providers/openai-compatible", apiKey: "glm-secret" },
       geminiCredential: { baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai/", apiKey: "gemini-secret" },
@@ -1289,6 +1292,15 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     expect(evaluateSanctuaryProviderReadinessContract({ ...canonical, glm: { ...canonical.glm, baseUrl: "https://example.invalid" } }).baseUrlsExact).toBe(false)
     expect(evaluateSanctuaryProviderReadinessContract({ ...canonical, gemini: { ...canonical.gemini, vaultItem: "providers/wrong" } }).vaultCoordinatesExact).toBe(false)
     expect(evaluateSanctuaryProviderReadinessContract({ ...canonical, geminiCredential: { ...canonical.geminiCredential, apiKey: "glm-secret" } }).credentialIdentitiesDistinct).toBe(false)
+
+    const primaryOnly = {
+      outward: canonical.outward,
+      inner: canonical.inner,
+      glm: canonical.glm,
+      selectionPolicy: canonical.selectionPolicy,
+      identityKey: canonical.identityKey,
+    }
+    expect(evaluateSanctuaryProviderReadinessContract(primaryOnly)).toEqual({ baseUrlsExact: true, credentialIdentitiesDistinct: true, modelsExact: true, vaultCoordinatesExact: true })
   })
 
   it.each([
@@ -1301,7 +1313,10 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-provider-attempt-binding-"))
     const files: Record<string, string> = {
       [`${agentRoot}/agent.json`]: JSON.stringify({ humanFacing: { provider: "openai-compatible", model: "glm-out" }, agentFacing: { provider: "openai-compatible", model: "glm-in" } }),
-      [`${agentRoot}/provider-readiness.json`]: JSON.stringify({ selectionPolicy: "explicit-same-lane-only", providers: [{ provider: "openai-compatible-gemini", model: "gemini-candidate" }] }),
+      [`${agentRoot}/provider-readiness.json`]: JSON.stringify({ selectionPolicy: "explicit-same-lane-only", providers: [
+        { provider: "openai-compatible", model: "glm-out", vaultItem: "providers/openai-compatible" },
+        { provider: "openai-compatible-gemini", model: "gemini-candidate", vaultItem: "providers/openai-compatible-gemini" },
+      ] }),
     }
     const facts = await readDefaultSanctuaryScenarioFacts("unit-16c-provider-readiness", "a".repeat(64), unit16Deps({
       readFixedFile: (file) => { if (!(file in files)) throw Object.assign(new Error("missing"), { code: "ENOENT" }); return files[file]! },
