@@ -59,6 +59,26 @@ describe("Sanctuary scheduler origin", () => {
     })).toEqual(expect.objectContaining({ slot, occurrenceId: `cron:${slot}`, schedulerRunId: "11111111-1111-4111-8111-111111111111" }))
   })
 
+  it("mints and verifies the real shell-mediated Supercronic cron process tree", () => {
+    const readFile = (file: string) => {
+      if (file === "/proc/101/stat") return procStat(101, 77, "9001")
+      if (file === "/proc/77/stat") return procStat(77, 42, "8501")
+      if (file === "/proc/42/stat") return procStat(42, 1, "8001")
+      return parentCmdline
+    }
+    const readLink = (file: string) => file === "/proc/42/exe" ? "/usr/local/bin/supercronic" : "/bin/sh"
+    const command = createSanctuarySchedulerFireCommand({ agent: "sanctuary", habitName: "sanctuary-health", trigger: "cron" }, {
+      platform: "linux", pid: 101, ppid: 77, now: () => new Date("2026-08-21T07:16:01.000Z"),
+      readFile, readLink, identityKey: () => identityKey, marker: () => null,
+      randomId: () => "11111111-1111-4111-8111-111111111111",
+    })
+    expect(command).toMatchObject({ parentPid: 77, parentStartTime: "8501", invocationPid: 101, invocationStartTime: "9001", scenarioHandleDigest: null })
+    expect(verifySanctuarySchedulerFireCommand(command!, {
+      childPid: 42, identityKey, now: () => new Date("2026-08-21T07:16:02.000Z"),
+      readFile, readLink, scenarioHandleDigest: null,
+    })).toEqual(expect.objectContaining({ parentPid: 77, slot, occurrenceId: `cron:${slot}` }))
+  })
+
   it("does not mint provenance for an ordinary/manual parent", () => {
     expect(createSanctuarySchedulerFireCommand({ agent: "sanctuary", habitName: "sanctuary-health", trigger: "cron" }, {
       platform: "linux", pid: 101, ppid: 77, now: () => new Date("2026-08-21T07:16:01.000Z"), readFile: () => procStat(101, 77, "1"),

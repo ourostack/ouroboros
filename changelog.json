@@ -7,9 +7,11 @@
         "Ship Sanctuary on the cost-effective MiniMax-M3 provider path after live vault readiness proved both outward and inner lanes, with optional Gemini no longer required for readiness.",
         "Keep the packaged Unraid bundle on the same MiniMax-M3 lane the live Sanctuary vault uses.",
         "Update the packaged Unraid readiness/adoption checks to require only the production MiniMax credential and live MiniMax lane checks before cutover.",
+        "Accept Supercronic's real shell-mediated cron process tree while preserving authenticated Sanctuary scheduler provenance.",
         "Sequence same-provider Flash acceptance probes to avoid provider-side rate-limit flakiness while preserving exact provider/model attempt binding.",
         "Treat settled Telegram turns that are safely waiting for new input as healthy context-loss state instead of relatching the Sentinel as blocked.",
-        "Validate the live container process tree for agent, Telegram, and Supercronic health instead of failing on a stale child PID in daemon-health.json."
+        "Validate the live container process tree for agent, Telegram, and Supercronic health instead of failing on a stale child PID in daemon-health.json.",
+        "Accept Supercronic's real shell-mediated cron ancestry when authenticating Sanctuary health scheduler fires."
       ]
     },
     {
