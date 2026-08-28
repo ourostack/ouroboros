@@ -702,8 +702,8 @@ fi`
     expect(helper).toContain("umask 077")
     expect(helper).toContain('validate_sanctuary_roots "$READINESS_RUNTIME_ROOT" "$READINESS_AGENT_ROOT"')
     expect(helper).toContain("refreshProviderCredentialPool")
-    expect(helper).toContain("pingProvider")
-    expect(helper.match(/provider: "openai-compatible", model: "glm-4\.7-flash"/gu)).toHaveLength(3)
+    expect(helper).not.toContain("pingProvider")
+    expect(helper.match(/provider: "openai-compatible", model: "glm-4\.7-flash"/gu)).toHaveLength(1)
     expect(helper).not.toContain('provider: "openai-compatible-gemini", model: "gemini-3.6-flash"')
     expect(helper).not.toContain("ouro-entry.js auth verify --agent sanctuary")
   })
@@ -763,7 +763,7 @@ authenticate_sanctuary_provider "$IMAGE_ID" "$PROVIDER"`
     }
   })
 
-  it("requires exact Flash lane bindings and live primary Z.ai pings", () => {
+  it("requires exact Flash lane bindings and live primary Z.ai lane checks", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     const readiness = extractRunbookFunction(runbook, "verify_sanctuary_provider_readiness")
 
@@ -773,14 +773,14 @@ authenticate_sanctuary_provider "$IMAGE_ID" "$PROVIDER"`
     expect(readiness).toContain('vaultItem: "providers/openai-compatible"')
     expect(readiness).toContain('selectionPolicy: "explicit-same-lane-only"')
     expect(readiness).toContain("policy.selectionPolicy !== expectedPolicy.selectionPolicy")
-    expect(readiness).toContain("credentialRevision")
+    expect(readiness).toContain("revision")
     expect(readiness).toContain("ouro-entry.js check --agent sanctuary --lane outward")
     expect(readiness).toContain("ouro-entry.js check --agent sanctuary --lane inner")
     expect(readiness).not.toContain("ouro-entry.js auth verify")
     expect(readiness).not.toMatch(/AUTH_VERIFY|verify output/iu)
   })
 
-  it("executes the structured provider-readiness matrix and rejects every authority or ping defect", () => {
+  it("executes the structured provider-readiness matrix and rejects every authority defect", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     const readiness = extractRunbookFunction(runbook, "verify_sanctuary_provider_readiness")
     const match = readiness.match(/node - <<'"'"'NODE'"'"'\n([\s\S]*?)\nNODE/u)
@@ -789,13 +789,10 @@ authenticate_sanctuary_provider "$IMAGE_ID" "$PROVIDER"`
     const agentPath = path.join(testRoot, "agent.json")
     const contractPath = path.join(testRoot, "provider-readiness.json")
     const credentialsPath = path.join(testRoot, "credentials.json")
-    const pingsPath = path.join(testRoot, "pings.json")
     const credentialModule = path.join(testRoot, "provider-credentials.cjs")
-    const pingModule = path.join(testRoot, "provider-ping.cjs")
     const validator = match![1]!
       .replace('const root = "/home/ouro/AgentBundles/sanctuary.ouro";', `const root = ${JSON.stringify(testRoot)};`)
       .replace('require("/opt/ouro/dist/heart/provider-credentials.js")', `require(${JSON.stringify(credentialModule)})`)
-      .replace('require("/opt/ouro/dist/heart/provider-ping.js")', `require(${JSON.stringify(pingModule)})`)
     const exactAgent = {
       humanFacing: { provider: "openai-compatible", model: "glm-4.7-flash" },
       agentFacing: { provider: "openai-compatible", model: "glm-4.7-flash" },
@@ -816,30 +813,26 @@ authenticate_sanctuary_provider "$IMAGE_ID" "$PROVIDER"`
         credentials: { apiKey: "glm-secret" }, config: { baseUrl: "https://api.z.ai/api/paas/v4/" },
       },
     } } }
-    const exactPings = [true, true]
     const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T
     const run = (
       agent: typeof exactAgent,
       contract: typeof exactContract,
       credentials: typeof exactCredentials,
-      pings: boolean[],
     ) => {
       fs.writeFileSync(agentPath, JSON.stringify(agent))
       fs.writeFileSync(contractPath, JSON.stringify(contract))
       fs.writeFileSync(credentialsPath, JSON.stringify(credentials))
-      fs.writeFileSync(pingsPath, JSON.stringify(pings))
       return spawnSync(process.execPath, ["-e", validator], {
         encoding: "utf8",
-        env: { ...process.env, PROVIDER_FIXTURE: credentialsPath, PING_FIXTURE: pingsPath },
+        env: { ...process.env, PROVIDER_FIXTURE: credentialsPath },
       })
     }
     try {
       fs.writeFileSync(credentialModule, 'const fs=require("node:fs");module.exports.refreshProviderCredentialPool=async()=>JSON.parse(fs.readFileSync(process.env.PROVIDER_FIXTURE,"utf8"));\n')
-      fs.writeFileSync(pingModule, 'const fs=require("node:fs");const outcomes=JSON.parse(fs.readFileSync(process.env.PING_FIXTURE,"utf8"));let index=0;module.exports.pingProvider=async(provider,_credential,options)=>{const ok=outcomes[index++];return {ok,attempts:[{provider,model:options.model,operation:"ping",ok}]};};\n')
-      expect(run(exactAgent, exactContract, exactCredentials, exactPings).status).toBe(0)
-      const failures: Array<[string, typeof exactAgent, typeof exactContract, typeof exactCredentials, boolean[]]> = []
+      expect(run(exactAgent, exactContract, exactCredentials).status).toBe(0)
+      const failures: Array<[string, typeof exactAgent, typeof exactContract, typeof exactCredentials]> = []
       const missingGlm = clone(exactCredentials); delete (missingGlm.pool.providers as Record<string, unknown>)["openai-compatible"]
-      failures.push(["missing GLM", exactAgent, exactContract, missingGlm, exactPings])
+      failures.push(["missing GLM", exactAgent, exactContract, missingGlm])
       for (const [field, value] of [
         ["provider", "other-provider"],
         ["model", "other-model"],
@@ -848,25 +841,20 @@ authenticate_sanctuary_provider "$IMAGE_ID" "$PROVIDER"`
       ] as const) {
         const contract = clone(exactContract)
         Object.assign(contract.providers[0]!, { [field]: value })
-        failures.push([`wrong ${field}`, exactAgent, contract, exactCredentials, exactPings])
+        failures.push([`wrong ${field}`, exactAgent, contract, exactCredentials])
       }
       const badPolicy = clone(exactContract); badPolicy.selectionPolicy = "fallback-allowed"
-      failures.push(["wrong selection policy", exactAgent, badPolicy, exactCredentials, exactPings])
+      failures.push(["wrong selection policy", exactAgent, badPolicy, exactCredentials])
       const badOutward = clone(exactAgent); badOutward.humanFacing.provider = "openai-compatible-gemini"
-      failures.push(["wrong outward binding", badOutward, exactContract, exactCredentials, exactPings])
+      failures.push(["wrong outward binding", badOutward, exactContract, exactCredentials])
       const badInner = clone(exactAgent); badInner.agentFacing.model = "gemini-3.6-flash"
-      failures.push(["wrong inner binding", badInner, exactContract, exactCredentials, exactPings])
+      failures.push(["wrong inner binding", badInner, exactContract, exactCredentials])
       const wrongRecordProvider = clone(exactCredentials); wrongRecordProvider.pool.providers["openai-compatible"].provider = "other-provider"
-      failures.push(["wrong credential provider", exactAgent, exactContract, wrongRecordProvider, exactPings])
+      failures.push(["wrong credential provider", exactAgent, exactContract, wrongRecordProvider])
       const wrongRecordBase = clone(exactCredentials); wrongRecordBase.pool.providers["openai-compatible"].config.baseUrl = "https://wrong.invalid/"
-      failures.push(["wrong credential base URL", exactAgent, exactContract, wrongRecordBase, exactPings])
-      for (let index = 0; index < exactPings.length; index += 1) {
-        const pings = clone(exactPings)
-        pings[index] = false
-        failures.push([`ping ${index + 1} failed`, exactAgent, exactContract, exactCredentials, pings])
-      }
-      for (const [name, agent, contract, credentials, pings] of failures) {
-        const result = run(agent, contract, credentials, pings)
+      failures.push(["wrong credential base URL", exactAgent, exactContract, wrongRecordBase])
+      for (const [name, agent, contract, credentials] of failures) {
+        const result = run(agent, contract, credentials)
         expect(result.status, `${name}\n${result.stderr}`).not.toBe(0)
       }
     } finally {

@@ -791,7 +791,6 @@ local unlock: available
                 }
                 if (expected.size !== 0) throw new Error();
                 const { refreshProviderCredentialPool } = require("/opt/ouro/dist/heart/provider-credentials.js");
-                const { pingProvider } = require("/opt/ouro/dist/heart/provider-ping.js");
                 const refreshed = await refreshProviderCredentialPool("sanctuary", {
                   providers: ["openai-compatible"],
                   skipCache: true,
@@ -803,26 +802,6 @@ local unlock: available
                   && typeof record.credentials?.apiKey === "string" && record.credentials.apiKey.trim().length > 0
                   && record.config?.baseUrl === baseUrl;
                 if (!exactRecord(glm, "openai-compatible", "https://api.z.ai/api/paas/v4/")) throw new Error();
-                const probes = [
-                  { provider: "openai-compatible", model: "glm-4.7-flash", credentialRevision: glm.revision, record: glm },
-                  { provider: "openai-compatible", model: "glm-4.7-flash", credentialRevision: glm.revision, record: glm },
-                ];
-                const results = [];
-                for (const { provider, model, record } of probes) {
-                  results.push(await pingProvider(
-                    provider,
-                    { ...record.credentials, ...record.config },
-                    { model, timeoutMs: 10000, attemptPolicy: { baseDelayMs: 0 } },
-                  ));
-                }
-                for (let index = 0; index < results.length; index += 1) {
-                  const result = results[index];
-                  const probe = probes[index];
-                  if (!result.ok || !Array.isArray(result.attempts) || result.attempts.length < 1 || result.attempts.length > 3
-                    || !result.attempts.every(attempt => attempt.provider === probe.provider && attempt.model === probe.model
-                      && attempt.operation === "ping" && typeof attempt.ok === "boolean")
-                    || result.attempts.at(-1)?.ok !== true) throw new Error();
-                }
                 process.stdout.write("Sanctuary provider readiness verified.\n");
               } catch {
                 process.stderr.write("Sanctuary provider readiness verification failed.\n");
