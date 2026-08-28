@@ -1383,11 +1383,11 @@ export async function readDefaultSanctuaryScenarioFacts(
       const innerModel = text(innerConfig.model, "inner model")
       const glmConfig = glmRecord.ok ? { ...glmRecord.record.credentials, ...glmRecord.record.config } as unknown as Parameters<typeof pingProvider>[1] : null
       const unavailablePing: PingResult = { ok: false, classification: "auth-failure", message: "credential unavailable", attempts: [] }
-      const [outwardPing, innerPing, geminiPing] = await Promise.all([
-        glmConfig ? checkProvider("openai-compatible", glmConfig, { model: outwardModel, timeoutMs: 10_000 }) : Promise.resolve(unavailablePing),
-        glmConfig ? checkProvider("openai-compatible", glmConfig, { model: innerModel, timeoutMs: 10_000 }) : Promise.resolve(unavailablePing),
-        candidate && geminiRecord.ok ? checkProvider("openai-compatible-gemini", { ...geminiRecord.record.credentials, ...geminiRecord.record.config } as unknown as Parameters<typeof pingProvider>[1], { model: text(candidate.model, "Gemini candidate model"), timeoutMs: 10_000 }) : Promise.resolve({ ok: true, attempts: [] } as PingResult),
-      ])
+      const outwardPing = glmConfig ? await checkProvider("openai-compatible", glmConfig, { model: outwardModel, timeoutMs: 10_000 }) : unavailablePing
+      const innerPing = glmConfig ? await checkProvider("openai-compatible", glmConfig, { model: innerModel, timeoutMs: 10_000 }) : unavailablePing
+      const geminiPing = candidate && geminiRecord.ok
+        ? await checkProvider("openai-compatible-gemini", { ...geminiRecord.record.credentials, ...geminiRecord.record.config } as unknown as Parameters<typeof pingProvider>[1], { model: text(candidate.model, "Gemini candidate model"), timeoutMs: 10_000 })
+        : { ok: true, attempts: [] } as PingResult
       const geminiModel = candidate ? text(candidate.model, "Gemini candidate model") : ""
       const pingReceipts = [
         { lane: "outward", provider: "openai-compatible", model: outwardModel, credentialRevision: glmRecord.ok ? glmRecord.record.revision : null, ok: outwardPing.ok, attempts: outwardPing.attempts?.map(({ provider, model, operation, ok }) => ({ provider, model, operation, ok })) ?? [] },

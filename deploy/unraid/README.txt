@@ -807,11 +807,14 @@ local unlock: available
                   { provider: "openai-compatible", model: "glm-4.7-flash", credentialRevision: glm.revision, record: glm },
                   { provider: "openai-compatible", model: "glm-4.7-flash", credentialRevision: glm.revision, record: glm },
                 ];
-                const results = await Promise.all(probes.map(({ provider, model, record }) => pingProvider(
-                  provider,
-                  { ...record.credentials, ...record.config },
-                  { model, timeoutMs: 10000, attemptPolicy: { baseDelayMs: 0 } },
-                )));
+                const results = [];
+                for (const { provider, model, record } of probes) {
+                  results.push(await pingProvider(
+                    provider,
+                    { ...record.credentials, ...record.config },
+                    { model, timeoutMs: 10000, attemptPolicy: { baseDelayMs: 0 } },
+                  ));
+                }
                 for (let index = 0; index < results.length; index += 1) {
                   const result = results[index];
                   const probe = probes[index];

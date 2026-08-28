@@ -1239,7 +1239,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     fs.rmSync(agentRoot, { recursive: true, force: true })
   })
 
-  it("runs provider checks concurrently and derives fallback count from observed attempts", async () => {
+  it("binds provider checks to observed attempts and derives fallback count", async () => {
     const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-provider-observation-"))
     const files: Record<string, string> = {
       [`${agentRoot}/agent.json`]: JSON.stringify({ humanFacing: { provider: "openai-compatible", model: "glm-out" }, agentFacing: { provider: "openai-compatible", model: "glm-in" } }),
@@ -1266,7 +1266,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       },
       hostRequest: async () => ({ running: true, health: "healthy", imageId: "sha256:missing", user: "10001:10001", readOnlyRoot: true, mountCount: 2, publishedPortCount: 0, restartPolicy: "unless-stopped", restartCount: 0, autostartExact: true, updaterDisabled: true, vaultUnlocked: true, manualAuthRequired: false }),
     }), agentRoot)
-    expect(peak).toBe(3)
+    expect(peak).toBe(1)
     expect(facts.provider?.fallbackAttemptCount).toBe(1)
     expect(facts.provider?.requestSemanticsExact).toBe(false)
     expect(facts.provider?.pingReceipts).toEqual(expect.arrayContaining([expect.objectContaining({ lane: "candidate", attempts: [expect.objectContaining({ provider: "openai-compatible" })] })]))
