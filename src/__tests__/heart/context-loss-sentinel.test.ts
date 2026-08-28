@@ -2786,6 +2786,39 @@ describe("context-loss Sentinel core", () => {
     expect(formatContextLossSentinelText(blockedReceipt)).toContain("latest-ready: unavailable")
   })
 
+  it("treats a completed turn waiting for new input as ready instead of blocked", async () => {
+    const agentRoot = makeAgentRoot()
+    writeFlightRecorderResume(agentRoot, {
+      ...readyResume(),
+      canContinue: false,
+      nextSafeAction: {
+        value: "inspect the latest session and wait for new input before acting",
+        stopBefore: ["acting on stale context"],
+        sourceEventIds: ["fr-settled-turn"],
+      },
+      blockedBecause: ["turn outcome settled; wait for new input before acting"],
+      lastSafeCheckpoint: {
+        turnId: null,
+        sessionRef: "telegram/session",
+        recordedAt: "2026-08-28T01:45:34.331Z",
+        sourceEventIds: ["fr-settled-turn"],
+      },
+    })
+
+    const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
+      trigger: "post_turn",
+      now: () => new Date("2026-08-28T01:45:40.000Z"),
+      createReceiptId: () => "sentinel-settled-turn-ready",
+      providerVisibility: providerVisibility(),
+      daemonHealthResults: okHealth(),
+      gitStatus: () => ({ ok: true, porcelain: "" }),
+    })
+
+    expect(receipt.verdict).toBe("ready")
+    expect(receipt.gauntlet.failedChecks).not.toContain("next_safe_action")
+    expect(receipt.gauntlet.failedChecks).not.toContain("stale_guard")
+  })
+
   it("records blocked Sentinel receipts as flight-recorder blocker events", async () => {
     const agentRoot = makeAgentRoot()
 
