@@ -3,7 +3,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { execFileSync } from "node:child_process"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { hasManagedSupercronicProcess, hasManagedTelegramProcess } from "./container-runtime"
+import { hasManagedAgentProcess, hasManagedSupercronicProcess, hasManagedTelegramProcess } from "./container-runtime"
 
 function fail(reason: string): never {
   emitNervesEvent({ level: "error", component: "daemon", event: "daemon.container_healthcheck_error", message: "container healthcheck failed", meta: { reason } })
@@ -30,10 +30,11 @@ export function runContainerHealthcheck(options: { argv?: string[]; now?: () => 
   if (health.status !== "healthy" && health.status !== "partial") fail("daemon status is not ready")
   const agents = health.agents as Record<string, { status?: unknown; pid?: unknown }> | undefined
   const managed = agents?.[agent]
-  if (!managed || managed.status !== "running" || typeof managed.pid !== "number" || managed.pid <= 0 || !fs.existsSync(`/proc/${managed.pid}`)) fail("managed agent is not running")
+  if (!managed || managed.status !== "running" || typeof managed.pid !== "number" || managed.pid <= 0) fail("managed agent is not running")
   let processArguments = ""
   try { processArguments = execFileSync("ps", ["-eo", "args="], { encoding: "utf8", timeout: 2_000 }) }
   catch { fail("managed process inventory is unavailable") }
+  if (!hasManagedAgentProcess(processArguments, agent)) fail("managed agent is not running exactly once")
   if (!hasManagedTelegramProcess(processArguments, agent)) fail("managed Telegram sense is not running exactly once")
   if (!hasManagedSupercronicProcess(processArguments, agent)) fail("managed Supercronic scheduler is not running exactly once")
   emitNervesEvent({ component: "daemon", event: "daemon.container_healthcheck_end", message: "container healthcheck passed", meta: { agent } })

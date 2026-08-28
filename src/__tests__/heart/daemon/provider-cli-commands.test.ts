@@ -5756,7 +5756,7 @@ describe("provider CLI command execution", () => {
     ], makeCliDeps(homeDir, bundlesRoot))
 
     expect(result).toContain("MiniMax is currently paired with gpt-5.5")
-    expect(result).toContain("ouro use --agent Slugger --lane inner --provider minimax --model MiniMax-M2.7")
+    expect(result).toContain("ouro use --agent Slugger --lane inner --provider minimax --model MiniMax-M3")
     expect(mockPingProvider).not.toHaveBeenCalledWith("minimax", expect.anything(), expect.anything())
     const stateResult = readAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"))
     expect(stateResult.ok).toBe(true)
@@ -11222,18 +11222,18 @@ describe("provider CLI command execution", () => {
       "agent",
     ], makeCliDeps(homeDir, bundlesRoot))
 
-    expect(result).toContain("MiniMax-M2.7")
+    expect(result).toContain("MiniMax-M3")
     const config = readAgentConfig(bundlesRoot, "Slugger")
     expect(config.agentFacing).toMatchObject({
       provider: "minimax",
-      model: "MiniMax-M2.7",
+      model: "MiniMax-M3",
     })
     const stateResult = readAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"))
     expect(stateResult.ok).toBe(true)
     if (!stateResult.ok) throw new Error(stateResult.error)
     expect(stateResult.state.lanes.inner).toMatchObject({
       provider: "minimax",
-      model: "MiniMax-M2.7",
+      model: "MiniMax-M3",
     })
   })
 
@@ -12009,7 +12009,7 @@ describe("provider CLI command execution", () => {
     ], makeCliDeps(homeDir, bundlesRoot))
 
     expect(result).toContain("MiniMax is currently paired with gpt-5.5")
-    expect(result).toContain("ouro use --agent Slugger --lane outward --provider minimax --model MiniMax-M2.7")
+    expect(result).toContain("ouro use --agent Slugger --lane outward --provider minimax --model MiniMax-M3")
     const stateResult = readAgentProviderSelectionFixture(agentRoot(bundlesRoot, "Slugger"))
     expect(stateResult.ok).toBe(true)
     if (!stateResult.ok) throw new Error(stateResult.error)
