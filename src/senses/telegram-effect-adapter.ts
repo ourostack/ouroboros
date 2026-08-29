@@ -361,7 +361,7 @@ export async function executeTelegramEffect(
   store: FileTelegramEffectJournal,
   artifactIdValue: string,
   api: TelegramBotApi,
-  reauthorize: (artifact: TelegramEffectArtifact) => TelegramEffectAuthorization,
+  reauthorize: (artifact: TelegramEffectArtifact) => TelegramEffectAuthorization | Promise<TelegramEffectAuthorization>,
   signal?: AbortSignal,
 ): Promise<TelegramEffectArtifact> {
   return withSessionTurnLease(store.coordinationPath(artifactIdValue), async () => {
@@ -378,7 +378,7 @@ export async function executeTelegramEffect(
       store.write(artifact)
       throw new Error("Telegram effect has an indeterminate part after an interrupted send and cannot be retried blindly")
     }
-    const authorization = reauthorize(artifact)
+    const authorization = await reauthorize(artifact)
     if (!authorization.allowed) throw new Error(`Telegram effect authorization denied: ${authorization.reason}`)
     if (Date.parse(authorization.expiresAt) <= Date.now()) throw new Error("Telegram effect authorization expired")
     if (!/^[1-9][0-9]*$/u.test(authorization.transport.chatId)) throw new Error("Telegram effect authorization returned an invalid transport route")
@@ -420,7 +420,7 @@ export async function executeTelegramEffect(
 export function createTelegramAuthorizedEffectExecutor(options: {
   store: FileTelegramEffectJournal | (() => FileTelegramEffectJournal)
   api: TelegramBotApi
-  authorize(input: TelegramEffectAuthorizationInput): TelegramEffectAuthorization
+  authorize(input: TelegramEffectAuthorizationInput): TelegramEffectAuthorization | Promise<TelegramEffectAuthorization>
   barrier?: () => void
 }): (input: TelegramAuthorizedEffectInput) => Promise<TelegramEffectArtifact> {
   const barrier = options.barrier ?? (() => undefined)
@@ -428,12 +428,12 @@ export function createTelegramAuthorizedEffectExecutor(options: {
   return async (input) => {
     if (input.signal?.aborted) throw input.signal.reason
     barrier()
-    const authorization = options.authorize({ phase: "prepare", ...input })
+    const authorization = await options.authorize({ phase: "prepare", ...input })
     if (!authorization.allowed) throw new Error(`Telegram effect authorization denied: ${authorization.reason}`)
     const store = getStore()
     const prepared = prepareTelegramEffect(store, { ...input, authorization })
     try {
-      const executed = await executeTelegramEffect(store, prepared.id, options.api, (artifact) => {
+      const executed = await executeTelegramEffect(store, prepared.id, options.api, async (artifact) => {
         if (input.signal?.aborted) throw input.signal.reason
         barrier()
         return options.authorize({
