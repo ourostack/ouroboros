@@ -118,7 +118,7 @@ const MAX_EVENT_RECORDS_PER_SOURCE = 512
 const MAX_EVENT_SOURCES_PER_AGENT = 64
 const PRIVILEGED_EVENT_SOURCE = "sanctuary-usenet"
 const PRIVILEGED_SPOOL_MAX_BYTES = 32 * 1024
-const PRIVILEGED_REPLAY_BITS = 131_072
+const PRIVILEGED_REPLAY_BITS = 65_536
 const PRIVILEGED_REPLAY_HASHES = 7
 const privilegedIngress = Symbol("privileged external-event ingress")
 
@@ -244,6 +244,11 @@ function replayManifestWithLegacy(manifest: ExternalEventReplayManifest | undefi
   return result
 }
 
+function retentionWithoutReplayManifest(summary: ExternalEventRetentionSummary): ExternalEventRetentionSummary {
+  const { privilegedReplayManifest: _replay, ...retention } = summary
+  return retention
+}
+
 function compactHandledReceiptsForNewRecord(recordPath: string): ExternalEventRetentionSummary | null {
   const sourceDir = path.dirname(recordPath)
   if (!fs.existsSync(sourceDir)) return null
@@ -293,9 +298,11 @@ function observationFromInput(input: ExternalEventInput, now: string, digest: st
 }
 
 function atomicWrite(recordPath: string, record: ExternalEventRecord): void {
+  const serialized = `${JSON.stringify(record, null, 2)}\n`
+  if (Buffer.byteLength(serialized) > MAX_EVENT_RECORD_BYTES) throw new Error("External event record must be bounded")
   fs.mkdirSync(path.dirname(recordPath), { recursive: true })
   const temporary = `${recordPath}.tmp-${process.pid}-${randomUUID()}`
-  fs.writeFileSync(temporary, `${JSON.stringify(record, null, 2)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" })
+  fs.writeFileSync(temporary, serialized, { encoding: "utf8", mode: 0o600, flag: "wx" })
   const handle = fs.openSync(temporary, "r")
   try { fs.fsyncSync(handle) } finally { fs.closeSync(handle) }
   fs.renameSync(temporary, recordPath)
@@ -342,6 +349,16 @@ function withRecordLock<T>(recordPath: string, operation: () => T): T {
       }
     } catch {
       // A stale owner must never remove a successor's lock.
+    }
+  }
+}
+
+function withRecordLockRetry<T>(recordPath: string, operation: () => T): T {
+  const deadline = Date.now() + 30_000
+  while (true) {
+    try { return withRecordLock(recordPath, operation) } catch (error) {
+      if (!(error instanceof Error) || error.message !== "External event record is busy" || Date.now() >= deadline) throw error
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)
     }
   }
 }
@@ -556,12 +573,14 @@ function recordExternalEventInternal(input: ExternalEventInput, options: RecordE
       if (replayContains(replayAuthority, privilegedNonce)) throw new Error("Privileged external event replayed nonce")
       privilegedReplayManifest = replayAdd(replayAuthority, privilegedNonce)
     }
+    const retentionSummary = existing?.retentionSummary ?? compacted
+    const persistedRetention = retentionSummary ? retentionWithoutReplayManifest(retentionSummary) : undefined
     if (existing?.executionState === "running") {
       if (existing.observationRevision === revision && existing.observationDigest === digest) {
-        return privilegedNonce ? commitMutation(recordPath, { ...existing, privilegedReplayManifest, privilegedReplayNonces: undefined, shouldWake: false }, now) : { ...existing, shouldWake: false }
+        return privilegedNonce ? commitMutation(recordPath, { ...existing, ...(persistedRetention ? { retentionSummary: persistedRetention } : {}), privilegedReplayManifest, privilegedReplayNonces: undefined, shouldWake: false }, now) : { ...existing, shouldWake: false }
       }
       const pendingObservation = observationFromInput(input, now, digest, revision, "changed")
-      const updated = commitMutation(recordPath, { ...existing, privilegedReplayManifest, privilegedReplayNonces: undefined, pendingObservation, shouldWake: false }, now)
+      const updated = commitMutation(recordPath, { ...existing, ...(persistedRetention ? { retentionSummary: persistedRetention } : {}), privilegedReplayManifest, privilegedReplayNonces: undefined, pendingObservation, shouldWake: false }, now)
       emitNervesEvent({
         component: "daemon",
         event: "daemon.external_event_recorded",
@@ -602,7 +621,7 @@ function recordExternalEventInternal(input: ExternalEventInput, options: RecordE
     pendingObservation: shouldWake ? null : existing!.pendingObservation,
     dispatchEnabled: options.dispatchEnabled ?? existing?.dispatchEnabled ?? true,
     shouldWake,
-    ...((existing?.retentionSummary ?? compacted) ? { retentionSummary: existing?.retentionSummary ?? compacted! } : {}),
+    ...(persistedRetention ? { retentionSummary: persistedRetention } : {}),
     ...(privilegedReplayManifest ? { privilegedReplayManifest } : {}),
     }
     atomicWrite(recordPath, record)
@@ -699,49 +718,51 @@ export function scanPrivilegedEventSpool(options: { spoolRoot: string; eventRoot
   let rejected = 0
   let replayed = 0
   const eventRoot = options.eventRoot ?? getExternalEventRoot()
-  let replayAuthority = privilegedReplayAuthority(eventRoot)
   let rootSafe = false
   try {
     const root = fs.lstatSync(options.spoolRoot)
     rootSafe = root.isDirectory() && !root.isSymbolicLink() && root.uid === 0 && (root.mode & 0o777) === 0o755 && mountIsReadOnly(options.spoolRoot)
   } catch { rootSafe = false }
   if (!rootSafe) rejected = Math.max(1, entries.length)
-  else for (const entry of entries) {
-    const filePath = path.join(options.spoolRoot, entry.name)
-    try {
-      const before = fs.lstatSync(filePath)
-      if (!entry.isFile() || before.isSymbolicLink() || !before.isFile() || before.uid !== 0 || before.nlink !== 1 || (before.mode & 0o777) !== 0o444 || before.size < 2 || before.size > PRIVILEGED_SPOOL_MAX_BYTES) {
-        throw new Error("Privileged event spool file is unsafe")
-      }
-      const handle = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
-      let raw: string
+  else withRecordLockRetry(path.join(eventRoot, "sanctuary", PRIVILEGED_EVENT_SOURCE, ".privileged-replay"), () => {
+    let replayAuthority = privilegedReplayAuthority(eventRoot)
+    for (const entry of entries) {
+      const filePath = path.join(options.spoolRoot, entry.name)
       try {
-        const opened = fs.fstatSync(handle)
-        if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino || opened.size !== before.size) throw new Error("Privileged event spool file changed")
-        raw = fs.readFileSync(handle, "utf8")
-      } finally { fs.closeSync(handle) }
-      const now = options.now?.() ?? new Date().toISOString()
-      const envelope = parsePrivilegedEnvelope(raw, entry.name, now)
-      if (replayContains(replayAuthority, envelope.nonce)) throw new Error("Privileged external event replayed nonce")
-      recordExternalEventInternal({
-        agent: envelope.agent,
-        source: envelope.source,
-        eventType: envelope.eventType,
-        eventId: envelope.incidentKey,
-        summary: envelope.summary,
-        evidence: [...envelope.evidence, `protective action: ${envelope.action}`, `protective action receipt: ${envelope.actionReceipt}`, `privileged transition: ${envelope.transitionId}`],
-        priority: "critical",
-        receivedAt: envelope.createdAt,
-        observationRevision: envelope.observationRevision,
-        transition: "opened",
-      }, { root: eventRoot, now: () => now, [privilegedIngress]: { nonce: envelope.nonce } })
-      replayAuthority = replayAdd(replayAuthority, envelope.nonce)
-      accepted += 1
-    } catch (error) {
-      if (error instanceof Error && error.message === "Privileged external event replayed nonce") replayed += 1
-      else rejected += 1
+        const before = fs.lstatSync(filePath)
+        if (!entry.isFile() || before.isSymbolicLink() || !before.isFile() || before.uid !== 0 || before.nlink !== 1 || (before.mode & 0o777) !== 0o444 || before.size < 2 || before.size > PRIVILEGED_SPOOL_MAX_BYTES) {
+          throw new Error("Privileged event spool file is unsafe")
+        }
+        const handle = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+        let raw: string
+        try {
+          const opened = fs.fstatSync(handle)
+          if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino || opened.size !== before.size) throw new Error("Privileged event spool file changed")
+          raw = fs.readFileSync(handle, "utf8")
+        } finally { fs.closeSync(handle) }
+        const now = options.now?.() ?? new Date().toISOString()
+        const envelope = parsePrivilegedEnvelope(raw, entry.name, now)
+        if (replayContains(replayAuthority, envelope.nonce)) throw new Error("Privileged external event replayed nonce")
+        recordExternalEventInternal({
+          agent: envelope.agent,
+          source: envelope.source,
+          eventType: envelope.eventType,
+          eventId: envelope.incidentKey,
+          summary: envelope.summary,
+          evidence: [...envelope.evidence, `protective action: ${envelope.action}`, `protective action receipt: ${envelope.actionReceipt}`, `privileged transition: ${envelope.transitionId}`],
+          priority: "critical",
+          receivedAt: envelope.createdAt,
+          observationRevision: envelope.observationRevision,
+          transition: "opened",
+        }, { root: eventRoot, now: () => now, [privilegedIngress]: { nonce: envelope.nonce } })
+        replayAuthority = replayAdd(replayAuthority, envelope.nonce)
+        accepted += 1
+      } catch (error) {
+        if (error instanceof Error && error.message === "Privileged external event replayed nonce") replayed += 1
+        else rejected += 1
+      }
     }
-  }
+  })
   emitNervesEvent({ component: "daemon", event: "daemon.privileged_event_spool_scan", message: "scanned privileged external-event spool", meta: { accepted, rejected, replayed } })
   return { accepted, rejected, replayed }
 }

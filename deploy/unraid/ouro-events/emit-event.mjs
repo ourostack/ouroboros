@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url"
 
 const SPOOL_ROOT = "/boot/config/custom/ouro-events/spool"
 const MAX_BYTES = 32 * 1024
+const MAX_SPOOL_FILES = 4_096
 
 function id(value, name) {
   if (typeof value !== "string" || !/^[a-zA-Z0-9._:-]{1,160}$/u.test(value)) throw new Error(`${name} is invalid`)
@@ -97,28 +98,69 @@ export function emitEvent(input, options = {}) {
       if (JSON.stringify(stableInput(existing)) !== JSON.stringify(stableInput(envelope))) throw new Error("transition already exists with different content")
       return { filePath, created: false }
     }
-    const temporary = path.join(anchoredRoot, `.${digest}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`)
+    const lockName = ".producer.lock"
+    const lockPath = path.join(anchoredRoot, lockName)
+    const cleanupLock = (target) => {
+      for (const name of ["event.tmp", "owner.json"]) {
+        try { fs.unlinkSync(path.join(target, name)) } catch (error) { if (error?.code !== "ENOENT") throw error }
+      }
+      fs.rmdirSync(target)
+    }
+    const lockDeadline = Date.now() + 30_000
+    while (true) {
+      try {
+        fs.mkdirSync(lockPath, { mode: 0o700 })
+        const ownerPath = path.join(lockPath, "owner.json")
+        fs.writeFileSync(ownerPath, `${JSON.stringify({ pid: process.pid, createdAt: Date.now() })}\n`, { mode: 0o600, flag: "wx" })
+        const owner = fs.openSync(ownerPath, "r")
+        try { fs.fsyncSync(owner) } finally { fs.closeSync(owner) }
+        break
+      } catch (error) {
+        if (error?.code !== "EEXIST") throw error
+        const winner = readPublished()
+        if (winner) {
+          if (JSON.stringify(stableInput(winner)) !== JSON.stringify(stableInput(envelope))) throw new Error("transition already exists with different content")
+          return { filePath, created: false }
+        }
+        let ownerPid = 0
+        try { ownerPid = Number(JSON.parse(fs.readFileSync(path.join(lockPath, "owner.json"), "utf8")).pid) } catch { /* incomplete lock owner */ }
+        let ownerAlive = ownerPid > 0
+        if (ownerAlive) {
+          try { process.kill(ownerPid, 0) } catch (signalError) { ownerAlive = signalError?.code !== "ESRCH" }
+        }
+        const lockAge = Date.now() - fs.statSync(lockPath).mtimeMs
+        if (!ownerAlive && (ownerPid > 0 || lockAge > 30_000)) {
+          const stalePath = `${lockPath}.stale-${process.pid}-${randomBytes(8).toString("hex")}`
+          try { fs.renameSync(lockPath, stalePath) } catch { continue }
+          cleanupLock(stalePath)
+          continue
+        }
+        if (Date.now() >= lockDeadline) throw new Error("event transition publication is busy")
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)
+      }
+    }
+    const temporary = path.join(lockPath, "event.tmp")
     try {
+      const winner = readPublished()
+      if (winner) {
+        if (JSON.stringify(stableInput(winner)) !== JSON.stringify(stableInput(envelope))) throw new Error("transition already exists with different content")
+        return { filePath, created: false }
+      }
+      const maxSpoolFiles = options.maxSpoolFiles ?? MAX_SPOOL_FILES
+      if (!Number.isSafeInteger(maxSpoolFiles) || maxSpoolFiles < 1) throw new Error("event spool capacity is invalid")
+      const currentFiles = fs.readdirSync(anchoredRoot, { withFileTypes: true }).filter((entry) => entry.isFile() && entry.name.endsWith(".json")).length
+      if (currentFiles >= maxSpoolFiles) throw new Error("event spool capacity is exhausted; existing artifacts were preserved")
       fs.writeFileSync(temporary, serialized, { encoding: "utf8", mode: 0o600, flag: "wx" })
       const file = fs.openSync(temporary, "r")
       try { fs.fsyncSync(file) } finally { fs.closeSync(file) }
       fs.chmodSync(temporary, 0o444)
       assertRootIdentity()
-      try {
-        fs.linkSync(temporary, anchoredFile)
-      } catch (error) {
-        if (error?.code !== "EEXIST") throw error
-        const winner = readPublished()
-        if (!winner || JSON.stringify(stableInput(winner)) !== JSON.stringify(stableInput(envelope))) throw new Error("transition already exists with different content")
-        return { filePath, created: false }
-      }
-      fs.unlinkSync(temporary)
+      fs.renameSync(temporary, anchoredFile)
       fs.fsyncSync(directory)
       assertRootIdentity()
       return { filePath, created: true }
-    } catch (error) {
-      try { fs.unlinkSync(temporary) } catch { /* nothing to clean */ }
-      throw error
+    } finally {
+      cleanupLock(lockPath)
     }
   } finally {
     fs.closeSync(directory)
