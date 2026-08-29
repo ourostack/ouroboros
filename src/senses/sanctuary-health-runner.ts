@@ -17,7 +17,6 @@ export interface SanctuaryHealthHabitResult {
 export interface SanctuaryHealthHabitRunnerOptions {
   createSweep?: (agentName: string) => (() => Promise<SanctuaryHealthSweepResult>)
   submitEvidence?: (input: ExternalEventInput) => Promise<Pick<ExternalEventRecord, "shouldWake">> | Pick<ExternalEventRecord, "shouldWake">
-  recordEvidence?: (input: ExternalEventInput) => Pick<ExternalEventRecord, "shouldWake">
   /** Legacy test seams retained only to prove the health runner never touches delivery or model work. */
   createApi?: (...args: never[]) => unknown
   credentials?: (...args: never[]) => unknown
@@ -76,28 +75,13 @@ export async function runSanctuaryHealthHabit(agentName: string, options: Sanctu
     return { ok: true, message: "health evidence submitted", data: { incidentCount: 0, submitted: 0, wakesRequested: 0 } }
   }
   const submit = options.submitEvidence ?? ((input: ExternalEventInput) => recordExternalEvent(input))
-  const record = options.recordEvidence ?? ((input: ExternalEventInput) => recordExternalEvent(input, { dispatchEnabled: false }))
-  for (const input of inputs) record(input)
-  const correlationEvidence = inputs.slice(0, 16).map((input) => `${input.eventId}: ${input.summary}`.slice(0, 1_500))
-  if (inputs.length > correlationEvidence.length) correlationEvidence.push(`${inputs.length - correlationEvidence.length} additional transitions omitted from this bounded wake; inspect individual receipts.`)
-  const correlation = {
-    agent: agentName,
-    source: "sanctuary-health",
-    eventType: "health.sweep_observed",
-    eventId: "sweep",
-    observationRevision: result.observationRevision,
-    transition: result.transition ?? "unchanged",
-    summary: `Sanctuary health sweep observed ${inputs.length} incident transition${inputs.length === 1 ? "" : "s"}.`,
-    evidence: correlationEvidence,
-    priority: "high",
-  } satisfies ExternalEventInput
-  const correlationReceipt = await submit(correlation)
-  const wakesRequested = correlationReceipt.shouldWake ? 1 : 0
+  const receipts = await Promise.all(inputs.map((input) => submit(input)))
+  const wakesRequested = receipts.some((receipt) => receipt.shouldWake) ? 1 : 0
   emitNervesEvent({
     component: "senses",
     event: "senses.sanctuary_health_habit",
     message: "Sanctuary health evidence submitted",
-    meta: { agentName, incidentCount: result.incidents.length, submitted: inputs.length + 1, wakesRequested },
+    meta: { agentName, incidentCount: result.incidents.length, submitted: inputs.length, wakesRequested },
   })
-  return { ok: true, message: "health evidence submitted", data: { incidentCount: result.incidents.length, submitted: inputs.length + 1, wakesRequested } }
+  return { ok: true, message: "health evidence submitted", data: { incidentCount: result.incidents.length, submitted: inputs.length, wakesRequested } }
 }

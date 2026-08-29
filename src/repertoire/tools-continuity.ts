@@ -48,7 +48,10 @@ export const continuityToolDefinitions: ToolDefinition[] = [
       }
       const record = readExternalEventRecord(recordPath);
       if (record.agent !== agentName) throw new Error("External event receipt does not belong to the current agent");
-      const turnEvent = ctx?.currentExternalEvent;
+      const turnContext = ctx?.currentExternalEvent;
+      const turnEvent = turnContext
+        ? [turnContext, ...(turnContext.relatedEvents ?? [])].find((event) => path.resolve(event.recordPath) === recordPath)
+        : undefined;
       const expectedGeneration = Number(a.expectedGeneration);
       const classifiedRevision = String(a.classifiedRevision ?? "");
       if (!turnEvent || turnEvent.recordPath !== recordPath || turnEvent.agent !== agentName
@@ -226,6 +229,8 @@ export const continuityToolDefinitions: ToolDefinition[] = [
             classifiedRevision: { type: "string", description: "Observation revision classified by the agent" },
             correlationKey: { type: "string", description: "Optional key relating several incidents to one concern" },
             expectedUpdatedAt: { type: "string", description: "Optional Care updatedAt value for CAS fencing" },
+            currentRisk: { type: "string", description: "Current material risk for this Care, or an empty string to clear it" },
+            nextCheckAt: { type: "string", description: "Exact ISO time of the next owned check" },
           },
           required: ["action"],
         },
@@ -246,14 +251,16 @@ export const continuityToolDefinitions: ToolDefinition[] = [
           relatedAgentIds: [],
           relatedObligationIds: [],
           relatedEpisodeIds: [],
-          currentRisk: null,
-          nextCheckAt: null,
+          currentRisk: a.currentRisk ? String(a.currentRisk) : null,
+          nextCheckAt: a.nextCheckAt ? String(a.nextCheckAt) : null,
         });
       } else if (a.action === "update") {
         const updates: Record<string, unknown> = {};
         if (a.label) updates.label = a.label;
         if (a.why) updates.why = a.why;
         if (a.salience) updates.salience = a.salience;
+        if (a.currentRisk !== undefined) updates.currentRisk = a.currentRisk || null;
+        if (a.nextCheckAt !== undefined) updates.nextCheckAt = a.nextCheckAt || null;
         result = updateCare(agentRoot, a.id, updates);
       } else if (a.action === "resolve") {
         result = resolveCare(agentRoot, a.id);
@@ -284,8 +291,9 @@ export const continuityToolDefinitions: ToolDefinition[] = [
           relatedAgentIds: [],
           relatedObligationIds: [],
           relatedEpisodeIds: [],
-          currentRisk: null,
-          nextCheckAt: null,
+          currentRisk: a.currentRisk ? String(a.currentRisk) : null,
+          nextCheckAt: a.nextCheckAt ? String(a.nextCheckAt) : null,
+          ...(a.expectedUpdatedAt ? { expectedUpdatedAt: String(a.expectedUpdatedAt) } : {}),
           incident: {
             source: a.source,
             incidentKey: a.incidentKey,

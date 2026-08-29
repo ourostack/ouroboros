@@ -17,6 +17,7 @@ const {
   mockReadHabitSessionSummary,
   mockReadFileSync,
   MockFileFriendStore,
+  mockRenewExternalEventClaim,
 } = vi.hoisted(() => ({
   mockRunPrivateRuntimeTurn: vi.fn(),
   mockEmitNervesEvent: vi.fn(),
@@ -40,6 +41,11 @@ const {
     findByExternalId = vi.fn(async () => null)
     listAll = vi.fn(async () => [])
   },
+  mockRenewExternalEventClaim: vi.fn(),
+}))
+
+vi.mock("../../heart/external-events/router", () => ({
+  renewExternalEventClaim: (...args: any[]) => mockRenewExternalEventClaim(...args),
 }))
 
 vi.mock("fs", async (importOriginal) => {
@@ -142,6 +148,7 @@ describe("private-runtime-worker", () => {
     mockApplyHabitRuntimeState.mockReset().mockImplementation((_agentRoot: string, habit: any) => habit)
     mockReadHabitSessionSummary.mockReset().mockReturnValue(null)
     mockEmitNervesEvent.mockReset()
+    mockRenewExternalEventClaim.mockReset().mockReturnValue({ claimExpiresAt: "2026-08-29T18:00:30.000Z" })
   })
 
   it("runs boot/habit/instinct cycles and ignores unknown messages", async () => {
@@ -210,6 +217,37 @@ describe("private-runtime-worker", () => {
 
     expect(runTurn).toHaveBeenNthCalledWith(1, expect.objectContaining({ externalEvent }))
     expect(runTurn).toHaveBeenNthCalledWith(2, expect.not.objectContaining({ externalEvent: expect.anything() }))
+  })
+
+  it("keeps one external-event claim alive while queued and during a long turn", async () => {
+    vi.useFakeTimers()
+    let releaseBoot!: () => void
+    let releaseEvent!: () => void
+    const bootGate = new Promise<void>((resolve) => { releaseBoot = resolve })
+    const eventGate = new Promise<void>((resolve) => { releaseEvent = resolve })
+    const runTurn = vi.fn(async (options: any) => {
+      if (options.reason === "boot") await bootGate
+      if (options.externalEvent) await eventGate
+    })
+    const worker = createPrivateRuntimeWorker(runTurn)
+    const externalEvent = { schemaVersion: 1 as const, recordPath: "/events/slugger/health/books.json", agent: "slugger", source: "health", eventId: "books", generation: 1, observationRevision: "rev-1", claimOwner: "lease-1" }
+    try {
+      const running = worker.run("boot")
+      await worker.handleMessage({ type: "message", externalEvent })
+      await vi.advanceTimersByTimeAsync(25_000)
+      expect(mockRenewExternalEventClaim.mock.calls.length).toBeGreaterThanOrEqual(3)
+
+      releaseBoot()
+      await Promise.resolve()
+      await vi.advanceTimersByTimeAsync(40_000)
+      releaseEvent()
+      await running
+
+      expect(runTurn.mock.calls.filter(([options]) => options.externalEvent)).toHaveLength(1)
+      expect(mockRenewExternalEventClaim.mock.calls.length).toBeGreaterThanOrEqual(7)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("passes undefined taskId when poke has no taskId", async () => {

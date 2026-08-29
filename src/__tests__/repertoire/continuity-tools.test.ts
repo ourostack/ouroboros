@@ -345,6 +345,23 @@ describe("continuity tools", () => {
   })
 
   describe("external_event_disposition", () => {
+    it("disposes an independently fenced member of a coalesced event turn", async () => {
+      const tool = findTool("external_event_disposition")
+      const related = { schemaVersion: 1 as const, recordPath: "/events/ouroboros/sanctuary-health/sonarr.json", agent: "ouroboros", source: "sanctuary-health", eventId: "sonarr", generation: 3, observationRevision: "rev-sonarr", claimOwner: "lease-sonarr" }
+      mockReadExternalEventRecord.mockReturnValue({ agent: "ouroboros", eventId: "sonarr", version: 8, generation: 3, observationRevision: "rev-sonarr", executionState: "running", claimOwner: "lease-sonarr" })
+      mockCommitExternalEventDisposition.mockReturnValue({ executionState: "handled" })
+      const authorizeDisposition = vi.fn(() => ({ allowed: true, reason: "approved" }))
+      await tool.handler({
+        recordPath: related.recordPath, expectedGeneration: 3, classifiedRevision: "rev-sonarr", classification: "expected",
+        stewardPolicyKey: "service:sonarr", stewardPolicyVersion: 4, decision: "silent", reason: "Expected off.", nextWake: "on_change",
+      }, {
+        signin: async () => undefined,
+        currentExternalEvent: { schemaVersion: 1, recordPath: "/events/ouroboros/sanctuary-health/books.json", agent: "ouroboros", source: "sanctuary-health", eventId: "books", generation: 2, observationRevision: "rev-books", claimOwner: "lease-books", relatedEvents: [related] },
+        externalEventAuthority: { authorizeDisposition },
+      } as any)
+      expect(authorizeDisposition).toHaveBeenCalledWith(expect.objectContaining({ event: related, stewardPolicyKey: "service:sonarr" }))
+      expect(mockCommitExternalEventDisposition).toHaveBeenCalledWith(related.recordPath, expect.objectContaining({ owner: "lease-sonarr", expectedGeneration: 3 }))
+    })
     it("claims and commits the current event generation with the Butler's typed reason", async () => {
       mockReadExternalEventRecord.mockReturnValue({ agent: "ouroboros", eventId: "books", version: 4, generation: 2, observationRevision: "rev-2", executionState: "running", claimOwner: "lease-2" })
       mockCommitExternalEventDisposition.mockReturnValue({ executionState: "handled", disposition: { reason: "Expected while the library is sleeping." } })

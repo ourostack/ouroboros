@@ -28,7 +28,7 @@ export interface ExternalEventDisposition {
   verificationRefs: string[]
 }
 
-export interface ExternalEventLeaseContext {
+export interface ExternalEventLeaseMember {
   schemaVersion: 1
   recordPath: string
   agent: string
@@ -37,6 +37,10 @@ export interface ExternalEventLeaseContext {
   generation: number
   observationRevision: string
   claimOwner: string
+}
+
+export interface ExternalEventLeaseContext extends ExternalEventLeaseMember {
+  relatedEvents?: ExternalEventLeaseMember[]
 }
 
 interface ExternalEventObservation {
@@ -86,7 +90,21 @@ export interface ExternalEventRecord extends Required<Omit<ExternalEventInput, "
   pendingObservation: ExternalEventObservation | null
   dispatchEnabled: boolean
   shouldWake: boolean
+  retentionSummary?: ExternalEventRetentionSummary
 }
+
+export interface ExternalEventRetentionSummary {
+  compactedHandledCount: number
+  oldestCompactedAt: string
+  newestCompactedAt: string
+  digest: string
+}
+
+const MAX_EVENT_TEXT_BYTES = 4_096
+const MAX_EVENT_EVIDENCE = 32
+const MAX_EVENT_RECORD_BYTES = 64 * 1_024
+const MAX_EVENT_RECORDS_PER_SOURCE = 512
+const MAX_EVENT_SOURCES_PER_AGENT = 64
 
 export function getExternalEventRoot(homeDir?: string): string {
   return path.join(getOuroCliHome(homeDir), "daemon", "external-events")
@@ -110,6 +128,59 @@ function observationDigest(input: ExternalEventInput): string {
     payloadPath: input.payloadPath ?? null,
     priority: input.priority ?? "high",
   })).digest("hex")
+}
+
+function assertBoundedText(value: unknown, name: string, maxBytes = MAX_EVENT_TEXT_BYTES): void {
+  if (value === undefined) return
+  if (typeof value !== "string" || Buffer.byteLength(value) > maxBytes) throw new Error(`External event ${name} must be bounded`)
+}
+
+function validateExternalEventInput(input: ExternalEventInput): void {
+  assertBoundedText(input.agent, "agent", 160)
+  assertBoundedText(input.source, "source", 160)
+  assertBoundedText(input.eventType, "eventType", 160)
+  assertBoundedText(input.eventId, "eventId", 160)
+  if (!input.agent.trim() || !input.source.trim() || !input.eventType.trim() || !input.eventId.trim()) throw new Error("External event identity must be bounded and nonempty")
+  assertBoundedText(input.summary, "summary")
+  assertBoundedText(input.payloadPath, "payloadPath")
+  assertBoundedText(input.priority, "priority", 64)
+  assertBoundedText(input.receivedAt, "receivedAt", 64)
+  assertBoundedText(input.observationRevision, "observationRevision", 256)
+  if (input.evidence !== undefined && (!Array.isArray(input.evidence) || input.evidence.length > MAX_EVENT_EVIDENCE)) throw new Error("External event evidence must be bounded")
+  for (const entry of input.evidence ?? []) assertBoundedText(entry, "evidence entry")
+  if (Buffer.byteLength(JSON.stringify(input)) > MAX_EVENT_RECORD_BYTES) throw new Error("External event input must be bounded")
+}
+
+function compactHandledReceiptsForNewRecord(recordPath: string): ExternalEventRetentionSummary | null {
+  const sourceDir = path.dirname(recordPath)
+  if (!fs.existsSync(sourceDir)) return null
+  const records = fs.readdirSync(sourceDir, { withFileTypes: true }).filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+  if (records.length < MAX_EVENT_RECORDS_PER_SOURCE) return null
+  const handled = records.flatMap((entry) => {
+    const candidatePath = path.join(sourceDir, entry.name)
+    try {
+      const parsed = readExternalEventRecord(candidatePath)
+      return parsed.executionState === "handled" ? [{ recordPath: candidatePath, updatedAt: parsed.updatedAt, eventId: parsed.eventId, prior: parsed.retentionSummary }] : []
+    } catch { return [] }
+  }).sort((left, right) => left.updatedAt.localeCompare(right.updatedAt) || left.recordPath.localeCompare(right.recordPath))
+  let remaining = records.length
+  let summary: ExternalEventRetentionSummary | null = null
+  for (const candidate of handled) {
+    if (remaining < MAX_EVENT_RECORDS_PER_SOURCE) break
+    fs.unlinkSync(candidate.recordPath)
+    remaining -= 1
+    const previousSummary = summary as ExternalEventRetentionSummary | null
+    const oldest = candidate.prior?.oldestCompactedAt && candidate.prior.oldestCompactedAt < candidate.updatedAt ? candidate.prior.oldestCompactedAt : candidate.updatedAt
+    const newest = candidate.prior?.newestCompactedAt && candidate.prior.newestCompactedAt > candidate.updatedAt ? candidate.prior.newestCompactedAt : candidate.updatedAt
+    summary = {
+      compactedHandledCount: (previousSummary?.compactedHandledCount ?? 0) + 1 + (candidate.prior?.compactedHandledCount ?? 0),
+      oldestCompactedAt: previousSummary && previousSummary.oldestCompactedAt < oldest ? previousSummary.oldestCompactedAt : oldest,
+      newestCompactedAt: previousSummary && previousSummary.newestCompactedAt > newest ? previousSummary.newestCompactedAt : newest,
+      digest: createHash("sha256").update(`${previousSummary?.digest ?? ""}\0${candidate.prior?.digest ?? ""}\0${candidate.eventId}\0${candidate.updatedAt}`).digest("hex"),
+    }
+  }
+  if (remaining >= MAX_EVENT_RECORDS_PER_SOURCE) throw new Error("External event receipt capacity is exhausted; active and failed work was preserved")
+  return summary
 }
 
 function observationFromInput(input: ExternalEventInput, now: string, digest: string, revision: string, fallbackTransition: ExternalEventTransition): ExternalEventObservation {
@@ -226,6 +297,7 @@ export interface ExternalEventStatus {
   claimExpiresAt: string | null
   dispatchEnabled: boolean
   undispatched: boolean
+  retentionSummary: ExternalEventRetentionSummary | null
 }
 
 export function listExternalEventStatus(root: string): ExternalEventStatus[] {
@@ -266,6 +338,7 @@ export function listExternalEventStatus(root: string): ExternalEventStatus[] {
             claimExpiresAt: record.claimExpiresAt,
             dispatchEnabled: record.dispatchEnabled !== false,
             undispatched: record.executionState === "received",
+            retentionSummary: record.retentionSummary ?? null,
           })
         } catch (error) {
           const recordPath = path.join(agentPath, source.name, entry.name)
@@ -295,6 +368,7 @@ export function listExternalEventStatus(root: string): ExternalEventStatus[] {
             claimExpiresAt: null,
             dispatchEnabled: false,
             undispatched: false,
+            retentionSummary: null,
           })
         }
       }
@@ -353,10 +427,22 @@ export function buildExternalEventMessage(record: ExternalEventRecord): string {
 }
 
 export function recordExternalEvent(input: ExternalEventInput, options: { root?: string; now?: () => string; dispatchEnabled?: boolean } = {}): ExternalEventRecord {
+  validateExternalEventInput(input)
   const now = options.now?.() ?? new Date().toISOString()
   const root = options.root ?? getExternalEventRoot()
   const recordPath = externalEventRecordPath(root, input)
-  return withRecordLock(recordPath, () => {
+  const sourceDir = path.dirname(recordPath)
+  const agentDir = path.dirname(sourceDir)
+  const agentCapacityLock = path.join(agentDir, ".capacity")
+  const capacityLock = path.join(path.dirname(recordPath), ".capacity")
+  return withRecordLock(agentCapacityLock, () => {
+    if (!fs.existsSync(sourceDir)) {
+      const sources = fs.readdirSync(agentDir, { withFileTypes: true }).filter((entry) => entry.isDirectory() && !entry.name.startsWith(".")).length
+      if (sources >= MAX_EVENT_SOURCES_PER_AGENT) throw new Error("External event source capacity is exhausted")
+    }
+    return withRecordLock(capacityLock, () => {
+    const compacted = !fs.existsSync(recordPath) ? compactHandledReceiptsForNewRecord(recordPath) : null
+    return withRecordLock(recordPath, () => {
     const digest = observationDigest(input)
     const revision = input.observationRevision?.trim() || digest
     const existingResult = readExisting(recordPath)
@@ -405,6 +491,7 @@ export function recordExternalEvent(input: ExternalEventInput, options: { root?:
     pendingObservation: shouldWake ? null : existing!.pendingObservation,
     dispatchEnabled: options.dispatchEnabled ?? existing?.dispatchEnabled ?? true,
     shouldWake,
+    ...((existing?.retentionSummary ?? compacted) ? { retentionSummary: existing?.retentionSummary ?? compacted! } : {}),
     }
     atomicWrite(recordPath, record)
     emitNervesEvent({
@@ -414,6 +501,8 @@ export function recordExternalEvent(input: ExternalEventInput, options: { root?:
     meta: { agent: record.agent, source: record.source, eventType: record.eventType, eventId: record.eventId, duplicateCount: record.duplicateCount, generation, shouldWake, recordPath },
     })
     return record
+    })
+    })
   })
 }
 
@@ -459,15 +548,40 @@ export function claimExternalEvent(recordPath: string, input: CasInput & { owner
   })
 }
 
+export function renewExternalEventClaim(recordPath: string, input: { owner: string; expectedGeneration: number; leaseMs?: number; now?: () => string }): ExternalEventRecord {
+  return withRecordLock(recordPath, () => {
+    const record = readExternalEventRecord(recordPath)
+    if (record.executionState !== "running" || record.claimOwner !== input.owner) throw new Error("External event claim owner mismatch")
+    if (record.generation !== input.expectedGeneration) throw new Error("External event generation mismatch")
+    const leaseMs = input.leaseMs ?? 30_000
+    if (!Number.isSafeInteger(leaseMs) || leaseMs <= 0) throw new Error("External event claim renewal is invalid")
+    const now = input.now?.() ?? new Date().toISOString()
+    return commitMutation(recordPath, { ...record, claimExpiresAt: new Date(Date.parse(now) + leaseMs).toISOString() }, now)
+  })
+}
+
 function assertClaim(record: ExternalEventRecord, input: CasInput & { owner: string }): void {
   assertCas(record, input)
   if (record.executionState !== "running" || record.claimOwner !== input.owner) throw new Error("External event claim owner mismatch")
+}
+
+function validateDisposition(disposition: ExternalEventDisposition): void {
+  assertBoundedText(disposition.classifiedRevision, "classified revision", 256)
+  assertBoundedText(disposition.stewardPolicy.key, "steward policy key", 256)
+  assertBoundedText(disposition.reason, "disposition reason")
+  assertBoundedText(disposition.careId ?? undefined, "Care id", 256)
+  assertBoundedText(disposition.awaitId ?? undefined, "await id", 256)
+  if (disposition.actionRefs.length > 32 || disposition.verificationRefs.length > 32) throw new Error("External event disposition references must be bounded")
+  for (const ref of [...disposition.actionRefs, ...disposition.verificationRefs]) assertBoundedText(ref, "disposition reference", 512)
+  if (disposition.nextWake.kind === "at") assertBoundedText(disposition.nextWake.at, "wake time", 64)
+  if (Buffer.byteLength(JSON.stringify(disposition)) > MAX_EVENT_RECORD_BYTES) throw new Error("External event disposition must be bounded")
 }
 
 export function commitExternalEventDisposition(recordPath: string, input: CasInput & { owner: string; disposition: ExternalEventDisposition }): ExternalEventRecord {
   return withRecordLock(recordPath, () => {
     const record = readExternalEventRecord(recordPath)
     assertClaim(record, input)
+    validateDisposition(input.disposition)
     if (input.disposition.nextWake.kind === "at" && (!input.disposition.awaitId || !Number.isFinite(Date.parse(input.disposition.nextWake.at)))) {
       throw new Error("External event time disposition requires an await receipt")
     }
@@ -553,5 +667,18 @@ export function advanceExternalEventFromAwait(recordPath: string, input: CasInpu
     disposition: null,
     shouldWake: true,
     }, now)
+  })
+}
+
+export function advanceExternalEventsFromAwait(root: string, agent: string, awaitId: string): ExternalEventRecord[] {
+  const matches = listExternalEventStatus(root).filter((status) => !status.corrupt
+    && status.agent === agent && status.executionState === "handled" && status.awaitId === awaitId)
+  return matches.map((status) => {
+    const record = readExternalEventRecord(status.recordPath)
+    return advanceExternalEventFromAwait(record.recordPath, {
+      awaitId,
+      expectedVersion: record.version,
+      expectedGeneration: record.generation,
+    })
   })
 }
