@@ -1,6 +1,13 @@
 import fs from "node:fs"
 import path from "node:path"
-import { describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it } from "vitest"
+import { getChannelCapabilities, type FriendRecord } from "@ouro.bot/friends"
+
+import { readActiveCares } from "../../arc/cares"
+import { getAgentRoot, resetIdentity, setAgentName } from "../../heart/identity"
+import { parseAwaitFile } from "../../heart/awaiting/await-parser"
+import { createRelationshipAuthorizationEvaluator, loadRelationshipCapabilityRegistry } from "../../repertoire/relationship-authorization"
+import { execTool, getToolsForChannel } from "../../repertoire/tools"
 
 const bundleRoot = path.resolve("deploy/unraid/sanctuary.ouro")
 const transcriptPath = path.resolve("src/__tests__/fixtures/sanctuary-butler-transcripts.json")
@@ -11,7 +18,46 @@ function psyche(name: string): string {
   return fs.readFileSync(path.join(bundleRoot, "psyche", `${name}.md`), "utf8")
 }
 
+const rootsToRemove: string[] = []
+
+function relationshipFriend(profile: "sanctuary-owner" | "sanctuary-household"): FriendRecord {
+  return {
+    id: profile === "sanctuary-owner" ? "ari" : "household-member",
+    name: profile === "sanctuary-owner" ? "Ari" : "Household member",
+    trustLevel: profile === "sanctuary-owner" ? "family" : "friend",
+    admissionState: "active",
+    initiativePolicy: profile === "sanctuary-owner" ? "proactive" : "request_follow_up_only",
+    capabilityProfileId: profile,
+    externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0,
+    createdAt: "2026-08-29T00:00:00.000Z", updatedAt: "2026-08-29T00:00:00.000Z", schemaVersion: 1,
+  }
+}
+
+function realToolContext(profile: "sanctuary-owner" | "sanctuary-household") {
+  const registry = loadRelationshipCapabilityRegistry(bundleRoot)
+  const friend = relationshipFriend(profile)
+  const evaluator = createRelationshipAuthorizationEvaluator({
+    friend,
+    registry,
+    requestId: "telegram-request-1",
+    requestPhase: "inbound",
+    sessionEventId: "telegram-session-event-1",
+  })
+  return {
+    evaluator,
+    context: {
+      signin: async () => undefined,
+      relationshipAuthorization: evaluator,
+      currentSession: { friendId: friend.id, channel: "telegram", key: `telegram:${friend.id}`, sessionPath: "" },
+    },
+  }
+}
+
 describe("Mendelow Cloud Butler household UX", () => {
+  afterEach(() => {
+    resetIdentity()
+    while (rootsToRemove.length > 0) fs.rmSync(rootsToRemove.pop()!, { recursive: true, force: true })
+  })
   it("serves Ari and approved household members without requiring the internal server name", () => {
     expect(psyche("IDENTITY")).toContain("Mendelow Cloud Butler")
     expect(psyche("IDENTITY")).toContain("approved household members")
@@ -95,5 +141,61 @@ describe("Mendelow Cloud Butler household UX", () => {
     expect(family.audience).toBe("family")
     expect(family.reply).toContain("separate from everyone else’s private messages and tasks")
     expect(family.tools).not.toEqual(expect.arrayContaining(["query_cares", "query_active_work", "care_manage", "await_condition"]))
+  })
+
+  it("files the specified snooze and movie follow-up through the canonical await and Care stores", async () => {
+    setAgentName(`sanctuary-butler-ux-${process.pid}-${Date.now()}`)
+    const agentRoot = getAgentRoot()
+    rootsToRemove.push(agentRoot)
+    const { context } = realToolContext("sanctuary-owner")
+
+    const snoozeCare = JSON.parse(await execTool("care_manage", {
+      action: "create",
+      label: "Top up download credit",
+      why: "Ari asked me to remind him Friday at 10:00 AM",
+      nextCheckAt: "2026-09-04T10:00:00-07:00",
+    }, context)) as { id: string }
+    const awaitReceipt = JSON.parse(await execTool("await_condition", {
+      name: "download-credit-friday-10am",
+      condition: "It is Friday, September 4, 2026 at 10:00 AM America/Los_Angeles",
+      cadence: "1m",
+      body: `Remind Ari to top up download credit. Care: ${snoozeCare.id}`,
+    }, context)) as { filed: string; path: string }
+    const movieCare = JSON.parse(await execTool("care_manage", {
+      action: "create",
+      label: "Request Moonstruck for Ari",
+      why: "No truthful media-request API is installed; keep the request as owned active work",
+    }, context)) as { id: string }
+
+    expect(awaitReceipt).toEqual({ filed: "download-credit-friday-10am", path: path.join(agentRoot, "awaiting", "download-credit-friday-10am.md") })
+    const filedAwait = parseAwaitFile(fs.readFileSync(awaitReceipt.path, "utf8"), awaitReceipt.path)
+    expect(filedAwait).toMatchObject({ status: "pending", alert: "telegram", filed_from: "telegram", filed_for_friend_id: "ari" })
+    expect(filedAwait.body).toContain(`Care: ${snoozeCare.id}`)
+    expect(readActiveCares(agentRoot)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: snoozeCare.id, label: "Top up download credit", nextCheckAt: "2026-09-04T10:00:00-07:00" }),
+      expect.objectContaining({ id: movieCare.id, label: "Request Moonstruck for Ari", status: "active" }),
+    ]))
+  })
+
+  it("enforces family privacy with the packaged relationship evaluator at advertisement and execution", async () => {
+    setAgentName(`sanctuary-butler-privacy-${process.pid}-${Date.now()}`)
+    const agentRoot = getAgentRoot()
+    rootsToRemove.push(agentRoot)
+    const owner = realToolContext("sanctuary-owner")
+    const privateCare = JSON.parse(await execTool("care_manage", { action: "create", label: "Ari private task", why: "owner-only" }, owner.context)) as { id: string }
+    const household = realToolContext("sanctuary-household")
+    setAgentName("sanctuary")
+    const advertised = getToolsForChannel(getChannelCapabilities("telegram"))
+      .map((tool) => tool.function.name)
+      .filter((name) => household.evaluator.advertisedToolNames.includes(name))
+    setAgentName(path.basename(agentRoot, ".ouro"))
+
+    expect(advertised).toEqual(["unraid_list_containers", "unraid_get_storage", "unraid_get_disks", "unraid_get_system", "ponder", "settle", "speak"])
+    const deniedRead = await execTool("query_cares", {}, household.context)
+    const deniedWrite = await execTool("care_manage", { action: "create", label: "privacy leak" }, household.context)
+    expect(deniedRead).toContain("relationship authorization required")
+    expect(deniedRead).not.toContain("Ari private task")
+    expect(deniedWrite).toContain("relationship authorization required")
+    expect(readActiveCares(agentRoot)).toEqual([expect.objectContaining({ id: privateCare.id, label: "Ari private task" })])
   })
 })
