@@ -230,8 +230,8 @@ export interface RunSenseTurnResult {
   sessionPath?: string
 }
 
-export function getSenseSessionPath(agentName: string, friendId: string, channel: Channel, sessionKey: string): string {
-  return path.join(getAgentRoot(agentName), "state", "sessions", friendId, channel, `${sanitizeKey(sessionKey)}.json`)
+export function getSenseSessionPath(agentName: string, friendId: string, channel: Channel, sessionKey: string, agentRootOverride?: string): string {
+  return path.join(agentRootOverride ?? getAgentRoot(agentName), "state", "sessions", friendId, channel, `${sanitizeKey(sessionKey)}.json`)
 }
 
 /**
@@ -297,7 +297,7 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
   // Session path and loading
   const sessionDir = path.join(agentRoot, "state", "sessions", friendId, channel)
   fs.mkdirSync(sessionDir, { recursive: true })
-  const sessPath = getSenseSessionPath(agentName, friendId, channel, sessionKey)
+  const sessPath = getSenseSessionPath(agentName, friendId, channel, sessionKey, agentRoot)
   const runWithLease = options._withSessionTurnLease ?? withSessionTurnLease
   return runWithLease(sessPath, async (sessionTurnLease) => {
   const baseSessionRevision = readSessionTransaction(sessPath, sessionTurnLease).revision

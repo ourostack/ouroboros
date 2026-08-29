@@ -65,6 +65,31 @@ describe("Telegram effect adapter", () => {
     expect(retryApi.request).not.toHaveBeenCalled()
   })
 
+  it("turns a pre-existing attempting part into indeterminate without a blind resend", async () => {
+    const store = journal()
+    const prepared = prepareTelegramEffect(store, { idempotencyKey: "crash:req-2", target, authorClass: "butler", effect: { kind: "text", text: "Maybe accepted" }, authorization })
+    prepared.parts[0]!.state = "attempting"
+    store.write(prepared)
+    const api = { request: vi.fn() }
+    await expect(executeTelegramEffect(store, prepared.id, api, () => authorization)).rejects.toThrow("indeterminate")
+    expect(api.request).not.toHaveBeenCalled()
+    expect(store.read(prepared.id).parts[0]?.state).toBe("indeterminate")
+  })
+
+  it("rejects a symlink journal root and corrupt persisted artifacts", () => {
+    const parent = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-effect-security-"))
+    roots.push(parent)
+    const targetRoot = path.join(parent, "target")
+    const linkRoot = path.join(parent, "link")
+    fs.mkdirSync(targetRoot)
+    fs.symlinkSync(targetRoot, linkRoot)
+    expect(() => new FileTelegramEffectJournal(linkRoot)).toThrow("symbolic link")
+
+    const store = new FileTelegramEffectJournal(path.join(parent, "journal"))
+    fs.writeFileSync(path.join(parent, "journal", `${"a".repeat(64)}.json`), "{}", { mode: 0o600 })
+    expect(() => store.read("a".repeat(64))).toThrow("invalid")
+  })
+
   it("supports cards, edits, and callback acknowledgements through the same effect boundary", async () => {
     const store = journal()
     const api = { request: vi.fn(async (method: string) => method === "answerCallbackQuery" ? true : { message_id: 77 }) }
@@ -121,6 +146,7 @@ describe("Telegram effect adapter", () => {
       ["system", "telegram-system-failsafe"],
     ])
     expect(envelope.events.every((event) => event.relations.references.some((ref) => ref.startsWith("telegram-message:")))).toBe(true)
-    expect(resolveTelegramReply(store, 2)).toMatchObject({ authorClass: "control", sessionEventId: "evt-000002" })
+    expect(resolveTelegramReply(store, { messageId: 2, chatId: "42", friendId: "ari", sessionKey: "telegram:ari" })).toMatchObject({ authorClass: "control", sessionEventId: "evt-000002" })
+    expect(resolveTelegramReply(store, { messageId: 2, chatId: "other", friendId: "ari", sessionKey: "telegram:ari" })).toBeNull()
   })
 })
