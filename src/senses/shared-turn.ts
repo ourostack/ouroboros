@@ -230,6 +230,20 @@ export interface RunSenseTurnResult {
   sessionPath?: string
   /** Existing canonical session event IDs aligned with successful outward deliveries. */
   causalSessionEventIds?: Array<string | null>
+  /** Exact canonical assistant event recovered by the transcript-readback fallback. */
+  responseCausalSessionEventId?: string
+}
+
+function newOutwardCoordinates(
+  events: SessionEvent[],
+  existingEventIds: ReadonlySet<string>,
+): Array<{ kind: OutwardSenseDeliveryKind; eventId: string }> {
+  return events.flatMap((event): Array<{ kind: OutwardSenseDeliveryKind; eventId: string }> => {
+    if (existingEventIds.has(event.id) || event.role !== "assistant") return []
+    const outwardTools = event.toolCalls.filter((call) => call.function.name === "speak" || call.function.name === "settle")
+    if (outwardTools.length > 0) return outwardTools.map((call) => ({ kind: call.function.name as "speak" | "settle", eventId: event.id }))
+    return typeof event.content === "string" && event.content.trim() ? [{ kind: "text" as const, eventId: event.id }] : []
+  })
 }
 
 function causalSessionEventIds(
@@ -237,12 +251,7 @@ function causalSessionEventIds(
   existingEventIds: ReadonlySet<string>,
   attempts: Array<{ kind: OutwardSenseDeliveryKind; delivered: boolean }>,
 ): Array<string | null> {
-  const coordinates = events.flatMap((event): Array<{ kind: OutwardSenseDeliveryKind; eventId: string }> => {
-    if (existingEventIds.has(event.id) || event.role !== "assistant") return []
-    const outwardTools = event.toolCalls.filter((call) => call.function.name === "speak" || call.function.name === "settle")
-    if (outwardTools.length > 0) return outwardTools.map((call) => ({ kind: call.function.name as "speak" | "settle", eventId: event.id }))
-    return typeof event.content === "string" && event.content.trim() ? [{ kind: "text" as const, eventId: event.id }] : []
-  })
+  const coordinates = newOutwardCoordinates(events, existingEventIds)
   const aligned = coordinates.length === attempts.length && coordinates.every((coordinate, index) => coordinate.kind === attempts[index]!.kind)
     ? coordinates.map((coordinate) => coordinate.eventId)
     : attempts.map(() => null)
@@ -476,6 +485,7 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
 
   // Build response
   let finalResponse: string
+  let responseCausalSessionEventId: string | undefined
   if (committedResponseText.length === 0) {
     // Agent settled but no text came through callbacks — check session transcript for the settle answer
     // Await deferred persist so the session file is up-to-date before readback
@@ -483,8 +493,9 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
     if (persistPromise) await persistPromise
     const postTurnSession = loadSession(sessPath)
     if (postTurnSession?.messages) {
-      finalResponse = extractOutwardSenseDeliveryText(postTurnSession.messages)
-        ?? "(agent responded but response was empty)"
+      const recovered = extractOutwardSenseDeliveryText(postTurnSession.messages)
+      finalResponse = recovered ?? "(agent responded but response was empty)"
+      if (recovered) responseCausalSessionEventId = newOutwardCoordinates(persistedEvents, existingEventIds).at(-1)?.eventId
     } else {
       finalResponse = "(agent responded but response was empty)"
     }
@@ -533,6 +544,7 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
     toolInvocationCount,
     sessionPath: sessPath,
     ...(deliveries.length > 0 ? { causalSessionEventIds: causalSessionEventIds(persistedEvents, existingEventIds, deliveryAttempts) } : {}),
+    ...(responseCausalSessionEventId ? { responseCausalSessionEventId } : {}),
   }
   })
 }
