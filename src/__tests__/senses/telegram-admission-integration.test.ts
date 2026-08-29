@@ -66,6 +66,11 @@ describe("Telegram admission integration", () => {
       friendId: "household-friend",
       channel: "telegram",
       userMessage: "hostile https://evil.invalid",
+      ingressRelations: {
+        replyToEventId: null,
+        threadRootEventId: null,
+        references: [expect.stringMatching(/^telegram-admission:[a-f0-9]{20}$/u)],
+      },
       identity: expect.objectContaining({ provider: "telegram-user" }),
     }))
     expect(requests).toContainEqual({ method: "answerCallbackQuery", body: { callback_query_id: "callback-1" } })

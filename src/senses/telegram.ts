@@ -1072,6 +1072,9 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     const contactSubject = opaqueTelegramSubject(identityKey, input.botId, input.userId, input.chatId)
     const sessionKey = `telegram:${contactSubject}`
     const sessionPath = getSenseSessionPath(options.agentName, input.friendId, "telegram", sessionKey, agentRoot)
+    const admissionReference = `telegram-admission:${input.admissionId}`
+    const existingSession = loadSessionEnvelopeFile(sessionPath)
+    if (existingSession?.events.some((event) => event.relations.references.includes(admissionReference))) return
     const accepted: TelegramEffectArtifact[] = []
     let deliveryIndex = 0
     const result = await runTurn({
@@ -1085,6 +1088,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         displayName: "Approved Telegram household member",
       },
       userMessage: input.text,
+      ingressRelations: { replyToEventId: null, threadRootEventId: null, references: [admissionReference] },
       deliverySink: {
         onDelivery: async (delivery) => {
           const effect = await deliverTypedEffect({
