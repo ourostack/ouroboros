@@ -1413,6 +1413,25 @@ describe("runSenseTurn", () => {
       userMessage: "hello",
     })).rejects.toThrow("pipeline explosion")
   })
+
+  it("runs the sense authorization barrier at the pipeline pre-provider boundary", async () => {
+    let providerInvocationCount = 0
+    mockHandleInboundTurn.mockImplementation(async (input: any) => {
+      await input.prepareRunAgentOptions?.({ messages: [], currentUserMessages: [], resolvedContext: makeResolvedContext(), runAgentOptions: {} })
+      providerInvocationCount += 1
+      return { resolvedContext: makeResolvedContext(), gateResult: { allowed: true }, turnOutcome: "settled", messages: [] }
+    })
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    await expect(runSenseTurn({
+      agentName: "test-agent",
+      channel: "telegram",
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "hello",
+      prepareRunAgentOptions: async () => { throw new Error("relationship revoked before provider") },
+    })).rejects.toThrow("relationship revoked before provider")
+    expect(providerInvocationCount).toBe(0)
+  })
 })
 
 describe("stripThinkBlocks", () => {

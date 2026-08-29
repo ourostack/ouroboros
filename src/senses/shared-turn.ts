@@ -21,7 +21,7 @@ import type { IdentityProvider, Channel } from "@ouro.bot/friends"
 import { getPendingDir, drainPending } from "../mind/pending"
 import { postTurnTrim, deferPostTurnPersist } from "../mind/context"
 import { enforceTrustGate } from "./trust-gate"
-import { handleInboundTurn } from "./pipeline"
+import { handleInboundTurn, type InboundTurnInput } from "./pipeline"
 import { getSharedMcpManager } from "../repertoire/mcp-manager"
 import type { RuntimeMcpServers } from "../repertoire/mcp-manager"
 import { emitNervesEvent } from "../nerves/runtime"
@@ -184,6 +184,8 @@ export interface RunSenseTurnOptions {
   deliverySink?: OutwardSenseDeliverySink
   /** Optional transport-specific controls surfaced to tools during this turn. */
   toolContext?: Partial<ToolContext>
+  /** Final sense-owned authorization/context refresh at the shared pipeline's pre-provider boundary. */
+  prepareRunAgentOptions?: InboundTurnInput["prepareRunAgentOptions"]
   /** Builds a durable approval coordinator after the exact leased session path/revision are known. */
   approvalCoordinatorFactory?: (context: { sessionPath: string; baseSessionRevision: string }) => import("../heart/core").ApprovalCoordinator
   /**
@@ -466,6 +468,7 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
         currentUserMessage: userMessage,
       },
     },
+    ...(options.prepareRunAgentOptions ? { prepareRunAgentOptions: options.prepareRunAgentOptions } : {}),
     /* v8 ignore start — delegation wrappers; these just forward to the real functions */
     runAgent: (msgs, cb, ch, sig, opts) => runAgent(msgs, cb, ch, sig, opts),
     postTurn: (turnMessages, sessionPathArg, usage, hooks, state) => {
