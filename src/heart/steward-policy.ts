@@ -3,7 +3,7 @@ import * as path from "node:path"
 import { randomUUID } from "node:crypto"
 import type { TrustLevel } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../nerves/runtime"
-import { withImmediateSessionTurnLease } from "../mind/session-transaction"
+import { readSessionTransaction, withImmediateSessionTurnLease, writeSessionTransaction } from "../mind/session-transaction"
 
 export type LearnedPolicyProvenance = "stated" | "observed" | "default"
 export type ActionGrantProvenance = "stated" | "installed_explicit_policy"
@@ -87,19 +87,6 @@ function ensureDirectory(agentRoot: string): void {
   fs.chmodSync(policyDir(agentRoot), 0o700)
 }
 
-function writeAtomic(filePath: string, value: unknown): void {
-  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`
-  const fd = fs.openSync(tempPath, "wx", 0o600)
-  try {
-    fs.writeFileSync(fd, `${JSON.stringify(value, null, 2)}\n`, "utf8")
-    fs.fsyncSync(fd)
-  } finally {
-    fs.closeSync(fd)
-  }
-  fs.renameSync(tempPath, filePath)
-  fs.chmodSync(filePath, 0o600)
-}
-
 function appendReceipt(filePath: string, value: unknown): void {
   const fd = fs.openSync(filePath, "a", 0o600)
   try {
@@ -124,22 +111,28 @@ function optionalExpiry(value: string | undefined, now: string): string | undefi
   return value
 }
 
+function validateStewardPolicy(value: unknown): StewardPolicyRecord {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("steward policy is invalid")
+  const candidate = value as Partial<StewardPolicyRecord>
+  if (candidate.schemaVersion !== 1 || !Number.isInteger(candidate.version) || candidate.version! < 0 || typeof candidate.desiredStates !== "object" || !candidate.desiredStates || typeof candidate.routineActionGrants !== "object" || !candidate.routineActionGrants) {
+    throw new Error("steward policy is invalid")
+  }
+  return candidate as StewardPolicyRecord
+}
+
 export function readStewardPolicy(agentRoot: string): StewardPolicyRecord {
   const filePath = policyPath(agentRoot)
   if (!fs.existsSync(filePath)) return structuredClone(EMPTY_POLICY)
-  const value = JSON.parse(fs.readFileSync(filePath, "utf8")) as Partial<StewardPolicyRecord>
-  if (value.schemaVersion !== 1 || !Number.isInteger(value.version) || value.version! < 0 || typeof value.desiredStates !== "object" || !value.desiredStates || typeof value.routineActionGrants !== "object" || !value.routineActionGrants) {
-    throw new Error("steward policy is invalid")
-  }
-  return value as StewardPolicyRecord
+  return validateStewardPolicy(JSON.parse(fs.readFileSync(filePath, "utf8")))
 }
 
 export function updateStewardPolicy(agentRoot: string, input: { expectedVersion: number; actor: StewardPolicyActor; mutation: StewardPolicyMutation; now?: string }): StewardPolicyRecord {
   if (input.actor.trustLevel !== "family") throw new Error("steward policy mutation requires family authority")
   const authorizingSessionEvent = requireText(input.actor.sessionEventId, "authorizing session event")
   const issuer = requireText(input.actor.friendId, "issuer")
-  return withImmediateSessionTurnLease(policyPath(agentRoot), () => {
-    const current = readStewardPolicy(agentRoot)
+  return withImmediateSessionTurnLease(policyPath(agentRoot), (lease) => {
+    const snapshot = readSessionTransaction(policyPath(agentRoot), lease)
+    const current = snapshot.value === null ? structuredClone(EMPTY_POLICY) : validateStewardPolicy(snapshot.value)
     if (current.version !== input.expectedVersion) throw new Error(`steward policy version changed: expected ${input.expectedVersion}, got ${current.version}`)
     const now = input.now ?? new Date().toISOString()
     const expiresAt = optionalExpiry(input.mutation.expiresAt, now)
@@ -166,7 +159,7 @@ export function updateStewardPolicy(agentRoot: string, input: { expectedVersion:
       }
     }
     ensureDirectory(agentRoot)
-    writeAtomic(policyPath(agentRoot), next)
+    writeSessionTransaction(policyPath(agentRoot), next, { lease, expectedRevision: snapshot.revision })
     appendReceipt(auditPath(agentRoot), { schemaVersion: 1, policyVersion: version, issuer, authorizingSessionEvent, mutationKind: input.mutation.kind, at: now })
     emitNervesEvent({ component: "heart", event: "heart.steward_policy_updated", message: "updated steward policy", meta: { version, mutationKind: input.mutation.kind, issuer } })
     return next
