@@ -39,6 +39,8 @@ function isSanctuaryAgent(): boolean {
   }
 }
 
+const SANCTUARY_TELEGRAM_BASE_TOOLS = new Set(["query_active_work", "query_cares", "care_manage", "await_condition", "cancel_await"])
+
 // Re-export types and constants used by the rest of the codebase
 export { tools, settleTool, observeTool, ponderTool, restTool, speakTool } from "./tools-base";
 export type { ToolContext, ToolHandler, ToolDefinition } from "./tools-base";
@@ -104,6 +106,7 @@ export function getToolsForChannel(
 ): OpenAI.ChatCompletionFunctionTool[] {
   if (capabilities?.channel === "telegram" && isSanctuaryAgent()) {
     return [
+      ...baseToolDefinitions.filter((definition) => SANCTUARY_TELEGRAM_BASE_TOOLS.has(definition.tool.function.name)).map((definition) => definition.tool),
       ...unraidToolDefinitions.map((definition) => definition.tool),
       stewardPolicyToolDefinition.tool,
       ponderTool,

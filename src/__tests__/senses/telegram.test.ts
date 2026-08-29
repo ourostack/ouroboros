@@ -906,6 +906,16 @@ describe("Telegram sense", () => {
     await ordinary.getOnMessage()({ updateId: 20, messageId: "21", userId: "42", chatId: "42", text: "Explain the server architecture" })
     expect(ordinary.api.request).toHaveBeenCalledWith("sendMessage", { chat_id: "42", text: "Ordinary grounded prose remains under agent control.", parse_mode: "HTML" }, undefined)
 
+    const ordinaryStatus = fixture({
+      runWithToolReceiptCollection: collect,
+      runTurn: async (options: any) => {
+        await options.deliverySink.onDelivery({ kind: "settle", text: "Books is off because you asked me to keep it off. Everything else I checked is healthy." })
+        return { response: "Books is off because you asked me to keep it off. Everything else I checked is healthy.", ponderDeferred: false, deliveries: [], deliveryFailures: [] }
+      },
+    })
+    await ordinaryStatus.getOnMessage()({ updateId: 21, messageId: "22", userId: "42", chatId: "42", text: "status" })
+    expect(ordinaryStatus.api.request).toHaveBeenCalledWith("sendMessage", { chat_id: "42", text: "Books is off because you asked me to keep it off. Everything else I checked is healthy.", parse_mode: "HTML" }, undefined)
+
     const duplicateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-grounded-duplicate-"))
     const duplicate = fixture({
       acceptanceMarker: () => ({ scenarioHandleDigest: "d".repeat(64), label: "unit-16d-whats-up" }),
