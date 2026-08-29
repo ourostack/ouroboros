@@ -26,6 +26,7 @@ import {
   resetAwaitToolDeps,
 } from "../../repertoire/tools-awaiting"
 import { expectedCappedContent, expectedTruncationMarker, expectCappedAgentContent, makeOversizedAgentContent } from "../helpers/content-cap"
+import { claimExternalEvent, commitExternalEventDisposition, getExternalEventRoot, readExternalEventRecord, recordExternalEvent } from "../../heart/external-events/router"
 
 const fileAwaitDef = awaitingToolDefinitions.find((d) => d.tool.function.name === "await_condition")!
 const resolveAwaitDef = awaitingToolDefinitions.find((d) => d.tool.function.name === "resolve_await")!
@@ -193,6 +194,29 @@ describe("tools-awaiting", () => {
         reason: "resolved",
         observation: "download appeared",
       }))
+    })
+
+    it("advances the exact handled external event linked to the resolved await", async () => {
+      const previousHome = process.env.HOME
+      process.env.HOME = agentRoot
+      try {
+        const first = recordExternalEvent({ agent: "slugger", source: "guard", eventType: "health.observed", eventId: "books", observationRevision: "rev-1" }, { root: getExternalEventRoot() })
+        const claimed = claimExternalEvent(first.recordPath, { owner: "lease-1", expectedVersion: first.version, expectedGeneration: 1 })
+        const handled = commitExternalEventDisposition(first.recordPath, {
+          owner: "lease-1", expectedVersion: claimed.version, expectedGeneration: 1,
+          disposition: {
+            classifiedRevision: "rev-1", classification: "snoozed", stewardPolicy: { key: "service:books", version: 1 }, decision: "silent",
+            reason: "Check again later.", nextWake: { kind: "at", at: "2026-08-30T12:00:00.000Z" }, careId: null, awaitId: "books-recheck", actionRefs: [], verificationRefs: [],
+          },
+        })
+        await fileAwaitDef.handler({ name: "books-recheck", condition: "The recheck time has arrived", cadence: "5m" }, undefined)
+        await resolveAwaitDef.handler({ name: "books-recheck", verdict: "yes", observation: "recheck time reached" }, undefined)
+
+        expect(readExternalEventRecord(handled.recordPath)).toMatchObject({ executionState: "queued", generation: 2, disposition: null })
+      } finally {
+        if (previousHome === undefined) delete process.env.HOME
+        else process.env.HOME = previousHome
+      }
     })
 
     it("verdict=no records observation, does not archive", async () => {

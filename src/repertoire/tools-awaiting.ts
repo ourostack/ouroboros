@@ -17,6 +17,7 @@ import { getPrivateRuntimePendingDir } from "../mind/pending"
 import type { PendingMessage } from "../mind/pending"
 import type { ToolDefinition } from "./tools-base"
 import type { CrossChatDeliveryDeps } from "../heart/cross-chat-delivery"
+import { advanceExternalEventsFromAwait, getExternalEventRoot } from "../heart/external-events/router"
 
 /**
  * Bundle-root-relative locations.
@@ -229,6 +230,7 @@ async function resolveAwaitTool(name: string, verdict: string, observation: stri
   }
 
   // verdict === "yes" — archive and alert
+  const advancedEvents = advanceExternalEventsFromAwait(getExternalEventRoot(), agentName, name)
   const archive = archiveAwait(agentRoot, name, {
     status: "resolved",
     resolved_at: new Date().toISOString(),
@@ -268,6 +270,7 @@ async function resolveAwaitTool(name: string, verdict: string, observation: stri
     verdict: "yes",
     archived: awaitDoneFilePath(agentRoot, name),
     alert: alert ? { attempted: alert.attempted, status: alert.delivery?.status ?? null, skipped: alert.skipped ?? null } : null,
+    advancedExternalEvents: advancedEvents.map((event) => event.recordPath),
   })
 }
 

@@ -342,6 +342,32 @@ describe("care store", () => {
       expect(readCares(tmpDir)).toHaveLength(1)
     })
 
+    it("CAS-upserts a later incident revision with current risk and next check", () => {
+      const first = upsertCareForIncident(tmpDir, {
+        ...baseCareInput,
+        currentRisk: "downloads are stalled",
+        nextCheckAt: "2026-08-29T20:00:00.000Z",
+        incident: { source: "guard", incidentKey: "usenet", classifiedRevision: "rev-1" },
+      })
+      const updated = upsertCareForIncident(tmpDir, {
+        ...baseCareInput,
+        currentRisk: "credit is being wasted",
+        nextCheckAt: "2026-08-29T20:15:00.000Z",
+        incident: { source: "guard", incidentKey: "usenet", classifiedRevision: "rev-2" },
+        expectedUpdatedAt: first.updatedAt,
+      })
+
+      expect(updated.id).toBe(first.id)
+      expect(updated.currentRisk).toBe("credit is being wasted")
+      expect(updated.nextCheckAt).toBe("2026-08-29T20:15:00.000Z")
+      expect(updated.incidentBindings).toEqual([{ source: "guard", incidentKey: "usenet", classifiedRevision: "rev-2" }])
+      expect(() => upsertCareForIncident(tmpDir, {
+        ...baseCareInput,
+        incident: { source: "guard", incidentKey: "usenet", classifiedRevision: "rev-3" },
+        expectedUpdatedAt: first.updatedAt,
+      })).toThrow(/CAS/u)
+    })
+
     it("validates incident identity and resolution CAS", () => {
       const care = createCare(tmpDir, baseCareInput)
       expect(() => bindCareIncident(tmpDir, care.id, { source: "", incidentKey: "usenet", classifiedRevision: "rev-1" }, { expectedUpdatedAt: care.updatedAt })).toThrow(/invalid/u)

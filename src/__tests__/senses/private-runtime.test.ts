@@ -4452,6 +4452,21 @@ describe("private runtime", () => {
     expect(restrictedEvent![0].meta.resolved).toEqual(["read", "shell"])
   })
 
+  it("exposes the canonical await tool to an external-event turn", async () => {
+    mockGetToolsForChannel.mockReturnValue([
+      { type: "function", function: { name: "external_event_disposition", description: "dispose", parameters: {} } },
+      { type: "function", function: { name: "await_condition", description: "await", parameters: {} } },
+      { type: "function", function: { name: "shell", description: "shell", parameters: {} } },
+    ])
+    await runApprovedPrivateRuntimeTurn({
+      reason: "instinct",
+      externalEvent: { schemaVersion: 1, recordPath: "/events/test-agent/guard/event.json", agent: "test-agent", source: "guard", eventId: "event", generation: 1, observationRevision: "rev-1", claimOwner: "lease-1" },
+    })
+
+    const tools = mockHandleInboundTurn.mock.calls[0][0].runAgentOptions.tools
+    expect(tools.map((tool: any) => tool.function.name)).toEqual(["external_event_disposition", "await_condition"])
+  })
+
   it("emits habit.tools_unrestricted nerves event when habit has no tools field", async () => {
     const habitsDir = path.join(agentRoot, "habits")
     fs.mkdirSync(habitsDir, { recursive: true })

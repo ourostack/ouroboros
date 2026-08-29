@@ -51,7 +51,7 @@ import { awaitNameFromPrivateWakeCommand, buildAwaitPrivateWakeCommand } from ".
 import { buildHabitPrivateWakeCommand, habitMessageFromPrivateWakeCommand } from "./habit-private-wake"
 import { createDegradedHabitFile, parseHabitFile, type HabitFile } from "../habits/habit-parser"
 import { applyHabitRuntimeState } from "../habits/habit-runtime-state"
-import { buildExternalEventMessage, claimExternalEvent, failExternalEventAttempt, getExternalEventRoot, listExternalEventStatus, readExternalEventRecord, reconcileExternalEvent, recordExternalEvent, type ExternalEventLeaseContext, type ExternalEventRecord, type ExternalEventStatus } from "../external-events/router"
+import { buildExternalEventMessage, claimExternalEvent, failExternalEventAttempt, getExternalEventRoot, listExternalEventStatus, readExternalEventRecord, reconcileExternalEvent, recordExternalEvent, type ExternalEventLeaseContext, type ExternalEventLeaseMember, type ExternalEventRecord, type ExternalEventStatus } from "../external-events/router"
 import { isRsvpHabitName } from "../../rsvp/habit-policy"
 import { readContainerRuntimePolicy } from "./container-runtime"
 import type { RunNativeRsvpHabitInput, RunNativeRsvpHabitResult } from "../../rsvp/native-habit-runner"
@@ -1887,7 +1887,7 @@ export class OuroDaemon {
     return this.externalEventRoot ?? getExternalEventRoot()
   }
 
-  private externalEventLease(record: ExternalEventRecord): ExternalEventLeaseContext {
+  private externalEventLease(record: ExternalEventRecord): ExternalEventLeaseMember {
     /* v8 ignore next -- dispatcher calls this only with the record returned by claimExternalEvent @preserve */
     if (!record.claimOwner) throw new Error("External event dispatch requires a claimed receipt")
     return {
@@ -1902,46 +1902,50 @@ export class OuroDaemon {
     }
   }
 
-  private async dispatchExternalEvent(record: ExternalEventRecord): Promise<{ event: ExternalEventRecord; receipt: { id: string; queuedAt: string }; wake: DaemonResponse }> {
-    const owner = `external-event:${record.agent}:${record.source}:${record.eventId}:generation:${record.generation}:attempt:${record.attemptCount + 1}`
-    const claimed = claimExternalEvent(record.recordPath, {
-      owner,
-      expectedVersion: record.version,
-      expectedGeneration: record.generation,
-    })
-    const lease = this.externalEventLease(claimed)
-    const receipt = {
-      id: `external-event:${claimed.agent}:${claimed.source}:${claimed.eventId}:generation:${claimed.generation}:attempt:${claimed.attemptCount}`,
-      queuedAt: claimed.updatedAt,
-    }
+  private async dispatchExternalEvents(records: ExternalEventRecord[]): Promise<{ events: ExternalEventRecord[]; event: ExternalEventRecord; receipt: { id: string; queuedAt: string }; wake: DaemonResponse }> {
+    const claimed: ExternalEventRecord[] = []
     try {
+      for (const record of records) {
+        const owner = `external-event:${record.agent}:${record.source}:${record.eventId}:generation:${record.generation}:attempt:${record.attemptCount + 1}`
+        claimed.push(claimExternalEvent(record.recordPath, { owner, expectedVersion: record.version, expectedGeneration: record.generation }))
+      }
+      const primary = claimed[0]!
+      const [primaryLease, ...relatedEvents] = claimed.map((record) => this.externalEventLease(record))
+      const lease: ExternalEventLeaseContext = { ...primaryLease!, ...(relatedEvents.length > 0 ? { relatedEvents } : {}) }
+      const receipt = {
+        id: `external-event:${primary.agent}:${primary.source}:${primary.eventId}:generation:${primary.generation}:attempt:${primary.attemptCount}`,
+        queuedAt: primary.updatedAt,
+      }
       const wake = await this.handlePrivateRuntimeWake(
         this.buildExternalEventPrivateWakeCommand({
           kind: "external.event.submit",
-          agent: claimed.agent,
-          source: claimed.source,
-          eventType: claimed.eventType,
-          eventId: claimed.eventId,
-        }, receipt.id, claimed.generation, claimed.attemptCount),
-        () => this.queueExternalEventForPrivateRuntime(claimed),
+          agent: primary.agent,
+          source: primary.source,
+          eventType: primary.eventType,
+          eventId: primary.eventId,
+        }, receipt.id, primary.generation, primary.attemptCount),
+        () => { for (const record of claimed) this.queueExternalEventForPrivateRuntime(record) },
         lease,
       )
       const denied = !wake.ok || (wake.data as { decision?: { executable?: boolean } } | undefined)?.decision?.executable === false
       if (denied) throw new Error(wake.error ?? wake.message ?? /* v8 ignore next -- daemon wake responses always carry an error or message @preserve */ "external-event private turn was denied")
-      return { event: claimed, receipt, wake }
+      return { events: claimed, event: primary, receipt, wake }
     } catch (error) {
-      const latest = readExternalEventRecord(claimed.recordPath)
-      /* v8 ignore else -- concurrency fence: a superseding receipt owner must not be failed by this attempt @preserve */
-      if (latest.executionState === "running" && latest.claimOwner === owner) {
-        failExternalEventAttempt(latest.recordPath, {
-          owner,
-          expectedVersion: latest.version,
-          expectedGeneration: latest.generation,
-          error: error instanceof Error ? error.message : /* v8 ignore next -- private wake failures are Error objects @preserve */ String(error),
-        })
+      for (const record of claimed) {
+        const latest = readExternalEventRecord(record.recordPath)
+        if (latest.executionState === "running" && latest.claimOwner === record.claimOwner) {
+          failExternalEventAttempt(latest.recordPath, {
+            owner: record.claimOwner!, expectedVersion: latest.version, expectedGeneration: latest.generation,
+            error: error instanceof Error ? error.message : String(error),
+          })
+        }
       }
       throw error
     }
+  }
+
+  private dispatchExternalEvent(record: ExternalEventRecord): Promise<{ events: ExternalEventRecord[]; event: ExternalEventRecord; receipt: { id: string; queuedAt: string }; wake: DaemonResponse }> {
+    return this.dispatchExternalEvents([record])
   }
 
   private async reconcileExternalEvents(): Promise<void> {
@@ -1951,6 +1955,7 @@ export class OuroDaemon {
     try {
       const now = new Date().toISOString()
       const statuses = listExternalEventStatus(this.externalEventRootPath())
+      const dueRecords: ExternalEventRecord[] = []
       for (const status of statuses) {
         if (status.corrupt) continue
         let record = readExternalEventRecord(status.recordPath)
@@ -1961,17 +1966,29 @@ export class OuroDaemon {
         const due = record.executionState === "received"
           || record.executionState === "queued"
           || (record.executionState === "retry_wait" && record.nextAttemptAt !== null && Date.parse(record.nextAttemptAt) <= Date.parse(now))
-        if (!due) continue
-        try {
-          await this.dispatchExternalEvent(record)
-        } catch (error) {
-          emitNervesEvent({
-            level: "warn",
-            component: "daemon",
-            event: "daemon.external_event_dispatch_error",
-            message: "external event dispatch failed",
-            meta: { recordPath: record.recordPath, error: error instanceof Error ? error.message : /* v8 ignore next -- dispatch failures are Error objects @preserve */ String(error) },
-          })
+        if (due) dueRecords.push(record)
+      }
+      const batches = new Map<string, ExternalEventRecord[]>()
+      for (const record of dueRecords) {
+        const key = `${record.agent}\0${record.source}`
+        const batch = batches.get(key) ?? []
+        batch.push(record)
+        batches.set(key, batch)
+      }
+      for (const records of batches.values()) {
+        for (let offset = 0; offset < records.length; offset += 32) {
+          const batch = records.slice(offset, offset + 32)
+          try {
+            await this.dispatchExternalEvents(batch)
+          } catch (error) {
+            emitNervesEvent({
+              level: "warn",
+              component: "daemon",
+              event: "daemon.external_event_dispatch_error",
+              message: "external event dispatch failed",
+              meta: { recordPath: batch[0]!.recordPath, batchSize: batch.length, error: error instanceof Error ? error.message : /* v8 ignore next -- dispatch failures are Error objects @preserve */ String(error) },
+            })
+          }
         }
       }
     } finally {

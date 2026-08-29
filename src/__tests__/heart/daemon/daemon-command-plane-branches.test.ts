@@ -14,7 +14,7 @@ import { buildHabitPrivateWakeCommand } from "../../../heart/daemon/habit-privat
 import { readPrivateTurnLedger } from "../../../heart/private-runtime"
 import { readHabitLastRun } from "../../../heart/habits/habit-runtime-state"
 import { listHabitRunReceipts } from "../../../arc/flight-recorder"
-import { claimExternalEvent, readExternalEventRecord, recordExternalEvent } from "../../../heart/external-events/router"
+import { claimExternalEvent, commitExternalEventDisposition, listExternalEventStatus, readExternalEventRecord, recordExternalEvent } from "../../../heart/external-events/router"
 
 function tmpSocketPath(name: string): string {
   return path.join(os.tmpdir(), `${name}-${Date.now()}-${Math.random().toString(16).slice(2)}.sock`)
@@ -1061,6 +1061,79 @@ describe("daemon command plane branches", () => {
       fs.rmSync(externalEventRoot, { recursive: true, force: true })
       fs.rmSync(bundlesRoot, { recursive: true, force: true })
       fs.rmSync(ledgerPath, { force: true })
+    }
+  })
+
+  it("coalesces one source's incident receipts into one turn with independently fenced leases", async () => {
+    const socketPath = tmpSocketPath("daemon-external-event-batch")
+    const ledgerPath = path.join(os.tmpdir(), `external-event-batch-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const externalEventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "external-event-batch-root-"))
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "external-event-batch-bundles-"))
+    const events = ["books", "jellyfin", "sonarr"].map((eventId) => recordExternalEvent({
+      agent: "slugger", source: "sanctuary-health", eventType: "health.observed", eventId, observationRevision: `rev-${eventId}`, evidence: [`${eventId} is unavailable`],
+    }, { root: externalEventRoot }))
+    const { daemon, processManager } = make(socketPath, bundlesRoot, {
+      privateRuntimePolicyDeps: privateRuntimePolicyDeps(ledgerPath, "allow"),
+      externalEventRoot,
+    })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+
+    try {
+      await daemon.start()
+      expect(processManager.sendToAgent).toHaveBeenCalledTimes(1)
+      const message = processManager.sendToAgent.mock.calls[0]![1] as any
+      expect([message.externalEvent, ...message.externalEvent.relatedEvents]).toHaveLength(3)
+      expect([message.externalEvent, ...message.externalEvent.relatedEvents].map((event: any) => event.eventId).sort()).toEqual(["books", "jellyfin", "sonarr"])
+      for (const event of events) expect(readExternalEventRecord(event.recordPath)).toMatchObject({ executionState: "running", attemptCount: 1 })
+      const pendingDir = path.join(bundlesRoot, "slugger.ouro", "state", "pending", "self", "inner", "dialog")
+      expect(fs.readdirSync(pendingDir).filter((entry) => entry.endsWith(".json"))).toHaveLength(3)
+      for (const [index, lease] of [message.externalEvent, ...message.externalEvent.relatedEvents].entries()) {
+        const current = readExternalEventRecord(lease.recordPath)
+        commitExternalEventDisposition(current.recordPath, {
+          owner: lease.claimOwner, expectedVersion: current.version, expectedGeneration: lease.generation,
+          disposition: {
+            classifiedRevision: lease.observationRevision, classification: "expected", stewardPolicy: { key: `service:${lease.eventId}`, version: index + 1 },
+            decision: "silent", reason: `${lease.eventId} is expected off.`, nextWake: { kind: "on_change" }, careId: null, awaitId: null, actionRefs: [], verificationRefs: [],
+          },
+        })
+      }
+      expect(listExternalEventStatus(externalEventRoot).map((status) => ({ eventId: status.eventId, state: status.executionState, policy: status.stewardPolicy }))).toEqual([
+        { eventId: "books", state: "handled", policy: { key: "service:books", version: 1 } },
+        { eventId: "jellyfin", state: "handled", policy: { key: "service:jellyfin", version: 2 } },
+        { eventId: "sonarr", state: "handled", policy: { key: "service:sonarr", version: 3 } },
+      ])
+    } finally {
+      await daemon.stop()
+      fs.rmSync(externalEventRoot, { recursive: true, force: true })
+      fs.rmSync(bundlesRoot, { recursive: true, force: true })
+      fs.rmSync(ledgerPath, { force: true })
+    }
+  })
+
+  it("releases earlier batch claims when a later receipt cannot be claimed", async () => {
+    const socketPath = tmpSocketPath("daemon-external-event-partial-claim")
+    const externalEventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "external-event-partial-claim-root-"))
+    const first = recordExternalEvent({ agent: "slugger", source: "sanctuary-health", eventType: "health.observed", eventId: "first" }, { root: externalEventRoot })
+    const second = recordExternalEvent({ agent: "slugger", source: "sanctuary-health", eventType: "health.observed", eventId: "second" }, { root: externalEventRoot })
+    claimExternalEvent(second.recordPath, {
+      owner: "competing-worker",
+      expectedVersion: second.version,
+      expectedGeneration: second.generation,
+    })
+    const { daemon, processManager } = make(socketPath, undefined, { externalEventRoot })
+
+    try {
+      await expect((daemon as any).dispatchExternalEvents([first, second])).rejects.toThrow("External event CAS mismatch")
+      expect(readExternalEventRecord(first.recordPath)).toMatchObject({
+        executionState: "retry_wait",
+        attemptCount: 1,
+        claimOwner: null,
+        claimExpiresAt: null,
+      })
+      expect(readExternalEventRecord(second.recordPath)).toMatchObject({ executionState: "running", claimOwner: "competing-worker" })
+      expect(processManager.sendToAgent).not.toHaveBeenCalled()
+    } finally {
+      fs.rmSync(externalEventRoot, { recursive: true, force: true })
     }
   })
 

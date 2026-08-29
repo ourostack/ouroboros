@@ -12,6 +12,7 @@ import {
   readExternalEventRecord,
   reconcileExternalEvent,
   recordExternalEvent,
+  renewExternalEventClaim,
 } from "../../../heart/external-events/router"
 
 const roots: string[] = []
@@ -136,6 +137,73 @@ describe("external event attention lifecycle", () => {
     const first = recordExternalEvent({ agent: "sanctuary", source: "guard", eventType: "health.observed", eventId: "expired-direct" }, { root: eventRoot, now: () => "2026-08-29T18:00:00.000Z" })
     const expired = claimExternalEvent(first.recordPath, { owner: "worker-a", expectedVersion: first.version, expectedGeneration: 1, leaseMs: 1, now: () => "2026-08-29T18:00:00.000Z" })
     expect(claimExternalEvent(first.recordPath, { owner: "worker-b", expectedVersion: expired.version, expectedGeneration: 1, now: () => "2026-08-29T18:00:01.000Z" })).toMatchObject({ claimOwner: "worker-b", attemptCount: 2 })
+  })
+
+  it("renews only the exact live claim so a long turn is not reclaimed", () => {
+    const eventRoot = root()
+    const first = recordExternalEvent({ agent: "sanctuary", source: "guard", eventType: "health.observed", eventId: "long-turn" }, { root: eventRoot, now: () => "2026-08-29T18:00:00.000Z" })
+    const claimed = claimExternalEvent(first.recordPath, { owner: "worker-a", expectedVersion: first.version, expectedGeneration: 1, leaseMs: 1_000, now: () => "2026-08-29T18:00:00.000Z" })
+    const renewed = renewExternalEventClaim(first.recordPath, { owner: "worker-a", expectedGeneration: 1, leaseMs: 1_000, now: () => "2026-08-29T18:00:00.900Z" })
+
+    expect(renewed).toMatchObject({ claimOwner: "worker-a", claimExpiresAt: "2026-08-29T18:00:01.900Z" })
+    expect(reconcileExternalEvent(first.recordPath, { now: () => "2026-08-29T18:00:01.100Z" })).toEqual(renewed)
+    expect(() => renewExternalEventClaim(first.recordPath, { owner: "worker-b", expectedGeneration: 1 })).toThrow(/claim owner/u)
+    expect(renewed.version).toBeGreaterThan(claimed.version)
+  })
+
+  it("rejects unbounded event input before writing a receipt", () => {
+    const eventRoot = root()
+    expect(() => recordExternalEvent({
+      agent: "sanctuary",
+      source: "guard",
+      eventType: "health.observed",
+      eventId: "oversized",
+      evidence: Array.from({ length: 33 }, () => "evidence"),
+    }, { root: eventRoot })).toThrow(/bounded/u)
+    expect(fs.readdirSync(eventRoot, { recursive: true })).toEqual([])
+  })
+
+  it("rejects an unbounded disposition without changing the live claim", () => {
+    const eventRoot = root()
+    const first = recordExternalEvent({ agent: "sanctuary", source: "guard", eventType: "health.observed", eventId: "bounded-disposition" }, { root: eventRoot })
+    const claimed = claimExternalEvent(first.recordPath, { owner: "lease-1", expectedVersion: first.version, expectedGeneration: 1 })
+    expect(() => commitExternalEventDisposition(first.recordPath, {
+      owner: "lease-1", expectedVersion: claimed.version, expectedGeneration: 1,
+      disposition: {
+        classifiedRevision: claimed.observationRevision, classification: "resolved", stewardPolicy: { key: "service:test", version: 1 }, decision: "silent",
+        reason: "r".repeat(4_097), nextWake: { kind: "on_change" }, careId: null, awaitId: null, actionRefs: [], verificationRefs: [],
+      },
+    })).toThrow(/bounded/u)
+    expect(readExternalEventRecord(first.recordPath)).toEqual(claimed)
+  })
+
+  it("compacts oldest handled receipts but preserves active and dead-letter truth", () => {
+    const eventRoot = root()
+    const sourceDir = path.join(eventRoot, "sanctuary", "guard")
+    fs.mkdirSync(sourceDir, { recursive: true })
+    const template = recordExternalEvent({ agent: "sanctuary", source: "guard", eventType: "health.observed", eventId: "template" }, { root: eventRoot })
+    fs.unlinkSync(template.recordPath)
+    for (let index = 0; index < 512; index += 1) {
+      const state = index === 510 ? "received" : index === 511 ? "dead_letter" : "handled"
+      const recordPath = path.join(sourceDir, `old-${String(index).padStart(3, "0")}.json`)
+      fs.writeFileSync(recordPath, JSON.stringify({ ...template, eventId: `old-${index}`, recordPath, executionState: state, updatedAt: new Date(index).toISOString() }))
+    }
+
+    const newest = recordExternalEvent({ agent: "sanctuary", source: "guard", eventType: "health.observed", eventId: "new" }, { root: eventRoot })
+    const statuses = listExternalEventStatus(eventRoot)
+    expect(statuses).toHaveLength(512)
+    expect(statuses.some((row) => row.eventId === "old-510" && row.executionState === "received")).toBe(true)
+    expect(statuses.some((row) => row.eventId === "old-511" && row.executionState === "dead_letter")).toBe(true)
+    expect(statuses.some((row) => row.recordPath === newest.recordPath)).toBe(true)
+    expect(statuses.find((row) => row.recordPath === newest.recordPath)?.retentionSummary).toMatchObject({ compactedHandledCount: 1 })
+  })
+
+  it("bounds distinct sources per agent before creating another source directory", () => {
+    const eventRoot = root()
+    const agentDir = path.join(eventRoot, "sanctuary")
+    for (let index = 0; index < 64; index += 1) fs.mkdirSync(path.join(agentDir, `source-${index}`), { recursive: true })
+    expect(() => recordExternalEvent({ agent: "sanctuary", source: "source-overflow", eventType: "health.observed", eventId: "event" }, { root: eventRoot })).toThrow(/source capacity/u)
+    expect(fs.existsSync(path.join(agentDir, "source-overflow"))).toBe(false)
   })
 
   it("uses a cross-process record lock and reclaims only stale lock directories", () => {

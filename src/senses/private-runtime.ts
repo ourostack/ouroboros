@@ -101,6 +101,7 @@ const EXTERNAL_EVENT_TOOLS = [
   "external_event_disposition",
   "query_cares",
   "care_manage",
+  "await_condition",
   "unraid_list_containers",
   "unraid_get_container_logs",
   "unraid_get_storage",

@@ -270,14 +270,31 @@ export function bindCareIncident(
 
 export function upsertCareForIncident(
   agentRoot: string,
-  input: Omit<CareRecord, "id" | "createdAt" | "updatedAt" | "incidentBindings"> & { incident: CareIncidentBinding },
+  input: Omit<CareRecord, "id" | "createdAt" | "updatedAt" | "incidentBindings"> & { incident: CareIncidentBinding; expectedUpdatedAt?: string },
 ): CareRecord {
   return withCareMutationLock(agentRoot, () => {
     const incident = canonicalIncidentBinding(input.incident)
     const existing = readJsonDir<CareRecord>(caresDir(agentRoot)).find((care) =>
       care.incidentBindings?.some((binding) => binding.source === incident.source && binding.incidentKey === incident.incidentKey),
     )
-    if (existing) return existing
+    if (existing) {
+      const index = existing.incidentBindings!.findIndex((binding) => binding.source === incident.source && binding.incidentKey === incident.incidentKey)
+      const unchanged = JSON.stringify(existing.incidentBindings![index]) === JSON.stringify(incident)
+        && existing.currentRisk === input.currentRisk && existing.nextCheckAt === input.nextCheckAt
+      if (unchanged) return existing
+      if (!input.expectedUpdatedAt || input.expectedUpdatedAt !== existing.updatedAt) throw new Error("Care incident upsert CAS mismatch")
+      const incidentBindings = [...existing.incidentBindings!]
+      incidentBindings[index] = incident
+      const updated = {
+        ...existing,
+        currentRisk: input.currentRisk === null ? null : capStructuredRecordString(input.currentRisk),
+        nextCheckAt: input.nextCheckAt,
+        incidentBindings,
+        updatedAt: nextUpdatedAt(existing.updatedAt),
+      }
+      writeCareFile(agentRoot, updated)
+      return updated
+    }
     return createCareUnlocked(agentRoot, { ...input, incidentBindings: [incident] })
   })
 }
