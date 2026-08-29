@@ -2206,7 +2206,7 @@ function createAcceptanceProbeEffects(input: { agentRoot: string; api: TelegramB
     target,
     chatId: input.chatId,
     execute,
-    record: (artifact) => recordTelegramEffectsInSession({ store, sessionPath, artifacts: [artifact] }),
+    record: async (artifact) => { await recordTelegramEffectsInSession({ store, sessionPath, artifacts: [artifact] }) },
   })
   return { port, close: () => store.close() }
 }

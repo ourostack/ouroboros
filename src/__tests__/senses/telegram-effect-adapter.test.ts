@@ -9,7 +9,6 @@ import {
   FileTelegramEffectJournal,
   executeTelegramEffect,
   prepareTelegramEffect,
-  recordTelegramEffectsInSession,
   recordTelegramEffectInSession,
   recordTelegramEffectsInSession,
   recoverTelegramEffectOutbox,
