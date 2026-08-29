@@ -17,6 +17,8 @@ const AUTOSTART_FILE = "/var/lib/docker/unraid-autostart"
 const RUNTIME_POLICY_FILE = "/opt/ouro/container-runtime.json"
 const PRODUCTION_RUNTIME_SOURCE = "/mnt/user/appdata/ouro-butler/runtime/.ouro-cli"
 const PRODUCTION_BUNDLE_SOURCE = "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro"
+const PRODUCTION_EVENT_SPOOL_SOURCE = "/boot/config/custom/ouro-events/spool"
+const PRODUCTION_SAB_CONFIG_SOURCE = "/mnt/user/appdata/sabnzbd/sabnzbd.ini"
 const GRAPHQL_ENDPOINT = "http://127.0.0.1/graphql"
 const BOOT_ID = "/proc/sys/kernel/random/boot_id"
 const MDCMD = "/usr/local/sbin/mdcmd"
@@ -389,6 +391,8 @@ async function containerSnapshot(expectedImage) {
   const expectedMounts = [
     { destination: "/home/ouro/.ouro-cli", source: PRODUCTION_RUNTIME_SOURCE, mode: "rw", propagation: "rprivate", rw: true, type: "bind" },
     { destination: "/home/ouro/AgentBundles/sanctuary.ouro", source: PRODUCTION_BUNDLE_SOURCE, mode: "rw", propagation: "rprivate", rw: true, type: "bind" },
+    { destination: "/run/ouro-events", source: PRODUCTION_EVENT_SPOOL_SOURCE, mode: "ro", propagation: "rprivate", rw: false, type: "bind" },
+    { destination: "/run/sanctuary/sabnzbd.ini", source: PRODUCTION_SAB_CONFIG_SOURCE, mode: "ro", propagation: "rprivate", rw: false, type: "bind" },
   ]
   const mountsExact = mounts.length === expectedMounts.length && expectedMounts.every((expected) => mounts.some((mount) => mount.destination === expected.destination && mount.source === expected.source && mount.mode === expected.mode && mount.propagation === expected.propagation && mount.rw === expected.rw && mount.type === expected.type))
   const securityExact = value.privileged === false && (value.capAdd === null || (Array.isArray(value.capAdd) && value.capAdd.length === 0))

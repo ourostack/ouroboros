@@ -1783,6 +1783,7 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
     expect(template).not.toContain('/mnt/user/appdata/ouro-butler/AgentBundles')
     expect(template).toContain(`<Repository>ghcr.io/ourostack/ouroboros-butler:${JSON.parse(fs.readFileSync("package.json", "utf8")).version}</Repository>`)
     expect(template).toContain('Default="/boot/config/custom/ouro-events/spool" Mode="ro"')
+    expect(template).toContain('Default="/mnt/user/appdata/sabnzbd/sabnzbd.ini" Mode="ro"')
     expect(runbook).toContain("Mendelow Cloud Butler operator runbook")
     expect(runbook).toContain("/mnt/user/appdata/ouro-butler/runtime/.ouro-cli")
     expect(runbook).toContain("/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro")
@@ -1814,6 +1815,9 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
     expect(updateRunbook).toContain('docker create --name ouro-butler-staging --network host --restart unless-stopped --user 10001:10001 \\')
     expect(updateRunbook).toContain('--mount "type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli" \\')
     expect(updateRunbook).toContain('--mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \\')
+    const createCount = runbook.match(/docker create --name ouro-butler(?:-staging)?/gu)?.length ?? 0
+    expect(runbook.match(/--mount "type=bind,src=\/boot\/config\/custom\/ouro-events\/spool,dst=\/run\/ouro-events,readonly"/gu)).toHaveLength(createCount)
+    expect(runbook.match(/--mount "type=bind,src=\/mnt\/user\/appdata\/sabnzbd\/sabnzbd\.ini,dst=\/run\/sanctuary\/sabnzbd\.ini,readonly"/gu)).toHaveLength(createCount)
     expect(updateRunbook).toContain('"$IMAGE_ID"')
     expect(runbook).toContain('docker inspect "$AUDIT_CONTAINER" >"$INSPECT_DIR/container.json"')
     expect(runbook).toContain('docker image inspect "$AUDIT_EXPECTED_IMAGE" >"$INSPECT_DIR/image.json"')

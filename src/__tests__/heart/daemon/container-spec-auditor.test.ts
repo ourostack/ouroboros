@@ -26,6 +26,7 @@ function validInspect() {
         "/mnt/user/appdata/ouro-butler/runtime/.ouro-cli:/home/ouro/.ouro-cli:rw",
         "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro:/home/ouro/AgentBundles/sanctuary.ouro:rw",
         "/boot/config/custom/ouro-events/spool:/run/ouro-events:ro",
+        "/mnt/user/appdata/sabnzbd/sabnzbd.ini:/run/sanctuary/sabnzbd.ini:ro",
       ],
       PortBindings: {},
       Devices: [],
@@ -35,6 +36,7 @@ function validInspect() {
       { Type: "bind", Source: "/mnt/user/appdata/ouro-butler/runtime/.ouro-cli", Destination: "/home/ouro/.ouro-cli", RW: true },
       { Type: "bind", Source: "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro", Destination: "/home/ouro/AgentBundles/sanctuary.ouro", RW: true },
       { Type: "bind", Source: "/boot/config/custom/ouro-events/spool", Destination: "/run/ouro-events", RW: false },
+      { Type: "bind", Source: "/mnt/user/appdata/sabnzbd/sabnzbd.ini", Destination: "/run/sanctuary/sabnzbd.ini", RW: false },
     ],
   }
 }
@@ -61,6 +63,7 @@ function stagedTemplate(): string {
     '<Config Target="/home/ouro/.ouro-cli" Mode="rw" Type="Path">/mnt/user/appdata/ouro-butler/runtime/.ouro-cli</Config>',
     '<Config Target="/home/ouro/AgentBundles/sanctuary.ouro" Mode="rw" Type="Path">/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro</Config>',
     '<Config Target="/run/ouro-events" Mode="ro" Type="Path">/boot/config/custom/ouro-events/spool</Config>',
+    '<Config Target="/run/sanctuary/sabnzbd.ini" Mode="ro" Type="Path">/mnt/user/appdata/sabnzbd/sabnzbd.ini</Config>',
     "</Container>",
   ].join("\n")
 }
@@ -396,7 +399,7 @@ describe("Sanctuary pre-activation container auditor", () => {
 
     expect(result).toEqual(expect.objectContaining({
       ok: false,
-      violations: expect.arrayContaining(["template Config entries must equal the canonical three path binds"]),
+      violations: expect.arrayContaining(["template Config entries must equal the canonical four path binds"]),
     }))
   })
 
