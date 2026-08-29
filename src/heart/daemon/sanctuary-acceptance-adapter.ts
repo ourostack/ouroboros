@@ -1134,7 +1134,7 @@ export async function readDefaultSanctuaryScenarioFacts(
   const auditEntries = auditLedgerEntries.filter((entry) => entry.meta.scenarioHandleDigest === scenarioHandleDigest)
   const toolProfiles = parsedJson(optionalFixedFile(deps, SANCTUARY_TOOL_PROFILES_FILE))
   const profiles = toolProfiles ? object(toolProfiles.profiles, "Sanctuary tool profiles") : null
-  const telegramProfile = profiles?.["sanctuary-telegram"]
+  const telegramProfile = profiles?.["sanctuary-owner"]
   let approvalRecords = [] as ReturnType<typeof readApprovalsByScenarioHandleDigest>
   const approvalDatabasePath = pathFor(agentRoot, "state/approvals/approvals.sqlite")
   if (existsSync(approvalDatabasePath)) approvalRecords = readApprovalsByScenarioHandleDigest(approvalDatabasePath, scenarioHandleDigest)
@@ -1423,7 +1423,7 @@ export async function readDefaultSanctuaryScenarioFacts(
       return Array.isArray(names) ? names.filter((name): name is string => typeof name === "string") : []
     }
     const telegramNames = profileToolNames(telegramProfile)
-    const privateRaw = profiles?.["sanctuary-health-private"]
+    const privateRaw = profiles?.["sanctuary-event"]
     const privateNames = profileToolNames(privateRaw)
     const flowSchemas = new Map([ponderTool, settleTool, speakTool, restTool].map((tool) => [tool.function.name, tool]))
     const schemasFor = (names: string[]) => names.flatMap((name) => {

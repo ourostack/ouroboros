@@ -865,9 +865,9 @@ describe("Sanctuary production boundary adapter coverage", () => {
         } as never, root, { skipContainerSnapshot: true })
       } finally { fs.rmSync(root, { recursive: true, force: true }) }
     }
-    const sparse = await run({ "sanctuary-telegram": "bad", "sanctuary-health-private": "bad" }, [], [])
+    const sparse = await run({ "sanctuary-owner": "bad", "sanctuary-event": "bad" }, [], [])
     expect(sparse.containment).toMatchObject({ keyCount: 0, telegramToolCount: 0, privateToolCount: 0, containerUser: "", liveProcessUser: "", mountCount: -1, publishedPortCount: -1, networkMode: "" })
-    const odd = await run({ "sanctuary-telegram": ["shell", "not_a_tool", 1], "sanctuary-health-private": ["exec", "ponder", null] }, [
+    const odd = await run({ "sanctuary-owner": ["shell", "not_a_tool", 1], "sanctuary-event": ["exec", "ponder", null] }, [
       { id: "x", name: "Different", permissions: [{ resource: "DOCKER", actions: ["READ_ANY"] }], roles: ["role"], secret: "leaked" },
     ], [
       { name: "shell", reason: "other", invoked: true, sideEffect: true, globallyResolvable: true },

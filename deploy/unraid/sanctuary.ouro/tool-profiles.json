@@ -18,18 +18,6 @@
       "contextScopes": ["household.status", "household.policy"],
       "toolNames": ["unraid_list_containers", "unraid_get_container_logs", "unraid_get_storage", "unraid_get_disks", "unraid_get_notifications", "unraid_get_system", "unraid_restart_container", "ponder", "rest", "send_message"],
       "effectScopes": ["telegram.owner_event"]
-    },
-    "sanctuary-telegram": {
-      "version": 1,
-      "contextScopes": ["household.status", "household.policy", "household.private"],
-      "toolNames": ["unraid_list_containers", "unraid_get_container_logs", "unraid_get_storage", "unraid_get_disks", "unraid_get_notifications", "unraid_get_system", "unraid_restart_container", "steward_policy_manage", "ponder", "settle", "speak"],
-      "effectScopes": ["telegram.proactive", "telegram.request_return"]
-    },
-    "sanctuary-health-private": {
-      "version": 1,
-      "contextScopes": ["household.status", "household.policy"],
-      "toolNames": ["send_message", "rest"],
-      "effectScopes": ["telegram.owner_event"]
     }
   }
 }
