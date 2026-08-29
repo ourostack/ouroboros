@@ -197,6 +197,8 @@ Effective-spec audit helper:
       test -d "$VALIDATE_AGENT_ROOT" || return $?
       VALIDATE_BAD_SHAPE=$(find "$VALIDATE_RUNTIME_ROOT" "$VALIDATE_AGENT_ROOT" -xdev \( -type l -o \( ! -type d -a ! -type f \) \) -print -quit) || return $?
       test -z "$VALIDATE_BAD_SHAPE" || return $?
+      VALIDATE_UNEXPECTED_SOCKET=$(find "$VALIDATE_RUNTIME_ROOT" "$VALIDATE_AGENT_ROOT" -xdev -type s -print -quit) || return $?
+      test -z "$VALIDATE_UNEXPECTED_SOCKET" || return $?
       for VALIDATE_REQUIRED_FILE in \
         agent.json bundle-meta.json provider-readiness.json tool-profiles.json \
         psyche/SOUL.md habits/sanctuary-health.md; do
@@ -207,12 +209,41 @@ Effective-spec audit helper:
       test "$(printf '%s\n' "$VALIDATE_UNLOCK_FILES" | awk 'NF { count++ } END { print count + 0 }')" = 1 || return $?
       test ! -e "$VALIDATE_RUNTIME_ROOT/container-credentials.json" || return $?
       test ! -e "$VALIDATE_RUNTIME_ROOT/container-credentials.json.consuming" || return $?
+      test ! -S "$VALIDATE_AGENT_ROOT/state/acceptance/telegram-control.sock" || return $?
       VALIDATE_WRONG_OWNER=$(find "$VALIDATE_RUNTIME_ROOT" "$VALIDATE_AGENT_ROOT" -xdev \( ! -user 10001 -o ! -group 10001 \) -print -quit) || return $?
       test -z "$VALIDATE_WRONG_OWNER" || return $?
-      VALIDATE_WRONG_DIR_MODE=$(find "$VALIDATE_RUNTIME_ROOT" "$VALIDATE_AGENT_ROOT" -xdev -type d ! -perm 0700 -print -quit) || return $?
-      test -z "$VALIDATE_WRONG_DIR_MODE" || return $?
-      VALIDATE_WRONG_FILE_MODE=$(find "$VALIDATE_RUNTIME_ROOT" "$VALIDATE_AGENT_ROOT" -xdev -type f ! -perm 0600 -print -quit) || return $?
-      test -z "$VALIDATE_WRONG_FILE_MODE" || return $?
+      VALIDATE_WRONG_RUNTIME_DIR_MODE=$(find "$VALIDATE_RUNTIME_ROOT" -xdev -type d ! -perm 0700 \
+        ! \( -perm 0755 \( \
+          -path "$VALIDATE_RUNTIME_ROOT/scheduler" -o -path "$VALIDATE_RUNTIME_ROOT/scheduler/*" -o \
+          -path "$VALIDATE_RUNTIME_ROOT/daemon/logs" -o -path "$VALIDATE_RUNTIME_ROOT/daemon/logs/*" \
+        \) \) -print -quit) || return $?
+      test -z "$VALIDATE_WRONG_RUNTIME_DIR_MODE" || return $?
+      VALIDATE_WRONG_AGENT_DIR_MODE=$(find "$VALIDATE_AGENT_ROOT" -xdev -type d ! -perm 0700 \
+        ! \( -perm 0755 \( \
+          -path "$VALIDATE_AGENT_ROOT/arc/flight-recorder" -o -path "$VALIDATE_AGENT_ROOT/arc/flight-recorder/*" -o \
+          -path "$VALIDATE_AGENT_ROOT/state/health" -o -path "$VALIDATE_AGENT_ROOT/state/health/*" -o \
+          -path "$VALIDATE_AGENT_ROOT/state/logs" -o -path "$VALIDATE_AGENT_ROOT/state/logs/*" -o \
+          -path "$VALIDATE_AGENT_ROOT/state/habits" -o -path "$VALIDATE_AGENT_ROOT/state/habits/*" \
+        \) \) -print -quit) || return $?
+      test -z "$VALIDATE_WRONG_AGENT_DIR_MODE" || return $?
+      VALIDATE_WRONG_RUNTIME_FILE_MODE=$(find "$VALIDATE_RUNTIME_ROOT" -xdev -type f ! -perm 0600 \
+        ! \( -perm 0644 \( \
+          -path "$VALIDATE_RUNTIME_ROOT/daemon/logs/*" -o \
+          -path "$VALIDATE_RUNTIME_ROOT/scheduler/*" -o \
+          -path "$VALIDATE_RUNTIME_ROOT/pulse.json" -o \
+          -path "$VALIDATE_RUNTIME_ROOT/pulse-delivered.json" -o \
+          -path "$VALIDATE_RUNTIME_ROOT/daemon.pids" -o \
+          -path "$VALIDATE_RUNTIME_ROOT/daemon-health.json" \
+        \) \) -print -quit) || return $?
+      test -z "$VALIDATE_WRONG_RUNTIME_FILE_MODE" || return $?
+      VALIDATE_WRONG_AGENT_FILE_MODE=$(find "$VALIDATE_AGENT_ROOT" -xdev -type f ! -perm 0600 \
+        ! \( -perm 0644 \( \
+          -path "$VALIDATE_AGENT_ROOT/arc/flight-recorder/*" -o \
+          -path "$VALIDATE_AGENT_ROOT/state/health/*" -o \
+          -path "$VALIDATE_AGENT_ROOT/state/logs/*" -o \
+          -path "$VALIDATE_AGENT_ROOT/state/habits/*" \
+        \) \) -print -quit) || return $?
+      test -z "$VALIDATE_WRONG_AGENT_FILE_MODE" || return $?
       )
     }
     assert_restore_preflight() {
@@ -1047,6 +1078,9 @@ Update:
   result before stopping production. First resolve and validate the exact image
   ID of the known-good production container while it is still running, so a
   lookup failure cannot strand a renamed container:
+    /boot/config/custom/ouro-events/bootstrap-spool.sh --mount
+    test "$(findmnt -n -o FSTYPE --target /boot/config/custom/ouro-events/spool)" = tmpfs
+    test "$(stat -c '%u:%g:%a' /boot/config/custom/ouro-events/spool)" = 0:0:755
     ROLLBACK_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler)
     validate_exact_image_id "$ROLLBACK_IMAGE_ID"
     if assert_update_topology "$ROLLBACK_IMAGE_ID"; then
@@ -1143,6 +1177,7 @@ ouro-butler-rollback
     if docker create --name ouro-butler-staging --network host --restart unless-stopped --user 10001:10001 \
       --mount "type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli" \
       --mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
+      --mount "type=bind,src=/boot/config/custom/ouro-events/spool,dst=/run/ouro-events,readonly" \
       "$IMAGE_ID" \
       && audit_effective ouro-butler-staging "$IMAGE_ID" \
       && docker start ouro-butler-staging \
@@ -1187,6 +1222,7 @@ ouro-butler-rollback
     if docker create --name ouro-butler --network host --restart unless-stopped --user 10001:10001 \
       --mount "type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli" \
       --mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
+      --mount "type=bind,src=/boot/config/custom/ouro-events/spool,dst=/run/ouro-events,readonly" \
       "$IMAGE_ID" \
       && audit_effective ouro-butler "$IMAGE_ID" \
       && docker start ouro-butler \
@@ -1225,6 +1261,15 @@ Backup:
   A routine backup must not contain container-credentials.json or
   container-credentials.json.consuming. If either exists, credential migration
   is pending or failed and must be reconciled before taking the backup.
+  The Telegram control socket is live process state, not durable data. Exclude
+  exactly that socket while preserving every regular file byte-for-byte, then
+  require it to be absent from the stopped backup:
+    rsync -a --exclude='/state/acceptance/telegram-control.sock' \
+      /mnt/user/appdata/ouro-butler/runtime/.ouro-cli/ "$BACKUP_ROOT/runtime/.ouro-cli/"
+    rsync -a --exclude='/state/acceptance/telegram-control.sock' \
+      /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/ "$BACKUP_ROOT/agent/sanctuary.ouro/"
+    test ! -S "$BACKUP_ROOT/agent/sanctuary.ouro/state/acceptance/telegram-control.sock"
+    validate_sanctuary_roots "$BACKUP_ROOT/runtime/.ouro-cli" "$BACKUP_ROOT/agent/sanctuary.ouro"
 
 Restore:
   Set BACKUP_ROOT to the exact verified snapshot containing `runtime/.ouro-cli`
@@ -1242,6 +1287,9 @@ Restore:
     fi
   Guard the atomic autostart disable before stopping or removing any Butler
   container. Failure propagates while the existing production remains untouched:
+    /boot/config/custom/ouro-events/bootstrap-spool.sh --mount
+    test "$(findmnt -n -o FSTYPE --target /boot/config/custom/ouro-events/spool)" = tmpfs
+    test "$(stat -c '%u:%g:%a' /boot/config/custom/ouro-events/spool)" = 0:0:755
     if disable_butler_autostart; then
       :
     else
@@ -1270,6 +1318,7 @@ Restore:
       && docker create --name ouro-butler --network host --restart unless-stopped --user 10001:10001 \
       --mount "type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli" \
       --mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
+      --mount "type=bind,src=/boot/config/custom/ouro-events/spool,dst=/run/ouro-events,readonly" \
       "$IMAGE_ID" \
       && audit_effective ouro-butler "$IMAGE_ID" \
       && docker start ouro-butler \
