@@ -59,6 +59,22 @@ describe("relationship authorization", () => {
     expect(evaluator.authorizeEffect("telegram.reply")).toMatchObject({ allowed: true })
   })
 
+  it("intersects an internal event-turn profile with the durable relationship profile", () => {
+    const owner = { id: "ari", name: "Ari", trustLevel: "family" as const, admissionState: "active" as const, initiativePolicy: "proactive" as const, capabilityProfileId: "owner", externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: "", updatedAt: "", schemaVersion: 1 }
+    const evaluator = createRelationshipAuthorizationEvaluator({
+      friend: owner,
+      registry: { version: 2, profiles: {
+        owner: { id: "owner", version: 3, contextScopes: ["household.status", "household.private"], toolNames: ["unraid_get_system", "send_message"], effectScopes: ["telegram.proactive", "telegram.owner_event"] },
+        event: { id: "event", version: 2, contextScopes: ["household.status", "household.policy"], toolNames: ["send_message", "shell"], effectScopes: ["telegram.owner_event"] },
+      } },
+      profileId: "event",
+    })
+    expect(evaluator.authorizedContextScopes).toEqual(["household.status"])
+    expect(evaluator.advertisedToolNames).toEqual(["send_message"])
+    expect(evaluator.authorizeTool("shell")).toMatchObject({ allowed: false })
+    expect(evaluator.authorizeEffect("telegram.owner_event")).toMatchObject({ allowed: true, profileId: "event", profileVersion: 2 })
+  })
+
   it("allows a household read within the active request and emits a versioned receipt", () => {
     expect(authorizeRelationshipAccess({
       relationship: member,

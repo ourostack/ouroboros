@@ -90,15 +90,28 @@ export function relationshipSubjectFromFriend(friend: FriendRecord): Relationshi
 export function createRelationshipAuthorizationEvaluator(input: {
   friend: FriendRecord
   registry: RelationshipCapabilityRegistry
+  /** Optional internal turn profile; it can only reduce the Friend's durable relationship profile. */
+  profileId?: string
   requestId?: string
   requestPhase?: "inbound" | "follow_up"
   sessionEventId?: string
 }): RelationshipAuthorizationEvaluator {
   const subject = relationshipSubjectFromFriend(input.friend)
-  const profile = subject.capabilityProfileId ? input.registry.profiles[subject.capabilityProfileId] : undefined
-  const profiles = Object.values(input.registry.profiles)
+  const relationshipProfile = subject.capabilityProfileId ? input.registry.profiles[subject.capabilityProfileId] : undefined
+  const turnProfile = input.profileId ? input.registry.profiles[input.profileId] : relationshipProfile
+  const profile = relationshipProfile && turnProfile
+    ? {
+        id: turnProfile.id,
+        version: turnProfile.version,
+        contextScopes: turnProfile.contextScopes.filter((scope) => relationshipProfile.contextScopes.includes(scope)),
+        toolNames: turnProfile.toolNames.filter((name) => relationshipProfile.toolNames.includes(name)),
+        effectScopes: turnProfile.effectScopes.filter((scope) => relationshipProfile.effectScopes.includes(scope)),
+      }
+    : undefined
+  const effectiveSubject = { ...subject, ...(profile ? { capabilityProfileId: profile.id } : {}) }
+  const profiles = profile ? [profile] : []
   const evaluate = (request: RelationshipAuthorizationRequest) => authorizeRelationshipAccess({
-    relationship: subject,
+    relationship: effectiveSubject,
     profiles,
     request,
     activeRequestId: input.requestId,
