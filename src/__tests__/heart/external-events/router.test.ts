@@ -37,7 +37,7 @@ describe("external event router", () => {
       agent: " !!! ",
       source: "app store/connect",
       eventId: "feedback:1/2",
-    })).toBe(path.join(root, "unknown", "app_store_connect", "feedback_1_2.json"))
+    })).toMatch(new RegExp(`^${root}/unknown-[a-f0-9]{16}/app_store_connect-[a-f0-9]{16}/feedback_1_2-[a-f0-9]{16}\\.json$`, "u"))
   })
 
   it("recovers duplicate counting when an existing receipt is corrupt", () => {

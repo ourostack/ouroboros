@@ -3,6 +3,7 @@ import * as path from "path"
 import { runPrivateRuntimeTurn, type PreparedHabitContext } from "./private-runtime"
 import type { PriorHabitSessionSummaryInfo } from "./habit-turn-message"
 import type { PrivateTurnDecision } from "../heart/private-runtime"
+import type { ExternalEventLeaseContext } from "../heart/external-events/router"
 import { emitNervesEvent } from "../nerves/runtime"
 import { getAgentName, getAgentRoot } from "../heart/identity"
 import { getPrivateRuntimePendingDir, hasPendingMessages } from "../mind/pending"
@@ -52,6 +53,7 @@ export interface PrivateRuntimeWorkerMessage {
   trigger?: HabitRunReceipt["trigger"]
   noSend?: true
   privateTurnDecision?: PrivateTurnDecision
+  externalEvent?: ExternalEventLeaseContext
 }
 
 export interface PrivateRuntimeWorkerRunOptions {
@@ -64,6 +66,7 @@ export interface PrivateRuntimeWorkerRunOptions {
   preparedHabit?: PreparedHabitContext
   noSend?: true
   privateTurnDecision?: PrivateTurnDecision
+  externalEvent?: ExternalEventLeaseContext
 }
 
 export interface PrivateRuntimeWorkerController {
@@ -75,6 +78,7 @@ export interface PrivateRuntimeWorkerController {
     trigger?: HabitRunReceipt["trigger"],
     privateTurnDecision?: PrivateTurnDecision,
     noSend?: true,
+    externalEvent?: ExternalEventLeaseContext,
   ): Promise<void>
   handleMessage(message: unknown): Promise<void>
 }
@@ -92,6 +96,7 @@ interface QueueEntry {
   trigger?: HabitRunReceipt["trigger"]
   noSend?: true
   privateTurnDecision?: PrivateTurnDecision
+  externalEvent?: ExternalEventLeaseContext
 }
 
 interface PreparedHabitRun {
@@ -560,9 +565,10 @@ export function createPrivateRuntimeWorker(
     trigger?: HabitRunReceipt["trigger"],
     privateTurnDecision?: PrivateTurnDecision,
     noSend?: true,
+    externalEvent?: ExternalEventLeaseContext,
   ): Promise<void> {
     if (running) {
-      queue.push({ reason, taskId, habitName, awaitName, trigger, privateTurnDecision, noSend })
+      queue.push({ reason, taskId, habitName, awaitName, trigger, privateTurnDecision, noSend, externalEvent })
       return
     }
 
@@ -574,6 +580,7 @@ export function createPrivateRuntimeWorker(
       let nextAwaitName = awaitName
       let nextTrigger = trigger
       let nextPrivateTurnDecision = privateTurnDecision
+      let nextExternalEvent = externalEvent
       let nextNoSend = reason === "habit" ? noSend : undefined
       let nextHabitRun: PreparedHabitRun | null = null
       let consecutiveInstinctTurns = reason === "instinct" ? 1 : 0
@@ -632,6 +639,7 @@ export function createPrivateRuntimeWorker(
               awaitName: nextAwaitName,
               ...(currentNoSend ? { noSend: true } : {}),
               ...(nextPrivateTurnDecision ? { privateTurnDecision: nextPrivateTurnDecision } : {}),
+              ...(nextExternalEvent ? { externalEvent: nextExternalEvent } : {}),
               ...(currentHabitRun
                 ? {
                   trigger: currentHabitRun.trigger,
@@ -700,6 +708,7 @@ export function createPrivateRuntimeWorker(
           nextAwaitName = next.awaitName
           nextTrigger = next.trigger
           nextPrivateTurnDecision = next.privateTurnDecision
+          nextExternalEvent = next.externalEvent
           nextNoSend = next.reason === "habit" ? next.noSend : undefined
           consecutiveInstinctTurns = nextReason === "instinct" ? consecutiveInstinctTurns + 1 : 0
           continue runLoop
@@ -739,6 +748,7 @@ export function createPrivateRuntimeWorker(
             nextAwaitName = undefined
             nextTrigger = currentTrigger
             nextPrivateTurnDecision = undefined
+            nextExternalEvent = undefined
             nextNoSend = currentNoSend
             nextHabitRun = currentHabitRun
           } else {
@@ -750,6 +760,7 @@ export function createPrivateRuntimeWorker(
             nextAwaitName = undefined
             nextTrigger = undefined
             nextPrivateTurnDecision = undefined
+            nextExternalEvent = undefined
             nextNoSend = undefined
           }
           continue
@@ -805,7 +816,7 @@ export function createPrivateRuntimeWorker(
       maybeMessage.type === "message"
     ) {
       clearHeartbeatRestShield()
-      await run("instinct", undefined, undefined, undefined, undefined, maybeMessage.privateTurnDecision)
+      await run("instinct", undefined, undefined, undefined, undefined, maybeMessage.privateTurnDecision, undefined, maybeMessage.externalEvent)
       return
     }
     if (maybeMessage.type === "shutdown") {

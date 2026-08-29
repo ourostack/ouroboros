@@ -43,13 +43,13 @@ describe("Sanctuary health evidence runner", () => {
     await expect(runSanctuaryHealthHabit("sanctuary")).resolves.toEqual({
       ok: true,
       message: "health evidence submitted",
-      data: { incidentCount: 1, submitted: 1, wakesRequested: 1 },
+      data: { incidentCount: 1, submitted: 2, wakesRequested: 1 },
     })
     expect(mocks.refreshMachineRuntimeCredentialConfig).toHaveBeenCalledWith("sanctuary", "machine-1", { preserveCachedOnFailure: true })
     expect(mocks.refreshMachineRuntimeCredentialConfig).toHaveBeenCalledBefore(mocks.createSanctuaryToolContext)
     expect(mocks.recordExternalEvent).toHaveBeenCalledWith(expect.objectContaining({
       source: "sanctuary-health", eventId: "container:jellyfin:availability", observationRevision: "incident-rev",
-    }))
+    }), { dispatchEnabled: false })
   })
 
   it("reuses a healthy credential cache without refreshing it", async () => {

@@ -1388,7 +1388,7 @@ describe("Telegram sense", () => {
     }, undefined)
   })
 
-  it("samples startup health without Telegram delivery effects", async () => {
+  it("leaves startup health to the evidence-producing native habit", async () => {
     const order: string[] = []
     const healthSweep = Object.assign(
       vi.fn(async () => ({ message: "Array degraded", deliveryId: "delivery-1" })),
@@ -1403,7 +1403,7 @@ describe("Telegram sense", () => {
     await f.app.run()
 
     expect(order).toEqual([])
-    expect(healthSweep).toHaveBeenCalledOnce()
+    expect(healthSweep).not.toHaveBeenCalled()
   })
 
   it("does not attempt legacy health delivery even when Telegram would fail", async () => {
