@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { listExternalEventStatus, readExternalEventRecord, recordExternalEvent, scanPrivilegedEventSpool } from "../../../heart/external-events/router"
 
-const spoolMock = vi.hoisted(() => ({ root: "", readOnly: false }))
+const spoolMock = vi.hoisted(() => ({ root: "", readOnly: false, authorityBarrierUsed: false }))
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>()
   return {
@@ -25,6 +25,20 @@ vi.mock("node:fs", async (importOriginal) => {
         return `1 1 0:1 / ${spoolMock.root.replace(/ /gu, "\\040")} ro,nosuid,nodev - bind none ro\n`
       }
       return actual.readFileSync(target, options as never)
+    },
+    readdirSync(target: fs.PathLike, options?: unknown) {
+      const entries = actual.readdirSync(target, options as never)
+      const barrier = process.env.OURO_TEST_SCANNER_BARRIER
+      const eventRoot = process.env.OURO_TEST_SCANNER_EVENT_ROOT
+      if (barrier && eventRoot && !spoolMock.authorityBarrierUsed && path.resolve(String(target)).startsWith(path.resolve(eventRoot))) {
+        spoolMock.authorityBarrierUsed = true
+        actual.writeFileSync(`${barrier}.${process.pid}`, "ready")
+        const deadline = Date.now() + 500
+        while (Date.now() < deadline && actual.readdirSync(path.dirname(barrier)).filter((name) => name.startsWith(path.basename(barrier))).length < 2) {
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)
+        }
+      }
+      return entries
     },
   }
 })
@@ -85,9 +99,22 @@ function producerOptions(spoolRoot: string, nonce = "b".repeat(64)) {
   }
 }
 
+function runProducerProcess(producerPath: string, input: Record<string, unknown>, options: { spoolRoot: string; nonce: string; maxSpoolFiles?: number }): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve) => {
+    const program = `import { emitEvent } from ${JSON.stringify(pathToFileURL(producerPath).href)}; try { const result = emitEvent(${JSON.stringify(input)}, { spoolRoot: ${JSON.stringify(options.spoolRoot)}, effectiveUid: 0, expectedSpoolOwnerUid: process.getuid(), now: () => ${JSON.stringify("2026-08-29T19:55:00.000Z")}, nonce: () => ${JSON.stringify(options.nonce)}, maxSpoolFiles: ${JSON.stringify(options.maxSpoolFiles)} }); process.stdout.write(JSON.stringify(result)); } catch (error) { process.stderr.write(error.message); process.exitCode = 1 }`
+    const child = spawn(process.execPath, ["--input-type=module", "--eval", program], { stdio: ["ignore", "pipe", "pipe"] })
+    let stdout = ""
+    let stderr = ""
+    child.stdout.on("data", (chunk) => { stdout += String(chunk) })
+    child.stderr.on("data", (chunk) => { stderr += String(chunk) })
+    child.on("close", (code) => resolve({ code, stdout, stderr }))
+  })
+}
+
 afterEach(() => {
   spoolMock.root = ""
   spoolMock.readOnly = false
+  spoolMock.authorityBarrierUsed = false
   for (const value of roots.splice(0)) fs.rmSync(value, { recursive: true, force: true })
 })
 
@@ -160,7 +187,45 @@ describe("privileged external-event spool", () => {
     expect(listExternalEventStatus(eventRoot)).toHaveLength(512)
     expect(scanPrivilegedEventSpool({ spoolRoot, eventRoot, now: () => NOW })).toEqual({ accepted: 0, rejected: 0, replayed: 513 })
     expect(listExternalEventStatus(eventRoot)).toHaveLength(512)
+    const newest = listExternalEventStatus(eventRoot).find((status) => status.eventId === "incident-512")!
+    const newestRecord = readExternalEventRecord(newest.recordPath)
+    expect(newestRecord.privilegedReplayManifest).toBeDefined()
+    expect(newestRecord.retentionSummary).not.toHaveProperty("privilegedReplayManifest")
+    expect(Buffer.byteLength(JSON.stringify(newestRecord))).toBeLessThanOrEqual(64 * 1024)
   }, 15_000)
+
+  it("serializes scanner processes before accepting one nonce under different event IDs", async () => {
+    const eventRoot = root("ouro-scanner-process-events")
+    fs.mkdirSync(path.join(eventRoot, "sanctuary", "sanctuary-usenet"), { recursive: true })
+    const barrierDir = root("ouro-scanner-process-barrier")
+    const barrier = path.join(barrierDir, "ready")
+    const testPath = path.resolve(__filename)
+    const vitestPath = path.resolve("node_modules/vitest/vitest.mjs")
+    const run = (index: number): Promise<{ code: number | null; result: { accepted: number; rejected: number; replayed: number } }> => new Promise((resolve) => {
+      const spoolRoot = root(`ouro-scanner-process-spool-${index}`)
+      fs.chmodSync(spoolRoot, 0o755)
+      writeSpoolFile(spoolRoot, envelope({ incidentKey: `process-${index}`, transitionId: `process-${index}`, nonce: "e".repeat(64) }))
+      const resultPath = path.join(barrierDir, `result-${index}.json`)
+      const child = spawn(process.execPath, [vitestPath, "run", testPath, "-t", "scanner child process"], {
+        stdio: "ignore",
+        env: { ...process.env, OURO_TEST_SCANNER_CHILD: "1", OURO_TEST_SCANNER_SPOOL_ROOT: spoolRoot, OURO_TEST_SCANNER_EVENT_ROOT: eventRoot, OURO_TEST_SCANNER_RESULT: resultPath, OURO_TEST_SCANNER_BARRIER: barrier },
+      })
+      child.on("close", (code) => resolve({ code, result: JSON.parse(fs.readFileSync(resultPath, "utf8")) }))
+    })
+    const outcomes = await Promise.all([run(1), run(2)])
+    expect(outcomes.map((outcome) => outcome.code)).toEqual([0, 0])
+    expect(outcomes.reduce((total, outcome) => total + outcome.result.accepted, 0)).toBe(1)
+    expect(outcomes.reduce((total, outcome) => total + outcome.result.replayed, 0)).toBe(1)
+    expect(outcomes.reduce((total, outcome) => total + outcome.result.rejected, 0)).toBe(0)
+  }, 15_000)
+
+  it.skipIf(process.env.OURO_TEST_SCANNER_CHILD !== "1")("scanner child process", () => {
+    const spoolRoot = process.env.OURO_TEST_SCANNER_SPOOL_ROOT!
+    const eventRoot = process.env.OURO_TEST_SCANNER_EVENT_ROOT!
+    spoofRootOwnership(spoolRoot)
+    const result = scanPrivilegedEventSpool({ spoolRoot, eventRoot, now: () => NOW })
+    fs.writeFileSync(process.env.OURO_TEST_SCANNER_RESULT!, JSON.stringify(result))
+  })
 
   it.each([
     ["wrong source", { source: "attacker" }],
@@ -251,20 +316,70 @@ describe("packaged root event producer", () => {
     const producerPath = path.resolve(__dirname, "../../../../deploy/unraid/ouro-events/emit-event.mjs")
     const spoolRoot = root("ouro-producer-concurrent")
     fs.chmodSync(spoolRoot, 0o755)
-    const run = (summary: string, nonce: string): Promise<{ code: number | null; stdout: string; stderr: string }> => new Promise((resolve) => {
-      const program = `import { emitEvent } from ${JSON.stringify(pathToFileURL(producerPath).href)}; try { const result = emitEvent(${JSON.stringify(envelope({ createdAt: undefined, expiresAt: undefined, nonce: undefined, summary }))}, { spoolRoot: ${JSON.stringify(spoolRoot)}, effectiveUid: 0, expectedSpoolOwnerUid: process.getuid(), now: () => ${JSON.stringify("2026-08-29T19:55:00.000Z")}, nonce: () => ${JSON.stringify(nonce)} }); process.stdout.write(JSON.stringify(result)); } catch (error) { process.stderr.write(error.message); process.exitCode = 1 }`
-      const child = spawn(process.execPath, ["--input-type=module", "--eval", program], { stdio: ["ignore", "pipe", "pipe"] })
-      let stdout = ""
-      let stderr = ""
-      child.stdout.on("data", (chunk) => { stdout += String(chunk) })
-      child.stderr.on("data", (chunk) => { stderr += String(chunk) })
-      child.on("close", (code) => resolve({ code, stdout, stderr }))
-    })
-    const outcomes = await Promise.all([run("first contender", "c".repeat(64)), run("second contender", "d".repeat(64))])
+    const outcomes = await Promise.all([
+      runProducerProcess(producerPath, envelope({ createdAt: undefined, expiresAt: undefined, nonce: undefined, summary: "first contender" }), { spoolRoot, nonce: "c".repeat(64) }),
+      runProducerProcess(producerPath, envelope({ createdAt: undefined, expiresAt: undefined, nonce: undefined, summary: "second contender" }), { spoolRoot, nonce: "d".repeat(64) }),
+    ])
 
     expect(outcomes.filter((outcome) => outcome.code === 0)).toHaveLength(1)
     expect(outcomes.filter((outcome) => outcome.stderr.includes("different content"))).toHaveLength(1)
     expect(fs.readdirSync(spoolRoot)).toHaveLength(1)
     expect(JSON.parse(fs.readFileSync(path.join(spoolRoot, fs.readdirSync(spoolRoot)[0]!), "utf8")).summary).toMatch(/contender/u)
+  })
+
+  it("recovers a dead producer lock and publishes a single-link final file without hard links", async () => {
+    const producerPath = path.resolve(__dirname, "../../../../deploy/unraid/ouro-events/emit-event.mjs")
+    const producer = await import(`${pathToFileURL(producerPath).href}?recovery=${Date.now()}`) as {
+      emitEvent(input: Record<string, unknown>, options: ReturnType<typeof producerOptions>): { filePath: string; created: boolean }
+    }
+    const spoolRoot = root("ouro-producer-recovery")
+    fs.chmodSync(spoolRoot, 0o755)
+    const value = envelope({ createdAt: undefined, expiresAt: undefined, nonce: undefined })
+    const lockDir = path.join(spoolRoot, ".producer.lock")
+    fs.mkdirSync(lockDir)
+    fs.writeFileSync(path.join(lockDir, "owner.json"), JSON.stringify({ pid: 999_999, createdAt: 0 }))
+    fs.writeFileSync(path.join(lockDir, "event.tmp"), "partial")
+
+    const result = producer.emitEvent(value, producerOptions(spoolRoot))
+    expect(result.created).toBe(true)
+    expect(fs.statSync(result.filePath).nlink).toBe(1)
+    expect(fs.existsSync(lockDir)).toBe(false)
+    expect(fs.readFileSync(producerPath, "utf8")).not.toContain("fs.linkSync(")
+  })
+
+  it("fails closed at bounded spool capacity while preserving existing idempotency", async () => {
+    const producerPath = path.resolve(__dirname, "../../../../deploy/unraid/ouro-events/emit-event.mjs")
+    const producer = await import(`${pathToFileURL(producerPath).href}?capacity=${Date.now()}`) as {
+      emitEvent(input: Record<string, unknown>, options: ReturnType<typeof producerOptions> & { maxSpoolFiles: number }): { filePath: string; created: boolean }
+    }
+    const spoolRoot = root("ouro-producer-capacity")
+    fs.chmodSync(spoolRoot, 0o755)
+    const firstInput = envelope({ createdAt: undefined, expiresAt: undefined, nonce: undefined, incidentKey: "capacity-1", transitionId: "capacity-1" })
+    const options = { ...producerOptions(spoolRoot), maxSpoolFiles: 1 }
+    expect(producer.emitEvent(firstInput, options).created).toBe(true)
+    expect(producer.emitEvent(firstInput, options).created).toBe(false)
+    expect(() => producer.emitEvent(envelope({ createdAt: undefined, expiresAt: undefined, nonce: undefined, incidentKey: "capacity-2", transitionId: "capacity-2" }), options)).toThrow("capacity")
+    expect(fs.readdirSync(spoolRoot).filter((name) => name.endsWith(".json"))).toHaveLength(1)
+
+    const concurrentRoot = root("ouro-producer-concurrent-capacity")
+    fs.chmodSync(concurrentRoot, 0o755)
+    const outcomes = await Promise.all([1, 2].map((index) => runProducerProcess(producerPath, envelope({ createdAt: undefined, expiresAt: undefined, nonce: undefined, incidentKey: `bounded-${index}`, transitionId: `bounded-${index}` }), { spoolRoot: concurrentRoot, nonce: String(index).repeat(64), maxSpoolFiles: 1 })))
+    expect(outcomes.filter((outcome) => outcome.code === 0)).toHaveLength(1)
+    expect(outcomes.filter((outcome) => outcome.stderr.includes("capacity"))).toHaveLength(1)
+    expect(fs.readdirSync(concurrentRoot).filter((name) => name.endsWith(".json"))).toHaveLength(1)
+  })
+})
+
+describe("external-event record bound", () => {
+  it("refuses a final serialized receipt larger than 64 KiB", () => {
+    const eventRoot = root("ouro-record-bound")
+    expect(() => recordExternalEvent({
+      agent: "sanctuary",
+      source: "bounded-source",
+      eventType: "large",
+      eventId: "large",
+      evidence: Array.from({ length: 31 }, (_, index) => `${index}:${"x".repeat(2_090)}`),
+    }, { root: eventRoot })).toThrow("record must be bounded")
+    expect(listExternalEventStatus(eventRoot)).toEqual([])
   })
 })
