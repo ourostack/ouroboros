@@ -1562,9 +1562,14 @@ export async function createProductionTelegramRelationshipComposition(agentName:
     const bindings = sameBotTelegramBindings(friend)
     return bindings.length === 1 && /^[1-9][0-9]*$/u.test(bindings[0]!.externalId) && bindings[0]!.externalId === userId
   }
+  const canonicalOwner = (friend: Awaited<ReturnType<FileFriendStore["get"]>>): boolean => Boolean(friend
+    && exactTelegramIdentity(friend, ownerUserId) && friend.admissionState === "active" && friend.trustLevel === "family"
+    && friend.initiativePolicy === "proactive" && friend.capabilityProfileId === "sanctuary-owner")
+  const canonicalHousehold = (friend: Awaited<ReturnType<FileFriendStore["get"]>>, userId: string): boolean => Boolean(friend
+    && exactTelegramIdentity(friend, userId) && friend.admissionState === "active" && friend.trustLevel === "friend"
+    && friend.initiativePolicy === "request_follow_up_only" && friend.capabilityProfileId === "sanctuary-household")
   const owner = await store.findByExternalId("telegram-user", ownerUserId, botId)
-  if (!owner || !exactTelegramIdentity(owner, ownerUserId) || owner.admissionState !== "active"
-    || owner.capabilityProfileId !== "sanctuary-owner" || owner.trustLevel !== "family") {
+  if (!owner || !canonicalOwner(owner)) {
     throw new Error("Telegram owner Friend must be active with the sanctuary-owner profile and exact bot identity")
   }
   const registry = loadRelationshipCapabilityRegistry(agentRoot)
@@ -1573,8 +1578,11 @@ export async function createProductionTelegramRelationshipComposition(agentName:
   }
   const resolveEvaluator = async (input: { friendId: string; requestId: string; sessionEventId: string; botId: string; userId: string; chatId: string; sessionKey: string }): Promise<RelationshipAuthorizationEvaluator> => {
     const friend = await store.get(input.friendId)
-    if (input.botId !== botId || input.userId !== input.chatId || input.sessionKey !== `telegram:${botId}:${input.userId}`
-      || !friend || friend.admissionState !== "active" || !exactTelegramIdentity(friend, input.userId)) {
+    const ownerBound = friend?.id === owner.id
+    const coordinatesValid = ownerBound
+      ? input.botId === botId && input.userId === ownerUserId && input.chatId === ownerChatId && input.sessionKey === ownerSessionKey
+      : input.botId === botId && input.userId === input.chatId && input.sessionKey === `telegram:${botId}:${input.userId}`
+    if (!friend || !coordinatesValid || (ownerBound ? !canonicalOwner(friend) : !canonicalHousehold(friend, input.userId))) {
       throw new Error("Telegram relationship identity binding is not active")
     }
     return createRelationshipAuthorizationEvaluator({
@@ -1591,17 +1599,14 @@ export async function createProductionTelegramRelationshipComposition(agentName:
       if (candidateBotId !== botId || userId !== ownerUserId || chatId !== ownerChatId || sessionKey !== ownerSessionKey) return null
       const exact = await store.findByExternalId("telegram-user", userId, botId)
       const current = await store.get(owner.id)
-      return exact?.id === owner.id && current?.admissionState === "active" && current.trustLevel === "family"
-        && current.capabilityProfileId === "sanctuary-owner" && exactTelegramIdentity(current, userId)
+      return exact?.id === owner.id && canonicalOwner(current)
         ? { friendId: owner.id }
         : null
     },
     resolveApprovedFriend: async ({ botId: candidateBotId, userId, chatId }) => {
       if (candidateBotId !== botId || userId !== chatId) return null
       const friend = await store.findByExternalId("telegram-user", userId, botId)
-      return friend && exactTelegramIdentity(friend, userId) && friend.admissionState === "active"
-        && friend.trustLevel === "friend" && friend.initiativePolicy === "request_follow_up_only"
-        && friend.capabilityProfileId === "sanctuary-household" ? { friendId: friend.id } : null
+      return friend && canonicalHousehold(friend, userId) ? { friendId: friend.id } : null
     },
     claimFriend: async (input) => {
       if (input.botId !== botId || input.userId !== input.chatId) return { kind: "collision", reason: "Telegram identity is not bound to this bot and private chat" }
@@ -1632,10 +1637,11 @@ export async function createProductionTelegramRelationshipComposition(agentName:
     authorizeRelationshipEffect: async (input) => {
       if (input.target.kind !== "approved_relationship") return { allowed: false, reason: "relationship effect target is required" }
       const friend = await store.get(input.target.friendId)
-      if (!friend || friend.admissionState !== "active") return { allowed: false, reason: "relationship admission is not active" }
+      if (!friend) return { allowed: false, reason: "relationship admission is not active" }
       const bindings = sameBotTelegramBindings(friend)
       if (bindings.length !== 1 || !/^[1-9][0-9]*$/u.test(bindings[0]!.externalId)) return { allowed: false, reason: "relationship Telegram identity binding is unavailable" }
       const chatId = bindings[0]!.externalId
+      if (friend.id === owner.id ? !canonicalOwner(friend) : !canonicalHousehold(friend, chatId)) return { allowed: false, reason: "relationship admission is not active or canonical" }
       if (friend.id === owner.id) {
         if (chatId !== ownerUserId || chatId !== ownerChatId || input.target.sessionKey !== ownerSessionKey) return { allowed: false, reason: "owner Telegram identity or session binding changed" }
       } else if (input.target.sessionKey !== `telegram:${botId}:${chatId}`) return { allowed: false, reason: "relationship Telegram session binding changed" }
