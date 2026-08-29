@@ -299,11 +299,11 @@ function canonicalMessageId(result: unknown): number {
   return messageId as number
 }
 
-async function executePart(api: TelegramBotApi, artifact: TelegramEffectArtifact, part: TelegramEffectPart): Promise<number | undefined> {
+async function executePart(api: TelegramBotApi, artifact: TelegramEffectArtifact, part: TelegramEffectPart, signal?: AbortSignal): Promise<number | undefined> {
   const chatId = artifact.target.chatId
   const effect = artifact.effect
   if (effect.kind === "text" || effect.kind === "admission_ack") {
-    const ids = await sendTelegramText(api, chatId, part.text ?? "")
+    const ids = await sendTelegramText(api, chatId, part.text ?? "", signal)
     if (ids.length !== 1) throw new Error("Telegram effect chunk renderer returned an unexpected message count")
     return ids[0]
   }
@@ -342,6 +342,7 @@ export async function executeTelegramEffect(
   artifactIdValue: string,
   api: TelegramBotApi,
   reauthorize: (artifact: TelegramEffectArtifact) => TelegramEffectAuthorization,
+  signal?: AbortSignal,
 ): Promise<TelegramEffectArtifact> {
   return withSessionTurnLease(store.coordinationPath(artifactIdValue), async () => {
     const artifact = store.read(artifactIdValue)
@@ -364,13 +365,14 @@ export async function executeTelegramEffect(
     artifact.authorizationExpiresAt = authorization.expiresAt
     for (const part of artifact.parts) {
       if (part.state === "accepted" || part.state === "session_recorded") continue
+      if (signal?.aborted) throw signal.reason
       const attemptingAt = new Date().toISOString()
       part.state = "attempting"
       part.updatedAt = attemptingAt
       artifact.updatedAt = attemptingAt
       store.write(artifact)
       try {
-        const messageId = await executePart(api, artifact, part)
+        const messageId = await executePart(api, artifact, part, signal)
         part.state = "accepted"
         if (messageId !== undefined) part.messageId = messageId
         part.updatedAt = new Date().toISOString()
@@ -418,7 +420,7 @@ export function createTelegramAuthorizedEffectExecutor(options: {
           effect: artifact.effect,
           artifact,
         })
-      })
+      }, input.signal)
       barrier()
       for (const part of executed.parts) {
         if (part.messageId !== undefined && part.text !== null) input.onMessageDelivered?.(part.messageId, part.text)
