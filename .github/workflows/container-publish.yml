@@ -101,12 +101,35 @@ jobs:
           AUTHENTICATED_MANIFEST=$(docker buildx imagetools inspect "$VERSION_IMAGE")
           printf '%s\n' "$AUTHENTICATED_MANIFEST" | grep -F "Platform:    linux/amd64"
           printf '%s\n' "$AUTHENTICATED_MANIFEST" | grep -F "Platform:    linux/arm64"
-          docker logout ghcr.io
 
-      - name: Verify anonymous immutable references
+      - name: Verify anonymous immutable references and authenticated attestations
         run: |
+          verify_exact_attestations() {
+            EXACT_IMAGE=$1
+            PROVENANCE=$(docker buildx imagetools inspect "$EXACT_IMAGE" --format '{{json .Provenance}}')
+            SBOM=$(docker buildx imagetools inspect "$EXACT_IMAGE" --format '{{json .SBOM}}')
+            printf '%s' "$PROVENANCE" | node -e '
+              const fs = require("node:fs");
+              const attestations = JSON.parse(fs.readFileSync(0, "utf8"));
+              for (const platform of ["linux/amd64", "linux/arm64"]) {
+                const slsa = attestations[platform]?.SLSA;
+                if (!slsa?.builder || !slsa?.invocation || !slsa?.metadata) process.exit(1);
+              }
+            '
+            printf '%s' "$SBOM" | node -e '
+              const fs = require("node:fs");
+              const attestations = JSON.parse(fs.readFileSync(0, "utf8"));
+              for (const platform of ["linux/amd64", "linux/arm64"]) {
+                if (attestations[platform]?.SPDX?.SPDXID !== "SPDXRef-DOCUMENT") process.exit(1);
+              }
+            '
+          }
+          EXACT_IMAGE="$VERSION_IMAGE@${{ steps.exact-references.outputs.digest }}"
+          verify_exact_attestations "$EXACT_IMAGE"
+          docker logout ghcr.io
           GATE_OUTPUT=$(scripts/container-image-release-gate.sh "$VERSION_IMAGE" "$SHA_IMAGE")
           printf '%s\n' "$GATE_OUTPUT"
           test "$(printf '%s\n' "$GATE_OUTPUT" | awk -F= '$1 == "publish" { print $2 }')" = "false"
           PUBLIC_DIGEST=$(printf '%s\n' "$GATE_OUTPUT" | awk -F= '$1 == "digest" { print $2 }')
           test "$PUBLIC_DIGEST" = "${{ steps.exact-references.outputs.digest }}"
+          verify_exact_attestations "$EXACT_IMAGE"

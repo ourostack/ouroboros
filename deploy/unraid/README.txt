@@ -1128,6 +1128,56 @@ Update:
     docker image inspect "$IMAGE_ID" >/dev/null
     AUDIT_RUNNER_IMAGE_ID=$IMAGE_ID
     validate_exact_image_id "$AUDIT_RUNNER_IMAGE_ID"
+  Before stopping, renaming, or creating any Butler container, extract the packaged event assets from that exact image ID and install them transactionally. Do not copy these files from a checkout or another image:
+    EVENT_ASSET_STAGE=$(mktemp -d /mnt/user/appdata/ouro-butler/staging/ouro-events.XXXXXX)
+    chmod 0700 "$EVENT_ASSET_STAGE"
+    EVENT_ASSET_CONTAINER=
+    cleanup_event_asset_stage() {
+      if test -n "$EVENT_ASSET_CONTAINER"; then
+        docker rm --force "$EVENT_ASSET_CONTAINER" >/dev/null 2>&1 || true
+      fi
+      rm -rf -- "$EVENT_ASSET_STAGE"
+    }
+    trap cleanup_event_asset_stage EXIT
+    EVENT_ASSET_CONTAINER=$(docker create --pull=never --network none --read-only --entrypoint /bin/false "$IMAGE_ID")
+    test "$(docker inspect --format '{{.Image}}' "$EVENT_ASSET_CONTAINER")" = "$IMAGE_ID"
+    docker cp "$EVENT_ASSET_CONTAINER:/opt/ouro/deploy/unraid/ouro-events/." "$EVENT_ASSET_STAGE/"
+    docker rm "$EVENT_ASSET_CONTAINER"
+    EVENT_ASSET_CONTAINER=
+    EXPECTED_EVENT_ASSETS=$(printf '%s\n' bootstrap-spool.sh emit-event.mjs emit-usenet-event.sh install-usenet-guard.sh usenet-health.sh)
+    ACTUAL_EVENT_ASSETS=$(find "$EVENT_ASSET_STAGE" -mindepth 1 -maxdepth 1 -type f -exec basename {} \; | LC_ALL=C sort)
+    test "$ACTUAL_EVENT_ASSETS" = "$EXPECTED_EVENT_ASSETS"
+    test -z "$(find "$EVENT_ASSET_STAGE" -mindepth 1 -maxdepth 1 \( -type l -o ! -type f \) -print -quit)"
+    /bin/bash "$EVENT_ASSET_STAGE/install-usenet-guard.sh" --source-root "$EVENT_ASSET_STAGE"
+    /bin/bash /boot/config/custom/ouro-events/install-usenet-guard.sh --boot
+    verify_installed_usenet_guard() {
+      test "$(stat -c '%u:%g:%a' /boot/config/custom/usenet_health.sh)" = 0:0:600
+      test "$(stat -c '%u:%g:%a' /boot/config/custom/ouro-events/bootstrap-spool.sh)" = 0:0:600
+      test "$(stat -c '%u:%g:%a' /boot/config/custom/ouro-events/emit-event.mjs)" = 0:0:600
+      test "$(stat -c '%u:%g:%a' /boot/config/custom/ouro-events/emit-usenet-event.sh)" = 0:0:600
+      test "$(stat -c '%u:%g:%a' /boot/config/custom/ouro-events/install-usenet-guard.sh)" = 0:0:600
+      cmp -s "$EVENT_ASSET_STAGE/usenet-health.sh" /boot/config/custom/usenet_health.sh
+      cmp -s "$EVENT_ASSET_STAGE/bootstrap-spool.sh" /boot/config/custom/ouro-events/bootstrap-spool.sh
+      cmp -s "$EVENT_ASSET_STAGE/emit-event.mjs" /boot/config/custom/ouro-events/emit-event.mjs
+      cmp -s "$EVENT_ASSET_STAGE/emit-usenet-event.sh" /boot/config/custom/ouro-events/emit-usenet-event.sh
+      cmp -s "$EVENT_ASSET_STAGE/install-usenet-guard.sh" /boot/config/custom/ouro-events/install-usenet-guard.sh
+      test "$(grep -Fxc '/bin/bash /boot/config/custom/ouro-events/install-usenet-guard.sh --boot' /boot/config/go)" = 1
+      test "$(grep -Fxc '/boot/config/custom/ouro-events/bootstrap-spool.sh --mount' /boot/config/go || true)" = 0
+      INSTALLED_GUARD_CRON=$(crontab -l)
+      test "$(printf '%s\n' "$INSTALLED_GUARD_CRON" | grep -Fxc '*/15 * * * * /bin/bash /boot/config/custom/usenet_health.sh # ouro:usenet-health')" = 1
+      test "$(findmnt -n -o FSTYPE --target /boot/config/custom/ouro-events/spool)" = tmpfs
+      test "$(stat -c '%u:%g:%a' /boot/config/custom/ouro-events/spool)" = 0:0:755
+      INSTALLED_SPOOL_OPTIONS=$(findmnt -n -o OPTIONS --target /boot/config/custom/ouro-events/spool)
+      for INSTALLED_SPOOL_OPTION in nodev nosuid noexec; do
+        case ",$INSTALLED_SPOOL_OPTIONS," in *",$INSTALLED_SPOOL_OPTION,"*) ;; *) return 1 ;; esac
+      done
+      INSTALLED_SPOOL_SIZE=$(findmnt -bn -o SIZE --target /boot/config/custom/ouro-events/spool)
+      test "$INSTALLED_SPOOL_SIZE" -le 4194304
+    }
+    verify_installed_usenet_guard
+    cleanup_event_asset_stage
+    trap - EXIT
+  If extraction, transactional installation, boot activation, or verification fails, abort the update before any Butler mutation. The installer restores the previous assets, go file, and cron on transactional failure; production stays running. If boot activation or verification fails after the transaction commits, leave production untouched, repair or rerun this exact-image installation, and do not continue. Container rollback begins only after the later production stop succeeds.
   Initial install/adoption is a separate terminal path for the verified live
   legacy state: no production or rollback, exactly one running (possibly
   unhealthy) ouro-butler-staging, and no legacy-evidence container. After the
@@ -1167,9 +1217,6 @@ Update:
   result before stopping production. First resolve and validate the exact image
   ID of the known-good production container while it is still running, so a
   lookup failure cannot strand a renamed container:
-    /boot/config/custom/ouro-events/bootstrap-spool.sh --mount
-    test "$(findmnt -n -o FSTYPE --target /boot/config/custom/ouro-events/spool)" = tmpfs
-    test "$(stat -c '%u:%g:%a' /boot/config/custom/ouro-events/spool)" = 0:0:755
     ROLLBACK_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler)
     validate_exact_image_id "$ROLLBACK_IMAGE_ID"
     if assert_update_topology "$ROLLBACK_IMAGE_ID"; then
