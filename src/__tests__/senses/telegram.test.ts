@@ -62,6 +62,7 @@ function fixture(input: {
   runWithToolReceiptCollection?: any
   afterAcceptanceLedgerPreReadStat?: (filePath: string) => void
 } = {}) {
+  const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-sense-fixture-"))
   let onMessage: ((message: TelegramInboundMessage) => Promise<void>) | undefined
   let onUpdate: ((update: any) => Promise<boolean>) | undefined
   const poll: TelegramLongPoll = {
@@ -107,10 +108,11 @@ function fixture(input: {
     healthSweep: input.healthSweep,
     acceptanceMarker: input.acceptanceMarker,
     acceptanceReceiptRoot: input.acceptanceReceiptRoot,
+    _agentRoot: agentRoot,
     _runWithToolReceiptCollection: input.runWithToolReceiptCollection,
     _afterAcceptanceLedgerPreReadStat: input.afterAcceptanceLedgerPreReadStat,
   })
-  return { app, api, poll, runTurn, approvalTransport, getOnMessage: () => onMessage!, getOnUpdate: () => onUpdate! }
+  return { app, api, poll, runTurn, approvalTransport, agentRoot, getOnMessage: () => onMessage!, getOnUpdate: () => onUpdate! }
 }
 
 describe("Telegram sense", () => {
@@ -681,6 +683,57 @@ describe("Telegram sense", () => {
       text: "All systems nominal.",
       parse_mode: "HTML",
     }, undefined)
+  })
+
+  it("journals an authorized reply before sending and does not resend an accepted retry", async () => {
+    const f = fixture()
+    const inbound = { updateId: 91, messageId: "92", userId: "42", chatId: "42", text: "health?" }
+
+    await f.getOnMessage()(inbound)
+    await f.getOnMessage()(inbound)
+
+    expect(f.api.request).toHaveBeenCalledTimes(1)
+    const journalRoot = path.join(f.agentRoot, "state", "telegram", "effects")
+    const artifacts = fs.readdirSync(journalRoot).filter((name) => name.endsWith(".json"))
+    expect(artifacts).toHaveLength(1)
+    const artifact = JSON.parse(fs.readFileSync(path.join(journalRoot, artifacts[0]!), "utf8"))
+    expect(artifact).toMatchObject({
+      idempotencyKey: "turn:91:delivery:0",
+      authorClass: "butler",
+      effect: { kind: "text", text: "All systems nominal." },
+      parts: [{ state: "accepted", messageId: 71 }],
+    })
+  })
+
+  it("records every accepted Telegram chunk as a Butler-authored session artifact", async () => {
+    let sessionPath = ""
+    const f = fixture({
+      runTurn: vi.fn(async (options: any) => {
+        sessionPath = path.join(f.agentRoot, "state", "sessions", options.friendId, "telegram", "turn.json")
+        fs.mkdirSync(path.dirname(sessionPath), { recursive: true })
+        fs.writeFileSync(sessionPath, JSON.stringify({
+          version: 2,
+          events: [],
+          projection: { eventIds: [], trimmed: false, maxTokens: null, contextMargin: null, inputTokens: null, projectedAt: null },
+          lastUsage: null,
+          state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
+        }))
+        await options.deliverySink.onDelivery({ kind: "settle", text: "A useful answer." })
+        return { response: "A useful answer.", ponderDeferred: false, deliveries: [], deliveryFailures: [], sessionPath }
+      }),
+    })
+
+    await f.getOnMessage()({ updateId: 93, messageId: "94", userId: "42", chatId: "42", text: "help" })
+
+    const envelope = JSON.parse(fs.readFileSync(sessionPath, "utf8"))
+    expect(envelope.events).toEqual([expect.objectContaining({
+      role: "assistant",
+      name: "telegram-butler",
+      content: "A useful answer.",
+      relations: expect.objectContaining({ references: expect.arrayContaining([expect.stringMatching(/^telegram-artifact:/), "telegram-message:71"]) }),
+    })])
+    const artifactName = fs.readdirSync(path.join(f.agentRoot, "state", "telegram", "effects"))[0]!
+    expect(JSON.parse(fs.readFileSync(path.join(f.agentRoot, "state", "telegram", "effects", artifactName), "utf8")).parts[0]).toMatchObject({ state: "session_recorded", sessionEventId: "evt-000001" })
   })
 
   it("persists one HMAC-bound acceptance receipt with observed provider, tool, and delivery counts", async () => {

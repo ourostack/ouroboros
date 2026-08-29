@@ -224,6 +224,8 @@ export interface RunSenseTurnResult {
   providerInvocationCount?: number
   /** Actual tool invocation callbacks observed during this turn. */
   toolInvocationCount?: number
+  /** Exact durable session path used by this turn, for transport reconciliation. */
+  sessionPath?: string
 }
 
 /**
@@ -432,6 +434,7 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
       deliveryFailures,
       providerInvocationCount,
       toolInvocationCount,
+      sessionPath: sessPath,
     }
   }
 
@@ -490,6 +493,6 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
     meta: { agentName, channel, sessionKey, friendId, ponderDeferred, responseLength: finalResponse.length },
   })
 
-  return { response: finalResponse, ponderDeferred, deliveries, deliveryFailures, providerInvocationCount, toolInvocationCount }
+  return { response: finalResponse, ponderDeferred, deliveries, deliveryFailures, providerInvocationCount, toolInvocationCount, sessionPath: sessPath }
   })
 }

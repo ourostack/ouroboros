@@ -94,6 +94,7 @@ export interface TelegramUpdate {
     from?: { id: number }
     chat: { id: number; type: string }
     text?: string
+    reply_to_message?: { message_id: number }
   }
   callback_query?: {
     id: string
@@ -109,6 +110,7 @@ export interface TelegramInboundMessage {
   userId: string
   chatId: string
   text: string
+  replyToMessageId?: string
 }
 
 export interface TelegramUpdateInboxStore {
@@ -430,7 +432,16 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
     const userId = message?.from ? String(message.from.id) : ""
     const chatId = message ? String(message.chat.id) : ""
     if (!message || message.chat.type !== "private" || userId !== options.expectedUserId || chatId !== options.expectedChatId || typeof message.text !== "string") return null
-    return { updateId: update.update_id, messageId: String(message.message_id), userId, chatId, text: message.text }
+    return {
+      updateId: update.update_id,
+      messageId: String(message.message_id),
+      userId,
+      chatId,
+      text: message.text,
+      ...(Number.isSafeInteger(message.reply_to_message?.message_id) && message.reply_to_message!.message_id > 0
+        ? { replyToMessageId: String(message.reply_to_message!.message_id) }
+        : {}),
+    }
   }
 
   const authorizedCallback = (update: TelegramUpdate): boolean => {
