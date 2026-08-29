@@ -18,13 +18,46 @@ import {
   FileTelegramPendingApprovalStore,
   classifyTelegramPersistedApprovalState,
   createTelegramLongPoll,
-  createTelegramApprovalTransport,
+  createTelegramApprovalTransport as createRawTelegramApprovalTransport,
   type TelegramPendingApprovalStore,
   type TelegramBotApi,
 } from "../../senses/telegram-client"
 
 const token = "123456:super-secret-token"
 const tempDirectories: string[] = []
+
+function createTelegramApprovalTransport(options: Omit<Parameters<typeof createRawTelegramApprovalTransport>[0], "effects">) {
+  const effects: Parameters<typeof createRawTelegramApprovalTransport>[0]["effects"] = {
+    async sendText(input) {
+      return sendTelegramText(options.api, input.chatId, input.text)
+    },
+    async sendCard(input) {
+      const replyMarkup = { inline_keyboard: input.buttons.map((row) => row.map((button) => ({ text: button.text, callback_data: button.callbackData }))) }
+      let result: unknown
+      try {
+        result = await options.api.request("sendMessage", { chat_id: input.chatId, text: escapeTelegramHtml(input.text), parse_mode: "HTML", reply_markup: replyMarkup })
+      } catch (error) {
+        if (!(error instanceof TelegramApiError) || error.status !== 400) throw error
+        result = await options.api.request("sendMessage", { chat_id: input.chatId, text: input.text, reply_markup: replyMarkup })
+      }
+      if (!result || typeof result !== "object" || Array.isArray(result) || !("message_id" in result) || !Number.isSafeInteger(result.message_id) || Number(result.message_id) <= 0) throw new Error("Telegram sendMessage response did not include a canonical message_id")
+      return Number(result.message_id)
+    },
+    async edit(input) {
+      const base = { chat_id: input.chatId, message_id: input.messageId, reply_markup: { inline_keyboard: [] as never[] } }
+      try {
+        await options.api.request("editMessageText", { ...base, text: escapeTelegramHtml(input.text), parse_mode: "HTML" }, AbortSignal.timeout(30_000))
+      } catch (error) {
+        if (!(error instanceof TelegramApiError) || error.status !== 400) throw error
+        await options.api.request("editMessageText", { ...base, text: input.text }, AbortSignal.timeout(30_000))
+      }
+    },
+    async acknowledge(input) {
+      await options.api.request("answerCallbackQuery", { callback_query_id: input.callbackQueryId, ...(input.text ? { text: input.text } : {}), ...(input.showAlert ? { show_alert: true } : {}) })
+    },
+  }
+  return createRawTelegramApprovalTransport({ ...options, effects })
+}
 
 afterEach(() => {
   for (const directory of tempDirectories.splice(0)) rmSync(directory, { recursive: true, force: true })

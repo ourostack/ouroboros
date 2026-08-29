@@ -8,7 +8,15 @@ import type OpenAI from "openai"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { createTelegramApprovalRuntime, type TelegramApprovalRuntime } from "../../senses/telegram-approval-runtime"
 import { createTelegramBotApi, type TelegramBotApi, type TelegramUpdate } from "../../senses/telegram-client"
+import {
+  createTelegramApprovalEffectPort,
+  createTelegramAuthorizedEffectExecutor,
+  FileTelegramEffectJournal,
+  recordTelegramEffectsInSession,
+  type TelegramApprovalEffectPort,
+} from "../../senses/telegram-effect-adapter"
 import { executeSanctuaryInteractiveEngine, proveSanctuaryAttemptedRecoveryWithoutRetry, type SanctuaryInteractiveEngineDependencies } from "../../senses/sanctuary-interactive-control"
+import { getSenseSessionPath } from "../../senses/shared-turn"
 import { loadTelegramSenseCredentials, opaqueTelegramSubject, readOrCreateTelegramIdentityKey, sanctuaryTelegramApprovalEvidenceMac, sanctuaryTelegramAuditLifecycleMac, sanctuaryTelegramTurnReceiptDigest, sanctuaryTelegramTurnReceiptMac, sanctuaryTelegramUnauthorizedDropMac, type TelegramSenseCredentials } from "../../senses/telegram"
 import { TELEGRAM_ACCEPTANCE_AUDIT_HEAD_RELATIVE_PATH, TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH, verifyTelegramAuditLedger } from "../../senses/telegram-audit-ledger"
 import { createSanctuaryToolContext, runWithSanctuaryToolReceiptCollection } from "../../senses/sanctuary-runtime"
@@ -2174,6 +2182,26 @@ export interface SanctuaryAcceptanceCallbackProbeDependencies {
   createApi(options: { token: string }): TelegramBotApi
   createRuntime(input: Parameters<typeof createTelegramApprovalRuntime>[0]): Pick<TelegramApprovalRuntime, "transport" | "close">
   toolContext(agentName: string): ReturnType<typeof createSanctuaryToolContext>
+  effects?(input: { agentRoot: string; api: TelegramBotApi; subject: string; chatId: string }): { port: TelegramApprovalEffectPort; close(): void }
+}
+
+function createAcceptanceProbeEffects(input: { agentRoot: string; api: TelegramBotApi; subject: string; chatId: string }): { port: TelegramApprovalEffectPort; close(): void } {
+  const store = new FileTelegramEffectJournal(path.join(input.agentRoot, "state", "telegram", "effects"))
+  const target = { kind: "approved_relationship" as const, friendId: `telegram-user:${input.subject}`, sessionKey: `telegram:${input.subject}`, chatId: input.chatId }
+  const execute = createTelegramAuthorizedEffectExecutor({
+    store,
+    api: input.api,
+    authorize: ({ target: candidate }) => JSON.stringify(candidate) === JSON.stringify(target)
+      ? { allowed: true, receiptId: `configured-owner:${input.subject}`, expiresAt: new Date(Date.now() + 5 * 60_000).toISOString() }
+      : { allowed: false, reason: "effect target is not the configured owner relationship" },
+  })
+  const sessionPath = getSenseSessionPath(TARGET_ID, target.friendId, "telegram", target.sessionKey, input.agentRoot)
+  const port = createTelegramApprovalEffectPort({
+    target,
+    execute,
+    record: (artifact) => recordTelegramEffectsInSession({ store, sessionPath, artifacts: [artifact] }),
+  })
+  return { port, close: () => store.close() }
 }
 
 export type SanctuaryInteractiveRuntimeDependencies = SanctuaryInteractiveEngineDependencies
@@ -2209,6 +2237,7 @@ export async function executeSanctuaryAcceptanceCallbackProbe(
     createApi: createTelegramBotApi,
     createRuntime: createTelegramApprovalRuntime,
     toolContext: createSanctuaryToolContext,
+    effects: createAcceptanceProbeEffects,
   },
 ): Promise<{ settled: boolean; claimed: boolean; mutated: boolean }> {
   const update = callbackUpdate(rawUpdate) as unknown as TelegramUpdate
@@ -2223,6 +2252,13 @@ export async function executeSanctuaryAcceptanceCallbackProbe(
     credentials.authorizedChatId,
   )
   const api = deps.createApi({ token: credentials.botToken })
+  const effectBoundary = deps.effects?.({ agentRoot: getAgentRoot(TARGET_ID), api, subject, chatId: credentials.authorizedChatId })
+  const unavailableEffects: TelegramApprovalEffectPort = {
+    sendText: async () => { throw new Error("Telegram acceptance probe effect boundary is unavailable") },
+    sendCard: async () => { throw new Error("Telegram acceptance probe effect boundary is unavailable") },
+    edit: async () => { throw new Error("Telegram acceptance probe effect boundary is unavailable") },
+    acknowledge: async () => { throw new Error("Telegram acceptance probe effect boundary is unavailable") },
+  }
   const runtime = deps.createRuntime({
     agentName: TARGET_ID,
     api,
@@ -2231,6 +2267,7 @@ export async function executeSanctuaryAcceptanceCallbackProbe(
     subject,
     identityKey,
     toolContext: deps.toolContext(TARGET_ID),
+    effects: effectBoundary?.port ?? unavailableEffects,
   })
   try {
     const result = await runtime.transport.handleUpdate(update)
@@ -2241,6 +2278,7 @@ export async function executeSanctuaryAcceptanceCallbackProbe(
     }
   } finally {
     runtime.close()
+    effectBoundary?.close()
     api.stop()
   }
 }

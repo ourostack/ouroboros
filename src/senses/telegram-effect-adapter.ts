@@ -2,8 +2,9 @@ import * as crypto from "node:crypto"
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { emitNervesEvent } from "../nerves/runtime"
-import type { SessionEnvelope, SessionEvent } from "../heart/session-events"
-import { escapeTelegramHtml, sendTelegramText, splitTelegramText, type TelegramBotApi } from "./telegram-client"
+import { loadSessionEnvelopeFile, type SessionEnvelope, type SessionEvent } from "../heart/session-events"
+import { readSessionTransaction, withSessionTurnLease, writeSessionTransaction } from "../mind/session-transaction"
+import { escapeTelegramHtml, sendTelegramText, splitTelegramText, TelegramApiError, type TelegramBotApi } from "./telegram-client"
 
 export const FIXED_ADMISSION_ACKNOWLEDGEMENT = "Thanks — I’ve asked Ari."
 
@@ -16,7 +17,7 @@ export type TelegramEffect =
   | { kind: "admission_ack"; text: typeof FIXED_ADMISSION_ACKNOWLEDGEMENT }
   | { kind: "card"; text: string; buttons: Array<Array<{ text: string; callbackData: string }>> }
   | { kind: "edit"; messageId: number; text: string }
-  | { kind: "callback_ack"; callbackQueryId: string; text?: string }
+  | { kind: "callback_ack"; callbackQueryId: string; text?: string; showAlert?: boolean }
 
 export type TelegramArtifactAuthorClass = "butler" | "control" | "system_failsafe"
 export type TelegramEffectPartState = "prepared" | "attempting" | "accepted" | "session_recorded" | "indeterminate"
@@ -57,6 +58,22 @@ export interface TelegramEffectAuthorizationInput {
   artifact?: TelegramEffectArtifact
 }
 
+export interface TelegramAuthorizedEffectInput {
+  idempotencyKey: string
+  target: TelegramEffectTarget
+  authorClass: TelegramArtifactAuthorClass
+  effect: TelegramEffect
+  signal?: AbortSignal
+  onMessageDelivered?: (messageId: number, chunk: string) => void
+}
+
+export interface TelegramApprovalEffectPort {
+  sendText(input: { idempotencyKey: string; chatId: string; text: string; authorClass: TelegramArtifactAuthorClass }): Promise<number[]>
+  sendCard(input: { idempotencyKey: string; chatId: string; text: string; buttons: Array<Array<{ text: string; callbackData: string }>> }): Promise<number>
+  edit(input: { idempotencyKey: string; chatId: string; messageId: number; text: string }): Promise<void>
+  acknowledge(input: { idempotencyKey: string; callbackQueryId: string; text?: string; showAlert?: boolean }): Promise<void>
+}
+
 function artifactId(idempotencyKey: string): string {
   return crypto.createHash("sha256").update(idempotencyKey).digest("hex")
 }
@@ -82,7 +99,67 @@ function assertEffectTarget(target: TelegramEffectTarget, effect: TelegramEffect
   }
 }
 
+function boundedText(value: unknown, max = 50_000): value is string {
+  return typeof value === "string" && value.length > 0 && Buffer.byteLength(value, "utf8") <= max
+}
+
+function canonicalTime(value: unknown): value is string {
+  return typeof value === "string" && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value
+}
+
+function validateArtifact(artifact: TelegramEffectArtifact, expectedId: string): void {
+  const target = artifact?.target
+  const effect = artifact?.effect
+  const targetValid = target?.kind === "approved_relationship"
+    ? boundedText(target.friendId, 512) && boundedText(target.sessionKey, 512) && /^[1-9][0-9]*$/u.test(target.chatId)
+      && (target.requestId === undefined || boundedText(target.requestId, 512))
+    : target?.kind === "admission_gate" && boundedText(target.admissionId, 512) && /^[1-9][0-9]*$/u.test(target.botId)
+      && /^[1-9][0-9]*$/u.test(target.userId) && /^[1-9][0-9]*$/u.test(target.chatId)
+  const effectValid = effect?.kind === "text" || effect?.kind === "admission_ack"
+    ? boundedText(effect.text, 150_000)
+    : effect?.kind === "card"
+      ? boundedText(effect.text) && Array.isArray(effect.buttons) && effect.buttons.length > 0 && effect.buttons.length <= 20
+        && effect.buttons.every((row) => Array.isArray(row) && row.length > 0 && row.length <= 8
+          && row.every((button) => boundedText(button?.text, 256) && boundedText(button?.callbackData, 64) && Buffer.byteLength(button.callbackData, "utf8") <= 64))
+      : effect?.kind === "edit"
+        ? Number.isSafeInteger(effect.messageId) && effect.messageId > 0 && boundedText(effect.text)
+        : effect?.kind === "callback_ack"
+          ? boundedText(effect.callbackQueryId, 512) && (effect.text === undefined || boundedText(effect.text, 512)) && (effect.showAlert === undefined || typeof effect.showAlert === "boolean")
+          : false
+  let expectedTexts: Array<string | null> = []
+  try {
+    if (targetValid && effectValid) {
+      assertEffectTarget(target, effect, artifact.idempotencyKey)
+      expectedTexts = preparedTexts(effect)
+    }
+  } catch {
+    expectedTexts = []
+  }
+  const partsValid = Array.isArray(artifact.parts) && artifact.parts.length === expectedTexts.length && artifact.parts.length > 0 && artifact.parts.length <= 100
+    && artifact.parts.every((part, index) => part.index === index && part.text === expectedTexts[index]
+      && ["prepared", "attempting", "accepted", "session_recorded", "indeterminate"].includes(part.state)
+      && canonicalTime(part.updatedAt)
+      && (part.messageId === undefined || (Number.isSafeInteger(part.messageId) && part.messageId > 0))
+      && (part.sessionEventId === undefined || boundedText(part.sessionEventId, 512))
+      && (part.state === "session_recorded" ? boundedText(part.sessionEventId, 512) : part.sessionEventId === undefined)
+      && ((effect.kind === "callback_ack" || part.state === "prepared" || part.state === "attempting" || part.state === "indeterminate")
+        || (Number.isSafeInteger(part.messageId) && part.messageId! > 0)))
+  if (artifact.schemaVersion !== 1 || artifact.id !== expectedId || artifact.id !== artifactId(artifact.idempotencyKey)
+    || !boundedText(artifact.idempotencyKey, 1024) || !targetValid || !effectValid || expectedTexts.length === 0
+    || !["butler", "control", "system_failsafe"].includes(artifact.authorClass)
+    || !boundedText(artifact.authorizationReceiptId, 1024) || !canonicalTime(artifact.authorizationExpiresAt)
+    || !canonicalTime(artifact.createdAt) || !canonicalTime(artifact.updatedAt) || !partsValid) {
+    throw new Error("Telegram effect artifact is invalid")
+  }
+}
+
 export class FileTelegramEffectJournal {
+  private readonly directoryFd: number
+  private readonly descriptorRoot: string
+  private readonly rootDevice: number
+  private readonly rootInode: number
+  private closed = false
+
   constructor(private readonly root: string) {
     if (fs.existsSync(root)) {
       const stat = fs.lstatSync(root)
@@ -91,35 +168,51 @@ export class FileTelegramEffectJournal {
     } else {
       fs.mkdirSync(root, { recursive: true, mode: 0o700 })
     }
-    fs.chmodSync(root, 0o700)
+    this.directoryFd = fs.openSync(root, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
+    this.descriptorRoot = root
+    fs.fchmodSync(this.directoryFd, 0o700)
+    const identity = fs.fstatSync(this.directoryFd)
+    this.rootDevice = identity.dev
+    this.rootInode = identity.ino
     const verified = fs.lstatSync(root)
     if (!verified.isDirectory() || verified.isSymbolicLink() || (verified.mode & 0o777) !== 0o700) throw new Error("Telegram effect journal root is unsafe")
   }
 
   private artifactPath(id: string): string {
+    if (this.closed) throw new Error("Telegram effect journal is closed")
     if (!/^[a-f0-9]{64}$/u.test(id)) throw new Error("Telegram effect artifact id is invalid")
-    return path.join(this.root, `${id}.json`)
+    return path.join(this.descriptorRoot, `${id}.json`)
+  }
+
+  private assertRootIdentity(): void {
+    const current = fs.lstatSync(this.root)
+    if (current.isSymbolicLink() || !current.isDirectory() || current.dev !== this.rootDevice || current.ino !== this.rootInode) {
+      throw new Error("Telegram effect journal root identity changed")
+    }
+  }
+
+  coordinationPath(id: string): string {
+    if (!/^[a-f0-9]{64}$/u.test(id)) throw new Error("Telegram effect artifact id is invalid")
+    this.assertRootIdentity()
+    return path.join(path.dirname(this.root), `${path.basename(this.root)}.coordination`, id)
+  }
+
+  close(): void {
+    if (this.closed) return
+    this.closed = true
+    fs.closeSync(this.directoryFd)
   }
 
   read(id: string): TelegramEffectArtifact {
+    this.assertRootIdentity()
     const filePath = this.artifactPath(id)
     const fd = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
     try {
+      this.assertRootIdentity()
       const stat = fs.fstatSync(fd)
-      if (!stat.isFile() || stat.size < 2 || stat.size > 256 * 1024) throw new Error("Telegram effect artifact is not a bounded regular file")
+      if (!stat.isFile() || stat.size < 2 || stat.size > 512 * 1024) throw new Error("Telegram effect artifact is not a bounded regular file")
       const artifact = JSON.parse(fs.readFileSync(fd, "utf8")) as TelegramEffectArtifact
-      if (artifact.schemaVersion !== 1 || artifact.id !== id || typeof artifact.idempotencyKey !== "string" || !artifact.idempotencyKey
-        || !["butler", "control", "system_failsafe"].includes(artifact.authorClass)
-        || !artifact.target || !["approved_relationship", "admission_gate"].includes(artifact.target.kind)
-        || !artifact.effect || !["text", "admission_ack", "card", "edit", "callback_ack"].includes(artifact.effect.kind)
-        || typeof artifact.authorizationReceiptId !== "string" || !artifact.authorizationReceiptId
-        || !Number.isFinite(Date.parse(artifact.authorizationExpiresAt))
-        || !Array.isArray(artifact.parts) || artifact.parts.length < 1 || artifact.parts.length > 100
-        || artifact.parts.some((part, index) => part.index !== index || (part.text !== null && typeof part.text !== "string")
-          || !["prepared", "attempting", "accepted", "session_recorded", "indeterminate"].includes(part.state)
-          || (part.messageId !== undefined && (!Number.isSafeInteger(part.messageId) || part.messageId < 1)))) {
-        throw new Error("Telegram effect artifact is invalid")
-      }
+      validateArtifact(artifact, id)
       return artifact
     } finally {
       fs.closeSync(fd)
@@ -132,23 +225,29 @@ export class FileTelegramEffectJournal {
   }
 
   write(artifact: TelegramEffectArtifact): void {
+    this.assertRootIdentity()
     const filePath = this.artifactPath(artifact.id)
     const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`
     const fd = fs.openSync(tempPath, "wx", 0o600)
     try {
+      this.assertRootIdentity()
       fs.writeFileSync(fd, `${JSON.stringify(artifact, null, 2)}\n`, "utf8")
       fs.fsyncSync(fd)
     } finally {
       fs.closeSync(fd)
     }
+    this.assertRootIdentity()
     fs.renameSync(tempPath, filePath)
     fs.chmodSync(filePath, 0o600)
-    const directoryFd = fs.openSync(this.root, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
-    try { fs.fsyncSync(directoryFd) } finally { fs.closeSync(directoryFd) }
+    fs.fsyncSync(this.directoryFd)
+    this.assertRootIdentity()
   }
 
   list(): TelegramEffectArtifact[] {
-    return fs.readdirSync(this.root, { withFileTypes: true })
+    this.assertRootIdentity()
+    const entries = fs.readdirSync(this.descriptorRoot, { withFileTypes: true })
+    this.assertRootIdentity()
+    return entries
       .filter((entry) => entry.isFile() && /^[a-f0-9]{64}\.json$/u.test(entry.name))
       .map((entry) => this.read(entry.name.slice(0, -5)))
   }
@@ -209,19 +308,32 @@ async function executePart(api: TelegramBotApi, artifact: TelegramEffectArtifact
     return ids[0]
   }
   if (effect.kind === "card") {
-    const result = await api.request("sendMessage", {
-      chat_id: chatId,
-      text: escapeTelegramHtml(effect.text),
-      parse_mode: "HTML",
-      reply_markup: { inline_keyboard: effect.buttons.map((row) => row.map((button) => ({ text: button.text, callback_data: button.callbackData }))) },
-    })
+    const reply_markup = { inline_keyboard: effect.buttons.map((row) => row.map((button) => ({ text: button.text, callback_data: button.callbackData }))) }
+    let result: unknown
+    try {
+      result = await api.request("sendMessage", { chat_id: chatId, text: escapeTelegramHtml(effect.text), parse_mode: "HTML", reply_markup })
+    } catch (error) {
+      if (!(error instanceof TelegramApiError) || error.status !== 400) throw error
+      result = await api.request("sendMessage", { chat_id: chatId, text: effect.text, reply_markup })
+    }
     return canonicalMessageId(result)
   }
   if (effect.kind === "edit") {
-    await api.request("editMessageText", { chat_id: chatId, message_id: effect.messageId, text: escapeTelegramHtml(effect.text), parse_mode: "HTML" })
+    const base = { chat_id: chatId, message_id: effect.messageId, reply_markup: { inline_keyboard: [] as never[] } }
+    try {
+      await api.request("editMessageText", { ...base, text: escapeTelegramHtml(effect.text), parse_mode: "HTML" }, AbortSignal.timeout(30_000))
+    } catch (error) {
+      if (error instanceof TelegramApiError && error.status === 400 && /message is not modified/iu.test(error.message)) return effect.messageId
+      if (!(error instanceof TelegramApiError) || error.status !== 400) throw error
+      try {
+        await api.request("editMessageText", { ...base, text: effect.text }, AbortSignal.timeout(30_000))
+      } catch (fallbackError) {
+        if (!(fallbackError instanceof TelegramApiError) || fallbackError.status !== 400 || !/message is not modified/iu.test(fallbackError.message)) throw fallbackError
+      }
+    }
     return effect.messageId
   }
-  await api.request("answerCallbackQuery", { callback_query_id: effect.callbackQueryId, ...(effect.text ? { text: effect.text } : {}) })
+  await api.request("answerCallbackQuery", { callback_query_id: effect.callbackQueryId, ...(effect.text ? { text: effect.text } : {}), ...(effect.showAlert ? { show_alert: true } : {}) })
   return undefined
 }
 
@@ -231,50 +343,134 @@ export async function executeTelegramEffect(
   api: TelegramBotApi,
   reauthorize: (artifact: TelegramEffectArtifact) => TelegramEffectAuthorization,
 ): Promise<TelegramEffectArtifact> {
-  const artifact = store.read(artifactIdValue)
-  if (artifact.parts.some((part) => part.state === "indeterminate")) throw new Error("Telegram effect has an indeterminate part and cannot be retried blindly")
-  const interrupted = artifact.parts.filter((part) => part.state === "attempting")
-  if (interrupted.length > 0) {
-    const now = new Date().toISOString()
-    for (const part of interrupted) {
-      part.state = "indeterminate"
-      part.updatedAt = now
+  return withSessionTurnLease(store.coordinationPath(artifactIdValue), async () => {
+    const artifact = store.read(artifactIdValue)
+    if (artifact.parts.some((part) => part.state === "indeterminate")) throw new Error("Telegram effect has an indeterminate part and cannot be retried blindly")
+    const interrupted = artifact.parts.filter((part) => part.state === "attempting")
+    if (interrupted.length > 0) {
+      const now = new Date().toISOString()
+      for (const part of interrupted) {
+        part.state = "indeterminate"
+        part.updatedAt = now
+      }
+      artifact.updatedAt = now
+      store.write(artifact)
+      throw new Error("Telegram effect has an indeterminate part after an interrupted send and cannot be retried blindly")
     }
-    artifact.updatedAt = now
-    store.write(artifact)
-    throw new Error("Telegram effect has an indeterminate part after an interrupted send and cannot be retried blindly")
-  }
-  const authorization = reauthorize(artifact)
-  if (!authorization.allowed) throw new Error(`Telegram effect authorization denied: ${authorization.reason}`)
-  const nowMs = Date.now()
-  if (Date.parse(authorization.expiresAt) <= nowMs) throw new Error("Telegram effect authorization expired")
-  artifact.authorizationReceiptId = authorization.receiptId
-  artifact.authorizationExpiresAt = authorization.expiresAt
-  for (const part of artifact.parts) {
-    if (part.state === "accepted" || part.state === "session_recorded") continue
-    const attemptingAt = new Date().toISOString()
-    part.state = "attempting"
-    part.updatedAt = attemptingAt
-    artifact.updatedAt = attemptingAt
-    store.write(artifact)
+    const authorization = reauthorize(artifact)
+    if (!authorization.allowed) throw new Error(`Telegram effect authorization denied: ${authorization.reason}`)
+    if (Date.parse(authorization.expiresAt) <= Date.now()) throw new Error("Telegram effect authorization expired")
+    artifact.authorizationReceiptId = authorization.receiptId
+    artifact.authorizationExpiresAt = authorization.expiresAt
+    for (const part of artifact.parts) {
+      if (part.state === "accepted" || part.state === "session_recorded") continue
+      const attemptingAt = new Date().toISOString()
+      part.state = "attempting"
+      part.updatedAt = attemptingAt
+      artifact.updatedAt = attemptingAt
+      store.write(artifact)
+      try {
+        const messageId = await executePart(api, artifact, part)
+        part.state = "accepted"
+        if (messageId !== undefined) part.messageId = messageId
+        part.updatedAt = new Date().toISOString()
+        artifact.updatedAt = part.updatedAt
+        store.write(artifact)
+      } catch (error) {
+        const safelyRetryable = artifact.effect.kind === "edit"
+        part.state = safelyRetryable ? "prepared" : "indeterminate"
+        part.updatedAt = new Date().toISOString()
+        artifact.updatedAt = part.updatedAt
+        store.write(artifact)
+        if (!safelyRetryable) emitNervesEvent({ level: "error", component: "senses", event: "senses.telegram_effect_indeterminate", message: "Telegram effect became indeterminate", meta: { artifactId: artifact.id, partIndex: part.index, effectKind: artifact.effect.kind, error: error instanceof Error ? error.message : String(error) } })
+        throw error
+      }
+    }
+    emitNervesEvent({ component: "senses", event: "senses.telegram_effect_accepted", message: "Telegram effect accepted", meta: { artifactId: artifact.id, effectKind: artifact.effect.kind, partCount: artifact.parts.length } })
+    return artifact
+  })
+}
+
+export function createTelegramAuthorizedEffectExecutor(options: {
+  store: FileTelegramEffectJournal | (() => FileTelegramEffectJournal)
+  api: TelegramBotApi
+  authorize(input: TelegramEffectAuthorizationInput): TelegramEffectAuthorization
+  barrier?: () => void
+}): (input: TelegramAuthorizedEffectInput) => Promise<TelegramEffectArtifact> {
+  const barrier = options.barrier ?? (() => undefined)
+  const getStore = (): FileTelegramEffectJournal => typeof options.store === "function" ? options.store() : options.store
+  return async (input) => {
+    if (input.signal?.aborted) throw input.signal.reason
+    barrier()
+    const authorization = options.authorize({ phase: "prepare", ...input })
+    if (!authorization.allowed) throw new Error(`Telegram effect authorization denied: ${authorization.reason}`)
+    const store = getStore()
+    const prepared = prepareTelegramEffect(store, { ...input, authorization })
     try {
-      const messageId = await executePart(api, artifact, part)
-      part.state = "accepted"
-      if (messageId !== undefined) part.messageId = messageId
-      part.updatedAt = new Date().toISOString()
-      artifact.updatedAt = part.updatedAt
-      store.write(artifact)
+      const executed = await executeTelegramEffect(store, prepared.id, options.api, (artifact) => {
+        if (input.signal?.aborted) throw input.signal.reason
+        barrier()
+        return options.authorize({
+          phase: "send",
+          idempotencyKey: artifact.idempotencyKey,
+          target: artifact.target,
+          authorClass: artifact.authorClass,
+          effect: artifact.effect,
+          artifact,
+        })
+      })
+      barrier()
+      for (const part of executed.parts) {
+        if (part.messageId !== undefined && part.text !== null) input.onMessageDelivered?.(part.messageId, part.text)
+      }
+      return executed
     } catch (error) {
-      part.state = "indeterminate"
-      part.updatedAt = new Date().toISOString()
-      artifact.updatedAt = part.updatedAt
-      store.write(artifact)
-      emitNervesEvent({ level: "error", component: "senses", event: "senses.telegram_effect_indeterminate", message: "Telegram effect became indeterminate", meta: { artifactId: artifact.id, partIndex: part.index, effectKind: artifact.effect.kind, error: error instanceof Error ? error.message : String(error) } })
+      const attempted = store.read(prepared.id)
+      for (const part of attempted.parts) {
+        if ((part.state === "accepted" || part.state === "session_recorded") && part.messageId !== undefined && part.text !== null) {
+          input.onMessageDelivered?.(part.messageId, part.text)
+        }
+      }
       throw error
     }
   }
-  emitNervesEvent({ component: "senses", event: "senses.telegram_effect_accepted", message: "Telegram effect accepted", meta: { artifactId: artifact.id, effectKind: artifact.effect.kind, partCount: artifact.parts.length } })
-  return artifact
+}
+
+export function createTelegramApprovalEffectPort(options: {
+  target: TelegramEffectTarget
+  execute(input: TelegramAuthorizedEffectInput): Promise<TelegramEffectArtifact>
+  record(artifact: TelegramEffectArtifact): Promise<void>
+}): TelegramApprovalEffectPort {
+  const executeAndRecord = async (input: Omit<TelegramAuthorizedEffectInput, "target">): Promise<TelegramEffectArtifact> => {
+    const artifact = await options.execute({ ...input, target: options.target })
+    await options.record(artifact)
+    return artifact
+  }
+  return {
+    async sendText(input) {
+      if (input.chatId !== options.target.chatId) throw new Error("Telegram approval text target changed")
+      const artifact = await executeAndRecord({ idempotencyKey: input.idempotencyKey, authorClass: input.authorClass, effect: { kind: "text", text: input.text } })
+      return artifact.parts.flatMap((part) => part.messageId === undefined ? [] : [part.messageId])
+    },
+    async sendCard(input) {
+      if (input.chatId !== options.target.chatId) throw new Error("Telegram approval card target changed")
+      const artifact = await executeAndRecord({ idempotencyKey: input.idempotencyKey, authorClass: "control", effect: { kind: "card", text: input.text, buttons: input.buttons } })
+      const messageId = artifact.parts[0]?.messageId
+      if (!messageId) throw new Error("Telegram approval card omitted its message id")
+      return messageId
+    },
+    async edit(input) {
+      if (input.chatId !== options.target.chatId) throw new Error("Telegram approval edit target changed")
+      await executeAndRecord({ idempotencyKey: input.idempotencyKey, authorClass: "control", effect: { kind: "edit", messageId: input.messageId, text: input.text } })
+    },
+    async acknowledge(input) {
+      await executeAndRecord({
+        idempotencyKey: input.idempotencyKey,
+        authorClass: "control",
+        effect: { kind: "callback_ack", callbackQueryId: input.callbackQueryId, ...(input.text ? { text: input.text } : {}), ...(input.showAlert ? { showAlert: true } : {}) },
+      })
+    },
+  }
 }
 
 export function recordTelegramEffectInSession(store: FileTelegramEffectJournal, artifactIdValue: string, sessionEventIds: string[]): TelegramEffectArtifact {
@@ -344,6 +540,69 @@ export function appendTelegramArtifactEvents(envelope: SessionEnvelope, artifact
     },
     eventIds,
   }
+}
+
+export function appendTelegramInboundEvent(envelope: SessionEnvelope, input: { text: string; reference: string; recordedAt: string }): SessionEnvelope {
+  if (envelope.events.some((event) => event.relations.references.includes(input.reference))) return envelope
+  const sequence = envelope.events.reduce((maximum, event) => Math.max(maximum, event.sequence), 0) + 1
+  const id = `evt-${String(sequence).padStart(6, "0")}`
+  const event: SessionEvent = {
+    id,
+    sequence,
+    role: "user",
+    content: input.text,
+    name: "telegram-user",
+    toolCallId: null,
+    toolCalls: [],
+    attachments: [],
+    time: { authoredAt: null, authoredAtSource: "unknown", observedAt: input.recordedAt, observedAtSource: "ingest", recordedAt: input.recordedAt, recordedAtSource: "save" },
+    relations: { replyToEventId: null, threadRootEventId: null, references: [input.reference], toolCallId: null, supersedesEventId: null, redactsEventId: null },
+    provenance: { captureKind: "live", legacyVersion: null, sourceMessageIndex: null },
+  }
+  return {
+    ...envelope,
+    events: [...envelope.events, event],
+    projection: { ...envelope.projection, eventIds: [...envelope.projection.eventIds, id], projectedAt: input.recordedAt, trimmed: false },
+  }
+}
+
+export async function recordTelegramEffectsInSession(input: {
+  store: FileTelegramEffectJournal
+  sessionPath: string
+  artifacts: TelegramEffectArtifact[]
+  inbound?: { text: string; reference: string }
+}): Promise<void> {
+  if (input.artifacts.length === 0) return
+  await withSessionTurnLease(input.sessionPath, async (lease) => {
+    const transaction = readSessionTransaction(input.sessionPath, lease)
+    let envelope = loadSessionEnvelopeFile(input.sessionPath) ?? {
+      version: 2 as const,
+      events: [],
+      projection: { eventIds: [], trimmed: false, maxTokens: null, contextMargin: null, inputTokens: null, projectedAt: null },
+      lastUsage: null,
+      state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
+    }
+    if (input.inbound) envelope = appendTelegramInboundEvent(envelope, { ...input.inbound, recordedAt: new Date().toISOString() })
+    const recordings: Array<{ artifact: TelegramEffectArtifact; eventIds: string[] }> = []
+    let changed = false
+    for (const artifact of input.artifacts) {
+      const unrecorded = artifact.parts.filter((part) => part.state === "accepted")
+      if (unrecorded.length === 0) continue
+      const reference = `telegram-artifact:${artifact.id}`
+      const existingIds = envelope.events.filter((event) => event.relations.references.includes(reference)).map((event) => event.id)
+      if (existingIds.length === unrecorded.length) {
+        recordings.push({ artifact, eventIds: existingIds })
+        continue
+      }
+      if (existingIds.length !== 0) throw new Error("Telegram effect session reconciliation is partial")
+      const appended = appendTelegramArtifactEvents(envelope, artifact, new Date().toISOString())
+      envelope = appended.envelope
+      recordings.push({ artifact, eventIds: appended.eventIds })
+      changed = true
+    }
+    if (changed || input.inbound) writeSessionTransaction(input.sessionPath, envelope, { lease, expectedRevision: transaction.revision })
+    for (const recording of recordings) recordTelegramEffectInSession(input.store, recording.artifact.id, recording.eventIds)
+  })
 }
 
 export function resolveTelegramReply(store: FileTelegramEffectJournal, input: { messageId: number; chatId: string; friendId: string; sessionKey: string }): { artifactId: string; authorClass: TelegramArtifactAuthorClass; sessionEventId: string; requestId: string | null } | null {

@@ -17,8 +17,8 @@ import {
   createTelegramApprovalTransport,
   classifyTelegramPersistedApprovalState,
   FileTelegramPendingApprovalStore,
-  sendTelegramText,
   type TelegramApprovalTransport,
+  type TelegramApprovalTransportOptions,
   type TelegramBotApi,
 } from "./telegram-client"
 
@@ -136,6 +136,7 @@ export function createTelegramApprovalRuntime(options: {
   subject: string
   identityKey: string
   toolContext: Partial<ToolContext>
+  effects: TelegramApprovalTransportOptions["effects"]
   effectBarrier?: () => void
   dependencies?: {
     agentRoot?: string
@@ -305,7 +306,7 @@ export function createTelegramApprovalRuntime(options: {
         persist: (messages, result) => { effectBarrier(); saveSession(record.sessionPath, messages, result?.usage, undefined, lease) },
         deliver: async (text) => {
           effectBarrier()
-          const messageIds = await sendTelegramText(options.api, options.authorizedChatId, text)
+          const messageIds = await options.effects.sendText({ idempotencyKey: `approval:${record.approvalId}:continuation:${createHash("sha256").update(text).digest("hex")}`, chatId: options.authorizedChatId, text, authorClass: "butler" })
           effectBarrier()
           if (acceptanceBinding) {
             const unsigned = {
@@ -331,6 +332,7 @@ export function createTelegramApprovalRuntime(options: {
 
   transport = createTelegramApprovalTransport({
     api: options.api,
+    effects: options.effects,
     expectedUserId: options.authorizedUserId,
     expectedChatId: options.authorizedChatId,
     pendingStore,

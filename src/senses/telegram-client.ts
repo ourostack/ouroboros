@@ -749,6 +749,12 @@ export interface TelegramApprovalTransport {
 
 export interface TelegramApprovalTransportOptions {
   api: TelegramBotApi
+  effects: {
+    sendText(input: { idempotencyKey: string; chatId: string; text: string; authorClass: "butler" | "control" | "system_failsafe" }): Promise<number[]>
+    sendCard(input: { idempotencyKey: string; chatId: string; text: string; buttons: Array<Array<{ text: string; callbackData: string }>> }): Promise<number>
+    edit(input: { idempotencyKey: string; chatId: string; messageId: number; text: string }): Promise<void>
+    acknowledge(input: { idempotencyKey: string; callbackQueryId: string; text?: string; showAlert?: boolean }): Promise<void>
+  }
   expectedUserId: string
   expectedChatId: string
   pendingStore: TelegramPendingApprovalStore
@@ -1056,28 +1062,12 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
   const editTerminal = async (pending: TelegramPendingApproval, terminalText: string, expiryObservedAt?: number): Promise<number> => {
     if (pending.messageId === null) return now()
     const terminalEditStartedAt = now()
-    const base = {
-      chat_id: options.expectedChatId,
-      message_id: Number(pending.messageId),
-      reply_markup: { inline_keyboard: [] as never[] },
-    }
-    const editSignal = AbortSignal.timeout(TELEGRAM_APPROVAL_TERMINAL_EDIT_TIMEOUT_MS)
     try {
       effectBarrier()
-      await options.api.request("editMessageText", { ...base, text: escapeTelegramHtml(terminalText), parse_mode: "HTML" }, editSignal)
+      await options.effects.edit({ idempotencyKey: `approval:${pending.approvalId}:edit:${createHash("sha256").update(terminalText).digest("hex")}`, chatId: options.expectedChatId, messageId: Number(pending.messageId), text: terminalText })
     } catch (error) {
       const alreadyTerminal = error instanceof TelegramApiError && error.status === 400 && /message is not modified/i.test(error.message)
-      if (!alreadyTerminal) {
-        if (!(error instanceof TelegramApiError) || error.status !== 400) throw error
-        try {
-          effectBarrier()
-          await options.api.request("editMessageText", { ...base, text: terminalText }, editSignal)
-        } catch (fallbackError) {
-          if (!(fallbackError instanceof TelegramApiError) || fallbackError.status !== 400 || !/message is not modified/i.test(fallbackError.message)) {
-            throw fallbackError
-          }
-        }
-      }
+      if (!alreadyTerminal) throw error
     }
     const terminalizedAt = now()
     if (pending.acceptanceBinding) emitAcceptanceEvidence("telegram.approval_prompt_terminalized", pending, { ...(expiryObservedAt === undefined ? {} : { expiryDeadlineAt: pending.expiresAt, expiryObservedAt }), terminalEditStartedAt, terminalizedAt, buttonsRemoved: true })
@@ -1096,11 +1086,11 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
   const acknowledge = async (callbackQueryId: string, invalid: boolean): Promise<"acknowledged" | "rejected_as_stale"> => {
     try {
       effectBarrier()
-      await options.api.request("answerCallbackQuery", invalid ? {
-        callback_query_id: callbackQueryId,
-        text: "This approval is no longer valid.",
-        show_alert: true,
-      } : { callback_query_id: callbackQueryId })
+      await options.effects.acknowledge({
+        idempotencyKey: `approval-callback:${createHash("sha256").update(callbackQueryId).digest("hex")}`,
+        callbackQueryId,
+        ...(invalid ? { text: "This approval is no longer valid.", showAlert: true } : {}),
+      })
       return "acknowledged"
     } catch (error) {
       const stale = error instanceof TelegramApiError
@@ -1243,16 +1233,6 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
       if (pendingByCallback.has(approveCallbackData) || pendingByCallback.has(denyCallbackData)) {
         throw new Error("Telegram approval callback handle collision")
       }
-      const replyMarkup = { inline_keyboard: [[
-        { text: "Approve", callback_data: approveCallbackData },
-        { text: "Deny", callback_data: denyCallbackData },
-      ]] }
-      const htmlBody = {
-        chat_id: options.expectedChatId,
-        text: escapeTelegramHtml(input.prompt),
-        parse_mode: "HTML",
-        reply_markup: replyMarkup,
-      }
       const pending: TelegramPendingApproval = {
         approvalId: input.approvalId,
         decisionToken: input.decisionToken,
@@ -1279,24 +1259,15 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
         throw error
       }
       try {
-        let result: unknown
-        try {
-          effectBarrier()
-          result = await options.api.request("sendMessage", htmlBody)
-        } catch (error) {
-          if (!(error instanceof TelegramApiError) || error.status !== 400) throw error
-          effectBarrier()
-          result = await options.api.request("sendMessage", {
-            chat_id: options.expectedChatId,
-            text: input.prompt,
-            reply_markup: replyMarkup,
-          })
-        }
-        if (!result || typeof result !== "object" || Array.isArray(result) || !("message_id" in result)
-          || typeof result.message_id !== "number" || !Number.isSafeInteger(result.message_id) || result.message_id <= 0) {
-          throw new Error("Telegram sendMessage response did not include a canonical message_id")
-        }
-        pending.messageId = String(result.message_id)
+        effectBarrier()
+        const messageId = await options.effects.sendCard({
+          idempotencyKey: `approval:${input.approvalId}:prompt`,
+          chatId: options.expectedChatId,
+          text: input.prompt,
+          buttons: [[{ text: "Approve", callbackData: approveCallbackData }, { text: "Deny", callbackData: denyCallbackData }]],
+        })
+        if (!Number.isSafeInteger(messageId) || messageId <= 0) throw new Error("Telegram sendMessage response did not include a canonical message_id")
+        pending.messageId = String(messageId)
         pending.deliveryState = "bound"
         if (input.acceptanceBinding) {
           const boundAt = now()

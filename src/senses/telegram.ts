@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, randomUUID } from "node:crypto"
+import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto"
 import { AsyncLocalStorage } from "node:async_hooks"
 import {
   closeSync,
@@ -33,7 +33,6 @@ import {
   createTelegramLongPoll,
   FileTelegramOffsetStore,
   FileTelegramUpdateInboxStore,
-  sendTelegramText,
   type TelegramApprovalTransport,
   type TelegramBotApi,
   type TelegramInboundMessage,
@@ -48,18 +47,17 @@ import { renderSanctuaryGroundedResponse, sanctuaryGroundingDigest } from "./san
 import { createTelegramApprovalRuntime, type TelegramApprovalRuntime } from "./telegram-approval-runtime"
 import type { SanctuaryHealthSweepResult } from "./sanctuary-health"
 import { createTelegramAuditLedger, type TelegramAuditLedger } from "./telegram-audit-ledger"
-import { buildCanonicalSessionEnvelope, loadSessionEnvelopeFile, stampIngressTime } from "../heart/session-events"
-import { readSessionTransaction, withSessionTurnLease, writeSessionTransaction } from "../mind/session-transaction"
+import { loadSessionEnvelopeFile } from "../heart/session-events"
 import {
-  appendTelegramArtifactEvents,
-  executeTelegramEffect,
+  createTelegramAuthorizedEffectExecutor,
+  createTelegramApprovalEffectPort,
   FileTelegramEffectJournal,
-  prepareTelegramEffect,
-  recordTelegramEffectInSession,
+  recordTelegramEffectsInSession,
   resolveTelegramReply,
   type TelegramEffectArtifact,
   type TelegramEffectAuthorization,
   type TelegramEffectAuthorizationInput,
+  type TelegramEffectTarget,
 } from "./telegram-effect-adapter"
 
 export interface TelegramSenseCredentials {
@@ -822,6 +820,33 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     }
     throw primaryError
   }
+  let effectJournal: FileTelegramEffectJournal | undefined
+  const getEffectJournal = (): FileTelegramEffectJournal => {
+    effectJournal ??= new FileTelegramEffectJournal(path.join(agentRoot, "state", "telegram", "effects"))
+    return effectJournal
+  }
+  const defaultEffectAuthorization = (input: TelegramEffectAuthorizationInput): TelegramEffectAuthorization => {
+    const target = input.target
+    if (target.kind !== "approved_relationship" || target.friendId !== `telegram-user:${subject}` || target.sessionKey !== `telegram:${subject}` || target.chatId !== authorizedChatId) {
+      return { allowed: false, reason: "effect target is not the configured owner relationship" }
+    }
+    return { allowed: true, receiptId: `configured-owner:${subject}`, expiresAt: new Date(Date.now() + 5 * 60_000).toISOString() }
+  }
+  const authorizeEffect = options.authorizeEffect ?? defaultEffectAuthorization
+  let recordAcceptedEffects!: (sessionPath: string, artifacts: TelegramEffectArtifact[], bootstrapInbound?: { text: string; reference: string }) => Promise<void>
+  const configuredOwnerTarget = (): TelegramEffectTarget => ({ kind: "approved_relationship", friendId: `telegram-user:${subject}`, sessionKey: `telegram:${subject}`, chatId: authorizedChatId })
+  const executeAuthorizedEffect = createTelegramAuthorizedEffectExecutor({
+    store: getEffectJournal,
+    api,
+    authorize: authorizeEffect,
+    barrier: acceptanceAuditBarrier,
+  })
+  const recordConfiguredOwnerEffect = async (artifact: TelegramEffectArtifact): Promise<void> => {
+    const target = artifact.target
+    if (target.kind !== "approved_relationship") throw new Error("configured owner effect has no relationship session")
+    await recordAcceptedEffects(getSenseSessionPath(options.agentName, target.friendId, "telegram", target.sessionKey, agentRoot), [artifact])
+  }
+  const approvalEffects = createTelegramApprovalEffectPort({ target: configuredOwnerTarget(), execute: executeAuthorizedEffect, record: recordConfiguredOwnerEffect })
   let toolContext: ReturnType<typeof createSanctuaryToolContext> | undefined
   let approvalRuntime: TelegramApprovalRuntime | undefined
   let approvalTransport: TelegramApprovalTransport | undefined
@@ -836,6 +861,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       subject,
       identityKey,
       toolContext: toolContext ?? {},
+      effects: approvalEffects,
       effectBarrier: acceptanceAuditBarrier,
       dependencies: {
         acceptanceMarker: () => {
@@ -859,17 +885,6 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     releaseAcceptanceAudit(error)
   }
   const healthSweep = options.healthSweep
-  let effectJournal: FileTelegramEffectJournal | undefined
-  const getEffectJournal = (): FileTelegramEffectJournal => {
-    effectJournal ??= new FileTelegramEffectJournal(path.join(agentRoot, "state", "telegram", "effects"))
-    return effectJournal
-  }
-  const defaultEffectAuthorization = (): TelegramEffectAuthorization => ({
-    allowed: true,
-    receiptId: `telegram-owner:${subject}`,
-    expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
-  })
-  const authorizeEffect = options.authorizeEffect ?? defaultEffectAuthorization
   const migrateIdentity = options.migrateIdentity ?? (async () => {
     const legacySubjects = new Set([
       ...readTelegramSubjectIndex(agentRoot, subject),
@@ -938,7 +953,12 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       if (result.message) {
         acceptanceAuditBarrier()
         if (result.deliveryId) await healthSweep.markDeliveryAttempting?.(result.deliveryId)
-        const messageIds = await deliver(result.message)
+        const messageIds = await approvalEffects.sendText({
+          idempotencyKey: `health:${result.deliveryId ?? createHash("sha256").update(result.message).digest("hex")}`,
+          chatId: authorizedChatId,
+          text: result.message,
+          authorClass: "system_failsafe",
+        })
         acceptanceAuditBarrier()
         if (result.deliveryId) await healthSweep.markDelivered?.(result.deliveryId, messageIds)
         emitNervesEvent({
@@ -960,96 +980,31 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     }
   }
 
-  const deliver = async (text: string, signal?: AbortSignal, onMessageDelivered?: (messageId: number, chunk: string) => void): Promise<number[]> => {
-    acceptanceAuditBarrier()
-    return sendTelegramText(api, authorizedChatId, text, signal, onMessageDelivered)
-  }
-
   const deliverButlerEffect = async (
     text: string,
     idempotencyKey: string,
     signal?: AbortSignal,
     onMessageDelivered?: (messageId: number, chunk: string) => void,
   ): Promise<TelegramEffectArtifact> => {
-    if (signal?.aborted) throw signal.reason
-    acceptanceAuditBarrier()
-    const target = { kind: "approved_relationship" as const, friendId: `telegram-user:${subject}`, sessionKey: `telegram:${subject}`, chatId: authorizedChatId }
-    const effect = { kind: "text" as const, text }
-    const preparationAuthorization = authorizeEffect({ phase: "prepare", idempotencyKey, target, authorClass: "butler", effect })
-    if (!preparationAuthorization.allowed) throw new Error(`Telegram effect authorization denied: ${preparationAuthorization.reason}`)
-    const journal = getEffectJournal()
-    const prepared = prepareTelegramEffect(journal, {
+    return executeAuthorizedEffect({
       idempotencyKey,
-      target,
+      target: configuredOwnerTarget(),
       authorClass: "butler",
-      effect,
-      authorization: preparationAuthorization,
+      effect: { kind: "text", text },
+      ...(signal ? { signal } : {}),
+      ...(onMessageDelivered ? { onMessageDelivered } : {}),
     })
-    let executed: TelegramEffectArtifact
-    try {
-      executed = await executeTelegramEffect(journal, prepared.id, api, (artifact) => {
-        acceptanceAuditBarrier()
-        return authorizeEffect({ phase: "send", idempotencyKey, target, authorClass: "butler", effect, artifact })
-      })
-      acceptanceAuditBarrier()
-    } catch (error) {
-      executed = journal.read(prepared.id)
-      for (const part of executed.parts) {
-        if ((part.state === "accepted" || part.state === "session_recorded") && part.messageId !== undefined && part.text !== null) onMessageDelivered?.(part.messageId, part.text)
-      }
-      throw error
-    }
-    for (const part of executed.parts) {
-      if (part.messageId !== undefined && part.text !== null) onMessageDelivered?.(part.messageId, part.text)
-    }
-    return executed
   }
 
-  const recordAcceptedEffects = async (sessionPath: string, artifacts: TelegramEffectArtifact[], bootstrapUserMessage?: string): Promise<void> => {
-    if (artifacts.length === 0) return
-    await withSessionTurnLease(sessionPath, async (lease) => {
-      const transaction = readSessionTransaction(sessionPath, lease)
-      let envelope = loadSessionEnvelopeFile(sessionPath)
-      if (!envelope) {
-        const messages = bootstrapUserMessage ? [{ role: "user" as const, content: bootstrapUserMessage }] : []
-        if (messages[0]) stampIngressTime(messages[0])
-        envelope = buildCanonicalSessionEnvelope({
-          existing: null,
-          previousMessages: [],
-          currentMessages: messages,
-          trimmedMessages: messages,
-          recordedAt: new Date().toISOString(),
-          lastUsage: null,
-          state: null,
-          projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
-        }).envelope
-      }
-      const recordings: Array<{ artifact: TelegramEffectArtifact; eventIds: string[] }> = []
-      let changed = false
-      for (const artifact of artifacts) {
-        const unrecorded = artifact.parts.filter((part) => part.state === "accepted")
-        if (unrecorded.length === 0) continue
-        const reference = `telegram-artifact:${artifact.id}`
-        const existingIds = envelope.events.filter((event) => event.relations.references.includes(reference)).map((event) => event.id)
-        if (existingIds.length === unrecorded.length) {
-          recordings.push({ artifact, eventIds: existingIds })
-          continue
-        }
-        if (existingIds.length !== 0) throw new Error("Telegram effect session reconciliation is partial")
-        const appended = appendTelegramArtifactEvents(envelope, artifact, new Date().toISOString())
-        envelope = appended.envelope
-        recordings.push({ artifact, eventIds: appended.eventIds })
-        changed = true
-      }
-      if (changed) writeSessionTransaction(sessionPath, envelope, { lease, expectedRevision: transaction.revision })
-      for (const recording of recordings) recordTelegramEffectInSession(getEffectJournal(), recording.artifact.id, recording.eventIds)
-    })
+  recordAcceptedEffects = async (sessionPath: string, artifacts: TelegramEffectArtifact[], bootstrapInbound?: { text: string; reference: string }): Promise<void> => {
+    await recordTelegramEffectsInSession({ store: getEffectJournal(), sessionPath, artifacts, ...(bootstrapInbound ? { inbound: bootstrapInbound } : {}) })
   }
 
   const onMessageBody = async (message: TelegramInboundMessage): Promise<void> => {
     const currentFriendId = `telegram-user:${subject}`
     const currentSessionKey = `telegram:${subject}`
     const currentSessionPath = getSenseSessionPath(options.agentName, currentFriendId, "telegram", currentSessionKey, agentRoot)
+    const inboundReference = `telegram-inbound:${message.updateId}:${message.messageId}`
     const acceptanceMarker = options.acceptanceMarker ? options.acceptanceMarker() : readSanctuaryAcceptanceMarker(options.agentName)
     const acceptanceMeta = sanctuaryAcceptanceEventMeta(options.agentName)
     const groundedAcceptance = acceptanceMarker?.label === "unit-16d-whats-up" || acceptanceMarker?.label === "unit-16d-1-space"
@@ -1100,7 +1055,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         && artifact.parts.some((part) => part.state === "accepted"))
       if (recoverable.length > 0) await recordAcceptedEffects(currentSessionPath, recoverable)
     }
-    let ingressRelations: RunSenseTurnOptions["ingressRelations"]
+    let ingressRelations: NonNullable<RunSenseTurnOptions["ingressRelations"]> = { replyToEventId: null, threadRootEventId: null, references: [inboundReference] }
     if (message.replyToMessageId && /^[1-9][0-9]*$/u.test(message.replyToMessageId)) {
       const replyMessageId = Number(message.replyToMessageId)
       const candidate = getEffectJournal().list().find((artifact) => artifact.target.kind === "approved_relationship"
@@ -1114,7 +1069,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       if (reply && session?.events.some((event) => event.id === reply.sessionEventId)) ingressRelations = {
         replyToEventId: reply.sessionEventId,
         threadRootEventId: null,
-        references: [`telegram-artifact:${reply.artifactId}`, ...(reply.requestId ? [`request:${reply.requestId}`] : [])],
+        references: [inboundReference, `telegram-artifact:${reply.artifactId}`, ...(reply.requestId ? [`request:${reply.requestId}`] : [])],
       }
     }
     try {
@@ -1130,7 +1085,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
           displayName: `Telegram user ${subject}`,
         },
         userMessage: message.text,
-        ...(ingressRelations ? { ingressRelations } : {}),
+        ingressRelations,
         turnMetricsObserver,
         deliverySink: {
           onDelivery: async (delivery) => {
@@ -1187,7 +1142,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       })
       const fallback = "I couldn't complete that turn. The failure was recorded; please try again."
       if (deliveredMessageIds.length === 0) turnEffects.push(await deliverButlerEffect(fallback, `turn:${message.updateId}:fallback`, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) }))
-      await recordAcceptedEffects(currentSessionPath, turnEffects, message.text)
+      await recordAcceptedEffects(currentSessionPath, turnEffects, { text: message.text, reference: inboundReference })
     } finally {
       if (acceptanceMarker) {
         acceptanceAuditBarrier()
@@ -1346,6 +1301,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         await attempt(async () => { await interactiveControl?.stop() })
         await attempt(() => api.stop())
         await attempt(() => approvalRuntime?.close())
+        await attempt(() => effectJournal?.close())
         await attempt(() => runWithAcceptanceAuditOwner(() => {
           emitNervesEvent({
             component: "senses",
