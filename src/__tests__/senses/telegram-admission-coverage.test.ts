@@ -177,4 +177,24 @@ describe("Telegram admission defensive coverage", () => {
     await controller.recover()
     expect(sendEffect).toHaveBeenCalledTimes(2)
   })
+
+  it("fails closed on ambiguous display codes and Friends revocation collisions", async () => {
+    const store = new FileTelegramAdmissionStore(path.join(root(), "store"))
+    const controller = createTelegramAdmissionController({
+      store,
+      owner: { friendId: "ari", sessionKey: "telegram:ari", chatId: "42" },
+      sendEffect: vi.fn(async () => "effect"),
+      claimFriend: vi.fn(async () => ({ kind: "created" as const, friendId: "friend" })),
+      revokeFriend: vi.fn(async () => ({ kind: "collision" as const, reason: "identity changed" })),
+      queueApprovedTurn: vi.fn(async () => undefined),
+      createDisplayCode: () => "SAME-1234",
+    })
+    const first = await controller.handleUnknown(message())
+    await controller.handleUnknown(message({ userId: "999", chatId: "999", updateId: 2 }))
+    expect(() => controller.parseOwnerDecision("Allow SAME-1234")).toThrow("ambiguous")
+    if (first.kind !== "pending") throw new Error("fixture capture failed")
+    await controller.decide({ admissionId: first.admissionId, decision: "allow", actorFriendId: "ari" })
+    await expect(controller.decide({ admissionId: first.admissionId, decision: "block", actorFriendId: "ari" })).rejects.toThrow("revocation collision")
+    expect(store.read(first.admissionId).status).toBe("handled")
+  })
 })

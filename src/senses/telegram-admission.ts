@@ -109,6 +109,19 @@ export type TelegramAdmissionFriendClaimResult =
   | { kind: "created" | "existing"; friendId: string }
   | { kind: "collision"; reason: string }
 
+export interface TelegramAdmissionFriendRevocation {
+  provider: "telegram-user"
+  botId: string
+  userId: string
+  chatId: string
+  admissionId: string
+  friendId: string
+}
+
+export type TelegramAdmissionFriendRevocationResult =
+  | { kind: "revoked" }
+  | { kind: "collision"; reason: string }
+
 export interface TelegramApprovedTurn {
   admissionId: string
   idempotencyKey: string
@@ -424,6 +437,7 @@ export interface TelegramAdmissionControllerOptions {
   owner: { friendId: string; sessionKey: string; chatId: string }
   sendEffect(request: TelegramAdmissionEffectRequest): Promise<string>
   claimFriend(input: TelegramAdmissionFriendClaim): Promise<TelegramAdmissionFriendClaimResult>
+  revokeFriend?(input: TelegramAdmissionFriendRevocation): Promise<TelegramAdmissionFriendRevocationResult>
   queueApprovedTurn(input: TelegramApprovedTurn): Promise<void>
   now?: () => number
   createDisplayCode?: () => string
@@ -550,10 +564,32 @@ export function createTelegramAdmissionController(options: TelegramAdmissionCont
       if (!match) throw new Error("Telegram admission callback is invalid")
       return { admissionId: match[1]!, decision: match[2] as "allow" | "deny" | "block" }
     },
+    parseOwnerDecision(value: string): { admissionId: string; decision: "allow" | "deny" | "block" } | null {
+      const match = /^(Allow|Deny|Block) ([A-Z0-9-]{4,32})$/u.exec(value.normalize("NFKC").trim())
+      if (!match) return null
+      const matches = options.store.list().filter((record) => record.displayCode === match[2]
+        && (record.status === "pending" || (record.status === "handled" && match[1] === "Block")))
+      if (matches.length === 0) return null
+      if (matches.length !== 1) throw new Error("Telegram admission display code is ambiguous")
+      return { admissionId: matches[0]!.id, decision: match[1]!.toLocaleLowerCase("en-US") as "allow" | "deny" | "block" }
+    },
     async decide(input: TelegramAdmissionDecision): Promise<TelegramAdmissionRecord> {
       if (input.actorFriendId !== options.owner.friendId) throw new Error("Only the Telegram admission owner may decide")
       let record = options.store.read(input.admissionId)
       if (record.status === "handled" && input.decision === "allow") return record
+      if (record.status === "handled" && input.decision === "block") {
+        if (!record.friendId || !options.revokeFriend) throw new Error("Telegram admission revocation unavailable")
+        const revocation = await options.revokeFriend({
+          provider: "telegram-user",
+          botId: record.botId,
+          userId: record.userId,
+          chatId: record.chatId,
+          admissionId: record.id,
+          friendId: record.friendId,
+        })
+        if (revocation.kind === "collision") throw new Error(`Telegram admission revocation collision: ${revocation.reason}`)
+        return options.store.compareAndSwap({ admissionId: record.id, expectedStatus: "handled", nextStatus: "blocked" })
+      }
       if (TERMINAL_STATUSES.has(record.status)) throw new Error("Telegram admission is terminal")
       if (record.status !== "pending") return resume(record.id)
       if (now() >= record.expiresAt) {

@@ -48,6 +48,7 @@ function fixture(input: {
   now?: () => number
   limits?: ConstructorParameters<typeof FileTelegramAdmissionStore>[1]
   claim?: ReturnType<typeof vi.fn>
+  revoke?: ReturnType<typeof vi.fn>
   queue?: ReturnType<typeof vi.fn>
 } = {}) {
   const root = input.root ?? temporaryRoot()
@@ -63,6 +64,7 @@ function fixture(input: {
       return `artifact-${effects.length}`
     }),
     claimFriend: claim,
+    ...(input.revoke ? { revokeFriend: input.revoke } : {}),
     queueApprovedTurn: queue,
     now: input.now,
     createDisplayCode: () => "PINE-4821",
@@ -143,6 +145,16 @@ describe("Telegram household admission", () => {
     expect(value.controller.parseOwnerDecision("Block PINE-4821")).toEqual({ admissionId: pending.admissionId, decision: "block" })
     await expect(value.controller.decide({ admissionId: pending.admissionId, decision: "block", actorFriendId: "ari" })).rejects.toThrow("revocation unavailable")
     expect(value.store.read(pending.admissionId).status).toBe("handled")
+  })
+
+  it("revokes a handled admission only through the injected Friends operation", async () => {
+    const revoke = vi.fn(async () => ({ kind: "revoked" as const }))
+    const value = fixture({ revoke })
+    const pending = await value.controller.handleUnknown(unknown())
+    await value.controller.decide({ admissionId: pending.admissionId, decision: "allow", actorFriendId: "ari" })
+    await value.controller.decide({ admissionId: pending.admissionId, decision: "block", actorFriendId: "ari" })
+    expect(revoke).toHaveBeenCalledWith(expect.objectContaining({ provider: "telegram-user", friendId: "friend-1", admissionId: pending.admissionId }))
+    expect(value.store.read(pending.admissionId).status).toBe("blocked")
   })
 
   it("recovers approved, friend-bound, committed, and queued crash points without duplicating the turn", async () => {

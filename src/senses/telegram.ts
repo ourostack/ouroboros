@@ -67,6 +67,8 @@ import {
   FileTelegramAdmissionStore,
   type TelegramAdmissionFriendClaim,
   type TelegramAdmissionFriendClaimResult,
+  type TelegramAdmissionFriendRevocation,
+  type TelegramAdmissionFriendRevocationResult,
   type TelegramAdmissionLimits,
   type TelegramApprovedTurn,
 } from "./telegram-admission"
@@ -81,6 +83,7 @@ export interface TelegramSenseCredentials {
 export interface TelegramAdmissionDependencies {
   ownerFriendId: string
   claimFriend(input: TelegramAdmissionFriendClaim): Promise<TelegramAdmissionFriendClaimResult>
+  revokeFriend?(input: TelegramAdmissionFriendRevocation): Promise<TelegramAdmissionFriendRevocationResult>
   limits?: TelegramAdmissionLimits
   createDisplayCode?: () => string
 }
@@ -1125,6 +1128,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       return artifact.id
     },
     claimFriend: options.admission.claimFriend,
+    revokeFriend: options.admission.revokeFriend,
     queueApprovedTurn: runApprovedAdmissionTurn,
     createDisplayCode: options.admission.createDisplayCode,
   }) : undefined
@@ -1136,6 +1140,23 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     : undefined
 
   const onMessageBody = async (message: TelegramInboundMessage): Promise<void> => {
+    const ownerAdmissionDecision = admissionController?.parseOwnerDecision(message.text)
+    if (ownerAdmissionDecision) {
+      await admissionController!.decide({ ...ownerAdmissionDecision, actorFriendId: options.admission!.ownerFriendId })
+      await deliverTypedEffect({
+        idempotencyKey: `admission-owner-decision:${message.updateId}`,
+        target: {
+          kind: "approved_relationship",
+          friendId: options.admission!.ownerFriendId,
+          sessionKey: `telegram:${subject}`,
+          chatId: authorizedChatId,
+          requestId: ownerAdmissionDecision.admissionId,
+        },
+        authorClass: "control",
+        effect: { kind: "text", text: "Admission decision recorded." },
+      })
+      return
+    }
     const currentFriendId = `telegram-user:${subject}`
     const currentSessionKey = `telegram:${subject}`
     const currentSessionPath = getSenseSessionPath(options.agentName, currentFriendId, "telegram", currentSessionKey, agentRoot)
