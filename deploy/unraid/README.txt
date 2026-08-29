@@ -15,15 +15,19 @@ Status and health:
 
 Effective-spec audit helper:
   Run Update, Backup, and Restore command sequences from a root shell with `set -eu`.
-  Before either sequence, define this helper. It captures one actual container
+  Before any sequence, define this helper. It captures one actual container
   inspect and its reviewed image inspect without printing either, invokes the
-  packaged auditor from IMAGE_ID, and removes its mode-0600 inputs on success
-  or shell exit:
+  packaged auditor from the explicit validated runner image argument, and
+  removes its mode-0600 inputs on success or shell exit:
     audit_effective() {
       (
       AUDIT_CONTAINER=$1
       AUDIT_EXPECTED_IMAGE=$2
-      AUDIT_MOUNT_CONTRACT=${3-canonical}
+      AUDIT_RUNNER_IMAGE_ID=$3
+      AUDIT_MOUNT_CONTRACT=${4-canonical}
+      validate_exact_image_id "$AUDIT_EXPECTED_IMAGE" || return $?
+      validate_exact_image_id "$AUDIT_RUNNER_IMAGE_ID" || return $?
+      test "$AUDIT_RUNNER_IMAGE_ID" != sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d || return $?
       case "$AUDIT_MOUNT_CONTRACT" in
         canonical) set -- ;;
         legacy-alpha742) set -- --mount-contract legacy-alpha742 ;;
@@ -40,7 +44,7 @@ Effective-spec audit helper:
         --entrypoint /opt/ouro/deploy/unraid/audit-container-spec.sh \
         --mount "type=bind,src=$INSPECT_DIR/container.json,dst=/audit/container.json,readonly" \
         --mount "type=bind,src=$INSPECT_DIR/image.json,dst=/audit/image.json,readonly" \
-        "$IMAGE_ID" --inspect /audit/container.json --image-inspect /audit/image.json --expected-image "$AUDIT_EXPECTED_IMAGE" "$@" || return $?
+        "$AUDIT_RUNNER_IMAGE_ID" --inspect /audit/container.json --image-inspect /audit/image.json --expected-image "$AUDIT_EXPECTED_IMAGE" "$@" || return $?
       rm -f -- "$INSPECT_DIR/container.json" "$INSPECT_DIR/image.json" || return $?
       rmdir -- "$INSPECT_DIR" || return $?
       trap - EXIT || return $?
@@ -202,15 +206,17 @@ Effective-spec audit helper:
     }
     assert_legacy_alpha742_source() {
       EXPECTED_SOURCE_IMAGE_ID=$1
+      AUDIT_RUNNER_IMAGE_ID=$2
       test "$EXPECTED_SOURCE_IMAGE_ID" = sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d || return $?
-      audit_effective ouro-butler "$EXPECTED_SOURCE_IMAGE_ID" legacy-alpha742
+      audit_effective ouro-butler "$EXPECTED_SOURCE_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" legacy-alpha742
     }
     assert_update_source() {
       EXPECTED_SOURCE_IMAGE_ID=$1
+      AUDIT_RUNNER_IMAGE_ID=$2
       if test "$EXPECTED_SOURCE_IMAGE_ID" = sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d; then
-        assert_legacy_alpha742_source "$EXPECTED_SOURCE_IMAGE_ID"
+        assert_legacy_alpha742_source "$EXPECTED_SOURCE_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"
       else
-        audit_effective ouro-butler "$EXPECTED_SOURCE_IMAGE_ID"
+        audit_effective ouro-butler "$EXPECTED_SOURCE_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"
       fi
     }
     validate_sanctuary_roots() {
@@ -321,6 +327,7 @@ Effective-spec audit helper:
       (
       test -n "${BACKUP_ROOT-}" || return 1
       test -n "${IMAGE_ID-}" || return 1
+      test -n "${AUDIT_RUNNER_IMAGE_ID-}" || return 1
       case "$BACKUP_ROOT" in
         /*) ;;
         *) return 1 ;;
@@ -333,6 +340,8 @@ Effective-spec audit helper:
       verify_sanctuary_snapshot_provenance "$BACKUP_ROOT" "$IMAGE_ID" || return $?
       validate_sanctuary_roots "$BACKUP_ROOT/runtime/.ouro-cli" "$BACKUP_ROOT/agent/sanctuary.ouro" || return $?
       validate_exact_image_id "$IMAGE_ID" || return $?
+      validate_exact_image_id "$AUDIT_RUNNER_IMAGE_ID" || return $?
+      test "$AUDIT_RUNNER_IMAGE_ID" != sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d || return $?
       RESTORE_CONTAINER_NAMES=$(docker container ls -a --format '{{.Names}}') || return $?
       RESTORE_NAME_COUNTS=$(printf '%s\n' "$RESTORE_CONTAINER_NAMES" | awk '
         $0 == "ouro-butler" { production++ }
@@ -594,7 +603,7 @@ Effective-spec audit helper:
           --mount "type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli" \
           --mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
           "$IMAGE_ID" \
-        && audit_effective ouro-butler-staging "$IMAGE_ID" \
+        && audit_effective ouro-butler-staging "$IMAGE_ID" "$IMAGE_ID" \
         && docker start ouro-butler-staging \
         && assert_only_running_butler ouro-butler-staging \
         && wait_butler_ready ouro-butler-staging \
@@ -605,7 +614,7 @@ Effective-spec audit helper:
           --mount "type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli" \
           --mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
           "$IMAGE_ID" \
-        && audit_effective ouro-butler "$IMAGE_ID" \
+        && audit_effective ouro-butler "$IMAGE_ID" "$IMAGE_ID" \
         && docker start ouro-butler \
         && assert_only_running_butler ouro-butler \
         && wait_butler_ready ouro-butler \
@@ -1112,6 +1121,8 @@ Update:
     IMAGE_ID=$(docker image inspect --format '{{.Id}}' "$IMAGE_TAG")
     printf '%s\n' "$IMAGE_ID" | grep -Eq '^sha256:[0-9a-f]{64}$'
     docker image inspect "$IMAGE_ID" >/dev/null
+    AUDIT_RUNNER_IMAGE_ID=$IMAGE_ID
+    validate_exact_image_id "$AUDIT_RUNNER_IMAGE_ID"
   Initial install/adoption is a separate terminal path for the verified live
   legacy state: no production or rollback, exactly one running (possibly
   unhealthy) ouro-butler-staging, and no legacy-evidence container. After the
@@ -1162,7 +1173,7 @@ Update:
       UPDATE_PREFLIGHT_STATUS=$?
       (exit "$UPDATE_PREFLIGHT_STATUS")
     fi
-    assert_update_source "$ROLLBACK_IMAGE_ID"
+    assert_update_source "$ROLLBACK_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"
   Only after that topology gate, stage copies of the packaged template and
   runtime policy at these paths:
     STAGED_TEMPLATE=/mnt/user/appdata/ouro-butler/staging/sanctuary.xml
@@ -1219,7 +1230,7 @@ ouro-butler-rollback
           docker rm --force ouro-butler-rollback >/dev/null 2>&1 || true
         fi
         ! docker container inspect ouro-butler-rollback >/dev/null 2>&1
-        assert_update_source "$ROLLBACK_IMAGE_ID"
+        assert_update_source "$ROLLBACK_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"
         docker start ouro-butler
         assert_only_running_butler ouro-butler
         wait_butler_ready ouro-butler
@@ -1228,7 +1239,7 @@ ouro-butler-rollback
         docker stop ouro-butler-rollback >/dev/null 2>&1 || true
         test "$(docker inspect --format '{{.Image}}' ouro-butler-rollback)" = "$ROLLBACK_IMAGE_ID"
         docker rename ouro-butler-rollback ouro-butler
-        assert_update_source "$ROLLBACK_IMAGE_ID"
+        assert_update_source "$ROLLBACK_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"
         docker start ouro-butler
         assert_only_running_butler ouro-butler
         wait_butler_ready ouro-butler
@@ -1252,7 +1263,7 @@ ouro-butler-rollback
       --mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
       --mount "type=bind,src=/boot/config/custom/ouro-events/spool,dst=/run/ouro-events,readonly" \
       "$IMAGE_ID" \
-      && audit_effective ouro-butler-staging "$IMAGE_ID" \
+      && audit_effective ouro-butler-staging "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" \
       && docker start ouro-butler-staging \
       && assert_only_running_butler ouro-butler-staging \
       && wait_butler_ready ouro-butler-staging \
@@ -1271,7 +1282,7 @@ ouro-butler-rollback
       CURRENT_ROLLBACK_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler-rollback)
       test "$CURRENT_ROLLBACK_IMAGE_ID" = "$ROLLBACK_IMAGE_ID"
       docker rename ouro-butler-rollback ouro-butler
-      assert_update_source "$ROLLBACK_IMAGE_ID"
+      assert_update_source "$ROLLBACK_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"
       docker start ouro-butler
       assert_only_running_butler ouro-butler
       wait_butler_ready ouro-butler
@@ -1297,7 +1308,7 @@ ouro-butler-rollback
       --mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
       --mount "type=bind,src=/boot/config/custom/ouro-events/spool,dst=/run/ouro-events,readonly" \
       "$IMAGE_ID" \
-      && audit_effective ouro-butler "$IMAGE_ID" \
+      && audit_effective ouro-butler "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" \
       && docker start ouro-butler \
       && assert_only_running_butler ouro-butler \
       && test "$(docker inspect --format '{{.State.Running}}' ouro-butler-rollback)" = false \
@@ -1316,7 +1327,7 @@ ouro-butler-rollback
       CURRENT_ROLLBACK_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler-rollback)
       test "$CURRENT_ROLLBACK_IMAGE_ID" = "$ROLLBACK_IMAGE_ID"
       docker rename ouro-butler-rollback ouro-butler
-      assert_update_source "$ROLLBACK_IMAGE_ID"
+      assert_update_source "$ROLLBACK_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"
       docker start ouro-butler
       assert_only_running_butler ouro-butler
       wait_butler_ready ouro-butler
@@ -1329,6 +1340,8 @@ ouro-butler-rollback
 
 Backup:
   Set BACKUP_ROOT to a new absolute snapshot path on the destination filesystem.
+  Set AUDIT_RUNNER_IMAGE_TAG to the reviewed new image containing the
+  legacy-aware auditor; the alpha.742 source image cannot be the runner.
   Capture and validate the exact source image before stopping ouro-butler, then
   build a temporary snapshot with root-only provenance and atomically rename it into place:
     test -n "${BACKUP_ROOT-}"
@@ -1339,9 +1352,13 @@ Backup:
     test "$(cd -- "$BACKUP_PARENT" && pwd -P)" = "$BACKUP_PARENT"
     BACKUP_TMP=$BACKUP_ROOT.tmp.$$
     test ! -e "$BACKUP_TMP"
+    AUDIT_RUNNER_IMAGE_TAG=ouro-butler:<new-version>
+    AUDIT_RUNNER_IMAGE_ID=$(docker image inspect --format '{{.Id}}' "$AUDIT_RUNNER_IMAGE_TAG")
+    validate_exact_image_id "$AUDIT_RUNNER_IMAGE_ID"
+    test "$AUDIT_RUNNER_IMAGE_ID" != sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d
     BACKUP_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler)
     validate_exact_image_id "$BACKUP_IMAGE_ID"
-    assert_update_source "$BACKUP_IMAGE_ID"
+    assert_update_source "$BACKUP_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"
     assert_only_running_butler ouro-butler
     wait_butler_ready ouro-butler
     BACKUP_AUTOSTART_COUNTS=$(butler_autostart_counts)
@@ -1378,7 +1395,7 @@ Backup:
     else
       BACKUP_OPERATION_STATUS=$?
     fi
-    if assert_update_source "$BACKUP_IMAGE_ID" \
+    if assert_update_source "$BACKUP_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" \
       && docker start ouro-butler \
       && assert_only_running_butler ouro-butler \
       && wait_butler_ready ouro-butler \
@@ -1404,7 +1421,11 @@ Backup:
 
 Restore:
   Set BACKUP_ROOT to the exact verified snapshot containing `runtime/.ouro-cli`
-  and `agent/sanctuary.ouro`, and set IMAGE_ID to its recorded local image ID.
+  and `agent/sanctuary.ouro`, set IMAGE_ID to its recorded local image ID, and
+  set AUDIT_RUNNER_IMAGE_ID to the exact reviewed new image containing the
+  legacy-aware auditor. The runner is independent from the restored image.
+    AUDIT_RUNNER_IMAGE_TAG=ouro-butler:<new-version>
+    AUDIT_RUNNER_IMAGE_ID=$(docker image inspect --format '{{.Id}}' "$AUDIT_RUNNER_IMAGE_TAG")
   Before any autostart, root, or container mutation, run the nounset-safe input,
   backup-root, image, and topology preflight. It requires a nonempty canonical
   absolute BACKUP_ROOT (not /), both exact required directories, an exact local
@@ -1451,7 +1472,7 @@ Restore:
       --mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
       --mount "type=bind,src=/boot/config/custom/ouro-events/spool,dst=/run/ouro-events,readonly" \
       "$IMAGE_ID" \
-      && audit_effective ouro-butler "$IMAGE_ID" \
+      && audit_effective ouro-butler "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" \
       && docker start ouro-butler \
       && assert_only_running_butler ouro-butler \
       && wait_butler_ready ouro-butler \
