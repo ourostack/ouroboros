@@ -375,6 +375,59 @@ describe("runSenseTurn", () => {
     expect(result.ponderDeferred).toBe(false)
   })
 
+  it("claims an exact precommitted ingress event without synthesizing a second user message", async () => {
+    const reference = "telegram-admission:abc123"
+    mockLoadSession.mockReturnValue({
+      messages: [{ role: "system", content: "system" }, { role: "user", content: "approved original" }],
+      events: [{ id: "evt-000002", role: "user", content: "approved original", relations: { references: [reference] } }],
+      state: undefined,
+    })
+    mockHandleInboundTurn.mockImplementationOnce(async (input: any) => {
+      expect(input.messages).toEqual([])
+      expect(input.runAgentOptions.toolContext.currentUserMessage).toBe("approved original")
+      return { resolvedContext: makeResolvedContext(), gateResult: { allowed: true }, turnOutcome: "settled", messages: [] }
+    })
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    await runSenseTurn({
+      agentName: "test-agent",
+      channel: "telegram",
+      sessionKey: "telegram:approved",
+      friendId: "friend-1",
+      userMessage: "approved original",
+      precommittedIngress: { eventId: "evt-000002", reference },
+    })
+    expect(mockHandleInboundTurn).toHaveBeenCalledOnce()
+  })
+
+  it("fails closed when precommitted ingress is absent, mismatched, or no longer the latest user event", async () => {
+    const reference = "telegram-admission:abc123"
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    const options = {
+      agentName: "test-agent",
+      channel: "telegram" as const,
+      sessionKey: "telegram:approved",
+      friendId: "friend-1",
+      userMessage: "approved original",
+      precommittedIngress: { eventId: "evt-000002", reference },
+    }
+    mockLoadSession.mockReturnValue({ messages: [], events: [] })
+    await expect(runSenseTurn(options)).rejects.toThrow("precommitted ingress")
+    mockLoadSession.mockReturnValue({
+      messages: [{ role: "user", content: "different" }],
+      events: [{ id: "evt-000002", role: "user", content: "different", relations: { references: [reference] } }],
+    })
+    await expect(runSenseTurn(options)).rejects.toThrow("precommitted ingress")
+    mockLoadSession.mockReturnValue({
+      messages: [{ role: "user", content: "approved original" }, { role: "user", content: "newer" }],
+      events: [
+        { id: "evt-000002", role: "user", content: "approved original", relations: { references: [reference] } },
+        { id: "evt-000003", role: "user", content: "newer", relations: { references: ["other"] } },
+      ],
+    })
+    await expect(runSenseTurn(options)).rejects.toThrow("precommitted ingress")
+    expect(mockHandleInboundTurn).not.toHaveBeenCalled()
+  })
+
   it("preserves observed provider and tool counts when the shared turn rejects", async () => {
     mockHandleInboundTurn.mockImplementationOnce(async (input: any) => {
       input.callbacks.onModelStart()
