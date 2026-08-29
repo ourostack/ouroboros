@@ -14,6 +14,7 @@ const REQUIRED_PACKAGE_ASSET_PATHS = [
   "deploy/unraid/audit-container-spec.sh",
   "deploy/unraid/README.txt",
   "deploy/unraid/container-runtime.json",
+  "deploy/unraid/ouro-events/emit-event.mjs",
   "deploy/unraid/sanctuary-acceptance-harness.sh",
   "deploy/unraid/sanctuary-unit16-host-broker.mjs",
   "deploy/unraid/sanctuary-deployment-target.mjs",
