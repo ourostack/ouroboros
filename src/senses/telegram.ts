@@ -968,7 +968,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     const currentFriendId = `telegram-user:${subject}`
     const currentSessionKey = `telegram:${subject}`
     const currentSessionPath = getSenseSessionPath(options.agentName, currentFriendId, "telegram", currentSessionKey, agentRoot)
-    const inboundReference = `telegram-inbound:${message.updateId}:${message.messageId}`
+    const inboundReference = `telegram-inbound:${createHmac("sha256", identityKey).update(`${message.updateId}\0${message.messageId}`).digest("hex")}`
     const acceptanceMarker = options.acceptanceMarker ? options.acceptanceMarker() : readSanctuaryAcceptanceMarker(options.agentName)
     const acceptanceMeta = sanctuaryAcceptanceEventMeta(options.agentName)
     const groundedAcceptance = acceptanceMarker?.label === "unit-16d-whats-up" || acceptanceMarker?.label === "unit-16d-1-space"
@@ -1056,7 +1056,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
             if (groundingIntentTool) {
               bufferedGroundedDeliveries.push(delivery.kind)
             } else {
-              turnEffects.push(await deliverButlerEffect(delivery.text, `turn:${message.updateId}:delivery:${deliveryOrdinal++}`, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) }))
+              turnEffects.push(await deliverButlerEffect(delivery.text, `turn:${subject}:${message.updateId}:delivery:${deliveryOrdinal++}`, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) }))
               deliveryCount += 1
             }
           },
@@ -1072,10 +1072,10 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         if (!grounding || grounding.toolName !== groundingIntentTool || bufferedGroundedDeliveries.length > 1
           || (bufferedGroundedDeliveries.length === 1 && bufferedGroundedDeliveries[0] !== "settle")) throw new Error("Canonical Sanctuary query did not produce exactly one matching grounded settle")
         const canonical = renderSanctuaryGroundedResponse(grounding.toolName, grounding.facts)
-        turnEffects.push(await deliverButlerEffect(canonical, `turn:${message.updateId}:delivery:${deliveryOrdinal++}`, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) }))
+        turnEffects.push(await deliverButlerEffect(canonical, `turn:${subject}:${message.updateId}:delivery:${deliveryOrdinal++}`, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) }))
         deliveryCount = 1
       } else if (deliveryCount === 0 && result.response.trim()) {
-        turnEffects.push(await deliverButlerEffect(result.response, `turn:${message.updateId}:delivery:${deliveryOrdinal++}`, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) }))
+        turnEffects.push(await deliverButlerEffect(result.response, `turn:${subject}:${message.updateId}:delivery:${deliveryOrdinal++}`, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) }))
       }
       if (result.sessionPath) await recordAcceptedEffects(result.sessionPath, turnEffects)
       emitNervesEvent({
@@ -1105,7 +1105,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         }, Math.max(Date.now(), lifecycleStartedAt + 1)),
       })
       const fallback = "I couldn't complete that turn. The failure was recorded; please try again."
-      if (deliveredMessageIds.length === 0) turnEffects.push(await deliverButlerEffect(fallback, `turn:${message.updateId}:fallback`, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) }))
+      if (deliveredMessageIds.length === 0) turnEffects.push(await deliverButlerEffect(fallback, `turn:${subject}:${message.updateId}:fallback`, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) }))
       await recordAcceptedEffects(currentSessionPath, turnEffects, { text: message.text, reference: inboundReference })
     } finally {
       if (acceptanceMarker) {

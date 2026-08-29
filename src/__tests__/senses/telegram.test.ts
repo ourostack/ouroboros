@@ -15,6 +15,10 @@ const RECEIPT_DOMAIN = "ouroboros.telegram.turn-receipt.v3"
 const RECEIPT_KEY = "k".repeat(43)
 const HEX_DIGEST = "a".repeat(64)
 
+function inboundReference(updateId: number, messageId: string): string {
+  return `telegram-inbound:${createHmac("sha256", "k".repeat(43)).update(`${updateId}\0${messageId}`).digest("hex")}`
+}
+
 function receiptDigest(purpose: string, value: string): string {
   return createHmac("sha256", RECEIPT_KEY).update(`${RECEIPT_DOMAIN}\0${purpose}\0${value}`).digest("hex")
 }
@@ -701,7 +705,7 @@ describe("Telegram sense", () => {
     expect(artifacts).toHaveLength(1)
     const artifact = JSON.parse(fs.readFileSync(path.join(journalRoot, artifacts[0]!), "utf8"))
     expect(artifact).toMatchObject({
-      idempotencyKey: "turn:91:delivery:0",
+      idempotencyKey: expect.stringMatching(/^turn:tg_[A-Za-z0-9_-]{43}:91:delivery:0$/u),
       authorClass: "butler",
       effect: { kind: "text", text: "All systems nominal." },
       parts: [{ state: "session_recorded", messageId: 71 }],
@@ -779,7 +783,7 @@ describe("Telegram sense", () => {
       ["user", "Please check it"],
       ["assistant", "I started checking."],
     ])
-    expect(events[1].relations.references).toContain("telegram-inbound:930:931")
+    expect(events[1].relations.references).toContain(inboundReference(930, "931"))
   })
 
   it("binds a Telegram reply to the exact recorded artifact and request", async () => {
@@ -809,7 +813,7 @@ describe("Telegram sense", () => {
       ingressRelations: {
         replyToEventId: "evt-000007",
         threadRootEventId: null,
-        references: ["telegram-inbound:97:98", `telegram-artifact:${artifact.id}`, "request:req-7"],
+        references: [inboundReference(97, "98"), `telegram-artifact:${artifact.id}`, "request:req-7"],
       },
     }))
   })
