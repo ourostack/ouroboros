@@ -9,6 +9,7 @@ import { emitNervesEvent, setRuntimeLogger } from "../../nerves/runtime"
 import { createTelegramSenseApp, opaqueTelegramSubject, sanctuaryTelegramApprovalEvidenceMac, sanctuaryTelegramTurnReceiptDigest, sanctuaryTelegramTurnReceiptMac, telegramAcceptanceAuditOwnerDigest } from "../../senses/telegram"
 import { TELEGRAM_ACCEPTANCE_AUDIT_HEAD_RELATIVE_PATH, TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH, verifyTelegramAuditLedger } from "../../senses/telegram-audit-ledger"
 import { splitTelegramText, type TelegramBotApi, type TelegramInboundMessage, type TelegramLongPoll } from "../../senses/telegram-client"
+import { getSenseSessionPath } from "../../senses/shared-turn"
 
 const RECEIPT_DOMAIN = "ouroboros.telegram.turn-receipt.v3"
 const RECEIPT_KEY = "k".repeat(43)
@@ -61,6 +62,7 @@ function fixture(input: {
   api?: TelegramBotApi
   runWithToolReceiptCollection?: any
   afterAcceptanceLedgerPreReadStat?: (filePath: string) => void
+  authorizeEffect?: any
 } = {}) {
   const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-sense-fixture-"))
   let onMessage: ((message: TelegramInboundMessage) => Promise<void>) | undefined
@@ -111,6 +113,7 @@ function fixture(input: {
     _agentRoot: agentRoot,
     _runWithToolReceiptCollection: input.runWithToolReceiptCollection,
     _afterAcceptanceLedgerPreReadStat: input.afterAcceptanceLedgerPreReadStat,
+    authorizeEffect: input.authorizeEffect,
   })
   return { app, api, poll, runTurn, approvalTransport, agentRoot, getOnMessage: () => onMessage!, getOnUpdate: () => onUpdate! }
 }
@@ -701,8 +704,22 @@ describe("Telegram sense", () => {
       idempotencyKey: "turn:91:delivery:0",
       authorClass: "butler",
       effect: { kind: "text", text: "All systems nominal." },
-      parts: [{ state: "accepted", messageId: 71 }],
+      parts: [{ state: "session_recorded", messageId: 71 }],
     })
+  })
+
+  it("requires the real relationship authority before preparing and again before sending", async () => {
+    const denied = fixture({ authorizeEffect: vi.fn(() => ({ allowed: false, reason: "revoked" })) })
+    await expect(denied.getOnMessage()({ updateId: 911, messageId: "912", userId: "42", chatId: "42", text: "health?" })).rejects.toThrow("revoked")
+    expect(denied.api.request).not.toHaveBeenCalled()
+    expect(fs.existsSync(path.join(denied.agentRoot, "state", "telegram", "effects"))).toBe(false)
+
+    const phases: string[] = []
+    const allowed = fixture({ authorizeEffect: vi.fn((input: any) => { phases.push(input.phase); return { allowed: true, receiptId: `actual-${input.phase}`, expiresAt: "2099-01-01T00:00:00.000Z" } }) })
+    await allowed.getOnMessage()({ updateId: 913, messageId: "914", userId: "42", chatId: "42", text: "health?" })
+    expect(phases).toEqual(["prepare", "send"])
+    const file = fs.readdirSync(path.join(allowed.agentRoot, "state", "telegram", "effects"))[0]!
+    expect(JSON.parse(fs.readFileSync(path.join(allowed.agentRoot, "state", "telegram", "effects", file), "utf8")).authorizationReceiptId).toBe("actual-send")
   })
 
   it("records every accepted Telegram chunk as a Butler-authored session artifact", async () => {
@@ -746,6 +763,16 @@ describe("Telegram sense", () => {
     artifact.parts[0].state = "session_recorded"
     artifact.parts[0].sessionEventId = "evt-000007"
     fs.writeFileSync(artifactPath, JSON.stringify(artifact))
+    const firstTurn = f.runTurn.mock.calls[0]![0]
+    const replySessionPath = getSenseSessionPath("butler", firstTurn.friendId, "telegram", firstTurn.sessionKey, f.agentRoot)
+    fs.mkdirSync(path.dirname(replySessionPath), { recursive: true })
+    fs.writeFileSync(replySessionPath, JSON.stringify({
+      version: 2,
+      events: [{ id: "evt-000007", sequence: 7, role: "assistant", content: "All systems nominal.", name: "telegram-butler", toolCallId: null, toolCalls: [], attachments: [], time: { authoredAt: null, authoredAtSource: "local", observedAt: null, observedAtSource: "local", recordedAt: "2026-08-29T18:00:00.000Z", recordedAtSource: "save" }, relations: { replyToEventId: null, threadRootEventId: null, references: [`telegram-artifact:${artifact.id}`, "telegram-message:71"], toolCallId: null, supersedesEventId: null, redactsEventId: null }, provenance: { captureKind: "synthetic", legacyVersion: null, sourceMessageIndex: null } }],
+      projection: { eventIds: ["evt-000007"], trimmed: false, maxTokens: null, contextMargin: null, inputTokens: null, projectedAt: null },
+      lastUsage: null,
+      state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
+    }))
 
     await f.getOnMessage()({ updateId: 97, messageId: "98", userId: "42", chatId: "42", text: "that one", replyToMessageId: "71" })
 
@@ -1461,6 +1488,9 @@ describe("Telegram sense", () => {
       text: "Array recovered",
       parse_mode: "HTML",
     }, undefined)
+    const root = path.join(f.agentRoot, "state", "telegram", "effects")
+    const artifact = JSON.parse(fs.readFileSync(path.join(root, fs.readdirSync(root)[0]!), "utf8"))
+    expect(artifact).toMatchObject({ authorClass: "butler", effect: { kind: "text", text: "Array recovered" }, parts: [{ state: "session_recorded", messageId: 71 }] })
   })
 
   it("samples startup health without Telegram delivery effects", async () => {

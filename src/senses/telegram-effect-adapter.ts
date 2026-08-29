@@ -48,6 +48,15 @@ export type TelegramEffectAuthorization =
   | { allowed: true; receiptId: string; expiresAt: string }
   | { allowed: false; reason: string }
 
+export interface TelegramEffectAuthorizationInput {
+  phase: "prepare" | "send"
+  idempotencyKey: string
+  target: TelegramEffectTarget
+  authorClass: TelegramArtifactAuthorClass
+  effect: TelegramEffect
+  artifact?: TelegramEffectArtifact
+}
+
 function artifactId(idempotencyKey: string): string {
   return crypto.createHash("sha256").update(idempotencyKey).digest("hex")
 }
@@ -75,8 +84,16 @@ function assertEffectTarget(target: TelegramEffectTarget, effect: TelegramEffect
 
 export class FileTelegramEffectJournal {
   constructor(private readonly root: string) {
-    fs.mkdirSync(root, { recursive: true, mode: 0o700 })
+    if (fs.existsSync(root)) {
+      const stat = fs.lstatSync(root)
+      if (stat.isSymbolicLink()) throw new Error("Telegram effect journal root must not be a symbolic link")
+      if (!stat.isDirectory()) throw new Error("Telegram effect journal root must be a directory")
+    } else {
+      fs.mkdirSync(root, { recursive: true, mode: 0o700 })
+    }
     fs.chmodSync(root, 0o700)
+    const verified = fs.lstatSync(root)
+    if (!verified.isDirectory() || verified.isSymbolicLink() || (verified.mode & 0o777) !== 0o700) throw new Error("Telegram effect journal root is unsafe")
   }
 
   private artifactPath(id: string): string {
@@ -86,9 +103,27 @@ export class FileTelegramEffectJournal {
 
   read(id: string): TelegramEffectArtifact {
     const filePath = this.artifactPath(id)
-    const stat = fs.lstatSync(filePath)
-    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("Telegram effect artifact is not a regular file")
-    return JSON.parse(fs.readFileSync(filePath, "utf8")) as TelegramEffectArtifact
+    const fd = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+    try {
+      const stat = fs.fstatSync(fd)
+      if (!stat.isFile() || stat.size < 2 || stat.size > 256 * 1024) throw new Error("Telegram effect artifact is not a bounded regular file")
+      const artifact = JSON.parse(fs.readFileSync(fd, "utf8")) as TelegramEffectArtifact
+      if (artifact.schemaVersion !== 1 || artifact.id !== id || typeof artifact.idempotencyKey !== "string" || !artifact.idempotencyKey
+        || !["butler", "control", "system_failsafe"].includes(artifact.authorClass)
+        || !artifact.target || !["approved_relationship", "admission_gate"].includes(artifact.target.kind)
+        || !artifact.effect || !["text", "admission_ack", "card", "edit", "callback_ack"].includes(artifact.effect.kind)
+        || typeof artifact.authorizationReceiptId !== "string" || !artifact.authorizationReceiptId
+        || !Number.isFinite(Date.parse(artifact.authorizationExpiresAt))
+        || !Array.isArray(artifact.parts) || artifact.parts.length < 1 || artifact.parts.length > 100
+        || artifact.parts.some((part, index) => part.index !== index || (part.text !== null && typeof part.text !== "string")
+          || !["prepared", "attempting", "accepted", "session_recorded", "indeterminate"].includes(part.state)
+          || (part.messageId !== undefined && (!Number.isSafeInteger(part.messageId) || part.messageId < 1)))) {
+        throw new Error("Telegram effect artifact is invalid")
+      }
+      return artifact
+    } finally {
+      fs.closeSync(fd)
+    }
   }
 
   readIfExists(id: string): TelegramEffectArtifact | null {
@@ -108,6 +143,8 @@ export class FileTelegramEffectJournal {
     }
     fs.renameSync(tempPath, filePath)
     fs.chmodSync(filePath, 0o600)
+    const directoryFd = fs.openSync(this.root, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
+    try { fs.fsyncSync(directoryFd) } finally { fs.closeSync(directoryFd) }
   }
 
   list(): TelegramEffectArtifact[] {
@@ -196,6 +233,17 @@ export async function executeTelegramEffect(
 ): Promise<TelegramEffectArtifact> {
   const artifact = store.read(artifactIdValue)
   if (artifact.parts.some((part) => part.state === "indeterminate")) throw new Error("Telegram effect has an indeterminate part and cannot be retried blindly")
+  const interrupted = artifact.parts.filter((part) => part.state === "attempting")
+  if (interrupted.length > 0) {
+    const now = new Date().toISOString()
+    for (const part of interrupted) {
+      part.state = "indeterminate"
+      part.updatedAt = now
+    }
+    artifact.updatedAt = now
+    store.write(artifact)
+    throw new Error("Telegram effect has an indeterminate part after an interrupted send and cannot be retried blindly")
+  }
   const authorization = reauthorize(artifact)
   if (!authorization.allowed) throw new Error(`Telegram effect authorization denied: ${authorization.reason}`)
   const nowMs = Date.now()
@@ -298,15 +346,16 @@ export function appendTelegramArtifactEvents(envelope: SessionEnvelope, artifact
   }
 }
 
-export function resolveTelegramReply(store: FileTelegramEffectJournal, messageId: number): { artifactId: string; authorClass: TelegramArtifactAuthorClass; sessionEventId: string; requestId: string | null } | null {
+export function resolveTelegramReply(store: FileTelegramEffectJournal, input: { messageId: number; chatId: string; friendId: string; sessionKey: string }): { artifactId: string; authorClass: TelegramArtifactAuthorClass; sessionEventId: string; requestId: string | null } | null {
   for (const artifact of store.list()) {
-    const part = artifact.parts.find((candidate) => candidate.messageId === messageId && candidate.state === "session_recorded" && candidate.sessionEventId)
+    if (artifact.target.kind !== "approved_relationship" || artifact.target.chatId !== input.chatId || artifact.target.friendId !== input.friendId || artifact.target.sessionKey !== input.sessionKey) continue
+    const part = artifact.parts.find((candidate) => candidate.messageId === input.messageId && candidate.state === "session_recorded" && candidate.sessionEventId)
     if (!part?.sessionEventId) continue
     return {
       artifactId: artifact.id,
       authorClass: artifact.authorClass,
       sessionEventId: part.sessionEventId,
-      requestId: artifact.target.kind === "approved_relationship" ? artifact.target.requestId ?? null : null,
+      requestId: artifact.target.requestId ?? null,
     }
   }
   return null
