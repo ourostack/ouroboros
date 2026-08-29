@@ -38,6 +38,7 @@ export const stewardPolicyToolDefinition: ToolDefinition = {
   },
   handler: (args, ctx) => {
     if (!ctx?.agentRoot) throw new Error("steward policy runtime is unavailable")
+    if (!ctx.relationshipAuthorization) throw new Error("steward policy access requires authenticated relationship authority")
     if (args.action === "read") return JSON.stringify(readStewardPolicy(ctx.agentRoot))
     const actor = ctx.relationshipAuthorization?.actor
     if (!actor) throw new Error("steward policy mutation requires authenticated relationship authority")

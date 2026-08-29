@@ -28,13 +28,15 @@ describe("steward policy", () => {
   it("exposes one narrow relationship-bound management tool", async () => {
     const agentRoot = root()
     const definition = resolveToolDefinition("steward_policy_manage")!
+    const relationshipAuthorization = { authorizedContextScopes: ["household.private"], advertisedToolNames: ["steward_policy_manage"], authorizeTool: () => ({ allowed: true as const, receiptId: "auth-1" }), actor: ari }
     expect(definition.riskProfile).toBeTypeOf("function")
-    expect(await definition.handler({ action: "read" }, { signin: async () => undefined, agentRoot })).toContain('"version":0')
+    expect(() => definition.handler({ action: "read" }, { signin: async () => undefined, agentRoot })).toThrow("relationship authority")
+    expect(await definition.handler({ action: "read" }, { signin: async () => undefined, agentRoot, relationshipAuthorization })).toContain('"version":0')
     expect(() => definition.handler({ action: "set_desired_state", expectedVersion: "0", key: "container:books", value: "off", provenance: "stated", source: "direct instruction" }, { signin: async () => undefined, agentRoot })).toThrow("relationship authority")
     const result = await definition.handler({ action: "set_desired_state", expectedVersion: "0", key: "container:books", value: "off", provenance: "stated", source: "direct instruction" }, {
       signin: async () => undefined,
       agentRoot,
-      relationshipAuthorization: { authorizedContextScopes: ["household.private"], advertisedToolNames: ["steward_policy_manage"], authorizeTool: () => ({ allowed: true, receiptId: "auth-1" }), actor: ari },
+      relationshipAuthorization,
     })
     expect(JSON.parse(String(result))).toMatchObject({ version: 1, desiredStates: { "container:books": { value: "off", provenance: "stated" } } })
   })
