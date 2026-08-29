@@ -642,9 +642,9 @@ export async function recordTelegramEffectsInSession(input: {
   artifacts: TelegramEffectArtifact[]
   inbound?: { text: string; reference: string }
   causalEventIds?: Readonly<Record<string, string>>
-}): Promise<void> {
-  if (input.artifacts.length === 0) return
-  const record = async (lease: SessionTurnLease): Promise<void> => {
+}): Promise<{ eventId: string; reference: string } | null> {
+  if (input.artifacts.length === 0 && !input.inbound) return null
+  const record = async (lease: SessionTurnLease): Promise<{ eventId: string; reference: string } | null> => {
     const transaction = readSessionTransaction(input.sessionPath, lease)
     let envelope = loadSessionEnvelopeFile(input.sessionPath) ?? {
       version: 2 as const,
@@ -653,9 +653,22 @@ export async function recordTelegramEffectsInSession(input: {
       lastUsage: null,
       state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
     }
-    if (input.inbound) envelope = appendTelegramInboundEvent(envelope, { ...input.inbound, recordedAt: new Date().toISOString() })
-    const recordings: Array<{ artifact: TelegramEffectArtifact; eventIds: string[] }> = []
+    let inboundReceipt: { eventId: string; reference: string } | null = null
     let changed = false
+    if (input.inbound) {
+      const existing = envelope.events.filter((event) => event.relations.references.includes(input.inbound!.reference))
+      if (existing.length > 1 || (existing.length === 1 && (existing[0]!.role !== "user" || existing[0]!.content !== input.inbound.text))) {
+        throw new Error("Telegram session has conflicting inbound ingress")
+      }
+      if (existing.length === 1) {
+        inboundReceipt = { eventId: existing[0]!.id, reference: input.inbound.reference }
+      } else {
+        envelope = appendTelegramInboundEvent(envelope, { ...input.inbound, recordedAt: new Date().toISOString() })
+        inboundReceipt = { eventId: envelope.events.at(-1)!.id, reference: input.inbound.reference }
+        changed = true
+      }
+    }
+    const recordings: Array<{ artifact: TelegramEffectArtifact; eventIds: string[] }> = []
     for (const artifact of input.artifacts) {
       const unrecorded = artifact.parts.filter((part) => part.state === "accepted")
       if (unrecorded.length === 0) continue
@@ -679,12 +692,12 @@ export async function recordTelegramEffectsInSession(input: {
       recordings.push({ artifact, eventIds: appended.eventIds })
       changed = true
     }
-    if (changed || input.inbound) writeSessionTransaction(input.sessionPath, envelope, { lease, expectedRevision: transaction.revision })
+    if (changed) writeSessionTransaction(input.sessionPath, envelope, { lease, expectedRevision: transaction.revision })
     for (const recording of recordings) recordTelegramEffectInSession(input.store, recording.artifact.id, recording.eventIds)
+    return inboundReceipt
   }
   const lease = currentSessionTurnLease(input.sessionPath)
-  if (lease) await record(lease)
-  else await withSessionTurnLease(input.sessionPath, record)
+  return lease ? record(lease) : withSessionTurnLease(input.sessionPath, record)
 }
 
 export function resolveTelegramReply(store: FileTelegramEffectJournal, input: { messageId: number; friendId: string; sessionKey: string }): { artifactId: string; authorClass: TelegramArtifactAuthorClass; sessionEventId: string; requestId: string | null } | null {
