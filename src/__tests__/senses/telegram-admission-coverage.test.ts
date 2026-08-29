@@ -159,6 +159,7 @@ describe("Telegram admission defensive coverage", () => {
       store,
       owner: { friendId: "ari", sessionKey: "telegram:ari", chatId: "42" },
       sendEffect: vi.fn(async (effect) => { effects.push(effect); return `effect-${effects.length}` }),
+      resolveEffectMessageId: () => 101,
       claimFriend: vi.fn(async () => ({ kind: "created" as const, friendId: "friend" })),
       revokeFriend: vi.fn(async () => ({ kind: "revoked" as const })),
       commitApprovedIngress: vi.fn(async (turn) => ({ admissionId: turn.admissionId, friendId: turn.friendId, sessionKey: "telegram:friend", eventId: "evt-000001", reference: `telegram-admission:${turn.admissionId}` })),
@@ -180,6 +181,7 @@ describe("Telegram admission defensive coverage", () => {
       store,
       owner: { friendId: "ari", sessionKey: "telegram:ari", chatId: "42" },
       sendEffect,
+      resolveEffectMessageId: () => 101,
       claimFriend: vi.fn(async () => ({ kind: "created" as const, friendId: "friend" })),
       revokeFriend: vi.fn(async () => ({ kind: "revoked" as const })),
       commitApprovedIngress: vi.fn(async (turn) => ({ admissionId: turn.admissionId, friendId: turn.friendId, sessionKey: "telegram:friend", eventId: "evt-000001", reference: `telegram-admission:${turn.admissionId}` })),
@@ -205,6 +207,7 @@ describe("Telegram admission defensive coverage", () => {
       store,
       owner: { friendId: "ari", sessionKey: "telegram:ari", chatId: "42" },
       sendEffect: vi.fn(async () => "effect"),
+      resolveEffectMessageId: () => 101,
       claimFriend: vi.fn(async () => ({ kind: "created" as const, friendId: "friend" })),
       revokeFriend: vi.fn(async () => ({ kind: "collision" as const, reason: "identity changed" })),
       commitApprovedIngress: vi.fn(async (turn) => ({ admissionId: turn.admissionId, friendId: turn.friendId, sessionKey: "telegram:friend", eventId: "evt-000001", reference: `telegram-admission:${turn.admissionId}` })),
@@ -214,7 +217,7 @@ describe("Telegram admission defensive coverage", () => {
     })
     const first = await controller.handleUnknown(message())
     await controller.handleUnknown(message({ userId: "999", chatId: "999", updateId: 2 }))
-    expect(() => controller.parseOwnerDecision("Allow SAME-1234")).toThrow("ambiguous")
+    expect(() => controller.parseOwnerDecision({ text: "allow", replyToMessageId: 101 })).toThrow("ambiguous")
     if (first.kind !== "pending") throw new Error("fixture capture failed")
     await controller.decide({ admissionId: first.admissionId, decision: "allow", actorFriendId: "ari" })
     await expect(controller.decide({ admissionId: first.admissionId, decision: "block", actorFriendId: "ari" })).rejects.toThrow("revocation collision")

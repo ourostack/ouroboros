@@ -65,6 +65,7 @@ function fixture(input: {
       effects.push(structuredClone(request))
       return `artifact-${effects.length}`
     }),
+    resolveEffectMessageId: (artifactId) => Number(artifactId.split("-").at(-1)) + 100,
     claimFriend: claim,
     revokeFriend: input.revoke ?? vi.fn(async () => ({ kind: "revoked" as const })),
     commitApprovedIngress: commit,
@@ -166,12 +167,12 @@ describe("Telegram household admission", () => {
   it("parses only strict owner display-code decisions and routes revocation through Friends", async () => {
     const value = fixture()
     const pending = await value.controller.handleUnknown(unknown())
-    expect(value.controller.parseOwnerDecision("Allow PINE-4821")).toEqual({ admissionId: pending.admissionId, decision: "allow" })
-    expect(value.controller.parseOwnerDecision("please allow PINE-4821")).toBeNull()
-    expect(value.controller.parseOwnerDecision("Allow PINE-4821 extra")).toBeNull()
-    expect(value.controller.parseOwnerDecision("Allow UNKNOWN")).toBeNull()
+    expect(value.controller.parseOwnerDecision({ text: "let them in", replyToMessageId: 102 })).toEqual({ admissionId: pending.admissionId, decision: "allow" })
+    expect(value.controller.parseOwnerDecision({ text: "allow" })).toBeNull()
+    expect(value.controller.parseOwnerDecision({ text: "please allow them", replyToMessageId: 102 })).toBeNull()
+    expect(value.controller.parseOwnerDecision({ text: "yes", replyToMessageId: 999 })).toBeNull()
     await value.controller.decide({ admissionId: pending.admissionId, decision: "allow", actorFriendId: "ari" })
-    expect(value.controller.parseOwnerDecision("Block PINE-4821")).toEqual({ admissionId: pending.admissionId, decision: "block" })
+    expect(value.controller.parseOwnerDecision({ text: "block them", replyToMessageId: 102 })).toEqual({ admissionId: pending.admissionId, decision: "block" })
     await value.controller.decide({ admissionId: pending.admissionId, decision: "block", actorFriendId: "ari" })
     expect(value.store.read(pending.admissionId).status).toBe("blocked")
   })
@@ -306,7 +307,7 @@ describe("Telegram household admission", () => {
     const owner = fixture()
     const ownerPending = await owner.controller.handleUnknown(unknown({ userId: "889", chatId: "889" }))
     await expect(owner.controller.decide({ admissionId: ownerPending.admissionId, decision: "allow", actorFriendId: "not-ari" })).rejects.toThrow("owner")
-    expect(() => owner.controller.parseCallback(`admit:${ownerPending.admissionId}:allow:extra`)).toThrow("invalid")
+    expect(() => owner.controller.parseCallback(`admit:${ownerPending.admissionId}:allow:extra`, 102)).toThrow("invalid")
   })
 
   it("generalizes long polling so unknown private content is durably routed to admission, never dropped or modeled", async () => {
