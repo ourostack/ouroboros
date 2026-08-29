@@ -298,7 +298,7 @@ export async function execTool(name: string, args: Record<string, string>, ctx?:
     return `unknown: ${name}`;
   }
 
-  const relationshipDecision = ctx?.relationshipAuthorization?.authorizeTool(name, args)
+  const relationshipDecision = await ctx?.relationshipAuthorization?.authorizeTool(name, args)
   if (relationshipDecision && !relationshipDecision.allowed) {
     emitNervesEvent({
       level: "warn",

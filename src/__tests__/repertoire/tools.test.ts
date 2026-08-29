@@ -172,6 +172,16 @@ describe("execTool", () => {
     expect(fs.readFileSync).not.toHaveBeenCalledWith("/tmp/private.txt", "utf-8")
   })
 
+  it("awaits fresh relationship revalidation at execution time", async () => {
+    const authorizeTool = vi.fn(async () => ({ allowed: false as const, reason: "relationship was revoked" }))
+    const result = await execTool("read_file", { path: "/tmp/nope" }, {
+      signin: async () => undefined,
+      relationshipAuthorization: { authorizedContextScopes: [], advertisedToolNames: ["read_file"], authorizeTool },
+    })
+    expect(result).toContain("relationship was revoked")
+    expect(authorizeTool).toHaveBeenCalledOnce()
+  })
+
   it("orientation hold blocks high-risk durable mutations before handlers run", async () => {
     const ctx = orientationHoldCtx()
 

@@ -128,7 +128,7 @@ export interface ToolContext {
   relationshipAuthorization?: {
     authorizedContextScopes: readonly string[];
     advertisedToolNames: readonly string[];
-    authorizeTool(name: string, args: Record<string, string>): { allowed: true; receiptId: string } | { allowed: false; reason: string };
+    authorizeTool(name: string, args: Record<string, string>): { allowed: true; receiptId: string } | { allowed: false; reason: string } | Promise<{ allowed: true; receiptId: string } | { allowed: false; reason: string }>;
     readonly actor?: Readonly<{ friendId: string; trustLevel: import("@ouro.bot/friends").TrustLevel; sessionEventId: string }>;
   };
   commerceAuthority?: {
