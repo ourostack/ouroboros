@@ -37,8 +37,11 @@ export function runContainerSpecAuditorCli(args: string[], deps: ContainerSpecAu
   const write = deps.write ?? ((text: string) => process.stdout.write(text))
   const staged = parseModeArguments(args, ["--template", "--runtime-policy", "--expected-image"])
   const effective = parseModeArguments(args, ["--inspect", "--image-inspect", "--expected-image"])
-  if (!staged && !effective) {
-    write(JSON.stringify({ ok: false, error: "usage: staged --template <path> --runtime-policy <path> --expected-image <id>; effective --inspect <path> --image-inspect <path> --expected-image <id>" }) + "\n")
+  const legacyCandidate = parseModeArguments(args, ["--inspect", "--image-inspect", "--expected-image", "--mount-contract"])
+  const legacyEffective = legacyCandidate?.["--mount-contract"] === "legacy-alpha742" ? legacyCandidate : null
+  const selectedEffective = effective ?? legacyEffective
+  if (!staged && !selectedEffective) {
+    write(JSON.stringify({ ok: false, error: "usage: staged --template <path> --runtime-policy <path> --expected-image <id>; effective --inspect <path> --image-inspect <path> --expected-image <id> [--mount-contract legacy-alpha742]" }) + "\n")
     emitNervesEvent({
       level: "error",
       component: "daemon",
@@ -49,12 +52,12 @@ export function runContainerSpecAuditorCli(args: string[], deps: ContainerSpecAu
     return 2
   }
 
-  if (effective) {
+  if (selectedEffective) {
     let containerText: string
     let imageText: string
     try {
-      containerText = readFile(effective["--inspect"]!)
-      imageText = readFile(effective["--image-inspect"]!)
+      containerText = readFile(selectedEffective["--inspect"]!)
+      imageText = readFile(selectedEffective["--image-inspect"]!)
     } catch (error) {
       write(JSON.stringify({ ok: false, error: "effective audit inputs are unreadable" }) + "\n")
       emitNervesEvent({
@@ -84,10 +87,11 @@ export function runContainerSpecAuditorCli(args: string[], deps: ContainerSpecAu
       return 2
     }
     const result = auditSanctuaryContainerSpec(containerInspect, {
-      expectedImage: effective["--expected-image"]!,
+      expectedImage: selectedEffective["--expected-image"]!,
       expectedEnvironment,
+      mountContract: legacyEffective ? "legacy-alpha742" : "canonical",
     })
-    if (imageInspect.Id !== effective["--expected-image"]) {
+    if (imageInspect.Id !== selectedEffective["--expected-image"]) {
       result.ok = false
       result.violations.unshift("reviewed image inspect identity does not match the expected local image ID")
     }

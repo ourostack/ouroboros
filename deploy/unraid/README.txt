@@ -23,6 +23,12 @@ Effective-spec audit helper:
       (
       AUDIT_CONTAINER=$1
       AUDIT_EXPECTED_IMAGE=$2
+      AUDIT_MOUNT_CONTRACT=${3-canonical}
+      case "$AUDIT_MOUNT_CONTRACT" in
+        canonical) set -- ;;
+        legacy-alpha742) set -- --mount-contract legacy-alpha742 ;;
+        *) return 1 ;;
+      esac
       INSPECT_DIR=$(mktemp -d /mnt/user/appdata/ouro-butler/staging/inspect.XXXXXX) || return $?
       trap 'rm -f -- "$INSPECT_DIR/container.json" "$INSPECT_DIR/image.json"; rmdir -- "$INSPECT_DIR"' EXIT || return $?
       chmod 0700 "$INSPECT_DIR" || return $?
@@ -34,7 +40,7 @@ Effective-spec audit helper:
         --entrypoint /opt/ouro/deploy/unraid/audit-container-spec.sh \
         --mount "type=bind,src=$INSPECT_DIR/container.json,dst=/audit/container.json,readonly" \
         --mount "type=bind,src=$INSPECT_DIR/image.json,dst=/audit/image.json,readonly" \
-        "$IMAGE_ID" --inspect /audit/container.json --image-inspect /audit/image.json --expected-image "$AUDIT_EXPECTED_IMAGE" || return $?
+        "$IMAGE_ID" --inspect /audit/container.json --image-inspect /audit/image.json --expected-image "$AUDIT_EXPECTED_IMAGE" "$@" || return $?
       rm -f -- "$INSPECT_DIR/container.json" "$INSPECT_DIR/image.json" || return $?
       rmdir -- "$INSPECT_DIR" || return $?
       trap - EXIT || return $?
@@ -192,27 +198,7 @@ Effective-spec audit helper:
     assert_legacy_alpha742_source() {
       EXPECTED_SOURCE_IMAGE_ID=$1
       test "$EXPECTED_SOURCE_IMAGE_ID" = sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d || return $?
-      SOURCE_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler) || return $?
-      test "$SOURCE_IMAGE_ID" = "$EXPECTED_SOURCE_IMAGE_ID" || return $?
-      SOURCE_USER=$(docker inspect --format '{{.Config.User}}' ouro-butler) || return $?
-      test "$SOURCE_USER" = 10001:10001 || return $?
-      SOURCE_NETWORK=$(docker inspect --format '{{.HostConfig.NetworkMode}}' ouro-butler) || return $?
-      test "$SOURCE_NETWORK" = host || return $?
-      SOURCE_PRIVILEGED=$(docker inspect --format '{{.HostConfig.Privileged}}' ouro-butler) || return $?
-      test "$SOURCE_PRIVILEGED" = false || return $?
-      SOURCE_RESTART=$(docker inspect --format '{{.HostConfig.RestartPolicy.Name}}' ouro-butler) || return $?
-      test "$SOURCE_RESTART" = unless-stopped || return $?
-      SOURCE_MOUNTS=$(docker inspect --format '{{range .Mounts}}{{printf "%s|%s|%s|%t\n" .Type .Source .Destination .RW}}{{end}}' ouro-butler) || return $?
-      SOURCE_MOUNT_COUNTS=$(printf '%s\n' "$SOURCE_MOUNTS" | awk -F '|' '
-        NF {
-          total++
-          if ($1 == "bind" && $2 == "/mnt/user/appdata/ouro-butler/runtime/.ouro-cli" && $3 == "/home/ouro/.ouro-cli" && $4 == "true") runtime++
-          else if ($1 == "bind" && $2 == "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro" && $3 == "/home/ouro/AgentBundles/sanctuary.ouro" && $4 == "true") agent++
-          else invalid++
-        }
-        END { printf "%d %d %d %d", total + 0, runtime + 0, agent + 0, invalid + 0 }
-      ') || return $?
-      test "$SOURCE_MOUNT_COUNTS" = "2 1 1 0" || return $?
+      audit_effective ouro-butler "$EXPECTED_SOURCE_IMAGE_ID" legacy-alpha742
     }
     assert_update_source() {
       EXPECTED_SOURCE_IMAGE_ID=$1
@@ -279,6 +265,48 @@ Effective-spec audit helper:
       test -z "$VALIDATE_WRONG_AGENT_FILE_MODE" || return $?
       )
     }
+    verify_sanctuary_snapshot_provenance() {
+      (
+      SNAPSHOT_ROOT=$1
+      EXPECTED_SNAPSHOT_IMAGE_ID=$2
+      SNAPSHOT_PROVENANCE_ROOT=$SNAPSHOT_ROOT/provenance
+      test -d "$SNAPSHOT_PROVENANCE_ROOT" || return $?
+      test ! -L "$SNAPSHOT_PROVENANCE_ROOT" || return 1
+      test "$(stat -c '%u:%g:%a' "$SNAPSHOT_PROVENANCE_ROOT")" = 0:0:700 || return $?
+      SNAPSHOT_BAD_PROVENANCE_ENTRY=$(find "$SNAPSHOT_PROVENANCE_ROOT" -xdev -mindepth 1 ! -type f -print -quit) || return $?
+      test -z "$SNAPSHOT_BAD_PROVENANCE_ENTRY" || return $?
+      for SNAPSHOT_PROVENANCE_FILE in image-id container-inspect.json manifest.sha256; do
+        test -f "$SNAPSHOT_PROVENANCE_ROOT/$SNAPSHOT_PROVENANCE_FILE" || return $?
+        test ! -L "$SNAPSHOT_PROVENANCE_ROOT/$SNAPSHOT_PROVENANCE_FILE" || return 1
+        test "$(stat -c '%u:%g:%a' "$SNAPSHOT_PROVENANCE_ROOT/$SNAPSHOT_PROVENANCE_FILE")" = 0:0:600 || return $?
+      done
+      test "$(find "$SNAPSHOT_PROVENANCE_ROOT" -xdev -mindepth 1 -maxdepth 1 -type f | wc -l)" -eq 3 || return $?
+      test "$(wc -l <"$SNAPSHOT_PROVENANCE_ROOT/image-id")" -eq 1 || return $?
+      IFS= read -r SNAPSHOT_IMAGE_ID <"$SNAPSHOT_PROVENANCE_ROOT/image-id" || return $?
+      test "$SNAPSHOT_IMAGE_ID" = "$EXPECTED_SNAPSHOT_IMAGE_ID" || return $?
+      case "$SNAPSHOT_IMAGE_ID" in sha256:????????????????????????????????????????????????????????????????) ;; *) return 1 ;; esac
+      case "${SNAPSHOT_IMAGE_ID#sha256:}" in *[!0-9a-f]*) return 1 ;; esac
+      /usr/local/bin/node -e '
+        const fs = require("node:fs");
+        const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+        if (!Array.isArray(value) || value.length !== 1 || !value[0] || value[0].Image !== process.argv[2]) process.exit(1);
+      ' "$SNAPSHOT_PROVENANCE_ROOT/container-inspect.json" "$SNAPSHOT_IMAGE_ID" || return $?
+      SNAPSHOT_VERIFY_ROOT=$(mktemp -d /tmp/ouro-snapshot-verify.XXXXXX) || return $?
+      trap 'rm -f -- "$SNAPSHOT_VERIFY_ROOT/current-files" "$SNAPSHOT_VERIFY_ROOT/manifest-files"; rmdir -- "$SNAPSHOT_VERIFY_ROOT"' EXIT || return $?
+      (
+        cd "$SNAPSHOT_ROOT" || return $?
+        find runtime agent provenance -xdev -type f ! -path provenance/manifest.sha256 -print | LC_ALL=C sort >"$SNAPSHOT_VERIFY_ROOT/current-files" || return $?
+        grep -E '^[0-9a-f]{64}  [^/].+$' provenance/manifest.sha256 >/dev/null || return $?
+        ! grep -Ev '^[0-9a-f]{64}  [^/].+$' provenance/manifest.sha256 >/dev/null || return 1
+        sed 's/^[0-9a-f]\{64\}  //' provenance/manifest.sha256 | LC_ALL=C sort >"$SNAPSHOT_VERIFY_ROOT/manifest-files" || return $?
+        cmp -s "$SNAPSHOT_VERIFY_ROOT/current-files" "$SNAPSHOT_VERIFY_ROOT/manifest-files" || return $?
+        sha256sum -c -- provenance/manifest.sha256 >/dev/null || return $?
+      ) || return $?
+      rm -f -- "$SNAPSHOT_VERIFY_ROOT/current-files" "$SNAPSHOT_VERIFY_ROOT/manifest-files" || return $?
+      rmdir -- "$SNAPSHOT_VERIFY_ROOT" || return $?
+      trap - EXIT || return $?
+      )
+    }
     assert_restore_preflight() {
       (
       test -n "${BACKUP_ROOT-}" || return 1
@@ -292,6 +320,7 @@ Effective-spec audit helper:
       test "$RESTORE_BACKUP_ROOT" = "$BACKUP_ROOT" || return $?
       test -d "$BACKUP_ROOT/runtime/.ouro-cli" || return $?
       test -d "$BACKUP_ROOT/agent/sanctuary.ouro" || return $?
+      verify_sanctuary_snapshot_provenance "$BACKUP_ROOT" "$IMAGE_ID" || return $?
       validate_sanctuary_roots "$BACKUP_ROOT/runtime/.ouro-cli" "$BACKUP_ROOT/agent/sanctuary.ouro" || return $?
       validate_exact_image_id "$IMAGE_ID" || return $?
       RESTORE_CONTAINER_NAMES=$(docker container ls -a --format '{{.Names}}') || return $?
@@ -1289,7 +1318,23 @@ ouro-butler-rollback
   Never create a container from the mutable lookup tag.
 
 Backup:
-  Stop ouro-butler, then snapshot both of these directories together:
+  Set BACKUP_ROOT to a new absolute snapshot path on the destination filesystem.
+  Capture and validate the exact source image before stopping ouro-butler, then
+  build a root-only temporary snapshot and atomically rename it into place:
+    test -n "${BACKUP_ROOT-}"
+    case "$BACKUP_ROOT" in /*) ;; *) exit 1 ;; esac
+    test "$BACKUP_ROOT" != /
+    test ! -e "$BACKUP_ROOT"
+    BACKUP_PARENT=$(dirname -- "$BACKUP_ROOT")
+    test "$(cd -- "$BACKUP_PARENT" && pwd -P)" = "$BACKUP_PARENT"
+    BACKUP_TMP=$BACKUP_ROOT.tmp.$$
+    test ! -e "$BACKUP_TMP"
+    BACKUP_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler)
+    validate_exact_image_id "$BACKUP_IMAGE_ID"
+    docker stop ouro-butler
+    test "$(docker inspect --format '{{.State.Running}}' ouro-butler)" = false
+    install -d -m 0700 -o 0 -g 0 "$BACKUP_TMP" "$BACKUP_TMP/runtime" "$BACKUP_TMP/agent" "$BACKUP_TMP/provenance"
+  Snapshot both of these directories together:
     /mnt/user/appdata/ouro-butler/runtime/.ouro-cli
     /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro
   A routine backup must not contain container-credentials.json or
@@ -1299,11 +1344,25 @@ Backup:
   exactly that socket while preserving every regular file byte-for-byte, then
   require it to be absent from the stopped backup:
     rsync -a --exclude='/state/acceptance/telegram-control.sock' \
-      /mnt/user/appdata/ouro-butler/runtime/.ouro-cli/ "$BACKUP_ROOT/runtime/.ouro-cli/"
+      /mnt/user/appdata/ouro-butler/runtime/.ouro-cli "$BACKUP_TMP/runtime/"
     rsync -a --exclude='/state/acceptance/telegram-control.sock' \
-      /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/ "$BACKUP_ROOT/agent/sanctuary.ouro/"
-    test ! -S "$BACKUP_ROOT/agent/sanctuary.ouro/state/acceptance/telegram-control.sock"
-    validate_sanctuary_roots "$BACKUP_ROOT/runtime/.ouro-cli" "$BACKUP_ROOT/agent/sanctuary.ouro"
+      /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro "$BACKUP_TMP/agent/"
+    test ! -S "$BACKUP_TMP/agent/sanctuary.ouro/state/acceptance/telegram-control.sock"
+    validate_sanctuary_roots "$BACKUP_TMP/runtime/.ouro-cli" "$BACKUP_TMP/agent/sanctuary.ouro"
+    docker container inspect ouro-butler >"$BACKUP_TMP/provenance/container-inspect.json"
+    printf '%s\n' "$BACKUP_IMAGE_ID" >"$BACKUP_TMP/provenance/image-id"
+    chown 0:0 "$BACKUP_TMP/provenance/container-inspect.json" "$BACKUP_TMP/provenance/image-id"
+    chmod 0600 "$BACKUP_TMP/provenance/container-inspect.json" "$BACKUP_TMP/provenance/image-id"
+    (
+      cd "$BACKUP_TMP"
+      find runtime agent provenance -xdev -type f ! -path provenance/manifest.sha256 -exec sha256sum -- {} + | LC_ALL=C sort -k2 >provenance/manifest.sha256
+    )
+    chown 0:0 "$BACKUP_TMP/provenance/manifest.sha256"
+    chmod 0600 "$BACKUP_TMP/provenance/manifest.sha256"
+    verify_sanctuary_snapshot_provenance "$BACKUP_TMP" "$BACKUP_IMAGE_ID"
+    sync -f "$BACKUP_TMP/provenance/manifest.sha256"
+    mv -- "$BACKUP_TMP" "$BACKUP_ROOT"
+    sync -f "$BACKUP_PARENT"
 
 Restore:
   Set BACKUP_ROOT to the exact verified snapshot containing `runtime/.ouro-cli`
