@@ -1076,6 +1076,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         ...(approvalRuntime ? { approvalCoordinatorFactory: approvalRuntime.coordinator } : {}),
       }), toolReceiptObserver)
       const result = collected.result
+      let responseFallbackArtifactId: string | undefined
       turnMetricsObserver.providerInvocationCount = Math.max(turnMetricsObserver.providerInvocationCount, result.providerInvocationCount ?? 0)
       turnMetricsObserver.toolInvocationCount = Math.max(turnMetricsObserver.toolInvocationCount, result.toolInvocationCount ?? 0)
       if (groundingIntentTool) {
@@ -1086,12 +1087,17 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         turnEffects.push(await deliverButlerEffect(canonical, `turn:${subject}:${message.updateId}:delivery:${deliveryOrdinal++}`, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) }))
         deliveryCount = 1
       } else if (deliveryCount === 0 && result.response.trim()) {
-        turnEffects.push(await deliverButlerEffect(result.response, `turn:${subject}:${message.updateId}:delivery:${deliveryOrdinal++}`, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) }))
+        const artifact = await deliverButlerEffect(result.response, `turn:${subject}:${message.updateId}:delivery:${deliveryOrdinal++}`, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) })
+        turnEffects.push(artifact)
+        responseFallbackArtifactId = artifact.id
       }
       if (result.sessionPath) {
         const causalEventIds = Object.fromEntries((groundingIntentTool ? [] : turnEffects).flatMap((artifact, index) => {
           const eventId = result.causalSessionEventIds?.[index]
-          return eventId ? [[artifact.id, eventId]] : []
+          if (eventId) return [[artifact.id, eventId]]
+          return artifact.id === responseFallbackArtifactId && result.responseCausalSessionEventId
+            ? [[artifact.id, result.responseCausalSessionEventId]]
+            : []
         }))
         await recordAcceptedEffects(result.sessionPath, turnEffects, undefined, causalEventIds)
       }

@@ -734,13 +734,18 @@ describe("Telegram sense", () => {
         fs.mkdirSync(path.dirname(sessionPath), { recursive: true })
         fs.writeFileSync(sessionPath, JSON.stringify({
           version: 2,
-          events: [],
-          projection: { eventIds: [], trimmed: false, maxTokens: null, contextMargin: null, inputTokens: null, projectedAt: null },
+          events: [{
+            id: "evt-000001", sequence: 1, role: "assistant", content: "A useful answer.", name: null, toolCallId: null, toolCalls: [], attachments: [],
+            time: { authoredAt: null, authoredAtSource: "local", observedAt: null, observedAtSource: "local", recordedAt: "2026-08-29T17:00:00.000Z", recordedAtSource: "save" },
+            relations: { replyToEventId: null, threadRootEventId: null, references: [], toolCallId: null, supersedesEventId: null, redactsEventId: null },
+            provenance: { captureKind: "live", legacyVersion: null, sourceMessageIndex: null },
+          }],
+          projection: { eventIds: ["evt-000001"], trimmed: false, maxTokens: null, contextMargin: null, inputTokens: null, projectedAt: null },
           lastUsage: null,
           state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
         }))
         await options.deliverySink.onDelivery({ kind: "settle", text: "A useful answer." })
-        return { response: "A useful answer.", ponderDeferred: false, deliveries: [], deliveryFailures: [], sessionPath }
+        return { response: "A useful answer.", ponderDeferred: false, deliveries: [], deliveryFailures: [], sessionPath, causalSessionEventIds: ["evt-000001"] }
       }),
     })
 
@@ -749,12 +754,49 @@ describe("Telegram sense", () => {
     const envelope = JSON.parse(fs.readFileSync(sessionPath, "utf8"))
     expect(envelope.events).toEqual([expect.objectContaining({
       role: "assistant",
-      name: "telegram-butler",
       content: "A useful answer.",
       relations: expect.objectContaining({ references: expect.arrayContaining([expect.stringMatching(/^telegram-artifact:/), "telegram-message:71"]) }),
     })])
     const artifactName = fs.readdirSync(path.join(f.agentRoot, "state", "telegram", "effects"))[0]!
     expect(JSON.parse(fs.readFileSync(path.join(f.agentRoot, "state", "telegram", "effects", artifactName), "utf8")).parts[0]).toMatchObject({ state: "session_recorded", sessionEventId: "evt-000001" })
+  })
+
+  it("binds transcript-readback delivery and replies to its persisted canonical assistant event", async () => {
+    let sessionPath = ""
+    const f = fixture({
+      runTurn: vi.fn(async (options: any) => {
+        sessionPath = getSenseSessionPath("butler", options.friendId, "telegram", options.sessionKey, f.agentRoot)
+        fs.mkdirSync(path.dirname(sessionPath), { recursive: true })
+        const firstTurn = !fs.existsSync(sessionPath)
+        if (firstTurn) fs.writeFileSync(sessionPath, JSON.stringify({
+          version: 2,
+          events: [{
+            id: "evt-000001", sequence: 1, role: "assistant", content: "Recovered canonical answer.", name: null, toolCallId: null, toolCalls: [], attachments: [],
+            time: { authoredAt: null, authoredAtSource: "local", observedAt: null, observedAtSource: "local", recordedAt: "2026-08-29T17:00:00.000Z", recordedAtSource: "save" },
+            relations: { replyToEventId: null, threadRootEventId: null, references: [], toolCallId: null, supersedesEventId: null, redactsEventId: null },
+            provenance: { captureKind: "live", legacyVersion: null, sourceMessageIndex: null },
+          }],
+          projection: { eventIds: ["evt-000001"], trimmed: false, maxTokens: null, contextMargin: null, inputTokens: null, projectedAt: null },
+          lastUsage: null,
+          state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
+        }))
+        return { response: "Recovered canonical answer.", ponderDeferred: false, deliveries: [], deliveryFailures: [], sessionPath, ...(firstTurn ? { responseCausalSessionEventId: "evt-000001" } : {}) }
+      }),
+    })
+
+    await f.getOnMessage()({ updateId: 915, messageId: "916", userId: "42", chatId: "42", text: "recover it" })
+
+    expect(f.api.request).toHaveBeenCalledOnce()
+    const envelope = JSON.parse(fs.readFileSync(sessionPath, "utf8"))
+    expect(envelope.events).toHaveLength(1)
+    expect(envelope.events[0]).toMatchObject({ id: "evt-000001", role: "assistant", content: "Recovered canonical answer." })
+    expect(envelope.events[0].relations.references).toEqual(expect.arrayContaining([expect.stringMatching(/^telegram-artifact:/u), "telegram-message:71"]))
+    const artifactRoot = path.join(f.agentRoot, "state", "telegram", "effects")
+    const artifact = JSON.parse(fs.readFileSync(path.join(artifactRoot, fs.readdirSync(artifactRoot)[0]!), "utf8"))
+    expect(artifact.parts[0]).toMatchObject({ state: "session_recorded", messageId: 71, sessionEventId: "evt-000001" })
+
+    await f.getOnMessage()({ updateId: 917, messageId: "918", userId: "42", chatId: "42", text: "what did you mean?", replyToMessageId: "71" })
+    expect(f.runTurn.mock.calls[1]![0].ingressRelations.replyToEventId).toBe("evt-000001")
   })
 
   it("repairs the exact inbound before accepted output when an existing-session turn fails", async () => {

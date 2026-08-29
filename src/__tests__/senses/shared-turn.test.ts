@@ -1014,7 +1014,8 @@ describe("runSenseTurn", () => {
   })
 
   it("falls back to session transcript when no text from callbacks but session has assistant message", async () => {
-    mockHandleInboundTurn.mockImplementation(async () => {
+    mockHandleInboundTurn.mockImplementation(async (input: any) => {
+      await input.postTurn([], "/tmp/session.json")
       return {
         resolvedContext: makeResolvedContext(),
         gateResult: { allowed: true },
@@ -1024,12 +1025,18 @@ describe("runSenseTurn", () => {
       }
     })
     // When no text comes from callbacks, runSenseTurn re-loads the session
-    mockLoadSession.mockReturnValue({
+    const persistedEvents = [
+      { id: "evt-user", role: "user", content: "hi", toolCalls: [] },
+      { id: "evt-answer", role: "assistant", content: "recovered answer from session", toolCalls: [] },
+    ]
+    mockDeferPostTurnPersist.mockResolvedValue(persistedEvents)
+    mockLoadSession.mockReturnValueOnce(null).mockReturnValue({
       messages: [
         { role: "system", content: "system" },
         { role: "user", content: "hi" },
         { role: "assistant", content: "recovered answer from session" },
       ],
+      events: persistedEvents,
       state: {},
     })
     const { runSenseTurn } = await import("../../senses/shared-turn")
@@ -1041,6 +1048,7 @@ describe("runSenseTurn", () => {
       userMessage: "hello",
     })
     expect(result.response).toBe("recovered answer from session")
+    expect(result.responseCausalSessionEventId).toBe("evt-answer")
     expect(result.ponderDeferred).toBe(false)
   })
 
