@@ -7,6 +7,14 @@ export type CareKind = "person" | "agent" | "project" | "mission" | "system"
 export type CareStatus = "active" | "watching" | "resolved" | "dormant"
 export type CareStewardship = "mine" | "shared" | "delegated"
 
+export interface CareIncidentBinding {
+  source: string
+  incidentKey: string
+  classifiedRevision: string
+  correlationKey?: string
+  resolvedAt?: string
+}
+
 export interface CareRecord {
   id: string
   label: string
@@ -21,6 +29,7 @@ export interface CareRecord {
   relatedEpisodeIds: string[]
   currentRisk: string | null
   nextCheckAt: string | null
+  incidentBindings?: CareIncidentBinding[]
   createdAt: string
   updatedAt: string
   resolvedAt?: string
@@ -50,6 +59,7 @@ export function createCare(
     relatedEpisodeIds: input.relatedEpisodeIds,
     currentRisk: input.currentRisk === null ? null : capStructuredRecordString(input.currentRisk),
     nextCheckAt: input.nextCheckAt,
+    ...(input.incidentBindings ? { incidentBindings: input.incidentBindings.map((binding) => ({ ...binding })) } : {}),
     createdAt: now,
     updatedAt: now,
   }
@@ -64,6 +74,12 @@ export function createCare(
   })
 
   return care
+}
+
+function nextUpdatedAt(previous: string): string {
+  const now = Date.now()
+  const previousMs = Date.parse(previous)
+  return new Date(Number.isFinite(previousMs) ? Math.max(now, previousMs + 1) : now).toISOString()
 }
 
 export function readCares(agentRoot: string): CareRecord[] {
@@ -108,7 +124,7 @@ export function updateCare(
   updates: Partial<CareRecord>,
 ): CareRecord {
   const care = readCareFile(agentRoot, id)
-  const now = new Date().toISOString()
+  const now = nextUpdatedAt(care.updatedAt)
 
   const updated: CareRecord = {
     ...care,
@@ -133,9 +149,70 @@ export function updateCare(
   return updated
 }
 
+function canonicalIncidentBinding(binding: CareIncidentBinding): CareIncidentBinding {
+  const source = capStructuredRecordString(binding.source).trim()
+  const incidentKey = capStructuredRecordString(binding.incidentKey).trim()
+  const classifiedRevision = capStructuredRecordString(binding.classifiedRevision).trim()
+  if (!source || !incidentKey || !classifiedRevision) throw new Error("Care incident binding is invalid")
+  return {
+    source,
+    incidentKey,
+    classifiedRevision,
+    ...(binding.correlationKey ? { correlationKey: capStructuredRecordString(binding.correlationKey) } : {}),
+    ...(binding.resolvedAt ? { resolvedAt: binding.resolvedAt } : {}),
+  }
+}
+
+export function bindCareIncident(
+  agentRoot: string,
+  id: string,
+  binding: CareIncidentBinding,
+  options: { expectedUpdatedAt?: string } = {},
+): CareRecord {
+  const care = readCareFile(agentRoot, id)
+  if (options.expectedUpdatedAt !== undefined && care.updatedAt !== options.expectedUpdatedAt) throw new Error("Care incident binding CAS mismatch")
+  const canonical = canonicalIncidentBinding(binding)
+  const bindings = [...(care.incidentBindings ?? [])]
+  const index = bindings.findIndex((candidate) => candidate.source === canonical.source && candidate.incidentKey === canonical.incidentKey)
+  if (index >= 0) bindings[index] = canonical
+  else bindings.push(canonical)
+  const updated = { ...care, incidentBindings: bindings, updatedAt: nextUpdatedAt(care.updatedAt) }
+  writeCareFile(agentRoot, updated)
+  emitNervesEvent({
+    component: "heart",
+    event: "heart.care_incident_bound",
+    message: "care incident binding recorded",
+    meta: { careId: id, source: canonical.source, incidentKey: canonical.incidentKey, bindingCount: bindings.length },
+  })
+  return updated
+}
+
+export function resolveCareIncident(
+  agentRoot: string,
+  id: string,
+  input: { source: string; incidentKey: string; expectedUpdatedAt?: string },
+): CareRecord {
+  const care = readCareFile(agentRoot, id)
+  if (input.expectedUpdatedAt !== undefined && care.updatedAt !== input.expectedUpdatedAt) throw new Error("Care incident resolution CAS mismatch")
+  const bindings = [...(care.incidentBindings ?? [])]
+  const index = bindings.findIndex((binding) => binding.source === input.source && binding.incidentKey === input.incidentKey)
+  if (index < 0) throw new Error("Care incident binding not found")
+  const now = nextUpdatedAt(care.updatedAt)
+  bindings[index] = { ...bindings[index], resolvedAt: now }
+  const updated = { ...care, incidentBindings: bindings, updatedAt: now }
+  writeCareFile(agentRoot, updated)
+  emitNervesEvent({
+    component: "heart",
+    event: "heart.care_incident_resolved",
+    message: "care incident binding resolved",
+    meta: { careId: id, source: input.source, incidentKey: input.incidentKey, unresolvedCount: bindings.filter((binding) => !binding.resolvedAt).length },
+  })
+  return updated
+}
+
 export function resolveCare(agentRoot: string, id: string): CareRecord {
   const care = readCareFile(agentRoot, id)
-  const now = new Date().toISOString()
+  const now = nextUpdatedAt(care.updatedAt)
 
   const resolved: CareRecord = {
     ...care,

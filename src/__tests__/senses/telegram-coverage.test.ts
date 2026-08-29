@@ -1148,7 +1148,7 @@ describe("Telegram sense coverage contracts", () => {
     await expect(f.getOnUpdate()({ update_id: 2, callback_query: { id: "q", from: { id: 42 } } })).resolves.toBe(false)
   })
 
-  it("runs every health sweep result branch and receipts exact message ids", async () => {
+  it("runs every legacy health sweep shape without transport effects", async () => {
     for (const result of [
       {},
       { message: "health" },
@@ -1158,10 +1158,9 @@ describe("Telegram sense coverage contracts", () => {
       const healthSweep = Object.assign(vi.fn(async () => result), { markDeliveryAttempting: vi.fn(), markDelivered: vi.fn() })
       const app = createTelegramSenseApp({ agentName: "butler", credentials, healthSweep })
       await app.run()
-      if ("deliveryId" in result) {
-        expect(healthSweep.markDeliveryAttempting).toHaveBeenCalledWith("delivery-1")
-        expect(healthSweep.markDelivered).toHaveBeenCalledWith("delivery-1", [71])
-      }
+      expect(healthSweep.markDeliveryAttempting).not.toHaveBeenCalled()
+      expect(healthSweep.markDelivered).not.toHaveBeenCalled()
+      expect(f.api.request).not.toHaveBeenCalled()
       expect(f.poll.run).toHaveBeenCalledOnce()
     }
   })

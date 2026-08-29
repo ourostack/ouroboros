@@ -1388,7 +1388,7 @@ describe("Telegram sense", () => {
     }, undefined)
   })
 
-  it("persists health delivery intent before Telegram send and receipts it afterward", async () => {
+  it("samples startup health without Telegram delivery effects", async () => {
     const order: string[] = []
     const healthSweep = Object.assign(
       vi.fn(async () => ({ message: "Array degraded", deliveryId: "delivery-1" })),
@@ -1402,10 +1402,11 @@ describe("Telegram sense", () => {
 
     await f.app.run()
 
-    expect(order).toEqual(["attempting", "send", "delivered"])
+    expect(order).toEqual([])
+    expect(healthSweep).toHaveBeenCalledOnce()
   })
 
-  it("leaves an attempted health delivery unreceipted when Telegram send fails", async () => {
+  it("does not attempt legacy health delivery even when Telegram would fail", async () => {
     const healthSweep = Object.assign(
       vi.fn(async () => ({ message: "Array degraded", deliveryId: "delivery-1" })),
       { markDeliveryAttempting: vi.fn(), markDelivered: vi.fn() },
@@ -1415,7 +1416,8 @@ describe("Telegram sense", () => {
 
     await f.app.run()
 
-    expect(healthSweep.markDeliveryAttempting).toHaveBeenCalledWith("delivery-1")
+    expect(healthSweep.markDeliveryAttempting).not.toHaveBeenCalled()
     expect(healthSweep.markDelivered).not.toHaveBeenCalled()
+    expect(f.api.request).not.toHaveBeenCalled()
   })
 })

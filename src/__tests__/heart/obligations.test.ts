@@ -28,6 +28,29 @@ describe("obligations store", () => {
   const sampleOrigin = { friendId: "friend-1", channel: "cli", key: "session" }
 
   describe("createObligation", () => {
+    it("keeps machine provenance separate from the person owed a return", () => {
+      const obligation = createObligation(tmpDir, {
+        origin: { friendId: "ouro-external-event", channel: "external-event", key: "guard:usenet" },
+        sourceProvenance: { kind: "machine_evidence", source: "guard", ref: "usenet" },
+        owedTo: sampleOrigin,
+        requestId: "request-top-up",
+        content: "check the download path after Ari tops up credit",
+      })
+
+      expect(obligation.sourceProvenance).toEqual({ kind: "machine_evidence", source: "guard", ref: "usenet" })
+      expect(obligation.owedTo).toEqual(sampleOrigin)
+      expect(obligation.requestId).toBe("request-top-up")
+    })
+
+    it("does not create an obligation from machine evidence alone", () => {
+      expect(() => createObligation(tmpDir, {
+        origin: { friendId: "ouro-external-event", channel: "external-event", key: "guard:usenet" },
+        sourceProvenance: { kind: "machine_evidence", source: "guard", ref: "usenet" },
+        content: "raw machine evidence",
+      })).toThrow(/owed/i)
+      expect(readObligations(tmpDir)).toEqual([])
+    })
+
     it("writes a JSON file under arc/obligations/", () => {
       const obligation = createObligation(tmpDir, {
         origin: sampleOrigin,

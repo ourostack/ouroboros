@@ -50,7 +50,7 @@ describe("daemon command plane branches", () => {
     options?: {
       onStopCommandComplete?: () => void
       privateRuntimePolicyDeps?: unknown
-      externalEventRoot?: string
+      externalEventRoot?: string | null
       rsvpHabitRunner?: unknown
       nativeHabitRunner?: unknown
       nativeHabitMatch?: unknown
@@ -108,7 +108,9 @@ describe("daemon command plane branches", () => {
       nativeHabitMatch: options?.nativeHabitMatch,
       schedulerFireVerifier: options?.schedulerFireVerifier,
       schedulerFireConsumer: options?.schedulerFireConsumer,
-      externalEventRoot: options?.externalEventRoot,
+      externalEventRoot: options?.externalEventRoot === null
+        ? undefined
+        : options?.externalEventRoot ?? `${socketPath}.external-events`,
       mailboxServerFactory: vi.fn(async () => ({
         url: "http://127.0.0.1:6876",
         stop: async () => undefined,
@@ -949,14 +951,15 @@ describe("daemon command plane branches", () => {
     })
     expect(duplicate).toMatchObject({
       ok: true,
+      message: "updated external event app-store-connect/feedback-1 without wake",
       data: {
         event: expect.objectContaining({ duplicateCount: 1 }),
-        wake: expect.objectContaining({
-          message: "private-runtime wake denied for slugger: duplicate private-turn decision already recorded",
-        }),
+        receipt: null,
+        wake: null,
       },
     })
 
+    expect(router.send).toHaveBeenCalledTimes(1)
     expect(router.send).toHaveBeenCalledWith(expect.objectContaining({
       from: "ouro-external-event",
       to: "slugger",
@@ -974,7 +977,7 @@ describe("daemon command plane branches", () => {
         reason: "external event app-store-connect/feedback.created",
         triggerSource: "external-event",
         budgetClass: "interactive",
-        idempotencyKey: "external-event:slugger:app-store-connect:feedback-1",
+        idempotencyKey: "external-event:slugger:app-store-connect:feedback-1:generation:1",
         originRefs: [
           { kind: "external-event", id: "feedback-1", source: "app-store-connect", eventType: "feedback.created" },
           { kind: "queue-receipt", id: "msg-1" },
@@ -988,7 +991,7 @@ describe("daemon command plane branches", () => {
     expect(processManager.sendToAgent).toHaveBeenCalledWith("slugger", expect.objectContaining({
       type: "message",
       privateTurnDecision: expect.objectContaining({
-        idempotencyKey: "external-event:slugger:app-store-connect:feedback-1",
+        idempotencyKey: "external-event:slugger:app-store-connect:feedback-1:generation:1",
       }),
     }))
 
@@ -1028,7 +1031,7 @@ describe("daemon command plane branches", () => {
     const previousHome = process.env.HOME
     process.env.HOME = home
     try {
-      const { daemon, processManager, router } = make(socketPath)
+      const { daemon, processManager, router } = make(socketPath, undefined, { externalEventRoot: null })
       const response = await daemon.handleCommand({
         kind: "external.event.submit",
         agent: "slugger",
@@ -1259,6 +1262,7 @@ describe("daemon command plane branches", () => {
     const poke = await daemon.handleCommand({ kind: "task.poke", agent: "ghost", taskId: "habit-heartbeat" })
 
     expect(poke).toMatchObject({ ok: true, message: "queued poke msg-1" })
+    expect(router.send).toHaveBeenCalledTimes(1)
     expect(router.send).toHaveBeenCalledWith(expect.objectContaining({
       to: "ghost",
       taskRef: "habit-heartbeat",
@@ -3680,6 +3684,7 @@ describe("daemon command plane branches", () => {
     const daemon = new OuroDaemon({
       socketPath,
       bundlesRoot: isolatedBundles,
+      externalEventRoot: `${socketPath}.external-events`,
       processManager: {
         listAgentSnapshots: () => [
           {

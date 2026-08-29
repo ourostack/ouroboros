@@ -31,9 +31,18 @@ export interface ObligationMeaning {
   resumeHint?: string
 }
 
+export interface ObligationProvenance {
+  kind: "human_request" | "agent_promise" | "machine_evidence"
+  source: string
+  ref: string
+}
+
 export interface Obligation {
   id: string
   origin: { friendId: string; channel: string; key: string }
+  sourceProvenance?: ObligationProvenance
+  owedTo?: { friendId: string; channel: string; key: string }
+  requestId?: string
   bridgeId?: string
   content: string
   status: ObligationStatus
@@ -93,11 +102,21 @@ export function createObligation(
   agentRoot: string,
   input: Omit<Obligation, "id" | "createdAt" | "status">,
 ): Obligation {
+  if (input.sourceProvenance?.kind === "machine_evidence" && !input.owedTo) {
+    throw new Error("Machine evidence cannot create an obligation without a person owed a return")
+  }
   const now = new Date().toISOString()
   const id = generateTimestampId()
   const obligation: Obligation = {
     id,
     origin: input.origin,
+    sourceProvenance: input.sourceProvenance ?? {
+      kind: "human_request",
+      source: input.origin.channel,
+      ref: input.origin.key,
+    },
+    owedTo: input.owedTo ?? input.origin,
+    ...(input.requestId ? { requestId: capStructuredRecordString(input.requestId) } : {}),
     ...(input.bridgeId ? { bridgeId: input.bridgeId } : {}),
     content: capStructuredRecordString(input.content),
     status: "pending",
