@@ -1,19 +1,19 @@
 <?xml version="1.0"?>
 <Container version="2">
   <Name>ouro-butler</Name>
-  <Repository>sha256:REPLACE_WITH_EXACT_LOCAL_IMAGE_ID</Repository>
-  <Registry/>
+  <Repository>ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.742</Repository>
+  <Registry>https://github.com/ourostack/ouroboros/pkgs/container/ouroboros-butler</Registry>
   <Network>host</Network>
   <Shell>sh</Shell>
   <Privileged>false</Privileged>
-  <Support/>
-  <Project/>
-  <Overview>Mendelow Cloud Butler</Overview>
+  <Support>https://github.com/ourostack/ouroboros/issues</Support>
+  <Project>https://ouroboros.bot</Project>
+  <Overview>Mendelow Cloud Butler is a friendly Telegram steward for an Unraid household. It turns system evidence into useful agent-owned help, keeps each family member private, and asks before consequential actions.</Overview>
   <Category>Tools:</Category>
   <WebUI/>
-  <TemplateURL/>
-  <Icon/>
-  <ExtraParams>--restart=unless-stopped --user=10001:10001 --dns=1.1.1.1</ExtraParams>
+  <TemplateURL>https://raw.githubusercontent.com/ourostack/ouroboros/main/deploy/unraid/sanctuary.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png</Icon>
+  <ExtraParams>--restart=unless-stopped --user=10001:10001</ExtraParams>
   <PostArgs/>
   <CPUset/>
   <DateInstalled>0</DateInstalled>
@@ -22,4 +22,5 @@
   <Requires/>
   <Config Name="Runtime state" Target="/home/ouro/.ouro-cli" Default="/mnt/user/appdata/ouro-butler/runtime/.ouro-cli" Mode="rw" Description="Machine-scoped runtime" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/ouro-butler/runtime/.ouro-cli</Config>
   <Config Name="Agent bundle" Target="/home/ouro/AgentBundles/sanctuary.ouro" Default="/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro" Mode="rw" Description="Sanctuary bundle" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro</Config>
+  <Config Name="Privileged event spool" Target="/run/ouro-events" Default="/boot/config/custom/ouro-events/spool" Mode="ro" Description="Root-owned detector envelopes, read-only inside the Butler" Type="Path" Display="always" Required="true" Mask="false">/boot/config/custom/ouro-events/spool</Config>
 </Container>

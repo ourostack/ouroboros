@@ -25,6 +25,7 @@ function validInspect() {
       Binds: [
         "/mnt/user/appdata/ouro-butler/runtime/.ouro-cli:/home/ouro/.ouro-cli:rw",
         "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro:/home/ouro/AgentBundles/sanctuary.ouro:rw",
+        "/boot/config/custom/ouro-events/spool:/run/ouro-events:ro",
       ],
       PortBindings: {},
       Devices: [],
@@ -33,6 +34,7 @@ function validInspect() {
     Mounts: [
       { Type: "bind", Source: "/mnt/user/appdata/ouro-butler/runtime/.ouro-cli", Destination: "/home/ouro/.ouro-cli", RW: true },
       { Type: "bind", Source: "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro", Destination: "/home/ouro/AgentBundles/sanctuary.ouro", RW: true },
+      { Type: "bind", Source: "/boot/config/custom/ouro-events/spool", Destination: "/run/ouro-events", RW: false },
     ],
   }
 }
@@ -58,6 +60,7 @@ function stagedTemplate(): string {
     "<PostArgs></PostArgs>",
     '<Config Target="/home/ouro/.ouro-cli" Mode="rw" Type="Path">/mnt/user/appdata/ouro-butler/runtime/.ouro-cli</Config>',
     '<Config Target="/home/ouro/AgentBundles/sanctuary.ouro" Mode="rw" Type="Path">/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro</Config>',
+    '<Config Target="/run/ouro-events" Mode="ro" Type="Path">/boot/config/custom/ouro-events/spool</Config>',
     "</Container>",
   ].join("\n")
 }
@@ -393,7 +396,7 @@ describe("Sanctuary pre-activation container auditor", () => {
 
     expect(result).toEqual(expect.objectContaining({
       ok: false,
-      violations: expect.arrayContaining(["template Config entries must equal the canonical two path binds"]),
+      violations: expect.arrayContaining(["template Config entries must equal the canonical three path binds"]),
     }))
   })
 

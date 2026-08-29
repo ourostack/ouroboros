@@ -3,11 +3,13 @@ import { emitNervesEvent } from "../../nerves/runtime"
 const EXPECTED_BINDS = [
   "/mnt/user/appdata/ouro-butler/runtime/.ouro-cli:/home/ouro/.ouro-cli:rw",
   "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro:/home/ouro/AgentBundles/sanctuary.ouro:rw",
+  "/boot/config/custom/ouro-events/spool:/run/ouro-events:ro",
 ] as const
 
 const EXPECTED_MOUNTS = [
-  ["/mnt/user/appdata/ouro-butler/runtime/.ouro-cli", "/home/ouro/.ouro-cli"],
-  ["/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro", "/home/ouro/AgentBundles/sanctuary.ouro"],
+  ["/mnt/user/appdata/ouro-butler/runtime/.ouro-cli", "/home/ouro/.ouro-cli", true],
+  ["/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro", "/home/ouro/AgentBundles/sanctuary.ouro", true],
+  ["/boot/config/custom/ouro-events/spool", "/run/ouro-events", false],
 ] as const
 
 const EXPECTED_EXTRA_PARAMS = "--restart=unless-stopped --user=10001:10001"
@@ -72,17 +74,17 @@ export function auditSanctuaryContainerSpec(
     if (!Array.isArray(host.Devices) || host.Devices.length !== 0) violations.push("container must have no devices")
     if (!(host.CapAdd === null || (Array.isArray(host.CapAdd) && host.CapAdd.length === 0))) violations.push("container must add no capabilities")
     const binds = stringArray(host.Binds)
-    if (!binds || JSON.stringify([...binds].sort()) !== JSON.stringify([...EXPECTED_BINDS].sort())) violations.push("bind set must equal the canonical two writable roots")
+    if (!binds || JSON.stringify([...binds].sort()) !== JSON.stringify([...EXPECTED_BINDS].sort())) violations.push("bind set must equal the canonical writable roots and read-only event spool")
     const mounts = Array.isArray(root.Mounts) ? root.Mounts : []
     const normalizedMounts = mounts.map((mount) => {
       const item = record(mount)
-      return item && item.Type === "bind" && item.RW === true && typeof item.Source === "string" && typeof item.Destination === "string"
-        ? [item.Source, item.Destination]
+      return item && item.Type === "bind" && typeof item.RW === "boolean" && typeof item.Source === "string" && typeof item.Destination === "string"
+        ? [item.Source, item.Destination, item.RW]
         : null
     })
     if (normalizedMounts.some((mount) => mount === null)
       || JSON.stringify(normalizedMounts.sort()) !== JSON.stringify(EXPECTED_MOUNTS.map((mount) => [...mount]).sort())) {
-      violations.push("effective mounts must equal the canonical two writable bind mounts")
+      violations.push("effective mounts must equal the canonical writable roots and read-only event spool")
     }
   }
   const result = { ok: violations.length === 0, violations }
@@ -137,11 +139,11 @@ export function auditSanctuaryStagedFiles(input: SanctuaryStagedAuditInput): San
       return type === "Path" && target && mode ? `${match[2]}:${target}:${mode}` : "invalid"
     })
   if (
-    configOpenCount !== 2
-    || configEntries.length !== 2
+    configOpenCount !== 3
+    || configEntries.length !== 3
     || JSON.stringify([...pathConfigs].sort()) !== JSON.stringify([...EXPECTED_BINDS].sort())
   ) {
-    violations.push("template Config entries must equal the canonical two path binds")
+    violations.push("template Config entries must equal the canonical three path binds")
   }
   const postArgsOpenCount = [...input.templateXml.matchAll(/<PostArgs\b/gu)].length
   const postArgs = [...input.templateXml.matchAll(/<PostArgs(?:(?:\s*\/>)|>([^<]*)<\/PostArgs>)/gu)]

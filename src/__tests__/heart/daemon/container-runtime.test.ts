@@ -1777,12 +1777,12 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
       bundleSchemaVersion: number
     }
 
-    expect(template).toContain("<Overview>Mendelow Cloud Butler</Overview>")
+    expect(template).toContain("<Overview>Mendelow Cloud Butler")
     expect(template).toContain('Default="/mnt/user/appdata/ouro-butler/runtime/.ouro-cli"')
     expect(template).toContain('Default="/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro"')
     expect(template).not.toContain('/mnt/user/appdata/ouro-butler/AgentBundles')
-    expect(template).toContain("<Repository>sha256:REPLACE_WITH_EXACT_LOCAL_IMAGE_ID</Repository>")
-    expect(template).not.toMatch(/<Repository>ouro-butler:/u)
+    expect(template).toContain(`<Repository>ghcr.io/ourostack/ouroboros-butler:${JSON.parse(fs.readFileSync("package.json", "utf8")).version}</Repository>`)
+    expect(template).toContain('Default="/boot/config/custom/ouro-events/spool" Mode="ro"')
     expect(runbook).toContain("Mendelow Cloud Butler operator runbook")
     expect(runbook).toContain("/mnt/user/appdata/ouro-butler/runtime/.ouro-cli")
     expect(runbook).toContain("/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro")
