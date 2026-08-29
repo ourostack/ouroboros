@@ -24,6 +24,7 @@ describe("Telegram admission integration", () => {
     let pollOptions!: TelegramLongPollOptions
     let nextMessageId = 100
     const requests: Array<{ method: string; body: Record<string, unknown> }> = []
+    let displayCode = 0
     const runTurn = vi.fn(async () => ({ response: "", ponderDeferred: false, deliveries: [], deliveryFailures: [] }))
     const claimFriend = vi.fn(async () => ({ kind: "created" as const, friendId: "household-friend" }))
     const app = createTelegramSenseApp({
@@ -43,7 +44,7 @@ describe("Telegram admission integration", () => {
       createLongPoll: (options) => { pollOptions = options; return { pollOnce: vi.fn(), run: vi.fn(), stop: vi.fn() } },
       runTurn,
       migrateIdentity: async () => undefined,
-      admission: { ownerFriendId: "ari", claimFriend, createDisplayCode: () => "PINE-4821" },
+      admission: { ownerFriendId: "ari", claimFriend, createDisplayCode: () => displayCode++ === 0 ? "PINE-4821" : "OAK-7314" },
     })
 
     await pollOptions.onUnknownMessage!({ updateId: 11, messageId: 22, botId: "777", userId: "888", chatId: "888", text: "hostile https://evil.invalid", displayLabel: "<Unknown>", hasAttachments: true })
@@ -74,6 +75,12 @@ describe("Telegram admission integration", () => {
       identity: expect.objectContaining({ provider: "telegram-user" }),
     }))
     expect(requests).toContainEqual({ method: "answerCallbackQuery", body: { callback_query_id: "callback-1" } })
+
+    await pollOptions.onUnknownMessage!({ updateId: 13, messageId: 23, botId: "777", userId: "999", chatId: "999", text: "second quarantined request", displayLabel: "Second", hasAttachments: false })
+    await pollOptions.onMessage({ updateId: 14, messageId: 24, userId: "42", chatId: "42", text: "Allow OAK-7314" })
+    expect(runTurn).toHaveBeenCalledTimes(2)
+    expect(runTurn.mock.calls[1]![0]).toMatchObject({ friendId: "household-friend", userMessage: "second quarantined request" })
+    expect(JSON.stringify(runTurn.mock.calls)).not.toContain("Allow OAK-7314")
     await app.stop()
   })
 })

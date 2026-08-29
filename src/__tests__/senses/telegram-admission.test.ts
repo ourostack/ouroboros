@@ -132,6 +132,19 @@ describe("Telegram household admission", () => {
     expect(value.store.read(pending.admissionId)).toMatchObject({ status: "handled", quarantinedText: null, friendId: "friend-1" })
   })
 
+  it("parses only strict owner display-code decisions and keeps revocation fail-closed without Friends", async () => {
+    const value = fixture()
+    const pending = await value.controller.handleUnknown(unknown())
+    expect(value.controller.parseOwnerDecision("Allow PINE-4821")).toEqual({ admissionId: pending.admissionId, decision: "allow" })
+    expect(value.controller.parseOwnerDecision("please allow PINE-4821")).toBeNull()
+    expect(value.controller.parseOwnerDecision("Allow PINE-4821 extra")).toBeNull()
+    expect(value.controller.parseOwnerDecision("Allow UNKNOWN")).toBeNull()
+    await value.controller.decide({ admissionId: pending.admissionId, decision: "allow", actorFriendId: "ari" })
+    expect(value.controller.parseOwnerDecision("Block PINE-4821")).toEqual({ admissionId: pending.admissionId, decision: "block" })
+    await expect(value.controller.decide({ admissionId: pending.admissionId, decision: "block", actorFriendId: "ari" })).rejects.toThrow("revocation unavailable")
+    expect(value.store.read(pending.admissionId).status).toBe("handled")
+  })
+
   it("recovers approved, friend-bound, committed, and queued crash points without duplicating the turn", async () => {
     for (const state of ["approved", "friend_bound", "ingress_committed", "turn_queued"] as const) {
       const root = temporaryRoot()
