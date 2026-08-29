@@ -99,6 +99,20 @@ describe("Telegram admission defensive coverage", () => {
     try { expect(() => store.capture(message(), "CODE")).toThrow("busy") } finally { await lease.release() }
   })
 
+  it("pins the admission directory identity and rejects root replacement", () => {
+    const parent = root()
+    const storeRoot = path.join(parent, "store")
+    const store = new FileTelegramAdmissionStore(storeRoot)
+    const captured = store.capture(message(), "CODE")
+    if (!("record" in captured)) throw new Error("fixture capture failed")
+    fs.renameSync(storeRoot, path.join(parent, "displaced"))
+    fs.mkdirSync(storeRoot, { mode: 0o700 })
+    expect(() => store.read(captured.record.id)).toThrow("root identity changed")
+    expect(() => store.capture(message({ updateId: 2 }), "CODE")).toThrow("root identity changed")
+    store.close()
+    expect(() => store.list()).toThrow("closed")
+  })
+
   it("covers terminal replay, cooldown, CAS mismatch, and effect recording guards", () => {
     let now = 1_000
     const store = new FileTelegramAdmissionStore(path.join(root(), "store"), { retryCooldownMs: 10 }, () => now)
