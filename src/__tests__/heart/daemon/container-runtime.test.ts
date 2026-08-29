@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
+import * as net from "node:net"
 import { spawnSync } from "node:child_process"
 import { hasManagedAgentProcess, hasManagedSupercronicProcess, hasManagedTelegramProcess, readContainerRuntimePolicy } from "../../../heart/daemon/container-runtime"
 
@@ -1304,7 +1305,7 @@ install_from_legacy_staging`
     }
   })
 
-  it("validates complete private restore roots before mutation and after copying", () => {
+  it("validates production-shaped stopped restore roots before mutation and after copying", async () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     const validator = extractRunbookFunction(runbook, "validate_sanctuary_roots")
     const preflightHelper = extractRunbookFunction(runbook, "assert_restore_preflight")
@@ -1314,7 +1315,16 @@ install_from_legacy_staging`
     expect(validator).toContain("-type l")
     expect(validator).toContain("! -user 10001")
     expect(validator).toContain("! -perm 0700")
+    expect(validator).toContain("-perm 0755")
     expect(validator).toContain("! -perm 0600")
+    expect(validator).toContain("-perm 0644")
+    expect(validator).toContain('"$VALIDATE_RUNTIME_ROOT/daemon/logs/*"')
+    expect(validator).toContain('"$VALIDATE_RUNTIME_ROOT/scheduler/*"')
+    expect(validator).toContain('"$VALIDATE_AGENT_ROOT/arc/flight-recorder/*"')
+    expect(validator).toContain('"$VALIDATE_AGENT_ROOT/state/health/*"')
+    expect(validator).toContain('"$VALIDATE_AGENT_ROOT/state/logs/*"')
+    expect(validator).toContain('"$VALIDATE_AGENT_ROOT/state/habits/*"')
+    expect(validator).toContain('test ! -S "$VALIDATE_AGENT_ROOT/state/acceptance/telegram-control.sock"')
     expect(validator).toContain("container-credentials.json")
     expect(preflightHelper).toContain('validate_sanctuary_roots "$BACKUP_ROOT/runtime/.ouro-cli" "$BACKUP_ROOT/agent/sanctuary.ouro"')
     const preflight = restore.indexOf("if assert_restore_preflight; then")
@@ -1326,14 +1336,37 @@ install_from_legacy_staging`
     expect(postCopy).toBeGreaterThan(stop)
     expect(start).toBeGreaterThan(postCopy)
 
-    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-restore-roots-validator-"))
+    const testRoot = fs.mkdtempSync("/tmp/ouro-restore-roots-validator-")
     const runtimeRoot = path.join(testRoot, "runtime", ".ouro-cli")
     const agentRoot = path.join(testRoot, "agent", "sanctuary.ouro")
     const buildValidRoots = () => {
       fs.rmSync(testRoot, { recursive: true, force: true })
-      for (const directory of [runtimeRoot, path.join(runtimeRoot, "vault-unlock"), agentRoot, path.join(agentRoot, "psyche"), path.join(agentRoot, "habits")]) {
+      for (const directory of [
+        runtimeRoot,
+        path.join(runtimeRoot, "vault-unlock"),
+        path.join(runtimeRoot, "bitwarden"),
+        path.join(runtimeRoot, "daemon"),
+        agentRoot,
+        path.join(agentRoot, "arc"),
+        path.join(agentRoot, "psyche"),
+        path.join(agentRoot, "habits"),
+        path.join(agentRoot, "state"),
+        path.join(agentRoot, "state", "sessions", "owner"),
+        path.join(agentRoot, "friends"),
+      ]) {
         fs.mkdirSync(directory, { recursive: true, mode: 0o700 })
         fs.chmodSync(directory, 0o700)
+      }
+      for (const directory of [
+        path.join(runtimeRoot, "scheduler"),
+        path.join(runtimeRoot, "daemon", "logs"),
+        path.join(agentRoot, "arc", "flight-recorder", "events"),
+        path.join(agentRoot, "state", "logs", "cli"),
+        path.join(agentRoot, "state", "habits"),
+        path.join(agentRoot, "state", "health"),
+      ]) {
+        fs.mkdirSync(directory, { recursive: true, mode: 0o755 })
+        fs.chmodSync(directory, 0o755)
       }
       for (const relative of ["agent.json", "bundle-meta.json", "provider-readiness.json", "tool-profiles.json", "psyche/SOUL.md", "habits/sanctuary-health.md"]) {
         const file = path.join(agentRoot, relative)
@@ -1341,26 +1374,77 @@ install_from_legacy_staging`
         fs.chmodSync(file, 0o600)
       }
       fs.writeFileSync(path.join(runtimeRoot, "vault-unlock", "one.secret"), "secret", { mode: 0o600 })
+      fs.writeFileSync(path.join(runtimeRoot, "bitwarden", "data.json"), "secret", { mode: 0o600 })
+      fs.writeFileSync(path.join(agentRoot, "state", "sessions", "owner", "session.json"), "private", { mode: 0o600 })
+      fs.writeFileSync(path.join(agentRoot, "friends", "owner.json"), "private", { mode: 0o600 })
+      for (const file of [
+        path.join(runtimeRoot, "daemon", "logs", "daemon.ndjson"),
+        path.join(runtimeRoot, "pulse.json"),
+        path.join(runtimeRoot, "daemon-health.json"),
+        path.join(agentRoot, "arc", "flight-recorder", "events", "today.jsonl"),
+        path.join(agentRoot, "state", "logs", "cli", "latest.ndjson"),
+        path.join(agentRoot, "state", "habits", "sanctuary-health.json"),
+        path.join(agentRoot, "state", "health", "latest.json"),
+      ]) {
+        fs.writeFileSync(file, "generated", { mode: 0o644 })
+        fs.chmodSync(file, 0o644)
+      }
     }
     const script = String.raw`set -u
-find() { case "$*" in *"! -user 10001"*) return 0 ;; *) command find "$@" ;; esac; }
+find() {
+  case "$*" in *"! -user 10001"*) return 0 ;; *) command find "$@" ;; esac
+}
 ${validator}
 validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
     try {
       const run = () => runConditionalHelper(script, "validate", { RUNTIME_ROOT: runtimeRoot, AGENT_ROOT: agentRoot })
       buildValidRoots()
       expect(run().status).toBe(0)
+      const actualOwnerScript = `${validator}\nvalidate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
+      expect(runConditionalHelper(actualOwnerScript, "validate", { RUNTIME_ROOT: runtimeRoot, AGENT_ROOT: agentRoot }).status).not.toBe(0)
       for (const mutate of [
         () => fs.writeFileSync(path.join(agentRoot, "agent.json"), ""),
         () => fs.symlinkSync("agent.json", path.join(agentRoot, "link")),
         () => fs.chmodSync(path.join(agentRoot, "psyche"), 0o755),
         () => fs.chmodSync(path.join(agentRoot, "agent.json"), 0o644),
+        () => fs.chmodSync(path.join(runtimeRoot, "bitwarden", "data.json"), 0o644),
+        () => fs.chmodSync(path.join(agentRoot, "state", "sessions", "owner", "session.json"), 0o644),
+        () => fs.chmodSync(path.join(agentRoot, "friends", "owner.json"), 0o644),
+        () => fs.chmodSync(path.join(runtimeRoot, "scheduler"), 0o777),
+        () => fs.chmodSync(path.join(runtimeRoot, "pulse.json"), 0o666),
         () => fs.writeFileSync(path.join(runtimeRoot, "container-credentials.json"), "{}", { mode: 0o600 }),
         () => fs.writeFileSync(path.join(runtimeRoot, "vault-unlock", "one.secret"), ""),
+        () => spawnSync("mkfifo", [path.join(agentRoot, "unexpected.fifo")]),
       ]) {
         buildValidRoots()
         mutate()
         expect(run().status).not.toBe(0)
+      }
+      buildValidRoots()
+      const socketPath = path.join(agentRoot, "unexpected.sock")
+      const server = net.createServer()
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject)
+        server.listen(socketPath, resolve)
+      })
+      try {
+        expect(fs.lstatSync(socketPath).isSocket()).toBe(true)
+        expect(run().status).not.toBe(0)
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()))
+      }
+      buildValidRoots()
+      const acceptanceRoot = path.join(agentRoot, "state", "acceptance")
+      fs.mkdirSync(acceptanceRoot, { recursive: true, mode: 0o700 })
+      const controlSocket = net.createServer()
+      await new Promise<void>((resolve, reject) => {
+        controlSocket.once("error", reject)
+        controlSocket.listen(path.join(acceptanceRoot, "telegram-control.sock"), resolve)
+      })
+      try {
+        expect(run().status).not.toBe(0)
+      } finally {
+        await new Promise<void>((resolve) => controlSocket.close(() => resolve()))
       }
     } finally {
       fs.rmSync(testRoot, { recursive: true, force: true })
@@ -1803,6 +1887,8 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
     expect(runbook).toContain('--mount "type=bind,src=$STAGED_RUNTIME_POLICY,dst=/audit/container-runtime.json,readonly" \\')
     expect(runbook).toContain('"$IMAGE_ID" --template /audit/sanctuary.xml --runtime-policy /audit/container-runtime.json --expected-image "$IMAGE_ID"')
     const updateRunbook = runbook.slice(runbook.indexOf("Update:"), runbook.indexOf("Backup:"))
+    const backupRunbook = runbook.slice(runbook.indexOf("Backup:"), runbook.indexOf("Restore:"))
+    const restoreRunbook = runbook.slice(runbook.indexOf("Restore:"), runbook.indexOf("Credential recovery:"))
     expect(runbook).toContain("AUTOSTART_FILE=/var/lib/docker/unraid-autostart")
     expect(runbook).toContain("/plugins/dynamix.docker.manager/include/UpdateConfig.php")
     expect(runbook).toContain("--connect-timeout 5")
@@ -1814,6 +1900,12 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
     expect(updateRunbook).toContain('docker create --name ouro-butler-staging --network host --restart unless-stopped --user 10001:10001 \\')
     expect(updateRunbook).toContain('--mount "type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli" \\')
     expect(updateRunbook).toContain('--mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \\')
+    expect(updateRunbook).toContain('--mount "type=bind,src=/boot/config/custom/ouro-events/spool,dst=/run/ouro-events,readonly" \\')
+    expect(updateRunbook.indexOf("bootstrap-spool.sh --mount")).toBeLessThan(updateRunbook.indexOf("disable_butler_autostart"))
+    expect(backupRunbook).toContain("--exclude='/state/acceptance/telegram-control.sock'")
+    expect(backupRunbook).toContain('test ! -S "$BACKUP_ROOT/agent/sanctuary.ouro/state/acceptance/telegram-control.sock"')
+    expect(restoreRunbook).toContain('--mount "type=bind,src=/boot/config/custom/ouro-events/spool,dst=/run/ouro-events,readonly" \\')
+    expect(restoreRunbook.indexOf("bootstrap-spool.sh --mount")).toBeLessThan(restoreRunbook.indexOf("disable_butler_autostart"))
     expect(updateRunbook).toContain('"$IMAGE_ID"')
     expect(runbook).toContain('docker inspect "$AUDIT_CONTAINER" >"$INSPECT_DIR/container.json"')
     expect(runbook).toContain('docker image inspect "$AUDIT_EXPECTED_IMAGE" >"$INSPECT_DIR/image.json"')
@@ -1856,7 +1948,6 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
     const productionEnable = productionBlock.indexOf("enable_butler_autostart", productionReady)
     expect(productionReady).toBeGreaterThan(productionStart)
     expect(productionEnable).toBeGreaterThan(productionReady)
-    const restoreRunbook = runbook.slice(runbook.indexOf("Restore:"), runbook.indexOf("Credential recovery:"))
     expect(restoreRunbook).toContain("docker create --name ouro-butler")
     expect(restoreRunbook).toContain('audit_effective ouro-butler "$IMAGE_ID"')
     expect(restoreRunbook.indexOf("docker start ouro-butler")).toBeGreaterThan(restoreRunbook.indexOf('audit_effective ouro-butler "$IMAGE_ID"'))
