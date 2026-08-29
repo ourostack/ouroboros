@@ -118,6 +118,22 @@ export interface ToolContext {
     provider: "bluebubbles";
     captureKeyHash: string;
   }>;
+  readonly currentExternalEvent?: Readonly<import("../heart/external-events/router").ExternalEventLeaseContext>;
+  readonly externalEventAuthority?: Readonly<{
+    authorizeDisposition(input: {
+      event: import("../heart/external-events/router").ExternalEventLeaseContext;
+      classification: string;
+      decision: string;
+      stewardPolicyKey: string;
+      stewardPolicyVersion: number;
+      nextWake: string;
+      wakeAt: string | null;
+      awaitId: string | null;
+      careId: string | null;
+      actionRefs: string[];
+      verificationRefs: string[];
+    }): { allowed: boolean; reason: string };
+  }>;
   /** Irrevocable per-turn capability reduction used by transport-safe probes. */
   readonly noSend?: true;
   habitSession?: HabitSessionToolContext;

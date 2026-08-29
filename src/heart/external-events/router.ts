@@ -28,6 +28,28 @@ export interface ExternalEventDisposition {
   verificationRefs: string[]
 }
 
+export interface ExternalEventLeaseContext {
+  schemaVersion: 1
+  recordPath: string
+  agent: string
+  source: string
+  eventId: string
+  generation: number
+  observationRevision: string
+  claimOwner: string
+}
+
+interface ExternalEventObservation {
+  summary: string | null
+  evidence: string[]
+  payloadPath: string | null
+  priority: string
+  receivedAt: string
+  observationRevision: string
+  observationDigest: string
+  transition: ExternalEventTransition
+}
+
 export interface ExternalEventInput {
   agent: string
   source: string
@@ -61,6 +83,8 @@ export interface ExternalEventRecord extends Required<Omit<ExternalEventInput, "
   nextAttemptAt: string | null
   lastError: string | null
   disposition: ExternalEventDisposition | null
+  pendingObservation: ExternalEventObservation | null
+  dispatchEnabled: boolean
   shouldWake: boolean
 }
 
@@ -69,8 +93,10 @@ export function getExternalEventRoot(homeDir?: string): string {
 }
 
 function safePathSegment(value: string): string {
-  const safe = value.trim().replace(/[^a-zA-Z0-9._-]+/g, "_").replace(/^_+|_+$/g, "")
-  return safe.length > 0 ? safe.slice(0, 160) : "unknown"
+  const canonical = value.trim()
+  if (/^[a-zA-Z0-9._-]+$/u.test(canonical) && canonical.length <= 160) return canonical
+  const readable = canonical.replace(/[^a-zA-Z0-9._-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 140) || "unknown"
+  return `${readable}-${createHash("sha256").update(canonical).digest("hex").slice(0, 16)}`
 }
 
 export function externalEventRecordPath(root: string, input: Pick<ExternalEventInput, "agent" | "source" | "eventId">): string {
@@ -84,6 +110,19 @@ function observationDigest(input: ExternalEventInput): string {
     payloadPath: input.payloadPath ?? null,
     priority: input.priority ?? "high",
   })).digest("hex")
+}
+
+function observationFromInput(input: ExternalEventInput, now: string, digest: string, revision: string, fallbackTransition: ExternalEventTransition): ExternalEventObservation {
+  return {
+    summary: input.summary ?? null,
+    evidence: input.evidence ?? [],
+    payloadPath: input.payloadPath ?? null,
+    priority: input.priority ?? "high",
+    receivedAt: input.receivedAt ?? now,
+    observationRevision: revision,
+    observationDigest: digest,
+    transition: input.transition ?? fallbackTransition,
+  }
 }
 
 function atomicWrite(recordPath: string, record: ExternalEventRecord): void {
@@ -100,19 +139,44 @@ function atomicWrite(recordPath: string, record: ExternalEventRecord): void {
 function withRecordLock<T>(recordPath: string, operation: () => T): T {
   fs.mkdirSync(path.dirname(recordPath), { recursive: true })
   const lockPath = `${recordPath}.lock`
+  const ownerPath = path.join(lockPath, "owner")
+  const owner = randomUUID()
   const acquire = (): void => {
     try {
       fs.mkdirSync(lockPath, { mode: 0o700 })
+      fs.writeFileSync(ownerPath, owner, { mode: 0o600, flag: "wx" })
     } catch (error) {
+      /* v8 ignore next -- defensive: mkdirSync either acquires the lock or reports EEXIST in this loop @preserve */
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
       const metadata = fs.statSync(lockPath)
       if (!metadata.isDirectory() || Date.now() - metadata.mtimeMs <= 30_000) throw new Error("External event record is busy")
-      try { fs.rmdirSync(lockPath) } catch { throw new Error("External event record is busy") }
-      try { fs.mkdirSync(lockPath, { mode: 0o700 }) } catch { throw new Error("External event record is busy") }
+      const stalePath = `${lockPath}.stale-${owner}`
+      try { fs.renameSync(lockPath, stalePath) } catch { throw new Error("External event record is busy") }
+      try {
+        const staleOwnerPath = path.join(stalePath, "owner")
+        if (fs.existsSync(staleOwnerPath)) fs.unlinkSync(staleOwnerPath)
+        fs.rmdirSync(stalePath)
+        fs.mkdirSync(lockPath, { mode: 0o700 })
+        fs.writeFileSync(ownerPath, owner, { mode: 0o600, flag: "wx" })
+      } catch {
+        throw new Error("External event record is busy")
+      }
     }
   }
   acquire()
-  try { return operation() } finally { fs.rmdirSync(lockPath) }
+  try {
+    return operation()
+  } finally {
+    try {
+      /* v8 ignore else -- concurrency fence: a replaced owner must not release its successor's lock @preserve */
+      if (fs.readFileSync(ownerPath, "utf8") === owner) {
+        fs.unlinkSync(ownerPath)
+        fs.rmdirSync(lockPath)
+      }
+    } catch {
+      // A stale owner must never remove a successor's lock.
+    }
+  }
 }
 
 function isRecord(value: unknown): value is ExternalEventRecord {
@@ -128,17 +192,24 @@ function isRecord(value: unknown): value is ExternalEventRecord {
 export function readExternalEventRecord(recordPath: string): ExternalEventRecord {
   const parsed: unknown = JSON.parse(fs.readFileSync(recordPath, "utf8"))
   if (!isRecord(parsed)) throw new Error(`External event record is invalid: ${recordPath}`)
+  const root = path.dirname(path.dirname(path.dirname(recordPath)))
+  const expectedPath = externalEventRecordPath(root, parsed)
+  if (path.resolve(parsed.recordPath) !== path.resolve(recordPath) || path.resolve(expectedPath) !== path.resolve(recordPath)) {
+    throw new Error(`External event record identity is invalid: ${recordPath}`)
+  }
   return parsed
 }
 
 export interface ExternalEventStatus {
+  recordPath: string
+  corrupt: boolean
   agent: string
   source: string
   eventId: string
   eventType: string
   observationRevision: string
   transition: ExternalEventTransition
-  executionState: ExternalEventExecutionState
+  executionState: ExternalEventExecutionState | "corrupt"
   generation: number
   attemptCount: number
   updatedAt: string
@@ -149,6 +220,12 @@ export interface ExternalEventStatus {
   nextWake: ExternalEventWakePredicate | null
   careId: string | null
   awaitId: string | null
+  lastError: string | null
+  nextAttemptAt: string | null
+  claimOwner: string | null
+  claimExpiresAt: string | null
+  dispatchEnabled: boolean
+  undispatched: boolean
 }
 
 export function listExternalEventStatus(root: string): ExternalEventStatus[] {
@@ -164,6 +241,8 @@ export function listExternalEventStatus(root: string): ExternalEventStatus[] {
         try {
           const record = readExternalEventRecord(path.join(agentPath, source.name, entry.name))
           rows.push({
+            recordPath: record.recordPath,
+            corrupt: false,
             agent: record.agent,
             source: record.source,
             eventId: record.eventId,
@@ -181,9 +260,42 @@ export function listExternalEventStatus(root: string): ExternalEventStatus[] {
             nextWake: record.disposition?.nextWake ?? null,
             careId: record.disposition?.careId ?? null,
             awaitId: record.disposition?.awaitId ?? null,
+            lastError: record.lastError,
+            nextAttemptAt: record.nextAttemptAt,
+            claimOwner: record.claimOwner,
+            claimExpiresAt: record.claimExpiresAt,
+            dispatchEnabled: record.dispatchEnabled !== false,
+            undispatched: record.executionState === "received",
           })
-        } catch {
-          // Corrupt receipts remain visible through health checks; they cannot become trusted status rows.
+        } catch (error) {
+          const recordPath = path.join(agentPath, source.name, entry.name)
+          rows.push({
+            recordPath,
+            corrupt: true,
+            agent: agent.name,
+            source: source.name,
+            eventId: entry.name.slice(0, -5),
+            eventType: "unknown",
+            observationRevision: "unknown",
+            transition: "unchanged",
+            executionState: "corrupt",
+            generation: 0,
+            attemptCount: 0,
+            updatedAt: new Date(fs.statSync(recordPath).mtimeMs).toISOString(),
+            classification: null,
+            decision: null,
+            reason: null,
+            stewardPolicy: null,
+            nextWake: null,
+            careId: null,
+            awaitId: null,
+            lastError: `invalid receipt: ${error instanceof Error ? error.message : /* v8 ignore next -- filesystem and JSON parsers throw Error objects @preserve */ String(error)}`,
+            nextAttemptAt: null,
+            claimOwner: null,
+            claimExpiresAt: null,
+            dispatchEnabled: false,
+            undispatched: false,
+          })
         }
       }
     }
@@ -205,7 +317,7 @@ function readExisting(recordPath: string): { record: ExternalEventRecord | null;
   }
 }
 
-function predicateMatches(disposition: ExternalEventDisposition, input: ExternalEventInput, revision: string): boolean {
+function predicateMatches(disposition: ExternalEventDisposition, input: Pick<ExternalEventInput, "transition">, revision: string): boolean {
   switch (disposition.nextWake.kind) {
     case "on_change": return revision !== disposition.classifiedRevision
     case "on_escalation": return input.transition === "escalated"
@@ -225,7 +337,9 @@ export function buildExternalEventMessage(record: ExternalEventRecord): string {
     `id: ${record.eventId}`,
     `receipt: ${record.recordPath}`,
     `generation: ${record.generation}`,
+    `attempt: ${record.attemptCount}`,
     `observationRevision: ${record.observationRevision}`,
+    `claimOwner: ${record.claimOwner ?? "unclaimed"}`,
     `transition: ${record.transition}`,
     `receivedAt: ${record.receivedAt}`,
     `priority: ${record.priority}`,
@@ -238,7 +352,7 @@ export function buildExternalEventMessage(record: ExternalEventRecord): string {
   ].join("\n")
 }
 
-export function recordExternalEvent(input: ExternalEventInput, options: { root?: string; now?: () => string } = {}): ExternalEventRecord {
+export function recordExternalEvent(input: ExternalEventInput, options: { root?: string; now?: () => string; dispatchEnabled?: boolean } = {}): ExternalEventRecord {
   const now = options.now?.() ?? new Date().toISOString()
   const root = options.root ?? getExternalEventRoot()
   const recordPath = externalEventRecordPath(root, input)
@@ -247,6 +361,18 @@ export function recordExternalEvent(input: ExternalEventInput, options: { root?:
     const revision = input.observationRevision?.trim() || digest
     const existingResult = readExisting(recordPath)
     const existing = existingResult.record
+    if (existing?.executionState === "running") {
+      if (existing.observationRevision === revision && existing.observationDigest === digest) return { ...existing, shouldWake: false }
+      const pendingObservation = observationFromInput(input, now, digest, revision, "changed")
+      const updated = commitMutation(recordPath, { ...existing, pendingObservation, shouldWake: false }, now)
+      emitNervesEvent({
+        component: "daemon",
+        event: "daemon.external_event_recorded",
+        message: "recorded external event receipt",
+        meta: { agent: updated.agent, source: updated.source, eventType: updated.eventType, eventId: updated.eventId, duplicateCount: updated.duplicateCount, generation: updated.generation, shouldWake: false, recordPath },
+      })
+      return updated
+    }
     const shouldWake = !existing
       || (existing.disposition ? predicateMatches(existing.disposition, input, revision) : existing.executionState === "dead_letter" && revision !== existing.observationRevision)
     const generation = existing ? existing.generation + (shouldWake ? 1 : 0) : 1
@@ -268,14 +394,16 @@ export function recordExternalEvent(input: ExternalEventInput, options: { root?:
     observationRevision: revision,
     observationDigest: digest,
     transition: input.transition ?? (existing ? "unchanged" : "opened"),
-    executionState: shouldWake ? "queued" : (existing?.executionState ?? "queued"),
+    executionState: shouldWake ? "received" : existing!.executionState,
     generation,
-    attemptCount: shouldWake ? 0 : (existing?.attemptCount ?? 0),
-    claimOwner: shouldWake ? null : (existing?.claimOwner ?? null),
-    claimExpiresAt: shouldWake ? null : (existing?.claimExpiresAt ?? null),
-    nextAttemptAt: shouldWake ? null : (existing?.nextAttemptAt ?? null),
-    lastError: shouldWake ? null : (existing?.lastError ?? null),
-    disposition: shouldWake ? null : (existing?.disposition ?? null),
+    attemptCount: shouldWake ? 0 : existing!.attemptCount,
+    claimOwner: shouldWake ? null : existing!.claimOwner,
+    claimExpiresAt: shouldWake ? null : existing!.claimExpiresAt,
+    nextAttemptAt: shouldWake ? null : existing!.nextAttemptAt,
+    lastError: shouldWake ? null : existing!.lastError,
+    disposition: shouldWake ? null : existing!.disposition,
+    pendingObservation: shouldWake ? null : existing!.pendingObservation,
+    dispatchEnabled: options.dispatchEnabled ?? existing?.dispatchEnabled ?? true,
     shouldWake,
     }
     atomicWrite(recordPath, record)
@@ -313,7 +441,7 @@ export function claimExternalEvent(recordPath: string, input: CasInput & { owner
     assertCas(record, input)
     const now = input.now?.() ?? new Date().toISOString()
     const nowMs = Date.parse(now)
-    const due = record.executionState === "queued"
+    const due = record.executionState === "received" || record.executionState === "queued"
       || (record.executionState === "retry_wait" && record.nextAttemptAt !== null && Date.parse(record.nextAttemptAt) <= nowMs)
       || (record.executionState === "running" && record.claimExpiresAt !== null && Date.parse(record.claimExpiresAt) <= nowMs)
     if (!due) throw new Error("External event generation is already claimed or not ready")
@@ -345,15 +473,30 @@ export function commitExternalEventDisposition(recordPath: string, input: CasInp
     }
     if (input.disposition.nextWake.kind !== "at" && input.disposition.awaitId) throw new Error("External event await receipt does not match its wake predicate")
     const now = input.now?.() ?? new Date().toISOString()
+    const pending = record.pendingObservation
+    const wakePending = pending ? predicateMatches(input.disposition, pending, pending.observationRevision) : false
     return commitMutation(recordPath, {
     ...record,
-    executionState: "handled",
+    ...(pending ? {
+      summary: pending.summary,
+      evidence: pending.evidence,
+      payloadPath: pending.payloadPath,
+      priority: pending.priority,
+      receivedAt: pending.receivedAt,
+      observationRevision: pending.observationRevision,
+      observationDigest: pending.observationDigest,
+      transition: pending.transition,
+    } : {}),
+    executionState: wakePending ? "received" : "handled",
+    generation: record.generation + (wakePending ? 1 : 0),
+    attemptCount: wakePending ? 0 : record.attemptCount,
     claimOwner: null,
     claimExpiresAt: null,
     nextAttemptAt: null,
     lastError: null,
-    disposition: input.disposition,
-    shouldWake: false,
+    disposition: wakePending ? null : input.disposition,
+    pendingObservation: null,
+    shouldWake: wakePending,
     }, now)
   })
 }

@@ -200,6 +200,18 @@ describe("private-runtime-worker", () => {
     expect(runTurn).toHaveBeenNthCalledWith(2, expect.not.objectContaining({ noSend: true }))
   })
 
+  it("scopes an external-event lease to its originating turn", async () => {
+    const runTurn = vi.fn().mockResolvedValue(undefined)
+    const hasPendingWork = vi.fn().mockReturnValueOnce(true).mockReturnValue(false)
+    const worker = createPrivateRuntimeWorker(runTurn, hasPendingWork)
+    const externalEvent = { schemaVersion: 1 as const, recordPath: "/events/slugger/health/sweep.json", agent: "slugger", source: "health", eventId: "sweep", generation: 1, observationRevision: "rev-1", claimOwner: "lease-1" }
+
+    await worker.handleMessage({ type: "message", externalEvent })
+
+    expect(runTurn).toHaveBeenNthCalledWith(1, expect.objectContaining({ externalEvent }))
+    expect(runTurn).toHaveBeenNthCalledWith(2, expect.not.objectContaining({ externalEvent: expect.anything() }))
+  })
+
   it("passes undefined taskId when poke has no taskId", async () => {
     const runTurn = vi.fn().mockResolvedValue(undefined)
     const worker = createPrivateRuntimeWorker(runTurn)

@@ -857,7 +857,6 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   } catch (error) {
     releaseAcceptanceAudit(error)
   }
-  const healthSweep = options.healthSweep
   let effectJournal: FileTelegramEffectJournal | undefined
   const getEffectJournal = (): FileTelegramEffectJournal => {
     effectJournal ??= new FileTelegramEffectJournal(path.join(agentRoot, "state", "telegram", "effects"))
@@ -927,29 +926,6 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       })
       approvalReconciliationsInFlight.add(reconciliation)
     }, delay)
-  }
-
-  const runHealthSweep = async (): Promise<void> => {
-    if (!healthSweep) return
-    try {
-      acceptanceAuditBarrier()
-      const result = await healthSweep()
-      emitNervesEvent({
-        component: "senses",
-        event: "senses.sanctuary_health_observed",
-        message: "Sanctuary health startup evidence sampled without transport effects",
-        meta: { agentName: options.agentName, incidentCount: result.incidents.length, ...sanctuaryAcceptanceEventMeta(options.agentName) },
-      })
-    } catch (error) {
-      acceptanceAuditBarrier()
-      emitNervesEvent({
-        level: "error",
-        component: "senses",
-        event: "senses.sanctuary_health_error",
-        message: "Sanctuary deterministic health sweep failed",
-        meta: { agentName: options.agentName, subject, error: transportError(error) },
-      })
-    }
   }
 
   const deliverButlerEffect = async (
@@ -1279,7 +1255,6 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
             meta: { agentName: options.agentName, subject, error: transportError(error) },
           })
         }
-        await runWithAcceptanceAuditOwner(runHealthSweep)
         emitNervesEvent({
           component: "senses",
           event: "senses.telegram_poll_start",

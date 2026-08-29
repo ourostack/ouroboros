@@ -51,6 +51,8 @@ import { readHealth, getDefaultHealthPath } from "../heart/daemon/daemon-health"
 import { readFlightRecorderResume, formatFlightRecorderResume } from "../arc/flight-recorder"
 import { deskRecordOrientationSection } from "../mind/desk-section"
 import type { HabitSessionToolContext } from "../repertoire/tools-base"
+import type { ExternalEventLeaseContext } from "../heart/external-events/router"
+import { createSanctuaryToolContext } from "./sanctuary-runtime"
 import {
   createPrivateTurnRequestFingerprint,
   readPrivateTurnLedger,
@@ -90,9 +92,22 @@ export interface RunPrivateRuntimeTurnOptions {
   habitSession?: HabitSessionToolContext
   preparedHabit?: PreparedHabitContext
   privateTurnDecision?: PrivateTurnDecision
+  externalEvent?: ExternalEventLeaseContext
   noSend?: true
   _withSessionTurnLease?: <T>(sessionPath: string, work: (lease: SessionTurnLease) => Promise<T>) => Promise<T>
 }
+
+const EXTERNAL_EVENT_TOOLS = [
+  "external_event_disposition",
+  "query_cares",
+  "care_manage",
+  "unraid_list_containers",
+  "unraid_get_container_logs",
+  "unraid_get_storage",
+  "unraid_get_disks",
+  "unraid_get_notifications",
+  "unraid_get_system",
+] as const
 
 export interface PreparedHabitContext {
   runId: string
@@ -1192,6 +1207,9 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
   if (options?.noSend === true) {
     habitToolsResolved = []
   }
+  const externalEventToolsResolved = options?.externalEvent
+    ? getToolsForChannel(innerCapabilities).filter((tool) => EXTERNAL_EVENT_TOOLS.includes(tool.function.name as typeof EXTERNAL_EVENT_TOOLS[number]))
+    : undefined
 
   const effectiveHabitSession = options?.noSend === true
     ? reduceHabitSessionToNoSend(options.habitSession)
@@ -1279,10 +1297,16 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
       traceId,
       toolChoiceRequired: true,
       mcpManager,
-      ...(habitToolsResolved !== undefined && { tools: habitToolsResolved }),
+      ...(options?.externalEvent
+        ? { tools: externalEventToolsResolved }
+        : habitToolsResolved !== undefined ? { tools: habitToolsResolved } : {}),
       toolContext: {
         signin: async () => undefined,
         delegatedOrigins: attentionQueue,
+        ...(options?.externalEvent ? {
+          currentExternalEvent: Object.freeze({ ...options.externalEvent }),
+          ...(options.externalEvent.source === "sanctuary-health" ? createSanctuaryToolContext(agentName) : {}),
+        } : {}),
         ...(options?.noSend ? { noSend: true } : {}),
         ...(effectiveHabitSession ? { habitSession: effectiveHabitSession } : {}),
       },

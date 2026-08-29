@@ -1,7 +1,9 @@
 import * as path from "path"
+import * as fs from "node:fs"
+import { randomUUID } from "node:crypto"
 import { capStructuredRecordString } from "../heart/session-events"
 import { emitNervesEvent } from "../nerves/runtime"
-import { generateTimestampId, readJsonDir, readJsonFileOrThrow, writeJsonFile } from "./json-store"
+import { generateTimestampId, readJsonDir, readJsonFileOrThrow } from "./json-store"
 
 export type CareKind = "person" | "agent" | "project" | "mission" | "system"
 export type CareStatus = "active" | "watching" | "resolved" | "dormant"
@@ -39,7 +41,82 @@ function caresDir(agentRoot: string): string {
   return path.join(agentRoot, "arc", "cares")
 }
 
+function withCareMutationLock<T>(agentRoot: string, operation: () => T): T {
+  const dir = caresDir(agentRoot)
+  const lockPath = path.join(dir, ".mutation.lock")
+  const ownerPath = path.join(lockPath, "owner")
+  const owner = randomUUID()
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
+  const deadline = Date.now() + 1_000
+  for (;;) {
+    try {
+      fs.mkdirSync(lockPath, { mode: 0o700 })
+      fs.writeFileSync(ownerPath, JSON.stringify({ owner, pid: process.pid }), { mode: 0o600, flag: "wx" })
+      break
+    } catch (error) {
+      /* v8 ignore next -- defensive: mkdirSync either acquires the lock or reports EEXIST in this loop @preserve */
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
+      let incumbent: { owner?: unknown; pid?: unknown } | null = null
+      try { incumbent = JSON.parse(fs.readFileSync(ownerPath, "utf8")) as { owner?: unknown; pid?: unknown } } catch { /* incomplete acquisition remains busy */ }
+      let staleIncomplete = false
+      if (!Number.isSafeInteger(incumbent?.pid)) {
+        try { staleIncomplete = Date.now() - fs.statSync(lockPath).mtimeMs > 30_000 } catch { /* another contender may be replacing it */ }
+      }
+      let alive = true
+      if (Number.isSafeInteger(incumbent?.pid) && Number(incumbent?.pid) > 0) {
+        try { process.kill(Number(incumbent?.pid), 0) } catch (killError) { alive = (killError as NodeJS.ErrnoException).code === "EPERM" }
+      }
+      if (!alive || staleIncomplete) {
+        const stalePath = `${lockPath}.stale-${owner}`
+        try {
+          fs.renameSync(lockPath, stalePath)
+          const staleOwner = path.join(stalePath, "owner")
+          if (fs.existsSync(staleOwner)) fs.unlinkSync(staleOwner)
+          fs.rmdirSync(stalePath)
+          continue
+        } catch { /* another contender won */ }
+      }
+      if (Date.now() >= deadline) throw new Error("Care mutation is busy")
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)
+    }
+  }
+  try {
+    return operation()
+  } finally {
+    try {
+      const current = JSON.parse(fs.readFileSync(ownerPath, "utf8")) as { owner?: unknown }
+      /* v8 ignore else -- concurrency fence: a replaced owner must not release its successor's lock @preserve */
+      if (current.owner === owner) {
+        fs.unlinkSync(ownerPath)
+        fs.rmdirSync(lockPath)
+      }
+    } catch {
+      // Never remove a lock that no longer belongs to this mutation.
+    }
+  }
+}
+
+function writeCareFile(agentRoot: string, care: CareRecord): void {
+  const dir = caresDir(agentRoot)
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
+  const destination = path.join(dir, `${care.id}.json`)
+  const temporary = `${destination}.tmp-${process.pid}-${randomUUID()}`
+  fs.writeFileSync(temporary, `${JSON.stringify(care, null, 2)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" })
+  const handle = fs.openSync(temporary, "r")
+  try { fs.fsyncSync(handle) } finally { fs.closeSync(handle) }
+  fs.renameSync(temporary, destination)
+  const directory = fs.openSync(dir, "r")
+  try { fs.fsyncSync(directory) } finally { fs.closeSync(directory) }
+}
+
 export function createCare(
+  agentRoot: string,
+  input: Omit<CareRecord, "id" | "createdAt" | "updatedAt">,
+): CareRecord {
+  return withCareMutationLock(agentRoot, () => createCareUnlocked(agentRoot, input))
+}
+
+function createCareUnlocked(
   agentRoot: string,
   input: Omit<CareRecord, "id" | "createdAt" | "updatedAt">,
 ): CareRecord {
@@ -64,7 +141,7 @@ export function createCare(
     updatedAt: now,
   }
 
-  writeJsonFile(caresDir(agentRoot), id, care)
+  writeCareFile(agentRoot, care)
 
   emitNervesEvent({
     component: "heart",
@@ -114,17 +191,14 @@ function readCareFile(agentRoot: string, id: string): CareRecord {
   return readJsonFileOrThrow<CareRecord>(caresDir(agentRoot), id, "Care")
 }
 
-function writeCareFile(agentRoot: string, care: CareRecord): void {
-  writeJsonFile(caresDir(agentRoot), care.id, care)
-}
-
 export function updateCare(
   agentRoot: string,
   id: string,
   updates: Partial<CareRecord>,
 ): CareRecord {
-  const care = readCareFile(agentRoot, id)
-  const now = nextUpdatedAt(care.updatedAt)
+  return withCareMutationLock(agentRoot, () => {
+    const care = readCareFile(agentRoot, id)
+    const now = nextUpdatedAt(care.updatedAt)
 
   const updated: CareRecord = {
     ...care,
@@ -146,7 +220,8 @@ export function updateCare(
     meta: { careId: id, updates: Object.keys(updates) },
   })
 
-  return updated
+    return updated
+  })
 }
 
 function canonicalIncidentBinding(binding: CareIncidentBinding): CareIncidentBinding {
@@ -167,52 +242,76 @@ export function bindCareIncident(
   agentRoot: string,
   id: string,
   binding: CareIncidentBinding,
-  options: { expectedUpdatedAt?: string } = {},
+  options: { expectedUpdatedAt: string },
 ): CareRecord {
-  const care = readCareFile(agentRoot, id)
-  if (options.expectedUpdatedAt !== undefined && care.updatedAt !== options.expectedUpdatedAt) throw new Error("Care incident binding CAS mismatch")
-  const canonical = canonicalIncidentBinding(binding)
-  const bindings = [...(care.incidentBindings ?? [])]
-  const index = bindings.findIndex((candidate) => candidate.source === canonical.source && candidate.incidentKey === canonical.incidentKey)
-  if (index >= 0) bindings[index] = canonical
-  else bindings.push(canonical)
-  const updated = { ...care, incidentBindings: bindings, updatedAt: nextUpdatedAt(care.updatedAt) }
-  writeCareFile(agentRoot, updated)
-  emitNervesEvent({
-    component: "heart",
-    event: "heart.care_incident_bound",
-    message: "care incident binding recorded",
-    meta: { careId: id, source: canonical.source, incidentKey: canonical.incidentKey, bindingCount: bindings.length },
+  return withCareMutationLock(agentRoot, () => {
+    const canonical = canonicalIncidentBinding(binding)
+    const existingCare = readJsonDir<CareRecord>(caresDir(agentRoot)).find((candidate) =>
+      candidate.incidentBindings?.some((item) => item.source === canonical.source && item.incidentKey === canonical.incidentKey),
+    )
+    const care = existingCare ?? readCareFile(agentRoot, id)
+    const bindings = [...(care.incidentBindings ?? [])]
+    const index = bindings.findIndex((candidate) => candidate.source === canonical.source && candidate.incidentKey === canonical.incidentKey)
+    if (index >= 0 && JSON.stringify(bindings[index]) === JSON.stringify(canonical)) return care
+    if (!options.expectedUpdatedAt || care.updatedAt !== options.expectedUpdatedAt) throw new Error("Care incident binding CAS mismatch")
+    if (index >= 0) bindings[index] = canonical
+    else bindings.push(canonical)
+    const updated = { ...care, incidentBindings: bindings, updatedAt: nextUpdatedAt(care.updatedAt) }
+    writeCareFile(agentRoot, updated)
+    emitNervesEvent({
+      component: "heart",
+      event: "heart.care_incident_bound",
+      message: "care incident binding recorded",
+      meta: { careId: care.id, source: canonical.source, incidentKey: canonical.incidentKey, bindingCount: bindings.length },
+    })
+    return updated
   })
-  return updated
+}
+
+export function upsertCareForIncident(
+  agentRoot: string,
+  input: Omit<CareRecord, "id" | "createdAt" | "updatedAt" | "incidentBindings"> & { incident: CareIncidentBinding },
+): CareRecord {
+  return withCareMutationLock(agentRoot, () => {
+    const incident = canonicalIncidentBinding(input.incident)
+    const existing = readJsonDir<CareRecord>(caresDir(agentRoot)).find((care) =>
+      care.incidentBindings?.some((binding) => binding.source === incident.source && binding.incidentKey === incident.incidentKey),
+    )
+    if (existing) return existing
+    return createCareUnlocked(agentRoot, { ...input, incidentBindings: [incident] })
+  })
 }
 
 export function resolveCareIncident(
   agentRoot: string,
   id: string,
-  input: { source: string; incidentKey: string; expectedUpdatedAt?: string },
+  input: { source: string; incidentKey: string; expectedUpdatedAt: string },
 ): CareRecord {
-  const care = readCareFile(agentRoot, id)
-  if (input.expectedUpdatedAt !== undefined && care.updatedAt !== input.expectedUpdatedAt) throw new Error("Care incident resolution CAS mismatch")
-  const bindings = [...(care.incidentBindings ?? [])]
-  const index = bindings.findIndex((binding) => binding.source === input.source && binding.incidentKey === input.incidentKey)
-  if (index < 0) throw new Error("Care incident binding not found")
-  const now = nextUpdatedAt(care.updatedAt)
-  bindings[index] = { ...bindings[index], resolvedAt: now }
-  const updated = { ...care, incidentBindings: bindings, updatedAt: now }
-  writeCareFile(agentRoot, updated)
-  emitNervesEvent({
-    component: "heart",
-    event: "heart.care_incident_resolved",
-    message: "care incident binding resolved",
-    meta: { careId: id, source: input.source, incidentKey: input.incidentKey, unresolvedCount: bindings.filter((binding) => !binding.resolvedAt).length },
+  return withCareMutationLock(agentRoot, () => {
+    const care = readCareFile(agentRoot, id)
+    if (!input.expectedUpdatedAt || care.updatedAt !== input.expectedUpdatedAt) throw new Error("Care incident resolution CAS mismatch")
+    const bindings = [...(care.incidentBindings ?? [])]
+    const index = bindings.findIndex((binding) => binding.source === input.source && binding.incidentKey === input.incidentKey)
+    if (index < 0) throw new Error("Care incident binding not found")
+    if (bindings[index].resolvedAt) return care
+    const now = nextUpdatedAt(care.updatedAt)
+    bindings[index] = { ...bindings[index], resolvedAt: now }
+    const updated = { ...care, incidentBindings: bindings, updatedAt: now }
+    writeCareFile(agentRoot, updated)
+    emitNervesEvent({
+      component: "heart",
+      event: "heart.care_incident_resolved",
+      message: "care incident binding resolved",
+      meta: { careId: id, source: input.source, incidentKey: input.incidentKey, unresolvedCount: bindings.filter((binding) => !binding.resolvedAt).length },
+    })
+    return updated
   })
-  return updated
 }
 
 export function resolveCare(agentRoot: string, id: string): CareRecord {
-  const care = readCareFile(agentRoot, id)
-  const now = nextUpdatedAt(care.updatedAt)
+  return withCareMutationLock(agentRoot, () => {
+    const care = readCareFile(agentRoot, id)
+    const now = nextUpdatedAt(care.updatedAt)
 
   const resolved: CareRecord = {
     ...care,
@@ -230,5 +329,6 @@ export function resolveCare(agentRoot: string, id: string): CareRecord {
     meta: { careId: id },
   })
 
-  return resolved
+    return resolved
+  })
 }
