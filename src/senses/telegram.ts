@@ -33,7 +33,6 @@ import {
   createTelegramLongPoll,
   FileTelegramOffsetStore,
   FileTelegramUpdateInboxStore,
-  sendTelegramText,
   type TelegramApprovalTransport,
   type TelegramBotApi,
   type TelegramInboundMessage,
@@ -951,11 +950,6 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         meta: { agentName: options.agentName, subject, error: transportError(error) },
       })
     }
-  }
-
-  const deliver = async (text: string, signal?: AbortSignal, onMessageDelivered?: (messageId: number, chunk: string) => void): Promise<number[]> => {
-    acceptanceAuditBarrier()
-    return sendTelegramText(api, authorizedChatId, text, signal, onMessageDelivered)
   }
 
   const deliverButlerEffect = async (
