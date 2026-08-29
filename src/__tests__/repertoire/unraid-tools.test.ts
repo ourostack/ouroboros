@@ -5,8 +5,8 @@ import path from "node:path"
 import { describe, expect, it, vi } from "vitest"
 
 import { createUnraidReadTools, normalizeDockerStatus, unraidToolDefinitions } from "../../repertoire/tools-unraid"
-import { updateStewardPolicy } from "../../heart/steward-policy"
-import { approvalPolicyForInvocation, execTool, routineActionSelectionForInvocation } from "../../repertoire/tools"
+import { consumeRoutineActionGrant, transitionRoutineActionReceipt, updateStewardPolicy } from "../../heart/steward-policy"
+import { approvalPolicyForInvocation, classifyApprovalForInvocation, execTool } from "../../repertoire/tools"
 
 const LIVE_SERVER_ID = `${"a".repeat(64)}:${"b".repeat(64)}`
 
@@ -285,21 +285,90 @@ describe("Unraid typed read tools", () => {
       mutation: { kind: "grant_routine_action", key: "unraid.restart:alpha", action: "unraid.container.restart", targets: ["alpha"], maxCount: 2, windowMs: 3_600_000, verificationRequired: true, exclusions: [], provenance: "stated" },
     })
     const restart = unraidToolDefinitions.find((definition) => definition.tool.function.name === "unraid_restart_container")!
-    const context = { signin: async () => undefined, agentRoot, relationshipAuthorization: { authorizedContextScopes: [], advertisedToolNames: ["unraid_restart_container"], actor: { friendId: "ari", trustLevel: "family" as const, sessionEventId: "evt-2" }, authorizeTool: () => ({ allowed: true as const, receiptId: "relationship-1", profileVersion: 7 }) }, sanctuary: { restartContainer: vi.fn(async () => ({ ok: true })) } } as any
+    const restartContainer = vi.fn(async (_args, execution) => {
+      expect(await execution.routine.reauthorize()).toEqual({ allowed: true, receiptId: "relationship-1", profileVersion: 7 })
+      return { ok: true }
+    })
+    const context = { signin: async () => undefined, agentRoot, relationshipAuthorization: { authorizedContextScopes: [], advertisedToolNames: ["unraid_restart_container"], actor: { friendId: "ari", trustLevel: "family" as const, sessionEventId: "evt-2" }, authorizeTool: () => ({ allowed: true as const, receiptId: "relationship-1", profileVersion: 7 }) }, sanctuary: { restartContainer } } as any
     expect(await approvalPolicyForInvocation("unraid_restart_container", { container: "alpha" }, context)).toEqual({ kind: "not_required" })
-    await execTool("unraid_restart_container", { container: "alpha" }, { ...context, routineActionSelection: routineActionSelectionForInvocation("unraid_restart_container", { container: "alpha" }, context) })
-    expect(context.sanctuary.restartContainer).toHaveBeenCalledWith({ container: "alpha" }, { routine: expect.objectContaining({ key: "unraid.restart:alpha", expectedPolicyVersion: 1, authorizationReceiptId: "relationship-1", authorizationVersion: 7 }) })
+    const classification = await classifyApprovalForInvocation("unraid_restart_container", { container: "alpha" }, context)
+    await execTool("unraid_restart_container", { container: "alpha" }, { ...context, routineActionSelection: classification.routineActionSelection })
+    expect(context.sanctuary.restartContainer).toHaveBeenCalledWith({ container: "alpha" }, { routine: expect.objectContaining({ key: "unraid.restart:alpha", expectedPolicyVersion: 1, reauthorize: expect.any(Function) }) })
     expect(await approvalPolicyForInvocation("unraid_restart_container", { container: "other" }, context)).toMatchObject({ kind: "required" })
     const beforePolicyId = (await approvalPolicyForInvocation("unraid_restart_container", { container: "other" }, context) as { policyId: string }).policyId
     updateStewardPolicy(agentRoot, { expectedVersion: 1, actor: { friendId: "ari", trustLevel: "family", sessionEventId: "evt-4" }, mutation: { kind: "set_desired_state", key: "container:other", value: "on", provenance: "stated", source: "request" } })
     const afterPolicyId = (await approvalPolicyForInvocation("unraid_restart_container", { container: "other" }, context) as { policyId: string }).policyId
-    expect(afterPolicyId).not.toBe(beforePolicyId)
+    expect(afterPolicyId).toBe(beforePolicyId)
     const nonFamily = { ...context, relationshipAuthorization: { ...context.relationshipAuthorization, actor: { friendId: "brother", trustLevel: "friend", sessionEventId: "evt-3" } } }
     expect(await approvalPolicyForInvocation("unraid_restart_container", { container: "alpha" }, nonFamily)).toMatchObject({ kind: "required" })
     const missingVersion = { ...context, relationshipAuthorization: { ...context.relationshipAuthorization, authorizeTool: () => ({ allowed: true as const, receiptId: "relationship-unversioned" }) } }
-    const missingVersionSelection = routineActionSelectionForInvocation("unraid_restart_container", { container: "alpha" }, missingVersion)
-    expect(JSON.parse(await execTool("unraid_restart_container", { container: "alpha" }, { ...missingVersion, routineActionSelection: missingVersionSelection }))).toMatchObject({ ok: false, error: { code: "approval_required" } })
-    expect(JSON.parse(await restart.handler({ container: "other" }, { ...context, routineActionSelection: { key: "unraid.restart:alpha", target: "alpha", expectedPolicyVersion: 2 }, routineActionAuthorization: { receiptId: "relationship-1", profileVersion: 7 } }))).toMatchObject({ ok: false, error: { message: expect.stringContaining("arguments changed") } })
-    expect(JSON.parse(await restart.handler({ container: "alpha" }, { ...context, routineActionSelection: { key: "unraid.restart:alpha", target: "alpha", expectedPolicyVersion: 1 }, routineActionAuthorization: { receiptId: "relationship-1", profileVersion: 7 } }))).toMatchObject({ ok: false, error: { message: expect.stringContaining("version changed") } })
+    expect(await approvalPolicyForInvocation("unraid_restart_container", { container: "alpha" }, missingVersion)).toMatchObject({ kind: "required" })
+    const selection = { key: "unraid.restart:alpha", target: "alpha", expectedPolicyVersion: 1 }
+    expect(JSON.parse(await restart.handler({ container: "alpha" }, { ...context, agentRoot: undefined, routineActionSelection: selection }))).toMatchObject({ ok: false, error: { code: "approval_required" } })
+    expect(JSON.parse(await restart.handler({ container: "alpha" }, { ...context, relationshipAuthorization: nonFamily.relationshipAuthorization, routineActionSelection: selection }))).toMatchObject({ ok: false, error: { code: "approval_required" } })
+    expect(JSON.parse(await restart.handler({ container: "other" }, { ...context, routineActionSelection: { key: "unraid.restart:alpha", target: "alpha", expectedPolicyVersion: 2 } }))).toMatchObject({ ok: false, error: { message: expect.stringContaining("arguments changed") } })
+    expect(JSON.parse(await restart.handler({ container: "alpha" }, { ...context, routineActionSelection: { key: "unraid.restart:alpha", target: "alpha", expectedPolicyVersion: 1 } }))).toMatchObject({ ok: false, error: { message: expect.stringContaining("version changed") } })
+  })
+
+  it("requires a live versioned relationship capability before bypassing approval and degrades malformed policy to the existing approval", async () => {
+    const agentRoot = root()
+    updateStewardPolicy(agentRoot, {
+      expectedVersion: 0,
+      actor: { friendId: "ari", trustLevel: "family", sessionEventId: "evt-1" },
+      mutation: { kind: "grant_routine_action", key: "unraid.restart:alpha", action: "unraid.container.restart", targets: ["alpha"], maxCount: 2, windowMs: 3_600_000, verificationRequired: true, exclusions: [], provenance: "stated" },
+    })
+    const authorizeTool = vi.fn(async () => ({ allowed: false as const, reason: "relationship revoked" }))
+    const context = { signin: async () => undefined, agentRoot, relationshipAuthorization: { authorizedContextScopes: [], advertisedToolNames: ["unraid_restart_container"], actor: { friendId: "ari", trustLevel: "family" as const, sessionEventId: "evt-2" }, authorizeTool } } as any
+
+    await expect(approvalPolicyForInvocation("unraid_restart_container", { container: "alpha" }, context)).resolves.toMatchObject({ kind: "required", policyId: "sanctuary.unraid.restart.v1" })
+    expect(authorizeTool).toHaveBeenCalledWith("unraid_restart_container", { container: "alpha" })
+
+    authorizeTool.mockResolvedValueOnce({ allowed: true as const, receiptId: "unversioned" } as any)
+    await expect(approvalPolicyForInvocation("unraid_restart_container", { container: "alpha" }, context)).resolves.toMatchObject({ kind: "required" })
+
+    authorizeTool.mockRejectedValueOnce(new Error("relationship store offline"))
+    await expect(approvalPolicyForInvocation("unraid_restart_container", { container: "alpha" }, context)).resolves.toMatchObject({ kind: "required" })
+
+    fs.writeFileSync(path.join(agentRoot, "state", "policy", "steward.json"), "{\"broken\":true}\n")
+    await expect(approvalPolicyForInvocation("unraid_restart_container", { container: "alpha" }, context)).resolves.toMatchObject({ kind: "required", policyId: "sanctuary.unraid.restart.v1" })
+  })
+
+  it("falls back to the existing approval without mutation while an outage leaves the exact action and target unresolved", async () => {
+    const agentRoot = root()
+    updateStewardPolicy(agentRoot, {
+      expectedVersion: 0,
+      actor: { friendId: "ari", trustLevel: "family", sessionEventId: "evt-1" },
+      mutation: { kind: "grant_routine_action", key: "unraid.restart:alpha", action: "unraid.container.restart", targets: ["alpha"], maxCount: 4, windowMs: 3_600_000, verificationRequired: true, exclusions: [], provenance: "stated" },
+    })
+    const receipt = consumeRoutineActionGrant(agentRoot, { key: "unraid.restart:alpha", action: "unraid.container.restart", target: "alpha", expectedPolicyVersion: 1, authorizationReceiptId: "relationship-1", authorizationVersion: 7 })
+    transitionRoutineActionReceipt(agentRoot, { id: receipt.id, expectedState: "reserved", state: "attempting" })
+    transitionRoutineActionReceipt(agentRoot, { id: receipt.id, expectedState: "attempting", state: "recovery_pending", effectReceipt: "ack", recoveryState: { state: "pending", compensation: "none" } })
+    const restartContainer = vi.fn()
+    const context = {
+      signin: async () => undefined,
+      agentRoot,
+      relationshipAuthorization: { authorizedContextScopes: [], advertisedToolNames: ["unraid_restart_container"], actor: { friendId: "ari", trustLevel: "family" as const, sessionEventId: "evt-2" }, authorizeTool: async () => ({ allowed: true as const, receiptId: "relationship-2", profileVersion: 8 }) },
+      sanctuary: { restartContainer },
+    } as any
+
+    await expect(approvalPolicyForInvocation("unraid_restart_container", { container: "alpha" }, context)).resolves.toMatchObject({ kind: "required", policyId: "sanctuary.unraid.restart.v1" })
+    expect(restartContainer).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    [{ allowed: false as const, reason: "revoked" }, "revoked"],
+    [{ allowed: true as const, receiptId: "unversioned" }, "not versioned"],
+  ])("passes central relationship denial through the narrow post-resolution routine callback", async (authorization, reason) => {
+    const agentRoot = root()
+    updateStewardPolicy(agentRoot, { expectedVersion: 0, actor: { friendId: "ari", trustLevel: "family", sessionEventId: "evt-1" }, mutation: { kind: "grant_routine_action", key: "unraid.restart:alpha", action: "unraid.container.restart", targets: ["alpha"], maxCount: 2, windowMs: 3_600_000, verificationRequired: true, exclusions: [], provenance: "stated" } })
+    const restart = unraidToolDefinitions.find((definition) => definition.tool.function.name === "unraid_restart_container")!
+    const context = {
+      agentRoot,
+      relationshipAuthorization: { actor: { friendId: "ari", trustLevel: "family" as const, sessionEventId: "evt-2" }, authorizeTool: async () => authorization },
+      routineActionSelection: { key: "unraid.restart:alpha", target: "alpha", expectedPolicyVersion: 1 },
+      sanctuary: { restartContainer: async (_args: unknown, execution: any) => execution.routine.reauthorize() },
+    } as any
+
+    await expect(restart.handler({ container: "alpha" }, context)).resolves.toContain(reason)
   })
 })

@@ -312,14 +312,23 @@ export const unraidToolDefinitions: ToolDefinition[] = [
     handler: async (args, ctx) => {
       if (!ctx?.sanctuary) return missingRuntime()
       const target = String(args.container)
-      let routine: { key: string; expectedPolicyVersion: number; authorizationReceiptId: string; authorizationVersion: number } | undefined
+      let routine: import("./unraid-restart").RoutineRestartAuthority | undefined
       if (ctx.routineActionSelection) {
-        if (!ctx.routineActionAuthorization || !ctx.agentRoot || ctx.relationshipAuthorization?.actor?.trustLevel !== "family") return JSON.stringify({ ok: false, error: { code: "approval_required", message: "routine action authorization is unavailable", degraded: true } })
+        if (!ctx.agentRoot || ctx.relationshipAuthorization?.actor?.trustLevel !== "family") return JSON.stringify({ ok: false, error: { code: "approval_required", message: "routine action authorization is unavailable", degraded: true } })
         const { key, expectedPolicyVersion } = ctx.routineActionSelection
         if (ctx.routineActionSelection.target !== target) return JSON.stringify({ ok: false, error: { code: "approval_required", message: "routine action arguments changed", degraded: true } })
         const decision = inspectRoutineActionGrant(ctx.agentRoot, { key, action: "unraid.container.restart", target, expectedPolicyVersion })
         if (!decision.allowed) return JSON.stringify({ ok: false, error: { code: "approval_required", message: decision.reason, degraded: true } })
-        routine = { key, expectedPolicyVersion: decision.policyVersion, authorizationReceiptId: ctx.routineActionAuthorization.receiptId, authorizationVersion: ctx.routineActionAuthorization.profileVersion }
+        routine = {
+          key,
+          expectedPolicyVersion: decision.policyVersion,
+          reauthorize: async () => {
+            const authorization = await ctx.relationshipAuthorization!.authorizeTool("unraid_restart_container", { container: target })
+            if (!authorization.allowed) return authorization
+            if (!Number.isInteger(authorization.profileVersion) || Number(authorization.profileVersion) < 1) return { allowed: false, reason: "relationship capability profile is not versioned" }
+            return { allowed: true, receiptId: authorization.receiptId, profileVersion: Number(authorization.profileVersion) }
+          },
+        }
       }
       return JSON.stringify(await ctx.sanctuary.restartContainer({ container: target }, routine ? { routine } : undefined))
     },

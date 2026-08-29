@@ -3,7 +3,7 @@ import {
   getContextConfig,
 } from "./config";
 import { loadAgentConfig } from "./identity";
-import { approvalPolicyForInvocation, execTool, routineActionSelectionForInvocation, summarizeArgs, buildToolResultSummary, settleTool, observeTool, ponderTool, restTool, speakTool, getToolsForChannel, riskProfileForToolName, resolveToolDefinition } from "../repertoire/tools";
+import { classifyApprovalForInvocation, execTool, summarizeArgs, buildToolResultSummary, settleTool, observeTool, ponderTool, restTool, speakTool, getToolsForChannel, riskProfileForToolName, resolveToolDefinition } from "../repertoire/tools";
 import type { HabitSessionToolContext, ToolContext, ToolRiskProfile } from "../repertoire/tools-base";
 import { digestJson, validateAdvertisedToolArguments } from "../repertoire/tool-arguments";
 import type { ValidatedToolArguments } from "../repertoire/tool-arguments";
@@ -2196,9 +2196,12 @@ export async function runAgent(
           continue;
         }
 
-        const approvalCalls = options?.approvalCoordinator ? validCalls.map((entry) => ({
-          ...entry,
-          policy: approvalPolicyForInvocation(entry.call.name, entry.validated.arguments, augmentedToolContext),
+        const approvalCalls = options?.approvalCoordinator ? await Promise.all(validCalls.map(async (entry) => {
+          const classification = await classifyApprovalForInvocation(entry.call.name, entry.validated.arguments, augmentedToolContext)
+          return {
+            ...entry,
+            ...classification,
+          }
         })) : []
         const protectedCall = approvalCalls.find((entry) => entry.policy.kind === "required")
         if (protectedCall && result.toolCalls.length !== 1) {
@@ -2540,7 +2543,7 @@ export async function runAgent(
           let success: boolean;
           try {
             const execToolFn = options?.execTool ?? execTool;
-            const routineActionSelection = routineActionSelectionForInvocation(tc.name, args, augmentedToolContext)
+            const routineActionSelection = approvalCalls.find((entry) => entry.call.id === tc.id)?.routineActionSelection
             const executionToolContext = routineActionSelection && augmentedToolContext ? { ...augmentedToolContext, routineActionSelection } : augmentedToolContext
             toolResult = await execToolFn(tc.name, args, executionToolContext);
             success = true;

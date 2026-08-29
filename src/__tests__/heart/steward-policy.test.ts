@@ -113,8 +113,54 @@ describe("steward policy", () => {
     })
     const first = consumeRoutineActionGrant(agentRoot, { key: "unraid.restart:books", target: "books", expectedPolicyVersion: 1, now: "2026-08-29T17:00:00.000Z" })
     expect(first).toMatchObject({ state: "reserved", target: "books", policyVersion: 1, expectedBeforeState: null, effectReceipt: null, verifiedAfterState: null, recoveryState: { state: "not_needed", compensation: "none" } })
+    transitionRoutineActionReceipt(agentRoot, { id: first.id, expectedState: "reserved", state: "attempting" })
+    transitionRoutineActionReceipt(agentRoot, { id: first.id, expectedState: "attempting", state: "effect_acknowledged", effectReceipt: "ack" })
+    transitionRoutineActionReceipt(agentRoot, { id: first.id, expectedState: "effect_acknowledged", state: "verified", verifiedAfterState: "running" })
     expect(() => consumeRoutineActionGrant(agentRoot, { key: "unraid.restart:books", target: "books", expectedPolicyVersion: 1, now: "2026-08-29T17:30:00.000Z" })).toThrow("rate limit")
     expect(readStewardPolicy(agentRoot).version).toBe(1)
+  })
+
+  it("serializes policy updates and action reservation under the same steward-authority lease", async () => {
+    const agentRoot = root()
+    updateStewardPolicy(agentRoot, {
+      expectedVersion: 0,
+      actor: ari,
+      mutation: { kind: "grant_routine_action", key: "restart", action: "unraid.container.restart", targets: ["books"], maxCount: 2, windowMs: 3_600_000, verificationRequired: true, exclusions: [], provenance: "stated" },
+    })
+    const authorityPath = path.join(agentRoot, "state", "policy", "steward.json")
+    const lease = await acquireSessionTurnLease(authorityPath, { timeoutMs: 10 })
+    try {
+      expect(() => consumeRoutineActionGrant(agentRoot, { key: "restart", action: "unraid.container.restart", target: "books", expectedPolicyVersion: 1 })).toThrow("busy")
+    } finally {
+      await lease.release()
+    }
+  })
+
+  it.each(["reserved", "attempting", "effect_acknowledged", "recovery_pending", "indeterminate"] as const)("fences a later standing mutation while the same action and target has an unresolved %s receipt", (state) => {
+    const agentRoot = root()
+    updateStewardPolicy(agentRoot, {
+      expectedVersion: 0,
+      actor: ari,
+      mutation: { kind: "grant_routine_action", key: "restart", action: "unraid.container.restart", targets: ["books", "music"], maxCount: 20, windowMs: 3_600_000, verificationRequired: true, exclusions: [], provenance: "stated" },
+    })
+    const receipt = consumeRoutineActionGrant(agentRoot, { key: "restart", action: "unraid.container.restart", target: "books", expectedPolicyVersion: 1, authorizationReceiptId: "relationship-1", authorizationVersion: 7 })
+    if (state !== "reserved") transitionRoutineActionReceipt(agentRoot, { id: receipt.id, expectedState: "reserved", state: "attempting" })
+    if (["effect_acknowledged", "recovery_pending", "indeterminate"].includes(state)) transitionRoutineActionReceipt(agentRoot, { id: receipt.id, expectedState: "attempting", state: state === "effect_acknowledged" ? "effect_acknowledged" : state, ...(state === "effect_acknowledged" || state === "recovery_pending" ? { effectReceipt: "ack" } : {}), ...(state === "indeterminate" ? { recoveryState: { state: "manual_inspection_required" as const, compensation: "none" as const } } : {}) })
+
+    expect(inspectRoutineActionGrant(agentRoot, { key: "restart", action: "unraid.container.restart", target: "books", expectedPolicyVersion: 1 })).toMatchObject({ allowed: false, reason: expect.stringContaining("unresolved") })
+    expect(() => consumeRoutineActionGrant(agentRoot, { key: "restart", action: "unraid.container.restart", target: "books", expectedPolicyVersion: 1 })).toThrow("unresolved")
+    expect(inspectRoutineActionGrant(agentRoot, { key: "restart", action: "unraid.container.restart", target: "music", expectedPolicyVersion: 1 })).toMatchObject({ allowed: true })
+  })
+
+  it("fsyncs the steward directory when creating the first action receipt", () => {
+    const agentRoot = root()
+    updateStewardPolicy(agentRoot, { expectedVersion: 0, actor: ari, mutation: { kind: "grant_routine_action", key: "restart", action: "unraid.container.restart", targets: ["books"], maxCount: 2, windowMs: 3_600_000, verificationRequired: true, exclusions: [], provenance: "stated" } })
+    consumeRoutineActionGrant(agentRoot, { key: "restart", action: "unraid.container.restart", target: "books", expectedPolicyVersion: 1 })
+    expect(fs.readFileSync(path.join(agentRoot, "state", "policy", "action-receipts.ndjson"), "utf8")).toContain('"state":"reserved"')
+    const source = fs.readFileSync(path.join(process.cwd(), "src", "heart", "steward-policy.ts"), "utf8")
+    expect(source).toContain("if (creating)")
+    expect(source).toContain("fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW")
+    expect(source).toContain("fs.fsyncSync(directory)")
   })
 
   it("authorizes only the exact action, target, policy version, and non-off desired state", () => {
@@ -233,7 +279,7 @@ describe("steward policy", () => {
       mutation: { kind: "grant_routine_action", key: "restart", action: "unraid.restart", targets: ["books"], maxCount: 1, windowMs: 1_000, verificationRequired: true, exclusions: [], provenance: "stated", expiresAt: "2026-08-29T17:00:00.000Z" },
     })
     expect(() => consumeRoutineActionGrant(agentRoot, { key: "restart", target: "books", expectedPolicyVersion: 1, now: "2026-08-29T17:00:00.000Z" })).toThrow("expired")
-    const lease = await acquireSessionTurnLease(path.join(agentRoot, "state", "policy", "action-receipts.ndjson"), { timeoutMs: 10 })
+    const lease = await acquireSessionTurnLease(path.join(agentRoot, "state", "policy", "steward.json"), { timeoutMs: 10 })
     try {
       expect(() => consumeRoutineActionGrant(agentRoot, { key: "restart", target: "books", expectedPolicyVersion: 1, now: "2026-08-29T16:30:00.000Z" })).toThrow("busy")
     } finally {

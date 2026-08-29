@@ -51,6 +51,7 @@ const runtimeMocks = vi.hoisted(() => {
     withSessionTurnLease: vi.fn(async (_path: string, callback: (lease: object) => unknown) => callback({ lease: true })),
     execTool: vi.fn(),
     resolveToolDefinition: vi.fn(),
+    approvalPolicyForInvocation: vi.fn(async () => ({ kind: "required", policyId: "restart-policy", actionClass: "unraid.container.restart", requiresSoleCall: true })),
     emitNervesEvent: vi.fn(),
     emitNervesEventDurable: vi.fn(async () => undefined),
     readSanctuaryAcceptanceMarker: vi.fn(),
@@ -98,6 +99,7 @@ vi.mock("../../mind/session-transaction", () => ({
 vi.mock("../../repertoire/tools", () => ({
   execTool: runtimeMocks.execTool,
   resolveToolDefinition: runtimeMocks.resolveToolDefinition,
+  approvalPolicyForInvocation: runtimeMocks.approvalPolicyForInvocation,
 }))
 vi.mock("../../nerves/runtime", () => ({ emitNervesEvent: runtimeMocks.emitNervesEvent, emitNervesEventDurable: runtimeMocks.emitNervesEventDurable }))
 vi.mock("../../heart/daemon/sanctuary-acceptance-marker", () => ({
@@ -131,7 +133,7 @@ const baseRecord = {
   continuationEpoch: 7,
 }
 
-function makeRuntime(effectBarrier: () => void = vi.fn()) {
+function makeRuntime(effectBarrier: () => void = vi.fn(), toolContext: Record<string, unknown> = { agentName: "sanctuary" }) {
   const effects = {
     sendText: runtimeMocks.approvalSendText,
     sendCard: vi.fn(),
@@ -145,7 +147,7 @@ function makeRuntime(effectBarrier: () => void = vi.fn()) {
     authorizedChatId: "20",
     subject: "tg_stable-subject",
     identityKey: "k".repeat(43),
-    toolContext: { agentName: "sanctuary" },
+    toolContext,
     effects,
     effectBarrier,
   })
@@ -492,6 +494,24 @@ describe("Telegram approval runtime orchestration", () => {
       currentSessionRevision: "revision-current",
     }))
     expect(runtimeMocks.execTool).toHaveBeenCalledWith("ponder", { thought: "safe" }, { agentName: "sanctuary" })
+  })
+
+  it("keeps a proposed human approval authoritative when the standing relationship capability is later lost", async () => {
+    const authorizeTool = vi.fn(async () => ({ allowed: false as const, reason: "relationship revoked" }))
+    makeRuntime(vi.fn(), { agentName: "sanctuary", relationshipAuthorization: { authorizedContextScopes: [], advertisedToolNames: [], authorizeTool } })
+    runtimeMocks.store.read.mockReturnValue({ ...baseRecord, state: "proposed" })
+    runtimeMocks.execTool.mockImplementation(async (_name, _args, context) => {
+      expect(context.relationshipAuthorization).toBeUndefined()
+      return JSON.stringify({ ok: true, data: { container: { id: "Docker:abc", name: "calibre-web" }, beforeState: "running", afterState: "running", observedRestart: true, degraded: false } })
+    })
+    runtimeMocks.executeApprovalDecision.mockImplementation(async (options) => {
+      await expect(options.resolveApprovalPolicy("unraid_restart_container", { container: "calibre-web" })).resolves.toMatchObject({ kind: "required" })
+      await options.execute("unraid_restart_container", { container: "calibre-web" })
+      return { ...baseRecord, state: "succeeded" }
+    })
+
+    await expect(transportOptions().onDecision({ approvalId: "approval-1", decision: "approve" })).resolves.toEqual({ accepted: true, terminalText: "✅ Approved — action completed" })
+    expect(runtimeMocks.execTool).toHaveBeenCalledOnce()
   })
 
   it.each([
