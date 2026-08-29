@@ -1265,6 +1265,11 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       if (runPromise) return runPromise
       runPromise = (async () => {
         await runWithAcceptanceAuditOwner(migrateIdentity)
+        try {
+          await runWithAcceptanceAuditOwner(async () => { await toolContext?.sanctuary?.recoverRoutineActions?.() })
+        } catch (error) {
+          emitNervesEvent({ level: "error", component: "senses", event: "senses.sanctuary_routine_recovery_error", message: "Sanctuary routine action recovery requires inspection", meta: { agentName: options.agentName, subject, category: error instanceof Error ? error.name : "unknown" } })
+        }
         await runWithAcceptanceAuditOwner(async () => { await approvalRuntime?.recover() })
         await runWithAcceptanceAuditOwner(async () => { await interactiveControl?.start() })
         try {

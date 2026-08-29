@@ -97,6 +97,7 @@ describe("Sanctuary runtime tool context", () => {
     })
     expect(runtimeMocks.createUnraidReadTools).toHaveBeenCalledOnce()
     expect(context.sanctuary?.restartContainer).toEqual(expect.any(Function))
+    await expect(context.sanctuary?.recoverRoutineActions?.()).resolves.toEqual([])
     for (const key of Object.keys(runtimeMocks.readTools)) expect(context.sanctuary?.[key as keyof typeof runtimeMocks.readTools]).toEqual(expect.any(Function))
     expect(runtimeMocks.readMachineRuntimeCredentialConfig).toHaveBeenCalledTimes(1)
 

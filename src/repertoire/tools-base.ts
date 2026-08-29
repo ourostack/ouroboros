@@ -128,7 +128,7 @@ export interface ToolContext {
   relationshipAuthorization?: {
     authorizedContextScopes: readonly string[];
     advertisedToolNames: readonly string[];
-    authorizeTool(name: string, args: Record<string, string>): { allowed: true; receiptId: string } | { allowed: false; reason: string } | Promise<{ allowed: true; receiptId: string } | { allowed: false; reason: string }>;
+    authorizeTool(name: string, args: Record<string, string>): { allowed: true; receiptId: string; profileVersion?: number } | { allowed: false; reason: string } | Promise<{ allowed: true; receiptId: string; profileVersion?: number } | { allowed: false; reason: string }>;
     readonly actor?: Readonly<{ friendId: string; trustLevel: import("@ouro.bot/friends").TrustLevel; sessionEventId: string }>;
   };
   commerceAuthority?: {
@@ -142,8 +142,13 @@ export interface ToolContext {
     getDisks(): Promise<unknown>;
     getNotifications(): Promise<unknown>;
     getSystem(): Promise<unknown>;
-    restartContainer(args: { container: string }): Promise<unknown>;
+    restartContainer(args: { container: string }, execution?: { routine?: import("./unraid-restart").RoutineRestartAuthority }): Promise<unknown>;
+    recoverRoutineActions?(): Promise<unknown>;
   };
+  /** Ephemeral receipt from the execution-time relationship check. */
+  routineActionAuthorization?: Readonly<{ receiptId: string; profileVersion: number }>;
+  /** Immutable standing-policy selection made before this exact tool dispatch. */
+  routineActionSelection?: Readonly<{ key: string; target: string; expectedPolicyVersion: number }>;
 }
 
 export type ToolHandler = (args: Record<string, string>, ctx?: ToolContext) => string | Promise<string>;

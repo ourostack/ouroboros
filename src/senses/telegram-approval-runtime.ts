@@ -10,7 +10,7 @@ import { readSanctuaryAcceptanceMarker, runWithSanctuaryAcceptanceApproval } fro
 import { sanctuaryTelegramApprovalEvidenceMac } from "./telegram"
 import { saveSession } from "../mind/context"
 import { readSessionTransaction, withSessionTurnLease } from "../mind/session-transaction"
-import { execTool, resolveToolDefinition } from "../repertoire/tools"
+import { approvalPolicyForInvocation, execTool, resolveToolDefinition } from "../repertoire/tools"
 import type { ToolContext } from "../repertoire/tools-base"
 import { emitNervesEvent, emitNervesEventDurable } from "../nerves/runtime"
 import {
@@ -159,7 +159,9 @@ export function createTelegramApprovalRuntime(options: {
   const provider = options.dependencies?.runProvider ?? runAgent
   const resolveTool = options.dependencies?.resolveTool ?? resolveToolDefinition
   const executeTool = options.dependencies?.executeTool ?? execTool
-  const stateRoot = path.join(options.dependencies?.agentRoot ?? getAgentRoot(options.agentName), "state", "approvals")
+  const agentRoot = options.dependencies?.agentRoot ?? getAgentRoot(options.agentName)
+  const liveToolContext = { ...options.toolContext, agentRoot: options.toolContext.agentRoot ?? agentRoot } as ToolContext
+  const stateRoot = path.join(agentRoot, "state", "approvals")
   const store = openApprovalStore({ databasePath: path.join(stateRoot, "approvals.sqlite"), now: () => new Date(now()) })
   const checkpoints = new FileApprovalCheckpointStore(path.join(stateRoot, "checkpoints.json"))
   const tokens = new FileApprovalTokenStore(path.join(stateRoot, "tokens.json"))
@@ -301,7 +303,7 @@ export function createTelegramApprovalRuntime(options: {
         markContinuationAttempted: () => { effectBarrier(); store.markContinuationAttempted({ approvalId: record.approvalId, ownerId: continuationOwnerId, epoch: continuationEpoch }) },
         completeContinuation: () => { effectBarrier(); store.completeContinuation({ approvalId: record.approvalId, ownerId: continuationOwnerId, epoch: continuationEpoch }) },
         runAgent: provider,
-        runAgentOptions: approvalContinuationRunAgentOptions(options.toolContext, continuationCoordinator),
+        runAgentOptions: approvalContinuationRunAgentOptions(liveToolContext, continuationCoordinator),
         persist: (messages, result) => { effectBarrier(); saveSession(record.sessionPath, messages, result?.usage, undefined, lease) },
         deliver: async (text) => {
           effectBarrier()
@@ -381,6 +383,7 @@ export function createTelegramApprovalRuntime(options: {
             ownerId,
             currentSessionRevision: readSessionTransaction(existing.sessionPath, lease).revision,
             resolveTool,
+            resolveApprovalPolicy: (name, args) => approvalPolicyForInvocation(name, args, liveToolContext),
             liveGuard: async () => ({ ok: true }),
             liveRisk: async () => ({ ok: true }),
             hooks: telegramApprovalDecisionBarrierHooks(effectBarrier),

@@ -394,6 +394,12 @@ describe("approval decision and crash-safe execution", () => {
       actionClass: "different-class",
       requiresSoleCall: true,
     }) }) }],
+    ["live steward-policy version drift", { resolveApprovalPolicy: () => ({
+      kind: "required",
+      policyId: "shell.docker-lifecycle.v1.steward.2",
+      actionClass: "service-control",
+      requiresSoleCall: true,
+    }) }],
     ["schema/tool drift", { resolveTool: () => ({
       ...shellToolDefinitions[0]!,
       tool: {

@@ -3,7 +3,7 @@ import {
   getContextConfig,
 } from "./config";
 import { loadAgentConfig } from "./identity";
-import { approvalPolicyForToolName, execTool, summarizeArgs, buildToolResultSummary, settleTool, observeTool, ponderTool, restTool, speakTool, getToolsForChannel, riskProfileForToolName, resolveToolDefinition } from "../repertoire/tools";
+import { approvalPolicyForInvocation, execTool, routineActionSelectionForInvocation, summarizeArgs, buildToolResultSummary, settleTool, observeTool, ponderTool, restTool, speakTool, getToolsForChannel, riskProfileForToolName, resolveToolDefinition } from "../repertoire/tools";
 import type { HabitSessionToolContext, ToolContext, ToolRiskProfile } from "../repertoire/tools-base";
 import { digestJson, validateAdvertisedToolArguments } from "../repertoire/tool-arguments";
 import type { ValidatedToolArguments } from "../repertoire/tool-arguments";
@@ -2198,7 +2198,7 @@ export async function runAgent(
 
         const approvalCalls = options?.approvalCoordinator ? validCalls.map((entry) => ({
           ...entry,
-          policy: approvalPolicyForToolName(entry.call.name, entry.validated.arguments),
+          policy: approvalPolicyForInvocation(entry.call.name, entry.validated.arguments, augmentedToolContext),
         })) : []
         const protectedCall = approvalCalls.find((entry) => entry.policy.kind === "required")
         if (protectedCall && result.toolCalls.length !== 1) {
@@ -2540,7 +2540,9 @@ export async function runAgent(
           let success: boolean;
           try {
             const execToolFn = options?.execTool ?? execTool;
-            toolResult = await execToolFn(tc.name, args, augmentedToolContext);
+            const routineActionSelection = routineActionSelectionForInvocation(tc.name, args, augmentedToolContext)
+            const executionToolContext = routineActionSelection && augmentedToolContext ? { ...augmentedToolContext, routineActionSelection } : augmentedToolContext
+            toolResult = await execToolFn(tc.name, args, executionToolContext);
             success = true;
           } catch (e) {
             toolResult = `error: ${e}`;

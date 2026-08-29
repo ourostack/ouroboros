@@ -3,6 +3,10 @@ import os from "node:os"
 import path from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 import {
+  inspectRoutineActionGrant,
+  readRoutineActionReceipts,
+  recoverRoutineActionReceipts,
+  transitionRoutineActionReceipt,
   consumeRoutineActionGrant,
   readStewardPolicy,
   updateStewardPolicy,
@@ -108,9 +112,91 @@ describe("steward policy", () => {
       },
     })
     const first = consumeRoutineActionGrant(agentRoot, { key: "unraid.restart:books", target: "books", expectedPolicyVersion: 1, now: "2026-08-29T17:00:00.000Z" })
-    expect(first).toMatchObject({ state: "reserved", target: "books", policyVersion: 1, expectedBeforeState: null, effectReceipt: null, verifiedAfterState: null, recoveryState: "not_needed" })
+    expect(first).toMatchObject({ state: "reserved", target: "books", policyVersion: 1, expectedBeforeState: null, effectReceipt: null, verifiedAfterState: null, recoveryState: { state: "not_needed", compensation: "none" } })
     expect(() => consumeRoutineActionGrant(agentRoot, { key: "unraid.restart:books", target: "books", expectedPolicyVersion: 1, now: "2026-08-29T17:30:00.000Z" })).toThrow("rate limit")
     expect(readStewardPolicy(agentRoot).version).toBe(1)
+  })
+
+  it("authorizes only the exact action, target, policy version, and non-off desired state", () => {
+    const agentRoot = root()
+    updateStewardPolicy(agentRoot, {
+      expectedVersion: 0,
+      actor: ari,
+      now: "2026-08-29T16:00:00.000Z",
+      mutation: { kind: "grant_routine_action", key: "unraid.restart:books", action: "unraid.container.restart", targets: ["books"], maxCount: 2, windowMs: 3_600_000, verificationRequired: true, exclusions: ["ouro-butler"], provenance: "stated" },
+    })
+    expect(inspectRoutineActionGrant(agentRoot, { key: "unraid.restart:books", action: "unraid.container.restart", target: "books", expectedPolicyVersion: 1, now: "2026-08-29T16:30:00.000Z" })).toMatchObject({ allowed: true, policyVersion: 1, grantVersion: 1 })
+    expect(inspectRoutineActionGrant(agentRoot, { key: "unraid.restart:books", action: "wrong", target: "books", expectedPolicyVersion: 1 })).toMatchObject({ allowed: false, reason: expect.stringContaining("action") })
+    expect(inspectRoutineActionGrant(agentRoot, { key: "unraid.restart:books", action: "unraid.container.restart", target: "ouro-butler", expectedPolicyVersion: 1 })).toMatchObject({ allowed: false, reason: expect.stringContaining("target") })
+    expect(inspectRoutineActionGrant(agentRoot, { key: "unraid.restart:books", action: "unraid.container.restart", target: "books", expectedPolicyVersion: 0 })).toMatchObject({ allowed: false, reason: expect.stringContaining("version") })
+
+    updateStewardPolicy(agentRoot, {
+      expectedVersion: 1,
+      actor: { ...ari, sessionEventId: "evt-ari-2" },
+      mutation: { kind: "set_desired_state", key: "container:books", value: "off", provenance: "stated", source: "Ari asked for it to remain off" },
+    })
+    expect(inspectRoutineActionGrant(agentRoot, { key: "unraid.restart:books", action: "unraid.container.restart", target: "books", expectedPolicyVersion: 2 })).toMatchObject({ allowed: false, reason: expect.stringContaining("expected off") })
+  })
+
+  it("persists complete append-only mutation snapshots and rejects stale transitions", () => {
+    const agentRoot = root()
+    updateStewardPolicy(agentRoot, {
+      expectedVersion: 0,
+      actor: ari,
+      mutation: { kind: "grant_routine_action", key: "unraid.restart:books", action: "unraid.container.restart", targets: ["books"], maxCount: 2, windowMs: 3_600_000, verificationRequired: true, exclusions: [], provenance: "stated" },
+    })
+    const reserved = consumeRoutineActionGrant(agentRoot, {
+      key: "unraid.restart:books",
+      action: "unraid.container.restart",
+      target: "books",
+      expectedPolicyVersion: 1,
+      authorizationReceiptId: "relationship-abc",
+      authorizationVersion: 7,
+      attemptId: "attempt-1",
+      expectedBeforeState: "running",
+      resolvedTarget: { id: "Docker:abc", name: "books" },
+      effect: { operation: "restart", targetId: "Docker:abc" },
+      now: "2026-08-29T17:00:00.000Z",
+    })
+    expect(reserved).toMatchObject({ state: "reserved", attemptId: "attempt-1", expectedBeforeState: "running", resolvedTarget: { id: "Docker:abc", name: "books" }, authorizationReceiptId: "relationship-abc", authorizationVersion: 7, effectReceipt: null, verifiedAfterState: null, recoveryState: { state: "not_needed", compensation: "none" } })
+    const attempting = transitionRoutineActionReceipt(agentRoot, { id: reserved.id, expectedState: "reserved", state: "attempting", at: "2026-08-29T17:00:01.000Z" })
+    const indeterminate = transitionRoutineActionReceipt(agentRoot, { id: reserved.id, expectedState: "attempting", state: "indeterminate", effectReceipt: "transport-outcome-unknown", recoveryState: { state: "manual_inspection_required", compensation: "none" }, at: "2026-08-29T17:00:02.000Z" })
+    expect(attempting.attempt).toBe(1)
+    expect(indeterminate).toMatchObject({ state: "indeterminate", effectReceipt: "transport-outcome-unknown", recoveryState: { state: "manual_inspection_required" } })
+    expect(() => transitionRoutineActionReceipt(agentRoot, { id: reserved.id, expectedState: "attempting", state: "verified", verifiedAfterState: "running" })).toThrow("state changed")
+    expect(readRoutineActionReceipts(agentRoot)).toEqual([indeterminate])
+    expect(fs.readFileSync(path.join(agentRoot, "state", "policy", "action-receipts.ndjson"), "utf8").trim().split("\n")).toHaveLength(3)
+  })
+
+  it("recovers every crash boundary by inspection and never replays the mutation", async () => {
+    const agentRoot = root()
+    updateStewardPolicy(agentRoot, {
+      expectedVersion: 0,
+      actor: ari,
+      mutation: { kind: "grant_routine_action", key: "restart", action: "unraid.container.restart", targets: ["before", "during", "after", "recovery"], maxCount: 8, windowMs: 3_600_000, verificationRequired: true, exclusions: [], provenance: "stated" },
+    })
+    const reserve = (target: string, attemptId: string) => consumeRoutineActionGrant(agentRoot, { key: "restart", action: "unraid.container.restart", target, expectedPolicyVersion: 1, authorizationReceiptId: "relationship-1", authorizationVersion: 7, attemptId, expectedBeforeState: "running", resolvedTarget: { id: `Docker:${target}`, name: target }, effect: { operation: "restart", targetId: `Docker:${target}` } })
+    const before = reserve("before", "attempt-before")
+    const during = reserve("during", "attempt-during")
+    transitionRoutineActionReceipt(agentRoot, { id: during.id, expectedState: "reserved", state: "attempting" })
+    const after = reserve("after", "attempt-after")
+    transitionRoutineActionReceipt(agentRoot, { id: after.id, expectedState: "reserved", state: "attempting" })
+    transitionRoutineActionReceipt(agentRoot, { id: after.id, expectedState: "attempting", state: "effect_acknowledged", effectReceipt: "unraid-ack" })
+    const interrupted = reserve("recovery", "attempt-recovery")
+    transitionRoutineActionReceipt(agentRoot, { id: interrupted.id, expectedState: "reserved", state: "attempting" })
+    transitionRoutineActionReceipt(agentRoot, { id: interrupted.id, expectedState: "attempting", state: "effect_acknowledged", effectReceipt: "unraid-ack" })
+
+    const observeTarget = vi.fn(async ({ name }: { id: string; name: string }) => ({ id: `Docker:${name}`, name, state: "running" }))
+    await expect(recoverRoutineActionReceipts(agentRoot, { observeTarget, afterRecoveryClaim: (receipt) => { if (receipt.id === interrupted.id) throw new Error("crash during recovery") } })).rejects.toThrow("crash during recovery")
+    const interim = new Map(readRoutineActionReceipts(agentRoot).map((receipt) => [receipt.id, receipt]))
+    expect(interim.get(before.id)?.state).toBe("recovered_no_effect")
+    expect(interim.get(during.id)?.state).toBe("indeterminate")
+    expect(interim.get(after.id)?.state).toBe("verified")
+    expect(interim.get(interrupted.id)?.state).toBe("recovery_pending")
+
+    await recoverRoutineActionReceipts(agentRoot, { observeTarget })
+    expect(new Map(readRoutineActionReceipts(agentRoot).map((receipt) => [receipt.id, receipt])).get(interrupted.id)).toMatchObject({ state: "verified", verifiedAfterState: "running", recoveryState: { state: "completed", compensation: "none" } })
+    expect(observeTarget).toHaveBeenCalledTimes(2)
   })
 
   it("rejects excluded targets, target drift, and stale policy versions before reservation", () => {
@@ -130,6 +216,7 @@ describe("steward policy", () => {
     fs.mkdirSync(path.join(malformedRoot, "state", "policy"), { recursive: true })
     fs.writeFileSync(path.join(malformedRoot, "state", "policy", "steward.json"), "{}\n")
     expect(() => readStewardPolicy(malformedRoot)).toThrow("invalid")
+    expect(inspectRoutineActionGrant(malformedRoot, { key: "restart", action: "unraid.container.restart", target: "books" })).toMatchObject({ allowed: false, reason: expect.stringContaining("invalid") })
 
     const agentRoot = root()
     expect(() => updateStewardPolicy(agentRoot, {
@@ -152,5 +239,15 @@ describe("steward policy", () => {
     } finally {
       await lease.release()
     }
+  })
+
+  it("keeps a mismatched recovery observation indeterminate", async () => {
+    const agentRoot = root()
+    updateStewardPolicy(agentRoot, { expectedVersion: 0, actor: ari, mutation: { kind: "grant_routine_action", key: "restart", action: "unraid.container.restart", targets: ["books"], maxCount: 2, windowMs: 3_600_000, verificationRequired: true, exclusions: [], provenance: "stated" } })
+    const receipt = consumeRoutineActionGrant(agentRoot, { key: "restart", action: "unraid.container.restart", target: "books", expectedPolicyVersion: 1, authorizationReceiptId: "relationship-1", authorizationVersion: 7, attemptId: "attempt", expectedBeforeState: "running", resolvedTarget: { id: "Docker:books", name: "books" }, effect: { operation: "restart", targetId: "Docker:books" } })
+    transitionRoutineActionReceipt(agentRoot, { id: receipt.id, expectedState: "reserved", state: "attempting" })
+    transitionRoutineActionReceipt(agentRoot, { id: receipt.id, expectedState: "attempting", state: "effect_acknowledged", effectReceipt: "ack" })
+    await recoverRoutineActionReceipts(agentRoot, { observeTarget: async () => ({ id: "Docker:other", name: "books", state: "running" }) })
+    expect(readRoutineActionReceipts(agentRoot)[0]).toMatchObject({ state: "indeterminate", recoveryState: { state: "manual_inspection_required" } })
   })
 })
