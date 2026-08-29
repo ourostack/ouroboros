@@ -244,7 +244,7 @@ describe("Telegram household admission", () => {
 
   it("bounds pending contacts, per-identity messages, bytes, and records overflow without hostile content", async () => {
     const value = fixture({ limits: { maxPendingContacts: 1, maxTextBytes: 16, maxMessagesPerIdentity: 1, maxTotalBytes: 16 } })
-    const tooLarge = await value.controller.handleUnknown(unknown({ text: "x".repeat(17) }))
+    const tooLarge = await value.controller.handleUnknown(unknown({ userId: "889", chatId: "889", text: "x".repeat(17) }))
     expect(tooLarge.kind).toBe("overflow")
     const accepted = await value.controller.handleUnknown(unknown({ text: "small" }))
     expect(accepted.kind).toBe("pending")
@@ -253,6 +253,43 @@ describe("Telegram household admission", () => {
     expect(value.effects).toHaveLength(2)
     expect(JSON.stringify(value.store.readSelfHealth())).not.toContain("evil.invalid")
     expect(value.store.readSelfHealth()).toMatchObject({ code: "telegram_admission_overflow", count: 2 })
+  })
+
+  it("enforces replay-safe per-identity and global rate windows and resets at the exact boundary", () => {
+    let now = 1_000
+    const store = new FileTelegramAdmissionStore(path.join(temporaryRoot(), "admission"), {
+      maxMessagesPerIdentity: 2,
+      maxMessagesPerWindow: 3,
+      rateWindowMs: 100,
+      maxPendingContacts: 10,
+    }, () => now)
+    expect(store.capture(unknown({ updateId: 1 }), "CODE").kind).toBe("created")
+    expect(store.capture(unknown({ updateId: 1 }), "CODE").kind).toBe("existing")
+    expect(store.capture(unknown({ updateId: 2 }), "CODE").kind).toBe("existing")
+    expect(store.capture(unknown({ updateId: 3 }), "CODE")).toEqual({ kind: "overflow" })
+    expect(store.capture(unknown({ updateId: 4, userId: "999", chatId: "999" }), "CODE")).toEqual({ kind: "overflow" })
+    now = 1_101
+    expect(store.capture(unknown({ updateId: 5, userId: "999", chatId: "999" }), "CODE").kind).toBe("created")
+  })
+
+  it("compacts terminal records to a hard total bound", () => {
+    let now = 1_000
+    const admissionRoot = path.join(temporaryRoot(), "admission")
+    const store = new FileTelegramAdmissionStore(admissionRoot, {
+      maxTerminalRecords: 2,
+      terminalRetentionMs: 10_000,
+      maxMessagesPerWindow: 100,
+      maxPendingContacts: 10,
+    }, () => now)
+    for (let index = 0; index < 3; index++) {
+      const captured = store.capture(unknown({ updateId: index + 1, userId: String(900 + index), chatId: String(900 + index) }), `CODE-${index}`)
+      if (!("record" in captured)) throw new Error("fixture capture failed")
+      store.compareAndSwap({ admissionId: captured.record.id, expectedStatus: "pending", nextStatus: "denied" })
+      now += 1
+    }
+    expect(store.capture(unknown({ updateId: 10, userId: "999", chatId: "999" }), "CODE-X").kind).toBe("created")
+    expect(store.list().filter((record) => record.status === "denied")).toHaveLength(2)
+    expect(fs.readdirSync(admissionRoot).filter((name) => /^[a-f0-9]{20}\.json$/u.test(name))).toHaveLength(3)
   })
 
   it("rejects symlink roots, corrupt records, non-owner decisions, and callback collisions", async () => {

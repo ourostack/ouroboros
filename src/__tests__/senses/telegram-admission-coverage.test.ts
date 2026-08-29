@@ -3,6 +3,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { createTelegramAdmissionController, FileTelegramAdmissionStore, type TelegramAdmissionRecord } from "../../senses/telegram-admission"
+import { acquireSessionTurnLease } from "../../mind/session-transaction"
 
 const roots: string[] = []
 
@@ -88,14 +89,14 @@ describe("Telegram admission defensive coverage", () => {
     expect(() => store.read(otherId)).toThrow("invalid")
   })
 
-  it("rejects corrupt self-health and reports lock contention without consuming input", () => {
+  it("rejects corrupt self-health and reports shared lease contention without consuming input", async () => {
     const storeRoot = path.join(root(), "store")
     const store = new FileTelegramAdmissionStore(storeRoot)
     fs.writeFileSync(path.join(storeRoot, "self-health.json"), JSON.stringify({ schemaVersion: 1, code: "wrong", count: 0, lastObservedAt: 0 }))
     expect(() => store.readSelfHealth()).toThrow("self-health is invalid")
     fs.rmSync(path.join(storeRoot, "self-health.json"))
-    fs.mkdirSync(path.join(storeRoot, ".claim.lock"))
-    expect(() => store.capture(message(), "CODE")).toThrow("claim is busy")
+    const lease = await acquireSessionTurnLease(path.join(path.dirname(storeRoot), ".store-coordination", "admission"))
+    try { expect(() => store.capture(message(), "CODE")).toThrow("busy") } finally { await lease.release() }
   })
 
   it("covers terminal replay, cooldown, CAS mismatch, and effect recording guards", () => {
