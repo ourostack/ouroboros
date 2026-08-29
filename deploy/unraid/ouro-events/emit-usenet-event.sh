@@ -3,6 +3,10 @@ set -euo pipefail
 
 PRODUCER="/boot/config/custom/ouro-events/emit-event.mjs"
 
+if [ "$#" -eq 2 ] && [ "$1" = "--self-test" ]; then
+  exec "$(command -v node)" "$2" --maintain
+fi
+
 if [ "$#" -ne 9 ]; then
   echo "usage: emit-usenet-event.sh <action> <incident> <transition> <receipt> <summary> <evidence> <verified> <verification-digest> <observed-at>" >&2
   exit 2

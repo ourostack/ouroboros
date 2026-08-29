@@ -603,6 +603,8 @@ Effective-spec audit helper:
         && docker create --name ouro-butler-staging --network host --restart unless-stopped --user 10001:10001 \
           --mount "type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli" \
           --mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
+          --mount "type=bind,src=/boot/config/custom/ouro-events/spool,dst=/run/ouro-events,readonly" \
+          --mount "type=bind,src=/mnt/user/appdata/sabnzbd/sabnzbd.ini,dst=/run/sanctuary/sabnzbd.ini,readonly" \
           "$IMAGE_ID" \
         && audit_effective ouro-butler-staging "$IMAGE_ID" "$IMAGE_ID" \
         && docker start ouro-butler-staging \
@@ -614,6 +616,8 @@ Effective-spec audit helper:
         && docker create --name ouro-butler --network host --restart unless-stopped --user 10001:10001 \
           --mount "type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli" \
           --mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
+          --mount "type=bind,src=/boot/config/custom/ouro-events/spool,dst=/run/ouro-events,readonly" \
+          --mount "type=bind,src=/mnt/user/appdata/sabnzbd/sabnzbd.ini,dst=/run/sanctuary/sabnzbd.ini,readonly" \
           "$IMAGE_ID" \
         && audit_effective ouro-butler "$IMAGE_ID" "$IMAGE_ID" \
         && docker start ouro-butler \
@@ -1263,6 +1267,7 @@ ouro-butler-rollback
       --mount "type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli" \
       --mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
       --mount "type=bind,src=/boot/config/custom/ouro-events/spool,dst=/run/ouro-events,readonly" \
+      --mount "type=bind,src=/mnt/user/appdata/sabnzbd/sabnzbd.ini,dst=/run/sanctuary/sabnzbd.ini,readonly" \
       "$IMAGE_ID" \
       && audit_effective ouro-butler-staging "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" \
       && docker start ouro-butler-staging \
@@ -1308,6 +1313,7 @@ ouro-butler-rollback
       --mount "type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli" \
       --mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
       --mount "type=bind,src=/boot/config/custom/ouro-events/spool,dst=/run/ouro-events,readonly" \
+      --mount "type=bind,src=/mnt/user/appdata/sabnzbd/sabnzbd.ini,dst=/run/sanctuary/sabnzbd.ini,readonly" \
       "$IMAGE_ID" \
       && audit_effective ouro-butler "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" \
       && docker start ouro-butler \
@@ -1474,6 +1480,7 @@ Restore:
       --mount "type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli" \
       --mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
       --mount "type=bind,src=/boot/config/custom/ouro-events/spool,dst=/run/ouro-events,readonly" \
+      --mount "type=bind,src=/mnt/user/appdata/sabnzbd/sabnzbd.ini,dst=/run/sanctuary/sabnzbd.ini,readonly" \
       "$IMAGE_ID" \
       && audit_effective ouro-butler "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" \
       && docker start ouro-butler \
