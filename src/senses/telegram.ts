@@ -53,6 +53,7 @@ import {
   createTelegramApprovalEffectPort,
   FileTelegramEffectJournal,
   recordTelegramEffectsInSession,
+  recoverTelegramEffectOutbox,
   resolveTelegramReply,
   type TelegramEffectArtifact,
   type TelegramEffectAuthorization,
@@ -827,14 +828,14 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   }
   const defaultEffectAuthorization = (input: TelegramEffectAuthorizationInput): TelegramEffectAuthorization => {
     const target = input.target
-    if (target.kind !== "approved_relationship" || target.friendId !== `telegram-user:${subject}` || target.sessionKey !== `telegram:${subject}` || target.chatId !== authorizedChatId) {
+    if (target.kind !== "approved_relationship" || target.friendId !== `telegram-user:${subject}` || target.sessionKey !== `telegram:${subject}`) {
       return { allowed: false, reason: "effect target is not the configured owner relationship" }
     }
-    return { allowed: true, receiptId: `configured-owner:${subject}`, expiresAt: new Date(Date.now() + 5 * 60_000).toISOString() }
+    return { allowed: true, receiptId: `configured-owner:${subject}`, expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(), transport: { chatId: authorizedChatId } }
   }
   const authorizeEffect = options.authorizeEffect ?? defaultEffectAuthorization
   let recordAcceptedEffects!: (sessionPath: string, artifacts: TelegramEffectArtifact[], bootstrapInbound?: { text: string; reference: string }) => Promise<void>
-  const configuredOwnerTarget = (): TelegramEffectTarget => ({ kind: "approved_relationship", friendId: `telegram-user:${subject}`, sessionKey: `telegram:${subject}`, chatId: authorizedChatId })
+  const configuredOwnerTarget = (): TelegramEffectTarget => ({ kind: "approved_relationship", friendId: `telegram-user:${subject}`, sessionKey: `telegram:${subject}` })
   const executeAuthorizedEffect = createTelegramAuthorizedEffectExecutor({
     store: getEffectJournal,
     api,
@@ -846,7 +847,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     if (target.kind !== "approved_relationship") throw new Error("configured owner effect has no relationship session")
     await recordAcceptedEffects(getSenseSessionPath(options.agentName, target.friendId, "telegram", target.sessionKey, agentRoot), [artifact])
   }
-  const approvalEffects = createTelegramApprovalEffectPort({ target: configuredOwnerTarget(), execute: executeAuthorizedEffect, record: recordConfiguredOwnerEffect })
+  const approvalEffects = createTelegramApprovalEffectPort({ target: configuredOwnerTarget(), chatId: authorizedChatId, execute: executeAuthorizedEffect, record: recordConfiguredOwnerEffect })
   let toolContext: ReturnType<typeof createSanctuaryToolContext> | undefined
   let approvalRuntime: TelegramApprovalRuntime | undefined
   let approvalTransport: TelegramApprovalTransport | undefined
@@ -963,6 +964,21 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   recordAcceptedEffects = async (sessionPath: string, artifacts: TelegramEffectArtifact[], bootstrapInbound?: { text: string; reference: string }): Promise<void> => {
     await recordTelegramEffectsInSession({ store: getEffectJournal(), sessionPath, artifacts, ...(bootstrapInbound ? { inbound: bootstrapInbound } : {}) })
   }
+  const recoverEffectOutbox = async (): Promise<void> => {
+    if (!effectJournal && !existsSync(path.join(agentRoot, "state", "telegram", "effects"))) return
+    const target = configuredOwnerTarget()
+    if (target.kind !== "approved_relationship") throw new Error("configured owner target is not a relationship")
+    await recoverTelegramEffectOutbox({
+      store: getEffectJournal(),
+      execute: executeAuthorizedEffect,
+      matches: (artifact) => artifact.target.kind === "approved_relationship"
+        && artifact.target.friendId === target.friendId && artifact.target.sessionKey === target.sessionKey,
+    })
+    const accepted = getEffectJournal().list().filter((artifact) => artifact.target.kind === "approved_relationship"
+      && artifact.target.friendId === target.friendId && artifact.target.sessionKey === target.sessionKey
+      && artifact.parts.some((part) => part.state === "accepted"))
+    if (accepted.length > 0) await recordAcceptedEffects(getSenseSessionPath(options.agentName, target.friendId, "telegram", target.sessionKey, agentRoot), accepted)
+  }
 
   const onMessageBody = async (message: TelegramInboundMessage): Promise<void> => {
     const currentFriendId = `telegram-user:${subject}`
@@ -1008,27 +1024,17 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     const bufferedGroundedDeliveries: string[] = []
     const turnEffects: TelegramEffectArtifact[] = []
     let deliveryOrdinal = 0
-    if (effectJournal) {
-      const recoverable = effectJournal.list().filter((artifact) => artifact.target.kind === "approved_relationship"
-        && artifact.target.friendId === currentFriendId && artifact.target.sessionKey === currentSessionKey && artifact.target.chatId === authorizedChatId
-        && artifact.parts.some((part) => part.state === "accepted"))
-      if (recoverable.length > 0) await recordAcceptedEffects(currentSessionPath, recoverable)
-    } else if (existsSync(path.join(agentRoot, "state", "telegram", "effects"))) {
-      const recoverable = getEffectJournal().list().filter((artifact) => artifact.target.kind === "approved_relationship"
-        && artifact.target.friendId === currentFriendId && artifact.target.sessionKey === currentSessionKey && artifact.target.chatId === authorizedChatId
-        && artifact.parts.some((part) => part.state === "accepted"))
-      if (recoverable.length > 0) await recordAcceptedEffects(currentSessionPath, recoverable)
-    }
+    await recoverEffectOutbox()
     let ingressRelations: NonNullable<RunSenseTurnOptions["ingressRelations"]> = { replyToEventId: null, threadRootEventId: null, references: [inboundReference] }
     if (message.replyToMessageId && /^[1-9][0-9]*$/u.test(message.replyToMessageId)) {
       const replyMessageId = Number(message.replyToMessageId)
       const candidate = getEffectJournal().list().find((artifact) => artifact.target.kind === "approved_relationship"
-        && artifact.target.chatId === authorizedChatId && artifact.target.friendId === currentFriendId && artifact.target.sessionKey === currentSessionKey
+        && artifact.target.friendId === currentFriendId && artifact.target.sessionKey === currentSessionKey
         && artifact.parts.some((part) => part.messageId === replyMessageId))
       if (candidate?.target.kind === "approved_relationship" && candidate.parts.some((part) => part.state === "accepted")) {
         await recordAcceptedEffects(currentSessionPath, [candidate])
       }
-      const reply = resolveTelegramReply(getEffectJournal(), { messageId: replyMessageId, chatId: authorizedChatId, friendId: currentFriendId, sessionKey: currentSessionKey })
+      const reply = resolveTelegramReply(getEffectJournal(), { messageId: replyMessageId, friendId: currentFriendId, sessionKey: currentSessionKey })
       const session = reply ? loadSessionEnvelopeFile(currentSessionPath) : null
       if (reply && session?.events.some((event) => event.id === reply.sessionEventId)) ingressRelations = {
         replyToEventId: reply.sessionEventId,
@@ -1197,6 +1203,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       if (runPromise) return runPromise
       runPromise = (async () => {
         await runWithAcceptanceAuditOwner(migrateIdentity)
+        await runWithAcceptanceAuditOwner(recoverEffectOutbox)
         await runWithAcceptanceAuditOwner(async () => { await approvalRuntime?.recover() })
         await runWithAcceptanceAuditOwner(async () => { await interactiveControl?.start() })
         try {

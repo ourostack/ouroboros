@@ -54,21 +54,22 @@ function pending(agentRoot: string): Array<Record<string, unknown>> {
   return JSON.parse(fs.readFileSync(path.join(agentRoot, "state", "approvals", "telegram-pending.json"), "utf8")) as Array<Record<string, unknown>>
 }
 
-function approvalEffects(agentRoot: string, api: TelegramBotApi): TelegramApprovalEffectPort {
+function approvalEffects(agentRoot: string, api: TelegramBotApi, exactSessionPath?: string): TelegramApprovalEffectPort {
   const store = new FileTelegramEffectJournal(path.join(agentRoot, "state", "telegram", "effects"))
   effectStores.push(store)
-  const target = { kind: "approved_relationship" as const, friendId: `telegram-user:${subject}`, sessionKey: `telegram:${subject}`, chatId: "43" }
+  const target = { kind: "approved_relationship" as const, friendId: `telegram-user:${subject}`, sessionKey: `telegram:${subject}` }
   const execute = createTelegramAuthorizedEffectExecutor({
     store,
     api,
-    authorize: () => ({ allowed: true, receiptId: "test-owner", expiresAt: new Date(Date.now() + 60_000).toISOString() }),
+    authorize: () => ({ allowed: true, receiptId: "test-owner", expiresAt: new Date(Date.now() + 60_000).toISOString(), transport: { chatId: "43" } }),
   })
   return createTelegramApprovalEffectPort({
     target,
+    chatId: "43",
     execute,
     record: (artifact) => recordTelegramEffectsInSession({
       store,
-      sessionPath: getSenseSessionPath("sanctuary", target.friendId, "telegram", target.sessionKey, agentRoot),
+      sessionPath: exactSessionPath ?? getSenseSessionPath("sanctuary", target.friendId, "telegram", target.sessionKey, agentRoot),
       artifacts: [artifact],
     }),
   })
@@ -108,7 +109,7 @@ describe("production-composed Telegram approval lifecycle", () => {
       },
     }
     const first = createTelegramApprovalRuntime({
-      agentName: "sanctuary", api, authorizedUserId: "42", authorizedChatId: "43", subject, identityKey, toolContext: {}, effects: approvalEffects(agentRoot, api), dependencies,
+      agentName: "sanctuary", api, authorizedUserId: "42", authorizedChatId: "43", subject, identityKey, toolContext: {}, effects: approvalEffects(agentRoot, api, sessionPath), dependencies,
     })
     const suspension = await first.coordinator({ sessionPath, baseSessionRevision: emptyRevision }).propose(proposalRequest() as never)
     const approvalStateRoot = path.join(agentRoot, "state", "approvals")
@@ -138,7 +139,7 @@ describe("production-composed Telegram approval lifecycle", () => {
 
     clock.value = Number(record.expiresAt) + 1
     const restarted = createTelegramApprovalRuntime({
-      agentName: "sanctuary", api, authorizedUserId: "42", authorizedChatId: "43", subject, identityKey, toolContext: {}, effects: approvalEffects(agentRoot, api), dependencies,
+      agentName: "sanctuary", api, authorizedUserId: "42", authorizedChatId: "43", subject, identityKey, toolContext: {}, effects: approvalEffects(agentRoot, api, sessionPath), dependencies,
     })
     await restarted.recover()
 

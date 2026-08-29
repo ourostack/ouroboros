@@ -3,13 +3,13 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { emitNervesEvent } from "../nerves/runtime"
 import { loadSessionEnvelopeFile, type SessionEnvelope, type SessionEvent } from "../heart/session-events"
-import { readSessionTransaction, withSessionTurnLease, writeSessionTransaction } from "../mind/session-transaction"
+import { currentSessionTurnLease, readSessionTransaction, withSessionTurnLease, writeSessionTransaction, type SessionTurnLease } from "../mind/session-transaction"
 import { escapeTelegramHtml, sendTelegramText, splitTelegramText, TelegramApiError, type TelegramBotApi } from "./telegram-client"
 
 export const FIXED_ADMISSION_ACKNOWLEDGEMENT = "Thanks — I’ve asked Ari."
 
 export type TelegramEffectTarget =
-  | { kind: "approved_relationship"; friendId: string; sessionKey: string; chatId: string; requestId?: string }
+  | { kind: "approved_relationship"; friendId: string; sessionKey: string; requestId?: string }
   | { kind: "admission_gate"; admissionId: string; botId: string; userId: string; chatId: string }
 
 export type TelegramEffect =
@@ -28,6 +28,7 @@ export interface TelegramEffectPart {
   state: TelegramEffectPartState
   messageId?: number
   sessionEventId?: string
+  attempts?: number
   updatedAt: string
 }
 
@@ -46,7 +47,7 @@ export interface TelegramEffectArtifact {
 }
 
 export type TelegramEffectAuthorization =
-  | { allowed: true; receiptId: string; expiresAt: string }
+  | { allowed: true; receiptId: string; expiresAt: string; transport: { chatId: string } }
   | { allowed: false; reason: string }
 
 export interface TelegramEffectAuthorizationInput {
@@ -68,10 +69,10 @@ export interface TelegramAuthorizedEffectInput {
 }
 
 export interface TelegramApprovalEffectPort {
-  sendText(input: { idempotencyKey: string; chatId: string; text: string; authorClass: TelegramArtifactAuthorClass }): Promise<number[]>
-  sendCard(input: { idempotencyKey: string; chatId: string; text: string; buttons: Array<Array<{ text: string; callbackData: string }>> }): Promise<number>
-  edit(input: { idempotencyKey: string; chatId: string; messageId: number; text: string }): Promise<void>
-  acknowledge(input: { idempotencyKey: string; callbackQueryId: string; text?: string; showAlert?: boolean }): Promise<void>
+  sendText(input: { idempotencyKey: string; chatId: string; text: string; authorClass: TelegramArtifactAuthorClass; signal?: AbortSignal }): Promise<number[]>
+  sendCard(input: { idempotencyKey: string; chatId: string; text: string; buttons: Array<Array<{ text: string; callbackData: string }>>; signal?: AbortSignal }): Promise<number>
+  edit(input: { idempotencyKey: string; chatId: string; messageId: number; text: string; signal?: AbortSignal }): Promise<void>
+  acknowledge(input: { idempotencyKey: string; callbackQueryId: string; text?: string; showAlert?: boolean; signal?: AbortSignal }): Promise<void>
 }
 
 function artifactId(idempotencyKey: string): string {
@@ -99,6 +100,17 @@ function assertEffectTarget(target: TelegramEffectTarget, effect: TelegramEffect
   }
 }
 
+function canonicalTarget(target: TelegramEffectTarget): TelegramEffectTarget {
+  if (!target || typeof target !== "object") throw new Error("Telegram effect artifact is invalid")
+  if (target.kind === "admission_gate") return target
+  return {
+    kind: "approved_relationship",
+    friendId: target.friendId,
+    sessionKey: target.sessionKey,
+    ...(target.requestId ? { requestId: target.requestId } : {}),
+  }
+}
+
 function boundedText(value: unknown, max = 50_000): value is string {
   return typeof value === "string" && value.length > 0 && Buffer.byteLength(value, "utf8") <= max
 }
@@ -111,7 +123,7 @@ function validateArtifact(artifact: TelegramEffectArtifact, expectedId: string):
   const target = artifact?.target
   const effect = artifact?.effect
   const targetValid = target?.kind === "approved_relationship"
-    ? boundedText(target.friendId, 512) && boundedText(target.sessionKey, 512) && /^[1-9][0-9]*$/u.test(target.chatId)
+    ? boundedText(target.friendId, 512) && boundedText(target.sessionKey, 512)
       && (target.requestId === undefined || boundedText(target.requestId, 512))
     : target?.kind === "admission_gate" && boundedText(target.admissionId, 512) && /^[1-9][0-9]*$/u.test(target.botId)
       && /^[1-9][0-9]*$/u.test(target.userId) && /^[1-9][0-9]*$/u.test(target.chatId)
@@ -141,7 +153,10 @@ function validateArtifact(artifact: TelegramEffectArtifact, expectedId: string):
       && canonicalTime(part.updatedAt)
       && (part.messageId === undefined || (Number.isSafeInteger(part.messageId) && part.messageId > 0))
       && (part.sessionEventId === undefined || boundedText(part.sessionEventId, 512))
-      && (part.state === "session_recorded" ? boundedText(part.sessionEventId, 512) : part.sessionEventId === undefined)
+      && (part.attempts === undefined || (Number.isSafeInteger(part.attempts) && part.attempts >= 0 && part.attempts <= 100))
+      && (part.state === "session_recorded"
+        ? (boundedText(part.sessionEventId, 512) || (artifact.authorClass === "control" && effect.kind !== "text" && part.sessionEventId === undefined))
+        : part.sessionEventId === undefined)
       && ((effect.kind === "callback_ack" || part.state === "prepared" || part.state === "attempting" || part.state === "indeterminate")
         || (Number.isSafeInteger(part.messageId) && part.messageId! > 0)))
   if (artifact.schemaVersion !== 1 || artifact.id !== expectedId || artifact.id !== artifactId(artifact.idempotencyKey)
@@ -211,8 +226,11 @@ export class FileTelegramEffectJournal {
       this.assertRootIdentity()
       const stat = fs.fstatSync(fd)
       if (!stat.isFile() || stat.size < 2 || stat.size > 512 * 1024) throw new Error("Telegram effect artifact is not a bounded regular file")
-      const artifact = JSON.parse(fs.readFileSync(fd, "utf8")) as TelegramEffectArtifact
+      const raw = fs.readFileSync(fd, "utf8")
+      const artifact = JSON.parse(raw) as TelegramEffectArtifact
+      artifact.target = canonicalTarget(artifact.target)
       validateArtifact(artifact, id)
+      if (raw.includes('"chatId"') && artifact.target.kind === "approved_relationship") this.write(artifact)
       return artifact
     } finally {
       fs.closeSync(fd)
@@ -262,12 +280,15 @@ export function prepareTelegramEffect(store: FileTelegramEffectJournal, input: {
   now?: string
 }): TelegramEffectArtifact {
   if (!input.authorization.allowed) throw new Error(`Telegram effect authorization denied: ${input.authorization.reason}`)
+  if (!/^[1-9][0-9]*$/u.test(input.authorization.transport.chatId)) throw new Error("Telegram effect authorization returned an invalid transport route")
   const idempotencyKey = requireText(input.idempotencyKey, "Telegram effect idempotency key")
-  assertEffectTarget(input.target, input.effect, idempotencyKey)
+  const target = canonicalTarget(input.target)
+  assertEffectTarget(target, input.effect, idempotencyKey)
+  if (target.kind === "admission_gate" && input.authorization.transport.chatId !== target.chatId) throw new Error("Telegram admission transport route changed")
   const id = artifactId(idempotencyKey)
   const existing = store.readIfExists(id)
   if (existing) {
-    if (JSON.stringify(existing.target) !== JSON.stringify(input.target)
+    if (JSON.stringify(existing.target) !== JSON.stringify(target)
       || existing.authorClass !== input.authorClass
       || JSON.stringify(existing.effect) !== JSON.stringify(input.effect)) {
       throw new Error("Telegram effect idempotency key was reused for a different effect")
@@ -279,7 +300,7 @@ export function prepareTelegramEffect(store: FileTelegramEffectJournal, input: {
     schemaVersion: 1,
     id,
     idempotencyKey,
-    target: input.target,
+    target,
     authorClass: input.authorClass,
     effect: input.effect,
     authorizationReceiptId: input.authorization.receiptId,
@@ -299,8 +320,7 @@ function canonicalMessageId(result: unknown): number {
   return messageId as number
 }
 
-async function executePart(api: TelegramBotApi, artifact: TelegramEffectArtifact, part: TelegramEffectPart, signal?: AbortSignal): Promise<number | undefined> {
-  const chatId = artifact.target.chatId
+async function executePart(api: TelegramBotApi, artifact: TelegramEffectArtifact, part: TelegramEffectPart, chatId: string, signal?: AbortSignal): Promise<number | undefined> {
   const effect = artifact.effect
   if (effect.kind === "text" || effect.kind === "admission_ack") {
     const ids = await sendTelegramText(api, chatId, part.text ?? "", signal)
@@ -311,29 +331,29 @@ async function executePart(api: TelegramBotApi, artifact: TelegramEffectArtifact
     const reply_markup = { inline_keyboard: effect.buttons.map((row) => row.map((button) => ({ text: button.text, callback_data: button.callbackData }))) }
     let result: unknown
     try {
-      result = await api.request("sendMessage", { chat_id: chatId, text: escapeTelegramHtml(effect.text), parse_mode: "HTML", reply_markup })
+      result = await api.request("sendMessage", { chat_id: chatId, text: escapeTelegramHtml(effect.text), parse_mode: "HTML", reply_markup }, signal)
     } catch (error) {
       if (!(error instanceof TelegramApiError) || error.status !== 400) throw error
-      result = await api.request("sendMessage", { chat_id: chatId, text: effect.text, reply_markup })
+      result = await api.request("sendMessage", { chat_id: chatId, text: effect.text, reply_markup }, signal)
     }
     return canonicalMessageId(result)
   }
   if (effect.kind === "edit") {
     const base = { chat_id: chatId, message_id: effect.messageId, reply_markup: { inline_keyboard: [] as never[] } }
     try {
-      await api.request("editMessageText", { ...base, text: escapeTelegramHtml(effect.text), parse_mode: "HTML" }, AbortSignal.timeout(30_000))
+      await api.request("editMessageText", { ...base, text: escapeTelegramHtml(effect.text), parse_mode: "HTML" }, signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000))
     } catch (error) {
       if (error instanceof TelegramApiError && error.status === 400 && /message is not modified/iu.test(error.message)) return effect.messageId
       if (!(error instanceof TelegramApiError) || error.status !== 400) throw error
       try {
-        await api.request("editMessageText", { ...base, text: effect.text }, AbortSignal.timeout(30_000))
+        await api.request("editMessageText", { ...base, text: effect.text }, signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000))
       } catch (fallbackError) {
         if (!(fallbackError instanceof TelegramApiError) || fallbackError.status !== 400 || !/message is not modified/iu.test(fallbackError.message)) throw fallbackError
       }
     }
     return effect.messageId
   }
-  await api.request("answerCallbackQuery", { callback_query_id: effect.callbackQueryId, ...(effect.text ? { text: effect.text } : {}), ...(effect.showAlert ? { show_alert: true } : {}) })
+  await api.request("answerCallbackQuery", { callback_query_id: effect.callbackQueryId, ...(effect.text ? { text: effect.text } : {}), ...(effect.showAlert ? { show_alert: true } : {}) }, signal)
   return undefined
 }
 
@@ -361,6 +381,8 @@ export async function executeTelegramEffect(
     const authorization = reauthorize(artifact)
     if (!authorization.allowed) throw new Error(`Telegram effect authorization denied: ${authorization.reason}`)
     if (Date.parse(authorization.expiresAt) <= Date.now()) throw new Error("Telegram effect authorization expired")
+    if (!/^[1-9][0-9]*$/u.test(authorization.transport.chatId)) throw new Error("Telegram effect authorization returned an invalid transport route")
+    if (artifact.target.kind === "admission_gate" && authorization.transport.chatId !== artifact.target.chatId) throw new Error("Telegram admission transport route changed")
     artifact.authorizationReceiptId = authorization.receiptId
     artifact.authorizationExpiresAt = authorization.expiresAt
     for (const part of artifact.parts) {
@@ -368,18 +390,20 @@ export async function executeTelegramEffect(
       if (signal?.aborted) throw signal.reason
       const attemptingAt = new Date().toISOString()
       part.state = "attempting"
+      part.attempts = (part.attempts ?? 0) + 1
       part.updatedAt = attemptingAt
       artifact.updatedAt = attemptingAt
       store.write(artifact)
       try {
-        const messageId = await executePart(api, artifact, part, signal)
+        const messageId = await executePart(api, artifact, part, authorization.transport.chatId, signal)
         part.state = "accepted"
         if (messageId !== undefined) part.messageId = messageId
         part.updatedAt = new Date().toISOString()
         artifact.updatedAt = part.updatedAt
         store.write(artifact)
       } catch (error) {
-        const safelyRetryable = artifact.effect.kind === "edit"
+        const safelyRetryable = artifact.effect.kind === "edit" || artifact.effect.kind === "callback_ack"
+          || (error instanceof TelegramApiError && error.errorCode !== null)
         part.state = safelyRetryable ? "prepared" : "indeterminate"
         part.updatedAt = new Date().toISOString()
         artifact.updatedAt = part.updatedAt
@@ -438,8 +462,35 @@ export function createTelegramAuthorizedEffectExecutor(options: {
   }
 }
 
+export async function recoverTelegramEffectOutbox(input: {
+  store: FileTelegramEffectJournal
+  execute(input: TelegramAuthorizedEffectInput): Promise<TelegramEffectArtifact>
+  maxArtifacts?: number
+  matches?: (artifact: TelegramEffectArtifact) => boolean
+}): Promise<{ attempted: number; accepted: number; failed: number }> {
+  const limit = Math.min(Math.max(input.maxArtifacts ?? 20, 1), 100)
+  const candidates = input.store.list()
+    .filter((artifact) => (!input.matches || input.matches(artifact))
+      && !artifact.parts.some((part) => part.state === "attempting" || part.state === "indeterminate")
+      && artifact.parts.some((part) => part.state === "prepared" && (part.attempts ?? 0) < 3))
+    .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id))
+    .slice(0, limit)
+  let accepted = 0
+  let failed = 0
+  for (const artifact of candidates) {
+    try {
+      await input.execute({ idempotencyKey: artifact.idempotencyKey, target: artifact.target, authorClass: artifact.authorClass, effect: artifact.effect })
+      accepted += 1
+    } catch {
+      failed += 1
+    }
+  }
+  return { attempted: candidates.length, accepted, failed }
+}
+
 export function createTelegramApprovalEffectPort(options: {
   target: TelegramEffectTarget
+  chatId: string
   execute(input: TelegramAuthorizedEffectInput): Promise<TelegramEffectArtifact>
   record(artifact: TelegramEffectArtifact): Promise<void>
 }): TelegramApprovalEffectPort {
@@ -450,26 +501,27 @@ export function createTelegramApprovalEffectPort(options: {
   }
   return {
     async sendText(input) {
-      if (input.chatId !== options.target.chatId) throw new Error("Telegram approval text target changed")
-      const artifact = await executeAndRecord({ idempotencyKey: input.idempotencyKey, authorClass: input.authorClass, effect: { kind: "text", text: input.text } })
+      if (input.chatId !== options.chatId) throw new Error("Telegram approval text target changed")
+      const artifact = await executeAndRecord({ idempotencyKey: input.idempotencyKey, authorClass: input.authorClass, effect: { kind: "text", text: input.text }, ...(input.signal ? { signal: input.signal } : {}) })
       return artifact.parts.flatMap((part) => part.messageId === undefined ? [] : [part.messageId])
     },
     async sendCard(input) {
-      if (input.chatId !== options.target.chatId) throw new Error("Telegram approval card target changed")
-      const artifact = await executeAndRecord({ idempotencyKey: input.idempotencyKey, authorClass: "control", effect: { kind: "card", text: input.text, buttons: input.buttons } })
+      if (input.chatId !== options.chatId) throw new Error("Telegram approval card target changed")
+      const artifact = await executeAndRecord({ idempotencyKey: input.idempotencyKey, authorClass: "control", effect: { kind: "card", text: input.text, buttons: input.buttons }, ...(input.signal ? { signal: input.signal } : {}) })
       const messageId = artifact.parts[0]?.messageId
       if (!messageId) throw new Error("Telegram approval card omitted its message id")
       return messageId
     },
     async edit(input) {
-      if (input.chatId !== options.target.chatId) throw new Error("Telegram approval edit target changed")
-      await executeAndRecord({ idempotencyKey: input.idempotencyKey, authorClass: "control", effect: { kind: "edit", messageId: input.messageId, text: input.text } })
+      if (input.chatId !== options.chatId) throw new Error("Telegram approval edit target changed")
+      await executeAndRecord({ idempotencyKey: input.idempotencyKey, authorClass: "control", effect: { kind: "edit", messageId: input.messageId, text: input.text }, ...(input.signal ? { signal: input.signal } : {}) })
     },
     async acknowledge(input) {
       await executeAndRecord({
         idempotencyKey: input.idempotencyKey,
         authorClass: "control",
         effect: { kind: "callback_ack", callbackQueryId: input.callbackQueryId, ...(input.text ? { text: input.text } : {}), ...(input.showAlert ? { showAlert: true } : {}) },
+        ...(input.signal ? { signal: input.signal } : {}),
       })
     },
   }
@@ -478,16 +530,52 @@ export function createTelegramApprovalEffectPort(options: {
 export function recordTelegramEffectInSession(store: FileTelegramEffectJournal, artifactIdValue: string, sessionEventIds: string[]): TelegramEffectArtifact {
   const artifact = store.read(artifactIdValue)
   const accepted = artifact.parts.filter((part) => part.state === "accepted")
-  if (accepted.length !== sessionEventIds.length || sessionEventIds.some((value) => !value.trim())) throw new Error("Telegram session event ids do not match accepted effect parts")
+  const transportOnlyControl = artifact.authorClass === "control" && artifact.effect.kind !== "text"
+  if ((!transportOnlyControl && accepted.length !== sessionEventIds.length) || (transportOnlyControl && sessionEventIds.length !== 0) || sessionEventIds.some((value) => !value.trim())) {
+    throw new Error("Telegram session event ids do not match accepted effect parts")
+  }
   accepted.forEach((part, index) => {
     part.state = "session_recorded"
-    part.sessionEventId = sessionEventIds[index]
+    if (!transportOnlyControl) part.sessionEventId = sessionEventIds[index]
     part.updatedAt = new Date().toISOString()
   })
   artifact.updatedAt = new Date().toISOString()
   store.write(artifact)
   emitNervesEvent({ component: "senses", event: "senses.telegram_effect_session_recorded", message: "recorded Telegram effect in session continuity", meta: { artifactId: artifact.id, authorClass: artifact.authorClass, partCount: accepted.length } })
   return artifact
+}
+
+function outwardText(event: SessionEvent): string[] {
+  const values: string[] = []
+  if (event.role === "assistant" && typeof event.content === "string" && event.content.trim()) values.push(event.content.trim())
+  if (event.role !== "assistant") return values
+  for (const call of event.toolCalls) {
+    const argument = call.function.name === "settle" ? "answer" : call.function.name === "speak" ? "message" : null
+    if (!argument) continue
+    try {
+      const parsed = JSON.parse(call.function.arguments) as Record<string, unknown>
+      const value = parsed?.[argument]
+      if (typeof value === "string" && value.trim()) values.push(value.trim())
+    } catch {
+      continue
+    }
+  }
+  return values
+}
+
+function bindButlerArtifactToCanonicalEvent(envelope: SessionEnvelope, artifact: TelegramEffectArtifact): { envelope: SessionEnvelope; eventIds: string[] } | null {
+  if (artifact.authorClass !== "butler" || artifact.effect.kind !== "text") return null
+  const text = artifact.effect.text.trim()
+  const reference = `telegram-artifact:${artifact.id}`
+  const candidate = [...envelope.events].reverse().find((event) => !event.relations.references.some((value) => value.startsWith("telegram-artifact:"))
+    && outwardText(event).includes(text))
+  if (!candidate) return null
+  const messageReferences = artifact.parts.flatMap((part) => part.messageId ? [`telegram-message:${part.messageId}`] : [])
+  const requestReferences = artifact.target.kind === "approved_relationship" && artifact.target.requestId ? [`request:${artifact.target.requestId}`] : []
+  const events = envelope.events.map((event) => event.id === candidate.id
+    ? { ...event, relations: { ...event.relations, references: [...new Set([...event.relations.references, reference, ...messageReferences, ...requestReferences])] } }
+    : event)
+  return { envelope: { ...envelope, events }, eventIds: artifact.parts.filter((part) => part.state === "accepted").map(() => candidate.id) }
 }
 
 function artifactEventContent(artifact: TelegramEffectArtifact, part: TelegramEffectPart): string {
@@ -575,7 +663,7 @@ export async function recordTelegramEffectsInSession(input: {
   inbound?: { text: string; reference: string }
 }): Promise<void> {
   if (input.artifacts.length === 0) return
-  await withSessionTurnLease(input.sessionPath, async (lease) => {
+  const record = async (lease: SessionTurnLease): Promise<void> => {
     const transaction = readSessionTransaction(input.sessionPath, lease)
     let envelope = loadSessionEnvelopeFile(input.sessionPath) ?? {
       version: 2 as const,
@@ -590,26 +678,37 @@ export async function recordTelegramEffectsInSession(input: {
     for (const artifact of input.artifacts) {
       const unrecorded = artifact.parts.filter((part) => part.state === "accepted")
       if (unrecorded.length === 0) continue
-      const reference = `telegram-artifact:${artifact.id}`
-      const existingIds = envelope.events.filter((event) => event.relations.references.includes(reference)).map((event) => event.id)
-      if (existingIds.length === unrecorded.length) {
-        recordings.push({ artifact, eventIds: existingIds })
+      if (artifact.authorClass === "control" && artifact.effect.kind !== "text") {
+        recordings.push({ artifact, eventIds: [] })
         continue
       }
-      if (existingIds.length !== 0) throw new Error("Telegram effect session reconciliation is partial")
-      const appended = appendTelegramArtifactEvents(envelope, artifact, new Date().toISOString())
+      const reference = `telegram-artifact:${artifact.id}`
+      const existingEvents = envelope.events.filter((event) => event.relations.references.includes(reference))
+      if (existingEvents.length > 0) {
+        const eventIds = unrecorded.map((part) => existingEvents.find((event) => !part.messageId || event.relations.references.includes(`telegram-message:${part.messageId}`))?.id)
+        if (eventIds.every((id): id is string => typeof id === "string")) {
+          recordings.push({ artifact, eventIds })
+          continue
+        }
+      }
+      if (existingEvents.length !== 0) throw new Error("Telegram effect session reconciliation is partial")
+      const appended = bindButlerArtifactToCanonicalEvent(envelope, artifact)
+        ?? appendTelegramArtifactEvents(envelope, artifact, new Date().toISOString())
       envelope = appended.envelope
       recordings.push({ artifact, eventIds: appended.eventIds })
       changed = true
     }
     if (changed || input.inbound) writeSessionTransaction(input.sessionPath, envelope, { lease, expectedRevision: transaction.revision })
     for (const recording of recordings) recordTelegramEffectInSession(input.store, recording.artifact.id, recording.eventIds)
-  })
+  }
+  const lease = currentSessionTurnLease(input.sessionPath)
+  if (lease) await record(lease)
+  else await withSessionTurnLease(input.sessionPath, record)
 }
 
-export function resolveTelegramReply(store: FileTelegramEffectJournal, input: { messageId: number; chatId: string; friendId: string; sessionKey: string }): { artifactId: string; authorClass: TelegramArtifactAuthorClass; sessionEventId: string; requestId: string | null } | null {
+export function resolveTelegramReply(store: FileTelegramEffectJournal, input: { messageId: number; friendId: string; sessionKey: string }): { artifactId: string; authorClass: TelegramArtifactAuthorClass; sessionEventId: string; requestId: string | null } | null {
   for (const artifact of store.list()) {
-    if (artifact.target.kind !== "approved_relationship" || artifact.target.chatId !== input.chatId || artifact.target.friendId !== input.friendId || artifact.target.sessionKey !== input.sessionKey) continue
+    if (artifact.target.kind !== "approved_relationship" || artifact.target.friendId !== input.friendId || artifact.target.sessionKey !== input.sessionKey) continue
     const part = artifact.parts.find((candidate) => candidate.messageId === input.messageId && candidate.state === "session_recorded" && candidate.sessionEventId)
     if (!part?.sessionEventId) continue
     return {

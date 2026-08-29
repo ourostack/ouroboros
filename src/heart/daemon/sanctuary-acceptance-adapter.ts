@@ -2193,17 +2193,18 @@ export interface SanctuaryAcceptanceCallbackProbeDependencies {
 
 function createAcceptanceProbeEffects(input: { agentRoot: string; api: TelegramBotApi; subject: string; chatId: string }): { port: TelegramApprovalEffectPort; close(): void } {
   const store = new FileTelegramEffectJournal(path.join(input.agentRoot, "state", "telegram", "effects"))
-  const target = { kind: "approved_relationship" as const, friendId: `telegram-user:${input.subject}`, sessionKey: `telegram:${input.subject}`, chatId: input.chatId }
+  const target = { kind: "approved_relationship" as const, friendId: `telegram-user:${input.subject}`, sessionKey: `telegram:${input.subject}` }
   const execute = createTelegramAuthorizedEffectExecutor({
     store,
     api: input.api,
     authorize: ({ target: candidate }) => JSON.stringify(candidate) === JSON.stringify(target)
-      ? { allowed: true, receiptId: `configured-owner:${input.subject}`, expiresAt: new Date(Date.now() + 5 * 60_000).toISOString() }
+      ? { allowed: true, receiptId: `configured-owner:${input.subject}`, expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(), transport: { chatId: input.chatId } }
       : { allowed: false, reason: "effect target is not the configured owner relationship" },
   })
   const sessionPath = getSenseSessionPath(TARGET_ID, target.friendId, "telegram", target.sessionKey, input.agentRoot)
   const port = createTelegramApprovalEffectPort({
     target,
+    chatId: input.chatId,
     execute,
     record: (artifact) => recordTelegramEffectsInSession({ store, sessionPath, artifacts: [artifact] }),
   })
