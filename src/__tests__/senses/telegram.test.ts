@@ -753,6 +753,35 @@ describe("Telegram sense", () => {
     expect(JSON.parse(fs.readFileSync(path.join(f.agentRoot, "state", "telegram", "effects", artifactName), "utf8")).parts[0]).toMatchObject({ state: "session_recorded", sessionEventId: "evt-000001" })
   })
 
+  it("repairs the exact inbound before accepted output when an existing-session turn fails", async () => {
+    let sessionPath = ""
+    const f = fixture({
+      runTurn: vi.fn(async (options: any) => {
+        sessionPath = getSenseSessionPath("butler", options.friendId, "telegram", options.sessionKey, f.agentRoot)
+        fs.mkdirSync(path.dirname(sessionPath), { recursive: true })
+        fs.writeFileSync(sessionPath, JSON.stringify({
+          version: 2,
+          events: [{ id: "evt-000001", sequence: 1, role: "user", content: "older", name: null, toolCallId: null, toolCalls: [], attachments: [], time: { authoredAt: null, authoredAtSource: "unknown", observedAt: null, observedAtSource: "ingest", recordedAt: "2026-08-29T17:00:00.000Z", recordedAtSource: "save" }, relations: { replyToEventId: null, threadRootEventId: null, references: [], toolCallId: null, supersedesEventId: null, redactsEventId: null }, provenance: { captureKind: "live", legacyVersion: null, sourceMessageIndex: null } }],
+          projection: { eventIds: ["evt-000001"], trimmed: false, maxTokens: null, contextMargin: null, inputTokens: null, projectedAt: null },
+          lastUsage: null,
+          state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
+        }))
+        await options.deliverySink.onDelivery({ kind: "speak", text: "I started checking." })
+        throw new Error("provider failed after speak")
+      }),
+    })
+
+    await f.getOnMessage()({ updateId: 930, messageId: "931", userId: "42", chatId: "42", text: "Please check it" })
+
+    const events = JSON.parse(fs.readFileSync(sessionPath, "utf8")).events
+    expect(events.map((event: any) => [event.role, event.content])).toEqual([
+      ["user", "older"],
+      ["user", "Please check it"],
+      ["assistant", "I started checking."],
+    ])
+    expect(events[1].relations.references).toContain("telegram-inbound:930:931")
+  })
+
   it("binds a Telegram reply to the exact recorded artifact and request", async () => {
     const f = fixture()
     await f.getOnMessage()({ updateId: 95, messageId: "96", userId: "42", chatId: "42", text: "first" })
@@ -780,7 +809,7 @@ describe("Telegram sense", () => {
       ingressRelations: {
         replyToEventId: "evt-000007",
         threadRootEventId: null,
-        references: [`telegram-artifact:${artifact.id}`, "request:req-7"],
+        references: ["telegram-inbound:97:98", `telegram-artifact:${artifact.id}`, "request:req-7"],
       },
     }))
   })

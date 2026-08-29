@@ -76,6 +76,22 @@ describe("Telegram effect adapter", () => {
     expect(store.read(prepared.id).parts[0]?.state).toBe("indeterminate")
   })
 
+  it("serializes two same-key executors so Telegram receives one effect", async () => {
+    const store = journal()
+    const prepared = prepareTelegramEffect(store, { idempotencyKey: "concurrent:req-2", target, authorClass: "butler", effect: { kind: "text", text: "Once" }, authorization })
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const request = vi.fn(async () => { await gate; return { message_id: 77 } })
+    const first = executeTelegramEffect(store, prepared.id, { request }, () => authorization)
+    const second = executeTelegramEffect(store, prepared.id, { request }, () => authorization)
+    await vi.waitFor(() => expect(request).toHaveBeenCalledOnce())
+    release()
+    const [left, right] = await Promise.all([first, second])
+    expect(request).toHaveBeenCalledOnce()
+    expect(left.parts[0]).toMatchObject({ state: "accepted", messageId: 77 })
+    expect(right.parts[0]).toMatchObject({ state: "accepted", messageId: 77 })
+  })
+
   it("rejects a symlink journal root and corrupt persisted artifacts", () => {
     const parent = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-effect-security-"))
     roots.push(parent)
@@ -88,6 +104,27 @@ describe("Telegram effect adapter", () => {
     const store = new FileTelegramEffectJournal(path.join(parent, "journal"))
     fs.writeFileSync(path.join(parent, "journal", `${"a".repeat(64)}.json`), "{}", { mode: 0o600 })
     expect(() => store.read("a".repeat(64))).toThrow("invalid")
+  })
+
+  it("rejects altered prepared bytes and a replaced root after construction", () => {
+    const parent = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-effect-integrity-"))
+    roots.push(parent)
+    const root = path.join(parent, "journal")
+    const store = new FileTelegramEffectJournal(root)
+    const prepared = prepareTelegramEffect(store, { idempotencyKey: "integrity:req-2", target, authorClass: "butler", effect: { kind: "text", text: "Authorized" }, authorization })
+    const filePath = path.join(root, `${prepared.id}.json`)
+    const altered = JSON.parse(fs.readFileSync(filePath, "utf8"))
+    altered.parts[0].text = "Altered"
+    fs.writeFileSync(filePath, JSON.stringify(altered), { mode: 0o600 })
+    expect(() => store.read(prepared.id)).toThrow("invalid")
+
+    const retained = path.join(parent, "retained")
+    const redirect = path.join(parent, "redirect")
+    fs.renameSync(root, retained)
+    fs.mkdirSync(redirect)
+    fs.symlinkSync(redirect, root)
+    expect(() => store.list()).toThrow("identity changed")
+    expect(fs.readdirSync(redirect)).toEqual([])
   })
 
   it("supports cards, edits, and callback acknowledgements through the same effect boundary", async () => {

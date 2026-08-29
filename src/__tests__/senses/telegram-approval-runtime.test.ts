@@ -129,6 +129,12 @@ const baseRecord = {
 }
 
 function makeRuntime(effectBarrier: () => void = vi.fn()) {
+  const effects = {
+    sendText: async (input: { chatId: string; text: string }) => runtimeMocks.sendTelegramText({}, input.chatId, input.text),
+    sendCard: vi.fn(),
+    edit: vi.fn(),
+    acknowledge: vi.fn(),
+  }
   return createTelegramApprovalRuntime({
     agentName: "sanctuary",
     api: { request: vi.fn(), stop: vi.fn() },
@@ -137,6 +143,7 @@ function makeRuntime(effectBarrier: () => void = vi.fn()) {
     subject: "tg_stable-subject",
     identityKey: "k".repeat(43),
     toolContext: { agentName: "sanctuary" },
+    effects,
     effectBarrier,
   })
 }
@@ -300,6 +307,7 @@ describe("Telegram approval runtime orchestration", () => {
     createTelegramApprovalRuntime({
       agentName: "sanctuary", api: { request: vi.fn(), stop: vi.fn() }, authorizedUserId: "10", authorizedChatId: "20",
       subject: "tg_stable-subject", identityKey: "k".repeat(43), toolContext: { agentName: "sanctuary" },
+      effects: { sendText: vi.fn(), sendCard: vi.fn(), edit: vi.fn(), acknowledge: vi.fn() },
     })
     expect(() => transportOptions().effectBarrier()).not.toThrow()
   })
