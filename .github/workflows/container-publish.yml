@@ -48,26 +48,23 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Preserve an existing immutable version
-        id: image-exists
+      - name: Gate immutable references before build
+        id: release-gate
         run: |
-          if IMAGE_INSPECTION=$(docker buildx imagetools inspect "$VERSION_IMAGE" 2>&1); then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          elif printf '%s\n' "$IMAGE_INSPECTION" | grep -Eqi "404|not found|manifest unknown"; then
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-          else
-            printf '%s\n' "$IMAGE_INSPECTION" >&2
-            exit 1
-          fi
+          GATE_OUTPUT=$(scripts/container-image-release-gate.sh "$VERSION_IMAGE" "$SHA_IMAGE")
+          printf '%s\n' "$GATE_OUTPUT"
+          PUBLISH=$(printf '%s\n' "$GATE_OUTPUT" | awk -F= '$1 == "publish" { print $2 }')
+          test "$PUBLISH" = "true" || test "$PUBLISH" = "false"
+          echo "publish=$PUBLISH" >> "$GITHUB_OUTPUT"
 
       - name: Build release assets
-        if: steps.image-exists.outputs.exists != 'true'
+        if: steps.release-gate.outputs.publish == 'true'
         run: |
           npm ci
           npm run build
 
       - name: Build and publish immutable architectures
-        if: steps.image-exists.outputs.exists != 'true'
+        if: steps.release-gate.outputs.publish == 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -80,7 +77,17 @@ jobs:
             ghcr.io/ourostack/ouroboros-butler:${{ env.PACKAGE_VERSION }}
             ghcr.io/ourostack/ouroboros-butler:sha-${{ github.event.workflow_run.head_sha }}
 
-      - name: Verify immutable digest and public access
+      - name: Verify exact immutable references
+        id: exact-references
+        run: |
+          GATE_OUTPUT=$(scripts/container-image-release-gate.sh "$VERSION_IMAGE" "$SHA_IMAGE")
+          printf '%s\n' "$GATE_OUTPUT"
+          test "$(printf '%s\n' "$GATE_OUTPUT" | awk -F= '$1 == "publish" { print $2 }')" = "false"
+          DIGEST=$(printf '%s\n' "$GATE_OUTPUT" | awk -F= '$1 == "digest" { print $2 }')
+          test -n "$DIGEST"
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+
+      - name: Verify package visibility and architectures
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -88,16 +95,14 @@ jobs:
           test "$VISIBILITY" = "public"
 
           AUTHENTICATED_MANIFEST=$(docker buildx imagetools inspect "$VERSION_IMAGE")
-          AUTHENTICATED_DIGEST=$(printf '%s\n' "$AUTHENTICATED_MANIFEST" | awk '$1 == "Digest:" { print $2; exit }')
-          test -n "$AUTHENTICATED_DIGEST"
           printf '%s\n' "$AUTHENTICATED_MANIFEST" | grep -F "Platform:    linux/amd64"
           printf '%s\n' "$AUTHENTICATED_MANIFEST" | grep -F "Platform:    linux/arm64"
-
-          if [ "${{ steps.image-exists.outputs.exists }}" != "true" ]; then
-            SHA_DIGEST=$(docker buildx imagetools inspect "$SHA_IMAGE" | awk '$1 == "Digest:" { print $2; exit }')
-            test "$SHA_DIGEST" = "$AUTHENTICATED_DIGEST"
-          fi
-
           docker logout ghcr.io
-          PUBLIC_DIGEST=$(docker buildx imagetools inspect "$VERSION_IMAGE" | awk '$1 == "Digest:" { print $2; exit }')
-          test "$PUBLIC_DIGEST" = "$AUTHENTICATED_DIGEST"
+
+      - name: Verify anonymous immutable references
+        run: |
+          GATE_OUTPUT=$(scripts/container-image-release-gate.sh "$VERSION_IMAGE" "$SHA_IMAGE")
+          printf '%s\n' "$GATE_OUTPUT"
+          test "$(printf '%s\n' "$GATE_OUTPUT" | awk -F= '$1 == "publish" { print $2 }')" = "false"
+          PUBLIC_DIGEST=$(printf '%s\n' "$GATE_OUTPUT" | awk -F= '$1 == "digest" { print $2 }')
+          test "$PUBLIC_DIGEST" = "${{ steps.exact-references.outputs.digest }}"
