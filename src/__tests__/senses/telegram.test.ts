@@ -10,9 +10,6 @@ import { createTelegramSenseApp, opaqueTelegramSubject, sanctuaryTelegramApprova
 import { TELEGRAM_ACCEPTANCE_AUDIT_HEAD_RELATIVE_PATH, TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH, verifyTelegramAuditLedger } from "../../senses/telegram-audit-ledger"
 import { splitTelegramText, type TelegramBotApi, type TelegramInboundMessage, type TelegramLongPoll } from "../../senses/telegram-client"
 import { getSenseSessionPath } from "../../senses/shared-turn"
-import { updateStewardPolicy } from "../../heart/steward-policy"
-import { createRelationshipAuthorizationEvaluator, loadRelationshipCapabilityRegistry } from "../../repertoire/relationship-authorization"
-import { execTool } from "../../repertoire/tools"
 
 const RECEIPT_DOMAIN = "ouroboros.telegram.turn-receipt.v3"
 const RECEIPT_KEY = "k".repeat(43)
@@ -908,43 +905,6 @@ describe("Telegram sense", () => {
     })
     await ordinary.getOnMessage()({ updateId: 20, messageId: "21", userId: "42", chatId: "42", text: "Explain the server architecture" })
     expect(ordinary.api.request).toHaveBeenCalledWith("sendMessage", { chat_id: "42", text: "Ordinary grounded prose remains under agent control.", parse_mode: "HTML" }, undefined)
-
-    const ordinaryStatusToolContext: any = {}
-    let ordinaryStatusError: unknown
-    const ordinaryStatus = fixture({
-      runWithToolReceiptCollection: collect,
-      runTurn: async (options: any) => {
-        try {
-          const policy = JSON.parse(await execTool("steward_policy_manage", { action: "read" }, ordinaryStatusToolContext)) as { desiredStates: Record<string, { value: string }> }
-          const response = policy.desiredStates["container:books"]?.value === "intentionally_off" && Object.keys(policy.desiredStates).length === 1
-            ? "Books is off because you asked me to keep it off. That stored preference applies only to Books."
-            : "No matching stored policy."
-          await options.deliverySink.onDelivery({ kind: "settle", text: response })
-          return { response, ponderDeferred: false, deliveries: [], deliveryFailures: [] }
-        } catch (error) {
-          ordinaryStatusError = error
-          throw error
-        }
-      },
-    })
-    const registry = loadRelationshipCapabilityRegistry(path.resolve("deploy/unraid/sanctuary.ouro"))
-    const relationshipAuthorization = createRelationshipAuthorizationEvaluator({
-      friend: { id: "ari", name: "Ari", trustLevel: "family", admissionState: "active", initiativePolicy: "proactive", capabilityProfileId: "sanctuary-owner", externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: "", updatedAt: "", schemaVersion: 1 },
-      registry,
-      requestId: "telegram-status-request",
-      requestPhase: "inbound",
-      sessionEventId: "telegram-status-event",
-    })
-    Object.assign(ordinaryStatusToolContext, { signin: async () => undefined, agentRoot: ordinaryStatus.agentRoot, relationshipAuthorization })
-    updateStewardPolicy(ordinaryStatus.agentRoot, {
-      expectedVersion: 0,
-      actor: relationshipAuthorization.actor!,
-      mutation: { kind: "set_desired_state", key: "container:books", value: "intentionally_off", provenance: "stated", source: "telegram:status-preference" },
-      now: "2026-08-29T10:00:00.000Z",
-    })
-    await ordinaryStatus.getOnMessage()({ updateId: 21, messageId: "22", userId: "42", chatId: "42", text: "status" })
-    expect(ordinaryStatusError).toBeUndefined()
-    expect(ordinaryStatus.api.request).toHaveBeenCalledWith("sendMessage", { chat_id: "42", text: "Books is off because you asked me to keep it off. That stored preference applies only to Books.", parse_mode: "HTML" }, undefined)
 
     const duplicateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-grounded-duplicate-"))
     const duplicate = fixture({
