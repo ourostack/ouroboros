@@ -1868,6 +1868,24 @@ describe("session events", () => {
     })
   })
 
+  it("carries transport reply binding into the canonical user event", async () => {
+    const { buildCanonicalSessionEnvelope, getIngressRelations, stampIngressRelations } = await import("../../heart/session-events")
+    const message: OpenAI.ChatCompletionMessageParam = { role: "user", content: "About that one…" }
+    stampIngressRelations(message, { replyToEventId: "evt-000040", threadRootEventId: "evt-000001", references: ["telegram-artifact:abc", "request:req-1"] })
+    expect(getIngressRelations(message)).toEqual({ replyToEventId: "evt-000040", threadRootEventId: "evt-000001", references: ["telegram-artifact:abc", "request:req-1"] })
+    const { envelope } = buildCanonicalSessionEnvelope({
+      existing: null,
+      previousMessages: [],
+      currentMessages: [message],
+      trimmedMessages: [message],
+      recordedAt: "2026-08-29T18:00:00.000Z",
+      lastUsage: null,
+      state: null,
+      projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
+    })
+    expect(envelope.events[0]?.relations).toMatchObject({ replyToEventId: "evt-000040", threadRootEventId: "evt-000001", references: ["telegram-artifact:abc", "request:req-1"] })
+  })
+
   describe("findCommonPrefixLength skips system messages", () => {
     it("BUG PROOF: changing system prompt causes all messages to be re-created as new events", async () => {
       const { buildCanonicalSessionEnvelope } = await import("../../heart/session-events")

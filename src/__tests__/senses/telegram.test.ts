@@ -736,6 +736,28 @@ describe("Telegram sense", () => {
     expect(JSON.parse(fs.readFileSync(path.join(f.agentRoot, "state", "telegram", "effects", artifactName), "utf8")).parts[0]).toMatchObject({ state: "session_recorded", sessionEventId: "evt-000001" })
   })
 
+  it("binds a Telegram reply to the exact recorded artifact and request", async () => {
+    const f = fixture()
+    await f.getOnMessage()({ updateId: 95, messageId: "96", userId: "42", chatId: "42", text: "first" })
+    const journalRoot = path.join(f.agentRoot, "state", "telegram", "effects")
+    const artifactPath = path.join(journalRoot, fs.readdirSync(journalRoot)[0]!)
+    const artifact = JSON.parse(fs.readFileSync(artifactPath, "utf8"))
+    artifact.target.requestId = "req-7"
+    artifact.parts[0].state = "session_recorded"
+    artifact.parts[0].sessionEventId = "evt-000007"
+    fs.writeFileSync(artifactPath, JSON.stringify(artifact))
+
+    await f.getOnMessage()({ updateId: 97, messageId: "98", userId: "42", chatId: "42", text: "that one", replyToMessageId: "71" })
+
+    expect(f.runTurn).toHaveBeenLastCalledWith(expect.objectContaining({
+      ingressRelations: {
+        replyToEventId: "evt-000007",
+        threadRootEventId: null,
+        references: [`telegram-artifact:${artifact.id}`, "request:req-7"],
+      },
+    }))
+  })
+
   it("persists one HMAC-bound acceptance receipt with observed provider, tool, and delivery counts", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-acceptance-receipt-"))
     const runTurn = vi.fn(async (options: any) => {

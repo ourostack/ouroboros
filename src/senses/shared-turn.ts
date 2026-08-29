@@ -13,7 +13,7 @@ import type { ChannelCallbacks } from "../heart/core"
 import { runAgent } from "../heart/core"
 import { getAgentRoot } from "../heart/identity"
 import { sanitizeKey } from "../heart/config"
-import { stampIngressTime } from "../heart/session-events"
+import { stampIngressRelations, stampIngressTime, type SessionIngressRelations } from "../heart/session-events"
 import { loadSession } from "../mind/context"
 import { buildSystem, flattenSystemPrompt } from "../mind/prompt"
 import { getChannelCapabilities, FriendResolver, FileFriendStore, accumulateFriendTokens } from "@ouro.bot/friends"
@@ -174,6 +174,8 @@ export interface RunSenseTurnOptions {
   }
   /** The user's message text. */
   userMessage: string
+  /** Optional authenticated transport binding for the new user event. */
+  ingressRelations?: SessionIngressRelations
   /** Latency profile. Live turns keep local session state but skip remote sync and pre-model kept-note judging. */
   latencyMode?: "standard" | "live"
   /** Optional transport delivery hook for outward `speak`/`settle` text. */
@@ -226,6 +228,10 @@ export interface RunSenseTurnResult {
   toolInvocationCount?: number
   /** Exact durable session path used by this turn, for transport reconciliation. */
   sessionPath?: string
+}
+
+export function getSenseSessionPath(agentName: string, friendId: string, channel: Channel, sessionKey: string): string {
+  return path.join(getAgentRoot(agentName), "state", "sessions", friendId, channel, `${sanitizeKey(sessionKey)}.json`)
 }
 
 /**
@@ -291,7 +297,7 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
   // Session path and loading
   const sessionDir = path.join(agentRoot, "state", "sessions", friendId, channel)
   fs.mkdirSync(sessionDir, { recursive: true })
-  const sessPath = path.join(sessionDir, `${sanitizeKey(sessionKey)}.json`)
+  const sessPath = getSenseSessionPath(agentName, friendId, channel, sessionKey)
   const runWithLease = options._withSessionTurnLease ?? withSessionTurnLease
   return runWithLease(sessPath, async (sessionTurnLease) => {
   const baseSessionRevision = readSessionTransaction(sessPath, sessionTurnLease).revision
@@ -375,6 +381,7 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
   // Run the pipeline
   const userMsg: ChatCompletionMessageParam = { role: "user", content: userMessage }
   stampIngressTime(userMsg)
+  if (options.ingressRelations) stampIngressRelations(userMsg, options.ingressRelations)
   const turnResult = await handleInboundTurn({
     channel,
     latencyMode: options.latencyMode,

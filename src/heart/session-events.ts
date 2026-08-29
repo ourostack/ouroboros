@@ -53,6 +53,8 @@ export interface SessionEventRelations {
   redactsEventId: string | null
 }
 
+export type SessionIngressRelations = Pick<SessionEventRelations, "replyToEventId" | "threadRootEventId" | "references">
+
 export interface SessionEventProvenance {
   captureKind: SessionEventCaptureKind
   legacyVersion: number | null
@@ -317,6 +319,8 @@ export interface SessionEnvelopeBuildOptions {
   trimmedMessages: OpenAI.ChatCompletionMessageParam[]
   /** Pre-captured ingress times (index-aligned with currentMessages, before sanitization stripped _ingressAt). */
   currentIngressTimes?: (string | null)[]
+  /** Pre-captured transport reply bindings, index-aligned with currentMessages. */
+  currentIngressRelations?: (SessionIngressRelations | null)[]
   recordedAt: string
   lastUsage?: SessionUsageData | null
   state?: { mustResolveBeforeHandoff?: boolean; lastFriendActivityAt?: string } | null
@@ -1074,6 +1078,21 @@ export function getIngressTime(msg: OpenAI.ChatCompletionMessageParam): string |
   return typeof value === "string" ? value : null
 }
 
+export function stampIngressRelations(msg: OpenAI.ChatCompletionMessageParam, relations: SessionIngressRelations): void {
+  ;(msg as unknown as Record<string, unknown>)._ingressRelations = structuredClone(relations)
+}
+
+export function getIngressRelations(msg: OpenAI.ChatCompletionMessageParam): SessionIngressRelations | null {
+  const value = (msg as unknown as Record<string, unknown>)._ingressRelations
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null
+  const relations = value as Record<string, unknown>
+  return {
+    replyToEventId: typeof relations.replyToEventId === "string" ? relations.replyToEventId : null,
+    threadRootEventId: typeof relations.threadRootEventId === "string" ? relations.threadRootEventId : null,
+    references: Array.isArray(relations.references) ? relations.references.filter((item): item is string => typeof item === "string") : [],
+  }
+}
+
 function createEventTime(
   role: SessionEventRole,
   recordedAt: string,
@@ -1120,6 +1139,7 @@ function buildEventFromMessage(
   sourceMessageIndex: number | null,
   legacyVersion: number | null,
   ingressAt?: string | null,
+  ingressRelations?: SessionIngressRelations | null,
 ): SessionEvent {
   const normalized = normalizeMessage(message)
   const role = normalized.role
@@ -1136,9 +1156,9 @@ function buildEventFromMessage(
     attachments: [],
     time: createEventTime(role, recordedAt, captureKind, ingressAt),
     relations: {
-      replyToEventId: null,
-      threadRootEventId: null,
-      references: [],
+      replyToEventId: ingressRelations?.replyToEventId ?? null,
+      threadRootEventId: ingressRelations?.threadRootEventId ?? null,
+      references: ingressRelations?.references ?? [],
       toolCallId: role === "tool" ? normalized.toolCallId : null,
       supersedesEventId: null,
       redactsEventId: null,
@@ -1472,6 +1492,7 @@ export function buildCanonicalSessionEnvelope(options: SessionEnvelopeBuildOptio
   const existing = options.existing
   // Callers pass pre-sanitized messages + pre-captured ingress times.
   const currentIngressTimes = options.currentIngressTimes ?? options.currentMessages.map(getIngressTime)
+  const currentIngressRelations = options.currentIngressRelations ?? options.currentMessages.map(getIngressRelations)
   const previousMessages = options.previousMessages
   const currentMessages = options.currentMessages
   const trimmedMessages = options.trimmedMessages
@@ -1526,6 +1547,7 @@ export function buildCanonicalSessionEnvelope(options: SessionEnvelopeBuildOptio
         null,
         null,
         currentIngressTimes[i],
+        currentIngressRelations[i],
       )
       events.push(event)
       currentEventIds.push(event.id)
