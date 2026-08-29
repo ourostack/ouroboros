@@ -1782,7 +1782,7 @@ describe("Telegram durable authorized long poll", () => {
     const onMessage = vi.fn(async () => undefined)
     const request = vi.fn(async () => [
       { update_id: 4, message: { message_id: 1, from: { id: 10 }, chat: { id: 10, type: "private" }, text: "duplicate" } },
-      { update_id: 5, message: { message_id: 2, from: { id: 10 }, chat: { id: 10, type: "private" }, text: "hello" } },
+      { update_id: 5, message: { message_id: 2, from: { id: 10 }, chat: { id: 10, type: "private" }, text: "hello", reply_to_message: { message_id: 44 } } },
       { update_id: 6, message: { message_id: 3, from: { id: 99 }, chat: { id: 99, type: "private" }, text: "foreign" } },
     ])
     const api: TelegramBotApi = { request, stop: vi.fn() }
@@ -1791,7 +1791,7 @@ describe("Telegram durable authorized long poll", () => {
     await expect(poll.pollOnce()).resolves.toBe(7)
     expect(request).toHaveBeenCalledWith("getUpdates", { offset: 5, timeout: 50, allowed_updates: ["message", "callback_query"] }, expect.any(AbortSignal))
     expect(onMessage).toHaveBeenCalledTimes(1)
-    expect(onMessage).toHaveBeenCalledWith(expect.objectContaining({ updateId: 5, userId: "10", chatId: "10", text: "hello" }))
+    expect(onMessage).toHaveBeenCalledWith(expect.objectContaining({ updateId: 5, userId: "10", chatId: "10", text: "hello", replyToMessageId: "44" }))
     expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ nextUpdateId: 7 })
 
     const restartedRequest = vi.fn(async () => [])
