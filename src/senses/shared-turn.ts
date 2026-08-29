@@ -176,6 +176,8 @@ export interface RunSenseTurnOptions {
   userMessage: string
   /** Optional authenticated transport binding for the new user event. */
   ingressRelations?: SessionIngressRelations
+  /** Exact already-committed user ingress claimed by a durable transport worker. */
+  precommittedIngress?: { eventId: string; reference: string }
   /** Latency profile. Live turns keep local session state but skip remote sync and pre-model kept-note judging. */
   latencyMode?: "standard" | "live"
   /** Optional transport delivery hook for outward `speak`/`settle` text. */
@@ -302,6 +304,14 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
   return runWithLease(sessPath, async (sessionTurnLease) => {
   const baseSessionRevision = readSessionTransaction(sessPath, sessionTurnLease).revision
   const existing = loadSession(sessPath)
+  if (options.precommittedIngress) {
+    const event = existing?.events?.find((candidate) => candidate.id === options.precommittedIngress!.eventId)
+    const latestUserEvent = existing?.events?.filter((candidate) => candidate.role === "user").at(-1)
+    if (!event || event !== latestUserEvent || event.role !== "user" || event.content !== userMessage
+      || !event.relations.references.includes(options.precommittedIngress.reference)) {
+      throw new Error("shared turn precommitted ingress is missing, mismatched, or no longer current")
+    }
+  }
   let sessionState = existing?.state
   let persistPromise: Promise<unknown> | undefined
   const sessionMessages: ChatCompletionMessageParam[] = existing?.messages && existing.messages.length > 0
@@ -379,15 +389,19 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
   /* v8 ignore stop */
 
   // Run the pipeline
-  const userMsg: ChatCompletionMessageParam = { role: "user", content: userMessage }
-  stampIngressTime(userMsg)
-  if (options.ingressRelations) stampIngressRelations(userMsg, options.ingressRelations)
+  const inboundMessages: ChatCompletionMessageParam[] = []
+  if (!options.precommittedIngress) {
+    const userMsg: ChatCompletionMessageParam = { role: "user", content: userMessage }
+    stampIngressTime(userMsg)
+    if (options.ingressRelations) stampIngressRelations(userMsg, options.ingressRelations)
+    inboundMessages.push(userMsg)
+  }
   const turnResult = await handleInboundTurn({
     channel,
     latencyMode: options.latencyMode,
     sessionKey,
     capabilities,
-    messages: [userMsg],
+    messages: inboundMessages,
     callbacks,
     sessionTurnLease,
     /* v8 ignore start — delegation wrappers; pipeline integration tested separately */
