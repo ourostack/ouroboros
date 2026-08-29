@@ -112,6 +112,7 @@ describe("Mendelow Cloud Butler Community Apps release", () => {
     expect(update).toContain("findmnt -n -o FSTYPE --target /boot/config/custom/ouro-events/spool")
     expect(update).toContain("nodev nosuid noexec")
     expect(update).not.toContain("cp deploy/unraid/ouro-events")
+    expect(runbook).not.toMatch(/^\s+\/boot\/config\/custom\/ouro-events\/[^ ]+\.sh(?:\s|$)/gmu)
     expect(extractIndex).toBeGreaterThan(0)
     expect(installIndex).toBeGreaterThan(extractIndex)
     expect(verifyIndex).toBeGreaterThan(installIndex)

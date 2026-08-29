@@ -1495,7 +1495,7 @@ Restore:
     fi
   Guard the atomic autostart disable before stopping or removing any Butler
   container. Failure propagates while the existing production remains untouched:
-    /boot/config/custom/ouro-events/bootstrap-spool.sh --mount
+    /bin/bash /boot/config/custom/ouro-events/bootstrap-spool.sh --mount
     test "$(findmnt -n -o FSTYPE --target /boot/config/custom/ouro-events/spool)" = tmpfs
     test "$(stat -c '%u:%g:%a' /boot/config/custom/ouro-events/spool)" = 0:0:755
     if disable_butler_autostart; then
