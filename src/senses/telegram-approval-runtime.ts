@@ -6,6 +6,7 @@ import { openApprovalStore, type ApprovalRecord } from "../heart/approval-store"
 import { ApprovalExecutionFailedError, commitApprovalProposal, executeApprovalDecision, recoverAttemptedApproval, recoverClaimedApproval } from "../heart/tool-approval"
 import { resumeApprovalContinuation, runAgent, type ApprovalCoordinator, type RunAgentOptions } from "../heart/core"
 import { getAgentRoot } from "../heart/identity"
+import { loadSessionEnvelopeFile } from "../heart/session-events"
 import { readSanctuaryAcceptanceMarker, runWithSanctuaryAcceptanceApproval } from "../heart/daemon/sanctuary-acceptance-marker"
 import { sanctuaryTelegramApprovalEvidenceMac } from "./telegram"
 import { saveSession } from "../mind/context"
@@ -278,6 +279,7 @@ export function createTelegramApprovalRuntime(options: {
       if (!checkpoint) return { accepted: false, terminalText: "⚠️ Approval checkpoint is unavailable" }
       const continuationOwnerId = `telegram-continuation-${randomUUID()}`
       let continuationEpoch = 0
+      let continuationCausalEventId: string | undefined
       const continuationCoordinator: ApprovalCoordinator = {
         propose: (request) => coordinator({
           sessionPath: record.sessionPath,
@@ -303,10 +305,17 @@ export function createTelegramApprovalRuntime(options: {
         completeContinuation: () => { effectBarrier(); store.completeContinuation({ approvalId: record.approvalId, ownerId: continuationOwnerId, epoch: continuationEpoch }) },
         runAgent: provider,
         runAgentOptions: approvalContinuationRunAgentOptions(options.toolContext, continuationCoordinator),
-        persist: (messages, result) => { effectBarrier(); saveSession(record.sessionPath, messages, result?.usage, undefined, lease) },
+        persist: (messages, result) => {
+          effectBarrier()
+          const existingEventIds = new Set(loadSessionEnvelopeFile(record.sessionPath)?.events.map((event) => event.id) ?? [])
+          const events = saveSession(record.sessionPath, messages, result?.usage, undefined, lease)
+          continuationCausalEventId = result
+            ? [...events].reverse().find((event) => event.role === "assistant" && !existingEventIds.has(event.id))?.id
+            : undefined
+        },
         deliver: async (text) => {
           effectBarrier()
-          const messageIds = await options.effects.sendText({ idempotencyKey: `approval:${record.approvalId}:continuation:${createHash("sha256").update(text).digest("hex")}`, chatId: options.authorizedChatId, text, authorClass: "butler" })
+          const messageIds = await options.effects.sendText({ idempotencyKey: `approval:${record.approvalId}:continuation:${createHash("sha256").update(text).digest("hex")}`, chatId: options.authorizedChatId, text, authorClass: "butler", ...(continuationCausalEventId ? { causalEventId: continuationCausalEventId } : {}) })
           effectBarrier()
           if (acceptanceBinding) {
             const unsigned = {

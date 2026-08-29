@@ -328,7 +328,8 @@ describe("Telegram effect adapter", () => {
     const artifact = prepareTelegramEffect(store, { idempotencyKey: "shared-turn:1", target, authorClass: "butler", effect: { kind: "text", text: "One useful answer." }, authorization })
     await executeTelegramEffect(store, artifact.id, { request: vi.fn(async () => ({ message_id: 88 })) }, () => authorization)
 
-    await recordTelegramEffectsInSession({ store, sessionPath, artifacts: [store.read(artifact.id)] })
+    const causalEventIds = { [artifact.id]: "evt-000002" }
+    await recordTelegramEffectsInSession({ store, sessionPath, artifacts: [store.read(artifact.id)], causalEventIds })
 
     const recorded = JSON.parse(fs.readFileSync(sessionPath, "utf8")) as SessionEnvelope
     expect(recorded.events).toHaveLength(1)
@@ -339,12 +340,12 @@ describe("Telegram effect adapter", () => {
     crashWindow.parts[0]!.state = "accepted"
     delete crashWindow.parts[0]!.sessionEventId
     store.write(crashWindow)
-    await recordTelegramEffectsInSession({ store, sessionPath, artifacts: [crashWindow] })
+    await recordTelegramEffectsInSession({ store, sessionPath, artifacts: [crashWindow], causalEventIds })
     expect((JSON.parse(fs.readFileSync(sessionPath, "utf8")) as SessionEnvelope).events).toHaveLength(1)
     expect(store.read(artifact.id).parts[0]).toMatchObject({ state: "session_recorded", sessionEventId: "evt-000002" })
   })
 
-  it("binds plain and speak assistant output while ignoring malformed or unrelated tool calls", async () => {
+  it("binds plain and speak assistant output only to the supplied causal events", async () => {
     const store = journal()
     const sessionRoot = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-shared-branches-"))
     roots.push(sessionRoot)
@@ -370,7 +371,12 @@ describe("Telegram effect adapter", () => {
     for (const [key, text] of [["plain", "Plain answer"], ["speak", "Spoken answer"]]) {
       const artifact = prepareTelegramEffect(store, { idempotencyKey: `binding:${key}`, target: { kind: "approved_relationship", friendId: "ari", sessionKey: "telegram:ari" }, authorClass: "butler", effect: { kind: "text", text }, authorization })
       await executeTelegramEffect(store, artifact.id, { request: vi.fn(async () => ({ message_id: key === "plain" ? 91 : 92 })) }, () => authorization)
-      await recordTelegramEffectsInSession({ store, sessionPath, artifacts: [store.read(artifact.id)] })
+      await recordTelegramEffectsInSession({
+        store,
+        sessionPath,
+        artifacts: [store.read(artifact.id)],
+        causalEventIds: { [artifact.id]: key === "plain" ? "evt-000001" : "evt-000004" },
+      })
     }
     const recorded = JSON.parse(fs.readFileSync(sessionPath, "utf8")) as SessionEnvelope
     expect(recorded.events).toHaveLength(4)

@@ -13,7 +13,7 @@ import type { ChannelCallbacks } from "../heart/core"
 import { runAgent } from "../heart/core"
 import { getAgentRoot } from "../heart/identity"
 import { sanitizeKey } from "../heart/config"
-import { stampIngressRelations, stampIngressTime, type SessionIngressRelations } from "../heart/session-events"
+import { stampIngressRelations, stampIngressTime, type SessionEvent, type SessionIngressRelations } from "../heart/session-events"
 import { loadSession } from "../mind/context"
 import { buildSystem, flattenSystemPrompt } from "../mind/prompt"
 import { getChannelCapabilities, FriendResolver, FileFriendStore, accumulateFriendTokens } from "@ouro.bot/friends"
@@ -228,6 +228,25 @@ export interface RunSenseTurnResult {
   toolInvocationCount?: number
   /** Exact durable session path used by this turn, for transport reconciliation. */
   sessionPath?: string
+  /** Existing canonical session event IDs aligned with successful outward deliveries. */
+  causalSessionEventIds?: Array<string | null>
+}
+
+function causalSessionEventIds(
+  events: SessionEvent[],
+  existingEventIds: ReadonlySet<string>,
+  attempts: Array<{ kind: OutwardSenseDeliveryKind; delivered: boolean }>,
+): Array<string | null> {
+  const coordinates = events.flatMap((event): Array<{ kind: OutwardSenseDeliveryKind; eventId: string }> => {
+    if (existingEventIds.has(event.id) || event.role !== "assistant") return []
+    const outwardTools = event.toolCalls.filter((call) => call.function.name === "speak" || call.function.name === "settle")
+    if (outwardTools.length > 0) return outwardTools.map((call) => ({ kind: call.function.name as "speak" | "settle", eventId: event.id }))
+    return typeof event.content === "string" && event.content.trim() ? [{ kind: "text" as const, eventId: event.id }] : []
+  })
+  const aligned = coordinates.length === attempts.length && coordinates.every((coordinate, index) => coordinate.kind === attempts[index]!.kind)
+    ? coordinates.map((coordinate) => coordinate.eventId)
+    : attempts.map(() => null)
+  return attempts.flatMap((attempt, index) => attempt.delivered ? [aligned[index] ?? null] : [])
 }
 
 export function getSenseSessionPath(agentName: string, friendId: string, channel: Channel, sessionKey: string, agentRootOverride?: string): string {
@@ -302,8 +321,9 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
   return runWithLease(sessPath, async (sessionTurnLease) => {
   const baseSessionRevision = readSessionTransaction(sessPath, sessionTurnLease).revision
   const existing = loadSession(sessPath)
+  const existingEventIds = new Set(existing?.events?.map((event) => event.id) ?? [])
   let sessionState = existing?.state
-  let persistPromise: Promise<unknown> | undefined
+  let persistPromise: Promise<SessionEvent[]> | undefined
   const sessionMessages: ChatCompletionMessageParam[] = existing?.messages && existing.messages.length > 0
     ? existing.messages
     : [{ role: "system", content: flattenSystemPrompt(await buildSystem(channel, {}, undefined)) }]
@@ -319,6 +339,7 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
   let terminalDeliveryKind: OutwardSenseDeliveryKind = "text"
   const deliveries: OutwardSenseDelivery[] = []
   const deliveryFailures: OutwardSenseDeliveryFailure[] = []
+  const deliveryAttempts: Array<{ kind: OutwardSenseDeliveryKind; delivered: boolean }> = []
   let providerInvocationCount = 0
   let toolInvocationCount = 0
 
@@ -342,8 +363,11 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
     if (!text) return
 
     const delivery: OutwardSenseDelivery = { kind, text }
+    const attempt = { kind, delivered: false }
+    deliveryAttempts.push(attempt)
     try {
       await options.deliverySink?.onDelivery(delivery)
+      attempt.delivered = true
       deliveries.push(delivery)
       commitResponseText(text)
     } catch (error) {
@@ -445,7 +469,7 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
     }
   }
 
-  if (persistPromise) await persistPromise
+  const persistedEvents = persistPromise ? await persistPromise : []
   await deliverPending(terminalDeliveryKind, { throwOnError: false })
 
   const ponderDeferred = false
@@ -500,6 +524,15 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
     meta: { agentName, channel, sessionKey, friendId, ponderDeferred, responseLength: finalResponse.length },
   })
 
-  return { response: finalResponse, ponderDeferred, deliveries, deliveryFailures, providerInvocationCount, toolInvocationCount, sessionPath: sessPath }
+  return {
+    response: finalResponse,
+    ponderDeferred,
+    deliveries,
+    deliveryFailures,
+    providerInvocationCount,
+    toolInvocationCount,
+    sessionPath: sessPath,
+    ...(deliveries.length > 0 ? { causalSessionEventIds: causalSessionEventIds(persistedEvents, existingEventIds, deliveryAttempts) } : {}),
+  }
   })
 }

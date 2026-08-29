@@ -1526,6 +1526,38 @@ describe("Telegram sense", () => {
     expect(artifact).toMatchObject({ authorClass: "butler", effect: { kind: "text", text: "Array recovered" }, parts: [{ state: "session_recorded", messageId: 71 }] })
   })
 
+  it("records proactive text as a new event when an older assistant event has identical text", async () => {
+    const f = fixture()
+    const subject = opaqueTelegramSubject("k".repeat(43), "test-token", "42", "42")
+    const sessionPath = getSenseSessionPath("butler", `telegram-user:${subject}`, "telegram", `telegram:${subject}`, f.agentRoot)
+    fs.mkdirSync(path.dirname(sessionPath), { recursive: true })
+    fs.writeFileSync(sessionPath, JSON.stringify({
+      version: 2,
+      events: [{
+        id: "evt-000001", sequence: 1, role: "assistant", content: "Array recovered", name: null, toolCallId: null, toolCalls: [], attachments: [],
+        time: { authoredAt: null, authoredAtSource: "local", observedAt: null, observedAtSource: "local", recordedAt: "2026-08-29T17:00:00.000Z", recordedAtSource: "save" },
+        relations: { replyToEventId: null, threadRootEventId: null, references: [], toolCallId: null, supersedesEventId: null, redactsEventId: null },
+        provenance: { captureKind: "live", legacyVersion: null, sourceMessageIndex: null },
+      }],
+      projection: { eventIds: ["evt-000001"], trimmed: false, maxTokens: null, contextMargin: null, inputTokens: null, projectedAt: null },
+      lastUsage: null,
+      state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
+    }))
+
+    await f.app.sendProactive("Array recovered")
+
+    const envelope = JSON.parse(fs.readFileSync(sessionPath, "utf8"))
+    expect(envelope.events.map((event: any) => event.content)).toEqual(["Array recovered", "Array recovered"])
+    expect(envelope.events[0].relations.references).toEqual([])
+    expect(envelope.events[1].relations.references).toEqual(expect.arrayContaining([expect.stringMatching(/^telegram-artifact:/u), "telegram-message:71"]))
+    const artifactRoot = path.join(f.agentRoot, "state", "telegram", "effects")
+    const artifact = JSON.parse(fs.readFileSync(path.join(artifactRoot, fs.readdirSync(artifactRoot)[0]!), "utf8"))
+    expect(artifact.parts[0]).toMatchObject({ state: "session_recorded", messageId: 71, sessionEventId: "evt-000002" })
+
+    await f.getOnMessage()({ updateId: 1518, messageId: "1519", userId: "42", chatId: "42", text: "What did you mean?", replyToMessageId: "71" })
+    expect(f.runTurn.mock.calls[0]![0].ingressRelations.replyToEventId).toBe("evt-000002")
+  })
+
   it("leaves startup health to the evidence-producing native habit", async () => {
     const order: string[] = []
     const healthSweep = Object.assign(

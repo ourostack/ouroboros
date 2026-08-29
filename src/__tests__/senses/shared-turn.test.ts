@@ -61,12 +61,14 @@ vi.mock("../../heart/config", async () => {
 })
 
 const mockLoadSession = vi.fn().mockReturnValue(null)
+const mockDeferPostTurnPersist = vi.fn().mockResolvedValue([])
 
 vi.mock("../../mind/context", async () => {
   const actual = await vi.importActual<typeof import("../../mind/context")>("../../mind/context")
   return {
     ...actual,
     loadSession: (...args: any[]) => mockLoadSession(...args),
+    deferPostTurnPersist: (...args: any[]) => mockDeferPostTurnPersist(...args),
   }
 })
 
@@ -303,6 +305,7 @@ describe("runSenseTurn", () => {
     vi.clearAllMocks()
     mockLoadSession.mockReset()
     mockLoadSession.mockReturnValue(null)
+    mockDeferPostTurnPersist.mockReset().mockResolvedValue([])
     setupSettledTurn()
     mockFriendResolve.mockResolvedValue(makeResolvedContext())
     mockWithSessionTurnLease.mockReset().mockImplementation(async (_sessionPath: string, work: (lease: any) => Promise<any>) => work({
@@ -807,12 +810,17 @@ describe("runSenseTurn", () => {
 
   it("delivers speak and settle segments through the outward delivery sink", async () => {
     const delivered: Array<{ kind: string; text: string }> = []
+    mockDeferPostTurnPersist.mockResolvedValue([
+      { id: "evt-000001", role: "assistant", content: null, toolCalls: [{ function: { name: "speak" } }] },
+      { id: "evt-000002", role: "assistant", content: null, toolCalls: [{ function: { name: "settle" } }] },
+    ])
     mockHandleInboundTurn.mockImplementation(async (input: any) => {
       input.callbacks.onTextChunk("quick voice update")
       await input.callbacks.flushNow()
       input.callbacks.onToolEnd("settle", "final answer", true)
       input.callbacks.onClearText()
       input.callbacks.onTextChunk("final voice answer")
+      await input.postTurn([], "/tmp/session.json")
       return {
         resolvedContext: makeResolvedContext(),
         gateResult: { allowed: true },
@@ -840,7 +848,53 @@ describe("runSenseTurn", () => {
       { kind: "settle", text: "final voice answer" },
     ])
     expect(result.deliveries).toEqual(delivered)
+    expect(result.causalSessionEventIds).toEqual(["evt-000001", "evt-000002"])
     expect(result.response).toBe("quick voice update\nfinal voice answer")
+  })
+
+  it("returns the exact new plain-assistant coordinate without considering older or non-assistant events", async () => {
+    mockLoadSession.mockReturnValue({
+      messages: [{ role: "assistant", content: "old" }],
+      events: [{ id: "evt-old", role: "assistant" }],
+    })
+    mockDeferPostTurnPersist.mockResolvedValue([
+      { id: "evt-old", role: "assistant", content: "old", toolCalls: [] },
+      { id: "evt-user", role: "user", content: "hello", toolCalls: [] },
+      { id: "evt-empty", role: "assistant", content: null, toolCalls: [] },
+      { id: "evt-new", role: "assistant", content: "new", toolCalls: [] },
+    ])
+    mockHandleInboundTurn.mockImplementation(async (input: any) => {
+      input.callbacks.onTextChunk("new")
+      await input.postTurn([], "/tmp/session.json")
+      return { resolvedContext: makeResolvedContext(), gateResult: { allowed: true }, turnOutcome: "settled", sessionPath: "/tmp/session.json", messages: [] }
+    })
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+
+    const result = await runSenseTurn({ agentName: "test-agent", channel: "mcp", sessionKey: "session-123", friendId: "friend-1", userMessage: "hello" })
+
+    expect(result.causalSessionEventIds).toEqual(["evt-new"])
+  })
+
+  it("returns no causal coordinate when failed and successful deliveries do not align with persisted events", async () => {
+    mockDeferPostTurnPersist.mockResolvedValue([
+      { id: "evt-speak", role: "assistant", content: null, toolCalls: [{ function: { name: "speak" } }] },
+    ])
+    mockHandleInboundTurn.mockImplementation(async (input: any) => {
+      input.callbacks.onTextChunk("failed speak")
+      await expect(input.callbacks.flushNow()).rejects.toThrow("speaker down")
+      input.callbacks.onTextChunk("successful text")
+      await input.postTurn([], "/tmp/session.json")
+      return { resolvedContext: makeResolvedContext(), gateResult: { allowed: true }, turnOutcome: "settled", sessionPath: "/tmp/session.json", messages: [] }
+    })
+    let delivery = 0
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+
+    const result = await runSenseTurn({
+      agentName: "test-agent", channel: "mcp", sessionKey: "session-123", friendId: "friend-1", userMessage: "hello",
+      deliverySink: { onDelivery: async () => { if (delivery++ === 0) throw new Error("speaker down") } },
+    })
+
+    expect(result.causalSessionEventIds).toEqual([null])
   })
 
   it("records final outward delivery failures without losing settled text", async () => {
