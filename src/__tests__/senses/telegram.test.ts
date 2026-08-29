@@ -10,6 +10,7 @@ import { createTelegramSenseApp, opaqueTelegramSubject, sanctuaryTelegramApprova
 import { TELEGRAM_ACCEPTANCE_AUDIT_HEAD_RELATIVE_PATH, TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH, verifyTelegramAuditLedger } from "../../senses/telegram-audit-ledger"
 import { splitTelegramText, type TelegramBotApi, type TelegramInboundMessage, type TelegramLongPoll } from "../../senses/telegram-client"
 import { getSenseSessionPath } from "../../senses/shared-turn"
+import { FIXED_USENET_SYSTEM_FAILSAFE } from "../../senses/telegram-effect-adapter"
 
 const RECEIPT_DOMAIN = "ouroboros.telegram.turn-receipt.v3"
 const RECEIPT_KEY = "k".repeat(43)
@@ -67,6 +68,7 @@ function fixture(input: {
   runWithToolReceiptCollection?: any
   afterAcceptanceLedgerPreReadStat?: (filePath: string) => void
   authorizeEffect?: any
+  privilegedFailsafe?: any
 } = {}) {
   const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-sense-fixture-"))
   let onMessage: ((message: TelegramInboundMessage) => Promise<void>) | undefined
@@ -118,8 +120,26 @@ function fixture(input: {
     _runWithToolReceiptCollection: input.runWithToolReceiptCollection,
     _afterAcceptanceLedgerPreReadStat: input.afterAcceptanceLedgerPreReadStat,
     authorizeEffect: input.authorizeEffect,
+    privilegedFailsafe: input.privilegedFailsafe,
   })
   return { app, api, poll, runTurn, approvalTransport, agentRoot, getOnMessage: () => onMessage!, getOnUpdate: () => onUpdate! }
+}
+
+function writeEligibleFailsafeRecord(eventRoot: string): string {
+  const recordPath = path.join(eventRoot, "sanctuary", "sanctuary-usenet", "spend-guard.json")
+  fs.mkdirSync(path.dirname(recordPath), { recursive: true })
+  fs.writeFileSync(recordPath, `${JSON.stringify({
+    schemaVersion: 2, agent: "sanctuary", source: "sanctuary-usenet", eventType: "usenet.protective_action", eventId: "spend-guard",
+    summary: "Downloads paused", evidence: ["verified"], payloadPath: null, priority: "critical", receivedAt: "2026-08-29T19:55:00.000Z", recordPath,
+    duplicateCount: 0, updatedAt: "2026-08-29T19:56:00.000Z", version: 1, observationRevision: "a".repeat(64), observationDigest: "b".repeat(64),
+    transition: "opened", executionState: "retry_wait", generation: 1, attemptCount: 1, claimOwner: null, claimExpiresAt: null,
+    nextAttemptAt: "2026-08-29T19:56:01.000Z", lastError: "provider unavailable", disposition: null, pendingObservation: null,
+    dispatchEnabled: true, shouldWake: false, privilegedIngressNonce: "c".repeat(64), privilegedProtectiveAction: {
+      action: "sabnzbd.pause", actionReceipt: "sabnzbd:pause:2026-08-29", transitionId: "spend-pause:2026-08-29:verified", critical: true,
+      createdAt: "2026-08-29T19:55:00.000Z", expiresAt: "2099-01-01T00:00:00.000Z", verification: { verified: true, digest: "d".repeat(64), observedAt: "2026-08-29T19:55:01.000Z" },
+    },
+  }, null, 2)}\n`)
+  return recordPath
 }
 
 describe("Telegram sense", () => {
@@ -1592,6 +1612,37 @@ describe("Telegram sense", () => {
     const root = path.join(f.agentRoot, "state", "telegram", "effects")
     const artifact = JSON.parse(fs.readFileSync(path.join(root, fs.readdirSync(root)[0]!), "utf8"))
     expect(artifact).toMatchObject({ authorClass: "butler", effect: { kind: "text", text: "Array recovered" }, parts: [{ state: "session_recorded", messageId: 71 }] })
+  })
+
+  it("runs the verified privileged failsafe through the existing Telegram startup reconciliation and records it once", async () => {
+    const eventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-failsafe-events-"))
+    const recordPath = writeEligibleFailsafeRecord(eventRoot)
+    const verifyProtectiveState = vi.fn(async () => ({ verified: true, reference: `sabnzbd.queue.paused:${"d".repeat(64)}:2026-08-29T19:55:01.000Z` }))
+    const f = fixture({ privilegedFailsafe: { eventRoot, verifyProtectiveState } })
+
+    await f.app.run()
+    expect(f.api.request).toHaveBeenCalledTimes(1)
+    expect(f.api.request).toHaveBeenCalledWith("sendMessage", expect.objectContaining({ text: FIXED_USENET_SYSTEM_FAILSAFE }), undefined)
+    expect(JSON.parse(fs.readFileSync(recordPath, "utf8"))).toMatchObject({ privilegedFailsafe: { artifactId: expect.stringMatching(/^[a-f0-9]{64}$/u), verificationRef: expect.stringContaining("sabnzbd.queue.paused") } })
+    await f.app.stop()
+    fs.rmSync(eventRoot, { recursive: true, force: true })
+  })
+
+  it("keeps Telegram available and records a diagnostic when failsafe verification fails", async () => {
+    const eventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-failsafe-error-"))
+    writeEligibleFailsafeRecord(eventRoot)
+    const events: string[] = []
+    setRuntimeLogger(createLogger({ sinks: [(entry) => { events.push(entry.event) }] }))
+    const f = fixture({ privilegedFailsafe: { eventRoot, verifyProtectiveState: vi.fn(async () => { throw new Error("SAB queue unavailable") }) } })
+    try {
+      await expect(f.app.run()).resolves.toBeUndefined()
+      expect(f.api.request).not.toHaveBeenCalled()
+      expect(events).toContain("senses.telegram_system_failsafe_error")
+    } finally {
+      await f.app.stop()
+      setRuntimeLogger(null)
+      fs.rmSync(eventRoot, { recursive: true, force: true })
+    }
   })
 
   it("records proactive text as a new event when an older assistant event has identical text", async () => {

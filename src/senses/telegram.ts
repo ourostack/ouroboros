@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, randomUUID } from "node:crypto"
+import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto"
 import { AsyncLocalStorage } from "node:async_hooks"
 import {
   closeSync,
@@ -48,6 +48,7 @@ import { createTelegramApprovalRuntime, type TelegramApprovalRuntime } from "./t
 import type { SanctuaryHealthSweepResult } from "./sanctuary-health"
 import { createTelegramAuditLedger, type TelegramAuditLedger } from "./telegram-audit-ledger"
 import { loadSessionEnvelopeFile } from "../heart/session-events"
+import { getExternalEventRoot, type PrivilegedProtectiveAction } from "../heart/external-events/router"
 import { withSessionTurnLease } from "../mind/session-transaction"
 import {
   authorizeRelationshipAccess,
@@ -66,15 +67,50 @@ import {
 import {
   createTelegramAuthorizedEffectExecutor,
   createTelegramApprovalEffectPort,
+  FIXED_USENET_SYSTEM_FAILSAFE,
   FileTelegramEffectJournal,
   recordTelegramEffectsInSession,
   recoverTelegramEffectOutbox,
   resolveTelegramReply,
+  sweepTelegramSystemFailsafes,
   type TelegramEffectArtifact,
   type TelegramEffectAuthorization,
   type TelegramEffectAuthorizationInput,
   type TelegramEffectTarget,
 } from "./telegram-effect-adapter"
+
+const SANCTUARY_SAB_CONFIG_PATH = "/run/sanctuary/sabnzbd.ini"
+
+export function createSabQueueProtectiveStateVerifier(options: {
+  iniPath?: string
+  fetch?: typeof fetch
+  now?: () => string
+} = {}): (action: PrivilegedProtectiveAction) => Promise<{ verified: boolean; reference: string }> {
+  const iniPath = options.iniPath ?? SANCTUARY_SAB_CONFIG_PATH
+  const fetchImpl = options.fetch ?? fetch
+  return async (action) => {
+    const apiKey = readFileSync(iniPath, "utf8").match(/^\s*api_key\s*=\s*(\S+)\s*$/mu)?.[1]
+    if (!apiKey) throw new Error("SAB queue verification credential is unavailable")
+    let response: Response
+    try {
+      response = await fetchImpl(`http://127.0.0.1:8090/api?mode=queue&output=json&apikey=${encodeURIComponent(apiKey)}`, { signal: AbortSignal.timeout(15_000) })
+    } catch {
+      throw new Error("SAB queue verification request failed")
+    }
+    if (!response.ok) throw new Error("SAB queue verification request failed")
+    const body = await response.json() as unknown
+    if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("SAB queue verification response is malformed")
+    const queue = (body as Record<string, unknown>).queue
+    if (!queue || typeof queue !== "object" || Array.isArray(queue) || typeof (queue as Record<string, unknown>).paused !== "boolean") {
+      throw new Error("SAB queue verification response is malformed")
+    }
+    const paused = (queue as Record<string, unknown>).paused as boolean
+    const digest = createHash("sha256").update(`sabnzbd.queue.paused=${String(paused)}`).digest("hex")
+    const observedAt = options.now?.() ?? new Date().toISOString()
+    const verified = action.action === "sabnzbd.pause" && paused && action.verification.verified && action.verification.digest === digest
+    return { verified, reference: `sabnzbd.queue.paused:${digest}:${observedAt}` }
+  }
+}
 
 export interface TelegramSenseCredentials {
   botToken: string
@@ -420,6 +456,10 @@ export interface CreateTelegramSenseAppOptions {
   admission?: TelegramAdmissionDependencies
   /** Resolves current relationship authority before both effect preparation and send. */
   authorizeRelationshipEffect?: (input: TelegramEffectAuthorizationInput) => Promise<TelegramEffectAuthorization>
+  privilegedFailsafe?: {
+    eventRoot: string
+    verifyProtectiveState(action: PrivilegedProtectiveAction): Promise<{ verified: boolean; reference: string }>
+  }
   /** Resolves a current per-turn relationship envelope after durable ingress exists. */
   resolveRelationshipAuthorization?: (input: { friendId: string; requestId: string; sessionEventId: string; botId: string; userId: string; chatId: string; sessionKey: string }) => Promise<RelationshipAuthorizationEvaluator>
 }
@@ -884,6 +924,9 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         ? { allowed: true, receiptId: authorization.receiptId, expiresAt: authorization.expiresAt, transport: { chatId: target.chatId } }
         : authorization.allowed ? { allowed: false, reason: "admission gate returned relationship authority" } : authorization
     }
+    if (input.authorClass === "system_failsafe" && (input.effect.kind !== "text" || input.effect.text !== FIXED_USENET_SYSTEM_FAILSAFE || !input.idempotencyKey.startsWith("system-failsafe:"))) {
+      return { allowed: false, reason: "system failsafe shape is not fixed" }
+    }
     if (options.authorizeRelationshipEffect) {
       if (target.friendId === configuredOwnerFriendId && target.sessionKey !== configuredOwnerSessionKey) return { allowed: false, reason: "owner relationship session binding changed" }
       return options.authorizeRelationshipEffect(input)
@@ -978,6 +1021,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   let approvalReconciliationActive = false
   const approvalReconciliationsInFlight = new Set<Promise<void>>()
   let nextApprovalReconcileDeadline: number | undefined
+  let reconcileSystemFailsafes = async (): Promise<void> => undefined
   let stopPromise: Promise<void> | undefined
   let runPromise: Promise<void> | undefined
 
@@ -1007,6 +1051,9 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         approvalReconciliationsInFlight.delete(reconciliation)
       })
       approvalReconciliationsInFlight.add(reconciliation)
+      const failsafe = runWithAcceptanceAuditOwner(reconcileSystemFailsafes)
+        .finally(() => { approvalReconciliationsInFlight.delete(failsafe) })
+      approvalReconciliationsInFlight.add(failsafe)
     }, delay)
   }
 
@@ -1028,6 +1075,24 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
 
   recordAcceptedEffects = async (sessionPath: string, artifacts: TelegramEffectArtifact[], bootstrapInbound?: { text: string; reference: string }, causalEventIds?: Readonly<Record<string, string>>): Promise<void> => {
     await recordTelegramEffectsInSession({ store: getEffectJournal(), sessionPath, artifacts, ...(bootstrapInbound ? { inbound: bootstrapInbound } : {}), ...(causalEventIds ? { causalEventIds } : {}) })
+  }
+  reconcileSystemFailsafes = async (): Promise<void> => {
+    if (!options.privilegedFailsafe) return
+    const target = configuredOwnerTarget()
+    try {
+      await sweepTelegramSystemFailsafes({
+        eventRoot: options.privilegedFailsafe.eventRoot,
+        target,
+        verifyProtectiveState: options.privilegedFailsafe.verifyProtectiveState,
+        execute: executeAuthorizedEffect,
+        recordArtifact: async (artifact) => {
+          if (target.kind !== "approved_relationship") throw new Error("system failsafe target is not a relationship")
+          await recordAcceptedEffects(getSenseSessionPath(options.agentName, target.friendId, "telegram", target.sessionKey, agentRoot), [artifact])
+        },
+      })
+    } catch (error) {
+      emitNervesEvent({ level: "error", component: "senses", event: "senses.telegram_system_failsafe_error", message: "Telegram system failsafe reconciliation failed", meta: { agentName: options.agentName, subject, error: transportError(error) } })
+    }
   }
   const dispatchResolvedRelationshipTurn = async (input: {
     friendId: string
@@ -1448,6 +1513,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         inboxStore.quarantineStrandedAdmittedWork?.()
         await runWithAcceptanceAuditOwner(async () => { await admissionController?.recover() })
         await runWithAcceptanceAuditOwner(recoverEffectOutbox)
+        await runWithAcceptanceAuditOwner(reconcileSystemFailsafes)
         try {
           await runWithAcceptanceAuditOwner(async () => { await toolContext?.sanctuary?.recoverRoutineActions?.() })
         } catch (error) {
@@ -1664,7 +1730,15 @@ export async function createProductionTelegramRelationshipComposition(agentName:
 export async function startTelegramSenseApp(agentName: string): Promise<TelegramSenseApp> {
   const loaded = loadTelegramSenseCredentials(agentName)
   const credentials = { ...loaded, botId: telegramBotIdFromToken(loaded.botToken) }
-  const app = createTelegramSenseApp({ agentName, credentials, ...(await createProductionTelegramRelationshipComposition(agentName, credentials)) })
+  const app = createTelegramSenseApp({
+    agentName,
+    credentials,
+    ...(await createProductionTelegramRelationshipComposition(agentName, credentials)),
+    ...(agentName === "sanctuary" ? { privilegedFailsafe: {
+      eventRoot: getExternalEventRoot(),
+      verifyProtectiveState: createSabQueueProtectiveStateVerifier(),
+    } } : {}),
+  })
   emitNervesEvent({
     component: "senses",
     event: "senses.telegram_app_ready",
