@@ -7,6 +7,7 @@ import {
   createRelationshipAuthorizationEvaluator,
   loadRelationshipCapabilityRegistry,
   relationshipSubjectFromFriend,
+  resolveProfileScopedRelationshipAuthorization,
   type RelationshipCapabilityProfile,
 } from "../../repertoire/relationship-authorization"
 
@@ -73,6 +74,20 @@ describe("relationship authorization", () => {
     expect(evaluator.advertisedToolNames).toEqual(["send_message"])
     expect(evaluator.authorizeTool("shell")).toMatchObject({ allowed: false })
     expect(evaluator.authorizeEffect("telegram.owner_event")).toMatchObject({ allowed: true, profileId: "event", profileVersion: 2 })
+  })
+
+  it("resolves exactly one durable relationship before applying an internal event reduction", async () => {
+    const owner = { id: "ari", name: "Ari", trustLevel: "family" as const, admissionState: "active" as const, initiativePolicy: "proactive" as const, capabilityProfileId: "sanctuary-owner", externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: "", updatedAt: "", schemaVersion: 1 as const }
+    const registry = { version: 2 as const, profiles: {
+      "sanctuary-owner": { id: "sanctuary-owner", version: 3, contextScopes: ["household.status", "operator.private"], toolNames: ["external_event_disposition", "send_message"], effectScopes: ["telegram.owner_event"] },
+      "sanctuary-event": { id: "sanctuary-event", version: 2, contextScopes: ["household.status"], toolNames: ["external_event_disposition"], effectScopes: [] },
+    } }
+    const store = { listAll: async () => [owner] } as any
+    const evaluator = await resolveProfileScopedRelationshipAuthorization({ store, registry, relationshipProfileId: "sanctuary-owner", profileId: "sanctuary-event" })
+    expect(evaluator.advertisedToolNames).toEqual(["external_event_disposition"])
+    expect(evaluator.authorizeTool("external_event_disposition")).toMatchObject({ allowed: true, profileId: "sanctuary-event", profileVersion: 2 })
+    await expect(resolveProfileScopedRelationshipAuthorization({ store: { listAll: async () => [] } as any, registry, relationshipProfileId: "sanctuary-owner", profileId: "sanctuary-event" })).rejects.toThrow("exactly one Friend")
+    await expect(resolveProfileScopedRelationshipAuthorization({ store: { listAll: async () => [owner, { ...owner, id: "duplicate" }] } as any, registry, relationshipProfileId: "sanctuary-owner", profileId: "sanctuary-event" })).rejects.toThrow("exactly one Friend")
   })
 
   it("allows a household read within the active request and emits a versioned receipt", () => {

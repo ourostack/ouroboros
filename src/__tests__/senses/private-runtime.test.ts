@@ -3,6 +3,7 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 import type OpenAI from "openai"
+import { FileFriendStore } from "@ouro.bot/friends"
 import { currentTestObservedNervesEvent } from "../helpers/current-test-nerves"
 
 const mockBuildSystem = vi.fn()
@@ -4453,6 +4454,15 @@ describe("private runtime", () => {
   })
 
   it("exposes the canonical await tool to an external-event turn", async () => {
+    fs.writeFileSync(path.join(agentRoot, "tool-profiles.json"), JSON.stringify({
+      version: 2,
+      profiles: {
+        "sanctuary-owner": { version: 3, contextScopes: ["household.status"], toolNames: ["external_event_disposition", "await_condition"], effectScopes: [] },
+        "sanctuary-event": { version: 2, contextScopes: ["household.status"], toolNames: ["external_event_disposition", "await_condition"], effectScopes: [] },
+      },
+    }))
+    const friendStore = new FileFriendStore(path.join(agentRoot, "friends"))
+    await friendStore.put("owner", { id: "owner", name: "Owner", trustLevel: "family", admissionState: "active", initiativePolicy: "proactive", capabilityProfileId: "sanctuary-owner", externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: "2026-08-29T00:00:00.000Z", updatedAt: "2026-08-29T00:00:00.000Z", schemaVersion: 1 })
     mockGetToolsForChannel.mockReturnValue([
       { type: "function", function: { name: "external_event_disposition", description: "dispose", parameters: {} } },
       { type: "function", function: { name: "await_condition", description: "await", parameters: {} } },
@@ -4465,6 +4475,11 @@ describe("private runtime", () => {
 
     const tools = mockHandleInboundTurn.mock.calls[0][0].runAgentOptions.tools
     expect(tools.map((tool: any) => tool.function.name)).toEqual(["external_event_disposition", "await_condition"])
+    const toolContext = mockHandleInboundTurn.mock.calls[0][0].runAgentOptions.toolContext
+    expect(toolContext.externalEventAuthority.authorizeDisposition({})).toEqual({ allowed: true, reason: "relationship-authorized" })
+    await expect(toolContext.relationshipAuthorization.authorizeTool("external_event_disposition", {})).resolves.toMatchObject({ allowed: true, profileId: "sanctuary-event", profileVersion: 2 })
+    await friendStore.put("owner", { ...(await friendStore.get("owner"))!, admissionState: "revoked", updatedAt: "2026-08-29T00:01:00.000Z" })
+    await expect(toolContext.relationshipAuthorization.authorizeTool("external_event_disposition", {})).resolves.toMatchObject({ allowed: false, reason: expect.stringContaining("admission") })
   })
 
   it("emits habit.tools_unrestricted nerves event when habit has no tools field", async () => {

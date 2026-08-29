@@ -21,7 +21,7 @@ import {
 import { advanceReturnObligation, listActiveReturnObligations, findPendingObligationForOrigin, fulfillObligation } from "../arc/obligations"
 import { buildAttentionQueue, buildAttentionQueueStatusFrame, type AttentionItem } from "./attention-queue"
 import { readPonderPacket } from "../arc/packets"
-import { getChannelCapabilities, accumulateFriendTokens } from "@ouro.bot/friends"
+import { FileFriendStore, getChannelCapabilities, accumulateFriendTokens } from "@ouro.bot/friends"
 import type { FriendRecord, ResolvedContext, FriendStore } from "@ouro.bot/friends"
 import { enforceTrustGate } from "./trust-gate"
 import { handleInboundTurn } from "./pipeline"
@@ -53,6 +53,7 @@ import { deskRecordOrientationSection } from "../mind/desk-section"
 import type { HabitSessionToolContext } from "../repertoire/tools-base"
 import type { ExternalEventLeaseContext } from "../heart/external-events/router"
 import { createSanctuaryToolContext } from "./sanctuary-runtime"
+import { loadRelationshipCapabilityRegistry, resolveProfileScopedRelationshipAuthorization } from "../repertoire/relationship-authorization"
 import {
   createPrivateTurnRequestFingerprint,
   readPrivateTurnLedger,
@@ -1181,6 +1182,36 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
   const selfContext: ResolvedContext = { friend: selfFriend, channel: innerCapabilities }
 
   const mcpManager = await getSharedMcpManager() ?? undefined
+  const externalEventRelationship = options?.externalEvent
+    ? await (async () => {
+        const agentRoot = getAgentRoot(agentName)
+        const store = new FileFriendStore(path.join(agentRoot, "friends"))
+        const registry = loadRelationshipCapabilityRegistry(agentRoot)
+        const resolve = () => resolveProfileScopedRelationshipAuthorization({
+          store,
+          registry,
+          relationshipProfileId: "sanctuary-owner",
+          profileId: "sanctuary-event",
+        })
+        const initial = await resolve()
+        const initialDisposition = initial.authorizeTool("external_event_disposition")
+        if (!initialDisposition.allowed) throw new Error(`external event relationship authority denied: ${initialDisposition.reason}`)
+        return {
+          store,
+          relationshipAuthorization: {
+            authorizedContextScopes: initial.authorizedContextScopes,
+            advertisedToolNames: initial.advertisedToolNames,
+            authorizeTool: async (name: string) => (await resolve()).authorizeTool(name),
+          },
+          externalEventAuthority: {
+            authorizeDisposition: () => {
+              const decision = initial.authorizeTool("external_event_disposition")
+              return decision.allowed ? { allowed: true, reason: "relationship-authorized" } : { allowed: false, reason: decision.reason }
+            },
+          },
+        }
+      })()
+    : undefined
 
   // ── Habit tool enforcement ───────────────────────────────────────
   let habitToolsResolved: OpenAI.ChatCompletionFunctionTool[] | undefined
@@ -1306,6 +1337,9 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
         delegatedOrigins: attentionQueue,
         ...(options?.externalEvent ? {
           currentExternalEvent: Object.freeze({ ...options.externalEvent }),
+          friendStore: externalEventRelationship!.store,
+          relationshipAuthorization: externalEventRelationship!.relationshipAuthorization,
+          externalEventAuthority: externalEventRelationship!.externalEventAuthority,
           ...(options.externalEvent.source === "sanctuary-health" ? createSanctuaryToolContext(agentName) : {}),
         } : {}),
         ...(options?.noSend ? { noSend: true } : {}),

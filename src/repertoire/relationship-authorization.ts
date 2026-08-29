@@ -1,7 +1,7 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { createHash } from "node:crypto"
-import type { FriendRecord, TrustLevel } from "@ouro.bot/friends"
+import type { FriendRecord, FriendStore, TrustLevel } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../nerves/runtime"
 
 export interface RelationshipCapabilityProfile {
@@ -128,6 +128,28 @@ export function createRelationshipAuthorizationEvaluator(input: {
     authorizeTool: (name) => evaluate({ kind: "tool", name, ...(input.requestId ? { requestId: input.requestId, returnTargetFriendId: subject.friendId } : {}) }),
     authorizeEffect: (scope) => evaluate({ kind: "effect", scope, ...(input.requestId ? { requestId: input.requestId, returnTargetFriendId: subject.friendId } : {}) }),
   }
+}
+
+export async function resolveProfileScopedRelationshipAuthorization(input: {
+  store: FriendStore
+  registry: RelationshipCapabilityRegistry
+  relationshipProfileId: string
+  profileId?: string
+  requestId?: string
+  requestPhase?: "inbound" | "follow_up"
+  sessionEventId?: string
+}): Promise<RelationshipAuthorizationEvaluator> {
+  const friends = await input.store.listAll?.() ?? []
+  const matches = friends.filter((friend) => friend.capabilityProfileId === input.relationshipProfileId)
+  if (matches.length !== 1) throw new Error(`relationship profile ${input.relationshipProfileId} must resolve to exactly one Friend`)
+  return createRelationshipAuthorizationEvaluator({
+    friend: matches[0]!,
+    registry: input.registry,
+    ...(input.profileId ? { profileId: input.profileId } : {}),
+    ...(input.requestId ? { requestId: input.requestId } : {}),
+    ...(input.requestPhase ? { requestPhase: input.requestPhase } : {}),
+    ...(input.sessionEventId ? { sessionEventId: input.sessionEventId } : {}),
+  })
 }
 
 export function authorizeRelationshipAccess(input: {
