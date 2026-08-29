@@ -1656,11 +1656,66 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     const update = runbook.slice(runbook.indexOf("Update:"), runbook.indexOf("Backup:"))
     const topology = update.indexOf('if assert_update_topology "$ROLLBACK_IMAGE_ID"; then')
-    const audit = update.indexOf('audit_effective ouro-butler "$ROLLBACK_IMAGE_ID"')
+    const sourcePreflight = update.indexOf('assert_update_source "$ROLLBACK_IMAGE_ID"')
     const firstDockerRun = update.indexOf("docker run --rm")
     expect(topology).toBeGreaterThan(-1)
-    expect(audit).toBeGreaterThan(topology)
+    expect(sourcePreflight).toBeGreaterThan(topology)
     expect(firstDockerRun).toBeGreaterThan(topology)
+  })
+
+  it("admits only the exact known alpha.742 two-mount source topology", () => {
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const helper = extractRunbookFunction(runbook, "assert_legacy_alpha742_source")
+    const dispatch = extractRunbookFunction(runbook, "assert_update_source")
+    const imageId = "sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d"
+    const script = String.raw`set -u
+docker() {
+  test "$1" = inspect || return 1
+  test "$2" = --format || return 1
+  test "$4" = ouro-butler || return 1
+  case "$3" in
+    *'.Image'*) printf '%s\n' "$SOURCE_IMAGE_ID" ;;
+    *'.Config.User'*) printf '%s\n' "$SOURCE_USER" ;;
+    *'.HostConfig.NetworkMode'*) printf '%s\n' "$SOURCE_NETWORK" ;;
+    *'.HostConfig.Privileged'*) printf '%s\n' "$SOURCE_PRIVILEGED" ;;
+    *'.HostConfig.RestartPolicy.Name'*) printf '%s\n' "$SOURCE_RESTART" ;;
+    *'range .Mounts'*) printf '%b' "$SOURCE_MOUNTS" ;;
+    *) return 1 ;;
+  esac
+}
+${helper}
+assert_legacy_alpha742_source "$EXPECTED_IMAGE_ID"`
+    const base = {
+      EXPECTED_IMAGE_ID: imageId,
+      SOURCE_IMAGE_ID: imageId,
+      SOURCE_USER: "10001:10001",
+      SOURCE_NETWORK: "host",
+      SOURCE_PRIVILEGED: "false",
+      SOURCE_RESTART: "unless-stopped",
+      SOURCE_MOUNTS: [
+        "bind|/mnt/user/appdata/ouro-butler/runtime/.ouro-cli|/home/ouro/.ouro-cli|true",
+        "bind|/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro|/home/ouro/AgentBundles/sanctuary.ouro|true",
+        "",
+      ].join("\\n"),
+    }
+    const valid = runConditionalHelper(script, "legacy", base)
+    expect(valid.status).toBe(0)
+    for (const changed of [
+      { EXPECTED_IMAGE_ID: `sha256:${"a".repeat(64)}` },
+      { SOURCE_IMAGE_ID: `sha256:${"b".repeat(64)}` },
+      { SOURCE_USER: "0:0" },
+      { SOURCE_NETWORK: "bridge" },
+      { SOURCE_PRIVILEGED: "true" },
+      { SOURCE_RESTART: "always" },
+      { SOURCE_MOUNTS: `${base.SOURCE_MOUNTS}bind|/var/run/docker.sock|/var/run/docker.sock|true\\n` },
+      { SOURCE_MOUNTS: base.SOURCE_MOUNTS.replace("|true\\n", "|false\\n") },
+      { SOURCE_MOUNTS: base.SOURCE_MOUNTS.replace("/mnt/user/appdata/ouro-butler/runtime/.ouro-cli", "/mnt/user/media") },
+    ]) {
+      expect(runConditionalHelper(script, "legacy", { ...base, ...changed }).status).not.toBe(0)
+    }
+    expect(helper).not.toContain("audit_effective")
+    expect(dispatch).toContain('assert_legacy_alpha742_source "$EXPECTED_SOURCE_IMAGE_ID"')
+    expect(dispatch).toContain('audit_effective ouro-butler "$EXPECTED_SOURCE_IMAGE_ID"')
   })
 
   it("locks deployment and credential rotation to the canonical bot and exact key IDs", () => {
@@ -1695,7 +1750,7 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
     const currentImage = activation.indexOf("CURRENT_ROLLBACK_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler-rollback)", verifyAbsent)
     const exactImage = activation.indexOf('test "$CURRENT_ROLLBACK_IMAGE_ID" = "$ROLLBACK_IMAGE_ID"', currentImage)
     const rename = activation.indexOf("docker rename ouro-butler-rollback ouro-butler", exactImage)
-    const audit = activation.indexOf('audit_effective ouro-butler "$ROLLBACK_IMAGE_ID"', rename)
+    const audit = activation.indexOf('assert_update_source "$ROLLBACK_IMAGE_ID"', rename)
     const restart = activation.indexOf("docker start ouro-butler", audit)
     const ready = activation.indexOf("wait_butler_ready ouro-butler", restart)
     const autostart = activation.indexOf("enable_butler_autostart", ready)
@@ -1737,7 +1792,7 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
     const currentRollbackImage = staging.indexOf("CURRENT_ROLLBACK_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler-rollback)", verifyAbsent)
     const exactRollbackImage = staging.indexOf('test "$CURRENT_ROLLBACK_IMAGE_ID" = "$ROLLBACK_IMAGE_ID"', currentRollbackImage)
     const renameRollback = staging.indexOf("docker rename ouro-butler-rollback ouro-butler", exactRollbackImage)
-    const auditRollback = staging.indexOf('audit_effective ouro-butler "$ROLLBACK_IMAGE_ID"', renameRollback)
+    const auditRollback = staging.indexOf('assert_update_source "$ROLLBACK_IMAGE_ID"', renameRollback)
     const startRollback = staging.indexOf("docker start ouro-butler", auditRollback)
     const readyRollback = staging.indexOf("wait_butler_ready ouro-butler", startRollback)
     const autostart = staging.indexOf("enable_butler_autostart", readyRollback)
@@ -1798,7 +1853,7 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
     expect(recoverRollback).toBeGreaterThan(recoverProduction)
     expect(propagate).toBeGreaterThan(recoverRollback)
     for (const recovery of [namedProductionRecovery, renamedRollbackRecovery]) {
-      const audit = recovery.indexOf('audit_effective ouro-butler "$ROLLBACK_IMAGE_ID"')
+      const audit = recovery.indexOf('assert_update_source "$ROLLBACK_IMAGE_ID"')
       const start = recovery.indexOf("docker start ouro-butler", audit)
       const ready = recovery.indexOf("wait_butler_ready ouro-butler", start)
       const autostart = recovery.indexOf("enable_butler_autostart", ready)
@@ -1928,7 +1983,7 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
     expect(updateRunbook.indexOf("wait_butler_ready ouro-butler-staging")).toBeGreaterThan(startStaging)
     expect(updateRunbook).toContain("At no point may production and staging run together against the same Telegram token")
     expect(updateRunbook).toContain("docker rename ouro-butler-rollback ouro-butler")
-    const rollbackAudit = updateRunbook.indexOf('audit_effective ouro-butler "$ROLLBACK_IMAGE_ID"')
+    const rollbackAudit = updateRunbook.indexOf('assert_update_source "$ROLLBACK_IMAGE_ID"')
     const rollbackStart = updateRunbook.indexOf("docker start ouro-butler", rollbackAudit)
     expect(rollbackStart).toBeGreaterThan(rollbackAudit)
     const productionBlock = updateRunbook.slice(updateRunbook.indexOf("Create and activate production from the same exact image ID"))

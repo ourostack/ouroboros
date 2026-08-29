@@ -189,6 +189,39 @@ Effective-spec audit helper:
       esac
       assert_only_running_butler ouro-butler || return $?
     }
+    assert_legacy_alpha742_source() {
+      EXPECTED_SOURCE_IMAGE_ID=$1
+      test "$EXPECTED_SOURCE_IMAGE_ID" = sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d || return $?
+      SOURCE_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler) || return $?
+      test "$SOURCE_IMAGE_ID" = "$EXPECTED_SOURCE_IMAGE_ID" || return $?
+      SOURCE_USER=$(docker inspect --format '{{.Config.User}}' ouro-butler) || return $?
+      test "$SOURCE_USER" = 10001:10001 || return $?
+      SOURCE_NETWORK=$(docker inspect --format '{{.HostConfig.NetworkMode}}' ouro-butler) || return $?
+      test "$SOURCE_NETWORK" = host || return $?
+      SOURCE_PRIVILEGED=$(docker inspect --format '{{.HostConfig.Privileged}}' ouro-butler) || return $?
+      test "$SOURCE_PRIVILEGED" = false || return $?
+      SOURCE_RESTART=$(docker inspect --format '{{.HostConfig.RestartPolicy.Name}}' ouro-butler) || return $?
+      test "$SOURCE_RESTART" = unless-stopped || return $?
+      SOURCE_MOUNTS=$(docker inspect --format '{{range .Mounts}}{{printf "%s|%s|%s|%t\n" .Type .Source .Destination .RW}}{{end}}' ouro-butler) || return $?
+      SOURCE_MOUNT_COUNTS=$(printf '%s\n' "$SOURCE_MOUNTS" | awk -F '|' '
+        NF {
+          total++
+          if ($1 == "bind" && $2 == "/mnt/user/appdata/ouro-butler/runtime/.ouro-cli" && $3 == "/home/ouro/.ouro-cli" && $4 == "true") runtime++
+          else if ($1 == "bind" && $2 == "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro" && $3 == "/home/ouro/AgentBundles/sanctuary.ouro" && $4 == "true") agent++
+          else invalid++
+        }
+        END { printf "%d %d %d %d", total + 0, runtime + 0, agent + 0, invalid + 0 }
+      ') || return $?
+      test "$SOURCE_MOUNT_COUNTS" = "2 1 1 0" || return $?
+    }
+    assert_update_source() {
+      EXPECTED_SOURCE_IMAGE_ID=$1
+      if test "$EXPECTED_SOURCE_IMAGE_ID" = sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d; then
+        assert_legacy_alpha742_source "$EXPECTED_SOURCE_IMAGE_ID"
+      else
+        audit_effective ouro-butler "$EXPECTED_SOURCE_IMAGE_ID"
+      fi
+    }
     validate_sanctuary_roots() {
       (
       VALIDATE_RUNTIME_ROOT=$1
@@ -1070,8 +1103,9 @@ Update:
   Failure removes only partial target-image staging/production containers,
   quarantines the exact legacy container without deletion or restart, leaves
   autostart disabled, and propagates the original status.
-  For a normal update, preflight the canonical topology before any autostart or
-  container mutation. Production must be the only running Butler poller;
+  For this cutover, preflight either the exact known alpha.742 two-mount source
+  or an already-canonical source before any autostart or container mutation.
+  Production must be the only running Butler poller;
   staging must be absent; rollback may be absent or one stopped container with
   the exact production image. A stopped legacy-evidence container is preserved.
   Disable every Butler name in Unraid's array-autostart file and verify that
@@ -1089,7 +1123,7 @@ Update:
       UPDATE_PREFLIGHT_STATUS=$?
       (exit "$UPDATE_PREFLIGHT_STATUS")
     fi
-    audit_effective ouro-butler "$ROLLBACK_IMAGE_ID"
+    assert_update_source "$ROLLBACK_IMAGE_ID"
   Only after that topology gate, stage copies of the packaged template and
   runtime policy at these paths:
     STAGED_TEMPLATE=/mnt/user/appdata/ouro-butler/staging/sanctuary.xml
@@ -1146,7 +1180,7 @@ ouro-butler-rollback
           docker rm --force ouro-butler-rollback >/dev/null 2>&1 || true
         fi
         ! docker container inspect ouro-butler-rollback >/dev/null 2>&1
-        audit_effective ouro-butler "$ROLLBACK_IMAGE_ID"
+        assert_update_source "$ROLLBACK_IMAGE_ID"
         docker start ouro-butler
         assert_only_running_butler ouro-butler
         wait_butler_ready ouro-butler
@@ -1155,7 +1189,7 @@ ouro-butler-rollback
         docker stop ouro-butler-rollback >/dev/null 2>&1 || true
         test "$(docker inspect --format '{{.Image}}' ouro-butler-rollback)" = "$ROLLBACK_IMAGE_ID"
         docker rename ouro-butler-rollback ouro-butler
-        audit_effective ouro-butler "$ROLLBACK_IMAGE_ID"
+        assert_update_source "$ROLLBACK_IMAGE_ID"
         docker start ouro-butler
         assert_only_running_butler ouro-butler
         wait_butler_ready ouro-butler
@@ -1165,7 +1199,7 @@ ouro-butler-rollback
     fi
   Preparation failure therefore either restores the still-named exact production
   after removing any stale rollback, or renames the exact stopped rollback back;
-  both recoveries re-audit, start, bounded-wait, atomically restore production-only
+  both recoveries revalidate, start, bounded-wait, atomically restore production-only
   autostart, and propagate the original failure. If neither exact container can
   be found, the failure propagates with Butler autostart disabled.
   Put the entire post-rename staging phase in one explicit conditional so
@@ -1198,7 +1232,7 @@ ouro-butler-rollback
       CURRENT_ROLLBACK_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler-rollback)
       test "$CURRENT_ROLLBACK_IMAGE_ID" = "$ROLLBACK_IMAGE_ID"
       docker rename ouro-butler-rollback ouro-butler
-      audit_effective ouro-butler "$ROLLBACK_IMAGE_ID"
+      assert_update_source "$ROLLBACK_IMAGE_ID"
       docker start ouro-butler
       assert_only_running_butler ouro-butler
       wait_butler_ready ouro-butler
@@ -1207,7 +1241,7 @@ ouro-butler-rollback
     fi
   The failure arm safely handles staging that was never created, remains
   stopped, is running, or exited: it force-removes any partial staging state,
-  verifies the name is absent, restores and re-audits the old production against
+  verifies the name is absent, restores and revalidates the old production against
   its exact pre-recorded image ID, starts and bounded-waits it, atomically
   restores production-only autostart, and propagates the original failure.
   At no point may production and staging run together against the same Telegram token.
@@ -1243,7 +1277,7 @@ ouro-butler-rollback
       CURRENT_ROLLBACK_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler-rollback)
       test "$CURRENT_ROLLBACK_IMAGE_ID" = "$ROLLBACK_IMAGE_ID"
       docker rename ouro-butler-rollback ouro-butler
-      audit_effective ouro-butler "$ROLLBACK_IMAGE_ID"
+      assert_update_source "$ROLLBACK_IMAGE_ID"
       docker start ouro-butler
       assert_only_running_butler ouro-butler
       wait_butler_ready ouro-butler
