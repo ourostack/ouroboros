@@ -21,6 +21,7 @@ import { unraidToolDefinitions } from "./tools-unraid";
 import { ponderTool, settleTool, speakTool } from "./tools-flow";
 import { stewardPolicyToolDefinition } from "./tools-steward-policy";
 import type { ToolHighRiskMutationKind, ToolRiskProfile } from "./tools-base";
+import { inspectRoutineActionGrant, readStewardPolicy } from "../heart/steward-policy";
 
 function safeGetAgentRoot(): string | undefined {
   try {
@@ -171,6 +172,27 @@ export function resolveToolDefinition(toolName: string): ToolDefinition | undefi
 
 export function approvalPolicyForToolName(name: string, args: Record<string, unknown>): ToolApprovalPolicy {
   return resolveToolDefinition(name)?.approvalPolicy?.(args) ?? { kind: "not_required" }
+}
+
+function routineActionInvocation(name: string, args: Record<string, unknown>, ctx?: ToolContext): { policyVersion: number; selection?: NonNullable<ToolContext["routineActionSelection"]> } | null {
+  const target = typeof args.container === "string" ? args.container : ""
+  if (name !== "unraid_restart_container" || !ctx?.agentRoot || ctx.relationshipAuthorization?.actor?.trustLevel !== "family" || !target) return null
+  const policy = readStewardPolicy(ctx.agentRoot)
+  const key = `unraid.restart:${target}`
+  const decision = inspectRoutineActionGrant(ctx.agentRoot, { key, action: "unraid.container.restart", target, expectedPolicyVersion: policy.version })
+  return { policyVersion: policy.version, ...(decision.allowed ? { selection: { key, target, expectedPolicyVersion: policy.version } } : {}) }
+}
+
+export function approvalPolicyForInvocation(name: string, args: Record<string, unknown>, ctx?: ToolContext): ToolApprovalPolicy {
+  const fallback = approvalPolicyForToolName(name, args)
+  if (name !== "unraid_restart_container" || fallback.kind !== "required") return fallback
+  const invocation = routineActionInvocation(name, args, ctx)
+  if (!invocation) return fallback
+  return invocation.selection ? { kind: "not_required" } : { ...fallback, policyId: `${fallback.policyId}.steward.${invocation.policyVersion}` }
+}
+
+export function routineActionSelectionForInvocation(name: string, args: Record<string, unknown>, ctx?: ToolContext): ToolContext["routineActionSelection"] {
+  return routineActionInvocation(name, args, ctx)?.selection
 }
 
 const findDefinition = resolveToolDefinition
@@ -368,16 +390,19 @@ export async function execTool(name: string, args: Record<string, string>, ctx?:
     });
     return `commerce authority required: ${commerceReservation.reason}`
   }
+  const authorizedContext = relationshipDecision?.allowed && name === "unraid_restart_container" && ctx?.routineActionSelection && Number.isInteger(relationshipDecision.profileVersion) && Number(relationshipDecision.profileVersion) > 0
+    ? { ...ctx, routineActionAuthorization: { receiptId: relationshipDecision.receiptId, profileVersion: relationshipDecision.profileVersion ?? 0 } } as ToolContext
+    : ctx
   const toolContext: ToolContext | undefined = commerceReservation?.ok
     ? {
-      ...ctx,
+      ...authorizedContext,
       agentRoot: guardContext.agentRoot,
       commerceAuthority: {
         checkoutId: commerceReservation.checkoutId,
         reservationToken: commerceReservation.reservationToken,
       },
     } as ToolContext
-    : ctx
+    : authorizedContext
 
   try {
     const result = await def.handler(args, toolContext);

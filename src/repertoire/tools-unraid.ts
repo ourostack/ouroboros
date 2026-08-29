@@ -2,6 +2,7 @@ import { createHash } from "node:crypto"
 import { emitNervesEvent } from "../nerves/runtime"
 import { UnraidClient, UnraidClientError, type UnraidErrorCode } from "./unraid-client"
 import type { ToolDefinition } from "./tools-base"
+import { inspectRoutineActionGrant } from "../heart/steward-policy"
 
 export const SANCTUARY_CONTAINERS_QUERY = `query SanctuaryContainers {
   docker { containers(skipCache: true) { id names state status autoStart } }
@@ -308,9 +309,20 @@ export const unraidToolDefinitions: ToolDefinition[] = [
         },
       },
     },
-    handler: async (args, ctx) => JSON.stringify(ctx?.sanctuary
-      ? await ctx.sanctuary.restartContainer({ container: String(args.container) })
-      : JSON.parse(missingRuntime())),
+    handler: async (args, ctx) => {
+      if (!ctx?.sanctuary) return missingRuntime()
+      const target = String(args.container)
+      let routine: { key: string; expectedPolicyVersion: number; authorizationReceiptId: string; authorizationVersion: number } | undefined
+      if (ctx.routineActionSelection) {
+        if (!ctx.routineActionAuthorization || !ctx.agentRoot || ctx.relationshipAuthorization?.actor?.trustLevel !== "family") return JSON.stringify({ ok: false, error: { code: "approval_required", message: "routine action authorization is unavailable", degraded: true } })
+        const { key, expectedPolicyVersion } = ctx.routineActionSelection
+        if (ctx.routineActionSelection.target !== target) return JSON.stringify({ ok: false, error: { code: "approval_required", message: "routine action arguments changed", degraded: true } })
+        const decision = inspectRoutineActionGrant(ctx.agentRoot, { key, action: "unraid.container.restart", target, expectedPolicyVersion })
+        if (!decision.allowed) return JSON.stringify({ ok: false, error: { code: "approval_required", message: decision.reason, degraded: true } })
+        routine = { key, expectedPolicyVersion: decision.policyVersion, authorizationReceiptId: ctx.routineActionAuthorization.receiptId, authorizationVersion: ctx.routineActionAuthorization.profileVersion }
+      }
+      return JSON.stringify(await ctx.sanctuary.restartContainer({ container: target }, routine ? { routine } : undefined))
+    },
     riskProfile: { mutates: "external_side_effect", risk: "high", reason: "restarts one existing allowlisted Docker container" },
     approvalPolicy: () => ({
       kind: "required",

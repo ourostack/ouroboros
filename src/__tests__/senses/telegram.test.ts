@@ -1517,6 +1517,32 @@ describe("Telegram sense", () => {
     expect(neverStarted.api.stop).toHaveBeenCalledOnce()
   })
 
+  it("keeps Telegram available when routine recovery needs later inspection", async () => {
+    const recoverRoutineActions = vi.fn(async () => { throw new Error("Unraid offline") })
+    const poll = { pollOnce: vi.fn(), run: vi.fn(async () => undefined), stop: vi.fn() }
+    const approvalRuntime = {
+      transport: { sendApproval: vi.fn(), handleUpdate: vi.fn(), terminalizeRecovered: vi.fn(), reconcileExpired: vi.fn(async () => undefined) },
+      coordinator: vi.fn(), recover: vi.fn(async () => undefined), close: vi.fn(), legacySubjects: vi.fn(() => []), migrateIdentity: vi.fn(),
+    }
+    const app = createTelegramSenseApp({
+      agentName: "sanctuary",
+      credentials: { botToken: "test-token", authorizedUserId: "42", authorizedChatId: "42" },
+      identityKey: "k".repeat(43),
+      _agentRoot: fs.mkdtempSync(path.join(os.tmpdir(), "telegram-routine-recovery-")),
+      _toolContext: { sanctuary: { recoverRoutineActions } } as never,
+      migrateIdentity: async () => undefined,
+      api: { request: vi.fn(), stop: vi.fn() },
+      offsetStore: { load: () => 0, save: vi.fn() },
+      createLongPoll: () => poll,
+      approvalRuntime: approvalRuntime as never,
+      _createInteractiveControl: (() => ({ socketPath: "unused", start: vi.fn(), stop: vi.fn() })) as never,
+    })
+    await expect(app.run()).resolves.toBeUndefined()
+    expect(recoverRoutineActions).toHaveBeenCalledOnce()
+    expect(poll.run).toHaveBeenCalledOnce()
+    await app.stop()
+  })
+
   it("never stops the one-second observer after persistent reconciliation failures", async () => {
     vi.useFakeTimers()
     let finishPolling!: () => void

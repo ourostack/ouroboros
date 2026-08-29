@@ -6,6 +6,7 @@ import { AsyncLocalStorage } from "node:async_hooks"
 import { getAgentRoot } from "../heart/identity"
 import { readMachineRuntimeCredentialConfig } from "../heart/runtime-credentials"
 import { createApprovedUnraidRestartExecutor, type UnraidRestartAttempt } from "../repertoire/unraid-restart"
+import { consumeRoutineActionGrant, recoverRoutineActionReceipts, transitionRoutineActionReceipt } from "../heart/steward-policy"
 import { UnraidClient } from "../repertoire/unraid-client"
 import { createUnraidReadTools } from "../repertoire/tools-unraid"
 import type { ToolContext } from "../repertoire/tools-base"
@@ -132,6 +133,8 @@ export function createSanctuaryToolContext(agentName: string): Pick<ToolContext,
     },
     acceptanceScenarioHandleDigest: () => readSanctuaryAcceptanceMarker(agentName)?.scenarioHandleDigest,
     acceptanceApproval: readSanctuaryAcceptanceApproval,
+    reserveRoutineAction: (input) => consumeRoutineActionGrant(getAgentRoot(agentName), input),
+    transitionRoutineAction: (input) => transitionRoutineActionReceipt(getAgentRoot(agentName), input),
   })
   return {
     sanctuary: {
@@ -141,11 +144,20 @@ export function createSanctuaryToolContext(agentName: string): Pick<ToolContext,
       getDisks: acceptanceRead("unraid_get_disks", reads.getDisks),
       getNotifications: acceptanceRead("unraid_get_notifications", reads.getNotifications),
       getSystem: acceptanceRead("unraid_get_system", reads.getSystem),
-      restartContainer: async (args) => {
-        const result = await restart(args)
+      restartContainer: async (args, execution) => {
+        const result = execution ? await restart(args, execution) : await restart(args)
         collectToolResult(result)
         return result
       },
+      recoverRoutineActions: () => recoverRoutineActionReceipts(getAgentRoot(agentName), {
+        observeTarget: async (target) => {
+          const observed = await reads.listContainers()
+          if (!observed.ok) throw new Error(observed.error.message)
+          const matches = observed.data.containers.filter((container) => container.id === target.id && container.name === target.name)
+          if (matches.length !== 1) return { ...target, state: "unknown" }
+          return { id: matches[0]!.id, name: matches[0]!.name, state: matches[0]!.state }
+        },
+      }),
     },
   }
 }

@@ -1,9 +1,18 @@
 import { createHash } from "node:crypto"
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
 import { describe, expect, it, vi } from "vitest"
 
 import { createUnraidReadTools, normalizeDockerStatus, unraidToolDefinitions } from "../../repertoire/tools-unraid"
+import { updateStewardPolicy } from "../../heart/steward-policy"
+import { approvalPolicyForInvocation, execTool, routineActionSelectionForInvocation } from "../../repertoire/tools"
 
 const LIVE_SERVER_ID = `${"a".repeat(64)}:${"b".repeat(64)}`
+
+function root(): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "unraid-tools-routine-"))
+}
 
 describe("Unraid typed read tools", () => {
   it("normalizes only canonical Docker state/status pairs", () => {
@@ -263,8 +272,34 @@ describe("Unraid typed read tools", () => {
       expect(JSON.parse(await definition.handler(args, { sanctuary } as any)).ok).toBe(true)
     }
     expect(sanctuary.getContainerLogs).toHaveBeenCalledExactlyOnceWith({ container: "alpha", tailLines: 7 })
-    expect(sanctuary.restartContainer).toHaveBeenCalledExactlyOnceWith({ container: "alpha" })
+    expect(sanctuary.restartContainer).toHaveBeenCalledExactlyOnceWith({ container: "alpha" }, undefined)
     const restartDefinition = unraidToolDefinitions.find((definition) => definition.tool.function.name === "unraid_restart_container")!
     expect(restartDefinition.approvalPolicy?.({}, {} as any)).toEqual({ kind: "required", policyId: "sanctuary.unraid.restart.v1", actionClass: "unraid.container.restart", requiresSoleCall: true })
+  })
+
+  it("uses standing policy only for an exact family-authorized routine restart and otherwise preserves approval", async () => {
+    const agentRoot = root()
+    updateStewardPolicy(agentRoot, {
+      expectedVersion: 0,
+      actor: { friendId: "ari", trustLevel: "family", sessionEventId: "evt-1" },
+      mutation: { kind: "grant_routine_action", key: "unraid.restart:alpha", action: "unraid.container.restart", targets: ["alpha"], maxCount: 2, windowMs: 3_600_000, verificationRequired: true, exclusions: [], provenance: "stated" },
+    })
+    const restart = unraidToolDefinitions.find((definition) => definition.tool.function.name === "unraid_restart_container")!
+    const context = { signin: async () => undefined, agentRoot, relationshipAuthorization: { authorizedContextScopes: [], advertisedToolNames: ["unraid_restart_container"], actor: { friendId: "ari", trustLevel: "family" as const, sessionEventId: "evt-2" }, authorizeTool: () => ({ allowed: true as const, receiptId: "relationship-1", profileVersion: 7 }) }, sanctuary: { restartContainer: vi.fn(async () => ({ ok: true })) } } as any
+    expect(await approvalPolicyForInvocation("unraid_restart_container", { container: "alpha" }, context)).toEqual({ kind: "not_required" })
+    await execTool("unraid_restart_container", { container: "alpha" }, { ...context, routineActionSelection: routineActionSelectionForInvocation("unraid_restart_container", { container: "alpha" }, context) })
+    expect(context.sanctuary.restartContainer).toHaveBeenCalledWith({ container: "alpha" }, { routine: expect.objectContaining({ key: "unraid.restart:alpha", expectedPolicyVersion: 1, authorizationReceiptId: "relationship-1", authorizationVersion: 7 }) })
+    expect(await approvalPolicyForInvocation("unraid_restart_container", { container: "other" }, context)).toMatchObject({ kind: "required" })
+    const beforePolicyId = (await approvalPolicyForInvocation("unraid_restart_container", { container: "other" }, context) as { policyId: string }).policyId
+    updateStewardPolicy(agentRoot, { expectedVersion: 1, actor: { friendId: "ari", trustLevel: "family", sessionEventId: "evt-4" }, mutation: { kind: "set_desired_state", key: "container:other", value: "on", provenance: "stated", source: "request" } })
+    const afterPolicyId = (await approvalPolicyForInvocation("unraid_restart_container", { container: "other" }, context) as { policyId: string }).policyId
+    expect(afterPolicyId).not.toBe(beforePolicyId)
+    const nonFamily = { ...context, relationshipAuthorization: { ...context.relationshipAuthorization, actor: { friendId: "brother", trustLevel: "friend", sessionEventId: "evt-3" } } }
+    expect(await approvalPolicyForInvocation("unraid_restart_container", { container: "alpha" }, nonFamily)).toMatchObject({ kind: "required" })
+    const missingVersion = { ...context, relationshipAuthorization: { ...context.relationshipAuthorization, authorizeTool: () => ({ allowed: true as const, receiptId: "relationship-unversioned" }) } }
+    const missingVersionSelection = routineActionSelectionForInvocation("unraid_restart_container", { container: "alpha" }, missingVersion)
+    expect(JSON.parse(await execTool("unraid_restart_container", { container: "alpha" }, { ...missingVersion, routineActionSelection: missingVersionSelection }))).toMatchObject({ ok: false, error: { code: "approval_required" } })
+    expect(JSON.parse(await restart.handler({ container: "other" }, { ...context, routineActionSelection: { key: "unraid.restart:alpha", target: "alpha", expectedPolicyVersion: 2 }, routineActionAuthorization: { receiptId: "relationship-1", profileVersion: 7 } }))).toMatchObject({ ok: false, error: { message: expect.stringContaining("arguments changed") } })
+    expect(JSON.parse(await restart.handler({ container: "alpha" }, { ...context, routineActionSelection: { key: "unraid.restart:alpha", target: "alpha", expectedPolicyVersion: 1 }, routineActionAuthorization: { receiptId: "relationship-1", profileVersion: 7 } }))).toMatchObject({ ok: false, error: { message: expect.stringContaining("version changed") } })
   })
 })
