@@ -14,6 +14,10 @@ const mockReadPeerPresence = vi.fn()
 const mockCaptureIntention = vi.fn()
 const mockResolveIntention = vi.fn()
 const mockDismissIntention = vi.fn()
+const mockGetExternalEventRoot = vi.fn(() => "/events")
+const mockReadExternalEventRecord = vi.fn()
+const mockClaimExternalEvent = vi.fn()
+const mockCommitExternalEventDisposition = vi.fn()
 
 vi.mock("../../arc/episodes", () => ({
   readRecentEpisodes: (...args: any[]) => mockReadRecentEpisodes(...args),
@@ -51,6 +55,13 @@ vi.mock("../../heart/identity", () => ({
   })),
   getAgentRepoWorkspacesRoot: vi.fn(() => "/mock/repo/ouroboros/state/workspaces"),
   HARNESS_CANONICAL_REPO_URL: "https://github.com/ourostack/ouroboros.git",
+}))
+
+vi.mock("../../heart/external-events/router", () => ({
+  getExternalEventRoot: (...args: any[]) => mockGetExternalEventRoot(...args),
+  readExternalEventRecord: (...args: any[]) => mockReadExternalEventRecord(...args),
+  claimExternalEvent: (...args: any[]) => mockClaimExternalEvent(...args),
+  commitExternalEventDisposition: (...args: any[]) => mockCommitExternalEventDisposition(...args),
 }))
 
 // Minimal mocks for tools-base dependencies
@@ -247,6 +258,38 @@ describe("continuity tools", () => {
       const tool = findTool("care_manage")
       const result = await tool.handler({ action: "resolve", id: "c-1" })
       expect(mockResolveCare).toHaveBeenCalledWith("/mock/agent-root", "c-1")
+    })
+  })
+
+  describe("external_event_disposition", () => {
+    it("claims and commits the current event generation with the Butler's typed reason", async () => {
+      mockReadExternalEventRecord.mockReturnValue({ agent: "ouroboros", version: 4, generation: 2, observationRevision: "rev-2" })
+      mockClaimExternalEvent.mockReturnValue({ version: 5, generation: 2 })
+      mockCommitExternalEventDisposition.mockReturnValue({ executionState: "handled", disposition: { reason: "Expected while the library is sleeping." } })
+      const tool = findTool("external_event_disposition")
+      const result = await tool.handler({
+        recordPath: "/events/ouroboros/sanctuary-health/books.json",
+        classification: "expected",
+        stewardPolicyKey: "service:books",
+        stewardPolicyVersion: 2,
+        decision: "silent",
+        reason: "Expected while the library is sleeping.",
+        nextWake: "on_change",
+      })
+
+      expect(mockClaimExternalEvent).toHaveBeenCalledWith("/events/ouroboros/sanctuary-health/books.json", expect.objectContaining({ expectedVersion: 4, expectedGeneration: 2 }))
+      expect(mockCommitExternalEventDisposition).toHaveBeenCalledWith("/events/ouroboros/sanctuary-health/books.json", expect.objectContaining({
+        expectedVersion: 5,
+        expectedGeneration: 2,
+        disposition: expect.objectContaining({ classifiedRevision: "rev-2", reason: "Expected while the library is sleeping.", nextWake: { kind: "on_change" } }),
+      }))
+      expect(result).toContain("handled")
+    })
+
+    it("rejects records outside the current agent's canonical event root", async () => {
+      const tool = findTool("external_event_disposition")
+      expect(() => tool.handler({ recordPath: "/tmp/other.json" })).toThrow(/current agent/u)
+      expect(mockClaimExternalEvent).not.toHaveBeenCalled()
     })
   })
 

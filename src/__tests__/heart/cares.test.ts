@@ -8,6 +8,8 @@ import {
   readActiveCares,
   updateCare,
   resolveCare,
+  bindCareIncident,
+  resolveCareIncident,
   type CareRecord,
 } from "../../arc/cares"
 import { expectCappedAgentContent, makeOversizedAgentContent } from "../helpers/content-cap"
@@ -256,6 +258,36 @@ describe("care store", () => {
 
     it("throws when care does not exist", () => {
       expect(() => updateCare(tmpDir, "nonexistent-id", { label: "nope" })).toThrow()
+    })
+  })
+
+  describe("incident bindings", () => {
+    it("binds several incidents to one care and resolves them independently", () => {
+      const care = createCare(tmpDir, baseCareInput)
+      const first = bindCareIncident(tmpDir, care.id, {
+        source: "sanctuary-health", incidentKey: "container:jellyfin", classifiedRevision: "rev-1", correlationKey: "media-stack",
+      }, { expectedUpdatedAt: care.updatedAt })
+      const second = bindCareIncident(tmpDir, care.id, {
+        source: "sanctuary-health", incidentKey: "container:sonarr", classifiedRevision: "rev-2", correlationKey: "media-stack",
+      }, { expectedUpdatedAt: first.updatedAt })
+      const partial = resolveCareIncident(tmpDir, care.id, {
+        source: "sanctuary-health", incidentKey: "container:jellyfin", expectedUpdatedAt: second.updatedAt,
+      })
+
+      expect(partial.status).toBe("active")
+      expect(partial.incidentBindings).toHaveLength(2)
+      expect(partial.incidentBindings?.find((binding) => binding.incidentKey === "container:jellyfin")?.resolvedAt).toBeTruthy()
+      expect(partial.incidentBindings?.find((binding) => binding.incidentKey === "container:sonarr")?.resolvedAt).toBeUndefined()
+      expect(() => bindCareIncident(tmpDir, care.id, {
+        source: "sanctuary-health", incidentKey: "container:lidarr", classifiedRevision: "rev-3",
+      }, { expectedUpdatedAt: care.updatedAt })).toThrow(/CAS/u)
+    })
+
+    it("upserts a later revision of the same incident without duplicating its binding", () => {
+      const care = createCare(tmpDir, baseCareInput)
+      const first = bindCareIncident(tmpDir, care.id, { source: "guard", incidentKey: "usenet", classifiedRevision: "rev-1" })
+      const second = bindCareIncident(tmpDir, care.id, { source: "guard", incidentKey: "usenet", classifiedRevision: "rev-2" }, { expectedUpdatedAt: first.updatedAt })
+      expect(second.incidentBindings).toEqual([{ source: "guard", incidentKey: "usenet", classifiedRevision: "rev-2" }])
     })
   })
 

@@ -1,4 +1,7 @@
+import { randomUUID } from "node:crypto";
+import * as path from "node:path";
 import { getAgentRoot, getAgentName } from "../heart/identity";
+import { claimExternalEvent, commitExternalEventDisposition, getExternalEventRoot, readExternalEventRecord } from "../heart/external-events/router";
 import { emitNervesEvent } from "../nerves/runtime";
 import { readRecentEpisodes, emitEpisode } from "../arc/episodes";
 import { readActiveCares, readCares, createCare, updateCare, resolveCare } from "../arc/cares";
@@ -8,6 +11,78 @@ import type { ToolDefinition } from "./tools-base";
 
 export const continuityToolDefinitions: ToolDefinition[] = [
   // ── Continuity tools ──────────────────────────────────────────────
+  {
+    tool: {
+      type: "function",
+      function: {
+        name: "external_event_disposition",
+        description: "Classify the exact external-event generation I just investigated. This records why I acted or stayed silent and what exact change should wake me next; it never sends a message by itself.",
+        parameters: {
+          type: "object",
+          properties: {
+            recordPath: { type: "string", description: "Exact receipt path from the external-event message" },
+            classification: { type: "string", enum: ["expected", "needs_attention", "adopted", "snoozed", "dismissed_until_change", "resolved"] },
+            stewardPolicyKey: { type: "string", description: "Exact desired-state policy key used for this decision" },
+            stewardPolicyVersion: { type: "number", description: "Exact desired-state policy version used for this decision" },
+            decision: { type: "string", enum: ["silent", "act", "ask", "report"] },
+            reason: { type: "string", description: "Short plain-language reason for the decision" },
+            nextWake: { type: "string", enum: ["on_change", "on_escalation", "on_recovery", "at"] },
+            wakeAt: { type: "string", description: "ISO time required when nextWake=at" },
+            awaitId: { type: "string", description: "Existing await receipt required when nextWake=at" },
+            careId: { type: "string", description: "Existing Care adopted for this incident, if any" },
+            actionRefs: { type: "array", items: { type: "string" } },
+            verificationRefs: { type: "array", items: { type: "string" } },
+          },
+          required: ["recordPath", "classification", "stewardPolicyKey", "stewardPolicyVersion", "decision", "reason", "nextWake"],
+        },
+      },
+    },
+    handler: (a) => {
+      const agentName = getAgentName();
+      const agentEventRoot = path.resolve(getExternalEventRoot(), agentName);
+      const recordPath = path.resolve(String(a.recordPath ?? ""));
+      const relative = path.relative(agentEventRoot, recordPath);
+      if (!relative || relative.startsWith("..") || path.isAbsolute(relative) || !recordPath.endsWith(".json")) {
+        throw new Error("External event receipt does not belong to the current agent");
+      }
+      const record = readExternalEventRecord(recordPath);
+      if (record.agent !== agentName) throw new Error("External event receipt does not belong to the current agent");
+      const classification = String(a.classification);
+      const decision = String(a.decision);
+      const nextWake = String(a.nextWake);
+      const policyVersion = Number(a.stewardPolicyVersion);
+      const reason = String(a.reason ?? "").trim();
+      if (!reason || !Number.isSafeInteger(policyVersion) || policyVersion < 1
+        || !["expected", "needs_attention", "adopted", "snoozed", "dismissed_until_change", "resolved"].includes(classification)
+        || !["silent", "act", "ask", "report"].includes(decision)
+        || !["on_change", "on_escalation", "on_recovery", "at"].includes(nextWake)) {
+        throw new Error("External event disposition is invalid");
+      }
+      const wake = nextWake === "at" ? { kind: "at" as const, at: String(a.wakeAt ?? "") } : { kind: nextWake as "on_change" | "on_escalation" | "on_recovery" };
+      const owner = `agent-disposition:${randomUUID()}`;
+      const claim = claimExternalEvent(recordPath, { owner, expectedVersion: record.version, expectedGeneration: record.generation });
+      const handled = commitExternalEventDisposition(recordPath, {
+        owner,
+        expectedVersion: claim.version,
+        expectedGeneration: claim.generation,
+        disposition: {
+          classifiedRevision: record.observationRevision,
+          classification: classification as import("../heart/external-events/router").ExternalEventClassification,
+          stewardPolicy: { key: String(a.stewardPolicyKey), version: policyVersion },
+          decision: decision as import("../heart/external-events/router").ExternalEventDecision,
+          reason,
+          nextWake: wake,
+          careId: typeof a.careId === "string" && a.careId ? a.careId : null,
+          awaitId: typeof a.awaitId === "string" && a.awaitId ? a.awaitId : null,
+          actionRefs: Array.isArray(a.actionRefs) ? a.actionRefs.map(String) : [],
+          verificationRefs: Array.isArray(a.verificationRefs) ? a.verificationRefs.map(String) : [],
+        },
+      });
+      emitNervesEvent({ component: "repertoire", event: "repertoire.external_event_disposition", message: "external event disposition recorded", meta: { agentName, eventId: record.eventId, generation: record.generation, classification, decision } });
+      return JSON.stringify(handled, null, 2);
+    },
+    riskProfile: { mutates: "durable_state_write", risk: "high", reason: "records the agent's classification on an existing external-event receipt" },
+  },
   {
     tool: {
       type: "function",

@@ -51,7 +51,7 @@ import { awaitNameFromPrivateWakeCommand, buildAwaitPrivateWakeCommand } from ".
 import { buildHabitPrivateWakeCommand, habitMessageFromPrivateWakeCommand } from "./habit-private-wake"
 import { createDegradedHabitFile, parseHabitFile, type HabitFile } from "../habits/habit-parser"
 import { applyHabitRuntimeState } from "../habits/habit-runtime-state"
-import { buildExternalEventMessage, recordExternalEvent, type ExternalEventRecord } from "../external-events/router"
+import { buildExternalEventMessage, getExternalEventRoot, listExternalEventStatus, recordExternalEvent, type ExternalEventRecord, type ExternalEventStatus } from "../external-events/router"
 import { isRsvpHabitName } from "../../rsvp/habit-policy"
 import { readContainerRuntimePolicy } from "./container-runtime"
 import type { RunNativeRsvpHabitInput, RunNativeRsvpHabitResult } from "../../rsvp/native-habit-runner"
@@ -534,7 +534,7 @@ export type DaemonCommand =
   | SanctuarySchedulerFireCommand
   | { kind: "habit.probe"; agent: string; habitName: string; noSend?: true }
   | { kind: "await.poke"; agent: string; awaitName: string }
-  | { kind: "external.event.submit"; agent: string; source: string; eventType: string; eventId: string; summary?: string; evidence?: string[]; payloadPath?: string; priority?: string; sessionId?: string; taskRef?: string; wake?: boolean }
+  | { kind: "external.event.submit"; agent: string; source: string; eventType: string; eventId: string; summary?: string; evidence?: string[]; payloadPath?: string; priority?: string; sessionId?: string; taskRef?: string; wake?: boolean; observationRevision?: string; transition?: import("../external-events/router").ExternalEventTransition }
   | { kind: "message.send"; from: string; to: string; content: string; priority?: string; sessionId?: string; taskRef?: string }
   | { kind: "message.poll"; agent: string }
   | { kind: "mcp.list"; agent?: string }
@@ -631,6 +631,7 @@ interface DaemonStatusPayload {
   agents: BundleAgentRow[]
   /** Safe provider/model/readiness rows for every discovered bundle. */
   providers?: ProviderStatusRow[]
+  externalEvents?: ExternalEventStatus[]
 }
 
 interface SocketIdentity {
@@ -944,6 +945,7 @@ export class OuroDaemon {
         agentRoot: path.join(this.bundlesRoot, `${agentName}.ouro`),
       })),
     )
+    const externalEvents = listExternalEventStatus(this.externalEventRoot ?? getExternalEventRoot())
 
     const mailboxUrl = this.mailboxServer?.origin ?? "http://127.0.0.1:0"
     return {
@@ -965,6 +967,7 @@ export class OuroDaemon {
       sync,
       agents,
       ...(providers.length > 0 ? { providers } : {}),
+      ...(externalEvents.length > 0 ? { externalEvents } : {}),
     }
   }
 
@@ -1579,6 +1582,7 @@ export class OuroDaemon {
   private buildExternalEventPrivateWakeCommand(
     command: Extract<DaemonCommand, { kind: "external.event.submit" }>,
     receiptId: string,
+    generation: number,
   ): Extract<DaemonCommand, { kind: "private.wake" }> {
     return {
       kind: "private.wake",
@@ -1586,7 +1590,7 @@ export class OuroDaemon {
       reason: `external event ${command.source}/${command.eventType}`,
       triggerSource: "external-event",
       budgetClass: "interactive",
-      idempotencyKey: `external-event:${command.agent}:${command.source}:${command.eventId}`,
+      idempotencyKey: `external-event:${command.agent}:${command.source}:${command.eventId}:generation:${generation}`,
       originRefs: [
         { kind: "external-event", id: command.eventId, source: command.source, eventType: command.eventType },
         { kind: "queue-receipt", id: receiptId },
@@ -2122,9 +2126,18 @@ export class OuroDaemon {
           evidence: command.evidence,
           payloadPath: command.payloadPath,
           priority: command.priority,
+          observationRevision: command.observationRevision,
+          transition: command.transition,
         }, {
           ...(this.externalEventRoot ? { root: this.externalEventRoot } : {}),
         })
+        if (!record.shouldWake) {
+          return {
+            ok: true,
+            message: `updated external event ${record.source}/${record.eventId} without wake`,
+            data: { event: record, receipt: null, wake: null },
+          }
+        }
         const receipt = await this.router.send({
           from: "ouro-external-event",
           to: command.agent,
@@ -2136,7 +2149,7 @@ export class OuroDaemon {
         let wake: DaemonResponse | null = null
         if (command.wake !== false) {
           wake = await this.handlePrivateRuntimeWake(
-            this.buildExternalEventPrivateWakeCommand(command, receipt.id),
+            this.buildExternalEventPrivateWakeCommand(command, receipt.id, record.generation),
             () => this.queueExternalEventForPrivateRuntime(record),
           )
         }

@@ -909,19 +909,12 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     try {
       acceptanceAuditBarrier()
       const result = await healthSweep()
-      if (result.message) {
-        acceptanceAuditBarrier()
-        if (result.deliveryId) await healthSweep.markDeliveryAttempting?.(result.deliveryId)
-        const messageIds = await deliver(result.message)
-        acceptanceAuditBarrier()
-        if (result.deliveryId) await healthSweep.markDelivered?.(result.deliveryId, messageIds)
-        emitNervesEvent({
-          component: "senses",
-          event: "senses.sanctuary_health_delivered",
-          message: "Sanctuary health notification was delivered",
-          meta: { agentName: options.agentName, deliveryCount: messageIds.length, ...sanctuaryAcceptanceEventMeta(options.agentName) },
-        })
-      }
+      emitNervesEvent({
+        component: "senses",
+        event: "senses.sanctuary_health_observed",
+        message: "Sanctuary health startup evidence sampled without transport effects",
+        meta: { agentName: options.agentName, incidentCount: result.incidents.length, ...sanctuaryAcceptanceEventMeta(options.agentName) },
+      })
     } catch (error) {
       acceptanceAuditBarrier()
       emitNervesEvent({
