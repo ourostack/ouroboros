@@ -34,7 +34,7 @@ describe("steward policy", () => {
     const result = await definition.handler({ action: "set_desired_state", expectedVersion: "0", key: "container:books", value: "off", provenance: "stated", source: "direct instruction" }, {
       signin: async () => undefined,
       agentRoot,
-      relationshipAuthorization: { advertisedToolNames: ["steward_policy_manage"], authorizeTool: () => ({ allowed: true, receiptId: "auth-1" }), actor: ari },
+      relationshipAuthorization: { authorizedContextScopes: ["household.private"], advertisedToolNames: ["steward_policy_manage"], authorizeTool: () => ({ allowed: true, receiptId: "auth-1" }), actor: ari },
     })
     expect(JSON.parse(String(result))).toMatchObject({ version: 1, desiredStates: { "container:books": { value: "off", provenance: "stated" } } })
   })

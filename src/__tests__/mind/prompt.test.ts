@@ -3237,6 +3237,20 @@ describe("buildSystem with context", () => {
     expect(result).toContain("consult_notes")
   })
 
+  it("omits private prompt surfaces when the relationship profile authorizes only household status and own requests", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const friend = { id: "relative", name: "Relative", trustLevel: "friend" as const, admissionState: "active" as const, initiativePolicy: "request_follow_up_only" as const, capabilityProfileId: "sanctuary-household", externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: "", updatedAt: "", schemaVersion: 1 }
+    const result = flattenSystemPrompt(await buildSystem("telegram", { relationshipContextScopes: ["household.status", "own_requests"] }, { friend, channel: { channel: "telegram", senseType: "chat", isRemote: true, isGroup: false, availableIntegrations: [], supportsAttachments: false, supportsReactions: false, chatStyle: true, supportsStreaming: false, supportsRichCards: true, maxMessageLength: 4096 } } as never))
+    expect(result).not.toContain("## my desk")
+    expect(result).not.toContain("family cross-session")
+    expect(result).toContain("Relative")
+  })
+
   it("buildSystem('inner') does NOT include contextSection output (no friend context, no onboarding)", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")

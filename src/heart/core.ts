@@ -1331,6 +1331,7 @@ export async function runAgent(
     try {
       const buildSystemOptions = {
         ...options,
+        relationshipContextScopes: options?.toolContext?.relationshipAuthorization?.authorizedContextScopes,
         orientationFrame: turnOrientationFrame,
         resumePriorWork: options?.resumePriorWork === true,
         providerCapabilities: providerRuntime.capabilities,

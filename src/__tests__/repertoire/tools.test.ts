@@ -165,7 +165,7 @@ describe("execTool", () => {
     const authorizeTool = vi.fn(() => ({ allowed: false as const, reason: "relationship capability was revoked" }))
     const result = await execTool("read_file", { path: "/tmp/private.txt" }, {
       signin: async () => undefined,
-      relationshipAuthorization: { advertisedToolNames: ["read_file"], authorizeTool },
+      relationshipAuthorization: { authorizedContextScopes: [], advertisedToolNames: ["read_file"], authorizeTool },
     })
     expect(result).toContain("relationship capability was revoked")
     expect(authorizeTool).toHaveBeenCalledWith("read_file", { path: "/tmp/private.txt" })

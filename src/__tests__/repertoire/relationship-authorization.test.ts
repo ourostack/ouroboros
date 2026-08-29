@@ -13,7 +13,7 @@ import {
 const household: RelationshipCapabilityProfile = {
   id: "sanctuary-household",
   version: 1,
-  contextScopes: ["household_status", "own_requests"],
+  contextScopes: ["household.status", "own_requests"],
   toolNames: ["unraid_get_system"],
   effectScopes: ["household.read", "telegram.reply"],
 }
@@ -52,6 +52,7 @@ describe("relationship authorization", () => {
       sessionEventId: "evt-1",
     })
     expect(evaluator.advertisedToolNames).toEqual(["unraid_get_system"])
+    expect(evaluator.authorizedContextScopes).toEqual(["household.status", "own_requests"])
     expect(evaluator.actor).toMatchObject({ friendId: "brother", sessionEventId: "evt-1" })
     expect(evaluator.authorizeContext("operator_private")).toMatchObject({ allowed: false })
     expect(evaluator.authorizeTool("unraid_get_system")).toMatchObject({ allowed: true, receiptId: expect.any(String) })

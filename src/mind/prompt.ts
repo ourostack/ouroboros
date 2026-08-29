@@ -825,6 +825,8 @@ if i keep re-deriving it, save it.`
 
 
 export interface BuildSystemOptions {
+  /** Exact relationship-authorized prompt context scopes. Undefined preserves ordinary non-scoped behavior. */
+  relationshipContextScopes?: readonly string[];
   toolChoiceRequired?: boolean;
   bridgeContext?: string;
   currentSessionKey?: string;
@@ -1639,6 +1641,8 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     ] : []),
   ];
 
+  const relationshipScoped = options?.relationshipContextScopes !== undefined
+  const relationshipAllows = (scope: string): boolean => !relationshipScoped || options!.relationshipContextScopes!.includes(scope)
   const volatileParts = [
     // Volatile sections from Group 2 (date and rhythm change every turn)
     dateSection(),
@@ -1650,14 +1654,14 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     startOfTurnPacketSection(options),
     pulseSection(channel),
     tripLedgerTruthSection(channel, context),
-    liveWorldStateSection(options),
+    relationshipAllows("household.status") ? liveWorldStateSection(options) : "",
     pendingMessagesSection(options),
-    activeWorkSection(options),
+    relationshipAllows("household.private") || relationshipAllows("own_requests") ? activeWorkSection(options) : "",
     centerOfGravitySteeringSection(channel, options, context),
-    commitmentsSection(options),
+    relationshipAllows("household.private") || relationshipAllows("own_requests") ? commitmentsSection(options) : "",
     delegationHintSection(options),
     bridgeContextSection(options),
-    buildSessionSummary({
+    (relationshipAllows("household.private") || relationshipAllows("own_requests")) ? buildSessionSummary({
       sessionsDir: path.join(getAgentRoot(), "state", "sessions"),
       friendsDir: path.join(getAgentRoot(), "friends"),
       agentName: getAgentName(),
@@ -1667,16 +1671,16 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
       currentFriendId: context?.friend?.id,
       currentChannel: channel,
       currentKey: options?.currentSessionKey ?? "session",
-    }),
+    }) : "",
 
     // Group 8: friend context
     "# friend context",
     contextSection(context, options),
-    familyCrossSessionTruthSection(context, options),
+    relationshipAllows("household.private") ? familyCrossSessionTruthSection(context, options) : "",
 
     // Group 9: desk
     "# desk",
-    deskSection(),
+    relationshipAllows("household.private") ? deskSection() : "",
   ];
 
   const result: SystemPrompt = {

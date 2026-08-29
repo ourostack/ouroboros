@@ -9826,6 +9826,7 @@ describe("confirmation system", () => {
       toolContext: {
         signin: async () => undefined,
         relationshipAuthorization: {
+          authorizedContextScopes: [],
           advertisedToolNames: ["read_file"],
           authorizeTool: () => ({ allowed: true, receiptId: "auth-1" }),
         },
