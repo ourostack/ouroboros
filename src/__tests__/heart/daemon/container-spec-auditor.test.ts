@@ -136,8 +136,8 @@ describe("Sanctuary pre-activation container auditor", () => {
     const legacyImage = "sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d"
     const legacy = validInspect()
     legacy.Config.Image = legacyImage
-    legacy.HostConfig.Binds.pop()
-    legacy.Mounts.pop()
+    legacy.HostConfig.Binds.splice(2)
+    legacy.Mounts.splice(2)
     expect(auditSanctuaryContainerSpec(legacy, {
       expectedImage: legacyImage,
       expectedEnvironment,
@@ -264,8 +264,8 @@ describe("Sanctuary pre-activation container auditor", () => {
     const legacyImage = "sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d"
     const container = validInspect()
     container.Config.Image = legacyImage
-    container.HostConfig.Binds.pop()
-    container.Mounts.pop()
+    container.HostConfig.Binds.splice(2)
+    container.Mounts.splice(2)
     const image = validImageInspect()
     image.Id = legacyImage
     const files: Record<string, string> = {
