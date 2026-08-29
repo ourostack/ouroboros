@@ -72,6 +72,13 @@ describe("steward policy", () => {
     })).toThrow("explicit authority")
   })
 
+  it("requires verification and canonical future expiry for policy changes", () => {
+    const agentRoot = root()
+    expect(() => updateStewardPolicy(agentRoot, { expectedVersion: 0, actor: ari, now: "2026-08-29T16:00:00.000Z", mutation: { kind: "grant_routine_action", key: "restart", action: "unraid.restart", targets: ["books"], maxCount: 1, windowMs: 1_000, verificationRequired: false, exclusions: [], provenance: "stated" } })).toThrow("verification")
+    expect(() => updateStewardPolicy(agentRoot, { expectedVersion: 0, actor: ari, now: "2026-08-29T16:00:00.000Z", mutation: { kind: "set_desired_state", key: "container:books", value: "off", provenance: "stated", source: "request", expiresAt: "not-a-time" } })).toThrow("canonical")
+    expect(() => updateStewardPolicy(agentRoot, { expectedVersion: 0, actor: ari, now: "2026-08-29T16:00:00.000Z", mutation: { kind: "set_desired_state", key: "container:books", value: "off", provenance: "stated", source: "request", expiresAt: "2026-08-29T15:00:00.000Z" } })).toThrow("future")
+  })
+
   it("requires family identity, a current authorizing session event, and fresh CAS", () => {
     const agentRoot = root()
     const mutation = { kind: "set_desired_state" as const, key: "container:books", value: "on_demand", provenance: "stated" as const, source: "direct instruction" }

@@ -1,5 +1,6 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
+import { randomUUID } from "node:crypto"
 import type { TrustLevel } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../nerves/runtime"
 import { withImmediateSessionTurnLease } from "../mind/session-transaction"
@@ -116,6 +117,13 @@ function requireText(value: string, label: string): string {
   return result
 }
 
+function optionalExpiry(value: string | undefined, now: string): string | undefined {
+  if (!value) return undefined
+  const epoch = Date.parse(value)
+  if (!Number.isFinite(epoch) || new Date(epoch).toISOString() !== value || epoch <= Date.parse(now)) throw new Error("policy expiry must be a future canonical timestamp")
+  return value
+}
+
 export function readStewardPolicy(agentRoot: string): StewardPolicyRecord {
   const filePath = policyPath(agentRoot)
   if (!fs.existsSync(filePath)) return structuredClone(EMPTY_POLICY)
@@ -134,6 +142,7 @@ export function updateStewardPolicy(agentRoot: string, input: { expectedVersion:
     const current = readStewardPolicy(agentRoot)
     if (current.version !== input.expectedVersion) throw new Error(`steward policy version changed: expected ${input.expectedVersion}, got ${current.version}`)
     const now = input.now ?? new Date().toISOString()
+    const expiresAt = optionalExpiry(input.mutation.expiresAt, now)
     const version = current.version + 1
     const next: StewardPolicyRecord = { ...current, version, desiredStates: { ...current.desiredStates }, routineActionGrants: { ...current.routineActionGrants }, updatedAt: now }
     if (input.mutation.kind === "set_desired_state") {
@@ -142,17 +151,18 @@ export function updateStewardPolicy(agentRoot: string, input: { expectedVersion:
         provenance: input.mutation.provenance,
         version,
         source: requireText(input.mutation.source, "desired state source"),
-        ...(input.mutation.expiresAt ? { expiresAt: input.mutation.expiresAt } : {}),
+        ...(expiresAt ? { expiresAt } : {}),
       }
     } else {
       if (input.mutation.provenance !== "stated" && input.mutation.provenance !== "installed_explicit_policy") throw new Error("routine action grants require explicit authority")
       if (!Number.isInteger(input.mutation.maxCount) || input.mutation.maxCount < 1 || !Number.isFinite(input.mutation.windowMs) || input.mutation.windowMs <= 0) throw new Error("routine action grant bounds are invalid")
+      if (!input.mutation.verificationRequired) throw new Error("routine action grants require post-action verification")
       const targets = [...new Set(input.mutation.targets.map((value) => requireText(value, "routine action target")))]
       if (targets.length === 0) throw new Error("routine action grant requires a target")
       next.routineActionGrants[requireText(input.mutation.key, "routine action key")] = {
         action: requireText(input.mutation.action, "routine action"), targets, maxCount: input.mutation.maxCount, windowMs: input.mutation.windowMs,
         verificationRequired: input.mutation.verificationRequired, exclusions: [...new Set(input.mutation.exclusions)], provenance: input.mutation.provenance,
-        issuer, authorizedAt: now, authorizingSessionEvent, version, ...(input.mutation.expiresAt ? { expiresAt: input.mutation.expiresAt } : {}),
+        issuer, authorizedAt: now, authorizingSessionEvent, version, ...(expiresAt ? { expiresAt } : {}),
       }
     }
     ensureDirectory(agentRoot)
@@ -184,7 +194,7 @@ export function consumeRoutineActionGrant(agentRoot: string, input: { key: strin
     if (used >= grant.maxCount) throw new Error("routine action rate limit reached")
     const receipt: RoutineActionReceipt = {
       schemaVersion: 1,
-      id: `action-${Date.now()}-${process.pid}`,
+      id: `action-${randomUUID()}`,
       state: "reserved",
       key: input.key,
       target: input.target,
