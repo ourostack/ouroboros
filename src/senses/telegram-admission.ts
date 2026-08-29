@@ -58,6 +58,7 @@ export interface TelegramAdmissionRecord {
   friendId: string | null
   acknowledgementArtifactId: string | null
   ownerCardArtifactId: string | null
+  ownerCardMessageId: number | null
   ingressSessionKey: string | null
   ingressEventId: string | null
   ingressReference: string | null
@@ -229,6 +230,7 @@ function validateRecord(value: unknown, expectedId?: string): asserts value is T
     || (record.friendId !== null && (typeof record.friendId !== "string" || !record.friendId))
     || (record.acknowledgementArtifactId !== null && typeof record.acknowledgementArtifactId !== "string")
     || (record.ownerCardArtifactId !== null && typeof record.ownerCardArtifactId !== "string")
+    || (record.ownerCardMessageId !== null && (!Number.isSafeInteger(record.ownerCardMessageId) || record.ownerCardMessageId < 1))
     || (record.ingressSessionKey !== null && (typeof record.ingressSessionKey !== "string" || record.ingressSessionKey.length < 1 || record.ingressSessionKey.length > 1_024))
     || (record.ingressEventId !== null && (typeof record.ingressEventId !== "string" || !/^evt-[0-9]{6,}$/u.test(record.ingressEventId)))
     || (record.ingressReference !== null && record.ingressReference !== `telegram-admission:${record.id}`)
@@ -495,6 +497,7 @@ export class FileTelegramAdmissionStore {
       friendId: null,
       acknowledgementArtifactId: null,
       ownerCardArtifactId: null,
+      ownerCardMessageId: null,
       ingressSessionKey: null,
       ingressEventId: null,
       ingressReference: null,
@@ -537,14 +540,16 @@ export class FileTelegramAdmissionStore {
     return updated
   }
 
-  recordEffect(admissionIdValue: string, kind: "acknowledgement" | "owner_card", artifactId: string): TelegramAdmissionRecord {
+  recordEffect(admissionIdValue: string, kind: "acknowledgement" | "owner_card", artifactId: string, messageId?: number): TelegramAdmissionRecord {
     const current = this.read(admissionIdValue)
     if (current.status !== "pending") return current
+    if (kind === "owner_card" && (!Number.isSafeInteger(messageId) || (messageId as number) < 1)) throw new Error("Telegram admission owner card message id is invalid")
+    const ownerCardMessageId = messageId as number
     const updated: TelegramAdmissionRecord = {
       ...current,
       revision: current.revision + 1,
       updatedAt: this.now(),
-      ...(kind === "acknowledgement" ? { acknowledgementArtifactId: artifactId } : { ownerCardArtifactId: artifactId }),
+      ...(kind === "acknowledgement" ? { acknowledgementArtifactId: artifactId } : { ownerCardArtifactId: artifactId, ownerCardMessageId }),
     }
     this.write(updated)
     return updated
@@ -555,6 +560,7 @@ export interface TelegramAdmissionControllerOptions {
   store: FileTelegramAdmissionStore
   owner: { friendId: string; sessionKey: string; chatId: string }
   sendEffect(request: TelegramAdmissionEffectRequest): Promise<string>
+  resolveEffectMessageId(artifactId: string): number | null
   claimFriend(input: TelegramAdmissionFriendClaim): Promise<TelegramAdmissionFriendClaimResult>
   revokeFriend(input: TelegramAdmissionFriendRevocation): Promise<TelegramAdmissionFriendRevocationResult>
   commitApprovedIngress(input: TelegramApprovedTurn): Promise<TelegramCommittedAdmissionIngress>
@@ -608,7 +614,9 @@ export function createTelegramAdmissionController(options: TelegramAdmissionCont
           { text: "Block", callbackData: `admit:${record.id}:block` },
         ]] },
       })
-      record = options.store.recordEffect(record.id, "owner_card", artifactIdValue)
+      const messageId = options.resolveEffectMessageId(artifactIdValue)
+      if (!messageId) throw new Error("Telegram admission owner card message id is unavailable")
+      record = options.store.recordEffect(record.id, "owner_card", artifactIdValue, messageId)
     }
     return record
   }
@@ -716,19 +724,26 @@ export function createTelegramAdmissionController(options: TelegramAdmissionCont
       const record = await ensureEffects(captured.record)
       return { kind: "pending", admissionId: record.id }
     },
-    parseCallback(value: string): { admissionId: string; decision: "allow" | "deny" | "block" } {
+    parseCallback(value: string, messageId: number): { admissionId: string; decision: "allow" | "deny" | "block" } {
       const match = /^admit:([a-f0-9]{20}):(allow|deny|block)$/u.exec(value)
       if (!match) throw new Error("Telegram admission callback is invalid")
+      const record = options.store.read(match[1]!)
+      if (record.ownerCardMessageId !== messageId) throw new Error("Telegram admission callback is not bound to its owner card")
       return { admissionId: match[1]!, decision: match[2] as "allow" | "deny" | "block" }
     },
-    parseOwnerDecision(value: string): { admissionId: string; decision: "allow" | "deny" | "block" } | null {
-      const match = /^(Allow|Deny|Block) ([A-Z0-9-]{4,32})$/u.exec(value.normalize("NFKC").trim())
-      if (!match) return null
-      const matches = options.store.list().filter((record) => record.displayCode === match[2]
-        && (record.status === "pending" || (record.status === "handled" && match[1] === "Block")))
+    parseOwnerDecision(input: { text: string; replyToMessageId?: number }): { admissionId: string; decision: "allow" | "deny" | "block" } | null {
+      if (!input.replyToMessageId || Buffer.byteLength(input.text, "utf8") > 80) return null
+      const normalized = input.text.normalize("NFKC").trim().toLocaleLowerCase("en-US")
+      const decision = /^(?:yes|allow|approve|let (?:them|him|her) in)$/u.test(normalized) ? "allow"
+        : /^(?:no|deny|decline)$/u.test(normalized) ? "deny"
+          : /^(?:block|block (?:them|him|her))$/u.test(normalized) ? "block"
+            : null
+      if (!decision) return null
+      const matches = options.store.list().filter((record) => record.ownerCardMessageId === input.replyToMessageId
+        && (record.status === "pending" || (record.status === "handled" && decision === "block")))
       if (matches.length === 0) return null
-      if (matches.length !== 1) throw new Error("Telegram admission display code is ambiguous")
-      return { admissionId: matches[0]!.id, decision: match[1]!.toLocaleLowerCase("en-US") as "allow" | "deny" | "block" }
+      if (matches.length !== 1) throw new Error("Telegram admission owner card message id is ambiguous")
+      return { admissionId: matches[0]!.id, decision }
     },
     async decide(input: TelegramAdmissionDecision): Promise<TelegramAdmissionRecord> {
       return withDecisionLease(input.admissionId, async () => {
