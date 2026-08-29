@@ -22,4 +22,5 @@
   <Requires/>
   <Config Name="Runtime state" Target="/home/ouro/.ouro-cli" Default="/mnt/user/appdata/ouro-butler/runtime/.ouro-cli" Mode="rw" Description="Machine-scoped runtime" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/ouro-butler/runtime/.ouro-cli</Config>
   <Config Name="Agent bundle" Target="/home/ouro/AgentBundles/sanctuary.ouro" Default="/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro" Mode="rw" Description="Sanctuary bundle" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro</Config>
+  <Config Name="Privileged event spool" Target="/boot/config/custom/ouro-events/spool" Default="/boot/config/custom/ouro-events/spool" Mode="ro" Description="Root producer event spool" Type="Path" Display="always" Required="true" Mask="false">/boot/config/custom/ouro-events/spool</Config>
 </Container>

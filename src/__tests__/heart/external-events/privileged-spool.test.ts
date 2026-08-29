@@ -33,7 +33,7 @@ vi.mock("node:fs", async (importOriginal) => {
       if (barrier && eventRoot && !spoolMock.authorityBarrierUsed && path.resolve(String(target)).startsWith(path.resolve(eventRoot))) {
         spoolMock.authorityBarrierUsed = true
         actual.writeFileSync(`${barrier}.${process.pid}`, "ready")
-        const deadline = Date.now() + 500
+        const deadline = Date.now() + Number(process.env.OURO_TEST_SCANNER_BARRIER_WAIT_MS ?? 500)
         while (Date.now() < deadline && actual.readdirSync(path.dirname(barrier)).filter((name) => name.startsWith(path.basename(barrier))).length < 2) {
           Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)
         }
@@ -45,6 +45,7 @@ vi.mock("node:fs", async (importOriginal) => {
 
 const roots: string[] = []
 const NOW = "2026-08-29T20:00:00.000Z"
+const SOURCE_MANIFEST = ".privileged-replay-manifest.json"
 
 function root(name: string): string {
   const value = fs.mkdtempSync(path.join(os.tmpdir(), `${name}-`))
@@ -133,9 +134,19 @@ describe("privileged external-event spool", () => {
     expect(status).toMatchObject({ agent: "sanctuary", source: "sanctuary-usenet", eventId: "spend-guard", executionState: "received" })
     expect(readExternalEventRecord(status!.recordPath)).toMatchObject({
       observationRevision: "a".repeat(64),
-      privilegedReplayManifest: { algorithm: "sha256-bloom-v1", observedCount: 1 },
+      privilegedIngressNonce: "b".repeat(64),
       evidence: expect.arrayContaining(["protective action receipt: sabnzbd:pause:2026-08-29:50000:20"]),
     })
+    expect(readExternalEventRecord(status!.recordPath)).not.toHaveProperty("privilegedReplayManifest")
+    const sourceManifestPath = path.join(eventRoot, "sanctuary", "sanctuary-usenet", SOURCE_MANIFEST)
+    expect(JSON.parse(fs.readFileSync(sourceManifestPath, "utf8"))).toMatchObject({
+      schemaVersion: 1,
+      agent: "sanctuary",
+      source: "sanctuary-usenet",
+      algorithm: "sha256-bloom-v1",
+      observedCount: 1,
+    })
+    expect(fs.statSync(sourceManifestPath).size).toBeLessThan(64 * 1024)
   })
 
   it("retains replay authority after more than 128 transitions and a scanner restart", () => {
@@ -153,10 +164,8 @@ describe("privileged external-event spool", () => {
 
     expect(scanPrivilegedEventSpool({ spoolRoot, eventRoot, now: () => NOW })).toEqual({ accepted: 140, rejected: 0, replayed: 0 })
     expect(scanPrivilegedEventSpool({ spoolRoot, eventRoot, now: () => NOW })).toEqual({ accepted: 0, rejected: 0, replayed: 140 })
-    expect(readExternalEventRecord(listExternalEventStatus(eventRoot)[0]!.recordPath)).toMatchObject({
-      privilegedReplayManifest: { algorithm: "sha256-bloom-v1", observedCount: 140 },
-    })
-  })
+    expect(JSON.parse(fs.readFileSync(path.join(eventRoot, "sanctuary", "sanctuary-usenet", SOURCE_MANIFEST), "utf8"))).toMatchObject({ observedCount: 140 })
+  }, 15_000)
 
   it("does not recreate compacted handled work when immutable spool history is rescanned", () => {
     const spoolRoot = root("ouro-privileged-compaction")
@@ -189,14 +198,41 @@ describe("privileged external-event spool", () => {
     expect(listExternalEventStatus(eventRoot)).toHaveLength(512)
     const newest = listExternalEventStatus(eventRoot).find((status) => status.eventId === "incident-512")!
     const newestRecord = readExternalEventRecord(newest.recordPath)
-    expect(newestRecord.privilegedReplayManifest).toBeDefined()
+    expect(newestRecord).not.toHaveProperty("privilegedReplayManifest")
     expect(newestRecord.retentionSummary).not.toHaveProperty("privilegedReplayManifest")
     expect(Buffer.byteLength(JSON.stringify(newestRecord))).toBeLessThanOrEqual(64 * 1024)
-  }, 15_000)
+  }, 45_000)
+
+  it.each(["deleted", "corrupt"])("fails closed when the source replay manifest is %s", (failure) => {
+    const spoolRoot = root("ouro-source-manifest-fail-closed")
+    const eventRoot = root("ouro-source-manifest-fail-closed-events")
+    fs.chmodSync(spoolRoot, 0o755)
+    writeSpoolFile(spoolRoot, envelope())
+    spoofRootOwnership(spoolRoot)
+    expect(scanPrivilegedEventSpool({ spoolRoot, eventRoot, now: () => NOW }).accepted).toBe(1)
+    const manifestPath = path.join(eventRoot, "sanctuary", "sanctuary-usenet", SOURCE_MANIFEST)
+    if (failure === "deleted") fs.unlinkSync(manifestPath)
+    else fs.writeFileSync(manifestPath, "not-json")
+
+    expect(scanPrivilegedEventSpool({ spoolRoot, eventRoot, now: () => NOW })).toEqual({ accepted: 0, rejected: 1, replayed: 0 })
+  })
+
+  it("retains replay authority when the accepted receipt is deleted or corrupt", () => {
+    const spoolRoot = root("ouro-source-manifest-independent")
+    const eventRoot = root("ouro-source-manifest-independent-events")
+    fs.chmodSync(spoolRoot, 0o755)
+    writeSpoolFile(spoolRoot, envelope())
+    spoofRootOwnership(spoolRoot)
+    expect(scanPrivilegedEventSpool({ spoolRoot, eventRoot, now: () => NOW }).accepted).toBe(1)
+    const receiptPath = listExternalEventStatus(eventRoot)[0]!.recordPath
+    fs.unlinkSync(receiptPath)
+    expect(scanPrivilegedEventSpool({ spoolRoot, eventRoot, now: () => NOW })).toEqual({ accepted: 0, rejected: 0, replayed: 1 })
+    fs.writeFileSync(receiptPath, "not-json")
+    expect(scanPrivilegedEventSpool({ spoolRoot, eventRoot, now: () => NOW })).toEqual({ accepted: 0, rejected: 1, replayed: 0 })
+  })
 
   it("serializes scanner processes before accepting one nonce under different event IDs", async () => {
     const eventRoot = root("ouro-scanner-process-events")
-    fs.mkdirSync(path.join(eventRoot, "sanctuary", "sanctuary-usenet"), { recursive: true })
     const barrierDir = root("ouro-scanner-process-barrier")
     const barrier = path.join(barrierDir, "ready")
     const testPath = path.resolve(__filename)
@@ -215,8 +251,11 @@ describe("privileged external-event spool", () => {
     const outcomes = await Promise.all([run(1), run(2)])
     expect(outcomes.map((outcome) => outcome.code)).toEqual([0, 0])
     expect(outcomes.reduce((total, outcome) => total + outcome.result.accepted, 0)).toBe(1)
-    expect(outcomes.reduce((total, outcome) => total + outcome.result.replayed, 0)).toBe(1)
+    expect(outcomes.reduce((total, outcome) => total + outcome.result.replayed, 0)).toBe(0)
     expect(outcomes.reduce((total, outcome) => total + outcome.result.rejected, 0)).toBe(0)
+    const retryRoot = roots.find((value) => value.includes("spool-2"))!
+    spoofRootOwnership(retryRoot)
+    expect(scanPrivilegedEventSpool({ spoolRoot: retryRoot, eventRoot, now: () => NOW }).replayed).toBe(1)
   }, 15_000)
 
   it.skipIf(process.env.OURO_TEST_SCANNER_CHILD !== "1")("scanner child process", () => {
@@ -226,6 +265,44 @@ describe("privileged external-event spool", () => {
     const result = scanPrivilegedEventSpool({ spoolRoot, eventRoot, now: () => NOW })
     fs.writeFileSync(process.env.OURO_TEST_SCANNER_RESULT!, JSON.stringify(result))
   })
+
+  it("does not steal an aged global replay lock from its live PID and process start owner", async () => {
+    const eventRoot = root("ouro-scanner-live-lease-events")
+    const holderRoot = root("ouro-scanner-live-lease-holder")
+    const contenderRoot = root("ouro-scanner-live-lease-contender")
+    for (const [index, spoolRoot] of [holderRoot, contenderRoot].entries()) {
+      fs.chmodSync(spoolRoot, 0o755)
+      writeSpoolFile(spoolRoot, envelope({ incidentKey: `lease-${index}`, transitionId: `lease-${index}`, nonce: "f".repeat(64) }))
+    }
+    const barrierDir = root("ouro-scanner-live-lease-barrier")
+    const barrier = path.join(barrierDir, "ready")
+    const resultPath = path.join(barrierDir, "result.json")
+    const child = spawn(process.execPath, [path.resolve("node_modules/vitest/vitest.mjs"), "run", path.resolve(__filename), "-t", "scanner child process"], {
+      stdio: "ignore",
+      env: { ...process.env, OURO_TEST_SCANNER_CHILD: "1", OURO_TEST_SCANNER_SPOOL_ROOT: holderRoot, OURO_TEST_SCANNER_EVENT_ROOT: eventRoot, OURO_TEST_SCANNER_RESULT: resultPath, OURO_TEST_SCANNER_BARRIER: barrier, OURO_TEST_SCANNER_BARRIER_WAIT_MS: "5000" },
+    })
+    const readyPath = async (): Promise<string> => {
+      const deadline = Date.now() + 5_000
+      while (Date.now() < deadline) {
+        const found = fs.readdirSync(barrierDir).find((name) => name.startsWith("ready."))
+        if (found) return path.join(barrierDir, found)
+        await new Promise((resolve) => setTimeout(resolve, 10))
+      }
+      throw new Error("scanner child did not acquire its replay lease")
+    }
+    await readyPath()
+    const lockPath = path.join(eventRoot, "sanctuary", "sanctuary-usenet", ".privileged-replay.lock")
+    const owner = JSON.parse(fs.readFileSync(path.join(lockPath, "owner.json"), "utf8"))
+    expect(owner).toMatchObject({ token: expect.any(String), pid: expect.any(Number), processStart: expect.any(String), leaseUntil: expect.any(String) })
+    fs.utimesSync(lockPath, new Date(0), new Date(0))
+    spoofRootOwnership(contenderRoot)
+    const started = Date.now()
+    expect(scanPrivilegedEventSpool({ spoolRoot: contenderRoot, eventRoot, now: () => NOW })).toEqual({ accepted: 0, rejected: 0, replayed: 0 })
+    expect(Date.now() - started).toBeLessThan(1_000)
+    expect(JSON.parse(fs.readFileSync(path.join(lockPath, "owner.json"), "utf8")).token).toBe(owner.token)
+    fs.writeFileSync(`${barrier}.release`, "release")
+    await new Promise<void>((resolve, reject) => child.on("close", (code) => code === 0 ? resolve() : reject(new Error(`scanner child exited ${code}`))))
+  }, 15_000)
 
   it.each([
     ["wrong source", { source: "attacker" }],
@@ -337,7 +414,7 @@ describe("packaged root event producer", () => {
     const value = envelope({ createdAt: undefined, expiresAt: undefined, nonce: undefined })
     const lockDir = path.join(spoolRoot, ".producer.lock")
     fs.mkdirSync(lockDir)
-    fs.writeFileSync(path.join(lockDir, "owner.json"), JSON.stringify({ pid: 999_999, createdAt: 0 }))
+    fs.writeFileSync(path.join(lockDir, "owner.json"), JSON.stringify({ token: "stale-token", pid: process.pid, processStart: "reused-pid", leaseUntil: new Date(0).toISOString() }))
     fs.writeFileSync(path.join(lockDir, "event.tmp"), "partial")
 
     const result = producer.emitEvent(value, producerOptions(spoolRoot))
@@ -345,6 +422,30 @@ describe("packaged root event producer", () => {
     expect(fs.statSync(result.filePath).nlink).toBe(1)
     expect(fs.existsSync(lockDir)).toBe(false)
     expect(fs.readFileSync(producerPath, "utf8")).not.toContain("fs.linkSync(")
+  })
+
+  it("prunes only canonical safely-opened envelopes expired past grace on every detector tick", async () => {
+    const producerPath = path.resolve(__dirname, "../../../../deploy/unraid/ouro-events/emit-event.mjs")
+    const producer = await import(`${pathToFileURL(producerPath).href}?maintenance=${Date.now()}`) as {
+      maintainSpool(options: ReturnType<typeof producerOptions> & { graceMs: number }): { pruned: number; preserved: number }
+      emitEvent(input: Record<string, unknown>, options: ReturnType<typeof producerOptions> & { graceMs: number; maxSpoolFiles: number }): { created: boolean }
+    }
+    const spoolRoot = root("ouro-producer-maintenance")
+    fs.chmodSync(spoolRoot, 0o755)
+    const expired = envelope({ createdAt: "2026-08-27T19:00:00.000Z", expiresAt: "2026-08-27T20:00:00.000Z", transitionId: "expired", nonce: "1".repeat(64) })
+    const recent = envelope({ createdAt: "2026-08-29T19:40:00.000Z", expiresAt: "2026-08-29T20:10:00.000Z", transitionId: "recent", nonce: "2".repeat(64) })
+    const expiredPath = writeSpoolFile(spoolRoot, expired)
+    const recentPath = writeSpoolFile(spoolRoot, recent)
+    const invalidPath = path.join(spoolRoot, `${"a".repeat(64)}.json`)
+    fs.writeFileSync(invalidPath, "not-json", { mode: 0o444 })
+    fs.chmodSync(invalidPath, 0o444)
+    const options = { ...producerOptions(spoolRoot), graceMs: 60 * 60_000 }
+
+    expect(producer.maintainSpool(options)).toEqual({ pruned: 1, preserved: 2 })
+    expect(fs.existsSync(expiredPath)).toBe(false)
+    expect(fs.existsSync(recentPath)).toBe(true)
+    expect(fs.existsSync(invalidPath)).toBe(true)
+    expect(producer.emitEvent(envelope({ createdAt: undefined, expiresAt: undefined, nonce: undefined, incidentKey: "after-prune", transitionId: "after-prune" }), { ...options, maxSpoolFiles: 3 }).created).toBe(true)
   })
 
   it("fails closed at bounded spool capacity while preserving existing idempotency", async () => {

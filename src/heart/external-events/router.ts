@@ -93,6 +93,7 @@ export interface ExternalEventRecord extends Required<Omit<ExternalEventInput, "
   retentionSummary?: ExternalEventRetentionSummary
   privilegedReplayNonces?: string[]
   privilegedReplayManifest?: ExternalEventReplayManifest
+  privilegedIngressNonce?: string
 }
 
 export interface ExternalEventReplayManifest {
@@ -120,7 +121,15 @@ const PRIVILEGED_EVENT_SOURCE = "sanctuary-usenet"
 const PRIVILEGED_SPOOL_MAX_BYTES = 32 * 1024
 const PRIVILEGED_REPLAY_BITS = 65_536
 const PRIVILEGED_REPLAY_HASHES = 7
+const PRIVILEGED_REPLAY_STATE_FILE = ".privileged-replay-manifest.json"
 const privilegedIngress = Symbol("privileged external-event ingress")
+
+interface PrivilegedReplayState extends ExternalEventReplayManifest {
+  schemaVersion: 1
+  agent: "sanctuary"
+  source: typeof PRIVILEGED_EVENT_SOURCE
+  updatedAt: string
+}
 
 interface PrivilegedExternalEventEnvelope {
   schemaVersion: 1
@@ -252,14 +261,13 @@ function retentionWithoutReplayManifest(summary: ExternalEventRetentionSummary):
 function compactHandledReceiptsForNewRecord(recordPath: string): ExternalEventRetentionSummary | null {
   const sourceDir = path.dirname(recordPath)
   if (!fs.existsSync(sourceDir)) return null
-  const records = fs.readdirSync(sourceDir, { withFileTypes: true }).filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+  const records = fs.readdirSync(sourceDir, { withFileTypes: true }).filter((entry) => entry.isFile() && !entry.name.startsWith(".") && entry.name.endsWith(".json"))
   if (records.length < MAX_EVENT_RECORDS_PER_SOURCE) return null
   const handled = records.flatMap((entry) => {
     const candidatePath = path.join(sourceDir, entry.name)
     try {
       const parsed = readExternalEventRecord(candidatePath)
-      const hasReplay = parsed.privilegedReplayManifest !== undefined || (parsed.privilegedReplayNonces?.length ?? 0) > 0
-      return parsed.executionState === "handled" ? [{ recordPath: candidatePath, updatedAt: parsed.updatedAt, eventId: parsed.eventId, prior: parsed.retentionSummary, replay: hasReplay ? replayManifestWithLegacy(parsed.privilegedReplayManifest, parsed.privilegedReplayNonces) : undefined }] : []
+      return parsed.executionState === "handled" ? [{ recordPath: candidatePath, updatedAt: parsed.updatedAt, eventId: parsed.eventId, prior: parsed.retentionSummary }] : []
     } catch { return [] }
   }).sort((left, right) => left.updatedAt.localeCompare(right.updatedAt) || left.recordPath.localeCompare(right.recordPath))
   let remaining = records.length
@@ -271,13 +279,11 @@ function compactHandledReceiptsForNewRecord(recordPath: string): ExternalEventRe
     const previousSummary = summary as ExternalEventRetentionSummary | null
     const oldest = candidate.prior?.oldestCompactedAt && candidate.prior.oldestCompactedAt < candidate.updatedAt ? candidate.prior.oldestCompactedAt : candidate.updatedAt
     const newest = candidate.prior?.newestCompactedAt && candidate.prior.newestCompactedAt > candidate.updatedAt ? candidate.prior.newestCompactedAt : candidate.updatedAt
-    const replaySources = [previousSummary?.privilegedReplayManifest, candidate.prior?.privilegedReplayManifest, candidate.replay].filter((manifest) => manifest !== undefined)
     summary = {
       compactedHandledCount: (previousSummary?.compactedHandledCount ?? 0) + 1 + (candidate.prior?.compactedHandledCount ?? 0),
       oldestCompactedAt: previousSummary && previousSummary.oldestCompactedAt < oldest ? previousSummary.oldestCompactedAt : oldest,
       newestCompactedAt: previousSummary && previousSummary.newestCompactedAt > newest ? previousSummary.newestCompactedAt : newest,
       digest: createHash("sha256").update(`${previousSummary?.digest ?? ""}\0${candidate.prior?.digest ?? ""}\0${candidate.eventId}\0${candidate.updatedAt}`).digest("hex"),
-      ...(replaySources.length > 0 ? { privilegedReplayManifest: mergeReplayManifests(...replaySources) } : {}),
     }
   }
   if (remaining >= MAX_EVENT_RECORDS_PER_SOURCE) throw new Error("External event receipt capacity is exhausted; active and failed work was preserved")
@@ -297,17 +303,21 @@ function observationFromInput(input: ExternalEventInput, now: string, digest: st
   }
 }
 
-function atomicWrite(recordPath: string, record: ExternalEventRecord): void {
-  const serialized = `${JSON.stringify(record, null, 2)}\n`
-  if (Buffer.byteLength(serialized) > MAX_EVENT_RECORD_BYTES) throw new Error("External event record must be bounded")
-  fs.mkdirSync(path.dirname(recordPath), { recursive: true })
-  const temporary = `${recordPath}.tmp-${process.pid}-${randomUUID()}`
+function atomicWriteJson(filePath: string, value: unknown, errorPrefix: string): void {
+  const serialized = `${JSON.stringify(value, null, 2)}\n`
+  if (Buffer.byteLength(serialized) > MAX_EVENT_RECORD_BYTES) throw new Error(`${errorPrefix} must be bounded`)
+  fs.mkdirSync(path.dirname(filePath), { recursive: true })
+  const temporary = `${filePath}.tmp-${process.pid}-${randomUUID()}`
   fs.writeFileSync(temporary, serialized, { encoding: "utf8", mode: 0o600, flag: "wx" })
   const handle = fs.openSync(temporary, "r")
   try { fs.fsyncSync(handle) } finally { fs.closeSync(handle) }
-  fs.renameSync(temporary, recordPath)
-  const directory = fs.openSync(path.dirname(recordPath), "r")
+  fs.renameSync(temporary, filePath)
+  const directory = fs.openSync(path.dirname(filePath), "r")
   try { fs.fsyncSync(directory) } finally { fs.closeSync(directory) }
+}
+
+function atomicWrite(recordPath: string, record: ExternalEventRecord): void {
+  atomicWriteJson(recordPath, record, "External event record")
 }
 
 function withRecordLock<T>(recordPath: string, operation: () => T): T {
@@ -349,16 +359,6 @@ function withRecordLock<T>(recordPath: string, operation: () => T): T {
       }
     } catch {
       // A stale owner must never remove a successor's lock.
-    }
-  }
-}
-
-function withRecordLockRetry<T>(recordPath: string, operation: () => T): T {
-  const deadline = Date.now() + 30_000
-  while (true) {
-    try { return withRecordLock(recordPath, operation) } catch (error) {
-      if (!(error instanceof Error) || error.message !== "External event record is busy" || Date.now() >= deadline) throw error
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)
     }
   }
 }
@@ -422,7 +422,7 @@ export function listExternalEventStatus(root: string): ExternalEventStatus[] {
     for (const source of fs.readdirSync(agentPath, { withFileTypes: true })) {
       if (!source.isDirectory()) continue
       for (const entry of fs.readdirSync(path.join(agentPath, source.name), { withFileTypes: true })) {
-        if (!entry.isFile() || !entry.name.endsWith(".json")) continue
+        if (!entry.isFile() || entry.name.startsWith(".") || !entry.name.endsWith(".json")) continue
         try {
           const record = readExternalEventRecord(path.join(agentPath, source.name, entry.name))
           rows.push({
@@ -563,24 +563,14 @@ function recordExternalEventInternal(input: ExternalEventInput, options: RecordE
     const existingResult = readExisting(recordPath)
     const existing = existingResult.record
     const privilegedNonce = options[privilegedIngress]?.nonce
-    let privilegedReplayManifest = existing?.privilegedReplayManifest
-    if (privilegedNonce) {
-      const replayAuthority = mergeReplayManifests(
-        replayManifestWithLegacy(existing?.privilegedReplayManifest, existing?.privilegedReplayNonces),
-        existing?.privilegedReplayManifest ? undefined : existing?.retentionSummary?.privilegedReplayManifest,
-        compacted?.privilegedReplayManifest,
-      )
-      if (replayContains(replayAuthority, privilegedNonce)) throw new Error("Privileged external event replayed nonce")
-      privilegedReplayManifest = replayAdd(replayAuthority, privilegedNonce)
-    }
     const retentionSummary = existing?.retentionSummary ?? compacted
     const persistedRetention = retentionSummary ? retentionWithoutReplayManifest(retentionSummary) : undefined
     if (existing?.executionState === "running") {
       if (existing.observationRevision === revision && existing.observationDigest === digest) {
-        return privilegedNonce ? commitMutation(recordPath, { ...existing, ...(persistedRetention ? { retentionSummary: persistedRetention } : {}), privilegedReplayManifest, privilegedReplayNonces: undefined, shouldWake: false }, now) : { ...existing, shouldWake: false }
+        return privilegedNonce ? commitMutation(recordPath, { ...existing, ...(persistedRetention ? { retentionSummary: persistedRetention } : {}), privilegedReplayManifest: undefined, privilegedReplayNonces: undefined, privilegedIngressNonce: privilegedNonce, shouldWake: false }, now) : { ...existing, shouldWake: false }
       }
       const pendingObservation = observationFromInput(input, now, digest, revision, "changed")
-      const updated = commitMutation(recordPath, { ...existing, ...(persistedRetention ? { retentionSummary: persistedRetention } : {}), privilegedReplayManifest, privilegedReplayNonces: undefined, pendingObservation, shouldWake: false }, now)
+      const updated = commitMutation(recordPath, { ...existing, ...(persistedRetention ? { retentionSummary: persistedRetention } : {}), privilegedReplayManifest: undefined, privilegedReplayNonces: undefined, privilegedIngressNonce: privilegedNonce, pendingObservation, shouldWake: false }, now)
       emitNervesEvent({
         component: "daemon",
         event: "daemon.external_event_recorded",
@@ -622,7 +612,7 @@ function recordExternalEventInternal(input: ExternalEventInput, options: RecordE
     dispatchEnabled: options.dispatchEnabled ?? existing?.dispatchEnabled ?? true,
     shouldWake,
     ...(persistedRetention ? { retentionSummary: persistedRetention } : {}),
-    ...(privilegedReplayManifest ? { privilegedReplayManifest } : {}),
+    ...(privilegedNonce ? { privilegedIngressNonce: privilegedNonce } : {}),
     }
     atomicWrite(recordPath, record)
     emitNervesEvent({
@@ -692,24 +682,144 @@ function safeSpoolEntries(spoolRoot: string): fs.Dirent[] {
   try { return fs.readdirSync(spoolRoot, { withFileTypes: true }).filter((entry) => entry.name.endsWith(".json")) } catch { return [] }
 }
 
-function privilegedReplayAuthority(eventRoot: string): ExternalEventReplayManifest {
-  const sourceDir = path.dirname(externalEventRecordPath(eventRoot, { agent: "sanctuary", source: PRIVILEGED_EVENT_SOURCE, eventId: "authority" }))
-  if (!fs.existsSync(sourceDir)) return emptyReplayManifest()
-  let authority = emptyReplayManifest()
-  for (const entry of fs.readdirSync(sourceDir, { withFileTypes: true })) {
-    if (!entry.isFile() || !entry.name.endsWith(".json")) continue
+interface PrivilegedLockOwner {
+  token: string
+  pid: number
+  processStart: string
+  leaseUntil: string
+}
+
+interface PrivilegedLockHandle {
+  refresh(): void
+  release(): void
+}
+
+function linuxProcessStart(pid: number): string | null {
+  try {
+    const raw = fs.readFileSync(`/proc/${pid}/stat`, "utf8")
+    const fields = raw.slice(raw.lastIndexOf(")") + 2).trim().split(/\s+/u)
+    return fields[19] ?? null
+  } catch { return null }
+}
+
+const currentProcessStart = linuxProcessStart(process.pid) ?? `fallback-${Math.floor(Date.now() - process.uptime() * 1_000)}`
+
+function ownerProcessIsLive(owner: PrivilegedLockOwner): boolean {
+  try { process.kill(owner.pid, 0) } catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH" }
+  const observedStart = owner.pid === process.pid ? currentProcessStart : linuxProcessStart(owner.pid)
+  return observedStart === null || observedStart === owner.processStart
+}
+
+function isPrivilegedLockOwner(value: unknown): value is PrivilegedLockOwner {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false
+  const owner = value as Partial<PrivilegedLockOwner>
+  return typeof owner.token === "string" && owner.token.length > 0 && Number.isSafeInteger(owner.pid) && owner.pid! > 0
+    && typeof owner.processStart === "string" && owner.processStart.length > 0 && canonicalIso(owner.leaseUntil)
+}
+
+function acquirePrivilegedReplayLock(sourceDir: string): PrivilegedLockHandle | null {
+  fs.mkdirSync(sourceDir, { recursive: true })
+  const lockPath = path.join(sourceDir, ".privileged-replay.lock")
+  const ownerPath = path.join(lockPath, "owner.json")
+  const token = randomUUID()
+  const owner = (): PrivilegedLockOwner => ({ token, pid: process.pid, processStart: currentProcessStart, leaseUntil: new Date(Date.now() + 30_000).toISOString() })
+  for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      const record = readExternalEventRecord(path.join(sourceDir, entry.name))
-      authority = mergeReplayManifests(
-        authority,
-        replayManifestWithLegacy(record.privilegedReplayManifest, record.privilegedReplayNonces),
-        record.retentionSummary?.privilegedReplayManifest,
-      )
-    } catch {
-      // Corrupt receipts are surfaced by status; they cannot safely grant replay authority.
+      fs.mkdirSync(lockPath, { mode: 0o700 })
+      atomicWriteJson(ownerPath, owner(), "Privileged replay lock owner")
+      return {
+        refresh() {
+          const current: unknown = JSON.parse(fs.readFileSync(ownerPath, "utf8"))
+          if (!isPrivilegedLockOwner(current) || current.token !== token) throw new Error("Privileged replay lock ownership changed")
+          atomicWriteJson(ownerPath, owner(), "Privileged replay lock owner")
+        },
+        release() {
+          try {
+            const current: unknown = JSON.parse(fs.readFileSync(ownerPath, "utf8"))
+            if (!isPrivilegedLockOwner(current) || current.token !== token) return
+            fs.unlinkSync(ownerPath)
+            fs.rmdirSync(lockPath)
+          } catch { /* a replaced owner must retain its lock */ }
+        },
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
+      let existing: PrivilegedLockOwner | null = null
+      try {
+        const parsed: unknown = JSON.parse(fs.readFileSync(ownerPath, "utf8"))
+        if (isPrivilegedLockOwner(parsed)) existing = parsed
+      } catch { /* incomplete owner is bounded by the directory lease */ }
+      if (existing && ownerProcessIsLive(existing)) return null
+      const leaseActive = existing ? Date.parse(existing.leaseUntil) > Date.now() : Date.now() - fs.statSync(lockPath).mtimeMs <= 30_000
+      if (leaseActive) return null
+      const stalePath = `${lockPath}.stale-${token}`
+      try { fs.renameSync(lockPath, stalePath) } catch { return null }
+      try {
+        const staleOwner = path.join(stalePath, "owner.json")
+        if (fs.existsSync(staleOwner)) fs.unlinkSync(staleOwner)
+        fs.rmdirSync(stalePath)
+      } catch { return null }
     }
   }
-  return authority
+  return null
+}
+
+function replayStatePath(eventRoot: string): string {
+  return path.join(eventRoot, "sanctuary", PRIVILEGED_EVENT_SOURCE, PRIVILEGED_REPLAY_STATE_FILE)
+}
+
+function replayStateFromManifest(manifest: ExternalEventReplayManifest, updatedAt: string): PrivilegedReplayState {
+  return { schemaVersion: 1, agent: "sanctuary", source: PRIVILEGED_EVENT_SOURCE, ...manifest, updatedAt }
+}
+
+function isReplayState(value: unknown): value is PrivilegedReplayState {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false
+  const state = value as Partial<PrivilegedReplayState>
+  if (state.schemaVersion !== 1 || state.agent !== "sanctuary" || state.source !== PRIVILEGED_EVENT_SOURCE || !canonicalIso(state.updatedAt)) return false
+  try { replayBytes(state as PrivilegedReplayState); return true } catch { return false }
+}
+
+function loadReplayState(eventRoot: string, sourceExisted: boolean, now: string): PrivilegedReplayState {
+  const statePath = replayStatePath(eventRoot)
+  const sourceDir = path.dirname(statePath)
+  const stateExists = fs.existsSync(statePath)
+  let state: PrivilegedReplayState | null = null
+  if (stateExists) {
+    let parsed: unknown
+    try { parsed = JSON.parse(fs.readFileSync(statePath, "utf8")) } catch { throw new Error("Privileged replay manifest is corrupt") }
+    if (!isReplayState(parsed)) throw new Error("Privileged replay manifest is corrupt")
+    state = parsed
+  }
+  let authority = state ? mergeReplayManifests(state) : emptyReplayManifest()
+  let legacyFound = false
+  const migrations: Array<{ recordPath: string; record: ExternalEventRecord }> = []
+  for (const entry of fs.readdirSync(sourceDir, { withFileTypes: true })) {
+    if (!entry.isFile() || entry.name.startsWith(".") || !entry.name.endsWith(".json")) continue
+    const recordPath = path.join(sourceDir, entry.name)
+    let record: ExternalEventRecord
+    try { record = readExternalEventRecord(recordPath) } catch { throw new Error("Privileged replay authority is blocked by a corrupt receipt") }
+    if (state) {
+      if (record.privilegedIngressNonce) authority = replayAdd(authority, record.privilegedIngressNonce)
+    }
+    if (record.privilegedReplayManifest || record.privilegedReplayNonces || record.retentionSummary?.privilegedReplayManifest) {
+      legacyFound = true
+      authority = mergeReplayManifests(authority, replayManifestWithLegacy(record.privilegedReplayManifest, record.privilegedReplayNonces), record.retentionSummary?.privilegedReplayManifest)
+      migrations.push({ recordPath, record })
+    }
+  }
+  if (!state && sourceExisted && !legacyFound) throw new Error("Privileged replay manifest is missing")
+  const next = replayStateFromManifest(authority, now)
+  atomicWriteJson(statePath, next, "Privileged replay manifest")
+  for (const migration of migrations) {
+    const retentionSummary = migration.record.retentionSummary ? retentionWithoutReplayManifest(migration.record.retentionSummary) : undefined
+    atomicWrite(migration.recordPath, {
+      ...migration.record,
+      ...(retentionSummary ? { retentionSummary } : {}),
+      privilegedReplayManifest: undefined,
+      privilegedReplayNonces: undefined,
+    })
+  }
+  return next
 }
 
 export function scanPrivilegedEventSpool(options: { spoolRoot: string; eventRoot?: string; now?: () => string }): { accepted: number; rejected: number; replayed: number } {
@@ -718,15 +828,25 @@ export function scanPrivilegedEventSpool(options: { spoolRoot: string; eventRoot
   let rejected = 0
   let replayed = 0
   const eventRoot = options.eventRoot ?? getExternalEventRoot()
+  const sourceDir = path.dirname(replayStatePath(eventRoot))
+  const sourceExisted = fs.existsSync(sourceDir)
   let rootSafe = false
   try {
     const root = fs.lstatSync(options.spoolRoot)
     rootSafe = root.isDirectory() && !root.isSymbolicLink() && root.uid === 0 && (root.mode & 0o777) === 0o755 && mountIsReadOnly(options.spoolRoot)
   } catch { rootSafe = false }
   if (!rootSafe) rejected = Math.max(1, entries.length)
-  else withRecordLockRetry(path.join(eventRoot, "sanctuary", PRIVILEGED_EVENT_SOURCE, ".privileged-replay"), () => {
-    let replayAuthority = privilegedReplayAuthority(eventRoot)
-    for (const entry of entries) {
+  else {
+    const replayLock = acquirePrivilegedReplayLock(sourceDir)
+    if (replayLock) try {
+      const initialNow = options.now?.() ?? new Date().toISOString()
+      let replayState: PrivilegedReplayState
+      try { replayState = loadReplayState(eventRoot, sourceExisted, initialNow) } catch {
+        rejected = Math.max(1, entries.length)
+        replayState = replayStateFromManifest(emptyReplayManifest(), initialNow)
+      }
+      if (rejected === 0) for (const entry of entries) {
+        replayLock.refresh()
       const filePath = path.join(options.spoolRoot, entry.name)
       try {
         const before = fs.lstatSync(filePath)
@@ -742,7 +862,7 @@ export function scanPrivilegedEventSpool(options: { spoolRoot: string; eventRoot
         } finally { fs.closeSync(handle) }
         const now = options.now?.() ?? new Date().toISOString()
         const envelope = parsePrivilegedEnvelope(raw, entry.name, now)
-        if (replayContains(replayAuthority, envelope.nonce)) throw new Error("Privileged external event replayed nonce")
+        if (replayContains(replayState, envelope.nonce)) throw new Error("Privileged external event replayed nonce")
         recordExternalEventInternal({
           agent: envelope.agent,
           source: envelope.source,
@@ -755,14 +875,16 @@ export function scanPrivilegedEventSpool(options: { spoolRoot: string; eventRoot
           observationRevision: envelope.observationRevision,
           transition: "opened",
         }, { root: eventRoot, now: () => now, [privilegedIngress]: { nonce: envelope.nonce } })
-        replayAuthority = replayAdd(replayAuthority, envelope.nonce)
+        replayState = replayStateFromManifest(replayAdd(replayState, envelope.nonce), now)
+        atomicWriteJson(replayStatePath(eventRoot), replayState, "Privileged replay manifest")
         accepted += 1
       } catch (error) {
         if (error instanceof Error && error.message === "Privileged external event replayed nonce") replayed += 1
         else rejected += 1
       }
-    }
-  })
+      }
+    } finally { replayLock.release() }
+  }
   emitNervesEvent({ component: "daemon", event: "daemon.privileged_event_spool_scan", message: "scanned privileged external-event spool", meta: { accepted, rejected, replayed } })
   return { accepted, rejected, replayed }
 }
