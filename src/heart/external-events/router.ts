@@ -91,6 +91,7 @@ export interface ExternalEventRecord extends Required<Omit<ExternalEventInput, "
   dispatchEnabled: boolean
   shouldWake: boolean
   retentionSummary?: ExternalEventRetentionSummary
+  privilegedReplayNonces?: string[]
 }
 
 export interface ExternalEventRetentionSummary {
@@ -105,6 +106,27 @@ const MAX_EVENT_EVIDENCE = 32
 const MAX_EVENT_RECORD_BYTES = 64 * 1_024
 const MAX_EVENT_RECORDS_PER_SOURCE = 512
 const MAX_EVENT_SOURCES_PER_AGENT = 64
+const PRIVILEGED_EVENT_SOURCE = "sanctuary-usenet"
+const PRIVILEGED_SPOOL_MAX_BYTES = 32 * 1024
+const privilegedIngress = Symbol("privileged external-event ingress")
+
+interface PrivilegedExternalEventEnvelope {
+  schemaVersion: 1
+  agent: "sanctuary"
+  source: typeof PRIVILEGED_EVENT_SOURCE
+  eventType: "usenet.protective_action"
+  incidentKey: string
+  transitionId: string
+  observationRevision: string
+  action: "sabnzbd.pause" | "prowlarr.disable-indexer"
+  actionReceipt: string
+  critical: true
+  summary: string
+  evidence: string[]
+  createdAt: string
+  expiresAt: string
+  nonce: string
+}
 
 export function getExternalEventRoot(homeDir?: string): string {
   return path.join(getOuroCliHome(homeDir), "daemon", "external-events")
@@ -426,7 +448,9 @@ export function buildExternalEventMessage(record: ExternalEventRecord): string {
   ].join("\n")
 }
 
-export function recordExternalEvent(input: ExternalEventInput, options: { root?: string; now?: () => string; dispatchEnabled?: boolean } = {}): ExternalEventRecord {
+type RecordExternalEventOptions = { root?: string; now?: () => string; dispatchEnabled?: boolean; [privilegedIngress]?: { nonce: string } }
+
+function recordExternalEventInternal(input: ExternalEventInput, options: RecordExternalEventOptions = {}): ExternalEventRecord {
   validateExternalEventInput(input)
   const now = options.now?.() ?? new Date().toISOString()
   const root = options.root ?? getExternalEventRoot()
@@ -447,10 +471,17 @@ export function recordExternalEvent(input: ExternalEventInput, options: { root?:
     const revision = input.observationRevision?.trim() || digest
     const existingResult = readExisting(recordPath)
     const existing = existingResult.record
+    const privilegedNonce = options[privilegedIngress]?.nonce
+    if (privilegedNonce && existing?.privilegedReplayNonces?.includes(privilegedNonce)) throw new Error("Privileged external event replayed nonce")
+    const privilegedReplayNonces = privilegedNonce
+      ? [...(existing?.privilegedReplayNonces ?? []), privilegedNonce].slice(-128)
+      : existing?.privilegedReplayNonces
     if (existing?.executionState === "running") {
-      if (existing.observationRevision === revision && existing.observationDigest === digest) return { ...existing, shouldWake: false }
+      if (existing.observationRevision === revision && existing.observationDigest === digest) {
+        return privilegedNonce ? commitMutation(recordPath, { ...existing, privilegedReplayNonces, shouldWake: false }, now) : { ...existing, shouldWake: false }
+      }
       const pendingObservation = observationFromInput(input, now, digest, revision, "changed")
-      const updated = commitMutation(recordPath, { ...existing, pendingObservation, shouldWake: false }, now)
+      const updated = commitMutation(recordPath, { ...existing, privilegedReplayNonces, pendingObservation, shouldWake: false }, now)
       emitNervesEvent({
         component: "daemon",
         event: "daemon.external_event_recorded",
@@ -492,6 +523,7 @@ export function recordExternalEvent(input: ExternalEventInput, options: { root?:
     dispatchEnabled: options.dispatchEnabled ?? existing?.dispatchEnabled ?? true,
     shouldWake,
     ...((existing?.retentionSummary ?? compacted) ? { retentionSummary: existing?.retentionSummary ?? compacted! } : {}),
+    ...(privilegedReplayNonces ? { privilegedReplayNonces } : {}),
     }
     atomicWrite(recordPath, record)
     emitNervesEvent({
@@ -504,6 +536,109 @@ export function recordExternalEvent(input: ExternalEventInput, options: { root?:
     })
     })
   })
+}
+
+export function recordExternalEvent(input: ExternalEventInput, options: { root?: string; now?: () => string; dispatchEnabled?: boolean } = {}): ExternalEventRecord {
+  if (input.source === PRIVILEGED_EVENT_SOURCE) throw new Error(`External event source '${PRIVILEGED_EVENT_SOURCE}' is reserved for privileged spool ingress`)
+  return recordExternalEventInternal(input, options)
+}
+
+function canonicalIso(value: unknown): value is string {
+  return typeof value === "string" && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value
+}
+
+function boundedIdentifier(value: unknown): value is string {
+  return typeof value === "string" && /^[a-zA-Z0-9._:-]{1,160}$/u.test(value)
+}
+
+function parsePrivilegedEnvelope(raw: string, fileName: string, now: string): PrivilegedExternalEventEnvelope {
+  if (Buffer.byteLength(raw) > PRIVILEGED_SPOOL_MAX_BYTES) throw new Error("Privileged event envelope must be bounded")
+  const parsed: unknown = JSON.parse(raw)
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Privileged event envelope is invalid")
+  const value = parsed as Record<string, unknown>
+  const expectedKeys = ["action", "actionReceipt", "agent", "createdAt", "critical", "eventType", "evidence", "expiresAt", "incidentKey", "nonce", "observationRevision", "schemaVersion", "source", "summary", "transitionId"]
+  if (Object.keys(value).sort().join("\0") !== expectedKeys.sort().join("\0")
+    || value.schemaVersion !== 1 || value.agent !== "sanctuary" || value.source !== PRIVILEGED_EVENT_SOURCE
+    || value.eventType !== "usenet.protective_action" || !["sabnzbd.pause", "prowlarr.disable-indexer"].includes(String(value.action))
+    || value.critical !== true || !boundedIdentifier(value.incidentKey) || !boundedIdentifier(value.transitionId)
+    || !/^[a-f0-9]{64}$/u.test(String(value.observationRevision)) || !/^[a-f0-9]{64}$/u.test(String(value.nonce))
+    || typeof value.actionReceipt !== "string" || !value.actionReceipt || Buffer.byteLength(value.actionReceipt) > 512
+    || typeof value.summary !== "string" || !value.summary || Buffer.byteLength(value.summary) > 4_096
+    || !Array.isArray(value.evidence) || value.evidence.length > 16
+    || value.evidence.some((entry) => typeof entry !== "string" || !entry || Buffer.byteLength(entry) > 2_048)
+    || !canonicalIso(value.createdAt) || !canonicalIso(value.expiresAt)) throw new Error("Privileged event envelope is invalid or unbounded")
+  const createdMs = Date.parse(value.createdAt)
+  const expiresMs = Date.parse(value.expiresAt)
+  const nowMs = Date.parse(now)
+  if (createdMs > nowMs || expiresMs <= nowMs || expiresMs <= createdMs || expiresMs - createdMs > 60 * 60_000) throw new Error("Privileged event envelope is outside its validity window")
+  const expectedName = `${createHash("sha256").update(`${value.source}\0${value.incidentKey}\0${value.transitionId}`).digest("hex")}.json`
+  if (fileName !== expectedName) throw new Error("Privileged event envelope filename is invalid")
+  return value as unknown as PrivilegedExternalEventEnvelope
+}
+
+function mountIsReadOnly(spoolRoot: string): boolean {
+  let mountInfo: string
+  try { mountInfo = fs.readFileSync("/proc/self/mountinfo", "utf8") } catch { return false }
+  const resolved = path.resolve(spoolRoot)
+  return mountInfo.split("\n").some((line) => {
+    const fields = line.split(" ")
+    if (fields.length < 6) return false
+    const mountPoint = fields[4]!.replace(/\\040/gu, " ").replace(/\\011/gu, "\t").replace(/\\134/gu, "\\")
+    return path.resolve(mountPoint) === resolved && fields[5]!.split(",").includes("ro")
+  })
+}
+
+function safeSpoolEntries(spoolRoot: string): fs.Dirent[] {
+  try { return fs.readdirSync(spoolRoot, { withFileTypes: true }).filter((entry) => entry.name.endsWith(".json")) } catch { return [] }
+}
+
+export function scanPrivilegedEventSpool(options: { spoolRoot: string; eventRoot?: string; now?: () => string }): { accepted: number; rejected: number; replayed: number } {
+  const entries = safeSpoolEntries(options.spoolRoot)
+  let accepted = 0
+  let rejected = 0
+  let replayed = 0
+  let rootSafe = false
+  try {
+    const root = fs.lstatSync(options.spoolRoot)
+    rootSafe = root.isDirectory() && !root.isSymbolicLink() && root.uid === 0 && (root.mode & 0o777) === 0o755 && mountIsReadOnly(options.spoolRoot)
+  } catch { rootSafe = false }
+  if (!rootSafe) rejected = Math.max(1, entries.length)
+  else for (const entry of entries) {
+    const filePath = path.join(options.spoolRoot, entry.name)
+    try {
+      const before = fs.lstatSync(filePath)
+      if (!entry.isFile() || before.isSymbolicLink() || !before.isFile() || before.uid !== 0 || before.nlink !== 1 || (before.mode & 0o777) !== 0o444 || before.size < 2 || before.size > PRIVILEGED_SPOOL_MAX_BYTES) {
+        throw new Error("Privileged event spool file is unsafe")
+      }
+      const handle = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+      let raw: string
+      try {
+        const opened = fs.fstatSync(handle)
+        if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino || opened.size !== before.size) throw new Error("Privileged event spool file changed")
+        raw = fs.readFileSync(handle, "utf8")
+      } finally { fs.closeSync(handle) }
+      const now = options.now?.() ?? new Date().toISOString()
+      const envelope = parsePrivilegedEnvelope(raw, entry.name, now)
+      recordExternalEventInternal({
+        agent: envelope.agent,
+        source: envelope.source,
+        eventType: envelope.eventType,
+        eventId: envelope.incidentKey,
+        summary: envelope.summary,
+        evidence: [...envelope.evidence, `protective action: ${envelope.action}`, `protective action receipt: ${envelope.actionReceipt}`, `privileged transition: ${envelope.transitionId}`],
+        priority: "critical",
+        receivedAt: envelope.createdAt,
+        observationRevision: envelope.observationRevision,
+        transition: "opened",
+      }, { root: options.eventRoot, now: () => now, [privilegedIngress]: { nonce: envelope.nonce } })
+      accepted += 1
+    } catch (error) {
+      if (error instanceof Error && error.message === "Privileged external event replayed nonce") replayed += 1
+      else rejected += 1
+    }
+  }
+  emitNervesEvent({ component: "daemon", event: "daemon.privileged_event_spool_scan", message: "scanned privileged external-event spool", meta: { accepted, rejected, replayed } })
+  return { accepted, rejected, replayed }
 }
 
 interface CasInput {
