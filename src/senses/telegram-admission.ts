@@ -256,6 +256,9 @@ function atomicWrite(filePath: string, value: unknown): void {
 
 export class FileTelegramAdmissionStore {
   private readonly limits: ResolvedTelegramAdmissionLimits
+  private readonly rootFd: number
+  private readonly rootIdentity: { dev: number; ino: number }
+  private closed = false
 
   constructor(
     private readonly root: string,
@@ -275,6 +278,25 @@ export class FileTelegramAdmissionStore {
     const stat = fs.lstatSync(root)
     /* v8 ignore next -- race defense: constructor-created/chmodded roots satisfy this unless another process swaps the path between syscalls @preserve */
     if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.mode & 0o777) !== 0o700) throw new Error("Telegram admission root is unsafe")
+    this.rootFd = fs.openSync(root, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
+    const pinned = fs.fstatSync(this.rootFd)
+    this.rootIdentity = { dev: pinned.dev, ino: pinned.ino }
+  }
+
+  private assertRootIdentity(): void {
+    if (this.closed) throw new Error("Telegram admission store is closed")
+    const pinned = fs.fstatSync(this.rootFd)
+    const current = fs.lstatSync(this.root)
+    if (!pinned.isDirectory() || !current.isDirectory() || current.isSymbolicLink()
+      || pinned.dev !== this.rootIdentity.dev || pinned.ino !== this.rootIdentity.ino
+      || current.dev !== this.rootIdentity.dev || current.ino !== this.rootIdentity.ino
+      || (current.mode & 0o777) !== 0o700) throw new Error("Telegram admission root identity changed")
+  }
+
+  close(): void {
+    if (this.closed) return
+    fs.closeSync(this.rootFd)
+    this.closed = true
   }
 
   private filePath(id: string): string {
@@ -314,6 +336,7 @@ export class FileTelegramAdmissionStore {
   }
 
   private recordRateAttempt(input: TelegramUnknownContactMessage, now: number): boolean {
+    this.assertRootIdentity()
     const state = this.readRateState(now)
     const identityDigest = digest(`identity\0${identity(input)}`)
     const updateDigest = digest(`update\0${input.botId}\0${input.updateId}`)
@@ -324,6 +347,7 @@ export class FileTelegramAdmissionStore {
       .sort((left, right) => left.observedAt - right.observedAt || left.updateDigest.localeCompare(right.updateDigest))
       .slice(-(this.limits.maxMessagesPerWindow + 1))
     atomicWrite(this.rateStatePath(), state)
+    this.assertRootIdentity()
     return overflow
   }
 
@@ -337,10 +361,12 @@ export class FileTelegramAdmissionStore {
     for (const record of terminal) {
       if (!retained.has(record.id)) fs.unlinkSync(this.filePath(record.id))
     }
+    this.assertRootIdentity()
     return records.filter((record) => !TERMINAL_STATUSES.has(record.status) || retained.has(record.id))
   }
 
   read(id: string): TelegramAdmissionRecord {
+    this.assertRootIdentity()
     const filePath = this.filePath(id)
     const handle = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
     try {
@@ -348,6 +374,7 @@ export class FileTelegramAdmissionStore {
       if (!stat.isFile() || stat.size < 2 || stat.size > this.limits.maxTextBytes + 8 * 1024) throw new Error("Telegram admission record is not bounded")
       const parsed = JSON.parse(fs.readFileSync(handle, "utf8")) as unknown
       validateRecord(parsed, id)
+      this.assertRootIdentity()
       return parsed
     } finally {
       fs.closeSync(handle)
@@ -355,21 +382,28 @@ export class FileTelegramAdmissionStore {
   }
 
   list(): TelegramAdmissionRecord[] {
-    return fs.readdirSync(this.root, { withFileTypes: true })
+    this.assertRootIdentity()
+    const records = fs.readdirSync(this.root, { withFileTypes: true })
       .filter((entry) => entry.isFile() && /^[a-f0-9]{20}\.json$/u.test(entry.name))
       .map((entry) => this.read(entry.name.slice(0, -5)))
+    this.assertRootIdentity()
+    return records
   }
 
   private write(record: TelegramAdmissionRecord): void {
+    this.assertRootIdentity()
     validateRecord(record, record.id)
     atomicWrite(this.filePath(record.id), record)
+    this.assertRootIdentity()
   }
 
   readSelfHealth(): TelegramAdmissionSelfHealth | null {
+    this.assertRootIdentity()
     try {
       const value = JSON.parse(fs.readFileSync(this.selfHealthPath(), "utf8")) as TelegramAdmissionSelfHealth
       if (value.schemaVersion !== 1 || value.code !== "telegram_admission_overflow" || !Number.isSafeInteger(value.count)
         || value.count < 1 || !Number.isSafeInteger(value.lastObservedAt)) throw new Error("invalid")
+      this.assertRootIdentity()
       return value
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return null
