@@ -2,7 +2,8 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { createTelegramSenseApp, opaqueTelegramSubject, telegramBotIdFromToken } from "../../senses/telegram"
+import { FileFriendStore } from "@ouro.bot/friends"
+import { createProductionTelegramRelationshipComposition, createTelegramSenseApp, opaqueTelegramSubject, telegramBotIdFromToken } from "../../senses/telegram"
 import { FileTelegramUpdateInboxStore, type TelegramLongPollOptions } from "../../senses/telegram-client"
 
 const roots: string[] = []
@@ -25,8 +26,9 @@ describe("Telegram admission integration", () => {
     let nextMessageId = 100
     const requests: Array<{ method: string; body: Record<string, unknown> }> = []
     let displayCode = 0
+    let approvedFriend = false
     const runTurn = vi.fn(async () => ({ response: "", ponderDeferred: false, deliveries: [], deliveryFailures: [] }))
-    const claimFriend = vi.fn(async () => ({ kind: "created" as const, friendId: "household-friend" }))
+    const claimFriend = vi.fn(async () => { approvedFriend = true; return { kind: "created" as const, friendId: "household-friend" } })
     const app = createTelegramSenseApp({
       agentName: "butler",
       credentials: { botToken: "777:secret", botId: "777", authorizedUserId: "42", authorizedChatId: "42" },
@@ -44,7 +46,7 @@ describe("Telegram admission integration", () => {
       createLongPoll: (options) => { pollOptions = options; return { pollOnce: vi.fn(), run: vi.fn(), stop: vi.fn() } },
       runTurn,
       migrateIdentity: async () => undefined,
-      admission: { ownerFriendId: "ari", resolveApprovedFriend: vi.fn(async () => null), claimFriend, revokeFriend: vi.fn(async () => ({ kind: "revoked" as const })), createDisplayCode: () => displayCode++ === 0 ? "PINE-4821" : "OAK-7314" },
+      admission: { ownerFriendId: "ari", resolveApprovedFriend: vi.fn(async ({ userId }) => approvedFriend && userId === "888" ? { friendId: "household-friend" } : null), claimFriend, revokeFriend: vi.fn(async () => ({ kind: "revoked" as const })), createDisplayCode: () => displayCode++ === 0 ? "PINE-4821" : "OAK-7314" },
       authorizeRelationshipEffect: vi.fn(async () => ({ allowed: true, receiptId: "friends:test", expiresAt: "2099-01-01T00:00:00.000Z" })),
       resolveRelationshipAuthorization: vi.fn(async ({ friendId, sessionEventId }) => ({
         subject: { friendId, trustLevel: "friend" as const, admissionState: "active" as const, initiativePolicy: "request_follow_up_only" as const, capabilityProfileId: "sanctuary-household" },
@@ -85,11 +87,38 @@ describe("Telegram admission integration", () => {
     }))
     expect(requests).toContainEqual({ method: "answerCallbackQuery", body: { callback_query_id: "callback-1" } })
 
-    await pollOptions.onUnknownMessage!({ updateId: 13, messageId: 23, botId: "777", userId: "999", chatId: "999", text: "second quarantined request", displayLabel: "Second", hasAttachments: false })
-    await pollOptions.onMessage({ updateId: 14, messageId: 24, userId: "42", chatId: "42", text: "Allow OAK-7314" })
+    await pollOptions.onUnknownMessage!({ updateId: 13, messageId: 23, botId: "777", userId: "888", chatId: "888", text: "known household follow-up", displayLabel: "Known", hasAttachments: false })
     expect(runTurn).toHaveBeenCalledTimes(2)
-    expect(runTurn.mock.calls[1]![0]).toMatchObject({ friendId: "household-friend", userMessage: "second quarantined request" })
-    expect(JSON.stringify(runTurn.mock.calls)).not.toContain("Allow OAK-7314")
+    expect(runTurn.mock.calls[1]![0]).toMatchObject({ friendId: "household-friend", userMessage: "known household follow-up", precommittedIngress: { eventId: expect.any(String), reference: expect.stringMatching(/^telegram-inbound:/u) } })
+
+    await pollOptions.onUnknownMessage!({ updateId: 14, messageId: 24, botId: "777", userId: "999", chatId: "999", text: "second quarantined request", displayLabel: "Second", hasAttachments: false })
+    await pollOptions.onMessage({ updateId: 15, messageId: 25, userId: "42", chatId: "42", text: "Allow", replyToMessageId: "103" })
+    expect(runTurn).toHaveBeenCalledTimes(3)
+    expect(runTurn.mock.calls[2]![0]).toMatchObject({ friendId: "household-friend", userMessage: "second quarantined request" })
+    expect(JSON.stringify(runTurn.mock.calls)).not.toContain('"userMessage":"Allow"')
     await app.stop()
+  })
+
+  it("claims, resolves, and revokes the exact production Friends identity with live authority", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-admission-friends-")); roots.push(root)
+    fs.writeFileSync(path.join(root, "tool-profiles.json"), JSON.stringify({ version: 2, profiles: {
+      "sanctuary-owner": { version: 1, contextScopes: ["household.private"], toolNames: [], effectScopes: ["telegram.owner_event", "telegram.proactive"] },
+      "sanctuary-household": { version: 1, contextScopes: ["own_requests"], toolNames: [], effectScopes: ["telegram.request_return"] },
+    } }))
+    const friends = new FileFriendStore(path.join(root, "friends"))
+    const now = new Date().toISOString()
+    await friends.put("ari", { id: "ari", name: "Ari", trustLevel: "family", admissionState: "active", initiativePolicy: "proactive", capabilityProfileId: "sanctuary-owner",
+      externalIds: [{ provider: "telegram-user", externalId: "42", tenantId: "777", linkedAt: now }], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: now, updatedAt: now, schemaVersion: 1 })
+    const production = await createProductionTelegramRelationshipComposition("butler", { botToken: "777:secret", botId: "777", authorizedUserId: "42", authorizedChatId: "42" }, root)
+    const claimed = await production.admission!.claimFriend({ provider: "telegram-user", botId: "777", userId: "888", chatId: "888", admissionId: "a".repeat(20), displayLabel: "Sibling",
+      defaults: { trustLevel: "friend", admissionState: "active", initiativePolicy: "request_follow_up_only", capabilityProfileId: "sanctuary-household" } })
+    expect(claimed.kind).toBe("created")
+    if (claimed.kind === "collision") throw new Error(claimed.reason)
+    await expect(production.admission!.resolveApprovedFriend({ botId: "777", userId: "888", chatId: "888" })).resolves.toEqual({ friendId: claimed.friendId })
+    await expect(production.authorizeRelationshipEffect!({ phase: "prepare", idempotencyKey: "reply", target: { kind: "approved_relationship", friendId: claimed.friendId, sessionKey: "telegram:777:888", requestId: "req-1" }, authorClass: "butler", effect: { kind: "text", text: "ok" } })).resolves.toMatchObject({ allowed: true })
+    await expect(production.admission!.revokeFriend({ provider: "telegram-user", botId: "777", userId: "888", chatId: "888", admissionId: "a".repeat(20), friendId: claimed.friendId })).resolves.toEqual({ kind: "revoked" })
+    await expect(production.admission!.resolveApprovedFriend({ botId: "777", userId: "888", chatId: "888" })).resolves.toBeNull()
+    await expect(production.resolveRelationshipAuthorization!({ friendId: claimed.friendId, requestId: "req-1", sessionEventId: "evt-1" })).rejects.toThrow("not active")
+    await expect(production.authorizeRelationshipEffect!({ phase: "send", idempotencyKey: "reply", target: { kind: "approved_relationship", friendId: claimed.friendId, sessionKey: "telegram:777:888", requestId: "req-1" }, authorClass: "butler", effect: { kind: "text", text: "ok" } })).resolves.toMatchObject({ allowed: false, reason: expect.stringContaining("not active") })
   })
 })
