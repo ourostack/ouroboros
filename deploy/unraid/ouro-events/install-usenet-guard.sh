@@ -7,6 +7,7 @@ GO_FILE="/boot/config/go"
 CRONTAB_FILE=""
 ACTION="install"
 STAGE_PATH=""
+SYSTEM_CRON_PRESENT=false
 
 while (($# > 0)); do
   case "$1" in
@@ -22,15 +23,16 @@ done
 
 EVENT_ROOT="$INSTALL_ROOT/ouro-events"
 BOOT_HOOK="$EVENT_ROOT/install-usenet-guard.sh --boot${CRONTAB_FILE:+ --crontab-file $CRONTAB_FILE}"
+LEGACY_BOOT_HOOK="/boot/config/custom/ouro-events/bootstrap-spool.sh --mount"
 CRON_LINE="*/15 * * * * $INSTALL_ROOT/usenet_health.sh # ouro:usenet-health"
 ASSET_NAMES=(usenet-health.sh bootstrap-spool.sh emit-event.mjs emit-usenet-event.sh install-usenet-guard.sh)
 TARGET_PATHS=("$INSTALL_ROOT/usenet_health.sh" "$EVENT_ROOT/bootstrap-spool.sh" "$EVENT_ROOT/emit-event.mjs" "$EVENT_ROOT/emit-usenet-event.sh" "$EVENT_ROOT/install-usenet-guard.sh")
 
 atomic_install() {
-  local source="$1" target="$2" mode="$3" temporary="${2}.ouro-next.$$"
+  local source="$1" target="$2" mode="$3" temporary="${2}.ouro-next.$$" status
   /bin/mkdir -p "$(dirname "$target")"
-  install -m "$mode" "$source" "$temporary" || return $?
-  /bin/mv "$temporary" "$target"
+  install -m "$mode" "$source" "$temporary" || { status=$?; /bin/rm -f "$temporary"; return "$status"; }
+  mv "$temporary" "$target" || { status=$?; /bin/rm -f "$temporary"; return "$status"; }
 }
 
 render_cron() {
@@ -41,14 +43,19 @@ render_cron() {
 }
 
 read_system_cron() {
-  /usr/bin/crontab -l > "$1" 2>/dev/null || : > "$1"
+  if crontab -l > "$1" 2>/dev/null; then
+    SYSTEM_CRON_PRESENT=true
+  else
+    SYSTEM_CRON_PRESENT=false
+    : > "$1"
+  fi
 }
 
 activate_cron_file() {
   if [ -n "$CRONTAB_FILE" ]; then
     atomic_install "$1" "$CRONTAB_FILE" 0600
   else
-    /usr/bin/crontab "$1"
+    crontab "$1"
   fi
 }
 
@@ -97,10 +104,11 @@ install_transaction() {
     printf '#!/bin/bash\n' > "$stage/go.base"
   fi
   go_candidate="$stage/go.candidate"
-  if grep -Fqx "$BOOT_HOOK" "$stage/go.base"; then
-    /bin/cp "$stage/go.base" "$go_candidate"
+  grep -Fvx -e "$LEGACY_BOOT_HOOK" -e "$BOOT_HOOK" "$stage/go.base" > "$stage/go.filtered" || true
+  if [ -s "$stage/go.filtered" ]; then
+    awk -v hook="$BOOT_HOOK" 'NR == 1 && /^#!/ { print; print hook; next } NR == 1 { print hook } { print }' "$stage/go.filtered" > "$go_candidate"
   else
-    awk -v hook="$BOOT_HOOK" 'NR == 1 && /^#!/ { print; print hook; next } NR == 1 { print hook } { print }' "$stage/go.base" > "$go_candidate"
+    printf '#!/bin/bash\n%s\n' "$BOOT_HOOK" > "$go_candidate"
   fi
   /bin/chmod 0700 "$go_candidate"
 
@@ -126,8 +134,8 @@ install_transaction() {
   done
 
   set +e
-  activate_cron_file "$cron_inactive"
-  status=$?
+  status=0
+  if grep -Fq '# ouro:usenet-health' "$cron_original"; then activate_cron_file "$cron_inactive" || status=$?; fi
   if [ "$status" -eq 0 ]; then
     for index in "${!TARGET_PATHS[@]}"; do
       atomic_install "$stage/${ASSET_NAMES[$index]}" "${TARGET_PATHS[$index]}" 0700 || { status=$?; break; }
@@ -139,7 +147,13 @@ install_transaction() {
   if [ "$status" -ne 0 ]; then
     for index in "${!TARGET_PATHS[@]}"; do restore_target "${TARGET_PATHS[$index]}" "$backup/asset-$index"; done
     restore_target "$GO_FILE" "$backup/go"
-    if [ -n "$CRONTAB_FILE" ]; then restore_target "$CRONTAB_FILE" "$backup/cron"; else /usr/bin/crontab "$backup/cron"; fi
+    if [ -n "$CRONTAB_FILE" ]; then
+      restore_target "$CRONTAB_FILE" "$backup/cron"
+    elif [ "$SYSTEM_CRON_PRESENT" = true ]; then
+      crontab "$backup/cron"
+    else
+      crontab -r >/dev/null 2>&1 || true
+    fi
     return "$status"
   fi
   cleanup

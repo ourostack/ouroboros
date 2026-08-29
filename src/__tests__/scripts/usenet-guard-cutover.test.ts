@@ -31,6 +31,11 @@ fs.appendFileSync(${JSON.stringify(lifecycleLog)}, "event:" + (active ? "active"
   return source
 }
 
+function transactionResidue(directory: string): string[] {
+  if (!fs.existsSync(directory)) return []
+  return fs.readdirSync(directory, { recursive: true }).map(String).filter((name) => name.includes(".ouro-next.") || name.includes(".ouro-usenet-stage."))
+}
+
 afterEach(() => {
   for (const value of roots.splice(0)) fs.rmSync(value, { recursive: true, force: true })
 })
@@ -105,20 +110,22 @@ describe("Unraid usenet guard cutover assets", () => {
     const crontabFile = path.join(temp, "crontab")
     const lifecycleLog = path.join(temp, "lifecycle.log")
     const source = transactionalSource(temp, crontabFile, lifecycleLog)
-    fs.writeFileSync(goFile, "#!/bin/bash\n/usr/local/sbin/emhttp &\n")
+    const legacyHook = "/boot/config/custom/ouro-events/bootstrap-spool.sh --mount"
+    const hook = `${installRoot}/ouro-events/install-usenet-guard.sh --boot --crontab-file ${crontabFile}`
+    fs.writeFileSync(goFile, `#!/bin/bash\n${legacyHook}\n${hook}\n${hook}\n/usr/local/sbin/emhttp &\n`)
 
     for (let index = 0; index < 2; index += 1) {
       execFileSync(installerPath, ["--install-only", "--source-root", source, "--install-root", installRoot, "--go-file", goFile, "--crontab-file", crontabFile])
     }
 
-    const hook = `${installRoot}/ouro-events/install-usenet-guard.sh --boot --crontab-file ${crontabFile}`
     const go = fs.readFileSync(goFile, "utf8")
     expect(go.match(new RegExp(hook.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "gu"))).toHaveLength(1)
+    expect(go).not.toContain(legacyHook)
     expect(go.indexOf(hook)).toBeLessThan(go.indexOf("/usr/local/sbin/emhttp"))
     expect(fs.readFileSync(crontabFile, "utf8").match(/# ouro:usenet-health$/gmu)).toHaveLength(1)
     expect(fs.readFileSync(crontabFile, "utf8")).toContain(`*/15 * * * * ${installRoot}/usenet_health.sh # ouro:usenet-health`)
     expect(fs.readFileSync(lifecycleLog, "utf8")).toBe("spool:--mount\nspool:--self-test\nevent:inactive\nspool:--mount\nspool:--self-test\nevent:active\n")
-    expect(fs.readdirSync(installRoot).filter((name) => name.startsWith(".ouro-usenet-stage."))).toEqual([])
+    expect(transactionResidue(installRoot)).toEqual([])
     for (const file of ["usenet_health.sh", "ouro-events/emit-event.mjs", "ouro-events/emit-usenet-event.sh", "ouro-events/bootstrap-spool.sh", "ouro-events/install-usenet-guard.sh"]) {
       expect(fs.statSync(path.join(installRoot, file)).mode & 0o777).toBe(0o700)
     }
@@ -144,6 +151,85 @@ describe("Unraid usenet guard cutover assets", () => {
     expect(fs.readFileSync(crontabFile, "utf8")).toBe("prior-cron\n")
   })
 
+  it("removes forward temporary files and leaves a fresh host untouched when a rename fails", () => {
+    const temp = root()
+    const installRoot = path.join(temp, "custom")
+    const goFile = path.join(temp, "go")
+    const crontabFile = path.join(temp, "crontab")
+    const source = transactionalSource(temp, crontabFile, path.join(temp, "lifecycle.log"))
+    const bin = path.join(temp, "bin")
+    fs.mkdirSync(bin)
+    fs.writeFileSync(path.join(bin, "mv"), `#!/bin/bash
+source="$1"
+target="$2"
+case "$source:$target" in
+  *.ouro-next.*:${JSON.stringify(path.join(installRoot, "usenet_health.sh"))}) exit 74 ;;
+esac
+exec /bin/mv "$@"
+`, { mode: 0o700 })
+
+    expect(() => execFileSync(installerPath, ["--install-only", "--source-root", source, "--install-root", installRoot, "--go-file", goFile, "--crontab-file", crontabFile], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` }, stdio: "ignore" })).toThrow()
+    expect(fs.existsSync(goFile)).toBe(false)
+    expect(fs.existsSync(crontabFile)).toBe(false)
+    for (const target of [path.join(installRoot, "usenet_health.sh"), ...["bootstrap-spool.sh", "emit-event.mjs", "emit-usenet-event.sh", "install-usenet-guard.sh"].map((name) => path.join(installRoot, "ouro-events", name))]) expect(fs.existsSync(target), target).toBe(false)
+    expect(transactionResidue(installRoot)).toEqual([])
+  })
+
+  it("removes a created forward temporary file and restores an existing host when install reports failure", () => {
+    const temp = root()
+    const installRoot = path.join(temp, "custom")
+    const eventRoot = path.join(installRoot, "ouro-events")
+    const goFile = path.join(temp, "go")
+    const crontabFile = path.join(temp, "crontab")
+    const source = transactionalSource(temp, crontabFile, path.join(temp, "lifecycle.log"))
+    const bin = path.join(temp, "bin")
+    fs.mkdirSync(eventRoot, { recursive: true })
+    fs.mkdirSync(bin)
+    const targets = [path.join(installRoot, "usenet_health.sh"), ...["bootstrap-spool.sh", "emit-event.mjs", "emit-usenet-event.sh", "install-usenet-guard.sh"].map((name) => path.join(eventRoot, name))]
+    for (const [index, target] of targets.entries()) fs.writeFileSync(target, `prior-${index}\n`, { mode: 0o700 })
+    fs.writeFileSync(goFile, "#!/bin/bash\n/boot/config/custom/ouro-events/bootstrap-spool.sh --mount\n/usr/local/sbin/emhttp &\n", { mode: 0o700 })
+    fs.writeFileSync(crontabFile, "*/15 * * * * prior-guard # ouro:usenet-health\n", { mode: 0o600 })
+    const before = new Map([...targets, goFile, crontabFile].map((target) => [target, fs.readFileSync(target, "utf8")]))
+    const failingTarget = path.join(eventRoot, "emit-event.mjs")
+    fs.writeFileSync(path.join(bin, "install"), `#!/bin/bash
+target="\${!#}"
+/usr/bin/install "$@" || exit $?
+case "$target" in
+  ${JSON.stringify(`${failingTarget}.ouro-next.`)}*) exit 76 ;;
+esac
+`, { mode: 0o700 })
+
+    expect(() => execFileSync(installerPath, ["--install-only", "--source-root", source, "--install-root", installRoot, "--go-file", goFile, "--crontab-file", crontabFile], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` }, stdio: "ignore" })).toThrow()
+    for (const [target, content] of before) expect(fs.readFileSync(target, "utf8"), target).toBe(content)
+    expect(transactionResidue(installRoot)).toEqual([])
+  })
+
+  it("restores an absent system crontab when final cron activation fails", () => {
+    const temp = root()
+    const installRoot = path.join(temp, "custom")
+    const goFile = path.join(temp, "go")
+    const cronState = path.join(temp, "system.crontab")
+    const cronCalls = path.join(temp, "crontab.calls")
+    const source = transactionalSource(temp, cronState, path.join(temp, "lifecycle.log"))
+    const bin = path.join(temp, "bin")
+    fs.mkdirSync(bin)
+    fs.writeFileSync(path.join(bin, "crontab"), `#!/bin/bash
+printf '%s\n' "$*" >> ${JSON.stringify(cronCalls)}
+case "$1" in
+  -l) [ -f ${JSON.stringify(cronState)} ] || exit 1; cat ${JSON.stringify(cronState)} ;;
+  -r) rm -f ${JSON.stringify(cronState)} ;;
+  *) cp "$1" ${JSON.stringify(cronState)}; grep -q '# ouro:usenet-health' "$1" && exit 75 ;;
+esac
+`, { mode: 0o700 })
+
+    expect(() => execFileSync(installerPath, ["--install-only", "--source-root", source, "--install-root", installRoot, "--go-file", goFile], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` }, stdio: "ignore" })).toThrow()
+    expect(fs.existsSync(cronState)).toBe(false)
+    expect(fs.existsSync(goFile)).toBe(false)
+    expect(fs.readFileSync(cronCalls, "utf8")).toContain("-l")
+    expect(fs.readFileSync(cronCalls, "utf8")).toContain("-r")
+    expect(transactionResidue(installRoot)).toEqual([])
+  })
+
   it("restores the prior guard, assets, go hook, and cron when cron activation fails after asset and go swaps", () => {
     const temp = root()
     const installRoot = path.join(temp, "custom")
@@ -157,7 +243,7 @@ describe("Unraid usenet guard cutover assets", () => {
     fs.mkdirSync(bin)
     const targets = [path.join(installRoot, "usenet_health.sh"), ...["bootstrap-spool.sh", "emit-event.mjs", "emit-usenet-event.sh", "install-usenet-guard.sh"].map((name) => path.join(eventRoot, name))]
     for (const [index, target] of targets.entries()) fs.writeFileSync(target, `prior-${index}\n`, { mode: 0o700 })
-    fs.writeFileSync(goFile, "#!/bin/bash\nprior-go\n", { mode: 0o700 })
+    fs.writeFileSync(goFile, "#!/bin/bash\n/boot/config/custom/ouro-events/bootstrap-spool.sh --mount\n/usr/local/sbin/emhttp &\n", { mode: 0o700 })
     fs.writeFileSync(crontabFile, "*/15 * * * * prior-guard # ouro:usenet-health\n", { mode: 0o600 })
     const before = new Map([...targets, goFile, crontabFile].map((target) => [target, fs.readFileSync(target, "utf8")]))
     const failingTarget = crontabFile
@@ -184,6 +270,6 @@ exec /usr/bin/install "$@"
     expect(() => execFileSync(installerPath, ["--install-only", "--source-root", source, "--install-root", installRoot, "--go-file", goFile, "--crontab-file", crontabFile], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } })).toThrow()
     for (const [target, content] of before) expect(fs.readFileSync(target, "utf8"), target).toBe(content)
     expect(fs.readFileSync(crontabFile, "utf8")).toContain("prior-guard # ouro:usenet-health")
-    expect(fs.readdirSync(installRoot).filter((name) => name.startsWith(".ouro-usenet-stage."))).toEqual([])
+    expect(transactionResidue(installRoot)).toEqual([])
   })
 })
