@@ -92,6 +92,15 @@ export interface ExternalEventRecord extends Required<Omit<ExternalEventInput, "
   shouldWake: boolean
   retentionSummary?: ExternalEventRetentionSummary
   privilegedReplayNonces?: string[]
+  privilegedReplayManifest?: ExternalEventReplayManifest
+}
+
+export interface ExternalEventReplayManifest {
+  algorithm: "sha256-bloom-v1"
+  bitCount: number
+  hashCount: number
+  bits: string
+  observedCount: number
 }
 
 export interface ExternalEventRetentionSummary {
@@ -99,6 +108,7 @@ export interface ExternalEventRetentionSummary {
   oldestCompactedAt: string
   newestCompactedAt: string
   digest: string
+  privilegedReplayManifest?: ExternalEventReplayManifest
 }
 
 const MAX_EVENT_TEXT_BYTES = 4_096
@@ -108,6 +118,8 @@ const MAX_EVENT_RECORDS_PER_SOURCE = 512
 const MAX_EVENT_SOURCES_PER_AGENT = 64
 const PRIVILEGED_EVENT_SOURCE = "sanctuary-usenet"
 const PRIVILEGED_SPOOL_MAX_BYTES = 32 * 1024
+const PRIVILEGED_REPLAY_BITS = 131_072
+const PRIVILEGED_REPLAY_HASHES = 7
 const privilegedIngress = Symbol("privileged external-event ingress")
 
 interface PrivilegedExternalEventEnvelope {
@@ -163,6 +175,7 @@ function validateExternalEventInput(input: ExternalEventInput): void {
   assertBoundedText(input.eventType, "eventType", 160)
   assertBoundedText(input.eventId, "eventId", 160)
   if (!input.agent.trim() || !input.source.trim() || !input.eventType.trim() || !input.eventId.trim()) throw new Error("External event identity must be bounded and nonempty")
+  if ([input.agent, input.source, input.eventType, input.eventId].some((value) => value !== value.trim())) throw new Error("External event identity must be canonical")
   assertBoundedText(input.summary, "summary")
   assertBoundedText(input.payloadPath, "payloadPath")
   assertBoundedText(input.priority, "priority", 64)
@@ -171,6 +184,64 @@ function validateExternalEventInput(input: ExternalEventInput): void {
   if (input.evidence !== undefined && (!Array.isArray(input.evidence) || input.evidence.length > MAX_EVENT_EVIDENCE)) throw new Error("External event evidence must be bounded")
   for (const entry of input.evidence ?? []) assertBoundedText(entry, "evidence entry")
   if (Buffer.byteLength(JSON.stringify(input)) > MAX_EVENT_RECORD_BYTES) throw new Error("External event input must be bounded")
+}
+
+function emptyReplayManifest(): ExternalEventReplayManifest {
+  return {
+    algorithm: "sha256-bloom-v1",
+    bitCount: PRIVILEGED_REPLAY_BITS,
+    hashCount: PRIVILEGED_REPLAY_HASHES,
+    bits: Buffer.alloc(PRIVILEGED_REPLAY_BITS / 8).toString("base64"),
+    observedCount: 0,
+  }
+}
+
+function replayBytes(manifest: ExternalEventReplayManifest): Buffer {
+  if (manifest.algorithm !== "sha256-bloom-v1" || manifest.bitCount !== PRIVILEGED_REPLAY_BITS
+    || manifest.hashCount !== PRIVILEGED_REPLAY_HASHES || !Number.isSafeInteger(manifest.observedCount) || manifest.observedCount < 0) {
+    throw new Error("Privileged replay manifest is invalid")
+  }
+  const bytes = Buffer.from(manifest.bits, "base64")
+  if (bytes.length !== PRIVILEGED_REPLAY_BITS / 8) throw new Error("Privileged replay manifest is invalid")
+  return bytes
+}
+
+function replayIndexes(nonce: string): number[] {
+  const digest = createHash("sha256").update(nonce).digest()
+  return Array.from({ length: PRIVILEGED_REPLAY_HASHES }, (_, index) => digest.readUInt32BE(index * 4) % PRIVILEGED_REPLAY_BITS)
+}
+
+function replayContains(manifest: ExternalEventReplayManifest, nonce: string): boolean {
+  const bytes = replayBytes(manifest)
+  return replayIndexes(nonce).every((index) => (bytes[Math.floor(index / 8)]! & (1 << (index % 8))) !== 0)
+}
+
+function replayAdd(manifest: ExternalEventReplayManifest, nonce: string): ExternalEventReplayManifest {
+  if (replayContains(manifest, nonce)) return manifest
+  const bytes = replayBytes(manifest)
+  for (const index of replayIndexes(nonce)) {
+    const byteIndex = Math.floor(index / 8)
+    bytes[byteIndex] = bytes[byteIndex]! | (1 << (index % 8))
+  }
+  return { ...manifest, bits: bytes.toString("base64"), observedCount: manifest.observedCount + 1 }
+}
+
+function mergeReplayManifests(...manifests: Array<ExternalEventReplayManifest | undefined>): ExternalEventReplayManifest {
+  const merged = Buffer.alloc(PRIVILEGED_REPLAY_BITS / 8)
+  let observedCount = 0
+  for (const manifest of manifests) {
+    if (!manifest) continue
+    const bytes = replayBytes(manifest)
+    for (let index = 0; index < merged.length; index += 1) merged[index] = merged[index]! | bytes[index]!
+    observedCount += manifest.observedCount
+  }
+  return { ...emptyReplayManifest(), bits: merged.toString("base64"), observedCount }
+}
+
+function replayManifestWithLegacy(manifest: ExternalEventReplayManifest | undefined, nonces: string[] | undefined): ExternalEventReplayManifest {
+  let result = mergeReplayManifests(manifest)
+  for (const nonce of nonces ?? []) result = replayAdd(result, nonce)
+  return result
 }
 
 function compactHandledReceiptsForNewRecord(recordPath: string): ExternalEventRetentionSummary | null {
@@ -182,7 +253,8 @@ function compactHandledReceiptsForNewRecord(recordPath: string): ExternalEventRe
     const candidatePath = path.join(sourceDir, entry.name)
     try {
       const parsed = readExternalEventRecord(candidatePath)
-      return parsed.executionState === "handled" ? [{ recordPath: candidatePath, updatedAt: parsed.updatedAt, eventId: parsed.eventId, prior: parsed.retentionSummary }] : []
+      const hasReplay = parsed.privilegedReplayManifest !== undefined || (parsed.privilegedReplayNonces?.length ?? 0) > 0
+      return parsed.executionState === "handled" ? [{ recordPath: candidatePath, updatedAt: parsed.updatedAt, eventId: parsed.eventId, prior: parsed.retentionSummary, replay: hasReplay ? replayManifestWithLegacy(parsed.privilegedReplayManifest, parsed.privilegedReplayNonces) : undefined }] : []
     } catch { return [] }
   }).sort((left, right) => left.updatedAt.localeCompare(right.updatedAt) || left.recordPath.localeCompare(right.recordPath))
   let remaining = records.length
@@ -194,11 +266,13 @@ function compactHandledReceiptsForNewRecord(recordPath: string): ExternalEventRe
     const previousSummary = summary as ExternalEventRetentionSummary | null
     const oldest = candidate.prior?.oldestCompactedAt && candidate.prior.oldestCompactedAt < candidate.updatedAt ? candidate.prior.oldestCompactedAt : candidate.updatedAt
     const newest = candidate.prior?.newestCompactedAt && candidate.prior.newestCompactedAt > candidate.updatedAt ? candidate.prior.newestCompactedAt : candidate.updatedAt
+    const replaySources = [previousSummary?.privilegedReplayManifest, candidate.prior?.privilegedReplayManifest, candidate.replay].filter((manifest) => manifest !== undefined)
     summary = {
       compactedHandledCount: (previousSummary?.compactedHandledCount ?? 0) + 1 + (candidate.prior?.compactedHandledCount ?? 0),
       oldestCompactedAt: previousSummary && previousSummary.oldestCompactedAt < oldest ? previousSummary.oldestCompactedAt : oldest,
       newestCompactedAt: previousSummary && previousSummary.newestCompactedAt > newest ? previousSummary.newestCompactedAt : newest,
       digest: createHash("sha256").update(`${previousSummary?.digest ?? ""}\0${candidate.prior?.digest ?? ""}\0${candidate.eventId}\0${candidate.updatedAt}`).digest("hex"),
+      ...(replaySources.length > 0 ? { privilegedReplayManifest: mergeReplayManifests(...replaySources) } : {}),
     }
   }
   if (remaining >= MAX_EVENT_RECORDS_PER_SOURCE) throw new Error("External event receipt capacity is exhausted; active and failed work was preserved")
@@ -472,16 +546,22 @@ function recordExternalEventInternal(input: ExternalEventInput, options: RecordE
     const existingResult = readExisting(recordPath)
     const existing = existingResult.record
     const privilegedNonce = options[privilegedIngress]?.nonce
-    if (privilegedNonce && existing?.privilegedReplayNonces?.includes(privilegedNonce)) throw new Error("Privileged external event replayed nonce")
-    const privilegedReplayNonces = privilegedNonce
-      ? [...(existing?.privilegedReplayNonces ?? []), privilegedNonce].slice(-128)
-      : existing?.privilegedReplayNonces
+    let privilegedReplayManifest = existing?.privilegedReplayManifest
+    if (privilegedNonce) {
+      const replayAuthority = mergeReplayManifests(
+        replayManifestWithLegacy(existing?.privilegedReplayManifest, existing?.privilegedReplayNonces),
+        existing?.privilegedReplayManifest ? undefined : existing?.retentionSummary?.privilegedReplayManifest,
+        compacted?.privilegedReplayManifest,
+      )
+      if (replayContains(replayAuthority, privilegedNonce)) throw new Error("Privileged external event replayed nonce")
+      privilegedReplayManifest = replayAdd(replayAuthority, privilegedNonce)
+    }
     if (existing?.executionState === "running") {
       if (existing.observationRevision === revision && existing.observationDigest === digest) {
-        return privilegedNonce ? commitMutation(recordPath, { ...existing, privilegedReplayNonces, shouldWake: false }, now) : { ...existing, shouldWake: false }
+        return privilegedNonce ? commitMutation(recordPath, { ...existing, privilegedReplayManifest, privilegedReplayNonces: undefined, shouldWake: false }, now) : { ...existing, shouldWake: false }
       }
       const pendingObservation = observationFromInput(input, now, digest, revision, "changed")
-      const updated = commitMutation(recordPath, { ...existing, privilegedReplayNonces, pendingObservation, shouldWake: false }, now)
+      const updated = commitMutation(recordPath, { ...existing, privilegedReplayManifest, privilegedReplayNonces: undefined, pendingObservation, shouldWake: false }, now)
       emitNervesEvent({
         component: "daemon",
         event: "daemon.external_event_recorded",
@@ -523,7 +603,7 @@ function recordExternalEventInternal(input: ExternalEventInput, options: RecordE
     dispatchEnabled: options.dispatchEnabled ?? existing?.dispatchEnabled ?? true,
     shouldWake,
     ...((existing?.retentionSummary ?? compacted) ? { retentionSummary: existing?.retentionSummary ?? compacted! } : {}),
-    ...(privilegedReplayNonces ? { privilegedReplayNonces } : {}),
+    ...(privilegedReplayManifest ? { privilegedReplayManifest } : {}),
     }
     atomicWrite(recordPath, record)
     emitNervesEvent({
@@ -539,6 +619,7 @@ function recordExternalEventInternal(input: ExternalEventInput, options: RecordE
 }
 
 export function recordExternalEvent(input: ExternalEventInput, options: { root?: string; now?: () => string; dispatchEnabled?: boolean } = {}): ExternalEventRecord {
+  validateExternalEventInput(input)
   if (input.source === PRIVILEGED_EVENT_SOURCE) throw new Error(`External event source '${PRIVILEGED_EVENT_SOURCE}' is reserved for privileged spool ingress`)
   return recordExternalEventInternal(input, options)
 }
@@ -592,11 +673,33 @@ function safeSpoolEntries(spoolRoot: string): fs.Dirent[] {
   try { return fs.readdirSync(spoolRoot, { withFileTypes: true }).filter((entry) => entry.name.endsWith(".json")) } catch { return [] }
 }
 
+function privilegedReplayAuthority(eventRoot: string): ExternalEventReplayManifest {
+  const sourceDir = path.dirname(externalEventRecordPath(eventRoot, { agent: "sanctuary", source: PRIVILEGED_EVENT_SOURCE, eventId: "authority" }))
+  if (!fs.existsSync(sourceDir)) return emptyReplayManifest()
+  let authority = emptyReplayManifest()
+  for (const entry of fs.readdirSync(sourceDir, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) continue
+    try {
+      const record = readExternalEventRecord(path.join(sourceDir, entry.name))
+      authority = mergeReplayManifests(
+        authority,
+        replayManifestWithLegacy(record.privilegedReplayManifest, record.privilegedReplayNonces),
+        record.retentionSummary?.privilegedReplayManifest,
+      )
+    } catch {
+      // Corrupt receipts are surfaced by status; they cannot safely grant replay authority.
+    }
+  }
+  return authority
+}
+
 export function scanPrivilegedEventSpool(options: { spoolRoot: string; eventRoot?: string; now?: () => string }): { accepted: number; rejected: number; replayed: number } {
   const entries = safeSpoolEntries(options.spoolRoot)
   let accepted = 0
   let rejected = 0
   let replayed = 0
+  const eventRoot = options.eventRoot ?? getExternalEventRoot()
+  let replayAuthority = privilegedReplayAuthority(eventRoot)
   let rootSafe = false
   try {
     const root = fs.lstatSync(options.spoolRoot)
@@ -619,6 +722,7 @@ export function scanPrivilegedEventSpool(options: { spoolRoot: string; eventRoot
       } finally { fs.closeSync(handle) }
       const now = options.now?.() ?? new Date().toISOString()
       const envelope = parsePrivilegedEnvelope(raw, entry.name, now)
+      if (replayContains(replayAuthority, envelope.nonce)) throw new Error("Privileged external event replayed nonce")
       recordExternalEventInternal({
         agent: envelope.agent,
         source: envelope.source,
@@ -630,7 +734,8 @@ export function scanPrivilegedEventSpool(options: { spoolRoot: string; eventRoot
         receivedAt: envelope.createdAt,
         observationRevision: envelope.observationRevision,
         transition: "opened",
-      }, { root: options.eventRoot, now: () => now, [privilegedIngress]: { nonce: envelope.nonce } })
+      }, { root: eventRoot, now: () => now, [privilegedIngress]: { nonce: envelope.nonce } })
+      replayAuthority = replayAdd(replayAuthority, envelope.nonce)
       accepted += 1
     } catch (error) {
       if (error instanceof Error && error.message === "Privileged external event replayed nonce") replayed += 1

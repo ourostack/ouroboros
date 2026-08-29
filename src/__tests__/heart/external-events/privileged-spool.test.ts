@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto"
+import { spawn } from "node:child_process"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
@@ -74,6 +75,16 @@ function spoofRootOwnership(spoolRoot: string): void {
   spoolMock.readOnly = true
 }
 
+function producerOptions(spoolRoot: string, nonce = "b".repeat(64)) {
+  return {
+    spoolRoot,
+    effectiveUid: 0,
+    expectedSpoolOwnerUid: process.getuid?.() ?? 0,
+    now: () => "2026-08-29T19:55:00.000Z",
+    nonce: () => nonce,
+  }
+}
+
 afterEach(() => {
   spoolMock.root = ""
   spoolMock.readOnly = false
@@ -95,10 +106,61 @@ describe("privileged external-event spool", () => {
     expect(status).toMatchObject({ agent: "sanctuary", source: "sanctuary-usenet", eventId: "spend-guard", executionState: "received" })
     expect(readExternalEventRecord(status!.recordPath)).toMatchObject({
       observationRevision: "a".repeat(64),
-      privilegedReplayNonces: ["b".repeat(64)],
+      privilegedReplayManifest: { algorithm: "sha256-bloom-v1", observedCount: 1 },
       evidence: expect.arrayContaining(["protective action receipt: sabnzbd:pause:2026-08-29:50000:20"]),
     })
   })
+
+  it("retains replay authority after more than 128 transitions and a scanner restart", () => {
+    const spoolRoot = root("ouro-privileged-long-history")
+    const eventRoot = root("ouro-privileged-long-history-events")
+    fs.chmodSync(spoolRoot, 0o755)
+    for (let index = 0; index < 140; index += 1) {
+      writeSpoolFile(spoolRoot, envelope({
+        transitionId: `transition-${index}`,
+        observationRevision: createHash("sha256").update(`revision-${index}`).digest("hex"),
+        nonce: createHash("sha256").update(`nonce-${index}`).digest("hex"),
+      }))
+    }
+    spoofRootOwnership(spoolRoot)
+
+    expect(scanPrivilegedEventSpool({ spoolRoot, eventRoot, now: () => NOW })).toEqual({ accepted: 140, rejected: 0, replayed: 0 })
+    expect(scanPrivilegedEventSpool({ spoolRoot, eventRoot, now: () => NOW })).toEqual({ accepted: 0, rejected: 0, replayed: 140 })
+    expect(readExternalEventRecord(listExternalEventStatus(eventRoot)[0]!.recordPath)).toMatchObject({
+      privilegedReplayManifest: { algorithm: "sha256-bloom-v1", observedCount: 140 },
+    })
+  })
+
+  it("does not recreate compacted handled work when immutable spool history is rescanned", () => {
+    const spoolRoot = root("ouro-privileged-compaction")
+    const eventRoot = root("ouro-privileged-compaction-events")
+    fs.chmodSync(spoolRoot, 0o755)
+    for (let index = 0; index < 512; index += 1) {
+      writeSpoolFile(spoolRoot, envelope({
+        incidentKey: `incident-${index}`,
+        transitionId: `transition-${index}`,
+        observationRevision: createHash("sha256").update(`revision-${index}`).digest("hex"),
+        nonce: createHash("sha256").update(`nonce-${index}`).digest("hex"),
+      }))
+    }
+    spoofRootOwnership(spoolRoot)
+    expect(scanPrivilegedEventSpool({ spoolRoot, eventRoot, now: () => NOW })).toEqual({ accepted: 512, rejected: 0, replayed: 0 })
+    for (const status of listExternalEventStatus(eventRoot)) {
+      const record = readExternalEventRecord(status.recordPath)
+      fs.writeFileSync(status.recordPath, `${JSON.stringify({ ...record, executionState: "handled" })}\n`)
+    }
+    writeSpoolFile(spoolRoot, envelope({
+      incidentKey: "incident-512",
+      transitionId: "transition-512",
+      observationRevision: createHash("sha256").update("revision-512").digest("hex"),
+      nonce: createHash("sha256").update("nonce-512").digest("hex"),
+    }))
+
+    expect(scanPrivilegedEventSpool({ spoolRoot, eventRoot, now: () => NOW })).toEqual({ accepted: 1, rejected: 0, replayed: 512 })
+    expect(listExternalEventStatus(eventRoot)).toHaveLength(512)
+    expect(scanPrivilegedEventSpool({ spoolRoot, eventRoot, now: () => NOW })).toEqual({ accepted: 0, rejected: 0, replayed: 513 })
+    expect(listExternalEventStatus(eventRoot)).toHaveLength(512)
+  }, 15_000)
 
   it.each([
     ["wrong source", { source: "attacker" }],
@@ -142,19 +204,26 @@ describe("privileged external-event spool", () => {
     expect(() => recordExternalEvent({ agent: "sanctuary", source: "sanctuary-usenet", eventType: "usenet.protective_action", eventId: "spoof" }, { root: root("ordinary-event") }))
       .toThrow("reserved for privileged spool ingress")
   })
+
+  it.each([" sanctuary-usenet", "sanctuary-usenet ", "\tsanctuary-usenet"])('rejects noncanonical reserved-source identity %j before deriving a path', (source) => {
+    const eventRoot = root("ordinary-noncanonical-event")
+    expect(() => recordExternalEvent({ agent: "sanctuary", source, eventType: "usenet.protective_action", eventId: "spoof" }, { root: eventRoot }))
+      .toThrow("identity must be canonical")
+    expect(fs.readdirSync(eventRoot)).toEqual([])
+  })
 })
 
 describe("packaged root event producer", () => {
-  it("writes one canonical bounded envelope with fsync then atomic rename and is idempotent", async () => {
+  it("writes one canonical bounded envelope with fsync and atomic no-replace publication and is idempotent", async () => {
     const producerPath = path.resolve(__dirname, "../../../../deploy/unraid/ouro-events/emit-event.mjs")
     const producer = await import(`${pathToFileURL(producerPath).href}?test=${Date.now()}`) as {
-      emitEvent(input: Record<string, unknown>, options: { spoolRoot: string; effectiveUid: number; now: () => string; nonce: () => string }): { filePath: string; created: boolean }
+      emitEvent(input: Record<string, unknown>, options: ReturnType<typeof producerOptions>): { filePath: string; created: boolean }
     }
     const spoolRoot = root("ouro-producer")
     fs.chmodSync(spoolRoot, 0o755)
     const input = envelope({ createdAt: undefined, expiresAt: undefined, nonce: undefined })
-    const first = producer.emitEvent(input, { spoolRoot, effectiveUid: 0, now: () => "2026-08-29T19:55:00.000Z", nonce: () => "b".repeat(64) })
-    const second = producer.emitEvent(input, { spoolRoot, effectiveUid: 0, now: () => "2026-08-29T19:56:00.000Z", nonce: () => "c".repeat(64) })
+    const first = producer.emitEvent(input, producerOptions(spoolRoot))
+    const second = producer.emitEvent(input, { ...producerOptions(spoolRoot, "c".repeat(64)), now: () => "2026-08-29T19:56:00.000Z" })
 
     expect(first).toEqual({ filePath: path.join(spoolRoot, envelopeName(envelope())), created: true })
     expect(second).toEqual({ filePath: first.filePath, created: false })
@@ -166,14 +235,36 @@ describe("packaged root event producer", () => {
   it("rejects non-root CLI execution, traversal, oversized content, and conflicting transition reuse", async () => {
     const producerPath = path.resolve(__dirname, "../../../../deploy/unraid/ouro-events/emit-event.mjs")
     const producer = await import(`${pathToFileURL(producerPath).href}?negative=${Date.now()}`) as {
-      emitEvent(input: Record<string, unknown>, options: { spoolRoot: string; effectiveUid: number; now: () => string; nonce: () => string }): unknown
+      emitEvent(input: Record<string, unknown>, options: ReturnType<typeof producerOptions>): unknown
     }
     const spoolRoot = root("ouro-producer-negative")
     fs.chmodSync(spoolRoot, 0o755)
-    expect(() => producer.emitEvent(envelope(), { spoolRoot, effectiveUid: 10001, now: () => NOW, nonce: () => "b".repeat(64) })).toThrow("must run as root")
-    expect(() => producer.emitEvent(envelope({ incidentKey: "../escape" }), { spoolRoot, effectiveUid: 0, now: () => NOW, nonce: () => "b".repeat(64) })).toThrow("invalid")
-    expect(() => producer.emitEvent(envelope({ summary: "x".repeat(4097) }), { spoolRoot, effectiveUid: 0, now: () => NOW, nonce: () => "b".repeat(64) })).toThrow("bounded")
-    producer.emitEvent(envelope(), { spoolRoot, effectiveUid: 0, now: () => "2026-08-29T19:55:00.000Z", nonce: () => "b".repeat(64) })
-    expect(() => producer.emitEvent(envelope({ summary: "different" }), { spoolRoot, effectiveUid: 0, now: () => "2026-08-29T19:56:00.000Z", nonce: () => "c".repeat(64) })).toThrow("transition already exists with different content")
+    expect(() => producer.emitEvent(envelope(), { ...producerOptions(spoolRoot), effectiveUid: 10001 })).toThrow("must run as root")
+    expect(() => producer.emitEvent(envelope(), { ...producerOptions(spoolRoot), expectedSpoolOwnerUid: 0 })).toThrow("root-owned")
+    expect(() => producer.emitEvent(envelope({ incidentKey: "../escape" }), producerOptions(spoolRoot))).toThrow("invalid")
+    expect(() => producer.emitEvent(envelope({ summary: "x".repeat(4097) }), producerOptions(spoolRoot))).toThrow("bounded")
+    producer.emitEvent(envelope(), producerOptions(spoolRoot))
+    expect(() => producer.emitEvent(envelope({ summary: "different" }), { ...producerOptions(spoolRoot, "c".repeat(64)), now: () => "2026-08-29T19:56:00.000Z" })).toThrow("transition already exists with different content")
+  })
+
+  it("publishes without replacement when concurrent processes emit conflicting content", async () => {
+    const producerPath = path.resolve(__dirname, "../../../../deploy/unraid/ouro-events/emit-event.mjs")
+    const spoolRoot = root("ouro-producer-concurrent")
+    fs.chmodSync(spoolRoot, 0o755)
+    const run = (summary: string, nonce: string): Promise<{ code: number | null; stdout: string; stderr: string }> => new Promise((resolve) => {
+      const program = `import { emitEvent } from ${JSON.stringify(pathToFileURL(producerPath).href)}; try { const result = emitEvent(${JSON.stringify(envelope({ createdAt: undefined, expiresAt: undefined, nonce: undefined, summary }))}, { spoolRoot: ${JSON.stringify(spoolRoot)}, effectiveUid: 0, expectedSpoolOwnerUid: process.getuid(), now: () => ${JSON.stringify("2026-08-29T19:55:00.000Z")}, nonce: () => ${JSON.stringify(nonce)} }); process.stdout.write(JSON.stringify(result)); } catch (error) { process.stderr.write(error.message); process.exitCode = 1 }`
+      const child = spawn(process.execPath, ["--input-type=module", "--eval", program], { stdio: ["ignore", "pipe", "pipe"] })
+      let stdout = ""
+      let stderr = ""
+      child.stdout.on("data", (chunk) => { stdout += String(chunk) })
+      child.stderr.on("data", (chunk) => { stderr += String(chunk) })
+      child.on("close", (code) => resolve({ code, stdout, stderr }))
+    })
+    const outcomes = await Promise.all([run("first contender", "c".repeat(64)), run("second contender", "d".repeat(64))])
+
+    expect(outcomes.filter((outcome) => outcome.code === 0)).toHaveLength(1)
+    expect(outcomes.filter((outcome) => outcome.stderr.includes("different content"))).toHaveLength(1)
+    expect(fs.readdirSync(spoolRoot)).toHaveLength(1)
+    expect(JSON.parse(fs.readFileSync(path.join(spoolRoot, fs.readdirSync(spoolRoot)[0]!), "utf8")).summary).toMatch(/contender/u)
   })
 })
