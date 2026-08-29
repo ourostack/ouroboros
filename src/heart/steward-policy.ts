@@ -100,6 +100,7 @@ function ensureDirectory(agentRoot: string): void {
 }
 
 function appendReceipt(filePath: string, value: unknown): void {
+  const creating = !fs.existsSync(filePath)
   const fd = fs.openSync(filePath, "a", 0o600)
   try {
     fs.writeFileSync(fd, `${JSON.stringify(value)}\n`, "utf8")
@@ -108,6 +109,10 @@ function appendReceipt(filePath: string, value: unknown): void {
     fs.closeSync(fd)
   }
   fs.chmodSync(filePath, 0o600)
+  if (creating) {
+    const directory = fs.openSync(path.dirname(filePath), fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
+    try { fs.fsyncSync(directory) } finally { fs.closeSync(directory) }
+  }
 }
 
 function requireText(value: string, label: string): string {
@@ -196,18 +201,31 @@ function expectedOff(policy: StewardPolicyRecord, target: string, now: string): 
   return /^(?:off|disabled|paused|intentionally_off|intentionally_paused)$/u.test(desired.value.trim().toLowerCase())
 }
 
+const UNRESOLVED_ACTION_STATES = new Set<RoutineActionReceipt["state"]>(["reserved", "attempting", "effect_acknowledged", "recovery_pending", "indeterminate"])
+
+function inspectRoutineActionGrantSnapshot(
+  policy: StewardPolicyRecord,
+  receipts: RoutineActionReceipt[],
+  input: { key: string; action: string; target: string; expectedPolicyVersion?: number; now?: string },
+): RoutineActionGrantDecision {
+  if (input.expectedPolicyVersion !== undefined && policy.version !== input.expectedPolicyVersion) return { allowed: false, reason: "routine action policy version changed" }
+  const grant = policy.routineActionGrants[input.key]
+  if (!grant) return { allowed: false, reason: "routine action grant is missing" }
+  if (grant.action !== input.action) return { allowed: false, reason: "routine action does not match the grant" }
+  if (!grant.targets.includes(input.target) || grant.exclusions.includes(input.target)) return { allowed: false, reason: "routine action target is not authorized" }
+  const now = input.now ?? new Date().toISOString()
+  if (grant.expiresAt && Date.parse(grant.expiresAt) <= Date.parse(now)) return { allowed: false, reason: "routine action grant expired" }
+  if (expectedOff(policy, input.target, now)) return { allowed: false, reason: "container is expected off" }
+  if (receipts.some((receipt) => receipt.action === input.action && receipt.target === input.target && UNRESOLVED_ACTION_STATES.has(receipt.state))) {
+    return { allowed: false, reason: "routine action has an unresolved receipt for this target" }
+  }
+  return { allowed: true, policyVersion: policy.version, grantVersion: grant.version, key: input.key, action: grant.action, target: input.target }
+}
+
 export function inspectRoutineActionGrant(agentRoot: string, input: { key: string; action: string; target: string; expectedPolicyVersion?: number; now?: string }): RoutineActionGrantDecision {
   try {
     const policy = readStewardPolicy(agentRoot)
-    if (input.expectedPolicyVersion !== undefined && policy.version !== input.expectedPolicyVersion) return { allowed: false, reason: "routine action policy version changed" }
-    const grant = policy.routineActionGrants[input.key]
-    if (!grant) return { allowed: false, reason: "routine action grant is missing" }
-    if (grant.action !== input.action) return { allowed: false, reason: "routine action does not match the grant" }
-    if (!grant.targets.includes(input.target) || grant.exclusions.includes(input.target)) return { allowed: false, reason: "routine action target is not authorized" }
-    const now = input.now ?? new Date().toISOString()
-    if (grant.expiresAt && Date.parse(grant.expiresAt) <= Date.parse(now)) return { allowed: false, reason: "routine action grant expired" }
-    if (expectedOff(policy, input.target, now)) return { allowed: false, reason: "container is expected off" }
-    return { allowed: true, policyVersion: policy.version, grantVersion: grant.version, key: input.key, action: grant.action, target: input.target }
+    return inspectRoutineActionGrantSnapshot(policy, readRoutineActionReceipts(agentRoot), input)
   } catch (error) {
     return { allowed: false, reason: error instanceof Error ? error.message : "routine action policy is unavailable" }
   }
@@ -226,17 +244,19 @@ export function consumeRoutineActionGrant(agentRoot: string, input: {
   effect?: { operation: string; targetId: string }
   now?: string
 }): RoutineActionReceipt {
-  return withImmediateSessionTurnLease(receiptsPath(agentRoot), () => {
-    const policy = readStewardPolicy(agentRoot)
+  return withImmediateSessionTurnLease(policyPath(agentRoot), (lease) => {
+    const snapshot = readSessionTransaction(policyPath(agentRoot), lease)
+    const policy = snapshot.value === null ? structuredClone(EMPTY_POLICY) : validateStewardPolicy(snapshot.value)
     const grant = policy.routineActionGrants[input.key]
     const now = input.now ?? new Date().toISOString()
     const action = input.action ?? grant?.action ?? ""
-    const decision = inspectRoutineActionGrant(agentRoot, { key: input.key, action, target: input.target, expectedPolicyVersion: input.expectedPolicyVersion, now })
+    const receipts = readRoutineActionReceipts(agentRoot)
+    const decision = inspectRoutineActionGrantSnapshot(policy, receipts, { key: input.key, action, target: input.target, expectedPolicyVersion: input.expectedPolicyVersion, now })
     if (!decision.allowed) throw new Error(decision.reason)
     if (!grant) throw new Error("routine action grant is missing")
     ensureDirectory(agentRoot)
     const windowStart = Date.parse(now) - grant.windowMs
-    const used = readRoutineActionReceipts(agentRoot).filter((receipt) => receipt.key === input.key && Date.parse(receipt.reservedAt) > windowStart).length
+    const used = receipts.filter((receipt) => receipt.key === input.key && Date.parse(receipt.reservedAt) > windowStart).length
     if (used >= grant.maxCount) throw new Error("routine action rate limit reached")
     const id = `action-${randomUUID()}`
     const receipt: RoutineActionReceipt = {
@@ -276,7 +296,7 @@ export function transitionRoutineActionReceipt(agentRoot: string, input: {
   recoveryState?: RoutineActionReceipt["recoveryState"]
   at?: string
 }): RoutineActionReceipt {
-  return withImmediateSessionTurnLease(receiptsPath(agentRoot), () => {
+  return withImmediateSessionTurnLease(policyPath(agentRoot), () => {
     const current = readRoutineActionReceipts(agentRoot).find((receipt) => receipt.id === input.id)
     if (!current) throw new Error("routine action receipt is missing")
     if (current.state !== input.expectedState) throw new Error(`routine action receipt state changed: expected ${input.expectedState}, got ${current.state}`)

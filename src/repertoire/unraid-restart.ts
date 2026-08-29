@@ -76,8 +76,10 @@ export interface ApprovedUnraidRestartOptions {
 export interface RoutineRestartAuthority {
   key: string
   expectedPolicyVersion: number
-  authorizationReceiptId: string
-  authorizationVersion: number
+  reauthorize(): Promise<
+    | { allowed: true; receiptId: string; profileVersion: number }
+    | { allowed: false; reason: string }
+  >
 }
 
 class RoutineActionReceiptError extends Error {
@@ -134,6 +136,21 @@ export function createApprovedUnraidRestartExecutor(options: ApprovedUnraidResta
     if ("ok" in fresh) return fresh
     if (fresh.id !== resolved.id) return failure("stale_target", "container identity changed before restart")
 
+    let routineAuthorization: { receiptId: string; profileVersion: number } | null = null
+    if (execution?.routine) {
+      let authorization: Awaited<ReturnType<RoutineRestartAuthority["reauthorize"]>>
+      try {
+        authorization = await execution.routine.reauthorize()
+      } catch {
+        return failure("stale_target", "routine relationship authorization is unavailable")
+      }
+      if (!authorization.allowed) return failure("stale_target", authorization.reason)
+      if (!authorization.receiptId.trim() || !Number.isInteger(authorization.profileVersion) || authorization.profileVersion < 1) {
+        return failure("stale_target", "routine relationship authorization is not versioned")
+      }
+      routineAuthorization = { receiptId: authorization.receiptId, profileVersion: authorization.profileVersion }
+    }
+
     const scenarioHandleDigest = options.acceptanceScenarioHandleDigest?.()
     const approval = options.acceptanceApproval?.()
     const attempt = {
@@ -154,7 +171,10 @@ export function createApprovedUnraidRestartExecutor(options: ApprovedUnraidResta
       if (!options.reserveRoutineAction || !options.transitionRoutineAction) return failure("invalid_response", "routine action ledger is unavailable")
       try {
         routineReceipt = options.reserveRoutineAction({
-          ...execution.routine,
+          key: execution.routine.key,
+          expectedPolicyVersion: execution.routine.expectedPolicyVersion,
+          authorizationReceiptId: routineAuthorization!.receiptId,
+          authorizationVersion: routineAuthorization!.profileVersion,
           action: "unraid.container.restart",
           target: fresh.name,
           attemptId: attempt.attemptId,

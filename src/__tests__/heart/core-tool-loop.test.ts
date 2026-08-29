@@ -1698,6 +1698,39 @@ describe("runAgent tool loop guard", () => {
       return streamedCall("settle", JSON.stringify({ answer, intent: "complete" }), "call_settle_after_rejection")
     }
 
+    it("carries the one live standing-policy classification into the exact dispatch without rereading it", async () => {
+      const policy = {
+        schemaVersion: 1,
+        version: 1,
+        desiredStates: {},
+        routineActionGrants: {
+          "unraid.restart:calibre-web": { action: "unraid.container.restart", targets: ["calibre-web"], maxCount: 2, windowMs: 3_600_000, verificationRequired: true, exclusions: [], provenance: "stated", issuer: "ari", authorizedAt: "2026-08-29T17:00:00.000Z", authorizingSessionEvent: "evt-1", version: 1 },
+        },
+        updatedAt: "2026-08-29T17:00:00.000Z",
+      }
+      vi.mocked(fs.existsSync).mockImplementation((filePath) => String(filePath).endsWith("steward.json"))
+      vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => String(filePath).endsWith("steward.json") ? JSON.stringify(policy) : defaultReadFileSync(filePath))
+      const { resolveToolDefinition } = await import("../../repertoire/tools")
+      const tool = resolveToolDefinition("unraid_restart_container")!.tool
+      mockCreate.mockReturnValueOnce(streamedCall("unraid_restart_container", JSON.stringify({ container: "calibre-web" }), "call_routine_restart"))
+      const controller = new AbortController()
+      const execTool = vi.fn(async () => { controller.abort(); return JSON.stringify({ ok: true }) })
+      const propose = vi.fn()
+      const relationshipAuthorization = { authorizedContextScopes: [], advertisedToolNames: ["unraid_restart_container"], actor: { friendId: "ari", trustLevel: "family" as const, sessionEventId: "evt-2" }, authorizeTool: vi.fn(async () => ({ allowed: true as const, receiptId: "relationship-1", profileVersion: 7 })) }
+      const { runAgent } = await import("../../heart/core")
+
+      const result = await runAgent([{ role: "user", content: "restart calibre-web" }], makeCallbacks(), "cli", controller.signal, {
+        tools: [tool], execTool, approvalCoordinator: { propose },
+        toolContext: { signin: async () => undefined, agentRoot: "/mock/repo/testagent", relationshipAuthorization },
+      } as any)
+
+      expect(propose).not.toHaveBeenCalled()
+      expect(result.outcome).not.toBe("errored")
+      expect(mockCreate).toHaveBeenCalledOnce()
+      expect(execTool).toHaveBeenCalledWith("unraid_restart_container", { container: "calibre-web" }, expect.objectContaining({ routineActionSelection: { key: "unraid.restart:calibre-web", target: "calibre-web", expectedPolicyVersion: 1 } }))
+      expect(relationshipAuthorization.authorizeTool).toHaveBeenCalledOnce()
+    })
+
     it("suspends the exact Docker restart before the shell handler despite its low-risk profile", async () => {
       mockCreate.mockReturnValueOnce(streamedCall("shell", JSON.stringify({ command: "docker restart calibre-web" }), "call_restart"))
       mockCreate.mockReturnValueOnce(settled("unexpected continuation"))

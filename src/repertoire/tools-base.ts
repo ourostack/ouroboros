@@ -145,8 +145,6 @@ export interface ToolContext {
     restartContainer(args: { container: string }, execution?: { routine?: import("./unraid-restart").RoutineRestartAuthority }): Promise<unknown>;
     recoverRoutineActions?(): Promise<unknown>;
   };
-  /** Ephemeral receipt from the execution-time relationship check. */
-  routineActionAuthorization?: Readonly<{ receiptId: string; profileVersion: number }>;
   /** Immutable standing-policy selection made before this exact tool dispatch. */
   routineActionSelection?: Readonly<{ key: string; target: string; expectedPolicyVersion: number }>;
 }

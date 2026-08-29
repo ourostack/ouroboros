@@ -388,10 +388,13 @@ export function createTelegramApprovalRuntime(options: {
             liveRisk: async () => ({ ok: true }),
             hooks: telegramApprovalDecisionBarrierHooks(effectBarrier),
             execute: (name, args) => {
+              const approvedToolContext = name === "unraid_restart_container"
+                ? { ...options.toolContext, relationshipAuthorization: undefined } as ToolContext
+                : options.toolContext as ToolContext
               const execute = () => executeApprovedTelegramTool(
                 name,
                 args,
-                (toolName, toolArgs) => executeTool(toolName, toolArgs as Record<string, string>, options.toolContext as ToolContext),
+                (toolName, toolArgs) => executeTool(toolName, toolArgs as Record<string, string>, approvedToolContext),
                 decisionScenarioDigest,
                 existing.approvalId,
                 effectBarrier,

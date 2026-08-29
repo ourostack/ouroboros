@@ -21,7 +21,7 @@ import { unraidToolDefinitions } from "./tools-unraid";
 import { ponderTool, settleTool, speakTool } from "./tools-flow";
 import { stewardPolicyToolDefinition } from "./tools-steward-policy";
 import type { ToolHighRiskMutationKind, ToolRiskProfile } from "./tools-base";
-import { inspectRoutineActionGrant, readStewardPolicy } from "../heart/steward-policy";
+import { inspectRoutineActionGrant } from "../heart/steward-policy";
 
 function safeGetAgentRoot(): string | undefined {
   try {
@@ -174,25 +174,33 @@ export function approvalPolicyForToolName(name: string, args: Record<string, unk
   return resolveToolDefinition(name)?.approvalPolicy?.(args) ?? { kind: "not_required" }
 }
 
-function routineActionInvocation(name: string, args: Record<string, unknown>, ctx?: ToolContext): { policyVersion: number; selection?: NonNullable<ToolContext["routineActionSelection"]> } | null {
+async function routineActionInvocation(name: string, args: Record<string, unknown>, ctx?: ToolContext): Promise<NonNullable<ToolContext["routineActionSelection"]> | null> {
   const target = typeof args.container === "string" ? args.container : ""
   if (name !== "unraid_restart_container" || !ctx?.agentRoot || ctx.relationshipAuthorization?.actor?.trustLevel !== "family" || !target) return null
-  const policy = readStewardPolicy(ctx.agentRoot)
+  let authorization: Awaited<ReturnType<NonNullable<ToolContext["relationshipAuthorization"]>["authorizeTool"]>>
+  try {
+    authorization = await ctx.relationshipAuthorization.authorizeTool(name, args as Record<string, string>)
+  } catch {
+    return null
+  }
+  if (!authorization.allowed || !Number.isInteger(authorization.profileVersion) || Number(authorization.profileVersion) < 1) return null
   const key = `unraid.restart:${target}`
-  const decision = inspectRoutineActionGrant(ctx.agentRoot, { key, action: "unraid.container.restart", target, expectedPolicyVersion: policy.version })
-  return { policyVersion: policy.version, ...(decision.allowed ? { selection: { key, target, expectedPolicyVersion: policy.version } } : {}) }
+  const decision = inspectRoutineActionGrant(ctx.agentRoot, { key, action: "unraid.container.restart", target })
+  return decision.allowed ? { key, target, expectedPolicyVersion: decision.policyVersion } : null
 }
 
-export function approvalPolicyForInvocation(name: string, args: Record<string, unknown>, ctx?: ToolContext): ToolApprovalPolicy {
+export async function classifyApprovalForInvocation(name: string, args: Record<string, unknown>, ctx?: ToolContext): Promise<{
+  policy: ToolApprovalPolicy
+  routineActionSelection?: NonNullable<ToolContext["routineActionSelection"]>
+}> {
   const fallback = approvalPolicyForToolName(name, args)
-  if (name !== "unraid_restart_container" || fallback.kind !== "required") return fallback
-  const invocation = routineActionInvocation(name, args, ctx)
-  if (!invocation) return fallback
-  return invocation.selection ? { kind: "not_required" } : { ...fallback, policyId: `${fallback.policyId}.steward.${invocation.policyVersion}` }
+  if (name !== "unraid_restart_container" || fallback.kind !== "required") return { policy: fallback }
+  const routineActionSelection = await routineActionInvocation(name, args, ctx)
+  return routineActionSelection ? { policy: { kind: "not_required" }, routineActionSelection } : { policy: fallback }
 }
 
-export function routineActionSelectionForInvocation(name: string, args: Record<string, unknown>, ctx?: ToolContext): ToolContext["routineActionSelection"] {
-  return routineActionInvocation(name, args, ctx)?.selection
+export async function approvalPolicyForInvocation(name: string, args: Record<string, unknown>, ctx?: ToolContext): Promise<ToolApprovalPolicy> {
+  return (await classifyApprovalForInvocation(name, args, ctx)).policy
 }
 
 const findDefinition = resolveToolDefinition
@@ -390,9 +398,7 @@ export async function execTool(name: string, args: Record<string, string>, ctx?:
     });
     return `commerce authority required: ${commerceReservation.reason}`
   }
-  const authorizedContext = relationshipDecision?.allowed && name === "unraid_restart_container" && ctx?.routineActionSelection && Number.isInteger(relationshipDecision.profileVersion) && Number(relationshipDecision.profileVersion) > 0
-    ? { ...ctx, routineActionAuthorization: { receiptId: relationshipDecision.receiptId, profileVersion: relationshipDecision.profileVersion ?? 0 } } as ToolContext
-    : ctx
+  const authorizedContext = ctx
   const toolContext: ToolContext | undefined = commerceReservation?.ok
     ? {
       ...authorizedContext,
