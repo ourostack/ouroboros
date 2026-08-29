@@ -45,6 +45,8 @@ const runtimeMocks = vi.hoisted(() => {
     runAgent: vi.fn(),
     getAgentRoot: vi.fn(() => "/agents/sanctuary.ouro"),
     saveSession: vi.fn(),
+    loadSessionEnvelopeFile: vi.fn(),
+    approvalSendText: vi.fn(),
     readSessionTransaction: vi.fn(() => ({ revision: "revision-current" })),
     withSessionTurnLease: vi.fn(async (_path: string, callback: (lease: object) => unknown) => callback({ lease: true })),
     execTool: vi.fn(),
@@ -87,6 +89,7 @@ vi.mock("../../heart/core", () => ({
 }))
 
 vi.mock("../../heart/identity", () => ({ getAgentRoot: runtimeMocks.getAgentRoot }))
+vi.mock("../../heart/session-events", () => ({ loadSessionEnvelopeFile: runtimeMocks.loadSessionEnvelopeFile }))
 vi.mock("../../mind/context", () => ({ saveSession: runtimeMocks.saveSession }))
 vi.mock("../../mind/session-transaction", () => ({
   readSessionTransaction: runtimeMocks.readSessionTransaction,
@@ -130,7 +133,7 @@ const baseRecord = {
 
 function makeRuntime(effectBarrier: () => void = vi.fn()) {
   const effects = {
-    sendText: async (input: { chatId: string; text: string }) => runtimeMocks.sendTelegramText({}, input.chatId, input.text),
+    sendText: runtimeMocks.approvalSendText,
     sendCard: vi.fn(),
     edit: vi.fn(),
     acknowledge: vi.fn(),
@@ -183,7 +186,9 @@ beforeEach(() => {
   runtimeMocks.recoverClaimedApproval.mockImplementation(({ approvalId }) => ({ ...baseRecord, approvalId, state: "failed" }))
   runtimeMocks.recoverAttemptedApproval.mockImplementation(({ approvalId }) => ({ ...baseRecord, approvalId, state: "attempted_indeterminate" }))
   runtimeMocks.resumeApprovalContinuation.mockResolvedValue(undefined)
-  runtimeMocks.saveSession.mockReturnValue(undefined)
+  runtimeMocks.saveSession.mockReturnValue([])
+  runtimeMocks.loadSessionEnvelopeFile.mockReturnValue(null)
+  runtimeMocks.approvalSendText.mockImplementation(async (input: { chatId: string; text: string }) => runtimeMocks.sendTelegramText({}, input.chatId, input.text))
   runtimeMocks.sendTelegramText.mockResolvedValue(undefined)
   runtimeMocks.readSanctuaryAcceptanceMarker.mockReturnValue(null)
 })
@@ -537,6 +542,9 @@ describe("Telegram approval runtime orchestration", () => {
   it("wires continuation claims, persistence, delivery, and recursively gated proposals", async () => {
     makeRuntime()
     runtimeMocks.sendTelegramText.mockResolvedValueOnce([])
+    runtimeMocks.saveSession.mockReturnValueOnce([{
+      id: "evt-000009", role: "assistant", content: "done", toolCalls: [],
+    }])
     runtimeMocks.store.read.mockReturnValue({ ...baseRecord, state: "succeeded" })
     runtimeMocks.resumeApprovalContinuation.mockImplementation(async (options) => {
       expect(options.claimContinuation()).toEqual(expect.objectContaining({ claimed: true }))
@@ -571,6 +579,7 @@ describe("Telegram approval runtime orchestration", () => {
       { lease: true },
     )
     expect(runtimeMocks.sendTelegramText).toHaveBeenCalledWith(expect.anything(), "20", "calibre-web is back")
+    expect(runtimeMocks.approvalSendText).toHaveBeenCalledWith(expect.objectContaining({ causalEventId: "evt-000009" }))
     expect(runtimeMocks.readSessionTransaction).toHaveBeenCalledTimes(2)
   })
 

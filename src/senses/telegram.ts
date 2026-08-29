@@ -834,7 +834,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     return { allowed: true, receiptId: `configured-owner:${subject}`, expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(), transport: { chatId: authorizedChatId } }
   }
   const authorizeEffect = options.authorizeEffect ?? defaultEffectAuthorization
-  let recordAcceptedEffects!: (sessionPath: string, artifacts: TelegramEffectArtifact[], bootstrapInbound?: { text: string; reference: string }) => Promise<void>
+  let recordAcceptedEffects!: (sessionPath: string, artifacts: TelegramEffectArtifact[], bootstrapInbound?: { text: string; reference: string }, causalEventIds?: Readonly<Record<string, string>>) => Promise<void>
   const configuredOwnerTarget = (): TelegramEffectTarget => ({ kind: "approved_relationship", friendId: `telegram-user:${subject}`, sessionKey: `telegram:${subject}` })
   const executeAuthorizedEffect = createTelegramAuthorizedEffectExecutor({
     store: getEffectJournal,
@@ -842,10 +842,15 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     authorize: authorizeEffect,
     barrier: acceptanceAuditBarrier,
   })
-  const recordConfiguredOwnerEffect = async (artifact: TelegramEffectArtifact): Promise<void> => {
+  const recordConfiguredOwnerEffect = async (artifact: TelegramEffectArtifact, causalEventId?: string): Promise<void> => {
     const target = artifact.target
     if (target.kind !== "approved_relationship") throw new Error("configured owner effect has no relationship session")
-    await recordAcceptedEffects(getSenseSessionPath(options.agentName, target.friendId, "telegram", target.sessionKey, agentRoot), [artifact])
+    await recordAcceptedEffects(
+      getSenseSessionPath(options.agentName, target.friendId, "telegram", target.sessionKey, agentRoot),
+      [artifact],
+      undefined,
+      causalEventId ? { [artifact.id]: causalEventId } : undefined,
+    )
   }
   const approvalEffects = createTelegramApprovalEffectPort({ target: configuredOwnerTarget(), chatId: authorizedChatId, execute: executeAuthorizedEffect, record: recordConfiguredOwnerEffect })
   let toolContext: ReturnType<typeof createSanctuaryToolContext> | undefined
@@ -997,8 +1002,8 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     })
   }
 
-  recordAcceptedEffects = async (sessionPath: string, artifacts: TelegramEffectArtifact[], bootstrapInbound?: { text: string; reference: string }): Promise<void> => {
-    await recordTelegramEffectsInSession({ store: getEffectJournal(), sessionPath, artifacts, ...(bootstrapInbound ? { inbound: bootstrapInbound } : {}) })
+  recordAcceptedEffects = async (sessionPath: string, artifacts: TelegramEffectArtifact[], bootstrapInbound?: { text: string; reference: string }, causalEventIds?: Readonly<Record<string, string>>): Promise<void> => {
+    await recordTelegramEffectsInSession({ store: getEffectJournal(), sessionPath, artifacts, ...(bootstrapInbound ? { inbound: bootstrapInbound } : {}), ...(causalEventIds ? { causalEventIds } : {}) })
   }
   const recoverEffectOutbox = async (): Promise<void> => {
     if (!effectJournal && !existsSync(path.join(agentRoot, "state", "telegram", "effects"))) return
@@ -1119,7 +1124,13 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       } else if (deliveryCount === 0 && result.response.trim()) {
         turnEffects.push(await deliverButlerEffect(result.response, `turn:${subject}:${message.updateId}:delivery:${deliveryOrdinal++}`, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) }))
       }
-      if (result.sessionPath) await recordAcceptedEffects(result.sessionPath, turnEffects)
+      if (result.sessionPath) {
+        const causalEventIds = Object.fromEntries((groundingIntentTool ? [] : turnEffects).flatMap((artifact, index) => {
+          const eventId = result.causalSessionEventIds?.[index]
+          return eventId ? [[artifact.id, eventId]] : []
+        }))
+        await recordAcceptedEffects(result.sessionPath, turnEffects, undefined, causalEventIds)
+      }
       emitNervesEvent({
         component: "senses",
         event: "senses.telegram_turn_end",

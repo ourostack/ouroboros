@@ -69,7 +69,7 @@ export interface TelegramAuthorizedEffectInput {
 }
 
 export interface TelegramApprovalEffectPort {
-  sendText(input: { idempotencyKey: string; chatId: string; text: string; authorClass: TelegramArtifactAuthorClass; signal?: AbortSignal }): Promise<number[]>
+  sendText(input: { idempotencyKey: string; chatId: string; text: string; authorClass: TelegramArtifactAuthorClass; causalEventId?: string; signal?: AbortSignal }): Promise<number[]>
   sendCard(input: { idempotencyKey: string; chatId: string; text: string; buttons: Array<Array<{ text: string; callbackData: string }>>; signal?: AbortSignal }): Promise<number>
   edit(input: { idempotencyKey: string; chatId: string; messageId: number; text: string; signal?: AbortSignal }): Promise<void>
   acknowledge(input: { idempotencyKey: string; callbackQueryId: string; text?: string; showAlert?: boolean; signal?: AbortSignal }): Promise<void>
@@ -492,17 +492,17 @@ export function createTelegramApprovalEffectPort(options: {
   target: TelegramEffectTarget
   chatId: string
   execute(input: TelegramAuthorizedEffectInput): Promise<TelegramEffectArtifact>
-  record(artifact: TelegramEffectArtifact): Promise<void>
+  record(artifact: TelegramEffectArtifact, causalEventId?: string): Promise<void>
 }): TelegramApprovalEffectPort {
-  const executeAndRecord = async (input: Omit<TelegramAuthorizedEffectInput, "target">): Promise<TelegramEffectArtifact> => {
+  const executeAndRecord = async (input: Omit<TelegramAuthorizedEffectInput, "target">, causalEventId?: string): Promise<TelegramEffectArtifact> => {
     const artifact = await options.execute({ ...input, target: options.target })
-    await options.record(artifact)
+    await options.record(artifact, causalEventId)
     return artifact
   }
   return {
     async sendText(input) {
       if (input.chatId !== options.chatId) throw new Error("Telegram approval text target changed")
-      const artifact = await executeAndRecord({ idempotencyKey: input.idempotencyKey, authorClass: input.authorClass, effect: { kind: "text", text: input.text }, ...(input.signal ? { signal: input.signal } : {}) })
+      const artifact = await executeAndRecord({ idempotencyKey: input.idempotencyKey, authorClass: input.authorClass, effect: { kind: "text", text: input.text }, ...(input.signal ? { signal: input.signal } : {}) }, input.causalEventId)
       return artifact.parts.flatMap((part) => part.messageId === undefined ? [] : [part.messageId])
     },
     async sendCard(input) {
@@ -545,31 +545,11 @@ export function recordTelegramEffectInSession(store: FileTelegramEffectJournal, 
   return artifact
 }
 
-function outwardText(event: SessionEvent): string[] {
-  const values: string[] = []
-  if (event.role === "assistant" && typeof event.content === "string" && event.content.trim()) values.push(event.content.trim())
-  if (event.role !== "assistant") return values
-  for (const call of event.toolCalls) {
-    const argument = call.function.name === "settle" ? "answer" : call.function.name === "speak" ? "message" : null
-    if (!argument) continue
-    try {
-      const parsed = JSON.parse(call.function.arguments) as Record<string, unknown>
-      const value = parsed?.[argument]
-      if (typeof value === "string" && value.trim()) values.push(value.trim())
-    } catch {
-      continue
-    }
-  }
-  return values
-}
-
-function bindButlerArtifactToCanonicalEvent(envelope: SessionEnvelope, artifact: TelegramEffectArtifact): { envelope: SessionEnvelope; eventIds: string[] } | null {
-  if (artifact.authorClass !== "butler" || artifact.effect.kind !== "text") return null
-  const text = artifact.effect.text.trim()
+function bindButlerArtifactToCanonicalEvent(envelope: SessionEnvelope, artifact: TelegramEffectArtifact, causalEventId?: string): { envelope: SessionEnvelope; eventIds: string[] } | null {
+  if (artifact.authorClass !== "butler" || artifact.effect.kind !== "text" || !causalEventId) return null
   const reference = `telegram-artifact:${artifact.id}`
-  const candidate = [...envelope.events].reverse().find((event) => !event.relations.references.some((value) => value.startsWith("telegram-artifact:"))
-    && outwardText(event).includes(text))
-  if (!candidate) return null
+  const candidate = envelope.events.find((event) => event.id === causalEventId && event.role === "assistant")
+  if (!candidate) throw new Error("Telegram effect canonical causal event is unavailable")
   const messageReferences = artifact.parts.flatMap((part) => part.messageId ? [`telegram-message:${part.messageId}`] : [])
   const requestReferences = artifact.target.kind === "approved_relationship" && artifact.target.requestId ? [`request:${artifact.target.requestId}`] : []
   const events = envelope.events.map((event) => event.id === candidate.id
@@ -661,6 +641,7 @@ export async function recordTelegramEffectsInSession(input: {
   sessionPath: string
   artifacts: TelegramEffectArtifact[]
   inbound?: { text: string; reference: string }
+  causalEventIds?: Readonly<Record<string, string>>
 }): Promise<void> {
   if (input.artifacts.length === 0) return
   const record = async (lease: SessionTurnLease): Promise<void> => {
@@ -692,7 +673,7 @@ export async function recordTelegramEffectsInSession(input: {
         }
       }
       if (existingEvents.length !== 0) throw new Error("Telegram effect session reconciliation is partial")
-      const appended = bindButlerArtifactToCanonicalEvent(envelope, artifact)
+      const appended = bindButlerArtifactToCanonicalEvent(envelope, artifact, input.causalEventIds?.[artifact.id])
         ?? appendTelegramArtifactEvents(envelope, artifact, new Date().toISOString())
       envelope = appended.envelope
       recordings.push({ artifact, eventIds: appended.eventIds })

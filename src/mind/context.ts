@@ -339,8 +339,8 @@ export function saveSession(
   lastUsage?: UsageData,
   state?: SessionContinuityState,
   lease?: SessionTurnLease,
-): void {
-  withMutationLease(filePath, lease, (owned) => {
+): SessionEvent[] {
+  return withMutationLease(filePath, lease, (owned) => {
     const existing = loadSessionEnvelopeFile(filePath)
     const previousMessages = existing ? projectProviderMessages(existing) : []
     const currentIngressTimes = messages.map(getIngressTime)
@@ -363,6 +363,7 @@ export function saveSession(
       },
     })
     writeSessionEnvelopeUnderLease(filePath, envelope, owned)
+    return envelope.events
   })
 }
 
