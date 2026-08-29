@@ -20,7 +20,11 @@ function validInspect() {
     },
     HostConfig: {
       NetworkMode: "host",
+      PidMode: "",
+      IpcMode: "private",
       Privileged: false,
+      ReadonlyRootfs: false,
+      SecurityOpt: null,
       RestartPolicy: { Name: "unless-stopped", MaximumRetryCount: 0 },
       Binds: [
         "/mnt/user/appdata/ouro-butler/runtime/.ouro-cli:/home/ouro/.ouro-cli:rw",
@@ -30,12 +34,15 @@ function validInspect() {
       PortBindings: {},
       Devices: [],
       CapAdd: null,
+      CapDrop: null,
+      PublishAllPorts: false,
     },
     Mounts: [
       { Type: "bind", Source: "/mnt/user/appdata/ouro-butler/runtime/.ouro-cli", Destination: "/home/ouro/.ouro-cli", RW: true },
       { Type: "bind", Source: "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro", Destination: "/home/ouro/AgentBundles/sanctuary.ouro", RW: true },
       { Type: "bind", Source: "/boot/config/custom/ouro-events/spool", Destination: "/run/ouro-events", RW: false },
     ],
+    NetworkSettings: { Ports: {} },
   }
 }
 
@@ -99,10 +106,17 @@ describe("Sanctuary pre-activation container auditor", () => {
     ["published port", (spec: any) => { spec.HostConfig.PortBindings = { "80/tcp": [{ HostPort: "8080" }] } }],
     ["exposed port", (spec: any) => { spec.Config.ExposedPorts = { "80/tcp": {} } }],
     ["bridge network", (spec: any) => { spec.HostConfig.NetworkMode = "bridge" }],
+    ["host pid namespace", (spec: any) => { spec.HostConfig.PidMode = "host" }],
+    ["host IPC namespace", (spec: any) => { spec.HostConfig.IpcMode = "host" }],
     ["privileged", (spec: any) => { spec.HostConfig.Privileged = true }],
+    ["read-only root override", (spec: any) => { spec.HostConfig.ReadonlyRootfs = true }],
+    ["security option", (spec: any) => { spec.HostConfig.SecurityOpt = ["seccomp=unconfined"] }],
     ["wrong restart", (spec: any) => { spec.HostConfig.RestartPolicy.Name = "always" }],
     ["device", (spec: any) => { spec.HostConfig.Devices = [{ PathOnHost: "/dev/sda" }] }],
     ["capability", (spec: any) => { spec.HostConfig.CapAdd = ["SYS_ADMIN"] }],
+    ["dropped capability", (spec: any) => { spec.HostConfig.CapDrop = ["NET_RAW"] }],
+    ["publish all ports", (spec: any) => { spec.HostConfig.PublishAllPorts = true }],
+    ["effective network port", (spec: any) => { spec.NetworkSettings.Ports = { "80/tcp": [{ HostPort: "8080" }] } }],
     ["Docker socket", (spec: any) => { spec.HostConfig.Binds.push("/var/run/docker.sock:/var/run/docker.sock:rw") }],
     ["host root", (spec: any) => { spec.HostConfig.Binds.push("/:/host:ro") }],
     ["missing bind", (spec: any) => { spec.HostConfig.Binds.pop(); spec.Mounts.pop() }],
@@ -113,6 +127,43 @@ describe("Sanctuary pre-activation container auditor", () => {
     const result = auditSanctuaryContainerSpec(spec, { expectedImage: "sha256:" + "a".repeat(64), expectedEnvironment })
     expect(result.ok).toBe(false)
     expect(result.violations.length).toBeGreaterThan(0)
+  })
+
+  it("allows only the pinned alpha.742 mount exception while retaining every other invariant", () => {
+    const legacyImage = "sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d"
+    const legacy = validInspect()
+    legacy.Config.Image = legacyImage
+    legacy.HostConfig.Binds.pop()
+    legacy.Mounts.pop()
+    expect(auditSanctuaryContainerSpec(legacy, {
+      expectedImage: legacyImage,
+      expectedEnvironment,
+      mountContract: "legacy-alpha742",
+    })).toEqual({ ok: true, violations: [] })
+
+    const wrongImage = structuredClone(legacy)
+    wrongImage.Config.Image = "sha256:" + "b".repeat(64)
+    expect(auditSanctuaryContainerSpec(wrongImage, {
+      expectedImage: "sha256:" + "b".repeat(64),
+      expectedEnvironment,
+      mountContract: "legacy-alpha742",
+    }).ok).toBe(false)
+
+    for (const mutate of [
+      (spec: any) => { spec.Config.Cmd = ["sleep"] },
+      (spec: any) => { spec.Config.Env.push("INJECTED=yes") },
+      (spec: any) => { spec.HostConfig.PidMode = "host" },
+      (spec: any) => { spec.HostConfig.SecurityOpt = ["seccomp=unconfined"] },
+      (spec: any) => { spec.HostConfig.Binds.push("/var/run/docker.sock:/var/run/docker.sock:rw") },
+    ]) {
+      const changed = structuredClone(legacy)
+      mutate(changed)
+      expect(auditSanctuaryContainerSpec(changed, {
+        expectedImage: legacyImage,
+        expectedEnvironment,
+        mountContract: "legacy-alpha742",
+      }).ok).toBe(false)
+    }
   })
 
   it("fails closed across malformed optional inspect fields", () => {
@@ -204,6 +255,31 @@ describe("Sanctuary pre-activation container auditor", () => {
     })).toBe(0)
     expect(output.join("")).toBe('{"ok":true,"violations":[]}\n')
     expect(output.join("")).not.toContain("NODE_VERSION")
+  })
+
+  it("exposes the pinned alpha.742 exception only through an explicit effective mount contract", () => {
+    const legacyImage = "sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d"
+    const container = validInspect()
+    container.Config.Image = legacyImage
+    container.HostConfig.Binds.pop()
+    container.Mounts.pop()
+    const image = validImageInspect()
+    image.Id = legacyImage
+    const files: Record<string, string> = {
+      "/audit/container.json": JSON.stringify([container]),
+      "/audit/image.json": JSON.stringify([image]),
+    }
+    expect(runContainerSpecAuditorCli([
+      "--inspect", "/audit/container.json",
+      "--image-inspect", "/audit/image.json",
+      "--expected-image", legacyImage,
+      "--mount-contract", "legacy-alpha742",
+    ], { readFile: (filePath) => files[filePath]!, write: () => undefined })).toBe(0)
+    expect(runContainerSpecAuditorCli([
+      "--inspect", "/audit/container.json",
+      "--image-inspect", "/audit/image.json",
+      "--expected-image", legacyImage,
+    ], { readFile: (filePath) => files[filePath]!, write: () => undefined })).toBe(1)
   })
 
   it.each([

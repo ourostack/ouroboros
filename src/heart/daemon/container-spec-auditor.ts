@@ -12,11 +12,16 @@ const EXPECTED_MOUNTS = [
   ["/boot/config/custom/ouro-events/spool", "/run/ouro-events", false],
 ] as const
 
+const LEGACY_ALPHA742_IMAGE = "sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d"
+const LEGACY_ALPHA742_BINDS = EXPECTED_BINDS.slice(0, 2)
+const LEGACY_ALPHA742_MOUNTS = EXPECTED_MOUNTS.slice(0, 2)
+
 const EXPECTED_EXTRA_PARAMS = "--restart=unless-stopped --user=10001:10001"
 
 export interface SanctuaryContainerAuditOptions {
   expectedImage: string
   expectedEnvironment: readonly string[]
+  mountContract?: "canonical" | "legacy-alpha742"
 }
 
 export interface SanctuaryContainerAuditResult {
@@ -53,10 +58,15 @@ export function auditSanctuaryContainerSpec(
   const root = record(value)
   const config = record(root?.Config)
   const host = record(root?.HostConfig)
+  const network = record(root?.NetworkSettings)
   if (!root || !config || !host) {
     violations.push("inspect payload must contain object Config and HostConfig records")
   } else {
     if (!/^sha256:[a-f0-9]{64}$/u.test(options.expectedImage)) violations.push("expected image must be an exact local Docker image ID")
+    const mountContract = options.mountContract ?? "canonical"
+    if (mountContract === "legacy-alpha742" && options.expectedImage !== LEGACY_ALPHA742_IMAGE) violations.push("legacy mount exception requires the pinned alpha.742 image ID")
+    const expectedBinds = mountContract === "legacy-alpha742" ? LEGACY_ALPHA742_BINDS : EXPECTED_BINDS
+    const expectedMounts = mountContract === "legacy-alpha742" ? LEGACY_ALPHA742_MOUNTS : EXPECTED_MOUNTS
     if (config.Image !== options.expectedImage) violations.push("image does not match the reviewed exact local Docker image ID")
     if (root.Path !== "node") violations.push("effective container path must be node")
     if (JSON.stringify(root.Args) !== JSON.stringify(["/opt/ouro/dist/heart/daemon/daemon-entry.js"])) violations.push("effective container arguments must be the direct daemon entry")
@@ -67,14 +77,21 @@ export function auditSanctuaryContainerSpec(
     if (!environment || JSON.stringify(environment) !== JSON.stringify(options.expectedEnvironment)) violations.push("container environment must exactly match the reviewed image environment")
     if (!(config.ExposedPorts === null || config.ExposedPorts === undefined || isEmptyRecord(config.ExposedPorts))) violations.push("container must expose no ports")
     if (host.NetworkMode !== "host") violations.push("network mode must be host")
+    if (host.PidMode !== "") violations.push("PID namespace must be private")
+    if (host.IpcMode !== "private") violations.push("IPC namespace must be private")
     if (host.Privileged !== false) violations.push("container must not be privileged")
+    if (host.ReadonlyRootfs !== false) violations.push("root filesystem mode must match the reviewed runtime")
+    if (!(host.SecurityOpt === null || (Array.isArray(host.SecurityOpt) && host.SecurityOpt.length === 0))) violations.push("container must set no security options")
     const restart = record(host.RestartPolicy)
     if (restart?.Name !== "unless-stopped" || restart.MaximumRetryCount !== 0) violations.push("restart policy must be unless-stopped")
     if (!isEmptyRecord(host.PortBindings)) violations.push("container must publish no ports")
     if (!Array.isArray(host.Devices) || host.Devices.length !== 0) violations.push("container must have no devices")
     if (!(host.CapAdd === null || (Array.isArray(host.CapAdd) && host.CapAdd.length === 0))) violations.push("container must add no capabilities")
+    if (!(host.CapDrop === null || (Array.isArray(host.CapDrop) && host.CapDrop.length === 0))) violations.push("container must drop no capabilities")
+    if (host.PublishAllPorts !== false) violations.push("container must not publish all exposed ports")
+    if (!isEmptyRecord(network?.Ports)) violations.push("effective network ports must be empty")
     const binds = stringArray(host.Binds)
-    if (!binds || JSON.stringify([...binds].sort()) !== JSON.stringify([...EXPECTED_BINDS].sort())) violations.push("bind set must equal the canonical writable roots and read-only event spool")
+    if (!binds || JSON.stringify([...binds].sort()) !== JSON.stringify([...expectedBinds].sort())) violations.push("bind set does not match the selected Sanctuary mount contract")
     const mounts = Array.isArray(root.Mounts) ? root.Mounts : []
     const normalizedMounts = mounts.map((mount) => {
       const item = record(mount)
@@ -83,8 +100,8 @@ export function auditSanctuaryContainerSpec(
         : null
     })
     if (normalizedMounts.some((mount) => mount === null)
-      || JSON.stringify(normalizedMounts.sort()) !== JSON.stringify(EXPECTED_MOUNTS.map((mount) => [...mount]).sort())) {
-      violations.push("effective mounts must equal the canonical writable roots and read-only event spool")
+      || JSON.stringify(normalizedMounts.sort()) !== JSON.stringify(expectedMounts.map((mount) => [...mount]).sort())) {
+      violations.push("effective mounts do not match the selected Sanctuary mount contract")
     }
   }
   const result = { ok: violations.length === 0, violations }

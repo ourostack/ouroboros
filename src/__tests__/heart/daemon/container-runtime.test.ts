@@ -3,6 +3,7 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import * as net from "node:net"
+import { createHash } from "node:crypto"
 import { spawnSync } from "node:child_process"
 import { hasManagedAgentProcess, hasManagedSupercronicProcess, hasManagedTelegramProcess, readContainerRuntimePolicy } from "../../../heart/daemon/container-runtime"
 
@@ -303,12 +304,29 @@ if assert_update_topology "$EXPECTED_IMAGE"; then command printf 'MUTATION\n'; e
     const imageValidator = extractRunbookFunction(runbook, "validate_exact_image_id")
     const onlyRunning = extractRunbookFunction(runbook, "assert_only_running_butler")
     const preflight = extractRunbookFunction(runbook, "assert_restore_preflight")
+    const provenance = extractRunbookFunction(runbook, "verify_sanctuary_snapshot_provenance").replaceAll("/usr/local/bin/node", process.execPath)
     const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-restore-preflight-"))
     const validRootPath = path.join(testRoot, "backup")
     fs.mkdirSync(path.join(validRootPath, "runtime", ".ouro-cli"), { recursive: true })
     fs.mkdirSync(path.join(validRootPath, "agent", "sanctuary.ouro"), { recursive: true })
     const validRoot = fs.realpathSync(validRootPath)
     const validImage = `sha256:${"b".repeat(64)}`
+    const provenanceRoot = path.join(validRoot, "provenance")
+    const writeProvenance = (imageId = validImage, inspectImageId = imageId) => {
+      fs.rmSync(provenanceRoot, { recursive: true, force: true })
+      fs.mkdirSync(provenanceRoot, { recursive: true, mode: 0o700 })
+      const imagePath = path.join(provenanceRoot, "image-id")
+      const inspectPath = path.join(provenanceRoot, "container-inspect.json")
+      fs.writeFileSync(imagePath, `${imageId}\n`, { mode: 0o600 })
+      fs.writeFileSync(inspectPath, `${JSON.stringify([{ Image: inspectImageId }])}\n`, { mode: 0o600 })
+      const entries = [imagePath, inspectPath].map((filePath) => {
+        const relative = path.relative(validRoot, filePath)
+        const digest = createHash("sha256").update(fs.readFileSync(filePath)).digest("hex")
+        return `${digest}  ${relative}`
+      }).sort()
+      fs.writeFileSync(path.join(provenanceRoot, "manifest.sha256"), `${entries.join("\n")}\n`, { mode: 0o600 })
+    }
+    writeProvenance()
     const script = String.raw`set -u
 SCENARIO=$1
 docker() {
@@ -321,8 +339,16 @@ docker() {
     *) return 23 ;;
   esac
 }
+stat() {
+  if [ "$1" = -c ] && [ "$2" = %u:%g:%a ]; then
+    case "$3" in */provenance) command printf '0:0:700\n' ;; */provenance/*) command printf '0:0:600\n' ;; *) command stat "$@" ;; esac
+  else
+    command stat "$@"
+  fi
+}
 ${imageValidator}
 ${onlyRunning}
+${provenance}
 validate_sanctuary_roots() { test "$SCENARIO" != invalid-roots; }
 ${preflight}
 if assert_restore_preflight; then command printf 'MUTATION\n'; else exit $?; fi`
@@ -332,6 +358,7 @@ if assert_restore_preflight; then command printf 'MUTATION\n'; else exit $?; fi`
         { scenario: "relative", env: { BACKUP_ROOT: "relative", IMAGE_ID: validImage } },
         { scenario: "missing", env: { BACKUP_ROOT: path.join(testRoot, "missing"), IMAGE_ID: validImage } },
         { scenario: "bad-image", env: { BACKUP_ROOT: validRoot, IMAGE_ID: "latest" } },
+        { scenario: "wrong-snapshot-image", env: { BACKUP_ROOT: validRoot, IMAGE_ID: `sha256:${"c".repeat(64)}` } },
         { scenario: "invalid-roots", env: { BACKUP_ROOT: validRoot, IMAGE_ID: validImage } },
         { scenario: "staging", env: { BACKUP_ROOT: validRoot, IMAGE_ID: validImage } },
       ]
@@ -344,6 +371,15 @@ if assert_restore_preflight; then command printf 'MUTATION\n'; else exit $?; fi`
       const success = runConditionalHelper(script, "safe", { VALID_IMAGE: validImage, BACKUP_ROOT: validRoot, IMAGE_ID: validImage })
       expect(success.status, success.stderr).toBe(0)
       expect(success.stdout).toContain("MUTATION")
+      fs.appendFileSync(path.join(provenanceRoot, "image-id"), "tampered")
+      const tampered = runConditionalHelper(script, "safe", { VALID_IMAGE: validImage, BACKUP_ROOT: validRoot, IMAGE_ID: validImage })
+      expect(tampered.status).not.toBe(0)
+      expect(tampered.stdout).not.toContain("MUTATION")
+      writeProvenance()
+      fs.writeFileSync(path.join(validRoot, "agent", "sanctuary.ouro", "unmanifested"), "extra")
+      const extra = runConditionalHelper(script, "safe", { VALID_IMAGE: validImage, BACKUP_ROOT: validRoot, IMAGE_ID: validImage })
+      expect(extra.status).not.toBe(0)
+      expect(extra.stdout).not.toContain("MUTATION")
     } finally {
       fs.rmSync(testRoot, { recursive: true, force: true })
     }
@@ -1668,54 +1704,14 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
     const helper = extractRunbookFunction(runbook, "assert_legacy_alpha742_source")
     const dispatch = extractRunbookFunction(runbook, "assert_update_source")
     const imageId = "sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d"
-    const script = String.raw`set -u
-docker() {
-  test "$1" = inspect || return 1
-  test "$2" = --format || return 1
-  test "$4" = ouro-butler || return 1
-  case "$3" in
-    *'.Image'*) printf '%s\n' "$SOURCE_IMAGE_ID" ;;
-    *'.Config.User'*) printf '%s\n' "$SOURCE_USER" ;;
-    *'.HostConfig.NetworkMode'*) printf '%s\n' "$SOURCE_NETWORK" ;;
-    *'.HostConfig.Privileged'*) printf '%s\n' "$SOURCE_PRIVILEGED" ;;
-    *'.HostConfig.RestartPolicy.Name'*) printf '%s\n' "$SOURCE_RESTART" ;;
-    *'range .Mounts'*) printf '%b' "$SOURCE_MOUNTS" ;;
-    *) return 1 ;;
-  esac
-}
-${helper}
-assert_legacy_alpha742_source "$EXPECTED_IMAGE_ID"`
-    const base = {
-      EXPECTED_IMAGE_ID: imageId,
-      SOURCE_IMAGE_ID: imageId,
-      SOURCE_USER: "10001:10001",
-      SOURCE_NETWORK: "host",
-      SOURCE_PRIVILEGED: "false",
-      SOURCE_RESTART: "unless-stopped",
-      SOURCE_MOUNTS: [
-        "bind|/mnt/user/appdata/ouro-butler/runtime/.ouro-cli|/home/ouro/.ouro-cli|true",
-        "bind|/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro|/home/ouro/AgentBundles/sanctuary.ouro|true",
-        "",
-      ].join("\\n"),
-    }
-    const valid = runConditionalHelper(script, "legacy", base)
-    expect(valid.status).toBe(0)
-    for (const changed of [
-      { EXPECTED_IMAGE_ID: `sha256:${"a".repeat(64)}` },
-      { SOURCE_IMAGE_ID: `sha256:${"b".repeat(64)}` },
-      { SOURCE_USER: "0:0" },
-      { SOURCE_NETWORK: "bridge" },
-      { SOURCE_PRIVILEGED: "true" },
-      { SOURCE_RESTART: "always" },
-      { SOURCE_MOUNTS: `${base.SOURCE_MOUNTS}bind|/var/run/docker.sock|/var/run/docker.sock|true\\n` },
-      { SOURCE_MOUNTS: base.SOURCE_MOUNTS.replace("|true\\n", "|false\\n") },
-      { SOURCE_MOUNTS: base.SOURCE_MOUNTS.replace("/mnt/user/appdata/ouro-butler/runtime/.ouro-cli", "/mnt/user/media") },
-    ]) {
-      expect(runConditionalHelper(script, "legacy", { ...base, ...changed }).status).not.toBe(0)
-    }
-    expect(helper).not.toContain("audit_effective")
+    expect(helper).toContain(`test "$EXPECTED_SOURCE_IMAGE_ID" = ${imageId}`)
+    expect(helper).toContain('audit_effective ouro-butler "$EXPECTED_SOURCE_IMAGE_ID" legacy-alpha742')
+    expect(helper).not.toContain("docker inspect --format")
     expect(dispatch).toContain('assert_legacy_alpha742_source "$EXPECTED_SOURCE_IMAGE_ID"')
     expect(dispatch).toContain('audit_effective ouro-butler "$EXPECTED_SOURCE_IMAGE_ID"')
+    const audit = extractRunbookFunction(runbook, "audit_effective")
+    expect(audit).toContain('legacy-alpha742) set -- --mount-contract legacy-alpha742 ;;')
+    expect(audit).toContain('"$@"')
   })
 
   it("locks deployment and credential rotation to the canonical bot and exact key IDs", () => {
@@ -1958,7 +1954,13 @@ assert_legacy_alpha742_source "$EXPECTED_IMAGE_ID"`
     expect(updateRunbook).toContain('--mount "type=bind,src=/boot/config/custom/ouro-events/spool,dst=/run/ouro-events,readonly" \\')
     expect(updateRunbook.indexOf("bootstrap-spool.sh --mount")).toBeLessThan(updateRunbook.indexOf("disable_butler_autostart"))
     expect(backupRunbook).toContain("--exclude='/state/acceptance/telegram-control.sock'")
-    expect(backupRunbook).toContain('test ! -S "$BACKUP_ROOT/agent/sanctuary.ouro/state/acceptance/telegram-control.sock"')
+    expect(backupRunbook).toContain('test ! -S "$BACKUP_TMP/agent/sanctuary.ouro/state/acceptance/telegram-control.sock"')
+    expect(backupRunbook).toContain('docker container inspect ouro-butler >"$BACKUP_TMP/provenance/container-inspect.json"')
+    expect(backupRunbook).toContain('printf \'%s\\n\' "$BACKUP_IMAGE_ID" >"$BACKUP_TMP/provenance/image-id"')
+    expect(backupRunbook).toContain('sha256sum --')
+    expect(backupRunbook).toContain('mv -- "$BACKUP_TMP" "$BACKUP_ROOT"')
+    expect(backupRunbook.indexOf('chmod 0600 "$BACKUP_TMP/provenance/container-inspect.json"')).toBeLessThan(backupRunbook.indexOf('mv -- "$BACKUP_TMP" "$BACKUP_ROOT"'))
+    expect(extractRunbookFunction(runbook, "assert_restore_preflight")).toContain('verify_sanctuary_snapshot_provenance "$BACKUP_ROOT" "$IMAGE_ID"')
     expect(restoreRunbook).toContain('--mount "type=bind,src=/boot/config/custom/ouro-events/spool,dst=/run/ouro-events,readonly" \\')
     expect(restoreRunbook.indexOf("bootstrap-spool.sh --mount")).toBeLessThan(restoreRunbook.indexOf("disable_butler_autostart"))
     expect(updateRunbook).toContain('"$IMAGE_ID"')
