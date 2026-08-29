@@ -53,6 +53,7 @@ describe("Mendelow Cloud Butler household UX", () => {
       },
       "sanctuary-event": {
         contextScopes: expect.arrayContaining(["household.status", "household.policy"]),
+        toolNames: expect.arrayContaining(["external_event_disposition", "query_cares", "care_manage", "await_condition"]),
         effectScopes: ["telegram.owner_event"],
       },
     })
