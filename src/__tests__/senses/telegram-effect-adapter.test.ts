@@ -7,6 +7,7 @@ import {
   FileTelegramEffectJournal,
   executeTelegramEffect,
   prepareTelegramEffect,
+  recordTelegramEffectsInSession,
   recordTelegramEffectInSession,
   resolveTelegramReply,
 } from "../../senses/telegram-effect-adapter"
@@ -127,6 +128,20 @@ describe("Telegram effect adapter", () => {
       expect(recorded.parts[0]).toMatchObject({ state: "session_recorded", sessionEventId: `session:${authorClass}` })
       expect(recorded.authorClass).toBe(authorClass)
     }
+  })
+
+  it("commits inbound-only admission ingress once and returns the exact durable session event", async () => {
+    const store = journal()
+    const sessionPath = path.join(roots[roots.length - 1]!, "session.json")
+    const input = { text: "approved original", reference: "telegram-admission:abc123" }
+    const first = await recordTelegramEffectsInSession({ store, sessionPath, artifacts: [], inbound: input })
+    const replay = await recordTelegramEffectsInSession({ store, sessionPath, artifacts: [], inbound: input })
+    expect(replay).toEqual(first)
+    expect(first).toMatchObject({ eventId: "evt-000001", reference: input.reference })
+    const persisted = JSON.parse(fs.readFileSync(sessionPath, "utf8")) as SessionEnvelope
+    expect(persisted.events).toHaveLength(1)
+    expect(persisted.events[0]).toMatchObject({ id: first.eventId, role: "user", content: input.text, relations: { references: [input.reference] } })
+    await expect(recordTelegramEffectsInSession({ store, sessionPath, artifacts: [], inbound: { ...input, text: "different" } })).rejects.toThrow("conflicting inbound")
   })
 
   it("projects Butler speech as assistant but control and failsafe artifacts as typed system continuity", async () => {
