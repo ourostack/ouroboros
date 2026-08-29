@@ -41,6 +41,7 @@ import {
   type TelegramOffsetStore,
   type TelegramUpdateInboxStore,
   type TelegramUpdate,
+  type TelegramUnknownInboundMessage,
 } from "./telegram-client"
 import { createSanctuaryToolContext, runWithSanctuaryToolReceiptCollection, type SanctuaryToolReceiptObserver } from "./sanctuary-runtime"
 import { renderSanctuaryGroundedResponse, sanctuaryGroundingDigest } from "./sanctuary-grounding"
@@ -54,16 +55,34 @@ import {
   FileTelegramEffectJournal,
   recordTelegramEffectsInSession,
   resolveTelegramReply,
+  type TelegramArtifactAuthorClass,
+  type TelegramEffect,
   type TelegramEffectArtifact,
   type TelegramEffectAuthorization,
   type TelegramEffectAuthorizationInput,
   type TelegramEffectTarget,
 } from "./telegram-effect-adapter"
+import {
+  createTelegramAdmissionController,
+  FileTelegramAdmissionStore,
+  type TelegramAdmissionFriendClaim,
+  type TelegramAdmissionFriendClaimResult,
+  type TelegramAdmissionLimits,
+  type TelegramApprovedTurn,
+} from "./telegram-admission"
 
 export interface TelegramSenseCredentials {
   botToken: string
+  botId?: string
   authorizedUserId: string
   authorizedChatId: string
+}
+
+export interface TelegramAdmissionDependencies {
+  ownerFriendId: string
+  claimFriend(input: TelegramAdmissionFriendClaim): Promise<TelegramAdmissionFriendClaimResult>
+  limits?: TelegramAdmissionLimits
+  createDisplayCode?: () => string
 }
 
 export interface TelegramSenseApp {
@@ -390,6 +409,8 @@ export interface CreateTelegramSenseAppOptions {
   _createInteractiveControl?: typeof createSanctuaryInteractiveControl
   /** Revalidates relationship authority immediately before each Telegram effect. */
   authorizeEffect?: (input: TelegramEffectAuthorizationInput) => TelegramEffectAuthorization
+  /** Narrow Friends claim seam used until the Friends package ships the admission primitive. */
+  admission?: TelegramAdmissionDependencies
 }
 
 function requiredText(value: unknown, label: string): string {
@@ -401,6 +422,12 @@ function canonicalTelegramId(value: unknown, label: string): string {
   const text = requiredText(value, label)
   if (!/^[1-9][0-9]*$/u.test(text)) throw new Error(`Telegram ${label} must be a canonical positive decimal string`)
   return text
+}
+
+export function telegramBotIdFromToken(token: string): string {
+  const match = /^([1-9][0-9]*):/u.exec(token.trim())
+  if (!match) throw new Error("Telegram bot token does not expose a canonical numeric bot id")
+  return match[1]!
 }
 
 function canonicalTelegramIdentityKey(value: string): string {
@@ -494,10 +521,10 @@ export function readOrCreateTelegramIdentityKey(agentRoot: string, hooks: {
   }
 }
 
-export function opaqueTelegramSubject(identityKey: string, botToken: string, authorizedUserId: string, authorizedChatId: string): string {
+export function opaqueTelegramSubject(identityKey: string, botId: string, authorizedUserId: string, authorizedChatId: string): string {
   const payload = [
     TELEGRAM_SUBJECT_DOMAIN,
-    `bot:${botToken.length}:${botToken}`,
+    `bot:${botId.length}:${botId}`,
     `user:${authorizedUserId.length}:${authorizedUserId}`,
     `chat:${authorizedChatId.length}:${authorizedChatId}`,
   ].join("\0")
@@ -660,8 +687,13 @@ function redactTelegramPrivateValues(error: unknown, privateValues: readonly str
 }
 
 export function parseTelegramSenseCredentials(value: Record<string, unknown>): TelegramSenseCredentials {
+  const botToken = requiredText(value.telegramBotToken, "bot token")
+  const tokenBotId = /^([1-9][0-9]*):/u.exec(botToken)?.[1]
   return {
-    botToken: requiredText(value.telegramBotToken, "bot token"),
+    botToken,
+    ...(value.telegramBotId !== undefined
+      ? { botId: canonicalTelegramId(value.telegramBotId, "bot id") }
+      : tokenBotId ? { botId: tokenBotId } : {}),
     authorizedUserId: canonicalTelegramId(value.telegramAuthorizedUserId, "authorized user id"),
     authorizedChatId: canonicalTelegramId(value.telegramAuthorizedChatId, "authorized chat id"),
   }
@@ -669,13 +701,16 @@ export function parseTelegramSenseCredentials(value: Record<string, unknown>): T
 
 export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): TelegramSenseApp {
   const botToken = requiredText(options.credentials.botToken, "bot token")
+  const botId = options.credentials.botId === undefined
+    ? (/^([1-9][0-9]*):/u.exec(botToken)?.[1] ?? `legacy-${createHmac("sha256", "telegram-legacy-bot").update(botToken).digest("hex").slice(0, 16)}`)
+    : canonicalTelegramId(options.credentials.botId, "bot id")
   const authorizedUserId = canonicalTelegramId(options.credentials.authorizedUserId, "authorized user id")
   const authorizedChatId = canonicalTelegramId(options.credentials.authorizedChatId, "authorized chat id")
   const agentRoot = options._agentRoot ?? getAgentRoot(options.agentName)
   const identityKey = options.identityKey === undefined
     ? readOrCreateTelegramIdentityKey(agentRoot)
     : canonicalTelegramIdentityKey(options.identityKey)
-  const subject = opaqueTelegramSubject(identityKey, botToken, authorizedUserId, authorizedChatId)
+  const subject = opaqueTelegramSubject(identityKey, botId, authorizedUserId, authorizedChatId)
   const transportError = (error: unknown): string => redactTelegramPrivateValues(
     error,
     [botToken, authorizedUserId, authorizedChatId],
@@ -820,6 +855,9 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     }
     throw primaryError
   }
+  const admissionStore = options.admission
+    ? new FileTelegramAdmissionStore(path.join(agentRoot, "state", "telegram", "admission"), options.admission.limits)
+    : undefined
   let effectJournal: FileTelegramEffectJournal | undefined
   const getEffectJournal = (): FileTelegramEffectJournal => {
     effectJournal ??= new FileTelegramEffectJournal(path.join(agentRoot, "state", "telegram", "effects"))
@@ -827,10 +865,33 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   }
   const defaultEffectAuthorization = (input: TelegramEffectAuthorizationInput): TelegramEffectAuthorization => {
     const target = input.target
-    if (target.kind !== "approved_relationship" || target.friendId !== `telegram-user:${subject}` || target.sessionKey !== `telegram:${subject}` || target.chatId !== authorizedChatId) {
-      return { allowed: false, reason: "effect target is not the configured owner relationship" }
+    if (target.kind === "admission_gate") {
+      if (!admissionStore) return { allowed: false, reason: "Telegram admission is disabled" }
+      let record
+      try { record = admissionStore.read(target.admissionId) } catch { return { allowed: false, reason: "Telegram admission record is unavailable" } }
+      const coordinatesMatch = record.botId === target.botId && record.userId === target.userId && record.chatId === target.chatId
+      if (record.status !== "pending" || !coordinatesMatch || record.expiresAt <= Date.now()) {
+        return { allowed: false, reason: "Telegram admission authority is stale" }
+      }
+      return { allowed: true, receiptId: `telegram-admission:${record.id}:${record.revision}`, expiresAt: new Date(record.expiresAt).toISOString() }
     }
-    return { allowed: true, receiptId: `configured-owner:${subject}`, expiresAt: new Date(Date.now() + 5 * 60_000).toISOString() }
+    if (target.friendId === `telegram-user:${subject}` && target.sessionKey === `telegram:${subject}` && target.chatId === authorizedChatId) {
+      return { allowed: true, receiptId: `configured-owner:${subject}`, expiresAt: new Date(Date.now() + 5 * 60_000).toISOString() }
+    }
+    if (admissionStore && target.requestId) {
+      let record
+      try { record = admissionStore.read(target.requestId) } catch { return { allowed: false, reason: "Telegram admission relationship is unavailable" } }
+      const ownerControl = target.friendId === options.admission?.ownerFriendId
+        && target.sessionKey === `telegram:${subject}` && target.chatId === authorizedChatId
+      const admittedSubject = opaqueTelegramSubject(identityKey, record.botId, record.userId, record.chatId)
+      const admittedRelationship = target.friendId === record.friendId
+        && target.sessionKey === `telegram:${admittedSubject}` && target.chatId === record.chatId
+        && (record.status === "turn_queued" || record.status === "handled")
+      if (ownerControl || admittedRelationship) {
+        return { allowed: true, receiptId: `telegram-admission-relationship:${record.id}:${record.revision}`, expiresAt: new Date(Date.now() + 5 * 60_000).toISOString() }
+      }
+    }
+    return { allowed: false, reason: "effect target is not an approved Telegram relationship" }
   }
   const authorizeEffect = options.authorizeEffect ?? defaultEffectAuthorization
   let recordAcceptedEffects!: (sessionPath: string, artifacts: TelegramEffectArtifact[], bootstrapInbound?: { text: string; reference: string }) => Promise<void>
@@ -996,9 +1057,79 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     })
   }
 
+  const deliverTypedEffect = async (
+    request: { idempotencyKey: string; target: TelegramEffectTarget; authorClass: TelegramArtifactAuthorClass; effect: TelegramEffect },
+    signal?: AbortSignal,
+  ): Promise<TelegramEffectArtifact> => {
+    return executeAuthorizedEffect({ ...request, ...(signal ? { signal } : {}) })
+  }
+
   recordAcceptedEffects = async (sessionPath: string, artifacts: TelegramEffectArtifact[], bootstrapInbound?: { text: string; reference: string }): Promise<void> => {
     await recordTelegramEffectsInSession({ store: getEffectJournal(), sessionPath, artifacts, ...(bootstrapInbound ? { inbound: bootstrapInbound } : {}) })
   }
+
+  const runApprovedAdmissionTurn = async (input: TelegramApprovedTurn): Promise<void> => {
+    const contactSubject = opaqueTelegramSubject(identityKey, input.botId, input.userId, input.chatId)
+    const sessionKey = `telegram:${contactSubject}`
+    const sessionPath = getSenseSessionPath(options.agentName, input.friendId, "telegram", sessionKey, agentRoot)
+    const accepted: TelegramEffectArtifact[] = []
+    let deliveryIndex = 0
+    const result = await runTurn({
+      agentName: options.agentName,
+      channel: "telegram",
+      sessionKey,
+      friendId: input.friendId,
+      identity: {
+        provider: "telegram-user",
+        externalId: contactSubject,
+        displayName: "Approved Telegram household member",
+      },
+      userMessage: input.text,
+      deliverySink: {
+        onDelivery: async (delivery) => {
+          const effect = await deliverTypedEffect({
+            idempotencyKey: `${input.idempotencyKey}:response:${deliveryIndex++}`,
+            target: { kind: "approved_relationship", friendId: input.friendId, sessionKey, chatId: input.chatId, requestId: input.admissionId },
+            authorClass: "butler",
+            effect: { kind: "text", text: delivery.text },
+          })
+          accepted.push(effect)
+        },
+      },
+      ...(toolContext ? { toolContext } : {}),
+    })
+    if (accepted.length === 0 && result.response.trim()) {
+      accepted.push(await deliverTypedEffect({
+        idempotencyKey: `${input.idempotencyKey}:response:0`,
+        target: { kind: "approved_relationship", friendId: input.friendId, sessionKey, chatId: input.chatId, requestId: input.admissionId },
+        authorClass: "butler",
+        effect: { kind: "text", text: result.response },
+      }))
+    }
+    await recordAcceptedEffects(sessionPath, accepted)
+  }
+
+  const admissionController = options.admission ? createTelegramAdmissionController({
+    store: admissionStore!,
+    owner: { friendId: options.admission.ownerFriendId, sessionKey: `telegram:${subject}`, chatId: authorizedChatId },
+    sendEffect: async (request) => {
+      const artifact = await deliverTypedEffect(request)
+      if (request.target.kind === "approved_relationship") {
+        const ownerSessionPath = getSenseSessionPath(options.agentName, request.target.friendId, "telegram", request.target.sessionKey, agentRoot)
+        await recordAcceptedEffects(ownerSessionPath, [artifact])
+      }
+      return artifact.id
+    },
+    claimFriend: options.admission.claimFriend,
+    queueApprovedTurn: runApprovedAdmissionTurn,
+    createDisplayCode: options.admission.createDisplayCode,
+  }) : undefined
+
+  const onUnknownMessage = admissionController
+    ? async (message: TelegramUnknownInboundMessage): Promise<void> => {
+      await runWithAcceptanceAuditOwner(() => admissionController.handleUnknown(message))
+    }
+    : undefined
 
   const onMessageBody = async (message: TelegramInboundMessage): Promise<void> => {
     const currentFriendId = `telegram-user:${subject}`
@@ -1185,7 +1316,23 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   const onMessage = (message: TelegramInboundMessage): Promise<void> => runWithAcceptanceAuditOwner(() => onMessageBody(message))
 
   const onUpdate = async (update: TelegramUpdate): Promise<boolean> => {
-    if (!update.callback_query || !approvalTransport) return false
+    const callback = update.callback_query
+    if (!callback) return false
+    if (admissionController && callback.data?.startsWith("admit:")) {
+      if (String(callback.from.id) !== authorizedUserId || !callback.message || String(callback.message.chat.id) !== authorizedChatId) return false
+      return runWithAcceptanceAuditOwner(async () => {
+        const decision = admissionController.parseCallback(callback.data!)
+        await admissionController.decide({ ...decision, actorFriendId: options.admission!.ownerFriendId })
+        await deliverTypedEffect({
+          idempotencyKey: `admission-callback:${callback.id}`,
+          target: { kind: "approved_relationship", friendId: options.admission!.ownerFriendId, sessionKey: `telegram:${subject}`, chatId: authorizedChatId, requestId: decision.admissionId },
+          authorClass: "control",
+          effect: { kind: "callback_ack", callbackQueryId: callback.id },
+        })
+        return true
+      })
+    }
+    if (!approvalTransport) return false
     return runWithAcceptanceAuditOwner(async () => (await approvalTransport.handleUpdate(update)).handled)
   }
 
@@ -1195,9 +1342,11 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       api,
       expectedUserId: authorizedUserId,
       expectedChatId: authorizedChatId,
+      botId: options.admission ? botId : undefined,
       offsetStore,
       inboxStore,
       onMessage,
+      ...(onUnknownMessage ? { onUnknownMessage } : {}),
       onUpdate,
       acceptanceEventMeta: (update, distinctAccount) => {
         const marker = options.acceptanceMarker ? options.acceptanceMarker() : readSanctuaryAcceptanceMarker(options.agentName)
@@ -1233,6 +1382,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       if (runPromise) return runPromise
       runPromise = (async () => {
         await runWithAcceptanceAuditOwner(migrateIdentity)
+        await runWithAcceptanceAuditOwner(async () => { await admissionController?.recover() })
         await runWithAcceptanceAuditOwner(async () => { await approvalRuntime?.recover() })
         await runWithAcceptanceAuditOwner(async () => { await interactiveControl?.start() })
         try {
