@@ -3,12 +3,14 @@ import { getContextConfig } from "../heart/config"
 import {
   appendSyntheticAssistantEvent,
   buildCanonicalSessionEnvelope,
+  getIngressRelations,
   getIngressTime,
   loadSessionEnvelopeFile,
   projectProviderMessages,
   sanitizeProviderMessages,
   type SessionEnvelope,
   type SessionEvent,
+  type SessionIngressRelations,
 } from "../heart/session-events"
 import type { StructuredOutput } from "../heart/structured-output"
 import { emitNervesEvent } from "../nerves/runtime"
@@ -342,6 +344,7 @@ export function saveSession(
     const existing = loadSessionEnvelopeFile(filePath)
     const previousMessages = existing ? projectProviderMessages(existing) : []
     const currentIngressTimes = messages.map(getIngressTime)
+    const currentIngressRelations = messages.map(getIngressRelations)
     const sanitized = sanitizeProviderMessages(messages)
     const { envelope } = buildCanonicalSessionEnvelope({
       existing,
@@ -349,6 +352,7 @@ export function saveSession(
       currentMessages: sanitized,
       trimmedMessages: sanitized,
       currentIngressTimes,
+      currentIngressRelations,
       recordedAt: new Date().toISOString(),
       lastUsage: lastUsage ?? null,
       state,
@@ -418,6 +422,7 @@ export interface PostTurnPrepared {
   currentMessages: OpenAI.ChatCompletionMessageParam[]
   trimmedMessages: OpenAI.ChatCompletionMessageParam[]
   currentIngressTimes: (string | null)[]
+  currentIngressRelations: (SessionIngressRelations | null)[]
   maxTokens: number
   contextMargin: number
 }
@@ -448,12 +453,13 @@ export function postTurnTrim(
     }
   }
   const { maxTokens, contextMargin } = getContextConfig()
+  const currentIngressTimes = preTrimMessages.map(getIngressTime)
+  const currentIngressRelations = preTrimMessages.map(getIngressRelations)
   const currentMessages = sanitizeProviderMessages(messages)
-  const currentIngressTimes = currentMessages.map(getIngressTime)
   const tokenTrimmedMessages = trimMessages(currentMessages, maxTokens, contextMargin, usage?.input_tokens)
   const trimmedMessages = compactIdleRestOnlyTurns(tokenTrimmedMessages)
   messages.splice(0, messages.length, ...trimmedMessages)
-  return { currentMessages, trimmedMessages, currentIngressTimes, maxTokens, contextMargin }
+  return { currentMessages, trimmedMessages, currentIngressTimes, currentIngressRelations, maxTokens, contextMargin }
 }
 
 /**
@@ -476,6 +482,7 @@ export function postTurnPersist(
       currentMessages: prepared.currentMessages,
       trimmedMessages: prepared.trimmedMessages,
       currentIngressTimes: prepared.currentIngressTimes,
+      currentIngressRelations: prepared.currentIngressRelations,
       recordedAt: new Date().toISOString(),
       lastUsage: usage ?? null,
       state,

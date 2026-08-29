@@ -27,7 +27,7 @@ import { readRuntimeCredentialConfig } from "../heart/runtime-credentials"
 import { emitNervesEvent, emitNervesEventDurable } from "../nerves/runtime"
 import { registerGlobalLogSink } from "../nerves"
 import { createSanctuaryInteractiveControl } from "./sanctuary-interactive-control"
-import { runSenseTurn, type RunSenseTurnOptions, type RunSenseTurnResult } from "./shared-turn"
+import { getSenseSessionPath, runSenseTurn, type RunSenseTurnOptions, type RunSenseTurnResult } from "./shared-turn"
 import {
   createTelegramBotApi,
   createTelegramLongPoll,
@@ -56,6 +56,7 @@ import {
   FileTelegramEffectJournal,
   prepareTelegramEffect,
   recordTelegramEffectInSession,
+  resolveTelegramReply,
   type TelegramEffectArtifact,
   type TelegramEffectAuthorization,
 } from "./telegram-effect-adapter"
@@ -1067,6 +1068,20 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     const bufferedGroundedDeliveries: string[] = []
     const turnEffects: TelegramEffectArtifact[] = []
     let deliveryOrdinal = 0
+    let ingressRelations: RunSenseTurnOptions["ingressRelations"]
+    if (message.replyToMessageId && /^[1-9][0-9]*$/u.test(message.replyToMessageId)) {
+      const replyMessageId = Number(message.replyToMessageId)
+      const candidate = getEffectJournal().list().find((artifact) => artifact.parts.some((part) => part.messageId === replyMessageId))
+      if (candidate?.target.kind === "approved_relationship" && candidate.parts.some((part) => part.state === "accepted")) {
+        await recordAcceptedEffects(getSenseSessionPath(options.agentName, candidate.target.friendId, "telegram", candidate.target.sessionKey), [candidate])
+      }
+      const reply = resolveTelegramReply(getEffectJournal(), replyMessageId)
+      if (reply) ingressRelations = {
+        replyToEventId: reply.sessionEventId,
+        threadRootEventId: null,
+        references: [`telegram-artifact:${reply.artifactId}`, ...(reply.requestId ? [`request:${reply.requestId}`] : [])],
+      }
+    }
     try {
       acceptanceAuditBarrier()
       const collected = await collectToolReceipts(() => runTurn({
@@ -1080,6 +1095,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
           displayName: `Telegram user ${subject}`,
         },
         userMessage: message.text,
+        ...(ingressRelations ? { ingressRelations } : {}),
         turnMetricsObserver,
         deliverySink: {
           onDelivery: async (delivery) => {
