@@ -60,12 +60,17 @@ function fixture(input: {
   const store = new FileTelegramAdmissionStore(path.join(root, "admission"), input.limits, input.now)
   const controller = createTelegramAdmissionController({
     store,
-    owner: { friendId: "ari", sessionKey: "telegram:ari", chatId: "42" },
+    owner: { friendId: "ari", sessionKey: "telegram:ari" },
     sendEffect: vi.fn(async (request: TelegramAdmissionEffectRequest) => {
       effects.push(structuredClone(request))
       return `artifact-${effects.length}`
     }),
-    resolveEffectMessageId: (artifactId) => Number(artifactId.split("-").at(-1)) + 100,
+    resolveOwnerCard: (messageId) => {
+      const effect = effects[messageId - 101]
+      return effect?.target.kind === "approved_relationship" && effect.target.requestId
+        ? { artifactId: `artifact-${messageId - 100}`, admissionId: effect.target.requestId }
+        : null
+    },
     claimFriend: claim,
     revokeFriend: input.revoke ?? vi.fn(async () => ({ kind: "revoked" as const })),
     commitApprovedIngress: commit,
@@ -94,7 +99,7 @@ describe("Telegram household admission", () => {
     })
     expect(value.effects[1]).toMatchObject({
       idempotencyKey: `owner-card:${result.admissionId}`,
-      target: { kind: "approved_relationship", friendId: "ari", sessionKey: "telegram:ari", chatId: "42", requestId: result.admissionId },
+      target: { kind: "approved_relationship", friendId: "ari", sessionKey: "telegram:ari", requestId: result.admissionId },
       authorClass: "control",
       effect: {
         kind: "card",
@@ -338,5 +343,31 @@ describe("Telegram household admission", () => {
     expect(stranger).toHaveBeenCalledWith(expect.objectContaining({ botId: "777", userId: "888", chatId: "888", text: "hostile https://evil.invalid", hasAttachments: true, displayLabel: "<Unknown>" }))
     expect(inbox.capture).toHaveBeenCalledWith(update)
     expect(inbox.complete).toHaveBeenCalledWith(update)
+  })
+
+  it("rejects a non-owner admission callback before the generic update handler can act", async () => {
+    const update: TelegramUpdate = { update_id: 8, callback_query: {
+      id: "hostile-callback",
+      from: { id: 888 },
+      data: `admit:${"a".repeat(20)}:allow`,
+      message: { message_id: 101, chat: { id: 42 } },
+    } }
+    const onUpdate = vi.fn(async () => true)
+    const offsetSave = vi.fn()
+    const poll = createTelegramLongPoll({
+      api: { request: vi.fn(async () => [update]), stop: vi.fn() },
+      expectedUserId: "42",
+      expectedChatId: "42",
+      botId: "777",
+      offsetStore: { load: () => 0, save: offsetSave },
+      onMessage: vi.fn(),
+      onUnknownMessage: vi.fn(),
+      onUpdate,
+    })
+
+    await poll.pollOnce()
+
+    expect(onUpdate).not.toHaveBeenCalled()
+    expect(offsetSave).toHaveBeenCalledWith(9)
   })
 })

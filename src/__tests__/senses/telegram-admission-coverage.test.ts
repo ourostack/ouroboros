@@ -99,6 +99,19 @@ describe("Telegram admission defensive coverage", () => {
     try { expect(() => store.capture(message(), "CODE")).toThrow("busy") } finally { await lease.release() }
   })
 
+  it("rejects symlinked and oversized fixed auxiliary state files", () => {
+    const parent = root()
+    const storeRoot = path.join(parent, "store")
+    const store = new FileTelegramAdmissionStore(storeRoot, { maxTextBytes: 8 })
+    const outside = path.join(parent, "outside.json")
+    fs.writeFileSync(outside, JSON.stringify({ version: 1, events: [] }))
+    fs.symlinkSync(outside, path.join(storeRoot, "rate-window.json"))
+    expect(() => store.capture(message(), "CODE")).toThrow(/invalid/iu)
+    fs.unlinkSync(path.join(storeRoot, "rate-window.json"))
+    fs.writeFileSync(path.join(storeRoot, "self-health.json"), "x".repeat(32 * 1024))
+    expect(() => store.readSelfHealth()).toThrow(/invalid/iu)
+  })
+
   it("pins the admission directory identity and rejects root replacement", () => {
     const parent = root()
     const storeRoot = path.join(parent, "store")
@@ -157,9 +170,9 @@ describe("Telegram admission defensive coverage", () => {
     const effects: unknown[] = []
     const controller = createTelegramAdmissionController({
       store,
-      owner: { friendId: "ari", sessionKey: "telegram:ari", chatId: "42" },
+      owner: { friendId: "ari", sessionKey: "telegram:ari" },
       sendEffect: vi.fn(async (effect) => { effects.push(effect); return `effect-${effects.length}` }),
-      resolveEffectMessageId: () => 101,
+      resolveOwnerCard: () => null,
       claimFriend: vi.fn(async () => ({ kind: "created" as const, friendId: "friend" })),
       revokeFriend: vi.fn(async () => ({ kind: "revoked" as const })),
       commitApprovedIngress: vi.fn(async (turn) => ({ admissionId: turn.admissionId, friendId: turn.friendId, sessionKey: "telegram:friend", eventId: "evt-000001", reference: `telegram-admission:${turn.admissionId}` })),
@@ -179,9 +192,9 @@ describe("Telegram admission defensive coverage", () => {
     const queue = vi.fn(async () => undefined)
     const controller = createTelegramAdmissionController({
       store,
-      owner: { friendId: "ari", sessionKey: "telegram:ari", chatId: "42" },
+      owner: { friendId: "ari", sessionKey: "telegram:ari" },
       sendEffect,
-      resolveEffectMessageId: () => 101,
+      resolveOwnerCard: () => null,
       claimFriend: vi.fn(async () => ({ kind: "created" as const, friendId: "friend" })),
       revokeFriend: vi.fn(async () => ({ kind: "revoked" as const })),
       commitApprovedIngress: vi.fn(async (turn) => ({ admissionId: turn.admissionId, friendId: turn.friendId, sessionKey: "telegram:friend", eventId: "evt-000001", reference: `telegram-admission:${turn.admissionId}` })),
@@ -205,9 +218,9 @@ describe("Telegram admission defensive coverage", () => {
     const store = new FileTelegramAdmissionStore(path.join(root(), "store"))
     const controller = createTelegramAdmissionController({
       store,
-      owner: { friendId: "ari", sessionKey: "telegram:ari", chatId: "42" },
+      owner: { friendId: "ari", sessionKey: "telegram:ari" },
       sendEffect: vi.fn(async () => "effect"),
-      resolveEffectMessageId: () => 101,
+      resolveOwnerCard: () => null,
       claimFriend: vi.fn(async () => ({ kind: "created" as const, friendId: "friend" })),
       revokeFriend: vi.fn(async () => ({ kind: "collision" as const, reason: "identity changed" })),
       commitApprovedIngress: vi.fn(async (turn) => ({ admissionId: turn.admissionId, friendId: turn.friendId, sessionKey: "telegram:friend", eventId: "evt-000001", reference: `telegram-admission:${turn.admissionId}` })),
@@ -217,7 +230,7 @@ describe("Telegram admission defensive coverage", () => {
     })
     const first = await controller.handleUnknown(message())
     await controller.handleUnknown(message({ userId: "999", chatId: "999", updateId: 2 }))
-    expect(() => controller.parseOwnerDecision({ text: "allow", replyToMessageId: 101 })).toThrow("ambiguous")
+    expect(controller.parseOwnerDecision({ text: "allow", replyToMessageId: 101 })).toBeNull()
     if (first.kind !== "pending") throw new Error("fixture capture failed")
     await controller.decide({ admissionId: first.admissionId, decision: "allow", actorFriendId: "ari" })
     await expect(controller.decide({ admissionId: first.admissionId, decision: "block", actorFriendId: "ari" })).rejects.toThrow("revocation collision")

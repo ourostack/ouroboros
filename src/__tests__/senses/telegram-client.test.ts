@@ -1736,7 +1736,7 @@ describe("Telegram durable authorized long poll", () => {
     })
     await poll.pollOnce()
     expect(inboxStore.capture).not.toHaveBeenCalled()
-    expect(onUpdate).toHaveBeenCalledWith(callback)
+    expect(onUpdate).not.toHaveBeenCalled()
   })
 
   it("durably claims authorized callbacks by opaque receipt and skips an unclaimable duplicate", async () => {

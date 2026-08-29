@@ -58,7 +58,6 @@ export interface TelegramAdmissionRecord {
   friendId: string | null
   acknowledgementArtifactId: string | null
   ownerCardArtifactId: string | null
-  ownerCardMessageId: number | null
   ingressSessionKey: string | null
   ingressEventId: string | null
   ingressReference: string | null
@@ -230,7 +229,6 @@ function validateRecord(value: unknown, expectedId?: string): asserts value is T
     || (record.friendId !== null && (typeof record.friendId !== "string" || !record.friendId))
     || (record.acknowledgementArtifactId !== null && typeof record.acknowledgementArtifactId !== "string")
     || (record.ownerCardArtifactId !== null && typeof record.ownerCardArtifactId !== "string")
-    || (record.ownerCardMessageId !== null && (!Number.isSafeInteger(record.ownerCardMessageId) || record.ownerCardMessageId < 1))
     || (record.ingressSessionKey !== null && (typeof record.ingressSessionKey !== "string" || record.ingressSessionKey.length < 1 || record.ingressSessionKey.length > 1_024))
     || (record.ingressEventId !== null && (typeof record.ingressEventId !== "string" || !/^evt-[0-9]{6,}$/u.test(record.ingressEventId)))
     || (record.ingressReference !== null && record.ingressReference !== `telegram-admission:${record.id}`)
@@ -254,6 +252,19 @@ function atomicWrite(filePath: string, value: unknown): void {
   fs.chmodSync(filePath, 0o600)
   const directory = fs.openSync(path.dirname(filePath), fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
   try { fs.fsyncSync(directory) } finally { fs.closeSync(directory) }
+}
+
+function readBoundedPrivateJson(filePath: string, maxBytes: number, label: string): unknown {
+  const handle = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+  try {
+    const stat = fs.fstatSync(handle)
+    if (!stat.isFile() || stat.size < 2 || stat.size > maxBytes || (stat.mode & 0o777) !== 0o600) {
+      throw new Error(`Telegram admission ${label} is not a bounded private regular file`)
+    }
+    return JSON.parse(fs.readFileSync(handle, "utf8")) as unknown
+  } finally {
+    fs.closeSync(handle)
+  }
 }
 
 export class FileTelegramAdmissionStore {
@@ -325,7 +336,7 @@ export class FileTelegramAdmissionStore {
   private readRateState(now: number): TelegramAdmissionRateState {
     let state: TelegramAdmissionRateState = { version: 1, events: [] }
     try {
-      const value = JSON.parse(fs.readFileSync(this.rateStatePath(), "utf8")) as TelegramAdmissionRateState
+      const value = readBoundedPrivateJson(this.rateStatePath(), 256 * 1024, "rate state") as TelegramAdmissionRateState
       if (value.version !== 1 || !Array.isArray(value.events) || value.events.some((event) => !event
         || !/^[a-f0-9]{64}$/u.test(event.identityDigest) || !/^[a-f0-9]{64}$/u.test(event.updateDigest)
         || !Number.isSafeInteger(event.observedAt) || event.observedAt < 0)) throw new Error("invalid")
@@ -402,7 +413,7 @@ export class FileTelegramAdmissionStore {
   readSelfHealth(): TelegramAdmissionSelfHealth | null {
     this.assertRootIdentity()
     try {
-      const value = JSON.parse(fs.readFileSync(this.selfHealthPath(), "utf8")) as TelegramAdmissionSelfHealth
+      const value = readBoundedPrivateJson(this.selfHealthPath(), 4 * 1024, "self-health") as TelegramAdmissionSelfHealth
       if (value.schemaVersion !== 1 || value.code !== "telegram_admission_overflow" || !Number.isSafeInteger(value.count)
         || value.count < 1 || !Number.isSafeInteger(value.lastObservedAt)) throw new Error("invalid")
       this.assertRootIdentity()
@@ -497,7 +508,6 @@ export class FileTelegramAdmissionStore {
       friendId: null,
       acknowledgementArtifactId: null,
       ownerCardArtifactId: null,
-      ownerCardMessageId: null,
       ingressSessionKey: null,
       ingressEventId: null,
       ingressReference: null,
@@ -540,16 +550,14 @@ export class FileTelegramAdmissionStore {
     return updated
   }
 
-  recordEffect(admissionIdValue: string, kind: "acknowledgement" | "owner_card", artifactId: string, messageId?: number): TelegramAdmissionRecord {
+  recordEffect(admissionIdValue: string, kind: "acknowledgement" | "owner_card", artifactId: string): TelegramAdmissionRecord {
     const current = this.read(admissionIdValue)
     if (current.status !== "pending") return current
-    if (kind === "owner_card" && (!Number.isSafeInteger(messageId) || (messageId as number) < 1)) throw new Error("Telegram admission owner card message id is invalid")
-    const ownerCardMessageId = messageId as number
     const updated: TelegramAdmissionRecord = {
       ...current,
       revision: current.revision + 1,
       updatedAt: this.now(),
-      ...(kind === "acknowledgement" ? { acknowledgementArtifactId: artifactId } : { ownerCardArtifactId: artifactId, ownerCardMessageId }),
+      ...(kind === "acknowledgement" ? { acknowledgementArtifactId: artifactId } : { ownerCardArtifactId: artifactId }),
     }
     this.write(updated)
     return updated
@@ -558,9 +566,9 @@ export class FileTelegramAdmissionStore {
 
 export interface TelegramAdmissionControllerOptions {
   store: FileTelegramAdmissionStore
-  owner: { friendId: string; sessionKey: string; chatId: string }
+  owner: { friendId: string; sessionKey: string }
   sendEffect(request: TelegramAdmissionEffectRequest): Promise<string>
-  resolveEffectMessageId(artifactId: string): number | null
+  resolveOwnerCard(messageId: number): { artifactId: string; admissionId: string } | null
   claimFriend(input: TelegramAdmissionFriendClaim): Promise<TelegramAdmissionFriendClaimResult>
   revokeFriend(input: TelegramAdmissionFriendRevocation): Promise<TelegramAdmissionFriendRevocationResult>
   commitApprovedIngress(input: TelegramApprovedTurn): Promise<TelegramCommittedAdmissionIngress>
@@ -614,9 +622,7 @@ export function createTelegramAdmissionController(options: TelegramAdmissionCont
           { text: "Block", callbackData: `admit:${record.id}:block` },
         ]] },
       })
-      const messageId = options.resolveEffectMessageId(artifactIdValue)
-      if (!messageId) throw new Error("Telegram admission owner card message id is unavailable")
-      record = options.store.recordEffect(record.id, "owner_card", artifactIdValue, messageId)
+      record = options.store.recordEffect(record.id, "owner_card", artifactIdValue)
     }
     return record
   }
@@ -728,7 +734,8 @@ export function createTelegramAdmissionController(options: TelegramAdmissionCont
       const match = /^admit:([a-f0-9]{20}):(allow|deny|block)$/u.exec(value)
       if (!match) throw new Error("Telegram admission callback is invalid")
       const record = options.store.read(match[1]!)
-      if (record.ownerCardMessageId !== messageId) throw new Error("Telegram admission callback is not bound to its owner card")
+      const binding = options.resolveOwnerCard(messageId)
+      if (!binding || binding.admissionId !== record.id || binding.artifactId !== record.ownerCardArtifactId) throw new Error("Telegram admission callback is not bound to its owner card")
       return { admissionId: match[1]!, decision: match[2] as "allow" | "deny" | "block" }
     },
     parseOwnerDecision(input: { text: string; replyToMessageId?: number }): { admissionId: string; decision: "allow" | "deny" | "block" } | null {
@@ -739,11 +746,11 @@ export function createTelegramAdmissionController(options: TelegramAdmissionCont
           : /^(?:block|block (?:them|him|her))$/u.test(normalized) ? "block"
             : null
       if (!decision) return null
-      const matches = options.store.list().filter((record) => record.ownerCardMessageId === input.replyToMessageId
-        && (record.status === "pending" || (record.status === "handled" && decision === "block")))
-      if (matches.length === 0) return null
-      if (matches.length !== 1) throw new Error("Telegram admission owner card message id is ambiguous")
-      return { admissionId: matches[0]!.id, decision }
+      const binding = options.resolveOwnerCard(input.replyToMessageId)
+      if (!binding) return null
+      const record = options.store.read(binding.admissionId)
+      if (record.ownerCardArtifactId !== binding.artifactId || (record.status !== "pending" && !(record.status === "handled" && decision === "block"))) return null
+      return { admissionId: record.id, decision }
     },
     async decide(input: TelegramAdmissionDecision): Promise<TelegramAdmissionRecord> {
       return withDecisionLease(input.admissionId, async () => {

@@ -932,7 +932,7 @@ describe("Telegram sense coverage contracts", () => {
     fs.rmSync(root, { recursive: true, force: true })
   })
 
-  it("preserves unauthorized redelivery when the real MAC ledger fails after poll preflight", async () => {
+  it("drops unauthorized callbacks before approval transport or acceptance-audit mutation", async () => {
     const { createTelegramLongPoll } = await vi.importActual<typeof import("../../senses/telegram-client")>("../../senses/telegram-client")
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-audit-offset-atomic-"))
     mocks.getAgentRoot.mockReturnValue(root)
@@ -960,33 +960,10 @@ describe("Telegram sense coverage contracts", () => {
       acceptanceMarker: () => ({ scenarioHandleDigest }),
     })
 
-    await expect(firstPoll!.pollOnce()).rejects.toThrow(/audit/iu)
-    expect(offset).toBe(0)
-    expect(firstFixture.transport.handleUpdate).toHaveBeenCalledOnce()
-    await firstApp.stop().catch(() => undefined)
-
-    fs.rmSync(path.join(root, TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH), { force: true })
-    fs.rmSync(path.join(root, TELEGRAM_ACCEPTANCE_AUDIT_HEAD_RELATIVE_PATH), { force: true })
-    const secondFixture = defaultFixture()
-    secondFixture.api.request.mockResolvedValue([update])
-    secondFixture.transport.handleUpdate.mockImplementationOnce(async () => {
-      emitGlobal({ ...acceptanceEvent("telegram.callback_settled"), meta: { scenarioHandleDigest, acceptanceAuditOwnerDigest: owner } })
-      return { handled: true }
-    })
-    let secondPoll: ReturnType<typeof createTelegramLongPoll> | undefined
-    mocks.createTelegramLongPoll.mockImplementationOnce((options: any) => {
-      secondPoll = createTelegramLongPoll(options)
-      return secondPoll
-    })
-    const secondApp = createTelegramSenseApp({
-      agentName: "sanctuary", credentials, identityKey, offsetStore,
-      acceptanceMarker: () => ({ scenarioHandleDigest }),
-    })
-
-    await expect(secondPoll!.pollOnce()).resolves.toBe(8)
+    await expect(firstPoll!.pollOnce()).resolves.toBe(8)
     expect(offset).toBe(8)
-    expect(secondFixture.transport.handleUpdate).toHaveBeenCalledOnce()
-    await secondApp.stop()
+    expect(firstFixture.transport.handleUpdate).not.toHaveBeenCalled()
+    await firstApp.stop()
     fs.rmSync(root, { recursive: true, force: true })
   })
 
@@ -1183,13 +1160,12 @@ describe("Telegram sense coverage contracts", () => {
     await expect(app.sendProactive("   ")).rejects.toThrow("proactive message is missing")
   })
 
-  it("loads credentials, explains missing runtime config, and starts the default app", async () => {
+  it("loads credentials, explains missing runtime config, and fails production start on an unbound bot identity", async () => {
     expect(loadTelegramSenseCredentials("butler")).toEqual(credentials)
     mocks.readRuntimeCredentialConfig.mockReturnValueOnce({ ok: false, reason: "missing" })
     expect(() => loadTelegramSenseCredentials("butler")).toThrow("actor: agent-runnable")
-    const f = defaultFixture()
-    await expect(startTelegramSenseApp("butler")).resolves.toMatchObject({ run: expect.any(Function), stop: expect.any(Function) })
-    expect(mocks.createTelegramBotApi).toHaveBeenCalledWith({ token: credentials.botToken })
-    expect(f.api.stop).not.toHaveBeenCalled()
+    defaultFixture()
+    await expect(startTelegramSenseApp("butler")).rejects.toThrow("canonical numeric bot id")
+    expect(mocks.createTelegramBotApi).not.toHaveBeenCalled()
   })
 })

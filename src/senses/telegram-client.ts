@@ -657,7 +657,9 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
   }
 
   const dispatch = async (update: TelegramUpdate): Promise<void> => {
-    const handled = await options.onUpdate?.(update) ?? false
+    const handled = !update.callback_query || authorizedCallback(update)
+      ? await options.onUpdate?.(update) ?? false
+      : false
     if (handled) return
     const message = authorizedMessage(update)
     if (message) {
