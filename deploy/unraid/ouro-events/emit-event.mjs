@@ -59,30 +59,70 @@ export function emitEvent(input, options = {}) {
   const effectiveUid = options.effectiveUid ?? process.getuid?.()
   if (effectiveUid !== 0) throw new Error("ouro event producer must run as root")
   const spoolRoot = options.spoolRoot ?? SPOOL_ROOT
-  const root = fs.lstatSync(spoolRoot)
-  if (!root.isDirectory() || root.isSymbolicLink() || (root.mode & 0o777) !== 0o755) throw new Error("event spool root is unsafe")
-  const { envelope, serialized } = buildEnvelope(input, options.now ?? (() => new Date()), options.nonce ?? (() => randomBytes(32).toString("hex")))
-  const digest = createHash("sha256").update(`${envelope.source}\0${envelope.incidentKey}\0${envelope.transitionId}`).digest("hex")
-  const filePath = path.join(spoolRoot, `${digest}.json`)
-  if (fs.existsSync(filePath)) {
-    const existing = JSON.parse(fs.readFileSync(filePath, "utf8"))
-    if (JSON.stringify(stableInput(existing)) !== JSON.stringify(stableInput(envelope))) throw new Error("transition already exists with different content")
-    return { filePath, created: false }
-  }
-  const temporary = path.join(spoolRoot, `.${digest}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`)
+  const expectedOwnerUid = options.expectedSpoolOwnerUid ?? 0
+  const directory = fs.openSync(spoolRoot, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
   try {
-    fs.writeFileSync(temporary, serialized, { encoding: "utf8", mode: 0o600, flag: "wx" })
-    const file = fs.openSync(temporary, "r")
-    try { fs.fsyncSync(file) } finally { fs.closeSync(file) }
-    fs.chmodSync(temporary, 0o444)
-    fs.renameSync(temporary, filePath)
-    const directory = fs.openSync(spoolRoot, "r")
-    try { fs.fsyncSync(directory) } finally { fs.closeSync(directory) }
-  } catch (error) {
-    try { fs.unlinkSync(temporary) } catch { /* nothing to clean */ }
-    throw error
+    const openedRoot = fs.fstatSync(directory)
+    const assertRootIdentity = () => {
+      const namedRoot = fs.lstatSync(spoolRoot)
+      if (!openedRoot.isDirectory() || openedRoot.uid !== expectedOwnerUid || (openedRoot.mode & 0o777) !== 0o755
+        || !namedRoot.isDirectory() || namedRoot.isSymbolicLink() || namedRoot.uid !== expectedOwnerUid || (namedRoot.mode & 0o777) !== 0o755
+        || namedRoot.dev !== openedRoot.dev || namedRoot.ino !== openedRoot.ino) {
+        throw new Error(expectedOwnerUid === 0 ? "event spool root must be root-owned and mode 0755" : "event spool root is unsafe")
+      }
+    }
+    assertRootIdentity()
+    const anchoredRoot = process.platform === "linux" ? `/proc/self/fd/${directory}` : spoolRoot
+    const { envelope, serialized } = buildEnvelope(input, options.now ?? (() => new Date()), options.nonce ?? (() => randomBytes(32).toString("hex")))
+    const digest = createHash("sha256").update(`${envelope.source}\0${envelope.incidentKey}\0${envelope.transitionId}`).digest("hex")
+    const fileName = `${digest}.json`
+    const filePath = path.join(spoolRoot, fileName)
+    const anchoredFile = path.join(anchoredRoot, fileName)
+    const readPublished = () => {
+      let file
+      try { file = fs.openSync(anchoredFile, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW) } catch (error) {
+        if (error?.code === "ENOENT") return null
+        throw error
+      }
+      try {
+        const metadata = fs.fstatSync(file)
+        if (!metadata.isFile() || metadata.uid !== expectedOwnerUid || (metadata.mode & 0o777) !== 0o444 || metadata.size > MAX_BYTES) {
+          throw new Error("existing event spool file is unsafe")
+        }
+        return JSON.parse(fs.readFileSync(file, "utf8"))
+      } finally { fs.closeSync(file) }
+    }
+    const existing = readPublished()
+    if (existing) {
+      if (JSON.stringify(stableInput(existing)) !== JSON.stringify(stableInput(envelope))) throw new Error("transition already exists with different content")
+      return { filePath, created: false }
+    }
+    const temporary = path.join(anchoredRoot, `.${digest}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`)
+    try {
+      fs.writeFileSync(temporary, serialized, { encoding: "utf8", mode: 0o600, flag: "wx" })
+      const file = fs.openSync(temporary, "r")
+      try { fs.fsyncSync(file) } finally { fs.closeSync(file) }
+      fs.chmodSync(temporary, 0o444)
+      assertRootIdentity()
+      try {
+        fs.linkSync(temporary, anchoredFile)
+      } catch (error) {
+        if (error?.code !== "EEXIST") throw error
+        const winner = readPublished()
+        if (!winner || JSON.stringify(stableInput(winner)) !== JSON.stringify(stableInput(envelope))) throw new Error("transition already exists with different content")
+        return { filePath, created: false }
+      }
+      fs.unlinkSync(temporary)
+      fs.fsyncSync(directory)
+      assertRootIdentity()
+      return { filePath, created: true }
+    } catch (error) {
+      try { fs.unlinkSync(temporary) } catch { /* nothing to clean */ }
+      throw error
+    }
+  } finally {
+    fs.closeSync(directory)
   }
-  return { filePath, created: true }
 }
 
 function parseArgs(argv) {
