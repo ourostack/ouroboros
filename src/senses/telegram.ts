@@ -49,6 +49,7 @@ import { createTelegramApprovalRuntime, type TelegramApprovalRuntime } from "./t
 import type { SanctuaryHealthSweepResult } from "./sanctuary-health"
 import { createTelegramAuditLedger, type TelegramAuditLedger } from "./telegram-audit-ledger"
 import { loadSessionEnvelopeFile } from "../heart/session-events"
+import { withSessionTurnLease } from "../mind/session-transaction"
 import {
   createTelegramAuthorizedEffectExecutor,
   createTelegramApprovalEffectPort,
@@ -1128,8 +1129,9 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       return artifact.id
     },
     claimFriend: options.admission.claimFriend,
-    revokeFriend: options.admission.revokeFriend,
+    ...(options.admission.revokeFriend ? { revokeFriend: options.admission.revokeFriend } : {}),
     queueApprovedTurn: runApprovedAdmissionTurn,
+    withDecisionLease: (admissionId, work) => withSessionTurnLease(admissionStore!.coordinationPath(admissionId), async () => work()),
     createDisplayCode: options.admission.createDisplayCode,
   }) : undefined
 

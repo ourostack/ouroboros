@@ -59,8 +59,7 @@ describe("Telegram admission integration", () => {
 
     const callbackData = ((requests[1]!.body.reply_markup as { inline_keyboard: Array<Array<{ callback_data: string }>> }).inline_keyboard[0]![0]!.callback_data)
     const callback = { update_id: 12, callback_query: { id: "callback-1", from: { id: 42 }, data: callbackData, message: { message_id: 101, chat: { id: 42 } } } }
-    await expect(pollOptions.onUpdate!(callback)).resolves.toBe(true)
-    await expect(pollOptions.onUpdate!(callback)).resolves.toBe(true)
+    await expect(Promise.all([pollOptions.onUpdate!(callback), pollOptions.onUpdate!(callback)])).resolves.toEqual([true, true])
     expect(claimFriend).toHaveBeenCalledTimes(1)
     expect(runTurn).toHaveBeenCalledTimes(1)
     expect(runTurn).toHaveBeenCalledWith(expect.objectContaining({

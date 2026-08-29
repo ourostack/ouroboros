@@ -247,6 +247,10 @@ export class FileTelegramAdmissionStore {
     return path.join(this.root, `${id}.json`)
   }
 
+  coordinationPath(id: string): string {
+    return `${this.filePath(id)}.decision`
+  }
+
   private selfHealthPath(): string {
     return path.join(this.root, "self-health.json")
   }
@@ -439,6 +443,7 @@ export interface TelegramAdmissionControllerOptions {
   claimFriend(input: TelegramAdmissionFriendClaim): Promise<TelegramAdmissionFriendClaimResult>
   revokeFriend?(input: TelegramAdmissionFriendRevocation): Promise<TelegramAdmissionFriendRevocationResult>
   queueApprovedTurn(input: TelegramApprovedTurn): Promise<void>
+  withDecisionLease?<T>(admissionId: string, work: () => Promise<T>): Promise<T>
   now?: () => number
   createDisplayCode?: () => string
 }
@@ -462,6 +467,7 @@ function ownerCard(record: TelegramAdmissionRecord): string {
 export function createTelegramAdmissionController(options: TelegramAdmissionControllerOptions) {
   const now = options.now ?? Date.now
   const createDisplayCode = options.createDisplayCode ?? (() => crypto.randomBytes(4).toString("hex").toUpperCase())
+  const withDecisionLease = options.withDecisionLease ?? (async <T>(_admissionId: string, work: () => Promise<T>): Promise<T> => work())
 
   const ensureEffects = async (initial: TelegramAdmissionRecord): Promise<TelegramAdmissionRecord> => {
     let record = options.store.read(initial.id)
@@ -544,11 +550,14 @@ export function createTelegramAdmissionController(options: TelegramAdmissionCont
   }
 
   const reconcileExpired = async (): Promise<void> => {
-    for (const record of options.store.list()) {
-      if (ACTIVE_STATUSES.has(record.status) && now() >= record.expiresAt) {
-        options.store.compareAndSwap({ admissionId: record.id, expectedStatus: record.status, nextStatus: "expired" })
-        emitNervesEvent({ component: "senses", event: "senses.telegram_admission_expired", message: "Telegram admission expired and raw content was purged", meta: { admissionId: record.id } })
-      }
+    for (const candidate of options.store.list()) {
+      await withDecisionLease(candidate.id, async () => {
+        const record = options.store.read(candidate.id)
+        if (ACTIVE_STATUSES.has(record.status) && now() >= record.expiresAt) {
+          options.store.compareAndSwap({ admissionId: record.id, expectedStatus: record.status, nextStatus: "expired" })
+          emitNervesEvent({ component: "senses", event: "senses.telegram_admission_expired", message: "Telegram admission expired and raw content was purged", meta: { admissionId: record.id } })
+        }
+      })
     }
   }
 
@@ -574,40 +583,44 @@ export function createTelegramAdmissionController(options: TelegramAdmissionCont
       return { admissionId: matches[0]!.id, decision: match[1]!.toLocaleLowerCase("en-US") as "allow" | "deny" | "block" }
     },
     async decide(input: TelegramAdmissionDecision): Promise<TelegramAdmissionRecord> {
-      if (input.actorFriendId !== options.owner.friendId) throw new Error("Only the Telegram admission owner may decide")
-      let record = options.store.read(input.admissionId)
-      if (record.status === "handled" && input.decision === "allow") return record
-      if (record.status === "handled" && input.decision === "block") {
-        if (!record.friendId || !options.revokeFriend) throw new Error("Telegram admission revocation unavailable")
-        const revocation = await options.revokeFriend({
-          provider: "telegram-user",
-          botId: record.botId,
-          userId: record.userId,
-          chatId: record.chatId,
-          admissionId: record.id,
-          friendId: record.friendId,
-        })
-        if (revocation.kind === "collision") throw new Error(`Telegram admission revocation collision: ${revocation.reason}`)
-        return options.store.compareAndSwap({ admissionId: record.id, expectedStatus: "handled", nextStatus: "blocked" })
-      }
-      if (TERMINAL_STATUSES.has(record.status)) throw new Error("Telegram admission is terminal")
-      if (record.status !== "pending") return resume(record.id)
-      if (now() >= record.expiresAt) {
-        options.store.compareAndSwap({ admissionId: record.id, expectedStatus: "pending", nextStatus: "expired" })
-        throw new Error("Telegram admission is terminal")
-      }
-      if (input.decision === "deny" || input.decision === "block") {
-        return options.store.compareAndSwap({ admissionId: record.id, expectedStatus: "pending", nextStatus: input.decision === "deny" ? "denied" : "blocked" })
-      }
-      record = options.store.compareAndSwap({ admissionId: record.id, expectedStatus: "pending", nextStatus: "approved" })
-      return resume(record.id)
+      return withDecisionLease(input.admissionId, async () => {
+        if (input.actorFriendId !== options.owner.friendId) throw new Error("Only the Telegram admission owner may decide")
+        let record = options.store.read(input.admissionId)
+        if (record.status === "handled" && input.decision === "allow") return record
+        if (record.status === "handled" && input.decision === "block") {
+          if (!record.friendId || !options.revokeFriend) throw new Error("Telegram admission revocation unavailable")
+          const revocation = await options.revokeFriend({
+            provider: "telegram-user",
+            botId: record.botId,
+            userId: record.userId,
+            chatId: record.chatId,
+            admissionId: record.id,
+            friendId: record.friendId,
+          })
+          if (revocation.kind === "collision") throw new Error(`Telegram admission revocation collision: ${revocation.reason}`)
+          return options.store.compareAndSwap({ admissionId: record.id, expectedStatus: "handled", nextStatus: "blocked" })
+        }
+        if (TERMINAL_STATUSES.has(record.status)) throw new Error("Telegram admission is terminal")
+        if (record.status !== "pending") return resume(record.id)
+        if (now() >= record.expiresAt) {
+          options.store.compareAndSwap({ admissionId: record.id, expectedStatus: "pending", nextStatus: "expired" })
+          throw new Error("Telegram admission is terminal")
+        }
+        if (input.decision === "deny" || input.decision === "block") {
+          return options.store.compareAndSwap({ admissionId: record.id, expectedStatus: "pending", nextStatus: input.decision === "deny" ? "denied" : "blocked" })
+        }
+        record = options.store.compareAndSwap({ admissionId: record.id, expectedStatus: "pending", nextStatus: "approved" })
+        return resume(record.id)
+      })
     },
     async reconcileExpired(): Promise<void> { await reconcileExpired() },
     async recover(): Promise<void> {
       await reconcileExpired()
       for (const record of options.store.list()) {
         if (record.status === "pending") await ensureEffects(record)
-        else if (["approved", "friend_bound", "ingress_committed", "turn_queued"].includes(record.status)) await resume(record.id)
+        else if (["approved", "friend_bound", "ingress_committed", "turn_queued"].includes(record.status)) {
+          await withDecisionLease(record.id, () => resume(record.id))
+        }
       }
     },
   }
