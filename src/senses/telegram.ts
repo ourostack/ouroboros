@@ -1023,9 +1023,11 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     const turnMetricsObserver = { providerInvocationCount: 0, toolInvocationCount: 0 }
     const toolReceiptObserver: SanctuaryToolReceiptObserver = { toolResultDigests: [], toolGroundings: [] }
     const normalizedRequest = message.text.normalize("NFKC").trim().toLocaleLowerCase("en-US")
-    const groundingIntentTool = /^(?:what['’]?s up|status)\??$/u.test(normalizedRequest) ? "unraid_get_system"
-      : /^how much (?:space|storage) is left\??$/u.test(normalizedRequest) ? "unraid_get_storage"
-        : null
+    const groundingIntentTool = groundedAcceptance
+      ? /^(?:what['’]?s up|status)\??$/u.test(normalizedRequest) ? "unraid_get_system"
+        : /^how much (?:space|storage) is left\??$/u.test(normalizedRequest) ? "unraid_get_storage"
+          : null
+      : null
     const bufferedGroundedDeliveries: string[] = []
     const turnEffects: TelegramEffectArtifact[] = []
     let deliveryOrdinal = 0

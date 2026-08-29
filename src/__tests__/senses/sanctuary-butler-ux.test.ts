@@ -3,6 +3,9 @@ import path from "node:path"
 import { describe, expect, it } from "vitest"
 
 const bundleRoot = path.resolve("deploy/unraid/sanctuary.ouro")
+const transcriptPath = path.resolve("src/__tests__/fixtures/sanctuary-butler-transcripts.json")
+
+type Transcript = { id: string; audience: "owner" | "family"; user: string; reply: string; tools: string[] }
 
 function psyche(name: string): string {
   return fs.readFileSync(path.join(bundleRoot, "psyche", `${name}.md`), "utf8")
@@ -57,5 +60,40 @@ describe("Mendelow Cloud Butler household UX", () => {
         effectScopes: ["telegram.owner_event"],
       },
     })
+  })
+
+  it("freezes phone-sized, action-first owner and family conversations", () => {
+    const transcripts = JSON.parse(fs.readFileSync(transcriptPath, "utf8")) as Transcript[]
+    expect(transcripts.map((entry) => entry.id)).toEqual(["owner-status", "expected-off", "credit-top-up", "specified-snooze", "storage-creative", "books-troubleshooting", "tv-troubleshooting", "movie-request", "full-visibility", "family-privacy"])
+    for (const entry of transcripts) {
+      expect(entry.user.trim()).not.toBe("")
+      expect(entry.reply.length, entry.id).toBeLessThanOrEqual(420)
+      expect(entry.reply, entry.id).not.toMatch(/\b(?:SABnzbd|Sonarr|Radarr|Jellyseerr|daemon|provider lane|model provider)\b/iu)
+      expect(entry.tools, entry.id).not.toEqual(expect.arrayContaining(["shell", "read_file", "write_file", "jellyseerr_request", "sonarr_add", "radarr_add"]))
+    }
+  })
+
+  it("keeps learned expected-off policy scoped and reminders tied to real awaits", () => {
+    const transcripts = JSON.parse(fs.readFileSync(transcriptPath, "utf8")) as Transcript[]
+    const expectedOff = transcripts.find((entry) => entry.id === "expected-off")!
+    expect(expectedOff.reply).toContain("applies only to Books")
+    expect(expectedOff.tools).toEqual(["steward_policy_manage"])
+    const reminder = transcripts.find((entry) => entry.id === "specified-snooze")!
+    expect(reminder.reply).toContain("Friday at 10:00 AM")
+    expect(reminder.tools).toContain("await_condition")
+    const topUp = transcripts.find((entry) => entry.id === "credit-top-up")!
+    expect(topUp.reply).toContain("<provider account link>")
+    expect(topUp.reply).toContain("Tell me when you’re done and I’ll test it")
+  })
+
+  it("does not invent a media API and keeps family replies private", () => {
+    const transcripts = JSON.parse(fs.readFileSync(transcriptPath, "utf8")) as Transcript[]
+    const movie = transcripts.find((entry) => entry.id === "movie-request")!
+    expect(movie.reply).toContain("I can’t truthfully submit it")
+    expect(movie.tools).toEqual(["care_manage"])
+    const family = transcripts.find((entry) => entry.id === "family-privacy")!
+    expect(family.audience).toBe("family")
+    expect(family.reply).toContain("separate from everyone else’s private messages and tasks")
+    expect(family.tools).not.toEqual(expect.arrayContaining(["query_cares", "query_active_work", "care_manage", "await_condition"]))
   })
 })
