@@ -404,6 +404,12 @@ function canonicalTelegramId(value: unknown, label: string): string {
   return text
 }
 
+export function telegramBotIdFromToken(token: string): string {
+  const match = /^([1-9][0-9]*):/u.exec(token.trim())
+  if (!match) throw new Error("Telegram bot token does not expose a canonical numeric bot id")
+  return match[1]!
+}
+
 function canonicalTelegramIdentityKey(value: string): string {
   const key = value.trim()
   if (!TELEGRAM_IDENTITY_KEY.test(key) || Buffer.from(key, "base64url").length !== 32) {
