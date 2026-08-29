@@ -2,11 +2,14 @@ import * as crypto from "node:crypto"
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { emitNervesEvent } from "../nerves/runtime"
+import { bindPrivilegedFailsafeArtifact, listExternalEventStatus, readExternalEventRecord, type ExternalEventRecord } from "../heart/external-events/router"
 import { loadSessionEnvelopeFile, type SessionEnvelope, type SessionEvent } from "../heart/session-events"
 import { currentSessionTurnLease, readSessionTransaction, withSessionTurnLease, writeSessionTransaction, type SessionTurnLease } from "../mind/session-transaction"
 import { escapeTelegramHtml, sendTelegramText, splitTelegramText, TelegramApiError, type TelegramBotApi } from "./telegram-client"
 
 export const FIXED_ADMISSION_ACKNOWLEDGEMENT = "Thanks — I’ve asked Ari."
+export const FIXED_USENET_SYSTEM_FAILSAFE = "Quick heads-up: I paused downloads because the server was discarding most of what it fetched. Nothing needs doing this second — I’ll investigate and follow up when I’m back online."
+const SYSTEM_FAILSAFE_UNAVAILABLE_MS = 2 * 60_000
 
 export type TelegramEffectTarget =
   | { kind: "approved_relationship"; friendId: string; sessionKey: string; requestId?: string }
@@ -465,6 +468,69 @@ export function createTelegramAuthorizedEffectExecutor(options: {
       throw error
     }
   }
+}
+
+export async function reconcileTelegramSystemFailsafe(input: {
+  record: ExternalEventRecord
+  now?: () => string
+  target: TelegramEffectTarget
+  verifyProtectiveState(action: NonNullable<ExternalEventRecord["privilegedProtectiveAction"]>): Promise<{ verified: boolean; reference: string }>
+  execute(input: TelegramAuthorizedEffectInput): Promise<TelegramEffectArtifact>
+  recordArtifact(artifact: TelegramEffectArtifact): Promise<void>
+  bindArtifact(recordPath: string, input: { artifactId: string; verificationRef: string; recordedAt?: string }): ExternalEventRecord
+}): Promise<{ sent: boolean; reason: string; artifactId?: string }> {
+  const { record } = input
+  const action = record.privilegedProtectiveAction
+  if (record.privilegedFailsafe) return { sent: false, reason: "already_recorded", artifactId: record.privilegedFailsafe.artifactId }
+  if (record.agent !== "sanctuary" || record.source !== "sanctuary-usenet" || record.eventType !== "usenet.protective_action"
+    || record.priority !== "critical" || !action?.critical) return { sent: false, reason: "noncritical" }
+  if (!action.verification.verified) return { sent: false, reason: "unverified" }
+  if (action.action !== "sabnzbd.pause") return { sent: false, reason: "policy_blocked" }
+  if (record.dispatchEnabled === false) return { sent: false, reason: "policy_blocked" }
+  if ((record.executionState !== "retry_wait" && record.executionState !== "dead_letter") || !record.lastError || record.attemptCount < 1) {
+    return { sent: false, reason: "butler_available" }
+  }
+  const now = input.now?.() ?? new Date().toISOString()
+  const nowMs = Date.parse(now)
+  if (!Number.isFinite(nowMs) || nowMs - Date.parse(record.updatedAt) < SYSTEM_FAILSAFE_UNAVAILABLE_MS) return { sent: false, reason: "unavailability_window" }
+  if (nowMs > Date.parse(action.expiresAt)) return { sent: false, reason: "expired" }
+  const verification = await input.verifyProtectiveState(action)
+  if (!verification.verified || !verification.reference.trim() || Buffer.byteLength(verification.reference) > 512) return { sent: false, reason: "unverified" }
+  const artifact = await input.execute({
+    idempotencyKey: `system-failsafe:${action.transitionId}`,
+    target: input.target,
+    authorClass: "system_failsafe",
+    effect: { kind: "text", text: FIXED_USENET_SYSTEM_FAILSAFE },
+  })
+  await input.recordArtifact(artifact)
+  input.bindArtifact(record.recordPath, { artifactId: artifact.id, verificationRef: verification.reference, recordedAt: now })
+  emitNervesEvent({ component: "senses", event: "senses.telegram_system_failsafe_sent", message: "sent verified Sanctuary system failsafe", meta: { artifactId: artifact.id, eventId: record.eventId, transitionId: action.transitionId } })
+  return { sent: true, reason: "sent", artifactId: artifact.id }
+}
+
+export async function sweepTelegramSystemFailsafes(input: {
+  eventRoot: string
+  now?: () => string
+  target: TelegramEffectTarget
+  verifyProtectiveState(action: NonNullable<ExternalEventRecord["privilegedProtectiveAction"]>): Promise<{ verified: boolean; reference: string }>
+  execute(input: TelegramAuthorizedEffectInput): Promise<TelegramEffectArtifact>
+  recordArtifact(artifact: TelegramEffectArtifact): Promise<void>
+}): Promise<{ inspected: number; sent: number }> {
+  const records = listExternalEventStatus(input.eventRoot).filter((status) => !status.corrupt && status.agent === "sanctuary" && status.source === "sanctuary-usenet").slice(0, 32)
+  let sent = 0
+  for (const status of records) {
+    const result = await reconcileTelegramSystemFailsafe({
+      record: readExternalEventRecord(status.recordPath),
+      ...(input.now ? { now: input.now } : {}),
+      target: input.target,
+      verifyProtectiveState: input.verifyProtectiveState,
+      execute: input.execute,
+      recordArtifact: input.recordArtifact,
+      bindArtifact: bindPrivilegedFailsafeArtifact,
+    })
+    if (result.sent) sent += 1
+  }
+  return { inspected: records.length, sent }
 }
 
 export async function recoverTelegramEffectOutbox(input: {

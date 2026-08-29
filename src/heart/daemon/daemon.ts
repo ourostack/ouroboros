@@ -51,7 +51,7 @@ import { awaitNameFromPrivateWakeCommand, buildAwaitPrivateWakeCommand } from ".
 import { buildHabitPrivateWakeCommand, habitMessageFromPrivateWakeCommand } from "./habit-private-wake"
 import { createDegradedHabitFile, parseHabitFile, type HabitFile } from "../habits/habit-parser"
 import { applyHabitRuntimeState } from "../habits/habit-runtime-state"
-import { buildExternalEventMessage, claimExternalEvent, failExternalEventAttempt, getExternalEventRoot, listExternalEventStatus, readExternalEventRecord, reconcileExternalEvent, recordExternalEvent, type ExternalEventLeaseContext, type ExternalEventLeaseMember, type ExternalEventRecord, type ExternalEventStatus } from "../external-events/router"
+import { buildExternalEventMessage, claimExternalEvent, failExternalEventAttempt, getExternalEventRoot, listExternalEventStatus, readExternalEventRecord, reconcileExternalEvent, recordExternalEvent, scanPrivilegedEventSpool, type ExternalEventLeaseContext, type ExternalEventLeaseMember, type ExternalEventRecord, type ExternalEventStatus } from "../external-events/router"
 import { isRsvpHabitName } from "../../rsvp/habit-policy"
 import { readContainerRuntimePolicy } from "./container-runtime"
 import type { RunNativeRsvpHabitInput, RunNativeRsvpHabitResult } from "../../rsvp/native-habit-runner"
@@ -577,6 +577,9 @@ export interface OuroDaemonOptions {
   onStopCommandComplete?: () => void | Promise<void>
   /** Test seam for external-event receipts. Defaults to ~/.ouro-cli/daemon/external-events. */
   externalEventRoot?: string
+  /** Root-owned host detector spool, mounted read-only in the daemon container. */
+  privilegedEventSpoolRoot?: string
+  privilegedEventScanner?: typeof scanPrivilegedEventSpool
   /** Test seam for typed native RSVP habit execution. Defaults to the real native runner. */
   rsvpHabitRunner?: (input: RunNativeRsvpHabitInput) => Promise<RunNativeRsvpHabitResult>
   nativeHabitRunner?: (input: { agent: string; habitName: string; trigger: HabitRunTrigger; occurrenceId?: string; runnerId: string; schedulerOrigin?: SanctuarySchedulerOrigin }) => Promise<DaemonResponse | null>
@@ -867,6 +870,8 @@ export class OuroDaemon {
   private readonly privateRuntimePolicyDeps: PrivateTurnPolicyDeps
   private readonly onStopCommandComplete: (() => void | Promise<void>) | null
   private readonly externalEventRoot: string | null
+  private readonly privilegedEventSpoolRoot: string
+  private readonly privilegedEventScanner: typeof scanPrivilegedEventSpool
   private readonly rsvpHabitRunner?: (input: RunNativeRsvpHabitInput) => Promise<RunNativeRsvpHabitResult>
   private readonly nativeHabitRunner?: OuroDaemonOptions["nativeHabitRunner"]
   private readonly nativeHabitMatch?: OuroDaemonOptions["nativeHabitMatch"]
@@ -889,6 +894,8 @@ export class OuroDaemon {
     this.privateRuntimePolicyDeps = options.privateRuntimePolicyDeps ?? {}
     this.onStopCommandComplete = options.onStopCommandComplete ?? null
     this.externalEventRoot = options.externalEventRoot ?? null
+    this.privilegedEventSpoolRoot = options.privilegedEventSpoolRoot ?? "/run/ouro-events"
+    this.privilegedEventScanner = options.privilegedEventScanner ?? scanPrivilegedEventSpool
     this.rsvpHabitRunner = options.rsvpHabitRunner
     this.nativeHabitRunner = options.nativeHabitRunner
     this.nativeHabitMatch = options.nativeHabitMatch
@@ -1954,6 +1961,9 @@ export class OuroDaemon {
     this.externalEventReconcileRunning = true
     try {
       const now = new Date().toISOString()
+      if (fs.existsSync(this.privilegedEventSpoolRoot)) {
+        this.privilegedEventScanner({ spoolRoot: this.privilegedEventSpoolRoot, eventRoot: this.externalEventRootPath() })
+      }
       const statuses = listExternalEventStatus(this.externalEventRootPath())
       const dueRecords: ExternalEventRecord[] = []
       for (const status of statuses) {

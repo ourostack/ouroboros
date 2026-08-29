@@ -52,6 +52,23 @@ interface ExternalEventObservation {
   observationRevision: string
   observationDigest: string
   transition: ExternalEventTransition
+  privilegedProtectiveAction?: PrivilegedProtectiveAction
+}
+
+export interface PrivilegedProtectiveAction {
+  action: "sabnzbd.pause" | "prowlarr.disable-indexer"
+  actionReceipt: string
+  transitionId: string
+  critical: boolean
+  createdAt: string
+  expiresAt: string
+  verification: { verified: boolean; digest: string; observedAt: string }
+}
+
+export interface PrivilegedFailsafeReceipt {
+  artifactId: string
+  verificationRef: string
+  recordedAt: string
 }
 
 export interface ExternalEventInput {
@@ -94,6 +111,9 @@ export interface ExternalEventRecord extends Required<Omit<ExternalEventInput, "
   privilegedReplayNonces?: string[]
   privilegedReplayManifest?: ExternalEventReplayManifest
   privilegedIngressNonce?: string
+  privilegedProtectiveAction?: PrivilegedProtectiveAction
+  pendingPrivilegedProtectiveAction?: PrivilegedProtectiveAction
+  privilegedFailsafe?: PrivilegedFailsafeReceipt
 }
 
 export interface ExternalEventReplayManifest {
@@ -141,6 +161,9 @@ interface PrivilegedExternalEventEnvelope {
   observationRevision: string
   action: "sabnzbd.pause" | "prowlarr.disable-indexer"
   actionReceipt: string
+  protectiveStateVerified: boolean
+  protectiveStateDigest: string
+  protectiveStateObservedAt: string
   critical: true
   summary: string
   evidence: string[]
@@ -290,7 +313,7 @@ function compactHandledReceiptsForNewRecord(recordPath: string): ExternalEventRe
   return summary
 }
 
-function observationFromInput(input: ExternalEventInput, now: string, digest: string, revision: string, fallbackTransition: ExternalEventTransition): ExternalEventObservation {
+function observationFromInput(input: ExternalEventInput, now: string, digest: string, revision: string, fallbackTransition: ExternalEventTransition, protectiveAction?: PrivilegedProtectiveAction): ExternalEventObservation {
   return {
     summary: input.summary ?? null,
     evidence: input.evidence ?? [],
@@ -300,6 +323,7 @@ function observationFromInput(input: ExternalEventInput, now: string, digest: st
     observationRevision: revision,
     observationDigest: digest,
     transition: input.transition ?? fallbackTransition,
+    ...(protectiveAction ? { privilegedProtectiveAction: protectiveAction } : {}),
   }
 }
 
@@ -539,7 +563,7 @@ export function buildExternalEventMessage(record: ExternalEventRecord): string {
   ].join("\n")
 }
 
-type RecordExternalEventOptions = { root?: string; now?: () => string; dispatchEnabled?: boolean; [privilegedIngress]?: { nonce: string } }
+type RecordExternalEventOptions = { root?: string; now?: () => string; dispatchEnabled?: boolean; [privilegedIngress]?: { nonce: string; protectiveAction: PrivilegedProtectiveAction } }
 
 function recordExternalEventInternal(input: ExternalEventInput, options: RecordExternalEventOptions = {}): ExternalEventRecord {
   validateExternalEventInput(input)
@@ -563,14 +587,15 @@ function recordExternalEventInternal(input: ExternalEventInput, options: RecordE
     const existingResult = readExisting(recordPath)
     const existing = existingResult.record
     const privilegedNonce = options[privilegedIngress]?.nonce
+    const protectiveAction = options[privilegedIngress]?.protectiveAction
     const retentionSummary = existing?.retentionSummary ?? compacted
     const persistedRetention = retentionSummary ? retentionWithoutReplayManifest(retentionSummary) : undefined
     if (existing?.executionState === "running") {
       if (existing.observationRevision === revision && existing.observationDigest === digest) {
         return privilegedNonce ? commitMutation(recordPath, { ...existing, ...(persistedRetention ? { retentionSummary: persistedRetention } : {}), privilegedReplayManifest: undefined, privilegedReplayNonces: undefined, privilegedIngressNonce: privilegedNonce, shouldWake: false }, now) : { ...existing, shouldWake: false }
       }
-      const pendingObservation = observationFromInput(input, now, digest, revision, "changed")
-      const updated = commitMutation(recordPath, { ...existing, ...(persistedRetention ? { retentionSummary: persistedRetention } : {}), privilegedReplayManifest: undefined, privilegedReplayNonces: undefined, privilegedIngressNonce: privilegedNonce, pendingObservation, shouldWake: false }, now)
+      const pendingObservation = observationFromInput(input, now, digest, revision, "changed", protectiveAction)
+      const updated = commitMutation(recordPath, { ...existing, ...(persistedRetention ? { retentionSummary: persistedRetention } : {}), privilegedReplayManifest: undefined, privilegedReplayNonces: undefined, privilegedIngressNonce: privilegedNonce, pendingObservation, ...(protectiveAction ? { pendingPrivilegedProtectiveAction: protectiveAction } : {}), shouldWake: false }, now)
       emitNervesEvent({
         component: "daemon",
         event: "daemon.external_event_recorded",
@@ -613,6 +638,7 @@ function recordExternalEventInternal(input: ExternalEventInput, options: RecordE
     shouldWake,
     ...(persistedRetention ? { retentionSummary: persistedRetention } : {}),
     ...(privilegedNonce ? { privilegedIngressNonce: privilegedNonce } : {}),
+    ...(protectiveAction ? { privilegedProtectiveAction: protectiveAction, pendingPrivilegedProtectiveAction: undefined } : {}),
     }
     atomicWrite(recordPath, record)
     emitNervesEvent({
@@ -646,13 +672,14 @@ function parsePrivilegedEnvelope(raw: string, fileName: string, now: string): Pr
   const parsed: unknown = JSON.parse(raw)
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Privileged event envelope is invalid")
   const value = parsed as Record<string, unknown>
-  const expectedKeys = ["action", "actionReceipt", "agent", "createdAt", "critical", "eventType", "evidence", "expiresAt", "incidentKey", "nonce", "observationRevision", "schemaVersion", "source", "summary", "transitionId"]
+  const expectedKeys = ["action", "actionReceipt", "agent", "createdAt", "critical", "eventType", "evidence", "expiresAt", "incidentKey", "nonce", "observationRevision", "protectiveStateDigest", "protectiveStateObservedAt", "protectiveStateVerified", "schemaVersion", "source", "summary", "transitionId"]
   if (Object.keys(value).sort().join("\0") !== expectedKeys.sort().join("\0")
     || value.schemaVersion !== 1 || value.agent !== "sanctuary" || value.source !== PRIVILEGED_EVENT_SOURCE
     || value.eventType !== "usenet.protective_action" || !["sabnzbd.pause", "prowlarr.disable-indexer"].includes(String(value.action))
     || value.critical !== true || !boundedIdentifier(value.incidentKey) || !boundedIdentifier(value.transitionId)
     || !/^[a-f0-9]{64}$/u.test(String(value.observationRevision)) || !/^[a-f0-9]{64}$/u.test(String(value.nonce))
     || typeof value.actionReceipt !== "string" || !value.actionReceipt || Buffer.byteLength(value.actionReceipt) > 512
+    || typeof value.protectiveStateVerified !== "boolean" || !/^[a-f0-9]{64}$/u.test(String(value.protectiveStateDigest)) || !canonicalIso(value.protectiveStateObservedAt)
     || typeof value.summary !== "string" || !value.summary || Buffer.byteLength(value.summary) > 4_096
     || !Array.isArray(value.evidence) || value.evidence.length > 16
     || value.evidence.some((entry) => typeof entry !== "string" || !entry || Buffer.byteLength(entry) > 2_048)
@@ -661,6 +688,8 @@ function parsePrivilegedEnvelope(raw: string, fileName: string, now: string): Pr
   const expiresMs = Date.parse(value.expiresAt)
   const nowMs = Date.parse(now)
   if (createdMs > nowMs || expiresMs <= nowMs || expiresMs <= createdMs || expiresMs - createdMs > 60 * 60_000) throw new Error("Privileged event envelope is outside its validity window")
+  const protectiveObservedMs = Date.parse(value.protectiveStateObservedAt as string)
+  if (Math.abs(protectiveObservedMs - createdMs) > 5 * 60_000 || protectiveObservedMs > expiresMs) throw new Error("Privileged protective-state verification is stale")
   const expectedName = `${createHash("sha256").update(`${value.source}\0${value.incidentKey}\0${value.transitionId}`).digest("hex")}.json`
   if (fileName !== expectedName) throw new Error("Privileged event envelope filename is invalid")
   return value as unknown as PrivilegedExternalEventEnvelope
@@ -869,12 +898,20 @@ export function scanPrivilegedEventSpool(options: { spoolRoot: string; eventRoot
           eventType: envelope.eventType,
           eventId: envelope.incidentKey,
           summary: envelope.summary,
-          evidence: [...envelope.evidence, `protective action: ${envelope.action}`, `protective action receipt: ${envelope.actionReceipt}`, `privileged transition: ${envelope.transitionId}`],
+          evidence: [...envelope.evidence, `protective action: ${envelope.action}`, `protective action receipt: ${envelope.actionReceipt}`, `protective state verified: ${String(envelope.protectiveStateVerified)} digest=${envelope.protectiveStateDigest} observedAt=${envelope.protectiveStateObservedAt}`, `privileged transition: ${envelope.transitionId}`],
           priority: "critical",
           receivedAt: envelope.createdAt,
           observationRevision: envelope.observationRevision,
           transition: "opened",
-        }, { root: eventRoot, now: () => now, [privilegedIngress]: { nonce: envelope.nonce } })
+        }, { root: eventRoot, now: () => now, [privilegedIngress]: { nonce: envelope.nonce, protectiveAction: {
+          action: envelope.action,
+          actionReceipt: envelope.actionReceipt,
+          transitionId: envelope.transitionId,
+          critical: envelope.critical,
+          createdAt: envelope.createdAt,
+          expiresAt: envelope.expiresAt,
+          verification: { verified: envelope.protectiveStateVerified, digest: envelope.protectiveStateDigest, observedAt: envelope.protectiveStateObservedAt },
+        } } })
         replayState = replayStateFromManifest(replayAdd(replayState, envelope.nonce), now)
         atomicWriteJson(replayStatePath(eventRoot), replayState, "Privileged replay manifest")
         accepted += 1
@@ -905,6 +942,33 @@ function commitMutation(recordPath: string, record: ExternalEventRecord, now: st
   const next = { ...record, version: record.version + 1, updatedAt: now }
   atomicWrite(recordPath, next)
   return next
+}
+
+export function bindPrivilegedFailsafeArtifact(recordPath: string, input: { artifactId: string; verificationRef: string; recordedAt?: string }): ExternalEventRecord {
+  return withRecordLock(recordPath, () => {
+    const record = readExternalEventRecord(recordPath)
+    if (record.agent !== "sanctuary" || record.source !== PRIVILEGED_EVENT_SOURCE || !record.privilegedProtectiveAction) {
+      throw new Error("System failsafe requires a privileged Sanctuary event")
+    }
+    if (!/^[a-f0-9]{64}$/u.test(input.artifactId)) throw new Error("System failsafe artifact id is invalid")
+    assertBoundedText(input.verificationRef, "failsafe verification reference", 512)
+    if (!input.verificationRef.trim()) throw new Error("System failsafe verification reference is invalid")
+    const recordedAt = input.recordedAt ?? new Date().toISOString()
+    if (!canonicalIso(recordedAt)) throw new Error("System failsafe recorded time is invalid")
+    const receipt: PrivilegedFailsafeReceipt = { artifactId: input.artifactId, verificationRef: input.verificationRef, recordedAt }
+    if (record.privilegedFailsafe) {
+      if (record.privilegedFailsafe.artifactId !== receipt.artifactId || record.privilegedFailsafe.verificationRef !== receipt.verificationRef) {
+        throw new Error("System failsafe artifact binding changed")
+      }
+      return record
+    }
+    const evidence = [...record.evidence]
+    for (const entry of [`system failsafe artifact: ${receipt.artifactId}`, `protective state verification: ${receipt.verificationRef}`]) {
+      if (!evidence.includes(entry)) evidence.push(entry)
+    }
+    if (evidence.length > MAX_EVENT_EVIDENCE) throw new Error("System failsafe evidence exceeds its bound")
+    return commitMutation(recordPath, { ...record, evidence, privilegedFailsafe: receipt }, recordedAt)
+  })
 }
 
 export function claimExternalEvent(recordPath: string, input: CasInput & { owner: string; leaseMs?: number }): ExternalEventRecord {
@@ -971,6 +1035,7 @@ export function commitExternalEventDisposition(recordPath: string, input: CasInp
     if (input.disposition.nextWake.kind !== "at" && input.disposition.awaitId) throw new Error("External event await receipt does not match its wake predicate")
     const now = input.now?.() ?? new Date().toISOString()
     const pending = record.pendingObservation
+    const pendingProtectiveAction = record.pendingPrivilegedProtectiveAction ?? pending?.privilegedProtectiveAction
     const wakePending = pending ? predicateMatches(input.disposition, pending, pending.observationRevision) : false
     return commitMutation(recordPath, {
     ...record,
@@ -983,6 +1048,7 @@ export function commitExternalEventDisposition(recordPath: string, input: CasInp
       observationRevision: pending.observationRevision,
       observationDigest: pending.observationDigest,
       transition: pending.transition,
+      ...(pendingProtectiveAction ? { privilegedProtectiveAction: pendingProtectiveAction } : {}),
     } : {}),
     executionState: wakePending ? "received" : "handled",
     generation: record.generation + (wakePending ? 1 : 0),
@@ -993,6 +1059,7 @@ export function commitExternalEventDisposition(recordPath: string, input: CasInp
     lastError: null,
     disposition: wakePending ? null : input.disposition,
     pendingObservation: null,
+    pendingPrivilegedProtectiveAction: undefined,
     shouldWake: wakePending,
     }, now)
   })

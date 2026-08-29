@@ -52,6 +52,8 @@ describe("daemon command plane branches", () => {
       onStopCommandComplete?: () => void
       privateRuntimePolicyDeps?: unknown
       externalEventRoot?: string | null
+      privilegedEventSpoolRoot?: string
+      privilegedEventScanner?: (options: { spoolRoot: string; eventRoot: string }) => { accepted: number; rejected: number; replayed: number }
       rsvpHabitRunner?: unknown
       nativeHabitRunner?: unknown
       nativeHabitMatch?: unknown
@@ -112,6 +114,8 @@ describe("daemon command plane branches", () => {
       externalEventRoot: options?.externalEventRoot === null
         ? undefined
         : options?.externalEventRoot ?? `${socketPath}.external-events`,
+      privilegedEventSpoolRoot: options?.privilegedEventSpoolRoot,
+      privilegedEventScanner: options?.privilegedEventScanner,
       mailboxServerFactory: vi.fn(async () => ({
         url: "http://127.0.0.1:6876",
         stop: async () => undefined,
@@ -1061,6 +1065,27 @@ describe("daemon command plane branches", () => {
       fs.rmSync(externalEventRoot, { recursive: true, force: true })
       fs.rmSync(bundlesRoot, { recursive: true, force: true })
       fs.rmSync(ledgerPath, { force: true })
+    }
+  })
+
+  it("scans the hardened privileged spool on startup and the existing external-event reconciliation tick", async () => {
+    const socketPath = tmpSocketPath("daemon-privileged-spool")
+    const externalEventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-privileged-event-root-"))
+    const spoolRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-privileged-spool-root-"))
+    const scanner = vi.fn(() => ({ accepted: 0, rejected: 0, replayed: 0 }))
+    const { daemon } = make(socketPath, undefined, { externalEventRoot, privilegedEventSpoolRoot: spoolRoot, privilegedEventScanner: scanner })
+
+    try {
+      await daemon.start()
+      expect(scanner).toHaveBeenCalledTimes(1)
+      expect(scanner).toHaveBeenLastCalledWith({ spoolRoot, eventRoot: externalEventRoot })
+      ;((daemon as any).externalEventReconcileTimer as { _onTimeout(): void })._onTimeout()
+      await new Promise((resolve) => setImmediate(resolve))
+      expect(scanner).toHaveBeenCalledTimes(2)
+    } finally {
+      await daemon.stop()
+      fs.rmSync(externalEventRoot, { recursive: true, force: true })
+      fs.rmSync(spoolRoot, { recursive: true, force: true })
     }
   })
 

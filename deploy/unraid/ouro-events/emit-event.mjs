@@ -9,7 +9,7 @@ const SPOOL_ROOT = "/boot/config/custom/ouro-events/spool"
 const MAX_BYTES = 32 * 1024
 const MAX_SPOOL_FILES = 4_096
 const DEFAULT_EXPIRY_GRACE_MS = 24 * 60 * 60_000
-const ENVELOPE_KEYS = ["action", "actionReceipt", "agent", "createdAt", "critical", "eventType", "evidence", "expiresAt", "incidentKey", "nonce", "observationRevision", "schemaVersion", "source", "summary", "transitionId"]
+const ENVELOPE_KEYS = ["action", "actionReceipt", "agent", "createdAt", "critical", "eventType", "evidence", "expiresAt", "incidentKey", "nonce", "observationRevision", "protectiveStateDigest", "protectiveStateObservedAt", "protectiveStateVerified", "schemaVersion", "source", "summary", "transitionId"]
 
 function id(value, name) {
   if (typeof value !== "string" || !/^[a-zA-Z0-9._:-]{1,160}$/u.test(value)) throw new Error(`${name} is invalid`)
@@ -22,7 +22,7 @@ function bounded(value, name, max) {
 }
 
 function stableInput(envelope) {
-  const { createdAt: _createdAt, expiresAt: _expiresAt, nonce: _nonce, ...stable } = envelope
+  const { createdAt: _createdAt, expiresAt: _expiresAt, nonce: _nonce, protectiveStateObservedAt: _protectiveStateObservedAt, ...stable } = envelope
   return stable
 }
 
@@ -36,6 +36,8 @@ function validateEnvelope(envelope) {
     || envelope.eventType !== "usenet.protective_action" || !["sabnzbd.pause", "prowlarr.disable-indexer"].includes(envelope.action)
     || envelope.critical !== true || !/^[a-zA-Z0-9._:-]{1,160}$/u.test(String(envelope.incidentKey)) || !/^[a-zA-Z0-9._:-]{1,160}$/u.test(String(envelope.transitionId))
     || !/^[a-f0-9]{64}$/u.test(String(envelope.observationRevision)) || !/^[a-f0-9]{64}$/u.test(String(envelope.nonce))
+    || typeof envelope.protectiveStateVerified !== "boolean" || !/^[a-f0-9]{64}$/u.test(String(envelope.protectiveStateDigest))
+    || !canonicalIso(envelope.protectiveStateObservedAt)
     || typeof envelope.actionReceipt !== "string" || !envelope.actionReceipt || Buffer.byteLength(envelope.actionReceipt) > 512
     || typeof envelope.summary !== "string" || !envelope.summary || Buffer.byteLength(envelope.summary) > 4_096
     || !Array.isArray(envelope.evidence) || envelope.evidence.length > 16 || envelope.evidence.some((entry) => typeof entry !== "string" || !entry || Buffer.byteLength(entry) > 2_048)
@@ -64,6 +66,9 @@ function buildEnvelope(input, now, nonce) {
     observationRevision: input.observationRevision,
     action: input.action,
     actionReceipt: bounded(input.actionReceipt, "action receipt", 512),
+    protectiveStateVerified: input.protectiveStateVerified,
+    protectiveStateDigest: input.protectiveStateDigest,
+    protectiveStateObservedAt: input.protectiveStateObservedAt,
     critical: input.critical,
     summary: bounded(input.summary, "summary", 4_096),
     evidence: evidence.map((entry) => bounded(entry, "evidence", 2_048)),
@@ -255,11 +260,13 @@ function parseArgs(argv) {
     ["--agent", "agent"], ["--source", "source"], ["--event-type", "eventType"], ["--incident-key", "incidentKey"],
     ["--transition-id", "transitionId"], ["--revision", "observationRevision"], ["--action", "action"],
     ["--action-receipt", "actionReceipt"], ["--summary", "summary"],
+    ["--protective-state-digest", "protectiveStateDigest"], ["--protective-state-observed-at", "protectiveStateObservedAt"],
   ])
   for (let index = 0; index < argv.length; index += 2) {
     const flag = argv[index]
     const value = argv[index + 1]
     if (flag === "--evidence" && value !== undefined) input.evidence.push(value)
+    else if (flag === "--protective-state-verified" && (value === "true" || value === "false")) input.protectiveStateVerified = value === "true"
     else if (names.has(flag) && value !== undefined) input[names.get(flag)] = value
     else throw new Error("event producer arguments are invalid")
   }

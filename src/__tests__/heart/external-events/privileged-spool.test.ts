@@ -64,6 +64,9 @@ function envelope(overrides: Record<string, unknown> = {}): Record<string, unkno
     observationRevision: "a".repeat(64),
     action: "sabnzbd.pause",
     actionReceipt: "sabnzbd:pause:2026-08-29:50000:20",
+    protectiveStateVerified: true,
+    protectiveStateDigest: "d".repeat(64),
+    protectiveStateObservedAt: "2026-08-29T19:55:01.000Z",
     critical: true,
     summary: "SABnzbd was paused after article success fell below the spend guard.",
     evidence: ["50,000 articles attempted; 20% succeeded."],
@@ -135,6 +138,19 @@ describe("privileged external-event spool", () => {
     expect(readExternalEventRecord(status!.recordPath)).toMatchObject({
       observationRevision: "a".repeat(64),
       privilegedIngressNonce: "b".repeat(64),
+      privilegedProtectiveAction: {
+        action: "sabnzbd.pause",
+        actionReceipt: "sabnzbd:pause:2026-08-29:50000:20",
+        transitionId: "2026-08-29:pause:50000:20",
+        critical: true,
+        createdAt: "2026-08-29T19:55:00.000Z",
+        expiresAt: "2026-08-29T20:10:00.000Z",
+        verification: {
+          verified: true,
+          digest: "d".repeat(64),
+          observedAt: "2026-08-29T19:55:01.000Z",
+        },
+      },
       evidence: expect.arrayContaining(["protective action receipt: sabnzbd:pause:2026-08-29:50000:20"]),
     })
     expect(readExternalEventRecord(status!.recordPath)).not.toHaveProperty("privilegedReplayManifest")
@@ -166,6 +182,21 @@ describe("privileged external-event spool", () => {
     expect(scanPrivilegedEventSpool({ spoolRoot, eventRoot, now: () => NOW })).toEqual({ accepted: 0, rejected: 0, replayed: 140 })
     expect(JSON.parse(fs.readFileSync(path.join(eventRoot, "sanctuary", "sanctuary-usenet", SOURCE_MANIFEST), "utf8"))).toMatchObject({ observedCount: 140 })
   }, 15_000)
+
+  it("records an authenticated pause claim whose independent SAB read says unpaused as agent-visible unverified evidence", () => {
+    const spoolRoot = root("ouro-privileged-unverified")
+    const eventRoot = root("ouro-privileged-unverified-events")
+    fs.chmodSync(spoolRoot, 0o755)
+    writeSpoolFile(spoolRoot, envelope({ protectiveStateVerified: false, protectiveStateDigest: "e".repeat(64) }))
+    spoofRootOwnership(spoolRoot)
+
+    expect(scanPrivilegedEventSpool({ spoolRoot, eventRoot, now: () => NOW })).toEqual({ accepted: 1, rejected: 0, replayed: 0 })
+    const [status] = listExternalEventStatus(eventRoot)
+    expect(readExternalEventRecord(status!.recordPath)).toMatchObject({
+      privilegedProtectiveAction: { verification: { verified: false, digest: "e".repeat(64) } },
+      evidence: expect.arrayContaining([expect.stringContaining("protective state verified: false")]),
+    })
+  })
 
   it("does not recreate compacted handled work when immutable spool history is rescanned", () => {
     const spoolRoot = root("ouro-privileged-compaction")
@@ -310,6 +341,7 @@ describe("privileged external-event spool", () => {
     ["wrong action", { action: "shell.exec" }],
     ["expired", { expiresAt: "2026-08-29T19:59:59.000Z" }],
     ["future", { createdAt: "2026-08-29T20:00:01.000Z" }],
+    ["stale verification", { protectiveStateObservedAt: "2026-08-29T19:49:59.999Z" }],
     ["bad nonce", { nonce: "not-a-nonce" }],
   ])("rejects %s envelopes without creating a receipt", (_label, overrides) => {
     const spoolRoot = root("ouro-privileged-spoof")
