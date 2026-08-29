@@ -91,9 +91,19 @@ export interface TelegramUpdate {
   update_id: number
   message?: {
     message_id: number
-    from?: { id: number }
+    from?: { id: number; first_name?: string; last_name?: string; username?: string }
     chat: { id: number; type: string }
     text?: string
+    caption?: string
+    entities?: Array<{ type: string; offset: number; length: number }>
+    caption_entities?: Array<{ type: string; offset: number; length: number }>
+    document?: { file_id: string }
+    photo?: Array<{ file_id: string }>
+    audio?: { file_id: string }
+    video?: { file_id: string }
+    voice?: { file_id: string }
+    animation?: { file_id: string }
+    sticker?: { file_id: string }
     reply_to_message?: { message_id: number }
   }
   callback_query?: {
@@ -111,6 +121,17 @@ export interface TelegramInboundMessage {
   chatId: string
   text: string
   replyToMessageId?: string
+}
+
+export interface TelegramUnknownInboundMessage {
+  updateId: number
+  messageId: number
+  botId: string
+  userId: string
+  chatId: string
+  text: string
+  displayLabel: string
+  hasAttachments: boolean
 }
 
 export interface TelegramUpdateInboxStore {
@@ -568,9 +589,11 @@ export interface TelegramLongPollOptions {
   api: TelegramBotApi
   expectedUserId: string
   expectedChatId: string
+  botId?: string
   offsetStore: TelegramOffsetStore
   inboxStore?: TelegramUpdateInboxStore
   onMessage: (message: TelegramInboundMessage) => Promise<void>
+  onUnknownMessage?: (message: TelegramUnknownInboundMessage) => Promise<void>
   onUpdate?: (update: TelegramUpdate) => Promise<boolean>
   acceptanceEventMeta?: (update?: TelegramUpdate, distinctAccount?: boolean) => Record<string, unknown>
   onBeforeDispatch?: () => void
@@ -605,6 +628,27 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
     }
   }
 
+  const unknownMessage = (update: TelegramUpdate): TelegramUnknownInboundMessage | null => {
+    const message = update.message
+    if (!options.onUnknownMessage || !options.botId || !message?.from || message.chat.type !== "private") return null
+    const userId = String(message.from.id)
+    const chatId = String(message.chat.id)
+    if (userId === options.expectedUserId && chatId === options.expectedChatId) return null
+    const displayLabel = [message.from.first_name, message.from.last_name].filter(Boolean).join(" ")
+      || (message.from.username ? `@${message.from.username}` : `Telegram user ${userId}`)
+    return {
+      updateId: update.update_id,
+      messageId: message.message_id,
+      botId: options.botId,
+      userId,
+      chatId,
+      text: message.text ?? message.caption ?? "",
+      displayLabel,
+      hasAttachments: Boolean(message.document || message.photo?.length || message.audio || message.video
+        || message.voice || message.animation || message.sticker),
+    }
+  }
+
   const authorizedCallback = (update: TelegramUpdate): boolean => {
     const callback = update.callback_query
     return Boolean(callback?.message
@@ -618,6 +662,11 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
     const message = authorizedMessage(update)
     if (message) {
       await options.onMessage(message)
+      return
+    }
+    const stranger = unknownMessage(update)
+    if (stranger) {
+      await options.onUnknownMessage!(stranger)
       return
     }
     const distinctAccount = Boolean(update.message?.from && String(update.message.from.id) !== options.expectedUserId)
@@ -660,7 +709,7 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
       if (!update || !Number.isSafeInteger(update.update_id) || update.update_id < nextUpdateId) continue
       options.onBeforeDispatch?.()
       const next = update.update_id + 1
-      const requiresDurableDispatch = Boolean(authorizedCallback(update) || authorizedMessage(update))
+      const requiresDurableDispatch = Boolean(authorizedCallback(update) || authorizedMessage(update) || unknownMessage(update))
       const newlyCaptured = requiresDurableDispatch ? (options.inboxStore?.capture(update) ?? true) : true
       if (newlyCaptured) {
         if (requiresDurableDispatch && options.inboxStore && !options.inboxStore.claim(update)) {
