@@ -352,6 +352,10 @@ if assert_update_topology "$EXPECTED_IMAGE"; then command printf 'MUTATION\n'; e
     const onlyRunning = extractRunbookFunction(runbook, "assert_only_running_butler")
     const preflight = extractRunbookFunction(runbook, "assert_restore_preflight")
     const provenance = extractRunbookFunction(runbook, "verify_sanctuary_snapshot_provenance").replaceAll("/usr/local/bin/node", process.execPath)
+    const audit = extractRunbookFunction(runbook, "audit_effective").replace("/mnt/user/appdata/ouro-butler/staging/inspect.XXXXXX", "$AUDIT_TEST_ROOT/inspect.XXXXXX")
+    const legacySource = extractRunbookFunction(runbook, "assert_legacy_alpha742_source")
+    const updateSource = extractRunbookFunction(runbook, "assert_update_source")
+    expect(preflight.indexOf('assert_update_source "$RESTORE_PRODUCTION_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"')).toBeGreaterThan(preflight.indexOf("assert_only_running_butler ouro-butler"))
     const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-restore-preflight-"))
     const validRootPath = path.join(testRoot, "backup")
     fs.mkdirSync(path.join(validRootPath, "runtime", ".ouro-cli"), { recursive: true })
@@ -379,7 +383,9 @@ if assert_update_topology "$EXPECTED_IMAGE"; then command printf 'MUTATION\n'; e
 SCENARIO=$1
 docker() {
   case "$*" in
-    "image inspect "*) return 0 ;;
+    "image inspect "*) command printf '{}\n' ;;
+    "inspect ouro-butler") command printf '{}\n' ;;
+    "run --rm "*) if [ "$SCENARIO" = auditor-fails ]; then return 23; fi ;;
     "container ls -a --format {{.Names}}") if [ "$SCENARIO" = staging ]; then command printf 'ouro-butler\nouro-butler-staging\n'; else command printf 'ouro-butler\n'; fi ;;
     "container ls --format {{.Names}}") if [ "$SCENARIO" = staging ]; then command printf 'ouro-butler\nouro-butler-staging\n'; else command printf 'ouro-butler\n'; fi ;;
     "inspect --format {{.State.Running}} "*) command printf 'true\n' ;;
@@ -397,6 +403,9 @@ stat() {
 ${imageValidator}
 ${onlyRunning}
 ${provenance}
+${audit}
+${legacySource}
+${updateSource}
 validate_sanctuary_roots() { test "$SCENARIO" != invalid-roots; }
 ${preflight}
 if assert_restore_preflight; then command printf 'MUTATION\n'; else exit $?; fi`
@@ -410,35 +419,36 @@ if assert_restore_preflight; then command printf 'MUTATION\n'; else exit $?; fi`
         { scenario: "wrong-snapshot-image", env: { BACKUP_ROOT: validRoot, IMAGE_ID: `sha256:${"c".repeat(64)}` } },
         { scenario: "invalid-roots", env: { BACKUP_ROOT: validRoot, IMAGE_ID: validImage } },
         { scenario: "staging", env: { BACKUP_ROOT: validRoot, IMAGE_ID: validImage } },
+        { scenario: "auditor-fails", env: { BACKUP_ROOT: validRoot, IMAGE_ID: validImage } },
       ]
       for (const testCase of cases) {
         const caseScript = testCase.unset ? `unset BACKUP_ROOT IMAGE_ID AUDIT_RUNNER_IMAGE_ID\n${script}` : script
-        const result = runConditionalHelper(caseScript, testCase.scenario, { VALID_IMAGE: validImage, AUDIT_RUNNER_IMAGE_ID: auditRunnerImage, ...testCase.env })
+        const result = runConditionalHelper(caseScript, testCase.scenario, { VALID_IMAGE: validImage, AUDIT_RUNNER_IMAGE_ID: auditRunnerImage, AUDIT_TEST_ROOT: testRoot, ...testCase.env })
         expect(result.status, `${testCase.scenario}\n${result.stderr}`).not.toBe(0)
         expect(result.stdout).not.toContain("MUTATION")
       }
-      const success = runConditionalHelper(script, "safe", { VALID_IMAGE: validImage, BACKUP_ROOT: validRoot, IMAGE_ID: validImage, AUDIT_RUNNER_IMAGE_ID: auditRunnerImage })
+      const success = runConditionalHelper(script, "safe", { VALID_IMAGE: validImage, BACKUP_ROOT: validRoot, IMAGE_ID: validImage, AUDIT_RUNNER_IMAGE_ID: auditRunnerImage, AUDIT_TEST_ROOT: testRoot })
       expect(success.status, success.stderr).toBe(0)
       expect(success.stdout).toContain("MUTATION")
       fs.appendFileSync(path.join(provenanceRoot, "image-id"), "tampered")
-      const tampered = runConditionalHelper(script, "safe", { VALID_IMAGE: validImage, BACKUP_ROOT: validRoot, IMAGE_ID: validImage, AUDIT_RUNNER_IMAGE_ID: auditRunnerImage })
+      const tampered = runConditionalHelper(script, "safe", { VALID_IMAGE: validImage, BACKUP_ROOT: validRoot, IMAGE_ID: validImage, AUDIT_RUNNER_IMAGE_ID: auditRunnerImage, AUDIT_TEST_ROOT: testRoot })
       expect(tampered.status).not.toBe(0)
       expect(tampered.stdout).not.toContain("MUTATION")
       writeProvenance()
       fs.writeFileSync(path.join(validRoot, "agent", "sanctuary.ouro", "unmanifested"), "extra")
-      const extra = runConditionalHelper(script, "safe", { VALID_IMAGE: validImage, BACKUP_ROOT: validRoot, IMAGE_ID: validImage, AUDIT_RUNNER_IMAGE_ID: auditRunnerImage })
+      const extra = runConditionalHelper(script, "safe", { VALID_IMAGE: validImage, BACKUP_ROOT: validRoot, IMAGE_ID: validImage, AUDIT_RUNNER_IMAGE_ID: auditRunnerImage, AUDIT_TEST_ROOT: testRoot })
       expect(extra.status).not.toBe(0)
       expect(extra.stdout).not.toContain("MUTATION")
       fs.rmSync(path.join(validRoot, "agent", "sanctuary.ouro", "unmanifested"))
       writeProvenance()
       const topLevelExtra = path.join(validRoot, "unexpected")
       fs.writeFileSync(topLevelExtra, "extra")
-      const unexpectedFile = runConditionalHelper(script, "safe", { VALID_IMAGE: validImage, BACKUP_ROOT: validRoot, IMAGE_ID: validImage, AUDIT_RUNNER_IMAGE_ID: auditRunnerImage })
+      const unexpectedFile = runConditionalHelper(script, "safe", { VALID_IMAGE: validImage, BACKUP_ROOT: validRoot, IMAGE_ID: validImage, AUDIT_RUNNER_IMAGE_ID: auditRunnerImage, AUDIT_TEST_ROOT: testRoot })
       expect(unexpectedFile.status).not.toBe(0)
       expect(unexpectedFile.stdout).not.toContain("MUTATION")
       fs.rmSync(topLevelExtra)
       expect(spawnSync("mkfifo", [topLevelExtra]).status).toBe(0)
-      const unexpectedFifo = runConditionalHelper(script, "safe", { VALID_IMAGE: validImage, BACKUP_ROOT: validRoot, IMAGE_ID: validImage, AUDIT_RUNNER_IMAGE_ID: auditRunnerImage })
+      const unexpectedFifo = runConditionalHelper(script, "safe", { VALID_IMAGE: validImage, BACKUP_ROOT: validRoot, IMAGE_ID: validImage, AUDIT_RUNNER_IMAGE_ID: auditRunnerImage, AUDIT_TEST_ROOT: testRoot })
       expect(unexpectedFifo.status).not.toBe(0)
       expect(unexpectedFifo.stdout).not.toContain("MUTATION")
     } finally {
