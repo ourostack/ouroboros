@@ -14,7 +14,7 @@ Status and health:
   docker logs --tail 200 ouro-butler
 
 Effective-spec audit helper:
-  Run Update and Restore command sequences from a root shell with `set -eu`.
+  Run Update, Backup, and Restore command sequences from a root shell with `set -eu`.
   Before either sequence, define this helper. It captures one actual container
   inspect and its reviewed image inspect without printing either, invokes the
   packaged auditor from IMAGE_ID, and removes its mode-0600 inputs on success
@@ -78,18 +78,23 @@ Effective-spec audit helper:
           http://127.0.0.1/plugins/dynamix.docker.manager/include/UpdateConfig.php || return $?
       )
     }
-    verify_butler_autostart() {
+    butler_autostart_counts() {
       (
-      EXPECTED_AUTOSTART_COUNTS=$1
       AUTOSTART_FILE=/var/lib/docker/unraid-autostart
       test -f "$AUTOSTART_FILE" || return $?
-      AUTOSTART_COUNTS=$(awk '
+      awk '
         $1 == "ouro-butler" { production++ }
         $1 == "ouro-butler-staging" { staging++ }
         $1 == "ouro-butler-rollback" { rollback++ }
         $1 == "ouro-butler-legacy-evidence" { legacy++ }
         END { printf "%d %d %d %d", production + 0, staging + 0, rollback + 0, legacy + 0 }
-      ' "$AUTOSTART_FILE") || return $?
+      ' "$AUTOSTART_FILE"
+      )
+    }
+    verify_butler_autostart() {
+      (
+      EXPECTED_AUTOSTART_COUNTS=$1
+      AUTOSTART_COUNTS=$(butler_autostart_counts) || return $?
       test "$AUTOSTART_COUNTS" = "$EXPECTED_AUTOSTART_COUNTS" || return $?
       )
     }
@@ -270,6 +275,11 @@ Effective-spec audit helper:
       SNAPSHOT_ROOT=$1
       EXPECTED_SNAPSHOT_IMAGE_ID=$2
       SNAPSHOT_PROVENANCE_ROOT=$SNAPSHOT_ROOT/provenance
+      for SNAPSHOT_TOP_LEVEL_DIRECTORY in runtime agent provenance; do
+        test -d "$SNAPSHOT_ROOT/$SNAPSHOT_TOP_LEVEL_DIRECTORY" || return $?
+        test ! -L "$SNAPSHOT_ROOT/$SNAPSHOT_TOP_LEVEL_DIRECTORY" || return 1
+      done
+      test "$(find "$SNAPSHOT_ROOT" -xdev -mindepth 1 -maxdepth 1 -print | wc -l)" -eq 3 || return $?
       test -d "$SNAPSHOT_PROVENANCE_ROOT" || return $?
       test ! -L "$SNAPSHOT_PROVENANCE_ROOT" || return 1
       test "$(stat -c '%u:%g:%a' "$SNAPSHOT_PROVENANCE_ROOT")" = 0:0:700 || return $?
@@ -1320,7 +1330,7 @@ ouro-butler-rollback
 Backup:
   Set BACKUP_ROOT to a new absolute snapshot path on the destination filesystem.
   Capture and validate the exact source image before stopping ouro-butler, then
-  build a root-only temporary snapshot and atomically rename it into place:
+  build a temporary snapshot with root-only provenance and atomically rename it into place:
     test -n "${BACKUP_ROOT-}"
     case "$BACKUP_ROOT" in /*) ;; *) exit 1 ;; esac
     test "$BACKUP_ROOT" != /
@@ -1331,9 +1341,11 @@ Backup:
     test ! -e "$BACKUP_TMP"
     BACKUP_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler)
     validate_exact_image_id "$BACKUP_IMAGE_ID"
-    docker stop ouro-butler
-    test "$(docker inspect --format '{{.State.Running}}' ouro-butler)" = false
-    install -d -m 0700 -o 0 -g 0 "$BACKUP_TMP" "$BACKUP_TMP/runtime" "$BACKUP_TMP/agent" "$BACKUP_TMP/provenance"
+    assert_update_source "$BACKUP_IMAGE_ID"
+    assert_only_running_butler ouro-butler
+    wait_butler_ready ouro-butler
+    BACKUP_AUTOSTART_COUNTS=$(butler_autostart_counts)
+    case "$BACKUP_AUTOSTART_COUNTS" in "0 0 0 0"|"1 0 0 0") ;; *) exit 1 ;; esac
   Snapshot both of these directories together:
     /mnt/user/appdata/ouro-butler/runtime/.ouro-cli
     /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro
@@ -1343,26 +1355,52 @@ Backup:
   The Telegram control socket is live process state, not durable data. Exclude
   exactly that socket while preserving every regular file byte-for-byte, then
   require it to be absent from the stopped backup:
-    rsync -a --exclude='/state/acceptance/telegram-control.sock' \
-      /mnt/user/appdata/ouro-butler/runtime/.ouro-cli "$BACKUP_TMP/runtime/"
-    rsync -a --exclude='/state/acceptance/telegram-control.sock' \
-      /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro "$BACKUP_TMP/agent/"
-    test ! -S "$BACKUP_TMP/agent/sanctuary.ouro/state/acceptance/telegram-control.sock"
-    validate_sanctuary_roots "$BACKUP_TMP/runtime/.ouro-cli" "$BACKUP_TMP/agent/sanctuary.ouro"
-    docker container inspect ouro-butler >"$BACKUP_TMP/provenance/container-inspect.json"
-    printf '%s\n' "$BACKUP_IMAGE_ID" >"$BACKUP_TMP/provenance/image-id"
-    chown 0:0 "$BACKUP_TMP/provenance/container-inspect.json" "$BACKUP_TMP/provenance/image-id"
-    chmod 0600 "$BACKUP_TMP/provenance/container-inspect.json" "$BACKUP_TMP/provenance/image-id"
-    (
-      cd "$BACKUP_TMP"
-      find runtime agent provenance -xdev -type f ! -path provenance/manifest.sha256 -exec sha256sum -- {} + | LC_ALL=C sort -k2 >provenance/manifest.sha256
-    )
-    chown 0:0 "$BACKUP_TMP/provenance/manifest.sha256"
-    chmod 0600 "$BACKUP_TMP/provenance/manifest.sha256"
-    verify_sanctuary_snapshot_provenance "$BACKUP_TMP" "$BACKUP_IMAGE_ID"
-    sync -f "$BACKUP_TMP/provenance/manifest.sha256"
-    mv -- "$BACKUP_TMP" "$BACKUP_ROOT"
-    sync -f "$BACKUP_PARENT"
+    BACKUP_OPERATION_STATUS=0
+    if docker stop ouro-butler \
+      && test "$(docker inspect --format '{{.State.Running}}' ouro-butler)" = false \
+      && install -d -m 0700 -o 0 -g 0 "$BACKUP_TMP" "$BACKUP_TMP/runtime" "$BACKUP_TMP/agent" "$BACKUP_TMP/provenance" \
+      && rsync -a --exclude='/state/acceptance/telegram-control.sock' /mnt/user/appdata/ouro-butler/runtime/.ouro-cli "$BACKUP_TMP/runtime/" \
+      && rsync -a --exclude='/state/acceptance/telegram-control.sock' /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro "$BACKUP_TMP/agent/" \
+      && test ! -S "$BACKUP_TMP/agent/sanctuary.ouro/state/acceptance/telegram-control.sock" \
+      && validate_sanctuary_roots "$BACKUP_TMP/runtime/.ouro-cli" "$BACKUP_TMP/agent/sanctuary.ouro" \
+      && docker container inspect ouro-butler >"$BACKUP_TMP/provenance/container-inspect.json" \
+      && printf '%s\n' "$BACKUP_IMAGE_ID" >"$BACKUP_TMP/provenance/image-id" \
+      && chown 0:0 "$BACKUP_TMP/provenance/container-inspect.json" "$BACKUP_TMP/provenance/image-id" \
+      && chmod 0600 "$BACKUP_TMP/provenance/container-inspect.json" "$BACKUP_TMP/provenance/image-id" \
+      && (cd "$BACKUP_TMP" && find runtime agent provenance -xdev -type f ! -path provenance/manifest.sha256 -exec sha256sum -- {} + | LC_ALL=C sort -k2 >provenance/manifest.sha256) \
+      && chown 0:0 "$BACKUP_TMP/provenance/manifest.sha256" \
+      && chmod 0600 "$BACKUP_TMP/provenance/manifest.sha256" \
+      && verify_sanctuary_snapshot_provenance "$BACKUP_TMP" "$BACKUP_IMAGE_ID" \
+      && sync -f "$BACKUP_TMP/provenance/manifest.sha256" \
+      && mv -- "$BACKUP_TMP" "$BACKUP_ROOT" \
+      && sync -f "$BACKUP_PARENT"; then
+      :
+    else
+      BACKUP_OPERATION_STATUS=$?
+    fi
+    if assert_update_source "$BACKUP_IMAGE_ID" \
+      && docker start ouro-butler \
+      && assert_only_running_butler ouro-butler \
+      && wait_butler_ready ouro-butler \
+      && verify_butler_autostart "$BACKUP_AUTOSTART_COUNTS"; then
+      :
+    else
+      BACKUP_RECOVERY_STATUS=$?
+      if test -d "$BACKUP_ROOT"; then
+        printf '%s\n' "CRITICAL: production recovery failed after backup; completed snapshot remains intact at $BACKUP_ROOT" >&2
+      else
+        printf '%s\n' "CRITICAL: production recovery failed and no completed snapshot was published; inspect $BACKUP_TMP" >&2
+      fi
+      (exit "$BACKUP_RECOVERY_STATUS")
+    fi
+    if test "$BACKUP_OPERATION_STATUS" -ne 0; then
+      if test -d "$BACKUP_ROOT"; then
+        printf '%s\n' "Backup publication was not durably confirmed; production was recovered; completed snapshot remains intact at $BACKUP_ROOT" >&2
+      else
+        printf '%s\n' "Backup failed before atomic publication; production was recovered; inspect $BACKUP_TMP" >&2
+      fi
+      (exit "$BACKUP_OPERATION_STATUS")
+    fi
 
 Restore:
   Set BACKUP_ROOT to the exact verified snapshot containing `runtime/.ouro-cli`
