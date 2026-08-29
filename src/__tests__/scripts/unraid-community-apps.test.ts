@@ -5,6 +5,17 @@ import { describe, expect, it } from "vitest"
 const packageVersion = JSON.parse(fs.readFileSync("package.json", "utf8")) as { version: string }
 
 describe("Mendelow Cloud Butler Community Apps release", () => {
+  it("serializes repository container publications without cancelling an in-flight release", () => {
+    const workflow = fs.readFileSync(".github/workflows/container-publish.yml", "utf8")
+    const concurrencyIndex = workflow.indexOf("\nconcurrency:\n")
+    const jobsIndex = workflow.indexOf("\njobs:\n")
+
+    expect(concurrencyIndex).toBeGreaterThan(0)
+    expect(concurrencyIndex).toBeLessThan(jobsIndex)
+    expect(workflow).toContain("group: container-publish-${{ github.repository }}")
+    expect(workflow).toContain("cancel-in-progress: false")
+  })
+
   it("publishes the required repository profile from canonical project metadata", () => {
     const profile = fs.readFileSync("ca_profile.xml", "utf8")
     const profileBody = profile.match(/<Profile>([\s\S]*?)<\/Profile>/u)?.[1].trim()
