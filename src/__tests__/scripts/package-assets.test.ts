@@ -55,6 +55,7 @@ describe("package asset validation", () => {
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary.ouro/tool-profiles.json")
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary.xml")
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/ouro-events/emit-event.mjs")
+    expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/ouro-events/bootstrap-spool.sh")
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary-acceptance-harness.sh")
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary-unit16-host-broker.mjs")
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary-deployment-target.mjs")
