@@ -2,6 +2,7 @@ import * as crypto from "node:crypto"
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { emitNervesEvent } from "../nerves/runtime"
+import { withImmediateSessionTurnLease } from "../mind/session-transaction"
 import {
   FIXED_ADMISSION_ACKNOWLEDGEMENT,
   type TelegramArtifactAuthorClass,
@@ -66,18 +67,26 @@ export interface TelegramAdmissionLimits {
   maxPendingContacts?: number
   maxTextBytes?: number
   maxMessagesPerIdentity?: number
+  maxMessagesPerWindow?: number
+  rateWindowMs?: number
   maxTotalBytes?: number
   retentionMs?: number
   retryCooldownMs?: number
+  terminalRetentionMs?: number
+  maxTerminalRecords?: number
 }
 
 interface ResolvedTelegramAdmissionLimits {
   maxPendingContacts: number
   maxTextBytes: number
   maxMessagesPerIdentity: number
+  maxMessagesPerWindow: number
+  rateWindowMs: number
   maxTotalBytes: number
   retentionMs: number
   retryCooldownMs: number
+  terminalRetentionMs: number
+  maxTerminalRecords: number
 }
 
 export interface TelegramAdmissionSelfHealth {
@@ -159,10 +168,19 @@ const CANONICAL_ID = /^[1-9][0-9]*$/u
 const DEFAULT_LIMITS: ResolvedTelegramAdmissionLimits = {
   maxPendingContacts: 32,
   maxTextBytes: 16 * 1024,
-  maxMessagesPerIdentity: 1,
+  maxMessagesPerIdentity: 8,
+  maxMessagesPerWindow: 128,
+  rateWindowMs: 60_000,
   maxTotalBytes: 256 * 1024,
   retentionMs: 24 * 60 * 60 * 1_000,
   retryCooldownMs: 5 * 60 * 1_000,
+  terminalRetentionMs: 7 * 24 * 60 * 60 * 1_000,
+  maxTerminalRecords: 256,
+}
+
+interface TelegramAdmissionRateState {
+  version: 1
+  events: Array<{ identityDigest: string; updateDigest: string; observedAt: number }>
 }
 
 function admissionId(input: TelegramUnknownContactMessage): string {
@@ -272,6 +290,56 @@ export class FileTelegramAdmissionStore {
     return path.join(this.root, "self-health.json")
   }
 
+  private rateStatePath(): string {
+    return path.join(this.root, "rate-window.json")
+  }
+
+  private globalCoordinationPath(): string {
+    return path.join(path.dirname(this.root), `.${path.basename(this.root)}-coordination`, "admission")
+  }
+
+  private readRateState(now: number): TelegramAdmissionRateState {
+    let state: TelegramAdmissionRateState = { version: 1, events: [] }
+    try {
+      const value = JSON.parse(fs.readFileSync(this.rateStatePath(), "utf8")) as TelegramAdmissionRateState
+      if (value.version !== 1 || !Array.isArray(value.events) || value.events.some((event) => !event
+        || !/^[a-f0-9]{64}$/u.test(event.identityDigest) || !/^[a-f0-9]{64}$/u.test(event.updateDigest)
+        || !Number.isSafeInteger(event.observedAt) || event.observedAt < 0)) throw new Error("invalid")
+      state = value
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Error("Telegram admission rate state is invalid", { cause: error })
+    }
+    state.events = state.events.filter((event) => event.observedAt > now - this.limits.rateWindowMs)
+    return state
+  }
+
+  private recordRateAttempt(input: TelegramUnknownContactMessage, now: number): boolean {
+    const state = this.readRateState(now)
+    const identityDigest = digest(`identity\0${identity(input)}`)
+    const updateDigest = digest(`update\0${input.botId}\0${input.updateId}`)
+    if (!state.events.some((event) => event.updateDigest === updateDigest)) state.events.push({ identityDigest, updateDigest, observedAt: now })
+    const identityCount = state.events.filter((event) => event.identityDigest === identityDigest).length
+    const overflow = identityCount > this.limits.maxMessagesPerIdentity || state.events.length > this.limits.maxMessagesPerWindow
+    state.events = state.events
+      .sort((left, right) => left.observedAt - right.observedAt || left.updateDigest.localeCompare(right.updateDigest))
+      .slice(-(this.limits.maxMessagesPerWindow + 1))
+    atomicWrite(this.rateStatePath(), state)
+    return overflow
+  }
+
+  private compactTerminalRecords(records: TelegramAdmissionRecord[], now: number): TelegramAdmissionRecord[] {
+    const terminal = records.filter((record) => TERMINAL_STATUSES.has(record.status))
+      .sort((left, right) => right.updatedAt - left.updatedAt || left.id.localeCompare(right.id))
+    const retained = new Set(terminal
+      .filter((record) => record.updatedAt > now - this.limits.terminalRetentionMs)
+      .slice(0, this.limits.maxTerminalRecords)
+      .map((record) => record.id))
+    for (const record of terminal) {
+      if (!retained.has(record.id)) fs.unlinkSync(this.filePath(record.id))
+    }
+    return records.filter((record) => !TERMINAL_STATUSES.has(record.status) || retained.has(record.id))
+  }
+
   read(id: string): TelegramAdmissionRecord {
     const filePath = this.filePath(id)
     const handle = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
@@ -330,20 +398,7 @@ export class FileTelegramAdmissionStore {
   capture(input: TelegramUnknownContactMessage, displayCode: string):
     | { kind: "created" | "existing"; record: TelegramAdmissionRecord }
     | { kind: "blocked" | "overflow" } {
-    const lockPath = path.join(this.root, ".claim.lock")
-    try {
-      fs.mkdirSync(lockPath, { mode: 0o700 })
-    } catch (error) {
-      /* v8 ignore next -- deterministic coverage exercises the only expected collision; other OS errors are propagated unchanged below @preserve */
-      if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error("Telegram admission claim is busy")
-      /* v8 ignore next -- OS/filesystem failures are propagated unchanged; deterministic tests cover the fail-closed contention case @preserve */
-      throw error
-    }
-    try {
-      return this.captureExclusive(input, displayCode)
-    } finally {
-      fs.rmdirSync(lockPath)
-    }
+    return withImmediateSessionTurnLease(this.globalCoordinationPath(), () => this.captureExclusive(input, displayCode))
   }
 
   private captureExclusive(input: TelegramUnknownContactMessage, displayCode: string):
@@ -355,14 +410,18 @@ export class FileTelegramAdmissionStore {
     assertCanonicalId(input.botId, "bot id")
     assertCanonicalId(input.userId, "user id")
     assertCanonicalId(input.chatId, "chat id")
-    const records = this.list()
+    const now = this.now()
+    const records = this.compactTerminalRecords(this.list(), now)
+    if (this.recordRateAttempt(input, now)) {
+      this.recordOverflow()
+      return { kind: "overflow" }
+    }
     const sameIdentity = records.filter((record) => identity(record) === identity(input))
       .sort((left, right) => right.createdAt - left.createdAt)
     const blocked = sameIdentity.find((record) => record.status === "blocked")
     if (blocked) return { kind: "blocked" }
     const active = sameIdentity.find((record) => ACTIVE_STATUSES.has(record.status))
     if (active) return { kind: "existing", record: active }
-    const now = this.now()
     const recentTerminal = sameIdentity[0]
     if (recentTerminal && now - recentTerminal.updatedAt < this.limits.retryCooldownMs) return { kind: "blocked" }
     const textBytes = Buffer.byteLength(input.text, "utf8")
