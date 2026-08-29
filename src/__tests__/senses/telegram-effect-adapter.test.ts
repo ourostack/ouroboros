@@ -21,7 +21,7 @@ function journal(): FileTelegramEffectJournal {
 }
 
 const target = { kind: "approved_relationship" as const, friendId: "ari", sessionKey: "telegram:ari", chatId: "42", requestId: "req-1" }
-const authorization = { allowed: true as const, receiptId: "auth-1", expiresAt: "2026-08-29T18:00:00.000Z" }
+const authorization = { allowed: true as const, receiptId: "auth-1", expiresAt: "2099-01-01T00:00:00.000Z" }
 
 afterEach(() => {
   vi.restoreAllMocks()
