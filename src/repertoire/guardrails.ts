@@ -43,8 +43,9 @@ const PROTECTED_PATH_SEGMENTS = [
   ".git/",
   ".ouro-cli/vault-unlock/",
   ".ouro-cli/vault-unlock-dpapi/",
+  "state/policy/",
 ]
-const PROTECTED_FILENAMES = ["agent.json"]
+const PROTECTED_FILENAMES = ["agent.json", "tool-profiles.json"]
 
 function isProtectedPath(filePath: string): boolean {
   for (const segment of PROTECTED_PATH_SEGMENTS) {

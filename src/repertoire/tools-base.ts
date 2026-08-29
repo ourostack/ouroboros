@@ -124,6 +124,12 @@ export interface ToolContext {
   daemonSocketPath?: string;
   agentRoot?: string;
   currentUserMessage?: string;
+  /** Relationship-scoped capability envelope: advertise narrowly, then revalidate at execution. */
+  relationshipAuthorization?: {
+    advertisedToolNames: readonly string[];
+    authorizeTool(name: string, args: Record<string, string>): { allowed: true; receiptId: string } | { allowed: false; reason: string };
+    readonly actor?: Readonly<{ friendId: string; trustLevel: import("@ouro.bot/friends").TrustLevel; sessionEventId: string }>;
+  };
   commerceAuthority?: {
     checkoutId: string;
     reservationToken: string;

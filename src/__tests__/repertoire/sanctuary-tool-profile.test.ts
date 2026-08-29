@@ -19,13 +19,15 @@ describe("Sanctuary active tool profile", () => {
       "unraid_get_notifications",
       "unraid_get_system",
       "unraid_restart_container",
+      "steward_policy_manage",
       "ponder",
       "settle",
       "speak",
     ])
     const packaged = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/tool-profiles.json", "utf8"))
-    expect(packaged.profiles["sanctuary-telegram"]).toEqual(names)
-    expect(packaged.profiles["sanctuary-health-private"]).toEqual(["send_message", "rest"])
+    expect(packaged.version).toBe(2)
+    expect(packaged.profiles["sanctuary-telegram"].toolNames).toEqual(names)
+    expect(packaged.profiles["sanctuary-health-private"].toolNames).toEqual(["send_message", "rest"])
   })
 
   it("keeps non-Sanctuary Telegram agents on the generic tool profile", () => {

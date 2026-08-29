@@ -1479,8 +1479,12 @@ export async function runAgent(
       options?.mcpManager,
       providerRuntime.model,
     );
+  const relationshipToolNames = options?.toolContext?.relationshipAuthorization?.advertisedToolNames
+  const relationshipScopedTools = relationshipToolNames
+    ? unboundBaseTools.filter((tool) => relationshipToolNames.includes(tool.function.name))
+    : unboundBaseTools
   const baseTools = bindCurrentIngressEvidenceLocator(
-    unboundBaseTools,
+    relationshipScopedTools,
     options?.toolContext?.currentIngressEvidence,
   )
   // Augment tool context with reasoning effort controls from provider
@@ -1528,7 +1532,7 @@ export async function runAgent(
     const filteredBaseTools = isPrivateRuntimeChannel
       ? baseTools.filter((t) => privateRuntimeHabitCanSendMessage || t.function.name !== "send_message")
       : baseTools;
-    const ordinaryActiveTools = [
+    const unscopedOrdinaryActiveTools = [
         ...filteredBaseTools,
         ...(augmentedToolContext?.noSend === true ? [] : [ponderTool]),
         ...(isPrivateRuntimeChannel && privateRuntimeHabitCanSurface ? [surfaceToolDef] : []),
@@ -1537,6 +1541,9 @@ export async function runAgent(
         ...(!isPrivateRuntimeChannel ? [settleTool] : []),
         ...(isChatStyleChannel(channel ?? "") ? [speakTool] : []),
       ];
+    const ordinaryActiveTools = relationshipToolNames
+      ? unscopedOrdinaryActiveTools.filter((tool) => relationshipToolNames.includes(tool.function.name))
+      : unscopedOrdinaryActiveTools
     const activeTools = options?.toolProfile === "sanctuary-health-private"
       ? (() => {
           const sendTools = baseTools.filter((tool) => tool.function.name === "send_message")

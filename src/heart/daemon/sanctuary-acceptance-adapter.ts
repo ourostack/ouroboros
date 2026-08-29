@@ -1416,9 +1416,15 @@ export async function readDefaultSanctuaryScenarioFacts(
     })).sort((left, right) => left.name.localeCompare(right.name))
     const readRecord = inventory.find((record) => record.name === "Butler RO")
     const writeRecord = inventory.find((record) => record.name === "Butler RW")
-    const telegramNames = Array.isArray(telegramProfile) ? telegramProfile.filter((name): name is string => typeof name === "string") : []
+    const profileToolNames = (profile: unknown): string[] => {
+      if (Array.isArray(profile)) return profile.filter((name): name is string => typeof name === "string")
+      if (!profile || typeof profile !== "object" || Array.isArray(profile)) return []
+      const names = (profile as JsonObject).toolNames
+      return Array.isArray(names) ? names.filter((name): name is string => typeof name === "string") : []
+    }
+    const telegramNames = profileToolNames(telegramProfile)
     const privateRaw = profiles?.["sanctuary-health-private"]
-    const privateNames = Array.isArray(privateRaw) ? privateRaw.filter((name): name is string => typeof name === "string") : []
+    const privateNames = profileToolNames(privateRaw)
     const flowSchemas = new Map([ponderTool, settleTool, speakTool, restTool].map((tool) => [tool.function.name, tool]))
     const schemasFor = (names: string[]) => names.flatMap((name) => {
       const schema = resolveToolDefinition(name)?.tool ?? flowSchemas.get(name)

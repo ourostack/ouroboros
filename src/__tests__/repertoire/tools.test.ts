@@ -160,6 +160,18 @@ describe("execTool", () => {
     expect(fs.readFileSync).toHaveBeenCalledWith("/tmp/test.txt", "utf-8")
   })
 
+  it("revalidates relationship capability immediately before tool execution", async () => {
+    vi.mocked(fs.readFileSync).mockReturnValue("must stay private")
+    const authorizeTool = vi.fn(() => ({ allowed: false as const, reason: "relationship capability was revoked" }))
+    const result = await execTool("read_file", { path: "/tmp/private.txt" }, {
+      signin: async () => undefined,
+      relationshipAuthorization: { advertisedToolNames: ["read_file"], authorizeTool },
+    })
+    expect(result).toContain("relationship capability was revoked")
+    expect(authorizeTool).toHaveBeenCalledWith("read_file", { path: "/tmp/private.txt" })
+    expect(fs.readFileSync).not.toHaveBeenCalledWith("/tmp/private.txt", "utf-8")
+  })
+
   it("orientation hold blocks high-risk durable mutations before handlers run", async () => {
     const ctx = orientationHoldCtx()
 

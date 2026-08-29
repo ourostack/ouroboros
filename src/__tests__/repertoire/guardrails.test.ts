@@ -385,6 +385,17 @@ describe("guardInvocation — structural guardrails", () => {
     expect(result.allowed).toBe(true)
   })
 
+  it.each([
+    "/bundle/state/policy/steward.json",
+    "/bundle/state/policy/action-receipts.ndjson",
+    "/bundle/tool-profiles.json",
+  ])("blocks generic writes to steward authority path %s", async (protectedPath) => {
+    const { guardInvocation } = await import("../../repertoire/guardrails")
+    expect(guardInvocation("write_file", { path: protectedPath }, { readPaths: new Set() })).toMatchObject({ allowed: false })
+    expect(guardInvocation("edit_file", { path: protectedPath }, { readPaths: new Set([protectedPath]) })).toMatchObject({ allowed: false })
+    expect(guardInvocation("shell", { command: `printf x > ${protectedPath}` }, { readPaths: new Set() })).toMatchObject({ allowed: false })
+  })
+
   // --- local vault unlock stores are protected ---
 
   it("blocks write_file to plaintext vault unlock material", async () => {

@@ -19,6 +19,7 @@ import { voiceToolDefinitions } from "./tools-voice";
 import { detectDestructivePatterns } from "./shell-sessions";
 import { unraidToolDefinitions } from "./tools-unraid";
 import { ponderTool, settleTool, speakTool } from "./tools-flow";
+import { stewardPolicyToolDefinition } from "./tools-steward-policy";
 import type { ToolHighRiskMutationKind, ToolRiskProfile } from "./tools-base";
 
 function safeGetAgentRoot(): string | undefined {
@@ -45,7 +46,7 @@ export type { ToolContext, ToolHandler, ToolDefinition } from "./tools-base";
 export { surfaceToolDef } from "./tools-surface";
 
 // All tool definitions in a single registry
-const allDefinitions: ToolDefinition[] = [...baseToolDefinitions, ...bluebubblesToolDefinitions, ...teamsToolDefinitions, ...adoSemanticToolDefinitions, ...githubToolDefinitions, ...bundleToolDefinitions, ...voiceToolDefinitions, ...unraidToolDefinitions, surfaceToolDefinition];
+const allDefinitions: ToolDefinition[] = [...baseToolDefinitions, ...bluebubblesToolDefinitions, ...teamsToolDefinitions, ...adoSemanticToolDefinitions, ...githubToolDefinitions, ...bundleToolDefinitions, ...voiceToolDefinitions, ...unraidToolDefinitions, stewardPolicyToolDefinition, surfaceToolDefinition];
 const COMMERCE_AUTHORITY_TOOLS = new Set(["stripe_create_card", "flight_hold", "flight_book"])
 
 // MCP tool definitions — populated each time getToolsForChannel() is called with an mcpManager.
@@ -103,6 +104,7 @@ export function getToolsForChannel(
   if (capabilities?.channel === "telegram" && isSanctuaryAgent()) {
     return [
       ...unraidToolDefinitions.map((definition) => definition.tool),
+      stewardPolicyToolDefinition.tool,
       ponderTool,
       settleTool,
       speakTool,
@@ -294,6 +296,18 @@ export async function execTool(name: string, args: Record<string, string>, ctx?:
       meta: { name },
     });
     return `unknown: ${name}`;
+  }
+
+  const relationshipDecision = ctx?.relationshipAuthorization?.authorizeTool(name, args)
+  if (relationshipDecision && !relationshipDecision.allowed) {
+    emitNervesEvent({
+      level: "warn",
+      event: "tool.relationship_authorization_block",
+      component: "tools",
+      message: "relationship authorization blocked tool execution",
+      meta: { name, reason: relationshipDecision.reason },
+    })
+    return `relationship authorization required: ${relationshipDecision.reason}`
   }
 
   const riskProfile = riskProfileForTool(def, name, args)

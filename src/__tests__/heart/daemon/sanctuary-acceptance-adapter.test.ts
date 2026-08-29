@@ -307,7 +307,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     ].map((entry) => JSON.stringify(entry)).join("\n") + "\n"
     const files: Record<string, string> = {
       ...chainedAuditFiles(agentRoot, audit, identityKey),
-      "/opt/ouro/deploy/unraid/sanctuary.ouro/tool-profiles.json": JSON.stringify({ version: 1, profiles: { "sanctuary-telegram": telegramTools, "sanctuary-health-private": privateTools } }),
+      "/opt/ouro/deploy/unraid/sanctuary.ouro/tool-profiles.json": JSON.stringify({ version: 2, profiles: { "sanctuary-telegram": { version: 1, contextScopes: [], toolNames: telegramTools, effectScopes: [] }, "sanctuary-health-private": { version: 1, contextScopes: [], toolNames: privateTools, effectScopes: [] } } }),
     }
     const hostRequest = vi.fn(async (payload: Record<string, unknown>) => payload.operation === "inventory_keys" ? { keys: [
       { id: "ro-private-id", name: "Butler RO", permissions: READ_PERMISSIONS, roles: [] },
