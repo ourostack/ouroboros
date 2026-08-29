@@ -367,6 +367,7 @@ Effective-spec audit helper:
         validate_exact_image_id "$RESTORE_LEGACY_IMAGE_ID" || return $?
       fi
       assert_only_running_butler ouro-butler || return $?
+      assert_update_source "$RESTORE_PRODUCTION_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" || return $?
       )
     }
     ensure_sanctuary_machine_identity() {
@@ -1430,7 +1431,9 @@ Restore:
   backup-root, image, and topology preflight. It requires a nonempty canonical
   absolute BACKUP_ROOT (not /), both exact required directories, an exact local
   sha256 image ID, canonical production as the only running Butler poller, no
-  staging or rollback, and at most one exact stopped legacy-evidence container:
+  staging or rollback, and at most one exact stopped legacy-evidence container.
+  It also executes the reviewed runner against the live source container before
+  any autostart, root, or container mutation:
     if assert_restore_preflight; then
       :
     else
