@@ -46,6 +46,11 @@ export interface TelegramEffectArtifact {
   updatedAt: string
 }
 
+function isTransportOnlyControl(artifact: Pick<TelegramEffectArtifact, "authorClass" | "effect" | "target">): boolean {
+  return artifact.authorClass === "control" && artifact.effect.kind !== "text"
+    && !(artifact.effect.kind === "card" && artifact.target.kind === "approved_relationship" && Boolean(artifact.target.requestId))
+}
+
 export type TelegramEffectAuthorization =
   | { allowed: true; receiptId: string; expiresAt: string; transport: { chatId: string } }
   | { allowed: false; reason: string }
@@ -155,7 +160,7 @@ function validateArtifact(artifact: TelegramEffectArtifact, expectedId: string):
       && (part.sessionEventId === undefined || boundedText(part.sessionEventId, 512))
       && (part.attempts === undefined || (Number.isSafeInteger(part.attempts) && part.attempts >= 0 && part.attempts <= 100))
       && (part.state === "session_recorded"
-        ? (boundedText(part.sessionEventId, 512) || (artifact.authorClass === "control" && effect.kind !== "text" && part.sessionEventId === undefined))
+        ? (boundedText(part.sessionEventId, 512) || (isTransportOnlyControl(artifact) && part.sessionEventId === undefined))
         : part.sessionEventId === undefined)
       && ((effect.kind === "callback_ack" || part.state === "prepared" || part.state === "attempting" || part.state === "indeterminate")
         || (Number.isSafeInteger(part.messageId) && part.messageId! > 0)))
@@ -530,7 +535,7 @@ export function createTelegramApprovalEffectPort(options: {
 export function recordTelegramEffectInSession(store: FileTelegramEffectJournal, artifactIdValue: string, sessionEventIds: string[]): TelegramEffectArtifact {
   const artifact = store.read(artifactIdValue)
   const accepted = artifact.parts.filter((part) => part.state === "accepted")
-  const transportOnlyControl = artifact.authorClass === "control" && artifact.effect.kind !== "text"
+  const transportOnlyControl = isTransportOnlyControl(artifact)
   if ((!transportOnlyControl && accepted.length !== sessionEventIds.length) || (transportOnlyControl && sessionEventIds.length !== 0) || sessionEventIds.some((value) => !value.trim())) {
     throw new Error("Telegram session event ids do not match accepted effect parts")
   }
@@ -672,7 +677,7 @@ export async function recordTelegramEffectsInSession(input: {
     for (const artifact of input.artifacts) {
       const unrecorded = artifact.parts.filter((part) => part.state === "accepted")
       if (unrecorded.length === 0) continue
-      if (artifact.authorClass === "control" && artifact.effect.kind !== "text") {
+      if (isTransportOnlyControl(artifact)) {
         recordings.push({ artifact, eventIds: [] })
         continue
       }

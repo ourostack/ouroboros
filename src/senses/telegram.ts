@@ -54,7 +54,6 @@ import {
   createRelationshipAuthorizationEvaluator,
   loadRelationshipCapabilityRegistry,
   type RelationshipAuthorizationEvaluator,
-  type RelationshipAuthorizationResult,
 } from "../repertoire/relationship-authorization"
 import {
   createTelegramAdmissionController,
@@ -86,6 +85,7 @@ export interface TelegramSenseCredentials {
 
 export interface TelegramAdmissionDependencies {
   ownerFriendId: string
+  resolveOwner(input: { botId: string; userId: string; chatId: string; sessionKey: string }): Promise<{ friendId: string } | null>
   resolveApprovedFriend(input: { botId: string; userId: string; chatId: string }): Promise<{ friendId: string } | null>
   claimFriend(input: TelegramAdmissionFriendClaim): Promise<TelegramAdmissionFriendClaimResult>
   revokeFriend(input: TelegramAdmissionFriendRevocation): Promise<TelegramAdmissionFriendRevocationResult>
@@ -419,9 +419,9 @@ export interface CreateTelegramSenseAppOptions {
   /** Installs the stranger quarantine/admission path. Production supplies this from Friends. */
   admission?: TelegramAdmissionDependencies
   /** Resolves current relationship authority before both effect preparation and send. */
-  authorizeRelationshipEffect?: (input: TelegramEffectAuthorizationInput) => Promise<RelationshipAuthorizationResult>
+  authorizeRelationshipEffect?: (input: TelegramEffectAuthorizationInput) => Promise<TelegramEffectAuthorization>
   /** Resolves a current per-turn relationship envelope after durable ingress exists. */
-  resolveRelationshipAuthorization?: (input: { friendId: string; requestId: string; sessionEventId: string }) => Promise<RelationshipAuthorizationEvaluator>
+  resolveRelationshipAuthorization?: (input: { friendId: string; requestId: string; sessionEventId: string; botId: string; userId: string; chatId: string; sessionKey: string }) => Promise<RelationshipAuthorizationEvaluator>
 }
 
 function requiredText(value: unknown, label: string): string {
@@ -871,13 +871,6 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   }
   const configuredOwnerFriendId = options.admission?.ownerFriendId ?? `telegram-user:${subject}`
   const configuredOwnerSessionKey = `telegram:${subject}`
-  const resolveEffectChatId = (target: TelegramEffectTarget): string | null => {
-    if (target.kind === "admission_gate") return target.chatId
-    if (target.friendId === configuredOwnerFriendId && target.sessionKey === configuredOwnerSessionKey) return authorizedChatId
-    const record = admissionStore?.list().find((candidate) => candidate.friendId === target.friendId
-      && candidate.status !== "collision" && candidate.status !== "denied" && candidate.status !== "expired")
-    return record?.chatId ?? null
-  }
   const defaultEffectAuthorization = async (input: TelegramEffectAuthorizationInput): Promise<TelegramEffectAuthorization> => {
     const target = input.target
     if (target.kind === "admission_gate") {
@@ -892,12 +885,8 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         : authorization.allowed ? { allowed: false, reason: "admission gate returned relationship authority" } : authorization
     }
     if (options.authorizeRelationshipEffect) {
-      const authorization = await options.authorizeRelationshipEffect(input)
-      if (!authorization.allowed) return authorization
-      const chatId = resolveEffectChatId(target)
-      return chatId
-        ? { allowed: true, receiptId: authorization.receiptId, expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(), transport: { chatId } }
-        : { allowed: false, reason: "relationship transport route is unavailable" }
+      if (target.friendId === configuredOwnerFriendId && target.sessionKey !== configuredOwnerSessionKey) return { allowed: false, reason: "owner relationship session binding changed" }
+      return options.authorizeRelationshipEffect(input)
     }
     if (target.friendId !== `telegram-user:${subject}` || target.sessionKey !== `telegram:${subject}`) {
       return { allowed: false, reason: "effect target is not the configured owner relationship" }
@@ -1048,18 +1037,20 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     reference: string
     text: string
     userId: string
-    displayLabel: string
+    chatId: string
   }): Promise<void> => {
     if (!options.resolveRelationshipAuthorization) throw new Error("Telegram relationship authorization resolver is unavailable")
     const sessionPath = getSenseSessionPath(options.agentName, input.friendId, "telegram", input.sessionKey, agentRoot)
-    const initialAuthorization = await options.resolveRelationshipAuthorization({ friendId: input.friendId, requestId: input.requestId, sessionEventId: input.eventId })
+    const relationshipCoordinates = { friendId: input.friendId, requestId: input.requestId, sessionEventId: input.eventId,
+      botId: botId!, userId: input.userId, chatId: input.chatId, sessionKey: input.sessionKey }
+    const initialAuthorization = await options.resolveRelationshipAuthorization(relationshipCoordinates)
     if (initialAuthorization.subject.friendId !== input.friendId || initialAuthorization.subject.admissionState !== "active") throw new Error("Telegram relationship admission is not active")
     const relationshipAuthorization = {
       authorizedContextScopes: initialAuthorization.authorizedContextScopes,
       advertisedToolNames: initialAuthorization.advertisedToolNames,
       actor: initialAuthorization.actor,
       authorizeTool: async (name: string, args: Record<string, string>) =>
-        (await options.resolveRelationshipAuthorization!({ friendId: input.friendId, requestId: input.requestId, sessionEventId: input.eventId })).authorizeTool(name, args),
+        (await options.resolveRelationshipAuthorization!(relationshipCoordinates)).authorizeTool(name, args),
     }
     const effects: TelegramEffectArtifact[] = []
     let ordinal = 0
@@ -1076,7 +1067,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       channel: "telegram",
       sessionKey: input.sessionKey,
       friendId: input.friendId,
-      identity: { provider: "telegram-user", externalId: input.userId, displayName: input.displayLabel },
+      identity: { provider: "telegram-user", externalId: input.userId, displayName: "Household member", tenantId: botId! },
       userMessage: input.text,
       ingressRelations: { replyToEventId: null, threadRootEventId: null, references: [input.reference] },
       precommittedIngress: { eventId: input.eventId, reference: input.reference },
@@ -1092,7 +1083,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   }
   const admissionController = options.admission && admissionStore ? createTelegramAdmissionController({
     store: admissionStore,
-    owner: { friendId: configuredOwnerFriendId, sessionKey: configuredOwnerSessionKey, chatId: authorizedChatId },
+    owner: { friendId: configuredOwnerFriendId, sessionKey: configuredOwnerSessionKey },
     sendEffect: async (request) => {
       const artifact = await executeAuthorizedEffect(request)
       if (artifact.target.kind === "approved_relationship") {
@@ -1100,10 +1091,11 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       }
       return artifact.id
     },
-    resolveEffectMessageId: (artifactId) => {
-      const messageIds = getEffectJournal().read(artifactId).parts.flatMap((part) =>
-        (part.state === "accepted" || part.state === "session_recorded") && part.messageId ? [part.messageId] : [])
-      return messageIds.length === 1 ? messageIds[0]! : null
+    resolveOwnerCard: (messageId) => {
+      const resolved = resolveTelegramReply(getEffectJournal(), { messageId, friendId: configuredOwnerFriendId, sessionKey: configuredOwnerSessionKey })
+      return resolved?.authorClass === "control" && resolved.requestId
+        ? { artifactId: resolved.artifactId, admissionId: resolved.requestId }
+        : null
     },
     claimFriend: options.admission.claimFriend,
     revokeFriend: options.admission.revokeFriend,
@@ -1132,7 +1124,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         if (!event || typeof event.content !== "string") throw new Error("Telegram admitted work ingress is unavailable")
         const record = admissionStore.read(input.admissionId)
         await dispatchResolvedRelationshipTurn({ friendId: input.friendId, sessionKey: input.sessionKey, requestId: input.admissionId,
-          eventId: input.eventId, reference: input.reference, text: event.content, userId: record.userId, displayLabel: record.displayLabel })
+          eventId: input.eventId, reference: input.reference, text: event.content, userId: record.userId, chatId: record.chatId })
         inboxStore.completeAdmittedWork(input.admissionId)
         return "settled"
       } catch {
@@ -1351,7 +1343,9 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       ...(message.replyToMessageId ? { replyToMessageId: Number(message.replyToMessageId) } : {}),
     })
     if (ownerDecision) {
-      await admissionController!.decide({ ...ownerDecision, actorFriendId: configuredOwnerFriendId })
+      const actor = await options.admission?.resolveOwner({ botId: botId!, userId: message.userId, chatId: message.chatId, sessionKey: configuredOwnerSessionKey })
+      if (!actor) throw new Error("Telegram admission owner decision identity is invalid")
+      await admissionController!.decide({ ...ownerDecision, actorFriendId: actor.friendId })
       return
     }
     await onMessageBody(message)
@@ -1369,15 +1363,17 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     const receipt = await recordTelegramEffectsInSession({ store: getEffectJournal(), sessionPath, artifacts: [], inbound: { text: message.text, reference } })
     if (!receipt) throw new Error("Telegram approved relationship ingress was not committed")
     await dispatchResolvedRelationshipTurn({ friendId: approved.friendId, sessionKey, requestId: reference, eventId: receipt.eventId,
-      reference, text: message.text, userId: message.userId, displayLabel: message.displayLabel })
+      reference, text: message.text, userId: message.userId, chatId: message.chatId })
   } : undefined
 
   const onUpdate = async (update: TelegramUpdate): Promise<boolean> => {
     const callback = update.callback_query
     if (callback?.data?.startsWith("admit:") && admissionController && callback.message) {
       return runWithAcceptanceAuditOwner(async () => {
+        const actor = await options.admission?.resolveOwner({ botId: botId!, userId: String(callback.from.id), chatId: String(callback.message!.chat.id), sessionKey: configuredOwnerSessionKey })
+        if (!actor) throw new Error("Telegram admission owner callback identity is invalid")
         const decision = admissionController.parseCallback(callback.data!, callback.message!.message_id)
-        await admissionController.decide({ ...decision, actorFriendId: configuredOwnerFriendId })
+        await admissionController.decide({ ...decision, actorFriendId: actor.friendId })
         const ownerTarget = configuredOwnerTarget()
         if (ownerTarget.kind !== "approved_relationship") throw new Error("Telegram admission owner target is invalid")
         const artifact = await executeAuthorizedEffect({
@@ -1550,21 +1546,25 @@ export async function createProductionTelegramRelationshipComposition(agentName:
   const ownerUserId = canonicalTelegramId(credentials.authorizedUserId, "authorized user id")
   const ownerChatId = canonicalTelegramId(credentials.authorizedChatId, "authorized chat id")
   if (ownerUserId !== ownerChatId) throw new Error("Telegram owner relationship requires a private user-bound chat")
+  const ownerSessionKey = `telegram:${opaqueTelegramSubject(readOrCreateTelegramIdentityKey(agentRoot), botId, ownerUserId, ownerChatId)}`
   const store = new FileFriendStore(path.join(agentRoot, "friends"))
   const exactTelegramIdentity = (friend: Awaited<ReturnType<FileFriendStore["get"]>>, userId: string): boolean => Boolean(friend?.externalIds.some((external) =>
     external.provider === "telegram-user" && external.externalId === userId && external.tenantId === botId))
   const owner = await store.findByExternalId("telegram-user", ownerUserId, botId)
   if (!owner || !exactTelegramIdentity(owner, ownerUserId) || owner.admissionState !== "active"
-    || owner.capabilityProfileId !== "sanctuary-owner" || (owner.trustLevel !== "family" && owner.trustLevel !== "friend")) {
+    || owner.capabilityProfileId !== "sanctuary-owner" || owner.trustLevel !== "family") {
     throw new Error("Telegram owner Friend must be active with the sanctuary-owner profile and exact bot identity")
   }
   const registry = loadRelationshipCapabilityRegistry(agentRoot)
   if (!registry.profiles["sanctuary-owner"] || !registry.profiles["sanctuary-household"]) {
     throw new Error("Telegram relationship capability registry is missing canonical profiles")
   }
-  const resolveEvaluator = async (input: { friendId: string; requestId: string; sessionEventId: string }): Promise<RelationshipAuthorizationEvaluator> => {
+  const resolveEvaluator = async (input: { friendId: string; requestId: string; sessionEventId: string; botId: string; userId: string; chatId: string; sessionKey: string }): Promise<RelationshipAuthorizationEvaluator> => {
     const friend = await store.get(input.friendId)
-    if (!friend || friend.admissionState !== "active") throw new Error("Telegram relationship admission is not active")
+    if (input.botId !== botId || input.userId !== input.chatId || input.sessionKey !== `telegram:${botId}:${input.userId}`
+      || !friend || friend.admissionState !== "active" || !exactTelegramIdentity(friend, input.userId)) {
+      throw new Error("Telegram relationship identity binding is not active")
+    }
     return createRelationshipAuthorizationEvaluator({
       friend,
       registry: loadRelationshipCapabilityRegistry(agentRoot),
@@ -1575,6 +1575,15 @@ export async function createProductionTelegramRelationshipComposition(agentName:
   }
   const admission: TelegramAdmissionDependencies = {
     ownerFriendId: owner.id,
+    resolveOwner: async ({ botId: candidateBotId, userId, chatId, sessionKey }) => {
+      if (candidateBotId !== botId || userId !== ownerUserId || chatId !== ownerChatId || sessionKey !== ownerSessionKey) return null
+      const exact = await store.findByExternalId("telegram-user", userId, botId)
+      const current = await store.get(owner.id)
+      return exact?.id === owner.id && current?.admissionState === "active" && current.trustLevel === "family"
+        && current.capabilityProfileId === "sanctuary-owner" && exactTelegramIdentity(current, userId)
+        ? { friendId: owner.id }
+        : null
+    },
     resolveApprovedFriend: async ({ botId: candidateBotId, userId, chatId }) => {
       if (candidateBotId !== botId || userId !== chatId) return null
       const friend = await store.findByExternalId("telegram-user", userId, botId)
@@ -1586,7 +1595,7 @@ export async function createProductionTelegramRelationshipComposition(agentName:
       if (input.botId !== botId || input.userId !== input.chatId) return { kind: "collision", reason: "Telegram identity is not bound to this bot and private chat" }
       const claimed = await store.claimExternalId({
         externalId: { provider: "telegram-user", externalId: input.userId, tenantId: botId, linkedAt: new Date().toISOString() },
-        target: { kind: "create", record: { id: randomUUID(), name: input.displayLabel } },
+        target: { kind: "create", record: { id: randomUUID(), name: "Household member" } },
       })
       if (!claimed.ok) return { kind: "collision", reason: `Telegram external identity ${claimed.status}` }
       const current = claimed.record
@@ -1612,6 +1621,11 @@ export async function createProductionTelegramRelationshipComposition(agentName:
       if (input.target.kind !== "approved_relationship") return { allowed: false, reason: "relationship effect target is required" }
       const friend = await store.get(input.target.friendId)
       if (!friend || friend.admissionState !== "active") return { allowed: false, reason: "relationship admission is not active" }
+      const bindings = friend.externalIds.filter((external) => external.provider === "telegram-user" && external.tenantId === botId
+        && /^[1-9][0-9]*$/u.test(external.externalId))
+      if (bindings.length !== 1) return { allowed: false, reason: "relationship Telegram identity binding is unavailable" }
+      const chatId = bindings[0]!.externalId
+      if (friend.id !== owner.id && input.target.sessionKey !== `telegram:${botId}:${chatId}`) return { allowed: false, reason: "relationship Telegram session binding changed" }
       const evaluator = createRelationshipAuthorizationEvaluator({
         friend,
         registry: loadRelationshipCapabilityRegistry(agentRoot),
@@ -1620,7 +1634,10 @@ export async function createProductionTelegramRelationshipComposition(agentName:
       const scope = input.target.friendId === owner.id
         ? (input.target.requestId ? "telegram.owner_event" : "telegram.proactive")
         : "telegram.request_return"
-      return evaluator.authorizeEffect(scope)
+      const authorization = evaluator.authorizeEffect(scope)
+      return authorization.allowed
+        ? { allowed: true, receiptId: authorization.receiptId, expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(), transport: { chatId } }
+        : authorization
     },
   }
 }
