@@ -24,7 +24,10 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../../heart/identity", () => ({ getAgentRoot: mocks.getAgentRoot }))
 vi.mock("../../heart/runtime-credentials", () => ({ readRuntimeCredentialConfig: mocks.readRuntimeCredentialConfig }))
-vi.mock("../../senses/shared-turn", () => ({ runSenseTurn: mocks.runSenseTurn }))
+vi.mock("../../senses/shared-turn", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../senses/shared-turn")>(),
+  runSenseTurn: mocks.runSenseTurn,
+}))
 vi.mock("../../senses/sanctuary-runtime", () => ({
   createSanctuaryToolContext: mocks.createSanctuaryToolContext,
   runWithSanctuaryToolReceiptCollection: mocks.runWithSanctuaryToolReceiptCollection,
