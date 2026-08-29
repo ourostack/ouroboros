@@ -719,7 +719,7 @@ describe("Telegram sense", () => {
     expect(fs.existsSync(path.join(denied.agentRoot, "state", "telegram", "effects"))).toBe(false)
 
     const phases: string[] = []
-    const allowed = fixture({ authorizeEffect: vi.fn((input: any) => { phases.push(input.phase); return { allowed: true, receiptId: `actual-${input.phase}`, expiresAt: "2099-01-01T00:00:00.000Z" } }) })
+    const allowed = fixture({ authorizeEffect: vi.fn((input: any) => { phases.push(input.phase); return { allowed: true, receiptId: `actual-${input.phase}`, expiresAt: "2099-01-01T00:00:00.000Z", transport: { chatId: "42" } } }) })
     await allowed.getOnMessage()({ updateId: 913, messageId: "914", userId: "42", chatId: "42", text: "health?" })
     expect(phases).toEqual(["prepare", "send"])
     const file = fs.readdirSync(path.join(allowed.agentRoot, "state", "telegram", "effects"))[0]!
