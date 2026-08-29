@@ -26,12 +26,14 @@ jobs:
           node-version: 22
           cache: npm
 
-      - name: Build release assets
+      - name: Resolve immutable image references
         run: |
-          npm ci
-          npm run build
           PACKAGE_VERSION=$(node -p "require('./package.json').version")
-          echo "PACKAGE_VERSION=$PACKAGE_VERSION" >> "$GITHUB_ENV"
+          {
+            echo "PACKAGE_VERSION=$PACKAGE_VERSION"
+            echo "VERSION_IMAGE=ghcr.io/ourostack/ouroboros-butler:$PACKAGE_VERSION"
+            echo "SHA_IMAGE=ghcr.io/ourostack/ouroboros-butler:sha-${{ github.event.workflow_run.head_sha }}"
+          } >> "$GITHUB_ENV"
 
       - name: Setup QEMU
         uses: docker/setup-qemu-action@v3
@@ -46,7 +48,26 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Preserve an existing immutable version
+        id: image-exists
+        run: |
+          if IMAGE_INSPECTION=$(docker buildx imagetools inspect "$VERSION_IMAGE" 2>&1); then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          elif printf '%s\n' "$IMAGE_INSPECTION" | grep -Eqi "404|not found|manifest unknown"; then
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          else
+            printf '%s\n' "$IMAGE_INSPECTION" >&2
+            exit 1
+          fi
+
+      - name: Build release assets
+        if: steps.image-exists.outputs.exists != 'true'
+        run: |
+          npm ci
+          npm run build
+
       - name: Build and publish immutable architectures
+        if: steps.image-exists.outputs.exists != 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -59,7 +80,24 @@ jobs:
             ghcr.io/ourostack/ouroboros-butler:${{ env.PACKAGE_VERSION }}
             ghcr.io/ourostack/ouroboros-butler:sha-${{ github.event.workflow_run.head_sha }}
 
-      - name: Keep Community Apps pulls public
+      - name: Verify immutable digest and public access
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh api --method PATCH /orgs/ourostack/packages/container/ouroboros-butler -f visibility=public
+        run: |
+          VISIBILITY=$(gh api /orgs/ourostack/packages/container/ouroboros-butler --jq .visibility)
+          test "$VISIBILITY" = "public"
+
+          AUTHENTICATED_MANIFEST=$(docker buildx imagetools inspect "$VERSION_IMAGE")
+          AUTHENTICATED_DIGEST=$(printf '%s\n' "$AUTHENTICATED_MANIFEST" | awk '$1 == "Digest:" { print $2; exit }')
+          test -n "$AUTHENTICATED_DIGEST"
+          printf '%s\n' "$AUTHENTICATED_MANIFEST" | grep -F "Platform:    linux/amd64"
+          printf '%s\n' "$AUTHENTICATED_MANIFEST" | grep -F "Platform:    linux/arm64"
+
+          if [ "${{ steps.image-exists.outputs.exists }}" != "true" ]; then
+            SHA_DIGEST=$(docker buildx imagetools inspect "$SHA_IMAGE" | awk '$1 == "Digest:" { print $2; exit }')
+            test "$SHA_DIGEST" = "$AUTHENTICATED_DIGEST"
+          fi
+
+          docker logout ghcr.io
+          PUBLIC_DIGEST=$(docker buildx imagetools inspect "$VERSION_IMAGE" | awk '$1 == "Digest:" { print $2; exit }')
+          test "$PUBLIC_DIGEST" = "$AUTHENTICATED_DIGEST"

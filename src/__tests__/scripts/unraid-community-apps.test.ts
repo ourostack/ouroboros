@@ -5,9 +5,21 @@ import { describe, expect, it } from "vitest"
 const packageVersion = JSON.parse(fs.readFileSync("package.json", "utf8")) as { version: string }
 
 describe("Mendelow Cloud Butler Community Apps release", () => {
+  it("publishes the required repository profile from canonical project metadata", () => {
+    const profile = fs.readFileSync("ca_profile.xml", "utf8")
+    const profileBody = profile.match(/<Profile>([\s\S]*?)<\/Profile>/u)?.[1].trim()
+
+    expect(profile).toContain("<CommunityApplications>")
+    expect(profileBody).toBeTruthy()
+    expect(profile).toContain("https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png")
+    expect(profile).toContain("<WebPage>https://ouroboros.bot</WebPage>")
+    expect(profile).toContain("<Forum>https://github.com/ourostack/ouroboros/issues</Forum>")
+  })
+
   it("publishes one complete versioned Community Apps template", () => {
     const template = fs.readFileSync("deploy/unraid/sanctuary.xml", "utf8")
 
+    expect(template).toContain("<Name>Mendelow Cloud Butler</Name>")
     expect(template).toContain(`<Repository>ghcr.io/ourostack/ouroboros-butler:${packageVersion.version}</Repository>`)
     expect(template).toContain("<Registry>https://github.com/ourostack/ouroboros/pkgs/container/ouroboros-butler</Registry>")
     expect(template).toContain("<Support>https://github.com/ourostack/ouroboros/issues</Support>")
@@ -34,6 +46,7 @@ describe("Mendelow Cloud Butler Community Apps release", () => {
   it("builds the scheduler for both published image architectures", () => {
     const dockerfile = fs.readFileSync("deploy/unraid/Dockerfile", "utf8")
 
+    expect(dockerfile).toContain('LABEL org.opencontainers.image.source="https://github.com/ourostack/ouroboros"')
     expect(dockerfile).toContain("ARG TARGETARCH")
     expect(dockerfile).toContain("supercronic-linux-${TARGETARCH}")
     expect(dockerfile).toContain("5adff01c5a797663948e656d2b61d10932369ee437eb5cb54fa872b2960f222b")
@@ -41,14 +54,20 @@ describe("Mendelow Cloud Butler Community Apps release", () => {
     expect(dockerfile).not.toContain("supercronic-linux-amd64 \\")
   })
 
-  it("publishes the same image version for amd64 and arm64", () => {
+  it("publishes one immutable public multi-architecture image per release version", () => {
     const workflow = fs.readFileSync(".github/workflows/container-publish.yml", "utf8")
 
     expect(workflow).toContain("packages: write")
     expect(workflow).toContain("linux/amd64,linux/arm64")
     expect(workflow).toContain("ghcr.io/ourostack/ouroboros-butler")
     expect(workflow).toContain("deploy/unraid/Dockerfile")
-    expect(workflow).toContain("/orgs/ourostack/packages/container/ouroboros-butler")
-    expect(workflow).toContain("visibility=public")
+    expect(workflow).toContain("steps.image-exists.outputs.exists != 'true'")
+    expect(workflow).toContain('docker buildx imagetools inspect "$VERSION_IMAGE"')
+    expect(workflow).toContain('IMAGE_INSPECTION=$(docker buildx imagetools inspect "$VERSION_IMAGE" 2>&1)')
+    expect(workflow).toContain("404|not found|manifest unknown")
+    expect(workflow).toContain("gh api /orgs/ourostack/packages/container/ouroboros-butler --jq .visibility")
+    expect(workflow).toContain("docker logout ghcr.io")
+    expect(workflow).not.toContain("--method PATCH")
+    expect(workflow).not.toContain("visibility=public")
   })
 })

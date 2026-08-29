@@ -1,0 +1,7 @@
+<?xml version="1.0"?>
+<CommunityApplications>
+  <Profile>Ourostack maintains Mendelow Cloud Butler, a friendly Telegram steward for Unraid households. Support and source are available through the Ouroboros project.</Profile>
+  <Icon>https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png</Icon>
+  <WebPage>https://ouroboros.bot</WebPage>
+  <Forum>https://github.com/ourostack/ouroboros/issues</Forum>
+</CommunityApplications>
