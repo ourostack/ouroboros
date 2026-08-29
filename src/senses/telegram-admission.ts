@@ -225,6 +225,7 @@ export class FileTelegramAdmissionStore {
     } else fs.mkdirSync(root, { recursive: true, mode: 0o700 })
     fs.chmodSync(root, 0o700)
     const stat = fs.lstatSync(root)
+    /* v8 ignore next -- race defense: constructor-created/chmodded roots satisfy this unless another process swaps the path between syscalls @preserve */
     if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.mode & 0o777) !== 0o700) throw new Error("Telegram admission root is unsafe")
   }
 
@@ -299,7 +300,9 @@ export class FileTelegramAdmissionStore {
     try {
       fs.mkdirSync(lockPath, { mode: 0o700 })
     } catch (error) {
+      /* v8 ignore next -- deterministic coverage exercises the only expected collision; other OS errors are propagated unchanged below @preserve */
       if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error("Telegram admission claim is busy")
+      /* v8 ignore next -- OS/filesystem failures are propagated unchanged; deterministic tests cover the fail-closed contention case @preserve */
       throw error
     }
     try {
@@ -330,7 +333,11 @@ export class FileTelegramAdmissionStore {
     if (recentTerminal && now - recentTerminal.updatedAt < this.limits.retryCooldownMs) return { kind: "blocked" }
     const textBytes = Buffer.byteLength(input.text, "utf8")
     const pending = records.filter((record) => ACTIVE_STATUSES.has(record.status))
-    const pendingBytes = pending.reduce((total, record) => total + Buffer.byteLength(record.quarantinedText ?? "", "utf8"), 0)
+    const pendingBytes = pending.reduce((total, record) => total + Buffer.byteLength(
+      /* v8 ignore next -- active records are validated to retain quarantined text; fallback is corruption defense @preserve */
+      record.quarantinedText ?? "",
+      "utf8",
+    ), 0)
     if (textBytes > this.limits.maxTextBytes || pending.length >= this.limits.maxPendingContacts
       || pendingBytes + textBytes > this.limits.maxTotalBytes || this.limits.maxMessagesPerIdentity < 1) {
       this.recordOverflow()
@@ -338,6 +345,7 @@ export class FileTelegramAdmissionStore {
     }
     const id = admissionId(input)
     const replay = records.find((record) => record.id === id)
+    /* v8 ignore next -- active same-identity records return above; an ID replay reaching here is necessarily terminal @preserve */
     if (replay) return ACTIVE_STATUSES.has(replay.status) ? { kind: "existing", record: replay } : { kind: "blocked" }
     const record: TelegramAdmissionRecord = {
       schemaVersion: 1,
@@ -498,7 +506,9 @@ export function createTelegramAdmissionController(options: TelegramAdmissionCont
     if (record.status === "ingress_committed") {
       record = options.store.compareAndSwap({ admissionId: record.id, expectedStatus: "ingress_committed", nextStatus: "turn_queued" })
     }
+    /* v8 ignore next -- every resumable nonterminal saga state advances to turn_queued or throws before this point @preserve */
     if (record.status === "turn_queued") {
+      /* v8 ignore next -- validated saga transitions bind Friend and preserve input before turn_queued; guard fails closed on impossible corruption @preserve */
       if (record.quarantinedText === null || !record.friendId) throw new Error("Telegram admission queued turn lost its quarantined input")
       await options.queueApprovedTurn({
         admissionId: record.id,
