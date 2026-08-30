@@ -171,6 +171,7 @@ describe("Mendelow Cloud Butler household UX", () => {
     const transcripts = JSON.parse(fs.readFileSync(transcriptPath, "utf8")) as Transcript[]
     const expectedOff = transcripts.find((entry) => entry.id === "expected-off")!
     expect(expectedOff.reply).toContain("applies only to Books")
+    expect(psyche("LORE")).toContain("Books maps to the exact containers `calibre` and `calibre-web`")
     expect(expectedOff.tools).toEqual(["steward_policy_manage"])
     const reminder = transcripts.find((entry) => entry.id === "specified-snooze")!
     expect(reminder.reply).toContain("Friday at 10:00 AM")
