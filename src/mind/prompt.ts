@@ -831,6 +831,8 @@ if i keep re-deriving it, save it.`
 export interface BuildSystemOptions {
   /** Exact relationship-authorized prompt context scopes. Undefined preserves ordinary non-scoped behavior. */
   relationshipContextScopes?: readonly string[];
+  /** Exact effective relationship profile id for scope-safe prompt projection. */
+  relationshipProfileId?: string;
   /** Exact relationship-authorized tool names. Undefined preserves ordinary non-scoped behavior. */
   relationshipToolNames?: readonly string[];
   toolChoiceRequired?: boolean;
@@ -1618,7 +1620,7 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
 
   const relationshipScoped = options?.relationshipContextScopes !== undefined
   if (relationshipScoped) {
-    const authorizedPsyche = context?.friend?.capabilityProfileId?.startsWith("sanctuary-") === true
+    const authorizedPsyche = (options.relationshipProfileId?.startsWith("sanctuary-") === true || context?.friend?.capabilityProfileId?.startsWith("sanctuary-") === true)
       && options.relationshipContextScopes!.some((scope) => scope === "household.status" || scope === "household.policy" || scope === "household.private")
     const result: SystemPrompt = {
       stable: [

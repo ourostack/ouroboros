@@ -4477,6 +4477,8 @@ describe("private runtime", () => {
       { type: "function", function: { name: "await_condition", description: "await", parameters: {} } },
       { type: "function", function: { name: "shell", description: "shell", parameters: {} } },
     ])
+    const defaultTurn = mockHandleInboundTurn.getMockImplementation()!
+    mockHandleInboundTurn.mockImplementationOnce(async (input: any) => ({ ...await defaultTurn(input), turnOutcome: "rested" }))
     await runApprovedPrivateRuntimeTurn({
       reason: "instinct",
       externalEvent: { schemaVersion: 1, recordPath: "/events/test-agent/guard/event.json", agent: "test-agent", source: "guard", eventId: "event", generation: 1, observationRevision: "rev-1", claimOwner: "lease-1" },
@@ -4491,6 +4493,7 @@ describe("private runtime", () => {
     const tools = mockHandleInboundTurn.mock.calls[0][0].runAgentOptions.tools
     expect(tools.map((tool: any) => tool.function.name)).toEqual(["external_event_disposition", "await_condition"])
     const toolContext = mockHandleInboundTurn.mock.calls[0][0].runAgentOptions.toolContext
+    expect(toolContext.relationshipAuthorization.profileId).toBe("sanctuary-event")
     const eventMessage = String(mockHandleInboundTurn.mock.calls[0][0].messages[0].content)
     expect(eventMessage).toContain("Ari's presentation preferences")
     expect(eventMessage).toContain("source=telegram explicit turn evt-1; provenance=stated; category=communication; value=Signal over noise")
@@ -4528,10 +4531,15 @@ describe("private runtime", () => {
     } }))
     const friendStore = new FileFriendStore(path.join(agentRoot, "friends"))
     await friendStore.put("owner", { id: "owner", name: "Ari", trustLevel: "family", admissionState: "active", initiativePolicy: "proactive", capabilityProfileId: "sanctuary-owner", externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: "2026-08-29T00:00:00.000Z", updatedAt: "2026-08-29T00:00:00.000Z", schemaVersion: 1 })
+    mockHandleInboundTurn.mockResolvedValueOnce({ messages: [], turnOutcome: "errored", usage: undefined, sessionPath: path.join(agentRoot, "state", "sessions", "self", "inner", "dialog.json") })
+    await runApprovedPrivateRuntimeTurn({ reason: "instinct", externalEvent: { schemaVersion: 1, recordPath: "/events/test-agent/guard/returned-error.json", agent: "test-agent", source: "guard", eventId: "returned-error", generation: 1, observationRevision: "rev-returned-error", claimOwner: "lease-returned-error" } })
+    let rows = fs.readFileSync(path.join(agentRoot, "state", "run-ledger", "runs.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line))
+    expect(rows.at(-1)).toMatchObject({ lifecycle: "error", senseOrHabit: "external-event", errorName: "AgentTurnError" })
+
     mockHandleInboundTurn.mockRejectedValueOnce(new Error("provider down"))
 
     await expect(runApprovedPrivateRuntimeTurn({ reason: "instinct", externalEvent: { schemaVersion: 1, recordPath: "/events/test-agent/guard/error.json", agent: "test-agent", source: "guard", eventId: "error", generation: 1, observationRevision: "rev-error", claimOwner: "lease-error" } })).rejects.toThrow("provider down")
-    const rows = fs.readFileSync(path.join(agentRoot, "state", "run-ledger", "runs.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line))
+    rows = fs.readFileSync(path.join(agentRoot, "state", "run-ledger", "runs.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line))
     expect(rows.slice(-2)).toEqual([
       expect.objectContaining({ lifecycle: "started", senseOrHabit: "external-event" }),
       expect.objectContaining({ lifecycle: "error", senseOrHabit: "external-event", errorName: "Error" }),

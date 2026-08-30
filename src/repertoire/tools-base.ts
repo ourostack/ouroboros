@@ -146,6 +146,7 @@ export interface ToolContext {
   /** Relationship-scoped capability envelope: advertise narrowly, then revalidate at execution. */
   relationshipAuthorization?: {
     readonly requestId?: string;
+    readonly profileId?: string;
     authorizedContextScopes: readonly string[];
     advertisedToolNames: readonly string[];
     authorizeTool(name: string, args: Record<string, string>): { allowed: true; receiptId: string; profileVersion?: number } | { allowed: false; reason: string } | Promise<{ allowed: true; receiptId: string; profileVersion?: number } | { allowed: false; reason: string }>;

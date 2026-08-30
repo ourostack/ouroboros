@@ -1200,6 +1200,7 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
           store,
           ownerPresentationPreferences: buildOwnerPresentationPreferences(owner),
           relationshipAuthorization: {
+            profileId: initial.profileId,
             authorizedContextScopes: initial.authorizedContextScopes,
             advertisedToolNames: initial.advertisedToolNames,
             authorizeTool: async (name: string) => (await resolve()).authorizeTool(name),
@@ -1372,7 +1373,14 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
       ...(effectiveHabitSession ? { habitSession: effectiveHabitSession } : {}),
     },
     })
-    if (externalRunBase) appendRunLedgerRecordNonFatal(getAgentRoot(agentName), createRunLedgerRecord({ ...externalRunBase, lifecycle: "completed", endedAt: now().toISOString(), usage: usageMetadataFromUsageData(result.usage, result.usage ? "provider" : "reported-unavailable") }))
+    if (externalRunBase) {
+      const lifecycle = result.turnOutcome === "settled" || result.turnOutcome === "observed" || result.turnOutcome === "rested"
+        ? "completed" as const
+        : result.turnOutcome === "errored" ? "error" as const
+          : result.turnOutcome === "blocked" || result.turnOutcome === "suspended" ? "blocked" as const
+            : "skipped" as const
+      appendRunLedgerRecordNonFatal(getAgentRoot(agentName), createRunLedgerRecord({ ...externalRunBase, lifecycle, endedAt: now().toISOString(), usage: usageMetadataFromUsageData(result.usage, result.usage ? "provider" : "reported-unavailable"), ...(result.turnOutcome === "errored" ? { errorName: "AgentTurnError" } : {}) }))
+    }
   } catch (error) {
     if (externalRunBase) appendRunLedgerRecordNonFatal(getAgentRoot(agentName), createRunLedgerRecord({ ...externalRunBase, lifecycle: "error", endedAt: now().toISOString(), errorName: error instanceof Error ? error.name : "UnknownError" }))
     throw error

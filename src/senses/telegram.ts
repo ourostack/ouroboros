@@ -1162,6 +1162,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       if (authorization.subject.friendId !== input.friendId || authorization.subject.admissionState !== "active") throw new Error("Telegram relationship admission is not active")
       return {
         requestId: input.requestId,
+        profileId: authorization.profileId,
         authorizedContextScopes: authorization.authorizedContextScopes,
         advertisedToolNames: authorization.advertisedToolNames,
         actor: authorization.actor,

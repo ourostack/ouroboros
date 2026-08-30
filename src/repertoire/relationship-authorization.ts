@@ -51,6 +51,7 @@ export interface RelationshipAuthorizationSubject {
 
 export interface RelationshipAuthorizationEvaluator {
   readonly subject: RelationshipAuthorizationSubject
+  readonly profileId?: string
   readonly authorizedContextScopes: readonly string[]
   readonly advertisedToolNames: readonly string[]
   readonly actor?: Readonly<{ friendId: string; trustLevel: TrustLevel; sessionEventId: string }>
@@ -145,6 +146,7 @@ export function createRelationshipAuthorizationEvaluator(input: {
   const authorizedContextScopes = profile?.contextScopes.filter((scope) => evaluate({ kind: "context", scope }).allowed) ?? []
   return {
     subject,
+    ...(profile ? { profileId: profile.id } : {}),
     authorizedContextScopes,
     advertisedToolNames,
     ...(input.sessionEventId ? { actor: { friendId: subject.friendId, trustLevel: subject.trustLevel, sessionEventId: input.sessionEventId } } : {}),
