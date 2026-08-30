@@ -15,6 +15,7 @@ export const SANCTUARY_STORAGE_QUERY = `query SanctuaryStorage {
   vars { id }
   array { state capacity { kilobytes { used free total } } }
   shares { id name used free size }
+  docker { containers(skipCache: true) { id names state status autoStart } }
 }`
 export const SANCTUARY_DISKS_QUERY = `query SanctuaryDisks {
   disks { id name smartStatus temperature }
@@ -196,7 +197,29 @@ export function createUnraidReadTools(client: ReadClient) {
           const used = numberOrNull(item.used); const free = numberOrNull(item.free)
           return { name, usedBytes: used, freeBytes: free, usedPercent: percent(used, free), degraded: used === null || free === null }
         }).sort((a, b) => a.name.localeCompare(b.name))
-        return { ok: true, data: { sourceIdentityDigest, array: { state: state.value, usedBytes, freeBytes, usedPercent: percent(usedBytes, freeBytes), degraded: state.truncated || usedBytes === null || freeBytes === null }, shares, truncated } }
+        const largestCandidates = shares
+          .filter((share) => share.usedBytes !== null && share.usedBytes > 0)
+          .sort((a, b) => Number(b.usedBytes) - Number(a.usedBytes) || a.name.localeCompare(b.name))
+          .slice(0, 10)
+          .map((share) => ({ kind: "share" as const, name: share.name, usedBytes: share.usedBytes }))
+        let unmanic = { state: "unknown" as "running" | "exited" | "restarting" | "unknown", degraded: true }
+        if (data.docker && typeof data.docker === "object" && !Array.isArray(data.docker)) {
+          const matches = mapContainers(data).containers.filter((container) => container.name === "unmanic")
+          if (matches.length === 1) unmanic = { state: matches[0]!.state, degraded: matches[0]!.degraded }
+        }
+        return { ok: true, data: {
+          sourceIdentityDigest,
+          array: { state: state.value, usedBytes, freeBytes, usedPercent: percent(usedBytes, freeBytes), degraded: state.truncated || usedBytes === null || freeBytes === null },
+          shares,
+          largestCandidates,
+          optimization: {
+            unmanic,
+            estimatedReclaimableBytes: null,
+            estimateConfidence: "unavailable",
+            reason: "Share usage is real, but the read-only Unraid API does not expose bounded file-level codec evidence; no savings estimate is claimed.",
+          },
+          truncated,
+        } }
       } catch (error) { return fail(error) }
     },
     async getDisks(): Promise<ToolResult<Record<string, unknown>>> {
@@ -299,7 +322,7 @@ async function runTrackedRestart(ctx: ToolContext, target: string, routine?: imp
   }
 }
 
-function readDefinition(name: string, description: string, method: "listContainers" | "getStorage" | "getDisks" | "getNotifications" | "getSystem"): ToolDefinition {
+function readDefinition(name: string, description: string, method: "listContainers" | "getStorage" | "getDisks" | "getNotifications" | "getSystem" | "checkServices" | "getDownloadQueue"): ToolDefinition {
   return {
     tool: { type: "function", function: { name, description, parameters: emptyParameters } },
     handler: async (_args, ctx) => JSON.stringify(ctx?.sanctuary ? await ctx.sanctuary[method]() : JSON.parse(missingRuntime())),
@@ -335,6 +358,14 @@ export const unraidToolDefinitions: ToolDefinition[] = [
   readDefinition("unraid_get_disks", "Read bounded Sanctuary disk SMART, temperature, and parity health.", "getDisks"),
   readDefinition("unraid_get_notifications", "Read bounded unacknowledged Sanctuary notifications.", "getNotifications"),
   readDefinition("unraid_get_system", "Read bounded Sanctuary system and version health.", "getSystem"),
+  readDefinition("unraid_check_services", "Freshly check the fixed public Sanctuary service endpoints and return bounded status with an observation timestamp.", "checkServices"),
+  readDefinition("sanctuary_get_download_queue", "Read the bounded live household download queue state, including whether the spend guard has paused it.", "getDownloadQueue"),
+  {
+    tool: { type: "function", function: { name: "sanctuary_resume_download_queue", description: "Resume the household download queue after Ari confirms the provider is ready, then independently verify paused=false. This can spend prepaid download credit.", parameters: emptyParameters } },
+    handler: async (_args, ctx) => JSON.stringify(ctx?.sanctuary ? await ctx.sanctuary.resumeDownloadQueue() : JSON.parse(missingRuntime())),
+    riskProfile: { mutates: "external_side_effect", risk: "high", reason: "resumes downloads that can spend prepaid provider credit" },
+    approvalPolicy: () => ({ kind: "required", policyId: "sanctuary.downloads.resume.v1", actionClass: "sanctuary.downloads.resume", requiresSoleCall: true }),
+  },
   {
     tool: {
       type: "function",
@@ -386,5 +417,5 @@ emitNervesEvent({
   component: "repertoire",
   event: "repertoire.unraid_tools_loaded",
   message: "typed Unraid tools loaded",
-  meta: { operations: 6 },
+  meta: { operations: 9 },
 })

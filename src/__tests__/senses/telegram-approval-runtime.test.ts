@@ -117,8 +117,15 @@ import {
   approvalContinuationRunAgentOptions,
   createTelegramApprovalRuntime,
   executeApprovedTelegramTool,
+  formatTelegramApprovalPrompt,
 } from "../../senses/telegram-approval-runtime"
 import { ApprovalExecutionFailedError } from "../../heart/tool-approval"
+
+it("renders phone-clear Sanctuary approval prompts without internal names or JSON", () => {
+  expect(formatTelegramApprovalPrompt("sanctuary_resume_download_queue", {})).toBe("Resume household downloads? This can spend prepaid download credit. I’ll verify the queue actually resumed.")
+  expect(formatTelegramApprovalPrompt("unraid_restart_container", { container: "calibre-web" })).toBe("Restart calibre-web?")
+  expect(formatTelegramApprovalPrompt("other_tool", { value: 1 })).toContain('Approve other_tool with exact arguments {"value":1}?')
+})
 
 const baseRecord = {
   approvalId: "approval-1",
@@ -233,6 +240,13 @@ describe("Telegram approval runtime safety", () => {
 
     await expect(executeApprovedTelegramTool("unraid_restart_container", { container: "calibre-web" }, execute))
       .resolves.toBe(result)
+  })
+
+  it("accepts only an independently verified approved download resume", async () => {
+    const result = '{"ok":true,"data":{"verified":true,"after":{"paused":false}}}'
+    await expect(executeApprovedTelegramTool("sanctuary_resume_download_queue", {}, vi.fn().mockResolvedValue(result))).resolves.toBe(result)
+    await expect(executeApprovedTelegramTool("sanctuary_resume_download_queue", {}, vi.fn().mockResolvedValue('{"ok":true,"data":{"verified":false,"after":{"paused":true}}}'))).rejects.toThrow("not independently verified")
+    await expect(executeApprovedTelegramTool("sanctuary_resume_download_queue", {}, vi.fn().mockResolvedValue("invalid"))).rejects.toThrow("invalid result")
   })
 
   it("binds approved restart lifecycle events to the exact approval and scenario", async () => {
@@ -383,7 +397,7 @@ describe("Telegram approval runtime orchestration", () => {
     expect(runtimeMocks.transport.sendApproval).toHaveBeenCalledWith(expect.objectContaining({
       approvalId: "approval-1",
       decisionToken: "server-secret",
-      prompt: 'Approve unraid_restart_container with exact arguments {"container":"calibre-web"}?',
+      prompt: "Restart calibre-web?",
     }))
     expect(runtimeMocks.store.bindPrompt).toHaveBeenCalledWith(expect.objectContaining({
       transportChatId: "tg_stable-subject",

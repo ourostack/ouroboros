@@ -17,7 +17,7 @@
     "id": "credit-top-up",
     "audience": "owner",
     "user": "What do you need me to do about the downloads?",
-    "reply": "Your paid download provider appears to be out of credit, so new downloads are waiting. You can top it up here: <provider account link>. Tell me when you’re done and I’ll test it, or say something like “remind me tomorrow at 9.”",
+    "reply": "Your paid download provider appears to be out of credit, so new downloads are waiting. You can top it up here: https://www.astraweb.com/login. Tell me when you’re done and I’ll verify a download finishes, or say “remind me tomorrow at 9.”",
     "tools": ["query_cares", "care_manage", "await_condition"]
   },
   {
@@ -31,7 +31,7 @@
     "id": "storage-creative",
     "audience": "owner",
     "user": "Why is storage so full?",
-    "reply": "Media is the main consumer. One 94 GB file is unusually large; Unmanic may be able to shrink it without changing what you see, but I don’t have a trustworthy savings estimate yet. I can inspect the bounded media evidence next.",
+    "reply": "Media is among the largest shares. Unmanic is running, but the read-only evidence does not expose file codecs, so I won’t invent a savings estimate. I can inspect its bounded logs next before proposing any re-encode.",
     "tools": ["unraid_get_storage", "unraid_get_disks"]
   },
   {

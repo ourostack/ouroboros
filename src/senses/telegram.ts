@@ -27,6 +27,7 @@ import { readRuntimeCredentialConfig } from "../heart/runtime-credentials"
 import { emitNervesEvent, emitNervesEventDurable } from "../nerves/runtime"
 import { registerGlobalLogSink } from "../nerves"
 import { createSanctuaryInteractiveControl } from "./sanctuary-interactive-control"
+import { createSanctuarySabClient } from "./sanctuary-sab"
 import { getSenseSessionPath, runSenseTurn, type RunSenseTurnOptions, type RunSenseTurnResult } from "./shared-turn"
 import {
   createTelegramBotApi,
@@ -95,29 +96,14 @@ export function createSabQueueProtectiveStateVerifier(options: {
   fetch?: typeof fetch
   now?: () => string
 } = {}): (action: PrivilegedProtectiveAction) => Promise<{ verified: boolean; reference: string }> {
-  const iniPath = options.iniPath ?? SANCTUARY_SAB_CONFIG_PATH
-  const fetchImpl = options.fetch ?? fetch
+  let client: ReturnType<typeof createSanctuarySabClient> | null = null
   return async (action) => {
-    const apiKey = readFileSync(iniPath, "utf8").match(/^\s*api_key\s*=\s*(\S+)\s*$/mu)?.[1]
-    if (!apiKey) throw new Error("SAB queue verification credential is unavailable")
-    let response: Response
-    try {
-      response = await fetchImpl(`http://127.0.0.1:8090/api?mode=queue&output=json&apikey=${encodeURIComponent(apiKey)}`, { signal: AbortSignal.timeout(15_000) })
-    } catch {
-      throw new Error("SAB queue verification request failed")
-    }
-    if (!response.ok) throw new Error("SAB queue verification request failed")
-    const body = await response.json() as unknown
-    if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("SAB queue verification response is malformed")
-    const queue = (body as Record<string, unknown>).queue
-    if (!queue || typeof queue !== "object" || Array.isArray(queue) || typeof (queue as Record<string, unknown>).paused !== "boolean") {
-      throw new Error("SAB queue verification response is malformed")
-    }
-    const paused = (queue as Record<string, unknown>).paused as boolean
+    client ??= createSanctuarySabClient({ iniPath: options.iniPath ?? SANCTUARY_SAB_CONFIG_PATH, fetch: options.fetch, now: options.now })
+    const snapshot = await client.readQueue()
+    const paused = snapshot.paused
     const digest = createHash("sha256").update(`sabnzbd.queue.paused=${String(paused)}`).digest("hex")
-    const observedAt = options.now?.() ?? new Date().toISOString()
     const verified = action.action === "sabnzbd.pause" && paused && action.verification.verified && action.verification.digest === digest
-    return { verified, reference: `sabnzbd.queue.paused:${digest}:${observedAt}` }
+    return { verified, reference: `sabnzbd.queue.paused:${digest}:${snapshot.observedAt}` }
   }
 }
 

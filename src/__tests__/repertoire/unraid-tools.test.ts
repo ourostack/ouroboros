@@ -86,6 +86,51 @@ describe("Unraid typed read tools", () => {
     expect(String(read.mock.calls[3]?.[0])).toContain("vars { id name version }")
   })
 
+  it("reports real largest shares and truthful Unmanic opportunity without inventing file savings", async () => {
+    const read = vi.fn(async () => ({
+      vars: { id: LIVE_SERVER_ID },
+      array: { state: "STARTED", capacity: { kilobytes: { used: 2_000, free: 1_000, total: 3_000 } } },
+      shares: [
+        { id: "s1", name: "media", used: 900, free: 100, size: 1_000 },
+        { id: "s2", name: "downloads", used: 300, free: 700, size: 1_000 },
+        { id: "s4", name: "archive", used: 300, free: 700, size: 1_000 },
+        { id: "s3", name: "empty", used: 0, free: 1_000, size: 1_000 },
+      ],
+      docker: { containers: [{ id: "Docker:unmanic", names: ["/unmanic"], state: "RUNNING", status: "Up 2 days (healthy)", autoStart: true }] },
+    }))
+
+    await expect(createUnraidReadTools({ read } as any).getStorage()).resolves.toMatchObject({
+      ok: true,
+      data: {
+        largestCandidates: [
+          { kind: "share", name: "media", usedBytes: 900 },
+          { kind: "share", name: "archive", usedBytes: 300 },
+          { kind: "share", name: "downloads", usedBytes: 300 },
+        ],
+        optimization: {
+          unmanic: { state: "running", degraded: false },
+          estimatedReclaimableBytes: null,
+          estimateConfidence: "unavailable",
+          reason: expect.stringContaining("file-level"),
+        },
+      },
+    })
+    expect(read).toHaveBeenCalledWith(expect.stringContaining("docker { containers"), {})
+  })
+
+  it("bounds largest storage candidates and degrades missing or ambiguous Unmanic status", async () => {
+    const shares = Array.from({ length: 20 }, (_, index) => ({ id: `s${index}`, name: `share-${index}`, used: index, free: 100, size: 100 + index }))
+    const payload = (containers: unknown[]) => ({ vars: { id: LIVE_SERVER_ID }, array: { state: "STARTED", capacity: { kilobytes: { used: 1, free: 1 } } }, shares, docker: { containers } })
+    const missing = await createUnraidReadTools({ read: vi.fn(async () => payload([])) } as any).getStorage()
+    expect(missing).toMatchObject({ ok: true, data: { largestCandidates: { length: 10 }, optimization: { unmanic: { state: "unknown", degraded: true } } } })
+    expect((missing as any).data.largestCandidates.map((item: any) => item.usedBytes)).toEqual([19, 18, 17, 16, 15, 14, 13, 12, 11, 10])
+    const ambiguous = await createUnraidReadTools({ read: vi.fn(async () => payload([
+      { id: "Docker:a", names: ["unmanic"], state: "RUNNING", status: "Up 1 hour", autoStart: true },
+      { id: "Docker:b", names: ["/unmanic"], state: "EXITED", status: "Exited (1) 1 hour ago", autoStart: true },
+    ])) } as any).getStorage()
+    expect(ambiguous).toMatchObject({ ok: true, data: { optimization: { unmanic: { state: "unknown", degraded: true } } } })
+  })
+
   it("fails closed when the parity completion timestamp is in the future", async () => {
     const read = vi.fn(async () => ({
       disks: [],
@@ -263,6 +308,9 @@ describe("Unraid typed read tools", () => {
       getDisks: vi.fn(async () => ({ ok: true, data: "disks" })),
       getNotifications: vi.fn(async () => ({ ok: true, data: "notifications" })),
       getSystem: vi.fn(async () => ({ ok: true, data: "system" })),
+      checkServices: vi.fn(async () => ({ ok: true, data: "services" })),
+      getDownloadQueue: vi.fn(async () => ({ ok: true, data: "download-queue" })),
+      resumeDownloadQueue: vi.fn(async () => ({ ok: true, data: "resumed" })),
       restartContainer: vi.fn(async (args) => ({ ok: true, data: args })),
     }
     for (const definition of unraidToolDefinitions) {
@@ -273,9 +321,15 @@ describe("Unraid typed read tools", () => {
       expect(JSON.parse(await definition.handler(args, { sanctuary } as any)).ok).toBe(true)
     }
     expect(sanctuary.getContainerLogs).toHaveBeenCalledExactlyOnceWith({ container: "alpha", tailLines: 7 })
+    expect(sanctuary.checkServices).toHaveBeenCalledExactlyOnceWith()
+    expect(sanctuary.getDownloadQueue).toHaveBeenCalledExactlyOnceWith()
+    expect(sanctuary.resumeDownloadQueue).toHaveBeenCalledExactlyOnceWith()
     expect(sanctuary.restartContainer).toHaveBeenCalledExactlyOnceWith({ container: "alpha" }, undefined)
     const restartDefinition = unraidToolDefinitions.find((definition) => definition.tool.function.name === "unraid_restart_container")!
     expect(restartDefinition.approvalPolicy?.({}, {} as any)).toEqual({ kind: "required", policyId: "sanctuary.unraid.restart.v1", actionClass: "unraid.container.restart", requiresSoleCall: true })
+    const resumeDefinition = unraidToolDefinitions.find((definition) => definition.tool.function.name === "sanctuary_resume_download_queue")!
+    expect(resumeDefinition.approvalPolicy?.({}, {} as any)).toEqual({ kind: "required", policyId: "sanctuary.downloads.resume.v1", actionClass: "sanctuary.downloads.resume", requiresSoleCall: true })
+    expect(resumeDefinition.riskProfile).toMatchObject({ mutates: "external_side_effect", risk: "high" })
   })
 
   it("uses standing policy only for an exact family-authorized routine restart and otherwise preserves approval", async () => {

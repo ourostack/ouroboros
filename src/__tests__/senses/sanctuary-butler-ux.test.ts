@@ -98,18 +98,21 @@ describe("Mendelow Cloud Butler household UX", () => {
     expect(config.version).toBe(2)
     expect(config.profiles).toMatchObject({
       "sanctuary-owner": {
+        version: 3,
         contextScopes: expect.arrayContaining(["household.status", "household.policy"]),
-        toolNames: expect.arrayContaining(["steward_policy_manage", "unraid_restart_container"]),
+        toolNames: expect.arrayContaining(["steward_policy_manage", "unraid_restart_container", "unraid_check_services", "sanctuary_get_download_queue", "sanctuary_resume_download_queue"]),
         effectScopes: expect.arrayContaining(["telegram.proactive", "telegram.request_return"]),
       },
       "sanctuary-household": {
+        version: 3,
         contextScopes: expect.arrayContaining(["household.status"]),
-        toolNames: expect.arrayContaining(["unraid_get_system"]),
+        toolNames: expect.arrayContaining(["unraid_get_system", "unraid_check_services"]),
         effectScopes: ["telegram.request_return"],
       },
       "sanctuary-event": {
+        version: 2,
         contextScopes: expect.arrayContaining(["household.status", "household.policy"]),
-        toolNames: expect.arrayContaining(["external_event_disposition", "query_cares", "care_manage", "await_condition"]),
+        toolNames: expect.arrayContaining(["external_event_disposition", "query_cares", "care_manage", "await_condition", "sanctuary_get_download_queue"]),
         effectScopes: ["telegram.owner_event"],
       },
     })
@@ -173,8 +176,12 @@ describe("Mendelow Cloud Butler household UX", () => {
     expect(reminder.reply).toContain("Friday at 10:00 AM")
     expect(reminder.tools).toContain("await_condition")
     const topUp = transcripts.find((entry) => entry.id === "credit-top-up")!
-    expect(topUp.reply).toContain("<provider account link>")
-    expect(topUp.reply).toContain("Tell me when you’re done and I’ll test it")
+    expect(topUp.reply).toContain("https://www.astraweb.com/login")
+    expect(topUp.reply).not.toContain("<provider account link>")
+    expect(topUp.reply).toContain("Tell me when you’re done and I’ll verify a download finishes")
+    const storage = transcripts.find((entry) => entry.id === "storage-creative")!
+    expect(storage.reply).not.toMatch(/\b94 GB\b/u)
+    expect(storage.reply).toContain("largest shares")
   })
 
   it("does not invent a media API and keeps family replies private", () => {
@@ -235,7 +242,10 @@ describe("Mendelow Cloud Butler household UX", () => {
       .filter((name) => household.evaluator.advertisedToolNames.includes(name))
     setAgentName(path.basename(agentRoot, ".ouro"))
 
-    expect(advertised).toEqual(["save_friend_note", "await_condition", "cancel_await", "unraid_list_containers", "unraid_get_storage", "unraid_get_disks", "unraid_get_system", "unraid_restart_container", "settle", "speak"])
+    expect(advertised).toEqual(["save_friend_note", "await_condition", "cancel_await", "unraid_list_containers", "unraid_get_storage", "unraid_get_disks", "unraid_get_system", "unraid_check_services", "unraid_restart_container", "settle", "speak"])
+    expect(household.evaluator.advertisedToolNames).not.toEqual(expect.arrayContaining(["sanctuary_get_download_queue", "sanctuary_resume_download_queue"]))
+    expect(await execTool("sanctuary_get_download_queue", {}, { ...household.context, sanctuary: { getDownloadQueue: async () => ({ paused: true }) } } as any)).toContain("relationship authorization required")
+    expect(await execTool("sanctuary_resume_download_queue", {}, { ...household.context, sanctuary: { resumeDownloadQueue: async () => ({ ok: true }) } } as any)).toContain("relationship authorization required")
     const deniedRead = await execTool("query_cares", {}, household.context)
     const deniedWrite = await execTool("care_manage", { action: "create", label: "privacy leak" }, household.context)
     expect(deniedRead).toContain("relationship authorization required")

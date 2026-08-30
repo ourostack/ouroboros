@@ -265,7 +265,11 @@ describe("privileged external-event spool", () => {
     let record = readExternalEventRecord(listExternalEventStatus(eventRoot)[0]!.recordPath)
     expect(record).toMatchObject({ transition: "recovered", executionState: "handled", shouldWake: false, disposition: null, generation: 1 })
 
-    writeSpoolFile(spoolRoot, healthEnvelope("recovered", "20260829T195100Z"))
+    writeSpoolFile(spoolRoot, {
+      ...healthEnvelope("recovered", "20260829T195100Z"),
+      evidence: ["100 successful articles and one recent completed download"],
+      protectiveStateDigest: "e".repeat(64),
+    })
     expect(scanPrivilegedEventSpool({ spoolRoot, eventRoot, now: () => NOW })).toEqual({ accepted: 1, rejected: 0, replayed: 1 })
     record = readExternalEventRecord(record.recordPath)
     expect(record).toMatchObject({ transition: "recovered", executionState: "handled", shouldWake: false, disposition: null, generation: 1 })

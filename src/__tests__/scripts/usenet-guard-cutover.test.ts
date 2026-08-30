@@ -53,8 +53,8 @@ describe("Unraid usenet guard cutover assets", () => {
     const source = fs.readFileSync(guardPath, "utf8")
     expect(source).toContain("MIN_ARTICLES=50000")
     expect(source).toContain("MIN_RATE=30")
-    expect(source).toContain("RATE=$(( OKAY * 100 / TRIED ))")
-    expect(source).toContain('if [ "${TRIED:-0}" -ge "$MIN_ARTICLES" ]')
+    expect(source).toContain("RATE=$(( DELTA_OKAY * 100 / DELTA_TRIED ))")
+    expect(source).toContain('if [ "${DELTA_TRIED:-0}" -ge "$MIN_ARTICLES" ]')
     expect(source).toContain('if [ "$RATE" -lt "$MIN_RATE" ]')
     expect(source).toContain("api?mode=pause&apikey=$SAB_KEY")
     expect(source).not.toMatch(/api\.telegram\.org|TELEGRAM_BOT_TOKEN|TELEGRAM_CHAT_ID|notify\.conf|sendMessage|notify_unraid|webGui\/scripts\/notify/u)
@@ -83,13 +83,18 @@ describe("Unraid usenet guard cutover assets", () => {
     expect(source).toContain('emit_transition "usenet.observe" "provider-health" "auth-failed:${OBSERVED_SLOT}"')
     expect(source).toContain('emit_transition "usenet.observe" "provider-health" "stalled:${OBSERVED_SLOT}"')
     expect(source).toContain('emit_transition "usenet.observe" "provider-health" "recovered:${OBSERVED_SLOT}"')
+    expect(source).toContain("api?mode=history&limit=20&start=0&output=json&apikey=$SAB_KEY")
+    expect(source).toContain('RECENT_COMPLETED=$(echo "$HISTORY"')
+    expect(source).toContain('[ "$FINAL_PAUSED" = "false" ] && [ "${DELTA_OKAY:-0}" -gt 0 ] && [ "${RECENT_COMPLETED:-0}" -gt 0 ]')
+    expect(source).toContain("recent completed downloads")
+    expect(source).toContain('((.time // 0) | tonumber) >= $since')
   })
 
   it.each([
     ["auth", "auth-failed:"],
     ["stall", "stalled:"],
     ["recovery", "recovered:"],
-  ])("submits the %s observation on every detector run without consulting Prowlarr", (scenario, transition) => {
+  ])("submits the %s observation on every materially verified detector run without consulting Prowlarr", (scenario, transition) => {
     const temp = root()
     const bin = path.join(temp, "bin")
     const calls = path.join(temp, "adapter.calls")
@@ -100,6 +105,8 @@ describe("Unraid usenet guard cutover assets", () => {
     const adapter = path.join(temp, "adapter")
     fs.mkdirSync(bin)
     fs.writeFileSync(ini, "api_key = test-only\n")
+    const local = new Date()
+    fs.writeFileSync(`${log}.baseline.json`, JSON.stringify({ day: `${local.getFullYear()}-${String(local.getMonth() + 1).padStart(2, "0")}-${String(local.getDate()).padStart(2, "0")}`, tried: 0, okay: 0 }) + "\n")
     fs.writeFileSync(producer, "process.exit(0)\n")
     fs.writeFileSync(path.join(bin, "curl"), `#!/bin/bash
 printf '%s\n' "$*" >> ${JSON.stringify(curlCalls)}
@@ -111,7 +118,11 @@ case "$*" in
   *Authentication*length*) [ "$USENET_CASE" = auth ] && echo 1 || echo 0 ;;
   *queue.status*) [ "$USENET_CASE" = stall ] && echo Idle || echo Downloading ;;
   *queue.noofslots*) [ "$USENET_CASE" = stall ] && echo 2 || echo 0 ;;
-  *articles_tried*|*articles_success*|*daily*) echo 0 ;;
+  *queue.paused*) echo false ;;
+  *articles_tried*) [ "$USENET_CASE" = recovery ] && echo 100 || echo 0 ;;
+  *articles_success*) [ "$USENET_CASE" = recovery ] && echo 100 || echo 0 ;;
+  *history.slots*) [ "$USENET_CASE" = recovery ] && echo 1 || echo 0 ;;
+  *daily*) echo 0 ;;
   *) echo 0 ;;
 esac
 `, { mode: 0o700 })
@@ -128,6 +139,118 @@ printf '%s\n' "$*" >> ${JSON.stringify(calls)}
     expect(queried).not.toMatch(/9696|Prowlarr|api\/v1\/indexer/iu)
   })
 
+  it("does not claim recovery when authentication clears but no recent download completed", () => {
+    const temp = root()
+    const bin = path.join(temp, "bin")
+    const calls = path.join(temp, "adapter.calls")
+    const log = path.join(temp, "guard.log")
+    const ini = path.join(temp, "sabnzbd.ini")
+    fs.mkdirSync(bin)
+    fs.writeFileSync(ini, "api_key = test-only\n")
+    fs.writeFileSync(path.join(bin, "curl"), "#!/bin/bash\nprintf '{}\\n'\n", { mode: 0o700 })
+    fs.writeFileSync(path.join(bin, "jq"), `#!/bin/bash
+case "$*" in
+  *queue.status*) echo Downloading ;;
+  *queue.noofslots*) echo 1 ;;
+  *Authentication*) echo 0 ;;
+  *) echo 0 ;;
+esac
+`, { mode: 0o700 })
+    fs.writeFileSync(path.join(temp, "producer"), "#!/bin/bash\nexit 0\n", { mode: 0o700 })
+    fs.writeFileSync(path.join(temp, "adapter"), `#!/bin/bash
+printf '%s\n' "$*" >> ${JSON.stringify(calls)}
+`, { mode: 0o700 })
+
+    execFileSync(guardPath, ["--sab-ini", ini, "--log", log, "--producer", path.join(temp, "producer"), "--adapter", path.join(temp, "adapter")], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } })
+
+    expect(fs.existsSync(calls)).toBe(false)
+    expect(fs.readFileSync(log, "utf8")).toContain("not yet whole-path recovery")
+  })
+
+  it.each([
+    ["healthy new interval", 1_100_000, 160_000, "recovered", false, true],
+    ["failing new interval", 1_100_000, 75_000, "sabnzbd.pause", true, true],
+    ["first observation seed", 1_000_000, 70_000, "", false, false],
+  ] as const)("uses a rolling baseline after historical 7%% spend for a %s", (_label, tried, okay, expected, pausedAfter, seedBaseline) => {
+    const temp = root()
+    const bin = path.join(temp, "bin")
+    const calls = path.join(temp, "adapter.calls")
+    const paused = path.join(temp, "paused")
+    const state = path.join(temp, "baseline.json")
+    const log = path.join(temp, "guard.log")
+    const ini = path.join(temp, "sabnzbd.ini")
+    fs.mkdirSync(bin)
+    fs.writeFileSync(ini, "api_key = test-only\n")
+    fs.writeFileSync(paused, "false\n")
+    const local = new Date()
+    const day = `${local.getFullYear()}-${String(local.getMonth() + 1).padStart(2, "0")}-${String(local.getDate()).padStart(2, "0")}`
+    if (seedBaseline) fs.writeFileSync(state, JSON.stringify({ day, tried: 1_000_000, okay: 70_000 }) + "\n")
+    fs.writeFileSync(path.join(bin, "curl"), `#!/bin/bash
+case "$*" in
+  *mode=pause*) printf 'true\n' > ${JSON.stringify(paused)} ;;
+  *mode=warnings*) [ "$GUARD_HISTORICAL_AUTH" = 1 ] && printf '{"warnings":[{"text":"502 Authentication Failed","time":1}]}\n' || printf '{"warnings":[]}\n' ;;
+  *mode=server_stats*) printf '{"servers":[{"articles_tried":{"%s":%s},"articles_success":{"%s":%s},"daily":{"%s":0}}]}\n' "$(date +%Y-%m-%d)" "$GUARD_TRIED" "$(date +%Y-%m-%d)" "$GUARD_OKAY" "$(date +%Y-%m-%d)" ;;
+  *mode=history*) printf '{"history":{"slots":[{"status":"Completed","completed":%s}]}}\n' "$(date +%s)" ;;
+  *mode=queue*) printf '{"queue":{"paused":%s,"status":"Downloading","noofslots":1}}\n' "$(cat ${JSON.stringify(paused)})" ;;
+  *) printf '{}\n' ;;
+esac
+`, { mode: 0o700 })
+    fs.writeFileSync(path.join(temp, "producer"), "#!/bin/bash\nexit 0\n", { mode: 0o700 })
+    fs.writeFileSync(path.join(temp, "adapter"), `#!/bin/bash
+printf '%s\n' "$*" >> ${JSON.stringify(calls)}
+`, { mode: 0o700 })
+
+    execFileSync(guardPath, ["--sab-ini", ini, "--log", log, "--producer", path.join(temp, "producer"), "--adapter", path.join(temp, "adapter"), "--state", state], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, GUARD_TRIED: String(tried), GUARD_OKAY: String(okay), GUARD_HISTORICAL_AUTH: pausedAfter ? "0" : "1" } })
+
+    const emitted = fs.existsSync(calls) ? fs.readFileSync(calls, "utf8") : ""
+    if (expected) expect(emitted).toContain(expected)
+    else expect(emitted).toBe("")
+    if (expected) expect(emitted.includes("recovered")).toBe(!pausedAfter)
+    expect(fs.readFileSync(paused, "utf8").trim()).toBe(String(pausedAfter))
+  })
+
+  it("accumulates sub-threshold failing intervals until the spend guard can judge them", () => {
+    const temp = root()
+    const bin = path.join(temp, "bin")
+    const calls = path.join(temp, "adapter.calls")
+    const runCount = path.join(temp, "runs")
+    const paused = path.join(temp, "paused")
+    const state = path.join(temp, "baseline.json")
+    const log = path.join(temp, "guard.log")
+    const ini = path.join(temp, "sabnzbd.ini")
+    fs.mkdirSync(bin)
+    fs.writeFileSync(ini, "api_key = test-only\n")
+    fs.writeFileSync(runCount, "0\n")
+    fs.writeFileSync(paused, "false\n")
+    const local = new Date()
+    const day = `${local.getFullYear()}-${String(local.getMonth() + 1).padStart(2, "0")}-${String(local.getDate()).padStart(2, "0")}`
+    fs.writeFileSync(state, JSON.stringify({ day, tried: 0, okay: 0 }) + "\n")
+    fs.writeFileSync(path.join(bin, "curl"), `#!/bin/bash
+case "$*" in
+  *mode=pause*) printf 'true\n' > ${JSON.stringify(paused)} ;;
+  *mode=warnings*) printf '{"warnings":[]}\n' ;;
+  *mode=server_stats*) run=$(cat ${JSON.stringify(runCount)}); [ "$run" = 0 ] && tried=30000 || tried=60000; okay=$((tried * 7 / 100)); printf '{"servers":[{"articles_tried":{"%s":%s},"articles_success":{"%s":%s},"daily":{"%s":0}}]}\n' "$(date +%Y-%m-%d)" "$tried" "$(date +%Y-%m-%d)" "$okay" "$(date +%Y-%m-%d)" ;;
+  *mode=history*) printf '{"history":{"slots":[]}}\n' ;;
+  *mode=queue*) printf '{"queue":{"paused":%s,"status":"Downloading","noofslots":1}}\n' "$(cat ${JSON.stringify(paused)})" ;;
+  *) printf '{}\n' ;;
+esac
+`, { mode: 0o700 })
+    fs.writeFileSync(path.join(temp, "producer"), "#!/bin/bash\nexit 0\n", { mode: 0o700 })
+    fs.writeFileSync(path.join(temp, "adapter"), `#!/bin/bash
+printf '%s\n' "$*" >> ${JSON.stringify(calls)}
+`, { mode: 0o700 })
+    const args = ["--sab-ini", ini, "--log", log, "--producer", path.join(temp, "producer"), "--adapter", path.join(temp, "adapter"), "--state", state]
+
+    execFileSync(guardPath, args, { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } })
+    expect(fs.existsSync(calls)).toBe(false)
+    expect(JSON.parse(fs.readFileSync(state, "utf8"))).toMatchObject({ tried: 0, okay: 0 })
+    fs.writeFileSync(runCount, "1\n")
+    execFileSync(guardPath, args, { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } })
+    expect(fs.readFileSync(calls, "utf8")).toContain("sabnzbd.pause")
+    expect(fs.readFileSync(paused, "utf8").trim()).toBe("true")
+    expect(JSON.parse(fs.readFileSync(state, "utf8"))).toMatchObject({ tried: 60000, okay: 4200 })
+  })
+
   it("uses the canonical producer with a fixed bounded argv contract and no detector speech token", () => {
     const source = fs.readFileSync(adapterPath, "utf8")
     expect(source).toContain('exec /usr/local/bin/node "$PRODUCER"')
@@ -142,7 +265,8 @@ printf '%s\n' "$*" >> ${JSON.stringify(calls)}
     expect(source).toContain('"--protective-state-digest" "$VERIFICATION_DIGEST"')
     expect(source).toContain('"--protective-state-observed-at" "$VERIFIED_AT"')
     expect(source).toContain('OBSERVED_STATE="${TRANSITION%%:*}"')
-    expect(source).toContain('"$ACTION" "$INCIDENT" "$OBSERVED_STATE" "$VERIFICATION_DIGEST"')
+    expect(source).toContain("printf '%s\\0%s\\0%s' \"$ACTION\" \"$INCIDENT\" \"$OBSERVED_STATE\"")
+    expect(source).not.toContain('"$OBSERVED_STATE" "$VERIFICATION_DIGEST"')
     expect(source).not.toContain("prowlarr.disable-indexer")
     expect(fs.readFileSync(producerPath, "utf8")).not.toContain("prowlarr.disable-indexer")
     expect(source).not.toMatch(/TELEGRAM|token|sendMessage|api\.telegram/iu)
@@ -156,6 +280,8 @@ printf '%s\n' "$*" >> ${JSON.stringify(calls)}
     const ini = path.join(temp, "sabnzbd.ini")
     fs.mkdirSync(bin)
     fs.writeFileSync(ini, "api_key = test-only\n")
+    const local = new Date()
+    fs.writeFileSync(`${log}.baseline.json`, JSON.stringify({ day: `${local.getFullYear()}-${String(local.getMonth() + 1).padStart(2, "0")}-${String(local.getDate()).padStart(2, "0")}`, tried: 0, okay: 0 }) + "\n")
     fs.writeFileSync(path.join(bin, "curl"), "#!/bin/bash\nprintf '{}\\n'\n", { mode: 0o700 })
     fs.writeFileSync(path.join(bin, "jq"), `#!/bin/bash\ncase "$*" in\n  *articles_tried*) echo 50000 ;;\n  *articles_success*) echo 0 ;;\n  *daily*) echo 1000000000 ;;\n  *queue.paused*) echo false ;;\n  *queue.status*) echo Downloading ;;\n  *queue.noofslots*) echo 0 ;;\n  *Authentication*) echo 0 ;;\n  *) echo 0 ;;\nesac\n`, { mode: 0o700 })
     fs.writeFileSync(path.join(temp, "producer"), "#!/bin/bash\nexit 0\n", { mode: 0o700 })

@@ -33,7 +33,7 @@ case "$VERIFIED" in true|false) ;; *) echo "usenet event adapter: verification s
 
 if [ "$ACTION" = "usenet.observe" ]; then
   OBSERVED_STATE="${TRANSITION%%:*}"
-  REVISION="$(printf '%s\0%s\0%s\0%s' "$ACTION" "$INCIDENT" "$OBSERVED_STATE" "$VERIFICATION_DIGEST" | sha256sum | cut -d' ' -f1)"
+  REVISION="$(printf '%s\0%s\0%s' "$ACTION" "$INCIDENT" "$OBSERVED_STATE" | sha256sum | cut -d' ' -f1)"
 else
   REVISION="$(printf '%s\0%s\0%s\0%s' "$ACTION" "$INCIDENT" "$TRANSITION" "$RECEIPT" | sha256sum | cut -d' ' -f1)"
 fi
