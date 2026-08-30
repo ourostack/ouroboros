@@ -790,7 +790,7 @@ export function createTelegramAdmissionController(options: TelegramAdmissionCont
     parseOwnerDecision(input: { text: string; replyToMessageId?: number }): { admissionId: string; decision: "allow" | "deny" | "block" } | null {
       if (!input.replyToMessageId || Buffer.byteLength(input.text, "utf8") > 80) return null
       const normalized = input.text.normalize("NFKC").trim().toLocaleLowerCase("en-US")
-      const decision = /^(?:yes|allow|approve|let (?:them|him|her) in)$/u.test(normalized) ? "allow"
+      const decision = /^(?:yes|allow|approve|let (?:them|him|her) in|yes,? (?:that(?:'|’)s|that is) my (?:brother|sister|sibling|mom|mother|mum|dad|father|parent|son|daughter|aunt|uncle|cousin|grandmother|grandma|grandfather|grandpa|wife|husband|partner))$/u.test(normalized) ? "allow"
         : /^(?:no|deny|decline)$/u.test(normalized) ? "deny"
           : /^(?:block|block (?:them|him|her))$/u.test(normalized) ? "block"
             : null
