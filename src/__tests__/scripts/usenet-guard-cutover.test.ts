@@ -26,7 +26,7 @@ printf 'spool:%s\n' "$1" >> ${JSON.stringify(lifecycleLog)}
 `, { mode: 0o700 })
   fs.writeFileSync(path.join(source, "emit-event.mjs"), `import fs from "node:fs"
 if (!process.argv.includes("--maintain")) process.exit(2)
-const active = fs.existsSync(${JSON.stringify(crontabFile)}) && fs.readFileSync(${JSON.stringify(crontabFile)}, "utf8").includes("# ouro:usenet-health")
+const active = fs.existsSync(${JSON.stringify(crontabFile)}) && fs.readFileSync(${JSON.stringify(crontabFile)}, "utf8").includes("usenet_health.sh # ouro:usenet-health")
 fs.appendFileSync(${JSON.stringify(lifecycleLog)}, "event:" + (active ? "active" : "inactive") + "\\n")
 `, { mode: 0o700 })
   return source
@@ -423,15 +423,18 @@ printf '%s\n' "$*" >> ${JSON.stringify(calls)}
     const legacyHook = "/boot/config/custom/ouro-events/bootstrap-spool.sh --mount"
     const hook = `/bin/bash ${installRoot}/ouro-events/install-usenet-guard.sh --boot --install-root ${installRoot} --crontab-file ${crontabFile}`
     const previousInstallerHook = `/bin/bash ${installRoot}/ouro-events/install-usenet-guard.sh --boot --crontab-file ${crontabFile}`
+    const externalMarkerCron = "0 3 * * * /opt/team/health # ouro:usenet-health"
     fs.mkdirSync(path.join(installRoot, "ouro-events"), { recursive: true })
     const killedResidue = [path.join(installRoot, "usenet_health.sh.ouro-next.999"), `${goFile}.ouro-next.999`, `${crontabFile}.ouro-restore.999`]
     for (const residue of killedResidue) fs.writeFileSync(residue, "stranded-global-bytes\n", { mode: 0o600 })
     fs.writeFileSync(goFile, `#!/bin/bash\n${legacyHook}\n${previousInstallerHook}\n${hook}\n${hook}\n/usr/local/sbin/emhttp &\n`)
+    fs.writeFileSync(crontabFile, `${externalMarkerCron}\n`, { mode: 0o600 })
 
     for (let index = 0; index < 2; index += 1) {
       execFileSync(installerPath, ["--install-only", "--source-root", source, "--install-root", installRoot, "--go-file", goFile, "--crontab-file", crontabFile])
     }
 
+    expect(fs.readFileSync(crontabFile, "utf8")).toContain(`${externalMarkerCron}\n`)
     fs.rmSync(crontabFile)
     const renderedHooks = fs.readFileSync(goFile, "utf8").split("\n").filter((line) => line.startsWith("/bin/bash ") && line.includes("install-usenet-guard.sh --boot"))
     expect(renderedHooks).toEqual([hook])
@@ -478,6 +481,31 @@ printf '%s\n' "$*" >> ${JSON.stringify(calls)}
     expect(cron.filter((line) => line.startsWith(legacyLine))).toEqual([installedLine])
     expect(cron).toContain("0 3 * * * /usr/local/bin/unrelated")
     expect(fs.readFileSync(lifecycleLog, "utf8")).not.toContain("event:active\nspool:")
+  })
+
+  it("boots through a private reserved workspace while preserving unrelated marker cron", () => {
+    const temp = root()
+    const installRoot = path.join(temp, "custom")
+    const eventRoot = path.join(installRoot, "ouro-events")
+    const crontabFile = path.join(temp, "crontab")
+    const external = "0 3 * * * /opt/team/health # ouro:usenet-health"
+    fs.mkdirSync(eventRoot, { recursive: true })
+    fs.writeFileSync(path.join(eventRoot, "bootstrap-spool.sh"), "#!/bin/bash\nexit 0\n", { mode: 0o700 })
+    fs.writeFileSync(path.join(eventRoot, "emit-usenet-event.sh"), "#!/bin/bash\nexit 0\n", { mode: 0o700 })
+    fs.writeFileSync(path.join(eventRoot, "emit-event.mjs"), "process.exit(0)\n", { mode: 0o600 })
+    fs.writeFileSync(crontabFile, `${external}\n*/15 * * * * /bin/bash /boot/config/custom/usenet_health.sh\n`, { mode: 0o600 })
+
+    execFileSync(installerPath, ["--boot", "--install-root", installRoot, "--crontab-file", crontabFile])
+
+    const cron = fs.readFileSync(crontabFile, "utf8")
+    expect(cron).toContain(`${external}\n`)
+    expect(cron).toContain(`*/15 * * * * /bin/bash ${installRoot}/usenet_health.sh # ouro:usenet-health\n`)
+    expect(cron.match(/# ouro:usenet-health$/gmu)).toHaveLength(2)
+    const boot = installerFunction("boot_activate")
+    expect(boot).toContain('private_transaction_workspace boot')
+    expect(boot).toContain('/usr/bin/install -m 0600 /dev/null "$current.error"')
+    expect(boot).toContain('/usr/bin/install -m 0600 /dev/null "$candidate"')
+    expect(boot).not.toContain("mktemp /tmp/ouro-usenet-cron")
   })
 
   it("rejects an incomplete source set before touching a fresh host", () => {
@@ -636,7 +664,7 @@ exec /usr/bin/install "$@"
     for (let index = 0; index < 2; index += 1) execFileSync(installerPath, ["--restore-root", snapshot, "--install-root", installRoot, "--go-file", goFile, "--crontab-file", crontabFile])
 
     expect(fs.readFileSync(goFile, "utf8")).toBe(`#!/bin/bash\n/bin/bash /boot/config/custom/ouro-events/install-usenet-guard.sh --boot\n${unrelatedHook}\ncurrent-go\n`)
-    expect(fs.readFileSync(crontabFile, "utf8")).toBe("unrelated-cron\n*/15 * * * * /bin/bash /boot/config/custom/usenet_health.sh\n")
+    expect(fs.readFileSync(crontabFile, "utf8")).toBe("current-cron # ouro:usenet-health\nunrelated-cron\n*/15 * * * * /bin/bash /boot/config/custom/usenet_health.sh\n")
     expect(fs.readFileSync(path.join(installRoot, "usenet_health.sh"), "utf8")).toBe("snapshot:custom/usenet_health.sh\n")
     expect(fs.readFileSync(path.join(installRoot, "ouro-events", "install-usenet-guard.sh"), "utf8")).toBe("snapshot:custom/ouro-events/install-usenet-guard.sh\n")
     expect(transactionResidue(installRoot)).toEqual([])

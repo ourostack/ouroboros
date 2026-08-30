@@ -52,6 +52,8 @@ CANONICAL_BOOT_HOOK="$CANONICAL_PREVIOUS_BOOT_HOOK --install-root /boot/config/c
 printf -v HEALTH_SCRIPT_Q '%q' "$INSTALL_ROOT/usenet_health.sh"
 CRON_LINE="*/15 * * * * /bin/bash $HEALTH_SCRIPT_Q # ouro:usenet-health"
 LEGACY_CRON_LINE="*/15 * * * * /bin/bash $HEALTH_SCRIPT_Q"
+CANONICAL_CRON_LINE="*/15 * * * * /bin/bash /boot/config/custom/usenet_health.sh # ouro:usenet-health"
+CANONICAL_LEGACY_CRON_LINE="*/15 * * * * /bin/bash /boot/config/custom/usenet_health.sh"
 ASSET_NAMES=(usenet-health.sh bootstrap-spool.sh emit-event.mjs emit-usenet-event.sh install-usenet-guard.sh)
 TARGET_PATHS=("$INSTALL_ROOT/usenet_health.sh" "$EVENT_ROOT/bootstrap-spool.sh" "$EVENT_ROOT/emit-event.mjs" "$EVENT_ROOT/emit-usenet-event.sh" "$EVENT_ROOT/install-usenet-guard.sh")
 
@@ -85,16 +87,39 @@ cleanup_stale_atomic_residue() {
   fi
 }
 
+is_canonical_butler_cron_line() {
+  case "$1" in
+    "$CRON_LINE"|"$LEGACY_CRON_LINE"|"$CANONICAL_CRON_LINE"|"$CANONICAL_LEGACY_CRON_LINE") return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+render_cron_without_owned() {
+  local source="$1" target="$2" line
+  : > "$target"
+  while IFS= read -r line || [ -n "$line" ]; do
+    if ! is_canonical_butler_cron_line "$line"; then printf '%s\n' "$line" >> "$target"; fi
+  done < "$source"
+}
+
+cron_contains_owned() {
+  local source="$1" line
+  while IFS= read -r line || [ -n "$line" ]; do
+    if is_canonical_butler_cron_line "$line"; then return 0; fi
+  done < "$source"
+  return 1
+}
+
 render_cron() {
   local source="$1" target="$2"
-  awk -v legacy="$LEGACY_CRON_LINE" 'index($0, "# ouro:usenet-health") == 0 && $0 != legacy && $0 != "*/15 * * * * /bin/bash /boot/config/custom/usenet_health.sh" { print }' "$source" > "$target"
+  render_cron_without_owned "$source" "$target"
   printf '%s\n' "$CRON_LINE" >> "$target"
   /bin/chmod 0600 "$target"
 }
 
 render_inactive_cron() {
   local source="$1" target="$2"
-  awk -v legacy="$LEGACY_CRON_LINE" 'index($0, "# ouro:usenet-health") == 0 && $0 != legacy && $0 != "*/15 * * * * /bin/bash /boot/config/custom/usenet_health.sh" { print }' "$source" > "$target"
+  render_cron_without_owned "$source" "$target"
   /bin/chmod 0600 "$target"
 }
 
@@ -237,7 +262,7 @@ install_transaction() {
 
   set +e
   status=0
-  if grep -Fq '# ouro:usenet-health' "$cron_original" || grep -Fxq "$LEGACY_CRON_LINE" "$cron_original"; then activate_cron_file "$cron_inactive" || status=$?; fi
+  if cron_contains_owned "$cron_original"; then activate_cron_file "$cron_inactive" || status=$?; fi
   if [ "$status" -eq 0 ]; then
     for index in "${!TARGET_PATHS[@]}"; do
       atomic_install "$stage/${ASSET_NAMES[$index]}" "${TARGET_PATHS[$index]}" 0700 || { status=$?; break; }
@@ -263,9 +288,16 @@ boot_activate() {
   /bin/bash "$EVENT_ROOT/bootstrap-spool.sh" --mount
   /bin/bash "$EVENT_ROOT/bootstrap-spool.sh" --self-test
   /bin/bash "$EVENT_ROOT/emit-usenet-event.sh" --self-test "$EVENT_ROOT/emit-event.mjs"
-  local current candidate
-  current="$(/usr/bin/mktemp /tmp/ouro-usenet-cron.XXXXXX)"
-  candidate="${current}.next"
+  local workspace current candidate
+  workspace="$(private_transaction_workspace boot)"
+  STAGE_PATH="$workspace"
+  cleanup() { [ -z "$STAGE_PATH" ] || /bin/rm -rf "$STAGE_PATH"; }
+  trap cleanup EXIT
+  current="$workspace/current"
+  candidate="$workspace/candidate"
+  /usr/bin/install -m 0600 /dev/null "$current"
+  /usr/bin/install -m 0600 /dev/null "$current.error"
+  /usr/bin/install -m 0600 /dev/null "$candidate"
   if [ -n "$CRONTAB_FILE" ]; then
     if [ -f "$CRONTAB_FILE" ]; then /bin/cp "$CRONTAB_FILE" "$current"; else : > "$current"; fi
   else
@@ -273,7 +305,9 @@ boot_activate() {
   fi
   render_cron "$current" "$candidate"
   activate_cron_file "$candidate"
-  /bin/rm -f "$current" "$candidate"
+  cleanup
+  STAGE_PATH=""
+  trap - EXIT
 }
 
 restore_snapshot() {
@@ -355,7 +389,7 @@ restore_snapshot() {
 
   set +e
   status=0
-  if grep -Fq '# ouro:usenet-health' "$cron_original" || grep -Fxq "$LEGACY_CRON_LINE" "$cron_original"; then activate_cron_file "$cron_inactive" || status=$?; fi
+  if cron_contains_owned "$cron_original"; then activate_cron_file "$cron_inactive" || status=$?; fi
   for index in "${!TARGET_PATHS[@]}"; do
     [ "$status" -eq 0 ] || break
     target="${TARGET_PATHS[$index]}"
