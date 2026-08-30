@@ -36,7 +36,12 @@ EVENT_ROOT="$INSTALL_ROOT/ouro-events"
 printf -v EVENT_INSTALLER_Q '%q' "$EVENT_ROOT/install-usenet-guard.sh"
 printf -v INSTALL_ROOT_Q '%q' "$INSTALL_ROOT"
 BOOT_HOOK="/bin/bash $EVENT_INSTALLER_Q --boot --install-root $INSTALL_ROOT_Q"
-if [ -n "$CRONTAB_FILE" ]; then printf -v CRONTAB_FILE_Q '%q' "$CRONTAB_FILE"; BOOT_HOOK+=" --crontab-file $CRONTAB_FILE_Q"; fi
+PREVIOUS_INSTALLER_BOOT_HOOK="/bin/bash $EVENT_INSTALLER_Q --boot"
+if [ -n "$CRONTAB_FILE" ]; then
+  printf -v CRONTAB_FILE_Q '%q' "$CRONTAB_FILE"
+  BOOT_HOOK+=" --crontab-file $CRONTAB_FILE_Q"
+  PREVIOUS_INSTALLER_BOOT_HOOK+=" --crontab-file $CRONTAB_FILE_Q"
+fi
 LEGACY_BOOT_HOOK="/boot/config/custom/ouro-events/bootstrap-spool.sh --mount"
 LEGACY_BASH_BOOT_HOOK="/bin/bash /boot/config/custom/ouro-events/bootstrap-spool.sh --mount"
 printf -v HEALTH_SCRIPT_Q '%q' "$INSTALL_ROOT/usenet_health.sh"
@@ -120,7 +125,7 @@ install_transaction() {
     printf '#!/bin/bash\n' > "$stage/go.base"
   fi
   go_candidate="$stage/go.candidate"
-  grep -Fvx -e "$LEGACY_BOOT_HOOK" -e "$LEGACY_BASH_BOOT_HOOK" -e "$BOOT_HOOK" "$stage/go.base" > "$stage/go.filtered" || true
+  grep -Fvx -e "$LEGACY_BOOT_HOOK" -e "$LEGACY_BASH_BOOT_HOOK" -e "$PREVIOUS_INSTALLER_BOOT_HOOK" -e "$BOOT_HOOK" "$stage/go.base" > "$stage/go.filtered" || true
   if [ -s "$stage/go.filtered" ]; then
     awk -v hook="$BOOT_HOOK" 'NR == 1 && /^#!/ { print; print hook; next } NR == 1 { print hook } { print }' "$stage/go.filtered" > "$go_candidate"
   else
