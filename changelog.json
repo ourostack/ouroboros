@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.743",
+      "changes": [
+        "Turn Sanctuary system evidence into one deduplicated, agent-owned care loop with durable snoozes, reminders, and resolution.",
+        "Add family-safe Telegram admission, relationship-scoped privacy and authority, approval, revocation, and friendly household UX.",
+        "Publish Mendelow Cloud Butler as a non-root multi-architecture Unraid Community Apps container with read-only privileged event ingress, provenance, and an SBOM."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.742",
       "changes": [
         "Ship Sanctuary on the cost-effective MiniMax-M3 provider path after live vault readiness proved both outward and inner lanes, with optional Gemini no longer required for readiness.",
