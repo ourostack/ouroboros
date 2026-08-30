@@ -52,6 +52,7 @@ import { getExternalEventRoot, type PrivilegedProtectiveAction } from "../heart/
 import { withSessionTurnLease } from "../mind/session-transaction"
 import { cancelRelationshipFollowUps, hasActiveRelationshipFollowUp, resetAwaitToolDeps, setAwaitToolDeps } from "../repertoire/tools-awaiting"
 import { getPrivateRuntimePendingDir, queuePendingMessage } from "../mind/pending"
+import type { CrossChatDeliveryRequest, CrossChatDirectDeliveryResult } from "../heart/cross-chat-delivery"
 import {
   authorizeRelationshipAccess,
   createRelationshipAuthorizationEvaluator,
@@ -135,6 +136,7 @@ export interface TelegramSenseApp {
   run(signal?: AbortSignal): Promise<void>
   sendProactive(text: string, signal?: AbortSignal): Promise<void>
   sendExternalEventDecision(input: { source: string; eventId: string; generation: number; text: string; signal?: AbortSignal }): Promise<void>
+  sendAwaitFollowUp(request: CrossChatDeliveryRequest): Promise<CrossChatDirectDeliveryResult>
   stop(): Promise<void>
 }
 
@@ -1080,27 +1082,28 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   recordAcceptedEffects = async (sessionPath: string, artifacts: TelegramEffectArtifact[], bootstrapInbound?: { text: string; reference: string }, causalEventIds?: Readonly<Record<string, string>>): Promise<void> => {
     await recordTelegramEffectsInSession({ store: getEffectJournal(), sessionPath, artifacts, ...(bootstrapInbound ? { inbound: bootstrapInbound } : {}), ...(causalEventIds ? { causalEventIds } : {}) })
   }
+  const deliverAwaitFollowUp = async (request: CrossChatDeliveryRequest): Promise<CrossChatDirectDeliveryResult> => {
+    if (!request.requestId) return { status: "blocked", detail: "Telegram follow-up is missing its request binding" }
+    try {
+      const expiry = request.deliveryId?.endsWith(":expired") === true
+      const artifact = await executeAuthorizedEffect({
+        idempotencyKey: `await-${expiry ? "expiry-" : ""}follow-up:${request.requestId}:${createHash("sha256").update(request.deliveryId ?? request.content).digest("hex")}`,
+        target: { kind: "approved_relationship", friendId: request.friendId, sessionKey: request.key, requestId: request.requestId },
+        authorClass: "butler",
+        effect: { kind: "text", text: request.content },
+      })
+      await recordAcceptedEffects(getSenseSessionPath(options.agentName, request.friendId, "telegram", request.key, agentRoot), [artifact])
+      return { status: "delivered_now", detail: "sent to the exact request-bound Telegram chat" }
+    } catch (error) {
+      return { status: "blocked", detail: error instanceof Error ? error.message : String(error) }
+    }
+  }
   setAwaitToolDeps({
     buildDeliveryDeps: () => ({
       agentName: options.agentName,
       queuePending: (message) => queuePendingMessage(getPrivateRuntimePendingDir(options.agentName), message),
       deliverers: {
-        telegram: async (request) => {
-          if (!request.requestId) return { status: "blocked", detail: "Telegram follow-up is missing its request binding" }
-          try {
-            const expiry = request.deliveryId?.endsWith(":expired") === true
-            const artifact = await executeAuthorizedEffect({
-              idempotencyKey: `await-${expiry ? "expiry-" : ""}follow-up:${request.requestId}:${createHash("sha256").update(request.deliveryId ?? request.content).digest("hex")}`,
-              target: { kind: "approved_relationship", friendId: request.friendId, sessionKey: request.key, requestId: request.requestId },
-              authorClass: "butler",
-              effect: { kind: "text", text: request.content },
-            })
-            await recordAcceptedEffects(getSenseSessionPath(options.agentName, request.friendId, "telegram", request.key, agentRoot), [artifact])
-            return { status: "delivered_now", detail: "sent to the exact request-bound Telegram chat" }
-          } catch (error) {
-            return { status: "blocked", detail: error instanceof Error ? error.message : String(error) }
-          }
-        },
+        telegram: deliverAwaitFollowUp,
       },
     }),
   })
@@ -1619,6 +1622,9 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         await recordAcceptedEffects(sessionPath, [effect])
       })
     },
+    async sendAwaitFollowUp(request) {
+      return runWithAcceptanceAuditOwner(() => deliverAwaitFollowUp(request))
+    },
     stop() {
       if (stopPromise) return stopPromise
       stopPromise = (async () => {
@@ -1810,6 +1816,15 @@ export async function sendTelegramExternalEventDecision(
   const app = await startTelegramSenseApp(agentName)
   try {
     await app.sendExternalEventDecision(input)
+  } finally {
+    await app.stop()
+  }
+}
+
+export async function sendTelegramAwaitFollowUp(agentName: string, request: CrossChatDeliveryRequest): Promise<CrossChatDirectDeliveryResult> {
+  const app = await startTelegramSenseApp(agentName)
+  try {
+    return await app.sendAwaitFollowUp(request)
   } finally {
     await app.stop()
   }

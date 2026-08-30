@@ -873,6 +873,12 @@ void startDaemonAfterContainerCredentialBootstrap({
             awaitName,
             deliveryDeps: {
               agentName: agent,
+              deliverers: {
+                telegram: async (request) => {
+                  const { sendTelegramAwaitFollowUp } = await import("../../senses/telegram")
+                  return sendTelegramAwaitFollowUp(agent, request)
+                },
+              },
               queuePending: () => {
                 // Best-effort: queue private-runtime wake so the agent processes the alert path.
                 sendDaemonCommand(socketPath, buildAwaitPrivateWakeCommand({
