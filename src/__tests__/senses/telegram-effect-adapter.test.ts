@@ -431,5 +431,16 @@ describe("Telegram effect adapter", () => {
     expect(fs.existsSync(sessionPath)).toBe(false)
     expect(resolveTelegramReply(store, { messageId: 333, friendId: "ari", sessionKey: "telegram:ari" })).toBeNull()
     expect(resolveTelegramControlArtifact(store, { messageId: 333, friendId: "ari", sessionKey: "telegram:ari" })).toEqual({ artifactId: card.id, requestId: "a".repeat(20) })
+
+    const terminal = prepareTelegramEffect(store, {
+      idempotencyKey: "owner-card-terminal:admission:denied",
+      target: { kind: "approved_relationship", friendId: "ari", sessionKey: "telegram:ari", requestId: "a".repeat(20) },
+      authorClass: "control",
+      effect: { kind: "edit", messageId: 333, text: "Denied" },
+      authorization,
+    })
+    await executeTelegramEffect(store, terminal.id, { request: vi.fn(async () => true) }, () => authorization)
+    await recordTelegramEffectsInSession({ store, sessionPath, artifacts: [store.read(terminal.id)] })
+    expect(resolveTelegramControlArtifact(store, { messageId: 333, friendId: "ari", sessionKey: "telegram:ari" })).toEqual({ artifactId: card.id, requestId: "a".repeat(20) })
   })
 })

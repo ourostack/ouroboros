@@ -437,6 +437,23 @@ describe("tools-awaiting", () => {
       const result = parse(cancelAwaitDef.handler({ name: "hey_export" }, undefined) as string)
       expect(result.error).toMatch(/not found/)
     })
+
+    it("limits relationship cancellation to the exact friend, channel, key, and request", async () => {
+      const context = (friendId: string, requestId: string) => ({
+        currentSession: { friendId, channel: "telegram", key: `telegram:777:${friendId}`, sessionPath: "/tmp/session.json" },
+        relationshipAuthorization: { requestId, authorizedContextScopes: ["own_requests"], advertisedToolNames: ["await_condition", "cancel_await"], authorizeTool: vi.fn() },
+      })
+      const mine = context("sibling", "request-mine")
+      const otherRequest = context("sibling", "request-other")
+      const otherFriend = context("cousin", "request-mine")
+      await fileAwaitDef.handler({ name: "mine", condition: "mine", cadence: "5m" }, mine as any)
+      await fileAwaitDef.handler({ name: "other", condition: "other", cadence: "5m" }, otherRequest as any)
+
+      expect(parse(cancelAwaitDef.handler({ name: "other" }, mine as any) as string).error).toMatch(/current relationship request/u)
+      expect(parse(cancelAwaitDef.handler({ name: "mine" }, otherFriend as any) as string).error).toMatch(/current relationship request/u)
+      expect(parse(cancelAwaitDef.handler({ name: "mine" }, mine as any) as string).canceled).toBe("mine")
+      expect(fs.existsSync(path.join(agentRoot, "awaiting", "other.md"))).toBe(true)
+    })
   })
 
   describe("delivery deps injection", () => {

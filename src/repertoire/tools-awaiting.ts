@@ -347,11 +347,12 @@ export function cancelAwaitTool(name: string, reason: string | undefined, agentR
   return JSON.stringify({ canceled: name, archived: awaitDoneFilePath(agentRoot, name) })
 }
 
-export function hasActiveRelationshipFollowUp(agentRoot: string, input: { friendId: string; channel: string; key: string; requestId: string; now?: number }): boolean {
+export function hasActiveRelationshipFollowUp(agentRoot: string, input: { friendId: string; channel: string; key: string; requestId: string; awaitName?: string; allowElapsed?: boolean; now?: number }): boolean {
   const obligation = readVerifiedPendingObligations(agentRoot).find((candidate) => candidate.requestId === input.requestId
     && candidate.origin.friendId === input.friendId && candidate.origin.channel === input.channel && candidate.origin.key === input.key
     && candidate.owedTo?.friendId === input.friendId && candidate.owedTo.channel === input.channel && candidate.owedTo.key === input.key
-    && candidate.currentArtifact?.startsWith("awaiting/") && candidate.currentArtifact.endsWith(".md"))
+    && candidate.currentArtifact?.startsWith("awaiting/") && candidate.currentArtifact.endsWith(".md")
+    && (!input.awaitName || candidate.currentArtifact === `awaiting/${input.awaitName}.md`))
   if (!obligation) return false
   const name = path.basename(obligation.currentArtifact!, ".md")
   if (!VALID_NAME.test(name) || obligation.currentArtifact !== `awaiting/${name}.md`) return false
@@ -359,7 +360,7 @@ export function hasActiveRelationshipFollowUp(agentRoot: string, input: { friend
   if (!awaiting || awaiting.status !== "pending" || awaiting.obligation_id !== obligation.id || awaiting.request_id !== input.requestId
     || awaiting.filed_for_friend_id !== input.friendId || awaiting.filed_from !== input.channel || awaiting.filed_from_key !== input.key) return false
   const maxAge = parseCadenceToMs(awaiting.max_age)
-  return maxAge === null || !awaiting.created_at || (input.now ?? Date.now()) < Date.parse(awaiting.created_at) + maxAge
+  return input.allowElapsed === true || maxAge === null || !awaiting.created_at || (input.now ?? Date.now()) < Date.parse(awaiting.created_at) + maxAge
 }
 
 export function cancelRelationshipFollowUps(agentRoot: string, agentName: string, input: { friendId: string; channel: string; key: string }): void {
@@ -467,9 +468,20 @@ export const awaitingToolDefinitions: ToolDefinition[] = [
         },
       },
     },
-    handler: (a) => {
+    handler: (a, ctx) => {
       const agentRoot = getAgentRoot()
       const agentName = getAgentName()
+      if (ctx?.relationshipAuthorization) {
+        const session = ctx.currentSession
+        const requestId = ctx.relationshipAuthorization.requestId
+        if (!session || !requestId || !hasActiveRelationshipFollowUp(agentRoot, {
+          friendId: session.friendId,
+          channel: session.channel,
+          key: session.key,
+          requestId,
+          awaitName: String(a.name ?? ""),
+        })) return JSON.stringify({ error: "cancel_await is limited to the current relationship request" })
+      }
       return cancelAwaitTool(a.name, a.reason, agentRoot, agentName)
     },
     riskProfile: { mutates: "durable_state_write", risk: "high", reason: "archives a durable await condition" },
