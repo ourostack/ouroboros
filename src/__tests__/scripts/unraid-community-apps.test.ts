@@ -95,6 +95,10 @@ describe("Mendelow Cloud Butler Community Apps release", () => {
 
   it("installs privileged event assets from the exact reviewed image before Butler mutation", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const installer = fs.readFileSync("deploy/unraid/ouro-events/install-usenet-guard.sh", "utf8")
+    const defaultInstallRoot = installer.match(/^INSTALL_ROOT="([^"]+)"$/mu)?.[1]
+    expect(defaultInstallRoot).toBeTruthy()
+    const bootHook = `/bin/bash ${defaultInstallRoot}/ouro-events/install-usenet-guard.sh --boot --install-root ${defaultInstallRoot}`
     const update = runbook.slice(runbook.indexOf("Update:"), runbook.indexOf("\nBackup:"))
     const extractIndex = update.indexOf('docker cp "$EVENT_ASSET_CONTAINER:/opt/ouro/deploy/unraid/ouro-events/." "$EVENT_ASSET_STAGE/"')
     const installIndex = update.indexOf('/bin/bash "$EVENT_ASSET_STAGE/install-usenet-guard.sh" --source-root "$EVENT_ASSET_STAGE"')
@@ -107,7 +111,8 @@ describe("Mendelow Cloud Butler Community Apps release", () => {
     expect(update).toContain("EXPECTED_EVENT_ASSETS=")
     expect(update).toContain("usenet-health.sh")
     expect(update).toContain("install-usenet-guard.sh")
-    expect(update).toContain("/bin/bash /boot/config/custom/ouro-events/install-usenet-guard.sh --boot")
+    expect(update).toContain(`    ${bootHook}\n`)
+    expect(update).toContain(`grep -Fxc '${bootHook}' /boot/config/go`)
     expect(update).toContain("/bin/bash /boot/config/custom/usenet_health.sh # ouro:usenet-health")
     expect(update).toContain("findmnt -n -o FSTYPE --target /boot/config/custom/ouro-events/spool")
     expect(update).toContain("nodev nosuid noexec")

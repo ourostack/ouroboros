@@ -1149,7 +1149,7 @@ Update:
     test "$ACTUAL_EVENT_ASSETS" = "$EXPECTED_EVENT_ASSETS"
     test -z "$(find "$EVENT_ASSET_STAGE" -mindepth 1 -maxdepth 1 \( -type l -o ! -type f \) -print -quit)"
     /bin/bash "$EVENT_ASSET_STAGE/install-usenet-guard.sh" --source-root "$EVENT_ASSET_STAGE"
-    /bin/bash /boot/config/custom/ouro-events/install-usenet-guard.sh --boot
+    /bin/bash /boot/config/custom/ouro-events/install-usenet-guard.sh --boot --install-root /boot/config/custom
     verify_installed_usenet_guard() {
       test "$(stat -c '%u:%g:%a' /boot/config/custom/usenet_health.sh)" = 0:0:600
       test "$(stat -c '%u:%g:%a' /boot/config/custom/ouro-events/bootstrap-spool.sh)" = 0:0:600
@@ -1161,7 +1161,7 @@ Update:
       cmp -s "$EVENT_ASSET_STAGE/emit-event.mjs" /boot/config/custom/ouro-events/emit-event.mjs
       cmp -s "$EVENT_ASSET_STAGE/emit-usenet-event.sh" /boot/config/custom/ouro-events/emit-usenet-event.sh
       cmp -s "$EVENT_ASSET_STAGE/install-usenet-guard.sh" /boot/config/custom/ouro-events/install-usenet-guard.sh
-      test "$(grep -Fxc '/bin/bash /boot/config/custom/ouro-events/install-usenet-guard.sh --boot' /boot/config/go)" = 1
+      test "$(grep -Fxc '/bin/bash /boot/config/custom/ouro-events/install-usenet-guard.sh --boot --install-root /boot/config/custom' /boot/config/go)" = 1
       test "$(grep -Fxc '/boot/config/custom/ouro-events/bootstrap-spool.sh --mount' /boot/config/go || true)" = 0
       INSTALLED_GUARD_CRON=$(crontab -l)
       test "$(printf '%s\n' "$INSTALLED_GUARD_CRON" | grep -Fxc '*/15 * * * * /bin/bash /boot/config/custom/usenet_health.sh # ouro:usenet-health')" = 1
