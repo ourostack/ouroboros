@@ -295,6 +295,7 @@ describe("Unraid typed read tools", () => {
     await execTool("unraid_restart_container", { container: "alpha" }, { ...context, routineActionSelection: classification.routineActionSelection })
     expect(context.sanctuary.restartContainer).toHaveBeenCalledWith({ container: "alpha" }, { routine: expect.objectContaining({ key: "unraid.restart:alpha", expectedPolicyVersion: 1, reauthorize: expect.any(Function) }) })
     expect(await approvalPolicyForInvocation("unraid_restart_container", { container: "other" }, context)).toMatchObject({ kind: "required" })
+    expect(await approvalPolicyForInvocation("unraid_restart_container", { container: 7 } as any, context)).toMatchObject({ kind: "required" })
     const beforePolicyId = (await approvalPolicyForInvocation("unraid_restart_container", { container: "other" }, context) as { policyId: string }).policyId
     updateStewardPolicy(agentRoot, { expectedVersion: 1, actor: { friendId: "ari", trustLevel: "family", sessionEventId: "evt-4" }, mutation: { kind: "set_desired_state", key: "container:other", value: "on", provenance: "stated", source: "request" } })
     const afterPolicyId = (await approvalPolicyForInvocation("unraid_restart_container", { container: "other" }, context) as { policyId: string }).policyId

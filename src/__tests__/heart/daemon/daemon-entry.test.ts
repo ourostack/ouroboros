@@ -314,6 +314,7 @@ describe("daemon entrypoint", () => {
     const configureDaemonRuntimeLogger = vi.fn()
     const daemonCtor = vi.fn()
     const processManagerCtor = vi.fn()
+    const handleCommand = vi.fn(async () => ({ ok: true, data: { event: { shouldWake: true } } }))
     const checkAgentConfig = vi.fn(() => ({ ok: true }))
     const checkAgentConfigWithProviderHealth = vi.fn(async () => {
       throw new Error("passive daemon startup must not run live provider health checks")
@@ -329,6 +330,7 @@ describe("daemon entrypoint", () => {
         }
         start = start
         stop = stop
+        handleCommand = handleCommand
       },
     }))
     vi.doMock("../../../heart/daemon/process-manager", () => ({
@@ -390,6 +392,7 @@ describe("daemon entrypoint", () => {
       emitNervesEvent,
       checkAgentConfig,
       checkAgentConfigWithProviderHealth,
+      handleCommand,
       daemonOptions: daemonCtor.mock.calls[0]?.[0] as {
         schedulerFireVerifier: (command: unknown) => unknown
         schedulerFireConsumer: (origin: unknown) => unknown
@@ -823,7 +826,7 @@ describe("daemon entrypoint", () => {
 
   it("wires private-runtime workers as passive by default and uses offline config validation", async () => {
     supercronicMocks.policy = { scheduler: "supercronic", updates: "disabled" }
-    const { emitNervesEvent, checkAgentConfig, checkAgentConfigWithProviderHealth, daemonOptions, processManagerOptions } =
+    const { emitNervesEvent, checkAgentConfig, checkAgentConfigWithProviderHealth, handleCommand, daemonOptions, processManagerOptions } =
       await importDaemonEntryWithPrivateRuntimeConfig({ autoStart: false, source: "default" })
 
     expect(processManagerOptions.agents).toEqual([expect.objectContaining({
@@ -859,12 +862,25 @@ describe("daemon entrypoint", () => {
     runSanctuaryHealthHabitMock.mockImplementationOnce(async (_agent, options: any) => {
       options.acceptanceMetrics.onPrivateTurnStart()
       options.acceptanceMetrics.onProviderInvocation()
+      await expect(options.submitEvidence({ source: "sanctuary-health", eventId: "books" })).resolves.toEqual({ shouldWake: true })
       return { ok: true, message: "acceptance health" }
     })
     await expect(daemonOptions.nativeHabitRunner({
       agent: "sanctuary", habitName: "sanctuary-health", trigger: "cron", occurrenceId: "occurrence-1", runnerId: "runner-1", schedulerOrigin,
     })).resolves.toEqual({ ok: true, message: "acceptance health" })
     expect(sanctuaryAcceptanceMocks.recordReceipt).toHaveBeenCalledWith(expect.objectContaining({ occurrenceId: "occurrence-1", runnerId: "runner-1", providerInvocationCount: 1, privateTurnCount: 1 }))
+    expect(handleCommand).toHaveBeenCalledWith(expect.objectContaining({ kind: "external.event.submit", source: "sanctuary-health", eventId: "books" }))
+
+    handleCommand.mockResolvedValueOnce({ ok: false, error: "evidence rejected" } as never)
+    runSanctuaryHealthHabitMock.mockImplementationOnce(async (_agent, options: any) => options.submitEvidence({ source: "sanctuary-health", eventId: "books" }))
+    await expect(daemonOptions.nativeHabitRunner({
+      agent: "sanctuary", habitName: "sanctuary-health",
+    })).rejects.toThrow("evidence rejected")
+    handleCommand.mockResolvedValueOnce({ ok: false } as never)
+    runSanctuaryHealthHabitMock.mockImplementationOnce(async (_agent, options: any) => options.submitEvidence({ source: "sanctuary-health", eventId: "books" }))
+    await expect(daemonOptions.nativeHabitRunner({
+      agent: "sanctuary", habitName: "sanctuary-health",
+    })).rejects.toThrow("Sanctuary health evidence submission failed")
 
     sanctuaryAcceptanceMocks.readCursor.mockReturnValueOnce(null)
     await expect(daemonOptions.nativeHabitRunner({

@@ -206,6 +206,12 @@ function setupSettledTurn(text: string = "hello from the agent") {
 // ── Tests ──────────────────────────────────────────────────────
 
 describe("extractOutwardSenseDeliveryText", () => {
+  it("derives the session path from the canonical agent root when no override is supplied", async () => {
+    const { getSenseSessionPath } = await import("../../senses/shared-turn")
+    expect(getSenseSessionPath("test-agent", "friend", "telegram", "telegram:1:2"))
+      .toBe("/tmp/test-agent/state/sessions/friend/telegram/telegram_1_2.json")
+  })
+
   it("prefers latest assistant content when present", async () => {
     const { extractOutwardSenseDeliveryText } = await import("../../senses/shared-turn")
     const messages: ChatCompletionMessageParam[] = [

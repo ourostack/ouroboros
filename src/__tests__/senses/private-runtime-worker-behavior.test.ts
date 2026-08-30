@@ -219,6 +219,33 @@ describe("private-runtime-worker", () => {
     expect(runTurn).toHaveBeenNthCalledWith(2, expect.not.objectContaining({ externalEvent: expect.anything() }))
   })
 
+  it("renews every related event lease and reports Error and non-Error renewal failures", async () => {
+    const runTurn = vi.fn().mockResolvedValue(undefined)
+    const worker = createPrivateRuntimeWorker(runTurn)
+    const relatedEvents = [
+      { schemaVersion: 1 as const, recordPath: "/events/slugger/health/jellyfin.json", agent: "slugger", source: "health", eventId: "jellyfin", generation: 2, observationRevision: "rev-2", claimOwner: "lease-2" },
+      { schemaVersion: 1 as const, recordPath: "/events/slugger/health/sonarr.json", agent: "slugger", source: "health", eventId: "sonarr", generation: 3, observationRevision: "rev-3", claimOwner: "lease-3" },
+    ]
+    const externalEvent = { schemaVersion: 1 as const, recordPath: "/events/slugger/health/books.json", agent: "slugger", source: "health", eventId: "books", generation: 1, observationRevision: "rev-1", claimOwner: "lease-1", relatedEvents }
+    mockRenewExternalEventClaim.mockImplementation((recordPath: string) => {
+      if (recordPath.endsWith("books.json")) throw new Error("primary lease failed")
+      if (recordPath.endsWith("jellyfin.json")) throw "related lease failed"
+      return { claimExpiresAt: "2026-08-29T18:00:30.000Z" }
+    })
+
+    await worker.handleMessage({ type: "message", externalEvent })
+
+    expect(mockRenewExternalEventClaim).toHaveBeenCalledTimes(3)
+    expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.external_event_lease_renew_error",
+      meta: expect.objectContaining({ error: "primary lease failed" }),
+    }))
+    expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.external_event_lease_renew_error",
+      meta: expect.objectContaining({ error: "related lease failed" }),
+    }))
+  })
+
   it("keeps one external-event claim alive while queued and during a long turn", async () => {
     vi.useFakeTimers()
     let releaseBoot!: () => void

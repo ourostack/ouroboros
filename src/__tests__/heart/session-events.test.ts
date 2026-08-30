@@ -1873,6 +1873,9 @@ describe("session events", () => {
     const message: OpenAI.ChatCompletionMessageParam = { role: "user", content: "About that one…" }
     stampIngressRelations(message, { replyToEventId: "evt-000040", threadRootEventId: "evt-000001", references: ["telegram-artifact:abc", "request:req-1"] })
     expect(getIngressRelations(message)).toEqual({ replyToEventId: "evt-000040", threadRootEventId: "evt-000001", references: ["telegram-artifact:abc", "request:req-1"] })
+    ;(message as any)._ingressRelations.references = "not-an-array"
+    expect(getIngressRelations(message)?.references).toEqual([])
+    ;(message as any)._ingressRelations.references = ["telegram-artifact:abc", "request:req-1"]
     const { envelope } = buildCanonicalSessionEnvelope({
       existing: null,
       previousMessages: [],

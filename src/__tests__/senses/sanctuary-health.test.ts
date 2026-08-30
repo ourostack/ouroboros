@@ -461,15 +461,23 @@ describe("Sanctuary deterministic health sweep", () => {
     }
   })
 
-  it("rejects unavailable runtime", async () => {
+  it("normalizes legacy delivery receipts before rejecting an unavailable runtime", async () => {
     const filePath = statePath("sanctuary-health-transitions-")
+    writeState(filePath, validState({
+      outbox: validDelivery({ kind: undefined }),
+      indeterminateDeliveries: [validDelivery({ id: "indeterminate", kind: undefined })],
+      deliveredReceipts: [validDeliveredReceipt({ kind: undefined })],
+    }))
     const absent = createSanctuaryHealthSweep({
       toolContext: {} as any,
       statePath: filePath,
-      fetch: vi.fn().mockResolvedValue(new Response(null, { status: 204 })),
     })
     await expect(absent()).rejects.toThrow("Sanctuary health runtime is unavailable")
-
+    expect(JSON.parse(fs.readFileSync(filePath, "utf8"))).toMatchObject({
+      outbox: null,
+      indeterminateDeliveries: [],
+      deliveredReceipts: [{ deliveryId: "delivery-1", kind: "legacy_unknown" }],
+    })
   })
 
   it("retires an attempting legacy delivery without surfacing detector prose", async () => {
