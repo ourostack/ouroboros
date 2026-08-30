@@ -6,7 +6,8 @@
       "changes": [
         "Turn Sanctuary system evidence into one deduplicated, agent-owned care loop with durable snoozes, reminders, and resolution.",
         "Add family-safe Telegram admission, relationship-scoped privacy and authority, approval, revocation, and friendly household UX.",
-        "Publish Mendelow Cloud Butler as a non-root multi-architecture Unraid Community Apps container with read-only privileged event ingress, provenance, and an SBOM."
+        "Publish Mendelow Cloud Butler as a non-root multi-architecture Unraid Community Apps container with read-only privileged event ingress, provenance, and an SBOM.",
+        "Harden exact-image Unraid updates and privileged event ingestion with transactional guard installation, canonical boot verification, bounded spool recovery, and fail-closed integrity checks."
       ]
     },
     {
