@@ -2364,14 +2364,9 @@ describe("private runtime", () => {
     const active = (await friendStore.get("household"))!
     await friendStore.put("household", { ...active, admissionState: "revoked", initiativePolicy: "none", updatedAt: "2026-08-29T00:06:00.000Z" })
     await expect(runOptions.toolContext.relationshipAuthorization.authorizeTool("resolve_await", { name: "hostile" })).rejects.toThrow(/admission or profile is not active/i)
-    await friendStore.put("household", { ...active, updatedAt: "2026-08-29T00:07:00.000Z" })
-
-    mockHandleInboundTurn.mockClear()
-    await runApprovedPrivateRuntimeTurn({ reason: "await", awaitName: "hostile", now: () => new Date("2026-08-29T00:10:00.000Z") })
-    runOptions = mockHandleInboundTurn.mock.calls[0][0].runAgentOptions
-    expect(runOptions.tools.map((tool: any) => tool.function.name)).toEqual(["await_condition", "resolve_await", "unraid_get_system"])
-    fulfillObligation(agentRoot, obligation.id)
-    await expect(runOptions.toolContext.relationshipAuthorization.authorizeTool("unraid_get_system", {})).rejects.toThrow(/binding is missing, stale, or ambiguous/i)
+    expect(fs.existsSync(path.join(awaitingDir, "hostile.md"))).toBe(false)
+    expect(fs.readFileSync(path.join(awaitingDir, ".done", "hostile.md"), "utf8")).toContain("status: canceled")
+    expect(fs.readFileSync(path.join(awaitingDir, ".done", "hostile.md"), "utf8")).toContain("cancel_reason: admission or profile is not active")
   })
 
   it("preserves the owner's current profile on a scheduled owner await", async () => {
@@ -2422,8 +2417,25 @@ describe("private runtime", () => {
     mockHandleInboundTurn.mockClear()
     mockHasActiveExternalEventAwait.mockReturnValue(false)
     await expect(runOptions.toolContext.relationshipAuthorization.authorizeTool("resolve_await", { name: "event-wait" })).rejects.toThrow(/binding is missing, stale, or ambiguous/i)
-    await expect(runApprovedPrivateRuntimeTurn({ reason: "await", awaitName: "event-wait", now: () => new Date("2026-08-30T17:01:00.000Z") })).rejects.toThrow(/authority binding is missing, stale, or ambiguous/i)
+    expect(fs.existsSync(path.join(agentRoot, "awaiting", "event-wait.md"))).toBe(false)
+    expect(fs.readFileSync(path.join(agentRoot, "awaiting", ".done", "event-wait.md"), "utf8")).toContain("cancel_reason: external event disposition is no longer active")
+  })
+
+  it("terminally cancels an orphaned external-event await before starting the model", async () => {
+    fs.writeFileSync(path.join(agentRoot, "tool-profiles.json"), JSON.stringify({ version: 2, profiles: {
+      "sanctuary-owner": { version: 1, contextScopes: [], toolNames: ["resolve_await"], effectScopes: [] },
+      "sanctuary-event": { version: 1, contextScopes: [], toolNames: ["resolve_await"], effectScopes: [] },
+    } }))
+    const friendStore = new FileFriendStore(path.join(agentRoot, "friends"))
+    await friendStore.put("owner", { id: "owner", name: "Ari", trustLevel: "family", admissionState: "active", initiativePolicy: "proactive", capabilityProfileId: "sanctuary-owner", externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: "2026-08-29T00:00:00.000Z", updatedAt: "2026-08-29T00:00:00.000Z", schemaVersion: 1 })
+    fs.mkdirSync(path.join(agentRoot, "awaiting"), { recursive: true })
+    fs.writeFileSync(path.join(agentRoot, "awaiting", "orphan.md"), "---\ncondition: wake\ncadence: 5m\nwake_at: 2026-08-30T17:00:00.000Z\nstatus: pending\nfiled_from: external-event\nfiled_for_friend_id: owner\nfiled_from_key: /events/orphan.json\nrequest_id: null\n---\n", "utf8")
+    mockHasActiveExternalEventAwait.mockReturnValue(false)
+
+    await expect(runApprovedPrivateRuntimeTurn({ reason: "await", awaitName: "orphan", now: () => new Date("2026-08-30T17:00:00.000Z") })).rejects.toThrow(/binding is missing, stale, or ambiguous/u)
     expect(mockHandleInboundTurn).not.toHaveBeenCalled()
+    expect(fs.existsSync(path.join(agentRoot, "awaiting", "orphan.md"))).toBe(false)
+    expect(fs.readFileSync(path.join(agentRoot, "awaiting", ".done", "orphan.md"), "utf8")).toContain("cancel_reason: external event disposition is no longer active")
   })
 
   it.each(["missing", "revoked", "profile-missing", "legacy", "obligation-missing", "fulfilled", "expired"] as const)("fails closed before the model for a %s relationship await", async (state) => {
@@ -2448,6 +2460,29 @@ describe("private runtime", () => {
 
     await expect(runApprovedPrivateRuntimeTurn({ reason: "await", awaitName: "unsafe", now: () => new Date("2026-08-29T00:05:00.000Z") })).rejects.toThrow(/relationship await authority|relationship admission|provenance/i)
     expect(mockHandleInboundTurn).not.toHaveBeenCalled()
+    if (state === "legacy") {
+      expect(fs.existsSync(path.join(agentRoot, "awaiting", "unsafe.md"))).toBe(true)
+    } else {
+      expect(fs.existsSync(path.join(agentRoot, "awaiting", "unsafe.md"))).toBe(false)
+      expect(fs.readFileSync(path.join(agentRoot, "awaiting", ".done", "unsafe.md"), "utf8")).toContain("status: canceled")
+    }
+  })
+
+  it.each(["registry", "friend"] as const)("preserves a request await when its %s record cannot be read", async (unreadable) => {
+    fs.writeFileSync(path.join(agentRoot, "tool-profiles.json"), JSON.stringify({ version: 2, profiles: {
+      "sanctuary-household": { version: 1, contextScopes: ["own_requests"], toolNames: ["resolve_await"], effectScopes: ["telegram.request_return"] },
+    } }), "utf8")
+    const friendStore = new FileFriendStore(path.join(agentRoot, "friends"))
+    await friendStore.put("household", { id: "household", name: "Household member", trustLevel: "friend", admissionState: "active", initiativePolicy: "request_follow_up_only", capabilityProfileId: "sanctuary-household", externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: "2026-08-29T00:00:00.000Z", updatedAt: "2026-08-29T00:00:00.000Z", schemaVersion: 1 })
+    fs.mkdirSync(path.join(agentRoot, "awaiting"), { recursive: true })
+    const obligation = createObligation(agentRoot, { origin: { friendId: "household", channel: "telegram", key: "telegram:777:888" }, owedTo: { friendId: "household", channel: "telegram", key: "telegram:777:888" }, requestId: "request-1", content: "wait" })
+    advanceObligation(agentRoot, obligation.id, { currentSurface: { kind: "session", label: "telegram/telegram:777:888" }, currentArtifact: "awaiting/repair.md", nextAction: "wait" })
+    fs.writeFileSync(path.join(agentRoot, "awaiting", "repair.md"), `---\ncondition: wait\ncadence: 5m\nstatus: pending\nfiled_from: telegram\nfiled_for_friend_id: household\nfiled_from_key: telegram:777:888\nrequest_id: request-1\nobligation_id: ${obligation.id}\n---\n`, "utf8")
+    fs.writeFileSync(unreadable === "registry" ? path.join(agentRoot, "tool-profiles.json") : path.join(agentRoot, "friends", "household.json"), "{not-json", "utf8")
+
+    await expect(runApprovedPrivateRuntimeTurn({ reason: "await", awaitName: "repair", now: () => new Date("2026-08-29T00:05:00.000Z") })).rejects.toThrow()
+    expect(fs.existsSync(path.join(agentRoot, "awaiting", "repair.md"))).toBe(true)
+    expect(fs.existsSync(path.join(agentRoot, "awaiting", ".done", "repair.md"))).toBe(false)
   })
 
   it("uses prepared habit context after revalidating the current active definition", async () => {

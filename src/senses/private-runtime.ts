@@ -8,7 +8,7 @@ import { loadSession, postTurnTrim, deferPostTurnPersist, type UsageData } from 
 import { buildSystem, flattenSystemPrompt } from "../mind/prompt"
 import { getSharedMcpManager } from "../repertoire/mcp-manager"
 import { getSanctuaryRelationshipTools, getToolsForChannel } from "../repertoire/tools"
-import { hasActiveExternalEventAwait, hasActiveRelationshipFollowUp } from "../repertoire/tools-awaiting"
+import { cancelStaleAwait, hasActiveExternalEventAwait, inspectRelationshipFollowUp } from "../repertoire/tools-awaiting"
 import { renderRelationshipPreferences } from "../repertoire/relationship-authorization"
 import { appendRunLedgerRecordNonFatal, createRunLedgerRecord, usageMetadataFromUsageData } from "../heart/run-ledger"
 import { findNonCanonicalBundlePaths } from "../mind/bundle-manifest"
@@ -139,6 +139,23 @@ const DEFAULT_PRIVATE_RUNTIME_INSTINCTS: PrivateRuntimeInstinct[] = [
 
 type RelationshipAwaitCoordinates = { friendId: string; channel: string; key: string; requestId: string | null }
 
+class StaleRelationshipAwaitError extends Error {
+  constructor(readonly reason: string) {
+    super(`Relationship await authority ${reason}`)
+  }
+}
+
+function exactFriendFileIsMissing(agentRoot: string, friendId: string): boolean {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(friendId)) throw new Error("Relationship await authority friend id is invalid")
+  try {
+    fs.lstatSync(path.join(agentRoot, "friends", `${friendId}.json`))
+    return false
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return true
+    throw error
+  }
+}
+
 function relationshipAwaitCoordinates(awaitFile: AwaitFile): RelationshipAwaitCoordinates | null {
   const values = [awaitFile.filed_for_friend_id, awaitFile.filed_from, awaitFile.filed_from_key]
   if (!awaitFile.request_id) {
@@ -160,16 +177,24 @@ function relationshipAwaitCoordinates(awaitFile: AwaitFile): RelationshipAwaitCo
   return { friendId, channel, key, requestId: awaitFile.request_id }
 }
 
-async function resolveRelationshipAwaitAuthority(store: FileFriendStore, registry: ReturnType<typeof loadRelationshipCapabilityRegistry>, coordinates: RelationshipAwaitCoordinates) {
+async function resolveRelationshipAwaitAuthority(agentRoot: string, store: FileFriendStore, registry: ReturnType<typeof loadRelationshipCapabilityRegistry>, coordinates: RelationshipAwaitCoordinates) {
   const friend = await store.get(coordinates.friendId)
-  if (!friend || friend.id !== coordinates.friendId) throw new Error("Relationship await authority friend is missing")
+  if (!friend) {
+    if (exactFriendFileIsMissing(agentRoot, coordinates.friendId)) throw new StaleRelationshipAwaitError("friend is missing")
+    throw new Error("Relationship await authority friend exists but could not be read")
+  }
+  if (friend.id !== coordinates.friendId) throw new Error("Relationship await authority friend record is ambiguous")
+  if (friend.admissionState !== "active" || !friend.capabilityProfileId) throw new StaleRelationshipAwaitError("admission or profile is not active")
+  if (!registry.profiles[friend.capabilityProfileId]) throw new StaleRelationshipAwaitError("admission or profile is not active")
+  if (coordinates.channel === "external-event" && (friend.capabilityProfileId !== "sanctuary-owner" || !registry.profiles["sanctuary-event"])) {
+    throw new StaleRelationshipAwaitError("admission or profile is not active")
+  }
   const authorization = coordinates.channel === "external-event"
-    ? await resolveProfileScopedRelationshipAuthorization({ store, registry, relationshipProfileId: "sanctuary-owner", profileId: "sanctuary-event", requestPhase: "follow_up" })
+    ? createRelationshipAuthorizationEvaluator({ friend, registry, profileId: "sanctuary-event", requestPhase: "follow_up" })
     : createRelationshipAuthorizationEvaluator({ friend, registry, requestId: coordinates.requestId!, requestPhase: "follow_up" })
   if (authorization.subject.friendId !== coordinates.friendId) throw new Error("Relationship await authority friend is ambiguous")
-  if (authorization.subject.admissionState !== "active" || !authorization.profileId) throw new Error("Relationship await authority admission or profile is not active")
-  if (!authorization.authorizeTool("resolve_await").allowed) throw new Error("Relationship await authority profile cannot resolve its await")
-  return authorization
+  if (!authorization.authorizeTool("resolve_await").allowed) throw new StaleRelationshipAwaitError("admission or profile is not active")
+  return { authorization, friend }
 }
 
 function readAspirations(agentRoot: string): string {
@@ -1222,9 +1247,12 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
   const relationshipAwait = relationshipAwaitCoordinatesValue
       ? await (async () => {
         const agentRoot = getAgentRoot(agentName)
-        const hasLiveBinding = () => relationshipAwaitCoordinatesValue.channel === "external-event"
-          ? !!parsedAwait!.wake_at && hasActiveExternalEventAwait(agentName, { recordPath: relationshipAwaitCoordinatesValue.key, awaitName: parsedAwait!.name, wakeAt: parsedAwait!.wake_at })
-          : hasActiveRelationshipFollowUp(agentRoot, {
+        const assertLiveBinding = () => {
+          const binding = relationshipAwaitCoordinatesValue.channel === "external-event"
+            ? parsedAwait!.wake_at && hasActiveExternalEventAwait(agentName, { recordPath: relationshipAwaitCoordinatesValue.key, awaitName: parsedAwait!.name, wakeAt: parsedAwait!.wake_at })
+              ? { active: true as const }
+              : { active: false as const, reason: "external event disposition is no longer active" }
+            : inspectRelationshipFollowUp(agentRoot, {
               friendId: relationshipAwaitCoordinatesValue.friendId,
               channel: relationshipAwaitCoordinatesValue.channel,
               key: relationshipAwaitCoordinatesValue.key,
@@ -1232,19 +1260,26 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
               awaitName: parsedAwait!.name,
               now: now().getTime(),
             })
-        if (!hasLiveBinding()) throw new Error("Relationship await authority binding is missing, stale, or ambiguous")
+          if (!binding.active) {
+            cancelStaleAwait(agentRoot, agentName, parsedAwait!.name, binding.reason)
+            throw new Error(`Relationship await authority binding is missing, stale, or ambiguous: ${binding.reason}`)
+          }
+        }
+        assertLiveBinding()
         const store = new FileFriendStore(path.join(agentRoot, "friends"))
-        const resolve = () => resolveRelationshipAwaitAuthority(
-          store,
-          loadRelationshipCapabilityRegistry(agentRoot),
-          relationshipAwaitCoordinatesValue,
-        )
-        const initial = await resolve()
-        const friend = await store.get(relationshipAwaitCoordinatesValue.friendId)
-        if (!friend) throw new Error("Relationship await authority friend is missing")
+        const resolve = () => resolveRelationshipAwaitAuthority(agentRoot, store, loadRelationshipCapabilityRegistry(agentRoot), relationshipAwaitCoordinatesValue)
+        const resolveOrCancel = async () => {
+          try {
+            return await resolve()
+          } catch (error) {
+            if (error instanceof StaleRelationshipAwaitError) cancelStaleAwait(agentRoot, agentName, parsedAwait!.name, error.reason)
+            throw error
+          }
+        }
+        const initial = await resolveOrCancel()
         return {
           store,
-          context: { friend, channel: innerCapabilities } as ResolvedContext,
+          context: { friend: initial.friend, channel: innerCapabilities } as ResolvedContext,
           currentSession: {
             friendId: relationshipAwaitCoordinatesValue.friendId,
             channel: relationshipAwaitCoordinatesValue.channel,
@@ -1255,12 +1290,12 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
           },
           relationshipAuthorization: {
             ...(relationshipAwaitCoordinatesValue.requestId ? { requestId: relationshipAwaitCoordinatesValue.requestId } : {}),
-            profileId: initial.profileId,
-            authorizedContextScopes: initial.authorizedContextScopes,
-            advertisedToolNames: relationshipAwaitCoordinatesValue.channel === "external-event" ? ["resolve_await"] : initial.advertisedToolNames,
+            profileId: initial.authorization.profileId,
+            authorizedContextScopes: initial.authorization.authorizedContextScopes,
+            advertisedToolNames: relationshipAwaitCoordinatesValue.channel === "external-event" ? ["resolve_await"] : initial.authorization.advertisedToolNames,
             authorizeTool: async (name: string, args: Record<string, string>) => {
-              if (!hasLiveBinding()) throw new Error("Relationship await authority binding is missing, stale, or ambiguous")
-              const decision = (await resolve()).authorizeTool(name, args)
+              assertLiveBinding()
+              const decision = (await resolveOrCancel()).authorization.authorizeTool(name, args)
               return relationshipAwaitCoordinatesValue.channel !== "external-event" || name === "resolve_await"
                 ? decision
                 : { ...decision, allowed: false as const, reason: "external event await wake is resolve-only" }
