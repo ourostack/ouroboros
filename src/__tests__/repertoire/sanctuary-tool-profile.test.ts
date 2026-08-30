@@ -36,6 +36,7 @@ describe("Sanctuary active tool profile", () => {
     expect(packaged.profiles["sanctuary-event"].toolNames).toEqual(expect.arrayContaining(["external_event_disposition", "query_cares", "care_manage", "await_condition", "steward_policy_manage", "rest"]))
     expect(packaged.profiles["sanctuary-event"].toolNames).not.toContain("send_message")
     expect(packaged.profiles["sanctuary-household"].toolNames).not.toContain("ponder")
+    expect(packaged.profiles["sanctuary-household"].toolNames).toContain("unraid_restart_container")
     expect(names).not.toEqual(expect.arrayContaining(["shell", "read_file", "write_file", "jellyseerr_request", "sonarr_add", "radarr_add"]))
     expect(Object.keys(packaged.profiles)).toEqual(["sanctuary-owner", "sanctuary-household", "sanctuary-event"])
   })

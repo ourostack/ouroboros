@@ -168,6 +168,20 @@ export interface ToolContext {
   routineActionSelection?: Readonly<{ key: string; target: string; expectedPolicyVersion: number }>;
 }
 
+export type RoutineActionRequester =
+  | { kind: "owner"; friendId: string }
+  | { kind: "household_request"; friendId: string; requestId: string; origin: { friendId: string; channel: string; key: string } }
+
+export function routineActionRequester(ctx?: ToolContext): RoutineActionRequester | null {
+  const actor = ctx?.relationshipAuthorization?.actor
+  if (!actor) return null
+  if (actor.trustLevel === "family") return { kind: "owner", friendId: actor.friendId }
+  const requestId = ctx?.relationshipAuthorization?.requestId
+  const session = ctx?.currentSession
+  if (actor.trustLevel !== "friend" || !requestId || !session || session.friendId !== actor.friendId) return null
+  return { kind: "household_request", friendId: actor.friendId, requestId, origin: { friendId: session.friendId, channel: session.channel, key: session.key } }
+}
+
 export type ToolHandler = (args: Record<string, string>, ctx?: ToolContext) => string | Promise<string>;
 export type ToolMutationKind = "none" | "private_attention_write" | "durable_state_write" | "external_side_effect"
 export type ToolHighRiskMutationKind = Exclude<ToolMutationKind, "none">

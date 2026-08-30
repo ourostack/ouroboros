@@ -1,5 +1,5 @@
 import type OpenAI from "openai";
-import { baseToolDefinitions, editFileReadTracker } from "./tools-base";
+import { baseToolDefinitions, editFileReadTracker, routineActionRequester } from "./tools-base";
 import type { ToolApprovalPolicy, ToolContext, ToolDefinition } from "./tools-base";
 import { teamsToolDefinitions } from "./tools-teams";
 import { bluebubblesToolDefinitions } from "./tools-bluebubbles";
@@ -179,10 +179,12 @@ export function approvalPolicyForToolName(name: string, args: Record<string, unk
 
 async function routineActionInvocation(name: string, args: Record<string, unknown>, ctx?: ToolContext): Promise<NonNullable<ToolContext["routineActionSelection"]> | null> {
   const target = typeof args.container === "string" ? args.container : ""
-  if (name !== "unraid_restart_container" || !ctx?.agentRoot || ctx.relationshipAuthorization?.actor?.trustLevel !== "family" || !target) return null
+  if (name !== "unraid_restart_container" || !ctx?.agentRoot || !routineActionRequester(ctx) || !target) return null
+  const relationshipAuthorization = ctx.relationshipAuthorization
+  if (!relationshipAuthorization) return null
   let authorization: Awaited<ReturnType<NonNullable<ToolContext["relationshipAuthorization"]>["authorizeTool"]>>
   try {
-    authorization = await ctx.relationshipAuthorization.authorizeTool(name, args as Record<string, string>)
+    authorization = await relationshipAuthorization.authorizeTool(name, args as Record<string, string>)
   } catch {
     return null
   }

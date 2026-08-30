@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from "vitest"
 import { createUnraidReadTools, normalizeDockerStatus, unraidToolDefinitions } from "../../repertoire/tools-unraid"
 import { consumeRoutineActionGrant, transitionRoutineActionReceipt, updateStewardPolicy } from "../../heart/steward-policy"
 import { approvalPolicyForInvocation, classifyApprovalForInvocation, execTool } from "../../repertoire/tools"
+import { readObligations } from "../../arc/obligations"
 
 const LIVE_SERVER_ID = `${"a".repeat(64)}:${"b".repeat(64)}`
 
@@ -309,6 +310,71 @@ describe("Unraid typed read tools", () => {
     expect(JSON.parse(await restart.handler({ container: "alpha" }, { ...context, relationshipAuthorization: nonFamily.relationshipAuthorization, routineActionSelection: selection }))).toMatchObject({ ok: false, error: { code: "approval_required" } })
     expect(JSON.parse(await restart.handler({ container: "other" }, { ...context, routineActionSelection: { key: "unraid.restart:alpha", target: "alpha", expectedPolicyVersion: 2 } }))).toMatchObject({ ok: false, error: { message: expect.stringContaining("arguments changed") } })
     expect(JSON.parse(await restart.handler({ container: "alpha" }, { ...context, routineActionSelection: { key: "unraid.restart:alpha", target: "alpha", expectedPolicyVersion: 1 } }))).toMatchObject({ ok: false, error: { message: expect.stringContaining("version changed") } })
+  })
+
+  it("lets a household request trigger the Butler's standing restart grant and tracks the exact return obligation", async () => {
+    const agentRoot = root()
+    updateStewardPolicy(agentRoot, {
+      expectedVersion: 0,
+      actor: { friendId: "ari", trustLevel: "family", sessionEventId: "evt-owner-grant" },
+      mutation: { kind: "grant_routine_action", key: "unraid.restart:books", action: "unraid.container.restart", targets: ["books"], maxCount: 2, windowMs: 3_600_000, verificationRequired: true, exclusions: [], provenance: "stated" },
+    })
+    const restartContainer = vi.fn(async () => ({ ok: true, data: { container: "books", state: "running" } }))
+    const authorizeTool = vi.fn(async () => ({ allowed: true as const, receiptId: "household-request-authorization", profileVersion: 1 }))
+    const context = {
+      signin: async () => undefined,
+      agentRoot,
+      currentSession: { friendId: "brother", channel: "telegram", key: "telegram:777:888", sessionPath: path.join(agentRoot, "session.json") },
+      relationshipAuthorization: {
+        requestId: "telegram-request-1",
+        authorizedContextScopes: ["own_requests"],
+        advertisedToolNames: ["unraid_restart_container"],
+        actor: { friendId: "brother", trustLevel: "friend" as const, sessionEventId: "evt-household-request" },
+        authorizeTool,
+      },
+      sanctuary: { restartContainer },
+    } as any
+
+    const classification = await classifyApprovalForInvocation("unraid_restart_container", { container: "books" }, context)
+    expect(classification).toMatchObject({ policy: { kind: "not_required" }, routineActionSelection: { key: "unraid.restart:books", target: "books", expectedPolicyVersion: 1 } })
+    const result = JSON.parse(await execTool("unraid_restart_container", { container: "books" }, { ...context, routineActionSelection: classification.routineActionSelection }))
+    expect(result).toMatchObject({ ok: true })
+    expect(restartContainer).toHaveBeenCalledOnce()
+    expect(authorizeTool).toHaveBeenCalledWith("unraid_restart_container", { container: "books" })
+    expect(readObligations(agentRoot)).toContainEqual(expect.objectContaining({
+      origin: { friendId: "brother", channel: "telegram", key: "telegram:777:888" },
+      owedTo: { friendId: "brother", channel: "telegram", key: "telegram:777:888" },
+      requestId: "telegram-request-1",
+      status: "updating_runtime",
+      nextAction: "Report the verified outcome to the exact requester",
+      content: expect.stringContaining("books"),
+    }))
+
+    await expect(classifyApprovalForInvocation("unraid_restart_container", { container: "music" }, context))
+      .resolves.toMatchObject({ policy: { kind: "required", policyId: "sanctuary.unraid.restart.v1" } })
+    const mismatchedRequester = { ...context, currentSession: { ...context.currentSession, friendId: "someone-else" } }
+    await expect(classifyApprovalForInvocation("unraid_restart_container", { container: "books" }, mismatchedRequester))
+      .resolves.toMatchObject({ policy: { kind: "required", policyId: "sanctuary.unraid.restart.v1" } })
+    expect(restartContainer).toHaveBeenCalledOnce()
+  })
+
+  it.each(["reported failure", "thrown failure"] as const)("keeps the household return obligation visible after a %s", async (failure) => {
+    const agentRoot = root()
+    updateStewardPolicy(agentRoot, { expectedVersion: 0, actor: { friendId: "ari", trustLevel: "family", sessionEventId: "evt-owner-grant" },
+      mutation: { kind: "grant_routine_action", key: "unraid.restart:books", action: "unraid.container.restart", targets: ["books"], maxCount: 2, windowMs: 3_600_000, verificationRequired: true, exclusions: [], provenance: "stated" } })
+    const restartContainer = failure === "reported failure"
+      ? vi.fn(async () => ({ ok: false, error: { message: "still down" } }))
+      : vi.fn(async () => { throw new Error("restart transport failed") })
+    const context = { signin: async () => undefined, agentRoot,
+      currentSession: { friendId: "brother", channel: "telegram", key: "telegram:777:888", sessionPath: path.join(agentRoot, "session.json") },
+      relationshipAuthorization: { requestId: `request-${failure}`, authorizedContextScopes: ["own_requests"], advertisedToolNames: ["unraid_restart_container"],
+        actor: { friendId: "brother", trustLevel: "friend" as const, sessionEventId: "evt-request" }, authorizeTool: async () => ({ allowed: true as const, receiptId: "request-auth", profileVersion: 1 }) },
+      sanctuary: { restartContainer } } as any
+    const classification = await classifyApprovalForInvocation("unraid_restart_container", { container: "books" }, context)
+    const execution = execTool("unraid_restart_container", { container: "books" }, { ...context, routineActionSelection: classification.routineActionSelection })
+    if (failure === "thrown failure") await expect(execution).rejects.toThrow("restart transport failed")
+    else await expect(execution).resolves.toContain('"ok":false')
+    expect(readObligations(agentRoot)).toContainEqual(expect.objectContaining({ status: "investigating", nextAction: expect.stringContaining("report back") }))
   })
 
   it("requires a live versioned relationship capability before bypassing approval and degrades malformed policy to the existing approval", async () => {
