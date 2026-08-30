@@ -2,7 +2,6 @@
 
 LOG="/var/log/usenet_health.log"
 SAB_INI="/mnt/user/appdata/sabnzbd/sabnzbd.ini"
-NZB_INDEXER_NAME="NZBgeek"
 EVENT_PRODUCER="/boot/config/custom/ouro-events/emit-event.mjs"
 EVENT_ADAPTER="/boot/config/custom/ouro-events/emit-usenet-event.sh"
 
@@ -27,7 +26,7 @@ notify_unraid() {
 
 emit_transition() {
     if ! /bin/bash "$EVENT_ADAPTER" "$@" >> "$LOG" 2>&1; then
-        log "[EVENT] Canonical Butler event emission failed; Unraid UI and this log retain the verified action."
+        log "[EVENT] Canonical Butler event emission failed; Unraid UI and this log retain the observation or verified action."
     fi
 }
 
@@ -79,13 +78,11 @@ if [ "${TRIED:-0}" -ge "$MIN_ARTICLES" ]; then
     fi
 fi
 
+VERIFIED_AT=$(date -u '+%Y-%m-%dT%H:%M:%S.000Z')
+OBSERVED_SLOT=$(date -u '+%Y%m%dT%H%M%SZ')
 if [ "$AUTH_FAIL" -eq 0 ] && [ "$STALLED" -eq 0 ]; then
-    PROWL_DIR=$(docker inspect prowlarr --format '{{range .Mounts}}{{if eq .Destination "/config"}}{{.Source}}{{end}}{{end}}' 2>/dev/null)
-    PKEY=$(grep -oP '(?<=<ApiKey>)[^<]+' "$PROWL_DIR/config.xml" 2>/dev/null)
-    if [ -n "$PKEY" ]; then
-        STILL_OFF=$(curl -s --max-time 15 -H "X-Api-Key: $PKEY" "http://localhost:9696/api/v1/indexer" | jq -r --arg n "$NZB_INDEXER_NAME" '[.[] | select(.name==$n and .enable==false)] | length' 2>/dev/null)
-        if [ "${STILL_OFF:-0}" -gt 0 ]; then log "[USENET] Server auth is healthy again, but $NZB_INDEXER_NAME is still disabled; recovery remains a Butler/operator decision."; fi
-    fi
+    VERIFICATION_DIGEST=$(printf 'sabnzbd.auth_fail=0\nsabnzbd.stalled=0' | sha256sum | cut -d' ' -f1)
+    emit_transition "usenet.observe" "provider-health" "recovered:${OBSERVED_SLOT}" "usenet:provider-health:${OBSERVED_SLOT}:recovered" "Usenet provider health recovered." "SABnzbd reports no authentication failure and no queued download stall; the Butler should verify any remaining recovery work." "true" "$VERIFICATION_DIGEST" "$VERIFIED_AT"
     tail -300 "$LOG" > "${LOG}.tmp" 2>/dev/null && mv "${LOG}.tmp" "$LOG"
     exit 0
 fi
@@ -93,38 +90,12 @@ fi
 if [ "$AUTH_FAIL" -gt 0 ]; then
     SAMPLE=$(echo "$WARN" | jq -r '[.warnings[]? | select(.text | test("Authentication Failed|Failed login"; "i"))] | last | .text' 2>/dev/null)
     log "[USENET] CRITICAL — SABnzbd cannot authenticate to the news server: ${SAMPLE:0:120}"
+    VERIFICATION_DIGEST=$(printf 'sabnzbd.auth_fail=1' | sha256sum | cut -d' ' -f1)
+    emit_transition "usenet.observe" "provider-health" "auth-failed:${OBSERVED_SLOT}" "usenet:provider-health:${OBSERVED_SLOT}:auth-failed" "The news provider rejected SABnzbd authentication." "SAB warning history contains an authentication failure; the Butler should investigate credentials, provider status, and next steps." "true" "$VERIFICATION_DIGEST" "$VERIFIED_AT"
 else
     log "[USENET] CRITICAL — SABnzbd is Idle with $Q_SLOTS job(s) queued and nothing downloading."
-fi
-
-PROWL_DIR=$(docker inspect prowlarr --format '{{range .Mounts}}{{if eq .Destination "/config"}}{{.Source}}{{end}}{{end}}' 2>/dev/null)
-PKEY=$(grep -oP '(?<=<ApiKey>)[^<]+' "$PROWL_DIR/config.xml" 2>/dev/null)
-if [ -z "$PKEY" ]; then
-    log "[USENET] Could not read Prowlarr API key — no protective indexer action was attempted."
-    tail -300 "$LOG" > "${LOG}.tmp" 2>/dev/null && mv "${LOG}.tmp" "$LOG"
-    exit 1
-fi
-
-IDX=$(curl -s --max-time 15 -H "X-Api-Key: $PKEY" "http://localhost:9696/api/v1/indexer" | jq -c --arg n "$NZB_INDEXER_NAME" '.[] | select(.name==$n)' 2>/dev/null)
-if [ -z "$IDX" ]; then
-    log "[USENET] Indexer '$NZB_INDEXER_NAME' not found; no action was attempted."
-elif [ "$(echo "$IDX" | jq -r '.enable')" = "false" ]; then
-    log "[USENET] $NZB_INDEXER_NAME already disabled — no new action."
-else
-    IID=$(echo "$IDX" | jq -r '.id')
-    CODE=$(printf '%s\n' "$IDX" | jq -c '.enable = false' | curl -4 -s -o /dev/null -w '%{http_code}' --connect-timeout 8 --max-time 25 --retry 3 --retry-delay 2 --retry-all-errors -X PUT -H "X-Api-Key: $PKEY" -H 'Content-Type: application/json' --data-binary @- "http://localhost:9696/api/v1/indexer/$IID")
-    VERIFIED_OFF=$(curl -s --max-time 15 -H "X-Api-Key: $PKEY" "http://localhost:9696/api/v1/indexer" | jq -r --arg n "$NZB_INDEXER_NAME" '[.[] | select(.name==$n and .enable==false)] | length' 2>/dev/null)
-    VERIFIED_AT=$(date -u '+%Y-%m-%dT%H:%M:%S.000Z')
-    VERIFICATION_DIGEST=$(printf 'prowlarr.indexer.%s.enabled=%s' "$NZB_INDEXER_NAME" "$([ "${VERIFIED_OFF:-0}" -eq 1 ] && echo false || echo unknown)" | sha256sum | cut -d' ' -f1)
-    if { [ "$CODE" = "202" ] || [ "$CODE" = "200" ]; } && [ "${VERIFIED_OFF:-0}" -eq 1 ]; then
-        curl -s -o /dev/null --max-time 20 -X POST -H "X-Api-Key: $PKEY" -H 'Content-Type: application/json' -d '{"name":"ApplicationIndexerSync"}' "http://localhost:9696/api/v1/command"
-        log "[USENET] Verified $NZB_INDEXER_NAME disabled and requested downstream sync."
-        notify_unraid "Usenet provider unavailable" "The usenet indexer was verified disabled after the provider failed. Torrents are unaffected; the Butler will investigate." "alert"
-        emit_transition "prowlarr.disable-indexer" "provider-unavailable" "indexer-disable:${TODAY}:verified" "prowlarr:disable:${TODAY}:provider-unavailable" "The usenet indexer was disabled after provider failure." "A separate Prowlarr read verified the named indexer enable=false after the protective action." "true" "$VERIFICATION_DIGEST" "$VERIFIED_AT"
-    else
-        log "[USENET] Indexer disable was not independently verified; only a verification-failure event was emitted."
-        emit_transition "prowlarr.disable-indexer" "provider-unavailable" "indexer-disable:${TODAY}:unverified" "prowlarr:disable-request:${TODAY}:provider-unavailable" "The guard requested an indexer disable but could not verify it." "A separate Prowlarr read did not verify the named indexer enable=false; investigate before reporting protection." "false" "$VERIFICATION_DIGEST" "$VERIFIED_AT"
-    fi
+    VERIFICATION_DIGEST=$(printf 'sabnzbd.queue.status=Idle\nsabnzbd.queue.slots=%s' "$Q_SLOTS" | sha256sum | cut -d' ' -f1)
+    emit_transition "usenet.observe" "provider-health" "stalled:${OBSERVED_SLOT}" "usenet:provider-health:${OBSERVED_SLOT}:stalled" "Usenet downloads appear stalled." "SABnzbd is idle with queued jobs; the Butler should investigate the provider and download path before deciding what to do." "true" "$VERIFICATION_DIGEST" "$VERIFIED_AT"
 fi
 
 tail -300 "$LOG" > "${LOG}.tmp" 2>/dev/null && mv "${LOG}.tmp" "$LOG"

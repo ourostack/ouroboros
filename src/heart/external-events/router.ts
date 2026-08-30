@@ -155,11 +155,11 @@ interface PrivilegedExternalEventEnvelope {
   schemaVersion: 1
   agent: "sanctuary"
   source: typeof PRIVILEGED_EVENT_SOURCE
-  eventType: "usenet.protective_action"
+  eventType: "usenet.protective_action" | "usenet.health_observation"
   incidentKey: string
   transitionId: string
   observationRevision: string
-  action: "sabnzbd.pause" | "prowlarr.disable-indexer"
+  action: "sabnzbd.pause" | "prowlarr.disable-indexer" | "usenet.observe"
   actionReceipt: string
   protectiveStateVerified: boolean
   protectiveStateDigest: string
@@ -562,7 +562,7 @@ export function buildExternalEventMessage(record: ExternalEventRecord): string {
   ].join("\n")
 }
 
-type RecordExternalEventOptions = { root?: string; now?: () => string; dispatchEnabled?: boolean; [privilegedIngress]?: { nonce: string; protectiveAction: PrivilegedProtectiveAction } }
+type RecordExternalEventOptions = { root?: string; now?: () => string; dispatchEnabled?: boolean; quietInitialReceipt?: boolean; [privilegedIngress]?: { nonce: string; protectiveAction?: PrivilegedProtectiveAction } }
 
 function recordExternalEventInternal(input: ExternalEventInput, options: RecordExternalEventOptions = {}): ExternalEventRecord {
   validateExternalEventInput(input)
@@ -613,8 +613,11 @@ function recordExternalEventInternal(input: ExternalEventInput, options: RecordE
       })
       return updated
     }
-    const shouldWake = !existing
-      || (existing.disposition ? predicateMatches(existing.disposition, input, revision) : existing.executionState === "dead_letter" && revision !== existing.observationRevision)
+    const quietInitialReceipt = options.quietInitialReceipt === true && !existing
+    const quietBaselineChanged = existing?.source === PRIVILEGED_EVENT_SOURCE && existing.eventType === "usenet.health_observation"
+      && existing.executionState === "handled" && !existing.disposition && revision !== existing.observationRevision
+    const shouldWake = !quietInitialReceipt && (!existing || quietBaselineChanged
+      || (existing.disposition ? predicateMatches(existing.disposition, input, revision) : existing.executionState === "dead_letter" && revision !== existing.observationRevision))
     const generation = existing ? existing.generation + (shouldWake ? 1 : 0) : 1
     const record: ExternalEventRecord = {
     schemaVersion: 2,
@@ -634,15 +637,15 @@ function recordExternalEventInternal(input: ExternalEventInput, options: RecordE
     observationRevision: revision,
     observationDigest: digest,
     transition: input.transition ?? (existing ? "unchanged" : "opened"),
-    executionState: shouldWake ? "received" : existing!.executionState,
+    executionState: quietInitialReceipt ? "handled" : shouldWake ? "received" : existing!.executionState,
     generation,
-    attemptCount: shouldWake ? 0 : existing!.attemptCount,
-    claimOwner: shouldWake ? null : existing!.claimOwner,
-    claimExpiresAt: shouldWake ? null : existing!.claimExpiresAt,
-    nextAttemptAt: shouldWake ? null : existing!.nextAttemptAt,
-    lastError: shouldWake ? null : existing!.lastError,
-    disposition: shouldWake ? null : existing!.disposition,
-    pendingObservation: shouldWake ? null : existing!.pendingObservation,
+    attemptCount: shouldWake || quietInitialReceipt ? 0 : existing!.attemptCount,
+    claimOwner: shouldWake || quietInitialReceipt ? null : existing!.claimOwner,
+    claimExpiresAt: shouldWake || quietInitialReceipt ? null : existing!.claimExpiresAt,
+    nextAttemptAt: shouldWake || quietInitialReceipt ? null : existing!.nextAttemptAt,
+    lastError: shouldWake || quietInitialReceipt ? null : existing!.lastError,
+    disposition: shouldWake || quietInitialReceipt ? null : existing!.disposition,
+    pendingObservation: shouldWake || quietInitialReceipt ? null : existing!.pendingObservation,
     dispatchEnabled: options.dispatchEnabled ?? existing?.dispatchEnabled ?? true,
     shouldWake,
     ...(persistedRetention ? { retentionSummary: persistedRetention } : {}),
@@ -681,10 +684,13 @@ function parsePrivilegedEnvelope(raw: string, fileName: string, now: string): Pr
   const parsed: unknown = JSON.parse(raw)
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Privileged event envelope is invalid")
   const value = parsed as Record<string, unknown>
+  const eventShapeIsAllowed = (value.eventType === "usenet.protective_action" && ["sabnzbd.pause", "prowlarr.disable-indexer"].includes(String(value.action)))
+    || (value.eventType === "usenet.health_observation" && value.action === "usenet.observe")
+  const observationTransitionIsAllowed = value.eventType !== "usenet.health_observation" || /^(?:auth-failed|stalled|recovered):\d{8}T\d{6}Z$/u.test(String(value.transitionId))
   const expectedKeys = ["action", "actionReceipt", "agent", "createdAt", "critical", "eventType", "evidence", "expiresAt", "incidentKey", "nonce", "observationRevision", "protectiveStateDigest", "protectiveStateObservedAt", "protectiveStateVerified", "schemaVersion", "source", "summary", "transitionId"]
   if (Object.keys(value).sort().join("\0") !== expectedKeys.sort().join("\0")
     || value.schemaVersion !== 1 || value.agent !== "sanctuary" || value.source !== PRIVILEGED_EVENT_SOURCE
-    || value.eventType !== "usenet.protective_action" || !["sabnzbd.pause", "prowlarr.disable-indexer"].includes(String(value.action))
+    || !eventShapeIsAllowed || !observationTransitionIsAllowed
     || value.critical !== true || !boundedIdentifier(value.incidentKey) || !boundedIdentifier(value.transitionId)
     || !/^[a-f0-9]{64}$/u.test(String(value.observationRevision)) || !/^[a-f0-9]{64}$/u.test(String(value.nonce))
     || typeof value.actionReceipt !== "string" || !value.actionReceipt || Buffer.byteLength(value.actionReceipt) > 512
@@ -901,18 +907,7 @@ export function scanPrivilegedEventSpool(options: { spoolRoot: string; eventRoot
         const now = options.now?.() ?? new Date().toISOString()
         const envelope = parsePrivilegedEnvelope(raw, entry.name, now)
         if (replayContains(replayState, envelope.nonce)) throw new Error("Privileged external event replayed nonce")
-        recordExternalEventInternal({
-          agent: envelope.agent,
-          source: envelope.source,
-          eventType: envelope.eventType,
-          eventId: envelope.incidentKey,
-          summary: envelope.summary,
-          evidence: [...envelope.evidence, `protective action: ${envelope.action}`, `protective action receipt: ${envelope.actionReceipt}`, `protective state verified: ${String(envelope.protectiveStateVerified)} digest=${envelope.protectiveStateDigest} observedAt=${envelope.protectiveStateObservedAt}`, `privileged transition: ${envelope.transitionId}`],
-          priority: "critical",
-          receivedAt: envelope.createdAt,
-          observationRevision: envelope.observationRevision,
-          transition: "opened",
-        }, { root: eventRoot, now: () => now, [privilegedIngress]: { nonce: envelope.nonce, protectiveAction: {
+        const protectiveAction = envelope.action === "usenet.observe" ? undefined : {
           action: envelope.action,
           actionReceipt: envelope.actionReceipt,
           transitionId: envelope.transitionId,
@@ -920,7 +915,21 @@ export function scanPrivilegedEventSpool(options: { spoolRoot: string; eventRoot
           createdAt: envelope.createdAt,
           expiresAt: envelope.expiresAt,
           verification: { verified: envelope.protectiveStateVerified, digest: envelope.protectiveStateDigest, observedAt: envelope.protectiveStateObservedAt },
-        } } })
+        }
+        const transition: ExternalEventTransition = envelope.eventType === "usenet.health_observation" && envelope.transitionId.startsWith("recovered:") ? "recovered" : "opened"
+        const quietInitialReceipt = transition === "recovered" && !fs.existsSync(externalEventRecordPath(eventRoot, { agent: envelope.agent, source: envelope.source, eventId: envelope.incidentKey }))
+        recordExternalEventInternal({
+          agent: envelope.agent,
+          source: envelope.source,
+          eventType: envelope.eventType,
+          eventId: envelope.incidentKey,
+          summary: envelope.summary,
+          evidence: protectiveAction ? [...envelope.evidence, `protective action: ${envelope.action}`, `protective action receipt: ${envelope.actionReceipt}`, `protective state verified: ${String(envelope.protectiveStateVerified)} digest=${envelope.protectiveStateDigest} observedAt=${envelope.protectiveStateObservedAt}`, `privileged transition: ${envelope.transitionId}`] : envelope.evidence,
+          priority: "critical",
+          receivedAt: envelope.createdAt,
+          observationRevision: envelope.observationRevision,
+          transition,
+        }, { root: eventRoot, now: () => now, quietInitialReceipt, [privilegedIngress]: { nonce: envelope.nonce, protectiveAction } })
         replayState = replayStateFromManifest(replayAdd(replayState, envelope.nonce), now)
         atomicWriteJson(replayStatePath(eventRoot), replayState, "Privileged replay manifest")
         accepted += 1

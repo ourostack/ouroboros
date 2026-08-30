@@ -31,9 +31,12 @@ function canonicalIso(value) {
 }
 
 function validateEnvelope(envelope) {
+  const eventShapeIsAllowed = envelope && typeof envelope === "object" && !Array.isArray(envelope) && ((envelope.eventType === "usenet.protective_action" && ["sabnzbd.pause", "prowlarr.disable-indexer"].includes(envelope.action))
+    || (envelope.eventType === "usenet.health_observation" && envelope.action === "usenet.observe"))
+  const observationTransitionIsAllowed = envelope?.eventType !== "usenet.health_observation" || /^(?:auth-failed|stalled|recovered):\d{8}T\d{6}Z$/u.test(String(envelope.transitionId))
   if (!envelope || typeof envelope !== "object" || Array.isArray(envelope) || Object.keys(envelope).sort().join("\0") !== [...ENVELOPE_KEYS].sort().join("\0")
     || envelope.schemaVersion !== 1 || envelope.agent !== "sanctuary" || envelope.source !== "sanctuary-usenet"
-    || envelope.eventType !== "usenet.protective_action" || !["sabnzbd.pause", "prowlarr.disable-indexer"].includes(envelope.action)
+    || !eventShapeIsAllowed || !observationTransitionIsAllowed
     || envelope.critical !== true || !/^[a-zA-Z0-9._:-]{1,160}$/u.test(String(envelope.incidentKey)) || !/^[a-zA-Z0-9._:-]{1,160}$/u.test(String(envelope.transitionId))
     || !/^[a-f0-9]{64}$/u.test(String(envelope.observationRevision)) || !/^[a-f0-9]{64}$/u.test(String(envelope.nonce))
     || typeof envelope.protectiveStateVerified !== "boolean" || !/^[a-f0-9]{64}$/u.test(String(envelope.protectiveStateDigest))

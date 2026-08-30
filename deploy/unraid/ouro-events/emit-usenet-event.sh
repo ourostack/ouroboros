@@ -21,20 +21,27 @@ EVIDENCE="$6"
 VERIFIED="$7"
 VERIFICATION_DIGEST="$8"
 VERIFIED_AT="$9"
+EVENT_TYPE="usenet.protective_action"
 
 case "$ACTION" in
   sabnzbd.pause|prowlarr.disable-indexer) ;;
+  usenet.observe) EVENT_TYPE="usenet.health_observation" ;;
   *) echo "usenet event adapter: action is not allowlisted" >&2; exit 2 ;;
 esac
 case "$VERIFIED" in true|false) ;; *) echo "usenet event adapter: verification state is invalid" >&2; exit 2 ;; esac
 [[ "$VERIFICATION_DIGEST" =~ ^[a-f0-9]{64}$ ]] || { echo "usenet event adapter: verification digest is invalid" >&2; exit 2; }
 
-REVISION="$(printf '%s\0%s\0%s\0%s' "$ACTION" "$INCIDENT" "$TRANSITION" "$RECEIPT" | sha256sum | cut -d' ' -f1)"
+if [ "$ACTION" = "usenet.observe" ]; then
+  OBSERVED_STATE="${TRANSITION%%:*}"
+  REVISION="$(printf '%s\0%s\0%s\0%s' "$ACTION" "$INCIDENT" "$OBSERVED_STATE" "$VERIFICATION_DIGEST" | sha256sum | cut -d' ' -f1)"
+else
+  REVISION="$(printf '%s\0%s\0%s\0%s' "$ACTION" "$INCIDENT" "$TRANSITION" "$RECEIPT" | sha256sum | cut -d' ' -f1)"
+fi
 
 exec /usr/local/bin/node "$PRODUCER" \
   "--agent" "sanctuary" \
   "--source" "sanctuary-usenet" \
-  "--event-type" "usenet.protective_action" \
+  "--event-type" "$EVENT_TYPE" \
   "--incident-key" "$INCIDENT" \
   "--transition-id" "$TRANSITION" \
   "--revision" "$REVISION" \
