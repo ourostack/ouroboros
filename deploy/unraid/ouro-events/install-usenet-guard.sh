@@ -34,7 +34,8 @@ if [ -n "$CRONTAB_FILE" ]; then validate_persisted_path "$CRONTAB_FILE" "crontab
 
 EVENT_ROOT="$INSTALL_ROOT/ouro-events"
 printf -v EVENT_INSTALLER_Q '%q' "$EVENT_ROOT/install-usenet-guard.sh"
-BOOT_HOOK="/bin/bash $EVENT_INSTALLER_Q --boot"
+printf -v INSTALL_ROOT_Q '%q' "$INSTALL_ROOT"
+BOOT_HOOK="/bin/bash $EVENT_INSTALLER_Q --boot --install-root $INSTALL_ROOT_Q"
 if [ -n "$CRONTAB_FILE" ]; then printf -v CRONTAB_FILE_Q '%q' "$CRONTAB_FILE"; BOOT_HOOK+=" --crontab-file $CRONTAB_FILE_Q"; fi
 LEGACY_BOOT_HOOK="/boot/config/custom/ouro-events/bootstrap-spool.sh --mount"
 LEGACY_BASH_BOOT_HOOK="/bin/bash /boot/config/custom/ouro-events/bootstrap-spool.sh --mount"

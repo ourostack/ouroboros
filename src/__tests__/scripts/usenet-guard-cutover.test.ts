@@ -125,12 +125,15 @@ describe("Unraid usenet guard cutover assets", () => {
     const lifecycleLog = path.join(temp, "lifecycle.log")
     const source = transactionalSource(temp, crontabFile, lifecycleLog)
     const legacyHook = "/boot/config/custom/ouro-events/bootstrap-spool.sh --mount"
-    const hook = `/bin/bash ${installRoot}/ouro-events/install-usenet-guard.sh --boot --crontab-file ${crontabFile}`
+    const hook = `/bin/bash ${installRoot}/ouro-events/install-usenet-guard.sh --boot --install-root ${installRoot} --crontab-file ${crontabFile}`
     fs.writeFileSync(goFile, `#!/bin/bash\n${legacyHook}\n${hook}\n${hook}\n/usr/local/sbin/emhttp &\n`)
 
     for (let index = 0; index < 2; index += 1) {
       execFileSync(installerPath, ["--install-only", "--source-root", source, "--install-root", installRoot, "--go-file", goFile, "--crontab-file", crontabFile])
     }
+
+    fs.rmSync(crontabFile)
+    execFileSync("/bin/bash", ["-c", hook])
 
     const go = fs.readFileSync(goFile, "utf8")
     expect(go.match(new RegExp(hook.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "gu"))).toHaveLength(1)
@@ -138,7 +141,7 @@ describe("Unraid usenet guard cutover assets", () => {
     expect(go.indexOf(hook)).toBeLessThan(go.indexOf("/usr/local/sbin/emhttp"))
     expect(fs.readFileSync(crontabFile, "utf8").match(/# ouro:usenet-health$/gmu)).toHaveLength(1)
     expect(fs.readFileSync(crontabFile, "utf8")).toContain(`*/15 * * * * /bin/bash ${installRoot}/usenet_health.sh # ouro:usenet-health`)
-    expect(fs.readFileSync(lifecycleLog, "utf8")).toBe("spool:--mount\nspool:--self-test\nevent:inactive\nspool:--mount\nspool:--self-test\nevent:active\n")
+    expect(fs.readFileSync(lifecycleLog, "utf8")).toBe("spool:--mount\nspool:--self-test\nevent:inactive\nspool:--mount\nspool:--self-test\nevent:active\nspool:--mount\nspool:--self-test\nevent:inactive\n")
     expect(transactionResidue(installRoot)).toEqual([])
     for (const file of ["usenet_health.sh", "ouro-events/emit-event.mjs", "ouro-events/emit-usenet-event.sh", "ouro-events/bootstrap-spool.sh", "ouro-events/install-usenet-guard.sh"]) {
       expect(fs.statSync(path.join(installRoot, file)).mode & 0o777).toBe(0o700)
