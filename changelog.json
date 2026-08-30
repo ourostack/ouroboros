@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.748",
+      "changes": [
+        "Reject any unexpected running Ouro image or writable Sanctuary-root overlap, including legacy and package-managed layouts, across zero-poller and active-poller deployment handoffs.",
+        "Remove the exact legacy Unraid boot hook that rewrites the managed Usenet cron entry after reboot."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.747",
       "changes": [
         "Create every nested host-backup directory as root-private before provenance verification.",

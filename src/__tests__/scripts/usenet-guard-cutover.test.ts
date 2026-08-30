@@ -421,13 +421,14 @@ printf '%s\n' "$*" >> ${JSON.stringify(calls)}
     const lifecycleLog = path.join(temp, "lifecycle.log")
     const source = transactionalSource(temp, crontabFile, lifecycleLog)
     const legacyHook = "/boot/config/custom/ouro-events/bootstrap-spool.sh --mount"
+    const legacyCronBootHook = '(crontab -l 2>/dev/null | grep -v usenet_health; echo "*/15 * * * * /bin/bash /boot/config/custom/usenet_health.sh") | crontab -'
     const hook = `/bin/bash ${installRoot}/ouro-events/install-usenet-guard.sh --boot --install-root ${installRoot} --crontab-file ${crontabFile}`
     const previousInstallerHook = `/bin/bash ${installRoot}/ouro-events/install-usenet-guard.sh --boot --crontab-file ${crontabFile}`
     const externalMarkerCron = "0 3 * * * /opt/team/health # ouro:usenet-health"
     fs.mkdirSync(path.join(installRoot, "ouro-events"), { recursive: true })
     const killedResidue = [path.join(installRoot, "usenet_health.sh.ouro-next.999"), `${goFile}.ouro-next.999`, `${crontabFile}.ouro-restore.999`]
     for (const residue of killedResidue) fs.writeFileSync(residue, "stranded-global-bytes\n", { mode: 0o600 })
-    fs.writeFileSync(goFile, `#!/bin/bash\n${legacyHook}\n${previousInstallerHook}\n${hook}\n${hook}\n/usr/local/sbin/emhttp &\n`)
+    fs.writeFileSync(goFile, `#!/bin/bash\n${legacyHook}\n${legacyCronBootHook}\n${previousInstallerHook}\n${hook}\n${hook}\n/usr/local/sbin/emhttp &\n`)
     fs.writeFileSync(crontabFile, `${externalMarkerCron}\n`, { mode: 0o600 })
 
     for (let index = 0; index < 2; index += 1) {
@@ -444,6 +445,7 @@ printf '%s\n' "$*" >> ${JSON.stringify(calls)}
     expect(go.match(new RegExp(hook.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "gu"))).toHaveLength(1)
     expect(go).not.toContain(previousInstallerHook)
     expect(go).not.toContain(legacyHook)
+    expect(go).not.toContain(legacyCronBootHook)
     expect(go.indexOf(hook)).toBeLessThan(go.indexOf("/usr/local/sbin/emhttp"))
     expect(fs.readFileSync(crontabFile, "utf8").match(/# ouro:usenet-health$/gmu)).toHaveLength(1)
     expect(fs.readFileSync(crontabFile, "utf8")).toContain(`*/15 * * * * /bin/bash ${installRoot}/usenet_health.sh # ouro:usenet-health`)

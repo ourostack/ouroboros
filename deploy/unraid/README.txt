@@ -141,7 +141,8 @@ Effective-spec audit helper:
       return 1
     }
   Define these fail-closed image and topology helpers in the same shell. They use
-  exact Docker image IDs and exact container names; no mutation is performed:
+  exact Docker image IDs and container identity, image provenance, and writable
+  root overlap; no mutation is performed:
     validate_exact_image_id() {
       VALIDATE_IMAGE_ID=$1
       case "$VALIDATE_IMAGE_ID" in
@@ -155,18 +156,43 @@ Effective-spec audit helper:
       docker image inspect "$VALIDATE_IMAGE_ID" >/dev/null || return $?
     }
     assert_only_running_butler() {
+      (
       EXPECTED_RUNNING_BUTLER=$1
-      RUNNING_BUTLER_NAMES=$(docker container ls --format '{{.Names}}') || return $?
-      RUNNING_BUTLER_COUNTS=$(printf '%s\n' "$RUNNING_BUTLER_NAMES" | awk -v expected="$EXPECTED_RUNNING_BUTLER" '
-        {
-          if ($0 == "ouro-butler" || $0 == "ouro-butler-staging" || $0 == "ouro-butler-rollback" || $0 == "ouro-butler-legacy-evidence") {
-            butlers++
-            if ($0 == expected) matching++
+      case "$EXPECTED_RUNNING_BUTLER" in
+        -) EXPECTED_RUNNING_BUTLER_COUNT=0 ;;
+        ouro-butler|ouro-butler-staging) EXPECTED_RUNNING_BUTLER_COUNT=1 ;;
+        *) return 1 ;;
+      esac
+      RUNNING_CONTAINER_IDS=$(docker container ls -q) || return $?
+      MATCHING_RUNNING_BUTLERS=0
+      for RUNNING_CONTAINER_ID in $RUNNING_CONTAINER_IDS; do
+        RUNNING_CONTAINER_NAME=$(docker container inspect --format '{{.Name}}' "$RUNNING_CONTAINER_ID") || return $?
+        RUNNING_CONTAINER_NAME=${RUNNING_CONTAINER_NAME#/}
+        if test "$RUNNING_CONTAINER_NAME" = "$EXPECTED_RUNNING_BUTLER"; then
+          MATCHING_RUNNING_BUTLERS=$(( MATCHING_RUNNING_BUTLERS + 1 ))
+          continue
+        fi
+        RUNNING_CONTAINER_IMAGE_ID=$(docker container inspect --format '{{.Image}}' "$RUNNING_CONTAINER_ID") || return $?
+        RUNNING_CONTAINER_IMAGE_REF=$(docker container inspect --format '{{.Config.Image}}' "$RUNNING_CONTAINER_ID") || return $?
+        RUNNING_CONTAINER_IMAGE_SOURCE=$(docker image inspect --format '{{with .Config.Labels}}{{index . "org.opencontainers.image.source"}}{{end}}' "$RUNNING_CONTAINER_IMAGE_ID") || return $?
+        test "$RUNNING_CONTAINER_IMAGE_SOURCE" != https://github.com/ourostack/ouroboros || return 1
+        test "$RUNNING_CONTAINER_IMAGE_ID" != sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d || return 1
+        case "$RUNNING_CONTAINER_IMAGE_REF" in
+          ouro-butler|ouro-butler:*|ouro-butler@sha256:*|ouroboros-butler|ouroboros-butler:*|ouroboros-butler@sha256:*|ghcr.io/ourostack/ouroboros-butler|ghcr.io/ourostack/ouroboros-butler:*|ghcr.io/ourostack/ouroboros-butler@sha256:*) return 1 ;;
+        esac
+        RUNNING_WRITABLE_MOUNT_SOURCES=$(docker container inspect --format '{{range .Mounts}}{{if .RW}}{{println .Source}}{{end}}{{end}}' "$RUNNING_CONTAINER_ID") || return $?
+        if printf '%s\n' "$RUNNING_WRITABLE_MOUNT_SOURCES" | awk '
+          function overlaps(path, root) {
+            return length(path) > 0 && (path == root || index(path, root "/") == 1 || index(root, path "/") == 1)
           }
-        }
-        END { printf "%d %d", butlers + 0, matching + 0 }
-      ') || return $?
-      test "$RUNNING_BUTLER_COUNTS" = "1 1" || return $?
+          overlaps($0, "/mnt/user/appdata/ouro-butler/runtime") || overlaps($0, "/mnt/user/appdata/ouro-butler/runtime/.ouro-cli") || overlaps($0, "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro") || overlaps($0, "/mnt/user/appdata/ouro-butler/AgentBundles") { found = 1 }
+          END { exit found ? 0 : 1 }
+        '; then
+          return 1
+        fi
+      done
+      test "$MATCHING_RUNNING_BUTLERS" -eq "$EXPECTED_RUNNING_BUTLER_COUNT" || return $?
+      )
     }
     assert_update_topology() {
       EXPECTED_ROLLBACK_IMAGE_ID=$1
@@ -786,6 +812,7 @@ Effective-spec audit helper:
         && CURRENT_LEGACY_EVIDENCE_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler-legacy-evidence) \
         && test "$CURRENT_LEGACY_EVIDENCE_IMAGE_ID" = "$LEGACY_STAGING_IMAGE_ID" \
         && test "$(docker inspect --format '{{.State.Running}}' ouro-butler-legacy-evidence)" = false \
+        && assert_only_running_butler - \
         && docker create --name ouro-butler-staging --network host --restart unless-stopped --user 10001:10001 \
           --mount "type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli" \
           --mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
@@ -799,6 +826,7 @@ Effective-spec audit helper:
         && docker stop ouro-butler-staging \
         && test "$(docker inspect --format '{{.Image}}' ouro-butler-staging)" = "$IMAGE_ID" \
         && docker rm ouro-butler-staging \
+        && assert_only_running_butler - \
         && docker create --name ouro-butler --network host --restart unless-stopped --user 10001:10001 \
           --mount "type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli" \
           --mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
@@ -1362,6 +1390,7 @@ Update:
       cmp -s "$EVENT_SCRIPT_STAGE/install-usenet-guard.sh" /boot/config/custom/ouro-events/install-usenet-guard.sh
       test "$(grep -Fxc '/bin/bash /boot/config/custom/ouro-events/install-usenet-guard.sh --boot --install-root /boot/config/custom' /boot/config/go)" = 1
       test "$(grep -Fxc '/boot/config/custom/ouro-events/bootstrap-spool.sh --mount' /boot/config/go || true)" = 0
+      test "$(grep -Fxc '(crontab -l 2>/dev/null | grep -v usenet_health; echo "*/15 * * * * /bin/bash /boot/config/custom/usenet_health.sh") | crontab -' /boot/config/go || true)" = 0
       INSTALLED_GUARD_CRON=$(crontab -l)
       test "$(printf '%s\n' "$INSTALLED_GUARD_CRON" | grep -Fxc '*/15 * * * * /bin/bash /boot/config/custom/usenet_health.sh # ouro:usenet-health')" = 1
       INSTALLED_LEGACY_GUARD_COUNT=$(printf '%s\n' "$INSTALLED_GUARD_CRON" | grep -Fxc '*/15 * * * * /bin/bash /boot/config/custom/usenet_health.sh' || true)
@@ -1511,6 +1540,7 @@ ouro-butler-rollback
       && remove_stopped_rollback_if_present "$ROLLBACK_IMAGE_ID" \
       && docker rename ouro-butler ouro-butler-rollback \
       && test "$(docker inspect --format '{{.State.Running}}' ouro-butler-rollback)" = false \
+      && assert_only_running_butler - \
       && migrate_sanctuary_package_managed_bundle "$IMAGE_ID" migrate "$ROLLBACK_IMAGE_ID"; then
       :
     else
@@ -1566,7 +1596,8 @@ ouro-butler-rollback
       && assert_only_running_butler ouro-butler-staging \
       && wait_butler_ready ouro-butler-staging \
       && docker stop ouro-butler-staging \
-      && docker rm ouro-butler-staging; then
+      && docker rm ouro-butler-staging \
+      && assert_only_running_butler -; then
       :
     else
       STAGING_ACTIVATION_STATUS=$?
