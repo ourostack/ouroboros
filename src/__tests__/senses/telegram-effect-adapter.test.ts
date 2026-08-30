@@ -101,7 +101,8 @@ describe("Telegram effect adapter", () => {
       authorize: () => authorization,
     })
     for (const key of ["recover:1", "recover:2", "recover:3"]) {
-      prepareTelegramEffect(store, { idempotencyKey: key, target, authorClass: "butler", effect: { kind: "text", text: key }, authorization })
+      prepareTelegramEffect(store, { idempotencyKey: key, target, authorClass: "butler", effect: { kind: "text", text: key }, authorization,
+        ...(key === "recover:1" ? { obligationReturnId: "obligation-1" } : {}) })
     }
     const uncertain = prepareTelegramEffect(store, { idempotencyKey: "recover:uncertain", target, authorClass: "butler", effect: { kind: "text", text: "uncertain" }, authorization })
     uncertain.parts[0]!.state = "indeterminate"
@@ -111,6 +112,7 @@ describe("Telegram effect adapter", () => {
 
     expect(recovered).toMatchObject({ attempted: 2, accepted: 2, failed: 0 })
     expect(store.list().filter((artifact) => artifact.parts.some((part) => part.state === "accepted"))).toHaveLength(2)
+    expect(store.list().find((artifact) => artifact.idempotencyKey === "recover:1")?.obligationReturnId).toBe("obligation-1")
     expect(store.read(uncertain.id).parts[0]?.state).toBe("indeterminate")
 
     const failed = await recoverTelegramEffectOutbox({

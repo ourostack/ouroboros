@@ -39,7 +39,7 @@ function isSanctuaryAgent(): boolean {
   }
 }
 
-const SANCTUARY_TELEGRAM_BASE_TOOLS = new Set(["query_active_work", "save_friend_note", "query_cares", "care_manage", "await_condition", "cancel_await"])
+const SANCTUARY_TELEGRAM_BASE_TOOLS = new Set(["query_active_work", "save_friend_note", "query_cares", "care_manage", "await_condition", "cancel_await", "telegram_contact_manage"])
 
 // Re-export types and constants used by the rest of the codebase
 export { tools, settleTool, observeTool, ponderTool, restTool, speakTool } from "./tools-base";

@@ -1,9 +1,9 @@
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import * as fs from "node:fs"
 
 import { getChannelCapabilities } from "@ouro.bot/friends"
 import { resetIdentity, setAgentName } from "../../heart/identity"
-import { approvalPolicyForToolName, getToolsForChannel, resolveToolDefinition } from "../../repertoire/tools"
+import { approvalPolicyForToolName, execTool, getToolsForChannel, resolveToolDefinition } from "../../repertoire/tools"
 
 describe("Sanctuary active tool profile", () => {
   afterEach(() => resetIdentity())
@@ -18,6 +18,7 @@ describe("Sanctuary active tool profile", () => {
       "care_manage",
       "await_condition",
       "cancel_await",
+      "telegram_contact_manage",
       "unraid_list_containers",
       "unraid_get_container_logs",
       "unraid_get_storage",
@@ -38,12 +39,29 @@ describe("Sanctuary active tool profile", () => {
     expect(packaged.profiles["sanctuary-owner"].toolNames).toEqual(expect.arrayContaining(["external_event_disposition", "query_active_work", "query_cares", "care_manage", "await_condition", "cancel_await"]))
     expect(packaged.profiles["sanctuary-owner"].toolNames).toContain("save_friend_note")
     expect(packaged.profiles["sanctuary-household"].toolNames).not.toContain("save_friend_note")
+    expect(packaged.profiles["sanctuary-household"].toolNames).not.toContain("telegram_contact_manage")
     expect(packaged.profiles["sanctuary-event"].toolNames).toEqual(expect.arrayContaining(["external_event_disposition", "query_cares", "care_manage", "await_condition", "steward_policy_manage", "rest"]))
     expect(packaged.profiles["sanctuary-event"].toolNames).not.toContain("send_message")
     expect(packaged.profiles["sanctuary-household"].toolNames).not.toContain("ponder")
     expect(packaged.profiles["sanctuary-household"].toolNames).toContain("unraid_restart_container")
     expect(names).not.toEqual(expect.arrayContaining(["shell", "read_file", "write_file", "jellyseerr_request", "sonarr_add", "radarr_add"]))
     expect(Object.keys(packaged.profiles)).toEqual(["sanctuary-owner", "sanctuary-household", "sanctuary-event"])
+  })
+
+  it("keeps Telegram contact management owner-only and delegates exact mutations to the live manager", async () => {
+    const manager = {
+      list: vi.fn(async () => ({ contacts: [], blocked: [] })),
+      revoke: vi.fn(async ({ friendId }: { friendId: string }) => ({ revoked: true as const, friendId })),
+      unblock: vi.fn(async ({ admissionId }: { admissionId: string }) => ({ unblocked: true as const, admissionId })),
+    }
+    const base = { signin: async () => undefined, telegramContactManager: manager,
+      relationshipAuthorization: { authorizedContextScopes: [], advertisedToolNames: ["telegram_contact_manage"], authorizeTool: async () => ({ allowed: true as const, receiptId: "owner" }) } } as any
+    expect(JSON.parse(await execTool("telegram_contact_manage", { action: "list" }, base))).toMatchObject({ ok: false })
+    const owner = { ...base, relationshipAuthorization: { ...base.relationshipAuthorization, actor: { friendId: "ari", trustLevel: "family", sessionEventId: "evt-owner" } } }
+    expect(JSON.parse(await execTool("telegram_contact_manage", { action: "list" }, owner))).toMatchObject({ ok: true, contacts: [] })
+    expect(JSON.parse(await execTool("telegram_contact_manage", { action: "revoke", friendId: "sibling" }, owner))).toMatchObject({ ok: true, revoked: true })
+    expect(JSON.parse(await execTool("telegram_contact_manage", { action: "unblock", admissionId: "admission" }, owner))).toMatchObject({ ok: true, unblocked: true })
+    expect(JSON.parse(await execTool("telegram_contact_manage", { action: "revoke" }, owner))).toMatchObject({ ok: false })
   })
 
   it("keeps non-Sanctuary Telegram agents on the generic tool profile", () => {

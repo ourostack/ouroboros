@@ -11,7 +11,7 @@ import { TELEGRAM_ACCEPTANCE_AUDIT_HEAD_RELATIVE_PATH, TELEGRAM_ACCEPTANCE_AUDIT
 import { splitTelegramText, type TelegramBotApi, type TelegramInboundMessage, type TelegramLongPoll } from "../../senses/telegram-client"
 import { getSenseSessionPath } from "../../senses/shared-turn"
 import { FileTelegramEffectJournal, FIXED_USENET_SYSTEM_FAILSAFE, prepareTelegramEffect } from "../../senses/telegram-effect-adapter"
-import { createObligation, readObligation } from "../../arc/obligations"
+import { createObligation, markObligationReturnReady, readObligation } from "../../arc/obligations"
 
 const RECEIPT_DOMAIN = "ouroboros.telegram.turn-receipt.v3"
 const RECEIPT_KEY = "k".repeat(43)
@@ -1770,6 +1770,24 @@ describe("Telegram sense", () => {
     expect(f.runTurn).toHaveBeenCalledOnce()
     expect(admission.claimFriend).not.toHaveBeenCalled()
     await f.app.stop()
+  })
+
+  it("does not fulfill an investigating request from accepted interim speech without an exact terminal-return binding", async () => {
+    const f = fixture({ authorizeEffect: vi.fn(async () => ({ allowed: true, receiptId: "request-return", expiresAt: new Date(Date.now() + 60_000).toISOString(), transport: { chatId: "888" } })) })
+    const obligation = createObligation(f.agentRoot, {
+      origin: { friendId: "sibling", channel: "telegram", key: "telegram:777:888" },
+      requestId: "request-investigating",
+      content: "Repair books and report the verified outcome",
+    })
+
+    const effect = await f.app.sendAwaitFollowUp({ friendId: "sibling", channel: "telegram", key: "telegram:777:888", requestId: "different-request", content: "Still investigating.", intent: "generic_outreach" })
+    expect(effect.status).toBe("delivered_now")
+    expect(readObligation(f.agentRoot, obligation.id)?.status).toBe("pending")
+
+    markObligationReturnReady(f.agentRoot, obligation.id, "unraid-restart:books:verified")
+    expect(readObligation(f.agentRoot, obligation.id)?.returnEvidenceRef).toBe("unraid-restart:books:verified")
+    expect(markObligationReturnReady(f.agentRoot, obligation.id, "unraid-restart:books:verified").returnEvidenceRef).toBe("unraid-restart:books:verified")
+    expect(() => markObligationReturnReady(f.agentRoot, obligation.id, "unraid-restart:books:unverified")).toThrow("already bound")
   })
 
   it("blocks malformed and unauthorized await returns without sending", async () => {
