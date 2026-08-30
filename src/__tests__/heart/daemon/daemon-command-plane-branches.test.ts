@@ -1162,6 +1162,45 @@ describe("daemon command plane branches", () => {
     }
   })
 
+  it("fails only still-owned batch claims when a denial has no prose", async () => {
+    const socketPath = tmpSocketPath("daemon-external-event-proseless-denial")
+    const externalEventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "external-event-proseless-denial-root-"))
+    const first = recordExternalEvent({ agent: "slugger", source: "sanctuary-health", eventType: "health.observed", eventId: "first" }, { root: externalEventRoot })
+    const second = recordExternalEvent({ agent: "slugger", source: "sanctuary-health", eventType: "health.observed", eventId: "second" }, { root: externalEventRoot })
+    const { daemon } = make(socketPath, undefined, { externalEventRoot })
+    vi.spyOn(daemon as any, "handlePrivateRuntimeWake").mockImplementation(async (_command: unknown, _fallback: unknown, lease: any) => {
+      const related = readExternalEventRecord(lease.relatedEvents[0].recordPath)
+      commitExternalEventDisposition(related.recordPath, {
+        owner: related.claimOwner!, expectedVersion: related.version, expectedGeneration: related.generation,
+        disposition: { classifiedRevision: related.observationRevision, classification: "expected", stewardPolicy: { kind: "none" }, decision: "silent", reason: "Handled concurrently.", nextWake: { kind: "on_change" }, careId: null, awaitId: null, actionRefs: [], verificationRefs: [] },
+      })
+      return { ok: true, data: { decision: { executable: false } } }
+    })
+
+    try {
+      await expect((daemon as any).dispatchExternalEvents([first, second])).rejects.toThrow("external-event private turn was denied")
+      expect(readExternalEventRecord(first.recordPath)).toMatchObject({ executionState: "retry_wait", lastError: "external-event private turn was denied" })
+      expect(readExternalEventRecord(second.recordPath)).toMatchObject({ executionState: "handled" })
+    } finally {
+      fs.rmSync(externalEventRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("records non-Error external-event dispatch failures without losing the claim", async () => {
+    const socketPath = tmpSocketPath("daemon-external-event-string-failure")
+    const externalEventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "external-event-string-failure-root-"))
+    const received = recordExternalEvent({ agent: "slugger", source: "sanctuary-health", eventType: "health.observed", eventId: "books" }, { root: externalEventRoot })
+    const { daemon } = make(socketPath, undefined, { externalEventRoot })
+    vi.spyOn(daemon as any, "handlePrivateRuntimeWake").mockRejectedValue("string failure")
+
+    try {
+      await expect((daemon as any).dispatchExternalEvents([received])).rejects.toBe("string failure")
+      expect(readExternalEventRecord(received.recordPath)).toMatchObject({ executionState: "retry_wait", lastError: "string failure" })
+    } finally {
+      fs.rmSync(externalEventRoot, { recursive: true, force: true })
+    }
+  })
+
   it("durably schedules a retry when startup dispatch is denied", async () => {
     const socketPath = tmpSocketPath("daemon-external-event-retry")
     const ledgerPath = path.join(os.tmpdir(), `external-event-retry-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
