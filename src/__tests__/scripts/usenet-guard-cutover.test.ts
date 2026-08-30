@@ -126,17 +126,21 @@ describe("Unraid usenet guard cutover assets", () => {
     const source = transactionalSource(temp, crontabFile, lifecycleLog)
     const legacyHook = "/boot/config/custom/ouro-events/bootstrap-spool.sh --mount"
     const hook = `/bin/bash ${installRoot}/ouro-events/install-usenet-guard.sh --boot --install-root ${installRoot} --crontab-file ${crontabFile}`
-    fs.writeFileSync(goFile, `#!/bin/bash\n${legacyHook}\n${hook}\n${hook}\n/usr/local/sbin/emhttp &\n`)
+    const previousInstallerHook = `/bin/bash ${installRoot}/ouro-events/install-usenet-guard.sh --boot --crontab-file ${crontabFile}`
+    fs.writeFileSync(goFile, `#!/bin/bash\n${legacyHook}\n${previousInstallerHook}\n${hook}\n${hook}\n/usr/local/sbin/emhttp &\n`)
 
     for (let index = 0; index < 2; index += 1) {
       execFileSync(installerPath, ["--install-only", "--source-root", source, "--install-root", installRoot, "--go-file", goFile, "--crontab-file", crontabFile])
     }
 
     fs.rmSync(crontabFile)
-    execFileSync("/bin/bash", ["-c", hook])
+    const renderedHooks = fs.readFileSync(goFile, "utf8").split("\n").filter((line) => line.startsWith("/bin/bash ") && line.includes("install-usenet-guard.sh --boot"))
+    expect(renderedHooks).toEqual([hook])
+    execFileSync("/bin/bash", ["-c", renderedHooks[0]!])
 
     const go = fs.readFileSync(goFile, "utf8")
     expect(go.match(new RegExp(hook.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "gu"))).toHaveLength(1)
+    expect(go).not.toContain(previousInstallerHook)
     expect(go).not.toContain(legacyHook)
     expect(go.indexOf(hook)).toBeLessThan(go.indexOf("/usr/local/sbin/emhttp"))
     expect(fs.readFileSync(crontabFile, "utf8").match(/# ouro:usenet-health$/gmu)).toHaveLength(1)
