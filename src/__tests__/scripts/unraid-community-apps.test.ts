@@ -130,6 +130,7 @@ describe("Mendelow Cloud Butler Community Apps release", () => {
     expect(update).toContain("install-usenet-guard.sh")
     expect(update).toContain(`    ${bootHook}\n`)
     expect(update).toContain(`grep -Fxc '${bootHook}' /boot/config/go`)
+    expect(update).toContain(`grep -Fxc '(crontab -l 2>/dev/null | grep -v usenet_health; echo "*/15 * * * * /bin/bash /boot/config/custom/usenet_health.sh") | crontab -' /boot/config/go`)
     expect(update).toContain("/bin/bash /boot/config/custom/usenet_health.sh # ouro:usenet-health")
     expect(update).toContain("INSTALLED_LEGACY_GUARD_COUNT")
     expect(update).toContain("grep -Fc '/bin/bash /boot/config/custom/usenet_health.sh'")

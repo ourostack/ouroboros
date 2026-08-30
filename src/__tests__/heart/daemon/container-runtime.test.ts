@@ -324,8 +324,10 @@ docker() {
   case "$1 $2 $3" in
     "container ls -a")
       case "$SCENARIO" in staging-running) command printf 'ouro-butler\nouro-butler-staging\n' ;; *) command printf 'ouro-butler\nouro-butler-rollback\n' ;; esac ;;
-    "container ls --format")
-      case "$SCENARIO" in staging-running) command printf 'ouro-butler\nouro-butler-staging\n' ;; production-stopped) : ;; *) command printf 'ouro-butler\n' ;; esac ;;
+    "container ls -q")
+      case "$SCENARIO" in production-stopped) : ;; *) command printf 'production-id\n' ;; esac ;;
+    "container inspect --format")
+      case "$4 $5" in "{{.Name}} production-id") command printf '/ouro-butler\n' ;; *) return 23 ;; esac ;;
     "inspect --format {{.State.Running}}")
       case "$4" in ouro-butler) command printf 'true\n' ;; ouro-butler-rollback) command printf 'false\n' ;; esac ;;
     "inspect --format {{.Image}}")
@@ -344,6 +346,58 @@ if assert_update_topology "$EXPECTED_IMAGE"; then command printf 'MUTATION\n'; e
     const success = runConditionalHelper(script, "safe", { EXPECTED_IMAGE: expectedImage })
     expect(success.status, success.stderr).toBe(0)
     expect(success.stdout).toContain("MUTATION")
+  })
+
+  it("rejects hidden running Ouro containers and shared writable Sanctuary roots", () => {
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const onlyRunning = extractRunbookFunction(runbook, "assert_only_running_butler")
+    const script = String.raw`set -u
+SCENARIO=$1
+docker() {
+  case "$1 $2 $3" in
+    "container ls -q") if [ "$SCENARIO" = fail-list ]; then return 23; elif [ "$SCENARIO" != none-safe ]; then command printf 'expected-id\nother-id\n'; fi ;;
+    "container inspect --format")
+      case "$4 $5" in
+        "{{.Name}} expected-id") command printf '/ouro-butler\n' ;;
+        "{{.Name}} other-id") if [ "$SCENARIO" = fail-name ]; then return 23; else command printf '/lucid_shockley\n'; fi ;;
+        "{{.Image}} expected-id") command printf 'sha256:%064d\n' 1 ;;
+        "{{.Image}} other-id")
+          case "$SCENARIO" in fail-image) return 23 ;; legacy-image) command printf 'sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d\n' ;; *) command printf 'sha256:%064d\n' 2 ;; esac ;;
+        "{{.Config.Image}} expected-id") command printf 'ghcr.io/ourostack/ouroboros-butler:expected\n' ;;
+        "{{.Config.Image}} other-id")
+          case "$SCENARIO" in fail-ref) return 23 ;; ouro-reference) command printf 'ghcr.io/ourostack/ouroboros-butler:old\n' ;; ouro-short-reference) command printf 'ouro-butler:0.1.0-alpha.742-amd64\n' ;; *) command printf 'example.invalid/unrelated:latest\n' ;; esac ;;
+        "{{range .Mounts}}{{if .RW}}{{println .Source}}{{end}}{{end}} expected-id") command printf '/mnt/user/appdata/ouro-butler/runtime/.ouro-cli\n/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro\n' ;;
+        "{{range .Mounts}}{{if .RW}}{{println .Source}}{{end}}{{end}} other-id")
+          case "$SCENARIO" in fail-mounts) return 23 ;; runtime-root) command printf '/mnt/user/appdata/ouro-butler/runtime/.ouro-cli\n' ;; runtime-parent) command printf '/mnt/user/appdata/ouro-butler/runtime\n' ;; runtime-child) command printf '/mnt/user/appdata/ouro-butler/runtime/.ouro-cli/state\n' ;; agent-root) command printf '/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro\n' ;; agent-parent) command printf '/mnt/user/appdata/ouro-butler/agent\n' ;; package-agent-root) command printf '/mnt/user/appdata/ouro-butler/AgentBundles\n' ;; package-agent-child) command printf '/mnt/user/appdata/ouro-butler/AgentBundles/sanctuary.ouro\n' ;; package-agent-parent) command printf '/mnt/user/appdata/ouro-butler\n' ;; unrelated-empty) : ;; *) command printf '/mnt/user/appdata/unrelated\n' ;; esac ;;
+        *) return 23 ;;
+      esac ;;
+    "image inspect --format")
+      test "$4" = '{{with .Config.Labels}}{{index . "org.opencontainers.image.source"}}{{end}}' || return 23
+      case "$SCENARIO" in fail-source) return 23 ;; ouro-provenance) command printf 'https://github.com/ourostack/ouroboros\n' ;; *) command printf '<no value>\n' ;; esac ;;
+    *) return 23 ;;
+  esac
+}
+${onlyRunning}
+if assert_only_running_butler ouro-butler; then command printf 'TRANSITION\n'; else exit $?; fi`
+    for (const scenario of ["ouro-provenance", "ouro-reference", "ouro-short-reference", "legacy-image", "runtime-root", "runtime-parent", "runtime-child", "agent-root", "agent-parent", "package-agent-root", "package-agent-child", "package-agent-parent"]) {
+      const result = runConditionalHelper(script, scenario)
+      expect(result.status, `${scenario}\n${result.stderr}`).not.toBe(0)
+      expect(result.stdout).not.toContain("TRANSITION")
+    }
+    const unrelated = runConditionalHelper(script, "unrelated")
+    expect(unrelated.status, unrelated.stderr).toBe(0)
+    expect(unrelated.stdout).toContain("TRANSITION")
+    const unrelatedEmpty = runConditionalHelper(script, "unrelated-empty")
+    expect(unrelatedEmpty.status, unrelatedEmpty.stderr).toBe(0)
+    expect(unrelatedEmpty.stdout).toContain("TRANSITION")
+    const noneSafe = runConditionalHelper(script.replace("assert_only_running_butler ouro-butler", "assert_only_running_butler -"), "none-safe")
+    expect(noneSafe.status, noneSafe.stderr).toBe(0)
+    expect(noneSafe.stdout).toContain("TRANSITION")
+    for (const scenario of ["fail-list", "fail-name", "fail-image", "fail-ref", "fail-source", "fail-mounts"]) {
+      const failure = runConditionalHelper(script, scenario)
+      expect(failure.status, `${scenario}\n${failure.stderr}`).toBe(23)
+      expect(failure.stdout).not.toContain("TRANSITION")
+    }
   })
 
   it("rejects invalid restore inputs and topology before any mutation", () => {
@@ -411,7 +465,8 @@ docker() {
     "inspect ouro-butler") command printf '{}\n' ;;
     "run --rm "*) if [ "$SCENARIO" = auditor-fails ]; then return 23; fi ;;
     "container ls -a --format {{.Names}}") if [ "$SCENARIO" = staging ]; then command printf 'ouro-butler\nouro-butler-staging\n'; else command printf 'ouro-butler\n'; fi ;;
-    "container ls --format {{.Names}}") if [ "$SCENARIO" = staging ]; then command printf 'ouro-butler\nouro-butler-staging\n'; else command printf 'ouro-butler\n'; fi ;;
+    "container ls -q") command printf 'production-id\n' ;;
+    "container inspect --format {{.Name}} production-id") command printf '/ouro-butler\n' ;;
     "inspect --format {{.State.Running}} "*) command printf 'true\n' ;;
     "inspect --format {{.Image}} "*) command printf '%s\n' "$VALID_IMAGE" ;;
     *) return 23 ;;
@@ -611,9 +666,10 @@ docker() {
         fresh-created|fresh-running) command printf 'ouro-butler-staging\nouro-butler-legacy-evidence\n' ;;
         prod-created|prod-running) command printf 'ouro-butler\nouro-butler-legacy-evidence\n' ;;
       esac; fi ;;
-    "container ls --format {{.Names}}")
-      if [ "$SCENARIO" = extra ]; then command printf 'ouro-butler-staging\nouro-butler-rollback\n'
-      else case "$(command cat "$STATE")" in legacy|fresh-running) command printf 'ouro-butler-staging\n' ;; prod-running) command printf 'ouro-butler\n' ;; esac; fi ;;
+    "container ls -q")
+      case "$(command cat "$STATE")" in legacy|fresh-running) command printf 'staging-id\n' ;; prod-running) command printf 'production-id\n' ;; esac ;;
+    "container inspect --format {{.Name}} staging-id") command printf '/ouro-butler-staging\n' ;;
+    "container inspect --format {{.Name}} production-id") command printf '/ouro-butler\n' ;;
     "inspect --format {{.Image}} "*) if [ "$SCENARIO" = mismatch ] && [ "$(command cat "$STATE")" = legacy ]; then command printf 'not-an-image\n'; elif [ "$4" = ouro-butler-legacy-evidence ]; then command printf '%s\n' "$LEGACY_IMAGE"; elif [ "$(command cat "$STATE")" = legacy ] || [ "$(command cat "$STATE")" = legacy-stopped ]; then command printf '%s\n' "$LEGACY_IMAGE"; else command printf '%s\n' "$TARGET_IMAGE"; fi ;;
     "inspect --format {{.Id}} ouro-butler-staging") command printf '%064d\n' 1 ;;
     "inspect --format {{.State.Running}} "*) case "$(command cat "$STATE")" in legacy|fresh-running|prod-running) command printf 'true\n' ;; *) command printf 'false\n' ;; esac ;;
@@ -1997,8 +2053,9 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
     const start = staging.indexOf("&& docker start ouro-butler-staging", audit)
     const ready = staging.indexOf("&& wait_butler_ready ouro-butler-staging", start)
     const stopPassing = staging.indexOf("&& docker stop ouro-butler-staging", ready)
-    const removePassing = staging.indexOf("&& docker rm ouro-butler-staging; then", stopPassing)
-    const failureArm = staging.indexOf("else", removePassing)
+    const removePassing = staging.indexOf("&& docker rm ouro-butler-staging", stopPassing)
+    const assertNoPoller = staging.indexOf("&& assert_only_running_butler -; then", removePassing)
+    const failureArm = staging.indexOf("else", assertNoPoller)
     const status = staging.indexOf("STAGING_ACTIVATION_STATUS=$?", failureArm)
     const inspectPartial = staging.indexOf("if docker container inspect ouro-butler-staging >/dev/null 2>&1; then", status)
     const stopPartial = staging.indexOf("docker stop ouro-butler-staging >/dev/null 2>&1 || true", inspectPartial)
@@ -2022,7 +2079,8 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
     expect(ready).toBeGreaterThan(start)
     expect(stopPassing).toBeGreaterThan(ready)
     expect(removePassing).toBeGreaterThan(stopPassing)
-    expect(failureArm).toBeGreaterThan(removePassing)
+    expect(assertNoPoller).toBeGreaterThan(removePassing)
+    expect(failureArm).toBeGreaterThan(assertNoPoller)
     expect(status).toBeGreaterThan(failureArm)
     expect(inspectPartial).toBeGreaterThan(status)
     expect(stopPartial).toBeGreaterThan(inspectPartial)
@@ -2436,7 +2494,7 @@ recover_test`
     expect(restoreRunbook.indexOf("enable_butler_autostart")).toBeGreaterThan(restoreRunbook.indexOf("wait_butler_ready ouro-butler"))
     expect(auditor).toContain("exec node /opt/ouro/dist/heart/daemon/container-spec-auditor-main.js")
     expect(agent.habitPaidTurnsPerDay).toBe(24)
-    expect(meta).toMatchObject({ runtimeVersion: "0.1.0-alpha.747", bundleSchemaVersion: 3 })
+    expect(meta).toMatchObject({ runtimeVersion: "0.1.0-alpha.748", bundleSchemaVersion: 3 })
     expect(fs.existsSync("deploy/unraid/sanctuary.ouro/arc/README.md")).toBe(true)
     expect(fs.existsSync("deploy/unraid/sanctuary.ouro/tool-profiles.json")).toBe(true)
     expect(dockerfile).toContain("COPY deploy/unraid /opt/ouro/deploy/unraid")

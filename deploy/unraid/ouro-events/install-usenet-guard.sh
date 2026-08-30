@@ -49,6 +49,7 @@ LEGACY_BOOT_HOOK="/boot/config/custom/ouro-events/bootstrap-spool.sh --mount"
 LEGACY_BASH_BOOT_HOOK="/bin/bash /boot/config/custom/ouro-events/bootstrap-spool.sh --mount"
 CANONICAL_PREVIOUS_BOOT_HOOK="/bin/bash /boot/config/custom/ouro-events/install-usenet-guard.sh --boot"
 CANONICAL_BOOT_HOOK="$CANONICAL_PREVIOUS_BOOT_HOOK --install-root /boot/config/custom"
+LEGACY_CRON_BOOT_HOOK='(crontab -l 2>/dev/null | grep -v usenet_health; echo "*/15 * * * * /bin/bash /boot/config/custom/usenet_health.sh") | crontab -'
 printf -v HEALTH_SCRIPT_Q '%q' "$INSTALL_ROOT/usenet_health.sh"
 CRON_LINE="*/15 * * * * /bin/bash $HEALTH_SCRIPT_Q # ouro:usenet-health"
 LEGACY_CRON_LINE="*/15 * * * * /bin/bash $HEALTH_SCRIPT_Q"
@@ -125,7 +126,7 @@ render_inactive_cron() {
 
 is_canonical_butler_go_hook() {
   case "$1" in
-    "$LEGACY_BOOT_HOOK"|"$LEGACY_BASH_BOOT_HOOK"|"$CANONICAL_PREVIOUS_BOOT_HOOK"|"$CANONICAL_BOOT_HOOK") return 0 ;;
+    "$LEGACY_BOOT_HOOK"|"$LEGACY_BASH_BOOT_HOOK"|"$CANONICAL_PREVIOUS_BOOT_HOOK"|"$CANONICAL_BOOT_HOOK"|"$PREVIOUS_INSTALLER_BOOT_HOOK"|"$BOOT_HOOK"|"$LEGACY_CRON_BOOT_HOOK") return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -232,7 +233,7 @@ install_transaction() {
     printf '#!/bin/bash\n' > "$stage/go.base"
   fi
   go_candidate="$stage/go.candidate"
-  grep -Fvx -e "$LEGACY_BOOT_HOOK" -e "$LEGACY_BASH_BOOT_HOOK" -e "$PREVIOUS_INSTALLER_BOOT_HOOK" -e "$BOOT_HOOK" "$stage/go.base" > "$stage/go.filtered" || true
+  render_go_without_owned "$stage/go.base" "$stage/go.filtered"
   if [ -s "$stage/go.filtered" ]; then
     awk -v hook="$BOOT_HOOK" 'NR == 1 && /^#!/ { print; print hook; next } NR == 1 { print hook } { print }' "$stage/go.filtered" > "$go_candidate"
   else
