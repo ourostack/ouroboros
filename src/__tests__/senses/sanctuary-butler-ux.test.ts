@@ -1,4 +1,5 @@
 import fs from "node:fs"
+import os from "node:os"
 import path from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 import { FileFriendStore, getChannelCapabilities, type FriendRecord } from "@ouro.bot/friends"
@@ -134,8 +135,7 @@ describe("Mendelow Cloud Butler household UX", () => {
   })
 
   it("stores typed preference provenance while limiting household writes to their own communication and timing", async () => {
-    setAgentName(`sanctuary-owner-notes-${process.pid}-${Date.now()}`)
-    const agentRoot = getAgentRoot()
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-owner-notes-"))
     rootsToRemove.push(agentRoot)
     const owner = realToolContext("sanctuary-owner")
     const household = realToolContext("sanctuary-household")
