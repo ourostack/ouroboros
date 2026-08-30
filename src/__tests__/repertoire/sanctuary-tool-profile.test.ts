@@ -97,6 +97,8 @@ describe("Sanctuary active tool profile", () => {
     expect(JSON.parse(await execTool("telegram_contact_manage", { action: "revoke", friendId: "sibling" }, owner))).toMatchObject({ ok: true, revoked: true })
     expect(JSON.parse(await execTool("telegram_contact_manage", { action: "unblock", admissionId: "admission" }, owner))).toMatchObject({ ok: true, unblocked: true })
     expect(JSON.parse(await execTool("telegram_contact_manage", { action: "revoke" }, owner))).toMatchObject({ ok: false })
+    expect(JSON.parse(await execTool("telegram_contact_manage", { action: "unblock", admissionId: "   " }, owner))).toMatchObject({ ok: false })
+    expect(JSON.parse(await execTool("telegram_contact_manage", {}, owner))).toMatchObject({ ok: false })
     expect(resolveToolDefinition("telegram_contact_manage")!.riskProfile!({ action: "list" })).toEqual({ mutates: "none", risk: "low" })
     expect(resolveToolDefinition("telegram_contact_manage")!.riskProfile!({ action: "revoke" })).toMatchObject({ mutates: "durable_state_write", risk: "high" })
     expect(approvalPolicyForToolName("telegram_contact_manage", { action: "revoke" })).toEqual({ kind: "not_required" })

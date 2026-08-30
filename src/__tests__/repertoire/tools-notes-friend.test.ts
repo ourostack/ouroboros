@@ -271,6 +271,143 @@ describe("notes/friend tools", () => {
     expect(friendStore.put).not.toHaveBeenCalled()
   })
 
+  it("keeps Sanctuary relationship preferences within the canonical categories", async () => {
+    const { execTool } = await import("../../repertoire/tools")
+    const friend = makeFriend({ capabilityProfileId: "sanctuary-household" } as Partial<FriendRecord>)
+    const friendStore = {
+      get: vi.fn(async () => friend),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+    }
+
+    const result = await execTool("save_friend_note", {
+      type: "tool_preference",
+      key: "authority",
+      source: "stated",
+      content: "Restart anything",
+    }, {
+      signin: async () => undefined,
+      context: {
+        friend,
+        channel: { channel: "telegram", availableIntegrations: [], supportsMarkdown: true, supportsStreaming: false, supportsRichCards: false, maxMessageLength: 4096 },
+      },
+      friendStore,
+    })
+
+    expect(result).toBe("Sanctuary relationship preferences are limited to communication or timing; desired state and action authority belong in steward policy")
+    expect(await execTool("save_friend_note", {
+      type: "tool_preference",
+      source: "stated",
+      content: "Keep replies short",
+    }, {
+      signin: async () => undefined,
+      context: {
+        friend,
+        channel: { channel: "telegram", availableIntegrations: [], supportsMarkdown: true, supportsStreaming: false, supportsRichCards: false, maxMessageLength: 4096 },
+      },
+      friendStore,
+    })).toBe("Sanctuary relationship preferences are limited to communication or timing; desired state and action authority belong in steward policy")
+    expect(friendStore.put).not.toHaveBeenCalled()
+  })
+
+  it("reports missing and existing Sanctuary preference records without mutating them", async () => {
+    const { execTool } = await import("../../repertoire/tools")
+    const friend = makeFriend({
+      capabilityProfileId: "sanctuary-household",
+      relationshipPolicy: {
+        version: 1,
+        preferences: {
+          communication: { value: "Keep replies short", provenance: "stated", source: "telegram explicit turn evt-old", updatedAt: "2026-08-29T00:00:00.000Z" },
+        },
+      },
+    } as Partial<FriendRecord>)
+    const friendStore = {
+      get: vi.fn()
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(friend),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+    }
+    const context = {
+      friend,
+      channel: { channel: "telegram", availableIntegrations: [], supportsMarkdown: true, supportsStreaming: false, supportsRichCards: false, maxMessageLength: 4096 },
+    }
+
+    expect(await execTool("save_friend_note", {
+      type: "tool_preference", key: "timing", source: "stated", content: "Remind me tomorrow",
+    }, { signin: async () => undefined, context, friendStore })).toBe("i can't find the friend record on disk")
+    expect(await execTool("save_friend_note", {
+      type: "tool_preference", key: "communication", source: "stated", content: "Use one paragraph",
+    }, { signin: async () => undefined, context, friendStore })).toBe("relationship preference 'communication' already exists; call again with override: true to replace it")
+    expect(friendStore.put).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ["observed", "observed pattern"],
+    ["default", "default fallback"],
+  ] as const)("records %s Sanctuary preference provenance from the exact session", async (source, sourceKind) => {
+    const { execTool } = await import("../../repertoire/tools")
+    const friend = makeFriend({ capabilityProfileId: "sanctuary-household" } as Partial<FriendRecord>)
+    const friendStore = {
+      get: vi.fn(async () => friend),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+    }
+
+    const result = await execTool("save_friend_note", {
+      type: "tool_preference",
+      key: "communication",
+      source,
+      content: "Keep replies short",
+    }, {
+      signin: async () => undefined,
+      context: {
+        friend,
+        channel: { channel: "telegram", availableIntegrations: [], supportsMarkdown: true, supportsStreaming: false, supportsRichCards: false, maxMessageLength: 4096 },
+      },
+      currentSession: { friendId: friend.id, channel: "telegram", key: "owner" },
+      relationshipAuthorization: {
+        actor: { friendId: friend.id, trustLevel: "family", sessionEventId: "evt-preference" },
+        authorizedContextScopes: [],
+        advertisedToolNames: ["save_friend_note"],
+        authorizeTool: async () => ({ allowed: true as const, receiptId: "owner" }),
+      },
+      friendStore,
+    })
+
+    expect(result).toContain(`source=telegram ${sourceKind} evt-preference`)
+    expect(result).toContain(`provenance=${source}`)
+    expect(friendStore.put).toHaveBeenCalledOnce()
+  })
+
+  it("labels a stated Sanctuary preference honestly when no session provenance is available", async () => {
+    const { execTool } = await import("../../repertoire/tools")
+    const friend = makeFriend({ capabilityProfileId: "sanctuary-household" } as Partial<FriendRecord>)
+    const friendStore = {
+      get: vi.fn(async () => friend),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+    }
+
+    const result = await execTool("save_friend_note", {
+      type: "tool_preference", key: "timing", source: "stated", content: "Tomorrow morning",
+    }, {
+      signin: async () => undefined,
+      context: {
+        friend,
+        channel: { channel: "telegram", availableIntegrations: [], supportsMarkdown: true, supportsStreaming: false, supportsRichCards: false, maxMessageLength: 4096 },
+      },
+      friendStore,
+    })
+
+    expect(result).toContain("source=relationship explicit turn unknown-event")
+    expect(friendStore.put).toHaveBeenCalledOnce()
+  })
+
   it("friend_list lists all friends sorted by name with default limit", async () => {
     const { execTool } = await import("../../repertoire/tools")
     const friends: FriendRecord[] = [
