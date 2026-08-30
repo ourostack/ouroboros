@@ -446,7 +446,7 @@ export function validateSanctuaryUnit16EvidenceAssertions(label: SanctuaryUnit16
       requiredInteger(value, "keyRoleAssignmentCount", 0, label)
       const telegramToolCount = integer(value.telegramToolCount, `${label} telegramToolCount`, 1)
       const privateToolCount = integer(value.privateToolCount, `${label} privateToolCount`, 1)
-      if (integer(value.resolvedHandlerCount, `${label} resolvedHandlerCount`, 1) !== telegramToolCount + privateToolCount) throw new Error(`${label} handler count does not match the packaged profiles`)
+      if (integer(value.resolvedHandlerCount, `${label} resolvedHandlerCount`, 1) !== telegramToolCount + privateToolCount) throw new Error(`${label} handler count does not match the live relationship profiles`)
       requiredInteger(value, "excludedToolCount", 7, label)
       requiredInteger(value, "excludedToolAttemptCount", 7, label)
       requiredInteger(value, "excludedToolRejectedCount", 7, label)
