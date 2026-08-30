@@ -103,7 +103,20 @@ const listCodingSessionsMock = vi.fn(() => [
   },
 ])
 const listVisibleBackgroundOperationsMock = vi.fn(() => [])
-const readSanctuaryHealthStateMock = vi.fn(() => ({ incidents: {}, lastDigestDay: null, updatedAt: "2026-08-29T00:00:00.000Z", outbox: null, indeterminateDeliveries: [], deliveredReceipts: [], sweepReceipts: [] }))
+const listTelegramEffectsMock = vi.fn(() => [{
+  id: "a".repeat(64),
+  authorClass: "butler",
+  target: { kind: "approved_relationship", friendId: "ari", sessionKey: "telegram:8541786263:42" },
+  parts: [{ state: "session_recorded" }],
+  updatedAt: "2026-08-29T00:00:00.000Z",
+}])
+const listTelegramAdmissionsMock = vi.fn(() => [{
+  id: "b".repeat(20),
+  status: "pending",
+  displayCode: "PINE-4821",
+  createdAt: Date.parse("2026-08-29T00:00:00.000Z"),
+  expiresAt: Date.parse("2026-08-30T00:00:00.000Z"),
+}])
 
 vi.mock("fs", () => ({
   existsSync: vi.fn(),
@@ -206,9 +219,20 @@ vi.mock("../../heart/mail-import-discovery", () => ({
   listVisibleBackgroundOperations: listVisibleBackgroundOperationsMock,
 }))
 
-vi.mock("../../senses/sanctuary-health", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../../senses/sanctuary-health")>(),
-  readSanctuaryHealthState: (...args: any[]) => readSanctuaryHealthStateMock(...args),
+vi.mock("../../senses/telegram-effect-adapter", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../senses/telegram-effect-adapter")>(),
+  FileTelegramEffectJournal: class {
+    list() { return listTelegramEffectsMock() }
+    close() {}
+  },
+}))
+
+vi.mock("../../senses/telegram-admission", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../senses/telegram-admission")>(),
+  FileTelegramAdmissionStore: class {
+    list() { return listTelegramAdmissionsMock() }
+    close() {}
+  },
 }))
 
 describe("query_active_work tool", () => {
@@ -394,14 +418,16 @@ describe("query_active_work tool", () => {
     expect(result.length).toBeLessThan(10_000)
   })
 
-  it("reads pending awaits plus live delivery and daemon state from their canonical files", async () => {
+  it("reads pending awaits plus canonical Telegram journals and daemon state", async () => {
     const fs = await import("fs")
     const existsSync = vi.mocked(fs.existsSync)
     const readdirSync = vi.mocked(fs.readdirSync)
     const readFileSync = vi.mocked(fs.readFileSync)
     existsSync.mockImplementation((candidate) => {
       const filePath = String(candidate)
-      return filePath.endsWith("/awaiting") || filePath.endsWith("/state/health/sanctuary-health.json")
+      return filePath.endsWith("/awaiting")
+        || filePath.endsWith("/state/telegram/effects")
+        || filePath.endsWith("/state/senses/telegram/admissions")
     })
     readdirSync.mockImplementation(((candidate: string) => String(candidate).endsWith("/awaiting") ? [
       { name: "pending.md", isFile: () => true },
@@ -413,7 +439,6 @@ describe("query_active_work tool", () => {
       const filePath = String(candidate)
       if (filePath.endsWith("pending.md")) return "---\ncondition: Ari confirms the top-up\nstatus: pending\n---\ncheck credit\n"
       if (filePath.endsWith("resolved.md")) return "---\nstatus: resolved\n---\ndone\n"
-      if (filePath.endsWith("sanctuary-health.json")) return JSON.stringify({ incidents: {}, lastDigestDay: null, updatedAt: "2026-08-29T00:00:00.000Z", outbox: null, indeterminateDeliveries: [], deliveredReceipts: [], sweepReceipts: [] })
       return JSON.stringify({ status: "healthy", mode: "production", pid: 41, startedAt: "2026-08-29T00:00:00.000Z", uptimeSeconds: 60, safeMode: null, degraded: [], agents: {}, habits: {} })
     }) as any)
 
@@ -421,7 +446,8 @@ describe("query_active_work tool", () => {
       const { readButlerOperationalVisibility } = await import("../../repertoire/tools-session")
       const status = readButlerOperationalVisibility("/mock/butler", "sanctuary")
       expect(status.awaits).toEqual([expect.objectContaining({ name: "pending", status: "pending" })])
-      expect(status.telegramDelivery.updatedAt).toBe("2026-08-29T00:00:00.000Z")
+      expect(status.telegramEffects).toEqual([expect.objectContaining({ state: "session_recorded", updatedAt: "2026-08-29T00:00:00.000Z" })])
+      expect(status.telegramAdmissions).toEqual([expect.objectContaining({ status: "pending", displayCode: "PINE-4821" })])
       expect(status.daemonHealth).toMatchObject({ status: "healthy", pid: 41 })
     } finally {
       existsSync.mockReset()
@@ -467,7 +493,8 @@ describe("query_active_work tool", () => {
       senseStatusLines: [],
       stewardPolicy: { schemaVersion: 1, version: 0, desiredStates: {}, routineActionGrants: {}, updatedAt: null },
       awaits,
-      telegramDelivery: { outbox: null, indeterminateDeliveries: [], deliveredReceipts: [], updatedAt: "2026-08-29T00:00:00.000Z" },
+      telegramEffects: [],
+      telegramAdmissions: [],
       externalEvents: [event],
       sourceErrors: { awaits: "await store unavailable", external_events: "event store unavailable", steward_policy: "policy unavailable" },
     })
