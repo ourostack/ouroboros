@@ -70,7 +70,8 @@ function writeAtomic(filePath: string, content: string | Buffer): void {
     }
     fs.renameSync(temporary, filePath)
   } finally {
-    fs.rmSync(stagingDirectory, { recursive: true, force: true })
+    if (fs.existsSync(temporary)) fs.unlinkSync(temporary)
+    fs.rmdirSync(stagingDirectory)
   }
   fs.chmodSync(filePath, 0o600)
   const directory = fs.openSync(path.dirname(filePath), fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
