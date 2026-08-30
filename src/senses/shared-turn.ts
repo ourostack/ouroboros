@@ -27,6 +27,7 @@ import type { RuntimeMcpServers } from "../repertoire/mcp-manager"
 import { emitNervesEvent } from "../nerves/runtime"
 import type { ToolContext } from "../repertoire/tools-base"
 import { readSessionTransaction, withSessionTurnLease, type SessionTurnLease } from "../mind/session-transaction"
+import type { OrientationFrame } from "../heart/orientation-frame"
 
 const RESPONSE_CAP = 50_000
 const OUTWARD_DELIVERY_TOOL_ACKS = new Map([
@@ -186,6 +187,8 @@ export interface RunSenseTurnOptions {
   toolContext?: Partial<ToolContext>
   /** Final sense-owned authorization/context refresh at the shared pipeline's pre-provider boundary. */
   prepareRunAgentOptions?: InboundTurnInput["prepareRunAgentOptions"]
+  /** Truth-bearing presentation context for a transport-specific turn trigger. */
+  orientationFrame?: OrientationFrame
   /** Builds a durable approval coordinator after the exact leased session path/revision are known. */
   approvalCoordinatorFactory?: (context: { sessionPath: string; baseSessionRevision: string }) => import("../heart/core").ApprovalCoordinator
   /**
@@ -462,6 +465,7 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
       mcpManager,
       ...(options.approvalCoordinatorFactory ? { approvalCoordinator: options.approvalCoordinatorFactory({ sessionPath: sessPath, baseSessionRevision }) } : {}),
       ...(options.latencyMode === "live" ? { skipKeptNotes: true } : {}),
+      ...(options.orientationFrame ? { orientationFrame: options.orientationFrame } : {}),
       toolContext: {
         signin: async () => undefined,
         ...(options.toolContext ? options.toolContext as ToolContext : {}),
