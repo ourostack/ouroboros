@@ -17,6 +17,10 @@ function response(body: unknown, status = 200): Response {
 }
 
 describe("Sanctuary SAB client", () => {
+  it("constructs lazily with the default attachment", () => {
+    expect(createSanctuarySabClient()).toMatchObject({ readQueue: expect.any(Function), resumeQueue: expect.any(Function) })
+  })
+
   it("reads a bounded queue snapshot without exposing its credential", async () => {
     const fetch = vi.fn(async () => response({ queue: { paused: true, status: "Paused", noofslots: "12" } }))
     const client = createSanctuarySabClient({ iniPath: config(), fetch, now: () => "2026-08-30T04:00:00.000Z" })
@@ -74,6 +78,21 @@ describe("Sanctuary SAB client", () => {
     const fetch = vi.fn(async () => { if (result instanceof Error) throw result; return result as Response })
     if (!contents) await expect(createSanctuarySabClient({ iniPath, fetch }).readQueue()).rejects.toThrow(/credential/u)
     else await expect(createSanctuarySabClient({ iniPath, fetch }).readQueue()).rejects.toThrow(/request|malformed/u)
+  })
+
+  it.each([
+    ["non-integer job count", { queue: { paused: false, noofslots: 1.5 } }],
+    ["negative job count", { queue: { paused: false, noofslots: -1 } }],
+    ["excessive job count", { queue: { paused: false, noofslots: 1_000_001 } }],
+    ["missing body", null],
+    ["primitive body", "invalid"],
+    ["array body", []],
+    ["missing queue", {}],
+    ["primitive queue", { queue: "invalid" }],
+    ["array queue", { queue: [] }],
+  ])("rejects malformed queue response: %s", async (_label, body) => {
+    const fetch = vi.fn(async () => response(body))
+    await expect(createSanctuarySabClient({ iniPath: config(), fetch }).readQueue()).rejects.toThrow("SAB queue response is malformed")
   })
 
   it("isolates a missing SAB attachment until an SAB operation is requested", async () => {

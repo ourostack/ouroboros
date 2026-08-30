@@ -7,6 +7,7 @@ import { FileFriendStore } from "@ouro.bot/friends"
 import { currentTestObservedNervesEvent } from "../helpers/current-test-nerves"
 import { cacheMachineRuntimeCredentialConfig } from "../../heart/runtime-credentials"
 
+const mockLstatSyncError = vi.hoisted(() => ({ value: null as Error | null }))
 const mockBuildSystem = vi.fn()
 const mockRunAgent = vi.fn()
 const mockSessionPath = vi.fn()
@@ -37,6 +38,17 @@ const mockGetToolsForChannel = vi.fn()
 const mockSendTelegramExternalEventDecision = vi.hoisted(() => vi.fn())
 const mockHasActiveExternalEventAwait = vi.hoisted(() => vi.fn(() => false))
 const mockRelationshipSubjectFriendId = vi.hoisted(() => ({ value: null as string | null }))
+
+vi.mock("fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("fs")>()
+  return {
+    ...actual,
+    lstatSync: (...args: Parameters<typeof actual.lstatSync>) => {
+      if (mockLstatSyncError.value) throw mockLstatSyncError.value
+      return actual.lstatSync(...args)
+    },
+  }
+})
 
 vi.mock("../../mind/prompt", () => ({
   buildSystem: (...args: any[]) => mockBuildSystem(...args),
@@ -208,6 +220,7 @@ describe("private runtime", () => {
     privateDecisionCounter = 0
     mockHasActiveExternalEventAwait.mockReset().mockReturnValue(false)
     mockRelationshipSubjectFriendId.value = null
+    mockLstatSyncError.value = null
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "private-runtime-test-"))
     sessionFile = path.join(tmp, "private-runtime-session.json")
     agentRoot = path.join(tmp, "agent-root")
@@ -2477,13 +2490,40 @@ describe("private runtime", () => {
     expect(mockHandleInboundTurn).not.toHaveBeenCalled()
   })
 
-  it.each(["missing", "revoked", "profile-missing", "legacy", "obligation-missing", "fulfilled", "expired"] as const)("fails closed before the model for a %s relationship await", async (state) => {
+  it.each([
+    ["oversized external-event friend id", `filed_from: external-event\nfiled_for_friend_id: ${"x".repeat(257)}\nfiled_from_key: /events/event.json\nrequest_id: null\n`],
+    ["incomplete request coordinates", "filed_from: telegram\nfiled_for_friend_id: household\nfiled_from_key: null\nrequest_id: request-1\n"],
+  ])("rejects %s provenance", async (_label, provenance) => {
+    fs.mkdirSync(path.join(agentRoot, "awaiting"), { recursive: true })
+    fs.writeFileSync(path.join(agentRoot, "awaiting", "bad-provenance.md"), `---\ncondition: check\ncadence: 5m\nstatus: pending\n${provenance}---\n`, "utf8")
+    await expect(runApprovedPrivateRuntimeTurn({ reason: "await", awaitName: "bad-provenance", now: () => new Date("2026-08-30T17:00:00.000Z") })).rejects.toThrow(/provenance/u)
+    expect(mockHandleInboundTurn).not.toHaveBeenCalled()
+  })
+
+  it("rejects an unsafe friend id before probing its exact file", async () => {
     fs.writeFileSync(path.join(agentRoot, "tool-profiles.json"), JSON.stringify({ version: 2, profiles: {
-      "sanctuary-household": { version: 3, contextScopes: ["own_requests"], toolNames: ["await_condition", "resolve_await"], effectScopes: ["telegram.request_return"] },
+      "sanctuary-event": { version: 1, contextScopes: [], toolNames: ["resolve_await"], effectScopes: [] },
     } }))
-    if (state === "revoked" || state === "profile-missing" || state === "obligation-missing" || state === "fulfilled" || state === "expired") {
+    fs.mkdirSync(path.join(agentRoot, "awaiting"), { recursive: true })
+    fs.writeFileSync(path.join(agentRoot, "awaiting", "unsafe-friend-id.md"), "---\ncondition: check\ncadence: 5m\nwake_at: 2026-08-30T17:00:00.000Z\nstatus: pending\nfiled_from: external-event\nfiled_for_friend_id: bad/id\nfiled_from_key: /events/event.json\nrequest_id: null\n---\n", "utf8")
+    mockHasActiveExternalEventAwait.mockReturnValue(true)
+    await expect(runApprovedPrivateRuntimeTurn({ reason: "await", awaitName: "unsafe-friend-id", now: () => new Date("2026-08-30T17:00:00.000Z") })).rejects.toThrow(/friend id is invalid/u)
+  })
+
+  it("accepts a CLI-filed system await without relationship authority", async () => {
+    fs.mkdirSync(path.join(agentRoot, "awaiting"), { recursive: true })
+    fs.writeFileSync(path.join(agentRoot, "awaiting", "cli-system.md"), "---\ncondition: check\ncadence: 5m\nstatus: pending\nfiled_from: cli\nfiled_for_friend_id: null\nfiled_from_key: null\nrequest_id: null\n---\n", "utf8")
+    await runApprovedPrivateRuntimeTurn({ reason: "await", awaitName: "cli-system", now: () => new Date("2026-08-30T17:00:00.000Z") })
+    expect(mockHandleInboundTurn.mock.calls[0][0].runAgentOptions.toolContext.relationshipAuthorization).toBeUndefined()
+  })
+
+  it.each(["missing", "revoked", "profile-missing", "registry-profile-missing", "resolve-denied", "legacy", "obligation-missing", "fulfilled", "expired"] as const)("fails closed before the model for a %s relationship await", async (state) => {
+    fs.writeFileSync(path.join(agentRoot, "tool-profiles.json"), JSON.stringify({ version: 2, profiles: {
+      "sanctuary-household": { version: 3, contextScopes: ["own_requests"], toolNames: state === "resolve-denied" ? [] : ["await_condition", "resolve_await"], effectScopes: ["telegram.request_return"] },
+    } }))
+    if (state === "revoked" || state === "profile-missing" || state === "registry-profile-missing" || state === "resolve-denied" || state === "obligation-missing" || state === "fulfilled" || state === "expired") {
       const friendStore = new FileFriendStore(path.join(agentRoot, "friends"))
-      await friendStore.put("household", { id: "household", name: "Household member", trustLevel: "friend", admissionState: state === "revoked" ? "revoked" : "active", initiativePolicy: state === "revoked" ? "none" : "request_follow_up_only", ...(state === "profile-missing" ? {} : { capabilityProfileId: "sanctuary-household" }), externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: "2026-08-29T00:00:00.000Z", updatedAt: "2026-08-29T00:00:00.000Z", schemaVersion: 1 })
+      await friendStore.put("household", { id: "household", name: "Household member", trustLevel: "friend", admissionState: state === "revoked" ? "revoked" : "active", initiativePolicy: state === "revoked" ? "none" : "request_follow_up_only", ...(state === "profile-missing" ? {} : { capabilityProfileId: state === "registry-profile-missing" ? "unknown-profile" : "sanctuary-household" }), externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: "2026-08-29T00:00:00.000Z", updatedAt: "2026-08-29T00:00:00.000Z", schemaVersion: 1 })
     }
     fs.mkdirSync(path.join(agentRoot, "awaiting"), { recursive: true })
     const friendId = state === "missing" ? "missing" : "household"
@@ -2542,6 +2582,21 @@ describe("private runtime", () => {
     fs.mkdirSync(path.join(agentRoot, "awaiting"), { recursive: true })
     fs.writeFileSync(path.join(agentRoot, "awaiting", "corrupt.md"), `---\ncondition: check\ncadence: 5m\nstatus: pending\nfiled_from: telegram\nfiled_for_friend_id: household\nfiled_from_key: telegram:777:888\nrequest_id: request-corrupt\nobligation_id: ${obligation.id}\n---\n`, "utf8")
     await expect(runApprovedPrivateRuntimeTurn({ reason: "await", awaitName: "corrupt", now: () => new Date("2026-08-29T00:05:00.000Z") })).rejects.toThrow(/ambiguous/u)
+    expect(mockHandleInboundTurn).not.toHaveBeenCalled()
+  })
+
+  it("propagates non-missing friend-file read failures while resolving relationship authority", async () => {
+    fs.writeFileSync(path.join(agentRoot, "tool-profiles.json"), JSON.stringify({ version: 2, profiles: {
+      "sanctuary-household": { version: 3, contextScopes: ["own_requests"], toolNames: ["resolve_await"], effectScopes: ["telegram.request_return"] },
+    } }))
+    const obligation = createObligation(agentRoot, { origin: { friendId: "missing-friend", channel: "telegram", key: "telegram:777:888" }, owedTo: { friendId: "missing-friend", channel: "telegram", key: "telegram:777:888" }, requestId: "request-unreadable", content: "unreadable" })
+    advanceObligation(agentRoot, obligation.id, { currentSurface: { kind: "session", label: "telegram/telegram:777:888" }, currentArtifact: "awaiting/unreadable.md", nextAction: "unreadable" })
+    fs.mkdirSync(path.join(agentRoot, "awaiting"), { recursive: true })
+    fs.writeFileSync(path.join(agentRoot, "awaiting", "unreadable.md"), `---\ncondition: check\ncadence: 5m\nstatus: pending\nfiled_from: telegram\nfiled_for_friend_id: missing-friend\nfiled_from_key: telegram:777:888\nrequest_id: request-unreadable\nobligation_id: ${obligation.id}\n---\n`, "utf8")
+    const readError = Object.assign(new Error("friend store unreadable"), { code: "EACCES" })
+    mockLstatSyncError.value = readError
+
+    await expect(runApprovedPrivateRuntimeTurn({ reason: "await", awaitName: "unreadable", now: () => new Date("2026-08-29T00:05:00.000Z") })).rejects.toBe(readError)
     expect(mockHandleInboundTurn).not.toHaveBeenCalled()
   })
 
