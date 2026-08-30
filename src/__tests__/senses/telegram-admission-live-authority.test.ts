@@ -111,6 +111,7 @@ describe("Telegram admission live authority", () => {
     const freshAwait = fs.readFileSync(awaitPath, "utf8")
     fs.writeFileSync(awaitPath, freshAwait.replace(/created_at: .*/u, "created_at: 2020-01-01T00:00:00.000Z").replace("max_age: 2h", "max_age: 1m"))
     await expect(restartedComposition.authorizeRelationshipEffect!({ phase: "send", idempotencyKey: "later:expired", target: householdTarget, authorClass: "butler", effect: { kind: "text", text: "expired" } })).resolves.toMatchObject({ allowed: false })
+    await expect(restartedComposition.authorizeRelationshipEffect!({ phase: "send", idempotencyKey: `await-expiry-follow-up:${followRequestId}:receipt`, target: householdTarget, authorClass: "butler", effect: { kind: "text", text: "timed out" } })).resolves.toMatchObject({ allowed: true })
     fs.writeFileSync(awaitPath, freshAwait)
     let pollOptions!: TelegramLongPollOptions
     const requests: Array<{ method: string; body: Record<string, unknown> }> = []
@@ -184,5 +185,6 @@ describe("Telegram admission live authority", () => {
     expect(fs.existsSync(path.join(root, "awaiting", "revoked_follow.md"))).toBe(false)
     expect(fs.readFileSync(path.join(root, "awaiting", ".done", "revoked_follow.md"), "utf8")).toContain("status: canceled")
     await expect(restartedComposition.authorizeRelationshipEffect!({ phase: "send", idempotencyKey: "later:revoked", target: householdTarget, authorClass: "butler", effect: { kind: "text", text: "revoked" } })).resolves.toMatchObject({ allowed: false })
+    await expect(restartedComposition.authorizeRelationshipEffect!({ phase: "send", idempotencyKey: `await-expiry-follow-up:${revokeRequestId}:receipt`, target: { ...householdTarget, requestId: revokeRequestId }, authorClass: "butler", effect: { kind: "text", text: "timed out" } })).resolves.toMatchObject({ allowed: false })
   })
 })

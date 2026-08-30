@@ -50,6 +50,7 @@ function fixture(input: {
   claim?: ReturnType<typeof vi.fn>
   revoke?: ReturnType<typeof vi.fn>
   queue?: ReturnType<typeof vi.fn>
+  sendEffect?: (request: TelegramAdmissionEffectRequest) => Promise<string>
 } = {}) {
   const root = input.root ?? temporaryRoot()
   const effects: TelegramAdmissionEffectRequest[] = []
@@ -63,6 +64,7 @@ function fixture(input: {
     owner: { friendId: "ari", sessionKey: "telegram:ari" },
     sendEffect: vi.fn(async (request: TelegramAdmissionEffectRequest) => {
       effects.push(structuredClone(request))
+      if (input.sendEffect) return input.sendEffect(request)
       return `artifact-${effects.length}`
     }),
     resolveOwnerCard: (messageId) => {
@@ -253,6 +255,29 @@ describe("Telegram household admission", () => {
     await value.controller.reconcileExpired()
     expect(value.store.read(pending.admissionId)).toMatchObject({ status: "expired", quarantinedText: null })
     await expect(value.controller.decide({ admissionId: pending.admissionId, decision: "allow", actorFriendId: "ari" })).resolves.toMatchObject({ status: "expired" })
+  })
+
+  it("reconciles a terminal owner-card edit that failed before restart", async () => {
+    const root = temporaryRoot()
+    let initialEffects = 0
+    const first = fixture({ root, sendEffect: async (request) => {
+      if (request.effect.kind === "edit") throw new Error("edit unavailable")
+      initialEffects += 1
+      return `artifact-${initialEffects}`
+    } })
+    const pending = await first.controller.handleUnknown(unknown({ userId: "991", chatId: "991" }))
+    await expect(first.controller.decide({ admissionId: pending.admissionId, decision: "deny", actorFriendId: "ari" })).rejects.toThrow("edit unavailable")
+    expect(first.store.read(pending.admissionId).status).toBe("denied")
+
+    const retried: TelegramAdmissionEffectRequest[] = []
+    const restarted = fixture({ root, sendEffect: async (request) => { retried.push(request); return "terminal-artifact" } })
+    await restarted.controller.recover()
+    expect(retried).toContainEqual(expect.objectContaining({
+      idempotencyKey: `owner-card-terminal:${pending.admissionId}:denied`,
+      effect: { kind: "edit", messageId: 102, text: "Denied" },
+    }))
+    await restarted.controller.decide({ admissionId: pending.admissionId, decision: "deny", actorFriendId: "ari" })
+    expect(retried).toHaveLength(1)
   })
 
   it("bounds pending contacts, per-identity messages, bytes, and records overflow without hostile content", async () => {

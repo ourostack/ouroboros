@@ -57,9 +57,8 @@ export async function archiveAndAlertExpiredAwait(options: ArchiveExpiredAwaitOp
 
   const parsed = parseAwaitFile(content, source)
   const runtime = readAwaitRuntimeState(options.agentRoot, options.awaitName)
-  const lastObservation = runtime?.last_observation ?? null
-
-  const expiredAt = now().toISOString()
+  const lastObservation = parsed.last_observation_at_expiry ?? runtime?.last_observation ?? null
+  const expiredAt = parsed.expired_at ?? now().toISOString()
   const merged: Record<string, unknown> = {
     condition: parsed.condition,
     cadence: parsed.cadence,
@@ -75,6 +74,32 @@ export async function archiveAndAlertExpiredAwait(options: ArchiveExpiredAwaitOp
     obligation_id: parsed.obligation_id,
     expired_at: expiredAt,
     last_observation_at_expiry: lastObservation,
+  }
+
+  // A request-bound return must remain live through effect authorization and
+  // acceptance. Freeze its expiry payload in the still-pending await so a
+  // crash after Telegram acceptance retries the exact same effect.
+  if (parsed.request_id) {
+    const staged = { ...merged, status: "pending" }
+    const temporary = `${source}.${process.pid}.expiry.tmp`
+    try {
+      fs.writeFileSync(temporary, renderAwaitFile(staged, parsed.body), { encoding: "utf-8", mode: 0o600, flag: "wx" })
+      fs.renameSync(temporary, source)
+    } catch (error) {
+      try { fs.unlinkSync(temporary) } catch { /* no staged residue to remove */ }
+      throw error
+    }
+    const alertResult = await deliverAwaitAlert({
+      awaitFile: parseAwaitFile(fs.readFileSync(source, "utf-8"), source),
+      reason: "expired",
+      observation: lastObservation,
+      agentRoot: options.agentRoot,
+      agentName: options.agentName,
+      deliveryDeps: options.deliveryDeps,
+    })
+    if (alertResult.delivery?.status !== "delivered_now") {
+      return { archived: false, alerted: alertResult.attempted, reason: alertResult.delivery?.status ?? alertResult.skipped ?? "delivery not accepted" }
+    }
   }
 
   fs.mkdirSync(doneDir, { recursive: true })
@@ -93,7 +118,7 @@ export async function archiveAndAlertExpiredAwait(options: ArchiveExpiredAwaitOp
   const archived: AwaitFile = parseAwaitFile(archivedContent, target)
   if (archived.obligation_id) fulfillObligation(options.agentRoot, archived.obligation_id)
 
-  const alertResult = await deliverAwaitAlert({
+  const alertResult = parsed.request_id ? null : await deliverAwaitAlert({
     awaitFile: archived,
     reason: "expired",
     observation: lastObservation,
@@ -102,5 +127,5 @@ export async function archiveAndAlertExpiredAwait(options: ArchiveExpiredAwaitOp
     deliveryDeps: options.deliveryDeps,
   })
 
-  return { archived: true, alerted: alertResult.attempted }
+  return { archived: true, alerted: parsed.request_id ? true : Boolean(alertResult?.attempted) }
 }

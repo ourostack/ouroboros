@@ -788,6 +788,7 @@ export function resolveTelegramReply(store: FileTelegramEffectJournal, input: { 
 export function resolveTelegramControlArtifact(store: FileTelegramEffectJournal, input: { messageId: number; friendId: string; sessionKey: string }): { artifactId: string; requestId: string | null } | null {
   for (const artifact of store.list()) {
     if (artifact.authorClass !== "control" || artifact.target.kind !== "approved_relationship"
+      || artifact.effect.kind !== "card"
       || artifact.target.friendId !== input.friendId || artifact.target.sessionKey !== input.sessionKey) continue
     if (!artifact.parts.some((part) => part.messageId === input.messageId && part.state === "session_recorded")) continue
     return { artifactId: artifact.id, requestId: artifact.target.requestId ?? null }

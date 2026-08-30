@@ -40,6 +40,17 @@ function writePending(root: string, name: string): void {
   ].join("\n"), "utf-8")
 }
 
+function writeRequestPending(root: string, name: string): void {
+  writePending(root, name)
+  const filePath = path.join(root, "awaiting", `${name}.md`)
+  const content = fs.readFileSync(filePath, "utf8").replace("filed_from: cli", [
+    "filed_from: telegram",
+    "filed_from_key: telegram:777:888",
+    "request_id: request-1",
+  ].join("\n"))
+  fs.writeFileSync(filePath, content)
+}
+
 describe("archiveAndAlertExpiredAwait", () => {
   const cleanup: string[] = []
 
@@ -122,6 +133,27 @@ describe("archiveAndAlertExpiredAwait", () => {
       reason: "expired",
       observation: null,
     }))
+  })
+
+  it("keeps a request-bound expiry active until delivery is accepted, then archives on retry", async () => {
+    const root = makeTempRoot()
+    cleanup.push(root)
+    writeRequestPending(root, "movie")
+    mockDeliver.mockImplementationOnce(async () => {
+      expect(fs.existsSync(path.join(root, "awaiting", "movie.md"))).toBe(true)
+      const staged = fs.readFileSync(path.join(root, "awaiting", "movie.md"), "utf8")
+      expect(staged).toContain("status: pending")
+      expect(staged).toContain("expired_at: 2026-05-10T20:00:00.000Z")
+      return { attempted: true, delivery: { status: "blocked", detail: "revoked" } }
+    })
+    const first = await archiveAndAlertExpiredAwait({ agentRoot: root, agentName: "slugger", awaitName: "movie", deliveryDeps: { agentName: "slugger", queuePending: () => {} }, now: () => new Date("2026-05-10T20:00:00.000Z") })
+    expect(first).toMatchObject({ archived: false, alerted: true, reason: "blocked" })
+    expect(fs.existsSync(path.join(root, "awaiting", "movie.md"))).toBe(true)
+
+    mockDeliver.mockResolvedValueOnce({ attempted: true, delivery: { status: "delivered_now", detail: "accepted" } })
+    const second = await archiveAndAlertExpiredAwait({ agentRoot: root, agentName: "slugger", awaitName: "movie", deliveryDeps: { agentName: "slugger", queuePending: () => {} }, now: () => new Date("2026-05-10T21:00:00.000Z") })
+    expect(second).toEqual({ archived: true, alerted: true })
+    expect(fs.readFileSync(path.join(root, "awaiting", ".done", "movie.md"), "utf8")).toContain("expired_at: 2026-05-10T20:00:00.000Z")
   })
 
   it("uses default now when not provided", async () => {

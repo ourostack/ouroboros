@@ -130,6 +130,7 @@ export async function deliverAwaitAlert(options: AwaitAlertOptions): Promise<Awa
       key,
       content,
       ...(awaitFile.request_id ? { requestId: awaitFile.request_id } : {}),
+      deliveryId: `await:${awaitFile.name}:${reason}`,
       intent: "generic_outreach",
     },
     deliveryDeps,

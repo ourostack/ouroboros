@@ -10,6 +10,8 @@ export interface CrossChatDeliveryRequest {
   key: string
   content: string
   requestId?: string
+  /** Stable identity for retry-safe direct delivery of one durable return. */
+  deliveryId?: string
   intent: CrossChatDeliveryIntent
   authorizingSession?: {
     friendId: string

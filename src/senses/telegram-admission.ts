@@ -799,7 +799,9 @@ export function createTelegramAdmissionController(options: TelegramAdmissionCont
       for (const record of options.store.list()) {
         if (record.status === "pending") await ensureEffects(record)
         else if (["approved", "friend_bound", "ingress_committed", "turn_queued"].includes(record.status)) {
-          await withDecisionLease(record.id, () => resume(record.id))
+          await withDecisionLease(record.id, async () => settleOwnerCard(await resume(record.id)))
+        } else if (TERMINAL_STATUSES.has(record.status)) {
+          await withDecisionLease(record.id, () => settleOwnerCard(record))
         }
       }
     },

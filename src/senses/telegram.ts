@@ -1087,8 +1087,9 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         telegram: async (request) => {
           if (!request.requestId) return { status: "blocked", detail: "Telegram follow-up is missing its request binding" }
           try {
+            const expiry = request.deliveryId?.endsWith(":expired") === true
             const artifact = await executeAuthorizedEffect({
-              idempotencyKey: `await-follow-up:${request.requestId}:${createHash("sha256").update(request.content).digest("hex")}`,
+              idempotencyKey: `await-${expiry ? "expiry-" : ""}follow-up:${request.requestId}:${createHash("sha256").update(request.deliveryId ?? request.content).digest("hex")}`,
               target: { kind: "approved_relationship", friendId: request.friendId, sessionKey: request.key, requestId: request.requestId },
               authorClass: "butler",
               effect: { kind: "text", text: request.content },
@@ -1750,7 +1751,7 @@ export async function createProductionTelegramRelationshipComposition(agentName:
         ? new RegExp(`^relationship-turn:${input.target.requestId.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}:delivery:[0-9]+$`, "u").test(input.idempotencyKey)
         : false
       const durableFollowUp = friend.id !== owner.id && input.target.requestId
-        ? hasActiveRelationshipFollowUp(agentRoot, { friendId: friend.id, channel: "telegram", key: input.target.sessionKey, requestId: input.target.requestId })
+        ? hasActiveRelationshipFollowUp(agentRoot, { friendId: friend.id, channel: "telegram", key: input.target.sessionKey, requestId: input.target.requestId, allowElapsed: input.idempotencyKey.startsWith("await-expiry-follow-up:") })
         : false
       if (friend.id !== owner.id && input.target.requestId && !inboundIdempotency && !durableFollowUp) return { allowed: false, reason: "relationship follow-up is not bound to an active request await" }
       const evaluator = createRelationshipAuthorizationEvaluator({
