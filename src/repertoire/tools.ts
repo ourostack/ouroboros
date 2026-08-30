@@ -47,6 +47,7 @@ const SANCTUARY_RELATIONSHIP_BASE_TOOLS = new Set([
   "query_cares",
   "care_manage",
   "await_condition",
+  "resolve_await",
   "cancel_await",
   "send_message",
 ])
@@ -57,6 +58,7 @@ const SANCTUARY_TELEGRAM_SURFACE = new Set([
   "query_cares",
   "care_manage",
   "await_condition",
+  "resolve_await",
   "cancel_await",
   ...unraidToolDefinitions.map((definition) => definition.tool.function.name),
   "steward_policy_manage",
