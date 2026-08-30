@@ -18,7 +18,7 @@ import { mcpToolsAsDefinitions } from "./mcp-tools";
 import { voiceToolDefinitions } from "./tools-voice";
 import { detectDestructivePatterns } from "./shell-sessions";
 import { unraidToolDefinitions } from "./tools-unraid";
-import { ponderTool, settleTool, speakTool } from "./tools-flow";
+import { ponderTool, restTool, settleTool, speakTool } from "./tools-flow";
 import { stewardPolicyToolDefinition } from "./tools-steward-policy";
 import type { ToolHighRiskMutationKind, ToolRiskProfile } from "./tools-base";
 import { inspectRoutineActionGrant } from "../heart/steward-policy";
@@ -39,7 +39,31 @@ function isSanctuaryAgent(): boolean {
   }
 }
 
-const SANCTUARY_TELEGRAM_BASE_TOOLS = new Set(["query_active_work", "save_friend_note", "query_cares", "care_manage", "await_condition", "cancel_await", "telegram_contact_manage"])
+const SANCTUARY_RELATIONSHIP_BASE_TOOLS = new Set([
+  "external_event_disposition",
+  "query_active_work",
+  "save_friend_note",
+  "telegram_contact_manage",
+  "query_cares",
+  "care_manage",
+  "await_condition",
+  "cancel_await",
+  "send_message",
+])
+const SANCTUARY_TELEGRAM_SURFACE = new Set([
+  "query_active_work",
+  "save_friend_note",
+  "telegram_contact_manage",
+  "query_cares",
+  "care_manage",
+  "await_condition",
+  "cancel_await",
+  ...unraidToolDefinitions.map((definition) => definition.tool.function.name),
+  "steward_policy_manage",
+  "ponder",
+  "settle",
+  "speak",
+])
 
 // Re-export types and constants used by the rest of the codebase
 export { tools, settleTool, observeTool, ponderTool, restTool, speakTool } from "./tools-base";
@@ -64,6 +88,33 @@ export function resetMcpDefinitions(): void {
 function baseToolsForCapabilities(): OpenAI.ChatCompletionFunctionTool[] {
   // Use baseToolDefinitions at call time so dynamically-added tools are included
   return baseToolDefinitions.map((d) => d.tool);
+}
+
+function uniqueToolSchemas(tools: OpenAI.ChatCompletionFunctionTool[]): OpenAI.ChatCompletionFunctionTool[] {
+  const seen = new Set<string>()
+  return tools.filter((tool) => {
+    if (seen.has(tool.function.name)) return false
+    seen.add(tool.function.name)
+    return true
+  })
+}
+
+/**
+ * Resolve Sanctuary relationship tools from one canonical definition pool.
+ * Durable relationship profiles can only reduce this surface; they cannot
+ * introduce an arbitrary base tool by naming it in configuration.
+ */
+export function getSanctuaryRelationshipTools(advertisedToolNames: readonly string[]): OpenAI.ChatCompletionFunctionTool[] {
+  const advertised = new Set(advertisedToolNames)
+  return uniqueToolSchemas([
+    ...baseToolDefinitions.filter((definition) => SANCTUARY_RELATIONSHIP_BASE_TOOLS.has(definition.tool.function.name)).map((definition) => definition.tool),
+    ...unraidToolDefinitions.map((definition) => definition.tool),
+    stewardPolicyToolDefinition.tool,
+    ponderTool,
+    restTool,
+    settleTool,
+    speakTool,
+  ]).filter((tool) => advertised.has(tool.function.name))
 }
 
 // Apply a single tool preference to a tool schema, returning a new object.
@@ -105,14 +156,7 @@ export function getToolsForChannel(
   _chatModel?: string,
 ): OpenAI.ChatCompletionFunctionTool[] {
   if (capabilities?.channel === "telegram" && isSanctuaryAgent()) {
-    return [
-      ...baseToolDefinitions.filter((definition) => SANCTUARY_TELEGRAM_BASE_TOOLS.has(definition.tool.function.name)).map((definition) => definition.tool),
-      ...unraidToolDefinitions.map((definition) => definition.tool),
-      stewardPolicyToolDefinition.tool,
-      ponderTool,
-      settleTool,
-      speakTool,
-    ]
+    return getSanctuaryRelationshipTools([...SANCTUARY_TELEGRAM_SURFACE])
   }
   const baseTools = baseToolsForCapabilities();
   const bluebubblesTools = capabilities?.channel === "bluebubbles"

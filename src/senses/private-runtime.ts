@@ -7,7 +7,7 @@ import { getAgentName, getAgentRoot, type AgentProvider } from "../heart/identit
 import { loadSession, postTurnTrim, deferPostTurnPersist, type UsageData } from "../mind/context"
 import { buildSystem, flattenSystemPrompt } from "../mind/prompt"
 import { getSharedMcpManager } from "../repertoire/mcp-manager"
-import { getToolsForChannel } from "../repertoire/tools"
+import { getSanctuaryRelationshipTools, getToolsForChannel } from "../repertoire/tools"
 import { findNonCanonicalBundlePaths } from "../mind/bundle-manifest"
 import {
   drainPending,
@@ -1250,7 +1250,7 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
     habitToolsResolved = []
   }
   const externalEventToolsResolved = options?.externalEvent
-    ? getToolsForChannel(innerCapabilities).filter((tool) => externalEventRelationship!.relationshipAuthorization.advertisedToolNames.includes(tool.function.name))
+    ? getSanctuaryRelationshipTools(externalEventRelationship!.relationshipAuthorization.advertisedToolNames)
     : undefined
 
   const effectiveHabitSession = options?.noSend === true

@@ -3,7 +3,7 @@ import * as fs from "node:fs"
 
 import { getChannelCapabilities } from "@ouro.bot/friends"
 import { resetIdentity, setAgentName } from "../../heart/identity"
-import { approvalPolicyForToolName, execTool, getToolsForChannel, resolveToolDefinition } from "../../repertoire/tools"
+import { approvalPolicyForToolName, execTool, getSanctuaryRelationshipTools, getToolsForChannel, resolveToolDefinition } from "../../repertoire/tools"
 
 describe("Sanctuary active tool profile", () => {
   afterEach(() => resetIdentity())
@@ -46,6 +46,29 @@ describe("Sanctuary active tool profile", () => {
     expect(packaged.profiles["sanctuary-household"].toolNames).toContain("unraid_restart_container")
     expect(names).not.toEqual(expect.arrayContaining(["shell", "read_file", "write_file", "jellyseerr_request", "sonarr_add", "radarr_add"]))
     expect(Object.keys(packaged.profiles)).toEqual(["sanctuary-owner", "sanctuary-household", "sanctuary-event"])
+  })
+
+  it("resolves every relationship profile from the same canonical Sanctuary definition pool", () => {
+    setAgentName("sanctuary")
+    const packaged = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/tool-profiles.json", "utf8")) as {
+      profiles: Record<string, { toolNames: string[] }>
+    }
+    const resolve = (profile: string) => getSanctuaryRelationshipTools(packaged.profiles[profile]!.toolNames)
+      .map((tool) => tool.function.name)
+
+    for (const profile of ["sanctuary-owner", "sanctuary-household", "sanctuary-event"]) {
+      expect(resolve(profile).toSorted()).toEqual(packaged.profiles[profile]!.toolNames.toSorted())
+    }
+    expect(resolve("sanctuary-event")).toEqual(expect.arrayContaining([
+      "external_event_disposition",
+      "steward_policy_manage",
+      "unraid_list_containers",
+      "unraid_get_container_logs",
+      "unraid_restart_container",
+      "rest",
+    ]))
+    expect(getSanctuaryRelationshipTools(["shell", "read_file", "unraid_get_system"]).map((tool) => tool.function.name))
+      .toEqual(["unraid_get_system"])
   })
 
   it("keeps Telegram contact management owner-only and delegates exact mutations to the live manager", async () => {

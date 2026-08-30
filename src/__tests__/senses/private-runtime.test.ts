@@ -133,6 +133,8 @@ vi.mock("../../heart/daemon/daemon-health", () => ({
 
 vi.mock("../../repertoire/tools", () => ({
   getToolsForChannel: (...args: any[]) => mockGetToolsForChannel(...args),
+  getSanctuaryRelationshipTools: (advertisedToolNames: readonly string[]) => mockGetToolsForChannel()
+    .filter((tool: any) => advertisedToolNames.includes(tool.function.name)),
 }))
 
 vi.mock("../../senses/telegram", () => ({
