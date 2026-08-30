@@ -109,7 +109,7 @@ describe("Telegram admission integration", () => {
         source: {
           kind: "telegram_newly_admitted",
           authority: "presentation_only",
-          routingHint: "This is this person’s first admitted turn. Welcome them warmly and briefly explain what the household Butler can help with before answering their request.",
+          routingHint: "This is this person’s first admitted turn. Welcome them warmly and briefly explain what the household Butler can help with before answering their request. Their original message included attachments that were not downloaded; ask them to resend those attachments now.",
         },
       }),
     }))
@@ -133,6 +133,7 @@ describe("Telegram admission integration", () => {
     await pollOptions.onMessage({ updateId: 15, messageId: 25, userId: "42", chatId: "42", text: "Allow", replyToMessageId: String(secondOwnerCardMessageId) })
     expect(runTurn).toHaveBeenCalledTimes(4)
     expect(runTurn.mock.calls[3]![0]).toMatchObject({ friendId: "household-friend", userMessage: "second quarantined request" })
+    expect(runTurn.mock.calls[3]![0].orientationFrame.source.routingHint).not.toContain("resend")
     expect(JSON.stringify(runTurn.mock.calls)).not.toContain('"userMessage":"Allow"')
     await pollOptions.onMessage({ updateId: 16, messageId: 26, userId: "42", chatId: "42", text: "ordinary owner message" })
     const ownerTurn = runTurn.mock.calls[4]![0]
@@ -148,6 +149,24 @@ describe("Telegram admission integration", () => {
       .toContainEqual(expect.objectContaining({ role: "user", content: "ordinary owner message" }))
     await pollOptions.onMessage({ updateId: 17, messageId: 27, userId: "42", chatId: "42", text: "owner reply", replyToMessageId: String(nextMessageId - 1) })
     expect(runTurn.mock.calls[5]![0].ingressRelations).toMatchObject({ replyToEventId: expect.any(String) })
+
+    await pollOptions.onUnknownMessage!({ updateId: 18, messageId: 28, botId: "777", userId: "1000", chatId: "1000", text: "", displayLabel: "Photo only", hasAttachments: true })
+    const photoOwnerCardMessageId = Math.max(...fs.readdirSync(path.join(root, "state", "telegram", "effects"))
+      .map((name) => JSON.parse(fs.readFileSync(path.join(root, "state", "telegram", "effects", name), "utf8")) as any)
+      .filter((artifact) => artifact.authorClass === "control" && artifact.effect.kind === "card")
+      .flatMap((artifact) => artifact.parts.map((part: any) => part.messageId).filter(Number.isSafeInteger)))
+    await pollOptions.onMessage({ updateId: 19, messageId: 29, userId: "42", chatId: "42", text: "Allow", replyToMessageId: String(photoOwnerCardMessageId) })
+    expect(runTurn.mock.calls[6]![0]).toMatchObject({
+      userMessage: "",
+      orientationFrame: {
+        currentUserSpeech: [],
+        source: {
+          kind: "telegram_newly_admitted",
+          authority: "presentation_only",
+          routingHint: "This is this person’s first admitted turn. Welcome them warmly and briefly explain what the household Butler can help with before answering their request. Their original message included attachments that were not downloaded; ask them to resend those attachments now.",
+        },
+      },
+    })
     await app.stop()
   })
 

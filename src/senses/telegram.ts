@@ -1194,7 +1194,9 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
           source: {
             kind: "telegram_newly_admitted",
             authority: "presentation_only" as const,
-            routingHint: "This is this person’s first admitted turn. Welcome them warmly and briefly explain what the household Butler can help with before answering their request.",
+            routingHint: input.orientation.attachmentsNeedResend
+              ? "This is this person’s first admitted turn. Welcome them warmly and briefly explain what the household Butler can help with before answering their request. Their original message included attachments that were not downloaded; ask them to resend those attachments now."
+              : "This is this person’s first admitted turn. Welcome them warmly and briefly explain what the household Butler can help with before answering their request.",
           },
         }
       : undefined
