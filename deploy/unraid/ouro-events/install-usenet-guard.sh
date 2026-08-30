@@ -62,6 +62,29 @@ atomic_install() {
   mv "$temporary" "$target" || { status=$?; /bin/rm -f "$temporary"; return "$status"; }
 }
 
+private_transaction_workspace() {
+  local kind="$1" workspace identity status
+  workspace="$(/usr/bin/mktemp -d "/tmp/ouro-usenet-$kind.XXXXXX")" || return $?
+  [ -d "$workspace" ] && [ ! -L "$workspace" ] || { status=$?; /bin/rmdir "$workspace" 2>/dev/null || true; return "$status"; }
+  identity="$(/usr/bin/stat -c '%u:%a' "$workspace" 2>/dev/null || /usr/bin/stat -f '%u:%Lp' "$workspace")" || { status=$?; /bin/rmdir "$workspace"; return "$status"; }
+  [ "$identity" = "$(id -u):700" ] || { /bin/rmdir "$workspace"; return 1; }
+  printf '%s\n' "$workspace"
+}
+
+cleanup_stale_atomic_residue() {
+  local target parent base
+  for target in "${TARGET_PATHS[@]}" "$GO_FILE"; do
+    parent="$(dirname "$target")"
+    base="$(basename "$target")"
+    [ ! -d "$parent" ] || find "$parent" -maxdepth 1 \( -type f -o -type l \) \( -name "$base.ouro-next.*" -o -name "$base.ouro-restore.*" \) -delete
+  done
+  if [ -n "$CRONTAB_FILE" ]; then
+    parent="$(dirname "$CRONTAB_FILE")"
+    base="$(basename "$CRONTAB_FILE")"
+    [ ! -d "$parent" ] || find "$parent" -maxdepth 1 \( -type f -o -type l \) \( -name "$base.ouro-next.*" -o -name "$base.ouro-restore.*" \) -delete
+  fi
+}
+
 render_cron() {
   local source="$1" target="$2"
   awk -v legacy="$LEGACY_CRON_LINE" 'index($0, "# ouro:usenet-health") == 0 && $0 != legacy && $0 != "*/15 * * * * /bin/bash /boot/config/custom/usenet_health.sh" { print }' "$source" > "$target"
@@ -126,7 +149,7 @@ preflight_sources() {
 }
 
 restore_target() {
-  local target="$1" backup="$2" temporary="${1}.ouro-restore.$$"
+  local target="$1" backup="$2" temporary="${1}.ouro-next.$$"
   if [ -f "$backup" ]; then
     /usr/bin/install -m "$(/bin/stat -c '%a' "$backup" 2>/dev/null || /usr/bin/stat -f '%Lp' "$backup")" "$backup" "$temporary"
     /bin/mv "$temporary" "$target"
@@ -160,8 +183,9 @@ rollback_host_state() {
 install_transaction() {
   preflight_sources
   /bin/mkdir -p "$INSTALL_ROOT"
+  cleanup_stale_atomic_residue
   local stage backup cron_original cron_inactive cron_candidate go_candidate status rollback_status index name target
-  stage="$(/usr/bin/mktemp -d "$INSTALL_ROOT/.ouro-usenet-stage.XXXXXX")"
+  stage="$(private_transaction_workspace install)"
   STAGE_PATH="$stage"
   backup="$stage/backup"
   /bin/mkdir "$backup"
@@ -284,9 +308,16 @@ restore_snapshot() {
   done < "$RESTORE_ROOT/global-state"
   [ "$index" -eq 2 ] || return 1
   while IFS= read -r source || [ -n "$source" ]; do is_canonical_butler_go_hook "$source" || return 1; done < "$RESTORE_ROOT/go.butler-lines"
-  awk 'index($0, "# ouro:usenet-health") == 0 && $0 != "*/15 * * * * /bin/bash /boot/config/custom/usenet_health.sh" { exit 1 }' "$RESTORE_ROOT/crontab.butler-lines" || return 1
+  while IFS= read -r source || [ -n "$source" ]; do
+    case "$source" in
+      "*/15 * * * * /bin/bash /boot/config/custom/usenet_health.sh"|"*/15 * * * * /bin/bash /boot/config/custom/usenet_health.sh # ouro:usenet-health") ;;
+      *) return 1 ;;
+    esac
+  done < "$RESTORE_ROOT/crontab.butler-lines"
 
-  stage="$(/usr/bin/mktemp -d "$INSTALL_ROOT/.ouro-usenet-restore.XXXXXX")"
+  /bin/mkdir -p "$INSTALL_ROOT"
+  cleanup_stale_atomic_residue
+  stage="$(private_transaction_workspace restore)"
   STAGE_PATH="$stage"
   backup="$stage/backup"
   /bin/mkdir "$backup"

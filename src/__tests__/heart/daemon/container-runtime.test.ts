@@ -536,6 +536,46 @@ if assert_restore_preflight; then command printf 'MUTATION\n'; else exit $?; fi`
     fs.rmSync(testRoot, { recursive: true, force: true })
   })
 
+  it("snapshots only exact Sanctuary cron lines and excludes marker-bearing commands", () => {
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const classifier = extractRunbookFunction(runbook, "snapshot_butler_cron_fragments")
+    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-cron-fragments-"))
+    const source = path.join(testRoot, "crontab")
+    const target = path.join(testRoot, "fragments")
+    const legacy = "*/15 * * * * /bin/bash /boot/config/custom/usenet_health.sh"
+    const canonical = `${legacy} # ouro:usenet-health`
+    const malicious = "* * * * * curl --token stolen-secret # ouro:usenet-health"
+    fs.writeFileSync(source, `${legacy}\n${canonical}\n${malicious}\n`, { mode: 0o600 })
+
+    const result = runConditionalHelper(`${classifier}\nsnapshot_butler_cron_fragments "$SOURCE" "$TARGET"`, "unused", { SOURCE: source, TARGET: target })
+    expect(result.status, result.stderr).toBe(0)
+    expect(fs.readFileSync(target, "utf8")).toBe(`${legacy}\n${canonical}\n`)
+    fs.rmSync(testRoot, { recursive: true, force: true })
+  })
+
+  it("creates cron capture files inside a private unpredictable directory", () => {
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const createCapture = extractRunbookFunction(runbook, "create_private_cron_capture")
+    const victim = path.join(os.tmpdir(), `ouro-cron-victim-${process.pid}`)
+    const oldCompanion = path.join(os.tmpdir(), `ouro-backup-crontab-${process.pid}.error`)
+    fs.writeFileSync(victim, "untouched\n", { mode: 0o600 })
+    fs.symlinkSync(victim, oldCompanion)
+    const result = runConditionalHelper(`${createCapture}\ncreate_private_cron_capture || exit $?\nprintf '%s\n%s\n%s\n' "$BACKUP_CRON_ROOT" "$BACKUP_CRON_SOURCE" "$BACKUP_CRON_ERROR"`, "unused")
+    expect(result.status, result.stderr).toBe(0)
+    const [captureRoot, stdoutPath, stderrPath] = result.stdout.trim().split("\n") as [string, string, string]
+    expect(captureRoot).toMatch(/^\/tmp\/ouro-backup-cron\.[A-Za-z0-9]+$/u)
+    expect(path.dirname(stdoutPath)).toBe(captureRoot)
+    expect(path.dirname(stderrPath)).toBe(captureRoot)
+    expect(fs.lstatSync(captureRoot).isSymbolicLink()).toBe(false)
+    expect(fs.statSync(captureRoot).mode & 0o777).toBe(0o700)
+    expect(fs.statSync(stdoutPath).mode & 0o777).toBe(0o600)
+    expect(fs.statSync(stderrPath).mode & 0o777).toBe(0o600)
+    expect(fs.readFileSync(victim, "utf8")).toBe("untouched\n")
+    fs.rmSync(captureRoot, { recursive: true, force: true })
+    fs.rmSync(oldCompanion, { force: true })
+    fs.rmSync(victim, { force: true })
+  })
+
   it("preserves legacy evidence while promoting a fresh canonical staging poller", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     const imageValidator = extractRunbookFunction(runbook, "validate_exact_image_id")
@@ -2279,7 +2319,7 @@ recover_test`
     expect(backupRunbook).toContain('backup_host_file /boot/config/custom/ouro-events/install-usenet-guard.sh custom/ouro-events/install-usenet-guard.sh')
     expect(backupRunbook).toContain('crontab -l >"$BACKUP_CRON_SOURCE"')
     expect(backupRunbook).toContain('>"$BACKUP_TMP/host/go.butler-lines"')
-    expect(backupRunbook).toContain('>"$BACKUP_TMP/host/crontab.butler-lines"')
+    expect(backupRunbook).toContain('snapshot_butler_cron_fragments "$BACKUP_CRON_SOURCE" "$BACKUP_TMP/host/crontab.butler-lines"')
     expect(backupRunbook).toContain('>"$BACKUP_TMP/host/global-state"')
     expect(backupRunbook).toContain("BACKUP_GO_DIGEST=$(sha256sum /boot/config/go")
     expect(backupRunbook).toContain('BACKUP_CRON_DIGEST=$(sha256sum "$BACKUP_CRON_SOURCE"')

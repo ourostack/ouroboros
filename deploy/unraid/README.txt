@@ -1703,10 +1703,38 @@ Backup:
         esac
       done <"$BACKUP_GO_SOURCE"
     }
+    snapshot_butler_cron_fragments() {
+      BACKUP_CRON_INPUT=$1
+      BACKUP_CRON_TARGET=$2
+      : >"$BACKUP_CRON_TARGET" || return $?
+      while IFS= read -r BACKUP_CRON_LINE || test -n "$BACKUP_CRON_LINE"; do
+        case "$BACKUP_CRON_LINE" in
+          "*/15 * * * * /bin/bash /boot/config/custom/usenet_health.sh"|"*/15 * * * * /bin/bash /boot/config/custom/usenet_health.sh # ouro:usenet-health")
+            printf '%s\n' "$BACKUP_CRON_LINE" >>"$BACKUP_CRON_TARGET" || return $?
+            ;;
+        esac
+      done <"$BACKUP_CRON_INPUT"
+    }
+    create_private_cron_capture() {
+      BACKUP_CRON_ROOT=$(mktemp -d /tmp/ouro-backup-cron.XXXXXX) || return $?
+      BACKUP_CRON_SOURCE=$BACKUP_CRON_ROOT/stdout
+      BACKUP_CRON_ERROR=$BACKUP_CRON_ROOT/stderr
+      test -d "$BACKUP_CRON_ROOT" && test ! -L "$BACKUP_CRON_ROOT" || return 1
+      test "$(stat -c '%u:%a' "$BACKUP_CRON_ROOT" 2>/dev/null || stat -f '%u:%Lp' "$BACKUP_CRON_ROOT")" = "$(id -u):700" || return 1
+      install -m 0600 /dev/null "$BACKUP_CRON_SOURCE" || return $?
+      install -m 0600 /dev/null "$BACKUP_CRON_ERROR" || return $?
+      test -f "$BACKUP_CRON_SOURCE" && test ! -L "$BACKUP_CRON_SOURCE" || return 1
+      test -f "$BACKUP_CRON_ERROR" && test ! -L "$BACKUP_CRON_ERROR" || return 1
+      test "$(stat -c '%u:%a' "$BACKUP_CRON_SOURCE" 2>/dev/null || stat -f '%u:%Lp' "$BACKUP_CRON_SOURCE")" = "$(id -u):600" || return 1
+      test "$(stat -c '%u:%a' "$BACKUP_CRON_ERROR" 2>/dev/null || stat -f '%u:%Lp' "$BACKUP_CRON_ERROR")" = "$(id -u):600" || return 1
+    }
+    cleanup_private_cron_capture() {
+      rm -f -- "$BACKUP_CRON_SOURCE" "$BACKUP_CRON_ERROR" || return $?
+      rmdir -- "$BACKUP_CRON_ROOT"
+    }
     snapshot_butler_host_fragments() {
-      BACKUP_CRON_SOURCE=$(mktemp /tmp/ouro-backup-crontab.XXXXXX) || return $?
-      BACKUP_CRON_ERROR=$BACKUP_CRON_SOURCE.error
-      trap 'rm -f -- "$BACKUP_CRON_SOURCE" "$BACKUP_CRON_ERROR"' RETURN
+      create_private_cron_capture || return $?
+      trap 'cleanup_private_cron_capture' RETURN
       if test -f /boot/config/go && test ! -L /boot/config/go; then
         BACKUP_GO_STATE=present
         BACKUP_GO_DIGEST=$(sha256sum /boot/config/go | awk '{print $1}') || return $?
@@ -1733,14 +1761,14 @@ Backup:
         fi
       fi
       rm -f -- "$BACKUP_CRON_ERROR" || return $?
-      awk 'index($0, "# ouro:usenet-health") || $0 == "*/15 * * * * /bin/bash /boot/config/custom/usenet_health.sh"' "$BACKUP_CRON_SOURCE" >"$BACKUP_TMP/host/crontab.butler-lines" || return $?
+      snapshot_butler_cron_fragments "$BACKUP_CRON_SOURCE" "$BACKUP_TMP/host/crontab.butler-lines" || return $?
       BACKUP_GO_COUNT=$(awk 'END { print NR + 0 }' "$BACKUP_TMP/host/go.butler-lines") || return $?
       BACKUP_CRON_COUNT=$(awk 'END { print NR + 0 }' "$BACKUP_TMP/host/crontab.butler-lines") || return $?
       printf 'go\t%s\t%s\t%s\ncrontab\t%s\t%s\t%s\n' "$BACKUP_GO_STATE" "$BACKUP_GO_DIGEST" "$BACKUP_GO_COUNT" "$BACKUP_CRON_STATE" "$BACKUP_CRON_DIGEST" "$BACKUP_CRON_COUNT" >"$BACKUP_TMP/host/global-state" || return $?
       chown 0:0 "$BACKUP_TMP/host/go.butler-lines" "$BACKUP_TMP/host/crontab.butler-lines" "$BACKUP_TMP/host/global-state" || return $?
       chmod 0600 "$BACKUP_TMP/host/go.butler-lines" "$BACKUP_TMP/host/crontab.butler-lines" "$BACKUP_TMP/host/global-state" || return $?
       printf 'present\t%s\n' go.butler-lines crontab.butler-lines global-state >>"$BACKUP_TMP/host/inventory" || return $?
-      rm -f -- "$BACKUP_CRON_SOURCE" || return $?
+      cleanup_private_cron_capture || return $?
       trap - RETURN
     }
   Snapshot both of these directories together:
