@@ -365,15 +365,18 @@ if assert_update_topology "$EXPECTED_IMAGE"; then command printf 'MUTATION\n'; e
     fs.mkdirSync(path.join(validRootPath, "agent", "sanctuary.ouro"), { recursive: true })
     fs.mkdirSync(path.join(validRootPath, "host", "custom", "ouro-events"), { recursive: true, mode: 0o700 })
     for (const directory of [path.join(validRootPath, "host"), path.join(validRootPath, "host", "custom"), path.join(validRootPath, "host", "custom", "ouro-events")]) fs.chmodSync(directory, 0o700)
-    fs.writeFileSync(path.join(validRootPath, "host", "crontab"), "*/15 * * * * guard\n", { mode: 0o600 })
+    fs.writeFileSync(path.join(validRootPath, "host", "go.butler-lines"), "", { mode: 0o600 })
+    fs.writeFileSync(path.join(validRootPath, "host", "crontab.butler-lines"), "", { mode: 0o600 })
+    fs.writeFileSync(path.join(validRootPath, "host", "global-state"), "go\tabsent\t-\t0\ncrontab\tabsent\t-\t0\n", { mode: 0o600 })
     fs.writeFileSync(path.join(validRootPath, "host", "inventory"), [
-      "absent\tgo",
       "absent\tcustom/usenet_health.sh",
       "absent\tcustom/ouro-events/bootstrap-spool.sh",
       "absent\tcustom/ouro-events/emit-event.mjs",
       "absent\tcustom/ouro-events/emit-usenet-event.sh",
       "absent\tcustom/ouro-events/install-usenet-guard.sh",
-      "present\tcrontab",
+      "present\tgo.butler-lines",
+      "present\tcrontab.butler-lines",
+      "present\tglobal-state",
       "",
     ].join("\n"), { mode: 0o600 })
     const validRoot = fs.realpathSync(validRootPath)
@@ -391,7 +394,7 @@ if assert_update_topology "$EXPECTED_IMAGE"; then command printf 'MUTATION\n'; e
       fs.writeFileSync(inspectPath, `${JSON.stringify([{ Image: inspectImageId }])}\n`, { mode: 0o600 })
       fs.writeFileSync(imageInspectPath, `${JSON.stringify([{ Id: imageId, Config: { Labels: { "org.opencontainers.image.source": "https://github.com/ourostack/ouroboros" } } }])}\n`, { mode: 0o600 })
       fs.writeFileSync(packageVersionPath, "0.1.0-alpha.743\n", { mode: 0o600 })
-      const entries = [path.join(validRoot, "host", "inventory"), path.join(validRoot, "host", "crontab"), imagePath, inspectPath, imageInspectPath, packageVersionPath].map((filePath) => {
+      const entries = [path.join(validRoot, "host", "inventory"), path.join(validRoot, "host", "go.butler-lines"), path.join(validRoot, "host", "crontab.butler-lines"), path.join(validRoot, "host", "global-state"), imagePath, inspectPath, imageInspectPath, packageVersionPath].map((filePath) => {
         const relative = path.relative(validRoot, filePath)
         const digest = createHash("sha256").update(fs.readFileSync(filePath)).digest("hex")
         return `${digest}  ${relative}`
@@ -474,6 +477,46 @@ if assert_restore_preflight; then command printf 'MUTATION\n'; else exit $?; fi`
     } finally {
       fs.rmSync(testRoot, { recursive: true, force: true })
     }
+  })
+
+  it("rejects representative inline credential forms from host snapshots without rejecting references", () => {
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const scanner = extractRunbookFunction(runbook, "host_file_contains_inline_credential")
+    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-host-credential-scan-"))
+    const candidate = path.join(testRoot, "candidate")
+    const scan = (contents: string) => {
+      fs.writeFileSync(candidate, contents, { mode: 0o600 })
+      return runConditionalHelper(`${scanner}\nhost_file_contains_inline_credential "$CANDIDATE"`, "unused", { CANDIDATE: candidate })
+    }
+
+    for (const contents of [
+      "TELEGRAM_BOT_TOKEN=123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi\n",
+      "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.signature\n",
+      "curl --token abcdefghijklmnopqrstuvwxyz012345\n",
+      "client --api-key=abcdefghijklmnopqrstuvwxyz012345\n",
+      "https://service-user:correct-horse-battery-staple@example.invalid/path\n",
+      "-----BEGIN PRIVATE KEY-----\nbase64body\n-----END PRIVATE KEY-----\n",
+      '{"token":"abcdefghijklmnopqrstuvwxyz012345"}\n',
+      "api_key: abcdefghijklmnopqrstuvwxyz012345\n",
+      "password: 'correct-horse-battery-staple'\n",
+    ]) {
+      const result = scan(contents)
+      expect(result.status, `${contents}\n${result.stderr}`).toBe(0)
+    }
+
+    for (const contents of [
+      "Authorization: Bearer $ACCESS_TOKEN\n",
+      'curl --token "$ACCESS_TOKEN"\n',
+      "https://example.invalid/path\n",
+      "-----BEGIN PUBLIC KEY-----\nbase64body\n-----END PUBLIC KEY-----\n",
+      '{"token":"${TOKEN_FROM_VAULT}"}\n',
+      "api_key: $API_KEY\n",
+    ]) {
+      const result = scan(contents)
+      expect(result.status, `${contents}\n${result.stderr}`).not.toBe(0)
+    }
+
+    fs.rmSync(testRoot, { recursive: true, force: true })
   })
 
   it("preserves legacy evidence while promoting a fresh canonical staging poller", () => {
@@ -2214,10 +2257,17 @@ recover_test`
     expect(backupRunbook).toContain('docker image inspect "$BACKUP_IMAGE_ID" >"$BACKUP_TMP/provenance/image-inspect.json"')
     expect(backupRunbook).toContain('>"$BACKUP_TMP/provenance/package-version"')
     expect(backupRunbook).toContain('"$BACKUP_TMP/agent" "$BACKUP_TMP/host" "$BACKUP_TMP/provenance"')
-    expect(backupRunbook).toContain('backup_host_file /boot/config/go go')
+    expect(backupRunbook).toContain("snapshot_butler_host_fragments")
     expect(backupRunbook).toContain('backup_host_file /boot/config/custom/usenet_health.sh custom/usenet_health.sh')
     expect(backupRunbook).toContain('backup_host_file /boot/config/custom/ouro-events/install-usenet-guard.sh custom/ouro-events/install-usenet-guard.sh')
-    expect(backupRunbook).toContain('crontab -l >"$BACKUP_TMP/host/crontab"')
+    expect(backupRunbook).toContain('crontab -l >"$BACKUP_CRON_SOURCE"')
+    expect(backupRunbook).toContain('>"$BACKUP_TMP/host/go.butler-lines"')
+    expect(backupRunbook).toContain('>"$BACKUP_TMP/host/crontab.butler-lines"')
+    expect(backupRunbook).toContain('>"$BACKUP_TMP/host/global-state"')
+    expect(backupRunbook).toContain("BACKUP_GO_DIGEST=$(sha256sum /boot/config/go")
+    expect(backupRunbook).toContain('BACKUP_CRON_DIGEST=$(sha256sum "$BACKUP_CRON_SOURCE"')
+    expect(backupRunbook).not.toContain('backup_host_file /boot/config/go go')
+    expect(backupRunbook).not.toContain('>"$BACKUP_TMP/host/crontab"')
     expect(backupRunbook).toContain('test ! -e "$BACKUP_TMP/host/notify.conf"')
     expect(backupRunbook).toContain('test ! -e "$BACKUP_TMP/host/sabnzbd.ini"')
     expect(backupRunbook).toContain('host/inventory')
@@ -2249,7 +2299,6 @@ recover_test`
     expect(restoreRunbook).toContain('--restore-root "$BACKUP_ROOT/host"')
     expect(restoreRunbook).toContain('HOST_RESTORE_INSTALLER=$(mktemp /tmp/ouro-usenet-host-restore.XXXXXX)')
     expect(backupRunbook).toContain('host_file_contains_inline_credential "$BACKUP_HOST_SOURCE"')
-    expect(backupRunbook).toContain('host_file_contains_inline_credential "$BACKUP_TMP/host/crontab"')
     expect(restoreRunbook.indexOf("bootstrap-spool.sh --mount")).toBeLessThan(restoreRunbook.indexOf("disable_butler_autostart"))
     const createCount = runbook.match(/docker create --name ouro-butler(?:-staging)?/gu)?.length ?? 0
     expect(runbook.match(/--mount "type=bind,src=\/boot\/config\/custom\/ouro-events\/spool,dst=\/run\/ouro-events,readonly"/gu)).toHaveLength(createCount)

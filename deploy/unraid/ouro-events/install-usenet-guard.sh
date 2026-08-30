@@ -62,15 +62,20 @@ atomic_install() {
 
 render_cron() {
   local source="$1" target="$2"
-  awk -v legacy="$LEGACY_CRON_LINE" 'index($0, "# ouro:usenet-health") == 0 && $0 != legacy { print }' "$source" > "$target"
+  awk -v legacy="$LEGACY_CRON_LINE" 'index($0, "# ouro:usenet-health") == 0 && $0 != legacy && $0 != "*/15 * * * * /bin/bash /boot/config/custom/usenet_health.sh" { print }' "$source" > "$target"
   printf '%s\n' "$CRON_LINE" >> "$target"
   /bin/chmod 0600 "$target"
 }
 
 render_inactive_cron() {
   local source="$1" target="$2"
-  awk -v legacy="$LEGACY_CRON_LINE" 'index($0, "# ouro:usenet-health") == 0 && $0 != legacy { print }' "$source" > "$target"
+  awk -v legacy="$LEGACY_CRON_LINE" 'index($0, "# ouro:usenet-health") == 0 && $0 != legacy && $0 != "*/15 * * * * /bin/bash /boot/config/custom/usenet_health.sh" { print }' "$source" > "$target"
   /bin/chmod 0600 "$target"
+}
+
+render_go_without_owned() {
+  local source="$1" target="$2"
+  awk '$0 != "/boot/config/custom/ouro-events/bootstrap-spool.sh --mount" && $0 != "/bin/bash /boot/config/custom/ouro-events/bootstrap-spool.sh --mount" && $0 !~ /^\/bin\/bash [^[:space:]]+\/ouro-events\/install-usenet-guard\.sh --boot([[:space:]]|$)/ { print }' "$source" > "$target"
 }
 
 read_system_cron() {
@@ -209,18 +214,38 @@ boot_activate() {
 }
 
 restore_snapshot() {
-  local expected_inventory stage backup cron_original cron_inactive status index target relative source state
-  expected_inventory=$'present\tgo\npresent\tcustom/usenet_health.sh\npresent\tcustom/ouro-events/bootstrap-spool.sh\npresent\tcustom/ouro-events/emit-event.mjs\npresent\tcustom/ouro-events/emit-usenet-event.sh\npresent\tcustom/ouro-events/install-usenet-guard.sh\npresent\tcrontab'
+  local expected_inventory stage backup cron_original cron_inactive cron_candidate go_original go_filtered go_candidate status index target relative source state global_name global_state global_digest global_count go_state cron_state
+  expected_inventory=$'present\tcustom/usenet_health.sh\npresent\tcustom/ouro-events/bootstrap-spool.sh\npresent\tcustom/ouro-events/emit-event.mjs\npresent\tcustom/ouro-events/emit-usenet-event.sh\npresent\tcustom/ouro-events/install-usenet-guard.sh\npresent\tgo.butler-lines\npresent\tcrontab.butler-lines\npresent\tglobal-state'
   [ -d "$RESTORE_ROOT" ] && [ ! -L "$RESTORE_ROOT" ] || return 1
   [ -f "$RESTORE_ROOT/inventory" ] && [ ! -L "$RESTORE_ROOT/inventory" ] || return 1
   while IFS=$'\t' read -r state relative; do
     case "$state:$relative" in
-      present:go|absent:go|present:custom/usenet_health.sh|absent:custom/usenet_health.sh|present:custom/ouro-events/bootstrap-spool.sh|absent:custom/ouro-events/bootstrap-spool.sh|present:custom/ouro-events/emit-event.mjs|absent:custom/ouro-events/emit-event.mjs|present:custom/ouro-events/emit-usenet-event.sh|absent:custom/ouro-events/emit-usenet-event.sh|present:custom/ouro-events/install-usenet-guard.sh|absent:custom/ouro-events/install-usenet-guard.sh|present:crontab) ;;
+      present:custom/usenet_health.sh|absent:custom/usenet_health.sh|present:custom/ouro-events/bootstrap-spool.sh|absent:custom/ouro-events/bootstrap-spool.sh|present:custom/ouro-events/emit-event.mjs|absent:custom/ouro-events/emit-event.mjs|present:custom/ouro-events/emit-usenet-event.sh|absent:custom/ouro-events/emit-usenet-event.sh|present:custom/ouro-events/install-usenet-guard.sh|absent:custom/ouro-events/install-usenet-guard.sh|present:go.butler-lines|present:crontab.butler-lines|present:global-state) ;;
       *) return 1 ;;
     esac
     if [ "$state" = present ]; then [ -f "$RESTORE_ROOT/$relative" ] && [ ! -L "$RESTORE_ROOT/$relative" ] || return 1; else [ ! -e "$RESTORE_ROOT/$relative" ] && [ ! -L "$RESTORE_ROOT/$relative" ] || return 1; fi
   done < "$RESTORE_ROOT/inventory"
   test "$(sed 's/^absent/present/' "$RESTORE_ROOT/inventory")" = "$expected_inventory" || return 1
+  index=0
+  while IFS=$'\t' read -r global_name global_state global_digest global_count; do
+    case "$index:$global_name:$global_state" in
+      0:go:present|0:go:absent) go_state="$global_state" ;;
+      1:crontab:present|1:crontab:absent) cron_state="$global_state" ;;
+      *) return 1 ;;
+    esac
+    if [ "$global_state" = absent ]; then
+      [ "$global_digest" = - ] || return 1
+    else
+      [ "${#global_digest}" -eq 64 ] || return 1
+      case "$global_digest" in *[!0-9a-f]*) return 1 ;; esac
+    fi
+    case "$global_count" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$(awk 'END { print NR + 0 }' "$RESTORE_ROOT/$global_name.butler-lines")" = "$global_count" ] || return 1
+    index=$((index + 1))
+  done < "$RESTORE_ROOT/global-state"
+  [ "$index" -eq 2 ] || return 1
+  awk '$0 != "/boot/config/custom/ouro-events/bootstrap-spool.sh --mount" && $0 != "/bin/bash /boot/config/custom/ouro-events/bootstrap-spool.sh --mount" && $0 !~ /^\/bin\/bash \/boot\/config\/custom\/ouro-events\/install-usenet-guard\.sh --boot([[:space:]]|$)/ { exit 1 }' "$RESTORE_ROOT/go.butler-lines" || return 1
+  awk 'index($0, "# ouro:usenet-health") == 0 && $0 != "*/15 * * * * /bin/bash /boot/config/custom/usenet_health.sh" { exit 1 }' "$RESTORE_ROOT/crontab.butler-lines" || return 1
 
   stage="$(/usr/bin/mktemp -d "$INSTALL_ROOT/.ouro-usenet-restore.XXXXXX")"
   STAGE_PATH="$stage"
@@ -233,6 +258,17 @@ restore_snapshot() {
     if [ -e "$target" ]; then [ -f "$target" ] && [ ! -L "$target" ] || return 1; /bin/cp -p "$target" "$backup/asset-$index"; fi
   done
   if [ -e "$GO_FILE" ]; then [ -f "$GO_FILE" ] && [ ! -L "$GO_FILE" ] || return 1; /bin/cp -p "$GO_FILE" "$backup/go"; fi
+  go_original="$stage/go.original"
+  if [ -f "$GO_FILE" ]; then /bin/cp "$GO_FILE" "$go_original"; else printf '#!/bin/bash\n' > "$go_original"; fi
+  go_filtered="$stage/go.filtered"
+  render_go_without_owned "$go_original" "$go_filtered"
+  go_candidate="$stage/go.candidate"
+  if [ -s "$RESTORE_ROOT/go.butler-lines" ]; then
+    awk -v fragments="$RESTORE_ROOT/go.butler-lines" 'NR == 1 && /^#!/ { print; while ((getline line < fragments) > 0) print line; close(fragments); next } NR == 1 { while ((getline line < fragments) > 0) print line; close(fragments) } { print }' "$go_filtered" > "$go_candidate"
+  else
+    /bin/cp "$go_filtered" "$go_candidate"
+  fi
+  /bin/chmod 0700 "$go_candidate"
   cron_original="$stage/cron.original"
   if [ -n "$CRONTAB_FILE" ]; then
     if [ -f "$CRONTAB_FILE" ]; then /bin/cp -p "$CRONTAB_FILE" "$backup/cron"; /bin/cp "$CRONTAB_FILE" "$cron_original"; else : > "$cron_original"; fi
@@ -242,6 +278,10 @@ restore_snapshot() {
   fi
   cron_inactive="$stage/cron.inactive"
   render_inactive_cron "$cron_original" "$cron_inactive"
+  cron_candidate="$stage/cron.candidate"
+  /bin/cp "$cron_inactive" "$cron_candidate"
+  /bin/cat "$RESTORE_ROOT/crontab.butler-lines" >> "$cron_candidate"
+  /bin/chmod 0600 "$cron_candidate"
 
   set +e
   status=0
@@ -260,9 +300,15 @@ restore_snapshot() {
     if [ -f "$source" ]; then atomic_install "$source" "$target" 0700 || status=$?; else /bin/rm -f "$target" || status=$?; fi
   done
   if [ "$status" -eq 0 ]; then
-    if [ -f "$RESTORE_ROOT/go" ]; then atomic_install "$RESTORE_ROOT/go" "$GO_FILE" 0700 || status=$?; else /bin/rm -f "$GO_FILE" || status=$?; fi
+    if [ "$go_state" = absent ] && [ "$(awk 'NF && $0 !~ /^#!/ { count++ } END { print count + 0 }' "$go_candidate")" -eq 0 ]; then /bin/rm -f "$GO_FILE" || status=$?; else atomic_install "$go_candidate" "$GO_FILE" 0700 || status=$?; fi
   fi
-  if [ "$status" -eq 0 ]; then activate_cron_file "$RESTORE_ROOT/crontab" || status=$?; fi
+  if [ "$status" -eq 0 ]; then
+    if [ "$cron_state" = absent ] && [ ! -s "$cron_candidate" ]; then
+      if [ -n "$CRONTAB_FILE" ]; then /bin/rm -f "$CRONTAB_FILE" || status=$?; else crontab -r >/dev/null 2>&1 || status=$?; fi
+    else
+      activate_cron_file "$cron_candidate" || status=$?
+    fi
+  fi
   set -e
   if [ "$status" -ne 0 ]; then
     for index in "${!TARGET_PATHS[@]}"; do restore_target "${TARGET_PATHS[$index]}" "$backup/asset-$index"; done
