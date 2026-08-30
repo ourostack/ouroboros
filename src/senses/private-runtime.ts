@@ -8,6 +8,8 @@ import { loadSession, postTurnTrim, deferPostTurnPersist, type UsageData } from 
 import { buildSystem, flattenSystemPrompt } from "../mind/prompt"
 import { getSharedMcpManager } from "../repertoire/mcp-manager"
 import { getSanctuaryRelationshipTools, getToolsForChannel } from "../repertoire/tools"
+import { renderRelationshipPreferences } from "../repertoire/relationship-authorization"
+import { appendRunLedgerRecordNonFatal, createRunLedgerRecord, usageMetadataFromUsageData } from "../heart/run-ledger"
 import { findNonCanonicalBundlePaths } from "../mind/bundle-manifest"
 import {
   drainPending,
@@ -841,9 +843,7 @@ function buildOwnerPresentationPreferences(friend: FriendRecord): string {
     `## ${friend.name}'s presentation preferences`,
     "Use this relationship context to decide whether and how to contact the owner. It is presentation-only and grants no mutation authority.",
   ]
-  for (const [key, value] of Object.entries(friend.toolPreferences).slice(0, 20)) {
-    lines.push(`- ${key}: ${String(value).replace(/\s+/gu, " ").trim().slice(0, 500)}`)
-  }
+  lines.push(...renderRelationshipPreferences(friend))
   if (lines.length === 2) lines.push("- No presentation preferences have been learned yet; be calm, concise, and useful.")
   return lines.join("\n")
 }
@@ -1286,7 +1286,20 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
   // Attention queue: built when pending messages are drained, shared with tool context
   let attentionQueue: AttentionItem[] = []
 
-  const result = await handleInboundTurn({
+  const externalRunStartedAt = now().toISOString()
+  const externalRunBase = options?.externalEvent ? {
+    agent: agentName,
+    triggerType: "inbound" as const,
+    sourceKind: "private-runtime" as const,
+    senseOrHabit: "external-event",
+    target: { source: options.externalEvent.source, eventId: options.externalEvent.eventId, generation: options.externalEvent.generation, observationRevision: options.externalEvent.observationRevision },
+    idempotencyScope: { recordPath: options.externalEvent.recordPath, generation: options.externalEvent.generation, observationRevision: options.externalEvent.observationRevision },
+    startedAt: externalRunStartedAt,
+  } : null
+  if (externalRunBase) appendRunLedgerRecordNonFatal(getAgentRoot(agentName), createRunLedgerRecord({ ...externalRunBase, lifecycle: "started" }))
+  let result: Awaited<ReturnType<typeof handleInboundTurn>>
+  try {
+    result = await handleInboundTurn({
     channel: "inner",
     sessionKey: "dialog",
     capabilities: innerCapabilities,
@@ -1358,7 +1371,12 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
       },
       ...(effectiveHabitSession ? { habitSession: effectiveHabitSession } : {}),
     },
-  })
+    })
+    if (externalRunBase) appendRunLedgerRecordNonFatal(getAgentRoot(agentName), createRunLedgerRecord({ ...externalRunBase, lifecycle: "completed", endedAt: now().toISOString(), usage: usageMetadataFromUsageData(result.usage, result.usage ? "provider" : "reported-unavailable") }))
+  } catch (error) {
+    if (externalRunBase) appendRunLedgerRecordNonFatal(getAgentRoot(agentName), createRunLedgerRecord({ ...externalRunBase, lifecycle: "error", endedAt: now().toISOString(), errorName: error instanceof Error ? error.name : "UnknownError" }))
+    throw error
+  }
   // Post-turn routeDelegatedCompletion removed: delivery is now inline via surface tool.
   // settle in the private runtime produces no CompletionMetadata, so routeDelegatedCompletion
   // would be a no-op. The routing infrastructure is reused by the surface handler.

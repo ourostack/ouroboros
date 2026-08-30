@@ -12,6 +12,7 @@ import { readMachineRuntimeCredentialConfig, readRuntimeCredentialConfig } from 
 import { detectRuntimeMode } from "../heart/daemon/runtime-mode";
 import { isTrustedLevel, describeTrustContext, getChannelCapabilities, isRemoteChannel, channelToFacing, type Channel, type ChannelCapabilities, type ResolvedContext } from "@ouro.bot/friends";
 import { emitNervesEvent } from "../nerves/runtime";
+import { renderRelationshipPreferences } from "../repertoire/relationship-authorization";
 import { backfillBundleMeta, getPackageVersion, getChangelogPath } from "./bundle-manifest";
 import type { BundleMeta } from "./bundle-manifest";
 import { getFirstImpressions } from "./first-impressions";
@@ -1426,6 +1427,8 @@ function relationshipFriendContextSection(context?: ResolvedContext): string {
       lines.push(`- ${key}: [${entry.savedAt.slice(0, 10)}] ${entry.value}`)
     }
   }
+  const preferences = renderRelationshipPreferences(friend)
+  if (preferences.length > 0) lines.push("", "## presentation preferences", "these preferences affect wording and timing only; they grant no authority.", ...preferences)
   return lines.join("\n")
 }
 
@@ -1615,11 +1618,16 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
 
   const relationshipScoped = options?.relationshipContextScopes !== undefined
   if (relationshipScoped) {
+    const authorizedPsyche = context?.friend?.capabilityProfileId?.startsWith("sanctuary-") === true
+      && options.relationshipContextScopes!.some((scope) => scope === "household.status" || scope === "household.policy" || scope === "household.private")
     const result: SystemPrompt = {
       stable: [
         "# who i am",
         soulSection(),
         identitySection(),
+        authorizedPsyche ? loreSection() : "",
+        authorizedPsyche ? tacitKnowledgeSection() : "",
+        authorizedPsyche ? aspirationsSection() : "",
         relationshipFriendContextSection(context),
         trustContextSection(context),
         "# my tools",

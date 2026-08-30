@@ -1,8 +1,32 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { createHash } from "node:crypto"
-import type { FriendRecord, FriendStore, TrustLevel } from "@ouro.bot/friends"
+import type { FriendRecord, FriendStore, RelationshipPolicyProvenance, TrustLevel } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../nerves/runtime"
+
+export function renderRelationshipPreferences(friend: Pick<FriendRecord, "relationshipPolicy">): string[] {
+  const now = Date.now()
+  return Object.entries(friend.relationshipPolicy?.preferences ?? {})
+    .filter(([, preference]) => !preference.expiresAt || Date.parse(preference.expiresAt) > now)
+    .slice(0, 20)
+    .map(([category, preference]) =>
+      `- source=${preference.source}; provenance=${preference.provenance}; category=${category}; value=${String(preference.value).replace(/\s+/gu, " ").trim().slice(0, 500)}; version=${preference.version}; precedence=current${preference.expiresAt ? `; expires=${preference.expiresAt}` : ""}`,
+    )
+}
+
+export function withRelationshipPreference(friend: FriendRecord, input: { category: string; value: string; provenance: RelationshipPolicyProvenance; source: string }): FriendRecord {
+  const current = friend.relationshipPolicy ?? { schemaVersion: 1 as const, version: 0, preferences: {} }
+  const previous = current.preferences[input.category]
+  return {
+    ...friend,
+    relationshipPolicy: {
+      schemaVersion: 1,
+      version: current.version + 1,
+      preferences: { ...current.preferences, [input.category]: { value: input.value, provenance: input.provenance, source: input.source, version: (previous?.version ?? 0) + 1 } },
+    },
+    updatedAt: new Date().toISOString(),
+  }
+}
 
 export interface RelationshipCapabilityProfile {
   id: string

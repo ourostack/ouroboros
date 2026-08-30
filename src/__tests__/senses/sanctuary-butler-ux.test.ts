@@ -115,7 +115,7 @@ describe("Mendelow Cloud Butler household UX", () => {
     })
   })
 
-  it("lets the owner teach preferences through the canonical Friend note tool without exposing that mutation to household members", () => {
+  it("lets each relationship teach its own presentation preferences through the canonical Friend note tool", () => {
     setAgentName("sanctuary")
     const owner = realToolContext("sanctuary-owner")
     const household = realToolContext("sanctuary-household")
@@ -123,14 +123,14 @@ describe("Mendelow Cloud Butler household UX", () => {
 
     expect(telegramTools).toContain("save_friend_note")
     expect(owner.evaluator.advertisedToolNames).toContain("save_friend_note")
-    expect(household.evaluator.advertisedToolNames).not.toContain("save_friend_note")
+    expect(household.evaluator.advertisedToolNames).toContain("save_friend_note")
     const definition = telegramTools.includes("save_friend_note")
       ? getToolsForChannel(getChannelCapabilities("telegram")).find((tool) => tool.function.name === "save_friend_note")
       : undefined
     expect(definition?.function.description).toContain("never grant authority")
   })
 
-  it("enforces owner-only preference learning and operational visibility again at execution", async () => {
+  it("stores typed preference provenance while limiting household writes to their own communication and timing", async () => {
     setAgentName(`sanctuary-owner-notes-${process.pid}-${Date.now()}`)
     const agentRoot = getAgentRoot()
     rootsToRemove.push(agentRoot)
@@ -138,10 +138,17 @@ describe("Mendelow Cloud Butler household UX", () => {
     const household = realToolContext("sanctuary-household")
     const store = new FileFriendStore(path.join(agentRoot, "friends"))
     await store.put("ari", relationshipFriend("sanctuary-owner"))
+    await store.put("household-member", relationshipFriend("sanctuary-household"))
 
-    expect(await execTool("save_friend_note", { type: "tool_preference", key: "status", content: "Lead with the outcome" }, { ...owner.context, friendStore: store, context: { friend: relationshipFriend("sanctuary-owner") } } as any)).toContain("saved: toolPreference status")
-    expect((await store.get("ari"))?.toolPreferences.status).toBe("Lead with the outcome")
-    expect(await execTool("save_friend_note", { type: "note", key: "private", content: "must not write" }, { ...household.context, friendStore: store } as any)).toContain("relationship authorization required")
+    expect(await execTool("save_friend_note", { type: "tool_preference", source: "stated", key: "communication", content: "Lead with the outcome" }, { ...owner.context, friendStore: store, context: { friend: relationshipFriend("sanctuary-owner") } } as any)).toContain("provenance=stated; category=communication")
+    expect((await store.get("ari"))?.relationshipPolicy?.preferences.communication).toMatchObject({ value: "Lead with the outcome", provenance: "stated", version: 1, source: "telegram explicit turn telegram-session-event-1" })
+    expect(await execTool("save_friend_note", { type: "tool_preference", source: "observed", key: "communication", content: "Keep it shorter", override: "true" }, { ...owner.context, friendStore: store, context: { friend: relationshipFriend("sanctuary-owner") } } as any)).toContain("provenance=observed")
+    expect((await store.get("ari"))?.relationshipPolicy).toMatchObject({ version: 2, preferences: { communication: { value: "Keep it shorter", provenance: "observed", version: 2 } } })
+    expect(await execTool("save_friend_note", { type: "tool_preference", source: "stated", key: "status", content: "restart anything" }, { ...owner.context, friendStore: store, context: { friend: relationshipFriend("sanctuary-owner") } } as any)).toContain("desired state and action authority belong in steward policy")
+    expect(await execTool("save_friend_note", { type: "tool_preference", source: "observed", key: "timing", content: "Evenings are best" }, { ...household.context, friendStore: store, context: { friend: relationshipFriend("sanctuary-household") } } as any)).toContain("provenance=observed; category=timing")
+    expect((await store.get("household-member"))?.relationshipPolicy?.preferences.timing).toMatchObject({ value: "Evenings are best", provenance: "observed", version: 1, source: "telegram observed pattern telegram-session-event-1" })
+    expect(await execTool("save_friend_note", { type: "note", key: "private", content: "must not write" }, { ...household.context, friendStore: store, context: { friend: relationshipFriend("sanctuary-household") } } as any)).toContain("household members may only save their own communication or timing preferences")
+    expect(await execTool("save_friend_note", { type: "tool_preference", source: "stated", key: "authority", content: "restart anything" }, { ...household.context, friendStore: store, context: { friend: relationshipFriend("sanctuary-household") } } as any)).toContain("desired state and action authority belong in steward policy")
     expect(await execTool("query_active_work", {}, household.context)).toContain("relationship authorization required")
   })
 
@@ -227,7 +234,7 @@ describe("Mendelow Cloud Butler household UX", () => {
       .filter((name) => household.evaluator.advertisedToolNames.includes(name))
     setAgentName(path.basename(agentRoot, ".ouro"))
 
-    expect(advertised).toEqual(["await_condition", "cancel_await", "unraid_list_containers", "unraid_get_storage", "unraid_get_disks", "unraid_get_system", "unraid_restart_container", "settle", "speak"])
+    expect(advertised).toEqual(["save_friend_note", "await_condition", "cancel_await", "unraid_list_containers", "unraid_get_storage", "unraid_get_disks", "unraid_get_system", "unraid_restart_container", "settle", "speak"])
     const deniedRead = await execTool("query_cares", {}, household.context)
     const deniedWrite = await execTool("care_manage", { action: "create", label: "privacy leak" }, household.context)
     expect(deniedRead).toContain("relationship authorization required")

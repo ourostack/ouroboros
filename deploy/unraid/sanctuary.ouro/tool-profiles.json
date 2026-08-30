@@ -10,7 +10,7 @@
     "sanctuary-household": {
       "version": 2,
       "contextScopes": ["household.status", "own_requests"],
-      "toolNames": ["await_condition", "cancel_await", "unraid_list_containers", "unraid_get_storage", "unraid_get_disks", "unraid_get_system", "unraid_restart_container", "settle", "speak"],
+      "toolNames": ["save_friend_note", "await_condition", "cancel_await", "unraid_list_containers", "unraid_get_storage", "unraid_get_disks", "unraid_get_system", "unraid_restart_container", "settle", "speak"],
       "effectScopes": ["telegram.request_return"]
     },
     "sanctuary-event": {

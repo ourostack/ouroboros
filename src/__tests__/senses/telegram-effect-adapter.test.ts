@@ -391,8 +391,14 @@ describe("Telegram effect adapter", () => {
     for (const authorClass of ["butler", "control", "system_failsafe"] as const) {
       const prepared = prepareTelegramEffect(store, { idempotencyKey: `artifact:${authorClass}`, target, authorClass, effect: { kind: "text", text: authorClass }, authorization })
       await executeTelegramEffect(store, prepared.id, api, () => authorization)
+      const accepted = store.read(prepared.id)
+      accepted.parts[0]!.acceptedAt = "2026-08-29T00:00:00.000Z"
+      store.write(accepted)
       const recorded = recordTelegramEffectInSession(store, prepared.id, [`session:${authorClass}`])
       expect(recorded.parts[0]).toMatchObject({ state: "session_recorded", sessionEventId: `session:${authorClass}` })
+      expect(recorded.parts[0]?.acceptedAt).toBeTruthy()
+      expect(recorded.parts[0]?.sessionRecordedAt).toBeTruthy()
+      expect(recorded.parts[0]!.sessionRecordedAt).not.toBe(recorded.parts[0]!.acceptedAt)
       expect(recorded.authorClass).toBe(authorClass)
     }
   })

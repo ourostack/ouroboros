@@ -31,6 +31,8 @@ export interface TelegramEffectPart {
   state: TelegramEffectPartState
   messageId?: number
   sessionEventId?: string
+  acceptedAt?: string
+  sessionRecordedAt?: string
   attempts?: number
   updatedAt: string
 }
@@ -160,6 +162,8 @@ function validateArtifact(artifact: TelegramEffectArtifact, expectedId: string):
     && artifact.parts.every((part, index) => part.index === index && part.text === expectedTexts[index]
       && ["prepared", "attempting", "accepted", "session_recorded", "indeterminate"].includes(part.state)
       && canonicalTime(part.updatedAt)
+      && (part.acceptedAt === undefined || canonicalTime(part.acceptedAt))
+      && (part.sessionRecordedAt === undefined || canonicalTime(part.sessionRecordedAt))
       && (part.messageId === undefined || (Number.isSafeInteger(part.messageId) && part.messageId > 0))
       && (part.sessionEventId === undefined || boundedText(part.sessionEventId, 512))
       && (part.attempts === undefined || (Number.isSafeInteger(part.attempts) && part.attempts >= 0 && part.attempts <= 100))
@@ -411,7 +415,8 @@ export async function executeTelegramEffect(
         const messageId = await executePart(api, artifact, part, authorization.transport.chatId, signal)
         part.state = "accepted"
         if (messageId !== undefined) part.messageId = messageId
-        part.updatedAt = new Date().toISOString()
+        part.acceptedAt = new Date().toISOString()
+        part.updatedAt = part.acceptedAt
         artifact.updatedAt = part.updatedAt
         store.write(artifact)
       } catch (error) {
@@ -613,7 +618,8 @@ export function recordTelegramEffectInSession(store: FileTelegramEffectJournal, 
   accepted.forEach((part, index) => {
     part.state = "session_recorded"
     if (!transportOnlyControl) part.sessionEventId = sessionEventIds[index]
-    part.updatedAt = new Date().toISOString()
+    part.sessionRecordedAt = new Date().toISOString()
+    part.updatedAt = part.sessionRecordedAt
   })
   artifact.updatedAt = new Date().toISOString()
   store.write(artifact)

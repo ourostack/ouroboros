@@ -3248,7 +3248,27 @@ describe("buildSystem with context", () => {
     const result = flattenSystemPrompt(await buildSystem("telegram", { relationshipContextScopes: ["household.status", "own_requests"] }, { friend, channel: { channel: "telegram", senseType: "chat", isRemote: true, isGroup: false, availableIntegrations: [], supportsAttachments: false, supportsReactions: false, chatStyle: true, supportsStreaming: false, supportsRichCards: true, maxMessageLength: 4096 } } as never))
     expect(result).not.toContain("## my desk")
     expect(result).not.toContain("family cross-session")
+    expect(result).toContain("## my lore")
+    expect(result).toContain("## tacit knowledge")
+    expect(result).toContain("## my aspirations")
     expect(result).toContain("Relative")
+  })
+
+  it("restores the existing psyche sections when relationship policy authorizes household policy context", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const friend = { id: "ari", name: "Ari", trustLevel: "family" as const, admissionState: "active" as const, initiativePolicy: "proactive" as const, capabilityProfileId: "sanctuary-owner", relationshipPolicy: { schemaVersion: 1 as const, version: 2, preferences: { communication: { value: "Lead with outcomes", provenance: "stated" as const, version: 1, source: "telegram explicit turn evt-1" }, timing: { value: "Do not use this stale timing", provenance: "observed" as const, version: 1, source: "telegram observed pattern evt-old", expiresAt: "2020-01-01T00:00:00.000Z" } } }, externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: "", updatedAt: "", schemaVersion: 1 }
+    const result = flattenSystemPrompt(await buildSystem("telegram", { relationshipContextScopes: ["household.status", "household.policy"] }, { friend, channel: { channel: "telegram", senseType: "chat", isRemote: true, isGroup: false, availableIntegrations: [], supportsAttachments: false, supportsReactions: false, chatStyle: true, supportsStreaming: false, supportsRichCards: true, maxMessageLength: 4096 } } as never))
+    expect(result).toContain("## my lore")
+    expect(result).toContain("## tacit knowledge")
+    expect(result).toContain("## my aspirations")
+    expect(result).toContain("source=telegram explicit turn evt-1; provenance=stated; category=communication; value=Lead with outcomes; version=1; precedence=current")
+    expect(result).not.toContain("Do not use this stale timing")
+    expect(result).not.toContain("## my desk")
   })
 
   it("keeps relationship-scoped Telegram prompts private even when global frames are populated", async () => {

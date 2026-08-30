@@ -38,7 +38,7 @@ describe("Sanctuary active tool profile", () => {
     expect(packaged.profiles["sanctuary-owner"].toolNames).toEqual(expect.arrayContaining(names))
     expect(packaged.profiles["sanctuary-owner"].toolNames).toEqual(expect.arrayContaining(["external_event_disposition", "query_active_work", "query_cares", "care_manage", "await_condition", "cancel_await"]))
     expect(packaged.profiles["sanctuary-owner"].toolNames).toContain("save_friend_note")
-    expect(packaged.profiles["sanctuary-household"].toolNames).not.toContain("save_friend_note")
+    expect(packaged.profiles["sanctuary-household"].toolNames).toContain("save_friend_note")
     expect(packaged.profiles["sanctuary-household"].toolNames).not.toContain("telegram_contact_manage")
     expect(packaged.profiles["sanctuary-event"].toolNames).toEqual(expect.arrayContaining(["external_event_disposition", "query_cares", "care_manage", "await_condition", "steward_policy_manage", "rest"]))
     expect(packaged.profiles["sanctuary-event"].toolNames).not.toContain("send_message")
