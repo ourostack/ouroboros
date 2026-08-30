@@ -31,7 +31,7 @@ function canonicalIso(value) {
 }
 
 function validateEnvelope(envelope) {
-  const eventShapeIsAllowed = envelope && typeof envelope === "object" && !Array.isArray(envelope) && ((envelope.eventType === "usenet.protective_action" && ["sabnzbd.pause", "prowlarr.disable-indexer"].includes(envelope.action))
+  const eventShapeIsAllowed = envelope && typeof envelope === "object" && !Array.isArray(envelope) && ((envelope.eventType === "usenet.protective_action" && envelope.action === "sabnzbd.pause")
     || (envelope.eventType === "usenet.health_observation" && envelope.action === "usenet.observe"))
   const observationTransitionIsAllowed = envelope?.eventType !== "usenet.health_observation" || /^(?:auth-failed|stalled|recovered):\d{8}T\d{6}Z$/u.test(String(envelope.transitionId))
   if (!envelope || typeof envelope !== "object" || Array.isArray(envelope) || Object.keys(envelope).sort().join("\0") !== [...ENVELOPE_KEYS].sort().join("\0")

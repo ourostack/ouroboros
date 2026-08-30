@@ -56,7 +56,7 @@ interface ExternalEventObservation {
 }
 
 export interface PrivilegedProtectiveAction {
-  action: "sabnzbd.pause" | "prowlarr.disable-indexer"
+  action: "sabnzbd.pause"
   actionReceipt: string
   transitionId: string
   critical: boolean
@@ -159,7 +159,7 @@ interface PrivilegedExternalEventEnvelope {
   incidentKey: string
   transitionId: string
   observationRevision: string
-  action: "sabnzbd.pause" | "prowlarr.disable-indexer" | "usenet.observe"
+  action: "sabnzbd.pause" | "usenet.observe"
   actionReceipt: string
   protectiveStateVerified: boolean
   protectiveStateDigest: string
@@ -684,7 +684,7 @@ function parsePrivilegedEnvelope(raw: string, fileName: string, now: string): Pr
   const parsed: unknown = JSON.parse(raw)
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Privileged event envelope is invalid")
   const value = parsed as Record<string, unknown>
-  const eventShapeIsAllowed = (value.eventType === "usenet.protective_action" && ["sabnzbd.pause", "prowlarr.disable-indexer"].includes(String(value.action)))
+  const eventShapeIsAllowed = value.eventType === "usenet.protective_action" && value.action === "sabnzbd.pause"
     || (value.eventType === "usenet.health_observation" && value.action === "usenet.observe")
   const observationTransitionIsAllowed = value.eventType !== "usenet.health_observation" || /^(?:auth-failed|stalled|recovered):\d{8}T\d{6}Z$/u.test(String(value.transitionId))
   const expectedKeys = ["action", "actionReceipt", "agent", "createdAt", "critical", "eventType", "evidence", "expiresAt", "incidentKey", "nonce", "observationRevision", "protectiveStateDigest", "protectiveStateObservedAt", "protectiveStateVerified", "schemaVersion", "source", "summary", "transitionId"]

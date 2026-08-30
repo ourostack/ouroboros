@@ -788,6 +788,7 @@ describe("packaged root event producer", () => {
     expect(() => producer.emitEvent(envelope({ incidentKey: "../escape" }), producerOptions(spoolRoot))).toThrow("invalid")
     expect(() => producer.emitEvent(envelope({ summary: "x".repeat(4097) }), producerOptions(spoolRoot))).toThrow("bounded")
     expect(() => producer.emitEvent(envelope({ action: "usenet.observe" }), producerOptions(spoolRoot))).toThrow("invalid")
+    expect(() => producer.emitEvent(envelope({ action: "prowlarr.disable-indexer", transitionId: "retired-prowlarr-action" }), producerOptions(spoolRoot))).toThrow("invalid")
     expect(() => producer.emitEvent(envelope({ eventType: "usenet.health_observation" }), producerOptions(spoolRoot))).toThrow("invalid")
     expect(() => producer.emitEvent(envelope({ eventType: "usenet.health_observation", action: "usenet.observe", transitionId: "recovered:daily" }), producerOptions(spoolRoot))).toThrow("invalid")
     producer.emitEvent(envelope(), producerOptions(spoolRoot))
