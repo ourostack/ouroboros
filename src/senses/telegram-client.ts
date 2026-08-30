@@ -97,8 +97,8 @@ export interface TelegramUpdate {
     caption?: string
     entities?: Array<{ type: string; offset: number; length: number }>
     caption_entities?: Array<{ type: string; offset: number; length: number }>
-    document?: { file_id: string }
-    photo?: Array<{ file_id: string }>
+    document?: { file_id: string; file_name?: string; mime_type?: string; file_size?: number }
+    photo?: Array<{ file_id: string; file_size?: number; width?: number; height?: number }>
     audio?: { file_id: string }
     video?: { file_id: string }
     voice?: { file_id: string }
@@ -120,7 +120,16 @@ export interface TelegramInboundMessage {
   userId: string
   chatId: string
   text: string
+  attachments?: TelegramInboundAttachment[]
   replyToMessageId?: string
+}
+
+export interface TelegramInboundAttachment {
+  fileId: string
+  kind: "image" | "document"
+  displayName: string
+  mimeType?: string
+  byteCount?: number
 }
 
 export interface TelegramUnknownInboundMessage {
@@ -132,6 +141,7 @@ export interface TelegramUnknownInboundMessage {
   text: string
   displayLabel: string
   hasAttachments: boolean
+  attachments?: TelegramInboundAttachment[]
 }
 
 export interface TelegramUpdateInboxStore {
@@ -611,17 +621,36 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
     }, { once: true })
   })
 
+  const inboundAttachments = (message: NonNullable<TelegramUpdate["message"]>): TelegramInboundAttachment[] => {
+    const result: TelegramInboundAttachment[] = []
+    const photo = message.photo?.filter((candidate) => typeof candidate.file_id === "string" && candidate.file_id.trim())
+      .sort((left, right) => (left.file_size ?? left.width ?? 0) - (right.file_size ?? right.width ?? 0)).at(-1)
+    if (photo) result.push({ fileId: photo.file_id, kind: "image", displayName: "telegram-photo.jpg", ...(Number.isSafeInteger(photo.file_size) ? { byteCount: photo.file_size } : {}) })
+    if (typeof message.document?.file_id === "string" && message.document.file_id.trim()) result.push({
+      fileId: message.document.file_id,
+      kind: "document",
+      displayName: message.document.file_name?.trim() || "telegram-document",
+      ...(message.document.mime_type?.trim() ? { mimeType: message.document.mime_type.trim().toLowerCase() } : {}),
+      ...(Number.isSafeInteger(message.document.file_size) ? { byteCount: message.document.file_size } : {}),
+    })
+    return result
+  }
+
   const authorizedMessage = (update: TelegramUpdate): TelegramInboundMessage | null => {
     const message = update.message
     const userId = message?.from ? String(message.from.id) : ""
     const chatId = message ? String(message.chat.id) : ""
-    if (!message || message.chat.type !== "private" || userId !== options.expectedUserId || chatId !== options.expectedChatId || typeof message.text !== "string") return null
+    if (!message || message.chat.type !== "private" || userId !== options.expectedUserId || chatId !== options.expectedChatId) return null
+    const attachments = inboundAttachments(message)
+    const text = message.text ?? message.caption ?? ""
+    if (typeof text !== "string" || (!text && attachments.length === 0)) return null
     return {
       updateId: update.update_id,
       messageId: String(message.message_id),
       userId,
       chatId,
-      text: message.text,
+      text,
+      attachments,
       ...(Number.isSafeInteger(message.reply_to_message?.message_id) && message.reply_to_message!.message_id > 0
         ? { replyToMessageId: String(message.reply_to_message!.message_id) }
         : {}),
@@ -636,6 +665,7 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
     if (userId === options.expectedUserId && chatId === options.expectedChatId) return null
     const displayLabel = [message.from.first_name, message.from.last_name].filter(Boolean).join(" ")
       || (message.from.username ? `@${message.from.username}` : `Telegram user ${userId}`)
+    const attachments = inboundAttachments(message)
     return {
       updateId: update.update_id,
       messageId: message.message_id,
@@ -646,6 +676,7 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
       displayLabel,
       hasAttachments: Boolean(message.document || message.photo?.length || message.audio || message.video
         || message.voice || message.animation || message.sticker),
+      attachments,
     }
   }
 

@@ -1859,6 +1859,21 @@ describe("Telegram durable authorized long poll", () => {
     expect(restartedRequest).toHaveBeenCalledWith("getUpdates", expect.objectContaining({ offset: 7 }), expect.any(AbortSignal))
   })
 
+  it("routes authorized photo and document messages with captions or attachment-only text exactly once", async () => {
+    const onMessage = vi.fn(async () => undefined)
+    const request = vi.fn(async () => [
+      { update_id: 1, message: { message_id: 1, from: { id: 10 }, chat: { id: 10, type: "private" }, caption: "look at this", photo: [{ file_id: "small", file_size: 10 }, { file_id: "large", file_size: 20 }] } },
+      { update_id: 2, message: { message_id: 2, from: { id: 10 }, chat: { id: 10, type: "private" }, document: { file_id: "doc", file_name: "notes.pdf", mime_type: "application/pdf", file_size: 30 } } },
+    ])
+    const poll = createTelegramLongPoll({ api: { request, stop: vi.fn() }, expectedUserId: "10", expectedChatId: "10", offsetStore: { load: () => 0, save: vi.fn() }, onMessage })
+
+    await poll.pollOnce()
+
+    expect(onMessage).toHaveBeenCalledTimes(2)
+    expect(onMessage).toHaveBeenNthCalledWith(1, expect.objectContaining({ text: "look at this", attachments: [{ fileId: "large", kind: "image", displayName: "telegram-photo.jpg", byteCount: 20 }] }))
+    expect(onMessage).toHaveBeenNthCalledWith(2, expect.objectContaining({ text: "", attachments: [{ fileId: "doc", kind: "document", displayName: "notes.pdf", mimeType: "application/pdf", byteCount: 30 }] }))
+  })
+
   it("normalizes every supported unknown-contact label, body, and attachment shape", async () => {
     const updates = [
       { update_id: 1, message: { message_id: 1, from: { id: 21, first_name: "Ada", last_name: "Lovelace" }, chat: { id: 21, type: "private" }, text: "document", document: {} } },

@@ -177,6 +177,18 @@ describe("attachment tool handlers", () => {
     expect(parsed.data.variant).toBe("original")
   })
 
+  it("fails closed outside the exact current-ingress attachment allowlist", async () => {
+    const agentRoot = makeAgentRoot()
+    const attachmentPath = writeFile(agentRoot, "private.png", "png-bytes")
+    const attachment = cacheRecentAttachment("testagent", buildCliLocalFileAttachmentRecord({ path: attachmentPath, mimeType: "image/png", byteCount: 9 }), agentRoot)
+    const list = attachmentToolDefinitions.find((def) => def.tool.function.name === "list_recent_attachments")!
+    const materialize = attachmentToolDefinitions.find((def) => def.tool.function.name === "materialize_attachment")!
+
+    expect(JSON.parse(await list.handler({}, { attachmentIds: [] } as any)).data).toEqual([])
+    expect(JSON.parse(await materialize.handler({ attachment_id: attachment.id, variant: "original" }, { attachmentIds: [] } as any))).toMatchObject({ ok: false, friction: { signature: "materialize_attachment:attachment-not-found" } })
+    expect(JSON.parse(await list.handler({}, { attachmentIds: [attachment.id] } as any)).data).toHaveLength(1)
+  })
+
   it("returns structured friction when materialize_attachment is missing an attachment id", async () => {
     makeAgentRoot()
     const tool = attachmentToolDefinitions.find((def) => def.tool.function.name === "materialize_attachment")!

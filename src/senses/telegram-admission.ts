@@ -52,6 +52,8 @@ export interface TelegramAdmissionRecord {
   displayLabel: string
   displayCode: string
   hasAttachments: boolean
+  /** Owner-authenticated kinship assertion; absent on legacy and generic admissions. */
+  ownerRelationship?: TelegramKinship
   createdAt: number
   updatedAt: number
   expiresAt: number
@@ -110,6 +112,7 @@ export interface TelegramAdmissionFriendClaim {
   chatId: string
   admissionId: string
   displayLabel: string
+  relationship?: TelegramKinship
   defaults: {
     trustLevel: "friend"
     admissionState: "active"
@@ -178,6 +181,17 @@ const TERMINAL_STATUSES = new Set<TelegramAdmissionStatus>([
 ])
 const ADMISSION_ID = /^[a-f0-9]{20}$/u
 const CANONICAL_ID = /^[1-9][0-9]*$/u
+const KINSHIP = new Set<TelegramKinship>(["brother", "sister", "sibling", "mother", "father", "parent", "son", "daughter", "aunt", "uncle", "cousin", "grandmother", "grandfather", "wife", "husband", "partner"])
+
+function normalizeKinship(value: string): TelegramKinship {
+  const normalized = value === "mom" || value === "mum" ? "mother"
+    : value === "dad" ? "father"
+      : value === "grandma" ? "grandmother"
+        : value === "grandpa" ? "grandfather"
+          : value
+  if (!KINSHIP.has(normalized as TelegramKinship)) throw new Error("Telegram admission kinship is invalid")
+  return normalized as TelegramKinship
+}
 const DEFAULT_LIMITS: ResolvedTelegramAdmissionLimits = {
   maxPendingContacts: 32,
   maxTextBytes: 16 * 1024,
@@ -238,6 +252,7 @@ function validateRecord(value: unknown, expectedId?: string): asserts value is T
     || typeof record.displayLabel !== "string" || [...record.displayLabel].length > 120
     || typeof record.displayCode !== "string" || record.displayCode.length < 4 || record.displayCode.length > 32
     || typeof record.hasAttachments !== "boolean"
+    || (record.ownerRelationship !== undefined && !KINSHIP.has(record.ownerRelationship))
     || ![record.createdAt, record.updatedAt, record.expiresAt].every(Number.isSafeInteger)
     || (record.friendId !== null && (typeof record.friendId !== "string" || !record.friendId))
     || (record.acknowledgementArtifactId !== null && typeof record.acknowledgementArtifactId !== "string")
@@ -542,6 +557,7 @@ export class FileTelegramAdmissionStore {
     friendId?: string
     acknowledgementArtifactId?: string
     ownerCardArtifactId?: string
+    ownerRelationship?: TelegramKinship
     ingress?: Pick<TelegramCommittedAdmissionIngress, "sessionKey" | "eventId" | "reference">
   }): TelegramAdmissionRecord {
     const current = this.read(input.admissionId)
@@ -556,6 +572,7 @@ export class FileTelegramAdmissionStore {
       ...(input.friendId ? { friendId: input.friendId } : {}),
       ...(input.acknowledgementArtifactId ? { acknowledgementArtifactId: input.acknowledgementArtifactId } : {}),
       ...(input.ownerCardArtifactId ? { ownerCardArtifactId: input.ownerCardArtifactId } : {}),
+      ...(input.ownerRelationship ? { ownerRelationship: input.ownerRelationship } : {}),
       ...(input.ingress ? { ingressSessionKey: input.ingress.sessionKey, ingressEventId: input.ingress.eventId, ingressReference: input.ingress.reference } : {}),
       ...(terminal || input.ingress ? { quarantinedText: null } : {}),
     }
@@ -605,7 +622,10 @@ export interface TelegramAdmissionDecision {
   admissionId: string
   decision: "allow" | "deny" | "block"
   actorFriendId: string
+  relationship?: TelegramKinship
 }
+
+export type TelegramKinship = "brother" | "sister" | "sibling" | "mother" | "father" | "parent" | "son" | "daughter" | "aunt" | "uncle" | "cousin" | "grandmother" | "grandfather" | "wife" | "husband" | "partner"
 
 function ownerCard(record: TelegramAdmissionRecord): string {
   return [
@@ -689,6 +709,7 @@ export function createTelegramAdmissionController(options: TelegramAdmissionCont
         chatId: record.chatId,
         admissionId: record.id,
         displayLabel: record.displayLabel,
+        ...(record.ownerRelationship ? { relationship: record.ownerRelationship } : {}),
         defaults: {
           trustLevel: "friend",
           admissionState: "active",
@@ -787,10 +808,12 @@ export function createTelegramAdmissionController(options: TelegramAdmissionCont
       if (!binding || binding.admissionId !== record.id || binding.artifactId !== record.ownerCardArtifactId) throw new Error("Telegram admission callback is not bound to its owner card")
       return { admissionId: match[1]!, decision: match[2] as "allow" | "deny" | "block" }
     },
-    parseOwnerDecision(input: { text: string; replyToMessageId?: number }): { admissionId: string; decision: "allow" | "deny" | "block" } | null {
+    parseOwnerDecision(input: { text: string; replyToMessageId?: number }): { admissionId: string; decision: "allow" | "deny" | "block"; relationship?: TelegramKinship } | null {
       if (!input.replyToMessageId || Buffer.byteLength(input.text, "utf8") > 80) return null
       const normalized = input.text.normalize("NFKC").trim().toLocaleLowerCase("en-US")
-      const decision = /^(?:yes|allow|approve|let (?:them|him|her) in|yes,? (?:that(?:'|’)s|that is) my (?:brother|sister|sibling|mom|mother|mum|dad|father|parent|son|daughter|aunt|uncle|cousin|grandmother|grandma|grandfather|grandpa|wife|husband|partner))$/u.test(normalized) ? "allow"
+      const kinshipMatch = /^yes,? (?:that(?:'|’)s|that is) my (brother|sister|sibling|mom|mother|mum|dad|father|parent|son|daughter|aunt|uncle|cousin|grandmother|grandma|grandfather|grandpa|wife|husband|partner)$/u.exec(normalized)
+      const relationship = kinshipMatch ? normalizeKinship(kinshipMatch[1]!) : undefined
+      const decision = /^(?:yes|allow|approve|let (?:them|him|her) in)$/u.test(normalized) || relationship ? "allow"
         : /^(?:no|deny|decline)$/u.test(normalized) ? "deny"
           : /^(?:block|block (?:them|him|her))$/u.test(normalized) ? "block"
             : null
@@ -799,7 +822,7 @@ export function createTelegramAdmissionController(options: TelegramAdmissionCont
       if (!binding) return null
       const record = options.store.read(binding.admissionId)
       if (record.ownerCardArtifactId !== binding.artifactId || record.status !== "pending") return null
-      return { admissionId: record.id, decision }
+      return { admissionId: record.id, decision, ...(relationship ? { relationship } : {}) }
     },
     async decide(input: TelegramAdmissionDecision): Promise<TelegramAdmissionRecord> {
       return withDecisionLease(input.admissionId, async () => {
@@ -817,7 +840,7 @@ export function createTelegramAdmissionController(options: TelegramAdmissionCont
           await settleOwnerCard(record)
           return record
         }
-        record = options.store.compareAndSwap({ admissionId: record.id, expectedStatus: "pending", nextStatus: "approved" })
+        record = options.store.compareAndSwap({ admissionId: record.id, expectedStatus: "pending", nextStatus: "approved", ...(input.relationship ? { ownerRelationship: input.relationship } : {}) })
         record = await resume(record.id)
         await settleOwnerCard(record)
         return record

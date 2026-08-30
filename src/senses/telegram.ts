@@ -56,6 +56,8 @@ import { openApprovalStore } from "../heart/approval-store"
 import { cancelRelationshipFollowUps, hasActiveRelationshipFollowUp, resetAwaitToolDeps, setAwaitToolDeps } from "../repertoire/tools-awaiting"
 import { findPendingObligationForRequest, fulfillObligation, markObligationReturnReady, readObligation } from "../arc/obligations"
 import { buildOrientationFrame } from "../heart/orientation-frame"
+import { renderAttachmentBlock } from "../heart/attachments/render"
+import { ingestTelegramAttachments } from "./telegram-attachments"
 import { getPrivateRuntimePendingDir, queuePendingMessage } from "../mind/pending"
 import type { CrossChatDeliveryRequest, CrossChatDirectDeliveryResult } from "../heart/cross-chat-delivery"
 import {
@@ -466,6 +468,8 @@ export interface CreateTelegramSenseAppOptions {
   /** Resolves a current per-turn relationship envelope after durable ingress exists. */
   resolveRelationshipAuthorization?: (input: { friendId: string; requestId: string; sessionEventId: string; botId: string; userId: string; chatId: string; sessionKey: string }) => Promise<RelationshipAuthorizationEvaluator>
   telegramContactManager?: TelegramContactManager
+  /** Optional transport seam; production defaults to global fetch. */
+  attachmentFetch?: typeof globalThis.fetch
 }
 
 function requiredText(value: unknown, label: string): string {
@@ -940,7 +944,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     return { allowed: true, receiptId: `configured-owner:${subject}`, expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(), transport: { chatId: authorizedChatId } }
   }
   const authorizeEffect = options.authorizeEffect ?? defaultEffectAuthorization
-  let recordAcceptedEffects!: (sessionPath: string, artifacts: TelegramEffectArtifact[], bootstrapInbound?: { text: string; reference: string }, causalEventIds?: Readonly<Record<string, string>>) => Promise<void>
+  let recordAcceptedEffects!: (sessionPath: string, artifacts: TelegramEffectArtifact[], bootstrapInbound?: { text: string; reference: string; attachmentIds?: readonly string[] }, causalEventIds?: Readonly<Record<string, string>>) => Promise<void>
   const configuredOwnerTarget = (): Extract<TelegramEffectTarget, { kind: "approved_relationship" }> => ({ kind: "approved_relationship", friendId: configuredOwnerFriendId, sessionKey: configuredOwnerSessionKey })
   const executeAuthorizedEffect = createTelegramAuthorizedEffectExecutor({
     store: getEffectJournal,
@@ -1075,7 +1079,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     })
   }
 
-  recordAcceptedEffects = async (sessionPath: string, artifacts: TelegramEffectArtifact[], bootstrapInbound?: { text: string; reference: string }, causalEventIds?: Readonly<Record<string, string>>): Promise<void> => {
+  recordAcceptedEffects = async (sessionPath: string, artifacts: TelegramEffectArtifact[], bootstrapInbound?: { text: string; reference: string; attachmentIds?: readonly string[] }, causalEventIds?: Readonly<Record<string, string>>): Promise<void> => {
     await recordTelegramEffectsInSession({ store: getEffectJournal(), sessionPath, artifacts, ...(bootstrapInbound ? { inbound: bootstrapInbound } : {}), ...(causalEventIds ? { causalEventIds } : {}) })
     for (const artifact of artifacts) {
       if (artifact.target.kind !== "approved_relationship" || !artifact.target.requestId || artifact.effect.kind !== "text") continue
@@ -1168,6 +1172,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     eventId: string
     reference: string
     text: string
+    attachmentIds?: readonly string[]
     userId: string
     chatId: string
     orientation?: TelegramNewlyAdmittedOrientation
@@ -1210,7 +1215,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       ingressRelations: { replyToEventId: null, threadRootEventId: null, references: [input.reference] },
       precommittedIngress: { eventId: input.eventId, reference: input.reference },
       ...(orientationFrame ? { orientationFrame } : {}),
-      toolContext: { ...(toolContext ?? {}) },
+      toolContext: { ...(toolContext ?? {}), attachmentIds: input.attachmentIds ?? [] },
       prepareRunAgentOptions: prepareRelationshipRunAgentOptions({ friendId: input.friendId, requestId: input.requestId,
         sessionEventId: input.eventId, userId: input.userId, chatId: input.chatId, sessionKey: input.sessionKey }),
       deliverySink: { onDelivery: (delivery) => deliver(delivery.text, delivery.kind === "settle") },
@@ -1297,7 +1302,26 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     }
   }
 
-  const onMessageBody = async (message: TelegramInboundMessage): Promise<void> => {
+  const hydrateAuthorizedMessage = async (message: TelegramInboundMessage): Promise<{ text: string; attachmentIds: string[] }> => {
+    if (!message.attachments?.length) return { text: message.text, attachmentIds: [] }
+    const ingested = await ingestTelegramAttachments({
+      agentName: options.agentName,
+      agentRoot,
+      botToken,
+      api,
+      ...(options.attachmentFetch ? { fetch: options.attachmentFetch } : {}),
+      attachments: message.attachments ?? [],
+    })
+    const attachmentIds = ingested.attachments.map((attachment) => attachment.id)
+    return {
+      text: [message.text, renderAttachmentBlock(ingested.attachments), ...ingested.notices].filter(Boolean).join("\n"),
+      attachmentIds,
+    }
+  }
+
+  const onMessageBody = async (rawMessage: TelegramInboundMessage): Promise<void> => {
+    const hydrated = await hydrateAuthorizedMessage(rawMessage)
+    const message = { ...rawMessage, text: hydrated.text }
     const currentFriendId = configuredOwnerFriendId
     const currentSessionKey = configuredOwnerSessionKey
     const currentSessionPath = getSenseSessionPath(options.agentName, currentFriendId, "telegram", currentSessionKey, agentRoot)
@@ -1362,7 +1386,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
             store: getEffectJournal(),
             sessionPath: currentSessionPath,
             artifacts: [],
-            inbound: { text: message.text, reference: inboundReference, relations: ingressRelations },
+            inbound: { text: message.text, reference: inboundReference, attachmentIds: hydrated.attachmentIds, relations: ingressRelations },
           })
         : null
       const collected = await collectToolReceipts(() => runTurn({
@@ -1390,7 +1414,9 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
             }
           },
         },
-        ...(toolContext ? { toolContext } : {}),
+        ...(toolContext || options.resolveRelationshipAuthorization ? {
+          toolContext: { ...(toolContext ?? {}), ...(options.resolveRelationshipAuthorization ? { attachmentIds: hydrated.attachmentIds } : {}) },
+        } : {}),
         ...(options.resolveRelationshipAuthorization ? {
           prepareRunAgentOptions: prepareRelationshipRunAgentOptions({
             friendId: currentFriendId,
@@ -1457,7 +1483,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       })
       const fallback = "I couldn't complete that turn. The failure was recorded; please try again."
       if (deliveredMessageIds.length === 0) turnEffects.push(await deliverButlerEffect(fallback, `turn:${subject}:${message.updateId}:fallback`, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) }))
-      await recordAcceptedEffects(currentSessionPath, turnEffects, { text: message.text, reference: inboundReference })
+      await recordAcceptedEffects(currentSessionPath, turnEffects, { text: message.text, reference: inboundReference, attachmentIds: hydrated.attachmentIds })
     } finally {
       if (acceptanceMarker) {
         acceptanceAuditBarrier()
@@ -1498,15 +1524,19 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   }
 
   const onMessage = (message: TelegramInboundMessage): Promise<void> => runWithAcceptanceAuditOwner(async () => {
-    const ownerDecision = admissionController?.parseOwnerDecision({
+    const ownerDecision = !message.attachments?.length ? admissionController?.parseOwnerDecision({
       text: message.text,
       ...(message.replyToMessageId ? { replyToMessageId: Number(message.replyToMessageId) } : {}),
-    })
+    }) : null
     if (ownerDecision) {
       const actor = await options.admission?.resolveOwner({ botId: botId!, userId: message.userId, chatId: message.chatId, sessionKey: configuredOwnerSessionKey })
       if (!actor) throw new Error("Telegram admission owner decision identity is invalid")
       await admissionController!.decide({ ...ownerDecision, actorFriendId: actor.friendId })
       return
+    }
+    if (message.attachments?.length && options.admission) {
+      const actor = await options.admission.resolveOwner({ botId: botId!, userId: message.userId, chatId: message.chatId, sessionKey: configuredOwnerSessionKey })
+      if (!actor || actor.friendId !== configuredOwnerFriendId) throw new Error("Telegram attachment owner relationship is not active")
     }
     await onMessageBody(message)
   })
@@ -1517,12 +1547,20 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       await admissionController.handleUnknown(message)
       return
     }
+    const hydrated = await hydrateAuthorizedMessage({
+      updateId: message.updateId,
+      messageId: String(message.messageId),
+      userId: message.userId,
+      chatId: message.chatId,
+      text: message.text,
+      attachments: message.attachments,
+    })
     const sessionKey = `telegram:${message.botId}:${message.userId}`
     const reference = `telegram-inbound:${createHmac("sha256", identityKey).update(`${message.botId}\0${message.userId}\0${message.updateId}\0${message.messageId}`).digest("hex")}`
     const sessionPath = getSenseSessionPath(options.agentName, approved.friendId, "telegram", sessionKey, agentRoot)
-    const receipt = await recordTelegramEffectsInSession({ store: getEffectJournal(), sessionPath, artifacts: [], inbound: { text: message.text, reference } })
+    const receipt = await recordTelegramEffectsInSession({ store: getEffectJournal(), sessionPath, artifacts: [], inbound: { text: hydrated.text, reference, attachmentIds: hydrated.attachmentIds } })
     await dispatchResolvedRelationshipTurn({ friendId: approved.friendId, sessionKey, requestId: reference, eventId: receipt.eventId,
-      reference, text: message.text, userId: message.userId, chatId: message.chatId })
+      reference, text: hydrated.text, attachmentIds: hydrated.attachmentIds, userId: message.userId, chatId: message.chatId })
   } : undefined
 
   const onUpdate = async (update: TelegramUpdate): Promise<boolean> => {
@@ -1856,8 +1894,20 @@ export async function createProductionTelegramRelationshipComposition(agentName:
         target: { kind: "create", record: { id: randomUUID(), name: "Household member" } },
       }) as Extract<Awaited<ReturnType<FileFriendStore["claimExternalId"]>>, { ok: true }>
       const current = claimed.record
-      const updated = { ...current, trustLevel: input.defaults.trustLevel, admissionState: input.defaults.admissionState,
-        initiativePolicy: input.defaults.initiativePolicy, capabilityProfileId: input.defaults.capabilityProfileId, updatedAt: new Date().toISOString() }
+      const now = new Date().toISOString()
+      const relationalName = input.relationship ? `${owner.name}’s ${input.relationship}` : undefined
+      const connections = input.relationship
+        ? [...(current.connections ?? []).filter((connection) => !(connection.name === owner.name && connection.relationship === input.relationship)), { name: owner.name, relationship: input.relationship }]
+        : current.connections
+      const notes = input.relationship
+        ? { ...current.notes, [`telegram-admission:${input.admissionId}:kinship`]: { value: `The owner identified this person as their ${input.relationship}.`, savedAt: now, provenance: { origin: "first_party" as const }, shareable: false } }
+        : current.notes
+      const updated = { ...current,
+        ...(relationalName && current.name === "Household member" ? { name: relationalName } : {}),
+        ...(connections ? { connections } : {}),
+        notes,
+        trustLevel: input.defaults.trustLevel, admissionState: input.defaults.admissionState,
+        initiativePolicy: input.defaults.initiativePolicy, capabilityProfileId: input.defaults.capabilityProfileId, updatedAt: now }
       await store.put(current.id, updated)
       return { kind: claimed.status === "created" ? "created" : "existing", friendId: current.id }
     },

@@ -143,6 +143,8 @@ export interface ToolContext {
   daemonSocketPath?: string;
   agentRoot?: string;
   currentUserMessage?: string;
+  /** Exact attachments bound to the current ingress; when present, attachment tools fail closed outside it. */
+  attachmentIds?: readonly string[];
   /** Relationship-scoped capability envelope: advertise narrowly, then revalidate at execution. */
   relationshipAuthorization?: {
     readonly requestId?: string;

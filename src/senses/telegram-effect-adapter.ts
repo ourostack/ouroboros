@@ -694,7 +694,7 @@ export function appendTelegramArtifactEvents(envelope: SessionEnvelope, artifact
   }
 }
 
-export function appendTelegramInboundEvent(envelope: SessionEnvelope, input: { text: string; reference: string; recordedAt: string; relations?: SessionIngressRelations }): SessionEnvelope {
+export function appendTelegramInboundEvent(envelope: SessionEnvelope, input: { text: string; reference: string; recordedAt: string; attachmentIds?: readonly string[]; relations?: SessionIngressRelations }): SessionEnvelope {
   if (envelope.events.some((event) => event.relations.references.includes(input.reference))) return envelope
   const sequence = envelope.events.reduce((maximum, event) => Math.max(maximum, event.sequence), 0) + 1
   const id = `evt-${String(sequence).padStart(6, "0")}`
@@ -706,7 +706,7 @@ export function appendTelegramInboundEvent(envelope: SessionEnvelope, input: { t
     name: "telegram-user",
     toolCallId: null,
     toolCalls: [],
-    attachments: [],
+    attachments: [...new Set(input.attachmentIds ?? [])],
     time: { authoredAt: null, authoredAtSource: "unknown", observedAt: input.recordedAt, observedAtSource: "ingest", recordedAt: input.recordedAt, recordedAtSource: "save" },
     relations: {
       replyToEventId: input.relations?.replyToEventId ?? null,
@@ -729,21 +729,21 @@ export function recordTelegramEffectsInSession(input: {
   store: FileTelegramEffectJournal
   sessionPath: string
   artifacts: TelegramEffectArtifact[]
-  inbound: { text: string; reference: string; relations?: SessionIngressRelations }
+  inbound: { text: string; reference: string; attachmentIds?: readonly string[]; relations?: SessionIngressRelations }
   causalEventIds?: Readonly<Record<string, string>>
 }): Promise<{ eventId: string; reference: string }>
 export function recordTelegramEffectsInSession(input: {
   store: FileTelegramEffectJournal
   sessionPath: string
   artifacts: TelegramEffectArtifact[]
-  inbound?: { text: string; reference: string; relations?: SessionIngressRelations }
+  inbound?: { text: string; reference: string; attachmentIds?: readonly string[]; relations?: SessionIngressRelations }
   causalEventIds?: Readonly<Record<string, string>>
 }): Promise<{ eventId: string; reference: string } | null>
 export async function recordTelegramEffectsInSession(input: {
   store: FileTelegramEffectJournal
   sessionPath: string
   artifacts: TelegramEffectArtifact[]
-  inbound?: { text: string; reference: string; relations?: SessionIngressRelations }
+  inbound?: { text: string; reference: string; attachmentIds?: readonly string[]; relations?: SessionIngressRelations }
   causalEventIds?: Readonly<Record<string, string>>
 }): Promise<{ eventId: string; reference: string } | null> {
   if (input.artifacts.length === 0 && !input.inbound) return null
@@ -760,13 +760,15 @@ export async function recordTelegramEffectsInSession(input: {
     let changed = false
     if (input.inbound) {
       const existing = envelope.events.filter((event) => event.relations.references.includes(input.inbound!.reference))
-      if (existing.length > 1 || (existing.length === 1 && (existing[0]!.role !== "user" || existing[0]!.content !== input.inbound.text))) {
+      const expectedAttachmentIds = [...new Set(input.inbound.attachmentIds ?? [])]
+      if (existing.length > 1 || (existing.length === 1 && (existing[0]!.role !== "user" || existing[0]!.content !== input.inbound.text
+        || JSON.stringify(existing[0]!.attachments) !== JSON.stringify(expectedAttachmentIds)))) {
         throw new Error("Telegram session has conflicting inbound ingress")
       }
       if (existing.length === 1) {
         inboundReceipt = { eventId: existing[0]!.id, reference: input.inbound.reference }
       } else {
-        envelope = appendTelegramInboundEvent(envelope, { ...input.inbound, recordedAt: new Date().toISOString() })
+        envelope = appendTelegramInboundEvent(envelope, { ...input.inbound, attachmentIds: expectedAttachmentIds, recordedAt: new Date().toISOString() })
         inboundReceipt = { eventId: envelope.events.at(-1)!.id, reference: input.inbound.reference }
         changed = true
       }
