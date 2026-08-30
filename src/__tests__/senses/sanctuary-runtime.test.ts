@@ -196,6 +196,9 @@ describe("Sanctuary runtime tool context", () => {
     runtimeMocks.sab.resumeQueue.mockRejectedValueOnce("private failure")
     await expect(context.sanctuary!.resumeDownloadQueue()).rejects.toBe("private failure")
     expect(runtimeMocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({ event: "senses.sanctuary_download_resume_error", meta: { category: "unknown" } }))
+    runtimeMocks.sab.resumeQueue.mockRejectedValueOnce(new TypeError("typed failure"))
+    await expect(context.sanctuary!.resumeDownloadQueue()).rejects.toThrow("typed failure")
+    expect(runtimeMocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({ event: "senses.sanctuary_download_resume_error", meta: { category: "TypeError" } }))
   })
 
   it("routes routine-action reservation, transition, and recovery observations through the canonical policy seams", async () => {

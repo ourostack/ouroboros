@@ -449,6 +449,16 @@ describe("external event attention lifecycle", () => {
     })).toThrow(/await receipt/u)
   })
 
+  it("rejects an unknown steward-policy shape", () => {
+    const eventRoot = root()
+    const first = recordExternalEvent({ agent: "sanctuary", source: "guard", eventType: "health.observed", eventId: "invalid-policy" }, { root: eventRoot })
+    const claim = claimExternalEvent(first.recordPath, { owner: "worker", expectedVersion: first.version, expectedGeneration: 1 })
+    expect(() => commitExternalEventDisposition(first.recordPath, {
+      owner: "worker", expectedVersion: claim.version, expectedGeneration: 1,
+      disposition: { classifiedRevision: first.observationRevision, classification: "resolved", stewardPolicy: { kind: "future" } as never, decision: "silent", reason: "invalid", nextWake: { kind: "on_change" }, careId: null, awaitId: null, actionRefs: [], verificationRefs: [] },
+    })).toThrow("steward policy is invalid")
+  })
+
   it("rejects invalid claims, owners, retry policies, and await combinations", () => {
     const eventRoot = root()
     const first = recordExternalEvent({ agent: "sanctuary", source: "guard", eventType: "health.observed", eventId: "validation" }, { root: eventRoot })

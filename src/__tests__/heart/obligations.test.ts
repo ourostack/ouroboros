@@ -321,6 +321,12 @@ describe("obligations store", () => {
         returnEvidenceRef: "effect:1",
         returnReadyAt: expect.any(String),
       })
+
+      const machineOnly = createObligation(tmpDir, { origin: sampleOrigin, content: "machine-owned return" })
+      expect(markObligationReturnReady(tmpDir, machineOnly.id, "effect:machine")).toMatchObject({
+        id: machineOnly.id,
+        returnEvidenceRef: "effect:machine",
+      })
     })
   })
 

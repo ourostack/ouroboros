@@ -35,6 +35,22 @@ describe("Sanctuary SAB client", () => {
     expect(fetch.mock.calls[1]?.[0]).toMatch(/mode=resume/u)
   })
 
+  it("tolerates an unreadable resume body while independently verifying the queue", async () => {
+    const cancel = vi.fn().mockRejectedValue(new Error("body already closed"))
+    const resumeResponse = { ok: true, body: { cancel } } as unknown as Response
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(response({ queue: { paused: true } }))
+      .mockResolvedValueOnce(resumeResponse)
+      .mockResolvedValueOnce(response({ queue: { paused: false } }))
+
+    await expect(createSanctuarySabClient({ iniPath: config(), fetch, now: () => "2026-08-30T04:00:00.000Z" }).resumeQueue()).resolves.toMatchObject({
+      changed: true,
+      before: { paused: true, status: "unknown", queuedJobs: 0 },
+      after: { paused: false, status: "unknown", queuedJobs: 0 },
+    })
+    expect(cancel).toHaveBeenCalledOnce()
+  })
+
   it("is idempotent when already resumed and fails if after-state remains paused", async () => {
     const already = vi.fn(async () => response({ queue: { paused: false, status: "Idle", noofslots: 0 } }))
     await expect(createSanctuarySabClient({ iniPath: config(), fetch: already }).resumeQueue()).resolves.toMatchObject({ changed: false, verified: true, before: { paused: false }, after: { paused: false } })
