@@ -867,6 +867,8 @@ describe("Sanctuary production boundary adapter coverage", () => {
     }
     const sparse = await run({ "sanctuary-owner": "bad", "sanctuary-event": "bad" }, [], [])
     expect(sparse.containment).toMatchObject({ keyCount: 0, telegramToolCount: 0, privateToolCount: 0, containerUser: "", liveProcessUser: "", mountCount: -1, publishedPortCount: -1, networkMode: "" })
+    const shaped = await run({ "sanctuary-owner": { toolNames: ["ponder"] }, "sanctuary-event": { toolNames: "bad" } }, [], [])
+    expect(shaped.containment).toMatchObject({ telegramToolCount: 1, privateToolCount: 0 })
     const odd = await run({ "sanctuary-owner": ["shell", "not_a_tool", 1], "sanctuary-event": ["exec", "ponder", null] }, [
       { id: "x", name: "Different", permissions: [{ resource: "DOCKER", actions: ["READ_ANY"] }], roles: ["role"], secret: "leaked" },
     ], [
