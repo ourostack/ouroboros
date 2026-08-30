@@ -50,6 +50,8 @@ import { createTelegramAuditLedger, type TelegramAuditLedger } from "./telegram-
 import { loadSessionEnvelopeFile } from "../heart/session-events"
 import { getExternalEventRoot, type PrivilegedProtectiveAction } from "../heart/external-events/router"
 import { withSessionTurnLease } from "../mind/session-transaction"
+import { cancelRelationshipFollowUps, hasActiveRelationshipFollowUp, resetAwaitToolDeps, setAwaitToolDeps } from "../repertoire/tools-awaiting"
+import { getPrivateRuntimePendingDir, queuePendingMessage } from "../mind/pending"
 import {
   authorizeRelationshipAccess,
   createRelationshipAuthorizationEvaluator,
@@ -71,6 +73,7 @@ import {
   FileTelegramEffectJournal,
   recordTelegramEffectsInSession,
   recoverTelegramEffectOutbox,
+  resolveTelegramControlArtifact,
   resolveTelegramReply,
   sweepTelegramSystemFailsafes,
   type TelegramEffectArtifact,
@@ -1076,6 +1079,29 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   recordAcceptedEffects = async (sessionPath: string, artifacts: TelegramEffectArtifact[], bootstrapInbound?: { text: string; reference: string }, causalEventIds?: Readonly<Record<string, string>>): Promise<void> => {
     await recordTelegramEffectsInSession({ store: getEffectJournal(), sessionPath, artifacts, ...(bootstrapInbound ? { inbound: bootstrapInbound } : {}), ...(causalEventIds ? { causalEventIds } : {}) })
   }
+  setAwaitToolDeps({
+    buildDeliveryDeps: () => ({
+      agentName: options.agentName,
+      queuePending: (message) => queuePendingMessage(getPrivateRuntimePendingDir(options.agentName), message),
+      deliverers: {
+        telegram: async (request) => {
+          if (!request.requestId) return { status: "blocked", detail: "Telegram follow-up is missing its request binding" }
+          try {
+            const artifact = await executeAuthorizedEffect({
+              idempotencyKey: `await-follow-up:${request.requestId}:${createHash("sha256").update(request.content).digest("hex")}`,
+              target: { kind: "approved_relationship", friendId: request.friendId, sessionKey: request.key, requestId: request.requestId },
+              authorClass: "butler",
+              effect: { kind: "text", text: request.content },
+            })
+            await recordAcceptedEffects(getSenseSessionPath(options.agentName, request.friendId, "telegram", request.key, agentRoot), [artifact])
+            return { status: "delivered_now", detail: "sent to the exact request-bound Telegram chat" }
+          } catch (error) {
+            return { status: "blocked", detail: error instanceof Error ? error.message : String(error) }
+          }
+        },
+      },
+    }),
+  })
   reconcileSystemFailsafes = async (): Promise<void> => {
     if (!options.privilegedFailsafe) return
     const target = configuredOwnerTarget()
@@ -1112,6 +1138,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       const authorization = await options.resolveRelationshipAuthorization!(relationshipCoordinates)
       if (authorization.subject.friendId !== input.friendId || authorization.subject.admissionState !== "active") throw new Error("Telegram relationship admission is not active")
       return {
+        requestId: input.requestId,
         authorizedContextScopes: authorization.authorizedContextScopes,
         advertisedToolNames: authorization.advertisedToolNames,
         actor: authorization.actor,
@@ -1163,10 +1190,16 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       return artifact.id
     },
     resolveOwnerCard: (messageId) => {
-      const resolved = resolveTelegramReply(getEffectJournal(), { messageId, friendId: configuredOwnerFriendId, sessionKey: configuredOwnerSessionKey })
-      return resolved?.authorClass === "control" && resolved.requestId
+      const resolved = resolveTelegramControlArtifact(getEffectJournal(), { messageId, friendId: configuredOwnerFriendId, sessionKey: configuredOwnerSessionKey })
+      return resolved?.requestId
         ? { artifactId: resolved.artifactId, admissionId: resolved.requestId }
         : null
+    },
+    resolveOwnerCardMessageId: (artifactId) => {
+      const artifact = getEffectJournal().read(artifactId)
+      if (artifact.authorClass !== "control" || artifact.target.kind !== "approved_relationship"
+        || artifact.target.friendId !== configuredOwnerFriendId || artifact.target.sessionKey !== configuredOwnerSessionKey) return null
+      return artifact.parts.find((part) => part.state === "session_recorded" && part.messageId)?.messageId ?? null
     },
     claimFriend: options.admission.claimFriend,
     revokeFriend: options.admission.revokeFriend,
@@ -1588,6 +1621,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         await attempt(() => approvalRuntime?.close())
         await attempt(() => effectJournal?.close())
         await attempt(() => admissionStore?.close())
+        await attempt(() => resetAwaitToolDeps())
         await attempt(() => runWithAcceptanceAuditOwner(() => {
           emitNervesEvent({
             component: "senses",
@@ -1694,6 +1728,7 @@ export async function createProductionTelegramRelationshipComposition(agentName:
       if (!current || current.id !== input.friendId || !exactTelegramIdentity(current, input.userId)) return { kind: "collision", reason: "Telegram revocation identity changed" }
       const { capabilityProfileId: _removedProfile, ...withoutProfile } = current
       await store.put(current.id, { ...withoutProfile, admissionState: "revoked", initiativePolicy: "none", updatedAt: new Date().toISOString() })
+      cancelRelationshipFollowUps(agentRoot, agentName, { friendId: current.id, channel: "telegram", key: `telegram:${botId}:${input.userId}` })
       return { kind: "revoked" }
     },
   }
@@ -1711,10 +1746,17 @@ export async function createProductionTelegramRelationshipComposition(agentName:
       if (friend.id === owner.id) {
         if (chatId !== ownerUserId || chatId !== ownerChatId || input.target.sessionKey !== ownerSessionKey) return { allowed: false, reason: "owner Telegram identity or session binding changed" }
       } else if (input.target.sessionKey !== `telegram:${botId}:${chatId}`) return { allowed: false, reason: "relationship Telegram session binding changed" }
+      const inboundIdempotency = input.target.requestId
+        ? new RegExp(`^relationship-turn:${input.target.requestId.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}:delivery:[0-9]+$`, "u").test(input.idempotencyKey)
+        : false
+      const durableFollowUp = friend.id !== owner.id && input.target.requestId
+        ? hasActiveRelationshipFollowUp(agentRoot, { friendId: friend.id, channel: "telegram", key: input.target.sessionKey, requestId: input.target.requestId })
+        : false
+      if (friend.id !== owner.id && input.target.requestId && !inboundIdempotency && !durableFollowUp) return { allowed: false, reason: "relationship follow-up is not bound to an active request await" }
       const evaluator = createRelationshipAuthorizationEvaluator({
         friend,
         registry: loadRelationshipCapabilityRegistry(agentRoot),
-        ...(input.target.requestId ? { requestId: input.target.requestId, requestPhase: "inbound" as const } : {}),
+        ...(input.target.requestId ? { requestId: input.target.requestId, requestPhase: inboundIdempotency ? "inbound" as const : "follow_up" as const } : {}),
       })
       const scope = input.target.friendId === owner.id
         ? (input.target.requestId ? "telegram.owner_event" : "telegram.proactive")

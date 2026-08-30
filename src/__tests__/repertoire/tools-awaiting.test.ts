@@ -86,6 +86,34 @@ describe("tools-awaiting", () => {
       expect(content).toContain("filed_for_friend_id: ari")
     })
 
+    it("binds a relationship await to the exact durable request obligation and return route", async () => {
+      const ctx = {
+        currentSession: { friendId: "sibling", channel: "telegram", key: "telegram:777:888", sessionPath: "/tmp/session.json" },
+        relationshipAuthorization: {
+          requestId: "telegram-inbound:request-1",
+          authorizedContextScopes: ["own_requests"],
+          advertisedToolNames: ["await_condition"],
+          authorizeTool: vi.fn(),
+        },
+      }
+      await fileAwaitDef.handler({ name: "movie_ready", condition: "Requested movie is available", cadence: "5m", max_age: "2h" }, ctx as any)
+
+      const awaitText = fs.readFileSync(path.join(agentRoot, "awaiting", "movie_ready.md"), "utf8")
+      expect(awaitText).toContain("request_id: telegram-inbound:request-1")
+      expect(awaitText).toContain("filed_from_key: telegram:777:888")
+      const obligations = fs.readdirSync(path.join(agentRoot, "arc", "obligations")).filter((name) => name.endsWith(".json"))
+        .map((name) => JSON.parse(fs.readFileSync(path.join(agentRoot, "arc", "obligations", name), "utf8")))
+      expect(obligations).toHaveLength(1)
+      expect(obligations[0]).toMatchObject({
+        origin: { friendId: "sibling", channel: "telegram", key: "telegram:777:888" },
+        owedTo: { friendId: "sibling", channel: "telegram", key: "telegram:777:888" },
+        requestId: "telegram-inbound:request-1",
+        currentArtifact: "awaiting/movie_ready.md",
+        status: "pending",
+      })
+      expect(awaitText).toContain(`obligation_id: ${obligations[0].id}`)
+    })
+
     it("uses explicit alert + mode + max_age + body", async () => {
       const result = parse(await fileAwaitDef.handler(
         {

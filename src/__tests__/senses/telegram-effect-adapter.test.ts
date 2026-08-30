@@ -12,6 +12,7 @@ import {
   recordTelegramEffectInSession,
   recordTelegramEffectsInSession,
   recoverTelegramEffectOutbox,
+  resolveTelegramControlArtifact,
   resolveTelegramReply,
   type TelegramEffectArtifact,
 } from "../../senses/telegram-effect-adapter"
@@ -412,5 +413,23 @@ describe("Telegram effect adapter", () => {
     expect(fs.existsSync(sessionPath)).toBe(false)
     expect(store.read(callback.id).parts[0]).toMatchObject({ state: "session_recorded" })
     expect(store.read(callback.id).parts[0]?.sessionEventId).toBeUndefined()
+  })
+
+  it("keeps admission control cards out of model-visible history while retaining transport binding", async () => {
+    const store = journal()
+    const sessionPath = path.join(roots.at(-1)!, "owner-session.json")
+    const card = prepareTelegramEffect(store, {
+      idempotencyKey: "owner-card:admission",
+      target: { kind: "approved_relationship", friendId: "ari", sessionKey: "telegram:ari", requestId: "a".repeat(20) },
+      authorClass: "control",
+      effect: { kind: "card", text: "Unverified Telegram label: ATTACKER_INSTRUCTION", buttons: [[{ text: "Allow", callbackData: `admit:${"a".repeat(20)}:allow` }]] },
+      authorization,
+    })
+    await executeTelegramEffect(store, card.id, { request: vi.fn(async () => ({ message_id: 333 })) }, () => authorization)
+    await recordTelegramEffectsInSession({ store, sessionPath, artifacts: [store.read(card.id)] })
+
+    expect(fs.existsSync(sessionPath)).toBe(false)
+    expect(resolveTelegramReply(store, { messageId: 333, friendId: "ari", sessionKey: "telegram:ari" })).toBeNull()
+    expect(resolveTelegramControlArtifact(store, { messageId: 333, friendId: "ari", sessionKey: "telegram:ari" })).toEqual({ artifactId: card.id, requestId: "a".repeat(20) })
   })
 })

@@ -16,6 +16,9 @@ export interface AwaitFile {
   created_at: string | null
   filed_from: string | null
   filed_for_friend_id: string | null
+  filed_from_key: string | null
+  request_id: string | null
+  obligation_id: string | null
   body: string
 
   // resolved-only
@@ -66,6 +69,9 @@ function emptyAwait(stem: string, body: string): AwaitFile {
     created_at: null,
     filed_from: null,
     filed_for_friend_id: null,
+    filed_from_key: null,
+    request_id: null,
+    obligation_id: null,
     body,
     resolved_at: null,
     resolution_observation: null,
@@ -107,6 +113,9 @@ export function parseAwaitFile(content: string, filePath: string): AwaitFile {
     created_at: nonEmptyString(frontmatter.created_at),
     filed_from: nonEmptyString(frontmatter.filed_from),
     filed_for_friend_id: nonEmptyString(frontmatter.filed_for_friend_id),
+    filed_from_key: nonEmptyString(frontmatter.filed_from_key),
+    request_id: nonEmptyString(frontmatter.request_id),
+    obligation_id: nonEmptyString(frontmatter.obligation_id),
     body,
     resolved_at: nonEmptyString(frontmatter.resolved_at),
     resolution_observation: nonEmptyString(frontmatter.resolution_observation),

@@ -3251,6 +3251,72 @@ describe("buildSystem with context", () => {
     expect(result).toContain("Relative")
   })
 
+  it("keeps relationship-scoped Telegram prompts private even when global frames are populated", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const friend = {
+      id: "relative",
+      name: "Maya",
+      trustLevel: "friend" as const,
+      admissionState: "active" as const,
+      initiativePolicy: "request_follow_up_only" as const,
+      capabilityProfileId: "sanctuary-household",
+      externalIds: [],
+      tenantMemberships: [],
+      toolPreferences: {},
+      notes: { preference: { value: "likes concise answers", savedAt: "2026-08-29T00:00:00.000Z" } },
+      totalTokens: 0,
+      createdAt: "",
+      updatedAt: "",
+      schemaVersion: 1,
+    }
+    const result = flattenSystemPrompt(await buildSystem("telegram", {
+      relationshipContextScopes: ["household.status", "own_requests"],
+      relationshipToolNames: ["unraid_get_system", "settle", "speak"],
+      tools: [{ type: "function", function: { name: "unraid_get_system", description: "Read household server status", parameters: { type: "object", properties: {} } } }],
+      startOfTurnPacket: "PRIVATE_PACKET_ARI",
+      pendingMessages: [{ from: "Ari", content: "PRIVATE_PENDING_ARI" }],
+      bridgeContext: "PRIVATE_BRIDGE_ARI",
+      currentObligation: "PRIVATE_OBLIGATION_ARI",
+      delegationDecision: { target: "delegate-inward", reasons: ["cross_session"], outwardClosureRequired: true },
+      providerVisibility: {
+        agentName: "sanctuary",
+        lanes: [{ lane: "outward", status: "configured", provider: "secret-provider", model: "secret-model", source: "agent.json", readiness: { status: "ready", checkedAt: "2026-08-29T00:00:00.000Z" }, credential: { status: "present", source: "auth-flow", revision: "private-provider-revision" }, warnings: [] }],
+      },
+      activeWorkFrame: {
+        centerOfGravity: "shared-work",
+        currentSession: { friendId: "relative", channel: "telegram", key: "telegram:bot:user", sessionPath: "/tmp/current.json" },
+        currentObligation: "PRIVATE_WORK_ARI",
+        inner: { status: "idle", hasPending: false, job: { status: "idle", content: null, origin: null, mode: "reflect", obligationStatus: null, surfacedResult: null, queuedAt: null, startedAt: null, surfacedAt: null } },
+        bridges: [{ id: "PRIVATE_BRIDGE_ID", status: "active", createdAt: "2026-08-29T00:00:00.000Z", updatedAt: "2026-08-29T00:00:00.000Z", sessions: [], summary: "PRIVATE_BRIDGE_SUMMARY", createdBy: "ari" }],
+        friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [], allOtherLiveSessions: [{ friendId: "ari", friendName: "Ari", channel: "cli", key: "private", sessionPath: "/tmp/private.json", lastActivityAt: "2026-08-29T00:00:00.000Z", lastActivityMs: 0, activitySource: "friend-facing" }] },
+        codingSessions: [],
+        otherCodingSessions: [],
+        pendingObligations: [],
+        bridgeSuggestion: null,
+      },
+    } as any, {
+      friend,
+      channel: { channel: "telegram", senseType: "chat", isRemote: true, isGroup: false, availableIntegrations: [], supportsAttachments: false, supportsReactions: false, chatStyle: true, supportsStreaming: false, supportsRichCards: true, maxMessageLength: 4096 },
+    } as never))
+
+    expect(result).toContain("friend: Maya")
+    expect(result).toContain("witty, funny, competent chaos monkey")
+    expect(result).toContain("likes concise answers")
+    expect(result).toContain("unraid_get_system")
+    for (const privateText of ["PRIVATE_PACKET_ARI", "PRIVATE_PENDING_ARI", "PRIVATE_BRIDGE_ARI", "PRIVATE_OBLIGATION_ARI", "PRIVATE_WORK_ARI", "PRIVATE_BRIDGE_ID", "PRIVATE_BRIDGE_SUMMARY", "secret-provider", "secret-model", "private-provider-revision"]) {
+      expect(result).not.toContain(privateText)
+    }
+    for (const globalHeading of ["## my provider", "## the pulse", "## trip ledger truth", "## pending messages", "## what i'm holding", "## where my attention is", "## my commitments", "## session summary", "## my desk", "family cross-session", "cross-session truth"]) {
+      expect(result).not.toContain(globalHeading)
+    }
+    expect(result).not.toContain("My desk is always loaded")
+  })
+
   it("buildSystem('inner') does NOT include contextSection output (no friend context, no onboarding)", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")

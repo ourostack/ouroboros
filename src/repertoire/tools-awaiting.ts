@@ -18,6 +18,8 @@ import type { PendingMessage } from "../mind/pending"
 import type { ToolDefinition } from "./tools-base"
 import type { CrossChatDeliveryDeps } from "../heart/cross-chat-delivery"
 import { advanceExternalEventsFromAwait, getExternalEventRoot } from "../heart/external-events/router"
+import { advanceObligation, createObligation, fulfillObligation, readVerifiedPendingObligations } from "../arc/obligations"
+import { parseCadenceToMs } from "../heart/daemon/cadence"
 
 /**
  * Bundle-root-relative locations.
@@ -48,7 +50,7 @@ function validateName(name: string): string | null {
   return null
 }
 
-function readAwaitDefinition(agentRoot: string, name: string): AwaitFile | null {
+export function readAwaitDefinition(agentRoot: string, name: string): AwaitFile | null {
   const filePath = awaitFilePath(agentRoot, name)
   try {
     const content = fs.readFileSync(filePath, "utf-8")
@@ -111,7 +113,7 @@ interface FileAwaitArgs {
   body?: string
 }
 
-function fileAwait(args: FileAwaitArgs, agentRoot: string, agentName: string, sessionFriendId: string | null, sessionChannel: string | null): string {
+function fileAwait(args: FileAwaitArgs, agentRoot: string, agentName: string, sessionFriendId: string | null, sessionChannel: string | null, sessionKey: string | null, requestId: string | null): string {
   const nameError = validateName(args.name)
   if (nameError) return JSON.stringify({ error: nameError })
 
@@ -140,11 +142,33 @@ function fileAwait(args: FileAwaitArgs, agentRoot: string, agentName: string, se
     created_at: new Date().toISOString(),
     filed_from: sessionChannel ?? "unknown",
     filed_for_friend_id: sessionFriendId ?? null,
+    filed_from_key: sessionKey,
+    request_id: requestId,
   }
-
+  let obligationId: string | null = null
+  if (requestId && sessionFriendId && sessionChannel && sessionKey) {
+    const obligation = createObligation(agentRoot, {
+      origin: { friendId: sessionFriendId, channel: sessionChannel, key: sessionKey },
+      owedTo: { friendId: sessionFriendId, channel: sessionChannel, key: sessionKey },
+      requestId,
+      content: args.condition.trim(),
+    })
+    advanceObligation(agentRoot, obligation.id, {
+      currentSurface: { kind: "session", label: `${sessionChannel}/${sessionKey}` },
+      currentArtifact: `awaiting/${args.name}.md`,
+      nextAction: args.condition.trim(),
+    })
+    obligationId = obligation.id
+    frontmatter.obligation_id = obligation.id
+  }
   const rendered = renderAwaitFile(frontmatter, capStructuredRecordString(args.body ?? ""))
   fs.mkdirSync(awaitingDir(agentRoot), { recursive: true })
-  fs.writeFileSync(filePath, rendered, "utf-8")
+  try {
+    fs.writeFileSync(filePath, rendered, "utf-8")
+  } catch (error) {
+    if (obligationId) fulfillObligation(agentRoot, obligationId)
+    throw error
+  }
 
   emitNervesEvent({
     component: "repertoire",
@@ -178,6 +202,9 @@ function archiveAwait(agentRoot: string, name: string, updates: Record<string, u
     created_at: current.created_at,
     filed_from: current.filed_from,
     filed_for_friend_id: current.filed_for_friend_id,
+    filed_from_key: current.filed_from_key,
+    request_id: current.request_id,
+    obligation_id: current.obligation_id,
     ...updates,
   }
 
@@ -194,6 +221,10 @@ function archiveAwait(agentRoot: string, name: string, updates: Record<string, u
   const archivedContent = fs.readFileSync(awaitDoneFilePath(agentRoot, name), "utf-8")
   const archived = parseAwaitFile(archivedContent, awaitDoneFilePath(agentRoot, name))
   return { ok: true, file: archived }
+}
+
+function fulfillAwaitObligation(agentRoot: string, awaitFile: AwaitFile): void {
+  if (awaitFile.obligation_id) fulfillObligation(agentRoot, awaitFile.obligation_id)
 }
 
 async function resolveAwaitTool(name: string, verdict: string, observation: string, agentRoot: string, agentName: string): Promise<string> {
@@ -229,7 +260,19 @@ async function resolveAwaitTool(name: string, verdict: string, observation: stri
     return JSON.stringify({ verdict: "no", recorded: true })
   }
 
-  // verdict === "yes" — archive and alert
+  // Request-bound returns stay active through Telegram prepare/send authorization.
+  let alert: AwaitAlertResult | null = null
+  if (existing.request_id) {
+    try {
+      alert = await deliverAwaitAlert({ awaitFile: existing, reason: "resolved", observation: observation.trim(), agentRoot, agentName, deliveryDeps: resolveDeliveryDeps(agentName) })
+    } catch (error) {
+      emitNervesEvent({ level: "error", component: "repertoire", event: "repertoire.await_alert_error", message: "await alert delivery threw", meta: { agent: agentName, name, error: error instanceof Error ? error.message : String(error) } })
+    }
+    if (alert?.delivery?.status !== "delivered_now") {
+      return JSON.stringify({ verdict: "yes", archived: null, alert: alert ? { attempted: alert.attempted, status: alert.delivery?.status ?? null, skipped: alert.skipped ?? null } : null, advancedExternalEvents: [] })
+    }
+  }
+
   const advancedEvents = advanceExternalEventsFromAwait(getExternalEventRoot(), agentName, name)
   const archive = archiveAwait(agentRoot, name, {
     status: "resolved",
@@ -238,6 +281,7 @@ async function resolveAwaitTool(name: string, verdict: string, observation: stri
   })
   /* v8 ignore next -- defensive: archiveAwait only fails on the file-disappears-mid-call race already covered by v8 ignore inside archiveAwait @preserve */
   if (!archive.ok) return JSON.stringify({ error: archive.error })
+  fulfillAwaitObligation(agentRoot, archive.file)
 
   emitNervesEvent({
     component: "repertoire",
@@ -246,24 +290,12 @@ async function resolveAwaitTool(name: string, verdict: string, observation: stri
     meta: { agent: agentName, name },
   })
 
-  let alert: AwaitAlertResult | null = null
-  try {
-    alert = await deliverAwaitAlert({
-      awaitFile: archive.file,
-      reason: "resolved",
-      observation: observation.trim(),
-      agentRoot,
-      agentName,
-      deliveryDeps: resolveDeliveryDeps(agentName),
-    })
-  } catch (error) {
-    emitNervesEvent({
-      level: "error",
-      component: "repertoire",
-      event: "repertoire.await_alert_error",
-      message: "await alert delivery threw",
-      meta: { agent: agentName, name, error: error instanceof Error ? error.message : String(error) },
-    })
+  if (!existing.request_id) {
+    try {
+      alert = await deliverAwaitAlert({ awaitFile: archive.file, reason: "resolved", observation: observation.trim(), agentRoot, agentName, deliveryDeps: resolveDeliveryDeps(agentName) })
+    } catch (error) {
+      emitNervesEvent({ level: "error", component: "repertoire", event: "repertoire.await_alert_error", message: "await alert delivery threw", meta: { agent: agentName, name, error: error instanceof Error ? error.message : String(error) } })
+    }
   }
 
   return JSON.stringify({
@@ -274,7 +306,7 @@ async function resolveAwaitTool(name: string, verdict: string, observation: stri
   })
 }
 
-function cancelAwaitTool(name: string, reason: string | undefined, agentRoot: string, agentName: string): string {
+export function cancelAwaitTool(name: string, reason: string | undefined, agentRoot: string, agentName: string): string {
   const nameError = validateName(name)
   if (nameError) return JSON.stringify({ error: nameError })
 
@@ -297,6 +329,7 @@ function cancelAwaitTool(name: string, reason: string | undefined, agentRoot: st
   const archive = archiveAwait(agentRoot, name, updates)
   /* v8 ignore next -- defensive: archiveAwait only fails on the file-disappears-mid-call race already covered by v8 ignore inside archiveAwait @preserve */
   if (!archive.ok) return JSON.stringify({ error: archive.error })
+  fulfillAwaitObligation(agentRoot, archive.file)
 
   emitNervesEvent({
     component: "repertoire",
@@ -306,6 +339,35 @@ function cancelAwaitTool(name: string, reason: string | undefined, agentRoot: st
   })
 
   return JSON.stringify({ canceled: name, archived: awaitDoneFilePath(agentRoot, name) })
+}
+
+export function hasActiveRelationshipFollowUp(agentRoot: string, input: { friendId: string; channel: string; key: string; requestId: string; now?: number }): boolean {
+  const obligation = readVerifiedPendingObligations(agentRoot).find((candidate) => candidate.requestId === input.requestId
+    && candidate.origin.friendId === input.friendId && candidate.origin.channel === input.channel && candidate.origin.key === input.key
+    && candidate.owedTo?.friendId === input.friendId && candidate.owedTo.channel === input.channel && candidate.owedTo.key === input.key
+    && candidate.currentArtifact?.startsWith("awaiting/") && candidate.currentArtifact.endsWith(".md"))
+  if (!obligation) return false
+  const name = path.basename(obligation.currentArtifact!, ".md")
+  if (!VALID_NAME.test(name) || obligation.currentArtifact !== `awaiting/${name}.md`) return false
+  const awaiting = readAwaitDefinition(agentRoot, name)
+  if (!awaiting || awaiting.status !== "pending" || awaiting.obligation_id !== obligation.id || awaiting.request_id !== input.requestId
+    || awaiting.filed_for_friend_id !== input.friendId || awaiting.filed_from !== input.channel || awaiting.filed_from_key !== input.key) return false
+  const maxAge = parseCadenceToMs(awaiting.max_age)
+  return maxAge === null || !awaiting.created_at || (input.now ?? Date.now()) < Date.parse(awaiting.created_at) + maxAge
+}
+
+export function cancelRelationshipFollowUps(agentRoot: string, agentName: string, input: { friendId: string; channel: string; key: string }): void {
+  const obligations = readVerifiedPendingObligations(agentRoot).filter((candidate) => candidate.owedTo?.friendId === input.friendId
+    && candidate.owedTo.channel === input.channel && candidate.owedTo.key === input.key)
+  for (const obligation of obligations) {
+    const artifact = obligation.currentArtifact
+    const name = artifact?.startsWith("awaiting/") && artifact.endsWith(".md") ? path.basename(artifact, ".md") : null
+    if (name && VALID_NAME.test(name) && artifact === `awaiting/${name}.md` && readAwaitDefinition(agentRoot, name)) {
+      cancelAwaitTool(name, "relationship revoked", agentRoot, agentName)
+    } else {
+      fulfillObligation(agentRoot, obligation.id)
+    }
+  }
 }
 
 export const awaitingToolDefinitions: ToolDefinition[] = [
@@ -347,6 +409,8 @@ export const awaitingToolDefinitions: ToolDefinition[] = [
         agentName,
         ctx?.currentSession?.friendId ?? null,
         ctx?.currentSession?.channel ?? null,
+        ctx?.currentSession?.key ?? null,
+        ctx?.relationshipAuthorization?.requestId ?? null,
       )
     },
     riskProfile: { mutates: "durable_state_write", risk: "high", reason: "files a durable await condition" },
