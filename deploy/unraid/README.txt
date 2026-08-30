@@ -404,6 +404,17 @@ Effective-spec audit helper:
         --package-root /opt/ouro/deploy/unraid/sanctuary.ouro \
         --agent-root /home/ouro/AgentBundles/sanctuary.ouro || return $?
     }
+    # Package installation and migration never grant restart authority. The
+    # migration is the pre-activation assertion: it fails before live mutation
+    # if packaged steward.json carries any routine grant. It preserves an
+    # existing live steward policy and its audit receipts byte for byte. On a
+    # new installation, start the healthy private runtime, then use
+    # an authenticated owner Telegram turn to grant each exact restart target
+    # through steward_policy_manage. That existing tool binds the grant to the
+    # verified owner relationship and durable session event. Do not seed grants
+    # in the packaged steward.json, copy an old session-event ID, or edit the
+    # live policy/audit files directly. A missing grant remains fail-closed until
+    # that explicit owner ceremony succeeds.
     prepare_canonical_sanctuary_roots() {
       PREPARE_IMAGE_ID=$1
       validate_exact_image_id "$PREPARE_IMAGE_ID" || return $?

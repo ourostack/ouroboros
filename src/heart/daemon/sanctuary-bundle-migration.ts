@@ -1,7 +1,7 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { readStewardPolicy, updateStewardPolicy, type RoutineActionGrant } from "../steward-policy"
+import { readStewardPolicy } from "../steward-policy"
 
 export const SANCTUARY_PACKAGE_MANAGED_FILES = [
   "provider-readiness.json",
@@ -70,7 +70,7 @@ function writeAtomic(filePath: string, content: string | Buffer): void {
     }
     fs.renameSync(temporary, filePath)
   } finally {
-    if (fs.existsSync(temporary)) fs.unlinkSync(temporary)
+    fs.rmSync(temporary, { force: true })
     fs.rmdirSync(stagingDirectory)
   }
   fs.chmodSync(filePath, 0o600)
@@ -124,20 +124,6 @@ function restoreMigrationSnapshot(snapshot: MigrationSnapshot): void {
   }
 }
 
-function sameGrant(left: RoutineActionGrant, right: RoutineActionGrant): boolean {
-  const managed = (grant: RoutineActionGrant) => ({ action: grant.action, targets: grant.targets, maxCount: grant.maxCount, windowMs: grant.windowMs, verificationRequired: grant.verificationRequired, exclusions: grant.exclusions, provenance: grant.provenance, issuer: grant.issuer, authorizingSessionEvent: grant.authorizingSessionEvent, expiresAt: grant.expiresAt })
-  return JSON.stringify(managed(left)) === JSON.stringify(managed(right))
-}
-
-function validatePackagedGrant(key: string, value: RoutineActionGrant): void {
-  if (!value || typeof value !== "object" || value.provenance !== "installed_explicit_policy" || !value.issuer?.trim() || !value.authorizingSessionEvent?.trim() || !value.authorizedAt) {
-    throw new Error(`packaged routine grant is invalid: ${key}`)
-  }
-  if (!Number.isInteger(value.version) || value.version < 1 || !Number.isInteger(value.maxCount) || value.maxCount < 1 || !Number.isFinite(value.windowMs) || value.windowMs <= 0 || !value.verificationRequired || !Array.isArray(value.targets) || value.targets.length === 0 || !Array.isArray(value.exclusions)) {
-    throw new Error(`packaged routine grant is invalid: ${key}`)
-  }
-}
-
 export function migrateSanctuaryPackageManagedBundle(input: { packageRoot: string; agentRoot: string }): SanctuaryBundleMigrationResult {
   emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_bundle_migration_start", message: "starting Sanctuary package-managed bundle migration", meta: { agentRoot: input.agentRoot } })
   let snapshot: MigrationSnapshot | null = null
@@ -160,7 +146,9 @@ export function migrateSanctuaryPackageManagedBundle(input: { packageRoot: strin
     const packagedMeta = readObject(path.join(input.packageRoot, "bundle-meta.json"))
     for (const field of BUNDLE_META_VERSION_FIELDS) if (!(field in packagedMeta)) throw new Error(`packaged bundle-meta.json is missing ${field}`)
     const packagedPolicy = readStewardPolicy(input.packageRoot)
-    for (const [key, grant] of Object.entries(packagedPolicy.routineActionGrants)) validatePackagedGrant(key, grant)
+    if (Object.keys(packagedPolicy.routineActionGrants).length > 0) {
+      throw new Error("packaged steward policy must not carry routine action grants; authorize them through an authenticated owner session")
+    }
     snapshot = captureMigrationSnapshot(input.agentRoot)
 
     let managedFilesUpdated = 0
@@ -180,33 +168,8 @@ export function migrateSanctuaryPackageManagedBundle(input: { packageRoot: strin
     const nextMetaText = `${JSON.stringify(nextMeta, null, 2)}\n`
     if (!fs.existsSync(metaPath) || fs.readFileSync(metaPath, "utf8") !== nextMetaText) writeAtomic(metaPath, nextMetaText)
 
-    let grantsAdded = 0
-    let grantsUpdated = 0
-    for (const [key, packagedGrant] of Object.entries(packagedPolicy.routineActionGrants)) {
-      const current = readStewardPolicy(input.agentRoot)
-      const existing = current.routineActionGrants[key]
-      if (existing?.provenance === "stated" || (existing && sameGrant(existing, packagedGrant))) continue
-      updateStewardPolicy(input.agentRoot, {
-        expectedVersion: current.version,
-        actor: { friendId: packagedGrant.issuer, trustLevel: "family", sessionEventId: packagedGrant.authorizingSessionEvent },
-        mutation: {
-          kind: "grant_routine_action",
-          key,
-          action: packagedGrant.action,
-          targets: packagedGrant.targets,
-          maxCount: packagedGrant.maxCount,
-          windowMs: packagedGrant.windowMs,
-          verificationRequired: packagedGrant.verificationRequired,
-          exclusions: packagedGrant.exclusions,
-          provenance: "installed_explicit_policy",
-          ...(packagedGrant.expiresAt ? { expiresAt: packagedGrant.expiresAt } : {}),
-        },
-      })
-      if (existing) grantsUpdated += 1
-      else grantsAdded += 1
-    }
     const policy = readStewardPolicy(input.agentRoot)
-    const result = { managedFilesUpdated, grantsAdded, grantsUpdated, grantsPreserved: Object.keys(policy.routineActionGrants).length - grantsAdded - grantsUpdated, policyVersion: policy.version }
+    const result = { managedFilesUpdated, grantsAdded: 0, grantsUpdated: 0, grantsPreserved: Object.keys(policy.routineActionGrants).length, policyVersion: policy.version }
     emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_bundle_migration_end", message: "completed Sanctuary package-managed bundle migration", meta: result })
     return result
   } catch (error) {
