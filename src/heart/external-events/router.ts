@@ -686,7 +686,7 @@ function parsePrivilegedEnvelope(raw: string, fileName: string, now: string): Pr
   const value = parsed as Record<string, unknown>
   const eventShapeIsAllowed = value.eventType === "usenet.protective_action" && value.action === "sabnzbd.pause"
     || (value.eventType === "usenet.health_observation" && value.action === "usenet.observe")
-  const observationTransitionIsAllowed = value.eventType !== "usenet.health_observation" || /^(?:auth-failed|stalled|recovered):\d{8}T\d{6}Z$/u.test(String(value.transitionId))
+  const observationTransitionIsAllowed = value.eventType !== "usenet.health_observation" || /^(?:auth-failed|stalled|recovered|indeterminate):\d{8}T\d{6}Z$/u.test(String(value.transitionId))
   const expectedKeys = ["action", "actionReceipt", "agent", "createdAt", "critical", "eventType", "evidence", "expiresAt", "incidentKey", "nonce", "observationRevision", "protectiveStateDigest", "protectiveStateObservedAt", "protectiveStateVerified", "schemaVersion", "source", "summary", "transitionId"]
   if (Object.keys(value).sort().join("\0") !== expectedKeys.sort().join("\0")
     || value.schemaVersion !== 1 || value.agent !== "sanctuary" || value.source !== PRIVILEGED_EVENT_SOURCE

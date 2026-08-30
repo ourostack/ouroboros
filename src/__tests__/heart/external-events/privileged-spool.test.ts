@@ -97,7 +97,7 @@ function envelope(overrides: Record<string, unknown> = {}): Record<string, unkno
   }
 }
 
-function healthEnvelope(state: "auth-failed" | "stalled" | "recovered", slot: string): Record<string, unknown> {
+function healthEnvelope(state: "auth-failed" | "stalled" | "recovered" | "indeterminate", slot: string): Record<string, unknown> {
   return envelope({
     eventType: "usenet.health_observation",
     action: "usenet.observe",
@@ -254,7 +254,7 @@ describe("privileged external-event spool", () => {
     expect(record.evidence).not.toEqual(expect.arrayContaining([expect.stringContaining("protective action:")]))
   })
 
-  it.each(["auth-failed", "stalled"] as const)("keeps initial health and unchanged %s quiet, but wakes for failure and recovery", (failureState) => {
+  it.each(["auth-failed", "stalled", "indeterminate"] as const)("keeps initial health and unchanged %s quiet, but wakes for failure and recovery", (failureState) => {
     const spoolRoot = root(`ouro-privileged-${failureState}`)
     const eventRoot = root(`ouro-privileged-${failureState}-events`)
     fs.chmodSync(spoolRoot, 0o755)
@@ -766,9 +766,9 @@ describe("packaged root event producer", () => {
     const input = envelope({
       eventType: "usenet.health_observation",
       action: "usenet.observe",
-      actionReceipt: "usenet:provider-health:auth-failed",
+      actionReceipt: "usenet:provider-health:indeterminate",
       incidentKey: "provider-health",
-      transitionId: "auth-failed:20260829T195500Z",
+      transitionId: "indeterminate:20260829T195500Z",
       createdAt: undefined,
       expiresAt: undefined,
       nonce: undefined,
