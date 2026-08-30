@@ -456,6 +456,18 @@ describe("packaged root event producer", () => {
     expect(fs.readFileSync(producerPath, "utf8")).not.toContain("fs.linkSync(")
   })
 
+  it("fails closed on a dangling producer lock instead of retrying forever", async () => {
+    const producerPath = path.resolve(__dirname, "../../../../deploy/unraid/ouro-events/emit-event.mjs")
+    const producer = await import(`${pathToFileURL(producerPath).href}?dangling-lock=${Date.now()}`) as {
+      emitEvent(input: Record<string, unknown>, options: ReturnType<typeof producerOptions>): unknown
+    }
+    const spoolRoot = root("ouro-producer-dangling-lock")
+    fs.chmodSync(spoolRoot, 0o755)
+    fs.symlinkSync("missing-lock-target", path.join(spoolRoot, ".producer.lock"))
+
+    expect(() => producer.emitEvent(envelope(), producerOptions(spoolRoot))).toThrow("event transition publication lock is unsafe")
+  })
+
   it("prunes only canonical safely-opened envelopes expired past grace on every detector tick", async () => {
     const producerPath = path.resolve(__dirname, "../../../../deploy/unraid/ouro-events/emit-event.mjs")
     const producer = await import(`${pathToFileURL(producerPath).href}?maintenance=${Date.now()}`) as {

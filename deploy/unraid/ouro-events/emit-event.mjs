@@ -162,7 +162,15 @@ function withProducerLock(context, operation) {
         try {
           leaseActive = Date.now() - fs.statSync(lockPath).mtimeMs <= 30_000
         } catch (statError) {
-          if (statError?.code === "ENOENT") continue
+          if (statError?.code === "ENOENT") {
+            try {
+              fs.lstatSync(lockPath)
+            } catch (lstatError) {
+              if (lstatError?.code === "ENOENT") continue
+              throw lstatError
+            }
+            throw new Error("event transition publication lock is unsafe")
+          }
           throw statError
         }
       }
