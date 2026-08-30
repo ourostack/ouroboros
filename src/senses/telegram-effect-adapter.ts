@@ -330,7 +330,7 @@ function canonicalMessageId(result: unknown): number {
 async function executePart(api: TelegramBotApi, artifact: TelegramEffectArtifact, part: TelegramEffectPart, chatId: string, signal?: AbortSignal): Promise<number | undefined> {
   const effect = artifact.effect
   if (effect.kind === "text" || effect.kind === "admission_ack") {
-    const ids = await sendTelegramText(api, chatId, part.text ?? "", signal)
+    const ids = await sendTelegramText(api, chatId, part.text!, signal)
     if (ids.length !== 1) throw new Error("Telegram effect chunk renderer returned an unexpected message count")
     return ids[0]
   }

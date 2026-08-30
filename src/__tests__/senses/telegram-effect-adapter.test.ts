@@ -65,6 +65,11 @@ describe("Telegram effect adapter", () => {
     store.close()
     expect(() => store.close()).not.toThrow()
     expect(() => store.read("d".repeat(64))).toThrow("closed")
+
+    const fileRoot = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "telegram-effect-file-root-")), "journal")
+    roots.push(path.dirname(fileRoot))
+    fs.writeFileSync(fileRoot, "not a directory")
+    expect(() => new FileTelegramEffectJournal(fileRoot)).toThrow("must be a directory")
   })
 
   it("prepares deterministic text chunks once and sends each through the existing renderer", async () => {
@@ -238,14 +243,43 @@ describe("Telegram effect adapter", () => {
     const store = journal()
     const card = prepareTelegramEffect(store, { idempotencyKey: "card:no-id", target, authorClass: "control", effect: { kind: "card", text: "Card", buttons: [[{ text: "Ok", callbackData: "ok" }]] }, authorization })
     await expect(executeTelegramEffect(store, card.id, { request: vi.fn(async () => ({})) }, () => authorization)).rejects.toThrow("omitted message_id")
+    const arrayCard = prepareTelegramEffect(store, { idempotencyKey: "card:array-response", target, authorClass: "control", effect: { kind: "card", text: "Card", buttons: [[{ text: "Ok", callbackData: "ok" }]] }, authorization })
+    await expect(executeTelegramEffect(store, arrayCard.id, { request: vi.fn(async () => []) }, () => authorization)).rejects.toThrow("omitted message_id")
 
     const unchanged = prepareTelegramEffect(store, { idempotencyKey: "edit:unchanged", target, authorClass: "control", effect: { kind: "edit", messageId: 7, text: "Same" }, authorization })
     await expect(executeTelegramEffect(store, unchanged.id, { request: vi.fn(async () => { throw new TelegramApiError("message is not modified", { status: 400, errorCode: 400 }) }) }, () => authorization)).resolves.toMatchObject({ parts: [{ state: "accepted", messageId: 7 }] })
     const server = prepareTelegramEffect(store, { idempotencyKey: "edit:server", target, authorClass: "control", effect: { kind: "edit", messageId: 8, text: "Edit" }, authorization })
     await expect(executeTelegramEffect(store, server.id, { request: vi.fn(async () => { throw new TelegramApiError("server", { status: 500, errorCode: 500 }) }) }, () => authorization)).rejects.toThrow("server")
 
+    for (const [suffix, signal] of [["without-signal", undefined], ["with-signal", new AbortController().signal]] as const) {
+      const fallback = prepareTelegramEffect(store, { idempotencyKey: `edit:fallback:${suffix}`, target, authorClass: "control", effect: { kind: "edit", messageId: 9, text: "<Edit>" }, authorization })
+      const request = vi.fn()
+        .mockRejectedValueOnce(new TelegramApiError("bad html", { status: 400, errorCode: 400 }))
+        .mockResolvedValueOnce(true)
+      await expect(executeTelegramEffect(store, fallback.id, { request }, () => authorization, signal)).resolves.toMatchObject({ parts: [{ state: "accepted", messageId: 9 }] })
+      expect(request).toHaveBeenCalledTimes(2)
+    }
+
+    const fallbackErrors: Array<[string, unknown, boolean]> = [
+      ["plain-error", new Error("plain fallback failure"), false],
+      ["server-error", new TelegramApiError("server fallback failure", { status: 500, errorCode: 500 }), false],
+      ["other-400", new TelegramApiError("other fallback failure", { status: 400, errorCode: 400 }), false],
+      ["unchanged", new TelegramApiError("message is not modified", { status: 400, errorCode: 400 }), true],
+    ]
+    for (const [suffix, fallbackError, succeeds] of fallbackErrors) {
+      const fallback = prepareTelegramEffect(store, { idempotencyKey: `edit:fallback-error:${suffix}`, target, authorClass: "control", effect: { kind: "edit", messageId: 10, text: "<Edit>" }, authorization })
+      const request = vi.fn()
+        .mockRejectedValueOnce(new TelegramApiError("bad html", { status: 400, errorCode: 400 }))
+        .mockRejectedValueOnce(fallbackError)
+      const result = executeTelegramEffect(store, fallback.id, { request }, () => authorization)
+      if (succeeds) await expect(result).resolves.toMatchObject({ parts: [{ state: "accepted", messageId: 10 }] })
+      else await expect(result).rejects.toBe(fallbackError)
+    }
+
     const expired = prepareTelegramEffect(store, { idempotencyKey: "expired", target, authorClass: "butler", effect: { kind: "text", text: "Expired" }, authorization })
     await expect(executeTelegramEffect(store, expired.id, { request: vi.fn() }, () => ({ ...authorization, expiresAt: "2020-01-01T00:00:00.000Z" }))).rejects.toThrow("authorization expired")
+    const invalidRoute = prepareTelegramEffect(store, { idempotencyKey: "invalid-send-route", target, authorClass: "butler", effect: { kind: "text", text: "No route" }, authorization })
+    await expect(executeTelegramEffect(store, invalidRoute.id, { request: vi.fn() }, () => ({ ...authorization, transport: { chatId: "0" } }))).rejects.toThrow("invalid transport route")
     const aborted = prepareTelegramEffect(store, { idempotencyKey: "aborted", target, authorClass: "butler", effect: { kind: "text", text: "Abort" }, authorization })
     const controller = new AbortController(); controller.abort(new Error("cancelled"))
     await expect(executeTelegramEffect(store, aborted.id, { request: vi.fn() }, () => authorization, controller.signal)).rejects.toThrow("cancelled")
@@ -539,5 +573,63 @@ describe("Telegram effect adapter", () => {
     card.parts[0]!.state = "session_recorded"; card.parts[0]!.messageId = 1
     store.write(card)
     expect(resolveTelegramControlArtifact(store, { messageId: 999, friendId: "ari", sessionKey: "telegram:ari" })).toBeNull()
+
+    const noRequest = prepareTelegramEffect(store, { idempotencyKey: "control:no-request", target: { kind: "approved_relationship", friendId: "ari", sessionKey: "telegram:ari" }, authorClass: "control", effect: { kind: "card", text: "Card", buttons: [[{ text: "Ok", callbackData: "ok" }]] }, authorization })
+    noRequest.parts[0]!.state = "session_recorded"; noRequest.parts[0]!.messageId = 2
+    store.write(noRequest)
+    expect(resolveTelegramControlArtifact(store, { messageId: 2, friendId: "ari", sessionKey: "telegram:ari" })).toEqual({ artifactId: noRequest.id, requestId: null })
+  })
+
+  it("records crash-window and transport-only edge states without duplicating session history", async () => {
+    const store = journal()
+    const sessionPath = path.join(roots.at(-1)!, "edge-session.json")
+    const envelope: SessionEnvelope = {
+      version: 2,
+      events: [{
+        id: "evt-000001", sequence: 1, role: "assistant", content: "First chunk", name: null, toolCallId: null, toolCalls: [], attachments: [],
+        time: { authoredAt: null, authoredAtSource: "local", observedAt: null, observedAtSource: "local", recordedAt: "2026-08-29T00:00:00.000Z", recordedAtSource: "save" },
+        relations: { replyToEventId: null, threadRootEventId: null, references: [], toolCallId: null, supersedesEventId: null, redactsEventId: null },
+        provenance: { captureKind: "live", legacyVersion: null, sourceMessageIndex: null },
+      }],
+      projection: { eventIds: ["evt-000001"], trimmed: false, maxTokens: null, contextMargin: null, inputTokens: null, projectedAt: null },
+      lastUsage: null,
+      state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
+    }
+    fs.writeFileSync(sessionPath, JSON.stringify(envelope))
+
+    const partial = prepareTelegramEffect(store, { idempotencyKey: "partial-send", target, authorClass: "butler", effect: { kind: "text", text: `${"a".repeat(2_500)} ${"b".repeat(2_500)}` }, authorization })
+    partial.parts[0]!.state = "accepted"
+    partial.parts[0]!.messageId = 11
+    store.write(partial)
+    await recordTelegramEffectsInSession({ store, sessionPath, artifacts: [partial], causalEventIds: { [partial.id]: "evt-000001" } })
+    expect(store.read(partial.id).parts).toEqual(expect.arrayContaining([expect.objectContaining({ state: "session_recorded" }), expect.objectContaining({ state: "prepared" })]))
+
+    const conflict = prepareTelegramEffect(store, { idempotencyKey: "partial-reconcile", target, authorClass: "butler", effect: { kind: "text", text: `${"c".repeat(2_500)} ${"d".repeat(2_500)}` }, authorization })
+    conflict.parts.forEach((part, index) => { part.state = "accepted"; part.messageId = 20 + index })
+    store.write(conflict)
+    const existing = JSON.parse(fs.readFileSync(sessionPath, "utf8")) as SessionEnvelope
+    existing.events[0]!.relations.references.push(`telegram-artifact:${conflict.id}`, "telegram-message:20")
+    fs.writeFileSync(sessionPath, JSON.stringify(existing))
+    await expect(recordTelegramEffectsInSession({ store, sessionPath, artifacts: [conflict] })).rejects.toThrow("reconciliation is partial")
+
+    const callback = prepareTelegramEffect(store, { idempotencyKey: "callback:event-content", target: { kind: "approved_relationship", friendId: "ari", sessionKey: "telegram:ari" }, authorClass: "control", effect: { kind: "callback_ack", callbackQueryId: "callback" }, authorization })
+    callback.parts[0]!.state = "accepted"
+    const appended = appendTelegramArtifactEvents(existing, callback, "2026-08-29T00:00:01.000Z")
+    expect(appended.envelope.events.at(-1)).toMatchObject({ content: "[Telegram control artifact]\n", relations: { references: [`telegram-artifact:${callback.id}`] } })
+  })
+
+  it("uses the deterministic artifact id as the outbox sort tiebreaker", async () => {
+    const store = journal()
+    const artifacts = ["tie:right", "tie:left"].map((idempotencyKey) => prepareTelegramEffect(store, { idempotencyKey, target, authorClass: "butler", effect: { kind: "text", text: idempotencyKey }, authorization, now: "2026-08-29T00:00:00.000Z" }))
+    const order: string[] = []
+    await recoverTelegramEffectOutbox({ store, execute: async (input) => { order.push(input.idempotencyKey); return artifacts.find((artifact) => artifact.idempotencyKey === input.idempotencyKey)! } })
+    expect(order).toEqual([...order].sort((left, right) => artifacts.find((artifact) => artifact.idempotencyKey === left)!.id.localeCompare(artifacts.find((artifact) => artifact.idempotencyKey === right)!.id)))
+  })
+
+  it("records a non-Error transport loss as indeterminate", async () => {
+    const store = journal()
+    const artifact = prepareTelegramEffect(store, { idempotencyKey: "non-error-loss", target, authorClass: "butler", effect: { kind: "text", text: "Maybe sent" }, authorization })
+    await expect(executeTelegramEffect(store, artifact.id, { request: vi.fn(async () => { throw "socket vanished" }) }, () => authorization)).rejects.toBe("socket vanished")
+    expect(store.read(artifact.id).parts[0]).toMatchObject({ state: "indeterminate" })
   })
 })
