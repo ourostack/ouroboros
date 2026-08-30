@@ -651,7 +651,7 @@ describe("packaged Sanctuary health acceptance probe", () => {
   it.each([
     ["unit-16f-cron-fingerprint", 1, 0, 0, "ambient"],
     ["unit-16g-health-transition", 6, 0, 0, "ambient"],
-    ["unit-16h-daily-digest", 2, 0, 0, "local-daily-boundary"],
+    ["unit-16h-acceptance-delivery-probe", 2, 0, 0, "local-daily-boundary"],
   ] as const)("runs and restores %s through the real health runner", async (label, phaseCount, providers, deliveries, clockMode) => {
     const fixture = setup(label)
     try {
@@ -699,7 +699,7 @@ describe("packaged Sanctuary health acceptance probe", () => {
           ["fixture-refail", 503, 1, 0, null],
         ])
       }
-      if (label === "unit-16h-daily-digest") {
+      if (label === "unit-16h-acceptance-delivery-probe") {
         expect(receipt.effectiveNow).toMatch(/T(?:16|17):00:00\.000Z$/u)
         expect(receipt.phases.map((phase) => [phase.fixtureStatus, phase.digestDue, phase.deliveryKind])).toEqual([
           [503, false, null], [503, false, null],
@@ -1008,7 +1008,7 @@ describe("packaged Sanctuary health acceptance probe", () => {
       await expect(recoverSanctuaryHealthAcceptanceProbe(fixture.input, fixture.deps)).resolves.toEqual({ recovered: false })
       for (const receipt of [
         null,
-        { label: "unit-16h-daily-digest", scenarioHandleDigest: fixture.input.scenarioHandleDigest, ownerImageDigestBefore: fixture.input.ownerImageDigest, ownerContainerDigestBefore: fixture.input.ownerContainerDigest },
+        { label: "unit-16h-acceptance-delivery-probe", scenarioHandleDigest: fixture.input.scenarioHandleDigest, ownerImageDigestBefore: fixture.input.ownerImageDigest, ownerContainerDigestBefore: fixture.input.ownerContainerDigest },
         { label: fixture.input.label, scenarioHandleDigest: "d".repeat(64), ownerImageDigestBefore: fixture.input.ownerImageDigest, ownerContainerDigestBefore: fixture.input.ownerContainerDigest },
         { label: fixture.input.label, scenarioHandleDigest: fixture.input.scenarioHandleDigest, ownerImageDigestBefore: "d".repeat(64), ownerContainerDigestBefore: fixture.input.ownerContainerDigest },
         { label: fixture.input.label, scenarioHandleDigest: fixture.input.scenarioHandleDigest, ownerImageDigestBefore: fixture.input.ownerImageDigest, ownerContainerDigestBefore: "d".repeat(64) },
@@ -1034,7 +1034,7 @@ describe("packaged Sanctuary health acceptance probe", () => {
       for (const envelope of [
         {},
         { schemaVersion: "wrong", receipt: {} },
-        { schemaVersion: "sanctuary-health-probe-pending-v1", receipt: { label: "unit-16h-daily-digest" } },
+        { schemaVersion: "sanctuary-health-probe-pending-v1", receipt: { label: "unit-16h-acceptance-delivery-probe" } },
       ]) {
         fs.writeFileSync(pendingPath, `${JSON.stringify(envelope)}\n`)
         expect(() => finalizeSanctuaryHealthAcceptanceProbe(fixture.input, {

@@ -101,13 +101,13 @@ describe("Sanctuary acceptance harness", () => {
     "unit-16c-provider-readiness",
     "unit-16d-whats-up",
     "unit-16d-1-space",
-    "unit-16d-2-unauthorized",
+    "unit-16d-2-unknown-admission",
     "unit-16e-containment-audit",
     "unit-16e-1-stop-denial",
     "unit-16e-2-restart-denial",
     "unit-16f-cron-fingerprint",
     "unit-16g-health-transition",
-    "unit-16h-daily-digest",
+    "unit-16h-acceptance-delivery-probe",
     "unit-16i-delayed-approval",
     "unit-16j-denial",
     "unit-16k-timeout-stale",
@@ -136,23 +136,23 @@ describe("Sanctuary acceptance harness", () => {
       case "unit-16a-pre-reboot-checkpoint": return { approvalDigest: "d".repeat(64), auditDigest: "d".repeat(64), containerDigest: "d".repeat(64), fingerprintDigest: "d".repeat(64), offsetDigest: "d".repeat(64), processBindingDigest: "d".repeat(64), ready: true, unrelatedHostOperations: 0 }
       case "unit-16a-reboot-request": return { exactlyOnce: true, processBindingDigest: "d".repeat(64), requestCheckpointPersisted: true, requestDigest: "d".repeat(64) }
       case "unit-16a-boot-recovery-milestones": return { arrayReady: true, bootIdentityChanged: true, butlerReady: true, dockerReady: true, hostReady: true, postbootIntegrityPreserved: true, processBindingDigest: "d".repeat(64), sshReady: true, tailscaleReady: true }
-      case "unit-16b-runtime-vault-containment": return { autostartExact: true, exactImage: true, manualAuthRequired: false, mountCount: 2, nonRootUid: 10001, publishedPortCount: 0, readOnlyRoot: true, updaterDisabled: true, vaultUnlocked: true }
+      case "unit-16b-runtime-vault-containment": return { autostartExact: true, exactImage: true, manualAuthRequired: false, mountCount: 4, mountsExact: true, nonRootUid: 10001, publishedPortCount: 0, readOnlyRoot: true, updaterDisabled: true, vaultUnlocked: true }
       case "unit-16c-provider-readiness": return { baseUrlsExact: true, credentialIdentitiesDistinct: true, geminiCandidateReady: true, innerReady: true, modelsExact: true, outwardReady: true, providersDistinct: true, silentFallback: false, vaultCoordinatesExact: true }
       case "unit-16d-whats-up": return { accurate: true, authorized: true, grounded: true, liveFactsMatched: true, responseCount: 1, responseWithinLimit: true, telegramDelivered: true }
       case "unit-16d-1-space": return { accurate: true, authorized: true, grounded: true, liveFactsMatched: true, mutationCount: 0, responseCount: 1, responseWithinLimit: true, telegramDelivered: true }
-      case "unit-16d-2-unauthorized": return { auditRejected: true, distinctAccount: true, mutationCount: 0, providerInvocationCount: 0, responseCount: 0, workItemCount: 0 }
+      case "unit-16d-2-unknown-admission": return { acknowledgementSent: true, agentTurnCount: 0, distinctAccount: true, mutationCount: 0, ownerCardSent: true, providerInvocationCount: 0, quarantined: true, responseCount: 0, workItemCount: 0 }
       case "unit-16e-containment-audit": return {
         schemaVersion: "sanctuary-containment-audit-v1", keyCount: 2, keyInventoryDigest: "d".repeat(64), readScopeDigest: "9914469afdcb574937d1020a03faa82e3c02d767169d3eccae4b81863dafa06e", writeScopeDigest: "1de873b2bc3c7769010c32c69fcc8ea55343a5647cfdb0294769e831142945ec", keyRoleAssignmentCount: 0,
-        telegramToolCount: 10, telegramProfileDigest: "a7f26934c5e60737582b9d13c78944b8bcbb941366899d82d58c01ca296e14e2", telegramSchemaDigest: "3c66299a5f70ec82f8795cae47659284e6dbc691ef49002c2fb22edba76c59b6", privateToolCount: 2, privateProfileDigest: "a100ffcaf436842bf9fceaf3d2fd1a1b766c04238300487474d6e9fcb7946369", privateSchemaDigest: "61b137b2467acbcf22ca7443ee01e71ed970a62728c42aabffbdcb562f4a6a70", resolvedHandlerCount: 12,
+        telegramToolCount: 25, telegramProfileDigest: "a".repeat(64), telegramSchemaDigest: "b".repeat(64), privateToolCount: 17, privateProfileDigest: "c".repeat(64), privateSchemaDigest: "d".repeat(64), resolvedHandlerCount: 42, relationshipProfilesExact: true, handlersExact: true,
         excludedToolCount: 7, excludedSchemaIntersectionCount: 0, fabricatedHandlerInvocationCount: 0, excludedToolAttemptCount: 7, excludedToolRejectedCount: 7, excludedToolInvokedCount: 0, excludedToolSideEffectCount: 0, globallyResolvableExcludedToolCount: 4,
         auditPathDigest: "1cb8f1a00c544a5d10b0577090dbf070a07a5b6a99de13ccd27c11a257f84b75", auditLedgerDigest: "d".repeat(64), auditRecordCount: 2, auditLifecyclePairCount: 1,
-        containerUser: "10001:10001", liveProcessUser: "10001:10001", mountCount: 2, publishedPortCount: 0, networkMode: "host", readOnlyRoot: true, mountsExact: true, securityExact: true, updaterDisabled: true, writableKeyExposure: false,
-        rawWriteMaterialFieldCount: 0, typedWriteExecutorCount: 1, writeApprovalPolicyDigest: "24b1726edf1a2bbd524e9be63d3f0f726d996a8a009425462e01a5c4916ef42b", sensitiveMaterialObserved: false, mutationCount: 0,
+        containerUser: "10001:10001", liveProcessUser: "10001:10001", mountCount: 4, publishedPortCount: 0, networkMode: "host", readOnlyRoot: true, mountsExact: true, securityExact: true, updaterDisabled: true, writableKeyExposure: false,
+        rawWriteMaterialFieldCount: 0, typedWriteExecutorCount: 1, writeApprovalPolicyDigest: "e".repeat(64), writeApprovalPolicyExact: true, sensitiveMaterialObserved: false, mutationCount: 0,
       }
       case "unit-16e-1-stop-denial": case "unit-16e-2-restart-denial": return { attemptCount: 1, cursorBoundaryCount: 7, denied: true, mutationCount: 0, restartCountUnchanged: true, resumed: true }
       case "unit-16f-cron-fingerprint": return { fingerprintUnchanged: true, messageCount: 0, providerInvocationCount: 0, receiptUnchanged: true, scheduleRegistered: true, sweepObserved: true }
       case "unit-16g-health-transition": return { alertCount: 3, productionRestored: true, transitionObserved: true }
-      case "unit-16h-daily-digest": return { firedWithinMs: 900_000, messageCount: 1, productionRestored: true, scheduleObserved: true }
+      case "unit-16h-acceptance-delivery-probe": return { acceptanceOnly: true, deliveryPathObserved: true, firedWithinMs: 900_000, messageCount: 1, productionRestored: true, productionScheduleChanged: false }
       case "unit-16i-delayed-approval": return { elapsedMs: 120_000, mutationCount: 1, promptTerminal: true, replayMutationCount: 0, resumed: true, state: "succeeded" }
       case "unit-16j-denial": return { mutationCount: 0, promptTerminal: true, replayMutationCount: 0, resumed: true, state: "denied" }
       case "unit-16k-timeout-stale": return { buttonsRemoved: true, mutationCount: 0, promptTerminal: true, staleAcknowledged: true, staleReplayMutationCount: 0, state: "expired" }
@@ -284,8 +284,8 @@ describe("Sanctuary acceptance harness", () => {
     expect(calls).toContainEqual(expect.objectContaining({
       operation: "capture_acceptance_scenario",
       phase: "begin",
-      label: "unit-16d-2-unauthorized",
-      externalGate: "distinct-telegram-account-message",
+      label: "unit-16d-2-unknown-admission",
+      externalGate: "unknown-telegram-admission",
     }))
     expect(calls).toContainEqual(expect.objectContaining({
       operation: "capture_acceptance_scenario",
@@ -308,6 +308,7 @@ describe("Sanctuary acceptance harness", () => {
     reject("unit-12c-1-opaque-identity", { identityBound: false }, /must be true/u)
     reject("unit-15c-1-no-callback-terminalization", { elapsedMs: 59_999 }, /reach ttlMs/u)
     reject("unit-16b-runtime-vault-containment", { manualAuthRequired: true }, /must be false/u)
+    reject("unit-16b-runtime-vault-containment", { mountCount: 2 }, /must equal 4/u)
     reject("unit-16d-whats-up", { responseCount: 0 }, /must equal 1/u)
     reject("unit-16e-containment-audit", { fabricatedHandlerInvocationCount: 1 }, /must equal 0/u)
     reject("unit-16e-containment-audit", { excludedToolAttemptCount: 6 }, /must equal 7/u)
@@ -321,11 +322,15 @@ describe("Sanctuary acceptance harness", () => {
     reject("unit-16e-containment-audit", { liveProcessUser: "0:0" }, /identity/u)
     reject("unit-16e-containment-audit", { writableKeyExposure: true }, /must be false/u)
     reject("unit-16e-containment-audit", { networkMode: "bridge" }, /network/u)
-    reject("unit-16e-containment-audit", { telegramSchemaDigest: "e".repeat(64) }, /telegramSchemaDigest/u)
+    reject("unit-16e-containment-audit", { mountCount: 2 }, /must equal 4/u)
+    reject("unit-16e-containment-audit", { relationshipProfilesExact: false }, /must be true/u)
+    reject("unit-16e-containment-audit", { resolvedHandlerCount: 41 }, /handler/u)
+    reject("unit-16e-containment-audit", { handlersExact: false }, /must be true/u)
+    reject("unit-16e-containment-audit", { writeApprovalPolicyExact: false }, /must be true/u)
     reject("unit-16e-containment-audit", { readScopeDigest: "e".repeat(64) }, /readScopeDigest/u)
-    reject("unit-16h-daily-digest", { firedWithinMs: 960_001 }, /16-minute/u)
-    expect(() => validateSanctuaryUnit16EvidenceAssertions("unit-16h-daily-digest", {
-      ...validAssertions("unit-16h-daily-digest"), firedWithinMs: 0,
+    reject("unit-16h-acceptance-delivery-probe", { firedWithinMs: 960_001 }, /16-minute/u)
+    expect(() => validateSanctuaryUnit16EvidenceAssertions("unit-16h-acceptance-delivery-probe", {
+      ...validAssertions("unit-16h-acceptance-delivery-probe"), firedWithinMs: 0,
     })).not.toThrow()
     reject("unit-16i-delayed-approval", { elapsedMs: 119_999 }, /120 seconds/u)
     reject("unit-16i-delayed-approval", { state: "failed" }, /succeeded/u)
@@ -774,6 +779,10 @@ describe("Sanctuary acceptance harness", () => {
       adapterExecutable: "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
       adapterTimeoutMs: 240_000,
       telegramTimeoutMs: 10_000,
+      configTemplates: { "evidence-snapshot": { scenarioSemantics: {
+        "unit-16d-2-unknown-admission": expect.stringContaining("pending and quarantined"),
+        "unit-16h-acceptance-delivery-probe": expect.stringContaining("acceptance-only"),
+      } } },
     })
     expect(Object.keys(contract.commands).sort()).toEqual([
       "callback-inject", "cursor-delta", "cursor-snapshot", "evidence-bundle-index", "evidence-bundle-verify",

@@ -25,7 +25,7 @@ const TARGET_ENDPOINT = "https://books.mendelow.cloud/"
 const CRON_MARKER = "# ouro:habit:sanctuary:sanctuary:sanctuary-health"
 const CRON_COMMAND = "*/15 * * * * /usr/local/bin/node /opt/ouro/dist/heart/daemon/ouro-entry.js poke sanctuary --habit sanctuary-health --trigger cron"
 const PROCESS_ENTRY = "/opt/ouro/dist/senses/sanctuary-health-acceptance-probe-entry.js"
-const LABELS = ["unit-16f-cron-fingerprint", "unit-16g-health-transition", "unit-16h-daily-digest"] as const
+const LABELS = ["unit-16f-cron-fingerprint", "unit-16g-health-transition", "unit-16h-acceptance-delivery-probe"] as const
 
 export type SanctuaryHealthAcceptanceProbeLabel = typeof LABELS[number]
 
@@ -78,6 +78,8 @@ export interface SanctuaryHealthAcceptanceProbeReceipt {
   realCheckEquivalent: boolean
   productionRestored: boolean
   schedulerReceipt: SanctuarySchedulerLivenessReceipt | null
+  acceptanceOnly: true
+  productionScheduleChanged: false
 }
 
 export interface SanctuaryHealthAcceptanceProbeDependencies {
@@ -565,7 +567,7 @@ export async function runSanctuaryHealthAcceptanceProbe(
   const cronBefore = fs.readFileSync(cronPath, "utf8")
   const cronFingerprintBefore = digestBytes(cronBefore)
   const cronRegisteredBefore = canonicalCron(cronBefore)
-  const effectiveNow = input.label === "unit-16h-daily-digest" ? exactLocalDailyBoundary(dependencies.now()) : dependencies.now()
+  const effectiveNow = input.label === "unit-16h-acceptance-delivery-probe" ? exactLocalDailyBoundary(dependencies.now()) : dependencies.now()
   let fixture: Awaited<ReturnType<typeof createSanctuaryHealthAcceptanceLoopbackFixture>> | undefined
   let expectedIncidentDigest = ""
   let realCheckEquivalent = false
@@ -597,7 +599,7 @@ export async function runSanctuaryHealthAcceptanceProbe(
       restoredStateDigest = snapshotDigest(snapshotState(statePath))
     } else await withSanctuaryHealthStateLease(statePath, async (lease: SanctuaryHealthStateLease) => {
       expectedIncidentDigest = await normalizeWorkingState({ workspace, statePath, deps: dependencies, effectiveNow })
-      if (input.label === "unit-16h-daily-digest") {
+      if (input.label === "unit-16h-acceptance-delivery-probe") {
         const state = readHealthState(statePath)
         state.incidents[`endpoint:${TARGET_ENDPOINT}`] = { id: `endpoint:${TARGET_ENDPOINT}`, summary: `${TARGET_ENDPOINT} returned 503` }
         state.lastDigestDay = localDay(new Date(effectiveNow.getTime() - 36 * 60 * 60 * 1_000))
@@ -627,8 +629,8 @@ export async function runSanctuaryHealthAcceptanceProbe(
         }
       } else {
         fixture = await createSanctuaryHealthAcceptanceLoopbackFixture([503, 503], dependencies.ambientFetch, dependencies.createLoopbackServer)
-        await runPhase("digest-boundary", "acceptance", 503, fixture.fetch, effectiveNow)
-        await runPhase("digest-repeat", "acceptance", 503, fixture.fetch, effectiveNow)
+        await runPhase("delivery-probe-first", "acceptance", 503, fixture.fetch, effectiveNow)
+        await runPhase("delivery-probe-repeat", "acceptance", 503, fixture.fetch, effectiveNow)
       }
       await closeServer(fixture!.server)
       socketAbsent = fixture!.server.address() === null
@@ -659,7 +661,7 @@ export async function runSanctuaryHealthAcceptanceProbe(
       cronDegradedBefore: !cronRegisteredBefore,
       cronDegradedAfter: !cronRegisteredAfter,
       fixtureSequenceDigest: digestJson(observedFixtureSequence),
-      clockMode: input.label === "unit-16h-daily-digest" ? "local-daily-boundary" : "ambient",
+      clockMode: input.label === "unit-16h-acceptance-delivery-probe" ? "local-daily-boundary" : "ambient",
       effectiveNow: effectiveNow.toISOString(),
       phases,
       providerInvocationCount,
@@ -672,6 +674,8 @@ export async function runSanctuaryHealthAcceptanceProbe(
       productionRestored: beforeStateDigest === restoredStateDigest && cronFingerprintBefore === cronFingerprintAfter
         && cronRegisteredBefore && cronRegisteredAfter && socketAbsent && realCheckEquivalent,
       schedulerReceipt,
+      acceptanceOnly: true,
+      productionScheduleChanged: false,
     }
     if (input.label === "unit-16f-cron-fingerprint") receipt.productionRestored = cronFingerprintBefore === cronFingerprintAfter
       && cronRegisteredBefore && cronRegisteredAfter && socketAbsent && realCheckEquivalent && schedulerReceipt !== null
