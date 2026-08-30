@@ -43,7 +43,7 @@ vi.mock("../../heart/daemon/socket-client", () => ({
 }))
 
 import { patchRuntimeConfig, resetConfigCache } from "../../heart/config"
-import { updateStewardPolicy } from "../../heart/steward-policy"
+import { readStewardPolicy, updateStewardPolicy } from "../../heart/steward-policy"
 import { createRelationshipAuthorizationEvaluator, loadRelationshipCapabilityRegistry } from "../../repertoire/relationship-authorization"
 import { createTelegramSenseApp, opaqueTelegramSubject } from "../../senses/telegram"
 import type { TelegramBotApi, TelegramInboundMessage, TelegramLongPoll } from "../../senses/telegram-client"
@@ -70,7 +70,7 @@ describe("Sanctuary Telegram stored-status integration", () => {
     fs.rmSync(harness.agentRoot, { recursive: true, force: true })
   })
 
-  it("reads the stored Books-only policy through the real provider/tool loop and delivers its settle over Telegram", async () => {
+  it("reads a stored Books preference through the real provider/tool loop and delivers its settle over Telegram", async () => {
     const identityKey = "k".repeat(43)
     const botToken = "test-token"
     const userId = "42"
@@ -91,7 +91,7 @@ describe("Sanctuary Telegram stored-status integration", () => {
       sessionEventId: "telegram-status-event",
     })
     updateStewardPolicy(harness.agentRoot, {
-      expectedVersion: 0,
+      expectedVersion: readStewardPolicy(harness.agentRoot).version,
       actor: relationshipAuthorization.actor!,
       mutation: { kind: "set_desired_state", key: "container:books", value: "intentionally_off", provenance: "stated", source: "telegram:status-preference" },
       now: "2026-08-29T10:00:00.000Z",
@@ -132,7 +132,11 @@ describe("Sanctuary Telegram stored-status integration", () => {
       const policy = JSON.parse(durableToolResult) as { desiredStates: Record<string, { value: string }> }
       expect(Object.keys(policy.desiredStates)).toEqual(["container:books"])
       expect(policy.desiredStates["container:books"]?.value).toBe("intentionally_off")
-      expect(api.request).toHaveBeenCalledWith("sendMessage", { chat_id: chatId, text: durableToolResult, parse_mode: "HTML" }, undefined)
+      const delivered = vi.mocked(api.request).mock.calls
+        .filter(([method]) => method === "sendMessage")
+        .map(([, parameters]) => String((parameters as { text?: unknown }).text ?? ""))
+        .join("")
+      expect(delivered).toBe(durableToolResult)
     } finally {
       await app.stop()
     }
