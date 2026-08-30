@@ -37,7 +37,7 @@ const HEALTH_PROBE_ENTRY = "/opt/ouro/dist/senses/sanctuary-health-acceptance-pr
 const ACCEPTANCE_ADAPTER = "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh"
 const HEALTH_PROBE_TERM_GRACE_MS = 5_000
 const HEALTH_PROBE_KILL_GRACE_MS = 5_000
-const HEALTH_PROBE_LABELS = new Set(["unit-16f-cron-fingerprint", "unit-16g-health-transition", "unit-16h-daily-digest"])
+const HEALTH_PROBE_LABELS = new Set(["unit-16f-cron-fingerprint", "unit-16g-health-transition", "unit-16h-acceptance-delivery-probe"])
 const ASYNC_RESTART_SCENARIO = Symbol("asyncRestartScenario")
 const HEALTH_PROBE_RECEIPT_KEYS = [
   "schemaVersion", "label", "scenarioHandleDigest", "ownerImageDigestBefore", "ownerImageDigestAfter",

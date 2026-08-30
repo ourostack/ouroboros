@@ -2037,6 +2037,7 @@ Packaged Unit 16 acceptance execution:
   Never hand-author a Unit 16 config. Materialize it from the exact image, then
   execute it in the order below. Before every execution the launcher regenerates
   the config from the packaged fixed contract and requires byte-for-byte equality.
+  Unit 16d-2 stops at the pre-model quarantine boundary: use a genuinely distinct private Telegram sender, confirm the fixed acknowledgement and owner admission card, and do not approve the contact during this scenario. The production-identical allow-to-one-turn continuation is covered by the Telegram admission integration suite when a second live account is unavailable. Unit 16h is acceptance-only: it exercises the delivery path against isolated state, restores exact health and cron bytes, and does not activate a production daily digest.
   The cursor snapshot is deliberately materialized and executed twice around the
   live scenario. Telegram bootstrap reads the new bot token from host file
   descriptor 3; callback injection reads the reviewed saved callback-update JSON

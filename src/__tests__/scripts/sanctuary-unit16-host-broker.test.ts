@@ -921,16 +921,16 @@ describe("Sanctuary Unit 16 host broker", () => {
   it("constructs an exact argv-only packaged probe invocation", async () => {
     const { healthProbeDockerArgs } = await broker()
     expect(healthProbeDockerArgs("run", {
-      label: "unit-16h-daily-digest", scenarioHandleDigest: "a".repeat(64), ownerImageDigest: "b".repeat(64), ownerContainerDigest: "c".repeat(64),
+      label: "unit-16h-acceptance-delivery-probe", scenarioHandleDigest: "a".repeat(64), ownerImageDigest: "b".repeat(64), ownerContainerDigest: "c".repeat(64),
     })).toEqual([
       "exec", defaultTargetId, "/usr/local/bin/node", "/opt/ouro/dist/senses/sanctuary-health-acceptance-probe-entry.js", "run",
-      "--label", "unit-16h-daily-digest", "--scenario", "a".repeat(64), "--owner-image", "b".repeat(64), "--owner-container", "c".repeat(64),
+      "--label", "unit-16h-acceptance-delivery-probe", "--scenario", "a".repeat(64), "--owner-image", "b".repeat(64), "--owner-container", "c".repeat(64),
     ])
     expect(healthProbeDockerArgs("stop", {
-      label: "unit-16h-daily-digest", scenarioHandleDigest: "a".repeat(64), ownerImageDigest: "b".repeat(64), ownerContainerDigest: "c".repeat(64),
+      label: "unit-16h-acceptance-delivery-probe", scenarioHandleDigest: "a".repeat(64), ownerImageDigest: "b".repeat(64), ownerContainerDigest: "c".repeat(64),
     })).toEqual([
       "exec", defaultTargetId, "/usr/local/bin/node", "/opt/ouro/dist/senses/sanctuary-health-acceptance-probe-entry.js", "stop",
-      "--label", "unit-16h-daily-digest", "--scenario", "a".repeat(64), "--owner-image", "b".repeat(64), "--owner-container", "c".repeat(64),
+      "--label", "unit-16h-acceptance-delivery-probe", "--scenario", "a".repeat(64), "--owner-image", "b".repeat(64), "--owner-container", "c".repeat(64),
     ])
   })
 

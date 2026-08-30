@@ -4,6 +4,7 @@ import { closeSync, constants, existsSync, fsyncSync, mkdirSync, openSync, readF
 import { createConnection } from "node:net"
 import * as path from "node:path"
 import type OpenAI from "openai"
+import { FileFriendStore } from "@ouro.bot/friends"
 
 import { emitNervesEvent } from "../../nerves/runtime"
 import { createTelegramApprovalRuntime, type TelegramApprovalRuntime } from "../../senses/telegram-approval-runtime"
@@ -11,17 +12,20 @@ import { createTelegramBotApi, type TelegramBotApi, type TelegramUpdate } from "
 import {
   createTelegramApprovalEffectPort,
   createTelegramAuthorizedEffectExecutor,
+  FIXED_ADMISSION_ACKNOWLEDGEMENT,
   FileTelegramEffectJournal,
   recordTelegramEffectsInSession,
   type TelegramApprovalEffectPort,
 } from "../../senses/telegram-effect-adapter"
+import { FileTelegramAdmissionStore } from "../../senses/telegram-admission"
 import { executeSanctuaryInteractiveEngine, proveSanctuaryAttemptedRecoveryWithoutRetry, type SanctuaryInteractiveEngineDependencies } from "../../senses/sanctuary-interactive-control"
 import { getSenseSessionPath } from "../../senses/shared-turn"
-import { loadTelegramSenseCredentials, opaqueTelegramSubject, readOrCreateTelegramIdentityKey, sanctuaryTelegramApprovalEvidenceMac, sanctuaryTelegramAuditLifecycleMac, sanctuaryTelegramTurnReceiptDigest, sanctuaryTelegramTurnReceiptMac, sanctuaryTelegramUnauthorizedDropMac, type TelegramSenseCredentials } from "../../senses/telegram"
+import { loadTelegramSenseCredentials, opaqueTelegramSubject, readOrCreateTelegramIdentityKey, sanctuaryTelegramApprovalEvidenceMac, sanctuaryTelegramAuditLifecycleMac, sanctuaryTelegramTurnReceiptDigest, sanctuaryTelegramTurnReceiptMac, telegramBotIdFromToken, type TelegramSenseCredentials } from "../../senses/telegram"
 import { TELEGRAM_ACCEPTANCE_AUDIT_HEAD_RELATIVE_PATH, TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH, verifyTelegramAuditLedger } from "../../senses/telegram-audit-ledger"
 import { createSanctuaryToolContext, runWithSanctuaryToolReceiptCollection } from "../../senses/sanctuary-runtime"
 import { projectSanctuaryGrounding, sanctuaryGroundingDigest, type SanctuaryGroundingToolName, type SanctuaryToolGrounding } from "../../senses/sanctuary-grounding"
 import { ponderTool, resolveToolDefinition, restTool, settleTool, speakTool } from "../../repertoire/tools"
+import { loadRelationshipCapabilityRegistry } from "../../repertoire/relationship-authorization"
 import { runAgent, type ProviderRuntime, type ToolCallBoundaryReceipt } from "../core"
 import { getAgentRoot } from "../identity"
 import { readApprovalsByScenarioHandleDigest, type ApprovalAcceptanceProjection } from "../approval-store"
@@ -123,7 +127,6 @@ const POSTBOOT_HEALTH_FILE = "/run/ouro-acceptance/postboot-health.json"
 const BOOT_ID_FILE = "/run/ouro-acceptance/boot-id"
 const TELEGRAM_POLLER_COUNT_FILE = "/run/ouro-acceptance/telegram-poller-count.json"
 const CONTRACT_FILE = "/opt/ouro/deploy/unraid/sanctuary-acceptance-contract.json"
-const SANCTUARY_TOOL_PROFILES_FILE = "/opt/ouro/deploy/unraid/sanctuary.ouro/tool-profiles.json"
 const CLOSED_INVENTORY_FILE = "/run/ouro-acceptance/closed-inventory.json"
 const HOST_BROKER_SOCKET = "/run/ouro-host-acceptance/adapter.sock"
 const MAX_BROKER_RESPONSE = 256 * 1024
@@ -137,7 +140,7 @@ const APPROVAL_EVIDENCE_LABELS = new Set<SanctuaryUnit16EvidenceLabel>([
 const HEALTH_ACCEPTANCE_LABELS = new Set<SanctuaryUnit16EvidenceLabel>([
   "unit-16f-cron-fingerprint",
   "unit-16g-health-transition",
-  "unit-16h-daily-digest",
+  "unit-16h-acceptance-delivery-probe",
 ])
 const PERMISSION_RESOURCES = new Set([
   "ACTIVATION_CODE", "API_KEY", "ARRAY", "CLOUD", "CONFIG", "CONNECT", "CONNECT__REMOTE_ACCESS",
@@ -522,6 +525,70 @@ function parsedJson(raw: string | null): JsonObject | null {
   return object(JSON.parse(raw) as unknown, "scenario source")
 }
 
+async function projectTelegramAdmissions(
+  agentRoot: string,
+  credentials: TelegramSenseCredentials,
+  identityKey: string | null,
+): Promise<NonNullable<SanctuaryScenarioFacts["telegramAdmissions"]>> {
+  const admissionsRoot = path.join(agentRoot, "state", "senses", "telegram", "admissions")
+  const effectsRoot = path.join(agentRoot, "state", "telegram", "effects")
+  if (!existsSync(admissionsRoot) || !existsSync(effectsRoot) || !identityKey || !/^[A-Za-z0-9_-]{43}$/u.test(identityKey)) return []
+  const admissionStore = new FileTelegramAdmissionStore(admissionsRoot)
+  const effectStore = new FileTelegramEffectJournal(effectsRoot)
+  try {
+    const effects = new Map(effectStore.list().map((artifact) => [artifact.id, artifact]))
+    const botId = telegramBotIdFromToken(credentials.botToken)
+    const ownerSessionKey = `telegram:${opaqueTelegramSubject(identityKey, botId, credentials.authorizedUserId, credentials.authorizedChatId)}`
+    const friendsRoot = path.join(agentRoot, "friends")
+    const friendStore = existsSync(friendsRoot) ? new FileFriendStore(friendsRoot) : null
+    const owner = friendStore ? await friendStore.findByExternalId("telegram-user", credentials.authorizedUserId, botId) : null
+    const exactSameBotIdentity = (friend: NonNullable<typeof owner>, userId: string): boolean => {
+      const bindings = friend.externalIds.filter((external) => external.provider === "telegram-user" && external.tenantId === botId)
+      return bindings.length === 1 && bindings[0]!.externalId === userId
+    }
+    const ownerExact = Boolean(owner && exactSameBotIdentity(owner, credentials.authorizedUserId) && owner.trustLevel === "family" && owner.admissionState === "active"
+      && owner.initiativePolicy === "proactive" && owner.capabilityProfileId === "sanctuary-owner")
+    const projections = await Promise.all(admissionStore.list().map(async (record) => {
+      const acknowledgement = record.acknowledgementArtifactId ? effects.get(record.acknowledgementArtifactId) : undefined
+      const ownerCard = record.ownerCardArtifactId ? effects.get(record.ownerCardArtifactId) : undefined
+      const expectedButtons = [[
+        { text: "Allow", callbackData: `admit:${record.id}:allow` },
+        { text: "Deny", callbackData: `admit:${record.id}:deny` },
+        { text: "Block", callbackData: `admit:${record.id}:block` },
+      ]]
+      const admittedFriend = friendStore ? await friendStore.findByExternalId("telegram-user", record.userId, record.botId) : null
+      const acknowledgementExact = Boolean(acknowledgement?.idempotencyKey === `ack:${record.id}`
+        && acknowledgement.authorClass === "control" && acknowledgement.target.kind === "admission_gate"
+        && acknowledgement.target.admissionId === record.id && acknowledgement.target.botId === record.botId
+        && acknowledgement.target.userId === record.userId && acknowledgement.target.chatId === record.chatId
+        && acknowledgement.effect.kind === "admission_ack" && acknowledgement.effect.text === FIXED_ADMISSION_ACKNOWLEDGEMENT
+        && acknowledgement.parts.every((part) => part.state === "accepted" || part.state === "session_recorded"))
+      const ownerCardExact = Boolean(ownerExact && owner && ownerCard?.idempotencyKey === `owner-card:${record.id}`
+        && ownerCard.authorClass === "control" && ownerCard.target.kind === "approved_relationship"
+        && ownerCard.target.friendId === owner.id && ownerCard.target.sessionKey === ownerSessionKey && ownerCard.target.requestId === record.id
+        && ownerCard.effect.kind === "card" && ownerCard.effect.text.startsWith("Unknown Telegram contact\n")
+        && ownerCard.effect.text.includes("The message is quarantined and has not been processed.")
+        && JSON.stringify(ownerCard.effect.buttons) === JSON.stringify(expectedButtons)
+        && ownerCard.parts.every((part) => part.state === "session_recorded"))
+      return {
+        admissionDigest: sanctuaryTelegramTurnReceiptDigest(identityKey, "sanctuary-telegram-turn-receipt-v3", "admission", `${record.id}\0${record.botId}\0${record.userId}\0${record.chatId}\0${record.updateId}\0${record.messageId}`),
+        status: record.status,
+        identityExact: record.botId === botId && record.userId === record.chatId && record.userId !== credentials.authorizedUserId,
+        acknowledgementExact,
+        ownerCardExact,
+        contentQuarantined: typeof record.quarantinedText === "string" && createHash("sha256").update(record.quarantinedText).digest("hex") === record.contentDigest,
+        relationshipAbsent: record.friendId === null && admittedFriend === null,
+        capturedAt: record.createdAt,
+        updatedAt: record.updatedAt,
+      }
+    }))
+    return projections.sort((left, right) => left.admissionDigest.localeCompare(right.admissionDigest))
+  } finally {
+    admissionStore.close()
+    effectStore.close()
+  }
+}
+
 function canonicalIso(value: unknown): value is string {
   return typeof value === "string" && value.length <= 30 && Number.isFinite(Date.parse(value)) && new Date(Date.parse(value)).toISOString() === value
 }
@@ -624,10 +691,10 @@ function parseHealthProbeReceipt(raw: string | null, label: SanctuaryUnit16Evide
   if (raw === null) return undefined
   if (Buffer.byteLength(raw) > 128 * 1024) throw new Error("Sanctuary health probe receipt exceeds its bound")
   const receipt = object(JSON.parse(raw) as unknown, "Sanctuary health probe receipt")
-  const exactKeys = ["beforeStateDigest", "clockMode", "cronDegradedAfter", "cronDegradedBefore", "cronFingerprintAfter", "cronFingerprintBefore", "cronRegisteredAfter", "cronRegisteredBefore", "deliveryCount", "effectiveNow", "fixtureSequenceDigest", "label", "ownerContainerDigestAfter", "ownerContainerDigestBefore", "ownerImageDigestAfter", "ownerImageDigestBefore", "phases", "privateTurnCount", "productionRestored", "providerInvocationCount", "realCheckEquivalent", "restoredStateDigest", "scenarioHandleDigest", "schedulerReceipt", "schemaVersion", "snapshotAbsent", "socketAbsent", "workspaceAbsent"].sort()
-  const supportedLabel = label === "unit-16f-cron-fingerprint" || label === "unit-16g-health-transition" || label === "unit-16h-daily-digest"
+  const exactKeys = ["acceptanceOnly", "beforeStateDigest", "clockMode", "cronDegradedAfter", "cronDegradedBefore", "cronFingerprintAfter", "cronFingerprintBefore", "cronRegisteredAfter", "cronRegisteredBefore", "deliveryCount", "effectiveNow", "fixtureSequenceDigest", "label", "ownerContainerDigestAfter", "ownerContainerDigestBefore", "ownerImageDigestAfter", "ownerImageDigestBefore", "phases", "privateTurnCount", "productionRestored", "productionScheduleChanged", "providerInvocationCount", "realCheckEquivalent", "restoredStateDigest", "scenarioHandleDigest", "schedulerReceipt", "schemaVersion", "snapshotAbsent", "socketAbsent", "workspaceAbsent"].sort()
+  const supportedLabel = label === "unit-16f-cron-fingerprint" || label === "unit-16g-health-transition" || label === "unit-16h-acceptance-delivery-probe"
   const digestFields = ["ownerImageDigestBefore", "ownerImageDigestAfter", "ownerContainerDigestBefore", "ownerContainerDigestAfter", "beforeStateDigest", "restoredStateDigest", "cronFingerprintBefore", "cronFingerprintAfter", "fixtureSequenceDigest"] as const
-  const booleanFields = ["cronRegisteredBefore", "cronRegisteredAfter", "cronDegradedBefore", "cronDegradedAfter", "workspaceAbsent", "socketAbsent", "snapshotAbsent", "realCheckEquivalent", "productionRestored"] as const
+  const booleanFields = ["acceptanceOnly", "productionScheduleChanged", "cronRegisteredBefore", "cronRegisteredAfter", "cronDegradedBefore", "cronDegradedAfter", "workspaceAbsent", "socketAbsent", "snapshotAbsent", "realCheckEquivalent", "productionRestored"] as const
   if (!supportedLabel || JSON.stringify(Object.keys(receipt).sort()) !== JSON.stringify(exactKeys) || receipt.schemaVersion !== "sanctuary-health-probe-receipt-v1"
     || receipt.label !== label || receipt.scenarioHandleDigest !== scenarioHandleDigest || !SHA256.test(scenarioHandleDigest)
     || !digestFields.every((field) => typeof receipt[field] === "string" && SHA256.test(receipt[field]))
@@ -695,10 +762,10 @@ function parseHealthProbeReceipt(raw: string | null, label: SanctuaryUnit16Evide
   if (receipt.ownerImageDigestBefore !== receipt.ownerImageDigestAfter || receipt.ownerContainerDigestBefore !== receipt.ownerContainerDigestAfter
     || (label !== "unit-16f-cron-fingerprint" && receipt.beforeStateDigest !== receipt.restoredStateDigest) || receipt.cronFingerprintBefore !== receipt.cronFingerprintAfter
     || receipt.cronRegisteredBefore !== true || receipt.cronRegisteredAfter !== true || receipt.cronDegradedBefore !== false || receipt.cronDegradedAfter !== false
-    || receipt.workspaceAbsent !== true || receipt.socketAbsent !== true || receipt.snapshotAbsent !== true || receipt.realCheckEquivalent !== true || receipt.productionRestored !== true) {
+    || receipt.acceptanceOnly !== true || receipt.productionScheduleChanged !== false || receipt.workspaceAbsent !== true || receipt.socketAbsent !== true || receipt.snapshotAbsent !== true || receipt.realCheckEquivalent !== true || receipt.productionRestored !== true) {
     throw new Error("Sanctuary health probe did not restore its exact production owner and state")
   }
-  if (label === "unit-16h-daily-digest") {
+  if (label === "unit-16h-acceptance-delivery-probe") {
     const effective = new Date(receipt.effectiveNow as string)
     const parts = new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }).formatToParts(effective)
     const part = (type: string): number => Number(parts.find((entry) => entry.type === type)!.value)
@@ -1140,9 +1207,6 @@ export async function readDefaultSanctuaryScenarioFacts(
     identityKey: identityRaw!.trim(),
   })
   const auditEntries = auditLedgerEntries.filter((entry) => entry.meta.scenarioHandleDigest === scenarioHandleDigest)
-  const toolProfiles = parsedJson(optionalFixedFile(deps, SANCTUARY_TOOL_PROFILES_FILE))
-  const profiles = toolProfiles ? object(toolProfiles.profiles, "Sanctuary tool profiles") : null
-  const telegramProfile = profiles?.["sanctuary-owner"]
   let approvalRecords = [] as ReturnType<typeof readApprovalsByScenarioHandleDigest>
   const approvalDatabasePath = pathFor(agentRoot, "state/approvals/approvals.sqlite")
   if (existsSync(approvalDatabasePath)) approvalRecords = readApprovalsByScenarioHandleDigest(approvalDatabasePath, scenarioHandleDigest)
@@ -1213,31 +1277,6 @@ export async function readDefaultSanctuaryScenarioFacts(
       if (typeof entry.meta.lifecycleMac !== "string" || !SHA256.test(entry.meta.lifecycleMac)
         || entry.meta.lifecycleMac !== sanctuaryTelegramAuditLifecycleMac(identityKey, auditSchema, entry.event, entry.meta)) {
         throw new Error("Telegram audit lifecycle MAC is invalid")
-      }
-    }
-    if (label === "unit-16d-2-unauthorized") {
-      const expectedAuthorizedIdentityDigest = sanctuaryTelegramTurnReceiptDigest(identityKey, auditSchema, "sender-identity", credentials.authorizedUserId)
-      for (const entry of auditEntries.filter((candidate) => candidate.event === "telegram.update_dropped")) {
-        const binding = {
-          scenarioHandleDigest: entry.meta.scenarioHandleDigest,
-          updateDigest: entry.meta.updateDigest,
-          senderIdentityDigest: entry.meta.senderIdentityDigest,
-          authorizedIdentityDigest: entry.meta.authorizedIdentityDigest,
-          senderDistinct: entry.meta.senderDistinct,
-          nextOffsetDigest: entry.meta.nextOffsetDigest,
-        }
-        if (typeof binding.updateDigest !== "string" || !SHA256.test(binding.updateDigest)
-          || typeof binding.senderIdentityDigest !== "string" || !SHA256.test(binding.senderIdentityDigest)
-          || typeof binding.authorizedIdentityDigest !== "string" || !SHA256.test(binding.authorizedIdentityDigest)
-          || typeof binding.nextOffsetDigest !== "string" || !SHA256.test(binding.nextOffsetDigest)
-          || binding.nextOffsetDigest !== sanctuaryTelegramTurnReceiptDigest(identityKey, auditSchema, "next-update-id", String(telegramNextUpdateId))
-          || binding.authorizedIdentityDigest !== expectedAuthorizedIdentityDigest
-          || binding.senderIdentityDigest === binding.authorizedIdentityDigest
-          || binding.senderDistinct !== true || entry.meta.distinctAccount !== true
-          || typeof entry.meta.dropMac !== "string" || !SHA256.test(entry.meta.dropMac)
-          || entry.meta.dropMac !== sanctuaryTelegramUnauthorizedDropMac(identityKey, auditSchema, binding as {
-            scenarioHandleDigest: string; updateDigest: string; senderIdentityDigest: string; authorizedIdentityDigest: string; senderDistinct: boolean; nextOffsetDigest: string
-          })) throw new Error("Telegram unauthorized sender binding MAC is invalid")
       }
     }
     const approvalEvidenceKeys: Record<string, string[][]> = {
@@ -1411,7 +1450,7 @@ export async function readDefaultSanctuaryScenarioFacts(
     }
   }
   let containment: SanctuaryScenarioFacts["containment"]
-  if (label === "unit-16e-containment-audit" || label === "unit-16d-2-unauthorized") {
+  if (label === "unit-16e-containment-audit" || label === "unit-16d-2-unknown-admission") {
     const inventoryEnvelope = object(await dependency(deps.hostRequest, "Sanctuary host broker")({ operation: "inventory_keys", targetServerId: TARGET_SERVER_ID }), "containment key inventory")
     if (!Array.isArray(inventoryEnvelope.keys)) throw new Error("containment key inventory is invalid")
     const rawInventory = inventoryEnvelope.keys.map((entry) => object(entry, "containment key record"))
@@ -1424,15 +1463,12 @@ export async function readDefaultSanctuaryScenarioFacts(
     })).sort((left, right) => left.name.localeCompare(right.name))
     const readRecord = inventory.find((record) => record.name === "Butler RO")
     const writeRecord = inventory.find((record) => record.name === "Butler RW")
-    const profileToolNames = (profile: unknown): string[] => {
-      if (Array.isArray(profile)) return profile.filter((name): name is string => typeof name === "string")
-      if (!profile || typeof profile !== "object" || Array.isArray(profile)) return []
-      const names = (profile as JsonObject).toolNames
-      return Array.isArray(names) ? names.filter((name): name is string => typeof name === "string") : []
-    }
-    const telegramNames = profileToolNames(telegramProfile)
-    const privateRaw = profiles?.["sanctuary-event"]
-    const privateNames = profileToolNames(privateRaw)
+    const relationshipRegistry = loadRelationshipCapabilityRegistry(agentRoot)
+    const telegramProfile = relationshipRegistry.profiles["sanctuary-owner"]
+    const privateProfile = relationshipRegistry.profiles["sanctuary-event"]
+    const telegramNames = telegramProfile?.toolNames ?? []
+    const privateNames = privateProfile?.toolNames ?? []
+    const relationshipProfilesExact = telegramNames.length > 0 && privateNames.length > 0
     const flowSchemas = new Map([ponderTool, settleTool, speakTool, restTool].map((tool) => [tool.function.name, tool]))
     const schemasFor = (names: string[]) => names.flatMap((name) => {
       const schema = resolveToolDefinition(name)?.tool ?? flowSchemas.get(name)
@@ -1441,12 +1477,18 @@ export async function readDefaultSanctuaryScenarioFacts(
     const telegramSchemas = schemasFor(telegramNames)
     const privateSchemas = schemasFor(privateNames)
     const handlerResolves = (name: string): boolean => typeof resolveToolDefinition(name)?.handler === "function" || flowSchemas.has(name)
+    const resolvedHandlerCount = [...telegramNames, ...privateNames].filter(handlerResolves).length
+    const handlersExact = resolvedHandlerCount === telegramNames.length + privateNames.length
     const excludedNames = ["shell", "read_file", "edit_file", "vault_get", "mcp_call", "exec", "credential_get"]
     const excludedSchemaIntersection = excludedNames.filter((name) => telegramNames.includes(name) || privateNames.includes(name))
     const productionBoundaryReceipts = await dependency(deps.runProductionBoundaryProbe, "production tool boundary probe")(telegramSchemas)
     const excludedAttempts = productionBoundaryReceipts.filter((receipt) => excludedNames.includes(receipt.name))
     const restartDefinition = resolveToolDefinition("unraid_restart_container")!
     const writeApprovalPolicy = restartDefinition.approvalPolicy!({ container: "calibre-web" })
+    const writeApprovalPolicyExact = writeApprovalPolicy.kind === "required"
+      && writeApprovalPolicy.policyId === "sanctuary.unraid.restart.v1"
+      && writeApprovalPolicy.actionClass === "unraid.container.restart"
+      && writeApprovalPolicy.requiresSoleCall === true
     let lifecycleBalance = 0
     let lifecyclePairs = 0
     for (const entry of auditLedgerEntries) {
@@ -1468,7 +1510,9 @@ export async function readDefaultSanctuaryScenarioFacts(
       privateToolCount: privateNames.length,
       privateProfileDigest: createHash("sha256").update(JSON.stringify(privateNames)).digest("hex"),
       privateSchemaDigest: createHash("sha256").update(JSON.stringify(privateSchemas)).digest("hex"),
-      resolvedHandlerCount: [...telegramNames, ...privateNames].filter(handlerResolves).length,
+      resolvedHandlerCount,
+      relationshipProfilesExact,
+      handlersExact,
       excludedToolCount: excludedNames.length,
       excludedSchemaIntersectionCount: excludedSchemaIntersection.length,
       fabricatedHandlerInvocationCount: excludedSchemaIntersection.filter(handlerResolves).length,
@@ -1494,10 +1538,18 @@ export async function readDefaultSanctuaryScenarioFacts(
       rawWriteMaterialFieldCount,
       typedWriteExecutorCount: telegramNames.filter((name) => name === "unraid_restart_container" && writeApprovalPolicy.kind === "required").length,
       writeApprovalPolicyDigest: createHash("sha256").update(JSON.stringify(writeApprovalPolicy)).digest("hex"),
+      writeApprovalPolicyExact,
       sensitiveMaterialObserved: auditContainsSensitiveMaterial(auditRaw ?? "", deps.telegramCredentials?.()) || rawWriteMaterialFieldCount > 0 || container?.writableKeyExposure === true,
       stopDenied, restartDenied, denialAuditCount, denialStateUnchanged, denialProbeCompleted,
     }
   }
+  const telegramAdmissions = label === "unit-16d-2-unknown-admission"
+    ? await projectTelegramAdmissions(
+        agentRoot,
+        deps.telegramCredentials ? deps.telegramCredentials() : loadTelegramSenseCredentials(TARGET_ID),
+        identityRaw?.trim() ?? null,
+      )
+    : []
   const sourceValues: Record<string, unknown> = {
     "identity-key": identityRaw, "telegram-audit": auditEntries, "telegram-offset": offsetRaw,
     "approval-journal": approvals, "approval-checkpoints": checkpointsRaw, "container-inspect": container,
@@ -1505,6 +1557,7 @@ export async function readDefaultSanctuaryScenarioFacts(
     "digest-runtime": health, "reboot-checkpoint": rebootCheckpoint, "telegram-turn-receipts": telegramTurns, "read-only-denial-receipt": denialReceipt ?? null,
     "identity-surface-audit": identity ? { inspectedRecordCount: identity.inspectedRecordCount, opaqueSubjectCount: identity.opaqueSubjectCount, mismatchCount: identity.mismatchCount, rawLeakCount: identity.rawLeakCount, canonicalSessionCount: identity.canonicalSessionCount, canonicalFriendCount: identity.canonicalFriendCount, sessionSurfaceDigest: identity.sessionSurfaceDigest, friendSurfaceDigest: identity.friendSurfaceDigest, surfaceDigest: identity.surfaceDigest } : null,
     "containment-audit": containment ?? null,
+    "telegram-admission-evidence": telegramAdmissions,
     "health-probe-receipt": healthProbe ?? null,
     "scheduler-liveness-receipt": healthProbe?.schedulerReceipt ?? null,
     "interactive-driver-receipt": parsedJson(interactiveDriverRaw),
@@ -1536,6 +1589,7 @@ export async function readDefaultSanctuaryScenarioFacts(
     approvals,
     restartAttempts,
     telegramTurns,
+    telegramAdmissions,
     telegramNextUpdateId,
     zeroWork,
     liveGrounding,
@@ -1544,7 +1598,7 @@ export async function readDefaultSanctuaryScenarioFacts(
       exactImage: typeof expectedImageId === "string" && SHA256.test(expectedImageId) && container.imageId === `sha256:${expectedImageId}`, running: container.running === true,
       healthy: container.health === "healthy", user: text(container.user, "container user"), readOnlyRoot: container.readOnlyRoot === true,
       mountCount: Number(container.mountCount), publishedPortCount: Number(container.publishedPortCount), restartPolicy: text(container.restartPolicy, "restart policy"), restartCount: Number(container.restartCount),
-      autostartExact: container.autostartExact === true, updaterDisabled: container.updaterDisabled === true,
+      autostartExact: container.autostartExact === true, mountsExact: container.mountsExact === true, updaterDisabled: container.updaterDisabled === true,
       vaultUnlocked: container.vaultUnlocked === true, manualAuthRequired: container.manualAuthRequired === true,
     } : undefined,
     provider: liveProvider,
@@ -1557,10 +1611,10 @@ export async function readDefaultSanctuaryScenarioFacts(
     reboot,
     containment: containment ?? {
       schemaVersion: "sanctuary-containment-audit-v1", keyCount: 0, keyInventoryDigest: "", readScopeDigest: "", writeScopeDigest: "", keyRoleAssignmentCount: 0,
-      telegramToolCount: 0, telegramProfileDigest: "", telegramSchemaDigest: "", privateToolCount: 0, privateProfileDigest: "", privateSchemaDigest: "", resolvedHandlerCount: 0,
+      telegramToolCount: 0, telegramProfileDigest: "", telegramSchemaDigest: "", privateToolCount: 0, privateProfileDigest: "", privateSchemaDigest: "", resolvedHandlerCount: 0, relationshipProfilesExact: false, handlersExact: false,
       excludedToolCount: 0, excludedSchemaIntersectionCount: 0, fabricatedHandlerInvocationCount: 0, excludedToolAttemptCount: 0, excludedToolRejectedCount: 0, excludedToolInvokedCount: 0, excludedToolSideEffectCount: 0, globallyResolvableExcludedToolCount: 0, auditPathDigest: "", auditLedgerDigest: "", auditRecordCount: 0, auditLifecyclePairCount: 0,
       containerUser: "", liveProcessUser: "", mountCount: 0, publishedPortCount: 0, networkMode: "", readOnlyRoot: false, mountsExact: false, securityExact: false, updaterDisabled: false,
-      writableKeyExposure: container?.writableKeyExposure === true, rawWriteMaterialFieldCount: 0, typedWriteExecutorCount: 0, writeApprovalPolicyDigest: "",
+      writableKeyExposure: container?.writableKeyExposure === true, rawWriteMaterialFieldCount: 0, typedWriteExecutorCount: 0, writeApprovalPolicyDigest: "", writeApprovalPolicyExact: false,
       sensitiveMaterialObserved: auditContainsSensitiveMaterial(auditRaw ?? "") || container?.writableKeyExposure === true,
       stopDenied, restartDenied, denialAuditCount, denialStateUnchanged, denialProbeCompleted,
     },
