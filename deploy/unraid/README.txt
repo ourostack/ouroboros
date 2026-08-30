@@ -2,8 +2,9 @@ Mendelow Cloud Butler operator runbook
 
 The production container is ouro-butler. It runs as UID/GID 10001, publishes no
 ports, uses host networking only so its loopback-only Unraid GraphQL client can
-reach 127.0.0.1, mounts only the runtime and sanctuary.ouro bundle paths from
-the Unraid template, and uses restart policy unless-stopped.
+reach 127.0.0.1, mounts the runtime and sanctuary.ouro bundle read-write plus
+the privileged event spool and SAB configuration read-only, and uses restart
+policy unless-stopped.
 
 Start/stop:
   docker start ouro-butler
@@ -1128,9 +1129,13 @@ Update:
     docker image inspect "$IMAGE_ID" >/dev/null
     AUDIT_RUNNER_IMAGE_ID=$IMAGE_ID
     validate_exact_image_id "$AUDIT_RUNNER_IMAGE_ID"
-  Before stopping, renaming, or creating any Butler container, extract the packaged event assets from that exact image ID and install them transactionally. Do not copy these files from a checkout or another image:
+  Before stopping, renaming, or creating any Butler container, extract the packaged event, template, and runtime-policy assets from that exact image ID. Install the event assets transactionally, bind the staged template to the exact local image ID, and audit both staged deployment files. Do not copy these files from a checkout or another image:
     EVENT_ASSET_STAGE=$(mktemp -d /mnt/user/appdata/ouro-butler/staging/ouro-events.XXXXXX)
     chmod 0700 "$EVENT_ASSET_STAGE"
+    EVENT_SCRIPT_STAGE="$EVENT_ASSET_STAGE/ouro-events"
+    mkdir "$EVENT_SCRIPT_STAGE"
+    STAGED_TEMPLATE="$EVENT_ASSET_STAGE/sanctuary.xml"
+    STAGED_RUNTIME_POLICY="$EVENT_ASSET_STAGE/container-runtime.json"
     EVENT_ASSET_CONTAINER=
     cleanup_event_asset_stage() {
       if test -n "$EVENT_ASSET_CONTAINER"; then
@@ -1141,14 +1146,22 @@ Update:
     trap cleanup_event_asset_stage EXIT
     EVENT_ASSET_CONTAINER=$(docker create --pull=never --network none --read-only --entrypoint /bin/false "$IMAGE_ID")
     test "$(docker inspect --format '{{.Image}}' "$EVENT_ASSET_CONTAINER")" = "$IMAGE_ID"
-    docker cp "$EVENT_ASSET_CONTAINER:/opt/ouro/deploy/unraid/ouro-events/." "$EVENT_ASSET_STAGE/"
+    docker cp "$EVENT_ASSET_CONTAINER:/opt/ouro/deploy/unraid/ouro-events/." "$EVENT_SCRIPT_STAGE/"
+    docker cp "$EVENT_ASSET_CONTAINER:/opt/ouro/deploy/unraid/sanctuary.xml" "$STAGED_TEMPLATE"
+    docker cp "$EVENT_ASSET_CONTAINER:/opt/ouro/deploy/unraid/container-runtime.json" "$STAGED_RUNTIME_POLICY"
     docker rm "$EVENT_ASSET_CONTAINER"
     EVENT_ASSET_CONTAINER=
+    EXPECTED_RELEASE_ASSETS=$(printf '%s\n' container-runtime.json ouro-events sanctuary.xml)
+    ACTUAL_RELEASE_ASSETS=$(find "$EVENT_ASSET_STAGE" -mindepth 1 -maxdepth 1 -exec basename {} \; | LC_ALL=C sort)
+    test "$ACTUAL_RELEASE_ASSETS" = "$EXPECTED_RELEASE_ASSETS"
+    test -d "$EVENT_SCRIPT_STAGE" && test ! -L "$EVENT_SCRIPT_STAGE"
+    test -f "$STAGED_TEMPLATE" && test ! -L "$STAGED_TEMPLATE"
+    test -f "$STAGED_RUNTIME_POLICY" && test ! -L "$STAGED_RUNTIME_POLICY"
     EXPECTED_EVENT_ASSETS=$(printf '%s\n' bootstrap-spool.sh emit-event.mjs emit-usenet-event.sh install-usenet-guard.sh usenet-health.sh)
-    ACTUAL_EVENT_ASSETS=$(find "$EVENT_ASSET_STAGE" -mindepth 1 -maxdepth 1 -type f -exec basename {} \; | LC_ALL=C sort)
+    ACTUAL_EVENT_ASSETS=$(find "$EVENT_SCRIPT_STAGE" -mindepth 1 -maxdepth 1 -type f -exec basename {} \; | LC_ALL=C sort)
     test "$ACTUAL_EVENT_ASSETS" = "$EXPECTED_EVENT_ASSETS"
-    test -z "$(find "$EVENT_ASSET_STAGE" -mindepth 1 -maxdepth 1 \( -type l -o ! -type f \) -print -quit)"
-    /bin/bash "$EVENT_ASSET_STAGE/install-usenet-guard.sh" --source-root "$EVENT_ASSET_STAGE"
+    test -z "$(find "$EVENT_SCRIPT_STAGE" -mindepth 1 -maxdepth 1 \( -type l -o ! -type f \) -print -quit)"
+    /bin/bash "$EVENT_SCRIPT_STAGE/install-usenet-guard.sh" --source-root "$EVENT_SCRIPT_STAGE"
     /bin/bash /boot/config/custom/ouro-events/install-usenet-guard.sh --boot --install-root /boot/config/custom
     verify_installed_usenet_guard() {
       test "$(stat -c '%u:%g:%a' /boot/config/custom/usenet_health.sh)" = 0:0:600
@@ -1156,11 +1169,11 @@ Update:
       test "$(stat -c '%u:%g:%a' /boot/config/custom/ouro-events/emit-event.mjs)" = 0:0:600
       test "$(stat -c '%u:%g:%a' /boot/config/custom/ouro-events/emit-usenet-event.sh)" = 0:0:600
       test "$(stat -c '%u:%g:%a' /boot/config/custom/ouro-events/install-usenet-guard.sh)" = 0:0:600
-      cmp -s "$EVENT_ASSET_STAGE/usenet-health.sh" /boot/config/custom/usenet_health.sh
-      cmp -s "$EVENT_ASSET_STAGE/bootstrap-spool.sh" /boot/config/custom/ouro-events/bootstrap-spool.sh
-      cmp -s "$EVENT_ASSET_STAGE/emit-event.mjs" /boot/config/custom/ouro-events/emit-event.mjs
-      cmp -s "$EVENT_ASSET_STAGE/emit-usenet-event.sh" /boot/config/custom/ouro-events/emit-usenet-event.sh
-      cmp -s "$EVENT_ASSET_STAGE/install-usenet-guard.sh" /boot/config/custom/ouro-events/install-usenet-guard.sh
+      cmp -s "$EVENT_SCRIPT_STAGE/usenet-health.sh" /boot/config/custom/usenet_health.sh
+      cmp -s "$EVENT_SCRIPT_STAGE/bootstrap-spool.sh" /boot/config/custom/ouro-events/bootstrap-spool.sh
+      cmp -s "$EVENT_SCRIPT_STAGE/emit-event.mjs" /boot/config/custom/ouro-events/emit-event.mjs
+      cmp -s "$EVENT_SCRIPT_STAGE/emit-usenet-event.sh" /boot/config/custom/ouro-events/emit-usenet-event.sh
+      cmp -s "$EVENT_SCRIPT_STAGE/install-usenet-guard.sh" /boot/config/custom/ouro-events/install-usenet-guard.sh
       test "$(grep -Fxc '/bin/bash /boot/config/custom/ouro-events/install-usenet-guard.sh --boot --install-root /boot/config/custom' /boot/config/go)" = 1
       test "$(grep -Fxc '/boot/config/custom/ouro-events/bootstrap-spool.sh --mount' /boot/config/go || true)" = 0
       INSTALLED_GUARD_CRON=$(crontab -l)
@@ -1175,8 +1188,18 @@ Update:
       test "$INSTALLED_SPOOL_SIZE" -le 4194304
     }
     verify_installed_usenet_guard
-    cleanup_event_asset_stage
-    trap - EXIT
+    /usr/local/bin/node -e '
+      const fs = require("node:fs");
+      const [templatePath, imageId] = process.argv.slice(1);
+      if (!/^sha256:[0-9a-f]{64}$/.test(imageId)) throw new Error("invalid exact image ID");
+      const source = fs.readFileSync(templatePath, "utf8");
+      const repositories = [...source.matchAll(/<Repository>[^<]*<\/Repository>/g)];
+      if (repositories.length !== 1) throw new Error("template must contain exactly one Repository element");
+      const staged = source.replace(repositories[0][0], `<Repository>${imageId}</Repository>`);
+      if ((staged.match(/<Repository>[^<]*<\/Repository>/g) ?? []).length !== 1
+        || !staged.includes(`<Repository>${imageId}</Repository>`)) throw new Error("exact Repository staging failed");
+      fs.writeFileSync(templatePath, staged);
+    ' "$STAGED_TEMPLATE" "$IMAGE_ID"
   If extraction, transactional installation, boot activation, or verification fails, abort the update before any Butler mutation. The installer restores the previous assets, go file, and cron on transactional failure; production stays running. If boot activation or verification fails after the transaction commits, leave production untouched, repair or rerun this exact-image installation, and do not continue. Container rollback begins only after the later production stop succeeds.
   Initial install/adoption is a separate terminal path for the verified live
   legacy state: no production or rollback, exactly one running (possibly
@@ -1229,19 +1252,17 @@ Update:
       (exit "$UPDATE_PREFLIGHT_STATUS")
     fi
     assert_update_source "$ROLLBACK_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"
-  Only after that topology gate, stage copies of the packaged template and
-  runtime policy at these paths:
-    STAGED_TEMPLATE=/mnt/user/appdata/ouro-butler/staging/sanctuary.xml
-    STAGED_RUNTIME_POLICY=/mnt/user/appdata/ouro-butler/staging/container-runtime.json
-  Replace sha256:REPLACE_WITH_EXACT_LOCAL_IMAGE_ID in the staged template at
-  $STAGED_TEMPLATE with exactly $IMAGE_ID. Before docker create, run the
-  packaged auditor from that exact image ID with both staged inputs mounted
-  read-only:
+  The earlier exact-image asset stage has already replaced the template's sole
+  Repository element with $IMAGE_ID. After the topology and source gates pass,
+  audit the staged template and runtime policy with the packaged auditor, then
+  remove the private stage before any Butler mutation:
     docker run --rm --pull=never --network=none \
       --entrypoint /opt/ouro/deploy/unraid/audit-container-spec.sh \
       --mount "type=bind,src=$STAGED_TEMPLATE,dst=/audit/sanctuary.xml,readonly" \
       --mount "type=bind,src=$STAGED_RUNTIME_POLICY,dst=/audit/container-runtime.json,readonly" \
       "$IMAGE_ID" --template /audit/sanctuary.xml --runtime-policy /audit/container-runtime.json --expected-image "$IMAGE_ID"
+    cleanup_event_asset_stage
+    trap - EXIT
   Guard the atomic autostart disable separately. If it fails, production has not
   been touched and the captured status is propagated:
     if disable_butler_autostart; then
