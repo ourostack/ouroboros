@@ -36,6 +36,7 @@ const mockGetDefaultHealthPath = vi.fn(() => "/tmp/fake-health-path/daemon-healt
 const mockGetToolsForChannel = vi.fn()
 const mockSendTelegramExternalEventDecision = vi.hoisted(() => vi.fn())
 const mockHasActiveExternalEventAwait = vi.hoisted(() => vi.fn(() => false))
+const mockRelationshipSubjectFriendId = vi.hoisted(() => ({ value: null as string | null }))
 
 vi.mock("../../mind/prompt", () => ({
   buildSystem: (...args: any[]) => mockBuildSystem(...args),
@@ -144,6 +145,19 @@ vi.mock("../../repertoire/tools-awaiting", async (importOriginal) => ({
   hasActiveExternalEventAwait: (...args: any[]) => mockHasActiveExternalEventAwait(...args),
 }))
 
+vi.mock("../../repertoire/relationship-authorization", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../repertoire/relationship-authorization")>()
+  return {
+    ...actual,
+    createRelationshipAuthorizationEvaluator: (...args: Parameters<typeof actual.createRelationshipAuthorizationEvaluator>) => {
+      const evaluator = actual.createRelationshipAuthorizationEvaluator(...args)
+      return mockRelationshipSubjectFriendId.value
+        ? { ...evaluator, subject: { ...evaluator.subject, friendId: mockRelationshipSubjectFriendId.value } }
+        : evaluator
+    },
+  }
+})
+
 vi.mock("../../senses/telegram", () => ({
   sendTelegramExternalEventDecision: (...args: any[]) => mockSendTelegramExternalEventDecision(...args),
 }))
@@ -193,6 +207,7 @@ describe("private runtime", () => {
     resetProviderCredentialCache()
     privateDecisionCounter = 0
     mockHasActiveExternalEventAwait.mockReset().mockReturnValue(false)
+    mockRelationshipSubjectFriendId.value = null
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "private-runtime-test-"))
     sessionFile = path.join(tmp, "private-runtime-session.json")
     agentRoot = path.join(tmp, "agent-root")
@@ -2438,6 +2453,30 @@ describe("private runtime", () => {
     expect(fs.readFileSync(path.join(agentRoot, "awaiting", ".done", "orphan.md"), "utf8")).toContain("cancel_reason: external event disposition is no longer active")
   })
 
+  it("terminally cancels an external-event await whose relationship is not the owner profile", async () => {
+    fs.writeFileSync(path.join(agentRoot, "tool-profiles.json"), JSON.stringify({ version: 2, profiles: {
+      "sanctuary-household": { version: 1, contextScopes: [], toolNames: ["resolve_await"], effectScopes: [] },
+      "sanctuary-event": { version: 1, contextScopes: [], toolNames: ["resolve_await"], effectScopes: [] },
+    } }))
+    const friendStore = new FileFriendStore(path.join(agentRoot, "friends"))
+    await friendStore.put("relative", { id: "relative", name: "Relative", trustLevel: "friend", admissionState: "active", initiativePolicy: "request_follow_up_only", capabilityProfileId: "sanctuary-household", externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: "2026-08-29T00:00:00.000Z", updatedAt: "2026-08-29T00:00:00.000Z", schemaVersion: 1 })
+    fs.mkdirSync(path.join(agentRoot, "awaiting"), { recursive: true })
+    fs.writeFileSync(path.join(agentRoot, "awaiting", "wrong-owner.md"), "---\ncondition: wake\ncadence: 5m\nwake_at: 2026-08-30T17:00:00.000Z\nstatus: pending\nfiled_from: external-event\nfiled_for_friend_id: relative\nfiled_from_key: /events/wrong-owner.json\nrequest_id: null\n---\n", "utf8")
+    mockHasActiveExternalEventAwait.mockReturnValue(true)
+
+    await expect(runApprovedPrivateRuntimeTurn({ reason: "await", awaitName: "wrong-owner", now: () => new Date("2026-08-30T17:00:00.000Z") })).rejects.toThrow(/admission or profile is not active/u)
+    expect(mockHandleInboundTurn).not.toHaveBeenCalled()
+    expect(fs.readFileSync(path.join(agentRoot, "awaiting", ".done", "wrong-owner.md"), "utf8")).toContain("status: canceled")
+  })
+
+  it("rejects invalid request-bound await provenance before resolving authority", async () => {
+    fs.mkdirSync(path.join(agentRoot, "awaiting"), { recursive: true })
+    fs.writeFileSync(path.join(agentRoot, "awaiting", "invalid-route.md"), "---\ncondition: wake\ncadence: 5m\nstatus: pending\nfiled_from: bluebubbles\nfiled_for_friend_id: relative\nfiled_from_key: chat:1\nrequest_id: request-1\n---\n", "utf8")
+
+    await expect(runApprovedPrivateRuntimeTurn({ reason: "await", awaitName: "invalid-route", now: () => new Date("2026-08-30T17:00:00.000Z") })).rejects.toThrow(/provenance is invalid/u)
+    expect(mockHandleInboundTurn).not.toHaveBeenCalled()
+  })
+
   it.each(["missing", "revoked", "profile-missing", "legacy", "obligation-missing", "fulfilled", "expired"] as const)("fails closed before the model for a %s relationship await", async (state) => {
     fs.writeFileSync(path.join(agentRoot, "tool-profiles.json"), JSON.stringify({ version: 2, profiles: {
       "sanctuary-household": { version: 3, contextScopes: ["own_requests"], toolNames: ["await_condition", "resolve_await"], effectScopes: ["telegram.request_return"] },
@@ -2483,6 +2522,27 @@ describe("private runtime", () => {
     await expect(runApprovedPrivateRuntimeTurn({ reason: "await", awaitName: "repair", now: () => new Date("2026-08-29T00:05:00.000Z") })).rejects.toThrow()
     expect(fs.existsSync(path.join(agentRoot, "awaiting", "repair.md"))).toBe(true)
     expect(fs.existsSync(path.join(agentRoot, "awaiting", ".done", "repair.md"))).toBe(false)
+  })
+
+  it.each(["friend-record-mismatch", "authorization-subject-mismatch"] as const)("fails closed on defensive %s relationship authority corruption", async (state) => {
+    fs.writeFileSync(path.join(agentRoot, "tool-profiles.json"), JSON.stringify({ version: 2, profiles: {
+      "sanctuary-household": { version: 3, contextScopes: ["own_requests"], toolNames: ["resolve_await"], effectScopes: ["telegram.request_return"] },
+    } }))
+    const store = new FileFriendStore(path.join(agentRoot, "friends"))
+    await store.put("household", { id: "household", name: "Household member", trustLevel: "friend", admissionState: "active", initiativePolicy: "request_follow_up_only", capabilityProfileId: "sanctuary-household", externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: "2026-08-29T00:00:00.000Z", updatedAt: "2026-08-29T00:00:00.000Z", schemaVersion: 1 })
+    if (state === "friend-record-mismatch") {
+      const friendPath = path.join(agentRoot, "friends", "household.json")
+      const record = JSON.parse(fs.readFileSync(friendPath, "utf8"))
+      fs.writeFileSync(friendPath, JSON.stringify({ ...record, id: "someone-else" }), "utf8")
+    } else {
+      mockRelationshipSubjectFriendId.value = "someone-else"
+    }
+    const obligation = createObligation(agentRoot, { origin: { friendId: "household", channel: "telegram", key: "telegram:777:888" }, owedTo: { friendId: "household", channel: "telegram", key: "telegram:777:888" }, requestId: "request-corrupt", content: "unsafe" })
+    advanceObligation(agentRoot, obligation.id, { currentSurface: { kind: "session", label: "telegram/telegram:777:888" }, currentArtifact: "awaiting/corrupt.md", nextAction: "unsafe" })
+    fs.mkdirSync(path.join(agentRoot, "awaiting"), { recursive: true })
+    fs.writeFileSync(path.join(agentRoot, "awaiting", "corrupt.md"), `---\ncondition: check\ncadence: 5m\nstatus: pending\nfiled_from: telegram\nfiled_for_friend_id: household\nfiled_from_key: telegram:777:888\nrequest_id: request-corrupt\nobligation_id: ${obligation.id}\n---\n`, "utf8")
+    await expect(runApprovedPrivateRuntimeTurn({ reason: "await", awaitName: "corrupt", now: () => new Date("2026-08-29T00:05:00.000Z") })).rejects.toThrow(/ambiguous/u)
+    expect(mockHandleInboundTurn).not.toHaveBeenCalled()
   })
 
   it("uses prepared habit context after revalidating the current active definition", async () => {

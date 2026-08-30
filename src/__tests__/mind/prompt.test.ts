@@ -3297,6 +3297,19 @@ describe("buildSystem with context", () => {
     expect(result).toContain("## my aspirations")
   })
 
+  it("does not restore psyche for an event-named profile without a household context scope", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache(); patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const self = { id: "self", name: "Sanctuary", trustLevel: "family" as const, externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: "", updatedAt: "", schemaVersion: 1 }
+    const result = flattenSystemPrompt(await buildSystem("inner", { relationshipContextScopes: ["own_requests"], relationshipProfileId: "sanctuary-event" }, { friend: self, channel: { channel: "inner", senseType: "private", isRemote: false, isGroup: false, availableIntegrations: [], supportsAttachments: false, supportsReactions: false, chatStyle: false, supportsStreaming: false, supportsRichCards: false, maxMessageLength: 4096 } } as never))
+    expect(result).not.toContain("## my lore")
+    expect(result).not.toContain("## tacit knowledge")
+    expect(result).not.toContain("## my aspirations")
+  })
+
   it("keeps relationship-scoped Telegram prompts private even when global frames are populated", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
