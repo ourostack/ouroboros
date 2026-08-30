@@ -677,6 +677,7 @@ function boundedIdentifier(value: unknown): value is string {
 }
 
 function parsePrivilegedEnvelope(raw: string, fileName: string, now: string): PrivilegedExternalEventEnvelope {
+  if (Buffer.byteLength(raw) > PRIVILEGED_SPOOL_MAX_BYTES) throw new Error("Privileged event envelope must be bounded")
   const parsed: unknown = JSON.parse(raw)
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Privileged event envelope is invalid")
   const value = parsed as Record<string, unknown>

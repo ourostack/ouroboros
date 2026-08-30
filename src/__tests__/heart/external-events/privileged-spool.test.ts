@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { claimExternalEvent, commitExternalEventDisposition, listExternalEventStatus, readExternalEventRecord, recordExternalEvent, scanPrivilegedEventSpool } from "../../../heart/external-events/router"
 
-const spoolMock = vi.hoisted(() => ({ root: "", readOnly: false, authorityBarrierUsed: false, mountInfo: null as string | null, mountReadError: false, replaceLockOwner: false, failReplayLockMkdir: false, changeOpenedFile: false, preserveReplayLock: false }))
+const spoolMock = vi.hoisted(() => ({ root: "", readOnly: false, authorityBarrierUsed: false, mountInfo: null as string | null, mountReadError: false, replaceLockOwner: false, failReplayLockMkdir: false, changeOpenedFile: false, preserveReplayLock: false, oversizedFdRead: false }))
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>()
   return {
@@ -21,6 +21,7 @@ vi.mock("node:fs", async (importOriginal) => {
       return new Proxy(stat, { get(value, property, receiver) { return property === "uid" ? 0 : Reflect.get(value, property, receiver) } })
     },
     readFileSync(target: Parameters<typeof actual.readFileSync>[0], options?: unknown) {
+      if (spoolMock.oversizedFdRead && typeof target === "number") return "x".repeat(32 * 1_024 + 1)
       if (spoolMock.replaceLockOwner && String(target).endsWith("/.privileged-replay.lock/owner.json")) return JSON.stringify({ token: "replacement", pid: process.pid, processStart: "replacement", leaseUntil: "2099-01-01T00:00:00.000Z" })
       if (target === "/proc/self/mountinfo" && spoolMock.mountReadError) throw new Error("mountinfo unavailable")
       if (target === "/proc/self/mountinfo" && spoolMock.mountInfo !== null) return spoolMock.mountInfo
@@ -140,6 +141,7 @@ afterEach(() => {
   spoolMock.failReplayLockMkdir = false
   spoolMock.changeOpenedFile = false
   spoolMock.preserveReplayLock = false
+  spoolMock.oversizedFdRead = false
   for (const value of roots.splice(0)) fs.rmSync(value, { recursive: true, force: true })
 })
 
@@ -594,6 +596,17 @@ describe("privileged external-event spool", () => {
     spoofRootOwnership(spoolRoot)
     spoolMock.changeOpenedFile = true
     expect(scanPrivilegedEventSpool({ spoolRoot, eventRoot })).toEqual({ accepted: 0, rejected: 1, replayed: 0 })
+  })
+
+  it("rejects an oversized descriptor read even when pre-read metadata was safe", () => {
+    const spoolRoot = root("ouro-privileged-grown-file")
+    const eventRoot = root("ouro-privileged-grown-file-events")
+    fs.chmodSync(spoolRoot, 0o755)
+    writeSpoolFile(spoolRoot, envelope())
+    spoofRootOwnership(spoolRoot)
+    spoolMock.oversizedFdRead = true
+    expect(scanPrivilegedEventSpool({ spoolRoot, eventRoot, now: () => NOW })).toEqual({ accepted: 0, rejected: 1, replayed: 0 })
+    expect(listExternalEventStatus(eventRoot)).toEqual([])
   })
 
   it("uses the default event root only after safely rejecting a missing spool", () => {
