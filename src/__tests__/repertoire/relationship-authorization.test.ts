@@ -37,6 +37,10 @@ describe("relationship authorization", () => {
       expect(() => loadRelationshipCapabilityRegistry(root)).toThrow("version 2")
       fs.writeFileSync(path.join(root, "tool-profiles.json"), JSON.stringify({ version: 2, profiles: { bad: { version: 0, contextScopes: [], toolNames: [], effectScopes: [] } } }))
       expect(() => loadRelationshipCapabilityRegistry(root)).toThrow("version")
+      fs.writeFileSync(path.join(root, "tool-profiles.json"), JSON.stringify({ version: 2, profiles: { bad: null } }))
+      expect(() => loadRelationshipCapabilityRegistry(root)).toThrow("profile bad is invalid")
+      fs.writeFileSync(path.join(root, "tool-profiles.json"), JSON.stringify({ version: 2, profiles: { bad: { version: 1, contextScopes: [""], toolNames: [], effectScopes: [] } } }))
+      expect(() => loadRelationshipCapabilityRegistry(root)).toThrow("contextScopes must be a string array")
     } finally { fs.rmSync(root, { recursive: true, force: true }) }
   })
 
@@ -58,6 +62,19 @@ describe("relationship authorization", () => {
     expect(evaluator.authorizeContext("operator_private")).toMatchObject({ allowed: false })
     expect(evaluator.authorizeTool("unraid_get_system")).toMatchObject({ allowed: true, receiptId: expect.any(String) })
     expect(evaluator.authorizeEffect("telegram.reply")).toMatchObject({ allowed: true })
+  })
+
+  it("builds a fail-closed evaluator when the Friend has no durable profile", () => {
+    const evaluator = createRelationshipAuthorizationEvaluator({
+      friend: { id: "unknown", name: "Unknown", externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: "", updatedAt: "", schemaVersion: 1 },
+      registry: { version: 2, profiles: { "sanctuary-household": household } },
+    })
+    expect(evaluator.authorizedContextScopes).toEqual([])
+    expect(evaluator.advertisedToolNames).toEqual([])
+    expect(evaluator.actor).toBeUndefined()
+    expect(evaluator.authorizeContext("household.status")).toMatchObject({ allowed: false })
+    expect(evaluator.authorizeTool("unraid_get_system")).toMatchObject({ allowed: false })
+    expect(evaluator.authorizeEffect("telegram.reply")).toMatchObject({ allowed: false })
   })
 
   it("intersects an internal event-turn profile with the durable relationship profile", () => {
@@ -112,6 +129,29 @@ describe("relationship authorization", () => {
     expect(authorizeRelationshipAccess({ relationship: member, profiles: [household], request: { kind: "tool", name: "query_cares", requestId: "req-1", returnTargetFriendId: "brother" }, activeRequestId: "req-1" })).toMatchObject({ allowed: false })
     expect(authorizeRelationshipAccess({ relationship: member, profiles: [household], request: { kind: "effect", scope: "telegram.reply", requestId: "req-old", returnTargetFriendId: "brother" }, activeRequestId: "req-new" })).toMatchObject({ allowed: false, reason: expect.stringContaining("request") })
     expect(authorizeRelationshipAccess({ relationship: member, profiles: [household], request: { kind: "effect", scope: "telegram.reply", returnTargetFriendId: "brother" } })).toMatchObject({ allowed: false, reason: expect.stringContaining("initiative") })
+    expect(authorizeRelationshipAccess({ relationship: member, profiles: [household], request: { kind: "effect", scope: "telegram.proactive", requestId: "req-1", returnTargetFriendId: "brother" }, activeRequestId: "req-1" })).toMatchObject({ allowed: false, reason: expect.stringContaining("effect") })
+  })
+
+  it("supports a store without listAll and forwards every optional evaluator binding", async () => {
+    const registry = { version: 2 as const, profiles: { "sanctuary-household": household } }
+    await expect(resolveProfileScopedRelationshipAuthorization({
+      store: {} as any,
+      registry,
+      relationshipProfileId: "sanctuary-household",
+    })).rejects.toThrow("exactly one Friend")
+
+    const friend = { id: "brother", name: "Brother", trustLevel: "friend" as const, admissionState: "active" as const, initiativePolicy: "request_follow_up_only" as const, capabilityProfileId: "sanctuary-household", externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: "", updatedAt: "", schemaVersion: 1 as const }
+    const evaluator = await resolveProfileScopedRelationshipAuthorization({
+      store: { listAll: async () => [friend] } as any,
+      registry,
+      relationshipProfileId: "sanctuary-household",
+      profileId: "sanctuary-household",
+      requestId: "req-forwarded",
+      requestPhase: "inbound",
+      sessionEventId: "evt-forwarded",
+    })
+    expect(evaluator.actor).toMatchObject({ sessionEventId: "evt-forwarded" })
+    expect(evaluator.authorizeTool("unraid_get_system")).toMatchObject({ allowed: true, requestId: "req-forwarded" })
   })
 
   it("allows only the fixed pending admission-gate effect without a relationship", () => {
@@ -127,6 +167,11 @@ describe("relationship authorization", () => {
       pendingAdmission: { admissionId: "adm-1", botId: "100", userId: "200", chatId: "200", expiresAt: "2026-08-29T18:00:00.000Z" },
       now: "2026-08-29T17:00:00.000Z",
     })).toMatchObject({ allowed: false })
+    expect(authorizeRelationshipAccess({
+      profiles: [household],
+      request: { kind: "admission_gate", admissionId: "adm-future", botId: "100", userId: "200", chatId: "200", effect: "fixed_ack", idempotencyKey: "ack:adm-future", expiresAt: "2099-08-29T18:00:00.000Z" },
+      pendingAdmission: { admissionId: "adm-future", botId: "100", userId: "200", chatId: "200", expiresAt: "2099-08-29T18:00:00.000Z" },
+    })).toMatchObject({ allowed: true })
   })
 
   it("denies missing, expired, replay-shaped, and wrong-effect admission receipts", () => {

@@ -125,6 +125,26 @@ describe("Telegram approval callback transport", () => {
     }
   }
 
+  it("rejects a non-canonical message id returned by the injected approval effect port", async () => {
+    let records: ReturnType<TelegramPendingApprovalStore["load"]> = []
+    const transport = createRawTelegramApprovalTransport({
+      api: { request: vi.fn(), stop: vi.fn() },
+      expectedUserId: "10",
+      expectedChatId: "10",
+      pendingStore: { load: () => structuredClone(records), save: (next) => { records = structuredClone(next) } },
+      createOpaqueHandle: vi.fn(() => "handle"),
+      onDecision: vi.fn(),
+      resolveDecisionToken: async () => "token",
+      effects: {
+        sendText: vi.fn(async () => []),
+        sendCard: vi.fn(async () => 0),
+        edit: vi.fn(async () => undefined),
+        acknowledge: vi.fn(async () => undefined),
+      },
+    })
+    await expect(transport.sendApproval({ approvalId: "bad-message-id", decisionToken: "secret", prompt: "Approve?" })).rejects.toThrow("canonical message_id")
+  })
+
   it("sends a token-free prompt with opaque callbacks and an exact 300000ms durable TTL", async () => {
     const fixture = approvalFixture()
     const sent = await fixture.transport.sendApproval({ approvalId: "approval-1", decisionToken: "secret-token", prompt: "Restart <books>?" })

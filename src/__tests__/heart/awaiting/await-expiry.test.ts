@@ -15,6 +15,7 @@ vi.mock("../../../heart/awaiting/await-alert", () => ({
 
 import { archiveAndAlertExpiredAwait } from "../../../heart/awaiting/await-expiry"
 import { writeAwaitRuntimeState } from "../../../heart/awaiting/await-runtime-state"
+import { createObligation, readVerifiedPendingObligations } from "../../../arc/obligations"
 
 function makeTempRoot(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "await-expiry-"))
@@ -156,6 +157,23 @@ describe("archiveAndAlertExpiredAwait", () => {
     expect(fs.readFileSync(path.join(root, "awaiting", ".done", "movie.md"), "utf8")).toContain("expired_at: 2026-05-10T20:00:00.000Z")
   })
 
+  it.each([
+    [{ attempted: false, skipped: "no route" }, "no route"],
+    [{ attempted: false }, "delivery not accepted"],
+  ] as const)("keeps request-bound expiry pending when no delivery was attempted (%s)", async (delivery, reason) => {
+    const root = makeTempRoot()
+    cleanup.push(root)
+    writeRequestPending(root, `undelivered_${cleanup.length}`)
+    mockDeliver.mockResolvedValueOnce(delivery)
+    const result = await archiveAndAlertExpiredAwait({
+      agentRoot: root,
+      agentName: "slugger",
+      awaitName: `undelivered_${cleanup.length}`,
+      deliveryDeps: { agentName: "slugger", queuePending: () => {} },
+    })
+    expect(result).toMatchObject({ archived: false, alerted: false, reason })
+  })
+
   it("uses default now when not provided", async () => {
     const root = makeTempRoot()
     cleanup.push(root)
@@ -183,5 +201,43 @@ describe("archiveAndAlertExpiredAwait", () => {
     })
     expect(result.archived).toBe(true)
     expect(result.alerted).toBe(false)
+  })
+
+  it("removes a failed request-bound staging file and propagates the write failure", async () => {
+    const root = makeTempRoot()
+    cleanup.push(root)
+    writeRequestPending(root, "write_failure")
+    fs.chmodSync(path.join(root, "awaiting"), 0o500)
+    await expect(archiveAndAlertExpiredAwait({
+      agentRoot: root,
+      agentName: "slugger",
+      awaitName: "write_failure",
+      deliveryDeps: { agentName: "slugger", queuePending: () => {} },
+    })).rejects.toThrow()
+    fs.chmodSync(path.join(root, "awaiting"), 0o700)
+    expect(fs.readdirSync(path.join(root, "awaiting"))).toEqual(["write_failure.md"])
+  })
+
+  it("fulfills the durable obligation after a legacy expiry is archived", async () => {
+    const root = makeTempRoot()
+    cleanup.push(root)
+    const obligation = createObligation(root, {
+      origin: { friendId: "ari", channel: "telegram", key: "telegram:ari" },
+      owedTo: { friendId: "ari", channel: "telegram", key: "telegram:ari" },
+      requestId: "request-obligation",
+      content: "wait for it",
+    })
+    writePending(root, "obligated")
+    const filePath = path.join(root, "awaiting", "obligated.md")
+    fs.writeFileSync(filePath, fs.readFileSync(filePath, "utf8").replace("filed_from: cli", `filed_from: cli\nobligation_id: ${obligation.id}`))
+
+    await archiveAndAlertExpiredAwait({
+      agentRoot: root,
+      agentName: "slugger",
+      awaitName: "obligated",
+      deliveryDeps: { agentName: "slugger", queuePending: () => {} },
+    })
+
+    expect(readVerifiedPendingObligations(root)).toEqual([])
   })
 })

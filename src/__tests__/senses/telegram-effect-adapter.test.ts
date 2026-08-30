@@ -4,6 +4,7 @@ import path from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import {
   appendTelegramArtifactEvents,
+  appendTelegramInboundEvent,
   createTelegramApprovalEffectPort,
   createTelegramAuthorizedEffectExecutor,
   FileTelegramEffectJournal,
@@ -37,6 +38,35 @@ afterEach(() => {
 })
 
 describe("Telegram effect adapter", () => {
+  it("rejects empty effects, denied or invalid routes, admission drift, and malformed persisted admission effects", () => {
+    const store = journal()
+    expect(() => prepareTelegramEffect(store, { idempotencyKey: "empty", target, authorClass: "butler", effect: { kind: "text", text: " " }, authorization })).toThrow("nonempty")
+    expect(() => prepareTelegramEffect(store, { idempotencyKey: "denied", target, authorClass: "butler", effect: { kind: "text", text: "No" }, authorization: { allowed: false, reason: "revoked" } })).toThrow("denied")
+    expect(() => prepareTelegramEffect(store, { idempotencyKey: "route", target, authorClass: "butler", effect: { kind: "text", text: "No" }, authorization: { ...authorization, transport: { chatId: "0" } } })).toThrow("invalid transport")
+    const admissionTarget = { kind: "admission_gate" as const, admissionId: "admission", botId: "100", userId: "200", chatId: "200" }
+    expect(() => prepareTelegramEffect(store, { idempotencyKey: "ack:admission", target: admissionTarget, authorClass: "control", effect: { kind: "admission_ack", text: "Thanks — I’ve asked Ari." }, authorization: { ...authorization, transport: { chatId: "201" } } })).toThrow("route changed")
+
+    const id = "c".repeat(64)
+    const root = (store as unknown as { root: string }).root
+    fs.writeFileSync(path.join(root, `${id}.json`), JSON.stringify({
+      schemaVersion: 1, id, idempotencyKey: "wrong", target: admissionTarget, authorClass: "control",
+      effect: { kind: "admission_ack", text: "Thanks — I’ve asked Ari." }, authorizationReceiptId: "receipt", authorizationExpiresAt: "2099-01-01T00:00:00.000Z",
+      parts: [{ index: 0, text: "Thanks — I’ve asked Ari.", state: "prepared", updatedAt: "2026-08-29T00:00:00.000Z" }], createdAt: "2026-08-29T00:00:00.000Z", updatedAt: "2026-08-29T00:00:00.000Z",
+    }), { mode: 0o600 })
+    expect(() => store.read(id)).toThrow("invalid")
+  })
+
+  it("covers journal close, coordination, and bounded-file guards", () => {
+    const store = journal()
+    expect(() => store.coordinationPath("bad")).toThrow("id is invalid")
+    const root = (store as unknown as { root: string }).root
+    fs.writeFileSync(path.join(root, `${"d".repeat(64)}.json`), "x", { mode: 0o600 })
+    expect(() => store.read("d".repeat(64))).toThrow("not a bounded regular file")
+    store.close()
+    expect(() => store.close()).not.toThrow()
+    expect(() => store.read("d".repeat(64))).toThrow("closed")
+  })
+
   it("prepares deterministic text chunks once and sends each through the existing renderer", async () => {
     const store = journal()
     const prepared = prepareTelegramEffect(store, {
@@ -204,6 +234,35 @@ describe("Telegram effect adapter", () => {
     expect(api.request.mock.calls.map(([method]) => method)).toEqual(["sendMessage", "editMessageText", "answerCallbackQuery"])
   })
 
+  it("handles malformed card responses, edit retry classifications, expired authorization, and cancellation", async () => {
+    const store = journal()
+    const card = prepareTelegramEffect(store, { idempotencyKey: "card:no-id", target, authorClass: "control", effect: { kind: "card", text: "Card", buttons: [[{ text: "Ok", callbackData: "ok" }]] }, authorization })
+    await expect(executeTelegramEffect(store, card.id, { request: vi.fn(async () => ({})) }, () => authorization)).rejects.toThrow("omitted message_id")
+
+    const unchanged = prepareTelegramEffect(store, { idempotencyKey: "edit:unchanged", target, authorClass: "control", effect: { kind: "edit", messageId: 7, text: "Same" }, authorization })
+    await expect(executeTelegramEffect(store, unchanged.id, { request: vi.fn(async () => { throw new TelegramApiError("message is not modified", { status: 400, errorCode: 400 }) }) }, () => authorization)).resolves.toMatchObject({ parts: [{ state: "accepted", messageId: 7 }] })
+    const server = prepareTelegramEffect(store, { idempotencyKey: "edit:server", target, authorClass: "control", effect: { kind: "edit", messageId: 8, text: "Edit" }, authorization })
+    await expect(executeTelegramEffect(store, server.id, { request: vi.fn(async () => { throw new TelegramApiError("server", { status: 500, errorCode: 500 }) }) }, () => authorization)).rejects.toThrow("server")
+
+    const expired = prepareTelegramEffect(store, { idempotencyKey: "expired", target, authorClass: "butler", effect: { kind: "text", text: "Expired" }, authorization })
+    await expect(executeTelegramEffect(store, expired.id, { request: vi.fn() }, () => ({ ...authorization, expiresAt: "2020-01-01T00:00:00.000Z" }))).rejects.toThrow("authorization expired")
+    const aborted = prepareTelegramEffect(store, { idempotencyKey: "aborted", target, authorClass: "butler", effect: { kind: "text", text: "Abort" }, authorization })
+    const controller = new AbortController(); controller.abort(new Error("cancelled"))
+    await expect(executeTelegramEffect(store, aborted.id, { request: vi.fn() }, () => authorization, controller.signal)).rejects.toThrow("cancelled")
+  })
+
+  it("enforces executor cancellation at prepare and send boundaries", async () => {
+    const store = journal()
+    const already = new AbortController(); already.abort(new Error("already cancelled"))
+    const execute = createTelegramAuthorizedEffectExecutor({ store, api: { request: vi.fn() }, authorize: () => authorization })
+    await expect(execute({ idempotencyKey: "cancel:prepare", target, authorClass: "butler", effect: { kind: "text", text: "No" }, signal: already.signal })).rejects.toThrow("already cancelled")
+
+    const during = new AbortController()
+    const authorize = vi.fn(async () => { if (authorize.mock.calls.length === 1) during.abort(new Error("cancelled before send")); return authorization })
+    const executeDuring = createTelegramAuthorizedEffectExecutor({ store, api: { request: vi.fn() }, authorize })
+    await expect(executeDuring({ idempotencyKey: "cancel:send", target, authorClass: "butler", effect: { kind: "text", text: "No" }, signal: during.signal })).rejects.toThrow("cancelled before send")
+  })
+
   it("handles explicit card rendering rejection and fences admission route drift", async () => {
     const store = journal()
     const card = prepareTelegramEffect(store, { idempotencyKey: "card:fallback", target, authorClass: "control", effect: { kind: "card", text: "<Allow?>", buttons: [[{ text: "Allow", callbackData: "allow:2" }]] }, authorization })
@@ -240,6 +299,19 @@ describe("Telegram effect adapter", () => {
     await expect(port.sendText({ idempotencyKey: "port:text", chatId: "42", text: "No id", authorClass: "butler", signal })).resolves.toEqual([])
     expect(() => recordTelegramEffectInSession(journal(), "missing", [])).toThrow()
     expect(artifacts).toHaveLength(4)
+  })
+
+  it("rejects approval route drift and a card result without a message id", async () => {
+    const execute = vi.fn(async (input: any) => {
+      const artifact = prepareTelegramEffect(journal(), { ...input, authorization })
+      artifact.parts[0]!.state = "accepted"
+      return artifact
+    })
+    const port = createTelegramApprovalEffectPort({ target, chatId: "42", execute, record: vi.fn(async () => undefined) })
+    await expect(port.sendText({ idempotencyKey: "wrong:text", chatId: "43", text: "Text", authorClass: "butler" })).rejects.toThrow("target changed")
+    await expect(port.sendCard({ idempotencyKey: "wrong:card", chatId: "43", text: "Card", buttons: [[{ text: "Ok", callbackData: "ok" }]] })).rejects.toThrow("target changed")
+    await expect(port.edit({ idempotencyKey: "wrong:edit", chatId: "43", messageId: 1, text: "Edit" })).rejects.toThrow("target changed")
+    await expect(port.sendCard({ idempotencyKey: "missing:id", chatId: "42", text: "Card", buttons: [[{ text: "Ok", callbackData: "ok" }]] })).rejects.toThrow("omitted its message id")
   })
 
   it("propagates caller cancellation through card, edit, and callback requests", async () => {
@@ -442,5 +514,30 @@ describe("Telegram effect adapter", () => {
     await executeTelegramEffect(store, terminal.id, { request: vi.fn(async () => true) }, () => authorization)
     await recordTelegramEffectsInSession({ store, sessionPath, artifacts: [store.read(terminal.id)] })
     expect(resolveTelegramControlArtifact(store, { messageId: 333, friendId: "ari", sessionKey: "telegram:ari" })).toEqual({ artifactId: card.id, requestId: "a".repeat(20) })
+  })
+
+  it("rejects session reconciliation without accepted parts or its canonical causal event", async () => {
+    const store = journal()
+    const empty: SessionEnvelope = { version: 2, events: [], projection: { eventIds: [], trimmed: false, maxTokens: null, contextMargin: null, inputTokens: null, projectedAt: null }, lastUsage: null, state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null } }
+    const prepared = prepareTelegramEffect(store, { idempotencyKey: "session:prepared", target, authorClass: "butler", effect: { kind: "text", text: "Prepared" }, authorization })
+    expect(() => appendTelegramArtifactEvents(empty, prepared, "2026-08-29T00:00:00.000Z")).toThrow("no accepted parts")
+
+    await executeTelegramEffect(store, prepared.id, { request: vi.fn(async () => ({ message_id: 91 })) }, () => authorization)
+    expect(() => recordTelegramEffectInSession(store, prepared.id, [])).toThrow("do not match")
+    const sessionPath = path.join((store as unknown as { root: string }).root, "missing-causal-session.json")
+    await expect(recordTelegramEffectsInSession({ store, sessionPath, artifacts: [store.read(prepared.id)], causalEventIds: { [prepared.id]: "evt-999999" } })).rejects.toThrow("causal event is unavailable")
+  })
+
+  it("returns an unchanged envelope for duplicate inbound ingress and null for unmatched control messages", () => {
+    const recordedAt = "2026-08-29T00:00:00.000Z"
+    const empty: SessionEnvelope = { version: 2, events: [], projection: { eventIds: [], trimmed: false, maxTokens: null, contextMargin: null, inputTokens: null, projectedAt: null }, lastUsage: null, state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null } }
+    const once = appendTelegramInboundEvent(empty, { text: "Hello", reference: "telegram-inbound:one", recordedAt })
+    expect(appendTelegramInboundEvent(once, { text: "Hello", reference: "telegram-inbound:one", recordedAt })).toBe(once)
+
+    const store = journal()
+    const card = prepareTelegramEffect(store, { idempotencyKey: "control:miss", target, authorClass: "control", effect: { kind: "card", text: "Card", buttons: [[{ text: "Ok", callbackData: "ok" }]] }, authorization })
+    card.parts[0]!.state = "session_recorded"; card.parts[0]!.messageId = 1
+    store.write(card)
+    expect(resolveTelegramControlArtifact(store, { messageId: 999, friendId: "ari", sessionKey: "telegram:ari" })).toBeNull()
   })
 })

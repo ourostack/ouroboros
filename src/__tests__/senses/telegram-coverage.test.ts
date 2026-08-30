@@ -50,8 +50,11 @@ import {
   parseTelegramSenseCredentials,
   readOrCreateTelegramIdentityKey,
   startTelegramSenseApp,
+  sendTelegramAwaitFollowUp,
+  sendTelegramExternalEventDecision,
   telegramAcceptanceAuditOwnerDigest,
 } from "../../senses/telegram"
+import { FileFriendStore } from "@ouro.bot/friends"
 
 const credentials = { botToken: "synthetic-test-token", authorizedUserId: "42", authorizedChatId: "43" }
 const isolatedRoots: string[] = []
@@ -1160,6 +1163,15 @@ describe("Telegram sense coverage contracts", () => {
     await expect(app.sendProactive("   ")).rejects.toThrow("proactive message is missing")
   })
 
+  it("records approval-runtime owner effects through the configured relationship session", async () => {
+    defaultFixture()
+    const app = createTelegramSenseApp({ agentName: "sanctuary", credentials, _toolContext: {} as never })
+    const runtimeOptions = mocks.createTelegramApprovalRuntime.mock.calls.at(-1)?.[0] as { effects: { sendText(input: { idempotencyKey: string; chatId: string; text: string; authorClass: "control" }): Promise<number[]> } }
+    await expect(runtimeOptions.effects.sendText({ idempotencyKey: "approval:coverage", chatId: "43", text: "Approval text", authorClass: "control" })).resolves.toEqual([71])
+    expect(fs.existsSync(path.join(isolatedRoot, "state", "telegram", "effects"))).toBe(true)
+    await app.stop()
+  })
+
   it("loads credentials, explains missing runtime config, and fails production start on an unbound bot identity", async () => {
     expect(loadTelegramSenseCredentials("butler")).toEqual(credentials)
     mocks.readRuntimeCredentialConfig.mockReturnValueOnce({ ok: false, reason: "missing" })
@@ -1167,5 +1179,29 @@ describe("Telegram sense coverage contracts", () => {
     defaultFixture()
     await expect(startTelegramSenseApp("butler")).rejects.toThrow("canonical numeric bot id")
     expect(mocks.createTelegramBotApi).not.toHaveBeenCalled()
+  })
+
+  it("runs one-shot production event and await adapters through a transient Telegram app", async () => {
+    const f = defaultFixture()
+    f.api.request.mockResolvedValue({ message_id: 71 })
+    mocks.readRuntimeCredentialConfig.mockReturnValue({ ok: true, config: {
+      telegramBotToken: "777:secret",
+      telegramAuthorizedUserId: "42",
+      telegramAuthorizedChatId: "42",
+    } })
+    fs.writeFileSync(path.join(isolatedRoot, "tool-profiles.json"), JSON.stringify({ version: 2, profiles: {
+      "sanctuary-owner": { version: 1, contextScopes: ["household.private"], toolNames: [], effectScopes: ["telegram.owner_event", "telegram.proactive"] },
+      "sanctuary-household": { version: 1, contextScopes: ["own_requests"], toolNames: [], effectScopes: ["telegram.request_return"] },
+    } }))
+    const friends = new FileFriendStore(path.join(isolatedRoot, "friends"))
+    const now = new Date().toISOString()
+    await friends.put("ari", { id: "ari", name: "Ari", trustLevel: "family", admissionState: "active", initiativePolicy: "proactive", capabilityProfileId: "sanctuary-owner",
+      externalIds: [{ provider: "telegram-user", externalId: "42", tenantId: "777", linkedAt: now }], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: now, updatedAt: now, schemaVersion: 1 })
+
+    await sendTelegramExternalEventDecision("butler", { source: "health", eventId: "books", generation: 1, text: "Books recovered." })
+    await expect(sendTelegramAwaitFollowUp("butler", { friendId: "sibling", channel: "telegram", key: "telegram:777:888", content: "Ready", intent: "generic_outreach" })).resolves.toMatchObject({ status: "blocked" })
+
+    expect(mocks.sendTelegramText).toHaveBeenCalledWith(f.api, "42", "Books recovered.", undefined)
+    expect(f.api.stop).toHaveBeenCalledTimes(2)
   })
 })

@@ -10,7 +10,7 @@ import { createTelegramSenseApp, opaqueTelegramSubject, sanctuaryTelegramApprova
 import { TELEGRAM_ACCEPTANCE_AUDIT_HEAD_RELATIVE_PATH, TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH, verifyTelegramAuditLedger } from "../../senses/telegram-audit-ledger"
 import { splitTelegramText, type TelegramBotApi, type TelegramInboundMessage, type TelegramLongPoll } from "../../senses/telegram-client"
 import { getSenseSessionPath } from "../../senses/shared-turn"
-import { FIXED_USENET_SYSTEM_FAILSAFE } from "../../senses/telegram-effect-adapter"
+import { FileTelegramEffectJournal, FIXED_USENET_SYSTEM_FAILSAFE, prepareTelegramEffect } from "../../senses/telegram-effect-adapter"
 
 const RECEIPT_DOMAIN = "ouroboros.telegram.turn-receipt.v3"
 const RECEIPT_KEY = "k".repeat(43)
@@ -68,6 +68,7 @@ function fixture(input: {
   runWithToolReceiptCollection?: any
   afterAcceptanceLedgerPreReadStat?: (filePath: string) => void
   authorizeEffect?: any
+  authorizeRelationshipEffect?: any
   privilegedFailsafe?: any
 } = {}) {
   const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-sense-fixture-"))
@@ -120,6 +121,7 @@ function fixture(input: {
     _runWithToolReceiptCollection: input.runWithToolReceiptCollection,
     _afterAcceptanceLedgerPreReadStat: input.afterAcceptanceLedgerPreReadStat,
     authorizeEffect: input.authorizeEffect,
+    authorizeRelationshipEffect: input.authorizeRelationshipEffect,
     privilegedFailsafe: input.privilegedFailsafe,
   })
   return { app, api, poll, runTurn, approvalTransport, agentRoot, getOnMessage: () => onMessage!, getOnUpdate: () => onUpdate! }
@@ -1640,6 +1642,18 @@ describe("Telegram sense", () => {
     expect(new Set(keys).size).toBe(2)
   })
 
+  it("rejects malformed event identities and missing event text before any Telegram effect", async () => {
+    const f = fixture()
+    for (const input of [
+      { source: "x".repeat(513), eventId: "event", generation: 1, text: "report" },
+      { source: "source", eventId: "x".repeat(513), generation: 1, text: "report" },
+      { source: "source", eventId: "event", generation: 0, text: "report" },
+      { source: "source", eventId: "event", generation: 1.5, text: "report" },
+    ]) await expect(f.app.sendExternalEventDecision(input)).rejects.toThrow("identity is invalid")
+    await expect(f.app.sendExternalEventDecision({ source: "source", eventId: "event", generation: 1, text: "   " })).rejects.toThrow("decision is missing")
+    expect(f.api.request).not.toHaveBeenCalled()
+  })
+
   it("delivers an expiry return through the existing authorized effect journal and exact household session", async () => {
     const f = fixture({ authorizeEffect: vi.fn(async () => ({ allowed: true, receiptId: "request-return", expiresAt: new Date(Date.now() + 60_000).toISOString(), transport: { chatId: "888" } })) })
     const result = await f.app.sendAwaitFollowUp({
@@ -1658,6 +1672,44 @@ describe("Telegram sense", () => {
     expect(artifact.idempotencyKey).toMatch(/^await-expiry-follow-up:request-1:/u)
     const sessionPath = getSenseSessionPath("butler", "sibling", "telegram", "telegram:777:888", f.agentRoot)
     expect(JSON.parse(fs.readFileSync(sessionPath, "utf8")).events).toContainEqual(expect.objectContaining({ content: "Movie request timed out." }))
+  })
+
+  it("blocks malformed and unauthorized await returns without sending", async () => {
+    const missing = fixture()
+    await expect(missing.app.sendAwaitFollowUp({ friendId: "sibling", channel: "telegram", key: "telegram:777:888", content: "Ready", intent: "generic_outreach" })).resolves.toMatchObject({ status: "blocked", detail: expect.stringContaining("request binding") })
+    const unauthorized = fixture({ authorizeEffect: vi.fn(async () => { throw new Error("relationship revoked") }) })
+    await expect(unauthorized.app.sendAwaitFollowUp({ friendId: "sibling", channel: "telegram", key: "telegram:777:888", requestId: "request-2", content: "Ready", intent: "generic_outreach" })).resolves.toEqual({ status: "blocked", detail: "relationship revoked" })
+    expect(missing.api.request).not.toHaveBeenCalled()
+    expect(unauthorized.api.request).not.toHaveBeenCalled()
+  })
+
+  it("fails closed for await returns aimed at an unbound owner session or unrelated relationship", async () => {
+    const subject = opaqueTelegramSubject("k".repeat(43), "test-token", "42", "42")
+    const ownerDrift = fixture({ authorizeRelationshipEffect: vi.fn(async () => ({ allowed: true, receiptId: "should-not-run", expiresAt: "2099-01-01T00:00:00.000Z", transport: { chatId: "42" } })) })
+    await expect(ownerDrift.app.sendAwaitFollowUp({ friendId: `telegram-user:${subject}`, channel: "telegram", key: "telegram:wrong", requestId: "request-owner", content: "Ready", intent: "generic_outreach" })).resolves.toMatchObject({ status: "blocked" })
+
+    const unrelated = fixture()
+    await expect(unrelated.app.sendAwaitFollowUp({ friendId: "sibling", channel: "telegram", key: "telegram:777:888", requestId: "request-unrelated", content: "Ready", intent: "generic_outreach" })).resolves.toMatchObject({ status: "blocked", detail: expect.stringContaining("configured owner") })
+    expect(ownerDrift.api.request).not.toHaveBeenCalled()
+    expect(unrelated.api.request).not.toHaveBeenCalled()
+  })
+
+  it("refuses recovery of a non-fixed system-failsafe artifact", async () => {
+    const f = fixture()
+    const subject = opaqueTelegramSubject("k".repeat(43), "test-token", "42", "42")
+    const store = new FileTelegramEffectJournal(path.join(f.agentRoot, "state", "telegram", "effects"))
+    prepareTelegramEffect(store, {
+      idempotencyKey: "system-failsafe:invalid-shape",
+      target: { kind: "approved_relationship", friendId: `telegram-user:${subject}`, sessionKey: `telegram:${subject}` },
+      authorClass: "system_failsafe",
+      effect: { kind: "text", text: "Not the fixed failsafe" },
+      authorization: { allowed: true, receiptId: "test", expiresAt: "2099-01-01T00:00:00.000Z", transport: { chatId: "42" } },
+    })
+    store.close()
+
+    await f.app.run()
+
+    expect(f.api.request).not.toHaveBeenCalled()
   })
 
   it("runs the verified privileged failsafe through the existing Telegram startup reconciliation and records it once", async () => {
