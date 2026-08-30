@@ -4,6 +4,7 @@ import * as fs from "node:fs"
 import { getChannelCapabilities } from "@ouro.bot/friends"
 import { resetIdentity, setAgentName } from "../../heart/identity"
 import { approvalPolicyForToolName, execTool, getSanctuaryRelationshipTools, getToolsForChannel, resolveToolDefinition } from "../../repertoire/tools"
+import { baseToolDefinitions } from "../../repertoire/tools-base"
 
 describe("Sanctuary active tool profile", () => {
   afterEach(() => resetIdentity())
@@ -88,11 +89,25 @@ describe("Sanctuary active tool profile", () => {
     const base = { signin: async () => undefined, telegramContactManager: manager,
       relationshipAuthorization: { authorizedContextScopes: [], advertisedToolNames: ["telegram_contact_manage"], authorizeTool: async () => ({ allowed: true as const, receiptId: "owner" }) } } as any
     expect(JSON.parse(await execTool("telegram_contact_manage", { action: "list" }, base))).toMatchObject({ ok: false })
+    expect(JSON.parse(await execTool("telegram_contact_manage", { action: "list" }, { ...base, relationshipAuthorization: { ...base.relationshipAuthorization, actor: { friendId: "guest", trustLevel: "friend" } } }))).toMatchObject({ ok: false })
+    expect(JSON.parse(await execTool("telegram_contact_manage", { action: "list" }, { ...base, telegramContactManager: undefined, relationshipAuthorization: { ...base.relationshipAuthorization, actor: { friendId: "ari", trustLevel: "family" } } }))).toMatchObject({ ok: false })
     const owner = { ...base, relationshipAuthorization: { ...base.relationshipAuthorization, actor: { friendId: "ari", trustLevel: "family", sessionEventId: "evt-owner" } } }
     expect(JSON.parse(await execTool("telegram_contact_manage", { action: "list" }, owner))).toMatchObject({ ok: true, contacts: [] })
     expect(JSON.parse(await execTool("telegram_contact_manage", { action: "revoke", friendId: "sibling" }, owner))).toMatchObject({ ok: true, revoked: true })
     expect(JSON.parse(await execTool("telegram_contact_manage", { action: "unblock", admissionId: "admission" }, owner))).toMatchObject({ ok: true, unblocked: true })
     expect(JSON.parse(await execTool("telegram_contact_manage", { action: "revoke" }, owner))).toMatchObject({ ok: false })
+    expect(resolveToolDefinition("telegram_contact_manage")!.riskProfile!({ action: "list" })).toEqual({ mutates: "none", risk: "low" })
+    expect(resolveToolDefinition("telegram_contact_manage")!.riskProfile!({ action: "revoke" })).toMatchObject({ mutates: "durable_state_write", risk: "high" })
+  })
+
+  it("deduplicates relationship schemas by canonical tool name", () => {
+    const original = baseToolDefinitions.find((definition) => definition.tool.function.name === "query_active_work")!
+    baseToolDefinitions.push({ ...original, tool: { ...original.tool, function: { ...original.tool.function } } })
+    try {
+      expect(getSanctuaryRelationshipTools(["query_active_work"]).filter((tool) => tool.function.name === "query_active_work")).toHaveLength(1)
+    } finally {
+      baseToolDefinitions.pop()
+    }
   })
 
   it("keeps non-Sanctuary Telegram agents on the generic tool profile", () => {

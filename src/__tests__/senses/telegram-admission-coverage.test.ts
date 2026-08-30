@@ -144,6 +144,7 @@ describe("Telegram admission defensive coverage", () => {
     const store = new FileTelegramAdmissionStore(path.join(root(), "store"), { retryCooldownMs: 10 }, () => now)
     const captured = store.capture(message(), "CODE")
     if (!("record" in captured)) throw new Error("fixture capture failed")
+    expect(() => store.releaseBlock(captured.record.id)).toThrow("not blocked")
     expect(() => store.compareAndSwap({ admissionId: captured.record.id, expectedStatus: "approved", nextStatus: "handled" })).toThrow("CAS failed")
     const denied = store.compareAndSwap({ admissionId: captured.record.id, expectedStatus: "pending", nextStatus: "denied" })
     expect(store.recordEffect(denied.id, "acknowledgement", "ignored")).toEqual(denied)
