@@ -3,7 +3,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { emitNervesEvent } from "../nerves/runtime"
 import { bindPrivilegedFailsafeArtifact, listExternalEventStatus, readExternalEventRecord, type ExternalEventRecord } from "../heart/external-events/router"
-import { loadSessionEnvelopeFile, type SessionEnvelope, type SessionEvent } from "../heart/session-events"
+import { loadSessionEnvelopeFile, type SessionEnvelope, type SessionEvent, type SessionIngressRelations } from "../heart/session-events"
 import { currentSessionTurnLease, readSessionTransaction, withSessionTurnLease, writeSessionTransaction, type SessionTurnLease } from "../mind/session-transaction"
 import { escapeTelegramHtml, sendTelegramText, splitTelegramText, TelegramApiError, type TelegramBotApi } from "./telegram-client"
 
@@ -682,7 +682,7 @@ export function appendTelegramArtifactEvents(envelope: SessionEnvelope, artifact
   }
 }
 
-export function appendTelegramInboundEvent(envelope: SessionEnvelope, input: { text: string; reference: string; recordedAt: string }): SessionEnvelope {
+export function appendTelegramInboundEvent(envelope: SessionEnvelope, input: { text: string; reference: string; recordedAt: string; relations?: SessionIngressRelations }): SessionEnvelope {
   if (envelope.events.some((event) => event.relations.references.includes(input.reference))) return envelope
   const sequence = envelope.events.reduce((maximum, event) => Math.max(maximum, event.sequence), 0) + 1
   const id = `evt-${String(sequence).padStart(6, "0")}`
@@ -696,7 +696,14 @@ export function appendTelegramInboundEvent(envelope: SessionEnvelope, input: { t
     toolCalls: [],
     attachments: [],
     time: { authoredAt: null, authoredAtSource: "unknown", observedAt: input.recordedAt, observedAtSource: "ingest", recordedAt: input.recordedAt, recordedAtSource: "save" },
-    relations: { replyToEventId: null, threadRootEventId: null, references: [input.reference], toolCallId: null, supersedesEventId: null, redactsEventId: null },
+    relations: {
+      replyToEventId: input.relations?.replyToEventId ?? null,
+      threadRootEventId: input.relations?.threadRootEventId ?? null,
+      references: [...new Set([input.reference, ...(input.relations?.references ?? [])])],
+      toolCallId: null,
+      supersedesEventId: null,
+      redactsEventId: null,
+    },
     provenance: { captureKind: "live", legacyVersion: null, sourceMessageIndex: null },
   }
   return {
@@ -710,21 +717,21 @@ export function recordTelegramEffectsInSession(input: {
   store: FileTelegramEffectJournal
   sessionPath: string
   artifacts: TelegramEffectArtifact[]
-  inbound: { text: string; reference: string }
+  inbound: { text: string; reference: string; relations?: SessionIngressRelations }
   causalEventIds?: Readonly<Record<string, string>>
 }): Promise<{ eventId: string; reference: string }>
 export function recordTelegramEffectsInSession(input: {
   store: FileTelegramEffectJournal
   sessionPath: string
   artifacts: TelegramEffectArtifact[]
-  inbound?: { text: string; reference: string }
+  inbound?: { text: string; reference: string; relations?: SessionIngressRelations }
   causalEventIds?: Readonly<Record<string, string>>
 }): Promise<{ eventId: string; reference: string } | null>
 export async function recordTelegramEffectsInSession(input: {
   store: FileTelegramEffectJournal
   sessionPath: string
   artifacts: TelegramEffectArtifact[]
-  inbound?: { text: string; reference: string }
+  inbound?: { text: string; reference: string; relations?: SessionIngressRelations }
   causalEventIds?: Readonly<Record<string, string>>
 }): Promise<{ eventId: string; reference: string } | null> {
   if (input.artifacts.length === 0 && !input.inbound) return null

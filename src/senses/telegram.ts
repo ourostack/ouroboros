@@ -1121,20 +1121,16 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       emitNervesEvent({ level: "error", component: "senses", event: "senses.telegram_system_failsafe_error", message: "Telegram system failsafe reconciliation failed", meta: { agentName: options.agentName, subject, error: transportError(error) } })
     }
   }
-  const dispatchResolvedRelationshipTurn = async (input: {
+  const prepareRelationshipRunAgentOptions = (input: {
     friendId: string
-    sessionKey: string
     requestId: string
-    eventId: string
-    reference: string
-    text: string
+    sessionEventId: string
     userId: string
     chatId: string
-  }): Promise<void> => {
+    sessionKey: string
+  }): NonNullable<RunSenseTurnOptions["prepareRunAgentOptions"]> => {
     if (!options.resolveRelationshipAuthorization) throw new Error("Telegram relationship authorization resolver is unavailable")
-    const sessionPath = getSenseSessionPath(options.agentName, input.friendId, "telegram", input.sessionKey, agentRoot)
-    const relationshipCoordinates = { friendId: input.friendId, requestId: input.requestId, sessionEventId: input.eventId,
-      botId: botId!, userId: input.userId, chatId: input.chatId, sessionKey: input.sessionKey }
+    const relationshipCoordinates = { ...input, botId: botId! }
     const resolveLiveRelationshipAuthorization = async () => {
       const authorization = await options.resolveRelationshipAuthorization!(relationshipCoordinates)
       if (authorization.subject.friendId !== input.friendId || authorization.subject.admissionState !== "active") throw new Error("Telegram relationship admission is not active")
@@ -1147,6 +1143,22 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
           (await options.resolveRelationshipAuthorization!(relationshipCoordinates)).authorizeTool(name, args),
       }
     }
+    return async ({ runAgentOptions }) => ({
+      ...runAgentOptions,
+      toolContext: { ...runAgentOptions.toolContext!, relationshipAuthorization: await resolveLiveRelationshipAuthorization() },
+    })
+  }
+  const dispatchResolvedRelationshipTurn = async (input: {
+    friendId: string
+    sessionKey: string
+    requestId: string
+    eventId: string
+    reference: string
+    text: string
+    userId: string
+    chatId: string
+  }): Promise<void> => {
+    const sessionPath = getSenseSessionPath(options.agentName, input.friendId, "telegram", input.sessionKey, agentRoot)
     const effects: TelegramEffectArtifact[] = []
     let ordinal = 0
     const deliver = async (text: string): Promise<void> => {
@@ -1167,10 +1179,8 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       ingressRelations: { replyToEventId: null, threadRootEventId: null, references: [input.reference] },
       precommittedIngress: { eventId: input.eventId, reference: input.reference },
       toolContext: { ...(toolContext ?? {}) },
-      prepareRunAgentOptions: async ({ runAgentOptions }) => ({
-        ...runAgentOptions,
-        toolContext: { ...runAgentOptions.toolContext!, relationshipAuthorization: await resolveLiveRelationshipAuthorization() },
-      }),
+      prepareRunAgentOptions: prepareRelationshipRunAgentOptions({ friendId: input.friendId, requestId: input.requestId,
+        sessionEventId: input.eventId, userId: input.userId, chatId: input.chatId, sessionKey: input.sessionKey }),
       deliverySink: { onDelivery: (delivery) => deliver(delivery.text) },
     })
     if (effects.length === 0 && result.response.trim()) await deliver(result.response)
@@ -1257,8 +1267,8 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   }
 
   const onMessageBody = async (message: TelegramInboundMessage): Promise<void> => {
-    const currentFriendId = `telegram-user:${subject}`
-    const currentSessionKey = `telegram:${subject}`
+    const currentFriendId = configuredOwnerFriendId
+    const currentSessionKey = configuredOwnerSessionKey
     const currentSessionPath = getSenseSessionPath(options.agentName, currentFriendId, "telegram", currentSessionKey, agentRoot)
     const inboundReference = `telegram-inbound:${createHmac("sha256", identityKey).update(`${message.updateId}\0${message.messageId}`).digest("hex")}`
     const acceptanceMarker = options.acceptanceMarker ? options.acceptanceMarker() : readSanctuaryAcceptanceMarker(options.agentName)
@@ -1316,6 +1326,14 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     }
     try {
       acceptanceAuditBarrier()
+      const ingressReceipt = options.resolveRelationshipAuthorization
+        ? await recordTelegramEffectsInSession({
+            store: getEffectJournal(),
+            sessionPath: currentSessionPath,
+            artifacts: [],
+            inbound: { text: message.text, reference: inboundReference, relations: ingressRelations },
+          })
+        : null
       const collected = await collectToolReceipts(() => runTurn({
         agentName: options.agentName,
         channel: "telegram",
@@ -1323,11 +1341,13 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         friendId: currentFriendId,
         identity: {
           provider: "telegram-user",
-          externalId: subject,
-          displayName: `Telegram user ${subject}`,
+          externalId: options.admission ? message.userId : subject,
+          displayName: options.admission ? "Ari" : `Telegram user ${subject}`,
+          ...(options.admission ? { tenantId: botId! } : {}),
         },
         userMessage: message.text,
         ingressRelations,
+        ...(ingressReceipt ? { precommittedIngress: ingressReceipt } : {}),
         turnMetricsObserver,
         deliverySink: {
           onDelivery: async (delivery) => {
@@ -1340,6 +1360,16 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
           },
         },
         ...(toolContext ? { toolContext } : {}),
+        ...(options.resolveRelationshipAuthorization ? {
+          prepareRunAgentOptions: prepareRelationshipRunAgentOptions({
+            friendId: currentFriendId,
+            requestId: inboundReference,
+            sessionEventId: ingressReceipt!.eventId,
+            userId: message.userId,
+            chatId: message.chatId,
+            sessionKey: currentSessionKey,
+          }),
+        } : {}),
         ...(approvalRuntime ? { approvalCoordinatorFactory: approvalRuntime.coordinator } : {}),
       }), toolReceiptObserver)
       const result = collected.result
@@ -1591,7 +1621,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     async sendProactive(text, signal) {
       await runWithAcceptanceAuditOwner(async () => {
         const effect = await deliverButlerEffect(requiredText(text, "proactive message"), `proactive:${randomUUID()}`, signal)
-        const sessionPath = getSenseSessionPath(options.agentName, `telegram-user:${subject}`, "telegram", `telegram:${subject}`, agentRoot)
+        const sessionPath = getSenseSessionPath(options.agentName, configuredOwnerFriendId, "telegram", configuredOwnerSessionKey, agentRoot)
         await recordAcceptedEffects(sessionPath, [effect])
       })
     },
@@ -1602,7 +1632,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       await runWithAcceptanceAuditOwner(async () => {
         const receiptIdentity = JSON.stringify([source, eventId, input.generation])
         const effect = await deliverButlerEffect(requiredText(input.text, "external event decision"), `external-event:${receiptIdentity}`, input.signal)
-        const sessionPath = getSenseSessionPath(options.agentName, `telegram-user:${subject}`, "telegram", `telegram:${subject}`, agentRoot)
+        const sessionPath = getSenseSessionPath(options.agentName, configuredOwnerFriendId, "telegram", configuredOwnerSessionKey, agentRoot)
         await recordAcceptedEffects(sessionPath, [effect])
       })
     },
