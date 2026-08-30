@@ -117,7 +117,7 @@ export const continuityToolDefinitions: ToolDefinition[] = [
         } catch {
           throw new Error("External event timed disposition requires a current pending Await");
         }
-        if (pendingAwait.status !== "pending" || pendingAwait.wake_at !== String(a.wakeAt ?? "")) {
+        if (pendingAwait.status !== "pending" || pendingAwait.wake_at !== String(a.wakeAt)) {
           throw new Error("External event timed disposition Await does not match the exact wake time");
         }
       }
@@ -127,7 +127,7 @@ export const continuityToolDefinitions: ToolDefinition[] = [
         decision,
         stewardPolicy,
         nextWake,
-        wakeAt: nextWake === "at" ? String(a.wakeAt ?? "") : null,
+        wakeAt: nextWake === "at" ? String(a.wakeAt) : null,
         awaitId: typeof a.awaitId === "string" && a.awaitId ? a.awaitId : null,
         careId: typeof a.careId === "string" && a.careId ? a.careId : null,
         actionRefs,
