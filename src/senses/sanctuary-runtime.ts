@@ -15,6 +15,7 @@ import { readSanctuaryAcceptanceApproval, readSanctuaryAcceptanceMarker, sanctua
 import { projectSanctuaryGrounding, sanctuaryGroundingDigest, type SanctuaryToolGrounding } from "./sanctuary-grounding"
 import { probeSanctuaryEndpoint, SANCTUARY_PUBLIC_ENDPOINTS } from "./sanctuary-health"
 import { createSanctuarySabClient } from "./sanctuary-sab"
+import { createSanctuaryMediaOptimizationClient } from "./sanctuary-media-optimization"
 
 const sanctuaryToolReceipts = new AsyncLocalStorage<string[]>()
 const sanctuaryToolGroundings = new AsyncLocalStorage<SanctuaryToolGrounding[]>()
@@ -55,6 +56,28 @@ function required(config: Record<string, unknown>, field: string): string {
   const value = config[field]
   if (typeof value !== "string" || value.trim().length === 0) throw new Error(`Sanctuary ${field} is missing`)
   return value.trim()
+}
+
+function requiredObject(config: Record<string, unknown>, field: string): Record<string, unknown> {
+  const value = config[field]
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Sanctuary ${field} is missing`)
+  return value as Record<string, unknown>
+}
+
+function requiredPair(config: Record<string, unknown>, field: string): [string, string] {
+  const values = required(config, field).split(",").map((value) => value.trim())
+  if (values.length !== 2 || new Set(values).size !== 2 || values.some((value) => value.length === 0)) throw new Error(`Sanctuary ${field} must contain exactly two unique IDs`)
+  return [values[0]!, values[1]!]
+}
+
+function optionalJellyfin(config: Record<string, unknown>) {
+  if (config.jellyfin === undefined) return {}
+  const jellyfin = requiredObject(config, "jellyfin")
+  return {
+    jellyfinUserId: required(jellyfin, "userId"),
+    jellyfinAccessToken: required(jellyfin, "accessToken"),
+    jellyfinFolderIds: requiredPair(jellyfin, "folderIds"),
+  }
 }
 
 function persistAttempt(filePath: string, attempt: UnraidRestartAttempt): void {
@@ -115,11 +138,17 @@ export function createSanctuaryToolContext(agentName: string): Pick<ToolContext,
   const readClient = new UnraidClient({ endpoint, apiKey: required(initial, "unraidReadApiKey") })
   const reads = createUnraidReadTools(readClient)
   const sab = createSanctuarySabClient()
+  const mediaOptimization = createSanctuaryMediaOptimizationClient(optionalJellyfin(initial))
   const acceptanceRead = <TArgs extends unknown[], TResult>(toolName: string, read: (...args: TArgs) => Promise<TResult>) => async (...args: TArgs): Promise<TResult> => {
     try {
       const result = await read(...args)
       const receipt = collectToolResult(result, toolName)
-      emitNervesEvent({ component: "senses", event: "senses.sanctuary_read_receipt", message: "Sanctuary live read completed", meta: { toolName, success: true, ...receipt, ...sanctuaryAcceptanceEventMeta(agentName) } })
+      const semantic = result && typeof result === "object" && "ok" in result ? result as { ok?: unknown; error?: { code?: unknown } } : null
+      if (semantic?.ok === false) {
+        emitNervesEvent({ level: "error", component: "senses", event: "senses.sanctuary_read_receipt_error", message: "Sanctuary live read returned a semantic failure", meta: { toolName, success: false, semanticCode: typeof semantic.error?.code === "string" ? semantic.error.code : "unknown", ...receipt, ...sanctuaryAcceptanceEventMeta(agentName) } })
+      } else {
+        emitNervesEvent({ component: "senses", event: "senses.sanctuary_read_receipt", message: "Sanctuary live read completed", meta: { toolName, success: true, ...receipt, ...sanctuaryAcceptanceEventMeta(agentName) } })
+      }
       return result
     } catch (error) {
       emitNervesEvent({ level: "error", component: "senses", event: "senses.sanctuary_read_receipt_error", message: "Sanctuary live read failed", meta: { toolName, success: false, category: error instanceof Error ? error.name : "unknown", ...sanctuaryAcceptanceEventMeta(agentName) } })
@@ -152,6 +181,7 @@ export function createSanctuaryToolContext(agentName: string): Pick<ToolContext,
         return { ok: true, data: { observedAt: new Date().toISOString(), services, degraded: services.some((service) => !service.ok) } }
       }),
       getDownloadQueue: acceptanceRead("sanctuary_get_download_queue", sab.readQueue),
+      getMediaOptimization: acceptanceRead("sanctuary_get_media_optimization", mediaOptimization.read),
       resumeDownloadQueue: async () => {
         try {
           const result = await sab.resumeQueue()

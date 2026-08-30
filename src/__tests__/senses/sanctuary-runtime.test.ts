@@ -32,6 +32,8 @@ const runtimeMocks = vi.hoisted(() => {
     emitNervesEvent: vi.fn(),
     probeSanctuaryEndpoint: vi.fn(),
     sab: { readQueue: vi.fn(), resumeQueue: vi.fn() },
+    mediaOptimization: { read: vi.fn() },
+    createSanctuaryMediaOptimizationClient: vi.fn(),
     forceUnexpectedGrounding: false,
   }
 })
@@ -56,6 +58,9 @@ vi.mock("../../senses/sanctuary-health", () => ({
   probeSanctuaryEndpoint: runtimeMocks.probeSanctuaryEndpoint,
 }))
 vi.mock("../../senses/sanctuary-sab", () => ({ createSanctuarySabClient: () => runtimeMocks.sab }))
+vi.mock("../../senses/sanctuary-media-optimization", () => ({
+  createSanctuaryMediaOptimizationClient: runtimeMocks.createSanctuaryMediaOptimizationClient,
+}))
 vi.mock("../../senses/sanctuary-grounding", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../senses/sanctuary-grounding")>()
   return {
@@ -84,6 +89,7 @@ function configured(overrides: Record<string, unknown> = {}) {
     unraidGraphqlUrl: " https://sanctuary.invalid/graphql ",
     unraidReadApiKey: " synthetic-read-key ",
     unraidWriteApiKey: " synthetic-write-key ",
+    jellyfin: { userId: " bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb ", accessToken: " aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ", folderIds: " library-a, library-b " },
     ...overrides,
   })
 }
@@ -99,6 +105,8 @@ describe("Sanctuary runtime tool context", () => {
     runtimeMocks.probeSanctuaryEndpoint.mockReset()
     runtimeMocks.sab.readQueue.mockReset()
     runtimeMocks.sab.resumeQueue.mockReset()
+    runtimeMocks.mediaOptimization.read.mockReset()
+    runtimeMocks.createSanctuaryMediaOptimizationClient.mockReset().mockReturnValue(runtimeMocks.mediaOptimization)
     runtimeMocks.readMachineRuntimeCredentialConfig.mockReturnValue(configured())
     runtimeMocks.getAgentRoot.mockReturnValue(fs.mkdtempSync(path.join(os.tmpdir(), "ouro-sanctuary-runtime-")))
   })
@@ -117,9 +125,15 @@ describe("Sanctuary runtime tool context", () => {
       apiKey: "synthetic-read-key",
     })
     expect(runtimeMocks.createUnraidReadTools).toHaveBeenCalledOnce()
+    expect(runtimeMocks.createSanctuaryMediaOptimizationClient).toHaveBeenCalledWith({
+      jellyfinUserId: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      jellyfinAccessToken: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      jellyfinFolderIds: ["library-a", "library-b"],
+    })
     expect(context.sanctuary?.restartContainer).toEqual(expect.any(Function))
     await expect(context.sanctuary?.recoverRoutineActions?.()).resolves.toEqual([])
     for (const key of Object.keys(runtimeMocks.readTools)) expect(context.sanctuary?.[key as keyof typeof runtimeMocks.readTools]).toEqual(expect.any(Function))
+    expect(context.sanctuary?.getMediaOptimization).toEqual(expect.any(Function))
     expect(runtimeMocks.readMachineRuntimeCredentialConfig).toHaveBeenCalledTimes(1)
 
     runtimeMocks.readTools.getSystem.mockResolvedValueOnce({ ok: true, data: { uptime: 10 } })
@@ -160,6 +174,31 @@ describe("Sanctuary runtime tool context", () => {
     })
     const acceptanceScenarioHandleDigest = runtimeMocks.state.restartOptions?.acceptanceScenarioHandleDigest as () => string | undefined
     expect(acceptanceScenarioHandleDigest()).toBeUndefined()
+  })
+
+  it("records the combined media optimization read through the existing acceptance seam", async () => {
+    runtimeMocks.mediaOptimization.read.mockResolvedValueOnce({ ok: true, data: { degraded: false } })
+    const context = createSanctuaryToolContext("slugger")
+    await expect(context.sanctuary!.getMediaOptimization()).resolves.toEqual({ ok: true, data: { degraded: false } })
+    expect(runtimeMocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.sanctuary_read_receipt",
+      meta: expect.objectContaining({ toolName: "sanctuary_get_media_optimization", success: true }),
+    }))
+  })
+
+  it("records semantic read failures as failed acceptance receipts without discarding typed evidence", async () => {
+    const result = { ok: false, error: { code: "authorization", message: "restricted identity drifted", degraded: true }, data: { unmanic: { version: "test" } } }
+    runtimeMocks.mediaOptimization.read.mockResolvedValueOnce(result)
+    const context = createSanctuaryToolContext("slugger")
+    await expect(context.sanctuary!.getMediaOptimization()).resolves.toEqual(result)
+    expect(runtimeMocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      level: "error",
+      event: "senses.sanctuary_read_receipt_error",
+      meta: expect.objectContaining({ toolName: "sanctuary_get_media_optimization", success: false, semanticCode: "authorization" }),
+    }))
+    runtimeMocks.mediaOptimization.read.mockResolvedValueOnce({ ok: false, error: {} })
+    await context.sanctuary!.getMediaOptimization()
+    expect(runtimeMocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({ meta: expect.objectContaining({ semanticCode: "unknown" }) }))
   })
 
   it("checks every fixed public service endpoint on demand and records one bounded read receipt", async () => {
@@ -282,6 +321,32 @@ describe("Sanctuary runtime tool context", () => {
   ])("rejects a missing or blank initial %s value", (field, value) => {
     runtimeMocks.readMachineRuntimeCredentialConfig.mockReturnValue(configured({ [field]: value }))
 
+    expect(() => createSanctuaryToolContext("slugger")).toThrow(`Sanctuary ${field} is missing`)
+  })
+
+  it.each(["one", "same,same", "one,two,three"])("rejects a non-exact Jellyfin folder list (%s)", (folderIds) => {
+    runtimeMocks.readMachineRuntimeCredentialConfig.mockReturnValue(configured({ jellyfin: { userId: "b".repeat(32), accessToken: "a".repeat(32), folderIds } }))
+    expect(() => createSanctuaryToolContext("slugger")).toThrow("Sanctuary folderIds must contain exactly two unique IDs")
+  })
+
+  it("keeps Sanctuary startup and Unmanic evidence available when optional Jellyfin config is absent", async () => {
+    runtimeMocks.readMachineRuntimeCredentialConfig.mockReturnValue(configured({ jellyfin: undefined }))
+    runtimeMocks.createSanctuaryMediaOptimizationClient.mockReturnValueOnce(runtimeMocks.mediaOptimization)
+    runtimeMocks.mediaOptimization.read.mockResolvedValueOnce({ ok: false, data: { unmanic: { version: "test" }, inventory: { available: false } } })
+    const context = createSanctuaryToolContext("slugger")
+    expect(runtimeMocks.createSanctuaryMediaOptimizationClient).toHaveBeenCalledWith({})
+    await expect(context.sanctuary!.getMediaOptimization()).resolves.toMatchObject({ data: { unmanic: { version: "test" }, inventory: { available: false } } })
+  })
+
+  it.each([null, "bad", [], {}])("fails closed for malformed present Jellyfin config (%j)", (jellyfin) => {
+    runtimeMocks.readMachineRuntimeCredentialConfig.mockReturnValue(configured({ jellyfin }))
+    expect(() => createSanctuaryToolContext("slugger")).toThrow()
+  })
+
+  it.each([
+    ["userId", undefined], ["userId", "   "], ["accessToken", undefined], ["accessToken", "   "], ["folderIds", undefined], ["folderIds", "   "],
+  ])("fails closed for missing present Jellyfin field %s (%j)", (field, value) => {
+    runtimeMocks.readMachineRuntimeCredentialConfig.mockReturnValue(configured({ jellyfin: { userId: "b".repeat(32), accessToken: "a".repeat(32), folderIds: "library-a,library-b", [field]: value } }))
     expect(() => createSanctuaryToolContext("slugger")).toThrow(`Sanctuary ${field} is missing`)
   })
 

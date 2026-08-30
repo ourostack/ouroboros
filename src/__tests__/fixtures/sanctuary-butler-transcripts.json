@@ -31,8 +31,9 @@
     "id": "storage-creative",
     "audience": "owner",
     "user": "Why is storage so full?",
-    "reply": "Media is among the largest shares. Unmanic is running, but the read-only evidence does not expose file codecs, so I won’t invent a savings estimate. I can inspect its bounded logs next before proposing any re-encode.",
-    "tools": ["unraid_get_storage", "unraid_get_disks"]
+    "reply": "Media is among the largest shares. Unmanic has historically saved 5.04 TiB and has one item queued. I found one unusually large older-codec item worth sample-testing, but I won’t promise future savings until a sample encode proves the size and quality tradeoff.",
+    "tools": ["unraid_get_storage", "sanctuary_get_media_optimization"],
+    "evidence": { "pending": 1, "opportunities": 1 }
   },
   {
     "id": "books-troubleshooting",
