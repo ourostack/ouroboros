@@ -823,7 +823,13 @@ describe("Sanctuary production boundary adapter coverage", () => {
           providerPing: async (provider, _config, options) => ({ ok: true, ...(variant.attempts === "present" ? { attempts: [{ provider, model: options.model!, operation: "ping", ok: true }] } : {}) }),
         } as never, root, { skipContainerSnapshot: true })
         expect(facts.provider?.pingReceipts).toHaveLength(2)
-        expect(facts.provider?.modelsExact).toBe(Boolean(("apiKey" in variant.credentials) && variant.credentials.apiKey && variant.credentialOk))
+        const contractEvaluated = Boolean(("apiKey" in variant.credentials) && variant.credentials.apiKey && variant.credentialOk)
+        expect(facts.provider).toMatchObject({
+          laneSelectionExact: contractEvaluated,
+          baseUrlExact: contractEvaluated,
+          vaultCoordinatesExact: contractEvaluated && variant.readinessVaultItem === "providers/minimax",
+          singleCredentialExact: contractEvaluated,
+        })
       } finally { fs.rmSync(root, { recursive: true, force: true }) }
     }
   })
@@ -846,7 +852,14 @@ describe("Sanctuary production boundary adapter coverage", () => {
         readFixedFile: (file) => file in files ? files[file]! : (() => { throw missing })(),
         telegramCredentials: () => ({ botToken: "12345:abcdefghijklmnopqrst", authorizedUserId: "42", authorizedChatId: "42" }),
       } as never, root, { skipContainerSnapshot: true })
-      expect(facts.provider).toMatchObject({ outwardReady: false, innerReady: false, modelsExact: false })
+      expect(facts.provider).toMatchObject({
+        outwardReady: false,
+        innerReady: false,
+        laneSelectionExact: false,
+        baseUrlExact: false,
+        vaultCoordinatesExact: false,
+        singleCredentialExact: false,
+      })
     } finally {
       fs.rmSync(root, { recursive: true, force: true })
     }

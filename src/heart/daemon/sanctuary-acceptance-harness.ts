@@ -406,8 +406,8 @@ export function validateSanctuaryUnit16EvidenceAssertions(label: SanctuaryUnit16
       requiredInteger(value, "publishedPortCount", 0, label)
       break
     case "unit-16c-provider-readiness":
-      exact(["baseUrlsExact", "credentialIdentitiesDistinct", "geminiCandidateReady", "innerReady", "modelsExact", "outwardReady", "providersDistinct", "silentFallback", "vaultCoordinatesExact"])
-      allTrue(["baseUrlsExact", "credentialIdentitiesDistinct", "geminiCandidateReady", "innerReady", "modelsExact", "outwardReady", "providersDistinct", "vaultCoordinatesExact"])
+      exact(["baseUrlExact", "innerReady", "laneSelectionExact", "outwardReady", "silentFallback", "singleCredentialExact", "vaultCoordinatesExact"])
+      allTrue(["baseUrlExact", "innerReady", "laneSelectionExact", "outwardReady", "singleCredentialExact", "vaultCoordinatesExact"])
       requiredFalse(value, "silentFallback", label)
       break
     case "unit-16d-whats-up":
@@ -554,7 +554,7 @@ function assertRedactedEvidence(value: unknown, label: string, key = ""): void {
     }
     for (const [key, item] of Object.entries(value as JsonObject)) {
       if (key === "writeCredentialAbsent" && item === true) continue
-      if (key === "credentialIdentitiesDistinct" && typeof item === "boolean") continue
+      if (key === "singleCredentialExact" && typeof item === "boolean") continue
       if (/(?:telegram)?(?:user|chat|update|message)[_-]?id|token|secret|password|credential|api[_-]?key/iu.test(key)) {
         throw new Error(`${label} contains a sensitive or raw Telegram identity field`)
       }

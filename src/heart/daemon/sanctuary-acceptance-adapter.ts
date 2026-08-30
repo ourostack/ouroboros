@@ -31,6 +31,7 @@ import { getAgentRoot } from "../identity"
 import { readApprovalsByScenarioHandleDigest, type ApprovalAcceptanceProjection } from "../approval-store"
 import { readProviderCredentialRecord } from "../provider-credentials"
 import { pingProvider, type PingResult } from "../provider-ping"
+import { MINIMAX_PROVIDER_BASE_URL } from "../providers/minimax"
 import { SANCTUARY_SCENARIO_GATES, SANCTUARY_SCENARIO_SOURCES, SANCTUARY_UNIT_16_EVIDENCE_LABELS, type SanctuaryUnit16EvidenceLabel } from "./sanctuary-acceptance-harness"
 import { readSanctuaryAcceptanceMarker } from "./sanctuary-acceptance-marker"
 import { createSanctuaryScenarioCapture, finalizeSanctuaryScenarioCapture, type SanctuaryHealthProbeReceipt, type SanctuaryInteractiveDriverReceipt, type SanctuaryPostbootIntegritySnapshot, type SanctuaryReadOnlyDenialReceipt, type SanctuaryScenarioFacts } from "./sanctuary-acceptance-scenarios"
@@ -94,20 +95,20 @@ const WRITE_PROBE = "mutation AcceptanceWriteProbe($id: PrefixedID!) { docker { 
 interface SanctuaryProviderReadinessContractInput {
   outward: { provider: string; model: string }
   inner: { provider: string; model: string }
-  minimax: { vaultItem: string; apiKey: string }
+  minimax: { vaultItem: string; apiKey: string; baseUrl: string }
   selectionPolicy: string
 }
 
 export function evaluateSanctuaryProviderReadinessContract(input: SanctuaryProviderReadinessContractInput): {
-  modelsExact: boolean; baseUrlsExact: boolean; vaultCoordinatesExact: boolean; credentialIdentitiesDistinct: boolean
+  laneSelectionExact: boolean; baseUrlExact: boolean; vaultCoordinatesExact: boolean; singleCredentialExact: boolean
 } {
   return {
-    modelsExact: input.outward.provider === "minimax" && input.outward.model === "MiniMax-M3"
+    laneSelectionExact: input.outward.provider === "minimax" && input.outward.model === "MiniMax-M3"
       && input.inner.provider === "minimax" && input.inner.model === "MiniMax-M3",
-    baseUrlsExact: true,
+    baseUrlExact: input.minimax.baseUrl === MINIMAX_PROVIDER_BASE_URL,
     vaultCoordinatesExact: input.minimax.vaultItem === "providers/minimax"
       && input.selectionPolicy === "explicit-same-lane-only",
-    credentialIdentitiesDistinct: typeof input.minimax.apiKey === "string" && input.minimax.apiKey.trim().length > 0,
+    singleCredentialExact: typeof input.minimax.apiKey === "string" && input.minimax.apiKey.trim().length > 0,
   }
 }
 const MISSING_CONTAINER_ID = "Docker:ouro-acceptance-guaranteed-missing"
@@ -1425,12 +1426,12 @@ export async function readDefaultSanctuaryScenarioFacts(
         && receipt.attempts.at(-1)?.ok === true)
       const fallbackAttemptCount = pingReceipts.reduce((count, receipt) => count + receipt.attempts.filter((attempt) => attempt.provider !== receipt.provider || attempt.model !== receipt.model).length, 0)
       const minimaxCredentials = minimaxRecord.ok ? minimaxRecord.record.credentials as Record<string, unknown> : {}
-      let exactContract = { modelsExact: false, baseUrlsExact: false, vaultCoordinatesExact: false, credentialIdentitiesDistinct: false }
+      let exactContract = { laneSelectionExact: false, baseUrlExact: false, vaultCoordinatesExact: false, singleCredentialExact: false }
       if (typeof minimaxCredentials.apiKey === "string") {
         const input: SanctuaryProviderReadinessContractInput = {
           outward: { provider: text(outwardConfig.provider, "outward provider"), model: outwardModel },
           inner: { provider: text(innerConfig.provider, "inner provider"), model: innerModel },
-          minimax: { vaultItem: typeof minimaxReadiness?.vaultItem === "string" ? minimaxReadiness.vaultItem : "", apiKey: minimaxCredentials.apiKey },
+          minimax: { vaultItem: typeof minimaxReadiness?.vaultItem === "string" ? minimaxReadiness.vaultItem : "", apiKey: minimaxCredentials.apiKey, baseUrl: MINIMAX_PROVIDER_BASE_URL },
           selectionPolicy: text(readinessPolicy.selectionPolicy, "provider selection policy"),
         }
         exactContract = evaluateSanctuaryProviderReadinessContract(input)
@@ -1438,8 +1439,6 @@ export async function readDefaultSanctuaryScenarioFacts(
       liveProvider = {
         outwardReady: outwardPing.ok,
         innerReady: innerPing.ok,
-        geminiCandidateReady: true,
-        providersDistinct: true,
         silentFallback: readinessPolicy.selectionPolicy !== "explicit-same-lane-only",
         credentialRevisionsPresent: minimaxRecord.ok && Boolean(minimaxRecord.record.revision),
         requestSemanticsExact,
