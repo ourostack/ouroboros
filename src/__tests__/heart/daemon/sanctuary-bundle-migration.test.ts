@@ -30,7 +30,7 @@ function grant(target: string, provenance: "stated" | "installed_explicit_policy
     provenance,
     issuer: "ari",
     authorizedAt: "2026-08-29T00:00:00.000Z",
-    authorizingSessionEvent: "owner-contract-2026-08-29",
+    authorizingSessionEvent: `authenticated-owner-turn-${version}`,
     version,
   }
 }
@@ -51,10 +51,7 @@ function makePackageRoot(): string {
   const root = makeRoot("sanctuary-package")
   for (const relative of SANCTUARY_PACKAGE_MANAGED_FILES) write(root, relative, `packaged:${relative}\n`)
   write(root, "bundle-meta.json", { runtimeVersion: "0.1.0-alpha.743", bundleSchemaVersion: 3, lastUpdated: "2026-08-30T00:00:00.000Z" })
-  write(root, "state/policy/steward.json", policy(1, {
-    "unraid.restart:jellyfin": grant("jellyfin", "installed_explicit_policy", 1),
-    "unraid.restart:sabnzbd": grant("sabnzbd", "installed_explicit_policy", 1),
-  }))
+  write(root, "state/policy/steward.json", policy(0, {}))
   return root
 }
 
@@ -74,7 +71,7 @@ afterEach(() => {
 })
 
 describe("Sanctuary package-managed bundle migration", () => {
-  it("updates only package-managed files and bundle versions while CAS-merging installed grants", () => {
+  it("updates only package-managed files and bundle versions while preserving live owner authority exactly", () => {
     const packageRoot = makePackageRoot()
     const agentRoot = makeRoot("sanctuary-live")
     write(agentRoot, "agent.json", { humanFacing: { provider: "minimax", model: "custom" } })
@@ -90,14 +87,19 @@ describe("Sanctuary package-managed bundle migration", () => {
       "unraid.restart:sabnzbd": { ...grant("sabnzbd", "installed_explicit_policy", 6), maxCount: 1 },
       "unraid.restart:custom": grant("custom", "stated", 7),
     }))
+    write(agentRoot, "state/policy/policy-audit.ndjson", '{"authenticatedOwnerReceipt":"owner-session-event-7"}\n')
 
+    const originalPolicyText = fs.readFileSync(path.join(agentRoot, "state/policy/steward.json"), "utf8")
+    const originalAuditText = fs.readFileSync(path.join(agentRoot, "state/policy/policy-audit.ndjson"), "utf8")
     const first = migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot })
     const firstPolicyText = fs.readFileSync(path.join(agentRoot, "state/policy/steward.json"), "utf8")
     const firstAuditText = fs.readFileSync(path.join(agentRoot, "state/policy/policy-audit.ndjson"), "utf8")
     const second = migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot })
 
-    expect(first).toEqual({ managedFilesUpdated: SANCTUARY_PACKAGE_MANAGED_FILES.length, grantsAdded: 0, grantsUpdated: 1, grantsPreserved: 2, policyVersion: 8 })
-    expect(second).toEqual({ managedFilesUpdated: 0, grantsAdded: 0, grantsUpdated: 0, grantsPreserved: 3, policyVersion: 8 })
+    expect(first).toEqual({ managedFilesUpdated: SANCTUARY_PACKAGE_MANAGED_FILES.length, grantsAdded: 0, grantsUpdated: 0, grantsPreserved: 3, policyVersion: 7 })
+    expect(second).toEqual({ managedFilesUpdated: 0, grantsAdded: 0, grantsUpdated: 0, grantsPreserved: 3, policyVersion: 7 })
+    expect(firstPolicyText).toBe(originalPolicyText)
+    expect(firstAuditText).toBe(originalAuditText)
     expect(fs.readFileSync(path.join(agentRoot, "state/policy/steward.json"), "utf8")).toBe(firstPolicyText)
     expect(fs.readFileSync(path.join(agentRoot, "state/policy/policy-audit.ndjson"), "utf8")).toBe(firstAuditText)
     for (const relative of SANCTUARY_PACKAGE_MANAGED_FILES) {
@@ -114,19 +116,20 @@ describe("Sanctuary package-managed bundle migration", () => {
     const livePolicy = readStewardPolicy(agentRoot)
     expect(livePolicy.desiredStates["container:jellyfin"]).toMatchObject({ value: "off", provenance: "stated" })
     expect(livePolicy.routineActionGrants["unraid.restart:jellyfin"]).toMatchObject({ provenance: "stated", maxCount: 9 })
-    expect(livePolicy.routineActionGrants["unraid.restart:sabnzbd"]).toMatchObject({ provenance: "installed_explicit_policy", maxCount: 2, version: 8 })
+    expect(livePolicy.routineActionGrants["unraid.restart:sabnzbd"]).toMatchObject({ provenance: "installed_explicit_policy", maxCount: 1, version: 6 })
     expect(livePolicy.routineActionGrants["unraid.restart:custom"]).toMatchObject({ provenance: "stated" })
   })
 
-  it("adds missing packaged grants without copying packaged desired states", () => {
+  it("does not create policy authority when the live bundle has none", () => {
     const packageRoot = makePackageRoot()
     const agentRoot = makeRoot("sanctuary-live-empty")
     const result = migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot })
 
-    expect(result).toMatchObject({ grantsAdded: 2, grantsUpdated: 0, policyVersion: 2 })
+    expect(result).toMatchObject({ grantsAdded: 0, grantsUpdated: 0, grantsPreserved: 0, policyVersion: 0 })
     const livePolicy = readStewardPolicy(agentRoot)
     expect(livePolicy.desiredStates).toEqual({})
-    expect(Object.keys(livePolicy.routineActionGrants).sort()).toEqual(["unraid.restart:jellyfin", "unraid.restart:sabnzbd"])
+    expect(livePolicy.routineActionGrants).toEqual({})
+    expect(fs.existsSync(path.join(agentRoot, "state/policy/steward.json"))).toBe(false)
   })
 
   it("fails closed before writes for missing package files or symlinked destinations", () => {
@@ -145,12 +148,9 @@ describe("Sanctuary package-managed bundle migration", () => {
     expect(fs.existsSync(path.join(outside, "soul"))).toBe(false)
   })
 
-  it("restores exact files, modes, policy audit, and newly created parents when a CAS-path mutation fails", () => {
+  it("rejects package-carried authority before changing live files", () => {
     const packageRoot = makePackageRoot()
-    const packagedPolicy = policy(1, {
-      "unraid.restart:jellyfin": grant("jellyfin", "installed_explicit_policy", 1),
-      "unraid.restart:sabnzbd": { ...grant("sabnzbd", "installed_explicit_policy", 1), expiresAt: "2026-08-28T00:00:00.000Z" },
-    })
+    const packagedPolicy = policy(1, { "unraid.restart:jellyfin": grant("jellyfin", "installed_explicit_policy", 1) })
     write(packageRoot, "state/policy/steward.json", packagedPolicy)
     const agentRoot = makeRoot("sanctuary-live-rollback")
     write(agentRoot, "agent.json", { preserve: true })
@@ -160,13 +160,30 @@ describe("Sanctuary package-managed bundle migration", () => {
     fs.chmodSync(path.join(agentRoot, "bundle-meta.json"), 0o640)
     const before = treeSnapshot(agentRoot)
 
-    expect(() => migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot })).toThrow(/expiry/u)
+    expect(() => migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot })).toThrow(/must not carry routine action grants/u)
 
     expect(treeSnapshot(agentRoot)).toEqual(before)
     expect(treeSnapshot(agentRoot).some((entry) => /(?:journal|wal|shm|turn\.lock|package-migration)/u.test(entry))).toBe(false)
   })
 
-  it("rejects malformed roots, files, metadata, destinations, and installed grants before mutation", () => {
+  it("restores exact files, modes, and newly created parents when live policy validation fails after managed writes", () => {
+    const packageRoot = makePackageRoot()
+    const agentRoot = makeRoot("sanctuary-live-rollback")
+    write(agentRoot, "agent.json", { preserve: true })
+    write(agentRoot, "bundle-meta.json", { runtimeVersion: "old", bundleSchemaVersion: 2, lastUpdated: "old" })
+    write(agentRoot, "state/policy/steward.json", { schemaVersion: 99 })
+    write(agentRoot, "psyche/operator-note.md", "preserve\n")
+    fs.chmodSync(path.join(agentRoot, "psyche"), 0o750)
+    fs.chmodSync(path.join(agentRoot, "bundle-meta.json"), 0o640)
+    const before = treeSnapshot(agentRoot)
+
+    expect(() => migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot })).toThrow(/steward policy is invalid/u)
+
+    expect(treeSnapshot(agentRoot)).toEqual(before)
+    expect(treeSnapshot(agentRoot).some((entry) => /(?:journal|wal|shm|turn\.lock|package-migration)/u.test(entry))).toBe(false)
+  })
+
+  it("rejects malformed roots, files, metadata, and destinations before mutation", () => {
     const cases: Array<(packageRoot: string, agentRoot: string) => void> = [
       (packageRoot, agentRoot) => { expect(() => migrateSanctuaryPackageManagedBundle({ packageRoot: "relative", agentRoot })).toThrow(/absolute/u) },
       (packageRoot) => { expect(() => migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot: "relative" })).toThrow(/absolute/u) },
@@ -185,18 +202,27 @@ describe("Sanctuary package-managed bundle migration", () => {
       (packageRoot, agentRoot) => { write(packageRoot, "bundle-meta.json", { runtimeVersion: "x" }); expect(() => migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot })).toThrow(/missing/u) },
     ]
     for (const run of cases) run(makePackageRoot(), makeRoot("sanctuary-invalid"))
+  })
 
-    const invalidGrants: Array<Record<string, unknown>> = [
-      { provenance: "stated" }, { issuer: "" }, { authorizingSessionEvent: "" }, { authorizedAt: "" },
-      { version: 0 }, { version: 1.5 }, { maxCount: 0 }, { maxCount: 1.5 }, { windowMs: 0 }, { windowMs: Number.POSITIVE_INFINITY },
-      { verificationRequired: false }, { targets: [] }, { targets: "bad" }, { exclusions: "bad" },
-    ]
-    for (const mutation of invalidGrants) {
-      const packageRoot = makePackageRoot()
-      const packaged = policy(1, { broken: { ...grant("broken", "installed_explicit_policy", 1), ...mutation } as ReturnType<typeof grant> })
-      write(packageRoot, "state/policy/steward.json", packaged)
-      expect(() => migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot: makeRoot("sanctuary-invalid-grant") })).toThrow(/invalid/u)
-    }
+  it.each([
+    ["static issuer and shape-only event", {
+      first: { ...grant("jellyfin", "installed_explicit_policy", 1), issuer: "ari", authorizingSessionEvent: "owner-contract-2026-08-29" },
+    }],
+    ["missing authenticated session event", {
+      first: { ...grant("jellyfin", "installed_explicit_policy", 1), authorizingSessionEvent: "" },
+    }],
+    ["replayed session event across grants", {
+      first: { ...grant("jellyfin", "installed_explicit_policy", 1), authorizingSessionEvent: "authenticated-owner-turn-replayed" },
+      second: { ...grant("sabnzbd", "installed_explicit_policy", 2), authorizingSessionEvent: "authenticated-owner-turn-replayed" },
+    }],
+  ])("rejects %s in packaged policy without fabricating live authority", (_label, grants) => {
+    const packageRoot = makePackageRoot()
+    write(packageRoot, "state/policy/steward.json", policy(1, grants as Record<string, ReturnType<typeof grant>>))
+    const agentRoot = makeRoot("sanctuary-package-authority")
+
+    expect(() => migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot })).toThrow(/must not carry routine action grants/u)
+    expect(readStewardPolicy(agentRoot).routineActionGrants).toEqual({})
+    expect(fs.readdirSync(agentRoot)).toEqual([])
   })
 
 })
