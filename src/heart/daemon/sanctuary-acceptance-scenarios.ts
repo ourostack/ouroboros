@@ -308,7 +308,7 @@ export interface SanctuaryScenarioFacts {
     mountCount: number; publishedPortCount: number; restartPolicy: string; restartCount: number
     autostartExact: boolean; mountsExact: boolean; updaterDisabled: boolean; vaultUnlocked: boolean; manualAuthRequired: boolean
   }
-  provider?: { outwardReady: boolean; innerReady: boolean; geminiCandidateReady: boolean; providersDistinct: boolean; silentFallback: boolean; credentialRevisionsPresent?: boolean; requestSemanticsExact?: boolean; fallbackAttemptCount?: number; modelsExact?: boolean; baseUrlsExact?: boolean; vaultCoordinatesExact?: boolean; credentialIdentitiesDistinct?: boolean; pingReceipts?: Array<Record<string, unknown>> }
+  provider?: { outwardReady: boolean; innerReady: boolean; silentFallback: boolean; credentialRevisionsPresent?: boolean; requestSemanticsExact?: boolean; fallbackAttemptCount?: number; laneSelectionExact?: boolean; vaultCoordinatesExact?: boolean; singleCredentialExact?: boolean; pingReceipts?: Array<Record<string, unknown>> }
   cron?: { registered: boolean; fingerprint: string; receiptDigest: string; sweepCount: number }
   health?: { transitionCount: number; alertCount: number; productionRestored: boolean }
   digest?: { scheduleObserved: boolean; messageCount: number; firedWithinMs: number; productionRestored: boolean }
@@ -756,10 +756,10 @@ export function deriveSanctuaryScenarioAssertions(
         || !after.container.updaterDisabled || !after.container.vaultUnlocked) return null
       return { autostartExact: after.container.autostartExact, exactImage: after.container.exactImage, manualAuthRequired: after.container.manualAuthRequired, mountCount: after.container.mountCount, mountsExact: after.container.mountsExact, nonRootUid: Number(after.container.user.split(":")[0]), publishedPortCount: after.container.publishedPortCount, readOnlyRoot: after.container.readOnlyRoot, updaterDisabled: after.container.updaterDisabled, vaultUnlocked: after.container.vaultUnlocked }
     case "unit-16c-provider-readiness":
-      return after.provider && after.provider.outwardReady && after.provider.innerReady && after.provider.geminiCandidateReady && after.provider.providersDistinct && !after.provider.silentFallback
+      return after.provider && after.provider.outwardReady && after.provider.innerReady && !after.provider.silentFallback
         && after.provider.credentialRevisionsPresent === true && after.provider.requestSemanticsExact === true && after.provider.fallbackAttemptCount === 0
-        && after.provider.modelsExact === true && after.provider.baseUrlsExact === true && after.provider.vaultCoordinatesExact === true && after.provider.credentialIdentitiesDistinct === true
-        ? { outwardReady: true, innerReady: true, geminiCandidateReady: true, providersDistinct: true, silentFallback: false, modelsExact: true, baseUrlsExact: true, vaultCoordinatesExact: true, credentialIdentitiesDistinct: true } : null
+        && after.provider.laneSelectionExact === true && after.provider.vaultCoordinatesExact === true && after.provider.singleCredentialExact === true
+        ? { outwardReady: true, innerReady: true, silentFallback: false, laneSelectionExact: true, vaultCoordinatesExact: true, singleCredentialExact: true } : null
     case "unit-16d-whats-up":
       if (telegramResponses !== 1 || newTurns.length !== 1 || !exactFreshTelegramLifecycle(before, after, newTurns[0]!.updateDigest) || deliveredTurns[0]!.toolInvocationCount !== 1 || deliveredTurns[0]!.toolResultDigests.length !== 1 || !turnHasGroundedRead(after, deliveredTurns[0]!, "unraid_get_system") || !exactGroundedResponse(after, deliveredTurns[0]!, "unraid_get_system")) return null
       return { accurate: true, authorized: true, grounded: true, liveFactsMatched: true, responseCount: telegramResponses, responseWithinLimit: true, telegramDelivered: true }

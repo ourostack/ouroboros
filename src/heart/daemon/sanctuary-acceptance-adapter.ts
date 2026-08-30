@@ -99,15 +99,14 @@ interface SanctuaryProviderReadinessContractInput {
 }
 
 export function evaluateSanctuaryProviderReadinessContract(input: SanctuaryProviderReadinessContractInput): {
-  modelsExact: boolean; baseUrlsExact: boolean; vaultCoordinatesExact: boolean; credentialIdentitiesDistinct: boolean
+  laneSelectionExact: boolean; vaultCoordinatesExact: boolean; singleCredentialExact: boolean
 } {
   return {
-    modelsExact: input.outward.provider === "minimax" && input.outward.model === "MiniMax-M3"
+    laneSelectionExact: input.outward.provider === "minimax" && input.outward.model === "MiniMax-M3"
       && input.inner.provider === "minimax" && input.inner.model === "MiniMax-M3",
-    baseUrlsExact: true,
     vaultCoordinatesExact: input.minimax.vaultItem === "providers/minimax"
       && input.selectionPolicy === "explicit-same-lane-only",
-    credentialIdentitiesDistinct: typeof input.minimax.apiKey === "string" && input.minimax.apiKey.trim().length > 0,
+    singleCredentialExact: typeof input.minimax.apiKey === "string" && input.minimax.apiKey.trim().length > 0,
   }
 }
 const MISSING_CONTAINER_ID = "Docker:ouro-acceptance-guaranteed-missing"
@@ -1425,7 +1424,7 @@ export async function readDefaultSanctuaryScenarioFacts(
         && receipt.attempts.at(-1)?.ok === true)
       const fallbackAttemptCount = pingReceipts.reduce((count, receipt) => count + receipt.attempts.filter((attempt) => attempt.provider !== receipt.provider || attempt.model !== receipt.model).length, 0)
       const minimaxCredentials = minimaxRecord.ok ? minimaxRecord.record.credentials as Record<string, unknown> : {}
-      let exactContract = { modelsExact: false, baseUrlsExact: false, vaultCoordinatesExact: false, credentialIdentitiesDistinct: false }
+      let exactContract = { laneSelectionExact: false, vaultCoordinatesExact: false, singleCredentialExact: false }
       if (typeof minimaxCredentials.apiKey === "string") {
         const input: SanctuaryProviderReadinessContractInput = {
           outward: { provider: text(outwardConfig.provider, "outward provider"), model: outwardModel },
@@ -1438,8 +1437,6 @@ export async function readDefaultSanctuaryScenarioFacts(
       liveProvider = {
         outwardReady: outwardPing.ok,
         innerReady: innerPing.ok,
-        geminiCandidateReady: true,
-        providersDistinct: true,
         silentFallback: readinessPolicy.selectionPolicy !== "explicit-same-lane-only",
         credentialRevisionsPresent: minimaxRecord.ok && Boolean(minimaxRecord.record.revision),
         requestSemanticsExact,

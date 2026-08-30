@@ -1345,13 +1345,14 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       selectionPolicy: "explicit-same-lane-only",
     }
     const result = evaluateSanctuaryProviderReadinessContract(canonical)
-    expect(result).toEqual({ baseUrlsExact: true, credentialIdentitiesDistinct: true, modelsExact: true, vaultCoordinatesExact: true })
+    expect(result).toEqual({ singleCredentialExact: true, laneSelectionExact: true, vaultCoordinatesExact: true })
     expect(JSON.stringify(result)).not.toContain("glm-secret")
     expect(JSON.stringify(result)).not.toContain("gemini-secret")
     expect(JSON.stringify(result)).not.toContain("minimax-secret")
-    expect(evaluateSanctuaryProviderReadinessContract({ ...canonical, outward: { ...canonical.outward, model: "MiniMax-M2.7" } }).modelsExact).toBe(false)
-    expect(evaluateSanctuaryProviderReadinessContract({ ...canonical, inner: { ...canonical.inner, provider: "openai-compatible" } }).modelsExact).toBe(false)
+    expect(evaluateSanctuaryProviderReadinessContract({ ...canonical, outward: { ...canonical.outward, model: "MiniMax-M2.7" } }).laneSelectionExact).toBe(false)
+    expect(evaluateSanctuaryProviderReadinessContract({ ...canonical, inner: { ...canonical.inner, provider: "openai-compatible" } }).laneSelectionExact).toBe(false)
     expect(evaluateSanctuaryProviderReadinessContract({ ...canonical, minimax: { ...canonical.minimax, vaultItem: "providers/wrong" } }).vaultCoordinatesExact).toBe(false)
+    expect(evaluateSanctuaryProviderReadinessContract({ ...canonical, minimax: { ...canonical.minimax, apiKey: "" } }).singleCredentialExact).toBe(false)
   })
 
   it.each([

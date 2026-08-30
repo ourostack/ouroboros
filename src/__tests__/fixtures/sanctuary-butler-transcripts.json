@@ -10,7 +10,7 @@
     "id": "expected-off",
     "audience": "owner",
     "user": "I turn Books off when I’m not using it. Stop treating that as broken.",
-    "reply": "Got it. I’ll treat Books being off as expected until you start it again. That preference applies only to Books; I’ll keep watching everything else normally.",
+    "reply": "Got it. I’ll treat both parts of Books being off as expected until you ask for Books again. That preference applies only to Books; I’ll keep watching everything else normally.",
     "tools": ["steward_policy_manage"]
   },
   {

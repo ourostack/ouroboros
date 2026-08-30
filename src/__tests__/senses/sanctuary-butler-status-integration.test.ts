@@ -43,7 +43,7 @@ vi.mock("../../heart/daemon/socket-client", () => ({
 }))
 
 import { patchRuntimeConfig, resetConfigCache } from "../../heart/config"
-import { readStewardPolicy, updateStewardPolicy } from "../../heart/steward-policy"
+import { readStewardPolicy } from "../../heart/steward-policy"
 import { createRelationshipAuthorizationEvaluator, loadRelationshipCapabilityRegistry } from "../../repertoire/relationship-authorization"
 import { createTelegramSenseApp, opaqueTelegramSubject } from "../../senses/telegram"
 import type { TelegramBotApi, TelegramInboundMessage, TelegramLongPoll } from "../../senses/telegram-client"
@@ -70,7 +70,7 @@ describe("Sanctuary Telegram stored-status integration", () => {
     fs.rmSync(harness.agentRoot, { recursive: true, force: true })
   })
 
-  it("reads a stored Books preference through the real provider/tool loop and delivers its settle over Telegram", async () => {
+  it("turns Ari's natural Books preference into both exact desired states without restart noise and reverses both", async () => {
     const identityKey = "k".repeat(43)
     const botToken = "test-token"
     const userId = "42"
@@ -90,28 +90,35 @@ describe("Sanctuary Telegram stored-status integration", () => {
       requestPhase: "inbound",
       sessionEventId: "telegram-status-event",
     })
-    updateStewardPolicy(harness.agentRoot, {
-      expectedVersion: readStewardPolicy(harness.agentRoot).version,
-      actor: relationshipAuthorization.actor!,
-      mutation: { kind: "set_desired_state", key: "container:books", value: "intentionally_off", provenance: "stated", source: "telegram:status-preference" },
-      now: "2026-08-29T10:00:00.000Z",
-    })
-
     let advertisedTools: string[] = []
-    let durableToolResult = ""
+    const invokedTools: string[] = []
+    const invoke = (id: string, name: string, args: Record<string, unknown>) => (request: any) => {
+      advertisedTools = request.tools.map((tool: any) => tool.function.name)
+      invokedTools.push(name)
+      return toolCall(id, name, args)
+    }
     harness.providerCreate
-      .mockImplementationOnce((request: any) => {
-        advertisedTools = request.tools.map((tool: any) => tool.function.name)
-        return toolCall("read-stored-policy", "steward_policy_manage", { action: "read" })
-      })
-      .mockImplementationOnce((request: any) => {
-        durableToolResult = request.messages.findLast((message: any) => message.role === "tool" && message.tool_call_id === "read-stored-policy")?.content ?? ""
-        return toolCall("return-stored-policy", "settle", { answer: durableToolResult, intent: "direct_reply" })
-      })
+      .mockImplementationOnce(invoke("read-before-off", "steward_policy_manage", { action: "read" }))
+      .mockImplementationOnce(invoke("set-calibre-off", "steward_policy_manage", {
+        action: "set_desired_state", expectedVersion: 0, key: "container:calibre", value: "intentionally_off", provenance: "stated", source: "Ari said Books can stay off when unused",
+      }))
+      .mockImplementationOnce(invoke("set-calibre-web-off", "steward_policy_manage", {
+        action: "set_desired_state", expectedVersion: 1, key: "container:calibre-web", value: "intentionally_off", provenance: "stated", source: "Ari said Books can stay off when unused",
+      }))
+      .mockImplementationOnce(invoke("confirm-off", "settle", { answer: "Got it. I’ll leave Books quietly off until you ask for it again.", intent: "direct_reply" }))
+      .mockImplementationOnce(invoke("read-before-on", "steward_policy_manage", { action: "read" }))
+      .mockImplementationOnce(invoke("set-calibre-on", "steward_policy_manage", {
+        action: "set_desired_state", expectedVersion: 2, key: "container:calibre", value: "on_demand", provenance: "stated", source: "Ari asked for Books again",
+      }))
+      .mockImplementationOnce(invoke("set-calibre-web-on", "steward_policy_manage", {
+        action: "set_desired_state", expectedVersion: 3, key: "container:calibre-web", value: "on_demand", provenance: "stated", source: "Ari asked for Books again",
+      }))
+      .mockImplementationOnce(invoke("confirm-on", "settle", { answer: "Books is expected on again. I’ll check both parts.", intent: "direct_reply" }))
 
     let onMessage!: (message: TelegramInboundMessage) => Promise<void>
     const api: TelegramBotApi = { request: vi.fn(async () => ({ message_id: 71 })), stop: vi.fn() }
     const poll: TelegramLongPoll = { pollOnce: vi.fn(), run: vi.fn(), stop: vi.fn() }
+    const sendApproval = vi.fn()
     const app = createTelegramSenseApp({
       agentName: "sanctuary",
       credentials: { botToken, authorizedUserId: userId, authorizedChatId: chatId },
@@ -121,22 +128,34 @@ describe("Sanctuary Telegram stored-status integration", () => {
       api,
       offsetStore: { load: () => 0, save: vi.fn() },
       createLongPoll: (options) => { onMessage = options.onMessage; return poll },
-      approvalTransport: { sendApproval: vi.fn(), handleUpdate: vi.fn(async () => ({ handled: true, accepted: true, reason: "accepted" })), reconcileExpired: vi.fn(), terminalizeRecovered: vi.fn() } as any,
+      approvalTransport: { sendApproval, handleUpdate: vi.fn(async () => ({ handled: true, accepted: true, reason: "accepted" })), reconcileExpired: vi.fn(), terminalizeRecovered: vi.fn() } as any,
       _createInteractiveControl: (() => ({ socketPath: "unused", start: vi.fn(), stop: vi.fn() })) as any,
       migrateIdentity: async () => undefined,
     })
 
     try {
-      await onMessage({ updateId: 1, messageId: "2", userId, chatId, text: "status" })
+      await onMessage({ updateId: 1, messageId: "2", userId, chatId, text: "Books can stay off when I’m not using it." })
       expect(advertisedTools).toContain("steward_policy_manage")
-      const policy = JSON.parse(durableToolResult) as { desiredStates: Record<string, { value: string }> }
-      expect(Object.keys(policy.desiredStates)).toEqual(["container:books"])
-      expect(policy.desiredStates["container:books"]?.value).toBe("intentionally_off")
+      const offPolicy = readStewardPolicy(harness.agentRoot)
+      expect(Object.keys(offPolicy.desiredStates).sort()).toEqual(["container:calibre", "container:calibre-web"])
+      expect(offPolicy.desiredStates["container:calibre"]?.value).toBe("intentionally_off")
+      expect(offPolicy.desiredStates["container:calibre-web"]?.value).toBe("intentionally_off")
+      expect(offPolicy.desiredStates["container:books"]).toBeUndefined()
+
+      await onMessage({ updateId: 2, messageId: "3", userId, chatId, text: "I want Books again." })
+      const onPolicy = readStewardPolicy(harness.agentRoot)
+      expect(Object.keys(onPolicy.desiredStates).sort()).toEqual(["container:calibre", "container:calibre-web"])
+      expect(onPolicy.desiredStates["container:calibre"]?.value).toBe("on_demand")
+      expect(onPolicy.desiredStates["container:calibre-web"]?.value).toBe("on_demand")
+      expect(invokedTools).not.toContain("unraid_restart_container")
+      expect(sendApproval).not.toHaveBeenCalled()
       const delivered = vi.mocked(api.request).mock.calls
         .filter(([method]) => method === "sendMessage")
         .map(([, parameters]) => String((parameters as { text?: unknown }).text ?? ""))
-        .join("")
-      expect(delivered).toBe(durableToolResult)
+      expect(delivered).toEqual([
+        "Got it. I’ll leave Books quietly off until you ask for it again.",
+        "Books is expected on again. I’ll check both parts.",
+      ])
     } finally {
       await app.stop()
     }
