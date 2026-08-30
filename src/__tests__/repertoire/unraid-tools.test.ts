@@ -310,6 +310,7 @@ describe("Unraid typed read tools", () => {
       getSystem: vi.fn(async () => ({ ok: true, data: "system" })),
       checkServices: vi.fn(async () => ({ ok: true, data: "services" })),
       getDownloadQueue: vi.fn(async () => ({ ok: true, data: "download-queue" })),
+      getMediaOptimization: vi.fn(async () => ({ ok: true, data: "media-optimization" })),
       resumeDownloadQueue: vi.fn(async () => ({ ok: true, data: "resumed" })),
       restartContainer: vi.fn(async (args) => ({ ok: true, data: args })),
     }
@@ -323,6 +324,7 @@ describe("Unraid typed read tools", () => {
     expect(sanctuary.getContainerLogs).toHaveBeenCalledExactlyOnceWith({ container: "alpha", tailLines: 7 })
     expect(sanctuary.checkServices).toHaveBeenCalledExactlyOnceWith()
     expect(sanctuary.getDownloadQueue).toHaveBeenCalledExactlyOnceWith()
+    expect(sanctuary.getMediaOptimization).toHaveBeenCalledExactlyOnceWith()
     expect(sanctuary.resumeDownloadQueue).toHaveBeenCalledExactlyOnceWith()
     expect(sanctuary.restartContainer).toHaveBeenCalledExactlyOnceWith({ container: "alpha" }, undefined)
     const restartDefinition = unraidToolDefinitions.find((definition) => definition.tool.function.name === "unraid_restart_container")!

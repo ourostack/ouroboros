@@ -4786,7 +4786,7 @@ describe("private runtime", () => {
   })
 
   it("gives Sanctuary usenet event turns the existing Sanctuary tool context", async () => {
-    cacheMachineRuntimeCredentialConfig("test-agent", { unraidGraphqlUrl: "http://unraid.test/graphql", unraidReadApiKey: "read-test", unraidWriteApiKey: "write-test" })
+    cacheMachineRuntimeCredentialConfig("test-agent", { unraidGraphqlUrl: "http://unraid.test/graphql", unraidReadApiKey: "read-test", unraidWriteApiKey: "write-test", jellyfin: { userId: "b".repeat(32), accessToken: "a".repeat(32), folderIds: "library-a,library-b" } })
     fs.writeFileSync(path.join(agentRoot, "tool-profiles.json"), JSON.stringify({ version: 2, profiles: {
       "sanctuary-owner": { version: 3, contextScopes: ["household.status"], toolNames: ["external_event_disposition", "unraid_inspect"], effectScopes: [] },
       "sanctuary-event": { version: 2, contextScopes: ["household.status"], toolNames: ["external_event_disposition", "unraid_inspect"], effectScopes: [] },

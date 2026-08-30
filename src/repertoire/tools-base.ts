@@ -165,6 +165,7 @@ export interface ToolContext {
     getSystem(): Promise<unknown>;
     checkServices(): Promise<unknown>;
     getDownloadQueue(): Promise<unknown>;
+    getMediaOptimization(): Promise<unknown>;
     resumeDownloadQueue(): Promise<unknown>;
     restartContainer(args: { container: string }, execution?: { routine?: import("./unraid-restart").RoutineRestartAuthority }): Promise<unknown>;
     recoverRoutineActions?(): Promise<unknown>;

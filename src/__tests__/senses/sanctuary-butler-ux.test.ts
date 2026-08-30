@@ -13,7 +13,7 @@ import { execTool, getToolsForChannel } from "../../repertoire/tools"
 const bundleRoot = path.resolve("deploy/unraid/sanctuary.ouro")
 const transcriptPath = path.resolve("src/__tests__/fixtures/sanctuary-butler-transcripts.json")
 
-type Transcript = { id: string; audience: "owner" | "family"; user: string; reply: string; tools: string[] }
+type Transcript = { id: string; audience: "owner" | "family"; user: string; reply: string; tools: string[]; evidence?: { pending: number; opportunities: number } }
 
 function psyche(name: string): string {
   return fs.readFileSync(path.join(bundleRoot, "psyche", `${name}.md`), "utf8")
@@ -99,7 +99,7 @@ describe("Mendelow Cloud Butler household UX", () => {
     expect(config.version).toBe(2)
     expect(config.profiles).toMatchObject({
       "sanctuary-owner": {
-        version: 4,
+        version: 5,
         contextScopes: expect.arrayContaining(["household.status", "household.policy"]),
         toolNames: expect.arrayContaining(["steward_policy_manage", "unraid_restart_container", "unraid_check_services", "sanctuary_get_download_queue", "sanctuary_resume_download_queue"]),
         effectScopes: expect.arrayContaining(["telegram.proactive", "telegram.request_return"]),
@@ -111,7 +111,7 @@ describe("Mendelow Cloud Butler household UX", () => {
         effectScopes: ["telegram.request_return"],
       },
       "sanctuary-event": {
-        version: 3,
+        version: 4,
         contextScopes: expect.arrayContaining(["household.status", "household.policy"]),
         toolNames: expect.arrayContaining(["external_event_disposition", "query_cares", "care_manage", "await_condition", "resolve_await", "sanctuary_get_download_queue"]),
         effectScopes: ["telegram.owner_event"],
@@ -183,6 +183,12 @@ describe("Mendelow Cloud Butler household UX", () => {
     const storage = transcripts.find((entry) => entry.id === "storage-creative")!
     expect(storage.reply).not.toMatch(/\b94 GB\b/u)
     expect(storage.reply).toContain("largest shares")
+    expect(storage.reply).toContain("historically saved")
+    expect(storage.reply).toContain("sample encode")
+    expect(storage.tools).toEqual(["unraid_get_storage", "sanctuary_get_media_optimization"])
+    expect(storage.evidence).toEqual({ pending: 1, opportunities: 1 })
+    expect(storage.reply).toContain(`${storage.evidence!.pending === 1 ? "one item" : storage.evidence!.pending} queued`)
+    expect(storage.reply).toContain(`${storage.evidence!.opportunities === 1 ? "one" : storage.evidence!.opportunities} unusually large`)
   })
 
   it("does not invent a media API and keeps family replies private", () => {
@@ -245,6 +251,7 @@ describe("Mendelow Cloud Butler household UX", () => {
 
     expect(advertised).toEqual(["save_friend_note", "await_condition", "resolve_await", "cancel_await", "unraid_list_containers", "unraid_get_storage", "unraid_get_disks", "unraid_get_system", "unraid_check_services", "unraid_restart_container", "settle", "speak"])
     expect(household.evaluator.advertisedToolNames).not.toEqual(expect.arrayContaining(["sanctuary_get_download_queue", "sanctuary_resume_download_queue"]))
+    expect(household.evaluator.advertisedToolNames).not.toContain("sanctuary_get_media_optimization")
     expect(await execTool("sanctuary_get_download_queue", {}, { ...household.context, sanctuary: { getDownloadQueue: async () => ({ paused: true }) } } as any)).toContain("relationship authorization required")
     expect(await execTool("sanctuary_resume_download_queue", {}, { ...household.context, sanctuary: { resumeDownloadQueue: async () => ({ ok: true }) } } as any)).toContain("relationship authorization required")
     const deniedRead = await execTool("query_cares", {}, household.context)
