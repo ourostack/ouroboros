@@ -707,16 +707,14 @@ export function createTelegramAdmissionController(options: TelegramAdmissionCont
       if (record.status === "ingress_committed") {
         record = options.store.compareAndSwap({ admissionId: record.id, expectedStatus: "ingress_committed", nextStatus: "turn_queued" })
       }
-      if (record.status === "turn_queued") {
-        if (!record.friendId || !record.ingressSessionKey || !record.ingressEventId || !record.ingressReference) throw new Error("Telegram admission queued work lost its durable reference")
-        const settlement = await options.dispatchApprovedWork({ admissionId: record.id, friendId: record.friendId, sessionKey: record.ingressSessionKey, eventId: record.ingressEventId, reference: record.ingressReference })
-        if (settlement === "indeterminate") {
-          await compensateFriend(record)
-          return options.store.compareAndSwap({ admissionId: record.id, expectedStatus: "turn_queued", nextStatus: "indeterminate" })
-        }
-        record = options.store.compareAndSwap({ admissionId: record.id, expectedStatus: "turn_queued", nextStatus: "handled" })
-        emitNervesEvent({ component: "senses", event: "senses.telegram_admission_handled", message: "Telegram admission dispatched one approved user turn", meta: { admissionId: record.id, friendId: record.friendId } })
+      if (!record.friendId || !record.ingressSessionKey || !record.ingressEventId || !record.ingressReference) throw new Error("Telegram admission queued work lost its durable reference")
+      const settlement = await options.dispatchApprovedWork({ admissionId: record.id, friendId: record.friendId, sessionKey: record.ingressSessionKey, eventId: record.ingressEventId, reference: record.ingressReference })
+      if (settlement === "indeterminate") {
+        await compensateFriend(record)
+        return options.store.compareAndSwap({ admissionId: record.id, expectedStatus: "turn_queued", nextStatus: "indeterminate" })
       }
+      record = options.store.compareAndSwap({ admissionId: record.id, expectedStatus: "turn_queued", nextStatus: "handled" })
+      emitNervesEvent({ component: "senses", event: "senses.telegram_admission_handled", message: "Telegram admission dispatched one approved user turn", meta: { admissionId: record.id, friendId: record.friendId } })
     } catch (error) {
       const failed = options.store.read(record.id)
       if (failed.friendId && !TERMINAL_STATUSES.has(failed.status)) {
@@ -800,7 +798,7 @@ export function createTelegramAdmissionController(options: TelegramAdmissionCont
         if (record.status === "pending") await ensureEffects(record)
         else if (["approved", "friend_bound", "ingress_committed", "turn_queued"].includes(record.status)) {
           await withDecisionLease(record.id, async () => settleOwnerCard(await resume(record.id)))
-        } else if (TERMINAL_STATUSES.has(record.status)) {
+        } else {
           await withDecisionLease(record.id, () => settleOwnerCard(record))
         }
       }
