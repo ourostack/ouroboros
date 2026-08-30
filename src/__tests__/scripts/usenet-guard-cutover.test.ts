@@ -423,6 +423,9 @@ printf '%s\n' "$*" >> ${JSON.stringify(calls)}
     const legacyHook = "/boot/config/custom/ouro-events/bootstrap-spool.sh --mount"
     const hook = `/bin/bash ${installRoot}/ouro-events/install-usenet-guard.sh --boot --install-root ${installRoot} --crontab-file ${crontabFile}`
     const previousInstallerHook = `/bin/bash ${installRoot}/ouro-events/install-usenet-guard.sh --boot --crontab-file ${crontabFile}`
+    fs.mkdirSync(path.join(installRoot, "ouro-events"), { recursive: true })
+    const killedResidue = [path.join(installRoot, "usenet_health.sh.ouro-next.999"), `${goFile}.ouro-next.999`, `${crontabFile}.ouro-restore.999`]
+    for (const residue of killedResidue) fs.writeFileSync(residue, "stranded-global-bytes\n", { mode: 0o600 })
     fs.writeFileSync(goFile, `#!/bin/bash\n${legacyHook}\n${previousInstallerHook}\n${hook}\n${hook}\n/usr/local/sbin/emhttp &\n`)
 
     for (let index = 0; index < 2; index += 1) {
@@ -443,6 +446,10 @@ printf '%s\n' "$*" >> ${JSON.stringify(calls)}
     expect(fs.readFileSync(crontabFile, "utf8")).toContain(`*/15 * * * * /bin/bash ${installRoot}/usenet_health.sh # ouro:usenet-health`)
     expect(fs.readFileSync(lifecycleLog, "utf8")).toBe("spool:--mount\nspool:--self-test\nevent:inactive\nspool:--mount\nspool:--self-test\nevent:active\nspool:--mount\nspool:--self-test\nevent:inactive\n")
     expect(transactionResidue(installRoot)).toEqual([])
+    for (const residue of killedResidue) expect(fs.existsSync(residue), residue).toBe(false)
+    const installer = fs.readFileSync(installerPath, "utf8")
+    expect(installer).toContain('private_transaction_workspace install')
+    expect(installer).not.toContain('mktemp -d "$INSTALL_ROOT/.ouro-usenet-stage')
     for (const file of ["usenet_health.sh", "ouro-events/emit-event.mjs", "ouro-events/emit-usenet-event.sh", "ouro-events/bootstrap-spool.sh", "ouro-events/install-usenet-guard.sh"]) {
       expect(fs.statSync(path.join(installRoot, file)).mode & 0o777).toBe(0o700)
     }
@@ -620,6 +627,8 @@ exec /usr/bin/install "$@"
     const crontabFile = path.join(temp, "crontab")
     const snapshot = hostSnapshot(temp)
     fs.mkdirSync(path.join(installRoot, "ouro-events"), { recursive: true })
+    const killedResidue = [path.join(installRoot, "usenet_health.sh.ouro-next.998"), `${goFile}.ouro-restore.998`, `${crontabFile}.ouro-next.998`]
+    for (const residue of killedResidue) fs.writeFileSync(residue, "stranded-global-bytes\n", { mode: 0o600 })
     const unrelatedHook = "/bin/bash /opt/team/ouro-events/install-usenet-guard.sh --boot"
     fs.writeFileSync(goFile, `#!/bin/bash\n${unrelatedHook}\ncurrent-go\n`)
     fs.writeFileSync(crontabFile, "current-cron # ouro:usenet-health\nunrelated-cron\n")
@@ -631,6 +640,26 @@ exec /usr/bin/install "$@"
     expect(fs.readFileSync(path.join(installRoot, "usenet_health.sh"), "utf8")).toBe("snapshot:custom/usenet_health.sh\n")
     expect(fs.readFileSync(path.join(installRoot, "ouro-events", "install-usenet-guard.sh"), "utf8")).toBe("snapshot:custom/ouro-events/install-usenet-guard.sh\n")
     expect(transactionResidue(installRoot)).toEqual([])
+    for (const residue of killedResidue) expect(fs.existsSync(residue), residue).toBe(false)
+    const installer = fs.readFileSync(installerPath, "utf8")
+    expect(installer).toContain('private_transaction_workspace restore')
+    expect(installer).not.toContain('mktemp -d "$INSTALL_ROOT/.ouro-usenet-restore')
+  })
+
+  it("rejects marker-bearing unrelated cron fragments before host mutation", () => {
+    const temp = root()
+    const installRoot = path.join(temp, "custom")
+    const goFile = path.join(temp, "go")
+    const crontabFile = path.join(temp, "crontab")
+    const snapshot = hostSnapshot(temp)
+    fs.writeFileSync(path.join(snapshot, "crontab.butler-lines"), "* * * * * curl --token stolen-secret # ouro:usenet-health\n", { mode: 0o600 })
+    fs.writeFileSync(goFile, "original-go\n")
+    fs.writeFileSync(crontabFile, "original-cron\n")
+
+    expect(() => execFileSync(installerPath, ["--restore-root", snapshot, "--install-root", installRoot, "--go-file", goFile, "--crontab-file", crontabFile], { stdio: "ignore" })).toThrow()
+    expect(fs.readFileSync(goFile, "utf8")).toBe("original-go\n")
+    expect(fs.readFileSync(crontabFile, "utf8")).toBe("original-cron\n")
+    expect(fs.existsSync(installRoot)).toBe(false)
   })
 
   it("rejects a captured boot hook with any argument or shell-command suffix before mutation", () => {
