@@ -283,7 +283,6 @@ function retentionWithoutReplayManifest(summary: ExternalEventRetentionSummary):
 
 function compactHandledReceiptsForNewRecord(recordPath: string): ExternalEventRetentionSummary | null {
   const sourceDir = path.dirname(recordPath)
-  if (!fs.existsSync(sourceDir)) return null
   const records = fs.readdirSync(sourceDir, { withFileTypes: true }).filter((entry) => entry.isFile() && !entry.name.startsWith(".") && entry.name.endsWith(".json"))
   if (records.length < MAX_EVENT_RECORDS_PER_SOURCE) return null
   const handled = records.flatMap((entry) => {

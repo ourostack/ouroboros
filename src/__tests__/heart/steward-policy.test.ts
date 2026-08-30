@@ -1,7 +1,7 @@
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import {
   inspectRoutineActionGrant,
   readRoutineActionReceipts,
@@ -13,6 +13,7 @@ import {
 } from "../../heart/steward-policy"
 import { acquireSessionTurnLease } from "../../mind/session-transaction"
 import { resolveToolDefinition } from "../../repertoire/tools"
+import { stewardPolicyToolDefinition } from "../../repertoire/tools-steward-policy"
 
 const roots: string[] = []
 
@@ -29,6 +30,49 @@ afterEach(() => {
 })
 
 describe("steward policy", () => {
+  it("covers the direct tool contract, validation boundaries, and risk profiles", async () => {
+    const agentRoot = root()
+    const relationshipAuthorization = { authorizedContextScopes: [], advertisedToolNames: [], authorizeTool: () => ({ allowed: true as const, receiptId: "auth" }), actor: ari }
+    const context = { signin: async () => undefined, agentRoot, relationshipAuthorization }
+    expect(() => stewardPolicyToolDefinition.handler({ action: "read" }, undefined)).toThrow("runtime")
+    expect(() => stewardPolicyToolDefinition.handler({ action: "read" }, { signin: async () => undefined, agentRoot } as any)).toThrow("relationship")
+    expect(stewardPolicyToolDefinition.handler({ action: "read" }, context as any)).toContain('"version":0')
+    expect(() => stewardPolicyToolDefinition.handler({ action: "set_desired_state", expectedVersion: 0 }, { ...context, relationshipAuthorization: { ...relationshipAuthorization, actor: undefined } } as any)).toThrow("mutation requires")
+    expect(() => stewardPolicyToolDefinition.handler({ action: "set_desired_state", expectedVersion: "bad" }, context as any)).toThrow("nonnegative")
+    expect(() => stewardPolicyToolDefinition.handler({ action: "set_desired_state", expectedVersion: 0, provenance: "bogus" }, context as any)).toThrow("provenance")
+    expect(() => stewardPolicyToolDefinition.handler({ action: "set_desired_state", expectedVersion: 0, provenance: "stated" }, context as any)).toThrow("key must be nonempty")
+    expect(() => stewardPolicyToolDefinition.handler({ action: "grant_routine_action", expectedVersion: 0, provenance: "observed" }, context as any)).toThrow("provenance")
+    expect(() => stewardPolicyToolDefinition.handler({ action: "grant_routine_action", expectedVersion: 0, provenance: "stated" }, context as any)).toThrow("targetsJson is required")
+    expect(() => stewardPolicyToolDefinition.handler({ action: "grant_routine_action", expectedVersion: 0, provenance: "stated", targetsJson: "{}" }, context as any)).toThrow("JSON string array")
+    expect(() => stewardPolicyToolDefinition.handler({ action: "grant_routine_action", expectedVersion: 0, provenance: "stated", targetsJson: '["books",1]' }, context as any)).toThrow("JSON string array")
+    expect(() => stewardPolicyToolDefinition.handler({ action: "unknown", expectedVersion: 0 }, context as any)).toThrow("action is invalid")
+    expect(stewardPolicyToolDefinition.riskProfile!({ action: "read" } as any)).toMatchObject({ risk: "low" })
+    expect(stewardPolicyToolDefinition.riskProfile!({ action: "set_desired_state" } as any)).toMatchObject({ risk: "high" })
+    const granted = stewardPolicyToolDefinition.handler({ action: "grant_routine_action", expectedVersion: 0, provenance: "stated", key: "restart", routineAction: "unraid.container.restart", targetsJson: '["books"]', exclusionsJson: "[]", maxCount: 1, windowMs: 1000, verificationRequired: "true", expiresAt: "2099-01-01T00:00:00.000Z" }, context as any)
+    expect(granted).toContain('"restart"')
+    const desired = stewardPolicyToolDefinition.handler({ action: "set_desired_state", expectedVersion: 1, provenance: "default", key: "container:music", value: "on", source: "default" }, context as any)
+    expect(desired).toContain("container:music")
+    const expiring = stewardPolicyToolDefinition.handler({ action: "set_desired_state", expectedVersion: 2, provenance: "stated", key: "container:video", value: "on", source: "request", expiresAt: "2099-01-02T00:00:00.000Z" }, context as any)
+    expect(expiring).toContain("2099-01-02")
+    const secondGrant = stewardPolicyToolDefinition.handler({ action: "grant_routine_action", expectedVersion: 3, provenance: "installed_explicit_policy", key: "restart-video", routineAction: "restart", targetsJson: '["video"]', exclusionsJson: "[]", maxCount: 1, windowMs: 1000, verificationRequired: "true" }, context as any)
+    expect(secondGrant).toContain("restart-video")
+  })
+
+  it("covers malformed policy, empty targets, expiry, and missing receipt boundaries", () => {
+    const agentRoot = root()
+    const policyDir = path.join(agentRoot, "state", "policy")
+    fs.mkdirSync(policyDir, { recursive: true })
+    for (const malformed of [null, [], { schemaVersion: 1, version: -1, desiredStates: {}, routineActionGrants: {} }]) {
+      fs.writeFileSync(path.join(policyDir, "steward.json"), JSON.stringify(malformed))
+      expect(() => readStewardPolicy(agentRoot)).toThrow("invalid")
+    }
+    fs.rmSync(path.join(policyDir, "steward.json"))
+    expect(() => updateStewardPolicy(agentRoot, { expectedVersion: 0, actor: ari, mutation: { kind: "grant_routine_action", key: "restart", action: "restart", targets: [], maxCount: 1, windowMs: 1, verificationRequired: true, exclusions: [], provenance: "stated" } })).toThrow("requires a target")
+    updateStewardPolicy(agentRoot, { expectedVersion: 0, actor: ari, now: "2026-01-01T00:00:00.000Z", mutation: { kind: "set_desired_state", key: "container:books", value: "off", provenance: "stated", source: "test", expiresAt: "2026-01-02T00:00:00.000Z" } })
+    expect(readStewardPolicy(agentRoot).desiredStates["container:books"]?.expiresAt).toBe("2026-01-02T00:00:00.000Z")
+    expect(() => transitionRoutineActionReceipt(agentRoot, { id: "missing", expectedState: "reserved", state: "attempting" })).toThrow("missing")
+  })
+
   it("exposes one narrow relationship-bound management tool", async () => {
     const agentRoot = root()
     const definition = resolveToolDefinition("steward_policy_manage")!
@@ -182,6 +226,15 @@ describe("steward policy", () => {
       mutation: { kind: "set_desired_state", key: "container:books", value: "off", provenance: "stated", source: "Ari asked for it to remain off" },
     })
     expect(inspectRoutineActionGrant(agentRoot, { key: "unraid.restart:books", action: "unraid.container.restart", target: "books", expectedPolicyVersion: 2 })).toMatchObject({ allowed: false, reason: expect.stringContaining("expected off") })
+  })
+
+  it("keeps an explicitly-on desired state eligible and treats expired off state as inactive", () => {
+    const agentRoot = root()
+    updateStewardPolicy(agentRoot, { expectedVersion: 0, actor: ari, now: "2026-01-01T00:00:00.000Z", mutation: { kind: "grant_routine_action", key: "restart", action: "restart", targets: ["books"], maxCount: 2, windowMs: 1000, verificationRequired: true, exclusions: [], provenance: "stated" } })
+    updateStewardPolicy(agentRoot, { expectedVersion: 1, actor: { ...ari, sessionEventId: "evt-2" }, now: "2026-01-01T00:00:00.000Z", mutation: { kind: "set_desired_state", key: "container:books", value: "on", provenance: "stated", source: "test" } })
+    expect(inspectRoutineActionGrant(agentRoot, { key: "restart", action: "restart", target: "books", expectedPolicyVersion: 2, now: "2026-01-01T00:00:00.500Z" })).toMatchObject({ allowed: true })
+    updateStewardPolicy(agentRoot, { expectedVersion: 2, actor: { ...ari, sessionEventId: "evt-3" }, now: "2026-01-01T00:00:00.000Z", mutation: { kind: "set_desired_state", key: "container:books", value: "off", provenance: "stated", source: "test", expiresAt: "2026-01-01T00:00:01.000Z" } })
+    expect(inspectRoutineActionGrant(agentRoot, { key: "restart", action: "restart", target: "books", expectedPolicyVersion: 3, now: "2026-01-01T00:00:02.000Z" })).toMatchObject({ allowed: true })
   })
 
   it("persists complete append-only mutation snapshots and rejects stale transitions", () => {

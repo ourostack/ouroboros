@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { listExternalEventStatus, readExternalEventRecord, recordExternalEvent, scanPrivilegedEventSpool } from "../../../heart/external-events/router"
 
-const spoolMock = vi.hoisted(() => ({ root: "", readOnly: false, authorityBarrierUsed: false }))
+const spoolMock = vi.hoisted(() => ({ root: "", readOnly: false, authorityBarrierUsed: false, mountInfo: null as string | null, mountReadError: false }))
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>()
   return {
@@ -21,6 +21,8 @@ vi.mock("node:fs", async (importOriginal) => {
       return new Proxy(stat, { get(value, property, receiver) { return property === "uid" ? 0 : Reflect.get(value, property, receiver) } })
     },
     readFileSync(target: Parameters<typeof actual.readFileSync>[0], options?: unknown) {
+      if (target === "/proc/self/mountinfo" && spoolMock.mountReadError) throw new Error("mountinfo unavailable")
+      if (target === "/proc/self/mountinfo" && spoolMock.mountInfo !== null) return spoolMock.mountInfo
       if (target === "/proc/self/mountinfo" && spoolMock.root && spoolMock.readOnly) {
         return `1 1 0:1 / ${spoolMock.root.replace(/ /gu, "\\040")} ro,nosuid,nodev - bind none ro\n`
       }
@@ -119,6 +121,8 @@ afterEach(() => {
   spoolMock.root = ""
   spoolMock.readOnly = false
   spoolMock.authorityBarrierUsed = false
+  spoolMock.mountInfo = null
+  spoolMock.mountReadError = false
   for (const value of roots.splice(0)) fs.rmSync(value, { recursive: true, force: true })
 })
 
@@ -352,6 +356,107 @@ describe("privileged external-event spool", () => {
 
     expect(scanPrivilegedEventSpool({ spoolRoot, eventRoot, now: () => NOW })).toEqual({ accepted: 0, rejected: 1, replayed: 0 })
     expect(listExternalEventStatus(eventRoot)).toEqual([])
+  })
+
+  it.each(["null", "[]"])("rejects non-object %s envelopes", (raw) => {
+    const spoolRoot = root("ouro-privileged-nonobject")
+    const eventRoot = root("ouro-privileged-nonobject-events")
+    fs.chmodSync(spoolRoot, 0o755)
+    const filePath = path.join(spoolRoot, `${"a".repeat(64)}.json`)
+    fs.writeFileSync(filePath, raw, { mode: 0o444 })
+    fs.chmodSync(filePath, 0o444)
+    spoofRootOwnership(spoolRoot)
+    expect(scanPrivilegedEventSpool({ spoolRoot, eventRoot, now: () => NOW })).toEqual({ accepted: 0, rejected: 1, replayed: 0 })
+  })
+
+  it("rejects a valid envelope published under the wrong canonical filename", () => {
+    const spoolRoot = root("ouro-privileged-wrong-name")
+    const eventRoot = root("ouro-privileged-wrong-name-events")
+    fs.chmodSync(spoolRoot, 0o755)
+    const filePath = path.join(spoolRoot, `${"f".repeat(64)}.json`)
+    fs.writeFileSync(filePath, JSON.stringify(envelope()), { mode: 0o444 })
+    fs.chmodSync(filePath, 0o444)
+    spoofRootOwnership(spoolRoot)
+    expect(scanPrivilegedEventSpool({ spoolRoot, eventRoot, now: () => NOW })).toEqual({ accepted: 0, rejected: 1, replayed: 0 })
+  })
+
+  it("rejects missing spool roots without throwing", () => {
+    const missing = path.join(root("ouro-privileged-missing-parent"), "missing")
+    expect(scanPrivilegedEventSpool({ spoolRoot: missing, eventRoot: root("ouro-privileged-missing-events"), now: () => NOW })).toEqual({ accepted: 0, rejected: 1, replayed: 0 })
+  })
+
+  it("fails closed when mount metadata is unavailable or malformed", () => {
+    for (const mode of ["error", "malformed"] as const) {
+      const spoolRoot = root(`ouro-privileged-mount-${mode}`)
+      fs.chmodSync(spoolRoot, 0o755)
+      writeSpoolFile(spoolRoot, envelope())
+      spoolMock.root = spoolRoot
+      if (mode === "error") spoolMock.mountReadError = true
+      else spoolMock.mountInfo = "too short"
+      expect(scanPrivilegedEventSpool({ spoolRoot, eventRoot: root(`ouro-privileged-mount-events-${mode}`), now: () => NOW }).accepted).toBe(0)
+      spoolMock.mountReadError = false
+      spoolMock.mountInfo = null
+    }
+  })
+
+  it("recovers only stale malformed or dead replay-lock owners", () => {
+    for (const owner of [{ bad: true }, { token: "old", pid: 999_999_999, processStart: "gone", leaseUntil: "2020-01-01T00:00:00.000Z" }]) {
+      const spoolRoot = root("ouro-privileged-stale-owner")
+      const eventRoot = root("ouro-privileged-stale-owner-events")
+      fs.chmodSync(spoolRoot, 0o755)
+      spoofRootOwnership(spoolRoot)
+      const lockPath = path.join(eventRoot, "sanctuary", "sanctuary-usenet", ".privileged-replay.lock")
+      fs.mkdirSync(lockPath, { recursive: true })
+      fs.writeFileSync(path.join(lockPath, "owner.json"), JSON.stringify(owner))
+      fs.utimesSync(lockPath, new Date(0), new Date(0))
+      expect(scanPrivilegedEventSpool({ spoolRoot, eventRoot, now: () => NOW })).toEqual({ accepted: 0, rejected: 1, replayed: 0 })
+      expect(fs.existsSync(lockPath)).toBe(false)
+    }
+  })
+
+  it("fails closed when stale replay-lock cleanup cannot remove unknown contents", () => {
+    const spoolRoot = root("ouro-privileged-stale-dirty")
+    const eventRoot = root("ouro-privileged-stale-dirty-events")
+    fs.chmodSync(spoolRoot, 0o755)
+    spoofRootOwnership(spoolRoot)
+    const lockPath = path.join(eventRoot, "sanctuary", "sanctuary-usenet", ".privileged-replay.lock")
+    fs.mkdirSync(lockPath, { recursive: true })
+    fs.writeFileSync(path.join(lockPath, "owner.json"), JSON.stringify({ bad: true }))
+    fs.writeFileSync(path.join(lockPath, "unknown"), "preserve")
+    fs.utimesSync(lockPath, new Date(0), new Date(0))
+    expect(scanPrivilegedEventSpool({ spoolRoot, eventRoot, now: () => NOW })).toEqual({ accepted: 0, rejected: 0, replayed: 0 })
+  })
+
+  it.each([
+    { schemaVersion: 2, agent: "sanctuary", source: "sanctuary-usenet", algorithm: "sha256-bloom-v1", bitCount: 65536, hashCount: 7, bits: "", observedCount: 0, updatedAt: NOW },
+    { schemaVersion: 1, agent: "sanctuary", source: "sanctuary-usenet", algorithm: "wrong", bitCount: 65536, hashCount: 7, bits: "", observedCount: 0, updatedAt: NOW },
+    { schemaVersion: 1, agent: "sanctuary", source: "sanctuary-usenet", algorithm: "sha256-bloom-v1", bitCount: 65536, hashCount: 7, bits: "bad", observedCount: 0, updatedAt: NOW },
+  ])("rejects structurally corrupt replay authority", (state) => {
+    const spoolRoot = root("ouro-privileged-state-shape")
+    const eventRoot = root("ouro-privileged-state-shape-events")
+    fs.chmodSync(spoolRoot, 0o755)
+    spoofRootOwnership(spoolRoot)
+    const statePath = path.join(eventRoot, "sanctuary", "sanctuary-usenet", SOURCE_MANIFEST)
+    fs.mkdirSync(path.dirname(statePath), { recursive: true })
+    fs.writeFileSync(statePath, JSON.stringify(state))
+    expect(scanPrivilegedEventSpool({ spoolRoot, eventRoot, now: () => NOW })).toEqual({ accepted: 0, rejected: 1, replayed: 0 })
+  })
+
+  it("migrates legacy receipt replay nonces into the canonical source manifest", () => {
+    const spoolRoot = root("ouro-privileged-legacy")
+    const eventRoot = root("ouro-privileged-legacy-events")
+    fs.chmodSync(spoolRoot, 0o755)
+    writeSpoolFile(spoolRoot, envelope())
+    spoofRootOwnership(spoolRoot)
+    expect(scanPrivilegedEventSpool({ spoolRoot, eventRoot, now: () => NOW }).accepted).toBe(1)
+    const receipt = listExternalEventStatus(eventRoot)[0]!
+    const raw = readExternalEventRecord(receipt.recordPath)
+    fs.writeFileSync(receipt.recordPath, JSON.stringify({ ...raw, privilegedReplayNonces: ["c".repeat(64)] }))
+    const statePath = path.join(eventRoot, "sanctuary", "sanctuary-usenet", SOURCE_MANIFEST)
+    fs.unlinkSync(statePath)
+    expect(scanPrivilegedEventSpool({ spoolRoot, eventRoot, now: () => NOW }).accepted).toBe(1)
+    expect(readExternalEventRecord(receipt.recordPath).privilegedReplayNonces).toBeUndefined()
+    expect(fs.existsSync(statePath)).toBe(true)
   })
 
   it("rejects writable mounts, non-root owners, unsafe modes, symlinks, and oversized files", () => {

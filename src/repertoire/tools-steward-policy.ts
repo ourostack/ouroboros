@@ -1,5 +1,6 @@
 import type { ToolDefinition } from "./tools-base"
 import { readStewardPolicy, updateStewardPolicy, type StewardPolicyMutation } from "../heart/steward-policy"
+import { emitNervesEvent } from "../nerves/runtime"
 
 function arrayArgument(raw: string | undefined, label: string): string[] {
   if (!raw) throw new Error(`${label} is required`)
@@ -39,7 +40,10 @@ export const stewardPolicyToolDefinition: ToolDefinition = {
   handler: (args, ctx) => {
     if (!ctx?.agentRoot) throw new Error("steward policy runtime is unavailable")
     if (!ctx.relationshipAuthorization) throw new Error("steward policy access requires authenticated relationship authority")
-    if (args.action === "read") return JSON.stringify(readStewardPolicy(ctx.agentRoot))
+    if (args.action === "read") {
+      emitNervesEvent({ component: "repertoire", event: "repertoire.steward_policy_tool_call", message: "read steward policy", meta: { action: "read" } })
+      return JSON.stringify(readStewardPolicy(ctx.agentRoot))
+    }
     const actor = ctx.relationshipAuthorization?.actor
     if (!actor) throw new Error("steward policy mutation requires authenticated relationship authority")
     const expectedVersion = Number(args.expectedVersion)
@@ -63,7 +67,9 @@ export const stewardPolicyToolDefinition: ToolDefinition = {
         ...(args.expiresAt ? { expiresAt: args.expiresAt } : {}),
       }
     } else throw new Error("steward policy action is invalid")
-    return JSON.stringify(updateStewardPolicy(ctx.agentRoot, { expectedVersion, actor, mutation }))
+    const result = updateStewardPolicy(ctx.agentRoot, { expectedVersion, actor, mutation })
+    emitNervesEvent({ component: "repertoire", event: "repertoire.steward_policy_tool_call", message: "updated steward policy", meta: { action: args.action } })
+    return JSON.stringify(result)
   },
   riskProfile: (args) => args.action === "read"
     ? { mutates: "none", risk: "low" }
