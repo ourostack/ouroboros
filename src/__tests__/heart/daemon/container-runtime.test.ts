@@ -103,79 +103,95 @@ describe("container runtime policy", () => {
     })
   })
 
-  it("changes autostart only through bounded authenticated WebGUI requests", () => {
+  it("changes Butler autostart through Unraid's root backend without touching ghost entries", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-autostart-helper-"))
     const autostartFile = path.join(testRoot, "unraid-autostart")
-    const csrfFile = path.join(testRoot, "var.ini")
+    const includeFile = path.join(testRoot, "UpdateConfig.php")
     const callLog = path.join(testRoot, "calls.log")
-    const bodyLog = path.join(testRoot, "bodies.log")
     const stubs = String.raw`
-awk() {
-  case "$*" in *'END { printf'*) command printf '%s' "$EXPECTED_COUNTS" ;; *) command awk "$@" ;; esac
+id() { command printf '0\n'; }
+stat() { command printf '0:0:644\n'; }
+sync() { return 0; }
+docker() { command printf 'docker %s\n' "$*" >>"$CALL_LOG"; }
+mv() {
+  eval "AUTOSTART_MV_DEST=\${$#}"
+  if test "$FAIL_RESTORE_MV" = yes && test "$AUTOSTART_MV_DEST" = "$AUTOSTART_TEST_FILE"; then return 25; fi
+  command mv "$@"
 }
-curl() {
-  command printf '%s\n' "$*" >>"$CALL_LOG"
-  command cat >>"$BODY_LOG"
-  command printf '\n' >>"$BODY_LOG"
-  if [ "$FAIL_CURL" = yes ]; then return 23; fi
+php() {
+  AUTOSTART_ACTION=$3
+  AUTOSTART_NAME=$4
+  AUTOSTART_VALUE=$5
+  command printf 'php %s:%s %s\n' "$AUTOSTART_ACTION" "$AUTOSTART_VALUE" "$AUTOSTART_NAME" >>"$CALL_LOG"
+  test "$FAIL_BACKEND" != "$AUTOSTART_ACTION:$AUTOSTART_VALUE" || return 23
+  if test "$READBACK_DRIFT" = yes; then return 0; fi
+  AUTOSTART_MUTATION_TMP=$AUTOSTART_TEST_ROOT/php-mutation.tmp
+  case "$AUTOSTART_ACTION:$AUTOSTART_VALUE" in
+    wait:0)
+      command awk -v name="$AUTOSTART_NAME" '{ if ($1 == name) print name " 0"; else print }' "$AUTOSTART_TEST_FILE" >"$AUTOSTART_MUTATION_TMP" ;;
+    autostart:true)
+      command cp "$AUTOSTART_TEST_FILE" "$AUTOSTART_MUTATION_TMP"
+      command printf '%s 0\n' "$AUTOSTART_NAME" >>"$AUTOSTART_MUTATION_TMP" ;;
+    autostart:false)
+      command awk -v name="$AUTOSTART_NAME" '$0 != name " 0" { print }' "$AUTOSTART_TEST_FILE" >"$AUTOSTART_MUTATION_TMP" ;;
+    *) return 24 ;;
+  esac
+  if test "$DRIFT_NONBUTLER" = yes; then command printf 'injected-drift\n' >>"$AUTOSTART_MUTATION_TMP"; fi
+  command mv "$AUTOSTART_MUTATION_TMP" "$AUTOSTART_TEST_FILE"
 }
 `
     try {
-      fs.writeFileSync(autostartFile, "other 9\n", { mode: 0o644 })
-      fs.writeFileSync(csrfFile, 'csrf_token="redacted-test-csrf"\n', { mode: 0o600 })
-      for (const [name, expectedCounts, expectedAutos] of [
-        ["disable_butler_autostart", "0 0 0 0", ["false", "false", "false", "false"]],
-        ["enable_butler_autostart", "1 0 0 0", ["false", "false", "false", "true"]],
-      ] as const) {
-        fs.writeFileSync(callLog, "")
-        fs.writeFileSync(bodyLog, "")
-        const helpers = ["set_butler_autostart", "butler_autostart_counts", "verify_butler_autostart", name]
-          .map((helperName) => extractRunbookFunction(runbook, helperName))
-          .join("\n")
-          .replaceAll("/var/local/emhttp/var.ini", "$AUTOSTART_CSRF_FILE")
-          .replaceAll("/var/lib/docker/unraid-autostart", "$AUTOSTART_TEST_FILE")
-        const script = `set -u\n${stubs}\n${helpers}\n${name}`
-        const result = runConditionalHelper(script, "unused", {
-          AUTOSTART_CSRF_FILE: csrfFile,
-          AUTOSTART_TEST_FILE: autostartFile,
-          BODY_LOG: bodyLog,
-          CALL_LOG: callLog,
-          EXPECTED_COUNTS: expectedCounts,
-          FAIL_CURL: "no",
-        })
-        expect(result.status, `${name}\n${result.stderr}`).toBe(0)
-        expect(result.stdout).not.toContain("redacted-test-csrf")
-        expect(result.stderr).not.toContain("redacted-test-csrf")
-        const calls = fs.readFileSync(callLog, "utf8").trim().split("\n")
-        expect(calls).toHaveLength(4)
-        for (const call of calls) {
-          expect(call).toContain("--request POST")
-          expect(call).toContain("--connect-timeout 5")
-          expect(call).toContain("--max-time 15")
-          expect(call).toContain("--header Content-Type: application/x-www-form-urlencoded")
-          expect(call).toContain("--data-binary @-")
-          expect(call).toContain("http://127.0.0.1/plugins/dynamix.docker.manager/include/UpdateConfig.php")
-          expect(call).not.toContain("redacted-test-csrf")
-        }
-        const bodies = fs.readFileSync(bodyLog, "utf8").trim().split("\n")
-        expect(bodies).toEqual([
-          `action=autostart&container=ouro-butler-staging&auto=${expectedAutos[0]}&wait=0&csrf_token=redacted-test-csrf`,
-          `action=autostart&container=ouro-butler-rollback&auto=${expectedAutos[1]}&wait=0&csrf_token=redacted-test-csrf`,
-          `action=autostart&container=ouro-butler-legacy-evidence&auto=${expectedAutos[2]}&wait=0&csrf_token=redacted-test-csrf`,
-          `action=autostart&container=ouro-butler&auto=${expectedAutos[3]}&wait=0&csrf_token=redacted-test-csrf`,
-        ])
+      fs.writeFileSync(includeFile, "<?php", { mode: 0o644 })
+      const helpers = ["butler_autostart_counts", "snapshot_nonbutler_autostart", "run_unraid_autostart_backend", "mutate_butler_autostart", "verify_butler_autostart", "set_butler_autostart", "disable_butler_autostart", "enable_butler_autostart"]
+        .map((helperName) => extractRunbookFunction(runbook, helperName)).join("\n")
+        .replaceAll("/var/lib/docker", "$AUTOSTART_TEST_ROOT")
+        .replaceAll("/run/unraid-autostart.nonbutler-before.XXXXXX", "$AUTOSTART_TEST_ROOT/nonbutler-before.XXXXXX")
+        .replaceAll("/run/unraid-autostart.nonbutler-after.XXXXXX", "$AUTOSTART_TEST_ROOT/nonbutler-after.XXXXXX")
+        .replaceAll("/usr/local/emhttp/plugins/dynamix.docker.manager/include/UpdateConfig.php", "$AUTOSTART_INCLUDE_TEST")
+        .replaceAll("timeout -s KILL 20 /usr/bin/php", "php")
+      const run = (command: string, options: Record<string, string> = {}) => runConditionalHelper(`set -u\n${stubs}\n${helpers}\n${command}`, "unused", {
+        AUTOSTART_TEST_FILE: autostartFile, AUTOSTART_TEST_ROOT: testRoot, AUTOSTART_INCLUDE_TEST: includeFile, CALL_LOG: callLog,
+        FAIL_BACKEND: "none", FAIL_RESTORE_MV: "no", READBACK_DRIFT: "no", DRIFT_NONBUTLER: "no", ...options,
+      })
 
-        const failure = runConditionalHelper(script, "unused", {
-          AUTOSTART_CSRF_FILE: csrfFile,
-          AUTOSTART_TEST_FILE: autostartFile,
-          BODY_LOG: bodyLog,
-          CALL_LOG: callLog,
-          EXPECTED_COUNTS: expectedCounts,
-          FAIL_CURL: "yes",
-        })
-        expect(failure.status).toBe(23)
+      const ghosts = "ghost-zero\ndeluge 7\njackett\n"
+      fs.writeFileSync(autostartFile, `ghost-zero\ndeluge 7\nouro-butler-staging 4\njackett\n`, { mode: 0o644 })
+      fs.writeFileSync(callLog, "")
+      expect(run("disable_butler_autostart").status).toBe(0)
+      expect(fs.readFileSync(autostartFile, "utf8")).toBe(ghosts)
+      expect(fs.readFileSync(callLog, "utf8").match(/^php/gmu)).toHaveLength(2)
+
+      fs.writeFileSync(callLog, "")
+      expect(run("enable_butler_autostart").status).toBe(0)
+      expect(fs.readFileSync(autostartFile, "utf8")).toBe(`${ghosts}ouro-butler 0\n`)
+
+      for (const [initial, command, options] of [
+        [`${ghosts}ouro-butler\nouro-butler 4\n`, "enable_butler_autostart", {}],
+        [`${ghosts}ouro-butler-staging 4\n`, "disable_butler_autostart", { FAIL_BACKEND: "autostart:false" }],
+        [ghosts, "enable_butler_autostart", { READBACK_DRIFT: "yes" }],
+        [`${ghosts}ouro-butler-staging\n`, "disable_butler_autostart", { DRIFT_NONBUTLER: "yes" }],
+      ] as const) {
+        fs.writeFileSync(autostartFile, initial, { mode: 0o644 })
+        fs.writeFileSync(callLog, "")
+        const failed = run(command, options)
+        expect(failed.status, `${command} ${JSON.stringify(options)} ${failed.stderr}`).not.toBe(0)
+        expect(fs.readFileSync(autostartFile, "utf8")).toBe(initial)
       }
+
+      const restoreFailureInitial = `${ghosts}ouro-butler-staging 4\n`
+      fs.writeFileSync(autostartFile, restoreFailureInitial, { mode: 0o644 })
+      const restoreFailure = run("disable_butler_autostart", { FAIL_BACKEND: "autostart:false", FAIL_RESTORE_MV: "yes" })
+      expect(restoreFailure.status).not.toBe(0)
+      const preserved = /recovery copy preserved at (.+)$/mu.exec(restoreFailure.stderr)?.[1]
+      expect(preserved).toMatch(/\.unraid-autostart\.ouro\.[A-Za-z0-9]+$/u)
+      expect(fs.readFileSync(String(preserved), "utf8")).toBe(restoreFailureInitial)
+      fs.rmSync(String(preserved))
+
+      fs.renameSync(includeFile, `${includeFile}.missing`)
+      fs.writeFileSync(autostartFile, ghosts, { mode: 0o644 })
+      expect(run("disable_butler_autostart").status).not.toBe(0)
+      expect(fs.readFileSync(autostartFile, "utf8")).toBe(ghosts)
     } finally {
       fs.rmSync(testRoot, { recursive: true, force: true })
     }
@@ -2373,10 +2389,12 @@ recover_test`
     const backupRunbook = runbook.slice(runbook.indexOf("Backup:"), runbook.indexOf("Restore:"))
     const restoreRunbook = runbook.slice(runbook.indexOf("Restore:"), runbook.indexOf("Credential recovery:"))
     expect(runbook).toContain("AUTOSTART_FILE=/var/lib/docker/unraid-autostart")
-    expect(runbook).toContain("/plugins/dynamix.docker.manager/include/UpdateConfig.php")
-    expect(runbook).toContain("--connect-timeout 5")
-    expect(runbook).toContain("--max-time 15")
-    expect(runbook).toContain("--data-binary @-")
+    expect(runbook).toContain("/usr/local/emhttp/plugins/dynamix.docker.manager/include/UpdateConfig.php")
+    expect(runbook).toContain("timeout -s KILL 20 /usr/bin/php -r")
+    expect(runbook).toContain("false-to-index-zero behavior")
+    expect(extractRunbookFunction(runbook, "set_butler_autostart")).not.toMatch(/(?:AUDIT_RUNNER_)?IMAGE_ID/u)
+    expect(restoreRunbook).toContain("AUDIT_RUNNER_IMAGE_ID=")
+    expect(restoreRunbook).toContain("IMAGE_ID=")
     expect(runbook).not.toContain('mv -f -- "$AUTOSTART_TMP" "$AUTOSTART_FILE"')
     expect(runbook).toContain('verify_butler_autostart "0 0 0 0" || return $?')
     expect(runbook).toContain('verify_butler_autostart "1 0 0 0" || return $?')
@@ -2477,7 +2495,7 @@ recover_test`
     expect(productionCreate).toBeGreaterThan(-1)
     expect(productionStart).toBeGreaterThan(productionAudit)
     expect(updateRunbook).toContain("docker start ouro-butler")
-    expect(runbook).toContain("set_butler_autostart ouro-butler true || return $?")
+    expect(runbook).toContain("set_butler_autostart production || return $?")
     expect(runbook).toContain('verify_butler_autostart "1 0 0 0" || return $?')
     const rollbackReady = updateRunbook.indexOf("wait_butler_ready ouro-butler", rollbackStart)
     const rollbackEnable = updateRunbook.indexOf("enable_butler_autostart", rollbackReady)
