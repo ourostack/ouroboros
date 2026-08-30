@@ -25,6 +25,7 @@ export interface PendingMessage {
   obligationStatus?: "pending" | "fulfilled"
   mode?: "reflect" | "plan" | "relay"
   obligationId?: string
+  requestId?: string
 }
 
 export function getPendingDir(agentName: string, friendId: string, channel: string, key: string): string {

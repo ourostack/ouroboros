@@ -71,6 +71,7 @@ function fixture(input: {
         ? { artifactId: `artifact-${messageId - 100}`, admissionId: effect.target.requestId }
         : null
     },
+    resolveOwnerCardMessageId: (artifactId) => artifactId === "artifact-2" ? 102 : null,
     claimFriend: claim,
     revokeFriend: input.revoke ?? vi.fn(async () => ({ kind: "revoked" as const })),
     commitApprovedIngress: commit,
@@ -142,6 +143,11 @@ describe("Telegram household admission", () => {
     expect(value.queue).toHaveBeenCalledTimes(1)
     expect(value.queue).toHaveBeenCalledWith(expect.objectContaining({ friendId: "friend-1", eventId: "evt-000001", reference: `telegram-admission:${pending.admissionId}` }))
     expect(value.store.read(pending.admissionId)).toMatchObject({ status: "handled", quarantinedText: null, friendId: "friend-1" })
+    expect(value.effects.at(-1)).toMatchObject({
+      idempotencyKey: `owner-card-terminal:${pending.admissionId}:handled`,
+      effect: { kind: "edit", messageId: 102, text: "Allowed" },
+    })
+    expect(value.effects.filter((effect) => effect.effect.kind === "edit")).toHaveLength(1)
   })
 
   it("commits the session event before reference-only enqueue and fences an indeterminate dispatch with Friends revocation", async () => {
@@ -157,7 +163,7 @@ describe("Telegram household admission", () => {
     await value.controller.decide({ admissionId: pending.admissionId, decision: "allow", actorFriendId: "ari" })
     expect(order).toEqual(["commit", "enqueue", "dispatch", "revoke"])
     expect(value.store.read(pending.admissionId)).toMatchObject({ status: "indeterminate", quarantinedText: null, ingressEventId: "evt-000001" })
-    await expect(value.controller.decide({ admissionId: pending.admissionId, decision: "allow", actorFriendId: "ari" })).rejects.toThrow("terminal")
+    await expect(value.controller.decide({ admissionId: pending.admissionId, decision: "allow", actorFriendId: "ari" })).resolves.toMatchObject({ status: "indeterminate" })
   })
 
   it("compensates Friends and terminalizes when dispatch throws after claim", async () => {
@@ -177,19 +183,19 @@ describe("Telegram household admission", () => {
     expect(value.controller.parseOwnerDecision({ text: "please allow them", replyToMessageId: 102 })).toBeNull()
     expect(value.controller.parseOwnerDecision({ text: "yes", replyToMessageId: 999 })).toBeNull()
     await value.controller.decide({ admissionId: pending.admissionId, decision: "allow", actorFriendId: "ari" })
-    expect(value.controller.parseOwnerDecision({ text: "block them", replyToMessageId: 102 })).toEqual({ admissionId: pending.admissionId, decision: "block" })
+    expect(value.controller.parseOwnerDecision({ text: "block them", replyToMessageId: 102 })).toBeNull()
     await value.controller.decide({ admissionId: pending.admissionId, decision: "block", actorFriendId: "ari" })
-    expect(value.store.read(pending.admissionId).status).toBe("blocked")
+    expect(value.store.read(pending.admissionId).status).toBe("handled")
   })
 
-  it("revokes a handled admission only through the injected Friends operation", async () => {
+  it("acknowledges stale handled decisions without changing the admitted Friend", async () => {
     const revoke = vi.fn(async () => ({ kind: "revoked" as const }))
     const value = fixture({ revoke })
     const pending = await value.controller.handleUnknown(unknown())
     await value.controller.decide({ admissionId: pending.admissionId, decision: "allow", actorFriendId: "ari" })
     await value.controller.decide({ admissionId: pending.admissionId, decision: "block", actorFriendId: "ari" })
-    expect(revoke).toHaveBeenCalledWith(expect.objectContaining({ provider: "telegram-user", friendId: "friend-1", admissionId: pending.admissionId }))
-    expect(value.store.read(pending.admissionId).status).toBe("blocked")
+    expect(revoke).not.toHaveBeenCalled()
+    expect(value.store.read(pending.admissionId).status).toBe("handled")
   })
 
   it("recovers approved, friend-bound, committed, and queued crash points without duplicating the turn", async () => {
@@ -235,7 +241,8 @@ describe("Telegram household admission", () => {
     const record = value.store.read(pending.admissionId)
     expect(record.quarantinedText).toBeNull()
     expect(record.status).toBe(decision === "deny" ? "denied" : "blocked")
-    await expect(value.controller.decide({ admissionId: pending.admissionId, decision: "allow", actorFriendId: "ari" })).rejects.toThrow("terminal")
+    await expect(value.controller.decide({ admissionId: pending.admissionId, decision: "allow", actorFriendId: "ari" })).resolves.toMatchObject({ status: decision === "deny" ? "denied" : "blocked" })
+    expect(value.effects.at(-1)).toMatchObject({ effect: { kind: "edit", messageId: 102, text: decision === "deny" ? "Denied" : "Blocked" } })
   })
 
   it("expires to denial, purges content, and never replays it", async () => {
@@ -245,7 +252,7 @@ describe("Telegram household admission", () => {
     now = 1_101
     await value.controller.reconcileExpired()
     expect(value.store.read(pending.admissionId)).toMatchObject({ status: "expired", quarantinedText: null })
-    await expect(value.controller.decide({ admissionId: pending.admissionId, decision: "allow", actorFriendId: "ari" })).rejects.toThrow("terminal")
+    await expect(value.controller.decide({ admissionId: pending.admissionId, decision: "allow", actorFriendId: "ari" })).resolves.toMatchObject({ status: "expired" })
   })
 
   it("bounds pending contacts, per-identity messages, bytes, and records overflow without hostile content", async () => {

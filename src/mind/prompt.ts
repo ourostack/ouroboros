@@ -677,7 +677,10 @@ function toolsSection(channel: Channel, options?: BuildSystemOptions, context?: 
       ...((context?.isGroupChat || options?.isReactionSignal) ? [observeTool] : []),
       settleTool,
     ]);
-  const list = activeTools
+  const visibleTools = options?.relationshipToolNames
+    ? activeTools.filter((tool) => options.relationshipToolNames!.includes(tool.function.name))
+    : activeTools;
+  const list = visibleTools
     .map((t) => `- ${t.function.name}: ${t.function.description}`)
     .join("\n");
   return `## my tools\n${list}`;
@@ -827,6 +830,8 @@ if i keep re-deriving it, save it.`
 export interface BuildSystemOptions {
   /** Exact relationship-authorized prompt context scopes. Undefined preserves ordinary non-scoped behavior. */
   relationshipContextScopes?: readonly string[];
+  /** Exact relationship-authorized tool names. Undefined preserves ordinary non-scoped behavior. */
+  relationshipToolNames?: readonly string[];
   toolChoiceRequired?: boolean;
   bridgeContext?: string;
   currentSessionKey?: string;
@@ -1406,6 +1411,24 @@ export function contextSection(context?: ResolvedContext, options?: BuildSystemO
   return lines.join("\n")
 }
 
+function relationshipFriendContextSection(context?: ResolvedContext): string {
+  const friend = context?.friend
+  if (!friend) return ""
+  const lines = [
+    "## current relationship",
+    `friend: ${friend.name}`,
+    `channel: ${context.channel.channel}`,
+    "this conversation and this friend's own relationship notes are the only personal context available in this turn.",
+  ]
+  if (Object.keys(friend.notes).length > 0) {
+    lines.push("", "## what i know about this friend")
+    for (const [key, entry] of Object.entries(friend.notes)) {
+      lines.push(`- ${key}: [${entry.savedAt.slice(0, 10)}] ${entry.value}`)
+    }
+  }
+  return lines.join("\n")
+}
+
 export function metacognitiveFramingSection(channel: Channel): string {
   if (channel !== "inner") return ""
   return `this is my private-runtime turn. there is no one else here.
@@ -1590,6 +1613,25 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
   // Backfill bundle-meta.json for existing agents that don't have one
   backfillBundleMeta(getAgentRoot());
 
+  const relationshipScoped = options?.relationshipContextScopes !== undefined
+  if (relationshipScoped) {
+    const result: SystemPrompt = {
+      stable: [
+        "# who i am",
+        soulSection(),
+        identitySection(),
+        relationshipFriendContextSection(context),
+        trustContextSection(context),
+        "# my tools",
+        toolsSection(channel, options, context),
+        toolRestrictionSection(context),
+      ].filter(Boolean).join("\n\n"),
+      volatile: [dateSection(), currentTriggerSection(channel, options)].filter(Boolean).join("\n\n"),
+    }
+    emitNervesEvent({ event: "mind.step_end", component: "mind", message: "buildSystem completed", meta: { channel } })
+    return result
+  }
+
   const stableParts = [
     // Group 1: who i am
     "# who i am",
@@ -1641,8 +1683,6 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     ] : []),
   ];
 
-  const relationshipScoped = options?.relationshipContextScopes !== undefined
-  const relationshipAllows = (scope: string): boolean => !relationshipScoped || options!.relationshipContextScopes!.includes(scope)
   const volatileParts = [
     // Volatile sections from Group 2 (date and rhythm change every turn)
     dateSection(),
@@ -1654,14 +1694,14 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
     startOfTurnPacketSection(options),
     pulseSection(channel),
     tripLedgerTruthSection(channel, context),
-    relationshipAllows("household.status") ? liveWorldStateSection(options) : "",
+    liveWorldStateSection(options),
     pendingMessagesSection(options),
-    relationshipAllows("household.private") || relationshipAllows("own_requests") ? activeWorkSection(options) : "",
+    activeWorkSection(options),
     centerOfGravitySteeringSection(channel, options, context),
-    relationshipAllows("household.private") || relationshipAllows("own_requests") ? commitmentsSection(options) : "",
+    commitmentsSection(options),
     delegationHintSection(options),
     bridgeContextSection(options),
-    (relationshipAllows("household.private") || relationshipAllows("own_requests")) ? buildSessionSummary({
+    buildSessionSummary({
       sessionsDir: path.join(getAgentRoot(), "state", "sessions"),
       friendsDir: path.join(getAgentRoot(), "friends"),
       agentName: getAgentName(),
@@ -1671,16 +1711,16 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
       currentFriendId: context?.friend?.id,
       currentChannel: channel,
       currentKey: options?.currentSessionKey ?? "session",
-    }) : "",
+    }),
 
     // Group 8: friend context
     "# friend context",
     contextSection(context, options),
-    relationshipAllows("household.private") ? familyCrossSessionTruthSection(context, options) : "",
+    familyCrossSessionTruthSection(context, options),
 
     // Group 9: desk
     "# desk",
-    relationshipAllows("household.private") ? deskSection() : "",
+    deskSection(),
   ];
 
   const result: SystemPrompt = {

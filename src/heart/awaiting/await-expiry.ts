@@ -9,6 +9,7 @@ import {
 import { readAwaitRuntimeState } from "./await-runtime-state"
 import { deliverAwaitAlert } from "./await-alert"
 import type { CrossChatDeliveryDeps } from "../cross-chat-delivery"
+import { fulfillObligation } from "../../arc/obligations"
 
 export interface ArchiveExpiredAwaitOptions {
   agentRoot: string
@@ -69,6 +70,9 @@ export async function archiveAndAlertExpiredAwait(options: ArchiveExpiredAwaitOp
     created_at: parsed.created_at,
     filed_from: parsed.filed_from,
     filed_for_friend_id: parsed.filed_for_friend_id,
+    filed_from_key: parsed.filed_from_key,
+    request_id: parsed.request_id,
+    obligation_id: parsed.obligation_id,
     expired_at: expiredAt,
     last_observation_at_expiry: lastObservation,
   }
@@ -87,6 +91,7 @@ export async function archiveAndAlertExpiredAwait(options: ArchiveExpiredAwaitOp
   // Re-parse archived file to feed the alert with merged fields
   const archivedContent = fs.readFileSync(target, "utf-8")
   const archived: AwaitFile = parseAwaitFile(archivedContent, target)
+  if (archived.obligation_id) fulfillObligation(options.agentRoot, archived.obligation_id)
 
   const alertResult = await deliverAwaitAlert({
     awaitFile: archived,

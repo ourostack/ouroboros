@@ -72,11 +72,7 @@ describe("Telegram admission integration", () => {
     expect(JSON.stringify(requests)).not.toContain("evil.invalid")
     const ownerSubject = opaqueTelegramSubject("k".repeat(43), "777", "42", "42")
     const ownerSession = loadSessionEnvelopeFile(getSenseSessionPath("butler", "ari", "telegram", `telegram:${ownerSubject}`, root))
-    expect(ownerSession?.events).toEqual(expect.arrayContaining([expect.objectContaining({
-      role: "system",
-      name: "telegram-control",
-      relations: expect.objectContaining({ references: expect.arrayContaining([expect.stringMatching(/^request:[a-f0-9]{20}$/u)]) }),
-    })]))
+    expect(ownerSession).toBeNull()
     const admissionRecord = JSON.parse(fs.readFileSync(path.join(root, "state", "senses", "telegram", "admissions", `${callbackDataAdmissionId(requests)}.json`), "utf8")) as Record<string, unknown>
     expect(admissionRecord).not.toHaveProperty("ownerCardMessageId")
 
@@ -144,7 +140,7 @@ describe("Telegram admission integration", () => {
       await friends.put(claimed.friendId, admitted!)
     }
     await expect(production.admission!.resolveApprovedFriend({ botId: "777", userId: "888", chatId: "888" })).resolves.toEqual({ friendId: claimed.friendId })
-    await expect(production.authorizeRelationshipEffect!({ phase: "prepare", idempotencyKey: "reply", target: { kind: "approved_relationship", friendId: claimed.friendId, sessionKey: "telegram:777:888", requestId: "req-1" }, authorClass: "butler", effect: { kind: "text", text: "ok" } })).resolves.toMatchObject({ allowed: true })
+    await expect(production.authorizeRelationshipEffect!({ phase: "prepare", idempotencyKey: "relationship-turn:req-1:delivery:0", target: { kind: "approved_relationship", friendId: claimed.friendId, sessionKey: "telegram:777:888", requestId: "req-1" }, authorClass: "butler", effect: { kind: "text", text: "ok" } })).resolves.toMatchObject({ allowed: true })
     await expect(production.resolveRelationshipAuthorization!({ friendId: claimed.friendId, requestId: "req-1", sessionEventId: "evt-1", botId: "777", userId: "888", chatId: "888", sessionKey: "telegram:777:999" })).rejects.toThrow(/identity|binding/iu)
     await expect(production.authorizeRelationshipEffect!({ phase: "send", idempotencyKey: "reply", target: { kind: "approved_relationship", friendId: claimed.friendId, sessionKey: "telegram:777:999", requestId: "req-1" }, authorClass: "butler", effect: { kind: "text", text: "ok" } })).resolves.toMatchObject({ allowed: false })
     await friends.put(claimed.friendId, { ...admitted!, externalIds: [...admitted!.externalIds, { provider: "telegram-user", externalId: "889", tenantId: "777", linkedAt: now }] })

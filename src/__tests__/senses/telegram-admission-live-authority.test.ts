@@ -60,6 +60,7 @@ import { loadSessionEnvelopeFile } from "../../heart/session-events"
 import { resetIdentity, setAgentName } from "../../heart/identity"
 import { patchRuntimeConfig, resetConfigCache } from "../../heart/config"
 import { getSenseSessionPath } from "../../senses/shared-turn"
+import { awaitingToolDefinitions } from "../../repertoire/tools-awaiting"
 
 const roots: string[] = []
 afterEach(() => {
@@ -94,6 +95,23 @@ describe("Telegram admission live authority", () => {
       externalIds: [{ provider: "telegram-user", externalId: "888", tenantId: "777", linkedAt: now }], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: now, updatedAt: now, schemaVersion: 1 })
     const credentials = { botToken: "777:secret", botId: "777", authorizedUserId: "42", authorizedChatId: "42" }
     const composition = await createProductionTelegramRelationshipComposition(pipeline.agentName, credentials, root)
+    const followRequestId = "telegram-inbound:durable-follow-up"
+    const householdTarget = { kind: "approved_relationship" as const, friendId: "sibling", sessionKey: "telegram:777:888", requestId: followRequestId }
+    await expect(composition.authorizeRelationshipEffect!({ phase: "send", idempotencyKey: `relationship-turn:${followRequestId}:delivery:0`, target: householdTarget, authorClass: "butler", effect: { kind: "text", text: "same-turn" } })).resolves.toMatchObject({ allowed: true })
+    await expect(composition.authorizeRelationshipEffect!({ phase: "send", idempotencyKey: "later:return", target: householdTarget, authorClass: "butler", effect: { kind: "text", text: "later" } })).resolves.toMatchObject({ allowed: false })
+    const awaitTool = awaitingToolDefinitions.find((definition) => definition.tool.function.name === "await_condition")!
+    await awaitTool.handler({ name: "durable_follow", condition: "The requested item is ready", cadence: "5m", max_age: "2h" }, {
+      currentSession: { friendId: "sibling", channel: "telegram", key: "telegram:777:888", sessionPath: "/tmp/session.json" },
+      relationshipAuthorization: { requestId: followRequestId, authorizedContextScopes: ["own_requests"], advertisedToolNames: ["await_condition"], authorizeTool: vi.fn() },
+    } as any)
+    const restartedComposition = await createProductionTelegramRelationshipComposition(pipeline.agentName, credentials, root)
+    await expect(restartedComposition.authorizeRelationshipEffect!({ phase: "send", idempotencyKey: "later:return", target: householdTarget, authorClass: "butler", effect: { kind: "text", text: "later" } })).resolves.toMatchObject({ allowed: true })
+    await expect(restartedComposition.authorizeRelationshipEffect!({ phase: "send", idempotencyKey: "later:wrong", target: { ...householdTarget, requestId: "telegram-inbound:unrelated" }, authorClass: "butler", effect: { kind: "text", text: "wrong" } })).resolves.toMatchObject({ allowed: false })
+    const awaitPath = path.join(root, "awaiting", "durable_follow.md")
+    const freshAwait = fs.readFileSync(awaitPath, "utf8")
+    fs.writeFileSync(awaitPath, freshAwait.replace(/created_at: .*/u, "created_at: 2020-01-01T00:00:00.000Z").replace("max_age: 2h", "max_age: 1m"))
+    await expect(restartedComposition.authorizeRelationshipEffect!({ phase: "send", idempotencyKey: "later:expired", target: householdTarget, authorClass: "butler", effect: { kind: "text", text: "expired" } })).resolves.toMatchObject({ allowed: false })
+    fs.writeFileSync(awaitPath, freshAwait)
     let pollOptions!: TelegramLongPollOptions
     const requests: Array<{ method: string; body: Record<string, unknown> }> = []
     let deliveryCount = 0
@@ -149,6 +167,22 @@ describe("Telegram admission live authority", () => {
     await expect(turn).rejects.toThrow(/identity binding is not active/iu)
     expect({ context: pipeline.contextCount, provider: pipeline.runAgent.mock.calls.length, tools: pipeline.toolCount, deliveries: deliveryCount, effects: effectCount }).toEqual(countersAtBarrier)
     expect(fs.readFileSync(sessionPath, "utf8")).toBe(atBarrier)
+    await friends.put("sibling", friend!)
+    const resolveAwait = awaitingToolDefinitions.find((definition) => definition.tool.function.name === "resolve_await")!
+    const resolved = JSON.parse(await resolveAwait.handler({ name: "durable_follow", verdict: "yes", observation: "It is ready now" }, undefined) as string)
+    expect(resolved).toMatchObject({ verdict: "yes", alert: { status: "delivered_now" } })
+    expect(requests).toContainEqual(expect.objectContaining({ method: "sendMessage", body: expect.objectContaining({ chat_id: "888", text: expect.stringContaining("It is ready now") }) }))
+    expect(fs.existsSync(awaitPath)).toBe(false)
+
+    const revokeRequestId = "telegram-inbound:revoke-follow-up"
+    await awaitTool.handler({ name: "revoked_follow", condition: "Another requested item is ready", cadence: "5m" }, {
+      currentSession: { friendId: "sibling", channel: "telegram", key: "telegram:777:888", sessionPath: "/tmp/session.json" },
+      relationshipAuthorization: { requestId: revokeRequestId, authorizedContextScopes: ["own_requests"], advertisedToolNames: ["await_condition"], authorizeTool: vi.fn() },
+    } as any)
     await app.stop()
+    await restartedComposition.admission.revokeFriend({ provider: "telegram-user", botId: "777", userId: "888", chatId: "888", admissionId: "a".repeat(20), friendId: "sibling" })
+    expect(fs.existsSync(path.join(root, "awaiting", "revoked_follow.md"))).toBe(false)
+    expect(fs.readFileSync(path.join(root, "awaiting", ".done", "revoked_follow.md"), "utf8")).toContain("status: canceled")
+    await expect(restartedComposition.authorizeRelationshipEffect!({ phase: "send", idempotencyKey: "later:revoked", target: householdTarget, authorClass: "butler", effect: { kind: "text", text: "revoked" } })).resolves.toMatchObject({ allowed: false })
   })
 })

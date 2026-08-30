@@ -183,7 +183,7 @@ describe("Telegram admission defensive coverage", () => {
     expect(JSON.stringify(effects)).toContain("Attachments were not downloaded")
     if (pending.kind !== "pending") throw new Error("fixture capture failed")
     now = 1_011
-    await expect(controller.decide({ admissionId: pending.admissionId, decision: "allow", actorFriendId: "ari" })).rejects.toThrow("terminal")
+    await expect(controller.decide({ admissionId: pending.admissionId, decision: "allow", actorFriendId: "ari" })).resolves.toMatchObject({ status: "expired" })
   })
 
   it("resumes a decision already moved beyond pending and repairs pending effects on recovery", async () => {
@@ -233,7 +233,7 @@ describe("Telegram admission defensive coverage", () => {
     expect(controller.parseOwnerDecision({ text: "allow", replyToMessageId: 101 })).toBeNull()
     if (first.kind !== "pending") throw new Error("fixture capture failed")
     await controller.decide({ admissionId: first.admissionId, decision: "allow", actorFriendId: "ari" })
-    await expect(controller.decide({ admissionId: first.admissionId, decision: "block", actorFriendId: "ari" })).rejects.toThrow("revocation collision")
+    await expect(controller.decide({ admissionId: first.admissionId, decision: "block", actorFriendId: "ari" })).resolves.toMatchObject({ status: "handled" })
     expect(store.read(first.admissionId).status).toBe("handled")
   })
 })

@@ -51,7 +51,6 @@ export interface TelegramEffectArtifact {
 
 function isTransportOnlyControl(artifact: Pick<TelegramEffectArtifact, "authorClass" | "effect" | "target">): boolean {
   return artifact.authorClass === "control" && artifact.effect.kind !== "text"
-    && !(artifact.effect.kind === "card" && artifact.target.kind === "approved_relationship" && Boolean(artifact.target.requestId))
 }
 
 export type TelegramEffectAuthorization =
@@ -782,6 +781,16 @@ export function resolveTelegramReply(store: FileTelegramEffectJournal, input: { 
       sessionEventId: part.sessionEventId,
       requestId: artifact.target.requestId ?? null,
     }
+  }
+  return null
+}
+
+export function resolveTelegramControlArtifact(store: FileTelegramEffectJournal, input: { messageId: number; friendId: string; sessionKey: string }): { artifactId: string; requestId: string | null } | null {
+  for (const artifact of store.list()) {
+    if (artifact.authorClass !== "control" || artifact.target.kind !== "approved_relationship"
+      || artifact.target.friendId !== input.friendId || artifact.target.sessionKey !== input.sessionKey) continue
+    if (!artifact.parts.some((part) => part.messageId === input.messageId && part.state === "session_recorded")) continue
+    return { artifactId: artifact.id, requestId: artifact.target.requestId ?? null }
   }
   return null
 }
