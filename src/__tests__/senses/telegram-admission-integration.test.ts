@@ -122,7 +122,19 @@ describe("Telegram admission integration", () => {
     expect(runTurn.mock.calls[3]![0]).toMatchObject({ friendId: "household-friend", userMessage: "second quarantined request" })
     expect(JSON.stringify(runTurn.mock.calls)).not.toContain('"userMessage":"Allow"')
     await pollOptions.onMessage({ updateId: 16, messageId: 26, userId: "42", chatId: "42", text: "ordinary owner message" })
-    await pollOptions.onMessage({ updateId: 17, messageId: 27, userId: "42", chatId: "42", text: "Allow", replyToMessageId: "99999" })
+    const ownerTurn = runTurn.mock.calls[4]![0]
+    expect(ownerTurn).toMatchObject({
+      friendId: "ari",
+      sessionKey: `telegram:${ownerSubject}`,
+      identity: { provider: "telegram-user", externalId: "42", tenantId: "777" },
+      precommittedIngress: { eventId: expect.any(String), reference: expect.stringMatching(/^telegram-inbound:/u) },
+    })
+    const ownerPrepared = await ownerTurn.prepareRunAgentOptions({ runAgentOptions: { toolContext: {} } })
+    expect(ownerPrepared.toolContext.relationshipAuthorization).toMatchObject({ actor: { friendId: "ari", sessionEventId: ownerTurn.precommittedIngress.eventId } })
+    expect(loadSessionEnvelopeFile(getSenseSessionPath("butler", "ari", "telegram", `telegram:${ownerSubject}`, root))?.events)
+      .toContainEqual(expect.objectContaining({ role: "user", content: "ordinary owner message" }))
+    await pollOptions.onMessage({ updateId: 17, messageId: 27, userId: "42", chatId: "42", text: "owner reply", replyToMessageId: String(nextMessageId - 1) })
+    expect(runTurn.mock.calls[5]![0].ingressRelations).toMatchObject({ replyToEventId: expect.any(String) })
     await app.stop()
   })
 
