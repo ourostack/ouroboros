@@ -1164,11 +1164,12 @@ Update:
     /bin/bash "$EVENT_SCRIPT_STAGE/install-usenet-guard.sh" --source-root "$EVENT_SCRIPT_STAGE"
     /bin/bash /boot/config/custom/ouro-events/install-usenet-guard.sh --boot --install-root /boot/config/custom
     verify_installed_usenet_guard() {
-      test "$(stat -c '%u:%g:%a' /boot/config/custom/usenet_health.sh)" = 0:0:700
-      test "$(stat -c '%u:%g:%a' /boot/config/custom/ouro-events/bootstrap-spool.sh)" = 0:0:700
-      test "$(stat -c '%u:%g:%a' /boot/config/custom/ouro-events/emit-event.mjs)" = 0:0:700
-      test "$(stat -c '%u:%g:%a' /boot/config/custom/ouro-events/emit-usenet-event.sh)" = 0:0:700
-      test "$(stat -c '%u:%g:%a' /boot/config/custom/ouro-events/install-usenet-guard.sh)" = 0:0:700
+      test "$(findmnt -n -o FSTYPE --target /boot/config/custom)" = vfat
+      test "$(stat -c '%u:%g:%a' /boot/config/custom/usenet_health.sh)" = 0:0:600
+      test "$(stat -c '%u:%g:%a' /boot/config/custom/ouro-events/bootstrap-spool.sh)" = 0:0:600
+      test "$(stat -c '%u:%g:%a' /boot/config/custom/ouro-events/emit-event.mjs)" = 0:0:600
+      test "$(stat -c '%u:%g:%a' /boot/config/custom/ouro-events/emit-usenet-event.sh)" = 0:0:600
+      test "$(stat -c '%u:%g:%a' /boot/config/custom/ouro-events/install-usenet-guard.sh)" = 0:0:600
       cmp -s "$EVENT_SCRIPT_STAGE/usenet-health.sh" /boot/config/custom/usenet_health.sh
       cmp -s "$EVENT_SCRIPT_STAGE/bootstrap-spool.sh" /boot/config/custom/ouro-events/bootstrap-spool.sh
       cmp -s "$EVENT_SCRIPT_STAGE/emit-event.mjs" /boot/config/custom/ouro-events/emit-event.mjs
