@@ -64,6 +64,10 @@ describe("package metadata", () => {
     expect(packageJob).toContain('test "$AUDIT_STATUS" = 0')
     expect(packageJob).toContain('test "$STAGED_AUDIT_STATUS" = 0')
     expect(packageJob.match(/grep -F "inputs are unreadable"/gu)).toHaveLength(2)
+    expect(packageJob).toContain('LEGACY_ALPHA742_IMAGE_ID=sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d')
+    expect(packageJob.match(/verify_sanctuary_snapshot_provenance \/snapshot "\$1"/gu)).toHaveLength(2)
+    expect(packageJob).toContain('test "$UNLABELED_CURRENT_STATUS" != 0')
+    expect(packageJob).toContain('sudo rm -rf -- "$PACKAGE_ROOT"')
     expect(packageJob).not.toContain('$(bw --version)')
   })
 

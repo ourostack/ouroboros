@@ -311,7 +311,9 @@ Effective-spec audit helper:
         const image = JSON.parse(fs.readFileSync(imagePath, "utf8"));
         if (!Array.isArray(container) || container.length !== 1 || !container[0] || container[0].Image !== imageId) process.exit(1);
         if (!Array.isArray(image) || image.length !== 1 || !image[0] || image[0].Id !== imageId) process.exit(1);
-        if (image[0].Config?.Labels?.["org.opencontainers.image.source"] !== "https://github.com/ourostack/ouroboros") process.exit(1);
+        const source = image[0].Config?.Labels?.["org.opencontainers.image.source"];
+        const legacyAlpha742 = "sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d";
+        if (source !== "https://github.com/ourostack/ouroboros" && !(source === undefined && imageId === legacyAlpha742)) process.exit(1);
         const expected = ["custom/usenet_health.sh", "custom/ouro-events/bootstrap-spool.sh", "custom/ouro-events/emit-event.mjs", "custom/ouro-events/emit-usenet-event.sh", "custom/ouro-events/install-usenet-guard.sh", "go.butler-lines", "crontab.butler-lines", "global-state"];
         const expectedUid = 0;
         const expectedGid = 0;
@@ -1786,7 +1788,7 @@ Backup:
     if docker stop ouro-butler \
       && test "$(docker inspect --format '{{.State.Running}}' ouro-butler)" = false \
       && install -d -m 0700 -o 0 -g 0 "$BACKUP_TMP" "$BACKUP_TMP/runtime" "$BACKUP_TMP/agent" "$BACKUP_TMP/host" "$BACKUP_TMP/provenance" \
-      && install -d -m 0700 -o 0 -g 0 "$BACKUP_TMP/host/custom/ouro-events" \
+      && install -d -m 0700 -o 0 -g 0 "$BACKUP_TMP/host/custom" "$BACKUP_TMP/host/custom/ouro-events" \
       && install -m 0600 -o 0 -g 0 /dev/null "$BACKUP_TMP/host/inventory" \
       && backup_host_file /boot/config/custom/usenet_health.sh custom/usenet_health.sh \
       && backup_host_file /boot/config/custom/ouro-events/bootstrap-spool.sh custom/ouro-events/bootstrap-spool.sh \

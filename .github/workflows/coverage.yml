@@ -150,7 +150,7 @@ jobs:
             /boot/config/custom/ouro-events/spool \
             /mnt/user/appdata/sabnzbd
           sudo touch /mnt/user/appdata/sabnzbd/sabnzbd.ini
-          trap 'docker rm -f ouro-butler-package-audit-canonical >/dev/null 2>&1 || true; sudo rm -rf -- /mnt/user/appdata/ouro-butler/runtime/.ouro-cli /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro /boot/config/custom/ouro-events/spool /mnt/user/appdata/sabnzbd/sabnzbd.ini; rm -rf "$PACKAGE_ROOT"' EXIT
+          trap 'docker rm -f ouro-butler-package-audit-canonical >/dev/null 2>&1 || true; sudo rm -rf -- /mnt/user/appdata/ouro-butler/runtime/.ouro-cli /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro /boot/config/custom/ouro-events/spool /mnt/user/appdata/sabnzbd/sabnzbd.ini; sudo rm -rf -- "$PACKAGE_ROOT"' EXIT
           docker create --name ouro-butler-package-audit-canonical --network host --restart unless-stopped --user 10001:10001 \
             --mount type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli \
             --mount type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro \
@@ -208,6 +208,78 @@ jobs:
             echo "constrained root could not read staged audit inputs" >&2
             exit 1
           fi
+          LEGACY_ALPHA742_IMAGE_ID=sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d
+          SNAPSHOT_ROOT="$PACKAGE_ROOT/legacy-snapshot"
+          SNAPSHOT_VERIFIER="$PACKAGE_ROOT/verify-snapshot.sh"
+          awk '
+            /^    verify_sanctuary_snapshot_provenance\(\) \{/ { active = 1 }
+            active {
+              ending = ($0 == "    }")
+              sub(/^    /, "")
+              print
+              if (ending) active = 0
+            }
+          ' "$PACKAGE_ROOT/package/deploy/unraid/README.txt" >"$SNAPSHOT_VERIFIER"
+          grep -Fq 'verify_sanctuary_snapshot_provenance() {' "$SNAPSHOT_VERIFIER"
+          sudo install -d -m 0700 -o 0 -g 0 \
+            "$SNAPSHOT_ROOT" \
+            "$SNAPSHOT_ROOT/runtime" \
+            "$SNAPSHOT_ROOT/agent" \
+            "$SNAPSHOT_ROOT/host" \
+            "$SNAPSHOT_ROOT/provenance" \
+            "$SNAPSHOT_ROOT/host/custom" \
+            "$SNAPSHOT_ROOT/host/custom/ouro-events"
+          for SNAPSHOT_FILE in \
+            "$SNAPSHOT_ROOT/host/inventory" \
+            "$SNAPSHOT_ROOT/host/go.butler-lines" \
+            "$SNAPSHOT_ROOT/host/crontab.butler-lines" \
+            "$SNAPSHOT_ROOT/host/global-state" \
+            "$SNAPSHOT_ROOT/provenance/image-id" \
+            "$SNAPSHOT_ROOT/provenance/container-inspect.json" \
+            "$SNAPSHOT_ROOT/provenance/image-inspect.json" \
+            "$SNAPSHOT_ROOT/provenance/package-version" \
+            "$SNAPSHOT_ROOT/provenance/manifest.sha256"; do
+            sudo install -m 0600 -o 0 -g 0 /dev/null "$SNAPSHOT_FILE"
+          done
+          sudo tee "$SNAPSHOT_ROOT/host/inventory" >/dev/null <<'EOF'
+          absent	custom/usenet_health.sh
+          absent	custom/ouro-events/bootstrap-spool.sh
+          absent	custom/ouro-events/emit-event.mjs
+          absent	custom/ouro-events/emit-usenet-event.sh
+          absent	custom/ouro-events/install-usenet-guard.sh
+          present	go.butler-lines
+          present	crontab.butler-lines
+          present	global-state
+          EOF
+          sudo tee "$SNAPSHOT_ROOT/host/global-state" >/dev/null <<'EOF'
+          go	absent	-	0
+          crontab	absent	-	0
+          EOF
+          printf '%s\n' "$LEGACY_ALPHA742_IMAGE_ID" | sudo tee "$SNAPSHOT_ROOT/provenance/image-id" >/dev/null
+          printf '[{"Image":"%s"}]\n' "$LEGACY_ALPHA742_IMAGE_ID" | sudo tee "$SNAPSHOT_ROOT/provenance/container-inspect.json" >/dev/null
+          printf '[{"Id":"%s","Config":{"Labels":{}}}]\n' "$LEGACY_ALPHA742_IMAGE_ID" | sudo tee "$SNAPSHOT_ROOT/provenance/image-inspect.json" >/dev/null
+          printf '%s\n' "$PACKAGE_VERSION" | sudo tee "$SNAPSHOT_ROOT/provenance/package-version" >/dev/null
+          sudo sh -ceu 'cd "$1"; find runtime agent host provenance -xdev -type f ! -path provenance/manifest.sha256 -exec sha256sum -- {} + | LC_ALL=C sort -k2 >provenance/manifest.sha256' snapshot-manifest "$SNAPSHOT_ROOT"
+          docker run --rm --network none --user 0:0 --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m,mode=1777 \
+            --mount "type=bind,src=$SNAPSHOT_ROOT,dst=/snapshot,readonly" \
+            --mount "type=bind,src=$SNAPSHOT_VERIFIER,dst=/verify-snapshot.sh,readonly" \
+            --entrypoint /bin/bash ouro-butler-package-smoke:"$PACKAGE_VERSION" -ceu \
+            'source /verify-snapshot.sh; verify_sanctuary_snapshot_provenance /snapshot "$1"' \
+            -- "$LEGACY_ALPHA742_IMAGE_ID"
+          printf '%s\n' "$AUDIT_IMAGE_ID" | sudo tee "$SNAPSHOT_ROOT/provenance/image-id" >/dev/null
+          printf '[{"Image":"%s"}]\n' "$AUDIT_IMAGE_ID" | sudo tee "$SNAPSHOT_ROOT/provenance/container-inspect.json" >/dev/null
+          printf '[{"Id":"%s","Config":{"Labels":{}}}]\n' "$AUDIT_IMAGE_ID" | sudo tee "$SNAPSHOT_ROOT/provenance/image-inspect.json" >/dev/null
+          sudo sh -ceu 'cd "$1"; find runtime agent host provenance -xdev -type f ! -path provenance/manifest.sha256 -exec sha256sum -- {} + | LC_ALL=C sort -k2 >provenance/manifest.sha256' snapshot-manifest "$SNAPSHOT_ROOT"
+          set +e
+          docker run --rm --network none --user 0:0 --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m,mode=1777 \
+            --mount "type=bind,src=$SNAPSHOT_ROOT,dst=/snapshot,readonly" \
+            --mount "type=bind,src=$SNAPSHOT_VERIFIER,dst=/verify-snapshot.sh,readonly" \
+            --entrypoint /bin/bash ouro-butler-package-smoke:"$PACKAGE_VERSION" -ceu \
+            'source /verify-snapshot.sh; verify_sanctuary_snapshot_provenance /snapshot "$1"' \
+            -- "$AUDIT_IMAGE_ID"
+          UNLABELED_CURRENT_STATUS=$?
+          set -e
+          test "$UNLABELED_CURRENT_STATUS" != 0
 
   publish:
     needs:
