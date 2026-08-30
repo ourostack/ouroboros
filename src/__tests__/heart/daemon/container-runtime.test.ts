@@ -383,7 +383,7 @@ if assert_update_topology "$EXPECTED_IMAGE"; then command printf 'MUTATION\n'; e
     const validImage = `sha256:${"b".repeat(64)}`
     const auditRunnerImage = `sha256:${"d".repeat(64)}`
     const provenanceRoot = path.join(validRoot, "provenance")
-    const writeProvenance = (imageId = validImage, inspectImageId = imageId) => {
+    const writeProvenance = (imageId = validImage, inspectImageId = imageId, sourceLabel: string | null = "https://github.com/ourostack/ouroboros") => {
       fs.rmSync(provenanceRoot, { recursive: true, force: true })
       fs.mkdirSync(provenanceRoot, { recursive: true, mode: 0o700 })
       const imagePath = path.join(provenanceRoot, "image-id")
@@ -392,7 +392,8 @@ if assert_update_topology "$EXPECTED_IMAGE"; then command printf 'MUTATION\n'; e
       const packageVersionPath = path.join(provenanceRoot, "package-version")
       fs.writeFileSync(imagePath, `${imageId}\n`, { mode: 0o600 })
       fs.writeFileSync(inspectPath, `${JSON.stringify([{ Image: inspectImageId }])}\n`, { mode: 0o600 })
-      fs.writeFileSync(imageInspectPath, `${JSON.stringify([{ Id: imageId, Config: { Labels: { "org.opencontainers.image.source": "https://github.com/ourostack/ouroboros" } } }])}\n`, { mode: 0o600 })
+      const labels = sourceLabel === null ? {} : { "org.opencontainers.image.source": sourceLabel }
+      fs.writeFileSync(imageInspectPath, `${JSON.stringify([{ Id: imageId, Config: { Labels: labels } }])}\n`, { mode: 0o600 })
       fs.writeFileSync(packageVersionPath, "0.1.0-alpha.743\n", { mode: 0o600 })
       const entries = [path.join(validRoot, "host", "inventory"), path.join(validRoot, "host", "go.butler-lines"), path.join(validRoot, "host", "crontab.butler-lines"), path.join(validRoot, "host", "global-state"), imagePath, inspectPath, imageInspectPath, packageVersionPath].map((filePath) => {
         const relative = path.relative(validRoot, filePath)
@@ -453,6 +454,20 @@ if assert_restore_preflight; then command printf 'MUTATION\n'; else exit $?; fi`
       const success = runConditionalHelper(script, "safe", { VALID_IMAGE: validImage, BACKUP_ROOT: validRoot, IMAGE_ID: validImage, AUDIT_RUNNER_IMAGE_ID: auditRunnerImage, AUDIT_TEST_ROOT: testRoot })
       expect(success.status, success.stderr).toBe(0)
       expect(success.stdout).toContain("MUTATION")
+      const legacyImage = "sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d"
+      writeProvenance(legacyImage, legacyImage, null)
+      const unlabeledLegacy = runConditionalHelper(script, "safe", { VALID_IMAGE: legacyImage, BACKUP_ROOT: validRoot, IMAGE_ID: legacyImage, AUDIT_RUNNER_IMAGE_ID: auditRunnerImage, AUDIT_TEST_ROOT: testRoot })
+      expect(unlabeledLegacy.status, unlabeledLegacy.stderr).toBe(0)
+      expect(unlabeledLegacy.stdout).toContain("MUTATION")
+      writeProvenance(validImage, validImage, null)
+      const unlabeledCurrent = runConditionalHelper(script, "safe", { VALID_IMAGE: validImage, BACKUP_ROOT: validRoot, IMAGE_ID: validImage, AUDIT_RUNNER_IMAGE_ID: auditRunnerImage, AUDIT_TEST_ROOT: testRoot })
+      expect(unlabeledCurrent.status).not.toBe(0)
+      expect(unlabeledCurrent.stdout).not.toContain("MUTATION")
+      writeProvenance(legacyImage, legacyImage, "https://example.invalid/not-ouroboros")
+      const mislabeledLegacy = runConditionalHelper(script, "safe", { VALID_IMAGE: legacyImage, BACKUP_ROOT: validRoot, IMAGE_ID: legacyImage, AUDIT_RUNNER_IMAGE_ID: auditRunnerImage, AUDIT_TEST_ROOT: testRoot })
+      expect(mislabeledLegacy.status).not.toBe(0)
+      expect(mislabeledLegacy.stdout).not.toContain("MUTATION")
+      writeProvenance()
       fs.appendFileSync(path.join(provenanceRoot, "image-id"), "tampered")
       const tampered = runConditionalHelper(script, "safe", { VALID_IMAGE: validImage, BACKUP_ROOT: validRoot, IMAGE_ID: validImage, AUDIT_RUNNER_IMAGE_ID: auditRunnerImage, AUDIT_TEST_ROOT: testRoot })
       expect(tampered.status).not.toBe(0)
@@ -2326,6 +2341,7 @@ recover_test`
     expect(backupRunbook).toContain('>"$BACKUP_TMP/host/go.butler-lines"')
     expect(backupRunbook).toContain('snapshot_butler_cron_fragments "$BACKUP_CRON_SOURCE" "$BACKUP_TMP/host/crontab.butler-lines"')
     expect(backupRunbook).toContain('>"$BACKUP_TMP/host/global-state"')
+    expect(backupRunbook).toContain('install -d -m 0700 -o 0 -g 0 "$BACKUP_TMP/host/custom" "$BACKUP_TMP/host/custom/ouro-events"')
     expect(backupRunbook).toContain("BACKUP_GO_DIGEST=$(sha256sum /boot/config/go")
     expect(backupRunbook).toContain('BACKUP_CRON_DIGEST=$(sha256sum "$BACKUP_CRON_SOURCE"')
     expect(backupRunbook).not.toContain('backup_host_file /boot/config/go go')
@@ -2420,7 +2436,7 @@ recover_test`
     expect(restoreRunbook.indexOf("enable_butler_autostart")).toBeGreaterThan(restoreRunbook.indexOf("wait_butler_ready ouro-butler"))
     expect(auditor).toContain("exec node /opt/ouro/dist/heart/daemon/container-spec-auditor-main.js")
     expect(agent.habitPaidTurnsPerDay).toBe(24)
-    expect(meta).toMatchObject({ runtimeVersion: "0.1.0-alpha.746", bundleSchemaVersion: 3 })
+    expect(meta).toMatchObject({ runtimeVersion: "0.1.0-alpha.747", bundleSchemaVersion: 3 })
     expect(fs.existsSync("deploy/unraid/sanctuary.ouro/arc/README.md")).toBe(true)
     expect(fs.existsSync("deploy/unraid/sanctuary.ouro/tool-profiles.json")).toBe(true)
     expect(dockerfile).toContain("COPY deploy/unraid /opt/ouro/deploy/unraid")
