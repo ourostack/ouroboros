@@ -9,6 +9,9 @@ export interface CrossChatDeliveryRequest {
   channel: string
   key: string
   content: string
+  requestId?: string
+  /** Stable identity for retry-safe direct delivery of one durable return. */
+  deliveryId?: string
   intent: CrossChatDeliveryIntent
   authorizingSession?: {
     friendId: string
@@ -43,6 +46,7 @@ function buildPendingEnvelope(request: CrossChatDeliveryRequest, agentName: stri
     channel: request.channel,
     key: request.key,
     content: request.content,
+    ...(request.requestId ? { requestId: request.requestId } : {}),
     timestamp: now,
   }
 }

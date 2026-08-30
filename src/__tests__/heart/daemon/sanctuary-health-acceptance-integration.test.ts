@@ -23,7 +23,7 @@ function healthContext() {
 }
 
 describe("Sanctuary health acceptance integration", () => {
-  it("reads one tagged delivered transition from the sweep's durable state", async () => {
+  it("reads one tagged evidence transition without a detector-authored alert", async () => {
     const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-health-acceptance-"))
     const scenarioHandleDigest = "a".repeat(64)
     const healthPath = path.join(agentRoot, "state", "health", "sanctuary-health.json")
@@ -39,9 +39,7 @@ describe("Sanctuary health acceptance integration", () => {
         now: () => new Date("2026-08-18T15:00:00.000Z"),
         acceptanceEventMeta: () => ({ scenarioHandleDigest }),
       })
-      const result = await sweep()
-      await sweep.markDeliveryAttempting(result.deliveryId!)
-      await sweep.markDelivered(result.deliveryId!, [7001])
+      await sweep()
 
       const dependencies: SanctuaryAcceptanceAdapterDependencies = {
         readKeyFiles: () => [],
@@ -73,21 +71,16 @@ describe("Sanctuary health acceptance integration", () => {
         agentRoot,
       )
 
-      expect(facts.health).toEqual({ transitionCount: 1, alertCount: 1, productionRestored: true })
+      expect(facts.health).toEqual({ transitionCount: 1, alertCount: 0, productionRestored: true })
       expect(facts.sourceValues["health-runtime"]).toMatchObject({
         outbox: null,
         sweepReceipts: [expect.objectContaining({
           scenarioHandleDigest,
-          deliveryId: result.deliveryId,
           opened: 1,
           recovered: 0,
           digestDue: false,
         })],
-        deliveredReceipts: [expect.objectContaining({
-          deliveryId: result.deliveryId,
-          kind: "transition",
-          messageIds: [7001],
-        })],
+        deliveredReceipts: [],
       })
     } finally {
       fs.rmSync(agentRoot, { recursive: true, force: true })

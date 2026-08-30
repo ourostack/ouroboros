@@ -9,10 +9,17 @@ import { emitNervesEvent, setRuntimeLogger } from "../../nerves/runtime"
 import { createTelegramSenseApp, opaqueTelegramSubject, sanctuaryTelegramApprovalEvidenceMac, sanctuaryTelegramTurnReceiptDigest, sanctuaryTelegramTurnReceiptMac, telegramAcceptanceAuditOwnerDigest } from "../../senses/telegram"
 import { TELEGRAM_ACCEPTANCE_AUDIT_HEAD_RELATIVE_PATH, TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH, verifyTelegramAuditLedger } from "../../senses/telegram-audit-ledger"
 import { splitTelegramText, type TelegramBotApi, type TelegramInboundMessage, type TelegramLongPoll } from "../../senses/telegram-client"
+import { getSenseSessionPath } from "../../senses/shared-turn"
+import { FileTelegramEffectJournal, FIXED_USENET_SYSTEM_FAILSAFE, prepareTelegramEffect } from "../../senses/telegram-effect-adapter"
+import { createObligation, markObligationReturnReady, readObligation } from "../../arc/obligations"
 
 const RECEIPT_DOMAIN = "ouroboros.telegram.turn-receipt.v3"
 const RECEIPT_KEY = "k".repeat(43)
 const HEX_DIGEST = "a".repeat(64)
+
+function inboundReference(updateId: number, messageId: string): string {
+  return `telegram-inbound:${createHmac("sha256", "k".repeat(43)).update(`${updateId}\0${messageId}`).digest("hex")}`
+}
 
 function receiptDigest(purpose: string, value: string): string {
   return createHmac("sha256", RECEIPT_KEY).update(`${RECEIPT_DOMAIN}\0${purpose}\0${value}`).digest("hex")
@@ -61,7 +68,12 @@ function fixture(input: {
   api?: TelegramBotApi
   runWithToolReceiptCollection?: any
   afterAcceptanceLedgerPreReadStat?: (filePath: string) => void
+  authorizeEffect?: any
+  authorizeRelationshipEffect?: any
+  privilegedFailsafe?: any
+  admission?: any
 } = {}) {
+  const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-sense-fixture-"))
   let onMessage: ((message: TelegramInboundMessage) => Promise<void>) | undefined
   let onUpdate: ((update: any) => Promise<boolean>) | undefined
   const poll: TelegramLongPoll = {
@@ -107,10 +119,32 @@ function fixture(input: {
     healthSweep: input.healthSweep,
     acceptanceMarker: input.acceptanceMarker,
     acceptanceReceiptRoot: input.acceptanceReceiptRoot,
+    _agentRoot: agentRoot,
     _runWithToolReceiptCollection: input.runWithToolReceiptCollection,
     _afterAcceptanceLedgerPreReadStat: input.afterAcceptanceLedgerPreReadStat,
+    authorizeEffect: input.authorizeEffect,
+    authorizeRelationshipEffect: input.authorizeRelationshipEffect,
+    privilegedFailsafe: input.privilegedFailsafe,
+    admission: input.admission,
   })
-  return { app, api, poll, runTurn, approvalTransport, getOnMessage: () => onMessage!, getOnUpdate: () => onUpdate! }
+  return { app, api, poll, runTurn, approvalTransport, agentRoot, getOnMessage: () => onMessage!, getOnUpdate: () => onUpdate! }
+}
+
+function writeEligibleFailsafeRecord(eventRoot: string): string {
+  const recordPath = path.join(eventRoot, "sanctuary", "sanctuary-usenet", "spend-guard.json")
+  fs.mkdirSync(path.dirname(recordPath), { recursive: true })
+  fs.writeFileSync(recordPath, `${JSON.stringify({
+    schemaVersion: 2, agent: "sanctuary", source: "sanctuary-usenet", eventType: "usenet.protective_action", eventId: "spend-guard",
+    summary: "Downloads paused", evidence: ["verified"], payloadPath: null, priority: "critical", receivedAt: "2026-08-29T19:55:00.000Z", recordPath,
+    duplicateCount: 0, updatedAt: "2026-08-29T19:56:00.000Z", version: 1, observationRevision: "a".repeat(64), observationDigest: "b".repeat(64),
+    transition: "opened", executionState: "retry_wait", generation: 1, attemptCount: 1, claimOwner: null, claimExpiresAt: null,
+    nextAttemptAt: "2026-08-29T19:56:01.000Z", lastError: "provider unavailable", disposition: null, pendingObservation: null,
+    dispatchEnabled: true, shouldWake: false, privilegedIngressNonce: "c".repeat(64), privilegedProtectiveAction: {
+      action: "sabnzbd.pause", actionReceipt: "sabnzbd:pause:2026-08-29", transitionId: "spend-pause:2026-08-29:verified", critical: true,
+      createdAt: "2026-08-29T19:55:00.000Z", expiresAt: "2099-01-01T00:00:00.000Z", verification: { verified: true, digest: "d".repeat(64), observedAt: "2026-08-29T19:55:01.000Z" },
+    },
+  }, null, 2)}\n`)
+  return recordPath
 }
 
 describe("Telegram sense", () => {
@@ -683,6 +717,177 @@ describe("Telegram sense", () => {
     }, undefined)
   })
 
+  it("journals an authorized reply before sending and does not resend an accepted retry", async () => {
+    const f = fixture()
+    const inbound = { updateId: 91, messageId: "92", userId: "42", chatId: "42", text: "health?" }
+
+    await f.getOnMessage()(inbound)
+    await f.getOnMessage()(inbound)
+
+    expect(f.api.request).toHaveBeenCalledTimes(1)
+    const journalRoot = path.join(f.agentRoot, "state", "telegram", "effects")
+    const artifacts = fs.readdirSync(journalRoot).filter((name) => name.endsWith(".json"))
+    expect(artifacts).toHaveLength(1)
+    const artifact = JSON.parse(fs.readFileSync(path.join(journalRoot, artifacts[0]!), "utf8"))
+    expect(artifact).toMatchObject({
+      idempotencyKey: expect.stringMatching(/^turn:tg_[A-Za-z0-9_-]{43}:91:delivery:0$/u),
+      authorClass: "butler",
+      effect: { kind: "text", text: "All systems nominal." },
+      parts: [{ state: "session_recorded", messageId: 71 }],
+    })
+  })
+
+  it("requires the real relationship authority before preparing and again before sending", async () => {
+    const denied = fixture({ authorizeEffect: vi.fn(() => ({ allowed: false, reason: "revoked" })) })
+    await expect(denied.getOnMessage()({ updateId: 911, messageId: "912", userId: "42", chatId: "42", text: "health?" })).rejects.toThrow("revoked")
+    expect(denied.api.request).not.toHaveBeenCalled()
+    expect(fs.existsSync(path.join(denied.agentRoot, "state", "telegram", "effects"))).toBe(false)
+
+    const phases: string[] = []
+    const allowed = fixture({ authorizeEffect: vi.fn((input: any) => { phases.push(input.phase); return { allowed: true, receiptId: `actual-${input.phase}`, expiresAt: "2099-01-01T00:00:00.000Z", transport: { chatId: "42" } } }) })
+    await allowed.getOnMessage()({ updateId: 913, messageId: "914", userId: "42", chatId: "42", text: "health?" })
+    expect(phases).toEqual(["prepare", "send"])
+    const file = fs.readdirSync(path.join(allowed.agentRoot, "state", "telegram", "effects"))[0]!
+    expect(JSON.parse(fs.readFileSync(path.join(allowed.agentRoot, "state", "telegram", "effects", file), "utf8")).authorizationReceiptId).toBe("actual-send")
+  })
+
+  it("records every accepted Telegram chunk as a Butler-authored session artifact", async () => {
+    let sessionPath = ""
+    const f = fixture({
+      runTurn: vi.fn(async (options: any) => {
+        sessionPath = path.join(f.agentRoot, "state", "sessions", options.friendId, "telegram", "turn.json")
+        fs.mkdirSync(path.dirname(sessionPath), { recursive: true })
+        fs.writeFileSync(sessionPath, JSON.stringify({
+          version: 2,
+          events: [{
+            id: "evt-000001", sequence: 1, role: "assistant", content: "A useful answer.", name: null, toolCallId: null, toolCalls: [], attachments: [],
+            time: { authoredAt: null, authoredAtSource: "local", observedAt: null, observedAtSource: "local", recordedAt: "2026-08-29T17:00:00.000Z", recordedAtSource: "save" },
+            relations: { replyToEventId: null, threadRootEventId: null, references: [], toolCallId: null, supersedesEventId: null, redactsEventId: null },
+            provenance: { captureKind: "live", legacyVersion: null, sourceMessageIndex: null },
+          }],
+          projection: { eventIds: ["evt-000001"], trimmed: false, maxTokens: null, contextMargin: null, inputTokens: null, projectedAt: null },
+          lastUsage: null,
+          state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
+        }))
+        await options.deliverySink.onDelivery({ kind: "settle", text: "A useful answer." })
+        return { response: "A useful answer.", ponderDeferred: false, deliveries: [], deliveryFailures: [], sessionPath, causalSessionEventIds: ["evt-000001"] }
+      }),
+    })
+
+    await f.getOnMessage()({ updateId: 93, messageId: "94", userId: "42", chatId: "42", text: "help" })
+
+    const envelope = JSON.parse(fs.readFileSync(sessionPath, "utf8"))
+    expect(envelope.events).toEqual([expect.objectContaining({
+      role: "assistant",
+      content: "A useful answer.",
+      relations: expect.objectContaining({ references: expect.arrayContaining([expect.stringMatching(/^telegram-artifact:/), "telegram-message:71"]) }),
+    })])
+    const artifactName = fs.readdirSync(path.join(f.agentRoot, "state", "telegram", "effects"))[0]!
+    expect(JSON.parse(fs.readFileSync(path.join(f.agentRoot, "state", "telegram", "effects", artifactName), "utf8")).parts[0]).toMatchObject({ state: "session_recorded", sessionEventId: "evt-000001" })
+  })
+
+  it("binds transcript-readback delivery and replies to its persisted canonical assistant event", async () => {
+    let sessionPath = ""
+    const f = fixture({
+      runTurn: vi.fn(async (options: any) => {
+        sessionPath = getSenseSessionPath("butler", options.friendId, "telegram", options.sessionKey, f.agentRoot)
+        fs.mkdirSync(path.dirname(sessionPath), { recursive: true })
+        const firstTurn = !fs.existsSync(sessionPath)
+        if (firstTurn) fs.writeFileSync(sessionPath, JSON.stringify({
+          version: 2,
+          events: [{
+            id: "evt-000001", sequence: 1, role: "assistant", content: "Recovered canonical answer.", name: null, toolCallId: null, toolCalls: [], attachments: [],
+            time: { authoredAt: null, authoredAtSource: "local", observedAt: null, observedAtSource: "local", recordedAt: "2026-08-29T17:00:00.000Z", recordedAtSource: "save" },
+            relations: { replyToEventId: null, threadRootEventId: null, references: [], toolCallId: null, supersedesEventId: null, redactsEventId: null },
+            provenance: { captureKind: "live", legacyVersion: null, sourceMessageIndex: null },
+          }],
+          projection: { eventIds: ["evt-000001"], trimmed: false, maxTokens: null, contextMargin: null, inputTokens: null, projectedAt: null },
+          lastUsage: null,
+          state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
+        }))
+        return { response: "Recovered canonical answer.", ponderDeferred: false, deliveries: [], deliveryFailures: [], sessionPath, ...(firstTurn ? { responseCausalSessionEventId: "evt-000001" } : {}) }
+      }),
+    })
+
+    await f.getOnMessage()({ updateId: 915, messageId: "916", userId: "42", chatId: "42", text: "recover it" })
+
+    expect(f.api.request).toHaveBeenCalledOnce()
+    const envelope = JSON.parse(fs.readFileSync(sessionPath, "utf8"))
+    expect(envelope.events).toHaveLength(1)
+    expect(envelope.events[0]).toMatchObject({ id: "evt-000001", role: "assistant", content: "Recovered canonical answer." })
+    expect(envelope.events[0].relations.references).toEqual(expect.arrayContaining([expect.stringMatching(/^telegram-artifact:/u), "telegram-message:71"]))
+    const artifactRoot = path.join(f.agentRoot, "state", "telegram", "effects")
+    const artifact = JSON.parse(fs.readFileSync(path.join(artifactRoot, fs.readdirSync(artifactRoot)[0]!), "utf8"))
+    expect(artifact.parts[0]).toMatchObject({ state: "session_recorded", messageId: 71, sessionEventId: "evt-000001" })
+
+    await f.getOnMessage()({ updateId: 917, messageId: "918", userId: "42", chatId: "42", text: "what did you mean?", replyToMessageId: "71" })
+    expect(f.runTurn.mock.calls[1]![0].ingressRelations.replyToEventId).toBe("evt-000001")
+  })
+
+  it("repairs the exact inbound before accepted output when an existing-session turn fails", async () => {
+    let sessionPath = ""
+    const f = fixture({
+      runTurn: vi.fn(async (options: any) => {
+        sessionPath = getSenseSessionPath("butler", options.friendId, "telegram", options.sessionKey, f.agentRoot)
+        fs.mkdirSync(path.dirname(sessionPath), { recursive: true })
+        fs.writeFileSync(sessionPath, JSON.stringify({
+          version: 2,
+          events: [{ id: "evt-000001", sequence: 1, role: "user", content: "older", name: null, toolCallId: null, toolCalls: [], attachments: [], time: { authoredAt: null, authoredAtSource: "unknown", observedAt: null, observedAtSource: "ingest", recordedAt: "2026-08-29T17:00:00.000Z", recordedAtSource: "save" }, relations: { replyToEventId: null, threadRootEventId: null, references: [], toolCallId: null, supersedesEventId: null, redactsEventId: null }, provenance: { captureKind: "live", legacyVersion: null, sourceMessageIndex: null } }],
+          projection: { eventIds: ["evt-000001"], trimmed: false, maxTokens: null, contextMargin: null, inputTokens: null, projectedAt: null },
+          lastUsage: null,
+          state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
+        }))
+        await options.deliverySink.onDelivery({ kind: "speak", text: "I started checking." })
+        throw new Error("provider failed after speak")
+      }),
+    })
+
+    await f.getOnMessage()({ updateId: 930, messageId: "931", userId: "42", chatId: "42", text: "Please check it" })
+
+    const events = JSON.parse(fs.readFileSync(sessionPath, "utf8")).events
+    expect(events.map((event: any) => [event.role, event.content])).toEqual([
+      ["user", "older"],
+      ["user", "Please check it"],
+      ["assistant", "I started checking."],
+    ])
+    expect(events[1].relations.references).toContain(inboundReference(930, "931"))
+  })
+
+  it("binds a Telegram reply to the exact recorded artifact and request", async () => {
+    const f = fixture()
+    await f.getOnMessage()({ updateId: 95, messageId: "96", userId: "42", chatId: "42", text: "first" })
+    const journalRoot = path.join(f.agentRoot, "state", "telegram", "effects")
+    const artifactPath = path.join(journalRoot, fs.readdirSync(journalRoot)[0]!)
+    const artifact = JSON.parse(fs.readFileSync(artifactPath, "utf8"))
+    artifact.target.requestId = "req-7"
+    artifact.parts[0].state = "accepted"
+    delete artifact.parts[0].sessionEventId
+    fs.writeFileSync(artifactPath, JSON.stringify(artifact))
+    const firstTurn = f.runTurn.mock.calls[0]![0]
+    const replySessionPath = getSenseSessionPath("butler", firstTurn.friendId, "telegram", firstTurn.sessionKey, f.agentRoot)
+    fs.mkdirSync(path.dirname(replySessionPath), { recursive: true })
+    fs.writeFileSync(replySessionPath, JSON.stringify({
+      version: 2,
+      events: [{ id: "evt-000007", sequence: 7, role: "assistant", content: "All systems nominal.", name: "telegram-butler", toolCallId: null, toolCalls: [], attachments: [], time: { authoredAt: null, authoredAtSource: "local", observedAt: null, observedAtSource: "local", recordedAt: "2026-08-29T18:00:00.000Z", recordedAtSource: "save" }, relations: { replyToEventId: null, threadRootEventId: null, references: [`telegram-artifact:${artifact.id}`, "telegram-message:71"], toolCallId: null, supersedesEventId: null, redactsEventId: null }, provenance: { captureKind: "synthetic", legacyVersion: null, sourceMessageIndex: null } }],
+      projection: { eventIds: ["evt-000007"], trimmed: false, maxTokens: null, contextMargin: null, inputTokens: null, projectedAt: null },
+      lastUsage: null,
+      state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
+    }))
+
+    await f.getOnMessage()({ updateId: 97, messageId: "98", userId: "42", chatId: "42", text: "that one", replyToMessageId: "71" })
+
+    expect(f.runTurn).toHaveBeenLastCalledWith(expect.objectContaining({
+      ingressRelations: {
+        replyToEventId: "evt-000007",
+        threadRootEventId: null,
+        references: [inboundReference(97, "98"), `telegram-artifact:${artifact.id}`, "request:req-7"],
+      },
+    }))
+
+    await f.getOnMessage()({ updateId: 99, messageId: "100", userId: "42", chatId: "42", text: "unknown reply", replyToMessageId: "999" })
+    expect(f.runTurn).toHaveBeenLastCalledWith(expect.objectContaining({ ingressRelations: expect.objectContaining({ replyToEventId: null }) }))
+  })
+
   it("persists one HMAC-bound acceptance receipt with observed provider, tool, and delivery counts", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-acceptance-receipt-"))
     const runTurn = vi.fn(async (options: any) => {
@@ -745,6 +950,32 @@ describe("Telegram sense", () => {
     expect(duplicate.api.request).toHaveBeenCalledWith("sendMessage", { chat_id: "42", text: "I couldn't complete that turn. The failure was recorded; please try again.", parse_mode: "HTML" }, undefined)
     expect(JSON.parse(fs.readFileSync(receiptPath(duplicateRoot), "utf8"))).toMatchObject({ status: "error", deliveryCount: 1 })
     fs.rmSync(duplicateRoot, { recursive: true, force: true })
+  })
+
+  it("grounds the canonical storage intent and contains a missing grounding", async () => {
+    const storage = { array: { state: "STARTED", degraded: false, usedBytes: 8_000_000_000_000, freeBytes: 2_000_000_000_000, usedPercent: 80 }, shares: [], truncated: false }
+    const sessionPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "telegram-storage-grounding-")), "session.json")
+    const collect = async (operation: () => Promise<unknown>, observer: { toolResultDigests: string[]; toolGroundings?: unknown[] }) => {
+      observer.toolGroundings?.push({ toolName: "unraid_get_storage", resultDigest: HEX_DIGEST, groundingDigest: createHash("sha256").update(JSON.stringify(storage)).digest("hex"), sourceIdentityDigest: "9".repeat(64), observedAt: "2026-08-20T16:00:00.000Z", facts: storage })
+      return { result: await operation(), toolResultDigests: [], toolGroundings: [...(observer.toolGroundings ?? [])] }
+    }
+    const grounded = fixture({
+      acceptanceMarker: () => ({ scenarioHandleDigest: HEX_DIGEST, label: "unit-16d-1-space" }),
+      acceptanceReceiptRoot: path.dirname(sessionPath),
+      runWithToolReceiptCollection: collect,
+      runTurn: vi.fn(async () => ({ response: "ignored", sessionPath, deliveries: [], deliveryFailures: [], ponderDeferred: false })),
+    })
+    await grounded.getOnMessage()({ updateId: 24, messageId: "25", userId: "42", chatId: "42", text: "how much space is left?" })
+    expect(grounded.api.request).toHaveBeenCalledWith("sendMessage", { chat_id: "42", text: "There is 2 TB free and the array is 80% used.", parse_mode: "HTML" }, undefined)
+
+    const missing = fixture({
+      acceptanceMarker: () => ({ scenarioHandleDigest: "e".repeat(64), label: "unit-16d-whats-up" }),
+      acceptanceReceiptRoot: fs.mkdtempSync(path.join(os.tmpdir(), "telegram-missing-grounding-")),
+      runWithToolReceiptCollection: async (operation) => ({ result: await operation(), toolResultDigests: [], toolGroundings: [] }),
+      runTurn: vi.fn(async () => ({ response: "ungrounded", deliveries: [], deliveryFailures: [], ponderDeferred: false })),
+    })
+    await missing.getOnMessage()({ updateId: 26, messageId: "27", userId: "42", chatId: "42", text: "status" })
+    expect(missing.api.request).toHaveBeenCalledWith("sendMessage", { chat_id: "42", text: "I couldn't complete that turn. The failure was recorded; please try again.", parse_mode: "HTML" }, undefined)
   })
 
   it("records partial chunk delivery as an error without sending a duplicate fallback", async () => {
@@ -1340,6 +1571,32 @@ describe("Telegram sense", () => {
     expect(neverStarted.api.stop).toHaveBeenCalledOnce()
   })
 
+  it.each([new Error("Unraid offline"), "Unraid offline"])('keeps Telegram available when routine recovery needs later inspection for $failure', async (failure) => {
+    const recoverRoutineActions = vi.fn(async () => { throw failure })
+    const poll = { pollOnce: vi.fn(), run: vi.fn(async () => undefined), stop: vi.fn() }
+    const approvalRuntime = {
+      transport: { sendApproval: vi.fn(), handleUpdate: vi.fn(), terminalizeRecovered: vi.fn(), reconcileExpired: vi.fn(async () => undefined) },
+      coordinator: vi.fn(), recover: vi.fn(async () => undefined), close: vi.fn(), legacySubjects: vi.fn(() => []), migrateIdentity: vi.fn(),
+    }
+    const app = createTelegramSenseApp({
+      agentName: "sanctuary",
+      credentials: { botToken: "test-token", authorizedUserId: "42", authorizedChatId: "42" },
+      identityKey: "k".repeat(43),
+      _agentRoot: fs.mkdtempSync(path.join(os.tmpdir(), "telegram-routine-recovery-")),
+      _toolContext: { sanctuary: { recoverRoutineActions } } as never,
+      migrateIdentity: async () => undefined,
+      api: { request: vi.fn(), stop: vi.fn() },
+      offsetStore: { load: () => 0, save: vi.fn() },
+      createLongPoll: () => poll,
+      approvalRuntime: approvalRuntime as never,
+      _createInteractiveControl: (() => ({ socketPath: "unused", start: vi.fn(), stop: vi.fn() })) as never,
+    })
+    await expect(app.run()).resolves.toBeUndefined()
+    expect(recoverRoutineActions).toHaveBeenCalledOnce()
+    expect(poll.run).toHaveBeenCalledOnce()
+    await app.stop()
+  })
+
   it("never stops the one-second observer after persistent reconciliation failures", async () => {
     vi.useFakeTimers()
     let finishPolling!: () => void
@@ -1386,9 +1643,255 @@ describe("Telegram sense", () => {
       text: "Array recovered",
       parse_mode: "HTML",
     }, undefined)
+    const root = path.join(f.agentRoot, "state", "telegram", "effects")
+    const artifact = JSON.parse(fs.readFileSync(path.join(root, fs.readdirSync(root)[0]!), "utf8"))
+    expect(artifact).toMatchObject({ authorClass: "butler", effect: { kind: "text", text: "Array recovered" }, parts: [{ state: "session_recorded", messageId: 71 }] })
   })
 
-  it("persists health delivery intent before Telegram send and receipts it afterward", async () => {
+  it("records one event-generation owner decision through the existing effect and Telegram session", async () => {
+    const f = fixture()
+    await f.app.sendExternalEventDecision({ source: "sanctuary-health", eventId: "container:books", generation: 4, text: "Books is still down. I’m looking into it." })
+    await f.app.sendExternalEventDecision({ source: "sanctuary-health", eventId: "container:books", generation: 4, text: "Books is still down. I’m looking into it." })
+
+    expect(f.api.request).toHaveBeenCalledTimes(1)
+    const effectRoot = path.join(f.agentRoot, "state", "telegram", "effects")
+    const artifact = JSON.parse(fs.readFileSync(path.join(effectRoot, fs.readdirSync(effectRoot)[0]!), "utf8"))
+    expect(artifact).toMatchObject({ idempotencyKey: 'external-event:["sanctuary-health","container:books",4]', authorClass: "butler", parts: [{ state: "session_recorded", messageId: 71 }] })
+    const sessionRoot = path.join(f.agentRoot, "state", "sessions")
+    const sessionFile = fs.readdirSync(sessionRoot, { recursive: true }).find((entry) => String(entry).endsWith(".json"))
+    expect(sessionFile).toBeDefined()
+    const session = JSON.parse(fs.readFileSync(path.join(sessionRoot, String(sessionFile)), "utf8"))
+    expect(session.events.filter((event: any) => event.content === "Books is still down. I’m looking into it.")).toHaveLength(1)
+  })
+
+  it("does not collide owner delivery across event sources", async () => {
+    const f = fixture()
+    await f.app.sendExternalEventDecision({ source: "sanctuary-health", eventId: "books", generation: 1, text: "Health report" })
+    await f.app.sendExternalEventDecision({ source: "sanctuary-usenet", eventId: "books", generation: 1, text: "Usenet report" })
+    expect(f.api.request).toHaveBeenCalledTimes(2)
+    const effectRoot = path.join(f.agentRoot, "state", "telegram", "effects")
+    const keys = fs.readdirSync(effectRoot).map((name) => JSON.parse(fs.readFileSync(path.join(effectRoot, name), "utf8")).idempotencyKey)
+    expect(new Set(keys).size).toBe(2)
+  })
+
+  it("rejects malformed event identities and missing event text before any Telegram effect", async () => {
+    const f = fixture()
+    for (const input of [
+      { source: "x".repeat(513), eventId: "event", generation: 1, text: "report" },
+      { source: "source", eventId: "x".repeat(513), generation: 1, text: "report" },
+      { source: "source", eventId: "event", generation: 0, text: "report" },
+      { source: "source", eventId: "event", generation: 1.5, text: "report" },
+    ]) await expect(f.app.sendExternalEventDecision(input)).rejects.toThrow("identity is invalid")
+    await expect(f.app.sendExternalEventDecision({ source: "source", eventId: "event", generation: 1, text: "   " })).rejects.toThrow("decision is missing")
+    expect(f.api.request).not.toHaveBeenCalled()
+  })
+
+  it("delivers an expiry return through the existing authorized effect journal and exact household session", async () => {
+    const f = fixture({ authorizeEffect: vi.fn(async () => ({ allowed: true, receiptId: "request-return", expiresAt: new Date(Date.now() + 60_000).toISOString(), transport: { chatId: "888" } })) })
+    const obligation = createObligation(f.agentRoot, {
+      origin: { friendId: "sibling", channel: "telegram", key: "telegram:777:888" },
+      requestId: "request-1",
+      content: "Return the movie request outcome",
+    })
+    const result = await f.app.sendAwaitFollowUp({
+      friendId: "sibling",
+      channel: "telegram",
+      key: "telegram:777:888",
+      requestId: "request-1",
+      deliveryId: "await:movie:expired",
+      content: "Movie request timed out.",
+      intent: "generic_outreach",
+    })
+    expect(result.status).toBe("delivered_now")
+    expect(f.api.request).toHaveBeenCalledWith("sendMessage", expect.objectContaining({ chat_id: "888", text: "Movie request timed out." }), undefined)
+    const effects = path.join(f.agentRoot, "state", "telegram", "effects")
+    const artifact = JSON.parse(fs.readFileSync(path.join(effects, fs.readdirSync(effects)[0]!), "utf8"))
+    expect(artifact.idempotencyKey).toMatch(/^await-expiry-follow-up:request-1:/u)
+    const sessionPath = getSenseSessionPath("butler", "sibling", "telegram", "telegram:777:888", f.agentRoot)
+    expect(JSON.parse(fs.readFileSync(sessionPath, "utf8")).events).toContainEqual(expect.objectContaining({ content: "Movie request timed out." }))
+    expect(readObligation(f.agentRoot, obligation.id)?.status).toBe("fulfilled")
+  })
+
+  it("keeps a request obligation pending when its exact Telegram return is not accepted and recorded", async () => {
+    const api = { request: vi.fn(async () => { throw new Error("Telegram unavailable") }), stop: vi.fn() }
+    const f = fixture({ api, authorizeEffect: vi.fn(async () => ({ allowed: true, receiptId: "request-return", expiresAt: new Date(Date.now() + 60_000).toISOString(), transport: { chatId: "888" } })) })
+    const obligation = createObligation(f.agentRoot, {
+      origin: { friendId: "sibling", channel: "telegram", key: "telegram:777:888" },
+      requestId: "request-crash",
+      content: "Return the repair outcome",
+    })
+
+    await expect(f.app.sendAwaitFollowUp({ friendId: "sibling", channel: "telegram", key: "telegram:777:888", requestId: "request-crash", content: "Books is back.", intent: "generic_outreach" }))
+      .resolves.toMatchObject({ status: "blocked" })
+    expect(readObligation(f.agentRoot, obligation.id)?.status).toBe("pending")
+  })
+
+  it("does not fulfill a request obligation from a partially recorded multi-part return", async () => {
+    const f = fixture()
+    const subject = opaqueTelegramSubject("k".repeat(43), "test-token", "42", "42")
+    const journal = new FileTelegramEffectJournal(path.join(f.agentRoot, "state", "telegram", "effects"))
+    const artifact = prepareTelegramEffect(journal, {
+      idempotencyKey: "partial-request-return",
+      target: { kind: "approved_relationship", friendId: `telegram-user:${subject}`, sessionKey: `telegram:${subject}`, requestId: "request-partial" },
+      authorClass: "butler",
+      effect: { kind: "text", text: `${"a".repeat(3_000)} ${"b".repeat(3_000)}` },
+      authorization: { allowed: true, receiptId: "request-return", expiresAt: "2099-01-01T00:00:00.000Z", transport: { chatId: "42" } },
+    })
+    artifact.parts[0] = { ...artifact.parts[0]!, state: "accepted", messageId: 71, attempts: 1 }
+    artifact.parts[1] = { ...artifact.parts[1]!, state: "indeterminate", attempts: 1 }
+    journal.write(artifact)
+    journal.close()
+    const obligation = createObligation(f.agentRoot, {
+      origin: { friendId: `telegram-user:${subject}`, channel: "telegram", key: `telegram:${subject}` },
+      requestId: "request-partial",
+      content: "Return the partial result",
+    })
+
+    await f.app.run()
+    expect(readObligation(f.agentRoot, obligation.id)?.status).toBe("pending")
+    await f.app.stop()
+  })
+
+  it("treats a reply to an ordinary Butler message as ordinary owner conversation, not an admission decision", async () => {
+    const admission = {
+      ownerFriendId: "ari",
+      resolveOwner: vi.fn(async () => ({ friendId: "ari" })),
+      resolveApprovedFriend: vi.fn(async () => null),
+      claimFriend: vi.fn(),
+      revokeFriend: vi.fn(),
+    }
+    const f = fixture({
+      botToken: "123:test-token",
+      admission,
+      authorizeEffect: vi.fn(async () => ({ allowed: true, receiptId: "owner-effect", expiresAt: "2099-01-01T00:00:00.000Z", transport: { chatId: "42" } })),
+    })
+    await f.app.sendProactive("Ordinary status update")
+    await f.getOnMessage()({ updateId: 701, messageId: "702", userId: "42", chatId: "42", text: "yes", replyToMessageId: "71" })
+    expect(f.runTurn).toHaveBeenCalledOnce()
+    expect(admission.claimFriend).not.toHaveBeenCalled()
+    await f.app.stop()
+  })
+
+  it("does not fulfill an investigating request from accepted interim speech without an exact terminal-return binding", async () => {
+    const f = fixture({ authorizeEffect: vi.fn(async () => ({ allowed: true, receiptId: "request-return", expiresAt: new Date(Date.now() + 60_000).toISOString(), transport: { chatId: "888" } })) })
+    const obligation = createObligation(f.agentRoot, {
+      origin: { friendId: "sibling", channel: "telegram", key: "telegram:777:888" },
+      requestId: "request-investigating",
+      content: "Repair books and report the verified outcome",
+    })
+
+    const effect = await f.app.sendAwaitFollowUp({ friendId: "sibling", channel: "telegram", key: "telegram:777:888", requestId: "different-request", content: "Still investigating.", intent: "generic_outreach" })
+    expect(effect.status).toBe("delivered_now")
+    expect(readObligation(f.agentRoot, obligation.id)?.status).toBe("pending")
+
+    markObligationReturnReady(f.agentRoot, obligation.id, "unraid-restart:books:verified")
+    expect(readObligation(f.agentRoot, obligation.id)?.returnEvidenceRef).toBe("unraid-restart:books:verified")
+    expect(markObligationReturnReady(f.agentRoot, obligation.id, "unraid-restart:books:verified").returnEvidenceRef).toBe("unraid-restart:books:verified")
+    expect(() => markObligationReturnReady(f.agentRoot, obligation.id, "unraid-restart:books:unverified")).toThrow("already bound")
+  })
+
+  it("blocks malformed and unauthorized await returns without sending", async () => {
+    const missing = fixture()
+    await expect(missing.app.sendAwaitFollowUp({ friendId: "sibling", channel: "telegram", key: "telegram:777:888", content: "Ready", intent: "generic_outreach" })).resolves.toMatchObject({ status: "blocked", detail: expect.stringContaining("request binding") })
+    const unauthorized = fixture({ authorizeEffect: vi.fn(async () => { throw new Error("relationship revoked") }) })
+    await expect(unauthorized.app.sendAwaitFollowUp({ friendId: "sibling", channel: "telegram", key: "telegram:777:888", requestId: "request-2", content: "Ready", intent: "generic_outreach" })).resolves.toEqual({ status: "blocked", detail: "relationship revoked" })
+    expect(missing.api.request).not.toHaveBeenCalled()
+    expect(unauthorized.api.request).not.toHaveBeenCalled()
+  })
+
+  it("fails closed for await returns aimed at an unbound owner session or unrelated relationship", async () => {
+    const subject = opaqueTelegramSubject("k".repeat(43), "test-token", "42", "42")
+    const ownerDrift = fixture({ authorizeRelationshipEffect: vi.fn(async () => ({ allowed: true, receiptId: "should-not-run", expiresAt: "2099-01-01T00:00:00.000Z", transport: { chatId: "42" } })) })
+    await expect(ownerDrift.app.sendAwaitFollowUp({ friendId: `telegram-user:${subject}`, channel: "telegram", key: "telegram:wrong", requestId: "request-owner", content: "Ready", intent: "generic_outreach" })).resolves.toMatchObject({ status: "blocked" })
+
+    const unrelated = fixture()
+    await expect(unrelated.app.sendAwaitFollowUp({ friendId: "sibling", channel: "telegram", key: "telegram:777:888", requestId: "request-unrelated", content: "Ready", intent: "generic_outreach" })).resolves.toMatchObject({ status: "blocked", detail: expect.stringContaining("configured owner") })
+    expect(ownerDrift.api.request).not.toHaveBeenCalled()
+    expect(unrelated.api.request).not.toHaveBeenCalled()
+  })
+
+  it("refuses recovery of a non-fixed system-failsafe artifact", async () => {
+    const f = fixture()
+    const subject = opaqueTelegramSubject("k".repeat(43), "test-token", "42", "42")
+    const store = new FileTelegramEffectJournal(path.join(f.agentRoot, "state", "telegram", "effects"))
+    prepareTelegramEffect(store, {
+      idempotencyKey: "system-failsafe:invalid-shape",
+      target: { kind: "approved_relationship", friendId: `telegram-user:${subject}`, sessionKey: `telegram:${subject}` },
+      authorClass: "system_failsafe",
+      effect: { kind: "text", text: "Not the fixed failsafe" },
+      authorization: { allowed: true, receiptId: "test", expiresAt: "2099-01-01T00:00:00.000Z", transport: { chatId: "42" } },
+    })
+    store.close()
+
+    await f.app.run()
+
+    expect(f.api.request).not.toHaveBeenCalled()
+  })
+
+  it("runs the verified privileged failsafe through the existing Telegram startup reconciliation and records it once", async () => {
+    const eventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-failsafe-events-"))
+    const recordPath = writeEligibleFailsafeRecord(eventRoot)
+    const verifyProtectiveState = vi.fn(async () => ({ verified: true, reference: `sabnzbd.queue.paused:${"d".repeat(64)}:2026-08-29T19:55:01.000Z` }))
+    const f = fixture({ privilegedFailsafe: { eventRoot, verifyProtectiveState } })
+
+    await f.app.run()
+    expect(f.api.request).toHaveBeenCalledTimes(1)
+    expect(f.api.request).toHaveBeenCalledWith("sendMessage", expect.objectContaining({ text: FIXED_USENET_SYSTEM_FAILSAFE }), undefined)
+    expect(JSON.parse(fs.readFileSync(recordPath, "utf8"))).toMatchObject({ privilegedFailsafe: { artifactId: expect.stringMatching(/^[a-f0-9]{64}$/u), verificationRef: expect.stringContaining("sabnzbd.queue.paused") } })
+    await f.app.stop()
+    fs.rmSync(eventRoot, { recursive: true, force: true })
+  })
+
+  it("keeps Telegram available and records a diagnostic when failsafe verification fails", async () => {
+    const eventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-failsafe-error-"))
+    writeEligibleFailsafeRecord(eventRoot)
+    const events: string[] = []
+    setRuntimeLogger(createLogger({ sinks: [(entry) => { events.push(entry.event) }] }))
+    const f = fixture({ privilegedFailsafe: { eventRoot, verifyProtectiveState: vi.fn(async () => { throw new Error("SAB queue unavailable") }) } })
+    try {
+      await expect(f.app.run()).resolves.toBeUndefined()
+      expect(f.api.request).not.toHaveBeenCalled()
+      expect(events).toContain("senses.telegram_system_failsafe_error")
+    } finally {
+      await f.app.stop()
+      setRuntimeLogger(null)
+      fs.rmSync(eventRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("records proactive text as a new event when an older assistant event has identical text", async () => {
+    const f = fixture()
+    const subject = opaqueTelegramSubject("k".repeat(43), "test-token", "42", "42")
+    const sessionPath = getSenseSessionPath("butler", `telegram-user:${subject}`, "telegram", `telegram:${subject}`, f.agentRoot)
+    fs.mkdirSync(path.dirname(sessionPath), { recursive: true })
+    fs.writeFileSync(sessionPath, JSON.stringify({
+      version: 2,
+      events: [{
+        id: "evt-000001", sequence: 1, role: "assistant", content: "Array recovered", name: null, toolCallId: null, toolCalls: [], attachments: [],
+        time: { authoredAt: null, authoredAtSource: "local", observedAt: null, observedAtSource: "local", recordedAt: "2026-08-29T17:00:00.000Z", recordedAtSource: "save" },
+        relations: { replyToEventId: null, threadRootEventId: null, references: [], toolCallId: null, supersedesEventId: null, redactsEventId: null },
+        provenance: { captureKind: "live", legacyVersion: null, sourceMessageIndex: null },
+      }],
+      projection: { eventIds: ["evt-000001"], trimmed: false, maxTokens: null, contextMargin: null, inputTokens: null, projectedAt: null },
+      lastUsage: null,
+      state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
+    }))
+
+    await f.app.sendProactive("Array recovered")
+
+    const envelope = JSON.parse(fs.readFileSync(sessionPath, "utf8"))
+    expect(envelope.events.map((event: any) => event.content)).toEqual(["Array recovered", "Array recovered"])
+    expect(envelope.events[0].relations.references).toEqual([])
+    expect(envelope.events[1].relations.references).toEqual(expect.arrayContaining([expect.stringMatching(/^telegram-artifact:/u), "telegram-message:71"]))
+    const artifactRoot = path.join(f.agentRoot, "state", "telegram", "effects")
+    const artifact = JSON.parse(fs.readFileSync(path.join(artifactRoot, fs.readdirSync(artifactRoot)[0]!), "utf8"))
+    expect(artifact.parts[0]).toMatchObject({ state: "session_recorded", messageId: 71, sessionEventId: "evt-000002" })
+
+    await f.getOnMessage()({ updateId: 1518, messageId: "1519", userId: "42", chatId: "42", text: "What did you mean?", replyToMessageId: "71" })
+    expect(f.runTurn.mock.calls[0]![0].ingressRelations.replyToEventId).toBe("evt-000002")
+  })
+
+  it("leaves startup health to the evidence-producing native habit", async () => {
     const order: string[] = []
     const healthSweep = Object.assign(
       vi.fn(async () => ({ message: "Array degraded", deliveryId: "delivery-1" })),
@@ -1402,10 +1905,11 @@ describe("Telegram sense", () => {
 
     await f.app.run()
 
-    expect(order).toEqual(["attempting", "send", "delivered"])
+    expect(order).toEqual([])
+    expect(healthSweep).not.toHaveBeenCalled()
   })
 
-  it("leaves an attempted health delivery unreceipted when Telegram send fails", async () => {
+  it("does not attempt legacy health delivery even when Telegram would fail", async () => {
     const healthSweep = Object.assign(
       vi.fn(async () => ({ message: "Array degraded", deliveryId: "delivery-1" })),
       { markDeliveryAttempting: vi.fn(), markDelivered: vi.fn() },
@@ -1415,7 +1919,8 @@ describe("Telegram sense", () => {
 
     await f.app.run()
 
-    expect(healthSweep.markDeliveryAttempting).toHaveBeenCalledWith("delivery-1")
+    expect(healthSweep.markDeliveryAttempting).not.toHaveBeenCalled()
     expect(healthSweep.markDelivered).not.toHaveBeenCalled()
+    expect(f.api.request).not.toHaveBeenCalled()
   })
 })

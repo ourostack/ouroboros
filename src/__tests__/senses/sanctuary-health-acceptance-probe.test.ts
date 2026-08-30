@@ -23,6 +23,7 @@ import {
   type SanctuaryHealthAcceptanceProbeInput,
 } from "../../senses/sanctuary-health-acceptance-probe"
 import { sanctuarySchedulerLivenessReceiptMac } from "../../heart/daemon/sanctuary-scheduler-liveness"
+import * as healthRunner from "../../senses/sanctuary-health-runner"
 
 const sha = (value: unknown): string => createHash("sha256").update(JSON.stringify(value)).digest("hex")
 const shaBytes = (value: string): string => createHash("sha256").update(value).digest("hex")
@@ -649,8 +650,8 @@ describe("packaged Sanctuary health acceptance probe", () => {
 
   it.each([
     ["unit-16f-cron-fingerprint", 1, 0, 0, "ambient"],
-    ["unit-16g-health-transition", 6, 3, 3, "ambient"],
-    ["unit-16h-daily-digest", 2, 1, 1, "local-daily-boundary"],
+    ["unit-16g-health-transition", 6, 0, 0, "ambient"],
+    ["unit-16h-acceptance-delivery-probe", 2, 0, 0, "local-daily-boundary"],
   ] as const)("runs and restores %s through the real health runner", async (label, phaseCount, providers, deliveries, clockMode) => {
     const fixture = setup(label)
     try {
@@ -692,19 +693,73 @@ describe("packaged Sanctuary health acceptance probe", () => {
         expect(receipt.phases.map((phase) => [phase.name, phase.fixtureStatus, phase.opened, phase.recovered, phase.deliveryKind])).toEqual([
           ["live-baseline", null, 0, 0, null],
           ["live-repeat", null, 0, 0, null],
-          ["fixture-fail", 503, 1, 0, "transition"],
+          ["fixture-fail", 503, 1, 0, null],
           ["fixture-repeat", 503, 0, 0, null],
-          ["fixture-recover", 200, 0, 1, "transition"],
-          ["fixture-refail", 503, 1, 0, "transition"],
+          ["fixture-recover", 200, 0, 1, null],
+          ["fixture-refail", 503, 1, 0, null],
         ])
       }
-      if (label === "unit-16h-daily-digest") {
+      if (label === "unit-16h-acceptance-delivery-probe") {
         expect(receipt.effectiveNow).toMatch(/T(?:16|17):00:00\.000Z$/u)
         expect(receipt.phases.map((phase) => [phase.fixtureStatus, phase.digestDue, phase.deliveryKind])).toEqual([
-          [503, true, "digest"], [503, false, null],
+          [503, false, null], [503, false, null],
         ])
       }
     } finally {
+      fs.rmSync(fixture.agentRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("counts acceptance turn/provider callbacks and binds delivered phase receipts", async () => {
+    const fixture = setup("unit-16g-health-transition")
+    const original = healthRunner.runSanctuaryHealthHabit
+    let phase = 0
+    const spy = vi.spyOn(healthRunner, "runSanctuaryHealthHabit").mockImplementation(async (agentName, options) => {
+      options.acceptanceMetrics?.onPrivateTurnStart()
+      options.acceptanceMetrics?.onProviderInvocation()
+      const result = await original(agentName, options)
+      phase += 1
+      const state = JSON.parse(fs.readFileSync(fixture.statePath, "utf8"))
+      const deliveryId = `coverage-delivery-${phase}`
+      state.sweepReceipts.at(-1).deliveryId = deliveryId
+      state.deliveredReceipts.push({
+        deliveryId,
+        kind: phase === 1 ? "legacy_unknown" : "transition",
+        messageIds: [phase],
+        deliveredAt: "2026-08-29T00:00:00.000Z",
+      })
+      fs.writeFileSync(fixture.statePath, `${JSON.stringify(state)}\n`)
+      return result
+    })
+    try {
+      const receipt = await runSanctuaryHealthAcceptanceProbe(fixture.input, fixture.deps)
+      expect(receipt).toMatchObject({ privateTurnCount: 6, providerInvocationCount: 6, deliveryCount: 6 })
+      expect(receipt.phases[0]).toMatchObject({ deliveryKind: null, deliveryReceiptDigest: expect.stringMatching(/^[0-9a-f]{64}$/u) })
+      expect(receipt.phases[1]).toMatchObject({ deliveryKind: "transition", deliveryReceiptDigest: expect.stringMatching(/^[0-9a-f]{64}$/u) })
+    } finally {
+      spy.mockRestore()
+      fs.rmSync(fixture.agentRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("closes the loopback fixture when a phase references a missing delivery receipt", async () => {
+    const fixture = setup("unit-16g-health-transition")
+    const original = healthRunner.runSanctuaryHealthHabit
+    let phase = 0
+    const spy = vi.spyOn(healthRunner, "runSanctuaryHealthHabit").mockImplementation(async (agentName, options) => {
+      const result = await original(agentName, options)
+      phase += 1
+      if (phase === 3) {
+        const state = JSON.parse(fs.readFileSync(fixture.statePath, "utf8"))
+        state.sweepReceipts.at(-1).deliveryId = "missing-delivery"
+        fs.writeFileSync(fixture.statePath, `${JSON.stringify(state)}\n`)
+      }
+      return result
+    })
+    try {
+      await expect(runSanctuaryHealthAcceptanceProbe(fixture.input, fixture.deps)).rejects.toThrow("delivery receipt is missing")
+    } finally {
+      spy.mockRestore()
       fs.rmSync(fixture.agentRoot, { recursive: true, force: true })
     }
   })
@@ -914,17 +969,13 @@ describe("packaged Sanctuary health acceptance probe", () => {
     } finally { fs.rmSync(fixture.agentRoot, { recursive: true, force: true }) }
   })
 
-  it("fails closed when a delivery receipt vanishes before phase binding", async () => {
+  it("never invokes the retired private-turn delivery seam", async () => {
     const fixture = setup("unit-16g-health-transition")
-    fixture.deps.runnerOptions.runPrivateTurn = async ({ payload, deliver }: { payload: string; deliver(content: string): Promise<void> }) => {
-      await deliver(payload)
-      const state = JSON.parse(fs.readFileSync(fixture.statePath, "utf8"))
-      state.deliveredReceipts = []
-      fs.writeFileSync(fixture.statePath, `${JSON.stringify(state)}\n`)
-      return { delivered: true }
-    }
+    const runPrivateTurn = vi.fn()
+    ;(fixture.deps.runnerOptions as any).runPrivateTurn = runPrivateTurn
     try {
-      await expect(runSanctuaryHealthAcceptanceProbe(fixture.input, fixture.deps)).rejects.toThrow(/delivery receipt is missing/u)
+      await expect(runSanctuaryHealthAcceptanceProbe(fixture.input, fixture.deps)).resolves.toMatchObject({ deliveryCount: 0, privateTurnCount: 0 })
+      expect(runPrivateTurn).not.toHaveBeenCalled()
     } finally { fs.rmSync(fixture.agentRoot, { recursive: true, force: true }) }
   })
 
@@ -957,7 +1008,7 @@ describe("packaged Sanctuary health acceptance probe", () => {
       await expect(recoverSanctuaryHealthAcceptanceProbe(fixture.input, fixture.deps)).resolves.toEqual({ recovered: false })
       for (const receipt of [
         null,
-        { label: "unit-16h-daily-digest", scenarioHandleDigest: fixture.input.scenarioHandleDigest, ownerImageDigestBefore: fixture.input.ownerImageDigest, ownerContainerDigestBefore: fixture.input.ownerContainerDigest },
+        { label: "unit-16h-acceptance-delivery-probe", scenarioHandleDigest: fixture.input.scenarioHandleDigest, ownerImageDigestBefore: fixture.input.ownerImageDigest, ownerContainerDigestBefore: fixture.input.ownerContainerDigest },
         { label: fixture.input.label, scenarioHandleDigest: "d".repeat(64), ownerImageDigestBefore: fixture.input.ownerImageDigest, ownerContainerDigestBefore: fixture.input.ownerContainerDigest },
         { label: fixture.input.label, scenarioHandleDigest: fixture.input.scenarioHandleDigest, ownerImageDigestBefore: "d".repeat(64), ownerContainerDigestBefore: fixture.input.ownerContainerDigest },
         { label: fixture.input.label, scenarioHandleDigest: fixture.input.scenarioHandleDigest, ownerImageDigestBefore: fixture.input.ownerImageDigest, ownerContainerDigestBefore: "d".repeat(64) },
@@ -983,7 +1034,7 @@ describe("packaged Sanctuary health acceptance probe", () => {
       for (const envelope of [
         {},
         { schemaVersion: "wrong", receipt: {} },
-        { schemaVersion: "sanctuary-health-probe-pending-v1", receipt: { label: "unit-16h-daily-digest" } },
+        { schemaVersion: "sanctuary-health-probe-pending-v1", receipt: { label: "unit-16h-acceptance-delivery-probe" } },
       ]) {
         fs.writeFileSync(pendingPath, `${JSON.stringify(envelope)}\n`)
         expect(() => finalizeSanctuaryHealthAcceptanceProbe(fixture.input, {

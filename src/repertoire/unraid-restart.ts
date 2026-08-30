@@ -51,6 +51,42 @@ export interface ApprovedUnraidRestartOptions {
   observationTimeoutMs?: number
   acceptanceScenarioHandleDigest?: () => string | undefined
   acceptanceApproval?: () => { approvalId: string; argumentDigest: string } | null
+  reserveRoutineAction?: (input: {
+    key: string
+    action: "unraid.container.restart"
+    target: string
+    expectedPolicyVersion: number
+    authorizationReceiptId: string
+    authorizationVersion: number
+    attemptId: string
+    expectedBeforeState: string
+    resolvedTarget: { id: string; name: string }
+    effect: { operation: "restart"; targetId: string }
+  }) => { id: string }
+  transitionRoutineAction?: (input: {
+    id: string
+    expectedState: "reserved" | "attempting" | "effect_acknowledged"
+    state: "attempting" | "effect_acknowledged" | "verified" | "failed" | "indeterminate"
+    effectReceipt?: string
+    verifiedAfterState?: string
+    recoveryState?: { state: "not_needed" | "manual_inspection_required" | "completed" | "failed"; compensation: "none" | "required" | "completed" }
+  }) => unknown
+}
+
+export interface RoutineRestartAuthority {
+  key: string
+  expectedPolicyVersion: number
+  reauthorize(): Promise<
+    | { allowed: true; receiptId: string; profileVersion: number }
+    | { allowed: false; reason: string }
+  >
+}
+
+class RoutineActionReceiptError extends Error {
+  constructor(cause: unknown) {
+    super("routine action receipt persistence failed", { cause })
+    this.name = "RoutineActionReceiptError"
+  }
 }
 
 function failure(code: "invalid_response" | "not_found" | "ambiguous" | "stale_target", message: string): RestartResult {
@@ -84,14 +120,36 @@ export function createApprovedUnraidRestartExecutor(options: ApprovedUnraidResta
   const sleep = options.sleep ?? ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)))
   const now = options.now ?? (() => new Date())
   const observationTimeoutMs = options.observationTimeoutMs ?? 30_000
+  const transitionRoutine = (input: Parameters<NonNullable<ApprovedUnraidRestartOptions["transitionRoutineAction"]>>[0]): void => {
+    try {
+      options.transitionRoutineAction?.(input)
+    } catch (error) {
+      throw new RoutineActionReceiptError(error)
+    }
+  }
 
-  return async (args: { container: string }): Promise<RestartResult> => {
+  return async (args: { container: string }, execution?: { routine?: RoutineRestartAuthority }): Promise<RestartResult> => {
     if (!validArgument(args.container)) return failure("invalid_response", "container must be one bounded exact name")
     const resolved = exactTarget(await options.listContainers(), args.container)
     if ("ok" in resolved) return resolved
     const fresh = exactTarget(await options.listContainers(), args.container)
     if ("ok" in fresh) return fresh
     if (fresh.id !== resolved.id) return failure("stale_target", "container identity changed before restart")
+
+    let routineAuthorization: { receiptId: string; profileVersion: number } | null = null
+    if (execution?.routine) {
+      let authorization: Awaited<ReturnType<RoutineRestartAuthority["reauthorize"]>>
+      try {
+        authorization = await execution.routine.reauthorize()
+      } catch {
+        return failure("stale_target", "routine relationship authorization is unavailable")
+      }
+      if (!authorization.allowed) return failure("stale_target", authorization.reason)
+      if (!authorization.receiptId.trim() || !Number.isInteger(authorization.profileVersion) || authorization.profileVersion < 1) {
+        return failure("stale_target", "routine relationship authorization is not versioned")
+      }
+      routineAuthorization = { receiptId: authorization.receiptId, profileVersion: authorization.profileVersion }
+    }
 
     const scenarioHandleDigest = options.acceptanceScenarioHandleDigest?.()
     const approval = options.acceptanceApproval?.()
@@ -107,11 +165,40 @@ export function createApprovedUnraidRestartExecutor(options: ApprovedUnraidResta
       mutationAcknowledged: false,
       afterState: null,
     }
+    let routineReceipt: { id: string } | null = null
+    let routineState: "reserved" | "attempting" | "effect_acknowledged" | null = null
+    if (execution?.routine) {
+      if (!options.reserveRoutineAction || !options.transitionRoutineAction) return failure("invalid_response", "routine action ledger is unavailable")
+      try {
+        routineReceipt = options.reserveRoutineAction({
+          key: execution.routine.key,
+          expectedPolicyVersion: execution.routine.expectedPolicyVersion,
+          authorizationReceiptId: routineAuthorization!.receiptId,
+          authorizationVersion: routineAuthorization!.profileVersion,
+          action: "unraid.container.restart",
+          target: fresh.name,
+          attemptId: attempt.attemptId,
+          expectedBeforeState: fresh.state,
+          resolvedTarget: { id: fresh.id, name: fresh.name },
+          effect: { operation: "restart", targetId: fresh.id },
+        })
+        routineState = "reserved"
+      } catch (error) {
+        return failure("stale_target", error instanceof Error ? error.message : "routine action authority changed")
+      }
+    }
     if (approval && approval.argumentDigest !== attempt.argumentDigest) return failure("stale_target", "approval arguments changed before restart")
     await options.persistAttempt?.({ ...attempt, observedAt: now().toISOString(), state: "attempt_not_started" })
     const apiKey = await options.loadWriteApiKey()
-    if (!apiKey.trim()) return failure("invalid_response", "Unraid write credential is unavailable")
+    if (!apiKey.trim()) {
+      if (routineReceipt && routineState === "reserved") transitionRoutine({ id: routineReceipt.id, expectedState: "reserved", state: "failed", recoveryState: { state: "completed", compensation: "none" } })
+      return failure("invalid_response", "Unraid write credential is unavailable")
+    }
     const client = createClient({ endpoint: options.endpoint, apiKey })
+    if (routineReceipt && routineState === "reserved") {
+      transitionRoutine({ id: routineReceipt.id, expectedState: "reserved", state: "attempting" })
+      routineState = "attempting"
+    }
     await options.persistAttempt?.({ ...attempt, observedAt: now().toISOString(), state: "attempting" })
     emitNervesEvent({ component: "repertoire", event: "repertoire.unraid_restart_start", message: "approved Unraid restart started", meta: { containerId: fresh.id, containerName: fresh.name } })
     const persistTerminal = async (terminal: UnraidRestartAttempt): Promise<boolean> => {
@@ -125,12 +212,17 @@ export function createApprovedUnraidRestartExecutor(options: ApprovedUnraidResta
     }
 
     let acknowledged = false
+    let mutation: Record<string, unknown> | null = null
     try {
-      const mutation = await client.mutate<Record<string, unknown>>(SANCTUARY_RESTART_MUTATION, { id: fresh.id })
+      mutation = await client.mutate<Record<string, unknown>>(SANCTUARY_RESTART_MUTATION, { id: fresh.id })
       acknowledged = acknowledgedIdentity(mutation, fresh)
       if (!acknowledged) throw new Error("restart response identity was invalid")
     } catch {
       acknowledged = false
+    }
+    if (acknowledged && mutation && routineReceipt && routineState === "attempting") {
+      transitionRoutine({ id: routineReceipt.id, expectedState: "attempting", state: "effect_acknowledged", effectReceipt: createHash("sha256").update(JSON.stringify(mutation)).digest("hex") })
+      routineState = "effect_acknowledged"
     }
 
     const startedAt = now().getTime()
@@ -141,12 +233,21 @@ export function createApprovedUnraidRestartExecutor(options: ApprovedUnraidResta
         if (!("ok" in observed)) {
           if (observed.id !== fresh.id) {
             await persistTerminal({ ...attempt, observedAt: now().toISOString(), state: "attempted_or_indeterminate", mutationAcknowledged: acknowledged })
+            if (routineReceipt && routineState) transitionRoutine({ id: routineReceipt.id, expectedState: routineState, state: "indeterminate", recoveryState: { state: "manual_inspection_required", compensation: "none" } })
             return failure("ambiguous", "container identity changed after restart attempt")
           }
           sawRestarting ||= observed.state === "restarting"
           if (observed.state === "running" && !observed.degraded && (acknowledged || sawRestarting)) {
             if (!await persistTerminal({ ...attempt, observedAt: now().toISOString(), state: "succeeded", mutationAcknowledged: acknowledged, afterState: observed.state })) {
               return failure("ambiguous", "restart succeeded but its terminal receipt could not be persisted; it was not retried")
+            }
+            if (routineReceipt && routineState === "attempting") {
+              transitionRoutine({ id: routineReceipt.id, expectedState: "attempting", state: "effect_acknowledged", effectReceipt: createHash("sha256").update(JSON.stringify({ observation: "restarting", target: fresh.id })).digest("hex") })
+              routineState = "effect_acknowledged"
+            }
+            if (routineReceipt && routineState === "effect_acknowledged") {
+              transitionRoutine({ id: routineReceipt.id, expectedState: "effect_acknowledged", state: "verified", verifiedAfterState: observed.state, recoveryState: { state: "completed", compensation: "none" } })
+              routineState = null
             }
             emitNervesEvent({ component: "repertoire", event: "repertoire.unraid_restart_end", message: "approved Unraid restart completed", meta: { containerId: fresh.id, observedRestart: true } })
             return { ok: true, data: { container: { id: fresh.id, name: fresh.name }, beforeState: fresh.state, afterState: observed.state, observedRestart: true, degraded: false } }
@@ -155,13 +256,16 @@ export function createApprovedUnraidRestartExecutor(options: ApprovedUnraidResta
         if (now().getTime() - startedAt >= observationTimeoutMs) break
         await sleep(1_000)
       } while (true)
-    } catch {
+    } catch (error) {
+      if (error instanceof RoutineActionReceiptError) throw error
       await persistTerminal({ ...attempt, observedAt: now().toISOString(), state: "attempted_or_indeterminate", mutationAcknowledged: acknowledged })
+      if (routineReceipt && routineState) transitionRoutine({ id: routineReceipt.id, expectedState: routineState, state: "indeterminate", recoveryState: { state: "manual_inspection_required", compensation: "none" } })
       emitNervesEvent({ level: "error", component: "repertoire", event: "repertoire.unraid_restart_error", message: "approved Unraid restart observation failed", meta: { containerId: fresh.id, acknowledged } })
       return failure("ambiguous", "restart was attempted but observation failed; it was not retried")
     }
 
     await persistTerminal({ ...attempt, observedAt: now().toISOString(), state: "attempted_or_indeterminate", mutationAcknowledged: acknowledged })
+    if (routineReceipt && routineState) transitionRoutine({ id: routineReceipt.id, expectedState: routineState, state: "indeterminate", recoveryState: { state: "manual_inspection_required", compensation: "none" } })
     emitNervesEvent({ level: "error", component: "repertoire", event: "repertoire.unraid_restart_error", message: "approved Unraid restart outcome was ambiguous", meta: { containerId: fresh.id, acknowledged } })
     return failure("ambiguous", "restart was attempted but could not be proven; it was not retried")
   }

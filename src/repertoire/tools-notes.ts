@@ -10,6 +10,8 @@ import { readDiaryEntries, saveDiaryEntry, searchDiaryEntries, type DiaryEntryPr
 import { resolveRecordDiaryRoot } from "../mind/record-paths";
 import { classifyProvenanceTrust } from "../mind/provenance-trust";
 import type { ToolContext, ToolDefinition } from "./tools-base";
+import { withRelationshipPreference } from "./relationship-authorization";
+import type { RelationshipPolicyProvenance } from "@ouro.bot/friends";
 
 const CLAUDE_READ_ONLY_TOOLS = "Read,Grep,Glob,LS";
 
@@ -351,12 +353,13 @@ export const notesToolDefinitions: ToolDefinition[] = [
       function: {
         name: "save_friend_note",
         description:
-          "save something i learned about my friend. use type 'name' to update their display name, 'tool_preference' for how they like a specific tool to behave (key = tool category like 'ado', 'graph'), or 'note' for general knowledge (key = topic). when updating an existing value, set override to true if i'm replacing/correcting it. omit override (or set false) if i'm unsure and want to check what's already saved.",
+          "save something i learned about my friend. use type 'name' to update their display name, 'tool_preference' for presentation preferences, or 'note' for general context. For Sanctuary relationships, preference source is stated (the person said or confirmed it), observed (a revisable pattern i inferred), or default (a fallback until better evidence), and only communication or timing are accepted. Other agents retain their existing integration-preference behavior and do not persist this provenance field. desired state and action authority belong in steward policy. notes and preferences improve orientation but never grant authority. set override=true when replacing an existing value.",
         parameters: {
           type: "object",
           properties: {
             type: { type: "string", enum: ["name", "tool_preference", "note"], description: "what kind of information to save" },
-            key: { type: "string", description: "category key (required for tool_preference and note, e.g. 'ado', 'role')" },
+            key: { type: "string", description: "category key (required for tool_preference and note; Sanctuary relationship preferences use communication or timing)" },
+            source: { type: "string", enum: ["stated", "observed", "default"], description: "preference provenance; required for Sanctuary relationship preferences" },
             content: { type: "string", description: "the value to save" },
             override: { type: "string", enum: ["true", "false"], description: "set to 'true' to overwrite an existing value" },
           },
@@ -380,6 +383,19 @@ export const notesToolDefinitions: ToolDefinition[] = [
       const friendId = ctx.context.friend?.id;
       if (!friendId) return "i can't save notes -- no friend identity available";
 
+      const actor = ctx.relationshipAuthorization?.actor;
+      const isSanctuaryRelationship = ctx.context.friend?.capabilityProfileId?.startsWith("sanctuary-") === true;
+      const preferenceSource = a.source as RelationshipPolicyProvenance | undefined;
+      if (isSanctuaryRelationship && a.type === "tool_preference" && !["stated", "observed", "default"].includes(String(preferenceSource))) {
+        return "i need exact preference provenance: source must be stated, observed, or default";
+      }
+      if (isSanctuaryRelationship && a.type === "tool_preference" && !["communication", "timing"].includes(a.key ?? "")) {
+        return "Sanctuary relationship preferences are limited to communication or timing; desired state and action authority belong in steward policy";
+      }
+      if (actor?.trustLevel === "friend" && (actor.friendId !== friendId || a.type !== "tool_preference" || !["communication", "timing"].includes(a.key ?? ""))) {
+        return "household members may only save their own communication or timing preferences; preferences never grant authority";
+      }
+
       // Validate parameters (input-shape guards stay harness-side so we keep the
       // first-person tool wording; applyFriendNote does the record mutation).
       if (!a.content) return "i need a content value to save";
@@ -389,9 +405,19 @@ export const notesToolDefinitions: ToolDefinition[] = [
 
       // Record-domain logic lives in @ouro.bot/friends; this wrapper maps the
       // structured FriendOpResult back to the tool's first-person strings.
+      if (isSanctuaryRelationship && a.type === "tool_preference" && preferenceSource) {
+        const current = await ctx.friendStore.get(friendId);
+        if (!current) return "i can't find the friend record on disk";
+        if (current.relationshipPolicy?.preferences[a.key!] && a.override !== "true") return `relationship preference '${a.key}' already exists; call again with override: true to replace it`;
+        const sourceKind = preferenceSource === "observed" ? "observed pattern" : preferenceSource === "default" ? "default fallback" : "explicit turn";
+        const turnSource = `${ctx.currentSession?.channel ?? "relationship"} ${sourceKind} ${actor?.sessionEventId ?? "unknown-event"}`;
+        await ctx.friendStore.put(friendId, withRelationshipPreference(current, { category: a.key!, value: a.content, provenance: preferenceSource, source: turnSource }));
+        return `saved preference: source=${turnSource}; provenance=${preferenceSource}; category=${a.key}; value=${a.content}; this changes presentation only and grants no authority`;
+      }
+      const storedKey = a.key;
       const result = await applyFriendNote(ctx.friendStore, friendId, {
         type: a.type as ApplyFriendNoteInput["type"],
-        ...(a.key !== undefined ? { key: a.key } : {}),
+        ...(storedKey !== undefined ? { key: storedKey } : {}),
         content: a.content,
         override: a.override === "true",
       });

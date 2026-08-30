@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto"
 import { emitNervesEvent } from "../nerves/runtime"
 import { UnraidClient, UnraidClientError, type UnraidErrorCode } from "./unraid-client"
-import type { ToolDefinition } from "./tools-base"
+import { routineActionRequester, type ToolContext, type ToolDefinition } from "./tools-base"
+import { inspectRoutineActionGrant } from "../heart/steward-policy"
+import { advanceObligation, createObligation, findPendingObligationForRequest, markObligationReturnReady, type Obligation } from "../arc/obligations"
 
 export const SANCTUARY_CONTAINERS_QUERY = `query SanctuaryContainers {
   docker { containers(skipCache: true) { id names state status autoStart } }
@@ -13,6 +15,7 @@ export const SANCTUARY_STORAGE_QUERY = `query SanctuaryStorage {
   vars { id }
   array { state capacity { kilobytes { used free total } } }
   shares { id name used free size }
+  docker { containers(skipCache: true) { id names state status autoStart } }
 }`
 export const SANCTUARY_DISKS_QUERY = `query SanctuaryDisks {
   disks { id name smartStatus temperature }
@@ -194,7 +197,29 @@ export function createUnraidReadTools(client: ReadClient) {
           const used = numberOrNull(item.used); const free = numberOrNull(item.free)
           return { name, usedBytes: used, freeBytes: free, usedPercent: percent(used, free), degraded: used === null || free === null }
         }).sort((a, b) => a.name.localeCompare(b.name))
-        return { ok: true, data: { sourceIdentityDigest, array: { state: state.value, usedBytes, freeBytes, usedPercent: percent(usedBytes, freeBytes), degraded: state.truncated || usedBytes === null || freeBytes === null }, shares, truncated } }
+        const largestCandidates = shares
+          .filter((share) => share.usedBytes !== null && share.usedBytes > 0)
+          .sort((a, b) => Number(b.usedBytes) - Number(a.usedBytes) || a.name.localeCompare(b.name))
+          .slice(0, 10)
+          .map((share) => ({ kind: "share" as const, name: share.name, usedBytes: share.usedBytes }))
+        let unmanic = { state: "unknown" as "running" | "exited" | "restarting" | "unknown", degraded: true }
+        if (data.docker && typeof data.docker === "object" && !Array.isArray(data.docker)) {
+          const matches = mapContainers(data).containers.filter((container) => container.name === "unmanic")
+          if (matches.length === 1) unmanic = { state: matches[0]!.state, degraded: matches[0]!.degraded }
+        }
+        return { ok: true, data: {
+          sourceIdentityDigest,
+          array: { state: state.value, usedBytes, freeBytes, usedPercent: percent(usedBytes, freeBytes), degraded: state.truncated || usedBytes === null || freeBytes === null },
+          shares,
+          largestCandidates,
+          optimization: {
+            unmanic,
+            estimatedReclaimableBytes: null,
+            estimateConfidence: "unavailable",
+            reason: "Share usage is real, but the read-only Unraid API does not expose bounded file-level codec evidence; no savings estimate is claimed.",
+          },
+          truncated,
+        } }
       } catch (error) { return fail(error) }
     },
     async getDisks(): Promise<ToolResult<Record<string, unknown>>> {
@@ -258,7 +283,46 @@ function missingRuntime(): string {
   return JSON.stringify({ ok: false, error: { code: "invalid_response", message: "Sanctuary runtime is unavailable", degraded: true } })
 }
 
-function readDefinition(name: string, description: string, method: "listContainers" | "getStorage" | "getDisks" | "getNotifications" | "getSystem"): ToolDefinition {
+function householdRepairObligation(ctx: ToolContext, target: string): Obligation | null {
+  const requester = routineActionRequester(ctx)
+  if (requester?.kind !== "household_request") return null
+  if (!ctx.agentRoot) throw new Error("household repair request tracking is unavailable")
+  const existing = findPendingObligationForRequest(ctx.agentRoot, { requestId: requester.requestId, owedTo: requester.origin })
+  if (existing) return existing
+  return createObligation(ctx.agentRoot, {
+    origin: requester.origin,
+    owedTo: requester.origin,
+    requestId: requester.requestId,
+    sourceProvenance: { kind: "human_request", source: requester.origin.channel, ref: `request:${requester.requestId}` },
+    content: `Restore Sanctuary service ${target} and report the outcome`,
+    currentSurface: { kind: "runtime", label: `Sanctuary container ${target}` },
+    nextAction: `Restart ${target} under the Butler's standing grant and verify recovery`,
+  })
+}
+
+async function runTrackedRestart(ctx: ToolContext, target: string, routine?: import("./unraid-restart").RoutineRestartAuthority): Promise<unknown> {
+  const obligation = householdRepairObligation(ctx, target)
+  if (obligation && ctx.agentRoot) advanceObligation(ctx.agentRoot, obligation.id, { status: "updating_runtime", latestNote: `Starting the requested restart of ${target}` })
+  try {
+    const result = await ctx.sanctuary!.restartContainer({ container: target }, routine ? { routine } : undefined)
+    if (obligation && ctx.agentRoot) {
+      const succeeded = !!result && typeof result === "object" && !Array.isArray(result) && (result as { ok?: unknown }).ok === true
+      if (succeeded) advanceObligation(ctx.agentRoot, obligation.id, {
+        status: "updating_runtime",
+        latestNote: `The requested restart of ${target} verified recovery`,
+        nextAction: "Report the verified outcome to the exact requester",
+      })
+      else advanceObligation(ctx.agentRoot, obligation.id, { status: "investigating", latestNote: `The requested restart of ${target} did not verify recovery`, nextAction: `Diagnose ${target} and report back to the requester` })
+      if (succeeded) markObligationReturnReady(ctx.agentRoot, obligation.id, `unraid-restart:${target}:verified`)
+    }
+    return result
+  } catch (error) {
+    if (obligation && ctx.agentRoot) advanceObligation(ctx.agentRoot, obligation.id, { status: "investigating", latestNote: `The requested restart of ${target} failed`, nextAction: `Diagnose ${target} and report back to the requester` })
+    throw error
+  }
+}
+
+function readDefinition(name: string, description: string, method: "listContainers" | "getStorage" | "getDisks" | "getNotifications" | "getSystem" | "checkServices" | "getDownloadQueue"): ToolDefinition {
   return {
     tool: { type: "function", function: { name, description, parameters: emptyParameters } },
     handler: async (_args, ctx) => JSON.stringify(ctx?.sanctuary ? await ctx.sanctuary[method]() : JSON.parse(missingRuntime())),
@@ -294,12 +358,20 @@ export const unraidToolDefinitions: ToolDefinition[] = [
   readDefinition("unraid_get_disks", "Read bounded Sanctuary disk SMART, temperature, and parity health.", "getDisks"),
   readDefinition("unraid_get_notifications", "Read bounded unacknowledged Sanctuary notifications.", "getNotifications"),
   readDefinition("unraid_get_system", "Read bounded Sanctuary system and version health.", "getSystem"),
+  readDefinition("unraid_check_services", "Freshly check the fixed public Sanctuary service endpoints and return bounded status with an observation timestamp.", "checkServices"),
+  readDefinition("sanctuary_get_download_queue", "Read the bounded live household download queue state, including whether the spend guard has paused it.", "getDownloadQueue"),
+  {
+    tool: { type: "function", function: { name: "sanctuary_resume_download_queue", description: "Resume the household download queue after Ari confirms the provider is ready, then independently verify paused=false. This can spend prepaid download credit.", parameters: emptyParameters } },
+    handler: async (_args, ctx) => JSON.stringify(ctx?.sanctuary ? await ctx.sanctuary.resumeDownloadQueue() : JSON.parse(missingRuntime())),
+    riskProfile: { mutates: "external_side_effect", risk: "high", reason: "resumes downloads that can spend prepaid provider credit" },
+    approvalPolicy: () => ({ kind: "required", policyId: "sanctuary.downloads.resume.v1", actionClass: "sanctuary.downloads.resume", requiresSoleCall: true }),
+  },
   {
     tool: {
       type: "function",
       function: {
         name: "unraid_restart_container",
-        description: "Propose restarting one exact existing allowlisted Sanctuary container. Execution requires human approval.",
+        description: "Restart one exact existing allowlisted Sanctuary container when standing policy allows; otherwise request approval.",
         parameters: {
           type: "object",
           properties: { container: { type: "string" } },
@@ -308,9 +380,29 @@ export const unraidToolDefinitions: ToolDefinition[] = [
         },
       },
     },
-    handler: async (args, ctx) => JSON.stringify(ctx?.sanctuary
-      ? await ctx.sanctuary.restartContainer({ container: String(args.container) })
-      : JSON.parse(missingRuntime())),
+    handler: async (args, ctx) => {
+      if (!ctx?.sanctuary) return missingRuntime()
+      const target = String(args.container)
+      let routine: import("./unraid-restart").RoutineRestartAuthority | undefined
+      if (ctx.routineActionSelection) {
+        if (!ctx.agentRoot || !routineActionRequester(ctx)) return JSON.stringify({ ok: false, error: { code: "approval_required", message: "routine action authorization is unavailable", degraded: true } })
+        const { key, expectedPolicyVersion } = ctx.routineActionSelection
+        if (ctx.routineActionSelection.target !== target) return JSON.stringify({ ok: false, error: { code: "approval_required", message: "routine action arguments changed", degraded: true } })
+        const decision = inspectRoutineActionGrant(ctx.agentRoot, { key, action: "unraid.container.restart", target, expectedPolicyVersion })
+        if (!decision.allowed) return JSON.stringify({ ok: false, error: { code: "approval_required", message: decision.reason, degraded: true } })
+        routine = {
+          key,
+          expectedPolicyVersion: decision.policyVersion,
+          reauthorize: async () => {
+            const authorization = await ctx.relationshipAuthorization!.authorizeTool("unraid_restart_container", { container: target })
+            if (!authorization.allowed) return authorization
+            if (!Number.isInteger(authorization.profileVersion) || Number(authorization.profileVersion) < 1) return { allowed: false, reason: "relationship capability profile is not versioned" }
+            return { allowed: true, receiptId: authorization.receiptId, profileVersion: Number(authorization.profileVersion) }
+          },
+        }
+      }
+      return JSON.stringify(await runTrackedRestart(ctx, target, routine))
+    },
     riskProfile: { mutates: "external_side_effect", risk: "high", reason: "restarts one existing allowlisted Docker container" },
     approvalPolicy: () => ({
       kind: "required",
@@ -325,5 +417,5 @@ emitNervesEvent({
   component: "repertoire",
   event: "repertoire.unraid_tools_loaded",
   message: "typed Unraid tools loaded",
-  meta: { operations: 6 },
+  meta: { operations: 9 },
 })

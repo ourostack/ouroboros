@@ -2,8 +2,9 @@ Mendelow Cloud Butler operator runbook
 
 The production container is ouro-butler. It runs as UID/GID 10001, publishes no
 ports, uses host networking only so its loopback-only Unraid GraphQL client can
-reach 127.0.0.1, mounts only the runtime and sanctuary.ouro bundle paths from
-the Unraid template, and uses restart policy unless-stopped.
+reach 127.0.0.1, mounts the runtime and sanctuary.ouro bundle read-write plus
+the privileged event spool and SAB configuration read-only, and uses restart
+policy unless-stopped.
 
 Start/stop:
   docker start ouro-butler
@@ -14,15 +15,25 @@ Status and health:
   docker logs --tail 200 ouro-butler
 
 Effective-spec audit helper:
-  Run Update and Restore command sequences from a root shell with `set -eu`.
-  Before either sequence, define this helper. It captures one actual container
+  Run Update, Backup, and Restore command sequences from a root shell with `set -eu`.
+  Before any sequence, define this helper. It captures one actual container
   inspect and its reviewed image inspect without printing either, invokes the
-  packaged auditor from IMAGE_ID, and removes its mode-0600 inputs on success
-  or shell exit:
+  packaged auditor from the explicit validated runner image argument, and
+  removes its mode-0600 inputs on success or shell exit:
     audit_effective() {
       (
       AUDIT_CONTAINER=$1
       AUDIT_EXPECTED_IMAGE=$2
+      AUDIT_RUNNER_IMAGE_ID=$3
+      AUDIT_MOUNT_CONTRACT=${4-canonical}
+      validate_exact_image_id "$AUDIT_EXPECTED_IMAGE" || return $?
+      validate_exact_image_id "$AUDIT_RUNNER_IMAGE_ID" || return $?
+      test "$AUDIT_RUNNER_IMAGE_ID" != sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d || return $?
+      case "$AUDIT_MOUNT_CONTRACT" in
+        canonical) set -- ;;
+        legacy-alpha742) set -- --mount-contract legacy-alpha742 ;;
+        *) return 1 ;;
+      esac
       INSPECT_DIR=$(mktemp -d /mnt/user/appdata/ouro-butler/staging/inspect.XXXXXX) || return $?
       trap 'rm -f -- "$INSPECT_DIR/container.json" "$INSPECT_DIR/image.json"; rmdir -- "$INSPECT_DIR"' EXIT || return $?
       chmod 0700 "$INSPECT_DIR" || return $?
@@ -34,7 +45,7 @@ Effective-spec audit helper:
         --entrypoint /opt/ouro/deploy/unraid/audit-container-spec.sh \
         --mount "type=bind,src=$INSPECT_DIR/container.json,dst=/audit/container.json,readonly" \
         --mount "type=bind,src=$INSPECT_DIR/image.json,dst=/audit/image.json,readonly" \
-        "$IMAGE_ID" --inspect /audit/container.json --image-inspect /audit/image.json --expected-image "$AUDIT_EXPECTED_IMAGE" || return $?
+        "$AUDIT_RUNNER_IMAGE_ID" --inspect /audit/container.json --image-inspect /audit/image.json --expected-image "$AUDIT_EXPECTED_IMAGE" "$@" || return $?
       rm -f -- "$INSPECT_DIR/container.json" "$INSPECT_DIR/image.json" || return $?
       rmdir -- "$INSPECT_DIR" || return $?
       trap - EXIT || return $?
@@ -72,18 +83,23 @@ Effective-spec audit helper:
           http://127.0.0.1/plugins/dynamix.docker.manager/include/UpdateConfig.php || return $?
       )
     }
-    verify_butler_autostart() {
+    butler_autostart_counts() {
       (
-      EXPECTED_AUTOSTART_COUNTS=$1
       AUTOSTART_FILE=/var/lib/docker/unraid-autostart
       test -f "$AUTOSTART_FILE" || return $?
-      AUTOSTART_COUNTS=$(awk '
+      awk '
         $1 == "ouro-butler" { production++ }
         $1 == "ouro-butler-staging" { staging++ }
         $1 == "ouro-butler-rollback" { rollback++ }
         $1 == "ouro-butler-legacy-evidence" { legacy++ }
         END { printf "%d %d %d %d", production + 0, staging + 0, rollback + 0, legacy + 0 }
-      ' "$AUTOSTART_FILE") || return $?
+      ' "$AUTOSTART_FILE"
+      )
+    }
+    verify_butler_autostart() {
+      (
+      EXPECTED_AUTOSTART_COUNTS=$1
+      AUTOSTART_COUNTS=$(butler_autostart_counts) || return $?
       test "$AUTOSTART_COUNTS" = "$EXPECTED_AUTOSTART_COUNTS" || return $?
       )
     }
@@ -189,6 +205,21 @@ Effective-spec audit helper:
       esac
       assert_only_running_butler ouro-butler || return $?
     }
+    assert_legacy_alpha742_source() {
+      EXPECTED_SOURCE_IMAGE_ID=$1
+      AUDIT_RUNNER_IMAGE_ID=$2
+      test "$EXPECTED_SOURCE_IMAGE_ID" = sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d || return $?
+      audit_effective ouro-butler "$EXPECTED_SOURCE_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" legacy-alpha742
+    }
+    assert_update_source() {
+      EXPECTED_SOURCE_IMAGE_ID=$1
+      AUDIT_RUNNER_IMAGE_ID=$2
+      if test "$EXPECTED_SOURCE_IMAGE_ID" = sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d; then
+        assert_legacy_alpha742_source "$EXPECTED_SOURCE_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"
+      else
+        audit_effective ouro-butler "$EXPECTED_SOURCE_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"
+      fi
+    }
     validate_sanctuary_roots() {
       (
       VALIDATE_RUNTIME_ROOT=$1
@@ -197,6 +228,8 @@ Effective-spec audit helper:
       test -d "$VALIDATE_AGENT_ROOT" || return $?
       VALIDATE_BAD_SHAPE=$(find "$VALIDATE_RUNTIME_ROOT" "$VALIDATE_AGENT_ROOT" -xdev \( -type l -o \( ! -type d -a ! -type f \) \) -print -quit) || return $?
       test -z "$VALIDATE_BAD_SHAPE" || return $?
+      VALIDATE_UNEXPECTED_SOCKET=$(find "$VALIDATE_RUNTIME_ROOT" "$VALIDATE_AGENT_ROOT" -xdev -type s -print -quit) || return $?
+      test -z "$VALIDATE_UNEXPECTED_SOCKET" || return $?
       for VALIDATE_REQUIRED_FILE in \
         agent.json bundle-meta.json provider-readiness.json tool-profiles.json \
         psyche/SOUL.md habits/sanctuary-health.md; do
@@ -207,18 +240,142 @@ Effective-spec audit helper:
       test "$(printf '%s\n' "$VALIDATE_UNLOCK_FILES" | awk 'NF { count++ } END { print count + 0 }')" = 1 || return $?
       test ! -e "$VALIDATE_RUNTIME_ROOT/container-credentials.json" || return $?
       test ! -e "$VALIDATE_RUNTIME_ROOT/container-credentials.json.consuming" || return $?
+      test ! -S "$VALIDATE_AGENT_ROOT/state/acceptance/telegram-control.sock" || return $?
       VALIDATE_WRONG_OWNER=$(find "$VALIDATE_RUNTIME_ROOT" "$VALIDATE_AGENT_ROOT" -xdev \( ! -user 10001 -o ! -group 10001 \) -print -quit) || return $?
       test -z "$VALIDATE_WRONG_OWNER" || return $?
-      VALIDATE_WRONG_DIR_MODE=$(find "$VALIDATE_RUNTIME_ROOT" "$VALIDATE_AGENT_ROOT" -xdev -type d ! -perm 0700 -print -quit) || return $?
-      test -z "$VALIDATE_WRONG_DIR_MODE" || return $?
-      VALIDATE_WRONG_FILE_MODE=$(find "$VALIDATE_RUNTIME_ROOT" "$VALIDATE_AGENT_ROOT" -xdev -type f ! -perm 0600 -print -quit) || return $?
-      test -z "$VALIDATE_WRONG_FILE_MODE" || return $?
+      VALIDATE_WRONG_RUNTIME_DIR_MODE=$(find "$VALIDATE_RUNTIME_ROOT" -xdev -type d ! -perm 0700 \
+        ! \( -perm 0755 \( \
+          -path "$VALIDATE_RUNTIME_ROOT/scheduler" -o -path "$VALIDATE_RUNTIME_ROOT/scheduler/*" -o \
+          -path "$VALIDATE_RUNTIME_ROOT/daemon/logs" -o -path "$VALIDATE_RUNTIME_ROOT/daemon/logs/*" \
+        \) \) -print -quit) || return $?
+      test -z "$VALIDATE_WRONG_RUNTIME_DIR_MODE" || return $?
+      VALIDATE_WRONG_AGENT_DIR_MODE=$(find "$VALIDATE_AGENT_ROOT" -xdev -type d ! -perm 0700 \
+        ! \( -perm 0755 \( \
+          -path "$VALIDATE_AGENT_ROOT/arc/flight-recorder" -o -path "$VALIDATE_AGENT_ROOT/arc/flight-recorder/*" -o \
+          -path "$VALIDATE_AGENT_ROOT/state/health" -o -path "$VALIDATE_AGENT_ROOT/state/health/*" -o \
+          -path "$VALIDATE_AGENT_ROOT/state/logs" -o -path "$VALIDATE_AGENT_ROOT/state/logs/*" -o \
+          -path "$VALIDATE_AGENT_ROOT/state/habits" -o -path "$VALIDATE_AGENT_ROOT/state/habits/*" \
+        \) \) -print -quit) || return $?
+      test -z "$VALIDATE_WRONG_AGENT_DIR_MODE" || return $?
+      VALIDATE_WRONG_RUNTIME_FILE_MODE=$(find "$VALIDATE_RUNTIME_ROOT" -xdev -type f ! -perm 0600 \
+        ! \( -perm 0644 \( \
+          -path "$VALIDATE_RUNTIME_ROOT/daemon/logs/*" -o \
+          -path "$VALIDATE_RUNTIME_ROOT/scheduler/*" -o \
+          -path "$VALIDATE_RUNTIME_ROOT/pulse.json" -o \
+          -path "$VALIDATE_RUNTIME_ROOT/pulse-delivered.json" -o \
+          -path "$VALIDATE_RUNTIME_ROOT/daemon.pids" -o \
+          -path "$VALIDATE_RUNTIME_ROOT/daemon-health.json" \
+        \) \) -print -quit) || return $?
+      test -z "$VALIDATE_WRONG_RUNTIME_FILE_MODE" || return $?
+      VALIDATE_WRONG_AGENT_FILE_MODE=$(find "$VALIDATE_AGENT_ROOT" -xdev -type f ! -perm 0600 \
+        ! \( -perm 0644 \( \
+          -path "$VALIDATE_AGENT_ROOT/arc/flight-recorder/*" -o \
+          -path "$VALIDATE_AGENT_ROOT/state/health/*" -o \
+          -path "$VALIDATE_AGENT_ROOT/state/logs/*" -o \
+          -path "$VALIDATE_AGENT_ROOT/state/habits/*" \
+        \) \) -print -quit) || return $?
+      test -z "$VALIDATE_WRONG_AGENT_FILE_MODE" || return $?
+      )
+    }
+    verify_sanctuary_snapshot_provenance() {
+      (
+      SNAPSHOT_ROOT=$1
+      EXPECTED_SNAPSHOT_IMAGE_ID=$2
+      SNAPSHOT_PROVENANCE_ROOT=$SNAPSHOT_ROOT/provenance
+      for SNAPSHOT_TOP_LEVEL_DIRECTORY in runtime agent host provenance; do
+        test -d "$SNAPSHOT_ROOT/$SNAPSHOT_TOP_LEVEL_DIRECTORY" || return $?
+        test ! -L "$SNAPSHOT_ROOT/$SNAPSHOT_TOP_LEVEL_DIRECTORY" || return 1
+      done
+      test "$(find "$SNAPSHOT_ROOT" -xdev -mindepth 1 -maxdepth 1 -print | wc -l)" -eq 4 || return $?
+      test -d "$SNAPSHOT_PROVENANCE_ROOT" || return $?
+      test ! -L "$SNAPSHOT_PROVENANCE_ROOT" || return 1
+      test "$(stat -c '%u:%g:%a' "$SNAPSHOT_PROVENANCE_ROOT")" = 0:0:700 || return $?
+      SNAPSHOT_BAD_PROVENANCE_ENTRY=$(find "$SNAPSHOT_PROVENANCE_ROOT" -xdev -mindepth 1 ! -type f -print -quit) || return $?
+      test -z "$SNAPSHOT_BAD_PROVENANCE_ENTRY" || return $?
+      for SNAPSHOT_PROVENANCE_FILE in image-id container-inspect.json image-inspect.json package-version manifest.sha256; do
+        test -f "$SNAPSHOT_PROVENANCE_ROOT/$SNAPSHOT_PROVENANCE_FILE" || return $?
+        test ! -L "$SNAPSHOT_PROVENANCE_ROOT/$SNAPSHOT_PROVENANCE_FILE" || return 1
+        test "$(stat -c '%u:%g:%a' "$SNAPSHOT_PROVENANCE_ROOT/$SNAPSHOT_PROVENANCE_FILE")" = 0:0:600 || return $?
+      done
+      test "$(find "$SNAPSHOT_PROVENANCE_ROOT" -xdev -mindepth 1 -maxdepth 1 -type f | wc -l)" -eq 5 || return $?
+      test "$(wc -l <"$SNAPSHOT_PROVENANCE_ROOT/image-id")" -eq 1 || return $?
+      IFS= read -r SNAPSHOT_IMAGE_ID <"$SNAPSHOT_PROVENANCE_ROOT/image-id" || return $?
+      test "$SNAPSHOT_IMAGE_ID" = "$EXPECTED_SNAPSHOT_IMAGE_ID" || return $?
+      case "$SNAPSHOT_IMAGE_ID" in sha256:????????????????????????????????????????????????????????????????) ;; *) return 1 ;; esac
+      case "${SNAPSHOT_IMAGE_ID#sha256:}" in *[!0-9a-f]*) return 1 ;; esac
+      /usr/local/bin/node -e '
+        const fs = require("node:fs");
+        const [containerPath, imagePath, imageId, hostPath] = process.argv.slice(1);
+        const container = JSON.parse(fs.readFileSync(containerPath, "utf8"));
+        const image = JSON.parse(fs.readFileSync(imagePath, "utf8"));
+        if (!Array.isArray(container) || container.length !== 1 || !container[0] || container[0].Image !== imageId) process.exit(1);
+        if (!Array.isArray(image) || image.length !== 1 || !image[0] || image[0].Id !== imageId) process.exit(1);
+        if (image[0].Config?.Labels?.["org.opencontainers.image.source"] !== "https://github.com/ourostack/ouroboros") process.exit(1);
+        const expected = ["custom/usenet_health.sh", "custom/ouro-events/bootstrap-spool.sh", "custom/ouro-events/emit-event.mjs", "custom/ouro-events/emit-usenet-event.sh", "custom/ouro-events/install-usenet-guard.sh", "go.butler-lines", "crontab.butler-lines", "global-state"];
+        const expectedUid = 0;
+        const expectedGid = 0;
+        const hostRoot = fs.lstatSync(hostPath);
+        if (!hostRoot.isDirectory() || hostRoot.isSymbolicLink() || hostRoot.uid !== expectedUid || hostRoot.gid !== expectedGid || (hostRoot.mode & 0o777) !== 0o700) process.exit(1);
+        const rows = fs.readFileSync(`${hostPath}/inventory`, "utf8").trim().split("\n").map(line => line.split("\t"));
+        if (rows.length !== expected.length || rows.some((row, index) => row.length !== 2 || row[1] !== expected[index] || !["present", "absent"].includes(row[0]))) process.exit(1);
+        const present = rows.filter(row => row[0] === "present").map(row => row[1]);
+        if (!["go.butler-lines", "crontab.butler-lines", "global-state"].every(relative => present.includes(relative))) process.exit(1);
+        const globalRows = fs.readFileSync(`${hostPath}/global-state`, "utf8").trim().split("\n").map(line => line.split("\t"));
+        if (globalRows.length !== 2 || globalRows[0][0] !== "go" || globalRows[1][0] !== "crontab") process.exit(1);
+        for (const [name, state, digest, count] of globalRows) {
+          if (!["go", "crontab"].includes(name) || !["present", "absent"].includes(state) || !/^(?:[0-9a-f]{64}|-)$/.test(digest) || !/^(?:0|[1-9][0-9]*)$/.test(count)) process.exit(1);
+          if ((state === "absent") !== (digest === "-")) process.exit(1);
+          const fragmentLines = fs.readFileSync(`${hostPath}/${name}.butler-lines`, "utf8").split("\n").filter(Boolean);
+          if (fragmentLines.length !== Number(count)) process.exit(1);
+        }
+        for (const [state, relative] of rows) {
+          if (fs.existsSync(`${hostPath}/${relative}`) !== (state === "present")) process.exit(1);
+        }
+        const files = [];
+        const directories = [];
+        const walk = (directory, prefix = "") => {
+          for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+            const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+            const metadata = fs.lstatSync(`${directory}/${entry.name}`);
+            if (metadata.uid !== expectedUid || metadata.gid !== expectedGid) process.exit(1);
+            if (entry.isDirectory() && (metadata.mode & 0o777) === 0o700) { directories.push(relative); walk(`${directory}/${entry.name}`, relative); }
+            else if (entry.isFile() && (metadata.mode & 0o777) === 0o600) files.push(relative);
+            else process.exit(1);
+          }
+        };
+        walk(hostPath);
+        if (JSON.stringify(directories.sort()) !== JSON.stringify(["custom", "custom/ouro-events"])) process.exit(1);
+        if (JSON.stringify(files.sort()) !== JSON.stringify(["inventory", ...present].sort())) process.exit(1);
+      ' "$SNAPSHOT_PROVENANCE_ROOT/container-inspect.json" "$SNAPSHOT_PROVENANCE_ROOT/image-inspect.json" "$SNAPSHOT_IMAGE_ID" "$SNAPSHOT_ROOT/host" || return $?
+      test "$(wc -l <"$SNAPSHOT_PROVENANCE_ROOT/package-version")" -eq 1 || return $?
+      grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' "$SNAPSHOT_PROVENANCE_ROOT/package-version" || return $?
+      test "$(stat -c '%u:%g:%a' "$SNAPSHOT_ROOT/host")" = 0:0:700 || return $?
+      SNAPSHOT_BAD_HOST_ENTRY=$(find "$SNAPSHOT_ROOT/host" -xdev \( \( -type d ! -perm 0700 \) -o \( -type f ! -perm 0600 \) -o \( ! -type d -a ! -type f \) \) -print -quit) || return $?
+      test -z "$SNAPSHOT_BAD_HOST_ENTRY" || return $?
+      test -f "$SNAPSHOT_ROOT/host/inventory" || return $?
+      test ! -e "$SNAPSHOT_ROOT/host/notify.conf" || return 1
+      test ! -e "$SNAPSHOT_ROOT/host/sabnzbd.ini" || return 1
+      SNAPSHOT_VERIFY_ROOT=$(mktemp -d /tmp/ouro-snapshot-verify.XXXXXX) || return $?
+      trap 'rm -f -- "$SNAPSHOT_VERIFY_ROOT/current-files" "$SNAPSHOT_VERIFY_ROOT/manifest-files"; rmdir -- "$SNAPSHOT_VERIFY_ROOT"' EXIT || return $?
+      (
+        cd "$SNAPSHOT_ROOT" || return $?
+        find runtime agent host provenance -xdev -type f ! -path provenance/manifest.sha256 -print | LC_ALL=C sort >"$SNAPSHOT_VERIFY_ROOT/current-files" || return $?
+        grep -E '^[0-9a-f]{64}  [^/].+$' provenance/manifest.sha256 >/dev/null || return $?
+        ! grep -Ev '^[0-9a-f]{64}  [^/].+$' provenance/manifest.sha256 >/dev/null || return 1
+        sed 's/^[0-9a-f]\{64\}  //' provenance/manifest.sha256 | LC_ALL=C sort >"$SNAPSHOT_VERIFY_ROOT/manifest-files" || return $?
+        cmp -s "$SNAPSHOT_VERIFY_ROOT/current-files" "$SNAPSHOT_VERIFY_ROOT/manifest-files" || return $?
+        sha256sum -c -- provenance/manifest.sha256 >/dev/null || return $?
+      ) || return $?
+      rm -f -- "$SNAPSHOT_VERIFY_ROOT/current-files" "$SNAPSHOT_VERIFY_ROOT/manifest-files" || return $?
+      rmdir -- "$SNAPSHOT_VERIFY_ROOT" || return $?
+      trap - EXIT || return $?
       )
     }
     assert_restore_preflight() {
       (
       test -n "${BACKUP_ROOT-}" || return 1
       test -n "${IMAGE_ID-}" || return 1
+      test -n "${AUDIT_RUNNER_IMAGE_ID-}" || return 1
       case "$BACKUP_ROOT" in
         /*) ;;
         *) return 1 ;;
@@ -228,8 +385,11 @@ Effective-spec audit helper:
       test "$RESTORE_BACKUP_ROOT" = "$BACKUP_ROOT" || return $?
       test -d "$BACKUP_ROOT/runtime/.ouro-cli" || return $?
       test -d "$BACKUP_ROOT/agent/sanctuary.ouro" || return $?
+      verify_sanctuary_snapshot_provenance "$BACKUP_ROOT" "$IMAGE_ID" || return $?
       validate_sanctuary_roots "$BACKUP_ROOT/runtime/.ouro-cli" "$BACKUP_ROOT/agent/sanctuary.ouro" || return $?
       validate_exact_image_id "$IMAGE_ID" || return $?
+      validate_exact_image_id "$AUDIT_RUNNER_IMAGE_ID" || return $?
+      test "$AUDIT_RUNNER_IMAGE_ID" != sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d || return $?
       RESTORE_CONTAINER_NAMES=$(docker container ls -a --format '{{.Names}}') || return $?
       RESTORE_NAME_COUNTS=$(printf '%s\n' "$RESTORE_CONTAINER_NAMES" | awk '
         $0 == "ouro-butler" { production++ }
@@ -255,6 +415,7 @@ Effective-spec audit helper:
         validate_exact_image_id "$RESTORE_LEGACY_IMAGE_ID" || return $?
       fi
       assert_only_running_butler ouro-butler || return $?
+      assert_update_source "$RESTORE_PRODUCTION_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" || return $?
       )
     }
     ensure_sanctuary_machine_identity() {
@@ -280,6 +441,141 @@ Effective-spec audit helper:
       chmod 0600 "$MACHINE_PATH" || return $?
       sync -f "$MACHINE_PATH" || return $?
     }
+    migrate_sanctuary_package_managed_bundle() {
+      MIGRATE_IMAGE_ID=$1
+      MIGRATE_OPERATION=$2
+      MIGRATE_ROLLBACK_IMAGE_ID=${3-}
+      validate_exact_image_id "$MIGRATE_IMAGE_ID" || return $?
+      case "$MIGRATE_OPERATION" in migrate|rollback|commit|status) ;; *) return 1 ;; esac
+      if test "$MIGRATE_OPERATION" = migrate; then
+        validate_exact_image_id "$MIGRATE_ROLLBACK_IMAGE_ID" || return $?
+        test "$MIGRATE_IMAGE_ID" != "$MIGRATE_ROLLBACK_IMAGE_ID" || return 1
+        set -- --rollback-image-id "$MIGRATE_ROLLBACK_IMAGE_ID" --target-image-id "$MIGRATE_IMAGE_ID"
+      else
+        set --
+      fi
+      docker run --rm --pull=never --network=none --read-only --user 10001:10001 \
+        --entrypoint /usr/local/bin/node \
+        --mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
+        "$MIGRATE_IMAGE_ID" /opt/ouro/deploy/unraid/migrate-sanctuary-bundle.mjs \
+        --package-root /opt/ouro/deploy/unraid/sanctuary.ouro \
+        --agent-root /home/ouro/AgentBundles/sanctuary.ouro \
+        --operation "$MIGRATE_OPERATION" "$@" || return $?
+    }
+    recover_pending_sanctuary_bundle_migration() {
+      RECOVERY_IMAGE_ID=$1
+      RECOVERY_AGENT_ROOT=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro
+      RECOVERY_RECORD=$RECOVERY_AGENT_ROOT/.sanctuary-package-managed-rollback.json
+      RECOVERY_COMMITTING_RECORD=$RECOVERY_RECORD.committing
+      RECOVERY_RECORD_COUNT=0
+      for RECOVERY_CANDIDATE in "$RECOVERY_RECORD" "$RECOVERY_COMMITTING_RECORD"; do
+        test ! -L "$RECOVERY_CANDIDATE" || return 1
+        if test -e "$RECOVERY_CANDIDATE"; then
+          test -f "$RECOVERY_CANDIDATE" || return 1
+          RECOVERY_RECORD_COUNT=$((RECOVERY_RECORD_COUNT + 1))
+        fi
+      done
+      test "$RECOVERY_RECORD_COUNT" -le 1 || return 1
+      test "$RECOVERY_RECORD_COUNT" -eq 1 || return 0
+      RECOVERY_STATUS=$(migrate_sanctuary_package_managed_bundle "$RECOVERY_IMAGE_ID" status) || return $?
+      RECOVERY_IDENTITIES=$(printf '%s' "$RECOVERY_STATUS" | /usr/local/bin/node -e '
+        let input = "";
+        process.stdin.setEncoding("utf8");
+        process.stdin.on("data", chunk => { input += chunk; });
+        process.stdin.on("end", () => {
+          const value = JSON.parse(input);
+          if (!value || !["rollback", "committing"].includes(value.state)
+            || typeof value.rollbackImageId !== "string" || typeof value.targetImageId !== "string") process.exit(1);
+          process.stdout.write(`${value.state} ${value.rollbackImageId} ${value.targetImageId}`);
+        });
+      ') || return $?
+      set -- $RECOVERY_IDENTITIES
+      test "$#" -eq 3 || return 1
+      RECOVERY_STATE=$1
+      RECOVERY_ROLLBACK_IMAGE_ID=$2
+      RECOVERY_TARGET_IMAGE_ID=$3
+      validate_exact_image_id "$RECOVERY_ROLLBACK_IMAGE_ID" || return $?
+      validate_exact_image_id "$RECOVERY_TARGET_IMAGE_ID" || return $?
+      test "$RECOVERY_TARGET_IMAGE_ID" != "$RECOVERY_ROLLBACK_IMAGE_ID" || return 1
+      disable_butler_autostart || return $?
+      if test "$RECOVERY_STATE" = committing; then
+        ! docker container inspect ouro-butler-staging >/dev/null 2>&1 || return 1
+        RECOVERY_PRODUCTION_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler) || return $?
+        test "$(docker inspect --format '{{.State.Running}}' ouro-butler)" = true || return 1
+        if test "$RECOVERY_PRODUCTION_IMAGE_ID" = "$RECOVERY_TARGET_IMAGE_ID"; then
+          RECOVERY_CURRENT_ROLLBACK_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler-rollback) || return $?
+          test "$RECOVERY_CURRENT_ROLLBACK_IMAGE_ID" = "$RECOVERY_ROLLBACK_IMAGE_ID" || return 1
+          test "$(docker inspect --format '{{.State.Running}}' ouro-butler-rollback)" = false || return 1
+        elif test "$RECOVERY_PRODUCTION_IMAGE_ID" = "$RECOVERY_ROLLBACK_IMAGE_ID"; then
+          ! docker container inspect ouro-butler-rollback >/dev/null 2>&1 || return 1
+        else
+          return 1
+        fi
+        assert_only_running_butler ouro-butler || return $?
+        assert_update_source "$RECOVERY_PRODUCTION_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" || return $?
+        wait_butler_ready ouro-butler || return $?
+        enable_butler_autostart || return $?
+        migrate_sanctuary_package_managed_bundle "$RECOVERY_IMAGE_ID" commit || return $?
+        return 0
+      fi
+      if docker container inspect ouro-butler-rollback >/dev/null 2>&1; then
+        RECOVERY_CURRENT_ROLLBACK_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler-rollback) || return $?
+        test "$RECOVERY_CURRENT_ROLLBACK_IMAGE_ID" = "$RECOVERY_ROLLBACK_IMAGE_ID" || return 1
+        test "$(docker inspect --format '{{.State.Running}}' ouro-butler-rollback)" = false || return 1
+        if docker container inspect ouro-butler-staging >/dev/null 2>&1; then
+          RECOVERY_STAGING_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler-staging) || return $?
+          test "$RECOVERY_STAGING_IMAGE_ID" = "$RECOVERY_TARGET_IMAGE_ID" || return 1
+          docker stop ouro-butler-staging >/dev/null 2>&1 || true
+          docker rm --force ouro-butler-staging || return $?
+        fi
+        if docker container inspect ouro-butler >/dev/null 2>&1; then
+          RECOVERY_PRODUCTION_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler) || return $?
+          test "$RECOVERY_PRODUCTION_IMAGE_ID" = "$RECOVERY_TARGET_IMAGE_ID" || return 1
+          docker stop ouro-butler >/dev/null 2>&1 || true
+          docker rm --force ouro-butler || return $?
+        fi
+        migrate_sanctuary_package_managed_bundle "$RECOVERY_IMAGE_ID" rollback || return $?
+        docker rename ouro-butler-rollback ouro-butler || return $?
+      elif docker container inspect ouro-butler >/dev/null 2>&1; then
+        ! docker container inspect ouro-butler-staging >/dev/null 2>&1 || return 1
+        RECOVERY_PRODUCTION_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler) || return $?
+        test "$RECOVERY_PRODUCTION_IMAGE_ID" = "$RECOVERY_ROLLBACK_IMAGE_ID" || return 1
+        ! docker container inspect ouro-butler-rollback >/dev/null 2>&1 || return 1
+      else
+        return 1
+      fi
+      RECOVERY_PRODUCTION_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler) || return $?
+      test "$RECOVERY_PRODUCTION_IMAGE_ID" = "$RECOVERY_ROLLBACK_IMAGE_ID" || return 1
+      assert_update_source "$RECOVERY_ROLLBACK_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" || return $?
+      docker start ouro-butler || return $?
+      assert_only_running_butler ouro-butler || return $?
+      wait_butler_ready ouro-butler || return $?
+      enable_butler_autostart || return $?
+      migrate_sanctuary_package_managed_bundle "$RECOVERY_IMAGE_ID" commit || return $?
+    }
+    rollback_sanctuary_bundle_if_pending() {
+      OPTIONAL_ROLLBACK_IMAGE_ID=$1
+      OPTIONAL_ROLLBACK_RECORD=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/.sanctuary-package-managed-rollback.json
+      OPTIONAL_COMMITTING_RECORD=$OPTIONAL_ROLLBACK_RECORD.committing
+      test ! -L "$OPTIONAL_ROLLBACK_RECORD" || return 1
+      test ! -L "$OPTIONAL_COMMITTING_RECORD" || return 1
+      test ! -e "$OPTIONAL_COMMITTING_RECORD" || return 1
+      if test -e "$OPTIONAL_ROLLBACK_RECORD"; then
+        test -f "$OPTIONAL_ROLLBACK_RECORD" || return 1
+        migrate_sanctuary_package_managed_bundle "$OPTIONAL_ROLLBACK_IMAGE_ID" rollback || return $?
+      fi
+    }
+    # Package installation and migration never grant restart authority. The
+    # migration is the pre-activation assertion: it fails before live mutation
+    # if packaged steward.json carries any routine grant. It preserves an
+    # existing live steward policy and its audit receipts byte for byte. On a
+    # new installation, start the healthy private runtime, then use
+    # an authenticated owner Telegram turn to grant each exact restart target
+    # through steward_policy_manage. That existing tool binds the grant to the
+    # verified owner relationship and durable session event. Do not seed grants
+    # in the packaged steward.json, copy an old session-event ID, or edit the
+    # live policy/audit files directly. A missing grant remains fail-closed until
+    # that explicit owner ceremony succeeds.
     prepare_canonical_sanctuary_roots() {
       PREPARE_IMAGE_ID=$1
       validate_exact_image_id "$PREPARE_IMAGE_ID" || return $?
@@ -490,8 +786,10 @@ Effective-spec audit helper:
         && docker create --name ouro-butler-staging --network host --restart unless-stopped --user 10001:10001 \
           --mount "type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli" \
           --mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
+          --mount "type=bind,src=/boot/config/custom/ouro-events/spool,dst=/run/ouro-events,readonly" \
+          --mount "type=bind,src=/mnt/user/appdata/sabnzbd/sabnzbd.ini,dst=/run/sanctuary/sabnzbd.ini,readonly" \
           "$IMAGE_ID" \
-        && audit_effective ouro-butler-staging "$IMAGE_ID" \
+        && audit_effective ouro-butler-staging "$IMAGE_ID" "$IMAGE_ID" \
         && docker start ouro-butler-staging \
         && assert_only_running_butler ouro-butler-staging \
         && wait_butler_ready ouro-butler-staging \
@@ -501,8 +799,10 @@ Effective-spec audit helper:
         && docker create --name ouro-butler --network host --restart unless-stopped --user 10001:10001 \
           --mount "type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli" \
           --mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
+          --mount "type=bind,src=/boot/config/custom/ouro-events/spool,dst=/run/ouro-events,readonly" \
+          --mount "type=bind,src=/mnt/user/appdata/sabnzbd/sabnzbd.ini,dst=/run/sanctuary/sabnzbd.ini,readonly" \
           "$IMAGE_ID" \
-        && audit_effective ouro-butler "$IMAGE_ID" \
+        && audit_effective ouro-butler "$IMAGE_ID" "$IMAGE_ID" \
         && docker start ouro-butler \
         && assert_only_running_butler ouro-butler \
         && wait_butler_ready ouro-butler \
@@ -1009,6 +1309,84 @@ Update:
     IMAGE_ID=$(docker image inspect --format '{{.Id}}' "$IMAGE_TAG")
     printf '%s\n' "$IMAGE_ID" | grep -Eq '^sha256:[0-9a-f]{64}$'
     docker image inspect "$IMAGE_ID" >/dev/null
+    AUDIT_RUNNER_IMAGE_ID=$IMAGE_ID
+    validate_exact_image_id "$AUDIT_RUNNER_IMAGE_ID"
+  Before stopping, renaming, or creating any Butler container, extract the packaged event, template, and runtime-policy assets from that exact image ID. Install the event assets transactionally, bind the staged template to the exact local image ID, and audit both staged deployment files. Do not copy these files from a checkout or another image:
+    EVENT_ASSET_STAGE=$(mktemp -d /mnt/user/appdata/ouro-butler/staging/ouro-events.XXXXXX)
+    chmod 0700 "$EVENT_ASSET_STAGE"
+    EVENT_SCRIPT_STAGE="$EVENT_ASSET_STAGE/ouro-events"
+    mkdir "$EVENT_SCRIPT_STAGE"
+    STAGED_TEMPLATE="$EVENT_ASSET_STAGE/sanctuary.xml"
+    STAGED_RUNTIME_POLICY="$EVENT_ASSET_STAGE/container-runtime.json"
+    EVENT_ASSET_CONTAINER=
+    cleanup_event_asset_stage() {
+      if test -n "$EVENT_ASSET_CONTAINER"; then
+        docker rm --force "$EVENT_ASSET_CONTAINER" >/dev/null 2>&1 || true
+      fi
+      rm -rf -- "$EVENT_ASSET_STAGE"
+    }
+    trap cleanup_event_asset_stage EXIT
+    EVENT_ASSET_CONTAINER=$(docker create --pull=never --network none --read-only --entrypoint /bin/false "$IMAGE_ID")
+    test "$(docker inspect --format '{{.Image}}' "$EVENT_ASSET_CONTAINER")" = "$IMAGE_ID"
+    docker cp "$EVENT_ASSET_CONTAINER:/opt/ouro/deploy/unraid/ouro-events/." "$EVENT_SCRIPT_STAGE/"
+    docker cp "$EVENT_ASSET_CONTAINER:/opt/ouro/deploy/unraid/sanctuary.xml" "$STAGED_TEMPLATE"
+    docker cp "$EVENT_ASSET_CONTAINER:/opt/ouro/deploy/unraid/container-runtime.json" "$STAGED_RUNTIME_POLICY"
+    docker rm "$EVENT_ASSET_CONTAINER"
+    EVENT_ASSET_CONTAINER=
+    EXPECTED_RELEASE_ASSETS=$(printf '%s\n' container-runtime.json ouro-events sanctuary.xml)
+    ACTUAL_RELEASE_ASSETS=$(find "$EVENT_ASSET_STAGE" -mindepth 1 -maxdepth 1 -exec basename {} \; | LC_ALL=C sort)
+    test "$ACTUAL_RELEASE_ASSETS" = "$EXPECTED_RELEASE_ASSETS"
+    test -d "$EVENT_SCRIPT_STAGE" && test ! -L "$EVENT_SCRIPT_STAGE"
+    test -f "$STAGED_TEMPLATE" && test ! -L "$STAGED_TEMPLATE"
+    test -f "$STAGED_RUNTIME_POLICY" && test ! -L "$STAGED_RUNTIME_POLICY"
+    EXPECTED_EVENT_ASSETS=$(printf '%s\n' bootstrap-spool.sh emit-event.mjs emit-usenet-event.sh install-usenet-guard.sh usenet-health.sh)
+    ACTUAL_EVENT_ASSETS=$(find "$EVENT_SCRIPT_STAGE" -mindepth 1 -maxdepth 1 -type f -exec basename {} \; | LC_ALL=C sort)
+    test "$ACTUAL_EVENT_ASSETS" = "$EXPECTED_EVENT_ASSETS"
+    test -z "$(find "$EVENT_SCRIPT_STAGE" -mindepth 1 -maxdepth 1 \( -type l -o ! -type f \) -print -quit)"
+    /bin/bash "$EVENT_SCRIPT_STAGE/install-usenet-guard.sh" --source-root "$EVENT_SCRIPT_STAGE"
+    /bin/bash /boot/config/custom/ouro-events/install-usenet-guard.sh --boot --install-root /boot/config/custom
+    verify_installed_usenet_guard() {
+      test "$(findmnt -n -o FSTYPE --target /boot/config/custom)" = vfat
+      test "$(stat -c '%u:%g:%a' /boot/config/custom/usenet_health.sh)" = 0:0:600
+      test "$(stat -c '%u:%g:%a' /boot/config/custom/ouro-events/bootstrap-spool.sh)" = 0:0:600
+      test "$(stat -c '%u:%g:%a' /boot/config/custom/ouro-events/emit-event.mjs)" = 0:0:600
+      test "$(stat -c '%u:%g:%a' /boot/config/custom/ouro-events/emit-usenet-event.sh)" = 0:0:600
+      test "$(stat -c '%u:%g:%a' /boot/config/custom/ouro-events/install-usenet-guard.sh)" = 0:0:600
+      cmp -s "$EVENT_SCRIPT_STAGE/usenet-health.sh" /boot/config/custom/usenet_health.sh
+      cmp -s "$EVENT_SCRIPT_STAGE/bootstrap-spool.sh" /boot/config/custom/ouro-events/bootstrap-spool.sh
+      cmp -s "$EVENT_SCRIPT_STAGE/emit-event.mjs" /boot/config/custom/ouro-events/emit-event.mjs
+      cmp -s "$EVENT_SCRIPT_STAGE/emit-usenet-event.sh" /boot/config/custom/ouro-events/emit-usenet-event.sh
+      cmp -s "$EVENT_SCRIPT_STAGE/install-usenet-guard.sh" /boot/config/custom/ouro-events/install-usenet-guard.sh
+      test "$(grep -Fxc '/bin/bash /boot/config/custom/ouro-events/install-usenet-guard.sh --boot --install-root /boot/config/custom' /boot/config/go)" = 1
+      test "$(grep -Fxc '/boot/config/custom/ouro-events/bootstrap-spool.sh --mount' /boot/config/go || true)" = 0
+      INSTALLED_GUARD_CRON=$(crontab -l)
+      test "$(printf '%s\n' "$INSTALLED_GUARD_CRON" | grep -Fxc '*/15 * * * * /bin/bash /boot/config/custom/usenet_health.sh # ouro:usenet-health')" = 1
+      INSTALLED_LEGACY_GUARD_COUNT=$(printf '%s\n' "$INSTALLED_GUARD_CRON" | grep -Fxc '*/15 * * * * /bin/bash /boot/config/custom/usenet_health.sh' || true)
+      test "$INSTALLED_LEGACY_GUARD_COUNT" = 0
+      test "$(printf '%s\n' "$INSTALLED_GUARD_CRON" | grep -Fc '/bin/bash /boot/config/custom/usenet_health.sh')" = 1
+      test "$(findmnt -n -o FSTYPE --target /boot/config/custom/ouro-events/spool)" = tmpfs
+      test "$(stat -c '%u:%g:%a' /boot/config/custom/ouro-events/spool)" = 0:0:755
+      INSTALLED_SPOOL_OPTIONS=$(findmnt -n -o OPTIONS --target /boot/config/custom/ouro-events/spool)
+      for INSTALLED_SPOOL_OPTION in nodev nosuid noexec; do
+        case ",$INSTALLED_SPOOL_OPTIONS," in *",$INSTALLED_SPOOL_OPTION,"*) ;; *) return 1 ;; esac
+      done
+      INSTALLED_SPOOL_SIZE=$(findmnt -bn -o SIZE --target /boot/config/custom/ouro-events/spool)
+      test "$INSTALLED_SPOOL_SIZE" -le 4194304
+    }
+    verify_installed_usenet_guard
+    /usr/local/bin/node -e '
+      const fs = require("node:fs");
+      const [templatePath, imageId] = process.argv.slice(1);
+      if (!/^sha256:[0-9a-f]{64}$/.test(imageId)) throw new Error("invalid exact image ID");
+      const source = fs.readFileSync(templatePath, "utf8");
+      const repositories = [...source.matchAll(/<Repository>[^<]*<\/Repository>/g)];
+      if (repositories.length !== 1) throw new Error("template must contain exactly one Repository element");
+      const staged = source.replace(repositories[0][0], `<Repository>${imageId}</Repository>`);
+      if ((staged.match(/<Repository>[^<]*<\/Repository>/g) ?? []).length !== 1
+        || !staged.includes(`<Repository>${imageId}</Repository>`)) throw new Error("exact Repository staging failed");
+      fs.writeFileSync(templatePath, staged);
+    ' "$STAGED_TEMPLATE" "$IMAGE_ID"
+  If extraction, transactional installation, boot activation, or verification fails, abort the update before any Butler mutation. The installer restores the previous assets, go file, and cron on transactional failure; production stays running. If boot activation or verification fails after the transaction commits, leave production untouched, repair or rerun this exact-image installation, and do not continue. Container rollback begins only after the later production stop succeeds.
   Initial install/adoption is a separate terminal path for the verified live
   legacy state: no production or rollback, exactly one running (possibly
   unhealthy) ouro-butler-staging, and no legacy-evidence container. After the
@@ -1039,14 +1417,19 @@ Update:
   Failure removes only partial target-image staging/production containers,
   quarantines the exact legacy container without deletion or restart, leaves
   autostart disabled, and propagates the original status.
-  For a normal update, preflight the canonical topology before any autostart or
-  container mutation. Production must be the only running Butler poller;
+  For this cutover, preflight either the exact known alpha.742 two-mount source
+  or an already-canonical source before any autostart or container mutation.
+  Production must be the only running Butler poller;
   staging must be absent; rollback may be absent or one stopped container with
   the exact production image. A stopped legacy-evidence container is preserved.
   Disable every Butler name in Unraid's array-autostart file and verify that
   result before stopping production. First resolve and validate the exact image
   ID of the known-good production container while it is still running, so a
   lookup failure cannot strand a renamed container:
+    recover_pending_sanctuary_bundle_migration "$IMAGE_ID"
+    /bin/bash /boot/config/custom/ouro-events/bootstrap-spool.sh --mount
+    test "$(findmnt -n -o FSTYPE --target /boot/config/custom/ouro-events/spool)" = tmpfs
+    test "$(stat -c '%u:%g:%a' /boot/config/custom/ouro-events/spool)" = 0:0:755
     ROLLBACK_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler)
     validate_exact_image_id "$ROLLBACK_IMAGE_ID"
     if assert_update_topology "$ROLLBACK_IMAGE_ID"; then
@@ -1055,20 +1438,18 @@ Update:
       UPDATE_PREFLIGHT_STATUS=$?
       (exit "$UPDATE_PREFLIGHT_STATUS")
     fi
-    audit_effective ouro-butler "$ROLLBACK_IMAGE_ID"
-  Only after that topology gate, stage copies of the packaged template and
-  runtime policy at these paths:
-    STAGED_TEMPLATE=/mnt/user/appdata/ouro-butler/staging/sanctuary.xml
-    STAGED_RUNTIME_POLICY=/mnt/user/appdata/ouro-butler/staging/container-runtime.json
-  Replace sha256:REPLACE_WITH_EXACT_LOCAL_IMAGE_ID in the staged template at
-  $STAGED_TEMPLATE with exactly $IMAGE_ID. Before docker create, run the
-  packaged auditor from that exact image ID with both staged inputs mounted
-  read-only:
+    assert_update_source "$ROLLBACK_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"
+  The earlier exact-image asset stage has already replaced the template's sole
+  Repository element with $IMAGE_ID. After the topology and source gates pass,
+  audit the staged template and runtime policy with the packaged auditor, then
+  remove the private stage before any Butler mutation:
     docker run --rm --pull=never --network=none \
       --entrypoint /opt/ouro/deploy/unraid/audit-container-spec.sh \
       --mount "type=bind,src=$STAGED_TEMPLATE,dst=/audit/sanctuary.xml,readonly" \
       --mount "type=bind,src=$STAGED_RUNTIME_POLICY,dst=/audit/container-runtime.json,readonly" \
       "$IMAGE_ID" --template /audit/sanctuary.xml --runtime-policy /audit/container-runtime.json --expected-image "$IMAGE_ID"
+    cleanup_event_asset_stage
+    trap - EXIT
   Guard the atomic autostart disable separately. If it fails, production has not
   been touched and the captured status is propagated:
     if disable_butler_autostart; then
@@ -1096,11 +1477,37 @@ ouro-butler-rollback
       esac
     }
   Stop production, remove only a stopped stale rollback, rename the known-good
-  container, and verify it remains stopped in one explicit preparation guard:
+  container, verify it remains stopped, and apply the exact target image's
+  package-managed bundle migration in one explicit preparation guard.
+  Package-managed files are exactly `provider-readiness.json`,
+  `tool-profiles.json`, `habits/sanctuary-health.md`, and the five canonical
+  files under `psyche/`. The migration also merges the three bundle-meta version
+  fields. It never installs or mutates steward policy authority. It preserves
+  agent.json, all steward policy and audit bytes, relationships, sessions, and
+  every other state path. Repeating it is a no-op.
+  Before its first managed write, the migrator atomically fsyncs one mode-0600
+  rollback record at `.sanctuary-package-managed-rollback.json`. That transient
+  record contains a verified SHA-256 digest over the exact prior bytes, modes,
+  and parent existence for those
+  files plus bundle-meta, bound to distinct exact rollback and target image IDs.
+  It is the migration transaction record, not a second bundle authority. Normal
+  managed-file failure restores it immediately; every
+  later container rollback restores it before the old container restarts, while
+  successful production readiness and autostart commit it. A killed updater is
+  reconciled from the same record before update topology preflight: partial new
+  containers are removed, interrupted atomic-write stages are discarded, the
+  exact prior bundle is restored idempotently, and only the image ID recorded in
+  the transaction may resume as production. A malformed record, wrong image,
+  or restore failure leaves autostart disabled and fails closed. Once target
+  readiness and autostart have passed, commit first durably renames the record;
+  a kill then keeps target production in place and the next run validates its
+  exact topology/readiness before finishing commit. Migration failure then enters the same exact container
+  rollback arm before staging starts:
     if docker stop ouro-butler \
       && remove_stopped_rollback_if_present "$ROLLBACK_IMAGE_ID" \
       && docker rename ouro-butler ouro-butler-rollback \
-      && test "$(docker inspect --format '{{.State.Running}}' ouro-butler-rollback)" = false; then
+      && test "$(docker inspect --format '{{.State.Running}}' ouro-butler-rollback)" = false \
+      && migrate_sanctuary_package_managed_bundle "$IMAGE_ID" migrate "$ROLLBACK_IMAGE_ID"; then
       :
     else
       PRODUCTION_PREPARATION_STATUS=$?
@@ -1112,26 +1519,30 @@ ouro-butler-rollback
           docker rm --force ouro-butler-rollback >/dev/null 2>&1 || true
         fi
         ! docker container inspect ouro-butler-rollback >/dev/null 2>&1
-        audit_effective ouro-butler "$ROLLBACK_IMAGE_ID"
+        rollback_sanctuary_bundle_if_pending "$IMAGE_ID"
+        assert_update_source "$ROLLBACK_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"
         docker start ouro-butler
         assert_only_running_butler ouro-butler
         wait_butler_ready ouro-butler
         enable_butler_autostart
+        migrate_sanctuary_package_managed_bundle "$IMAGE_ID" commit
       elif docker container inspect ouro-butler-rollback >/dev/null 2>&1; then
         docker stop ouro-butler-rollback >/dev/null 2>&1 || true
         test "$(docker inspect --format '{{.Image}}' ouro-butler-rollback)" = "$ROLLBACK_IMAGE_ID"
+        rollback_sanctuary_bundle_if_pending "$IMAGE_ID"
         docker rename ouro-butler-rollback ouro-butler
-        audit_effective ouro-butler "$ROLLBACK_IMAGE_ID"
+        assert_update_source "$ROLLBACK_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"
         docker start ouro-butler
         assert_only_running_butler ouro-butler
         wait_butler_ready ouro-butler
         enable_butler_autostart
+        migrate_sanctuary_package_managed_bundle "$IMAGE_ID" commit
       fi
       (exit "$PRODUCTION_PREPARATION_STATUS")
     fi
   Preparation failure therefore either restores the still-named exact production
   after removing any stale rollback, or renames the exact stopped rollback back;
-  both recoveries re-audit, start, bounded-wait, atomically restore production-only
+  both recoveries revalidate, start, bounded-wait, atomically restore production-only
   autostart, and propagate the original failure. If neither exact container can
   be found, the failure propagates with Butler autostart disabled.
   Put the entire post-rename staging phase in one explicit conditional so
@@ -1143,8 +1554,10 @@ ouro-butler-rollback
     if docker create --name ouro-butler-staging --network host --restart unless-stopped --user 10001:10001 \
       --mount "type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli" \
       --mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
+      --mount "type=bind,src=/boot/config/custom/ouro-events/spool,dst=/run/ouro-events,readonly" \
+      --mount "type=bind,src=/mnt/user/appdata/sabnzbd/sabnzbd.ini,dst=/run/sanctuary/sabnzbd.ini,readonly" \
       "$IMAGE_ID" \
-      && audit_effective ouro-butler-staging "$IMAGE_ID" \
+      && audit_effective ouro-butler-staging "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" \
       && docker start ouro-butler-staging \
       && assert_only_running_butler ouro-butler-staging \
       && wait_butler_ready ouro-butler-staging \
@@ -1162,17 +1575,19 @@ ouro-butler-rollback
       ! docker container inspect ouro-butler-staging >/dev/null 2>&1
       CURRENT_ROLLBACK_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler-rollback)
       test "$CURRENT_ROLLBACK_IMAGE_ID" = "$ROLLBACK_IMAGE_ID"
+      migrate_sanctuary_package_managed_bundle "$IMAGE_ID" rollback
       docker rename ouro-butler-rollback ouro-butler
-      audit_effective ouro-butler "$ROLLBACK_IMAGE_ID"
+      assert_update_source "$ROLLBACK_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"
       docker start ouro-butler
       assert_only_running_butler ouro-butler
       wait_butler_ready ouro-butler
       enable_butler_autostart
+      migrate_sanctuary_package_managed_bundle "$IMAGE_ID" commit
       (exit "$STAGING_ACTIVATION_STATUS")
     fi
   The failure arm safely handles staging that was never created, remains
   stopped, is running, or exited: it force-removes any partial staging state,
-  verifies the name is absent, restores and re-audits the old production against
+  verifies the name is absent, restores and revalidates the old production against
   its exact pre-recorded image ID, starts and bounded-waits it, atomically
   restores production-only autostart, and propagates the original failure.
   At no point may production and staging run together against the same Telegram token.
@@ -1187,8 +1602,10 @@ ouro-butler-rollback
     if docker create --name ouro-butler --network host --restart unless-stopped --user 10001:10001 \
       --mount "type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli" \
       --mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
+      --mount "type=bind,src=/boot/config/custom/ouro-events/spool,dst=/run/ouro-events,readonly" \
+      --mount "type=bind,src=/mnt/user/appdata/sabnzbd/sabnzbd.ini,dst=/run/sanctuary/sabnzbd.ini,readonly" \
       "$IMAGE_ID" \
-      && audit_effective ouro-butler "$IMAGE_ID" \
+      && audit_effective ouro-butler "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" \
       && docker start ouro-butler \
       && assert_only_running_butler ouro-butler \
       && test "$(docker inspect --format '{{.State.Running}}' ouro-butler-rollback)" = false \
@@ -1206,42 +1623,259 @@ ouro-butler-rollback
       ! docker container inspect ouro-butler >/dev/null 2>&1
       CURRENT_ROLLBACK_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler-rollback)
       test "$CURRENT_ROLLBACK_IMAGE_ID" = "$ROLLBACK_IMAGE_ID"
+      migrate_sanctuary_package_managed_bundle "$IMAGE_ID" rollback
       docker rename ouro-butler-rollback ouro-butler
-      audit_effective ouro-butler "$ROLLBACK_IMAGE_ID"
+      assert_update_source "$ROLLBACK_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"
       docker start ouro-butler
       assert_only_running_butler ouro-butler
       wait_butler_ready ouro-butler
       enable_butler_autostart
+      migrate_sanctuary_package_managed_bundle "$IMAGE_ID" commit
       (exit "$PRODUCTION_ACTIVATION_STATUS")
     fi
+    migrate_sanctuary_package_managed_bundle "$IMAGE_ID" commit
   Keep ouro-butler-rollback stopped until the new production container is proven
   or the explicit rollback arm restores it.
   Never create a container from the mutable lookup tag.
 
 Backup:
-  Stop ouro-butler, then snapshot both of these directories together:
+  Set BACKUP_ROOT to a new absolute snapshot path on the destination filesystem.
+  Set AUDIT_RUNNER_IMAGE_TAG to the reviewed new image containing the
+  legacy-aware auditor; the alpha.742 source image cannot be the runner.
+  Capture and validate the exact source image before stopping ouro-butler, then
+  build a temporary snapshot with root-only provenance and atomically rename it into place:
+    test -n "${BACKUP_ROOT-}"
+    case "$BACKUP_ROOT" in /*) ;; *) exit 1 ;; esac
+    test "$BACKUP_ROOT" != /
+    test ! -e "$BACKUP_ROOT"
+    BACKUP_PARENT=$(dirname -- "$BACKUP_ROOT")
+    test "$(cd -- "$BACKUP_PARENT" && pwd -P)" = "$BACKUP_PARENT"
+    BACKUP_TMP=$BACKUP_ROOT.tmp.$$
+    test ! -e "$BACKUP_TMP"
+    AUDIT_RUNNER_IMAGE_TAG=ouro-butler:<new-version>
+    AUDIT_RUNNER_IMAGE_ID=$(docker image inspect --format '{{.Id}}' "$AUDIT_RUNNER_IMAGE_TAG")
+    validate_exact_image_id "$AUDIT_RUNNER_IMAGE_ID"
+    test "$AUDIT_RUNNER_IMAGE_ID" != sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d
+    BACKUP_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler)
+    validate_exact_image_id "$BACKUP_IMAGE_ID"
+    assert_update_source "$BACKUP_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"
+    assert_only_running_butler ouro-butler
+    wait_butler_ready ouro-butler
+    BACKUP_AUTOSTART_COUNTS=$(butler_autostart_counts)
+    case "$BACKUP_AUTOSTART_COUNTS" in "0 0 0 0"|"1 0 0 0") ;; *) exit 1 ;; esac
+    backup_host_file() {
+      BACKUP_HOST_SOURCE=$1
+      BACKUP_HOST_RELATIVE=$2
+      case "$BACKUP_HOST_RELATIVE" in
+        custom/usenet_health.sh|custom/ouro-events/bootstrap-spool.sh|custom/ouro-events/emit-event.mjs|custom/ouro-events/emit-usenet-event.sh|custom/ouro-events/install-usenet-guard.sh) ;;
+        *) return 1 ;;
+      esac
+      if test -e "$BACKUP_HOST_SOURCE" || test -L "$BACKUP_HOST_SOURCE"; then
+        test -f "$BACKUP_HOST_SOURCE" && test ! -L "$BACKUP_HOST_SOURCE" || return 1
+        ! host_file_contains_inline_credential "$BACKUP_HOST_SOURCE" || return 1
+        install -D -m 0600 -o 0 -g 0 "$BACKUP_HOST_SOURCE" "$BACKUP_TMP/host/$BACKUP_HOST_RELATIVE" || return $?
+        printf 'present\t%s\n' "$BACKUP_HOST_RELATIVE" >>"$BACKUP_TMP/host/inventory" || return $?
+      else
+        printf 'absent\t%s\n' "$BACKUP_HOST_RELATIVE" >>"$BACKUP_TMP/host/inventory" || return $?
+      fi
+    }
+    host_file_contains_inline_credential() {
+      LC_ALL=C awk '
+        BEGIN { IGNORECASE = 1; found = 0 }
+        /[0-9]{6,}:[A-Za-z0-9_-]{20,}/ { found = 1 }
+        /Authorization:[[:space:]]*(Bearer|Basic)[[:space:]]+["\047]?[A-Za-z0-9][A-Za-z0-9._~+\/=:-]{11,}/ { found = 1 }
+        /--(token|api-key|api_key|secret|password)(=|[[:space:]]+)["\047]?[A-Za-z0-9][A-Za-z0-9._~+\/=:-]{11,}/ { found = 1 }
+        /[A-Za-z][A-Za-z0-9+.-]*:\/\/[^\/@[:space:]]+:[^\/@[:space:]]+@/ { found = 1 }
+        /-----BEGIN ([A-Z0-9]+ )*PRIVATE KEY-----/ { found = 1 }
+        /(token|secret|password|pass|api[_-]?key)[A-Za-z0-9_-]*["\047[:space:]]*[:=][[:space:]]*["\047]?[A-Za-z0-9][A-Za-z0-9._~+\/=:-]{11,}/ { found = 1 }
+        END { exit found ? 0 : 1 }
+      ' "$1"
+    }
+    snapshot_butler_go_fragments() {
+      BACKUP_GO_SOURCE=$1
+      BACKUP_GO_TARGET=$2
+      : >"$BACKUP_GO_TARGET" || return $?
+      while IFS= read -r BACKUP_GO_LINE || test -n "$BACKUP_GO_LINE"; do
+        case "$BACKUP_GO_LINE" in
+          "/boot/config/custom/ouro-events/bootstrap-spool.sh --mount"|"/bin/bash /boot/config/custom/ouro-events/bootstrap-spool.sh --mount"|"/bin/bash /boot/config/custom/ouro-events/install-usenet-guard.sh --boot"|"/bin/bash /boot/config/custom/ouro-events/install-usenet-guard.sh --boot --install-root /boot/config/custom")
+            printf '%s\n' "$BACKUP_GO_LINE" >>"$BACKUP_GO_TARGET" || return $?
+            ;;
+        esac
+      done <"$BACKUP_GO_SOURCE"
+    }
+    snapshot_butler_cron_fragments() {
+      BACKUP_CRON_INPUT=$1
+      BACKUP_CRON_TARGET=$2
+      : >"$BACKUP_CRON_TARGET" || return $?
+      while IFS= read -r BACKUP_CRON_LINE || test -n "$BACKUP_CRON_LINE"; do
+        case "$BACKUP_CRON_LINE" in
+          "*/15 * * * * /bin/bash /boot/config/custom/usenet_health.sh"|"*/15 * * * * /bin/bash /boot/config/custom/usenet_health.sh # ouro:usenet-health")
+            printf '%s\n' "$BACKUP_CRON_LINE" >>"$BACKUP_CRON_TARGET" || return $?
+            ;;
+        esac
+      done <"$BACKUP_CRON_INPUT"
+    }
+    create_private_cron_capture() {
+      BACKUP_CRON_ROOT=$(mktemp -d /tmp/ouro-backup-cron.XXXXXX) || return $?
+      BACKUP_CRON_SOURCE=$BACKUP_CRON_ROOT/stdout
+      BACKUP_CRON_ERROR=$BACKUP_CRON_ROOT/stderr
+      test -d "$BACKUP_CRON_ROOT" && test ! -L "$BACKUP_CRON_ROOT" || return 1
+      test "$(stat -c '%u:%a' "$BACKUP_CRON_ROOT" 2>/dev/null || stat -f '%u:%Lp' "$BACKUP_CRON_ROOT")" = "$(id -u):700" || return 1
+      install -m 0600 /dev/null "$BACKUP_CRON_SOURCE" || return $?
+      install -m 0600 /dev/null "$BACKUP_CRON_ERROR" || return $?
+      test -f "$BACKUP_CRON_SOURCE" && test ! -L "$BACKUP_CRON_SOURCE" || return 1
+      test -f "$BACKUP_CRON_ERROR" && test ! -L "$BACKUP_CRON_ERROR" || return 1
+      test "$(stat -c '%u:%a' "$BACKUP_CRON_SOURCE" 2>/dev/null || stat -f '%u:%Lp' "$BACKUP_CRON_SOURCE")" = "$(id -u):600" || return 1
+      test "$(stat -c '%u:%a' "$BACKUP_CRON_ERROR" 2>/dev/null || stat -f '%u:%Lp' "$BACKUP_CRON_ERROR")" = "$(id -u):600" || return 1
+    }
+    cleanup_private_cron_capture() {
+      rm -f -- "$BACKUP_CRON_SOURCE" "$BACKUP_CRON_ERROR" || return $?
+      rmdir -- "$BACKUP_CRON_ROOT"
+    }
+    snapshot_butler_host_fragments() {
+      create_private_cron_capture || return $?
+      trap 'cleanup_private_cron_capture' RETURN
+      if test -f /boot/config/go && test ! -L /boot/config/go; then
+        BACKUP_GO_STATE=present
+        BACKUP_GO_DIGEST=$(sha256sum /boot/config/go | awk '{print $1}') || return $?
+        snapshot_butler_go_fragments /boot/config/go "$BACKUP_TMP/host/go.butler-lines" || return $?
+      elif test -e /boot/config/go || test -L /boot/config/go; then
+        return 1
+      else
+        BACKUP_GO_STATE=absent
+        BACKUP_GO_DIGEST=-
+        : >"$BACKUP_TMP/host/go.butler-lines" || return $?
+      fi
+      BACKUP_CRON_USER=$(id -un) || return $?
+      if crontab -l >"$BACKUP_CRON_SOURCE" 2>"$BACKUP_CRON_ERROR"; then
+        BACKUP_CRON_STATE=present
+        BACKUP_CRON_DIGEST=$(sha256sum "$BACKUP_CRON_SOURCE" | awk '{print $1}') || return $?
+      else
+        BACKUP_CRON_STATUS=$?
+        if test "$BACKUP_CRON_STATUS" -eq 1 && grep -Fxq "no crontab for $BACKUP_CRON_USER" "$BACKUP_CRON_ERROR"; then
+          BACKUP_CRON_STATE=absent
+          BACKUP_CRON_DIGEST=-
+          : >"$BACKUP_CRON_SOURCE" || return $?
+        else
+          return "$BACKUP_CRON_STATUS"
+        fi
+      fi
+      rm -f -- "$BACKUP_CRON_ERROR" || return $?
+      snapshot_butler_cron_fragments "$BACKUP_CRON_SOURCE" "$BACKUP_TMP/host/crontab.butler-lines" || return $?
+      BACKUP_GO_COUNT=$(awk 'END { print NR + 0 }' "$BACKUP_TMP/host/go.butler-lines") || return $?
+      BACKUP_CRON_COUNT=$(awk 'END { print NR + 0 }' "$BACKUP_TMP/host/crontab.butler-lines") || return $?
+      printf 'go\t%s\t%s\t%s\ncrontab\t%s\t%s\t%s\n' "$BACKUP_GO_STATE" "$BACKUP_GO_DIGEST" "$BACKUP_GO_COUNT" "$BACKUP_CRON_STATE" "$BACKUP_CRON_DIGEST" "$BACKUP_CRON_COUNT" >"$BACKUP_TMP/host/global-state" || return $?
+      chown 0:0 "$BACKUP_TMP/host/go.butler-lines" "$BACKUP_TMP/host/crontab.butler-lines" "$BACKUP_TMP/host/global-state" || return $?
+      chmod 0600 "$BACKUP_TMP/host/go.butler-lines" "$BACKUP_TMP/host/crontab.butler-lines" "$BACKUP_TMP/host/global-state" || return $?
+      printf 'present\t%s\n' go.butler-lines crontab.butler-lines global-state >>"$BACKUP_TMP/host/inventory" || return $?
+      cleanup_private_cron_capture || return $?
+      trap - RETURN
+    }
+  Snapshot both of these directories together:
     /mnt/user/appdata/ouro-butler/runtime/.ouro-cli
     /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro
   A routine backup must not contain container-credentials.json or
   container-credentials.json.consuming. If either exists, credential migration
   is pending or failed and must be reconciled before taking the backup.
+  The Telegram control socket is live process state, not durable data. Exclude
+  exactly that socket while preserving every regular file byte-for-byte, then
+  require it to be absent from the stopped backup:
+    BACKUP_OPERATION_STATUS=0
+    if docker stop ouro-butler \
+      && test "$(docker inspect --format '{{.State.Running}}' ouro-butler)" = false \
+      && install -d -m 0700 -o 0 -g 0 "$BACKUP_TMP" "$BACKUP_TMP/runtime" "$BACKUP_TMP/agent" "$BACKUP_TMP/host" "$BACKUP_TMP/provenance" \
+      && install -d -m 0700 -o 0 -g 0 "$BACKUP_TMP/host/custom/ouro-events" \
+      && install -m 0600 -o 0 -g 0 /dev/null "$BACKUP_TMP/host/inventory" \
+      && backup_host_file /boot/config/custom/usenet_health.sh custom/usenet_health.sh \
+      && backup_host_file /boot/config/custom/ouro-events/bootstrap-spool.sh custom/ouro-events/bootstrap-spool.sh \
+      && backup_host_file /boot/config/custom/ouro-events/emit-event.mjs custom/ouro-events/emit-event.mjs \
+      && backup_host_file /boot/config/custom/ouro-events/emit-usenet-event.sh custom/ouro-events/emit-usenet-event.sh \
+      && backup_host_file /boot/config/custom/ouro-events/install-usenet-guard.sh custom/ouro-events/install-usenet-guard.sh \
+      && snapshot_butler_host_fragments \
+      && test ! -e "$BACKUP_TMP/host/notify.conf" \
+      && test ! -e "$BACKUP_TMP/host/sabnzbd.ini" \
+      && rsync -a --exclude='/state/acceptance/telegram-control.sock' /mnt/user/appdata/ouro-butler/runtime/.ouro-cli "$BACKUP_TMP/runtime/" \
+      && rsync -a --exclude='/state/acceptance/telegram-control.sock' /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro "$BACKUP_TMP/agent/" \
+      && test ! -S "$BACKUP_TMP/agent/sanctuary.ouro/state/acceptance/telegram-control.sock" \
+      && validate_sanctuary_roots "$BACKUP_TMP/runtime/.ouro-cli" "$BACKUP_TMP/agent/sanctuary.ouro" \
+      && docker container inspect ouro-butler >"$BACKUP_TMP/provenance/container-inspect.json" \
+      && docker image inspect "$BACKUP_IMAGE_ID" >"$BACKUP_TMP/provenance/image-inspect.json" \
+      && docker run --rm --pull=never --network=none --read-only --entrypoint /usr/local/bin/node "$BACKUP_IMAGE_ID" -p 'require("/opt/ouro/package.json").version' >"$BACKUP_TMP/provenance/package-version" \
+      && printf '%s\n' "$BACKUP_IMAGE_ID" >"$BACKUP_TMP/provenance/image-id" \
+      && chown 0:0 "$BACKUP_TMP/provenance/container-inspect.json" "$BACKUP_TMP/provenance/image-inspect.json" "$BACKUP_TMP/provenance/package-version" "$BACKUP_TMP/provenance/image-id" \
+      && chmod 0600 "$BACKUP_TMP/provenance/container-inspect.json" "$BACKUP_TMP/provenance/image-inspect.json" "$BACKUP_TMP/provenance/package-version" "$BACKUP_TMP/provenance/image-id" \
+      && (cd "$BACKUP_TMP" && find runtime agent host provenance -xdev -type f ! -path provenance/manifest.sha256 -exec sha256sum -- {} + | LC_ALL=C sort -k2 >provenance/manifest.sha256) \
+      && chown 0:0 "$BACKUP_TMP/provenance/manifest.sha256" \
+      && chmod 0600 "$BACKUP_TMP/provenance/manifest.sha256" \
+      && verify_sanctuary_snapshot_provenance "$BACKUP_TMP" "$BACKUP_IMAGE_ID" \
+      && sync -f "$BACKUP_TMP/provenance/manifest.sha256" \
+      && mv -- "$BACKUP_TMP" "$BACKUP_ROOT" \
+      && sync -f "$BACKUP_PARENT"; then
+      :
+    else
+      BACKUP_OPERATION_STATUS=$?
+    fi
+    if assert_update_source "$BACKUP_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" \
+      && docker start ouro-butler \
+      && assert_only_running_butler ouro-butler \
+      && wait_butler_ready ouro-butler \
+      && verify_butler_autostart "$BACKUP_AUTOSTART_COUNTS"; then
+      :
+    else
+      BACKUP_RECOVERY_STATUS=$?
+      if test -d "$BACKUP_ROOT"; then
+        printf '%s\n' "CRITICAL: production recovery failed after backup; completed snapshot remains intact at $BACKUP_ROOT" >&2
+      else
+        printf '%s\n' "CRITICAL: production recovery failed and no completed snapshot was published; inspect $BACKUP_TMP" >&2
+      fi
+      (exit "$BACKUP_RECOVERY_STATUS")
+    fi
+    if test "$BACKUP_OPERATION_STATUS" -ne 0; then
+      if test -d "$BACKUP_ROOT"; then
+        printf '%s\n' "Backup publication was not durably confirmed; production was recovered; completed snapshot remains intact at $BACKUP_ROOT" >&2
+      else
+        printf '%s\n' "Backup failed before atomic publication; production was recovered; inspect $BACKUP_TMP" >&2
+      fi
+      (exit "$BACKUP_OPERATION_STATUS")
+    fi
 
 Restore:
   Set BACKUP_ROOT to the exact verified snapshot containing `runtime/.ouro-cli`
-  and `agent/sanctuary.ouro`, and set IMAGE_ID to its recorded local image ID.
+  and `agent/sanctuary.ouro`, set IMAGE_ID to its recorded local image ID, and
+  set AUDIT_RUNNER_IMAGE_ID to the exact reviewed new image containing the
+  legacy-aware auditor. The runner is independent from the restored image.
+    AUDIT_RUNNER_IMAGE_TAG=ouro-butler:<new-version>
+    AUDIT_RUNNER_IMAGE_ID=$(docker image inspect --format '{{.Id}}' "$AUDIT_RUNNER_IMAGE_TAG")
   Before any autostart, root, or container mutation, run the nounset-safe input,
   backup-root, image, and topology preflight. It requires a nonempty canonical
   absolute BACKUP_ROOT (not /), both exact required directories, an exact local
   sha256 image ID, canonical production as the only running Butler poller, no
-  staging or rollback, and at most one exact stopped legacy-evidence container:
+  staging or rollback, and at most one exact stopped legacy-evidence container.
+  It also executes the reviewed runner against the live source container before
+  any autostart, root, or container mutation:
     if assert_restore_preflight; then
       :
     else
       RESTORE_PREFLIGHT_STATUS=$?
       (exit "$RESTORE_PREFLIGHT_STATUS")
     fi
+  The verified host snapshot is restored only by this explicit Restore path.
+  Ordinary update failure continues to use the installer's short-lived
+  transaction rollback. Extract the installer from the reviewed runner image,
+  then let that fixed allowlist transaction restore exact presence/absence for
+  the five guard assets and reapply only the captured Butler-owned go/crontab
+  fragments. Unrelated current go/crontab lines are never stored in the durable
+  snapshot and remain untouched by restore. The transaction deactivates the
+  current owned cron before swapping files and restores the entire pre-restore
+  host state if any swap or final crontab activation fails:
+    HOST_RESTORE_INSTALLER=$(mktemp /tmp/ouro-usenet-host-restore.XXXXXX)
+    docker run --rm --pull=never --network=none --entrypoint /bin/cat "$AUDIT_RUNNER_IMAGE_ID" /opt/ouro/deploy/unraid/ouro-events/install-usenet-guard.sh >"$HOST_RESTORE_INSTALLER"
+    chmod 0500 "$HOST_RESTORE_INSTALLER"
   Guard the atomic autostart disable before stopping or removing any Butler
   container. Failure propagates while the existing production remains untouched:
+    /bin/bash /boot/config/custom/ouro-events/bootstrap-spool.sh --mount
+    test "$(findmnt -n -o FSTYPE --target /boot/config/custom/ouro-events/spool)" = tmpfs
+    test "$(stat -c '%u:%g:%a' /boot/config/custom/ouro-events/spool)" = 0:0:755
     if disable_butler_autostart; then
       :
     else
@@ -1266,12 +1900,16 @@ Restore:
       && rsync -a --delete "$BACKUP_ROOT/agent/sanctuary.ouro/" /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/ \
       && chown -R 10001:10001 /mnt/user/appdata/ouro-butler/runtime/.ouro-cli /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro \
       && validate_sanctuary_roots /mnt/user/appdata/ouro-butler/runtime/.ouro-cli /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro \
+      && /bin/bash "$HOST_RESTORE_INSTALLER" --restore-root "$BACKUP_ROOT/host" \
+      && rm -f "$HOST_RESTORE_INSTALLER" \
       && docker image inspect "$IMAGE_ID" >/dev/null \
       && docker create --name ouro-butler --network host --restart unless-stopped --user 10001:10001 \
       --mount "type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli" \
       --mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
+      --mount "type=bind,src=/boot/config/custom/ouro-events/spool,dst=/run/ouro-events,readonly" \
+      --mount "type=bind,src=/mnt/user/appdata/sabnzbd/sabnzbd.ini,dst=/run/sanctuary/sabnzbd.ini,readonly" \
       "$IMAGE_ID" \
-      && audit_effective ouro-butler "$IMAGE_ID" \
+      && audit_effective ouro-butler "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" \
       && docker start ouro-butler \
       && assert_only_running_butler ouro-butler \
       && wait_butler_ready ouro-butler \
@@ -1286,6 +1924,7 @@ Restore:
         docker rm --force ouro-butler >/dev/null 2>&1 || true
       fi
       ! docker container inspect ouro-butler >/dev/null 2>&1
+      rm -f "$HOST_RESTORE_INSTALLER"
       (exit "$RESTORE_ACTIVATION_STATUS")
     fi
   A restore has no retained old container or pre-restore data root to roll back
@@ -1398,6 +2037,7 @@ Packaged Unit 16 acceptance execution:
   Never hand-author a Unit 16 config. Materialize it from the exact image, then
   execute it in the order below. Before every execution the launcher regenerates
   the config from the packaged fixed contract and requires byte-for-byte equality.
+  Unit 16d-2 stops at the pre-model quarantine boundary: use a genuinely distinct private Telegram sender, confirm the fixed acknowledgement and owner admission card, and do not approve the contact during this scenario. The production-identical allow-to-one-turn continuation is covered by the Telegram admission integration suite when a second live account is unavailable. Unit 16h is acceptance-only: it exercises the delivery path against isolated state, restores exact health and cron bytes, and does not activate a production daily digest.
   The cursor snapshot is deliberately materialized and executed twice around the
   live scenario. Telegram bootstrap reads the new bot token from host file
   descriptor 3; callback injection reads the reviewed saved callback-update JSON
@@ -1412,7 +2052,7 @@ Packaged Unit 16 acceptance execution:
       printf 'Telegram bot token: ' >&2
       IFS= read -r -s UNIT16_BOT_TOKEN || return $?
       printf '\n' >&2
-      if "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" telegram-bootstrap telegram-bootstrap.json \
+      if "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final telegram-bootstrap telegram-bootstrap.json \
         3< <(printf '%s\n' "$UNIT16_BOT_TOKEN"); then
         UNIT16_BOT_STATUS=0
       else
@@ -1485,40 +2125,40 @@ Packaged Unit 16 acceptance execution:
       test "$(stat -c '%d:%i' "$UNIT16_CALLBACK_FILE")" = "$(stat -Lc '%d:%i' /proc/self/fd/3)" || exit 1
       UNIT16_CALLBACK_VALIDATED=yes
       test "$(stat -Lc '%F %u:%g %a' /proc/self/fd/3)" = "regular file 0:0 600" || exit 1
-      "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" callback-inject callback-inject.json 3<&3
+      "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final callback-inject callback-inject.json 3<&3
       )
     }
-    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize telegram-bootstrap
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final materialize telegram-bootstrap
     run_unit16_telegram_bootstrap
-    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize cursor-snapshot before
-    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" cursor-snapshot cursor-snapshot.json
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final materialize cursor-snapshot before
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final cursor-snapshot cursor-snapshot.json
     # Perform the live scenario whose cursor movement is being measured.
-    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize cursor-snapshot after
-    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" cursor-snapshot cursor-snapshot.json
-    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize cursor-delta
-    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" cursor-delta cursor-delta.json
-    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize callback-inject
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final materialize cursor-snapshot after
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final cursor-snapshot cursor-snapshot.json
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final materialize cursor-delta
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final cursor-delta cursor-delta.json
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final materialize callback-inject
     run_unit16_callback_inject
-    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize unraid-key-rotate
-    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" unraid-key-rotate unraid-key-rotate.json
-    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize reboot-request
-    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" reboot-request reboot-request.json
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final materialize unraid-key-rotate
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final unraid-key-rotate unraid-key-rotate.json
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final materialize reboot-request
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final reboot-request reboot-request.json
     # The preceding command captures and seals preflight evidence before it asks
     # the broker to stage the reboot, then seals the requested-phase evidence and
     # fsyncs the requested checkpoint before invoking the host reboot. Reconnect
     # only after Unraid and Docker are ready.
-    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize reboot-resume
-    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" reboot-resume reboot-resume.json
-    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize evidence-snapshot
-    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" evidence-snapshot evidence-snapshot.json
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final materialize reboot-resume
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final reboot-resume reboot-resume.json
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final materialize evidence-snapshot
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final evidence-snapshot evidence-snapshot.json
     # reboot-resume seals the changed boot identity and recovery milestones.
     # evidence-snapshot then runs the remaining scenarios sequentially with a
     # 72-minute aggregate bound; each completed scenario records provenance at
     # capture time and always clears its public gate, private marker, and receipt.
-    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize evidence-bundle-index
-    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" evidence-bundle-index evidence-bundle-index.json
-    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize evidence-bundle-verify
-    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" evidence-bundle-verify evidence-bundle-verify.json
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final materialize evidence-bundle-index
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final evidence-bundle-index evidence-bundle-index.json
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final materialize evidence-bundle-verify
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final evidence-bundle-verify evidence-bundle-verify.json
   Each execution revalidates the immutable image and the production container's
   exact image ID. The main one-shot gets a read-only root filesystem, one writable
   evidence mount, narrowly selected runtime/bundle modes, and individual read-only

@@ -7,7 +7,10 @@ import { getAgentName, getAgentRoot, type AgentProvider } from "../heart/identit
 import { loadSession, postTurnTrim, deferPostTurnPersist, type UsageData } from "../mind/context"
 import { buildSystem, flattenSystemPrompt } from "../mind/prompt"
 import { getSharedMcpManager } from "../repertoire/mcp-manager"
-import { getToolsForChannel } from "../repertoire/tools"
+import { getSanctuaryRelationshipTools, getToolsForChannel } from "../repertoire/tools"
+import { cancelStaleAwait, hasActiveExternalEventAwait, inspectRelationshipFollowUp } from "../repertoire/tools-awaiting"
+import { renderRelationshipPreferences } from "../repertoire/relationship-authorization"
+import { appendRunLedgerRecordNonFatal, createRunLedgerRecord, usageMetadataFromUsageData } from "../heart/run-ledger"
 import { findNonCanonicalBundlePaths } from "../mind/bundle-manifest"
 import {
   drainPending,
@@ -21,7 +24,7 @@ import {
 import { advanceReturnObligation, listActiveReturnObligations, findPendingObligationForOrigin, fulfillObligation } from "../arc/obligations"
 import { buildAttentionQueue, buildAttentionQueueStatusFrame, type AttentionItem } from "./attention-queue"
 import { readPonderPacket } from "../arc/packets"
-import { getChannelCapabilities, accumulateFriendTokens } from "@ouro.bot/friends"
+import { FileFriendStore, getChannelCapabilities, accumulateFriendTokens } from "@ouro.bot/friends"
 import type { FriendRecord, ResolvedContext, FriendStore } from "@ouro.bot/friends"
 import { enforceTrustGate } from "./trust-gate"
 import { handleInboundTurn } from "./pipeline"
@@ -34,7 +37,7 @@ import { listSessionActivity, type SessionActivityRecord } from "../heart/sessio
 import { sendProactiveBlueBubblesMessageToSession } from "./bluebubbles"
 import { buildHabitTurnMessage, type PriorHabitSessionSummaryInfo } from "./habit-turn-message"
 import { buildAwaitTurnMessage } from "./await-turn-message"
-import { parseAwaitFile } from "../heart/awaiting/await-parser"
+import { parseAwaitFile, type AwaitFile } from "../heart/awaiting/await-parser"
 import { applyAwaitRuntimeState, type AwaitRuntimeState } from "../heart/awaiting/await-runtime-state"
 import {
   createDegradedHabitFile,
@@ -51,6 +54,10 @@ import { readHealth, getDefaultHealthPath } from "../heart/daemon/daemon-health"
 import { readFlightRecorderResume, formatFlightRecorderResume } from "../arc/flight-recorder"
 import { deskRecordOrientationSection } from "../mind/desk-section"
 import type { HabitSessionToolContext } from "../repertoire/tools-base"
+import type { ExternalEventLeaseContext } from "../heart/external-events/router"
+import { createSanctuaryToolContext } from "./sanctuary-runtime"
+import { getSenseSessionPath } from "./shared-turn"
+import { createRelationshipAuthorizationEvaluator, loadRelationshipCapabilityRegistry, resolveProfileScopedRelationshipAuthorization } from "../repertoire/relationship-authorization"
 import {
   createPrivateTurnRequestFingerprint,
   readPrivateTurnLedger,
@@ -90,6 +97,7 @@ export interface RunPrivateRuntimeTurnOptions {
   habitSession?: HabitSessionToolContext
   preparedHabit?: PreparedHabitContext
   privateTurnDecision?: PrivateTurnDecision
+  externalEvent?: ExternalEventLeaseContext
   noSend?: true
   _withSessionTurnLease?: <T>(sessionPath: string, work: (lease: SessionTurnLease) => Promise<T>) => Promise<T>
 }
@@ -128,6 +136,66 @@ const DEFAULT_PRIVATE_RUNTIME_INSTINCTS: PrivateRuntimeInstinct[] = [
     enabled: true,
   },
 ]
+
+type RelationshipAwaitCoordinates = { friendId: string; channel: string; key: string; requestId: string | null }
+
+class StaleRelationshipAwaitError extends Error {
+  constructor(readonly reason: string) {
+    super(`Relationship await authority ${reason}`)
+  }
+}
+
+function exactFriendFileIsMissing(agentRoot: string, friendId: string): boolean {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(friendId)) throw new Error("Relationship await authority friend id is invalid")
+  try {
+    fs.lstatSync(path.join(agentRoot, "friends", `${friendId}.json`))
+    return false
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return true
+    throw error
+  }
+}
+
+function relationshipAwaitCoordinates(awaitFile: AwaitFile): RelationshipAwaitCoordinates | null {
+  const values = [awaitFile.filed_for_friend_id, awaitFile.filed_from, awaitFile.filed_from_key]
+  if (!awaitFile.request_id) {
+    if (awaitFile.filed_from === "external-event" && awaitFile.filed_for_friend_id && awaitFile.filed_from_key) {
+      if (Buffer.byteLength(awaitFile.filed_for_friend_id) > 256 || Buffer.byteLength(awaitFile.filed_from_key) > 1_024) throw new Error("Relationship await provenance is invalid")
+      return { friendId: awaitFile.filed_for_friend_id, channel: awaitFile.filed_from, key: awaitFile.filed_from_key, requestId: null }
+    }
+    const isSystemAwait = awaitFile.filed_for_friend_id === null
+      && awaitFile.filed_from_key === null
+      && (awaitFile.filed_from === null || awaitFile.filed_from === "unknown" || awaitFile.filed_from === "cli")
+    if (isSystemAwait) return null
+    throw new Error("Relationship await provenance is incomplete or legacy")
+  }
+  if (values.some((value) => value === null)) throw new Error("Relationship await provenance is incomplete or legacy")
+  const [friendId, channel, key] = values as [string, string, string]
+  if (channel !== "telegram" || Buffer.byteLength(friendId) > 256 || Buffer.byteLength(channel) > 64 || Buffer.byteLength(key) > 1_024 || Buffer.byteLength(awaitFile.request_id) > 256) {
+    throw new Error("Relationship await provenance is invalid")
+  }
+  return { friendId, channel, key, requestId: awaitFile.request_id }
+}
+
+async function resolveRelationshipAwaitAuthority(agentRoot: string, store: FileFriendStore, registry: ReturnType<typeof loadRelationshipCapabilityRegistry>, coordinates: RelationshipAwaitCoordinates) {
+  const friend = await store.get(coordinates.friendId)
+  if (!friend) {
+    if (exactFriendFileIsMissing(agentRoot, coordinates.friendId)) throw new StaleRelationshipAwaitError("friend is missing")
+    throw new Error("Relationship await authority friend exists but could not be read")
+  }
+  if (friend.id !== coordinates.friendId) throw new Error("Relationship await authority friend record is ambiguous")
+  if (friend.admissionState !== "active" || !friend.capabilityProfileId) throw new StaleRelationshipAwaitError("admission or profile is not active")
+  if (!registry.profiles[friend.capabilityProfileId]) throw new StaleRelationshipAwaitError("admission or profile is not active")
+  if (coordinates.channel === "external-event" && (friend.capabilityProfileId !== "sanctuary-owner" || !registry.profiles["sanctuary-event"])) {
+    throw new StaleRelationshipAwaitError("admission or profile is not active")
+  }
+  const authorization = coordinates.channel === "external-event"
+    ? createRelationshipAuthorizationEvaluator({ friend, registry, profileId: "sanctuary-event", requestPhase: "follow_up" })
+    : createRelationshipAuthorizationEvaluator({ friend, registry, requestId: coordinates.requestId!, requestPhase: "follow_up" })
+  if (authorization.subject.friendId !== coordinates.friendId) throw new Error("Relationship await authority friend is ambiguous")
+  if (!authorization.authorizeTool("resolve_await").allowed) throw new StaleRelationshipAwaitError("admission or profile is not active")
+  return { authorization, friend }
+}
 
 function readAspirations(agentRoot: string): string {
   try {
@@ -832,6 +900,16 @@ function createSelfFriend(agentName: string): FriendRecord {
   }
 }
 
+function buildOwnerPresentationPreferences(friend: FriendRecord): string {
+  const lines = [
+    `## ${friend.name}'s presentation preferences`,
+    "Use this relationship context to decide whether and how to contact the owner. It is presentation-only and grants no mutation authority.",
+  ]
+  lines.push(...renderRelationshipPreferences(friend))
+  if (lines.length === 2) lines.push("- No presentation preferences have been learned yet; be calm, concise, and useful.")
+  return lines.join("\n")
+}
+
 // No-op friend store for the private runtime. It doesn't track token usage per-friend.
 function createNoOpFriendStore(): FriendStore {
   return {
@@ -989,6 +1067,7 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
   let userContent: string
   let habitTools: string[] | undefined
   let habitParsedSuccessfully = false
+  let parsedAwait: AwaitFile | null = null
   const isPayloadSpecificWake =
     !!options?.taskId
     || (reason === "habit" && !!options?.habitName)
@@ -1124,6 +1203,7 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
       try {
         const awaitContent = fs.readFileSync(awaitFilePath, "utf-8")
         const parsed = applyAwaitRuntimeState(agentRoot, parseAwaitFile(awaitContent, awaitFilePath)) as ReturnType<typeof parseAwaitFile> & Partial<AwaitRuntimeState>
+        parsedAwait = parsed
         awaitFound = true
         awaitBody = parsed.body || undefined
         condition = parsed.condition
@@ -1157,14 +1237,118 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
     userContent = buildHeldReturnWakeMessage()
   }
 
-  const userMessage: OpenAI.ChatCompletionMessageParam = { role: "user", content: userContent }
-
   // ── Session loader: wraps existing session logic ──────────────────
   const innerCapabilities = getChannelCapabilities("inner")
   const selfFriend = createSelfFriend(agentName)
   const selfContext: ResolvedContext = { friend: selfFriend, channel: innerCapabilities }
 
   const mcpManager = await getSharedMcpManager() ?? undefined
+  const relationshipAwaitCoordinatesValue = parsedAwait ? relationshipAwaitCoordinates(parsedAwait) : null
+  const relationshipAwait = relationshipAwaitCoordinatesValue
+      ? await (async () => {
+        const agentRoot = getAgentRoot(agentName)
+        const assertLiveBinding = () => {
+          const binding = relationshipAwaitCoordinatesValue.channel === "external-event"
+            ? parsedAwait!.wake_at && hasActiveExternalEventAwait(agentName, { recordPath: relationshipAwaitCoordinatesValue.key, awaitName: parsedAwait!.name, wakeAt: parsedAwait!.wake_at })
+              ? { active: true as const }
+              : { active: false as const, reason: "external event disposition is no longer active" }
+            : inspectRelationshipFollowUp(agentRoot, {
+              friendId: relationshipAwaitCoordinatesValue.friendId,
+              channel: relationshipAwaitCoordinatesValue.channel,
+              key: relationshipAwaitCoordinatesValue.key,
+              requestId: relationshipAwaitCoordinatesValue.requestId!,
+              awaitName: parsedAwait!.name,
+              now: now().getTime(),
+            })
+          if (!binding.active) {
+            cancelStaleAwait(agentRoot, agentName, parsedAwait!.name, binding.reason)
+            throw new Error(`Relationship await authority binding is missing, stale, or ambiguous: ${binding.reason}`)
+          }
+        }
+        assertLiveBinding()
+        const store = new FileFriendStore(path.join(agentRoot, "friends"))
+        const resolve = () => resolveRelationshipAwaitAuthority(agentRoot, store, loadRelationshipCapabilityRegistry(agentRoot), relationshipAwaitCoordinatesValue)
+        const resolveOrCancel = async () => {
+          try {
+            return await resolve()
+          } catch (error) {
+            if (error instanceof StaleRelationshipAwaitError) cancelStaleAwait(agentRoot, agentName, parsedAwait!.name, error.reason)
+            throw error
+          }
+        }
+        const initial = await resolveOrCancel()
+        return {
+          store,
+          context: { friend: initial.friend, channel: innerCapabilities } as ResolvedContext,
+          currentSession: {
+            friendId: relationshipAwaitCoordinatesValue.friendId,
+            channel: relationshipAwaitCoordinatesValue.channel,
+            key: relationshipAwaitCoordinatesValue.key,
+            sessionPath: relationshipAwaitCoordinatesValue.channel === "telegram"
+              ? getSenseSessionPath(agentName, relationshipAwaitCoordinatesValue.friendId, "telegram", relationshipAwaitCoordinatesValue.key, agentRoot)
+              : sessionFilePath,
+          },
+          relationshipAuthorization: {
+            ...(relationshipAwaitCoordinatesValue.requestId ? { requestId: relationshipAwaitCoordinatesValue.requestId } : {}),
+            profileId: initial.authorization.profileId,
+            authorizedContextScopes: initial.authorization.authorizedContextScopes,
+            advertisedToolNames: relationshipAwaitCoordinatesValue.channel === "external-event" ? ["resolve_await"] : initial.authorization.advertisedToolNames,
+            authorizeTool: async (name: string, args: Record<string, string>) => {
+              assertLiveBinding()
+              const decision = (await resolveOrCancel()).authorization.authorizeTool(name, args)
+              return relationshipAwaitCoordinatesValue.channel !== "external-event" || name === "resolve_await"
+                ? decision
+                : { ...decision, allowed: false as const, reason: "external event await wake is resolve-only" }
+            },
+          },
+        }
+      })()
+    : undefined
+  const externalEventRelationship = options?.externalEvent
+    ? await (async () => {
+        const agentRoot = getAgentRoot(agentName)
+        const store = new FileFriendStore(path.join(agentRoot, "friends"))
+        const registry = loadRelationshipCapabilityRegistry(agentRoot)
+        const resolve = () => resolveProfileScopedRelationshipAuthorization({
+          store,
+          registry,
+          relationshipProfileId: "sanctuary-owner",
+          profileId: "sanctuary-event",
+        })
+        const initial = await resolve()
+        const initialDisposition = initial.authorizeTool("external_event_disposition")
+        if (!initialDisposition.allowed) throw new Error(`external event relationship authority denied: ${initialDisposition.reason}`)
+        const owners = (await store.listAll()).filter((friend) => friend.capabilityProfileId === "sanctuary-owner")
+        const [owner] = owners
+        if (owners.length !== 1 || !owner) throw new Error("external event owner presentation context must resolve to exactly one Friend")
+        return {
+          store,
+          context: { friend: owner, channel: innerCapabilities } as ResolvedContext,
+          ownerPresentationPreferences: buildOwnerPresentationPreferences(owner),
+          relationshipAuthorization: {
+            profileId: initial.profileId,
+            authorizedContextScopes: initial.authorizedContextScopes,
+            advertisedToolNames: initial.advertisedToolNames,
+            authorizeTool: async (name: string) => (await resolve()).authorizeTool(name),
+          },
+          externalEventAuthority: {
+            authorizeDisposition: () => {
+              const decision = initial.authorizeTool("external_event_disposition")
+              return decision.allowed ? { allowed: true, reason: "relationship-authorized" } : { allowed: false, reason: decision.reason }
+            },
+          },
+          externalEventEffects: {
+            deliverOwnerDecision: async (input: { source: string; eventId: string; generation: number; text: string }) => {
+              const { sendTelegramExternalEventDecision } = await import("./telegram")
+              await sendTelegramExternalEventDecision(agentName, input)
+            },
+          },
+        }
+      })()
+    : undefined
+
+  if (externalEventRelationship) userContent = `${userContent}\n\n${externalEventRelationship.ownerPresentationPreferences}`
+  const userMessage: OpenAI.ChatCompletionMessageParam = { role: "user", content: userContent }
 
   // ── Habit tool enforcement ───────────────────────────────────────
   let habitToolsResolved: OpenAI.ChatCompletionFunctionTool[] | undefined
@@ -1192,6 +1376,12 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
   if (options?.noSend === true) {
     habitToolsResolved = []
   }
+  const externalEventToolsResolved = options?.externalEvent
+    ? getSanctuaryRelationshipTools(externalEventRelationship!.relationshipAuthorization.advertisedToolNames)
+    : undefined
+  const relationshipAwaitToolsResolved = relationshipAwait
+    ? getSanctuaryRelationshipTools(relationshipAwait.relationshipAuthorization.advertisedToolNames)
+    : undefined
 
   const effectiveHabitSession = options?.noSend === true
     ? reduceHabitSessionToNoSend(options.habitSession)
@@ -1226,7 +1416,20 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
   // Attention queue: built when pending messages are drained, shared with tool context
   let attentionQueue: AttentionItem[] = []
 
-  const result = await handleInboundTurn({
+  const externalRunStartedAt = now().toISOString()
+  const externalRunBase = options?.externalEvent ? {
+    agent: agentName,
+    triggerType: "inbound" as const,
+    sourceKind: "private-runtime" as const,
+    senseOrHabit: "external-event",
+    target: { source: options.externalEvent.source, eventId: options.externalEvent.eventId, generation: options.externalEvent.generation, observationRevision: options.externalEvent.observationRevision },
+    idempotencyScope: { recordPath: options.externalEvent.recordPath, generation: options.externalEvent.generation, observationRevision: options.externalEvent.observationRevision },
+    startedAt: externalRunStartedAt,
+  } : null
+  if (externalRunBase) appendRunLedgerRecordNonFatal(getAgentRoot(agentName), createRunLedgerRecord({ ...externalRunBase, lifecycle: "started" }))
+  let result: Awaited<ReturnType<typeof handleInboundTurn>>
+  try {
+    result = await handleInboundTurn({
     channel: "inner",
     sessionKey: "dialog",
     capabilities: innerCapabilities,
@@ -1279,16 +1482,46 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
       traceId,
       toolChoiceRequired: true,
       mcpManager,
-      ...(habitToolsResolved !== undefined && { tools: habitToolsResolved }),
+      ...(options?.externalEvent
+        ? { tools: externalEventToolsResolved }
+        : relationshipAwaitToolsResolved !== undefined ? { tools: relationshipAwaitToolsResolved }
+        : habitToolsResolved !== undefined ? { tools: habitToolsResolved } : {}),
       toolContext: {
         signin: async () => undefined,
         delegatedOrigins: attentionQueue,
+        ...(relationshipAwait ? {
+          friendStore: relationshipAwait.store,
+          context: relationshipAwait.context,
+          currentSession: relationshipAwait.currentSession,
+          relationshipAuthorization: relationshipAwait.relationshipAuthorization,
+        } : {}),
+        ...(options?.externalEvent ? {
+          currentExternalEvent: Object.freeze({ ...options.externalEvent }),
+          friendStore: externalEventRelationship!.store,
+          context: externalEventRelationship!.context,
+          relationshipAuthorization: externalEventRelationship!.relationshipAuthorization,
+          externalEventAuthority: externalEventRelationship!.externalEventAuthority,
+          externalEventEffects: externalEventRelationship!.externalEventEffects,
+          ...(["sanctuary-health", "sanctuary-usenet"].includes(options.externalEvent.source) ? createSanctuaryToolContext(agentName) : {}),
+        } : {}),
         ...(options?.noSend ? { noSend: true } : {}),
         ...(effectiveHabitSession ? { habitSession: effectiveHabitSession } : {}),
       },
       ...(effectiveHabitSession ? { habitSession: effectiveHabitSession } : {}),
     },
-  })
+    })
+    if (externalRunBase) {
+      const lifecycle = result.turnOutcome === "settled" || result.turnOutcome === "observed" || result.turnOutcome === "rested"
+        ? "completed" as const
+        : result.turnOutcome === "errored" ? "error" as const
+          : result.turnOutcome === "blocked" || result.turnOutcome === "suspended" ? "blocked" as const
+            : "skipped" as const
+      appendRunLedgerRecordNonFatal(getAgentRoot(agentName), createRunLedgerRecord({ ...externalRunBase, lifecycle, endedAt: now().toISOString(), usage: usageMetadataFromUsageData(result.usage, result.usage ? "provider" : "reported-unavailable"), ...(result.turnOutcome === "errored" ? { errorName: "AgentTurnError" } : {}) }))
+    }
+  } catch (error) {
+    if (externalRunBase) appendRunLedgerRecordNonFatal(getAgentRoot(agentName), createRunLedgerRecord({ ...externalRunBase, lifecycle: "error", endedAt: now().toISOString(), errorName: error instanceof Error ? error.name : "UnknownError" }))
+    throw error
+  }
   // Post-turn routeDelegatedCompletion removed: delivery is now inline via surface tool.
   // settle in the private runtime produces no CompletionMetadata, so routeDelegatedCompletion
   // would be a no-op. The routing infrastructure is reused by the surface handler.

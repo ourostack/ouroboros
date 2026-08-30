@@ -252,6 +252,47 @@ describe("deliverAwaitAlert", () => {
     expect(result.skipped).toBe("no session key")
   })
 
+  it("never guesses a session key for a request-bound return", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "await-deliver-"))
+    cleanup.push(tmp)
+    const dir = path.join(tmp, "state", "sessions", "ari", "telegram")
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, "some-other-session.json"), "{}")
+
+    const result = await deliverAwaitAlert({
+      awaitFile: makeAwaitFile({ alert: "telegram", request_id: "request-1", filed_from_key: null }),
+      reason: "resolved",
+      observation: "ready",
+      agentRoot: tmp,
+      agentName: "slugger",
+      deliveryDeps: { agentName: "slugger", queuePending: () => {} },
+    })
+
+    expect(result).toEqual({ attempted: false, skipped: "no session key" })
+    expect(mockDeliver).not.toHaveBeenCalled()
+  })
+
+  it("binds request and stable delivery identity to the exact filed session", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "await-deliver-"))
+    cleanup.push(tmp)
+    mockDeliver.mockResolvedValue({ status: "delivered_now", detail: "accepted" })
+
+    await deliverAwaitAlert({
+      awaitFile: makeAwaitFile({ alert: "telegram", request_id: "request-1", filed_from_key: " telegram:777:888 " }),
+      reason: "expired",
+      observation: null,
+      agentRoot: tmp,
+      agentName: "slugger",
+      deliveryDeps: { agentName: "slugger", queuePending: () => {} },
+    })
+
+    expect(mockDeliver).toHaveBeenCalledWith(expect.objectContaining({
+      key: "telegram:777:888",
+      requestId: "request-1",
+      deliveryId: "await:hey_export:expired",
+    }), expect.any(Object))
+  })
+
   it("trims whitespace alert/friend values to null", async () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "await-deliver-"))
     cleanup.push(tmp)

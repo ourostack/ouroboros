@@ -2,18 +2,51 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest"
 import * as fs from "fs"
 import * as path from "path"
 import * as os from "os"
+import Database from "better-sqlite3"
 import {
   createCare,
   readCares,
   readActiveCares,
   updateCare,
   resolveCare,
+  bindCareIncident,
+  resolveCareIncident,
+  upsertCareForIncident,
   type CareRecord,
 } from "../../arc/cares"
 import { expectCappedAgentContent, makeOversizedAgentContent } from "../helpers/content-cap"
 
 describe("care store", () => {
   let tmpDir: string
+
+  function createMutationLease(pid?: number): string {
+    const lockPath = path.join(tmpDir, "arc", "cares", ".mutation.turn.lock")
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true })
+    const database = new Database(lockPath)
+    database.exec(`
+      CREATE TABLE session_turn_lease (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        pid INTEGER NOT NULL,
+        owner_id TEXT NOT NULL,
+        owner_token TEXT NOT NULL
+      )
+    `)
+    if (pid !== undefined) {
+      database.prepare("INSERT INTO session_turn_lease (singleton, pid, owner_id, owner_token) VALUES (1, ?, ?, ?)")
+        .run(pid, "test-owner", "test-token")
+    }
+    database.close()
+    return lockPath
+  }
+
+  function mutationLeaseCount(lockPath: string): number {
+    const database = new Database(lockPath)
+    try {
+      return (database.prepare("SELECT COUNT(*) AS count FROM session_turn_lease").get() as { count: number }).count
+    } finally {
+      database.close()
+    }
+  }
 
   const baseCareInput = {
     label: "harness reliability",
@@ -107,6 +140,28 @@ describe("care store", () => {
       createCare(tmpDir, baseCareInput)
 
       expect(fs.existsSync(caresDir)).toBe(true)
+    })
+
+    it("claims an ownerless canonical mutation lease", () => {
+      const lockPath = createMutationLease()
+
+      const care = createCare(tmpDir, baseCareInput)
+
+      expect(care.label).toBe("harness reliability")
+      expect(mutationLeaseCount(lockPath)).toBe(0)
+    })
+
+    it("recovers a canonical mutation lease owned by a dead process", () => {
+      const lockPath = createMutationLease(2_147_483_647)
+
+      expect(createCare(tmpDir, baseCareInput).label).toBe("harness reliability")
+      expect(mutationLeaseCount(lockPath)).toBe(0)
+    })
+
+    it("fails closed while another live process owns the canonical mutation lease", () => {
+      createMutationLease(process.pid)
+
+      expect(() => createCare(tmpDir, baseCareInput)).toThrow(/busy/u)
     })
 
     it("supports all CareKind types", () => {
@@ -256,6 +311,111 @@ describe("care store", () => {
 
     it("throws when care does not exist", () => {
       expect(() => updateCare(tmpDir, "nonexistent-id", { label: "nope" })).toThrow()
+    })
+
+    it("repairs an invalid legacy updatedAt while updating", () => {
+      const care = createCare(tmpDir, baseCareInput)
+      const filePath = path.join(tmpDir, "arc", "cares", `${care.id}.json`)
+      fs.writeFileSync(filePath, JSON.stringify({ ...care, updatedAt: "invalid" }))
+      expect(updateCare(tmpDir, care.id, { label: "repaired" }).updatedAt).toMatch(/^\d{4}-/u)
+    })
+  })
+
+  describe("incident bindings", () => {
+    it("binds several incidents to one care and resolves them independently", () => {
+      const care = createCare(tmpDir, baseCareInput)
+      const first = bindCareIncident(tmpDir, care.id, {
+        source: "sanctuary-health", incidentKey: "container:jellyfin", classifiedRevision: "rev-1", correlationKey: "media-stack",
+      }, { expectedUpdatedAt: care.updatedAt })
+      const second = bindCareIncident(tmpDir, care.id, {
+        source: "sanctuary-health", incidentKey: "container:sonarr", classifiedRevision: "rev-2", correlationKey: "media-stack",
+      }, { expectedUpdatedAt: first.updatedAt })
+      const partial = resolveCareIncident(tmpDir, care.id, {
+        source: "sanctuary-health", incidentKey: "container:jellyfin", expectedUpdatedAt: second.updatedAt,
+      })
+
+      expect(partial.status).toBe("active")
+      expect(partial.incidentBindings).toHaveLength(2)
+      expect(partial.incidentBindings?.find((binding) => binding.incidentKey === "container:jellyfin")?.resolvedAt).toBeTruthy()
+      expect(partial.incidentBindings?.find((binding) => binding.incidentKey === "container:sonarr")?.resolvedAt).toBeUndefined()
+      expect(() => bindCareIncident(tmpDir, care.id, {
+        source: "sanctuary-health", incidentKey: "container:lidarr", classifiedRevision: "rev-3",
+      }, { expectedUpdatedAt: care.updatedAt })).toThrow(/CAS/u)
+    })
+
+    it("upserts a later revision of the same incident without duplicating its binding", () => {
+      const care = createCare(tmpDir, baseCareInput)
+      const first = bindCareIncident(tmpDir, care.id, { source: "guard", incidentKey: "usenet", classifiedRevision: "rev-1" }, { expectedUpdatedAt: care.updatedAt })
+      const second = bindCareIncident(tmpDir, care.id, { source: "guard", incidentKey: "usenet", classifiedRevision: "rev-2" }, { expectedUpdatedAt: first.updatedAt })
+      expect(second.incidentBindings).toEqual([{ source: "guard", incidentKey: "usenet", classifiedRevision: "rev-2" }])
+    })
+
+    it("returns an exact repeated incident binding without advancing its CAS version", () => {
+      const care = createCare(tmpDir, baseCareInput)
+      const binding = { source: "guard", incidentKey: "usenet", classifiedRevision: "rev-1" }
+      const first = bindCareIncident(tmpDir, care.id, binding, { expectedUpdatedAt: care.updatedAt })
+      expect(bindCareIncident(tmpDir, care.id, binding, { expectedUpdatedAt: first.updatedAt })).toEqual(first)
+    })
+
+    it("creates and binds one care idempotently by canonical incident identity", () => {
+      const input = { ...baseCareInput, incident: { source: "guard", incidentKey: "usenet", classifiedRevision: "rev-1" } }
+      const first = upsertCareForIncident(tmpDir, input)
+      const duplicate = upsertCareForIncident(tmpDir, { ...input, label: "duplicate must not be created" })
+      expect(duplicate.id).toBe(first.id)
+      expect(readCares(tmpDir)).toHaveLength(1)
+    })
+
+    it("CAS-upserts a later incident revision with current risk and next check", () => {
+      const first = upsertCareForIncident(tmpDir, {
+        ...baseCareInput,
+        currentRisk: "downloads are stalled",
+        nextCheckAt: "2026-08-29T20:00:00.000Z",
+        incident: { source: "guard", incidentKey: "usenet", classifiedRevision: "rev-1" },
+      })
+      const updated = upsertCareForIncident(tmpDir, {
+        ...baseCareInput,
+        currentRisk: "credit is being wasted",
+        nextCheckAt: "2026-08-29T20:15:00.000Z",
+        incident: { source: "guard", incidentKey: "usenet", classifiedRevision: "rev-2" },
+        expectedUpdatedAt: first.updatedAt,
+      })
+
+      expect(updated.id).toBe(first.id)
+      expect(updated.currentRisk).toBe("credit is being wasted")
+      expect(updated.nextCheckAt).toBe("2026-08-29T20:15:00.000Z")
+      expect(updated.incidentBindings).toEqual([{ source: "guard", incidentKey: "usenet", classifiedRevision: "rev-2" }])
+      const cleared = upsertCareForIncident(tmpDir, {
+        ...baseCareInput,
+        currentRisk: null,
+        nextCheckAt: null,
+        incident: { source: "guard", incidentKey: "usenet", classifiedRevision: "rev-clear" },
+        expectedUpdatedAt: updated.updatedAt,
+      })
+      expect(cleared.currentRisk).toBeNull()
+      expect(() => upsertCareForIncident(tmpDir, {
+        ...baseCareInput,
+        incident: { source: "guard", incidentKey: "usenet", classifiedRevision: "rev-3" },
+        expectedUpdatedAt: first.updatedAt,
+      })).toThrow(/CAS/u)
+    })
+
+    it("validates incident identity and resolution CAS", () => {
+      const care = createCare(tmpDir, baseCareInput)
+      expect(() => bindCareIncident(tmpDir, care.id, { source: "", incidentKey: "usenet", classifiedRevision: "rev-1" }, { expectedUpdatedAt: care.updatedAt })).toThrow(/invalid/u)
+      expect(() => resolveCareIncident(tmpDir, care.id, { source: "guard", incidentKey: "missing", expectedUpdatedAt: care.updatedAt })).toThrow(/not found/u)
+      expect(() => resolveCareIncident(tmpDir, care.id, { source: "guard", incidentKey: "missing", expectedUpdatedAt: "stale" })).toThrow(/CAS/u)
+    })
+
+    it("preserves optional resolved metadata and makes repeated resolution idempotent", () => {
+      const care = createCare(tmpDir, baseCareInput)
+      const bound = bindCareIncident(tmpDir, care.id, {
+        source: "guard",
+        incidentKey: "usenet",
+        classifiedRevision: "rev-1",
+        resolvedAt: "2026-08-29T12:00:00.000Z",
+      }, { expectedUpdatedAt: care.updatedAt })
+      const repeated = resolveCareIncident(tmpDir, care.id, { source: "guard", incidentKey: "usenet", expectedUpdatedAt: bound.updatedAt })
+      expect(repeated).toEqual(bound)
     })
   })
 

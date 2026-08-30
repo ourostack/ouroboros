@@ -39,8 +39,8 @@ export interface AwaitAlertResult {
   skipped?: string
 }
 
-function readNonEmpty(value: string | null): string | null {
-  if (value === null) return null
+function readNonEmpty(value: string | null | undefined): string | null {
+  if (value === null || value === undefined) return null
   const trimmed = value.trim()
   return trimmed.length > 0 ? trimmed : null
 }
@@ -110,7 +110,7 @@ export async function deliverAwaitAlert(options: AwaitAlertOptions): Promise<Awa
     return { attempted: false, skipped: "no friend id" }
   }
 
-  const key = resolveAlertKey(agentRoot, friendId, channel)
+  const key = readNonEmpty(awaitFile.filed_from_key) ?? (awaitFile.request_id ? null : resolveAlertKey(agentRoot, friendId, channel))
   if (!key) {
     emitNervesEvent({
       level: "warn",
@@ -129,6 +129,8 @@ export async function deliverAwaitAlert(options: AwaitAlertOptions): Promise<Awa
       channel,
       key,
       content,
+      ...(awaitFile.request_id ? { requestId: awaitFile.request_id } : {}),
+      deliveryId: `await:${awaitFile.name}:${reason}`,
       intent: "generic_outreach",
     },
     deliveryDeps,

@@ -397,6 +397,36 @@ describe("queuePendingMessage", () => {
     expect(written.content).toContain(expectedTruncationMarker(oversized))
     expect(written.content).toBe(expectedCappedContent(oversized))
   })
+
+  it("uses one deterministic path for repeated packet delivery", async () => {
+    const { queuePendingMessageOnce } = await import("../../mind/pending")
+    const message = { from: "ouro-external-event", content: "evidence", timestamp: 1709900001, packetId: "generation:1:attempt:1" }
+    const first = queuePendingMessageOnce("/mock/pending/self/inner/dialog", message)
+    const second = queuePendingMessageOnce("/mock/pending/self/inner/dialog", message)
+    expect(first).toBe(second)
+    expect(fs.renameSync).toHaveBeenCalledTimes(2)
+  })
+
+  it("treats existing deterministic temporary and destination files as idempotent", async () => {
+    const { queuePendingMessageOnce } = await import("../../mind/pending")
+    vi.mocked(fs.writeFileSync).mockImplementationOnce(() => { throw Object.assign(new Error("exists"), { code: "EEXIST" }) })
+    expect(() => queuePendingMessageOnce("/mock/pending", { from: "event", content: "evidence", timestamp: 1, packetId: "packet" })).not.toThrow()
+
+    vi.mocked(fs.writeFileSync).mockImplementationOnce(() => undefined)
+    vi.mocked(fs.renameSync).mockImplementationOnce(() => { throw Object.assign(new Error("exists"), { code: "EEXIST" }) })
+    expect(() => queuePendingMessageOnce("/mock/pending", { from: "event", content: "evidence", timestamp: 1, packetId: "packet" })).not.toThrow()
+    expect(fs.unlinkSync).toHaveBeenCalled()
+  })
+
+  it("surfaces non-idempotent write and rename failures", async () => {
+    const { queuePendingMessageOnce } = await import("../../mind/pending")
+    vi.mocked(fs.writeFileSync).mockImplementationOnce(() => { throw Object.assign(new Error("disk full"), { code: "ENOSPC" }) })
+    expect(() => queuePendingMessageOnce("/mock/pending", { from: "event", content: "evidence", timestamp: 1, packetId: "packet-a" })).toThrow(/disk full/u)
+
+    vi.mocked(fs.writeFileSync).mockImplementationOnce(() => undefined)
+    vi.mocked(fs.renameSync).mockImplementationOnce(() => { throw Object.assign(new Error("read only"), { code: "EROFS" }) })
+    expect(() => queuePendingMessageOnce("/mock/pending", { from: "event", content: "evidence", timestamp: 1, packetId: "packet-b" })).toThrow(/read only/u)
+  })
 })
 
 describe("mode on PendingMessage", () => {

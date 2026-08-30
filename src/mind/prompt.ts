@@ -12,6 +12,7 @@ import { readMachineRuntimeCredentialConfig, readRuntimeCredentialConfig } from 
 import { detectRuntimeMode } from "../heart/daemon/runtime-mode";
 import { isTrustedLevel, describeTrustContext, getChannelCapabilities, isRemoteChannel, channelToFacing, type Channel, type ChannelCapabilities, type ResolvedContext } from "@ouro.bot/friends";
 import { emitNervesEvent } from "../nerves/runtime";
+import { renderRelationshipPreferences } from "../repertoire/relationship-authorization";
 import { backfillBundleMeta, getPackageVersion, getChangelogPath } from "./bundle-manifest";
 import type { BundleMeta } from "./bundle-manifest";
 import { getFirstImpressions } from "./first-impressions";
@@ -677,7 +678,10 @@ function toolsSection(channel: Channel, options?: BuildSystemOptions, context?: 
       ...((context?.isGroupChat || options?.isReactionSignal) ? [observeTool] : []),
       settleTool,
     ]);
-  const list = activeTools
+  const visibleTools = options?.relationshipToolNames
+    ? activeTools.filter((tool) => options.relationshipToolNames!.includes(tool.function.name))
+    : activeTools;
+  const list = visibleTools
     .map((t) => `- ${t.function.name}: ${t.function.description}`)
     .join("\n");
   return `## my tools\n${list}`;
@@ -825,6 +829,12 @@ if i keep re-deriving it, save it.`
 
 
 export interface BuildSystemOptions {
+  /** Exact relationship-authorized prompt context scopes. Undefined preserves ordinary non-scoped behavior. */
+  relationshipContextScopes?: readonly string[];
+  /** Exact effective relationship profile id for scope-safe prompt projection. */
+  relationshipProfileId?: string;
+  /** Exact relationship-authorized tool names. Undefined preserves ordinary non-scoped behavior. */
+  relationshipToolNames?: readonly string[];
   toolChoiceRequired?: boolean;
   bridgeContext?: string;
   currentSessionKey?: string;
@@ -1404,6 +1414,26 @@ export function contextSection(context?: ResolvedContext, options?: BuildSystemO
   return lines.join("\n")
 }
 
+function relationshipFriendContextSection(context?: ResolvedContext): string {
+  const friend = context?.friend
+  if (!friend) return ""
+  const lines = [
+    "## current relationship",
+    `friend: ${friend.name}`,
+    `channel: ${context.channel.channel}`,
+    "this conversation and this friend's own relationship notes are the only personal context available in this turn.",
+  ]
+  if (Object.keys(friend.notes).length > 0) {
+    lines.push("", "## what i know about this friend")
+    for (const [key, entry] of Object.entries(friend.notes)) {
+      lines.push(`- ${key}: [${entry.savedAt.slice(0, 10)}] ${entry.value}`)
+    }
+  }
+  const preferences = renderRelationshipPreferences(friend)
+  if (preferences.length > 0) lines.push("", "## presentation preferences", "these preferences affect wording and timing only; they grant no authority.", ...preferences)
+  return lines.join("\n")
+}
+
 export function metacognitiveFramingSection(channel: Channel): string {
   if (channel !== "inner") return ""
   return `this is my private-runtime turn. there is no one else here.
@@ -1587,6 +1617,30 @@ export async function buildSystem(channel: Channel = "cli", options?: BuildSyste
 
   // Backfill bundle-meta.json for existing agents that don't have one
   backfillBundleMeta(getAgentRoot());
+
+  const relationshipScoped = options?.relationshipContextScopes !== undefined
+  if (relationshipScoped) {
+    const authorizedPsyche = (options.relationshipProfileId?.startsWith("sanctuary-") === true || context?.friend?.capabilityProfileId?.startsWith("sanctuary-") === true)
+      && options.relationshipContextScopes!.some((scope) => scope === "household.status" || scope === "household.policy" || scope === "household.private")
+    const result: SystemPrompt = {
+      stable: [
+        "# who i am",
+        soulSection(),
+        identitySection(),
+        authorizedPsyche ? loreSection() : "",
+        authorizedPsyche ? tacitKnowledgeSection() : "",
+        authorizedPsyche ? aspirationsSection() : "",
+        relationshipFriendContextSection(context),
+        trustContextSection(context),
+        "# my tools",
+        toolsSection(channel, options, context),
+        toolRestrictionSection(context),
+      ].filter(Boolean).join("\n\n"),
+      volatile: [dateSection(), currentTriggerSection(channel, options)].filter(Boolean).join("\n\n"),
+    }
+    emitNervesEvent({ event: "mind.step_end", component: "mind", message: "buildSystem completed", meta: { channel } })
+    return result
+  }
 
   const stableParts = [
     // Group 1: who i am

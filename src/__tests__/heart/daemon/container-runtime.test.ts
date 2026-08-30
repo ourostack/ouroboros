@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
+import * as net from "node:net"
+import { createHash } from "node:crypto"
 import { spawnSync } from "node:child_process"
 import { hasManagedAgentProcess, hasManagedSupercronicProcess, hasManagedTelegramProcess, readContainerRuntimePolicy } from "../../../heart/daemon/container-runtime"
 
@@ -128,7 +130,7 @@ curl() {
       ] as const) {
         fs.writeFileSync(callLog, "")
         fs.writeFileSync(bodyLog, "")
-        const helpers = ["set_butler_autostart", "verify_butler_autostart", name]
+        const helpers = ["set_butler_autostart", "butler_autostart_counts", "verify_butler_autostart", name]
           .map((helperName) => extractRunbookFunction(runbook, helperName))
           .join("\n")
           .replaceAll("/var/local/emhttp/var.ini", "$AUTOSTART_CSRF_FILE")
@@ -183,6 +185,8 @@ curl() {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-audit-helper-"))
     const helper = extractRunbookFunction(runbook, "audit_effective").replace("/mnt/user/appdata/ouro-butler/staging/inspect.XXXXXX", "$AUDIT_TEST_ROOT/inspect.XXXXXX")
+    expect(helper).not.toContain("$IMAGE_ID")
+    const imageValidator = extractRunbookFunction(runbook, "validate_exact_image_id")
     const script = String.raw`set -u
 FAIL_KEY=$1
 maybe_fail() { if [ "$FAIL_KEY" = "$1" ]; then return 23; fi; }
@@ -193,19 +197,64 @@ docker() {
   maybe_fail "$KEY" || return $?
   case "$KEY" in docker-inspect|docker-image) command printf '{}\n' ;; esac
 }
+${imageValidator}
 ${helper}
-if audit_effective ouro-butler "$IMAGE_ID"; then command printf 'TRANSITION\n'; else STATUS=$?; set -- "$AUDIT_TEST_ROOT"/inspect.*; if [ -e "$1" ]; then command printf 'LEAK\n'; fi; command printf 'FAILED:%s\n' "$STATUS"; exit "$STATUS"; fi`
+unset IMAGE_ID
+if audit_effective ouro-butler "$SOURCE_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"; then command printf 'TRANSITION\n'; else STATUS=$?; set -- "$AUDIT_TEST_ROOT"/inspect.*; if [ -e "$1" ]; then command printf 'LEAK\n'; fi; command printf 'FAILED:%s\n' "$STATUS"; exit "$STATUS"; fi`
     try {
       for (const failKey of ["mktemp", "chmod-0700", "docker-inspect", "docker-image", "chmod-0600", "docker-run"]) {
-        const result = runConditionalHelper(script, failKey, { AUDIT_TEST_ROOT: testRoot, IMAGE_ID: `sha256:${"a".repeat(64)}` })
+        const result = runConditionalHelper(script, failKey, { AUDIT_TEST_ROOT: testRoot, SOURCE_IMAGE_ID: `sha256:${"a".repeat(64)}`, AUDIT_RUNNER_IMAGE_ID: `sha256:${"b".repeat(64)}` })
         expect(result.status, `${failKey}\n${result.stderr}`).toBe(23)
         expect(result.stdout).not.toContain("TRANSITION")
         expect(result.stdout).not.toContain("LEAK")
         expect(fs.readdirSync(testRoot), `${failKey} leaked an inspect directory`).toEqual([])
       }
-      const success = runConditionalHelper(script, "none", { AUDIT_TEST_ROOT: testRoot, IMAGE_ID: `sha256:${"a".repeat(64)}` })
+      const success = runConditionalHelper(script, "none", { AUDIT_TEST_ROOT: testRoot, SOURCE_IMAGE_ID: `sha256:${"a".repeat(64)}`, AUDIT_RUNNER_IMAGE_ID: `sha256:${"b".repeat(64)}` })
       expect(success.status, success.stderr).toBe(0)
       expect(success.stdout).toContain("TRANSITION")
+    } finally {
+      fs.rmSync(testRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("audits standalone backup preflight and recovery with IMAGE_ID unset", () => {
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-backup-audit-runner-"))
+    const audit = extractRunbookFunction(runbook, "audit_effective").replace("/mnt/user/appdata/ouro-butler/staging/inspect.XXXXXX", "$AUDIT_TEST_ROOT/inspect.XXXXXX")
+    const validateImage = extractRunbookFunction(runbook, "validate_exact_image_id")
+    const legacy = extractRunbookFunction(runbook, "assert_legacy_alpha742_source")
+    const source = extractRunbookFunction(runbook, "assert_update_source")
+    const script = String.raw`set -u
+docker() {
+  case "$1 $2" in
+    "inspect "*|"image inspect") command printf '{}\n' ;;
+    "run --rm")
+      case " $* " in *" $AUDIT_RUNNER_IMAGE_ID "*) command printf 'AUDIT_RUN\n' ;; *) return 29 ;; esac ;;
+    *) return 23 ;;
+  esac
+}
+${validateImage}
+${audit}
+${legacy}
+${source}
+unset IMAGE_ID
+assert_update_source "$BACKUP_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"
+assert_update_source "$BACKUP_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"`
+    try {
+      const result = runConditionalHelper(script, "unused", {
+        AUDIT_TEST_ROOT: testRoot,
+        BACKUP_IMAGE_ID: "sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d",
+        AUDIT_RUNNER_IMAGE_ID: `sha256:${"c".repeat(64)}`,
+      })
+      expect(result.status, result.stderr).toBe(0)
+      expect(result.stdout.trim().split("\n")).toEqual(["AUDIT_RUN", "AUDIT_RUN"])
+      const rejectedRunner = runConditionalHelper(script, "unused", {
+        AUDIT_TEST_ROOT: testRoot,
+        BACKUP_IMAGE_ID: "sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d",
+        AUDIT_RUNNER_IMAGE_ID: "sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d",
+      })
+      expect(rejectedRunner.status).not.toBe(0)
+      expect(rejectedRunner.stdout).not.toContain("AUDIT_RUN")
     } finally {
       fs.rmSync(testRoot, { recursive: true, force: true })
     }
@@ -302,17 +351,64 @@ if assert_update_topology "$EXPECTED_IMAGE"; then command printf 'MUTATION\n'; e
     const imageValidator = extractRunbookFunction(runbook, "validate_exact_image_id")
     const onlyRunning = extractRunbookFunction(runbook, "assert_only_running_butler")
     const preflight = extractRunbookFunction(runbook, "assert_restore_preflight")
+    const provenance = extractRunbookFunction(runbook, "verify_sanctuary_snapshot_provenance")
+      .replaceAll("/usr/local/bin/node", process.execPath)
+      .replace("const expectedUid = 0;", "const expectedUid = process.getuid();")
+      .replace("const expectedGid = 0;", "const expectedGid = process.getgid();")
+    const audit = extractRunbookFunction(runbook, "audit_effective").replace("/mnt/user/appdata/ouro-butler/staging/inspect.XXXXXX", "$AUDIT_TEST_ROOT/inspect.XXXXXX")
+    const legacySource = extractRunbookFunction(runbook, "assert_legacy_alpha742_source")
+    const updateSource = extractRunbookFunction(runbook, "assert_update_source")
+    expect(preflight.indexOf('assert_update_source "$RESTORE_PRODUCTION_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"')).toBeGreaterThan(preflight.indexOf("assert_only_running_butler ouro-butler"))
     const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-restore-preflight-"))
     const validRootPath = path.join(testRoot, "backup")
     fs.mkdirSync(path.join(validRootPath, "runtime", ".ouro-cli"), { recursive: true })
     fs.mkdirSync(path.join(validRootPath, "agent", "sanctuary.ouro"), { recursive: true })
+    fs.mkdirSync(path.join(validRootPath, "host", "custom", "ouro-events"), { recursive: true, mode: 0o700 })
+    for (const directory of [path.join(validRootPath, "host"), path.join(validRootPath, "host", "custom"), path.join(validRootPath, "host", "custom", "ouro-events")]) fs.chmodSync(directory, 0o700)
+    fs.writeFileSync(path.join(validRootPath, "host", "go.butler-lines"), "", { mode: 0o600 })
+    fs.writeFileSync(path.join(validRootPath, "host", "crontab.butler-lines"), "", { mode: 0o600 })
+    fs.writeFileSync(path.join(validRootPath, "host", "global-state"), "go\tabsent\t-\t0\ncrontab\tabsent\t-\t0\n", { mode: 0o600 })
+    fs.writeFileSync(path.join(validRootPath, "host", "inventory"), [
+      "absent\tcustom/usenet_health.sh",
+      "absent\tcustom/ouro-events/bootstrap-spool.sh",
+      "absent\tcustom/ouro-events/emit-event.mjs",
+      "absent\tcustom/ouro-events/emit-usenet-event.sh",
+      "absent\tcustom/ouro-events/install-usenet-guard.sh",
+      "present\tgo.butler-lines",
+      "present\tcrontab.butler-lines",
+      "present\tglobal-state",
+      "",
+    ].join("\n"), { mode: 0o600 })
     const validRoot = fs.realpathSync(validRootPath)
     const validImage = `sha256:${"b".repeat(64)}`
+    const auditRunnerImage = `sha256:${"d".repeat(64)}`
+    const provenanceRoot = path.join(validRoot, "provenance")
+    const writeProvenance = (imageId = validImage, inspectImageId = imageId) => {
+      fs.rmSync(provenanceRoot, { recursive: true, force: true })
+      fs.mkdirSync(provenanceRoot, { recursive: true, mode: 0o700 })
+      const imagePath = path.join(provenanceRoot, "image-id")
+      const inspectPath = path.join(provenanceRoot, "container-inspect.json")
+      const imageInspectPath = path.join(provenanceRoot, "image-inspect.json")
+      const packageVersionPath = path.join(provenanceRoot, "package-version")
+      fs.writeFileSync(imagePath, `${imageId}\n`, { mode: 0o600 })
+      fs.writeFileSync(inspectPath, `${JSON.stringify([{ Image: inspectImageId }])}\n`, { mode: 0o600 })
+      fs.writeFileSync(imageInspectPath, `${JSON.stringify([{ Id: imageId, Config: { Labels: { "org.opencontainers.image.source": "https://github.com/ourostack/ouroboros" } } }])}\n`, { mode: 0o600 })
+      fs.writeFileSync(packageVersionPath, "0.1.0-alpha.743\n", { mode: 0o600 })
+      const entries = [path.join(validRoot, "host", "inventory"), path.join(validRoot, "host", "go.butler-lines"), path.join(validRoot, "host", "crontab.butler-lines"), path.join(validRoot, "host", "global-state"), imagePath, inspectPath, imageInspectPath, packageVersionPath].map((filePath) => {
+        const relative = path.relative(validRoot, filePath)
+        const digest = createHash("sha256").update(fs.readFileSync(filePath)).digest("hex")
+        return `${digest}  ${relative}`
+      }).sort()
+      fs.writeFileSync(path.join(provenanceRoot, "manifest.sha256"), `${entries.join("\n")}\n`, { mode: 0o600 })
+    }
+    writeProvenance()
     const script = String.raw`set -u
 SCENARIO=$1
 docker() {
   case "$*" in
-    "image inspect "*) return 0 ;;
+    "image inspect "*) command printf '{}\n' ;;
+    "inspect ouro-butler") command printf '{}\n' ;;
+    "run --rm "*) if [ "$SCENARIO" = auditor-fails ]; then return 23; fi ;;
     "container ls -a --format {{.Names}}") if [ "$SCENARIO" = staging ]; then command printf 'ouro-butler\nouro-butler-staging\n'; else command printf 'ouro-butler\n'; fi ;;
     "container ls --format {{.Names}}") if [ "$SCENARIO" = staging ]; then command printf 'ouro-butler\nouro-butler-staging\n'; else command printf 'ouro-butler\n'; fi ;;
     "inspect --format {{.State.Running}} "*) command printf 'true\n' ;;
@@ -320,8 +416,19 @@ docker() {
     *) return 23 ;;
   esac
 }
+stat() {
+  if [ "$1" = -c ] && [ "$2" = %u:%g:%a ]; then
+    case "$3" in */provenance|*/host) command printf '0:0:700\n' ;; */provenance/*) command printf '0:0:600\n' ;; *) command stat "$@" ;; esac
+  else
+    command stat "$@"
+  fi
+}
 ${imageValidator}
 ${onlyRunning}
+${provenance}
+${audit}
+${legacySource}
+${updateSource}
 validate_sanctuary_roots() { test "$SCENARIO" != invalid-roots; }
 ${preflight}
 if assert_restore_preflight; then command printf 'MUTATION\n'; else exit $?; fi`
@@ -331,21 +438,142 @@ if assert_restore_preflight; then command printf 'MUTATION\n'; else exit $?; fi`
         { scenario: "relative", env: { BACKUP_ROOT: "relative", IMAGE_ID: validImage } },
         { scenario: "missing", env: { BACKUP_ROOT: path.join(testRoot, "missing"), IMAGE_ID: validImage } },
         { scenario: "bad-image", env: { BACKUP_ROOT: validRoot, IMAGE_ID: "latest" } },
+        { scenario: "legacy-audit-runner", env: { BACKUP_ROOT: validRoot, IMAGE_ID: validImage, AUDIT_RUNNER_IMAGE_ID: "sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d" } },
+        { scenario: "wrong-snapshot-image", env: { BACKUP_ROOT: validRoot, IMAGE_ID: `sha256:${"c".repeat(64)}` } },
         { scenario: "invalid-roots", env: { BACKUP_ROOT: validRoot, IMAGE_ID: validImage } },
         { scenario: "staging", env: { BACKUP_ROOT: validRoot, IMAGE_ID: validImage } },
+        { scenario: "auditor-fails", env: { BACKUP_ROOT: validRoot, IMAGE_ID: validImage } },
       ]
       for (const testCase of cases) {
-        const caseScript = testCase.unset ? `unset BACKUP_ROOT IMAGE_ID\n${script}` : script
-        const result = runConditionalHelper(caseScript, testCase.scenario, { VALID_IMAGE: validImage, ...testCase.env })
+        const caseScript = testCase.unset ? `unset BACKUP_ROOT IMAGE_ID AUDIT_RUNNER_IMAGE_ID\n${script}` : script
+        const result = runConditionalHelper(caseScript, testCase.scenario, { VALID_IMAGE: validImage, AUDIT_RUNNER_IMAGE_ID: auditRunnerImage, AUDIT_TEST_ROOT: testRoot, ...testCase.env })
         expect(result.status, `${testCase.scenario}\n${result.stderr}`).not.toBe(0)
         expect(result.stdout).not.toContain("MUTATION")
       }
-      const success = runConditionalHelper(script, "safe", { VALID_IMAGE: validImage, BACKUP_ROOT: validRoot, IMAGE_ID: validImage })
+      const success = runConditionalHelper(script, "safe", { VALID_IMAGE: validImage, BACKUP_ROOT: validRoot, IMAGE_ID: validImage, AUDIT_RUNNER_IMAGE_ID: auditRunnerImage, AUDIT_TEST_ROOT: testRoot })
       expect(success.status, success.stderr).toBe(0)
       expect(success.stdout).toContain("MUTATION")
+      fs.appendFileSync(path.join(provenanceRoot, "image-id"), "tampered")
+      const tampered = runConditionalHelper(script, "safe", { VALID_IMAGE: validImage, BACKUP_ROOT: validRoot, IMAGE_ID: validImage, AUDIT_RUNNER_IMAGE_ID: auditRunnerImage, AUDIT_TEST_ROOT: testRoot })
+      expect(tampered.status).not.toBe(0)
+      expect(tampered.stdout).not.toContain("MUTATION")
+      writeProvenance()
+      fs.writeFileSync(path.join(validRoot, "agent", "sanctuary.ouro", "unmanifested"), "extra")
+      const extra = runConditionalHelper(script, "safe", { VALID_IMAGE: validImage, BACKUP_ROOT: validRoot, IMAGE_ID: validImage, AUDIT_RUNNER_IMAGE_ID: auditRunnerImage, AUDIT_TEST_ROOT: testRoot })
+      expect(extra.status).not.toBe(0)
+      expect(extra.stdout).not.toContain("MUTATION")
+      fs.rmSync(path.join(validRoot, "agent", "sanctuary.ouro", "unmanifested"))
+      writeProvenance()
+      const topLevelExtra = path.join(validRoot, "unexpected")
+      fs.writeFileSync(topLevelExtra, "extra")
+      const unexpectedFile = runConditionalHelper(script, "safe", { VALID_IMAGE: validImage, BACKUP_ROOT: validRoot, IMAGE_ID: validImage, AUDIT_RUNNER_IMAGE_ID: auditRunnerImage, AUDIT_TEST_ROOT: testRoot })
+      expect(unexpectedFile.status).not.toBe(0)
+      expect(unexpectedFile.stdout).not.toContain("MUTATION")
+      fs.rmSync(topLevelExtra)
+      expect(spawnSync("mkfifo", [topLevelExtra]).status).toBe(0)
+      const unexpectedFifo = runConditionalHelper(script, "safe", { VALID_IMAGE: validImage, BACKUP_ROOT: validRoot, IMAGE_ID: validImage, AUDIT_RUNNER_IMAGE_ID: auditRunnerImage, AUDIT_TEST_ROOT: testRoot })
+      expect(unexpectedFifo.status).not.toBe(0)
+      expect(unexpectedFifo.stdout).not.toContain("MUTATION")
     } finally {
       fs.rmSync(testRoot, { recursive: true, force: true })
     }
+  })
+
+  it("rejects representative inline credential forms from host snapshots without rejecting references", () => {
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const scanner = extractRunbookFunction(runbook, "host_file_contains_inline_credential")
+    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-host-credential-scan-"))
+    const candidate = path.join(testRoot, "candidate")
+    const scan = (contents: string) => {
+      fs.writeFileSync(candidate, contents, { mode: 0o600 })
+      return runConditionalHelper(`${scanner}\nhost_file_contains_inline_credential "$CANDIDATE"`, "unused", { CANDIDATE: candidate })
+    }
+
+    for (const contents of [
+      "TELEGRAM_BOT_TOKEN=123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi\n",
+      "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.signature\n",
+      "curl --token abcdefghijklmnopqrstuvwxyz012345\n",
+      "client --api-key=abcdefghijklmnopqrstuvwxyz012345\n",
+      "https://service-user:correct-horse-battery-staple@example.invalid/path\n",
+      "-----BEGIN PRIVATE KEY-----\nbase64body\n-----END PRIVATE KEY-----\n",
+      '{"token":"abcdefghijklmnopqrstuvwxyz012345"}\n',
+      "api_key: abcdefghijklmnopqrstuvwxyz012345\n",
+      "password: 'correct-horse-battery-staple'\n",
+    ]) {
+      const result = scan(contents)
+      expect(result.status, `${contents}\n${result.stderr}`).toBe(0)
+    }
+
+    for (const contents of [
+      "Authorization: Bearer $ACCESS_TOKEN\n",
+      'curl --token "$ACCESS_TOKEN"\n',
+      "https://example.invalid/path\n",
+      "-----BEGIN PUBLIC KEY-----\nbase64body\n-----END PUBLIC KEY-----\n",
+      '{"token":"${TOKEN_FROM_VAULT}"}\n',
+      "api_key: $API_KEY\n",
+    ]) {
+      const result = scan(contents)
+      expect(result.status, `${contents}\n${result.stderr}`).not.toBe(0)
+    }
+
+    fs.rmSync(testRoot, { recursive: true, force: true })
+  })
+
+  it("snapshots only exact complete canonical Butler go hooks", () => {
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const classifier = extractRunbookFunction(runbook, "snapshot_butler_go_fragments")
+    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-go-fragments-"))
+    const source = path.join(testRoot, "go")
+    const target = path.join(testRoot, "fragments")
+    const canonical = "/bin/bash /boot/config/custom/ouro-events/install-usenet-guard.sh --boot"
+    const unrelated = "/bin/bash /opt/team/ouro-events/install-usenet-guard.sh --boot"
+    const malicious = `${canonical} --token stolen-secret`
+    fs.writeFileSync(source, `#!/bin/bash\n${canonical}\n${unrelated}\n${malicious}\n`, { mode: 0o700 })
+
+    const result = runConditionalHelper(`${classifier}\nsnapshot_butler_go_fragments "$SOURCE" "$TARGET"`, "unused", { SOURCE: source, TARGET: target })
+    expect(result.status, result.stderr).toBe(0)
+    expect(fs.readFileSync(target, "utf8")).toBe(`${canonical}\n`)
+    fs.rmSync(testRoot, { recursive: true, force: true })
+  })
+
+  it("snapshots only exact Sanctuary cron lines and excludes marker-bearing commands", () => {
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const classifier = extractRunbookFunction(runbook, "snapshot_butler_cron_fragments")
+    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-cron-fragments-"))
+    const source = path.join(testRoot, "crontab")
+    const target = path.join(testRoot, "fragments")
+    const legacy = "*/15 * * * * /bin/bash /boot/config/custom/usenet_health.sh"
+    const canonical = `${legacy} # ouro:usenet-health`
+    const malicious = "* * * * * curl --token stolen-secret # ouro:usenet-health"
+    fs.writeFileSync(source, `${legacy}\n${canonical}\n${malicious}\n`, { mode: 0o600 })
+
+    const result = runConditionalHelper(`${classifier}\nsnapshot_butler_cron_fragments "$SOURCE" "$TARGET"`, "unused", { SOURCE: source, TARGET: target })
+    expect(result.status, result.stderr).toBe(0)
+    expect(fs.readFileSync(target, "utf8")).toBe(`${legacy}\n${canonical}\n`)
+    fs.rmSync(testRoot, { recursive: true, force: true })
+  })
+
+  it("creates cron capture files inside a private unpredictable directory", () => {
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const createCapture = extractRunbookFunction(runbook, "create_private_cron_capture")
+    const victim = path.join(os.tmpdir(), `ouro-cron-victim-${process.pid}`)
+    const oldCompanion = path.join(os.tmpdir(), `ouro-backup-crontab-${process.pid}.error`)
+    fs.writeFileSync(victim, "untouched\n", { mode: 0o600 })
+    fs.symlinkSync(victim, oldCompanion)
+    const result = runConditionalHelper(`${createCapture}\ncreate_private_cron_capture || exit $?\nprintf '%s\n%s\n%s\n' "$BACKUP_CRON_ROOT" "$BACKUP_CRON_SOURCE" "$BACKUP_CRON_ERROR"`, "unused")
+    expect(result.status, result.stderr).toBe(0)
+    const [captureRoot, stdoutPath, stderrPath] = result.stdout.trim().split("\n") as [string, string, string]
+    expect(captureRoot).toMatch(/^\/tmp\/ouro-backup-cron\.[A-Za-z0-9]+$/u)
+    expect(path.dirname(stdoutPath)).toBe(captureRoot)
+    expect(path.dirname(stderrPath)).toBe(captureRoot)
+    expect(fs.lstatSync(captureRoot).isSymbolicLink()).toBe(false)
+    expect(fs.statSync(captureRoot).mode & 0o777).toBe(0o700)
+    expect(fs.statSync(stdoutPath).mode & 0o777).toBe(0o600)
+    expect(fs.statSync(stderrPath).mode & 0o777).toBe(0o600)
+    expect(fs.readFileSync(victim, "utf8")).toBe("untouched\n")
+    fs.rmSync(captureRoot, { recursive: true, force: true })
+    fs.rmSync(oldCompanion, { force: true })
+    fs.rmSync(victim, { force: true })
   })
 
   it("preserves legacy evidence while promoting a fresh canonical staging poller", () => {
@@ -1304,7 +1532,7 @@ install_from_legacy_staging`
     }
   })
 
-  it("validates complete private restore roots before mutation and after copying", () => {
+  it("validates production-shaped stopped restore roots before mutation and after copying", async () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     const validator = extractRunbookFunction(runbook, "validate_sanctuary_roots")
     const preflightHelper = extractRunbookFunction(runbook, "assert_restore_preflight")
@@ -1314,7 +1542,16 @@ install_from_legacy_staging`
     expect(validator).toContain("-type l")
     expect(validator).toContain("! -user 10001")
     expect(validator).toContain("! -perm 0700")
+    expect(validator).toContain("-perm 0755")
     expect(validator).toContain("! -perm 0600")
+    expect(validator).toContain("-perm 0644")
+    expect(validator).toContain('"$VALIDATE_RUNTIME_ROOT/daemon/logs/*"')
+    expect(validator).toContain('"$VALIDATE_RUNTIME_ROOT/scheduler/*"')
+    expect(validator).toContain('"$VALIDATE_AGENT_ROOT/arc/flight-recorder/*"')
+    expect(validator).toContain('"$VALIDATE_AGENT_ROOT/state/health/*"')
+    expect(validator).toContain('"$VALIDATE_AGENT_ROOT/state/logs/*"')
+    expect(validator).toContain('"$VALIDATE_AGENT_ROOT/state/habits/*"')
+    expect(validator).toContain('test ! -S "$VALIDATE_AGENT_ROOT/state/acceptance/telegram-control.sock"')
     expect(validator).toContain("container-credentials.json")
     expect(preflightHelper).toContain('validate_sanctuary_roots "$BACKUP_ROOT/runtime/.ouro-cli" "$BACKUP_ROOT/agent/sanctuary.ouro"')
     const preflight = restore.indexOf("if assert_restore_preflight; then")
@@ -1326,14 +1563,37 @@ install_from_legacy_staging`
     expect(postCopy).toBeGreaterThan(stop)
     expect(start).toBeGreaterThan(postCopy)
 
-    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-restore-roots-validator-"))
+    const testRoot = fs.mkdtempSync("/tmp/ouro-restore-roots-validator-")
     const runtimeRoot = path.join(testRoot, "runtime", ".ouro-cli")
     const agentRoot = path.join(testRoot, "agent", "sanctuary.ouro")
     const buildValidRoots = () => {
       fs.rmSync(testRoot, { recursive: true, force: true })
-      for (const directory of [runtimeRoot, path.join(runtimeRoot, "vault-unlock"), agentRoot, path.join(agentRoot, "psyche"), path.join(agentRoot, "habits")]) {
+      for (const directory of [
+        runtimeRoot,
+        path.join(runtimeRoot, "vault-unlock"),
+        path.join(runtimeRoot, "bitwarden"),
+        path.join(runtimeRoot, "daemon"),
+        agentRoot,
+        path.join(agentRoot, "arc"),
+        path.join(agentRoot, "psyche"),
+        path.join(agentRoot, "habits"),
+        path.join(agentRoot, "state"),
+        path.join(agentRoot, "state", "sessions", "owner"),
+        path.join(agentRoot, "friends"),
+      ]) {
         fs.mkdirSync(directory, { recursive: true, mode: 0o700 })
         fs.chmodSync(directory, 0o700)
+      }
+      for (const directory of [
+        path.join(runtimeRoot, "scheduler"),
+        path.join(runtimeRoot, "daemon", "logs"),
+        path.join(agentRoot, "arc", "flight-recorder", "events"),
+        path.join(agentRoot, "state", "logs", "cli"),
+        path.join(agentRoot, "state", "habits"),
+        path.join(agentRoot, "state", "health"),
+      ]) {
+        fs.mkdirSync(directory, { recursive: true, mode: 0o755 })
+        fs.chmodSync(directory, 0o755)
       }
       for (const relative of ["agent.json", "bundle-meta.json", "provider-readiness.json", "tool-profiles.json", "psyche/SOUL.md", "habits/sanctuary-health.md"]) {
         const file = path.join(agentRoot, relative)
@@ -1341,26 +1601,77 @@ install_from_legacy_staging`
         fs.chmodSync(file, 0o600)
       }
       fs.writeFileSync(path.join(runtimeRoot, "vault-unlock", "one.secret"), "secret", { mode: 0o600 })
+      fs.writeFileSync(path.join(runtimeRoot, "bitwarden", "data.json"), "secret", { mode: 0o600 })
+      fs.writeFileSync(path.join(agentRoot, "state", "sessions", "owner", "session.json"), "private", { mode: 0o600 })
+      fs.writeFileSync(path.join(agentRoot, "friends", "owner.json"), "private", { mode: 0o600 })
+      for (const file of [
+        path.join(runtimeRoot, "daemon", "logs", "daemon.ndjson"),
+        path.join(runtimeRoot, "pulse.json"),
+        path.join(runtimeRoot, "daemon-health.json"),
+        path.join(agentRoot, "arc", "flight-recorder", "events", "today.jsonl"),
+        path.join(agentRoot, "state", "logs", "cli", "latest.ndjson"),
+        path.join(agentRoot, "state", "habits", "sanctuary-health.json"),
+        path.join(agentRoot, "state", "health", "latest.json"),
+      ]) {
+        fs.writeFileSync(file, "generated", { mode: 0o644 })
+        fs.chmodSync(file, 0o644)
+      }
     }
     const script = String.raw`set -u
-find() { case "$*" in *"! -user 10001"*) return 0 ;; *) command find "$@" ;; esac; }
+find() {
+  case "$*" in *"! -user 10001"*) return 0 ;; *) command find "$@" ;; esac
+}
 ${validator}
 validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
     try {
       const run = () => runConditionalHelper(script, "validate", { RUNTIME_ROOT: runtimeRoot, AGENT_ROOT: agentRoot })
       buildValidRoots()
       expect(run().status).toBe(0)
+      const actualOwnerScript = `${validator}\nvalidate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
+      expect(runConditionalHelper(actualOwnerScript, "validate", { RUNTIME_ROOT: runtimeRoot, AGENT_ROOT: agentRoot }).status).not.toBe(0)
       for (const mutate of [
         () => fs.writeFileSync(path.join(agentRoot, "agent.json"), ""),
         () => fs.symlinkSync("agent.json", path.join(agentRoot, "link")),
         () => fs.chmodSync(path.join(agentRoot, "psyche"), 0o755),
         () => fs.chmodSync(path.join(agentRoot, "agent.json"), 0o644),
+        () => fs.chmodSync(path.join(runtimeRoot, "bitwarden", "data.json"), 0o644),
+        () => fs.chmodSync(path.join(agentRoot, "state", "sessions", "owner", "session.json"), 0o644),
+        () => fs.chmodSync(path.join(agentRoot, "friends", "owner.json"), 0o644),
+        () => fs.chmodSync(path.join(runtimeRoot, "scheduler"), 0o777),
+        () => fs.chmodSync(path.join(runtimeRoot, "pulse.json"), 0o666),
         () => fs.writeFileSync(path.join(runtimeRoot, "container-credentials.json"), "{}", { mode: 0o600 }),
         () => fs.writeFileSync(path.join(runtimeRoot, "vault-unlock", "one.secret"), ""),
+        () => spawnSync("mkfifo", [path.join(agentRoot, "unexpected.fifo")]),
       ]) {
         buildValidRoots()
         mutate()
         expect(run().status).not.toBe(0)
+      }
+      buildValidRoots()
+      const socketPath = path.join(agentRoot, "unexpected.sock")
+      const server = net.createServer()
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject)
+        server.listen(socketPath, resolve)
+      })
+      try {
+        expect(fs.lstatSync(socketPath).isSocket()).toBe(true)
+        expect(run().status).not.toBe(0)
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()))
+      }
+      buildValidRoots()
+      const acceptanceRoot = path.join(agentRoot, "state", "acceptance")
+      fs.mkdirSync(acceptanceRoot, { recursive: true, mode: 0o700 })
+      const controlSocket = net.createServer()
+      await new Promise<void>((resolve, reject) => {
+        controlSocket.once("error", reject)
+        controlSocket.listen(path.join(acceptanceRoot, "telegram-control.sock"), resolve)
+      })
+      try {
+        expect(run().status).not.toBe(0)
+      } finally {
+        await new Promise<void>((resolve) => controlSocket.close(() => resolve()))
       }
     } finally {
       fs.rmSync(testRoot, { recursive: true, force: true })
@@ -1544,6 +1855,19 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
     for (const command of Object.keys(contract.commands)) expect(runbook).toContain(`${command}.json`)
   })
 
+  it("routes every post-activation acceptance launcher invocation through the final profile", () => {
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const sectionStart = runbook.indexOf("  After final activation")
+    const sectionEnd = runbook.indexOf("  Each execution revalidates", sectionStart)
+    expect(sectionStart).toBeGreaterThan(-1)
+    expect(sectionEnd).toBeGreaterThan(sectionStart)
+
+    const invocations = runbook.slice(sectionStart, sectionEnd).split("\n")
+      .filter((line) => line.includes('"$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID"'))
+    expect(invocations.length).toBeGreaterThan(2)
+    expect(invocations.filter((line) => !line.includes('"$IMAGE_ID" --profile final '))).toEqual([])
+  })
+
   it("narrows capability proof authority to read-only roots and one exact key record", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     const verify = extractRunbookFunction(runbook, "verify_vault_backed_unraid_key")
@@ -1572,11 +1896,26 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     const update = runbook.slice(runbook.indexOf("Update:"), runbook.indexOf("Backup:"))
     const topology = update.indexOf('if assert_update_topology "$ROLLBACK_IMAGE_ID"; then')
-    const audit = update.indexOf('audit_effective ouro-butler "$ROLLBACK_IMAGE_ID"')
+    const sourcePreflight = update.indexOf('assert_update_source "$ROLLBACK_IMAGE_ID"')
     const firstDockerRun = update.indexOf("docker run --rm")
     expect(topology).toBeGreaterThan(-1)
-    expect(audit).toBeGreaterThan(topology)
+    expect(sourcePreflight).toBeGreaterThan(topology)
     expect(firstDockerRun).toBeGreaterThan(topology)
+  })
+
+  it("admits only the exact known alpha.742 two-mount source topology", () => {
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const helper = extractRunbookFunction(runbook, "assert_legacy_alpha742_source")
+    const dispatch = extractRunbookFunction(runbook, "assert_update_source")
+    const imageId = "sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d"
+    expect(helper).toContain(`test "$EXPECTED_SOURCE_IMAGE_ID" = ${imageId}`)
+    expect(helper).toContain('audit_effective ouro-butler "$EXPECTED_SOURCE_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" legacy-alpha742')
+    expect(helper).not.toContain("docker inspect --format")
+    expect(dispatch).toContain('assert_legacy_alpha742_source "$EXPECTED_SOURCE_IMAGE_ID"')
+    expect(dispatch).toContain('audit_effective ouro-butler "$EXPECTED_SOURCE_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"')
+    const audit = extractRunbookFunction(runbook, "audit_effective")
+    expect(audit).toContain('legacy-alpha742) set -- --mount-contract legacy-alpha742 ;;')
+    expect(audit).toContain('"$@"')
   })
 
   it("locks deployment and credential rotation to the canonical bot and exact key IDs", () => {
@@ -1598,7 +1937,7 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
     const activation = production.slice(production.indexOf("if docker create --name ouro-butler "))
 
     expect(activation).toContain("if docker create --name ouro-butler --network host --restart unless-stopped --user 10001:10001 \\")
-    expect(activation).toContain('&& audit_effective ouro-butler "$IMAGE_ID" \\')
+    expect(activation).toContain('&& audit_effective ouro-butler "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" \\')
     expect(activation).toContain("&& docker start ouro-butler \\")
     expect(activation).toContain("&& wait_butler_ready ouro-butler \\")
     expect(activation).toContain("&& enable_butler_autostart; then")
@@ -1611,7 +1950,7 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
     const currentImage = activation.indexOf("CURRENT_ROLLBACK_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler-rollback)", verifyAbsent)
     const exactImage = activation.indexOf('test "$CURRENT_ROLLBACK_IMAGE_ID" = "$ROLLBACK_IMAGE_ID"', currentImage)
     const rename = activation.indexOf("docker rename ouro-butler-rollback ouro-butler", exactImage)
-    const audit = activation.indexOf('audit_effective ouro-butler "$ROLLBACK_IMAGE_ID"', rename)
+    const audit = activation.indexOf('assert_update_source "$ROLLBACK_IMAGE_ID"', rename)
     const restart = activation.indexOf("docker start ouro-butler", audit)
     const ready = activation.indexOf("wait_butler_ready ouro-butler", restart)
     const autostart = activation.indexOf("enable_butler_autostart", ready)
@@ -1639,7 +1978,7 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
     const oldImage = update.indexOf("ROLLBACK_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler)")
     const validateOldImage = update.indexOf('validate_exact_image_id "$ROLLBACK_IMAGE_ID"', oldImage)
     const create = staging.indexOf("if docker create --name ouro-butler-staging")
-    const audit = staging.indexOf('&& audit_effective ouro-butler-staging "$IMAGE_ID"', create)
+    const audit = staging.indexOf('&& audit_effective ouro-butler-staging "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"', create)
     const start = staging.indexOf("&& docker start ouro-butler-staging", audit)
     const ready = staging.indexOf("&& wait_butler_ready ouro-butler-staging", start)
     const stopPassing = staging.indexOf("&& docker stop ouro-butler-staging", ready)
@@ -1653,7 +1992,7 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
     const currentRollbackImage = staging.indexOf("CURRENT_ROLLBACK_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler-rollback)", verifyAbsent)
     const exactRollbackImage = staging.indexOf('test "$CURRENT_ROLLBACK_IMAGE_ID" = "$ROLLBACK_IMAGE_ID"', currentRollbackImage)
     const renameRollback = staging.indexOf("docker rename ouro-butler-rollback ouro-butler", exactRollbackImage)
-    const auditRollback = staging.indexOf('audit_effective ouro-butler "$ROLLBACK_IMAGE_ID"', renameRollback)
+    const auditRollback = staging.indexOf('assert_update_source "$ROLLBACK_IMAGE_ID"', renameRollback)
     const startRollback = staging.indexOf("docker start ouro-butler", auditRollback)
     const readyRollback = staging.indexOf("wait_butler_ready ouro-butler", startRollback)
     const autostart = staging.indexOf("enable_butler_autostart", readyRollback)
@@ -1694,8 +2033,9 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
     const stop = update.indexOf("if docker stop ouro-butler \\", disableGuard)
     const removeStale = update.indexOf('&& remove_stopped_rollback_if_present "$ROLLBACK_IMAGE_ID" \\', stop)
     const rename = update.indexOf("&& docker rename ouro-butler ouro-butler-rollback \\", removeStale)
-    const stopped = update.indexOf("&& test \"$(docker inspect --format '{{.State.Running}}' ouro-butler-rollback)\" = false; then", rename)
-    const status = update.indexOf("PRODUCTION_PREPARATION_STATUS=$?", stopped)
+    const stopped = update.indexOf("&& test \"$(docker inspect --format '{{.State.Running}}' ouro-butler-rollback)\" = false \\", rename)
+    const migration = update.indexOf('&& migrate_sanctuary_package_managed_bundle "$IMAGE_ID" migrate "$ROLLBACK_IMAGE_ID"; then', stopped)
+    const status = update.indexOf("PRODUCTION_PREPARATION_STATUS=$?", migration)
     const recoverProduction = update.indexOf("if docker container inspect ouro-butler >/dev/null 2>&1; then", status)
     const recoverRollback = update.indexOf("elif docker container inspect ouro-butler-rollback >/dev/null 2>&1; then", recoverProduction)
     const propagate = update.indexOf('(exit "$PRODUCTION_PREPARATION_STATUS")', recoverRollback)
@@ -1709,12 +2049,13 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
     expect(removeStale).toBeGreaterThan(stop)
     expect(rename).toBeGreaterThan(removeStale)
     expect(stopped).toBeGreaterThan(rename)
-    expect(status).toBeGreaterThan(stopped)
+    expect(migration).toBeGreaterThan(stopped)
+    expect(status).toBeGreaterThan(migration)
     expect(recoverProduction).toBeGreaterThan(status)
     expect(recoverRollback).toBeGreaterThan(recoverProduction)
     expect(propagate).toBeGreaterThan(recoverRollback)
     for (const recovery of [namedProductionRecovery, renamedRollbackRecovery]) {
-      const audit = recovery.indexOf('audit_effective ouro-butler "$ROLLBACK_IMAGE_ID"')
+      const audit = recovery.indexOf('assert_update_source "$ROLLBACK_IMAGE_ID"')
       const start = recovery.indexOf("docker start ouro-butler", audit)
       const ready = recovery.indexOf("wait_butler_ready ouro-butler", start)
       const autostart = recovery.indexOf("enable_butler_autostart", ready)
@@ -1722,6 +2063,153 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
       expect(start).toBeGreaterThan(audit)
       expect(ready).toBeGreaterThan(start)
       expect(autostart).toBeGreaterThan(ready)
+    }
+  })
+
+  it("durably rolls managed bundle state back on every update failure and reconciles a killed updater before preflight", () => {
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const update = runbook.slice(runbook.indexOf("Update:"), runbook.indexOf("Backup:"))
+    const helper = extractRunbookFunction(runbook, "migrate_sanctuary_package_managed_bundle")
+    const recovery = extractRunbookFunction(runbook, "recover_pending_sanctuary_bundle_migration")
+    const optionalRollback = extractRunbookFunction(runbook, "rollback_sanctuary_bundle_if_pending")
+
+    expect(helper).toContain('MIGRATE_OPERATION=$2')
+    expect(helper).toContain('--operation "$MIGRATE_OPERATION"')
+    expect(recovery).toContain('RECOVERY_RECORD=$RECOVERY_AGENT_ROOT/.sanctuary-package-managed-rollback.json')
+    expect(recovery).toContain('test -f "$RECOVERY_CANDIDATE"')
+    expect(recovery).toContain('migrate_sanctuary_package_managed_bundle "$RECOVERY_IMAGE_ID" rollback')
+    expect(recovery.indexOf('docker rm --force ouro-butler')).toBeLessThan(recovery.indexOf('docker rename ouro-butler-rollback ouro-butler'))
+    expect(recovery.indexOf('migrate_sanctuary_package_managed_bundle "$RECOVERY_IMAGE_ID" rollback')).toBeLessThan(recovery.indexOf('docker rename ouro-butler-rollback ouro-butler'))
+    expect(optionalRollback).toContain('if test -e "$OPTIONAL_ROLLBACK_RECORD"; then')
+    expect(optionalRollback).toContain('migrate_sanctuary_package_managed_bundle "$OPTIONAL_ROLLBACK_IMAGE_ID" rollback')
+    expect(optionalRollback).toContain('test ! -e "$OPTIONAL_COMMITTING_RECORD" || return 1')
+
+    const recoverBeforePreflight = update.indexOf('recover_pending_sanctuary_bundle_migration "$IMAGE_ID"')
+    const captureProduction = update.indexOf("ROLLBACK_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler)")
+    expect(recoverBeforePreflight).toBeGreaterThan(-1)
+    expect(recoverBeforePreflight).toBeLessThan(captureProduction)
+
+    const migration = update.indexOf('migrate_sanctuary_package_managed_bundle "$IMAGE_ID" migrate "$ROLLBACK_IMAGE_ID"')
+    const stagingFailure = update.indexOf("STAGING_ACTIVATION_STATUS=$?", migration)
+    const productionFailure = update.indexOf("PRODUCTION_ACTIVATION_STATUS=$?", stagingFailure)
+    const commit = update.indexOf('migrate_sanctuary_package_managed_bundle "$IMAGE_ID" commit', productionFailure)
+    expect(migration).toBeGreaterThan(-1)
+    expect(update.indexOf('rollback_sanctuary_bundle_if_pending "$IMAGE_ID"', migration)).toBeLessThan(update.indexOf("docker start ouro-butler", migration))
+    expect(update.indexOf('migrate_sanctuary_package_managed_bundle "$IMAGE_ID" rollback', stagingFailure)).toBeLessThan(update.indexOf("docker rename ouro-butler-rollback ouro-butler", stagingFailure))
+    expect(update.indexOf('migrate_sanctuary_package_managed_bundle "$IMAGE_ID" rollback', productionFailure)).toBeLessThan(update.indexOf("docker rename ouro-butler-rollback ouro-butler", productionFailure))
+    const productionCreate = update.lastIndexOf("if docker create --name ouro-butler ", productionFailure)
+    expect(commit).toBeGreaterThan(update.indexOf("wait_butler_ready ouro-butler", productionCreate))
+    expect(commit).toBeGreaterThan(update.indexOf("enable_butler_autostart", productionCreate))
+    expect(recovery).toContain('test "$(docker inspect --format \'{{.State.Running}}\' ouro-butler-rollback)" = false')
+    expect(recovery).toContain('test "$RECOVERY_STAGING_IMAGE_ID" = "$RECOVERY_TARGET_IMAGE_ID"')
+    expect(recovery).toContain('test "$RECOVERY_PRODUCTION_IMAGE_ID" = "$RECOVERY_TARGET_IMAGE_ID"')
+    expect(recovery.indexOf('test "$RECOVERY_STAGING_IMAGE_ID" = "$RECOVERY_TARGET_IMAGE_ID"')).toBeLessThan(recovery.indexOf("docker rm --force ouro-butler-staging"))
+    expect(recovery.indexOf('test "$RECOVERY_PRODUCTION_IMAGE_ID" = "$RECOVERY_TARGET_IMAGE_ID"', recovery.indexOf('if docker container inspect ouro-butler >/dev/null'))).toBeLessThan(recovery.indexOf("docker rm --force ouro-butler", recovery.indexOf('if docker container inspect ouro-butler >/dev/null')))
+    expect(recovery).toContain('if test "$RECOVERY_PRODUCTION_IMAGE_ID" = "$RECOVERY_TARGET_IMAGE_ID"; then')
+    expect(recovery).toContain('elif test "$RECOVERY_PRODUCTION_IMAGE_ID" = "$RECOVERY_ROLLBACK_IMAGE_ID"; then')
+    expect(recovery).toContain('! docker container inspect ouro-butler-rollback >/dev/null 2>&1 || return 1')
+    expect(recovery).toContain('assert_update_source "$RECOVERY_PRODUCTION_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"')
+  })
+
+  it("resumes rollback recovery after the old container was renamed, started, or re-enabled", () => {
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const recovery = extractRunbookFunction(runbook, "recover_pending_sanctuary_bundle_migration")
+    const rollbackRecovery = recovery.slice(recovery.indexOf('test "$RECOVERY_STATE" = committing'))
+    const rollbackBranch = recovery.slice(
+      recovery.lastIndexOf("  if docker container inspect ouro-butler-rollback >/dev/null 2>&1; then"),
+      recovery.lastIndexOf("\n}"),
+    )
+
+    expect(rollbackRecovery).toContain("if docker container inspect ouro-butler-rollback >/dev/null 2>&1; then")
+    expect(rollbackRecovery).toContain("elif docker container inspect ouro-butler >/dev/null 2>&1; then")
+    expect(rollbackRecovery).toContain('test "$RECOVERY_PRODUCTION_IMAGE_ID" = "$RECOVERY_ROLLBACK_IMAGE_ID" || return 1')
+    expect(rollbackRecovery).toContain("! docker container inspect ouro-butler-staging >/dev/null 2>&1 || return 1")
+    expect(rollbackRecovery).toContain("! docker container inspect ouro-butler-rollback >/dev/null 2>&1 || return 1")
+    expect(rollbackRecovery).toContain("else\n    return 1\n  fi\n  RECOVERY_PRODUCTION_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler) || return $?")
+    expect(rollbackRecovery).toContain('test "$RECOVERY_PRODUCTION_IMAGE_ID" = "$RECOVERY_ROLLBACK_IMAGE_ID" || return 1')
+
+    const topologyResolved = rollbackRecovery.lastIndexOf("RECOVERY_PRODUCTION_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler)")
+    const audit = rollbackRecovery.indexOf('assert_update_source "$RECOVERY_ROLLBACK_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"', topologyResolved)
+    const start = rollbackRecovery.indexOf("docker start ouro-butler", audit)
+    const ready = rollbackRecovery.indexOf("wait_butler_ready ouro-butler", start)
+    const autostart = rollbackRecovery.indexOf("enable_butler_autostart", ready)
+    const commit = rollbackRecovery.indexOf('migrate_sanctuary_package_managed_bundle "$RECOVERY_IMAGE_ID" commit', autostart)
+    expect(topologyResolved).toBeGreaterThan(-1)
+    expect(audit).toBeGreaterThan(topologyResolved)
+    expect(start).toBeGreaterThan(audit)
+    expect(ready).toBeGreaterThan(start)
+    expect(autostart).toBeGreaterThan(ready)
+    expect(commit).toBeGreaterThan(autostart)
+
+    const oldImage = `sha256:${"a".repeat(64)}`
+    const targetImage = `sha256:${"b".repeat(64)}`
+    const script = `
+docker() {
+  command printf '%s\n' "docker $*" >>"$CALL_LOG"
+  case "$*" in
+    "container inspect ouro-butler-rollback") return 1 ;;
+    "container inspect ouro-butler-staging") test "$TOPOLOGY" = ambiguous ;;
+    "container inspect ouro-butler") return 0 ;;
+    "inspect --format {{.Image}} ouro-butler")
+      if test "$TOPOLOGY" = wrong-image; then command printf '%s\n' "$RECOVERY_TARGET_IMAGE_ID"; else command printf '%s\n' "$RECOVERY_ROLLBACK_IMAGE_ID"; fi ;;
+    "start ouro-butler")
+      if test "$TOPOLOGY" = renamed; then command printf '%s\n' started-stopped-container >>"$CALL_LOG"; else command printf '%s\n' start-was-idempotent >>"$CALL_LOG"; fi ;;
+    *) return 23 ;;
+  esac
+}
+assert_update_source() { test "$1" = "$RECOVERY_ROLLBACK_IMAGE_ID" && command printf '%s\n' assert-update-source >>"$CALL_LOG"; }
+assert_only_running_butler() { command printf '%s\n' assert-only-running >>"$CALL_LOG"; }
+wait_butler_ready() { command printf '%s\n' wait-ready >>"$CALL_LOG"; }
+enable_butler_autostart() {
+  if test "$TOPOLOGY" = autostart-enabled; then command printf '%s\n' autostart-was-idempotent >>"$CALL_LOG"; fi
+  command printf '%s\n' enable-autostart >>"$CALL_LOG"
+}
+migrate_sanctuary_package_managed_bundle() { test "$2" = commit && command printf '%s\n' commit >>"$CALL_LOG"; }
+recover_test() {
+${rollbackBranch}
+}
+recover_test`
+    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-old-topology-recovery-"))
+    try {
+      for (const topology of ["renamed", "started", "autostart-enabled"]) {
+        const callLog = path.join(testRoot, `${topology}.log`)
+        const result = runConditionalHelper(script, "unused", {
+          AUDIT_RUNNER_IMAGE_ID: targetImage,
+          CALL_LOG: callLog,
+          RECOVERY_IMAGE_ID: targetImage,
+          RECOVERY_ROLLBACK_IMAGE_ID: oldImage,
+          RECOVERY_TARGET_IMAGE_ID: targetImage,
+          TOPOLOGY: topology,
+        })
+        expect(result.status, `${topology}\n${result.stderr}`).toBe(0)
+        const calls = fs.readFileSync(callLog, "utf8")
+        expect(calls).toContain("docker start ouro-butler")
+        expect(calls.indexOf("assert-update-source")).toBeLessThan(calls.indexOf("docker start ouro-butler"))
+        expect(calls.indexOf("docker start ouro-butler")).toBeLessThan(calls.indexOf("wait-ready"))
+        expect(calls.indexOf("wait-ready")).toBeLessThan(calls.indexOf("enable-autostart"))
+        expect(calls.indexOf("enable-autostart")).toBeLessThan(calls.indexOf("commit"))
+        if (topology === "renamed") expect(calls).toContain("started-stopped-container")
+        else expect(calls).toContain("start-was-idempotent")
+        if (topology === "autostart-enabled") expect(calls).toContain("autostart-was-idempotent")
+      }
+
+      for (const topology of ["wrong-image", "ambiguous"]) {
+        const callLog = path.join(testRoot, `${topology}.log`)
+        const result = runConditionalHelper(script, "unused", {
+          AUDIT_RUNNER_IMAGE_ID: targetImage,
+          CALL_LOG: callLog,
+          RECOVERY_IMAGE_ID: targetImage,
+          RECOVERY_ROLLBACK_IMAGE_ID: oldImage,
+          RECOVERY_TARGET_IMAGE_ID: targetImage,
+          TOPOLOGY: topology,
+        })
+        expect(result.status, topology).not.toBe(0)
+        const calls = fs.readFileSync(callLog, "utf8")
+        expect(calls).not.toContain("docker start ouro-butler")
+        expect(calls).not.toContain("commit")
+      }
+    } finally {
+      fs.rmSync(testRoot, { recursive: true, force: true })
     }
   })
 
@@ -1743,7 +2231,7 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
     expect(restoreRuntime).toBeGreaterThan(stopOld)
     expect(restoreBundle).toBeGreaterThan(restoreRuntime)
     expect(create).toBeGreaterThan(restoreBundle)
-    expect(restore).toContain('&& audit_effective ouro-butler "$IMAGE_ID" \\')
+    expect(restore).toContain('&& audit_effective ouro-butler "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" \\')
     expect(restore).toContain("&& docker start ouro-butler \\")
     expect(restore).toContain("&& wait_butler_ready ouro-butler \\")
     expect(restore).toContain("&& enable_butler_autostart; then")
@@ -1777,12 +2265,13 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
       bundleSchemaVersion: number
     }
 
-    expect(template).toContain("<Overview>Mendelow Cloud Butler</Overview>")
+    expect(template).toContain("<Overview>Mendelow Cloud Butler")
     expect(template).toContain('Default="/mnt/user/appdata/ouro-butler/runtime/.ouro-cli"')
     expect(template).toContain('Default="/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro"')
     expect(template).not.toContain('/mnt/user/appdata/ouro-butler/AgentBundles')
-    expect(template).toContain("<Repository>sha256:REPLACE_WITH_EXACT_LOCAL_IMAGE_ID</Repository>")
-    expect(template).not.toMatch(/<Repository>ouro-butler:/u)
+    expect(template).toContain(`<Repository>ghcr.io/ourostack/ouroboros-butler:${JSON.parse(fs.readFileSync("package.json", "utf8")).version}</Repository>`)
+    expect(template).toContain('Default="/boot/config/custom/ouro-events/spool" Mode="ro"')
+    expect(template).toContain('Default="/mnt/user/appdata/sabnzbd/sabnzbd.ini" Mode="ro"')
     expect(runbook).toContain("Mendelow Cloud Butler operator runbook")
     expect(runbook).toContain("/mnt/user/appdata/ouro-butler/runtime/.ouro-cli")
     expect(runbook).toContain("/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro")
@@ -1803,6 +2292,8 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
     expect(runbook).toContain('--mount "type=bind,src=$STAGED_RUNTIME_POLICY,dst=/audit/container-runtime.json,readonly" \\')
     expect(runbook).toContain('"$IMAGE_ID" --template /audit/sanctuary.xml --runtime-policy /audit/container-runtime.json --expected-image "$IMAGE_ID"')
     const updateRunbook = runbook.slice(runbook.indexOf("Update:"), runbook.indexOf("Backup:"))
+    const backupRunbook = runbook.slice(runbook.indexOf("Backup:"), runbook.indexOf("Restore:"))
+    const restoreRunbook = runbook.slice(runbook.indexOf("Restore:"), runbook.indexOf("Credential recovery:"))
     expect(runbook).toContain("AUTOSTART_FILE=/var/lib/docker/unraid-autostart")
     expect(runbook).toContain("/plugins/dynamix.docker.manager/include/UpdateConfig.php")
     expect(runbook).toContain("--connect-timeout 5")
@@ -1814,6 +2305,61 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
     expect(updateRunbook).toContain('docker create --name ouro-butler-staging --network host --restart unless-stopped --user 10001:10001 \\')
     expect(updateRunbook).toContain('--mount "type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli" \\')
     expect(updateRunbook).toContain('--mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \\')
+    expect(updateRunbook).toContain('--mount "type=bind,src=/boot/config/custom/ouro-events/spool,dst=/run/ouro-events,readonly" \\')
+    expect(updateRunbook.indexOf("bootstrap-spool.sh --mount")).toBeLessThan(updateRunbook.indexOf("disable_butler_autostart"))
+    expect(backupRunbook).toContain("--exclude='/state/acceptance/telegram-control.sock'")
+    expect(backupRunbook).toContain('test ! -S "$BACKUP_TMP/agent/sanctuary.ouro/state/acceptance/telegram-control.sock"')
+    expect(backupRunbook).toContain('docker container inspect ouro-butler >"$BACKUP_TMP/provenance/container-inspect.json"')
+    expect(backupRunbook).toContain('printf \'%s\\n\' "$BACKUP_IMAGE_ID" >"$BACKUP_TMP/provenance/image-id"')
+    expect(backupRunbook).toContain('docker image inspect "$BACKUP_IMAGE_ID" >"$BACKUP_TMP/provenance/image-inspect.json"')
+    expect(backupRunbook).toContain('>"$BACKUP_TMP/provenance/package-version"')
+    expect(backupRunbook).toContain('"$BACKUP_TMP/agent" "$BACKUP_TMP/host" "$BACKUP_TMP/provenance"')
+    expect(backupRunbook).toContain("snapshot_butler_host_fragments")
+    expect(backupRunbook).toContain('backup_host_file /boot/config/custom/usenet_health.sh custom/usenet_health.sh')
+    expect(backupRunbook).toContain('backup_host_file /boot/config/custom/ouro-events/install-usenet-guard.sh custom/ouro-events/install-usenet-guard.sh')
+    expect(backupRunbook).toContain('crontab -l >"$BACKUP_CRON_SOURCE"')
+    expect(backupRunbook).toContain('>"$BACKUP_TMP/host/go.butler-lines"')
+    expect(backupRunbook).toContain('snapshot_butler_cron_fragments "$BACKUP_CRON_SOURCE" "$BACKUP_TMP/host/crontab.butler-lines"')
+    expect(backupRunbook).toContain('>"$BACKUP_TMP/host/global-state"')
+    expect(backupRunbook).toContain("BACKUP_GO_DIGEST=$(sha256sum /boot/config/go")
+    expect(backupRunbook).toContain('BACKUP_CRON_DIGEST=$(sha256sum "$BACKUP_CRON_SOURCE"')
+    expect(backupRunbook).not.toContain('backup_host_file /boot/config/go go')
+    expect(backupRunbook).not.toContain('>"$BACKUP_TMP/host/crontab"')
+    expect(backupRunbook).toContain('test ! -e "$BACKUP_TMP/host/notify.conf"')
+    expect(backupRunbook).toContain('test ! -e "$BACKUP_TMP/host/sabnzbd.ini"')
+    expect(backupRunbook).toContain('host/inventory')
+    expect(backupRunbook).toContain('sha256sum --')
+    expect(backupRunbook).toContain('mv -- "$BACKUP_TMP" "$BACKUP_ROOT"')
+    const publish = backupRunbook.indexOf('mv -- "$BACKUP_TMP" "$BACKUP_ROOT"')
+    const revalidate = backupRunbook.indexOf('assert_update_source "$BACKUP_IMAGE_ID"', publish)
+    const restart = backupRunbook.indexOf("docker start ouro-butler", revalidate)
+    const onlyRunningAfterBackup = backupRunbook.indexOf("assert_only_running_butler ouro-butler", restart)
+    const readyAfterBackup = backupRunbook.indexOf("wait_butler_ready ouro-butler", onlyRunningAfterBackup)
+    const autostartCapture = backupRunbook.indexOf("BACKUP_AUTOSTART_COUNTS=$(butler_autostart_counts)")
+    const stopForBackup = backupRunbook.indexOf("if docker stop ouro-butler")
+    const autostartAfterBackup = backupRunbook.indexOf('verify_butler_autostart "$BACKUP_AUTOSTART_COUNTS"', readyAfterBackup)
+    expect(autostartCapture).toBeGreaterThan(-1)
+    expect(backupRunbook).toContain('validate_exact_image_id "$AUDIT_RUNNER_IMAGE_ID"')
+    expect(backupRunbook).toContain('test "$AUDIT_RUNNER_IMAGE_ID" != sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d')
+    expect(backupRunbook).toContain('assert_update_source "$BACKUP_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"')
+    expect(stopForBackup).toBeGreaterThan(autostartCapture)
+    expect(revalidate).toBeGreaterThan(publish)
+    expect(restart).toBeGreaterThan(revalidate)
+    expect(onlyRunningAfterBackup).toBeGreaterThan(restart)
+    expect(readyAfterBackup).toBeGreaterThan(onlyRunningAfterBackup)
+    expect(autostartAfterBackup).toBeGreaterThan(readyAfterBackup)
+    expect(backupRunbook).toContain("BACKUP_RECOVERY_STATUS=$?")
+    expect(backupRunbook).toContain("completed snapshot remains intact")
+    expect(backupRunbook.indexOf('chmod 0600 "$BACKUP_TMP/provenance/container-inspect.json"')).toBeLessThan(backupRunbook.indexOf('mv -- "$BACKUP_TMP" "$BACKUP_ROOT"'))
+    expect(extractRunbookFunction(runbook, "assert_restore_preflight")).toContain('verify_sanctuary_snapshot_provenance "$BACKUP_ROOT" "$IMAGE_ID"')
+    expect(restoreRunbook).toContain('--mount "type=bind,src=/boot/config/custom/ouro-events/spool,dst=/run/ouro-events,readonly" \\')
+    expect(restoreRunbook).toContain('--restore-root "$BACKUP_ROOT/host"')
+    expect(restoreRunbook).toContain('HOST_RESTORE_INSTALLER=$(mktemp /tmp/ouro-usenet-host-restore.XXXXXX)')
+    expect(backupRunbook).toContain('host_file_contains_inline_credential "$BACKUP_HOST_SOURCE"')
+    expect(restoreRunbook.indexOf("bootstrap-spool.sh --mount")).toBeLessThan(restoreRunbook.indexOf("disable_butler_autostart"))
+    const createCount = runbook.match(/docker create --name ouro-butler(?:-staging)?/gu)?.length ?? 0
+    expect(runbook.match(/--mount "type=bind,src=\/boot\/config\/custom\/ouro-events\/spool,dst=\/run\/ouro-events,readonly"/gu)).toHaveLength(createCount)
+    expect(runbook.match(/--mount "type=bind,src=\/mnt\/user\/appdata\/sabnzbd\/sabnzbd\.ini,dst=\/run\/sanctuary\/sabnzbd\.ini,readonly"/gu)).toHaveLength(createCount)
     expect(updateRunbook).toContain('"$IMAGE_ID"')
     expect(runbook).toContain('docker inspect "$AUDIT_CONTAINER" >"$INSPECT_DIR/container.json"')
     expect(runbook).toContain('docker image inspect "$AUDIT_EXPECTED_IMAGE" >"$INSPECT_DIR/image.json"')
@@ -1824,7 +2370,7 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
     const disableAutostart = updateRunbook.indexOf("disable_butler_autostart")
     const renameRollback = updateRunbook.indexOf("docker rename ouro-butler ouro-butler-rollback")
     const createStaging = updateRunbook.indexOf("docker create --name ouro-butler-staging")
-    const auditStaging = updateRunbook.indexOf('audit_effective ouro-butler-staging "$IMAGE_ID"')
+    const auditStaging = updateRunbook.indexOf('audit_effective ouro-butler-staging "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"')
     const startStaging = updateRunbook.indexOf("docker start ouro-butler-staging")
     expect(disableAutostart).toBeGreaterThan(-1)
     expect(stopProduction).toBeGreaterThan(disableAutostart)
@@ -1834,14 +2380,20 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
     expect(auditStaging).toBeGreaterThan(createStaging)
     expect(startStaging).toBeGreaterThan(auditStaging)
     expect(updateRunbook.indexOf("wait_butler_ready ouro-butler-staging")).toBeGreaterThan(startStaging)
+    const packageMigration = updateRunbook.indexOf("migrate_sanctuary_package_managed_bundle \"$IMAGE_ID\"")
+    expect(packageMigration).toBeGreaterThan(renameRollback)
+    expect(packageMigration).toBeLessThan(createStaging)
+    expect(runbook).toContain("docker run --rm --pull=never --network=none --read-only --user 10001:10001 \\")
+    expect(updateRunbook).toContain("Package-managed files are exactly")
+    expect(updateRunbook).toContain("preserves\n  agent.json, all steward policy and audit bytes, relationships, sessions, and\n  every other state path")
     expect(updateRunbook).toContain("At no point may production and staging run together against the same Telegram token")
     expect(updateRunbook).toContain("docker rename ouro-butler-rollback ouro-butler")
-    const rollbackAudit = updateRunbook.indexOf('audit_effective ouro-butler "$ROLLBACK_IMAGE_ID"')
+    const rollbackAudit = updateRunbook.indexOf('assert_update_source "$ROLLBACK_IMAGE_ID"')
     const rollbackStart = updateRunbook.indexOf("docker start ouro-butler", rollbackAudit)
     expect(rollbackStart).toBeGreaterThan(rollbackAudit)
     const productionBlock = updateRunbook.slice(updateRunbook.indexOf("Create and activate production from the same exact image ID"))
     const productionCreate = productionBlock.indexOf("if docker create --name ouro-butler ")
-    const productionAudit = productionBlock.indexOf('&& audit_effective ouro-butler "$IMAGE_ID"', productionCreate)
+    const productionAudit = productionBlock.indexOf('&& audit_effective ouro-butler "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"', productionCreate)
     const productionStart = productionBlock.indexOf("&& docker start ouro-butler", productionAudit)
     expect(productionCreate).toBeGreaterThan(-1)
     expect(productionStart).toBeGreaterThan(productionAudit)
@@ -1856,15 +2408,14 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
     const productionEnable = productionBlock.indexOf("enable_butler_autostart", productionReady)
     expect(productionReady).toBeGreaterThan(productionStart)
     expect(productionEnable).toBeGreaterThan(productionReady)
-    const restoreRunbook = runbook.slice(runbook.indexOf("Restore:"), runbook.indexOf("Credential recovery:"))
     expect(restoreRunbook).toContain("docker create --name ouro-butler")
-    expect(restoreRunbook).toContain('audit_effective ouro-butler "$IMAGE_ID"')
-    expect(restoreRunbook.indexOf("docker start ouro-butler")).toBeGreaterThan(restoreRunbook.indexOf('audit_effective ouro-butler "$IMAGE_ID"'))
+    expect(restoreRunbook).toContain('audit_effective ouro-butler "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"')
+    expect(restoreRunbook.indexOf("docker start ouro-butler")).toBeGreaterThan(restoreRunbook.indexOf('audit_effective ouro-butler "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"'))
     expect(restoreRunbook.indexOf("wait_butler_ready ouro-butler")).toBeGreaterThan(restoreRunbook.indexOf("docker start ouro-butler"))
     expect(restoreRunbook.indexOf("enable_butler_autostart")).toBeGreaterThan(restoreRunbook.indexOf("wait_butler_ready ouro-butler"))
     expect(auditor).toContain("exec node /opt/ouro/dist/heart/daemon/container-spec-auditor-main.js")
     expect(agent.habitPaidTurnsPerDay).toBe(24)
-    expect(meta).toMatchObject({ runtimeVersion: "0.1.0-alpha.735", bundleSchemaVersion: 3 })
+    expect(meta).toMatchObject({ runtimeVersion: "0.1.0-alpha.743", bundleSchemaVersion: 3 })
     expect(fs.existsSync("deploy/unraid/sanctuary.ouro/arc/README.md")).toBe(true)
     expect(fs.existsSync("deploy/unraid/sanctuary.ouro/tool-profiles.json")).toBe(true)
     expect(dockerfile).toContain("COPY deploy/unraid /opt/ouro/deploy/unraid")

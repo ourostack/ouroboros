@@ -921,16 +921,16 @@ describe("Sanctuary Unit 16 host broker", () => {
   it("constructs an exact argv-only packaged probe invocation", async () => {
     const { healthProbeDockerArgs } = await broker()
     expect(healthProbeDockerArgs("run", {
-      label: "unit-16h-daily-digest", scenarioHandleDigest: "a".repeat(64), ownerImageDigest: "b".repeat(64), ownerContainerDigest: "c".repeat(64),
+      label: "unit-16h-acceptance-delivery-probe", scenarioHandleDigest: "a".repeat(64), ownerImageDigest: "b".repeat(64), ownerContainerDigest: "c".repeat(64),
     })).toEqual([
       "exec", defaultTargetId, "/usr/local/bin/node", "/opt/ouro/dist/senses/sanctuary-health-acceptance-probe-entry.js", "run",
-      "--label", "unit-16h-daily-digest", "--scenario", "a".repeat(64), "--owner-image", "b".repeat(64), "--owner-container", "c".repeat(64),
+      "--label", "unit-16h-acceptance-delivery-probe", "--scenario", "a".repeat(64), "--owner-image", "b".repeat(64), "--owner-container", "c".repeat(64),
     ])
     expect(healthProbeDockerArgs("stop", {
-      label: "unit-16h-daily-digest", scenarioHandleDigest: "a".repeat(64), ownerImageDigest: "b".repeat(64), ownerContainerDigest: "c".repeat(64),
+      label: "unit-16h-acceptance-delivery-probe", scenarioHandleDigest: "a".repeat(64), ownerImageDigest: "b".repeat(64), ownerContainerDigest: "c".repeat(64),
     })).toEqual([
       "exec", defaultTargetId, "/usr/local/bin/node", "/opt/ouro/dist/senses/sanctuary-health-acceptance-probe-entry.js", "stop",
-      "--label", "unit-16h-daily-digest", "--scenario", "a".repeat(64), "--owner-image", "b".repeat(64), "--owner-container", "c".repeat(64),
+      "--label", "unit-16h-acceptance-delivery-probe", "--scenario", "a".repeat(64), "--owner-image", "b".repeat(64), "--owner-container", "c".repeat(64),
     ])
   })
 
@@ -1285,6 +1285,10 @@ describe("Sanctuary Unit 16 host broker", () => {
     expect(source).toContain('const RUNTIME_POLICY_FILE = "/opt/ouro/container-runtime.json"')
     expect(source).toContain('const PRODUCTION_RUNTIME_SOURCE = "/mnt/user/appdata/ouro-butler/runtime/.ouro-cli"')
     expect(source).toContain('const PRODUCTION_BUNDLE_SOURCE = "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro"')
+    expect(source).toContain('const PRODUCTION_EVENT_SPOOL_SOURCE = "/boot/config/custom/ouro-events/spool"')
+    expect(source).toContain('const PRODUCTION_SAB_CONFIG_SOURCE = "/mnt/user/appdata/sabnzbd/sabnzbd.ini"')
+    expect(source).toContain('{ destination: "/run/ouro-events", source: PRODUCTION_EVENT_SPOOL_SOURCE, mode: "ro", propagation: "rprivate", rw: false, type: "bind" }')
+    expect(source).toContain('{ destination: "/run/sanctuary/sabnzbd.ini", source: PRODUCTION_SAB_CONFIG_SOURCE, mode: "ro", propagation: "rprivate", rw: false, type: "bind" }')
     expect(source).toContain("mount.source === expected.source")
     expect(source).toContain("mount.mode === expected.mode")
     expect(source).toContain("mount.propagation === expected.propagation")

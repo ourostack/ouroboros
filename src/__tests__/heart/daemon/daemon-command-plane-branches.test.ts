@@ -14,6 +14,7 @@ import { buildHabitPrivateWakeCommand } from "../../../heart/daemon/habit-privat
 import { readPrivateTurnLedger } from "../../../heart/private-runtime"
 import { readHabitLastRun } from "../../../heart/habits/habit-runtime-state"
 import { listHabitRunReceipts } from "../../../arc/flight-recorder"
+import { claimExternalEvent, commitExternalEventDisposition, listExternalEventStatus, readExternalEventRecord, recordExternalEvent } from "../../../heart/external-events/router"
 
 function tmpSocketPath(name: string): string {
   return path.join(os.tmpdir(), `${name}-${Date.now()}-${Math.random().toString(16).slice(2)}.sock`)
@@ -50,7 +51,9 @@ describe("daemon command plane branches", () => {
     options?: {
       onStopCommandComplete?: () => void
       privateRuntimePolicyDeps?: unknown
-      externalEventRoot?: string
+      externalEventRoot?: string | null
+      privilegedEventSpoolRoot?: string
+      privilegedEventScanner?: (options: { spoolRoot: string; eventRoot: string }) => { accepted: number; rejected: number; replayed: number }
       rsvpHabitRunner?: unknown
       nativeHabitRunner?: unknown
       nativeHabitMatch?: unknown
@@ -108,7 +111,11 @@ describe("daemon command plane branches", () => {
       nativeHabitMatch: options?.nativeHabitMatch,
       schedulerFireVerifier: options?.schedulerFireVerifier,
       schedulerFireConsumer: options?.schedulerFireConsumer,
-      externalEventRoot: options?.externalEventRoot,
+      externalEventRoot: options?.externalEventRoot === null
+        ? undefined
+        : options?.externalEventRoot ?? `${socketPath}.external-events`,
+      privilegedEventSpoolRoot: options?.privilegedEventSpoolRoot,
+      privilegedEventScanner: options?.privilegedEventScanner,
       mailboxServerFactory: vi.fn(async () => ({
         url: "http://127.0.0.1:6876",
         stop: async () => undefined,
@@ -933,7 +940,7 @@ describe("daemon command plane branches", () => {
 
     expect(first).toMatchObject({
       ok: true,
-      message: expect.stringContaining("queued external event app-store-connect/feedback-1 as msg-1"),
+      message: expect.stringContaining("queued external event app-store-connect/feedback-1 as external-event:"),
       data: {
         event: expect.objectContaining({
           agent: "slugger",
@@ -949,24 +956,15 @@ describe("daemon command plane branches", () => {
     })
     expect(duplicate).toMatchObject({
       ok: true,
+      message: "updated external event app-store-connect/feedback-1 without wake",
       data: {
-        event: expect.objectContaining({ duplicateCount: 1 }),
-        wake: expect.objectContaining({
-          message: "private-runtime wake denied for slugger: duplicate private-turn decision already recorded",
-        }),
+        event: expect.objectContaining({ duplicateCount: 0 }),
+        receipt: null,
+        wake: null,
       },
     })
 
-    expect(router.send).toHaveBeenCalledWith(expect.objectContaining({
-      from: "ouro-external-event",
-      to: "slugger",
-      priority: "high",
-      taskRef: "app-store-connect:feedback-1",
-      content: expect.stringContaining("source: app-store-connect"),
-    }))
-    expect(router.send).toHaveBeenCalledWith(expect.objectContaining({
-      content: expect.stringContaining("/tmp/feedback/screenshot-1.jpg"),
-    }))
+    expect(router.send).not.toHaveBeenCalled()
     expect(policyDeps.evaluatePolicy).toHaveBeenCalledWith(
       expect.objectContaining({
         agent: "slugger",
@@ -974,10 +972,10 @@ describe("daemon command plane branches", () => {
         reason: "external event app-store-connect/feedback.created",
         triggerSource: "external-event",
         budgetClass: "interactive",
-        idempotencyKey: "external-event:slugger:app-store-connect:feedback-1",
+        idempotencyKey: "external-event:slugger:app-store-connect:feedback-1:generation:1:attempt:1",
         originRefs: [
           { kind: "external-event", id: "feedback-1", source: "app-store-connect", eventType: "feedback.created" },
-          { kind: "queue-receipt", id: "msg-1" },
+          { kind: "queue-receipt", id: "external-event:slugger:app-store-connect:feedback-1:generation:1:attempt:1" },
           { kind: "daemon-command", id: "external.event.submit" },
         ],
       }),
@@ -988,14 +986,15 @@ describe("daemon command plane branches", () => {
     expect(processManager.sendToAgent).toHaveBeenCalledWith("slugger", expect.objectContaining({
       type: "message",
       privateTurnDecision: expect.objectContaining({
-        idempotencyKey: "external-event:slugger:app-store-connect:feedback-1",
+        idempotencyKey: "external-event:slugger:app-store-connect:feedback-1:generation:1:attempt:1",
       }),
+      externalEvent: expect.objectContaining({ generation: 1, observationRevision: expect.any(String), claimOwner: expect.any(String) }),
     }))
 
     const recordPath = path.join(externalEventRoot, "slugger", "app-store-connect", "feedback-1.json")
     const record = JSON.parse(fs.readFileSync(recordPath, "utf-8")) as { duplicateCount: number; payloadPath: string }
     expect(record).toMatchObject({
-      duplicateCount: 1,
+      duplicateCount: 0,
       payloadPath: "/tmp/feedback/event.json",
     })
     const pendingDir = path.join(bundlesRoot, "slugger.ouro", "state", "pending", "self", "inner", "dialog")
@@ -1022,13 +1021,289 @@ describe("daemon command plane branches", () => {
     fs.rmSync(bundlesRoot, { recursive: true, force: true })
   })
 
+  it("reconciles a received external event into exactly one typed private turn on startup", async () => {
+    const socketPath = tmpSocketPath("daemon-external-event-reconcile")
+    const ledgerPath = path.join(os.tmpdir(), `external-event-reconcile-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const externalEventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "external-event-reconcile-root-"))
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "external-event-reconcile-bundles-"))
+    const received = recordExternalEvent({
+      agent: "slugger",
+      source: "sanctuary-health",
+      eventType: "health.sweep_observed",
+      eventId: "sweep",
+      observationRevision: "rev-startup",
+      evidence: ["Jellyfin is unavailable"],
+    }, { root: externalEventRoot })
+    const { daemon, processManager } = make(socketPath, bundlesRoot, {
+      privateRuntimePolicyDeps: privateRuntimePolicyDeps(ledgerPath, "allow"),
+      externalEventRoot,
+    })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+
+    try {
+      await daemon.start()
+      ;((daemon as any).externalEventReconcileTimer as { _onTimeout(): void })._onTimeout()
+      await Promise.resolve()
+      expect(processManager.sendToAgent).toHaveBeenCalledTimes(1)
+      expect(processManager.sendToAgent).toHaveBeenCalledWith("slugger", expect.objectContaining({
+        externalEvent: {
+          schemaVersion: 1,
+          recordPath: received.recordPath,
+          agent: "slugger",
+          source: "sanctuary-health",
+          eventId: "sweep",
+          generation: 1,
+          observationRevision: "rev-startup",
+          claimOwner: "external-event:slugger:sanctuary-health:sweep:generation:1:attempt:1",
+        },
+      }))
+      const pendingDir = path.join(bundlesRoot, "slugger.ouro", "state", "pending", "self", "inner", "dialog")
+      expect(fs.readdirSync(pendingDir).filter((entry) => entry.endsWith(".json"))).toHaveLength(1)
+      expect(readExternalEventRecord(received.recordPath)).toMatchObject({ executionState: "running", attemptCount: 1 })
+    } finally {
+      await daemon.stop()
+      fs.rmSync(externalEventRoot, { recursive: true, force: true })
+      fs.rmSync(bundlesRoot, { recursive: true, force: true })
+      fs.rmSync(ledgerPath, { force: true })
+    }
+  })
+
+  it("scans the hardened privileged spool on startup and the existing external-event reconciliation tick", async () => {
+    const socketPath = tmpSocketPath("daemon-privileged-spool")
+    const externalEventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-privileged-event-root-"))
+    const spoolRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-privileged-spool-root-"))
+    const scanner = vi.fn(() => ({ accepted: 0, rejected: 0, replayed: 0 }))
+    const { daemon } = make(socketPath, undefined, { externalEventRoot, privilegedEventSpoolRoot: spoolRoot, privilegedEventScanner: scanner })
+
+    try {
+      await daemon.start()
+      expect(scanner).toHaveBeenCalledTimes(1)
+      expect(scanner).toHaveBeenLastCalledWith({ spoolRoot, eventRoot: externalEventRoot })
+      ;((daemon as any).externalEventReconcileTimer as { _onTimeout(): void })._onTimeout()
+      await new Promise((resolve) => setImmediate(resolve))
+      expect(scanner).toHaveBeenCalledTimes(2)
+    } finally {
+      await daemon.stop()
+      fs.rmSync(externalEventRoot, { recursive: true, force: true })
+      fs.rmSync(spoolRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("skips corrupt and explicitly undispatched external-event receipts during reconciliation", async () => {
+    const socketPath = tmpSocketPath("daemon-external-event-skip")
+    const externalEventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "external-event-skip-root-"))
+    const disabled = recordExternalEvent({
+      agent: "slugger",
+      source: "sanctuary-health",
+      eventType: "health.observed",
+      eventId: "disabled",
+    }, { root: externalEventRoot, dispatchEnabled: false })
+    const corruptPath = path.join(externalEventRoot, "slugger", "sanctuary-health", "corrupt.json")
+    fs.writeFileSync(corruptPath, "{bad")
+    const { daemon, processManager } = make(socketPath, undefined, { externalEventRoot })
+
+    try {
+      await (daemon as any).reconcileExternalEvents()
+      expect(processManager.sendToAgent).not.toHaveBeenCalled()
+      expect(readExternalEventRecord(disabled.recordPath)).toMatchObject({
+        dispatchEnabled: false,
+        executionState: "received",
+      })
+      expect(listExternalEventStatus(externalEventRoot)).toEqual(expect.arrayContaining([
+        expect.objectContaining({ eventId: "corrupt", corrupt: true }),
+        expect.objectContaining({ eventId: "disabled", dispatchEnabled: false }),
+      ]))
+    } finally {
+      fs.rmSync(externalEventRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("coalesces one source's incident receipts into one turn with independently fenced leases", async () => {
+    const socketPath = tmpSocketPath("daemon-external-event-batch")
+    const ledgerPath = path.join(os.tmpdir(), `external-event-batch-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const externalEventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "external-event-batch-root-"))
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "external-event-batch-bundles-"))
+    const events = ["books", "jellyfin", "sonarr"].map((eventId) => recordExternalEvent({
+      agent: "slugger", source: "sanctuary-health", eventType: "health.observed", eventId, observationRevision: `rev-${eventId}`, evidence: [`${eventId} is unavailable`],
+    }, { root: externalEventRoot }))
+    const { daemon, processManager } = make(socketPath, bundlesRoot, {
+      privateRuntimePolicyDeps: privateRuntimePolicyDeps(ledgerPath, "allow"),
+      externalEventRoot,
+    })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+
+    try {
+      await daemon.start()
+      expect(processManager.sendToAgent).toHaveBeenCalledTimes(1)
+      const message = processManager.sendToAgent.mock.calls[0]![1] as any
+      expect([message.externalEvent, ...message.externalEvent.relatedEvents]).toHaveLength(3)
+      expect([message.externalEvent, ...message.externalEvent.relatedEvents].map((event: any) => event.eventId).sort()).toEqual(["books", "jellyfin", "sonarr"])
+      for (const event of events) expect(readExternalEventRecord(event.recordPath)).toMatchObject({ executionState: "running", attemptCount: 1 })
+      const pendingDir = path.join(bundlesRoot, "slugger.ouro", "state", "pending", "self", "inner", "dialog")
+      expect(fs.readdirSync(pendingDir).filter((entry) => entry.endsWith(".json"))).toHaveLength(3)
+      for (const [index, lease] of [message.externalEvent, ...message.externalEvent.relatedEvents].entries()) {
+        const current = readExternalEventRecord(lease.recordPath)
+        commitExternalEventDisposition(current.recordPath, {
+          owner: lease.claimOwner, expectedVersion: current.version, expectedGeneration: lease.generation,
+          disposition: {
+            classifiedRevision: lease.observationRevision, classification: "expected", stewardPolicy: { kind: "current", key: `service:${lease.eventId}`, version: index + 1 },
+            decision: "silent", reason: `${lease.eventId} is expected off.`, nextWake: { kind: "on_change" }, careId: null, awaitId: null, actionRefs: [], verificationRefs: [],
+          },
+        })
+      }
+      expect(listExternalEventStatus(externalEventRoot).map((status) => ({ eventId: status.eventId, state: status.executionState, policy: status.stewardPolicy }))).toEqual([
+        { eventId: "books", state: "handled", policy: { kind: "current", key: "service:books", version: 1 } },
+        { eventId: "jellyfin", state: "handled", policy: { kind: "current", key: "service:jellyfin", version: 2 } },
+        { eventId: "sonarr", state: "handled", policy: { kind: "current", key: "service:sonarr", version: 3 } },
+      ])
+    } finally {
+      await daemon.stop()
+      fs.rmSync(externalEventRoot, { recursive: true, force: true })
+      fs.rmSync(bundlesRoot, { recursive: true, force: true })
+      fs.rmSync(ledgerPath, { force: true })
+    }
+  })
+
+  it("releases earlier batch claims when a later receipt cannot be claimed", async () => {
+    const socketPath = tmpSocketPath("daemon-external-event-partial-claim")
+    const externalEventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "external-event-partial-claim-root-"))
+    const first = recordExternalEvent({ agent: "slugger", source: "sanctuary-health", eventType: "health.observed", eventId: "first" }, { root: externalEventRoot })
+    const second = recordExternalEvent({ agent: "slugger", source: "sanctuary-health", eventType: "health.observed", eventId: "second" }, { root: externalEventRoot })
+    claimExternalEvent(second.recordPath, {
+      owner: "competing-worker",
+      expectedVersion: second.version,
+      expectedGeneration: second.generation,
+    })
+    const { daemon, processManager } = make(socketPath, undefined, { externalEventRoot })
+
+    try {
+      await expect((daemon as any).dispatchExternalEvents([first, second])).rejects.toThrow("External event CAS mismatch")
+      expect(readExternalEventRecord(first.recordPath)).toMatchObject({
+        executionState: "retry_wait",
+        attemptCount: 1,
+        claimOwner: null,
+        claimExpiresAt: null,
+      })
+      expect(readExternalEventRecord(second.recordPath)).toMatchObject({ executionState: "running", claimOwner: "competing-worker" })
+      expect(processManager.sendToAgent).not.toHaveBeenCalled()
+    } finally {
+      fs.rmSync(externalEventRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("fails only still-owned batch claims when a denial has no prose", async () => {
+    const socketPath = tmpSocketPath("daemon-external-event-proseless-denial")
+    const externalEventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "external-event-proseless-denial-root-"))
+    const first = recordExternalEvent({ agent: "slugger", source: "sanctuary-health", eventType: "health.observed", eventId: "first" }, { root: externalEventRoot })
+    const second = recordExternalEvent({ agent: "slugger", source: "sanctuary-health", eventType: "health.observed", eventId: "second" }, { root: externalEventRoot })
+    const { daemon } = make(socketPath, undefined, { externalEventRoot })
+    vi.spyOn(daemon as any, "handlePrivateRuntimeWake").mockImplementation(async (_command: unknown, _fallback: unknown, lease: any) => {
+      const related = readExternalEventRecord(lease.relatedEvents[0].recordPath)
+      commitExternalEventDisposition(related.recordPath, {
+        owner: related.claimOwner!, expectedVersion: related.version, expectedGeneration: related.generation,
+        disposition: { classifiedRevision: related.observationRevision, classification: "expected", stewardPolicy: { kind: "none" }, decision: "silent", reason: "Handled concurrently.", nextWake: { kind: "on_change" }, careId: null, awaitId: null, actionRefs: [], verificationRefs: [] },
+      })
+      return { ok: true, data: { decision: { executable: false } } }
+    })
+
+    try {
+      await expect((daemon as any).dispatchExternalEvents([first, second])).rejects.toThrow("external-event private turn was denied")
+      expect(readExternalEventRecord(first.recordPath)).toMatchObject({ executionState: "retry_wait", lastError: "external-event private turn was denied" })
+      expect(readExternalEventRecord(second.recordPath)).toMatchObject({ executionState: "handled" })
+    } finally {
+      fs.rmSync(externalEventRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("records non-Error external-event dispatch failures without losing the claim", async () => {
+    const socketPath = tmpSocketPath("daemon-external-event-string-failure")
+    const externalEventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "external-event-string-failure-root-"))
+    const received = recordExternalEvent({ agent: "slugger", source: "sanctuary-health", eventType: "health.observed", eventId: "books" }, { root: externalEventRoot })
+    const { daemon } = make(socketPath, undefined, { externalEventRoot })
+    vi.spyOn(daemon as any, "handlePrivateRuntimeWake").mockRejectedValue("string failure")
+
+    try {
+      await expect((daemon as any).dispatchExternalEvents([received])).rejects.toBe("string failure")
+      expect(readExternalEventRecord(received.recordPath)).toMatchObject({ executionState: "retry_wait", lastError: "string failure" })
+    } finally {
+      fs.rmSync(externalEventRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("durably schedules a retry when startup dispatch is denied", async () => {
+    const socketPath = tmpSocketPath("daemon-external-event-retry")
+    const ledgerPath = path.join(os.tmpdir(), `external-event-retry-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const externalEventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "external-event-retry-root-"))
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "external-event-retry-bundles-"))
+    const received = recordExternalEvent({ agent: "slugger", source: "sanctuary-health", eventType: "health.sweep_observed", eventId: "sweep" }, { root: externalEventRoot })
+    const { daemon, processManager } = make(socketPath, bundlesRoot, {
+      privateRuntimePolicyDeps: privateRuntimePolicyDeps(ledgerPath, "deny"),
+      externalEventRoot,
+    })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+
+    try {
+      await daemon.start()
+      expect(readExternalEventRecord(received.recordPath)).toMatchObject({
+        executionState: "retry_wait",
+        attemptCount: 1,
+        claimOwner: null,
+        claimExpiresAt: null,
+        nextAttemptAt: expect.any(String),
+        lastError: expect.stringContaining("default policy deny"),
+      })
+      expect(processManager.sendToAgent).not.toHaveBeenCalled()
+    } finally {
+      await daemon.stop()
+      fs.rmSync(externalEventRoot, { recursive: true, force: true })
+      fs.rmSync(bundlesRoot, { recursive: true, force: true })
+      fs.rmSync(ledgerPath, { force: true })
+    }
+  })
+
+  it("recovers an expired external-event claim on startup without losing the receipt", async () => {
+    const socketPath = tmpSocketPath("daemon-external-event-expired")
+    const externalEventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "external-event-expired-root-"))
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "external-event-expired-bundles-"))
+    const received = recordExternalEvent({ agent: "slugger", source: "sanctuary-health", eventType: "health.sweep_observed", eventId: "sweep" }, {
+      root: externalEventRoot,
+      now: () => "2026-01-01T00:00:00.000Z",
+    })
+    claimExternalEvent(received.recordPath, {
+      owner: "crashed-daemon",
+      expectedVersion: received.version,
+      expectedGeneration: received.generation,
+      leaseMs: 1,
+      now: () => "2026-01-01T00:00:00.000Z",
+    })
+    const { daemon, processManager } = make(socketPath, bundlesRoot, { externalEventRoot })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+
+    try {
+      await daemon.start()
+      expect(readExternalEventRecord(received.recordPath)).toMatchObject({
+        executionState: "retry_wait",
+        attemptCount: 1,
+        claimOwner: null,
+        claimExpiresAt: null,
+        nextAttemptAt: expect.any(String),
+        lastError: expect.stringContaining("execution lease expired"),
+      })
+      expect(processManager.sendToAgent).not.toHaveBeenCalled()
+    } finally {
+      await daemon.stop()
+      fs.rmSync(externalEventRoot, { recursive: true, force: true })
+      fs.rmSync(bundlesRoot, { recursive: true, force: true })
+    }
+  })
+
   it("queues external events without waking and uses the default CLI receipt root", async () => {
     const socketPath = tmpSocketPath("daemon-external-event-no-wake")
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-external-event-home-"))
     const previousHome = process.env.HOME
     process.env.HOME = home
     try {
-      const { daemon, processManager, router } = make(socketPath)
+      const { daemon, processManager, router } = make(socketPath, undefined, { externalEventRoot: null })
       const response = await daemon.handleCommand({
         kind: "external.event.submit",
         agent: "slugger",
@@ -1040,7 +1315,7 @@ describe("daemon command plane branches", () => {
 
       expect(response).toMatchObject({
         ok: true,
-        message: "queued external event app-store-connect/feedback-no-wake as msg-1",
+        message: "updated external event app-store-connect/feedback-no-wake without wake",
         data: {
           wake: null,
           event: expect.objectContaining({
@@ -1048,9 +1323,7 @@ describe("daemon command plane branches", () => {
           }),
         },
       })
-      expect(router.send).toHaveBeenCalledWith(expect.objectContaining({
-        taskRef: "app-store-connect:feedback-no-wake",
-      }))
+      expect(router.send).not.toHaveBeenCalled()
       expect(processManager.startAgent).not.toHaveBeenCalled()
       expect(processManager.sendToAgent).not.toHaveBeenCalled()
     } finally {
@@ -1112,7 +1385,7 @@ describe("daemon command plane branches", () => {
 
     expect(response).toMatchObject({
       ok: true,
-      message: "queued external event app-store-connect/feedback-wake-fallback as msg-1; wake skipped",
+      message: expect.stringMatching(/^queued external event app-store-connect\/feedback-wake-fallback as external-event:.*; wake skipped$/u),
       data: {
         wake: { ok: true },
       },
@@ -1259,6 +1532,7 @@ describe("daemon command plane branches", () => {
     const poke = await daemon.handleCommand({ kind: "task.poke", agent: "ghost", taskId: "habit-heartbeat" })
 
     expect(poke).toMatchObject({ ok: true, message: "queued poke msg-1" })
+    expect(router.send).toHaveBeenCalledTimes(1)
     expect(router.send).toHaveBeenCalledWith(expect.objectContaining({
       to: "ghost",
       taskRef: "habit-heartbeat",
@@ -3680,6 +3954,7 @@ describe("daemon command plane branches", () => {
     const daemon = new OuroDaemon({
       socketPath,
       bundlesRoot: isolatedBundles,
+      externalEventRoot: `${socketPath}.external-events`,
       processManager: {
         listAgentSnapshots: () => [
           {

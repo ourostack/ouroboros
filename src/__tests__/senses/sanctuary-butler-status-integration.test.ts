@@ -1,0 +1,144 @@
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { FileFriendStore } from "@ouro.bot/friends"
+
+const harness = vi.hoisted(() => ({
+  agentRoot: "",
+  providerCreate: vi.fn(),
+}))
+
+vi.mock("../../heart/identity", async () => {
+  const actual = await vi.importActual<typeof import("../../heart/identity")>("../../heart/identity")
+  return {
+    ...actual,
+    getAgentName: () => "sanctuary",
+    getAgentRoot: () => harness.agentRoot,
+    getAgentStateRoot: () => `${harness.agentRoot}/state`,
+    loadAgentConfig: () => ({
+      name: "sanctuary",
+      humanFacing: { provider: "minimax", model: "minimax-text-01" },
+      agentFacing: { provider: "minimax", model: "minimax-text-01" },
+      phrases: actual.DEFAULT_AGENT_PHRASES,
+    }),
+  }
+})
+
+vi.mock("openai", () => {
+  class MockOpenAI {
+    chat = { completions: { create: harness.providerCreate } }
+    responses = { create: vi.fn() }
+  }
+  return { default: MockOpenAI, AzureOpenAI: MockOpenAI }
+})
+
+vi.mock("child_process", () => ({ execSync: vi.fn(), spawnSync: vi.fn() }))
+vi.mock("../../repertoire/skills", () => ({ listSkills: vi.fn(() => []), loadSkill: vi.fn() }))
+vi.mock("../../heart/daemon/socket-client", () => ({
+  DEFAULT_DAEMON_SOCKET_PATH: "/tmp/ouroboros-test-mock.sock",
+  sendDaemonCommand: vi.fn().mockResolvedValue({ ok: true }),
+  checkDaemonSocketAlive: vi.fn().mockResolvedValue(false),
+  requestInnerWake: vi.fn().mockResolvedValue(null),
+}))
+
+import { patchRuntimeConfig, resetConfigCache } from "../../heart/config"
+import { readStewardPolicy, updateStewardPolicy } from "../../heart/steward-policy"
+import { createRelationshipAuthorizationEvaluator, loadRelationshipCapabilityRegistry } from "../../repertoire/relationship-authorization"
+import { createTelegramSenseApp, opaqueTelegramSubject } from "../../senses/telegram"
+import type { TelegramBotApi, TelegramInboundMessage, TelegramLongPoll } from "../../senses/telegram-client"
+
+function stream(chunks: unknown[]) {
+  return { [Symbol.asyncIterator]: async function* () { for (const chunk of chunks) yield chunk } }
+}
+
+function toolCall(id: string, name: string, args: Record<string, unknown>) {
+  return stream([{ choices: [{ delta: { tool_calls: [{ index: 0, id, function: { name, arguments: JSON.stringify(args) } }] } }] }])
+}
+
+describe("Sanctuary Telegram stored-status integration", () => {
+  beforeEach(() => {
+    harness.agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-status-integration-"))
+    fs.cpSync(path.resolve("deploy/unraid/sanctuary.ouro"), harness.agentRoot, { recursive: true })
+    harness.providerCreate.mockReset()
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key", model: "minimax-text-01" } } })
+  })
+
+  afterEach(() => {
+    resetConfigCache()
+    fs.rmSync(harness.agentRoot, { recursive: true, force: true })
+  })
+
+  it("reads a stored Books preference through the real provider/tool loop and delivers its settle over Telegram", async () => {
+    const identityKey = "k".repeat(43)
+    const botToken = "test-token"
+    const userId = "42"
+    const chatId = "42"
+    const subject = opaqueTelegramSubject(identityKey, botToken, userId, chatId)
+    const registry = loadRelationshipCapabilityRegistry(harness.agentRoot)
+    const owner = {
+      id: "ari", name: "Ari", trustLevel: "family" as const, admissionState: "active" as const, initiativePolicy: "proactive" as const,
+      capabilityProfileId: "sanctuary-owner", externalIds: [{ provider: "telegram-user" as const, externalId: subject, linkedAt: "2026-08-29T00:00:00.000Z" }],
+      tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: "2026-08-29T00:00:00.000Z", updatedAt: "2026-08-29T00:00:00.000Z", schemaVersion: 1 as const,
+    }
+    await new FileFriendStore(path.join(harness.agentRoot, "friends")).put(owner.id, owner)
+    const relationshipAuthorization = createRelationshipAuthorizationEvaluator({
+      friend: owner,
+      registry,
+      requestId: "telegram-status-request",
+      requestPhase: "inbound",
+      sessionEventId: "telegram-status-event",
+    })
+    updateStewardPolicy(harness.agentRoot, {
+      expectedVersion: readStewardPolicy(harness.agentRoot).version,
+      actor: relationshipAuthorization.actor!,
+      mutation: { kind: "set_desired_state", key: "container:books", value: "intentionally_off", provenance: "stated", source: "telegram:status-preference" },
+      now: "2026-08-29T10:00:00.000Z",
+    })
+
+    let advertisedTools: string[] = []
+    let durableToolResult = ""
+    harness.providerCreate
+      .mockImplementationOnce((request: any) => {
+        advertisedTools = request.tools.map((tool: any) => tool.function.name)
+        return toolCall("read-stored-policy", "steward_policy_manage", { action: "read" })
+      })
+      .mockImplementationOnce((request: any) => {
+        durableToolResult = request.messages.findLast((message: any) => message.role === "tool" && message.tool_call_id === "read-stored-policy")?.content ?? ""
+        return toolCall("return-stored-policy", "settle", { answer: durableToolResult, intent: "direct_reply" })
+      })
+
+    let onMessage!: (message: TelegramInboundMessage) => Promise<void>
+    const api: TelegramBotApi = { request: vi.fn(async () => ({ message_id: 71 })), stop: vi.fn() }
+    const poll: TelegramLongPoll = { pollOnce: vi.fn(), run: vi.fn(), stop: vi.fn() }
+    const app = createTelegramSenseApp({
+      agentName: "sanctuary",
+      credentials: { botToken, authorizedUserId: userId, authorizedChatId: chatId },
+      identityKey,
+      _agentRoot: harness.agentRoot,
+      _toolContext: { signin: async () => undefined, agentRoot: harness.agentRoot, relationshipAuthorization } as any,
+      api,
+      offsetStore: { load: () => 0, save: vi.fn() },
+      createLongPoll: (options) => { onMessage = options.onMessage; return poll },
+      approvalTransport: { sendApproval: vi.fn(), handleUpdate: vi.fn(async () => ({ handled: true, accepted: true, reason: "accepted" })), reconcileExpired: vi.fn(), terminalizeRecovered: vi.fn() } as any,
+      _createInteractiveControl: (() => ({ socketPath: "unused", start: vi.fn(), stop: vi.fn() })) as any,
+      migrateIdentity: async () => undefined,
+    })
+
+    try {
+      await onMessage({ updateId: 1, messageId: "2", userId, chatId, text: "status" })
+      expect(advertisedTools).toContain("steward_policy_manage")
+      const policy = JSON.parse(durableToolResult) as { desiredStates: Record<string, { value: string }> }
+      expect(Object.keys(policy.desiredStates)).toEqual(["container:books"])
+      expect(policy.desiredStates["container:books"]?.value).toBe("intentionally_off")
+      const delivered = vi.mocked(api.request).mock.calls
+        .filter(([method]) => method === "sendMessage")
+        .map(([, parameters]) => String((parameters as { text?: unknown }).text ?? ""))
+        .join("")
+      expect(delivered).toBe(durableToolResult)
+    } finally {
+      await app.stop()
+    }
+  }, 20_000)
+})

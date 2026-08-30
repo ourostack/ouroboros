@@ -1,12 +1,12 @@
 {
   "name": "@ouro.bot/cli",
-  "version": "0.1.0-alpha.742",
+  "version": "0.1.0-alpha.743",
   "lockfileVersion": 3,
   "requires": true,
   "packages": {
     "": {
       "name": "@ouro.bot/cli",
-      "version": "0.1.0-alpha.742",
+      "version": "0.1.0-alpha.743",
       "dependencies": {
         "@anthropic-ai/sdk": "^0.78.0",
         "@azure/identity": "^4.13.0",
@@ -18,7 +18,7 @@
         "@microsoft/teams.common": "2.0.11",
         "@microsoft/teams.dev": "2.0.11",
         "@microsoft/teams.graph": "2.0.11",
-        "@ouro.bot/friends": "0.1.0-alpha.9",
+        "@ouro.bot/friends": "0.1.0-alpha.10",
         "@types/react": "^17.0.91",
         "@types/ws": "^8.18.1",
         "ajv": "^8.20.0",
@@ -1343,9 +1343,9 @@
       }
     },
     "node_modules/@ouro.bot/friends": {
-      "version": "0.1.0-alpha.9",
-      "resolved": "https://registry.npmjs.org/@ouro.bot/friends/-/friends-0.1.0-alpha.9.tgz",
-      "integrity": "sha512-yul9vy8OkrXbUNoYIAf8JbUn9SV4X3yxhIxbyeNTw599zwR6mG8CyPXo3BZPHXTGKPpbJluJh2iOsMBztgI4hg==",
+      "version": "0.1.0-alpha.10",
+      "resolved": "https://registry.npmjs.org/@ouro.bot/friends/-/friends-0.1.0-alpha.10.tgz",
+      "integrity": "sha512-HxKCXDv74pWnVPcyEYyWn4L1Okg4otanHo3o80J1yofN2ycb56Nreimj+IPSTf7d3lthIsoSbksgIpDyE11OGw==",
       "license": "Apache-2.0",
       "dependencies": {
         "libsodium-wrappers": "0.8.4"

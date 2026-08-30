@@ -8,7 +8,158 @@ const running = (id = "Docker:abc", name = "calibre-web") => ({
   data: { containers: [{ id, name, autostart: true, state: "running" as const, exitCode: null, degraded: false, status: "Up 2 hours" }], truncated: false },
 })
 
+const routineAuthority = (key: string, expectedPolicyVersion: number, receiptId = "relationship-1", profileVersion = 7) => ({
+  key,
+  expectedPolicyVersion,
+  reauthorize: async () => ({ allowed: true as const, receiptId, profileVersion }),
+})
+
 describe("approved Unraid restart executor", () => {
+  it("binds routine authority after exact double resolution and records every effect boundary", async () => {
+    const reserveRoutineAction = vi.fn().mockReturnValue({ id: "receipt-1" })
+    const transitionRoutineAction = vi.fn()
+    const persistAttempt = vi.fn()
+    const mutate = vi.fn().mockResolvedValue({ docker: { restart: { id: "Docker:abc", names: ["/calibre-web"] } } })
+    const restart = createApprovedUnraidRestartExecutor({
+      endpoint: "https://host/graphql",
+      listContainers: vi.fn().mockResolvedValue(running()),
+      loadWriteApiKey: async () => "key",
+      createClient: () => ({ mutate }),
+      persistAttempt,
+      reserveRoutineAction,
+      transitionRoutineAction,
+      now: () => new Date("2026-08-29T17:00:00.000Z"),
+    })
+    await expect(restart({ container: "calibre-web" }, { routine: routineAuthority("unraid.restart:calibre-web", 3, "relationship-1", 9) })).resolves.toMatchObject({ ok: true })
+    expect(reserveRoutineAction).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ key: "unraid.restart:calibre-web", action: "unraid.container.restart", target: "calibre-web", expectedBeforeState: "running", resolvedTarget: { id: "Docker:abc", name: "calibre-web" }, effect: { operation: "restart", targetId: "Docker:abc" }, attemptId: expect.any(String), authorizationReceiptId: "relationship-1", authorizationVersion: 9 }))
+    expect(transitionRoutineAction.mock.calls.map(([entry]) => entry)).toEqual([
+      expect.objectContaining({ id: "receipt-1", expectedState: "reserved", state: "attempting" }),
+      expect.objectContaining({ id: "receipt-1", expectedState: "attempting", state: "effect_acknowledged", effectReceipt: expect.stringMatching(/^[0-9a-f]{64}$/u) }),
+      expect.objectContaining({ id: "receipt-1", expectedState: "effect_acknowledged", state: "verified", verifiedAfterState: "running" }),
+    ])
+    expect(mutate).toHaveBeenCalledOnce()
+  })
+
+  it("revalidates the central relationship capability after the second exact resolution and binds only the fresh receipt", async () => {
+    const order: string[] = []
+    const reserveRoutineAction = vi.fn((input) => { order.push("reserve"); return { id: "receipt-1", input } })
+    const mutate = vi.fn(async () => { order.push("mutate"); return { docker: { restart: { id: "Docker:abc", names: ["/calibre-web"] } } } })
+    const reauthorize = vi.fn(async () => {
+      order.push("reauthorize")
+      return { allowed: true as const, receiptId: "relationship-fresh", profileVersion: 11 }
+    })
+    const listContainers = vi.fn(async () => { order.push("resolve"); return running() })
+    const restart = createApprovedUnraidRestartExecutor({
+      endpoint: "https://host/graphql",
+      listContainers,
+      loadWriteApiKey: async () => "key",
+      createClient: () => ({ mutate }),
+      persistAttempt: vi.fn(),
+      reserveRoutineAction,
+      transitionRoutineAction: vi.fn(),
+      now: () => new Date("2026-08-29T17:00:00.000Z"),
+    })
+
+    await expect(restart({ container: "calibre-web" }, { routine: {
+      key: "unraid.restart:calibre-web",
+      expectedPolicyVersion: 3,
+      reauthorize,
+    } })).resolves.toMatchObject({ ok: true })
+
+    expect(order.slice(0, 4)).toEqual(["resolve", "resolve", "reauthorize", "reserve"])
+    expect(reserveRoutineAction).toHaveBeenCalledWith(expect.objectContaining({ authorizationReceiptId: "relationship-fresh", authorizationVersion: 11 }))
+    expect(mutate).toHaveBeenCalledOnce()
+  })
+
+  it("does not reserve or mutate when the live relationship capability is lost after exact target resolution", async () => {
+    const reserveRoutineAction = vi.fn()
+    const mutate = vi.fn()
+    const restart = createApprovedUnraidRestartExecutor({
+      endpoint: "https://host/graphql",
+      listContainers: vi.fn().mockResolvedValue(running()),
+      loadWriteApiKey: async () => "key",
+      createClient: () => ({ mutate }),
+      reserveRoutineAction,
+      transitionRoutineAction: vi.fn(),
+    })
+
+    await expect(restart({ container: "calibre-web" }, { routine: {
+      key: "unraid.restart:calibre-web",
+      expectedPolicyVersion: 3,
+      reauthorize: async () => ({ allowed: false as const, reason: "relationship capability revoked" }),
+    } })).resolves.toMatchObject({ ok: false, error: { message: expect.stringContaining("revoked") } })
+    expect(reserveRoutineAction).not.toHaveBeenCalled()
+    expect(mutate).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    [async () => { throw new Error("relationship store offline") }, "unavailable"],
+    [async () => ({ allowed: true as const, receiptId: "", profileVersion: 7 }), "versioned"],
+    [async () => ({ allowed: true as const, receiptId: "receipt", profileVersion: 0 }), "versioned"],
+  ])("fails closed without reservation or mutation when fresh relationship evidence is invalid", async (reauthorize, reason) => {
+    const reserveRoutineAction = vi.fn()
+    const mutate = vi.fn()
+    const restart = createApprovedUnraidRestartExecutor({ endpoint: "https://host/graphql", listContainers: vi.fn().mockResolvedValue(running()), loadWriteApiKey: async () => "key", createClient: () => ({ mutate }), reserveRoutineAction, transitionRoutineAction: vi.fn() })
+
+    await expect(restart({ container: "calibre-web" }, { routine: { key: "restart", expectedPolicyVersion: 1, reauthorize } })).resolves.toMatchObject({ ok: false, error: { message: expect.stringContaining(reason) } })
+    expect(reserveRoutineAction).not.toHaveBeenCalled()
+    expect(mutate).not.toHaveBeenCalled()
+  })
+
+  it("never mutates when routine reservation fails after exact resolution", async () => {
+    const mutate = vi.fn()
+    const restart = createApprovedUnraidRestartExecutor({
+      endpoint: "https://host/graphql",
+      listContainers: vi.fn().mockResolvedValue(running()),
+      loadWriteApiKey: async () => "key",
+      createClient: () => ({ mutate }),
+      reserveRoutineAction: vi.fn(() => { throw new Error("routine action policy version changed") }),
+      transitionRoutineAction: vi.fn(),
+    })
+    await expect(restart({ container: "calibre-web" }, { routine: routineAuthority("unraid.restart:calibre-web", 3, "relationship-1", 9) })).resolves.toMatchObject({ ok: false, error: { code: "stale_target", message: expect.stringContaining("policy") } })
+    expect(mutate).not.toHaveBeenCalled()
+  })
+
+  it("does not leak a non-Error routine reservation failure", async () => {
+    const restart = createApprovedUnraidRestartExecutor({ endpoint: "https://host/graphql", listContainers: vi.fn().mockResolvedValue(running()), loadWriteApiKey: vi.fn(), reserveRoutineAction: vi.fn(() => { throw "offline" }), transitionRoutineAction: vi.fn() })
+    await expect(restart({ container: "calibre-web" }, { routine: routineAuthority("restart", 1) })).resolves.toMatchObject({ ok: false, error: { message: "routine action authority changed" } })
+  })
+
+  it("freezes indeterminate routine effects without blind retry", async () => {
+    const transitionRoutineAction = vi.fn()
+    const mutate = vi.fn().mockRejectedValue(new Error("connection reset"))
+    const restart = createApprovedUnraidRestartExecutor({
+      endpoint: "https://host/graphql",
+      listContainers: vi.fn().mockResolvedValue(running()),
+      loadWriteApiKey: async () => "key",
+      createClient: () => ({ mutate }),
+      reserveRoutineAction: vi.fn().mockReturnValue({ id: "receipt-1" }),
+      transitionRoutineAction,
+      sleep: async () => undefined,
+      observationTimeoutMs: 0,
+    })
+    await expect(restart({ container: "calibre-web" }, { routine: routineAuthority("unraid.restart:calibre-web", 3, "relationship-1", 9) })).resolves.toMatchObject({ ok: false, error: { code: "ambiguous", message: expect.stringContaining("not retried") } })
+    expect(mutate).toHaveBeenCalledOnce()
+    expect(transitionRoutineAction).toHaveBeenLastCalledWith(expect.objectContaining({ id: "receipt-1", state: "indeterminate", recoveryState: { state: "manual_inspection_required", compensation: "none" } }))
+  })
+
+  it("propagates a durable-ledger crash without retrying the mutation", async () => {
+    const mutate = vi.fn().mockResolvedValue({ docker: { restart: { id: "Docker:abc", names: ["/calibre-web"] } } })
+    const transitionRoutineAction = vi.fn()
+      .mockReturnValueOnce(undefined)
+      .mockImplementationOnce(() => { throw new Error("disk full after effect") })
+    const restart = createApprovedUnraidRestartExecutor({ endpoint: "https://host/graphql", listContainers: vi.fn().mockResolvedValue(running()), loadWriteApiKey: async () => "key", createClient: () => ({ mutate }), reserveRoutineAction: vi.fn().mockReturnValue({ id: "receipt-1" }), transitionRoutineAction })
+    await expect(restart({ container: "calibre-web" }, { routine: routineAuthority("restart", 1) })).rejects.toThrow("receipt persistence failed")
+    expect(mutate).toHaveBeenCalledOnce()
+  })
+
+  it("records an observed restarting transition as the external receipt", async () => {
+    const transitionRoutineAction = vi.fn()
+    const listings = [running(), running(), { ...running(), data: { ...running().data, containers: [{ ...running().data.containers[0], state: "restarting" as const }] } }, running()]
+    const restart = createApprovedUnraidRestartExecutor({ endpoint: "https://host/graphql", listContainers: vi.fn(async () => listings.shift()!), loadWriteApiKey: async () => "key", createClient: () => ({ mutate: vi.fn().mockResolvedValue({}) }), reserveRoutineAction: vi.fn().mockReturnValue({ id: "receipt-1" }), transitionRoutineAction, sleep: async () => undefined })
+    await expect(restart({ container: "calibre-web" }, { routine: routineAuthority("restart", 1) })).resolves.toMatchObject({ ok: true })
+    expect(transitionRoutineAction).toHaveBeenNthCalledWith(2, expect.objectContaining({ state: "effect_acknowledged", effectReceipt: expect.stringMatching(/^[0-9a-f]{64}$/u) }))
+  })
   it("loads the write credential only inside execution and sends one exact mutation", async () => {
     const listContainers = vi.fn().mockResolvedValue(running())
     const loadWriteApiKey = vi.fn().mockResolvedValue("secret-write-key")
@@ -316,5 +467,32 @@ describe("approved Unraid restart executor", () => {
       loadWriteApiKey: vi.fn(),
     })
     expect(restart).toBeTypeOf("function")
+  })
+
+  it("fails closed when routine ledger adapters are incomplete", async () => {
+    const restart = createApprovedUnraidRestartExecutor({ endpoint: "https://host/graphql", listContainers: vi.fn().mockResolvedValue(running()), loadWriteApiKey: vi.fn(), reserveRoutineAction: vi.fn() })
+    await expect(restart({ container: "calibre-web" }, { routine: routineAuthority("restart", 1) })).resolves.toMatchObject({ ok: false, error: { code: "invalid_response", message: expect.stringContaining("ledger") } })
+  })
+
+  it("terminalizes a reserved routine when the write credential is blank", async () => {
+    const transitionRoutineAction = vi.fn()
+    const restart = createApprovedUnraidRestartExecutor({ endpoint: "https://host/graphql", listContainers: vi.fn().mockResolvedValue(running()), loadWriteApiKey: async () => " ", reserveRoutineAction: vi.fn(() => ({ id: "receipt" })), transitionRoutineAction })
+    await expect(restart({ container: "calibre-web" }, { routine: routineAuthority("restart", 1) })).resolves.toMatchObject({ ok: false })
+    expect(transitionRoutineAction).toHaveBeenCalledWith(expect.objectContaining({ expectedState: "reserved", state: "failed" }))
+  })
+
+  it("propagates routine-ledger failure during post-attempt identity drift", async () => {
+    const listings = [running(), running(), running("Docker:def")]
+    const transitionRoutineAction = vi.fn().mockImplementationOnce(() => undefined).mockImplementationOnce(() => { throw "ledger offline" })
+    const restart = createApprovedUnraidRestartExecutor({ endpoint: "https://host/graphql", listContainers: vi.fn(async () => listings.shift()!), loadWriteApiKey: async () => "key", createClient: () => ({ mutate: vi.fn(async () => ({})) }), reserveRoutineAction: vi.fn(() => ({ id: "receipt" })), transitionRoutineAction })
+    await expect(restart({ container: "calibre-web" }, { routine: routineAuthority("restart", 1) })).rejects.toThrow("receipt persistence failed")
+  })
+
+  it("terminalizes routine authority when observation itself fails", async () => {
+    const transitionRoutineAction = vi.fn()
+    const listContainers = vi.fn().mockResolvedValueOnce(running()).mockResolvedValueOnce(running()).mockRejectedValueOnce(new Error("offline"))
+    const restart = createApprovedUnraidRestartExecutor({ endpoint: "https://host/graphql", listContainers, loadWriteApiKey: async () => "key", createClient: () => ({ mutate: vi.fn(async () => ({})) }), reserveRoutineAction: vi.fn(() => ({ id: "receipt" })), transitionRoutineAction })
+    await expect(restart({ container: "calibre-web" }, { routine: routineAuthority("restart", 1) })).resolves.toMatchObject({ ok: false, error: { code: "ambiguous" } })
+    expect(transitionRoutineAction).toHaveBeenLastCalledWith(expect.objectContaining({ state: "indeterminate" }))
   })
 })

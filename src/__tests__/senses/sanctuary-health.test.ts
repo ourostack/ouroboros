@@ -3,7 +3,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { describe, expect, it, vi } from "vitest"
 
-import { createSanctuaryHealthSweep, probeSanctuaryEndpoint } from "../../senses/sanctuary-health"
+import { createSanctuaryHealthSweep, probeSanctuaryEndpoint, readSanctuaryHealthState } from "../../senses/sanctuary-health"
 
 function context(state: "running" | "exited", autostart = true) {
   return { sanctuary: {
@@ -68,6 +68,12 @@ function writeState(filePath: string, state: unknown): void {
 }
 
 describe("Sanctuary deterministic health sweep", () => {
+  it("exposes the canonical health state through its read-only projection", () => {
+    const filePath = statePath()
+    writeState(filePath, validState({ lastDigestDay: "2026-08-29" }))
+    expect(readSanctuaryHealthState(filePath)).toMatchObject({ lastDigestDay: "2026-08-29", incidents: {} })
+  })
+
   it("follows only bounded same-origin HTTPS redirects with manual redirect control", async () => {
     const fetch = vi.fn()
       .mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: "/ready" } }))
@@ -255,7 +261,7 @@ describe("Sanctuary deterministic health sweep", () => {
     await expect(sweep()).rejects.toThrow("Sanctuary health state is corrupt")
   })
 
-  it("keeps truncated multi-byte health text inside the exact UTF-8 byte bound", async () => {
+  it("keeps multi-byte incident evidence bounded without authoring a message", async () => {
     const toolContext = context("running")
     toolContext.sanctuary.getNotifications.mockResolvedValue({ ok: true, data: { unacknowledged: [
       { id: "large", title: "é".repeat(30_000) },
@@ -269,52 +275,34 @@ describe("Sanctuary deterministic health sweep", () => {
     })
 
     const opened = await sweep()
-    expect(opened.message).toBeTypeOf("string")
-    expect(Buffer.byteLength(opened.message!)).toBeLessThanOrEqual(50_000)
-    expect(opened.message).toMatch(/…$/u)
-    await expect(sweep.markDeliveryAttempting(opened.deliveryId!)).resolves.toBeUndefined()
+    expect(opened.message).toBeNull()
+    expect(Buffer.byteLength(opened.incidents[0].summary)).toBeLessThanOrEqual(4_096)
+    expect(opened.incidents[0].summary).toMatch(/…$/u)
   })
 
-  it("alerts once on transition, suppresses unchanged, and emits one recovery", async () => {
+  it("records transition evidence without detector-authored messages or daily digests", async () => {
     const statePath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-health-")), "state.json")
     const fetch = vi.fn().mockResolvedValue(new Response("ok", { status: 200 }))
     let clock = new Date("2026-08-18T18:00:00.000Z")
     const now = () => clock
     const broken = createSanctuaryHealthSweep({ toolContext: context("exited"), statePath, fetch, now, acceptanceEventMeta: () => ({ scenarioHandleDigest: "a".repeat(64) }) })
     const opened = await broken()
-    expect(opened.message).toContain("calibre-web")
-    expect(opened.deliveryId).toBeTypeOf("string")
-    expect(JSON.parse(fs.readFileSync(statePath, "utf8")).sweepReceipts[0]).toMatchObject({ deliveryId: opened.deliveryId, opened: 1, recovered: 0, digestDue: true, scenarioHandleDigest: "a".repeat(64) })
-    expect((await broken())).toMatchObject({ message: opened.message, deliveryId: opened.deliveryId })
-    await broken.cacheDeliveryPayload(opened.deliveryId!, "cached private summary")
-    expect(await broken()).toMatchObject({ deliveryId: opened.deliveryId, cachedMessage: "cached private summary" })
-    await broken.markDeliveryAttempting(opened.deliveryId!)
+    expect(opened).toMatchObject({ message: null, transition: "opened", incidents: [expect.objectContaining({ id: "container:Docker:a:availability", summary: "calibre-web is exited" })] })
+    expect(JSON.parse(fs.readFileSync(statePath, "utf8")).sweepReceipts[0]).toMatchObject({ opened: 1, recovered: 0, digestDue: false, scenarioHandleDigest: "a".repeat(64) })
+    expect((await broken())).toMatchObject({ message: null, transition: "unchanged", recovered: [] })
     const restarted = createSanctuaryHealthSweep({ toolContext: context("exited"), statePath, fetch, now })
-    const retried = await restarted()
-    expect(retried).toMatchObject({ message: opened.message, deliveryId: opened.deliveryId, cachedMessage: "cached private summary" })
-    await restarted.markDeliveryAttempting(retried.deliveryId!)
-    await restarted.markDelivered(retried.deliveryId!, [7001])
-    expect(JSON.parse(fs.readFileSync(statePath, "utf8")).deliveredReceipts).toEqual([
-      expect.objectContaining({ deliveryId: retried.deliveryId, kind: "transition_and_digest", messageIds: [7001] }),
-    ])
-    expect((await broken()).message).toBeNull()
+    expect(await restarted()).toMatchObject({ message: null, transition: "unchanged" })
 
     clock = new Date("2026-08-19T18:00:00.000Z")
-    const nextDigest = await restarted()
-    expect(nextDigest.deliveryId).not.toBe(opened.deliveryId)
-    expect(nextDigest.message).toContain("still broken")
-    await restarted.markDeliveryAttempting(nextDigest.deliveryId!)
-    await restarted.markDelivered(nextDigest.deliveryId!, [7003])
+    expect(await restarted()).toMatchObject({ message: null, transition: "unchanged" })
 
     const healthy = createSanctuaryHealthSweep({ toolContext: context("running"), statePath, fetch, now })
     const recovered = await healthy()
-    expect(recovered.message).toContain("recovered")
-    await healthy.markDeliveryAttempting(recovered.deliveryId!)
-    await healthy.markDelivered(recovered.deliveryId!, [7002])
-    expect((await healthy()).message).toBeNull()
+    expect(recovered).toMatchObject({ message: null, transition: "recovered", incidents: [], recovered: [expect.objectContaining({ id: "container:Docker:a:availability" })] })
+    expect((await healthy())).toMatchObject({ message: null, transition: "unchanged", recovered: [] })
   })
 
-  it("serializes overlapping sweeps so they share one durable delivery", async () => {
+  it("serializes overlapping sweeps while sampling each requested observation", async () => {
     const statePath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-health-overlap-")), "state.json")
     let release!: () => void
     const gate = new Promise<void>((resolve) => { release = resolve })
@@ -328,8 +316,9 @@ describe("Sanctuary deterministic health sweep", () => {
     const second = sweep()
     release()
     const [left, right] = await Promise.all([first, second])
-    expect(right.deliveryId).toBe(left.deliveryId)
-    expect(toolContext.sanctuary.listContainers).toHaveBeenCalledTimes(1)
+    expect(left.transition).toBe("opened")
+    expect(right.transition).toBe("unchanged")
+    expect(toolContext.sanctuary.listContainers).toHaveBeenCalledTimes(2)
   })
 
   it("creates the health state directory before acquiring the first lease", async () => {
@@ -355,7 +344,7 @@ describe("Sanctuary deterministic health sweep", () => {
       now: () => new Date("2026-08-18T18:00:00.000Z"),
     })
 
-    expect((await sweep()).message).toContain("calibre-web is exited")
+    expect((await sweep()).incidents).toContainEqual(expect.objectContaining({ id: "container:Docker:a:availability", summary: "calibre-web is exited" }))
   })
 
   it("surfaces every degraded health dimension with stable incident identities", async () => {
@@ -402,30 +391,30 @@ describe("Sanctuary deterministic health sweep", () => {
     const ids = result.incidents.map((incident) => incident.id)
     expect(ids).toEqual([...ids].sort())
     expect(ids).toEqual(expect.arrayContaining([
-      "container:Docker:auto:exited:none",
-      "container:Docker:unknown:degraded",
-      "container:Docker:degraded:degraded",
-      "storage:array:90",
-      "storage:share:unknown:degraded",
-      "storage:share:degraded:degraded",
-      "storage:share:full:90",
-      "disk:Disk:bad:smart:failed",
-      "disk:Disk:bad:temperature:unknown",
-      "disk:Disk:hot:temperature:50",
+      "container:Docker:auto:availability",
+      "container:Docker:unknown:health",
+      "container:Docker:degraded:health",
+      "storage:array:capacity",
+      "storage:share:unknown:capacity",
+      "storage:share:degraded:capacity",
+      "storage:share:full:capacity",
+      "disk:Disk:bad:smart",
+      "disk:Disk:bad:temperature",
+      "disk:Disk:hot:temperature",
       "parity:stale-or-failed",
       "notification:n1",
       "notification:n2",
       "endpoint:https://media.mendelow.cloud/",
       "endpoint:https://books.mendelow.cloud/",
     ]))
-    expect(ids).not.toContain("container:Docker:optional:exited:none")
-    expect(result.message).toContain("unacknowledged notification: n2")
-    expect(result.message).toContain("returned no response")
+    expect(ids).not.toContain("container:Docker:optional:availability")
+    expect(result.message).toBeNull()
+    expect(result.incidents.map((incident) => incident.summary)).toEqual(expect.arrayContaining(["unacknowledged notification: n2", "https://books.mendelow.cloud/ returned no response"]))
   })
 
   it.each([
     ["containers", { listContainers: { ok: false, error: { code: "offline" } } }, "containers:unavailable"],
-    ["storage", { getStorage: { ok: false, error: { code: "offline" } } }, "storage:array:degraded"],
+    ["storage", { getStorage: { ok: false, error: { code: "offline" } } }, "storage:array:capacity"],
     ["disks", { getDisks: { ok: false, error: { code: "offline" } } }, "disks:unavailable"],
     ["notifications", { getNotifications: { ok: false, error: { code: "offline" } } }, "notifications:unavailable"],
   ])("reports unavailable %s results", async (_label, replacement, expectedId) => {
@@ -457,7 +446,7 @@ describe("Sanctuary deterministic health sweep", () => {
     })
 
     expect((await sweep()).incidents.map((incident) => incident.id)).toEqual(expect.arrayContaining([
-      "containers:unavailable", "storage:array:degraded", "parity:stale-or-failed", "notifications:unavailable",
+      "containers:unavailable", "storage:array:capacity", "parity:stale-or-failed", "notifications:unavailable",
     ]))
 
     const parityCases = [
@@ -478,65 +467,26 @@ describe("Sanctuary deterministic health sweep", () => {
     }
   })
 
-  it("rejects unavailable runtime and invalid delivery state transitions", async () => {
+  it("normalizes legacy delivery receipts before rejecting an unavailable runtime", async () => {
     const filePath = statePath("sanctuary-health-transitions-")
+    writeState(filePath, validState({
+      outbox: validDelivery({ kind: undefined }),
+      indeterminateDeliveries: [validDelivery({ id: "indeterminate", kind: undefined })],
+      deliveredReceipts: [validDeliveredReceipt({ kind: undefined })],
+    }))
     const absent = createSanctuaryHealthSweep({
       toolContext: {} as any,
       statePath: filePath,
-      fetch: vi.fn().mockResolvedValue(new Response(null, { status: 204 })),
     })
     await expect(absent()).rejects.toThrow("Sanctuary health runtime is unavailable")
-
-    const sweep = createSanctuaryHealthSweep({
-      toolContext: context("exited"),
-      statePath: filePath,
-      fetch: vi.fn().mockResolvedValue(new Response(null, { status: 204 })),
-      now: () => new Date("2026-08-18T18:00:00.000Z"),
+    expect(JSON.parse(fs.readFileSync(filePath, "utf8"))).toMatchObject({
+      outbox: null,
+      indeterminateDeliveries: [],
+      deliveredReceipts: [{ deliveryId: "delivery-1", kind: "legacy_unknown" }],
     })
-    const opened = await sweep()
-    await expect(sweep.markDeliveryAttempting("wrong")).rejects.toThrow("is not pending")
-    await expect(sweep.cacheDeliveryPayload(opened.deliveryId!, 1 as any)).rejects.toThrow("must be nonempty")
-    await expect(sweep.cacheDeliveryPayload(opened.deliveryId!, "   ")).rejects.toThrow("must be nonempty")
-    await expect(sweep.cacheDeliveryPayload(opened.deliveryId!, "x".repeat(50_001))).rejects.toThrow("bounded")
-    await expect(sweep.cacheDeliveryPayload("wrong", "summary")).rejects.toThrow("is not pending")
-    await expect(sweep.markDelivered(opened.deliveryId!, null as any)).rejects.toThrow("canonical Telegram message ids")
-    await expect(sweep.markDelivered(opened.deliveryId!, [])).rejects.toThrow("canonical Telegram message ids")
-    await expect(sweep.markDelivered(opened.deliveryId!, [1.5])).rejects.toThrow("canonical Telegram message ids")
-    await expect(sweep.markDelivered(opened.deliveryId!, [0])).rejects.toThrow("canonical Telegram message ids")
-    await expect(sweep.markDelivered(opened.deliveryId!, Array.from({ length: 101 }, (_, index) => index + 1))).rejects.toThrow("canonical Telegram message ids")
-    await expect(sweep.markDelivered(opened.deliveryId!, [1])).rejects.toThrow("is not attempting")
-    await sweep.markDeliveryAttempting(opened.deliveryId!)
-    await expect(sweep.markDeliveryAttempting(opened.deliveryId!)).rejects.toThrow("is not pending")
-    await expect(sweep.cacheDeliveryPayload(opened.deliveryId!, "too late")).rejects.toThrow("is not pending")
-    await expect(sweep.markDelivered("wrong", [1])).rejects.toThrow("is not attempting")
   })
 
-  it("caps delivered receipts at the newest one hundred and preserves canonical message ids", async () => {
-    const filePath = statePath("sanctuary-health-receipts-")
-    const oldReceipts = Array.from({ length: 100 }, (_, index) => ({
-      deliveryId: `old-${index}`,
-      messageIds: [index + 1],
-      deliveredAt: "2026-08-17T00:00:00.000Z",
-    }))
-    writeState(filePath, validState({
-      outbox: { id: "new", message: "health", status: "attempting", createdAt: "2026-08-18T18:00:00.000Z" },
-      deliveredReceipts: oldReceipts,
-    }))
-    const sweep = createSanctuaryHealthSweep({
-      toolContext: context("running"), statePath: filePath, now: () => new Date("2026-08-18T19:00:00.000Z"),
-    })
-
-    await sweep.markDelivered("new", [9001, 9002])
-
-    const saved = JSON.parse(fs.readFileSync(filePath, "utf8"))
-    expect(saved.deliveredReceipts).toHaveLength(100)
-    expect(saved.deliveredReceipts[0].deliveryId).toBe("old-1")
-    expect(saved.deliveredReceipts.at(-1)).toMatchObject({ deliveryId: "new", kind: "legacy_unknown", messageIds: [9001, 9002] })
-    expect(fs.statSync(filePath).mode & 0o777).toBe(0o600)
-    expect(fs.readdirSync(path.dirname(filePath))).toEqual(["state.json"])
-  })
-
-  it("moves an attempting delivery without a cached summary into the next indeterminate digest", async () => {
+  it("retires an attempting legacy delivery without surfacing detector prose", async () => {
     const filePath = statePath("sanctuary-health-indeterminate-retry-")
     writeState(filePath, validState({
       incidents: { previous: { id: "previous", summary: "prior health alert" } },
@@ -558,13 +508,13 @@ describe("Sanctuary deterministic health sweep", () => {
 
     const result = await sweep()
 
-    expect(result.message).toContain("prior Telegram delivery was indeterminate")
+    expect(result.message).toBeNull()
     const saved = JSON.parse(fs.readFileSync(filePath, "utf8"))
-    expect(saved.outbox).toMatchObject({ message: expect.stringContaining("prior Telegram delivery was indeterminate"), status: "pending", kind: "transition_and_digest" })
+    expect(saved.outbox).toBeNull()
     expect(saved.indeterminateDeliveries).toHaveLength(0)
   })
 
-  it("migrates a legacy indeterminate delivery without a kind into a tagged digest", async () => {
+  it("retires legacy indeterminate delivery prose without a digest", async () => {
     const filePath = statePath("sanctuary-health-legacy-indeterminate-")
     writeState(filePath, validState({
       indeterminateDeliveries: [{
@@ -582,8 +532,8 @@ describe("Sanctuary deterministic health sweep", () => {
     })
 
     const result = await sweep()
-    expect(result.message).toContain("prior health warning")
-    expect(JSON.parse(fs.readFileSync(filePath, "utf8")).outbox).toMatchObject({ kind: "digest" })
+    expect(result.message).toBeNull()
+    expect(JSON.parse(fs.readFileSync(filePath, "utf8"))).toMatchObject({ outbox: null, indeterminateDeliveries: [] })
   })
 
   it("defaults omitted durable collections and the runtime clock", async () => {

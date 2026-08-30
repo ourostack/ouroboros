@@ -6,7 +6,7 @@ import type { ToolContext } from "../repertoire/tools-base"
 import { emitNervesEvent } from "../nerves/runtime"
 import { sanctuaryAcceptanceEventMeta } from "../heart/daemon/sanctuary-acceptance-marker"
 
-const ENDPOINTS = [
+export const SANCTUARY_PUBLIC_ENDPOINTS = [
   "https://media.mendelow.cloud/",
   "https://books.mendelow.cloud/",
   "https://requests.mendelow.cloud/",
@@ -16,6 +16,17 @@ const REQUIRED_CONTAINERS = new Set(["calibre", "calibre-web", "Cloudflare-DDNS"
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
 const MAX_HEALTH_STATE_BYTES = 4 * 1024 * 1024
 const MAX_HEALTH_TEXT_BYTES = 50_000
+const MAX_HEALTH_INCIDENT_BYTES = 4_096
+
+function boundedIncidentText(value: string): string {
+  if (Buffer.byteLength(value) <= MAX_HEALTH_INCIDENT_BYTES) return value
+  let output = ""
+  for (const character of value) {
+    if (Buffer.byteLength(output) + Buffer.byteLength(character) > MAX_HEALTH_INCIDENT_BYTES - 3) break
+    output += character
+  }
+  return `${output}…`
+}
 
 function canonicalIsoTimestamp(value: unknown): value is string {
   if (typeof value !== "string" || value.length > 30) return false
@@ -23,20 +34,8 @@ function canonicalIsoTimestamp(value: unknown): value is string {
   return Number.isFinite(parsed) && new Date(parsed).toISOString() === value
 }
 
-function boundedHealthText(value: string): string {
-  if (Buffer.byteLength(value) <= MAX_HEALTH_TEXT_BYTES) return value
-  const ellipsis = "…"
-  const contentByteLimit = MAX_HEALTH_TEXT_BYTES - Buffer.byteLength(ellipsis)
-  let output = ""
-  for (const character of value) {
-    if (Buffer.byteLength(output) + Buffer.byteLength(character) > contentByteLimit) break
-    output += character
-  }
-  return `${output}${ellipsis}`
-}
-
-interface Incident { id: string; summary: string }
-interface HealthDelivery {
+interface Incident { id: string; summary: string; observationRevision?: string; transition?: "opened" | "unchanged" | "changed" }
+export interface HealthDelivery {
   id: string
   message: string
   status: "pending" | "attempting"
@@ -44,7 +43,7 @@ interface HealthDelivery {
   kind: "transition" | "digest" | "transition_and_digest" | "legacy_unknown"
   summarizedMessage?: string
 }
-interface HealthState {
+export interface HealthState {
   incidents: Record<string, Incident>
   lastDigestDay: string | null
   updatedAt: string
@@ -67,15 +66,15 @@ interface HealthState {
 export interface SanctuaryHealthSweepResult {
   message: string | null
   incidents: Incident[]
+  recovered?: Incident[]
+  observationRevision?: string
+  transition?: "opened" | "unchanged" | "changed" | "recovered"
   deliveryId?: string
   cachedMessage?: string
 }
 
 export interface SanctuaryHealthSweep {
   (): Promise<SanctuaryHealthSweepResult>
-  markDeliveryAttempting(deliveryId: string): Promise<void>
-  cacheDeliveryPayload(deliveryId: string, message: string): Promise<void>
-  markDelivered(deliveryId: string, messageIds: number[]): Promise<void>
 }
 
 const healthLockTails = new Map<string, Promise<void>>()
@@ -246,6 +245,11 @@ function load(filePath: string): HealthState {
   }
 }
 
+/** Read-only projection for status/orientation surfaces; mutation remains lease-owned by the sweep. */
+export function readSanctuaryHealthState(filePath: string): HealthState {
+  return load(filePath)
+}
+
 function save(filePath: string, state: HealthState): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true })
   const temporary = `${filePath}.tmp-${process.pid}-${randomUUID()}`
@@ -307,30 +311,9 @@ export function createSanctuaryHealthSweep(options: {
     const startedAt = now().toISOString()
     emitNervesEvent({ component: "senses", event: "senses.sanctuary_health_start", message: "Sanctuary deterministic health sweep started", meta: { statePath: options.statePath, ...acceptanceEventMeta() } })
     const pendingState = load(options.statePath)
-    if (pendingState.outbox?.status === "pending") {
-      emitNervesEvent({ component: "senses", event: "senses.sanctuary_health_end", message: "Sanctuary health delivery recovered from durable outbox", meta: { incidentCount: Object.keys(pendingState.incidents).length, deliveryId: pendingState.outbox.id, deliveryStatus: pendingState.outbox.status, ...acceptanceEventMeta() } })
-      return {
-        message: pendingState.outbox.message,
-        incidents: Object.values(pendingState.incidents),
-        deliveryId: pendingState.outbox.id,
-        ...(pendingState.outbox.summarizedMessage ? { cachedMessage: pendingState.outbox.summarizedMessage } : {}),
-      }
-    }
-    if (pendingState.outbox?.status === "attempting" && pendingState.outbox.summarizedMessage) {
-      pendingState.outbox.status = "pending"
-      pendingState.updatedAt = now().toISOString()
-      save(options.statePath, pendingState)
-      emitNervesEvent({ component: "senses", event: "senses.sanctuary_health_end", message: "Sanctuary health delivery retry recovered from durable outbox", meta: { incidentCount: Object.keys(pendingState.incidents).length, deliveryId: pendingState.outbox.id, deliveryStatus: pendingState.outbox.status, ...acceptanceEventMeta() } })
-      return {
-        message: pendingState.outbox.message,
-        incidents: Object.values(pendingState.incidents),
-        deliveryId: pendingState.outbox.id,
-        cachedMessage: pendingState.outbox.summarizedMessage,
-      }
-    }
-    if (pendingState.outbox?.status === "attempting") {
-      pendingState.indeterminateDeliveries.push(pendingState.outbox)
+    if (pendingState.outbox) {
       pendingState.outbox = null
+      pendingState.indeterminateDeliveries = []
       pendingState.updatedAt = now().toISOString()
       save(options.statePath, pendingState)
     }
@@ -338,28 +321,35 @@ export function createSanctuaryHealthSweep(options: {
     if (!runtime) throw new Error("Sanctuary health runtime is unavailable")
     const [containersResult, storageResult, disksResult, notificationsResult, endpoints] = await Promise.all([
       runtime.listContainers(), runtime.getStorage(), runtime.getDisks(), runtime.getNotifications(),
-      Promise.all(ENDPOINTS.map((url) => probeSanctuaryEndpoint(url, fetchImpl))),
+      Promise.all(SANCTUARY_PUBLIC_ENDPOINTS.map((url) => probeSanctuaryEndpoint(url, fetchImpl))),
     ])
     const incidents = new Map<string, Incident>()
-    const add = (id: string, summary: string) => incidents.set(id, { id, summary })
+    const add = (id: string, rawSummary: string) => {
+      const summary = boundedIncidentText(rawSummary)
+      incidents.set(id, {
+      id,
+      summary,
+      observationRevision: createHash("sha256").update(`${id}\0${summary}`).digest("hex"),
+      })
+    }
     const containers = record(containersResult)?.ok ? record(record(containersResult)?.data)?.containers : null
     if (!Array.isArray(containers)) add("containers:unavailable", "container status is unavailable")
     else for (const container of containers) {
-      if ((container.autostart === true || REQUIRED_CONTAINERS.has(container.name)) && container.state !== "running") add(`container:${container.id}:${container.state}:${container.exitCode ?? "none"}`, `${container.name} is ${container.state}`)
-      if (container.state === "unknown" || container.degraded === true) add(`container:${container.id}:degraded`, `${container.name} status is degraded`)
+      if ((container.autostart === true || REQUIRED_CONTAINERS.has(container.name)) && container.state !== "running") add(`container:${container.id}:availability`, `${container.name} is ${container.state}`)
+      if (container.state === "unknown" || container.degraded === true) add(`container:${container.id}:health`, `${container.name} status is degraded`)
     }
     const storage = record(storageResult)?.ok ? record(record(storageResult)?.data) : null
     const array = record(storage?.array)
-    if (!array || array.degraded || typeof array.usedPercent !== "number") add("storage:array:degraded", "array capacity is unavailable")
-    else if (array.usedPercent >= 90) add("storage:array:90", `array usage is ${array.usedPercent}%`)
-    for (const share of Array.isArray(storage?.shares) ? storage.shares : []) if (share.degraded || typeof share.usedPercent !== "number") add(`storage:share:${share.name}:degraded`, `${share.name} capacity is unavailable`); else if (share.usedPercent >= 90) add(`storage:share:${share.name}:90`, `${share.name} usage is ${share.usedPercent}%`)
+    if (!array || array.degraded || typeof array.usedPercent !== "number") add("storage:array:capacity", "array capacity is unavailable")
+    else if (array.usedPercent >= 90) add("storage:array:capacity", `array usage is ${array.usedPercent}%`)
+    for (const share of Array.isArray(storage?.shares) ? storage.shares : []) if (share.degraded || typeof share.usedPercent !== "number") add(`storage:share:${share.name}:capacity`, `${share.name} capacity is unavailable`); else if (share.usedPercent >= 90) add(`storage:share:${share.name}:capacity`, `${share.name} usage is ${share.usedPercent}%`)
     const disks = record(disksResult)?.ok ? record(record(disksResult)?.data) : null
     if (!disks) add("disks:unavailable", "disk health is unavailable")
     else {
       for (const disk of Array.isArray(disks.disks) ? disks.disks : []) {
-        if (disk.smart !== "passed") add(`disk:${disk.id}:smart:${disk.smart}`, `${disk.name} SMART is ${disk.smart}`)
-        if (typeof disk.temperatureC !== "number") add(`disk:${disk.id}:temperature:unknown`, `${disk.name} temperature is unavailable`)
-        else if (disk.temperatureC >= 50) add(`disk:${disk.id}:temperature:50`, `${disk.name} is ${disk.temperatureC}°C`)
+        if (disk.smart !== "passed") add(`disk:${disk.id}:smart`, `${disk.name} SMART is ${disk.smart}`)
+        if (typeof disk.temperatureC !== "number") add(`disk:${disk.id}:temperature`, `${disk.name} temperature is unavailable`)
+        else if (disk.temperatureC >= 50) add(`disk:${disk.id}:temperature`, `${disk.name} is ${disk.temperatureC}°C`)
       }
       const parity = record(disks.parity)
       if (!parity || parity.result !== "success" || typeof parity.ageHours !== "number" || parity.ageHours >= 45 * 24) add("parity:stale-or-failed", "parity check is unsuccessful, unknown, or older than 45 days")
@@ -370,85 +360,43 @@ export function createSanctuaryHealthSweep(options: {
     for (const endpoint of endpoints) if (!endpoint.ok) add(`endpoint:${endpoint.url}`, `${endpoint.url} returned ${endpoint.status || "no response"}`)
 
     const previous = load(options.statePath)
-    const current = Object.fromEntries([...incidents.entries()].sort(([a], [b]) => a.localeCompare(b)))
+    const current = Object.fromEntries([...incidents.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([id, incident]) => {
+      const prior = previous.incidents[id]
+      const transition: NonNullable<Incident["transition"]> = !prior ? "opened" : prior.observationRevision === incident.observationRevision ? "unchanged" : "changed"
+      return [id, { ...incident, transition }]
+    }))
     const opened = Object.values(current).filter((incident) => !previous.incidents[incident.id])
+    const changed = Object.values(current).filter((incident) => incident.transition === "changed")
     const recovered = Object.values(previous.incidents).filter((incident) => !current[incident.id])
-    const localParts = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Los_Angeles", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", hourCycle: "h23" }).formatToParts(now())
-    const part = (type: string) => localParts.find((item) => item.type === type)?.value ?? ""
-    const day = `${part("year")}-${part("month")}-${part("day")}`
-    const digestDue = Number(part("hour")) >= 9
-      && (Object.keys(current).length > 0 || previous.indeterminateDeliveries.length > 0)
-      && previous.lastDigestDay !== day
-    const lines = [
-      ...opened.map((incident) => `🚨 ${incident.summary}`),
-      ...recovered.map((incident) => `✅ recovered: ${incident.summary}`),
-      ...(digestDue && Object.keys(current).length > 0 ? [`📋 still broken: ${Object.values(current).map((incident) => incident.summary).join("; ")}`] : []),
-      ...(digestDue && previous.indeterminateDeliveries.length > 0
-        ? previous.indeterminateDeliveries.map((delivery) => `⚠️ prior Telegram delivery was indeterminate: ${delivery.message}`)
-        : []),
-    ]
-    const message = lines.length ? boundedHealthText(lines.join("\n")) : null
-    const deliveryKind: HealthDelivery["kind"] = digestDue && (opened.length > 0 || recovered.length > 0)
-      ? "transition_and_digest"
-      : digestDue ? "digest" : "transition"
-    const delivery = message ? { id: randomUUID(), message, status: "pending" as const, createdAt: now().toISOString(), kind: deliveryKind } : null
     const acceptanceMeta = acceptanceEventMeta()
     const completedAt = now().toISOString()
+    const incidentDigest = createHash("sha256").update(JSON.stringify(current)).digest("hex")
     const sweepReceipt = {
       sweepId,
       startedAt,
       completedAt,
-      incidentDigest: createHash("sha256").update(JSON.stringify(current)).digest("hex"),
+      incidentDigest,
       opened: opened.length,
       recovered: recovered.length,
-      digestDue,
-      ...(delivery ? { deliveryId: delivery.id } : {}),
+      digestDue: false,
       ...(acceptanceMeta.scenarioHandleDigest ? { scenarioHandleDigest: acceptanceMeta.scenarioHandleDigest } : {}),
     }
     const next: HealthState = {
       incidents: current,
-      lastDigestDay: digestDue ? day : previous.lastDigestDay,
+      lastDigestDay: null,
       updatedAt: now().toISOString(),
-      outbox: delivery,
-      indeterminateDeliveries: digestDue ? [] : previous.indeterminateDeliveries,
+      outbox: null,
+      indeterminateDeliveries: [],
       deliveredReceipts: previous.deliveredReceipts,
       sweepReceipts: [...previous.sweepReceipts, sweepReceipt].slice(-500),
     }
     save(options.statePath, next)
-    emitNervesEvent({ component: "senses", event: "senses.sanctuary_health_end", message: "Sanctuary deterministic health sweep completed", meta: { incidentCount: incidents.size, opened: opened.length, recovered: recovered.length, digestDue, ...acceptanceEventMeta() } })
-    return { message, incidents: Object.values(current), ...(delivery ? { deliveryId: delivery.id } : {}) }
+    emitNervesEvent({ component: "senses", event: "senses.sanctuary_health_end", message: "Sanctuary deterministic health sweep completed", meta: { incidentCount: incidents.size, opened: opened.length, recovered: recovered.length, digestDue: false, ...acceptanceEventMeta() } })
+    const transition = changed.length > 0 || (opened.length > 0 && recovered.length > 0) ? "changed" : opened.length > 0 ? "opened" : recovered.length > 0 ? "recovered" : "unchanged"
+    return { message: null, incidents: Object.values(current), recovered, observationRevision: incidentDigest, transition }
   }
 
   const sweep = (() => withHealthLock(options.statePath, runSweep, options.lease)) as SanctuaryHealthSweep
-
-  sweep.markDeliveryAttempting = (deliveryId: string): Promise<void> => withHealthLock(options.statePath, () => {
-    const state = load(options.statePath)
-    if (!state.outbox || state.outbox.id !== deliveryId || state.outbox.status !== "pending") throw new Error(`Sanctuary health delivery ${deliveryId} is not pending`)
-    state.outbox.status = "attempting"
-    state.updatedAt = now().toISOString()
-    save(options.statePath, state)
-  }, options.lease)
-
-  sweep.cacheDeliveryPayload = (deliveryId: string, message: string): Promise<void> => withHealthLock(options.statePath, () => {
-    if (typeof message !== "string" || message.trim().length === 0 || Buffer.byteLength(message) > MAX_HEALTH_TEXT_BYTES) throw new Error("Sanctuary health cached delivery payload must be nonempty and bounded")
-    const state = load(options.statePath)
-    if (!state.outbox || state.outbox.id !== deliveryId || state.outbox.status !== "pending") throw new Error(`Sanctuary health delivery ${deliveryId} is not pending`)
-    state.outbox.summarizedMessage = message
-    state.updatedAt = now().toISOString()
-    save(options.statePath, state)
-  }, options.lease)
-
-  sweep.markDelivered = (deliveryId: string, messageIds: number[]): Promise<void> => withHealthLock(options.statePath, () => {
-    if (!Array.isArray(messageIds) || messageIds.length < 1 || messageIds.length > 100 || !messageIds.every((id) => Number.isSafeInteger(id) && id > 0)) {
-      throw new Error("Sanctuary health delivery receipt requires canonical Telegram message ids")
-    }
-    const state = load(options.statePath)
-    if (!state.outbox || state.outbox.id !== deliveryId || state.outbox.status !== "attempting") throw new Error(`Sanctuary health delivery ${deliveryId} is not attempting`)
-    state.deliveredReceipts = [...state.deliveredReceipts, { deliveryId, kind: state.outbox.kind, messageIds: [...messageIds], deliveredAt: now().toISOString() }].slice(-100)
-    state.outbox = null
-    state.updatedAt = now().toISOString()
-    save(options.statePath, state)
-  }, options.lease)
 
   return sweep
 }

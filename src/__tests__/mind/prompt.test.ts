@@ -3237,6 +3237,145 @@ describe("buildSystem with context", () => {
     expect(result).toContain("consult_notes")
   })
 
+  it("omits private prompt surfaces when the relationship profile authorizes only household status and own requests", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const friend = { id: "relative", name: "Relative", trustLevel: "friend" as const, admissionState: "active" as const, initiativePolicy: "request_follow_up_only" as const, capabilityProfileId: "sanctuary-household", externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: "", updatedAt: "", schemaVersion: 1 }
+    const result = flattenSystemPrompt(await buildSystem("telegram", { relationshipContextScopes: ["household.status", "own_requests"] }, { friend, channel: { channel: "telegram", senseType: "chat", isRemote: true, isGroup: false, availableIntegrations: [], supportsAttachments: false, supportsReactions: false, chatStyle: true, supportsStreaming: false, supportsRichCards: true, maxMessageLength: 4096 } } as never))
+    expect(result).not.toContain("## my desk")
+    expect(result).not.toContain("family cross-session")
+    expect(result).toContain("## my lore")
+    expect(result).toContain("## tacit knowledge")
+    expect(result).toContain("## my aspirations")
+    expect(result).toContain("Relative")
+  })
+
+  it("restores the existing psyche sections when relationship policy authorizes household policy context", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const friend = { id: "ari", name: "Ari", trustLevel: "family" as const, admissionState: "active" as const, initiativePolicy: "proactive" as const, capabilityProfileId: "sanctuary-owner", relationshipPolicy: { schemaVersion: 1 as const, version: 2, preferences: { communication: { value: "Lead with outcomes", provenance: "stated" as const, version: 1, source: "telegram explicit turn evt-1" }, timing: { value: "Do not use this stale timing", provenance: "observed" as const, version: 1, source: "telegram observed pattern evt-old", expiresAt: "2020-01-01T00:00:00.000Z" } } }, externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: "", updatedAt: "", schemaVersion: 1 }
+    const result = flattenSystemPrompt(await buildSystem("telegram", { relationshipContextScopes: ["household.status", "household.policy"] }, { friend, channel: { channel: "telegram", senseType: "chat", isRemote: true, isGroup: false, availableIntegrations: [], supportsAttachments: false, supportsReactions: false, chatStyle: true, supportsStreaming: false, supportsRichCards: true, maxMessageLength: 4096 } } as never))
+    expect(result).toContain("## my lore")
+    expect(result).toContain("## tacit knowledge")
+    expect(result).toContain("## my aspirations")
+    expect(result).toContain("source=telegram explicit turn evt-1; provenance=stated; category=communication; value=Lead with outcomes; version=1; precedence=current")
+    expect(result).not.toContain("Do not use this stale timing")
+    expect(result).not.toContain("## my desk")
+  })
+
+  it("does not expose psyche sections to a generic relationship that merely reuses a household-named scope", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache(); patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const friend = { id: "generic", name: "Generic", trustLevel: "friend" as const, admissionState: "active" as const, initiativePolicy: "reactive_only" as const, capabilityProfileId: "generic-household", externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: "", updatedAt: "", schemaVersion: 1 }
+    const result = flattenSystemPrompt(await buildSystem("telegram", { relationshipContextScopes: ["household.status"] }, { friend, channel: { channel: "telegram", senseType: "chat", isRemote: true, isGroup: false, availableIntegrations: [], supportsAttachments: false, supportsReactions: false, chatStyle: true, supportsStreaming: false, supportsRichCards: true, maxMessageLength: 4096 } } as never))
+    expect(result).not.toContain("## my lore")
+    expect(result).not.toContain("## tacit knowledge")
+    expect(result).not.toContain("## my aspirations")
+  })
+
+  it("uses the exact event relationship profile to restore psyche in the self-context private turn", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache(); patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const self = { id: "self", name: "Sanctuary", trustLevel: "family" as const, externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: "", updatedAt: "", schemaVersion: 1 }
+    const result = flattenSystemPrompt(await buildSystem("inner", { relationshipContextScopes: ["household.status"], relationshipProfileId: "sanctuary-event" }, { friend: self, channel: { channel: "inner", senseType: "private", isRemote: false, isGroup: false, availableIntegrations: [], supportsAttachments: false, supportsReactions: false, chatStyle: false, supportsStreaming: false, supportsRichCards: false, maxMessageLength: 4096 } } as never))
+    expect(result).toContain("## my lore")
+    expect(result).toContain("## tacit knowledge")
+    expect(result).toContain("## my aspirations")
+  })
+
+  it("does not restore psyche for an event-named profile without a household context scope", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache(); patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const self = { id: "self", name: "Sanctuary", trustLevel: "family" as const, externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: "", updatedAt: "", schemaVersion: 1 }
+    const result = flattenSystemPrompt(await buildSystem("inner", { relationshipContextScopes: ["own_requests"], relationshipProfileId: "sanctuary-event" }, { friend: self, channel: { channel: "inner", senseType: "private", isRemote: false, isGroup: false, availableIntegrations: [], supportsAttachments: false, supportsReactions: false, chatStyle: false, supportsStreaming: false, supportsRichCards: false, maxMessageLength: 4096 } } as never))
+    expect(result).not.toContain("## my lore")
+    expect(result).not.toContain("## tacit knowledge")
+    expect(result).not.toContain("## my aspirations")
+  })
+
+  it("keeps relationship-scoped Telegram prompts private even when global frames are populated", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const friend = {
+      id: "relative",
+      name: "Maya",
+      trustLevel: "friend" as const,
+      admissionState: "active" as const,
+      initiativePolicy: "request_follow_up_only" as const,
+      capabilityProfileId: "sanctuary-household",
+      externalIds: [],
+      tenantMemberships: [],
+      toolPreferences: {},
+      notes: { preference: { value: "likes concise answers", savedAt: "2026-08-29T00:00:00.000Z" } },
+      totalTokens: 0,
+      createdAt: "",
+      updatedAt: "",
+      schemaVersion: 1,
+    }
+    const result = flattenSystemPrompt(await buildSystem("telegram", {
+      relationshipContextScopes: ["household.status", "own_requests"],
+      relationshipToolNames: ["unraid_get_system", "settle", "speak"],
+      tools: [{ type: "function", function: { name: "unraid_get_system", description: "Read household server status", parameters: { type: "object", properties: {} } } }],
+      startOfTurnPacket: "PRIVATE_PACKET_ARI",
+      pendingMessages: [{ from: "Ari", content: "PRIVATE_PENDING_ARI" }],
+      bridgeContext: "PRIVATE_BRIDGE_ARI",
+      currentObligation: "PRIVATE_OBLIGATION_ARI",
+      delegationDecision: { target: "delegate-inward", reasons: ["cross_session"], outwardClosureRequired: true },
+      providerVisibility: {
+        agentName: "sanctuary",
+        lanes: [{ lane: "outward", status: "configured", provider: "secret-provider", model: "secret-model", source: "agent.json", readiness: { status: "ready", checkedAt: "2026-08-29T00:00:00.000Z" }, credential: { status: "present", source: "auth-flow", revision: "private-provider-revision" }, warnings: [] }],
+      },
+      activeWorkFrame: {
+        centerOfGravity: "shared-work",
+        currentSession: { friendId: "relative", channel: "telegram", key: "telegram:bot:user", sessionPath: "/tmp/current.json" },
+        currentObligation: "PRIVATE_WORK_ARI",
+        inner: { status: "idle", hasPending: false, job: { status: "idle", content: null, origin: null, mode: "reflect", obligationStatus: null, surfacedResult: null, queuedAt: null, startedAt: null, surfacedAt: null } },
+        bridges: [{ id: "PRIVATE_BRIDGE_ID", status: "active", createdAt: "2026-08-29T00:00:00.000Z", updatedAt: "2026-08-29T00:00:00.000Z", sessions: [], summary: "PRIVATE_BRIDGE_SUMMARY", createdBy: "ari" }],
+        friendActivity: { freshestForCurrentFriend: null, otherLiveSessionsForCurrentFriend: [], allOtherLiveSessions: [{ friendId: "ari", friendName: "Ari", channel: "cli", key: "private", sessionPath: "/tmp/private.json", lastActivityAt: "2026-08-29T00:00:00.000Z", lastActivityMs: 0, activitySource: "friend-facing" }] },
+        codingSessions: [],
+        otherCodingSessions: [],
+        pendingObligations: [],
+        bridgeSuggestion: null,
+      },
+    } as any, {
+      friend,
+      channel: { channel: "telegram", senseType: "chat", isRemote: true, isGroup: false, availableIntegrations: [], supportsAttachments: false, supportsReactions: false, chatStyle: true, supportsStreaming: false, supportsRichCards: true, maxMessageLength: 4096 },
+    } as never))
+
+    expect(result).toContain("friend: Maya")
+    expect(result).toContain("witty, funny, competent chaos monkey")
+    expect(result).toContain("likes concise answers")
+    expect(result).toContain("unraid_get_system")
+    for (const privateText of ["PRIVATE_PACKET_ARI", "PRIVATE_PENDING_ARI", "PRIVATE_BRIDGE_ARI", "PRIVATE_OBLIGATION_ARI", "PRIVATE_WORK_ARI", "PRIVATE_BRIDGE_ID", "PRIVATE_BRIDGE_SUMMARY", "secret-provider", "secret-model", "private-provider-revision"]) {
+      expect(result).not.toContain(privateText)
+    }
+    for (const globalHeading of ["## my provider", "## the pulse", "## trip ledger truth", "## pending messages", "## what i'm holding", "## where my attention is", "## my commitments", "## session summary", "## my desk", "family cross-session", "cross-session truth"]) {
+      expect(result).not.toContain(globalHeading)
+    }
+    expect(result).not.toContain("My desk is always loaded")
+  })
+
   it("buildSystem('inner') does NOT include contextSection output (no friend context, no onboarding)", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")

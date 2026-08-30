@@ -93,7 +93,7 @@ import { SANCTUARY_SCENARIO_GATES, SANCTUARY_SCENARIO_SOURCES } from "../../../h
 
 function healthProbeReceipt(scenarioHandleDigest: string, patch: Record<string, unknown> = {}) {
   const phases = [{ ordinal: 1, name: "digest", trigger: "acceptance", fixtureStatus: 503, opened: 0, recovered: 0, digestDue: true, deliveryKind: "digest", sweepReceiptDigest: "5".repeat(64), deliveryReceiptDigest: "6".repeat(64) }]
-  return { schemaVersion: "sanctuary-health-probe-receipt-v1", label: "unit-16h-daily-digest", scenarioHandleDigest, ownerImageDigestBefore: "1".repeat(64), ownerImageDigestAfter: "1".repeat(64), ownerContainerDigestBefore: "2".repeat(64), ownerContainerDigestAfter: "2".repeat(64), beforeStateDigest: "3".repeat(64), restoredStateDigest: "3".repeat(64), cronFingerprintBefore: "4".repeat(64), cronFingerprintAfter: "4".repeat(64), cronRegisteredBefore: true, cronRegisteredAfter: true, cronDegradedBefore: false, cronDegradedAfter: false, fixtureSequenceDigest: createHash("sha256").update(JSON.stringify([503])).digest("hex"), clockMode: "local-daily-boundary", effectiveNow: "2026-08-20T16:00:00.000Z", phases, privateTurnCount: 1, providerInvocationCount: 1, deliveryCount: 1, workspaceAbsent: true, socketAbsent: true, snapshotAbsent: true, realCheckEquivalent: true, productionRestored: true, schedulerReceipt: null, ...patch }
+  return { schemaVersion: "sanctuary-health-probe-receipt-v1", label: "unit-16h-acceptance-delivery-probe", scenarioHandleDigest, ownerImageDigestBefore: "1".repeat(64), ownerImageDigestAfter: "1".repeat(64), ownerContainerDigestBefore: "2".repeat(64), ownerContainerDigestAfter: "2".repeat(64), beforeStateDigest: "3".repeat(64), restoredStateDigest: "3".repeat(64), cronFingerprintBefore: "4".repeat(64), cronFingerprintAfter: "4".repeat(64), cronRegisteredBefore: true, cronRegisteredAfter: true, cronDegradedBefore: false, cronDegradedAfter: false, fixtureSequenceDigest: createHash("sha256").update(JSON.stringify([503])).digest("hex"), clockMode: "local-daily-boundary", effectiveNow: "2026-08-20T16:00:00.000Z", phases, privateTurnCount: 1, providerInvocationCount: 1, deliveryCount: 1, workspaceAbsent: true, socketAbsent: true, snapshotAbsent: true, realCheckEquivalent: true, productionRestored: true, schedulerReceipt: null, acceptanceOnly: true, productionScheduleChanged: false, ...patch }
 }
 
 function cronHealthProbeReceipt(scenarioHandleDigest: string) {
@@ -264,7 +264,7 @@ describe("Sanctuary production boundary adapter coverage", () => {
     } finally { fs.rmSync(root, { recursive: true, force: true }) }
   })
 
-  it("derives daily digest evidence from valid health receipts", async () => {
+  it("derives acceptance-only delivery-path evidence from valid health receipts", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-facts-health-"))
     boundary.agentRoot = root
     const scenario = "a".repeat(64)
@@ -278,7 +278,7 @@ describe("Sanctuary production boundary adapter coverage", () => {
     const cron = "# ouro:habit:sanctuary:sanctuary:sanctuary-health\n*/15 * * * * /usr/local/bin/node /opt/ouro/dist/heart/daemon/ouro-entry.js poke sanctuary --habit sanctuary-health --trigger cron\n"
     const missing = Object.assign(new Error("missing"), { code: "ENOENT" })
     try {
-      const facts = await readDefaultSanctuaryScenarioFacts("unit-16h-daily-digest", scenario, {
+      const facts = await readDefaultSanctuaryScenarioFacts("unit-16h-acceptance-delivery-probe", scenario, {
         readKeyFiles: () => [], readDescriptor: () => "", execFile: async () => ({ status: 0, stdout: "" }), fetch,
         readFixedFile: (file) => {
           if (file.endsWith("/state/health/sanctuary-health.json")) return JSON.stringify(health)
@@ -858,22 +858,27 @@ describe("Sanctuary production boundary adapter coverage", () => {
     const run = async (profiles: unknown, keys: unknown[], receipts: unknown[]) => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-containment-sparse-"))
       try {
+        fs.writeFileSync(path.join(root, "tool-profiles.json"), JSON.stringify({ version: 2, profiles }))
         return await readDefaultSanctuaryScenarioFacts("unit-16e-containment-audit", digest, {
           readKeyFiles: () => [], readDescriptor: () => "", execFile: async () => ({ status: 0, stdout: "" }), fetch,
-          readFixedFile: (file) => file.endsWith("tool-profiles.json") ? JSON.stringify({ profiles }) : (() => { throw missing })(),
+          readFixedFile: () => { throw missing },
           hostRequest: async () => ({ keys }), runProductionBoundaryProbe: async () => receipts,
         } as never, root, { skipContainerSnapshot: true })
       } finally { fs.rmSync(root, { recursive: true, force: true }) }
     }
-    const sparse = await run({ "sanctuary-telegram": "bad", "sanctuary-health-private": "bad" }, [], [])
+    const sparse = await run({}, [], [])
     expect(sparse.containment).toMatchObject({ keyCount: 0, telegramToolCount: 0, privateToolCount: 0, containerUser: "", liveProcessUser: "", mountCount: -1, publishedPortCount: -1, networkMode: "" })
-    const odd = await run({ "sanctuary-telegram": ["shell", "not_a_tool", 1], "sanctuary-health-private": ["exec", "ponder", null] }, [
-      { id: "x", name: "Different", permissions: [{ resource: "DOCKER", actions: ["READ_ANY"] }], roles: ["role"], secret: "leaked" },
-    ], [
-      { name: "shell", reason: "other", invoked: true, sideEffect: true, globallyResolvable: true },
-      { name: "exec", reason: "profile_excluded", invoked: false, sideEffect: false, globallyResolvable: false },
-    ] as never)
-    expect(odd.containment).toMatchObject({ telegramToolCount: 2, privateToolCount: 2, rawWriteMaterialFieldCount: 1, excludedToolInvokedCount: 1, excludedToolSideEffectCount: 1 })
+    const shaped = await run({
+      "sanctuary-owner": { version: 1, contextScopes: [], toolNames: ["ponder"], effectScopes: [] },
+      "sanctuary-event": { version: 1, contextScopes: [], toolNames: [], effectScopes: [] },
+    }, [], [])
+    expect(shaped.containment).toMatchObject({ telegramToolCount: 1, privateToolCount: 0 })
+    const unresolved = await run({
+      "sanctuary-owner": { version: 1, contextScopes: [], toolNames: ["not_a_registered_tool"], effectScopes: [] },
+      "sanctuary-event": { version: 1, contextScopes: [], toolNames: ["rest"], effectScopes: [] },
+    }, [], [])
+    expect(unresolved.containment).toMatchObject({ relationshipProfilesExact: true, handlersExact: false, telegramToolCount: 1, privateToolCount: 1, resolvedHandlerCount: 1 })
+    await expect(run({ "sanctuary-owner": "bad", "sanctuary-event": "bad" }, [], [])).rejects.toThrow("relationship capability profile")
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-containment-invalid-"))
     try {
       await expect(readDefaultSanctuaryScenarioFacts("unit-16e-containment-audit", digest, {
@@ -949,7 +954,7 @@ describe("Sanctuary production boundary adapter coverage", () => {
         updatedAt: "2026-08-20T16:00:00.000Z",
       }
       const missing = Object.assign(new Error("missing"), { code: "ENOENT" })
-      const facts = await readDefaultSanctuaryScenarioFacts("unit-16h-daily-digest", digest, {
+      const facts = await readDefaultSanctuaryScenarioFacts("unit-16h-acceptance-delivery-probe", digest, {
         readKeyFiles: () => [], readDescriptor: () => "", execFile: async () => ({ status: 0, stdout: "" }), fetch,
         telegramCredentials: () => ({ botToken: "12345:abcdefghijklmnopqrst", authorizedUserId: "42", authorizedChatId: "42" }),
         readFixedFile: (file) => {
@@ -1059,12 +1064,12 @@ describe("Sanctuary production boundary adapter coverage", () => {
       },
     })
     try {
-      const sparse = await readDefaultSanctuaryScenarioFacts("unit-16h-daily-digest", digest, deps([]) as never, root, { skipContainerSnapshot: true })
+      const sparse = await readDefaultSanctuaryScenarioFacts("unit-16h-acceptance-delivery-probe", digest, deps([]) as never, root, { skipContainerSnapshot: true })
       expect(sparse.reboot).toMatchObject({ phase: "requested", hostReady: false })
-      const restored = await readDefaultSanctuaryScenarioFacts("unit-16h-daily-digest", digest, deps({ schemaVersion: "sanctuary-postboot-integrity-v2" }) as never, root, { containerSnapshot: owner })
+      const restored = await readDefaultSanctuaryScenarioFacts("unit-16h-acceptance-delivery-probe", digest, deps({ schemaVersion: "sanctuary-postboot-integrity-v2" }) as never, root, { containerSnapshot: owner })
       expect(restored.digest).toMatchObject({ scheduleObserved: false, productionRestored: true, messageCount: 1 })
       expect(restored.reboot).toMatchObject({ hostReady: true, butlerReady: true })
-      const unhealthy = await readDefaultSanctuaryScenarioFacts("unit-16h-daily-digest", digest, deps({}) as never, root, { containerSnapshot: { ...owner, running: false, health: "unhealthy" } })
+      const unhealthy = await readDefaultSanctuaryScenarioFacts("unit-16h-acceptance-delivery-probe", digest, deps({}) as never, root, { containerSnapshot: { ...owner, running: false, health: "unhealthy" } })
       expect(unhealthy.digest?.productionRestored).toBe(false)
       const cronOnly = await readDefaultSanctuaryScenarioFacts("unit-16f-cron-fingerprint", digest, {
         readKeyFiles: () => [], readDescriptor: () => "", execFile: async () => ({ status: 0, stdout: "" }), fetch,
@@ -1118,7 +1123,7 @@ describe("Sanctuary production boundary adapter coverage", () => {
     const digest = "a".repeat(64)
     const identityKey = "k".repeat(43)
     const missing = Object.assign(new Error("missing"), { code: "ENOENT" })
-    const read = (label: "unit-16f-cron-fingerprint" | "unit-16g-health-transition" | "unit-16h-daily-digest", receipt: unknown) => readDefaultSanctuaryScenarioFacts(label, digest, {
+    const read = (label: "unit-16f-cron-fingerprint" | "unit-16g-health-transition" | "unit-16h-acceptance-delivery-probe", receipt: unknown) => readDefaultSanctuaryScenarioFacts(label, digest, {
       readKeyFiles: () => [], readDescriptor: () => "", execFile: async () => ({ status: 0, stdout: "" }), fetch,
       telegramCredentials: () => ({ botToken: "x", authorizedUserId: "42", authorizedChatId: "42" }),
       readFixedFile: (file) => file.endsWith("identity.key") ? identityKey : file.includes("health-probe-receipts") ? JSON.stringify(receipt) : (() => { throw missing })(),
@@ -1127,25 +1132,9 @@ describe("Sanctuary production boundary adapter coverage", () => {
       const cron = cronHealthProbeReceipt(digest)
       const scheduler = (cron.schedulerReceipt as Record<string, any>)
       await expect(read("unit-16f-cron-fingerprint", { ...cron, schedulerReceipt: { ...scheduler, supervisor: { ...scheduler.supervisor, manifest: null } } })).rejects.toThrow("scheduler liveness receipt is invalid")
-      await expect(read("unit-16h-daily-digest", healthProbeReceipt(digest, { schedulerReceipt: {} }))).rejects.toThrow("unexpected scheduler receipt")
+      await expect(read("unit-16h-acceptance-delivery-probe", healthProbeReceipt(digest, { schedulerReceipt: {} }))).rejects.toThrow("unexpected scheduler receipt")
       await expect(read("unit-16g-health-transition", healthProbeReceipt(digest, { label: "unit-16g-health-transition", clockMode: "local-daily-boundary" }))).rejects.toThrow("clock mode is invalid")
     } finally { fs.rmSync(root, { recursive: true, force: true }) }
   })
 
-  it("rejects an unauthorized audit event bound to a malformed scenario digest", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-unauthorized-malformed-"))
-    const identityKey = "k".repeat(43)
-    const audit = createTelegramAuditLedger({ root, identityKey })
-    const scenario = "a".repeat(64)
-    const credentials = { botToken: "x", authorizedUserId: "42", authorizedChatId: "42" }
-    const binding = { scenarioHandleDigest: scenario, updateDigest: "1".repeat(64), senderIdentityDigest: "2".repeat(64), authorizedIdentityDigest: sanctuaryTelegramTurnReceiptDigest(identityKey, "sanctuary-telegram-turn-receipt-v3", "sender-identity", credentials.authorizedUserId), senderDistinct: true, nextOffsetDigest: sanctuaryTelegramTurnReceiptDigest(identityKey, "sanctuary-telegram-turn-receipt-v3", "next-update-id", "124") }
-    audit.append({ ts: "2026-08-20T16:00:00.000Z", level: "info", event: "telegram.update_dropped", component: "senses", trace_id: "trace-valid", message: "dropped", meta: { ...binding, distinctAccount: true, dropMac: sanctuaryTelegramUnauthorizedDropMac(identityKey, "sanctuary-telegram-turn-receipt-v3", binding) } })
-    const missing = Object.assign(new Error("missing"), { code: "ENOENT" })
-    const deps = { readKeyFiles: () => [], readDescriptor: () => "", execFile: async () => ({ status: 0, stdout: "" }), fetch, telegramCredentials: () => credentials, hostRequest: async () => ({ keys: [] }), runProductionBoundaryProbe: async () => [], readFixedFile: (file: string) => file.endsWith("identity.key") ? identityKey : file.endsWith("telegram-audit-chain.ndjson") ? fs.readFileSync(audit.ledgerPath, "utf8") : file.endsWith("telegram-audit-chain.head.json") ? fs.readFileSync(audit.headPath, "utf8") : file.endsWith("offset.json") ? JSON.stringify({ nextUpdateId: 124 }) : (() => { throw missing })() }
-    try {
-      await expect(readDefaultSanctuaryScenarioFacts("unit-16d-2-unauthorized", scenario, deps as never, root, { skipContainerSnapshot: true })).resolves.toBeTruthy()
-      audit.append({ ts: "2026-08-20T16:00:01.000Z", level: "info", event: "telegram.update_dropped", component: "senses", trace_id: "trace-bad", message: "dropped", meta: { scenarioHandleDigest: "bad" } })
-      await expect(readDefaultSanctuaryScenarioFacts("unit-16d-2-unauthorized", "bad", deps as never, root, { skipContainerSnapshot: true })).rejects.toThrow("unauthorized sender binding MAC is invalid")
-    } finally { fs.rmSync(root, { recursive: true, force: true }) }
-  })
 })

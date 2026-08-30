@@ -1,5 +1,5 @@
 import type OpenAI from "openai";
-import { baseToolDefinitions, editFileReadTracker } from "./tools-base";
+import { baseToolDefinitions, editFileReadTracker, routineActionRequester } from "./tools-base";
 import type { ToolApprovalPolicy, ToolContext, ToolDefinition } from "./tools-base";
 import { teamsToolDefinitions } from "./tools-teams";
 import { bluebubblesToolDefinitions } from "./tools-bluebubbles";
@@ -18,8 +18,10 @@ import { mcpToolsAsDefinitions } from "./mcp-tools";
 import { voiceToolDefinitions } from "./tools-voice";
 import { detectDestructivePatterns } from "./shell-sessions";
 import { unraidToolDefinitions } from "./tools-unraid";
-import { ponderTool, settleTool, speakTool } from "./tools-flow";
+import { ponderTool, restTool, settleTool, speakTool } from "./tools-flow";
+import { stewardPolicyToolDefinition } from "./tools-steward-policy";
 import type { ToolHighRiskMutationKind, ToolRiskProfile } from "./tools-base";
+import { inspectRoutineActionGrant } from "../heart/steward-policy";
 
 function safeGetAgentRoot(): string | undefined {
   try {
@@ -37,6 +39,34 @@ function isSanctuaryAgent(): boolean {
   }
 }
 
+const SANCTUARY_RELATIONSHIP_BASE_TOOLS = new Set([
+  "external_event_disposition",
+  "query_active_work",
+  "save_friend_note",
+  "telegram_contact_manage",
+  "query_cares",
+  "care_manage",
+  "await_condition",
+  "resolve_await",
+  "cancel_await",
+  "send_message",
+])
+const SANCTUARY_TELEGRAM_SURFACE = new Set([
+  "query_active_work",
+  "save_friend_note",
+  "telegram_contact_manage",
+  "query_cares",
+  "care_manage",
+  "await_condition",
+  "resolve_await",
+  "cancel_await",
+  ...unraidToolDefinitions.map((definition) => definition.tool.function.name),
+  "steward_policy_manage",
+  "ponder",
+  "settle",
+  "speak",
+])
+
 // Re-export types and constants used by the rest of the codebase
 export { tools, settleTool, observeTool, ponderTool, restTool, speakTool } from "./tools-base";
 export type { ToolContext, ToolHandler, ToolDefinition } from "./tools-base";
@@ -45,7 +75,7 @@ export type { ToolContext, ToolHandler, ToolDefinition } from "./tools-base";
 export { surfaceToolDef } from "./tools-surface";
 
 // All tool definitions in a single registry
-const allDefinitions: ToolDefinition[] = [...baseToolDefinitions, ...bluebubblesToolDefinitions, ...teamsToolDefinitions, ...adoSemanticToolDefinitions, ...githubToolDefinitions, ...bundleToolDefinitions, ...voiceToolDefinitions, ...unraidToolDefinitions, surfaceToolDefinition];
+const allDefinitions: ToolDefinition[] = [...baseToolDefinitions, ...bluebubblesToolDefinitions, ...teamsToolDefinitions, ...adoSemanticToolDefinitions, ...githubToolDefinitions, ...bundleToolDefinitions, ...voiceToolDefinitions, ...unraidToolDefinitions, stewardPolicyToolDefinition, surfaceToolDefinition];
 const COMMERCE_AUTHORITY_TOOLS = new Set(["stripe_create_card", "flight_hold", "flight_book"])
 
 // MCP tool definitions — populated each time getToolsForChannel() is called with an mcpManager.
@@ -60,6 +90,33 @@ export function resetMcpDefinitions(): void {
 function baseToolsForCapabilities(): OpenAI.ChatCompletionFunctionTool[] {
   // Use baseToolDefinitions at call time so dynamically-added tools are included
   return baseToolDefinitions.map((d) => d.tool);
+}
+
+function uniqueToolSchemas(tools: OpenAI.ChatCompletionFunctionTool[]): OpenAI.ChatCompletionFunctionTool[] {
+  const seen = new Set<string>()
+  return tools.filter((tool) => {
+    if (seen.has(tool.function.name)) return false
+    seen.add(tool.function.name)
+    return true
+  })
+}
+
+/**
+ * Resolve Sanctuary relationship tools from one canonical definition pool.
+ * Durable relationship profiles can only reduce this surface; they cannot
+ * introduce an arbitrary base tool by naming it in configuration.
+ */
+export function getSanctuaryRelationshipTools(advertisedToolNames: readonly string[]): OpenAI.ChatCompletionFunctionTool[] {
+  const advertised = new Set(advertisedToolNames)
+  return uniqueToolSchemas([
+    ...baseToolDefinitions.filter((definition) => SANCTUARY_RELATIONSHIP_BASE_TOOLS.has(definition.tool.function.name)).map((definition) => definition.tool),
+    ...unraidToolDefinitions.map((definition) => definition.tool),
+    stewardPolicyToolDefinition.tool,
+    ponderTool,
+    restTool,
+    settleTool,
+    speakTool,
+  ]).filter((tool) => advertised.has(tool.function.name))
 }
 
 // Apply a single tool preference to a tool schema, returning a new object.
@@ -101,12 +158,7 @@ export function getToolsForChannel(
   _chatModel?: string,
 ): OpenAI.ChatCompletionFunctionTool[] {
   if (capabilities?.channel === "telegram" && isSanctuaryAgent()) {
-    return [
-      ...unraidToolDefinitions.map((definition) => definition.tool),
-      ponderTool,
-      settleTool,
-      speakTool,
-    ]
+    return getSanctuaryRelationshipTools([...SANCTUARY_TELEGRAM_SURFACE])
   }
   const baseTools = baseToolsForCapabilities();
   const bluebubblesTools = capabilities?.channel === "bluebubbles"
@@ -169,6 +221,37 @@ export function resolveToolDefinition(toolName: string): ToolDefinition | undefi
 
 export function approvalPolicyForToolName(name: string, args: Record<string, unknown>): ToolApprovalPolicy {
   return resolveToolDefinition(name)?.approvalPolicy?.(args) ?? { kind: "not_required" }
+}
+
+async function routineActionInvocation(name: string, args: Record<string, unknown>, ctx?: ToolContext): Promise<NonNullable<ToolContext["routineActionSelection"]> | null> {
+  const target = typeof args.container === "string" ? args.container : ""
+  if (name !== "unraid_restart_container" || !ctx?.agentRoot || !routineActionRequester(ctx) || !target) return null
+  const relationshipAuthorization = ctx.relationshipAuthorization
+  if (!relationshipAuthorization) return null
+  let authorization: Awaited<ReturnType<NonNullable<ToolContext["relationshipAuthorization"]>["authorizeTool"]>>
+  try {
+    authorization = await relationshipAuthorization.authorizeTool(name, args as Record<string, string>)
+  } catch {
+    return null
+  }
+  if (!authorization.allowed || !Number.isInteger(authorization.profileVersion) || Number(authorization.profileVersion) < 1) return null
+  const key = `unraid.restart:${target}`
+  const decision = inspectRoutineActionGrant(ctx.agentRoot, { key, action: "unraid.container.restart", target })
+  return decision.allowed ? { key, target, expectedPolicyVersion: decision.policyVersion } : null
+}
+
+export async function classifyApprovalForInvocation(name: string, args: Record<string, unknown>, ctx?: ToolContext): Promise<{
+  policy: ToolApprovalPolicy
+  routineActionSelection?: NonNullable<ToolContext["routineActionSelection"]>
+}> {
+  const fallback = approvalPolicyForToolName(name, args)
+  if (name !== "unraid_restart_container" || fallback.kind !== "required") return { policy: fallback }
+  const routineActionSelection = await routineActionInvocation(name, args, ctx)
+  return routineActionSelection ? { policy: { kind: "not_required" }, routineActionSelection } : { policy: fallback }
+}
+
+export async function approvalPolicyForInvocation(name: string, args: Record<string, unknown>, ctx?: ToolContext): Promise<ToolApprovalPolicy> {
+  return (await classifyApprovalForInvocation(name, args, ctx)).policy
 }
 
 const findDefinition = resolveToolDefinition
@@ -296,6 +379,18 @@ export async function execTool(name: string, args: Record<string, string>, ctx?:
     return `unknown: ${name}`;
   }
 
+  const relationshipDecision = await ctx?.relationshipAuthorization?.authorizeTool(name, args)
+  if (relationshipDecision && !relationshipDecision.allowed) {
+    emitNervesEvent({
+      level: "warn",
+      event: "tool.relationship_authorization_block",
+      component: "tools",
+      message: "relationship authorization blocked tool execution",
+      meta: { name, reason: relationshipDecision.reason },
+    })
+    return `relationship authorization required: ${relationshipDecision.reason}`
+  }
+
   const riskProfile = riskProfileForTool(def, name, args)
   const orientationPolicy = ctx?.orientationFrame?.actionPolicy
   if (orientationPolicy?.mode === "correction_hold"
@@ -354,16 +449,17 @@ export async function execTool(name: string, args: Record<string, string>, ctx?:
     });
     return `commerce authority required: ${commerceReservation.reason}`
   }
+  const authorizedContext = ctx
   const toolContext: ToolContext | undefined = commerceReservation?.ok
     ? {
-      ...ctx,
+      ...authorizedContext,
       agentRoot: guardContext.agentRoot,
       commerceAuthority: {
         checkoutId: commerceReservation.checkoutId,
         reservationToken: commerceReservation.reservationToken,
       },
     } as ToolContext
-    : ctx
+    : authorizedContext
 
   try {
     const result = await def.handler(args, toolContext);

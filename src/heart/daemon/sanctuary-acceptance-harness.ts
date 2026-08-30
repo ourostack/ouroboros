@@ -297,13 +297,13 @@ export const SANCTUARY_UNIT_16_EVIDENCE_LABELS = [
   "unit-16c-provider-readiness",
   "unit-16d-whats-up",
   "unit-16d-1-space",
-  "unit-16d-2-unauthorized",
+  "unit-16d-2-unknown-admission",
   "unit-16e-containment-audit",
   "unit-16e-1-stop-denial",
   "unit-16e-2-restart-denial",
   "unit-16f-cron-fingerprint",
   "unit-16g-health-transition",
-  "unit-16h-daily-digest",
+  "unit-16h-acceptance-delivery-probe",
   "unit-16i-delayed-approval",
   "unit-16j-denial",
   "unit-16k-timeout-stale",
@@ -337,7 +337,7 @@ const MAX_MATRIX_TIMEOUT_MS = 7_200_000
 export function sanctuaryScenarioTimeoutBudget(label: SanctuaryUnit16EvidenceLabel): number {
   if (REBOOT_SCENARIO_LABELS.has(label)) return 125_000
   if (label === "unit-15c-1-no-callback-terminalization") return 365_000
-  if (label === "unit-16h-daily-digest") return 1_025_000
+  if (label === "unit-16h-acceptance-delivery-probe") return 1_025_000
   if (label === "unit-16f-cron-fingerprint") return 1_025_000
   if (label === "unit-16i-delayed-approval") return 185_000
   if (label === "unit-16k-timeout-stale") return TIMEOUT_STALE_SCENARIO_MS
@@ -398,10 +398,10 @@ export function validateSanctuaryUnit16EvidenceAssertions(label: SanctuaryUnit16
       opaqueDigest(value.processBindingDigest, `${label} processBindingDigest`)
       break
     case "unit-16b-runtime-vault-containment":
-      exact(["autostartExact", "exactImage", "manualAuthRequired", "mountCount", "nonRootUid", "publishedPortCount", "readOnlyRoot", "updaterDisabled", "vaultUnlocked"])
-      allTrue(["autostartExact", "exactImage", "readOnlyRoot", "updaterDisabled", "vaultUnlocked"])
+      exact(["autostartExact", "exactImage", "manualAuthRequired", "mountCount", "mountsExact", "nonRootUid", "publishedPortCount", "readOnlyRoot", "updaterDisabled", "vaultUnlocked"])
+      allTrue(["autostartExact", "exactImage", "mountsExact", "readOnlyRoot", "updaterDisabled", "vaultUnlocked"])
       requiredFalse(value, "manualAuthRequired", label)
-      requiredInteger(value, "mountCount", 2, label)
+      requiredInteger(value, "mountCount", 4, label)
       requiredInteger(value, "nonRootUid", 10001, label)
       requiredInteger(value, "publishedPortCount", 0, label)
       break
@@ -421,37 +421,32 @@ export function validateSanctuaryUnit16EvidenceAssertions(label: SanctuaryUnit16
       requiredInteger(value, "responseCount", 1, label)
       requiredInteger(value, "mutationCount", 0, label)
       break
-    case "unit-16d-2-unauthorized":
-      exact(["auditRejected", "distinctAccount", "mutationCount", "providerInvocationCount", "responseCount", "workItemCount"])
-      allTrue(["auditRejected", "distinctAccount"])
-      allZero(["mutationCount", "providerInvocationCount", "responseCount", "workItemCount"])
+    case "unit-16d-2-unknown-admission":
+      exact(["acknowledgementSent", "agentTurnCount", "distinctAccount", "mutationCount", "ownerCardSent", "providerInvocationCount", "quarantined", "responseCount", "workItemCount"])
+      allTrue(["acknowledgementSent", "distinctAccount", "ownerCardSent", "quarantined"])
+      allZero(["agentTurnCount", "mutationCount", "providerInvocationCount", "responseCount", "workItemCount"])
       break
     case "unit-16e-containment-audit":
       exact([
         "schemaVersion", "keyCount", "keyInventoryDigest", "readScopeDigest", "writeScopeDigest", "keyRoleAssignmentCount",
-        "telegramToolCount", "telegramProfileDigest", "telegramSchemaDigest", "privateToolCount", "privateProfileDigest", "privateSchemaDigest", "resolvedHandlerCount",
+        "telegramToolCount", "telegramProfileDigest", "telegramSchemaDigest", "privateToolCount", "privateProfileDigest", "privateSchemaDigest", "resolvedHandlerCount", "relationshipProfilesExact", "handlersExact",
         "excludedToolCount", "excludedSchemaIntersectionCount", "fabricatedHandlerInvocationCount", "excludedToolAttemptCount", "excludedToolRejectedCount", "excludedToolInvokedCount", "excludedToolSideEffectCount", "globallyResolvableExcludedToolCount",
         "auditPathDigest", "auditLedgerDigest", "auditRecordCount", "auditLifecyclePairCount",
         "containerUser", "liveProcessUser", "mountCount", "publishedPortCount", "networkMode", "readOnlyRoot", "mountsExact", "securityExact", "updaterDisabled", "writableKeyExposure",
-        "rawWriteMaterialFieldCount", "typedWriteExecutorCount", "writeApprovalPolicyDigest", "sensitiveMaterialObserved", "mutationCount",
+        "rawWriteMaterialFieldCount", "typedWriteExecutorCount", "writeApprovalPolicyDigest", "writeApprovalPolicyExact", "sensitiveMaterialObserved", "mutationCount",
       ])
       if (text(value.schemaVersion, `${label} schemaVersion`) !== "sanctuary-containment-audit-v1") throw new Error(`${label} schemaVersion is invalid`)
       for (const key of ["keyInventoryDigest", "readScopeDigest", "writeScopeDigest", "telegramProfileDigest", "telegramSchemaDigest", "privateProfileDigest", "privateSchemaDigest", "auditPathDigest", "auditLedgerDigest", "writeApprovalPolicyDigest"]) opaqueDigest(value[key], `${label} ${key}`)
       for (const [key, expected] of Object.entries({
         readScopeDigest: "9914469afdcb574937d1020a03faa82e3c02d767169d3eccae4b81863dafa06e",
         writeScopeDigest: "1de873b2bc3c7769010c32c69fcc8ea55343a5647cfdb0294769e831142945ec",
-        telegramProfileDigest: "a7f26934c5e60737582b9d13c78944b8bcbb941366899d82d58c01ca296e14e2",
-        telegramSchemaDigest: "3c66299a5f70ec82f8795cae47659284e6dbc691ef49002c2fb22edba76c59b6",
-        privateProfileDigest: "a100ffcaf436842bf9fceaf3d2fd1a1b766c04238300487474d6e9fcb7946369",
-        privateSchemaDigest: "61b137b2467acbcf22ca7443ee01e71ed970a62728c42aabffbdcb562f4a6a70",
         auditPathDigest: "1cb8f1a00c544a5d10b0577090dbf070a07a5b6a99de13ccd27c11a257f84b75",
-        writeApprovalPolicyDigest: "24b1726edf1a2bbd524e9be63d3f0f726d996a8a009425462e01a5c4916ef42b",
       })) if (value[key] !== expected) throw new Error(`${label} ${key} does not match the canonical contract`)
       requiredInteger(value, "keyCount", 2, label)
       requiredInteger(value, "keyRoleAssignmentCount", 0, label)
-      requiredInteger(value, "telegramToolCount", 10, label)
-      requiredInteger(value, "privateToolCount", 2, label)
-      requiredInteger(value, "resolvedHandlerCount", 12, label)
+      const telegramToolCount = integer(value.telegramToolCount, `${label} telegramToolCount`, 1)
+      const privateToolCount = integer(value.privateToolCount, `${label} privateToolCount`, 1)
+      if (integer(value.resolvedHandlerCount, `${label} resolvedHandlerCount`, 1) !== telegramToolCount + privateToolCount) throw new Error(`${label} handler count does not match the live relationship profiles`)
       requiredInteger(value, "excludedToolCount", 7, label)
       requiredInteger(value, "excludedToolAttemptCount", 7, label)
       requiredInteger(value, "excludedToolRejectedCount", 7, label)
@@ -462,9 +457,9 @@ export function validateSanctuaryUnit16EvidenceAssertions(label: SanctuaryUnit16
       integer(value.auditRecordCount, `${label} auditRecordCount`, 2)
       integer(value.auditLifecyclePairCount, `${label} auditLifecyclePairCount`, 1)
       if (text(value.containerUser, `${label} containerUser`) !== "10001:10001" || text(value.liveProcessUser, `${label} liveProcessUser`) !== "10001:10001" || text(value.networkMode, `${label} networkMode`) !== "host") throw new Error(`${label} container identity or network is invalid`)
-      requiredInteger(value, "mountCount", 2, label)
+      requiredInteger(value, "mountCount", 4, label)
       requiredInteger(value, "typedWriteExecutorCount", 1, label)
-      allTrue(["readOnlyRoot", "mountsExact", "securityExact", "updaterDisabled"])
+      allTrue(["relationshipProfilesExact", "handlersExact", "writeApprovalPolicyExact", "readOnlyRoot", "mountsExact", "securityExact", "updaterDisabled"])
       break
     case "unit-16e-1-stop-denial":
     case "unit-16e-2-restart-denial":
@@ -484,9 +479,10 @@ export function validateSanctuaryUnit16EvidenceAssertions(label: SanctuaryUnit16
       allTrue(["productionRestored", "transitionObserved"])
       requiredInteger(value, "alertCount", 3, label)
       break
-    case "unit-16h-daily-digest":
-      exact(["firedWithinMs", "messageCount", "productionRestored", "scheduleObserved"])
-      allTrue(["productionRestored", "scheduleObserved"])
+    case "unit-16h-acceptance-delivery-probe":
+      exact(["acceptanceOnly", "deliveryPathObserved", "firedWithinMs", "messageCount", "productionRestored", "productionScheduleChanged"])
+      allTrue(["acceptanceOnly", "deliveryPathObserved", "productionRestored"])
+      requiredFalse(value, "productionScheduleChanged", label)
       requiredInteger(value, "messageCount", 1, label)
       if (integer(value.firedWithinMs, `${label} firedWithinMs`, 0) > 960_000) throw new Error(`${label} fired outside the 16-minute bound`)
       break
@@ -594,7 +590,7 @@ interface EvidenceProvenance {
   harnessSha256: string
 }
 
-type SanctuaryScenarioGate = "none" | "authorized-telegram-message" | "distinct-telegram-account-message"
+type SanctuaryScenarioGate = "none" | "authorized-telegram-message" | "unknown-telegram-admission"
   | "telegram-delayed-approve" | "telegram-deny" | "telegram-stale-callback"
   | "telegram-concurrent-callback" | "telegram-restart-approve" | "authorized-telegram-restart-no-callback"
 
@@ -609,13 +605,13 @@ export const SANCTUARY_SCENARIO_GATES: Record<SanctuaryUnit16EvidenceLabel, Sanc
   "unit-16c-provider-readiness": "none",
   "unit-16d-whats-up": "authorized-telegram-message",
   "unit-16d-1-space": "authorized-telegram-message",
-  "unit-16d-2-unauthorized": "distinct-telegram-account-message",
+  "unit-16d-2-unknown-admission": "unknown-telegram-admission",
   "unit-16e-containment-audit": "none",
   "unit-16e-1-stop-denial": "none",
   "unit-16e-2-restart-denial": "none",
   "unit-16f-cron-fingerprint": "none",
   "unit-16g-health-transition": "none",
-  "unit-16h-daily-digest": "none",
+  "unit-16h-acceptance-delivery-probe": "none",
   "unit-16i-delayed-approval": "telegram-delayed-approve",
   "unit-16j-denial": "telegram-deny",
   "unit-16k-timeout-stale": "telegram-stale-callback",
@@ -627,6 +623,7 @@ type SanctuaryScenarioSource = "identity-key" | "telegram-audit" | "telegram-off
   | "approval-checkpoints" | "container-inspect" | "provider-live-check" | "cron-runtime"
   | "health-runtime" | "digest-runtime" | "health-probe-receipt" | "scheduler-liveness-receipt" | "reboot-checkpoint" | "restart-attempt-ledger" | "telegram-turn-receipts" | "read-only-denial-receipt" | "containment-audit" | "identity-surface-audit" | "interactive-driver-receipt"
   | "live-grounding-read"
+  | "telegram-admission-evidence"
 
 export const SANCTUARY_SCENARIO_SOURCES: Record<SanctuaryUnit16EvidenceLabel, SanctuaryScenarioSource[]> = {
   "unit-12c-1-opaque-identity": ["identity-key", "identity-surface-audit", "approval-journal"],
@@ -639,13 +636,13 @@ export const SANCTUARY_SCENARIO_SOURCES: Record<SanctuaryUnit16EvidenceLabel, Sa
   "unit-16c-provider-readiness": ["provider-live-check"],
   "unit-16d-whats-up": ["telegram-audit", "telegram-offset", "telegram-turn-receipts", "live-grounding-read"],
   "unit-16d-1-space": ["telegram-audit", "telegram-offset", "telegram-turn-receipts", "restart-attempt-ledger", "container-inspect", "live-grounding-read"],
-  "unit-16d-2-unauthorized": ["telegram-audit", "telegram-offset", "telegram-turn-receipts", "approval-journal", "restart-attempt-ledger", "container-inspect", "containment-audit"],
+  "unit-16d-2-unknown-admission": ["identity-key", "telegram-audit", "telegram-offset", "telegram-turn-receipts", "telegram-admission-evidence", "approval-journal", "restart-attempt-ledger", "container-inspect", "containment-audit"],
   "unit-16e-containment-audit": ["telegram-audit", "container-inspect", "containment-audit"],
   "unit-16e-1-stop-denial": ["read-only-denial-receipt", "container-inspect"],
   "unit-16e-2-restart-denial": ["read-only-denial-receipt", "container-inspect"],
   "unit-16f-cron-fingerprint": ["health-probe-receipt", "scheduler-liveness-receipt", "cron-runtime", "telegram-audit", "container-inspect"],
   "unit-16g-health-transition": ["health-probe-receipt", "telegram-audit", "container-inspect"],
-  "unit-16h-daily-digest": ["health-probe-receipt", "cron-runtime", "telegram-audit", "container-inspect"],
+  "unit-16h-acceptance-delivery-probe": ["health-probe-receipt", "cron-runtime", "telegram-audit", "container-inspect"],
   "unit-16i-delayed-approval": ["identity-key", "telegram-audit", "approval-journal", "approval-checkpoints", "restart-attempt-ledger", "container-inspect"],
   "unit-16j-denial": ["identity-key", "telegram-audit", "approval-journal", "approval-checkpoints", "restart-attempt-ledger", "container-inspect"],
   "unit-16k-timeout-stale": ["identity-key", "telegram-audit", "approval-journal", "approval-checkpoints", "restart-attempt-ledger", "container-inspect", "interactive-driver-receipt"],

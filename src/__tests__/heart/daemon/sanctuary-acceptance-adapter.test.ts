@@ -5,8 +5,9 @@ import { createServer } from "node:net"
 import { createHash, createHmac } from "node:crypto"
 
 import { describe, expect, it, vi } from "vitest"
+import { FileFriendStore } from "@ouro.bot/friends"
 import { openApprovalStore } from "../../../heart/approval-store"
-import { opaqueTelegramSubject, sanctuaryTelegramApprovalEvidenceMac, sanctuaryTelegramAuditLifecycleMac, sanctuaryTelegramTurnReceiptDigest, sanctuaryTelegramTurnReceiptMac, sanctuaryTelegramUnauthorizedDropMac } from "../../../senses/telegram"
+import { opaqueTelegramSubject, sanctuaryTelegramApprovalEvidenceMac, sanctuaryTelegramAuditLifecycleMac, sanctuaryTelegramTurnReceiptDigest, sanctuaryTelegramTurnReceiptMac } from "../../../senses/telegram"
 import { createTelegramAuditLedger } from "../../../senses/telegram-audit-ledger"
 import * as sanctuaryAcceptanceAdapter from "../../../heart/daemon/sanctuary-acceptance-adapter"
 import { SANCTUARY_SCENARIO_GATES, SANCTUARY_SCENARIO_SOURCES } from "../../../heart/daemon/sanctuary-acceptance-harness"
@@ -31,6 +32,8 @@ import {
 } from "../../../heart/daemon/sanctuary-acceptance-adapter"
 import { sanctuarySchedulerLivenessReceiptMac } from "../../../heart/daemon/sanctuary-scheduler-liveness"
 import { writeSanctuaryAcceptanceMarker } from "../../../heart/daemon/sanctuary-acceptance-marker"
+import { FileTelegramAdmissionStore } from "../../../senses/telegram-admission"
+import { FileTelegramEffectJournal, FIXED_ADMISSION_ACKNOWLEDGEMENT, prepareTelegramEffect } from "../../../senses/telegram-effect-adapter"
 
 const READ_QUERY = "query AcceptanceAuthProbe { info { os { hostname } } }"
 const WRITE_QUERY = "mutation AcceptanceWriteProbe($id: PrefixedID!) { docker { restart(id: $id) { id } } }"
@@ -72,16 +75,16 @@ function refreshed(config: Record<string, unknown>) {
 
 function validHealthProbeReceipt(scenarioHandleDigest: string, patch: Record<string, unknown> = {}) {
   const phases = [
-    { ordinal: 1, name: "digest-first", trigger: "acceptance", fixtureStatus: 503, opened: 0, recovered: 0, digestDue: true, deliveryKind: "digest", sweepReceiptDigest: "5".repeat(64), deliveryReceiptDigest: "6".repeat(64) },
-    { ordinal: 2, name: "digest-repeat", trigger: "acceptance", fixtureStatus: 503, opened: 0, recovered: 0, digestDue: false, deliveryKind: null, sweepReceiptDigest: "7".repeat(64), deliveryReceiptDigest: null },
+    { ordinal: 1, name: "delivery-probe-first", trigger: "acceptance", fixtureStatus: 503, opened: 0, recovered: 0, digestDue: true, deliveryKind: "digest", sweepReceiptDigest: "5".repeat(64), deliveryReceiptDigest: "6".repeat(64) },
+    { ordinal: 2, name: "delivery-probe-repeat", trigger: "acceptance", fixtureStatus: 503, opened: 0, recovered: 0, digestDue: false, deliveryKind: null, sweepReceiptDigest: "7".repeat(64), deliveryReceiptDigest: null },
   ]
   return {
-    schemaVersion: "sanctuary-health-probe-receipt-v1", label: "unit-16h-daily-digest", scenarioHandleDigest,
+    schemaVersion: "sanctuary-health-probe-receipt-v1", label: "unit-16h-acceptance-delivery-probe", scenarioHandleDigest,
     ownerImageDigestBefore: "1".repeat(64), ownerImageDigestAfter: "1".repeat(64), ownerContainerDigestBefore: "2".repeat(64), ownerContainerDigestAfter: "2".repeat(64),
     beforeStateDigest: "3".repeat(64), restoredStateDigest: "3".repeat(64), cronFingerprintBefore: "4".repeat(64), cronFingerprintAfter: "4".repeat(64),
     cronRegisteredBefore: true, cronRegisteredAfter: true, cronDegradedBefore: false, cronDegradedAfter: false,
     fixtureSequenceDigest: createHash("sha256").update(JSON.stringify([503, 503])).digest("hex"), clockMode: "local-daily-boundary", effectiveNow: "2026-08-20T16:00:00.000Z",
-    phases, privateTurnCount: 1, providerInvocationCount: 2, deliveryCount: 1, workspaceAbsent: true, socketAbsent: true, snapshotAbsent: true, realCheckEquivalent: true, productionRestored: true, schedulerReceipt: null,
+    phases, privateTurnCount: 1, providerInvocationCount: 2, deliveryCount: 1, workspaceAbsent: true, socketAbsent: true, snapshotAbsent: true, realCheckEquivalent: true, productionRestored: true, schedulerReceipt: null, acceptanceOnly: true, productionScheduleChanged: false,
     ...patch,
   }
 }
@@ -123,7 +126,7 @@ function validOwnerSnapshot(patch: Record<string, unknown> = {}) {
     liveProcessUser: "10001:10001",
     processBindingDigest: "4".repeat(64),
     readOnlyRoot: true,
-    mountCount: 2,
+    mountCount: 4,
     mountsDigest: "3".repeat(64),
     mountsExact: true,
     publishedPortCount: 0,
@@ -298,8 +301,10 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-containment-audit-"))
     const scenarioHandleDigest = "a".repeat(64)
     const identityKey = "k".repeat(43)
-    const telegramTools = ["unraid_list_containers", "unraid_get_container_logs", "unraid_get_storage", "unraid_get_disks", "unraid_get_notifications", "unraid_get_system", "unraid_restart_container", "ponder", "settle", "speak"]
-    const privateTools = ["send_message", "rest"]
+    const packagedProfilesRaw = fs.readFileSync("deploy/unraid/sanctuary.ouro/tool-profiles.json", "utf8")
+    const packagedProfiles = JSON.parse(packagedProfilesRaw) as { profiles: Record<string, { toolNames: string[] }> }
+    const telegramTools = packagedProfiles.profiles["sanctuary-owner"]!.toolNames
+    const privateTools = packagedProfiles.profiles["sanctuary-event"]!.toolNames
     const lifecycle = (event: string, ts: string, meta: Record<string, unknown>) => ({ ts, event, meta: { ...meta, lifecycleMac: sanctuaryTelegramAuditLifecycleMac(identityKey, "sanctuary-telegram-turn-receipt-v3", event, meta) } })
     const audit = [
       lifecycle("senses.telegram_turn_start", "2026-08-20T16:00:00.000Z", { scenarioHandleDigest }),
@@ -307,8 +312,8 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     ].map((entry) => JSON.stringify(entry)).join("\n") + "\n"
     const files: Record<string, string> = {
       ...chainedAuditFiles(agentRoot, audit, identityKey),
-      "/opt/ouro/deploy/unraid/sanctuary.ouro/tool-profiles.json": JSON.stringify({ version: 1, profiles: { "sanctuary-telegram": telegramTools, "sanctuary-health-private": privateTools } }),
     }
+    fs.writeFileSync(path.join(agentRoot, "tool-profiles.json"), packagedProfilesRaw, { mode: 0o600 })
     const hostRequest = vi.fn(async (payload: Record<string, unknown>) => payload.operation === "inventory_keys" ? { keys: [
       { id: "ro-private-id", name: "Butler RO", permissions: READ_PERMISSIONS, roles: [] },
       { id: "rw-private-id", name: "Butler RW", permissions: [...READ_PERMISSIONS, { resource: "DOCKER", actions: ["UPDATE_ANY"] }], roles: [] },
@@ -323,12 +328,12 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       expect(facts.containment).toMatchObject({
         schemaVersion: "sanctuary-containment-audit-v1",
         keyCount: 2, keyRoleAssignmentCount: 0,
-        telegramToolCount: 10, privateToolCount: 2, resolvedHandlerCount: 12,
+        telegramToolCount: telegramTools.length, privateToolCount: privateTools.length, resolvedHandlerCount: telegramTools.length + privateTools.length,
         excludedToolCount: 7, excludedSchemaIntersectionCount: 0, fabricatedHandlerInvocationCount: 0, excludedToolAttemptCount: 7, excludedToolRejectedCount: 7, excludedToolInvokedCount: 0, excludedToolSideEffectCount: 0, globallyResolvableExcludedToolCount: expect.any(Number),
         auditRecordCount: 2, auditLifecyclePairCount: 1,
-        containerUser: "10001:10001", liveProcessUser: "10001:10001", mountCount: 2, publishedPortCount: 0, networkMode: "host",
+        containerUser: "10001:10001", liveProcessUser: "10001:10001", mountCount: 4, publishedPortCount: 0, networkMode: "host",
         readOnlyRoot: true, mountsExact: true, securityExact: true, updaterDisabled: true, writableKeyExposure: false,
-        rawWriteMaterialFieldCount: 0, typedWriteExecutorCount: 1, sensitiveMaterialObserved: false,
+        rawWriteMaterialFieldCount: 0, typedWriteExecutorCount: 1, relationshipProfilesExact: true, handlersExact: true, writeApprovalPolicyExact: true, sensitiveMaterialObserved: false,
       })
       for (const field of ["keyInventoryDigest", "readScopeDigest", "writeScopeDigest", "telegramSchemaDigest", "privateSchemaDigest", "auditPathDigest", "auditLedgerDigest", "writeApprovalPolicyDigest"] as const) {
         expect(facts.containment?.[field]).toMatch(/^[0-9a-f]{64}$/u)
@@ -336,6 +341,104 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       expect(facts.sourceValues["containment-audit"]).toEqual(facts.containment)
       expect(facts.containment!.globallyResolvableExcludedToolCount).toBeGreaterThanOrEqual(1)
       expect(JSON.stringify(facts.sourceValues["containment-audit"])).not.toMatch(/ro-private-id|rw-private-id|read-only-key/u)
+    } finally { fs.rmSync(agentRoot, { recursive: true, force: true }) }
+  })
+
+  it("projects an exact opaque pre-model admission from the production stores", async () => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-admission-evidence-"))
+    const identityKey = "k".repeat(43)
+    const credentials = { botToken: "777:secret", authorizedUserId: "42", authorizedChatId: "42" }
+    const now = "2026-08-20T16:00:00.000Z"
+    fs.writeFileSync(path.join(agentRoot, "tool-profiles.json"), fs.readFileSync("deploy/unraid/sanctuary.ouro/tool-profiles.json", "utf8"), { mode: 0o600 })
+    const friends = new FileFriendStore(path.join(agentRoot, "friends"))
+    await friends.put("ari", {
+      id: "ari", name: "Ari", trustLevel: "family", admissionState: "active", initiativePolicy: "proactive", capabilityProfileId: "sanctuary-owner",
+      externalIds: [{ provider: "telegram-user", externalId: "42", tenantId: "777", linkedAt: now }], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: now, updatedAt: now, schemaVersion: 1,
+    })
+    const admissionStore = new FileTelegramAdmissionStore(path.join(agentRoot, "state", "senses", "telegram", "admissions"), {}, () => Date.parse(now))
+    const captured = admissionStore.capture({ updateId: 10, messageId: 20, botId: "777", userId: "888", chatId: "888", text: "private stranger text", displayLabel: "Household guest", hasAttachments: false }, "PINE-4821")
+    if (!("record" in captured)) throw new Error("admission fixture failed")
+    const record = captured.record
+    const effects = new FileTelegramEffectJournal(path.join(agentRoot, "state", "telegram", "effects"))
+    const accept = (artifact: ReturnType<typeof prepareTelegramEffect>, state: "accepted" | "session_recorded", messageId: number) => ({
+      ...artifact,
+      updatedAt: now,
+      parts: artifact.parts.map((part) => ({ ...part, state, messageId, acceptedAt: now, updatedAt: now, ...(state === "session_recorded" ? { sessionEventId: `event-${messageId}`, sessionRecordedAt: now } : {}) })),
+    })
+    const acknowledgement = accept(prepareTelegramEffect(effects, {
+      idempotencyKey: `ack:${record.id}`, target: { kind: "admission_gate", admissionId: record.id, botId: "777", userId: "888", chatId: "888" }, authorClass: "control",
+      effect: { kind: "admission_ack", text: FIXED_ADMISSION_ACKNOWLEDGEMENT }, authorization: { allowed: true, receiptId: "admission-receipt", expiresAt: "2099-01-01T00:00:00.000Z", transport: { chatId: "888" } }, now,
+    }), "accepted", 100)
+    const subject = opaqueTelegramSubject(identityKey, "777", "42", "42")
+    const ownerCard = accept(prepareTelegramEffect(effects, {
+      idempotencyKey: `owner-card:${record.id}`, target: { kind: "approved_relationship", friendId: "ari", sessionKey: `telegram:${subject}`, requestId: record.id }, authorClass: "control",
+      effect: { kind: "card", text: "Unknown Telegram contact\nUnverified Telegram label: Household guest\nVerification code: PINE-4821\nThe message is quarantined and has not been processed.", buttons: [[
+        { text: "Allow", callbackData: `admit:${record.id}:allow` }, { text: "Deny", callbackData: `admit:${record.id}:deny` }, { text: "Block", callbackData: `admit:${record.id}:block` },
+      ]] }, authorization: { allowed: true, receiptId: "owner-receipt", expiresAt: "2099-01-01T00:00:00.000Z", transport: { chatId: "42" } }, now,
+    }), "session_recorded", 101)
+    effects.write(acknowledgement)
+    effects.write(ownerCard)
+    admissionStore.recordEffect(record.id, "acknowledgement", acknowledgement.id)
+    admissionStore.recordEffect(record.id, "owner_card", ownerCard.id)
+    effects.close()
+    admissionStore.close()
+    const files: Record<string, string> = {
+      [`${agentRoot}/state/senses/telegram/identity.key`]: identityKey,
+      [`${agentRoot}/state/senses/telegram/offset.json`]: JSON.stringify({ nextUpdateId: 11 }),
+    }
+    try {
+      const facts = await readDefaultSanctuaryScenarioFacts("unit-16d-2-unknown-admission", "a".repeat(64), unit16Deps({
+        readFixedFile: (file) => file in files ? files[file]! : (() => { throw Object.assign(new Error("missing"), { code: "ENOENT" }) })(),
+        telegramCredentials: () => credentials,
+        hostRequest: async () => ({ keys: [] }),
+      }), agentRoot, { skipContainerSnapshot: true })
+      expect(facts.telegramAdmissions).toEqual([expect.objectContaining({ status: "pending", identityExact: true, acknowledgementExact: true, ownerCardExact: true, contentQuarantined: true, relationshipAbsent: true })])
+      expect(facts.telegramAdmissions?.[0]?.admissionDigest).toMatch(/^[0-9a-f]{64}$/u)
+      expect(JSON.stringify(facts.telegramAdmissions)).not.toMatch(/private stranger text|\b777\b|\b888\b/u)
+      const rewrittenEffects = new FileTelegramEffectJournal(path.join(agentRoot, "state", "telegram", "effects"))
+      rewrittenEffects.write(accept(acknowledgement, "session_recorded", 100))
+      rewrittenEffects.close()
+      const sessionRecordedAcknowledgement = await readDefaultSanctuaryScenarioFacts("unit-16d-2-unknown-admission", "a".repeat(64), unit16Deps({
+        readFixedFile: (file) => file in files ? files[file]! : (() => { throw Object.assign(new Error("missing"), { code: "ENOENT" }) })(),
+        telegramCredentials: () => credentials,
+        hostRequest: async () => ({ keys: [] }),
+      }), agentRoot, { skipContainerSnapshot: true })
+      expect(sessionRecordedAcknowledgement.telegramAdmissions).toEqual([expect.objectContaining({ acknowledgementExact: true })])
+      delete files[`${agentRoot}/state/senses/telegram/identity.key`]
+      const identityAbsent = await readDefaultSanctuaryScenarioFacts("unit-16d-2-unknown-admission", "a".repeat(64), unit16Deps({
+        readFixedFile: (file) => file in files ? files[file]! : (() => { throw Object.assign(new Error("missing"), { code: "ENOENT" }) })(),
+        telegramCredentials: () => credentials,
+        hostRequest: async () => ({ keys: [] }),
+      }), agentRoot, { skipContainerSnapshot: true })
+      expect(identityAbsent.telegramAdmissions).toEqual([])
+    } finally { fs.rmSync(agentRoot, { recursive: true, force: true }) }
+  })
+
+  it("projects incomplete quarantine stores without inventing effects or relationships", async () => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-admission-incomplete-evidence-"))
+    const identityKey = "k".repeat(43)
+    const credentials = { botToken: "777:secret", authorizedUserId: "42", authorizedChatId: "42" }
+    fs.writeFileSync(path.join(agentRoot, "tool-profiles.json"), fs.readFileSync("deploy/unraid/sanctuary.ouro/tool-profiles.json", "utf8"), { mode: 0o600 })
+    const admissionStore = new FileTelegramAdmissionStore(path.join(agentRoot, "state", "senses", "telegram", "admissions"), {}, () => Date.parse("2026-08-20T16:00:00.000Z"))
+    const captured = admissionStore.capture({ updateId: 10, messageId: 20, botId: "777", userId: "888", chatId: "888", text: "quarantined", displayLabel: "Guest", hasAttachments: false }, "PINE-4821")
+    if (!("record" in captured)) throw new Error("admission fixture failed")
+    const second = admissionStore.capture({ updateId: 11, messageId: 21, botId: "777", userId: "889", chatId: "889", text: "also quarantined", displayLabel: "Second guest", hasAttachments: false }, "PINE-4822")
+    if (!("record" in second)) throw new Error("second admission fixture failed")
+    admissionStore.close()
+    const emptyEffects = new FileTelegramEffectJournal(path.join(agentRoot, "state", "telegram", "effects"))
+    emptyEffects.close()
+    const files: Record<string, string> = {
+      [`${agentRoot}/state/senses/telegram/identity.key`]: identityKey,
+      [`${agentRoot}/state/senses/telegram/offset.json`]: JSON.stringify({ nextUpdateId: 11 }),
+    }
+    try {
+      const facts = await readDefaultSanctuaryScenarioFacts("unit-16d-2-unknown-admission", "a".repeat(64), unit16Deps({
+        readFixedFile: (file) => file in files ? files[file]! : (() => { throw Object.assign(new Error("missing"), { code: "ENOENT" }) })(),
+        telegramCredentials: () => credentials,
+        hostRequest: async () => ({ keys: [] }),
+      }), agentRoot, { skipContainerSnapshot: true })
+      expect(facts.telegramAdmissions).toHaveLength(2)
+      expect(facts.telegramAdmissions).toEqual(expect.arrayContaining([expect.objectContaining({ acknowledgementExact: false, ownerCardExact: false, relationshipAbsent: true })]))
     } finally { fs.rmSync(agentRoot, { recursive: true, force: true }) }
   })
 
@@ -584,8 +687,8 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     }
     try {
       const payload = {
-        operation: "capture_acceptance_scenario", phase: "begin", label: "unit-16h-daily-digest",
-        externalGate: SANCTUARY_SCENARIO_GATES["unit-16h-daily-digest"], sources: SANCTUARY_SCENARIO_SOURCES["unit-16h-daily-digest"],
+        operation: "capture_acceptance_scenario", phase: "begin", label: "unit-16h-acceptance-delivery-probe",
+        externalGate: SANCTUARY_SCENARIO_GATES["unit-16h-acceptance-delivery-probe"], sources: SANCTUARY_SCENARIO_SOURCES["unit-16h-acceptance-delivery-probe"],
       }
       const begin = await executeSanctuaryAcceptanceAdapter(payload, deps) as Record<string, unknown>
       expect(fs.existsSync(receiptRoot)).toBe(true)
@@ -598,17 +701,17 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     }
     const scenarioHandleDigest = (requests[0] as { scenarioHandleDigest: string }).scenarioHandleDigest
     expect(requests).toEqual([
-      { operation: "start_health_probe", targetId: "sanctuary", label: "unit-16h-daily-digest", scenarioHandleDigest },
-      { operation: "health_probe_status", targetId: "sanctuary", label: "unit-16h-daily-digest", scenarioHandleDigest },
-      { operation: "health_probe_status", targetId: "sanctuary", label: "unit-16h-daily-digest", scenarioHandleDigest },
-      { operation: "recover_health_probe", targetId: "sanctuary", label: "unit-16h-daily-digest", scenarioHandleDigest },
+      { operation: "start_health_probe", targetId: "sanctuary", label: "unit-16h-acceptance-delivery-probe", scenarioHandleDigest },
+      { operation: "health_probe_status", targetId: "sanctuary", label: "unit-16h-acceptance-delivery-probe", scenarioHandleDigest },
+      { operation: "health_probe_status", targetId: "sanctuary", label: "unit-16h-acceptance-delivery-probe", scenarioHandleDigest },
+      { operation: "recover_health_probe", targetId: "sanctuary", label: "unit-16h-acceptance-delivery-probe", scenarioHandleDigest },
     ])
   })
 
   it("declares the exact after-owner source set for every health scenario", () => {
     expect(SANCTUARY_SCENARIO_SOURCES["unit-16f-cron-fingerprint"]).toEqual(["health-probe-receipt", "scheduler-liveness-receipt", "cron-runtime", "telegram-audit", "container-inspect"])
     expect(SANCTUARY_SCENARIO_SOURCES["unit-16g-health-transition"]).toEqual(["health-probe-receipt", "telegram-audit", "container-inspect"])
-    expect(SANCTUARY_SCENARIO_SOURCES["unit-16h-daily-digest"]).toEqual(["health-probe-receipt", "cron-runtime", "telegram-audit", "container-inspect"])
+    expect(SANCTUARY_SCENARIO_SOURCES["unit-16h-acceptance-delivery-probe"]).toEqual(["health-probe-receipt", "cron-runtime", "telegram-audit", "container-inspect"])
   })
   it("uses one bounded redacted request over the private host broker socket", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-unit16-broker-client-"))
@@ -786,7 +889,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     }).createSanctuaryHealthAcceptanceScenarioDriver
     expect(factory).toBeTypeOf("function")
     const driver = factory!(hostRequest)
-    await expect(driver.poll("unit-16h-daily-digest", "a".repeat(64))).rejects.toThrow(/health probe.*(?:state|snapshot|response)/iu)
+    await expect(driver.poll("unit-16h-acceptance-delivery-probe", "a".repeat(64))).rejects.toThrow(/health probe.*(?:state|snapshot|response)/iu)
   })
 
   it.each([
@@ -1000,36 +1103,6 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     fs.rmSync(agentRoot, { recursive: true, force: true })
   })
 
-  it("rejects a tampered unauthorized Telegram sender binding", async () => {
-    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-unauthorized-binding-"))
-    const scenarioHandleDigest = "a".repeat(64)
-    const identityKey = "k".repeat(43)
-    const credentials = { botToken: "12345:private-token-value", authorizedUserId: "123456789", authorizedChatId: "123456789" }
-    const binding = {
-      scenarioHandleDigest,
-      updateDigest: "1".repeat(64),
-      senderIdentityDigest: "d".repeat(64),
-      authorizedIdentityDigest: sanctuaryTelegramTurnReceiptDigest(identityKey, "sanctuary-telegram-turn-receipt-v3", "sender-identity", credentials.authorizedUserId),
-      senderDistinct: true,
-      nextOffsetDigest: sanctuaryTelegramTurnReceiptDigest(identityKey, "sanctuary-telegram-turn-receipt-v3", "next-update-id", "124"),
-    }
-    const drop = { ts: "2026-08-20T16:00:00.000Z", event: "telegram.update_dropped", meta: { ...binding, distinctAccount: true, dropMac: sanctuaryTelegramUnauthorizedDropMac(identityKey, "sanctuary-telegram-turn-receipt-v3", binding) } }
-    const files: Record<string, string> = {
-      ...chainedAuditFiles(agentRoot, `${JSON.stringify(drop)}\n`, identityKey),
-      "/home/ouro/AgentBundles/sanctuary.ouro/state/senses/telegram/offset.json": '{"nextUpdateId":124}\n',
-    }
-    const deps = unit16Deps({
-      readFixedFile: (file) => { if (!(file in files)) throw Object.assign(new Error("missing fixture"), { code: "ENOENT" }); return files[file]! },
-      telegramCredentials: () => credentials,
-    })
-    Object.assign(files, chainedAuditFiles(agentRoot, `${JSON.stringify({ ...drop, meta: { ...drop.meta, senderIdentityDigest: "c".repeat(64) } })}\n`, identityKey))
-    await expect(readDefaultSanctuaryScenarioFacts("unit-16d-2-unauthorized", scenarioHandleDigest, deps, agentRoot, { skipContainerSnapshot: true })).rejects.toThrow("sender binding MAC")
-    Object.assign(files, chainedAuditFiles(agentRoot, `${JSON.stringify(drop)}\n`, identityKey))
-    files["/home/ouro/AgentBundles/sanctuary.ouro/state/senses/telegram/offset.json"] = '{"nextUpdateId":125}\n'
-    await expect(readDefaultSanctuaryScenarioFacts("unit-16d-2-unauthorized", scenarioHandleDigest, deps, agentRoot, { skipContainerSnapshot: true })).rejects.toThrow("sender binding MAC")
-    fs.rmSync(agentRoot, { recursive: true, force: true })
-  })
-
   it("detects raw Telegram credentials in persisted session paths as well as contents", async () => {
     const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-identity-path-leak-"))
     const scenarioHandleDigest = "a".repeat(64)
@@ -1123,7 +1196,6 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     const files: Record<string, string> = {
       "/evidence/reboot.json": JSON.stringify({ schemaVersion: 1, operation: "reboot", phase: "complete", targetId: "sanctuary", requestId, prebootDigest, postbootDigest, processBindingDigest: "6".repeat(64), unrelatedHostOperations: 0, completedAt: 1 }),
       "/run/ouro-acceptance/image-digest": "b".repeat(64),
-      "/opt/ouro/deploy/unraid/sanctuary.ouro/tool-profiles.json": JSON.stringify({ version: 1, profiles: { "sanctuary-telegram": ["unraid_list_containers", "unraid_get_container_logs", "unraid_get_storage", "unraid_get_disks", "unraid_get_notifications", "unraid_get_system", "unraid_restart_container", "ponder", "settle", "speak"] } }),
     }
     const facts = await readDefaultSanctuaryScenarioFacts("unit-16a-boot-recovery-milestones", "a".repeat(64), unit16Deps({
       readFixedFile: (file) => { if (!(file in files)) throw Object.assign(new Error("missing"), { code: "ENOENT" }); return files[file]! },
@@ -1321,11 +1393,11 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-health-probe-receipt-"))
     const scenarioHandleDigest = "a".repeat(64)
     const receiptPath = `${agentRoot}/state/acceptance/health-probe-receipts/${scenarioHandleDigest}.json`
-    const facts = await readDefaultSanctuaryScenarioFacts("unit-16h-daily-digest", scenarioHandleDigest, unit16Deps({
+    const facts = await readDefaultSanctuaryScenarioFacts("unit-16h-acceptance-delivery-probe", scenarioHandleDigest, unit16Deps({
       readFixedFile: (file) => { if (file === receiptPath) return JSON.stringify(validHealthProbeReceipt(scenarioHandleDigest)); throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
       hostRequest: async () => ({ running: true, health: "healthy", imageId: "sha256:missing", user: "10001:10001", readOnlyRoot: true, mountCount: 2, publishedPortCount: 0, restartPolicy: "unless-stopped", restartCount: 0, autostartExact: true, updaterDisabled: true, vaultUnlocked: true, manualAuthRequired: false }),
     }), agentRoot)
-    expect(facts.healthProbe).toMatchObject({ label: "unit-16h-daily-digest", scenarioHandleDigest, clockMode: "local-daily-boundary", privateTurnCount: 1, providerInvocationCount: 2, deliveryCount: 1 })
+    expect(facts.healthProbe).toMatchObject({ label: "unit-16h-acceptance-delivery-probe", scenarioHandleDigest, clockMode: "local-daily-boundary", privateTurnCount: 1, providerInvocationCount: 2, deliveryCount: 1 })
     expect(facts.sourceValues["health-probe-receipt"]).toEqual(facts.healthProbe)
     fs.rmSync(agentRoot, { recursive: true, force: true })
   })
@@ -1367,12 +1439,12 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     ["provider count below private turns", { privateTurnCount: 2, providerInvocationCount: 1 }],
     ["provider count above bound", { providerInvocationCount: 1_001 }],
     ["mismatched fixture sequence", { fixtureSequenceDigest: "9".repeat(64) }],
-    ["malformed phase", { phases: [{ ordinal: 1, name: "digest-first", trigger: "acceptance", fixtureStatus: 503, opened: 0, recovered: 0, digestDue: true, deliveryKind: "digest", sweepReceiptDigest: "5".repeat(64), deliveryReceiptDigest: "6".repeat(64), extra: true }] }],
+    ["malformed phase", { phases: [{ ordinal: 1, name: "delivery-probe-first", trigger: "acceptance", fixtureStatus: 503, opened: 0, recovered: 0, digestDue: true, deliveryKind: "digest", sweepReceiptDigest: "5".repeat(64), deliveryReceiptDigest: "6".repeat(64), extra: true }] }],
   ])("rejects a health probe receipt with %s", async (_label, patch) => {
     const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-health-probe-invalid-"))
     const scenarioHandleDigest = "a".repeat(64)
     const receiptPath = `${agentRoot}/state/acceptance/health-probe-receipts/${scenarioHandleDigest}.json`
-    await expect(readDefaultSanctuaryScenarioFacts("unit-16h-daily-digest", scenarioHandleDigest, unit16Deps({
+    await expect(readDefaultSanctuaryScenarioFacts("unit-16h-acceptance-delivery-probe", scenarioHandleDigest, unit16Deps({
       readFixedFile: (file) => { if (file === receiptPath) return JSON.stringify(validHealthProbeReceipt(scenarioHandleDigest, patch)); throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
     }), agentRoot)).rejects.toThrow()
     fs.rmSync(agentRoot, { recursive: true, force: true })
@@ -1385,7 +1457,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-health-probe-invalid-raw-"))
     const scenarioHandleDigest = "a".repeat(64)
     const receiptPath = `${agentRoot}/state/acceptance/health-probe-receipts/${scenarioHandleDigest}.json`
-    await expect(readDefaultSanctuaryScenarioFacts("unit-16h-daily-digest", scenarioHandleDigest, unit16Deps({
+    await expect(readDefaultSanctuaryScenarioFacts("unit-16h-acceptance-delivery-probe", scenarioHandleDigest, unit16Deps({
       readFixedFile: (file) => { if (file === receiptPath) return raw; throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
     }), agentRoot)).rejects.toThrow()
     fs.rmSync(agentRoot, { recursive: true, force: true })

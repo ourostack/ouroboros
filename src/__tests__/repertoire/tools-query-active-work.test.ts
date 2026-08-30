@@ -103,6 +103,21 @@ const listCodingSessionsMock = vi.fn(() => [
   },
 ])
 const listVisibleBackgroundOperationsMock = vi.fn(() => [])
+const listExternalEventStatusMock = vi.fn(() => [])
+const listTelegramEffectsMock = vi.fn(() => [{
+  id: "a".repeat(64),
+  authorClass: "butler",
+  target: { kind: "approved_relationship", friendId: "ari", sessionKey: "telegram:8541786263:42" },
+  parts: [{ state: "session_recorded" }],
+  updatedAt: "2026-08-29T00:00:00.000Z",
+}])
+const listTelegramAdmissionsMock = vi.fn(() => [{
+  id: "b".repeat(20),
+  status: "pending",
+  displayCode: "PINE-4821",
+  createdAt: Date.parse("2026-08-29T00:00:00.000Z"),
+  expiresAt: Date.parse("2026-08-30T00:00:00.000Z"),
+}])
 
 vi.mock("fs", () => ({
   existsSync: vi.fn(),
@@ -128,6 +143,8 @@ vi.mock("../../heart/identity", () => ({
   getAgentName: vi.fn(() => "slugger"),
   loadAgentConfig: vi.fn(() => ({
     provider: "anthropic",
+    humanFacing: { provider: "minimax", model: "MiniMax-M3" },
+    agentFacing: { provider: "minimax", model: "MiniMax-M3" },
     context: { maxTokens: 80000, contextMargin: 20 },
     phrases: { thinking: [], tool: [], followup: [] },
   })),
@@ -205,11 +222,42 @@ vi.mock("../../heart/mail-import-discovery", () => ({
   listVisibleBackgroundOperations: listVisibleBackgroundOperationsMock,
 }))
 
+vi.mock("../../heart/external-events/router", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../heart/external-events/router")>(),
+  listExternalEventStatus: listExternalEventStatusMock,
+}))
+
+vi.mock("../../senses/telegram-effect-adapter", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../senses/telegram-effect-adapter")>(),
+  FileTelegramEffectJournal: class {
+    list() { return listTelegramEffectsMock() }
+    close() {}
+  },
+}))
+
+vi.mock("../../senses/telegram-admission", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../senses/telegram-admission")>(),
+  FileTelegramAdmissionStore: class {
+    list() { return listTelegramAdmissionsMock() }
+    close() {}
+  },
+}))
+
 describe("query_active_work tool", () => {
   beforeEach(() => {
     vi.resetModules()
     getBoardMock.mockReset()
     getBoardMock.mockImplementation(() => makeEmptyBoard())
+    listTelegramEffectsMock.mockReset()
+    listTelegramEffectsMock.mockReturnValue([{
+      id: "a".repeat(64), authorClass: "butler", target: { kind: "approved_relationship", friendId: "ari", sessionKey: "telegram:8541786263:42" },
+      parts: [{ state: "session_recorded" }], updatedAt: "2026-08-29T00:00:00.000Z",
+    }])
+    listTelegramAdmissionsMock.mockReset()
+    listTelegramAdmissionsMock.mockReturnValue([{
+      id: "b".repeat(20), status: "pending", displayCode: "PINE-4821",
+      createdAt: Date.parse("2026-08-29T00:00:00.000Z"), expiresAt: Date.parse("2026-08-30T00:00:00.000Z"),
+    }])
     listSessionActivityMock.mockReset()
     listSessionActivityMock.mockImplementation(() => [
       {
@@ -295,6 +343,8 @@ describe("query_active_work tool", () => {
     ])
     listVisibleBackgroundOperationsMock.mockReset()
     listVisibleBackgroundOperationsMock.mockImplementation(() => [])
+    listExternalEventStatusMock.mockReset()
+    listExternalEventStatusMock.mockReturnValue([])
   })
 
   it("is registered in baseToolDefinitions", async () => {
@@ -331,6 +381,327 @@ describe("query_active_work tool", () => {
     expect(result).toContain("## other active sessions")
     expect(result).toContain("Ari/bluebubbles/chat:any;-;ari@mendelow.me")
     expect(result).not.toContain("coding-001")
+  })
+
+  it("adds the bounded operational projection only for the Sanctuary Butler", async () => {
+    const identity = await import("../../heart/identity")
+    vi.mocked(identity.getAgentName).mockReturnValue("sanctuary")
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find((entry) => entry.tool.function.name === "query_active_work")!
+    const result = await tool.handler({}, { signin: async () => undefined } as any)
+    expect(result).toContain("## butler operational visibility")
+    expect(result).toContain("unavailable")
+    vi.mocked(identity.getAgentName).mockReturnValue("slugger")
+  })
+
+  it("renders full Butler visibility from the existing event, policy, await, effect, admission, daemon, and sense owners", async () => {
+    const { formatButlerOperationalVisibility } = await import("../../repertoire/tools-session")
+    const result = formatButlerOperationalVisibility({
+      agentName: "sanctuary",
+      daemonHealth: { status: "partial", mode: "production", pid: 11, startedAt: "2026-08-29T00:00:00.000Z", uptimeSeconds: 30, safeMode: null, degraded: [], agents: { sanctuary: { status: "running", pid: 12, crashes: 0 } }, habits: {} },
+      senseStatusLines: ["- Telegram: ready", "- Mail: disabled"],
+      stewardPolicy: { schemaVersion: 1, version: 4, desiredStates: { "container:books": { value: "intentionally_off", provenance: "stated", version: 4, source: "telegram" } }, routineActionGrants: { restart: { action: "unraid.container.restart", targets: ["jellyfin"], maxCount: 2, windowMs: 60000, verificationRequired: true, exclusions: [], provenance: "stated", issuer: "ari", authorizedAt: "2026-08-29T00:00:00.000Z", authorizingSessionEvent: "evt", version: 4 } }, updatedAt: "2026-08-29T00:00:00.000Z" },
+      awaits: [{ name: "top-up", condition: "Ari says the account is topped up", cadence: "1h", alert: "telegram", mode: "full", max_age: null, status: "pending", created_at: "2026-08-29T00:00:00.000Z", filed_from: "telegram", filed_for_friend_id: "ari", filed_from_key: "owner", request_id: "req", obligation_id: null, body: "check credit", resolved_at: null, resolution_observation: null, expired_at: null, last_observation_at_expiry: null, canceled_at: null, cancel_reason: null }],
+      telegramEffects: [{ id: "effect-1", authorClass: "butler", targetKind: "approved_relationship", state: "accepted", updatedAt: "2026-08-29T00:00:00.000Z" }],
+      telegramAdmissions: [{ id: "admission-1", status: "pending", displayCode: "WARM-OWL", createdAt: 1_777_000_000_000, expiresAt: 1_777_003_600_000 }],
+      externalEvents: [{ recordPath: "/event", corrupt: false, agent: "sanctuary", source: "health", eventId: "media-down", eventType: "service", observationRevision: "r1", transition: "unchanged", executionState: "handled", generation: 1, attemptCount: 1, updatedAt: "2026-08-29T00:00:00.000Z", classification: "expected", decision: "silent", reason: "Books is intentionally off", stewardPolicy: { kind: "current", key: "container:books", version: 4 }, nextWake: { kind: "on_change" }, careId: null, awaitId: null, lastError: null, nextAttemptAt: null, claimOwner: null, claimExpiresAt: null, dispatchEnabled: true, undispatched: false, retentionSummary: null }],
+      sourceErrors: {},
+    }, { limit: 20 })
+    expect(result).toContain("disposition expected/silent; reason Books is intentionally off")
+    expect(result).toContain("steward container:books@4")
+    expect(result).toContain("pending awaits: 1")
+    expect(result).toContain("container:books = intentionally_off")
+    expect(result).toContain("restart: unraid.container.restart on jellyfin")
+    expect(result).toContain("Telegram effects: 1")
+    expect(result).toContain("effect-1: accepted; butler; approved_relationship")
+    expect(result).toContain("Telegram admissions: 1")
+    expect(result).toContain("admission-1: pending; code WARM-OWL")
+    expect(result).toContain("daemon: partial")
+    expect(result).toContain("Telegram: ready")
+  })
+
+  it("surfaces unavailable owners and bounds operational history", async () => {
+    const { formatButlerOperationalVisibility } = await import("../../repertoire/tools-session")
+    const event = { recordPath: "/event", corrupt: false, agent: "sanctuary", source: "health", eventId: "media-down", eventType: "service", observationRevision: "r1", transition: "unchanged" as const, executionState: "handled" as const, generation: 1, attemptCount: 1, updatedAt: "2026-08-29T00:00:00.000Z", classification: "expected" as const, decision: "silent" as const, reason: "x".repeat(500), stewardPolicy: { kind: "none" as const }, nextWake: { kind: "on_change" as const }, careId: null, awaitId: null, lastError: null, nextAttemptAt: null, claimOwner: null, claimExpiresAt: null, dispatchEnabled: true, undispatched: false, retentionSummary: null }
+    const result = formatButlerOperationalVisibility({
+      agentName: "sanctuary", daemonHealth: null, senseStatusLines: [],
+      stewardPolicy: { schemaVersion: 1, version: 0, desiredStates: {}, routineActionGrants: {}, updatedAt: null },
+      awaits: [], telegramEffects: [], telegramAdmissions: [],
+      externalEvents: Array.from({ length: 25 }, (_, index) => ({ ...event, eventId: `event-${index}` })),
+      sourceErrors: { daemon_health: "health file unreadable", telegram_effects: "state corrupt", telegram_admissions: "admissions unreadable", senses: "credentials unavailable" },
+    })
+    expect(result).toContain("daemon: unavailable (health file unreadable)")
+    expect(result).toContain("Telegram effects: unavailable (state corrupt)")
+    expect(result).toContain("Telegram admissions: unavailable (admissions unreadable)")
+    expect(result).toContain("unavailable (credentials unavailable)")
+    expect(result).toContain("15 more events; call query_active_work with section=events, offset=10, limit=10")
+    expect(result.length).toBeLessThan(10_000)
+  })
+
+  it("reads pending awaits plus canonical Telegram journals and daemon state", async () => {
+    const fs = await import("fs")
+    const existsSync = vi.mocked(fs.existsSync)
+    const readdirSync = vi.mocked(fs.readdirSync)
+    const readFileSync = vi.mocked(fs.readFileSync)
+    existsSync.mockImplementation((candidate) => {
+      const filePath = String(candidate)
+      return filePath.endsWith("/awaiting")
+        || filePath.endsWith("/state/telegram/effects")
+        || filePath.endsWith("/state/senses/telegram/admissions")
+        || filePath.endsWith("/state/run-ledger/runs.jsonl")
+    }, { limit: 20 })
+    readdirSync.mockImplementation(((candidate: string) => String(candidate).endsWith("/awaiting") ? [
+      { name: "pending.md", isFile: () => true },
+      { name: "resolved.md", isFile: () => true },
+      { name: "ignored.txt", isFile: () => true },
+      { name: "nested.md", isFile: () => false },
+    ] : []) as any)
+    readFileSync.mockImplementation(((candidate: string) => {
+      const filePath = String(candidate)
+      if (filePath.endsWith("pending.md")) return "---\ncondition: Ari confirms the top-up\nstatus: pending\n---\ncheck credit\n"
+      if (filePath.endsWith("resolved.md")) return "---\nstatus: resolved\n---\ndone\n"
+      if (filePath.endsWith("runs.jsonl")) {
+        const base = { schemaVersion: 1, rootRunId: "root", idempotencyKey: "idem", agent: "sanctuary", triggerType: "inbound", sourceKind: "private-runtime", senseOrHabit: "external-event", targetHash: "sha256:target", startedAt: "2026-08-29T00:00:00.000Z", contextPacketIds: [], contentStored: false }
+        return [
+          { ...base, recordedAt: "2026-08-29T00:01:00.000Z", runId: "run-success", lifecycle: "completed" },
+          { ...base, recordedAt: "2026-08-29T00:03:00.000Z", runId: "run-latest", lifecycle: "completed" },
+          { ...base, recordedAt: "2026-08-29T00:02:00.000Z", runId: "run-error", lifecycle: "error", endedAt: "2026-08-29T00:02:00.000Z", errorName: "Error" },
+        ].map((row) => JSON.stringify(row)).join("\n")
+      }
+      return JSON.stringify({ status: "healthy", mode: "production", pid: 41, startedAt: "2026-08-29T00:00:00.000Z", uptimeSeconds: 60, safeMode: null, degraded: [], agents: {}, habits: {} })
+    }) as any)
+
+    try {
+      const { readButlerOperationalVisibility } = await import("../../repertoire/tools-session")
+      const status = readButlerOperationalVisibility("/mock/butler", "sanctuary")
+      expect(status.awaits).toEqual([expect.objectContaining({ name: "pending", status: "pending" })])
+      expect(status.telegramEffects).toEqual([expect.objectContaining({ state: "session_recorded", updatedAt: "2026-08-29T00:00:00.000Z" })])
+      expect(status.telegramEffects[0]).toMatchObject({ acceptedAt: null, sessionRecordedAt: null })
+      expect(status.telegramAdmissions).toEqual([expect.objectContaining({ status: "pending", displayCode: "PINE-4821" })])
+      expect(status.daemonHealth).toMatchObject({ status: "healthy", pid: 41 })
+      expect(status.lastAutomatedEventRun).toMatchObject({ runId: "run-latest", lifecycle: "completed" })
+    } finally {
+      existsSync.mockReset()
+      readdirSync.mockReset()
+      readFileSync.mockReset()
+    }
+  })
+
+  it("derives every durable Telegram effect state and preserves empty primitive read failures", async () => {
+    const fs = await import("fs")
+    const existsSync = vi.mocked(fs.existsSync)
+    existsSync.mockImplementation((candidate) => {
+      const filePath = String(candidate)
+      if (filePath.endsWith("/awaiting")) throw ""
+      return filePath.endsWith("/state/telegram/effects") || filePath.endsWith("/state/senses/telegram/admissions")
+    })
+    listTelegramEffectsMock.mockReturnValue([
+      { id: "1", authorClass: "butler", target: { kind: "approved_relationship" }, parts: [{ state: "indeterminate", acceptedAt: "2026-08-29T01:00:00.000Z", sessionRecordedAt: "2026-08-29T01:01:00.000Z", messageId: 42, sessionEventId: "evt-42" }], updatedAt: "1" },
+      { id: "2", authorClass: "butler", target: { kind: "approved_relationship" }, parts: [{ state: "attempting" }], updatedAt: "2" },
+      { id: "3", authorClass: "butler", target: { kind: "approved_relationship" }, parts: [{ state: "session_recorded" }], updatedAt: "3" },
+      { id: "4", authorClass: "butler", target: { kind: "approved_relationship" }, parts: [{ state: "accepted" }], updatedAt: "4" },
+      { id: "5", authorClass: "butler", target: { kind: "approved_relationship" }, parts: [{ state: "prepared" }], updatedAt: "5" },
+    ] as any)
+
+    const { readButlerOperationalVisibility } = await import("../../repertoire/tools-session")
+    const status = readButlerOperationalVisibility("/mock/agent-root", "sanctuary")
+    expect(status.telegramEffects.map((effect) => effect.state)).toEqual(["indeterminate", "attempting", "session_recorded", "accepted", "prepared"])
+    expect(status.telegramEffects[0]).toMatchObject({
+      acceptedAt: "2026-08-29T01:00:00.000Z",
+      sessionRecordedAt: "2026-08-29T01:01:00.000Z",
+      messageIds: [42],
+      sessionEventIds: ["evt-42"],
+    })
+    expect(status.sourceErrors.awaits).toBe("unknown read failure")
+  })
+
+  it("filters external issues for this Butler and reports unavailable provider lanes", async () => {
+    const identity = await import("../../heart/identity")
+    vi.mocked(identity.loadAgentConfig).mockReturnValueOnce({ provider: "minimax" } as any)
+    listExternalEventStatusMock.mockReturnValue([
+      { agent: "sanctuary", eventId: "for-sanctuary" },
+      { agent: "slugger", eventId: "for-slugger" },
+    ] as any)
+
+    const { readButlerOperationalVisibility } = await import("../../repertoire/tools-session")
+    const status = readButlerOperationalVisibility("/mock/agent-root", "sanctuary")
+
+    expect(status.externalEvents).toEqual([expect.objectContaining({ eventId: "for-sanctuary" })])
+    expect(status.providerLanes).toBeNull()
+    expect(status.sourceErrors.provider).toBe("provider lanes are unavailable")
+  })
+
+  it("renders unavailable health plus bounded policy and Telegram ledgers", async () => {
+    const { formatButlerOperationalVisibility } = await import("../../repertoire/tools-session")
+    const desiredStates = Object.fromEntries(Array.from({ length: 11 }, (_, index) => [`desired-${index}`, {
+      value: `value-${index}`, provenance: "owner", source: "telegram", version: 1, expiresAt: "2099-01-01T00:00:00.000Z",
+    }]))
+    const routineActionGrants = Object.fromEntries(Array.from({ length: 11 }, (_, index) => [`grant-${index}`, {
+      action: "restart", targets: ["books"], maxCount: 1, windowMs: 60_000, verificationRequired: false, version: 1, expiresAt: "2099-01-01T00:00:00.000Z",
+    }]))
+    const telegramEffects = Array.from({ length: 21 }, (_, index) => ({ id: `effect-${index}`, authorClass: "butler", targetKind: "approved_relationship", state: "prepared" as const, updatedAt: String(index) }))
+    const telegramAdmissions = Array.from({ length: 21 }, (_, index) => ({ id: `admission-${index}`, status: "pending" as const, displayCode: "PINE-4821", createdAt: index, expiresAt: 1_800_000_000_000 }))
+    const event = { recordPath: "/event", corrupt: false, agent: "sanctuary", source: "guard", eventId: "quiet", eventType: "health", observationRevision: "r1", transition: "changed" as const, executionState: "handled" as const, generation: 1, attemptCount: 1, updatedAt: "2026-08-29T00:00:00.000Z", classification: null, decision: null, reason: null, stewardPolicy: { kind: "none" as const }, nextWake: null, careId: null, awaitId: null, lastError: null, nextAttemptAt: null, claimOwner: null, claimExpiresAt: null, dispatchEnabled: true, undispatched: false, retentionSummary: null }
+    const result = formatButlerOperationalVisibility({
+      agentName: "sanctuary", daemonHealth: null, senseStatusLines: [],
+      stewardPolicy: { schemaVersion: 1, version: 1, desiredStates, routineActionGrants, updatedAt: "2026-08-29T00:00:00.000Z" } as any,
+      awaits: [], telegramEffects, telegramAdmissions, externalEvents: [event], sourceErrors: {},
+    }, { limit: 20 })
+    expect(result).toContain("daemon: unavailable")
+    expect(result).toContain("butler: unavailable")
+    expect(result).toContain("no verification")
+    expect(result).toContain("2 more policy")
+    expect(result).toContain("22 more telegram")
+    expect(result).toContain("not yet recorded")
+  })
+
+  it("renders bounded await and event detail including wake, return, care, and unavailable sources", async () => {
+    const { formatButlerOperationalVisibility } = await import("../../repertoire/tools-session")
+    const awaits = Array.from({ length: 21 }, (_, index) => ({
+      name: `await-${index}`,
+      condition: index === 0 ? null : `condition-${index}`,
+      cadence: null,
+      alert: null,
+      mode: "full" as const,
+      max_age: null,
+      wake_at: index === 0 ? "2026-08-30T00:00:00.000Z" : null,
+      status: "pending" as const,
+      created_at: null,
+      filed_from: null,
+      filed_for_friend_id: null,
+      filed_from_key: null,
+      request_id: null,
+      obligation_id: null,
+      body: index === 0 ? "body fallback" : "",
+      resolved_at: null,
+      resolution_observation: null,
+      expired_at: null,
+      last_observation_at_expiry: null,
+      canceled_at: null,
+      cancel_reason: null,
+    }))
+    const event = {
+      recordPath: "/event", corrupt: false, agent: "sanctuary", source: "health", eventId: "needs-detail", eventType: "service", observationRevision: "r1", transition: "changed" as const,
+      executionState: "handled" as const, generation: 1, attemptCount: 1, updatedAt: "2026-08-29T00:00:00.000Z", classification: null, decision: null,
+      reason: null, stewardPolicy: { kind: "none" as const }, nextWake: null, careId: "care-1", awaitId: "await-1", lastError: "still investigating", nextAttemptAt: null,
+      claimOwner: null, claimExpiresAt: null, dispatchEnabled: true, undispatched: false, retentionSummary: null,
+    }
+    const result = formatButlerOperationalVisibility({
+      agentName: "sanctuary",
+      daemonHealth: { status: "healthy", mode: "production", pid: 1, startedAt: "2026-08-29T00:00:00.000Z", uptimeSeconds: 1, safeMode: null, degraded: [], agents: {}, habits: {} },
+      senseStatusLines: [],
+      stewardPolicy: { schemaVersion: 1, version: 0, desiredStates: {}, routineActionGrants: {}, updatedAt: null },
+      awaits,
+      telegramEffects: [],
+      telegramAdmissions: [],
+      externalEvents: [event],
+      sourceErrors: { awaits: "await store unavailable", external_events: "event store unavailable", steward_policy: "policy unavailable" },
+    }, { limit: 20 })
+    expect(result).toContain("body fallback; wake 2026-08-30T00:00:00.000Z")
+    expect(result).toContain("1 more awaits; call query_active_work with section=awaits, offset=20, limit=20")
+    expect(result).toContain("still investigating")
+    expect(result).toContain("await await-1; care care-1")
+    expect(result).toContain("event store unavailable")
+    expect(result).toContain("steward policy: unavailable (policy unavailable)")
+  })
+
+  it("pages canonical Butler ledgers and exposes model, sweep, action, event-turn, and Telegram receipt truth", async () => {
+    const { formatButlerOperationalVisibility } = await import("../../repertoire/tools-session")
+    const event = { recordPath: "/event", corrupt: false, agent: "sanctuary", source: "health", eventId: "books", eventType: "service", observationRevision: "r1", transition: "changed" as const, executionState: "handled" as const, generation: 1, attemptCount: 1, updatedAt: "2026-08-29T03:00:00.000Z", classification: "actionable", decision: "act", reason: "restarted", stewardPolicy: { kind: "none" as const }, nextWake: null, careId: null, awaitId: null, lastError: null, nextAttemptAt: null, claimOwner: null, claimExpiresAt: null, dispatchEnabled: true, undispatched: false, retentionSummary: null }
+    const common = {
+      agentName: "sanctuary", daemonHealth: null, senseStatusLines: [], stewardPolicy: { schemaVersion: 1 as const, version: 1, desiredStates: { old: { value: "off", provenance: "stated" as const, version: 1, source: "old", expiresAt: "2020-01-01T00:00:00.000Z" } }, routineActionGrants: {}, updatedAt: null }, awaits: [], telegramAdmissions: [], externalEvents: [event], sourceErrors: {},
+      telegramEffects: [{ id: "effect-1", authorClass: "butler", targetKind: "approved_relationship", state: "session_recorded" as const, acceptedAt: "2026-08-29T03:59:00.000Z", sessionRecordedAt: "2026-08-29T04:00:00.000Z", messageIds: [42], sessionEventIds: ["session-42"], updatedAt: "2026-08-29T04:00:00.000Z" }, { id: "legacy", authorClass: "butler", targetKind: "approved_relationship", state: "session_recorded" as const, messageIds: [41], sessionEventIds: ["session-41"], updatedAt: "2026-08-29T03:00:00.000Z" }],
+      providerLanes: { outward: { provider: "minimax", model: "MiniMax-M3" }, inner: { provider: "minimax", model: "MiniMax-M3" } },
+      healthState: { incidents: {}, lastDigestDay: null, updatedAt: "2026-08-29T02:00:00.000Z", outbox: { id: "out-1", message: "pending", status: "pending" as const, createdAt: "2026-08-29T02:00:00.000Z", kind: "transition" as const }, indeterminateDeliveries: [{ id: "ind-1", message: "unknown", status: "attempting" as const, createdAt: "2026-08-29T02:00:00.000Z", kind: "transition" as const }], deliveredReceipts: [{ deliveryId: "delivered-1", kind: "transition" as const, deliveredAt: "2026-08-29T02:01:00.000Z", messageIds: [7] }], sweepReceipts: [{ sweepId: "sweep-1", startedAt: "2026-08-29T01:59:00.000Z", completedAt: "2026-08-29T02:00:00.000Z", incidentDigest: "a".repeat(64), opened: 1, recovered: 0, digestDue: false }] },
+      routineActions: [{ schemaVersion: 2 as const, id: "action-1", state: "verified" as const, key: "restart", action: "container.restart", target: "books", policyVersion: 1, grantVersion: 1, reservedAt: "2026-08-29T02:30:00.000Z", updatedAt: "2026-08-29T02:31:00.000Z", authorizationReceiptId: "auth", authorizationVersion: 1, attemptId: "attempt", attempt: 1, expectedBeforeState: "exited", resolvedTarget: { id: "docker:books", name: "books" }, effect: { operation: "restart", targetId: "docker:books" }, effectReceipt: "receipt", verifiedAfterState: "running", recoveryState: { state: "completed" as const, compensation: "none" as const } }, { schemaVersion: 2 as const, id: "action-failed", state: "failed" as const, key: "restart", action: "container.restart", target: "media", policyVersion: 1, grantVersion: 1, reservedAt: "2026-08-29T02:30:00.000Z", updatedAt: "2026-08-29T02:32:00.000Z", authorizationReceiptId: "auth2", authorizationVersion: 1, attemptId: "attempt2", attempt: 1, expectedBeforeState: "exited", resolvedTarget: { id: "docker:media", name: "media" }, effect: { operation: "restart", targetId: "docker:media" }, effectReceipt: null, verifiedAfterState: null, recoveryState: { state: "failed" as const, compensation: "none" as const } }],
+      lastAutomatedEventRun: { schemaVersion: 1 as const, recordedAt: "2026-08-29T03:00:01.000Z", runId: "run-success", rootRunId: "run-success", idempotencyKey: "idem-success", agent: "sanctuary", triggerType: "inbound" as const, sourceKind: "private-runtime" as const, senseOrHabit: "external-event", targetHash: "sha256:target", lifecycle: "completed" as const, startedAt: "2026-08-29T02:59:00.000Z", endedAt: "2026-08-29T03:00:00.000Z", contextPacketIds: [], contentStored: false as const },
+    }
+    const all = formatButlerOperationalVisibility(common)
+    expect(all).toContain("outward minimax/MiniMax-M3; inner minimax/MiniMax-M3")
+    expect(all).toContain("health sweeps: 1")
+    expect(all).toContain("indeterminate 1; outbox pending:out-1")
+    expect(all).toContain("indeterminate ind-1")
+    expect(all).toContain("delivered delivered-1: transition; messages 7; at 2026-08-29T02:01:00.000Z")
+    expect(all).toContain("action-1: container.restart books; verified")
+    expect(all).toContain("action-failed: container.restart media; failed; updated 2026-08-29T02:32:00.000Z; verification failed")
+    expect(all).toContain("old = off; expired")
+    expect(all).toContain("last successful automated event turn 2026-08-29T03:00:00.000Z; run run-success; target sha256:target")
+    expect(all).toContain("effect-1: session_recorded")
+    expect(all).toContain("accepted 2026-08-29T03:59:00.000Z; session recorded 2026-08-29T04:00:00.000Z; message ids 42; session events session-42")
+    expect(all).toContain("latest Telegram accepted: 2026-08-29T03:59:00.000Z; latest session recorded: 2026-08-29T04:00:00.000Z")
+    expect(all).toContain("legacy: session_recorded; butler; approved_relationship; accepted timestamp unavailable (legacy); session recorded timestamp unavailable (legacy)")
+    expect(formatButlerOperationalVisibility(common, { section: "provider" })).not.toContain("external issues")
+  })
+
+  it("renders every truthful Butler fallback and bounded receipt state", async () => {
+    const { formatButlerOperationalVisibility } = await import("../../repertoire/tools-session")
+    const status = {
+      agentName: "sanctuary",
+      daemonHealth: { status: "healthy", mode: "production", pid: 1, agents: { sanctuary: { status: "running", pid: null, crashes: 2 } } },
+      senseStatusLines: [],
+      stewardPolicy: {
+        schemaVersion: 1,
+        version: 2,
+        desiredStates: { current: { value: "on", provenance: "stated", source: "owner", version: 2 } },
+        routineActionGrants: { expired: { action: "restart", targets: ["books"], maxCount: 1, windowMs: 60_000, verificationRequired: false, version: 2, expiresAt: "2020-01-01T00:00:00.000Z" } },
+        updatedAt: null,
+      },
+      awaits: [{ name: "unknown", condition: null, body: "", wake_at: null, status: "pending" }],
+      telegramEffects: [{ id: "prepared", authorClass: "butler", targetKind: "approved_relationship", state: "prepared", updatedAt: "2026-08-29T00:00:00.000Z" }],
+      telegramAdmissions: [],
+      externalEvents: [],
+      healthState: {
+        incidents: {}, lastDigestDay: null, updatedAt: "2026-08-29T02:00:00.000Z", outbox: null, indeterminateDeliveries: [], deliveredReceipts: [],
+        sweepReceipts: [
+          { sweepId: "sweep-new", completedAt: "2026-08-29T02:00:00.000Z", opened: 0, recovered: 1, deliveryId: "delivery-1" },
+          { sweepId: "sweep-old", completedAt: "2026-08-29T01:00:00.000Z", opened: 0, recovered: 0 },
+        ],
+      },
+      routineActions: [
+        { id: "verified", action: "restart", target: "books", state: "verified", verifiedAfterState: null, updatedAt: "2026-08-29T05:00:00.000Z" },
+        { id: "indeterminate", action: "restart", target: "books", state: "indeterminate", updatedAt: "2026-08-29T04:00:00.000Z" },
+        { id: "recovered", action: "restart", target: "books", state: "recovered_no_effect", updatedAt: "2026-08-29T03:00:00.000Z" },
+        { id: "pending", action: "restart", target: "books", state: "reserved", updatedAt: "2026-08-29T02:00:00.000Z" },
+      ],
+      providerLanes: null,
+      lastAutomatedEventRun: { runId: "run-recorded", recordedAt: "2026-08-29T06:00:00.000Z", targetHash: "sha256:recorded" },
+      sourceErrors: {},
+    } as any
+
+    const rendered = formatButlerOperationalVisibility(status, { limit: 1 })
+    const actions = formatButlerOperationalVisibility(status, { section: "actions", limit: 20 })
+    const policy = formatButlerOperationalVisibility(status, { section: "policy", limit: 20 })
+    expect(rendered).toContain("butler: running; pid none; crashes 2")
+    expect(rendered).toContain("delivery delivery-1")
+    expect(rendered).toContain("1 more health")
+    expect(rendered).toContain("current = on; active")
+    expect(policy).toContain("expired: restart on books; expired")
+    expect(rendered).toContain("verified state unavailable")
+    expect(rendered).toContain("3 more actions")
+    expect(actions).toContain("indeterminate; manual inspection required")
+    expect(actions).toContain("no effect occurred")
+    expect(actions).toContain("verification pending")
+    expect(rendered).toContain("condition unavailable")
+    expect(rendered).toContain("latest Telegram accepted: none; latest session recorded: none")
+    expect(rendered).toContain("accepted not accepted; session recorded not recorded; message ids none; session events none")
+    expect(rendered).toContain("2026-08-29T06:00:00.000Z; run run-recorded")
+    expect(formatButlerOperationalVisibility({ ...status, sourceErrors: { provider: "vault locked" } }, { section: "provider" })).toContain("provider lanes: unavailable (vault locked)")
+    expect(formatButlerOperationalVisibility({ ...status, sourceErrors: { external_events: "event ledger unreadable", run_ledger: "run ledger unreadable" } }, { section: "events" })).toContain("last successful automated event turn unavailable (run ledger unreadable)")
+    expect(formatButlerOperationalVisibility({ ...status, telegramEffects: [{ ...status.telegramEffects[0], state: "session_recorded" }] }, { section: "telegram" })).toContain("latest session recorded: timestamp unavailable (legacy artifacts present)")
+  })
+
+  it("bounds and defaults Sanctuary visibility paging arguments at the tool boundary", async () => {
+    const identity = await import("../../heart/identity")
+    vi.mocked(identity.getAgentName).mockReturnValue("sanctuary")
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find((entry) => entry.tool.function.name === "query_active_work")!
+
+    const clamped = await tool.handler({ section: "events", offset: "99999", limit: "0" }, { signin: async () => undefined } as any)
+    const defaulted = await tool.handler({ section: "events", offset: "invalid", limit: "invalid" }, { signin: async () => undefined } as any)
+
+    expect(clamped).toContain("## butler operational visibility")
+    expect(defaulted).toContain("## butler operational visibility")
+    vi.mocked(identity.getAgentName).mockReturnValue("slugger")
   })
 
   it("shows other live work even without a current session", async () => {

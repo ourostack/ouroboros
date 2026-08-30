@@ -61,12 +61,14 @@ vi.mock("../../heart/config", async () => {
 })
 
 const mockLoadSession = vi.fn().mockReturnValue(null)
+const mockDeferPostTurnPersist = vi.fn().mockResolvedValue([])
 
 vi.mock("../../mind/context", async () => {
   const actual = await vi.importActual<typeof import("../../mind/context")>("../../mind/context")
   return {
     ...actual,
     loadSession: (...args: any[]) => mockLoadSession(...args),
+    deferPostTurnPersist: (...args: any[]) => mockDeferPostTurnPersist(...args),
   }
 })
 
@@ -204,6 +206,12 @@ function setupSettledTurn(text: string = "hello from the agent") {
 // ── Tests ──────────────────────────────────────────────────────
 
 describe("extractOutwardSenseDeliveryText", () => {
+  it("derives the session path from the canonical agent root when no override is supplied", async () => {
+    const { getSenseSessionPath } = await import("../../senses/shared-turn")
+    expect(getSenseSessionPath("test-agent", "friend", "telegram", "telegram:1:2"))
+      .toBe("/tmp/test-agent/state/sessions/friend/telegram/telegram_1_2.json")
+  })
+
   it("prefers latest assistant content when present", async () => {
     const { extractOutwardSenseDeliveryText } = await import("../../senses/shared-turn")
     const messages: ChatCompletionMessageParam[] = [
@@ -303,6 +311,7 @@ describe("runSenseTurn", () => {
     vi.clearAllMocks()
     mockLoadSession.mockReset()
     mockLoadSession.mockReturnValue(null)
+    mockDeferPostTurnPersist.mockReset().mockResolvedValue([])
     setupSettledTurn()
     mockFriendResolve.mockResolvedValue(makeResolvedContext())
     mockWithSessionTurnLease.mockReset().mockImplementation(async (_sessionPath: string, work: (lease: any) => Promise<any>) => work({
@@ -370,6 +379,59 @@ describe("runSenseTurn", () => {
     })
     expect(result.response).toBe("hello from the agent")
     expect(result.ponderDeferred).toBe(false)
+  })
+
+  it("claims an exact precommitted ingress event without synthesizing a second user message", async () => {
+    const reference = "telegram-admission:abc123"
+    mockLoadSession.mockReturnValue({
+      messages: [{ role: "system", content: "system" }, { role: "user", content: "approved original" }],
+      events: [{ id: "evt-000002", role: "user", content: "approved original", relations: { references: [reference] } }],
+      state: undefined,
+    })
+    mockHandleInboundTurn.mockImplementationOnce(async (input: any) => {
+      expect(input.messages).toEqual([])
+      expect(input.runAgentOptions.toolContext.currentUserMessage).toBe("approved original")
+      return { resolvedContext: makeResolvedContext(), gateResult: { allowed: true }, turnOutcome: "settled", messages: [] }
+    })
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    await runSenseTurn({
+      agentName: "test-agent",
+      channel: "telegram",
+      sessionKey: "telegram:approved",
+      friendId: "friend-1",
+      userMessage: "approved original",
+      precommittedIngress: { eventId: "evt-000002", reference },
+    })
+    expect(mockHandleInboundTurn).toHaveBeenCalledOnce()
+  })
+
+  it("fails closed when precommitted ingress is absent, mismatched, or no longer the latest user event", async () => {
+    const reference = "telegram-admission:abc123"
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    const options = {
+      agentName: "test-agent",
+      channel: "telegram" as const,
+      sessionKey: "telegram:approved",
+      friendId: "friend-1",
+      userMessage: "approved original",
+      precommittedIngress: { eventId: "evt-000002", reference },
+    }
+    mockLoadSession.mockReturnValue({ messages: [], events: [] })
+    await expect(runSenseTurn(options)).rejects.toThrow("precommitted ingress")
+    mockLoadSession.mockReturnValue({
+      messages: [{ role: "user", content: "different" }],
+      events: [{ id: "evt-000002", role: "user", content: "different", relations: { references: [reference] } }],
+    })
+    await expect(runSenseTurn(options)).rejects.toThrow("precommitted ingress")
+    mockLoadSession.mockReturnValue({
+      messages: [{ role: "user", content: "approved original" }, { role: "user", content: "newer" }],
+      events: [
+        { id: "evt-000002", role: "user", content: "approved original", relations: { references: [reference] } },
+        { id: "evt-000003", role: "user", content: "newer", relations: { references: ["other"] } },
+      ],
+    })
+    await expect(runSenseTurn(options)).rejects.toThrow("precommitted ingress")
+    expect(mockHandleInboundTurn).not.toHaveBeenCalled()
   })
 
   it("preserves observed provider and tool counts when the shared turn rejects", async () => {
@@ -538,6 +600,28 @@ describe("runSenseTurn", () => {
     ])
     expect(input.runAgentOptions?.orientationFrame).toBeUndefined()
     expect(input.runAgentOptions?.toolContext?.orientationFrame).toBeUndefined()
+  })
+
+  it("passes an explicitly resolved orientation frame through the shared turn boundary", async () => {
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    const orientationFrame = {
+      frameId: "frame-1",
+      source: { channel: "mcp", conversationKey: "session-123", speechKind: "utterance", speech: ["hello"] },
+      candidates: [],
+      status: "resolved",
+      generatedAt: "2026-08-29T00:00:00.000Z",
+    } as any
+
+    await runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "hello",
+      orientationFrame,
+    })
+
+    expect(mockHandleInboundTurn.mock.calls[0][0].runAgentOptions.orientationFrame).toBe(orientationFrame)
   })
 
   it("passes transport tool context through to the agent turn", async () => {
@@ -807,12 +891,17 @@ describe("runSenseTurn", () => {
 
   it("delivers speak and settle segments through the outward delivery sink", async () => {
     const delivered: Array<{ kind: string; text: string }> = []
+    mockDeferPostTurnPersist.mockResolvedValue([
+      { id: "evt-000001", role: "assistant", content: null, toolCalls: [{ function: { name: "speak" } }] },
+      { id: "evt-000002", role: "assistant", content: null, toolCalls: [{ function: { name: "settle" } }] },
+    ])
     mockHandleInboundTurn.mockImplementation(async (input: any) => {
       input.callbacks.onTextChunk("quick voice update")
       await input.callbacks.flushNow()
       input.callbacks.onToolEnd("settle", "final answer", true)
       input.callbacks.onClearText()
       input.callbacks.onTextChunk("final voice answer")
+      await input.postTurn([], "/tmp/session.json")
       return {
         resolvedContext: makeResolvedContext(),
         gateResult: { allowed: true },
@@ -840,7 +929,53 @@ describe("runSenseTurn", () => {
       { kind: "settle", text: "final voice answer" },
     ])
     expect(result.deliveries).toEqual(delivered)
+    expect(result.causalSessionEventIds).toEqual(["evt-000001", "evt-000002"])
     expect(result.response).toBe("quick voice update\nfinal voice answer")
+  })
+
+  it("returns the exact new plain-assistant coordinate without considering older or non-assistant events", async () => {
+    mockLoadSession.mockReturnValue({
+      messages: [{ role: "assistant", content: "old" }],
+      events: [{ id: "evt-old", role: "assistant" }],
+    })
+    mockDeferPostTurnPersist.mockResolvedValue([
+      { id: "evt-old", role: "assistant", content: "old", toolCalls: [] },
+      { id: "evt-user", role: "user", content: "hello", toolCalls: [] },
+      { id: "evt-empty", role: "assistant", content: null, toolCalls: [] },
+      { id: "evt-new", role: "assistant", content: "new", toolCalls: [] },
+    ])
+    mockHandleInboundTurn.mockImplementation(async (input: any) => {
+      input.callbacks.onTextChunk("new")
+      await input.postTurn([], "/tmp/session.json")
+      return { resolvedContext: makeResolvedContext(), gateResult: { allowed: true }, turnOutcome: "settled", sessionPath: "/tmp/session.json", messages: [] }
+    })
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+
+    const result = await runSenseTurn({ agentName: "test-agent", channel: "mcp", sessionKey: "session-123", friendId: "friend-1", userMessage: "hello" })
+
+    expect(result.causalSessionEventIds).toEqual(["evt-new"])
+  })
+
+  it("returns no causal coordinate when failed and successful deliveries do not align with persisted events", async () => {
+    mockDeferPostTurnPersist.mockResolvedValue([
+      { id: "evt-speak", role: "assistant", content: null, toolCalls: [{ function: { name: "speak" } }] },
+    ])
+    mockHandleInboundTurn.mockImplementation(async (input: any) => {
+      input.callbacks.onTextChunk("failed speak")
+      await expect(input.callbacks.flushNow()).rejects.toThrow("speaker down")
+      input.callbacks.onTextChunk("successful text")
+      await input.postTurn([], "/tmp/session.json")
+      return { resolvedContext: makeResolvedContext(), gateResult: { allowed: true }, turnOutcome: "settled", sessionPath: "/tmp/session.json", messages: [] }
+    })
+    let delivery = 0
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+
+    const result = await runSenseTurn({
+      agentName: "test-agent", channel: "mcp", sessionKey: "session-123", friendId: "friend-1", userMessage: "hello",
+      deliverySink: { onDelivery: async () => { if (delivery++ === 0) throw new Error("speaker down") } },
+    })
+
+    expect(result.causalSessionEventIds).toEqual([null])
   })
 
   it("records final outward delivery failures without losing settled text", async () => {
@@ -960,7 +1095,8 @@ describe("runSenseTurn", () => {
   })
 
   it("falls back to session transcript when no text from callbacks but session has assistant message", async () => {
-    mockHandleInboundTurn.mockImplementation(async () => {
+    mockHandleInboundTurn.mockImplementation(async (input: any) => {
+      await input.postTurn([], "/tmp/session.json")
       return {
         resolvedContext: makeResolvedContext(),
         gateResult: { allowed: true },
@@ -970,12 +1106,18 @@ describe("runSenseTurn", () => {
       }
     })
     // When no text comes from callbacks, runSenseTurn re-loads the session
-    mockLoadSession.mockReturnValue({
+    const persistedEvents = [
+      { id: "evt-user", role: "user", content: "hi", toolCalls: [] },
+      { id: "evt-answer", role: "assistant", content: "recovered answer from session", toolCalls: [] },
+    ]
+    mockDeferPostTurnPersist.mockResolvedValue(persistedEvents)
+    mockLoadSession.mockReturnValueOnce(null).mockReturnValue({
       messages: [
         { role: "system", content: "system" },
         { role: "user", content: "hi" },
         { role: "assistant", content: "recovered answer from session" },
       ],
+      events: persistedEvents,
       state: {},
     })
     const { runSenseTurn } = await import("../../senses/shared-turn")
@@ -987,6 +1129,7 @@ describe("runSenseTurn", () => {
       userMessage: "hello",
     })
     expect(result.response).toBe("recovered answer from session")
+    expect(result.responseCausalSessionEventId).toBe("evt-answer")
     expect(result.ponderDeferred).toBe(false)
   })
 
@@ -1297,6 +1440,25 @@ describe("runSenseTurn", () => {
       friendId: "friend-1",
       userMessage: "hello",
     })).rejects.toThrow("pipeline explosion")
+  })
+
+  it("runs the sense authorization barrier at the pipeline pre-provider boundary", async () => {
+    let providerInvocationCount = 0
+    mockHandleInboundTurn.mockImplementation(async (input: any) => {
+      await input.prepareRunAgentOptions?.({ messages: [], currentUserMessages: [], resolvedContext: makeResolvedContext(), runAgentOptions: {} })
+      providerInvocationCount += 1
+      return { resolvedContext: makeResolvedContext(), gateResult: { allowed: true }, turnOutcome: "settled", messages: [] }
+    })
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    await expect(runSenseTurn({
+      agentName: "test-agent",
+      channel: "telegram",
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "hello",
+      prepareRunAgentOptions: async () => { throw new Error("relationship revoked before provider") },
+    })).rejects.toThrow("relationship revoked before provider")
+    expect(providerInvocationCount).toBe(0)
   })
 })
 

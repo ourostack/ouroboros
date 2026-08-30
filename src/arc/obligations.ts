@@ -31,9 +31,18 @@ export interface ObligationMeaning {
   resumeHint?: string
 }
 
+export interface ObligationProvenance {
+  kind: "human_request" | "agent_promise" | "machine_evidence"
+  source: string
+  ref: string
+}
+
 export interface Obligation {
   id: string
   origin: { friendId: string; channel: string; key: string }
+  sourceProvenance?: ObligationProvenance
+  owedTo?: { friendId: string; channel: string; key: string }
+  requestId?: string
   bridgeId?: string
   content: string
   status: ObligationStatus
@@ -44,6 +53,8 @@ export interface Obligation {
   nextAction?: string
   latestNote?: string
   fulfilledAt?: string
+  returnReadyAt?: string
+  returnEvidenceRef?: string
   meaning?: ObligationMeaning
 }
 
@@ -93,11 +104,21 @@ export function createObligation(
   agentRoot: string,
   input: Omit<Obligation, "id" | "createdAt" | "status">,
 ): Obligation {
+  if (input.sourceProvenance?.kind === "machine_evidence" && !input.owedTo) {
+    throw new Error("Machine evidence cannot create an obligation without a person owed a return")
+  }
   const now = new Date().toISOString()
   const id = generateTimestampId()
   const obligation: Obligation = {
     id,
     origin: input.origin,
+    sourceProvenance: input.sourceProvenance ?? {
+      kind: "human_request",
+      source: input.origin.channel,
+      ref: input.origin.key,
+    },
+    owedTo: input.owedTo ?? input.origin,
+    ...(input.requestId ? { requestId: capStructuredRecordString(input.requestId) } : {}),
     ...(input.bridgeId ? { bridgeId: input.bridgeId } : {}),
     content: capStructuredRecordString(input.content),
     status: "pending",
@@ -213,6 +234,24 @@ export function fulfillObligation(agentRoot: string, obligationId: string): void
   })
 }
 
+export function markObligationReturnReady(agentRoot: string, obligationId: string, evidenceRef: string): Obligation {
+  const dir = obligationsDir(agentRoot)
+  const obligation = readJsonFile<Obligation>(dir, obligationId)
+  if (!obligation || !isOpenObligation(obligation)) throw new Error(`Open obligation not found: ${obligationId}`)
+  const ref = capStructuredRecordString(evidenceRef).trim()
+  if (!ref) throw new Error("Obligation return evidence is required")
+  if (obligation.returnReadyAt) {
+    if (obligation.returnEvidenceRef !== ref) throw new Error(`Obligation return evidence is already bound: ${obligationId}`)
+    return obligation
+  }
+  obligation.returnReadyAt = new Date().toISOString()
+  obligation.returnEvidenceRef = ref
+  obligation.updatedAt = obligation.returnReadyAt
+  writeJsonFile(dir, obligationId, obligation)
+  emitNervesEvent({ component: "engine", event: "engine.obligation_return_ready", message: "obligation is ready for an exact recorded return", meta: { obligationId, friendId: obligation.owedTo?.friendId ?? obligation.origin.friendId } })
+  return obligation
+}
+
 export function findPendingObligationForOrigin(
   agentRoot: string,
   origin: { friendId: string; channel: string; key: string },
@@ -223,6 +262,16 @@ export function findPendingObligationForOrigin(
       && ob.origin.channel === origin.channel
       && ob.origin.key === origin.key,
   )
+}
+
+export function findPendingObligationForRequest(
+  agentRoot: string,
+  input: { requestId: string; owedTo: { friendId: string; channel: string; key: string } },
+): Obligation | undefined {
+  return readPendingObligations(agentRoot).find((obligation) => obligation.requestId === input.requestId
+    && obligation.owedTo?.friendId === input.owedTo.friendId
+    && obligation.owedTo.channel === input.owedTo.channel
+    && obligation.owedTo.key === input.owedTo.key)
 }
 
 export function enrichObligation(

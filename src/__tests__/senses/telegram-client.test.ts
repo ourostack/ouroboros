@@ -18,13 +18,46 @@ import {
   FileTelegramPendingApprovalStore,
   classifyTelegramPersistedApprovalState,
   createTelegramLongPoll,
-  createTelegramApprovalTransport,
+  createTelegramApprovalTransport as createRawTelegramApprovalTransport,
   type TelegramPendingApprovalStore,
   type TelegramBotApi,
 } from "../../senses/telegram-client"
 
 const token = "123456:super-secret-token"
 const tempDirectories: string[] = []
+
+function createTelegramApprovalTransport(options: Omit<Parameters<typeof createRawTelegramApprovalTransport>[0], "effects">) {
+  const effects: Parameters<typeof createRawTelegramApprovalTransport>[0]["effects"] = {
+    async sendText(input) {
+      return sendTelegramText(options.api, input.chatId, input.text)
+    },
+    async sendCard(input) {
+      const replyMarkup = { inline_keyboard: input.buttons.map((row) => row.map((button) => ({ text: button.text, callback_data: button.callbackData }))) }
+      let result: unknown
+      try {
+        result = await options.api.request("sendMessage", { chat_id: input.chatId, text: escapeTelegramHtml(input.text), parse_mode: "HTML", reply_markup: replyMarkup })
+      } catch (error) {
+        if (!(error instanceof TelegramApiError) || error.status !== 400) throw error
+        result = await options.api.request("sendMessage", { chat_id: input.chatId, text: input.text, reply_markup: replyMarkup })
+      }
+      if (!result || typeof result !== "object" || Array.isArray(result) || !("message_id" in result) || !Number.isSafeInteger(result.message_id) || Number(result.message_id) <= 0) throw new Error("Telegram sendMessage response did not include a canonical message_id")
+      return Number(result.message_id)
+    },
+    async edit(input) {
+      const base = { chat_id: input.chatId, message_id: input.messageId, reply_markup: { inline_keyboard: [] as never[] } }
+      try {
+        await options.api.request("editMessageText", { ...base, text: escapeTelegramHtml(input.text), parse_mode: "HTML" }, AbortSignal.timeout(30_000))
+      } catch (error) {
+        if (!(error instanceof TelegramApiError) || error.status !== 400) throw error
+        await options.api.request("editMessageText", { ...base, text: input.text }, AbortSignal.timeout(30_000))
+      }
+    },
+    async acknowledge(input) {
+      await options.api.request("answerCallbackQuery", { callback_query_id: input.callbackQueryId, ...(input.text ? { text: input.text } : {}), ...(input.showAlert ? { show_alert: true } : {}) })
+    },
+  }
+  return createRawTelegramApprovalTransport({ ...options, effects })
+}
 
 afterEach(() => {
   for (const directory of tempDirectories.splice(0)) rmSync(directory, { recursive: true, force: true })
@@ -91,6 +124,26 @@ describe("Telegram approval callback transport", () => {
       },
     }
   }
+
+  it("rejects a non-canonical message id returned by the injected approval effect port", async () => {
+    let records: ReturnType<TelegramPendingApprovalStore["load"]> = []
+    const transport = createRawTelegramApprovalTransport({
+      api: { request: vi.fn(), stop: vi.fn() },
+      expectedUserId: "10",
+      expectedChatId: "10",
+      pendingStore: { load: () => structuredClone(records), save: (next) => { records = structuredClone(next) } },
+      createOpaqueHandle: vi.fn(() => "handle"),
+      onDecision: vi.fn(),
+      resolveDecisionToken: async () => "token",
+      effects: {
+        sendText: vi.fn(async () => []),
+        sendCard: vi.fn(async () => 0),
+        edit: vi.fn(async () => undefined),
+        acknowledge: vi.fn(async () => undefined),
+      },
+    })
+    await expect(transport.sendApproval({ approvalId: "bad-message-id", decisionToken: "secret", prompt: "Approve?" })).rejects.toThrow("canonical message_id")
+  })
 
   it("sends a token-free prompt with opaque callbacks and an exact 300000ms durable TTL", async () => {
     const fixture = approvalFixture()
@@ -1672,7 +1725,7 @@ describe("Telegram durable authorized long poll", () => {
     expect(migrated.acknowledgeIndeterminateWarning(migratedWarning)).toBe(true)
     expect(migrated.quarantineStranded()).toEqual([])
     expect(JSON.parse(readFileSync(inboxPath, "utf8"))).toMatchObject({
-      version: 4,
+      version: 5,
       indeterminate: [expect.objectContaining({ quarantinedAt: 2_000, warningAcknowledged: true })],
     })
 
@@ -1703,7 +1756,7 @@ describe("Telegram durable authorized long poll", () => {
     })
     await poll.pollOnce()
     expect(inboxStore.capture).not.toHaveBeenCalled()
-    expect(onUpdate).toHaveBeenCalledWith(callback)
+    expect(onUpdate).not.toHaveBeenCalled()
   })
 
   it("durably claims authorized callbacks by opaque receipt and skips an unclaimable duplicate", async () => {
@@ -1782,7 +1835,7 @@ describe("Telegram durable authorized long poll", () => {
     const onMessage = vi.fn(async () => undefined)
     const request = vi.fn(async () => [
       { update_id: 4, message: { message_id: 1, from: { id: 10 }, chat: { id: 10, type: "private" }, text: "duplicate" } },
-      { update_id: 5, message: { message_id: 2, from: { id: 10 }, chat: { id: 10, type: "private" }, text: "hello" } },
+      { update_id: 5, message: { message_id: 2, from: { id: 10 }, chat: { id: 10, type: "private" }, text: "hello", reply_to_message: { message_id: 44 } } },
       { update_id: 6, message: { message_id: 3, from: { id: 99 }, chat: { id: 99, type: "private" }, text: "foreign" } },
     ])
     const api: TelegramBotApi = { request, stop: vi.fn() }
@@ -1791,7 +1844,7 @@ describe("Telegram durable authorized long poll", () => {
     await expect(poll.pollOnce()).resolves.toBe(7)
     expect(request).toHaveBeenCalledWith("getUpdates", { offset: 5, timeout: 50, allowed_updates: ["message", "callback_query"] }, expect.any(AbortSignal))
     expect(onMessage).toHaveBeenCalledTimes(1)
-    expect(onMessage).toHaveBeenCalledWith(expect.objectContaining({ updateId: 5, userId: "10", chatId: "10", text: "hello" }))
+    expect(onMessage).toHaveBeenCalledWith(expect.objectContaining({ updateId: 5, userId: "10", chatId: "10", text: "hello", replyToMessageId: "44" }))
     expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ nextUpdateId: 7 })
 
     const restartedRequest = vi.fn(async () => [])
@@ -1804,6 +1857,41 @@ describe("Telegram durable authorized long poll", () => {
     })
     await restarted.pollOnce()
     expect(restartedRequest).toHaveBeenCalledWith("getUpdates", expect.objectContaining({ offset: 7 }), expect.any(AbortSignal))
+  })
+
+  it("normalizes every supported unknown-contact label, body, and attachment shape", async () => {
+    const updates = [
+      { update_id: 1, message: { message_id: 1, from: { id: 21, first_name: "Ada", last_name: "Lovelace" }, chat: { id: 21, type: "private" }, text: "document", document: {} } },
+      { update_id: 2, message: { message_id: 2, from: { id: 22, username: "grace" }, chat: { id: 22, type: "private" }, caption: "photo", photo: [{}] } },
+      { update_id: 3, message: { message_id: 3, from: { id: 23 }, chat: { id: 23, type: "private" }, audio: {} } },
+      { update_id: 4, message: { message_id: 4, from: { id: 24, first_name: "Linus" }, chat: { id: 24, type: "private" }, text: "video", video: {} } },
+      { update_id: 5, message: { message_id: 5, from: { id: 25, last_name: "Hopper" }, chat: { id: 25, type: "private" }, text: "voice", voice: {} } },
+      { update_id: 6, message: { message_id: 6, from: { id: 26, first_name: "Margaret" }, chat: { id: 26, type: "private" }, text: "animation", animation: {} } },
+      { update_id: 7, message: { message_id: 7, from: { id: 27, first_name: "Alan" }, chat: { id: 27, type: "private" }, text: "sticker", sticker: {} } },
+      { update_id: 8, message: { message_id: 8, from: { id: 28 }, chat: { id: 28, type: "private" } } },
+    ]
+    const onUnknownMessage = vi.fn(async () => undefined)
+    const poll = createTelegramLongPoll({
+      api: { request: vi.fn(async () => updates), stop: vi.fn() },
+      botId: "777",
+      expectedUserId: "10",
+      expectedChatId: "10",
+      offsetStore: { load: () => 0, save: vi.fn() },
+      onMessage: vi.fn(),
+      onUnknownMessage,
+    })
+
+    await expect(poll.pollOnce()).resolves.toBe(9)
+    expect(onUnknownMessage.mock.calls.map(([unknown]) => unknown)).toEqual([
+      expect.objectContaining({ displayLabel: "Ada Lovelace", text: "document", hasAttachments: true }),
+      expect.objectContaining({ displayLabel: "@grace", text: "photo", hasAttachments: true }),
+      expect.objectContaining({ displayLabel: "Telegram user 23", text: "", hasAttachments: true }),
+      expect.objectContaining({ displayLabel: "Linus", text: "video", hasAttachments: true }),
+      expect.objectContaining({ displayLabel: "Hopper", text: "voice", hasAttachments: true }),
+      expect.objectContaining({ displayLabel: "Margaret", text: "animation", hasAttachments: true }),
+      expect.objectContaining({ displayLabel: "Alan", text: "sticker", hasAttachments: true }),
+      expect.objectContaining({ displayLabel: "Telegram user 28", text: "", hasAttachments: false }),
+    ])
   })
 
   it("drops malformed, non-private, foreign-chat, and message-less updates with zero dispatch", async () => {

@@ -1,5 +1,6 @@
 import * as fs from "fs"
 import * as path from "path"
+import { createHash } from "node:crypto"
 import { getAgentRoot } from "../heart/identity"
 import { capStructuredRecordString } from "../heart/session-events"
 import { emitNervesEvent } from "../nerves/runtime"
@@ -24,6 +25,7 @@ export interface PendingMessage {
   obligationStatus?: "pending" | "fulfilled"
   mode?: "reflect" | "plan" | "relay"
   obligationId?: string
+  requestId?: string
 }
 
 export function getPendingDir(agentName: string, friendId: string, channel: string, key: string): string {
@@ -64,6 +66,24 @@ function writeQueueFile(queueDir: string, message: PendingMessage): string {
 
 export function queuePendingMessage(pendingDir: string, message: PendingMessage): void {
   writeQueueFile(pendingDir, message)
+}
+
+export function queuePendingMessageOnce(pendingDir: string, message: PendingMessage & { packetId: string }): string {
+  fs.mkdirSync(pendingDir, { recursive: true })
+  const identity = createHash("sha256").update(message.packetId).digest("hex")
+  const filePath = path.join(pendingDir, `${message.timestamp}-${identity}.json`)
+  const temporary = `${filePath}.tmp-${process.pid}`
+  const content = JSON.stringify({ ...message, content: capStructuredRecordString(message.content) }, null, 2)
+  try {
+    fs.writeFileSync(temporary, content, { encoding: "utf8", mode: 0o600, flag: "wx" })
+    try { fs.renameSync(temporary, filePath) } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
+      fs.unlinkSync(temporary)
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
+  }
+  return filePath
 }
 
 function drainQueue(queueDir: string): { messages: PendingMessage[]; recovered: number } {

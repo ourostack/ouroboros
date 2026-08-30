@@ -1,21 +1,23 @@
 {
-  "version": 1,
+  "version": 2,
   "profiles": {
-    "sanctuary-telegram": [
-      "unraid_list_containers",
-      "unraid_get_container_logs",
-      "unraid_get_storage",
-      "unraid_get_disks",
-      "unraid_get_notifications",
-      "unraid_get_system",
-      "unraid_restart_container",
-      "ponder",
-      "settle",
-      "speak"
-    ],
-    "sanctuary-health-private": [
-      "send_message",
-      "rest"
-    ]
+    "sanctuary-owner": {
+      "version": 4,
+      "contextScopes": ["household.status", "household.policy", "household.private"],
+      "toolNames": ["external_event_disposition", "query_active_work", "save_friend_note", "telegram_contact_manage", "query_cares", "care_manage", "await_condition", "resolve_await", "cancel_await", "unraid_list_containers", "unraid_get_container_logs", "unraid_get_storage", "unraid_get_disks", "unraid_get_notifications", "unraid_get_system", "unraid_check_services", "sanctuary_get_download_queue", "sanctuary_resume_download_queue", "unraid_restart_container", "steward_policy_manage", "send_message", "ponder", "rest", "settle", "speak"],
+      "effectScopes": ["telegram.proactive", "telegram.request_return", "telegram.owner_event"]
+    },
+    "sanctuary-household": {
+      "version": 4,
+      "contextScopes": ["household.status", "own_requests"],
+      "toolNames": ["save_friend_note", "await_condition", "resolve_await", "cancel_await", "unraid_list_containers", "unraid_get_storage", "unraid_get_disks", "unraid_get_system", "unraid_check_services", "unraid_restart_container", "settle", "speak"],
+      "effectScopes": ["telegram.request_return"]
+    },
+    "sanctuary-event": {
+      "version": 3,
+      "contextScopes": ["household.status", "household.policy"],
+      "toolNames": ["external_event_disposition", "query_cares", "care_manage", "await_condition", "resolve_await", "unraid_list_containers", "unraid_get_container_logs", "unraid_get_storage", "unraid_get_disks", "unraid_get_notifications", "unraid_get_system", "unraid_check_services", "sanctuary_get_download_queue", "unraid_restart_container", "steward_policy_manage", "ponder", "rest"],
+      "effectScopes": ["telegram.owner_event"]
+    }
   }
 }

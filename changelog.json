@@ -2,6 +2,32 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.743",
+      "changes": [
+        "Turn Sanctuary system evidence into one deduplicated, agent-owned care loop with durable snoozes, reminders, and resolution.",
+        "Add family-safe Telegram admission, relationship-scoped privacy and authority, approval, revocation, and friendly household UX.",
+        "Publish Mendelow Cloud Butler as a non-root multi-architecture Unraid Community Apps container with read-only privileged event ingress, provenance, and an SBOM.",
+        "Harden exact-image Unraid updates and privileged event ingestion with package-derived deployment staging, transactional guard installation, canonical boot verification, bounded spool recovery, and fail-closed integrity checks.",
+        "Keep live Sanctuary upgrades aligned with the packaged Butler contract through an idempotent package-managed persona, tools, habits, and metadata migration with exact non-recursive cleanup, a digest-verified crash-durable rollback journal bound to exact old and target images, and no package-carried action authority.",
+        "Recover package-managed upgrades across every old-container rename, start, and autostart kill boundary by accepting only an exact, unambiguous old-image production topology before idempotently completing rollback.",
+        "Treat missing credentials, transport failures, HTTP or API rejection, malformed JSON, and schema drift as redacted indeterminate Usenet health evidence for the existing agent-owned incident loop while keeping SAB credentials out of process arguments and repeated classified observations quiet.",
+        "Adopt the exact unmarked legacy Usenet cron entry without duplicate guard runs, and preserve credential-censored host scripts, boot hooks, cron state, image labels, and package provenance in a verified transactional backup and restore path.",
+        "Keep durable host snapshots credential-free by storing only Butler-owned boot and cron fragments, preserving unrelated live content during transactional restore, and rejecting common header, CLI, URL, private-key, JSON, YAML, and Telegram secret forms in owned assets.",
+        "Restrict host restore to four exact canonical Butler boot hooks, fail closed on indeterminate crontab reads, preserve similarly named third-party hooks, and attempt every rollback compensation before surfacing failure.",
+        "Keep installer transaction copies on private ephemeral storage, reserve temporary cron files against symlink races, recognize only the two exact Butler cron forms, and remove exact target-local residue on the next run after interruption.",
+        "Preserve similarly marked external cron jobs during install, restore, and boot activation while reserving every root-crontab working file inside a private transaction directory.",
+        "Keep the cross-platform coverage gate truthful by excluding the BlueBubbles ingress evidence file that contains only TypeScript declarations and no executable production code.",
+        "Verify boot-installed guard assets using Unraid's real VFAT ownership and mode semantics while retaining stricter staged-file permissions before installation.",
+        "Make the Butler signal-first and family-friendly with agent-owned issue triage, quiet unchanged evidence, canonical owner context, terminal request-bound household returns, owner-managed admission and revocation, learned preferences, full operational visibility, and a warm, wry voice.",
+        "Preserve owner, household, and external-event authority across scheduled awaits, terminally archive definitively stale bindings while preserving corrupt state for repair, and keep event snoozes on the existing exact-receipt disposition and router path without fabricating human obligations.",
+        "Verify real Sanctuary service, storage, download-queue, spend-guard, and recovery outcomes while keeping first-class Community Apps publication immutable, public, securely installed, and bound to the canonical ouro-butler container.",
+        "Bind every post-activation acceptance launch explicitly to the final production topology so staging defaults cannot inspect or drive the wrong container.",
+        "Publish the Community Apps listing under the Mendelow Cloud Butler name, label the alpha channel as beta, and place it in the Utilities category.",
+        "Align final Sanctuary acceptance with the live four-mount container, live relationship profiles, pending stranger quarantine and admission-card flow, and acceptance-only delivery probe without inventing dropped updates, family sessions, or a production daily digest.",
+        "Fail closed when admission acceptance lacks its production Telegram credential dependency, and cover missing identity, unresolved live-profile handlers, absent admission projections, and both quarantine branches at the release gate."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.742",
       "changes": [
         "Ship Sanctuary on the cost-effective MiniMax-M3 provider path after live vault readiness proved both outward and inner lanes, with optional Gemini no longer required for readiness.",

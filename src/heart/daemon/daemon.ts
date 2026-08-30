@@ -21,7 +21,7 @@ import { agentConfigV2Hook } from "./hooks/agent-config-v2"
 import { getPackageVersion } from "../../mind/bundle-manifest"
 import { CLI_UPDATE_DIST_TAG, startUpdateChecker, stopUpdateChecker } from "../versioning/update-checker"
 import { execSync } from "child_process"
-import { drainPending, PRIVATE_RUNTIME_PENDING, queuePendingMessage } from "../../mind/pending"
+import { drainPending, PRIVATE_RUNTIME_PENDING, queuePendingMessageOnce } from "../../mind/pending"
 import {
   handleAgentCatchup, handleAgentCheckGuidance,
   handleAgentCheckScope, handleAgentDelegate, handleAgentGetContext,
@@ -51,7 +51,7 @@ import { awaitNameFromPrivateWakeCommand, buildAwaitPrivateWakeCommand } from ".
 import { buildHabitPrivateWakeCommand, habitMessageFromPrivateWakeCommand } from "./habit-private-wake"
 import { createDegradedHabitFile, parseHabitFile, type HabitFile } from "../habits/habit-parser"
 import { applyHabitRuntimeState } from "../habits/habit-runtime-state"
-import { buildExternalEventMessage, recordExternalEvent, type ExternalEventRecord } from "../external-events/router"
+import { buildExternalEventMessage, claimExternalEvent, failExternalEventAttempt, getExternalEventRoot, listExternalEventStatus, readExternalEventRecord, reconcileExternalEvent, recordExternalEvent, scanPrivilegedEventSpool, type ExternalEventLeaseContext, type ExternalEventLeaseMember, type ExternalEventRecord, type ExternalEventStatus } from "../external-events/router"
 import { isRsvpHabitName } from "../../rsvp/habit-policy"
 import { readContainerRuntimePolicy } from "./container-runtime"
 import type { RunNativeRsvpHabitInput, RunNativeRsvpHabitResult } from "../../rsvp/native-habit-runner"
@@ -534,7 +534,7 @@ export type DaemonCommand =
   | SanctuarySchedulerFireCommand
   | { kind: "habit.probe"; agent: string; habitName: string; noSend?: true }
   | { kind: "await.poke"; agent: string; awaitName: string }
-  | { kind: "external.event.submit"; agent: string; source: string; eventType: string; eventId: string; summary?: string; evidence?: string[]; payloadPath?: string; priority?: string; sessionId?: string; taskRef?: string; wake?: boolean }
+  | { kind: "external.event.submit"; agent: string; source: string; eventType: string; eventId: string; summary?: string; evidence?: string[]; payloadPath?: string; priority?: string; sessionId?: string; taskRef?: string; wake?: boolean; observationRevision?: string; transition?: import("../external-events/router").ExternalEventTransition }
   | { kind: "message.send"; from: string; to: string; content: string; priority?: string; sessionId?: string; taskRef?: string }
   | { kind: "message.poll"; agent: string }
   | { kind: "mcp.list"; agent?: string }
@@ -577,6 +577,9 @@ export interface OuroDaemonOptions {
   onStopCommandComplete?: () => void | Promise<void>
   /** Test seam for external-event receipts. Defaults to ~/.ouro-cli/daemon/external-events. */
   externalEventRoot?: string
+  /** Root-owned host detector spool, mounted read-only in the daemon container. */
+  privilegedEventSpoolRoot?: string
+  privilegedEventScanner?: typeof scanPrivilegedEventSpool
   /** Test seam for typed native RSVP habit execution. Defaults to the real native runner. */
   rsvpHabitRunner?: (input: RunNativeRsvpHabitInput) => Promise<RunNativeRsvpHabitResult>
   nativeHabitRunner?: (input: { agent: string; habitName: string; trigger: HabitRunTrigger; occurrenceId?: string; runnerId: string; schedulerOrigin?: SanctuarySchedulerOrigin }) => Promise<DaemonResponse | null>
@@ -631,6 +634,7 @@ interface DaemonStatusPayload {
   agents: BundleAgentRow[]
   /** Safe provider/model/readiness rows for every discovered bundle. */
   providers?: ProviderStatusRow[]
+  externalEvents?: ExternalEventStatus[]
 }
 
 interface SocketIdentity {
@@ -860,10 +864,14 @@ export class OuroDaemon {
   private mailboxServer: MailboxHttpServerHandle | null = null
   private socketIdentity: SocketIdentity | null = null
   private senseAutostartTimer: ReturnType<typeof setTimeout> | null = null
+  private externalEventReconcileTimer: ReturnType<typeof setInterval> | null = null
+  private externalEventReconcileRunning = false
   private readonly mailboxServerFactory: () => Promise<MailboxHttpServerHandle>
   private readonly privateRuntimePolicyDeps: PrivateTurnPolicyDeps
   private readonly onStopCommandComplete: (() => void | Promise<void>) | null
   private readonly externalEventRoot: string | null
+  private readonly privilegedEventSpoolRoot: string
+  private readonly privilegedEventScanner: typeof scanPrivilegedEventSpool
   private readonly rsvpHabitRunner?: (input: RunNativeRsvpHabitInput) => Promise<RunNativeRsvpHabitResult>
   private readonly nativeHabitRunner?: OuroDaemonOptions["nativeHabitRunner"]
   private readonly nativeHabitMatch?: OuroDaemonOptions["nativeHabitMatch"]
@@ -886,6 +894,8 @@ export class OuroDaemon {
     this.privateRuntimePolicyDeps = options.privateRuntimePolicyDeps ?? {}
     this.onStopCommandComplete = options.onStopCommandComplete ?? null
     this.externalEventRoot = options.externalEventRoot ?? null
+    this.privilegedEventSpoolRoot = options.privilegedEventSpoolRoot ?? "/run/ouro-events"
+    this.privilegedEventScanner = options.privilegedEventScanner ?? scanPrivilegedEventSpool
     this.rsvpHabitRunner = options.rsvpHabitRunner
     this.nativeHabitRunner = options.nativeHabitRunner
     this.nativeHabitMatch = options.nativeHabitMatch
@@ -944,6 +954,7 @@ export class OuroDaemon {
         agentRoot: path.join(this.bundlesRoot, `${agentName}.ouro`),
       })),
     )
+    const externalEvents = listExternalEventStatus(this.externalEventRoot ?? getExternalEventRoot())
 
     const mailboxUrl = this.mailboxServer?.origin ?? "http://127.0.0.1:0"
     return {
@@ -965,6 +976,7 @@ export class OuroDaemon {
       sync,
       agents,
       ...(providers.length > 0 ? { providers } : {}),
+      ...(externalEvents.length > 0 ? { externalEvents } : {}),
     }
   }
 
@@ -1055,6 +1067,11 @@ export class OuroDaemon {
 
     await this.orphanStartupDrain(this.socketPath)
     await this.openCommandSocket()
+    await this.reconcileExternalEvents()
+    this.externalEventReconcileTimer = setInterval(() => {
+      void this.reconcileExternalEvents()
+    }, 1_000)
+    this.externalEventReconcileTimer.unref?.()
     this.triggerAutoStartAgents()
     this.triggerAutoStartSensesWhenAgentsSettled()
 
@@ -1379,6 +1396,10 @@ export class OuroDaemon {
       clearTimeout(this.senseAutostartTimer)
       this.senseAutostartTimer = null
     }
+    if (this.externalEventReconcileTimer) {
+      clearInterval(this.externalEventReconcileTimer)
+      this.externalEventReconcileTimer = null
+    }
     const workerStopTasks = [Promise.resolve().then(() => this.processManager.stopAll())]
     if (this.senseManager) {
       workerStopTasks.push(Promise.resolve().then(() => this.senseManager!.stopAll()))
@@ -1579,6 +1600,8 @@ export class OuroDaemon {
   private buildExternalEventPrivateWakeCommand(
     command: Extract<DaemonCommand, { kind: "external.event.submit" }>,
     receiptId: string,
+    generation: number,
+    attemptCount: number,
   ): Extract<DaemonCommand, { kind: "private.wake" }> {
     return {
       kind: "private.wake",
@@ -1586,7 +1609,7 @@ export class OuroDaemon {
       reason: `external event ${command.source}/${command.eventType}`,
       triggerSource: "external-event",
       budgetClass: "interactive",
-      idempotencyKey: `external-event:${command.agent}:${command.source}:${command.eventId}`,
+      idempotencyKey: `external-event:${command.agent}:${command.source}:${command.eventId}:generation:${generation}:attempt:${attemptCount}`,
       originRefs: [
         { kind: "external-event", id: command.eventId, source: command.source, eventType: command.eventType },
         { kind: "queue-receipt", id: receiptId },
@@ -1794,6 +1817,7 @@ export class OuroDaemon {
   private buildPrivateRuntimeWorkerWakeMessage(
     command: Extract<DaemonCommand, { kind: "private.wake" | "inner.wake" }>,
     decision: PrivateTurnDecision,
+    externalEvent?: ExternalEventLeaseContext,
   ): Record<string, unknown> {
     const awaitName = awaitNameFromPrivateWakeCommand(command)
     if (awaitName) {
@@ -1821,7 +1845,7 @@ export class OuroDaemon {
         privateTurnDecision: decision,
       }
     }
-    return { type: "message", privateTurnDecision: decision }
+    return { type: "message", privateTurnDecision: decision, ...(externalEvent ? { externalEvent } : {}) }
   }
 
   private queueExternalEventForPrivateRuntime(record: ExternalEventRecord): void {
@@ -1836,7 +1860,7 @@ export class OuroDaemon {
     )
     const originKey = `${record.source}:${record.eventId}`
     const parsedReceivedAt = Date.parse(record.receivedAt)
-    queuePendingMessage(pendingDir, {
+    queuePendingMessageOnce(pendingDir, {
       from: "ouro-external-event",
       friendId: "ouro-external-event",
       channel: "external-event",
@@ -1850,6 +1874,7 @@ export class OuroDaemon {
       },
       obligationStatus: "pending",
       mode: "relay",
+      packetId: `external-event:${record.agent}:${record.source}:${record.eventId}:generation:${record.generation}:attempt:${record.attemptCount}`,
     })
     emitNervesEvent({
       component: "daemon",
@@ -1865,9 +1890,126 @@ export class OuroDaemon {
     })
   }
 
+  private externalEventRootPath(): string {
+    return this.externalEventRoot ?? getExternalEventRoot()
+  }
+
+  private externalEventLease(record: ExternalEventRecord): ExternalEventLeaseMember {
+    /* v8 ignore next -- dispatcher calls this only with the record returned by claimExternalEvent @preserve */
+    if (!record.claimOwner) throw new Error("External event dispatch requires a claimed receipt")
+    return {
+      schemaVersion: 1,
+      recordPath: record.recordPath,
+      agent: record.agent,
+      source: record.source,
+      eventId: record.eventId,
+      generation: record.generation,
+      observationRevision: record.observationRevision,
+      claimOwner: record.claimOwner,
+    }
+  }
+
+  private async dispatchExternalEvents(records: ExternalEventRecord[]): Promise<{ events: ExternalEventRecord[]; event: ExternalEventRecord; receipt: { id: string; queuedAt: string }; wake: DaemonResponse }> {
+    const claimed: ExternalEventRecord[] = []
+    try {
+      for (const record of records) {
+        const owner = `external-event:${record.agent}:${record.source}:${record.eventId}:generation:${record.generation}:attempt:${record.attemptCount + 1}`
+        claimed.push(claimExternalEvent(record.recordPath, { owner, expectedVersion: record.version, expectedGeneration: record.generation }))
+      }
+      const primary = claimed[0]!
+      const [primaryLease, ...relatedEvents] = claimed.map((record) => this.externalEventLease(record))
+      const lease: ExternalEventLeaseContext = { ...primaryLease!, ...(relatedEvents.length > 0 ? { relatedEvents } : {}) }
+      const receipt = {
+        id: `external-event:${primary.agent}:${primary.source}:${primary.eventId}:generation:${primary.generation}:attempt:${primary.attemptCount}`,
+        queuedAt: primary.updatedAt,
+      }
+      const wake = await this.handlePrivateRuntimeWake(
+        this.buildExternalEventPrivateWakeCommand({
+          kind: "external.event.submit",
+          agent: primary.agent,
+          source: primary.source,
+          eventType: primary.eventType,
+          eventId: primary.eventId,
+        }, receipt.id, primary.generation, primary.attemptCount),
+        () => { for (const record of claimed) this.queueExternalEventForPrivateRuntime(record) },
+        lease,
+      )
+      const denied = !wake.ok || (wake.data as { decision?: { executable?: boolean } } | undefined)?.decision?.executable === false
+      if (denied) throw new Error(wake.error ?? wake.message ?? /* v8 ignore next -- daemon wake responses always carry an error or message @preserve */ "external-event private turn was denied")
+      return { events: claimed, event: primary, receipt, wake }
+    } catch (error) {
+      for (const record of claimed) {
+        const latest = readExternalEventRecord(record.recordPath)
+        if (latest.executionState === "running" && latest.claimOwner === record.claimOwner) {
+          failExternalEventAttempt(latest.recordPath, {
+            owner: record.claimOwner!, expectedVersion: latest.version, expectedGeneration: latest.generation,
+            error: error instanceof Error ? error.message : String(error),
+          })
+        }
+      }
+      throw error
+    }
+  }
+
+  private dispatchExternalEvent(record: ExternalEventRecord): Promise<{ events: ExternalEventRecord[]; event: ExternalEventRecord; receipt: { id: string; queuedAt: string }; wake: DaemonResponse }> {
+    return this.dispatchExternalEvents([record])
+  }
+
+  private async reconcileExternalEvents(): Promise<void> {
+    /* v8 ignore next -- re-entrancy guard is exercised only by overlapping real timer callbacks @preserve */
+    if (this.externalEventReconcileRunning) return
+    this.externalEventReconcileRunning = true
+    try {
+      const now = new Date().toISOString()
+      if (fs.existsSync(this.privilegedEventSpoolRoot)) {
+        this.privilegedEventScanner({ spoolRoot: this.privilegedEventSpoolRoot, eventRoot: this.externalEventRootPath() })
+      }
+      const statuses = listExternalEventStatus(this.externalEventRootPath())
+      const dueRecords: ExternalEventRecord[] = []
+      for (const status of statuses) {
+        if (status.corrupt) continue
+        let record = readExternalEventRecord(status.recordPath)
+        if (record.dispatchEnabled === false) continue
+        if (record.executionState === "running" && record.claimExpiresAt && Date.parse(record.claimExpiresAt) <= Date.parse(now)) {
+          record = reconcileExternalEvent(record.recordPath)
+        }
+        const due = record.executionState === "received"
+          || record.executionState === "queued"
+          || (record.executionState === "retry_wait" && record.nextAttemptAt !== null && Date.parse(record.nextAttemptAt) <= Date.parse(now))
+        if (due) dueRecords.push(record)
+      }
+      const batches = new Map<string, ExternalEventRecord[]>()
+      for (const record of dueRecords) {
+        const key = `${record.agent}\0${record.source}`
+        const batch = batches.get(key) ?? []
+        batch.push(record)
+        batches.set(key, batch)
+      }
+      for (const records of batches.values()) {
+        for (let offset = 0; offset < records.length; offset += 32) {
+          const batch = records.slice(offset, offset + 32)
+          try {
+            await this.dispatchExternalEvents(batch)
+          } catch (error) {
+            emitNervesEvent({
+              level: "warn",
+              component: "daemon",
+              event: "daemon.external_event_dispatch_error",
+              message: "external event dispatch failed",
+              meta: { recordPath: batch[0]!.recordPath, batchSize: batch.length, error: error instanceof Error ? error.message : /* v8 ignore next -- dispatch failures are Error objects @preserve */ String(error) },
+            })
+          }
+        }
+      }
+    } finally {
+      this.externalEventReconcileRunning = false
+    }
+  }
+
   private async handlePrivateRuntimeWake(
     command: Extract<DaemonCommand, { kind: "private.wake" | "inner.wake" }>,
     beforeDispatch?: (decision: PrivateTurnDecision) => void | Promise<void>,
+    externalEvent?: ExternalEventLeaseContext,
   ): Promise<DaemonResponse> {
     if (!this.hasManagedPrivateRuntime(command.agent)) {
       return {
@@ -1891,7 +2033,7 @@ export class OuroDaemon {
 
     await beforeDispatch?.(decision)
     await this.processManager.startAgent(command.agent)
-    this.processManager.sendToAgent?.(command.agent, this.buildPrivateRuntimeWorkerWakeMessage(command, decision))
+    this.processManager.sendToAgent?.(command.agent, this.buildPrivateRuntimeWorkerWakeMessage(command, decision, externalEvent))
     return {
       ok: true,
       message: `woke private runtime for ${command.agent}`,
@@ -2122,30 +2264,24 @@ export class OuroDaemon {
           evidence: command.evidence,
           payloadPath: command.payloadPath,
           priority: command.priority,
+          observationRevision: command.observationRevision,
+          transition: command.transition,
         }, {
           ...(this.externalEventRoot ? { root: this.externalEventRoot } : {}),
+          dispatchEnabled: command.wake !== false,
         })
-        const receipt = await this.router.send({
-          from: "ouro-external-event",
-          to: command.agent,
-          content: buildExternalEventMessage(record),
-          priority: record.priority,
-          sessionId: command.sessionId,
-          taskRef: command.taskRef ?? `${record.source}:${record.eventId}`,
-        })
-        let wake: DaemonResponse | null = null
-        if (command.wake !== false) {
-          wake = await this.handlePrivateRuntimeWake(
-            this.buildExternalEventPrivateWakeCommand(command, receipt.id),
-            () => this.queueExternalEventForPrivateRuntime(record),
-          )
+        if (!record.shouldWake || command.wake === false) {
+          return {
+            ok: true,
+            message: `updated external event ${record.source}/${record.eventId} without wake`,
+            data: { event: record, receipt: null, wake: null },
+          }
         }
+        const dispatched = await this.dispatchExternalEvent(record)
         return {
           ok: true,
-          message: command.wake === false
-            ? `queued external event ${record.source}/${record.eventId} as ${receipt.id}`
-            : `queued external event ${record.source}/${record.eventId} as ${receipt.id}; ${wake?.message ?? "wake skipped"}`,
-          data: { event: record, receipt, wake },
+          message: `queued external event ${record.source}/${record.eventId} as ${dispatched.receipt.id}; ${dispatched.wake.message ?? "wake skipped"}`,
+          data: dispatched,
         }
       }
       case "private.decisions": {

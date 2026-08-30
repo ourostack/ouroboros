@@ -12,10 +12,14 @@ export interface AwaitFile {
   alert: string | null
   mode: AwaitMode
   max_age: string | null
+  wake_at?: string | null
   status: AwaitStatus
   created_at: string | null
   filed_from: string | null
   filed_for_friend_id: string | null
+  filed_from_key: string | null
+  request_id: string | null
+  obligation_id: string | null
   body: string
 
   // resolved-only
@@ -62,10 +66,14 @@ function emptyAwait(stem: string, body: string): AwaitFile {
     alert: null,
     mode: "full",
     max_age: null,
+    wake_at: null,
     status: "pending",
     created_at: null,
     filed_from: null,
     filed_for_friend_id: null,
+    filed_from_key: null,
+    request_id: null,
+    obligation_id: null,
     body,
     resolved_at: null,
     resolution_observation: null,
@@ -103,10 +111,14 @@ export function parseAwaitFile(content: string, filePath: string): AwaitFile {
     alert: nonEmptyString(frontmatter.alert),
     mode,
     max_age: nonEmptyString(frontmatter.max_age),
+    wake_at: nonEmptyString(frontmatter.wake_at),
     status,
     created_at: nonEmptyString(frontmatter.created_at),
     filed_from: nonEmptyString(frontmatter.filed_from),
     filed_for_friend_id: nonEmptyString(frontmatter.filed_for_friend_id),
+    filed_from_key: nonEmptyString(frontmatter.filed_from_key),
+    request_id: nonEmptyString(frontmatter.request_id),
+    obligation_id: nonEmptyString(frontmatter.obligation_id),
     body,
     resolved_at: nonEmptyString(frontmatter.resolved_at),
     resolution_observation: nonEmptyString(frontmatter.resolution_observation),

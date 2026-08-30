@@ -11,6 +11,8 @@ import {
   fulfillObligation,
   findPendingObligationForOrigin,
   advanceObligation,
+  markObligationReturnReady,
+  isActiveReturnObligationRecord,
 } from "../../arc/obligations"
 import { expectCappedAgentContent, makeOversizedAgentContent } from "../helpers/content-cap"
 
@@ -28,6 +30,29 @@ describe("obligations store", () => {
   const sampleOrigin = { friendId: "friend-1", channel: "cli", key: "session" }
 
   describe("createObligation", () => {
+    it("keeps machine provenance separate from the person owed a return", () => {
+      const obligation = createObligation(tmpDir, {
+        origin: { friendId: "ouro-external-event", channel: "external-event", key: "guard:usenet" },
+        sourceProvenance: { kind: "machine_evidence", source: "guard", ref: "usenet" },
+        owedTo: sampleOrigin,
+        requestId: "request-top-up",
+        content: "check the download path after Ari tops up credit",
+      })
+
+      expect(obligation.sourceProvenance).toEqual({ kind: "machine_evidence", source: "guard", ref: "usenet" })
+      expect(obligation.owedTo).toEqual(sampleOrigin)
+      expect(obligation.requestId).toBe("request-top-up")
+    })
+
+    it("does not create an obligation from machine evidence alone", () => {
+      expect(() => createObligation(tmpDir, {
+        origin: { friendId: "ouro-external-event", channel: "external-event", key: "guard:usenet" },
+        sourceProvenance: { kind: "machine_evidence", source: "guard", ref: "usenet" },
+        content: "raw machine evidence",
+      })).toThrow(/owed/i)
+      expect(readObligations(tmpDir)).toEqual([])
+    })
+
     it("writes a JSON file under arc/obligations/", () => {
       const obligation = createObligation(tmpDir, {
         origin: sampleOrigin,
@@ -280,6 +305,38 @@ describe("obligations store", () => {
       expect(all).toHaveLength(1)
       expect(all[0].status).toBe("pending")
     })
+  })
+
+  describe("markObligationReturnReady", () => {
+    it("requires one open obligation and records exact return evidence", () => {
+      expect(() => markObligationReturnReady(tmpDir, "missing", "effect:1")).toThrow("Open obligation not found")
+
+      const closed = createObligation(tmpDir, { origin: sampleOrigin, content: "already returned" })
+      fulfillObligation(tmpDir, closed.id)
+      expect(() => markObligationReturnReady(tmpDir, closed.id, "effect:1")).toThrow("Open obligation not found")
+
+      const open = createObligation(tmpDir, { origin: sampleOrigin, content: "return this" })
+      expect(() => markObligationReturnReady(tmpDir, open.id, "   ")).toThrow("return evidence is required")
+      expect(markObligationReturnReady(tmpDir, open.id, "effect:1")).toMatchObject({
+        id: open.id,
+        returnEvidenceRef: "effect:1",
+        returnReadyAt: expect.any(String),
+      })
+
+      const machineOnly = createObligation(tmpDir, { origin: sampleOrigin, content: "machine-owned return" })
+      const machineOnlyPath = path.join(tmpDir, "arc", "obligations", `${machineOnly.id}.json`)
+      const legacyMachineOnly = JSON.parse(fs.readFileSync(machineOnlyPath, "utf8"))
+      delete legacyMachineOnly.owedTo
+      fs.writeFileSync(machineOnlyPath, JSON.stringify(legacyMachineOnly))
+      expect(markObligationReturnReady(tmpDir, machineOnly.id, "effect:machine")).toMatchObject({
+        id: machineOnly.id,
+        returnEvidenceRef: "effect:machine",
+      })
+    })
+  })
+
+  it("rejects malformed records at the active return-obligation boundary", () => {
+    expect(isActiveReturnObligationRecord({ status: "pending" })).toBe(false)
   })
 
   describe("advanceObligation", () => {

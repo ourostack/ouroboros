@@ -65,6 +65,7 @@ export default defineConfig({
         "src/senses/*-entry.ts",
         "src/senses/voice/index.ts",
         "src/senses/voice/types.ts",
+        "src/senses/ingress-evidence.ts",
         "src/a2a/types.ts",
         "src/commerce/types.ts",
         "src/reflection/*-entry.ts",

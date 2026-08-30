@@ -53,7 +53,14 @@ describe("package asset validation", () => {
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary.ouro/bundle-meta.json")
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary.ouro/provider-readiness.json")
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary.ouro/tool-profiles.json")
+    expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary.ouro/state/policy/steward.json")
+    expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/migrate-sanctuary-bundle.mjs")
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary.xml")
+    expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/ouro-events/emit-event.mjs")
+    expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/ouro-events/bootstrap-spool.sh")
+    expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/ouro-events/emit-usenet-event.sh")
+    expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/ouro-events/usenet-health.sh")
+    expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/ouro-events/install-usenet-guard.sh")
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary-acceptance-harness.sh")
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary-unit16-host-broker.mjs")
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary-deployment-target.mjs")
@@ -62,6 +69,14 @@ describe("package asset validation", () => {
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/README.txt")
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary.ouro/psyche/SOUL.md")
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary.ouro/psyche/IDENTITY.md")
+  })
+
+  it("ships no restart authority or fabricated owner session identity", () => {
+    const policy = JSON.parse(fs.readFileSync(path.resolve(__dirname, "../../../deploy/unraid/sanctuary.ouro/state/policy/steward.json"), "utf8"))
+    expect(policy.desiredStates).toEqual({})
+    expect(policy.routineActionGrants).toEqual({})
+    expect(JSON.stringify(policy)).not.toContain("owner-contract")
+    expect(JSON.stringify(policy)).not.toContain('"issuer":"ari"')
   })
 
   it("declares stale nested Mailbox UI dist as disallowed", () => {

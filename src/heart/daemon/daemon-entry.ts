@@ -422,12 +422,19 @@ const daemon = new OuroDaemon({
     const before = schedulerScenario ? readSanctuaryHealthCursor(agentRoot) : null
     let providerInvocationCount = 0
     let privateTurnCount = 0
-    const result = await runSanctuaryHealthHabit(agent, schedulerScenario ? {
-      acceptanceMetrics: {
-        onPrivateTurnStart: () => { privateTurnCount += 1 },
-        onProviderInvocation: () => { providerInvocationCount += 1 },
+    const result = await runSanctuaryHealthHabit(agent, {
+      submitEvidence: async (input) => {
+        const response = await daemon.handleCommand({ kind: "external.event.submit", ...input })
+        if (!response.ok) throw new Error(response.error ?? "Sanctuary health evidence submission failed")
+        return (response.data as { event: { shouldWake: boolean } }).event
       },
-    } : {})
+      ...(schedulerScenario ? {
+        acceptanceMetrics: {
+          onPrivateTurnStart: () => { privateTurnCount += 1 },
+          onProviderInvocation: () => { providerInvocationCount += 1 },
+        },
+      } : {}),
+    })
     if (schedulerScenario) {
       if (!supercronicSupervisor || !before || !occurrenceId || !schedulerOrigin) throw new Error("Sanctuary scheduler liveness supervisor provenance is unavailable")
       recordSanctuarySchedulerLivenessReceipt({
@@ -866,6 +873,12 @@ void startDaemonAfterContainerCredentialBootstrap({
             awaitName,
             deliveryDeps: {
               agentName: agent,
+              deliverers: {
+                telegram: async (request) => {
+                  const { sendTelegramAwaitFollowUp } = await import("../../senses/telegram")
+                  return sendTelegramAwaitFollowUp(agent, request)
+                },
+              },
               queuePending: () => {
                 // Best-effort: queue private-runtime wake so the agent processes the alert path.
                 sendDaemonCommand(socketPath, buildAwaitPrivateWakeCommand({

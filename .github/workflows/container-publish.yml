@@ -1,0 +1,135 @@
+name: publish-container
+
+on:
+  workflow_run:
+    workflows:
+      - coverage-gate
+    types:
+      - completed
+
+concurrency:
+  group: container-publish-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout verified commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Resolve immutable image references
+        run: |
+          PACKAGE_VERSION=$(node -p "require('./package.json').version")
+          {
+            echo "PACKAGE_VERSION=$PACKAGE_VERSION"
+            echo "VERSION_IMAGE=ghcr.io/ourostack/ouroboros-butler:$PACKAGE_VERSION"
+            echo "SHA_IMAGE=ghcr.io/ourostack/ouroboros-butler:sha-${{ github.event.workflow_run.head_sha }}"
+          } >> "$GITHUB_ENV"
+
+      - name: Setup QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Gate immutable references before build
+        id: release-gate
+        run: |
+          GATE_OUTPUT=$(scripts/container-image-release-gate.sh "$VERSION_IMAGE" "$SHA_IMAGE")
+          printf '%s\n' "$GATE_OUTPUT"
+          PUBLISH=$(printf '%s\n' "$GATE_OUTPUT" | awk -F= '$1 == "publish" { print $2 }')
+          test "$PUBLISH" = "true" || test "$PUBLISH" = "false"
+          echo "publish=$PUBLISH" >> "$GITHUB_OUTPUT"
+
+      - name: Build release assets
+        if: steps.release-gate.outputs.publish == 'true'
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build and publish immutable architectures
+        if: steps.release-gate.outputs.publish == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/unraid/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: mode=max
+          sbom: true
+          tags: |
+            ghcr.io/ourostack/ouroboros-butler:${{ env.PACKAGE_VERSION }}
+            ghcr.io/ourostack/ouroboros-butler:sha-${{ github.event.workflow_run.head_sha }}
+
+      - name: Verify exact immutable references
+        id: exact-references
+        run: |
+          GATE_OUTPUT=$(scripts/container-image-release-gate.sh "$VERSION_IMAGE" "$SHA_IMAGE")
+          printf '%s\n' "$GATE_OUTPUT"
+          test "$(printf '%s\n' "$GATE_OUTPUT" | awk -F= '$1 == "publish" { print $2 }')" = "false"
+          DIGEST=$(printf '%s\n' "$GATE_OUTPUT" | awk -F= '$1 == "digest" { print $2 }')
+          test -n "$DIGEST"
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+
+      - name: Verify package visibility and architectures
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VISIBILITY=$(gh api /orgs/ourostack/packages/container/ouroboros-butler --jq .visibility)
+          test "$VISIBILITY" = "public"
+
+          AUTHENTICATED_MANIFEST=$(docker buildx imagetools inspect "$VERSION_IMAGE")
+          printf '%s\n' "$AUTHENTICATED_MANIFEST" | grep -F "Platform:    linux/amd64"
+          printf '%s\n' "$AUTHENTICATED_MANIFEST" | grep -F "Platform:    linux/arm64"
+
+      - name: Verify anonymous immutable references and authenticated attestations
+        run: |
+          verify_exact_attestations() {
+            EXACT_IMAGE=$1
+            PROVENANCE=$(docker buildx imagetools inspect "$EXACT_IMAGE" --format '{{json .Provenance}}')
+            SBOM=$(docker buildx imagetools inspect "$EXACT_IMAGE" --format '{{json .SBOM}}')
+            printf '%s' "$PROVENANCE" | node -e '
+              const fs = require("node:fs");
+              const attestations = JSON.parse(fs.readFileSync(0, "utf8"));
+              for (const platform of ["linux/amd64", "linux/arm64"]) {
+                const slsa = attestations[platform]?.SLSA;
+                if (!slsa?.builder || !slsa?.invocation || !slsa?.metadata) process.exit(1);
+              }
+            '
+            printf '%s' "$SBOM" | node -e '
+              const fs = require("node:fs");
+              const attestations = JSON.parse(fs.readFileSync(0, "utf8"));
+              for (const platform of ["linux/amd64", "linux/arm64"]) {
+                if (attestations[platform]?.SPDX?.SPDXID !== "SPDXRef-DOCUMENT") process.exit(1);
+              }
+            '
+          }
+          EXACT_IMAGE="$VERSION_IMAGE@${{ steps.exact-references.outputs.digest }}"
+          verify_exact_attestations "$EXACT_IMAGE"
+          docker logout ghcr.io
+          GATE_OUTPUT=$(scripts/container-image-release-gate.sh "$VERSION_IMAGE" "$SHA_IMAGE")
+          printf '%s\n' "$GATE_OUTPUT"
+          test "$(printf '%s\n' "$GATE_OUTPUT" | awk -F= '$1 == "publish" { print $2 }')" = "false"
+          PUBLIC_DIGEST=$(printf '%s\n' "$GATE_OUTPUT" | awk -F= '$1 == "digest" { print $2 }')
+          test "$PUBLIC_DIGEST" = "${{ steps.exact-references.outputs.digest }}"
+          verify_exact_attestations "$EXACT_IMAGE"

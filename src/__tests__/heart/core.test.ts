@@ -9816,6 +9816,26 @@ describe("confirmation system", () => {
     expect(mockStore.get).toHaveBeenCalledWith("uuid-1")
   })
 
+  it("advertises only tools in the relationship capability envelope", async () => {
+    mockCreate.mockReturnValue(makeStream([makeChunk("hi")]))
+    const callbacks: ChannelCallbacks = {
+      onModelStart: () => {}, onModelStreamStart: () => {}, onTextChunk: () => {}, onReasoningChunk: () => {},
+      onToolStart: () => {}, onToolEnd: () => {}, onError: () => {},
+    }
+    await runAgent([{ role: "system", content: "prompt" }, { role: "user", content: "hello" }] as any, callbacks, "cli", undefined, {
+      toolContext: {
+        signin: async () => undefined,
+        relationshipAuthorization: {
+          authorizedContextScopes: [],
+          advertisedToolNames: ["read_file"],
+          authorizeTool: () => ({ allowed: true, receiptId: "auth-1" }),
+        },
+      },
+    } as any)
+    const tools = mockCreate.mock.calls[0][0].tools as Array<{ function: { name: string } }>
+    expect(tools.map((tool) => tool.function.name)).toEqual(["read_file"])
+  })
+
   it("rebuilds system prompt with fresh context when friendStore returns updated record", async () => {
     mockCreate.mockReturnValue(makeStream([makeChunk("hi")]))
 

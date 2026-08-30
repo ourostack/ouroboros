@@ -32,6 +32,7 @@ import { runtimeToolDefinitions } from "./tools-runtime"
 import { orientationToolDefinitions } from "./tools-orientation"
 import { rsvpToolDefinitions } from "./tools-rsvp"
 import { habitToolDefinitions } from "./tools-habits"
+import { telegramContactToolDefinition } from "./tools-telegram-contacts"
 import type { OrientationFrame } from "../heart/orientation-frame"
 // Re-export flow tools for consumers that import them from tools-base
 export { ponderTool, observeTool, settleTool, restTool, speakTool } from "./tools-flow";
@@ -118,12 +119,39 @@ export interface ToolContext {
     provider: "bluebubbles";
     captureKeyHash: string;
   }>;
+  readonly currentExternalEvent?: Readonly<import("../heart/external-events/router").ExternalEventLeaseContext>;
+  readonly externalEventAuthority?: Readonly<{
+    authorizeDisposition(input: {
+      event: import("../heart/external-events/router").ExternalEventLeaseContext;
+      classification: string;
+      decision: string;
+      stewardPolicy: import("../heart/external-events/router").ExternalEventDisposition["stewardPolicy"];
+      nextWake: string;
+      wakeAt: string | null;
+      awaitId: string | null;
+      careId: string | null;
+      actionRefs: string[];
+      verificationRefs: string[];
+    }): { allowed: boolean; reason: string };
+  }>;
+  readonly externalEventEffects?: Readonly<{
+    deliverOwnerDecision(input: { source: string; eventId: string; generation: number; text: string }): Promise<void>;
+  }>;
   /** Irrevocable per-turn capability reduction used by transport-safe probes. */
   readonly noSend?: true;
   habitSession?: HabitSessionToolContext;
   daemonSocketPath?: string;
   agentRoot?: string;
   currentUserMessage?: string;
+  /** Relationship-scoped capability envelope: advertise narrowly, then revalidate at execution. */
+  relationshipAuthorization?: {
+    readonly requestId?: string;
+    readonly profileId?: string;
+    authorizedContextScopes: readonly string[];
+    advertisedToolNames: readonly string[];
+    authorizeTool(name: string, args: Record<string, string>): { allowed: true; receiptId: string; profileVersion?: number } | { allowed: false; reason: string } | Promise<{ allowed: true; receiptId: string; profileVersion?: number } | { allowed: false; reason: string }>;
+    readonly actor?: Readonly<{ friendId: string; trustLevel: import("@ouro.bot/friends").TrustLevel; sessionEventId: string }>;
+  };
   commerceAuthority?: {
     checkoutId: string;
     reservationToken: string;
@@ -135,8 +163,33 @@ export interface ToolContext {
     getDisks(): Promise<unknown>;
     getNotifications(): Promise<unknown>;
     getSystem(): Promise<unknown>;
-    restartContainer(args: { container: string }): Promise<unknown>;
+    checkServices(): Promise<unknown>;
+    getDownloadQueue(): Promise<unknown>;
+    resumeDownloadQueue(): Promise<unknown>;
+    restartContainer(args: { container: string }, execution?: { routine?: import("./unraid-restart").RoutineRestartAuthority }): Promise<unknown>;
+    recoverRoutineActions?(): Promise<unknown>;
   };
+  /** Immutable standing-policy selection made before this exact tool dispatch. */
+  routineActionSelection?: Readonly<{ key: string; target: string; expectedPolicyVersion: number }>;
+  telegramContactManager?: {
+    list(input: { actorFriendId: string }): Promise<{ contacts: unknown[]; blocked: unknown[] }>;
+    revoke(input: { actorFriendId: string; friendId: string }): Promise<{ revoked: true; friendId: string }>;
+    unblock(input: { actorFriendId: string; admissionId: string }): Promise<{ unblocked: true; admissionId: string }>;
+  };
+}
+
+export type RoutineActionRequester =
+  | { kind: "owner"; friendId: string }
+  | { kind: "household_request"; friendId: string; requestId: string; origin: { friendId: string; channel: string; key: string } }
+
+export function routineActionRequester(ctx?: ToolContext): RoutineActionRequester | null {
+  const actor = ctx?.relationshipAuthorization?.actor
+  if (!actor) return null
+  if (actor.trustLevel === "family") return { kind: "owner", friendId: actor.friendId }
+  const requestId = ctx?.relationshipAuthorization?.requestId
+  const session = ctx?.currentSession
+  if (actor.trustLevel !== "friend" || !requestId || !session || session.friendId !== actor.friendId) return null
+  return { kind: "household_request", friendId: actor.friendId, requestId, origin: { friendId: session.friendId, channel: session.channel, key: session.key } }
 }
 
 export type ToolHandler = (args: Record<string, string>, ctx?: ToolContext) => string | Promise<string>;
@@ -211,6 +264,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
   ...runtimeToolDefinitions,
   ...rsvpToolDefinitions,
   ...habitToolDefinitions,
+  telegramContactToolDefinition,
 ];
 
 // Convenience array of just the tool schemas (no handler/integration metadata).

@@ -1,0 +1,72 @@
+[
+  {
+    "id": "owner-status",
+    "audience": "owner",
+    "user": "status?",
+    "reply": "Books is off because you asked me to keep it off. Everything else I checked is healthy. I’m watching one download-credit issue and will only interrupt you if I need a decision.",
+    "tools": ["unraid_get_system", "unraid_list_containers", "query_cares", "query_active_work"]
+  },
+  {
+    "id": "expected-off",
+    "audience": "owner",
+    "user": "I turn Books off when I’m not using it. Stop treating that as broken.",
+    "reply": "Got it. I’ll treat Books being off as expected until you start it again. That preference applies only to Books; I’ll keep watching everything else normally.",
+    "tools": ["steward_policy_manage"]
+  },
+  {
+    "id": "credit-top-up",
+    "audience": "owner",
+    "user": "What do you need me to do about the downloads?",
+    "reply": "Your paid download provider appears to be out of credit, so new downloads are waiting. You can top it up here: https://www.astraweb.com/login. Tell me when you’re done and I’ll verify a download finishes, or say “remind me tomorrow at 9.”",
+    "tools": ["query_cares", "care_manage", "await_condition"]
+  },
+  {
+    "id": "specified-snooze",
+    "audience": "owner",
+    "user": "Remind me Friday at 10am.",
+    "reply": "Done. I’ll bring this back Friday at 10:00 AM, then re-check the download path instead of merely repeating the alert.",
+    "tools": ["await_condition", "care_manage"]
+  },
+  {
+    "id": "storage-creative",
+    "audience": "owner",
+    "user": "Why is storage so full?",
+    "reply": "Media is among the largest shares. Unmanic is running, but the read-only evidence does not expose file codecs, so I won’t invent a savings estimate. I can inspect its bounded logs next before proposing any re-encode.",
+    "tools": ["unraid_get_storage", "unraid_get_disks"]
+  },
+  {
+    "id": "books-troubleshooting",
+    "audience": "owner",
+    "user": "Books won’t load.",
+    "reply": "I checked it: Books is stopped, and that currently matches your preference. If you want it now, say “start Books” and I’ll handle the request; otherwise I’ll leave it quietly off.",
+    "tools": ["unraid_list_containers", "query_cares"]
+  },
+  {
+    "id": "tv-troubleshooting",
+    "audience": "owner",
+    "user": "The show I added never appeared.",
+    "reply": "I found the request but not a completed download. I’m checking the download path and will track the result here. If the provider needs money or another decision, I’ll send you the exact next step.",
+    "tools": ["query_cares", "care_manage"]
+  },
+  {
+    "id": "movie-request",
+    "audience": "owner",
+    "user": "Can you get Moonstruck?",
+    "reply": "I can track that request, but I can’t truthfully submit it to the media apps with my current tools. I’ve kept “Moonstruck” as active work and will tell you when that capability is available or if I need you to add it.",
+    "tools": ["care_manage"]
+  },
+  {
+    "id": "full-visibility",
+    "audience": "owner",
+    "user": "What are you working on?",
+    "reply": "Active: checking the download path. Waiting on you: account top-up, snoozed until Friday at 10. Quiet by preference: Books is off. Everything else I checked is healthy. I have no evidence of another open household issue.",
+    "tools": ["query_active_work", "query_cares", "unraid_get_system", "unraid_list_containers"]
+  },
+  {
+    "id": "family-privacy",
+    "audience": "family",
+    "user": "Why won’t the movie play?",
+    "reply": "I can help with that. Tell me the movie title and what happens when you press play, and I’ll check the household media service. I’ll keep your request separate from everyone else’s private messages and tasks.",
+    "tools": ["unraid_get_system", "unraid_list_containers"]
+  }
+]

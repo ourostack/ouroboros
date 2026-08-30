@@ -13,7 +13,7 @@ import type { ChannelCallbacks } from "../heart/core"
 import { runAgent } from "../heart/core"
 import { getAgentRoot } from "../heart/identity"
 import { sanitizeKey } from "../heart/config"
-import { stampIngressTime } from "../heart/session-events"
+import { stampIngressRelations, stampIngressTime, type SessionEvent, type SessionIngressRelations } from "../heart/session-events"
 import { loadSession } from "../mind/context"
 import { buildSystem, flattenSystemPrompt } from "../mind/prompt"
 import { getChannelCapabilities, FriendResolver, FileFriendStore, accumulateFriendTokens } from "@ouro.bot/friends"
@@ -21,12 +21,13 @@ import type { IdentityProvider, Channel } from "@ouro.bot/friends"
 import { getPendingDir, drainPending } from "../mind/pending"
 import { postTurnTrim, deferPostTurnPersist } from "../mind/context"
 import { enforceTrustGate } from "./trust-gate"
-import { handleInboundTurn } from "./pipeline"
+import { handleInboundTurn, type InboundTurnInput } from "./pipeline"
 import { getSharedMcpManager } from "../repertoire/mcp-manager"
 import type { RuntimeMcpServers } from "../repertoire/mcp-manager"
 import { emitNervesEvent } from "../nerves/runtime"
 import type { ToolContext } from "../repertoire/tools-base"
 import { readSessionTransaction, withSessionTurnLease, type SessionTurnLease } from "../mind/session-transaction"
+import type { OrientationFrame } from "../heart/orientation-frame"
 
 const RESPONSE_CAP = 50_000
 const OUTWARD_DELIVERY_TOOL_ACKS = new Map([
@@ -174,12 +175,20 @@ export interface RunSenseTurnOptions {
   }
   /** The user's message text. */
   userMessage: string
+  /** Optional authenticated transport binding for the new user event. */
+  ingressRelations?: SessionIngressRelations
+  /** Exact already-committed user ingress claimed by a durable transport worker. */
+  precommittedIngress?: { eventId: string; reference: string }
   /** Latency profile. Live turns keep local session state but skip remote sync and pre-model kept-note judging. */
   latencyMode?: "standard" | "live"
   /** Optional transport delivery hook for outward `speak`/`settle` text. */
   deliverySink?: OutwardSenseDeliverySink
   /** Optional transport-specific controls surfaced to tools during this turn. */
   toolContext?: Partial<ToolContext>
+  /** Final sense-owned authorization/context refresh at the shared pipeline's pre-provider boundary. */
+  prepareRunAgentOptions?: InboundTurnInput["prepareRunAgentOptions"]
+  /** Truth-bearing presentation context for a transport-specific turn trigger. */
+  orientationFrame?: OrientationFrame
   /** Builds a durable approval coordinator after the exact leased session path/revision are known. */
   approvalCoordinatorFactory?: (context: { sessionPath: string; baseSessionRevision: string }) => import("../heart/core").ApprovalCoordinator
   /**
@@ -224,6 +233,40 @@ export interface RunSenseTurnResult {
   providerInvocationCount?: number
   /** Actual tool invocation callbacks observed during this turn. */
   toolInvocationCount?: number
+  /** Exact durable session path used by this turn, for transport reconciliation. */
+  sessionPath?: string
+  /** Existing canonical session event IDs aligned with successful outward deliveries. */
+  causalSessionEventIds?: Array<string | null>
+  /** Exact canonical assistant event recovered by the transcript-readback fallback. */
+  responseCausalSessionEventId?: string
+}
+
+function newOutwardCoordinates(
+  events: SessionEvent[],
+  existingEventIds: ReadonlySet<string>,
+): Array<{ kind: OutwardSenseDeliveryKind; eventId: string }> {
+  return events.flatMap((event): Array<{ kind: OutwardSenseDeliveryKind; eventId: string }> => {
+    if (existingEventIds.has(event.id) || event.role !== "assistant") return []
+    const outwardTools = event.toolCalls.filter((call) => call.function.name === "speak" || call.function.name === "settle")
+    if (outwardTools.length > 0) return outwardTools.map((call) => ({ kind: call.function.name as "speak" | "settle", eventId: event.id }))
+    return typeof event.content === "string" && event.content.trim() ? [{ kind: "text" as const, eventId: event.id }] : []
+  })
+}
+
+function causalSessionEventIds(
+  events: SessionEvent[],
+  existingEventIds: ReadonlySet<string>,
+  attempts: Array<{ kind: OutwardSenseDeliveryKind; delivered: boolean }>,
+): Array<string | null> {
+  const coordinates = newOutwardCoordinates(events, existingEventIds)
+  const aligned = coordinates.length === attempts.length && coordinates.every((coordinate, index) => coordinate.kind === attempts[index]!.kind)
+    ? coordinates.map((coordinate) => coordinate.eventId)
+    : attempts.map(() => null)
+  return attempts.flatMap((attempt, index) => attempt.delivered ? [aligned[index] ?? null] : [])
+}
+
+export function getSenseSessionPath(agentName: string, friendId: string, channel: Channel, sessionKey: string, agentRootOverride?: string): string {
+  return path.join(agentRootOverride ?? getAgentRoot(agentName), "state", "sessions", friendId, channel, `${sanitizeKey(sessionKey)}.json`)
 }
 
 /**
@@ -289,13 +332,22 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
   // Session path and loading
   const sessionDir = path.join(agentRoot, "state", "sessions", friendId, channel)
   fs.mkdirSync(sessionDir, { recursive: true })
-  const sessPath = path.join(sessionDir, `${sanitizeKey(sessionKey)}.json`)
+  const sessPath = getSenseSessionPath(agentName, friendId, channel, sessionKey, agentRoot)
   const runWithLease = options._withSessionTurnLease ?? withSessionTurnLease
   return runWithLease(sessPath, async (sessionTurnLease) => {
   const baseSessionRevision = readSessionTransaction(sessPath, sessionTurnLease).revision
   const existing = loadSession(sessPath)
+  if (options.precommittedIngress) {
+    const event = existing?.events?.find((candidate) => candidate.id === options.precommittedIngress!.eventId)
+    const latestUserEvent = existing?.events?.filter((candidate) => candidate.role === "user").at(-1)
+    if (!event || event !== latestUserEvent || event.role !== "user" || event.content !== userMessage
+      || !event.relations.references.includes(options.precommittedIngress.reference)) {
+      throw new Error("shared turn precommitted ingress is missing, mismatched, or no longer current")
+    }
+  }
+  const existingEventIds = new Set(existing?.events?.map((event) => event.id) ?? [])
   let sessionState = existing?.state
-  let persistPromise: Promise<unknown> | undefined
+  let persistPromise: Promise<SessionEvent[]> | undefined
   const sessionMessages: ChatCompletionMessageParam[] = existing?.messages && existing.messages.length > 0
     ? existing.messages
     : [{ role: "system", content: flattenSystemPrompt(await buildSystem(channel, {}, undefined)) }]
@@ -311,6 +363,7 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
   let terminalDeliveryKind: OutwardSenseDeliveryKind = "text"
   const deliveries: OutwardSenseDelivery[] = []
   const deliveryFailures: OutwardSenseDeliveryFailure[] = []
+  const deliveryAttempts: Array<{ kind: OutwardSenseDeliveryKind; delivered: boolean }> = []
   let providerInvocationCount = 0
   let toolInvocationCount = 0
 
@@ -334,8 +387,11 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
     if (!text) return
 
     const delivery: OutwardSenseDelivery = { kind, text }
+    const attempt = { kind, delivered: false }
+    deliveryAttempts.push(attempt)
     try {
       await options.deliverySink?.onDelivery(delivery)
+      attempt.delivered = true
       deliveries.push(delivery)
       commitResponseText(text)
     } catch (error) {
@@ -371,14 +427,19 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
   /* v8 ignore stop */
 
   // Run the pipeline
-  const userMsg: ChatCompletionMessageParam = { role: "user", content: userMessage }
-  stampIngressTime(userMsg)
+  const inboundMessages: ChatCompletionMessageParam[] = []
+  if (!options.precommittedIngress) {
+    const userMsg: ChatCompletionMessageParam = { role: "user", content: userMessage }
+    stampIngressTime(userMsg)
+    if (options.ingressRelations) stampIngressRelations(userMsg, options.ingressRelations)
+    inboundMessages.push(userMsg)
+  }
   const turnResult = await handleInboundTurn({
     channel,
     latencyMode: options.latencyMode,
     sessionKey,
     capabilities,
-    messages: [userMsg],
+    messages: inboundMessages,
     callbacks,
     sessionTurnLease,
     /* v8 ignore start — delegation wrappers; pipeline integration tested separately */
@@ -404,12 +465,14 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
       mcpManager,
       ...(options.approvalCoordinatorFactory ? { approvalCoordinator: options.approvalCoordinatorFactory({ sessionPath: sessPath, baseSessionRevision }) } : {}),
       ...(options.latencyMode === "live" ? { skipKeptNotes: true } : {}),
+      ...(options.orientationFrame ? { orientationFrame: options.orientationFrame } : {}),
       toolContext: {
         signin: async () => undefined,
         ...(options.toolContext ? options.toolContext as ToolContext : {}),
         currentUserMessage: userMessage,
       },
     },
+    ...(options.prepareRunAgentOptions ? { prepareRunAgentOptions: options.prepareRunAgentOptions } : {}),
     /* v8 ignore start — delegation wrappers; these just forward to the real functions */
     runAgent: (msgs, cb, ch, sig, opts) => runAgent(msgs, cb, ch, sig, opts),
     postTurn: (turnMessages, sessionPathArg, usage, hooks, state) => {
@@ -432,16 +495,18 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
       deliveryFailures,
       providerInvocationCount,
       toolInvocationCount,
+      sessionPath: sessPath,
     }
   }
 
-  if (persistPromise) await persistPromise
+  const persistedEvents = persistPromise ? await persistPromise : []
   await deliverPending(terminalDeliveryKind, { throwOnError: false })
 
   const ponderDeferred = false
 
   // Build response
   let finalResponse: string
+  let responseCausalSessionEventId: string | undefined
   if (committedResponseText.length === 0) {
     // Agent settled but no text came through callbacks — check session transcript for the settle answer
     // Await deferred persist so the session file is up-to-date before readback
@@ -449,8 +514,9 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
     if (persistPromise) await persistPromise
     const postTurnSession = loadSession(sessPath)
     if (postTurnSession?.messages) {
-      finalResponse = extractOutwardSenseDeliveryText(postTurnSession.messages)
-        ?? "(agent responded but response was empty)"
+      const recovered = extractOutwardSenseDeliveryText(postTurnSession.messages)
+      finalResponse = recovered ?? "(agent responded but response was empty)"
+      if (recovered) responseCausalSessionEventId = newOutwardCoordinates(persistedEvents, existingEventIds).at(-1)?.eventId
     } else {
       finalResponse = "(agent responded but response was empty)"
     }
@@ -490,6 +556,16 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
     meta: { agentName, channel, sessionKey, friendId, ponderDeferred, responseLength: finalResponse.length },
   })
 
-  return { response: finalResponse, ponderDeferred, deliveries, deliveryFailures, providerInvocationCount, toolInvocationCount }
+  return {
+    response: finalResponse,
+    ponderDeferred,
+    deliveries,
+    deliveryFailures,
+    providerInvocationCount,
+    toolInvocationCount,
+    sessionPath: sessPath,
+    ...(deliveries.length > 0 ? { causalSessionEventIds: causalSessionEventIds(persistedEvents, existingEventIds, deliveryAttempts) } : {}),
+    ...(responseCausalSessionEventId ? { responseCausalSessionEventId } : {}),
+  }
   })
 }

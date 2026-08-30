@@ -134,6 +134,7 @@ export interface ExecuteApprovalDecisionOptions {
   ownerId: string
   currentSessionRevision: string
   resolveTool(toolName: string): ToolDefinition | undefined
+  resolveApprovalPolicy?: (toolName: string, argumentsValue: JsonObject) => ReturnType<NonNullable<ToolDefinition["approvalPolicy"]>> | Promise<ReturnType<NonNullable<ToolDefinition["approvalPolicy"]>>>
   liveGuard(context: ApprovalLiveContext): { ok: true } | { ok: false; reason: string } | Promise<{ ok: true } | { ok: false; reason: string }>
   liveRisk(context: ApprovalLiveContext): { ok: true } | { ok: false; reason: string } | Promise<{ ok: true } | { ok: false; reason: string }>
   execute(toolName: string, argumentsValue: JsonObject): Promise<string>
@@ -384,7 +385,9 @@ export async function executeApprovalDecision(options: ExecuteApprovalDecisionOp
     return terminalizeClaimed(options.approvalStore, decided, "drifted", "tool arguments or schema drift")
   }
 
-  const policy = definition.approvalPolicy?.(validated.value.arguments) ?? { kind: "not_required" as const }
+  const policy = await options.resolveApprovalPolicy?.(decided.toolName, validated.value.arguments)
+    ?? definition.approvalPolicy?.(validated.value.arguments)
+    ?? { kind: "not_required" as const }
   if (policy.kind !== "required") {
     return terminalizeClaimed(options.approvalStore, decided, "drifted", "approval policy no longer requires approval")
   }

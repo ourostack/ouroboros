@@ -1,10 +1,15 @@
 FROM node:22-bookworm-slim
 
-ARG SUPERCRONIC_SHA256=5adff01c5a797663948e656d2b61d10932369ee437eb5cb54fa872b2960f222b
+LABEL org.opencontainers.image.source="https://github.com/ourostack/ouroboros"
+
+ARG TARGETARCH
+ARG SUPERCRONIC_AMD64_SHA256=5adff01c5a797663948e656d2b61d10932369ee437eb5cb54fa872b2960f222b
+ARG SUPERCRONIC_ARM64_SHA256=c0576a8eb092e3f79108ed0a2155a25c7766af78456e5a6070e54757ef513bfe
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates curl procps python3 make g++ \
   && rm -rf /var/lib/apt/lists/* \
-  && curl -fsSLo /usr/local/bin/supercronic https://github.com/aptible/supercronic/releases/download/v0.2.46/supercronic-linux-amd64 \
+  && case "$TARGETARCH" in amd64) SUPERCRONIC_SHA256="$SUPERCRONIC_AMD64_SHA256" ;; arm64) SUPERCRONIC_SHA256="$SUPERCRONIC_ARM64_SHA256" ;; *) echo "unsupported architecture: $TARGETARCH" >&2; exit 1 ;; esac \
+  && curl -fsSLo /usr/local/bin/supercronic "https://github.com/aptible/supercronic/releases/download/v0.2.46/supercronic-linux-${TARGETARCH}" \
   && echo "${SUPERCRONIC_SHA256}  /usr/local/bin/supercronic" | sha256sum -c - \
   && chmod 0755 /usr/local/bin/supercronic \
   && groupadd --gid 10001 ouro \

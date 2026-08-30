@@ -149,7 +149,7 @@ const probePhase = (ordinal: number, name: string, trigger: "cron" | "acceptance
   ordinal, name, trigger, fixtureStatus, opened, recovered, digestDue, deliveryKind,
   sweepReceiptDigest: probeDigest({ ordinal, name }), deliveryReceiptDigest: deliveryKind === null ? null : probeDigest({ ordinal, deliveryKind }),
 })
-const healthProbe = (label: "unit-16f-cron-fingerprint" | "unit-16g-health-transition" | "unit-16h-daily-digest") => {
+const healthProbe = (label: "unit-16f-cron-fingerprint" | "unit-16g-health-transition" | "unit-16h-acceptance-delivery-probe") => {
   const phases = label === "unit-16f-cron-fingerprint"
     ? [probePhase(1, "cron-unchanged", "cron", null, 0, 0, false, null)]
     : label === "unit-16g-health-transition"
@@ -158,16 +158,17 @@ const healthProbe = (label: "unit-16f-cron-fingerprint" | "unit-16g-health-trans
           probePhase(3, "fixture-fail", "acceptance", 503, 1, 0, false, "transition"), probePhase(4, "fixture-repeat", "acceptance", 503, 0, 0, false, null),
           probePhase(5, "fixture-recover", "acceptance", 200, 0, 1, false, "transition"), probePhase(6, "fixture-refail", "acceptance", 503, 1, 0, false, "transition"),
         ]
-      : [probePhase(1, "digest-first", "acceptance", 503, 0, 0, true, "digest"), probePhase(2, "digest-repeat", "acceptance", 503, 0, 0, false, null)]
+      : [probePhase(1, "delivery-probe-first", "acceptance", 503, 0, 0, true, "digest"), probePhase(2, "delivery-probe-repeat", "acceptance", 503, 0, 0, false, null)]
   const fixtureSequence = phases.flatMap((phase) => phase.fixtureStatus === null ? [] : [phase.fixtureStatus])
   return {
     label, scenarioHandleDigest: "a".repeat(64), ownerImageDigestBefore: "1".repeat(64), ownerImageDigestAfter: "1".repeat(64), ownerContainerDigestBefore: "2".repeat(64), ownerContainerDigestAfter: "2".repeat(64),
     beforeStateDigest: "3".repeat(64), restoredStateDigest: "3".repeat(64), cronFingerprintBefore: "a".repeat(64), cronFingerprintAfter: "a".repeat(64), cronRegisteredBefore: true, cronRegisteredAfter: true,
-    cronDegradedBefore: false, cronDegradedAfter: false, fixtureSequenceDigest: probeDigest(fixtureSequence), clockMode: label === "unit-16h-daily-digest" ? "local-daily-boundary" as const : "ambient" as const,
-    effectiveNow: label === "unit-16h-daily-digest" ? "2026-08-20T16:00:00.000Z" : "2026-08-20T15:00:00.000Z", phases,
+    cronDegradedBefore: false, cronDegradedAfter: false, fixtureSequenceDigest: probeDigest(fixtureSequence), clockMode: label === "unit-16h-acceptance-delivery-probe" ? "local-daily-boundary" as const : "ambient" as const,
+    effectiveNow: label === "unit-16h-acceptance-delivery-probe" ? "2026-08-20T16:00:00.000Z" : "2026-08-20T15:00:00.000Z", phases,
     privateTurnCount: label === "unit-16f-cron-fingerprint" ? 0 : label === "unit-16g-health-transition" ? 3 : 1,
     providerInvocationCount: label === "unit-16f-cron-fingerprint" ? 0 : label === "unit-16g-health-transition" ? 5 : 2, deliveryCount: phases.filter((phase) => phase.deliveryReceiptDigest !== null).length,
     workspaceAbsent: true, socketAbsent: true, snapshotAbsent: true, realCheckEquivalent: true, productionRestored: true,
+    acceptanceOnly: true, productionScheduleChanged: false,
     schedulerReceipt: label === "unit-16f-cron-fingerprint" ? {
       schemaVersion: "sanctuary-scheduler-liveness-receipt-v1" as const, label, scenarioHandleDigest: "a".repeat(64), trigger: "cron" as const,
       occurrenceId: "cron:slot-1", runnerId: "11111111-1111-4111-8111-111111111111", recordedAt: "2026-08-20T15:00:00.000Z",
@@ -188,10 +189,11 @@ const base = (): SanctuaryScenarioFacts => ({
   events: [], approvals: [],
   restartAttempts: [],
   telegramTurns: [],
+  telegramAdmissions: [],
   telegramNextUpdateId: 10,
   zeroWork: { providerToolDigest: "1".repeat(64), outwardDigest: "2".repeat(64), approvalMutationDigest: "3".repeat(64), sessionFriendDigest: "4".repeat(64) },
   identity: { keyPresent: true, subjectOpaque: true, rawIdentityAbsent: true, liveSubjectObserved: true, inspectedRecordCount: 1, opaqueSubjectCount: 1, mismatchCount: 0, rawLeakCount: 0, surfaceDigest: "a".repeat(64), canonicalSessionCount: 1, canonicalFriendCount: 1, sessionSurfaceDigest: "b".repeat(64), friendSurfaceDigest: "c".repeat(64) },
-  container: { exactImage: true, running: true, healthy: true, user: "10001:10001", readOnlyRoot: true, mountCount: 2, publishedPortCount: 0, restartPolicy: "unless-stopped", restartCount: 0, autostartExact: true, updaterDisabled: true, vaultUnlocked: true, manualAuthRequired: false },
+  container: { exactImage: true, running: true, healthy: true, user: "10001:10001", readOnlyRoot: true, mountCount: 4, mountsExact: true, publishedPortCount: 0, restartPolicy: "unless-stopped", restartCount: 0, autostartExact: true, updaterDisabled: true, vaultUnlocked: true, manualAuthRequired: false },
   provider: { outwardReady: true, innerReady: true, geminiCandidateReady: true, providersDistinct: true, silentFallback: false, credentialRevisionsPresent: true, requestSemanticsExact: true, fallbackAttemptCount: 0, modelsExact: true, baseUrlsExact: true, vaultCoordinatesExact: true, credentialIdentitiesDistinct: true },
   cron: { registered: true, fingerprint: "a".repeat(64), receiptDigest: "b".repeat(64), sweepCount: 0 },
   health: { transitionCount: 0, alertCount: 0, productionRestored: true },
@@ -202,16 +204,15 @@ const base = (): SanctuaryScenarioFacts => ({
     schemaVersion: "sanctuary-containment-audit-v1", keyCount: 2, keyInventoryDigest: "1".repeat(64),
     readScopeDigest: createHash("sha256").update(JSON.stringify(["ARRAY", "DASHBOARD", "DISK", "DOCKER", "INFO", "LOGS", "NOTIFICATIONS", "SHARE", "VARS"].map((resource) => `${resource}:READ_ANY`).sort())).digest("hex"),
     writeScopeDigest: createHash("sha256").update(JSON.stringify([...(["ARRAY", "DASHBOARD", "DISK", "DOCKER", "INFO", "LOGS", "NOTIFICATIONS", "SHARE", "VARS"].map((resource) => `${resource}:READ_ANY`)), "DOCKER:UPDATE_ANY"].sort())).digest("hex"),
-    keyRoleAssignmentCount: 0, telegramToolCount: 10,
-    telegramProfileDigest: createHash("sha256").update(JSON.stringify(["unraid_list_containers", "unraid_get_container_logs", "unraid_get_storage", "unraid_get_disks", "unraid_get_notifications", "unraid_get_system", "unraid_restart_container", "ponder", "settle", "speak"])).digest("hex"),
-    telegramSchemaDigest: "3c66299a5f70ec82f8795cae47659284e6dbc691ef49002c2fb22edba76c59b6", privateToolCount: 2,
-    privateProfileDigest: createHash("sha256").update(JSON.stringify(["send_message", "rest"])).digest("hex"), privateSchemaDigest: "61b137b2467acbcf22ca7443ee01e71ed970a62728c42aabffbdcb562f4a6a70", resolvedHandlerCount: 12,
+    keyRoleAssignmentCount: 0, telegramToolCount: 25,
+    telegramProfileDigest: "5".repeat(64), telegramSchemaDigest: "6".repeat(64), privateToolCount: 17,
+    privateProfileDigest: "7".repeat(64), privateSchemaDigest: "8".repeat(64), resolvedHandlerCount: 42, relationshipProfilesExact: true, handlersExact: true,
     excludedToolCount: 7, excludedSchemaIntersectionCount: 0, fabricatedHandlerInvocationCount: 0, excludedToolAttemptCount: 7, excludedToolRejectedCount: 7, excludedToolInvokedCount: 0, excludedToolSideEffectCount: 0, globallyResolvableExcludedToolCount: 4,
     auditPathDigest: createHash("sha256").update("/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance/telegram-audit-chain.ndjson").digest("hex"),
     auditLedgerDigest: "4".repeat(64), auditRecordCount: 2, auditLifecyclePairCount: 1,
-    containerUser: "10001:10001", liveProcessUser: "10001:10001", mountCount: 2, publishedPortCount: 0, networkMode: "host", readOnlyRoot: true, mountsExact: true, securityExact: true, updaterDisabled: true,
+    containerUser: "10001:10001", liveProcessUser: "10001:10001", mountCount: 4, publishedPortCount: 0, networkMode: "host", readOnlyRoot: true, mountsExact: true, securityExact: true, updaterDisabled: true,
     writableKeyExposure: false, rawWriteMaterialFieldCount: 0, typedWriteExecutorCount: 1,
-    writeApprovalPolicyDigest: createHash("sha256").update(JSON.stringify({ kind: "required", policyId: "sanctuary.unraid.restart.v1", actionClass: "unraid.container.restart", requiresSoleCall: true })).digest("hex"),
+    writeApprovalPolicyDigest: "9".repeat(64), writeApprovalPolicyExact: true,
     sensitiveMaterialObserved: false, stopDenied: true, restartDenied: true, denialAuditCount: 1, denialStateUnchanged: true, denialProbeCompleted: true,
   },
   postbootIntegrity: integritySnapshot(),
@@ -421,14 +422,13 @@ describe("Sanctuary live scenario capture", () => {
         after.events.push({ ...event("senses.sanctuary_read_receipt"), meta: { toolName, success: true, resultDigest: "5".repeat(64), groundingDigest: factDigest, sourceIdentityDigest: groundingSource, observedAt: "1970-01-01T00:00:09.000Z" } })
         ;(after as any).liveGrounding = { toolName, groundingDigest: factDigest, sourceIdentityDigest: groundingSource, observedAt: "1970-01-01T00:00:11.000Z", facts }
       }
-      if (label === "unit-16d-2-unauthorized") after.events.push({ ...event("telegram.update_dropped"), meta: {
-        scenarioHandleDigest, updateDigest: "1".repeat(64), distinctAccount: true,
-        senderIdentityDigest: "d".repeat(64), authorizedIdentityDigest: "e".repeat(64), senderDistinct: true,
-        nextOffsetDigest: "9".repeat(64), dropMac: "f".repeat(64),
-      } }); after.telegramNextUpdateId = 11
+      if (label === "unit-16d-2-unknown-admission") {
+        after.telegramAdmissions = [{ admissionDigest: "d".repeat(64), status: "pending", identityExact: true, acknowledgementExact: true, ownerCardExact: true, contentQuarantined: true, relationshipAbsent: true, capturedAt: 2_000, updatedAt: 3_000 }]
+        after.telegramNextUpdateId = 11
+      }
       if (label === "unit-16e-2-restart-denial") after.denial = { ...after.denial!, label, operation: "restart" }
       if (label === "unit-16j-denial") { after.approvals = [approval("denied")]; after.events.push(...auditTurn(), ...approvalEvidence("deny", 1_000, 2_000)) }
-      if (label === "unit-16f-cron-fingerprint" || label === "unit-16g-health-transition" || label === "unit-16h-daily-digest") after.healthProbe = healthProbe(label)
+      if (label === "unit-16f-cron-fingerprint" || label === "unit-16g-health-transition" || label === "unit-16h-acceptance-delivery-probe") after.healthProbe = healthProbe(label)
       if (label === "unit-16i-delayed-approval") { after.approvals = [approval("succeeded")]; after.restartAttempts = successfulRestart(); after.events.push(...auditTurn(), ...approvalEvidence("approve")) }
       if (label === "unit-16k-timeout-stale") { after.approvals = [approval("expired")]; after.interactiveDriver = timeoutStaleDriver(); after.events.push(approvalAuditEvent("senses.telegram_approval_prompt_bound", 1_000, { boundAt: 1_000 }), expiryObservationEvidence(), approvalAuditEvent("telegram.approval_prompt_terminalized", 301_000, { boundAt: 1_000, expiryDeadlineAt: 301_000, expiryObservedAt: 301_000, terminalEditStartedAt: 301_000, terminalizedAt: 301_000, buttonsRemoved: true }), staleCallbackEvidence(), event("telegram.update_dropped")) }
       if (label === "unit-16l-duplicate-callback") { after.approvals = [{ ...approval("succeeded"), callbackCount: 2, settledCount: 2, claimCount: 1 }]; after.restartAttempts = successfulRestart(); after.interactiveDriver = duplicateCallbackDriver(); after.events.push(...approvalEvidence("approve"), event("telegram.callback_settled"), event("telegram.callback_settled"), event("approval.acceptance_transition")) }
@@ -833,7 +833,7 @@ describe("Sanctuary live scenario capture", () => {
 
     const prefixedBefore = base(); prefixedBefore.events = [event("existing")]
     const truncatedAfter = base()
-    expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unauthorized", prefixedBefore, truncatedAfter, 400_000)).toBeNull()
+    expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unknown-admission", prefixedBefore, truncatedAfter, 400_000)).toBeNull()
     const http401 = base(); http401.denial = { ...http401.denial!, httpStatus: 401 }
     expect(deriveSanctuaryScenarioAssertions("unit-16e-1-stop-denial", base(), http401, 400_000)).not.toBeNull()
     const http200 = base(); http200.denial = { ...http200.denial!, httpStatus: 200 }
@@ -856,7 +856,7 @@ describe("Sanctuary live scenario capture", () => {
   it.each([
     "unit-16f-cron-fingerprint",
     "unit-16g-health-transition",
-    "unit-16h-daily-digest",
+    "unit-16h-acceptance-delivery-probe",
   ] as const)("rejects stopped and unhealthy independently injected owner snapshots for %s", (label) => {
     const before = base()
     const stopped = base(); stopped.healthProbe = healthProbe(label); stopped.container = { ...stopped.container!, running: false }
@@ -1135,14 +1135,14 @@ describe("Sanctuary live scenario capture", () => {
     const gate = path.join(root, "failed-recovery-gate.json")
     const marker = path.join(root, "sanctuary.ouro", "state", "acceptance", "active-scenario.json")
     const failure = new Error("recover failed")
-    const after = base(); after.healthProbe = healthProbe("unit-16h-daily-digest")
+    const after = base(); after.healthProbe = healthProbe("unit-16h-acceptance-delivery-probe")
     const capture = createSanctuaryScenarioCapture({
       now: () => 400_000, receiptRoot: receipts, gateStatusPath: gate,
       readFacts: async (_label, _handle, options) => options?.skipContainerSnapshot ? base() : after,
       healthDriver: { begin: async () => {}, poll: async () => ({ state: "ready", containerSnapshot: {} }), recover: async () => { throw failure } },
     })
-    const begin = await capture({ phase: "begin", label: "unit-16h-daily-digest", externalGate: "digest", sources: ["digest-runtime", "health-probe-receipt"] })
-    await expect(capture({ phase: "poll", label: "unit-16h-daily-digest", externalGate: "digest", sources: ["digest-runtime", "health-probe-receipt"], checkpointDigest: begin.checkpointDigest as string })).rejects.toBe(failure)
+    const begin = await capture({ phase: "begin", label: "unit-16h-acceptance-delivery-probe", externalGate: "digest", sources: ["digest-runtime", "health-probe-receipt"] })
+    await expect(capture({ phase: "poll", label: "unit-16h-acceptance-delivery-probe", externalGate: "digest", sources: ["digest-runtime", "health-probe-receipt"], checkpointDigest: begin.checkpointDigest as string })).rejects.toBe(failure)
     expect(fs.existsSync(marker)).toBe(true)
     expect(fs.readdirSync(receipts)).toHaveLength(1)
     expect(JSON.parse(fs.readFileSync(gate, "utf8"))).toMatchObject({ phase: "waiting" })
@@ -1553,12 +1553,22 @@ describe("Sanctuary live scenario capture", () => {
     const before = base()
     const containment = base(); containment.container!.updaterDisabled = false
     expect(deriveSanctuaryScenarioAssertions("unit-16b-runtime-vault-containment", before, containment, 400_000)).toBeNull()
+    const staleMountContract = base(); staleMountContract.container!.mountCount = 2
+    expect(deriveSanctuaryScenarioAssertions("unit-16b-runtime-vault-containment", before, staleMountContract, 400_000)).toBeNull()
     const unauthorized = base(); unauthorized.events.push(event("telegram.update_dropped"))
-    expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unauthorized", before, unauthorized, 400_000)).toBeNull()
+    expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unknown-admission", before, unauthorized, 400_000)).toBeNull()
     const denial = base(); denial.approvals = [{ ...approval("denied"), replayMutationCount: 1 }]
     expect(deriveSanctuaryScenarioAssertions("unit-16j-denial", before, denial, 400_000)).toBeNull()
     const audit = base(); audit.containment!.sensitiveMaterialObserved = true
     expect(deriveSanctuaryScenarioAssertions("unit-16e-containment-audit", before, audit, 400_000)).toBeNull()
+    const staleAuditMountContract = base(); staleAuditMountContract.containment!.mountCount = 2
+    expect(deriveSanctuaryScenarioAssertions("unit-16e-containment-audit", before, staleAuditMountContract, 400_000)).toBeNull()
+    const missingRelationshipProfiles = base(); missingRelationshipProfiles.containment!.relationshipProfilesExact = false
+    expect(deriveSanctuaryScenarioAssertions("unit-16e-containment-audit", before, missingRelationshipProfiles, 400_000)).toBeNull()
+    const unresolvedPackagedHandler = base(); unresolvedPackagedHandler.containment!.handlersExact = false
+    expect(deriveSanctuaryScenarioAssertions("unit-16e-containment-audit", before, unresolvedPackagedHandler, 400_000)).toBeNull()
+    const wrongWritePolicy = base(); wrongWritePolicy.containment!.writeApprovalPolicyExact = false
+    expect(deriveSanctuaryScenarioAssertions("unit-16e-containment-audit", before, wrongWritePolicy, 400_000)).toBeNull()
     const unlinkedMutation = base(); unlinkedMutation.restartAttempts = successfulRestart().map((attempt) => ({ ...attempt, approvalId: "unlinked" }))
     expect(deriveSanctuaryScenarioAssertions("unit-16e-containment-audit", before, unlinkedMutation, 400_000)).toBeNull()
     const wrongApproval = base(); wrongApproval.approvals = [{ ...approval("denied"), toolName: "ponder", target: null }]
@@ -1585,49 +1595,55 @@ describe("Sanctuary live scenario capture", () => {
     expect(deriveSanctuaryScenarioAssertions("unit-16j-denial", before, ambiguous, 400_000)).toBeNull()
   })
 
-  it("requires unauthorized traffic to leave every scenario work ledger empty", () => {
+  it("rejects a synthetic drop in place of the production admission flow", () => {
     const before = base()
     const after = base()
     after.events.push({ ...event("telegram.update_dropped"), meta: { scenarioHandleDigest: "a".repeat(64), distinctAccount: true } })
     after.telegramTurns.push({ ...turnReceipt(), status: "error", deliveryCount: 0, telegramMessageIdDigests: [], providerTurnCount: 1 })
-    expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unauthorized", before, after, 400_000)).toBeNull()
+    expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unknown-admission", before, after, 400_000)).toBeNull()
   })
 
-  it("requires exactly one fresh scenario-bound distinct-account drop", () => {
-    const binding = { senderIdentityDigest: "d".repeat(64), authorizedIdentityDigest: "e".repeat(64), senderDistinct: true, nextOffsetDigest: "9".repeat(64), dropMac: "f".repeat(64) }
-    const historical = { ...event("telegram.update_dropped"), meta: { scenarioHandleDigest, updateDigest: "0".repeat(64), distinctAccount: true, ...binding } }
-    const freshDistinct = { ...event("telegram.update_dropped"), at: 2, meta: { scenarioHandleDigest, updateDigest: "1".repeat(64), distinctAccount: true, ...binding } }
-    const before = base(); before.events = [historical]
-    const after = base(); after.events = [historical, freshDistinct]; after.telegramNextUpdateId = 11
-    expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unauthorized", before, after, 400_000)).toMatchObject({ auditRejected: true, distinctAccount: true })
-
-    after.events = [historical, { ...freshDistinct, meta: { ...freshDistinct.meta, distinctAccount: false } }]
-    expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unauthorized", before, after, 400_000)).toBeNull()
-    after.events = [historical, freshDistinct, { ...freshDistinct, at: 3, meta: { ...freshDistinct.meta, updateDigest: "2".repeat(64) } }]
-    expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unauthorized", before, after, 400_000)).toBeNull()
-    after.events = [historical, { ...freshDistinct, meta: { ...freshDistinct.meta, updateDigest: "not-a-digest" } }]
-    expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unauthorized", before, after, 400_000)).toBeNull()
-    after.events = [historical, { ...freshDistinct, meta: { ...freshDistinct.meta, senderIdentityDigest: freshDistinct.meta.authorizedIdentityDigest } }]
-    expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unauthorized", before, after, 400_000)).toBeNull()
-    after.events = [historical, { ...freshDistinct, meta: { ...freshDistinct.meta, senderDistinct: false } }]
-    expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unauthorized", before, after, 400_000)).toBeNull()
-    after.events = [historical, { ...freshDistinct, meta: { ...freshDistinct.meta, dropMac: "not-a-mac" } }]
-    expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unauthorized", before, after, 400_000)).toBeNull()
-    after.events = [historical, freshDistinct, { ...event("senses.sanctuary_health_delivered"), at: 3, meta: { scenarioHandleDigest, deliveryCount: 1 } }]
-    expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unauthorized", before, after, 400_000)).toBeNull()
-    after.events = [historical, freshDistinct]
-    after.identity = { ...after.identity!, sessionSurfaceDigest: "d".repeat(64) }
-    expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unauthorized", before, after, 400_000)).toBeNull()
-    after.identity = { ...before.identity }
-    after.telegramNextUpdateId = before.telegramNextUpdateId
-    expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unauthorized", before, after, 400_000)).toBeNull()
-    after.telegramNextUpdateId = Number(before.telegramNextUpdateId) + 2
-    expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unauthorized", before, after, 400_000)).toBeNull()
+  it("requires one exact pre-model quarantine with no relationship or agent work", () => {
+    const before = base()
+    const after = base()
+    after.telegramAdmissions = [{ admissionDigest: "d".repeat(64), status: "pending", identityExact: true, acknowledgementExact: true, ownerCardExact: true, contentQuarantined: true, relationshipAbsent: true, capturedAt: 2_000, updatedAt: 3_000 }]
     after.telegramNextUpdateId = 11
-    after.zeroWork = { ...after.zeroWork!, outwardDigest: "f".repeat(64) }
-    expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unauthorized", before, after, 400_000)).toBeNull()
-    after.zeroWork = { ...before.zeroWork!, sessionFriendDigest: "f".repeat(64) }
-    expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unauthorized", before, after, 400_000)).toBeNull()
+    expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unknown-admission", before, after, 400_000)).toMatchObject({
+      acknowledgementSent: true, agentTurnCount: 0, ownerCardSent: true, quarantined: true, responseCount: 0,
+    })
+
+    for (const patch of [
+      { acknowledgementExact: false },
+      { ownerCardExact: false },
+      { identityExact: false },
+      { contentQuarantined: false },
+      { relationshipAbsent: false },
+      { status: "handled" },
+    ]) {
+      after.telegramAdmissions = [{ ...after.telegramAdmissions[0]!, ...patch }]
+      expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unknown-admission", before, after, 400_000)).toBeNull()
+    }
+    after.telegramAdmissions = [{ admissionDigest: "d".repeat(64), status: "pending", identityExact: true, acknowledgementExact: true, ownerCardExact: true, contentQuarantined: true, relationshipAbsent: true, capturedAt: 2_000, updatedAt: 3_000 }]
+    after.telegramTurns = [turnReceipt()]
+    expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unknown-admission", before, after, 400_000)).toBeNull()
+  })
+
+  it("does not mistake admission state drift or stranger session ingress for a new quarantine", () => {
+    const existingAdmission = { admissionDigest: "d".repeat(64), status: "handled", identityExact: true, acknowledgementExact: true, ownerCardExact: true, contentQuarantined: true, relationshipAbsent: true, capturedAt: 2_000, updatedAt: 2_500 }
+    const before = base()
+    before.telegramAdmissions = [existingAdmission]
+    const after = base()
+    after.telegramAdmissions = [{ ...existingAdmission, status: "pending", updatedAt: 3_000 }]
+    after.telegramNextUpdateId = 11
+    expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unknown-admission", before, after, 400_000)).toBeNull()
+
+    before.telegramAdmissions = []
+    after.zeroWork = { ...after.zeroWork!, sessionFriendDigest: "5".repeat(64) }
+    expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unknown-admission", before, after, 400_000)).toBeNull()
+
+    delete before.telegramAdmissions
+    delete after.telegramAdmissions
+    expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unknown-admission", before, after, 400_000)).toBeNull()
   })
 
   it.each(["unit-16d-whats-up", "unit-16i-delayed-approval", "unit-16j-denial"] as const)("requires one fresh exact audit lifecycle for %s", (label) => {
@@ -1719,21 +1735,21 @@ describe("Sanctuary live scenario capture", () => {
     }
   })
 
-  it("accepts a daily digest fired exactly at the local boundary", () => {
+  it("accepts an acceptance-only delivery probe at the local boundary", () => {
     const before = base()
     const after = base()
-    after.healthProbe = healthProbe("unit-16h-daily-digest")
-    expect(deriveSanctuaryScenarioAssertions("unit-16h-daily-digest", before, after, 400_000)).toMatchObject({ firedWithinMs: 0 })
+    after.healthProbe = healthProbe("unit-16h-acceptance-delivery-probe")
+    expect(deriveSanctuaryScenarioAssertions("unit-16h-acceptance-delivery-probe", before, after, 400_000)).toMatchObject({ firedWithinMs: 0 })
   })
 
   it("derives exact private-turn and delivery counts from observed health-probe metrics", () => {
     const before = base()
     const cron = base(); cron.healthProbe = healthProbe("unit-16f-cron-fingerprint")
     const transitions = base(); transitions.healthProbe = healthProbe("unit-16g-health-transition")
-    const digest = base(); digest.healthProbe = healthProbe("unit-16h-daily-digest")
+    const digest = base(); digest.healthProbe = healthProbe("unit-16h-acceptance-delivery-probe")
     expect(deriveSanctuaryScenarioAssertions("unit-16f-cron-fingerprint", before, cron, 400_000)).toMatchObject({ providerInvocationCount: 0, messageCount: 0 })
     expect(deriveSanctuaryScenarioAssertions("unit-16g-health-transition", before, transitions, 400_000)).toEqual({ alertCount: 3, productionRestored: true, transitionObserved: true })
-    expect(deriveSanctuaryScenarioAssertions("unit-16h-daily-digest", before, digest, 400_000)).toMatchObject({ firedWithinMs: 0, messageCount: 1 })
+    expect(deriveSanctuaryScenarioAssertions("unit-16h-acceptance-delivery-probe", before, digest, 400_000)).toMatchObject({ firedWithinMs: 0, messageCount: 1 })
   })
 
   it("rejects health-probe phase, private-turn, provider-bound, and restoration drift", () => {
@@ -1751,15 +1767,15 @@ describe("Sanctuary live scenario capture", () => {
     transitions.healthProbe = { ...healthProbe("unit-16g-health-transition"), providerInvocationCount: 1_001 }
     expect(deriveSanctuaryScenarioAssertions("unit-16g-health-transition", before, transitions, 400_000)).toBeNull()
 
-    const digest = base(); digest.healthProbe = { ...healthProbe("unit-16h-daily-digest"), privateTurnCount: 0 }
-    expect(deriveSanctuaryScenarioAssertions("unit-16h-daily-digest", before, digest, 400_000)).toBeNull()
-    digest.healthProbe = { ...healthProbe("unit-16h-daily-digest"), providerInvocationCount: 0 }
-    expect(deriveSanctuaryScenarioAssertions("unit-16h-daily-digest", before, digest, 400_000)).toBeNull()
-    digest.healthProbe = { ...healthProbe("unit-16h-daily-digest"), restoredStateDigest: "9".repeat(64) }
-    expect(deriveSanctuaryScenarioAssertions("unit-16h-daily-digest", before, digest, 400_000)).toBeNull()
+    const digest = base(); digest.healthProbe = { ...healthProbe("unit-16h-acceptance-delivery-probe"), privateTurnCount: 0 }
+    expect(deriveSanctuaryScenarioAssertions("unit-16h-acceptance-delivery-probe", before, digest, 400_000)).toBeNull()
+    digest.healthProbe = { ...healthProbe("unit-16h-acceptance-delivery-probe"), providerInvocationCount: 0 }
+    expect(deriveSanctuaryScenarioAssertions("unit-16h-acceptance-delivery-probe", before, digest, 400_000)).toBeNull()
+    digest.healthProbe = { ...healthProbe("unit-16h-acceptance-delivery-probe"), restoredStateDigest: "9".repeat(64) }
+    expect(deriveSanctuaryScenarioAssertions("unit-16h-acceptance-delivery-probe", before, digest, 400_000)).toBeNull()
   })
 
-  it.each(["unit-16f-cron-fingerprint", "unit-16g-health-transition", "unit-16h-daily-digest"] as const)("binds %s restoration to the independently observed current cron", (label) => {
+  it.each(["unit-16f-cron-fingerprint", "unit-16g-health-transition", "unit-16h-acceptance-delivery-probe"] as const)("binds %s restoration to the independently observed current cron", (label) => {
     const fingerprintDrift = base(); fingerprintDrift.healthProbe = healthProbe(label); fingerprintDrift.cron!.fingerprint = "9".repeat(64)
     expect(deriveSanctuaryScenarioAssertions(label, base(), fingerprintDrift, 400_000)).toBeNull()
     const registrationDrift = base(); registrationDrift.healthProbe = healthProbe(label); registrationDrift.cron!.registered = false

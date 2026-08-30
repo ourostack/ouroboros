@@ -91,9 +91,20 @@ export interface TelegramUpdate {
   update_id: number
   message?: {
     message_id: number
-    from?: { id: number }
+    from?: { id: number; first_name?: string; last_name?: string; username?: string }
     chat: { id: number; type: string }
     text?: string
+    caption?: string
+    entities?: Array<{ type: string; offset: number; length: number }>
+    caption_entities?: Array<{ type: string; offset: number; length: number }>
+    document?: { file_id: string }
+    photo?: Array<{ file_id: string }>
+    audio?: { file_id: string }
+    video?: { file_id: string }
+    voice?: { file_id: string }
+    animation?: { file_id: string }
+    sticker?: { file_id: string }
+    reply_to_message?: { message_id: number }
   }
   callback_query?: {
     id: string
@@ -109,6 +120,18 @@ export interface TelegramInboundMessage {
   userId: string
   chatId: string
   text: string
+  replyToMessageId?: string
+}
+
+export interface TelegramUnknownInboundMessage {
+  updateId: number
+  messageId: number
+  botId: string
+  userId: string
+  chatId: string
+  text: string
+  displayLabel: string
+  hasAttachments: boolean
 }
 
 export interface TelegramUpdateInboxStore {
@@ -121,6 +144,20 @@ export interface TelegramUpdateInboxStore {
   claim(update: TelegramUpdate): boolean
   complete(update: TelegramUpdate): void
   commit?(update: TelegramUpdate): void
+  captureAdmittedWork?(work: TelegramAdmittedWork): boolean
+  loadPendingAdmittedWork?(): TelegramAdmittedWork[]
+  claimAdmittedWork?(admissionId: string): TelegramAdmittedWork | null
+  completeAdmittedWork?(admissionId: string): void
+  quarantineStrandedAdmittedWork?(): TelegramAdmittedWork[]
+  admittedWorkState?(admissionId: string): "pending" | "dispatching" | "settled" | "indeterminate" | null
+}
+
+export interface TelegramAdmittedWork {
+  admissionId: string
+  friendId: string
+  sessionKey: string
+  eventId: string
+  reference: string
 }
 
 export interface TelegramUpdateReceipt {
@@ -134,12 +171,20 @@ interface TelegramIndeterminateUpdateReceipt extends TelegramUpdateReceipt {
   warningAcknowledged: boolean
 }
 
+interface TelegramIndeterminateAdmittedWork extends TelegramAdmittedWork {
+  quarantinedAt: number
+}
+
 interface TelegramUpdateInboxState {
-  version: 4
+  version: 5
   pending: TelegramUpdateReceipt[]
   dispatching: TelegramUpdateReceipt[]
   settled: TelegramUpdateReceipt[]
   indeterminate: TelegramIndeterminateUpdateReceipt[]
+  admittedPending: TelegramAdmittedWork[]
+  admittedDispatching: TelegramAdmittedWork[]
+  admittedSettled: TelegramAdmittedWork[]
+  admittedIndeterminate: TelegramIndeterminateAdmittedWork[]
 }
 
 export interface FileTelegramUpdateInboxStoreOptions {
@@ -155,6 +200,12 @@ const TELEGRAM_UPDATE_DIGEST_DOMAIN = "ouroboros.telegram.update.v1"
 const TELEGRAM_UPDATE_SEQUENCE_DOMAIN = "ouroboros.telegram.update-sequence.v1"
 const TELEGRAM_UPDATE_DIGEST = /^tgu_[A-Za-z0-9_-]{43}$/u
 const TELEGRAM_UPDATE_SEQUENCE_DIGEST = /^tgs_[A-Za-z0-9_-]{43}$/u
+const TELEGRAM_ADMISSION_ID = /^[a-f0-9]{20}$/u
+const TELEGRAM_SESSION_EVENT_ID = /^evt-[0-9]{6,}$/u
+
+function boundedTelegramWorkText(value: unknown, maxLength: number): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= maxLength
+}
 
 function updateReceipt(update: TelegramUpdate): TelegramUpdateReceipt {
   return {
@@ -223,6 +274,46 @@ export class FileTelegramUpdateInboxStore implements TelegramUpdateInboxStore {
         && Number.isSafeInteger((record as TelegramIndeterminateUpdateReceipt).quarantinedAt)
         && (record as TelegramIndeterminateUpdateReceipt).quarantinedAt >= 0
         && typeof (record as TelegramIndeterminateUpdateReceipt).warningAcknowledged === "boolean"
+      const validAdmitted = (record: unknown): record is TelegramAdmittedWork => Boolean(record)
+        && typeof record === "object"
+        && !Array.isArray(record)
+        && Object.keys(record as object).sort().join(",") === "admissionId,eventId,friendId,reference,sessionKey"
+        && TELEGRAM_ADMISSION_ID.test((record as TelegramAdmittedWork).admissionId)
+        && boundedTelegramWorkText((record as TelegramAdmittedWork).friendId, 512)
+        && boundedTelegramWorkText((record as TelegramAdmittedWork).sessionKey, 1_024)
+        && TELEGRAM_SESSION_EVENT_ID.test((record as TelegramAdmittedWork).eventId)
+        && (record as TelegramAdmittedWork).reference === `telegram-admission:${(record as TelegramAdmittedWork).admissionId}`
+      const validIndeterminateAdmitted = (record: unknown): record is TelegramIndeterminateAdmittedWork => {
+        if (!record || typeof record !== "object" || Array.isArray(record)
+          || Object.keys(record).sort().join(",") !== "admissionId,eventId,friendId,quarantinedAt,reference,sessionKey") return false
+        const { quarantinedAt, ...work } = record as TelegramIndeterminateAdmittedWork
+        return Number.isSafeInteger(quarantinedAt) && quarantinedAt >= 0 && validAdmitted(work)
+      }
+      if (value.version === 5) {
+        if (Object.keys(value).sort().join(",") !== "admittedDispatching,admittedIndeterminate,admittedPending,admittedSettled,dispatching,indeterminate,pending,settled,version"
+          || !Array.isArray(value.pending) || !Array.isArray(value.dispatching) || !Array.isArray(value.indeterminate) || !Array.isArray(value.settled)
+          || !Array.isArray(value.admittedPending) || !Array.isArray(value.admittedDispatching)
+          || !Array.isArray(value.admittedSettled) || !Array.isArray(value.admittedIndeterminate)
+          || !value.pending.every(validReceipt) || !value.dispatching.every(validReceipt) || !value.settled.every(validReceipt)
+          || !value.indeterminate.every(validIndeterminate)
+          || !value.admittedPending.every(validAdmitted) || !value.admittedDispatching.every(validAdmitted)
+          || !value.admittedSettled.every(validAdmitted) || !value.admittedIndeterminate.every(validIndeterminateAdmitted)) {
+          throw new Error("invalid bounded inbox shape")
+        }
+        const state = structuredClone(value) as unknown as TelegramUpdateInboxState
+        const timestamp = this.timestamp()
+        const prunedUpdates = this.prune(state.indeterminate, timestamp)
+        const prunedAdmitted = state.admittedIndeterminate
+          .filter((work) => work.quarantinedAt >= timestamp - this.indeterminateRetentionMs)
+          .sort((left, right) => left.quarantinedAt - right.quarantinedAt || left.admissionId.localeCompare(right.admissionId))
+          .slice(-this.maxIndeterminateReceipts)
+        if (prunedUpdates.length !== state.indeterminate.length || prunedAdmitted.length !== state.admittedIndeterminate.length) {
+          state.indeterminate = prunedUpdates
+          state.admittedIndeterminate = prunedAdmitted
+          this.write(state)
+        }
+        return state
+      }
       if (value.version === 4) {
         if (Object.keys(value).sort().join(",") !== "dispatching,indeterminate,pending,settled,version"
           || !Array.isArray(value.pending) || !Array.isArray(value.dispatching) || !Array.isArray(value.indeterminate)
@@ -230,12 +321,17 @@ export class FileTelegramUpdateInboxStore implements TelegramUpdateInboxStore {
           || !value.pending.every(validReceipt) || !value.dispatching.every(validReceipt)
           || !value.settled.every(validReceipt)
           || !value.indeterminate.every(validIndeterminate)) throw new Error("invalid bounded inbox shape")
-        const state = structuredClone(value) as unknown as TelegramUpdateInboxState
-        const pruned = this.prune(state.indeterminate, this.timestamp())
-        if (pruned.length !== state.indeterminate.length) {
-          state.indeterminate = pruned
-          this.write(state)
+        const state: TelegramUpdateInboxState = {
+          ...(structuredClone(value) as unknown as Omit<TelegramUpdateInboxState, "version" | "admittedPending" | "admittedDispatching" | "admittedSettled" | "admittedIndeterminate">),
+          version: 5,
+          admittedPending: [],
+          admittedDispatching: [],
+          admittedSettled: [],
+          admittedIndeterminate: [],
         }
+        const pruned = this.prune(state.indeterminate, this.timestamp())
+        state.indeterminate = pruned
+        this.write(state)
         return state
       }
       if (value.version === 3) {
@@ -245,11 +341,12 @@ export class FileTelegramUpdateInboxStore implements TelegramUpdateInboxStore {
           || !value.indeterminate.every(validIndeterminate)) throw new Error("invalid bounded inbox shape")
         const timestamp = this.timestamp()
         const migrated: TelegramUpdateInboxState = {
-          version: 4,
+          version: 5,
           pending: structuredClone(value.pending) as TelegramUpdateReceipt[],
           dispatching: structuredClone(value.dispatching) as TelegramUpdateReceipt[],
           settled: [],
           indeterminate: this.prune(structuredClone(value.indeterminate) as TelegramIndeterminateUpdateReceipt[], timestamp),
+          admittedPending: [], admittedDispatching: [], admittedSettled: [], admittedIndeterminate: [],
         }
         this.write(migrated)
         return migrated
@@ -261,7 +358,7 @@ export class FileTelegramUpdateInboxStore implements TelegramUpdateInboxStore {
         if (!arrays.flat().every(validReceipt)) throw new Error("invalid opaque inbox receipt")
         const timestamp = this.timestamp()
         const migrated: TelegramUpdateInboxState = {
-          version: 4,
+          version: 5,
           pending: structuredClone(value.pending) as TelegramUpdateReceipt[],
           dispatching: structuredClone(value.dispatching) as TelegramUpdateReceipt[],
           settled: [],
@@ -270,6 +367,7 @@ export class FileTelegramUpdateInboxStore implements TelegramUpdateInboxStore {
             quarantinedAt: timestamp,
             warningAcknowledged: false,
           })), timestamp),
+          admittedPending: [], admittedDispatching: [], admittedSettled: [], admittedIndeterminate: [],
         }
         this.write(migrated)
         return migrated
@@ -286,7 +384,7 @@ export class FileTelegramUpdateInboxStore implements TelegramUpdateInboxStore {
         || !completed.every((id) => Number.isSafeInteger(id) && (id as number) >= 0)) throw new Error("invalid legacy inbox record")
       const timestamp = this.timestamp()
       const migrated: TelegramUpdateInboxState = {
-        version: 4,
+        version: 5,
         pending: [],
         dispatching: [],
         settled: [],
@@ -295,11 +393,15 @@ export class FileTelegramUpdateInboxStore implements TelegramUpdateInboxStore {
           quarantinedAt: timestamp,
           warningAcknowledged: false,
         })), timestamp),
+        admittedPending: [], admittedDispatching: [], admittedSettled: [], admittedIndeterminate: [],
       }
       this.write(migrated)
       return migrated
     } catch (error) {
-      if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return { version: 4, pending: [], dispatching: [], settled: [], indeterminate: [] }
+      if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return {
+        version: 5, pending: [], dispatching: [], settled: [], indeterminate: [],
+        admittedPending: [], admittedDispatching: [], admittedSettled: [], admittedIndeterminate: [],
+      }
       throw new Error("Telegram update inbox state is corrupt", { cause: error })
     }
   }
@@ -393,6 +495,88 @@ export class FileTelegramUpdateInboxStore implements TelegramUpdateInboxStore {
     state.settled = settled
     this.write(state)
   }
+
+  captureAdmittedWork(work: TelegramAdmittedWork): boolean {
+    if (!this.validAdmittedWork(work)) throw new Error("Telegram admitted work is invalid")
+    const state = this.read()
+    const existing = [
+      ...state.admittedPending,
+      ...state.admittedDispatching,
+      ...state.admittedSettled,
+      ...state.admittedIndeterminate,
+    ].find((candidate) => candidate.admissionId === work.admissionId)
+    if (existing) {
+      const { quarantinedAt: _quarantinedAt, ...canonical } = existing as TelegramIndeterminateAdmittedWork
+      if (JSON.stringify(canonical) !== JSON.stringify(work)) throw new Error("Telegram admitted work has a conflicting receipt")
+      return false
+    }
+    state.admittedPending.push(structuredClone(work))
+    this.write(state)
+    return true
+  }
+
+  loadPendingAdmittedWork(): TelegramAdmittedWork[] {
+    return structuredClone(this.read().admittedPending)
+  }
+
+  claimAdmittedWork(admissionId: string): TelegramAdmittedWork | null {
+    if (!TELEGRAM_ADMISSION_ID.test(admissionId)) throw new Error("Telegram admission id is invalid")
+    const state = this.read()
+    if (state.admittedDispatching.some((candidate) => candidate.admissionId === admissionId)
+      || state.admittedSettled.some((candidate) => candidate.admissionId === admissionId)
+      || state.admittedIndeterminate.some((candidate) => candidate.admissionId === admissionId)) return null
+    const index = state.admittedPending.findIndex((candidate) => candidate.admissionId === admissionId)
+    if (index < 0) return null
+    const [work] = state.admittedPending.splice(index, 1)
+    state.admittedDispatching.push(work!)
+    this.write(state)
+    return structuredClone(work!)
+  }
+
+  completeAdmittedWork(admissionId: string): void {
+    if (!TELEGRAM_ADMISSION_ID.test(admissionId)) throw new Error("Telegram admission id is invalid")
+    const state = this.read()
+    const index = state.admittedDispatching.findIndex((candidate) => candidate.admissionId === admissionId)
+    if (index < 0) return
+    const [work] = state.admittedDispatching.splice(index, 1)
+    state.admittedSettled.push(work!)
+    state.admittedSettled = state.admittedSettled.slice(-this.maxIndeterminateReceipts)
+    this.write(state)
+  }
+
+  quarantineStrandedAdmittedWork(): TelegramAdmittedWork[] {
+    const state = this.read()
+    if (state.admittedDispatching.length === 0) return []
+    const timestamp = this.timestamp()
+    const stranded = state.admittedDispatching.map((work) => ({ ...work, quarantinedAt: timestamp }))
+    state.admittedDispatching = []
+    state.admittedIndeterminate = [...state.admittedIndeterminate, ...stranded]
+      .filter((work) => work.quarantinedAt >= timestamp - this.indeterminateRetentionMs)
+      .sort((left, right) => left.quarantinedAt - right.quarantinedAt || left.admissionId.localeCompare(right.admissionId))
+      .slice(-this.maxIndeterminateReceipts)
+    this.write(state)
+    return stranded.map(({ quarantinedAt: _quarantinedAt, ...work }) => work)
+  }
+
+  admittedWorkState(admissionId: string): "pending" | "dispatching" | "settled" | "indeterminate" | null {
+    if (!TELEGRAM_ADMISSION_ID.test(admissionId)) throw new Error("Telegram admission id is invalid")
+    const state = this.read()
+    if (state.admittedPending.some((work) => work.admissionId === admissionId)) return "pending"
+    if (state.admittedDispatching.some((work) => work.admissionId === admissionId)) return "dispatching"
+    if (state.admittedSettled.some((work) => work.admissionId === admissionId)) return "settled"
+    if (state.admittedIndeterminate.some((work) => work.admissionId === admissionId)) return "indeterminate"
+    return null
+  }
+
+  private validAdmittedWork(work: TelegramAdmittedWork): boolean {
+    return Boolean(work) && typeof work === "object" && !Array.isArray(work)
+      && Object.keys(work).sort().join(",") === "admissionId,eventId,friendId,reference,sessionKey"
+      && TELEGRAM_ADMISSION_ID.test(work.admissionId)
+      && boundedTelegramWorkText(work.friendId, 512)
+      && boundedTelegramWorkText(work.sessionKey, 1_024)
+      && TELEGRAM_SESSION_EVENT_ID.test(work.eventId)
+      && work.reference === `telegram-admission:${work.admissionId}`
+  }
 }
 
 export interface TelegramLongPoll {
@@ -405,9 +589,11 @@ export interface TelegramLongPollOptions {
   api: TelegramBotApi
   expectedUserId: string
   expectedChatId: string
+  botId?: string
   offsetStore: TelegramOffsetStore
   inboxStore?: TelegramUpdateInboxStore
   onMessage: (message: TelegramInboundMessage) => Promise<void>
+  onUnknownMessage?: (message: TelegramUnknownInboundMessage) => Promise<void>
   onUpdate?: (update: TelegramUpdate) => Promise<boolean>
   acceptanceEventMeta?: (update?: TelegramUpdate, distinctAccount?: boolean) => Record<string, unknown>
   onBeforeDispatch?: () => void
@@ -430,7 +616,37 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
     const userId = message?.from ? String(message.from.id) : ""
     const chatId = message ? String(message.chat.id) : ""
     if (!message || message.chat.type !== "private" || userId !== options.expectedUserId || chatId !== options.expectedChatId || typeof message.text !== "string") return null
-    return { updateId: update.update_id, messageId: String(message.message_id), userId, chatId, text: message.text }
+    return {
+      updateId: update.update_id,
+      messageId: String(message.message_id),
+      userId,
+      chatId,
+      text: message.text,
+      ...(Number.isSafeInteger(message.reply_to_message?.message_id) && message.reply_to_message!.message_id > 0
+        ? { replyToMessageId: String(message.reply_to_message!.message_id) }
+        : {}),
+    }
+  }
+
+  const unknownMessage = (update: TelegramUpdate): TelegramUnknownInboundMessage | null => {
+    const message = update.message
+    if (!options.onUnknownMessage || !options.botId || !message?.from || message.chat.type !== "private") return null
+    const userId = String(message.from.id)
+    const chatId = String(message.chat.id)
+    if (userId === options.expectedUserId && chatId === options.expectedChatId) return null
+    const displayLabel = [message.from.first_name, message.from.last_name].filter(Boolean).join(" ")
+      || (message.from.username ? `@${message.from.username}` : `Telegram user ${userId}`)
+    return {
+      updateId: update.update_id,
+      messageId: message.message_id,
+      botId: options.botId,
+      userId,
+      chatId,
+      text: message.text ?? message.caption ?? "",
+      displayLabel,
+      hasAttachments: Boolean(message.document || message.photo?.length || message.audio || message.video
+        || message.voice || message.animation || message.sticker),
+    }
   }
 
   const authorizedCallback = (update: TelegramUpdate): boolean => {
@@ -441,11 +657,18 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
   }
 
   const dispatch = async (update: TelegramUpdate): Promise<void> => {
-    const handled = await options.onUpdate?.(update) ?? false
+    const handled = !update.callback_query || authorizedCallback(update)
+      ? await options.onUpdate?.(update) ?? false
+      : false
     if (handled) return
     const message = authorizedMessage(update)
     if (message) {
       await options.onMessage(message)
+      return
+    }
+    const stranger = unknownMessage(update)
+    if (stranger) {
+      await options.onUnknownMessage!(stranger)
       return
     }
     const distinctAccount = Boolean(update.message?.from && String(update.message.from.id) !== options.expectedUserId)
@@ -488,7 +711,7 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
       if (!update || !Number.isSafeInteger(update.update_id) || update.update_id < nextUpdateId) continue
       options.onBeforeDispatch?.()
       const next = update.update_id + 1
-      const requiresDurableDispatch = Boolean(authorizedCallback(update) || authorizedMessage(update))
+      const requiresDurableDispatch = Boolean(authorizedCallback(update) || authorizedMessage(update) || unknownMessage(update))
       const newlyCaptured = requiresDurableDispatch ? (options.inboxStore?.capture(update) ?? true) : true
       if (newlyCaptured) {
         if (requiresDurableDispatch && options.inboxStore && !options.inboxStore.claim(update)) {
@@ -738,6 +961,12 @@ export interface TelegramApprovalTransport {
 
 export interface TelegramApprovalTransportOptions {
   api: TelegramBotApi
+  effects: {
+    sendText(input: { idempotencyKey: string; chatId: string; text: string; authorClass: "butler" | "control" | "system_failsafe" }): Promise<number[]>
+    sendCard(input: { idempotencyKey: string; chatId: string; text: string; buttons: Array<Array<{ text: string; callbackData: string }>> }): Promise<number>
+    edit(input: { idempotencyKey: string; chatId: string; messageId: number; text: string }): Promise<void>
+    acknowledge(input: { idempotencyKey: string; callbackQueryId: string; text?: string; showAlert?: boolean }): Promise<void>
+  }
   expectedUserId: string
   expectedChatId: string
   pendingStore: TelegramPendingApprovalStore
@@ -1045,28 +1274,12 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
   const editTerminal = async (pending: TelegramPendingApproval, terminalText: string, expiryObservedAt?: number): Promise<number> => {
     if (pending.messageId === null) return now()
     const terminalEditStartedAt = now()
-    const base = {
-      chat_id: options.expectedChatId,
-      message_id: Number(pending.messageId),
-      reply_markup: { inline_keyboard: [] as never[] },
-    }
-    const editSignal = AbortSignal.timeout(TELEGRAM_APPROVAL_TERMINAL_EDIT_TIMEOUT_MS)
     try {
       effectBarrier()
-      await options.api.request("editMessageText", { ...base, text: escapeTelegramHtml(terminalText), parse_mode: "HTML" }, editSignal)
+      await options.effects.edit({ idempotencyKey: `approval:${pending.approvalId}:edit:${createHash("sha256").update(terminalText).digest("hex")}`, chatId: options.expectedChatId, messageId: Number(pending.messageId), text: terminalText })
     } catch (error) {
       const alreadyTerminal = error instanceof TelegramApiError && error.status === 400 && /message is not modified/i.test(error.message)
-      if (!alreadyTerminal) {
-        if (!(error instanceof TelegramApiError) || error.status !== 400) throw error
-        try {
-          effectBarrier()
-          await options.api.request("editMessageText", { ...base, text: terminalText }, editSignal)
-        } catch (fallbackError) {
-          if (!(fallbackError instanceof TelegramApiError) || fallbackError.status !== 400 || !/message is not modified/i.test(fallbackError.message)) {
-            throw fallbackError
-          }
-        }
-      }
+      if (!alreadyTerminal) throw error
     }
     const terminalizedAt = now()
     if (pending.acceptanceBinding) emitAcceptanceEvidence("telegram.approval_prompt_terminalized", pending, { ...(expiryObservedAt === undefined ? {} : { expiryDeadlineAt: pending.expiresAt, expiryObservedAt }), terminalEditStartedAt, terminalizedAt, buttonsRemoved: true })
@@ -1085,11 +1298,11 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
   const acknowledge = async (callbackQueryId: string, invalid: boolean): Promise<"acknowledged" | "rejected_as_stale"> => {
     try {
       effectBarrier()
-      await options.api.request("answerCallbackQuery", invalid ? {
-        callback_query_id: callbackQueryId,
-        text: "This approval is no longer valid.",
-        show_alert: true,
-      } : { callback_query_id: callbackQueryId })
+      await options.effects.acknowledge({
+        idempotencyKey: `approval-callback:${createHash("sha256").update(callbackQueryId).digest("hex")}`,
+        callbackQueryId,
+        ...(invalid ? { text: "This approval is no longer valid.", showAlert: true } : {}),
+      })
       return "acknowledged"
     } catch (error) {
       const stale = error instanceof TelegramApiError
@@ -1232,16 +1445,6 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
       if (pendingByCallback.has(approveCallbackData) || pendingByCallback.has(denyCallbackData)) {
         throw new Error("Telegram approval callback handle collision")
       }
-      const replyMarkup = { inline_keyboard: [[
-        { text: "Approve", callback_data: approveCallbackData },
-        { text: "Deny", callback_data: denyCallbackData },
-      ]] }
-      const htmlBody = {
-        chat_id: options.expectedChatId,
-        text: escapeTelegramHtml(input.prompt),
-        parse_mode: "HTML",
-        reply_markup: replyMarkup,
-      }
       const pending: TelegramPendingApproval = {
         approvalId: input.approvalId,
         decisionToken: input.decisionToken,
@@ -1268,24 +1471,15 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
         throw error
       }
       try {
-        let result: unknown
-        try {
-          effectBarrier()
-          result = await options.api.request("sendMessage", htmlBody)
-        } catch (error) {
-          if (!(error instanceof TelegramApiError) || error.status !== 400) throw error
-          effectBarrier()
-          result = await options.api.request("sendMessage", {
-            chat_id: options.expectedChatId,
-            text: input.prompt,
-            reply_markup: replyMarkup,
-          })
-        }
-        if (!result || typeof result !== "object" || Array.isArray(result) || !("message_id" in result)
-          || typeof result.message_id !== "number" || !Number.isSafeInteger(result.message_id) || result.message_id <= 0) {
-          throw new Error("Telegram sendMessage response did not include a canonical message_id")
-        }
-        pending.messageId = String(result.message_id)
+        effectBarrier()
+        const messageId = await options.effects.sendCard({
+          idempotencyKey: `approval:${input.approvalId}:prompt`,
+          chatId: options.expectedChatId,
+          text: input.prompt,
+          buttons: [[{ text: "Approve", callbackData: approveCallbackData }, { text: "Deny", callbackData: denyCallbackData }]],
+        })
+        if (!Number.isSafeInteger(messageId) || messageId <= 0) throw new Error("Telegram sendMessage response did not include a canonical message_id")
+        pending.messageId = String(messageId)
         pending.deliveryState = "bound"
         if (input.acceptanceBinding) {
           const boundAt = now()

@@ -3,7 +3,7 @@ import {
   getContextConfig,
 } from "./config";
 import { loadAgentConfig } from "./identity";
-import { approvalPolicyForToolName, execTool, summarizeArgs, buildToolResultSummary, settleTool, observeTool, ponderTool, restTool, speakTool, getToolsForChannel, riskProfileForToolName, resolveToolDefinition } from "../repertoire/tools";
+import { classifyApprovalForInvocation, execTool, summarizeArgs, buildToolResultSummary, settleTool, observeTool, ponderTool, restTool, speakTool, getToolsForChannel, riskProfileForToolName, resolveToolDefinition } from "../repertoire/tools";
 import type { HabitSessionToolContext, ToolContext, ToolRiskProfile } from "../repertoire/tools-base";
 import { digestJson, validateAdvertisedToolArguments } from "../repertoire/tool-arguments";
 import type { ValidatedToolArguments } from "../repertoire/tool-arguments";
@@ -1331,6 +1331,9 @@ export async function runAgent(
     try {
       const buildSystemOptions = {
         ...options,
+        relationshipContextScopes: options?.toolContext?.relationshipAuthorization?.authorizedContextScopes,
+        relationshipProfileId: options?.toolContext?.relationshipAuthorization?.profileId,
+        relationshipToolNames: options?.toolContext?.relationshipAuthorization?.advertisedToolNames,
         orientationFrame: turnOrientationFrame,
         resumePriorWork: options?.resumePriorWork === true,
         providerCapabilities: providerRuntime.capabilities,
@@ -1479,8 +1482,12 @@ export async function runAgent(
       options?.mcpManager,
       providerRuntime.model,
     );
+  const relationshipToolNames = options?.toolContext?.relationshipAuthorization?.advertisedToolNames
+  const relationshipScopedTools = relationshipToolNames
+    ? unboundBaseTools.filter((tool) => relationshipToolNames.includes(tool.function.name))
+    : unboundBaseTools
   const baseTools = bindCurrentIngressEvidenceLocator(
-    unboundBaseTools,
+    relationshipScopedTools,
     options?.toolContext?.currentIngressEvidence,
   )
   // Augment tool context with reasoning effort controls from provider
@@ -1528,7 +1535,7 @@ export async function runAgent(
     const filteredBaseTools = isPrivateRuntimeChannel
       ? baseTools.filter((t) => privateRuntimeHabitCanSendMessage || t.function.name !== "send_message")
       : baseTools;
-    const ordinaryActiveTools = [
+    const unscopedOrdinaryActiveTools = [
         ...filteredBaseTools,
         ...(augmentedToolContext?.noSend === true ? [] : [ponderTool]),
         ...(isPrivateRuntimeChannel && privateRuntimeHabitCanSurface ? [surfaceToolDef] : []),
@@ -1537,6 +1544,9 @@ export async function runAgent(
         ...(!isPrivateRuntimeChannel ? [settleTool] : []),
         ...(isChatStyleChannel(channel ?? "") ? [speakTool] : []),
       ];
+    const ordinaryActiveTools = relationshipToolNames
+      ? unscopedOrdinaryActiveTools.filter((tool) => relationshipToolNames.includes(tool.function.name))
+      : unscopedOrdinaryActiveTools
     const activeTools = options?.toolProfile === "sanctuary-health-private"
       ? (() => {
           const sendTools = baseTools.filter((tool) => tool.function.name === "send_message")
@@ -2188,10 +2198,13 @@ export async function runAgent(
           continue;
         }
 
-        const approvalCalls = options?.approvalCoordinator ? validCalls.map((entry) => ({
-          ...entry,
-          policy: approvalPolicyForToolName(entry.call.name, entry.validated.arguments),
-        })) : []
+        const approvalCalls = await Promise.all(validCalls.map(async (entry) => {
+          const classification = await classifyApprovalForInvocation(entry.call.name, entry.validated.arguments, augmentedToolContext)
+          return {
+            ...entry,
+            ...classification,
+          }
+        }))
         const protectedCall = approvalCalls.find((entry) => entry.policy.kind === "required")
         if (protectedCall && result.toolCalls.length !== 1) {
           streamCallbackBuffer?.discard()
@@ -2211,6 +2224,21 @@ export async function runAgent(
           continue
         }
         if (protectedCall && protectedCall.policy.kind === "required") {
+          if (!options?.approvalCoordinator) {
+            streamCallbackBuffer?.discard()
+            pushGenerated(msg)
+            const rejection = "rejected: this protected tool requires approval, but the approval coordinator is unavailable; the handler was not invoked."
+            pushGenerated({ role: "tool", tool_call_id: protectedCall.call.id, content: rejection })
+            providerRuntime.appendToolOutput(protectedCall.call.id, rejection)
+            emitNervesEvent({
+              level: "warn",
+              component: "engine",
+              event: "engine.approval_coordinator_unavailable",
+              message: "protected tool failed closed before handler execution",
+              meta: { toolName: protectedCall.call.name, toolCallId: protectedCall.call.id },
+            })
+            continue
+          }
           streamCallbackBuffer?.discard()
           pushGenerated(msg)
           const toolDigest = digestJson({
@@ -2223,7 +2251,7 @@ export async function runAgent(
             actionClass: protectedCall.policy.actionClass,
             classification: "required",
           })
-          const committed = await options!.approvalCoordinator!.propose({
+          const committed = await options.approvalCoordinator.propose({
             toolCall: structuredClone(msg.tool_calls![0]!),
             arguments: structuredClone(protectedCall.validated.arguments),
             preCallMessages,
@@ -2532,7 +2560,9 @@ export async function runAgent(
           let success: boolean;
           try {
             const execToolFn = options?.execTool ?? execTool;
-            toolResult = await execToolFn(tc.name, args, augmentedToolContext);
+            const routineActionSelection = approvalCalls.find((entry) => entry.call.id === tc.id)?.routineActionSelection
+            const executionToolContext = routineActionSelection && augmentedToolContext ? { ...augmentedToolContext, routineActionSelection } : augmentedToolContext
+            toolResult = await execToolFn(tc.name, args, executionToolContext);
             success = true;
           } catch (e) {
             toolResult = `error: ${e}`;
