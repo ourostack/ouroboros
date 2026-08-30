@@ -11,6 +11,7 @@ import {
   fulfillObligation,
   findPendingObligationForOrigin,
   advanceObligation,
+  markObligationReturnReady,
 } from "../../arc/obligations"
 import { expectCappedAgentContent, makeOversizedAgentContent } from "../helpers/content-cap"
 
@@ -302,6 +303,24 @@ describe("obligations store", () => {
       const all = readObligations(tmpDir)
       expect(all).toHaveLength(1)
       expect(all[0].status).toBe("pending")
+    })
+  })
+
+  describe("markObligationReturnReady", () => {
+    it("requires one open obligation and records exact return evidence", () => {
+      expect(() => markObligationReturnReady(tmpDir, "missing", "effect:1")).toThrow("Open obligation not found")
+
+      const closed = createObligation(tmpDir, { origin: sampleOrigin, content: "already returned" })
+      fulfillObligation(tmpDir, closed.id)
+      expect(() => markObligationReturnReady(tmpDir, closed.id, "effect:1")).toThrow("Open obligation not found")
+
+      const open = createObligation(tmpDir, { origin: sampleOrigin, content: "return this" })
+      expect(() => markObligationReturnReady(tmpDir, open.id, "   ")).toThrow("return evidence is required")
+      expect(markObligationReturnReady(tmpDir, open.id, "effect:1")).toMatchObject({
+        id: open.id,
+        returnEvidenceRef: "effect:1",
+        returnReadyAt: expect.any(String),
+      })
     })
   })
 

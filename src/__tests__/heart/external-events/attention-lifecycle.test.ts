@@ -498,6 +498,30 @@ describe("external event attention lifecycle", () => {
     ]) expect(() => commitExternalEventDisposition(first.recordPath, { owner: "worker", expectedVersion: claim.version, expectedGeneration: 1, disposition: disposition as any })).toThrow()
   })
 
+  it.each([
+    ["current", { kind: "current", key: "test", version: 1 }, [], []],
+    ["none", { kind: "none" }, [], []],
+  ] as const)("accepts a valid %s steward disposition with bounded receipt lists", (_label, stewardPolicy, actionRefs, verificationRefs) => {
+    const first = recordExternalEvent({ agent: "sanctuary", source: "guard", eventType: "health", eventId: `valid-${_label}` }, { root: root() })
+    const claim = claimExternalEvent(first.recordPath, { owner: "worker", expectedVersion: first.version, expectedGeneration: 1 })
+    expect(commitExternalEventDisposition(first.recordPath, {
+      owner: "worker", expectedVersion: claim.version, expectedGeneration: 1,
+      disposition: { classifiedRevision: first.observationRevision, classification: "expected", stewardPolicy, decision: "silent", reason: "quiet", nextWake: { kind: "on_change" }, careId: null, awaitId: null, actionRefs: [...actionRefs], verificationRefs: [...verificationRefs] },
+    })).toMatchObject({ executionState: "handled" })
+  })
+
+  it.each([
+    ["non-integer policy", { stewardPolicy: { kind: "current", key: "test", version: Number.NaN } }],
+    ["zero policy", { stewardPolicy: { kind: "current", key: "test", version: 0 } }],
+    ["too many action receipts", { actionRefs: Array.from({ length: 33 }, () => "action") }],
+    ["too many verification receipts", { verificationRefs: Array.from({ length: 33 }, () => "verification") }],
+  ] as const)("rejects %s in an independently claimed event", (_label, override) => {
+    const first = recordExternalEvent({ agent: "sanctuary", source: "guard", eventType: "health", eventId: `invalid-${_label}` }, { root: root() })
+    const claim = claimExternalEvent(first.recordPath, { owner: "worker", expectedVersion: first.version, expectedGeneration: 1 })
+    const base = { classifiedRevision: first.observationRevision, classification: "expected" as const, stewardPolicy: { kind: "current" as const, key: "test", version: 1 }, decision: "silent" as const, reason: "quiet", nextWake: { kind: "on_change" as const }, careId: null, awaitId: null, actionRefs: [], verificationRefs: [] }
+    expect(() => commitExternalEventDisposition(first.recordPath, { owner: "worker", expectedVersion: claim.version, expectedGeneration: 1, disposition: { ...base, ...override } as any })).toThrow()
+  })
+
   it("preserves compacted retention while fencing a changed running observation", () => {
     const eventRoot = root()
     const first = recordExternalEvent({ agent: "sanctuary", source: "guard", eventType: "health.observed", eventId: "retained-running", observationRevision: "rev-1" }, { root: eventRoot })

@@ -242,6 +242,16 @@ describe("query_active_work tool", () => {
     vi.resetModules()
     getBoardMock.mockReset()
     getBoardMock.mockImplementation(() => makeEmptyBoard())
+    listTelegramEffectsMock.mockReset()
+    listTelegramEffectsMock.mockReturnValue([{
+      id: "a".repeat(64), authorClass: "butler", target: { kind: "approved_relationship", friendId: "ari", sessionKey: "telegram:8541786263:42" },
+      parts: [{ state: "session_recorded" }], updatedAt: "2026-08-29T00:00:00.000Z",
+    }])
+    listTelegramAdmissionsMock.mockReset()
+    listTelegramAdmissionsMock.mockReturnValue([{
+      id: "b".repeat(20), status: "pending", displayCode: "PINE-4821",
+      createdAt: Date.parse("2026-08-29T00:00:00.000Z"), expiresAt: Date.parse("2026-08-30T00:00:00.000Z"),
+    }])
     listSessionActivityMock.mockReset()
     listSessionActivityMock.mockImplementation(() => [
       {
@@ -466,6 +476,52 @@ describe("query_active_work tool", () => {
       readdirSync.mockReset()
       readFileSync.mockReset()
     }
+  })
+
+  it("derives every durable Telegram effect state and preserves empty primitive read failures", async () => {
+    const fs = await import("fs")
+    const existsSync = vi.mocked(fs.existsSync)
+    existsSync.mockImplementation((candidate) => {
+      const filePath = String(candidate)
+      if (filePath.endsWith("/awaiting")) throw ""
+      return filePath.endsWith("/state/telegram/effects") || filePath.endsWith("/state/senses/telegram/admissions")
+    })
+    listTelegramEffectsMock.mockReturnValue([
+      { id: "1", authorClass: "butler", target: { kind: "approved_relationship" }, parts: [{ state: "indeterminate" }], updatedAt: "1" },
+      { id: "2", authorClass: "butler", target: { kind: "approved_relationship" }, parts: [{ state: "attempting" }], updatedAt: "2" },
+      { id: "3", authorClass: "butler", target: { kind: "approved_relationship" }, parts: [{ state: "session_recorded" }], updatedAt: "3" },
+      { id: "4", authorClass: "butler", target: { kind: "approved_relationship" }, parts: [{ state: "accepted" }], updatedAt: "4" },
+      { id: "5", authorClass: "butler", target: { kind: "approved_relationship" }, parts: [{ state: "prepared" }], updatedAt: "5" },
+    ] as any)
+
+    const { readButlerOperationalVisibility } = await import("../../repertoire/tools-session")
+    const status = readButlerOperationalVisibility("/mock/agent-root", "sanctuary")
+    expect(status.telegramEffects.map((effect) => effect.state)).toEqual(["indeterminate", "attempting", "session_recorded", "accepted", "prepared"])
+    expect(status.sourceErrors.awaits).toBe("unknown read failure")
+  })
+
+  it("renders unavailable health plus bounded policy and Telegram ledgers", async () => {
+    const { formatButlerOperationalVisibility } = await import("../../repertoire/tools-session")
+    const desiredStates = Object.fromEntries(Array.from({ length: 11 }, (_, index) => [`desired-${index}`, {
+      value: `value-${index}`, provenance: "owner", source: "telegram", version: 1, expiresAt: "2099-01-01T00:00:00.000Z",
+    }]))
+    const routineActionGrants = Object.fromEntries(Array.from({ length: 11 }, (_, index) => [`grant-${index}`, {
+      action: "restart", targets: ["books"], maxCount: 1, windowMs: 60_000, verificationRequired: false, version: 1, expiresAt: "2099-01-01T00:00:00.000Z",
+    }]))
+    const telegramEffects = Array.from({ length: 21 }, (_, index) => ({ id: `effect-${index}`, authorClass: "butler", targetKind: "approved_relationship", state: "prepared" as const, updatedAt: String(index) }))
+    const telegramAdmissions = Array.from({ length: 21 }, (_, index) => ({ id: `admission-${index}`, status: "pending" as const, displayCode: "PINE-4821", createdAt: index, expiresAt: 1_800_000_000_000 }))
+    const event = { recordPath: "/event", corrupt: false, agent: "sanctuary", source: "guard", eventId: "quiet", eventType: "health", observationRevision: "r1", transition: "changed" as const, executionState: "handled" as const, generation: 1, attemptCount: 1, updatedAt: "2026-08-29T00:00:00.000Z", classification: null, decision: null, reason: null, stewardPolicy: { kind: "none" as const }, nextWake: null, careId: null, awaitId: null, lastError: null, nextAttemptAt: null, claimOwner: null, claimExpiresAt: null, dispatchEnabled: true, undispatched: false, retentionSummary: null }
+    const result = formatButlerOperationalVisibility({
+      agentName: "sanctuary", daemonHealth: null, senseStatusLines: [],
+      stewardPolicy: { schemaVersion: 1, version: 1, desiredStates, routineActionGrants, updatedAt: "2026-08-29T00:00:00.000Z" } as any,
+      awaits: [], telegramEffects, telegramAdmissions, externalEvents: [event], sourceErrors: {},
+    }, { limit: 20 })
+    expect(result).toContain("daemon: unavailable")
+    expect(result).toContain("butler: unavailable")
+    expect(result).toContain("no verification")
+    expect(result).toContain("2 more policy")
+    expect(result).toContain("1 more telegram")
+    expect(result).toContain("not yet recorded")
   })
 
   it("renders bounded await and event detail including wake, return, care, and unavailable sources", async () => {
