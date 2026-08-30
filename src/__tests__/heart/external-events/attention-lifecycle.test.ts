@@ -15,6 +15,7 @@ import {
   reconcileExternalEvent,
   recordExternalEvent,
   renewExternalEventClaim,
+  externalEventRecordPath,
 } from "../../../heart/external-events/router"
 
 const roots: string[] = []
@@ -200,6 +201,36 @@ describe("external event attention lifecycle", () => {
     expect(statuses.find((row) => row.recordPath === newest.recordPath)?.retentionSummary).toMatchObject({ compactedHandledCount: 1 })
   })
 
+  it("merges prior retention bounds and fails closed when capacity contains no handled receipt", () => {
+    const eventRoot = root()
+    const sourceDir = path.join(eventRoot, "sanctuary", "guard")
+    fs.mkdirSync(sourceDir, { recursive: true })
+    const template = recordExternalEvent({ agent: "sanctuary", source: "guard", eventType: "health.observed", eventId: "template" }, { root: eventRoot })
+    fs.unlinkSync(template.recordPath)
+    for (let index = 0; index < 513; index += 1) {
+      const recordPath = path.join(sourceDir, `handled-${index}.json`)
+      fs.writeFileSync(recordPath, JSON.stringify({
+        ...template,
+        eventId: `handled-${index}`,
+        recordPath,
+        executionState: "handled",
+        updatedAt: new Date(index * 1_000).toISOString(),
+        ...(index === 0 ? { retentionSummary: { compactedHandledCount: 2, oldestCompactedAt: new Date(-1_000).toISOString(), newestCompactedAt: new Date(99_999).toISOString(), digest: "a".repeat(64) } } : {}),
+      }))
+    }
+    const newest = recordExternalEvent({ agent: "sanctuary", source: "guard", eventType: "health.observed", eventId: "new" }, { root: eventRoot })
+    expect(newest.retentionSummary).toMatchObject({ compactedHandledCount: 4, oldestCompactedAt: new Date(-1_000).toISOString(), newestCompactedAt: new Date(99_999).toISOString() })
+
+    const blockedRoot = root()
+    const blockedDir = path.join(blockedRoot, "sanctuary", "guard")
+    fs.mkdirSync(blockedDir, { recursive: true })
+    for (let index = 0; index < 512; index += 1) {
+      const recordPath = path.join(blockedDir, `active-${index}.json`)
+      fs.writeFileSync(recordPath, JSON.stringify({ ...template, eventId: `active-${index}`, recordPath, executionState: "received" }))
+    }
+    expect(() => recordExternalEvent({ agent: "sanctuary", source: "guard", eventType: "health.observed", eventId: "blocked" }, { root: blockedRoot })).toThrow("capacity is exhausted")
+  })
+
   it("bounds distinct sources per agent before creating another source directory", () => {
     const eventRoot = root()
     const agentDir = path.join(eventRoot, "sanctuary")
@@ -343,6 +374,7 @@ describe("external event attention lifecycle", () => {
     const eventRoot = root()
     const first = recordExternalEvent({ agent: "sanctuary", source: "guard", eventType: "health.observed", eventId: "defaults", observationRevision: "rev-1" }, { root: eventRoot })
     claimExternalEvent(first.recordPath, { owner: "lease", expectedVersion: first.version, expectedGeneration: 1 })
+    expect(recordExternalEvent({ agent: "sanctuary", source: "guard", eventType: "health.observed", eventId: "defaults", observationRevision: "rev-1" }, { root: eventRoot })).toMatchObject({ executionState: "running", shouldWake: false })
     const pending = recordExternalEvent({ agent: "sanctuary", source: "guard", eventType: "health.observed", eventId: "defaults", observationRevision: "rev-2" }, { root: eventRoot })
     expect(pending.pendingObservation).toMatchObject({ summary: null, evidence: [], payloadPath: null, priority: "high", transition: "changed" })
   })
@@ -454,6 +486,7 @@ describe("external event attention lifecycle", () => {
     const claim = claimExternalEvent(first.recordPath, { owner: "worker", expectedVersion: first.version, expectedGeneration: 1 })
     expect(() => renewExternalEventClaim(first.recordPath, { owner: "worker", expectedGeneration: 2 })).toThrow("generation")
     expect(() => renewExternalEventClaim(first.recordPath, { owner: "worker", expectedGeneration: 1, leaseMs: 0 })).toThrow("renewal")
+    expect(renewExternalEventClaim(first.recordPath, { owner: "worker", expectedGeneration: 1 })).toMatchObject({ claimOwner: "worker", claimExpiresAt: expect.any(String) })
     const base = { classifiedRevision: first.observationRevision, classification: "expected" as const, stewardPolicy: { kind: "current" as const, key: "test", version: 1 }, decision: "silent" as const, reason: "test", nextWake: { kind: "on_change" as const }, careId: null, awaitId: null, actionRefs: [], verificationRefs: [] }
     for (const disposition of [
       { ...base, stewardPolicy: { kind: "current", key: "test", version: 0 } },
@@ -479,6 +512,14 @@ describe("external event attention lifecycle", () => {
     expect(() => bindPrivilegedFailsafeArtifact(recordPath, { artifactId: "b".repeat(64), verificationRef: "verified" })).toThrow("binding changed")
     const ordinary = recordExternalEvent({ agent: "sanctuary", source: "guard", eventType: "health", eventId: "ordinary" }, { root: eventRoot })
     expect(() => bindPrivilegedFailsafeArtifact(ordinary.recordPath, { artifactId: "a".repeat(64), verificationRef: "verified" })).toThrow("privileged")
+
+    const preseededPath = externalEventRecordPath(eventRoot, { agent: "sanctuary", source: "sanctuary-usenet", eventId: "preseeded" })
+    fs.writeFileSync(preseededPath, JSON.stringify({ ...privileged, eventId: "preseeded", recordPath: preseededPath, evidence: [`system failsafe artifact: ${"c".repeat(64)}`], privilegedFailsafe: undefined }))
+    expect(bindPrivilegedFailsafeArtifact(preseededPath, { artifactId: "c".repeat(64), verificationRef: "checked" }).evidence).toContain("protective state verification: checked")
+
+    const fullPath = externalEventRecordPath(eventRoot, { agent: "sanctuary", source: "sanctuary-usenet", eventId: "full" })
+    fs.writeFileSync(fullPath, JSON.stringify({ ...privileged, eventId: "full", recordPath: fullPath, evidence: Array.from({ length: 32 }, (_, index) => `evidence-${index}`), privilegedFailsafe: undefined }))
+    expect(() => bindPrivilegedFailsafeArtifact(fullPath, { artifactId: "d".repeat(64), verificationRef: "checked" })).toThrow("evidence exceeds")
   })
 
   it("advances every exact Await-bound status and ignores corrupt or unrelated rows", () => {

@@ -26,6 +26,9 @@ const runtimeMocks = vi.hoisted(() => {
       state.restartOptions = options
       return restart
     }),
+    consumeRoutineActionGrant: vi.fn(() => ({ state: "reserved" })),
+    transitionRoutineActionReceipt: vi.fn(() => ({ state: "verified" })),
+    recoverRoutineActionReceipts: vi.fn(async () => []),
     emitNervesEvent: vi.fn(),
     forceUnexpectedGrounding: false,
   }
@@ -39,6 +42,11 @@ vi.mock("../../repertoire/unraid-client", () => ({ UnraidClient: runtimeMocks.un
 vi.mock("../../repertoire/tools-unraid", () => ({ createUnraidReadTools: runtimeMocks.createUnraidReadTools }))
 vi.mock("../../repertoire/unraid-restart", () => ({
   createApprovedUnraidRestartExecutor: runtimeMocks.createApprovedUnraidRestartExecutor,
+}))
+vi.mock("../../heart/steward-policy", () => ({
+  consumeRoutineActionGrant: runtimeMocks.consumeRoutineActionGrant,
+  transitionRoutineActionReceipt: runtimeMocks.transitionRoutineActionReceipt,
+  recoverRoutineActionReceipts: runtimeMocks.recoverRoutineActionReceipts,
 }))
 vi.mock("../../nerves/runtime", () => ({ emitNervesEvent: runtimeMocks.emitNervesEvent }))
 vi.mock("../../senses/sanctuary-grounding", async (importOriginal) => {
@@ -77,6 +85,9 @@ describe("Sanctuary runtime tool context", () => {
   beforeEach(() => {
     vi.clearAllMocks()
     runtimeMocks.state.restartOptions = undefined
+    runtimeMocks.consumeRoutineActionGrant.mockReset().mockReturnValue({ state: "reserved" })
+    runtimeMocks.transitionRoutineActionReceipt.mockReset().mockReturnValue({ state: "verified" })
+    runtimeMocks.recoverRoutineActionReceipts.mockReset().mockResolvedValue([])
     runtimeMocks.forceUnexpectedGrounding = false
     runtimeMocks.readMachineRuntimeCredentialConfig.mockReturnValue(configured())
     runtimeMocks.getAgentRoot.mockReturnValue(fs.mkdtempSync(path.join(os.tmpdir(), "ouro-sanctuary-runtime-")))
@@ -122,6 +133,10 @@ describe("Sanctuary runtime tool context", () => {
     runtimeMocks.restart.mockResolvedValueOnce({ ok: true, data: { container: { id: "Docker:a", name: "calibre-web" }, beforeState: "running", afterState: "running", observedRestart: true, degraded: false } })
     await expect(context.sanctuary!.restartContainer({ container: "calibre-web" })).resolves.toMatchObject({ ok: true })
     expect(runtimeMocks.restart).toHaveBeenCalledWith({ container: "calibre-web" })
+    const execution = { approval: { approvalId: "approval-1" } } as any
+    runtimeMocks.restart.mockResolvedValueOnce({ ok: true, data: { container: { id: "Docker:a", name: "calibre-web" } } })
+    await expect(context.sanctuary!.restartContainer({ container: "calibre-web" }, execution)).resolves.toMatchObject({ ok: true })
+    expect(runtimeMocks.restart).toHaveBeenLastCalledWith({ container: "calibre-web" }, execution)
 
     runtimeMocks.readMachineRuntimeCredentialConfig.mockReturnValue(configured({
       unraidWriteApiKey: " rotated-synthetic-write-key ",
@@ -135,6 +150,34 @@ describe("Sanctuary runtime tool context", () => {
     })
     const acceptanceScenarioHandleDigest = runtimeMocks.state.restartOptions?.acceptanceScenarioHandleDigest as () => string | undefined
     expect(acceptanceScenarioHandleDigest()).toBeUndefined()
+  })
+
+  it("routes routine-action reservation, transition, and recovery observations through the canonical policy seams", async () => {
+    const context = createSanctuaryToolContext("slugger")
+    const agentRoot = runtimeMocks.getAgentRoot()
+    const reserveRoutineAction = runtimeMocks.state.restartOptions?.reserveRoutineAction as (input: Record<string, unknown>) => unknown
+    const transitionRoutineAction = runtimeMocks.state.restartOptions?.transitionRoutineAction as (input: Record<string, unknown>) => unknown
+    expect(reserveRoutineAction({ key: "restart:books" })).toEqual({ state: "reserved" })
+    expect(transitionRoutineAction({ id: "receipt-1" })).toEqual({ state: "verified" })
+    expect(runtimeMocks.consumeRoutineActionGrant).toHaveBeenCalledWith(agentRoot, { key: "restart:books" })
+    expect(runtimeMocks.transitionRoutineActionReceipt).toHaveBeenCalledWith(agentRoot, { id: "receipt-1" })
+
+    const target = { id: "Docker:books", name: "books" }
+    const observe = async (containers: unknown) => {
+      runtimeMocks.readTools.listContainers.mockResolvedValueOnce(containers)
+      runtimeMocks.recoverRoutineActionReceipts.mockImplementationOnce(async (_root: string, options: any) => [await options.observeTarget(target)])
+      return context.sanctuary!.recoverRoutineActions!()
+    }
+    await expect(observe({ ok: false, error: { message: "inventory unavailable" } })).rejects.toThrow("inventory unavailable")
+    await expect(observe({ ok: true, data: { containers: [
+      { id: "Docker:other", name: "books", state: "running" },
+      { id: "Docker:books", name: "other", state: "running" },
+    ] } })).resolves.toEqual([{ ...target, state: "unknown" }])
+    await expect(observe({ ok: true, data: { containers: [
+      { ...target, state: "running" },
+      { ...target, state: "exited" },
+    ] } })).resolves.toEqual([{ ...target, state: "unknown" }])
+    await expect(observe({ ok: true, data: { containers: [{ ...target, state: "running" }] } })).resolves.toEqual([{ ...target, state: "running" }])
   })
 
   it("records a sanitized unknown category when a read rejects with a non-Error", async () => {

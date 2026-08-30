@@ -591,7 +591,17 @@ function recordExternalEventInternal(input: ExternalEventInput, options: RecordE
     const persistedRetention = retentionSummary ? retentionWithoutReplayManifest(retentionSummary) : undefined
     if (existing?.executionState === "running") {
       if (existing.observationRevision === revision && existing.observationDigest === digest) {
-        return privilegedNonce ? commitMutation(recordPath, { ...existing, ...(persistedRetention ? { retentionSummary: persistedRetention } : {}), privilegedReplayManifest: undefined, privilegedReplayNonces: undefined, privilegedIngressNonce: privilegedNonce, shouldWake: false }, now) : { ...existing, shouldWake: false }
+        if (privilegedNonce) {
+          return commitMutation(recordPath, {
+            ...existing,
+            ...(persistedRetention ? { retentionSummary: persistedRetention } : {}),
+            privilegedReplayManifest: undefined,
+            privilegedReplayNonces: undefined,
+            privilegedIngressNonce: privilegedNonce,
+            shouldWake: false,
+          }, now)
+        }
+        return { ...existing, shouldWake: false }
       }
       const pendingObservation = observationFromInput(input, now, digest, revision, "changed", protectiveAction)
       const updated = commitMutation(recordPath, { ...existing, ...(persistedRetention ? { retentionSummary: persistedRetention } : {}), privilegedReplayManifest: undefined, privilegedReplayNonces: undefined, privilegedIngressNonce: privilegedNonce, pendingObservation, ...(protectiveAction ? { pendingPrivilegedProtectiveAction: protectiveAction } : {}), shouldWake: false }, now)
@@ -667,7 +677,6 @@ function boundedIdentifier(value: unknown): value is string {
 }
 
 function parsePrivilegedEnvelope(raw: string, fileName: string, now: string): PrivilegedExternalEventEnvelope {
-  if (Buffer.byteLength(raw) > PRIVILEGED_SPOOL_MAX_BYTES) throw new Error("Privileged event envelope must be bounded")
   const parsed: unknown = JSON.parse(raw)
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Privileged event envelope is invalid")
   const value = parsed as Record<string, unknown>
@@ -1023,7 +1032,6 @@ function validateDisposition(disposition: ExternalEventDisposition): void {
   if (disposition.actionRefs.length > 32 || disposition.verificationRefs.length > 32) throw new Error("External event disposition references must be bounded")
   for (const ref of [...disposition.actionRefs, ...disposition.verificationRefs]) assertBoundedText(ref, "disposition reference", 512)
   if (disposition.nextWake.kind === "at") assertBoundedText(disposition.nextWake.at, "wake time", 64)
-  if (Buffer.byteLength(JSON.stringify(disposition)) > MAX_EVENT_RECORD_BYTES) throw new Error("External event disposition must be bounded")
 }
 
 export function commitExternalEventDisposition(recordPath: string, input: CasInput & { owner: string; disposition: ExternalEventDisposition }): ExternalEventRecord {

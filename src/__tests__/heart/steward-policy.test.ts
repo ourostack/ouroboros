@@ -316,6 +316,8 @@ describe("steward policy", () => {
     fs.writeFileSync(path.join(malformedRoot, "state", "policy", "steward.json"), "{}\n")
     expect(() => readStewardPolicy(malformedRoot)).toThrow("invalid")
     expect(inspectRoutineActionGrant(malformedRoot, { key: "restart", action: "unraid.container.restart", target: "books" })).toMatchObject({ allowed: false, reason: expect.stringContaining("invalid") })
+    vi.spyOn(JSON, "parse").mockImplementationOnce(() => { throw "unavailable" })
+    expect(inspectRoutineActionGrant(malformedRoot, { key: "restart", action: "unraid.container.restart", target: "books" })).toEqual({ allowed: false, reason: "routine action policy is unavailable" })
 
     const agentRoot = root()
     expect(() => updateStewardPolicy(agentRoot, {
