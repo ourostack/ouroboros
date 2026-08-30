@@ -6,8 +6,10 @@ import {
   authorizeRelationshipAccess,
   createRelationshipAuthorizationEvaluator,
   loadRelationshipCapabilityRegistry,
+  renderRelationshipPreferences,
   relationshipSubjectFromFriend,
   resolveProfileScopedRelationshipAuthorization,
+  withRelationshipPreference,
   type RelationshipCapabilityProfile,
 } from "../../repertoire/relationship-authorization"
 
@@ -28,6 +30,40 @@ const member = {
 }
 
 describe("relationship authorization", () => {
+  it("renders only current relationship preferences with bounded normalized values", () => {
+    expect(renderRelationshipPreferences({})).toEqual([])
+    const friend = {
+      relationshipPolicy: {
+        schemaVersion: 1 as const,
+        version: 4,
+        preferences: {
+          current: { value: `  prefers   quiet updates ${"x".repeat(600)}  `, provenance: "observed" as const, source: "telegram", version: 2 },
+          expiring: { value: "remind tomorrow", provenance: "stated" as const, source: "owner", version: 1, expiresAt: "2099-01-01T00:00:00.000Z" },
+          expired: { value: "old choice", provenance: "stated" as const, source: "owner", version: 1, expiresAt: "2000-01-01T00:00:00.000Z" },
+        },
+      },
+    }
+
+    const rendered = renderRelationshipPreferences(friend)
+
+    expect(rendered).toHaveLength(2)
+    expect(rendered[0]).toContain("category=current; value=prefers quiet updates")
+    expect(rendered[0]!.match(/; value=(.*); version=/u)?.[1]).toHaveLength(500)
+    expect(rendered[1]).toContain("; expires=2099-01-01T00:00:00.000Z")
+    expect(rendered.join("\n")).not.toContain("old choice")
+  })
+
+  it("versions new and revised relationship preferences without mutating the Friend", () => {
+    const base = { id: "ari", name: "Ari", externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: "", updatedAt: "", schemaVersion: 1 as const }
+    const first = withRelationshipPreference(base, { category: "alerts", value: "quiet", provenance: "stated", source: "telegram" })
+    const second = withRelationshipPreference(first, { category: "alerts", value: "only actionable", provenance: "observed", source: "telegram" })
+
+    expect(base.relationshipPolicy).toBeUndefined()
+    expect(first.relationshipPolicy).toMatchObject({ version: 1, preferences: { alerts: { value: "quiet", version: 1 } } })
+    expect(second.relationshipPolicy).toMatchObject({ version: 2, preferences: { alerts: { value: "only actionable", version: 2 } } })
+    expect(Date.parse(second.updatedAt)).not.toBeNaN()
+  })
+
   it("loads the one typed registry and fails closed on legacy or malformed profiles", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "relationship-registry-"))
     try {

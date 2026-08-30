@@ -22,9 +22,12 @@ vi.mock("../../heart/awaiting/await-alert", () => ({
 
 import {
   awaitingToolDefinitions,
+  cancelStaleAwait,
   cancelRelationshipFollowUps,
   hasActiveExternalEventAwait,
   hasActiveRelationshipFollowUp,
+  inspectExternalEventAwait,
+  inspectRelationshipFollowUp,
   setAwaitToolDeps,
   resetAwaitToolDeps,
 } from "../../repertoire/tools-awaiting"
@@ -725,6 +728,113 @@ describe("tools-awaiting", () => {
   })
 
   describe("relationship follow-up verification", () => {
+    const route = { friendId: "sibling", channel: "telegram", key: "telegram:777:888" }
+    const context = (requestId: string) => ({
+      currentSession: { ...route, sessionPath: "/tmp/session.json" },
+      relationshipAuthorization: { requestId, authorizedContextScopes: ["own_requests"], advertisedToolNames: ["await_condition", "resolve_await", "cancel_await"], authorizeTool: vi.fn() },
+    })
+
+    it("distinguishes missing, unbound, expired, and exact active follow-up authority", async () => {
+      expect(() => inspectRelationshipFollowUp(agentRoot, { ...route, requestId: "request", awaitName: "missing" })).toThrow(/could not be verified/u)
+
+      await fileAwaitDef.handler({ name: "unbound", condition: "c", cadence: "5m" }, undefined)
+      expect(inspectRelationshipFollowUp(agentRoot, { ...route, requestId: "request", awaitName: "unbound" })).toEqual({ active: false, reason: "request obligation is missing" })
+
+      const ctx = context("request-expiry")
+      await fileAwaitDef.handler({ name: "expires", condition: "c", cadence: "5m", max_age: "1m" }, ctx as any)
+      expect(inspectRelationshipFollowUp(agentRoot, { ...route, requestId: "request-expiry", awaitName: "expires", now: Date.now() + 120_000 })).toEqual({ active: false, reason: "request obligation await expired" })
+      expect(inspectRelationshipFollowUp(agentRoot, { ...route, requestId: "request-expiry", awaitName: "expires", allowElapsed: true, now: Date.now() + 120_000 })).toEqual({ active: true })
+
+      const missingObligation = context("request-obligation-missing")
+      await fileAwaitDef.handler({ name: "obligation_missing", condition: "c", cadence: "5m" }, missingObligation as any)
+      const pending = readVerifiedPendingObligations(agentRoot).find((candidate) => candidate.requestId === "request-obligation-missing")!
+      fs.unlinkSync(path.join(agentRoot, "arc", "obligations", `${pending.id}.json`))
+      expect(inspectRelationshipFollowUp(agentRoot, { ...route, requestId: "request-obligation-missing", awaitName: "obligation_missing" })).toEqual({ active: false, reason: "request obligation is missing" })
+
+      const missingCreatedAt = context("request-created-at")
+      await fileAwaitDef.handler({ name: "created_at_missing", condition: "c", cadence: "5m", max_age: "1m" }, missingCreatedAt as any)
+      const awaitPath = path.join(agentRoot, "awaiting", "created_at_missing.md")
+      fs.writeFileSync(awaitPath, fs.readFileSync(awaitPath, "utf8").replace(/^created_at:.*\n/mu, ""), "utf8")
+      expect(inspectRelationshipFollowUp(agentRoot, { ...route, requestId: "request-created-at", awaitName: "created_at_missing", now: Date.now() + 120_000 })).toEqual({ active: true })
+
+      const implicitNow = context("request-implicit-now")
+      await fileAwaitDef.handler({ name: "implicit_now", condition: "c", cadence: "5m", max_age: "1m" }, implicitNow as any)
+      const implicitPath = path.join(agentRoot, "awaiting", "implicit_now.md")
+      fs.writeFileSync(implicitPath, fs.readFileSync(implicitPath, "utf8").replace(/^created_at:.*$/mu, "created_at: 2000-01-01T00:00:00.000Z"), "utf8")
+      expect(inspectRelationshipFollowUp(agentRoot, { ...route, requestId: "request-implicit-now", awaitName: "implicit_now" })).toEqual({ active: false, reason: "request obligation await expired" })
+    })
+
+    it("scans pending obligations without a supplied await name and respects elapsed policy", async () => {
+      const ctx = context("request-scan")
+      await fileAwaitDef.handler({ name: "scan", condition: "c", cadence: "5m", max_age: "1m" }, ctx as any)
+      expect(hasActiveRelationshipFollowUp(agentRoot, { ...route, requestId: "request-scan", now: Date.now() + 120_000 })).toBe(false)
+      expect(hasActiveRelationshipFollowUp(agentRoot, { ...route, requestId: "request-scan", allowElapsed: true, now: Date.now() + 120_000 })).toBe(true)
+      expect(hasActiveRelationshipFollowUp(agentRoot, { ...route, requestId: "other" })).toBe(false)
+
+      const noExpiry = context("request-no-expiry")
+      await fileAwaitDef.handler({ name: "no_expiry", condition: "c", cadence: "5m" }, noExpiry as any)
+      expect(hasActiveRelationshipFollowUp(agentRoot, { ...route, requestId: "request-no-expiry", now: Date.now() + 120_000 })).toBe(true)
+
+      const implicitNow = context("request-scan-implicit-now")
+      await fileAwaitDef.handler({ name: "scan_implicit_now", condition: "c", cadence: "5m", max_age: "1m" }, implicitNow as any)
+      const implicitPath = path.join(agentRoot, "awaiting", "scan_implicit_now.md")
+      fs.writeFileSync(implicitPath, fs.readFileSync(implicitPath, "utf8").replace(/^created_at:.*$/mu, "created_at: 2000-01-01T00:00:00.000Z"), "utf8")
+      expect(hasActiveRelationshipFollowUp(agentRoot, { ...route, requestId: "request-scan-implicit-now" })).toBe(false)
+
+      let awaitNameReads = 0
+      const changingAwaitName = {
+        ...route,
+        requestId: "request-no-expiry",
+        get awaitName() { return ++awaitNameReads === 1 ? undefined : "no_expiry" },
+      }
+      expect(hasActiveRelationshipFollowUp(agentRoot, changingAwaitName)).toBe(true)
+    })
+
+    it("rejects stale-await cancellation when the named await cannot be archived", () => {
+      expect(() => cancelStaleAwait(agentRoot, "slugger", "missing", "stale")).toThrow(/could not be archived/u)
+    })
+
+    it("reports the requested await when an adversarial name changes its serialized identity", async () => {
+      await fileAwaitDef.handler({ name: "identity_shift", condition: "c", cadence: "5m" }, undefined)
+      const shiftingName = { toString: () => "identity_shift", toJSON: () => "different" }
+      expect(() => cancelStaleAwait(agentRoot, "slugger", shiftingName as unknown as string, "stale")).toThrow(/identity_shift/u)
+    })
+
+    it("contains external-event authority to the event root and reports a missing exact record", () => {
+      const eventRoot = path.join(agentRoot, "external-events")
+      expect(() => inspectExternalEventAwait("slugger", { recordPath: path.join(agentRoot, "outside.json"), awaitName: "wait", wakeAt: "2099-01-01T00:00:00.000Z" }, eventRoot)).toThrow(/outside the event root/u)
+      expect(inspectExternalEventAwait("slugger", { recordPath: path.join(eventRoot, "missing.json"), awaitName: "wait", wakeAt: "2099-01-01T00:00:00.000Z" }, eventRoot)).toEqual({ active: false, reason: "external event disposition is missing" })
+    })
+
+    it("rejects event and relationship tool calls without an exact binding", async () => {
+      const event = { schemaVersion: 1, recordPath: path.join(agentRoot, "external-events", "missing.json"), agent: "slugger", source: "guard", eventId: "evt", generation: 1, observationRevision: "rev", claimOwner: "worker" }
+      expect(parse(await fileAwaitDef.handler({ name: "no_owner", condition: "c", cadence: "5m" }, { currentExternalEvent: event } as any) as string).error).toMatch(/owner relationship/u)
+
+      const authorization = { requestId: "request", authorizedContextScopes: [], advertisedToolNames: [], authorizeTool: vi.fn() }
+      expect(parse(await resolveAwaitDef.handler({ name: "missing", verdict: "yes", observation: "x" }, { relationshipAuthorization: authorization } as any) as string).error).toMatch(/limited/u)
+      expect(parse(await resolveAwaitDef.handler({ verdict: "yes", observation: "x" }, { relationshipAuthorization: authorization } as any) as string).error).toMatch(/limited/u)
+      expect(parse(cancelAwaitDef.handler({ name: "missing" }, { relationshipAuthorization: authorization } as any) as string).error).toMatch(/limited/u)
+      expect(parse(await resolveAwaitDef.handler({ name: "missing", verdict: "yes", observation: "x" }, { currentSession: { ...route, sessionPath: "" }, relationshipAuthorization: { ...authorization, requestId: undefined } } as any) as string).error).toMatch(/limited/u)
+    })
+
+    it("rejects an external-event await whose exact disposition is already stale", async () => {
+      const previousHome = process.env.HOME
+      process.env.HOME = agentRoot
+      try {
+        const event = recordExternalEvent({ agent: "slugger", source: "guard", eventType: "health.observed", eventId: "stale", observationRevision: "rev-1" }, { root: getExternalEventRoot() })
+        const claim = claimExternalEvent(event.recordPath, { owner: "worker", expectedVersion: event.version, expectedGeneration: event.generation })
+        commitExternalEventDisposition(event.recordPath, {
+          owner: "worker", expectedVersion: claim.version, expectedGeneration: claim.generation,
+          disposition: { classifiedRevision: "rev-1", classification: "snoozed", stewardPolicy: { kind: "none" }, decision: "silent", reason: "later", nextWake: { kind: "at", at: "2099-01-01T00:00:00.000Z" }, careId: null, awaitId: "different_wait", actionRefs: [], verificationRefs: [] },
+        })
+        await fileAwaitDef.handler({ name: "stale_event_wait", condition: "c", cadence: "5m", wake_at: "2099-01-01T00:00:00.000Z" }, { context: { friend: { id: "owner" } }, currentExternalEvent: claim } as any)
+        await expect(resolveAwaitDef.handler({ name: "stale_event_wait", verdict: "yes", observation: "ready" }, undefined)).rejects.toThrow(/authority changed/u)
+      } finally {
+        if (previousHome === undefined) delete process.env.HOME
+        else process.env.HOME = previousHome
+      }
+    })
+
     it("rejects malformed or missing await artifacts and fulfills orphaned revocation obligations", () => {
       const route = { friendId: "sibling", channel: "telegram", key: "telegram:777:888" }
       createObligation(agentRoot, { origin: route, owedTo: route, requestId: "request-unbound", content: "c" })
