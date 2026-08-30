@@ -1855,7 +1855,7 @@ Packaged Unit 16 acceptance execution:
       printf 'Telegram bot token: ' >&2
       IFS= read -r -s UNIT16_BOT_TOKEN || return $?
       printf '\n' >&2
-      if "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" telegram-bootstrap telegram-bootstrap.json \
+      if "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final telegram-bootstrap telegram-bootstrap.json \
         3< <(printf '%s\n' "$UNIT16_BOT_TOKEN"); then
         UNIT16_BOT_STATUS=0
       else
@@ -1928,40 +1928,40 @@ Packaged Unit 16 acceptance execution:
       test "$(stat -c '%d:%i' "$UNIT16_CALLBACK_FILE")" = "$(stat -Lc '%d:%i' /proc/self/fd/3)" || exit 1
       UNIT16_CALLBACK_VALIDATED=yes
       test "$(stat -Lc '%F %u:%g %a' /proc/self/fd/3)" = "regular file 0:0 600" || exit 1
-      "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" callback-inject callback-inject.json 3<&3
+      "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final callback-inject callback-inject.json 3<&3
       )
     }
-    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize telegram-bootstrap
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final materialize telegram-bootstrap
     run_unit16_telegram_bootstrap
-    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize cursor-snapshot before
-    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" cursor-snapshot cursor-snapshot.json
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final materialize cursor-snapshot before
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final cursor-snapshot cursor-snapshot.json
     # Perform the live scenario whose cursor movement is being measured.
-    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize cursor-snapshot after
-    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" cursor-snapshot cursor-snapshot.json
-    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize cursor-delta
-    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" cursor-delta cursor-delta.json
-    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize callback-inject
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final materialize cursor-snapshot after
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final cursor-snapshot cursor-snapshot.json
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final materialize cursor-delta
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final cursor-delta cursor-delta.json
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final materialize callback-inject
     run_unit16_callback_inject
-    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize unraid-key-rotate
-    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" unraid-key-rotate unraid-key-rotate.json
-    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize reboot-request
-    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" reboot-request reboot-request.json
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final materialize unraid-key-rotate
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final unraid-key-rotate unraid-key-rotate.json
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final materialize reboot-request
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final reboot-request reboot-request.json
     # The preceding command captures and seals preflight evidence before it asks
     # the broker to stage the reboot, then seals the requested-phase evidence and
     # fsyncs the requested checkpoint before invoking the host reboot. Reconnect
     # only after Unraid and Docker are ready.
-    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize reboot-resume
-    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" reboot-resume reboot-resume.json
-    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize evidence-snapshot
-    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" evidence-snapshot evidence-snapshot.json
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final materialize reboot-resume
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final reboot-resume reboot-resume.json
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final materialize evidence-snapshot
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final evidence-snapshot evidence-snapshot.json
     # reboot-resume seals the changed boot identity and recovery milestones.
     # evidence-snapshot then runs the remaining scenarios sequentially with a
     # 72-minute aggregate bound; each completed scenario records provenance at
     # capture time and always clears its public gate, private marker, and receipt.
-    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize evidence-bundle-index
-    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" evidence-bundle-index evidence-bundle-index.json
-    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" materialize evidence-bundle-verify
-    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" evidence-bundle-verify evidence-bundle-verify.json
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final materialize evidence-bundle-index
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final evidence-bundle-index evidence-bundle-index.json
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final materialize evidence-bundle-verify
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final evidence-bundle-verify evidence-bundle-verify.json
   Each execution revalidates the immutable image and the production container's
   exact image ID. The main one-shot gets a read-only root filesystem, one writable
   evidence mount, narrowly selected runtime/bundle modes, and individual read-only

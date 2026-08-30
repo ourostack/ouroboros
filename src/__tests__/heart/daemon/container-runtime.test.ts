@@ -1735,6 +1735,19 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
     for (const command of Object.keys(contract.commands)) expect(runbook).toContain(`${command}.json`)
   })
 
+  it("routes every post-activation acceptance launcher invocation through the final profile", () => {
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const sectionStart = runbook.indexOf("  After final activation")
+    const sectionEnd = runbook.indexOf("  Each execution revalidates", sectionStart)
+    expect(sectionStart).toBeGreaterThan(-1)
+    expect(sectionEnd).toBeGreaterThan(sectionStart)
+
+    const invocations = runbook.slice(sectionStart, sectionEnd).split("\n")
+      .filter((line) => line.includes('"$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID"'))
+    expect(invocations.length).toBeGreaterThan(2)
+    expect(invocations.filter((line) => !line.includes('"$IMAGE_ID" --profile final '))).toEqual([])
+  })
+
   it("narrows capability proof authority to read-only roots and one exact key record", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     const verify = extractRunbookFunction(runbook, "verify_vault_backed_unraid_key")
