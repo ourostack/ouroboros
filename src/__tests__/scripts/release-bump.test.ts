@@ -125,6 +125,19 @@ describe("release-bump helper", () => {
         ],
       })
       expect(changelog.versions[1].version).toBe("0.1.0-alpha.587")
+
+      const templateAfterFirstRun = fs.readFileSync(path.join(root, "deploy/unraid/sanctuary.xml"), "utf8")
+      const bundleMetaAfterFirstRun = fs.readFileSync(path.join(root, "deploy/unraid/sanctuary.ouro/bundle-meta.json"), "utf8")
+      bumpReleaseVersion({
+        root,
+        version: "0.1.0-alpha.588",
+        changes: [
+          "Release bump helper now keeps CLI, wrapper, lockfile, and changelog versions aligned.",
+          "Future release metadata errors fail before long validation starts.",
+        ],
+      })
+      expect(fs.readFileSync(path.join(root, "deploy/unraid/sanctuary.xml"), "utf8")).toBe(templateAfterFirstRun)
+      expect(fs.readFileSync(path.join(root, "deploy/unraid/sanctuary.ouro/bundle-meta.json"), "utf8")).toBe(bundleMetaAfterFirstRun)
     } finally {
       fs.rmSync(root, { recursive: true, force: true })
     }
@@ -187,6 +200,26 @@ describe("release-bump helper", () => {
       expect(readJson(path.join(root, "package.json")).version).toBe("0.1.0-alpha.587")
     } finally {
       fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it("rejects malformed Sanctuary bundle metadata before writing any release file", () => {
+    for (const malformed of [
+      null,
+      [],
+      { runtimeVersion: 7, bundleSchemaVersion: 3 },
+      { runtimeVersion: "0.1.0-alpha.587", bundleSchemaVersion: 2 },
+    ]) {
+      const root = makeReleaseRoot()
+      try {
+        writeJson(path.join(root, "deploy/unraid/sanctuary.ouro/bundle-meta.json"), malformed)
+        expect(() => bumpReleaseVersion({ root, version: "0.1.0-alpha.588", changes: ["note"] })).toThrow(
+          "bundle-meta.json must be a schema-3 runtime metadata object",
+        )
+        expect(readJson(path.join(root, "package.json")).version).toBe("0.1.0-alpha.587")
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true })
+      }
     }
   })
 

@@ -103,6 +103,14 @@ function updateSanctuaryRepository(template, version) {
   return template.replace(SANCTUARY_REPOSITORY, `<Repository>ghcr.io/ourostack/ouroboros-butler:${version}</Repository>`)
 }
 
+function validateSanctuaryBundleMeta(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+    || typeof value.runtimeVersion !== "string" || value.bundleSchemaVersion !== 3) {
+    throw new Error("deploy/unraid/sanctuary.ouro/bundle-meta.json must be a schema-3 runtime metadata object")
+  }
+  return value
+}
+
 function bumpReleaseVersion(input) {
   const root = path.resolve(input.root ?? process.cwd())
   const version = input.version
@@ -122,7 +130,7 @@ function bumpReleaseVersion(input) {
   const wrapperPackageJson = readJson(wrapperPackageJsonPath)
   const changelog = readJson(changelogPath)
   const sanctuaryTemplate = updateSanctuaryRepository(fs.readFileSync(sanctuaryTemplatePath, "utf8"), version)
-  const sanctuaryBundleMeta = readJson(sanctuaryBundleMetaPath)
+  const sanctuaryBundleMeta = validateSanctuaryBundleMeta(readJson(sanctuaryBundleMetaPath))
 
   packageJson.version = version
   packageLock.version = version
