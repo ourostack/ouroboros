@@ -53,6 +53,7 @@ describe("package asset validation", () => {
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary.ouro/bundle-meta.json")
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary.ouro/provider-readiness.json")
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary.ouro/tool-profiles.json")
+    expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary.ouro/state/policy/steward.json")
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary.xml")
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/ouro-events/emit-event.mjs")
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/ouro-events/bootstrap-spool.sh")
@@ -67,6 +68,24 @@ describe("package asset validation", () => {
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/README.txt")
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary.ouro/psyche/SOUL.md")
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("deploy/unraid/sanctuary.ouro/psyche/IDENTITY.md")
+  })
+
+  it("ships bounded exact-container restart grants without assuming containers should be on", () => {
+    const policy = JSON.parse(fs.readFileSync(path.resolve(__dirname, "../../../deploy/unraid/sanctuary.ouro/state/policy/steward.json"), "utf8"))
+    expect(policy.desiredStates).toEqual({})
+    expect(policy.routineActionGrants["unraid.restart:jellyfin"]).toMatchObject({
+      action: "unraid.container.restart",
+      targets: ["jellyfin"],
+      maxCount: 2,
+      windowMs: 3_600_000,
+      verificationRequired: true,
+      provenance: "installed_explicit_policy",
+    })
+    expect(Object.values(policy.routineActionGrants)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ targets: ["sabnzbd"] }),
+      expect.objectContaining({ targets: ["binhex-sonarr"] }),
+      expect.objectContaining({ targets: ["binhex-radarr"] }),
+    ]))
   })
 
   it("declares stale nested Mailbox UI dist as disallowed", () => {
