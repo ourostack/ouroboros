@@ -770,7 +770,7 @@ export function deriveSanctuaryScenarioAssertions(
       const freshEvents = recordsAdded(before.events, after.events, (entry) => hash(entry))
       const beforeAdmissions = before.telegramAdmissions ?? []
       const afterAdmissions = after.telegramAdmissions ?? []
-      const newAdmissions = recordsAdded(beforeAdmissions, afterAdmissions, (entry) => hash(entry))
+      const newAdmissions = recordsAdded(beforeAdmissions, afterAdmissions, (entry) => entry.admissionDigest)
       const admission = newAdmissions.length === 1 ? newAdmissions[0] : null
       const providerInvocationCount = newTurns.reduce((sum, turn) => sum + turn.providerTurnCount, 0)
       const toolInvocationCount = newTurns.reduce((sum, turn) => sum + turn.toolInvocationCount, 0)
@@ -784,7 +784,8 @@ export function deriveSanctuaryScenarioAssertions(
         && admission.contentQuarantined && admission.relationshipAbsent && admission.capturedAt <= admission.updatedAt
       const zeroAgentWork = Boolean(before.zeroWork && after.zeroWork
         && before.zeroWork.providerToolDigest === after.zeroWork.providerToolDigest
-        && before.zeroWork.approvalMutationDigest === after.zeroWork.approvalMutationDigest)
+        && before.zeroWork.approvalMutationDigest === after.zeroWork.approvalMutationDigest
+        && before.zeroWork.sessionFriendDigest === after.zeroWork.sessionFriendDigest)
       if (!exactQuarantine || !offsetAdvanced || !zeroAgentWork || newTurns.length !== 0 || telegramResponses !== 0
         || providerInvocationCount !== 0 || toolInvocationCount !== 0 || workItemCount !== 0 || approvalTransitions !== 0 || newAttempts.length !== 0
         || scenarioMutationCount !== 0 || durableToolRecordCount !== 0 || forbiddenWorkEvent) return null

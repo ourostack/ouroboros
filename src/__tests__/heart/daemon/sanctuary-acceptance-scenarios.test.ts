@@ -1628,6 +1628,20 @@ describe("Sanctuary live scenario capture", () => {
     expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unknown-admission", before, after, 400_000)).toBeNull()
   })
 
+  it("does not mistake admission state drift or stranger session ingress for a new quarantine", () => {
+    const existingAdmission = { admissionDigest: "d".repeat(64), status: "handled", identityExact: true, acknowledgementExact: true, ownerCardExact: true, contentQuarantined: true, relationshipAbsent: true, capturedAt: 2_000, updatedAt: 2_500 }
+    const before = base()
+    before.telegramAdmissions = [existingAdmission]
+    const after = base()
+    after.telegramAdmissions = [{ ...existingAdmission, status: "pending", updatedAt: 3_000 }]
+    after.telegramNextUpdateId = 11
+    expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unknown-admission", before, after, 400_000)).toBeNull()
+
+    before.telegramAdmissions = []
+    after.zeroWork = { ...after.zeroWork!, sessionFriendDigest: "5".repeat(64) }
+    expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unknown-admission", before, after, 400_000)).toBeNull()
+  })
+
   it.each(["unit-16d-whats-up", "unit-16i-delayed-approval", "unit-16j-denial"] as const)("requires one fresh exact audit lifecycle for %s", (label) => {
     const before = base()
     const after = base()
