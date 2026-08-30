@@ -344,7 +344,7 @@ describe("query_active_work tool", () => {
     vi.mocked(identity.getAgentName).mockReturnValue("slugger")
   })
 
-  it("renders full Butler visibility from the existing event, policy, await, outbox, daemon, and sense owners", async () => {
+  it("renders full Butler visibility from the existing event, policy, await, effect, admission, daemon, and sense owners", async () => {
     const { formatButlerOperationalVisibility } = await import("../../repertoire/tools-session")
     const result = formatButlerOperationalVisibility({
       agentName: "sanctuary",
@@ -352,14 +352,20 @@ describe("query_active_work tool", () => {
       senseStatusLines: ["- Telegram: ready", "- Mail: disabled"],
       stewardPolicy: { schemaVersion: 1, version: 4, desiredStates: { "container:books": { value: "intentionally_off", provenance: "stated", version: 4, source: "telegram" } }, routineActionGrants: { restart: { action: "unraid.container.restart", targets: ["jellyfin"], maxCount: 2, windowMs: 60000, verificationRequired: true, exclusions: [], provenance: "stated", issuer: "ari", authorizedAt: "2026-08-29T00:00:00.000Z", authorizingSessionEvent: "evt", version: 4 } }, updatedAt: "2026-08-29T00:00:00.000Z" },
       awaits: [{ name: "top-up", condition: "Ari says the account is topped up", cadence: "1h", alert: "telegram", mode: "full", max_age: null, status: "pending", created_at: "2026-08-29T00:00:00.000Z", filed_from: "telegram", filed_for_friend_id: "ari", filed_from_key: "owner", request_id: "req", obligation_id: null, body: "check credit", resolved_at: null, resolution_observation: null, expired_at: null, last_observation_at_expiry: null, canceled_at: null, cancel_reason: null }],
-      telegramDelivery: { outbox: { id: "delivery-1", message: "fixed", status: "pending", createdAt: "2026-08-29T00:00:00.000Z", kind: "transition" }, indeterminateDeliveries: [], deliveredReceipts: [], updatedAt: "2026-08-29T00:00:00.000Z" },
+      telegramEffects: [{ id: "effect-1", authorClass: "butler", targetKind: "approved_relationship", state: "accepted", updatedAt: "2026-08-29T00:00:00.000Z" }],
+      telegramAdmissions: [{ id: "admission-1", status: "pending", displayCode: "WARM-OWL", createdAt: 1_777_000_000_000, expiresAt: 1_777_003_600_000 }],
       externalEvents: [{ recordPath: "/event", corrupt: false, agent: "sanctuary", source: "health", eventId: "media-down", eventType: "service", observationRevision: "r1", transition: "unchanged", executionState: "handled", generation: 1, attemptCount: 1, updatedAt: "2026-08-29T00:00:00.000Z", classification: "expected", decision: "silent", reason: "Books is intentionally off", stewardPolicy: { kind: "current", key: "container:books", version: 4 }, nextWake: { kind: "on_change" }, careId: null, awaitId: null, lastError: null, nextAttemptAt: null, claimOwner: null, claimExpiresAt: null, dispatchEnabled: true, undispatched: false, retentionSummary: null }],
       sourceErrors: {},
     })
     expect(result).toContain("disposition expected/silent; reason Books is intentionally off")
     expect(result).toContain("steward container:books@4")
     expect(result).toContain("pending awaits: 1")
-    expect(result).toContain("Telegram outbox: pending delivery-1")
+    expect(result).toContain("container:books = intentionally_off")
+    expect(result).toContain("restart: unraid.container.restart on jellyfin")
+    expect(result).toContain("Telegram effects: 1")
+    expect(result).toContain("effect-1: accepted; butler; approved_relationship")
+    expect(result).toContain("Telegram admissions: 1")
+    expect(result).toContain("admission-1: pending; code WARM-OWL")
     expect(result).toContain("daemon: partial")
     expect(result).toContain("Telegram: ready")
   })
@@ -370,12 +376,13 @@ describe("query_active_work tool", () => {
     const result = formatButlerOperationalVisibility({
       agentName: "sanctuary", daemonHealth: null, senseStatusLines: [],
       stewardPolicy: { schemaVersion: 1, version: 0, desiredStates: {}, routineActionGrants: {}, updatedAt: null },
-      awaits: [], telegramDelivery: { outbox: null, indeterminateDeliveries: [], deliveredReceipts: [], updatedAt: "1970-01-01T00:00:00.000Z" },
+      awaits: [], telegramEffects: [], telegramAdmissions: [],
       externalEvents: Array.from({ length: 25 }, (_, index) => ({ ...event, eventId: `event-${index}` })),
-      sourceErrors: { daemon_health: "health file unreadable", telegram_delivery: "state corrupt", senses: "credentials unavailable" },
+      sourceErrors: { daemon_health: "health file unreadable", telegram_effects: "state corrupt", telegram_admissions: "admissions unreadable", senses: "credentials unavailable" },
     })
     expect(result).toContain("daemon: unavailable (health file unreadable)")
-    expect(result).toContain("Telegram outbox: unavailable (state corrupt)")
+    expect(result).toContain("Telegram effects: unavailable (state corrupt)")
+    expect(result).toContain("Telegram admissions: unavailable (admissions unreadable)")
     expect(result).toContain("unavailable (credentials unavailable)")
     expect(result).toContain("5 more; ouro status --json")
     expect(result.length).toBeLessThan(10_000)
