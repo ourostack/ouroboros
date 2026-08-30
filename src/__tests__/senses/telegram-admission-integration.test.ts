@@ -7,7 +7,10 @@ import { createProductionTelegramRelationshipComposition, createTelegramSenseApp
 import { FileTelegramUpdateInboxStore, type TelegramLongPollOptions } from "../../senses/telegram-client"
 import { loadSessionEnvelopeFile } from "../../heart/session-events"
 import { getSenseSessionPath } from "../../senses/shared-turn"
-import { FIXED_ADMISSION_ACKNOWLEDGEMENT } from "../../senses/telegram-admission"
+import { FileTelegramAdmissionStore, FIXED_ADMISSION_ACKNOWLEDGEMENT } from "../../senses/telegram-admission"
+import { openApprovalStore } from "../../heart/approval-store"
+import { FileApprovalCheckpointStore, FileApprovalTokenStore } from "../../heart/approval-files"
+import { commitApprovalProposal } from "../../heart/tool-approval"
 
 const roots: string[] = []
 afterEach(() => {
@@ -216,6 +219,58 @@ describe("Telegram admission integration", () => {
     await expect(production.admission!.resolveApprovedFriend({ botId: "777", userId: "888", chatId: "888" })).resolves.toBeNull()
     await expect(production.resolveRelationshipAuthorization!({ friendId: claimed.friendId, requestId: "req-1", sessionEventId: "evt-1", botId: "777", userId: "888", chatId: "888", sessionKey: "telegram:777:888" })).rejects.toThrow("not active")
     await expect(production.authorizeRelationshipEffect!({ phase: "send", idempotencyKey: "reply", target: { kind: "approved_relationship", friendId: claimed.friendId, sessionKey: "telegram:777:888", requestId: "req-1" }, authorClass: "butler", effect: { kind: "text", text: "ok" } })).resolves.toMatchObject({ allowed: false, reason: expect.stringContaining("not active") })
+  })
+
+  it("lets only the live owner list, revoke, and unblock exact Telegram contacts without exposing quarantined text", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-contact-management-"))
+    roots.push(root)
+    const friends = new FileFriendStore(path.join(root, "friends"))
+    const now = new Date().toISOString()
+    await friends.put("ari", { id: "ari", name: "Ari", trustLevel: "family", admissionState: "active", initiativePolicy: "proactive", capabilityProfileId: "sanctuary-owner",
+      externalIds: [{ provider: "telegram-user", externalId: "42", tenantId: "777", linkedAt: now }], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: now, updatedAt: now, schemaVersion: 1 })
+    await friends.put("sibling", { id: "sibling", name: "Sibling", trustLevel: "friend", admissionState: "active", initiativePolicy: "request_follow_up_only", capabilityProfileId: "sanctuary-household",
+      externalIds: [{ provider: "telegram-user", externalId: "888", tenantId: "777", linkedAt: now }], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: now, updatedAt: now, schemaVersion: 1 })
+    fs.writeFileSync(path.join(root, "tool-profiles.json"), JSON.stringify({ version: 2, profiles: {
+      "sanctuary-owner": { version: 1, contextScopes: [], toolNames: ["telegram_contact_manage"], effectScopes: [] },
+      "sanctuary-household": { version: 1, contextScopes: [], toolNames: [], effectScopes: [] },
+    } }))
+    const composition = await createProductionTelegramRelationshipComposition("sanctuary", { botToken: "777:secret", botId: "777", authorizedUserId: "42", authorizedChatId: "42" }, root)
+    const manager = composition.telegramContactManager!
+
+    const approvalRoot = path.join(root, "state", "approvals")
+    const approvalStore = openApprovalStore({ databasePath: path.join(approvalRoot, "approvals.sqlite") })
+    const checkpoints = new FileApprovalCheckpointStore(path.join(approvalRoot, "checkpoints.json"))
+    const tokens = new FileApprovalTokenStore(path.join(approvalRoot, "tokens.json"))
+    const sessionPath = getSenseSessionPath("sanctuary", "sibling", "telegram", "telegram:777:888", root)
+    const committed = commitApprovalProposal({ approvalStore, checkpointStore: checkpoints, tokenStore: tokens, proposal: {
+      toolCallId: "call-restart", toolName: "unraid_restart_container", arguments: { container: "books" }, schemaDigest: "a".repeat(64), toolDigest: "b".repeat(64), policyDigest: "c".repeat(64),
+      policyId: "sanctuary.unraid.restart.v1", sessionKey: "telegram:777:888", sessionPath, baseSessionRevision: "d".repeat(64), checkpointDigest: "0".repeat(64), requesterId: "sibling",
+      transport: "telegram", transportUserId: "42", transportChatId: "42", expiresAt: "2099-01-01T00:00:00.000Z",
+      frozenAssistantMessage: { role: "assistant", content: null, tool_calls: [{ id: "call-restart", type: "function", function: { name: "unraid_restart_container", arguments: "{\"container\":\"books\"}" } }] },
+    }, preCallMessages: [{ role: "user", content: "restart books" }] })
+    approvalStore.bindPrompt({ approvalId: committed.record.approvalId, transport: "telegram", transportChatId: "42", transportMessageId: "opaque-message" })
+    approvalStore.close()
+
+    await expect(manager.list({ actorFriendId: "sibling" })).rejects.toThrow("owner")
+    await expect(manager.list({ actorFriendId: "ari" })).resolves.toEqual(expect.objectContaining({ contacts: [expect.objectContaining({ friendId: "sibling", userId: "888", admissionState: "active" })] }))
+    await expect(manager.revoke({ actorFriendId: "ari", friendId: "sibling" })).resolves.toEqual(expect.objectContaining({ revoked: true, friendId: "sibling" }))
+    expect(await friends.get("sibling")).toEqual(expect.objectContaining({ admissionState: "revoked", initiativePolicy: "none" }))
+    const reopened = openApprovalStore({ databasePath: path.join(approvalRoot, "approvals.sqlite") })
+    expect(reopened.read(committed.record.approvalId)?.state).toBe("denied")
+    expect(checkpoints.read(committed.record.approvalId)).toBeNull()
+    expect(tokens.has(committed.record.approvalId)).toBe(false)
+    reopened.close()
+
+    const admissions = new FileTelegramAdmissionStore(path.join(root, "state", "senses", "telegram", "admissions"), {}, () => Date.parse("2026-08-29T20:00:00.000Z"))
+    const blocked = admissions.capture({ updateId: 9, messageId: 10, botId: "777", userId: "999", chatId: "999", text: "do not expose me", displayLabel: "Unknown", hasAttachments: false }, "PINE-1234")
+    expect(blocked.kind).toBe("created")
+    const admissionId = "record" in blocked ? blocked.record.id : ""
+    admissions.compareAndSwap({ admissionId, expectedStatus: "pending", nextStatus: "blocked" })
+    admissions.close()
+    const listed = await manager.list({ actorFriendId: "ari" })
+    expect(listed.blocked).toContainEqual(expect.objectContaining({ admissionId, userId: "999" }))
+    expect(JSON.stringify(listed)).not.toContain("do not expose me")
+    await expect(manager.unblock({ actorFriendId: "ari", admissionId })).resolves.toEqual({ unblocked: true, admissionId })
   })
 
   it.each(["missing", "inactive", "causal", "response-causal", "multi"] as const)("contains %s live relationship authority while settling admitted work", async (authority) => {

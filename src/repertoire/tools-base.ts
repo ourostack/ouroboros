@@ -32,6 +32,7 @@ import { runtimeToolDefinitions } from "./tools-runtime"
 import { orientationToolDefinitions } from "./tools-orientation"
 import { rsvpToolDefinitions } from "./tools-rsvp"
 import { habitToolDefinitions } from "./tools-habits"
+import { telegramContactToolDefinition } from "./tools-telegram-contacts"
 import type { OrientationFrame } from "../heart/orientation-frame"
 // Re-export flow tools for consumers that import them from tools-base
 export { ponderTool, observeTool, settleTool, restTool, speakTool } from "./tools-flow";
@@ -166,6 +167,11 @@ export interface ToolContext {
   };
   /** Immutable standing-policy selection made before this exact tool dispatch. */
   routineActionSelection?: Readonly<{ key: string; target: string; expectedPolicyVersion: number }>;
+  telegramContactManager?: {
+    list(input: { actorFriendId: string }): Promise<{ contacts: unknown[]; blocked: unknown[] }>;
+    revoke(input: { actorFriendId: string; friendId: string }): Promise<{ revoked: true; friendId: string }>;
+    unblock(input: { actorFriendId: string; admissionId: string }): Promise<{ unblocked: true; admissionId: string }>;
+  };
 }
 
 export type RoutineActionRequester =
@@ -254,6 +260,7 @@ export const baseToolDefinitions: ToolDefinition[] = [
   ...runtimeToolDefinitions,
   ...rsvpToolDefinitions,
   ...habitToolDefinitions,
+  telegramContactToolDefinition,
 ];
 
 // Convenience array of just the tool schemas (no handler/integration metadata).

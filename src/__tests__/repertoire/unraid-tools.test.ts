@@ -347,6 +347,8 @@ describe("Unraid typed read tools", () => {
       requestId: "telegram-request-1",
       status: "updating_runtime",
       nextAction: "Report the verified outcome to the exact requester",
+      returnReadyAt: expect.any(String),
+      returnEvidenceRef: "unraid-restart:books:verified",
       content: expect.stringContaining("books"),
     }))
 
@@ -374,7 +376,9 @@ describe("Unraid typed read tools", () => {
     const execution = execTool("unraid_restart_container", { container: "books" }, { ...context, routineActionSelection: classification.routineActionSelection })
     if (failure === "thrown failure") await expect(execution).rejects.toThrow("restart transport failed")
     else await expect(execution).resolves.toContain('"ok":false')
-    expect(readObligations(agentRoot)).toContainEqual(expect.objectContaining({ status: "investigating", nextAction: expect.stringContaining("report back") }))
+    const obligation = readObligations(agentRoot).find((candidate) => candidate.requestId === `request-${failure}`)!
+    expect(obligation).toEqual(expect.objectContaining({ status: "investigating", nextAction: expect.stringContaining("report back") }))
+    expect(obligation).not.toHaveProperty("returnReadyAt")
   })
 
   it("requires a live versioned relationship capability before bypassing approval and degrades malformed policy to the existing approval", async () => {

@@ -53,6 +53,8 @@ export interface Obligation {
   nextAction?: string
   latestNote?: string
   fulfilledAt?: string
+  returnReadyAt?: string
+  returnEvidenceRef?: string
   meaning?: ObligationMeaning
 }
 
@@ -230,6 +232,24 @@ export function fulfillObligation(agentRoot: string, obligationId: string): void
       key: obligation.origin.key,
     },
   })
+}
+
+export function markObligationReturnReady(agentRoot: string, obligationId: string, evidenceRef: string): Obligation {
+  const dir = obligationsDir(agentRoot)
+  const obligation = readJsonFile<Obligation>(dir, obligationId)
+  if (!obligation || !isOpenObligation(obligation)) throw new Error(`Open obligation not found: ${obligationId}`)
+  const ref = capStructuredRecordString(evidenceRef).trim()
+  if (!ref) throw new Error("Obligation return evidence is required")
+  if (obligation.returnReadyAt) {
+    if (obligation.returnEvidenceRef !== ref) throw new Error(`Obligation return evidence is already bound: ${obligationId}`)
+    return obligation
+  }
+  obligation.returnReadyAt = new Date().toISOString()
+  obligation.returnEvidenceRef = ref
+  obligation.updatedAt = obligation.returnReadyAt
+  writeJsonFile(dir, obligationId, obligation)
+  emitNervesEvent({ component: "engine", event: "engine.obligation_return_ready", message: "obligation is ready for an exact recorded return", meta: { obligationId, friendId: obligation.owedTo?.friendId ?? obligation.origin.friendId } })
+  return obligation
 }
 
 export function findPendingObligationForOrigin(

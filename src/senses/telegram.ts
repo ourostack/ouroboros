@@ -50,8 +50,10 @@ import { createTelegramAuditLedger, type TelegramAuditLedger } from "./telegram-
 import { loadSessionEnvelopeFile } from "../heart/session-events"
 import { getExternalEventRoot, type PrivilegedProtectiveAction } from "../heart/external-events/router"
 import { withSessionTurnLease } from "../mind/session-transaction"
+import { FileApprovalCheckpointStore, FileApprovalTokenStore } from "../heart/approval-files"
+import { openApprovalStore } from "../heart/approval-store"
 import { cancelRelationshipFollowUps, hasActiveRelationshipFollowUp, resetAwaitToolDeps, setAwaitToolDeps } from "../repertoire/tools-awaiting"
-import { findPendingObligationForRequest, fulfillObligation } from "../arc/obligations"
+import { findPendingObligationForRequest, fulfillObligation, markObligationReturnReady, readObligation } from "../arc/obligations"
 import { buildOrientationFrame } from "../heart/orientation-frame"
 import { getPrivateRuntimePendingDir, queuePendingMessage } from "../mind/pending"
 import type { CrossChatDeliveryRequest, CrossChatDirectDeliveryResult } from "../heart/cross-chat-delivery"
@@ -133,6 +135,12 @@ export interface TelegramAdmissionDependencies {
   claimFriend(input: TelegramAdmissionFriendClaim): Promise<TelegramAdmissionFriendClaimResult>
   revokeFriend(input: TelegramAdmissionFriendRevocation): Promise<TelegramAdmissionFriendRevocationResult>
   createDisplayCode?: () => string
+}
+
+export interface TelegramContactManager {
+  list(input: { actorFriendId: string }): Promise<{ contacts: Array<{ friendId: string; name: string; userId: string; admissionState: string; initiativePolicy: string }>; blocked: Array<{ admissionId: string; userId: string; displayCode: string; status: "blocked"; createdAt: string }> }>
+  revoke(input: { actorFriendId: string; friendId: string }): Promise<{ revoked: true; friendId: string }>
+  unblock(input: { actorFriendId: string; admissionId: string }): Promise<{ unblocked: true; admissionId: string }>
 }
 
 export interface TelegramSenseApp {
@@ -471,6 +479,7 @@ export interface CreateTelegramSenseAppOptions {
   }
   /** Resolves a current per-turn relationship envelope after durable ingress exists. */
   resolveRelationshipAuthorization?: (input: { friendId: string; requestId: string; sessionEventId: string; botId: string; userId: string; chatId: string; sessionKey: string }) => Promise<RelationshipAuthorizationEvaluator>
+  telegramContactManager?: TelegramContactManager
 }
 
 function requiredText(value: unknown, label: string): string {
@@ -968,6 +977,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   let interactiveControl: ReturnType<typeof createSanctuaryInteractiveControl> | undefined
   try {
     toolContext = useSanctuaryRuntime ? (options._toolContext ?? createSanctuaryToolContext(options.agentName)) : undefined
+    if (toolContext && options.telegramContactManager) (toolContext as import("../repertoire/tools-base").ToolContext).telegramContactManager = options.telegramContactManager
     approvalRuntime = options.approvalRuntime ?? (useSanctuaryRuntime ? (options._createApprovalRuntime ?? createTelegramApprovalRuntime)({
       agentName: options.agentName,
       api,
@@ -1085,22 +1095,25 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       if (artifact.target.kind !== "approved_relationship" || !artifact.target.requestId || artifact.effect.kind !== "text") continue
       const recorded = getEffectJournal().read(artifact.id)
       if (!recorded.parts.every((part) => part.state === "session_recorded")) continue
-      const obligation = findPendingObligationForRequest(agentRoot, {
-        requestId: artifact.target.requestId,
-        owedTo: { friendId: artifact.target.friendId, channel: "telegram", key: artifact.target.sessionKey },
-      })
-      if (obligation) fulfillObligation(agentRoot, obligation.id)
+      if (!artifact.obligationReturnId) continue
+      const obligation = readObligation(agentRoot, artifact.obligationReturnId)
+      if (obligation?.returnReadyAt && obligation.requestId === artifact.target.requestId
+        && obligation.owedTo?.friendId === artifact.target.friendId && obligation.owedTo.channel === "telegram"
+        && obligation.owedTo.key === artifact.target.sessionKey) fulfillObligation(agentRoot, obligation.id)
     }
   }
   const deliverAwaitFollowUp = async (request: CrossChatDeliveryRequest): Promise<CrossChatDirectDeliveryResult> => {
     if (!request.requestId) return { status: "blocked", detail: "Telegram follow-up is missing its request binding" }
     try {
+      const obligation = findPendingObligationForRequest(agentRoot, { requestId: request.requestId, owedTo: { friendId: request.friendId, channel: "telegram", key: request.key } })
+      if (obligation && !obligation.returnReadyAt) markObligationReturnReady(agentRoot, obligation.id, request.deliveryId ?? `telegram-return:${request.requestId}`)
       const expiry = request.deliveryId?.endsWith(":expired") === true
       const artifact = await executeAuthorizedEffect({
         idempotencyKey: `await-${expiry ? "expiry-" : ""}follow-up:${request.requestId}:${createHash("sha256").update(request.deliveryId ?? request.content).digest("hex")}`,
         target: { kind: "approved_relationship", friendId: request.friendId, sessionKey: request.key, requestId: request.requestId },
         authorClass: "butler",
         effect: { kind: "text", text: request.content },
+        ...(obligation ? { obligationReturnId: obligation.id } : {}),
       })
       await recordAcceptedEffects(getSenseSessionPath(options.agentName, request.friendId, "telegram", request.key, agentRoot), [artifact])
       return { status: "delivered_now", detail: "sent to the exact request-bound Telegram chat" }
@@ -1175,12 +1188,17 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     const sessionPath = getSenseSessionPath(options.agentName, input.friendId, "telegram", input.sessionKey, agentRoot)
     const effects: TelegramEffectArtifact[] = []
     let ordinal = 0
-    const deliver = async (text: string): Promise<void> => {
+    const deliver = async (text: string, terminalReturn = false): Promise<void> => {
+      const obligation = terminalReturn ? findPendingObligationForRequest(agentRoot, {
+        requestId: input.requestId,
+        owedTo: { friendId: input.friendId, channel: "telegram", key: input.sessionKey },
+      }) : undefined
       effects.push(await executeAuthorizedEffect({
         idempotencyKey: `relationship-turn:${input.requestId}:delivery:${ordinal++}`,
         target: { kind: "approved_relationship", friendId: input.friendId, sessionKey: input.sessionKey, requestId: input.requestId },
         authorClass: "butler",
         effect: { kind: "text", text },
+        ...(obligation?.returnReadyAt ? { obligationReturnId: obligation.id } : {}),
       }))
     }
     const orientationFrame = input.orientation?.kind === "newly_admitted"
@@ -1206,9 +1224,9 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       toolContext: { ...(toolContext ?? {}) },
       prepareRunAgentOptions: prepareRelationshipRunAgentOptions({ friendId: input.friendId, requestId: input.requestId,
         sessionEventId: input.eventId, userId: input.userId, chatId: input.chatId, sessionKey: input.sessionKey }),
-      deliverySink: { onDelivery: (delivery) => deliver(delivery.text) },
+      deliverySink: { onDelivery: (delivery) => deliver(delivery.text, delivery.kind === "settle") },
     })
-    if (effects.length === 0 && result.response.trim()) await deliver(result.response)
+    if (effects.length === 0 && result.response.trim()) await deliver(result.response, true)
     const causalEventIds = Object.fromEntries(effects.flatMap((artifact, index) => {
       const eventId = result.causalSessionEventIds?.[index] ?? (effects.length === 1 ? result.responseCausalSessionEventId : undefined)
       return eventId ? [[artifact.id, eventId]] : []
@@ -1278,17 +1296,16 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   }) : undefined
   const recoverEffectOutbox = async (): Promise<void> => {
     if (!effectJournal && !existsSync(path.join(agentRoot, "state", "telegram", "effects"))) return
-    const target = configuredOwnerTarget()
     await recoverTelegramEffectOutbox({
       store: getEffectJournal(),
       execute: executeAuthorizedEffect,
-      matches: (artifact) => artifact.target.kind === "approved_relationship"
-        && artifact.target.friendId === target.friendId && artifact.target.sessionKey === target.sessionKey,
+      matches: (artifact) => artifact.target.kind === "approved_relationship",
     })
-    const accepted = getEffectJournal().list().filter((artifact) => artifact.target.kind === "approved_relationship"
-      && artifact.target.friendId === target.friendId && artifact.target.sessionKey === target.sessionKey
-      && artifact.parts.some((part) => part.state === "accepted"))
-    if (accepted.length > 0) await recordAcceptedEffects(getSenseSessionPath(options.agentName, target.friendId, "telegram", target.sessionKey, agentRoot), accepted)
+    const accepted = getEffectJournal().list().filter((artifact) => artifact.target.kind === "approved_relationship" && artifact.parts.some((part) => part.state === "accepted"))
+    for (const artifact of accepted) {
+      const target = artifact.target as Extract<TelegramEffectTarget, { kind: "approved_relationship" }>
+      await recordAcceptedEffects(getSenseSessionPath(options.agentName, target.friendId, "telegram", target.sessionKey, agentRoot), [artifact])
+    }
   }
 
   const onMessageBody = async (message: TelegramInboundMessage): Promise<void> => {
@@ -1706,7 +1723,7 @@ export function loadTelegramSenseCredentials(agentName: string): TelegramSenseCr
 }
 
 export async function createProductionTelegramRelationshipComposition(agentName: string, credentials: TelegramSenseCredentials, agentRootOverride?: string): Promise<Pick<CreateTelegramSenseAppOptions,
-  "admission" | "authorizeRelationshipEffect" | "resolveRelationshipAuthorization">> {
+  "admission" | "authorizeRelationshipEffect" | "resolveRelationshipAuthorization"> & { telegramContactManager: TelegramContactManager }> {
   const agentRoot = agentRootOverride ?? getAgentRoot(agentName)
   const botId = canonicalTelegramId(credentials.botId ?? telegramBotIdFromToken(credentials.botToken), "bot id")
   const ownerUserId = canonicalTelegramId(credentials.authorizedUserId, "authorized user id")
@@ -1733,6 +1750,83 @@ export async function createProductionTelegramRelationshipComposition(agentName:
   const registry = loadRelationshipCapabilityRegistry(agentRoot)
   if (!registry.profiles["sanctuary-owner"] || !registry.profiles["sanctuary-household"]) {
     throw new Error("Telegram relationship capability registry is missing canonical profiles")
+  }
+  const assertLiveOwner = async (actorFriendId: string): Promise<void> => {
+    const current = await store.get(owner.id)
+    if (actorFriendId !== owner.id || !canonicalOwner(current)) throw new Error("Only the live Telegram owner may manage contacts")
+  }
+  const admissionsRoot = path.join(agentRoot, "state", "senses", "telegram", "admissions")
+  const invalidatePendingApprovals = (sessionPath: string): void => {
+    const stateRoot = path.join(agentRoot, "state", "approvals")
+    const checkpoints = new FileApprovalCheckpointStore(path.join(stateRoot, "checkpoints.json"))
+    const tokens = new FileApprovalTokenStore(path.join(stateRoot, "tokens.json"))
+    const approvals = openApprovalStore({ databasePath: path.join(stateRoot, "approvals.sqlite") })
+    try {
+      for (const checkpoint of checkpoints.list()) {
+        const approval = approvals.read(checkpoint.approvalId)
+        if (!approval || path.resolve(approval.sessionPath) !== path.resolve(sessionPath)) continue
+        const decisionToken = tokens.get(checkpoint.approvalId)
+        if (approval.state === "preparing") approvals.recoverPreparing({ approvalId: approval.approvalId, state: "abandoned_before_attempt", reason: "requesting relationship was revoked" })
+        else if (approval.state === "awaiting_prompt_binding") approvals.abandonPromptBinding({ approvalId: approval.approvalId, reason: "requesting relationship was revoked" })
+        else if (approval.state === "proposed" && decisionToken) approvals.decide({
+          approvalId: approval.approvalId, decisionToken, decision: "deny", requesterId: approval.requesterId,
+          transport: approval.transport, transportUserId: approval.transportUserId, transportChatId: approval.transportChatId,
+          transportMessageId: approval.transportMessageId!, sessionKey: approval.sessionKey, ownerId: `relationship-revocation-${randomUUID()}`,
+        })
+        else if (approval.state === "proposed") throw new Error(`Cannot revoke relationship while approval ${approval.approvalId} is missing its decision token`)
+        else if (approval.state === "claimed" && approval.ownerId) approvals.abandonBeforeAttempt({ approvalId: approval.approvalId, ownerId: approval.ownerId, epoch: approval.epoch, reason: "requesting relationship was revoked" })
+        else if (approval.state === "claimed") throw new Error(`Cannot revoke relationship while approval ${approval.approvalId} is missing its claim owner`)
+        const terminal = approvals.read(checkpoint.approvalId)
+        if (terminal && terminal.state !== "attempted") checkpoints.remove(checkpoint.approvalId)
+        tokens.remove(checkpoint.approvalId)
+      }
+    } finally { approvals.close() }
+  }
+  const telegramContactManager: TelegramContactManager = {
+    list: async ({ actorFriendId }) => {
+      await assertLiveOwner(actorFriendId)
+      const contacts = (await store.listAll()).flatMap((friend) => {
+        if (friend.id === owner.id) return []
+        const bindings = sameBotTelegramBindings(friend)
+        if (bindings.length !== 1 || !/^[1-9][0-9]*$/u.test(bindings[0]!.externalId)) return []
+        return [{ friendId: friend.id, name: friend.name, userId: bindings[0]!.externalId, admissionState: friend.admissionState ?? "unverified", initiativePolicy: friend.initiativePolicy ?? "none" }]
+      }).slice(0, 256)
+      const admissions = new FileTelegramAdmissionStore(admissionsRoot)
+      try {
+        const blocked = admissions.list().filter((record) => record.status === "blocked" && record.botId === botId)
+          .slice(0, 256).map((record) => ({ admissionId: record.id, userId: record.userId, displayCode: record.displayCode, status: "blocked" as const, createdAt: new Date(record.createdAt).toISOString() }))
+        return { contacts, blocked }
+      } finally { admissions.close() }
+    },
+    revoke: async ({ actorFriendId, friendId }) => {
+      await assertLiveOwner(actorFriendId)
+      if (friendId === owner.id) throw new Error("The Telegram owner relationship cannot revoke itself")
+      const current = await store.get(friendId)
+      if (!current) throw new Error("Telegram contact was not found")
+      const bindings = sameBotTelegramBindings(current)
+      if (bindings.length !== 1 || !/^[1-9][0-9]*$/u.test(bindings[0]!.externalId) || bindings[0]!.externalId === ownerUserId) throw new Error("Telegram contact identity is not exact")
+      const sessionKey = `telegram:${botId}:${bindings[0]!.externalId}`
+      const sessionPath = getSenseSessionPath(agentName, current.id, "telegram", sessionKey, agentRoot)
+      await withSessionTurnLease(sessionPath, async () => {
+        invalidatePendingApprovals(sessionPath)
+        const live = await store.get(current.id)
+        if (!live || !exactTelegramIdentity(live, bindings[0]!.externalId)) throw new Error("Telegram contact identity changed")
+        const { capabilityProfileId: _removedProfile, ...withoutProfile } = live
+        await store.put(live.id, { ...withoutProfile, admissionState: "revoked", initiativePolicy: "none", updatedAt: new Date().toISOString() })
+        cancelRelationshipFollowUps(agentRoot, agentName, { friendId: live.id, channel: "telegram", key: sessionKey })
+      })
+      return { revoked: true, friendId }
+    },
+    unblock: async ({ actorFriendId, admissionId }) => {
+      await assertLiveOwner(actorFriendId)
+      const admissions = new FileTelegramAdmissionStore(admissionsRoot)
+      try {
+        const record = admissions.read(admissionId)
+        if (record.botId !== botId || record.userId !== record.chatId) throw new Error("Blocked Telegram contact identity changed")
+        admissions.releaseBlock(admissionId)
+      } finally { admissions.close() }
+      return { unblocked: true, admissionId }
+    },
   }
   const resolveEvaluator = async (input: { friendId: string; requestId: string; sessionEventId: string; botId: string; userId: string; chatId: string; sessionKey: string }): Promise<RelationshipAuthorizationEvaluator> => {
     const friend = await store.get(input.friendId)
@@ -1789,6 +1883,7 @@ export async function createProductionTelegramRelationshipComposition(agentName:
     },
   }
   return {
+    telegramContactManager,
     admission,
     resolveRelationshipAuthorization: resolveEvaluator,
     authorizeRelationshipEffect: async (input) => {

@@ -44,6 +44,7 @@ export interface TelegramEffectArtifact {
   effect: TelegramEffect
   authorizationReceiptId: string
   authorizationExpiresAt: string
+  obligationReturnId?: string
   parts: TelegramEffectPart[]
   createdAt: string
   updatedAt: string
@@ -71,6 +72,7 @@ export interface TelegramAuthorizedEffectInput {
   target: TelegramEffectTarget
   authorClass: TelegramArtifactAuthorClass
   effect: TelegramEffect
+  obligationReturnId?: string
   signal?: AbortSignal
   onMessageDelivered?: (messageId: number, chunk: string) => void
 }
@@ -170,6 +172,7 @@ function validateArtifact(artifact: TelegramEffectArtifact, expectedId: string):
     || !boundedText(artifact.idempotencyKey, 1024) || !targetValid || !effectValid || expectedTexts.length === 0
     || !["butler", "control", "system_failsafe"].includes(artifact.authorClass)
     || !boundedText(artifact.authorizationReceiptId, 1024) || !canonicalTime(artifact.authorizationExpiresAt)
+    || (artifact.obligationReturnId !== undefined && !boundedText(artifact.obligationReturnId, 512))
     || !canonicalTime(artifact.createdAt) || !canonicalTime(artifact.updatedAt) || !partsValid) {
     throw new Error("Telegram effect artifact is invalid")
   }
@@ -283,6 +286,7 @@ export function prepareTelegramEffect(store: FileTelegramEffectJournal, input: {
   target: TelegramEffectTarget
   authorClass: TelegramArtifactAuthorClass
   effect: TelegramEffect
+  obligationReturnId?: string
   authorization: TelegramEffectAuthorization
   now?: string
 }): TelegramEffectArtifact {
@@ -297,7 +301,8 @@ export function prepareTelegramEffect(store: FileTelegramEffectJournal, input: {
   if (existing) {
     if (JSON.stringify(existing.target) !== JSON.stringify(target)
       || existing.authorClass !== input.authorClass
-      || JSON.stringify(existing.effect) !== JSON.stringify(input.effect)) {
+      || JSON.stringify(existing.effect) !== JSON.stringify(input.effect)
+      || existing.obligationReturnId !== input.obligationReturnId) {
       throw new Error("Telegram effect idempotency key was reused for a different effect")
     }
     return existing
@@ -312,6 +317,7 @@ export function prepareTelegramEffect(store: FileTelegramEffectJournal, input: {
     effect: input.effect,
     authorizationReceiptId: input.authorization.receiptId,
     authorizationExpiresAt: input.authorization.expiresAt,
+    ...(input.obligationReturnId ? { obligationReturnId: input.obligationReturnId } : {}),
     parts: preparedTexts(input.effect).map((text, index) => ({ index, text, state: "prepared", updatedAt: now })),
     createdAt: now,
     updatedAt: now,
@@ -549,7 +555,7 @@ export async function recoverTelegramEffectOutbox(input: {
   let failed = 0
   for (const artifact of candidates) {
     try {
-      await input.execute({ idempotencyKey: artifact.idempotencyKey, target: artifact.target, authorClass: artifact.authorClass, effect: artifact.effect })
+      await input.execute({ idempotencyKey: artifact.idempotencyKey, target: artifact.target, authorClass: artifact.authorClass, effect: artifact.effect, ...(artifact.obligationReturnId ? { obligationReturnId: artifact.obligationReturnId } : {}) })
       accepted += 1
     } catch {
       failed += 1

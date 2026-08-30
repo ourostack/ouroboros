@@ -573,6 +573,14 @@ export class FileTelegramAdmissionStore {
     this.write(updated)
     return updated
   }
+
+  releaseBlock(admissionIdValue: string): TelegramAdmissionRecord {
+    return withImmediateSessionTurnLease(this.globalCoordinationPath(), () => {
+      const current = this.read(admissionIdValue)
+      if (current.status !== "blocked") throw new Error("Telegram admission is not blocked")
+      return this.compareAndSwap({ admissionId: current.id, expectedStatus: "blocked", nextStatus: "denied" })
+    })
+  }
 }
 
 export interface TelegramAdmissionControllerOptions {

@@ -3,7 +3,7 @@ import { emitNervesEvent } from "../nerves/runtime"
 import { UnraidClient, UnraidClientError, type UnraidErrorCode } from "./unraid-client"
 import { routineActionRequester, type ToolContext, type ToolDefinition } from "./tools-base"
 import { inspectRoutineActionGrant } from "../heart/steward-policy"
-import { advanceObligation, createObligation, findPendingObligationForRequest, type Obligation } from "../arc/obligations"
+import { advanceObligation, createObligation, findPendingObligationForRequest, markObligationReturnReady, type Obligation } from "../arc/obligations"
 
 export const SANCTUARY_CONTAINERS_QUERY = `query SanctuaryContainers {
   docker { containers(skipCache: true) { id names state status autoStart } }
@@ -290,6 +290,7 @@ async function runTrackedRestart(ctx: ToolContext, target: string, routine?: imp
         nextAction: "Report the verified outcome to the exact requester",
       })
       else advanceObligation(ctx.agentRoot, obligation.id, { status: "investigating", latestNote: `The requested restart of ${target} did not verify recovery`, nextAction: `Diagnose ${target} and report back to the requester` })
+      if (succeeded) markObligationReturnReady(ctx.agentRoot, obligation.id, `unraid-restart:${target}:verified`)
     }
     return result
   } catch (error) {
