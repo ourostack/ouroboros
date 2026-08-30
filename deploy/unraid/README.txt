@@ -396,13 +396,116 @@ Effective-spec audit helper:
     }
     migrate_sanctuary_package_managed_bundle() {
       MIGRATE_IMAGE_ID=$1
+      MIGRATE_OPERATION=$2
+      MIGRATE_ROLLBACK_IMAGE_ID=${3-}
       validate_exact_image_id "$MIGRATE_IMAGE_ID" || return $?
+      case "$MIGRATE_OPERATION" in migrate|rollback|commit|status) ;; *) return 1 ;; esac
+      if test "$MIGRATE_OPERATION" = migrate; then
+        validate_exact_image_id "$MIGRATE_ROLLBACK_IMAGE_ID" || return $?
+        test "$MIGRATE_IMAGE_ID" != "$MIGRATE_ROLLBACK_IMAGE_ID" || return 1
+        set -- --rollback-image-id "$MIGRATE_ROLLBACK_IMAGE_ID" --target-image-id "$MIGRATE_IMAGE_ID"
+      else
+        set --
+      fi
       docker run --rm --pull=never --network=none --read-only --user 10001:10001 \
         --entrypoint /usr/local/bin/node \
         --mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
         "$MIGRATE_IMAGE_ID" /opt/ouro/deploy/unraid/migrate-sanctuary-bundle.mjs \
         --package-root /opt/ouro/deploy/unraid/sanctuary.ouro \
-        --agent-root /home/ouro/AgentBundles/sanctuary.ouro || return $?
+        --agent-root /home/ouro/AgentBundles/sanctuary.ouro \
+        --operation "$MIGRATE_OPERATION" "$@" || return $?
+    }
+    recover_pending_sanctuary_bundle_migration() {
+      RECOVERY_IMAGE_ID=$1
+      RECOVERY_AGENT_ROOT=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro
+      RECOVERY_RECORD=$RECOVERY_AGENT_ROOT/.sanctuary-package-managed-rollback.json
+      RECOVERY_COMMITTING_RECORD=$RECOVERY_RECORD.committing
+      RECOVERY_RECORD_COUNT=0
+      for RECOVERY_CANDIDATE in "$RECOVERY_RECORD" "$RECOVERY_COMMITTING_RECORD"; do
+        test ! -L "$RECOVERY_CANDIDATE" || return 1
+        if test -e "$RECOVERY_CANDIDATE"; then
+          test -f "$RECOVERY_CANDIDATE" || return 1
+          RECOVERY_RECORD_COUNT=$((RECOVERY_RECORD_COUNT + 1))
+        fi
+      done
+      test "$RECOVERY_RECORD_COUNT" -le 1 || return 1
+      test "$RECOVERY_RECORD_COUNT" -eq 1 || return 0
+      RECOVERY_STATUS=$(migrate_sanctuary_package_managed_bundle "$RECOVERY_IMAGE_ID" status) || return $?
+      RECOVERY_IDENTITIES=$(printf '%s' "$RECOVERY_STATUS" | /usr/local/bin/node -e '
+        let input = "";
+        process.stdin.setEncoding("utf8");
+        process.stdin.on("data", chunk => { input += chunk; });
+        process.stdin.on("end", () => {
+          const value = JSON.parse(input);
+          if (!value || !["rollback", "committing"].includes(value.state)
+            || typeof value.rollbackImageId !== "string" || typeof value.targetImageId !== "string") process.exit(1);
+          process.stdout.write(`${value.state} ${value.rollbackImageId} ${value.targetImageId}`);
+        });
+      ') || return $?
+      set -- $RECOVERY_IDENTITIES
+      test "$#" -eq 3 || return 1
+      RECOVERY_STATE=$1
+      RECOVERY_ROLLBACK_IMAGE_ID=$2
+      RECOVERY_TARGET_IMAGE_ID=$3
+      validate_exact_image_id "$RECOVERY_ROLLBACK_IMAGE_ID" || return $?
+      validate_exact_image_id "$RECOVERY_TARGET_IMAGE_ID" || return $?
+      test "$RECOVERY_TARGET_IMAGE_ID" != "$RECOVERY_ROLLBACK_IMAGE_ID" || return 1
+      disable_butler_autostart || return $?
+      if test "$RECOVERY_STATE" = committing; then
+        ! docker container inspect ouro-butler-staging >/dev/null 2>&1 || return 1
+        RECOVERY_PRODUCTION_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler) || return $?
+        test "$(docker inspect --format '{{.State.Running}}' ouro-butler)" = true || return 1
+        if test "$RECOVERY_PRODUCTION_IMAGE_ID" = "$RECOVERY_TARGET_IMAGE_ID"; then
+          RECOVERY_CURRENT_ROLLBACK_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler-rollback) || return $?
+          test "$RECOVERY_CURRENT_ROLLBACK_IMAGE_ID" = "$RECOVERY_ROLLBACK_IMAGE_ID" || return 1
+          test "$(docker inspect --format '{{.State.Running}}' ouro-butler-rollback)" = false || return 1
+        elif test "$RECOVERY_PRODUCTION_IMAGE_ID" = "$RECOVERY_ROLLBACK_IMAGE_ID"; then
+          ! docker container inspect ouro-butler-rollback >/dev/null 2>&1 || return 1
+        else
+          return 1
+        fi
+        assert_only_running_butler ouro-butler || return $?
+        assert_update_source "$RECOVERY_PRODUCTION_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" || return $?
+        wait_butler_ready ouro-butler || return $?
+        enable_butler_autostart || return $?
+        migrate_sanctuary_package_managed_bundle "$RECOVERY_IMAGE_ID" commit || return $?
+        return 0
+      fi
+      RECOVERY_CURRENT_ROLLBACK_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler-rollback) || return $?
+      test "$RECOVERY_CURRENT_ROLLBACK_IMAGE_ID" = "$RECOVERY_ROLLBACK_IMAGE_ID" || return 1
+      test "$(docker inspect --format '{{.State.Running}}' ouro-butler-rollback)" = false || return 1
+      if docker container inspect ouro-butler-staging >/dev/null 2>&1; then
+        RECOVERY_STAGING_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler-staging) || return $?
+        test "$RECOVERY_STAGING_IMAGE_ID" = "$RECOVERY_TARGET_IMAGE_ID" || return 1
+        docker stop ouro-butler-staging >/dev/null 2>&1 || true
+        docker rm --force ouro-butler-staging || return $?
+      fi
+      if docker container inspect ouro-butler >/dev/null 2>&1; then
+        RECOVERY_PRODUCTION_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler) || return $?
+        test "$RECOVERY_PRODUCTION_IMAGE_ID" = "$RECOVERY_TARGET_IMAGE_ID" || return 1
+        docker stop ouro-butler >/dev/null 2>&1 || true
+        docker rm --force ouro-butler || return $?
+      fi
+      migrate_sanctuary_package_managed_bundle "$RECOVERY_IMAGE_ID" rollback || return $?
+      docker rename ouro-butler-rollback ouro-butler || return $?
+      assert_update_source "$RECOVERY_ROLLBACK_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" || return $?
+      docker start ouro-butler || return $?
+      assert_only_running_butler ouro-butler || return $?
+      wait_butler_ready ouro-butler || return $?
+      enable_butler_autostart || return $?
+      migrate_sanctuary_package_managed_bundle "$RECOVERY_IMAGE_ID" commit || return $?
+    }
+    rollback_sanctuary_bundle_if_pending() {
+      OPTIONAL_ROLLBACK_IMAGE_ID=$1
+      OPTIONAL_ROLLBACK_RECORD=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/.sanctuary-package-managed-rollback.json
+      OPTIONAL_COMMITTING_RECORD=$OPTIONAL_ROLLBACK_RECORD.committing
+      test ! -L "$OPTIONAL_ROLLBACK_RECORD" || return 1
+      test ! -L "$OPTIONAL_COMMITTING_RECORD" || return 1
+      test ! -e "$OPTIONAL_COMMITTING_RECORD" || return 1
+      if test -e "$OPTIONAL_ROLLBACK_RECORD"; then
+        test -f "$OPTIONAL_ROLLBACK_RECORD" || return 1
+        migrate_sanctuary_package_managed_bundle "$OPTIONAL_ROLLBACK_IMAGE_ID" rollback || return $?
+      fi
     }
     # Package installation and migration never grant restart authority. The
     # migration is the pre-activation assertion: it fails before live mutation
@@ -1262,6 +1365,7 @@ Update:
   result before stopping production. First resolve and validate the exact image
   ID of the known-good production container while it is still running, so a
   lookup failure cannot strand a renamed container:
+    recover_pending_sanctuary_bundle_migration "$IMAGE_ID"
     /bin/bash /boot/config/custom/ouro-events/bootstrap-spool.sh --mount
     test "$(findmnt -n -o FSTYPE --target /boot/config/custom/ouro-events/spool)" = tmpfs
     test "$(stat -c '%u:%g:%a' /boot/config/custom/ouro-events/spool)" = 0:0:755
@@ -1317,19 +1421,32 @@ ouro-butler-rollback
   Package-managed files are exactly `provider-readiness.json`,
   `tool-profiles.json`, `habits/sanctuary-health.md`, and the five canonical
   files under `psyche/`. The migration also merges the three bundle-meta version
-  fields. It uses the existing steward-policy family-authority and CAS writer to
-  add missing installed routine grants or refresh older installed grants. It
-  preserves agent.json, desiredStates, stated or unrelated routine grants, relationships, sessions, and every other state path. Repeating it is a no-op.
-  The migrator snapshots those exact files plus bundle-meta, steward policy,
-  policy audit, modes, and parent existence in memory; any file or CAS failure
-  restores their exact prior bytes and removes only parents it created before it
-  returns failure. Migration failure then enters the same exact container
+  fields. It never installs or mutates steward policy authority. It preserves
+  agent.json, all steward policy and audit bytes, relationships, sessions, and
+  every other state path. Repeating it is a no-op.
+  Before its first managed write, the migrator atomically fsyncs one mode-0600
+  rollback record at `.sanctuary-package-managed-rollback.json`. That transient
+  record contains a verified SHA-256 digest over the exact prior bytes, modes,
+  and parent existence for those
+  files plus bundle-meta, bound to distinct exact rollback and target image IDs.
+  It is the migration transaction record, not a second bundle authority. Normal
+  managed-file failure restores it immediately; every
+  later container rollback restores it before the old container restarts, while
+  successful production readiness and autostart commit it. A killed updater is
+  reconciled from the same record before update topology preflight: partial new
+  containers are removed, interrupted atomic-write stages are discarded, the
+  exact prior bundle is restored idempotently, and only the image ID recorded in
+  the transaction may resume as production. A malformed record, wrong image,
+  or restore failure leaves autostart disabled and fails closed. Once target
+  readiness and autostart have passed, commit first durably renames the record;
+  a kill then keeps target production in place and the next run validates its
+  exact topology/readiness before finishing commit. Migration failure then enters the same exact container
   rollback arm before staging starts:
     if docker stop ouro-butler \
       && remove_stopped_rollback_if_present "$ROLLBACK_IMAGE_ID" \
       && docker rename ouro-butler ouro-butler-rollback \
       && test "$(docker inspect --format '{{.State.Running}}' ouro-butler-rollback)" = false \
-      && migrate_sanctuary_package_managed_bundle "$IMAGE_ID"; then
+      && migrate_sanctuary_package_managed_bundle "$IMAGE_ID" migrate "$ROLLBACK_IMAGE_ID"; then
       :
     else
       PRODUCTION_PREPARATION_STATUS=$?
@@ -1341,20 +1458,24 @@ ouro-butler-rollback
           docker rm --force ouro-butler-rollback >/dev/null 2>&1 || true
         fi
         ! docker container inspect ouro-butler-rollback >/dev/null 2>&1
+        rollback_sanctuary_bundle_if_pending "$IMAGE_ID"
         assert_update_source "$ROLLBACK_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"
         docker start ouro-butler
         assert_only_running_butler ouro-butler
         wait_butler_ready ouro-butler
         enable_butler_autostart
+        migrate_sanctuary_package_managed_bundle "$IMAGE_ID" commit
       elif docker container inspect ouro-butler-rollback >/dev/null 2>&1; then
         docker stop ouro-butler-rollback >/dev/null 2>&1 || true
         test "$(docker inspect --format '{{.Image}}' ouro-butler-rollback)" = "$ROLLBACK_IMAGE_ID"
+        rollback_sanctuary_bundle_if_pending "$IMAGE_ID"
         docker rename ouro-butler-rollback ouro-butler
         assert_update_source "$ROLLBACK_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"
         docker start ouro-butler
         assert_only_running_butler ouro-butler
         wait_butler_ready ouro-butler
         enable_butler_autostart
+        migrate_sanctuary_package_managed_bundle "$IMAGE_ID" commit
       fi
       (exit "$PRODUCTION_PREPARATION_STATUS")
     fi
@@ -1393,12 +1514,14 @@ ouro-butler-rollback
       ! docker container inspect ouro-butler-staging >/dev/null 2>&1
       CURRENT_ROLLBACK_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler-rollback)
       test "$CURRENT_ROLLBACK_IMAGE_ID" = "$ROLLBACK_IMAGE_ID"
+      migrate_sanctuary_package_managed_bundle "$IMAGE_ID" rollback
       docker rename ouro-butler-rollback ouro-butler
       assert_update_source "$ROLLBACK_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"
       docker start ouro-butler
       assert_only_running_butler ouro-butler
       wait_butler_ready ouro-butler
       enable_butler_autostart
+      migrate_sanctuary_package_managed_bundle "$IMAGE_ID" commit
       (exit "$STAGING_ACTIVATION_STATUS")
     fi
   The failure arm safely handles staging that was never created, remains
@@ -1439,14 +1562,17 @@ ouro-butler-rollback
       ! docker container inspect ouro-butler >/dev/null 2>&1
       CURRENT_ROLLBACK_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler-rollback)
       test "$CURRENT_ROLLBACK_IMAGE_ID" = "$ROLLBACK_IMAGE_ID"
+      migrate_sanctuary_package_managed_bundle "$IMAGE_ID" rollback
       docker rename ouro-butler-rollback ouro-butler
       assert_update_source "$ROLLBACK_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"
       docker start ouro-butler
       assert_only_running_butler ouro-butler
       wait_butler_ready ouro-butler
       enable_butler_autostart
+      migrate_sanctuary_package_managed_bundle "$IMAGE_ID" commit
       (exit "$PRODUCTION_ACTIVATION_STATUS")
     fi
+    migrate_sanctuary_package_managed_bundle "$IMAGE_ID" commit
   Keep ouro-butler-rollback stopped until the new production container is proven
   or the explicit rollback arm restores it.
   Never create a container from the mutable lookup tag.
