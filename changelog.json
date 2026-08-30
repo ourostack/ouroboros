@@ -4,7 +4,8 @@
     {
       "version": "0.1.0-alpha.750",
       "changes": [
-        "Make Sanctuary's Telegram admissions, Books preferences, and MiniMax readiness evidence signal-over-noise and truthful."
+        "Make Sanctuary's Telegram admissions, Books preferences, and MiniMax readiness evidence signal-over-noise and truthful.",
+        "Keep the Unraid image tag and packaged Sanctuary runtime version aligned during every release bump."
       ]
     },
     {
