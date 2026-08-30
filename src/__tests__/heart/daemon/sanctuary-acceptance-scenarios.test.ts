@@ -194,7 +194,7 @@ const base = (): SanctuaryScenarioFacts => ({
   zeroWork: { providerToolDigest: "1".repeat(64), outwardDigest: "2".repeat(64), approvalMutationDigest: "3".repeat(64), sessionFriendDigest: "4".repeat(64) },
   identity: { keyPresent: true, subjectOpaque: true, rawIdentityAbsent: true, liveSubjectObserved: true, inspectedRecordCount: 1, opaqueSubjectCount: 1, mismatchCount: 0, rawLeakCount: 0, surfaceDigest: "a".repeat(64), canonicalSessionCount: 1, canonicalFriendCount: 1, sessionSurfaceDigest: "b".repeat(64), friendSurfaceDigest: "c".repeat(64) },
   container: { exactImage: true, running: true, healthy: true, user: "10001:10001", readOnlyRoot: true, mountCount: 4, mountsExact: true, publishedPortCount: 0, restartPolicy: "unless-stopped", restartCount: 0, autostartExact: true, updaterDisabled: true, vaultUnlocked: true, manualAuthRequired: false },
-  provider: { outwardReady: true, innerReady: true, silentFallback: false, credentialRevisionsPresent: true, requestSemanticsExact: true, fallbackAttemptCount: 0, laneSelectionExact: true, baseUrlExact: true, vaultCoordinatesExact: true, singleCredentialExact: true },
+  provider: { outwardReady: true, innerReady: true, silentFallback: false, credentialRevisionsPresent: true, requestSemanticsExact: true, fallbackAttemptCount: 0, laneSelectionExact: true, vaultCoordinatesExact: true, singleCredentialExact: true },
   cron: { registered: true, fingerprint: "a".repeat(64), receiptDigest: "b".repeat(64), sweepCount: 0 },
   health: { transitionCount: 0, alertCount: 0, productionRestored: true },
   digest: { scheduleObserved: true, messageCount: 0, firedWithinMs: 1_000, productionRestored: true },
