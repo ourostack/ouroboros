@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.746",
+      "changes": [
+        "Run packaged Sanctuary auditors with constrained root privileges so root-private inspection and staged policy inputs remain readable without widening file permissions.",
+        "Audit immutable container image identity from Docker's resolved top-level Image and validate the portable effective root Mounts contract, including private bind propagation, across real Docker inspect output."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.745",
       "changes": [
         "Tell newly admitted Telegram contacts to resend attachments that stayed safely undownloaded during unknown-sender quarantine."

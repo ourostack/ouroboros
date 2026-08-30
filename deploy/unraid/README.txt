@@ -42,6 +42,7 @@ Effective-spec audit helper:
       docker image inspect "$AUDIT_EXPECTED_IMAGE" >"$INSPECT_DIR/image.json" || return $?
       chmod 0600 "$INSPECT_DIR/container.json" "$INSPECT_DIR/image.json" || return $?
       docker run --rm --pull=never --network=none \
+        --user 0:0 --read-only --cap-drop=ALL --security-opt=no-new-privileges \
         --entrypoint /opt/ouro/deploy/unraid/audit-container-spec.sh \
         --mount "type=bind,src=$INSPECT_DIR/container.json,dst=/audit/container.json,readonly" \
         --mount "type=bind,src=$INSPECT_DIR/image.json,dst=/audit/image.json,readonly" \
@@ -1444,6 +1445,7 @@ Update:
   audit the staged template and runtime policy with the packaged auditor, then
   remove the private stage before any Butler mutation:
     docker run --rm --pull=never --network=none \
+      --user 0:0 --read-only --cap-drop=ALL --security-opt=no-new-privileges \
       --entrypoint /opt/ouro/deploy/unraid/audit-container-spec.sh \
       --mount "type=bind,src=$STAGED_TEMPLATE,dst=/audit/sanctuary.xml,readonly" \
       --mount "type=bind,src=$STAGED_RUNTIME_POLICY,dst=/audit/container-runtime.json,readonly" \
