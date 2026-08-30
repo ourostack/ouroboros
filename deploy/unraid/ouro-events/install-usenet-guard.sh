@@ -21,11 +21,25 @@ while (($# > 0)); do
   esac
 done
 
+validate_persisted_path() {
+  local value="$1" label="$2"
+  [[ "$value" =~ ^/[A-Za-z0-9._/-]+$ ]] && [[ "$value" != */ ]] && [[ "$value" != *"//"* ]] && [[ "$value" != *"/../"* ]] && [[ "$value" != */.. ]] && [[ "$value" != *"/./"* ]] && [[ "$value" != */. ]] || {
+    echo "usenet guard installer: $label must be a canonical absolute path" >&2
+    exit 2
+  }
+}
+
+validate_persisted_path "$INSTALL_ROOT" "install root"
+if [ -n "$CRONTAB_FILE" ]; then validate_persisted_path "$CRONTAB_FILE" "crontab file"; fi
+
 EVENT_ROOT="$INSTALL_ROOT/ouro-events"
-BOOT_HOOK="/bin/bash $EVENT_ROOT/install-usenet-guard.sh --boot${CRONTAB_FILE:+ --crontab-file $CRONTAB_FILE}"
+printf -v EVENT_INSTALLER_Q '%q' "$EVENT_ROOT/install-usenet-guard.sh"
+BOOT_HOOK="/bin/bash $EVENT_INSTALLER_Q --boot"
+if [ -n "$CRONTAB_FILE" ]; then printf -v CRONTAB_FILE_Q '%q' "$CRONTAB_FILE"; BOOT_HOOK+=" --crontab-file $CRONTAB_FILE_Q"; fi
 LEGACY_BOOT_HOOK="/boot/config/custom/ouro-events/bootstrap-spool.sh --mount"
 LEGACY_BASH_BOOT_HOOK="/bin/bash /boot/config/custom/ouro-events/bootstrap-spool.sh --mount"
-CRON_LINE="*/15 * * * * /bin/bash $INSTALL_ROOT/usenet_health.sh # ouro:usenet-health"
+printf -v HEALTH_SCRIPT_Q '%q' "$INSTALL_ROOT/usenet_health.sh"
+CRON_LINE="*/15 * * * * /bin/bash $HEALTH_SCRIPT_Q # ouro:usenet-health"
 ASSET_NAMES=(usenet-health.sh bootstrap-spool.sh emit-event.mjs emit-usenet-event.sh install-usenet-guard.sh)
 TARGET_PATHS=("$INSTALL_ROOT/usenet_health.sh" "$EVENT_ROOT/bootstrap-spool.sh" "$EVENT_ROOT/emit-event.mjs" "$EVENT_ROOT/emit-usenet-event.sh" "$EVENT_ROOT/install-usenet-guard.sh")
 

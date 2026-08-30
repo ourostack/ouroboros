@@ -134,7 +134,7 @@ export interface ToolContext {
     }): { allowed: boolean; reason: string };
   }>;
   readonly externalEventEffects?: Readonly<{
-    deliverOwnerDecision(input: { eventId: string; generation: number; text: string }): Promise<void>;
+    deliverOwnerDecision(input: { source: string; eventId: string; generation: number; text: string }): Promise<void>;
   }>;
   /** Irrevocable per-turn capability reduction used by transport-safe probes. */
   readonly noSend?: true;
