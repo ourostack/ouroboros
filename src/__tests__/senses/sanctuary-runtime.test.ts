@@ -30,6 +30,8 @@ const runtimeMocks = vi.hoisted(() => {
     transitionRoutineActionReceipt: vi.fn(() => ({ state: "verified" })),
     recoverRoutineActionReceipts: vi.fn(async () => []),
     emitNervesEvent: vi.fn(),
+    probeSanctuaryEndpoint: vi.fn(),
+    sab: { readQueue: vi.fn(), resumeQueue: vi.fn() },
     forceUnexpectedGrounding: false,
   }
 })
@@ -49,6 +51,11 @@ vi.mock("../../heart/steward-policy", () => ({
   recoverRoutineActionReceipts: runtimeMocks.recoverRoutineActionReceipts,
 }))
 vi.mock("../../nerves/runtime", () => ({ emitNervesEvent: runtimeMocks.emitNervesEvent }))
+vi.mock("../../senses/sanctuary-health", () => ({
+  SANCTUARY_PUBLIC_ENDPOINTS: ["https://media.mendelow.cloud/", "https://books.mendelow.cloud/"],
+  probeSanctuaryEndpoint: runtimeMocks.probeSanctuaryEndpoint,
+}))
+vi.mock("../../senses/sanctuary-sab", () => ({ createSanctuarySabClient: () => runtimeMocks.sab }))
 vi.mock("../../senses/sanctuary-grounding", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../senses/sanctuary-grounding")>()
   return {
@@ -89,6 +96,9 @@ describe("Sanctuary runtime tool context", () => {
     runtimeMocks.transitionRoutineActionReceipt.mockReset().mockReturnValue({ state: "verified" })
     runtimeMocks.recoverRoutineActionReceipts.mockReset().mockResolvedValue([])
     runtimeMocks.forceUnexpectedGrounding = false
+    runtimeMocks.probeSanctuaryEndpoint.mockReset()
+    runtimeMocks.sab.readQueue.mockReset()
+    runtimeMocks.sab.resumeQueue.mockReset()
     runtimeMocks.readMachineRuntimeCredentialConfig.mockReturnValue(configured())
     runtimeMocks.getAgentRoot.mockReturnValue(fs.mkdtempSync(path.join(os.tmpdir(), "ouro-sanctuary-runtime-")))
   })
@@ -150,6 +160,42 @@ describe("Sanctuary runtime tool context", () => {
     })
     const acceptanceScenarioHandleDigest = runtimeMocks.state.restartOptions?.acceptanceScenarioHandleDigest as () => string | undefined
     expect(acceptanceScenarioHandleDigest()).toBeUndefined()
+  })
+
+  it("checks every fixed public service endpoint on demand and records one bounded read receipt", async () => {
+    runtimeMocks.probeSanctuaryEndpoint
+      .mockResolvedValueOnce({ url: "https://media.mendelow.cloud/", ok: true, status: 200 })
+      .mockResolvedValueOnce({ url: "https://books.mendelow.cloud/", ok: false, status: 503 })
+    const context = createSanctuaryToolContext("slugger")
+
+    await expect(context.sanctuary!.checkServices()).resolves.toEqual({
+      ok: true,
+      data: {
+        observedAt: expect.stringMatching(/^\d{4}-/u),
+        services: [
+          { name: "media", url: "https://media.mendelow.cloud/", ok: true, status: 200 },
+          { name: "books", url: "https://books.mendelow.cloud/", ok: false, status: 503 },
+        ],
+        degraded: true,
+      },
+    })
+    expect(runtimeMocks.probeSanctuaryEndpoint).toHaveBeenCalledTimes(2)
+    expect(runtimeMocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+      event: "senses.sanctuary_read_receipt",
+      meta: expect.objectContaining({ toolName: "unraid_check_services", success: true }),
+    }))
+  })
+
+  it("reads and approval-resumes the download queue through one cached SAB client", async () => {
+    runtimeMocks.sab.readQueue.mockResolvedValueOnce({ paused: true, queuedJobs: 2 })
+    runtimeMocks.sab.resumeQueue.mockResolvedValueOnce({ changed: true, verified: true, receiptDigest: "a".repeat(64) })
+    const context = createSanctuaryToolContext("slugger")
+    await expect(context.sanctuary!.getDownloadQueue()).resolves.toEqual({ paused: true, queuedJobs: 2 })
+    await expect(context.sanctuary!.resumeDownloadQueue()).resolves.toMatchObject({ ok: true, data: { changed: true, verified: true } })
+    expect(runtimeMocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({ event: "senses.sanctuary_download_resume_receipt", meta: expect.objectContaining({ changed: true, verified: true, receiptDigest: "a".repeat(64) }) }))
+    runtimeMocks.sab.resumeQueue.mockRejectedValueOnce("private failure")
+    await expect(context.sanctuary!.resumeDownloadQueue()).rejects.toBe("private failure")
+    expect(runtimeMocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({ event: "senses.sanctuary_download_resume_error", meta: { category: "unknown" } }))
   })
 
   it("routes routine-action reservation, transition, and recovery observations through the canonical policy seams", async () => {

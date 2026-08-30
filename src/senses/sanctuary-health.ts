@@ -6,7 +6,7 @@ import type { ToolContext } from "../repertoire/tools-base"
 import { emitNervesEvent } from "../nerves/runtime"
 import { sanctuaryAcceptanceEventMeta } from "../heart/daemon/sanctuary-acceptance-marker"
 
-const ENDPOINTS = [
+export const SANCTUARY_PUBLIC_ENDPOINTS = [
   "https://media.mendelow.cloud/",
   "https://books.mendelow.cloud/",
   "https://requests.mendelow.cloud/",
@@ -321,7 +321,7 @@ export function createSanctuaryHealthSweep(options: {
     if (!runtime) throw new Error("Sanctuary health runtime is unavailable")
     const [containersResult, storageResult, disksResult, notificationsResult, endpoints] = await Promise.all([
       runtime.listContainers(), runtime.getStorage(), runtime.getDisks(), runtime.getNotifications(),
-      Promise.all(ENDPOINTS.map((url) => probeSanctuaryEndpoint(url, fetchImpl))),
+      Promise.all(SANCTUARY_PUBLIC_ENDPOINTS.map((url) => probeSanctuaryEndpoint(url, fetchImpl))),
     ])
     const incidents = new Map<string, Incident>()
     const add = (id: string, rawSummary: string) => {

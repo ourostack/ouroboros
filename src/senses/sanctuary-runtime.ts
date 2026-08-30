@@ -13,6 +13,8 @@ import type { ToolContext } from "../repertoire/tools-base"
 import { emitNervesEvent } from "../nerves/runtime"
 import { readSanctuaryAcceptanceApproval, readSanctuaryAcceptanceMarker, sanctuaryAcceptanceEventMeta } from "../heart/daemon/sanctuary-acceptance-marker"
 import { projectSanctuaryGrounding, sanctuaryGroundingDigest, type SanctuaryToolGrounding } from "./sanctuary-grounding"
+import { probeSanctuaryEndpoint, SANCTUARY_PUBLIC_ENDPOINTS } from "./sanctuary-health"
+import { createSanctuarySabClient } from "./sanctuary-sab"
 
 const sanctuaryToolReceipts = new AsyncLocalStorage<string[]>()
 const sanctuaryToolGroundings = new AsyncLocalStorage<SanctuaryToolGrounding[]>()
@@ -112,6 +114,7 @@ export function createSanctuaryToolContext(agentName: string): Pick<ToolContext,
   const endpoint = required(initial, "unraidGraphqlUrl")
   const readClient = new UnraidClient({ endpoint, apiKey: required(initial, "unraidReadApiKey") })
   const reads = createUnraidReadTools(readClient)
+  const sab = createSanctuarySabClient()
   const acceptanceRead = <TArgs extends unknown[], TResult>(toolName: string, read: (...args: TArgs) => Promise<TResult>) => async (...args: TArgs): Promise<TResult> => {
     try {
       const result = await read(...args)
@@ -144,6 +147,22 @@ export function createSanctuaryToolContext(agentName: string): Pick<ToolContext,
       getDisks: acceptanceRead("unraid_get_disks", reads.getDisks),
       getNotifications: acceptanceRead("unraid_get_notifications", reads.getNotifications),
       getSystem: acceptanceRead("unraid_get_system", reads.getSystem),
+      checkServices: acceptanceRead("unraid_check_services", async () => {
+        const services = await Promise.all(SANCTUARY_PUBLIC_ENDPOINTS.map(async (url) => ({ name: new URL(url).hostname.split(".")[0]!, ...await probeSanctuaryEndpoint(url) })))
+        return { ok: true, data: { observedAt: new Date().toISOString(), services, degraded: services.some((service) => !service.ok) } }
+      }),
+      getDownloadQueue: acceptanceRead("sanctuary_get_download_queue", sab.readQueue),
+      resumeDownloadQueue: async () => {
+        try {
+          const result = await sab.resumeQueue()
+          collectToolResult(result)
+          emitNervesEvent({ component: "senses", event: "senses.sanctuary_download_resume_receipt", message: "Sanctuary download queue resume completed", meta: { changed: result.changed, verified: result.verified, receiptDigest: result.receiptDigest } })
+          return { ok: true, data: result }
+        } catch (error) {
+          emitNervesEvent({ level: "error", component: "senses", event: "senses.sanctuary_download_resume_error", message: "Sanctuary download queue resume failed", meta: { category: error instanceof Error ? error.name : "unknown" } })
+          throw error
+        }
+      },
       restartContainer: async (args, execution) => {
         const result = execution ? await restart(args, execution) : await restart(args)
         collectToolResult(result)

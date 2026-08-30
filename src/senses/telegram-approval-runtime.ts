@@ -55,6 +55,13 @@ export function approvalContinuationRunAgentOptions(
   return { toolContext: toolContext as ToolContext, approvalCoordinator }
 }
 
+export function formatTelegramApprovalPrompt(toolName: string, args: Record<string, unknown>): string {
+  if (toolName === "sanctuary_resume_download_queue") return "Resume household downloads? This can spend prepaid download credit. I’ll verify the queue actually resumed."
+  const container = args.container
+  if (toolName === "unraid_restart_container" && typeof container === "string" && container.length > 0 && container.length <= 128 && !container.includes("\n")) return `Restart ${container}?`
+  return `Approve ${toolName} with exact arguments ${JSON.stringify(args)}?`
+}
+
 export async function executeApprovedTelegramTool(
   name: string,
   args: Record<string, unknown>,
@@ -72,6 +79,15 @@ export async function executeApprovedTelegramTool(
   try {
   effectBarrier()
   const result = await execute(name, args)
+  if (name === "sanctuary_resume_download_queue") {
+    let parsed: unknown
+    try { parsed = JSON.parse(result) } catch { throw new ApprovalExecutionFailedError("approved download resume returned an invalid result") }
+    const data = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as { ok?: unknown; data?: unknown }) : null
+    const outcome = data?.data && typeof data.data === "object" && !Array.isArray(data.data) ? data.data as { verified?: unknown; after?: unknown } : null
+    const after = outcome?.after && typeof outcome.after === "object" && !Array.isArray(outcome.after) ? outcome.after as { paused?: unknown } : null
+    if (data?.ok !== true || outcome?.verified !== true || after?.paused !== false) throw new ApprovalExecutionFailedError("approved download resume was not independently verified")
+    return result
+  }
   if (name !== "unraid_restart_container") return result
   let parsed: unknown
   try {
@@ -221,7 +237,7 @@ export function createTelegramApprovalRuntime(options: {
         preCallMessages: request.preCallMessages,
         hooks: telegramApprovalCommitBarrierHooks(effectBarrier),
       })
-      const prompt = `Approve ${request.toolCall.function.name} with exact arguments ${JSON.stringify(request.arguments)}?`
+      const prompt = formatTelegramApprovalPrompt(request.toolCall.function.name, request.arguments)
       effectBarrier()
       const actionDigest = createHash("sha256").update(JSON.stringify({ toolName: committed.record.toolName, argumentDigest: committed.record.argumentDigest })).digest("hex")
       const targetDigest = createHash("sha256").update(JSON.stringify({ container: committed.record.arguments.container })).digest("hex")
