@@ -13,6 +13,7 @@ import {
   createTelegramAuthorizedEffectExecutor,
   reconcileTelegramSystemFailsafe,
   recordTelegramEffectsInSession,
+  sweepTelegramSystemFailsafes,
 } from "../../senses/telegram-effect-adapter"
 
 const roots: string[] = []
@@ -181,5 +182,25 @@ describe("Telegram system failsafe", () => {
     expect(request).toHaveBeenCalledTimes(1)
     await expect(reconcileTelegramSystemFailsafe({ ...common, record: readExternalEventRecord(initial.recordPath), recordArtifact: vi.fn() })).resolves.toMatchObject({ sent: false, reason: "already_recorded" })
     expect(request).toHaveBeenCalledTimes(1)
+  })
+
+  it("sweeps eligible persisted events with and without an injected clock", async () => {
+    const eligible = record()
+    const eventRoot = path.dirname(path.dirname(path.dirname(eligible.recordPath)))
+    const store = new FileTelegramEffectJournal(root("failsafe-sweep-journal"))
+    const execute = createTelegramAuthorizedEffectExecutor({ store, api: { request: vi.fn(async () => ({ message_id: 99 })) }, authorize: () => authorization })
+    const common = {
+      eventRoot,
+      target,
+      verifyProtectiveState: vi.fn(async () => ({ verified: true, reference: "sabnzbd-read:queue-paused:sha256:sweep" })),
+      execute,
+      recordArtifact: vi.fn(async () => undefined),
+    }
+
+    await expect(sweepTelegramSystemFailsafes({ ...common, now: () => "2026-08-29T19:58:01.000Z" })).resolves.toEqual({ inspected: 1, sent: 1 })
+
+    const ineligible = record({ executionState: "handled", lastError: null })
+    const ineligibleRoot = path.dirname(path.dirname(path.dirname(ineligible.recordPath)))
+    await expect(sweepTelegramSystemFailsafes({ ...common, eventRoot: ineligibleRoot })).resolves.toEqual({ inspected: 1, sent: 0 })
   })
 })
