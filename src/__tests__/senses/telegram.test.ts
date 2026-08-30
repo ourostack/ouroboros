@@ -71,6 +71,7 @@ function fixture(input: {
   authorizeEffect?: any
   authorizeRelationshipEffect?: any
   privilegedFailsafe?: any
+  admission?: any
 } = {}) {
   const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-sense-fixture-"))
   let onMessage: ((message: TelegramInboundMessage) => Promise<void>) | undefined
@@ -124,6 +125,7 @@ function fixture(input: {
     authorizeEffect: input.authorizeEffect,
     authorizeRelationshipEffect: input.authorizeRelationshipEffect,
     privilegedFailsafe: input.privilegedFailsafe,
+    admission: input.admission,
   })
   return { app, api, poll, runTurn, approvalTransport, agentRoot, getOnMessage: () => onMessage!, getOnUpdate: () => onUpdate! }
 }
@@ -1722,6 +1724,52 @@ describe("Telegram sense", () => {
     await expect(f.app.sendAwaitFollowUp({ friendId: "sibling", channel: "telegram", key: "telegram:777:888", requestId: "request-crash", content: "Books is back.", intent: "generic_outreach" }))
       .resolves.toMatchObject({ status: "blocked" })
     expect(readObligation(f.agentRoot, obligation.id)?.status).toBe("pending")
+  })
+
+  it("does not fulfill a request obligation from a partially recorded multi-part return", async () => {
+    const f = fixture()
+    const subject = opaqueTelegramSubject("k".repeat(43), "test-token", "42", "42")
+    const journal = new FileTelegramEffectJournal(path.join(f.agentRoot, "state", "telegram", "effects"))
+    const artifact = prepareTelegramEffect(journal, {
+      idempotencyKey: "partial-request-return",
+      target: { kind: "approved_relationship", friendId: `telegram-user:${subject}`, sessionKey: `telegram:${subject}`, requestId: "request-partial" },
+      authorClass: "butler",
+      effect: { kind: "text", text: `${"a".repeat(3_000)} ${"b".repeat(3_000)}` },
+      authorization: { allowed: true, receiptId: "request-return", expiresAt: "2099-01-01T00:00:00.000Z", transport: { chatId: "42" } },
+    })
+    artifact.parts[0] = { ...artifact.parts[0]!, state: "accepted", messageId: 71, attempts: 1 }
+    artifact.parts[1] = { ...artifact.parts[1]!, state: "indeterminate", attempts: 1 }
+    journal.write(artifact)
+    journal.close()
+    const obligation = createObligation(f.agentRoot, {
+      origin: { friendId: `telegram-user:${subject}`, channel: "telegram", key: `telegram:${subject}` },
+      requestId: "request-partial",
+      content: "Return the partial result",
+    })
+
+    await f.app.run()
+    expect(readObligation(f.agentRoot, obligation.id)?.status).toBe("pending")
+    await f.app.stop()
+  })
+
+  it("treats a reply to an ordinary Butler message as ordinary owner conversation, not an admission decision", async () => {
+    const admission = {
+      ownerFriendId: "ari",
+      resolveOwner: vi.fn(async () => ({ friendId: "ari" })),
+      resolveApprovedFriend: vi.fn(async () => null),
+      claimFriend: vi.fn(),
+      revokeFriend: vi.fn(),
+    }
+    const f = fixture({
+      botToken: "123:test-token",
+      admission,
+      authorizeEffect: vi.fn(async () => ({ allowed: true, receiptId: "owner-effect", expiresAt: "2099-01-01T00:00:00.000Z", transport: { chatId: "42" } })),
+    })
+    await f.app.sendProactive("Ordinary status update")
+    await f.getOnMessage()({ updateId: 701, messageId: "702", userId: "42", chatId: "42", text: "yes", replyToMessageId: "71" })
+    expect(f.runTurn).toHaveBeenCalledOnce()
+    expect(admission.claimFriend).not.toHaveBeenCalled()
+    await f.app.stop()
   })
 
   it("blocks malformed and unauthorized await returns without sending", async () => {

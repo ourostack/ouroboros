@@ -377,6 +377,51 @@ describe("Unraid typed read tools", () => {
     expect(readObligations(agentRoot)).toContainEqual(expect.objectContaining({ status: "investigating", nextAction: expect.stringContaining("report back") }))
   })
 
+  it("reuses the exact pending household return obligation and fails closed when its store is unavailable", async () => {
+    const restart = unraidToolDefinitions.find((definition) => definition.tool.function.name === "unraid_restart_container")!
+    const agentRoot = root()
+    const restartContainer = vi.fn(async () => ({ ok: true }))
+    const relationshipAuthorization = {
+      requestId: "request-repeat",
+      actor: { friendId: "brother", trustLevel: "friend" as const, sessionEventId: "evt-repeat" },
+      authorizeTool: vi.fn(),
+    }
+    const currentSession = { friendId: "brother", channel: "telegram", key: "telegram:777:888" }
+    const context = { agentRoot, currentSession, relationshipAuthorization, sanctuary: { restartContainer } } as any
+
+    await expect(restart.handler({ container: "books" }, context)).resolves.toContain('"ok":true')
+    await expect(restart.handler({ container: "books" }, context)).resolves.toContain('"ok":true')
+    expect(readObligations(agentRoot)).toHaveLength(1)
+
+    await expect(restart.handler({ container: "books" }, { currentSession, relationshipAuthorization, sanctuary: { restartContainer } } as any))
+      .rejects.toThrow("household repair request tracking is unavailable")
+  })
+
+  it("preserves the original thrown restart error when no household obligation exists", async () => {
+    const restart = unraidToolDefinitions.find((definition) => definition.tool.function.name === "unraid_restart_container")!
+    await expect(restart.handler({ container: "books" }, {
+      relationshipAuthorization: { actor: { friendId: "ari", trustLevel: "family", sessionEventId: "evt-owner" } },
+      sanctuary: { restartContainer: async () => { throw new Error("restart transport failed") } },
+    } as any)).rejects.toThrow("restart transport failed")
+  })
+
+  it("falls back to approval if relationship authority disappears between requester classification and revalidation", async () => {
+    const agentRoot = root()
+    let reads = 0
+    const relationshipAuthorization = {
+      actor: { friendId: "ari", trustLevel: "family" as const, sessionEventId: "evt-owner" },
+      authorizeTool: vi.fn(),
+    }
+    const context = { agentRoot } as any
+    Object.defineProperty(context, "relationshipAuthorization", {
+      configurable: true,
+      get: () => { reads += 1; return reads === 1 ? relationshipAuthorization : undefined },
+    })
+
+    await expect(classifyApprovalForInvocation("unraid_restart_container", { container: "books" }, context))
+      .resolves.toMatchObject({ policy: { kind: "required" } })
+  })
+
   it("requires a live versioned relationship capability before bypassing approval and degrades malformed policy to the existing approval", async () => {
     const agentRoot = root()
     updateStewardPolicy(agentRoot, {

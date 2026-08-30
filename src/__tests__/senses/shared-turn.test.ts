@@ -602,6 +602,28 @@ describe("runSenseTurn", () => {
     expect(input.runAgentOptions?.toolContext?.orientationFrame).toBeUndefined()
   })
 
+  it("passes an explicitly resolved orientation frame through the shared turn boundary", async () => {
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    const orientationFrame = {
+      frameId: "frame-1",
+      source: { channel: "mcp", conversationKey: "session-123", speechKind: "utterance", speech: ["hello"] },
+      candidates: [],
+      status: "resolved",
+      generatedAt: "2026-08-29T00:00:00.000Z",
+    } as any
+
+    await runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "hello",
+      orientationFrame,
+    })
+
+    expect(mockHandleInboundTurn.mock.calls[0][0].runAgentOptions.orientationFrame).toBe(orientationFrame)
+  })
+
   it("passes transport tool context through to the agent turn", async () => {
     const voiceCall = { requestEnd: vi.fn() }
     const { runSenseTurn } = await import("../../senses/shared-turn")
