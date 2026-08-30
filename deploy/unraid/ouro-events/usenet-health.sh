@@ -1,4 +1,5 @@
 #!/bin/bash
+set -uo pipefail
 
 LOG="/var/log/usenet_health.log"
 SAB_INI="/mnt/user/appdata/sabnzbd/sabnzbd.ini"
@@ -27,17 +28,57 @@ emit_transition() {
     fi
 }
 
+emit_blind_observation() {
+    local reason="$1"
+    local observed_slot verified_at verification_digest
+    observed_slot=$(date -u '+%Y%m%dT%H%M%SZ')
+    verified_at=$(date -u '+%Y-%m-%dT%H:%M:%S.000Z')
+    verification_digest=$(printf 'sabnzbd.health_check=indeterminate\nreason=%s' "$reason" | sha256sum | cut -d' ' -f1)
+    log "[USENET] CRITICAL — the SABnzbd health check is blind (${reason}); no healthy state was inferred."
+    emit_transition "usenet.observe" "provider-health" "indeterminate:${observed_slot}" "usenet:provider-health:${observed_slot}:indeterminate" "The Usenet health check could not verify current state." "A required SABnzbd ${reason} check failed; treat provider health as unknown and investigate the local API path." "false" "$verification_digest" "$verified_at"
+}
+
+sab_request() {
+    local timeout="$1"
+    local url="$2"
+    printf 'get\ndata-urlencode = "apikey=%s"\n' "$SAB_KEY" \
+      | curl --silent --fail --max-time "$timeout" --config - "$url" 2>/dev/null
+}
+
+fetch_sab_json() {
+    local target="$1"
+    local timeout="$2"
+    local url="$3"
+    local schema="$4"
+    local surface="$5"
+    local payload
+    if ! payload=$(sab_request "$timeout" "$url"); then
+        emit_blind_observation "${surface}-transport"
+        return 1
+    fi
+    if ! printf '%s' "$payload" | jq -e 'type == "object" and (.status != false) and ((has("error") | not) or .error == null or .error == "")' >/dev/null 2>&1 \
+      || ! printf '%s' "$payload" | jq -e "$schema" >/dev/null 2>&1; then
+        emit_blind_observation "${surface}-response"
+        return 1
+    fi
+    printf -v "$target" '%s' "$payload"
+}
+
 /usr/local/bin/node "$EVENT_PRODUCER" --maintain >> "$LOG" 2>&1 || log "[EVENT] Spool maintenance failed; unsafe or unparseable artifacts were preserved."
 
 SAB_KEY=$(grep -m1 '^api_key' "$SAB_INI" 2>/dev/null | cut -d= -f2 | tr -d ' ')
 if [ -z "$SAB_KEY" ]; then
-    log "[SAB] CRITICAL — cannot read api_key from $SAB_INI; check is blind. Exiting."
+    emit_blind_observation "credential-unavailable"
+    exit 1
+fi
+if [[ ! "$SAB_KEY" =~ ^[[:alnum:]_-]+$ ]]; then
+    emit_blind_observation "credential-invalid"
     exit 1
 fi
 
-WARN=$(curl -s --max-time 15 "http://localhost:8090/api?mode=warnings&output=json&apikey=$SAB_KEY")
+fetch_sab_json WARN 15 "http://localhost:8090/api?mode=warnings&output=json" '(.warnings | type) == "array"' "warnings" || exit 1
 
-Q=$(curl -s --max-time 15 "http://localhost:8090/api?mode=queue&output=json&apikey=$SAB_KEY")
+fetch_sab_json Q 15 "http://localhost:8090/api?mode=queue&output=json" '(.queue | type) == "object" and (.queue.status | type) == "string" and (.queue.paused | type) == "boolean" and (((.queue.noofslots | type) == "number") or ((.queue.noofslots | type) == "string"))' "queue" || exit 1
 Q_STATUS=$(echo "$Q" | jq -r '.queue.status // "?"' 2>/dev/null)
 Q_SLOTS=$(echo "$Q" | jq -r '.queue.noofslots // 0' 2>/dev/null)
 STALLED=0
@@ -47,7 +88,7 @@ if [ "$Q_STATUS" = "Idle" ] && [ "${Q_SLOTS:-0}" -gt 0 ]; then STALLED=1; fi
 MIN_ARTICLES=50000
 MIN_RATE=30
 TODAY=$(date +%Y-%m-%d)
-STATS=$(curl -s --max-time 20 "http://localhost:8090/api?mode=server_stats&output=json&apikey=$SAB_KEY")
+fetch_sab_json STATS 20 "http://localhost:8090/api?mode=server_stats&output=json" '(.servers | type) == "array"' "server-stats" || exit 1
 TRIED=$(echo "$STATS" | jq -r --arg d "$TODAY" '[.servers[].articles_tried[$d] // 0] | add // 0' 2>/dev/null)
 OKAY=$(echo "$STATS" | jq -r --arg d "$TODAY" '[.servers[].articles_success[$d] // 0] | add // 0' 2>/dev/null)
 BYTES=$(echo "$STATS" | jq -r --arg d "$TODAY" '[.servers[].daily[$d] // 0] | add // 0' 2>/dev/null)
@@ -78,7 +119,7 @@ DELTA_OKAY=$(( OKAY - BASE_OKAY ))
 
 # A cleared warning is not recovery. Require bounded evidence that articles succeeded
 # and one download reached Completed during the last two guard intervals.
-HISTORY=$(curl -s --max-time 15 "http://localhost:8090/api?mode=history&limit=20&start=0&output=json&apikey=$SAB_KEY")
+fetch_sab_json HISTORY 15 "http://localhost:8090/api?mode=history&limit=20&start=0&output=json" '(.history | type) == "object" and (.history.slots | type) == "array"' "history" || exit 1
 RECENT_SINCE=$(( $(date -u '+%s') - 1800 ))
 RECENT_COMPLETED=$(echo "$HISTORY" | jq -r --argjson since "$RECENT_SINCE" '[.history.slots[]? | select(.status == "Completed" and ((.completed // 0) | tonumber) >= $since)] | length' 2>/dev/null)
 case "$RECENT_COMPLETED" in ''|*[!0-9]*) RECENT_COMPLETED=0 ;; esac
@@ -88,8 +129,9 @@ case "$AUTH_FAIL" in ''|*[!0-9]*) AUTH_FAIL=0 ;; esac
 if [ "${DELTA_TRIED:-0}" -ge "$MIN_ARTICLES" ]; then
     RATE=$(( DELTA_OKAY * 100 / DELTA_TRIED ))
     if [ "$RATE" -lt "$MIN_RATE" ]; then
-        curl -s -o /dev/null --max-time 15 "http://localhost:8090/api?mode=pause&apikey=$SAB_KEY"
-        PAUSED_AFTER=$(curl -s --max-time 15 "http://localhost:8090/api?mode=queue&output=json&apikey=$SAB_KEY" | jq -r '.queue.paused // false')
+        fetch_sab_json PAUSE_RESPONSE 15 "http://localhost:8090/api?mode=pause&output=json" '(.status == true)' "pause" || exit 1
+        fetch_sab_json PAUSE_Q 15 "http://localhost:8090/api?mode=queue&output=json" '(.queue | type) == "object" and (.queue.paused | type) == "boolean"' "pause-verification" || exit 1
+        PAUSED_AFTER=$(printf '%s' "$PAUSE_Q" | jq -r '.queue.paused')
         VERIFIED_AT=$(date -u '+%Y-%m-%dT%H:%M:%S.000Z')
         VERIFICATION_DIGEST=$(printf 'sabnzbd.queue.paused=%s' "$PAUSED_AFTER" | sha256sum | cut -d' ' -f1)
         if [ "$PAUSED_AFTER" = "true" ]; then
@@ -107,7 +149,7 @@ fi
 
 VERIFIED_AT=$(date -u '+%Y-%m-%dT%H:%M:%S.000Z')
 OBSERVED_SLOT=$(date -u '+%Y%m%dT%H%M%SZ')
-FINAL_Q=$(curl -s --max-time 15 "http://localhost:8090/api?mode=queue&output=json&apikey=$SAB_KEY")
+fetch_sab_json FINAL_Q 15 "http://localhost:8090/api?mode=queue&output=json" '(.queue | type) == "object" and (.queue.paused | type) == "boolean"' "final-queue" || exit 1
 FINAL_PAUSED=$(echo "$FINAL_Q" | jq -r '.queue.paused // false' 2>/dev/null)
 if [ "$AUTH_FAIL" -eq 0 ] && [ "$STALLED" -eq 0 ] && [ "$FINAL_PAUSED" = "false" ] && [ "${DELTA_OKAY:-0}" -gt 0 ] && [ "${RECENT_COMPLETED:-0}" -gt 0 ]; then
     VERIFICATION_DIGEST=$(printf 'sabnzbd.auth_fail=0\nsabnzbd.stalled=0\nsabnzbd.queue.paused=false\nsabnzbd.interval_articles_tried=%s\nsabnzbd.interval_articles_success=%s\nsabnzbd.recent_completed=%s' "$DELTA_TRIED" "$DELTA_OKAY" "$RECENT_COMPLETED" | sha256sum | cut -d' ' -f1)

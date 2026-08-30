@@ -56,21 +56,111 @@ describe("Unraid usenet guard cutover assets", () => {
     expect(source).toContain("RATE=$(( DELTA_OKAY * 100 / DELTA_TRIED ))")
     expect(source).toContain('if [ "${DELTA_TRIED:-0}" -ge "$MIN_ARTICLES" ]')
     expect(source).toContain('if [ "$RATE" -lt "$MIN_RATE" ]')
-    expect(source).toContain("api?mode=pause&apikey=$SAB_KEY")
+    expect(source).toContain("api?mode=pause&output=json")
+    expect(source).not.toContain("apikey=$SAB_KEY")
+    expect(source).toContain('curl --silent --fail --max-time "$timeout" --config - "$url"')
     expect(source).not.toMatch(/api\.telegram\.org|TELEGRAM_BOT_TOKEN|TELEGRAM_CHAT_ID|notify\.conf|sendMessage|notify_unraid|webGui\/scripts\/notify/u)
   })
 
   it("maintains the spool every detector tick and emits only after an independent paused-state read", () => {
     const source = fs.readFileSync(guardPath, "utf8")
     expect(source).toContain('/usr/local/bin/node "$EVENT_PRODUCER" --maintain')
-    const pause = source.indexOf("api?mode=pause&apikey=$SAB_KEY")
-    const verify = source.indexOf('jq -r \'.queue.paused // false\'')
+    const pause = source.indexOf("api?mode=pause&output=json")
+    const verify = source.indexOf("api?mode=queue&output=json", pause)
     const emit = source.indexOf('emit_transition "sabnzbd.pause"')
     expect(pause).toBeGreaterThan(-1)
     expect(verify).toBeGreaterThan(pause)
     expect(emit).toBeGreaterThan(verify)
     expect(source).toContain('"spend-pause:${TODAY}:verified"')
     expect(source).toContain('"sabnzbd:pause:${TODAY}:spend-guard"')
+  })
+
+  it.each([
+    ["transport failure", "exit 22"],
+    ["authenticated API rejection", "printf '{\"status\":false,\"error\":\"API Key Incorrect\",\"warnings\":[],\"queue\":{\"status\":\"Downloading\",\"paused\":false,\"noofslots\":0},\"servers\":[],\"history\":{\"slots\":[]}}\\n'"],
+    ["malformed JSON", "printf 'not-json\\n'"],
+  ])("fails closed with one agent-owned observation on %s", (_label, response) => {
+    const temp = root()
+    const bin = path.join(temp, "bin")
+    const calls = path.join(temp, "adapter.calls")
+    const log = path.join(temp, "guard.log")
+    const ini = path.join(temp, "sabnzbd.ini")
+    fs.mkdirSync(bin)
+    fs.writeFileSync(ini, "api_key = test-only-secret-123\n")
+    fs.writeFileSync(path.join(bin, "curl"), `#!/bin/bash
+${response}
+`, { mode: 0o700 })
+    fs.writeFileSync(path.join(temp, "producer"), "#!/bin/bash\nexit 0\n", { mode: 0o700 })
+    fs.writeFileSync(path.join(temp, "adapter"), `#!/bin/bash
+printf '%s\n' "$*" >> ${JSON.stringify(calls)}
+`, { mode: 0o700 })
+
+    expect(() => execFileSync(guardPath, ["--sab-ini", ini, "--log", log, "--producer", path.join(temp, "producer"), "--adapter", path.join(temp, "adapter")], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` }, stdio: "ignore" })).toThrow()
+
+    const emitted = fs.readFileSync(calls, "utf8").trim().split("\n")
+    expect(emitted).toHaveLength(1)
+    expect(emitted[0]).toContain("usenet.observe provider-health indeterminate:")
+    expect(emitted[0]).toContain(" false ")
+    expect(emitted[0]).not.toContain("test-only-secret-123")
+    expect(fs.readFileSync(log, "utf8")).not.toContain("test-only-secret-123")
+  })
+
+  it.each([
+    ["missing credential", ""],
+    ["unsafe credential syntax", "api_key = hostile\"\\nurl = https://example.invalid\n"],
+  ])("fails closed before curl when SAB has a %s", (_label, iniBody) => {
+    const temp = root()
+    const bin = path.join(temp, "bin")
+    const calls = path.join(temp, "adapter.calls")
+    const curlMarker = path.join(temp, "curl.called")
+    const log = path.join(temp, "guard.log")
+    const ini = path.join(temp, "sabnzbd.ini")
+    fs.mkdirSync(bin)
+    fs.writeFileSync(ini, iniBody)
+    fs.writeFileSync(path.join(bin, "curl"), `#!/bin/bash\ntouch ${JSON.stringify(curlMarker)}\n`, { mode: 0o700 })
+    fs.writeFileSync(path.join(temp, "producer"), "#!/bin/bash\nexit 0\n", { mode: 0o700 })
+    fs.writeFileSync(path.join(temp, "adapter"), `#!/bin/bash\nprintf '%s\\n' "$*" >> ${JSON.stringify(calls)}\n`, { mode: 0o700 })
+
+    expect(() => execFileSync(guardPath, ["--sab-ini", ini, "--log", log, "--producer", path.join(temp, "producer"), "--adapter", path.join(temp, "adapter")], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` }, stdio: "ignore" })).toThrow()
+
+    expect(fs.existsSync(curlMarker)).toBe(false)
+    expect(fs.readFileSync(calls, "utf8")).toContain("usenet.observe provider-health indeterminate:")
+    expect(fs.readFileSync(calls, "utf8")).not.toContain("example.invalid")
+    expect(fs.readFileSync(log, "utf8")).not.toContain("example.invalid")
+  })
+
+  it("keeps the SAB API key out of curl and shell process argv", () => {
+    const temp = root()
+    const bin = path.join(temp, "bin")
+    const argv = path.join(temp, "argv")
+    const configs = path.join(temp, "configs")
+    const processes = path.join(temp, "processes")
+    const log = path.join(temp, "guard.log")
+    const ini = path.join(temp, "sabnzbd.ini")
+    const secret = "hostile-secret-argv-987"
+    fs.mkdirSync(bin)
+    fs.writeFileSync(ini, `api_key = ${secret}\n`)
+    fs.writeFileSync(path.join(bin, "curl"), `#!/bin/bash
+printf '%s\n' "$*" >> ${JSON.stringify(argv)}
+cat >> ${JSON.stringify(configs)}
+ps -o command= -p $$ -p $PPID >> ${JSON.stringify(processes)}
+case "$*" in
+  *mode=warnings*) printf '{"warnings":[]}\n' ;;
+  *mode=server_stats*) printf '{"servers":[]}\n' ;;
+  *mode=history*) printf '{"history":{"slots":[]}}\n' ;;
+  *mode=queue*) printf '{"queue":{"paused":false,"status":"Downloading","noofslots":0}}\n' ;;
+  *) printf '{}\n' ;;
+esac
+`, { mode: 0o700 })
+    fs.writeFileSync(path.join(temp, "producer"), "#!/bin/bash\nexit 0\n", { mode: 0o700 })
+    fs.writeFileSync(path.join(temp, "adapter"), "#!/bin/bash\nexit 0\n", { mode: 0o700 })
+
+    execFileSync(guardPath, ["--sab-ini", ini, "--log", log, "--producer", path.join(temp, "producer"), "--adapter", path.join(temp, "adapter")], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } })
+
+    expect(fs.readFileSync(argv, "utf8")).not.toContain(secret)
+    expect(fs.readFileSync(configs, "utf8")).toContain(`apikey=${secret}`)
+    expect(fs.readFileSync(processes, "utf8")).not.toContain(secret)
+    expect(fs.readFileSync(log, "utf8")).not.toContain(secret)
   })
 
   it("never mutates Prowlarr and emits auth, stall, and recovery observations for Butler turns", () => {
@@ -83,7 +173,7 @@ describe("Unraid usenet guard cutover assets", () => {
     expect(source).toContain('emit_transition "usenet.observe" "provider-health" "auth-failed:${OBSERVED_SLOT}"')
     expect(source).toContain('emit_transition "usenet.observe" "provider-health" "stalled:${OBSERVED_SLOT}"')
     expect(source).toContain('emit_transition "usenet.observe" "provider-health" "recovered:${OBSERVED_SLOT}"')
-    expect(source).toContain("api?mode=history&limit=20&start=0&output=json&apikey=$SAB_KEY")
+    expect(source).toContain("api?mode=history&limit=20&start=0&output=json")
     expect(source).toContain('RECENT_COMPLETED=$(echo "$HISTORY"')
     expect(source).toContain('[ "$FINAL_PAUSED" = "false" ] && [ "${DELTA_OKAY:-0}" -gt 0 ] && [ "${RECENT_COMPLETED:-0}" -gt 0 ]')
     expect(source).toContain("recent completed downloads")
@@ -187,7 +277,7 @@ printf '%s\n' "$*" >> ${JSON.stringify(calls)}
     if (seedBaseline) fs.writeFileSync(state, JSON.stringify({ day, tried: 1_000_000, okay: 70_000 }) + "\n")
     fs.writeFileSync(path.join(bin, "curl"), `#!/bin/bash
 case "$*" in
-  *mode=pause*) printf 'true\n' > ${JSON.stringify(paused)} ;;
+  *mode=pause*) printf 'true\n' > ${JSON.stringify(paused)}; printf '{"status":true}\n' ;;
   *mode=warnings*) [ "$GUARD_HISTORICAL_AUTH" = 1 ] && printf '{"warnings":[{"text":"502 Authentication Failed","time":1}]}\n' || printf '{"warnings":[]}\n' ;;
   *mode=server_stats*) printf '{"servers":[{"articles_tried":{"%s":%s},"articles_success":{"%s":%s},"daily":{"%s":0}}]}\n' "$(date +%Y-%m-%d)" "$GUARD_TRIED" "$(date +%Y-%m-%d)" "$GUARD_OKAY" "$(date +%Y-%m-%d)" ;;
   *mode=history*) printf '{"history":{"slots":[{"status":"Completed","completed":%s}]}}\n' "$(date +%s)" ;;
@@ -227,7 +317,7 @@ printf '%s\n' "$*" >> ${JSON.stringify(calls)}
     fs.writeFileSync(state, JSON.stringify({ day, tried: 0, okay: 0 }) + "\n")
     fs.writeFileSync(path.join(bin, "curl"), `#!/bin/bash
 case "$*" in
-  *mode=pause*) printf 'true\n' > ${JSON.stringify(paused)} ;;
+  *mode=pause*) printf 'true\n' > ${JSON.stringify(paused)}; printf '{"status":true}\n' ;;
   *mode=warnings*) printf '{"warnings":[]}\n' ;;
   *mode=server_stats*) run=$(cat ${JSON.stringify(runCount)}); [ "$run" = 0 ] && tried=30000 || tried=60000; okay=$((tried * 7 / 100)); printf '{"servers":[{"articles_tried":{"%s":%s},"articles_success":{"%s":%s},"daily":{"%s":0}}]}\n' "$(date +%Y-%m-%d)" "$tried" "$(date +%Y-%m-%d)" "$okay" "$(date +%Y-%m-%d)" ;;
   *mode=history*) printf '{"history":{"slots":[]}}\n' ;;
