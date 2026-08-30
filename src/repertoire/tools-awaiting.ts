@@ -17,7 +17,7 @@ import { getPrivateRuntimePendingDir } from "../mind/pending"
 import type { PendingMessage } from "../mind/pending"
 import type { ToolDefinition } from "./tools-base"
 import type { CrossChatDeliveryDeps } from "../heart/cross-chat-delivery"
-import { advanceExternalEventFromAwait, advanceExternalEventsFromAwait, getExternalEventRoot, listExternalEventStatus, readExternalEventRecord } from "../heart/external-events/router"
+import { advanceExternalEventFromAwait, getExternalEventRoot, listExternalEventStatus, readExternalEventRecord } from "../heart/external-events/router"
 import { advanceObligation, createObligation, fulfillObligation, readVerifiedPendingObligations } from "../arc/obligations"
 import { parseCadenceToMs } from "../heart/daemon/cadence"
 
@@ -283,9 +283,13 @@ async function resolveAwaitTool(name: string, verdict: string, observation: stri
     ? (() => {
         if (!hasActiveExternalEventAwait(agentName, { recordPath: existing.filed_from_key!, awaitName: name, wakeAt: existing.wake_at! })) throw new Error("External event await authority changed before resolution")
         const record = readExternalEventRecord(existing.filed_from_key!)
+        if (record.agent !== agentName || record.recordPath !== existing.filed_from_key || record.executionState !== "handled"
+          || record.disposition?.awaitId !== name || record.disposition.nextWake.kind !== "at" || record.disposition.nextWake.at !== existing.wake_at) {
+          throw new Error("External event await authority changed before resolution")
+        }
         return [advanceExternalEventFromAwait(record.recordPath, { awaitId: name, expectedVersion: record.version, expectedGeneration: record.generation })]
       })()
-    : advanceExternalEventsFromAwait(getExternalEventRoot(), agentName, name)
+    : []
   const archive = archiveAwait(agentRoot, name, {
     status: "resolved",
     resolved_at: new Date().toISOString(),
