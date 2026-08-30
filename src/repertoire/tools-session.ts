@@ -40,6 +40,12 @@ import {
 import type { ToolContext, ToolDefinition, VoiceCallAudioRequest } from "./tools-base";
 import { listVisibleBackgroundOperations } from "../heart/mail-import-discovery";
 import { placeTrustedFriendVoiceOutboundCall } from "../senses/voice/outbound";
+import { getExternalEventRoot, listExternalEventStatus, type ExternalEventStatus } from "../heart/external-events/router";
+import { readStewardPolicy, type StewardPolicyRecord } from "../heart/steward-policy";
+import { parseAwaitFile, type AwaitFile } from "../heart/awaiting/await-parser";
+import { getDefaultHealthPath, readHealth, type DaemonHealthState } from "../heart/daemon/daemon-health";
+import { readSenseStatusLines } from "../heart/turn-context";
+import { readSanctuaryHealthState, type HealthState } from "../senses/sanctuary-health";
 
 const NO_SESSION_FOUND_MESSAGE = "no session found for that friend/channel/key combination."
 const EMPTY_SESSION_MESSAGE = "session exists but has no non-system messages."
@@ -403,6 +409,87 @@ async function buildToolActiveWorkFrame(ctx?: ToolContext): Promise<ActiveWorkFr
   })
 }
 
+export interface ButlerOperationalVisibility {
+  agentName: string
+  externalEvents: ExternalEventStatus[]
+  stewardPolicy: StewardPolicyRecord
+  awaits: AwaitFile[]
+  telegramDelivery: Pick<HealthState, "outbox" | "indeterminateDeliveries" | "deliveredReceipts" | "updatedAt">
+  daemonHealth: DaemonHealthState | null
+  senseStatusLines: string[]
+  sourceErrors: Partial<Record<"external_events" | "awaits" | "telegram_delivery" | "daemon_health" | "senses" | "steward_policy", string>>
+}
+
+function boundedStatusText(value: string, max = 180): string {
+  const normalized = value.replace(/\s+/g, " ").trim()
+  return normalized.length <= max ? normalized : `${normalized.slice(0, max - 3)}...`
+}
+
+export function readButlerOperationalVisibility(agentRoot = getAgentRoot(), agentName = getAgentName()): ButlerOperationalVisibility {
+  const sourceErrors: ButlerOperationalVisibility["sourceErrors"] = {}
+  const read = <T>(source: keyof ButlerOperationalVisibility["sourceErrors"], operation: () => T, fallback: T): T => {
+    try { return operation() } catch (error) {
+      sourceErrors[source] = boundedStatusText(error instanceof Error ? error.message : String(error)) || "unknown read failure"
+      return fallback
+    }
+  }
+  const awaitsDir = path.join(agentRoot, "awaiting")
+  const awaits = read("awaits", () => fs.existsSync(awaitsDir) ? fs.readdirSync(awaitsDir, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
+    .map((entry) => {
+      const filePath = path.join(awaitsDir, entry.name)
+      return parseAwaitFile(fs.readFileSync(filePath, "utf8"), filePath)
+    })
+    .filter((entry) => entry.status === "pending") : [], [])
+  const healthPath = path.join(agentRoot, "state", "health", "sanctuary-health.json")
+  const health = read("telegram_delivery", () => {
+    if (!fs.existsSync(healthPath)) throw new Error("health delivery state has not been written yet")
+    return readSanctuaryHealthState(healthPath)
+  }, {
+    incidents: {}, lastDigestDay: null, updatedAt: new Date(0).toISOString(), outbox: null, indeterminateDeliveries: [], deliveredReceipts: [], sweepReceipts: [],
+  })
+  return {
+    agentName,
+    externalEvents: read("external_events", () => listExternalEventStatus(getExternalEventRoot()).filter((event) => event.agent === agentName), []),
+    stewardPolicy: read("steward_policy", () => readStewardPolicy(agentRoot), { schemaVersion: 1, version: 0, desiredStates: {}, routineActionGrants: {}, updatedAt: null }),
+    awaits,
+    telegramDelivery: { outbox: health.outbox, indeterminateDeliveries: health.indeterminateDeliveries, deliveredReceipts: health.deliveredReceipts, updatedAt: health.updatedAt },
+    daemonHealth: read("daemon_health", () => {
+      const health = readHealth(getDefaultHealthPath())
+      if (!health) throw new Error("daemon health is missing or invalid")
+      return health
+    }, null),
+    senseStatusLines: read("senses", () => readSenseStatusLines(), []),
+    sourceErrors,
+  }
+}
+
+export function formatButlerOperationalVisibility(status: ButlerOperationalVisibility): string {
+  const daemon = status.daemonHealth
+  const agentHealth = daemon?.agents[status.agentName]
+  const lines = ["## butler operational visibility"]
+  const error = (source: keyof ButlerOperationalVisibility["sourceErrors"]) => status.sourceErrors[source] ? `unavailable (${status.sourceErrors[source]})` : null
+  lines.push(`- daemon: ${error("daemon_health") ?? daemon?.status ?? "unavailable"}${daemon ? `; mode ${daemon.mode}; pid ${daemon.pid}` : ""}`)
+  lines.push(`- butler: ${agentHealth ? `${agentHealth.status}; pid ${agentHealth.pid ?? "none"}; crashes ${agentHealth.crashes}` : "unavailable"}`)
+  lines.push("- senses:")
+  lines.push(...(error("senses") ? [`  - ${error("senses")}`] : status.senseStatusLines.length > 0 ? status.senseStatusLines.map((line) => `  ${line}`) : ["  - unavailable"]))
+  lines.push(`- steward policy: ${error("steward_policy") ?? `version ${status.stewardPolicy.version}; ${Object.keys(status.stewardPolicy.desiredStates).length} desired states; ${Object.keys(status.stewardPolicy.routineActionGrants).length} routine grants`}`)
+  lines.push(`- pending awaits: ${status.awaits.length}`)
+  if (error("awaits")) lines.push(`  - ${error("awaits")}`)
+  for (const pending of status.awaits.slice(0, 20)) lines.push(`  - ${pending.name}: ${boundedStatusText(pending.condition ?? (pending.body || "condition unavailable"))}${pending.wake_at ? `; wake ${pending.wake_at}` : ""}`)
+  if (status.awaits.length > 20) lines.push(`  - ${status.awaits.length - 20} more; inspect awaiting/ for the full canonical list`)
+  lines.push(`- Telegram outbox: ${error("telegram_delivery") ?? `${status.telegramDelivery.outbox ? `${status.telegramDelivery.outbox.status} ${status.telegramDelivery.outbox.id}` : "clear"}; indeterminate ${status.telegramDelivery.indeterminateDeliveries.length}; delivered receipts ${status.telegramDelivery.deliveredReceipts.length}; updated ${status.telegramDelivery.updatedAt}`}`)
+  lines.push(`- external issues: ${status.externalEvents.length}`)
+  if (error("external_events")) lines.push(`  - ${error("external_events")}`)
+  const visibleEvents = [...status.externalEvents].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)).slice(0, 20)
+  for (const event of visibleEvents) {
+    const policy = event.stewardPolicy?.kind === "current" ? `${event.stewardPolicy.key}@${event.stewardPolicy.version}` : "none"
+    lines.push(`  - ${event.source}/${event.eventType}/${event.eventId}: ${event.executionState}; disposition ${event.classification ?? "pending"}/${event.decision ?? "pending"}; reason ${boundedStatusText(event.reason ?? event.lastError ?? "not yet recorded")}; silence/wake ${event.nextWake ? JSON.stringify(event.nextWake) : "pending"}; steward ${policy}${event.awaitId ? `; await ${event.awaitId}` : ""}${event.careId ? `; care ${event.careId}` : ""}`)
+  }
+  if (status.externalEvents.length > visibleEvents.length) lines.push(`  - ${status.externalEvents.length - visibleEvents.length} more; ouro status --json exposes the full canonical event status`)
+  return lines.join("\n")
+}
+
 function findDelegatingBridgeId(ctx?: ToolContext): string | undefined {
   const currentSession = ctx?.currentSession
   if (!currentSession) return undefined
@@ -465,7 +552,10 @@ export const sessionToolDefinitions: ToolDefinition[] = [
     },
     handler: async (_args, ctx) => {
       const frame = await buildToolActiveWorkFrame(ctx)
-      return `this is my current top-level live world-state.\nanswer whole-self status questions from this before drilling into individual sessions.\n\n${formatActiveWorkFrame(frame)}`
+      const activeWork = `this is my current top-level live world-state.\nanswer whole-self status questions from this before drilling into individual sessions.\n\n${formatActiveWorkFrame(frame)}`
+      return getAgentName() === "sanctuary"
+        ? `${activeWork}\n\n${formatButlerOperationalVisibility(readButlerOperationalVisibility())}`
+        : activeWork
     },
   },
   {

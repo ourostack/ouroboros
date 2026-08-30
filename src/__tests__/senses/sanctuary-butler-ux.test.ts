@@ -1,7 +1,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
-import { getChannelCapabilities, type FriendRecord } from "@ouro.bot/friends"
+import { FileFriendStore, getChannelCapabilities, type FriendRecord } from "@ouro.bot/friends"
 
 import { readActiveCares } from "../../arc/cares"
 import { getAgentRoot, resetIdentity, setAgentName } from "../../heart/identity"
@@ -75,6 +75,13 @@ describe("Mendelow Cloud Butler household UX", () => {
     expect(soul).not.toMatch(/\b(?:Dross|Lindon|Eithan|Cradle|Abidan|Monarch)\b/u)
   })
 
+  it("describes health as agent-owned transition work without retired digests or sender-only tooling", () => {
+    const habit = fs.readFileSync(path.join(bundleRoot, "habits", "sanctuary-health.md"), "utf8")
+    expect(habit).toContain("Every durable transition or recovery enters one private agent turn")
+    expect(habit).toContain("investigate or repair")
+    expect(habit).not.toMatch(/daily digest|send_message/iu)
+  })
+
   it("acts under typed standing policy instead of demanding approval for every reversible restart", () => {
     const tacit = psyche("TACIT")
     expect(tacit).toContain("standing policy")
@@ -106,6 +113,36 @@ describe("Mendelow Cloud Butler household UX", () => {
         effectScopes: ["telegram.owner_event"],
       },
     })
+  })
+
+  it("lets the owner teach preferences through the canonical Friend note tool without exposing that mutation to household members", () => {
+    setAgentName("sanctuary")
+    const owner = realToolContext("sanctuary-owner")
+    const household = realToolContext("sanctuary-household")
+    const telegramTools = getToolsForChannel(getChannelCapabilities("telegram")).map((tool) => tool.function.name)
+
+    expect(telegramTools).toContain("save_friend_note")
+    expect(owner.evaluator.advertisedToolNames).toContain("save_friend_note")
+    expect(household.evaluator.advertisedToolNames).not.toContain("save_friend_note")
+    const definition = telegramTools.includes("save_friend_note")
+      ? getToolsForChannel(getChannelCapabilities("telegram")).find((tool) => tool.function.name === "save_friend_note")
+      : undefined
+    expect(definition?.function.description).toContain("never grant authority")
+  })
+
+  it("enforces owner-only preference learning and operational visibility again at execution", async () => {
+    setAgentName(`sanctuary-owner-notes-${process.pid}-${Date.now()}`)
+    const agentRoot = getAgentRoot()
+    rootsToRemove.push(agentRoot)
+    const owner = realToolContext("sanctuary-owner")
+    const household = realToolContext("sanctuary-household")
+    const store = new FileFriendStore(path.join(agentRoot, "friends"))
+    await store.put("ari", relationshipFriend("sanctuary-owner"))
+
+    expect(await execTool("save_friend_note", { type: "tool_preference", key: "status", content: "Lead with the outcome" }, { ...owner.context, friendStore: store, context: { friend: relationshipFriend("sanctuary-owner") } } as any)).toContain("saved: toolPreference status")
+    expect((await store.get("ari"))?.toolPreferences.status).toBe("Lead with the outcome")
+    expect(await execTool("save_friend_note", { type: "note", key: "private", content: "must not write" }, { ...household.context, friendStore: store } as any)).toContain("relationship authorization required")
+    expect(await execTool("query_active_work", {}, household.context)).toContain("relationship authorization required")
   })
 
   it("freezes phone-sized, action-first owner and family conversations", () => {
