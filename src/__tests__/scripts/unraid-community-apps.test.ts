@@ -142,16 +142,18 @@ describe("Mendelow Cloud Butler Community Apps release", () => {
     expect(firstButlerCreateIndex).toBeGreaterThan(verifyIndex)
   })
 
-  it("keeps installed guard scripts root-executable and verifies the same exact modes", () => {
+  it("stages guard scripts as executable while verifying their vfat-installed Unraid modes", () => {
     const installer = fs.readFileSync("deploy/unraid/ouro-events/install-usenet-guard.sh", "utf8")
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const defaultInstallRoot = installer.match(/^INSTALL_ROOT="([^"]+)"$/mu)?.[1]
     const targetNames = installer.match(/^ASSET_NAMES=\(([^)]+)\)$/mu)?.[1].split(/\s+/u) ?? []
     const verifiedModes = [...runbook.matchAll(/stat -c '%u:%g:%a' \/boot\/config\/custom\/(?:ouro-events\/)?(?:usenet_health\.sh|bootstrap-spool\.sh|emit-event\.mjs|emit-usenet-event\.sh|install-usenet-guard\.sh)\)" = ([0-9:]+)/gu)].map((match) => match[1])
 
     expect(targetNames).toEqual(["usenet-health.sh", "bootstrap-spool.sh", "emit-event.mjs", "emit-usenet-event.sh", "install-usenet-guard.sh"])
     expect(installer).toContain('atomic_install "$stage/${ASSET_NAMES[$index]}" "${TARGET_PATHS[$index]}" 0700')
     expect(installer).not.toMatch(/TARGET_PATHS=.*(?:credential|secret|token|\.ini)/iu)
-    expect(verifiedModes).toEqual(Array(5).fill("0:0:700"))
+    expect(runbook).toContain(`test "$(findmnt -n -o FSTYPE --target ${defaultInstallRoot})" = vfat`)
+    expect(verifiedModes).toEqual(Array(5).fill("0:0:600"))
   })
 
   it("documents the exact two read-write and two read-only production mounts", () => {
