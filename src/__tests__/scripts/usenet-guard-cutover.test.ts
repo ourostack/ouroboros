@@ -37,15 +37,19 @@ function transactionResidue(directory: string): string[] {
   return fs.readdirSync(directory, { recursive: true }).map(String).filter((name) => name.includes(".ouro-next.") || name.includes(".ouro-usenet-stage.") || name.includes(".ouro-usenet-restore."))
 }
 
-const hostSnapshotRelatives = ["go", "custom/usenet_health.sh", "custom/ouro-events/bootstrap-spool.sh", "custom/ouro-events/emit-event.mjs", "custom/ouro-events/emit-usenet-event.sh", "custom/ouro-events/install-usenet-guard.sh", "crontab"]
+const hostAssetRelatives = ["custom/usenet_health.sh", "custom/ouro-events/bootstrap-spool.sh", "custom/ouro-events/emit-event.mjs", "custom/ouro-events/emit-usenet-event.sh", "custom/ouro-events/install-usenet-guard.sh"]
+const hostSnapshotRelatives = [...hostAssetRelatives, "go.butler-lines", "crontab.butler-lines", "global-state"]
 
 function hostSnapshot(temp: string): string {
   const snapshot = path.join(temp, "host-snapshot")
-  for (const relative of hostSnapshotRelatives) {
+  for (const relative of hostAssetRelatives) {
     const target = path.join(snapshot, relative)
     fs.mkdirSync(path.dirname(target), { recursive: true })
     fs.writeFileSync(target, `snapshot:${relative}\n`, { mode: 0o600 })
   }
+  fs.writeFileSync(path.join(snapshot, "go.butler-lines"), "/bin/bash /boot/config/custom/ouro-events/install-usenet-guard.sh --boot\n", { mode: 0o600 })
+  fs.writeFileSync(path.join(snapshot, "crontab.butler-lines"), "*/15 * * * * /bin/bash /boot/config/custom/usenet_health.sh\n", { mode: 0o600 })
+  fs.writeFileSync(path.join(snapshot, "global-state"), `go\tpresent\t${"a".repeat(64)}\t1\ncrontab\tpresent\t${"b".repeat(64)}\t1\n`, { mode: 0o600 })
   fs.writeFileSync(path.join(snapshot, "inventory"), `${hostSnapshotRelatives.map((relative) => `present\t${relative}`).join("\n")}\n`, { mode: 0o600 })
   return snapshot
 }
@@ -607,13 +611,13 @@ exec /usr/bin/install "$@"
     const crontabFile = path.join(temp, "crontab")
     const snapshot = hostSnapshot(temp)
     fs.mkdirSync(path.join(installRoot, "ouro-events"), { recursive: true })
-    fs.writeFileSync(goFile, "current-go\n")
-    fs.writeFileSync(crontabFile, "current-cron # ouro:usenet-health\n")
+    fs.writeFileSync(goFile, "#!/bin/bash\ncurrent-go\n")
+    fs.writeFileSync(crontabFile, "current-cron # ouro:usenet-health\nunrelated-cron\n")
 
     for (let index = 0; index < 2; index += 1) execFileSync(installerPath, ["--restore-root", snapshot, "--install-root", installRoot, "--go-file", goFile, "--crontab-file", crontabFile])
 
-    expect(fs.readFileSync(goFile, "utf8")).toBe("snapshot:go\n")
-    expect(fs.readFileSync(crontabFile, "utf8")).toBe("snapshot:crontab\n")
+    expect(fs.readFileSync(goFile, "utf8")).toBe("#!/bin/bash\n/bin/bash /boot/config/custom/ouro-events/install-usenet-guard.sh --boot\ncurrent-go\n")
+    expect(fs.readFileSync(crontabFile, "utf8")).toBe("unrelated-cron\n*/15 * * * * /bin/bash /boot/config/custom/usenet_health.sh\n")
     expect(fs.readFileSync(path.join(installRoot, "usenet_health.sh"), "utf8")).toBe("snapshot:custom/usenet_health.sh\n")
     expect(fs.readFileSync(path.join(installRoot, "ouro-events", "install-usenet-guard.sh"), "utf8")).toBe("snapshot:custom/ouro-events/install-usenet-guard.sh\n")
     expect(transactionResidue(installRoot)).toEqual([])
@@ -634,9 +638,13 @@ exec /usr/bin/install "$@"
     fs.writeFileSync(goFile, "current-go\n", { mode: 0o700 })
     fs.writeFileSync(crontabFile, "current-cron # ouro:usenet-health\n", { mode: 0o600 })
     const before = new Map([...targets, goFile, crontabFile].map((target) => [target, fs.readFileSync(target, "utf8")]))
-    const failingTarget = path.join(eventRoot, "emit-event.mjs")
+    const failingTarget = crontabFile
+    const failureMarker = path.join(temp, "mv.failed")
     fs.writeFileSync(path.join(bin, "mv"), `#!/bin/bash
-case "$2" in ${JSON.stringify(failingTarget)}) exit 77 ;; esac
+if [ "$2" = ${JSON.stringify(failingTarget)} ] && [ ! -e ${JSON.stringify(failureMarker)} ]; then
+  touch ${JSON.stringify(failureMarker)}
+  exit 77
+fi
 exec /bin/mv "$@"
 `, { mode: 0o700 })
 

@@ -311,7 +311,7 @@ Effective-spec audit helper:
         if (!Array.isArray(container) || container.length !== 1 || !container[0] || container[0].Image !== imageId) process.exit(1);
         if (!Array.isArray(image) || image.length !== 1 || !image[0] || image[0].Id !== imageId) process.exit(1);
         if (image[0].Config?.Labels?.["org.opencontainers.image.source"] !== "https://github.com/ourostack/ouroboros") process.exit(1);
-        const expected = ["go", "custom/usenet_health.sh", "custom/ouro-events/bootstrap-spool.sh", "custom/ouro-events/emit-event.mjs", "custom/ouro-events/emit-usenet-event.sh", "custom/ouro-events/install-usenet-guard.sh", "crontab"];
+        const expected = ["custom/usenet_health.sh", "custom/ouro-events/bootstrap-spool.sh", "custom/ouro-events/emit-event.mjs", "custom/ouro-events/emit-usenet-event.sh", "custom/ouro-events/install-usenet-guard.sh", "go.butler-lines", "crontab.butler-lines", "global-state"];
         const expectedUid = 0;
         const expectedGid = 0;
         const hostRoot = fs.lstatSync(hostPath);
@@ -319,7 +319,15 @@ Effective-spec audit helper:
         const rows = fs.readFileSync(`${hostPath}/inventory`, "utf8").trim().split("\n").map(line => line.split("\t"));
         if (rows.length !== expected.length || rows.some((row, index) => row.length !== 2 || row[1] !== expected[index] || !["present", "absent"].includes(row[0]))) process.exit(1);
         const present = rows.filter(row => row[0] === "present").map(row => row[1]);
-        if (!present.includes("crontab")) process.exit(1);
+        if (!["go.butler-lines", "crontab.butler-lines", "global-state"].every(relative => present.includes(relative))) process.exit(1);
+        const globalRows = fs.readFileSync(`${hostPath}/global-state`, "utf8").trim().split("\n").map(line => line.split("\t"));
+        if (globalRows.length !== 2 || globalRows[0][0] !== "go" || globalRows[1][0] !== "crontab") process.exit(1);
+        for (const [name, state, digest, count] of globalRows) {
+          if (!["go", "crontab"].includes(name) || !["present", "absent"].includes(state) || !/^(?:[0-9a-f]{64}|-)$/.test(digest) || !/^(?:0|[1-9][0-9]*)$/.test(count)) process.exit(1);
+          if ((state === "absent") !== (digest === "-")) process.exit(1);
+          const fragmentLines = fs.readFileSync(`${hostPath}/${name}.butler-lines`, "utf8").split("\n").filter(Boolean);
+          if (fragmentLines.length !== Number(count)) process.exit(1);
+        }
         for (const [state, relative] of rows) {
           if (fs.existsSync(`${hostPath}/${relative}`) !== (state === "present")) process.exit(1);
         }
@@ -1659,7 +1667,7 @@ Backup:
       BACKUP_HOST_SOURCE=$1
       BACKUP_HOST_RELATIVE=$2
       case "$BACKUP_HOST_RELATIVE" in
-        go|custom/usenet_health.sh|custom/ouro-events/bootstrap-spool.sh|custom/ouro-events/emit-event.mjs|custom/ouro-events/emit-usenet-event.sh|custom/ouro-events/install-usenet-guard.sh) ;;
+        custom/usenet_health.sh|custom/ouro-events/bootstrap-spool.sh|custom/ouro-events/emit-event.mjs|custom/ouro-events/emit-usenet-event.sh|custom/ouro-events/install-usenet-guard.sh) ;;
         *) return 1 ;;
       esac
       if test -e "$BACKUP_HOST_SOURCE" || test -L "$BACKUP_HOST_SOURCE"; then
@@ -1672,7 +1680,48 @@ Backup:
       fi
     }
     host_file_contains_inline_credential() {
-      LC_ALL=C grep -Eiq '([0-9]{6,}:[A-Za-z0-9_-]{20,}|(token|secret|password|pass|api[_-]?key)[[:space:]]*=[[:space:]]*["'"']?[A-Za-z0-9][A-Za-z0-9_./+=:-]{15,})' "$1"
+      LC_ALL=C awk '
+        BEGIN { IGNORECASE = 1; found = 0 }
+        /[0-9]{6,}:[A-Za-z0-9_-]{20,}/ { found = 1 }
+        /Authorization:[[:space:]]*(Bearer|Basic)[[:space:]]+["\047]?[A-Za-z0-9][A-Za-z0-9._~+\/=:-]{11,}/ { found = 1 }
+        /--(token|api-key|api_key|secret|password)(=|[[:space:]]+)["\047]?[A-Za-z0-9][A-Za-z0-9._~+\/=:-]{11,}/ { found = 1 }
+        /[A-Za-z][A-Za-z0-9+.-]*:\/\/[^\/@[:space:]]+:[^\/@[:space:]]+@/ { found = 1 }
+        /-----BEGIN ([A-Z0-9]+ )*PRIVATE KEY-----/ { found = 1 }
+        /(token|secret|password|pass|api[_-]?key)[A-Za-z0-9_-]*["\047[:space:]]*[:=][[:space:]]*["\047]?[A-Za-z0-9][A-Za-z0-9._~+\/=:-]{11,}/ { found = 1 }
+        END { exit found ? 0 : 1 }
+      ' "$1"
+    }
+    snapshot_butler_host_fragments() {
+      BACKUP_CRON_SOURCE=$(mktemp /tmp/ouro-backup-crontab.XXXXXX) || return $?
+      trap 'rm -f -- "$BACKUP_CRON_SOURCE"' RETURN
+      if test -f /boot/config/go && test ! -L /boot/config/go; then
+        BACKUP_GO_STATE=present
+        BACKUP_GO_DIGEST=$(sha256sum /boot/config/go | awk '{print $1}') || return $?
+        awk '$0 == "/boot/config/custom/ouro-events/bootstrap-spool.sh --mount" || $0 == "/bin/bash /boot/config/custom/ouro-events/bootstrap-spool.sh --mount" || $0 ~ /^\/bin\/bash \/boot\/config\/custom\/ouro-events\/install-usenet-guard\.sh --boot([[:space:]]|$)/' /boot/config/go >"$BACKUP_TMP/host/go.butler-lines" || return $?
+      elif test -e /boot/config/go || test -L /boot/config/go; then
+        return 1
+      else
+        BACKUP_GO_STATE=absent
+        BACKUP_GO_DIGEST=-
+        : >"$BACKUP_TMP/host/go.butler-lines" || return $?
+      fi
+      if crontab -l >"$BACKUP_CRON_SOURCE" 2>/dev/null; then
+        BACKUP_CRON_STATE=present
+        BACKUP_CRON_DIGEST=$(sha256sum "$BACKUP_CRON_SOURCE" | awk '{print $1}') || return $?
+      else
+        BACKUP_CRON_STATE=absent
+        BACKUP_CRON_DIGEST=-
+        : >"$BACKUP_CRON_SOURCE" || return $?
+      fi
+      awk 'index($0, "# ouro:usenet-health") || $0 == "*/15 * * * * /bin/bash /boot/config/custom/usenet_health.sh"' "$BACKUP_CRON_SOURCE" >"$BACKUP_TMP/host/crontab.butler-lines" || return $?
+      BACKUP_GO_COUNT=$(awk 'END { print NR + 0 }' "$BACKUP_TMP/host/go.butler-lines") || return $?
+      BACKUP_CRON_COUNT=$(awk 'END { print NR + 0 }' "$BACKUP_TMP/host/crontab.butler-lines") || return $?
+      printf 'go\t%s\t%s\t%s\ncrontab\t%s\t%s\t%s\n' "$BACKUP_GO_STATE" "$BACKUP_GO_DIGEST" "$BACKUP_GO_COUNT" "$BACKUP_CRON_STATE" "$BACKUP_CRON_DIGEST" "$BACKUP_CRON_COUNT" >"$BACKUP_TMP/host/global-state" || return $?
+      chown 0:0 "$BACKUP_TMP/host/go.butler-lines" "$BACKUP_TMP/host/crontab.butler-lines" "$BACKUP_TMP/host/global-state" || return $?
+      chmod 0600 "$BACKUP_TMP/host/go.butler-lines" "$BACKUP_TMP/host/crontab.butler-lines" "$BACKUP_TMP/host/global-state" || return $?
+      printf 'present\t%s\n' go.butler-lines crontab.butler-lines global-state >>"$BACKUP_TMP/host/inventory" || return $?
+      rm -f -- "$BACKUP_CRON_SOURCE" || return $?
+      trap - RETURN
     }
   Snapshot both of these directories together:
     /mnt/user/appdata/ouro-butler/runtime/.ouro-cli
@@ -1689,17 +1738,12 @@ Backup:
       && install -d -m 0700 -o 0 -g 0 "$BACKUP_TMP" "$BACKUP_TMP/runtime" "$BACKUP_TMP/agent" "$BACKUP_TMP/host" "$BACKUP_TMP/provenance" \
       && install -d -m 0700 -o 0 -g 0 "$BACKUP_TMP/host/custom/ouro-events" \
       && install -m 0600 -o 0 -g 0 /dev/null "$BACKUP_TMP/host/inventory" \
-      && backup_host_file /boot/config/go go \
       && backup_host_file /boot/config/custom/usenet_health.sh custom/usenet_health.sh \
       && backup_host_file /boot/config/custom/ouro-events/bootstrap-spool.sh custom/ouro-events/bootstrap-spool.sh \
       && backup_host_file /boot/config/custom/ouro-events/emit-event.mjs custom/ouro-events/emit-event.mjs \
       && backup_host_file /boot/config/custom/ouro-events/emit-usenet-event.sh custom/ouro-events/emit-usenet-event.sh \
       && backup_host_file /boot/config/custom/ouro-events/install-usenet-guard.sh custom/ouro-events/install-usenet-guard.sh \
-      && crontab -l >"$BACKUP_TMP/host/crontab" \
-      && { ! host_file_contains_inline_credential "$BACKUP_TMP/host/crontab" || { rm -f "$BACKUP_TMP/host/crontab"; false; }; } \
-      && chown 0:0 "$BACKUP_TMP/host/crontab" \
-      && chmod 0600 "$BACKUP_TMP/host/crontab" \
-      && printf 'present\tcrontab\n' >>"$BACKUP_TMP/host/inventory" \
+      && snapshot_butler_host_fragments \
       && test ! -e "$BACKUP_TMP/host/notify.conf" \
       && test ! -e "$BACKUP_TMP/host/sabnzbd.ini" \
       && rsync -a --exclude='/state/acceptance/telegram-control.sock' /mnt/user/appdata/ouro-butler/runtime/.ouro-cli "$BACKUP_TMP/runtime/" \
@@ -1771,7 +1815,9 @@ Restore:
   Ordinary update failure continues to use the installer's short-lived
   transaction rollback. Extract the installer from the reviewed runner image,
   then let that fixed allowlist transaction restore exact presence/absence for
-  go and the six guard assets plus the captured root crontab. It deactivates the
+  the five guard assets and reapply only the captured Butler-owned go/crontab
+  fragments. Unrelated current go/crontab lines are never stored in the durable
+  snapshot and remain untouched by restore. The transaction deactivates the
   current owned cron before swapping files and restores the entire pre-restore
   host state if any swap or final crontab activation fails:
     HOST_RESTORE_INSTALLER=$(mktemp /tmp/ouro-usenet-host-restore.XXXXXX)
