@@ -161,11 +161,13 @@ export interface TelegramCommittedAdmissionIngress {
 export interface TelegramNewlyAdmittedOrientation {
   kind: "newly_admitted"
   instruction: "welcome_and_explain_capabilities"
+  attachmentsNeedResend: boolean
 }
 
 export const NEWLY_ADMITTED_ORIENTATION: TelegramNewlyAdmittedOrientation = {
   kind: "newly_admitted",
   instruction: "welcome_and_explain_capabilities",
+  attachmentsNeedResend: false,
 }
 
 const ACTIVE_STATUSES = new Set<TelegramAdmissionStatus>([
@@ -717,7 +719,10 @@ export function createTelegramAdmissionController(options: TelegramAdmissionCont
           hasAttachments: record.hasAttachments,
           synthetic: false,
         })
-        const committed: TelegramCommittedAdmissionIngress = { ...committedBase, orientation: NEWLY_ADMITTED_ORIENTATION }
+        const committed: TelegramCommittedAdmissionIngress = {
+          ...committedBase,
+          orientation: { ...NEWLY_ADMITTED_ORIENTATION, attachmentsNeedResend: record.hasAttachments },
+        }
         if (committed.admissionId !== record.id || committed.friendId !== record.friendId || committed.reference !== `telegram-admission:${record.id}`) {
           throw new Error("Telegram admission committed ingress changed identity")
         }
@@ -728,7 +733,14 @@ export function createTelegramAdmissionController(options: TelegramAdmissionCont
         record = options.store.compareAndSwap({ admissionId: record.id, expectedStatus: "ingress_committed", nextStatus: "turn_queued" })
       }
       if (!record.friendId || !record.ingressSessionKey || !record.ingressEventId || !record.ingressReference) throw new Error("Telegram admission queued work lost its durable reference")
-      const settlement = await options.dispatchApprovedWork({ admissionId: record.id, friendId: record.friendId, sessionKey: record.ingressSessionKey, eventId: record.ingressEventId, reference: record.ingressReference, orientation: NEWLY_ADMITTED_ORIENTATION })
+      const settlement = await options.dispatchApprovedWork({
+        admissionId: record.id,
+        friendId: record.friendId,
+        sessionKey: record.ingressSessionKey,
+        eventId: record.ingressEventId,
+        reference: record.ingressReference,
+        orientation: { ...NEWLY_ADMITTED_ORIENTATION, attachmentsNeedResend: record.hasAttachments },
+      })
       if (settlement === "indeterminate") {
         await compensateFriend(record)
         return options.store.compareAndSwap({ admissionId: record.id, expectedStatus: "turn_queued", nextStatus: "indeterminate" })

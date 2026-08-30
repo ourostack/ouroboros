@@ -144,7 +144,7 @@ describe("Telegram household admission", () => {
     expect(value.claim).toHaveBeenCalledTimes(1)
     expect(value.claim).toHaveBeenCalledWith(expect.objectContaining({ provider: "telegram-user", botId: "777", userId: "888", chatId: "888" }))
     expect(value.queue).toHaveBeenCalledTimes(1)
-    expect(value.queue).toHaveBeenCalledWith(expect.objectContaining({ friendId: "friend-1", eventId: "evt-000001", reference: `telegram-admission:${pending.admissionId}`, orientation: { kind: "newly_admitted", instruction: "welcome_and_explain_capabilities" } }))
+    expect(value.queue).toHaveBeenCalledWith(expect.objectContaining({ friendId: "friend-1", eventId: "evt-000001", reference: `telegram-admission:${pending.admissionId}`, orientation: { kind: "newly_admitted", instruction: "welcome_and_explain_capabilities", attachmentsNeedResend: false } }))
     expect(value.store.read(pending.admissionId)).toMatchObject({ status: "handled", quarantinedText: null, friendId: "friend-1" })
     expect(value.effects.at(-1)).toMatchObject({
       idempotencyKey: `owner-card-terminal:${pending.admissionId}:handled`,
