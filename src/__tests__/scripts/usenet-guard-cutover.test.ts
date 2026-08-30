@@ -41,6 +41,13 @@ afterEach(() => {
 })
 
 describe("Unraid usenet guard cutover assets", () => {
+  it("rejects non-canonical persisted paths before rendering boot or cron commands", () => {
+    expect(() => execFileSync(installerPath, ["--install-root", "/boot/config/custom;touch-pwned"], { stdio: "ignore" })).toThrow()
+    expect(() => execFileSync(installerPath, ["--install-root", "/boot/config/../custom"], { stdio: "ignore" })).toThrow()
+    expect(() => execFileSync(installerPath, ["--install-root", "/boot/config/custom/"], { stdio: "ignore" })).toThrow()
+    expect(() => execFileSync(installerPath, ["--crontab-file", "relative/cron"], { stdio: "ignore" })).toThrow()
+  })
+
   it("preserves the article-success spend guard while removing direct Telegram delivery", () => {
     const source = fs.readFileSync(guardPath, "utf8")
     expect(source).toContain("MIN_ARTICLES=50000")

@@ -18,7 +18,7 @@ export const continuityToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "external_event_disposition",
-        description: "Classify the exact external-event generation I just investigated. This records why I acted or stayed silent and what exact change should wake me next; it never sends a message by itself.",
+        description: "Classify the exact external-event generation I just investigated. An ask or report is the sole owner-delivery path and sends reason once for this receipt; silent and act only record the disposition.",
         parameters: {
           type: "object",
           properties: {
@@ -81,14 +81,17 @@ export const continuityToolDefinitions: ToolDefinition[] = [
       const actionRefs = Array.isArray(a.actionRefs) ? a.actionRefs.map(String) : [];
       const verificationRefs = Array.isArray(a.verificationRefs) ? a.verificationRefs.map(String) : [];
       const agentRoot = getAgentRoot();
+      const policy = readStewardPolicy(agentRoot);
       let stewardPolicy: import("../heart/external-events/router").ExternalEventDisposition["stewardPolicy"];
       if (policyKind === "none") {
         if (record.transition !== "opened") throw new Error("External event no-policy disposition requires a fresh observation");
+        if (policy.version !== 0 || Object.keys(policy.desiredStates).length !== 0 || Object.keys(policy.routineActionGrants).length !== 0) {
+          throw new Error("External event no-policy disposition requires the canonical empty steward policy");
+        }
         stewardPolicy = { kind: "none" };
       } else {
         const key = String(a.stewardPolicyKey ?? "").trim();
         if (!key) throw new Error("External event disposition is invalid");
-        const policy = readStewardPolicy(agentRoot);
         if (policy.version !== policyVersion || (!policy.desiredStates[key] && !policy.routineActionGrants[key])) {
           throw new Error("External event steward policy is not the exact current key/version");
         }
@@ -135,7 +138,7 @@ export const continuityToolDefinitions: ToolDefinition[] = [
       if (decision === "ask" || decision === "report") {
         if (Buffer.byteLength(reason, "utf8") > 1_200) throw new Error("External event owner message must be phone-sized");
         if (!ctx?.externalEventEffects) throw new Error("External event owner delivery is unavailable");
-        await ctx.externalEventEffects.deliverOwnerDecision({ eventId: record.eventId, generation: record.generation, text: reason });
+        await ctx.externalEventEffects.deliverOwnerDecision({ source: record.source, eventId: record.eventId, generation: record.generation, text: reason });
       }
       const handled = commitExternalEventDisposition(recordPath, {
         owner: turnEvent.claimOwner,

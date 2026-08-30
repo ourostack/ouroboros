@@ -371,7 +371,7 @@ describe("continuity tools", () => {
         externalEventEffects: { deliverOwnerDecision },
       } as any)
 
-      expect(deliverOwnerDecision).toHaveBeenCalledWith({ eventId: "books", generation: 2, text: "Books is down. I’m checking it now." })
+      expect(deliverOwnerDecision).toHaveBeenCalledWith({ source: "sanctuary-health", eventId: "books", generation: 2, text: "Books is down. I’m checking it now." })
       expect(deliverOwnerDecision.mock.invocationCallOrder[0]).toBeLessThan(mockCommitExternalEventDisposition.mock.invocationCallOrder[0]!)
       expect(mockCommitExternalEventDisposition).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ disposition: expect.objectContaining({ stewardPolicy: { kind: "current", key: "service:books", version: 4 } }) }))
     })
@@ -382,9 +382,14 @@ describe("continuity tools", () => {
       const context = { signin: async () => undefined, currentExternalEvent: { schemaVersion: 1 as const, recordPath: "/events/ouroboros/sanctuary-health/books.json", agent: "ouroboros", source: "sanctuary-health", eventId: "books", generation: 2, observationRevision: "rev-2", claimOwner: "lease-2" }, externalEventAuthority: { authorizeDisposition: () => ({ allowed: true, reason: "test" }) } }
       expect(() => findTool("external_event_disposition").handler({ recordPath: context.currentExternalEvent.recordPath, expectedGeneration: 2, classifiedRevision: "rev-2", classification: "expected", stewardPolicyKind: "current", stewardPolicyKey: "service:books", stewardPolicyVersion: 4, decision: "silent", reason: "Expected.", nextWake: "on_change" }, context)).toThrow(/exact current key\/version/u)
       expect(() => findTool("external_event_disposition").handler({ recordPath: context.currentExternalEvent.recordPath, expectedGeneration: 2, classifiedRevision: "rev-2", classification: "expected", stewardPolicyKind: "none", decision: "silent", reason: "No policy yet.", nextWake: "on_change" }, context)).toThrow(/fresh observation/u)
+      mockReadExternalEventRecord.mockReturnValue({ agent: "ouroboros", source: "sanctuary-health", eventId: "books", transition: "opened", version: 4, generation: 2, observationRevision: "rev-2", executionState: "running", claimOwner: "lease-2" })
+      vi.mocked(fs.existsSync).mockReturnValue(true)
+      vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({ schemaVersion: 1, version: 1, desiredStates: { "service:other": { value: "on", provenance: "stated", version: 1, source: "ari" } }, routineActionGrants: {}, updatedAt: "2026-08-29T00:00:00.000Z" }))
+      expect(() => findTool("external_event_disposition").handler({ recordPath: context.currentExternalEvent.recordPath, expectedGeneration: 2, classifiedRevision: "rev-2", classification: "expected", stewardPolicyKind: "none", decision: "silent", reason: "No policy yet.", nextWake: "on_change" }, context)).toThrow(/canonical empty steward policy/u)
     })
 
     it("validates Care incident ownership and the exact pending Await time", async () => {
+      vi.mocked(fs.existsSync).mockReturnValue(false)
       mockReadExternalEventRecord.mockReturnValue({ agent: "ouroboros", source: "sanctuary-health", eventId: "books", transition: "opened", version: 4, generation: 2, observationRevision: "rev-2", executionState: "running", claimOwner: "lease-2" })
       mockReadCares.mockReturnValue([{ id: "care-books", incidentBindings: [{ source: "sanctuary-health", incidentKey: "books", classifiedRevision: "rev-2" }] }])
       vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => String(filePath).endsWith("await-top-up.md") ? "---\nstatus: pending\nwake_at: 2026-08-30T17:00:00.000Z\n---\n\nWaiting.\n" : "")

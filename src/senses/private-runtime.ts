@@ -1197,7 +1197,7 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
             },
           },
           externalEventEffects: {
-            deliverOwnerDecision: async (input: { eventId: string; generation: number; text: string }) => {
+            deliverOwnerDecision: async (input: { source: string; eventId: string; generation: number; text: string }) => {
               const { sendTelegramExternalEventDecision } = await import("./telegram")
               await sendTelegramExternalEventDecision(agentName, input)
             },

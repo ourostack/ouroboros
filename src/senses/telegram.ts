@@ -131,7 +131,7 @@ export interface TelegramAdmissionDependencies {
 export interface TelegramSenseApp {
   run(signal?: AbortSignal): Promise<void>
   sendProactive(text: string, signal?: AbortSignal): Promise<void>
-  sendExternalEventDecision(input: { eventId: string; generation: number; text: string; signal?: AbortSignal }): Promise<void>
+  sendExternalEventDecision(input: { source: string; eventId: string; generation: number; text: string; signal?: AbortSignal }): Promise<void>
   stop(): Promise<void>
 }
 
@@ -1575,10 +1575,12 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       })
     },
     async sendExternalEventDecision(input) {
+      const source = requiredText(input.source, "external event source")
       const eventId = requiredText(input.eventId, "external event id")
-      if (Buffer.byteLength(eventId) > 512 || !Number.isSafeInteger(input.generation) || input.generation < 1) throw new Error("Telegram external event identity is invalid")
+      if (Buffer.byteLength(source) > 512 || Buffer.byteLength(eventId) > 512 || !Number.isSafeInteger(input.generation) || input.generation < 1) throw new Error("Telegram external event identity is invalid")
       await runWithAcceptanceAuditOwner(async () => {
-        const effect = await deliverButlerEffect(requiredText(input.text, "external event decision"), `external-event:${eventId}:${input.generation}`, input.signal)
+        const receiptIdentity = JSON.stringify([source, eventId, input.generation])
+        const effect = await deliverButlerEffect(requiredText(input.text, "external event decision"), `external-event:${receiptIdentity}`, input.signal)
         const sessionPath = getSenseSessionPath(options.agentName, `telegram-user:${subject}`, "telegram", `telegram:${subject}`, agentRoot)
         await recordAcceptedEffects(sessionPath, [effect])
       })
@@ -1760,7 +1762,7 @@ export async function startTelegramSenseApp(agentName: string): Promise<Telegram
 
 export async function sendTelegramExternalEventDecision(
   agentName: string,
-  input: { eventId: string; generation: number; text: string; signal?: AbortSignal },
+  input: { source: string; eventId: string; generation: number; text: string; signal?: AbortSignal },
 ): Promise<void> {
   const app = await startTelegramSenseApp(agentName)
   try {

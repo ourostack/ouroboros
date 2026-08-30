@@ -1616,18 +1616,28 @@ describe("Telegram sense", () => {
 
   it("records one event-generation owner decision through the existing effect and Telegram session", async () => {
     const f = fixture()
-    await f.app.sendExternalEventDecision({ eventId: "container:books", generation: 4, text: "Books is still down. I’m looking into it." })
-    await f.app.sendExternalEventDecision({ eventId: "container:books", generation: 4, text: "Books is still down. I’m looking into it." })
+    await f.app.sendExternalEventDecision({ source: "sanctuary-health", eventId: "container:books", generation: 4, text: "Books is still down. I’m looking into it." })
+    await f.app.sendExternalEventDecision({ source: "sanctuary-health", eventId: "container:books", generation: 4, text: "Books is still down. I’m looking into it." })
 
     expect(f.api.request).toHaveBeenCalledTimes(1)
     const effectRoot = path.join(f.agentRoot, "state", "telegram", "effects")
     const artifact = JSON.parse(fs.readFileSync(path.join(effectRoot, fs.readdirSync(effectRoot)[0]!), "utf8"))
-    expect(artifact).toMatchObject({ idempotencyKey: "external-event:container:books:4", authorClass: "butler", parts: [{ state: "session_recorded", messageId: 71 }] })
+    expect(artifact).toMatchObject({ idempotencyKey: 'external-event:["sanctuary-health","container:books",4]', authorClass: "butler", parts: [{ state: "session_recorded", messageId: 71 }] })
     const sessionRoot = path.join(f.agentRoot, "state", "sessions")
     const sessionFile = fs.readdirSync(sessionRoot, { recursive: true }).find((entry) => String(entry).endsWith(".json"))
     expect(sessionFile).toBeDefined()
     const session = JSON.parse(fs.readFileSync(path.join(sessionRoot, String(sessionFile)), "utf8"))
     expect(session.events.filter((event: any) => event.content === "Books is still down. I’m looking into it.")).toHaveLength(1)
+  })
+
+  it("does not collide owner delivery across event sources", async () => {
+    const f = fixture()
+    await f.app.sendExternalEventDecision({ source: "sanctuary-health", eventId: "books", generation: 1, text: "Health report" })
+    await f.app.sendExternalEventDecision({ source: "sanctuary-usenet", eventId: "books", generation: 1, text: "Usenet report" })
+    expect(f.api.request).toHaveBeenCalledTimes(2)
+    const effectRoot = path.join(f.agentRoot, "state", "telegram", "effects")
+    const keys = fs.readdirSync(effectRoot).map((name) => JSON.parse(fs.readFileSync(path.join(effectRoot, name), "utf8")).idempotencyKey)
+    expect(new Set(keys).size).toBe(2)
   })
 
   it("runs the verified privileged failsafe through the existing Telegram startup reconciliation and records it once", async () => {
