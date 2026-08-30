@@ -8,6 +8,7 @@ import {
   createTelegramApprovalEffectPort,
   createTelegramAuthorizedEffectExecutor,
   FileTelegramEffectJournal,
+  FIXED_ADMISSION_ACKNOWLEDGEMENT,
   executeTelegramEffect,
   prepareTelegramEffect,
   recordTelegramEffectInSession,
@@ -44,14 +45,14 @@ describe("Telegram effect adapter", () => {
     expect(() => prepareTelegramEffect(store, { idempotencyKey: "denied", target, authorClass: "butler", effect: { kind: "text", text: "No" }, authorization: { allowed: false, reason: "revoked" } })).toThrow("denied")
     expect(() => prepareTelegramEffect(store, { idempotencyKey: "route", target, authorClass: "butler", effect: { kind: "text", text: "No" }, authorization: { ...authorization, transport: { chatId: "0" } } })).toThrow("invalid transport")
     const admissionTarget = { kind: "admission_gate" as const, admissionId: "admission", botId: "100", userId: "200", chatId: "200" }
-    expect(() => prepareTelegramEffect(store, { idempotencyKey: "ack:admission", target: admissionTarget, authorClass: "control", effect: { kind: "admission_ack", text: "Thanks — I’ve asked Ari." }, authorization: { ...authorization, transport: { chatId: "201" } } })).toThrow("route changed")
+    expect(() => prepareTelegramEffect(store, { idempotencyKey: "ack:admission", target: admissionTarget, authorClass: "control", effect: { kind: "admission_ack", text: FIXED_ADMISSION_ACKNOWLEDGEMENT }, authorization: { ...authorization, transport: { chatId: "201" } } })).toThrow("route changed")
 
     const id = "c".repeat(64)
     const root = (store as unknown as { root: string }).root
     fs.writeFileSync(path.join(root, `${id}.json`), JSON.stringify({
       schemaVersion: 1, id, idempotencyKey: "wrong", target: admissionTarget, authorClass: "control",
-      effect: { kind: "admission_ack", text: "Thanks — I’ve asked Ari." }, authorizationReceiptId: "receipt", authorizationExpiresAt: "2099-01-01T00:00:00.000Z",
-      parts: [{ index: 0, text: "Thanks — I’ve asked Ari.", state: "prepared", updatedAt: "2026-08-29T00:00:00.000Z" }], createdAt: "2026-08-29T00:00:00.000Z", updatedAt: "2026-08-29T00:00:00.000Z",
+      effect: { kind: "admission_ack", text: FIXED_ADMISSION_ACKNOWLEDGEMENT }, authorizationReceiptId: "receipt", authorizationExpiresAt: "2099-01-01T00:00:00.000Z",
+      parts: [{ index: 0, text: FIXED_ADMISSION_ACKNOWLEDGEMENT, state: "prepared", updatedAt: "2026-08-29T00:00:00.000Z" }], createdAt: "2026-08-29T00:00:00.000Z", updatedAt: "2026-08-29T00:00:00.000Z",
     }), { mode: 0o600 })
     expect(() => store.read(id)).toThrow("invalid")
   })
@@ -220,7 +221,7 @@ describe("Telegram effect adapter", () => {
     expect(store.read(prepared.id).target).toEqual(target)
     expect(fs.readFileSync(filePath, "utf8")).not.toContain("chatId")
 
-    expect(() => prepareTelegramEffect(store, { idempotencyKey: "bad-admission-kind", target, authorClass: "control", effect: { kind: "admission_ack", text: "Thanks — I’ve asked Ari." }, authorization })).toThrow("requires an admission target")
+    expect(() => prepareTelegramEffect(store, { idempotencyKey: "bad-admission-kind", target, authorClass: "control", effect: { kind: "admission_ack", text: FIXED_ADMISSION_ACKNOWLEDGEMENT }, authorization })).toThrow("requires an admission target")
     const corrupt = JSON.parse(fs.readFileSync(filePath, "utf8"))
     corrupt.effect = { kind: "unknown" }
     fs.writeFileSync(filePath, JSON.stringify(corrupt), { mode: 0o600 })
@@ -311,7 +312,7 @@ describe("Telegram effect adapter", () => {
 
     const admissionTarget = { kind: "admission_gate" as const, admissionId: "route-drift", botId: "100", userId: "200", chatId: "200" }
     const admissionAuthorization = { ...authorization, transport: { chatId: "200" } }
-    const admission = prepareTelegramEffect(store, { idempotencyKey: "ack:route-drift", target: admissionTarget, authorClass: "control", effect: { kind: "admission_ack", text: "Thanks — I’ve asked Ari." }, authorization: admissionAuthorization })
+    const admission = prepareTelegramEffect(store, { idempotencyKey: "ack:route-drift", target: admissionTarget, authorClass: "control", effect: { kind: "admission_ack", text: FIXED_ADMISSION_ACKNOWLEDGEMENT }, authorization: admissionAuthorization })
     await expect(executeTelegramEffect(store, admission.id, { request: vi.fn() }, () => ({ ...admissionAuthorization, transport: { chatId: "201" } }))).rejects.toThrow("route changed")
   })
 
@@ -379,7 +380,7 @@ describe("Telegram effect adapter", () => {
     const store = journal()
     const admissionTarget = { kind: "admission_gate" as const, admissionId: "adm-1", botId: "100", userId: "200", chatId: "200" }
     expect(() => prepareTelegramEffect(store, { idempotencyKey: "admission:adm-1", target: admissionTarget, authorClass: "control", effect: { kind: "text", text: "fixed" }, authorization })).toThrow("fixed admission")
-    expect(prepareTelegramEffect(store, { idempotencyKey: "ack:adm-1", target: admissionTarget, authorClass: "control", effect: { kind: "admission_ack", text: "Thanks — I’ve asked Ari." }, authorization: { ...authorization, transport: { chatId: "200" } } })).toMatchObject({ target: admissionTarget })
+    expect(prepareTelegramEffect(store, { idempotencyKey: "ack:adm-1", target: admissionTarget, authorClass: "control", effect: { kind: "admission_ack", text: FIXED_ADMISSION_ACKNOWLEDGEMENT }, authorization: { ...authorization, transport: { chatId: "200" } } })).toMatchObject({ target: admissionTarget })
   })
 
   it("records accepted Butler/control/system artifacts in order without relabeling authorship", async () => {

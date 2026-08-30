@@ -155,6 +155,17 @@ export interface TelegramCommittedAdmissionIngress {
   sessionKey: string
   eventId: string
   reference: string
+  orientation: TelegramNewlyAdmittedOrientation
+}
+
+export interface TelegramNewlyAdmittedOrientation {
+  kind: "newly_admitted"
+  instruction: "welcome_and_explain_capabilities"
+}
+
+export const NEWLY_ADMITTED_ORIENTATION: TelegramNewlyAdmittedOrientation = {
+  kind: "newly_admitted",
+  instruction: "welcome_and_explain_capabilities",
 }
 
 const ACTIVE_STATUSES = new Set<TelegramAdmissionStatus>([
@@ -572,8 +583,8 @@ export interface TelegramAdmissionControllerOptions {
   resolveOwnerCardMessageId?(artifactId: string): number | null
   claimFriend(input: TelegramAdmissionFriendClaim): Promise<TelegramAdmissionFriendClaimResult>
   revokeFriend(input: TelegramAdmissionFriendRevocation): Promise<TelegramAdmissionFriendRevocationResult>
-  commitApprovedIngress(input: TelegramApprovedTurn): Promise<TelegramCommittedAdmissionIngress>
-  enqueueApprovedWork(input: TelegramCommittedAdmissionIngress): Promise<void>
+  commitApprovedIngress(input: TelegramApprovedTurn): Promise<Omit<TelegramCommittedAdmissionIngress, "orientation">>
+  enqueueApprovedWork(input: Omit<TelegramCommittedAdmissionIngress, "orientation">): Promise<void>
   dispatchApprovedWork(input: TelegramCommittedAdmissionIngress): Promise<"settled" | "indeterminate">
   withDecisionLease?<T>(admissionId: string, work: () => Promise<T>): Promise<T>
   now?: () => number
@@ -685,7 +696,7 @@ export function createTelegramAdmissionController(options: TelegramAdmissionCont
     try {
       if (record.status === "friend_bound") {
         if (record.quarantinedText === null || !record.friendId) throw new Error("Telegram admission lost input before durable ingress")
-        const committed = await options.commitApprovedIngress({
+        const committedBase = await options.commitApprovedIngress({
           admissionId: record.id,
           idempotencyKey: `admission-turn:${record.id}`,
           friendId: record.friendId,
@@ -698,17 +709,18 @@ export function createTelegramAdmissionController(options: TelegramAdmissionCont
           hasAttachments: record.hasAttachments,
           synthetic: false,
         })
+        const committed: TelegramCommittedAdmissionIngress = { ...committedBase, orientation: NEWLY_ADMITTED_ORIENTATION }
         if (committed.admissionId !== record.id || committed.friendId !== record.friendId || committed.reference !== `telegram-admission:${record.id}`) {
           throw new Error("Telegram admission committed ingress changed identity")
         }
-        await options.enqueueApprovedWork(committed)
+        await options.enqueueApprovedWork(committedBase)
         record = options.store.compareAndSwap({ admissionId: record.id, expectedStatus: "friend_bound", nextStatus: "ingress_committed", ingress: committed })
       }
       if (record.status === "ingress_committed") {
         record = options.store.compareAndSwap({ admissionId: record.id, expectedStatus: "ingress_committed", nextStatus: "turn_queued" })
       }
       if (!record.friendId || !record.ingressSessionKey || !record.ingressEventId || !record.ingressReference) throw new Error("Telegram admission queued work lost its durable reference")
-      const settlement = await options.dispatchApprovedWork({ admissionId: record.id, friendId: record.friendId, sessionKey: record.ingressSessionKey, eventId: record.ingressEventId, reference: record.ingressReference })
+      const settlement = await options.dispatchApprovedWork({ admissionId: record.id, friendId: record.friendId, sessionKey: record.ingressSessionKey, eventId: record.ingressEventId, reference: record.ingressReference, orientation: NEWLY_ADMITTED_ORIENTATION })
       if (settlement === "indeterminate") {
         await compensateFriend(record)
         return options.store.compareAndSwap({ admissionId: record.id, expectedStatus: "turn_queued", nextStatus: "indeterminate" })

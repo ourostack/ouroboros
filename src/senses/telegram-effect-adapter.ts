@@ -7,7 +7,7 @@ import { loadSessionEnvelopeFile, type SessionEnvelope, type SessionEvent } from
 import { currentSessionTurnLease, readSessionTransaction, withSessionTurnLease, writeSessionTransaction, type SessionTurnLease } from "../mind/session-transaction"
 import { escapeTelegramHtml, sendTelegramText, splitTelegramText, TelegramApiError, type TelegramBotApi } from "./telegram-client"
 
-export const FIXED_ADMISSION_ACKNOWLEDGEMENT = "Thanks — I’ve asked Ari."
+export const FIXED_ADMISSION_ACKNOWLEDGEMENT = "Thanks — I’ve asked Ari. Your message is still unread and unprocessed; I’ll only read it if Ari welcomes you in."
 export const FIXED_USENET_SYSTEM_FAILSAFE = "Quick heads-up: I paused downloads because the server was discarding most of what it fetched. Nothing needs doing this second — I’ll investigate and follow up when I’m back online."
 const SYSTEM_FAILSAFE_UNAVAILABLE_MS = 2 * 60_000
 

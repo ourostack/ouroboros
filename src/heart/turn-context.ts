@@ -217,7 +217,7 @@ function hasStaleWorkbenchBundleEntry(config: { senses?: Partial<AgentSensesConf
     )
 }
 
-function readSenseStatusLines(): string[] {
+export function readSenseStatusLines(): string[] {
   const config = loadAgentConfig()
   const configuredSenses = config.senses ?? {} as Partial<AgentSensesConfig>
   const senses: AgentSensesConfig = {

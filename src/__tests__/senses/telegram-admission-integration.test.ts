@@ -7,6 +7,7 @@ import { createProductionTelegramRelationshipComposition, createTelegramSenseApp
 import { FileTelegramUpdateInboxStore, type TelegramLongPollOptions } from "../../senses/telegram-client"
 import { loadSessionEnvelopeFile } from "../../heart/session-events"
 import { getSenseSessionPath } from "../../senses/shared-turn"
+import { FIXED_ADMISSION_ACKNOWLEDGEMENT } from "../../senses/telegram-admission"
 
 const roots: string[] = []
 afterEach(() => {
@@ -70,7 +71,7 @@ describe("Telegram admission integration", () => {
 
     await pollOptions.onUnknownMessage!({ updateId: 11, messageId: 22, botId: "777", userId: "888", chatId: "888", text: "hostile https://evil.invalid", displayLabel: "<Unknown>", hasAttachments: true })
     expect(runTurn).not.toHaveBeenCalled()
-    expect(requests[0]).toEqual({ method: "sendMessage", body: { chat_id: "888", text: "Thanks — I’ve asked Ari.", parse_mode: "HTML" } })
+    expect(requests[0]).toEqual({ method: "sendMessage", body: { chat_id: "888", text: FIXED_ADMISSION_ACKNOWLEDGEMENT, parse_mode: "HTML" } })
     expect(requests[1]).toMatchObject({ method: "sendMessage", body: { chat_id: "42", parse_mode: "HTML", reply_markup: { inline_keyboard: [[
       { text: "Allow", callback_data: expect.stringMatching(/^admit:[a-f0-9]{20}:allow$/u) },
       { text: "Deny", callback_data: expect.stringMatching(/^admit:[a-f0-9]{20}:deny$/u) },
@@ -143,7 +144,7 @@ describe("Telegram admission integration", () => {
     await expect(production.admission!.claimFriend({ provider: "telegram-user", botId: "999", userId: "888", chatId: "889", admissionId: "a".repeat(20), displayLabel: "Unknown", defaults: { trustLevel: "friend", admissionState: "active", initiativePolicy: "request_follow_up_only", capabilityProfileId: "sanctuary-household" } })).resolves.toMatchObject({ kind: "collision" })
     await expect(production.admission!.revokeFriend({ provider: "telegram-user", botId: "999", userId: "888", chatId: "889", admissionId: "a".repeat(20), friendId: "missing" })).resolves.toMatchObject({ kind: "collision" })
     await expect(production.admission!.revokeFriend({ provider: "telegram-user", botId: "777", userId: "999", chatId: "999", admissionId: "a".repeat(20), friendId: "missing" })).resolves.toMatchObject({ kind: "collision" })
-    await expect(production.authorizeRelationshipEffect!({ phase: "prepare", idempotencyKey: "ack:missing", target: { kind: "admission_gate", admissionId: "missing", botId: "777", userId: "999", chatId: "999" }, authorClass: "control", effect: { kind: "admission_ack", text: "Thanks — I’ve asked Ari." } })).resolves.toMatchObject({ allowed: false, reason: expect.stringContaining("target") })
+    await expect(production.authorizeRelationshipEffect!({ phase: "prepare", idempotencyKey: "ack:missing", target: { kind: "admission_gate", admissionId: "missing", botId: "777", userId: "999", chatId: "999" }, authorClass: "control", effect: { kind: "admission_ack", text: FIXED_ADMISSION_ACKNOWLEDGEMENT } })).resolves.toMatchObject({ allowed: false, reason: expect.stringContaining("target") })
     await expect(production.authorizeRelationshipEffect!({ phase: "prepare", idempotencyKey: "missing-friend", target: { kind: "approved_relationship", friendId: "missing", sessionKey: "telegram:777:999" }, authorClass: "butler", effect: { kind: "text", text: "hello" } })).resolves.toMatchObject({ allowed: false, reason: expect.stringContaining("not active") })
     await expect(production.admission!.resolveOwner({ botId: "777", userId: "42", chatId: "42", sessionKey: "wrong" })).resolves.toBeNull()
     await expect(production.admission!.resolveOwner({ botId: "777", userId: "42", chatId: "42", sessionKey: ownerSessionKey })).resolves.toEqual({ friendId: "ari" })

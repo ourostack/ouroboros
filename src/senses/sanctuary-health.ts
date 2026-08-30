@@ -35,7 +35,7 @@ function canonicalIsoTimestamp(value: unknown): value is string {
 }
 
 interface Incident { id: string; summary: string; observationRevision?: string; transition?: "opened" | "unchanged" | "changed" }
-interface HealthDelivery {
+export interface HealthDelivery {
   id: string
   message: string
   status: "pending" | "attempting"
@@ -43,7 +43,7 @@ interface HealthDelivery {
   kind: "transition" | "digest" | "transition_and_digest" | "legacy_unknown"
   summarizedMessage?: string
 }
-interface HealthState {
+export interface HealthState {
   incidents: Record<string, Incident>
   lastDigestDay: string | null
   updatedAt: string
@@ -243,6 +243,11 @@ function load(filePath: string): HealthState {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return { incidents: {}, lastDigestDay: null, updatedAt: new Date(0).toISOString(), outbox: null, indeterminateDeliveries: [], deliveredReceipts: [], sweepReceipts: [] }
     throw new Error("Sanctuary health state is corrupt", { cause: error })
   }
+}
+
+/** Read-only projection for status/orientation surfaces; mutation remains lease-owned by the sweep. */
+export function readSanctuaryHealthState(filePath: string): HealthState {
+  return load(filePath)
 }
 
 function save(filePath: string, state: HealthState): void {
