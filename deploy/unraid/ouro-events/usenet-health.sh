@@ -17,13 +17,6 @@ done
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $1" >> "$LOG"; }
 
-notify_unraid() {
-    local subject="$1" desc="$2" sev="${3:-warning}"
-    if [ -x /usr/local/emhttp/webGui/scripts/notify ]; then
-        /usr/local/emhttp/webGui/scripts/notify -e "usenet_health" -s "$subject" -d "$desc" -i "$sev" >/dev/null 2>&1
-    fi
-}
-
 emit_transition() {
     if ! /bin/bash "$EVENT_ADAPTER" "$@" >> "$LOG" 2>&1; then
         log "[EVENT] Canonical Butler event emission failed; Unraid UI and this log retain the observation or verified action."
@@ -67,7 +60,6 @@ if [ "${TRIED:-0}" -ge "$MIN_ARTICLES" ]; then
         VERIFICATION_DIGEST=$(printf 'sabnzbd.queue.paused=%s' "$PAUSED_AFTER" | sha256sum | cut -d' ' -f1)
         if [ "$PAUSED_AFTER" = "true" ]; then
             log "[SPEND] CRITICAL — verified the download queue is PAUSED. ${GB} GB fetched today at ${RATE}% article success (threshold ${MIN_RATE}%)."
-            notify_unraid "Usenet spend guard: downloads paused" "The queue was verified paused after at least 50,000 articles fell below 30% success. The Butler will investigate." "alert"
             emit_transition "sabnzbd.pause" "spend-guard" "spend-pause:${TODAY}:verified" "sabnzbd:pause:${TODAY}:spend-guard" "Downloads were paused after article success fell below the spend guard." "At least 50,000 articles were attempted at less than 30% success; an independent queue read verified paused=true." "true" "$VERIFICATION_DIGEST" "$VERIFIED_AT"
         else
             log "[SPEND] CRITICAL — pause request was not independently verified; only a verification-failure event was emitted."
