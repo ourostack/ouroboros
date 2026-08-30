@@ -643,6 +643,22 @@ describe("continuity tools", () => {
       expect(context.externalEventAuthority.authorizeDisposition).not.toHaveBeenCalled()
     })
 
+    it("covers exact policy, adoption, Await safety, and owner-delivery rejection boundaries", async () => {
+      const tool = findTool("external_event_disposition")
+      const currentExternalEvent = { schemaVersion: 1 as const, recordPath: "/events/ouroboros/sanctuary-health/books.json", agent: "ouroboros", source: "sanctuary-health", eventId: "books", generation: 2, observationRevision: "rev-2", claimOwner: "lease-2" }
+      const authority = { authorizeDisposition: vi.fn(() => ({ allowed: true, reason: "ok" })) }
+      const base = { recordPath: currentExternalEvent.recordPath, expectedGeneration: 2, classifiedRevision: "rev-2", classification: "expected", stewardPolicyKind: "current", stewardPolicyKey: "service:books", stewardPolicyVersion: 2, decision: "silent", reason: "Expected.", nextWake: "on_change" }
+      mockReadExternalEventRecord.mockReturnValue({ agent: "ouroboros", source: "sanctuary-health", eventId: "books", transition: "opened", version: 4, generation: 2, observationRevision: "rev-2", executionState: "running", claimOwner: "lease-2" })
+      expect(() => tool.handler({ ...base, stewardPolicyKey: "" }, { signin: async () => undefined, currentExternalEvent, externalEventAuthority: authority })).toThrow("invalid")
+      expect(() => tool.handler({ ...base, stewardPolicyKey: undefined }, { signin: async () => undefined, currentExternalEvent, externalEventAuthority: authority })).toThrow("invalid")
+      expect(() => tool.handler({ ...base, classification: "adopted" }, { signin: async () => undefined, currentExternalEvent, externalEventAuthority: authority })).toThrow("requires a Care")
+      expect(() => tool.handler({ ...base, classification: "adopted", careId: 42 }, { signin: async () => undefined, currentExternalEvent, externalEventAuthority: authority })).toThrow("requires a Care")
+      vi.mocked(fs.lstatSync).mockReturnValueOnce({ isFile: () => false, isSymbolicLink: () => true } as any)
+      expect(() => tool.handler({ ...base, nextWake: "at", wakeAt: "2026-08-30T17:00:00.000Z", awaitId: "unsafe" }, { signin: async () => undefined, currentExternalEvent, externalEventAuthority: authority })).toThrow("current pending Await")
+      await expect(tool.handler({ ...base, decision: "report", reason: "x".repeat(1_201) }, { signin: async () => undefined, currentExternalEvent, externalEventAuthority: authority } as any)).rejects.toThrow("phone-sized")
+      await expect(tool.handler({ ...base, decision: "report" }, { signin: async () => undefined, currentExternalEvent, externalEventAuthority: authority } as any)).rejects.toThrow("delivery is unavailable")
+    })
+
     it("routes action and verification references through the injected authority", async () => {
       mockReadExternalEventRecord.mockReturnValue({ agent: "ouroboros", eventId: "books", version: 4, generation: 2, observationRevision: "rev-2", executionState: "running", claimOwner: "lease-2" })
       mockCommitExternalEventDisposition.mockReturnValue({ executionState: "handled" })
@@ -825,6 +841,21 @@ describe("continuity tools", () => {
       expect(updates).toEqual({ why: "new reason" })
       expect(updates).not.toHaveProperty("label")
       expect(updates).not.toHaveProperty("salience")
+    })
+
+    it("clears optional risk and next-check fields explicitly", async () => {
+      mockUpdateCare.mockReturnValue({ id: "c-clear" })
+      await findTool("care_manage").handler({ action: "update", id: "c-clear", currentRisk: "", nextCheckAt: "" })
+      expect(mockUpdateCare).toHaveBeenCalledWith("/mock/agent-root", "c-clear", { currentRisk: null, nextCheckAt: null })
+    })
+
+    it("passes explicit optional Care fields on create and incident upsert", async () => {
+      mockCreateCare.mockReturnValue({ id: "c-explicit" })
+      await findTool("care_manage").handler({ action: "create", currentRisk: "risk", nextCheckAt: "soon" })
+      expect(mockCreateCare).toHaveBeenCalledWith("/mock/agent-root", expect.objectContaining({ currentRisk: "risk", nextCheckAt: "soon" }))
+      mockUpsertCareForIncident.mockReturnValue({ id: "c-upsert" })
+      await findTool("care_manage").handler({ action: "upsert_incident", source: "guard", incidentKey: "books", classifiedRevision: "rev", currentRisk: "risk", nextCheckAt: "soon", expectedUpdatedAt: "version", correlationKey: "media" })
+      expect(mockUpsertCareForIncident).toHaveBeenCalledWith("/mock/agent-root", expect.objectContaining({ currentRisk: "risk", nextCheckAt: "soon", expectedUpdatedAt: "version", incident: expect.objectContaining({ correlationKey: "media" }) }))
     })
   })
 

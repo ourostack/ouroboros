@@ -7,6 +7,8 @@ import {
   externalEventRecordPath,
   getExternalEventRoot,
   recordExternalEvent,
+  readExternalEventRecord,
+  listExternalEventStatus,
 } from "../../../heart/external-events/router"
 
 const cleanupPaths: string[] = []
@@ -101,5 +103,18 @@ describe("external event router", () => {
     expect(buildExternalEventMessage(record)).toContain("Evidence:\n- none")
     expect(buildExternalEventMessage(record)).not.toContain("summary:")
     expect(buildExternalEventMessage(record)).not.toContain("payload:")
+  })
+
+  it("renders optional evidence, summary, and payload and rejects invalid receipt identity", () => {
+    const root = tempDir("ouro-external-event-root-")
+    const record = recordExternalEvent({ agent: "slugger", source: "guard", eventType: "health", eventId: "rich", summary: "Summary", payloadPath: "/payload", evidence: ["one", "two"] }, { root })
+    expect(buildExternalEventMessage(record)).toContain("- one\n- two")
+    expect(buildExternalEventMessage(record)).toContain("summary: Summary")
+    expect(buildExternalEventMessage(record)).toContain("payload: /payload")
+    fs.writeFileSync(record.recordPath, JSON.stringify({ ...record, recordPath: `${record.recordPath}.other` }))
+    expect(() => readExternalEventRecord(record.recordPath)).toThrow("identity")
+    fs.writeFileSync(record.recordPath, JSON.stringify({ schemaVersion: 1 }))
+    expect(() => readExternalEventRecord(record.recordPath)).toThrow("invalid")
+    expect(listExternalEventStatus(path.join(root, "missing"))).toEqual([])
   })
 })

@@ -4,7 +4,9 @@ import * as path from "path"
 import { afterEach, describe, expect, it } from "vitest"
 
 import {
+  advanceExternalEventsFromAwait,
   advanceExternalEventFromAwait,
+  bindPrivilegedFailsafeArtifact,
   claimExternalEvent,
   commitExternalEventDisposition,
   failExternalEventAttempt,
@@ -436,6 +438,58 @@ describe("external event attention lifecycle", () => {
     })).toThrow(/does not match/u)
     expect(() => failExternalEventAttempt(first.recordPath, { owner: "worker", expectedVersion: claim.version, expectedGeneration: 1, error: "failed", maxAttempts: 0 })).toThrow(/retry policy/u)
     expect(reconcileExternalEvent(first.recordPath)).toEqual(claim)
+  })
+
+  it("covers claim renewal, disposition, and input validation boundaries", () => {
+    const eventRoot = root()
+    for (const input of [
+      { agent: "", source: "guard", eventType: "health", eventId: "id" },
+      { agent: " sanctuary", source: "guard", eventType: "health", eventId: "id" },
+      { agent: "sanctuary", source: "guard", eventType: "health", eventId: "id", evidence: ["x".repeat(4_097)] },
+      { agent: "sanctuary", source: "guard", eventType: "health", eventId: "id", summary: "x".repeat(70_000) },
+      { agent: "sanctuary", source: "guard", eventType: "health", eventId: "id", evidence: Array.from({ length: 32 }, () => "x".repeat(4_096)) },
+    ]) expect(() => recordExternalEvent(input as any, { root: eventRoot })).toThrow()
+
+    const first = recordExternalEvent({ agent: "sanctuary", source: "guard", eventType: "health", eventId: "bounds" }, { root: eventRoot })
+    const claim = claimExternalEvent(first.recordPath, { owner: "worker", expectedVersion: first.version, expectedGeneration: 1 })
+    expect(() => renewExternalEventClaim(first.recordPath, { owner: "worker", expectedGeneration: 2 })).toThrow("generation")
+    expect(() => renewExternalEventClaim(first.recordPath, { owner: "worker", expectedGeneration: 1, leaseMs: 0 })).toThrow("renewal")
+    const base = { classifiedRevision: first.observationRevision, classification: "expected" as const, stewardPolicy: { kind: "current" as const, key: "test", version: 1 }, decision: "silent" as const, reason: "test", nextWake: { kind: "on_change" as const }, careId: null, awaitId: null, actionRefs: [], verificationRefs: [] }
+    for (const disposition of [
+      { ...base, stewardPolicy: { kind: "current", key: "test", version: 0 } },
+      { ...base, stewardPolicy: { kind: "invalid" } },
+      { ...base, actionRefs: Array.from({ length: 33 }, () => "ref") },
+      { ...base, actionRefs: ["x".repeat(513)] },
+    ]) expect(() => commitExternalEventDisposition(first.recordPath, { owner: "worker", expectedVersion: claim.version, expectedGeneration: 1, disposition: disposition as any })).toThrow()
+  })
+
+  it("binds a privileged failsafe exactly once and rejects changed or invalid bindings", () => {
+    const eventRoot = root()
+    const ordinarySeed = recordExternalEvent({ agent: "sanctuary", source: "guard", eventType: "usenet.protective_action", eventId: "spend" }, { root: eventRoot })
+    const recordPath = path.join(eventRoot, "sanctuary", "sanctuary-usenet", "spend.json")
+    fs.mkdirSync(path.dirname(recordPath), { recursive: true })
+    const privileged = { ...ordinarySeed, source: "sanctuary-usenet", recordPath, privilegedProtectiveAction: { action: "sabnzbd.pause", actionReceipt: "receipt", transitionId: "transition", critical: true, createdAt: "2026-08-29T00:00:00.000Z", expiresAt: "2026-08-30T00:00:00.000Z", verification: { verified: true, digest: "d".repeat(64), observedAt: "2026-08-29T00:00:00.000Z" } } }
+    fs.writeFileSync(recordPath, JSON.stringify(privileged))
+    expect(() => bindPrivilegedFailsafeArtifact(recordPath, { artifactId: "bad", verificationRef: "verified" })).toThrow("artifact id")
+    expect(() => bindPrivilegedFailsafeArtifact(recordPath, { artifactId: "a".repeat(64), verificationRef: " " })).toThrow("reference")
+    expect(() => bindPrivilegedFailsafeArtifact(recordPath, { artifactId: "a".repeat(64), verificationRef: "verified", recordedAt: "bad" })).toThrow("recorded time")
+    const bound = bindPrivilegedFailsafeArtifact(recordPath, { artifactId: "a".repeat(64), verificationRef: "verified", recordedAt: "2026-08-29T01:00:00.000Z" })
+    expect(bound.privilegedFailsafe?.artifactId).toBe("a".repeat(64))
+    expect(bindPrivilegedFailsafeArtifact(recordPath, { artifactId: "a".repeat(64), verificationRef: "verified" })).toMatchObject({ version: bound.version })
+    expect(() => bindPrivilegedFailsafeArtifact(recordPath, { artifactId: "b".repeat(64), verificationRef: "verified" })).toThrow("binding changed")
+    const ordinary = recordExternalEvent({ agent: "sanctuary", source: "guard", eventType: "health", eventId: "ordinary" }, { root: eventRoot })
+    expect(() => bindPrivilegedFailsafeArtifact(ordinary.recordPath, { artifactId: "a".repeat(64), verificationRef: "verified" })).toThrow("privileged")
+  })
+
+  it("advances every exact Await-bound status and ignores corrupt or unrelated rows", () => {
+    const eventRoot = root()
+    const first = recordExternalEvent({ agent: "sanctuary", source: "guard", eventType: "credit", eventId: "bulk-await" }, { root: eventRoot })
+    const claim = claimExternalEvent(first.recordPath, { owner: "worker", expectedVersion: first.version, expectedGeneration: 1 })
+    commitExternalEventDisposition(first.recordPath, { owner: "worker", expectedVersion: claim.version, expectedGeneration: 1, disposition: { classifiedRevision: first.observationRevision, classification: "snoozed", stewardPolicy: { kind: "none" }, decision: "silent", reason: "wait", nextWake: { kind: "at", at: "2026-09-01T00:00:00.000Z" }, careId: null, awaitId: "wake", actionRefs: [], verificationRefs: [] } })
+    const corruptPath = path.join(eventRoot, "sanctuary", "guard", "corrupt.json")
+    fs.writeFileSync(corruptPath, "bad")
+    expect(advanceExternalEventsFromAwait(eventRoot, "other", "wake")).toEqual([])
+    expect(advanceExternalEventsFromAwait(eventRoot, "sanctuary", "wake")).toEqual([expect.objectContaining({ executionState: "queued" })])
   })
 
   it.each([

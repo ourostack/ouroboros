@@ -384,6 +384,14 @@ describe("care store", () => {
       expect(updated.currentRisk).toBe("credit is being wasted")
       expect(updated.nextCheckAt).toBe("2026-08-29T20:15:00.000Z")
       expect(updated.incidentBindings).toEqual([{ source: "guard", incidentKey: "usenet", classifiedRevision: "rev-2" }])
+      const cleared = upsertCareForIncident(tmpDir, {
+        ...baseCareInput,
+        currentRisk: null,
+        nextCheckAt: null,
+        incident: { source: "guard", incidentKey: "usenet", classifiedRevision: "rev-clear" },
+        expectedUpdatedAt: updated.updatedAt,
+      })
+      expect(cleared.currentRisk).toBeNull()
       expect(() => upsertCareForIncident(tmpDir, {
         ...baseCareInput,
         incident: { source: "guard", incidentKey: "usenet", classifiedRevision: "rev-3" },

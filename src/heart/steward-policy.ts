@@ -253,7 +253,6 @@ export function consumeRoutineActionGrant(agentRoot: string, input: {
     const receipts = readRoutineActionReceipts(agentRoot)
     const decision = inspectRoutineActionGrantSnapshot(policy, receipts, { key: input.key, action, target: input.target, expectedPolicyVersion: input.expectedPolicyVersion, now })
     if (!decision.allowed) throw new Error(decision.reason)
-    if (!grant) throw new Error("routine action grant is missing")
     ensureDirectory(agentRoot)
     const windowStart = Date.parse(now) - grant.windowMs
     const used = receipts.filter((receipt) => receipt.key === input.key && Date.parse(receipt.reservedAt) > windowStart).length
