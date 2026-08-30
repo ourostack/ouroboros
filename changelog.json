@@ -4,7 +4,8 @@
     {
       "version": "0.1.0-alpha.749",
       "changes": [
-        "Fix Unraid Butler autostart updates through the root-local Docker manager backend with durable rollback and ghost-entry preservation."
+        "Fix Unraid Butler autostart updates through the root-local Docker manager backend with durable rollback and ghost-entry preservation.",
+        "Align the packaged Sanctuary template and bundle runtime metadata with alpha.749."
       ]
     },
     {
