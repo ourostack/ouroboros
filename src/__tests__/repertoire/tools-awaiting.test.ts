@@ -233,7 +233,7 @@ describe("tools-awaiting", () => {
         const handled = commitExternalEventDisposition(first.recordPath, {
           owner: "lease-1", expectedVersion: claimed.version, expectedGeneration: 1,
           disposition: {
-            classifiedRevision: "rev-1", classification: "snoozed", stewardPolicy: { key: "service:books", version: 1 }, decision: "silent",
+            classifiedRevision: "rev-1", classification: "snoozed", stewardPolicy: { kind: "current", key: "service:books", version: 1 }, decision: "silent",
             reason: "Check again later.", nextWake: { kind: "at", at: "2026-08-30T12:00:00.000Z" }, careId: null, awaitId: "books-recheck", actionRefs: [], verificationRefs: [],
           },
         })

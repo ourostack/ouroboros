@@ -110,6 +110,7 @@ interface FileAwaitArgs {
   alert?: string
   mode?: string
   max_age?: string
+  wake_at?: string
   body?: string
 }
 
@@ -122,6 +123,9 @@ function fileAwait(args: FileAwaitArgs, agentRoot: string, agentName: string, se
   }
   if (!args.cadence || !args.cadence.trim()) {
     return JSON.stringify({ error: "cadence is required" })
+  }
+  if (args.wake_at && (!Number.isFinite(Date.parse(args.wake_at)) || new Date(args.wake_at).toISOString() !== args.wake_at)) {
+    return JSON.stringify({ error: "wake_at must be a canonical ISO timestamp" })
   }
 
   const filePath = awaitFilePath(agentRoot, args.name)
@@ -138,6 +142,7 @@ function fileAwait(args: FileAwaitArgs, agentRoot: string, agentName: string, se
     alert,
     mode,
     max_age: typeof args.max_age === "string" ? capStructuredRecordString(args.max_age) : null,
+    wake_at: typeof args.wake_at === "string" ? capStructuredRecordString(args.wake_at) : null,
     status: "pending",
     created_at: new Date().toISOString(),
     filed_from: sessionChannel ?? "unknown",
@@ -198,6 +203,7 @@ function archiveAwait(agentRoot: string, name: string, updates: Record<string, u
     alert: current.alert,
     mode: current.mode,
     max_age: current.max_age,
+    wake_at: current.wake_at ?? null,
     status: current.status,
     created_at: current.created_at,
     filed_from: current.filed_from,
@@ -386,6 +392,7 @@ export const awaitingToolDefinitions: ToolDefinition[] = [
             alert: { type: "string", description: "Channel to alert on (e.g. 'bluebubbles', 'teams'). Defaults to filing session's channel." },
             mode: { type: "string", description: "'full' or 'quick'. Defaults 'full'." },
             max_age: { type: "string", description: "Optional auto-expiry (e.g. '24h')." },
+            wake_at: { type: "string", description: "Optional exact canonical ISO time this Await supports." },
             body: { type: "string", description: "Optional notes: why I filed this, what 'ready' looks like." },
           },
           required: ["name", "condition", "cadence"],
@@ -403,6 +410,7 @@ export const awaitingToolDefinitions: ToolDefinition[] = [
           alert: a.alert,
           mode: a.mode,
           max_age: a.max_age,
+          wake_at: a.wake_at,
           body: a.body,
         },
         agentRoot,

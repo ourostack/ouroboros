@@ -98,19 +98,6 @@ export interface RunPrivateRuntimeTurnOptions {
   _withSessionTurnLease?: <T>(sessionPath: string, work: (lease: SessionTurnLease) => Promise<T>) => Promise<T>
 }
 
-const EXTERNAL_EVENT_TOOLS = [
-  "external_event_disposition",
-  "query_cares",
-  "care_manage",
-  "await_condition",
-  "unraid_list_containers",
-  "unraid_get_container_logs",
-  "unraid_get_storage",
-  "unraid_get_disks",
-  "unraid_get_notifications",
-  "unraid_get_system",
-] as const
-
 export interface PreparedHabitContext {
   runId: string
   trigger: string
@@ -1209,6 +1196,12 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
               return decision.allowed ? { allowed: true, reason: "relationship-authorized" } : { allowed: false, reason: decision.reason }
             },
           },
+          externalEventEffects: {
+            deliverOwnerDecision: async (input: { eventId: string; generation: number; text: string }) => {
+              const { sendTelegramExternalEventDecision } = await import("./telegram")
+              await sendTelegramExternalEventDecision(agentName, input)
+            },
+          },
         }
       })()
     : undefined
@@ -1240,7 +1233,7 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
     habitToolsResolved = []
   }
   const externalEventToolsResolved = options?.externalEvent
-    ? getToolsForChannel(innerCapabilities).filter((tool) => EXTERNAL_EVENT_TOOLS.includes(tool.function.name as typeof EXTERNAL_EVENT_TOOLS[number]))
+    ? getToolsForChannel(innerCapabilities).filter((tool) => externalEventRelationship!.relationshipAuthorization.advertisedToolNames.includes(tool.function.name))
     : undefined
 
   const effectiveHabitSession = options?.noSend === true

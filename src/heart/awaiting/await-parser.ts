@@ -12,6 +12,7 @@ export interface AwaitFile {
   alert: string | null
   mode: AwaitMode
   max_age: string | null
+  wake_at?: string | null
   status: AwaitStatus
   created_at: string | null
   filed_from: string | null
@@ -65,6 +66,7 @@ function emptyAwait(stem: string, body: string): AwaitFile {
     alert: null,
     mode: "full",
     max_age: null,
+    wake_at: null,
     status: "pending",
     created_at: null,
     filed_from: null,
@@ -109,6 +111,7 @@ export function parseAwaitFile(content: string, filePath: string): AwaitFile {
     alert: nonEmptyString(frontmatter.alert),
     mode,
     max_age: nonEmptyString(frontmatter.max_age),
+    wake_at: nonEmptyString(frontmatter.wake_at),
     status,
     created_at: nonEmptyString(frontmatter.created_at),
     filed_from: nonEmptyString(frontmatter.filed_from),

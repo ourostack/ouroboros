@@ -1217,6 +1217,9 @@ Update:
   result before stopping production. First resolve and validate the exact image
   ID of the known-good production container while it is still running, so a
   lookup failure cannot strand a renamed container:
+    /bin/bash /boot/config/custom/ouro-events/bootstrap-spool.sh --mount
+    test "$(findmnt -n -o FSTYPE --target /boot/config/custom/ouro-events/spool)" = tmpfs
+    test "$(stat -c '%u:%g:%a' /boot/config/custom/ouro-events/spool)" = 0:0:755
     ROLLBACK_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler)
     validate_exact_image_id "$ROLLBACK_IMAGE_ID"
     if assert_update_topology "$ROLLBACK_IMAGE_ID"; then

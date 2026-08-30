@@ -61,7 +61,7 @@ describe("external event attention lifecycle", () => {
       owner: "private-runtime:1", expectedVersion: claimed.version, expectedGeneration: 1,
       now: () => "2026-08-29T17:00:02.000Z",
       disposition: {
-        classifiedRevision: "rev-1", classification: "expected", stewardPolicy: { key: "service:books", version: 3 },
+        classifiedRevision: "rev-1", classification: "expected", stewardPolicy: { kind: "current", key: "service:books", version: 3 },
         decision: "silent", reason: "Books is intentionally available only when requested.", nextWake: { kind: "on_change" },
         careId: null, awaitId: null, actionRefs: [], verificationRefs: [],
       },
@@ -70,7 +70,7 @@ describe("external event attention lifecycle", () => {
     expect(handled).toMatchObject({ executionState: "handled", shouldWake: false, disposition: { reason: "Books is intentionally available only when requested." } })
     expect(listExternalEventStatus(eventRoot)).toEqual([expect.objectContaining({
       source: "sanctuary-health", eventId: "container:books", executionState: "handled", classification: "expected",
-      decision: "silent", reason: "Books is intentionally available only when requested.", stewardPolicy: { key: "service:books", version: 3 },
+      decision: "silent", reason: "Books is intentionally available only when requested.", stewardPolicy: { kind: "current", key: "service:books", version: 3 },
     })])
 
     const unchanged = recordExternalEvent({
@@ -170,7 +170,7 @@ describe("external event attention lifecycle", () => {
     expect(() => commitExternalEventDisposition(first.recordPath, {
       owner: "lease-1", expectedVersion: claimed.version, expectedGeneration: 1,
       disposition: {
-        classifiedRevision: claimed.observationRevision, classification: "resolved", stewardPolicy: { key: "service:test", version: 1 }, decision: "silent",
+        classifiedRevision: claimed.observationRevision, classification: "resolved", stewardPolicy: { kind: "current", key: "service:test", version: 1 }, decision: "silent",
         reason: "r".repeat(4_097), nextWake: { kind: "on_change" }, careId: null, awaitId: null, actionRefs: [], verificationRefs: [],
       },
     })).toThrow(/bounded/u)
@@ -297,7 +297,7 @@ describe("external event attention lifecycle", () => {
       disposition: {
         classifiedRevision: duplicate.observationRevision,
         classification: "expected",
-        stewardPolicy: { key: "service:books", version: 1 },
+        stewardPolicy: { kind: "current", key: "service:books", version: 1 },
         decision: "silent",
         reason: "Expected while unused.",
         nextWake: { kind: "on_change" },
@@ -323,7 +323,7 @@ describe("external event attention lifecycle", () => {
       disposition: {
         classifiedRevision: "rev-1",
         classification: "needs_attention",
-        stewardPolicy: { key: "storage:health", version: 1 },
+        stewardPolicy: { kind: "current", key: "storage:health", version: 1 },
         decision: "act",
         reason: "Investigating the original degradation.",
         nextWake: { kind: "on_change" },
@@ -362,7 +362,7 @@ describe("external event attention lifecycle", () => {
     const handled = commitExternalEventDisposition(first.recordPath, {
       owner: "worker", expectedVersion: claim.version, expectedGeneration: 1,
       disposition: {
-        classifiedRevision: first.observationRevision, classification: "snoozed", stewardPolicy: { key: "downloads:credit", version: 2 },
+        classifiedRevision: first.observationRevision, classification: "snoozed", stewardPolicy: { kind: "current", key: "downloads:credit", version: 2 },
         decision: "silent", reason: "Ari asked for a reminder tomorrow.", nextWake: { kind: "at", at: "2026-08-30T17:00:00.000Z" },
         careId: null, awaitId: "await-top-up", actionRefs: [], verificationRefs: [],
       },
@@ -387,7 +387,7 @@ describe("external event attention lifecycle", () => {
       owner: "worker",
       expectedVersion: claim.version,
       expectedGeneration: 1,
-      disposition: { classifiedRevision: first.observationRevision, classification: "snoozed", stewardPolicy: { key: "downloads:credit", version: 1 }, decision: "silent", reason: "Wait.", nextWake: { kind: "at", at: "2026-08-30T17:00:00.000Z" }, careId: null, awaitId: "await-default", actionRefs: [], verificationRefs: [] },
+      disposition: { classifiedRevision: first.observationRevision, classification: "snoozed", stewardPolicy: { kind: "current", key: "downloads:credit", version: 1 }, decision: "silent", reason: "Wait.", nextWake: { kind: "at", at: "2026-08-30T17:00:00.000Z" }, careId: null, awaitId: "await-default", actionRefs: [], verificationRefs: [] },
     })
     expect(advanceExternalEventFromAwait(first.recordPath, { awaitId: "await-default", expectedVersion: handled.version, expectedGeneration: 1 }).updatedAt).toMatch(/^\d{4}-/u)
   })
@@ -403,7 +403,7 @@ describe("external event attention lifecycle", () => {
       disposition: {
         classifiedRevision: first.observationRevision,
         classification: "snoozed",
-        stewardPolicy: { key: "downloads:credit", version: 2 },
+        stewardPolicy: { kind: "current", key: "downloads:credit", version: 2 },
         decision: "silent",
         reason: "Wait for top-up.",
         nextWake: { kind: "at", at: "not-a-time" },
@@ -426,13 +426,13 @@ describe("external event attention lifecycle", () => {
       owner: "other",
       expectedVersion: claim.version,
       expectedGeneration: 1,
-      disposition: { classifiedRevision: first.observationRevision, classification: "expected", stewardPolicy: { key: "test", version: 1 }, decision: "silent", reason: "test", nextWake: { kind: "on_change" }, careId: null, awaitId: null, actionRefs: [], verificationRefs: [] },
+      disposition: { classifiedRevision: first.observationRevision, classification: "expected", stewardPolicy: { kind: "current", key: "test", version: 1 }, decision: "silent", reason: "test", nextWake: { kind: "on_change" }, careId: null, awaitId: null, actionRefs: [], verificationRefs: [] },
     })).toThrow(/owner mismatch/u)
     expect(() => commitExternalEventDisposition(first.recordPath, {
       owner: "worker",
       expectedVersion: claim.version,
       expectedGeneration: 1,
-      disposition: { classifiedRevision: first.observationRevision, classification: "expected", stewardPolicy: { key: "test", version: 1 }, decision: "silent", reason: "test", nextWake: { kind: "on_change" }, careId: null, awaitId: "unexpected", actionRefs: [], verificationRefs: [] },
+      disposition: { classifiedRevision: first.observationRevision, classification: "expected", stewardPolicy: { kind: "current", key: "test", version: 1 }, decision: "silent", reason: "test", nextWake: { kind: "on_change" }, careId: null, awaitId: "unexpected", actionRefs: [], verificationRefs: [] },
     })).toThrow(/does not match/u)
     expect(() => failExternalEventAttempt(first.recordPath, { owner: "worker", expectedVersion: claim.version, expectedGeneration: 1, error: "failed", maxAttempts: 0 })).toThrow(/retry policy/u)
     expect(reconcileExternalEvent(first.recordPath)).toEqual(claim)
@@ -457,7 +457,7 @@ describe("external event attention lifecycle", () => {
       disposition: {
         classifiedRevision: "rev-1",
         classification: "expected",
-        stewardPolicy: { key: "service:test", version: 1 },
+        stewardPolicy: { kind: "current", key: "service:test", version: 1 },
         decision: "silent",
         reason: "Predicate coverage.",
         nextWake,

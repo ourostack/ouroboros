@@ -34,7 +34,7 @@ function canonicalIsoTimestamp(value: unknown): value is string {
   return Number.isFinite(parsed) && new Date(parsed).toISOString() === value
 }
 
-interface Incident { id: string; summary: string; observationRevision?: string }
+interface Incident { id: string; summary: string; observationRevision?: string; transition?: "opened" | "unchanged" | "changed" }
 interface HealthDelivery {
   id: string
   message: string
@@ -75,9 +75,6 @@ export interface SanctuaryHealthSweepResult {
 
 export interface SanctuaryHealthSweep {
   (): Promise<SanctuaryHealthSweepResult>
-  markDeliveryAttempting(deliveryId: string): Promise<void>
-  cacheDeliveryPayload(deliveryId: string, message: string): Promise<void>
-  markDelivered(deliveryId: string, messageIds: number[]): Promise<void>
 }
 
 const healthLockTails = new Map<string, Promise<void>>()
@@ -358,8 +355,13 @@ export function createSanctuaryHealthSweep(options: {
     for (const endpoint of endpoints) if (!endpoint.ok) add(`endpoint:${endpoint.url}`, `${endpoint.url} returned ${endpoint.status || "no response"}`)
 
     const previous = load(options.statePath)
-    const current = Object.fromEntries([...incidents.entries()].sort(([a], [b]) => a.localeCompare(b)))
+    const current = Object.fromEntries([...incidents.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([id, incident]) => {
+      const prior = previous.incidents[id]
+      const transition: NonNullable<Incident["transition"]> = !prior ? "opened" : prior.observationRevision === incident.observationRevision ? "unchanged" : "changed"
+      return [id, { ...incident, transition }]
+    }))
     const opened = Object.values(current).filter((incident) => !previous.incidents[incident.id])
+    const changed = Object.values(current).filter((incident) => incident.transition === "changed")
     const recovered = Object.values(previous.incidents).filter((incident) => !current[incident.id])
     const acceptanceMeta = acceptanceEventMeta()
     const completedAt = now().toISOString()
@@ -385,40 +387,11 @@ export function createSanctuaryHealthSweep(options: {
     }
     save(options.statePath, next)
     emitNervesEvent({ component: "senses", event: "senses.sanctuary_health_end", message: "Sanctuary deterministic health sweep completed", meta: { incidentCount: incidents.size, opened: opened.length, recovered: recovered.length, digestDue: false, ...acceptanceEventMeta() } })
-    const transition = opened.length > 0 && recovered.length > 0 ? "changed" : opened.length > 0 ? "opened" : recovered.length > 0 ? "recovered" : "unchanged"
+    const transition = changed.length > 0 || (opened.length > 0 && recovered.length > 0) ? "changed" : opened.length > 0 ? "opened" : recovered.length > 0 ? "recovered" : "unchanged"
     return { message: null, incidents: Object.values(current), recovered, observationRevision: incidentDigest, transition }
   }
 
   const sweep = (() => withHealthLock(options.statePath, runSweep, options.lease)) as SanctuaryHealthSweep
-
-  sweep.markDeliveryAttempting = (deliveryId: string): Promise<void> => withHealthLock(options.statePath, () => {
-    const state = load(options.statePath)
-    if (!state.outbox || state.outbox.id !== deliveryId || state.outbox.status !== "pending") throw new Error(`Sanctuary health delivery ${deliveryId} is not pending`)
-    state.outbox.status = "attempting"
-    state.updatedAt = now().toISOString()
-    save(options.statePath, state)
-  }, options.lease)
-
-  sweep.cacheDeliveryPayload = (deliveryId: string, message: string): Promise<void> => withHealthLock(options.statePath, () => {
-    if (typeof message !== "string" || message.trim().length === 0 || Buffer.byteLength(message) > MAX_HEALTH_TEXT_BYTES) throw new Error("Sanctuary health cached delivery payload must be nonempty and bounded")
-    const state = load(options.statePath)
-    if (!state.outbox || state.outbox.id !== deliveryId || state.outbox.status !== "pending") throw new Error(`Sanctuary health delivery ${deliveryId} is not pending`)
-    state.outbox.summarizedMessage = message
-    state.updatedAt = now().toISOString()
-    save(options.statePath, state)
-  }, options.lease)
-
-  sweep.markDelivered = (deliveryId: string, messageIds: number[]): Promise<void> => withHealthLock(options.statePath, () => {
-    if (!Array.isArray(messageIds) || messageIds.length < 1 || messageIds.length > 100 || !messageIds.every((id) => Number.isSafeInteger(id) && id > 0)) {
-      throw new Error("Sanctuary health delivery receipt requires canonical Telegram message ids")
-    }
-    const state = load(options.statePath)
-    if (!state.outbox || state.outbox.id !== deliveryId || state.outbox.status !== "attempting") throw new Error(`Sanctuary health delivery ${deliveryId} is not attempting`)
-    state.deliveredReceipts = [...state.deliveredReceipts, { deliveryId, kind: state.outbox.kind, messageIds: [...messageIds], deliveredAt: now().toISOString() }].slice(-100)
-    state.outbox = null
-    state.updatedAt = now().toISOString()
-    save(options.statePath, state)
-  }, options.lease)
 
   return sweep
 }

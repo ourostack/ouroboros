@@ -1,4 +1,5 @@
 import * as path from "node:path";
+import * as fs from "node:fs";
 import { getAgentRoot, getAgentName } from "../heart/identity";
 import { commitExternalEventDisposition, getExternalEventRoot, readExternalEventRecord } from "../heart/external-events/router";
 import { emitNervesEvent } from "../nerves/runtime";
@@ -7,6 +8,8 @@ import { bindCareIncident, createCare, readActiveCares, readCares, resolveCare, 
 import { readPresence, readPeerPresence } from "../arc/presence";
 import { captureIntention, resolveIntention, dismissIntention } from "../arc/intentions";
 import type { ToolDefinition } from "./tools-base";
+import { readStewardPolicy } from "../heart/steward-policy";
+import { parseAwaitFile } from "../heart/awaiting/await-parser";
 
 export const continuityToolDefinitions: ToolDefinition[] = [
   // ── Continuity tools ──────────────────────────────────────────────
@@ -23,8 +26,9 @@ export const continuityToolDefinitions: ToolDefinition[] = [
             expectedGeneration: { type: "number", description: "Exact generation shown in the external-event turn" },
             classifiedRevision: { type: "string", description: "Exact observation revision investigated in this turn" },
             classification: { type: "string", enum: ["expected", "needs_attention", "adopted", "snoozed", "dismissed_until_change", "resolved"] },
-            stewardPolicyKey: { type: "string", description: "Exact desired-state policy key used for this decision" },
-            stewardPolicyVersion: { type: "number", description: "Exact desired-state policy version used for this decision" },
+            stewardPolicyKind: { type: "string", enum: ["current", "none"], description: "Use current with the exact live policy key/version, or none only for a fresh observation with no applicable policy" },
+            stewardPolicyKey: { type: "string", description: "Exact current policy key used for this decision" },
+            stewardPolicyVersion: { type: "number", description: "Exact current policy version used for this decision" },
             decision: { type: "string", enum: ["silent", "act", "ask", "report"] },
             reason: { type: "string", description: "Short plain-language reason for the decision" },
             nextWake: { type: "string", enum: ["on_change", "on_escalation", "on_recovery", "at"] },
@@ -34,7 +38,7 @@ export const continuityToolDefinitions: ToolDefinition[] = [
             actionRefs: { type: "array", items: { type: "string" } },
             verificationRefs: { type: "array", items: { type: "string" } },
           },
-          required: ["recordPath", "expectedGeneration", "classifiedRevision", "classification", "stewardPolicyKey", "stewardPolicyVersion", "decision", "reason", "nextWake"],
+          required: ["recordPath", "expectedGeneration", "classifiedRevision", "classification", "stewardPolicyKind", "decision", "reason", "nextWake"],
         },
       },
     },
@@ -64,8 +68,10 @@ export const continuityToolDefinitions: ToolDefinition[] = [
       const decision = String(a.decision);
       const nextWake = String(a.nextWake);
       const policyVersion = Number(a.stewardPolicyVersion);
+      const policyKind = String(a.stewardPolicyKind ?? "");
       const reason = String(a.reason ?? "").trim();
-      if (!reason || !Number.isSafeInteger(policyVersion) || policyVersion < 1
+      if (!reason || (policyKind !== "none" && (!Number.isSafeInteger(policyVersion) || policyVersion < 1))
+        || !["current", "none"].includes(policyKind)
         || !["expected", "needs_attention", "adopted", "snoozed", "dismissed_until_change", "resolved"].includes(classification)
         || !["silent", "act", "ask", "report"].includes(decision)
         || !["on_change", "on_escalation", "on_recovery", "at"].includes(nextWake)) {
@@ -74,12 +80,49 @@ export const continuityToolDefinitions: ToolDefinition[] = [
       const wake = nextWake === "at" ? { kind: "at" as const, at: String(a.wakeAt ?? "") } : { kind: nextWake as "on_change" | "on_escalation" | "on_recovery" };
       const actionRefs = Array.isArray(a.actionRefs) ? a.actionRefs.map(String) : [];
       const verificationRefs = Array.isArray(a.verificationRefs) ? a.verificationRefs.map(String) : [];
+      const agentRoot = getAgentRoot();
+      let stewardPolicy: import("../heart/external-events/router").ExternalEventDisposition["stewardPolicy"];
+      if (policyKind === "none") {
+        if (record.transition !== "opened") throw new Error("External event no-policy disposition requires a fresh observation");
+        stewardPolicy = { kind: "none" };
+      } else {
+        const key = String(a.stewardPolicyKey ?? "").trim();
+        if (!key) throw new Error("External event disposition is invalid");
+        const policy = readStewardPolicy(agentRoot);
+        if (policy.version !== policyVersion || (!policy.desiredStates[key] && !policy.routineActionGrants[key])) {
+          throw new Error("External event steward policy is not the exact current key/version");
+        }
+        stewardPolicy = { kind: "current", key, version: policyVersion };
+      }
+      if (typeof a.careId === "string" && a.careId) {
+        const care = readCares(agentRoot).find((candidate) => candidate.id === a.careId);
+        const binding = care?.incidentBindings?.find((candidate) => candidate.source === record.source && candidate.incidentKey === record.eventId && candidate.classifiedRevision === classifiedRevision);
+        if (!care || !binding) throw new Error("External event Care does not belong to this agent and incident revision");
+      }
+      if (classification === "adopted" && !(typeof a.careId === "string" && a.careId)) {
+        throw new Error("External event adopted disposition requires a Care");
+      }
+      if (nextWake === "at") {
+        const awaitId = typeof a.awaitId === "string" ? a.awaitId : "";
+        if (!/^[A-Za-z0-9_-]+$/u.test(awaitId)) throw new Error("External event timed disposition requires a current pending Await");
+        const awaitPath = path.join(agentRoot, "awaiting", `${awaitId}.md`);
+        let pendingAwait;
+        try {
+          const stat = fs.lstatSync(awaitPath);
+          if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("unsafe Await");
+          pendingAwait = parseAwaitFile(fs.readFileSync(awaitPath, "utf8"), awaitPath);
+        } catch {
+          throw new Error("External event timed disposition requires a current pending Await");
+        }
+        if (pendingAwait.status !== "pending" || pendingAwait.wake_at !== String(a.wakeAt ?? "")) {
+          throw new Error("External event timed disposition Await does not match the exact wake time");
+        }
+      }
       const authority = ctx?.externalEventAuthority?.authorizeDisposition({
         event: turnEvent,
         classification,
         decision,
-        stewardPolicyKey: String(a.stewardPolicyKey),
-        stewardPolicyVersion: policyVersion,
+        stewardPolicy,
         nextWake,
         wakeAt: nextWake === "at" ? String(a.wakeAt ?? "") : null,
         awaitId: typeof a.awaitId === "string" && a.awaitId ? a.awaitId : null,
@@ -88,6 +131,12 @@ export const continuityToolDefinitions: ToolDefinition[] = [
         verificationRefs,
       });
       if (!authority?.allowed) throw new Error(`External event disposition authority denied: ${authority?.reason ?? "authority unavailable"}`);
+      const finish = async () => {
+      if (decision === "ask" || decision === "report") {
+        if (Buffer.byteLength(reason, "utf8") > 1_200) throw new Error("External event owner message must be phone-sized");
+        if (!ctx?.externalEventEffects) throw new Error("External event owner delivery is unavailable");
+        await ctx.externalEventEffects.deliverOwnerDecision({ eventId: record.eventId, generation: record.generation, text: reason });
+      }
       const handled = commitExternalEventDisposition(recordPath, {
         owner: turnEvent.claimOwner,
         expectedVersion: record.version,
@@ -95,7 +144,7 @@ export const continuityToolDefinitions: ToolDefinition[] = [
         disposition: {
           classifiedRevision,
           classification: classification as import("../heart/external-events/router").ExternalEventClassification,
-          stewardPolicy: { key: String(a.stewardPolicyKey), version: policyVersion },
+          stewardPolicy,
           decision: decision as import("../heart/external-events/router").ExternalEventDecision,
           reason,
           nextWake: wake,
@@ -107,6 +156,8 @@ export const continuityToolDefinitions: ToolDefinition[] = [
       });
       emitNervesEvent({ component: "repertoire", event: "repertoire.external_event_disposition", message: "external event disposition recorded", meta: { agentName, eventId: record.eventId, generation: record.generation, classification, decision } });
       return JSON.stringify(handled, null, 2);
+      };
+      return finish();
     },
     riskProfile: { mutates: "durable_state_write", risk: "high", reason: "records the agent's classification on an existing external-event receipt" },
   },

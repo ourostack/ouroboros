@@ -30,7 +30,7 @@ describe("Unraid privileged spool bootstrap", () => {
 
     const installed = fs.readFileSync(installPath, "utf8")
     const go = fs.readFileSync(goFile, "utf8")
-    const hook = "/boot/config/custom/ouro-events/bootstrap-spool.sh --mount"
+    const hook = "/bin/bash /boot/config/custom/ouro-events/bootstrap-spool.sh --mount"
     expect(installed).toContain('SPOOL_ROOT="/boot/config/custom/ouro-events/spool"')
     expect(go.match(new RegExp(hook.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "gu"))).toHaveLength(1)
     expect(go.indexOf(hook)).toBeLessThan(go.indexOf("/usr/local/sbin/emhttp"))
