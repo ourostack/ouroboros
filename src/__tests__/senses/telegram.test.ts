@@ -857,8 +857,8 @@ describe("Telegram sense", () => {
     const artifactPath = path.join(journalRoot, fs.readdirSync(journalRoot)[0]!)
     const artifact = JSON.parse(fs.readFileSync(artifactPath, "utf8"))
     artifact.target.requestId = "req-7"
-    artifact.parts[0].state = "session_recorded"
-    artifact.parts[0].sessionEventId = "evt-000007"
+    artifact.parts[0].state = "accepted"
+    delete artifact.parts[0].sessionEventId
     fs.writeFileSync(artifactPath, JSON.stringify(artifact))
     const firstTurn = f.runTurn.mock.calls[0]![0]
     const replySessionPath = getSenseSessionPath("butler", firstTurn.friendId, "telegram", firstTurn.sessionKey, f.agentRoot)
@@ -880,6 +880,9 @@ describe("Telegram sense", () => {
         references: [inboundReference(97, "98"), `telegram-artifact:${artifact.id}`, "request:req-7"],
       },
     }))
+
+    await f.getOnMessage()({ updateId: 99, messageId: "100", userId: "42", chatId: "42", text: "unknown reply", replyToMessageId: "999" })
+    expect(f.runTurn).toHaveBeenLastCalledWith(expect.objectContaining({ ingressRelations: expect.objectContaining({ replyToEventId: null }) }))
   })
 
   it("persists one HMAC-bound acceptance receipt with observed provider, tool, and delivery counts", async () => {
@@ -944,6 +947,32 @@ describe("Telegram sense", () => {
     expect(duplicate.api.request).toHaveBeenCalledWith("sendMessage", { chat_id: "42", text: "I couldn't complete that turn. The failure was recorded; please try again.", parse_mode: "HTML" }, undefined)
     expect(JSON.parse(fs.readFileSync(receiptPath(duplicateRoot), "utf8"))).toMatchObject({ status: "error", deliveryCount: 1 })
     fs.rmSync(duplicateRoot, { recursive: true, force: true })
+  })
+
+  it("grounds the canonical storage intent and contains a missing grounding", async () => {
+    const storage = { array: { state: "STARTED", degraded: false, usedBytes: 8_000_000_000_000, freeBytes: 2_000_000_000_000, usedPercent: 80 }, shares: [], truncated: false }
+    const sessionPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "telegram-storage-grounding-")), "session.json")
+    const collect = async (operation: () => Promise<unknown>, observer: { toolResultDigests: string[]; toolGroundings?: unknown[] }) => {
+      observer.toolGroundings?.push({ toolName: "unraid_get_storage", resultDigest: HEX_DIGEST, groundingDigest: createHash("sha256").update(JSON.stringify(storage)).digest("hex"), sourceIdentityDigest: "9".repeat(64), observedAt: "2026-08-20T16:00:00.000Z", facts: storage })
+      return { result: await operation(), toolResultDigests: [], toolGroundings: [...(observer.toolGroundings ?? [])] }
+    }
+    const grounded = fixture({
+      acceptanceMarker: () => ({ scenarioHandleDigest: HEX_DIGEST, label: "unit-16d-1-space" }),
+      acceptanceReceiptRoot: path.dirname(sessionPath),
+      runWithToolReceiptCollection: collect,
+      runTurn: vi.fn(async () => ({ response: "ignored", sessionPath, deliveries: [], deliveryFailures: [], ponderDeferred: false })),
+    })
+    await grounded.getOnMessage()({ updateId: 24, messageId: "25", userId: "42", chatId: "42", text: "how much space is left?" })
+    expect(grounded.api.request).toHaveBeenCalledWith("sendMessage", { chat_id: "42", text: "There is 2 TB free and the array is 80% used.", parse_mode: "HTML" }, undefined)
+
+    const missing = fixture({
+      acceptanceMarker: () => ({ scenarioHandleDigest: "e".repeat(64), label: "unit-16d-whats-up" }),
+      acceptanceReceiptRoot: fs.mkdtempSync(path.join(os.tmpdir(), "telegram-missing-grounding-")),
+      runWithToolReceiptCollection: async (operation) => ({ result: await operation(), toolResultDigests: [], toolGroundings: [] }),
+      runTurn: vi.fn(async () => ({ response: "ungrounded", deliveries: [], deliveryFailures: [], ponderDeferred: false })),
+    })
+    await missing.getOnMessage()({ updateId: 26, messageId: "27", userId: "42", chatId: "42", text: "status" })
+    expect(missing.api.request).toHaveBeenCalledWith("sendMessage", { chat_id: "42", text: "I couldn't complete that turn. The failure was recorded; please try again.", parse_mode: "HTML" }, undefined)
   })
 
   it("records partial chunk delivery as an error without sending a duplicate fallback", async () => {
@@ -1539,8 +1568,8 @@ describe("Telegram sense", () => {
     expect(neverStarted.api.stop).toHaveBeenCalledOnce()
   })
 
-  it("keeps Telegram available when routine recovery needs later inspection", async () => {
-    const recoverRoutineActions = vi.fn(async () => { throw new Error("Unraid offline") })
+  it.each([new Error("Unraid offline"), "Unraid offline"])('keeps Telegram available when routine recovery needs later inspection for $failure', async (failure) => {
+    const recoverRoutineActions = vi.fn(async () => { throw failure })
     const poll = { pollOnce: vi.fn(), run: vi.fn(async () => undefined), stop: vi.fn() }
     const approvalRuntime = {
       transport: { sendApproval: vi.fn(), handleUpdate: vi.fn(), terminalizeRecovered: vi.fn(), reconcileExpired: vi.fn(async () => undefined) },

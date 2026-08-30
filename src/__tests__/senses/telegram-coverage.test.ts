@@ -22,7 +22,7 @@ const mocks = vi.hoisted(() => ({
   emitNervesEvent: vi.fn(),
 }))
 
-vi.mock("../../heart/identity", () => ({ getAgentRoot: mocks.getAgentRoot }))
+vi.mock("../../heart/identity", () => ({ getAgentRoot: mocks.getAgentRoot, getAgentName: () => "butler" }))
 vi.mock("../../heart/runtime-credentials", () => ({ readRuntimeCredentialConfig: mocks.readRuntimeCredentialConfig }))
 vi.mock("../../senses/shared-turn", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../senses/shared-turn")>(),
@@ -43,6 +43,7 @@ vi.mock("../../senses/telegram-client", async (importActual) => ({
 }))
 
 import {
+  createSabQueueProtectiveStateVerifier,
   createTelegramSenseApp,
   loadTelegramSenseCredentials,
   migrateTelegramFriendIdentity,
@@ -55,6 +56,7 @@ import {
   telegramAcceptanceAuditOwnerDigest,
 } from "../../senses/telegram"
 import { FileFriendStore } from "@ouro.bot/friends"
+import { awaitingToolDefinitions } from "../../repertoire/tools-awaiting"
 
 const credentials = { botToken: "synthetic-test-token", authorizedUserId: "42", authorizedChatId: "43" }
 const isolatedRoots: string[] = []
@@ -117,6 +119,24 @@ describe("Telegram sense coverage contracts", () => {
   const emitGlobal = (entry: ReturnType<typeof acceptanceEvent>) => {
     createLogger({ level: "info", sinks: [() => undefined], now: () => new Date("2026-08-20T20:00:00.000Z") }).info(entry)
   }
+
+  it("uses verifier defaults and rejects an unsuccessful SAB response", async () => {
+    expect(createSabQueueProtectiveStateVerifier()).toBeTypeOf("function")
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "sab-verifier-http-"))
+    const iniPath = path.join(root, "sab.ini")
+    fs.writeFileSync(iniPath, "api_key = secret\n")
+    const verify = createSabQueueProtectiveStateVerifier({
+      iniPath,
+      fetch: vi.fn(async () => ({ ok: false })) as never,
+    })
+    await expect(verify({ action: "sabnzbd.pause", actionReceipt: "r", transitionId: "t", critical: true, createdAt: "2026-01-01T00:00:00.000Z", expiresAt: "2099-01-01T00:00:00.000Z", verification: { verified: true, digest: "d", observedAt: "2026-01-01T00:00:00.000Z" } })).rejects.toThrow("request failed")
+    const verifyWithClockDefault = createSabQueueProtectiveStateVerifier({
+      iniPath,
+      fetch: vi.fn(async () => ({ ok: true, json: async () => ({ queue: { paused: false } }) })) as never,
+    })
+    await expect(verifyWithClockDefault({ action: "sabnzbd.pause", actionReceipt: "r", transitionId: "t", critical: true, createdAt: "2026-01-01T00:00:00.000Z", expiresAt: "2099-01-01T00:00:00.000Z", verification: { verified: true, digest: "d", observedAt: "2026-01-01T00:00:00.000Z" } })).resolves.toMatchObject({ verified: false, reference: expect.stringContaining("sabnzbd.queue.paused:") })
+    fs.rmSync(root, { recursive: true, force: true })
+  })
 
   it("creates one durable mode-0600 identity key in a repaired mode-0700 directory and rejects corrupt or permissive keys", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-telegram-identity-"))
@@ -1172,6 +1192,26 @@ describe("Telegram sense coverage contracts", () => {
     await app.stop()
   })
 
+  it("queues a Telegram await result when its direct request binding is unavailable", async () => {
+    defaultFixture()
+    createTelegramSenseApp({ agentName: "butler", credentials })
+    const fileAwait = awaitingToolDefinitions.find((definition) => definition.tool.function.name === "await_condition")!
+    const resolveAwait = awaitingToolDefinitions.find((definition) => definition.tool.function.name === "resolve_await")!
+    await fileAwait.handler({ name: "telegram_queue_fallback", condition: "ready", cadence: "5m", alert: "bluebubbles" }, {
+      currentSession: { friendId: "ari", channel: "bluebubbles", key: "bluebubbles:missing-binding", sessionPath: "" },
+    } as never)
+    await resolveAwait.handler({ name: "telegram_queue_fallback", verdict: "yes", observation: "ready" }, undefined)
+    expect(fs.readdirSync(path.join(isolatedRoot, "state", "pending", "self", "inner", "dialog"))).toHaveLength(1)
+  })
+
+  it("contains a primitive Telegram await authorization failure", async () => {
+    const f = defaultFixture()
+    const app = createTelegramSenseApp({ agentName: "butler", credentials, authorizeEffect: vi.fn(async () => { throw "primitive authorization failure" }) })
+    await expect(app.sendAwaitFollowUp({ friendId: "ari", channel: "telegram", key: "telegram:key", requestId: "request-1", content: "ready", intent: "generic_outreach" })).resolves.toEqual({ status: "blocked", detail: "primitive authorization failure" })
+    await app.stop()
+    expect(f.api.stop).toHaveBeenCalledOnce()
+  })
+
   it("loads credentials, explains missing runtime config, and fails production start on an unbound bot identity", async () => {
     expect(loadTelegramSenseCredentials("butler")).toEqual(credentials)
     mocks.readRuntimeCredentialConfig.mockReturnValueOnce({ ok: false, reason: "missing" })
@@ -1198,10 +1238,13 @@ describe("Telegram sense coverage contracts", () => {
     await friends.put("ari", { id: "ari", name: "Ari", trustLevel: "family", admissionState: "active", initiativePolicy: "proactive", capabilityProfileId: "sanctuary-owner",
       externalIds: [{ provider: "telegram-user", externalId: "42", tenantId: "777", linkedAt: now }], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: now, updatedAt: now, schemaVersion: 1 })
 
+    const sanctuary = await startTelegramSenseApp("sanctuary")
+    await sanctuary.stop()
+
     await sendTelegramExternalEventDecision("butler", { source: "health", eventId: "books", generation: 1, text: "Books recovered." })
     await expect(sendTelegramAwaitFollowUp("butler", { friendId: "sibling", channel: "telegram", key: "telegram:777:888", content: "Ready", intent: "generic_outreach" })).resolves.toMatchObject({ status: "blocked" })
 
     expect(mocks.sendTelegramText).toHaveBeenCalledWith(f.api, "42", "Books recovered.", undefined)
-    expect(f.api.stop).toHaveBeenCalledTimes(2)
+    expect(f.api.stop).toHaveBeenCalledTimes(3)
   })
 })

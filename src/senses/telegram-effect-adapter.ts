@@ -706,6 +706,20 @@ export function appendTelegramInboundEvent(envelope: SessionEnvelope, input: { t
   }
 }
 
+export function recordTelegramEffectsInSession(input: {
+  store: FileTelegramEffectJournal
+  sessionPath: string
+  artifacts: TelegramEffectArtifact[]
+  inbound: { text: string; reference: string }
+  causalEventIds?: Readonly<Record<string, string>>
+}): Promise<{ eventId: string; reference: string }>
+export function recordTelegramEffectsInSession(input: {
+  store: FileTelegramEffectJournal
+  sessionPath: string
+  artifacts: TelegramEffectArtifact[]
+  inbound?: { text: string; reference: string }
+  causalEventIds?: Readonly<Record<string, string>>
+}): Promise<{ eventId: string; reference: string } | null>
 export async function recordTelegramEffectsInSession(input: {
   store: FileTelegramEffectJournal
   sessionPath: string

@@ -152,6 +152,13 @@ describe("relationship authorization", () => {
     })
     expect(evaluator.actor).toMatchObject({ sessionEventId: "evt-forwarded" })
     expect(evaluator.authorizeTool("unraid_get_system")).toMatchObject({ allowed: true, requestId: "req-forwarded" })
+
+    const relationshipScoped = await resolveProfileScopedRelationshipAuthorization({
+      store: { listAll: async () => [friend] } as any,
+      registry,
+      relationshipProfileId: "sanctuary-household",
+    })
+    expect(relationshipScoped.advertisedToolNames).toEqual([])
   })
 
   it("allows only the fixed pending admission-gate effect without a relationship", () => {

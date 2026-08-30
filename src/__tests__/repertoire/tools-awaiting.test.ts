@@ -139,6 +139,11 @@ describe("tools-awaiting", () => {
       expect(content).toContain("what would count as ready")
     })
 
+    it("persists a canonical future wake time", async () => {
+      await fileAwaitDef.handler({ name: "scheduled", condition: "x", cadence: "5m", wake_at: "2099-08-30T01:00:00.000Z" }, undefined)
+      expect(fs.readFileSync(path.join(agentRoot, "awaiting", "scheduled.md"), "utf8")).toContain("wake_at: 2099-08-30T01:00:00.000Z")
+    })
+
     it("caps oversized agent-authored condition and body text while preserving markdown", async () => {
       const oversizedCondition = makeOversizedAgentContent("await condition ")
       const oversizedBody = makeOversizedAgentContent("await body ")
@@ -207,6 +212,15 @@ describe("tools-awaiting", () => {
         relationshipAuthorization: { requestId: "request-write-fail", authorizedContextScopes: ["own_requests"], advertisedToolNames: ["await_condition"], authorizeTool: vi.fn() },
       }
       expect(() => fileAwaitDef.handler({ name: "write_fail", condition: "c", cadence: "5m" }, ctx as any)).toThrow()
+      fs.chmodSync(awaiting, 0o700)
+      expect(readVerifiedPendingObligations(agentRoot)).toEqual([])
+    })
+
+    it("propagates an unbound await write failure without obligation cleanup", async () => {
+      const awaiting = path.join(agentRoot, "awaiting")
+      fs.mkdirSync(awaiting, { recursive: true })
+      fs.chmodSync(awaiting, 0o500)
+      expect(() => fileAwaitDef.handler({ name: "unbound_write_fail", condition: "c", cadence: "5m" }, undefined)).toThrow()
       fs.chmodSync(awaiting, 0o700)
       expect(readVerifiedPendingObligations(agentRoot)).toEqual([])
     })
@@ -498,6 +512,8 @@ describe("tools-awaiting", () => {
       expect(parse(cancelAwaitDef.handler({ name: "mine" }, otherFriend as any) as string).error).toMatch(/current relationship request/u)
       expect(parse(cancelAwaitDef.handler({ name: "mine" }, mine as any) as string).canceled).toBe("mine")
       expect(fs.existsSync(path.join(agentRoot, "awaiting", "other.md"))).toBe(true)
+
+      expect(parse(cancelAwaitDef.handler({}, mine as any) as string).error).toMatch(/current relationship request/u)
     })
   })
 
@@ -601,6 +617,7 @@ describe("tools-awaiting", () => {
   describe("relationship follow-up verification", () => {
     it("rejects malformed or missing await artifacts and fulfills orphaned revocation obligations", () => {
       const route = { friendId: "sibling", channel: "telegram", key: "telegram:777:888" }
+      createObligation(agentRoot, { origin: route, owedTo: route, requestId: "request-unbound", content: "c" })
       const malformed = createObligation(agentRoot, { origin: route, owedTo: route, requestId: "request-malformed", content: "c" })
       advanceObligation(agentRoot, malformed.id, { currentSurface: { kind: "session", label: "telegram" }, currentArtifact: "awaiting/.md", nextAction: "c" })
       expect(hasActiveRelationshipFollowUp(agentRoot, { ...route, requestId: "request-malformed" })).toBe(false)
