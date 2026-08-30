@@ -403,6 +403,16 @@ describe("Telegram effect adapter", () => {
     }
   })
 
+  it("loads legacy accepted artifacts without fabricating an acceptance timestamp", async () => {
+    const store = journal()
+    const prepared = prepareTelegramEffect(store, { idempotencyKey: "legacy:accepted", target, authorClass: "butler", effect: { kind: "text", text: "legacy" }, authorization })
+    const executed = await executeTelegramEffect(store, prepared.id, { request: vi.fn(async () => ({ message_id: 99 })) }, () => authorization)
+    delete executed.parts[0]!.acceptedAt
+    store.write(executed)
+    expect(store.read(prepared.id).parts[0]).toMatchObject({ state: "accepted", messageId: 99 })
+    expect(store.read(prepared.id).parts[0]!.acceptedAt).toBeUndefined()
+  })
+
   it("commits inbound-only admission ingress once and returns the exact durable session event", async () => {
     const store = journal()
     const sessionPath = path.join(roots[roots.length - 1]!, "session.json")

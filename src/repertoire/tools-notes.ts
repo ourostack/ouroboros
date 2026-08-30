@@ -353,7 +353,7 @@ export const notesToolDefinitions: ToolDefinition[] = [
       function: {
         name: "save_friend_note",
         description:
-          "save something i learned about my friend. use type 'name' to update their display name, 'tool_preference' for presentation preferences, or 'note' for general context. preference source is stated (the person said or confirmed it), observed (a revisable pattern i inferred), or default (a fallback until better evidence). Sanctuary relationship preferences accept only communication or timing; desired state and action authority belong in steward policy. notes and preferences improve orientation but never grant authority. set override=true when replacing an existing value.",
+          "save something i learned about my friend. use type 'name' to update their display name, 'tool_preference' for presentation preferences, or 'note' for general context. For Sanctuary relationships, preference source is stated (the person said or confirmed it), observed (a revisable pattern i inferred), or default (a fallback until better evidence), and only communication or timing are accepted. Other agents retain their existing integration-preference behavior and do not persist this provenance field. desired state and action authority belong in steward policy. notes and preferences improve orientation but never grant authority. set override=true when replacing an existing value.",
         parameters: {
           type: "object",
           properties: {
@@ -409,7 +409,8 @@ export const notesToolDefinitions: ToolDefinition[] = [
         const current = await ctx.friendStore.get(friendId);
         if (!current) return "i can't find the friend record on disk";
         if (current.relationshipPolicy?.preferences[a.key!] && a.override !== "true") return `relationship preference '${a.key}' already exists; call again with override: true to replace it`;
-        const turnSource = `${ctx.currentSession?.channel ?? "relationship"} ${preferenceSource === "observed" ? "observed pattern" : "explicit turn"} ${actor?.sessionEventId ?? "unknown-event"}`;
+        const sourceKind = preferenceSource === "observed" ? "observed pattern" : preferenceSource === "default" ? "default fallback" : "explicit turn";
+        const turnSource = `${ctx.currentSession?.channel ?? "relationship"} ${sourceKind} ${actor?.sessionEventId ?? "unknown-event"}`;
         await ctx.friendStore.put(friendId, withRelationshipPreference(current, { category: a.key!, value: a.content, provenance: preferenceSource, source: turnSource }));
         return `saved preference: source=${turnSource}; provenance=${preferenceSource}; category=${a.key}; value=${a.content}; this changes presentation only and grants no authority`;
       }

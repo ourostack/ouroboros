@@ -525,21 +525,33 @@ export function formatButlerOperationalVisibility(status: ButlerOperationalVisib
     lines.push("- senses:")
     lines.push(...(error("senses") ? [`  - ${error("senses")}`] : status.senseStatusLines.length > 0 ? status.senseStatusLines.map((line) => `  ${line}`) : ["  - unavailable"]))
     const health = status.healthState
-    lines.push(`- health sweeps: ${error("health_state") ?? health?.sweepReceipts.length ?? 0}; deliveries ${health?.deliveredReceipts.length ?? 0}; open incidents ${health ? Object.keys(health.incidents).length : 0}; updated ${health?.updatedAt ?? "unavailable"}`)
-    for (const sweep of page(health?.sweepReceipts ?? []).sort((a, b) => b.completedAt.localeCompare(a.completedAt))) lines.push(`  - sweep ${sweep.sweepId}: opened ${sweep.opened}; recovered ${sweep.recovered}; completed ${sweep.completedAt}${sweep.deliveryId ? `; delivery ${sweep.deliveryId}` : ""}`)
-    const overflow = more("health", health?.sweepReceipts.length ?? 0); if (overflow) lines.push(overflow)
+    lines.push(`- health sweeps: ${error("health_state") ?? health?.sweepReceipts.length ?? 0}; delivered ${health?.deliveredReceipts.length ?? 0}; indeterminate ${health?.indeterminateDeliveries.length ?? 0}; outbox ${health?.outbox ? `${health.outbox.status}:${health.outbox.id}` : "clear"}; open incidents ${health ? Object.keys(health.incidents).length : 0}; updated ${health?.updatedAt ?? "unavailable"}`)
+    const healthRows = [
+      ...(health?.sweepReceipts ?? []).map((sweep) => ({ at: sweep.completedAt, text: `sweep ${sweep.sweepId}: opened ${sweep.opened}; recovered ${sweep.recovered}; completed ${sweep.completedAt}${sweep.deliveryId ? `; delivery ${sweep.deliveryId}` : ""}` })),
+      ...(health?.deliveredReceipts ?? []).map((delivery) => ({ at: delivery.deliveredAt, text: `delivered ${delivery.deliveryId}: ${delivery.kind}; messages ${delivery.messageIds.join(",")}; at ${delivery.deliveredAt}` })),
+      ...(health?.indeterminateDeliveries ?? []).map((delivery) => ({ at: delivery.createdAt, text: `indeterminate ${delivery.id}: ${delivery.kind}; ${delivery.status}; created ${delivery.createdAt}` })),
+    ].sort((a, b) => b.at.localeCompare(a.at))
+    for (const row of page(healthRows)) lines.push(`  - ${row.text}`)
+    const overflow = more("health", healthRows.length); if (overflow) lines.push(overflow)
   }
   if (show("provider")) lines.push(`- provider lanes: ${error("provider") ?? (status.providerLanes ? `outward ${status.providerLanes.outward.provider}/${status.providerLanes.outward.model}; inner ${status.providerLanes.inner.provider}/${status.providerLanes.inner.model}` : "unavailable")}`)
   if (show("policy")) {
     lines.push(`- steward policy: ${error("steward_policy") ?? `version ${status.stewardPolicy.version}; ${Object.keys(status.stewardPolicy.desiredStates).length} desired states; ${Object.keys(status.stewardPolicy.routineActionGrants).length} routine grants`}`)
     const entries = [...Object.entries(status.stewardPolicy.desiredStates).map(([key, value]) => ({ key, kind: "desired" as const, value })), ...Object.entries(status.stewardPolicy.routineActionGrants).map(([key, value]) => ({ key, kind: "grant" as const, value }))]
-    for (const entry of page(entries)) lines.push(entry.kind === "desired" ? `  - ${entry.key} = ${boundedStatusText(entry.value.value)}; ${entry.value.provenance}; source ${boundedStatusText(entry.value.source)}; v${entry.value.version}` : `  - ${entry.key}: ${entry.value.action} on ${entry.value.targets.join(", ")}; max ${entry.value.maxCount}/${entry.value.windowMs}ms; ${entry.value.verificationRequired ? "verification required" : "no verification"}; v${entry.value.version}`)
+    for (const entry of page(entries)) {
+      const expiry = entry.value.expiresAt
+      const active = !expiry || Date.parse(expiry) > Date.now()
+      lines.push(entry.kind === "desired" ? `  - ${entry.key} = ${boundedStatusText(entry.value.value)}; ${active ? "active" : "expired"}; ${entry.value.provenance}; source ${boundedStatusText(entry.value.source)}; v${entry.value.version}${expiry ? `; expires ${expiry}` : ""}` : `  - ${entry.key}: ${entry.value.action} on ${entry.value.targets.join(", ")}; ${active ? "active" : "expired"}; max ${entry.value.maxCount}/${entry.value.windowMs}ms; ${entry.value.verificationRequired ? "verification required" : "no verification"}; v${entry.value.version}${expiry ? `; expires ${expiry}` : ""}`)
+    }
     const overflow = more("policy", entries.length); if (overflow) lines.push(overflow)
   }
   if (show("actions")) {
     const actions = [...(status.routineActions ?? [])].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
     lines.push(`- routine action receipts: ${error("routine_actions") ?? actions.length}`)
-    for (const action of page(actions)) lines.push(`  - ${action.id}: ${action.action} ${action.target}; ${action.state}; updated ${action.updatedAt}; verification ${action.verifiedAfterState ?? "pending"}`)
+    for (const action of page(actions)) {
+      const verification = action.state === "verified" ? `verified ${action.verifiedAfterState ?? "state unavailable"}` : action.state === "failed" ? "failed" : action.state === "indeterminate" ? "indeterminate; manual inspection required" : action.state === "recovered_no_effect" ? "no effect occurred" : "pending"
+      lines.push(`  - ${action.id}: ${action.action} ${action.target}; ${action.state}; updated ${action.updatedAt}; verification ${verification}`)
+    }
     const overflow = more("actions", actions.length); if (overflow) lines.push(overflow)
   }
   if (show("awaits")) {
@@ -548,11 +560,29 @@ export function formatButlerOperationalVisibility(status: ButlerOperationalVisib
     const overflow = more("awaits", status.awaits.length); if (overflow) lines.push(overflow)
   }
   if (show("telegram")) {
+    const acceptedTimes = status.telegramEffects.flatMap((effect) => effect.acceptedAt ? [effect.acceptedAt] : []).sort().reverse()
+    const recordedTimes = status.telegramEffects.flatMap((effect) => effect.sessionRecordedAt ? [effect.sessionRecordedAt] : []).sort().reverse()
+    const legacyAccepted = status.telegramEffects.some((effect) => !effect.acceptedAt && (effect.state === "accepted" || effect.state === "session_recorded"))
+    const legacyRecorded = status.telegramEffects.some((effect) => !effect.sessionRecordedAt && effect.state === "session_recorded")
+    lines.push(`- latest Telegram accepted: ${acceptedTimes[0] ?? (legacyAccepted ? "timestamp unavailable (legacy artifacts present)" : "none")}; latest session recorded: ${recordedTimes[0] ?? (legacyRecorded ? "timestamp unavailable (legacy artifacts present)" : "none")}`)
     lines.push(`- Telegram effects: ${error("telegram_effects") ?? status.telegramEffects.length}`)
-    for (const effect of page([...status.telegramEffects].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)))) lines.push(`  - ${effect.id}: ${effect.state}; ${effect.authorClass}; ${effect.targetKind}; accepted ${effect.acceptedAt ?? "no"}; session recorded ${effect.sessionRecordedAt ?? "no"}; message ids ${effect.messageIds?.join(",") || "none"}; session events ${effect.sessionEventIds?.join(",") || "none"}; updated ${effect.updatedAt}`)
     lines.push(`- Telegram admissions: ${error("telegram_admissions") ?? status.telegramAdmissions.length}`)
-    for (const admission of page([...status.telegramAdmissions].sort((left, right) => right.createdAt - left.createdAt))) lines.push(`  - ${admission.id}: ${admission.status}; code ${admission.displayCode}; expires ${new Date(admission.expiresAt).toISOString()}`)
-    const overflow = more("telegram", Math.max(status.telegramEffects.length, status.telegramAdmissions.length)); if (overflow) lines.push(overflow)
+    const telegramRows = [
+      ...status.telegramEffects.map((effect) => ({ at: effect.updatedAt, effect })),
+      ...status.telegramAdmissions.map((admission) => ({ at: new Date(admission.createdAt).toISOString(), admission })),
+    ].sort((a, b) => b.at.localeCompare(a.at))
+    for (const row of page(telegramRows)) {
+      if ("admission" in row) {
+        const admission = row.admission
+        lines.push(`  - admission ${admission.id}: ${admission.status}; code ${admission.displayCode}; expires ${new Date(admission.expiresAt).toISOString()}`)
+        continue
+      }
+      const effect = row.effect
+      const accepted = effect.acceptedAt ?? ((effect.state === "accepted" || effect.state === "session_recorded") ? "timestamp unavailable (legacy)" : "not accepted")
+      const recorded = effect.sessionRecordedAt ?? (effect.state === "session_recorded" ? "timestamp unavailable (legacy)" : "not recorded")
+      lines.push(`  - ${effect.id}: ${effect.state}; ${effect.authorClass}; ${effect.targetKind}; accepted ${accepted}; session recorded ${recorded}; message ids ${effect.messageIds?.join(",") || "none"}; session events ${effect.sessionEventIds?.join(",") || "none"}; updated ${effect.updatedAt}`)
+    }
+    const overflow = more("telegram", telegramRows.length); if (overflow) lines.push(overflow)
   }
   if (show("events")) {
     const events = [...status.externalEvents].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
