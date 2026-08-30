@@ -9,6 +9,7 @@ const roots: string[] = []
 const assetRoot = path.resolve(__dirname, "../../../deploy/unraid/ouro-events")
 const guardPath = path.join(assetRoot, "usenet-health.sh")
 const adapterPath = path.join(assetRoot, "emit-usenet-event.sh")
+const producerPath = path.join(assetRoot, "emit-event.mjs")
 const installerPath = path.join(assetRoot, "install-usenet-guard.sh")
 
 function root(): string {
@@ -142,6 +143,8 @@ printf '%s\n' "$*" >> ${JSON.stringify(calls)}
     expect(source).toContain('"--protective-state-observed-at" "$VERIFIED_AT"')
     expect(source).toContain('OBSERVED_STATE="${TRANSITION%%:*}"')
     expect(source).toContain('"$ACTION" "$INCIDENT" "$OBSERVED_STATE" "$VERIFICATION_DIGEST"')
+    expect(source).not.toContain("prowlarr.disable-indexer")
+    expect(fs.readFileSync(producerPath, "utf8")).not.toContain("prowlarr.disable-indexer")
     expect(source).not.toMatch(/TELEGRAM|token|sendMessage|api\.telegram/iu)
   })
 

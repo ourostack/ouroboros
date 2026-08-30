@@ -147,7 +147,7 @@ describe("Telegram system failsafe", () => {
       record({ privilegedProtectiveAction: { ...record().privilegedProtectiveAction!, critical: false } }),
       record({ executionState: "handled", lastError: null }),
       record({ dispatchEnabled: false }),
-      record({ privilegedProtectiveAction: { ...record().privilegedProtectiveAction!, action: "prowlarr.disable-indexer" } }),
+      record({ privilegedProtectiveAction: { ...record().privilegedProtectiveAction!, action: "unsupported.action" as never } }),
       record({ privilegedProtectiveAction: { ...record().privilegedProtectiveAction!, verification: { verified: false, digest: "e".repeat(64), observedAt: "2026-08-29T19:55:01.000Z" } } }),
     ]
     for (const candidate of cases) {

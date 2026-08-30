@@ -24,7 +24,7 @@ VERIFIED_AT="$9"
 EVENT_TYPE="usenet.protective_action"
 
 case "$ACTION" in
-  sabnzbd.pause|prowlarr.disable-indexer) ;;
+  sabnzbd.pause) ;;
   usenet.observe) EVENT_TYPE="usenet.health_observation" ;;
   *) echo "usenet event adapter: action is not allowlisted" >&2; exit 2 ;;
 esac
