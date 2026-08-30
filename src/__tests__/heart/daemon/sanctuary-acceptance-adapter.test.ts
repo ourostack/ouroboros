@@ -422,6 +422,8 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     const admissionStore = new FileTelegramAdmissionStore(path.join(agentRoot, "state", "senses", "telegram", "admissions"), {}, () => Date.parse("2026-08-20T16:00:00.000Z"))
     const captured = admissionStore.capture({ updateId: 10, messageId: 20, botId: "777", userId: "888", chatId: "888", text: "quarantined", displayLabel: "Guest", hasAttachments: false }, "PINE-4821")
     if (!("record" in captured)) throw new Error("admission fixture failed")
+    const second = admissionStore.capture({ updateId: 11, messageId: 21, botId: "777", userId: "889", chatId: "889", text: "also quarantined", displayLabel: "Second guest", hasAttachments: false }, "PINE-4822")
+    if (!("record" in second)) throw new Error("second admission fixture failed")
     admissionStore.close()
     const emptyEffects = new FileTelegramEffectJournal(path.join(agentRoot, "state", "telegram", "effects"))
     emptyEffects.close()
@@ -435,7 +437,8 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
         telegramCredentials: () => credentials,
         hostRequest: async () => ({ keys: [] }),
       }), agentRoot, { skipContainerSnapshot: true })
-      expect(facts.telegramAdmissions).toEqual([expect.objectContaining({ acknowledgementExact: false, ownerCardExact: false, relationshipAbsent: true })])
+      expect(facts.telegramAdmissions).toHaveLength(2)
+      expect(facts.telegramAdmissions).toEqual(expect.arrayContaining([expect.objectContaining({ acknowledgementExact: false, ownerCardExact: false, relationshipAbsent: true })]))
     } finally { fs.rmSync(agentRoot, { recursive: true, force: true }) }
   })
 
