@@ -32,6 +32,8 @@ describe("Sanctuary active tool profile", () => {
     ])
     const packaged = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/tool-profiles.json", "utf8"))
     expect(packaged.version).toBe(2)
+    expect(packaged.profiles["sanctuary-owner"].version).toBe(2)
+    expect(packaged.profiles["sanctuary-household"].version).toBe(2)
     expect(packaged.profiles["sanctuary-owner"].toolNames).toEqual(expect.arrayContaining(names))
     expect(packaged.profiles["sanctuary-owner"].toolNames).toEqual(expect.arrayContaining(["external_event_disposition", "query_active_work", "query_cares", "care_manage", "await_condition", "cancel_await"]))
     expect(packaged.profiles["sanctuary-owner"].toolNames).toContain("save_friend_note")
