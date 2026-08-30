@@ -395,6 +395,15 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       expect(facts.telegramAdmissions).toEqual([expect.objectContaining({ status: "pending", identityExact: true, acknowledgementExact: true, ownerCardExact: true, contentQuarantined: true, relationshipAbsent: true })])
       expect(facts.telegramAdmissions?.[0]?.admissionDigest).toMatch(/^[0-9a-f]{64}$/u)
       expect(JSON.stringify(facts.telegramAdmissions)).not.toMatch(/private stranger text|\b777\b|\b888\b/u)
+      const rewrittenEffects = new FileTelegramEffectJournal(path.join(agentRoot, "state", "telegram", "effects"))
+      rewrittenEffects.write(accept(acknowledgement, "session_recorded", 100))
+      rewrittenEffects.close()
+      const sessionRecordedAcknowledgement = await readDefaultSanctuaryScenarioFacts("unit-16d-2-unknown-admission", "a".repeat(64), unit16Deps({
+        readFixedFile: (file) => file in files ? files[file]! : (() => { throw Object.assign(new Error("missing"), { code: "ENOENT" }) })(),
+        telegramCredentials: () => credentials,
+        hostRequest: async () => ({ keys: [] }),
+      }), agentRoot, { skipContainerSnapshot: true })
+      expect(sessionRecordedAcknowledgement.telegramAdmissions).toEqual([expect.objectContaining({ acknowledgementExact: true })])
       delete files[`${agentRoot}/state/senses/telegram/identity.key`]
       const identityAbsent = await readDefaultSanctuaryScenarioFacts("unit-16d-2-unknown-admission", "a".repeat(64), unit16Deps({
         readFixedFile: (file) => file in files ? files[file]! : (() => { throw Object.assign(new Error("missing"), { code: "ENOENT" }) })(),
@@ -402,6 +411,31 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
         hostRequest: async () => ({ keys: [] }),
       }), agentRoot, { skipContainerSnapshot: true })
       expect(identityAbsent.telegramAdmissions).toEqual([])
+    } finally { fs.rmSync(agentRoot, { recursive: true, force: true }) }
+  })
+
+  it("projects incomplete quarantine stores without inventing effects or relationships", async () => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-admission-incomplete-evidence-"))
+    const identityKey = "k".repeat(43)
+    const credentials = { botToken: "777:secret", authorizedUserId: "42", authorizedChatId: "42" }
+    fs.writeFileSync(path.join(agentRoot, "tool-profiles.json"), fs.readFileSync("deploy/unraid/sanctuary.ouro/tool-profiles.json", "utf8"), { mode: 0o600 })
+    const admissionStore = new FileTelegramAdmissionStore(path.join(agentRoot, "state", "senses", "telegram", "admissions"), {}, () => Date.parse("2026-08-20T16:00:00.000Z"))
+    const captured = admissionStore.capture({ updateId: 10, messageId: 20, botId: "777", userId: "888", chatId: "888", text: "quarantined", displayLabel: "Guest", hasAttachments: false }, "PINE-4821")
+    if (!("record" in captured)) throw new Error("admission fixture failed")
+    admissionStore.close()
+    const emptyEffects = new FileTelegramEffectJournal(path.join(agentRoot, "state", "telegram", "effects"))
+    emptyEffects.close()
+    const files: Record<string, string> = {
+      [`${agentRoot}/state/senses/telegram/identity.key`]: identityKey,
+      [`${agentRoot}/state/senses/telegram/offset.json`]: JSON.stringify({ nextUpdateId: 11 }),
+    }
+    try {
+      const facts = await readDefaultSanctuaryScenarioFacts("unit-16d-2-unknown-admission", "a".repeat(64), unit16Deps({
+        readFixedFile: (file) => file in files ? files[file]! : (() => { throw Object.assign(new Error("missing"), { code: "ENOENT" }) })(),
+        telegramCredentials: () => credentials,
+        hostRequest: async () => ({ keys: [] }),
+      }), agentRoot, { skipContainerSnapshot: true })
+      expect(facts.telegramAdmissions).toEqual([expect.objectContaining({ acknowledgementExact: false, ownerCardExact: false, relationshipAbsent: true })])
     } finally { fs.rmSync(agentRoot, { recursive: true, force: true }) }
   })
 
