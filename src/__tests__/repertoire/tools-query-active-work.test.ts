@@ -520,7 +520,7 @@ describe("query_active_work tool", () => {
     expect(result).toContain("butler: unavailable")
     expect(result).toContain("no verification")
     expect(result).toContain("2 more policy")
-    expect(result).toContain("1 more telegram")
+    expect(result).toContain("22 more telegram")
     expect(result).toContain("not yet recorded")
   })
 
