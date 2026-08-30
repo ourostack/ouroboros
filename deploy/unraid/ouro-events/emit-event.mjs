@@ -155,7 +155,17 @@ function withProducerLock(context, operation) {
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)
         continue
       }
-      const leaseActive = owner && canonicalIso(owner.leaseUntil) ? Date.parse(owner.leaseUntil) > Date.now() : Date.now() - fs.statSync(lockPath).mtimeMs <= 30_000
+      let leaseActive
+      if (owner && canonicalIso(owner.leaseUntil)) {
+        leaseActive = Date.parse(owner.leaseUntil) > Date.now()
+      } else {
+        try {
+          leaseActive = Date.now() - fs.statSync(lockPath).mtimeMs <= 30_000
+        } catch (statError) {
+          if (statError?.code === "ENOENT") continue
+          throw statError
+        }
+      }
       if (leaseActive) {
         if (Date.now() >= deadline) throw new Error("event transition publication is busy")
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)

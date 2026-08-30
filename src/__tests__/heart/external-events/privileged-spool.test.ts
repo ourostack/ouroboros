@@ -431,7 +431,7 @@ describe("packaged root event producer", () => {
     ])
 
     expect(outcomes.filter((outcome) => outcome.code === 0)).toHaveLength(1)
-    expect(outcomes.filter((outcome) => outcome.stderr.includes("different content"))).toHaveLength(1)
+    expect(outcomes.filter((outcome) => outcome.stderr.includes("different content")), JSON.stringify(outcomes)).toHaveLength(1)
     expect(fs.readdirSync(spoolRoot)).toHaveLength(1)
     expect(JSON.parse(fs.readFileSync(path.join(spoolRoot, fs.readdirSync(spoolRoot)[0]!), "utf8")).summary).toMatch(/contender/u)
   })
