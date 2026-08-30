@@ -873,6 +873,11 @@ describe("Sanctuary production boundary adapter coverage", () => {
       "sanctuary-event": { version: 1, contextScopes: [], toolNames: [], effectScopes: [] },
     }, [], [])
     expect(shaped.containment).toMatchObject({ telegramToolCount: 1, privateToolCount: 0 })
+    const unresolved = await run({
+      "sanctuary-owner": { version: 1, contextScopes: [], toolNames: ["not_a_registered_tool"], effectScopes: [] },
+      "sanctuary-event": { version: 1, contextScopes: [], toolNames: ["rest"], effectScopes: [] },
+    }, [], [])
+    expect(unresolved.containment).toMatchObject({ relationshipProfilesExact: true, handlersExact: false, telegramToolCount: 1, privateToolCount: 1, resolvedHandlerCount: 1 })
     await expect(run({ "sanctuary-owner": "bad", "sanctuary-event": "bad" }, [], [])).rejects.toThrow("relationship capability profile")
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-containment-invalid-"))
     try {

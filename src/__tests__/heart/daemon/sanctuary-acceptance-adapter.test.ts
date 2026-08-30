@@ -395,6 +395,13 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       expect(facts.telegramAdmissions).toEqual([expect.objectContaining({ status: "pending", identityExact: true, acknowledgementExact: true, ownerCardExact: true, contentQuarantined: true, relationshipAbsent: true })])
       expect(facts.telegramAdmissions?.[0]?.admissionDigest).toMatch(/^[0-9a-f]{64}$/u)
       expect(JSON.stringify(facts.telegramAdmissions)).not.toMatch(/private stranger text|\b777\b|\b888\b/u)
+      delete files[`${agentRoot}/state/senses/telegram/identity.key`]
+      const identityAbsent = await readDefaultSanctuaryScenarioFacts("unit-16d-2-unknown-admission", "a".repeat(64), unit16Deps({
+        readFixedFile: (file) => file in files ? files[file]! : (() => { throw Object.assign(new Error("missing"), { code: "ENOENT" }) })(),
+        telegramCredentials: () => credentials,
+        hostRequest: async () => ({ keys: [] }),
+      }), agentRoot, { skipContainerSnapshot: true })
+      expect(identityAbsent.telegramAdmissions).toEqual([])
     } finally { fs.rmSync(agentRoot, { recursive: true, force: true }) }
   })
 

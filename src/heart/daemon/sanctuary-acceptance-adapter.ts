@@ -1546,7 +1546,7 @@ export async function readDefaultSanctuaryScenarioFacts(
   const telegramAdmissions = label === "unit-16d-2-unknown-admission"
     ? await projectTelegramAdmissions(
         agentRoot,
-        deps.telegramCredentials ? deps.telegramCredentials() : loadTelegramSenseCredentials(TARGET_ID),
+        dependency(deps.telegramCredentials, "Telegram credentials")(),
         identityRaw?.trim() ?? null,
       )
     : []

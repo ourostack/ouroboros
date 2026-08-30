@@ -1640,6 +1640,10 @@ describe("Sanctuary live scenario capture", () => {
     before.telegramAdmissions = []
     after.zeroWork = { ...after.zeroWork!, sessionFriendDigest: "5".repeat(64) }
     expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unknown-admission", before, after, 400_000)).toBeNull()
+
+    delete before.telegramAdmissions
+    delete after.telegramAdmissions
+    expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unknown-admission", before, after, 400_000)).toBeNull()
   })
 
   it.each(["unit-16d-whats-up", "unit-16i-delayed-approval", "unit-16j-denial"] as const)("requires one fresh exact audit lifecycle for %s", (label) => {
