@@ -1614,6 +1614,26 @@ describe("Telegram sense", () => {
     expect(artifact).toMatchObject({ authorClass: "butler", effect: { kind: "text", text: "Array recovered" }, parts: [{ state: "session_recorded", messageId: 71 }] })
   })
 
+  it("delivers an expiry return through the existing authorized effect journal and exact household session", async () => {
+    const f = fixture({ authorizeEffect: vi.fn(async () => ({ allowed: true, receiptId: "request-return", expiresAt: new Date(Date.now() + 60_000).toISOString(), transport: { chatId: "888" } })) })
+    const result = await f.app.sendAwaitFollowUp({
+      friendId: "sibling",
+      channel: "telegram",
+      key: "telegram:777:888",
+      requestId: "request-1",
+      deliveryId: "await:movie:expired",
+      content: "Movie request timed out.",
+      intent: "generic_outreach",
+    })
+    expect(result.status).toBe("delivered_now")
+    expect(f.api.request).toHaveBeenCalledWith("sendMessage", expect.objectContaining({ chat_id: "888", text: "Movie request timed out." }), undefined)
+    const effects = path.join(f.agentRoot, "state", "telegram", "effects")
+    const artifact = JSON.parse(fs.readFileSync(path.join(effects, fs.readdirSync(effects)[0]!), "utf8"))
+    expect(artifact.idempotencyKey).toMatch(/^await-expiry-follow-up:request-1:/u)
+    const sessionPath = getSenseSessionPath("butler", "sibling", "telegram", "telegram:777:888", f.agentRoot)
+    expect(JSON.parse(fs.readFileSync(sessionPath, "utf8")).events).toContainEqual(expect.objectContaining({ content: "Movie request timed out." }))
+  })
+
   it("runs the verified privileged failsafe through the existing Telegram startup reconciliation and records it once", async () => {
     const eventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-failsafe-events-"))
     const recordPath = writeEligibleFailsafeRecord(eventRoot)

@@ -54,6 +54,14 @@ const { sendDaemonCommandMock } = vi.hoisted(() => ({
   sendDaemonCommandMock: vi.fn(async () => ({ ok: true })),
 }))
 
+const { sendTelegramAwaitFollowUpMock } = vi.hoisted(() => ({
+  sendTelegramAwaitFollowUpMock: vi.fn(async () => ({ status: "delivered_now", detail: "accepted" })),
+}))
+
+vi.mock("../../../senses/telegram", () => ({
+  sendTelegramAwaitFollowUp: sendTelegramAwaitFollowUpMock,
+}))
+
 vi.mock("../../../heart/daemon/socket-client", () => ({
   sendDaemonCommand: sendDaemonCommandMock,
 }))
@@ -137,6 +145,7 @@ describe("daemon entry error boundary — per-agent habit setup isolation", () =
     testHomeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-entry-error-home-"))
     process.env.HOME = testHomeRoot
     sendDaemonCommandMock.mockResolvedValue({ ok: true })
+    sendTelegramAwaitFollowUpMock.mockResolvedValue({ status: "delivered_now", detail: "accepted" })
     archiveAndAlertExpiredAwaitMock.mockResolvedValue({ archived: false, alerted: false })
   })
 
@@ -156,6 +165,7 @@ describe("daemon entry error boundary — per-agent habit setup isolation", () =
     awaitSchedulerStartPeriodicReconciliationMock.mockReset()
     awaitSchedulerCtorHook.mockReset()
     sendDaemonCommandMock.mockReset()
+    sendTelegramAwaitFollowUpMock.mockReset()
     daemonProcessManagerSendToAgentMock.mockReset()
     archiveAndAlertExpiredAwaitMock.mockReset()
     migrateHabitsFromTaskSystemMock.mockReset()
@@ -718,6 +728,49 @@ describe("daemon entry error boundary — per-agent habit setup isolation", () =
       type: "await",
       awaitName: "hey_export",
     }))
+  })
+
+  it("wires await expiry to accepted Telegram delivery instead of the fallback wake queue", async () => {
+    vi.resetModules()
+    listEnabledBundleAgentsMock.mockReturnValue(["alpha"])
+    const awaitRoot = path.join(testHomeRoot, "AgentBundles", "alpha.ouro", "awaiting")
+    fs.mkdirSync(awaitRoot, { recursive: true })
+    fs.writeFileSync(path.join(awaitRoot, "movie.md"), [
+      "---",
+      "condition: Movie request",
+      "cadence: 5m",
+      "alert: telegram",
+      "mode: full",
+      "max_age: 1m",
+      "status: pending",
+      "created_at: 2026-08-29T00:00:00.000Z",
+      "filed_from: telegram",
+      "filed_for_friend_id: sibling",
+      "filed_from_key: telegram:777:888",
+      "request_id: request-1",
+      "---",
+      "",
+    ].join("\n"))
+    let awaitOptions: { onAwaitExpire: (awaitName: string) => void } | null = null
+    awaitSchedulerCtorHook.mockImplementation((options: { onAwaitExpire: (awaitName: string) => void }) => { awaitOptions = options })
+    archiveAndAlertExpiredAwaitMock.mockImplementationOnce(async (options) => {
+      const actual = await vi.importActual<typeof import("../../../heart/awaiting/await-expiry")>("../../../heart/awaiting/await-expiry")
+      return actual.archiveAndAlertExpiredAwait(options as never)
+    })
+    setupDaemonMocks()
+    vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js", "--socket", "/tmp/ouro-await-expire-live.sock"])
+
+    await import("../../../heart/daemon/daemon-entry")
+    await vi.waitFor(() => expect(awaitSchedulerCtorHook).toHaveBeenCalledTimes(1))
+    awaitOptions?.onAwaitExpire("movie")
+
+    await vi.waitFor(() => expect(sendTelegramAwaitFollowUpMock).toHaveBeenCalledWith("alpha", expect.objectContaining({
+      requestId: "request-1",
+      deliveryId: "await:movie:expired",
+    })))
+    await vi.waitFor(() => expect(fs.readFileSync(path.join(awaitRoot, ".done", "movie.md"), "utf8")).toContain("status: expired"))
+    expect(fs.existsSync(path.join(awaitRoot, "movie.md"))).toBe(false)
+    expect(sendDaemonCommandMock).not.toHaveBeenCalled()
   })
 
   it("emits daemon.await_setup_error when AwaitScheduler constructor throws (Error)", async () => {
