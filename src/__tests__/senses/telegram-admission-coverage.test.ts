@@ -44,6 +44,9 @@ describe("Telegram admission defensive coverage", () => {
     expect(() => store.read(tooSmall)).toThrow("not bounded")
     const tooLarge = "b".repeat(20); fs.writeFileSync(path.join(storeRoot, `${tooLarge}.json`), "x".repeat(8 * 1024 + 9))
     expect(() => store.read(tooLarge)).toThrow("not bounded")
+    expect(store.coordinationPath("a".repeat(20))).toBe(path.join(storeRoot, `${"a".repeat(20)}.json.decision`))
+    store.close()
+    expect(() => store.close()).not.toThrow()
   })
 
   it.each([
@@ -93,6 +96,9 @@ describe("Telegram admission defensive coverage", () => {
     const storeRoot = path.join(root(), "store")
     const store = new FileTelegramAdmissionStore(storeRoot)
     fs.writeFileSync(path.join(storeRoot, "self-health.json"), JSON.stringify({ schemaVersion: 1, code: "wrong", count: 0, lastObservedAt: 0 }))
+    fs.chmodSync(path.join(storeRoot, "self-health.json"), 0o600)
+    expect(() => store.readSelfHealth()).toThrow("self-health is invalid")
+    fs.writeFileSync(path.join(storeRoot, "self-health.json"), JSON.stringify({ schemaVersion: 1, code: "telegram_admission_overflow", count: 0, lastObservedAt: 0 }), { mode: 0o600 })
     expect(() => store.readSelfHealth()).toThrow("self-health is invalid")
     fs.rmSync(path.join(storeRoot, "self-health.json"))
     const lease = await acquireSessionTurnLease(path.join(path.dirname(storeRoot), ".store-coordination", "admission"))
@@ -110,6 +116,13 @@ describe("Telegram admission defensive coverage", () => {
     fs.unlinkSync(path.join(storeRoot, "rate-window.json"))
     fs.writeFileSync(path.join(storeRoot, "self-health.json"), "x".repeat(32 * 1024))
     expect(() => store.readSelfHealth()).toThrow(/invalid/iu)
+  })
+
+  it("rejects structurally invalid persisted rate events", () => {
+    const storeRoot = path.join(root(), "store")
+    const store = new FileTelegramAdmissionStore(storeRoot)
+    fs.writeFileSync(path.join(storeRoot, "rate-window.json"), JSON.stringify({ version: 1, events: [{ identityDigest: "a".repeat(64), updateDigest: "b".repeat(64), observedAt: -1 }] }), { mode: 0o600 })
+    expect(() => store.capture(message(), "CODE")).toThrow("rate state is invalid")
   })
 
   it("pins the admission directory identity and rejects root replacement", () => {
@@ -235,5 +248,71 @@ describe("Telegram admission defensive coverage", () => {
     await controller.decide({ admissionId: first.admissionId, decision: "allow", actorFriendId: "ari" })
     await expect(controller.decide({ admissionId: first.admissionId, decision: "block", actorFriendId: "ari" })).resolves.toMatchObject({ status: "handled" })
     expect(store.read(first.admissionId).status).toBe("handled")
+  })
+
+  it("fails closed when indeterminate work cannot compensate the claimed Friend", async () => {
+    const store = new FileTelegramAdmissionStore(path.join(root(), "store"))
+    const controller = createTelegramAdmissionController({
+      store,
+      owner: { friendId: "ari", sessionKey: "telegram:ari" },
+      sendEffect: vi.fn(async () => "effect"), resolveOwnerCard: () => null,
+      claimFriend: vi.fn(async () => ({ kind: "created" as const, friendId: "friend" })),
+      revokeFriend: vi.fn(async () => ({ kind: "collision" as const, reason: "identity changed" })),
+      commitApprovedIngress: vi.fn(async (turn) => ({ admissionId: turn.admissionId, friendId: turn.friendId, sessionKey: "telegram:friend", eventId: "evt-000001", reference: `telegram-admission:${turn.admissionId}` })),
+      enqueueApprovedWork: vi.fn(async () => undefined), dispatchApprovedWork: vi.fn(async () => "indeterminate" as const), createDisplayCode: () => "CODE",
+    })
+    const pending = await controller.handleUnknown(message())
+    if (pending.kind !== "pending") throw new Error("fixture capture failed")
+    await expect(controller.decide({ admissionId: pending.admissionId, decision: "allow", actorFriendId: "ari" })).rejects.toThrow("compensation collision")
+  })
+
+  it("rejects lost quarantined input, changed ingress identity, and queued work without durable references", async () => {
+    const build = (store: FileTelegramAdmissionStore, overrides: { commit?: (turn: any) => Promise<any> } = {}) => createTelegramAdmissionController({
+      store,
+      owner: { friendId: "ari", sessionKey: "telegram:ari" },
+      sendEffect: vi.fn(async () => "effect"), resolveOwnerCard: () => null,
+      claimFriend: vi.fn(async () => ({ kind: "created" as const, friendId: "friend" })),
+      revokeFriend: vi.fn(async () => ({ kind: "revoked" as const })),
+      commitApprovedIngress: overrides.commit ?? vi.fn(async (turn) => ({ admissionId: turn.admissionId, friendId: turn.friendId, sessionKey: "telegram:friend", eventId: "evt-000001", reference: `telegram-admission:${turn.admissionId}` })),
+      enqueueApprovedWork: vi.fn(async () => undefined), dispatchApprovedWork: vi.fn(async () => "settled" as const), createDisplayCode: () => "CODE",
+    })
+
+    const lostStoreRoot = path.join(root(), "lost")
+    const lostStore = new FileTelegramAdmissionStore(lostStoreRoot)
+    const lost = lostStore.capture(message(), "CODE")
+    if (!("record" in lost)) throw new Error("fixture capture failed")
+    lostStore.compareAndSwap({ admissionId: lost.record.id, expectedStatus: "pending", nextStatus: "approved" })
+    lostStore.compareAndSwap({ admissionId: lost.record.id, expectedStatus: "approved", nextStatus: "friend_bound", friendId: "friend" })
+    const lostPath = path.join(lostStoreRoot, `${lost.record.id}.json`)
+    const lostRecord = JSON.parse(fs.readFileSync(lostPath, "utf8")); lostRecord.quarantinedText = null
+    fs.writeFileSync(lostPath, JSON.stringify(lostRecord), { mode: 0o600 })
+    await expect(build(lostStore).decide({ admissionId: lost.record.id, decision: "allow", actorFriendId: "ari" })).rejects.toThrow("lost input")
+
+    const changedStore = new FileTelegramAdmissionStore(path.join(root(), "changed"))
+    const changedController = build(changedStore, { commit: async (turn) => ({ admissionId: "wrong", friendId: turn.friendId, sessionKey: "telegram:friend", eventId: "evt-000001", reference: `telegram-admission:${turn.admissionId}` }) })
+    const changed = await changedController.handleUnknown(message({ updateId: 2 }))
+    if (changed.kind !== "pending") throw new Error("fixture capture failed")
+    await expect(changedController.decide({ admissionId: changed.admissionId, decision: "allow", actorFriendId: "ari" })).rejects.toThrow("changed identity")
+
+    const queuedStore = new FileTelegramAdmissionStore(path.join(root(), "queued"))
+    const queued = queuedStore.capture(message({ updateId: 3 }), "CODE")
+    if (!("record" in queued)) throw new Error("fixture capture failed")
+    queuedStore.compareAndSwap({ admissionId: queued.record.id, expectedStatus: "pending", nextStatus: "approved" })
+    queuedStore.compareAndSwap({ admissionId: queued.record.id, expectedStatus: "approved", nextStatus: "friend_bound", friendId: "friend" })
+    queuedStore.compareAndSwap({ admissionId: queued.record.id, expectedStatus: "friend_bound", nextStatus: "ingress_committed" })
+    queuedStore.compareAndSwap({ admissionId: queued.record.id, expectedStatus: "ingress_committed", nextStatus: "turn_queued" })
+    await expect(build(queuedStore).decide({ admissionId: queued.record.id, decision: "allow", actorFriendId: "ari" })).rejects.toThrow("lost its durable reference")
+  })
+
+  it("rejects callbacks that are not bound to the persisted owner card", async () => {
+    const store = new FileTelegramAdmissionStore(path.join(root(), "store"))
+    const controller = createTelegramAdmissionController({
+      store, owner: { friendId: "ari", sessionKey: "telegram:ari" }, sendEffect: vi.fn(async () => "effect"), resolveOwnerCard: () => null,
+      claimFriend: vi.fn(async () => ({ kind: "created" as const, friendId: "friend" })), revokeFriend: vi.fn(async () => ({ kind: "revoked" as const })),
+      commitApprovedIngress: vi.fn(), enqueueApprovedWork: vi.fn(), dispatchApprovedWork: vi.fn(), createDisplayCode: () => "CODE",
+    })
+    const pending = await controller.handleUnknown(message())
+    if (pending.kind !== "pending") throw new Error("fixture capture failed")
+    expect(() => controller.parseCallback(`admit:${pending.admissionId}:allow`, 77)).toThrow("not bound")
   })
 })

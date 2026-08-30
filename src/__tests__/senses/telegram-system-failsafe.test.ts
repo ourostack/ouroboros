@@ -101,6 +101,16 @@ describe("Telegram system failsafe", () => {
     await expect(verify(action)).rejects.toThrow("request failed")
   })
 
+  it("rejects missing SAB credentials and non-object queue responses", async () => {
+    const iniPath = path.join(root("sab-verifier-invalid"), "sabnzbd.ini")
+    fs.writeFileSync(iniPath, "host = localhost\n")
+    const action = record().privilegedProtectiveAction!
+    await expect(createSabQueueProtectiveStateVerifier({ iniPath, fetch: vi.fn() })(action)).rejects.toThrow("credential is unavailable")
+    fs.writeFileSync(iniPath, "api_key = test-only-secret\n")
+    const verify = createSabQueueProtectiveStateVerifier({ iniPath, fetch: vi.fn(async () => new Response("null")) })
+    await expect(verify(action)).rejects.toThrow("response is malformed")
+  })
+
   it("sends one fixed typed artifact after the bounded outage window and binds verification to the canonical event and owner session", async () => {
     const initial = record()
     const store = new FileTelegramEffectJournal(root("failsafe-journal"))

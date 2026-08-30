@@ -162,6 +162,7 @@ describe("deliverCrossChatMessage", () => {
       channel: "teams",
       key: "session",
       content: "plain queued outreach",
+      requestId: "request-queued",
       intent: "generic_outreach",
     }, {
       agentName: "slugger",
@@ -174,6 +175,7 @@ describe("deliverCrossChatMessage", () => {
       detail: "live delivery unavailable right now; queued for the next active turn",
     })
     expect(queuePending).toHaveBeenCalledTimes(1)
+    expect(queuePending).toHaveBeenCalledWith(expect.objectContaining({ requestId: "request-queued" }))
   })
 
   it("surfaces channel-send failure truthfully instead of pretending the message merely queued", async () => {

@@ -22,11 +22,14 @@ vi.mock("../../heart/awaiting/await-alert", () => ({
 
 import {
   awaitingToolDefinitions,
+  cancelRelationshipFollowUps,
+  hasActiveRelationshipFollowUp,
   setAwaitToolDeps,
   resetAwaitToolDeps,
 } from "../../repertoire/tools-awaiting"
 import { expectedCappedContent, expectedTruncationMarker, expectCappedAgentContent, makeOversizedAgentContent } from "../helpers/content-cap"
 import { claimExternalEvent, commitExternalEventDisposition, getExternalEventRoot, readExternalEventRecord, recordExternalEvent } from "../../heart/external-events/router"
+import { advanceObligation, createObligation, readVerifiedPendingObligations } from "../../arc/obligations"
 
 const fileAwaitDef = awaitingToolDefinitions.find((d) => d.tool.function.name === "await_condition")!
 const resolveAwaitDef = awaitingToolDefinitions.find((d) => d.tool.function.name === "resolve_await")!
@@ -188,6 +191,24 @@ describe("tools-awaiting", () => {
       await fileAwaitDef.handler({ name: "x", condition: "c", cadence: "5m" }, undefined)
       const result = parse(await fileAwaitDef.handler({ name: "x", condition: "c", cadence: "5m" }, undefined) as string)
       expect(result.error).toMatch(/already exists/)
+    })
+
+    it.each(["not-a-date", "2026-08-30T01:00:00Z"])("rejects non-canonical wake_at %s", async (wakeAt) => {
+      const result = parse(await fileAwaitDef.handler({ name: `wake_${wakeAt.length}`, condition: "c", cadence: "5m", wake_at: wakeAt }, undefined) as string)
+      expect(result.error).toMatch(/canonical ISO timestamp/)
+    })
+
+    it("cleans up a newly-created obligation when the await file cannot be written", async () => {
+      const awaiting = path.join(agentRoot, "awaiting")
+      fs.mkdirSync(awaiting, { recursive: true })
+      fs.chmodSync(awaiting, 0o500)
+      const ctx = {
+        currentSession: { friendId: "sibling", channel: "telegram", key: "telegram:777:888", sessionPath: "/tmp/session.json" },
+        relationshipAuthorization: { requestId: "request-write-fail", authorizedContextScopes: ["own_requests"], advertisedToolNames: ["await_condition"], authorizeTool: vi.fn() },
+      }
+      expect(() => fileAwaitDef.handler({ name: "write_fail", condition: "c", cadence: "5m" }, ctx as any)).toThrow()
+      fs.chmodSync(awaiting, 0o700)
+      expect(readVerifiedPendingObligations(agentRoot)).toEqual([])
     })
 
     it("defaults filed_from to 'unknown' when no session context", async () => {
@@ -375,6 +396,30 @@ describe("tools-awaiting", () => {
       ) as string)
       expect(result.verdict).toBe("yes")
     })
+
+    it.each([new Error("request delivery boom"), "request-string-boom"])("keeps a request-bound await pending when delivery throws", async (failure) => {
+      const ctx = {
+        currentSession: { friendId: "sibling", channel: "telegram", key: "telegram:777:888", sessionPath: "/tmp/session.json" },
+        relationshipAuthorization: { requestId: `request-${typeof failure}`, authorizedContextScopes: ["own_requests"], advertisedToolNames: ["await_condition"], authorizeTool: vi.fn() },
+      }
+      await fileAwaitDef.handler({ name: `request_${typeof failure}`, condition: "c", cadence: "5m" }, ctx as any)
+      mockDeliverAwaitAlert.mockRejectedValueOnce(failure)
+      const result = parse(await resolveAwaitDef.handler({ name: `request_${typeof failure}`, verdict: "yes", observation: "ready" }, undefined) as string)
+      expect(result).toMatchObject({ verdict: "yes", archived: null, alert: null, advancedExternalEvents: [] })
+      expect(fs.existsSync(path.join(agentRoot, "awaiting", `request_${typeof failure}.md`))).toBe(true)
+    })
+
+    it("reports a request-bound skipped delivery without archiving", async () => {
+      const ctx = {
+        currentSession: { friendId: "sibling", channel: "telegram", key: "telegram:777:888", sessionPath: "/tmp/session.json" },
+        relationshipAuthorization: { requestId: "request-skipped", authorizedContextScopes: ["own_requests"], advertisedToolNames: ["await_condition"], authorizeTool: vi.fn() },
+      }
+      await fileAwaitDef.handler({ name: "request_skipped", condition: "c", cadence: "5m" }, ctx as any)
+      mockDeliverAwaitAlert.mockResolvedValueOnce({ attempted: false })
+      const result = parse(await resolveAwaitDef.handler({ name: "request_skipped", verdict: "yes", observation: "ready" }, undefined) as string)
+      expect(result.alert).toEqual({ attempted: false, status: null, skipped: null })
+      expect(result.archived).toBeNull()
+    })
   })
 
   describe("cancel_await", () => {
@@ -550,6 +595,36 @@ describe("tools-awaiting", () => {
 
       await resolveAwaitDef.handler({ name: "hey_export", verdict: "yes", observation: "ok" }, undefined)
       expect(customQueue).toHaveBeenCalled()
+    })
+  })
+
+  describe("relationship follow-up verification", () => {
+    it("rejects malformed or missing await artifacts and fulfills orphaned revocation obligations", () => {
+      const route = { friendId: "sibling", channel: "telegram", key: "telegram:777:888" }
+      const malformed = createObligation(agentRoot, { origin: route, owedTo: route, requestId: "request-malformed", content: "c" })
+      advanceObligation(agentRoot, malformed.id, { currentSurface: { kind: "session", label: "telegram" }, currentArtifact: "awaiting/.md", nextAction: "c" })
+      expect(hasActiveRelationshipFollowUp(agentRoot, { ...route, requestId: "request-malformed" })).toBe(false)
+
+      const missing = createObligation(agentRoot, { origin: route, owedTo: route, requestId: "request-missing", content: "c" })
+      advanceObligation(agentRoot, missing.id, { currentSurface: { kind: "session", label: "telegram" }, currentArtifact: "awaiting/missing.md", nextAction: "c" })
+      expect(hasActiveRelationshipFollowUp(agentRoot, { ...route, requestId: "request-missing" })).toBe(false)
+
+      cancelRelationshipFollowUps(agentRoot, "slugger", route)
+      expect(readVerifiedPendingObligations(agentRoot)).toEqual([])
+    })
+
+    it("cancels an exact live request await when the relationship is revoked", async () => {
+      const route = { friendId: "sibling", channel: "telegram", key: "telegram:777:888" }
+      await fileAwaitDef.handler({ name: "revoked_request", condition: "c", cadence: "5m" }, {
+        currentSession: { ...route, sessionPath: "/tmp/session.json" },
+        relationshipAuthorization: { requestId: "request-revoked", authorizedContextScopes: ["own_requests"], advertisedToolNames: ["await_condition"], authorizeTool: vi.fn() },
+      } as any)
+
+      cancelRelationshipFollowUps(agentRoot, "slugger", route)
+
+      expect(fs.existsSync(path.join(agentRoot, "awaiting", "revoked_request.md"))).toBe(false)
+      expect(readDoneFile(agentRoot, "revoked_request")).toContain("cancel_reason: relationship revoked")
+      expect(readVerifiedPendingObligations(agentRoot)).toEqual([])
     })
   })
 
