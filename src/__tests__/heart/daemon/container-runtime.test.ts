@@ -1991,6 +1991,108 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
     expect(recovery).toContain('assert_update_source "$RECOVERY_PRODUCTION_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"')
   })
 
+  it("resumes rollback recovery after the old container was renamed, started, or re-enabled", () => {
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const recovery = extractRunbookFunction(runbook, "recover_pending_sanctuary_bundle_migration")
+    const rollbackRecovery = recovery.slice(recovery.indexOf('test "$RECOVERY_STATE" = committing'))
+    const rollbackBranch = recovery.slice(
+      recovery.lastIndexOf("  if docker container inspect ouro-butler-rollback >/dev/null 2>&1; then"),
+      recovery.lastIndexOf("\n}"),
+    )
+
+    expect(rollbackRecovery).toContain("if docker container inspect ouro-butler-rollback >/dev/null 2>&1; then")
+    expect(rollbackRecovery).toContain("elif docker container inspect ouro-butler >/dev/null 2>&1; then")
+    expect(rollbackRecovery).toContain('test "$RECOVERY_PRODUCTION_IMAGE_ID" = "$RECOVERY_ROLLBACK_IMAGE_ID" || return 1')
+    expect(rollbackRecovery).toContain("! docker container inspect ouro-butler-staging >/dev/null 2>&1 || return 1")
+    expect(rollbackRecovery).toContain("! docker container inspect ouro-butler-rollback >/dev/null 2>&1 || return 1")
+    expect(rollbackRecovery).toContain("else\n    return 1\n  fi\n  RECOVERY_PRODUCTION_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler) || return $?")
+    expect(rollbackRecovery).toContain('test "$RECOVERY_PRODUCTION_IMAGE_ID" = "$RECOVERY_ROLLBACK_IMAGE_ID" || return 1')
+
+    const topologyResolved = rollbackRecovery.lastIndexOf("RECOVERY_PRODUCTION_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler)")
+    const audit = rollbackRecovery.indexOf('assert_update_source "$RECOVERY_ROLLBACK_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"', topologyResolved)
+    const start = rollbackRecovery.indexOf("docker start ouro-butler", audit)
+    const ready = rollbackRecovery.indexOf("wait_butler_ready ouro-butler", start)
+    const autostart = rollbackRecovery.indexOf("enable_butler_autostart", ready)
+    const commit = rollbackRecovery.indexOf('migrate_sanctuary_package_managed_bundle "$RECOVERY_IMAGE_ID" commit', autostart)
+    expect(topologyResolved).toBeGreaterThan(-1)
+    expect(audit).toBeGreaterThan(topologyResolved)
+    expect(start).toBeGreaterThan(audit)
+    expect(ready).toBeGreaterThan(start)
+    expect(autostart).toBeGreaterThan(ready)
+    expect(commit).toBeGreaterThan(autostart)
+
+    const oldImage = `sha256:${"a".repeat(64)}`
+    const targetImage = `sha256:${"b".repeat(64)}`
+    const script = `
+docker() {
+  command printf '%s\n' "docker $*" >>"$CALL_LOG"
+  case "$*" in
+    "container inspect ouro-butler-rollback") return 1 ;;
+    "container inspect ouro-butler-staging") test "$TOPOLOGY" = ambiguous ;;
+    "container inspect ouro-butler") return 0 ;;
+    "inspect --format {{.Image}} ouro-butler")
+      if test "$TOPOLOGY" = wrong-image; then command printf '%s\n' "$RECOVERY_TARGET_IMAGE_ID"; else command printf '%s\n' "$RECOVERY_ROLLBACK_IMAGE_ID"; fi ;;
+    "start ouro-butler")
+      if test "$TOPOLOGY" = renamed; then command printf '%s\n' started-stopped-container >>"$CALL_LOG"; else command printf '%s\n' start-was-idempotent >>"$CALL_LOG"; fi ;;
+    *) return 23 ;;
+  esac
+}
+assert_update_source() { test "$1" = "$RECOVERY_ROLLBACK_IMAGE_ID" && command printf '%s\n' assert-update-source >>"$CALL_LOG"; }
+assert_only_running_butler() { command printf '%s\n' assert-only-running >>"$CALL_LOG"; }
+wait_butler_ready() { command printf '%s\n' wait-ready >>"$CALL_LOG"; }
+enable_butler_autostart() {
+  if test "$TOPOLOGY" = autostart-enabled; then command printf '%s\n' autostart-was-idempotent >>"$CALL_LOG"; fi
+  command printf '%s\n' enable-autostart >>"$CALL_LOG"
+}
+migrate_sanctuary_package_managed_bundle() { test "$2" = commit && command printf '%s\n' commit >>"$CALL_LOG"; }
+recover_test() {
+${rollbackBranch}
+}
+recover_test`
+    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-old-topology-recovery-"))
+    try {
+      for (const topology of ["renamed", "started", "autostart-enabled"]) {
+        const callLog = path.join(testRoot, `${topology}.log`)
+        const result = runConditionalHelper(script, "unused", {
+          AUDIT_RUNNER_IMAGE_ID: targetImage,
+          CALL_LOG: callLog,
+          RECOVERY_IMAGE_ID: targetImage,
+          RECOVERY_ROLLBACK_IMAGE_ID: oldImage,
+          RECOVERY_TARGET_IMAGE_ID: targetImage,
+          TOPOLOGY: topology,
+        })
+        expect(result.status, `${topology}\n${result.stderr}`).toBe(0)
+        const calls = fs.readFileSync(callLog, "utf8")
+        expect(calls).toContain("docker start ouro-butler")
+        expect(calls.indexOf("assert-update-source")).toBeLessThan(calls.indexOf("docker start ouro-butler"))
+        expect(calls.indexOf("docker start ouro-butler")).toBeLessThan(calls.indexOf("wait-ready"))
+        expect(calls.indexOf("wait-ready")).toBeLessThan(calls.indexOf("enable-autostart"))
+        expect(calls.indexOf("enable-autostart")).toBeLessThan(calls.indexOf("commit"))
+        if (topology === "renamed") expect(calls).toContain("started-stopped-container")
+        else expect(calls).toContain("start-was-idempotent")
+        if (topology === "autostart-enabled") expect(calls).toContain("autostart-was-idempotent")
+      }
+
+      for (const topology of ["wrong-image", "ambiguous"]) {
+        const callLog = path.join(testRoot, `${topology}.log`)
+        const result = runConditionalHelper(script, "unused", {
+          AUDIT_RUNNER_IMAGE_ID: targetImage,
+          CALL_LOG: callLog,
+          RECOVERY_IMAGE_ID: targetImage,
+          RECOVERY_ROLLBACK_IMAGE_ID: oldImage,
+          RECOVERY_TARGET_IMAGE_ID: targetImage,
+          TOPOLOGY: topology,
+        })
+        expect(result.status, topology).not.toBe(0)
+        const calls = fs.readFileSync(callLog, "utf8")
+        expect(calls).not.toContain("docker start ouro-butler")
+        expect(calls).not.toContain("commit")
+      }
+    } finally {
+      fs.rmSync(testRoot, { recursive: true, force: true })
+    }
+  })
+
   it("contains failed restore activation explicitly while leaving autostart disabled", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     const restore = runbook.slice(runbook.indexOf("Restore:"), runbook.indexOf("Credential recovery:"))
