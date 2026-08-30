@@ -17,7 +17,7 @@ import { getPrivateRuntimePendingDir } from "../mind/pending"
 import type { PendingMessage } from "../mind/pending"
 import type { ToolDefinition } from "./tools-base"
 import type { CrossChatDeliveryDeps } from "../heart/cross-chat-delivery"
-import { advanceExternalEventsFromAwait, getExternalEventRoot } from "../heart/external-events/router"
+import { advanceExternalEventFromAwait, advanceExternalEventsFromAwait, getExternalEventRoot, listExternalEventStatus, readExternalEventRecord } from "../heart/external-events/router"
 import { advanceObligation, createObligation, fulfillObligation, readVerifiedPendingObligations } from "../arc/obligations"
 import { parseCadenceToMs } from "../heart/daemon/cadence"
 
@@ -134,7 +134,7 @@ function fileAwait(args: FileAwaitArgs, agentRoot: string, agentName: string, se
   }
 
   const mode: AwaitMode = args.mode === "quick" ? "quick" : "full"
-  const alert = args.alert ?? sessionChannel ?? null
+  const alert = sessionChannel === "external-event" ? null : args.alert ?? sessionChannel ?? null
 
   const frontmatter: Record<string, unknown> = {
     condition: capStructuredRecordString(args.condition.trim()),
@@ -268,7 +268,7 @@ async function resolveAwaitTool(name: string, verdict: string, observation: stri
 
   // Request-bound returns stay active through Telegram prepare/send authorization.
   let alert: AwaitAlertResult | null = null
-  if (existing.request_id) {
+  if (existing.request_id && existing.filed_from !== "external-event") {
     try {
       alert = await deliverAwaitAlert({ awaitFile: existing, reason: "resolved", observation: observation.trim(), agentRoot, agentName, deliveryDeps: resolveDeliveryDeps(agentName) })
     } catch (error) {
@@ -279,7 +279,13 @@ async function resolveAwaitTool(name: string, verdict: string, observation: stri
     }
   }
 
-  const advancedEvents = advanceExternalEventsFromAwait(getExternalEventRoot(), agentName, name)
+  const advancedEvents = existing.filed_from === "external-event" && existing.filed_from_key && existing.wake_at
+    ? (() => {
+        if (!hasActiveExternalEventAwait(agentName, { recordPath: existing.filed_from_key!, awaitName: name, wakeAt: existing.wake_at! })) throw new Error("External event await authority changed before resolution")
+        const record = readExternalEventRecord(existing.filed_from_key!)
+        return [advanceExternalEventFromAwait(record.recordPath, { awaitId: name, expectedVersion: record.version, expectedGeneration: record.generation })]
+      })()
+    : advanceExternalEventsFromAwait(getExternalEventRoot(), agentName, name)
   const archive = archiveAwait(agentRoot, name, {
     status: "resolved",
     resolved_at: new Date().toISOString(),
@@ -363,6 +369,13 @@ export function hasActiveRelationshipFollowUp(agentRoot: string, input: { friend
   return input.allowElapsed === true || maxAge === null || !awaiting.created_at || (input.now ?? Date.now()) < Date.parse(awaiting.created_at) + maxAge
 }
 
+export function hasActiveExternalEventAwait(agentName: string, input: { recordPath: string; awaitName: string; wakeAt: string }, root = getExternalEventRoot()): boolean {
+  const matches = listExternalEventStatus(root).filter((status) => !status.corrupt
+    && status.agent === agentName && status.executionState === "handled" && status.awaitId === input.awaitName)
+  return matches.length === 1 && matches[0]!.recordPath === input.recordPath
+    && matches[0]!.nextWake?.kind === "at" && matches[0]!.nextWake.at === input.wakeAt
+}
+
 export function cancelRelationshipFollowUps(agentRoot: string, agentName: string, input: { friendId: string; channel: string; key: string }): void {
   const obligations = readVerifiedPendingObligations(agentRoot).filter((candidate) => candidate.owedTo?.friendId === input.friendId
     && candidate.owedTo.channel === input.channel && candidate.owedTo.key === input.key)
@@ -403,6 +416,9 @@ export const awaitingToolDefinitions: ToolDefinition[] = [
     handler: (a, ctx) => {
       const agentRoot = getAgentRoot()
       const agentName = getAgentName()
+      const event = ctx?.currentExternalEvent
+      const eventFriendId = event ? ctx?.context?.friend.id ?? null : null
+      if (event && !eventFriendId) return JSON.stringify({ error: "external event await authority has no exact owner relationship" })
       return fileAwait(
         {
           name: a.name,
@@ -416,10 +432,10 @@ export const awaitingToolDefinitions: ToolDefinition[] = [
         },
         agentRoot,
         agentName,
-        ctx?.currentSession?.friendId ?? null,
-        ctx?.currentSession?.channel ?? null,
-        ctx?.currentSession?.key ?? null,
-        ctx?.relationshipAuthorization?.requestId ?? null,
+        eventFriendId ?? ctx?.currentSession?.friendId ?? null,
+        event ? "external-event" : ctx?.currentSession?.channel ?? null,
+        event ? event.recordPath : ctx?.currentSession?.key ?? null,
+        event ? null : ctx?.relationshipAuthorization?.requestId ?? null,
       )
     },
     riskProfile: { mutates: "durable_state_write", risk: "high", reason: "files a durable await condition" },
@@ -441,9 +457,23 @@ export const awaitingToolDefinitions: ToolDefinition[] = [
         },
       },
     },
-    handler: async (a) => {
+    handler: async (a, ctx) => {
       const agentRoot = getAgentRoot()
       const agentName = getAgentName()
+      if (ctx?.relationshipAuthorization) {
+        const session = ctx.currentSession
+        const requestId = ctx.relationshipAuthorization.requestId
+        const existing = readAwaitDefinition(agentRoot, String(a.name ?? ""))
+        const externalEventAuthorized = session?.channel === "external-event" && !!existing?.wake_at
+          && hasActiveExternalEventAwait(agentName, { recordPath: session.key, awaitName: String(a.name ?? ""), wakeAt: existing.wake_at })
+        if (!externalEventAuthorized && (!session || !requestId || !hasActiveRelationshipFollowUp(agentRoot, {
+          friendId: session.friendId,
+          channel: session.channel,
+          key: session.key,
+          requestId,
+          awaitName: String(a.name ?? ""),
+        }))) return JSON.stringify({ error: "resolve_await is limited to the current relationship request or bound external event" })
+      }
       return resolveAwaitTool(a.name, a.verdict, a.observation, agentRoot, agentName)
     },
     riskProfile: {

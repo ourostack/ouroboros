@@ -8,6 +8,7 @@ import { loadSession, postTurnTrim, deferPostTurnPersist, type UsageData } from 
 import { buildSystem, flattenSystemPrompt } from "../mind/prompt"
 import { getSharedMcpManager } from "../repertoire/mcp-manager"
 import { getSanctuaryRelationshipTools, getToolsForChannel } from "../repertoire/tools"
+import { hasActiveExternalEventAwait, hasActiveRelationshipFollowUp } from "../repertoire/tools-awaiting"
 import { renderRelationshipPreferences } from "../repertoire/relationship-authorization"
 import { appendRunLedgerRecordNonFatal, createRunLedgerRecord, usageMetadataFromUsageData } from "../heart/run-ledger"
 import { findNonCanonicalBundlePaths } from "../mind/bundle-manifest"
@@ -36,7 +37,7 @@ import { listSessionActivity, type SessionActivityRecord } from "../heart/sessio
 import { sendProactiveBlueBubblesMessageToSession } from "./bluebubbles"
 import { buildHabitTurnMessage, type PriorHabitSessionSummaryInfo } from "./habit-turn-message"
 import { buildAwaitTurnMessage } from "./await-turn-message"
-import { parseAwaitFile } from "../heart/awaiting/await-parser"
+import { parseAwaitFile, type AwaitFile } from "../heart/awaiting/await-parser"
 import { applyAwaitRuntimeState, type AwaitRuntimeState } from "../heart/awaiting/await-runtime-state"
 import {
   createDegradedHabitFile,
@@ -55,7 +56,8 @@ import { deskRecordOrientationSection } from "../mind/desk-section"
 import type { HabitSessionToolContext } from "../repertoire/tools-base"
 import type { ExternalEventLeaseContext } from "../heart/external-events/router"
 import { createSanctuaryToolContext } from "./sanctuary-runtime"
-import { loadRelationshipCapabilityRegistry, resolveProfileScopedRelationshipAuthorization } from "../repertoire/relationship-authorization"
+import { getSenseSessionPath } from "./shared-turn"
+import { createRelationshipAuthorizationEvaluator, loadRelationshipCapabilityRegistry, resolveProfileScopedRelationshipAuthorization } from "../repertoire/relationship-authorization"
 import {
   createPrivateTurnRequestFingerprint,
   readPrivateTurnLedger,
@@ -134,6 +136,41 @@ const DEFAULT_PRIVATE_RUNTIME_INSTINCTS: PrivateRuntimeInstinct[] = [
     enabled: true,
   },
 ]
+
+type RelationshipAwaitCoordinates = { friendId: string; channel: string; key: string; requestId: string | null }
+
+function relationshipAwaitCoordinates(awaitFile: AwaitFile): RelationshipAwaitCoordinates | null {
+  const values = [awaitFile.filed_for_friend_id, awaitFile.filed_from, awaitFile.filed_from_key]
+  if (!awaitFile.request_id) {
+    if (awaitFile.filed_from === "external-event" && awaitFile.filed_for_friend_id && awaitFile.filed_from_key) {
+      if (Buffer.byteLength(awaitFile.filed_for_friend_id) > 256 || Buffer.byteLength(awaitFile.filed_from_key) > 1_024) throw new Error("Relationship await provenance is invalid")
+      return { friendId: awaitFile.filed_for_friend_id, channel: awaitFile.filed_from, key: awaitFile.filed_from_key, requestId: null }
+    }
+    const isSystemAwait = awaitFile.filed_for_friend_id === null
+      && awaitFile.filed_from_key === null
+      && (awaitFile.filed_from === null || awaitFile.filed_from === "unknown" || awaitFile.filed_from === "cli")
+    if (isSystemAwait) return null
+    throw new Error("Relationship await provenance is incomplete or legacy")
+  }
+  if (values.some((value) => value === null)) throw new Error("Relationship await provenance is incomplete or legacy")
+  const [friendId, channel, key] = values as [string, string, string]
+  if (channel !== "telegram" || Buffer.byteLength(friendId) > 256 || Buffer.byteLength(channel) > 64 || Buffer.byteLength(key) > 1_024 || Buffer.byteLength(awaitFile.request_id) > 256) {
+    throw new Error("Relationship await provenance is invalid")
+  }
+  return { friendId, channel, key, requestId: awaitFile.request_id }
+}
+
+async function resolveRelationshipAwaitAuthority(store: FileFriendStore, registry: ReturnType<typeof loadRelationshipCapabilityRegistry>, coordinates: RelationshipAwaitCoordinates) {
+  const friend = await store.get(coordinates.friendId)
+  if (!friend || friend.id !== coordinates.friendId) throw new Error("Relationship await authority friend is missing")
+  const authorization = coordinates.channel === "external-event"
+    ? await resolveProfileScopedRelationshipAuthorization({ store, registry, relationshipProfileId: "sanctuary-owner", profileId: "sanctuary-event", requestPhase: "follow_up" })
+    : createRelationshipAuthorizationEvaluator({ friend, registry, requestId: coordinates.requestId!, requestPhase: "follow_up" })
+  if (authorization.subject.friendId !== coordinates.friendId) throw new Error("Relationship await authority friend is ambiguous")
+  if (authorization.subject.admissionState !== "active" || !authorization.profileId) throw new Error("Relationship await authority admission or profile is not active")
+  if (!authorization.authorizeTool("resolve_await").allowed) throw new Error("Relationship await authority profile cannot resolve its await")
+  return authorization
+}
 
 function readAspirations(agentRoot: string): string {
   try {
@@ -1005,6 +1042,7 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
   let userContent: string
   let habitTools: string[] | undefined
   let habitParsedSuccessfully = false
+  let parsedAwait: AwaitFile | null = null
   const isPayloadSpecificWake =
     !!options?.taskId
     || (reason === "habit" && !!options?.habitName)
@@ -1140,6 +1178,7 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
       try {
         const awaitContent = fs.readFileSync(awaitFilePath, "utf-8")
         const parsed = applyAwaitRuntimeState(agentRoot, parseAwaitFile(awaitContent, awaitFilePath)) as ReturnType<typeof parseAwaitFile> & Partial<AwaitRuntimeState>
+        parsedAwait = parsed
         awaitFound = true
         awaitBody = parsed.body || undefined
         condition = parsed.condition
@@ -1179,6 +1218,57 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
   const selfContext: ResolvedContext = { friend: selfFriend, channel: innerCapabilities }
 
   const mcpManager = await getSharedMcpManager() ?? undefined
+  const relationshipAwaitCoordinatesValue = parsedAwait ? relationshipAwaitCoordinates(parsedAwait) : null
+  const relationshipAwait = relationshipAwaitCoordinatesValue
+      ? await (async () => {
+        const agentRoot = getAgentRoot(agentName)
+        const hasLiveBinding = () => relationshipAwaitCoordinatesValue.channel === "external-event"
+          ? !!parsedAwait!.wake_at && hasActiveExternalEventAwait(agentName, { recordPath: relationshipAwaitCoordinatesValue.key, awaitName: parsedAwait!.name, wakeAt: parsedAwait!.wake_at })
+          : hasActiveRelationshipFollowUp(agentRoot, {
+              friendId: relationshipAwaitCoordinatesValue.friendId,
+              channel: relationshipAwaitCoordinatesValue.channel,
+              key: relationshipAwaitCoordinatesValue.key,
+              requestId: relationshipAwaitCoordinatesValue.requestId!,
+              awaitName: parsedAwait!.name,
+              now: now().getTime(),
+            })
+        if (!hasLiveBinding()) throw new Error("Relationship await authority binding is missing, stale, or ambiguous")
+        const store = new FileFriendStore(path.join(agentRoot, "friends"))
+        const resolve = () => resolveRelationshipAwaitAuthority(
+          store,
+          loadRelationshipCapabilityRegistry(agentRoot),
+          relationshipAwaitCoordinatesValue,
+        )
+        const initial = await resolve()
+        const friend = await store.get(relationshipAwaitCoordinatesValue.friendId)
+        if (!friend) throw new Error("Relationship await authority friend is missing")
+        return {
+          store,
+          context: { friend, channel: innerCapabilities } as ResolvedContext,
+          currentSession: {
+            friendId: relationshipAwaitCoordinatesValue.friendId,
+            channel: relationshipAwaitCoordinatesValue.channel,
+            key: relationshipAwaitCoordinatesValue.key,
+            sessionPath: relationshipAwaitCoordinatesValue.channel === "telegram"
+              ? getSenseSessionPath(agentName, relationshipAwaitCoordinatesValue.friendId, "telegram", relationshipAwaitCoordinatesValue.key, agentRoot)
+              : sessionFilePath,
+          },
+          relationshipAuthorization: {
+            ...(relationshipAwaitCoordinatesValue.requestId ? { requestId: relationshipAwaitCoordinatesValue.requestId } : {}),
+            profileId: initial.profileId,
+            authorizedContextScopes: initial.authorizedContextScopes,
+            advertisedToolNames: relationshipAwaitCoordinatesValue.channel === "external-event" ? ["resolve_await"] : initial.advertisedToolNames,
+            authorizeTool: async (name: string, args: Record<string, string>) => {
+              if (!hasLiveBinding()) throw new Error("Relationship await authority binding is missing, stale, or ambiguous")
+              const decision = (await resolve()).authorizeTool(name, args)
+              return relationshipAwaitCoordinatesValue.channel !== "external-event" || name === "resolve_await"
+                ? decision
+                : { ...decision, allowed: false as const, reason: "external event await wake is resolve-only" }
+            },
+          },
+        }
+      })()
+    : undefined
   const externalEventRelationship = options?.externalEvent
     ? await (async () => {
         const agentRoot = getAgentRoot(agentName)
@@ -1198,6 +1288,7 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
         if (owners.length !== 1 || !owner) throw new Error("external event owner presentation context must resolve to exactly one Friend")
         return {
           store,
+          context: { friend: owner, channel: innerCapabilities } as ResolvedContext,
           ownerPresentationPreferences: buildOwnerPresentationPreferences(owner),
           relationshipAuthorization: {
             profileId: initial.profileId,
@@ -1252,6 +1343,9 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
   }
   const externalEventToolsResolved = options?.externalEvent
     ? getSanctuaryRelationshipTools(externalEventRelationship!.relationshipAuthorization.advertisedToolNames)
+    : undefined
+  const relationshipAwaitToolsResolved = relationshipAwait
+    ? getSanctuaryRelationshipTools(relationshipAwait.relationshipAuthorization.advertisedToolNames)
     : undefined
 
   const effectiveHabitSession = options?.noSend === true
@@ -1355,13 +1449,21 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
       mcpManager,
       ...(options?.externalEvent
         ? { tools: externalEventToolsResolved }
+        : relationshipAwaitToolsResolved !== undefined ? { tools: relationshipAwaitToolsResolved }
         : habitToolsResolved !== undefined ? { tools: habitToolsResolved } : {}),
       toolContext: {
         signin: async () => undefined,
         delegatedOrigins: attentionQueue,
+        ...(relationshipAwait ? {
+          friendStore: relationshipAwait.store,
+          context: relationshipAwait.context,
+          currentSession: relationshipAwait.currentSession,
+          relationshipAuthorization: relationshipAwait.relationshipAuthorization,
+        } : {}),
         ...(options?.externalEvent ? {
           currentExternalEvent: Object.freeze({ ...options.externalEvent }),
           friendStore: externalEventRelationship!.store,
+          context: externalEventRelationship!.context,
           relationshipAuthorization: externalEventRelationship!.relationshipAuthorization,
           externalEventAuthority: externalEventRelationship!.externalEventAuthority,
           externalEventEffects: externalEventRelationship!.externalEventEffects,

@@ -18,6 +18,7 @@ describe("Sanctuary active tool profile", () => {
       "query_cares",
       "care_manage",
       "await_condition",
+      "resolve_await",
       "cancel_await",
       "telegram_contact_manage",
       "unraid_list_containers",
@@ -37,11 +38,11 @@ describe("Sanctuary active tool profile", () => {
     ])
     const packaged = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/tool-profiles.json", "utf8"))
     expect(packaged.version).toBe(2)
-    expect(packaged.profiles["sanctuary-owner"].version).toBe(3)
-    expect(packaged.profiles["sanctuary-household"].version).toBe(3)
-    expect(packaged.profiles["sanctuary-event"].version).toBe(2)
+    expect(packaged.profiles["sanctuary-owner"].version).toBe(4)
+    expect(packaged.profiles["sanctuary-household"].version).toBe(4)
+    expect(packaged.profiles["sanctuary-event"].version).toBe(3)
     expect(packaged.profiles["sanctuary-owner"].toolNames).toEqual(expect.arrayContaining(names))
-    expect(packaged.profiles["sanctuary-owner"].toolNames).toEqual(expect.arrayContaining(["external_event_disposition", "query_active_work", "query_cares", "care_manage", "await_condition", "cancel_await"]))
+    expect(packaged.profiles["sanctuary-owner"].toolNames).toEqual(expect.arrayContaining(["external_event_disposition", "query_active_work", "query_cares", "care_manage", "await_condition", "resolve_await", "cancel_await"]))
     expect(packaged.profiles["sanctuary-owner"].toolNames).toContain("save_friend_note")
     expect(packaged.profiles["sanctuary-household"].toolNames).toContain("save_friend_note")
     expect(packaged.profiles["sanctuary-household"].toolNames).not.toContain("telegram_contact_manage")
@@ -49,7 +50,7 @@ describe("Sanctuary active tool profile", () => {
     expect(packaged.profiles["sanctuary-household"].toolNames).not.toContain("sanctuary_resume_download_queue")
     expect(packaged.profiles["sanctuary-event"].toolNames).toContain("sanctuary_get_download_queue")
     expect(packaged.profiles["sanctuary-event"].toolNames).not.toContain("sanctuary_resume_download_queue")
-    expect(packaged.profiles["sanctuary-event"].toolNames).toEqual(expect.arrayContaining(["external_event_disposition", "query_cares", "care_manage", "await_condition", "steward_policy_manage", "rest"]))
+    expect(packaged.profiles["sanctuary-event"].toolNames).toEqual(expect.arrayContaining(["external_event_disposition", "query_cares", "care_manage", "await_condition", "resolve_await", "steward_policy_manage", "rest"]))
     expect(packaged.profiles["sanctuary-event"].toolNames).not.toContain("send_message")
     expect(packaged.profiles["sanctuary-household"].toolNames).not.toContain("ponder")
     expect(packaged.profiles["sanctuary-household"].toolNames).toContain("unraid_restart_container")

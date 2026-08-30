@@ -23,6 +23,7 @@ vi.mock("../../heart/awaiting/await-alert", () => ({
 import {
   awaitingToolDefinitions,
   cancelRelationshipFollowUps,
+  hasActiveExternalEventAwait,
   hasActiveRelationshipFollowUp,
   setAwaitToolDeps,
   resetAwaitToolDeps,
@@ -71,6 +72,48 @@ describe("tools-awaiting", () => {
   })
 
   describe("await_condition", () => {
+    it("files external-event awaits with exact event provenance and no human obligation", async () => {
+      const recordPath = path.join(agentRoot, "external-events", "sanctuary", "usenet", "event-1.json")
+      const result = parse(await fileAwaitDef.handler(
+        { name: "unsafe_event_wait", condition: "later", cadence: "5m" },
+        {
+          context: { friend: { id: "owner" } },
+          currentExternalEvent: { schemaVersion: 1, recordPath, agent: "sanctuary", source: "usenet", eventId: "event-1", generation: 2, observationRevision: "revision-1", claimOwner: "worker" },
+        } as any,
+      ) as string)
+
+      expect(result.filed).toBe("unsafe_event_wait")
+      const content = fs.readFileSync(path.join(agentRoot, "awaiting", "unsafe_event_wait.md"), "utf8")
+      expect(content).toContain("filed_from: external-event")
+      expect(content).toContain("alert: null")
+      expect(content).toContain("filed_for_friend_id: owner")
+      expect(content).toContain(`filed_from_key: ${recordPath}`)
+      expect(content).toContain("request_id: null")
+      expect(content).not.toContain("obligation_id:")
+    })
+
+    it("authorizes an external-event await only for its exact handled disposition and wake time", () => {
+      const eventRoot = path.join(agentRoot, "external-events")
+      const first = recordExternalEvent({ agent: "sanctuary", source: "usenet", eventType: "credit.low", eventId: "event-1" }, { root: eventRoot })
+      const claim = claimExternalEvent(first.recordPath, { owner: "worker", expectedVersion: first.version, expectedGeneration: first.generation })
+      commitExternalEventDisposition(first.recordPath, {
+        owner: "worker", expectedVersion: claim.version, expectedGeneration: claim.generation,
+        disposition: { classifiedRevision: first.observationRevision, classification: "snoozed", stewardPolicy: { kind: "none" }, decision: "silent", reason: "Wait.", nextWake: { kind: "at", at: "2026-08-30T17:00:00.000Z" }, careId: null, awaitId: "event-wait", actionRefs: [], verificationRefs: [] },
+      })
+
+      expect(hasActiveExternalEventAwait("sanctuary", { recordPath: first.recordPath, awaitName: "event-wait", wakeAt: "2026-08-30T17:00:00.000Z" }, eventRoot)).toBe(true)
+      expect(hasActiveExternalEventAwait("sanctuary", { recordPath: first.recordPath, awaitName: "event-wait", wakeAt: "2026-08-30T17:01:00.000Z" }, eventRoot)).toBe(false)
+      expect(hasActiveExternalEventAwait("sanctuary", { recordPath: first.recordPath, awaitName: "other", wakeAt: "2026-08-30T17:00:00.000Z" }, eventRoot)).toBe(false)
+
+      const second = recordExternalEvent({ agent: "sanctuary", source: "storage", eventType: "credit.low", eventId: "event-2" }, { root: eventRoot })
+      const secondClaim = claimExternalEvent(second.recordPath, { owner: "worker-2", expectedVersion: second.version, expectedGeneration: second.generation })
+      commitExternalEventDisposition(second.recordPath, {
+        owner: "worker-2", expectedVersion: secondClaim.version, expectedGeneration: secondClaim.generation,
+        disposition: { classifiedRevision: second.observationRevision, classification: "snoozed", stewardPolicy: { kind: "none" }, decision: "silent", reason: "Wait.", nextWake: { kind: "at", at: "2026-08-30T17:00:00.000Z" }, careId: null, awaitId: "event-wait", actionRefs: [], verificationRefs: [] },
+      })
+      expect(hasActiveExternalEventAwait("sanctuary", { recordPath: first.recordPath, awaitName: "event-wait", wakeAt: "2026-08-30T17:00:00.000Z" }, eventRoot)).toBe(false)
+    })
+
     it("files a new await with required fields", async () => {
       const ctx = { currentSession: { friendId: "ari", channel: "bluebubbles", key: "+15551112222;-;ari", sessionPath: "" } }
       const result = parse(await fileAwaitDef.handler(
@@ -514,6 +557,24 @@ describe("tools-awaiting", () => {
       expect(fs.existsSync(path.join(agentRoot, "awaiting", "other.md"))).toBe(true)
 
       expect(parse(cancelAwaitDef.handler({}, mine as any) as string).error).toMatch(/current relationship request/u)
+    })
+  })
+
+  describe("relationship resolve_await", () => {
+    it("resolves only the await bound to the exact current relationship request", async () => {
+      const context = (requestId: string) => ({
+        currentSession: { friendId: "sibling", channel: "telegram", key: "telegram:777:888", sessionPath: "/tmp/session.json" },
+        relationshipAuthorization: { requestId, authorizedContextScopes: ["own_requests"], advertisedToolNames: ["resolve_await"], authorizeTool: vi.fn() },
+      })
+      const mine = context("request-mine")
+      const other = context("request-other")
+      await fileAwaitDef.handler({ name: "mine", condition: "ready", cadence: "5m" }, mine as any)
+
+      expect(parse(await resolveAwaitDef.handler({ name: "mine", verdict: "yes", observation: "ready" }, other as any) as string).error).toMatch(/current relationship request/u)
+      expect(parse(await resolveAwaitDef.handler({ name: "mine", verdict: "yes", observation: "ready" }, mine as any) as string)).toMatchObject({ verdict: "yes", archived: expect.stringContaining("mine.md") })
+      expect(mockDeliverAwaitAlert).toHaveBeenCalledWith(expect.objectContaining({
+        awaitFile: expect.objectContaining({ filed_for_friend_id: "sibling", filed_from: "telegram", filed_from_key: "telegram:777:888", request_id: "request-mine" }),
+      }))
     })
   })
 
