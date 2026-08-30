@@ -31,6 +31,7 @@ const REQUIRED_PACKAGE_ASSET_PATHS = [
   "deploy/unraid/sanctuary.ouro/bundle-meta.json",
   "deploy/unraid/sanctuary.ouro/provider-readiness.json",
   "deploy/unraid/sanctuary.ouro/tool-profiles.json",
+  "deploy/unraid/sanctuary.ouro/state/policy/steward.json",
   "deploy/unraid/sanctuary.ouro/arc/README.md",
   "deploy/unraid/sanctuary.ouro/habits/sanctuary-health.md",
   "deploy/unraid/sanctuary.ouro/psyche/ASPIRATIONS.md",

@@ -1,0 +1,203 @@
+{
+  "schemaVersion": 1,
+  "version": 1,
+  "desiredStates": {},
+  "routineActionGrants": {
+    "unraid.restart:calibre": {
+      "action": "unraid.container.restart",
+      "targets": [
+        "calibre"
+      ],
+      "maxCount": 2,
+      "windowMs": 3600000,
+      "verificationRequired": true,
+      "exclusions": [],
+      "provenance": "installed_explicit_policy",
+      "issuer": "ari",
+      "authorizedAt": "2026-08-29T00:00:00.000Z",
+      "authorizingSessionEvent": "owner-contract-2026-08-29",
+      "version": 1
+    },
+    "unraid.restart:calibre-web": {
+      "action": "unraid.container.restart",
+      "targets": [
+        "calibre-web"
+      ],
+      "maxCount": 2,
+      "windowMs": 3600000,
+      "verificationRequired": true,
+      "exclusions": [],
+      "provenance": "installed_explicit_policy",
+      "issuer": "ari",
+      "authorizedAt": "2026-08-29T00:00:00.000Z",
+      "authorizingSessionEvent": "owner-contract-2026-08-29",
+      "version": 1
+    },
+    "unraid.restart:jellyfin": {
+      "action": "unraid.container.restart",
+      "targets": [
+        "jellyfin"
+      ],
+      "maxCount": 2,
+      "windowMs": 3600000,
+      "verificationRequired": true,
+      "exclusions": [],
+      "provenance": "installed_explicit_policy",
+      "issuer": "ari",
+      "authorizedAt": "2026-08-29T00:00:00.000Z",
+      "authorizingSessionEvent": "owner-contract-2026-08-29",
+      "version": 1
+    },
+    "unraid.restart:binhex-sonarr": {
+      "action": "unraid.container.restart",
+      "targets": [
+        "binhex-sonarr"
+      ],
+      "maxCount": 2,
+      "windowMs": 3600000,
+      "verificationRequired": true,
+      "exclusions": [],
+      "provenance": "installed_explicit_policy",
+      "issuer": "ari",
+      "authorizedAt": "2026-08-29T00:00:00.000Z",
+      "authorizingSessionEvent": "owner-contract-2026-08-29",
+      "version": 1
+    },
+    "unraid.restart:binhex-radarr": {
+      "action": "unraid.container.restart",
+      "targets": [
+        "binhex-radarr"
+      ],
+      "maxCount": 2,
+      "windowMs": 3600000,
+      "verificationRequired": true,
+      "exclusions": [],
+      "provenance": "installed_explicit_policy",
+      "issuer": "ari",
+      "authorizedAt": "2026-08-29T00:00:00.000Z",
+      "authorizingSessionEvent": "owner-contract-2026-08-29",
+      "version": 1
+    },
+    "unraid.restart:prowlarr": {
+      "action": "unraid.container.restart",
+      "targets": [
+        "prowlarr"
+      ],
+      "maxCount": 2,
+      "windowMs": 3600000,
+      "verificationRequired": true,
+      "exclusions": [],
+      "provenance": "installed_explicit_policy",
+      "issuer": "ari",
+      "authorizedAt": "2026-08-29T00:00:00.000Z",
+      "authorizingSessionEvent": "owner-contract-2026-08-29",
+      "version": 1
+    },
+    "unraid.restart:sabnzbd": {
+      "action": "unraid.container.restart",
+      "targets": [
+        "sabnzbd"
+      ],
+      "maxCount": 2,
+      "windowMs": 3600000,
+      "verificationRequired": true,
+      "exclusions": [],
+      "provenance": "installed_explicit_policy",
+      "issuer": "ari",
+      "authorizedAt": "2026-08-29T00:00:00.000Z",
+      "authorizingSessionEvent": "owner-contract-2026-08-29",
+      "version": 1
+    },
+    "unraid.restart:CloudflaredTunnel": {
+      "action": "unraid.container.restart",
+      "targets": [
+        "CloudflaredTunnel"
+      ],
+      "maxCount": 2,
+      "windowMs": 3600000,
+      "verificationRequired": true,
+      "exclusions": [],
+      "provenance": "installed_explicit_policy",
+      "issuer": "ari",
+      "authorizedAt": "2026-08-29T00:00:00.000Z",
+      "authorizingSessionEvent": "owner-contract-2026-08-29",
+      "version": 1
+    },
+    "unraid.restart:bookrequest": {
+      "action": "unraid.container.restart",
+      "targets": [
+        "bookrequest"
+      ],
+      "maxCount": 2,
+      "windowMs": 3600000,
+      "verificationRequired": true,
+      "exclusions": [],
+      "provenance": "installed_explicit_policy",
+      "issuer": "ari",
+      "authorizedAt": "2026-08-29T00:00:00.000Z",
+      "authorizingSessionEvent": "owner-contract-2026-08-29",
+      "version": 1
+    },
+    "unraid.restart:bookshelf": {
+      "action": "unraid.container.restart",
+      "targets": [
+        "bookshelf"
+      ],
+      "maxCount": 2,
+      "windowMs": 3600000,
+      "verificationRequired": true,
+      "exclusions": [],
+      "provenance": "installed_explicit_policy",
+      "issuer": "ari",
+      "authorizedAt": "2026-08-29T00:00:00.000Z",
+      "authorizingSessionEvent": "owner-contract-2026-08-29",
+      "version": 1
+    },
+    "unraid.restart:lazylibrarian": {
+      "action": "unraid.container.restart",
+      "targets": [
+        "lazylibrarian"
+      ],
+      "maxCount": 2,
+      "windowMs": 3600000,
+      "verificationRequired": true,
+      "exclusions": [],
+      "provenance": "installed_explicit_policy",
+      "issuer": "ari",
+      "authorizedAt": "2026-08-29T00:00:00.000Z",
+      "authorizingSessionEvent": "owner-contract-2026-08-29",
+      "version": 1
+    },
+    "unraid.restart:unmanic": {
+      "action": "unraid.container.restart",
+      "targets": [
+        "unmanic"
+      ],
+      "maxCount": 2,
+      "windowMs": 3600000,
+      "verificationRequired": true,
+      "exclusions": [],
+      "provenance": "installed_explicit_policy",
+      "issuer": "ari",
+      "authorizedAt": "2026-08-29T00:00:00.000Z",
+      "authorizingSessionEvent": "owner-contract-2026-08-29",
+      "version": 1
+    },
+    "unraid.restart:flaresolverr": {
+      "action": "unraid.container.restart",
+      "targets": [
+        "flaresolverr"
+      ],
+      "maxCount": 2,
+      "windowMs": 3600000,
+      "verificationRequired": true,
+      "exclusions": [],
+      "provenance": "installed_explicit_policy",
+      "issuer": "ari",
+      "authorizedAt": "2026-08-29T00:00:00.000Z",
+      "authorizingSessionEvent": "owner-contract-2026-08-29",
+      "version": 1
+    }
+  },
+  "updatedAt": "2026-08-29T00:00:00.000Z"
+}
