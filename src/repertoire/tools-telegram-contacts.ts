@@ -1,4 +1,5 @@
 import type { ToolDefinition } from "./tools-base"
+import { emitNervesEvent } from "../nerves/runtime"
 
 export const telegramContactToolDefinition: ToolDefinition = {
   tool: { type: "function", function: {
@@ -23,3 +24,10 @@ export const telegramContactToolDefinition: ToolDefinition = {
   riskProfile: (args) => String(args.action) === "list" ? { mutates: "none", risk: "low" } : { mutates: "durable_state_write", risk: "high", reason: "changes one exact household Telegram admission" },
   approvalPolicy: () => ({ kind: "not_required" }),
 }
+
+emitNervesEvent({
+  component: "repertoire",
+  event: "repertoire.telegram_contact_tool_loaded",
+  message: "Telegram contact management tool loaded",
+  meta: { operations: 3 },
+})
