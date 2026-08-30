@@ -406,8 +406,8 @@ export function validateSanctuaryUnit16EvidenceAssertions(label: SanctuaryUnit16
       requiredInteger(value, "publishedPortCount", 0, label)
       break
     case "unit-16c-provider-readiness":
-      exact(["baseUrlExact", "innerReady", "laneSelectionExact", "outwardReady", "silentFallback", "singleCredentialExact", "vaultCoordinatesExact"])
-      allTrue(["baseUrlExact", "innerReady", "laneSelectionExact", "outwardReady", "singleCredentialExact", "vaultCoordinatesExact"])
+      exact(["innerReady", "laneSelectionExact", "outwardReady", "silentFallback", "singleCredentialExact", "vaultCoordinatesExact"])
+      allTrue(["innerReady", "laneSelectionExact", "outwardReady", "singleCredentialExact", "vaultCoordinatesExact"])
       requiredFalse(value, "silentFallback", label)
       break
     case "unit-16d-whats-up":

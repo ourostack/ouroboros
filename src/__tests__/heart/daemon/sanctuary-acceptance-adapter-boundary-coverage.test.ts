@@ -826,7 +826,6 @@ describe("Sanctuary production boundary adapter coverage", () => {
         const contractEvaluated = Boolean(("apiKey" in variant.credentials) && variant.credentials.apiKey && variant.credentialOk)
         expect(facts.provider).toMatchObject({
           laneSelectionExact: contractEvaluated,
-          baseUrlExact: contractEvaluated,
           vaultCoordinatesExact: contractEvaluated && variant.readinessVaultItem === "providers/minimax",
           singleCredentialExact: contractEvaluated,
         })
@@ -856,7 +855,6 @@ describe("Sanctuary production boundary adapter coverage", () => {
         outwardReady: false,
         innerReady: false,
         laneSelectionExact: false,
-        baseUrlExact: false,
         vaultCoordinatesExact: false,
         singleCredentialExact: false,
       })

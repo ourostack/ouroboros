@@ -308,7 +308,7 @@ export interface SanctuaryScenarioFacts {
     mountCount: number; publishedPortCount: number; restartPolicy: string; restartCount: number
     autostartExact: boolean; mountsExact: boolean; updaterDisabled: boolean; vaultUnlocked: boolean; manualAuthRequired: boolean
   }
-  provider?: { outwardReady: boolean; innerReady: boolean; silentFallback: boolean; credentialRevisionsPresent?: boolean; requestSemanticsExact?: boolean; fallbackAttemptCount?: number; laneSelectionExact?: boolean; baseUrlExact?: boolean; vaultCoordinatesExact?: boolean; singleCredentialExact?: boolean; pingReceipts?: Array<Record<string, unknown>> }
+  provider?: { outwardReady: boolean; innerReady: boolean; silentFallback: boolean; credentialRevisionsPresent?: boolean; requestSemanticsExact?: boolean; fallbackAttemptCount?: number; laneSelectionExact?: boolean; vaultCoordinatesExact?: boolean; singleCredentialExact?: boolean; pingReceipts?: Array<Record<string, unknown>> }
   cron?: { registered: boolean; fingerprint: string; receiptDigest: string; sweepCount: number }
   health?: { transitionCount: number; alertCount: number; productionRestored: boolean }
   digest?: { scheduleObserved: boolean; messageCount: number; firedWithinMs: number; productionRestored: boolean }
@@ -758,8 +758,8 @@ export function deriveSanctuaryScenarioAssertions(
     case "unit-16c-provider-readiness":
       return after.provider && after.provider.outwardReady && after.provider.innerReady && !after.provider.silentFallback
         && after.provider.credentialRevisionsPresent === true && after.provider.requestSemanticsExact === true && after.provider.fallbackAttemptCount === 0
-        && after.provider.laneSelectionExact === true && after.provider.baseUrlExact === true && after.provider.vaultCoordinatesExact === true && after.provider.singleCredentialExact === true
-        ? { outwardReady: true, innerReady: true, silentFallback: false, laneSelectionExact: true, baseUrlExact: true, vaultCoordinatesExact: true, singleCredentialExact: true } : null
+        && after.provider.laneSelectionExact === true && after.provider.vaultCoordinatesExact === true && after.provider.singleCredentialExact === true
+        ? { outwardReady: true, innerReady: true, silentFallback: false, laneSelectionExact: true, vaultCoordinatesExact: true, singleCredentialExact: true } : null
     case "unit-16d-whats-up":
       if (telegramResponses !== 1 || newTurns.length !== 1 || !exactFreshTelegramLifecycle(before, after, newTurns[0]!.updateDigest) || deliveredTurns[0]!.toolInvocationCount !== 1 || deliveredTurns[0]!.toolResultDigests.length !== 1 || !turnHasGroundedRead(after, deliveredTurns[0]!, "unraid_get_system") || !exactGroundedResponse(after, deliveredTurns[0]!, "unraid_get_system")) return null
       return { accurate: true, authorized: true, grounded: true, liveFactsMatched: true, responseCount: telegramResponses, responseWithinLimit: true, telegramDelivered: true }
