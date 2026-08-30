@@ -376,7 +376,7 @@ describe("continuity tools", () => {
       expect(mockCommitExternalEventDisposition).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ disposition: expect.objectContaining({ stewardPolicy: { kind: "current", key: "service:books", version: 4 } }) }))
     })
 
-    it("rejects stale current policy and limits no-policy dispositions to fresh observations", async () => {
+    it("rejects stale current policy and allows no-policy dispositions for fresh observations with no applicable key", async () => {
       vi.mocked(fs.existsSync).mockReturnValue(false)
       mockReadExternalEventRecord.mockReturnValue({ agent: "ouroboros", source: "sanctuary-health", eventId: "books", transition: "unchanged", version: 4, generation: 2, observationRevision: "rev-2", executionState: "running", claimOwner: "lease-2" })
       const context = { signin: async () => undefined, currentExternalEvent: { schemaVersion: 1 as const, recordPath: "/events/ouroboros/sanctuary-health/books.json", agent: "ouroboros", source: "sanctuary-health", eventId: "books", generation: 2, observationRevision: "rev-2", claimOwner: "lease-2" }, externalEventAuthority: { authorizeDisposition: () => ({ allowed: true, reason: "test" }) } }
@@ -385,7 +385,7 @@ describe("continuity tools", () => {
       mockReadExternalEventRecord.mockReturnValue({ agent: "ouroboros", source: "sanctuary-health", eventId: "books", transition: "opened", version: 4, generation: 2, observationRevision: "rev-2", executionState: "running", claimOwner: "lease-2" })
       vi.mocked(fs.existsSync).mockReturnValue(true)
       vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({ schemaVersion: 1, version: 1, desiredStates: { "service:other": { value: "on", provenance: "stated", version: 1, source: "ari" } }, routineActionGrants: {}, updatedAt: "2026-08-29T00:00:00.000Z" }))
-      expect(() => findTool("external_event_disposition").handler({ recordPath: context.currentExternalEvent.recordPath, expectedGeneration: 2, classifiedRevision: "rev-2", classification: "expected", stewardPolicyKind: "none", decision: "silent", reason: "No policy yet.", nextWake: "on_change" }, context)).toThrow(/canonical empty steward policy/u)
+      await expect(findTool("external_event_disposition").handler({ recordPath: context.currentExternalEvent.recordPath, expectedGeneration: 2, classifiedRevision: "rev-2", classification: "expected", stewardPolicyKind: "none", decision: "silent", reason: "No applicable policy yet.", nextWake: "on_change" }, context)).resolves.toContain("handled")
     })
 
     it("validates Care incident ownership and the exact pending Await time", async () => {

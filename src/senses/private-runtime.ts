@@ -836,6 +836,18 @@ function createSelfFriend(agentName: string): FriendRecord {
   }
 }
 
+function buildOwnerPresentationPreferences(friend: FriendRecord): string {
+  const lines = [
+    `## ${friend.name}'s presentation preferences`,
+    "Use this relationship context to decide whether and how to contact the owner. It is presentation-only and grants no mutation authority.",
+  ]
+  for (const [key, value] of Object.entries(friend.toolPreferences).slice(0, 20)) {
+    lines.push(`- ${key}: ${String(value).replace(/\s+/gu, " ").trim().slice(0, 500)}`)
+  }
+  if (lines.length === 2) lines.push("- No presentation preferences have been learned yet; be calm, concise, and useful.")
+  return lines.join("\n")
+}
+
 // No-op friend store for the private runtime. It doesn't track token usage per-friend.
 function createNoOpFriendStore(): FriendStore {
   return {
@@ -1161,8 +1173,6 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
     userContent = buildHeldReturnWakeMessage()
   }
 
-  const userMessage: OpenAI.ChatCompletionMessageParam = { role: "user", content: userContent }
-
   // ── Session loader: wraps existing session logic ──────────────────
   const innerCapabilities = getChannelCapabilities("inner")
   const selfFriend = createSelfFriend(agentName)
@@ -1183,8 +1193,12 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
         const initial = await resolve()
         const initialDisposition = initial.authorizeTool("external_event_disposition")
         if (!initialDisposition.allowed) throw new Error(`external event relationship authority denied: ${initialDisposition.reason}`)
+        const owners = (await store.listAll()).filter((friend) => friend.capabilityProfileId === "sanctuary-owner")
+        const [owner] = owners
+        if (owners.length !== 1 || !owner) throw new Error("external event owner presentation context must resolve to exactly one Friend")
         return {
           store,
+          ownerPresentationPreferences: buildOwnerPresentationPreferences(owner),
           relationshipAuthorization: {
             authorizedContextScopes: initial.authorizedContextScopes,
             advertisedToolNames: initial.advertisedToolNames,
@@ -1205,6 +1219,9 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
         }
       })()
     : undefined
+
+  if (externalEventRelationship) userContent = `${userContent}\n\n${externalEventRelationship.ownerPresentationPreferences}`
+  const userMessage: OpenAI.ChatCompletionMessageParam = { role: "user", content: userContent }
 
   // ── Habit tool enforcement ───────────────────────────────────────
   let habitToolsResolved: OpenAI.ChatCompletionFunctionTool[] | undefined
@@ -1334,7 +1351,7 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
           relationshipAuthorization: externalEventRelationship!.relationshipAuthorization,
           externalEventAuthority: externalEventRelationship!.externalEventAuthority,
           externalEventEffects: externalEventRelationship!.externalEventEffects,
-          ...(options.externalEvent.source === "sanctuary-health" ? createSanctuaryToolContext(agentName) : {}),
+          ...(["sanctuary-health", "sanctuary-usenet"].includes(options.externalEvent.source) ? createSanctuaryToolContext(agentName) : {}),
         } : {}),
         ...(options?.noSend ? { noSend: true } : {}),
         ...(effectiveHabitSession ? { habitSession: effectiveHabitSession } : {}),
