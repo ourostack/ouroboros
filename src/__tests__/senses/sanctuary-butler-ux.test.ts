@@ -227,7 +227,7 @@ describe("Mendelow Cloud Butler household UX", () => {
       .filter((name) => household.evaluator.advertisedToolNames.includes(name))
     setAgentName(path.basename(agentRoot, ".ouro"))
 
-    expect(advertised).toEqual(["await_condition", "cancel_await", "unraid_list_containers", "unraid_get_storage", "unraid_get_disks", "unraid_get_system", "settle", "speak"])
+    expect(advertised).toEqual(["await_condition", "cancel_await", "unraid_list_containers", "unraid_get_storage", "unraid_get_disks", "unraid_get_system", "unraid_restart_container", "settle", "speak"])
     const deniedRead = await execTool("query_cares", {}, household.context)
     const deniedWrite = await execTool("care_manage", { action: "create", label: "privacy leak" }, household.context)
     expect(deniedRead).toContain("relationship authorization required")

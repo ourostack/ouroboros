@@ -244,6 +244,16 @@ export function findPendingObligationForOrigin(
   )
 }
 
+export function findPendingObligationForRequest(
+  agentRoot: string,
+  input: { requestId: string; owedTo: { friendId: string; channel: string; key: string } },
+): Obligation | undefined {
+  return readPendingObligations(agentRoot).find((obligation) => obligation.requestId === input.requestId
+    && obligation.owedTo?.friendId === input.owedTo.friendId
+    && obligation.owedTo.channel === input.owedTo.channel
+    && obligation.owedTo.key === input.owedTo.key)
+}
+
 export function enrichObligation(
   agentRoot: string,
   id: string,

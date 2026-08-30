@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto"
 import { emitNervesEvent } from "../nerves/runtime"
 import { UnraidClient, UnraidClientError, type UnraidErrorCode } from "./unraid-client"
-import type { ToolDefinition } from "./tools-base"
+import { routineActionRequester, type ToolContext, type ToolDefinition } from "./tools-base"
 import { inspectRoutineActionGrant } from "../heart/steward-policy"
+import { advanceObligation, createObligation, findPendingObligationForRequest, type Obligation } from "../arc/obligations"
 
 export const SANCTUARY_CONTAINERS_QUERY = `query SanctuaryContainers {
   docker { containers(skipCache: true) { id names state status autoStart } }
@@ -259,6 +260,44 @@ function missingRuntime(): string {
   return JSON.stringify({ ok: false, error: { code: "invalid_response", message: "Sanctuary runtime is unavailable", degraded: true } })
 }
 
+function householdRepairObligation(ctx: ToolContext, target: string): Obligation | null {
+  const requester = routineActionRequester(ctx)
+  if (requester?.kind !== "household_request") return null
+  if (!ctx.agentRoot) throw new Error("household repair request tracking is unavailable")
+  const existing = findPendingObligationForRequest(ctx.agentRoot, { requestId: requester.requestId, owedTo: requester.origin })
+  if (existing) return existing
+  return createObligation(ctx.agentRoot, {
+    origin: requester.origin,
+    owedTo: requester.origin,
+    requestId: requester.requestId,
+    sourceProvenance: { kind: "human_request", source: requester.origin.channel, ref: `request:${requester.requestId}` },
+    content: `Restore Sanctuary service ${target} and report the outcome`,
+    currentSurface: { kind: "runtime", label: `Sanctuary container ${target}` },
+    nextAction: `Restart ${target} under the Butler's standing grant and verify recovery`,
+  })
+}
+
+async function runTrackedRestart(ctx: ToolContext, target: string, routine?: import("./unraid-restart").RoutineRestartAuthority): Promise<unknown> {
+  const obligation = householdRepairObligation(ctx, target)
+  if (obligation && ctx.agentRoot) advanceObligation(ctx.agentRoot, obligation.id, { status: "updating_runtime", latestNote: `Starting the requested restart of ${target}` })
+  try {
+    const result = await ctx.sanctuary!.restartContainer({ container: target }, routine ? { routine } : undefined)
+    if (obligation && ctx.agentRoot) {
+      const succeeded = !!result && typeof result === "object" && !Array.isArray(result) && (result as { ok?: unknown }).ok === true
+      if (succeeded) advanceObligation(ctx.agentRoot, obligation.id, {
+        status: "updating_runtime",
+        latestNote: `The requested restart of ${target} verified recovery`,
+        nextAction: "Report the verified outcome to the exact requester",
+      })
+      else advanceObligation(ctx.agentRoot, obligation.id, { status: "investigating", latestNote: `The requested restart of ${target} did not verify recovery`, nextAction: `Diagnose ${target} and report back to the requester` })
+    }
+    return result
+  } catch (error) {
+    if (obligation && ctx.agentRoot) advanceObligation(ctx.agentRoot, obligation.id, { status: "investigating", latestNote: `The requested restart of ${target} failed`, nextAction: `Diagnose ${target} and report back to the requester` })
+    throw error
+  }
+}
+
 function readDefinition(name: string, description: string, method: "listContainers" | "getStorage" | "getDisks" | "getNotifications" | "getSystem"): ToolDefinition {
   return {
     tool: { type: "function", function: { name, description, parameters: emptyParameters } },
@@ -300,7 +339,7 @@ export const unraidToolDefinitions: ToolDefinition[] = [
       type: "function",
       function: {
         name: "unraid_restart_container",
-        description: "Propose restarting one exact existing allowlisted Sanctuary container. Execution requires human approval.",
+        description: "Restart one exact existing allowlisted Sanctuary container when standing policy allows; otherwise request approval.",
         parameters: {
           type: "object",
           properties: { container: { type: "string" } },
@@ -314,7 +353,7 @@ export const unraidToolDefinitions: ToolDefinition[] = [
       const target = String(args.container)
       let routine: import("./unraid-restart").RoutineRestartAuthority | undefined
       if (ctx.routineActionSelection) {
-        if (!ctx.agentRoot || ctx.relationshipAuthorization?.actor?.trustLevel !== "family") return JSON.stringify({ ok: false, error: { code: "approval_required", message: "routine action authorization is unavailable", degraded: true } })
+        if (!ctx.agentRoot || !routineActionRequester(ctx)) return JSON.stringify({ ok: false, error: { code: "approval_required", message: "routine action authorization is unavailable", degraded: true } })
         const { key, expectedPolicyVersion } = ctx.routineActionSelection
         if (ctx.routineActionSelection.target !== target) return JSON.stringify({ ok: false, error: { code: "approval_required", message: "routine action arguments changed", degraded: true } })
         const decision = inspectRoutineActionGrant(ctx.agentRoot, { key, action: "unraid.container.restart", target, expectedPolicyVersion })
@@ -330,7 +369,7 @@ export const unraidToolDefinitions: ToolDefinition[] = [
           },
         }
       }
-      return JSON.stringify(await ctx.sanctuary.restartContainer({ container: target }, routine ? { routine } : undefined))
+      return JSON.stringify(await runTrackedRestart(ctx, target, routine))
     },
     riskProfile: { mutates: "external_side_effect", risk: "high", reason: "restarts one existing allowlisted Docker container" },
     approvalPolicy: () => ({

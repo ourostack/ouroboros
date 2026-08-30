@@ -11,6 +11,7 @@ import { TELEGRAM_ACCEPTANCE_AUDIT_HEAD_RELATIVE_PATH, TELEGRAM_ACCEPTANCE_AUDIT
 import { splitTelegramText, type TelegramBotApi, type TelegramInboundMessage, type TelegramLongPoll } from "../../senses/telegram-client"
 import { getSenseSessionPath } from "../../senses/shared-turn"
 import { FileTelegramEffectJournal, FIXED_USENET_SYSTEM_FAILSAFE, prepareTelegramEffect } from "../../senses/telegram-effect-adapter"
+import { createObligation, readObligation } from "../../arc/obligations"
 
 const RECEIPT_DOMAIN = "ouroboros.telegram.turn-receipt.v3"
 const RECEIPT_KEY = "k".repeat(43)
@@ -1685,6 +1686,11 @@ describe("Telegram sense", () => {
 
   it("delivers an expiry return through the existing authorized effect journal and exact household session", async () => {
     const f = fixture({ authorizeEffect: vi.fn(async () => ({ allowed: true, receiptId: "request-return", expiresAt: new Date(Date.now() + 60_000).toISOString(), transport: { chatId: "888" } })) })
+    const obligation = createObligation(f.agentRoot, {
+      origin: { friendId: "sibling", channel: "telegram", key: "telegram:777:888" },
+      requestId: "request-1",
+      content: "Return the movie request outcome",
+    })
     const result = await f.app.sendAwaitFollowUp({
       friendId: "sibling",
       channel: "telegram",
@@ -1701,6 +1707,21 @@ describe("Telegram sense", () => {
     expect(artifact.idempotencyKey).toMatch(/^await-expiry-follow-up:request-1:/u)
     const sessionPath = getSenseSessionPath("butler", "sibling", "telegram", "telegram:777:888", f.agentRoot)
     expect(JSON.parse(fs.readFileSync(sessionPath, "utf8")).events).toContainEqual(expect.objectContaining({ content: "Movie request timed out." }))
+    expect(readObligation(f.agentRoot, obligation.id)?.status).toBe("fulfilled")
+  })
+
+  it("keeps a request obligation pending when its exact Telegram return is not accepted and recorded", async () => {
+    const api = { request: vi.fn(async () => { throw new Error("Telegram unavailable") }), stop: vi.fn() }
+    const f = fixture({ api, authorizeEffect: vi.fn(async () => ({ allowed: true, receiptId: "request-return", expiresAt: new Date(Date.now() + 60_000).toISOString(), transport: { chatId: "888" } })) })
+    const obligation = createObligation(f.agentRoot, {
+      origin: { friendId: "sibling", channel: "telegram", key: "telegram:777:888" },
+      requestId: "request-crash",
+      content: "Return the repair outcome",
+    })
+
+    await expect(f.app.sendAwaitFollowUp({ friendId: "sibling", channel: "telegram", key: "telegram:777:888", requestId: "request-crash", content: "Books is back.", intent: "generic_outreach" }))
+      .resolves.toMatchObject({ status: "blocked" })
+    expect(readObligation(f.agentRoot, obligation.id)?.status).toBe("pending")
   })
 
   it("blocks malformed and unauthorized await returns without sending", async () => {

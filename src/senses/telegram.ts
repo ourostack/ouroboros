@@ -51,6 +51,7 @@ import { loadSessionEnvelopeFile } from "../heart/session-events"
 import { getExternalEventRoot, type PrivilegedProtectiveAction } from "../heart/external-events/router"
 import { withSessionTurnLease } from "../mind/session-transaction"
 import { cancelRelationshipFollowUps, hasActiveRelationshipFollowUp, resetAwaitToolDeps, setAwaitToolDeps } from "../repertoire/tools-awaiting"
+import { findPendingObligationForRequest, fulfillObligation } from "../arc/obligations"
 import { getPrivateRuntimePendingDir, queuePendingMessage } from "../mind/pending"
 import type { CrossChatDeliveryRequest, CrossChatDirectDeliveryResult } from "../heart/cross-chat-delivery"
 import {
@@ -1078,6 +1079,16 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
 
   recordAcceptedEffects = async (sessionPath: string, artifacts: TelegramEffectArtifact[], bootstrapInbound?: { text: string; reference: string }, causalEventIds?: Readonly<Record<string, string>>): Promise<void> => {
     await recordTelegramEffectsInSession({ store: getEffectJournal(), sessionPath, artifacts, ...(bootstrapInbound ? { inbound: bootstrapInbound } : {}), ...(causalEventIds ? { causalEventIds } : {}) })
+    for (const artifact of artifacts) {
+      if (artifact.target.kind !== "approved_relationship" || !artifact.target.requestId || artifact.effect.kind !== "text") continue
+      const recorded = getEffectJournal().read(artifact.id)
+      if (!recorded.parts.every((part) => part.state === "session_recorded")) continue
+      const obligation = findPendingObligationForRequest(agentRoot, {
+        requestId: artifact.target.requestId,
+        owedTo: { friendId: artifact.target.friendId, channel: "telegram", key: artifact.target.sessionKey },
+      })
+      if (obligation) fulfillObligation(agentRoot, obligation.id)
+    }
   }
   const deliverAwaitFollowUp = async (request: CrossChatDeliveryRequest): Promise<CrossChatDirectDeliveryResult> => {
     if (!request.requestId) return { status: "blocked", detail: "Telegram follow-up is missing its request binding" }
