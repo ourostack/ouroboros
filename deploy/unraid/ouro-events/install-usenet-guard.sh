@@ -47,6 +47,8 @@ if [ -n "$CRONTAB_FILE" ]; then
 fi
 LEGACY_BOOT_HOOK="/boot/config/custom/ouro-events/bootstrap-spool.sh --mount"
 LEGACY_BASH_BOOT_HOOK="/bin/bash /boot/config/custom/ouro-events/bootstrap-spool.sh --mount"
+CANONICAL_PREVIOUS_BOOT_HOOK="/bin/bash /boot/config/custom/ouro-events/install-usenet-guard.sh --boot"
+CANONICAL_BOOT_HOOK="$CANONICAL_PREVIOUS_BOOT_HOOK --install-root /boot/config/custom"
 printf -v HEALTH_SCRIPT_Q '%q' "$INSTALL_ROOT/usenet_health.sh"
 CRON_LINE="*/15 * * * * /bin/bash $HEALTH_SCRIPT_Q # ouro:usenet-health"
 LEGACY_CRON_LINE="*/15 * * * * /bin/bash $HEALTH_SCRIPT_Q"
@@ -73,18 +75,37 @@ render_inactive_cron() {
   /bin/chmod 0600 "$target"
 }
 
+is_canonical_butler_go_hook() {
+  case "$1" in
+    "$LEGACY_BOOT_HOOK"|"$LEGACY_BASH_BOOT_HOOK"|"$CANONICAL_PREVIOUS_BOOT_HOOK"|"$CANONICAL_BOOT_HOOK") return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 render_go_without_owned() {
-  local source="$1" target="$2"
-  awk '$0 != "/boot/config/custom/ouro-events/bootstrap-spool.sh --mount" && $0 != "/bin/bash /boot/config/custom/ouro-events/bootstrap-spool.sh --mount" && $0 !~ /^\/bin\/bash [^[:space:]]+\/ouro-events\/install-usenet-guard\.sh --boot([[:space:]]|$)/ { print }' "$source" > "$target"
+  local source="$1" target="$2" line
+  : > "$target"
+  while IFS= read -r line || [ -n "$line" ]; do
+    if ! is_canonical_butler_go_hook "$line"; then printf '%s\n' "$line" >> "$target"; fi
+  done < "$source"
 }
 
 read_system_cron() {
-  if crontab -l > "$1" 2>/dev/null; then
+  local error_file="${1}.error" status current_user
+  current_user="$(id -un)" || return $?
+  if crontab -l > "$1" 2>"$error_file"; then
     SYSTEM_CRON_PRESENT=true
   else
-    SYSTEM_CRON_PRESENT=false
-    : > "$1"
+    status=$?
+    if [ "$status" -eq 1 ] && grep -Fxq "no crontab for $current_user" "$error_file"; then
+      SYSTEM_CRON_PRESENT=false
+      : > "$1"
+    else
+      /bin/rm -f "$1" "$error_file"
+      return "$status"
+    fi
   fi
+  /bin/rm -f "$error_file"
 }
 
 activate_cron_file() {
@@ -114,10 +135,32 @@ restore_target() {
   fi
 }
 
+rollback_host_state() {
+  local backup="$1" index rollback_status=0 attempt_status
+  for index in "${!TARGET_PATHS[@]}"; do
+    restore_target "${TARGET_PATHS[$index]}" "$backup/asset-$index"
+    attempt_status=$?
+    if [ "$attempt_status" -ne 0 ] && [ "$rollback_status" -eq 0 ]; then rollback_status=$attempt_status; fi
+  done
+  restore_target "$GO_FILE" "$backup/go"
+  attempt_status=$?
+  if [ "$attempt_status" -ne 0 ] && [ "$rollback_status" -eq 0 ]; then rollback_status=$attempt_status; fi
+  if [ -n "$CRONTAB_FILE" ]; then
+    restore_target "$CRONTAB_FILE" "$backup/cron"
+  elif [ "$SYSTEM_CRON_PRESENT" = true ]; then
+    crontab "$backup/cron"
+  else
+    crontab -r >/dev/null 2>&1
+  fi
+  attempt_status=$?
+  if [ "$attempt_status" -ne 0 ] && [ "$rollback_status" -eq 0 ]; then rollback_status=$attempt_status; fi
+  return "$rollback_status"
+}
+
 install_transaction() {
   preflight_sources
   /bin/mkdir -p "$INSTALL_ROOT"
-  local stage backup cron_original cron_inactive cron_candidate go_candidate status index name target
+  local stage backup cron_original cron_inactive cron_candidate go_candidate status rollback_status index name target
   stage="$(/usr/bin/mktemp -d "$INSTALL_ROOT/.ouro-usenet-stage.XXXXXX")"
   STAGE_PATH="$stage"
   backup="$stage/backup"
@@ -180,15 +223,11 @@ install_transaction() {
   if [ "$status" -eq 0 ]; then activate_cron_file "$cron_candidate" || status=$?; fi
   set -e
   if [ "$status" -ne 0 ]; then
-    for index in "${!TARGET_PATHS[@]}"; do restore_target "${TARGET_PATHS[$index]}" "$backup/asset-$index"; done
-    restore_target "$GO_FILE" "$backup/go"
-    if [ -n "$CRONTAB_FILE" ]; then
-      restore_target "$CRONTAB_FILE" "$backup/cron"
-    elif [ "$SYSTEM_CRON_PRESENT" = true ]; then
-      crontab "$backup/cron"
-    else
-      crontab -r >/dev/null 2>&1 || true
-    fi
+    set +e
+    rollback_host_state "$backup"
+    rollback_status=$?
+    set -e
+    if [ "$rollback_status" -ne 0 ]; then return "$rollback_status"; fi
     return "$status"
   fi
   cleanup
@@ -214,7 +253,7 @@ boot_activate() {
 }
 
 restore_snapshot() {
-  local expected_inventory stage backup cron_original cron_inactive cron_candidate go_original go_filtered go_candidate status index target relative source state global_name global_state global_digest global_count go_state cron_state
+  local expected_inventory stage backup cron_original cron_inactive cron_candidate go_original go_filtered go_candidate status rollback_status index target relative source state global_name global_state global_digest global_count go_state cron_state
   expected_inventory=$'present\tcustom/usenet_health.sh\npresent\tcustom/ouro-events/bootstrap-spool.sh\npresent\tcustom/ouro-events/emit-event.mjs\npresent\tcustom/ouro-events/emit-usenet-event.sh\npresent\tcustom/ouro-events/install-usenet-guard.sh\npresent\tgo.butler-lines\npresent\tcrontab.butler-lines\npresent\tglobal-state'
   [ -d "$RESTORE_ROOT" ] && [ ! -L "$RESTORE_ROOT" ] || return 1
   [ -f "$RESTORE_ROOT/inventory" ] && [ ! -L "$RESTORE_ROOT/inventory" ] || return 1
@@ -244,7 +283,7 @@ restore_snapshot() {
     index=$((index + 1))
   done < "$RESTORE_ROOT/global-state"
   [ "$index" -eq 2 ] || return 1
-  awk '$0 != "/boot/config/custom/ouro-events/bootstrap-spool.sh --mount" && $0 != "/bin/bash /boot/config/custom/ouro-events/bootstrap-spool.sh --mount" && $0 !~ /^\/bin\/bash \/boot\/config\/custom\/ouro-events\/install-usenet-guard\.sh --boot([[:space:]]|$)/ { exit 1 }' "$RESTORE_ROOT/go.butler-lines" || return 1
+  while IFS= read -r source || [ -n "$source" ]; do is_canonical_butler_go_hook "$source" || return 1; done < "$RESTORE_ROOT/go.butler-lines"
   awk 'index($0, "# ouro:usenet-health") == 0 && $0 != "*/15 * * * * /bin/bash /boot/config/custom/usenet_health.sh" { exit 1 }' "$RESTORE_ROOT/crontab.butler-lines" || return 1
 
   stage="$(/usr/bin/mktemp -d "$INSTALL_ROOT/.ouro-usenet-restore.XXXXXX")"
@@ -311,9 +350,11 @@ restore_snapshot() {
   fi
   set -e
   if [ "$status" -ne 0 ]; then
-    for index in "${!TARGET_PATHS[@]}"; do restore_target "${TARGET_PATHS[$index]}" "$backup/asset-$index"; done
-    restore_target "$GO_FILE" "$backup/go"
-    if [ -n "$CRONTAB_FILE" ]; then restore_target "$CRONTAB_FILE" "$backup/cron"; elif [ "$SYSTEM_CRON_PRESENT" = true ]; then crontab "$backup/cron"; else crontab -r >/dev/null 2>&1 || true; fi
+    set +e
+    rollback_host_state "$backup"
+    rollback_status=$?
+    set -e
+    if [ "$rollback_status" -ne 0 ]; then return "$rollback_status"; fi
     return "$status"
   fi
   cleanup

@@ -519,6 +519,23 @@ if assert_restore_preflight; then command printf 'MUTATION\n'; else exit $?; fi`
     fs.rmSync(testRoot, { recursive: true, force: true })
   })
 
+  it("snapshots only exact complete canonical Butler go hooks", () => {
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const classifier = extractRunbookFunction(runbook, "snapshot_butler_go_fragments")
+    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-go-fragments-"))
+    const source = path.join(testRoot, "go")
+    const target = path.join(testRoot, "fragments")
+    const canonical = "/bin/bash /boot/config/custom/ouro-events/install-usenet-guard.sh --boot"
+    const unrelated = "/bin/bash /opt/team/ouro-events/install-usenet-guard.sh --boot"
+    const malicious = `${canonical} --token stolen-secret`
+    fs.writeFileSync(source, `#!/bin/bash\n${canonical}\n${unrelated}\n${malicious}\n`, { mode: 0o700 })
+
+    const result = runConditionalHelper(`${classifier}\nsnapshot_butler_go_fragments "$SOURCE" "$TARGET"`, "unused", { SOURCE: source, TARGET: target })
+    expect(result.status, result.stderr).toBe(0)
+    expect(fs.readFileSync(target, "utf8")).toBe(`${canonical}\n`)
+    fs.rmSync(testRoot, { recursive: true, force: true })
+  })
+
   it("preserves legacy evidence while promoting a fresh canonical staging poller", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     const imageValidator = extractRunbookFunction(runbook, "validate_exact_image_id")

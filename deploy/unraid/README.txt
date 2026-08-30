@@ -1691,13 +1691,26 @@ Backup:
         END { exit found ? 0 : 1 }
       ' "$1"
     }
+    snapshot_butler_go_fragments() {
+      BACKUP_GO_SOURCE=$1
+      BACKUP_GO_TARGET=$2
+      : >"$BACKUP_GO_TARGET" || return $?
+      while IFS= read -r BACKUP_GO_LINE || test -n "$BACKUP_GO_LINE"; do
+        case "$BACKUP_GO_LINE" in
+          "/boot/config/custom/ouro-events/bootstrap-spool.sh --mount"|"/bin/bash /boot/config/custom/ouro-events/bootstrap-spool.sh --mount"|"/bin/bash /boot/config/custom/ouro-events/install-usenet-guard.sh --boot"|"/bin/bash /boot/config/custom/ouro-events/install-usenet-guard.sh --boot --install-root /boot/config/custom")
+            printf '%s\n' "$BACKUP_GO_LINE" >>"$BACKUP_GO_TARGET" || return $?
+            ;;
+        esac
+      done <"$BACKUP_GO_SOURCE"
+    }
     snapshot_butler_host_fragments() {
       BACKUP_CRON_SOURCE=$(mktemp /tmp/ouro-backup-crontab.XXXXXX) || return $?
-      trap 'rm -f -- "$BACKUP_CRON_SOURCE"' RETURN
+      BACKUP_CRON_ERROR=$BACKUP_CRON_SOURCE.error
+      trap 'rm -f -- "$BACKUP_CRON_SOURCE" "$BACKUP_CRON_ERROR"' RETURN
       if test -f /boot/config/go && test ! -L /boot/config/go; then
         BACKUP_GO_STATE=present
         BACKUP_GO_DIGEST=$(sha256sum /boot/config/go | awk '{print $1}') || return $?
-        awk '$0 == "/boot/config/custom/ouro-events/bootstrap-spool.sh --mount" || $0 == "/bin/bash /boot/config/custom/ouro-events/bootstrap-spool.sh --mount" || $0 ~ /^\/bin\/bash \/boot\/config\/custom\/ouro-events\/install-usenet-guard\.sh --boot([[:space:]]|$)/' /boot/config/go >"$BACKUP_TMP/host/go.butler-lines" || return $?
+        snapshot_butler_go_fragments /boot/config/go "$BACKUP_TMP/host/go.butler-lines" || return $?
       elif test -e /boot/config/go || test -L /boot/config/go; then
         return 1
       else
@@ -1705,14 +1718,21 @@ Backup:
         BACKUP_GO_DIGEST=-
         : >"$BACKUP_TMP/host/go.butler-lines" || return $?
       fi
-      if crontab -l >"$BACKUP_CRON_SOURCE" 2>/dev/null; then
+      BACKUP_CRON_USER=$(id -un) || return $?
+      if crontab -l >"$BACKUP_CRON_SOURCE" 2>"$BACKUP_CRON_ERROR"; then
         BACKUP_CRON_STATE=present
         BACKUP_CRON_DIGEST=$(sha256sum "$BACKUP_CRON_SOURCE" | awk '{print $1}') || return $?
       else
-        BACKUP_CRON_STATE=absent
-        BACKUP_CRON_DIGEST=-
-        : >"$BACKUP_CRON_SOURCE" || return $?
+        BACKUP_CRON_STATUS=$?
+        if test "$BACKUP_CRON_STATUS" -eq 1 && grep -Fxq "no crontab for $BACKUP_CRON_USER" "$BACKUP_CRON_ERROR"; then
+          BACKUP_CRON_STATE=absent
+          BACKUP_CRON_DIGEST=-
+          : >"$BACKUP_CRON_SOURCE" || return $?
+        else
+          return "$BACKUP_CRON_STATUS"
+        fi
       fi
+      rm -f -- "$BACKUP_CRON_ERROR" || return $?
       awk 'index($0, "# ouro:usenet-health") || $0 == "*/15 * * * * /bin/bash /boot/config/custom/usenet_health.sh"' "$BACKUP_CRON_SOURCE" >"$BACKUP_TMP/host/crontab.butler-lines" || return $?
       BACKUP_GO_COUNT=$(awk 'END { print NR + 0 }' "$BACKUP_TMP/host/go.butler-lines") || return $?
       BACKUP_CRON_COUNT=$(awk 'END { print NR + 0 }' "$BACKUP_TMP/host/crontab.butler-lines") || return $?

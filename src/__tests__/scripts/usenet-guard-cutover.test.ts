@@ -37,6 +37,15 @@ function transactionResidue(directory: string): string[] {
   return fs.readdirSync(directory, { recursive: true }).map(String).filter((name) => name.includes(".ouro-next.") || name.includes(".ouro-usenet-stage.") || name.includes(".ouro-usenet-restore."))
 }
 
+function installerFunction(name: string): string {
+  const source = fs.readFileSync(installerPath, "utf8")
+  const start = source.indexOf(`${name}() {`)
+  expect(start).toBeGreaterThan(-1)
+  const end = source.indexOf("\n}\n", start)
+  expect(end).toBeGreaterThan(start)
+  return source.slice(start, end + 2)
+}
+
 const hostAssetRelatives = ["custom/usenet_health.sh", "custom/ouro-events/bootstrap-spool.sh", "custom/ouro-events/emit-event.mjs", "custom/ouro-events/emit-usenet-event.sh", "custom/ouro-events/install-usenet-guard.sh"]
 const hostSnapshotRelatives = [...hostAssetRelatives, "go.butler-lines", "crontab.butler-lines", "global-state"]
 
@@ -546,7 +555,7 @@ esac
     fs.writeFileSync(path.join(bin, "crontab"), `#!/bin/bash
 printf '%s\n' "$*" >> ${JSON.stringify(cronCalls)}
 case "$1" in
-  -l) [ -f ${JSON.stringify(cronState)} ] || exit 1; cat ${JSON.stringify(cronState)} ;;
+  -l) [ -f ${JSON.stringify(cronState)} ] || { echo "no crontab for $(id -un)" >&2; exit 1; }; cat ${JSON.stringify(cronState)} ;;
   -r) rm -f ${JSON.stringify(cronState)} ;;
   *) cp "$1" ${JSON.stringify(cronState)}; grep -q '# ouro:usenet-health' "$1" && exit 75 ;;
 esac
@@ -611,16 +620,67 @@ exec /usr/bin/install "$@"
     const crontabFile = path.join(temp, "crontab")
     const snapshot = hostSnapshot(temp)
     fs.mkdirSync(path.join(installRoot, "ouro-events"), { recursive: true })
-    fs.writeFileSync(goFile, "#!/bin/bash\ncurrent-go\n")
+    const unrelatedHook = "/bin/bash /opt/team/ouro-events/install-usenet-guard.sh --boot"
+    fs.writeFileSync(goFile, `#!/bin/bash\n${unrelatedHook}\ncurrent-go\n`)
     fs.writeFileSync(crontabFile, "current-cron # ouro:usenet-health\nunrelated-cron\n")
 
     for (let index = 0; index < 2; index += 1) execFileSync(installerPath, ["--restore-root", snapshot, "--install-root", installRoot, "--go-file", goFile, "--crontab-file", crontabFile])
 
-    expect(fs.readFileSync(goFile, "utf8")).toBe("#!/bin/bash\n/bin/bash /boot/config/custom/ouro-events/install-usenet-guard.sh --boot\ncurrent-go\n")
+    expect(fs.readFileSync(goFile, "utf8")).toBe(`#!/bin/bash\n/bin/bash /boot/config/custom/ouro-events/install-usenet-guard.sh --boot\n${unrelatedHook}\ncurrent-go\n`)
     expect(fs.readFileSync(crontabFile, "utf8")).toBe("unrelated-cron\n*/15 * * * * /bin/bash /boot/config/custom/usenet_health.sh\n")
     expect(fs.readFileSync(path.join(installRoot, "usenet_health.sh"), "utf8")).toBe("snapshot:custom/usenet_health.sh\n")
     expect(fs.readFileSync(path.join(installRoot, "ouro-events", "install-usenet-guard.sh"), "utf8")).toBe("snapshot:custom/ouro-events/install-usenet-guard.sh\n")
     expect(transactionResidue(installRoot)).toEqual([])
+  })
+
+  it("rejects a captured boot hook with any argument or shell-command suffix before mutation", () => {
+    const temp = root()
+    const installRoot = path.join(temp, "custom")
+    const goFile = path.join(temp, "go")
+    const crontabFile = path.join(temp, "crontab")
+    const snapshot = hostSnapshot(temp)
+    const malicious = "/bin/bash /boot/config/custom/ouro-events/install-usenet-guard.sh --boot --token stolen-secret"
+    fs.writeFileSync(path.join(snapshot, "go.butler-lines"), `${malicious}\n`, { mode: 0o600 })
+    fs.mkdirSync(installRoot, { recursive: true })
+    fs.writeFileSync(goFile, "original-go\n")
+    fs.writeFileSync(crontabFile, "original-cron\n")
+
+    expect(() => execFileSync(installerPath, ["--restore-root", snapshot, "--install-root", installRoot, "--go-file", goFile, "--crontab-file", crontabFile], { stdio: "ignore" })).toThrow()
+    expect(fs.readFileSync(goFile, "utf8")).toBe("original-go\n")
+    expect(fs.readFileSync(crontabFile, "utf8")).toBe("original-cron\n")
+    expect(fs.existsSync(path.join(installRoot, "usenet_health.sh"))).toBe(false)
+  })
+
+  it("fails closed when system crontab cannot be read for an operational reason", () => {
+    const temp = root()
+    const installRoot = path.join(temp, "custom")
+    const goFile = path.join(temp, "go")
+    const lifecycleLog = path.join(temp, "lifecycle.log")
+    const source = transactionalSource(temp, path.join(temp, "unused-cron"), lifecycleLog)
+    const bin = path.join(temp, "bin")
+    fs.mkdirSync(bin)
+    fs.writeFileSync(path.join(bin, "crontab"), "#!/bin/bash\necho 'permission denied' >&2\nexit 2\n", { mode: 0o700 })
+    fs.writeFileSync(goFile, "original-go\n", { mode: 0o700 })
+
+    expect(() => execFileSync(installerPath, ["--install-only", "--source-root", source, "--install-root", installRoot, "--go-file", goFile], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` }, stdio: "ignore" })).toThrow()
+    expect(fs.readFileSync(goFile, "utf8")).toBe("original-go\n")
+    expect(fs.existsSync(path.join(installRoot, "usenet_health.sh"))).toBe(false)
+  })
+
+  it("attempts every host compensation and surfaces rollback failure", () => {
+    const helper = installerFunction("rollback_host_state")
+    const temp = root()
+    const log = path.join(temp, "attempts")
+    const script = `${helper}
+TARGET_PATHS=(asset-0 asset-1)
+GO_FILE=go
+CRONTAB_FILE=cron
+restore_target() { printf '%s\n' "$1" >> "$LOG"; case "$1" in asset-0|go) return 41 ;; esac; }
+rollback_host_state backup
+exit $?
+`
+    expect(() => execFileSync("/bin/bash", ["-c", script], { env: { ...process.env, LOG: log }, stdio: "ignore" })).toThrow()
+    expect(fs.readFileSync(log, "utf8")).toBe("asset-0\nasset-1\ngo\ncron\n")
   })
 
   it("rolls the complete live host allowlist back when snapshot activation fails", () => {
