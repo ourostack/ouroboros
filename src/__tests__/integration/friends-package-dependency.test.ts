@@ -60,7 +60,7 @@ describe("friend flow through the @ouro.bot/friends dependency", () => {
       readFileSync(join(process.cwd(), "node_modules", "@ouro.bot", "friends", "package.json"), "utf8"),
     ) as { version: string }
 
-    expect(packageJson.version).toBe("0.1.0-alpha.9")
+    expect(packageJson.version).toBe("0.1.0-alpha.10")
     expect(getChannelCapabilities("telegram")).toMatchObject({
       channel: "telegram",
       senseType: "open",
