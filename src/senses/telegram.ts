@@ -52,6 +52,7 @@ import { getExternalEventRoot, type PrivilegedProtectiveAction } from "../heart/
 import { withSessionTurnLease } from "../mind/session-transaction"
 import { cancelRelationshipFollowUps, hasActiveRelationshipFollowUp, resetAwaitToolDeps, setAwaitToolDeps } from "../repertoire/tools-awaiting"
 import { findPendingObligationForRequest, fulfillObligation } from "../arc/obligations"
+import { buildOrientationFrame } from "../heart/orientation-frame"
 import { getPrivateRuntimePendingDir, queuePendingMessage } from "../mind/pending"
 import type { CrossChatDeliveryRequest, CrossChatDirectDeliveryResult } from "../heart/cross-chat-delivery"
 import {
@@ -67,6 +68,7 @@ import {
   type TelegramAdmissionFriendClaimResult,
   type TelegramAdmissionFriendRevocation,
   type TelegramAdmissionFriendRevocationResult,
+  type TelegramNewlyAdmittedOrientation,
 } from "./telegram-admission"
 import {
   createTelegramAuthorizedEffectExecutor,
@@ -1168,6 +1170,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     text: string
     userId: string
     chatId: string
+    orientation?: TelegramNewlyAdmittedOrientation
   }): Promise<void> => {
     const sessionPath = getSenseSessionPath(options.agentName, input.friendId, "telegram", input.sessionKey, agentRoot)
     const effects: TelegramEffectArtifact[] = []
@@ -1180,6 +1183,16 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         effect: { kind: "text", text },
       }))
     }
+    const orientationFrame = input.orientation?.kind === "newly_admitted"
+      ? {
+          ...buildOrientationFrame({ channel: "telegram", messages: [{ role: "user", content: input.text }] }),
+          source: {
+            kind: "telegram_newly_admitted",
+            authority: "presentation_only" as const,
+            routingHint: "This is this person’s first admitted turn. Welcome them warmly and briefly explain what the household Butler can help with before answering their request.",
+          },
+        }
+      : undefined
     const result = await runTurn({
       agentName: options.agentName,
       channel: "telegram",
@@ -1189,6 +1202,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       userMessage: input.text,
       ingressRelations: { replyToEventId: null, threadRootEventId: null, references: [input.reference] },
       precommittedIngress: { eventId: input.eventId, reference: input.reference },
+      ...(orientationFrame ? { orientationFrame } : {}),
       toolContext: { ...(toolContext ?? {}) },
       prepareRunAgentOptions: prepareRelationshipRunAgentOptions({ friendId: input.friendId, requestId: input.requestId,
         sessionEventId: input.eventId, userId: input.userId, chatId: input.chatId, sessionKey: input.sessionKey }),
@@ -1249,7 +1263,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         if (!event || typeof event.content !== "string") throw new Error("Telegram admitted work ingress is unavailable")
         const record = admissionStore.read(input.admissionId)
         await dispatchResolvedRelationshipTurn({ friendId: input.friendId, sessionKey: input.sessionKey, requestId: input.admissionId,
-          eventId: input.eventId, reference: input.reference, text: event.content, userId: record.userId, chatId: record.chatId })
+          eventId: input.eventId, reference: input.reference, text: event.content, userId: record.userId, chatId: record.chatId, orientation: input.orientation })
         inboxStore.completeAdmittedWork(input.admissionId)
         return "settled"
       } catch {

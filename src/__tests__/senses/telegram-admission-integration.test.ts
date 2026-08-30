@@ -101,6 +101,14 @@ describe("Telegram admission integration", () => {
         references: [expect.stringMatching(/^telegram-admission:[a-f0-9]{20}$/u)],
       },
       identity: expect.objectContaining({ provider: "telegram-user" }),
+      orientationFrame: expect.objectContaining({
+        currentUserSpeech: ["hostile https://evil.invalid"],
+        source: {
+          kind: "telegram_newly_admitted",
+          authority: "presentation_only",
+          routingHint: "This is this person’s first admitted turn. Welcome them warmly and briefly explain what the household Butler can help with before answering their request.",
+        },
+      }),
     }))
     expect(JSON.stringify(runTurn.mock.calls[0])).not.toContain("<Unknown>")
     expect(requests).toContainEqual({ method: "answerCallbackQuery", body: { callback_query_id: "callback-1" } })
@@ -108,6 +116,7 @@ describe("Telegram admission integration", () => {
     await pollOptions.onUnknownMessage!({ updateId: 13, messageId: 23, botId: "777", userId: "888", chatId: "888", text: "known household follow-up", displayLabel: "Known", hasAttachments: false })
     expect(runTurn).toHaveBeenCalledTimes(2)
     expect(runTurn.mock.calls[1]![0]).toMatchObject({ friendId: "household-friend", userMessage: "known household follow-up", precommittedIngress: { eventId: expect.any(String), reference: expect.stringMatching(/^telegram-inbound:/u) } })
+    expect(runTurn.mock.calls[1]![0]).not.toHaveProperty("orientationFrame")
     relationshipActive = false
     await expect(pollOptions.onUnknownMessage!({ updateId: 131, messageId: 231, botId: "777", userId: "888", chatId: "888", text: "revoked follow-up", displayLabel: "Known", hasAttachments: false })).rejects.toThrow("not active")
     relationshipActive = true
