@@ -471,23 +471,34 @@ Effective-spec audit helper:
         migrate_sanctuary_package_managed_bundle "$RECOVERY_IMAGE_ID" commit || return $?
         return 0
       fi
-      RECOVERY_CURRENT_ROLLBACK_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler-rollback) || return $?
-      test "$RECOVERY_CURRENT_ROLLBACK_IMAGE_ID" = "$RECOVERY_ROLLBACK_IMAGE_ID" || return 1
-      test "$(docker inspect --format '{{.State.Running}}' ouro-butler-rollback)" = false || return 1
-      if docker container inspect ouro-butler-staging >/dev/null 2>&1; then
-        RECOVERY_STAGING_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler-staging) || return $?
-        test "$RECOVERY_STAGING_IMAGE_ID" = "$RECOVERY_TARGET_IMAGE_ID" || return 1
-        docker stop ouro-butler-staging >/dev/null 2>&1 || true
-        docker rm --force ouro-butler-staging || return $?
-      fi
-      if docker container inspect ouro-butler >/dev/null 2>&1; then
+      if docker container inspect ouro-butler-rollback >/dev/null 2>&1; then
+        RECOVERY_CURRENT_ROLLBACK_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler-rollback) || return $?
+        test "$RECOVERY_CURRENT_ROLLBACK_IMAGE_ID" = "$RECOVERY_ROLLBACK_IMAGE_ID" || return 1
+        test "$(docker inspect --format '{{.State.Running}}' ouro-butler-rollback)" = false || return 1
+        if docker container inspect ouro-butler-staging >/dev/null 2>&1; then
+          RECOVERY_STAGING_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler-staging) || return $?
+          test "$RECOVERY_STAGING_IMAGE_ID" = "$RECOVERY_TARGET_IMAGE_ID" || return 1
+          docker stop ouro-butler-staging >/dev/null 2>&1 || true
+          docker rm --force ouro-butler-staging || return $?
+        fi
+        if docker container inspect ouro-butler >/dev/null 2>&1; then
+          RECOVERY_PRODUCTION_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler) || return $?
+          test "$RECOVERY_PRODUCTION_IMAGE_ID" = "$RECOVERY_TARGET_IMAGE_ID" || return 1
+          docker stop ouro-butler >/dev/null 2>&1 || true
+          docker rm --force ouro-butler || return $?
+        fi
+        migrate_sanctuary_package_managed_bundle "$RECOVERY_IMAGE_ID" rollback || return $?
+        docker rename ouro-butler-rollback ouro-butler || return $?
+      elif docker container inspect ouro-butler >/dev/null 2>&1; then
+        ! docker container inspect ouro-butler-staging >/dev/null 2>&1 || return 1
         RECOVERY_PRODUCTION_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler) || return $?
-        test "$RECOVERY_PRODUCTION_IMAGE_ID" = "$RECOVERY_TARGET_IMAGE_ID" || return 1
-        docker stop ouro-butler >/dev/null 2>&1 || true
-        docker rm --force ouro-butler || return $?
+        test "$RECOVERY_PRODUCTION_IMAGE_ID" = "$RECOVERY_ROLLBACK_IMAGE_ID" || return 1
+        ! docker container inspect ouro-butler-rollback >/dev/null 2>&1 || return 1
+      else
+        return 1
       fi
-      migrate_sanctuary_package_managed_bundle "$RECOVERY_IMAGE_ID" rollback || return $?
-      docker rename ouro-butler-rollback ouro-butler || return $?
+      RECOVERY_PRODUCTION_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler) || return $?
+      test "$RECOVERY_PRODUCTION_IMAGE_ID" = "$RECOVERY_ROLLBACK_IMAGE_ID" || return 1
       assert_update_source "$RECOVERY_ROLLBACK_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" || return $?
       docker start ouro-butler || return $?
       assert_only_running_butler ouro-butler || return $?
