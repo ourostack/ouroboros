@@ -8,11 +8,12 @@ import { runContainerSpecAuditorCli, runContainerSpecAuditorMain } from "../../.
 
 function validInspect() {
   return {
+    Image: "sha256:" + "a".repeat(64),
     Path: "node",
     Args: ["/opt/ouro/dist/heart/daemon/daemon-entry.js"],
     Config: {
       User: "10001:10001",
-      Image: "sha256:" + "a".repeat(64),
+      Image: "ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.746",
       Entrypoint: ["node", "/opt/ouro/dist/heart/daemon/daemon-entry.js"],
       Cmd: [],
       Env: ["PATH=/usr/local/bin:/usr/bin:/bin", "NODE_VERSION=22.18.0", "HOME=/home/ouro"],
@@ -26,11 +27,12 @@ function validInspect() {
       ReadonlyRootfs: false,
       SecurityOpt: null,
       RestartPolicy: { Name: "unless-stopped", MaximumRetryCount: 0 },
-      Binds: [
-        "/mnt/user/appdata/ouro-butler/runtime/.ouro-cli:/home/ouro/.ouro-cli:rw",
-        "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro:/home/ouro/AgentBundles/sanctuary.ouro:rw",
-        "/boot/config/custom/ouro-events/spool:/run/ouro-events:ro",
-        "/mnt/user/appdata/sabnzbd/sabnzbd.ini:/run/sanctuary/sabnzbd.ini:ro",
+      Binds: null,
+      Mounts: [
+        { Type: "bind", Source: "/mnt/user/appdata/ouro-butler/runtime/.ouro-cli", Target: "/home/ouro/.ouro-cli", ReadOnly: false },
+        { Type: "bind", Source: "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro", Target: "/home/ouro/AgentBundles/sanctuary.ouro", ReadOnly: false },
+        { Type: "bind", Source: "/boot/config/custom/ouro-events/spool", Target: "/run/ouro-events", ReadOnly: true },
+        { Type: "bind", Source: "/mnt/user/appdata/sabnzbd/sabnzbd.ini", Target: "/run/sanctuary/sabnzbd.ini", ReadOnly: true },
       ],
       PortBindings: {},
       Devices: [],
@@ -39,10 +41,10 @@ function validInspect() {
       PublishAllPorts: false,
     },
     Mounts: [
-      { Type: "bind", Source: "/mnt/user/appdata/ouro-butler/runtime/.ouro-cli", Destination: "/home/ouro/.ouro-cli", RW: true },
-      { Type: "bind", Source: "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro", Destination: "/home/ouro/AgentBundles/sanctuary.ouro", RW: true },
-      { Type: "bind", Source: "/boot/config/custom/ouro-events/spool", Destination: "/run/ouro-events", RW: false },
-      { Type: "bind", Source: "/mnt/user/appdata/sabnzbd/sabnzbd.ini", Destination: "/run/sanctuary/sabnzbd.ini", RW: false },
+      { Type: "bind", Source: "/mnt/user/appdata/ouro-butler/runtime/.ouro-cli", Destination: "/home/ouro/.ouro-cli", RW: true, Propagation: "rprivate" },
+      { Type: "bind", Source: "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro", Destination: "/home/ouro/AgentBundles/sanctuary.ouro", RW: true, Propagation: "rprivate" },
+      { Type: "bind", Source: "/boot/config/custom/ouro-events/spool", Destination: "/run/ouro-events", RW: false, Propagation: "rprivate" },
+      { Type: "bind", Source: "/mnt/user/appdata/sabnzbd/sabnzbd.ini", Destination: "/run/sanctuary/sabnzbd.ini", RW: false, Propagation: "rprivate" },
     ],
     NetworkSettings: { Ports: {} },
   }
@@ -99,7 +101,7 @@ describe("Sanctuary pre-activation container auditor", () => {
 
   it.each([
     ["wrong user", (spec: any) => { spec.Config.User = "root" }],
-    ["mutable image", (spec: any) => { spec.Config.Image = "ouro-butler:latest" }],
+    ["wrong resolved image", (spec: any) => { spec.Image = "sha256:" + "b".repeat(64) }],
     ["wrong entrypoint", (spec: any) => { spec.Config.Entrypoint = ["sh"] }],
     ["extra command", (spec: any) => { spec.Config.Cmd = ["sleep", "infinity"] }],
     ["effective path override", (spec: any) => { spec.Path = "sh" }],
@@ -120,10 +122,13 @@ describe("Sanctuary pre-activation container auditor", () => {
     ["dropped capability", (spec: any) => { spec.HostConfig.CapDrop = ["NET_RAW"] }],
     ["publish all ports", (spec: any) => { spec.HostConfig.PublishAllPorts = true }],
     ["effective network port", (spec: any) => { spec.NetworkSettings.Ports = { "80/tcp": [{ HostPort: "8080" }] } }],
-    ["Docker socket", (spec: any) => { spec.HostConfig.Binds.push("/var/run/docker.sock:/var/run/docker.sock:rw") }],
-    ["host root", (spec: any) => { spec.HostConfig.Binds.push("/:/host:ro") }],
-    ["missing bind", (spec: any) => { spec.HostConfig.Binds.pop(); spec.Mounts.pop() }],
+    ["Docker socket", (spec: any) => { spec.Mounts.push({ Type: "bind", Source: "/var/run/docker.sock", Destination: "/var/run/docker.sock", RW: true, Propagation: "rprivate" }) }],
+    ["host root", (spec: any) => { spec.Mounts.push({ Type: "bind", Source: "/", Destination: "/host", RW: false, Propagation: "rprivate" }) }],
+    ["missing bind", (spec: any) => { spec.HostConfig.Mounts.pop(); spec.Mounts.pop() }],
     ["read-only bind", (spec: any) => { spec.Mounts[0].RW = false }],
+    ["shared bind propagation", (spec: any) => { spec.Mounts[0].Propagation = "rshared" }],
+    ["slave bind propagation", (spec: any) => { spec.Mounts[0].Propagation = "rslave" }],
+    ["missing bind propagation", (spec: any) => { delete spec.Mounts[0].Propagation }],
   ])("rejects %s", (_label, mutate) => {
     const spec = validInspect()
     mutate(spec)
@@ -135,8 +140,13 @@ describe("Sanctuary pre-activation container auditor", () => {
   it("allows only the pinned alpha.742 mount exception while retaining every other invariant", () => {
     const legacyImage = "sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d"
     const legacy = validInspect()
-    legacy.Config.Image = legacyImage
-    legacy.HostConfig.Binds.splice(2)
+    legacy.Image = legacyImage
+    legacy.Config.Image = "ouro-butler:0.1.0-alpha.742-amd64"
+    legacy.HostConfig.Binds = [
+      "/mnt/user/appdata/ouro-butler/runtime/.ouro-cli:/home/ouro/.ouro-cli",
+      "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro:/home/ouro/AgentBundles/sanctuary.ouro",
+    ]
+    legacy.HostConfig.Mounts = null
     legacy.Mounts.splice(2)
     expect(auditSanctuaryContainerSpec(legacy, {
       expectedImage: legacyImage,
@@ -145,7 +155,7 @@ describe("Sanctuary pre-activation container auditor", () => {
     })).toEqual({ ok: true, violations: [] })
 
     const wrongImage = structuredClone(legacy)
-    wrongImage.Config.Image = "sha256:" + "b".repeat(64)
+    wrongImage.Image = "sha256:" + "b".repeat(64)
     expect(auditSanctuaryContainerSpec(wrongImage, {
       expectedImage: "sha256:" + "b".repeat(64),
       expectedEnvironment,
@@ -157,7 +167,7 @@ describe("Sanctuary pre-activation container auditor", () => {
       (spec: any) => { spec.Config.Env.push("INJECTED=yes") },
       (spec: any) => { spec.HostConfig.PidMode = "host" },
       (spec: any) => { spec.HostConfig.SecurityOpt = ["seccomp=unconfined"] },
-      (spec: any) => { spec.HostConfig.Binds.push("/var/run/docker.sock:/var/run/docker.sock:rw") },
+      (spec: any) => { spec.Mounts.push({ Type: "bind", Source: "/var/run/docker.sock", Destination: "/var/run/docker.sock", RW: true, Propagation: "rprivate" }) },
     ]) {
       const changed = structuredClone(legacy)
       mutate(changed)
@@ -172,7 +182,7 @@ describe("Sanctuary pre-activation container auditor", () => {
   it("fails closed across malformed optional inspect fields", () => {
     const mutations: Array<(spec: any) => void> = [
       (spec) => { spec.Config.Env = ["HOME=/home/ouro", 7] },
-      (spec) => { spec.HostConfig.Binds = [7] },
+      (spec) => { spec.Mounts = [7] },
       (spec) => { spec.Mounts = "not-an-array" },
       (spec) => { spec.Mounts[0] = null },
       (spec) => { spec.Config.ExposedPorts = [] },
@@ -196,7 +206,7 @@ describe("Sanctuary pre-activation container auditor", () => {
     "sha256:" + "a".repeat(63),
   ])("rejects non-local or malformed expected image identity: %s", (expectedImage) => {
     const spec = validInspect()
-    spec.Config.Image = expectedImage
+    spec.Image = expectedImage
 
     expect(auditSanctuaryContainerSpec(spec, { expectedImage, expectedEnvironment })).toEqual(expect.objectContaining({
       ok: false,
@@ -206,7 +216,7 @@ describe("Sanctuary pre-activation container auditor", () => {
 
   it("rejects an effective image that differs from the reviewed local image ID", () => {
     const spec = validInspect()
-    spec.Config.Image = "sha256:" + "b".repeat(64)
+    spec.Image = "sha256:" + "b".repeat(64)
 
     expect(auditSanctuaryContainerSpec(spec, { expectedImage: "sha256:" + "a".repeat(64), expectedEnvironment })).toEqual(expect.objectContaining({
       ok: false,
@@ -263,8 +273,13 @@ describe("Sanctuary pre-activation container auditor", () => {
   it("exposes the pinned alpha.742 exception only through an explicit effective mount contract", () => {
     const legacyImage = "sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d"
     const container = validInspect()
-    container.Config.Image = legacyImage
-    container.HostConfig.Binds.splice(2)
+    container.Image = legacyImage
+    container.Config.Image = "ouro-butler:0.1.0-alpha.742-amd64"
+    container.HostConfig.Binds = [
+      "/mnt/user/appdata/ouro-butler/runtime/.ouro-cli:/home/ouro/.ouro-cli",
+      "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro:/home/ouro/AgentBundles/sanctuary.ouro",
+    ]
+    container.HostConfig.Mounts = null
     container.Mounts.splice(2)
     const image = validImageInspect()
     image.Id = legacyImage

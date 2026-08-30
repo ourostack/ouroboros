@@ -132,6 +132,82 @@ jobs:
             const shrinkwrap = require("/opt/ouro/npm-shrinkwrap.json")
             if (packageVersion !== expected || shrinkwrap.version !== expected || shrinkwrap.packages[""].version !== expected) process.exit(1)
           ' "$PACKAGE_VERSION"
+          AUDIT_PERMISSION_ROOT="$PACKAGE_ROOT/audit-permissions"
+          mkdir "$AUDIT_PERMISSION_ROOT"
+          chmod 0700 "$AUDIT_PERMISSION_ROOT"
+          umask 077
+          AUDIT_IMAGE_ID="$(docker image inspect --format '{{.Id}}' ouro-butler-package-smoke:"$PACKAGE_VERSION")"
+          for AUDIT_SOURCE in \
+            /mnt/user/appdata/ouro-butler/runtime/.ouro-cli \
+            /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro \
+            /boot/config/custom/ouro-events/spool \
+            /mnt/user/appdata/sabnzbd/sabnzbd.ini; do
+            test ! -e "$AUDIT_SOURCE"
+          done
+          sudo mkdir -p \
+            /mnt/user/appdata/ouro-butler/runtime/.ouro-cli \
+            /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro \
+            /boot/config/custom/ouro-events/spool \
+            /mnt/user/appdata/sabnzbd
+          sudo touch /mnt/user/appdata/sabnzbd/sabnzbd.ini
+          trap 'docker rm -f ouro-butler-package-audit-canonical >/dev/null 2>&1 || true; sudo rm -rf -- /mnt/user/appdata/ouro-butler/runtime/.ouro-cli /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro /boot/config/custom/ouro-events/spool /mnt/user/appdata/sabnzbd/sabnzbd.ini; rm -rf "$PACKAGE_ROOT"' EXIT
+          docker create --name ouro-butler-package-audit-canonical --network host --restart unless-stopped --user 10001:10001 \
+            --mount type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli \
+            --mount type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro \
+            --mount type=bind,src=/boot/config/custom/ouro-events/spool,dst=/run/ouro-events,readonly \
+            --mount type=bind,src=/mnt/user/appdata/sabnzbd/sabnzbd.ini,dst=/run/sanctuary/sabnzbd.ini,readonly \
+            ouro-butler-package-smoke:"$PACKAGE_VERSION"
+          docker inspect ouro-butler-package-audit-canonical >"$AUDIT_PERMISSION_ROOT/container.json"
+          docker image inspect "$AUDIT_IMAGE_ID" >"$AUDIT_PERMISSION_ROOT/image.json"
+          cp "$PACKAGE_ROOT/package/deploy/unraid/container-runtime.json" "$AUDIT_PERMISSION_ROOT/container-runtime.json"
+          node - "$PACKAGE_ROOT/package/deploy/unraid/sanctuary.xml" "$AUDIT_PERMISSION_ROOT/sanctuary.xml" "$AUDIT_IMAGE_ID" <<'NODE'
+          const fs = require('fs')
+          const [source, destination, imageId] = process.argv.slice(2)
+          const template = fs.readFileSync(source, 'utf8')
+          const updated = template.replace(/<Repository>[^<]+<\/Repository>/u, `<Repository>${imageId}</Repository>`)
+          if (updated === template) throw new Error('staged template Repository was not replaced')
+          fs.writeFileSync(destination, updated)
+          NODE
+          chmod 0600 "$AUDIT_PERMISSION_ROOT"/*.json "$AUDIT_PERMISSION_ROOT/sanctuary.xml"
+          sudo chown root:root "$AUDIT_PERMISSION_ROOT"/*
+          if docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+            --mount "type=bind,src=$AUDIT_PERMISSION_ROOT/container.json,dst=/audit/container.json,readonly" \
+            --entrypoint /bin/cat ouro-butler-package-smoke:"$PACKAGE_VERSION" /audit/container.json >/dev/null 2>&1; then
+            echo "default image UID unexpectedly read the root-private audit input" >&2
+            exit 1
+          fi
+          set +e
+          EFFECTIVE_RESULT=$(docker run --rm --network none --user 0:0 --read-only --cap-drop ALL --security-opt no-new-privileges \
+            --entrypoint /opt/ouro/deploy/unraid/audit-container-spec.sh \
+            --mount "type=bind,src=$AUDIT_PERMISSION_ROOT/container.json,dst=/audit/container.json,readonly" \
+            --mount "type=bind,src=$AUDIT_PERMISSION_ROOT/image.json,dst=/audit/image.json,readonly" \
+            ouro-butler-package-smoke:"$PACKAGE_VERSION" \
+            --inspect /audit/container.json --image-inspect /audit/image.json --expected-image "$AUDIT_IMAGE_ID" \
+            2>&1)
+          AUDIT_STATUS=$?
+          set -e
+          test "$AUDIT_STATUS" = 0
+          printf '%s\n' "$EFFECTIVE_RESULT" | grep -F '"ok":true'
+          if printf '%s\n' "$EFFECTIVE_RESULT" | grep -F "inputs are unreadable"; then
+            echo "constrained root could not read effective audit inputs" >&2
+            exit 1
+          fi
+          set +e
+          STAGED_RESULT=$(docker run --rm --network none --user 0:0 --read-only --cap-drop ALL --security-opt no-new-privileges \
+            --entrypoint /opt/ouro/deploy/unraid/audit-container-spec.sh \
+            --mount "type=bind,src=$AUDIT_PERMISSION_ROOT/sanctuary.xml,dst=/audit/sanctuary.xml,readonly" \
+            --mount "type=bind,src=$AUDIT_PERMISSION_ROOT/container-runtime.json,dst=/audit/container-runtime.json,readonly" \
+            ouro-butler-package-smoke:"$PACKAGE_VERSION" \
+            --template /audit/sanctuary.xml --runtime-policy /audit/container-runtime.json --expected-image "$AUDIT_IMAGE_ID" \
+            2>&1)
+          STAGED_AUDIT_STATUS=$?
+          set -e
+          test "$STAGED_AUDIT_STATUS" = 0
+          printf '%s\n' "$STAGED_RESULT" | grep -F '"ok":true'
+          if printf '%s\n' "$STAGED_RESULT" | grep -F "inputs are unreadable"; then
+            echo "constrained root could not read staged audit inputs" >&2
+            exit 1
+          fi
 
   publish:
     needs:
