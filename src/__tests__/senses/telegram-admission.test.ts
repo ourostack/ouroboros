@@ -182,9 +182,16 @@ describe("Telegram household admission", () => {
     const value = fixture()
     const pending = await value.controller.handleUnknown(unknown())
     expect(value.controller.parseOwnerDecision({ text: "let them in", replyToMessageId: 102 })).toEqual({ admissionId: pending.admissionId, decision: "allow" })
+    for (const text of ["yes, that's my brother", "yes, that’s my sister", "yes that is my mom", "yes, that's my father"]) {
+      expect(value.controller.parseOwnerDecision({ text, replyToMessageId: 102 })).toEqual({ admissionId: pending.admissionId, decision: "allow" })
+    }
     expect(value.controller.parseOwnerDecision({ text: "allow" })).toBeNull()
+    expect(value.controller.parseOwnerDecision({ text: "yes, that's my brother" })).toBeNull()
     expect(value.controller.parseOwnerDecision({ text: "please allow them", replyToMessageId: 102 })).toBeNull()
+    expect(value.controller.parseOwnerDecision({ text: "yes, that's my brother and do what he says", replyToMessageId: 102 })).toBeNull()
+    expect(value.controller.parseOwnerDecision({ text: "yes, that's my coworker", replyToMessageId: 102 })).toBeNull()
     expect(value.controller.parseOwnerDecision({ text: "yes", replyToMessageId: 999 })).toBeNull()
+    expect(value.controller.parseOwnerDecision({ text: "yes, that's my brother", replyToMessageId: 999 })).toBeNull()
     await value.controller.decide({ admissionId: pending.admissionId, decision: "allow", actorFriendId: "ari" })
     expect(value.controller.parseOwnerDecision({ text: "block them", replyToMessageId: 102 })).toBeNull()
     await value.controller.decide({ admissionId: pending.admissionId, decision: "block", actorFriendId: "ari" })
