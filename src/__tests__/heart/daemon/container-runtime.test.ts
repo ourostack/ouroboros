@@ -2415,7 +2415,7 @@ recover_test`
     expect(restoreRunbook.indexOf("enable_butler_autostart")).toBeGreaterThan(restoreRunbook.indexOf("wait_butler_ready ouro-butler"))
     expect(auditor).toContain("exec node /opt/ouro/dist/heart/daemon/container-spec-auditor-main.js")
     expect(agent.habitPaidTurnsPerDay).toBe(24)
-    expect(meta).toMatchObject({ runtimeVersion: "0.1.0-alpha.743", bundleSchemaVersion: 3 })
+    expect(meta).toMatchObject({ runtimeVersion: "0.1.0-alpha.744", bundleSchemaVersion: 3 })
     expect(fs.existsSync("deploy/unraid/sanctuary.ouro/arc/README.md")).toBe(true)
     expect(fs.existsSync("deploy/unraid/sanctuary.ouro/tool-profiles.json")).toBe(true)
     expect(dockerfile).toContain("COPY deploy/unraid /opt/ouro/deploy/unraid")
