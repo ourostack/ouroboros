@@ -33,6 +33,7 @@ const mockBuildHabitTurnMessage = vi.fn(() => "habit turn message")
 const mockReadHealth = vi.fn(() => null)
 const mockGetDefaultHealthPath = vi.fn(() => "/tmp/fake-health-path/daemon-health.json")
 const mockGetToolsForChannel = vi.fn()
+const mockSendTelegramExternalEventDecision = vi.hoisted(() => vi.fn())
 
 vi.mock("../../mind/prompt", () => ({
   buildSystem: (...args: any[]) => mockBuildSystem(...args),
@@ -131,6 +132,10 @@ vi.mock("../../heart/daemon/daemon-health", () => ({
 
 vi.mock("../../repertoire/tools", () => ({
   getToolsForChannel: (...args: any[]) => mockGetToolsForChannel(...args),
+}))
+
+vi.mock("../../senses/telegram", () => ({
+  sendTelegramExternalEventDecision: (...args: any[]) => mockSendTelegramExternalEventDecision(...args),
 }))
 
 import {
@@ -247,6 +252,7 @@ describe("private runtime", () => {
       { type: "function", function: { name: "shell", description: "Run a shell command", parameters: {} } },
       { type: "function", function: { name: "diary_write", description: "Write to diary", parameters: {} } },
     ])
+    mockSendTelegramExternalEventDecision.mockReset().mockResolvedValue(undefined)
 
     // Default handleInboundTurn: simulate pipeline running agent and returning result.
     mockHandleInboundTurn.mockReset().mockImplementation(async (input: any) => {
@@ -4480,6 +4486,33 @@ describe("private runtime", () => {
     await expect(toolContext.relationshipAuthorization.authorizeTool("external_event_disposition", {})).resolves.toMatchObject({ allowed: true, profileId: "sanctuary-event", profileVersion: 2 })
     await friendStore.put("owner", { ...(await friendStore.get("owner"))!, admissionState: "revoked", updatedAt: "2026-08-29T00:01:00.000Z" })
     await expect(toolContext.relationshipAuthorization.authorizeTool("external_event_disposition", {})).resolves.toMatchObject({ allowed: false, reason: expect.stringContaining("admission") })
+  })
+
+  it("wires the sole external-event owner delivery port without advertising send_message", async () => {
+    fs.writeFileSync(path.join(agentRoot, "tool-profiles.json"), JSON.stringify({
+      version: 2,
+      profiles: {
+        "sanctuary-owner": { version: 3, contextScopes: ["household.status"], toolNames: ["external_event_disposition"], effectScopes: ["telegram.owner_event"] },
+        "sanctuary-event": { version: 2, contextScopes: ["household.status"], toolNames: ["external_event_disposition"], effectScopes: ["telegram.owner_event"] },
+      },
+    }))
+    const friendStore = new FileFriendStore(path.join(agentRoot, "friends"))
+    await friendStore.put("owner", { id: "owner", name: "Owner", trustLevel: "family", admissionState: "active", initiativePolicy: "proactive", capabilityProfileId: "sanctuary-owner", externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: "2026-08-29T00:00:00.000Z", updatedAt: "2026-08-29T00:00:00.000Z", schemaVersion: 1 })
+    mockGetToolsForChannel.mockReturnValue([
+      { type: "function", function: { name: "external_event_disposition", description: "dispose", parameters: {} } },
+      { type: "function", function: { name: "send_message", description: "send", parameters: {} } },
+    ])
+
+    await runApprovedPrivateRuntimeTurn({
+      reason: "instinct",
+      externalEvent: { schemaVersion: 1, recordPath: "/events/test-agent/guard/books.json", agent: "test-agent", source: "guard", eventId: "books", generation: 2, observationRevision: "rev-2", claimOwner: "lease-2" },
+    })
+
+    const runOptions = mockHandleInboundTurn.mock.calls[0][0].runAgentOptions
+    expect(runOptions.tools.map((tool: any) => tool.function.name)).toEqual(["external_event_disposition"])
+    await runOptions.toolContext.externalEventEffects.deliverOwnerDecision({ source: "guard", eventId: "books", generation: 2, text: "Books needs attention." })
+    expect(mockSendTelegramExternalEventDecision).toHaveBeenCalledOnce()
+    expect(mockSendTelegramExternalEventDecision).toHaveBeenCalledWith("test-agent", { source: "guard", eventId: "books", generation: 2, text: "Books needs attention." })
   })
 
   it("emits habit.tools_unrestricted nerves event when habit has no tools field", async () => {

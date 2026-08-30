@@ -1333,6 +1333,7 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
           friendStore: externalEventRelationship!.store,
           relationshipAuthorization: externalEventRelationship!.relationshipAuthorization,
           externalEventAuthority: externalEventRelationship!.externalEventAuthority,
+          externalEventEffects: externalEventRelationship!.externalEventEffects,
           ...(options.externalEvent.source === "sanctuary-health" ? createSanctuaryToolContext(agentName) : {}),
         } : {}),
         ...(options?.noSend ? { noSend: true } : {}),
