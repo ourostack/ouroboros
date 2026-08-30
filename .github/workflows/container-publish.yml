@@ -113,7 +113,9 @@ jobs:
               const attestations = JSON.parse(fs.readFileSync(0, "utf8"));
               for (const platform of ["linux/amd64", "linux/arm64"]) {
                 const slsa = attestations[platform]?.SLSA;
-                if (!slsa?.builder || !slsa?.invocation || !slsa?.metadata) process.exit(1);
+                if (typeof slsa?.buildDefinition?.buildType !== "string" || slsa.buildDefinition.buildType.length === 0) process.exit(1);
+                if (typeof slsa?.runDetails?.builder?.id !== "string" || slsa.runDetails.builder.id.length === 0) process.exit(1);
+                if (!slsa?.runDetails?.metadata || typeof slsa.runDetails.metadata !== "object") process.exit(1);
               }
             '
             printf '%s' "$SBOM" | node -e '
