@@ -30,7 +30,9 @@ describe("Mendelow Cloud Butler Community Apps release", () => {
   it("publishes one complete versioned Community Apps template", () => {
     const template = fs.readFileSync("deploy/unraid/sanctuary.xml", "utf8")
 
-    expect(template).toContain("<Name>ouro-butler</Name>")
+    expect(template).toContain("<Name>Mendelow Cloud Butler</Name>")
+    expect(template).toContain("<Category>Tools:Utilities</Category>")
+    expect(template).toContain("<Beta>true</Beta>")
     expect(template).toContain("<Overview>Mendelow Cloud Butler")
     expect(template).toContain(`<Repository>ghcr.io/ourostack/ouroboros-butler:${packageVersion.version}</Repository>`)
     expect(template).toContain("<Registry>https://github.com/ourostack/ouroboros/pkgs/container/ouroboros-butler</Registry>")

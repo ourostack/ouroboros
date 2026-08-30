@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <Container version="2">
-  <Name>ouro-butler</Name>
+  <Name>Mendelow Cloud Butler</Name>
   <Repository>ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.743</Repository>
   <Registry>https://github.com/ourostack/ouroboros/pkgs/container/ouroboros-butler</Registry>
   <Network>host</Network>
@@ -9,7 +9,8 @@
   <Support>https://github.com/ourostack/ouroboros/issues</Support>
   <Project>https://ouroboros.bot</Project>
   <Overview>Mendelow Cloud Butler is a friendly Telegram steward for an Unraid household. It turns system evidence into useful agent-owned help, keeps each family member private, and asks before consequential actions.</Overview>
-  <Category>Tools:</Category>
+  <Category>Tools:Utilities</Category>
+  <Beta>true</Beta>
   <WebUI/>
   <TemplateURL>https://raw.githubusercontent.com/ourostack/ouroboros/main/deploy/unraid/sanctuary.xml</TemplateURL>
   <Icon>https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png</Icon>
