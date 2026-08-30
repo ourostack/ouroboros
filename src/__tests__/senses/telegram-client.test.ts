@@ -1859,6 +1859,41 @@ describe("Telegram durable authorized long poll", () => {
     expect(restartedRequest).toHaveBeenCalledWith("getUpdates", expect.objectContaining({ offset: 7 }), expect.any(AbortSignal))
   })
 
+  it("normalizes every supported unknown-contact label, body, and attachment shape", async () => {
+    const updates = [
+      { update_id: 1, message: { message_id: 1, from: { id: 21, first_name: "Ada", last_name: "Lovelace" }, chat: { id: 21, type: "private" }, text: "document", document: {} } },
+      { update_id: 2, message: { message_id: 2, from: { id: 22, username: "grace" }, chat: { id: 22, type: "private" }, caption: "photo", photo: [{}] } },
+      { update_id: 3, message: { message_id: 3, from: { id: 23 }, chat: { id: 23, type: "private" }, audio: {} } },
+      { update_id: 4, message: { message_id: 4, from: { id: 24, first_name: "Linus" }, chat: { id: 24, type: "private" }, text: "video", video: {} } },
+      { update_id: 5, message: { message_id: 5, from: { id: 25, last_name: "Hopper" }, chat: { id: 25, type: "private" }, text: "voice", voice: {} } },
+      { update_id: 6, message: { message_id: 6, from: { id: 26, first_name: "Margaret" }, chat: { id: 26, type: "private" }, text: "animation", animation: {} } },
+      { update_id: 7, message: { message_id: 7, from: { id: 27, first_name: "Alan" }, chat: { id: 27, type: "private" }, text: "sticker", sticker: {} } },
+      { update_id: 8, message: { message_id: 8, from: { id: 28 }, chat: { id: 28, type: "private" } } },
+    ]
+    const onUnknownMessage = vi.fn(async () => undefined)
+    const poll = createTelegramLongPoll({
+      api: { request: vi.fn(async () => updates), stop: vi.fn() },
+      botId: "777",
+      expectedUserId: "10",
+      expectedChatId: "10",
+      offsetStore: { load: () => 0, save: vi.fn() },
+      onMessage: vi.fn(),
+      onUnknownMessage,
+    })
+
+    await expect(poll.pollOnce()).resolves.toBe(9)
+    expect(onUnknownMessage.mock.calls.map(([unknown]) => unknown)).toEqual([
+      expect.objectContaining({ displayLabel: "Ada Lovelace", text: "document", hasAttachments: true }),
+      expect.objectContaining({ displayLabel: "@grace", text: "photo", hasAttachments: true }),
+      expect.objectContaining({ displayLabel: "Telegram user 23", text: "", hasAttachments: true }),
+      expect.objectContaining({ displayLabel: "Linus", text: "video", hasAttachments: true }),
+      expect.objectContaining({ displayLabel: "Hopper", text: "voice", hasAttachments: true }),
+      expect.objectContaining({ displayLabel: "Margaret", text: "animation", hasAttachments: true }),
+      expect.objectContaining({ displayLabel: "Alan", text: "sticker", hasAttachments: true }),
+      expect.objectContaining({ displayLabel: "Telegram user 28", text: "", hasAttachments: false }),
+    ])
+  })
+
   it("drops malformed, non-private, foreign-chat, and message-less updates with zero dispatch", async () => {
     let offset = 0
     const offsetStore = { load: () => offset, save: (value: number) => { offset = value } }

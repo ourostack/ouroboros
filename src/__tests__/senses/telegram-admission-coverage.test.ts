@@ -177,6 +177,18 @@ describe("Telegram admission defensive coverage", () => {
     expect(store.capture(message({ updateId: 3 }), "CODE")).toEqual({ kind: "blocked" })
   })
 
+  it("orders terminal records deterministically when their timestamps tie", () => {
+    const store = new FileTelegramAdmissionStore(path.join(root(), "store"), {}, () => 1_000)
+    const first = store.capture(message(), "CODE")
+    if (!("record" in first)) throw new Error("fixture capture failed")
+    store.compareAndSwap({ admissionId: first.record.id, expectedStatus: "pending", nextStatus: "denied" })
+    const second = store.capture(message({ updateId: 2, userId: "999", chatId: "999" }), "CODE")
+    if (!("record" in second)) throw new Error("fixture capture failed")
+    store.compareAndSwap({ admissionId: second.record.id, expectedStatus: "pending", nextStatus: "denied" })
+
+    expect(store.capture(message({ updateId: 3, userId: "666", chatId: "666" }), "CODE")).toMatchObject({ kind: "created" })
+  })
+
   it("repairs each missing effect, uses defaults, handles attachments, and expires on decision", async () => {
     let now = 1_000
     const store = new FileTelegramAdmissionStore(path.join(root(), "store"), { retentionMs: 10 }, () => now)
@@ -302,6 +314,37 @@ describe("Telegram admission defensive coverage", () => {
     queuedStore.compareAndSwap({ admissionId: queued.record.id, expectedStatus: "friend_bound", nextStatus: "ingress_committed" })
     queuedStore.compareAndSwap({ admissionId: queued.record.id, expectedStatus: "ingress_committed", nextStatus: "turn_queued" })
     await expect(build(queuedStore).decide({ admissionId: queued.record.id, decision: "allow", actorFriendId: "ari" })).rejects.toThrow("lost its durable reference")
+
+    const unboundStore = new FileTelegramAdmissionStore(path.join(root(), "unbound"))
+    const unbound = unboundStore.capture(message({ updateId: 4 }), "CODE")
+    if (!("record" in unbound)) throw new Error("fixture capture failed")
+    unboundStore.compareAndSwap({ admissionId: unbound.record.id, expectedStatus: "pending", nextStatus: "approved" })
+    unboundStore.compareAndSwap({ admissionId: unbound.record.id, expectedStatus: "approved", nextStatus: "friend_bound" })
+    await expect(build(unboundStore).decide({ admissionId: unbound.record.id, decision: "allow", actorFriendId: "ari" })).rejects.toThrow("lost input")
+  })
+
+  it("parses a bound plain-language denial", async () => {
+    const store = new FileTelegramAdmissionStore(path.join(root(), "store"))
+    let admissionId = ""
+    const controller = createTelegramAdmissionController({
+      store,
+      owner: { friendId: "ari", sessionKey: "telegram:ari" },
+      sendEffect: vi.fn(async (effect) => {
+        if (effect.effect.kind === "card") admissionId = effect.target.requestId
+        return effect.effect.kind === "card" ? "owner-card" : "ack"
+      }),
+      resolveOwnerCard: (messageId) => messageId === 101 ? { artifactId: "owner-card", admissionId } : null,
+      claimFriend: vi.fn(async () => ({ kind: "created" as const, friendId: "friend" })),
+      revokeFriend: vi.fn(async () => ({ kind: "revoked" as const })),
+      commitApprovedIngress: vi.fn(),
+      enqueueApprovedWork: vi.fn(),
+      dispatchApprovedWork: vi.fn(),
+      createDisplayCode: () => "CODE",
+    })
+    const pending = await controller.handleUnknown(message())
+    if (pending.kind !== "pending") throw new Error("fixture capture failed")
+
+    expect(controller.parseOwnerDecision({ text: "no", replyToMessageId: 101 })).toEqual({ admissionId: pending.admissionId, decision: "deny" })
   })
 
   it("rejects callbacks that are not bound to the persisted owner card", async () => {
