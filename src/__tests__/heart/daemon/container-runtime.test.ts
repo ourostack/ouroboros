@@ -351,7 +351,10 @@ if assert_update_topology "$EXPECTED_IMAGE"; then command printf 'MUTATION\n'; e
     const imageValidator = extractRunbookFunction(runbook, "validate_exact_image_id")
     const onlyRunning = extractRunbookFunction(runbook, "assert_only_running_butler")
     const preflight = extractRunbookFunction(runbook, "assert_restore_preflight")
-    const provenance = extractRunbookFunction(runbook, "verify_sanctuary_snapshot_provenance").replaceAll("/usr/local/bin/node", process.execPath)
+    const provenance = extractRunbookFunction(runbook, "verify_sanctuary_snapshot_provenance")
+      .replaceAll("/usr/local/bin/node", process.execPath)
+      .replace("const expectedUid = 0;", "const expectedUid = process.getuid();")
+      .replace("const expectedGid = 0;", "const expectedGid = process.getgid();")
     const audit = extractRunbookFunction(runbook, "audit_effective").replace("/mnt/user/appdata/ouro-butler/staging/inspect.XXXXXX", "$AUDIT_TEST_ROOT/inspect.XXXXXX")
     const legacySource = extractRunbookFunction(runbook, "assert_legacy_alpha742_source")
     const updateSource = extractRunbookFunction(runbook, "assert_update_source")
@@ -360,6 +363,19 @@ if assert_update_topology "$EXPECTED_IMAGE"; then command printf 'MUTATION\n'; e
     const validRootPath = path.join(testRoot, "backup")
     fs.mkdirSync(path.join(validRootPath, "runtime", ".ouro-cli"), { recursive: true })
     fs.mkdirSync(path.join(validRootPath, "agent", "sanctuary.ouro"), { recursive: true })
+    fs.mkdirSync(path.join(validRootPath, "host", "custom", "ouro-events"), { recursive: true, mode: 0o700 })
+    for (const directory of [path.join(validRootPath, "host"), path.join(validRootPath, "host", "custom"), path.join(validRootPath, "host", "custom", "ouro-events")]) fs.chmodSync(directory, 0o700)
+    fs.writeFileSync(path.join(validRootPath, "host", "crontab"), "*/15 * * * * guard\n", { mode: 0o600 })
+    fs.writeFileSync(path.join(validRootPath, "host", "inventory"), [
+      "absent\tgo",
+      "absent\tcustom/usenet_health.sh",
+      "absent\tcustom/ouro-events/bootstrap-spool.sh",
+      "absent\tcustom/ouro-events/emit-event.mjs",
+      "absent\tcustom/ouro-events/emit-usenet-event.sh",
+      "absent\tcustom/ouro-events/install-usenet-guard.sh",
+      "present\tcrontab",
+      "",
+    ].join("\n"), { mode: 0o600 })
     const validRoot = fs.realpathSync(validRootPath)
     const validImage = `sha256:${"b".repeat(64)}`
     const auditRunnerImage = `sha256:${"d".repeat(64)}`
@@ -369,9 +385,13 @@ if assert_update_topology "$EXPECTED_IMAGE"; then command printf 'MUTATION\n'; e
       fs.mkdirSync(provenanceRoot, { recursive: true, mode: 0o700 })
       const imagePath = path.join(provenanceRoot, "image-id")
       const inspectPath = path.join(provenanceRoot, "container-inspect.json")
+      const imageInspectPath = path.join(provenanceRoot, "image-inspect.json")
+      const packageVersionPath = path.join(provenanceRoot, "package-version")
       fs.writeFileSync(imagePath, `${imageId}\n`, { mode: 0o600 })
       fs.writeFileSync(inspectPath, `${JSON.stringify([{ Image: inspectImageId }])}\n`, { mode: 0o600 })
-      const entries = [imagePath, inspectPath].map((filePath) => {
+      fs.writeFileSync(imageInspectPath, `${JSON.stringify([{ Id: imageId, Config: { Labels: { "org.opencontainers.image.source": "https://github.com/ourostack/ouroboros" } } }])}\n`, { mode: 0o600 })
+      fs.writeFileSync(packageVersionPath, "0.1.0-alpha.743\n", { mode: 0o600 })
+      const entries = [path.join(validRoot, "host", "inventory"), path.join(validRoot, "host", "crontab"), imagePath, inspectPath, imageInspectPath, packageVersionPath].map((filePath) => {
         const relative = path.relative(validRoot, filePath)
         const digest = createHash("sha256").update(fs.readFileSync(filePath)).digest("hex")
         return `${digest}  ${relative}`
@@ -395,7 +415,7 @@ docker() {
 }
 stat() {
   if [ "$1" = -c ] && [ "$2" = %u:%g:%a ]; then
-    case "$3" in */provenance) command printf '0:0:700\n' ;; */provenance/*) command printf '0:0:600\n' ;; *) command stat "$@" ;; esac
+    case "$3" in */provenance|*/host) command printf '0:0:700\n' ;; */provenance/*) command printf '0:0:600\n' ;; *) command stat "$@" ;; esac
   else
     command stat "$@"
   fi
@@ -2191,6 +2211,16 @@ recover_test`
     expect(backupRunbook).toContain('test ! -S "$BACKUP_TMP/agent/sanctuary.ouro/state/acceptance/telegram-control.sock"')
     expect(backupRunbook).toContain('docker container inspect ouro-butler >"$BACKUP_TMP/provenance/container-inspect.json"')
     expect(backupRunbook).toContain('printf \'%s\\n\' "$BACKUP_IMAGE_ID" >"$BACKUP_TMP/provenance/image-id"')
+    expect(backupRunbook).toContain('docker image inspect "$BACKUP_IMAGE_ID" >"$BACKUP_TMP/provenance/image-inspect.json"')
+    expect(backupRunbook).toContain('>"$BACKUP_TMP/provenance/package-version"')
+    expect(backupRunbook).toContain('"$BACKUP_TMP/agent" "$BACKUP_TMP/host" "$BACKUP_TMP/provenance"')
+    expect(backupRunbook).toContain('backup_host_file /boot/config/go go')
+    expect(backupRunbook).toContain('backup_host_file /boot/config/custom/usenet_health.sh custom/usenet_health.sh')
+    expect(backupRunbook).toContain('backup_host_file /boot/config/custom/ouro-events/install-usenet-guard.sh custom/ouro-events/install-usenet-guard.sh')
+    expect(backupRunbook).toContain('crontab -l >"$BACKUP_TMP/host/crontab"')
+    expect(backupRunbook).toContain('test ! -e "$BACKUP_TMP/host/notify.conf"')
+    expect(backupRunbook).toContain('test ! -e "$BACKUP_TMP/host/sabnzbd.ini"')
+    expect(backupRunbook).toContain('host/inventory')
     expect(backupRunbook).toContain('sha256sum --')
     expect(backupRunbook).toContain('mv -- "$BACKUP_TMP" "$BACKUP_ROOT"')
     const publish = backupRunbook.indexOf('mv -- "$BACKUP_TMP" "$BACKUP_ROOT"')
@@ -2216,6 +2246,10 @@ recover_test`
     expect(backupRunbook.indexOf('chmod 0600 "$BACKUP_TMP/provenance/container-inspect.json"')).toBeLessThan(backupRunbook.indexOf('mv -- "$BACKUP_TMP" "$BACKUP_ROOT"'))
     expect(extractRunbookFunction(runbook, "assert_restore_preflight")).toContain('verify_sanctuary_snapshot_provenance "$BACKUP_ROOT" "$IMAGE_ID"')
     expect(restoreRunbook).toContain('--mount "type=bind,src=/boot/config/custom/ouro-events/spool,dst=/run/ouro-events,readonly" \\')
+    expect(restoreRunbook).toContain('--restore-root "$BACKUP_ROOT/host"')
+    expect(restoreRunbook).toContain('HOST_RESTORE_INSTALLER=$(mktemp /tmp/ouro-usenet-host-restore.XXXXXX)')
+    expect(backupRunbook).toContain('host_file_contains_inline_credential "$BACKUP_HOST_SOURCE"')
+    expect(backupRunbook).toContain('host_file_contains_inline_credential "$BACKUP_TMP/host/crontab"')
     expect(restoreRunbook.indexOf("bootstrap-spool.sh --mount")).toBeLessThan(restoreRunbook.indexOf("disable_butler_autostart"))
     const createCount = runbook.match(/docker create --name ouro-butler(?:-staging)?/gu)?.length ?? 0
     expect(runbook.match(/--mount "type=bind,src=\/boot\/config\/custom\/ouro-events\/spool,dst=\/run\/ouro-events,readonly"/gu)).toHaveLength(createCount)

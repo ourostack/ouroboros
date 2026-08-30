@@ -6,6 +6,7 @@ INSTALL_ROOT="/boot/config/custom"
 GO_FILE="/boot/config/go"
 CRONTAB_FILE=""
 ACTION="install"
+RESTORE_ROOT=""
 STAGE_PATH=""
 SYSTEM_CRON_PRESENT=false
 
@@ -13,6 +14,7 @@ while (($# > 0)); do
   case "$1" in
     --install-only) ACTION="install"; shift ;;
     --boot) ACTION="boot"; shift ;;
+    --restore-root) ACTION="restore"; RESTORE_ROOT="${2:?missing --restore-root value}"; shift 2 ;;
     --source-root) SOURCE_ROOT="${2:?missing --source-root value}"; shift 2 ;;
     --install-root) INSTALL_ROOT="${2:?missing --install-root value}"; shift 2 ;;
     --go-file) GO_FILE="${2:?missing --go-file value}"; shift 2 ;;
@@ -31,6 +33,7 @@ validate_persisted_path() {
 
 validate_persisted_path "$INSTALL_ROOT" "install root"
 if [ -n "$CRONTAB_FILE" ]; then validate_persisted_path "$CRONTAB_FILE" "crontab file"; fi
+if [ -n "$RESTORE_ROOT" ]; then validate_persisted_path "$RESTORE_ROOT" "restore root"; fi
 
 EVENT_ROOT="$INSTALL_ROOT/ouro-events"
 printf -v EVENT_INSTALLER_Q '%q' "$EVENT_ROOT/install-usenet-guard.sh"
@@ -46,6 +49,7 @@ LEGACY_BOOT_HOOK="/boot/config/custom/ouro-events/bootstrap-spool.sh --mount"
 LEGACY_BASH_BOOT_HOOK="/bin/bash /boot/config/custom/ouro-events/bootstrap-spool.sh --mount"
 printf -v HEALTH_SCRIPT_Q '%q' "$INSTALL_ROOT/usenet_health.sh"
 CRON_LINE="*/15 * * * * /bin/bash $HEALTH_SCRIPT_Q # ouro:usenet-health"
+LEGACY_CRON_LINE="*/15 * * * * /bin/bash $HEALTH_SCRIPT_Q"
 ASSET_NAMES=(usenet-health.sh bootstrap-spool.sh emit-event.mjs emit-usenet-event.sh install-usenet-guard.sh)
 TARGET_PATHS=("$INSTALL_ROOT/usenet_health.sh" "$EVENT_ROOT/bootstrap-spool.sh" "$EVENT_ROOT/emit-event.mjs" "$EVENT_ROOT/emit-usenet-event.sh" "$EVENT_ROOT/install-usenet-guard.sh")
 
@@ -58,8 +62,14 @@ atomic_install() {
 
 render_cron() {
   local source="$1" target="$2"
-  grep -vF '# ouro:usenet-health' "$source" > "$target" || true
+  awk -v legacy="$LEGACY_CRON_LINE" 'index($0, "# ouro:usenet-health") == 0 && $0 != legacy { print }' "$source" > "$target"
   printf '%s\n' "$CRON_LINE" >> "$target"
+  /bin/chmod 0600 "$target"
+}
+
+render_inactive_cron() {
+  local source="$1" target="$2"
+  awk -v legacy="$LEGACY_CRON_LINE" 'index($0, "# ouro:usenet-health") == 0 && $0 != legacy { print }' "$source" > "$target"
   /bin/chmod 0600 "$target"
 }
 
@@ -143,8 +153,7 @@ install_transaction() {
   cron_candidate="$stage/cron.candidate"
   render_cron "$cron_original" "$cron_candidate"
   cron_inactive="$stage/cron.inactive"
-  grep -vF '# ouro:usenet-health' "$cron_original" > "$cron_inactive" || true
-  /bin/chmod 0600 "$cron_inactive"
+  render_inactive_cron "$cron_original" "$cron_inactive"
 
   for index in "${!TARGET_PATHS[@]}"; do
     target="${TARGET_PATHS[$index]}"
@@ -156,7 +165,7 @@ install_transaction() {
 
   set +e
   status=0
-  if grep -Fq '# ouro:usenet-health' "$cron_original"; then activate_cron_file "$cron_inactive" || status=$?; fi
+  if grep -Fq '# ouro:usenet-health' "$cron_original" || grep -Fxq "$LEGACY_CRON_LINE" "$cron_original"; then activate_cron_file "$cron_inactive" || status=$?; fi
   if [ "$status" -eq 0 ]; then
     for index in "${!TARGET_PATHS[@]}"; do
       atomic_install "$stage/${ASSET_NAMES[$index]}" "${TARGET_PATHS[$index]}" 0700 || { status=$?; break; }
@@ -199,7 +208,75 @@ boot_activate() {
   /bin/rm -f "$current" "$candidate"
 }
 
+restore_snapshot() {
+  local expected_inventory stage backup cron_original cron_inactive status index target relative source state
+  expected_inventory=$'present\tgo\npresent\tcustom/usenet_health.sh\npresent\tcustom/ouro-events/bootstrap-spool.sh\npresent\tcustom/ouro-events/emit-event.mjs\npresent\tcustom/ouro-events/emit-usenet-event.sh\npresent\tcustom/ouro-events/install-usenet-guard.sh\npresent\tcrontab'
+  [ -d "$RESTORE_ROOT" ] && [ ! -L "$RESTORE_ROOT" ] || return 1
+  [ -f "$RESTORE_ROOT/inventory" ] && [ ! -L "$RESTORE_ROOT/inventory" ] || return 1
+  while IFS=$'\t' read -r state relative; do
+    case "$state:$relative" in
+      present:go|absent:go|present:custom/usenet_health.sh|absent:custom/usenet_health.sh|present:custom/ouro-events/bootstrap-spool.sh|absent:custom/ouro-events/bootstrap-spool.sh|present:custom/ouro-events/emit-event.mjs|absent:custom/ouro-events/emit-event.mjs|present:custom/ouro-events/emit-usenet-event.sh|absent:custom/ouro-events/emit-usenet-event.sh|present:custom/ouro-events/install-usenet-guard.sh|absent:custom/ouro-events/install-usenet-guard.sh|present:crontab) ;;
+      *) return 1 ;;
+    esac
+    if [ "$state" = present ]; then [ -f "$RESTORE_ROOT/$relative" ] && [ ! -L "$RESTORE_ROOT/$relative" ] || return 1; else [ ! -e "$RESTORE_ROOT/$relative" ] && [ ! -L "$RESTORE_ROOT/$relative" ] || return 1; fi
+  done < "$RESTORE_ROOT/inventory"
+  test "$(sed 's/^absent/present/' "$RESTORE_ROOT/inventory")" = "$expected_inventory" || return 1
+
+  stage="$(/usr/bin/mktemp -d "$INSTALL_ROOT/.ouro-usenet-restore.XXXXXX")"
+  STAGE_PATH="$stage"
+  backup="$stage/backup"
+  /bin/mkdir "$backup"
+  cleanup() { [ -z "$STAGE_PATH" ] || /bin/rm -rf "$STAGE_PATH"; }
+  trap cleanup EXIT
+  for index in "${!TARGET_PATHS[@]}"; do
+    target="${TARGET_PATHS[$index]}"
+    if [ -e "$target" ]; then [ -f "$target" ] && [ ! -L "$target" ] || return 1; /bin/cp -p "$target" "$backup/asset-$index"; fi
+  done
+  if [ -e "$GO_FILE" ]; then [ -f "$GO_FILE" ] && [ ! -L "$GO_FILE" ] || return 1; /bin/cp -p "$GO_FILE" "$backup/go"; fi
+  cron_original="$stage/cron.original"
+  if [ -n "$CRONTAB_FILE" ]; then
+    if [ -f "$CRONTAB_FILE" ]; then /bin/cp -p "$CRONTAB_FILE" "$backup/cron"; /bin/cp "$CRONTAB_FILE" "$cron_original"; else : > "$cron_original"; fi
+  else
+    read_system_cron "$cron_original"
+    /bin/cp "$cron_original" "$backup/cron"
+  fi
+  cron_inactive="$stage/cron.inactive"
+  render_inactive_cron "$cron_original" "$cron_inactive"
+
+  set +e
+  status=0
+  if grep -Fq '# ouro:usenet-health' "$cron_original" || grep -Fxq "$LEGACY_CRON_LINE" "$cron_original"; then activate_cron_file "$cron_inactive" || status=$?; fi
+  for index in "${!TARGET_PATHS[@]}"; do
+    [ "$status" -eq 0 ] || break
+    target="${TARGET_PATHS[$index]}"
+    case "$index" in
+      0) relative=custom/usenet_health.sh ;;
+      1) relative=custom/ouro-events/bootstrap-spool.sh ;;
+      2) relative=custom/ouro-events/emit-event.mjs ;;
+      3) relative=custom/ouro-events/emit-usenet-event.sh ;;
+      4) relative=custom/ouro-events/install-usenet-guard.sh ;;
+    esac
+    source="$RESTORE_ROOT/$relative"
+    if [ -f "$source" ]; then atomic_install "$source" "$target" 0700 || status=$?; else /bin/rm -f "$target" || status=$?; fi
+  done
+  if [ "$status" -eq 0 ]; then
+    if [ -f "$RESTORE_ROOT/go" ]; then atomic_install "$RESTORE_ROOT/go" "$GO_FILE" 0700 || status=$?; else /bin/rm -f "$GO_FILE" || status=$?; fi
+  fi
+  if [ "$status" -eq 0 ]; then activate_cron_file "$RESTORE_ROOT/crontab" || status=$?; fi
+  set -e
+  if [ "$status" -ne 0 ]; then
+    for index in "${!TARGET_PATHS[@]}"; do restore_target "${TARGET_PATHS[$index]}" "$backup/asset-$index"; done
+    restore_target "$GO_FILE" "$backup/go"
+    if [ -n "$CRONTAB_FILE" ]; then restore_target "$CRONTAB_FILE" "$backup/cron"; elif [ "$SYSTEM_CRON_PRESENT" = true ]; then crontab "$backup/cron"; else crontab -r >/dev/null 2>&1 || true; fi
+    return "$status"
+  fi
+  cleanup
+  STAGE_PATH=""
+  trap - EXIT
+}
+
 case "$ACTION" in
   install) install_transaction ;;
   boot) boot_activate ;;
+  restore) restore_snapshot ;;
 esac

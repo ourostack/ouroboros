@@ -282,22 +282,22 @@ Effective-spec audit helper:
       SNAPSHOT_ROOT=$1
       EXPECTED_SNAPSHOT_IMAGE_ID=$2
       SNAPSHOT_PROVENANCE_ROOT=$SNAPSHOT_ROOT/provenance
-      for SNAPSHOT_TOP_LEVEL_DIRECTORY in runtime agent provenance; do
+      for SNAPSHOT_TOP_LEVEL_DIRECTORY in runtime agent host provenance; do
         test -d "$SNAPSHOT_ROOT/$SNAPSHOT_TOP_LEVEL_DIRECTORY" || return $?
         test ! -L "$SNAPSHOT_ROOT/$SNAPSHOT_TOP_LEVEL_DIRECTORY" || return 1
       done
-      test "$(find "$SNAPSHOT_ROOT" -xdev -mindepth 1 -maxdepth 1 -print | wc -l)" -eq 3 || return $?
+      test "$(find "$SNAPSHOT_ROOT" -xdev -mindepth 1 -maxdepth 1 -print | wc -l)" -eq 4 || return $?
       test -d "$SNAPSHOT_PROVENANCE_ROOT" || return $?
       test ! -L "$SNAPSHOT_PROVENANCE_ROOT" || return 1
       test "$(stat -c '%u:%g:%a' "$SNAPSHOT_PROVENANCE_ROOT")" = 0:0:700 || return $?
       SNAPSHOT_BAD_PROVENANCE_ENTRY=$(find "$SNAPSHOT_PROVENANCE_ROOT" -xdev -mindepth 1 ! -type f -print -quit) || return $?
       test -z "$SNAPSHOT_BAD_PROVENANCE_ENTRY" || return $?
-      for SNAPSHOT_PROVENANCE_FILE in image-id container-inspect.json manifest.sha256; do
+      for SNAPSHOT_PROVENANCE_FILE in image-id container-inspect.json image-inspect.json package-version manifest.sha256; do
         test -f "$SNAPSHOT_PROVENANCE_ROOT/$SNAPSHOT_PROVENANCE_FILE" || return $?
         test ! -L "$SNAPSHOT_PROVENANCE_ROOT/$SNAPSHOT_PROVENANCE_FILE" || return 1
         test "$(stat -c '%u:%g:%a' "$SNAPSHOT_PROVENANCE_ROOT/$SNAPSHOT_PROVENANCE_FILE")" = 0:0:600 || return $?
       done
-      test "$(find "$SNAPSHOT_PROVENANCE_ROOT" -xdev -mindepth 1 -maxdepth 1 -type f | wc -l)" -eq 3 || return $?
+      test "$(find "$SNAPSHOT_PROVENANCE_ROOT" -xdev -mindepth 1 -maxdepth 1 -type f | wc -l)" -eq 5 || return $?
       test "$(wc -l <"$SNAPSHOT_PROVENANCE_ROOT/image-id")" -eq 1 || return $?
       IFS= read -r SNAPSHOT_IMAGE_ID <"$SNAPSHOT_PROVENANCE_ROOT/image-id" || return $?
       test "$SNAPSHOT_IMAGE_ID" = "$EXPECTED_SNAPSHOT_IMAGE_ID" || return $?
@@ -305,14 +305,53 @@ Effective-spec audit helper:
       case "${SNAPSHOT_IMAGE_ID#sha256:}" in *[!0-9a-f]*) return 1 ;; esac
       /usr/local/bin/node -e '
         const fs = require("node:fs");
-        const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-        if (!Array.isArray(value) || value.length !== 1 || !value[0] || value[0].Image !== process.argv[2]) process.exit(1);
-      ' "$SNAPSHOT_PROVENANCE_ROOT/container-inspect.json" "$SNAPSHOT_IMAGE_ID" || return $?
+        const [containerPath, imagePath, imageId, hostPath] = process.argv.slice(1);
+        const container = JSON.parse(fs.readFileSync(containerPath, "utf8"));
+        const image = JSON.parse(fs.readFileSync(imagePath, "utf8"));
+        if (!Array.isArray(container) || container.length !== 1 || !container[0] || container[0].Image !== imageId) process.exit(1);
+        if (!Array.isArray(image) || image.length !== 1 || !image[0] || image[0].Id !== imageId) process.exit(1);
+        if (image[0].Config?.Labels?.["org.opencontainers.image.source"] !== "https://github.com/ourostack/ouroboros") process.exit(1);
+        const expected = ["go", "custom/usenet_health.sh", "custom/ouro-events/bootstrap-spool.sh", "custom/ouro-events/emit-event.mjs", "custom/ouro-events/emit-usenet-event.sh", "custom/ouro-events/install-usenet-guard.sh", "crontab"];
+        const expectedUid = 0;
+        const expectedGid = 0;
+        const hostRoot = fs.lstatSync(hostPath);
+        if (!hostRoot.isDirectory() || hostRoot.isSymbolicLink() || hostRoot.uid !== expectedUid || hostRoot.gid !== expectedGid || (hostRoot.mode & 0o777) !== 0o700) process.exit(1);
+        const rows = fs.readFileSync(`${hostPath}/inventory`, "utf8").trim().split("\n").map(line => line.split("\t"));
+        if (rows.length !== expected.length || rows.some((row, index) => row.length !== 2 || row[1] !== expected[index] || !["present", "absent"].includes(row[0]))) process.exit(1);
+        const present = rows.filter(row => row[0] === "present").map(row => row[1]);
+        if (!present.includes("crontab")) process.exit(1);
+        for (const [state, relative] of rows) {
+          if (fs.existsSync(`${hostPath}/${relative}`) !== (state === "present")) process.exit(1);
+        }
+        const files = [];
+        const directories = [];
+        const walk = (directory, prefix = "") => {
+          for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+            const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+            const metadata = fs.lstatSync(`${directory}/${entry.name}`);
+            if (metadata.uid !== expectedUid || metadata.gid !== expectedGid) process.exit(1);
+            if (entry.isDirectory() && (metadata.mode & 0o777) === 0o700) { directories.push(relative); walk(`${directory}/${entry.name}`, relative); }
+            else if (entry.isFile() && (metadata.mode & 0o777) === 0o600) files.push(relative);
+            else process.exit(1);
+          }
+        };
+        walk(hostPath);
+        if (JSON.stringify(directories.sort()) !== JSON.stringify(["custom", "custom/ouro-events"])) process.exit(1);
+        if (JSON.stringify(files.sort()) !== JSON.stringify(["inventory", ...present].sort())) process.exit(1);
+      ' "$SNAPSHOT_PROVENANCE_ROOT/container-inspect.json" "$SNAPSHOT_PROVENANCE_ROOT/image-inspect.json" "$SNAPSHOT_IMAGE_ID" "$SNAPSHOT_ROOT/host" || return $?
+      test "$(wc -l <"$SNAPSHOT_PROVENANCE_ROOT/package-version")" -eq 1 || return $?
+      grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' "$SNAPSHOT_PROVENANCE_ROOT/package-version" || return $?
+      test "$(stat -c '%u:%g:%a' "$SNAPSHOT_ROOT/host")" = 0:0:700 || return $?
+      SNAPSHOT_BAD_HOST_ENTRY=$(find "$SNAPSHOT_ROOT/host" -xdev \( \( -type d ! -perm 0700 \) -o \( -type f ! -perm 0600 \) -o \( ! -type d -a ! -type f \) \) -print -quit) || return $?
+      test -z "$SNAPSHOT_BAD_HOST_ENTRY" || return $?
+      test -f "$SNAPSHOT_ROOT/host/inventory" || return $?
+      test ! -e "$SNAPSHOT_ROOT/host/notify.conf" || return 1
+      test ! -e "$SNAPSHOT_ROOT/host/sabnzbd.ini" || return 1
       SNAPSHOT_VERIFY_ROOT=$(mktemp -d /tmp/ouro-snapshot-verify.XXXXXX) || return $?
       trap 'rm -f -- "$SNAPSHOT_VERIFY_ROOT/current-files" "$SNAPSHOT_VERIFY_ROOT/manifest-files"; rmdir -- "$SNAPSHOT_VERIFY_ROOT"' EXIT || return $?
       (
         cd "$SNAPSHOT_ROOT" || return $?
-        find runtime agent provenance -xdev -type f ! -path provenance/manifest.sha256 -print | LC_ALL=C sort >"$SNAPSHOT_VERIFY_ROOT/current-files" || return $?
+        find runtime agent host provenance -xdev -type f ! -path provenance/manifest.sha256 -print | LC_ALL=C sort >"$SNAPSHOT_VERIFY_ROOT/current-files" || return $?
         grep -E '^[0-9a-f]{64}  [^/].+$' provenance/manifest.sha256 >/dev/null || return $?
         ! grep -Ev '^[0-9a-f]{64}  [^/].+$' provenance/manifest.sha256 >/dev/null || return 1
         sed 's/^[0-9a-f]\{64\}  //' provenance/manifest.sha256 | LC_ALL=C sort >"$SNAPSHOT_VERIFY_ROOT/manifest-files" || return $?
@@ -1314,6 +1353,9 @@ Update:
       test "$(grep -Fxc '/boot/config/custom/ouro-events/bootstrap-spool.sh --mount' /boot/config/go || true)" = 0
       INSTALLED_GUARD_CRON=$(crontab -l)
       test "$(printf '%s\n' "$INSTALLED_GUARD_CRON" | grep -Fxc '*/15 * * * * /bin/bash /boot/config/custom/usenet_health.sh # ouro:usenet-health')" = 1
+      INSTALLED_LEGACY_GUARD_COUNT=$(printf '%s\n' "$INSTALLED_GUARD_CRON" | grep -Fxc '*/15 * * * * /bin/bash /boot/config/custom/usenet_health.sh' || true)
+      test "$INSTALLED_LEGACY_GUARD_COUNT" = 0
+      test "$(printf '%s\n' "$INSTALLED_GUARD_CRON" | grep -Fc '/bin/bash /boot/config/custom/usenet_health.sh')" = 1
       test "$(findmnt -n -o FSTYPE --target /boot/config/custom/ouro-events/spool)" = tmpfs
       test "$(stat -c '%u:%g:%a' /boot/config/custom/ouro-events/spool)" = 0:0:755
       INSTALLED_SPOOL_OPTIONS=$(findmnt -n -o OPTIONS --target /boot/config/custom/ouro-events/spool)
@@ -1613,6 +1655,25 @@ Backup:
     wait_butler_ready ouro-butler
     BACKUP_AUTOSTART_COUNTS=$(butler_autostart_counts)
     case "$BACKUP_AUTOSTART_COUNTS" in "0 0 0 0"|"1 0 0 0") ;; *) exit 1 ;; esac
+    backup_host_file() {
+      BACKUP_HOST_SOURCE=$1
+      BACKUP_HOST_RELATIVE=$2
+      case "$BACKUP_HOST_RELATIVE" in
+        go|custom/usenet_health.sh|custom/ouro-events/bootstrap-spool.sh|custom/ouro-events/emit-event.mjs|custom/ouro-events/emit-usenet-event.sh|custom/ouro-events/install-usenet-guard.sh) ;;
+        *) return 1 ;;
+      esac
+      if test -e "$BACKUP_HOST_SOURCE" || test -L "$BACKUP_HOST_SOURCE"; then
+        test -f "$BACKUP_HOST_SOURCE" && test ! -L "$BACKUP_HOST_SOURCE" || return 1
+        ! host_file_contains_inline_credential "$BACKUP_HOST_SOURCE" || return 1
+        install -D -m 0600 -o 0 -g 0 "$BACKUP_HOST_SOURCE" "$BACKUP_TMP/host/$BACKUP_HOST_RELATIVE" || return $?
+        printf 'present\t%s\n' "$BACKUP_HOST_RELATIVE" >>"$BACKUP_TMP/host/inventory" || return $?
+      else
+        printf 'absent\t%s\n' "$BACKUP_HOST_RELATIVE" >>"$BACKUP_TMP/host/inventory" || return $?
+      fi
+    }
+    host_file_contains_inline_credential() {
+      LC_ALL=C grep -Eiq '([0-9]{6,}:[A-Za-z0-9_-]{20,}|(token|secret|password|pass|api[_-]?key)[[:space:]]*=[[:space:]]*["'"']?[A-Za-z0-9][A-Za-z0-9_./+=:-]{15,})' "$1"
+    }
   Snapshot both of these directories together:
     /mnt/user/appdata/ouro-butler/runtime/.ouro-cli
     /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro
@@ -1625,16 +1686,33 @@ Backup:
     BACKUP_OPERATION_STATUS=0
     if docker stop ouro-butler \
       && test "$(docker inspect --format '{{.State.Running}}' ouro-butler)" = false \
-      && install -d -m 0700 -o 0 -g 0 "$BACKUP_TMP" "$BACKUP_TMP/runtime" "$BACKUP_TMP/agent" "$BACKUP_TMP/provenance" \
+      && install -d -m 0700 -o 0 -g 0 "$BACKUP_TMP" "$BACKUP_TMP/runtime" "$BACKUP_TMP/agent" "$BACKUP_TMP/host" "$BACKUP_TMP/provenance" \
+      && install -d -m 0700 -o 0 -g 0 "$BACKUP_TMP/host/custom/ouro-events" \
+      && install -m 0600 -o 0 -g 0 /dev/null "$BACKUP_TMP/host/inventory" \
+      && backup_host_file /boot/config/go go \
+      && backup_host_file /boot/config/custom/usenet_health.sh custom/usenet_health.sh \
+      && backup_host_file /boot/config/custom/ouro-events/bootstrap-spool.sh custom/ouro-events/bootstrap-spool.sh \
+      && backup_host_file /boot/config/custom/ouro-events/emit-event.mjs custom/ouro-events/emit-event.mjs \
+      && backup_host_file /boot/config/custom/ouro-events/emit-usenet-event.sh custom/ouro-events/emit-usenet-event.sh \
+      && backup_host_file /boot/config/custom/ouro-events/install-usenet-guard.sh custom/ouro-events/install-usenet-guard.sh \
+      && crontab -l >"$BACKUP_TMP/host/crontab" \
+      && { ! host_file_contains_inline_credential "$BACKUP_TMP/host/crontab" || { rm -f "$BACKUP_TMP/host/crontab"; false; }; } \
+      && chown 0:0 "$BACKUP_TMP/host/crontab" \
+      && chmod 0600 "$BACKUP_TMP/host/crontab" \
+      && printf 'present\tcrontab\n' >>"$BACKUP_TMP/host/inventory" \
+      && test ! -e "$BACKUP_TMP/host/notify.conf" \
+      && test ! -e "$BACKUP_TMP/host/sabnzbd.ini" \
       && rsync -a --exclude='/state/acceptance/telegram-control.sock' /mnt/user/appdata/ouro-butler/runtime/.ouro-cli "$BACKUP_TMP/runtime/" \
       && rsync -a --exclude='/state/acceptance/telegram-control.sock' /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro "$BACKUP_TMP/agent/" \
       && test ! -S "$BACKUP_TMP/agent/sanctuary.ouro/state/acceptance/telegram-control.sock" \
       && validate_sanctuary_roots "$BACKUP_TMP/runtime/.ouro-cli" "$BACKUP_TMP/agent/sanctuary.ouro" \
       && docker container inspect ouro-butler >"$BACKUP_TMP/provenance/container-inspect.json" \
+      && docker image inspect "$BACKUP_IMAGE_ID" >"$BACKUP_TMP/provenance/image-inspect.json" \
+      && docker run --rm --pull=never --network=none --read-only --entrypoint /usr/local/bin/node "$BACKUP_IMAGE_ID" -p 'require("/opt/ouro/package.json").version' >"$BACKUP_TMP/provenance/package-version" \
       && printf '%s\n' "$BACKUP_IMAGE_ID" >"$BACKUP_TMP/provenance/image-id" \
-      && chown 0:0 "$BACKUP_TMP/provenance/container-inspect.json" "$BACKUP_TMP/provenance/image-id" \
-      && chmod 0600 "$BACKUP_TMP/provenance/container-inspect.json" "$BACKUP_TMP/provenance/image-id" \
-      && (cd "$BACKUP_TMP" && find runtime agent provenance -xdev -type f ! -path provenance/manifest.sha256 -exec sha256sum -- {} + | LC_ALL=C sort -k2 >provenance/manifest.sha256) \
+      && chown 0:0 "$BACKUP_TMP/provenance/container-inspect.json" "$BACKUP_TMP/provenance/image-inspect.json" "$BACKUP_TMP/provenance/package-version" "$BACKUP_TMP/provenance/image-id" \
+      && chmod 0600 "$BACKUP_TMP/provenance/container-inspect.json" "$BACKUP_TMP/provenance/image-inspect.json" "$BACKUP_TMP/provenance/package-version" "$BACKUP_TMP/provenance/image-id" \
+      && (cd "$BACKUP_TMP" && find runtime agent host provenance -xdev -type f ! -path provenance/manifest.sha256 -exec sha256sum -- {} + | LC_ALL=C sort -k2 >provenance/manifest.sha256) \
       && chown 0:0 "$BACKUP_TMP/provenance/manifest.sha256" \
       && chmod 0600 "$BACKUP_TMP/provenance/manifest.sha256" \
       && verify_sanctuary_snapshot_provenance "$BACKUP_TMP" "$BACKUP_IMAGE_ID" \
@@ -1689,6 +1767,16 @@ Restore:
       RESTORE_PREFLIGHT_STATUS=$?
       (exit "$RESTORE_PREFLIGHT_STATUS")
     fi
+  The verified host snapshot is restored only by this explicit Restore path.
+  Ordinary update failure continues to use the installer's short-lived
+  transaction rollback. Extract the installer from the reviewed runner image,
+  then let that fixed allowlist transaction restore exact presence/absence for
+  go and the six guard assets plus the captured root crontab. It deactivates the
+  current owned cron before swapping files and restores the entire pre-restore
+  host state if any swap or final crontab activation fails:
+    HOST_RESTORE_INSTALLER=$(mktemp /tmp/ouro-usenet-host-restore.XXXXXX)
+    docker run --rm --pull=never --network=none --entrypoint /bin/cat "$AUDIT_RUNNER_IMAGE_ID" /opt/ouro/deploy/unraid/ouro-events/install-usenet-guard.sh >"$HOST_RESTORE_INSTALLER"
+    chmod 0500 "$HOST_RESTORE_INSTALLER"
   Guard the atomic autostart disable before stopping or removing any Butler
   container. Failure propagates while the existing production remains untouched:
     /bin/bash /boot/config/custom/ouro-events/bootstrap-spool.sh --mount
@@ -1718,6 +1806,8 @@ Restore:
       && rsync -a --delete "$BACKUP_ROOT/agent/sanctuary.ouro/" /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro/ \
       && chown -R 10001:10001 /mnt/user/appdata/ouro-butler/runtime/.ouro-cli /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro \
       && validate_sanctuary_roots /mnt/user/appdata/ouro-butler/runtime/.ouro-cli /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro \
+      && /bin/bash "$HOST_RESTORE_INSTALLER" --restore-root "$BACKUP_ROOT/host" \
+      && rm -f "$HOST_RESTORE_INSTALLER" \
       && docker image inspect "$IMAGE_ID" >/dev/null \
       && docker create --name ouro-butler --network host --restart unless-stopped --user 10001:10001 \
       --mount "type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli" \
@@ -1740,6 +1830,7 @@ Restore:
         docker rm --force ouro-butler >/dev/null 2>&1 || true
       fi
       ! docker container inspect ouro-butler >/dev/null 2>&1
+      rm -f "$HOST_RESTORE_INSTALLER"
       (exit "$RESTORE_ACTIVATION_STATUS")
     fi
   A restore has no retained old container or pre-restore data root to roll back

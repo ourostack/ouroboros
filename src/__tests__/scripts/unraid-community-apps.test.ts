@@ -125,6 +125,8 @@ describe("Mendelow Cloud Butler Community Apps release", () => {
     expect(update).toContain(`    ${bootHook}\n`)
     expect(update).toContain(`grep -Fxc '${bootHook}' /boot/config/go`)
     expect(update).toContain("/bin/bash /boot/config/custom/usenet_health.sh # ouro:usenet-health")
+    expect(update).toContain("INSTALLED_LEGACY_GUARD_COUNT")
+    expect(update).toContain("grep -Fc '/bin/bash /boot/config/custom/usenet_health.sh'")
     expect(update).toContain("findmnt -n -o FSTYPE --target /boot/config/custom/ouro-events/spool")
     expect(update).toContain("nodev nosuid noexec")
     expect(update).not.toContain("cp deploy/unraid/ouro-events")
