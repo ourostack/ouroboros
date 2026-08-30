@@ -85,9 +85,6 @@ export const continuityToolDefinitions: ToolDefinition[] = [
       let stewardPolicy: import("../heart/external-events/router").ExternalEventDisposition["stewardPolicy"];
       if (policyKind === "none") {
         if (record.transition !== "opened") throw new Error("External event no-policy disposition requires a fresh observation");
-        if (policy.version !== 0 || Object.keys(policy.desiredStates).length !== 0 || Object.keys(policy.routineActionGrants).length !== 0) {
-          throw new Error("External event no-policy disposition requires the canonical empty steward policy");
-        }
         stewardPolicy = { kind: "none" };
       } else {
         const key = String(a.stewardPolicyKey ?? "").trim();
