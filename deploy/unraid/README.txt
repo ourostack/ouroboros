@@ -394,6 +394,16 @@ Effective-spec audit helper:
       chmod 0600 "$MACHINE_PATH" || return $?
       sync -f "$MACHINE_PATH" || return $?
     }
+    migrate_sanctuary_package_managed_bundle() {
+      MIGRATE_IMAGE_ID=$1
+      validate_exact_image_id "$MIGRATE_IMAGE_ID" || return $?
+      docker run --rm --pull=never --network=none --read-only --user 10001:10001 \
+        --entrypoint /usr/local/bin/node \
+        --mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
+        "$MIGRATE_IMAGE_ID" /opt/ouro/deploy/unraid/migrate-sanctuary-bundle.mjs \
+        --package-root /opt/ouro/deploy/unraid/sanctuary.ouro \
+        --agent-root /home/ouro/AgentBundles/sanctuary.ouro || return $?
+    }
     prepare_canonical_sanctuary_roots() {
       PREPARE_IMAGE_ID=$1
       validate_exact_image_id "$PREPARE_IMAGE_ID" || return $?
@@ -1291,11 +1301,24 @@ ouro-butler-rollback
       esac
     }
   Stop production, remove only a stopped stale rollback, rename the known-good
-  container, and verify it remains stopped in one explicit preparation guard:
+  container, verify it remains stopped, and apply the exact target image's
+  package-managed bundle migration in one explicit preparation guard.
+  Package-managed files are exactly `provider-readiness.json`,
+  `tool-profiles.json`, `habits/sanctuary-health.md`, and the five canonical
+  files under `psyche/`. The migration also merges the three bundle-meta version
+  fields. It uses the existing steward-policy family-authority and CAS writer to
+  add missing installed routine grants or refresh older installed grants. It
+  preserves agent.json, desiredStates, stated or unrelated routine grants, relationships, sessions, and every other state path. Repeating it is a no-op.
+  The migrator snapshots those exact files plus bundle-meta, steward policy,
+  policy audit, modes, and parent existence in memory; any file or CAS failure
+  restores their exact prior bytes and removes only parents it created before it
+  returns failure. Migration failure then enters the same exact container
+  rollback arm before staging starts:
     if docker stop ouro-butler \
       && remove_stopped_rollback_if_present "$ROLLBACK_IMAGE_ID" \
       && docker rename ouro-butler ouro-butler-rollback \
-      && test "$(docker inspect --format '{{.State.Running}}' ouro-butler-rollback)" = false; then
+      && test "$(docker inspect --format '{{.State.Running}}' ouro-butler-rollback)" = false \
+      && migrate_sanctuary_package_managed_bundle "$IMAGE_ID"; then
       :
     else
       PRODUCTION_PREPARATION_STATUS=$?
