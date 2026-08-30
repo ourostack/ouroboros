@@ -95,6 +95,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          gh api --method PATCH /orgs/ourostack/packages/container/ouroboros-butler -f visibility=public
           VISIBILITY=$(gh api /orgs/ourostack/packages/container/ouroboros-butler --jq .visibility)
           test "$VISIBILITY" = "public"
 

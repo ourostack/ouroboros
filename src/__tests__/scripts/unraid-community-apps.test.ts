@@ -30,7 +30,8 @@ describe("Mendelow Cloud Butler Community Apps release", () => {
   it("publishes one complete versioned Community Apps template", () => {
     const template = fs.readFileSync("deploy/unraid/sanctuary.xml", "utf8")
 
-    expect(template).toContain("<Name>Mendelow Cloud Butler</Name>")
+    expect(template).toContain("<Name>ouro-butler</Name>")
+    expect(template).toContain("<Overview>Mendelow Cloud Butler")
     expect(template).toContain(`<Repository>ghcr.io/ourostack/ouroboros-butler:${packageVersion.version}</Repository>`)
     expect(template).toContain("<Registry>https://github.com/ourostack/ouroboros/pkgs/container/ouroboros-butler</Registry>")
     expect(template).toContain("<Support>https://github.com/ourostack/ouroboros/issues</Support>")
@@ -88,9 +89,15 @@ describe("Mendelow Cloud Butler Community Apps release", () => {
     expect(workflow).toContain("--format '{{json .SBOM}}'")
     expect(workflow).toContain('["linux/amd64", "linux/arm64"]')
     expect(workflow).toContain("gh api /orgs/ourostack/packages/container/ouroboros-butler --jq .visibility")
+    expect(workflow).toContain("gh api --method PATCH /orgs/ourostack/packages/container/ouroboros-butler -f visibility=public")
     expect(workflow).toContain("docker logout ghcr.io")
-    expect(workflow).not.toContain("--method PATCH")
-    expect(workflow).not.toContain("visibility=public")
+    const publishIndex = workflow.indexOf("uses: docker/build-push-action@v6")
+    const visibilityMutationIndex = workflow.indexOf("gh api --method PATCH /orgs/ourostack/packages/container/ouroboros-butler -f visibility=public")
+    const visibilityVerificationIndex = workflow.indexOf("VISIBILITY=$(gh api /orgs/ourostack/packages/container/ouroboros-butler --jq .visibility)")
+    const anonymousVerificationIndex = workflow.indexOf("docker logout ghcr.io")
+    expect(visibilityMutationIndex).toBeGreaterThan(publishIndex)
+    expect(visibilityVerificationIndex).toBeGreaterThan(visibilityMutationIndex)
+    expect(anonymousVerificationIndex).toBeGreaterThan(visibilityVerificationIndex)
   })
 
   it("installs privileged event assets from the exact reviewed image before Butler mutation", () => {
@@ -134,6 +141,18 @@ describe("Mendelow Cloud Butler Community Apps release", () => {
     expect(cleanupIndex).toBeGreaterThan(stagedAuditIndex)
     expect(firstButlerStopIndex).toBeGreaterThan(verifyIndex)
     expect(firstButlerCreateIndex).toBeGreaterThan(verifyIndex)
+  })
+
+  it("keeps installed guard scripts root-executable and verifies the same exact modes", () => {
+    const installer = fs.readFileSync("deploy/unraid/ouro-events/install-usenet-guard.sh", "utf8")
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const targetNames = installer.match(/^ASSET_NAMES=\(([^)]+)\)$/mu)?.[1].split(/\s+/u) ?? []
+    const verifiedModes = [...runbook.matchAll(/stat -c '%u:%g:%a' \/boot\/config\/custom\/(?:ouro-events\/)?(?:usenet_health\.sh|bootstrap-spool\.sh|emit-event\.mjs|emit-usenet-event\.sh|install-usenet-guard\.sh)\)" = ([0-9:]+)/gu)].map((match) => match[1])
+
+    expect(targetNames).toEqual(["usenet-health.sh", "bootstrap-spool.sh", "emit-event.mjs", "emit-usenet-event.sh", "install-usenet-guard.sh"])
+    expect(installer).toContain('atomic_install "$stage/${ASSET_NAMES[$index]}" "${TARGET_PATHS[$index]}" 0700')
+    expect(installer).not.toMatch(/TARGET_PATHS=.*(?:credential|secret|token|\.ini)/iu)
+    expect(verifiedModes).toEqual(Array(5).fill("0:0:700"))
   })
 
   it("documents the exact two read-write and two read-only production mounts", () => {
