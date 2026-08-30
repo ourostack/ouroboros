@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest"
 import * as fs from "fs"
 import * as path from "path"
 import * as os from "os"
+import Database from "better-sqlite3"
 import {
   createCare,
   readCares,
@@ -17,6 +18,35 @@ import { expectCappedAgentContent, makeOversizedAgentContent } from "../helpers/
 
 describe("care store", () => {
   let tmpDir: string
+
+  function createMutationLease(pid?: number): string {
+    const lockPath = path.join(tmpDir, "arc", "cares", ".mutation.turn.lock")
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true })
+    const database = new Database(lockPath)
+    database.exec(`
+      CREATE TABLE session_turn_lease (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        pid INTEGER NOT NULL,
+        owner_id TEXT NOT NULL,
+        owner_token TEXT NOT NULL
+      )
+    `)
+    if (pid !== undefined) {
+      database.prepare("INSERT INTO session_turn_lease (singleton, pid, owner_id, owner_token) VALUES (1, ?, ?, ?)")
+        .run(pid, "test-owner", "test-token")
+    }
+    database.close()
+    return lockPath
+  }
+
+  function mutationLeaseCount(lockPath: string): number {
+    const database = new Database(lockPath)
+    try {
+      return (database.prepare("SELECT COUNT(*) AS count FROM session_turn_lease").get() as { count: number }).count
+    } finally {
+      database.close()
+    }
+  }
 
   const baseCareInput = {
     label: "harness reliability",
@@ -112,31 +142,24 @@ describe("care store", () => {
       expect(fs.existsSync(caresDir)).toBe(true)
     })
 
-    it("recovers a stale incomplete cross-process mutation lock", () => {
-      const lockDir = path.join(tmpDir, "arc", "cares", ".mutation.lock")
-      fs.mkdirSync(lockDir, { recursive: true })
-      const stale = new Date(Date.now() - 60_000)
-      fs.utimesSync(lockDir, stale, stale)
+    it("claims an ownerless canonical mutation lease", () => {
+      const lockPath = createMutationLease()
 
       const care = createCare(tmpDir, baseCareInput)
 
       expect(care.label).toBe("harness reliability")
-      expect(fs.existsSync(lockDir)).toBe(false)
+      expect(mutationLeaseCount(lockPath)).toBe(0)
     })
 
-    it("recovers a mutation lock owned by a dead process", () => {
-      const lockDir = path.join(tmpDir, "arc", "cares", ".mutation.lock")
-      fs.mkdirSync(lockDir, { recursive: true })
-      fs.writeFileSync(path.join(lockDir, "owner"), JSON.stringify({ owner: "dead", pid: 2_147_483_647 }))
+    it("recovers a canonical mutation lease owned by a dead process", () => {
+      const lockPath = createMutationLease(2_147_483_647)
 
       expect(createCare(tmpDir, baseCareInput).label).toBe("harness reliability")
-      expect(fs.existsSync(lockDir)).toBe(false)
+      expect(mutationLeaseCount(lockPath)).toBe(0)
     })
 
-    it("fails closed while another live process owns the mutation lock", () => {
-      const lockDir = path.join(tmpDir, "arc", "cares", ".mutation.lock")
-      fs.mkdirSync(lockDir, { recursive: true })
-      fs.writeFileSync(path.join(lockDir, "owner"), JSON.stringify({ owner: "live", pid: process.pid }))
+    it("fails closed while another live process owns the canonical mutation lease", () => {
+      createMutationLease(process.pid)
 
       expect(() => createCare(tmpDir, baseCareInput)).toThrow(/busy/u)
     })
