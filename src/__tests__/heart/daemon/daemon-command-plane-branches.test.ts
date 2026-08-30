@@ -1089,6 +1089,35 @@ describe("daemon command plane branches", () => {
     }
   })
 
+  it("skips corrupt and explicitly undispatched external-event receipts during reconciliation", async () => {
+    const socketPath = tmpSocketPath("daemon-external-event-skip")
+    const externalEventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "external-event-skip-root-"))
+    const disabled = recordExternalEvent({
+      agent: "slugger",
+      source: "sanctuary-health",
+      eventType: "health.observed",
+      eventId: "disabled",
+    }, { root: externalEventRoot, dispatchEnabled: false })
+    const corruptPath = path.join(externalEventRoot, "slugger", "sanctuary-health", "corrupt.json")
+    fs.writeFileSync(corruptPath, "{bad")
+    const { daemon, processManager } = make(socketPath, undefined, { externalEventRoot })
+
+    try {
+      await (daemon as any).reconcileExternalEvents()
+      expect(processManager.sendToAgent).not.toHaveBeenCalled()
+      expect(readExternalEventRecord(disabled.recordPath)).toMatchObject({
+        dispatchEnabled: false,
+        executionState: "received",
+      })
+      expect(listExternalEventStatus(externalEventRoot)).toEqual(expect.arrayContaining([
+        expect.objectContaining({ eventId: "corrupt", corrupt: true }),
+        expect.objectContaining({ eventId: "disabled", dispatchEnabled: false }),
+      ]))
+    } finally {
+      fs.rmSync(externalEventRoot, { recursive: true, force: true })
+    }
+  })
+
   it("coalesces one source's incident receipts into one turn with independently fenced leases", async () => {
     const socketPath = tmpSocketPath("daemon-external-event-batch")
     const ledgerPath = path.join(os.tmpdir(), `external-event-batch-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
