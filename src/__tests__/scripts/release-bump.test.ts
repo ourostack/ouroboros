@@ -58,6 +58,20 @@ function makeReleaseRoot(): string {
       },
     ],
   })
+  fs.mkdirSync(path.join(root, "deploy/unraid/sanctuary.ouro"), { recursive: true })
+  fs.writeFileSync(path.join(root, "deploy/unraid/sanctuary.xml"), [
+    "<?xml version=\"1.0\"?>",
+    "<Container version=\"2\">",
+    "  <Repository>ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.587</Repository>",
+    "  <Overview>preserve me</Overview>",
+    "</Container>",
+    "",
+  ].join("\n"))
+  writeJson(path.join(root, "deploy/unraid/sanctuary.ouro/bundle-meta.json"), {
+    runtimeVersion: "0.1.0-alpha.587",
+    bundleSchemaVersion: 3,
+    lastUpdated: "2026-08-30T00:00:00.000Z",
+  })
   return root
 }
 
@@ -82,6 +96,8 @@ describe("release-bump helper", () => {
           "npm-shrinkwrap.json",
           "packages/ouro.bot/package.json",
           "changelog.json",
+          "deploy/unraid/sanctuary.xml",
+          "deploy/unraid/sanctuary.ouro/bundle-meta.json",
         ],
       })
       expect(readJson(path.join(root, "package.json")).version).toBe("0.1.0-alpha.588")
@@ -90,6 +106,15 @@ describe("release-bump helper", () => {
       expect(readJson(path.join(root, "npm-shrinkwrap.json")).version).toBe("0.1.0-alpha.588")
       expect(readJson(path.join(root, "npm-shrinkwrap.json")).packages[""].version).toBe("0.1.0-alpha.588")
       expect(readJson(path.join(root, "packages/ouro.bot/package.json")).version).toBe("0.1.0-alpha.588")
+      expect(fs.readFileSync(path.join(root, "deploy/unraid/sanctuary.xml"), "utf8")).toContain(
+        "<Repository>ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.588</Repository>",
+      )
+      expect(fs.readFileSync(path.join(root, "deploy/unraid/sanctuary.xml"), "utf8")).toContain("<Overview>preserve me</Overview>")
+      expect(readJson(path.join(root, "deploy/unraid/sanctuary.ouro/bundle-meta.json"))).toEqual({
+        runtimeVersion: "0.1.0-alpha.588",
+        bundleSchemaVersion: 3,
+        lastUpdated: "2026-08-30T00:00:00.000Z",
+      })
 
       const changelog = readJson(path.join(root, "changelog.json"))
       expect(changelog.versions[0]).toEqual({
@@ -147,6 +172,19 @@ describe("release-bump helper", () => {
       expect(() => bumpReleaseVersion({ root, version: "0.1.0-alpha.588", changes: [] })).toThrow(
         "at least one --change entry is required",
       )
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it("fails before writing when the Sanctuary image coordinate is not exact", () => {
+    const root = makeReleaseRoot()
+    try {
+      fs.writeFileSync(path.join(root, "deploy/unraid/sanctuary.xml"), "<Container><Repository>wrong/image:old</Repository></Container>\n")
+      expect(() => bumpReleaseVersion({ root, version: "0.1.0-alpha.588", changes: ["note"] })).toThrow(
+        "sanctuary.xml must contain exactly one Butler Repository tag",
+      )
+      expect(readJson(path.join(root, "package.json")).version).toBe("0.1.0-alpha.587")
     } finally {
       fs.rmSync(root, { recursive: true, force: true })
     }

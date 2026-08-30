@@ -10,7 +10,11 @@ const CHANGED_FILES = [
   "npm-shrinkwrap.json",
   "packages/ouro.bot/package.json",
   "changelog.json",
+  "deploy/unraid/sanctuary.xml",
+  "deploy/unraid/sanctuary.ouro/bundle-meta.json",
 ]
+
+const SANCTUARY_REPOSITORY = /<Repository>ghcr\.io\/ourostack\/ouroboros-butler:[^<]+<\/Repository>/g
 
 function parseArgs(argv) {
   const options = {
@@ -91,6 +95,14 @@ function updateChangelog(changelog, version, changes) {
   }
 }
 
+function updateSanctuaryRepository(template, version) {
+  const matches = template.match(SANCTUARY_REPOSITORY) ?? []
+  if (matches.length !== 1) {
+    throw new Error("deploy/unraid/sanctuary.xml must contain exactly one Butler Repository tag")
+  }
+  return template.replace(SANCTUARY_REPOSITORY, `<Repository>ghcr.io/ourostack/ouroboros-butler:${version}</Repository>`)
+}
+
 function bumpReleaseVersion(input) {
   const root = path.resolve(input.root ?? process.cwd())
   const version = input.version
@@ -101,12 +113,16 @@ function bumpReleaseVersion(input) {
   const shrinkwrapPath = path.join(root, "npm-shrinkwrap.json")
   const wrapperPackageJsonPath = path.join(root, "packages/ouro.bot/package.json")
   const changelogPath = path.join(root, "changelog.json")
+  const sanctuaryTemplatePath = path.join(root, "deploy/unraid/sanctuary.xml")
+  const sanctuaryBundleMetaPath = path.join(root, "deploy/unraid/sanctuary.ouro/bundle-meta.json")
 
   const packageJson = readJson(packageJsonPath)
   const packageLock = readJson(packageLockPath)
   const shrinkwrap = readJson(shrinkwrapPath)
   const wrapperPackageJson = readJson(wrapperPackageJsonPath)
   const changelog = readJson(changelogPath)
+  const sanctuaryTemplate = updateSanctuaryRepository(fs.readFileSync(sanctuaryTemplatePath, "utf8"), version)
+  const sanctuaryBundleMeta = readJson(sanctuaryBundleMetaPath)
 
   packageJson.version = version
   packageLock.version = version
@@ -120,6 +136,7 @@ function bumpReleaseVersion(input) {
   }
   shrinkwrap.packages[""].version = version
   wrapperPackageJson.version = version
+  sanctuaryBundleMeta.runtimeVersion = version
   updateChangelog(changelog, version, changes)
 
   writeJson(packageJsonPath, packageJson)
@@ -127,6 +144,8 @@ function bumpReleaseVersion(input) {
   writeJson(shrinkwrapPath, shrinkwrap)
   writeJson(wrapperPackageJsonPath, wrapperPackageJson)
   writeJson(changelogPath, changelog)
+  fs.writeFileSync(sanctuaryTemplatePath, sanctuaryTemplate)
+  writeJson(sanctuaryBundleMetaPath, sanctuaryBundleMeta)
 
   return {
     version,
