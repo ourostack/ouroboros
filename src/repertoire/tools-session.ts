@@ -45,7 +45,8 @@ import { readStewardPolicy, type StewardPolicyRecord } from "../heart/steward-po
 import { parseAwaitFile, type AwaitFile } from "../heart/awaiting/await-parser";
 import { getDefaultHealthPath, readHealth, type DaemonHealthState } from "../heart/daemon/daemon-health";
 import { readSenseStatusLines } from "../heart/turn-context";
-import { readSanctuaryHealthState, type HealthState } from "../senses/sanctuary-health";
+import { FileTelegramEffectJournal, type TelegramEffectPartState } from "../senses/telegram-effect-adapter";
+import { FileTelegramAdmissionStore, type TelegramAdmissionStatus } from "../senses/telegram-admission";
 
 const NO_SESSION_FOUND_MESSAGE = "no session found for that friend/channel/key combination."
 const EMPTY_SESSION_MESSAGE = "session exists but has no non-system messages."
@@ -414,10 +415,11 @@ export interface ButlerOperationalVisibility {
   externalEvents: ExternalEventStatus[]
   stewardPolicy: StewardPolicyRecord
   awaits: AwaitFile[]
-  telegramDelivery: Pick<HealthState, "outbox" | "indeterminateDeliveries" | "deliveredReceipts" | "updatedAt">
+  telegramEffects: Array<{ id: string; authorClass: string; targetKind: string; state: TelegramEffectPartState; updatedAt: string }>
+  telegramAdmissions: Array<{ id: string; status: TelegramAdmissionStatus; displayCode: string; createdAt: number; expiresAt: number }>
   daemonHealth: DaemonHealthState | null
   senseStatusLines: string[]
-  sourceErrors: Partial<Record<"external_events" | "awaits" | "telegram_delivery" | "daemon_health" | "senses" | "steward_policy", string>>
+  sourceErrors: Partial<Record<"external_events" | "awaits" | "telegram_effects" | "telegram_admissions" | "daemon_health" | "senses" | "steward_policy", string>>
 }
 
 function boundedStatusText(value: string, max = 180): string {
@@ -441,19 +443,39 @@ export function readButlerOperationalVisibility(agentRoot = getAgentRoot(), agen
       return parseAwaitFile(fs.readFileSync(filePath, "utf8"), filePath)
     })
     .filter((entry) => entry.status === "pending") : [], [])
-  const healthPath = path.join(agentRoot, "state", "health", "sanctuary-health.json")
-  const health = read("telegram_delivery", () => {
-    if (!fs.existsSync(healthPath)) throw new Error("health delivery state has not been written yet")
-    return readSanctuaryHealthState(healthPath)
-  }, {
-    incidents: {}, lastDigestDay: null, updatedAt: new Date(0).toISOString(), outbox: null, indeterminateDeliveries: [], deliveredReceipts: [], sweepReceipts: [],
-  })
+  const effectsRoot = path.join(agentRoot, "state", "telegram", "effects")
+  const telegramEffects = read("telegram_effects", () => {
+    if (!fs.existsSync(effectsRoot)) throw new Error("Telegram effect journal has not been created yet")
+    const journal = new FileTelegramEffectJournal(effectsRoot)
+    try {
+      return journal.list().map((artifact) => ({
+        id: artifact.id,
+        authorClass: artifact.authorClass,
+        targetKind: artifact.target.kind,
+        state: artifact.parts.some((part) => part.state === "indeterminate") ? "indeterminate" as const
+          : artifact.parts.some((part) => part.state === "attempting") ? "attempting" as const
+            : artifact.parts.every((part) => part.state === "session_recorded") ? "session_recorded" as const
+              : artifact.parts.some((part) => part.state === "accepted") ? "accepted" as const
+                : "prepared" as const,
+        updatedAt: artifact.updatedAt,
+      }))
+    } finally { journal.close() }
+  }, [])
+  const admissionsRoot = path.join(agentRoot, "state", "senses", "telegram", "admissions")
+  const telegramAdmissions = read("telegram_admissions", () => {
+    if (!fs.existsSync(admissionsRoot)) throw new Error("Telegram admission store has not been created yet")
+    const store = new FileTelegramAdmissionStore(admissionsRoot)
+    try {
+      return store.list().map((record) => ({ id: record.id, status: record.status, displayCode: record.displayCode, createdAt: record.createdAt, expiresAt: record.expiresAt }))
+    } finally { store.close() }
+  }, [])
   return {
     agentName,
     externalEvents: read("external_events", () => listExternalEventStatus(getExternalEventRoot()).filter((event) => event.agent === agentName), []),
     stewardPolicy: read("steward_policy", () => readStewardPolicy(agentRoot), { schemaVersion: 1, version: 0, desiredStates: {}, routineActionGrants: {}, updatedAt: null }),
     awaits,
-    telegramDelivery: { outbox: health.outbox, indeterminateDeliveries: health.indeterminateDeliveries, deliveredReceipts: health.deliveredReceipts, updatedAt: health.updatedAt },
+    telegramEffects,
+    telegramAdmissions,
     daemonHealth: read("daemon_health", () => {
       const health = readHealth(getDefaultHealthPath())
       if (!health) throw new Error("daemon health is missing or invalid")
@@ -474,11 +496,22 @@ export function formatButlerOperationalVisibility(status: ButlerOperationalVisib
   lines.push("- senses:")
   lines.push(...(error("senses") ? [`  - ${error("senses")}`] : status.senseStatusLines.length > 0 ? status.senseStatusLines.map((line) => `  ${line}`) : ["  - unavailable"]))
   lines.push(`- steward policy: ${error("steward_policy") ?? `version ${status.stewardPolicy.version}; ${Object.keys(status.stewardPolicy.desiredStates).length} desired states; ${Object.keys(status.stewardPolicy.routineActionGrants).length} routine grants`}`)
+  if (!error("steward_policy")) {
+    for (const [key, entry] of Object.entries(status.stewardPolicy.desiredStates).slice(0, 20)) lines.push(`  - ${key} = ${boundedStatusText(entry.value)}; ${entry.provenance}; source ${boundedStatusText(entry.source)}; v${entry.version}${entry.expiresAt ? `; expires ${entry.expiresAt}` : ""}`)
+    for (const [key, grant] of Object.entries(status.stewardPolicy.routineActionGrants).slice(0, 20)) lines.push(`  - ${key}: ${grant.action} on ${grant.targets.join(", ")}; max ${grant.maxCount}/${grant.windowMs}ms; ${grant.verificationRequired ? "verification required" : "no verification"}; ${grant.provenance}; v${grant.version}${grant.expiresAt ? `; expires ${grant.expiresAt}` : ""}`)
+    const policyOverflow = Math.max(0, Object.keys(status.stewardPolicy.desiredStates).length - 20) + Math.max(0, Object.keys(status.stewardPolicy.routineActionGrants).length - 20)
+    if (policyOverflow > 0) lines.push(`  - ${policyOverflow} more policy entries in the canonical steward policy`)
+  }
   lines.push(`- pending awaits: ${status.awaits.length}`)
   if (error("awaits")) lines.push(`  - ${error("awaits")}`)
   for (const pending of status.awaits.slice(0, 20)) lines.push(`  - ${pending.name}: ${boundedStatusText(pending.condition ?? (pending.body || "condition unavailable"))}${pending.wake_at ? `; wake ${pending.wake_at}` : ""}`)
   if (status.awaits.length > 20) lines.push(`  - ${status.awaits.length - 20} more; inspect awaiting/ for the full canonical list`)
-  lines.push(`- Telegram outbox: ${error("telegram_delivery") ?? `${status.telegramDelivery.outbox ? `${status.telegramDelivery.outbox.status} ${status.telegramDelivery.outbox.id}` : "clear"}; indeterminate ${status.telegramDelivery.indeterminateDeliveries.length}; delivered receipts ${status.telegramDelivery.deliveredReceipts.length}; updated ${status.telegramDelivery.updatedAt}`}`)
+  lines.push(`- Telegram effects: ${error("telegram_effects") ?? status.telegramEffects.length}`)
+  for (const effect of [...status.telegramEffects].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)).slice(0, 20)) lines.push(`  - ${effect.id}: ${effect.state}; ${effect.authorClass}; ${effect.targetKind}; updated ${effect.updatedAt}`)
+  if (status.telegramEffects.length > 20) lines.push(`  - ${status.telegramEffects.length - 20} more in the canonical effect journal`)
+  lines.push(`- Telegram admissions: ${error("telegram_admissions") ?? status.telegramAdmissions.length}`)
+  for (const admission of [...status.telegramAdmissions].sort((left, right) => right.createdAt - left.createdAt).slice(0, 20)) lines.push(`  - ${admission.id}: ${admission.status}; code ${admission.displayCode}; expires ${new Date(admission.expiresAt).toISOString()}`)
+  if (status.telegramAdmissions.length > 20) lines.push(`  - ${status.telegramAdmissions.length - 20} more in the canonical admission store`)
   lines.push(`- external issues: ${status.externalEvents.length}`)
   if (error("external_events")) lines.push(`  - ${error("external_events")}`)
   const visibleEvents = [...status.externalEvents].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)).slice(0, 20)
