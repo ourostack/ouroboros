@@ -35,7 +35,7 @@ function evidenceInputs(agentName: string, result: SanctuaryHealthSweepResult): 
     eventType: "health.observed",
     eventId: incident.id,
     observationRevision: incident.observationRevision ?? revision,
-    transition: result.transition ?? "changed",
+    transition: incident.transition ?? result.transition ?? "changed",
     summary: incident.summary,
     evidence: [incident.summary],
     priority: "high",

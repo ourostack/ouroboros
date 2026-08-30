@@ -35,6 +35,7 @@ describe("parseAwaitFile", () => {
       alert: "bluebubbles",
       mode: "full",
       max_age: "24h",
+      wake_at: null,
       status: "pending",
       created_at: "2026-05-10T20:00:00.000Z",
       filed_from: "cli",
@@ -269,6 +270,7 @@ describe("parseAwaitFile", () => {
       "resolution_observation",
       "resolved_at",
       "status",
+      "wake_at",
     ].filter((v, i, a) => a.indexOf(v) === i))
   })
 

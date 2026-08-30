@@ -131,6 +131,7 @@ export interface TelegramAdmissionDependencies {
 export interface TelegramSenseApp {
   run(signal?: AbortSignal): Promise<void>
   sendProactive(text: string, signal?: AbortSignal): Promise<void>
+  sendExternalEventDecision(input: { eventId: string; generation: number; text: string; signal?: AbortSignal }): Promise<void>
   stop(): Promise<void>
 }
 
@@ -1573,6 +1574,15 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         await recordAcceptedEffects(sessionPath, [effect])
       })
     },
+    async sendExternalEventDecision(input) {
+      const eventId = requiredText(input.eventId, "external event id")
+      if (Buffer.byteLength(eventId) > 512 || !Number.isSafeInteger(input.generation) || input.generation < 1) throw new Error("Telegram external event identity is invalid")
+      await runWithAcceptanceAuditOwner(async () => {
+        const effect = await deliverButlerEffect(requiredText(input.text, "external event decision"), `external-event:${eventId}:${input.generation}`, input.signal)
+        const sessionPath = getSenseSessionPath(options.agentName, `telegram-user:${subject}`, "telegram", `telegram:${subject}`, agentRoot)
+        await recordAcceptedEffects(sessionPath, [effect])
+      })
+    },
     stop() {
       if (stopPromise) return stopPromise
       stopPromise = (async () => {
@@ -1746,4 +1756,16 @@ export async function startTelegramSenseApp(agentName: string): Promise<Telegram
     meta: { agentName },
   })
   return app
+}
+
+export async function sendTelegramExternalEventDecision(
+  agentName: string,
+  input: { eventId: string; generation: number; text: string; signal?: AbortSignal },
+): Promise<void> {
+  const app = await startTelegramSenseApp(agentName)
+  try {
+    await app.sendExternalEventDecision(input)
+  } finally {
+    await app.stop()
+  }
 }

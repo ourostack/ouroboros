@@ -18,7 +18,7 @@ export type ExternalEventWakePredicate =
 export interface ExternalEventDisposition {
   classifiedRevision: string
   classification: ExternalEventClassification
-  stewardPolicy: { key: string; version: number }
+  stewardPolicy: { kind: "current"; key: string; version: number } | { kind: "none" }
   decision: ExternalEventDecision
   reason: string
   nextWake: ExternalEventWakePredicate
@@ -424,7 +424,7 @@ export interface ExternalEventStatus {
   classification: ExternalEventClassification | null
   decision: ExternalEventDecision | null
   reason: string | null
-  stewardPolicy: { key: string; version: number } | null
+  stewardPolicy: ExternalEventDisposition["stewardPolicy"] | null
   nextWake: ExternalEventWakePredicate | null
   careId: string | null
   awaitId: string | null
@@ -1014,7 +1014,10 @@ function assertClaim(record: ExternalEventRecord, input: CasInput & { owner: str
 
 function validateDisposition(disposition: ExternalEventDisposition): void {
   assertBoundedText(disposition.classifiedRevision, "classified revision", 256)
-  assertBoundedText(disposition.stewardPolicy.key, "steward policy key", 256)
+  if (disposition.stewardPolicy.kind === "current") {
+    assertBoundedText(disposition.stewardPolicy.key, "steward policy key", 256)
+    if (!Number.isSafeInteger(disposition.stewardPolicy.version) || disposition.stewardPolicy.version < 1) throw new Error("External event steward policy version is invalid")
+  } else if (disposition.stewardPolicy.kind !== "none") throw new Error("External event steward policy is invalid")
   assertBoundedText(disposition.reason, "disposition reason")
   assertBoundedText(disposition.careId ?? undefined, "Care id", 256)
   assertBoundedText(disposition.awaitId ?? undefined, "await id", 256)

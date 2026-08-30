@@ -3,6 +3,7 @@ import * as fs from "node:fs"
 import { randomUUID } from "node:crypto"
 import { capStructuredRecordString } from "../heart/session-events"
 import { emitNervesEvent } from "../nerves/runtime"
+import { withImmediateSessionTurnLease } from "../mind/session-transaction"
 import { generateTimestampId, readJsonDir, readJsonFileOrThrow } from "./json-store"
 
 export type CareKind = "person" | "agent" | "project" | "mission" | "system"
@@ -43,57 +44,8 @@ function caresDir(agentRoot: string): string {
 
 function withCareMutationLock<T>(agentRoot: string, operation: () => T): T {
   const dir = caresDir(agentRoot)
-  const lockPath = path.join(dir, ".mutation.lock")
-  const ownerPath = path.join(lockPath, "owner")
-  const owner = randomUUID()
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
-  const deadline = Date.now() + 1_000
-  for (;;) {
-    try {
-      fs.mkdirSync(lockPath, { mode: 0o700 })
-      fs.writeFileSync(ownerPath, JSON.stringify({ owner, pid: process.pid }), { mode: 0o600, flag: "wx" })
-      break
-    } catch (error) {
-      /* v8 ignore next -- defensive: mkdirSync either acquires the lock or reports EEXIST in this loop @preserve */
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
-      let incumbent: { owner?: unknown; pid?: unknown } | null = null
-      try { incumbent = JSON.parse(fs.readFileSync(ownerPath, "utf8")) as { owner?: unknown; pid?: unknown } } catch { /* incomplete acquisition remains busy */ }
-      let staleIncomplete = false
-      if (!Number.isSafeInteger(incumbent?.pid)) {
-        try { staleIncomplete = Date.now() - fs.statSync(lockPath).mtimeMs > 30_000 } catch { /* another contender may be replacing it */ }
-      }
-      let alive = true
-      if (Number.isSafeInteger(incumbent?.pid) && Number(incumbent?.pid) > 0) {
-        try { process.kill(Number(incumbent?.pid), 0) } catch (killError) { alive = (killError as NodeJS.ErrnoException).code === "EPERM" }
-      }
-      if (!alive || staleIncomplete) {
-        const stalePath = `${lockPath}.stale-${owner}`
-        try {
-          fs.renameSync(lockPath, stalePath)
-          const staleOwner = path.join(stalePath, "owner")
-          if (fs.existsSync(staleOwner)) fs.unlinkSync(staleOwner)
-          fs.rmdirSync(stalePath)
-          continue
-        } catch { /* another contender won */ }
-      }
-      if (Date.now() >= deadline) throw new Error("Care mutation is busy")
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)
-    }
-  }
-  try {
-    return operation()
-  } finally {
-    try {
-      const current = JSON.parse(fs.readFileSync(ownerPath, "utf8")) as { owner?: unknown }
-      /* v8 ignore else -- concurrency fence: a replaced owner must not release its successor's lock @preserve */
-      if (current.owner === owner) {
-        fs.unlinkSync(ownerPath)
-        fs.rmdirSync(lockPath)
-      }
-    } catch {
-      // Never remove a lock that no longer belongs to this mutation.
-    }
-  }
+  return withImmediateSessionTurnLease(path.join(dir, ".mutation"), () => operation())
 }
 
 function writeCareFile(agentRoot: string, care: CareRecord): void {

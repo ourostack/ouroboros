@@ -1614,6 +1614,22 @@ describe("Telegram sense", () => {
     expect(artifact).toMatchObject({ authorClass: "butler", effect: { kind: "text", text: "Array recovered" }, parts: [{ state: "session_recorded", messageId: 71 }] })
   })
 
+  it("records one event-generation owner decision through the existing effect and Telegram session", async () => {
+    const f = fixture()
+    await f.app.sendExternalEventDecision({ eventId: "container:books", generation: 4, text: "Books is still down. I’m looking into it." })
+    await f.app.sendExternalEventDecision({ eventId: "container:books", generation: 4, text: "Books is still down. I’m looking into it." })
+
+    expect(f.api.request).toHaveBeenCalledTimes(1)
+    const effectRoot = path.join(f.agentRoot, "state", "telegram", "effects")
+    const artifact = JSON.parse(fs.readFileSync(path.join(effectRoot, fs.readdirSync(effectRoot)[0]!), "utf8"))
+    expect(artifact).toMatchObject({ idempotencyKey: "external-event:container:books:4", authorClass: "butler", parts: [{ state: "session_recorded", messageId: 71 }] })
+    const sessionRoot = path.join(f.agentRoot, "state", "sessions")
+    const sessionFile = fs.readdirSync(sessionRoot, { recursive: true }).find((entry) => String(entry).endsWith(".json"))
+    expect(sessionFile).toBeDefined()
+    const session = JSON.parse(fs.readFileSync(path.join(sessionRoot, String(sessionFile)), "utf8"))
+    expect(session.events.filter((event: any) => event.content === "Books is still down. I’m looking into it.")).toHaveLength(1)
+  })
+
   it("runs the verified privileged failsafe through the existing Telegram startup reconciliation and records it once", async () => {
     const eventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-failsafe-events-"))
     const recordPath = writeEligibleFailsafeRecord(eventRoot)

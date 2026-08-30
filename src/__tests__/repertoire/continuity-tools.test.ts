@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import * as fs from "fs"
 
 // ── Mock continuity store modules ────────────────────────────────
 
@@ -78,6 +79,7 @@ vi.mock("fs", () => ({
   readdirSync: vi.fn().mockReturnValue([]),
   mkdirSync: vi.fn(),
   statSync: vi.fn().mockReturnValue({ mtimeMs: 0 }),
+  lstatSync: vi.fn().mockReturnValue({ isFile: () => true, isSymbolicLink: () => false }),
   unlinkSync: vi.fn(),
   renameSync: vi.fn(),
   appendFileSync: vi.fn(),
@@ -127,6 +129,11 @@ function findTool(name: string): ToolDefinition {
 describe("continuity tools", () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    vi.mocked(fs.existsSync).mockImplementation((filePath) => String(filePath).endsWith("steward.json"))
+    vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => String(filePath).endsWith("steward.json")
+      ? JSON.stringify({ schemaVersion: 1, version: 2, desiredStates: { "service:books": { value: "on", provenance: "stated", version: 2, source: "ari" }, "service:sonarr": { value: "on", provenance: "stated", version: 2, source: "ari" }, test: { value: "on", provenance: "stated", version: 2, source: "ari" } }, routineActionGrants: {}, updatedAt: "2026-08-29T00:00:00.000Z" })
+      : "")
+    mockReadCares.mockReturnValue([])
   })
 
   describe("query_episodes", () => {
@@ -345,6 +352,50 @@ describe("continuity tools", () => {
   })
 
   describe("external_event_disposition", () => {
+    it("delivers an explicit current-policy report once before committing the disposition", async () => {
+      vi.mocked(fs.existsSync).mockImplementation((filePath) => String(filePath).endsWith("steward.json"))
+      vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => String(filePath).endsWith("steward.json")
+        ? JSON.stringify({ schemaVersion: 1, version: 4, desiredStates: { "service:books": { value: "on", provenance: "stated", version: 4, source: "ari" } }, routineActionGrants: {}, updatedAt: "2026-08-29T00:00:00.000Z" })
+        : "")
+      mockReadExternalEventRecord.mockReturnValue({ agent: "ouroboros", source: "sanctuary-health", eventId: "books", transition: "opened", version: 4, generation: 2, observationRevision: "rev-2", executionState: "running", claimOwner: "lease-2" })
+      mockCommitExternalEventDisposition.mockReturnValue({ executionState: "handled" })
+      const deliverOwnerDecision = vi.fn(async () => undefined)
+
+      await findTool("external_event_disposition").handler({
+        recordPath: "/events/ouroboros/sanctuary-health/books.json", expectedGeneration: 2, classifiedRevision: "rev-2", classification: "needs_attention",
+        stewardPolicyKind: "current", stewardPolicyKey: "service:books", stewardPolicyVersion: 4, decision: "report", reason: "Books is down. I’m checking it now.", nextWake: "on_change",
+      }, {
+        signin: async () => undefined,
+        currentExternalEvent: { schemaVersion: 1, recordPath: "/events/ouroboros/sanctuary-health/books.json", agent: "ouroboros", source: "sanctuary-health", eventId: "books", generation: 2, observationRevision: "rev-2", claimOwner: "lease-2" },
+        externalEventAuthority: { authorizeDisposition: () => ({ allowed: true, reason: "current" }) },
+        externalEventEffects: { deliverOwnerDecision },
+      } as any)
+
+      expect(deliverOwnerDecision).toHaveBeenCalledWith({ eventId: "books", generation: 2, text: "Books is down. I’m checking it now." })
+      expect(deliverOwnerDecision.mock.invocationCallOrder[0]).toBeLessThan(mockCommitExternalEventDisposition.mock.invocationCallOrder[0]!)
+      expect(mockCommitExternalEventDisposition).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ disposition: expect.objectContaining({ stewardPolicy: { kind: "current", key: "service:books", version: 4 } }) }))
+    })
+
+    it("rejects stale current policy and limits no-policy dispositions to fresh observations", async () => {
+      vi.mocked(fs.existsSync).mockReturnValue(false)
+      mockReadExternalEventRecord.mockReturnValue({ agent: "ouroboros", source: "sanctuary-health", eventId: "books", transition: "unchanged", version: 4, generation: 2, observationRevision: "rev-2", executionState: "running", claimOwner: "lease-2" })
+      const context = { signin: async () => undefined, currentExternalEvent: { schemaVersion: 1 as const, recordPath: "/events/ouroboros/sanctuary-health/books.json", agent: "ouroboros", source: "sanctuary-health", eventId: "books", generation: 2, observationRevision: "rev-2", claimOwner: "lease-2" }, externalEventAuthority: { authorizeDisposition: () => ({ allowed: true, reason: "test" }) } }
+      expect(() => findTool("external_event_disposition").handler({ recordPath: context.currentExternalEvent.recordPath, expectedGeneration: 2, classifiedRevision: "rev-2", classification: "expected", stewardPolicyKind: "current", stewardPolicyKey: "service:books", stewardPolicyVersion: 4, decision: "silent", reason: "Expected.", nextWake: "on_change" }, context)).toThrow(/exact current key\/version/u)
+      expect(() => findTool("external_event_disposition").handler({ recordPath: context.currentExternalEvent.recordPath, expectedGeneration: 2, classifiedRevision: "rev-2", classification: "expected", stewardPolicyKind: "none", decision: "silent", reason: "No policy yet.", nextWake: "on_change" }, context)).toThrow(/fresh observation/u)
+    })
+
+    it("validates Care incident ownership and the exact pending Await time", async () => {
+      mockReadExternalEventRecord.mockReturnValue({ agent: "ouroboros", source: "sanctuary-health", eventId: "books", transition: "opened", version: 4, generation: 2, observationRevision: "rev-2", executionState: "running", claimOwner: "lease-2" })
+      mockReadCares.mockReturnValue([{ id: "care-books", incidentBindings: [{ source: "sanctuary-health", incidentKey: "books", classifiedRevision: "rev-2" }] }])
+      vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => String(filePath).endsWith("await-top-up.md") ? "---\nstatus: pending\nwake_at: 2026-08-30T17:00:00.000Z\n---\n\nWaiting.\n" : "")
+      const context = { signin: async () => undefined, currentExternalEvent: { schemaVersion: 1 as const, recordPath: "/events/ouroboros/sanctuary-health/books.json", agent: "ouroboros", source: "sanctuary-health", eventId: "books", generation: 2, observationRevision: "rev-2", claimOwner: "lease-2" }, externalEventAuthority: { authorizeDisposition: () => ({ allowed: true, reason: "test" }) }, externalEventEffects: { deliverOwnerDecision: vi.fn(async () => undefined) } }
+      const base = { recordPath: context.currentExternalEvent.recordPath, expectedGeneration: 2, classifiedRevision: "rev-2", classification: "snoozed", stewardPolicyKind: "none", decision: "silent", reason: "Waiting.", nextWake: "at", wakeAt: "2026-08-30T17:00:00.000Z", awaitId: "await-top-up" }
+      await expect(findTool("external_event_disposition").handler({ ...base, careId: "care-books" }, context)).resolves.toContain("handled")
+      mockReadCares.mockReturnValue([{ id: "care-books", incidentBindings: [{ source: "other", incidentKey: "books", classifiedRevision: "rev-2" }] }])
+      expect(() => findTool("external_event_disposition").handler({ ...base, careId: "care-books" }, context)).toThrow(/Care does not belong/u)
+      mockReadCares.mockReturnValue([])
+      expect(() => findTool("external_event_disposition").handler({ ...base, wakeAt: "2026-08-30T18:00:00.000Z" }, context)).toThrow(/exact wake time/u)
+    })
     it("disposes an independently fenced member of a coalesced event turn", async () => {
       const tool = findTool("external_event_disposition")
       const related = { schemaVersion: 1 as const, recordPath: "/events/ouroboros/sanctuary-health/sonarr.json", agent: "ouroboros", source: "sanctuary-health", eventId: "sonarr", generation: 3, observationRevision: "rev-sonarr", claimOwner: "lease-sonarr" }
@@ -353,13 +404,14 @@ describe("continuity tools", () => {
       const authorizeDisposition = vi.fn(() => ({ allowed: true, reason: "approved" }))
       await tool.handler({
         recordPath: related.recordPath, expectedGeneration: 3, classifiedRevision: "rev-sonarr", classification: "expected",
-        stewardPolicyKey: "service:sonarr", stewardPolicyVersion: 4, decision: "silent", reason: "Expected off.", nextWake: "on_change",
+        stewardPolicyKind: "current",
+        stewardPolicyKey: "service:sonarr", stewardPolicyVersion: 2, decision: "silent", reason: "Expected off.", nextWake: "on_change",
       }, {
         signin: async () => undefined,
         currentExternalEvent: { schemaVersion: 1, recordPath: "/events/ouroboros/sanctuary-health/books.json", agent: "ouroboros", source: "sanctuary-health", eventId: "books", generation: 2, observationRevision: "rev-books", claimOwner: "lease-books", relatedEvents: [related] },
         externalEventAuthority: { authorizeDisposition },
       } as any)
-      expect(authorizeDisposition).toHaveBeenCalledWith(expect.objectContaining({ event: related, stewardPolicyKey: "service:sonarr" }))
+      expect(authorizeDisposition).toHaveBeenCalledWith(expect.objectContaining({ event: related, stewardPolicy: { kind: "current", key: "service:sonarr", version: 2 } }))
       expect(mockCommitExternalEventDisposition).toHaveBeenCalledWith(related.recordPath, expect.objectContaining({ owner: "lease-sonarr", expectedGeneration: 3 }))
     })
     it("claims and commits the current event generation with the Butler's typed reason", async () => {
@@ -371,6 +423,7 @@ describe("continuity tools", () => {
         expectedGeneration: "2",
         classifiedRevision: "rev-2",
         classification: "expected",
+        stewardPolicyKind: "current",
         stewardPolicyKey: "service:books",
         stewardPolicyVersion: 2,
         decision: "silent",
@@ -408,6 +461,7 @@ describe("continuity tools", () => {
         expectedGeneration: "3",
         classifiedRevision: "rev-3",
         classification: "expected",
+        stewardPolicyKind: "current",
         stewardPolicyKey: "service:books",
         stewardPolicyVersion: 2,
         decision: "silent",
@@ -471,6 +525,7 @@ describe("continuity tools", () => {
         expectedGeneration: 2,
         classifiedRevision: "rev-2",
         classification: "expected",
+        stewardPolicyKind: "current",
         stewardPolicyKey: "service:books",
         stewardPolicyVersion: 2,
         decision: "silent",
@@ -492,6 +547,7 @@ describe("continuity tools", () => {
         expectedGeneration: 2,
         classifiedRevision: "rev-2",
         classification: "expected",
+        stewardPolicyKind: "current",
         stewardPolicyKey: "service:books",
         stewardPolicyVersion: 0,
         decision: "silent",
@@ -507,6 +563,7 @@ describe("continuity tools", () => {
 
     it.each([
       ["missing reason", { reason: "" }],
+      ["missing typed policy kind", { stewardPolicyKind: undefined }],
       ["fractional policy version", { stewardPolicyVersion: 1.5 }],
       ["non-positive policy version", { stewardPolicyVersion: 0 }],
       ["unknown classification", { classification: "unknown" }],
@@ -520,6 +577,7 @@ describe("continuity tools", () => {
         expectedGeneration: 2,
         classifiedRevision: "rev-2",
         classification: "expected",
+        stewardPolicyKind: "current",
         stewardPolicyKey: "service:books",
         stewardPolicyVersion: 2,
         decision: "silent",
@@ -534,15 +592,21 @@ describe("continuity tools", () => {
     })
 
     it("passes an await-backed time disposition and optional Care references to authority", async () => {
-      mockReadExternalEventRecord.mockReturnValue({ agent: "ouroboros", eventId: "books", version: 4, generation: 2, observationRevision: "rev-2", executionState: "running", claimOwner: "lease-2" })
+      mockReadExternalEventRecord.mockReturnValue({ agent: "ouroboros", source: "sanctuary-health", eventId: "books", version: 4, generation: 2, observationRevision: "rev-2", executionState: "running", claimOwner: "lease-2" })
       mockCommitExternalEventDisposition.mockReturnValue({ executionState: "handled" })
+      mockReadCares.mockReturnValue([{ id: "care-downloads", incidentBindings: [{ source: "sanctuary-health", incidentKey: "books", classifiedRevision: "rev-2" }] }])
+      vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => String(filePath).endsWith("steward.json")
+        ? JSON.stringify({ schemaVersion: 1, version: 2, desiredStates: { "service:books": { value: "on", provenance: "stated", version: 2, source: "ari" } }, routineActionGrants: {}, updatedAt: "2026-08-29T00:00:00.000Z" })
+        : String(filePath).endsWith("await-top-up.md") ? "---\nstatus: pending\nwake_at: 2026-08-30T17:00:00.000Z\n---\n\nWaiting.\n" : "")
       const authorizeDisposition = vi.fn(() => ({ allowed: true, reason: "approved" }))
+      const deliverOwnerDecision = vi.fn(async () => undefined)
       const tool = findTool("external_event_disposition")
       await tool.handler({
         recordPath: "/events/ouroboros/sanctuary-health/books.json",
         expectedGeneration: 2,
         classifiedRevision: "rev-2",
         classification: "snoozed",
+        stewardPolicyKind: "current",
         stewardPolicyKey: "service:books",
         stewardPolicyVersion: 2,
         decision: "ask",
@@ -554,13 +618,14 @@ describe("continuity tools", () => {
       }, {
         signin: async () => undefined,
         currentExternalEvent: { schemaVersion: 1, recordPath: "/events/ouroboros/sanctuary-health/books.json", agent: "ouroboros", source: "sanctuary-health", eventId: "books", generation: 2, observationRevision: "rev-2", claimOwner: "lease-2" },
-        externalEventAuthority: { authorizeDisposition },
+        externalEventAuthority: { authorizeDisposition }, externalEventEffects: { deliverOwnerDecision },
       })
-      expect(authorizeDisposition).toHaveBeenCalledWith(expect.objectContaining({ wakeAt: "2026-08-30T17:00:00.000Z", awaitId: "await-top-up", careId: "care-downloads" }))
+      expect(authorizeDisposition).toHaveBeenCalledWith(expect.objectContaining({ wakeAt: "2026-08-30T17:00:00.000Z", awaitId: "await-top-up", careId: "care-downloads", stewardPolicy: { kind: "current", key: "service:books", version: 2 } }))
+      expect(deliverOwnerDecision).toHaveBeenCalledOnce()
       expect(mockCommitExternalEventDisposition).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ disposition: expect.objectContaining({ awaitId: "await-top-up", careId: "care-downloads" }) }))
     })
 
-    it("normalizes a missing reason and missing wakeAt before rejecting or authorizing", () => {
+    it("rejects a missing reason and an unbound timed wake before authority", () => {
       mockReadExternalEventRecord.mockReturnValue({ agent: "ouroboros", eventId: "books", version: 4, generation: 2, observationRevision: "rev-2", executionState: "running", claimOwner: "lease-2" })
       const tool = findTool("external_event_disposition")
       const context = {
@@ -568,9 +633,9 @@ describe("continuity tools", () => {
         currentExternalEvent: { schemaVersion: 1 as const, recordPath: "/events/ouroboros/sanctuary-health/books.json", agent: "ouroboros", source: "sanctuary-health", eventId: "books", generation: 2, observationRevision: "rev-2", claimOwner: "lease-2" },
         externalEventAuthority: { authorizeDisposition: vi.fn(() => ({ allowed: false, reason: "missing await" })) },
       }
-      expect(() => tool.handler({ recordPath: context.currentExternalEvent.recordPath, expectedGeneration: 2, classifiedRevision: "rev-2", classification: "expected", stewardPolicyKey: "test", stewardPolicyVersion: 1, decision: "silent", nextWake: "on_change" }, context)).toThrow(/invalid/u)
-      expect(() => tool.handler({ recordPath: context.currentExternalEvent.recordPath, expectedGeneration: 2, classifiedRevision: "rev-2", classification: "expected", stewardPolicyKey: "test", stewardPolicyVersion: 1, decision: "silent", reason: "wait", nextWake: "at" }, context)).toThrow(/missing await/u)
-      expect(context.externalEventAuthority.authorizeDisposition).toHaveBeenCalledWith(expect.objectContaining({ wakeAt: "" }))
+      expect(() => tool.handler({ recordPath: context.currentExternalEvent.recordPath, expectedGeneration: 2, classifiedRevision: "rev-2", classification: "expected", stewardPolicyKind: "current", stewardPolicyKey: "test", stewardPolicyVersion: 2, decision: "silent", nextWake: "on_change" }, context)).toThrow(/invalid/u)
+      expect(() => tool.handler({ recordPath: context.currentExternalEvent.recordPath, expectedGeneration: 2, classifiedRevision: "rev-2", classification: "expected", stewardPolicyKind: "current", stewardPolicyKey: "test", stewardPolicyVersion: 2, decision: "silent", reason: "wait", nextWake: "at" }, context)).toThrow(/current pending Await/u)
+      expect(context.externalEventAuthority.authorizeDisposition).not.toHaveBeenCalled()
     })
 
     it("routes action and verification references through the injected authority", async () => {
@@ -583,6 +648,7 @@ describe("continuity tools", () => {
         expectedGeneration: 2,
         classifiedRevision: "rev-2",
         classification: "needs_attention",
+        stewardPolicyKind: "current",
         stewardPolicyKey: "service:books",
         stewardPolicyVersion: 2,
         decision: "act",

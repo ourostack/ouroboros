@@ -5,7 +5,7 @@ SPOOL_ROOT="/boot/config/custom/ouro-events/spool"
 INSTALL_PATH="/boot/config/custom/ouro-events/bootstrap-spool.sh"
 GO_FILE="/boot/config/go"
 TMPFS_OPTIONS="size=4m,mode=0755,uid=0,gid=0,nodev,nosuid,noexec"
-BOOT_HOOK="/boot/config/custom/ouro-events/bootstrap-spool.sh --mount"
+BOOT_HOOK="/bin/bash /boot/config/custom/ouro-events/bootstrap-spool.sh --mount"
 ACTION="mount"
 
 while (($# > 0)); do

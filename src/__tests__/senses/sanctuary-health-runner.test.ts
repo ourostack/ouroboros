@@ -64,6 +64,23 @@ describe("native Sanctuary health habit", () => {
     expect(submitEvidence).toHaveBeenCalledTimes(1)
   })
 
+  it("keeps each current incident's own transition when another incident recovers", async () => {
+    const submitEvidence = vi.fn(async () => ({ shouldWake: true }))
+    await runSanctuaryHealthHabit("sanctuary", {
+      createSweep: () => Object.assign(vi.fn(async () => ({
+        message: null,
+        observationRevision: "aggregate-rev",
+        transition: "changed" as const,
+        incidents: [{ id: "incident:a", summary: "A is still unavailable", observationRevision: "rev-a", transition: "unchanged" as const }],
+        recovered: [{ id: "incident:b", summary: "B was unavailable", observationRevision: "rev-b" }],
+      })), {}),
+      submitEvidence,
+    })
+
+    expect(submitEvidence).toHaveBeenCalledWith(expect.objectContaining({ eventId: "incident:a", observationRevision: "rev-a", transition: "unchanged" }))
+    expect(submitEvidence).toHaveBeenCalledWith(expect.objectContaining({ eventId: "incident:b", observationRevision: "rev-b", transition: "recovered" }))
+  })
+
   it("does no paid or delivery work when the sweep has no changed evidence", async () => {
     const submitEvidence = vi.fn()
     await expect(runSanctuaryHealthHabit("sanctuary", {

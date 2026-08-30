@@ -16,7 +16,7 @@
     "sanctuary-event": {
       "version": 1,
       "contextScopes": ["household.status", "household.policy"],
-      "toolNames": ["external_event_disposition", "query_cares", "care_manage", "await_condition", "unraid_list_containers", "unraid_get_container_logs", "unraid_get_storage", "unraid_get_disks", "unraid_get_notifications", "unraid_get_system", "unraid_restart_container", "ponder", "rest", "send_message"],
+      "toolNames": ["external_event_disposition", "query_cares", "care_manage", "await_condition", "unraid_list_containers", "unraid_get_container_logs", "unraid_get_storage", "unraid_get_disks", "unraid_get_notifications", "unraid_get_system", "unraid_restart_container", "steward_policy_manage", "ponder", "rest", "send_message"],
       "effectScopes": ["telegram.owner_event"]
     }
   }

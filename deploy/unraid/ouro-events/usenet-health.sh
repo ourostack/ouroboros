@@ -26,12 +26,12 @@ notify_unraid() {
 }
 
 emit_transition() {
-    if ! "$EVENT_ADAPTER" "$@" >> "$LOG" 2>&1; then
+    if ! /bin/bash "$EVENT_ADAPTER" "$@" >> "$LOG" 2>&1; then
         log "[EVENT] Canonical Butler event emission failed; Unraid UI and this log retain the verified action."
     fi
 }
 
-"$EVENT_PRODUCER" --maintain >> "$LOG" 2>&1 || log "[EVENT] Spool maintenance failed; unsafe or unparseable artifacts were preserved."
+/usr/local/bin/node "$EVENT_PRODUCER" --maintain >> "$LOG" 2>&1 || log "[EVENT] Spool maintenance failed; unsafe or unparseable artifacts were preserved."
 
 SAB_KEY=$(grep -m1 '^api_key' "$SAB_INI" 2>/dev/null | cut -d= -f2 | tr -d ' ')
 if [ -z "$SAB_KEY" ]; then
@@ -112,8 +112,7 @@ elif [ "$(echo "$IDX" | jq -r '.enable')" = "false" ]; then
     log "[USENET] $NZB_INDEXER_NAME already disabled — no new action."
 else
     IID=$(echo "$IDX" | jq -r '.id')
-    echo "$IDX" | jq '.enable = false' > /tmp/usenet_idx_off.json
-    CODE=$(curl -4 -s -o /dev/null -w '%{http_code}' --connect-timeout 8 --max-time 25 --retry 3 --retry-delay 2 --retry-all-errors -X PUT -H "X-Api-Key: $PKEY" -H 'Content-Type: application/json' -d @/tmp/usenet_idx_off.json "http://localhost:9696/api/v1/indexer/$IID")
+    CODE=$(printf '%s\n' "$IDX" | jq -c '.enable = false' | curl -4 -s -o /dev/null -w '%{http_code}' --connect-timeout 8 --max-time 25 --retry 3 --retry-delay 2 --retry-all-errors -X PUT -H "X-Api-Key: $PKEY" -H 'Content-Type: application/json' --data-binary @- "http://localhost:9696/api/v1/indexer/$IID")
     VERIFIED_OFF=$(curl -s --max-time 15 -H "X-Api-Key: $PKEY" "http://localhost:9696/api/v1/indexer" | jq -r --arg n "$NZB_INDEXER_NAME" '[.[] | select(.name==$n and .enable==false)] | length' 2>/dev/null)
     VERIFIED_AT=$(date -u '+%Y-%m-%dT%H:%M:%S.000Z')
     VERIFICATION_DIGEST=$(printf 'prowlarr.indexer.%s.enabled=%s' "$NZB_INDEXER_NAME" "$([ "${VERIFIED_OFF:-0}" -eq 1 ] && echo false || echo unknown)" | sha256sum | cut -d' ' -f1)

@@ -22,9 +22,10 @@ while (($# > 0)); do
 done
 
 EVENT_ROOT="$INSTALL_ROOT/ouro-events"
-BOOT_HOOK="$EVENT_ROOT/install-usenet-guard.sh --boot${CRONTAB_FILE:+ --crontab-file $CRONTAB_FILE}"
+BOOT_HOOK="/bin/bash $EVENT_ROOT/install-usenet-guard.sh --boot${CRONTAB_FILE:+ --crontab-file $CRONTAB_FILE}"
 LEGACY_BOOT_HOOK="/boot/config/custom/ouro-events/bootstrap-spool.sh --mount"
-CRON_LINE="*/15 * * * * $INSTALL_ROOT/usenet_health.sh # ouro:usenet-health"
+LEGACY_BASH_BOOT_HOOK="/bin/bash /boot/config/custom/ouro-events/bootstrap-spool.sh --mount"
+CRON_LINE="*/15 * * * * /bin/bash $INSTALL_ROOT/usenet_health.sh # ouro:usenet-health"
 ASSET_NAMES=(usenet-health.sh bootstrap-spool.sh emit-event.mjs emit-usenet-event.sh install-usenet-guard.sh)
 TARGET_PATHS=("$INSTALL_ROOT/usenet_health.sh" "$EVENT_ROOT/bootstrap-spool.sh" "$EVENT_ROOT/emit-event.mjs" "$EVENT_ROOT/emit-usenet-event.sh" "$EVENT_ROOT/install-usenet-guard.sh")
 
@@ -93,9 +94,9 @@ install_transaction() {
     name="${ASSET_NAMES[$index]}"
     /usr/bin/install -m 0700 "$SOURCE_ROOT/$name" "$stage/$name"
   done
-  "$stage/bootstrap-spool.sh" --mount
-  "$stage/bootstrap-spool.sh" --self-test
-  "$stage/emit-usenet-event.sh" --self-test "$stage/emit-event.mjs"
+  /bin/bash "$stage/bootstrap-spool.sh" --mount
+  /bin/bash "$stage/bootstrap-spool.sh" --self-test
+  /bin/bash "$stage/emit-usenet-event.sh" --self-test "$stage/emit-event.mjs"
 
   if [ -f "$GO_FILE" ]; then
     /bin/cp -p "$GO_FILE" "$backup/go"
@@ -104,7 +105,7 @@ install_transaction() {
     printf '#!/bin/bash\n' > "$stage/go.base"
   fi
   go_candidate="$stage/go.candidate"
-  grep -Fvx -e "$LEGACY_BOOT_HOOK" -e "$BOOT_HOOK" "$stage/go.base" > "$stage/go.filtered" || true
+  grep -Fvx -e "$LEGACY_BOOT_HOOK" -e "$LEGACY_BASH_BOOT_HOOK" -e "$BOOT_HOOK" "$stage/go.base" > "$stage/go.filtered" || true
   if [ -s "$stage/go.filtered" ]; then
     awk -v hook="$BOOT_HOOK" 'NR == 1 && /^#!/ { print; print hook; next } NR == 1 { print hook } { print }' "$stage/go.filtered" > "$go_candidate"
   else
@@ -162,9 +163,9 @@ install_transaction() {
 }
 
 boot_activate() {
-  "$EVENT_ROOT/bootstrap-spool.sh" --mount
-  "$EVENT_ROOT/bootstrap-spool.sh" --self-test
-  "$EVENT_ROOT/emit-usenet-event.sh" --self-test "$EVENT_ROOT/emit-event.mjs"
+  /bin/bash "$EVENT_ROOT/bootstrap-spool.sh" --mount
+  /bin/bash "$EVENT_ROOT/bootstrap-spool.sh" --self-test
+  /bin/bash "$EVENT_ROOT/emit-usenet-event.sh" --self-test "$EVENT_ROOT/emit-event.mjs"
   local current candidate
   current="$(/usr/bin/mktemp /tmp/ouro-usenet-cron.XXXXXX)"
   candidate="${current}.next"

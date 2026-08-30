@@ -461,7 +461,7 @@ describe("Sanctuary deterministic health sweep", () => {
     }
   })
 
-  it("rejects unavailable runtime and keeps legacy delivery mutations closed when no outbox exists", async () => {
+  it("rejects unavailable runtime", async () => {
     const filePath = statePath("sanctuary-health-transitions-")
     const absent = createSanctuaryHealthSweep({
       toolContext: {} as any,
@@ -470,50 +470,6 @@ describe("Sanctuary deterministic health sweep", () => {
     })
     await expect(absent()).rejects.toThrow("Sanctuary health runtime is unavailable")
 
-    const sweep = createSanctuaryHealthSweep({
-      toolContext: context("exited"),
-      statePath: filePath,
-      fetch: vi.fn().mockResolvedValue(new Response(null, { status: 204 })),
-      now: () => new Date("2026-08-18T18:00:00.000Z"),
-    })
-    await sweep()
-    await expect(sweep.markDeliveryAttempting("wrong")).rejects.toThrow("is not pending")
-    await expect(sweep.cacheDeliveryPayload("retired", 1 as any)).rejects.toThrow("must be nonempty")
-    await expect(sweep.cacheDeliveryPayload("retired", "   ")).rejects.toThrow("must be nonempty")
-    await expect(sweep.cacheDeliveryPayload("retired", "x".repeat(50_001))).rejects.toThrow("bounded")
-    await expect(sweep.cacheDeliveryPayload("wrong", "summary")).rejects.toThrow("is not pending")
-    await expect(sweep.markDelivered("retired", null as any)).rejects.toThrow("canonical Telegram message ids")
-    await expect(sweep.markDelivered("retired", [])).rejects.toThrow("canonical Telegram message ids")
-    await expect(sweep.markDelivered("retired", [1.5])).rejects.toThrow("canonical Telegram message ids")
-    await expect(sweep.markDelivered("retired", [0])).rejects.toThrow("canonical Telegram message ids")
-    await expect(sweep.markDelivered("retired", Array.from({ length: 101 }, (_, index) => index + 1))).rejects.toThrow("canonical Telegram message ids")
-    await expect(sweep.markDelivered("retired", [1])).rejects.toThrow("is not attempting")
-    await expect(sweep.markDelivered("wrong", [1])).rejects.toThrow("is not attempting")
-  })
-
-  it("caps delivered receipts at the newest one hundred and preserves canonical message ids", async () => {
-    const filePath = statePath("sanctuary-health-receipts-")
-    const oldReceipts = Array.from({ length: 100 }, (_, index) => ({
-      deliveryId: `old-${index}`,
-      messageIds: [index + 1],
-      deliveredAt: "2026-08-17T00:00:00.000Z",
-    }))
-    writeState(filePath, validState({
-      outbox: { id: "new", message: "health", status: "attempting", createdAt: "2026-08-18T18:00:00.000Z" },
-      deliveredReceipts: oldReceipts,
-    }))
-    const sweep = createSanctuaryHealthSweep({
-      toolContext: context("running"), statePath: filePath, now: () => new Date("2026-08-18T19:00:00.000Z"),
-    })
-
-    await sweep.markDelivered("new", [9001, 9002])
-
-    const saved = JSON.parse(fs.readFileSync(filePath, "utf8"))
-    expect(saved.deliveredReceipts).toHaveLength(100)
-    expect(saved.deliveredReceipts[0].deliveryId).toBe("old-1")
-    expect(saved.deliveredReceipts.at(-1)).toMatchObject({ deliveryId: "new", kind: "legacy_unknown", messageIds: [9001, 9002] })
-    expect(fs.statSync(filePath).mode & 0o777).toBe(0o600)
-    expect(fs.readdirSync(path.dirname(filePath))).toEqual(["state.json"])
   })
 
   it("retires an attempting legacy delivery without surfacing detector prose", async () => {

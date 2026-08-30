@@ -1117,15 +1117,15 @@ describe("daemon command plane branches", () => {
         commitExternalEventDisposition(current.recordPath, {
           owner: lease.claimOwner, expectedVersion: current.version, expectedGeneration: lease.generation,
           disposition: {
-            classifiedRevision: lease.observationRevision, classification: "expected", stewardPolicy: { key: `service:${lease.eventId}`, version: index + 1 },
+            classifiedRevision: lease.observationRevision, classification: "expected", stewardPolicy: { kind: "current", key: `service:${lease.eventId}`, version: index + 1 },
             decision: "silent", reason: `${lease.eventId} is expected off.`, nextWake: { kind: "on_change" }, careId: null, awaitId: null, actionRefs: [], verificationRefs: [],
           },
         })
       }
       expect(listExternalEventStatus(externalEventRoot).map((status) => ({ eventId: status.eventId, state: status.executionState, policy: status.stewardPolicy }))).toEqual([
-        { eventId: "books", state: "handled", policy: { key: "service:books", version: 1 } },
-        { eventId: "jellyfin", state: "handled", policy: { key: "service:jellyfin", version: 2 } },
-        { eventId: "sonarr", state: "handled", policy: { key: "service:sonarr", version: 3 } },
+        { eventId: "books", state: "handled", policy: { kind: "current", key: "service:books", version: 1 } },
+        { eventId: "jellyfin", state: "handled", policy: { kind: "current", key: "service:jellyfin", version: 2 } },
+        { eventId: "sonarr", state: "handled", policy: { kind: "current", key: "service:sonarr", version: 3 } },
       ])
     } finally {
       await daemon.stop()

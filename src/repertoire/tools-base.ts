@@ -124,8 +124,7 @@ export interface ToolContext {
       event: import("../heart/external-events/router").ExternalEventLeaseContext;
       classification: string;
       decision: string;
-      stewardPolicyKey: string;
-      stewardPolicyVersion: number;
+      stewardPolicy: import("../heart/external-events/router").ExternalEventDisposition["stewardPolicy"];
       nextWake: string;
       wakeAt: string | null;
       awaitId: string | null;
@@ -133,6 +132,9 @@ export interface ToolContext {
       actionRefs: string[];
       verificationRefs: string[];
     }): { allowed: boolean; reason: string };
+  }>;
+  readonly externalEventEffects?: Readonly<{
+    deliverOwnerDecision(input: { eventId: string; generation: number; text: string }): Promise<void>;
   }>;
   /** Irrevocable per-turn capability reduction used by transport-safe probes. */
   readonly noSend?: true;

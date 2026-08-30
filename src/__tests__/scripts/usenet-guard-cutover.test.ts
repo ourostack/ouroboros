@@ -55,7 +55,7 @@ describe("Unraid usenet guard cutover assets", () => {
 
   it("maintains the spool every detector tick and emits only after an independent paused-state read", () => {
     const source = fs.readFileSync(guardPath, "utf8")
-    expect(source).toContain('"$EVENT_PRODUCER" --maintain')
+    expect(source).toContain('/usr/local/bin/node "$EVENT_PRODUCER" --maintain')
     const pause = source.indexOf("api?mode=pause&apikey=$SAB_KEY")
     const verify = source.indexOf('jq -r \'.queue.paused // false\'')
     const emit = source.indexOf('emit_transition "sabnzbd.pause"')
@@ -64,6 +64,13 @@ describe("Unraid usenet guard cutover assets", () => {
     expect(emit).toBeGreaterThan(verify)
     expect(source).toContain('"spend-pause:${TODAY}:verified"')
     expect(source).toContain('"sabnzbd:pause:${TODAY}:spend-guard"')
+  })
+
+  it("never stages Prowlarr JSON in a predictable temporary file", () => {
+    const source = fs.readFileSync(guardPath, "utf8")
+    expect(source).not.toContain("/tmp/usenet_idx_off.json")
+    expect(source).toContain("jq -c '.enable = false'")
+    expect(source).toContain("--data-binary @-")
   })
 
   it("uses the canonical producer with a fixed bounded argv contract and no detector speech token", () => {
@@ -111,7 +118,7 @@ describe("Unraid usenet guard cutover assets", () => {
     const lifecycleLog = path.join(temp, "lifecycle.log")
     const source = transactionalSource(temp, crontabFile, lifecycleLog)
     const legacyHook = "/boot/config/custom/ouro-events/bootstrap-spool.sh --mount"
-    const hook = `${installRoot}/ouro-events/install-usenet-guard.sh --boot --crontab-file ${crontabFile}`
+    const hook = `/bin/bash ${installRoot}/ouro-events/install-usenet-guard.sh --boot --crontab-file ${crontabFile}`
     fs.writeFileSync(goFile, `#!/bin/bash\n${legacyHook}\n${hook}\n${hook}\n/usr/local/sbin/emhttp &\n`)
 
     for (let index = 0; index < 2; index += 1) {
@@ -123,7 +130,7 @@ describe("Unraid usenet guard cutover assets", () => {
     expect(go).not.toContain(legacyHook)
     expect(go.indexOf(hook)).toBeLessThan(go.indexOf("/usr/local/sbin/emhttp"))
     expect(fs.readFileSync(crontabFile, "utf8").match(/# ouro:usenet-health$/gmu)).toHaveLength(1)
-    expect(fs.readFileSync(crontabFile, "utf8")).toContain(`*/15 * * * * ${installRoot}/usenet_health.sh # ouro:usenet-health`)
+    expect(fs.readFileSync(crontabFile, "utf8")).toContain(`*/15 * * * * /bin/bash ${installRoot}/usenet_health.sh # ouro:usenet-health`)
     expect(fs.readFileSync(lifecycleLog, "utf8")).toBe("spool:--mount\nspool:--self-test\nevent:inactive\nspool:--mount\nspool:--self-test\nevent:active\n")
     expect(transactionResidue(installRoot)).toEqual([])
     for (const file of ["usenet_health.sh", "ouro-events/emit-event.mjs", "ouro-events/emit-usenet-event.sh", "ouro-events/bootstrap-spool.sh", "ouro-events/install-usenet-guard.sh"]) {
