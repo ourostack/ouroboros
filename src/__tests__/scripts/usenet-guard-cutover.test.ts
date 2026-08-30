@@ -48,7 +48,7 @@ describe("Unraid usenet guard cutover assets", () => {
     expect(() => execFileSync(installerPath, ["--crontab-file", "relative/cron"], { stdio: "ignore" })).toThrow()
   })
 
-  it("preserves the article-success spend guard while removing direct Telegram delivery", () => {
+  it("preserves the article-success spend guard while leaving all routine notification to the Butler", () => {
     const source = fs.readFileSync(guardPath, "utf8")
     expect(source).toContain("MIN_ARTICLES=50000")
     expect(source).toContain("MIN_RATE=30")
@@ -56,8 +56,7 @@ describe("Unraid usenet guard cutover assets", () => {
     expect(source).toContain('if [ "${TRIED:-0}" -ge "$MIN_ARTICLES" ]')
     expect(source).toContain('if [ "$RATE" -lt "$MIN_RATE" ]')
     expect(source).toContain("api?mode=pause&apikey=$SAB_KEY")
-    expect(source).not.toMatch(/api\.telegram\.org|TELEGRAM_BOT_TOKEN|TELEGRAM_CHAT_ID|notify\.conf|sendMessage/u)
-    expect(source).toContain("/usr/local/emhttp/webGui/scripts/notify")
+    expect(source).not.toMatch(/api\.telegram\.org|TELEGRAM_BOT_TOKEN|TELEGRAM_CHAT_ID|notify\.conf|sendMessage|notify_unraid|webGui\/scripts\/notify/u)
   })
 
   it("maintains the spool every detector tick and emits only after an independent paused-state read", () => {
