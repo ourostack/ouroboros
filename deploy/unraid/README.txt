@@ -52,38 +52,11 @@ Effective-spec audit helper:
       trap - EXIT || return $?
       )
     }
-  Define these helpers in the same root shell. Each autostart change uses
-  Unraid's authenticated loopback WebGUI endpoint with the live root-session
-  CSRF token supplied only on request stdin. Requests have hard connection and
-  total timeouts, discard response bodies, and read back the durable array
-  autostart state without writing its backing file directly:
-    set_butler_autostart() {
-      (
-      AUTOSTART_CONTAINER=$1
-      AUTOSTART_ENABLED=$2
-      case "$AUTOSTART_CONTAINER" in
-        ouro-butler|ouro-butler-staging|ouro-butler-rollback|ouro-butler-legacy-evidence) ;;
-        *) return 1 ;;
-      esac
-      case "$AUTOSTART_ENABLED" in true|false) ;; *) return 1 ;; esac
-      AUTOSTART_CSRF_FILE=/var/local/emhttp/var.ini
-      test -f "$AUTOSTART_CSRF_FILE" || return $?
-      AUTOSTART_CSRF_TOKEN=$(awk -F= '$1 == "csrf_token" {
-        value = $2
-        sub(/^"/, "", value)
-        sub(/"$/, "", value)
-        print value
-      }' "$AUTOSTART_CSRF_FILE") || return $?
-      test -n "$AUTOSTART_CSRF_TOKEN" || return $?
-      case "$AUTOSTART_CSRF_TOKEN" in *[!A-Za-z0-9._-]*) return 1 ;; esac
-      printf '%s' "action=autostart&container=$AUTOSTART_CONTAINER&auto=$AUTOSTART_ENABLED&wait=0&csrf_token=$AUTOSTART_CSRF_TOKEN" | \
-        curl --silent --show-error --fail --request POST \
-          --connect-timeout 5 --max-time 15 \
-          --header 'Content-Type: application/x-www-form-urlencoded' \
-          --data-binary @- --output /dev/null \
-          http://127.0.0.1/plugins/dynamix.docker.manager/include/UpdateConfig.php || return $?
-      )
-    }
+  Define these helpers in the same root shell. Each profile change calls Unraid's
+  own root-local Docker manager backend, after proving exact durable identities.
+  A missing Butler entry is a no-op when disabling; this avoids the backend's
+  false-to-index-zero behavior. The helper preserves every non-Butler row byte
+  for byte and restores the complete captured file atomically on any failure:
     butler_autostart_counts() {
       (
       AUTOSTART_FILE=/var/lib/docker/unraid-autostart
@@ -97,6 +70,143 @@ Effective-spec audit helper:
       ' "$AUTOSTART_FILE"
       )
     }
+    snapshot_nonbutler_autostart() {
+      awk '
+        $1 != "ouro-butler" && $1 != "ouro-butler-staging" && $1 != "ouro-butler-rollback" && $1 != "ouro-butler-legacy-evidence" { print }
+      ' /var/lib/docker/unraid-autostart
+    }
+    run_unraid_autostart_backend() {
+      (
+      AUTOSTART_ACTION=$1
+      AUTOSTART_CONTAINER=$2
+      AUTOSTART_VALUE=$3
+      case "$AUTOSTART_ACTION:$AUTOSTART_VALUE" in wait:0|autostart:true|autostart:false) ;; *) return 1 ;; esac
+      case "$AUTOSTART_CONTAINER" in
+        ouro-butler|ouro-butler-staging|ouro-butler-rollback|ouro-butler-legacy-evidence) ;;
+        *) return 1 ;;
+      esac
+      timeout -s KILL 20 /usr/bin/php -r '
+        [$action, $container, $value] = array_slice($argv, 1);
+        $allowed = ["ouro-butler", "ouro-butler-staging", "ouro-butler-rollback", "ouro-butler-legacy-evidence"];
+        if (!in_array($container, $allowed, true)) exit(2);
+        if ($action === "wait" && $value === "0") {
+          $_POST = ["action" => "wait", "container" => $container, "wait" => "0"];
+        } elseif ($action === "autostart" && ($value === "true" || $value === "false")) {
+          $_POST = ["action" => "autostart", "container" => $container, "auto" => $value, "wait" => "0"];
+        } else exit(2);
+        $_SERVER["DOCUMENT_ROOT"] = "/usr/local/emhttp";
+        $_SERVER["REQUEST_URI"] = "docker";
+        require "/usr/local/emhttp/plugins/dynamix.docker.manager/include/UpdateConfig.php";
+      ' "$AUTOSTART_ACTION" "$AUTOSTART_CONTAINER" "$AUTOSTART_VALUE"
+      )
+    }
+    mutate_butler_autostart() {
+      (
+      AUTOSTART_CONTAINER=$1
+      AUTOSTART_ENABLED=$2
+      case "$AUTOSTART_CONTAINER" in
+        ouro-butler|ouro-butler-staging|ouro-butler-rollback|ouro-butler-legacy-evidence) ;;
+        *) return 1 ;;
+      esac
+      case "$AUTOSTART_ENABLED" in true|false) ;; *) return 1 ;; esac
+      AUTOSTART_COUNT=$(awk -v name="$AUTOSTART_CONTAINER" '$1 == name { count++ } END { print count + 0 }' /var/lib/docker/unraid-autostart) || return $?
+      case "$AUTOSTART_COUNT" in 0|1) ;; *) return 1 ;; esac
+      if test "$AUTOSTART_ENABLED" = false && test "$AUTOSTART_COUNT" -eq 0; then
+        return 0
+      fi
+      if test "$AUTOSTART_COUNT" -eq 1; then
+        run_unraid_autostart_backend wait "$AUTOSTART_CONTAINER" 0 || return $?
+      fi
+      if test "$AUTOSTART_ENABLED" = false; then
+        run_unraid_autostart_backend autostart "$AUTOSTART_CONTAINER" false || return $?
+        AUTOSTART_EXPECTED_COUNT=0
+      else
+        if test "$AUTOSTART_COUNT" -eq 0; then
+          run_unraid_autostart_backend autostart "$AUTOSTART_CONTAINER" true || return $?
+        fi
+        AUTOSTART_EXPECTED_COUNT=1
+      fi
+      AUTOSTART_COUNT=$(awk -v name="$AUTOSTART_CONTAINER" '$1 == name { count++ } END { print count + 0 }' /var/lib/docker/unraid-autostart) || return $?
+      test "$AUTOSTART_COUNT" -eq "$AUTOSTART_EXPECTED_COUNT" || return $?
+      )
+    }
+    set_butler_autostart() {
+      (
+      AUTOSTART_PROFILE=$1
+      case "$AUTOSTART_PROFILE" in disabled|production) ;; *) return 1 ;; esac
+      test "$(id -u)" -eq 0 || return $?
+      AUTOSTART_FILE=/var/lib/docker/unraid-autostart
+      AUTOSTART_INCLUDE=/usr/local/emhttp/plugins/dynamix.docker.manager/include/UpdateConfig.php
+      test -f "$AUTOSTART_FILE" && test ! -L "$AUTOSTART_FILE" || return 1
+      test "$(stat -c '%u:%g:%a' "$AUTOSTART_FILE")" = 0:0:644 || return $?
+      test -f "$AUTOSTART_INCLUDE" && test ! -L "$AUTOSTART_INCLUDE" || return 1
+      test "$(stat -c '%u:%g:%a' "$AUTOSTART_INCLUDE")" = 0:0:644 || return $?
+      AUTOSTART_COUNTS=$(butler_autostart_counts) || return $?
+      set -- $AUTOSTART_COUNTS
+      test "$#" -eq 4 || return $?
+      for AUTOSTART_COUNT in "$@"; do case "$AUTOSTART_COUNT" in 0|1) ;; *) return 1 ;; esac; done
+      if test "$AUTOSTART_PROFILE" = production; then
+        docker container inspect ouro-butler >/dev/null 2>&1 || return $?
+      fi
+      AUTOSTART_BACKUP=$(mktemp /var/lib/docker/.unraid-autostart.ouro.XXXXXX) || return $?
+      AUTOSTART_NONBUTLER_BEFORE=$(mktemp /run/unraid-autostart.nonbutler-before.XXXXXX) || { rm -f -- "$AUTOSTART_BACKUP"; return 1; }
+      AUTOSTART_NONBUTLER_AFTER=$(mktemp /run/unraid-autostart.nonbutler-after.XXXXXX) || { rm -f -- "$AUTOSTART_BACKUP" "$AUTOSTART_NONBUTLER_BEFORE"; return 1; }
+      AUTOSTART_COMMITTED=no
+      AUTOSTART_BACKUP_READY=no
+      AUTOSTART_RESTORE_TMP=
+      autostart_cleanup() {
+        AUTOSTART_STATUS=$?
+        trap - EXIT HUP INT TERM
+        if test "$AUTOSTART_COMMITTED" = yes; then
+          rm -f -- "$AUTOSTART_BACKUP" || AUTOSTART_STATUS=1
+        elif test "$AUTOSTART_BACKUP_READY" = yes; then
+          AUTOSTART_RESTORE_TMP=$(mktemp /var/lib/docker/.unraid-autostart.restore.XXXXXX) || AUTOSTART_RESTORE_TMP=
+          if test -n "$AUTOSTART_RESTORE_TMP" \
+            && cp -p -- "$AUTOSTART_BACKUP" "$AUTOSTART_RESTORE_TMP" \
+            && sync -f "$AUTOSTART_RESTORE_TMP" \
+            && mv -f -- "$AUTOSTART_RESTORE_TMP" "$AUTOSTART_FILE" \
+            && sync -f "$AUTOSTART_FILE" \
+            && sync -f /var/lib/docker; then
+            rm -f -- "$AUTOSTART_BACKUP" || AUTOSTART_STATUS=1
+          else
+            test -z "$AUTOSTART_RESTORE_TMP" || rm -f -- "$AUTOSTART_RESTORE_TMP"
+            printf 'CRITICAL: Butler autostart rollback failed; recovery copy preserved at %s\n' "$AUTOSTART_BACKUP" >&2
+            AUTOSTART_STATUS=1
+          fi
+        else
+          rm -f -- "$AUTOSTART_BACKUP" || AUTOSTART_STATUS=1
+        fi
+        rm -f -- "$AUTOSTART_NONBUTLER_BEFORE" "$AUTOSTART_NONBUTLER_AFTER" || AUTOSTART_STATUS=1
+        exit "$AUTOSTART_STATUS"
+      }
+      trap autostart_cleanup EXIT
+      trap 'exit 129' HUP
+      trap 'exit 130' INT
+      trap 'exit 143' TERM
+      cp -p -- "$AUTOSTART_FILE" "$AUTOSTART_BACKUP" || return $?
+      cmp -s -- "$AUTOSTART_FILE" "$AUTOSTART_BACKUP" || return 1
+      sync -f "$AUTOSTART_BACKUP" || return $?
+      sync -f /var/lib/docker || return $?
+      AUTOSTART_BACKUP_READY=yes
+      snapshot_nonbutler_autostart >"$AUTOSTART_NONBUTLER_BEFORE" || return $?
+      mutate_butler_autostart ouro-butler-staging false || return $?
+      mutate_butler_autostart ouro-butler-rollback false || return $?
+      mutate_butler_autostart ouro-butler-legacy-evidence false || return $?
+      if test "$AUTOSTART_PROFILE" = production; then
+        mutate_butler_autostart ouro-butler true || return $?
+        AUTOSTART_EXPECTED_COUNTS="1 0 0 0"
+      else
+        mutate_butler_autostart ouro-butler false || return $?
+        AUTOSTART_EXPECTED_COUNTS="0 0 0 0"
+      fi
+      verify_butler_autostart "$AUTOSTART_EXPECTED_COUNTS" || return $?
+      snapshot_nonbutler_autostart >"$AUTOSTART_NONBUTLER_AFTER" || return $?
+      cmp -s -- "$AUTOSTART_NONBUTLER_BEFORE" "$AUTOSTART_NONBUTLER_AFTER" || return 1
+      sync -f "$AUTOSTART_FILE" || return $?
+      sync -f /var/lib/docker || return $?
+      AUTOSTART_COMMITTED=yes
+      )
+    }
     verify_butler_autostart() {
       (
       EXPECTED_AUTOSTART_COUNTS=$1
@@ -105,17 +215,11 @@ Effective-spec audit helper:
       )
     }
     disable_butler_autostart() {
-      set_butler_autostart ouro-butler-staging false || return $?
-      set_butler_autostart ouro-butler-rollback false || return $?
-      set_butler_autostart ouro-butler-legacy-evidence false || return $?
-      set_butler_autostart ouro-butler false || return $?
+      set_butler_autostart disabled || return $?
       verify_butler_autostart "0 0 0 0" || return $?
     }
     enable_butler_autostart() {
-      set_butler_autostart ouro-butler-staging false || return $?
-      set_butler_autostart ouro-butler-rollback false || return $?
-      set_butler_autostart ouro-butler-legacy-evidence false || return $?
-      set_butler_autostart ouro-butler true || return $?
+      set_butler_autostart production || return $?
       verify_butler_autostart "1 0 0 0" || return $?
     }
   This bounded wait accepts only Docker's healthy state. The image healthcheck
