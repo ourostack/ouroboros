@@ -315,8 +315,14 @@ describe("tools-awaiting", () => {
             reason: "Check again later.", nextWake: { kind: "at", at: "2026-08-30T12:00:00.000Z" }, careId: null, awaitId: "books-recheck", actionRefs: [], verificationRefs: [],
           },
         })
-        await fileAwaitDef.handler({ name: "books-recheck", condition: "The recheck time has arrived", cadence: "5m" }, undefined)
-        await resolveAwaitDef.handler({ name: "books-recheck", verdict: "yes", observation: "recheck time reached" }, undefined)
+        await fileAwaitDef.handler({ name: "books-recheck", condition: "The recheck time has arrived", cadence: "5m", wake_at: "2026-08-30T12:00:00.000Z" }, {
+          context: { friend: { id: "owner" } },
+          currentExternalEvent: claimed,
+        } as any)
+        await resolveAwaitDef.handler({ name: "books-recheck", verdict: "yes", observation: "recheck time reached" }, {
+          currentSession: { friendId: "owner", channel: "external-event", key: handled.recordPath, sessionPath: "/private/session.json" },
+          relationshipAuthorization: { profileId: "sanctuary-event", authorizedContextScopes: [], advertisedToolNames: ["resolve_await"], authorizeTool: vi.fn() },
+        } as any)
 
         expect(readExternalEventRecord(handled.recordPath)).toMatchObject({ executionState: "queued", generation: 2, disposition: null })
       } finally {
