@@ -390,9 +390,9 @@ describe("continuity tools", () => {
 
     it("validates Care incident ownership and the exact pending Await time", async () => {
       vi.mocked(fs.existsSync).mockReturnValue(false)
-      mockReadExternalEventRecord.mockReturnValue({ agent: "ouroboros", source: "sanctuary-health", eventId: "books", transition: "opened", version: 4, generation: 2, observationRevision: "rev-2", executionState: "running", claimOwner: "lease-2" })
+      mockReadExternalEventRecord.mockReturnValue({ agent: "ouroboros", source: "sanctuary-health", eventId: "books", recordPath: "/events/ouroboros/sanctuary-health/books.json", transition: "opened", version: 4, generation: 2, observationRevision: "rev-2", executionState: "running", claimOwner: "lease-2" })
       mockReadCares.mockReturnValue([{ id: "care-books", incidentBindings: [{ source: "sanctuary-health", incidentKey: "books", classifiedRevision: "rev-2" }] }])
-      vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => String(filePath).endsWith("await-top-up.md") ? "---\nstatus: pending\nwake_at: 2026-08-30T17:00:00.000Z\n---\n\nWaiting.\n" : "")
+      vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => String(filePath).endsWith("await-top-up.md") ? "---\nstatus: pending\nwake_at: 2026-08-30T17:00:00.000Z\nfiled_from: external-event\nfiled_from_key: /events/ouroboros/sanctuary-health/books.json\n---\n\nWaiting.\n" : "")
       const context = { signin: async () => undefined, currentExternalEvent: { schemaVersion: 1 as const, recordPath: "/events/ouroboros/sanctuary-health/books.json", agent: "ouroboros", source: "sanctuary-health", eventId: "books", generation: 2, observationRevision: "rev-2", claimOwner: "lease-2" }, externalEventAuthority: { authorizeDisposition: () => ({ allowed: true, reason: "test" }) }, externalEventEffects: { deliverOwnerDecision: vi.fn(async () => undefined) } }
       const base = { recordPath: context.currentExternalEvent.recordPath, expectedGeneration: 2, classifiedRevision: "rev-2", classification: "snoozed", stewardPolicyKind: "none", decision: "silent", reason: "Waiting.", nextWake: "at", wakeAt: "2026-08-30T17:00:00.000Z", awaitId: "await-top-up" }
       await expect(findTool("external_event_disposition").handler({ ...base, careId: "care-books" }, context)).resolves.toContain("handled")
@@ -400,6 +400,32 @@ describe("continuity tools", () => {
       expect(() => findTool("external_event_disposition").handler({ ...base, careId: "care-books" }, context)).toThrow(/Care does not belong/u)
       mockReadCares.mockReturnValue([])
       expect(() => findTool("external_event_disposition").handler({ ...base, wakeAt: "2026-08-30T18:00:00.000Z" }, context)).toThrow(/exact wake time/u)
+    })
+
+    it("prevents a second event from binding an Await owned by the first event", async () => {
+      const tool = findTool("external_event_disposition")
+      const awaitText = "---\nstatus: pending\nwake_at: 2026-08-30T17:00:00.000Z\nfiled_from: external-event\nfiled_for_friend_id: owner\nfiled_from_key: /events/ouroboros/health/event-a.json\n---\n"
+      vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => String(filePath).endsWith("shared-wake.md")
+        ? awaitText
+        : JSON.stringify({ schemaVersion: 1, version: 2, desiredStates: {}, routineActionGrants: {}, updatedAt: "2026-08-29T00:00:00.000Z" }))
+      mockCommitExternalEventDisposition.mockReturnValue({ executionState: "handled" })
+      const timed = { expectedGeneration: 1, classifiedRevision: "rev-1", classification: "snoozed", stewardPolicyKind: "none", decision: "silent", reason: "Wait.", nextWake: "at", wakeAt: "2026-08-30T17:00:00.000Z", awaitId: "shared-wake" }
+      const contextFor = (recordPath: string, eventId: string) => ({
+        signin: async () => undefined,
+        context: { friend: { id: "owner" } },
+        currentExternalEvent: { schemaVersion: 1 as const, recordPath, agent: "ouroboros", source: "health", eventId, generation: 1, observationRevision: "rev-1", claimOwner: `lease-${eventId}` },
+        externalEventAuthority: { authorizeDisposition: () => ({ allowed: true, reason: "test" }) },
+      })
+
+      const eventB = contextFor("/events/ouroboros/health/event-b.json", "event-b")
+      mockReadExternalEventRecord.mockReturnValue({ agent: "ouroboros", source: "health", eventId: "event-b", recordPath: eventB.currentExternalEvent.recordPath, transition: "opened", version: 1, generation: 1, observationRevision: "rev-1", executionState: "running", claimOwner: "lease-event-b" })
+      expect(() => tool.handler({ ...timed, recordPath: eventB.currentExternalEvent.recordPath }, eventB as any)).toThrow(/owned by this exact external event/u)
+      expect(mockCommitExternalEventDisposition).not.toHaveBeenCalled()
+
+      const eventA = contextFor("/events/ouroboros/health/event-a.json", "event-a")
+      mockReadExternalEventRecord.mockReturnValue({ agent: "ouroboros", source: "health", eventId: "event-a", recordPath: eventA.currentExternalEvent.recordPath, transition: "opened", version: 1, generation: 1, observationRevision: "rev-1", executionState: "running", claimOwner: "lease-event-a" })
+      expect(() => tool.handler({ ...timed, recordPath: eventA.currentExternalEvent.recordPath }, { ...eventA, context: { friend: { id: "other-owner" } } } as any)).toThrow(/owned by this exact external event/u)
+      await expect(tool.handler({ ...timed, recordPath: eventA.currentExternalEvent.recordPath }, eventA as any)).resolves.toContain("handled")
     })
     it("disposes an independently fenced member of a coalesced event turn", async () => {
       const tool = findTool("external_event_disposition")
@@ -597,12 +623,12 @@ describe("continuity tools", () => {
     })
 
     it("passes an await-backed time disposition and optional Care references to authority", async () => {
-      mockReadExternalEventRecord.mockReturnValue({ agent: "ouroboros", source: "sanctuary-health", eventId: "books", version: 4, generation: 2, observationRevision: "rev-2", executionState: "running", claimOwner: "lease-2" })
+      mockReadExternalEventRecord.mockReturnValue({ agent: "ouroboros", source: "sanctuary-health", eventId: "books", recordPath: "/events/ouroboros/sanctuary-health/books.json", version: 4, generation: 2, observationRevision: "rev-2", executionState: "running", claimOwner: "lease-2" })
       mockCommitExternalEventDisposition.mockReturnValue({ executionState: "handled" })
       mockReadCares.mockReturnValue([{ id: "care-downloads", incidentBindings: [{ source: "sanctuary-health", incidentKey: "books", classifiedRevision: "rev-2" }] }])
       vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => String(filePath).endsWith("steward.json")
         ? JSON.stringify({ schemaVersion: 1, version: 2, desiredStates: { "service:books": { value: "on", provenance: "stated", version: 2, source: "ari" } }, routineActionGrants: {}, updatedAt: "2026-08-29T00:00:00.000Z" })
-        : String(filePath).endsWith("await-top-up.md") ? "---\nstatus: pending\nwake_at: 2026-08-30T17:00:00.000Z\n---\n\nWaiting.\n" : "")
+        : String(filePath).endsWith("await-top-up.md") ? "---\nstatus: pending\nwake_at: 2026-08-30T17:00:00.000Z\nfiled_from: external-event\nfiled_from_key: /events/ouroboros/sanctuary-health/books.json\n---\n\nWaiting.\n" : "")
       const authorizeDisposition = vi.fn(() => ({ allowed: true, reason: "approved" }))
       const deliverOwnerDecision = vi.fn(async () => undefined)
       const tool = findTool("external_event_disposition")
@@ -648,7 +674,7 @@ describe("continuity tools", () => {
       const currentExternalEvent = { schemaVersion: 1 as const, recordPath: "/events/ouroboros/sanctuary-health/books.json", agent: "ouroboros", source: "sanctuary-health", eventId: "books", generation: 2, observationRevision: "rev-2", claimOwner: "lease-2" }
       const authority = { authorizeDisposition: vi.fn(() => ({ allowed: true, reason: "ok" })) }
       const base = { recordPath: currentExternalEvent.recordPath, expectedGeneration: 2, classifiedRevision: "rev-2", classification: "expected", stewardPolicyKind: "current", stewardPolicyKey: "service:books", stewardPolicyVersion: 2, decision: "silent", reason: "Expected.", nextWake: "on_change" }
-      mockReadExternalEventRecord.mockReturnValue({ agent: "ouroboros", source: "sanctuary-health", eventId: "books", transition: "opened", version: 4, generation: 2, observationRevision: "rev-2", executionState: "running", claimOwner: "lease-2" })
+      mockReadExternalEventRecord.mockReturnValue({ agent: "ouroboros", source: "sanctuary-health", eventId: "books", recordPath: currentExternalEvent.recordPath, transition: "opened", version: 4, generation: 2, observationRevision: "rev-2", executionState: "running", claimOwner: "lease-2" })
       expect(() => tool.handler({ ...base, stewardPolicyKey: "" }, { signin: async () => undefined, currentExternalEvent, externalEventAuthority: authority })).toThrow("invalid")
       expect(() => tool.handler({ ...base, stewardPolicyKey: undefined }, { signin: async () => undefined, currentExternalEvent, externalEventAuthority: authority })).toThrow("invalid")
       expect(() => tool.handler({ ...base, classification: "adopted" }, { signin: async () => undefined, currentExternalEvent, externalEventAuthority: authority })).toThrow("requires a Care")
@@ -658,7 +684,7 @@ describe("continuity tools", () => {
       expect(() => tool.handler({ ...base, careId: "" }, { signin: async () => undefined, currentExternalEvent, externalEventAuthority: authority })).not.toThrow()
       vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => String(filePath).endsWith("steward.json")
         ? JSON.stringify({ schemaVersion: 1, version: 2, desiredStates: {}, routineActionGrants: { "service:books": { action: "restart", targets: ["books"], exclusions: [], maxCount: 1, windowMs: 1, verificationRequired: true, provenance: "stated", version: 2 } }, updatedAt: "2026-08-29T00:00:00.000Z" })
-        : String(filePath).endsWith("resolved.md") ? "---\nstatus: resolved\nwake_at: 2026-08-30T17:00:00.000Z\n---\n\nDone.\n" : "")
+        : String(filePath).endsWith("resolved.md") ? "---\nstatus: resolved\nwake_at: 2026-08-30T17:00:00.000Z\nfiled_from: external-event\nfiled_from_key: /events/ouroboros/sanctuary-health/books.json\n---\n\nDone.\n" : "")
       expect(() => tool.handler(base, { signin: async () => undefined, currentExternalEvent, externalEventAuthority: authority })).not.toThrow()
       expect(() => tool.handler({ ...base, nextWake: "at", wakeAt: "2026-08-30T17:00:00.000Z", awaitId: "resolved" }, { signin: async () => undefined, currentExternalEvent, externalEventAuthority: authority })).toThrow("does not match the exact wake time")
       vi.mocked(fs.lstatSync).mockReturnValueOnce({ isFile: () => false, isSymbolicLink: () => true } as any)

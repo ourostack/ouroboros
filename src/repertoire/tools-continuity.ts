@@ -114,6 +114,11 @@ export const continuityToolDefinitions: ToolDefinition[] = [
         } catch {
           throw new Error("External event timed disposition requires a current pending Await");
         }
+        const expectedOwnerId = ctx?.context?.friend.id;
+        if (pendingAwait.filed_from !== "external-event" || pendingAwait.filed_from_key !== record.recordPath
+          || (expectedOwnerId && pendingAwait.filed_for_friend_id !== expectedOwnerId)) {
+          throw new Error("External event timed disposition Await is not owned by this exact external event");
+        }
         if (pendingAwait.status !== "pending" || pendingAwait.wake_at !== String(a.wakeAt)) {
           throw new Error("External event timed disposition Await does not match the exact wake time");
         }
