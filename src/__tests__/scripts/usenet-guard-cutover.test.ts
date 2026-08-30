@@ -73,11 +73,59 @@ describe("Unraid usenet guard cutover assets", () => {
     expect(source).toContain('"sabnzbd:pause:${TODAY}:spend-guard"')
   })
 
-  it("never stages Prowlarr JSON in a predictable temporary file", () => {
+  it("never mutates Prowlarr and emits auth, stall, and recovery observations for Butler turns", () => {
     const source = fs.readFileSync(guardPath, "utf8")
     expect(source).not.toContain("/tmp/usenet_idx_off.json")
-    expect(source).toContain("jq -c '.enable = false'")
-    expect(source).toContain("--data-binary @-")
+    expect(source).not.toContain(".enable = false")
+    expect(source).not.toMatch(/-X PUT|-X POST|ApplicationIndexerSync|api\/v1\/indexer\/$IID/u)
+    expect(source).not.toContain('emit_transition "prowlarr.disable-indexer"')
+    expect(source).toContain("OBSERVED_SLOT=$(date -u '+%Y%m%dT%H%M%SZ')")
+    expect(source).toContain('emit_transition "usenet.observe" "provider-health" "auth-failed:${OBSERVED_SLOT}"')
+    expect(source).toContain('emit_transition "usenet.observe" "provider-health" "stalled:${OBSERVED_SLOT}"')
+    expect(source).toContain('emit_transition "usenet.observe" "provider-health" "recovered:${OBSERVED_SLOT}"')
+  })
+
+  it.each([
+    ["auth", "auth-failed:"],
+    ["stall", "stalled:"],
+    ["recovery", "recovered:"],
+  ])("submits the %s observation on every detector run without consulting Prowlarr", (scenario, transition) => {
+    const temp = root()
+    const bin = path.join(temp, "bin")
+    const calls = path.join(temp, "adapter.calls")
+    const curlCalls = path.join(temp, "curl.calls")
+    const log = path.join(temp, "guard.log")
+    const ini = path.join(temp, "sabnzbd.ini")
+    const producer = path.join(temp, "producer.mjs")
+    const adapter = path.join(temp, "adapter")
+    fs.mkdirSync(bin)
+    fs.writeFileSync(ini, "api_key = test-only\n")
+    fs.writeFileSync(producer, "process.exit(0)\n")
+    fs.writeFileSync(path.join(bin, "curl"), `#!/bin/bash
+printf '%s\n' "$*" >> ${JSON.stringify(curlCalls)}
+printf '{}\n'
+`, { mode: 0o700 })
+    fs.writeFileSync(path.join(bin, "jq"), `#!/bin/bash
+case "$*" in
+  *Authentication*last*) echo "502 Authentication Failed" ;;
+  *Authentication*length*) [ "$USENET_CASE" = auth ] && echo 1 || echo 0 ;;
+  *queue.status*) [ "$USENET_CASE" = stall ] && echo Idle || echo Downloading ;;
+  *queue.noofslots*) [ "$USENET_CASE" = stall ] && echo 2 || echo 0 ;;
+  *articles_tried*|*articles_success*|*daily*) echo 0 ;;
+  *) echo 0 ;;
+esac
+`, { mode: 0o700 })
+    fs.writeFileSync(adapter, `#!/bin/bash
+printf '%s\n' "$*" >> ${JSON.stringify(calls)}
+`, { mode: 0o700 })
+
+    execFileSync(guardPath, ["--sab-ini", ini, "--log", log, "--producer", producer, "--adapter", adapter], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, USENET_CASE: scenario } })
+
+    const emitted = fs.readFileSync(calls, "utf8").trim().split("\n")
+    expect(emitted).toHaveLength(1)
+    expect(emitted[0]).toContain(`usenet.observe provider-health ${transition}`)
+    const queried = fs.readFileSync(curlCalls, "utf8")
+    expect(queried).not.toMatch(/9696|Prowlarr|api\/v1\/indexer/iu)
   })
 
   it("uses the canonical producer with a fixed bounded argv contract and no detector speech token", () => {
@@ -85,12 +133,16 @@ describe("Unraid usenet guard cutover assets", () => {
     expect(source).toContain('exec /usr/local/bin/node "$PRODUCER"')
     expect(source).toContain('"--agent" "sanctuary"')
     expect(source).toContain('"--source" "sanctuary-usenet"')
-    expect(source).toContain('"--event-type" "usenet.protective_action"')
+    expect(source).toContain('EVENT_TYPE="usenet.protective_action"')
+    expect(source).toContain('usenet.observe) EVENT_TYPE="usenet.health_observation"')
+    expect(source).toContain('"--event-type" "$EVENT_TYPE"')
     expect(source).toContain('"--action" "$ACTION"')
     expect(source).toContain('"--evidence" "$EVIDENCE"')
     expect(source).toContain('"--protective-state-verified" "$VERIFIED"')
     expect(source).toContain('"--protective-state-digest" "$VERIFICATION_DIGEST"')
     expect(source).toContain('"--protective-state-observed-at" "$VERIFIED_AT"')
+    expect(source).toContain('OBSERVED_STATE="${TRANSITION%%:*}"')
+    expect(source).toContain('"$ACTION" "$INCIDENT" "$OBSERVED_STATE" "$VERIFICATION_DIGEST"')
     expect(source).not.toMatch(/TELEGRAM|token|sendMessage|api\.telegram/iu)
   })
 

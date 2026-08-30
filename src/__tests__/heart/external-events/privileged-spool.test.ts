@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { claimExternalEvent, commitExternalEventDisposition, listExternalEventStatus, readExternalEventRecord, recordExternalEvent, scanPrivilegedEventSpool } from "../../../heart/external-events/router"
 
-const spoolMock = vi.hoisted(() => ({ root: "", readOnly: false, authorityBarrierUsed: false, mountInfo: null as string | null, mountReadError: false, replaceLockOwner: false, failReplayLockMkdir: false, changeOpenedFile: false, preserveReplayLock: false, oversizedFdRead: false }))
+const spoolMock = vi.hoisted(() => ({ root: "", readOnly: false, authorityBarrierUsed: false, mountInfo: null as string | null, mountReadError: false, replaceLockOwner: false, failReplayLockMkdir: false, changeOpenedFile: false, preserveReplayLock: false, oversizedFdRead: false, skipDurabilityFsync: false }))
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>()
   return {
@@ -37,6 +37,10 @@ vi.mock("node:fs", async (importOriginal) => {
     fstatSync(handle: number) {
       const stat = actual.fstatSync(handle)
       return spoolMock.changeOpenedFile ? new Proxy(stat, { get(value, property, receiver) { return property === "size" ? value.size + 1 : Reflect.get(value, property, receiver) } }) : stat
+    },
+    fsyncSync(handle: number) {
+      if (spoolMock.skipDurabilityFsync) return
+      return actual.fsyncSync(handle)
     },
     unlinkSync(target: fs.PathLike) {
       if (spoolMock.preserveReplayLock && String(target).endsWith("/.privileged-replay.lock/owner.json")) return
@@ -93,6 +97,20 @@ function envelope(overrides: Record<string, unknown> = {}): Record<string, unkno
   }
 }
 
+function healthEnvelope(state: "auth-failed" | "stalled" | "recovered", slot: string): Record<string, unknown> {
+  return envelope({
+    eventType: "usenet.health_observation",
+    action: "usenet.observe",
+    actionReceipt: `usenet:provider-health:${slot}:${state}`,
+    incidentKey: "provider-health",
+    transitionId: `${state}:${slot}`,
+    observationRevision: createHash("sha256").update(`revision:${state}`).digest("hex"),
+    nonce: createHash("sha256").update(`nonce:${state}:${slot}`).digest("hex"),
+    summary: `Usenet provider health: ${state}`,
+    evidence: [`SABnzbd provider-health observation: ${state}`],
+  })
+}
+
 function envelopeName(value: Record<string, unknown>): string {
   return `${createHash("sha256").update(`${value.source}\0${value.incidentKey}\0${value.transitionId}`).digest("hex")}.json`
 }
@@ -142,6 +160,7 @@ afterEach(() => {
   spoolMock.changeOpenedFile = false
   spoolMock.preserveReplayLock = false
   spoolMock.oversizedFdRead = false
+  spoolMock.skipDurabilityFsync = false
   for (const value of roots.splice(0)) fs.rmSync(value, { recursive: true, force: true })
 })
 
@@ -221,7 +240,71 @@ describe("privileged external-event spool", () => {
     })
   })
 
+  it("routes a privileged health observation without inventing a protective action", () => {
+    const spoolRoot = root("ouro-privileged-observation")
+    const eventRoot = root("ouro-privileged-observation-events")
+    fs.chmodSync(spoolRoot, 0o755)
+    writeSpoolFile(spoolRoot, healthEnvelope("auth-failed", "20260829T195500Z"))
+    spoofRootOwnership(spoolRoot)
+
+    expect(scanPrivilegedEventSpool({ spoolRoot, eventRoot, now: () => NOW })).toEqual({ accepted: 1, rejected: 0, replayed: 0 })
+    const record = readExternalEventRecord(listExternalEventStatus(eventRoot)[0]!.recordPath)
+    expect(record).toMatchObject({ eventType: "usenet.health_observation", eventId: "provider-health", priority: "critical", transition: "opened", executionState: "received", shouldWake: true })
+    expect(record).not.toHaveProperty("privilegedProtectiveAction")
+    expect(record.evidence).not.toEqual(expect.arrayContaining([expect.stringContaining("protective action:")]))
+  })
+
+  it.each(["auth-failed", "stalled"] as const)("keeps initial health and unchanged %s quiet, but wakes for failure and recovery", (failureState) => {
+    const spoolRoot = root(`ouro-privileged-${failureState}`)
+    const eventRoot = root(`ouro-privileged-${failureState}-events`)
+    fs.chmodSync(spoolRoot, 0o755)
+    writeSpoolFile(spoolRoot, healthEnvelope("recovered", "20260829T195000Z"))
+    spoofRootOwnership(spoolRoot)
+
+    expect(scanPrivilegedEventSpool({ spoolRoot, eventRoot, now: () => NOW })).toEqual({ accepted: 1, rejected: 0, replayed: 0 })
+    let record = readExternalEventRecord(listExternalEventStatus(eventRoot)[0]!.recordPath)
+    expect(record).toMatchObject({ transition: "recovered", executionState: "handled", shouldWake: false, disposition: null, generation: 1 })
+
+    writeSpoolFile(spoolRoot, healthEnvelope("recovered", "20260829T195100Z"))
+    expect(scanPrivilegedEventSpool({ spoolRoot, eventRoot, now: () => NOW })).toEqual({ accepted: 1, rejected: 0, replayed: 1 })
+    record = readExternalEventRecord(record.recordPath)
+    expect(record).toMatchObject({ transition: "recovered", executionState: "handled", shouldWake: false, disposition: null, generation: 1 })
+
+    writeSpoolFile(spoolRoot, healthEnvelope(failureState, "20260829T195500Z"))
+    expect(scanPrivilegedEventSpool({ spoolRoot, eventRoot, now: () => NOW })).toEqual({ accepted: 1, rejected: 0, replayed: 2 })
+    record = readExternalEventRecord(record.recordPath)
+    expect(record).toMatchObject({ transition: "opened", executionState: "received", shouldWake: true, generation: 2 })
+    const claimed = claimExternalEvent(record.recordPath, { owner: "butler", expectedVersion: record.version, expectedGeneration: 2, now: () => "2026-08-29T20:00:01.000Z" })
+    const handled = commitExternalEventDisposition(record.recordPath, {
+      owner: "butler",
+      expectedVersion: claimed.version,
+      expectedGeneration: 2,
+      now: () => "2026-08-29T20:00:02.000Z",
+      disposition: {
+        classifiedRevision: record.observationRevision,
+        classification: "needs_attention",
+        stewardPolicy: { kind: "current", key: "usenet:provider-health", version: 1 },
+        decision: "act",
+        reason: "The Butler investigated the provider failure and will wait for recovery.",
+        nextWake: { kind: "on_recovery" },
+        careId: null,
+        awaitId: null,
+        actionRefs: [],
+        verificationRefs: [],
+      },
+    })
+
+    writeSpoolFile(spoolRoot, healthEnvelope(failureState, "20260829T195600Z"))
+    expect(scanPrivilegedEventSpool({ spoolRoot, eventRoot, now: () => NOW })).toEqual({ accepted: 1, rejected: 0, replayed: 3 })
+    expect(readExternalEventRecord(record.recordPath)).toMatchObject({ version: handled.version + 1, executionState: "handled", shouldWake: false, generation: 2 })
+
+    writeSpoolFile(spoolRoot, healthEnvelope("recovered", "20260829T200000Z"))
+    expect(scanPrivilegedEventSpool({ spoolRoot, eventRoot, now: () => NOW })).toEqual({ accepted: 1, rejected: 0, replayed: 4 })
+    expect(readExternalEventRecord(record.recordPath)).toMatchObject({ transition: "recovered", executionState: "received", shouldWake: true, generation: 3, disposition: null })
+  })
+
   it("does not recreate compacted handled work when immutable spool history is rescanned", () => {
+    spoolMock.skipDurabilityFsync = true
     const spoolRoot = root("ouro-privileged-compaction")
     const eventRoot = root("ouro-privileged-compaction-events")
     fs.chmodSync(spoolRoot, 0o755)
@@ -362,6 +445,9 @@ describe("privileged external-event spool", () => {
     ["wrong source", { source: "attacker" }],
     ["wrong schema", { schemaVersion: 2 }],
     ["wrong action", { action: "shell.exec" }],
+    ["observation action on a protective event", { action: "usenet.observe" }],
+    ["protective action on an observation event", { eventType: "usenet.health_observation" }],
+    ["invalid observation transition", { eventType: "usenet.health_observation", action: "usenet.observe", transitionId: "recovered:daily" }],
     ["expired", { expiresAt: "2026-08-29T19:59:59.000Z" }],
     ["future", { createdAt: "2026-08-29T20:00:01.000Z" }],
     ["stale verification", { protectiveStateObservedAt: "2026-08-29T19:49:59.999Z" }],
@@ -666,6 +752,30 @@ describe("packaged root event producer", () => {
     expect(JSON.parse(fs.readFileSync(first.filePath, "utf8"))).toMatchObject({ ...envelope(), createdAt: "2026-08-29T19:55:00.000Z", expiresAt: "2026-08-29T20:10:00.000Z", nonce: "b".repeat(64) })
   })
 
+  it("publishes a health observation through the existing privileged spool", async () => {
+    const producerPath = path.resolve(__dirname, "../../../../deploy/unraid/ouro-events/emit-event.mjs")
+    const producer = await import(`${pathToFileURL(producerPath).href}?observation=${Date.now()}`) as {
+      emitEvent(input: Record<string, unknown>, options: ReturnType<typeof producerOptions>): { filePath: string; created: boolean }
+    }
+    const spoolRoot = root("ouro-producer-observation")
+    fs.chmodSync(spoolRoot, 0o755)
+    const input = envelope({
+      eventType: "usenet.health_observation",
+      action: "usenet.observe",
+      actionReceipt: "usenet:provider-health:auth-failed",
+      incidentKey: "provider-health",
+      transitionId: "auth-failed:20260829T195500Z",
+      createdAt: undefined,
+      expiresAt: undefined,
+      nonce: undefined,
+    })
+
+    const result = producer.emitEvent(input, producerOptions(spoolRoot))
+
+    expect(result.created).toBe(true)
+    expect(JSON.parse(fs.readFileSync(result.filePath, "utf8"))).toMatchObject({ eventType: "usenet.health_observation", action: "usenet.observe", incidentKey: "provider-health" })
+  })
+
   it("rejects non-root CLI execution, traversal, oversized content, and conflicting transition reuse", async () => {
     const producerPath = path.resolve(__dirname, "../../../../deploy/unraid/ouro-events/emit-event.mjs")
     const producer = await import(`${pathToFileURL(producerPath).href}?negative=${Date.now()}`) as {
@@ -677,6 +787,9 @@ describe("packaged root event producer", () => {
     expect(() => producer.emitEvent(envelope(), { ...producerOptions(spoolRoot), expectedSpoolOwnerUid: 0 })).toThrow("root-owned")
     expect(() => producer.emitEvent(envelope({ incidentKey: "../escape" }), producerOptions(spoolRoot))).toThrow("invalid")
     expect(() => producer.emitEvent(envelope({ summary: "x".repeat(4097) }), producerOptions(spoolRoot))).toThrow("bounded")
+    expect(() => producer.emitEvent(envelope({ action: "usenet.observe" }), producerOptions(spoolRoot))).toThrow("invalid")
+    expect(() => producer.emitEvent(envelope({ eventType: "usenet.health_observation" }), producerOptions(spoolRoot))).toThrow("invalid")
+    expect(() => producer.emitEvent(envelope({ eventType: "usenet.health_observation", action: "usenet.observe", transitionId: "recovered:daily" }), producerOptions(spoolRoot))).toThrow("invalid")
     producer.emitEvent(envelope(), producerOptions(spoolRoot))
     expect(() => producer.emitEvent(envelope({ summary: "different" }), { ...producerOptions(spoolRoot, "c".repeat(64)), now: () => "2026-08-29T19:56:00.000Z" })).toThrow("transition already exists with different content")
   })
