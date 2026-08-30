@@ -12,6 +12,7 @@ import {
   findPendingObligationForOrigin,
   advanceObligation,
   markObligationReturnReady,
+  isActiveReturnObligationRecord,
 } from "../../arc/obligations"
 import { expectCappedAgentContent, makeOversizedAgentContent } from "../helpers/content-cap"
 
@@ -323,11 +324,19 @@ describe("obligations store", () => {
       })
 
       const machineOnly = createObligation(tmpDir, { origin: sampleOrigin, content: "machine-owned return" })
+      const machineOnlyPath = path.join(tmpDir, "arc", "obligations", `${machineOnly.id}.json`)
+      const legacyMachineOnly = JSON.parse(fs.readFileSync(machineOnlyPath, "utf8"))
+      delete legacyMachineOnly.owedTo
+      fs.writeFileSync(machineOnlyPath, JSON.stringify(legacyMachineOnly))
       expect(markObligationReturnReady(tmpDir, machineOnly.id, "effect:machine")).toMatchObject({
         id: machineOnly.id,
         returnEvidenceRef: "effect:machine",
       })
     })
+  })
+
+  it("rejects malformed records at the active return-obligation boundary", () => {
+    expect(isActiveReturnObligationRecord({ status: "pending" })).toBe(false)
   })
 
   describe("advanceObligation", () => {

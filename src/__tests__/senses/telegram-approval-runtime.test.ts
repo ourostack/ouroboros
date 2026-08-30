@@ -246,6 +246,9 @@ describe("Telegram approval runtime safety", () => {
     const result = '{"ok":true,"data":{"verified":true,"after":{"paused":false}}}'
     await expect(executeApprovedTelegramTool("sanctuary_resume_download_queue", {}, vi.fn().mockResolvedValue(result))).resolves.toBe(result)
     await expect(executeApprovedTelegramTool("sanctuary_resume_download_queue", {}, vi.fn().mockResolvedValue('{"ok":true,"data":{"verified":false,"after":{"paused":true}}}'))).rejects.toThrow("not independently verified")
+    for (const malformed of ["null", '{"ok":true,"data":null}', '{"ok":true,"data":{"verified":true,"after":null}}']) {
+      await expect(executeApprovedTelegramTool("sanctuary_resume_download_queue", {}, vi.fn().mockResolvedValue(malformed))).rejects.toThrow("not independently verified")
+    }
     await expect(executeApprovedTelegramTool("sanctuary_resume_download_queue", {}, vi.fn().mockResolvedValue("invalid"))).rejects.toThrow("invalid result")
   })
 
