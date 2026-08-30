@@ -111,7 +111,19 @@ describe("tools-awaiting", () => {
         owner: "worker-2", expectedVersion: secondClaim.version, expectedGeneration: secondClaim.generation,
         disposition: { classifiedRevision: second.observationRevision, classification: "snoozed", stewardPolicy: { kind: "none" }, decision: "silent", reason: "Wait.", nextWake: { kind: "at", at: "2026-08-30T17:00:00.000Z" }, careId: null, awaitId: "event-wait", actionRefs: [], verificationRefs: [] },
       })
+      expect(hasActiveExternalEventAwait("sanctuary", { recordPath: first.recordPath, awaitName: "event-wait", wakeAt: "2026-08-30T17:00:00.000Z" }, eventRoot)).toBe(true)
+
+      const changed = readExternalEventRecord(first.recordPath)
+      fs.writeFileSync(first.recordPath, JSON.stringify({ ...changed, executionState: "received", disposition: null }), "utf8")
       expect(hasActiveExternalEventAwait("sanctuary", { recordPath: first.recordPath, awaitName: "event-wait", wakeAt: "2026-08-30T17:00:00.000Z" }, eventRoot)).toBe(false)
+    })
+
+    it("does not classify an unreadable exact external-event record as stale", () => {
+      const eventRoot = path.join(agentRoot, "external-events")
+      const event = recordExternalEvent({ agent: "sanctuary", source: "usenet", eventType: "credit.low", eventId: "event-corrupt" }, { root: eventRoot })
+      fs.writeFileSync(event.recordPath, "{not-json", "utf8")
+
+      expect(() => hasActiveExternalEventAwait("sanctuary", { recordPath: event.recordPath, awaitName: "event-wait", wakeAt: "2026-08-30T17:00:00.000Z" }, eventRoot)).toThrow()
     })
 
     it("files a new await with required fields", async () => {
@@ -581,6 +593,37 @@ describe("tools-awaiting", () => {
       expect(mockDeliverAwaitAlert).toHaveBeenCalledWith(expect.objectContaining({
         awaitFile: expect.objectContaining({ filed_for_friend_id: "sibling", filed_from: "telegram", filed_from_key: "telegram:777:888", request_id: "request-mine" }),
       }))
+    })
+
+    it("terminally cancels an await whose exact request obligation became stale before dispatch", async () => {
+      const ctx = {
+        currentSession: { friendId: "sibling", channel: "telegram", key: "telegram:777:888", sessionPath: "/tmp/session.json" },
+        relationshipAuthorization: { requestId: "request-stale", authorizedContextScopes: ["own_requests"], advertisedToolNames: ["resolve_await"], authorizeTool: vi.fn() },
+      }
+      await fileAwaitDef.handler({ name: "stale", condition: "ready", cadence: "5m" }, ctx as any)
+      const [obligation] = readVerifiedPendingObligations(agentRoot)
+      advanceObligation(agentRoot, obligation!.id, { status: "fulfilled" })
+
+      const result = parse(await resolveAwaitDef.handler({ name: "stale", verdict: "yes", observation: "ready" }, ctx as any) as string)
+
+      expect(result.error).toMatch(/no longer active/u)
+      expect(fs.existsSync(path.join(agentRoot, "awaiting", "stale.md"))).toBe(false)
+      expect(readDoneFile(agentRoot, "stale")).toContain("status: canceled")
+      expect(readDoneFile(agentRoot, "stale")).toContain("cancel_reason: request obligation is no longer active")
+    })
+
+    it("preserves an await when its exact obligation record exists but cannot be verified", async () => {
+      const ctx = {
+        currentSession: { friendId: "sibling", channel: "telegram", key: "telegram:777:888", sessionPath: "/tmp/session.json" },
+        relationshipAuthorization: { requestId: "request-corrupt", authorizedContextScopes: ["own_requests"], advertisedToolNames: ["resolve_await"], authorizeTool: vi.fn() },
+      }
+      await fileAwaitDef.handler({ name: "corrupt", condition: "ready", cadence: "5m" }, ctx as any)
+      const [obligation] = readVerifiedPendingObligations(agentRoot)
+      fs.writeFileSync(path.join(agentRoot, "arc", "obligations", `${obligation!.id}.json`), "{not-json", "utf8")
+
+      await expect(resolveAwaitDef.handler({ name: "corrupt", verdict: "yes", observation: "ready" }, ctx as any)).rejects.toThrow(/could not be verified/u)
+      expect(fs.existsSync(path.join(agentRoot, "awaiting", "corrupt.md"))).toBe(true)
+      expect(fs.existsSync(path.join(agentRoot, "awaiting", ".done", "corrupt.md"))).toBe(false)
     })
   })
 

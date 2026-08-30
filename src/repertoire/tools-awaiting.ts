@@ -17,8 +17,8 @@ import { getPrivateRuntimePendingDir } from "../mind/pending"
 import type { PendingMessage } from "../mind/pending"
 import type { ToolDefinition } from "./tools-base"
 import type { CrossChatDeliveryDeps } from "../heart/cross-chat-delivery"
-import { advanceExternalEventFromAwait, getExternalEventRoot, listExternalEventStatus, readExternalEventRecord } from "../heart/external-events/router"
-import { advanceObligation, createObligation, fulfillObligation, readVerifiedPendingObligations } from "../arc/obligations"
+import { advanceExternalEventFromAwait, getExternalEventRoot, readExternalEventRecord } from "../heart/external-events/router"
+import { advanceObligation, createObligation, fulfillObligation, readVerifiedObligations, readVerifiedPendingObligations } from "../arc/obligations"
 import { parseCadenceToMs } from "../heart/daemon/cadence"
 
 /**
@@ -357,7 +357,50 @@ export function cancelAwaitTool(name: string, reason: string | undefined, agentR
   return JSON.stringify({ canceled: name, archived: awaitDoneFilePath(agentRoot, name) })
 }
 
+export type AwaitBindingInspection = { active: true } | { active: false; reason: string }
+
+function exactFileIsMissing(filePath: string): boolean {
+  try {
+    fs.lstatSync(filePath)
+    return false
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return true
+    throw error
+  }
+}
+
+export function cancelStaleAwait(agentRoot: string, agentName: string, name: string, reason: string): void {
+  const result = JSON.parse(cancelAwaitTool(name, reason, agentRoot, agentName)) as { canceled?: string; error?: string }
+  if (result.canceled !== name) throw new Error(`Stale await could not be archived for repair: ${result.error ?? name}`)
+}
+
+export function inspectRelationshipFollowUp(agentRoot: string, input: { friendId: string; channel: string; key: string; requestId: string; awaitName: string; allowElapsed?: boolean; now?: number }): AwaitBindingInspection {
+  const awaiting = readAwaitDefinition(agentRoot, input.awaitName)
+  if (!awaiting) throw new Error(`Await ${input.awaitName} could not be verified`)
+  if (!awaiting.obligation_id) return { active: false, reason: "request obligation is missing" }
+  const obligationPath = path.join(agentRoot, "arc", "obligations", `${awaiting.obligation_id}.json`)
+  const obligation = readVerifiedObligations(agentRoot).find((candidate) => candidate.id === awaiting.obligation_id)
+  if (!obligation) {
+    if (exactFileIsMissing(obligationPath)) return { active: false, reason: "request obligation is missing" }
+    throw new Error(`Request obligation ${awaiting.obligation_id} exists but could not be verified`)
+  }
+  if (obligation.status === "fulfilled") return { active: false, reason: "request obligation is no longer active" }
+  const matches = obligation.requestId === input.requestId
+    && obligation.origin.friendId === input.friendId && obligation.origin.channel === input.channel && obligation.origin.key === input.key
+    && obligation.owedTo?.friendId === input.friendId && obligation.owedTo.channel === input.channel && obligation.owedTo.key === input.key
+    && obligation.currentArtifact === `awaiting/${input.awaitName}.md`
+    && awaiting.status === "pending" && awaiting.obligation_id === obligation.id && awaiting.request_id === input.requestId
+    && awaiting.filed_for_friend_id === input.friendId && awaiting.filed_from === input.channel && awaiting.filed_from_key === input.key
+  if (!matches) return { active: false, reason: "request obligation binding no longer matches" }
+  const maxAge = parseCadenceToMs(awaiting.max_age)
+  if (input.allowElapsed !== true && maxAge !== null && awaiting.created_at && (input.now ?? Date.now()) >= Date.parse(awaiting.created_at) + maxAge) {
+    return { active: false, reason: "request obligation await expired" }
+  }
+  return { active: true }
+}
+
 export function hasActiveRelationshipFollowUp(agentRoot: string, input: { friendId: string; channel: string; key: string; requestId: string; awaitName?: string; allowElapsed?: boolean; now?: number }): boolean {
+  if (input.awaitName) return inspectRelationshipFollowUp(agentRoot, { ...input, awaitName: input.awaitName }).active
   const obligation = readVerifiedPendingObligations(agentRoot).find((candidate) => candidate.requestId === input.requestId
     && candidate.origin.friendId === input.friendId && candidate.origin.channel === input.channel && candidate.origin.key === input.key
     && candidate.owedTo?.friendId === input.friendId && candidate.owedTo.channel === input.channel && candidate.owedTo.key === input.key
@@ -374,10 +417,22 @@ export function hasActiveRelationshipFollowUp(agentRoot: string, input: { friend
 }
 
 export function hasActiveExternalEventAwait(agentName: string, input: { recordPath: string; awaitName: string; wakeAt: string }, root = getExternalEventRoot()): boolean {
-  const matches = listExternalEventStatus(root).filter((status) => !status.corrupt
-    && status.agent === agentName && status.executionState === "handled" && status.awaitId === input.awaitName)
-  return matches.length === 1 && matches[0]!.recordPath === input.recordPath
-    && matches[0]!.nextWake?.kind === "at" && matches[0]!.nextWake.at === input.wakeAt
+  return inspectExternalEventAwait(agentName, input, root).active
+}
+
+export function inspectExternalEventAwait(agentName: string, input: { recordPath: string; awaitName: string; wakeAt: string }, root = getExternalEventRoot()): AwaitBindingInspection {
+  const relative = path.relative(path.resolve(root), path.resolve(input.recordPath))
+  if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("External event await record is outside the event root")
+  let record: ReturnType<typeof readExternalEventRecord>
+  try {
+    record = readExternalEventRecord(input.recordPath)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { active: false, reason: "external event disposition is missing" }
+    throw error
+  }
+  const active = record.agent === agentName && record.recordPath === input.recordPath && record.executionState === "handled"
+    && record.disposition?.awaitId === input.awaitName && record.disposition.nextWake.kind === "at" && record.disposition.nextWake.at === input.wakeAt
+  return active ? { active: true } : { active: false, reason: "external event disposition is no longer active" }
 }
 
 export function cancelRelationshipFollowUps(agentRoot: string, agentName: string, input: { friendId: string; channel: string; key: string }): void {
@@ -468,15 +523,22 @@ export const awaitingToolDefinitions: ToolDefinition[] = [
         const session = ctx.currentSession
         const requestId = ctx.relationshipAuthorization.requestId
         const existing = readAwaitDefinition(agentRoot, String(a.name ?? ""))
-        const externalEventAuthorized = session?.channel === "external-event" && !!existing?.wake_at
-          && hasActiveExternalEventAwait(agentName, { recordPath: session.key, awaitName: String(a.name ?? ""), wakeAt: existing.wake_at })
-        if (!externalEventAuthorized && (!session || !requestId || !hasActiveRelationshipFollowUp(agentRoot, {
-          friendId: session.friendId,
-          channel: session.channel,
-          key: session.key,
-          requestId,
-          awaitName: String(a.name ?? ""),
-        }))) return JSON.stringify({ error: "resolve_await is limited to the current relationship request or bound external event" })
+        const awaitName = String(a.name ?? "")
+        let binding: AwaitBindingInspection | null = null
+        if (session?.channel === "external-event" && existing?.wake_at) {
+          binding = inspectExternalEventAwait(agentName, { recordPath: session.key, awaitName, wakeAt: existing.wake_at })
+        } else if (session && requestId) {
+          if (existing?.filed_for_friend_id !== session.friendId || existing.filed_from !== session.channel
+            || existing.filed_from_key !== session.key || existing.request_id !== requestId) {
+            return JSON.stringify({ error: "resolve_await is limited to the current relationship request or bound external event" })
+          }
+          binding = inspectRelationshipFollowUp(agentRoot, { friendId: session.friendId, channel: session.channel, key: session.key, requestId, awaitName })
+        }
+        if (binding && !binding.active) {
+          cancelStaleAwait(agentRoot, agentName, awaitName, binding.reason)
+          return JSON.stringify({ error: binding.reason })
+        }
+        if (!binding?.active) return JSON.stringify({ error: "resolve_await is limited to the current relationship request or bound external event" })
       }
       return resolveAwaitTool(a.name, a.verdict, a.observation, agentRoot, agentName)
     },
