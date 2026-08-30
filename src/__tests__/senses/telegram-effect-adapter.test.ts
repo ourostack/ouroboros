@@ -397,6 +397,7 @@ describe("Telegram effect adapter", () => {
   it("commits inbound-only admission ingress once and returns the exact durable session event", async () => {
     const store = journal()
     const sessionPath = path.join(roots[roots.length - 1]!, "session.json")
+    await expect(recordTelegramEffectsInSession({ store, sessionPath, artifacts: [] })).resolves.toBeNull()
     const input = { text: "approved original", reference: "telegram-admission:abc123" }
     const first = await recordTelegramEffectsInSession({ store, sessionPath, artifacts: [], inbound: input })
     const replay = await recordTelegramEffectsInSession({ store, sessionPath, artifacts: [], inbound: input })

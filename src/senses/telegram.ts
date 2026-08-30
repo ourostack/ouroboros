@@ -926,7 +926,6 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         pendingAdmission: { admissionId: pending.id, botId: pending.botId, userId: pending.userId, chatId: pending.chatId, expiresAt: new Date(pending.expiresAt).toISOString() },
         request: { kind: "admission_gate", admissionId: target.admissionId, botId: target.botId, userId: target.userId, chatId: target.chatId, effect: "fixed_ack", idempotencyKey: input.idempotencyKey, expiresAt: new Date(pending.expiresAt).toISOString() },
       })
-      if (!authorization.allowed) return authorization
       const admissionAuthorization = authorization as Extract<typeof authorization, { authorizationKind: "admission_gate" }>
       return { allowed: true, receiptId: admissionAuthorization.receiptId, expiresAt: admissionAuthorization.expiresAt, transport: { chatId: target.chatId } }
     }
@@ -1025,7 +1024,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   let approvalReconciliationActive = false
   const approvalReconciliationsInFlight = new Set<Promise<void>>()
   let nextApprovalReconcileDeadline: number | undefined
-  let reconcileSystemFailsafes = async (): Promise<void> => undefined
+  let reconcileSystemFailsafes!: () => Promise<void>
   let stopPromise: Promise<void> | undefined
   let runPromise: Promise<void> | undefined
 

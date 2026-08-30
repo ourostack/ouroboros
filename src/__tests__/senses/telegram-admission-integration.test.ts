@@ -196,7 +196,7 @@ describe("Telegram admission integration", () => {
     await expect(production.authorizeRelationshipEffect!({ phase: "send", idempotencyKey: "reply", target: { kind: "approved_relationship", friendId: claimed.friendId, sessionKey: "telegram:777:888", requestId: "req-1" }, authorClass: "butler", effect: { kind: "text", text: "ok" } })).resolves.toMatchObject({ allowed: false, reason: expect.stringContaining("not active") })
   })
 
-  it.each(["missing", "inactive", "causal"] as const)("contains %s live relationship authority while settling admitted work", async (authority) => {
+  it.each(["missing", "inactive", "causal", "response-causal", "multi"] as const)("contains %s live relationship authority while settling admitted work", async (authority) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), `telegram-admission-${authority}-authority-`)); roots.push(root)
     let pollOptions!: TelegramLongPollOptions
     let nextMessageId = 100
@@ -212,7 +212,12 @@ describe("Telegram admission integration", () => {
       runTurn: vi.fn(async (options: any) => {
         await options.prepareRunAgentOptions({ runAgentOptions: { toolContext: {} } })
         if (authority === "causal") await options.deliverySink.onDelivery({ kind: "settle", text: "causal response" })
-        return { response: "causal response", deliveries: [], deliveryFailures: [], ponderDeferred: false, causalSessionEventIds: ["nonexistent-causal-event"] }
+        if (authority === "multi") {
+          await options.deliverySink.onDelivery({ kind: "speak", text: "first response" })
+          await options.deliverySink.onDelivery({ kind: "settle", text: "second response" })
+        }
+        return { response: "causal response", deliveries: [], deliveryFailures: [], ponderDeferred: false,
+          ...(authority === "causal" ? { causalSessionEventIds: ["nonexistent-causal-event"] } : authority === "response-causal" ? { responseCausalSessionEventId: "nonexistent-response-event" } : {}) }
       }),
       migrateIdentity: async () => undefined,
       admission: {

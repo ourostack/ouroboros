@@ -1186,8 +1186,9 @@ describe("Telegram sense coverage contracts", () => {
   it("records approval-runtime owner effects through the configured relationship session", async () => {
     defaultFixture()
     const app = createTelegramSenseApp({ agentName: "sanctuary", credentials, _toolContext: {} as never })
-    const runtimeOptions = mocks.createTelegramApprovalRuntime.mock.calls.at(-1)?.[0] as { effects: { sendText(input: { idempotencyKey: string; chatId: string; text: string; authorClass: "control" }): Promise<number[]> } }
+    const runtimeOptions = mocks.createTelegramApprovalRuntime.mock.calls.at(-1)?.[0] as { effects: { sendText(input: { idempotencyKey: string; chatId: string; text: string; authorClass: "control"; causalEventId?: string }): Promise<number[]> } }
     await expect(runtimeOptions.effects.sendText({ idempotencyKey: "approval:coverage", chatId: "43", text: "Approval text", authorClass: "control" })).resolves.toEqual([71])
+    await expect(runtimeOptions.effects.sendText({ idempotencyKey: "approval:causal-coverage", chatId: "43", text: "Approval text", authorClass: "control", causalEventId: "missing-causal-event" })).resolves.toEqual([71])
     expect(fs.existsSync(path.join(isolatedRoot, "state", "telegram", "effects"))).toBe(true)
     await app.stop()
   })
