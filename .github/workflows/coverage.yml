@@ -150,7 +150,7 @@ jobs:
             /boot/config/custom/ouro-events/spool \
             /mnt/user/appdata/sabnzbd
           sudo touch /mnt/user/appdata/sabnzbd/sabnzbd.ini
-          trap 'docker rm -f ouro-butler-package-audit-canonical >/dev/null 2>&1 || true; sudo rm -rf -- /mnt/user/appdata/ouro-butler/runtime/.ouro-cli /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro /boot/config/custom/ouro-events/spool /mnt/user/appdata/sabnzbd/sabnzbd.ini; rm -rf "$PACKAGE_ROOT"' EXIT
+          trap 'docker rm -f ouro-butler-package-audit-canonical >/dev/null 2>&1 || true; sudo rm -rf -- /mnt/user/appdata/ouro-butler/runtime/.ouro-cli /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro /boot/config/custom/ouro-events/spool /mnt/user/appdata/sabnzbd/sabnzbd.ini; sudo rm -rf -- "$PACKAGE_ROOT"' EXIT
           docker create --name ouro-butler-package-audit-canonical --network host --restart unless-stopped --user 10001:10001 \
             --mount type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli \
             --mount type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro \
