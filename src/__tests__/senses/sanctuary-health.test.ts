@@ -3,7 +3,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { describe, expect, it, vi } from "vitest"
 
-import { createSanctuaryHealthSweep, probeSanctuaryEndpoint } from "../../senses/sanctuary-health"
+import { createSanctuaryHealthSweep, probeSanctuaryEndpoint, readSanctuaryHealthState } from "../../senses/sanctuary-health"
 
 function context(state: "running" | "exited", autostart = true) {
   return { sanctuary: {
@@ -68,6 +68,12 @@ function writeState(filePath: string, state: unknown): void {
 }
 
 describe("Sanctuary deterministic health sweep", () => {
+  it("exposes the canonical health state through its read-only projection", () => {
+    const filePath = statePath()
+    writeState(filePath, validState({ lastDigestDay: "2026-08-29" }))
+    expect(readSanctuaryHealthState(filePath)).toMatchObject({ lastDigestDay: "2026-08-29", incidents: {} })
+  })
+
   it("follows only bounded same-origin HTTPS redirects with manual redirect control", async () => {
     const fetch = vi.fn()
       .mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: "/ready" } }))

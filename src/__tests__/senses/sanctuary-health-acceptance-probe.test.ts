@@ -23,6 +23,7 @@ import {
   type SanctuaryHealthAcceptanceProbeInput,
 } from "../../senses/sanctuary-health-acceptance-probe"
 import { sanctuarySchedulerLivenessReceiptMac } from "../../heart/daemon/sanctuary-scheduler-liveness"
+import * as healthRunner from "../../senses/sanctuary-health-runner"
 
 const sha = (value: unknown): string => createHash("sha256").update(JSON.stringify(value)).digest("hex")
 const shaBytes = (value: string): string => createHash("sha256").update(value).digest("hex")
@@ -705,6 +706,60 @@ describe("packaged Sanctuary health acceptance probe", () => {
         ])
       }
     } finally {
+      fs.rmSync(fixture.agentRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("counts acceptance turn/provider callbacks and binds delivered phase receipts", async () => {
+    const fixture = setup("unit-16g-health-transition")
+    const original = healthRunner.runSanctuaryHealthHabit
+    let phase = 0
+    const spy = vi.spyOn(healthRunner, "runSanctuaryHealthHabit").mockImplementation(async (agentName, options) => {
+      options.acceptanceMetrics?.onPrivateTurnStart()
+      options.acceptanceMetrics?.onProviderInvocation()
+      const result = await original(agentName, options)
+      phase += 1
+      const state = JSON.parse(fs.readFileSync(fixture.statePath, "utf8"))
+      const deliveryId = `coverage-delivery-${phase}`
+      state.sweepReceipts.at(-1).deliveryId = deliveryId
+      state.deliveredReceipts.push({
+        deliveryId,
+        kind: phase === 1 ? "legacy_unknown" : "transition",
+        messageIds: [phase],
+        deliveredAt: "2026-08-29T00:00:00.000Z",
+      })
+      fs.writeFileSync(fixture.statePath, `${JSON.stringify(state)}\n`)
+      return result
+    })
+    try {
+      const receipt = await runSanctuaryHealthAcceptanceProbe(fixture.input, fixture.deps)
+      expect(receipt).toMatchObject({ privateTurnCount: 6, providerInvocationCount: 6, deliveryCount: 6 })
+      expect(receipt.phases[0]).toMatchObject({ deliveryKind: null, deliveryReceiptDigest: expect.stringMatching(/^[0-9a-f]{64}$/u) })
+      expect(receipt.phases[1]).toMatchObject({ deliveryKind: "transition", deliveryReceiptDigest: expect.stringMatching(/^[0-9a-f]{64}$/u) })
+    } finally {
+      spy.mockRestore()
+      fs.rmSync(fixture.agentRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("closes the loopback fixture when a phase references a missing delivery receipt", async () => {
+    const fixture = setup("unit-16g-health-transition")
+    const original = healthRunner.runSanctuaryHealthHabit
+    let phase = 0
+    const spy = vi.spyOn(healthRunner, "runSanctuaryHealthHabit").mockImplementation(async (agentName, options) => {
+      const result = await original(agentName, options)
+      phase += 1
+      if (phase === 3) {
+        const state = JSON.parse(fs.readFileSync(fixture.statePath, "utf8"))
+        state.sweepReceipts.at(-1).deliveryId = "missing-delivery"
+        fs.writeFileSync(fixture.statePath, `${JSON.stringify(state)}\n`)
+      }
+      return result
+    })
+    try {
+      await expect(runSanctuaryHealthAcceptanceProbe(fixture.input, fixture.deps)).rejects.toThrow("delivery receipt is missing")
+    } finally {
+      spy.mockRestore()
       fs.rmSync(fixture.agentRoot, { recursive: true, force: true })
     }
   })

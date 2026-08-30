@@ -489,11 +489,32 @@ describe("external event attention lifecycle", () => {
     expect(renewExternalEventClaim(first.recordPath, { owner: "worker", expectedGeneration: 1 })).toMatchObject({ claimOwner: "worker", claimExpiresAt: expect.any(String) })
     const base = { classifiedRevision: first.observationRevision, classification: "expected" as const, stewardPolicy: { kind: "current" as const, key: "test", version: 1 }, decision: "silent" as const, reason: "test", nextWake: { kind: "on_change" as const }, careId: null, awaitId: null, actionRefs: [], verificationRefs: [] }
     for (const disposition of [
+      { ...base, stewardPolicy: { kind: "current", key: "test", version: Number.NaN } },
       { ...base, stewardPolicy: { kind: "current", key: "test", version: 0 } },
       { ...base, stewardPolicy: { kind: "invalid" } },
       { ...base, actionRefs: Array.from({ length: 33 }, () => "ref") },
+      { ...base, verificationRefs: Array.from({ length: 33 }, () => "ref") },
       { ...base, actionRefs: ["x".repeat(513)] },
     ]) expect(() => commitExternalEventDisposition(first.recordPath, { owner: "worker", expectedVersion: claim.version, expectedGeneration: 1, disposition: disposition as any })).toThrow()
+  })
+
+  it("preserves compacted retention while fencing a changed running observation", () => {
+    const eventRoot = root()
+    const first = recordExternalEvent({ agent: "sanctuary", source: "guard", eventType: "health.observed", eventId: "retained-running", observationRevision: "rev-1" }, { root: eventRoot })
+    claimExternalEvent(first.recordPath, { owner: "worker", expectedVersion: first.version, expectedGeneration: 1 })
+    const running = readExternalEventRecord(first.recordPath)
+    fs.writeFileSync(first.recordPath, JSON.stringify({
+      ...running,
+      retentionSummary: {
+        compactedHandledCount: 2,
+        oldestCompactedAt: "2026-08-20T00:00:00.000Z",
+        newestCompactedAt: "2026-08-21T00:00:00.000Z",
+        digest: "retained",
+      },
+    }))
+
+    expect(recordExternalEvent({ agent: "sanctuary", source: "guard", eventType: "health.observed", eventId: "retained-running", observationRevision: "rev-2" }, { root: eventRoot }))
+      .toMatchObject({ pendingObservation: { observationRevision: "rev-2" }, retentionSummary: { compactedHandledCount: 2 } })
   })
 
   it("binds a privileged failsafe exactly once and rejects changed or invalid bindings", () => {

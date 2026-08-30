@@ -103,6 +103,7 @@ const listCodingSessionsMock = vi.fn(() => [
   },
 ])
 const listVisibleBackgroundOperationsMock = vi.fn(() => [])
+const readSanctuaryHealthStateMock = vi.fn(() => ({ incidents: {}, lastDigestDay: null, updatedAt: "2026-08-29T00:00:00.000Z", outbox: null, indeterminateDeliveries: [], deliveredReceipts: [], sweepReceipts: [] }))
 
 vi.mock("fs", () => ({
   existsSync: vi.fn(),
@@ -203,6 +204,11 @@ vi.mock("../../repertoire/coding", () => ({
 
 vi.mock("../../heart/mail-import-discovery", () => ({
   listVisibleBackgroundOperations: listVisibleBackgroundOperationsMock,
+}))
+
+vi.mock("../../senses/sanctuary-health", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../senses/sanctuary-health")>(),
+  readSanctuaryHealthState: (...args: any[]) => readSanctuaryHealthStateMock(...args),
 }))
 
 describe("query_active_work tool", () => {
@@ -386,6 +392,91 @@ describe("query_active_work tool", () => {
     expect(result).toContain("unavailable (credentials unavailable)")
     expect(result).toContain("5 more; ouro status --json")
     expect(result.length).toBeLessThan(10_000)
+  })
+
+  it("reads pending awaits plus live delivery and daemon state from their canonical files", async () => {
+    const fs = await import("fs")
+    const existsSync = vi.mocked(fs.existsSync)
+    const readdirSync = vi.mocked(fs.readdirSync)
+    const readFileSync = vi.mocked(fs.readFileSync)
+    existsSync.mockImplementation((candidate) => {
+      const filePath = String(candidate)
+      return filePath.endsWith("/awaiting") || filePath.endsWith("/state/health/sanctuary-health.json")
+    })
+    readdirSync.mockImplementation(((candidate: string) => String(candidate).endsWith("/awaiting") ? [
+      { name: "pending.md", isFile: () => true },
+      { name: "resolved.md", isFile: () => true },
+      { name: "ignored.txt", isFile: () => true },
+      { name: "nested.md", isFile: () => false },
+    ] : []) as any)
+    readFileSync.mockImplementation(((candidate: string) => {
+      const filePath = String(candidate)
+      if (filePath.endsWith("pending.md")) return "---\ncondition: Ari confirms the top-up\nstatus: pending\n---\ncheck credit\n"
+      if (filePath.endsWith("resolved.md")) return "---\nstatus: resolved\n---\ndone\n"
+      if (filePath.endsWith("sanctuary-health.json")) return JSON.stringify({ incidents: {}, lastDigestDay: null, updatedAt: "2026-08-29T00:00:00.000Z", outbox: null, indeterminateDeliveries: [], deliveredReceipts: [], sweepReceipts: [] })
+      return JSON.stringify({ status: "healthy", mode: "production", pid: 41, startedAt: "2026-08-29T00:00:00.000Z", uptimeSeconds: 60, safeMode: null, degraded: [], agents: {}, habits: {} })
+    }) as any)
+
+    try {
+      const { readButlerOperationalVisibility } = await import("../../repertoire/tools-session")
+      const status = readButlerOperationalVisibility("/mock/butler", "sanctuary")
+      expect(status.awaits).toEqual([expect.objectContaining({ name: "pending", status: "pending" })])
+      expect(status.telegramDelivery.updatedAt).toBe("2026-08-29T00:00:00.000Z")
+      expect(status.daemonHealth).toMatchObject({ status: "healthy", pid: 41 })
+    } finally {
+      existsSync.mockReset()
+      readdirSync.mockReset()
+      readFileSync.mockReset()
+    }
+  })
+
+  it("renders bounded await and event detail including wake, return, care, and unavailable sources", async () => {
+    const { formatButlerOperationalVisibility } = await import("../../repertoire/tools-session")
+    const awaits = Array.from({ length: 21 }, (_, index) => ({
+      name: `await-${index}`,
+      condition: index === 0 ? null : `condition-${index}`,
+      cadence: null,
+      alert: null,
+      mode: "full" as const,
+      max_age: null,
+      wake_at: index === 0 ? "2026-08-30T00:00:00.000Z" : null,
+      status: "pending" as const,
+      created_at: null,
+      filed_from: null,
+      filed_for_friend_id: null,
+      filed_from_key: null,
+      request_id: null,
+      obligation_id: null,
+      body: index === 0 ? "body fallback" : "",
+      resolved_at: null,
+      resolution_observation: null,
+      expired_at: null,
+      last_observation_at_expiry: null,
+      canceled_at: null,
+      cancel_reason: null,
+    }))
+    const event = {
+      recordPath: "/event", corrupt: false, agent: "sanctuary", source: "health", eventId: "needs-detail", eventType: "service", observationRevision: "r1", transition: "changed" as const,
+      executionState: "handled" as const, generation: 1, attemptCount: 1, updatedAt: "2026-08-29T00:00:00.000Z", classification: null, decision: null,
+      reason: null, stewardPolicy: { kind: "none" as const }, nextWake: null, careId: "care-1", awaitId: "await-1", lastError: "still investigating", nextAttemptAt: null,
+      claimOwner: null, claimExpiresAt: null, dispatchEnabled: true, undispatched: false, retentionSummary: null,
+    }
+    const result = formatButlerOperationalVisibility({
+      agentName: "sanctuary",
+      daemonHealth: { status: "healthy", mode: "production", pid: 1, startedAt: "2026-08-29T00:00:00.000Z", uptimeSeconds: 1, safeMode: null, degraded: [], agents: {}, habits: {} },
+      senseStatusLines: [],
+      stewardPolicy: { schemaVersion: 1, version: 0, desiredStates: {}, routineActionGrants: {}, updatedAt: null },
+      awaits,
+      telegramDelivery: { outbox: null, indeterminateDeliveries: [], deliveredReceipts: [], updatedAt: "2026-08-29T00:00:00.000Z" },
+      externalEvents: [event],
+      sourceErrors: { awaits: "await store unavailable", external_events: "event store unavailable", steward_policy: "policy unavailable" },
+    })
+    expect(result).toContain("body fallback; wake 2026-08-30T00:00:00.000Z")
+    expect(result).toContain("1 more; inspect awaiting/")
+    expect(result).toContain("still investigating")
+    expect(result).toContain("await await-1; care care-1")
+    expect(result).toContain("event store unavailable")
+    expect(result).toContain("steward policy: unavailable (policy unavailable)")
   })
 
   it("shows other live work even without a current session", async () => {
