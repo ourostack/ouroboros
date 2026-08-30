@@ -244,6 +244,33 @@ describe("notes/friend tools", () => {
     expect(result).toBe("friend not found: missing-friend")
   })
 
+  it("requires explicit provenance for a Sanctuary relationship preference", async () => {
+    const { execTool } = await import("../../repertoire/tools")
+    const friend = makeFriend({ capabilityProfileId: "sanctuary-household" } as Partial<FriendRecord>)
+    const friendStore = {
+      get: vi.fn(async () => friend),
+      put: vi.fn(),
+      delete: vi.fn(),
+      findByExternalId: vi.fn(),
+    }
+
+    const result = await execTool("save_friend_note", {
+      type: "tool_preference",
+      key: "communication",
+      content: "Keep replies short",
+    }, {
+      signin: async () => undefined,
+      context: {
+        friend,
+        channel: { channel: "telegram", availableIntegrations: [], supportsMarkdown: true, supportsStreaming: false, supportsRichCards: false, maxMessageLength: 4096 },
+      },
+      friendStore,
+    })
+
+    expect(result).toBe("i need exact preference provenance: source must be stated, observed, or default")
+    expect(friendStore.put).not.toHaveBeenCalled()
+  })
+
   it("friend_list lists all friends sorted by name with default limit", async () => {
     const { execTool } = await import("../../repertoire/tools")
     const friends: FriendRecord[] = [

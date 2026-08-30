@@ -456,6 +456,7 @@ describe("query_active_work tool", () => {
         const base = { schemaVersion: 1, rootRunId: "root", idempotencyKey: "idem", agent: "sanctuary", triggerType: "inbound", sourceKind: "private-runtime", senseOrHabit: "external-event", targetHash: "sha256:target", startedAt: "2026-08-29T00:00:00.000Z", contextPacketIds: [], contentStored: false }
         return [
           { ...base, recordedAt: "2026-08-29T00:01:00.000Z", runId: "run-success", lifecycle: "completed", endedAt: "2026-08-29T00:01:00.000Z" },
+          { ...base, recordedAt: "2026-08-29T00:03:00.000Z", runId: "run-latest", lifecycle: "completed" },
           { ...base, recordedAt: "2026-08-29T00:02:00.000Z", runId: "run-error", lifecycle: "error", endedAt: "2026-08-29T00:02:00.000Z", errorName: "Error" },
         ].map((row) => JSON.stringify(row)).join("\n")
       }
@@ -470,7 +471,7 @@ describe("query_active_work tool", () => {
       expect(status.telegramEffects[0]).toMatchObject({ acceptedAt: null, sessionRecordedAt: null })
       expect(status.telegramAdmissions).toEqual([expect.objectContaining({ status: "pending", displayCode: "PINE-4821" })])
       expect(status.daemonHealth).toMatchObject({ status: "healthy", pid: 41 })
-      expect(status.lastAutomatedEventRun).toMatchObject({ runId: "run-success", lifecycle: "completed" })
+      expect(status.lastAutomatedEventRun).toMatchObject({ runId: "run-latest", lifecycle: "completed" })
     } finally {
       existsSync.mockReset()
       readdirSync.mockReset()
@@ -581,7 +582,7 @@ describe("query_active_work tool", () => {
       agentName: "sanctuary", daemonHealth: null, senseStatusLines: [], stewardPolicy: { schemaVersion: 1 as const, version: 1, desiredStates: { old: { value: "off", provenance: "stated" as const, version: 1, source: "old", expiresAt: "2020-01-01T00:00:00.000Z" } }, routineActionGrants: {}, updatedAt: null }, awaits: [], telegramAdmissions: [], externalEvents: [event], sourceErrors: {},
       telegramEffects: [{ id: "effect-1", authorClass: "butler", targetKind: "approved_relationship", state: "session_recorded" as const, acceptedAt: "2026-08-29T03:59:00.000Z", sessionRecordedAt: "2026-08-29T04:00:00.000Z", messageIds: [42], sessionEventIds: ["session-42"], updatedAt: "2026-08-29T04:00:00.000Z" }, { id: "legacy", authorClass: "butler", targetKind: "approved_relationship", state: "session_recorded" as const, messageIds: [41], sessionEventIds: ["session-41"], updatedAt: "2026-08-29T03:00:00.000Z" }],
       providerLanes: { outward: { provider: "minimax", model: "MiniMax-M3" }, inner: { provider: "minimax", model: "MiniMax-M3" } },
-      healthState: { incidents: {}, lastDigestDay: null, updatedAt: "2026-08-29T02:00:00.000Z", outbox: { id: "out-1", message: "pending", status: "pending" as const, createdAt: "2026-08-29T02:00:00.000Z", kind: "transition" as const }, indeterminateDeliveries: [{ id: "ind-1", message: "unknown", status: "attempting" as const, createdAt: "2026-08-29T02:00:00.000Z", kind: "transition" as const }], deliveredReceipts: [], sweepReceipts: [{ sweepId: "sweep-1", startedAt: "2026-08-29T01:59:00.000Z", completedAt: "2026-08-29T02:00:00.000Z", incidentDigest: "a".repeat(64), opened: 1, recovered: 0, digestDue: false }] },
+      healthState: { incidents: {}, lastDigestDay: null, updatedAt: "2026-08-29T02:00:00.000Z", outbox: { id: "out-1", message: "pending", status: "pending" as const, createdAt: "2026-08-29T02:00:00.000Z", kind: "transition" as const }, indeterminateDeliveries: [{ id: "ind-1", message: "unknown", status: "attempting" as const, createdAt: "2026-08-29T02:00:00.000Z", kind: "transition" as const }], deliveredReceipts: [{ deliveryId: "delivered-1", kind: "transition" as const, deliveredAt: "2026-08-29T02:01:00.000Z", messageIds: [7] }], sweepReceipts: [{ sweepId: "sweep-1", startedAt: "2026-08-29T01:59:00.000Z", completedAt: "2026-08-29T02:00:00.000Z", incidentDigest: "a".repeat(64), opened: 1, recovered: 0, digestDue: false }] },
       routineActions: [{ schemaVersion: 2 as const, id: "action-1", state: "verified" as const, key: "restart", action: "container.restart", target: "books", policyVersion: 1, grantVersion: 1, reservedAt: "2026-08-29T02:30:00.000Z", updatedAt: "2026-08-29T02:31:00.000Z", authorizationReceiptId: "auth", authorizationVersion: 1, attemptId: "attempt", attempt: 1, expectedBeforeState: "exited", resolvedTarget: { id: "docker:books", name: "books" }, effect: { operation: "restart", targetId: "docker:books" }, effectReceipt: "receipt", verifiedAfterState: "running", recoveryState: { state: "completed" as const, compensation: "none" as const } }, { schemaVersion: 2 as const, id: "action-failed", state: "failed" as const, key: "restart", action: "container.restart", target: "media", policyVersion: 1, grantVersion: 1, reservedAt: "2026-08-29T02:30:00.000Z", updatedAt: "2026-08-29T02:32:00.000Z", authorizationReceiptId: "auth2", authorizationVersion: 1, attemptId: "attempt2", attempt: 1, expectedBeforeState: "exited", resolvedTarget: { id: "docker:media", name: "media" }, effect: { operation: "restart", targetId: "docker:media" }, effectReceipt: null, verifiedAfterState: null, recoveryState: { state: "failed" as const, compensation: "none" as const } }],
       lastAutomatedEventRun: { schemaVersion: 1 as const, recordedAt: "2026-08-29T03:00:01.000Z", runId: "run-success", rootRunId: "run-success", idempotencyKey: "idem-success", agent: "sanctuary", triggerType: "inbound" as const, sourceKind: "private-runtime" as const, senseOrHabit: "external-event", targetHash: "sha256:target", lifecycle: "completed" as const, startedAt: "2026-08-29T02:59:00.000Z", endedAt: "2026-08-29T03:00:00.000Z", contextPacketIds: [], contentStored: false as const },
     }
@@ -590,6 +591,7 @@ describe("query_active_work tool", () => {
     expect(all).toContain("health sweeps: 1")
     expect(all).toContain("indeterminate 1; outbox pending:out-1")
     expect(all).toContain("indeterminate ind-1")
+    expect(all).toContain("delivered delivered-1: transition; messages 7; at 2026-08-29T02:01:00.000Z")
     expect(all).toContain("action-1: container.restart books; verified")
     expect(all).toContain("action-failed: container.restart media; failed; updated 2026-08-29T02:32:00.000Z; verification failed")
     expect(all).toContain("old = off; expired")

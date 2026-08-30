@@ -99,6 +99,7 @@ describe("Sanctuary active tool profile", () => {
     expect(JSON.parse(await execTool("telegram_contact_manage", { action: "revoke" }, owner))).toMatchObject({ ok: false })
     expect(resolveToolDefinition("telegram_contact_manage")!.riskProfile!({ action: "list" })).toEqual({ mutates: "none", risk: "low" })
     expect(resolveToolDefinition("telegram_contact_manage")!.riskProfile!({ action: "revoke" })).toMatchObject({ mutates: "durable_state_write", risk: "high" })
+    expect(approvalPolicyForToolName("telegram_contact_manage", { action: "revoke" })).toEqual({ kind: "not_required" })
   })
 
   it("deduplicates relationship schemas by canonical tool name", () => {
