@@ -99,6 +99,21 @@ describe("recent attachment store", () => {
     ])
 
     expect(fs.existsSync(getRecentAttachmentsPath("slugger", agentRoot))).toBe(true)
+    expect(fs.statSync(getRecentAttachmentsPath("slugger", agentRoot)).mode & 0o777).toBe(0o600)
+    expect(fs.readdirSync(path.dirname(getRecentAttachmentsPath("slugger", agentRoot))).filter((name) => name.includes(".tmp-"))).toEqual([])
+  })
+
+  it("replaces an unreadable interrupted registry with a complete parseable snapshot", () => {
+    const agentRoot = makeAgentRoot()
+    const storePath = getRecentAttachmentsPath("slugger", agentRoot)
+    fs.mkdirSync(path.dirname(storePath), { recursive: true })
+    fs.writeFileSync(storePath, "[", "utf8")
+    const recovered = buildCliLocalFileAttachmentRecord({ path: "/tmp/recovered.pdf", mimeType: "application/pdf", byteCount: 12 })
+
+    cacheRecentAttachment("slugger", recovered, agentRoot)
+
+    expect(JSON.parse(fs.readFileSync(storePath, "utf8"))).toEqual([recovered])
+    expect(fs.readdirSync(path.dirname(storePath)).filter((name) => name.includes(".tmp-"))).toEqual([])
   })
 
   it("deduplicates by attachment id and keeps the newest copy", () => {

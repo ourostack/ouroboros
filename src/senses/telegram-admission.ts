@@ -165,6 +165,7 @@ export interface TelegramNewlyAdmittedOrientation {
   kind: "newly_admitted"
   instruction: "welcome_and_explain_capabilities"
   attachmentsNeedResend: boolean
+  relationship?: TelegramKinship
 }
 
 export const NEWLY_ADMITTED_ORIENTATION: TelegramNewlyAdmittedOrientation = {
@@ -742,7 +743,7 @@ export function createTelegramAdmissionController(options: TelegramAdmissionCont
         })
         const committed: TelegramCommittedAdmissionIngress = {
           ...committedBase,
-          orientation: { ...NEWLY_ADMITTED_ORIENTATION, attachmentsNeedResend: record.hasAttachments },
+          orientation: { ...NEWLY_ADMITTED_ORIENTATION, attachmentsNeedResend: record.hasAttachments, ...(record.ownerRelationship ? { relationship: record.ownerRelationship } : {}) },
         }
         if (committed.admissionId !== record.id || committed.friendId !== record.friendId || committed.reference !== `telegram-admission:${record.id}`) {
           throw new Error("Telegram admission committed ingress changed identity")
@@ -760,7 +761,7 @@ export function createTelegramAdmissionController(options: TelegramAdmissionCont
         sessionKey: record.ingressSessionKey,
         eventId: record.ingressEventId,
         reference: record.ingressReference,
-        orientation: { ...NEWLY_ADMITTED_ORIENTATION, attachmentsNeedResend: record.hasAttachments },
+        orientation: { ...NEWLY_ADMITTED_ORIENTATION, attachmentsNeedResend: record.hasAttachments, ...(record.ownerRelationship ? { relationship: record.ownerRelationship } : {}) },
       })
       if (settlement === "indeterminate") {
         await compensateFriend(record)

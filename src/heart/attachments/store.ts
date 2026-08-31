@@ -1,5 +1,6 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
+import { randomUUID } from "node:crypto"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { getAgentRoot } from "../identity"
 import type { AttachmentKind, AttachmentRecord } from "./types"
@@ -39,8 +40,21 @@ export function readRecentAttachments(agentName: string, agentRoot = getAgentRoo
 
 function writeRecentAttachments(agentName: string, agentRoot: string, attachments: AttachmentRecord[]): void {
   const targetPath = getRecentAttachmentsPath(agentName, agentRoot)
-  fs.mkdirSync(path.dirname(targetPath), { recursive: true })
-  fs.writeFileSync(targetPath, JSON.stringify(attachments, null, 2), "utf-8")
+  const directory = path.dirname(targetPath)
+  fs.mkdirSync(directory, { recursive: true })
+  const temporaryPath = `${targetPath}.tmp-${process.pid}-${randomUUID()}`
+  try {
+    fs.writeFileSync(temporaryPath, JSON.stringify(attachments, null, 2), { encoding: "utf-8", mode: 0o600 })
+    const temporary = fs.openSync(temporaryPath, "r")
+    try { fs.fsyncSync(temporary) } finally { fs.closeSync(temporary) }
+    fs.renameSync(temporaryPath, targetPath)
+    const directoryHandle = fs.openSync(directory, "r")
+    try { fs.fsyncSync(directoryHandle) } finally { fs.closeSync(directoryHandle) }
+  } finally {
+    try { fs.unlinkSync(temporaryPath) } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+    }
+  }
 }
 
 export function cacheRecentAttachment<TAttachment extends AttachmentRecord>(

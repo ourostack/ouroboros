@@ -1199,9 +1199,11 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
           source: {
             kind: "telegram_newly_admitted",
             authority: "presentation_only" as const,
-            routingHint: input.orientation.attachmentsNeedResend
-              ? "This is this person’s first admitted turn. Welcome them warmly and briefly explain what the household Butler can help with before answering their request. Their original message included attachments that were not downloaded; ask them to resend those attachments now."
-              : "This is this person’s first admitted turn. Welcome them warmly and briefly explain what the household Butler can help with before answering their request.",
+            routingHint: [
+              "This is this person’s first admitted turn. Welcome them warmly and briefly explain what the household Butler can help with before answering their request.",
+              input.orientation.relationship ? `The owner identified this person as their ${input.orientation.relationship}.` : null,
+              input.orientation.attachmentsNeedResend ? "Their original message included attachments that were not downloaded; ask them to resend those attachments now." : null,
+            ].filter(Boolean).join(" "),
           },
         }
       : undefined
@@ -1303,7 +1305,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   }
 
   const hydrateAuthorizedMessage = async (message: TelegramInboundMessage): Promise<{ text: string; attachmentIds: string[] }> => {
-    if (!message.attachments?.length) return { text: message.text, attachmentIds: [] }
+    if (!message.attachments?.length) return { text: [message.text, ...(message.attachmentNotices ?? [])].filter(Boolean).join("\n"), attachmentIds: [] }
     const ingested = await ingestTelegramAttachments({
       agentName: options.agentName,
       agentRoot,
@@ -1314,7 +1316,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     })
     const attachmentIds = ingested.attachments.map((attachment) => attachment.id)
     return {
-      text: [message.text, renderAttachmentBlock(ingested.attachments), ...ingested.notices].filter(Boolean).join("\n"),
+      text: [message.text, renderAttachmentBlock(ingested.attachments), ...(message.attachmentNotices ?? []), ...ingested.notices].filter(Boolean).join("\n"),
       attachmentIds,
     }
   }
@@ -1524,7 +1526,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   }
 
   const onMessage = (message: TelegramInboundMessage): Promise<void> => runWithAcceptanceAuditOwner(async () => {
-    const ownerDecision = !message.attachments?.length ? admissionController?.parseOwnerDecision({
+    const ownerDecision = !message.attachments?.length && !message.attachmentNotices?.length ? admissionController?.parseOwnerDecision({
       text: message.text,
       ...(message.replyToMessageId ? { replyToMessageId: Number(message.replyToMessageId) } : {}),
     }) : null
@@ -1534,7 +1536,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       await admissionController!.decide({ ...ownerDecision, actorFriendId: actor.friendId })
       return
     }
-    if (message.attachments?.length && options.admission) {
+    if ((message.attachments?.length || message.attachmentNotices?.length) && options.admission) {
       const actor = await options.admission.resolveOwner({ botId: botId!, userId: message.userId, chatId: message.chatId, sessionKey: configuredOwnerSessionKey })
       if (!actor || actor.friendId !== configuredOwnerFriendId) throw new Error("Telegram attachment owner relationship is not active")
     }
@@ -1554,6 +1556,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       chatId: message.chatId,
       text: message.text,
       attachments: message.attachments,
+      attachmentNotices: message.attachmentNotices,
     })
     const sessionKey = `telegram:${message.botId}:${message.userId}`
     const reference = `telegram-inbound:${createHmac("sha256", identityKey).update(`${message.botId}\0${message.userId}\0${message.updateId}\0${message.messageId}`).digest("hex")}`
@@ -1895,17 +1898,11 @@ export async function createProductionTelegramRelationshipComposition(agentName:
       }) as Extract<Awaited<ReturnType<FileFriendStore["claimExternalId"]>>, { ok: true }>
       const current = claimed.record
       const now = new Date().toISOString()
-      const relationalName = input.relationship ? `${owner.name}’s ${input.relationship}` : undefined
       const connections = input.relationship
         ? [...(current.connections ?? []).filter((connection) => !(connection.name === owner.name && connection.relationship === input.relationship)), { name: owner.name, relationship: input.relationship }]
         : current.connections
-      const notes = input.relationship
-        ? { ...current.notes, [`telegram-admission:${input.admissionId}:kinship`]: { value: `The owner identified this person as their ${input.relationship}.`, savedAt: now, provenance: { origin: "first_party" as const }, shareable: false } }
-        : current.notes
       const updated = { ...current,
-        ...(relationalName && current.name === "Household member" ? { name: relationalName } : {}),
         ...(connections ? { connections } : {}),
-        notes,
         trustLevel: input.defaults.trustLevel, admissionState: input.defaults.admissionState,
         initiativePolicy: input.defaults.initiativePolicy, capabilityProfileId: input.defaults.capabilityProfileId, updatedAt: now }
       await store.put(current.id, updated)

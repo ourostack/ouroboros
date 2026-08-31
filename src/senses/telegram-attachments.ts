@@ -1,5 +1,6 @@
 import * as fs from "node:fs/promises"
 import * as path from "node:path"
+import { randomUUID } from "node:crypto"
 import { cacheRecentAttachment } from "../heart/attachments/store"
 import { getRecentAttachment } from "../heart/attachments/store"
 import { originalStoragePath } from "../heart/attachments/originals"
@@ -33,6 +34,26 @@ async function readBounded(response: Response, limit: number): Promise<Buffer> {
   return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), total)
 }
 
+async function atomicWrite(filePath: string, buffer: Buffer): Promise<void> {
+  const directory = path.dirname(filePath)
+  await fs.mkdir(directory, { recursive: true, mode: 0o700 })
+  const temporary = `${filePath}.${randomUUID()}.tmp`
+  let handle: fs.FileHandle | undefined
+  try {
+    handle = await fs.open(temporary, "wx", 0o600)
+    await handle.writeFile(buffer)
+    await handle.sync()
+    await handle.close()
+    handle = undefined
+    await fs.rename(temporary, filePath)
+    const directoryHandle = await fs.open(directory, "r")
+    try { await directoryHandle.sync() } finally { await directoryHandle.close() }
+  } finally {
+    await handle?.close().catch(() => undefined)
+    await fs.unlink(temporary).catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error })
+  }
+}
+
 export async function ingestTelegramAttachments(input: {
   agentName: string
   agentRoot: string
@@ -59,6 +80,29 @@ export async function ingestTelegramAttachments(input: {
           continue
         }
       }
+      const recoverable = buildTelegramAttachmentRecord({
+        fileId: candidate.fileId,
+        displayName: candidate.displayName,
+        mimeType: candidate.mimeType,
+        byteCount: candidate.byteCount,
+        localPath: path.resolve(input.agentRoot, "state", "attachments", ".pending", candidate.fileId),
+      })
+      const recoverablePath = originalStoragePath(input.agentRoot, recoverable, recoverable.mimeType)
+      try {
+        const stat = await fs.lstat(recoverablePath)
+        if (!stat.isFile() || stat.size > MAX_TELEGRAM_ATTACHMENT_BYTES) throw new Error("persisted attachment is invalid")
+        const recovered = cacheRecentAttachment(input.agentName, buildTelegramAttachmentRecord({
+          fileId: candidate.fileId,
+          displayName: candidate.displayName,
+          mimeType: candidate.mimeType,
+          byteCount: stat.size,
+          localPath: recoverablePath,
+        }), input.agentRoot)
+        attachments.push(recovered)
+        continue
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+      }
       const remote = await input.api.request<{ file_path?: unknown; file_size?: unknown }>("getFile", { file_id: candidate.fileId })
       if (typeof remote.file_path !== "string" || !SAFE_FILE_PATH.test(remote.file_path)) throw new Error("invalid remote path")
       if (remote.file_size !== undefined && (!Number.isSafeInteger(remote.file_size) || (remote.file_size as number) < 0 || (remote.file_size as number) > MAX_TELEGRAM_ATTACHMENT_BYTES)) throw new Error("advertised size exceeds limit")
@@ -73,8 +117,7 @@ export async function ingestTelegramAttachments(input: {
         localPath: path.resolve(input.agentRoot, "state", "attachments", ".pending", candidate.fileId),
       })
       const localPath = originalStoragePath(input.agentRoot, provisional, provisional.mimeType)
-      await fs.mkdir(path.dirname(localPath), { recursive: true, mode: 0o700 })
-      await fs.writeFile(localPath, buffer, { mode: 0o600 })
+      await atomicWrite(localPath, buffer)
       const record = cacheRecentAttachment(input.agentName, buildTelegramAttachmentRecord({
         fileId: candidate.fileId,
         displayName: candidate.displayName,

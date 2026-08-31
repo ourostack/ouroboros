@@ -60,6 +60,18 @@ describe("Telegram attachment ingestion", () => {
     expect(readRecentAttachments("sanctuary", agentRoot)).toEqual([])
   })
 
+  it("recovers an atomically persisted pre-cache file without redownloading after a crash", async () => {
+    const agentRoot = root()
+    const persisted = path.join(agentRoot, "state", "attachments", "materialized", "telegram", "orphan", "original.pdf")
+    fs.mkdirSync(path.dirname(persisted), { recursive: true })
+    fs.writeFileSync(persisted, "saved")
+    const request = vi.fn()
+    const result = await ingestTelegramAttachments({ agentName: "sanctuary", agentRoot, botToken: "123:secret", api: { request, stop: vi.fn() }, fetch: vi.fn(), attachments: [{ fileId: "orphan", kind: "document", displayName: "orphan.pdf", mimeType: "application/pdf" }] })
+    expect(result.attachments).toHaveLength(1)
+    expect(result.attachments[0]).toMatchObject({ byteCount: 5, sourceData: { localPath: persisted } })
+    expect(request).not.toHaveBeenCalled()
+  })
+
   it("contains every local validation and transport boundary without leaking the token", async () => {
     const agentRoot = root()
     const request = vi.fn(async (_method: string, body: Record<string, unknown>) => {

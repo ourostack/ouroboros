@@ -211,12 +211,16 @@ describe("Telegram admission integration", () => {
       defaults: { trustLevel: "friend", admissionState: "active", initiativePolicy: "request_follow_up_only", capabilityProfileId: "sanctuary-household" } })
     if (relative.kind === "collision") throw new Error(relative.reason)
     const brother = await friends.get(relative.friendId)
-    expect(brother).toMatchObject({ name: "Ari’s brother", connections: [{ name: "Ari", relationship: "brother" }], trustLevel: "friend", admissionState: "active", initiativePolicy: "request_follow_up_only", capabilityProfileId: "sanctuary-household" })
-    expect(brother?.notes[`telegram-admission:${"c".repeat(20)}:kinship`]).toMatchObject({ value: "The owner identified this person as their brother.", shareable: false })
+    expect(brother).toMatchObject({ name: "Household member", connections: [{ name: "Ari", relationship: "brother" }], trustLevel: "friend", admissionState: "active", initiativePolicy: "request_follow_up_only", capabilityProfileId: "sanctuary-household" })
+    expect(Object.keys(brother?.notes ?? {})).not.toContain(`telegram-admission:${"c".repeat(20)}:kinship`)
     expect(JSON.stringify(brother)).not.toContain("Hostile label")
     await production.admission!.claimFriend({ provider: "telegram-user", botId: "777", userId: "889", chatId: "889", admissionId: "c".repeat(20), displayLabel: "different hostile label", relationship: "brother",
       defaults: { trustLevel: "friend", admissionState: "active", initiativePolicy: "request_follow_up_only", capabilityProfileId: "sanctuary-household" } })
     expect((await friends.get(relative.friendId))?.connections).toEqual([{ name: "Ari", relationship: "brother" }])
+    await friends.put(relative.friendId, { ...(await friends.get(relative.friendId))!, name: "Sam" })
+    await production.admission!.claimFriend({ provider: "telegram-user", botId: "777", userId: "889", chatId: "889", admissionId: "c".repeat(20), displayLabel: "another hostile label", relationship: "brother",
+      defaults: { trustLevel: "friend", admissionState: "active", initiativePolicy: "request_follow_up_only", capabilityProfileId: "sanctuary-household" } })
+    expect((await friends.get(relative.friendId))?.name).toBe("Sam")
     await expect(production.admission!.claimFriend({ provider: "telegram-user", botId: "777", userId: "888", chatId: "888", admissionId: "b".repeat(20), displayLabel: "Known",
       defaults: { trustLevel: "friend", admissionState: "active", initiativePolicy: "request_follow_up_only", capabilityProfileId: "sanctuary-household" } })).resolves.toMatchObject({ kind: "existing", friendId: claimed.friendId })
     for (const drift of [

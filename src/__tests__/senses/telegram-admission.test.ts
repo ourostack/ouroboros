@@ -190,6 +190,7 @@ describe("Telegram household admission", () => {
     const restarted = fixture({ root, claim: recoveredClaim })
     await restarted.controller.recover()
     expect(recoveredClaim).toHaveBeenCalledWith(expect.objectContaining({ admissionId: pending.admissionId, relationship: "brother" }))
+    expect(restarted.queue).toHaveBeenCalledWith(expect.objectContaining({ orientation: expect.objectContaining({ relationship: "brother" }) }))
   })
 
   it("parses only strict owner display-code decisions and routes revocation through Friends", async () => {

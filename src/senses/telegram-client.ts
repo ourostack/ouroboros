@@ -97,13 +97,13 @@ export interface TelegramUpdate {
     caption?: string
     entities?: Array<{ type: string; offset: number; length: number }>
     caption_entities?: Array<{ type: string; offset: number; length: number }>
-    document?: { file_id: string; file_name?: string; mime_type?: string; file_size?: number }
+    document?: { file_id?: string; file_name?: string; mime_type?: string; file_size?: number }
     photo?: Array<{ file_id: string; file_size?: number; width?: number; height?: number }>
-    audio?: { file_id: string }
-    video?: { file_id: string }
-    voice?: { file_id: string }
-    animation?: { file_id: string }
-    sticker?: { file_id: string }
+    audio?: { file_id?: string; file_name?: string; mime_type?: string; file_size?: number }
+    video?: { file_id?: string; file_name?: string; mime_type?: string; file_size?: number }
+    voice?: { file_id?: string; mime_type?: string; file_size?: number }
+    animation?: { file_id?: string; file_name?: string; mime_type?: string; file_size?: number }
+    sticker?: { file_id?: string; file_size?: number; is_animated?: boolean; is_video?: boolean }
     reply_to_message?: { message_id: number }
   }
   callback_query?: {
@@ -121,12 +121,13 @@ export interface TelegramInboundMessage {
   chatId: string
   text: string
   attachments?: TelegramInboundAttachment[]
+  attachmentNotices?: string[]
   replyToMessageId?: string
 }
 
 export interface TelegramInboundAttachment {
   fileId: string
-  kind: "image" | "document"
+  kind: "image" | "audio" | "document" | "binary"
   displayName: string
   mimeType?: string
   byteCount?: number
@@ -142,6 +143,7 @@ export interface TelegramUnknownInboundMessage {
   displayLabel: string
   hasAttachments: boolean
   attachments?: TelegramInboundAttachment[]
+  attachmentNotices?: string[]
 }
 
 export interface TelegramUpdateInboxStore {
@@ -623,18 +625,34 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
 
   const inboundAttachments = (message: NonNullable<TelegramUpdate["message"]>): TelegramInboundAttachment[] => {
     const result: TelegramInboundAttachment[] = []
+    const push = (media: { file_id?: string; file_name?: string; mime_type?: string; file_size?: number } | undefined,
+      kind: TelegramInboundAttachment["kind"], fallbackName: string, fallbackMimeType?: string): void => {
+      if (typeof media?.file_id !== "string" || !media.file_id.trim()) return
+      result.push({
+        fileId: media.file_id,
+        kind,
+        displayName: media.file_name?.trim() || fallbackName,
+        ...((media.mime_type?.trim() || fallbackMimeType) ? { mimeType: media.mime_type?.trim().toLowerCase() || fallbackMimeType } : {}),
+        ...(Number.isSafeInteger(media.file_size) ? { byteCount: media.file_size } : {}),
+      })
+    }
     const photo = message.photo?.filter((candidate) => typeof candidate.file_id === "string" && candidate.file_id.trim())
       .sort((left, right) => (left.file_size ?? left.width ?? 0) - (right.file_size ?? right.width ?? 0)).at(-1)
     if (photo) result.push({ fileId: photo.file_id, kind: "image", displayName: "telegram-photo.jpg", ...(Number.isSafeInteger(photo.file_size) ? { byteCount: photo.file_size } : {}) })
-    if (typeof message.document?.file_id === "string" && message.document.file_id.trim()) result.push({
-      fileId: message.document.file_id,
-      kind: "document",
-      displayName: message.document.file_name?.trim() || "telegram-document",
-      ...(message.document.mime_type?.trim() ? { mimeType: message.document.mime_type.trim().toLowerCase() } : {}),
-      ...(Number.isSafeInteger(message.document.file_size) ? { byteCount: message.document.file_size } : {}),
-    })
+    push(message.document, "document", "telegram-document")
+    push(message.audio, "audio", "telegram-audio", "audio/mpeg")
+    push(message.voice, "audio", "telegram-voice.ogg", "audio/ogg")
+    push(message.video, "binary", "telegram-video.mp4", "video/mp4")
+    push(message.animation, "binary", "telegram-animation.mp4", "video/mp4")
+    push(message.sticker, message.sticker?.is_animated || message.sticker?.is_video ? "binary" : "image",
+      message.sticker?.is_animated ? "telegram-sticker.tgs" : message.sticker?.is_video ? "telegram-sticker.webm" : "telegram-sticker.webp",
+      message.sticker?.is_animated ? "application/x-tgsticker" : message.sticker?.is_video ? "video/webm" : "image/webp")
     return result
   }
+
+  const rawAttachmentCount = (message: NonNullable<TelegramUpdate["message"]>): number => [
+    message.document, message.audio, message.video, message.voice, message.animation, message.sticker,
+  ].filter(Boolean).length + (message.photo?.length ? 1 : 0)
 
   const authorizedMessage = (update: TelegramUpdate): TelegramInboundMessage | null => {
     const message = update.message
@@ -642,8 +660,12 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
     const chatId = message ? String(message.chat.id) : ""
     if (!message || message.chat.type !== "private" || userId !== options.expectedUserId || chatId !== options.expectedChatId) return null
     const attachments = inboundAttachments(message)
+    const attachmentCount = rawAttachmentCount(message)
+    const attachmentNotices = attachmentCount > attachments.length
+      ? ["attachment unavailable: Telegram media metadata was incomplete"]
+      : []
     const text = message.text ?? message.caption ?? ""
-    if (typeof text !== "string" || (!text && attachments.length === 0)) return null
+    if (typeof text !== "string" || (!text && attachmentCount === 0)) return null
     return {
       updateId: update.update_id,
       messageId: String(message.message_id),
@@ -651,6 +673,7 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
       chatId,
       text,
       attachments,
+      ...(attachmentNotices.length ? { attachmentNotices } : {}),
       ...(Number.isSafeInteger(message.reply_to_message?.message_id) && message.reply_to_message!.message_id > 0
         ? { replyToMessageId: String(message.reply_to_message!.message_id) }
         : {}),
@@ -666,6 +689,7 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
     const displayLabel = [message.from.first_name, message.from.last_name].filter(Boolean).join(" ")
       || (message.from.username ? `@${message.from.username}` : `Telegram user ${userId}`)
     const attachments = inboundAttachments(message)
+    const attachmentCount = rawAttachmentCount(message)
     return {
       updateId: update.update_id,
       messageId: message.message_id,
@@ -674,9 +698,9 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
       chatId,
       text: message.text ?? message.caption ?? "",
       displayLabel,
-      hasAttachments: Boolean(message.document || message.photo?.length || message.audio || message.video
-        || message.voice || message.animation || message.sticker),
+      hasAttachments: attachmentCount > 0,
       attachments,
+      ...(attachmentCount > attachments.length ? { attachmentNotices: ["attachment unavailable: Telegram media metadata was incomplete"] } : {}),
     }
   }
 

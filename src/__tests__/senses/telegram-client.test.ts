@@ -1859,19 +1859,33 @@ describe("Telegram durable authorized long poll", () => {
     expect(restartedRequest).toHaveBeenCalledWith("getUpdates", expect.objectContaining({ offset: 7 }), expect.any(AbortSignal))
   })
 
-  it("routes authorized photo and document messages with captions or attachment-only text exactly once", async () => {
+  it("routes every supported authorized Telegram media type with captions or attachment-only text exactly once", async () => {
     const onMessage = vi.fn(async () => undefined)
     const request = vi.fn(async () => [
       { update_id: 1, message: { message_id: 1, from: { id: 10 }, chat: { id: 10, type: "private" }, caption: "look at this", photo: [{ file_id: "small", file_size: 10 }, { file_id: "large", file_size: 20 }] } },
       { update_id: 2, message: { message_id: 2, from: { id: 10 }, chat: { id: 10, type: "private" }, document: { file_id: "doc", file_name: "notes.pdf", mime_type: "application/pdf", file_size: 30 } } },
+      { update_id: 3, message: { message_id: 3, from: { id: 10 }, chat: { id: 10, type: "private" }, audio: { file_id: "audio", file_name: "song.flac", mime_type: "audio/flac", file_size: 40 } } },
+      { update_id: 4, message: { message_id: 4, from: { id: 10 }, chat: { id: 10, type: "private" }, voice: { file_id: "voice", file_size: 50 } } },
+      { update_id: 5, message: { message_id: 5, from: { id: 10 }, chat: { id: 10, type: "private" }, video: { file_id: "video", file_size: 60 } } },
+      { update_id: 6, message: { message_id: 6, from: { id: 10 }, chat: { id: 10, type: "private" }, animation: { file_id: "animation", mime_type: "image/gif", file_size: 70 } } },
+      { update_id: 7, message: { message_id: 7, from: { id: 10 }, chat: { id: 10, type: "private" }, sticker: { file_id: "sticker", file_size: 80 } } },
+      { update_id: 8, message: { message_id: 8, from: { id: 10 }, chat: { id: 10, type: "private" }, sticker: { file_id: "animated-sticker", is_animated: true, file_size: 90 } } },
+      { update_id: 9, message: { message_id: 9, from: { id: 10 }, chat: { id: 10, type: "private" }, video: {} } },
     ])
     const poll = createTelegramLongPoll({ api: { request, stop: vi.fn() }, expectedUserId: "10", expectedChatId: "10", offsetStore: { load: () => 0, save: vi.fn() }, onMessage })
 
     await poll.pollOnce()
 
-    expect(onMessage).toHaveBeenCalledTimes(2)
+    expect(onMessage).toHaveBeenCalledTimes(9)
     expect(onMessage).toHaveBeenNthCalledWith(1, expect.objectContaining({ text: "look at this", attachments: [{ fileId: "large", kind: "image", displayName: "telegram-photo.jpg", byteCount: 20 }] }))
     expect(onMessage).toHaveBeenNthCalledWith(2, expect.objectContaining({ text: "", attachments: [{ fileId: "doc", kind: "document", displayName: "notes.pdf", mimeType: "application/pdf", byteCount: 30 }] }))
+    expect(onMessage).toHaveBeenNthCalledWith(3, expect.objectContaining({ attachments: [{ fileId: "audio", kind: "audio", displayName: "song.flac", mimeType: "audio/flac", byteCount: 40 }] }))
+    expect(onMessage).toHaveBeenNthCalledWith(4, expect.objectContaining({ attachments: [{ fileId: "voice", kind: "audio", displayName: "telegram-voice.ogg", mimeType: "audio/ogg", byteCount: 50 }] }))
+    expect(onMessage).toHaveBeenNthCalledWith(5, expect.objectContaining({ attachments: [{ fileId: "video", kind: "binary", displayName: "telegram-video.mp4", mimeType: "video/mp4", byteCount: 60 }] }))
+    expect(onMessage).toHaveBeenNthCalledWith(6, expect.objectContaining({ attachments: [{ fileId: "animation", kind: "binary", displayName: "telegram-animation.mp4", mimeType: "image/gif", byteCount: 70 }] }))
+    expect(onMessage).toHaveBeenNthCalledWith(7, expect.objectContaining({ attachments: [{ fileId: "sticker", kind: "image", displayName: "telegram-sticker.webp", mimeType: "image/webp", byteCount: 80 }] }))
+    expect(onMessage).toHaveBeenNthCalledWith(8, expect.objectContaining({ attachments: [{ fileId: "animated-sticker", kind: "binary", displayName: "telegram-sticker.tgs", mimeType: "application/x-tgsticker", byteCount: 90 }] }))
+    expect(onMessage).toHaveBeenNthCalledWith(9, expect.objectContaining({ attachments: [], attachmentNotices: ["attachment unavailable: Telegram media metadata was incomplete"] }))
   })
 
   it("normalizes every supported unknown-contact label, body, and attachment shape", async () => {

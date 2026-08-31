@@ -17,6 +17,9 @@ describe("Sanctuary active tool profile", () => {
       "query_active_work",
       "query_cares",
       "care_manage",
+      "list_recent_attachments",
+      "materialize_attachment",
+      "describe_image",
       "await_condition",
       "resolve_await",
       "cancel_await",
@@ -39,13 +42,16 @@ describe("Sanctuary active tool profile", () => {
     ])
     const packaged = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/tool-profiles.json", "utf8"))
     expect(packaged.version).toBe(2)
-    expect(packaged.profiles["sanctuary-owner"].version).toBe(5)
-    expect(packaged.profiles["sanctuary-household"].version).toBe(4)
+    expect(packaged.profiles["sanctuary-owner"].version).toBe(6)
+    expect(packaged.profiles["sanctuary-household"].version).toBe(5)
     expect(packaged.profiles["sanctuary-event"].version).toBe(4)
     expect(packaged.profiles["sanctuary-owner"].toolNames).toEqual(expect.arrayContaining(names))
     expect(packaged.profiles["sanctuary-owner"].toolNames).toEqual(expect.arrayContaining(["external_event_disposition", "query_active_work", "query_cares", "care_manage", "await_condition", "resolve_await", "cancel_await"]))
     expect(packaged.profiles["sanctuary-owner"].toolNames).toContain("save_friend_note")
     expect(packaged.profiles["sanctuary-household"].toolNames).toContain("save_friend_note")
+    for (const profile of ["sanctuary-owner", "sanctuary-household"]) {
+      expect(packaged.profiles[profile].toolNames).toEqual(expect.arrayContaining(["list_recent_attachments", "materialize_attachment", "describe_image"]))
+    }
     expect(packaged.profiles["sanctuary-household"].toolNames).not.toContain("telegram_contact_manage")
     expect(packaged.profiles["sanctuary-household"].toolNames).not.toContain("sanctuary_get_download_queue")
     expect(packaged.profiles["sanctuary-household"].toolNames).not.toContain("sanctuary_resume_download_queue")

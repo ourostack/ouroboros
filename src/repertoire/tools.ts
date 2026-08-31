@@ -49,6 +49,9 @@ const SANCTUARY_RELATIONSHIP_BASE_TOOLS = new Set([
   "await_condition",
   "resolve_await",
   "cancel_await",
+  "list_recent_attachments",
+  "materialize_attachment",
+  "describe_image",
   "send_message",
 ])
 const SANCTUARY_TELEGRAM_SURFACE = new Set([
@@ -60,6 +63,9 @@ const SANCTUARY_TELEGRAM_SURFACE = new Set([
   "await_condition",
   "resolve_await",
   "cancel_await",
+  "list_recent_attachments",
+  "materialize_attachment",
+  "describe_image",
   ...unraidToolDefinitions.map((definition) => definition.tool.function.name),
   "steward_policy_manage",
   "ponder",
