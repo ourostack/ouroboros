@@ -133,6 +133,7 @@ export interface ToolContext {
       actionRefs: string[];
       verificationRefs: string[];
     }): { allowed: boolean; reason: string };
+    recordCommittedDisposition?(event: import("../heart/external-events/router").ExternalEventLeaseContext): void;
   }>;
   readonly externalEventEffects?: Readonly<{
     deliverOwnerDecision(input: { source: string; eventId: string; generation: number; text: string }): Promise<void>;

@@ -937,6 +937,26 @@ export function buildHeldReturnWakeMessage(): string {
   ].join("\n")
 }
 
+function buildExternalEventLeaseMessage(event: ExternalEventLeaseContext): string {
+  const members = [event, ...(event.relatedEvents ?? [])]
+  return [
+    "[current external-event disposition contract]",
+    "This exact lease frame is authoritative for this turn. Ignore older receipts, failed tool arguments, held-work summaries, and checkpoints when choosing disposition arguments.",
+    "Investigate the current observation, then call external_event_disposition once for every listed lease before settling.",
+    ...members.flatMap((member, index) => [
+      "",
+      `lease ${index + 1}:`,
+      `recordPath: ${JSON.stringify(member.recordPath)}`,
+      `expectedGeneration: ${member.generation}`,
+      `classifiedRevision: ${JSON.stringify(member.observationRevision)}`,
+    ]),
+  ].join("\n")
+}
+
+function externalEventLeaseKey(event: ExternalEventLeaseContext): string {
+  return JSON.stringify([event.recordPath, event.generation, event.observationRevision, event.claimOwner])
+}
+
 function buildAlsoDueLine(agentRoot: string, currentHabitName: string, now: () => Date): string {
   const habitsDir = path.join(agentRoot, "habits")
   let files: string[]
@@ -1233,7 +1253,9 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
     }
   }
 
-  if (shouldUseHeldReturnWake) {
+  if (options?.externalEvent) {
+    userContent = buildExternalEventLeaseMessage(options.externalEvent)
+  } else if (shouldUseHeldReturnWake) {
     userContent = buildHeldReturnWakeMessage()
   }
 
@@ -1304,6 +1326,7 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
         }
       })()
     : undefined
+  const committedExternalEventLeases = new Set<string>()
   const externalEventRelationship = options?.externalEvent
     ? await (async () => {
         const agentRoot = getAgentRoot(agentName)
@@ -1335,6 +1358,9 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
             authorizeDisposition: () => {
               const decision = initial.authorizeTool("external_event_disposition")
               return decision.allowed ? { allowed: true, reason: "relationship-authorized" } : { allowed: false, reason: decision.reason }
+            },
+            recordCommittedDisposition: (event: ExternalEventLeaseContext) => {
+              committedExternalEventLeases.add(externalEventLeaseKey(event))
             },
           },
           externalEventEffects: {
@@ -1510,6 +1536,13 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
       ...(effectiveHabitSession ? { habitSession: effectiveHabitSession } : {}),
     },
     })
+    if (options?.externalEvent && ["settled", "observed", "rested"].includes(String(result.turnOutcome))) {
+      const incomplete = [options.externalEvent, ...(options.externalEvent.relatedEvents ?? [])]
+        .filter((event) => !committedExternalEventLeases.has(externalEventLeaseKey(event)))
+      if (incomplete.length > 0) {
+        throw new Error(`External-event turn did not commit dispositions for every exact lease (${incomplete.length} incomplete)`)
+      }
+    }
     if (externalRunBase) {
       const lifecycle = result.turnOutcome === "settled" || result.turnOutcome === "observed" || result.turnOutcome === "rested"
         ? "completed" as const

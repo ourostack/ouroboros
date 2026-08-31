@@ -360,6 +360,7 @@ describe("continuity tools", () => {
       mockReadExternalEventRecord.mockReturnValue({ agent: "ouroboros", source: "sanctuary-health", eventId: "books", transition: "opened", version: 4, generation: 2, observationRevision: "rev-2", executionState: "running", claimOwner: "lease-2" })
       mockCommitExternalEventDisposition.mockReturnValue({ executionState: "handled" })
       const deliverOwnerDecision = vi.fn(async () => undefined)
+      const recordCommittedDisposition = vi.fn()
 
       await findTool("external_event_disposition").handler({
         recordPath: "/events/ouroboros/sanctuary-health/books.json", expectedGeneration: 2, classifiedRevision: "rev-2", classification: "needs_attention",
@@ -367,13 +368,15 @@ describe("continuity tools", () => {
       }, {
         signin: async () => undefined,
         currentExternalEvent: { schemaVersion: 1, recordPath: "/events/ouroboros/sanctuary-health/books.json", agent: "ouroboros", source: "sanctuary-health", eventId: "books", generation: 2, observationRevision: "rev-2", claimOwner: "lease-2" },
-        externalEventAuthority: { authorizeDisposition: () => ({ allowed: true, reason: "current" }) },
+        externalEventAuthority: { authorizeDisposition: () => ({ allowed: true, reason: "current" }), recordCommittedDisposition },
         externalEventEffects: { deliverOwnerDecision },
       } as any)
 
       expect(deliverOwnerDecision).toHaveBeenCalledWith({ source: "sanctuary-health", eventId: "books", generation: 2, text: "Books is down. I’m checking it now." })
       expect(deliverOwnerDecision.mock.invocationCallOrder[0]).toBeLessThan(mockCommitExternalEventDisposition.mock.invocationCallOrder[0]!)
       expect(mockCommitExternalEventDisposition).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ disposition: expect.objectContaining({ stewardPolicy: { kind: "current", key: "service:books", version: 4 } }) }))
+      expect(recordCommittedDisposition).toHaveBeenCalledWith(expect.objectContaining({ recordPath: "/events/ouroboros/sanctuary-health/books.json", generation: 2, claimOwner: "lease-2" }))
+      expect(mockCommitExternalEventDisposition.mock.invocationCallOrder[0]).toBeLessThan(recordCommittedDisposition.mock.invocationCallOrder[0]!)
     })
 
     it("rejects stale current policy and allows no-policy dispositions for fresh observations with no applicable key", async () => {
