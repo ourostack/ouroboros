@@ -14,12 +14,12 @@ export const stewardPolicyToolDefinition: ToolDefinition = {
     type: "function",
     function: {
       name: "steward_policy_manage",
-      description: "Read or update the household steward's typed desired-state and routine-action policy. Updates require the current authenticated family request and exact policy version.",
+      description: "Read or update the household steward's typed desired-state and routine-action policy. Updates require the current authenticated family request. expectedVersion is optional; omit it to apply against the current policy version, or supply a version from read for explicit stale-write detection.",
       parameters: {
         type: "object",
         properties: {
           action: { type: "string", enum: ["read", "set_desired_state", "grant_routine_action"] },
-          expectedVersion: { type: "integer", minimum: 0 },
+          expectedVersion: { type: "integer", minimum: 0, description: "Optional version returned by read. When omitted, the runtime uses the current policy version." },
           key: { type: "string" },
           value: { type: "string" },
           provenance: { type: "string", enum: ["stated", "observed", "default", "installed_explicit_policy"] },
@@ -46,7 +46,9 @@ export const stewardPolicyToolDefinition: ToolDefinition = {
     }
     const actor = ctx.relationshipAuthorization?.actor
     if (!actor) throw new Error("steward policy mutation requires authenticated relationship authority")
-    const expectedVersion = Number(args.expectedVersion)
+    const expectedVersion = args.expectedVersion === undefined
+      ? readStewardPolicy(ctx.agentRoot).version
+      : Number(args.expectedVersion)
     if (!Number.isInteger(expectedVersion) || expectedVersion < 0) throw new Error("expectedVersion must be a nonnegative integer")
     let mutation: StewardPolicyMutation
     if (args.action === "set_desired_state") {

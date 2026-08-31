@@ -52,16 +52,19 @@ describe("steward policy", () => {
     expect(granted).toContain('"restart"')
     const desired = stewardPolicyToolDefinition.handler({ action: "set_desired_state", expectedVersion: 1, provenance: "default", key: "container:music", value: "on", source: "default" }, context as any)
     expect(desired).toContain("container:music")
-    const expiring = stewardPolicyToolDefinition.handler({ action: "set_desired_state", expectedVersion: 2, provenance: "stated", key: "container:video", value: "on", source: "request", expiresAt: "2099-01-02T00:00:00.000Z" }, context as any)
+    const inferredCurrentVersion = stewardPolicyToolDefinition.handler({ action: "set_desired_state", provenance: "stated", key: "container:books", value: "intentionally_off", source: "direct family request" }, context as any)
+    expect(inferredCurrentVersion).toContain('"version":3')
+    const expiring = stewardPolicyToolDefinition.handler({ action: "set_desired_state", expectedVersion: 3, provenance: "stated", key: "container:video", value: "on", source: "request", expiresAt: "2099-01-02T00:00:00.000Z" }, context as any)
     expect(expiring).toContain("2099-01-02")
-    const secondGrant = stewardPolicyToolDefinition.handler({ action: "grant_routine_action", expectedVersion: 3, provenance: "installed_explicit_policy", key: "restart-video", routineAction: "restart", targetsJson: '["video"]', exclusionsJson: "[]", maxCount: 1, windowMs: 1000, verificationRequired: true }, context as any)
+    const secondGrant = stewardPolicyToolDefinition.handler({ action: "grant_routine_action", expectedVersion: 4, provenance: "installed_explicit_policy", key: "restart-video", routineAction: "restart", targetsJson: '["video"]', exclusionsJson: "[]", maxCount: 1, windowMs: 1000, verificationRequired: true }, context as any)
     expect(secondGrant).toContain("restart-video")
     for (const verificationRequired of [false, undefined, "true", 1] as const) {
-      expect(() => stewardPolicyToolDefinition.handler({ action: "grant_routine_action", expectedVersion: 4, provenance: "stated", key: "bad", routineAction: "restart", targetsJson: '["video"]', exclusionsJson: "[]", maxCount: 1, windowMs: 1000, verificationRequired } as any, context as any)).toThrow("verificationRequired must be true")
+      expect(() => stewardPolicyToolDefinition.handler({ action: "grant_routine_action", expectedVersion: 5, provenance: "stated", key: "bad", routineAction: "restart", targetsJson: '["video"]', exclusionsJson: "[]", maxCount: 1, windowMs: 1000, verificationRequired } as any, context as any)).toThrow("verificationRequired must be true")
     }
-    expect(() => stewardPolicyToolDefinition.handler({ action: "grant_routine_action", expectedVersion: 4, provenance: "stated", routineAction: "restart", targetsJson: '["video"]', exclusionsJson: "[]", maxCount: 1, windowMs: 1000, verificationRequired: true }, context as any)).toThrow("key must be nonempty")
-    expect(() => stewardPolicyToolDefinition.handler({ action: "grant_routine_action", expectedVersion: 4, provenance: "stated", key: "bad", targetsJson: '["video"]', exclusionsJson: "[]", maxCount: 1, windowMs: 1000, verificationRequired: true }, context as any)).toThrow("action must be nonempty")
-    expect(readStewardPolicy(agentRoot).version).toBe(4)
+    expect(() => stewardPolicyToolDefinition.handler({ action: "grant_routine_action", expectedVersion: 5, provenance: "stated", routineAction: "restart", targetsJson: '["video"]', exclusionsJson: "[]", maxCount: 1, windowMs: 1000, verificationRequired: true }, context as any)).toThrow("key must be nonempty")
+    expect(() => stewardPolicyToolDefinition.handler({ action: "grant_routine_action", expectedVersion: 5, provenance: "stated", key: "bad", targetsJson: '["video"]', exclusionsJson: "[]", maxCount: 1, windowMs: 1000, verificationRequired: true }, context as any)).toThrow("action must be nonempty")
+    expect(() => stewardPolicyToolDefinition.handler({ action: "set_desired_state", expectedVersion: 4, provenance: "stated", key: "container:books", value: "on", source: "stale write" }, context as any)).toThrow("version changed")
+    expect(readStewardPolicy(agentRoot).version).toBe(5)
   })
 
   it("covers malformed policy, empty targets, expiry, and missing receipt boundaries", () => {
