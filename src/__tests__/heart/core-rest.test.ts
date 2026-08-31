@@ -811,6 +811,26 @@ describe("rest tool in runAgent", () => {
     expect(vi.mocked(emitNervesEvent).mock.calls.some(([event]) => (event as any).event === "engine.historical_tool_failure_retry")).toBe(false)
   })
 
+  it("ignores malformed historical mutation arguments", async () => {
+    const request = "Keep Books off."
+    mockCreate.mockReturnValueOnce(makeStream([makeChunk("Please try that again.", undefined)]))
+    const execTool = vi.fn()
+
+    await runAgent([
+      { role: "user", content: request },
+      { role: "assistant", tool_calls: [{ id: "call_malformed", type: "function", function: { name: "steward_policy_manage", arguments: "{" } }] },
+      { role: "tool", tool_call_id: "call_malformed", content: "invalid tool arguments: malformed JSON" },
+      { role: "assistant", content: "It failed." },
+      { role: "user", content: request },
+    ] as any[], makeCallbacks(), "telegram", undefined, {
+      tools: [{ type: "function", function: { name: "steward_policy_manage", description: "Manage steward policy", parameters: { type: "object", properties: {} } } }],
+      execTool,
+    })
+
+    expect(mockCreate).toHaveBeenCalledTimes(1)
+    expect(execTool).not.toHaveBeenCalled()
+  })
+
   it("does not retry an exact request when the failed tool later succeeded", async () => {
     const request = "Keep Books off."
     mockCreate.mockReturnValueOnce(makeStream([
