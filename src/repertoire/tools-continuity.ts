@@ -159,6 +159,7 @@ export const continuityToolDefinitions: ToolDefinition[] = [
           verificationRefs,
         },
       });
+      ctx?.externalEventAuthority?.recordCommittedDisposition?.(turnEvent);
       emitNervesEvent({ component: "repertoire", event: "repertoire.external_event_disposition", message: "external event disposition recorded", meta: { agentName, eventId: record.eventId, generation: record.generation, classification, decision } });
       return JSON.stringify(handled, null, 2);
       };
