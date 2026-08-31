@@ -217,10 +217,11 @@ describe("Telegram admission integration", () => {
     await production.admission!.claimFriend({ provider: "telegram-user", botId: "777", userId: "889", chatId: "889", admissionId: "c".repeat(20), displayLabel: "different hostile label", relationship: "brother",
       defaults: { trustLevel: "friend", admissionState: "active", initiativePolicy: "request_follow_up_only", capabilityProfileId: "sanctuary-household" } })
     expect((await friends.get(relative.friendId))?.connections).toEqual([{ name: "Ari", relationship: "brother" }])
-    await friends.put(relative.friendId, { ...(await friends.get(relative.friendId))!, name: "Sam" })
+    await friends.put(relative.friendId, { ...(await friends.get(relative.friendId))!, name: "Sam", connections: [{ name: "PRIVATE_UNRELATED_PERSON", relationship: "private relationship" }, { name: "Ari", relationship: "brother" }] })
     await production.admission!.claimFriend({ provider: "telegram-user", botId: "777", userId: "889", chatId: "889", admissionId: "c".repeat(20), displayLabel: "another hostile label", relationship: "brother",
       defaults: { trustLevel: "friend", admissionState: "active", initiativePolicy: "request_follow_up_only", capabilityProfileId: "sanctuary-household" } })
     expect((await friends.get(relative.friendId))?.name).toBe("Sam")
+    expect((await friends.get(relative.friendId))?.connections).toEqual([{ name: "Ari", relationship: "brother" }, { name: "PRIVATE_UNRELATED_PERSON", relationship: "private relationship" }])
     await expect(production.admission!.claimFriend({ provider: "telegram-user", botId: "777", userId: "888", chatId: "888", admissionId: "b".repeat(20), displayLabel: "Known",
       defaults: { trustLevel: "friend", admissionState: "active", initiativePolicy: "request_follow_up_only", capabilityProfileId: "sanctuary-household" } })).resolves.toMatchObject({ kind: "existing", friendId: claimed.friendId })
     for (const drift of [

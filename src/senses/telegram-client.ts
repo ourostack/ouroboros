@@ -638,7 +638,7 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
     }
     const photo = message.photo?.filter((candidate) => typeof candidate.file_id === "string" && candidate.file_id.trim())
       .sort((left, right) => (left.file_size ?? left.width ?? 0) - (right.file_size ?? right.width ?? 0)).at(-1)
-    if (photo) result.push({ fileId: photo.file_id, kind: "image", displayName: "telegram-photo.jpg", ...(Number.isSafeInteger(photo.file_size) ? { byteCount: photo.file_size } : {}) })
+    if (photo) result.push({ fileId: photo.file_id, kind: "image", displayName: "telegram-photo.jpg", mimeType: "image/jpeg", ...(Number.isSafeInteger(photo.file_size) ? { byteCount: photo.file_size } : {}) })
     push(message.document, "document", "telegram-document")
     push(message.audio, "audio", "telegram-audio", "audio/mpeg")
     push(message.voice, "audio", "telegram-voice.ogg", "audio/ogg")

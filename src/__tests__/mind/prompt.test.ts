@@ -3244,7 +3244,7 @@ describe("buildSystem with context", () => {
     patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
     const { buildSystem, flattenSystemPrompt, resetPsycheCache } = await import("../../mind/prompt")
     resetPsycheCache()
-    const friend = { id: "relative", name: "Relative", trustLevel: "friend" as const, admissionState: "active" as const, initiativePolicy: "request_follow_up_only" as const, capabilityProfileId: "sanctuary-household", externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: "", updatedAt: "", schemaVersion: 1 }
+    const friend = { id: "relative", name: "Relative", trustLevel: "friend" as const, admissionState: "active" as const, initiativePolicy: "request_follow_up_only" as const, capabilityProfileId: "sanctuary-household", connections: [{ name: "Ari", relationship: "brother" }, { name: "PRIVATE_UNRELATED_PERSON", relationship: "private relationship" }], externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: "", updatedAt: "", schemaVersion: 1 }
     const result = flattenSystemPrompt(await buildSystem("telegram", { relationshipContextScopes: ["household.status", "own_requests"] }, { friend, channel: { channel: "telegram", senseType: "chat", isRemote: true, isGroup: false, availableIntegrations: [], supportsAttachments: false, supportsReactions: false, chatStyle: true, supportsStreaming: false, supportsRichCards: true, maxMessageLength: 4096 } } as never))
     expect(result).not.toContain("## my desk")
     expect(result).not.toContain("family cross-session")
@@ -3252,6 +3252,8 @@ describe("buildSystem with context", () => {
     expect(result).toContain("## tacit knowledge")
     expect(result).toContain("## my aspirations")
     expect(result).toContain("Relative")
+    expect(result).toContain("relationship: Ari’s brother")
+    expect(result).not.toContain("PRIVATE_UNRELATED_PERSON")
   })
 
   it("restores the existing psyche sections when relationship policy authorizes household policy context", async () => {

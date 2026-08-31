@@ -1899,7 +1899,7 @@ export async function createProductionTelegramRelationshipComposition(agentName:
       const current = claimed.record
       const now = new Date().toISOString()
       const connections = input.relationship
-        ? [...(current.connections ?? []).filter((connection) => !(connection.name === owner.name && connection.relationship === input.relationship)), { name: owner.name, relationship: input.relationship }]
+        ? [{ name: owner.name, relationship: input.relationship }, ...(current.connections ?? []).filter((connection) => !(connection.name === owner.name && connection.relationship === input.relationship))]
         : current.connections
       const updated = { ...current,
         ...(connections ? { connections } : {}),

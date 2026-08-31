@@ -6,6 +6,7 @@ import { readRecentAttachments } from "../../heart/attachments/store"
 import { materializeAttachment } from "../../heart/attachments/materialize"
 import { buildTelegramAttachmentRecord, telegramAttachmentSourceAdapter } from "../../heart/attachments/sources/telegram"
 import { ingestTelegramAttachments } from "../../senses/telegram-attachments"
+import { createTelegramLongPoll, type TelegramInboundMessage } from "../../senses/telegram-client"
 
 const roots: string[] = []
 const root = () => {
@@ -19,6 +20,40 @@ afterEach(() => {
 })
 
 describe("Telegram attachment ingestion", () => {
+  it.each([
+    ["absent", {}],
+    ["generic", { "content-type": "application/octet-stream" }],
+  ])("keeps a Telegram photo vision-safe when the CDN Content-Type is %s", async (_label, headers) => {
+    const agentRoot = root()
+    let inbound: TelegramInboundMessage | undefined
+    const poll = createTelegramLongPoll({
+      api: { request: vi.fn(async () => [{ update_id: 1, message: { message_id: 1, from: { id: 10 }, chat: { id: 10, type: "private" }, photo: [{ file_id: `photo-${_label}`, file_size: 4 }] } }]), stop: vi.fn() },
+      expectedUserId: "10",
+      expectedChatId: "10",
+      offsetStore: { load: () => 0, save: vi.fn() },
+      onMessage: async (message) => { inbound = message },
+    })
+    await poll.pollOnce()
+    const candidate = inbound?.attachments?.[0]
+    expect(candidate).toMatchObject({ kind: "image", mimeType: "image/jpeg" })
+    const result = await ingestTelegramAttachments({
+      agentName: "sanctuary",
+      agentRoot,
+      botToken: "123:secret",
+      api: { request: vi.fn(async () => ({ file_path: `photos/${_label}.jpg`, file_size: 4 })), stop: vi.fn() },
+      fetch: vi.fn(async () => new Response(Buffer.from("jpeg"), { status: 200, headers })),
+      attachments: [candidate!],
+    })
+    expect(result.attachments[0]).toMatchObject({ kind: "image", mimeType: "image/jpeg" })
+    const normalized = path.join(agentRoot, `${_label}.vision-safe.jpg`)
+    fs.writeFileSync(normalized, "normalized")
+    await expect(materializeAttachment("sanctuary", result.attachments[0]!.id, {
+      agentRoot,
+      variant: "vision_safe",
+      normalizeImage: vi.fn(async () => ({ path: normalized, mimeType: "image/jpeg", byteCount: 10 })),
+    })).resolves.toMatchObject({ variant: "vision_safe", mimeType: "image/jpeg" })
+  })
+
   it("downloads, bounds, persists, and caches authorized attachments through the shared attachment store", async () => {
     const agentRoot = root()
     const request = vi.fn(async () => ({ file_path: "documents/file.pdf", file_size: 4 }))

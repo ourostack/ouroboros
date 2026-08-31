@@ -1877,7 +1877,7 @@ describe("Telegram durable authorized long poll", () => {
     await poll.pollOnce()
 
     expect(onMessage).toHaveBeenCalledTimes(9)
-    expect(onMessage).toHaveBeenNthCalledWith(1, expect.objectContaining({ text: "look at this", attachments: [{ fileId: "large", kind: "image", displayName: "telegram-photo.jpg", byteCount: 20 }] }))
+    expect(onMessage).toHaveBeenNthCalledWith(1, expect.objectContaining({ text: "look at this", attachments: [{ fileId: "large", kind: "image", displayName: "telegram-photo.jpg", mimeType: "image/jpeg", byteCount: 20 }] }))
     expect(onMessage).toHaveBeenNthCalledWith(2, expect.objectContaining({ text: "", attachments: [{ fileId: "doc", kind: "document", displayName: "notes.pdf", mimeType: "application/pdf", byteCount: 30 }] }))
     expect(onMessage).toHaveBeenNthCalledWith(3, expect.objectContaining({ attachments: [{ fileId: "audio", kind: "audio", displayName: "song.flac", mimeType: "audio/flac", byteCount: 40 }] }))
     expect(onMessage).toHaveBeenNthCalledWith(4, expect.objectContaining({ attachments: [{ fileId: "voice", kind: "audio", displayName: "telegram-voice.ogg", mimeType: "audio/ogg", byteCount: 50 }] }))

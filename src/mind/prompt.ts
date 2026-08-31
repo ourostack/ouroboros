@@ -1423,6 +1423,10 @@ function relationshipFriendContextSection(context?: ResolvedContext): string {
     `channel: ${context.channel.channel}`,
     "this conversation and this friend's own relationship notes are the only personal context available in this turn.",
   ]
+  const connection = friend.connections?.[0]
+  const connectionName = connection?.name.replace(/[\r\n\t]+/gu, " ").trim().slice(0, 80)
+  const relationship = connection?.relationship.replace(/[\r\n\t]+/gu, " ").trim().slice(0, 40)
+  if (connectionName && relationship) lines.push(`relationship: ${connectionName}’s ${relationship}`)
   if (Object.keys(friend.notes).length > 0) {
     lines.push("", "## what i know about this friend")
     for (const [key, entry] of Object.entries(friend.notes)) {
