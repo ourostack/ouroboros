@@ -2,6 +2,8 @@ import { pathToFileURL } from "node:url"
 import { EventEmitter } from "node:events"
 import { createHash, createHmac } from "node:crypto"
 import * as fs from "node:fs"
+import { createConnection } from "node:net"
+import { tmpdir } from "node:os"
 import * as path from "node:path"
 
 import { describe, expect, it } from "vitest"
@@ -95,6 +97,10 @@ interface BrokerModule {
     run<T>(operation: () => T | Promise<T>): Promise<T>
     stopAndDrain(): Promise<void>
   }
+  createBrokerServer(dispatchRequest?: (request: unknown) => unknown | Promise<unknown>): {
+    server: import("node:net").Server
+    dispatchDrain: ReturnType<BrokerModule["createDispatchDrain"]>
+  }
   dispatch(request: unknown, dependencies?: BrokerDependencies): Promise<unknown>
   parseVaultStatus(output: string, succeeded: boolean): { vaultUnlocked: boolean; manualAuthRequired: boolean }
   queryGraphqlAutostart(records: unknown[], fetchImpl: typeof fetch, expectedContainerId?: string, profile?: { containerName: string; requiredStopped: string[]; optionalStopped: string[]; forbidden: string[] }, inspectOptionalStopped?: (name: string, id: string) => boolean): Promise<boolean>
@@ -146,6 +152,7 @@ async function broker(): Promise<BrokerModule> {
       markerPresent(): boolean
     }): void
     createDispatchDrain(): { run<T>(operation: () => T | Promise<T>): Promise<T>; stopAndDrain(): Promise<void> }
+    createBrokerServer: BrokerModule["createBrokerServer"]
     dispatch(request: unknown, dependencies?: BrokerDependencies): Promise<unknown>
     parseVaultStatus(output: string, succeeded: boolean): { vaultUnlocked: boolean; manualAuthRequired: boolean }
     queryGraphqlAutostart(records: unknown[], fetchImpl: typeof fetch, expectedContainerId?: string, profile?: { containerName: string; requiredStopped: string[]; optionalStopped: string[]; forbidden: string[] }, inspectOptionalStopped?: (name: string, id: string) => boolean): Promise<boolean>
@@ -174,6 +181,45 @@ async function broker(): Promise<BrokerModule> {
 }
 
 describe("Sanctuary Unit 16 host broker", () => {
+  it("returns bounded async responses after clients half-close their requests", async () => {
+    const { createBrokerServer } = await broker()
+    const directory = fs.mkdtempSync(path.join(tmpdir(), "ouro-unit16-broker-"))
+    const socketPath = path.join(directory, "broker.sock")
+    const { server } = createBrokerServer(async (request) => {
+      await new Promise((resolve) => setTimeout(resolve, 25))
+      if ((request as { reject?: boolean }).reject) throw new Error("private dispatch detail")
+      return { echoed: request }
+    })
+    const request = (payload: Record<string, unknown>) => new Promise<string>((resolve, reject) => {
+      const connection = createConnection(socketPath)
+      let value = ""
+      connection.setEncoding("utf8")
+      connection.once("connect", () => connection.end(JSON.stringify(payload)))
+      connection.on("data", (chunk) => { value += chunk })
+      connection.once("end", () => resolve(value))
+      connection.once("error", reject)
+    })
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject)
+        server.listen(socketPath, resolve)
+      })
+      expect(JSON.parse(await request({ operation: "container_snapshot", sequence: 1 }))).toEqual({
+        ok: true,
+        result: { echoed: { operation: "container_snapshot", sequence: 1 } },
+      })
+      expect(JSON.parse(await request({ operation: "container_snapshot", sequence: 2 }))).toEqual({
+        ok: true,
+        result: { echoed: { operation: "container_snapshot", sequence: 2 } },
+      })
+      expect(JSON.parse(await request({ reject: true }))).toEqual({ ok: false, error: "host operation failed" })
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+      fs.rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
   it("binds effective PID1 UID and GID to the inspected live container process", async () => {
     const { assertStableContainerProcess, liveContainerProcessIdentity, liveContainerProcessUser, parseProcStartTime, productionProcessBindingDigest, readBoundedProcStatus } = await broker()
     const reads: string[] = []

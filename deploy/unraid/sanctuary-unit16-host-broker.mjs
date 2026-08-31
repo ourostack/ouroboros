@@ -1707,6 +1707,27 @@ function writeClosedInventory(file) {
   chownSync(file, 0, 0)
 }
 
+function createBrokerServer(dispatchRequest = dispatch) {
+  const dispatchDrain = createDispatchDrain()
+  const server = createServer({ allowHalfOpen: true }, (connection) => {
+    let input = ""
+    connection.setEncoding("utf8")
+    connection.on("data", (chunk) => {
+      input += chunk
+      if (Buffer.byteLength(input) > MAX_REQUEST) connection.destroy()
+    })
+    connection.on("end", async () => {
+      try {
+        const result = await dispatchDrain.run(() => dispatchRequest(JSON.parse(input)))
+        const scenario = result?.[ASYNC_RESTART_SCENARIO]
+        const completed = scenario ? armRestartAfterResponseClosed(connection, scenario) : undefined
+        connection.end(`${JSON.stringify({ ok: true, result })}\n`, completed)
+      } catch { connection.end(`${JSON.stringify({ ok: false, error: "host operation failed" })}\n`) }
+    })
+  })
+  return { server, dispatchDrain }
+}
+
 async function main() {
   if (process.getuid?.() !== 0) throw new Error("host broker must run as root")
   const [profileName, targetContainerId, socket, closedInventory, expectedImage, initialSnapshot] = process.argv.slice(2)
@@ -1721,23 +1742,7 @@ async function main() {
   const snapshotFd = openSync(initialSnapshot, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600)
   try { writeFileSync(snapshotFd, `${JSON.stringify(snapshot)}\n`); fsyncSync(snapshotFd) } finally { closeSync(snapshotFd) }
   chownSync(initialSnapshot, 0, 0)
-  const server = createServer((connection) => {
-    let input = ""
-    connection.setEncoding("utf8")
-    connection.on("data", (chunk) => {
-      input += chunk
-      if (Buffer.byteLength(input) > MAX_REQUEST) connection.destroy()
-    })
-    connection.on("end", async () => {
-      try {
-        const result = await dispatchDrain.run(() => dispatch(JSON.parse(input)))
-        const scenario = result?.[ASYNC_RESTART_SCENARIO]
-        const completed = scenario ? armRestartAfterResponseClosed(connection, scenario) : undefined
-        connection.end(`${JSON.stringify({ ok: true, result })}\n`, completed)
-      } catch { connection.end(`${JSON.stringify({ ok: false, error: "host operation failed" })}\n`) }
-    })
-  })
-  const dispatchDrain = createDispatchDrain()
+  const { server, dispatchDrain } = createBrokerServer()
   server.listen(socket, () => {
     chownSync(socket, 0, 10001)
     chmodSync(socket, 0o660)
@@ -1769,6 +1774,7 @@ export {
   armRestartAfterResponseClosed,
   completeHealthProbeFromReceipt,
   createDispatchDrain,
+  createBrokerServer,
   createHealthProbeOperationCoordinator,
   createOwnerMutationCoordinator,
   createInteractiveRestartDriver,
