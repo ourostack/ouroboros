@@ -12,6 +12,7 @@ import { splitTelegramText, type TelegramBotApi, type TelegramInboundMessage, ty
 import { getSenseSessionPath } from "../../senses/shared-turn"
 import { FileTelegramEffectJournal, FIXED_USENET_SYSTEM_FAILSAFE, prepareTelegramEffect } from "../../senses/telegram-effect-adapter"
 import { createObligation, markObligationReturnReady, readObligation } from "../../arc/obligations"
+import { resolveToolDefinition } from "../../repertoire/tools"
 
 const RECEIPT_DOMAIN = "ouroboros.telegram.turn-receipt.v3"
 const RECEIPT_KEY = "k".repeat(43)
@@ -58,6 +59,7 @@ function readLedger(root: string): Record<string, unknown>[] {
 }
 
 function fixture(input: {
+  agentName?: string
   healthSweep?: any
   approvalRuntime?: any
   pollRun?: () => Promise<void>
@@ -106,7 +108,7 @@ function fixture(input: {
     terminalizeRecovered: vi.fn(async () => undefined),
   }
   const app = createTelegramSenseApp({
-    agentName: "butler",
+    agentName: input.agentName ?? "butler",
     credentials: { botToken: input.botToken ?? "test-token", authorizedUserId: "42", authorizedChatId: "42" },
     identityKey: "k".repeat(43),
     migrateIdentity: async () => undefined,
@@ -148,6 +150,71 @@ function writeEligibleFailsafeRecord(eventRoot: string): string {
 }
 
 describe("Telegram sense", () => {
+  it("turns the exact exhausted-credit live evidence into one household download reply", async () => {
+    const queueError = "SAB queue verification credential is unavailable"
+    const rawNotification = "Astraweb prepaid credit exhausted. Usenet indexer has been disabled."
+    const sanctuary = {
+      getDownloadQueue: vi.fn(async () => { throw new Error(queueError) }),
+      getNotifications: vi.fn(async () => ({ notifications: [rawNotification, rawNotification] })),
+    }
+    const noisyDraft = "Astraweb prepaid credit is exhausted, and the SABnzbd auth-check failed. Sonarr/Radarr and Deluge are now producing dead-letter events. Usenet indexer has been disabled. Top up at https://www.astraweb.com/login. Should I keep watching, or will you top it up?"
+    const canonical = "Downloads are paused to protect your prepaid credit. Top it up here: https://www.astraweb.com/login. Tell me when you’re done, and I’ll resume downloads and verify one finishes. Or tell me a reminder time, like “tomorrow at 9.”"
+    const runTurn = vi.fn(async (options: any) => {
+      const queueTool = resolveToolDefinition("sanctuary_get_download_queue")!
+      const notificationTool = resolveToolDefinition("unraid_get_notifications")!
+      await expect(queueTool.handler({}, { sanctuary } as any)).rejects.toThrow(queueError)
+      expect(JSON.parse(await notificationTool.handler({}, { sanctuary } as any))).toEqual({ notifications: [rawNotification, rawNotification] })
+      await options.deliverySink.onDelivery({ kind: "settle", text: noisyDraft })
+      return { response: noisyDraft, ponderDeferred: false, deliveries: [{ kind: "settle", text: noisyDraft }], deliveryFailures: [] }
+    })
+    const f = fixture({ agentName: "sanctuary", runTurn })
+
+    await f.getOnMessage()({ updateId: 759, messageId: "760", userId: "42", chatId: "42", text: "Why aren't my shows downloading?" })
+
+    expect(sanctuary.getDownloadQueue).toHaveBeenCalledOnce()
+    expect(sanctuary.getNotifications).toHaveBeenCalledOnce()
+    expect(f.api.request).toHaveBeenCalledWith("sendMessage", expect.objectContaining({ text: canonical }), undefined)
+    const sent = JSON.stringify((f.api.request as any).mock.calls)
+    expect(sent).not.toMatch(/SABnzbd|Sonarr|Radarr|Deluge|auth-check|dead-letter|indexer has been disabled|keep watching/iu)
+  })
+
+  it.each([
+    ["another agent", "butler", "Why aren't my shows downloading?", "Credit is exhausted. Top up at https://www.astraweb.com/login."],
+    ["another question", "sanctuary", "What is Astraweb?", "Credit is exhausted. Top up at https://www.astraweb.com/login."],
+    ["no locked link", "sanctuary", "Why aren't my shows downloading?", "The prepaid credit appears exhausted."],
+    ["no credit conclusion", "sanctuary", "Why aren't my shows downloading?", "Your account is at https://www.astraweb.com/login."],
+    ["healthy credit", "sanctuary", "Why aren't my shows downloading?", "Your credit is healthy; manage it at https://www.astraweb.com/login."],
+    ["no credit problem", "sanctuary", "Why aren't my shows downloading?", "There is no credit problem; manage it at https://www.astraweb.com/login."],
+    ["credit not empty", "sanctuary", "Why aren't my shows downloading?", "Your credit is not empty; manage it at https://www.astraweb.com/login."],
+  ])("passes through download-adjacent replies for %s", async (_label, agentName, userMessage, reply) => {
+    const f = fixture({
+      agentName,
+      runTurn: vi.fn(async (options: any) => {
+        await options.deliverySink.onDelivery({ kind: "settle", text: reply })
+        return { response: reply, ponderDeferred: false, deliveries: [{ kind: "settle", text: reply }], deliveryFailures: [] }
+      }),
+    })
+
+    await f.getOnMessage()({ updateId: 761, messageId: "762", userId: "42", chatId: "42", text: userMessage })
+
+    expect(f.api.request).toHaveBeenCalledWith("sendMessage", expect.objectContaining({ text: reply }), undefined)
+  })
+
+  it("preserves a compliant personality-bearing answer to the exact download question", async () => {
+    const reply = "Small household drama: downloads are paused to protect your prepaid credit. Top up here: https://www.astraweb.com/login. Tell me when you’re done; I’ll resume downloads and verify a download finishes. If later is better, tell me a reminder time—“tomorrow at 9” works."
+    const f = fixture({
+      agentName: "sanctuary",
+      runTurn: vi.fn(async (options: any) => {
+        await options.deliverySink.onDelivery({ kind: "settle", text: reply })
+        return { response: reply, ponderDeferred: false, deliveries: [{ kind: "settle", text: reply }], deliveryFailures: [] }
+      }),
+    })
+
+    await f.getOnMessage()({ updateId: 763, messageId: "764", userId: "42", chatId: "42", text: "Why aren't my shows downloading?" })
+
+    expect(f.api.request).toHaveBeenCalledWith("sendMessage", expect.objectContaining({ text: reply }), undefined)
+  })
+
   it("derives one canonical opaque subject from bot, user, and chat identity", () => {
     const identityKey = "k".repeat(43)
     const baseline = opaqueTelegramSubject(identityKey, "bot-a", "42", "43")

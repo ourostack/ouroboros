@@ -28,6 +28,7 @@ import { emitNervesEvent, emitNervesEventDurable } from "../nerves/runtime"
 import { registerGlobalLogSink } from "../nerves"
 import { createSanctuaryInteractiveControl } from "./sanctuary-interactive-control"
 import { createSanctuarySabClient } from "./sanctuary-sab"
+import { presentSanctuaryDownloadCreditReply } from "./sanctuary-download-credit-presentation"
 import { getSenseSessionPath, runSenseTurn, type RunSenseTurnOptions, type RunSenseTurnResult } from "./shared-turn"
 import {
   createTelegramBotApi,
@@ -1068,12 +1069,14 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     idempotencyKey: string,
     signal?: AbortSignal,
     onMessageDelivered?: (messageId: number, chunk: string) => void,
+    exactDownloadCreditQuestion = false,
   ): Promise<TelegramEffectArtifact> => {
+    const presentedText = presentSanctuaryDownloadCreditReply(options.agentName, exactDownloadCreditQuestion, text)
     return executeAuthorizedEffect({
       idempotencyKey,
       target: configuredOwnerTarget(),
       authorClass: "butler",
-      effect: { kind: "text", text },
+      effect: { kind: "text", text: presentedText },
       ...(signal ? { signal } : {}),
       ...(onMessageDelivered ? { onMessageDelivered } : {}),
     })
@@ -1361,6 +1364,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     const turnMetricsObserver = { providerInvocationCount: 0, toolInvocationCount: 0 }
     const toolReceiptObserver: SanctuaryToolReceiptObserver = { toolResultDigests: [], toolGroundings: [] }
     const normalizedRequest = message.text.normalize("NFKC").trim().toLocaleLowerCase("en-US")
+    const exactDownloadCreditQuestion = normalizedRequest === "why aren't my shows downloading?"
     const groundingIntentTool = groundedAcceptance
       ? /^(?:what['’]?s up|status)\??$/u.test(normalizedRequest) ? "unraid_get_system"
         : /^how much (?:space|storage) is left\??$/u.test(normalizedRequest) ? "unraid_get_storage"
@@ -1411,7 +1415,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
             if (groundingIntentTool) {
               bufferedGroundedDeliveries.push(delivery.kind)
             } else {
-              turnEffects.push(await deliverButlerEffect(delivery.text, `turn:${subject}:${message.updateId}:delivery:${deliveryOrdinal++}`, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) }))
+              turnEffects.push(await deliverButlerEffect(delivery.text, `turn:${subject}:${message.updateId}:delivery:${deliveryOrdinal++}`, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) }, exactDownloadCreditQuestion))
               deliveryCount += 1
             }
           },
@@ -1443,7 +1447,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         turnEffects.push(await deliverButlerEffect(canonical, `turn:${subject}:${message.updateId}:delivery:${deliveryOrdinal++}`, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) }))
         deliveryCount = 1
       } else if (deliveryCount === 0 && result.response.trim()) {
-        const artifact = await deliverButlerEffect(result.response, `turn:${subject}:${message.updateId}:delivery:${deliveryOrdinal++}`, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) })
+        const artifact = await deliverButlerEffect(result.response, `turn:${subject}:${message.updateId}:delivery:${deliveryOrdinal++}`, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) }, exactDownloadCreditQuestion)
         turnEffects.push(artifact)
         responseFallbackArtifactId = artifact.id
       }
@@ -1484,7 +1488,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         }, Math.max(Date.now(), lifecycleStartedAt + 1)),
       })
       const fallback = "I couldn't complete that turn. The failure was recorded; please try again."
-      if (deliveredMessageIds.length === 0) turnEffects.push(await deliverButlerEffect(fallback, `turn:${subject}:${message.updateId}:fallback`, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) }))
+      if (deliveredMessageIds.length === 0) turnEffects.push(await deliverButlerEffect(fallback, `turn:${subject}:${message.updateId}:fallback`, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) }, exactDownloadCreditQuestion))
       await recordAcceptedEffects(currentSessionPath, turnEffects, { text: message.text, reference: inboundReference, attachmentIds: hydrated.attachmentIds })
     } finally {
       if (acceptanceMarker) {
