@@ -58,6 +58,7 @@ function readLedger(root: string): Record<string, unknown>[] {
 }
 
 function fixture(input: {
+  agentName?: string
   healthSweep?: any
   approvalRuntime?: any
   pollRun?: () => Promise<void>
@@ -72,6 +73,7 @@ function fixture(input: {
   authorizeRelationshipEffect?: any
   privilegedFailsafe?: any
   admission?: any
+  resolveRelationshipAuthorization?: any
 } = {}) {
   const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-sense-fixture-"))
   let onMessage: ((message: TelegramInboundMessage) => Promise<void>) | undefined
@@ -106,7 +108,7 @@ function fixture(input: {
     terminalizeRecovered: vi.fn(async () => undefined),
   }
   const app = createTelegramSenseApp({
-    agentName: "butler",
+    agentName: input.agentName ?? "butler",
     credentials: { botToken: input.botToken ?? "test-token", authorizedUserId: "42", authorizedChatId: "42" },
     identityKey: "k".repeat(43),
     migrateIdentity: async () => undefined,
@@ -126,6 +128,7 @@ function fixture(input: {
     authorizeRelationshipEffect: input.authorizeRelationshipEffect,
     privilegedFailsafe: input.privilegedFailsafe,
     admission: input.admission,
+    resolveRelationshipAuthorization: input.resolveRelationshipAuthorization,
   })
   return { app, api, poll, runTurn, approvalTransport, agentRoot, getOnMessage: () => onMessage!, getOnUpdate: () => onUpdate! }
 }
@@ -148,6 +151,71 @@ function writeEligibleFailsafeRecord(eventRoot: string): string {
 }
 
 describe("Telegram sense", () => {
+  it("activates the required-read obligation for the exact authorized storage-and-shrink owner story", async () => {
+    const preparedOptions: any[] = []
+    const advertisedToolNames = ["unraid_get_storage", "sanctuary_get_media_optimization", "settle"]
+    const f = fixture({
+      agentName: "sanctuary",
+      resolveRelationshipAuthorization: vi.fn(async (coordinates: any) => ({
+        subject: { friendId: coordinates.friendId, admissionState: "active" },
+        profileId: "sanctuary-owner",
+        authorizedContextScopes: ["household.status"],
+        advertisedToolNames,
+        actor: { friendId: coordinates.friendId },
+        authorizeTool: vi.fn(async () => ({ allowed: true })),
+      })),
+      runTurn: vi.fn(async (options: any) => {
+        preparedOptions.push(await options.prepareRunAgentOptions({
+          messages: [],
+          currentUserMessages: [{ role: "user", content: options.userMessage }],
+          resolvedContext: {},
+          runAgentOptions: { toolContext: { signin: async () => undefined } },
+        }))
+        return { response: "", ponderDeferred: false, deliveries: [], deliveryFailures: [] }
+      }),
+    })
+
+    await f.getOnMessage()({ updateId: 980, messageId: "981", userId: "42", chatId: "42", text: "What's using all the space, and can we make it smaller?" })
+    await f.getOnMessage()({ updateId: 982, messageId: "983", userId: "42", chatId: "42", text: "How much space is left?" })
+
+    expect(preparedOptions[0]).toMatchObject({
+      requiredToolCalls: { names: ["unraid_get_storage", "sanctuary_get_media_optimization"] },
+      toolContext: { relationshipAuthorization: { advertisedToolNames } },
+    })
+    expect(preparedOptions[1].requiredToolCalls).toBeUndefined()
+  })
+
+  it.each([
+    ["sanctuary", "sanctuary-household"],
+    ["other-agent", "sanctuary-owner"],
+  ])("does not activate the storage obligation for agent %s with profile %s", async (agentName, profileId) => {
+    const preparedOptions: any[] = []
+    const f = fixture({
+      agentName,
+      resolveRelationshipAuthorization: vi.fn(async (coordinates: any) => ({
+        subject: { friendId: coordinates.friendId, admissionState: "active" },
+        profileId,
+        authorizedContextScopes: ["household.status"],
+        advertisedToolNames: ["unraid_get_storage", "sanctuary_get_media_optimization", "settle"],
+        actor: { friendId: coordinates.friendId },
+        authorizeTool: vi.fn(async () => ({ allowed: true })),
+      })),
+      runTurn: vi.fn(async (options: any) => {
+        preparedOptions.push(await options.prepareRunAgentOptions({
+          messages: [],
+          currentUserMessages: [{ role: "user", content: options.userMessage }],
+          resolvedContext: {},
+          runAgentOptions: { toolContext: { signin: async () => undefined } },
+        }))
+        return { response: "", ponderDeferred: false, deliveries: [], deliveryFailures: [] }
+      }),
+    })
+
+    await f.getOnMessage()({ updateId: 984, messageId: "985", userId: "42", chatId: "42", text: "What's using all the space, and can we make it smaller?" })
+
+    expect(preparedOptions[0].requiredToolCalls).toBeUndefined()
+  })
+
   it("derives one canonical opaque subject from bot, user, and chat identity", () => {
     const identityKey = "k".repeat(43)
     const baseline = opaqueTelegramSubject(identityKey, "bot-a", "42", "43")
