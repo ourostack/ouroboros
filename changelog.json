@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.762",
+      "changes": [
+        "Wait for the exact audited Sanctuary container and process to recover health before Unit 16 acceptance continues."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.761",
       "changes": [
         "Require current storage and media-optimization evidence before answering owner requests to diagnose and shrink Sanctuary storage.",
