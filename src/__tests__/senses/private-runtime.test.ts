@@ -4803,6 +4803,47 @@ describe("private runtime", () => {
     expect(mockHandleInboundTurn.mock.calls[0][0].runAgentOptions.toolContext).toMatchObject({ sanctuary: expect.any(Object), agentRoot })
   })
 
+  it("renders the exact current external-event lease instead of a stale held-return wake", async () => {
+    fs.writeFileSync(path.join(agentRoot, "tool-profiles.json"), JSON.stringify({ version: 2, profiles: {
+      "sanctuary-owner": { version: 1, contextScopes: ["household.status"], toolNames: ["external_event_disposition"], effectScopes: [] },
+      "sanctuary-event": { version: 1, contextScopes: ["household.status"], toolNames: ["external_event_disposition"], effectScopes: [] },
+    } }))
+    const friendStore = new FileFriendStore(path.join(agentRoot, "friends"))
+    await friendStore.put("owner", { id: "owner", name: "Ari", trustLevel: "family", admissionState: "active", initiativePolicy: "proactive", capabilityProfileId: "sanctuary-owner", externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: "2026-08-29T00:00:00.000Z", updatedAt: "2026-08-29T00:00:00.000Z", schemaVersion: 1 })
+    mockGetToolsForChannel.mockReturnValue([
+      { type: "function", function: { name: "external_event_disposition", description: "dispose", parameters: {} } },
+    ])
+    mockLoadSession.mockReturnValue({ messages: [{ role: "system", content: "old system" }, { role: "assistant", content: "old failed receipt" }] })
+    mockListActiveObligations.mockReturnValue([{ id: "stale", origin: { friendId: "ouro-external-event", channel: "external-event", key: "old:event" }, status: "running", delegatedContent: "old receipt", createdAt: 1 }])
+
+    await runApprovedPrivateRuntimeTurn({
+      reason: "instinct",
+      externalEvent: {
+        schemaVersion: 1,
+        recordPath: "/events/test-agent/guard/provider.json",
+        agent: "test-agent",
+        source: "guard",
+        eventId: "provider",
+        generation: 3,
+        observationRevision: "rev-recovered-3",
+        claimOwner: "lease-current-3",
+        relatedEvents: [{ schemaVersion: 1, recordPath: "/events/test-agent/guard/downloads.json", agent: "test-agent", source: "guard", eventId: "downloads", generation: 4, observationRevision: "rev-downloads-4", claimOwner: "lease-downloads-4" }],
+      },
+    })
+
+    const currentMessage = String(mockHandleInboundTurn.mock.calls[0][0].messages[0].content)
+    expect(currentMessage).toContain("recordPath: /events/test-agent/guard/provider.json")
+    expect(currentMessage).toContain("expectedGeneration: 3")
+    expect(currentMessage).toContain("classifiedRevision: rev-recovered-3")
+    expect(currentMessage).toContain("claimOwner: lease-current-3")
+    expect(currentMessage).toContain("recordPath: /events/test-agent/guard/downloads.json")
+    expect(currentMessage).toContain("expectedGeneration: 4")
+    expect(currentMessage).toContain("classifiedRevision: rev-downloads-4")
+    expect(currentMessage).toContain("claimOwner: lease-downloads-4")
+    expect(currentMessage).not.toContain("held return work arrived")
+    expect(currentMessage).not.toContain("old receipt")
+  })
+
   it("records an error lifecycle when an external-event private turn fails", async () => {
     fs.writeFileSync(path.join(agentRoot, "tool-profiles.json"), JSON.stringify({ version: 2, profiles: {
       "sanctuary-owner": { version: 1, contextScopes: ["household.status"], toolNames: ["external_event_disposition"], effectScopes: [] },
