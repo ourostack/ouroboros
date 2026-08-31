@@ -399,13 +399,28 @@ Effective-spec audit helper:
           -path "$VALIDATE_RUNTIME_ROOT/daemon-health.json" \
         \) \) -print -quit) || return $?
       test -z "$VALIDATE_WRONG_RUNTIME_FILE_MODE" || return $?
+      # Alpha.753 and earlier wrote content-free autonomy receipts as 0644 below a 0700 tree.
+      # Preserve those audit records; current writers create and normalize this exact format to 0600.
       VALIDATE_WRONG_AGENT_FILE_MODE=$(find "$VALIDATE_AGENT_ROOT" -xdev -type f ! -perm 0600 \
         ! \( -perm 0644 \( \
           -path "$VALIDATE_AGENT_ROOT/arc/flight-recorder/*" -o \
           -path "$VALIDATE_AGENT_ROOT/state/health/*" -o \
           -path "$VALIDATE_AGENT_ROOT/state/logs/*" -o \
           -path "$VALIDATE_AGENT_ROOT/state/habits/*" -o \
-          -path "$VALIDATE_AGENT_ROOT/state/arc/context-loss-sentinel-watermark.json" \
+          -path "$VALIDATE_AGENT_ROOT/state/arc/context-loss-sentinel-watermark.json" -o \
+          -exec /bin/sh -c '
+            VALIDATE_AUTONOMY_RECEIPT=$1
+            VALIDATE_AUTONOMY_RECEIPTS_ROOT=$2
+            test "${VALIDATE_AUTONOMY_RECEIPT%/*}" = "$VALIDATE_AUTONOMY_RECEIPTS_ROOT" || exit 1
+            VALIDATE_AUTONOMY_RECEIPT_NAME=${VALIDATE_AUTONOMY_RECEIPT##*/}
+            case "$VALIDATE_AUTONOMY_RECEIPT_NAME" in
+              autr_????????????????????????????????.json) ;;
+              *) exit 1 ;;
+            esac
+            VALIDATE_AUTONOMY_RECEIPT_ID=${VALIDATE_AUTONOMY_RECEIPT_NAME#autr_}
+            VALIDATE_AUTONOMY_RECEIPT_ID=${VALIDATE_AUTONOMY_RECEIPT_ID%.json}
+            case "$VALIDATE_AUTONOMY_RECEIPT_ID" in *[!0-9a-f]*) exit 1 ;; esac
+          ' sanctuary-autonomy-receipt-validator {} "$VALIDATE_AGENT_ROOT/state/autonomy/receipts" \; \
         \) \) -print -quit) || return $?
       test -z "$VALIDATE_WRONG_AGENT_FILE_MODE" || return $?
       )

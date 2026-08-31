@@ -313,7 +313,8 @@ function writeReceipt(agentRoot: string, decision: Omit<AutonomyBudgetDecision, 
   }
   const filePath = path.join(autonomyReceiptsDir(agentRoot), `${receiptId}.json`)
   fs.mkdirSync(path.dirname(filePath), { recursive: true })
-  fs.writeFileSync(filePath, `${JSON.stringify(receipt, null, 2)}\n`, "utf-8")
+  fs.writeFileSync(filePath, `${JSON.stringify(receipt, null, 2)}\n`, { encoding: "utf-8", mode: 0o600 })
+  fs.chmodSync(filePath, 0o600)
   return receipt
 }
 

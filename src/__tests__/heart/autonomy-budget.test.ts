@@ -219,7 +219,26 @@ describe("autonomy budget", () => {
       reason: "duplicate trigger suppressed",
     })
     expect(readAutonomyBudgetState(agentRoot).reservations).toHaveLength(1)
-    expect(fs.existsSync(path.join(autonomyReceiptsDir(agentRoot), `${duplicate.receiptId}.json`))).toBe(true)
+    const receiptPath = path.join(autonomyReceiptsDir(agentRoot), `${duplicate.receiptId}.json`)
+    expect(fs.existsSync(receiptPath)).toBe(true)
+    expect(fs.statSync(receiptPath).mode & 0o777).toBe(0o600)
+  })
+
+  it("creates receipts privately before chmod and normalizes byte-identical legacy rewrites", () => {
+    const source = fs.readFileSync("src/heart/autonomy-budget.ts", "utf8")
+    expect(source).toContain('{ encoding: "utf-8", mode: 0o600 }')
+
+    const agentRoot = tempAgentRoot()
+    expect(reserveAutonomyBudget(agentRoot, baseRequest()).allowed).toBe(true)
+    const request = baseRequest({ now: "2026-07-09T17:02:00.000Z" })
+    const duplicate = reserveAutonomyBudget(agentRoot, request)
+    const receiptPath = path.join(autonomyReceiptsDir(agentRoot), `${duplicate.receiptId}.json`)
+    const original = fs.readFileSync(receiptPath)
+    fs.chmodSync(receiptPath, 0o644)
+
+    expect(reserveAutonomyBudget(agentRoot, request).receiptId).toBe(duplicate.receiptId)
+    expect(fs.readFileSync(receiptPath)).toEqual(original)
+    expect(fs.statSync(receiptPath).mode & 0o777).toBe(0o600)
   })
 
   it("treats malformed budget and storm state as empty without leaking content", () => {

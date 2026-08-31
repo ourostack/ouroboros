@@ -1719,9 +1719,14 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
       const run = () => runConditionalHelper(script, "validate", { RUNTIME_ROOT: runtimeRoot, AGENT_ROOT: agentRoot })
       buildValidRoots()
       expect(run().status).toBe(0)
+      const autonomyReceiptName = `autr_${"a".repeat(32)}.json`
+      const autonomyReceiptsRoot = path.join(agentRoot, "state", "autonomy", "receipts")
+      fs.mkdirSync(autonomyReceiptsRoot, { recursive: true, mode: 0o700 })
+      fs.writeFileSync(path.join(autonomyReceiptsRoot, autonomyReceiptName), JSON.stringify({ contentStored: false }), { mode: 0o644 })
+      expect(run().status).toBe(0)
       const actualOwnerScript = `${validator}\nvalidate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
       expect(runConditionalHelper(actualOwnerScript, "validate", { RUNTIME_ROOT: runtimeRoot, AGENT_ROOT: agentRoot }).status).not.toBe(0)
-      for (const mutate of [
+      for (const [mutationIndex, mutate] of [
         () => fs.writeFileSync(path.join(agentRoot, "agent.json"), ""),
         () => fs.symlinkSync("agent.json", path.join(agentRoot, "link")),
         () => fs.chmodSync(path.join(agentRoot, "psyche"), 0o755),
@@ -1732,14 +1737,46 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
         () => fs.chmodSync(path.join(runtimeRoot, "scheduler"), 0o777),
         () => fs.mkdirSync(path.join(runtimeRoot, "daemon", "external-events-adjacent"), { mode: 0o755 }),
         () => fs.writeFileSync(path.join(agentRoot, "state", "arc", "context-loss-sentinel-watermark-adjacent.json"), "{}", { mode: 0o644 }),
+        () => {
+          const adjacent = path.join(agentRoot, "state", "autonomy", "receipts-adjacent")
+          fs.mkdirSync(adjacent, { recursive: true, mode: 0o700 })
+          fs.writeFileSync(path.join(adjacent, autonomyReceiptName), "{}", { mode: 0o644 })
+        },
+        () => {
+          const receipts = path.join(agentRoot, "state", "autonomy", "receipts")
+          fs.mkdirSync(receipts, { recursive: true, mode: 0o700 })
+          fs.writeFileSync(path.join(receipts, "autr_.json"), "{}", { mode: 0o644 })
+        },
+        () => {
+          const receipts = path.join(agentRoot, "state", "autonomy", "receipts")
+          fs.mkdirSync(receipts, { recursive: true, mode: 0o700 })
+          fs.writeFileSync(path.join(receipts, `autr_${"g".repeat(32)}.json`), "{}", { mode: 0o644 })
+        },
+        () => {
+          const receipts = path.join(agentRoot, "state", "autonomy", "receipts")
+          fs.mkdirSync(receipts, { recursive: true, mode: 0o700 })
+          fs.writeFileSync(path.join(receipts, `autr_${"a".repeat(31)}.json`), "{}", { mode: 0o644 })
+        },
+        () => {
+          const nested = path.join(agentRoot, "state", "autonomy", "receipts", "nested")
+          fs.mkdirSync(nested, { recursive: true, mode: 0o700 })
+          fs.writeFileSync(path.join(nested, autonomyReceiptName), "{}", { mode: 0o644 })
+        },
+        () => {
+          const receipts = path.join(agentRoot, "state", "autonomy", "receipts")
+          fs.mkdirSync(receipts, { recursive: true, mode: 0o700 })
+          const receipt = path.join(receipts, autonomyReceiptName)
+          fs.writeFileSync(receipt, "{}", { mode: 0o664 })
+          fs.chmodSync(receipt, 0o664)
+        },
         () => fs.chmodSync(path.join(runtimeRoot, "pulse.json"), 0o666),
         () => fs.writeFileSync(path.join(runtimeRoot, "container-credentials.json"), "{}", { mode: 0o600 }),
         () => fs.writeFileSync(path.join(runtimeRoot, "vault-unlock", "one.secret"), ""),
         () => spawnSync("mkfifo", [path.join(agentRoot, "unexpected.fifo")]),
-      ]) {
+      ].entries()) {
         buildValidRoots()
         mutate()
-        expect(run().status).not.toBe(0)
+        expect(run().status, `root mutation ${mutationIndex} must be rejected`).not.toBe(0)
       }
       buildValidRoots()
       const socketPath = path.join(agentRoot, "unexpected.sock")
