@@ -172,7 +172,7 @@ cat >> ${JSON.stringify(configs)}
 ps -o command= -p $$ -p $PPID >> ${JSON.stringify(processes)}
 case "$*" in
   *mode=warnings*) printf '{"warnings":[]}\n' ;;
-  *mode=server_stats*) printf '{"servers":[]}\n' ;;
+  *mode=server_stats*) printf '{"servers":[{"articles_tried":{},"articles_success":{},"daily":{}}]}\n' ;;
   *mode=history*) printf '{"history":{"slots":[]}}\n' ;;
   *mode=queue*) printf '{"queue":{"paused":false,"status":"Downloading","noofslots":0}}\n' ;;
   *) printf '{}\n' ;;
@@ -230,6 +230,8 @@ printf '{}\n'
 `, { mode: 0o700 })
     fs.writeFileSync(path.join(bin, "jq"), `#!/bin/bash
 case "$*" in
+  *valid_count*) echo true ;;
+  *@tsv*) [ "$USENET_CASE" = recovery ] && printf '100\t100\t0\n' || printf '0\t0\t0\n' ;;
   *Authentication*last*) echo "502 Authentication Failed" ;;
   *Authentication*length*) [ "$USENET_CASE" = auth ] && echo 1 || echo 0 ;;
   *queue.status*) [ "$USENET_CASE" = stall ] && echo Idle || echo Downloading ;;
@@ -287,7 +289,9 @@ printf '%s\n' "$*" >> ${JSON.stringify(calls)}
     ["healthy new interval", 1_100_000, 160_000, "recovered", false, true, "array"],
     ["failing new interval", 1_100_000, 75_000, "sabnzbd.pause", true, true, "array"],
     ["first observation seed", 1_000_000, 70_000, "", false, false, "array"],
-    ["live SAB object-shaped server map", 1_100_000, 160_000, "recovered", false, true, "object"],
+    ["multi-server array", 1_100_000, 160_000, "recovered", false, true, "multi-array"],
+    ["live SAB multi-server object map", 1_100_000, 160_000, "recovered", false, true, "multi-object"],
+    ["digit-string multi-server object map", 1_100_000, 160_000, "recovered", false, true, "multi-object-strings"],
   ] as const)("uses a rolling baseline after historical 7%% spend for a %s", (_label, tried, okay, expected, pausedAfter, seedBaseline, serverShape) => {
     const temp = root()
     const bin = path.join(temp, "bin")
@@ -307,11 +311,12 @@ case "$*" in
   *mode=pause*) printf 'true\n' > ${JSON.stringify(paused)}; printf '{"status":true}\n' ;;
   *mode=warnings*) [ "$GUARD_HISTORICAL_AUTH" = 1 ] && printf '{"warnings":[{"text":"502 Authentication Failed","time":1}]}\n' || printf '{"warnings":[]}\n' ;;
   *mode=server_stats*)
-    if [ "$GUARD_SERVER_SHAPE" = object ]; then
-      printf '{"servers":{"primary":{"articles_tried":{"%s":%s},"articles_success":{"%s":%s},"daily":{"%s":0}}}}\n' "$(date +%Y-%m-%d)" "$GUARD_TRIED" "$(date +%Y-%m-%d)" "$GUARD_OKAY" "$(date +%Y-%m-%d)"
-    else
-      printf '{"servers":[{"articles_tried":{"%s":%s},"articles_success":{"%s":%s},"daily":{"%s":0}}]}\n' "$(date +%Y-%m-%d)" "$GUARD_TRIED" "$(date +%Y-%m-%d)" "$GUARD_OKAY" "$(date +%Y-%m-%d)"
-    fi ;;
+    case "$GUARD_SERVER_SHAPE" in
+      multi-array) printf '{"servers":[{"articles_tried":{"%s":%s},"articles_success":{"%s":%s},"daily":{"%s":0}},{"articles_tried":{"%s":%s},"articles_success":{"%s":%s},"daily":{"%s":0}}]}\n' "$(date +%Y-%m-%d)" "$((GUARD_TRIED / 2))" "$(date +%Y-%m-%d)" "$((GUARD_OKAY / 2))" "$(date +%Y-%m-%d)" "$(date +%Y-%m-%d)" "$((GUARD_TRIED - GUARD_TRIED / 2))" "$(date +%Y-%m-%d)" "$((GUARD_OKAY - GUARD_OKAY / 2))" "$(date +%Y-%m-%d)" ;;
+      multi-object) printf '{"servers":{"primary":{"articles_tried":{"%s":%s},"articles_success":{"%s":%s},"daily":{"%s":0}},"fill":{"articles_tried":{"%s":%s},"articles_success":{"%s":%s},"daily":{"%s":0}}}}\n' "$(date +%Y-%m-%d)" "$((GUARD_TRIED / 2))" "$(date +%Y-%m-%d)" "$((GUARD_OKAY / 2))" "$(date +%Y-%m-%d)" "$(date +%Y-%m-%d)" "$((GUARD_TRIED - GUARD_TRIED / 2))" "$(date +%Y-%m-%d)" "$((GUARD_OKAY - GUARD_OKAY / 2))" "$(date +%Y-%m-%d)" ;;
+      multi-object-strings) printf '{"servers":{"primary":{"articles_tried":{"%s":"%s"},"articles_success":{"%s":"%s"},"daily":{"%s":"0"}},"fill":{"articles_tried":{"%s":"%s"},"articles_success":{"%s":"%s"},"daily":{"%s":"0"}}}}\n' "$(date +%Y-%m-%d)" "$((GUARD_TRIED / 2))" "$(date +%Y-%m-%d)" "$((GUARD_OKAY / 2))" "$(date +%Y-%m-%d)" "$(date +%Y-%m-%d)" "$((GUARD_TRIED - GUARD_TRIED / 2))" "$(date +%Y-%m-%d)" "$((GUARD_OKAY - GUARD_OKAY / 2))" "$(date +%Y-%m-%d)" ;;
+      *) printf '{"servers":[{"articles_tried":{"%s":%s},"articles_success":{"%s":%s},"daily":{"%s":0}}]}\n' "$(date +%Y-%m-%d)" "$GUARD_TRIED" "$(date +%Y-%m-%d)" "$GUARD_OKAY" "$(date +%Y-%m-%d)" ;;
+    esac ;;
   *mode=history*) printf '{"history":{"slots":[{"status":"Completed","completed":%s}]}}\n' "$(date +%s)" ;;
   *mode=queue*) printf '{"queue":{"paused":%s,"status":"Downloading","noofslots":1}}\n' "$(cat ${JSON.stringify(paused)})" ;;
   *) printf '{}\n' ;;
@@ -329,6 +334,42 @@ printf '%s\n' "$*" >> ${JSON.stringify(calls)}
     else expect(emitted).toBe("")
     if (expected) expect(emitted.includes("recovered")).toBe(!pausedAfter)
     expect(fs.readFileSync(paused, "utf8").trim()).toBe(String(pausedAfter))
+  })
+
+  it.each([
+    ["empty array", '{"servers":[]}'],
+    ["empty object", '{"servers":{}}'],
+    ["malformed stats map", '{"servers":[{"articles_tried":[],"articles_success":{},"daily":{}}]}'],
+    ["mixed invalid member", '{"servers":{"primary":{"articles_tried":{},"articles_success":{},"daily":{}},"fill":"invalid"}}'],
+    ["invalid counter", '{"servers":{"primary":{"articles_tried":{"today":-1},"articles_success":{"today":9},"daily":{"today":100}}}}'],
+  ])("treats %s server stats as blind instead of healthy zeroes", (_label, serverStats) => {
+    const temp = root()
+    const bin = path.join(temp, "bin")
+    const calls = path.join(temp, "adapter.calls")
+    const log = path.join(temp, "guard.log")
+    const ini = path.join(temp, "sabnzbd.ini")
+    const stats = path.join(temp, "server-stats.json")
+    fs.mkdirSync(bin)
+    fs.writeFileSync(ini, "api_key = test-only\n")
+    fs.writeFileSync(stats, `${serverStats}\n`)
+    fs.writeFileSync(path.join(bin, "curl"), `#!/bin/bash
+case "$*" in
+  *mode=warnings*) printf '{"warnings":[]}\n' ;;
+  *mode=queue*) printf '{"queue":{"paused":false,"status":"Downloading","noofslots":0}}\n' ;;
+  *mode=server_stats*) cat ${JSON.stringify(stats)} ;;
+  *) printf '{}\n' ;;
+esac
+`, { mode: 0o700 })
+    fs.writeFileSync(path.join(temp, "producer"), "#!/bin/bash\nexit 0\n", { mode: 0o700 })
+    fs.writeFileSync(path.join(temp, "adapter"), `#!/bin/bash
+printf '%s\n' "$*" >> ${JSON.stringify(calls)}
+`, { mode: 0o700 })
+
+    expect(() => execFileSync(guardPath, ["--sab-ini", ini, "--log", log, "--producer", path.join(temp, "producer"), "--adapter", path.join(temp, "adapter")], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } })).toThrow()
+    expect(fs.readFileSync(log, "utf8")).toContain("server-stats-response")
+    const emitted = fs.readFileSync(calls, "utf8")
+    expect(emitted).toContain("usenet.observe provider-health indeterminate:")
+    expect(emitted).not.toMatch(/recovered:|sabnzbd\.pause/u)
   })
 
   it("accumulates sub-threshold failing intervals until the spend guard can judge them", () => {
@@ -405,7 +446,7 @@ printf '%s\n' "$*" >> ${JSON.stringify(calls)}
     const local = new Date()
     fs.writeFileSync(`${log}.baseline.json`, JSON.stringify({ day: `${local.getFullYear()}-${String(local.getMonth() + 1).padStart(2, "0")}-${String(local.getDate()).padStart(2, "0")}`, tried: 0, okay: 0 }) + "\n")
     fs.writeFileSync(path.join(bin, "curl"), "#!/bin/bash\nprintf '{}\\n'\n", { mode: 0o700 })
-    fs.writeFileSync(path.join(bin, "jq"), `#!/bin/bash\ncase "$*" in\n  *articles_tried*) echo 50000 ;;\n  *articles_success*) echo 0 ;;\n  *daily*) echo 1000000000 ;;\n  *queue.paused*) echo false ;;\n  *queue.status*) echo Downloading ;;\n  *queue.noofslots*) echo 0 ;;\n  *Authentication*) echo 0 ;;\n  *) echo 0 ;;\nesac\n`, { mode: 0o700 })
+    fs.writeFileSync(path.join(bin, "jq"), `#!/bin/bash\ncase "$*" in\n  *valid_count*) echo true ;;\n  *@tsv*) printf '50000\\t0\\t1000000000\\n' ;;\n  *articles_tried*) echo 50000 ;;\n  *articles_success*) echo 0 ;;\n  *daily*) echo 1000000000 ;;\n  *queue.paused*) echo false ;;\n  *queue.status*) echo Downloading ;;\n  *queue.noofslots*) echo 0 ;;\n  *Authentication*) echo 0 ;;\n  *) echo 0 ;;\nesac\n`, { mode: 0o700 })
     fs.writeFileSync(path.join(temp, "producer"), "#!/bin/bash\nexit 0\n", { mode: 0o700 })
     fs.writeFileSync(path.join(temp, "adapter"), `#!/bin/bash\nprintf '%s\\n' "$*" >> ${JSON.stringify(calls)}\n`, { mode: 0o700 })
 
