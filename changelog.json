@@ -5,7 +5,7 @@
       "version": "0.1.0-alpha.755",
       "changes": [
         "Preserve canonical Telegram owner identity across restarts.",
-        "Accept SAB server maps in the Unraid spend guard."
+        "Validate and accept SAB array or object server stats without failing open on malformed or unsafe counts."
       ]
     },
     {

@@ -342,6 +342,7 @@ printf '%s\n' "$*" >> ${JSON.stringify(calls)}
     ["malformed stats map", '{"servers":[{"articles_tried":[],"articles_success":{},"daily":{}}]}'],
     ["mixed invalid member", '{"servers":{"primary":{"articles_tried":{},"articles_success":{},"daily":{}},"fill":"invalid"}}'],
     ["invalid counter", '{"servers":{"primary":{"articles_tried":{"today":-1},"articles_success":{"today":9},"daily":{"today":100}}}}'],
+    ["aggregate counter overflow", '{"servers":{"primary":{"articles_tried":{"today":9007199254740991},"articles_success":{"today":0},"daily":{"today":0}},"fill":{"articles_tried":{"today":9007199254740991},"articles_success":{"today":0},"daily":{"today":0}}}}'],
   ])("treats %s server stats as blind instead of healthy zeroes", (_label, serverStats) => {
     const temp = root()
     const bin = path.join(temp, "bin")
@@ -351,7 +352,9 @@ printf '%s\n' "$*" >> ${JSON.stringify(calls)}
     const stats = path.join(temp, "server-stats.json")
     fs.mkdirSync(bin)
     fs.writeFileSync(ini, "api_key = test-only\n")
-    fs.writeFileSync(stats, `${serverStats}\n`)
+    const local = new Date()
+    const day = `${local.getFullYear()}-${String(local.getMonth() + 1).padStart(2, "0")}-${String(local.getDate()).padStart(2, "0")}`
+    fs.writeFileSync(stats, `${serverStats.replaceAll('"today"', JSON.stringify(day))}\n`)
     fs.writeFileSync(path.join(bin, "curl"), `#!/bin/bash
 case "$*" in
   *mode=warnings*) printf '{"warnings":[]}\n' ;;
@@ -370,6 +373,48 @@ printf '%s\n' "$*" >> ${JSON.stringify(calls)}
     const emitted = fs.readFileSync(calls, "utf8")
     expect(emitted).toContain("usenet.observe provider-health indeterminate:")
     expect(emitted).not.toMatch(/recovered:|sabnzbd\.pause/u)
+  })
+
+  it("fails closed when validated server stats cannot be extracted", () => {
+    const temp = root()
+    const bin = path.join(temp, "bin")
+    const calls = path.join(temp, "adapter.calls")
+    const curlCalls = path.join(temp, "curl.calls")
+    const log = path.join(temp, "guard.log")
+    const state = path.join(temp, "baseline.json")
+    const ini = path.join(temp, "sabnzbd.ini")
+    const realJq = execFileSync("which", ["jq"], { encoding: "utf8" }).trim()
+    fs.mkdirSync(bin)
+    fs.writeFileSync(ini, "api_key = test-only\n")
+    fs.writeFileSync(path.join(bin, "curl"), `#!/bin/bash
+printf '%s\n' "$*" >> ${JSON.stringify(curlCalls)}
+case "$*" in
+  *mode=warnings*) printf '{"warnings":[]}\n' ;;
+  *mode=queue*) printf '{"queue":{"paused":false,"status":"Downloading","noofslots":0}}\n' ;;
+  *mode=server_stats*) printf '{"servers":{"primary":{"articles_tried":{},"articles_success":{},"daily":{}}}}\n' ;;
+  *) printf '{}\n' ;;
+esac
+`, { mode: 0o700 })
+    fs.writeFileSync(path.join(bin, "jq"), `#!/bin/bash
+case "$*" in
+  *@tsv*) exit 1 ;;
+  *) exec ${JSON.stringify(realJq)} "$@" ;;
+esac
+`, { mode: 0o700 })
+    fs.writeFileSync(path.join(temp, "producer"), "#!/bin/bash\nexit 0\n", { mode: 0o700 })
+    fs.writeFileSync(path.join(temp, "adapter"), `#!/bin/bash
+printf '%s\n' "$*" >> ${JSON.stringify(calls)}
+`, { mode: 0o700 })
+
+    expect(() => execFileSync(guardPath, ["--sab-ini", ini, "--log", log, "--producer", path.join(temp, "producer"), "--adapter", path.join(temp, "adapter"), "--state", state], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } })).toThrow()
+
+    const emitted = fs.readFileSync(calls, "utf8").trim().split("\n")
+    expect(emitted).toHaveLength(1)
+    expect(emitted[0]).toContain("usenet.observe provider-health indeterminate:")
+    expect(fs.readFileSync(log, "utf8")).toContain("server-stats-response")
+    expect(fs.readFileSync(curlCalls, "utf8")).not.toContain("mode=pause")
+    expect(emitted[0]).not.toMatch(/recovered:|sabnzbd\.pause/u)
+    expect(fs.existsSync(state)).toBe(false)
   })
 
   it("accumulates sub-threshold failing intervals until the spend guard can judge them", () => {
