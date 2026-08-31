@@ -33,7 +33,11 @@ vi.mock("openai", () => {
   return { default: MockOpenAI, AzureOpenAI: MockOpenAI }
 })
 
-vi.mock("child_process", () => ({ execSync: vi.fn(), spawnSync: vi.fn() }))
+vi.mock("child_process", async (importOriginal) => ({
+  ...await importOriginal<typeof import("child_process")>(),
+  execSync: vi.fn(),
+  spawnSync: vi.fn(),
+}))
 vi.mock("../../repertoire/skills", () => ({ listSkills: vi.fn(() => []), loadSkill: vi.fn() }))
 vi.mock("../../heart/daemon/socket-client", () => ({
   DEFAULT_DAEMON_SOCKET_PATH: "/tmp/ouroboros-test-mock.sock",
