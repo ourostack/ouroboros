@@ -617,6 +617,143 @@ describe("rest tool in runAgent", () => {
     expect(retryEvents).toHaveLength(0)
   })
 
+  it("retries a currently advertised tool instead of borrowing its failure from an exact prior request", async () => {
+    const request = "Books can stay off when I'm not using it. Stop treating that as broken."
+    mockCreate.mockReturnValueOnce(makeStream([
+      makeChunk("The steward runtime is still down; I already tried twice.", undefined),
+    ]))
+    mockCreate.mockReturnValueOnce(makeStream([
+      makeChunk(undefined, [{ index: 0, id: "call_current_policy", function: { name: "steward_policy_manage", arguments: "" } }]),
+      makeChunk(undefined, [{ index: 0, function: { arguments: JSON.stringify({ action: "set_desired_state", key: "container:calibre", value: "intentionally_off" }) } }]),
+    ]))
+    mockCreate.mockReturnValueOnce(makeStream(settleChunks("Got it. Books may stay quietly off until you ask for it.")))
+
+    const execTool = vi.fn(async (name: string) => name === "steward_policy_manage"
+      ? JSON.stringify({ version: 1, desiredStates: { "container:calibre": { value: "intentionally_off" } } })
+      : "unexpected")
+    const callbacks = makeCallbacks({ settleOutputMode: "retractable_buffer" })
+    const messages: any[] = [
+      { role: "user", content: request },
+      { role: "assistant", tool_calls: [{ id: "call_old_policy", type: "function", function: { name: "steward_policy_manage", arguments: JSON.stringify({ action: "set_desired_state" }) } }] },
+      { role: "tool", tool_call_id: "call_old_policy", content: "error: expectedVersion must be a nonnegative integer" },
+      { role: "assistant", content: "The policy runtime is down; I tried twice." },
+      { role: "user", content: request },
+    ]
+
+    await runAgent(messages, callbacks, "telegram", undefined, {
+      tools: [{
+        type: "function",
+        function: {
+          name: "steward_policy_manage",
+          description: "Manage steward policy",
+          parameters: { type: "object", properties: { action: { type: "string" }, key: { type: "string" }, value: { type: "string" } }, required: ["action"], additionalProperties: false },
+        },
+      }],
+      execTool,
+      toolContext: {
+        currentSession: { friendId: "ari", channel: "telegram", key: "direct" },
+      },
+    })
+
+    expect(mockCreate).toHaveBeenCalledTimes(3)
+    expect(execTool).toHaveBeenCalledWith("steward_policy_manage", expect.objectContaining({ action: "set_desired_state" }), expect.anything())
+    const retryMessages = mockCreate.mock.calls[1]?.[0]?.messages as any[]
+    const corrective = retryMessages.find((message) => message.role === "user" && String(message.content).startsWith("this exact request previously reached"))
+    expect(corrective?.content).toContain("steward_policy_manage")
+    expect(corrective?.content).toContain("historical")
+    expect(callbacks.onClearText).toHaveBeenCalled()
+    expect(vi.mocked(emitNervesEvent).mock.calls.some(([event]) => (event as any).event === "engine.historical_tool_failure_retry")).toBe(true)
+  })
+
+  it("does not retry a historical tool failure for a different current request", async () => {
+    mockCreate.mockReturnValueOnce(makeStream([
+      makeChunk("Here is a plain answer for the new request.", undefined),
+    ]))
+    const execTool = vi.fn()
+    await runAgent([
+      { role: "user", content: "Keep Books off." },
+      { role: "assistant", tool_calls: [{ id: "call_old_policy", type: "function", function: { name: "steward_policy_manage", arguments: "{}" } }] },
+      { role: "tool", tool_call_id: "call_old_policy", content: "error: old failure" },
+      { role: "assistant", content: "It failed." },
+      { role: "user", content: "How much storage is free?" },
+    ] as any[], makeCallbacks(), "telegram", undefined, {
+      tools: [{ type: "function", function: { name: "steward_policy_manage", description: "Manage steward policy", parameters: { type: "object", properties: {} } } }],
+      execTool,
+    })
+
+    expect(mockCreate).toHaveBeenCalledTimes(1)
+    expect(execTool).not.toHaveBeenCalled()
+    expect(vi.mocked(emitNervesEvent).mock.calls.some(([event]) => (event as any).event === "engine.historical_tool_failure_retry")).toBe(false)
+  })
+
+  it("does not retry an exact historical failure when the failed tool is no longer advertised", async () => {
+    const request = "Keep Books off."
+    mockCreate.mockReturnValueOnce(makeStream([
+      makeChunk("I cannot change that from this turn.", undefined),
+    ]))
+    const execTool = vi.fn()
+    await runAgent([
+      { role: "user", content: request },
+      { role: "assistant", tool_calls: [{ id: "call_old_policy", type: "function", function: { name: "steward_policy_manage", arguments: "{}" } }] },
+      { role: "tool", tool_call_id: "call_old_policy", content: "error: old failure" },
+      { role: "assistant", content: "It failed." },
+      { role: "user", content: request },
+    ] as any[], makeCallbacks(), "telegram", undefined, {
+      tools: [{ type: "function", function: { name: "unraid_list_containers", description: "List containers", parameters: { type: "object", properties: {} } } }],
+      execTool,
+    })
+
+    expect(mockCreate).toHaveBeenCalledTimes(1)
+    expect(execTool).not.toHaveBeenCalled()
+    expect(vi.mocked(emitNervesEvent).mock.calls.some(([event]) => (event as any).event === "engine.historical_tool_failure_retry")).toBe(false)
+  })
+
+  it("does not retry an exact request when the failed tool later succeeded", async () => {
+    const request = "Keep Books off."
+    mockCreate.mockReturnValueOnce(makeStream([
+      makeChunk("The steward runtime is down again.", undefined),
+    ]))
+    const execTool = vi.fn()
+    await runAgent([
+      { role: "user", content: request },
+      { role: "assistant", tool_calls: [{ id: "call_failed", type: "function", function: { name: "steward_policy_manage", arguments: "{}" } }] },
+      { role: "tool", tool_call_id: "call_failed", content: "error: transient failure" },
+      { role: "assistant", tool_calls: [{ id: "call_succeeded", type: "function", function: { name: "steward_policy_manage", arguments: "{}" } }] },
+      { role: "tool", tool_call_id: "call_succeeded", content: JSON.stringify({ version: 1, desiredStates: { "container:calibre": { value: "intentionally_off" } } }) },
+      { role: "assistant", content: "Books may stay off." },
+      { role: "user", content: request },
+    ] as any[], makeCallbacks(), "telegram", undefined, {
+      tools: [{ type: "function", function: { name: "steward_policy_manage", description: "Manage steward policy", parameters: { type: "object", properties: {} } } }],
+      execTool,
+    })
+
+    expect(mockCreate).toHaveBeenCalledTimes(1)
+    expect(execTool).not.toHaveBeenCalled()
+    expect(vi.mocked(emitNervesEvent).mock.calls.some(([event]) => (event as any).event === "engine.historical_tool_failure_retry")).toBe(false)
+  })
+
+  it("does not retry an exact request when the current response does not claim the tool failed", async () => {
+    const request = "Keep Books off."
+    mockCreate.mockReturnValueOnce(makeStream([
+      makeChunk("Books can stay quietly off until you ask for it.", undefined),
+    ]))
+    const execTool = vi.fn()
+    await runAgent([
+      { role: "user", content: request },
+      { role: "assistant", tool_calls: [{ id: "call_failed", type: "function", function: { name: "steward_policy_manage", arguments: "{}" } }] },
+      { role: "tool", tool_call_id: "call_failed", content: "error: transient failure" },
+      { role: "assistant", content: "It failed." },
+      { role: "user", content: request },
+    ] as any[], makeCallbacks(), "telegram", undefined, {
+      tools: [{ type: "function", function: { name: "steward_policy_manage", description: "Manage steward policy", parameters: { type: "object", properties: {} } } }],
+      execTool,
+    })
+
+    expect(mockCreate).toHaveBeenCalledTimes(1)
+    expect(execTool).not.toHaveBeenCalled()
+    expect(vi.mocked(emitNervesEvent).mock.calls.some(([event]) => (event as any).event === "engine.historical_tool_failure_retry")).toBe(false)
+  })
+
   it("retries with the private-runtime corrective when channel is inner", async () => {
     mockCreate.mockReturnValueOnce(makeStream([
       makeChunk("<think>thinking, no tool call</think>", undefined),
