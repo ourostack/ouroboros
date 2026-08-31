@@ -2073,5 +2073,53 @@ describe("runAgent tool loop guard", () => {
       expect(messages).toContainEqual(expect.objectContaining({ role: "tool", tool_call_id: "settle-missing-storage", content: expect.stringMatching(/Run the missing reads.*unraid_get_storage/is) }))
       expect(result).toMatchObject({ outcome: "blocked", completion: { intent: "blocked" } })
     })
+
+    it("rejects a stale whole-Sanctuary answer until all four current reads dispatch in one out-of-order batch", async () => {
+      const requiredNames = ["query_active_work", "query_cares", "unraid_get_system", "unraid_list_containers"]
+      const dispatchedNames = ["unraid_list_containers", "query_cares", "unraid_get_system", "query_active_work"]
+      const staleAnswer = "Docker is at 100%. I also see 134 private-runtime dead-letter events on the old policy lane. Which status slice should I inspect?"
+      const finalAnswer = "Active: checking the download path. Waiting on you: account top-up. Snoozed: the download-credit reminder until Friday at 10. Quiet by preference: Books is off. Healthy: Sanctuary is up, storage is currently 95% used, and everything else I checked is running. Other known issues: none in the current evidence."
+      mockCreate
+        .mockReturnValueOnce(streamed("settle", { answer: staleAnswer, intent: "blocked" }, "settle-before-current-reads"))
+        .mockReturnValueOnce(makeStream([makeChunk(undefined, dispatchedNames.map((name, index) => ({
+          index,
+          id: `current-read-${index}`,
+          function: { name, arguments: "{}" },
+        })))]))
+        .mockReturnValueOnce(streamed("settle", { answer: finalAnswer, intent: "complete" }, "settle-current-summary"))
+      const evidence = new Map<string, string>([
+        ["query_active_work", JSON.stringify({ active: ["checking the download path"], waitingOnAri: ["account top-up"] })],
+        ["query_cares", JSON.stringify({ snoozed: [{ subject: "download credit", wakeAt: "Friday at 10" }], preferences: [{ subject: "Books", state: "intentionally_off" }] })],
+        ["unraid_get_system", JSON.stringify({ serverName: "Sanctuary", arrayState: "STARTED", usedPercent: 95 })],
+        ["unraid_list_containers", JSON.stringify({ running: ["Plex", "Home Assistant"], intentionallyOff: ["Books"] })],
+      ])
+      const execTool = vi.fn(async (name: string) => evidence.get(name) ?? "unexpected")
+      const callbacks = makeCallbacks({ settleOutputMode: "final_only" })
+      const messages: any[] = [{ role: "user", content: "What's going on with Sanctuary?" }]
+      const { runAgent } = await import("../../heart/core")
+
+      const result = await runAgent(messages, callbacks, "telegram", undefined, {
+        tools: requiredNames.map((name) => readTool(name)),
+        execTool,
+        toolContext: { signin: async () => undefined },
+        requiredToolCalls: {
+          names: requiredNames,
+          retryMessage: "Read current active work, cares, system health, and service state before answering.",
+        },
+      })
+
+      expect(result).toMatchObject({ outcome: "settled", completion: { answer: finalAnswer, intent: "complete" } })
+      expect(execTool.mock.calls.map(([name]) => name)).toEqual(dispatchedNames)
+      expect(messages).toContainEqual(expect.objectContaining({
+        role: "tool",
+        tool_call_id: "settle-before-current-reads",
+        content: expect.stringMatching(/current active work.*query_active_work.*query_cares.*unraid_get_system.*unraid_list_containers/is),
+      }))
+      expect(callbacks.onTextChunk).toHaveBeenCalledTimes(1)
+      expect(callbacks.onTextChunk).toHaveBeenCalledWith(finalAnswer)
+      expect(finalAnswer).toMatch(/Active:.*Waiting on you:.*Snoozed:.*Quiet by preference:.*Healthy:.*Other known issues:/is)
+      expect(finalAnswer).toContain("95%")
+      expect(finalAnswer).not.toMatch(/100%|134|daemon|dead-letter|policy lane|private-runtime|SABnzbd|Sonarr|Radarr|Deluge|choose/is)
+    })
   })
 })

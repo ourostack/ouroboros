@@ -192,6 +192,16 @@ describe("Mendelow Cloud Butler household UX", () => {
     expect(topUp.reply).toContain("tomorrow at 9")
     expect(topUp.reply).not.toMatch(/SABnzbd|Sonarr|Radarr|Deluge|auth-check|credential|dead-letter|indexer has been disabled|keep watching/iu)
     expect(topUp.tools).toEqual(["sanctuary_get_download_queue", "unraid_get_notifications"])
+    const visibility = transcripts.find((entry) => entry.id === "full-visibility")!
+    expect(visibility.user).toBe("What are you working on?")
+    expect(visibility.tools).toEqual(["query_active_work", "query_cares", "unraid_get_system", "unraid_list_containers"])
+    for (const heading of ["Active:", "Waiting on you:", "Snoozed:", "Quiet by preference:", "Healthy:", "Other known issues:"]) {
+      expect(visibility.reply).toContain(heading)
+    }
+    expect(visibility.reply).not.toMatch(/daemon|dead.?letter|policy lane|private.?runtime|SABnzbd|Sonarr|Radarr|Deluge/iu)
+    expect(psyche("TACIT")).toContain("For Ari's whole-household status questions")
+    expect(psyche("TACIT")).toContain("active work, waiting on Ari, snoozed wake times, intentionally quiet services, healthy systems, and other current issues")
+    expect(psyche("TACIT")).toContain("Do not narrate daemon, event-queue, provider-lane, or backend service internals")
     const storage = transcripts.find((entry) => entry.id === "storage-creative")!
     expect(storage.reply).not.toMatch(/\b94 GB\b/u)
     expect(storage.reply).toContain("largest shares")

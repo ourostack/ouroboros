@@ -67,7 +67,7 @@
     "id": "full-visibility",
     "audience": "owner",
     "user": "What are you working on?",
-    "reply": "Active: checking the download path. Waiting on you: account top-up, snoozed until Friday at 10. Quiet by preference: Books is off. Everything else I checked is healthy. I have no evidence of another open household issue.",
+    "reply": "Active: checking the download path. Waiting on you: account top-up. Snoozed: the download-credit reminder until Friday at 10. Quiet by preference: Books is off. Healthy: everything else I checked. Other known issues: none in the current evidence.",
     "tools": ["query_active_work", "query_cares", "unraid_get_system", "unraid_list_containers"]
   },
   {
