@@ -4,7 +4,8 @@
     {
       "version": "0.1.0-alpha.757",
       "changes": [
-        "Allow authenticated steward policy writes to use the current version when the agent omits an explicit concurrency token."
+        "Allow authenticated steward policy writes to use the current version when the agent omits an explicit concurrency token.",
+        "Keep private external-event turns bound to their exact leased batch, with prompt-safe lease context and deterministic disposition completeness."
       ]
     },
     {
