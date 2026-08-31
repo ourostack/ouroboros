@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.760",
+      "changes": [
+        "Force exact repeated requests to retry unresolved matching effects and fail closed instead of accepting stale text."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.759",
       "changes": [
         "Retry unresolved tool failures across repeated requests when the current response says the lane is down.",
