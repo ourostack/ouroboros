@@ -2020,6 +2020,7 @@ docker() {
     recovery:1) HEALTH=unhealthy ;;
     timeout:*) HEALTH=unhealthy ;;
     identity-drift:*) command printf '%s\n' "drifted /ouro-butler $IMAGE_ID true false false false 321 healthy"; return 0 ;;
+    pid-drift:*) command printf '%s\n' "$TARGET_CONTAINER_ID /ouro-butler $IMAGE_ID true false false false 654 healthy"; return 0 ;;
     dead:*) command printf '%s\n' "$TARGET_CONTAINER_ID /ouro-butler $IMAGE_ID true false false true 321 unhealthy"; return 0 ;;
     *) HEALTH=healthy ;;
   esac
@@ -2035,13 +2036,14 @@ await_post_audit_health`
         IMAGE_ID: `sha256:${"a".repeat(64)}`,
         PRODUCTION_CONTAINER: "ouro-butler",
         TARGET_CONTAINER_ID: "b".repeat(64),
+        TARGET_CONTAINER_PID: "321",
       })
     }
     try {
       const recovered = run("recovery")
       expect(recovered.status, recovered.stderr).toBe(0)
       expect(fs.readFileSync(countFile, "utf8")).toBe("2")
-      for (const [scenario, calls] of [["timeout", "120"], ["identity-drift", "1"], ["dead", "1"]]) {
+      for (const [scenario, calls] of [["timeout", "120"], ["identity-drift", "1"], ["pid-drift", "1"], ["dead", "1"]]) {
         const rejected = run(scenario)
         expect(rejected.status, `${scenario}\n${rejected.stderr}`).not.toBe(0)
         expect(fs.readFileSync(countFile, "utf8"), scenario).toBe(calls)
