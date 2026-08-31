@@ -59,12 +59,18 @@ describe("Telegram admission integration", () => {
     expect(fs.readFileSync(friendPath)).toEqual(friendBefore)
     expect(fs.existsSync(legacySession)).toBe(false)
     const subject = opaqueTelegramSubject(readOrCreateTelegramIdentityKey(root), "777", "42", "42")
-    expect(fs.existsSync(path.join(root, "state", "sessions", `telegram-user:${subject}`))).toBe(true)
+    const currentSession = path.join(root, "state", "sessions", `telegram-user:${subject}`)
+    expect(fs.existsSync(currentSession)).toBe(true)
+    const priorSubject = `tg_${"l".repeat(43)}`
+    const priorSession = path.join(root, "state", "sessions", `telegram-user:${priorSubject}`)
+    fs.renameSync(currentSession, priorSession)
 
     const restarted = await createApp()
     await restarted.run()
     await restarted.stop()
     expect(fs.readFileSync(friendPath)).toEqual(friendBefore)
+    expect(fs.existsSync(priorSession)).toBe(false)
+    expect(fs.existsSync(currentSession)).toBe(true)
   })
 
   it("keeps unknown content pre-model, sends typed admission effects, then runs it once after owner approval", async () => {
