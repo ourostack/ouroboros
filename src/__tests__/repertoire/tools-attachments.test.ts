@@ -181,12 +181,19 @@ describe("attachment tool handlers", () => {
     const agentRoot = makeAgentRoot()
     const attachmentPath = writeFile(agentRoot, "private.png", "png-bytes")
     const attachment = cacheRecentAttachment("testagent", buildCliLocalFileAttachmentRecord({ path: attachmentPath, mimeType: "image/png", byteCount: 9 }), agentRoot)
+    const otherPath = writeFile(agentRoot, "other-friend.png", "other-bytes")
+    const other = cacheRecentAttachment("testagent", buildCliLocalFileAttachmentRecord({ path: otherPath, mimeType: "image/png", byteCount: 11 }), agentRoot)
     const list = attachmentToolDefinitions.find((def) => def.tool.function.name === "list_recent_attachments")!
     const materialize = attachmentToolDefinitions.find((def) => def.tool.function.name === "materialize_attachment")!
+    const describe = attachmentToolDefinitions.find((def) => def.tool.function.name === "describe_image")!
 
     expect(JSON.parse(await list.handler({}, { attachmentIds: [] } as any)).data).toEqual([])
     expect(JSON.parse(await materialize.handler({ attachment_id: attachment.id, variant: "original" }, { attachmentIds: [] } as any))).toMatchObject({ ok: false, friction: { signature: "materialize_attachment:attachment-not-found" } })
-    expect(JSON.parse(await list.handler({}, { attachmentIds: [attachment.id] } as any)).data).toHaveLength(1)
+    const currentIngress = JSON.parse(await list.handler({}, { attachmentIds: [attachment.id] } as any)).data
+    expect(currentIngress).toEqual([expect.objectContaining({ id: attachment.id })])
+    expect(JSON.stringify(currentIngress)).not.toContain(other.id)
+    expect(JSON.parse(await materialize.handler({ attachment_id: other.id, variant: "original" }, { attachmentIds: [attachment.id] } as any))).toMatchObject({ ok: false, friction: { signature: "materialize_attachment:attachment-not-found" } })
+    expect(JSON.parse(await describe.handler({ attachment_id: other.id, prompt: "what is this?" }, { attachmentIds: [attachment.id] } as any))).toMatchObject({ ok: false, friction: { signature: "describe_image:attachment-not-found" } })
   })
 
   it("returns structured friction when materialize_attachment is missing an attachment id", async () => {
