@@ -26,6 +26,47 @@ describe("Telegram admission integration", () => {
       .toBe(opaqueTelegramSubject(identityKey, telegramBotIdFromToken("777:rotated-secret"), "42", "42"))
   })
 
+  it("keeps the canonical owner identity valid across the default migration and restart", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-owner-restart-")); roots.push(root)
+    fs.writeFileSync(path.join(root, "tool-profiles.json"), JSON.stringify({ version: 2, profiles: {
+      "sanctuary-owner": { version: 1, contextScopes: [], toolNames: [], effectScopes: [] },
+      "sanctuary-household": { version: 1, contextScopes: [], toolNames: [], effectScopes: [] },
+    } }))
+    const friends = new FileFriendStore(path.join(root, "friends"))
+    const now = new Date().toISOString()
+    await friends.put("ari", { id: "ari", name: "Ari", trustLevel: "family", admissionState: "active", initiativePolicy: "proactive", capabilityProfileId: "sanctuary-owner",
+      externalIds: [{ provider: "telegram-user", externalId: "42", tenantId: "777", linkedAt: now }], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: now, updatedAt: now, schemaVersion: 1 })
+    const credentials = { botToken: "777:secret", botId: "777", authorizedUserId: "42", authorizedChatId: "42" }
+    const friendPath = path.join(root, "friends", "ari.json")
+    const friendBefore = fs.readFileSync(friendPath)
+    const legacySession = path.join(root, "state", "sessions", "telegram-user:42")
+    fs.mkdirSync(legacySession, { recursive: true })
+    const createApp = async () => createTelegramSenseApp({
+      agentName: "butler",
+      credentials,
+      _agentRoot: root,
+      ...(await createProductionTelegramRelationshipComposition("butler", credentials, root)),
+      api: { request: vi.fn(), stop: vi.fn() },
+      offsetStore: { load: () => 0, save: vi.fn() },
+      createLongPoll: () => ({ pollOnce: vi.fn(), run: vi.fn(async () => undefined), stop: vi.fn() }),
+      runTurn: vi.fn(),
+    })
+
+    const first = await createApp()
+    await first.run()
+    await first.stop()
+
+    expect(fs.readFileSync(friendPath)).toEqual(friendBefore)
+    expect(fs.existsSync(legacySession)).toBe(false)
+    const subject = opaqueTelegramSubject(readOrCreateTelegramIdentityKey(root), "777", "42", "42")
+    expect(fs.existsSync(path.join(root, "state", "sessions", `telegram-user:${subject}`))).toBe(true)
+
+    const restarted = await createApp()
+    await restarted.run()
+    await restarted.stop()
+    expect(fs.readFileSync(friendPath)).toEqual(friendBefore)
+  })
+
   it("keeps unknown content pre-model, sends typed admission effects, then runs it once after owner approval", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-admission-app-")); roots.push(root)
     let pollOptions!: TelegramLongPollOptions
