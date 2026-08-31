@@ -1,14 +1,24 @@
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { FileFriendStore, getChannelCapabilities, type FriendRecord } from "@ouro.bot/friends"
 
 import { readActiveCares } from "../../arc/cares"
-import { getAgentRoot, resetIdentity, setAgentName } from "../../heart/identity"
+import { resetIdentity, setAgentName } from "../../heart/identity"
 import { parseAwaitFile } from "../../heart/awaiting/await-parser"
 import { createRelationshipAuthorizationEvaluator, loadRelationshipCapabilityRegistry } from "../../repertoire/relationship-authorization"
 import { execTool, getToolsForChannel } from "../../repertoire/tools"
+
+const identityTestState = vi.hoisted(() => ({ agentRoot: null as string | null }))
+
+vi.mock("../../heart/identity", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../heart/identity")>()
+  return {
+    ...actual,
+    getAgentRoot: (agentName?: string) => identityTestState.agentRoot ?? actual.getAgentRoot(agentName),
+  }
+})
 
 const bundleRoot = path.resolve("deploy/unraid/sanctuary.ouro")
 const transcriptPath = path.resolve("src/__tests__/fixtures/sanctuary-butler-transcripts.json")
@@ -56,6 +66,7 @@ function realToolContext(profile: "sanctuary-owner" | "sanctuary-household") {
 
 describe("Mendelow Cloud Butler household UX", () => {
   afterEach(() => {
+    identityTestState.agentRoot = null
     resetIdentity()
     while (rootsToRemove.length > 0) fs.rmSync(rootsToRemove.pop()!, { recursive: true, force: true })
   })
@@ -226,7 +237,8 @@ describe("Mendelow Cloud Butler household UX", () => {
 
   it("files the specified snooze and movie follow-up through the canonical await and Care stores", async () => {
     setAgentName(`sanctuary-butler-ux-${process.pid}-${Date.now()}`)
-    const agentRoot = getAgentRoot()
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-butler-ux-"))
+    identityTestState.agentRoot = agentRoot
     rootsToRemove.push(agentRoot)
     const { context } = realToolContext("sanctuary-owner")
 
@@ -260,7 +272,8 @@ describe("Mendelow Cloud Butler household UX", () => {
 
   it("enforces family privacy with the packaged relationship evaluator at advertisement and execution", async () => {
     setAgentName(`sanctuary-butler-privacy-${process.pid}-${Date.now()}`)
-    const agentRoot = getAgentRoot()
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-butler-privacy-"))
+    identityTestState.agentRoot = agentRoot
     rootsToRemove.push(agentRoot)
     const owner = realToolContext("sanctuary-owner")
     const privateCare = JSON.parse(await execTool("care_manage", { action: "create", label: "Ari private task", why: "owner-only" }, owner.context)) as { id: string }
