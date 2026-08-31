@@ -1633,11 +1633,13 @@ install_from_legacy_staging`
     expect(validator).toContain("! -perm 0600")
     expect(validator).toContain("-perm 0644")
     expect(validator).toContain('"$VALIDATE_RUNTIME_ROOT/daemon/logs/*"')
+    expect(validator).toContain('"$VALIDATE_RUNTIME_ROOT/daemon/external-events/*"')
     expect(validator).toContain('"$VALIDATE_RUNTIME_ROOT/scheduler/*"')
     expect(validator).toContain('"$VALIDATE_AGENT_ROOT/arc/flight-recorder/*"')
     expect(validator).toContain('"$VALIDATE_AGENT_ROOT/state/health/*"')
     expect(validator).toContain('"$VALIDATE_AGENT_ROOT/state/logs/*"')
     expect(validator).toContain('"$VALIDATE_AGENT_ROOT/state/habits/*"')
+    expect(validator).toContain('"$VALIDATE_AGENT_ROOT/state/arc/context-loss-sentinel-watermark.json"')
     expect(validator).toContain('test ! -S "$VALIDATE_AGENT_ROOT/state/acceptance/telegram-control.sock"')
     expect(validator).toContain("container-credentials.json")
     expect(preflightHelper).toContain('validate_sanctuary_roots "$BACKUP_ROOT/runtime/.ouro-cli" "$BACKUP_ROOT/agent/sanctuary.ouro"')
@@ -1665,6 +1667,7 @@ install_from_legacy_staging`
         path.join(agentRoot, "psyche"),
         path.join(agentRoot, "habits"),
         path.join(agentRoot, "state"),
+        path.join(agentRoot, "state", "arc"),
         path.join(agentRoot, "state", "sessions", "owner"),
         path.join(agentRoot, "friends"),
       ]) {
@@ -1674,6 +1677,7 @@ install_from_legacy_staging`
       for (const directory of [
         path.join(runtimeRoot, "scheduler"),
         path.join(runtimeRoot, "daemon", "logs"),
+        path.join(runtimeRoot, "daemon", "external-events", "sanctuary", "usenet"),
         path.join(agentRoot, "arc", "flight-recorder", "events"),
         path.join(agentRoot, "state", "logs", "cli"),
         path.join(agentRoot, "state", "habits"),
@@ -1699,6 +1703,7 @@ install_from_legacy_staging`
         path.join(agentRoot, "state", "logs", "cli", "latest.ndjson"),
         path.join(agentRoot, "state", "habits", "sanctuary-health.json"),
         path.join(agentRoot, "state", "health", "latest.json"),
+        path.join(agentRoot, "state", "arc", "context-loss-sentinel-watermark.json"),
       ]) {
         fs.writeFileSync(file, "generated", { mode: 0o644 })
         fs.chmodSync(file, 0o644)
@@ -1725,6 +1730,8 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
         () => fs.chmodSync(path.join(agentRoot, "state", "sessions", "owner", "session.json"), 0o644),
         () => fs.chmodSync(path.join(agentRoot, "friends", "owner.json"), 0o644),
         () => fs.chmodSync(path.join(runtimeRoot, "scheduler"), 0o777),
+        () => fs.mkdirSync(path.join(runtimeRoot, "daemon", "external-events-adjacent"), { mode: 0o755 }),
+        () => fs.writeFileSync(path.join(agentRoot, "state", "arc", "context-loss-sentinel-watermark-adjacent.json"), "{}", { mode: 0o644 }),
         () => fs.chmodSync(path.join(runtimeRoot, "pulse.json"), 0o666),
         () => fs.writeFileSync(path.join(runtimeRoot, "container-credentials.json"), "{}", { mode: 0o600 }),
         () => fs.writeFileSync(path.join(runtimeRoot, "vault-unlock", "one.secret"), ""),
@@ -1763,6 +1770,16 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
     } finally {
       fs.rmSync(testRoot, { recursive: true, force: true })
     }
+  })
+
+  it("keeps provider readiness scoped to legacy adoption instead of normal updates", () => {
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const adoption = runbook.slice(runbook.indexOf("Initial install/adoption"), runbook.indexOf("For this cutover"))
+    const normalUpdate = runbook.slice(runbook.indexOf("For this cutover"), runbook.indexOf("Restore:"))
+
+    expect(adoption).toContain('verify_sanctuary_provider_readiness "$IMAGE_ID"')
+    expect(adoption).toContain("adoption-only")
+    expect(normalUpdate).not.toContain("verify_sanctuary_provider_readiness")
   })
 
   it("defines bounded host adapters instead of relying on test-only retirement stubs", () => {
