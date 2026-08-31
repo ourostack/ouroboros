@@ -23,6 +23,14 @@ function runConditionalHelper(script: string, failKey: string, env: Record<strin
   })
 }
 
+function extractTopLevelShellFunction(source: string, name: string): string {
+  const start = source.indexOf(`${name}() {`)
+  expect(start).toBeGreaterThan(-1)
+  const end = source.indexOf("\n}", start)
+  expect(end).toBeGreaterThan(start)
+  return source.slice(start, end + 2)
+}
+
 describe("container runtime policy", () => {
   it("accepts only the locked scheduler/update policy", () => {
     expect(readContainerRuntimePolicy({ readFile: () => JSON.stringify({ scheduler: "supercronic", updates: "disabled" }) })).toEqual({ scheduler: "supercronic", updates: "disabled" })
@@ -1906,6 +1914,8 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
     expect(launcher).toContain('restore_production_container')
     expect(launcher).toContain('/usr/bin/docker start "$EXPECTED_CONTAINER_ID"')
     expect(launcher).toContain('test "$RESTORE_RUNNING" = true && test "$RESTORE_HEALTH" = healthy')
+    const startBroker = launcher.slice(launcher.indexOf("start_broker()"), launcher.indexOf("prepare_live_facts()"))
+    expect(startBroker.indexOf("await_post_audit_health")).toBeLessThan(startBroker.indexOf("refresh_live_facts"))
     expect(launcher).not.toMatch(/autostart.*(?:write|install|rm|mv)/iu)
     expect(launcher.match(/exec 3<&0; exec \/opt\/ouro\/deploy\/unraid\/sanctuary-acceptance-harness\.sh/g)).toHaveLength(2)
     expect(launcher.match(/<\&3/g)?.length).toBeGreaterThanOrEqual(2)
@@ -1994,6 +2004,51 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
     expect(callbackHelper).toContain('rm -f -- "$UNIT16_CALLBACK_FILE"')
     expect(runbook).not.toContain('callback-inject callback-inject.json 3<"$CALLBACK_UPDATE_FILE"')
     for (const command of Object.keys(contract.commands)) expect(runbook).toContain(`${command}.json`)
+  })
+
+  it("waits for the exact audited production container to recover health before continuing", () => {
+    const launcher = fs.readFileSync("deploy/unraid/sanctuary-unit16-run.sh", "utf8")
+    const helper = extractTopLevelShellFunction(launcher, "await_post_audit_health")
+      .replaceAll("/usr/bin/timeout -s KILL 20 /usr/bin/docker", "docker")
+    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-unit16-post-audit-health-"))
+    const countFile = path.join(testRoot, "count")
+    const script = String.raw`set -u
+SCENARIO=$1
+docker() {
+  COUNT=$(command cat "$COUNT_FILE"); COUNT=$((COUNT + 1)); command printf '%s' "$COUNT" >"$COUNT_FILE"
+  case "$SCENARIO:$COUNT" in
+    recovery:1) HEALTH=unhealthy ;;
+    timeout:*) HEALTH=unhealthy ;;
+    identity-drift:*) command printf '%s\n' "drifted /ouro-butler $IMAGE_ID true false false false 321 healthy"; return 0 ;;
+    dead:*) command printf '%s\n' "$TARGET_CONTAINER_ID /ouro-butler $IMAGE_ID true false false true 321 unhealthy"; return 0 ;;
+    *) HEALTH=healthy ;;
+  esac
+  command printf '%s\n' "$TARGET_CONTAINER_ID /ouro-butler $IMAGE_ID true false false false 321 $HEALTH"
+}
+sleep() { return 0; }
+${helper}
+await_post_audit_health`
+    const run = (scenario: string) => {
+      fs.writeFileSync(countFile, "0")
+      return runConditionalHelper(script, scenario, {
+        COUNT_FILE: countFile,
+        IMAGE_ID: `sha256:${"a".repeat(64)}`,
+        PRODUCTION_CONTAINER: "ouro-butler",
+        TARGET_CONTAINER_ID: "b".repeat(64),
+      })
+    }
+    try {
+      const recovered = run("recovery")
+      expect(recovered.status, recovered.stderr).toBe(0)
+      expect(fs.readFileSync(countFile, "utf8")).toBe("2")
+      for (const [scenario, calls] of [["timeout", "120"], ["identity-drift", "1"], ["dead", "1"]]) {
+        const rejected = run(scenario)
+        expect(rejected.status, `${scenario}\n${rejected.stderr}`).not.toBe(0)
+        expect(fs.readFileSync(countFile, "utf8"), scenario).toBe(calls)
+      }
+    } finally {
+      fs.rmSync(testRoot, { recursive: true, force: true })
+    }
   })
 
   it("routes every post-activation acceptance launcher invocation through the final profile", () => {

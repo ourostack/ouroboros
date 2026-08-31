@@ -149,6 +149,26 @@ start_broker() {
   test "$(stat -c '%u:%g %a' "$BROKER_SOCKET")" = "0:10001 660" || return 1
   test "$(stat -c '%u:%g %a' "$CLOSED_INVENTORY")" = "0:0 600" || return 1
   test "$(stat -c '%u:%g %a' "$BROKER_SNAPSHOT")" = "0:0 600" || return 1
+  await_post_audit_health
+  refresh_live_facts
+}
+
+await_post_audit_health() {
+  POST_AUDIT_ATTEMPT=0
+  while test "$POST_AUDIT_ATTEMPT" -lt 120; do
+    POST_AUDIT_STATE=$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.Id}} {{.Name}} {{.Image}} {{.State.Running}} {{.State.Paused}} {{.State.Restarting}} {{.State.Dead}} {{.State.Pid}} {{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$TARGET_CONTAINER_ID") || return 1
+    set -- $POST_AUDIT_STATE
+    test "$#" -eq 9 || return 1
+    test "$1" = "$TARGET_CONTAINER_ID" && test "$2" = "/$PRODUCTION_CONTAINER" && test "$3" = "$IMAGE_ID" || return 1
+    test "$4" = true && test "$6" = false && test "$7" = false || return 1
+    case "$8" in ''|0|*[!0-9]*) return 1 ;; esac
+    if test "$5" = false && test "$9" = healthy; then return 0; fi
+    test "$5" = true || test "$5" = false || return 1
+    test "$9" = starting || test "$9" = unhealthy || return 1
+    POST_AUDIT_ATTEMPT=$((POST_AUDIT_ATTEMPT + 1))
+    sleep 1
+  done
+  return 1
 }
 
 prepare_live_facts() {
