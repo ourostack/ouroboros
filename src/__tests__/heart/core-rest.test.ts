@@ -620,7 +620,7 @@ describe("rest tool in runAgent", () => {
   it("retries a currently advertised tool instead of borrowing its failure from an exact prior request", async () => {
     const request = "Books can stay off when I'm not using it. Stop treating that as broken."
     mockCreate.mockReturnValueOnce(makeStream([
-      makeChunk("The steward runtime is still down; I already tried twice.", undefined),
+      makeChunk("I can't write the policy yet because the lane is down.", undefined),
     ]))
     mockCreate.mockReturnValueOnce(makeStream([
       makeChunk(undefined, [{ index: 0, id: "call_current_policy", function: { name: "steward_policy_manage", arguments: "" } }]),
@@ -639,6 +639,8 @@ describe("rest tool in runAgent", () => {
       { role: "assistant", tool_calls: [{ id: "call_old_policy", type: "function", function: { name: "steward_policy_manage", arguments: JSON.stringify({ action: "set_desired_state" }) } }] },
       { role: "tool", tool_call_id: "call_old_policy", content: "error: expectedVersion must be a nonnegative integer" },
       { role: "assistant", content: "The policy runtime is down; I tried twice." },
+      { role: "user", content: request },
+      { role: "assistant", content: "I still can't write the official policy because the policy runtime is down." },
       { role: "user", content: request },
     ]
 
@@ -723,6 +725,8 @@ describe("rest tool in runAgent", () => {
       { role: "assistant", tool_calls: [{ id: "call_succeeded", type: "function", function: { name: "steward_policy_manage", arguments: "{}" } }] },
       { role: "tool", tool_call_id: "call_succeeded", content: JSON.stringify({ version: 1, desiredStates: { "container:calibre": { value: "intentionally_off" } } }) },
       { role: "assistant", content: "Books may stay off." },
+      { role: "user", content: request },
+      { role: "assistant", content: "The steward runtime is down again." },
       { role: "user", content: request },
     ] as any[], makeCallbacks(), "telegram", undefined, {
       tools: [{ type: "function", function: { name: "steward_policy_manage", description: "Manage steward policy", parameters: { type: "object", properties: {} } } }],
