@@ -869,15 +869,36 @@ function isHarnessCorrectiveUserText(text: string): boolean {
     || text.startsWith("this exact request previously reached a tool that is advertised again now.")
 }
 
-function claimsCurrentToolFailure(text: string): boolean {
-  const normalized = text.replace(/\s+/g, " ").trim().toLowerCase()
-  return /\b(?:still|currently|now)\s+(?:down|offline|unavailable|broken|failing|unreachable)\b/.test(normalized)
-    || /\b(?:runtime|tool|service|server|system|lane)\b.{0,40}\b(?:is|remains?|seems?)\s+(?:still\s+)?(?:down|offline|unavailable|broken|failing|unreachable)\b/.test(normalized)
-    || /\b(?:i|we)\s+(?:can(?:not|'t)|could(?:not|n't)|am unable to|are unable to)\s+(?:call|use|access|reach|run|change)\b/.test(normalized)
-    || /\b(?:already\s+)?tried\b.{0,80}\b(?:failed|failure|error|down|offline|unavailable)\b/.test(normalized)
+type HistoricalFailedEffect = { name: string; fingerprint: string }
+
+function toolResultIndicatesFailure(content: string): boolean {
+  const normalized = content.trim().toLowerCase()
+  return normalized.startsWith("error:")
+    || normalized.startsWith("invalid tool arguments:")
+    || normalized.startsWith("unknown:")
+    || normalized.startsWith("relationship authorization required:")
+    || normalized.startsWith("orientation hold:")
+    || normalized.startsWith("commerce authority required:")
+    || normalized.startsWith("blocked:")
+    || normalized.startsWith("rejected:")
 }
 
-function historicalFailedToolsForExactRepeatedRequest(messages: OpenAI.ChatCompletionMessageParam[]): string[] {
+function effectFingerprint(name: string, rawArguments: string): string | null {
+  let args: Record<string, string>
+  try {
+    const parsed: unknown = JSON.parse(rawArguments)
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null
+    args = { ...parsed as Record<string, string> }
+  } catch {
+    return null
+  }
+  const profile = riskProfileForToolName(name, args)
+  if (!profile || profile.mutates === "none") return null
+  delete args.expectedVersion
+  return digestJson({ name, args })
+}
+
+function historicalFailedEffectsForExactRepeatedRequest(messages: OpenAI.ChatCompletionMessageParam[]): HistoricalFailedEffect[] {
   const userRequests: Array<{ index: number; text: string }> = []
   for (let index = 0; index < messages.length; index += 1) {
     const message = messages[index]
@@ -891,29 +912,29 @@ function historicalFailedToolsForExactRepeatedRequest(messages: OpenAI.ChatCompl
   const prior = userRequests.slice(0, -1).find((request) => request.text === current.text)
   if (!prior) return []
 
-  const namesByCallId = new Map<string, string>()
-  const failedNames = new Set<string>()
+  const effectsByCallId = new Map<string, HistoricalFailedEffect>()
+  const failedEffects = new Map<string, HistoricalFailedEffect>()
   for (let index = prior.index + 1; index < current.index; index += 1) {
     const message = messages[index]
     if (message?.role === "assistant" && Array.isArray(message.tool_calls)) {
       for (const call of message.tool_calls) {
-        if (call.type === "function" && call.id && call.function.name) {
-          namesByCallId.set(call.id, call.function.name)
-        }
+        if (call.type !== "function" || !call.id || !call.function.name) continue
+        const fingerprint = effectFingerprint(call.function.name, call.function.arguments)
+        if (fingerprint) effectsByCallId.set(call.id, { name: call.function.name, fingerprint })
       }
       continue
     }
     if (message?.role !== "tool") continue
-    const content = messageContentText(message.content).trim().toLowerCase()
-    const name = namesByCallId.get(message.tool_call_id)
-    if (!name) continue
-    if (content.startsWith("error:") || content.startsWith("invalid tool arguments:")) {
-      failedNames.add(name)
+    const content = messageContentText(message.content)
+    const effect = effectsByCallId.get(message.tool_call_id)
+    if (!effect) continue
+    if (toolResultIndicatesFailure(content)) {
+      failedEffects.set(effect.fingerprint, effect)
     } else {
-      failedNames.delete(name)
+      failedEffects.delete(effect.fingerprint)
     }
   }
-  return [...failedNames]
+  return [...failedEffects.values()]
 }
 
 function latestUserMessageText(messages: OpenAI.ChatCompletionMessageParam[]): string {
@@ -1470,8 +1491,8 @@ export async function runAgent(
   // a ponder packet created the return obligation in this turn.
   let noToolCallRetries = 0;
   const NO_TOOL_CALL_MAX_RETRIES = 2;
-  const historicalFailedToolNames = historicalFailedToolsForExactRepeatedRequest(messages);
-  let historicalToolFailureRetryIssued = false;
+  let unresolvedHistoricalEffects = historicalFailedEffectsForExactRepeatedRequest(messages);
+  let historicalToolFailureRetries = 0;
   let providerIterations = 0;
   const toolLoopState = createToolLoopState();
   const toolFrictionLedger = createToolFrictionLedger();
@@ -1597,15 +1618,25 @@ export async function runAgent(
     const ordinaryActiveTools = relationshipToolNames
       ? unscopedOrdinaryActiveTools.filter((tool) => relationshipToolNames.includes(tool.function.name))
       : unscopedOrdinaryActiveTools
-    const activeTools = options?.toolProfile === "sanctuary-health-private"
+    const candidateActiveTools = options?.toolProfile === "sanctuary-health-private"
       ? (() => {
           const sendTools = baseTools.filter((tool) => tool.function.name === "send_message")
           if (channel !== "inner" || sendTools.length !== 1 || baseTools.length !== 1) {
             throw new Error("sanctuary-health-private requires inner channel with exactly one canonical send_message definition")
           }
           return [sendTools[0]!, restTool]
-        })()
+      })()
       : ordinaryActiveTools;
+    const candidateToolNames = new Set(candidateActiveTools.map((tool) => tool.function.name))
+    const forcedHistoricalToolNames = new Set(
+      unresolvedHistoricalEffects
+        .map((effect) => effect.name)
+        .filter((name) => candidateToolNames.has(name)),
+    )
+    const forcingHistoricalEffect = forcedHistoricalToolNames.size > 0
+    const activeTools = forcingHistoricalEffect
+      ? candidateActiveTools.filter((tool) => forcedHistoricalToolNames.has(tool.function.name))
+      : candidateActiveTools
     const activeToolNames = new Set(activeTools.map((tool) => tool.function.name));
     const steeringFollowUps = options?.drainSteeringFollowUps?.() ?? [];
     if (steeringFollowUps.length > 0) {
@@ -1659,7 +1690,7 @@ export async function runAgent(
             callbacks: turnCallbackBufferRef.current?.callbacks ?? callbacks,
             signal,
             traceId,
-            toolChoiceRequired,
+            toolChoiceRequired: forcingHistoricalEffect || toolChoiceRequired,
             reasoningEffort: currentReasoningEffort,
             eagerSettleStreaming: true,
             systemPrompt: structuredSystemPrompt,
@@ -1849,29 +1880,45 @@ export async function runAgent(
         : null;
 
       if (!result.toolCalls.length) {
-        const retryableHistoricalTools = historicalToolFailureRetryIssued
-          ? []
-          : historicalFailedToolNames.filter((name) => activeToolNames.has(name))
-        const responseClaimsCurrentToolFailure = claimsCurrentToolFailure(messageContentText(msg.content))
-        if (retryableHistoricalTools.length > 0 && responseClaimsCurrentToolFailure) {
-          historicalToolFailureRetryIssued = true;
+        if (forcingHistoricalEffect) {
           streamCallbackBuffer?.discard();
           callbacks.onClearText?.();
+          const retryableHistoricalTools = [...forcedHistoricalToolNames]
+          if (historicalToolFailureRetries >= NO_TOOL_CALL_MAX_RETRIES) {
+            const blockedAnswer = `I could not complete the unresolved ${retryableHistoricalTools.join(", ")} effect because the provider repeatedly returned no tool call. I did not treat the requested change as complete.`
+            emitNervesEvent({
+              level: "warn",
+              component: "engine",
+              event: "engine.historical_tool_failure_retry",
+              message: "unresolved historical effect exhausted deterministic tool-call retries; failing closed",
+              meta: { provider: providerRuntime.id, model: providerRuntime.model, toolNames: retryableHistoricalTools, cap: NO_TOOL_CALL_MAX_RETRIES },
+            });
+            msg.content = blockedAnswer
+            pushGenerated(msg)
+            callbacks.onTextChunk(blockedAnswer)
+            completion = { answer: blockedAnswer, intent: "blocked" }
+            outcome = "blocked"
+            done = true
+            continue
+          }
+          historicalToolFailureRetries += 1
           emitNervesEvent({
             level: "warn",
             component: "engine",
             event: "engine.historical_tool_failure_retry",
-            message: "text-only response borrowed a historical failure for a currently advertised tool; retrying the exact repeated request",
+            message: "unresolved historical effect returned no tool call; forcing another exact-effect attempt",
             meta: {
               provider: providerRuntime.id,
               model: providerRuntime.model,
               toolNames: retryableHistoricalTools,
+              attempt: historicalToolFailureRetries,
+              cap: NO_TOOL_CALL_MAX_RETRIES,
             },
           });
           pushGenerated(msg);
           messages.push({
             role: "user",
-            content: `this exact request previously reached a tool that is advertised again now. The latest recorded result for ${retryableHistoricalTools.join(", ")} was a historical failure; that does not prove current unavailability. Re-evaluate whether the requested effect is still unsatisfied. If it is, call the currently advertised tool before reporting a current failure. Do not repeat an effect that already succeeded.`,
+            content: `this exact request previously reached a tool that is advertised again now. Its unresolved historical effect is through ${retryableHistoricalTools.join(", ")}. Only that tool is available now. Read current state if needed, then retry the exact failed effect. Do not report completion until the effect succeeds.`,
           });
           continue;
         }
@@ -2382,6 +2429,19 @@ export async function runAgent(
             continue;
           }
           const args = validatedCallArguments.get(tc)!
+          const currentEffectFingerprint = effectFingerprint(tc.name, tc.arguments)
+          if (
+            forcingHistoricalEffect
+            && currentEffectFingerprint
+            && !unresolvedHistoricalEffects.some((effect) => effect.fingerprint === currentEffectFingerprint)
+          ) {
+            const rejection = "rejected: this turn is retrying an unresolved historical effect, and these mutation arguments do not match it. Read current state or retry the exact failed effect."
+            callbacks.onToolStart(tc.name, args)
+            callbacks.onToolEnd(tc.name, summarizeArgs(tc.name, args), false)
+            pushGenerated({ role: "tool", tool_call_id: tc.id, content: rejection })
+            providerRuntime.appendToolOutput(tc.id, rejection)
+            continue
+          }
           if (tc.name === "send_message" && args.friendId === "self") {
             const latestUserText = latestUserMessageText(messages)
             if (!isPrivateRuntimeChannel && looksLikePrivateReturnRequest(latestUserText)) {
@@ -2644,6 +2704,11 @@ export async function runAgent(
             toolResult = `error: ${e}`;
             success = false;
             augmentedToolContext?.habitSession?.recordError?.(toolResult);
+          }
+          if (success && currentEffectFingerprint && !toolResultIndicatesFailure(toolResult)) {
+            unresolvedHistoricalEffects = unresolvedHistoricalEffects.filter(
+              (effect) => effect.fingerprint !== currentEffectFingerprint,
+            )
           }
           const resolvedRiskProfile = resolveToolDefinition(tc.name)?.riskProfile
           const toolRiskProfile = typeof resolvedRiskProfile === "function" ? resolvedRiskProfile(args) : resolvedRiskProfile

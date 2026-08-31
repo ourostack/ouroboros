@@ -617,19 +617,24 @@ describe("rest tool in runAgent", () => {
     expect(retryEvents).toHaveLength(0)
   })
 
-  it("retries a currently advertised tool instead of borrowing its failure from an exact prior request", async () => {
+  it("forces the unresolved mutation from the exact five-request Sanctuary chronology until it succeeds", async () => {
     const request = "Books can stay off when I'm not using it. Stop treating that as broken."
     mockCreate.mockReturnValueOnce(makeStream([
-      makeChunk("I can't write the policy yet because the lane is down.", undefined),
+      makeChunk("Got it. The minute the policy lane is healthy, I'll write the rule and confirm done.", undefined),
+    ]))
+    mockCreate.mockReturnValueOnce(makeStream([
+      makeChunk(undefined, [{ index: 0, id: "call_current_policy_read", function: { name: "steward_policy_manage", arguments: JSON.stringify({ action: "read" }) } }]),
     ]))
     mockCreate.mockReturnValueOnce(makeStream([
       makeChunk(undefined, [{ index: 0, id: "call_current_policy", function: { name: "steward_policy_manage", arguments: "" } }]),
-      makeChunk(undefined, [{ index: 0, function: { arguments: JSON.stringify({ action: "set_desired_state", key: "container:calibre", value: "intentionally_off" }) } }]),
+      makeChunk(undefined, [{ index: 0, function: { arguments: JSON.stringify({ action: "set_desired_state", key: "container:calibre", value: "intentionally_off", provenance: "stated", source: request, expectedVersion: 0 }) } }]),
     ]))
     mockCreate.mockReturnValueOnce(makeStream(settleChunks("Got it. Books may stay quietly off until you ask for it.")))
 
-    const execTool = vi.fn(async (name: string) => name === "steward_policy_manage"
-      ? JSON.stringify({ version: 1, desiredStates: { "container:calibre": { value: "intentionally_off" } } })
+    const execTool = vi.fn(async (name: string, args: Record<string, string>) => name === "steward_policy_manage"
+      ? args.action === "read"
+        ? JSON.stringify({ version: 0, desiredStates: {} })
+        : JSON.stringify({ version: 1, desiredStates: { "container:calibre": { value: "intentionally_off" } } })
       : "unexpected")
     const callbacks = makeCallbacks({ settleOutputMode: "retractable_buffer" })
     const messages: any[] = [
@@ -638,13 +643,15 @@ describe("rest tool in runAgent", () => {
       { role: "tool", tool_call_id: "call_old_custom", content: "error: unrelated custom failure" },
       { role: "assistant", tool_calls: [{ id: "call_old_policy_read", type: "function", function: { name: "steward_policy_manage", arguments: JSON.stringify({ action: "read" }) } }] },
       { role: "tool", tool_call_id: "call_old_policy_read", content: JSON.stringify({ version: 0, desiredStates: {} }) },
-      { role: "assistant", tool_calls: [{ id: "call_old_policy", type: "function", function: { name: "steward_policy_manage", arguments: JSON.stringify({ action: "set_desired_state" }) } }] },
+      { role: "assistant", tool_calls: [{ id: "call_old_policy", type: "function", function: { name: "steward_policy_manage", arguments: JSON.stringify({ action: "set_desired_state", key: "container:calibre", value: "intentionally_off", provenance: "stated", source: request }) } }] },
       { role: "tool", tool_call_id: "call_old_policy", content: "error: expectedVersion must be a nonnegative integer" },
       { role: "assistant", content: "The policy runtime is down; I tried twice." },
       { role: "user", content: request },
       { role: "assistant", content: "I still can't write the official policy because the policy runtime is down." },
       { role: "user", content: request },
       { role: "assistant", content: "The lane still looks unavailable to me." },
+      { role: "user", content: request },
+      { role: "assistant", content: "I'll write it when the lane is healthy." },
       { role: "user", content: request },
     ]
 
@@ -654,7 +661,7 @@ describe("rest tool in runAgent", () => {
         function: {
           name: "steward_policy_manage",
           description: "Manage steward policy",
-          parameters: { type: "object", properties: { action: { type: "string" }, key: { type: "string" }, value: { type: "string" } }, required: ["action"], additionalProperties: false },
+          parameters: { type: "object", properties: { action: { type: "string" }, key: { type: "string" }, value: { type: "string" }, provenance: { type: "string" }, source: { type: "string" }, expectedVersion: { type: "integer" } }, required: ["action"], additionalProperties: false },
         },
       }],
       execTool,
@@ -663,14 +670,102 @@ describe("rest tool in runAgent", () => {
       },
     })
 
-    expect(mockCreate).toHaveBeenCalledTimes(3)
+    expect(mockCreate).toHaveBeenCalledTimes(4)
+    expect(execTool).toHaveBeenNthCalledWith(1, "steward_policy_manage", { action: "read" }, expect.anything())
     expect(execTool).toHaveBeenCalledWith("steward_policy_manage", expect.objectContaining({ action: "set_desired_state" }), expect.anything())
     const retryMessages = mockCreate.mock.calls[1]?.[0]?.messages as any[]
     const corrective = retryMessages.find((message) => message.role === "user" && String(message.content).startsWith("this exact request previously reached"))
     expect(corrective?.content).toContain("steward_policy_manage")
     expect(corrective?.content).toContain("historical")
+    expect(mockCreate.mock.calls[0]?.[0]?.tools.map((tool: any) => tool.function.name)).toEqual(["steward_policy_manage"])
+    expect(mockCreate.mock.calls[0]?.[0]?.tool_choice).toBe("required")
+    expect(mockCreate.mock.calls[2]?.[0]?.tools.map((tool: any) => tool.function.name)).toEqual(["steward_policy_manage"])
+    expect(mockCreate.mock.calls[3]?.[0]?.tools.map((tool: any) => tool.function.name)).toContain("settle")
     expect(callbacks.onClearText).toHaveBeenCalled()
     expect(vi.mocked(emitNervesEvent).mock.calls.some(([event]) => (event as any).event === "engine.historical_tool_failure_retry")).toBe(true)
+  })
+
+  it("fails closed instead of delivering stale prose when an unresolved historical mutation never produces a tool call", async () => {
+    const request = "Keep Books off."
+    for (let index = 0; index < 3; index += 1) {
+      mockCreate.mockReturnValueOnce(makeStream([makeChunk("I'll update that when the lane is healthy.", undefined)]))
+    }
+    const callbacks = makeCallbacks({ settleOutputMode: "retractable_buffer" })
+    const result = await runAgent([
+      { role: "user", content: request },
+      { role: "assistant", tool_calls: [{ id: "call_failed", type: "function", function: { name: "steward_policy_manage", arguments: JSON.stringify({ action: "set_desired_state", key: "container:calibre", value: "intentionally_off", provenance: "stated", source: request }) } }] },
+      { role: "tool", tool_call_id: "call_failed", content: "error: expectedVersion must be a nonnegative integer" },
+      { role: "assistant", content: "It failed." },
+      { role: "user", content: request },
+    ] as any[], callbacks, "telegram", undefined, {
+      tools: [{ type: "function", function: { name: "steward_policy_manage", description: "Manage steward policy", parameters: { type: "object", properties: {} } } }],
+      execTool: vi.fn(),
+    })
+
+    expect(mockCreate).toHaveBeenCalledTimes(3)
+    expect(result).toMatchObject({ outcome: "blocked", completion: { intent: "blocked" } })
+    expect(callbacks.onTextChunk).toHaveBeenCalledWith(expect.stringContaining("could not complete the unresolved steward_policy_manage effect"))
+    expect(result.completion?.answer).not.toContain("lane is healthy")
+  })
+
+  it("rejects a different mutation while forcing an unresolved historical effect", async () => {
+    const request = "Keep Books off."
+    const desiredEffect = { action: "set_desired_state", key: "container:calibre", value: "intentionally_off", provenance: "stated", source: request }
+    mockCreate.mockReturnValueOnce(makeStream([
+      makeChunk(undefined, [{ index: 0, id: "call_wrong_policy", function: { name: "steward_policy_manage", arguments: JSON.stringify({ ...desiredEffect, key: "container:jellyfin" }) } }]),
+    ]))
+    mockCreate.mockReturnValueOnce(makeStream([
+      makeChunk(undefined, [{ index: 0, id: "call_right_policy", function: { name: "steward_policy_manage", arguments: JSON.stringify({ ...desiredEffect, expectedVersion: 3 }) } }]),
+    ]))
+    mockCreate.mockReturnValueOnce(makeStream(settleChunks("Books may stay off.")))
+    const execTool = vi.fn(async () => JSON.stringify({ version: 4 }))
+    const generated: any[][] = []
+
+    await runAgent([
+      { role: "user", content: request },
+      { role: "assistant", tool_calls: [{ id: "call_failed", type: "function", function: { name: "steward_policy_manage", arguments: JSON.stringify(desiredEffect) } }] },
+      { role: "tool", tool_call_id: "call_failed", content: "error: expectedVersion must be a nonnegative integer" },
+      { role: "assistant", content: "It failed." },
+      { role: "user", content: request },
+    ] as any[], makeCallbacks(), "telegram", undefined, {
+      tools: [{ type: "function", function: { name: "steward_policy_manage", description: "Manage steward policy", parameters: { type: "object", properties: { action: { type: "string" }, key: { type: "string" }, value: { type: "string" }, provenance: { type: "string" }, source: { type: "string" }, expectedVersion: { type: "integer" } }, required: ["action"], additionalProperties: false } } }],
+      execTool,
+      captureGeneratedMessages: (messages) => generated.push(messages as any[]),
+    })
+
+    expect(execTool).toHaveBeenCalledTimes(1)
+    expect(execTool).toHaveBeenCalledWith("steward_policy_manage", expect.objectContaining({ key: "container:calibre", expectedVersion: 3 }), expect.anything())
+    expect(generated.flat().find((message) => message.role === "tool" && message.tool_call_id === "call_wrong_policy")?.content).toContain("do not match")
+  })
+
+  it("keeps forcing a matching effect after a non-throwing relationship denial", async () => {
+    const request = "Keep Books off."
+    const desiredEffect = { action: "set_desired_state", key: "container:calibre", value: "intentionally_off", provenance: "stated", source: request }
+    mockCreate.mockReturnValueOnce(makeStream([
+      makeChunk(undefined, [{ index: 0, id: "call_denied_policy", function: { name: "steward_policy_manage", arguments: JSON.stringify(desiredEffect) } }]),
+    ]))
+    mockCreate.mockReturnValueOnce(makeStream([
+      makeChunk(undefined, [{ index: 0, id: "call_retried_policy", function: { name: "steward_policy_manage", arguments: JSON.stringify({ ...desiredEffect, expectedVersion: 4 }) } }]),
+    ]))
+    mockCreate.mockReturnValueOnce(makeStream(settleChunks("Books may stay off.")))
+    const execTool = vi.fn()
+      .mockResolvedValueOnce("relationship authorization required: revoked")
+      .mockResolvedValueOnce(JSON.stringify({ version: 5 }))
+
+    await runAgent([
+      { role: "user", content: request },
+      { role: "assistant", tool_calls: [{ id: "call_failed", type: "function", function: { name: "steward_policy_manage", arguments: JSON.stringify(desiredEffect) } }] },
+      { role: "tool", tool_call_id: "call_failed", content: "error: expectedVersion must be a nonnegative integer" },
+      { role: "assistant", content: "It failed." },
+      { role: "user", content: request },
+    ] as any[], makeCallbacks(), "telegram", undefined, {
+      tools: [{ type: "function", function: { name: "steward_policy_manage", description: "Manage steward policy", parameters: { type: "object", properties: { action: { type: "string" }, key: { type: "string" }, value: { type: "string" }, provenance: { type: "string" }, source: { type: "string" }, expectedVersion: { type: "integer" } }, required: ["action"], additionalProperties: false } } }],
+      execTool,
+    })
+
+    expect(execTool).toHaveBeenCalledTimes(2)
+    expect(mockCreate.mock.calls[1]?.[0]?.tools.map((tool: any) => tool.function.name)).toEqual(["steward_policy_manage"])
+    expect(mockCreate.mock.calls[2]?.[0]?.tools.map((tool: any) => tool.function.name)).toContain("settle")
   })
 
   it("does not retry a historical tool failure for a different current request", async () => {
@@ -740,53 +835,6 @@ describe("rest tool in runAgent", () => {
     expect(mockCreate).toHaveBeenCalledTimes(1)
     expect(execTool).not.toHaveBeenCalled()
     expect(vi.mocked(emitNervesEvent).mock.calls.some(([event]) => (event as any).event === "engine.historical_tool_failure_retry")).toBe(false)
-  })
-
-  it("does not retry an exact request when the current response does not claim the tool failed", async () => {
-    const request = "Keep Books off."
-    mockCreate.mockReturnValueOnce(makeStream([
-      makeChunk("Books can stay quietly off until you ask for it.", undefined),
-    ]))
-    const execTool = vi.fn()
-    await runAgent([
-      { role: "user", content: request },
-      { role: "assistant", tool_calls: [{ id: "call_failed", type: "function", function: { name: "steward_policy_manage", arguments: "{}" } }] },
-      { role: "tool", tool_call_id: "call_failed", content: "error: transient failure" },
-      { role: "assistant", content: "It failed." },
-      { role: "user", content: request },
-    ] as any[], makeCallbacks(), "telegram", undefined, {
-      tools: [{ type: "function", function: { name: "steward_policy_manage", description: "Manage steward policy", parameters: { type: "object", properties: {} } } }],
-      execTool,
-    })
-
-    expect(mockCreate).toHaveBeenCalledTimes(1)
-    expect(execTool).not.toHaveBeenCalled()
-    expect(vi.mocked(emitNervesEvent).mock.calls.some(([event]) => (event as any).event === "engine.historical_tool_failure_retry")).toBe(false)
-  })
-
-  it("issues at most one corrective retry for the same historical failure", async () => {
-    const request = "Keep Books off."
-    mockCreate.mockReturnValueOnce(makeStream([
-      makeChunk("The steward runtime is still down.", undefined),
-    ]))
-    mockCreate.mockReturnValueOnce(makeStream([
-      makeChunk("The steward runtime is still down.", undefined),
-    ]))
-    const execTool = vi.fn()
-    await runAgent([
-      { role: "user", content: request },
-      { role: "assistant", tool_calls: [{ id: "call_failed", type: "function", function: { name: "steward_policy_manage", arguments: "{}" } }] },
-      { role: "tool", tool_call_id: "call_failed", content: "error: transient failure" },
-      { role: "assistant", content: "It failed." },
-      { role: "user", content: request },
-    ] as any[], makeCallbacks({ settleOutputMode: "retractable_buffer" }), "telegram", undefined, {
-      tools: [{ type: "function", function: { name: "steward_policy_manage", description: "Manage steward policy", parameters: { type: "object", properties: {} } } }],
-      execTool,
-    })
-
-    expect(mockCreate).toHaveBeenCalledTimes(2)
-    expect(execTool).not.toHaveBeenCalled()
-    expect(vi.mocked(emitNervesEvent).mock.calls.filter(([event]) => (event as any).event === "engine.historical_tool_failure_retry")).toHaveLength(1)
   })
 
   it("retries with the private-runtime corrective when channel is inner", async () => {
