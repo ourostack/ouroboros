@@ -129,14 +129,18 @@ start_broker() {
   /usr/local/bin/node "$TARGET_AUDITOR" "$TARGET_PROFILE" "$IMAGE_ID" >"$PRIVATE_ROOT/deployment-target.json"
   chmod 0400 "$PRIVATE_ROOT/deployment-target.json"
   chown 0:0 "$PRIVATE_ROOT/deployment-target.json"
-  TARGET_CONTAINER_ID=$(/usr/local/bin/node -e '
+  TARGET_CONTAINER_BINDING=$(/usr/local/bin/node -e '
     const fs = require("node:fs"); const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); const deployment = value && value.deployment;
     if (value?.schemaVersion !== "sanctuary-effective-deployment-v1" || deployment?.schemaVersion !== "sanctuary-deployment-target-v1"
       || deployment.profile !== process.argv[3] || deployment.targetContainerName !== process.argv[4]
-      || deployment.targetImageId !== process.argv[2] || !/^[0-9a-f]{64}$/.test(deployment.targetContainerId)) process.exit(1);
-    process.stdout.write(deployment.targetContainerId);
+      || deployment.targetImageId !== process.argv[2] || !/^[0-9a-f]{64}$/.test(deployment.targetContainerId)
+      || !Number.isSafeInteger(deployment.targetPid) || deployment.targetPid <= 0 || deployment.targetPid > 4_194_304) process.exit(1);
+    process.stdout.write(`${deployment.targetContainerId} ${deployment.targetPid}`);
   ' "$PRIVATE_ROOT/deployment-target.json" "$IMAGE_ID" "$TARGET_PROFILE" "$PRODUCTION_CONTAINER")
-  test -n "$TARGET_CONTAINER_ID" || return 1
+  set -- $TARGET_CONTAINER_BINDING
+  test "$#" -eq 2 || return 1
+  TARGET_CONTAINER_ID=$1
+  TARGET_CONTAINER_PID=$2
   /usr/local/bin/node "$BROKER_PROGRAM" "$TARGET_PROFILE" "$TARGET_CONTAINER_ID" "$BROKER_SOCKET" "$CLOSED_INVENTORY" "$IMAGE_ID" "$BROKER_SNAPSHOT" </dev/null >/dev/null 2>&1 &
   BROKER_PID=$!
   ATTEMPT=0
@@ -149,6 +153,26 @@ start_broker() {
   test "$(stat -c '%u:%g %a' "$BROKER_SOCKET")" = "0:10001 660" || return 1
   test "$(stat -c '%u:%g %a' "$CLOSED_INVENTORY")" = "0:0 600" || return 1
   test "$(stat -c '%u:%g %a' "$BROKER_SNAPSHOT")" = "0:0 600" || return 1
+  await_post_audit_health
+  refresh_live_facts
+}
+
+await_post_audit_health() {
+  POST_AUDIT_ATTEMPT=0
+  while test "$POST_AUDIT_ATTEMPT" -lt 120; do
+    POST_AUDIT_STATE=$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.Id}} {{.Name}} {{.Image}} {{.State.Running}} {{.State.Paused}} {{.State.Restarting}} {{.State.Dead}} {{.State.Pid}} {{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$TARGET_CONTAINER_ID") || return 1
+    set -- $POST_AUDIT_STATE
+    test "$#" -eq 9 || return 1
+    test "$1" = "$TARGET_CONTAINER_ID" && test "$2" = "/$PRODUCTION_CONTAINER" && test "$3" = "$IMAGE_ID" || return 1
+    test "$4" = true && test "$6" = false && test "$7" = false || return 1
+    test "$8" = "$TARGET_CONTAINER_PID" || return 1
+    if test "$5" = false && test "$9" = healthy; then return 0; fi
+    test "$5" = true || test "$5" = false || return 1
+    test "$9" = starting || test "$9" = unhealthy || return 1
+    POST_AUDIT_ATTEMPT=$((POST_AUDIT_ATTEMPT + 1))
+    sleep 1
+  done
+  return 1
 }
 
 prepare_live_facts() {
