@@ -872,7 +872,7 @@ function isHarnessCorrectiveUserText(text: string): boolean {
 function claimsCurrentToolFailure(text: string): boolean {
   const normalized = text.replace(/\s+/g, " ").trim().toLowerCase()
   return /\b(?:still|currently|now)\s+(?:down|offline|unavailable|broken|failing|unreachable)\b/.test(normalized)
-    || /\b(?:runtime|tool|service|server|system)\b.{0,40}\b(?:is|remains?|seems?)\s+(?:still\s+)?(?:down|offline|unavailable|broken|failing|unreachable)\b/.test(normalized)
+    || /\b(?:runtime|tool|service|server|system|lane)\b.{0,40}\b(?:is|remains?|seems?)\s+(?:still\s+)?(?:down|offline|unavailable|broken|failing|unreachable)\b/.test(normalized)
     || /\b(?:i|we)\s+(?:can(?:not|'t)|could(?:not|n't)|am unable to|are unable to)\s+(?:call|use|access|reach|run|change)\b/.test(normalized)
     || /\b(?:already\s+)?tried\b.{0,80}\b(?:failed|failure|error|down|offline|unavailable)\b/.test(normalized)
 }
@@ -888,7 +888,7 @@ function historicalFailedToolsForExactRepeatedRequest(messages: OpenAI.ChatCompl
   }
   const current = userRequests.at(-1)
   if (!current) return []
-  const prior = userRequests.slice(0, -1).findLast((request) => request.text === current.text)
+  const prior = userRequests.slice(0, -1).find((request) => request.text === current.text)
   if (!prior) return []
 
   const namesByCallId = new Map<string, string>()
