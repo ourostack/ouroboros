@@ -145,8 +145,7 @@ function validTimestamp(value: unknown): string | null {
 }
 
 function liveSourceIdentityDigest(value: unknown): string {
-  const prefixedId = identifier(value, "server identity", 129)
-  if (!/^[0-9a-f]{64}:[0-9a-f]{64}$/u.test(prefixedId)) throw new UnraidClientError("invalid_response", "server identity is invalid")
+  const prefixedId = UnraidClient.assertPrefixedId(identifier(value, "server identity", 129))
   return createHash("sha256").update(prefixedId).digest("hex")
 }
 

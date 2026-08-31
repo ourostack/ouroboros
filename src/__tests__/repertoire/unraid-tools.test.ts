@@ -9,7 +9,7 @@ import { consumeRoutineActionGrant, transitionRoutineActionReceipt, updateStewar
 import { approvalPolicyForInvocation, classifyApprovalForInvocation, execTool } from "../../repertoire/tools"
 import { readObligations } from "../../arc/obligations"
 
-const LIVE_SERVER_ID = `${"a".repeat(64)}:${"b".repeat(64)}`
+const LIVE_SERVER_ID = `${"a".repeat(64)}:vars`
 
 function root(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "unraid-tools-routine-"))
@@ -216,16 +216,24 @@ describe("Unraid typed read tools", () => {
     expect(read).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("query SanctuaryStorage"), {})
   })
 
-  it("rejects a live source identity that is bounded but not the canonical digest pair", async () => {
+  it.each([
+    ["getStorage", "a".repeat(64)],
+    ["getStorage", `${"a".repeat(64)}:vars:extra`],
+    ["getStorage", `${"a".repeat(64)}:${"x".repeat(65)}`],
+    ["getSystem", "a".repeat(64)],
+    ["getSystem", `${"a".repeat(64)}:vars:extra`],
+    ["getSystem", `${"a".repeat(64)}:${"x".repeat(65)}`],
+  ] as const)("rejects malformed, multi-colon, and oversized source identities in %s", async (method, id) => {
     const read = vi.fn(async () => ({
-      vars: { id: "a".repeat(64) },
+      vars: { id, name: "Sanctuary", version: "7.2.3" },
       array: { state: "STARTED", capacity: { kilobytes: { used: 1, free: 1 } } },
       shares: [],
+      info: { os: { uptime: 1 }, versions: { core: { unraid: "7.2.3", api: "4.37.1" } } },
     }))
 
-    await expect(createUnraidReadTools({ read } as any).getStorage()).resolves.toMatchObject({
+    await expect(createUnraidReadTools({ read } as any)[method]()).resolves.toMatchObject({
       ok: false,
-      error: { code: "invalid_response", message: "server identity is invalid" },
+      error: { code: "invalid_response" },
     })
   })
 
