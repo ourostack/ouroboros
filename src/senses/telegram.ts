@@ -28,6 +28,7 @@ import { emitNervesEvent, emitNervesEventDurable } from "../nerves/runtime"
 import { registerGlobalLogSink } from "../nerves"
 import { createSanctuaryInteractiveControl } from "./sanctuary-interactive-control"
 import { createSanctuarySabClient } from "./sanctuary-sab"
+import { presentSanctuaryDownloadCreditReply } from "./sanctuary-download-credit-presentation"
 import { getSenseSessionPath, runSenseTurn, type RunSenseTurnOptions, type RunSenseTurnResult } from "./shared-turn"
 import {
   createTelegramBotApi,
@@ -44,6 +45,8 @@ import {
   type TelegramUpdate,
 } from "./telegram-client"
 import { createSanctuaryToolContext, runWithSanctuaryToolReceiptCollection, type SanctuaryToolReceiptObserver } from "./sanctuary-runtime"
+import { sanctuaryFullVisibilityRequiredToolCalls } from "./sanctuary-full-visibility-contract"
+import { sanctuaryStorageOptimizationRequiredToolCalls } from "./sanctuary-storage-optimization-contract"
 import { renderSanctuaryGroundedResponse, sanctuaryGroundingDigest } from "./sanctuary-grounding"
 import { createTelegramApprovalRuntime, type TelegramApprovalRuntime } from "./telegram-approval-runtime"
 import type { SanctuaryHealthSweepResult } from "./sanctuary-health"
@@ -1068,12 +1071,14 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     idempotencyKey: string,
     signal?: AbortSignal,
     onMessageDelivered?: (messageId: number, chunk: string) => void,
+    exactDownloadCreditQuestion = false,
   ): Promise<TelegramEffectArtifact> => {
+    const presentedText = presentSanctuaryDownloadCreditReply(options.agentName, exactDownloadCreditQuestion, text)
     return executeAuthorizedEffect({
       idempotencyKey,
       target: configuredOwnerTarget(),
       authorClass: "butler",
-      effect: { kind: "text", text },
+      effect: { kind: "text", text: presentedText },
       ...(signal ? { signal } : {}),
       ...(onMessageDelivered ? { onMessageDelivered } : {}),
     })
@@ -1144,6 +1149,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     userId: string
     chatId: string
     sessionKey: string
+    userMessage: string
   }): NonNullable<RunSenseTurnOptions["prepareRunAgentOptions"]> => {
     if (!options.resolveRelationshipAuthorization) throw new Error("Telegram relationship authorization resolver is unavailable")
     const relationshipCoordinates = { ...input, botId: botId! }
@@ -1160,10 +1166,18 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
           (await options.resolveRelationshipAuthorization!(relationshipCoordinates)).authorizeTool(name, args),
       }
     }
-    return async ({ runAgentOptions }) => ({
-      ...runAgentOptions,
-      toolContext: { ...runAgentOptions.toolContext!, relationshipAuthorization: await resolveLiveRelationshipAuthorization() },
-    })
+    return async ({ runAgentOptions }) => {
+      const relationshipAuthorization = await resolveLiveRelationshipAuthorization()
+      const requiredToolCalls = options.agentName === "sanctuary" && relationshipAuthorization.profileId === "sanctuary-owner"
+        ? sanctuaryStorageOptimizationRequiredToolCalls(input.userMessage, relationshipAuthorization.advertisedToolNames)
+          ?? sanctuaryFullVisibilityRequiredToolCalls(input.userMessage, relationshipAuthorization.advertisedToolNames)
+        : undefined
+      return {
+        ...runAgentOptions,
+        ...(requiredToolCalls ? { requiredToolCalls } : {}),
+        toolContext: { ...runAgentOptions.toolContext!, relationshipAuthorization },
+      }
+    }
   }
   const dispatchResolvedRelationshipTurn = async (input: {
     friendId: string
@@ -1219,7 +1233,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       ...(orientationFrame ? { orientationFrame } : {}),
       toolContext: { ...(toolContext ?? {}), attachmentIds: input.attachmentIds ?? [] },
       prepareRunAgentOptions: prepareRelationshipRunAgentOptions({ friendId: input.friendId, requestId: input.requestId,
-        sessionEventId: input.eventId, userId: input.userId, chatId: input.chatId, sessionKey: input.sessionKey }),
+        sessionEventId: input.eventId, userId: input.userId, chatId: input.chatId, sessionKey: input.sessionKey, userMessage: input.text }),
       deliverySink: { onDelivery: (delivery) => deliver(delivery.text, delivery.kind === "settle") },
     })
     if (effects.length === 0 && result.response.trim()) await deliver(result.response, true)
@@ -1361,6 +1375,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     const turnMetricsObserver = { providerInvocationCount: 0, toolInvocationCount: 0 }
     const toolReceiptObserver: SanctuaryToolReceiptObserver = { toolResultDigests: [], toolGroundings: [] }
     const normalizedRequest = message.text.normalize("NFKC").trim().toLocaleLowerCase("en-US")
+    const exactDownloadCreditQuestion = normalizedRequest === "why aren't my shows downloading?"
     const groundingIntentTool = groundedAcceptance
       ? /^(?:what['’]?s up|status)\??$/u.test(normalizedRequest) ? "unraid_get_system"
         : /^how much (?:space|storage) is left\??$/u.test(normalizedRequest) ? "unraid_get_storage"
@@ -1411,7 +1426,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
             if (groundingIntentTool) {
               bufferedGroundedDeliveries.push(delivery.kind)
             } else {
-              turnEffects.push(await deliverButlerEffect(delivery.text, `turn:${subject}:${message.updateId}:delivery:${deliveryOrdinal++}`, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) }))
+              turnEffects.push(await deliverButlerEffect(delivery.text, `turn:${subject}:${message.updateId}:delivery:${deliveryOrdinal++}`, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) }, exactDownloadCreditQuestion))
               deliveryCount += 1
             }
           },
@@ -1427,6 +1442,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
             userId: message.userId,
             chatId: message.chatId,
             sessionKey: currentSessionKey,
+            userMessage: message.text,
           }),
         } : {}),
         ...(approvalRuntime ? { approvalCoordinatorFactory: approvalRuntime.coordinator } : {}),
@@ -1443,7 +1459,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         turnEffects.push(await deliverButlerEffect(canonical, `turn:${subject}:${message.updateId}:delivery:${deliveryOrdinal++}`, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) }))
         deliveryCount = 1
       } else if (deliveryCount === 0 && result.response.trim()) {
-        const artifact = await deliverButlerEffect(result.response, `turn:${subject}:${message.updateId}:delivery:${deliveryOrdinal++}`, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) })
+        const artifact = await deliverButlerEffect(result.response, `turn:${subject}:${message.updateId}:delivery:${deliveryOrdinal++}`, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) }, exactDownloadCreditQuestion)
         turnEffects.push(artifact)
         responseFallbackArtifactId = artifact.id
       }
@@ -1484,7 +1500,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         }, Math.max(Date.now(), lifecycleStartedAt + 1)),
       })
       const fallback = "I couldn't complete that turn. The failure was recorded; please try again."
-      if (deliveredMessageIds.length === 0) turnEffects.push(await deliverButlerEffect(fallback, `turn:${subject}:${message.updateId}:fallback`, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) }))
+      if (deliveredMessageIds.length === 0) turnEffects.push(await deliverButlerEffect(fallback, `turn:${subject}:${message.updateId}:fallback`, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) }, exactDownloadCreditQuestion))
       await recordAcceptedEffects(currentSessionPath, turnEffects, { text: message.text, reference: inboundReference, attachmentIds: hydrated.attachmentIds })
     } finally {
       if (acceptanceMarker) {

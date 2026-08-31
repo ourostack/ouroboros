@@ -1,19 +1,29 @@
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { FileFriendStore, getChannelCapabilities, type FriendRecord } from "@ouro.bot/friends"
 
 import { readActiveCares } from "../../arc/cares"
-import { getAgentRoot, resetIdentity, setAgentName } from "../../heart/identity"
+import { resetIdentity, setAgentName } from "../../heart/identity"
 import { parseAwaitFile } from "../../heart/awaiting/await-parser"
 import { createRelationshipAuthorizationEvaluator, loadRelationshipCapabilityRegistry } from "../../repertoire/relationship-authorization"
 import { execTool, getToolsForChannel } from "../../repertoire/tools"
 
+const identityTestState = vi.hoisted(() => ({ agentRoot: null as string | null }))
+
+vi.mock("../../heart/identity", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../heart/identity")>()
+  return {
+    ...actual,
+    getAgentRoot: (agentName?: string) => identityTestState.agentRoot ?? actual.getAgentRoot(agentName),
+  }
+})
+
 const bundleRoot = path.resolve("deploy/unraid/sanctuary.ouro")
 const transcriptPath = path.resolve("src/__tests__/fixtures/sanctuary-butler-transcripts.json")
 
-type Transcript = { id: string; audience: "owner" | "family"; user: string; reply: string; tools: string[]; evidence?: { pending: number; opportunities: number } }
+type Transcript = { id: string; audience: "owner" | "family"; user: string; reply: string; tools: string[]; evidence?: { pending?: number; opportunities?: number; queueError?: string; notifications?: string[] } }
 
 function psyche(name: string): string {
   return fs.readFileSync(path.join(bundleRoot, "psyche", `${name}.md`), "utf8")
@@ -56,6 +66,7 @@ function realToolContext(profile: "sanctuary-owner" | "sanctuary-household") {
 
 describe("Mendelow Cloud Butler household UX", () => {
   afterEach(() => {
+    identityTestState.agentRoot = null
     resetIdentity()
     while (rootsToRemove.length > 0) fs.rmSync(rootsToRemove.pop()!, { recursive: true, force: true })
   })
@@ -177,9 +188,31 @@ describe("Mendelow Cloud Butler household UX", () => {
     expect(reminder.reply).toContain("Friday at 10:00 AM")
     expect(reminder.tools).toContain("await_condition")
     const topUp = transcripts.find((entry) => entry.id === "credit-top-up")!
+    expect(topUp.user).toBe("Why aren't my shows downloading?")
+    expect(topUp.evidence).toEqual({
+      queueError: "SAB queue verification credential is unavailable",
+      notifications: [
+        "Astraweb prepaid credit exhausted. Usenet indexer has been disabled.",
+        "Astraweb prepaid credit exhausted. Usenet indexer has been disabled.",
+      ],
+    })
+    expect(topUp.reply).toContain("Downloads are paused to protect your prepaid credit")
     expect(topUp.reply).toContain("https://www.astraweb.com/login")
     expect(topUp.reply).not.toContain("<provider account link>")
-    expect(topUp.reply).toContain("Tell me when you’re done and I’ll verify a download finishes")
+    expect(topUp.reply).toContain("Tell me when you’re done, and I’ll resume downloads and verify one finishes")
+    expect(topUp.reply).toContain("tomorrow at 9")
+    expect(topUp.reply).not.toMatch(/SABnzbd|Sonarr|Radarr|Deluge|auth-check|credential|dead-letter|indexer has been disabled|keep watching/iu)
+    expect(topUp.tools).toEqual(["sanctuary_get_download_queue", "unraid_get_notifications"])
+    const visibility = transcripts.find((entry) => entry.id === "full-visibility")!
+    expect(visibility.user).toBe("What are you working on?")
+    expect(visibility.tools).toEqual(["query_active_work", "query_cares", "unraid_get_system", "unraid_list_containers"])
+    for (const heading of ["Active:", "Waiting on you:", "Snoozed:", "Quiet by preference:", "Healthy:", "Other known issues:"]) {
+      expect(visibility.reply).toContain(heading)
+    }
+    expect(visibility.reply).not.toMatch(/daemon|dead.?letter|policy lane|private.?runtime|SABnzbd|Sonarr|Radarr|Deluge/iu)
+    expect(psyche("TACIT")).toContain("For Ari's whole-household status questions")
+    expect(psyche("TACIT")).toContain("active work, waiting on Ari, snoozed wake times, intentionally quiet services, healthy systems, and other current issues")
+    expect(psyche("TACIT")).toContain("Do not narrate daemon, event-queue, provider-lane, or backend service internals")
     const storage = transcripts.find((entry) => entry.id === "storage-creative")!
     expect(storage.reply).not.toMatch(/\b94 GB\b/u)
     expect(storage.reply).toContain("largest shares")
@@ -204,7 +237,8 @@ describe("Mendelow Cloud Butler household UX", () => {
 
   it("files the specified snooze and movie follow-up through the canonical await and Care stores", async () => {
     setAgentName(`sanctuary-butler-ux-${process.pid}-${Date.now()}`)
-    const agentRoot = getAgentRoot()
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-butler-ux-"))
+    identityTestState.agentRoot = agentRoot
     rootsToRemove.push(agentRoot)
     const { context } = realToolContext("sanctuary-owner")
 
@@ -238,7 +272,8 @@ describe("Mendelow Cloud Butler household UX", () => {
 
   it("enforces family privacy with the packaged relationship evaluator at advertisement and execution", async () => {
     setAgentName(`sanctuary-butler-privacy-${process.pid}-${Date.now()}`)
-    const agentRoot = getAgentRoot()
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-butler-privacy-"))
+    identityTestState.agentRoot = agentRoot
     rootsToRemove.push(agentRoot)
     const owner = realToolContext("sanctuary-owner")
     const privateCare = JSON.parse(await execTool("care_manage", { action: "create", label: "Ari private task", why: "owner-only" }, owner.context)) as { id: string }

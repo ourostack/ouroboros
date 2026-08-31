@@ -409,6 +409,8 @@ function createFinalOnlyTextBuffer(callbacks: ChannelCallbacks): HabitCallbackBu
 
 export interface RunAgentOptions {
   toolChoiceRequired?: boolean;
+  /** Turn-local reads that must actually reach their handlers before a sole settle call can complete. */
+  requiredToolCalls?: { names: readonly string[]; retryMessage: string };
   toolContext?: ToolContext;
   traceId?: string;
   bridgeContext?: string;
@@ -1494,6 +1496,8 @@ export async function runAgent(
   let unresolvedHistoricalEffects = historicalFailedEffectsForExactRepeatedRequest(messages);
   let historicalToolFailureRetries = 0;
   let providerIterations = 0;
+  const requiredToolCallNames = [...new Set(options?.requiredToolCalls?.names ?? [])];
+  const dispatchedRequiredToolCalls = new Set<string>();
   const toolLoopState = createToolLoopState();
   const toolFrictionLedger = createToolFrictionLedger();
   const finishTerminalProviderError = (error: Error, classification: ProviderErrorClassification): void => {
@@ -2142,6 +2146,24 @@ export async function runAgent(
         if (isSoleSettle) {
           const settleArgs = validatedCallArguments.get(result.toolCalls[0])!
           callbacks.onToolStart("settle", settleArgs);
+          const missingRequiredToolCalls = requiredToolCallNames.filter((name) => !dispatchedRequiredToolCalls.has(name));
+          if (missingRequiredToolCalls.length > 0) {
+            streamCallbackBuffer?.discard();
+            callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs), false);
+            callbacks.onClearText?.();
+            pushGenerated(msg);
+            const gateMessage = `${options!.requiredToolCalls!.retryMessage} Missing required tool calls: ${missingRequiredToolCalls.join(", ")}.`;
+            pushGenerated({ role: "tool", tool_call_id: result.toolCalls[0].id, content: gateMessage });
+            providerRuntime.appendToolOutput(result.toolCalls[0].id, gateMessage);
+            emitNervesEvent({
+              level: "warn",
+              component: "engine",
+              event: "engine.required_tool_calls_pending",
+              message: "settle rejected until required tool handlers dispatch",
+              meta: { missingToolNames: missingRequiredToolCalls },
+            });
+            continue;
+          }
           // Private-runtime attention queue gate: reject settle if items remain
           const attentionQueue = augmentedToolContext?.delegatedOrigins;
           if (isPrivateRuntimeChannel && attentionQueue && attentionQueue.length > 0) {
@@ -2698,6 +2720,7 @@ export async function runAgent(
             const execToolFn = options?.execTool ?? execTool;
             const routineActionSelection = approvalCalls.find((entry) => entry.call.id === tc.id)?.routineActionSelection
             const executionToolContext = routineActionSelection && augmentedToolContext ? { ...augmentedToolContext, routineActionSelection } : augmentedToolContext
+            if (requiredToolCallNames.includes(tc.name)) dispatchedRequiredToolCalls.add(tc.name);
             toolResult = await execToolFn(tc.name, args, executionToolContext);
             success = true;
           } catch (e) {

@@ -16,9 +16,16 @@
   {
     "id": "credit-top-up",
     "audience": "owner",
-    "user": "What do you need me to do about the downloads?",
-    "reply": "Your paid download provider appears to be out of credit, so new downloads are waiting. You can top it up here: https://www.astraweb.com/login. Tell me when you’re done and I’ll verify a download finishes, or say “remind me tomorrow at 9.”",
-    "tools": ["query_cares", "care_manage", "await_condition"]
+    "user": "Why aren't my shows downloading?",
+    "reply": "Downloads are paused to protect your prepaid credit. Top it up here: https://www.astraweb.com/login. Tell me when you’re done, and I’ll resume downloads and verify one finishes. Or tell me a reminder time, like “tomorrow at 9.”",
+    "tools": ["sanctuary_get_download_queue", "unraid_get_notifications"],
+    "evidence": {
+      "queueError": "SAB queue verification credential is unavailable",
+      "notifications": [
+        "Astraweb prepaid credit exhausted. Usenet indexer has been disabled.",
+        "Astraweb prepaid credit exhausted. Usenet indexer has been disabled."
+      ]
+    }
   },
   {
     "id": "specified-snooze",
@@ -60,7 +67,7 @@
     "id": "full-visibility",
     "audience": "owner",
     "user": "What are you working on?",
-    "reply": "Active: checking the download path. Waiting on you: account top-up, snoozed until Friday at 10. Quiet by preference: Books is off. Everything else I checked is healthy. I have no evidence of another open household issue.",
+    "reply": "Active: checking the download path. Waiting on you: account top-up. Snoozed: the download-credit reminder until Friday at 10. Quiet by preference: Books is off. Healthy: everything else I checked. Other known issues: none in the current evidence.",
     "tools": ["query_active_work", "query_cares", "unraid_get_system", "unraid_list_containers"]
   },
   {
