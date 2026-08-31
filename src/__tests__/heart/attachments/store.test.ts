@@ -1,7 +1,12 @@
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
+
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>()
+  return { ...actual, unlinkSync: vi.fn(actual.unlinkSync) }
+})
 
 import {
   MAX_RECENT_ATTACHMENTS,
@@ -114,6 +119,17 @@ describe("recent attachment store", () => {
 
     expect(JSON.parse(fs.readFileSync(storePath, "utf8"))).toEqual([recovered])
     expect(fs.readdirSync(path.dirname(storePath)).filter((name) => name.includes(".tmp-"))).toEqual([])
+  })
+
+  it("surfaces unexpected temporary-file cleanup failures after the durable rename", () => {
+    const agentRoot = makeAgentRoot()
+    const attachment = buildCliLocalFileAttachmentRecord({ path: "/tmp/durable.pdf", mimeType: "application/pdf", byteCount: 12 })
+    const cleanupError = Object.assign(new Error("cleanup denied"), { code: "EACCES" })
+    const unlink = vi.mocked(fs.unlinkSync).mockImplementationOnce(() => { throw cleanupError })
+
+    expect(() => cacheRecentAttachment("slugger", attachment, agentRoot)).toThrow(cleanupError)
+    unlink.mockRestore()
+    expect(readRecentAttachments("slugger", agentRoot)).toEqual([attachment])
   })
 
   it("deduplicates by attachment id and keeps the newest copy", () => {

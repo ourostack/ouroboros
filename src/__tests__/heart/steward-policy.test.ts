@@ -59,6 +59,8 @@ describe("steward policy", () => {
     for (const verificationRequired of [false, undefined, "true", 1] as const) {
       expect(() => stewardPolicyToolDefinition.handler({ action: "grant_routine_action", expectedVersion: 4, provenance: "stated", key: "bad", routineAction: "restart", targetsJson: '["video"]', exclusionsJson: "[]", maxCount: 1, windowMs: 1000, verificationRequired } as any, context as any)).toThrow("verificationRequired must be true")
     }
+    expect(() => stewardPolicyToolDefinition.handler({ action: "grant_routine_action", expectedVersion: 4, provenance: "stated", routineAction: "restart", targetsJson: '["video"]', exclusionsJson: "[]", maxCount: 1, windowMs: 1000, verificationRequired: true }, context as any)).toThrow("key must be nonempty")
+    expect(() => stewardPolicyToolDefinition.handler({ action: "grant_routine_action", expectedVersion: 4, provenance: "stated", key: "bad", targetsJson: '["video"]', exclusionsJson: "[]", maxCount: 1, windowMs: 1000, verificationRequired: true }, context as any)).toThrow("action must be nonempty")
     expect(readStewardPolicy(agentRoot).version).toBe(4)
   })
 
