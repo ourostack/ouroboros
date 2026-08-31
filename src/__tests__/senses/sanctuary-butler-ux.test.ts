@@ -13,7 +13,7 @@ import { execTool, getToolsForChannel } from "../../repertoire/tools"
 const bundleRoot = path.resolve("deploy/unraid/sanctuary.ouro")
 const transcriptPath = path.resolve("src/__tests__/fixtures/sanctuary-butler-transcripts.json")
 
-type Transcript = { id: string; audience: "owner" | "family"; user: string; reply: string; tools: string[]; evidence?: { pending: number; opportunities: number } }
+type Transcript = { id: string; audience: "owner" | "family"; user: string; reply: string; tools: string[]; evidence?: { pending?: number; opportunities?: number; queueError?: string; notifications?: string[] } }
 
 function psyche(name: string): string {
   return fs.readFileSync(path.join(bundleRoot, "psyche", `${name}.md`), "utf8")
@@ -177,9 +177,21 @@ describe("Mendelow Cloud Butler household UX", () => {
     expect(reminder.reply).toContain("Friday at 10:00 AM")
     expect(reminder.tools).toContain("await_condition")
     const topUp = transcripts.find((entry) => entry.id === "credit-top-up")!
+    expect(topUp.user).toBe("Why aren't my shows downloading?")
+    expect(topUp.evidence).toEqual({
+      queueError: "SAB queue verification credential is unavailable",
+      notifications: [
+        "Astraweb prepaid credit exhausted. Usenet indexer has been disabled.",
+        "Astraweb prepaid credit exhausted. Usenet indexer has been disabled.",
+      ],
+    })
+    expect(topUp.reply).toContain("Downloads are paused to protect your prepaid credit")
     expect(topUp.reply).toContain("https://www.astraweb.com/login")
     expect(topUp.reply).not.toContain("<provider account link>")
-    expect(topUp.reply).toContain("Tell me when you’re done and I’ll verify a download finishes")
+    expect(topUp.reply).toContain("Tell me when you’re done, and I’ll resume downloads and verify one finishes")
+    expect(topUp.reply).toContain("tomorrow at 9")
+    expect(topUp.reply).not.toMatch(/SABnzbd|Sonarr|Radarr|Deluge|auth-check|credential|dead-letter|indexer has been disabled|keep watching/iu)
+    expect(topUp.tools).toEqual(["sanctuary_get_download_queue", "unraid_get_notifications"])
     const storage = transcripts.find((entry) => entry.id === "storage-creative")!
     expect(storage.reply).not.toMatch(/\b94 GB\b/u)
     expect(storage.reply).toContain("largest shares")
