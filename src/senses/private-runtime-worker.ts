@@ -612,6 +612,7 @@ export function createPrivateRuntimeWorker(
         const currentHabitName = nextHabitName
         const currentTrigger = nextTrigger ?? "overdue"
         const currentNoSend = nextNoSend
+        const currentExternalEvent = nextExternalEvent
         const currentExternalEventHeartbeat = nextExternalEventHeartbeat
         nextExternalEventHeartbeat = undefined
         const currentHabitRun: PreparedHabitRun | null = currentReason === "habit" && currentHabitName
@@ -750,6 +751,11 @@ export function createPrivateRuntimeWorker(
         // would cause hasPendingWork() to be true here, producing a
         // self-sustaining "instinct" loop with no external input. Cap it.
         if (hasPendingWork(currentHabitRun?.paths.pendingDir)) {
+          if (currentExternalEvent && (turnErrors.length > 0
+            || (turnResult && typeof turnResult === "object" && "turnOutcome" in turnResult && turnResult.turnOutcome === "errored"))) {
+            finalizeCurrentHabitRun()
+            break
+          }
           clearHeartbeatRestShield()
           if (consecutiveInstinctTurns >= MAX_CONSECUTIVE_INSTINCT_TURNS) {
             emitNervesEvent({
