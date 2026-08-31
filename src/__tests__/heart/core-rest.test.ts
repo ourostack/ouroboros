@@ -634,6 +634,8 @@ describe("rest tool in runAgent", () => {
     const callbacks = makeCallbacks({ settleOutputMode: "retractable_buffer" })
     const messages: any[] = [
       { role: "user", content: request },
+      { role: "assistant", tool_calls: [{ id: "call_old_custom", type: "custom", custom: { name: "legacy_custom", input: "probe" } }] },
+      { role: "tool", tool_call_id: "call_old_custom", content: "error: unrelated custom failure" },
       { role: "assistant", tool_calls: [{ id: "call_old_policy", type: "function", function: { name: "steward_policy_manage", arguments: JSON.stringify({ action: "set_desired_state" }) } }] },
       { role: "tool", tool_call_id: "call_old_policy", content: "error: expectedVersion must be a nonnegative integer" },
       { role: "assistant", content: "The policy runtime is down; I tried twice." },
@@ -752,6 +754,31 @@ describe("rest tool in runAgent", () => {
     expect(mockCreate).toHaveBeenCalledTimes(1)
     expect(execTool).not.toHaveBeenCalled()
     expect(vi.mocked(emitNervesEvent).mock.calls.some(([event]) => (event as any).event === "engine.historical_tool_failure_retry")).toBe(false)
+  })
+
+  it("issues at most one corrective retry for the same historical failure", async () => {
+    const request = "Keep Books off."
+    mockCreate.mockReturnValueOnce(makeStream([
+      makeChunk("The steward runtime is still down.", undefined),
+    ]))
+    mockCreate.mockReturnValueOnce(makeStream([
+      makeChunk("The steward runtime is still down.", undefined),
+    ]))
+    const execTool = vi.fn()
+    await runAgent([
+      { role: "user", content: request },
+      { role: "assistant", tool_calls: [{ id: "call_failed", type: "function", function: { name: "steward_policy_manage", arguments: "{}" } }] },
+      { role: "tool", tool_call_id: "call_failed", content: "error: transient failure" },
+      { role: "assistant", content: "It failed." },
+      { role: "user", content: request },
+    ] as any[], makeCallbacks({ settleOutputMode: "retractable_buffer" }), "telegram", undefined, {
+      tools: [{ type: "function", function: { name: "steward_policy_manage", description: "Manage steward policy", parameters: { type: "object", properties: {} } } }],
+      execTool,
+    })
+
+    expect(mockCreate).toHaveBeenCalledTimes(2)
+    expect(execTool).not.toHaveBeenCalled()
+    expect(vi.mocked(emitNervesEvent).mock.calls.filter(([event]) => (event as any).event === "engine.historical_tool_failure_retry")).toHaveLength(1)
   })
 
   it("retries with the private-runtime corrective when channel is inner", async () => {
