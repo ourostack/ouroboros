@@ -44,6 +44,7 @@ import {
   type TelegramUpdate,
 } from "./telegram-client"
 import { createSanctuaryToolContext, runWithSanctuaryToolReceiptCollection, type SanctuaryToolReceiptObserver } from "./sanctuary-runtime"
+import { sanctuaryFullVisibilityRequiredToolCalls } from "./sanctuary-full-visibility-contract"
 import { sanctuaryStorageOptimizationRequiredToolCalls } from "./sanctuary-storage-optimization-contract"
 import { renderSanctuaryGroundedResponse, sanctuaryGroundingDigest } from "./sanctuary-grounding"
 import { createTelegramApprovalRuntime, type TelegramApprovalRuntime } from "./telegram-approval-runtime"
@@ -1166,6 +1167,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       const relationshipAuthorization = await resolveLiveRelationshipAuthorization()
       const requiredToolCalls = options.agentName === "sanctuary" && relationshipAuthorization.profileId === "sanctuary-owner"
         ? sanctuaryStorageOptimizationRequiredToolCalls(input.userMessage, relationshipAuthorization.advertisedToolNames)
+          ?? sanctuaryFullVisibilityRequiredToolCalls(input.userMessage, relationshipAuthorization.advertisedToolNames)
         : undefined
       return {
         ...runAgentOptions,
