@@ -636,11 +636,15 @@ describe("rest tool in runAgent", () => {
       { role: "user", content: request },
       { role: "assistant", tool_calls: [{ id: "call_old_custom", type: "custom", custom: { name: "legacy_custom", input: "probe" } }] },
       { role: "tool", tool_call_id: "call_old_custom", content: "error: unrelated custom failure" },
+      { role: "assistant", tool_calls: [{ id: "call_old_policy_read", type: "function", function: { name: "steward_policy_manage", arguments: JSON.stringify({ action: "read" }) } }] },
+      { role: "tool", tool_call_id: "call_old_policy_read", content: JSON.stringify({ version: 0, desiredStates: {} }) },
       { role: "assistant", tool_calls: [{ id: "call_old_policy", type: "function", function: { name: "steward_policy_manage", arguments: JSON.stringify({ action: "set_desired_state" }) } }] },
       { role: "tool", tool_call_id: "call_old_policy", content: "error: expectedVersion must be a nonnegative integer" },
       { role: "assistant", content: "The policy runtime is down; I tried twice." },
       { role: "user", content: request },
       { role: "assistant", content: "I still can't write the official policy because the policy runtime is down." },
+      { role: "user", content: request },
+      { role: "assistant", content: "The lane still looks unavailable to me." },
       { role: "user", content: request },
     ]
 
