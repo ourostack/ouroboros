@@ -87,9 +87,9 @@ function persistAttempt(filePath: string, attempt: UnraidRestartAttempt): void {
   fs.renameSync(temporary, filePath)
 }
 
-async function appendAcceptanceAttempt(agentName: string, attempt: UnraidRestartAttempt): Promise<void> {
+async function appendAcceptanceAttempt(agentRoot: string, attempt: UnraidRestartAttempt): Promise<void> {
   if (!attempt.scenarioHandleDigest) return
-  const filePath = path.join(getAgentRoot(agentName), "state", "acceptance", "restart-attempts.ndjson")
+  const filePath = path.join(agentRoot, "state", "acceptance", "restart-attempts.ndjson")
   const previous = acceptanceLedgerTails.get(filePath) ?? Promise.resolve()
   const current = previous.catch(() => undefined).then(() => {
     fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 })
@@ -126,13 +126,14 @@ async function appendAcceptanceAttempt(agentName: string, attempt: UnraidRestart
   try { await current } finally { if (acceptanceLedgerTails.get(filePath) === current) acceptanceLedgerTails.delete(filePath) }
 }
 
-export function createSanctuaryToolContext(agentName: string): Pick<ToolContext, "sanctuary"> {
+export function createSanctuaryToolContext(agentName: string): Pick<ToolContext, "agentRoot" | "sanctuary"> {
   emitNervesEvent({
     component: "senses",
     event: "senses.sanctuary_runtime_create",
     message: "creating typed Sanctuary tool context",
     meta: { agentName },
   })
+  const agentRoot = getAgentRoot(agentName)
   const initial = machineConfig(agentName)
   const endpoint = required(initial, "unraidGraphqlUrl")
   const readClient = new UnraidClient({ endpoint, apiKey: required(initial, "unraidReadApiKey") })
@@ -160,15 +161,16 @@ export function createSanctuaryToolContext(agentName: string): Pick<ToolContext,
     listContainers: reads.listContainers,
     loadWriteApiKey: async () => required(machineConfig(agentName), "unraidWriteApiKey"),
     persistAttempt: async (attempt) => {
-      persistAttempt(path.join(getAgentRoot(agentName), "state", "approvals", "unraid-restart-attempt.json"), attempt)
-      await appendAcceptanceAttempt(agentName, attempt)
+      persistAttempt(path.join(agentRoot, "state", "approvals", "unraid-restart-attempt.json"), attempt)
+      await appendAcceptanceAttempt(agentRoot, attempt)
     },
     acceptanceScenarioHandleDigest: () => readSanctuaryAcceptanceMarker(agentName)?.scenarioHandleDigest,
     acceptanceApproval: readSanctuaryAcceptanceApproval,
-    reserveRoutineAction: (input) => consumeRoutineActionGrant(getAgentRoot(agentName), input),
-    transitionRoutineAction: (input) => transitionRoutineActionReceipt(getAgentRoot(agentName), input),
+    reserveRoutineAction: (input) => consumeRoutineActionGrant(agentRoot, input),
+    transitionRoutineAction: (input) => transitionRoutineActionReceipt(agentRoot, input),
   })
   return {
+    agentRoot,
     sanctuary: {
       listContainers: acceptanceRead("unraid_list_containers", reads.listContainers),
       getContainerLogs: acceptanceRead("unraid_get_container_logs", reads.getContainerLogs),
@@ -198,7 +200,7 @@ export function createSanctuaryToolContext(agentName: string): Pick<ToolContext,
         collectToolResult(result)
         return result
       },
-      recoverRoutineActions: () => recoverRoutineActionReceipts(getAgentRoot(agentName), {
+      recoverRoutineActions: () => recoverRoutineActionReceipts(agentRoot, {
         observeTarget: async (target) => {
           const observed = await reads.listContainers()
           if (!observed.ok) throw new Error(observed.error.message)

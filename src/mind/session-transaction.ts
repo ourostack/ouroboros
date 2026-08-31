@@ -5,6 +5,7 @@ import * as path from "node:path"
 import Database from "better-sqlite3"
 
 import { emitNervesEvent } from "../nerves/runtime"
+import { probeHabitBootIdentity, probeHabitProcessStartedAt } from "../heart/habits/habit-lifecycle"
 
 export class SessionTurnBusyError extends Error {
   readonly retryable = true
@@ -33,6 +34,8 @@ interface LeaseRecord {
   pid: number
   ownerId: string
   ownerToken: string
+  bootIdentity: string | null
+  processStartedAt: string | null
 }
 
 interface HeldLease extends LeaseRecord {
@@ -49,6 +52,8 @@ export interface AcquireSessionTurnLeaseOptions {
   pollIntervalMs?: number
   pid?: number
   isProcessAlive?: (pid: number) => boolean
+  getBootIdentity?: () => string
+  getProcessStartedAt?: (pid: number) => string | null
   onStaleLease?: (record: LeaseRecord) => void
 }
 
@@ -98,38 +103,74 @@ function openLeaseDatabase(lockPath: string, busyTimeoutMs = 0): Database.Databa
       owner_token TEXT NOT NULL
     )
   `)
+  const columns = new Set((database.prepare(`PRAGMA table_info(session_turn_lease)`).all() as Array<{ name: string }>).map((column) => column.name))
+  if (!columns.has("boot_identity")) database.exec(`ALTER TABLE session_turn_lease ADD COLUMN boot_identity TEXT`)
+  if (!columns.has("process_started_at")) database.exec(`ALTER TABLE session_turn_lease ADD COLUMN process_started_at TEXT`)
   return database
+}
+
+function acquisitionRecord(options: AcquireSessionTurnLeaseOptions): LeaseRecord {
+  const pid = options.pid ?? process.pid
+  const bootIdentity = (options.getBootIdentity ?? probeHabitBootIdentity)()
+  const processStartedAt = (options.getProcessStartedAt ?? probeHabitProcessStartedAt)(pid)
+  if (!bootIdentity || !processStartedAt) throw new SessionTransactionError("current process identity is unavailable")
+  return {
+    pid,
+    ownerId: options.ownerId ?? randomUUID(),
+    ownerToken: options.ownerToken ?? randomUUID(),
+    bootIdentity,
+    processStartedAt,
+  }
 }
 
 function claimLeaseRecord(
   lockPath: string,
   record: LeaseRecord,
   isProcessAlive: (pid: number) => boolean,
+  getProcessStartedAt: (pid: number) => string | null,
 ): { acquired: boolean; stale: LeaseRecord | null } {
   const database = openLeaseDatabase(lockPath)
   try {
     return database.transaction(() => {
       const current = database.prepare(`
-        SELECT pid, owner_id, owner_token FROM session_turn_lease WHERE singleton = 1
-      `).get() as { pid: number; owner_id: string; owner_token: string } | undefined
+        SELECT pid, owner_id, owner_token, boot_identity, process_started_at FROM session_turn_lease WHERE singleton = 1
+      `).get() as { pid: number; owner_id: string; owner_token: string; boot_identity: unknown; process_started_at: unknown } | undefined
       if (!current) {
         database.prepare(`
-          INSERT INTO session_turn_lease (singleton, pid, owner_id, owner_token) VALUES (1, ?, ?, ?)
-        `).run(record.pid, record.ownerId, record.ownerToken)
+          INSERT INTO session_turn_lease (singleton, pid, owner_id, owner_token, boot_identity, process_started_at) VALUES (1, ?, ?, ?, ?, ?)
+        `).run(record.pid, record.ownerId, record.ownerToken, record.bootIdentity, record.processStartedAt)
         return { acquired: true, stale: null }
       }
       if (!Number.isSafeInteger(current.pid) || current.pid <= 0
         || typeof current.owner_id !== "string" || current.owner_id.length === 0
-        || typeof current.owner_token !== "string" || current.owner_token.length === 0) {
+        || typeof current.owner_token !== "string" || current.owner_token.length === 0
+        || !((current.boot_identity === null && current.process_started_at === null)
+          || (typeof current.boot_identity === "string" && current.boot_identity.length > 0
+            && typeof current.process_started_at === "string" && current.process_started_at.length > 0))) {
         throw new SessionTransactionError("invalid session lease record")
       }
-      const observed: LeaseRecord = { pid: current.pid, ownerId: current.owner_id, ownerToken: current.owner_token }
-      if (isProcessAlive(observed.pid)) return { acquired: false, stale: null }
-      database.prepare(`
-        UPDATE session_turn_lease SET pid = ?, owner_id = ?, owner_token = ?
+      const observed: LeaseRecord = {
+        pid: current.pid,
+        ownerId: current.owner_id,
+        ownerToken: current.owner_token,
+        bootIdentity: current.boot_identity as string | null,
+        processStartedAt: current.process_started_at as string | null,
+      }
+      const differentBoot = observed.bootIdentity !== null && observed.bootIdentity !== record.bootIdentity
+      let differentProcess = false
+      if (observed.bootIdentity !== null && !differentBoot) {
+        const liveStartedAt = getProcessStartedAt(observed.pid)
+        differentProcess = liveStartedAt !== null && liveStartedAt !== observed.processStartedAt
+        if (liveStartedAt === observed.processStartedAt) return { acquired: false, stale: null }
+      }
+      if (!differentBoot && !differentProcess && isProcessAlive(observed.pid)) return { acquired: false, stale: null }
+      const changed = database.prepare(`
+        UPDATE session_turn_lease SET pid = ?, owner_id = ?, owner_token = ?, boot_identity = ?, process_started_at = ?
         WHERE singleton = 1 AND pid = ? AND owner_id = ? AND owner_token = ?
-      `).run(record.pid, record.ownerId, record.ownerToken, observed.pid, observed.ownerId, observed.ownerToken)
-      return { acquired: true, stale: observed }
+          AND boot_identity IS ? AND process_started_at IS ?
+      `).run(record.pid, record.ownerId, record.ownerToken, record.bootIdentity, record.processStartedAt,
+        observed.pid, observed.ownerId, observed.ownerToken, observed.bootIdentity, observed.processStartedAt).changes
+      return changed === 1 ? { acquired: true, stale: observed } : { acquired: false, stale: null }
     })()
   } finally {
     database.close()
@@ -141,7 +182,8 @@ function releaseLeaseRecord(lockPath: string, record: LeaseRecord): boolean {
   try {
     return database.prepare(`
       DELETE FROM session_turn_lease WHERE singleton = 1 AND pid = ? AND owner_id = ? AND owner_token = ?
-    `).run(record.pid, record.ownerId, record.ownerToken).changes === 1
+        AND boot_identity IS ? AND process_started_at IS ?
+    `).run(record.pid, record.ownerId, record.ownerToken, record.bootIdentity, record.processStartedAt).changes === 1
   } finally {
     database.close()
   }
@@ -184,9 +226,8 @@ export async function acquireSessionTurnLease(
     }
   }
 
-  const ownerId = options.ownerId ?? randomUUID()
-  const ownerToken = options.ownerToken ?? randomUUID()
-  const pid = options.pid ?? process.pid
+  const record = acquisitionRecord(options)
+  const { ownerId } = record
   const timeoutMs = options.timeoutMs ?? 5_000
   const pollIntervalMs = options.pollIntervalMs ?? 10
   const isProcessAlive = options.isProcessAlive ?? processAlive
@@ -197,12 +238,12 @@ export async function acquireSessionTurnLease(
   for (;;) {
     let claim: ReturnType<typeof claimLeaseRecord> | null = null
     try {
-      claim = claimLeaseRecord(lockPath, { pid, ownerId, ownerToken }, isProcessAlive)
+      claim = claimLeaseRecord(lockPath, record, isProcessAlive, options.getProcessStartedAt ?? probeHabitProcessStartedAt)
     } catch (error) {
       if (!isSqliteBusy(error)) throw error
     }
     if (claim?.acquired) {
-      const held: HeldLease = { sessionPath: canonical, lockPath, pid, ownerId, ownerToken, depth: 1, released: false }
+      const held: HeldLease = { sessionPath: canonical, lockPath, ...record, depth: 1, released: false }
       heldLeases.set(canonical, held)
       emitNervesEvent({
         component: "mind",
@@ -252,26 +293,24 @@ export async function withSessionTurnLease<T>(
 export function withImmediateSessionTurnLease<T>(
   sessionPath: string,
   work: (lease: SessionTurnLease) => T,
-  options: Pick<AcquireSessionTurnLeaseOptions, "ownerId" | "ownerToken" | "pid" | "isProcessAlive" | "onStaleLease"> = {},
+  options: Pick<AcquireSessionTurnLeaseOptions, "ownerId" | "ownerToken" | "pid" | "isProcessAlive" | "getBootIdentity" | "getProcessStartedAt" | "onStaleLease"> = {},
 ): T {
   const canonical = canonicalSessionPath(sessionPath)
   const contextual = currentSessionTurnLease(canonical)
   if (contextual) return work(contextual)
-  const ownerId = options.ownerId ?? randomUUID()
-  const ownerToken = options.ownerToken ?? randomUUID()
-  const pid = options.pid ?? process.pid
+  const record = acquisitionRecord(options)
   const lockPath = `${canonical}.turn.lock`
   fs.mkdirSync(path.dirname(canonical), { recursive: true })
   const tryAcquire = (): HeldLease | null => {
     let claim: ReturnType<typeof claimLeaseRecord>
     try {
-      claim = claimLeaseRecord(lockPath, { pid, ownerId, ownerToken }, options.isProcessAlive ?? processAlive)
+      claim = claimLeaseRecord(lockPath, record, options.isProcessAlive ?? processAlive, options.getProcessStartedAt ?? probeHabitProcessStartedAt)
     } catch (error) {
       if (isSqliteBusy(error)) return null
       throw error
     }
     if (claim.acquired) {
-      const held: HeldLease = { sessionPath: canonical, lockPath, pid, ownerId, ownerToken, depth: 1, released: false }
+      const held: HeldLease = { sessionPath: canonical, lockPath, ...record, depth: 1, released: false }
       heldLeases.set(canonical, held)
       if (claim.stale) {
         options.onStaleLease?.(claim.stale)

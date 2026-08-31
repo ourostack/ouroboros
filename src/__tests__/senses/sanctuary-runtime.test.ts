@@ -114,6 +114,9 @@ describe("Sanctuary runtime tool context", () => {
   it("wires read tools once and reloads the write credential only for an approved restart", async () => {
     const context = createSanctuaryToolContext("slugger")
 
+    expect(context.agentRoot).toBe(runtimeMocks.getAgentRoot.mock.results[0]?.value)
+    expect(runtimeMocks.getAgentRoot).toHaveBeenCalledTimes(1)
+
     expect(runtimeMocks.emitNervesEvent).toHaveBeenCalledWith({
       component: "senses",
       event: "senses.sanctuary_runtime_create",

@@ -12,7 +12,7 @@ const mocks = vi.hoisted(() => ({
   createTelegramBotApi: vi.fn(),
   createTelegramLongPoll: vi.fn(),
   sendTelegramText: vi.fn(),
-  createSanctuaryToolContext: vi.fn(() => ({ sanctuary: true })),
+  createSanctuaryToolContext: vi.fn(() => ({ sanctuary: true, agentRoot: "/bundles/sanctuary.ouro" })),
   createSanctuaryInteractiveControl: vi.fn(() => ({ start: vi.fn(async () => undefined), stop: vi.fn(async () => undefined) })),
   runWithSanctuaryToolReceiptCollection: vi.fn(async (operation: () => Promise<unknown>, observer?: { toolResultDigests: string[] }) => {
     const result = await operation()
@@ -567,7 +567,7 @@ describe("Telegram sense coverage contracts", () => {
     expect(mocks.createTelegramBotApi).toHaveBeenCalledWith({ token: credentials.botToken })
     expect(mocks.createSanctuaryToolContext).toHaveBeenCalledWith("sanctuary")
     expect(mocks.createTelegramApprovalRuntime).toHaveBeenCalledWith(expect.objectContaining({
-      agentName: "sanctuary", api: f.api, authorizedUserId: "42", authorizedChatId: "43", toolContext: { sanctuary: true },
+      agentName: "sanctuary", api: f.api, authorizedUserId: "42", authorizedChatId: "43", toolContext: { sanctuary: true, agentRoot: "/bundles/sanctuary.ouro" },
     }))
     expect(mocks.createTelegramLongPoll).toHaveBeenCalledWith(expect.objectContaining({
       api: f.api, expectedUserId: "42", expectedChatId: "43",
@@ -1080,7 +1080,7 @@ describe("Telegram sense coverage contracts", () => {
     createTelegramSenseApp({ agentName: "sanctuary", credentials })
     await f.getOnMessage()({ updateId: 1, messageId: "2", text: "hello" })
     expect(mocks.runSenseTurn).toHaveBeenCalledWith(expect.objectContaining({
-      toolContext: { sanctuary: true }, approvalCoordinatorFactory: f.runtime.coordinator,
+      toolContext: { sanctuary: true, agentRoot: "/bundles/sanctuary.ouro" }, approvalCoordinatorFactory: f.runtime.coordinator,
     }))
     expect(mocks.sendTelegramText).toHaveBeenCalledExactlyOnceWith(f.api, "43", "fallback", undefined)
 

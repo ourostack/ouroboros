@@ -4800,7 +4800,7 @@ describe("private runtime", () => {
 
     await runApprovedPrivateRuntimeTurn({ reason: "instinct", externalEvent: { schemaVersion: 1, recordPath: "/events/sanctuary/sanctuary-usenet/provider.json", agent: "sanctuary", source: "sanctuary-usenet", eventId: "provider", generation: 1, observationRevision: "rev-1", claimOwner: "lease-1" } })
 
-    expect(mockHandleInboundTurn.mock.calls[0][0].runAgentOptions.toolContext.sanctuary).toBeDefined()
+    expect(mockHandleInboundTurn.mock.calls[0][0].runAgentOptions.toolContext).toMatchObject({ sanctuary: expect.any(Object), agentRoot })
   })
 
   it("records an error lifecycle when an external-event private turn fails", async () => {

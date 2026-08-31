@@ -219,6 +219,28 @@ describe("private-runtime-worker", () => {
     expect(runTurn).toHaveBeenNthCalledWith(2, expect.not.objectContaining({ externalEvent: expect.anything() }))
   })
 
+  it("does not turn pending residue into an unauthorized fallback after an external-event turn fails", async () => {
+    const runTurn = vi.fn().mockRejectedValueOnce(new Error("provider failed"))
+    const hasPendingWork = vi.fn().mockReturnValue(true)
+    const worker = createPrivateRuntimeWorker(runTurn, hasPendingWork)
+    const externalEvent = { schemaVersion: 1 as const, recordPath: "/events/slugger/health/sweep.json", agent: "slugger", source: "health", eventId: "sweep", generation: 1, observationRevision: "rev-1", claimOwner: "lease-1" }
+
+    await worker.handleMessage({ type: "message", externalEvent })
+
+    expect(runTurn).toHaveBeenCalledTimes(1)
+    expect(runTurn).toHaveBeenCalledWith(expect.objectContaining({ externalEvent }))
+  })
+
+  it("does not chain a generic turn after an external-event turn returns an errored outcome", async () => {
+    const runTurn = vi.fn().mockResolvedValueOnce({ turnOutcome: "errored" })
+    const worker = createPrivateRuntimeWorker(runTurn, () => true)
+    const externalEvent = { schemaVersion: 1 as const, recordPath: "/events/slugger/health/sweep.json", agent: "slugger", source: "health", eventId: "sweep", generation: 1, observationRevision: "rev-1", claimOwner: "lease-1" }
+
+    await worker.handleMessage({ type: "message", externalEvent })
+
+    expect(runTurn).toHaveBeenCalledTimes(1)
+  })
+
   it("renews every related event lease and reports Error and non-Error renewal failures", async () => {
     const runTurn = vi.fn().mockResolvedValue(undefined)
     const worker = createPrivateRuntimeWorker(runTurn)

@@ -29,33 +29,43 @@ function writeLock(sessionPath: string, content?: unknown): string {
   `)
   database.prepare(`DELETE FROM session_turn_lease`).run()
   if (content && typeof content === "object") {
-    const record = content as { pid?: unknown; ownerId?: unknown; ownerToken?: unknown }
-    database.prepare(`
-      INSERT INTO session_turn_lease (singleton, pid, owner_id, owner_token) VALUES (1, ?, ?, ?)
-    `).run(record.pid, record.ownerId, record.ownerToken)
+    const record = content as { pid?: unknown; ownerId?: unknown; ownerToken?: unknown; bootIdentity?: unknown; processStartedAt?: unknown }
+    if (record.bootIdentity !== undefined || record.processStartedAt !== undefined) {
+      database.exec(`ALTER TABLE session_turn_lease ADD COLUMN boot_identity TEXT`)
+      database.exec(`ALTER TABLE session_turn_lease ADD COLUMN process_started_at TEXT`)
+      database.prepare(`
+        INSERT INTO session_turn_lease (singleton, pid, owner_id, owner_token, boot_identity, process_started_at) VALUES (1, ?, ?, ?, ?, ?)
+      `).run(record.pid, record.ownerId, record.ownerToken, record.bootIdentity, record.processStartedAt)
+    } else {
+      database.prepare(`
+        INSERT INTO session_turn_lease (singleton, pid, owner_id, owner_token) VALUES (1, ?, ?, ?)
+      `).run(record.pid, record.ownerId, record.ownerToken)
+    }
   }
   database.close()
   return lockPath
 }
 
-function readLock(sessionPath: string): { pid: number; ownerId: string; ownerToken: string } | null {
+function readLock(sessionPath: string): { pid: number; ownerId: string; ownerToken: string; bootIdentity: string | null; processStartedAt: string | null } | null {
   const database = new Database(`${sessionPath}.turn.lock`)
   try {
     const row = database.prepare(`
-      SELECT pid, owner_id, owner_token FROM session_turn_lease WHERE singleton = 1
-    `).get() as { pid: number; owner_id: string; owner_token: string } | undefined
-    return row ? { pid: row.pid, ownerId: row.owner_id, ownerToken: row.owner_token } : null
+      SELECT pid, owner_id, owner_token, boot_identity, process_started_at FROM session_turn_lease WHERE singleton = 1
+    `).get() as { pid: number; owner_id: string; owner_token: string; boot_identity: string | null; process_started_at: string | null } | undefined
+    return row ? { pid: row.pid, ownerId: row.owner_id, ownerToken: row.owner_token, bootIdentity: row.boot_identity, processStartedAt: row.process_started_at } : null
   } finally {
     database.close()
   }
 }
 
-function replaceLock(sessionPath: string, content: { pid: number; ownerId: string; ownerToken: string }): void {
+function replaceLock(sessionPath: string, content: { pid: number; ownerId: string; ownerToken: string; bootIdentity?: string; processStartedAt?: string }): void {
   const database = new Database(`${sessionPath}.turn.lock`)
   try {
     database.prepare(`
-      UPDATE session_turn_lease SET pid = ?, owner_id = ?, owner_token = ? WHERE singleton = 1
-    `).run(content.pid, content.ownerId, content.ownerToken)
+      UPDATE session_turn_lease SET pid = ?, owner_id = ?, owner_token = ?,
+        boot_identity = COALESCE(?, boot_identity), process_started_at = COALESCE(?, process_started_at)
+      WHERE singleton = 1
+    `).run(content.pid, content.ownerId, content.ownerToken, content.bootIdentity ?? null, content.processStartedAt ?? null)
   } finally {
     database.close()
   }
@@ -263,6 +273,119 @@ describe("cross-process session turn transaction contract", () => {
     await lease.release()
   })
 
+  it("recovers a reused live PID only when its persisted process incarnation differs", async () => {
+    const { acquireSessionTurnLease, withImmediateSessionTurnLease } = await subject()
+    const asyncPath = makeSession()
+    writeLock(asyncPath, { pid: process.pid, ownerId: "previous-container", ownerToken: "old-token", bootIdentity: "boot-a", processStartedAt: "linux:old" })
+    const probes = { isProcessAlive: () => true, getBootIdentity: () => "boot-a", getProcessStartedAt: () => "linux:current" }
+
+    const lease = await acquireSessionTurnLease(asyncPath, { ...probes, ownerId: "current-container", ownerToken: "new-token", timeoutMs: 20, pollIntervalMs: 1 })
+    await lease.release()
+
+    const immediatePath = makeSession()
+    writeLock(immediatePath, { pid: process.pid, ownerId: "previous-container", ownerToken: "old-token", bootIdentity: "boot-a", processStartedAt: "linux:old" })
+    expect(withImmediateSessionTurnLease(immediatePath, () => "recovered", probes)).toBe("recovered")
+  })
+
+  it("never steals a live lease from the same process incarnation", async () => {
+    const { acquireSessionTurnLease, withImmediateSessionTurnLease } = await subject()
+    const sessionPath = makeSession()
+    const probes = { isProcessAlive: () => true, getBootIdentity: () => "boot-a", getProcessStartedAt: () => "linux:current" }
+    writeLock(sessionPath, { pid: process.pid, ownerId: "concurrent", ownerToken: "held-token", bootIdentity: "boot-a", processStartedAt: "linux:current" })
+
+    await expect(acquireSessionTurnLease(sessionPath, { ...probes, timeoutMs: 2, pollIntervalMs: 1 })).rejects.toMatchObject({ name: "SessionTurnBusyError" })
+    expect(() => withImmediateSessionTurnLease(sessionPath, () => undefined, probes)).toThrow(/busy/i)
+  })
+
+  it("recovers identity-bound rows from an earlier boot and fails closed when a live identity cannot be probed", async () => {
+    const { acquireSessionTurnLease } = await subject()
+    const oldBootPath = makeSession()
+    writeLock(oldBootPath, { pid: 900, ownerId: "old-boot", ownerToken: "old-token", bootIdentity: "boot-old", processStartedAt: "linux:10" })
+    const recovered = await acquireSessionTurnLease(oldBootPath, {
+      getBootIdentity: () => "boot-current",
+      getProcessStartedAt: () => "linux:10",
+      isProcessAlive: () => true,
+      timeoutMs: 20,
+      pollIntervalMs: 1,
+    })
+    await recovered.release()
+
+    const unknownPath = makeSession()
+    writeLock(unknownPath, { pid: 901, ownerId: "unknown", ownerToken: "unknown-token", bootIdentity: "boot-current", processStartedAt: "linux:11" })
+    await expect(acquireSessionTurnLease(unknownPath, {
+      getBootIdentity: () => "boot-current",
+      getProcessStartedAt: (pid) => pid === process.pid ? "linux:current" : null,
+      isProcessAlive: () => true,
+      timeoutMs: 2,
+      pollIntervalMs: 1,
+    })).rejects.toMatchObject({ name: "SessionTurnBusyError" })
+  })
+
+  it("keeps a live identity-less same-PID row busy", async () => {
+    const { acquireSessionTurnLease } = await subject()
+    const sessionPath = makeSession()
+    writeLock(sessionPath, { pid: process.pid, ownerId: "legacy-container", ownerToken: "legacy-token" })
+
+    await expect(acquireSessionTurnLease(sessionPath, {
+      getBootIdentity: () => "boot-a",
+      getProcessStartedAt: () => "linux:current",
+      isProcessAlive: () => true,
+      timeoutMs: 2,
+      pollIntervalMs: 1,
+    })).rejects.toMatchObject({ name: "SessionTurnBusyError" })
+  })
+
+  it("reclaims and migrates an identity-less row only when its PID is dead", async () => {
+    const { acquireSessionTurnLease } = await subject()
+    const sessionPath = makeSession()
+    writeLock(sessionPath, { pid: 999_999_999, ownerId: "legacy-container", ownerToken: "legacy-token" })
+    const onStaleLease = vi.fn()
+
+    const lease = await acquireSessionTurnLease(sessionPath, {
+      getBootIdentity: () => "boot-a",
+      getProcessStartedAt: () => "linux:current",
+      isProcessAlive: () => false,
+      onStaleLease,
+      timeoutMs: 20,
+      pollIntervalMs: 1,
+    })
+
+    expect(onStaleLease).toHaveBeenCalledWith(expect.objectContaining({ ownerId: "legacy-container" }))
+    expect(readLock(sessionPath)).toMatchObject({ bootIdentity: "boot-a", processStartedAt: "linux:current" })
+    await lease.release()
+  })
+
+  it("does not report ownership when the stale-row compare-and-swap changes no row", async () => {
+    const { acquireSessionTurnLease } = await subject()
+    const sessionPath = makeSession()
+    writeLock(sessionPath, { pid: 999_999_999, ownerId: "dead", ownerToken: "dead-token" })
+    const database = new Database(`${sessionPath}.turn.lock`)
+    database.exec(`CREATE TRIGGER suppress_lease_update BEFORE UPDATE ON session_turn_lease BEGIN SELECT RAISE(IGNORE); END`)
+    database.close()
+    const onStaleLease = vi.fn()
+
+    await expect(acquireSessionTurnLease(sessionPath, {
+      isProcessAlive: () => false,
+      onStaleLease,
+      timeoutMs: 2,
+      pollIntervalMs: 1,
+    })).rejects.toMatchObject({ name: "SessionTurnBusyError" })
+    expect(onStaleLease).not.toHaveBeenCalled()
+    expect(readLock(sessionPath)).toMatchObject({ ownerId: "dead", ownerToken: "dead-token" })
+  })
+
+  it("fails closed when either part of the acquiring process identity is unavailable", async () => {
+    const { acquireSessionTurnLease, withImmediateSessionTurnLease } = await subject()
+    await expect(acquireSessionTurnLease(makeSession(), {
+      getBootIdentity: () => "",
+      getProcessStartedAt: () => "linux:current",
+    })).rejects.toThrow(/process identity is unavailable/i)
+    expect(() => withImmediateSessionTurnLease(makeSession(), () => undefined, {
+      getBootIdentity: () => "boot-a",
+      getProcessStartedAt: () => null,
+    })).toThrow(/process identity is unavailable/i)
+  })
+
   it("binds a lease to one canonical session path", async () => {
     const { acquireSessionTurnLease, readSessionTransaction } = await subject()
     const sessionPath = makeSession()
@@ -446,6 +569,16 @@ describe("cross-process session turn transaction contract", () => {
 
     await lease.release()
     expect(readLock(sessionPath)).toMatchObject({ ownerId: "owner-b" })
+  })
+
+  it("does not release a replacement incarnation even when its PID and logical owner match", async () => {
+    const { acquireSessionTurnLease } = await subject()
+    const sessionPath = makeSession()
+    const lease = await acquireSessionTurnLease(sessionPath, { ownerId: "owner-a", ownerToken: "token-a" })
+    replaceLock(sessionPath, { pid: process.pid, ownerId: "owner-a", ownerToken: "token-a", processStartedAt: "replacement-incarnation" })
+
+    await lease.release()
+    expect(readLock(sessionPath)).toMatchObject({ ownerId: "owner-a", ownerToken: "token-a" })
   })
 
   it("propagates non-contention acquisition and non-missing read/delete failures", async () => {
