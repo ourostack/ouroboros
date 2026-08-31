@@ -88,13 +88,11 @@ if [ "$Q_STATUS" = "Idle" ] && [ "${Q_SLOTS:-0}" -gt 0 ]; then STALLED=1; fi
 MIN_ARTICLES=50000
 MIN_RATE=30
 TODAY=$(date +%Y-%m-%d)
-fetch_sab_json STATS 20 "http://localhost:8090/api?mode=server_stats&output=json" '(.servers | type) == "array"' "server-stats" || exit 1
-TRIED=$(echo "$STATS" | jq -r --arg d "$TODAY" '[.servers[].articles_tried[$d] // 0] | add // 0' 2>/dev/null)
-OKAY=$(echo "$STATS" | jq -r --arg d "$TODAY" '[.servers[].articles_success[$d] // 0] | add // 0' 2>/dev/null)
-BYTES=$(echo "$STATS" | jq -r --arg d "$TODAY" '[.servers[].daily[$d] // 0] | add // 0' 2>/dev/null)
-case "$TRIED" in ''|*[!0-9]*) TRIED=0 ;; esac
-case "$OKAY" in ''|*[!0-9]*) OKAY=0 ;; esac
-case "$BYTES" in ''|*[!0-9]*) BYTES=0 ;; esac
+fetch_sab_json STATS 20 "http://localhost:8090/api?mode=server_stats&output=json" 'def valid_count: ((type == "number" and . >= 0 and . <= 9007199254740991 and floor == .) or (type == "string" and test("^[0-9]+$") and (tonumber <= 9007199254740991))); ((.servers | type) == "array" or (.servers | type) == "object") and (.servers | length) > 0 and all(.servers[]; (type == "object") and (.articles_tried | type) == "object" and (.articles_success | type) == "object" and (.daily | type) == "object" and all(.articles_tried[]; valid_count) and all(.articles_success[]; valid_count) and all(.daily[]; valid_count))' "server-stats" || exit 1
+if ! IFS=$'\t' read -r TRIED OKAY BYTES < <(printf '%s' "$STATS" | jq -er --arg d "$TODAY" 'def count: if type == "number" and . >= 0 and . <= 9007199254740991 and floor == . then . elif type == "string" and test("^[0-9]+$") and (tonumber <= 9007199254740991) then tonumber else error("invalid server count") end; def total($field): ([.servers[] | (.[$field][$d] // 0) | count] | add) as $total | if $total >= 0 and $total <= 9007199254740991 and ($total | floor) == $total then $total else error("invalid aggregate server count") end; [total("articles_tried"), total("articles_success"), total("daily")] | @tsv' 2>/dev/null); then
+    emit_blind_observation "server-stats-response"
+    exit 1
+fi
 GB=$(( ${BYTES:-0} / 1000000000 ))
 
 BASE_DAY=""
