@@ -88,7 +88,7 @@ if [ "$Q_STATUS" = "Idle" ] && [ "${Q_SLOTS:-0}" -gt 0 ]; then STALLED=1; fi
 MIN_ARTICLES=50000
 MIN_RATE=30
 TODAY=$(date +%Y-%m-%d)
-fetch_sab_json STATS 20 "http://localhost:8090/api?mode=server_stats&output=json" '(.servers | type) == "array"' "server-stats" || exit 1
+fetch_sab_json STATS 20 "http://localhost:8090/api?mode=server_stats&output=json" '((.servers | type) == "array" or (.servers | type) == "object")' "server-stats" || exit 1
 TRIED=$(echo "$STATS" | jq -r --arg d "$TODAY" '[.servers[].articles_tried[$d] // 0] | add // 0' 2>/dev/null)
 OKAY=$(echo "$STATS" | jq -r --arg d "$TODAY" '[.servers[].articles_success[$d] // 0] | add // 0' 2>/dev/null)
 BYTES=$(echo "$STATS" | jq -r --arg d "$TODAY" '[.servers[].daily[$d] // 0] | add // 0' 2>/dev/null)

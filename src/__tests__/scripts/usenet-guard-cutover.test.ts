@@ -284,10 +284,11 @@ printf '%s\n' "$*" >> ${JSON.stringify(calls)}
   })
 
   it.each([
-    ["healthy new interval", 1_100_000, 160_000, "recovered", false, true],
-    ["failing new interval", 1_100_000, 75_000, "sabnzbd.pause", true, true],
-    ["first observation seed", 1_000_000, 70_000, "", false, false],
-  ] as const)("uses a rolling baseline after historical 7%% spend for a %s", (_label, tried, okay, expected, pausedAfter, seedBaseline) => {
+    ["healthy new interval", 1_100_000, 160_000, "recovered", false, true, "array"],
+    ["failing new interval", 1_100_000, 75_000, "sabnzbd.pause", true, true, "array"],
+    ["first observation seed", 1_000_000, 70_000, "", false, false, "array"],
+    ["live SAB object-shaped server map", 1_100_000, 160_000, "recovered", false, true, "object"],
+  ] as const)("uses a rolling baseline after historical 7%% spend for a %s", (_label, tried, okay, expected, pausedAfter, seedBaseline, serverShape) => {
     const temp = root()
     const bin = path.join(temp, "bin")
     const calls = path.join(temp, "adapter.calls")
@@ -305,7 +306,12 @@ printf '%s\n' "$*" >> ${JSON.stringify(calls)}
 case "$*" in
   *mode=pause*) printf 'true\n' > ${JSON.stringify(paused)}; printf '{"status":true}\n' ;;
   *mode=warnings*) [ "$GUARD_HISTORICAL_AUTH" = 1 ] && printf '{"warnings":[{"text":"502 Authentication Failed","time":1}]}\n' || printf '{"warnings":[]}\n' ;;
-  *mode=server_stats*) printf '{"servers":[{"articles_tried":{"%s":%s},"articles_success":{"%s":%s},"daily":{"%s":0}}]}\n' "$(date +%Y-%m-%d)" "$GUARD_TRIED" "$(date +%Y-%m-%d)" "$GUARD_OKAY" "$(date +%Y-%m-%d)" ;;
+  *mode=server_stats*)
+    if [ "$GUARD_SERVER_SHAPE" = object ]; then
+      printf '{"servers":{"primary":{"articles_tried":{"%s":%s},"articles_success":{"%s":%s},"daily":{"%s":0}}}}\n' "$(date +%Y-%m-%d)" "$GUARD_TRIED" "$(date +%Y-%m-%d)" "$GUARD_OKAY" "$(date +%Y-%m-%d)"
+    else
+      printf '{"servers":[{"articles_tried":{"%s":%s},"articles_success":{"%s":%s},"daily":{"%s":0}}]}\n' "$(date +%Y-%m-%d)" "$GUARD_TRIED" "$(date +%Y-%m-%d)" "$GUARD_OKAY" "$(date +%Y-%m-%d)"
+    fi ;;
   *mode=history*) printf '{"history":{"slots":[{"status":"Completed","completed":%s}]}}\n' "$(date +%s)" ;;
   *mode=queue*) printf '{"queue":{"paused":%s,"status":"Downloading","noofslots":1}}\n' "$(cat ${JSON.stringify(paused)})" ;;
   *) printf '{}\n' ;;
@@ -316,7 +322,7 @@ esac
 printf '%s\n' "$*" >> ${JSON.stringify(calls)}
 `, { mode: 0o700 })
 
-    execFileSync(guardPath, ["--sab-ini", ini, "--log", log, "--producer", path.join(temp, "producer"), "--adapter", path.join(temp, "adapter"), "--state", state], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, GUARD_TRIED: String(tried), GUARD_OKAY: String(okay), GUARD_HISTORICAL_AUTH: pausedAfter ? "0" : "1" } })
+    execFileSync(guardPath, ["--sab-ini", ini, "--log", log, "--producer", path.join(temp, "producer"), "--adapter", path.join(temp, "adapter"), "--state", state], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, GUARD_TRIED: String(tried), GUARD_OKAY: String(okay), GUARD_HISTORICAL_AUTH: pausedAfter ? "0" : "1", GUARD_SERVER_SHAPE: serverShape } })
 
     const emitted = fs.existsSync(calls) ? fs.readFileSync(calls, "utf8") : ""
     if (expected) expect(emitted).toContain(expected)
