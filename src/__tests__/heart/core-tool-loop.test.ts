@@ -1992,4 +1992,86 @@ describe("runAgent tool loop guard", () => {
       expect(propose).not.toHaveBeenCalled()
     })
   })
+
+  describe("required tool calls", () => {
+    const readTool = (name: string, requireScope = false) => ({
+      type: "function" as const,
+      function: {
+        name,
+        description: `read ${name}`,
+        parameters: requireScope
+          ? { type: "object", properties: { scope: { type: "string" } }, required: ["scope"], additionalProperties: false }
+          : { type: "object", properties: {}, additionalProperties: false },
+      },
+    })
+    const streamed = (name: string, args: Record<string, string>, id: string) => makeStream([makeChunk(undefined, [{
+      index: 0,
+      id,
+      function: { name, arguments: JSON.stringify(args) },
+    }])])
+
+    it("rejects early settlement until both exact storage reads dispatch, then preserves the agent's grounded answer", async () => {
+      const finalAnswer = "Media is the largest measured share at 12 TiB. Unmanic has historically saved 5.04 TiB and has one item queued; Jellyfin found one unusually large older-codec item. I recommend one sample encode before acting, because the evidence does not support a future-savings estimate yet."
+      mockCreate
+        .mockReturnValueOnce(streamed("settle", { answer: "Should I run the media read, or would you rather inspect it in QDirStat from a shell?", intent: "blocked" }, "settle-before-reads"))
+        .mockReturnValueOnce(streamed("unraid_get_storage", {}, "storage-read"))
+        .mockReturnValueOnce(streamed("settle", { answer: "Storage is full; shall I run another check?", intent: "blocked" }, "settle-before-media"))
+        .mockReturnValueOnce(streamed("sanctuary_get_media_optimization", {}, "media-read"))
+        .mockReturnValueOnce(streamed("settle", { answer: finalAnswer, intent: "complete" }, "settle-grounded"))
+      const execTool = vi.fn(async (name: string) => name === "unraid_get_storage"
+        ? JSON.stringify({ ok: true, data: { largestCandidates: [{ name: "media", usedBytes: 12 * 1024 ** 4 }] } })
+        : JSON.stringify({ ok: true, data: { unmanic: { history: { totalSavedBytes: 5.04 * 1024 ** 4 }, pending: { total: 1 } }, inventory: { largest: [{ likelySpaceOpportunity: true, videoCodec: "h264" }] }, estimate: { reclaimableBytes: null } } }))
+      const callbacks = makeCallbacks()
+      const messages: any[] = [{ role: "user", content: "What's using all the space, and can we make it smaller?" }]
+      const { runAgent } = await import("../../heart/core")
+
+      const result = await runAgent(messages, callbacks, "telegram", undefined, {
+        tools: [readTool("unraid_get_storage"), readTool("sanctuary_get_media_optimization")],
+        execTool,
+        toolContext: { signin: async () => undefined },
+        requiredToolCalls: {
+          names: ["unraid_get_storage", "sanctuary_get_media_optimization"],
+          retryMessage: "Run the missing safe storage reads before settling.",
+        },
+      } as any)
+
+      expect(result).toMatchObject({ outcome: "settled", completion: { answer: finalAnswer, intent: "complete" } })
+      expect(execTool.mock.calls.map(([name]) => name)).toEqual(["unraid_get_storage", "sanctuary_get_media_optimization"])
+      expect(callbacks.onTextChunk).toHaveBeenLastCalledWith(finalAnswer)
+      expect(messages).toContainEqual(expect.objectContaining({ role: "tool", tool_call_id: "settle-before-reads", content: expect.stringMatching(/safe storage reads.*unraid_get_storage.*sanctuary_get_media_optimization/is) }))
+      expect(messages).toContainEqual(expect.objectContaining({ role: "tool", tool_call_id: "settle-before-media", content: expect.stringMatching(/safe storage reads.*sanctuary_get_media_optimization/is) }))
+      expect(finalAnswer).toMatch(/largest measured share.*Unmanic.*Jellyfin.*sample encode/is)
+      expect(finalAnswer).not.toMatch(/future savings (?:are|of)|QDirStat|shell|should I|shall I/is)
+    })
+
+    it("counts a dispatched failure but never an argument-rejected required call", async () => {
+      mockCreate
+        .mockReturnValueOnce(streamed("unraid_get_storage", {}, "invalid-storage"))
+        .mockReturnValueOnce(streamed("sanctuary_get_media_optimization", {}, "failed-media"))
+        .mockReturnValueOnce(streamed("settle", { answer: "not yet", intent: "blocked" }, "settle-missing-storage"))
+        .mockReturnValueOnce(streamed("unraid_get_storage", { scope: "shares" }, "valid-storage"))
+        .mockReturnValueOnce(streamed("settle", { answer: "The media evidence read failed, so I can report the largest share but cannot estimate savings.", intent: "blocked" }, "settle-after-failure"))
+      const execTool = vi.fn(async (name: string) => {
+        if (name === "sanctuary_get_media_optimization") throw new Error("Jellyfin unavailable")
+        return JSON.stringify({ ok: true })
+      })
+      const messages: any[] = [{ role: "user", content: "diagnose storage and shrink it" }]
+      const { runAgent } = await import("../../heart/core")
+
+      const result = await runAgent(messages, makeCallbacks(), "telegram", undefined, {
+        tools: [readTool("unraid_get_storage", true), readTool("sanctuary_get_media_optimization")],
+        execTool,
+        toolContext: { signin: async () => undefined },
+        requiredToolCalls: {
+          names: ["unraid_get_storage", "sanctuary_get_media_optimization"],
+          retryMessage: "Run the missing reads.",
+        },
+      } as any)
+
+      expect(execTool.mock.calls.map(([name]) => name)).toEqual(["sanctuary_get_media_optimization", "unraid_get_storage"])
+      expect(messages).toContainEqual(expect.objectContaining({ role: "tool", tool_call_id: "invalid-storage", content: expect.stringContaining("invalid tool arguments") }))
+      expect(messages).toContainEqual(expect.objectContaining({ role: "tool", tool_call_id: "settle-missing-storage", content: expect.stringMatching(/Run the missing reads.*unraid_get_storage/is) }))
+      expect(result).toMatchObject({ outcome: "blocked", completion: { intent: "blocked" } })
+    })
+  })
 })

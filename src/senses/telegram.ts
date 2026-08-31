@@ -44,6 +44,7 @@ import {
   type TelegramUpdate,
 } from "./telegram-client"
 import { createSanctuaryToolContext, runWithSanctuaryToolReceiptCollection, type SanctuaryToolReceiptObserver } from "./sanctuary-runtime"
+import { sanctuaryStorageOptimizationRequiredToolCalls } from "./sanctuary-storage-optimization-contract"
 import { renderSanctuaryGroundedResponse, sanctuaryGroundingDigest } from "./sanctuary-grounding"
 import { createTelegramApprovalRuntime, type TelegramApprovalRuntime } from "./telegram-approval-runtime"
 import type { SanctuaryHealthSweepResult } from "./sanctuary-health"
@@ -1144,6 +1145,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     userId: string
     chatId: string
     sessionKey: string
+    userMessage: string
   }): NonNullable<RunSenseTurnOptions["prepareRunAgentOptions"]> => {
     if (!options.resolveRelationshipAuthorization) throw new Error("Telegram relationship authorization resolver is unavailable")
     const relationshipCoordinates = { ...input, botId: botId! }
@@ -1160,10 +1162,17 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
           (await options.resolveRelationshipAuthorization!(relationshipCoordinates)).authorizeTool(name, args),
       }
     }
-    return async ({ runAgentOptions }) => ({
-      ...runAgentOptions,
-      toolContext: { ...runAgentOptions.toolContext!, relationshipAuthorization: await resolveLiveRelationshipAuthorization() },
-    })
+    return async ({ runAgentOptions }) => {
+      const relationshipAuthorization = await resolveLiveRelationshipAuthorization()
+      const requiredToolCalls = options.agentName === "sanctuary" && relationshipAuthorization.profileId === "sanctuary-owner"
+        ? sanctuaryStorageOptimizationRequiredToolCalls(input.userMessage, relationshipAuthorization.advertisedToolNames)
+        : undefined
+      return {
+        ...runAgentOptions,
+        ...(requiredToolCalls ? { requiredToolCalls } : {}),
+        toolContext: { ...runAgentOptions.toolContext!, relationshipAuthorization },
+      }
+    }
   }
   const dispatchResolvedRelationshipTurn = async (input: {
     friendId: string
@@ -1219,7 +1228,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       ...(orientationFrame ? { orientationFrame } : {}),
       toolContext: { ...(toolContext ?? {}), attachmentIds: input.attachmentIds ?? [] },
       prepareRunAgentOptions: prepareRelationshipRunAgentOptions({ friendId: input.friendId, requestId: input.requestId,
-        sessionEventId: input.eventId, userId: input.userId, chatId: input.chatId, sessionKey: input.sessionKey }),
+        sessionEventId: input.eventId, userId: input.userId, chatId: input.chatId, sessionKey: input.sessionKey, userMessage: input.text }),
       deliverySink: { onDelivery: (delivery) => deliver(delivery.text, delivery.kind === "settle") },
     })
     if (effects.length === 0 && result.response.trim()) await deliver(result.response, true)
@@ -1427,6 +1436,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
             userId: message.userId,
             chatId: message.chatId,
             sessionKey: currentSessionKey,
+            userMessage: message.text,
           }),
         } : {}),
         ...(approvalRuntime ? { approvalCoordinatorFactory: approvalRuntime.coordinator } : {}),
