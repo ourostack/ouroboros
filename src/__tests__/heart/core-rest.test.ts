@@ -811,15 +811,23 @@ describe("rest tool in runAgent", () => {
     expect(vi.mocked(emitNervesEvent).mock.calls.some(([event]) => (event as any).event === "engine.historical_tool_failure_retry")).toBe(false)
   })
 
-  it("ignores malformed historical mutation arguments", async () => {
+  it("ignores malformed and non-object historical mutation arguments", async () => {
     const request = "Keep Books off."
     mockCreate.mockReturnValueOnce(makeStream([makeChunk("Please try that again.", undefined)]))
     const execTool = vi.fn()
 
     await runAgent([
       { role: "user", content: request },
-      { role: "assistant", tool_calls: [{ id: "call_malformed", type: "function", function: { name: "steward_policy_manage", arguments: "{" } }] },
+      { role: "assistant", tool_calls: [
+        { id: "call_malformed", type: "function", function: { name: "steward_policy_manage", arguments: "{" } },
+        { id: "call_null", type: "function", function: { name: "steward_policy_manage", arguments: "null" } },
+        { id: "call_scalar", type: "function", function: { name: "steward_policy_manage", arguments: JSON.stringify("text") } },
+        { id: "call_array", type: "function", function: { name: "steward_policy_manage", arguments: "[]" } },
+      ] },
       { role: "tool", tool_call_id: "call_malformed", content: "invalid tool arguments: malformed JSON" },
+      { role: "tool", tool_call_id: "call_null", content: "invalid tool arguments: expected object" },
+      { role: "tool", tool_call_id: "call_scalar", content: "invalid tool arguments: expected object" },
+      { role: "tool", tool_call_id: "call_array", content: "invalid tool arguments: expected object" },
       { role: "assistant", content: "It failed." },
       { role: "user", content: request },
     ] as any[], makeCallbacks(), "telegram", undefined, {
