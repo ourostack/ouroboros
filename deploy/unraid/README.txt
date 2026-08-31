@@ -377,7 +377,8 @@ Effective-spec audit helper:
       VALIDATE_WRONG_RUNTIME_DIR_MODE=$(find "$VALIDATE_RUNTIME_ROOT" -xdev -type d ! -perm 0700 \
         ! \( -perm 0755 \( \
           -path "$VALIDATE_RUNTIME_ROOT/scheduler" -o -path "$VALIDATE_RUNTIME_ROOT/scheduler/*" -o \
-          -path "$VALIDATE_RUNTIME_ROOT/daemon/logs" -o -path "$VALIDATE_RUNTIME_ROOT/daemon/logs/*" \
+          -path "$VALIDATE_RUNTIME_ROOT/daemon/logs" -o -path "$VALIDATE_RUNTIME_ROOT/daemon/logs/*" -o \
+          -path "$VALIDATE_RUNTIME_ROOT/daemon/external-events" -o -path "$VALIDATE_RUNTIME_ROOT/daemon/external-events/*" \
         \) \) -print -quit) || return $?
       test -z "$VALIDATE_WRONG_RUNTIME_DIR_MODE" || return $?
       VALIDATE_WRONG_AGENT_DIR_MODE=$(find "$VALIDATE_AGENT_ROOT" -xdev -type d ! -perm 0700 \
@@ -403,7 +404,8 @@ Effective-spec audit helper:
           -path "$VALIDATE_AGENT_ROOT/arc/flight-recorder/*" -o \
           -path "$VALIDATE_AGENT_ROOT/state/health/*" -o \
           -path "$VALIDATE_AGENT_ROOT/state/logs/*" -o \
-          -path "$VALIDATE_AGENT_ROOT/state/habits/*" \
+          -path "$VALIDATE_AGENT_ROOT/state/habits/*" -o \
+          -path "$VALIDATE_AGENT_ROOT/state/arc/context-loss-sentinel-watermark.json" \
         \) \) -print -quit) || return $?
       test -z "$VALIDATE_WRONG_AGENT_FILE_MODE" || return $?
       )
@@ -1530,6 +1532,8 @@ Update:
   sequence. MiniMax credentials are imported from the byte-verified legacy
   bootstrap envelope; do not place credentials in arguments, shell variables, or
   history.
+  These provider-readiness commands are adoption-only; do not use them as a
+  normal-update precheck against an active canonical production daemon.
   Sanctuary legacy adoption commands:
     prepare_sanctuary_legacy_adoption "$IMAGE_ID"
     verify_sanctuary_provider_readiness "$IMAGE_ID"
