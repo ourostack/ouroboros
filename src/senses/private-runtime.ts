@@ -937,6 +937,25 @@ export function buildHeldReturnWakeMessage(): string {
   ].join("\n")
 }
 
+function buildExternalEventLeaseMessage(event: ExternalEventLeaseContext): string {
+  const members = [event, ...(event.relatedEvents ?? [])]
+  return [
+    "[current external-event disposition contract]",
+    "This exact lease frame is authoritative for this turn. Ignore older receipts, failed tool arguments, held-work summaries, and checkpoints when choosing disposition arguments.",
+    "Investigate the current observation, then call external_event_disposition once for every listed lease before settling.",
+    ...members.flatMap((member, index) => [
+      "",
+      `lease ${index + 1}:`,
+      `recordPath: ${member.recordPath}`,
+      `expectedGeneration: ${member.generation}`,
+      `classifiedRevision: ${member.observationRevision}`,
+      `claimOwner: ${member.claimOwner}`,
+      `source: ${member.source}`,
+      `eventId: ${member.eventId}`,
+    ]),
+  ].join("\n")
+}
+
 function buildAlsoDueLine(agentRoot: string, currentHabitName: string, now: () => Date): string {
   const habitsDir = path.join(agentRoot, "habits")
   let files: string[]
@@ -1233,7 +1252,9 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
     }
   }
 
-  if (shouldUseHeldReturnWake) {
+  if (options?.externalEvent) {
+    userContent = buildExternalEventLeaseMessage(options.externalEvent)
+  } else if (shouldUseHeldReturnWake) {
     userContent = buildHeldReturnWakeMessage()
   }
 
