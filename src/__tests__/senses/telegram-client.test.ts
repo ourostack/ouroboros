@@ -1871,12 +1871,15 @@ describe("Telegram durable authorized long poll", () => {
       { update_id: 7, message: { message_id: 7, from: { id: 10 }, chat: { id: 10, type: "private" }, sticker: { file_id: "sticker", file_size: 80 } } },
       { update_id: 8, message: { message_id: 8, from: { id: 10 }, chat: { id: 10, type: "private" }, sticker: { file_id: "animated-sticker", is_animated: true, file_size: 90 } } },
       { update_id: 9, message: { message_id: 9, from: { id: 10 }, chat: { id: 10, type: "private" }, video: {} } },
+      { update_id: 10, message: { message_id: 10, from: { id: 10 }, chat: { id: 10, type: "private" }, sticker: { file_id: "video-sticker", is_video: true } } },
+      { update_id: 11, message: { message_id: 11, from: { id: 10 }, chat: { id: 10, type: "private" }, photo: [{ file_id: "narrow", width: 10 }, { file_id: "wide", width: 20 }] } },
+      { update_id: 12, message: { message_id: 12, from: { id: 10 }, chat: { id: 10, type: "private" }, photo: [{ file_id: "metadata-free-1" }, { file_id: "metadata-free-2" }] } },
     ])
     const poll = createTelegramLongPoll({ api: { request, stop: vi.fn() }, expectedUserId: "10", expectedChatId: "10", offsetStore: { load: () => 0, save: vi.fn() }, onMessage })
 
     await poll.pollOnce()
 
-    expect(onMessage).toHaveBeenCalledTimes(9)
+    expect(onMessage).toHaveBeenCalledTimes(12)
     expect(onMessage).toHaveBeenNthCalledWith(1, expect.objectContaining({ text: "look at this", attachments: [{ fileId: "large", kind: "image", displayName: "telegram-photo.jpg", mimeType: "image/jpeg", byteCount: 20 }] }))
     expect(onMessage).toHaveBeenNthCalledWith(2, expect.objectContaining({ text: "", attachments: [{ fileId: "doc", kind: "document", displayName: "notes.pdf", mimeType: "application/pdf", byteCount: 30 }] }))
     expect(onMessage).toHaveBeenNthCalledWith(3, expect.objectContaining({ attachments: [{ fileId: "audio", kind: "audio", displayName: "song.flac", mimeType: "audio/flac", byteCount: 40 }] }))
@@ -1886,6 +1889,9 @@ describe("Telegram durable authorized long poll", () => {
     expect(onMessage).toHaveBeenNthCalledWith(7, expect.objectContaining({ attachments: [{ fileId: "sticker", kind: "image", displayName: "telegram-sticker.webp", mimeType: "image/webp", byteCount: 80 }] }))
     expect(onMessage).toHaveBeenNthCalledWith(8, expect.objectContaining({ attachments: [{ fileId: "animated-sticker", kind: "binary", displayName: "telegram-sticker.tgs", mimeType: "application/x-tgsticker", byteCount: 90 }] }))
     expect(onMessage).toHaveBeenNthCalledWith(9, expect.objectContaining({ attachments: [], attachmentNotices: ["attachment unavailable: Telegram media metadata was incomplete"] }))
+    expect(onMessage).toHaveBeenNthCalledWith(10, expect.objectContaining({ attachments: [{ fileId: "video-sticker", kind: "binary", displayName: "telegram-sticker.webm", mimeType: "video/webm" }] }))
+    expect(onMessage).toHaveBeenNthCalledWith(11, expect.objectContaining({ attachments: [{ fileId: "wide", kind: "image", displayName: "telegram-photo.jpg", mimeType: "image/jpeg" }] }))
+    expect(onMessage).toHaveBeenNthCalledWith(12, expect.objectContaining({ attachments: [{ fileId: "metadata-free-2", kind: "image", displayName: "telegram-photo.jpg", mimeType: "image/jpeg" }] }))
   })
 
   it("normalizes every supported unknown-contact label, body, and attachment shape", async () => {
@@ -1921,6 +1927,25 @@ describe("Telegram durable authorized long poll", () => {
       expect.objectContaining({ displayLabel: "Alan", text: "sticker", hasAttachments: true }),
       expect.objectContaining({ displayLabel: "Telegram user 28", text: "", hasAttachments: false }),
     ])
+  })
+
+  it("drops an empty authorized-account update from both authorized and unknown-contact routes", async () => {
+    const onMessage = vi.fn()
+    const onUnknownMessage = vi.fn()
+    const poll = createTelegramLongPoll({
+      api: { request: vi.fn(async () => [{ update_id: 1, message: { message_id: 1, from: { id: 10 }, chat: { id: 10, type: "private" } } }]), stop: vi.fn() },
+      botId: "777",
+      expectedUserId: "10",
+      expectedChatId: "10",
+      offsetStore: { load: () => 0, save: vi.fn() },
+      onMessage,
+      onUnknownMessage,
+    })
+
+    await poll.pollOnce()
+
+    expect(onMessage).not.toHaveBeenCalled()
+    expect(onUnknownMessage).not.toHaveBeenCalled()
   })
 
   it("drops malformed, non-private, foreign-chat, and message-less updates with zero dispatch", async () => {

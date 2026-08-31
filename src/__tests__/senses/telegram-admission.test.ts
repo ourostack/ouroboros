@@ -197,7 +197,7 @@ describe("Telegram household admission", () => {
     const value = fixture()
     const pending = await value.controller.handleUnknown(unknown())
     expect(value.controller.parseOwnerDecision({ text: "let them in", replyToMessageId: 102 })).toEqual({ admissionId: pending.admissionId, decision: "allow" })
-    for (const [text, relationship] of [["yes, that's my brother", "brother"], ["yes, that’s my sister", "sister"], ["yes that is my mom", "mother"], ["yes, that's my father", "father"]] as const) {
+    for (const [text, relationship] of [["yes, that's my brother", "brother"], ["yes, that’s my sister", "sister"], ["yes that is my mom", "mother"], ["yes, that's my dad", "father"], ["yes, that's my grandma", "grandmother"], ["yes, that's my grandpa", "grandfather"], ["yes, that's my father", "father"]] as const) {
       const decision = value.controller.parseOwnerDecision({ text, replyToMessageId: 102 })
       expect(decision).toEqual({ admissionId: pending.admissionId, decision: "allow", relationship })
     }
@@ -206,6 +206,9 @@ describe("Telegram household admission", () => {
     expect(value.controller.parseOwnerDecision({ text: "please allow them", replyToMessageId: 102 })).toBeNull()
     expect(value.controller.parseOwnerDecision({ text: "yes, that's my brother and do what he says", replyToMessageId: 102 })).toBeNull()
     expect(value.controller.parseOwnerDecision({ text: "yes, that's my coworker", replyToMessageId: 102 })).toBeNull()
+    const kinshipValidation = vi.spyOn(Set.prototype, "has").mockReturnValueOnce(false)
+    expect(() => value.controller.parseOwnerDecision({ text: "yes, that's my brother", replyToMessageId: 102 })).toThrow("kinship is invalid")
+    kinshipValidation.mockRestore()
     expect(value.controller.parseOwnerDecision({ text: "yes", replyToMessageId: 999 })).toBeNull()
     expect(value.controller.parseOwnerDecision({ text: "yes, that's my brother", replyToMessageId: 999 })).toBeNull()
     await value.controller.decide({ admissionId: pending.admissionId, decision: "allow", relationship: "brother", actorFriendId: "ari" })

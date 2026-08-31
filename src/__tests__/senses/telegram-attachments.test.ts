@@ -2,8 +2,19 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { readRecentAttachments } from "../../heart/attachments/store"
+
+const fsPromiseFaults = vi.hoisted(() => ({ open: undefined as undefined | ((...args: any[]) => any), unlink: undefined as undefined | ((...args: any[]) => any) }))
+vi.mock("node:fs/promises", async (importActual) => {
+  const actual = await importActual<typeof import("node:fs/promises")>()
+  return {
+    ...actual,
+    open: (...args: any[]) => fsPromiseFaults.open ? fsPromiseFaults.open(...args) : (actual.open as any)(...args),
+    unlink: (...args: any[]) => fsPromiseFaults.unlink ? fsPromiseFaults.unlink(...args) : (actual.unlink as any)(...args),
+  }
+})
+import { cacheRecentAttachment, readRecentAttachments } from "../../heart/attachments/store"
 import { materializeAttachment } from "../../heart/attachments/materialize"
+import { originalStoragePath } from "../../heart/attachments/originals"
 import { buildTelegramAttachmentRecord, telegramAttachmentSourceAdapter } from "../../heart/attachments/sources/telegram"
 import { ingestTelegramAttachments } from "../../senses/telegram-attachments"
 import { createTelegramLongPoll, type TelegramInboundMessage } from "../../senses/telegram-client"
@@ -16,6 +27,8 @@ const root = () => {
 }
 
 afterEach(() => {
+  fsPromiseFaults.open = undefined
+  fsPromiseFaults.unlink = undefined
   for (const value of roots.splice(0)) fs.rmSync(value, { recursive: true, force: true })
 })
 
@@ -113,7 +126,7 @@ describe("Telegram attachment ingestion", () => {
       if (body.file_id === "missing-path") return {}
       if (body.file_id === "bad-size") return { file_path: "bad.bin", file_size: -1 }
       if (body.file_id === "primitive") throw "primitive failure"
-      return { file_path: "empty.bin" }
+      return { file_path: `${body.file_id}.bin` }
     })
     const fetch = vi.fn(async (url: string) => url.includes("header")
       ? new Response("x", { status: 200, headers: { "content-length": "20000001" } })
@@ -130,6 +143,64 @@ describe("Telegram attachment ingestion", () => {
     const result = await ingestTelegramAttachments({ agentName: "sanctuary", agentRoot, botToken: "123:secret", api: { request, stop: vi.fn() }, fetch, attachments: candidates })
     expect(result.notices).toHaveLength(candidates.length)
     expect(JSON.stringify(result)).not.toContain("123:secret")
+  })
+
+  it("covers global fetch, the eight-file cap, malformed cache metadata, and MIME fallbacks", async () => {
+    const agentRoot = root()
+    const malformedCached = buildTelegramAttachmentRecord({ fileId: "cached", displayName: "cached.bin", localPath: path.join(agentRoot, "cached.bin") })
+    cacheRecentAttachment("sanctuary", { ...malformedCached, sourceData: { localPath: 42 } } as any, agentRoot)
+    const request = vi.fn(async (_method: string, body: Record<string, unknown>) => ({ file_path: `${body.file_id}.bin`, file_size: 1 }))
+    const globalFetch = vi.fn(async (url: string) => new Response(new Uint8Array([1]), { status: 200, headers: url.includes("/typed.") ? { "content-type": "text/plain" } : {} }))
+    vi.stubGlobal("fetch", globalFetch)
+    const candidates = [
+      { fileId: "cached", kind: "binary" as const, displayName: "cached.bin" },
+      { fileId: "typed", kind: "document" as const, displayName: "typed" },
+      { fileId: "untyped", kind: "binary" as const, displayName: "untyped" },
+      ...Array.from({ length: 7 }, (_, index) => ({ fileId: `extra-${index}`, kind: "binary" as const, displayName: `extra-${index}.bin` })),
+    ]
+
+    const result = await ingestTelegramAttachments({ agentName: "sanctuary", agentRoot, botToken: "123:secret", api: { request, stop: vi.fn() }, attachments: candidates })
+    vi.unstubAllGlobals()
+
+    expect(result.attachments).toHaveLength(8)
+    expect(request).toHaveBeenCalledTimes(8)
+    expect(result.attachments.find((attachment) => attachment.sourceId === "typed")?.mimeType).toBe("text/plain")
+    expect(result.attachments.find((attachment) => attachment.sourceId === "untyped")?.mimeType).toBeUndefined()
+  })
+
+  it("rejects invalid persisted originals and contains cancellation and atomic-cleanup failures", async () => {
+    const agentRoot = root()
+    const descriptor = (fileId: string) => ({ fileId, kind: "binary" as const, displayName: `${fileId}.bin` })
+    const record = (fileId: string) => buildTelegramAttachmentRecord({ ...descriptor(fileId), localPath: path.join(agentRoot, "pending", fileId) })
+    const directoryPath = originalStoragePath(agentRoot, record("directory"))
+    fs.mkdirSync(directoryPath, { recursive: true })
+    const oversizedPath = originalStoragePath(agentRoot, record("oversized-persisted"))
+    fs.mkdirSync(path.dirname(oversizedPath), { recursive: true })
+    fs.closeSync(fs.openSync(oversizedPath, "w"))
+    fs.truncateSync(oversizedPath, 20_000_001)
+    const api = { request: vi.fn(async (_method: string, body: Record<string, unknown>) => ({ file_path: `${body.file_id}.bin`, file_size: 20_000_001 })), stop: vi.fn() }
+    const invalid = await ingestTelegramAttachments({ agentName: "sanctuary", agentRoot, botToken: "123:secret", api, fetch: vi.fn(), attachments: [descriptor("directory"), descriptor("oversized-persisted")] })
+    expect(invalid.notices).toHaveLength(2)
+    expect(api.request).not.toHaveBeenCalled()
+
+    const cancelFailure = new ReadableStream<Uint8Array>({
+      pull(controller) { controller.enqueue(new Uint8Array(20_000_001)) },
+      cancel() { throw new Error("cancel failed") },
+    })
+    const streamed = await ingestTelegramAttachments({ agentName: "sanctuary", agentRoot, botToken: "123:secret", api: { request: vi.fn(async () => ({ file_path: "cancel.bin" })), stop: vi.fn() }, fetch: vi.fn(async () => new Response(cancelFailure)), attachments: [descriptor("cancel")] })
+    expect(streamed.notices).toEqual(["attachment unavailable: cancel.bin"])
+
+    const close = vi.fn(async () => { throw new Error("close failed") })
+    fsPromiseFaults.open = async () => ({ writeFile: vi.fn(async () => { throw new Error("write failed") }), close })
+    const failedWrite = await ingestTelegramAttachments({ agentName: "sanctuary", agentRoot, botToken: "123:secret", api: { request: vi.fn(async () => ({ file_path: "write.bin", file_size: 1 })), stop: vi.fn() }, fetch: vi.fn(async () => new Response("x")), attachments: [descriptor("write")] })
+    fsPromiseFaults.open = undefined
+    expect(failedWrite.notices).toEqual(["attachment unavailable: write.bin"])
+    expect(close).toHaveBeenCalled()
+
+    fsPromiseFaults.unlink = async () => { throw Object.assign(new Error("unlink denied"), { code: "EACCES" }) }
+    const failedCleanup = await ingestTelegramAttachments({ agentName: "sanctuary", agentRoot, botToken: "123:secret", api: { request: vi.fn(async () => ({ file_path: "cleanup.bin", file_size: 1 })), stop: vi.fn() }, fetch: vi.fn(async () => new Response("x")), attachments: [descriptor("cleanup")] })
+    fsPromiseFaults.unlink = undefined
+    expect(failedCleanup.notices).toEqual(["attachment unavailable: cleanup.bin"])
   })
 
   it("rejects malformed Telegram source records and paths outside the owned attachment root", async () => {
