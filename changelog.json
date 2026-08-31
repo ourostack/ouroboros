@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.761",
+      "changes": [
+        "Require current storage and media-optimization evidence before answering owner requests to diagnose and shrink Sanctuary storage.",
+        "Turn the exact owner download-credit question into one household-safe top-up, resume, verification, or reminder reply without backend jargon.",
+        "Require current work, cares, system, and container evidence for compact whole-Sanctuary status answers."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.760",
       "changes": [
         "Force exact repeated requests to retry unresolved matching effects and fail closed instead of accepting stale text."
