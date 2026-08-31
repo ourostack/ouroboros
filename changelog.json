@@ -4,7 +4,8 @@
     {
       "version": "0.1.0-alpha.759",
       "changes": [
-        "Retry unresolved tool failures across repeated requests when the current response says the lane is down."
+        "Retry unresolved tool failures across repeated requests when the current response says the lane is down.",
+        "Accept Unraid's live server PrefixedID shape when grounding storage and system reads."
       ]
     },
     {
