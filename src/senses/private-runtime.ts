@@ -946,14 +946,15 @@ function buildExternalEventLeaseMessage(event: ExternalEventLeaseContext): strin
     ...members.flatMap((member, index) => [
       "",
       `lease ${index + 1}:`,
-      `recordPath: ${member.recordPath}`,
+      `recordPath: ${JSON.stringify(member.recordPath)}`,
       `expectedGeneration: ${member.generation}`,
-      `classifiedRevision: ${member.observationRevision}`,
-      `claimOwner: ${member.claimOwner}`,
-      `source: ${member.source}`,
-      `eventId: ${member.eventId}`,
+      `classifiedRevision: ${JSON.stringify(member.observationRevision)}`,
     ]),
   ].join("\n")
+}
+
+function externalEventLeaseKey(event: ExternalEventLeaseContext): string {
+  return JSON.stringify([event.recordPath, event.generation, event.observationRevision, event.claimOwner])
 }
 
 function buildAlsoDueLine(agentRoot: string, currentHabitName: string, now: () => Date): string {
@@ -1325,6 +1326,7 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
         }
       })()
     : undefined
+  const committedExternalEventLeases = new Set<string>()
   const externalEventRelationship = options?.externalEvent
     ? await (async () => {
         const agentRoot = getAgentRoot(agentName)
@@ -1356,6 +1358,9 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
             authorizeDisposition: () => {
               const decision = initial.authorizeTool("external_event_disposition")
               return decision.allowed ? { allowed: true, reason: "relationship-authorized" } : { allowed: false, reason: decision.reason }
+            },
+            recordCommittedDisposition: (event: ExternalEventLeaseContext) => {
+              committedExternalEventLeases.add(externalEventLeaseKey(event))
             },
           },
           externalEventEffects: {
@@ -1531,6 +1536,13 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
       ...(effectiveHabitSession ? { habitSession: effectiveHabitSession } : {}),
     },
     })
+    if (options?.externalEvent && ["settled", "observed", "rested"].includes(String(result.turnOutcome))) {
+      const incomplete = [options.externalEvent, ...(options.externalEvent.relatedEvents ?? [])]
+        .filter((event) => !committedExternalEventLeases.has(externalEventLeaseKey(event)))
+      if (incomplete.length > 0) {
+        throw new Error(`External-event turn did not commit dispositions for every exact lease (${incomplete.length} incomplete)`)
+      }
+    }
     if (externalRunBase) {
       const lifecycle = result.turnOutcome === "settled" || result.turnOutcome === "observed" || result.turnOutcome === "rested"
         ? "completed" as const
