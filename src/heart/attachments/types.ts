@@ -2,7 +2,7 @@ import * as path from "node:path"
 import { emitNervesEvent } from "../../nerves/runtime"
 
 export type AttachmentKind = "image" | "audio" | "document" | "binary" | "unknown"
-export type AttachmentSourceKind = "bluebubbles" | "cli-local-file"
+export type AttachmentSourceKind = "bluebubbles" | "cli-local-file" | "telegram"
 export type AttachmentVariant = "original" | "vision_safe"
 export type AttachmentSourceData = object
 

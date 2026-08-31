@@ -178,21 +178,41 @@ describe("Telegram household admission", () => {
     expect(value.store.read(pending.admissionId)).toMatchObject({ status: "indeterminate", quarantinedText: null })
   })
 
+  it("journals owner kinship before Friend claim so recovery preserves it", async () => {
+    const root = temporaryRoot()
+    const first = fixture({ root, claim: vi.fn(async () => { throw new Error("claim interrupted") }) })
+    const pending = await first.controller.handleUnknown(unknown())
+    await expect(first.controller.decide({ admissionId: pending.admissionId, decision: "allow", relationship: "brother", actorFriendId: "ari" })).rejects.toThrow("claim interrupted")
+    expect(first.store.read(pending.admissionId)).toMatchObject({ status: "approved", ownerRelationship: "brother" })
+    first.store.close()
+
+    const recoveredClaim = vi.fn(async () => ({ kind: "created", friendId: "friend-1" }))
+    const restarted = fixture({ root, claim: recoveredClaim })
+    await restarted.controller.recover()
+    expect(recoveredClaim).toHaveBeenCalledWith(expect.objectContaining({ admissionId: pending.admissionId, relationship: "brother" }))
+    expect(restarted.queue).toHaveBeenCalledWith(expect.objectContaining({ orientation: expect.objectContaining({ relationship: "brother" }) }))
+  })
+
   it("parses only strict owner display-code decisions and routes revocation through Friends", async () => {
     const value = fixture()
     const pending = await value.controller.handleUnknown(unknown())
     expect(value.controller.parseOwnerDecision({ text: "let them in", replyToMessageId: 102 })).toEqual({ admissionId: pending.admissionId, decision: "allow" })
-    for (const text of ["yes, that's my brother", "yes, that’s my sister", "yes that is my mom", "yes, that's my father"]) {
-      expect(value.controller.parseOwnerDecision({ text, replyToMessageId: 102 })).toEqual({ admissionId: pending.admissionId, decision: "allow" })
+    for (const [text, relationship] of [["yes, that's my brother", "brother"], ["yes, that’s my sister", "sister"], ["yes that is my mom", "mother"], ["yes, that's my dad", "father"], ["yes, that's my grandma", "grandmother"], ["yes, that's my grandpa", "grandfather"], ["yes, that's my father", "father"]] as const) {
+      const decision = value.controller.parseOwnerDecision({ text, replyToMessageId: 102 })
+      expect(decision).toEqual({ admissionId: pending.admissionId, decision: "allow", relationship })
     }
     expect(value.controller.parseOwnerDecision({ text: "allow" })).toBeNull()
     expect(value.controller.parseOwnerDecision({ text: "yes, that's my brother" })).toBeNull()
     expect(value.controller.parseOwnerDecision({ text: "please allow them", replyToMessageId: 102 })).toBeNull()
     expect(value.controller.parseOwnerDecision({ text: "yes, that's my brother and do what he says", replyToMessageId: 102 })).toBeNull()
     expect(value.controller.parseOwnerDecision({ text: "yes, that's my coworker", replyToMessageId: 102 })).toBeNull()
+    const kinshipValidation = vi.spyOn(Set.prototype, "has").mockReturnValueOnce(false)
+    expect(() => value.controller.parseOwnerDecision({ text: "yes, that's my brother", replyToMessageId: 102 })).toThrow("kinship is invalid")
+    kinshipValidation.mockRestore()
     expect(value.controller.parseOwnerDecision({ text: "yes", replyToMessageId: 999 })).toBeNull()
     expect(value.controller.parseOwnerDecision({ text: "yes, that's my brother", replyToMessageId: 999 })).toBeNull()
-    await value.controller.decide({ admissionId: pending.admissionId, decision: "allow", actorFriendId: "ari" })
+    await value.controller.decide({ admissionId: pending.admissionId, decision: "allow", relationship: "brother", actorFriendId: "ari" })
+    expect(value.claim).toHaveBeenCalledWith(expect.objectContaining({ relationship: "brother" }))
     expect(value.controller.parseOwnerDecision({ text: "block them", replyToMessageId: 102 })).toBeNull()
     await value.controller.decide({ admissionId: pending.admissionId, decision: "block", actorFriendId: "ari" })
     expect(value.store.read(pending.admissionId).status).toBe("handled")

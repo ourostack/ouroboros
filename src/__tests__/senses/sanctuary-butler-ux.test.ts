@@ -99,15 +99,15 @@ describe("Mendelow Cloud Butler household UX", () => {
     expect(config.version).toBe(2)
     expect(config.profiles).toMatchObject({
       "sanctuary-owner": {
-        version: 5,
+        version: 6,
         contextScopes: expect.arrayContaining(["household.status", "household.policy"]),
-        toolNames: expect.arrayContaining(["steward_policy_manage", "unraid_restart_container", "unraid_check_services", "sanctuary_get_download_queue", "sanctuary_resume_download_queue"]),
+        toolNames: expect.arrayContaining(["steward_policy_manage", "unraid_restart_container", "unraid_check_services", "sanctuary_get_download_queue", "sanctuary_resume_download_queue", "list_recent_attachments", "materialize_attachment", "describe_image"]),
         effectScopes: expect.arrayContaining(["telegram.proactive", "telegram.request_return"]),
       },
       "sanctuary-household": {
-        version: 4,
+        version: 5,
         contextScopes: expect.arrayContaining(["household.status"]),
-        toolNames: expect.arrayContaining(["unraid_get_system", "unraid_check_services"]),
+        toolNames: expect.arrayContaining(["unraid_get_system", "unraid_check_services", "list_recent_attachments", "materialize_attachment", "describe_image"]),
         effectScopes: ["telegram.request_return"],
       },
       "sanctuary-event": {
@@ -249,7 +249,7 @@ describe("Mendelow Cloud Butler household UX", () => {
       .filter((name) => household.evaluator.advertisedToolNames.includes(name))
     setAgentName(path.basename(agentRoot, ".ouro"))
 
-    expect(advertised).toEqual(["save_friend_note", "await_condition", "resolve_await", "cancel_await", "unraid_list_containers", "unraid_get_storage", "unraid_get_disks", "unraid_get_system", "unraid_check_services", "unraid_restart_container", "settle", "speak"])
+    expect(advertised).toEqual(["save_friend_note", "list_recent_attachments", "materialize_attachment", "describe_image", "await_condition", "resolve_await", "cancel_await", "unraid_list_containers", "unraid_get_storage", "unraid_get_disks", "unraid_get_system", "unraid_check_services", "unraid_restart_container", "settle", "speak"])
     expect(household.evaluator.advertisedToolNames).not.toEqual(expect.arrayContaining(["sanctuary_get_download_queue", "sanctuary_resume_download_queue"]))
     expect(household.evaluator.advertisedToolNames).not.toContain("sanctuary_get_media_optimization")
     expect(await execTool("sanctuary_get_download_queue", {}, { ...household.context, sanctuary: { getDownloadQueue: async () => ({ paused: true }) } } as any)).toContain("relationship authorization required")

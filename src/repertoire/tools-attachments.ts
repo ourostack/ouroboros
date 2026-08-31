@@ -160,13 +160,14 @@ export const attachmentToolDefinitions: ToolDefinition[] = [
         },
       },
     } satisfies OpenAI.ChatCompletionFunctionTool,
-    handler: async (args) => {
+    handler: async (args, ctx) => {
       const agentName = getAgentName()
       const kind = trimArg(args.kind)
+      const allowed = ctx?.attachmentIds ? new Set(ctx.attachmentIds) : null
       const attachments = listRecentAttachments(agentName, {
         kind: kind ? kind as "image" | "audio" | "document" | "binary" | "unknown" : undefined,
-        limit: parseLimit(args.limit),
-      })
+        limit: allowed ? undefined : parseLimit(args.limit),
+      }).filter((attachment) => !allowed || allowed.has(attachment.id)).slice(0, parseLimit(args.limit))
       return okToolResult("list_recent_attachments", attachments)
     },
     summaryKeys: ["kind", "limit"],
@@ -198,11 +199,12 @@ export const attachmentToolDefinitions: ToolDefinition[] = [
         },
       },
     } satisfies OpenAI.ChatCompletionFunctionTool,
-    handler: async (args) => {
+    handler: async (args, ctx) => {
       const attachmentId = resolveAttachmentId(args)
       if (!attachmentId) {
         return missingAttachmentId("materialize_attachment")
       }
+      if (ctx?.attachmentIds && !ctx.attachmentIds.includes(attachmentId)) return attachmentNotFound("materialize_attachment", attachmentId)
 
       const agentName = getAgentName()
       const variant = trimArg(args.variant) === "vision_safe" ? "vision_safe" : "original"
@@ -243,11 +245,12 @@ export const attachmentToolDefinitions: ToolDefinition[] = [
         },
       },
     } satisfies OpenAI.ChatCompletionFunctionTool,
-    handler: async (args) => {
+    handler: async (args, ctx) => {
       const attachmentId = resolveAttachmentId(args)
       if (!attachmentId) {
         return missingAttachmentId("describe_image")
       }
+      if (ctx?.attachmentIds && !ctx.attachmentIds.includes(attachmentId)) return attachmentNotFound("describe_image", attachmentId)
 
       const prompt = trimArg(args.prompt)
       if (!prompt) {

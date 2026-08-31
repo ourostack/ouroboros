@@ -54,15 +54,19 @@ export const stewardPolicyToolDefinition: ToolDefinition = {
       mutation = { kind: "set_desired_state", key: args.key ?? "", value: args.value ?? "", provenance: args.provenance, source: args.source ?? "", ...(args.expiresAt ? { expiresAt: args.expiresAt } : {}) }
     } else if (args.action === "grant_routine_action") {
       if (args.provenance !== "stated" && args.provenance !== "installed_explicit_policy") throw new Error("routine action provenance is invalid")
+      const targets = arrayArgument(args.targetsJson, "targetsJson")
+      const exclusions = arrayArgument(args.exclusionsJson, "exclusionsJson")
+      const verificationRequired: unknown = args.verificationRequired
+      if (verificationRequired !== true) throw new Error("verificationRequired must be true")
       mutation = {
         kind: "grant_routine_action",
         key: args.key ?? "",
         action: args.routineAction ?? "",
-        targets: arrayArgument(args.targetsJson, "targetsJson"),
+        targets,
         maxCount: Number(args.maxCount),
         windowMs: Number(args.windowMs),
-        verificationRequired: args.verificationRequired === "true",
-        exclusions: arrayArgument(args.exclusionsJson, "exclusionsJson"),
+        verificationRequired,
+        exclusions,
         provenance: args.provenance,
         ...(args.expiresAt ? { expiresAt: args.expiresAt } : {}),
       }
