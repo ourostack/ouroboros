@@ -52,7 +52,7 @@ import { awaitNameFromPrivateWakeCommand, buildAwaitPrivateWakeCommand } from ".
 import { buildHabitPrivateWakeCommand, habitMessageFromPrivateWakeCommand } from "./habit-private-wake"
 import { createDegradedHabitFile, parseHabitFile, type HabitFile } from "../habits/habit-parser"
 import { applyHabitRuntimeState } from "../habits/habit-runtime-state"
-import { buildExternalEventMessage, claimExternalEvent, externalEventRecoveryFailure, failExternalEventAttempt, getExternalEventRoot, listExternalEventStatus, readExternalEventRecord, reconcileExternalEvent, recordExternalEvent, reviveExternalEventAfterRecovery, scanPrivilegedEventSpool, type ExternalEventFailureClass, type ExternalEventLeaseContext, type ExternalEventLeaseMember, type ExternalEventRecord, type ExternalEventStatus } from "../external-events/router"
+import { buildExternalEventMessage, claimExternalEvent, externalEventRecoveryFailure, failExternalEventAttempt, getExternalEventRoot, isExactLegacyProviderRecoveryFailure, listExternalEventStatus, readExternalEventRecord, reconcileExternalEvent, recordExternalEvent, reviveExternalEventAfterRecovery, scanPrivilegedEventSpool, type ExternalEventFailureClass, type ExternalEventLeaseContext, type ExternalEventLeaseMember, type ExternalEventRecord, type ExternalEventStatus } from "../external-events/router"
 import { isRsvpHabitName } from "../../rsvp/habit-policy"
 import { readContainerRuntimePolicy } from "./container-runtime"
 import type { RunNativeRsvpHabitInput, RunNativeRsvpHabitResult } from "../../rsvp/native-habit-runner"
@@ -868,6 +868,7 @@ export class OuroDaemon {
   private senseAutostartTimer: ReturnType<typeof setTimeout> | null = null
   private externalEventReconcileTimer: ReturnType<typeof setInterval> | null = null
   private externalEventReconcileRunning = false
+  private readonly constructedAtMs = Date.now()
   private readonly mailboxServerFactory: () => Promise<MailboxHttpServerHandle>
   private readonly privateRuntimePolicyDeps: PrivateTurnPolicyDeps
   private readonly onStopCommandComplete: (() => void | Promise<void>) | null
@@ -1850,7 +1851,7 @@ export class OuroDaemon {
     return { type: "message", privateTurnDecision: decision, ...(externalEvent ? { externalEvent } : {}) }
   }
 
-  private queueExternalEventForPrivateRuntime(record: ExternalEventRecord): void {
+  private queueExternalEventForPrivateRuntime(record: ExternalEventRecord, quiet = false): void {
     const pendingDir = path.join(
       this.bundlesRoot,
       `${record.agent}.ouro`,
@@ -1878,18 +1879,20 @@ export class OuroDaemon {
       mode: "relay",
       packetId: `external-event:${record.agent}:${record.source}:${record.eventId}:generation:${record.generation}:attempt:${record.attemptCount}`,
     })
-    emitNervesEvent({
-      component: "daemon",
-      event: "daemon.external_event_private_runtime_queued",
-      message: "queued external event for private-runtime attention",
-      meta: {
-        agent: record.agent,
-        source: record.source,
-        eventType: record.eventType,
-        eventId: record.eventId,
-        pendingDir,
-      },
-    })
+    if (!quiet) {
+      emitNervesEvent({
+        component: "daemon",
+        event: "daemon.external_event_private_runtime_queued",
+        message: "queued external event for private-runtime attention",
+        meta: {
+          agent: record.agent,
+          source: record.source,
+          eventType: record.eventType,
+          eventId: record.eventId,
+          pendingDir,
+        },
+      })
+    }
   }
 
   private externalEventRootPath(): string {
@@ -1934,7 +1937,18 @@ export class OuroDaemon {
           eventType: primary.eventType,
           eventId: primary.eventId,
         }, receipt.id, primary.generation, primary.attemptCount),
-        () => { for (const record of claimed) this.queueExternalEventForPrivateRuntime(record) },
+        () => {
+          const batched = claimed.length > 1
+          for (const record of claimed) this.queueExternalEventForPrivateRuntime(record, batched)
+          if (batched) {
+            emitNervesEvent({
+              component: "daemon",
+              event: "daemon.external_event_private_runtime_batch_queued",
+              message: "queued an external-event batch for private-runtime attention",
+              meta: { agent: primary.agent, source: primary.source, eventCount: claimed.length },
+            })
+          }
+        },
         lease,
       )
       failureClass = wake.denialCode === "managed_runtime_unavailable"
@@ -1975,6 +1989,9 @@ export class OuroDaemon {
       }
       const statuses = listExternalEventStatus(this.externalEventRootPath())
       const dueRecords: ExternalEventRecord[] = []
+      const providerEvidenceByAgent = new Map<string, { observedAt: string } | null>()
+      const runtimeEvidenceByAgent = new Map<string, { observedAt: string } | null>()
+      const recoveredByClass = new Map<ExternalEventFailureClass, number>()
       for (const status of statuses) {
         if (status.corrupt) continue
         let record = readExternalEventRecord(status.recordPath)
@@ -1985,22 +2002,44 @@ export class OuroDaemon {
           let evidence: { class: ExternalEventFailureClass; observedAt: string } | null = null
           try {
             if (failure.class === "provider_lane_unavailable") {
-              const binding = resolveEffectiveProviderBinding({
-                agentName: record.agent,
-                agentRoot: path.join(this.bundlesRoot, `${record.agent}.ouro`),
-                lane: "inner",
-              })
-              if (binding.ok && binding.binding.credential.status === "present"
-                && binding.binding.readiness.status === "ready" && binding.binding.readiness.checkedAt
-                && Date.parse(binding.binding.readiness.checkedAt) > Date.parse(failure.failedAt)) {
-                evidence = { class: failure.class, observedAt: binding.binding.readiness.checkedAt }
+              if (!providerEvidenceByAgent.has(record.agent)) {
+                providerEvidenceByAgent.set(record.agent, null)
+                const binding = resolveEffectiveProviderBinding({
+                  agentName: record.agent,
+                  agentRoot: path.join(this.bundlesRoot, `${record.agent}.ouro`),
+                  lane: "inner",
+                })
+                providerEvidenceByAgent.set(record.agent, binding.ok && binding.binding.credential.status === "present"
+                  && binding.binding.readiness.status === "ready" && binding.binding.readiness.checkedAt
+                  ? { observedAt: binding.binding.readiness.checkedAt }
+                  : null)
+              }
+              const current = providerEvidenceByAgent.get(record.agent)
+              const readinessIsCurrentBoot = current && Date.parse(current.observedAt) >= this.constructedAtMs
+              if (current && (isExactLegacyProviderRecoveryFailure(record)
+                ? readinessIsCurrentBoot
+                : Date.parse(current.observedAt) > Date.parse(failure.failedAt))) {
+                evidence = { class: failure.class, observedAt: current.observedAt }
+              }
+            } else if (failure.class === "execution_lease_expired") {
+              if (!runtimeEvidenceByAgent.has(record.agent)) {
+                const snapshot = this.processManager.listAgentSnapshots().find((candidate) =>
+                  candidate.name === record.agent && candidate.channel === "private-runtime"
+                    && candidate.status === "running" && candidate.pid !== null && candidate.startedAt !== null,
+                )
+                runtimeEvidenceByAgent.set(record.agent, snapshot?.startedAt ? { observedAt: snapshot.startedAt } : null)
+              }
+              const current = runtimeEvidenceByAgent.get(record.agent)
+              if (current && Date.parse(current.observedAt) > Date.parse(failure.failedAt)) {
+                evidence = { class: failure.class, observedAt: current.observedAt }
               }
             } else if (this.hasManagedPrivateRuntime(record.agent) && Date.parse(now) > Date.parse(failure.failedAt)) {
               evidence = { class: failure.class, observedAt: now }
             }
             if (!evidence) continue
-            const revival = reviveExternalEventAfterRecovery(record.recordPath, { expectedVersion: record.version, expectedGeneration: record.generation, evidence, now: () => now })
+            const revival = reviveExternalEventAfterRecovery(record.recordPath, { expectedVersion: record.version, expectedGeneration: record.generation, evidence, now: () => now, quiet: true })
             record = revival.record
+            recoveredByClass.set(failure.class, (recoveredByClass.get(failure.class) ?? 0) + 1)
           } catch (error) {
             emitNervesEvent({
               level: "warn",
@@ -2019,6 +2058,14 @@ export class OuroDaemon {
           || record.executionState === "queued"
           || (record.executionState === "retry_wait" && record.nextAttemptAt !== null && Date.parse(record.nextAttemptAt) <= Date.parse(now))
         if (due) dueRecords.push(record)
+      }
+      if (recoveredByClass.size > 0) {
+        emitNervesEvent({
+          component: "daemon",
+          event: "daemon.external_event_recovery_batch",
+          message: "requeued external events after cached infrastructure recovery evidence",
+          meta: { recovered: Object.fromEntries(recoveredByClass) },
+        })
       }
       const batches = new Map<string, ExternalEventRecord[]>()
       for (const record of dueRecords) {

@@ -5,6 +5,7 @@ const REDACTED_BOOTSTRAP_STARTUP_ERROR = "container credential bootstrap rejecte
 
 export interface DaemonBootstrapStartupInput {
   loadBootstrap: () => Promise<unknown>
+  prepareDaemon?: () => Promise<void>
   startDaemon: () => Promise<void>
   markStartupFailure: () => void
   exit: (code: number) => void
@@ -38,6 +39,7 @@ export async function startDaemonAfterContainerCredentialBootstrap(
 ): Promise<boolean> {
   try {
     await input.loadBootstrap()
+    await input.prepareDaemon?.()
   } catch {
     input.markStartupFailure()
     failFastContainerCredentialBootstrapStartup({ exit: input.exit })

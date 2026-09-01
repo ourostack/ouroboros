@@ -117,4 +117,17 @@ describe("external event router", () => {
     expect(() => readExternalEventRecord(record.recordPath)).toThrow("invalid")
     expect(listExternalEventStatus(path.join(root, "missing"))).toEqual([])
   })
+
+  it("ignores dot directories without entering a disappearing capacity lock", () => {
+    const root = tempDir("ouro-external-event-dot-dirs-")
+    const hiddenAgent = path.join(root, ".capacity.lock")
+    const hiddenSource = path.join(root, "slugger", ".capacity.lock")
+    fs.mkdirSync(hiddenAgent, { recursive: true })
+    fs.mkdirSync(hiddenSource, { recursive: true })
+    fs.mkdirSync(path.join(hiddenAgent, "source"))
+    fs.writeFileSync(path.join(hiddenAgent, "source", "lock-race.json"), "{partial")
+    fs.writeFileSync(path.join(hiddenSource, "lock-race.json"), "{partial")
+
+    expect(listExternalEventStatus(root)).toEqual([])
+  })
 })

@@ -7,6 +7,7 @@ import {
   advanceExternalEventsFromAwait,
   advanceExternalEventFromAwait,
   bindPrivilegedFailsafeArtifact,
+  buildExternalEventMessage,
   claimExternalEvent,
   commitExternalEventDisposition,
   failExternalEventAttempt,
@@ -141,6 +142,46 @@ describe("external event attention lifecycle", () => {
     const first = recordExternalEvent({ agent: "sanctuary", source: "guard", eventType: "health.observed", eventId: "expired-direct" }, { root: eventRoot, now: () => "2026-08-29T18:00:00.000Z" })
     const expired = claimExternalEvent(first.recordPath, { owner: "worker-a", expectedVersion: first.version, expectedGeneration: 1, leaseMs: 1, now: () => "2026-08-29T18:00:00.000Z" })
     expect(claimExternalEvent(first.recordPath, { owner: "worker-b", expectedVersion: expired.version, expectedGeneration: 1, now: () => "2026-08-29T18:00:01.000Z" })).toMatchObject({ claimOwner: "worker-b", attemptCount: 2 })
+  })
+
+  it("types an exhausted execution lease and requires inspect-before-action on its single recovery", () => {
+    const eventRoot = root()
+    const first = recordExternalEvent({ agent: "sanctuary", source: "guard", eventType: "health.observed", eventId: "expired-dead" }, {
+      root: eventRoot,
+      now: () => "2026-08-29T18:00:00.000Z",
+    })
+    claimExternalEvent(first.recordPath, {
+      owner: "crashed-worker", expectedVersion: first.version, expectedGeneration: 1,
+      now: () => "2026-08-29T18:00:00.000Z", leaseMs: 1_000,
+    })
+    const dead = reconcileExternalEvent(first.recordPath, {
+      now: () => "2026-08-29T18:00:02.000Z", maxAttempts: 1, baseDelayMs: 1_000,
+    })
+    expect(dead).toMatchObject({
+      executionState: "dead_letter",
+      lastError: "execution lease expired",
+      failureProvenance: { class: "execution_lease_expired", failedAt: "2026-08-29T18:00:02.000Z" },
+    })
+
+    const revival = reviveExternalEventAfterRecovery(dead.recordPath, {
+      expectedVersion: dead.version,
+      expectedGeneration: dead.generation,
+      evidence: { class: "execution_lease_expired", observedAt: "2026-08-29T18:00:03.000Z" },
+      now: () => "2026-08-29T18:00:03.000Z",
+    })
+    expect(revival.revived).toBe(true)
+    expect(buildExternalEventMessage(revival.record)).toContain("Inspect the current system state before taking any action")
+
+    const recoveredClaim = claimExternalEvent(dead.recordPath, {
+      owner: "recovery-worker", expectedVersion: revival.record.version, expectedGeneration: 1,
+      now: () => "2026-08-29T18:00:04.000Z",
+    })
+    const failedAgain = failExternalEventAttempt(dead.recordPath, {
+      owner: recoveredClaim.claimOwner!, expectedVersion: recoveredClaim.version, expectedGeneration: 1,
+      error: "recovery turn also expired", failureClass: "execution_lease_expired", maxAttempts: 5,
+      now: () => "2026-08-29T18:00:05.000Z",
+    })
+    expect(failedAgain).toMatchObject({ executionState: "dead_letter", recoveryGrant: { generation: 1 } })
   })
 
   it("renews only the exact live claim so a long turn is not reclaimed", () => {
