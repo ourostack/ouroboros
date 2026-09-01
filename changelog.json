@@ -4,7 +4,8 @@
     {
       "version": "0.1.0-alpha.768",
       "changes": [
-        "Fix Sanctuary acceptance cursor snapshots for authenticated genesis and concurrent audit writes."
+        "Fix Sanctuary acceptance cursor snapshots for authenticated genesis and concurrent audit writes.",
+        "Cover fail-closed cursor schema, authority, and offset validation."
       ]
     },
     {
