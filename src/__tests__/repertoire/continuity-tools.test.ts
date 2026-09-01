@@ -281,7 +281,7 @@ describe("continuity tools", () => {
       vi.useFakeTimers()
       vi.setSystemTime("2026-09-01T02:17:46.315Z")
       const cares = [
-        { id: "current-system", label: "Current health", kind: "system", nextCheckAt: "2026-09-01T03:00:00.000Z", currentRisk: "Current fact" },
+        { id: "current-system", label: "Current health", kind: "system", status: "active", nextCheckAt: "2026-09-01T03:00:00.000Z", currentRisk: "Current fact" },
         { id: "project", label: "House project", kind: "project", nextCheckAt: "2026-08-31T03:00:00.000Z", currentRisk: "Still meaningful" },
       ]
       mockReadActiveCares.mockReturnValue(cares)

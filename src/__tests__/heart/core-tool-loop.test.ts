@@ -2200,6 +2200,41 @@ describe("runAgent tool loop guard", () => {
       expect(messages).toContainEqual(expect.objectContaining({ role: "user", content: expect.stringContaining("No current tool supports that Docker image claim") }))
     })
 
+    it("retries explicit read failures and rejects unsupported text-only answers after a successful default-validated read", async () => {
+      const staleAnswer = "Docker image disk is at 100%."
+      const finalAnswer = "Sanctuary is running. Docker image utilization still needs a fresh authoritative check."
+      mockCreate
+        .mockReturnValueOnce(streamed("unraid_get_storage", {}, "storage-error"))
+        .mockReturnValueOnce(streamed("unraid_get_storage", {}, "storage-current"))
+        .mockReturnValueOnce(makeStream([makeChunk(staleAnswer)]))
+        .mockReturnValueOnce(makeStream([makeChunk("")]))
+        .mockReturnValueOnce(streamed("settle", { answer: finalAnswer, intent: "complete" }, "settle-current"))
+      const execTool = vi.fn()
+        .mockResolvedValueOnce("error: storage offline")
+        .mockResolvedValueOnce("current storage read")
+      const messages: any[] = [{ role: "user", content: "What's going on with Sanctuary?" }]
+      const callbacks = makeCallbacks({ settleOutputMode: "final_only" })
+      const { runAgent } = await import("../../heart/core")
+
+      const result = await runAgent(messages, callbacks, "telegram", undefined, {
+        tools: [readTool("unraid_get_storage")],
+        execTool,
+        toolContext: { signin: async () => undefined },
+        requiredToolCalls: {
+          names: ["unraid_get_storage"],
+          retryMessage: "Read current storage before answering.",
+          requireSuccessfulResults: true,
+          validateTerminalAnswer: (answer) => answer === staleAnswer || answer === "" ? "No current tool supports that Docker image claim; report it only as needing a fresh check." : undefined,
+        },
+      })
+
+      expect(result).toMatchObject({ outcome: "settled", completion: { answer: finalAnswer, intent: "complete" } })
+      expect(execTool).toHaveBeenCalledTimes(2)
+      expect(JSON.stringify(messages)).not.toContain(staleAnswer)
+      expect(messages).toContainEqual(expect.objectContaining({ role: "user", content: expect.stringContaining("No current tool supports that Docker image claim") }))
+      expect(callbacks.onClearText).toHaveBeenCalled()
+    })
+
     it("snapshots each correction before resetting a stateful provider", async () => {
       const snapshots: any[][] = []
       const requests: any[][] = []
