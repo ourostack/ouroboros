@@ -11,13 +11,13 @@ function unsupportedCurrentClaim(answer: string): string | undefined {
     return stateClaim || !uncertaintyOnly
   })
   if (unsupported) return "No current Butler tool measures Docker image utilization. Do not report a Docker image percentage or full state as current; say that the stale care needs a fresh authoritative check."
-  const unsupportedProviderState = answer.split(/[,;!?\n]|(?<!\d)\.(?!\d)/u).some((clause) => {
+  const unsupportedProviderClaim = answer.split(/[,;!?\n]|(?<!\d)\.(?!\d)/u).some((clause) => {
     const explicitlyUnverified = /\b(?:cannot|can't|unable to) (?:currently )?(?:verify|confirm)|\b(?:unknown|unverified|stale|historical|previous|prior)\b|\bneeds? (?:a )?(?:fresh |authoritative )*(?:check|verification)\b/iu.test(clause)
     if (explicitlyUnverified) return false
     if (/\b(?:Astraweb|Usenet provider|download provider|(?:block|prepaid|download|provider) credit)\b/iu.test(clause)) return true
     return /\bSABnzbd\b/iu.test(clause) && /\b(?:auth(?:entication)?|authenticated|credentials?)\b/iu.test(clause)
   })
-  return unsupportedProviderState ? "The current queue read does not prove provider credit or authentication state. Do not report Astraweb, block-credit, or authentication failure as current; say that provider state needs a fresh authoritative check." : undefined
+  return unsupportedProviderClaim ? "The current queue read does not prove provider credit or authentication status. Do not report Astraweb, block-credit, or authentication failure as current; say that the provider needs a fresh authoritative check." : undefined
 }
 
 function successfulCurrentResult(name: string, result: string): boolean {
