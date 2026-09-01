@@ -6,7 +6,7 @@
       "changes": [
         "Make Sanctuary status turns preserve completed live checks and report bounded download-queue unavailability without retries, stale guesses, or empty replies.",
         "Move SAB queue access into the machine vault with guarded one-shot provisioning, live readiness verification, and no persistent host INI mount.",
-        "Share the owner-status completion fallback across Telegram admission paths and cover its incomplete and complete states."
+        "Share the owner-status completion fallback between Telegram's admitted-message replay and normal message paths, and cover its inactive, incomplete, and complete states."
       ]
     },
     {
