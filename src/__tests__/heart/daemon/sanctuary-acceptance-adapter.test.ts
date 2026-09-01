@@ -3,6 +3,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { createServer } from "node:net"
 import { createHash, createHmac } from "node:crypto"
+import Database from "better-sqlite3"
 
 import { describe, expect, it, vi } from "vitest"
 import { FileFriendStore } from "@ouro.bot/friends"
@@ -14,6 +15,7 @@ import { SANCTUARY_SCENARIO_GATES, SANCTUARY_SCENARIO_SOURCES } from "../../../h
 
 import {
   createSanctuaryAcceptanceAdapterDependencies,
+  callbackPlaybackSnapshot,
   createSanctuaryInteractiveAcceptanceScenarioDriver,
   createSanctuaryReadOnlyDenialScenarioDriver,
   createSanctuaryAcceptanceVaultProbeDependencies,
@@ -831,6 +833,26 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "inject_callbacks_concurrently", update, concurrency: 3 }, deps)).resolves.toMatchObject({ results: { length: 3 } })
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "inject_callback_replay", update }, deps)).resolves.toEqual({ settled: true, claimed: false, mutated: false })
     expect(peak).toBeGreaterThan(1)
+  })
+
+  it("fails closed on every malformed durable callback playback row", () => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-callback-playback-"))
+    const coordinateDigest = "a".repeat(64)
+    expect(callbackPlaybackSnapshot(agentRoot, coordinateDigest)).toMatchObject({ playbackCount: 0, coordinateDigest })
+    const database = new Database(path.join(agentRoot, "state", "approvals", "sanctuary-callback-playback.sqlite"))
+    database.pragma("ignore_check_constraints = ON")
+    const insert = database.prepare("INSERT INTO callback_playback (coordinate_digest, playback_count) VALUES (?, ?)")
+    try {
+      for (const [digest, count] of [["bad", 1], [coordinateDigest, 9_007_199_254_740_992], [coordinateDigest, 0]] as const) {
+        database.prepare("DELETE FROM callback_playback").run()
+        insert.run(digest, count)
+        expect(() => callbackPlaybackSnapshot(agentRoot, coordinateDigest)).toThrow(/journal is invalid/u)
+      }
+    } finally {
+      database.close()
+      fs.rmSync(agentRoot, { recursive: true, force: true })
+    }
+    expect(() => callbackPlaybackSnapshot(agentRoot, "bad")).toThrow(/coordinate digest/u)
   })
 
   it("permits an explicit before-only genesis cursor and rejects absent state otherwise", async () => {

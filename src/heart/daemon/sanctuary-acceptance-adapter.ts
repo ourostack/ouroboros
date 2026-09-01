@@ -1901,7 +1901,7 @@ function withCallbackPlaybackJournal<T>(agentRoot: string, operation: (database:
   }
 }
 
-function callbackPlaybackSnapshot(agentRoot: string, coordinateDigest: string): { playbackCount: number; coordinateDigest: string; journalDigest: string } {
+export function callbackPlaybackSnapshot(agentRoot: string, coordinateDigest: string): { playbackCount: number; coordinateDigest: string; journalDigest: string } {
   if (!SHA256.test(coordinateDigest)) throw new Error("callback coordinate digest is invalid")
   return withCallbackPlaybackJournal(agentRoot, (database) => {
     const rows = database.prepare("SELECT coordinate_digest, playback_count FROM callback_playback ORDER BY coordinate_digest")

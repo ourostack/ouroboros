@@ -1199,7 +1199,7 @@ async function rotateOccupiedCanonicalUnraidKeys(input: {
         }
         handle = text(recovered.key, "recovered key handle")
       }
-    } else if (matches.length === 0) {
+    } else {
       if (transaction) throw new Error("attested Unraid transaction key is absent")
       const response = object(await deps.runAdapter(adapters.create, {
         operation: "create_key", targetServerId, name, permissions: key.permissions,
@@ -1211,8 +1211,6 @@ async function rotateOccupiedCanonicalUnraidKeys(input: {
         || oldKeys.some((old) => old.id === id) || created.some((entry) => entry.id === id)) {
         throw new Error("created Unraid key scope or identity mismatch")
       }
-    } else {
-      throw new Error("resumable Unraid key name is ambiguous")
     }
     created.push({ id, name, permissions: key.permissions, roles: [], handle, desired: key, temporary })
     if (!createdKeyIds.includes(id)) createdKeyIds.push(id)
