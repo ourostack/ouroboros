@@ -2010,6 +2010,166 @@ describe("runAgent tool loop guard", () => {
       function: { name, arguments: JSON.stringify(args) },
     }])])
 
+    it("blocks dependent handlers before evidence and waits for every same-name mutation", async () => {
+      const careTool = {
+        type: "function" as const,
+        function: {
+          name: "care_manage",
+          description: "manage care",
+          parameters: {
+            type: "object",
+            properties: { action: { type: "string" }, id: { type: "string" }, expectedUpdatedAt: { type: "string" } },
+            required: ["action", "id", "expectedUpdatedAt"],
+            additionalProperties: false,
+          },
+        },
+      }
+      mockCreate
+        .mockReturnValueOnce(makeStream([makeChunk(undefined, [
+          { index: 0, id: "early-care", function: { name: "care_manage", arguments: JSON.stringify({ action: "resolve", id: "care-a", expectedUpdatedAt: "v1" }) } },
+          { index: 1, id: "notifications", function: { name: "unraid_get_notifications", arguments: "{}" } },
+        ])]))
+        .mockReturnValueOnce(makeStream([makeChunk(undefined, [
+          { index: 0, id: "care-a", function: { name: "care_manage", arguments: JSON.stringify({ action: "resolve", id: "care-a", expectedUpdatedAt: "v1" }) } },
+          { index: 1, id: "care-b", function: { name: "care_manage", arguments: JSON.stringify({ action: "resolve", id: "care-b", expectedUpdatedAt: "v2" }) } },
+        ])]))
+        .mockReturnValueOnce(streamed("settle", { answer: "Both recovered incidents are resolved.", intent: "complete" }, "settle-after-dependent"))
+      const execTool = vi.fn(async (name: string, args: Record<string, string>) => name === "unraid_get_notifications"
+        ? JSON.stringify({ ok: true, data: { unacknowledged: [] } })
+        : JSON.stringify({ id: args.id, status: "resolved" }))
+      const resolved = new Set<string>()
+      let verifierComplete = false
+      const { runAgent } = await import("../../heart/core")
+
+      const result = await runAgent([{ role: "user", content: "current status" }], makeCallbacks(), "telegram", undefined, {
+        tools: [readTool("unraid_get_notifications"), careTool],
+        execTool,
+        toolContext: { signin: async () => undefined },
+        requiredToolCalls: {
+          names: ["unraid_get_notifications"],
+          retryMessage: "Complete current evidence and dependent Care repairs.",
+          requireSuccessfulResults: true,
+          validateToolCallBeforeDispatch: (name: string) => name === "care_manage" && !verifierComplete ? "Read notifications before mutating Care." : undefined,
+          requiredToolCallsAfterResult: (name: string, _args: Record<string, string>, toolResult: string) => {
+            if (name !== "unraid_get_notifications" || !JSON.parse(toolResult).ok) return []
+            verifierComplete = true
+            return ["care_manage"]
+          },
+          validateRequiredToolResult: (name: string, result: string, args: Record<string, string>) => {
+            if (name === "unraid_get_notifications") return JSON.parse(result).ok === true
+            const parsed = JSON.parse(result)
+            if (parsed.status === "resolved" && parsed.id === args.id && ["care-a", "care-b"].includes(args.id)) resolved.add(args.id)
+            return resolved.size === 2
+          },
+        },
+      } as any)
+
+      expect(result).toMatchObject({ outcome: "settled", completion: { answer: "Both recovered incidents are resolved." } })
+      expect(execTool.mock.calls.map(([name, args]) => [name, args.id ?? null])).toEqual([
+        ["unraid_get_notifications", null],
+        ["care_manage", "care-a"],
+        ["care_manage", "care-b"],
+      ])
+    })
+
+    it("runs dependency rejection before approval classification and reports the blocked boundary", async () => {
+      const { resolveToolDefinition } = await import("../../repertoire/tools")
+      const shellTool = resolveToolDefinition("shell")!.tool
+      mockCreate
+        .mockReturnValueOnce(streamed("shell", { command: "shutdown now" }, "guarded-protected-call"))
+        .mockReturnValueOnce(streamed("settle", { answer: "blocked safely", intent: "complete" }, "settle-after-guard"))
+      const propose = vi.fn()
+      const execTool = vi.fn()
+      const boundaries: unknown[] = []
+      const { runAgent } = await import("../../heart/core")
+
+      await runAgent([{ role: "user", content: "run protected action" }], makeCallbacks(), "cli", undefined, {
+        tools: [shellTool], execTool, toolContext: { signin: async () => undefined }, approvalCoordinator: { propose },
+        toolBoundaryObserver: (receipt: unknown) => boundaries.push(receipt),
+        requiredToolCalls: {
+          names: [], retryMessage: "Dependency guard active.",
+          validateToolCallBeforeDispatch: (name: string) => name === "shell" ? "Evidence is not complete." : undefined,
+        },
+      } as any)
+
+      expect(propose).not.toHaveBeenCalled()
+      expect(execTool).not.toHaveBeenCalled()
+      expect(boundaries).toContainEqual(expect.objectContaining({ name: "shell", reason: "dependency_rejected", invoked: false, sideEffect: false }))
+    })
+
+    it("fails closed when an initially required tool is not advertised", async () => {
+      const { runAgent } = await import("../../heart/core")
+      await expect(runAgent([{ role: "user", content: "status" }], makeCallbacks(), "telegram", undefined, {
+        tools: [readTool("unraid_get_system")], execTool: vi.fn(), toolContext: { signin: async () => undefined },
+        requiredToolCalls: { names: ["unraid_get_notifications"], retryMessage: "Read notifications." },
+      })).rejects.toThrow(/required tool is not advertised.*unraid_get_notifications/iu)
+      expect(mockCreate).not.toHaveBeenCalled()
+    })
+
+    it("fails closed when validated evidence adds an unadvertised dependent tool", async () => {
+      mockCreate.mockReturnValueOnce(streamed("unraid_get_notifications", {}, "notifications-before-missing-dependent"))
+      const execTool = vi.fn().mockResolvedValue(JSON.stringify({ ok: true }))
+      const { runAgent } = await import("../../heart/core")
+
+      const result = await runAgent([{ role: "user", content: "status" }], makeCallbacks(), "telegram", undefined, {
+        tools: [readTool("unraid_get_notifications")], execTool, toolContext: { signin: async () => undefined },
+        requiredToolCalls: {
+          names: ["unraid_get_notifications"], retryMessage: "Read and repair.", requireSuccessfulResults: true,
+          validateRequiredToolResult: () => true,
+          requiredToolCallsAfterResult: () => ["care_manage"],
+        },
+      })
+
+      expect(execTool).toHaveBeenCalledTimes(1)
+      expect(result.outcome).toBe("errored")
+      expect(result.error?.message).toMatch(/dependent required tool is not advertised.*care_manage/iu)
+    })
+
+    it("does not duplicate a dependent name that is already required", async () => {
+      mockCreate
+        .mockReturnValueOnce(streamed("unraid_get_notifications", {}, "notifications-self-dependent"))
+        .mockReturnValueOnce(streamed("settle", { answer: "verified", intent: "complete" }, "settle-self-dependent"))
+      const execTool = vi.fn().mockResolvedValue(JSON.stringify({ ok: true }))
+      const { runAgent } = await import("../../heart/core")
+
+      const result = await runAgent([{ role: "user", content: "status" }], makeCallbacks(), "telegram", undefined, {
+        tools: [readTool("unraid_get_notifications")], execTool, toolContext: { signin: async () => undefined },
+        requiredToolCalls: {
+          names: ["unraid_get_notifications"], retryMessage: "Read notifications.", requireSuccessfulResults: true,
+          validateRequiredToolResult: () => true,
+          requiredToolCallsAfterResult: () => ["unraid_get_notifications"],
+        },
+      })
+
+      expect(result).toMatchObject({ outcome: "settled", completion: { answer: "verified" } })
+      expect(execTool).toHaveBeenCalledTimes(1)
+    })
+
+    it("does not expand dependent mutations after a required read handler throws", async () => {
+      mockCreate
+        .mockReturnValueOnce(streamed("unraid_get_notifications", {}, "notifications-throws-before-dependent"))
+        .mockReturnValueOnce(streamed("unraid_get_notifications", {}, "notifications-recovers-before-dependent"))
+        .mockReturnValueOnce(streamed("settle", { answer: "verified", intent: "complete" }, "settle-after-recovered-read"))
+      const execTool = vi.fn()
+        .mockRejectedValueOnce(new Error("transport failed"))
+        .mockResolvedValueOnce(JSON.stringify({ ok: true }))
+      const afterResult = vi.fn().mockReturnValue([])
+      const { runAgent } = await import("../../heart/core")
+
+      const result = await runAgent([{ role: "user", content: "status" }], makeCallbacks(), "telegram", undefined, {
+        tools: [readTool("unraid_get_notifications")], execTool, toolContext: { signin: async () => undefined },
+        requiredToolCalls: {
+          names: ["unraid_get_notifications"], retryMessage: "Read notifications.", requireSuccessfulResults: true,
+          validateRequiredToolResult: () => true,
+          requiredToolCallsAfterResult: afterResult,
+        },
+      })
+
+      expect(result.outcome).toBe("settled")
+      expect(afterResult).toHaveBeenCalledTimes(1)
+      expect(afterResult).toHaveBeenCalledWith("unraid_get_notifications", {}, JSON.stringify({ ok: true }))
+    })
+
     it("rejects early settlement until both exact storage reads dispatch, then preserves the agent's grounded answer", async () => {
       const finalAnswer = "Media is the largest measured share at 12 TiB. Unmanic has historically saved 5.04 TiB and has one item queued; Jellyfin found one unusually large older-codec item. I recommend one sample encode before acting, because the evidence does not support a future-savings estimate yet."
       mockCreate

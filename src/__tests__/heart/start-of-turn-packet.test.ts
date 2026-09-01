@@ -618,6 +618,23 @@ describe("start-of-turn packet", () => {
       expect(packet.cares).toContain("overnight deploy may fail")
     })
 
+    it("renders stale system Care as a recheck without historical label, why, or risk prose", () => {
+      const view = makeView({
+        activeCares: [makeCare({
+          label: "Docker image disk at 100%",
+          why: "writes will fail",
+          kind: "system",
+          currentRisk: "Docker image was measured at 100%",
+          nextCheckAt: "2020-01-01T00:00:00.000Z",
+        })],
+      })
+
+      const packet = buildStartOfTurnPacket(view)
+      expect(packet.cares).toContain("system care")
+      expect(packet.cares).toContain("recheck required")
+      expect(packet.cares).not.toMatch(/Docker|100%|writes will fail/iu)
+    })
+
     it("salience labels match authored source record values, not re-derived", () => {
       const view = makeView({
         activeCares: [

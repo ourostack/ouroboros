@@ -38,6 +38,45 @@ export interface CareRecord {
   resolvedAt?: string
 }
 
+export const CARE_INCIDENT_RECOVERY_REVIEW_RISK = "The verified incident recovered, but this Care still has unresolved context that needs review."
+
+export function isManagedDockerCareIncidentBinding(binding: CareIncidentBinding): boolean {
+  return binding.source === "sanctuary-health::Docker_critical_image_disk_utilization"
+    && /^docker-image-disk-(?:100|[1-9]?[0-9])pct-[0-9]{8}T[0-9]{4}Z$/u.test(binding.incidentKey)
+    && /^[a-f0-9]{64}$/u.test(binding.classifiedRevision)
+    && binding.correlationKey === undefined
+    && binding.resolvedAt === undefined
+}
+
+export interface StaleCareEvidence {
+  id: string
+  kind: "system"
+  status: "active" | "watching"
+  salience: CareRecord["salience"]
+  steward: CareStewardship
+  evidenceStatus: "stale"
+  recheckRequired: true
+  staleAt: string
+  lastAssessedAt: string
+}
+
+export function projectCareEvidence(care: CareRecord, now = Date.now()): CareRecord | StaleCareEvidence {
+  if (care.kind !== "system" || (care.status !== "active" && care.status !== "watching") || care.nextCheckAt === null) return care
+  const staleAt = Date.parse(care.nextCheckAt)
+  if (Number.isFinite(staleAt) && staleAt > now) return care
+  return {
+    id: care.id,
+    kind: care.kind,
+    status: care.status,
+    salience: care.salience,
+    steward: care.steward,
+    evidenceStatus: "stale",
+    recheckRequired: true,
+    staleAt: care.nextCheckAt,
+    lastAssessedAt: care.updatedAt,
+  }
+}
+
 function caresDir(agentRoot: string): string {
   return path.join(agentRoot, "arc", "cares")
 }
@@ -222,39 +261,69 @@ export function bindCareIncident(
 
 export function upsertCareForIncident(
   agentRoot: string,
-  input: Omit<CareRecord, "id" | "createdAt" | "updatedAt" | "incidentBindings"> & { incident: CareIncidentBinding; expectedUpdatedAt?: string },
+  input: Omit<CareRecord, "id" | "createdAt" | "updatedAt" | "incidentBindings" | "label" | "why" | "kind" | "status" | "salience" | "steward" | "currentRisk" | "nextCheckAt"> & Partial<Pick<CareRecord, "label" | "why" | "kind" | "status" | "salience" | "steward" | "currentRisk" | "nextCheckAt">> & { id?: string; incident: CareIncidentBinding; expectedUpdatedAt?: string },
 ): CareRecord {
   return withCareMutationLock(agentRoot, () => {
     const incident = canonicalIncidentBinding(input.incident)
     const existing = readJsonDir<CareRecord>(caresDir(agentRoot)).find((care) =>
-      care.incidentBindings?.some((binding) => binding.source === incident.source && binding.incidentKey === incident.incidentKey),
+      (!input.id || care.id === input.id) && care.incidentBindings?.some((binding) => binding.source === incident.source && binding.incidentKey === incident.incidentKey),
     )
     if (existing) {
       const index = existing.incidentBindings!.findIndex((binding) => binding.source === incident.source && binding.incidentKey === incident.incidentKey)
-      const unchanged = JSON.stringify(existing.incidentBindings![index]) === JSON.stringify(incident)
-        && existing.currentRisk === input.currentRisk && existing.nextCheckAt === input.nextCheckAt
+      const requestedRisk = input.currentRisk === undefined ? existing.currentRisk : input.currentRisk === null ? null : capStructuredRecordString(input.currentRisk)
+      const requestedNextCheckAt = input.nextCheckAt === undefined ? existing.nextCheckAt : input.nextCheckAt
+      const incidentStateUnchanged = JSON.stringify(existing.incidentBindings![index]) === JSON.stringify(incident)
+        && existing.currentRisk === requestedRisk
+        && existing.nextCheckAt === requestedNextCheckAt
+      const displayUnchanged = !input.id || (
+        (input.label === undefined || existing.label === capStructuredRecordString(input.label))
+        && (input.why === undefined || existing.why === capStructuredRecordString(input.why))
+        && (input.kind === undefined || existing.kind === input.kind)
+        && (input.status === undefined || existing.status === input.status)
+        && (input.salience === undefined || existing.salience === input.salience)
+        && (input.steward === undefined || existing.steward === input.steward)
+      )
+      const unchanged = incidentStateUnchanged && displayUnchanged
       if (unchanged) return existing
       if (!input.expectedUpdatedAt || input.expectedUpdatedAt !== existing.updatedAt) throw new Error("Care incident upsert CAS mismatch")
       const incidentBindings = [...existing.incidentBindings!]
       incidentBindings[index] = incident
       const updated = {
         ...existing,
-        currentRisk: input.currentRisk === null ? null : capStructuredRecordString(input.currentRisk),
-        nextCheckAt: input.nextCheckAt,
+        ...(input.id && input.label !== undefined ? { label: capStructuredRecordString(input.label) } : {}),
+        ...(input.id && input.why !== undefined ? { why: capStructuredRecordString(input.why) } : {}),
+        ...(input.id && input.kind !== undefined ? { kind: input.kind } : {}),
+        ...(input.id && input.status !== undefined ? { status: input.status } : {}),
+        ...(input.id && input.salience !== undefined ? { salience: input.salience } : {}),
+        ...(input.id && input.steward !== undefined ? { steward: input.steward } : {}),
+        currentRisk: requestedRisk,
+        nextCheckAt: requestedNextCheckAt,
         incidentBindings,
         updatedAt: nextUpdatedAt(existing.updatedAt),
       }
       writeCareFile(agentRoot, updated)
       return updated
     }
-    return createCareUnlocked(agentRoot, { ...input, incidentBindings: [incident] })
+    if (input.id) throw new Error("Care incident upsert target not found")
+    const { id: _id, incident: _incident, expectedUpdatedAt: _expectedUpdatedAt, ...careInput } = input
+    return createCareUnlocked(agentRoot, {
+      label: careInput.label ?? "untitled", why: careInput.why ?? "", kind: careInput.kind ?? "system", status: careInput.status ?? "active",
+      salience: careInput.salience ?? "medium", steward: careInput.steward ?? "mine", currentRisk: careInput.currentRisk ?? null,
+      nextCheckAt: careInput.nextCheckAt ?? null, relatedFriendIds: careInput.relatedFriendIds, relatedAgentIds: careInput.relatedAgentIds,
+      relatedObligationIds: careInput.relatedObligationIds, relatedEpisodeIds: careInput.relatedEpisodeIds, incidentBindings: [incident],
+    })
   })
 }
 
 export function resolveCareIncident(
   agentRoot: string,
   id: string,
-  input: { source: string; incidentKey: string; expectedUpdatedAt: string },
+  input: {
+    source: string
+    incidentKey: string
+    expectedUpdatedAt: string
+    display?: Partial<Pick<CareRecord, "label" | "why" | "currentRisk" | "nextCheckAt">>
+  },
 ): CareRecord {
   return withCareMutationLock(agentRoot, () => {
     const care = readCareFile(agentRoot, id)
@@ -262,10 +331,38 @@ export function resolveCareIncident(
     const bindings = [...(care.incidentBindings ?? [])]
     const index = bindings.findIndex((binding) => binding.source === input.source && binding.incidentKey === input.incidentKey)
     if (index < 0) throw new Error("Care incident binding not found")
-    if (bindings[index].resolvedAt) return care
+    const display = input.display
+    const requestedDisplay = display ? {
+      label: display.label === undefined ? care.label : capStructuredRecordString(display.label),
+      why: display.why === undefined ? care.why : capStructuredRecordString(display.why),
+      currentRisk: display.currentRisk === undefined ? care.currentRisk : display.currentRisk === null ? null : capStructuredRecordString(display.currentRisk),
+      nextCheckAt: display.nextCheckAt === undefined ? care.nextCheckAt : display.nextCheckAt,
+    } : undefined
+    const displayUnchanged = !requestedDisplay || JSON.stringify({
+      label: care.label,
+      why: care.why,
+      currentRisk: care.currentRisk,
+      nextCheckAt: care.nextCheckAt,
+    }) === JSON.stringify(requestedDisplay)
+    if (bindings[index].resolvedAt && displayUnchanged) return care
     const now = nextUpdatedAt(care.updatedAt)
-    bindings[index] = { ...bindings[index], resolvedAt: now }
-    const updated = { ...care, incidentBindings: bindings, updatedAt: now }
+    if (!bindings[index].resolvedAt) bindings[index] = { ...bindings[index], resolvedAt: now }
+    const noUnresolvedBindings = bindings.every((binding) => binding.resolvedAt)
+    const unresolvedBindingsBeforeResolution = care.incidentBindings!.filter((binding) => !binding.resolvedAt)
+    const soleBindingOwnsRisk = care.kind === "system" && unresolvedBindingsBeforeResolution.length === 1 && isManagedDockerCareIncidentBinding(unresolvedBindingsBeforeResolution[0]!)
+    const unresolvedContextRemains = !noUnresolvedBindings || (care.currentRisk !== null && !soleBindingOwnsRisk)
+    const canonicalDisplay = requestedDisplay && requestedDisplay.currentRisk === null && unresolvedContextRemains
+      ? { ...requestedDisplay, currentRisk: CARE_INCIDENT_RECOVERY_REVIEW_RISK, nextCheckAt: requestedDisplay.nextCheckAt ?? new Date(Date.parse(now) + 15 * 60_000).toISOString() }
+      : requestedDisplay
+    const resultingRisk = canonicalDisplay ? canonicalDisplay.currentRisk : care.currentRisk
+    const shouldResolveCare = noUnresolvedBindings && (care.currentRisk === null || soleBindingOwnsRisk) && resultingRisk === null
+    const updated: CareRecord = {
+      ...care,
+      ...canonicalDisplay,
+      incidentBindings: bindings,
+      ...(shouldResolveCare ? { status: "resolved", resolvedAt: care.resolvedAt ?? now } : {}),
+      updatedAt: now,
+    }
     writeCareFile(agentRoot, updated)
     emitNervesEvent({
       component: "heart",

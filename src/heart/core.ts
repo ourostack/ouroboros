@@ -19,7 +19,7 @@ import type { TurnResult } from "./streaming";
 import type { UsageData } from "../mind/context";
 
 export type ToolCallBoundaryCall = { id: string; name: string; arguments: string }
-export type ToolCallBoundaryReceipt = { name: string; reason: "profile_excluded" | "invalid_arguments" | "dispatched"; globallyResolvable: boolean; invoked: boolean; sideEffect: boolean }
+export type ToolCallBoundaryReceipt = { name: string; reason: "profile_excluded" | "invalid_arguments" | "dependency_rejected" | "dispatched"; globallyResolvable: boolean; invoked: boolean; sideEffect: boolean }
 
 export function validateToolCallBatchAtProductionBoundary(calls: ToolCallBoundaryCall[], activeTools: OpenAI.ChatCompletionFunctionTool[]) {
   const callIdCounts = new Map<string, number>()
@@ -414,7 +414,9 @@ export interface RunAgentOptions {
     names: readonly string[];
     retryMessage: string;
     requireSuccessfulResults?: boolean;
-    validateRequiredToolResult?: (name: string, result: string) => boolean;
+    validateRequiredToolResult?: (name: string, result: string, args: Record<string, string>) => boolean;
+    validateToolCallBeforeDispatch?: (name: string, args: Record<string, string>) => string | undefined;
+    requiredToolCallsAfterResult?: (name: string, args: Record<string, string>, result: string) => readonly string[];
     validateTerminalAnswer?: (answer: string) => string | undefined;
   };
   toolContext?: ToolContext;
@@ -891,9 +893,9 @@ function toolResultIndicatesFailure(content: string): boolean {
     || normalized.startsWith("rejected:")
 }
 
-function requiredToolResultSucceeded(name: string, content: string, validate?: (name: string, result: string) => boolean): boolean {
+function requiredToolResultSucceeded(name: string, content: string, args: Record<string, string>, validate?: (name: string, result: string, args: Record<string, string>) => boolean): boolean {
   if (toolResultIndicatesFailure(content)) return false
-  return validate?.(name, content) ?? true
+  return validate?.(name, content, args) ?? true
 }
 
 function effectFingerprint(name: string, rawArguments: string): string | null {
@@ -1654,6 +1656,11 @@ export async function runAgent(
       })()
       : ordinaryActiveTools;
     const candidateToolNames = new Set(candidateActiveTools.map((tool) => tool.function.name))
+    const unadvertisedRequiredTool = requiredToolCallNames.find((name) => !candidateToolNames.has(name))
+    if (unadvertisedRequiredTool) {
+      emitNervesEvent({ level: "error", component: "engine", event: "engine.required_tool_unadvertised", message: "required tool is not advertised for the active channel", meta: { toolName: unadvertisedRequiredTool, channel: String(channel) } })
+      throw new Error(`required tool is not advertised for this channel: ${unadvertisedRequiredTool}`)
+    }
     const forcedHistoricalToolNames = new Set(
       unresolvedHistoricalEffects
         .map((effect) => effect.name)
@@ -2393,7 +2400,13 @@ export async function runAgent(
           continue;
         }
 
-        const approvalCalls = await Promise.all(validCalls.map(async (entry) => {
+        const requiredDispatchRejections = new Map<string, { name: string; args: Record<string, string>; message: string }>()
+        for (const entry of validCalls) {
+          const requiredArgs = entry.validated.arguments as Record<string, string>
+          const rejection = options?.requiredToolCalls?.validateToolCallBeforeDispatch?.(entry.call.name, requiredArgs)
+          if (rejection) requiredDispatchRejections.set(entry.call.id, { name: entry.call.name, args: requiredArgs, message: rejection })
+        }
+        const approvalCalls = await Promise.all(validCalls.filter((entry) => !requiredDispatchRejections.has(entry.call.id)).map(async (entry) => {
           const classification = await classifyApprovalForInvocation(entry.call.name, entry.validated.arguments, augmentedToolContext)
           return {
             ...entry,
@@ -2489,6 +2502,28 @@ export async function runAgent(
         // Execute tools (sole-call tools in mixed calls are rejected inline)
         for (const tc of result.toolCalls) {
           if (signal?.aborted) break;
+          const requiredDispatchRejection = requiredDispatchRejections.get(tc.id)
+          if (requiredDispatchRejection) {
+            callbacks.onToolStart(tc.name, requiredDispatchRejection.args)
+            callbacks.onToolEnd(tc.name, summarizeArgs(tc.name, requiredDispatchRejection.args), false)
+            pushGenerated({ role: "tool", tool_call_id: tc.id, content: requiredDispatchRejection.message })
+            providerRuntime.appendToolOutput(tc.id, requiredDispatchRejection.message)
+            options?.toolBoundaryObserver?.({
+              name: tc.name,
+              reason: "dependency_rejected",
+              globallyResolvable: typeof resolveToolDefinition(tc.name)?.handler === "function",
+              invoked: false,
+              sideEffect: false,
+            })
+            emitNervesEvent({
+              level: "warn",
+              component: "engine",
+              event: "engine.required_tool_dispatch_rejected",
+              message: "required tool dependency rejected before approval and handler dispatch",
+              meta: { toolName: tc.name },
+            })
+            continue
+          }
           // Reject sole-call tools when mixed with other tool calls
           const terminalProjection = resolveToolDefinition(tc.name)?.terminalProjection
           const soleCallRejection = SOLE_CALL_REJECTION[tc.name]
@@ -2778,8 +2813,19 @@ export async function runAgent(
             success = false;
             augmentedToolContext?.habitSession?.recordError?.(toolResult);
           }
-          if (success && requiredToolCallNames.includes(tc.name) && options?.requiredToolCalls?.requireSuccessfulResults
-            && requiredToolResultSucceeded(tc.name, toolResult, options.requiredToolCalls.validateRequiredToolResult)) dispatchedRequiredToolCalls.add(tc.name)
+          const validatedRequiredResult = success && requiredToolCallNames.includes(tc.name) && options?.requiredToolCalls?.requireSuccessfulResults
+            ? requiredToolResultSucceeded(tc.name, toolResult, args, options.requiredToolCalls.validateRequiredToolResult)
+            : false
+          if (validatedRequiredResult) {
+            dispatchedRequiredToolCalls.add(tc.name)
+            for (const requiredName of options?.requiredToolCalls?.requiredToolCallsAfterResult?.(tc.name, args, toolResult) ?? []) {
+              if (!candidateToolNames.has(requiredName)) {
+                emitNervesEvent({ level: "error", component: "engine", event: "engine.required_tool_unadvertised", message: "dependent required tool is not advertised for the active channel", meta: { toolName: requiredName, channel: String(channel) } })
+                throw new Error(`dependent required tool is not advertised for this channel: ${requiredName}`)
+              }
+              if (!requiredToolCallNames.includes(requiredName)) requiredToolCallNames.push(requiredName)
+            }
+          }
           if (success && currentEffectFingerprint && !toolResultIndicatesFailure(toolResult)) {
             unresolvedHistoricalEffects = unresolvedHistoricalEffects.filter(
               (effect) => effect.fingerprint !== currentEffectFingerprint,

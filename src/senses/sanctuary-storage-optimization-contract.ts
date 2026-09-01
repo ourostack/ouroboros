@@ -13,14 +13,13 @@ function normalizedRequest(request: string): string {
 
 export function sanctuaryStorageOptimizationRequiredToolCalls(
   request: string,
-  advertisedToolNames: readonly string[],
+  _advertisedToolNames: readonly string[],
 ): { names: readonly string[]; retryMessage: string } | undefined {
   const normalized = normalizedRequest(request)
   const hasStorageSubject = /\b(?:space|storage)\b/u.test(normalized)
   const hasUsageDiagnosis = /\b(?:using|taking up|find what|diagnos(?:e|is))\b/u.test(normalized)
   const hasShrinkIntent = /\b(?:make it smaller|shrink|reclaim|free up|reduce|optimi[sz])\b/u.test(normalized)
-  const advertised = new Set(advertisedToolNames)
-  if (!hasStorageSubject || !hasUsageDiagnosis || !hasShrinkIntent || !REQUIRED_TOOL_NAMES.every((name) => advertised.has(name))) return undefined
+  if (!hasStorageSubject || !hasUsageDiagnosis || !hasShrinkIntent) return undefined
 
   const names = [...REQUIRED_TOOL_NAMES]
   emitNervesEvent({

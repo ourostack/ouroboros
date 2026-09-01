@@ -1,5 +1,6 @@
 export type {
   PrivateTurnDecision,
+  PrivateTurnDenialCode,
   PrivateTurnDecisionResult,
   PrivateTurnLedgerLocator,
   PrivateTurnOriginRef,

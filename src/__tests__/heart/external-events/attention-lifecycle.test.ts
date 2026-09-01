@@ -14,6 +14,7 @@ import {
   readExternalEventRecord,
   reconcileExternalEvent,
   recordExternalEvent,
+  reviveExternalEventAfterRecovery,
   renewExternalEventClaim,
   externalEventRecordPath,
 } from "../../../heart/external-events/router"
@@ -387,6 +388,153 @@ describe("external event attention lifecycle", () => {
     const unchanged = recordExternalEvent({ agent: "sanctuary", source: "guard", eventType: "health.observed", eventId: "poison", observationRevision: "rev-1" }, { root: eventRoot })
     expect(dead.executionState).toBe("dead_letter")
     expect(unchanged).toMatchObject({ executionState: "dead_letter", generation: 1, shouldWake: false })
+  })
+
+  it("consumes one typed recovery grant without changing observation or attempt identity", () => {
+    const eventRoot = root()
+    const first = recordExternalEvent({
+      agent: "sanctuary", source: "guard", eventType: "health.observed", eventId: "provider-lane", observationRevision: "rev-1",
+    }, { root: eventRoot, now: () => "2026-08-29T17:00:00.000Z" })
+    const claimed = claimExternalEvent(first.recordPath, {
+      owner: "worker-1", expectedVersion: first.version, expectedGeneration: 1,
+      now: () => "2026-08-29T17:00:01.000Z",
+    })
+    const dead = failExternalEventAttempt(first.recordPath, {
+      owner: "worker-1", expectedVersion: claimed.version, expectedGeneration: 1,
+      error: "private-runtime wake denied for sanctuary: provider lane resolution failed",
+      failureClass: "provider_lane_unavailable", maxAttempts: 1,
+      now: () => "2026-08-29T17:00:02.000Z",
+    })
+
+    expect(dead.failureProvenance).toEqual({ class: "provider_lane_unavailable", failedAt: "2026-08-29T17:00:02.000Z" })
+    expect(reviveExternalEventAfterRecovery(dead.recordPath, {
+      expectedVersion: dead.version, expectedGeneration: 1,
+      evidence: { class: "provider_lane_unavailable", observedAt: "2026-08-29T17:00:02.000Z" },
+    })).toMatchObject({ revived: false, reason: "stale_evidence" })
+
+    const revived = reviveExternalEventAfterRecovery(dead.recordPath, {
+      expectedVersion: dead.version, expectedGeneration: 1,
+      evidence: { class: "provider_lane_unavailable", observedAt: "2026-08-29T17:00:03.000Z" },
+      now: () => "2026-08-29T17:00:04.000Z",
+    })
+    expect(revived).toMatchObject({
+      revived: true,
+      record: {
+        executionState: "queued", generation: 1, observationRevision: "rev-1", attemptCount: 1,
+        recoveryGrant: { generation: 1, consumedAt: "2026-08-29T17:00:04.000Z" },
+      },
+    })
+
+    const duplicate = recordExternalEvent({
+      agent: "sanctuary", source: "guard", eventType: "health.observed", eventId: "provider-lane", observationRevision: "rev-1",
+    }, { root: eventRoot, now: () => "2026-08-29T17:00:05.000Z" })
+    expect(duplicate).toMatchObject({ generation: 1, recoveryGrant: { generation: 1 }, failureProvenance: dead.failureProvenance })
+    const recoveryClaim = claimExternalEvent(duplicate.recordPath, {
+      owner: "worker-2", expectedVersion: duplicate.version, expectedGeneration: 1,
+      now: () => "2026-08-29T17:00:06.000Z",
+    })
+    expect(recoveryClaim.attemptCount).toBe(2)
+    const deadAgain = failExternalEventAttempt(duplicate.recordPath, {
+      owner: "worker-2", expectedVersion: recoveryClaim.version, expectedGeneration: 1,
+      error: "still unavailable", failureClass: "managed_runtime_unavailable", maxAttempts: 5,
+      now: () => "2026-08-29T17:00:07.000Z",
+    })
+    expect(deadAgain).toMatchObject({
+      executionState: "dead_letter",
+      failureProvenance: dead.failureProvenance,
+      recoveryGrant: { generation: 1, consumedAt: "2026-08-29T17:00:04.000Z" },
+    })
+    expect(reviveExternalEventAfterRecovery(deadAgain.recordPath, {
+      expectedVersion: deadAgain.version, expectedGeneration: 1,
+      evidence: { class: "provider_lane_unavailable", observedAt: "2026-08-29T17:00:08.000Z" },
+    })).toMatchObject({ revived: false, reason: "grant_consumed" })
+    const changed = recordExternalEvent({
+      agent: "sanctuary", source: "guard", eventType: "health.observed", eventId: "provider-lane", observationRevision: "rev-2",
+    }, { root: eventRoot, now: () => "2026-08-29T17:00:09.000Z" })
+    expect(changed).toMatchObject({ generation: 2, observationRevision: "rev-2", attemptCount: 0 })
+    expect(changed.failureProvenance).toBeUndefined()
+    expect(changed.recoveryGrant).toBeUndefined()
+  })
+
+  it("migrates only the anchored same-agent legacy provider denial", () => {
+    const eventRoot = root()
+    const makeDead = (eventId: string, error: string) => {
+      const first = recordExternalEvent({ agent: "sanctuary", source: "guard", eventType: "health.observed", eventId }, {
+        root: eventRoot, now: () => "2026-08-29T17:00:00.000Z",
+      })
+      const claim = claimExternalEvent(first.recordPath, { owner: eventId, expectedVersion: first.version, expectedGeneration: 1 })
+      return failExternalEventAttempt(first.recordPath, {
+        owner: eventId, expectedVersion: claim.version, expectedGeneration: 1, error, maxAttempts: 1,
+        now: () => "2026-08-29T17:00:02.000Z",
+      })
+    }
+    const exact = makeDead("exact", "private-runtime wake denied for sanctuary: provider lane resolution failed")
+    const otherAgent = makeDead("other-agent", "private-runtime wake denied for slugger: provider lane resolution failed")
+    const substring = makeDead("substring", "prefix private-runtime wake denied for sanctuary: provider lane resolution failed")
+
+    expect(reviveExternalEventAfterRecovery(exact.recordPath, {
+      expectedVersion: exact.version, expectedGeneration: 1,
+      evidence: { class: "provider_lane_unavailable", observedAt: "2026-08-29T17:00:03.000Z" },
+    })).toMatchObject({ revived: true, record: { failureProvenance: { class: "provider_lane_unavailable", failedAt: exact.updatedAt } } })
+    for (const record of [otherAgent, substring]) {
+      expect(reviveExternalEventAfterRecovery(record.recordPath, {
+        expectedVersion: record.version, expectedGeneration: 1,
+        evidence: { class: "provider_lane_unavailable", observedAt: "2026-08-29T17:00:03.000Z" },
+      })).toMatchObject({ revived: false, reason: "ineligible_failure" })
+    }
+  })
+
+  it("fails closed at every dead-letter revival boundary", () => {
+    const eventRoot = root()
+    const received = recordExternalEvent({ agent: "sanctuary", source: "guard", eventType: "health.observed", eventId: "boundaries" }, { root: eventRoot })
+    expect(reviveExternalEventAfterRecovery(received.recordPath, {
+      expectedVersion: received.version, expectedGeneration: 1,
+      evidence: { class: "provider_lane_unavailable", observedAt: "2026-08-29T17:00:03.000Z" },
+    })).toMatchObject({ revived: false, reason: "not_dead_letter" })
+
+    const claim = claimExternalEvent(received.recordPath, { owner: "worker", expectedVersion: received.version, expectedGeneration: 1 })
+    expect(() => failExternalEventAttempt(received.recordPath, {
+      owner: "worker", expectedVersion: claim.version, expectedGeneration: 1, error: "bad class",
+      failureClass: "other" as never, maxAttempts: 1,
+    })).toThrow(/failure class/u)
+    const dead = failExternalEventAttempt(received.recordPath, {
+      owner: "worker", expectedVersion: claim.version, expectedGeneration: 1, error: "managed runtime missing",
+      failureClass: "managed_runtime_unavailable", maxAttempts: 1,
+      now: () => "2026-08-29T17:00:02.000Z",
+    })
+    expect(() => reviveExternalEventAfterRecovery(dead.recordPath, {
+      expectedVersion: dead.version + 1, expectedGeneration: 1,
+      evidence: { class: "managed_runtime_unavailable", observedAt: "2026-08-29T17:00:03.000Z" },
+    })).toThrow(/CAS/u)
+    expect(() => reviveExternalEventAfterRecovery(dead.recordPath, {
+      expectedVersion: dead.version, expectedGeneration: 1,
+      evidence: { class: "managed_runtime_unavailable", observedAt: "not-a-time" },
+    })).toThrow(/evidence time/u)
+    expect(() => reviveExternalEventAfterRecovery(dead.recordPath, {
+      expectedVersion: dead.version, expectedGeneration: 1,
+      evidence: { class: "other" as never, observedAt: "2026-08-29T17:00:03.000Z" },
+    })).toThrow(/evidence class/u)
+    expect(reviveExternalEventAfterRecovery(dead.recordPath, {
+      expectedVersion: dead.version, expectedGeneration: 1,
+      evidence: { class: "provider_lane_unavailable", observedAt: "2026-08-29T17:00:03.000Z" },
+    })).toMatchObject({ revived: false, reason: "evidence_mismatch" })
+    expect(() => reviveExternalEventAfterRecovery(dead.recordPath, {
+      expectedVersion: dead.version, expectedGeneration: 1,
+      evidence: { class: "managed_runtime_unavailable", observedAt: "2026-08-29T17:00:03.000Z" },
+      now: () => "not-a-time",
+    })).toThrow(/consumed time/u)
+
+    const disabled = recordExternalEvent({ agent: "sanctuary", source: "guard", eventType: "health.observed", eventId: "boundaries" }, {
+      root: eventRoot, dispatchEnabled: false,
+    })
+    expect(reviveExternalEventAfterRecovery(disabled.recordPath, {
+      expectedVersion: disabled.version, expectedGeneration: 1,
+      evidence: { class: "managed_runtime_unavailable", observedAt: "2026-08-29T17:00:03.000Z" },
+    })).toMatchObject({ revived: false, reason: "dispatch_disabled" })
+
+    const raw = JSON.parse(fs.readFileSync(disabled.recordPath, "utf8"))
+    fs.writeFileSync(disabled.recordPath, JSON.stringify({ ...raw, failureProvenance: null }))
+    expect(listExternalEventStatus(eventRoot)).toEqual([expect.objectContaining({ corrupt: true, failureProvenance: null, recoveryGrant: null })])
   })
 
   it("advances an exact await-backed disposition once and exposes persisted silence status", () => {

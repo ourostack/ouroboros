@@ -14,7 +14,10 @@ import { buildHabitPrivateWakeCommand } from "../../../heart/daemon/habit-privat
 import { readPrivateTurnLedger } from "../../../heart/private-runtime"
 import { readHabitLastRun } from "../../../heart/habits/habit-runtime-state"
 import { listHabitRunReceipts } from "../../../arc/flight-recorder"
-import { claimExternalEvent, commitExternalEventDisposition, listExternalEventStatus, readExternalEventRecord, recordExternalEvent } from "../../../heart/external-events/router"
+import { claimExternalEvent, commitExternalEventDisposition, failExternalEventAttempt, listExternalEventStatus, readExternalEventRecord, recordExternalEvent } from "../../../heart/external-events/router"
+import { cacheProviderCredentialRecords, createProviderCredentialRecord, resetProviderCredentialCache } from "../../../heart/provider-credentials"
+import { clearProviderReadinessCache, recordProviderLaneReadiness } from "../../../heart/provider-readiness-cache"
+import * as providerBindingResolver from "../../../heart/provider-binding-resolver"
 
 function tmpSocketPath(name: string): string {
   return path.join(os.tmpdir(), `${name}-${Date.now()}-${Math.random().toString(16).slice(2)}.sock`)
@@ -156,6 +159,46 @@ describe("daemon command plane branches", () => {
     }
   }
 
+  function writeProviderBundle(bundlesRoot: string, agent = "slugger", model = "MiniMax-M2.5"): string {
+    const agentRoot = path.join(bundlesRoot, `${agent}.ouro`)
+    fs.mkdirSync(agentRoot, { recursive: true })
+    fs.writeFileSync(path.join(agentRoot, "agent.json"), `${JSON.stringify({
+      version: 2,
+      enabled: true,
+      humanFacing: { provider: "minimax", model },
+      agentFacing: { provider: "minimax", model },
+      senses: {},
+    })}\n`)
+    return agentRoot
+  }
+
+  function cacheMinimaxCredential(agent = "slugger", createdAt = "2026-08-29T16:00:00.000Z"): string {
+    const credential = createProviderCredentialRecord({
+      provider: "minimax",
+      credentials: { apiKey: "test-only-minimax-key" },
+      config: {},
+      provenance: { source: "manual" },
+      now: new Date(createdAt),
+    })
+    cacheProviderCredentialRecords(agent, [credential], new Date(createdAt))
+    return credential.revision
+  }
+
+  function deadLetter(options: { root: string; failureClass?: "provider_lane_unavailable" | "managed_runtime_unavailable"; eventId: string; error?: string }) {
+    const received = recordExternalEvent({
+      agent: "slugger", source: "sanctuary-health", eventType: "health.observed", eventId: options.eventId, observationRevision: "rev-dead",
+    }, { root: options.root, now: () => "2026-08-29T17:00:00.000Z" })
+    const claim = claimExternalEvent(received.recordPath, {
+      owner: `worker:${options.eventId}`, expectedVersion: received.version, expectedGeneration: 1,
+      now: () => "2026-08-29T17:00:01.000Z",
+    })
+    return failExternalEventAttempt(received.recordPath, {
+      owner: claim.claimOwner!, expectedVersion: claim.version, expectedGeneration: 1,
+      error: options.error ?? "infrastructure unavailable", failureClass: options.failureClass, maxAttempts: 1,
+      now: () => "2026-08-29T17:00:02.000Z",
+    })
+  }
+
   function writeHabitFile(options: {
     bundlesRoot: string
     agent: string
@@ -207,6 +250,8 @@ describe("daemon command plane branches", () => {
   afterEach(() => {
     vi.restoreAllMocks()
     mockEmitNervesEvent.mockReset()
+    resetProviderCredentialCache()
+    clearProviderReadinessCache()
   })
 
   it("formats non-Error habit poke failures defensively", () => {
@@ -1115,6 +1160,260 @@ describe("daemon command plane branches", () => {
       ]))
     } finally {
       fs.rmSync(externalEventRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("records typed managed-runtime provenance when the final private wake is unavailable", async () => {
+    const socketPath = tmpSocketPath("daemon-managed-runtime-provenance")
+    const externalEventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "managed-runtime-provenance-root-"))
+    let record = recordExternalEvent({
+      agent: "slugger", source: "sanctuary-health", eventType: "health.observed", eventId: "managed-runtime", observationRevision: "rev-managed",
+    }, { root: externalEventRoot, now: () => "2026-08-29T17:00:00.000Z" })
+    for (let attempt = 1; attempt < 5; attempt += 1) {
+      const claimedAt = new Date(Date.parse("2026-08-29T17:00:00.000Z") + (attempt * 2 - 1) * 1_000).toISOString()
+      const failedAt = new Date(Date.parse(claimedAt) + 1_000).toISOString()
+      const claim = claimExternalEvent(record.recordPath, {
+        owner: `worker-${attempt}`, expectedVersion: record.version, expectedGeneration: 1,
+        now: () => claimedAt,
+      })
+      record = failExternalEventAttempt(record.recordPath, {
+        owner: claim.claimOwner!, expectedVersion: claim.version, expectedGeneration: 1,
+        error: "temporary failure", maxAttempts: 5, baseDelayMs: 1,
+        now: () => failedAt,
+      })
+    }
+    const { daemon, processManager } = make(socketPath, undefined, { externalEventRoot })
+
+    try {
+      await (daemon as any).reconcileExternalEvents()
+      expect(processManager.sendToAgent).not.toHaveBeenCalled()
+      expect(readExternalEventRecord(record.recordPath)).toMatchObject({
+        executionState: "dead_letter",
+        attemptCount: 5,
+        failureProvenance: { class: "managed_runtime_unavailable", failedAt: expect.any(String) },
+      })
+    } finally {
+      fs.rmSync(externalEventRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("records typed provider-lane provenance from the machine-coded private wake denial", async () => {
+    const socketPath = tmpSocketPath("daemon-provider-lane-provenance")
+    const externalEventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "provider-lane-provenance-root-"))
+    const ledgerPath = path.join(os.tmpdir(), `provider-lane-provenance-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    let record = recordExternalEvent({
+      agent: "slugger", source: "sanctuary-health", eventType: "health.observed", eventId: "provider-lane", observationRevision: "rev-provider",
+    }, { root: externalEventRoot, now: () => "2026-08-29T17:00:00.000Z" })
+    for (let attempt = 1; attempt < 5; attempt += 1) {
+      const claimedAt = new Date(Date.parse("2026-08-29T17:00:00.000Z") + (attempt * 2 - 1) * 1_000).toISOString()
+      const failedAt = new Date(Date.parse(claimedAt) + 1_000).toISOString()
+      const claim = claimExternalEvent(record.recordPath, {
+        owner: `worker-${attempt}`, expectedVersion: record.version, expectedGeneration: 1, now: () => claimedAt,
+      })
+      record = failExternalEventAttempt(record.recordPath, {
+        owner: claim.claimOwner!, expectedVersion: claim.version, expectedGeneration: 1,
+        error: "temporary failure", maxAttempts: 5, baseDelayMs: 1, now: () => failedAt,
+      })
+    }
+    const policyDeps = privateRuntimePolicyDeps(ledgerPath, "allow")
+    policyDeps.resolveProviderLane.mockRejectedValue(new Error("configured provider credential unavailable"))
+    const { daemon, processManager } = make(socketPath, undefined, { externalEventRoot, privateRuntimePolicyDeps: policyDeps })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+
+    try {
+      await (daemon as any).reconcileExternalEvents()
+      expect(processManager.sendToAgent).not.toHaveBeenCalled()
+      expect(policyDeps.evaluatePolicy).not.toHaveBeenCalled()
+      expect(readExternalEventRecord(record.recordPath)).toMatchObject({
+        executionState: "dead_letter",
+        attemptCount: 5,
+        failureProvenance: { class: "provider_lane_unavailable", failedAt: expect.any(String) },
+      })
+      expect(readPrivateTurnLedger(ledgerPath)).toEqual([
+        expect.objectContaining({ denialCode: "provider_lane_unavailable", deniedReason: "provider lane resolution failed" }),
+      ])
+    } finally {
+      fs.rmSync(externalEventRoot, { recursive: true, force: true })
+      fs.rmSync(ledgerPath, { force: true })
+    }
+  })
+
+  it("revives a provider dead letter only after exact newer inner-lane readiness and only once", async () => {
+    const socketPath = tmpSocketPath("daemon-provider-revival")
+    const externalEventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "provider-revival-root-"))
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "provider-revival-bundles-"))
+    const ledgerPath = path.join(os.tmpdir(), `provider-revival-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const dead = deadLetter({ root: externalEventRoot, eventId: "provider", failureClass: "provider_lane_unavailable" })
+    const agentRoot = writeProviderBundle(bundlesRoot)
+    const credentialRevision = cacheMinimaxCredential()
+    const { daemon, processManager } = make(socketPath, bundlesRoot, {
+      externalEventRoot,
+      privateRuntimePolicyDeps: privateRuntimePolicyDeps(ledgerPath, "allow"),
+    })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+
+    try {
+      await (daemon as any).reconcileExternalEvents()
+      expect(readExternalEventRecord(dead.recordPath).recoveryGrant).toBeUndefined()
+
+      recordProviderLaneReadiness({
+        agentRoot, agentName: "slugger", lane: "inner", provider: "minimax", model: "MiniMax-M2.5", credentialRevision,
+        status: "ready", checkedAt: dead.failureProvenance!.failedAt,
+      })
+      await (daemon as any).reconcileExternalEvents()
+      expect(readExternalEventRecord(dead.recordPath).executionState).toBe("dead_letter")
+      expect(readExternalEventRecord(dead.recordPath).recoveryGrant).toBeUndefined()
+
+      recordProviderLaneReadiness({
+        agentRoot, agentName: "slugger", lane: "inner", provider: "minimax", model: "MiniMax-M2.5", credentialRevision: "obsolete-credential-revision",
+        status: "ready", checkedAt: "2026-08-29T17:00:03.000Z",
+      })
+      await (daemon as any).reconcileExternalEvents()
+      expect(readExternalEventRecord(dead.recordPath).recoveryGrant).toBeUndefined()
+
+      recordProviderLaneReadiness({
+        agentRoot, agentName: "slugger", lane: "inner", provider: "minimax", model: "MiniMax-M2.5", credentialRevision,
+        status: "failed", checkedAt: "2026-08-29T17:00:03.500Z", error: "provider still unavailable",
+      })
+      await (daemon as any).reconcileExternalEvents()
+      expect(readExternalEventRecord(dead.recordPath).recoveryGrant).toBeUndefined()
+
+      recordProviderLaneReadiness({
+        agentRoot, agentName: "slugger", lane: "inner", provider: "minimax", model: "MiniMax-M2.7", credentialRevision,
+        status: "ready", checkedAt: "2026-08-29T17:00:03.000Z",
+      })
+      await (daemon as any).reconcileExternalEvents()
+      expect(readExternalEventRecord(dead.recordPath).executionState).toBe("dead_letter")
+      expect(readExternalEventRecord(dead.recordPath).recoveryGrant).toBeUndefined()
+
+      recordProviderLaneReadiness({
+        agentRoot, agentName: "slugger", lane: "inner", provider: "minimax", model: "MiniMax-M2.5", credentialRevision,
+        status: "ready", checkedAt: "2026-08-29T17:00:04.000Z",
+      })
+      await (daemon as any).reconcileExternalEvents()
+      const revived = readExternalEventRecord(dead.recordPath)
+      expect(revived).toMatchObject({
+        executionState: "running", generation: 1, observationRevision: "rev-dead", attemptCount: 2,
+        recoveryGrant: { generation: 1, consumedAt: expect.any(String) },
+      })
+      expect(processManager.sendToAgent).toHaveBeenCalledTimes(1)
+      const pendingDir = path.join(bundlesRoot, "slugger.ouro", "state", "pending", "self", "inner", "dialog")
+      expect(fs.readdirSync(pendingDir).filter((entry) => entry.endsWith(".json"))).toHaveLength(1)
+
+      await (daemon as any).reconcileExternalEvents()
+      expect(processManager.sendToAgent).toHaveBeenCalledTimes(1)
+      expect(fs.readdirSync(pendingDir).filter((entry) => entry.endsWith(".json"))).toHaveLength(1)
+    } finally {
+      fs.rmSync(externalEventRoot, { recursive: true, force: true })
+      fs.rmSync(bundlesRoot, { recursive: true, force: true })
+      fs.rmSync(ledgerPath, { force: true })
+    }
+  })
+
+  it("revives managed-runtime failures from registration independently of provider readiness", async () => {
+    const socketPath = tmpSocketPath("daemon-managed-revival")
+    const externalEventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "managed-revival-root-"))
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "managed-revival-bundles-"))
+    const ledgerPath = path.join(os.tmpdir(), `managed-revival-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const revivedCandidate = deadLetter({ root: externalEventRoot, eventId: "registered", failureClass: "managed_runtime_unavailable" })
+    const stillMissing = deadLetter({ root: externalEventRoot, eventId: "missing", failureClass: "managed_runtime_unavailable" })
+    const registered = make(socketPath, bundlesRoot, {
+      externalEventRoot,
+      privateRuntimePolicyDeps: privateRuntimePolicyDeps(ledgerPath, "allow"),
+    })
+    registered.processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+
+    try {
+      await (registered.daemon as any).reconcileExternalEvents()
+      expect(readExternalEventRecord(revivedCandidate.recordPath)).toMatchObject({
+        executionState: "running", attemptCount: 2, recoveryGrant: { generation: 1 },
+      })
+
+      const missingSocket = tmpSocketPath("daemon-managed-still-missing")
+      const missingRoot = fs.mkdtempSync(path.join(os.tmpdir(), "managed-still-missing-root-"))
+      const missingRecord = deadLetter({ root: missingRoot, eventId: "missing-runtime", failureClass: "managed_runtime_unavailable" })
+      const missing = make(missingSocket, bundlesRoot, { externalEventRoot: missingRoot })
+      await (missing.daemon as any).reconcileExternalEvents()
+      expect(readExternalEventRecord(missingRecord.recordPath).executionState).toBe("dead_letter")
+      expect(readExternalEventRecord(missingRecord.recordPath).recoveryGrant).toBeUndefined()
+      expect(missing.processManager.sendToAgent).not.toHaveBeenCalled()
+      fs.rmSync(missingRoot, { recursive: true, force: true })
+
+      expect(readExternalEventRecord(stillMissing.recordPath).recoveryGrant).toMatchObject({ generation: 1 })
+    } finally {
+      fs.rmSync(externalEventRoot, { recursive: true, force: true })
+      fs.rmSync(bundlesRoot, { recursive: true, force: true })
+      fs.rmSync(ledgerPath, { force: true })
+    }
+  })
+
+  it("quietly preserves a consumed recovery grant across repeated reconciliation", async () => {
+    const socketPath = tmpSocketPath("daemon-consumed-recovery")
+    const externalEventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "consumed-recovery-root-"))
+    const dead = deadLetter({ root: externalEventRoot, eventId: "consumed", failureClass: "provider_lane_unavailable" })
+    const revived = (await import("../../../heart/external-events/router")).reviveExternalEventAfterRecovery(dead.recordPath, {
+      expectedVersion: dead.version, expectedGeneration: 1,
+      evidence: { class: "provider_lane_unavailable", observedAt: "2026-08-29T17:00:03.000Z" },
+      now: () => "2026-08-29T17:00:04.000Z",
+    })
+    expect(revived.revived).toBe(true)
+    const recoveryClaim = claimExternalEvent(dead.recordPath, {
+      owner: "recovery-worker", expectedVersion: revived.record.version, expectedGeneration: 1,
+      now: () => "2026-08-29T17:00:05.000Z",
+    })
+    const deadAgain = failExternalEventAttempt(dead.recordPath, {
+      owner: "recovery-worker", expectedVersion: recoveryClaim.version, expectedGeneration: 1,
+      error: "provider still unavailable", failureClass: "provider_lane_unavailable", maxAttempts: 1,
+      now: () => "2026-08-29T17:00:06.000Z",
+    })
+    const { daemon } = make(socketPath, undefined, { externalEventRoot })
+    const restarted = make(tmpSocketPath("daemon-consumed-recovery-restarted"), undefined, { externalEventRoot }).daemon
+    mockEmitNervesEvent.mockClear()
+
+    try {
+      await (daemon as any).reconcileExternalEvents()
+      await (restarted as any).reconcileExternalEvents()
+      expect(readExternalEventRecord(deadAgain.recordPath)).toEqual(deadAgain)
+      expect(mockEmitNervesEvent.mock.calls.some(([event]) =>
+        event.event === "daemon.external_event_recovery_ineligible" || event.event === "daemon.external_event_recovery_error",
+      )).toBe(false)
+    } finally {
+      fs.rmSync(externalEventRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("contains provider resolver failures to their dead letters and continues reconciliation", async () => {
+    const socketPath = tmpSocketPath("daemon-provider-resolver-failure")
+    const externalEventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "resolver-failure-root-"))
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "resolver-failure-bundles-"))
+    const ledgerPath = path.join(os.tmpdir(), `resolver-failure-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const firstDead = deadLetter({ root: externalEventRoot, eventId: "a-dead", failureClass: "provider_lane_unavailable" })
+    const secondDead = deadLetter({ root: externalEventRoot, eventId: "b-dead", failureClass: "provider_lane_unavailable" })
+    const due = recordExternalEvent({ agent: "slugger", source: "sanctuary-health", eventType: "health.observed", eventId: "z-due" }, { root: externalEventRoot })
+    vi.spyOn(providerBindingResolver, "resolveEffectiveProviderBinding")
+      .mockImplementationOnce(() => { throw new Error("resolver exploded") })
+      .mockImplementationOnce(() => { throw "string resolver failure" })
+    const { daemon, processManager } = make(socketPath, bundlesRoot, {
+      externalEventRoot,
+      privateRuntimePolicyDeps: privateRuntimePolicyDeps(ledgerPath, "allow"),
+    })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+    mockEmitNervesEvent.mockClear()
+
+    try {
+      await expect((daemon as any).reconcileExternalEvents()).resolves.toBeUndefined()
+      expect(readExternalEventRecord(firstDead.recordPath).executionState).toBe("dead_letter")
+      expect(readExternalEventRecord(secondDead.recordPath).executionState).toBe("dead_letter")
+      expect(readExternalEventRecord(due.recordPath)).toMatchObject({ executionState: "running", attemptCount: 1 })
+      expect(processManager.sendToAgent).toHaveBeenCalledTimes(1)
+      expect(mockEmitNervesEvent.mock.calls.filter(([event]) => event.event === "daemon.external_event_recovery_error").map(([event]) => event.meta.error)).toEqual([
+        "resolver exploded",
+        "string resolver failure",
+      ])
+    } finally {
+      fs.rmSync(externalEventRoot, { recursive: true, force: true })
+      fs.rmSync(bundlesRoot, { recursive: true, force: true })
+      fs.rmSync(ledgerPath, { force: true })
     }
   })
 
@@ -2775,6 +3074,7 @@ describe("daemon command plane branches", () => {
       habitName: "daily-probe",
     })).resolves.toEqual({
       ok: false,
+      denialCode: "managed_runtime_unavailable",
       error: "No managed agent 'slugger' is registered with daemon-managed private runtime.",
     })
     expect(processManager.sendToAgent).not.toHaveBeenCalled()
@@ -3577,6 +3877,7 @@ describe("daemon command plane branches", () => {
 
     expect(wake).toEqual({
       ok: false,
+      denialCode: "managed_runtime_unavailable",
       error: "No managed agent 'ghost' is registered with daemon-managed private runtime.",
     })
     expect(policyDeps.evaluatePolicy).not.toHaveBeenCalled()
@@ -3645,6 +3946,7 @@ describe("daemon command plane branches", () => {
 
     expect(wake).toEqual({
       ok: false,
+      denialCode: "managed_runtime_unavailable",
       error: "No managed agent 'ghost' is registered with daemon-managed private runtime.",
     })
     expect(policyDeps.evaluatePolicy).not.toHaveBeenCalled()

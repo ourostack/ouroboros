@@ -424,6 +424,7 @@ describe("private-runtime policy and ledger", () => {
     expect(decision).toMatchObject({
       result: "deny",
       executable: false,
+      denialCode: "provider_lane_unavailable",
       deniedReason: "provider lane resolution failed",
       providerLane: {
         lane: "inner",
@@ -447,6 +448,7 @@ describe("private-runtime policy and ledger", () => {
     expect(decision).toMatchObject({
       result: "deny",
       executable: false,
+      denialCode: "provider_lane_unavailable",
       reason: "agent.json missing provider lane",
       deniedReason: "provider lane resolution failed",
       providerLane: {
@@ -513,8 +515,50 @@ describe("private-runtime policy and ledger", () => {
       result: "deny",
       reason: "provider lane boom",
       deniedReason: "provider lane resolution failed",
+      denialCode: "provider_lane_unavailable",
       executable: false,
     })
+  })
+
+  it("keeps policy evaluator failures permanent after provider resolution succeeds", async () => {
+    const privateRuntime = await loadPrivateRuntime()
+    const deps = policyDeps({
+      evaluatePolicy: vi.fn(async () => Promise.reject(new Error("policy evaluator boom"))),
+    })
+
+    const decision = await privateRuntime.requestPrivateTurnDecision(privateTurnRequest({
+      idempotencyKey: "policy-evaluator-error",
+    }), deps)
+
+    expect(decision).toMatchObject({
+      result: "deny",
+      executable: false,
+      reason: "policy evaluator boom",
+      deniedReason: "private runtime policy evaluation failed",
+      providerLane: {
+        lane: "inner",
+        provider: "openai-codex",
+        model: "gpt-5.5",
+      },
+    })
+    expect(decision.denialCode).toBeUndefined()
+  })
+
+  it("keeps non-Error policy evaluator failures permanent", async () => {
+    const privateRuntime = await loadPrivateRuntime()
+    const decision = await privateRuntime.requestPrivateTurnDecision(privateTurnRequest({
+      idempotencyKey: "policy-evaluator-string-error",
+    }), policyDeps({
+      evaluatePolicy: vi.fn(async () => Promise.reject("string policy failure")),
+    }))
+
+    expect(decision).toMatchObject({
+      result: "deny",
+      executable: false,
+      reason: "string policy failure",
+      deniedReason: "private runtime policy evaluation failed",
+    })
+    expect(decision.denialCode).toBeUndefined()
   })
 
   it("derives idempotency and fallback denied reasons without test event doubles", async () => {
@@ -651,15 +695,24 @@ describe("private-runtime policy and ledger", () => {
       ledgerPath,
       emitNervesEvent: vi.fn(),
     })
+    const classified = privateRuntime.recordPrivateTurnDecision({
+      ...directDecision,
+      denialCode: "provider_lane_unavailable",
+    }, { ledgerPath, emitNervesEvent: vi.fn() })
 
     expect(recorded).toMatchObject({
       receiptId: "ptrr_supplied",
       ledgerLocator: { path: ledgerPath, line: 1 },
     })
+    expect(classified).toMatchObject({ denialCode: "provider_lane_unavailable", ledgerLocator: { line: 2 } })
     expect(privateRuntime.readPrivateTurnLedger(ledgerPath)).toMatchObject([
       {
         receiptId: "ptrr_supplied",
         ledgerLocator: { path: ledgerPath, line: 1 },
+      },
+      {
+        denialCode: "provider_lane_unavailable",
+        ledgerLocator: { path: ledgerPath, line: 2 },
       },
     ])
   })
@@ -668,6 +721,7 @@ describe("private-runtime policy and ledger", () => {
     const privateRuntime = await loadPrivateRuntime()
     const deps = policyDeps({
       ledgerPath: path.join(fs.mkdtempSync(path.join(os.tmpdir(), "ouro-private-runtime-readonly-")), "missing", "decisions.jsonl"),
+      resolveProviderLane: vi.fn(async () => Promise.reject(new Error("provider unavailable"))),
       evaluatePolicy: vi.fn(async () => ({ result: "allow", reason: "manual operator-approved habit poke" })),
     })
 
@@ -678,6 +732,7 @@ describe("private-runtime policy and ledger", () => {
       deniedReason: "ledger write failed",
       executable: false,
     })
+    expect(decision.denialCode).toBeUndefined()
     expect(readLedger(deps.ledgerPath as string)).toHaveLength(0)
     expect(deps.readProviderCredentialPool).not.toHaveBeenCalled()
     expect(deps.pingProvider).not.toHaveBeenCalled()
@@ -827,7 +882,9 @@ describe("private-runtime policy and ledger", () => {
   it("rejects same-key different-fingerprint decisions without overwriting the original receipt", async () => {
     const privateRuntime = await loadPrivateRuntime()
     const deps = policyDeps({
-      evaluatePolicy: vi.fn(async () => ({ result: "allow", reason: "operator-approved" })),
+      evaluatePolicy: vi.fn()
+        .mockResolvedValueOnce({ result: "allow", reason: "operator-approved" })
+        .mockResolvedValueOnce({ result: "deny", deniedReason: "provider lane resolution failed", denialCode: "provider_lane_unavailable" }),
     })
 
     const first = await privateRuntime.requestPrivateTurnDecision(privateTurnRequest(), deps)
@@ -839,6 +896,7 @@ describe("private-runtime policy and ledger", () => {
       deniedReason: "idempotency-key fingerprint mismatch",
       idempotencyKey: first.idempotencyKey,
     })
+    expect(second.denialCode).toBeUndefined()
     const ledgerRows = readLedger(deps.ledgerPath as string)
     expect(ledgerRows).toHaveLength(2)
     expect(ledgerRows[0].requestFingerprint).toBe(first.requestFingerprint)

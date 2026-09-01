@@ -6,7 +6,7 @@ import { type TemporalView } from "./temporal-view"
 import { type TempoMode, TEMPO_BUDGETS, type TempoTokenBudget } from "./tempo"
 import { type EpisodeRecord } from "../arc/episodes"
 import { type Obligation } from "../arc/obligations"
-import { type CareRecord } from "../arc/cares"
+import { projectCareEvidence, type CareRecord } from "../arc/cares"
 import { type AgentPresence } from "../arc/presence"
 import { formatFlightRecorderResume, type FlightRecorderResume } from "../arc/flight-recorder"
 import { formatContextLossSentinelText, type ContextLossSentinelView } from "./context-loss-sentinel"
@@ -78,11 +78,13 @@ function buildObligationsSection(obligations: Obligation[]): string {
     .join("\n")
 }
 
-function buildCaresSection(cares: CareRecord[]): string {
+function buildCaresSection(cares: CareRecord[], now: number): string {
   if (cares.length === 0) return ""
 
   return cares
-    .map((c) => {
+    .map((care) => {
+      const c = projectCareEvidence(care, now)
+      if ("recheckRequired" in c) return `- system care [${c.salience}] evidence stale; recheck required`
       const parts = [`- ${c.label}`]
       if (c.salience !== "low") {
         parts.push(` [${c.salience}]`)
@@ -207,6 +209,7 @@ export function buildStartOfTurnPacket(
     friendContactTiming?: string
     flightRecorderResume?: FlightRecorderResume
     recoverySentinel?: ContextLossSentinelView
+    careEvidenceNow?: number
   },
 ): StartOfTurnPacket {
   const tempo = view.tempo
@@ -216,7 +219,7 @@ export function buildStartOfTurnPacket(
   const packet: StartOfTurnPacket = {
     plotLine: buildPlotLine(view.recentEpisodes, tempo),
     obligations: buildObligationsSection(effectiveObligations),
-    cares: buildCaresSection(view.activeCares),
+    cares: buildCaresSection(view.activeCares, opts?.careEvidenceNow ?? Date.now()),
     presence: buildPresenceSection(view.peerPresence),
     arcResume: opts?.flightRecorderResume ? formatFlightRecorderResume(opts.flightRecorderResume) : undefined,
     recoverySentinel: opts?.recoverySentinel,

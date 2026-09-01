@@ -4,29 +4,12 @@ import { getAgentRoot, getAgentName } from "../heart/identity";
 import { commitExternalEventDisposition, getExternalEventRoot, readExternalEventRecord } from "../heart/external-events/router";
 import { emitNervesEvent } from "../nerves/runtime";
 import { readRecentEpisodes, emitEpisode } from "../arc/episodes";
-import { bindCareIncident, createCare, readActiveCares, readCares, resolveCare, resolveCareIncident, updateCare, upsertCareForIncident, type CareRecord } from "../arc/cares";
+import { bindCareIncident, createCare, projectCareEvidence, readActiveCares, readCares, resolveCare, resolveCareIncident, updateCare, upsertCareForIncident } from "../arc/cares";
 import { readPresence, readPeerPresence } from "../arc/presence";
 import { captureIntention, resolveIntention, dismissIntention } from "../arc/intentions";
 import type { ToolDefinition } from "./tools-base";
 import { readStewardPolicy } from "../heart/steward-policy";
 import { parseAwaitFile } from "../heart/awaiting/await-parser";
-
-function presentCare(care: CareRecord): CareRecord | Record<string, unknown> {
-  const staleAt = care.nextCheckAt ? Date.parse(care.nextCheckAt) : Number.NaN
-  if (care.kind !== "system" || !["active", "watching"].includes(care.status) || care.nextCheckAt === null) return care
-  if (Number.isFinite(staleAt) && staleAt >= Date.now()) return care
-  return {
-    id: care.id,
-    kind: care.kind,
-    status: care.status,
-    salience: care.salience,
-    steward: care.steward,
-    evidenceStatus: "stale",
-    recheckRequired: true,
-    staleAt: care.nextCheckAt,
-    lastAssessedAt: care.updatedAt,
-  }
-}
 
 export const continuityToolDefinitions: ToolDefinition[] = [
   // ── Continuity tools ──────────────────────────────────────────────
@@ -277,7 +260,8 @@ export const continuityToolDefinitions: ToolDefinition[] = [
     },
     handler: (a) => {
       const agentRoot = getAgentRoot();
-      const cares = (a.status === "all" ? readCares(agentRoot) : readActiveCares(agentRoot)).map(presentCare);
+      const now = Date.now()
+      const cares = (a.status === "all" ? readCares(agentRoot) : readActiveCares(agentRoot)).map((care) => projectCareEvidence(care, now));
       emitNervesEvent({ component: "repertoire", event: "repertoire.query_cares", message: `queried ${cares.length} cares`, meta: { count: cares.length } });
       return JSON.stringify(cares, null, 2);
     },
@@ -297,6 +281,7 @@ export const continuityToolDefinitions: ToolDefinition[] = [
             why: { type: "string", description: "Why this matters" },
             salience: { type: "string", description: "low, medium, high, or critical" },
             kind: { type: "string", description: "person, agent, project, mission, or system" },
+            status: { type: "string", enum: ["active", "watching", "resolved", "dormant"], description: "active, watching, resolved, or dormant" },
             stewardship: { type: "string", description: "mine, shared, or delegated" },
             source: { type: "string", description: "Machine evidence source for an incident binding" },
             incidentKey: { type: "string", description: "Stable incident key within the source" },
@@ -318,7 +303,7 @@ export const continuityToolDefinitions: ToolDefinition[] = [
           label: a.label ?? "untitled",
           why: a.why ?? "",
           kind: (a.kind as any) ?? "project",
-          status: "active",
+          status: (a.status as any) ?? "active",
           salience: (a.salience as any) ?? "medium",
           steward: (a.stewardship as any) ?? "mine",
           relatedFriendIds: [],
@@ -352,21 +337,32 @@ export const continuityToolDefinitions: ToolDefinition[] = [
           source: a.source,
           incidentKey: a.incidentKey,
           expectedUpdatedAt: a.expectedUpdatedAt,
+          ...((a.label !== undefined || a.why !== undefined || a.currentRisk !== undefined || a.nextCheckAt !== undefined) ? {
+            display: {
+              ...(a.label !== undefined ? { label: String(a.label) } : {}),
+              ...(a.why !== undefined ? { why: String(a.why) } : {}),
+              ...(a.currentRisk !== undefined ? { currentRisk: a.currentRisk ? String(a.currentRisk) : null } : {}),
+              ...(a.nextCheckAt !== undefined ? { nextCheckAt: a.nextCheckAt ? String(a.nextCheckAt) : null } : {}),
+            },
+          } : {}),
         });
       } else if (a.action === "upsert_incident") {
         result = upsertCareForIncident(agentRoot, {
-          label: a.label ?? "untitled",
-          why: a.why ?? "",
-          kind: (a.kind as any) ?? "system",
-          status: "active",
-          salience: (a.salience as any) ?? "medium",
-          steward: (a.stewardship as any) ?? "mine",
+          ...(a.id ? { id: String(a.id) } : {}),
+          ...(!a.id ? {
+            label: a.label ?? "untitled", why: a.why ?? "", kind: (a.kind as any) ?? "system", status: (a.status as any) ?? "active",
+            salience: (a.salience as any) ?? "medium", steward: (a.stewardship as any) ?? "mine",
+          } : {
+            ...(a.label !== undefined ? { label: String(a.label) } : {}), ...(a.why !== undefined ? { why: String(a.why) } : {}),
+            ...(a.kind !== undefined ? { kind: a.kind as any } : {}), ...(a.status !== undefined ? { status: a.status as any } : {}),
+            ...(a.salience !== undefined ? { salience: a.salience as any } : {}), ...(a.stewardship !== undefined ? { steward: a.stewardship as any } : {}),
+          }),
           relatedFriendIds: [],
           relatedAgentIds: [],
           relatedObligationIds: [],
           relatedEpisodeIds: [],
-          currentRisk: a.currentRisk ? String(a.currentRisk) : null,
-          nextCheckAt: a.nextCheckAt ? String(a.nextCheckAt) : null,
+          ...(!a.id || a.currentRisk !== undefined ? { currentRisk: a.currentRisk ? String(a.currentRisk) : null } : {}),
+          ...(!a.id || a.nextCheckAt !== undefined ? { nextCheckAt: a.nextCheckAt ? String(a.nextCheckAt) : null } : {}),
           ...(a.expectedUpdatedAt ? { expectedUpdatedAt: String(a.expectedUpdatedAt) } : {}),
           incident: {
             source: a.source,
