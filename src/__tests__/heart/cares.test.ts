@@ -367,6 +367,16 @@ describe("care store", () => {
       expect(readCares(tmpDir)).toHaveLength(1)
     })
 
+    it("applies canonical defaults when a new incident has no display or policy metadata", () => {
+      const care = upsertCareForIncident(tmpDir, {
+        relatedFriendIds: [], relatedAgentIds: [], relatedObligationIds: [], relatedEpisodeIds: [],
+        incident: { source: "guard", incidentKey: "minimal", classifiedRevision: "rev-1" },
+      })
+      expect(care).toMatchObject({
+        label: "untitled", why: "", kind: "system", status: "active", salience: "medium", steward: "mine", currentRisk: null, nextCheckAt: null,
+      })
+    })
+
     it("CAS-upserts a later incident revision with current risk and next check", () => {
       const first = upsertCareForIncident(tmpDir, {
         ...baseCareInput,
@@ -467,6 +477,11 @@ describe("care store", () => {
         label: "Books service", why: "Keep the library available", kind: "project", status: "watching", salience: "high", steward: "shared",
         currentRisk: "Container is restarting", nextCheckAt: "2026-09-01T08:15:00.000Z",
       })
+      const revisionOnly = upsertCareForIncident(tmpDir, {
+        id: first.id, relatedFriendIds: [], relatedAgentIds: [], relatedObligationIds: [], relatedEpisodeIds: [],
+        incident: { source: "guard", incidentKey: "books", classifiedRevision: "rev-3" }, expectedUpdatedAt: refreshed.updatedAt,
+      })
+      expect(revisionOnly).toMatchObject({ currentRisk: "Container is restarting", nextCheckAt: "2026-09-01T08:15:00.000Z" })
     })
 
     it("updates safe display on an already-resolved binding without re-resolving it", () => {
@@ -482,6 +497,20 @@ describe("care store", () => {
         source: "guard", incidentKey: "docker", expectedUpdatedAt: updated.updatedAt,
         display: { label: updated.label, why: updated.why, currentRisk: updated.currentRisk, nextCheckAt: updated.nextCheckAt },
       })).toEqual(updated)
+    })
+
+    it("preserves omitted display fields during partial incident resolution", () => {
+      const care = createCare(tmpDir, { ...baseCareInput, label: "Books service", why: "Keep the library available", currentRisk: "Restarting", nextCheckAt: "2026-09-01T08:15:00.000Z" })
+      const bound = bindCareIncident(tmpDir, care.id, { source: "guard", incidentKey: "books", classifiedRevision: "rev-1" }, { expectedUpdatedAt: care.updatedAt })
+      const resolved = resolveCareIncident(tmpDir, care.id, {
+        source: "guard", incidentKey: "books", expectedUpdatedAt: bound.updatedAt, display: { currentRisk: "Recovery needs review" },
+      })
+      expect(resolved).toMatchObject({
+        label: "Books service", why: "Keep the library available", currentRisk: "Recovery needs review", nextCheckAt: "2026-09-01T08:15:00.000Z",
+      })
+      expect(resolveCareIncident(tmpDir, care.id, {
+        source: "guard", incidentKey: "books", expectedUpdatedAt: resolved.updatedAt, display: { label: resolved.label },
+      })).toEqual(resolved)
     })
 
     it("does not close the whole Care while another incident remains unresolved", () => {
