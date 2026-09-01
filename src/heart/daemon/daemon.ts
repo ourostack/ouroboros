@@ -52,7 +52,7 @@ import { awaitNameFromPrivateWakeCommand, buildAwaitPrivateWakeCommand } from ".
 import { buildHabitPrivateWakeCommand, habitMessageFromPrivateWakeCommand } from "./habit-private-wake"
 import { createDegradedHabitFile, parseHabitFile, type HabitFile } from "../habits/habit-parser"
 import { applyHabitRuntimeState } from "../habits/habit-runtime-state"
-import { buildExternalEventMessage, claimExternalEvent, externalEventRecoveryFailure, failExternalEventAttempt, getExternalEventRoot, isExactLegacyProviderRecoveryFailure, listExternalEventStatus, readExternalEventRecord, reconcileExternalEvent, recordExternalEvent, reviveExternalEventAfterRecovery, scanPrivilegedEventSpool, type ExternalEventFailureClass, type ExternalEventLeaseContext, type ExternalEventLeaseMember, type ExternalEventRecord, type ExternalEventStatus } from "../external-events/router"
+import { buildExternalEventMessage, claimExternalEvent, externalEventRecoveryFailure, failExternalEventAttempt, getExternalEventRoot, isExactLegacyProviderRecoveryFailure, listExternalEventStatus, readExternalEventRecord, reconcileExternalEvent, recordExternalEvent, repairExternalEventsFromManifest, reviveExternalEventAfterRecovery, scanPrivilegedEventSpool, type ExternalEventFailureClass, type ExternalEventLeaseContext, type ExternalEventLeaseMember, type ExternalEventRecord, type ExternalEventStatus } from "../external-events/router"
 import { isRsvpHabitName } from "../../rsvp/habit-policy"
 import { readContainerRuntimePolicy } from "./container-runtime"
 import type { RunNativeRsvpHabitInput, RunNativeRsvpHabitResult } from "../../rsvp/native-habit-runner"
@@ -536,6 +536,7 @@ export type DaemonCommand =
   | { kind: "habit.probe"; agent: string; habitName: string; noSend?: true }
   | { kind: "await.poke"; agent: string; awaitName: string }
   | { kind: "external.event.submit"; agent: string; source: string; eventType: string; eventId: string; summary?: string; evidence?: string[]; payloadPath?: string; priority?: string; sessionId?: string; taskRef?: string; wake?: boolean; observationRevision?: string; transition?: import("../external-events/router").ExternalEventTransition }
+  | { kind: "external.event.repair"; manifestPath: string }
   | { kind: "message.send"; from: string; to: string; content: string; priority?: string; sessionId?: string; taskRef?: string }
   | { kind: "message.poll"; agent: string }
   | { kind: "mcp.list"; agent?: string }
@@ -2373,6 +2374,23 @@ export class OuroDaemon {
           ok: true,
           message: `queued external event ${record.source}/${record.eventId} as ${dispatched.receipt.id}; ${dispatched.wake.message ?? "wake skipped"}`,
           data: dispatched,
+        }
+      }
+      case "external.event.repair": {
+        if (this.externalEventReconcileRunning) return { ok: false, error: "external event reconciliation is already active; repair made no changes" }
+        this.externalEventReconcileRunning = true
+        try {
+          try {
+            const result = repairExternalEventsFromManifest(command.manifestPath, { root: this.externalEventRootPath() })
+            return { ok: result.failed.length === 0, message: `external event repair applied=${result.applied.length} alreadyApplied=${result.alreadyApplied.length} failed=${result.failed.length} pending=${result.pending.length}`, data: result }
+          } catch (error) {
+            const message = (error instanceof Error ? error.message : /* v8 ignore next -- defensive: repair parser and filesystem dependencies throw Error instances @preserve */ String(error)).slice(0, 1_000)
+            const result = { applied: [], alreadyApplied: [], failed: [{ identity: "<manifest>", error: message }], pending: [] }
+            emitNervesEvent({ level: "error", component: "daemon", event: "daemon.external_event_repair", message: "rejected external event repair manifest", meta: { applied: 0, alreadyApplied: 0, failed: 1, pending: 0 } })
+            return { ok: false, error: `external event repair rejected: ${message}`, data: result }
+          }
+        } finally {
+          this.externalEventReconcileRunning = false
         }
       }
       case "private.decisions": {

@@ -144,10 +144,10 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
   },
   event: {
     category: "Tasks",
-    description: "Submit a verified external event to an owning agent and optionally wake its private runtime",
-    usage: "ouro event submit --agent <agent> --source <source> --type <event-type> --id <provider-id> [--summary <text>] [--evidence <path>] [--payload <path>] [--priority high|normal|low] [--no-wake]",
+    description: "Submit an external event or apply a reviewed receipt-repair manifest through the owning daemon",
+    usage: "ouro event submit --agent <agent> --source <source> --type <event-type> --id <provider-id> [--summary <text>] [--evidence <path>] [--payload <path>] [--priority high|normal|low] [--no-wake] | ouro event repair --manifest <path>",
     example: "ouro event submit --agent slugger --source app-store-connect --type feedback.created --id evt_123 --evidence /tmp/feedback",
-    subcommands: ["submit"],
+    subcommands: ["submit", "repair"],
   },
   poke: {
     category: "Tasks",
