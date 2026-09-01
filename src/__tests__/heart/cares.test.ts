@@ -12,6 +12,7 @@ import {
   bindCareIncident,
   resolveCareIncident,
   upsertCareForIncident,
+  projectCareEvidence,
   type CareRecord,
 } from "../../arc/cares"
 import { expectCappedAgentContent, makeOversizedAgentContent } from "../helpers/content-cap"
@@ -443,6 +444,54 @@ describe("care store", () => {
 
     it("throws when care does not exist", () => {
       expect(() => resolveCare(tmpDir, "nonexistent-id")).toThrow()
+    })
+  })
+
+  describe("projectCareEvidence", () => {
+    const now = Date.parse("2026-09-01T07:30:00.000Z")
+    const systemCare = (nextCheckAt: string | null, overrides: Partial<CareRecord> = {}): CareRecord => ({
+      id: "care-system",
+      label: "Docker image disk at 100%",
+      why: "historical warning",
+      kind: "system",
+      status: "active",
+      salience: "critical",
+      steward: "mine",
+      relatedFriendIds: [], relatedAgentIds: [], relatedObligationIds: [], relatedEpisodeIds: [],
+      currentRisk: "Docker image was measured at 100%",
+      nextCheckAt,
+      createdAt: "2026-09-01T06:00:00.000Z",
+      updatedAt: "2026-09-01T07:00:00.000Z",
+      ...overrides,
+    })
+
+    it.each([
+      ["equal", "2026-09-01T07:30:00.000Z"],
+      ["overdue", "2026-09-01T07:29:59.999Z"],
+      ["malformed", "not-a-time"],
+    ])("suppresses stale system prose at the captured %s boundary", (_label, nextCheckAt) => {
+      expect(projectCareEvidence(systemCare(nextCheckAt), now)).toEqual({
+        id: "care-system",
+        kind: "system",
+        status: "active",
+        salience: "critical",
+        steward: "mine",
+        evidenceStatus: "stale",
+        recheckRequired: true,
+        staleAt: nextCheckAt,
+        lastAssessedAt: "2026-09-01T07:00:00.000Z",
+      })
+    })
+
+    it("keeps null and future checks current and never projects non-system or terminal cares as stale", () => {
+      const nullCheck = systemCare(null)
+      const future = systemCare("2026-09-01T07:30:00.001Z")
+      const project = systemCare("2026-09-01T07:00:00.000Z", { kind: "project" })
+      const resolved = systemCare("2026-09-01T07:00:00.000Z", { status: "resolved" })
+      expect(projectCareEvidence(nullCheck, now)).toBe(nullCheck)
+      expect(projectCareEvidence(future, now)).toBe(future)
+      expect(projectCareEvidence(project, now)).toBe(project)
+      expect(projectCareEvidence(resolved, now)).toBe(resolved)
     })
   })
 

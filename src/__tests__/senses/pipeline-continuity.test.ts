@@ -489,6 +489,27 @@ describe("pipeline continuity integration", () => {
       )
     })
 
+    it("does not let overdue system risk raise tempo and passes the same Care snapshot to preparation", async () => {
+      const staleCare = {
+        id: "c-stale", label: "Docker at 100%", why: "historical", currentRisk: "writes fail", nextCheckAt: "2020-01-01T00:00:00.000Z",
+        status: "active", salience: "critical", kind: "system", steward: "mine",
+        relatedFriendIds: [], relatedAgentIds: [], relatedObligationIds: [], relatedEpisodeIds: [],
+        createdAt: "2020-01-01T00:00:00.000Z", updatedAt: "2020-01-01T00:00:00.000Z",
+      }
+      mockReadActiveCares.mockReturnValue([staleCare])
+      const prepareRunAgentOptions = vi.fn(() => undefined)
+
+      const { handleInboundTurn } = await import("../../senses/pipeline")
+      await handleInboundTurn(makeInput({ prepareRunAgentOptions }))
+
+      expect(mockDeriveTempo).toHaveBeenCalledWith(expect.objectContaining({ atRiskCareCount: 0 }))
+      expect(prepareRunAgentOptions).toHaveBeenCalledWith(expect.objectContaining({
+        activeCares: [staleCare],
+        careEvidenceNow: expect.any(Number),
+      }))
+      expect(mockReadActiveCares).toHaveBeenCalledTimes(1)
+    })
+
     it("gracefully handles continuity pipeline errors (Error instance)", async () => {
       mockDeriveTempo.mockImplementation(() => {
         throw new Error("tempo derivation failed")

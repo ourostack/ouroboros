@@ -59,6 +59,7 @@ import { buildOrientationFrame, type OrientationFrame } from "../heart/orientati
 import type { StructuredOutput } from "../heart/structured-output"
 import { readFlightRecorderResume, recordFlightRecorderEvent } from "../arc/flight-recorder"
 import { refreshContextLossSentinel } from "../heart/context-loss-sentinel"
+import { projectCareEvidence, type CareRecord } from "../arc/cares"
 
 export interface FailoverState {
   pending: FailoverContext | null
@@ -69,6 +70,8 @@ export interface PrepareRunAgentOptionsInput {
   currentUserMessages: ChatCompletionMessageParam[]
   resolvedContext: ResolvedContext
   runAgentOptions: RunAgentOptions
+  activeCares: CareRecord[]
+  careEvidenceNow: number
 }
 
 const VOICE_PENDING_MAX_AGE_MS = 15 * 60 * 1_000
@@ -1033,11 +1036,14 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
 
   // Step 4b: Continuity pipeline — derive tempo, build start-of-turn packet, snapshot obligations
   let renderedStartOfTurnPacket: string | undefined
+  const careEvidenceNow = Date.now()
+  const activeCaresSnapshot = ctx.activeCares
   const preTurnObligationIds = new Set(pendingObligations.map((ob) => `${ob.id}:${ob.status}`))
   try {
     const agentRoot = getAgentRoot()
     const agentName = getAgentName()
-    const { recentEpisodes, activeCares } = ctx
+    const { recentEpisodes } = ctx
+    const projectedCares = activeCaresSnapshot.map((care) => projectCareEvidence(care, careEvidenceNow))
     const tempoState = deriveTempo({
       activeSessions: sessionActivity.length + 1,
       openObligations: pendingObligations.length,
@@ -1047,15 +1053,15 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
         : 0,
       hasBlockers: false, // obligations use specific statuses, not "blocked"
       highSalienceEpisodes: recentEpisodes.filter((ep) => ep.salience === "high" || ep.salience === "critical").length,
-      activeCareCount: activeCares.length,
-      atRiskCareCount: activeCares.filter((c) => c.currentRisk != null).length,
+      activeCareCount: activeCaresSnapshot.length,
+      atRiskCareCount: projectedCares.filter((care) => !("recheckRequired" in care) && care.currentRisk != null).length,
     })
     const temporalView = buildTemporalView(agentRoot, {
       tempo: tempoState.mode,
       preloaded: {
         recentEpisodes,
         activeObligations: pendingObligations,
-        activeCares,
+        activeCares: activeCaresSnapshot,
       },
     })
     const startOfTurnPacket = buildStartOfTurnPacket(temporalView, {
@@ -1067,6 +1073,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
       friendContactTiming,
       flightRecorderResume: ctx.flightRecorderResume,
       recoverySentinel: ctx.recoverySentinel,
+      careEvidenceNow,
     })
     /* v8 ignore next 3 -- syncFailure propagation tested in sync.test.ts @preserve */
     if (syncFailure) {
@@ -1155,6 +1162,8 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
       currentUserMessages,
       resolvedContext,
       runAgentOptions,
+      activeCares: activeCaresSnapshot,
+      careEvidenceNow,
     }),
   )
   const checkpointCurrentAsk = selectCheckpointCurrentAsk({

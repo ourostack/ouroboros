@@ -38,6 +38,35 @@ export interface CareRecord {
   resolvedAt?: string
 }
 
+export interface StaleCareEvidence {
+  id: string
+  kind: "system"
+  status: "active" | "watching"
+  salience: CareRecord["salience"]
+  steward: CareStewardship
+  evidenceStatus: "stale"
+  recheckRequired: true
+  staleAt: string
+  lastAssessedAt: string
+}
+
+export function projectCareEvidence(care: CareRecord, now = Date.now()): CareRecord | StaleCareEvidence {
+  if (care.kind !== "system" || (care.status !== "active" && care.status !== "watching") || care.nextCheckAt === null) return care
+  const staleAt = Date.parse(care.nextCheckAt)
+  if (Number.isFinite(staleAt) && staleAt > now) return care
+  return {
+    id: care.id,
+    kind: care.kind,
+    status: care.status,
+    salience: care.salience,
+    steward: care.steward,
+    evidenceStatus: "stale",
+    recheckRequired: true,
+    staleAt: care.nextCheckAt,
+    lastAssessedAt: care.updatedAt,
+  }
+}
+
 function caresDir(agentRoot: string): string {
   return path.join(agentRoot, "arc", "cares")
 }

@@ -28,7 +28,8 @@ vi.mock("../../arc/episodes", () => ({
   emitEpisode: (...args: any[]) => mockEmitEpisode(...args),
 }))
 
-vi.mock("../../arc/cares", () => ({
+vi.mock("../../arc/cares", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../arc/cares")>()),
   readActiveCares: (...args: any[]) => mockReadActiveCares(...args),
   readCares: (...args: any[]) => mockReadCares(...args),
   createCare: (...args: any[]) => mockCreateCare(...args),
