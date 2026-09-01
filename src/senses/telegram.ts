@@ -95,6 +95,13 @@ import {
   type TelegramEffectTarget,
 } from "./telegram-effect-adapter"
 
+interface FullVisibilityProgress { fallback?: () => string | undefined }
+
+function createFullVisibilityProgress(): { progress: FullVisibilityProgress; emptyResponseFallback: () => string | undefined } {
+  const progress: FullVisibilityProgress = {}
+  return { progress, emptyResponseFallback: () => progress.fallback?.() }
+}
+
 export function createSabQueueProtectiveStateVerifier(options: {
   loadApiKey?: () => Promise<string>
   fetch?: typeof fetch
@@ -1149,7 +1156,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     chatId: string
     sessionKey: string
     userMessage: string
-    fullVisibilityProgress?: { fallback?: () => string | undefined }
+    fullVisibilityProgress?: FullVisibilityProgress
   }): NonNullable<RunSenseTurnOptions["prepareRunAgentOptions"]> => {
     if (!options.resolveRelationshipAuthorization) throw new Error("Telegram relationship authorization resolver is unavailable")
     const relationshipCoordinates = { ...input, botId: botId! }
@@ -1231,7 +1238,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
           },
         }
       : undefined
-    const fullVisibilityProgress: { fallback?: () => string | undefined } = {}
+    const fullVisibility = createFullVisibilityProgress()
     const result = await runTurn({
       agentName: options.agentName,
       channel: "telegram",
@@ -1244,8 +1251,8 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       ...(orientationFrame ? { orientationFrame } : {}),
       toolContext: { ...(toolContext ?? {}), attachmentIds: input.attachmentIds ?? [] },
       prepareRunAgentOptions: prepareRelationshipRunAgentOptions({ friendId: input.friendId, requestId: input.requestId,
-        sessionEventId: input.eventId, userId: input.userId, chatId: input.chatId, sessionKey: input.sessionKey, userMessage: input.text, fullVisibilityProgress }),
-      emptyResponseFallback: () => fullVisibilityProgress.fallback?.(),
+        sessionEventId: input.eventId, userId: input.userId, chatId: input.chatId, sessionKey: input.sessionKey, userMessage: input.text, fullVisibilityProgress: fullVisibility.progress }),
+      emptyResponseFallback: fullVisibility.emptyResponseFallback,
       deliverySink: { onDelivery: (delivery) => deliver(delivery.text, delivery.kind === "settle") },
     })
     if (effects.length === 0 && result.response.trim()) await deliver(result.response, true)
@@ -1418,7 +1425,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
             inbound: { text: message.text, reference: inboundReference, attachmentIds: hydrated.attachmentIds, relations: ingressRelations },
           })
         : null
-      const fullVisibilityProgress: { fallback?: () => string | undefined } = {}
+      const fullVisibility = createFullVisibilityProgress()
       const collected = await collectToolReceipts(() => runTurn({
         agentName: options.agentName,
         channel: "telegram",
@@ -1434,7 +1441,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         ingressRelations,
         ...(ingressReceipt ? { precommittedIngress: ingressReceipt } : {}),
         turnMetricsObserver,
-        emptyResponseFallback: () => fullVisibilityProgress.fallback?.(),
+        emptyResponseFallback: fullVisibility.emptyResponseFallback,
         deliverySink: {
           onDelivery: async (delivery) => {
             if (groundingIntentTool) {
@@ -1457,7 +1464,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
             chatId: message.chatId,
             sessionKey: currentSessionKey,
             userMessage: message.text,
-            fullVisibilityProgress,
+            fullVisibilityProgress: fullVisibility.progress,
           }),
         } : {}),
         ...(approvalRuntime ? { approvalCoordinatorFactory: approvalRuntime.coordinator } : {}),

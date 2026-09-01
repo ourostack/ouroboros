@@ -2,7 +2,13 @@ import { describe, expect, it, vi } from "vitest"
 
 const sab = vi.hoisted(() => ({
   create: vi.fn(),
+  loadApiKey: vi.fn(async () => "test-only-secret"),
   readQueue: vi.fn(async () => ({ paused: true, observedAt: "2026-08-29T00:00:00.000Z" })),
+}))
+
+vi.mock("../../senses/sanctuary-runtime", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../senses/sanctuary-runtime")>()),
+  loadSanctuarySabApiKey: sab.loadApiKey,
 }))
 
 vi.mock("../../senses/sanctuary-sab", () => ({
@@ -30,6 +36,8 @@ describe("Telegram SAB verifier cache coverage", () => {
 
     expect(sab.create).toHaveBeenCalledOnce()
     expect(sab.create).toHaveBeenCalledWith(expect.objectContaining({ loadApiKey: expect.any(Function) }))
+    await expect(sab.create.mock.calls[0]![0].loadApiKey()).resolves.toBe("test-only-secret")
+    expect(sab.loadApiKey).toHaveBeenCalledWith("sanctuary")
     expect(sab.readQueue).toHaveBeenCalledTimes(2)
   })
 })

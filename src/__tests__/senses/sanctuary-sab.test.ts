@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 
-import { createSanctuarySabClient } from "../../senses/sanctuary-sab"
+import { createSanctuarySabClient, sanctuarySabReadUnavailableCode } from "../../senses/sanctuary-sab"
 
 const loadApiKey = () => Promise.resolve("test-only")
 
@@ -9,6 +9,14 @@ function response(body: unknown, status = 200): Response {
 }
 
 describe("Sanctuary SAB client", () => {
+  it("maps only the exact bounded operational read failures", () => {
+    expect(sanctuarySabReadUnavailableCode("request failed")).toBeUndefined()
+    expect(sanctuarySabReadUnavailableCode(new Error("SAB queue verification credential is unavailable"))).toBe("credential_unavailable")
+    expect(sanctuarySabReadUnavailableCode(new Error("SAB queue request failed"))).toBe("request_unavailable")
+    expect(sanctuarySabReadUnavailableCode(new Error("SAB queue response is malformed"))).toBe("malformed_response")
+    expect(sanctuarySabReadUnavailableCode(new Error("unexpected programming failure"))).toBeUndefined()
+  })
+
   it("constructs lazily with an explicit credential loader", () => {
     expect(createSanctuarySabClient({ loadApiKey })).toMatchObject({ readQueue: expect.any(Function), resumeQueue: expect.any(Function) })
   })

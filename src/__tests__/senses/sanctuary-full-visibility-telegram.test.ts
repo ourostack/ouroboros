@@ -32,6 +32,7 @@ describe("Sanctuary owner full-visibility activation", () => {
         return { pollOnce: vi.fn(), run: vi.fn(), stop: vi.fn() }
       },
       runTurn: vi.fn(async (options: any) => {
+        expect(options.emptyResponseFallback()).toBeUndefined()
         prepared = await options.prepareRunAgentOptions({ runAgentOptions: { toolContext: {} } })
         expect(options.emptyResponseFallback()).toBeUndefined()
         const results: Record<string, string> = {
