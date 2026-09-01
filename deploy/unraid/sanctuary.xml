@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <Container version="2">
   <Name>Mendelow Cloud Butler</Name>
-  <Repository>ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.768</Repository>
+  <Repository>ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.769</Repository>
   <Registry>https://github.com/ourostack/ouroboros/pkgs/container/ouroboros-butler</Registry>
   <Network>host</Network>
   <Shell>sh</Shell>

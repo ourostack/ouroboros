@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.769",
+      "changes": [
+        "Keep stale Sanctuary Care evidence out of current context and require provenance-qualified same-turn Docker verification before reporting or mutation.",
+        "Recognize natural whole-Sanctuary current-status requests and require all seven current reads, including notifications, before a terminal reply.",
+        "Revive provider-lane and managed-runtime external-event dead letters exactly once per generation after typed, newer recovery evidence."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.768",
       "changes": [
         "Fix Sanctuary acceptance cursor snapshots for authenticated genesis and concurrent audit writes.",
