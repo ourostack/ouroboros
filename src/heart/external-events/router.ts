@@ -9,6 +9,17 @@ export type ExternalEventTransition = "opened" | "unchanged" | "changed" | "esca
 export type ExternalEventExecutionState = "received" | "queued" | "running" | "handled" | "retry_wait" | "dead_letter"
 export type ExternalEventClassification = "expected" | "needs_attention" | "adopted" | "snoozed" | "dismissed_until_change" | "resolved"
 export type ExternalEventDecision = "silent" | "act" | "ask" | "report"
+export type ExternalEventFailureClass = "provider_lane_unavailable" | "managed_runtime_unavailable"
+
+export interface ExternalEventFailureProvenance {
+  class: ExternalEventFailureClass
+  failedAt: string
+}
+
+export interface ExternalEventRecoveryGrant {
+  generation: number
+  consumedAt: string
+}
 export type ExternalEventWakePredicate =
   | { kind: "on_change" }
   | { kind: "on_escalation" }
@@ -103,6 +114,8 @@ export interface ExternalEventRecord extends Required<Omit<ExternalEventInput, "
   claimExpiresAt: string | null
   nextAttemptAt: string | null
   lastError: string | null
+  failureProvenance?: ExternalEventFailureProvenance
+  recoveryGrant?: ExternalEventRecoveryGrant
   disposition: ExternalEventDisposition | null
   pendingObservation: ExternalEventObservation | null
   dispatchEnabled: boolean
@@ -389,11 +402,19 @@ function withRecordLock<T>(recordPath: string, operation: () => T): T {
 function isRecord(value: unknown): value is ExternalEventRecord {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false
   const candidate = value as Partial<ExternalEventRecord>
+  const failure = candidate.failureProvenance
+  const grant = candidate.recoveryGrant
+  const validFailure = failure === undefined || (failure !== null && typeof failure === "object"
+    && (failure.class === "provider_lane_unavailable" || failure.class === "managed_runtime_unavailable") && canonicalIso(failure.failedAt))
+  const validGrant = grant === undefined || (grant !== null && typeof grant === "object"
+    && Number.isSafeInteger(grant.generation) && grant.generation === candidate.generation && canonicalIso(grant.consumedAt))
   return candidate.schemaVersion === 2
     && typeof candidate.recordPath === "string"
     && Number.isSafeInteger(candidate.version)
     && Number.isSafeInteger(candidate.generation)
     && typeof candidate.observationRevision === "string"
+    && validFailure
+    && validGrant
 }
 
 export function readExternalEventRecord(recordPath: string): ExternalEventRecord {
@@ -428,6 +449,8 @@ export interface ExternalEventStatus {
   careId: string | null
   awaitId: string | null
   lastError: string | null
+  failureProvenance: ExternalEventFailureProvenance | null
+  recoveryGrant: ExternalEventRecoveryGrant | null
   nextAttemptAt: string | null
   claimOwner: string | null
   claimExpiresAt: string | null
@@ -469,6 +492,8 @@ export function listExternalEventStatus(root: string): ExternalEventStatus[] {
             careId: record.disposition?.careId ?? null,
             awaitId: record.disposition?.awaitId ?? null,
             lastError: record.lastError,
+            failureProvenance: record.failureProvenance ?? null,
+            recoveryGrant: record.recoveryGrant ?? null,
             nextAttemptAt: record.nextAttemptAt,
             claimOwner: record.claimOwner,
             claimExpiresAt: record.claimExpiresAt,
@@ -499,6 +524,8 @@ export function listExternalEventStatus(root: string): ExternalEventStatus[] {
             careId: null,
             awaitId: null,
             lastError: `invalid receipt: ${error instanceof Error ? error.message : /* v8 ignore next -- filesystem and JSON parsers throw Error objects @preserve */ String(error)}`,
+            failureProvenance: null,
+            recoveryGrant: null,
             nextAttemptAt: null,
             claimOwner: null,
             claimExpiresAt: null,
@@ -644,6 +671,8 @@ function recordExternalEventInternal(input: ExternalEventInput, options: RecordE
     claimExpiresAt: shouldWake || quietInitialReceipt ? null : existing!.claimExpiresAt,
     nextAttemptAt: shouldWake || quietInitialReceipt ? null : existing!.nextAttemptAt,
     lastError: shouldWake || quietInitialReceipt ? null : existing!.lastError,
+    ...(!shouldWake && !quietInitialReceipt && existing?.failureProvenance ? { failureProvenance: existing.failureProvenance } : {}),
+    ...(!shouldWake && !quietInitialReceipt && existing?.recoveryGrant ? { recoveryGrant: existing.recoveryGrant } : {}),
     disposition: shouldWake || quietInitialReceipt ? null : existing!.disposition,
     pendingObservation: shouldWake || quietInitialReceipt ? null : existing!.pendingObservation,
     dispatchEnabled: options.dispatchEnabled ?? existing?.dispatchEnabled ?? true,
@@ -1080,13 +1109,14 @@ export function commitExternalEventDisposition(recordPath: string, input: CasInp
     disposition: wakePending ? null : input.disposition,
     pendingObservation: null,
     pendingPrivilegedProtectiveAction: undefined,
+    ...(wakePending ? { failureProvenance: undefined, recoveryGrant: undefined } : {}),
     shouldWake: wakePending,
     }, now)
   })
 }
 
-function retryState(record: ExternalEventRecord, now: string, maxAttempts: number, baseDelayMs: number, error: string): ExternalEventRecord {
-  const dead = record.attemptCount >= maxAttempts
+function retryState(record: ExternalEventRecord, now: string, maxAttempts: number, baseDelayMs: number, error: string, failureClass?: ExternalEventFailureClass): ExternalEventRecord {
+  const dead = record.recoveryGrant?.generation === record.generation || record.attemptCount >= maxAttempts
   return {
     ...record,
     executionState: dead ? "dead_letter" : "retry_wait",
@@ -1094,19 +1124,82 @@ function retryState(record: ExternalEventRecord, now: string, maxAttempts: numbe
     claimExpiresAt: null,
     nextAttemptAt: dead ? null : new Date(Date.parse(now) + baseDelayMs * 2 ** Math.max(0, record.attemptCount - 1)).toISOString(),
     lastError: error.slice(0, 1_000),
+    ...(dead && failureClass && !record.failureProvenance ? { failureProvenance: { class: failureClass, failedAt: now } } : {}),
     shouldWake: false,
   }
 }
 
-export function failExternalEventAttempt(recordPath: string, input: CasInput & { owner: string; error: string; maxAttempts?: number; baseDelayMs?: number }): ExternalEventRecord {
+export function failExternalEventAttempt(recordPath: string, input: CasInput & { owner: string; error: string; failureClass?: ExternalEventFailureClass; maxAttempts?: number; baseDelayMs?: number }): ExternalEventRecord {
   return withRecordLock(recordPath, () => {
     const record = readExternalEventRecord(recordPath)
     assertClaim(record, input)
     const now = input.now?.() ?? new Date().toISOString()
     const maxAttempts = input.maxAttempts ?? 5
     const baseDelayMs = input.baseDelayMs ?? 1_000
+    if (input.failureClass !== undefined && input.failureClass !== "provider_lane_unavailable" && input.failureClass !== "managed_runtime_unavailable") throw new Error("External event failure class is invalid")
     if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1 || !Number.isSafeInteger(baseDelayMs) || baseDelayMs < 1) throw new Error("External event retry policy is invalid")
-    return commitMutation(recordPath, retryState(record, now, maxAttempts, baseDelayMs, input.error), now)
+    return commitMutation(recordPath, retryState(record, now, maxAttempts, baseDelayMs, input.error, input.failureClass), now)
+  })
+}
+
+export type ExternalEventRevivalResult =
+  | { revived: true; record: ExternalEventRecord }
+  | { revived: false; reason: "not_dead_letter" | "dispatch_disabled" | "ineligible_failure" | "grant_consumed" | "evidence_mismatch" | "stale_evidence"; record: ExternalEventRecord }
+
+function exactLegacyProviderFailure(record: ExternalEventRecord): ExternalEventFailureProvenance | null {
+  const escapedAgent = record.agent.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")
+  const canonical = new RegExp(`^private-runtime wake denied for ${escapedAgent}: provider lane resolution failed$`, "u")
+  return record.lastError && canonical.test(record.lastError)
+    ? { class: "provider_lane_unavailable", failedAt: record.updatedAt }
+    : null
+}
+
+export function externalEventRecoveryFailure(record: ExternalEventRecord): ExternalEventFailureProvenance | null {
+  return record.failureProvenance ?? exactLegacyProviderFailure(record)
+}
+
+function recoveryIneligible(record: ExternalEventRecord, reason: Exclude<ExternalEventRevivalResult, { revived: true }>["reason"]): ExternalEventRevivalResult {
+  emitNervesEvent({
+    component: "daemon",
+    event: "daemon.external_event_recovery_ineligible",
+    message: "external event dead-letter recovery was ineligible or exhausted",
+    meta: { agent: record.agent, source: record.source, eventId: record.eventId, generation: record.generation, reason },
+  })
+  return { revived: false, reason, record }
+}
+
+export function reviveExternalEventAfterRecovery(recordPath: string, input: CasInput & { evidence: { class: ExternalEventFailureClass; observedAt: string } }): ExternalEventRevivalResult {
+  return withRecordLock(recordPath, () => {
+    const record = readExternalEventRecord(recordPath)
+    assertCas(record, input)
+    if (input.evidence.class !== "provider_lane_unavailable" && input.evidence.class !== "managed_runtime_unavailable") throw new Error("External event recovery evidence class is invalid")
+    if (!canonicalIso(input.evidence.observedAt)) throw new Error("External event recovery evidence time is invalid")
+    if (record.executionState !== "dead_letter") return recoveryIneligible(record, "not_dead_letter")
+    if (record.dispatchEnabled === false) return recoveryIneligible(record, "dispatch_disabled")
+    if (record.recoveryGrant?.generation === record.generation) return recoveryIneligible(record, "grant_consumed")
+    const failure = externalEventRecoveryFailure(record)
+    if (!failure) return recoveryIneligible(record, "ineligible_failure")
+    if (failure.class !== input.evidence.class) return recoveryIneligible(record, "evidence_mismatch")
+    if (Date.parse(input.evidence.observedAt) <= Date.parse(failure.failedAt)) return recoveryIneligible(record, "stale_evidence")
+    const now = input.now?.() ?? new Date().toISOString()
+    if (!canonicalIso(now)) throw new Error("External event recovery grant consumed time is invalid")
+    const revived = commitMutation(recordPath, {
+      ...record,
+      executionState: "queued",
+      claimOwner: null,
+      claimExpiresAt: null,
+      nextAttemptAt: null,
+      shouldWake: true,
+      failureProvenance: failure,
+      recoveryGrant: { generation: record.generation, consumedAt: now },
+    }, now)
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.external_event_requeued",
+      message: "requeued external event after infrastructure recovery",
+      meta: { agent: revived.agent, source: revived.source, eventId: revived.eventId, generation: revived.generation, failureClass: failure.class },
+    })
+    return { revived: true, record: revived }
   })
 }
 
@@ -1134,6 +1227,8 @@ export function advanceExternalEventFromAwait(recordPath: string, input: CasInpu
     generation: record.generation + 1,
     executionState: "queued",
     attemptCount: 0,
+    failureProvenance: undefined,
+    recoveryGrant: undefined,
     disposition: null,
     shouldWake: true,
     }, now)

@@ -177,15 +177,9 @@ export async function requestPrivateTurnDecision(
   const normalizedRequest: PrivateTurnRequest = { ...request, idempotencyKey }
   let providerLane: PrivateTurnProviderLaneMetadata
   let requestFingerprint: string
-  let evaluation: PrivateTurnPolicyEvaluation
+  let evaluation: PrivateTurnPolicyEvaluation | undefined
   try {
     providerLane = await resolveProviderLaneMetadata(normalizedRequest, deps)
-    requestFingerprint = createPrivateTurnRequestFingerprint(normalizedRequest, providerLane)
-    evaluation = await evaluatePolicy(normalizedRequest, {
-      requestFingerprint,
-      idempotencyKey,
-      providerLane,
-    }, deps)
   } catch (error) {
     providerLane = {
       lane: normalizedRequest.providerLane,
@@ -193,11 +187,27 @@ export async function requestPrivateTurnDecision(
       model: "-",
       source: "agent.json",
     }
-    requestFingerprint = createPrivateTurnRequestFingerprint(normalizedRequest, providerLane)
     evaluation = {
       result: "deny",
       reason: error instanceof Error ? error.message : String(error),
       deniedReason: "provider lane resolution failed",
+      denialCode: "provider_lane_unavailable",
+    }
+  }
+  requestFingerprint = createPrivateTurnRequestFingerprint(normalizedRequest, providerLane)
+  if (evaluation === undefined) {
+    try {
+      evaluation = await evaluatePolicy(normalizedRequest, {
+        requestFingerprint,
+        idempotencyKey,
+        providerLane,
+      }, deps)
+    } catch (error) {
+      evaluation = {
+        result: "deny",
+        reason: error instanceof Error ? error.message : String(error),
+        deniedReason: "private runtime policy evaluation failed",
+      }
     }
   }
   const result = evaluation.result
@@ -221,7 +231,10 @@ export async function requestPrivateTurnDecision(
     executable: result === "allow",
     decidedAt: nowIso(deps),
     ledgerLocator: { path: deps.ledgerPath ?? "" },
-    ...(result === "deny" ? { deniedReason: evaluation.deniedReason ?? reason } : {}),
+    ...(result === "deny" ? {
+      deniedReason: evaluation.deniedReason ?? reason,
+      ...(evaluation.denialCode ? { denialCode: evaluation.denialCode } : {}),
+    } : {}),
   }
 
   return recordPrivateTurnDecision(decision, deps)

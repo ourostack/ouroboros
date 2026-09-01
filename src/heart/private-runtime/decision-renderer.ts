@@ -1,5 +1,5 @@
 import { emitNervesEvent } from "../../nerves/runtime"
-import type { PrivateTurnDecision, PrivateTurnLedgerLocator, PrivateTurnOriginRef, PrivateTurnProviderLaneMetadata } from "./types"
+import type { PrivateTurnDecision, PrivateTurnDenialCode, PrivateTurnLedgerLocator, PrivateTurnOriginRef, PrivateTurnProviderLaneMetadata } from "./types"
 
 export interface PrivateDecisionReadRecord {
   schemaVersion: 1
@@ -18,6 +18,7 @@ export interface PrivateDecisionReadRecord {
   decidedAt: string
   ledgerLocator: PrivateTurnLedgerLocator
   deniedReason?: string
+  denialCode?: PrivateTurnDenialCode
   duplicateOf?: string
   error?: string
 }
@@ -85,6 +86,7 @@ export function sanitizePrivateDecision(row: unknown, ledgerPath?: string): Priv
     ? row as Record<string, unknown>
     : {}
   const deniedReason = stringField(record.deniedReason)
+  const denialCode = record.denialCode === "provider_lane_unavailable" ? record.denialCode : undefined
   const duplicateOf = stringField(record.duplicateOf)
   const error = stringField(record.error)
   return {
@@ -104,6 +106,7 @@ export function sanitizePrivateDecision(row: unknown, ledgerPath?: string): Priv
     decidedAt: stringField(record.decidedAt),
     ledgerLocator: ledgerLocatorField(record.ledgerLocator, ledgerPath),
     ...(deniedReason ? { deniedReason } : {}),
+    ...(denialCode ? { denialCode } : {}),
     ...(duplicateOf ? { duplicateOf } : {}),
     ...(error ? { error } : {}),
   }

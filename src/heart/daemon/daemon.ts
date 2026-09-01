@@ -37,6 +37,7 @@ import { MAILBOX_DEFAULT_PORT } from "../mailbox/mailbox-types"
 import { readMailboxAgentState, readMailboxMachineState } from "../mailbox/mailbox-read"
 import { buildMailboxAgentView, buildMailboxMachineView } from "../mailbox/mailbox-view"
 import { buildAgentProviderVisibility, providerVisibilityStatusRows, type ProviderStatusRow } from "../provider-visibility"
+import { resolveEffectiveProviderBinding } from "../provider-binding-resolver"
 import {
   buildPrivateDecisionReadPayload,
   privateDecisionCountSummary,
@@ -44,14 +45,14 @@ import {
   requestPrivateTurnDecision,
   readPrivateTurnLedger,
 } from "../private-runtime"
-import type { PrivateTurnDecision, PrivateTurnOriginRef, PrivateTurnPolicyDeps, PrivateTurnRequest } from "../private-runtime"
+import type { PrivateTurnDecision, PrivateTurnDenialCode, PrivateTurnOriginRef, PrivateTurnPolicyDeps, PrivateTurnRequest } from "../private-runtime"
 import { DEFAULT_DAEMON_SOCKET_PATH } from "./socket-client"
 import { isHabitRunTrigger, type HabitRunTrigger } from "../../arc/flight-recorder"
 import { awaitNameFromPrivateWakeCommand, buildAwaitPrivateWakeCommand } from "./await-private-wake"
 import { buildHabitPrivateWakeCommand, habitMessageFromPrivateWakeCommand } from "./habit-private-wake"
 import { createDegradedHabitFile, parseHabitFile, type HabitFile } from "../habits/habit-parser"
 import { applyHabitRuntimeState } from "../habits/habit-runtime-state"
-import { buildExternalEventMessage, claimExternalEvent, failExternalEventAttempt, getExternalEventRoot, listExternalEventStatus, readExternalEventRecord, reconcileExternalEvent, recordExternalEvent, scanPrivilegedEventSpool, type ExternalEventLeaseContext, type ExternalEventLeaseMember, type ExternalEventRecord, type ExternalEventStatus } from "../external-events/router"
+import { buildExternalEventMessage, claimExternalEvent, externalEventRecoveryFailure, failExternalEventAttempt, getExternalEventRoot, listExternalEventStatus, readExternalEventRecord, reconcileExternalEvent, recordExternalEvent, reviveExternalEventAfterRecovery, scanPrivilegedEventSpool, type ExternalEventFailureClass, type ExternalEventLeaseContext, type ExternalEventLeaseMember, type ExternalEventRecord, type ExternalEventStatus } from "../external-events/router"
 import { isRsvpHabitName } from "../../rsvp/habit-policy"
 import { readContainerRuntimePolicy } from "./container-runtime"
 import type { RunNativeRsvpHabitInput, RunNativeRsvpHabitResult } from "../../rsvp/native-habit-runner"
@@ -547,6 +548,7 @@ export interface DaemonResponse {
   summary?: string
   message?: string
   error?: string
+  denialCode?: PrivateTurnDenialCode | "managed_runtime_unavailable"
   data?: unknown
 }
 
@@ -1911,6 +1913,7 @@ export class OuroDaemon {
 
   private async dispatchExternalEvents(records: ExternalEventRecord[]): Promise<{ events: ExternalEventRecord[]; event: ExternalEventRecord; receipt: { id: string; queuedAt: string }; wake: DaemonResponse }> {
     const claimed: ExternalEventRecord[] = []
+    let failureClass: ExternalEventFailureClass | undefined
     try {
       for (const record of records) {
         const owner = `external-event:${record.agent}:${record.source}:${record.eventId}:generation:${record.generation}:attempt:${record.attemptCount + 1}`
@@ -1934,6 +1937,11 @@ export class OuroDaemon {
         () => { for (const record of claimed) this.queueExternalEventForPrivateRuntime(record) },
         lease,
       )
+      failureClass = wake.denialCode === "managed_runtime_unavailable"
+        ? "managed_runtime_unavailable"
+        : (wake.data as { decision?: { denialCode?: string } } | undefined)?.decision?.denialCode === "provider_lane_unavailable"
+          ? "provider_lane_unavailable"
+          : undefined
       const denied = !wake.ok || (wake.data as { decision?: { executable?: boolean } } | undefined)?.decision?.executable === false
       if (denied) throw new Error(wake.error ?? wake.message ?? /* v8 ignore next -- daemon wake responses always carry an error or message @preserve */ "external-event private turn was denied")
       return { events: claimed, event: primary, receipt, wake }
@@ -1944,6 +1952,7 @@ export class OuroDaemon {
           failExternalEventAttempt(latest.recordPath, {
             owner: record.claimOwner!, expectedVersion: latest.version, expectedGeneration: latest.generation,
             error: error instanceof Error ? error.message : String(error),
+            ...(failureClass ? { failureClass } : {}),
           })
         }
       }
@@ -1970,6 +1979,39 @@ export class OuroDaemon {
         if (status.corrupt) continue
         let record = readExternalEventRecord(status.recordPath)
         if (record.dispatchEnabled === false) continue
+        if (record.executionState === "dead_letter") {
+          const failure = externalEventRecoveryFailure(record)
+          if (!failure || record.recoveryGrant?.generation === record.generation) continue
+          let evidence: { class: ExternalEventFailureClass; observedAt: string } | null = null
+          try {
+            if (failure.class === "provider_lane_unavailable") {
+              const binding = resolveEffectiveProviderBinding({
+                agentName: record.agent,
+                agentRoot: path.join(this.bundlesRoot, `${record.agent}.ouro`),
+                lane: "inner",
+              })
+              if (binding.ok && binding.binding.credential.status === "present"
+                && binding.binding.readiness.status === "ready" && binding.binding.readiness.checkedAt
+                && Date.parse(binding.binding.readiness.checkedAt) > Date.parse(failure.failedAt)) {
+                evidence = { class: failure.class, observedAt: binding.binding.readiness.checkedAt }
+              }
+            } else if (this.hasManagedPrivateRuntime(record.agent) && Date.parse(now) > Date.parse(failure.failedAt)) {
+              evidence = { class: failure.class, observedAt: now }
+            }
+            if (!evidence) continue
+            const revival = reviveExternalEventAfterRecovery(record.recordPath, { expectedVersion: record.version, expectedGeneration: record.generation, evidence, now: () => now })
+            record = revival.record
+          } catch (error) {
+            emitNervesEvent({
+              level: "warn",
+              component: "daemon",
+              event: "daemon.external_event_recovery_error",
+              message: "external event dead-letter recovery check failed",
+              meta: { agent: record.agent, source: record.source, eventId: record.eventId, generation: record.generation, error: error instanceof Error ? error.message : String(error) },
+            })
+            continue
+          }
+        }
         if (record.executionState === "running" && record.claimExpiresAt && Date.parse(record.claimExpiresAt) <= Date.parse(now)) {
           record = reconcileExternalEvent(record.recordPath)
         }
@@ -2015,6 +2057,7 @@ export class OuroDaemon {
       return {
         ok: false,
         error: `No managed agent '${command.agent}' is registered with daemon-managed private runtime.`,
+        denialCode: "managed_runtime_unavailable",
       }
     }
 
@@ -2027,6 +2070,7 @@ export class OuroDaemon {
       return {
         ok: true,
         message: `private-runtime wake denied for ${command.agent}: ${decision.deniedReason}`,
+        ...(decision.denialCode ? { denialCode: decision.denialCode } : {}),
         data: { decision },
       }
     }

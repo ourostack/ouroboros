@@ -2,6 +2,7 @@ import type { AgentProvider } from "../identity"
 import type { ProviderLane } from "../provider-lanes"
 
 export type PrivateTurnDecisionResult = "allow" | "deny"
+export type PrivateTurnDenialCode = "provider_lane_unavailable"
 
 export interface PrivateTurnOriginRef {
   kind: string
@@ -53,13 +54,14 @@ export interface PrivateTurnDecision {
   decidedAt: string
   ledgerLocator: PrivateTurnLedgerLocator
   deniedReason?: string
+  denialCode?: PrivateTurnDenialCode
   duplicateOf?: string
   error?: string
 }
 
 export type PrivateTurnPolicyEvaluation =
   | { result: "allow"; reason: string }
-  | { result: "deny"; reason?: string; deniedReason?: string }
+  | { result: "deny"; reason?: string; deniedReason?: string; denialCode?: PrivateTurnDenialCode }
 
 export interface PrivateTurnPolicyDeps {
   ledgerPath?: string

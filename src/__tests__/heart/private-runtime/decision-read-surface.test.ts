@@ -337,6 +337,7 @@ describe("private-runtime decision read surface", () => {
             providerLane: {},
             result: "deny",
             executable: false,
+            denialCode: "provider_lane_unavailable",
             ledgerLocator: {
               path: "/tmp/slugger.ouro/state/private-runtime/decisions.jsonl",
             },
@@ -392,6 +393,7 @@ describe("private-runtime decision read surface", () => {
             idempotencyKey: "ptk_duplicate",
             result: "deny",
             executable: false,
+            denialCode: "provider_lane_unavailable",
             ledgerLocator: {
               path: "/tmp/slugger.ouro/state/private-runtime/decisions.jsonl",
               line: 7,
@@ -410,6 +412,7 @@ describe("private-runtime decision read surface", () => {
     expect(duplicatePayload.decisions[0]).toMatchObject({
       receiptId: "ptrr_duplicate",
       duplicateOf: "ptrr_original",
+      denialCode: "provider_lane_unavailable",
       error: "duplicate collapse note",
       ledgerLocator: {
         line: 7,

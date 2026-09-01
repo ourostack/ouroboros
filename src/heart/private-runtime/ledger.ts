@@ -111,6 +111,7 @@ function mismatchDecision(candidate: PrivateTurnDecision, existing: PrivateTurnD
     result: "deny",
     executable: false,
     deniedReason: "idempotency-key fingerprint mismatch",
+    denialCode: undefined,
     duplicateOf: existing.receiptId,
   }
 }
@@ -139,6 +140,7 @@ function ledgerWriteFailedDecision(
     result: "deny",
     executable: false,
     deniedReason: "ledger write failed",
+    denialCode: undefined,
     ledgerLocator: { path: ledgerPath },
     error: String(error),
   }
@@ -184,6 +186,7 @@ export function recordPrivateTurnDecision(
         && latestSameFingerprint.result === candidate.result
         && latestSameFingerprint.executable === candidate.executable
         && latestSameFingerprint.deniedReason === candidate.deniedReason
+        && latestSameFingerprint.denialCode === candidate.denialCode
       ) {
         return latestSameFingerprint
       }
