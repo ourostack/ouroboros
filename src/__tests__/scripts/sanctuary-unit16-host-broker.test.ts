@@ -36,6 +36,11 @@ interface BrokerDependencies {
 }
 
 interface BrokerModule {
+  createUnraidKey(name: string, requested: string[], dependencies: {
+    runUnraid(args: string[]): unknown
+    inventoryRecords(): Array<{ id: string; name: string; key: string; permissions: Array<{ resource: string; actions: string[] }>; roles: string[] }>
+    persistRecovery(record: { id: string; name: string; key: string; permissions: Array<{ resource: string; actions: string[] }>; roles: string[] }): void
+  }): { id: string; name: string; key: string; permissions: Array<{ resource: string; actions: string[] }>; roles: string[] }
   productionProcessBindingDigest(value: Record<string, unknown>): string
   assertStableContainerProcess(before: Record<string, unknown>, after: Record<string, unknown>): void
   readBoundedProcStatus(file: string): string
@@ -139,6 +144,7 @@ interface HealthProbeRecord {
 async function broker(): Promise<BrokerModule> {
   return import(pathToFileURL(path.resolve("deploy/unraid/sanctuary-unit16-host-broker.mjs")).href) as Promise<{
     createOwnerMutationCoordinator(): ReturnType<BrokerModule["createOwnerMutationCoordinator"]>
+    createUnraidKey: BrokerModule["createUnraidKey"]
     createInteractiveRestartDriver: BrokerModule["createInteractiveRestartDriver"]
     armRestartAfterResponseClosed: BrokerModule["armRestartAfterResponseClosed"]
     runInteractiveDriver(input: Record<string, string>, dependencies?: { run(executable: string, args: string[], options: Record<string, unknown>): { error?: Error; status: number | null; stdout?: string } }): Record<string, unknown>
@@ -181,6 +187,82 @@ async function broker(): Promise<BrokerModule> {
 }
 
 describe("Sanctuary Unit 16 host broker", () => {
+  it("attests the exact Unraid 7.2.3 API-key CLI response against persisted scope", async () => {
+    const { createUnraidKey } = await broker()
+    const id = "6735a32b-45c4-47e3-8953-910a6442b800"
+    const requested = ["ARRAY:READ_ANY", "DOCKER:READ_ANY"]
+    const record = {
+      id, name: "Butler RO Rotation 0123456789abcdef", key: "private-key",
+      permissions: [
+        { resource: "ARRAY", actions: ["READ_ANY"] },
+        { resource: "DOCKER", actions: ["READ_ANY"] },
+      ],
+      roles: [],
+    }
+    const calls: string[][] = []
+    let reads = 0
+    expect(createUnraidKey(record.name, requested, {
+      runUnraid: (args) => { calls.push(args); return { id, key: record.key, name: record.name } },
+      inventoryRecords: () => { reads += 1; return reads === 1 ? [] : [record] },
+      persistRecovery: () => { throw new Error("successful create must not persist recovery") },
+    })).toEqual(record)
+    expect(calls).toEqual([["apikey", "--name", record.name, "--create", "--permissions", requested.join(","), "--json"]])
+  })
+
+  it("fails closed on malformed CLI output or persisted API-key drift", async () => {
+    const { createUnraidKey } = await broker()
+    const id = "6735a32b-45c4-47e3-8953-910a6442b800"
+    const name = "Butler RO Rotation 0123456789abcdef"
+    const key = "private-key"
+    const requested = ["ARRAY:READ_ANY"]
+    const record = { id, name, key, permissions: [{ resource: "ARRAY", actions: ["READ_ANY"] }], roles: [] }
+    for (const response of [
+      { id, key, name, permissions: record.permissions },
+      { id, key },
+      { id, key, name: "Butler RW Rotation 0123456789abcdef" },
+      { id: "invalid/id", key, name },
+    ]) {
+      const persisted: typeof record[] = []
+      let reads = 0
+      const args: string[][] = []
+      expect(() => createUnraidKey(name, requested, {
+        runUnraid: (value) => { args.push(value); return response },
+        inventoryRecords: () => { reads += 1; return reads === 1 ? [] : [record] },
+        persistRecovery: (value) => persisted.push(value),
+      })).toThrow()
+      expect(args).toHaveLength(1)
+      expect(args[0]?.[0]).toBe("apikey")
+      expect(args[0]).not.toContain("--delete")
+      expect(persisted).toEqual([record])
+    }
+    for (const persisted of [
+      [],
+      [record, record],
+      [{ ...record, key: "different" }],
+      [{ ...record, permissions: [{ resource: "ARRAY", actions: ["UPDATE_ANY"] }] }],
+      [{ ...record, roles: ["ADMIN"] }],
+    ]) {
+      let reads = 0
+      const recovery: typeof record[] = []
+      expect(() => createUnraidKey(name, requested, {
+        runUnraid: () => ({ id, key, name }),
+        inventoryRecords: () => { reads += 1; return reads === 1 ? [] : persisted },
+        persistRecovery: (value) => recovery.push(value as typeof record),
+      })).toThrow(/record/u)
+      expect(recovery).toEqual(persisted.filter((value, index, values) => values.findIndex((candidate) => candidate.id === value.id) === index))
+    }
+    const commands: string[][] = []
+    const recovery: typeof record[] = []
+    expect(() => createUnraidKey(name, requested, {
+      runUnraid: (args) => { commands.push(args); return { id, key, name } },
+      inventoryRecords: () => [record],
+      persistRecovery: (value) => recovery.push(value),
+    })).toThrow(/identity/u)
+    expect(commands).toHaveLength(1)
+    expect(commands[0]).not.toContain("--delete")
+    expect(recovery).toEqual([])
+  })
+
   it("returns bounded async responses after clients half-close their requests", async () => {
     const { createBrokerServer } = await broker()
     const directory = fs.mkdtempSync(path.join(tmpdir(), "ouro-unit16-broker-"))
