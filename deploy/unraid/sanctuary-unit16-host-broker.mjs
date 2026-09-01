@@ -149,27 +149,113 @@ function runUnraid(args) {
   return object(JSON.parse(result.stdout), "Unraid API response")
 }
 
-function createUnraidKey(name, requested, dependencies = { runUnraid, inventoryRecords, persistRecovery }) {
+function permissionObjects(values) {
+  const grouped = new Map()
+  for (const value of values) {
+    const [resource, action] = value.split(":")
+    const actions = grouped.get(resource) ?? []
+    actions.push(action)
+    grouped.set(resource, actions)
+  }
+  return [...grouped.entries()].sort(([left], [right]) => left.localeCompare(right))
+    .map(([resource, actions]) => ({ resource, actions: actions.sort() }))
+}
+
+async function createUnraidKey(name, requested, dependencies = {
+  runUnraid, inventoryRecords, persistRecovery, readRecovery: optionalRecoveryRecord,
+  persistIntent: persistCreateIntent, readIntent: optionalCreateIntent, removeIntent: removeCreateIntent,
+  fetchImpl: fetch,
+}) {
   const before = dependencies.inventoryRecords()
   const beforeIds = new Set(before.map((record) => record.id))
+  const provisionalPermissions = [...requested, "API_KEY:UPDATE_ANY"].sort()
+  let recoveryId = null
+  let cliIdentity = null
   try {
-    const created = object(dependencies.runUnraid(["apikey", "--name", name, "--create", "--permissions", requested.join(","), "--json"]), "created Unraid key")
-    exactKeys(created, ["id", "key", "name"], "created Unraid key")
+    const occupied = before.filter((record) => record.name === name)
+    const existingIntent = dependencies.readIntent?.(name) ?? null
+    if (existingIntent === null) {
+      if (occupied.length !== 0) throw new Error("existing provisional key has no durable creation intent")
+      dependencies.persistIntent(name, provisionalPermissions)
+    } else if (existingIntent.name !== name || JSON.stringify(existingIntent.permissions) !== JSON.stringify(provisionalPermissions)) {
+      throw new Error("Unraid key creation intent is invalid")
+    }
+    let created
+    let provisional
+    let resumed = false
+    let resumedFinal = false
+    if (occupied.length === 1) {
+      provisional = occupied[0]
+      let recovery = dependencies.readRecovery?.(provisional.id) ?? null
+      const provisionalExact = JSON.stringify(flattened(provisional)) === JSON.stringify(provisionalPermissions)
+        && JSON.stringify(provisional.roles) === JSON.stringify(["GUEST"])
+      if (recovery === null && provisionalExact) {
+        dependencies.persistRecovery(provisional)
+        recovery = provisional
+      }
+      if (!recovery || recovery.id !== provisional.id || recovery.name !== provisional.name || recovery.key !== provisional.key
+        || JSON.stringify(flattened(recovery)) !== JSON.stringify(provisionalPermissions)
+        || JSON.stringify(recovery.roles) !== JSON.stringify(["GUEST"])
+        || !(provisionalExact
+          || (JSON.stringify(flattened(provisional)) === JSON.stringify(requested) && provisional.roles.length === 0))) {
+        throw new Error("existing provisional key is not exact owned recovery")
+      }
+      resumedFinal = provisional.roles.length === 0
+      created = { id: provisional.id, key: provisional.key, name: provisional.name }
+      resumed = true
+    } else if (occupied.length === 0) {
+      created = object(dependencies.runUnraid(["apikey", "--name", name, "--create", "--roles", "GUEST", "--permissions", provisionalPermissions.join(","), "--json"]), "created Unraid key")
+      exactKeys(created, ["id", "key", "name"], "created Unraid key")
+      cliIdentity = { id: text(created.id, "created key id", KEY_ID), key: text(created.key, "created key descriptor"), name: created.name }
+    } else {
+      throw new Error("created provisional key name is ambiguous")
+    }
     const id = text(created.id, "created key id", KEY_ID)
     const key = text(created.key, "created key descriptor")
-    if (created.name !== name || beforeIds.has(id)) throw new Error("created key identity is invalid")
-    const matches = dependencies.inventoryRecords().filter((record) => record.id === id)
+    if (created.name !== name || (!resumed && beforeIds.has(id))) throw new Error("created key identity is invalid")
+    const matches = resumed ? [provisional] : dependencies.inventoryRecords().filter((record) => record.id === id)
     if (matches.length !== 1 || matches[0].name !== name || matches[0].key !== key
-      || JSON.stringify(flattened(matches[0])) !== JSON.stringify(requested) || matches[0].roles.length !== 0) {
-      throw new Error("created key record does not match the exact CLI result")
+      || (!resumedFinal && (JSON.stringify(flattened(matches[0])) !== JSON.stringify(provisionalPermissions)
+        || JSON.stringify(matches[0].roles) !== JSON.stringify(["GUEST"])))) {
+      throw new Error("created provisional key record does not match the exact CLI result")
     }
-    return matches[0]
+    if (!resumed) dependencies.persistRecovery(matches[0])
+    recoveryId = id
+    const headers = { "content-type": "application/json", "x-api-key": key }
+    if (!resumedFinal) try {
+      const updateResponse = await dependencies.fetchImpl(GRAPHQL_ENDPOINT, {
+        method: "POST", headers,
+        body: JSON.stringify({
+          query: "mutation AcceptanceApiKeyDowngrade($input: UpdateApiKeyInput!) { apiKey { update(input: $input) { id name roles permissions { resource actions } } } }",
+          variables: { input: { id, roles: [], permissions: permissionObjects(requested) } },
+        }),
+        signal: AbortSignal.timeout(10_000),
+      })
+      const updateEnvelope = object(await updateResponse.json(), "Unraid key downgrade response")
+      if (!updateResponse.ok || updateEnvelope.errors || !updateEnvelope.data) throw new Error("Unraid key downgrade was rejected")
+    } catch {
+      // A lost response is accepted only when disk and live-auth attestation below prove convergence.
+    }
+    const finalized = dependencies.inventoryRecords().filter((record) => record.id === id)
+    if (finalized.length !== 1 || finalized[0].name !== name || finalized[0].key !== key
+      || JSON.stringify(flattened(finalized[0])) !== JSON.stringify(requested) || finalized[0].roles.length !== 0) {
+      throw new Error("created key did not converge to its exact final scope")
+    }
+    const probeResponse = await dependencies.fetchImpl(GRAPHQL_ENDPOINT, {
+      method: "POST", headers,
+      body: JSON.stringify({ query: "query AcceptanceAuthProbe { info { os { hostname } } }", variables: {} }),
+      signal: AbortSignal.timeout(10_000),
+    })
+    const probeEnvelope = object(await probeResponse.json(), "Unraid key readiness response")
+    if (!probeResponse.ok || probeEnvelope.errors || !probeEnvelope.data) throw new Error("created key readiness probe failed")
+    return finalized[0]
   } catch (error) {
-    const recoveredIds = new Set()
-    for (const record of dependencies.inventoryRecords().filter((candidate) => !beforeIds.has(candidate.id))) {
-      if (!recoveredIds.has(record.id)) dependencies.persistRecovery(record)
-      recoveredIds.add(record.id)
-    }
+    const candidates = dependencies.inventoryRecords().filter((record) => record.name === name
+      && !beforeIds.has(record.id)
+      && JSON.stringify(flattened(record)) === JSON.stringify(provisionalPermissions)
+      && JSON.stringify(record.roles) === JSON.stringify(["GUEST"])
+      && (cliIdentity === null || (record.id === cliIdentity.id && record.key === cliIdentity.key && record.name === cliIdentity.name)))
+    if (candidates.length === 1 && candidates[0].id !== recoveryId) dependencies.persistRecovery(candidates[0])
     throw error
   }
 }
@@ -570,25 +656,147 @@ function containerRestartSnapshot(expectedImage) {
 }
 
 function recoveryPath(id) { return `${RECOVERY_ROOT}/${id}.json` }
+function createIntentPath(name) { return `${RECOVERY_ROOT}/create-${createHash("sha256").update(name).digest("hex")}.json` }
+function rejectionReceiptPath(id) { return `${RECOVERY_ROOT}/${id}.rejected.json` }
 
-function persistRecovery(record) {
+function persistPrivateJson(target, value) {
   mkdirSync(RECOVERY_ROOT, { recursive: true, mode: 0o700 })
   chmodSync(RECOVERY_ROOT, 0o700)
   chownSync(RECOVERY_ROOT, 0, 0)
-  const target = recoveryPath(record.id)
   const temporary = `${target}.tmp-${process.pid}`
   const fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600)
-  try { writeFileSync(fd, `${JSON.stringify(record)}\n`); fsyncSync(fd) } finally { closeSync(fd) }
-  chownSync(temporary, 0, 0)
+  try { chownSync(temporary, 0, 0); writeFileSync(fd, `${JSON.stringify(value)}\n`); fsyncSync(fd) } finally { closeSync(fd) }
   renameSync(temporary, target)
   const directory = openSync(RECOVERY_ROOT, constants.O_RDONLY)
   try { fsyncSync(directory) } finally { closeSync(directory) }
+}
+
+function optionalPrivateJson(target) {
+  try { return object(readPrivateJson(target), "private acceptance record") }
+  catch (error) { if (error?.code === "ENOENT") return null; throw error }
+}
+
+function persistCreateIntent(name, requested) {
+  mkdirSync(RECOVERY_ROOT, { recursive: true, mode: 0o700 })
+  chmodSync(RECOVERY_ROOT, 0o700)
+  chownSync(RECOVERY_ROOT, 0, 0)
+  const target = createIntentPath(name)
+  const fd = openSync(target, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600)
+  try {
+    chownSync(target, 0, 0)
+    writeFileSync(fd, `${JSON.stringify({ schemaVersion: 1, name, permissions: requested })}\n`)
+    fsyncSync(fd)
+  } finally { closeSync(fd) }
+  const directory = openSync(RECOVERY_ROOT, constants.O_RDONLY)
+  try { fsyncSync(directory) } finally { closeSync(directory) }
+}
+
+function optionalCreateIntent(name) {
+  const value = optionalPrivateJson(createIntentPath(name))
+  if (value === null) return null
+  exactKeys(value, ["schemaVersion", "name", "permissions"], "Unraid key creation intent")
+  if (value.schemaVersion !== 1 || value.name !== name) throw new Error("Unraid key creation intent is invalid")
+  return { name, permissions: permissions(value.permissions) }
+}
+
+function removePrivateFile(target) {
+  try { unlinkSync(target) } catch (error) { if (error?.code !== "ENOENT") throw error }
+  const directory = openSync(RECOVERY_ROOT, constants.O_RDONLY)
+  try { fsyncSync(directory) } finally { closeSync(directory) }
+}
+
+function removeCreateIntent(name) { removePrivateFile(createIntentPath(name)) }
+
+function optionalRejectionReceipt(id) {
+  const value = optionalPrivateJson(rejectionReceiptPath(id))
+  if (value === null) return null
+  exactKeys(value, ["schemaVersion", "id", "status", "proofDigest"], "revoked key rejection receipt")
+  if (value.schemaVersion !== 1 || value.id !== id || (value.status !== 401 && value.status !== 403)
+    || value.proofDigest !== createHash("sha256").update(`revoked-key-rejected\0${id}\0${value.status}`).digest("hex")) {
+    throw new Error("revoked key rejection receipt is invalid")
+  }
+  return { valid: false, status: value.status, id }
+}
+
+function persistRejectionReceipt(id, status) {
+  persistPrivateJson(rejectionReceiptPath(id), {
+    schemaVersion: 1, id, status,
+    proofDigest: createHash("sha256").update(`revoked-key-rejected\0${id}\0${status}`).digest("hex"),
+  })
+}
+
+async function probeRevokedUnraidKey(id, dependencies = {
+  readReceipt: optionalRejectionReceipt,
+  readRecovery: optionalRecoveryRecord,
+  persistReceipt: persistRejectionReceipt,
+  removeRecovery,
+  fetchImpl: fetch,
+}) {
+  text(id, "key id", KEY_ID)
+  const receipt = dependencies.readReceipt(id)
+  if (receipt !== null) {
+    const staleRecovery = dependencies.readRecovery(id)
+    if (staleRecovery !== null) {
+      if (staleRecovery.id !== id) throw new Error("recovery key id is invalid")
+      dependencies.removeRecovery(id)
+    }
+    return receipt
+  }
+  const record = dependencies.readRecovery(id)
+  if (record === null || record.id !== id) throw new Error("recovery key id is invalid")
+  const response = await dependencies.fetchImpl(GRAPHQL_ENDPOINT, {
+    method: "POST", headers: { "content-type": "application/json", "x-api-key": record.key },
+    body: JSON.stringify({ query: "query AcceptanceAuthProbe { info { os { hostname } } }", variables: {} }),
+    signal: AbortSignal.timeout(10_000),
+  })
+  if (response.status !== 401 && response.status !== 403) throw new Error("revoked key still authenticates")
+  dependencies.persistReceipt(id, response.status)
+  dependencies.removeRecovery(id)
+  return { valid: false, status: response.status, id }
+}
+
+function optionalRecoveryRecord(id) {
+  try { return normalizeRecord(readPrivateJson(recoveryPath(id))) }
+  catch (error) { if (error?.code === "ENOENT") return null; throw error }
+}
+
+function persistRecovery(record) {
+  persistPrivateJson(recoveryPath(record.id), record)
 }
 
 function removeRecovery(id) {
   unlinkSync(recoveryPath(id))
   const directory = openSync(RECOVERY_ROOT, constants.O_RDONLY)
   try { fsyncSync(directory) } finally { closeSync(directory) }
+}
+
+function acknowledgeStoredUnraidKey(id, dependencies = {
+  readRecovery: optionalRecoveryRecord,
+  inventoryRecords,
+  removeRecovery,
+  removeIntent: removeCreateIntent,
+}) {
+  text(id, "key id", KEY_ID)
+  const matches = dependencies.inventoryRecords().filter((record) => record.id === id)
+  if (matches.length !== 1 || !KEY_NAME.test(matches[0].name)) throw new Error("Unraid key final storage acknowledgement is invalid")
+  const expected = matches[0].name.startsWith("Butler RO") ? RO_PERMISSIONS : [...RO_PERMISSIONS, "DOCKER:UPDATE_ANY"].sort()
+  if (matches[0].roles.length !== 0 || JSON.stringify(flattened(matches[0])) !== JSON.stringify(expected)) {
+    throw new Error("Unraid key final storage acknowledgement is invalid")
+  }
+  const recovery = dependencies.readRecovery(id)
+  if (recovery === null) {
+    dependencies.removeIntent?.(matches[0].name)
+    return { acknowledged: true, id }
+  }
+  const provisional = [...expected, "API_KEY:UPDATE_ANY"].sort()
+  if (recovery.id !== id || recovery.name !== matches[0].name || recovery.key !== matches[0].key
+    || JSON.stringify(recovery.roles) !== JSON.stringify(["GUEST"])
+    || JSON.stringify(flattened(recovery)) !== JSON.stringify(provisional)) {
+    throw new Error("Unraid key recovery ownership is invalid")
+  }
+  dependencies.removeRecovery(id)
+  dependencies.removeIntent?.(matches[0].name)
+  return { acknowledged: true, id }
 }
 
 function permissions(value) {
@@ -1556,7 +1764,12 @@ async function dispatch(request, dependencies = {
     if (payload.targetServerId !== TARGET_SERVER) throw new Error("target server is invalid")
     const name = text(payload.name, "key name", KEY_NAME)
     const requested = permissions(payload.permissions)
-    return createUnraidKey(name, requested)
+    return await createUnraidKey(name, requested)
+  }
+  if (operation === "acknowledge_key_storage") {
+    exactKeys(payload, ["operation", "targetServerId", "keyId"], operation)
+    if (payload.targetServerId !== TARGET_SERVER) throw new Error("target server is invalid")
+    return acknowledgeStoredUnraidKey(text(payload.keyId, "key id", KEY_ID))
   }
   if (operation === "revoke_key") {
     exactKeys(payload, ["operation", "targetServerId", "keyId"], operation)
@@ -1574,17 +1787,7 @@ async function dispatch(request, dependencies = {
   if (operation === "probe_revoked_key") {
     exactKeys(payload, ["operation", "targetServerId", "keyId"], operation)
     if (payload.targetServerId !== TARGET_SERVER) throw new Error("target server is invalid")
-    const id = text(payload.keyId, "key id", KEY_ID)
-    const record = normalizeRecord(readPrivateJson(recoveryPath(id)))
-    if (record.id !== id) throw new Error("recovery key id is invalid")
-    const response = await fetch(GRAPHQL_ENDPOINT, {
-      method: "POST", headers: { "content-type": "application/json", "x-api-key": record.key },
-      body: JSON.stringify({ query: "query AcceptanceAuthProbe { info { os { hostname } } }", variables: {} }),
-      signal: AbortSignal.timeout(10_000),
-    })
-    if (response.status !== 401 && response.status !== 403) throw new Error("revoked key still authenticates")
-    removeRecovery(id)
-    return { valid: false, status: response.status, id }
+    return await probeRevokedUnraidKey(text(payload.keyId, "key id", KEY_ID))
   }
   if (operation === "request_reboot") {
     exactKeys(payload, ["operation", "targetId", "idempotencyKey", "preflightDigest", "processBindingDigest"], operation)
@@ -1721,7 +1924,11 @@ function writeClosedInventory(file) {
 
 function createBrokerServer(dispatchRequest = dispatch) {
   const dispatchDrain = createDispatchDrain()
+  const connections = new Set()
   const server = createServer({ allowHalfOpen: true }, (connection) => {
+    connections.add(connection)
+    connection.setTimeout(30_000, () => connection.destroy())
+    connection.once("close", () => connections.delete(connection))
     let input = ""
     connection.setEncoding("utf8")
     connection.on("data", (chunk) => {
@@ -1737,7 +1944,8 @@ function createBrokerServer(dispatchRequest = dispatch) {
       } catch { connection.end(`${JSON.stringify({ ok: false, error: "host operation failed" })}\n`) }
     })
   })
-  return { server, dispatchDrain }
+  const destroyConnections = () => { for (const connection of connections) connection.destroy() }
+  return { server, dispatchDrain, destroyConnections }
 }
 
 async function main() {
@@ -1754,7 +1962,7 @@ async function main() {
   const snapshotFd = openSync(initialSnapshot, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600)
   try { writeFileSync(snapshotFd, `${JSON.stringify(snapshot)}\n`); fsyncSync(snapshotFd) } finally { closeSync(snapshotFd) }
   chownSync(initialSnapshot, 0, 0)
-  const { server, dispatchDrain } = createBrokerServer()
+  const { server, dispatchDrain, destroyConnections } = createBrokerServer()
   server.listen(socket, () => {
     chownSync(socket, 0, 10001)
     chmodSync(socket, 0o660)
@@ -1764,6 +1972,7 @@ async function main() {
     if (shuttingDown) return
     shuttingDown = true
     server.close()
+    destroyConnections()
     await dispatchDrain.stopAndDrain()
     await interactiveRestartDriver.stopAndDrain()
     let failed = false
@@ -1781,6 +1990,7 @@ if (process.argv[1]?.endsWith("sanctuary-unit16-host-broker.mjs")) {
 }
 
 export {
+  acknowledgeStoredUnraidKey,
   assertStableContainerProcess,
   attestHealthProbeProcessAbsent,
   armRestartAfterResponseClosed,
@@ -1805,6 +2015,7 @@ export {
   observeRebootPreflight,
   parseVaultStatus,
   optionalStoppedContainerExact,
+  probeRevokedUnraidKey,
   queryGraphqlAutostart,
   readBoundedProcStatus,
   driveDuplicateCallbacks,

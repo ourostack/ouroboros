@@ -36,11 +36,30 @@ interface BrokerDependencies {
 }
 
 interface BrokerModule {
+  acknowledgeStoredUnraidKey(id: string, dependencies: {
+    readRecovery(id: string): { id: string; name: string; key: string; permissions: Array<{ resource: string; actions: string[] }>; roles: string[] } | null
+    inventoryRecords(): Array<{ id: string; name: string; key: string; permissions: Array<{ resource: string; actions: string[] }>; roles: string[] }>
+    removeRecovery(id: string): void
+    removeIntent?(name: string): void
+  }): { acknowledged: true; id: string }
   createUnraidKey(name: string, requested: string[], dependencies: {
     runUnraid(args: string[]): unknown
     inventoryRecords(): Array<{ id: string; name: string; key: string; permissions: Array<{ resource: string; actions: string[] }>; roles: string[] }>
     persistRecovery(record: { id: string; name: string; key: string; permissions: Array<{ resource: string; actions: string[] }>; roles: string[] }): void
-  }): { id: string; name: string; key: string; permissions: Array<{ resource: string; actions: string[] }>; roles: string[] }
+    readRecovery?(id: string): { id: string; name: string; key: string; permissions: Array<{ resource: string; actions: string[] }>; roles: string[] } | null
+    persistIntent(name: string, permissions: string[]): void
+    readIntent(name: string): { name: string; permissions: string[] } | null
+    removeIntent(name: string): void
+    removeRecovery(id: string): void
+    fetchImpl: typeof fetch
+  }): Promise<{ id: string; name: string; key: string; permissions: Array<{ resource: string; actions: string[] }>; roles: string[] }>
+  probeRevokedUnraidKey(id: string, dependencies: {
+    readReceipt(id: string): { valid: false; status: number; id: string } | null
+    readRecovery(id: string): { id: string; name: string; key: string; permissions: Array<{ resource: string; actions: string[] }>; roles: string[] } | null
+    persistReceipt(id: string, status: number): void
+    removeRecovery(id: string): void
+    fetchImpl: typeof fetch
+  }): Promise<{ valid: false; status: number; id: string }>
   productionProcessBindingDigest(value: Record<string, unknown>): string
   assertStableContainerProcess(before: Record<string, unknown>, after: Record<string, unknown>): void
   readBoundedProcStatus(file: string): string
@@ -105,6 +124,7 @@ interface BrokerModule {
   createBrokerServer(dispatchRequest?: (request: unknown) => unknown | Promise<unknown>): {
     server: import("node:net").Server
     dispatchDrain: ReturnType<BrokerModule["createDispatchDrain"]>
+    destroyConnections(): void
   }
   dispatch(request: unknown, dependencies?: BrokerDependencies): Promise<unknown>
   parseVaultStatus(output: string, succeeded: boolean): { vaultUnlocked: boolean; manualAuthRequired: boolean }
@@ -143,8 +163,10 @@ interface HealthProbeRecord {
 
 async function broker(): Promise<BrokerModule> {
   return import(pathToFileURL(path.resolve("deploy/unraid/sanctuary-unit16-host-broker.mjs")).href) as Promise<{
+    acknowledgeStoredUnraidKey: BrokerModule["acknowledgeStoredUnraidKey"]
     createOwnerMutationCoordinator(): ReturnType<BrokerModule["createOwnerMutationCoordinator"]>
     createUnraidKey: BrokerModule["createUnraidKey"]
+    probeRevokedUnraidKey: BrokerModule["probeRevokedUnraidKey"]
     createInteractiveRestartDriver: BrokerModule["createInteractiveRestartDriver"]
     armRestartAfterResponseClosed: BrokerModule["armRestartAfterResponseClosed"]
     runInteractiveDriver(input: Record<string, string>, dependencies?: { run(executable: string, args: string[], options: Record<string, unknown>): { error?: Error; status: number | null; stdout?: string } }): Record<string, unknown>
@@ -187,26 +209,186 @@ async function broker(): Promise<BrokerModule> {
 }
 
 describe("Sanctuary Unit 16 host broker", () => {
-  it("attests the exact Unraid 7.2.3 API-key CLI response against persisted scope", async () => {
+  it("self-downgrades an attested Unraid 7.2.3 provisional key before returning it", async () => {
     const { createUnraidKey } = await broker()
     const id = "6735a32b-45c4-47e3-8953-910a6442b800"
     const requested = ["ARRAY:READ_ANY", "DOCKER:READ_ANY"]
-    const record = {
+    const provisional = {
       id, name: "Butler RO Rotation 0123456789abcdef", key: "private-key",
       permissions: [
+        { resource: "API_KEY", actions: ["UPDATE_ANY"] },
         { resource: "ARRAY", actions: ["READ_ANY"] },
         { resource: "DOCKER", actions: ["READ_ANY"] },
       ],
-      roles: [],
+      roles: ["GUEST"],
     }
+    const record = { ...provisional, permissions: provisional.permissions.slice(1), roles: [] }
     const calls: string[][] = []
+    const recovery: string[] = []
+    const requests: Array<{ url: string; init?: RequestInit }> = []
     let reads = 0
-    expect(createUnraidKey(record.name, requested, {
+    await expect(createUnraidKey(record.name, requested, {
       runUnraid: (args) => { calls.push(args); return { id, key: record.key, name: record.name } },
-      inventoryRecords: () => { reads += 1; return reads === 1 ? [] : [record] },
-      persistRecovery: () => { throw new Error("successful create must not persist recovery") },
-    })).toEqual(record)
-    expect(calls).toEqual([["apikey", "--name", record.name, "--create", "--permissions", requested.join(","), "--json"]])
+      inventoryRecords: () => { reads += 1; return reads === 1 ? [] : reads === 2 ? [provisional] : [record] },
+      persistIntent: () => recovery.push("intent"), readIntent: () => null, removeIntent: () => undefined,
+      persistRecovery: (value) => recovery.push(`persist:${value.id}`),
+      removeRecovery: (value) => recovery.push(`remove:${value}`),
+      fetchImpl: async (url, init) => {
+        requests.push({ url: String(url), init })
+        if (requests.length === 1) return new Response(JSON.stringify({ data: { apiKey: { update: { ...record, id: `${"a".repeat(64)}:${id}` } } } }), { status: 200 })
+        return new Response(JSON.stringify({ data: { info: { os: { hostname: "Tower" } } } }), { status: 200 })
+      },
+    })).resolves.toEqual(record)
+    expect(calls).toEqual([["apikey", "--name", record.name, "--create", "--roles", "GUEST", "--permissions", [...requested, "API_KEY:UPDATE_ANY"].sort().join(","), "--json"]])
+    expect(recovery).toEqual(["intent", `persist:${id}`])
+    expect(requests).toHaveLength(2)
+    expect(requests.every(({ url }) => url === "http://127.0.0.1/graphql")).toBe(true)
+    expect(requests.every(({ init }) => (init?.headers as Record<string, string>)["x-api-key"] === record.key)).toBe(true)
+    const mutation = JSON.parse(String(requests[0]!.init?.body)) as { variables: { input: Record<string, unknown> } }
+    expect(mutation.variables.input).toEqual({ id, roles: [], permissions: record.permissions })
+  })
+
+  it("clears key recovery ownership only after exact final-scope vault acknowledgement", async () => {
+    const { acknowledgeStoredUnraidKey } = await broker()
+    const id = "6735a32b-45c4-47e3-8953-910a6442b800"
+    const provisional = {
+      id, name: "Butler RO Rotation 0123456789abcdef", key: "private-key",
+      permissions: [
+        { resource: "API_KEY", actions: ["UPDATE_ANY"] },
+        ...["ARRAY", "DASHBOARD", "DISK", "DOCKER", "INFO", "LOGS", "NOTIFICATIONS", "SHARE", "VARS"]
+          .map((resource) => ({ resource, actions: ["READ_ANY"] })),
+      ],
+      roles: ["GUEST"],
+    }
+    const finalized = { ...provisional, permissions: provisional.permissions.slice(1), roles: [] }
+    const removed: string[] = []
+    const intents: string[] = []
+    const dependencies = {
+      readRecovery: () => provisional,
+      inventoryRecords: () => [finalized],
+      removeRecovery: (value: string) => removed.push(value),
+      removeIntent: (value: string) => intents.push(value),
+    }
+    expect(acknowledgeStoredUnraidKey(id, dependencies)).toEqual({ acknowledged: true, id })
+    expect(removed).toEqual([id])
+    expect(intents).toEqual([finalized.name])
+    removed.length = 0
+    intents.length = 0
+    expect(acknowledgeStoredUnraidKey(id, { ...dependencies, readRecovery: () => null })).toEqual({ acknowledged: true, id })
+    expect(removed).toEqual([])
+    expect(intents).toEqual([finalized.name])
+    for (const bad of [
+      [],
+      [{ ...finalized, key: "different" }],
+      [{ ...finalized, roles: ["GUEST"] }],
+      [{ ...finalized, permissions: provisional.permissions }],
+    ]) {
+      removed.length = 0
+      expect(() => acknowledgeStoredUnraidKey(id, { ...dependencies, inventoryRecords: () => bad })).toThrow()
+      expect(removed).toEqual([])
+    }
+  })
+
+  it("replays a durable redacted rejection receipt after raw proof deletion and response loss", async () => {
+    const { probeRevokedUnraidKey } = await broker()
+    const id = "6735a32b-45c4-47e3-8953-910a6442b800"
+    const record = { id, name: "Butler RO Rotation 0123456789abcdef", key: "private-key", permissions: [{ resource: "ARRAY", actions: ["READ_ANY"] }], roles: [] }
+    let receipt: { valid: false; status: number; id: string } | null = null
+    let recovery: typeof record | null = record
+    let fetches = 0
+    const dependencies = {
+      readReceipt: () => receipt,
+      readRecovery: () => recovery,
+      persistReceipt: (keyId: string, status: number) => { receipt = { valid: false, status, id: keyId } },
+      removeRecovery: () => { recovery = null },
+      fetchImpl: async () => { fetches += 1; return new Response("", { status: 403 }) },
+    }
+    await expect(probeRevokedUnraidKey(id, dependencies)).resolves.toEqual({ valid: false, status: 403, id })
+    expect(recovery).toBeNull()
+    await expect(probeRevokedUnraidKey(id, dependencies)).resolves.toEqual({ valid: false, status: 403, id })
+    expect(fetches).toBe(1)
+  })
+
+  it("finishes raw-proof deletion after death immediately following receipt fsync", async () => {
+    const { probeRevokedUnraidKey } = await broker()
+    const id = "6735a32b-45c4-47e3-8953-910a6442b800"
+    const record = { id, name: "Butler RO Rotation 0123456789abcdef", key: "private-key", permissions: [{ resource: "ARRAY", actions: ["READ_ANY"] }], roles: [] }
+    let recovery: typeof record | null = record
+    await expect(probeRevokedUnraidKey(id, {
+      readReceipt: () => ({ valid: false, status: 401, id }), readRecovery: () => recovery,
+      persistReceipt: () => { throw new Error("receipt already exists") },
+      removeRecovery: () => { recovery = null },
+      fetchImpl: async () => { throw new Error("receipt replay must not fetch") },
+    })).resolves.toEqual({ valid: false, status: 401, id })
+    expect(recovery).toBeNull()
+  })
+
+  it("resumes an exact owned provisional key without issuing a duplicate CLI create", async () => {
+    const { createUnraidKey } = await broker()
+    const id = "6735a32b-45c4-47e3-8953-910a6442b800"
+    const requested = ["ARRAY:READ_ANY"]
+    const provisional = {
+      id, name: "Butler RO Rotation 0123456789abcdef", key: "private-key",
+      permissions: [{ resource: "API_KEY", actions: ["UPDATE_ANY"] }, { resource: "ARRAY", actions: ["READ_ANY"] }], roles: ["GUEST"],
+    }
+    const finalized = { ...provisional, permissions: provisional.permissions.slice(1), roles: [] }
+    let inventoryRead = 0
+    const cli: string[][] = []
+    await expect(createUnraidKey(provisional.name, requested, {
+      runUnraid: (args) => { cli.push(args); throw new Error("duplicate create") },
+      inventoryRecords: () => { inventoryRead += 1; return inventoryRead < 2 ? [provisional] : [finalized] },
+      persistIntent: () => { throw new Error("intent already exists") }, readIntent: () => ({ name: provisional.name, permissions: [...requested, "API_KEY:UPDATE_ANY"].sort() }), removeIntent: () => undefined,
+      persistRecovery: () => { throw new Error("existing recovery ownership must be reused") },
+      readRecovery: () => provisional,
+      removeRecovery: () => undefined,
+      fetchImpl: async (_url, init) => String(init?.body).includes("mutation")
+        ? new Response(JSON.stringify({ data: { apiKey: { update: { id } } } }), { status: 200 })
+        : new Response(JSON.stringify({ data: { info: { os: { hostname: "Tower" } } } }), { status: 200 }),
+    })).resolves.toEqual(finalized)
+    expect(cli).toEqual([])
+  })
+
+  it("adopts one exact provisional after process death because intent preceded CLI creation", async () => {
+    const { createUnraidKey } = await broker()
+    const id = "6735a32b-45c4-47e3-8953-910a6442b800"
+    const requested = ["ARRAY:READ_ANY"]
+    const provisional = {
+      id, name: "Butler RO Rotation 0123456789abcdef", key: "private-key",
+      permissions: [{ resource: "API_KEY", actions: ["UPDATE_ANY"] }, { resource: "ARRAY", actions: ["READ_ANY"] }], roles: ["GUEST"],
+    }
+    const finalized = { ...provisional, permissions: provisional.permissions.slice(1), roles: [] }
+    let inventoryRead = 0
+    const persisted: typeof provisional[] = []
+    await expect(createUnraidKey(provisional.name, requested, {
+      runUnraid: () => { throw new Error("process-death resume must not create") },
+      inventoryRecords: () => { inventoryRead += 1; return inventoryRead < 2 ? [provisional] : [finalized] },
+      persistIntent: () => { throw new Error("intent already exists") },
+      readIntent: () => ({ name: provisional.name, permissions: [...requested, "API_KEY:UPDATE_ANY"].sort() }),
+      removeIntent: () => undefined,
+      persistRecovery: (record) => persisted.push(record), readRecovery: () => null, removeRecovery: () => undefined,
+      fetchImpl: async (_url, init) => String(init?.body).includes("mutation")
+        ? new Response(JSON.stringify({ data: { apiKey: { update: { id } } } }), { status: 200 })
+        : new Response(JSON.stringify({ data: { info: { os: { hostname: "Tower" } } } }), { status: 200 }),
+    })).resolves.toEqual(finalized)
+    expect(persisted).toEqual([provisional])
+  })
+
+  it("returns an exact finalized recovery-owned key after response loss without reminting", async () => {
+    const { createUnraidKey } = await broker()
+    const id = "6735a32b-45c4-47e3-8953-910a6442b800"
+    const requested = ["ARRAY:READ_ANY"]
+    const provisional = { id, name: "Butler RO Rotation 0123456789abcdef", key: "private-key", permissions: [{ resource: "API_KEY", actions: ["UPDATE_ANY"] }, { resource: "ARRAY", actions: ["READ_ANY"] }], roles: ["GUEST"] }
+    const finalized = { ...provisional, permissions: provisional.permissions.slice(1), roles: [] }
+    const bodies: string[] = []
+    await expect(createUnraidKey(finalized.name, requested, {
+      runUnraid: () => { throw new Error("must not remint") }, inventoryRecords: () => [finalized],
+      persistIntent: () => { throw new Error("intent already exists") }, readIntent: () => ({ name: finalized.name, permissions: [...requested, "API_KEY:UPDATE_ANY"].sort() }), removeIntent: () => undefined,
+      persistRecovery: () => { throw new Error("must retain existing recovery") }, readRecovery: () => provisional,
+      removeRecovery: () => undefined,
+      fetchImpl: async (_url, init) => { bodies.push(String(init?.body)); return new Response(JSON.stringify({ data: { info: { os: { hostname: "Tower" } } } }), { status: 200 }) },
+    })).resolves.toEqual(finalized)
+    expect(bodies).toHaveLength(1)
+    expect(bodies[0]).not.toContain("mutation")
   })
 
   it("fails closed on malformed CLI output or persisted API-key drift", async () => {
@@ -216,6 +398,8 @@ describe("Sanctuary Unit 16 host broker", () => {
     const key = "private-key"
     const requested = ["ARRAY:READ_ANY"]
     const record = { id, name, key, permissions: [{ resource: "ARRAY", actions: ["READ_ANY"] }], roles: [] }
+    const provisional = { id, name, key, permissions: [{ resource: "API_KEY", actions: ["UPDATE_ANY"] }, ...record.permissions], roles: ["GUEST"] }
+    const unavailableFetch = async () => { throw new Error("fetch must not run") }
     for (const response of [
       { id, key, name, permissions: record.permissions },
       { id, key },
@@ -225,42 +409,72 @@ describe("Sanctuary Unit 16 host broker", () => {
       const persisted: typeof record[] = []
       let reads = 0
       const args: string[][] = []
-      expect(() => createUnraidKey(name, requested, {
+      await expect(createUnraidKey(name, requested, {
         runUnraid: (value) => { args.push(value); return response },
-        inventoryRecords: () => { reads += 1; return reads === 1 ? [] : [record] },
+        inventoryRecords: () => { reads += 1; return reads === 1 ? [] : [provisional] },
+        persistIntent: () => undefined, readIntent: () => null, removeIntent: () => undefined,
         persistRecovery: (value) => persisted.push(value),
-      })).toThrow()
+        removeRecovery: () => undefined,
+        fetchImpl: unavailableFetch as typeof fetch,
+      })).rejects.toThrow()
       expect(args).toHaveLength(1)
       expect(args[0]?.[0]).toBe("apikey")
       expect(args[0]).not.toContain("--delete")
-      expect(persisted).toEqual([record])
+      expect(persisted).toEqual(response.name && response.name !== name ? [] : [provisional])
     }
     for (const persisted of [
       [],
-      [record, record],
-      [{ ...record, key: "different" }],
-      [{ ...record, permissions: [{ resource: "ARRAY", actions: ["UPDATE_ANY"] }] }],
-      [{ ...record, roles: ["ADMIN"] }],
+      [provisional, provisional],
+      [{ ...provisional, key: "different" }],
+      [{ ...provisional, permissions: [{ resource: "ARRAY", actions: ["UPDATE_ANY"] }] }],
+      [{ ...provisional, roles: ["ADMIN"] }],
     ]) {
       let reads = 0
-      const recovery: typeof record[] = []
-      expect(() => createUnraidKey(name, requested, {
+      const recovery: typeof provisional[] = []
+      await expect(createUnraidKey(name, requested, {
         runUnraid: () => ({ id, key, name }),
         inventoryRecords: () => { reads += 1; return reads === 1 ? [] : persisted },
-        persistRecovery: (value) => recovery.push(value as typeof record),
-      })).toThrow(/record/u)
-      expect(recovery).toEqual(persisted.filter((value, index, values) => values.findIndex((candidate) => candidate.id === value.id) === index))
+        persistIntent: () => undefined, readIntent: () => null, removeIntent: () => undefined,
+        persistRecovery: (value) => recovery.push(value as typeof provisional),
+        removeRecovery: () => undefined,
+        fetchImpl: unavailableFetch as typeof fetch,
+      })).rejects.toThrow(/record/u)
+      const exact = persisted.filter((value) => value.id === id && value.name === name && value.key === key
+        && JSON.stringify(value.permissions) === JSON.stringify(provisional.permissions)
+        && JSON.stringify(value.roles) === JSON.stringify(["GUEST"]))
+      expect(recovery).toEqual(exact.length === 1 ? exact : [])
     }
     const commands: string[][] = []
     const recovery: typeof record[] = []
-    expect(() => createUnraidKey(name, requested, {
+    await expect(createUnraidKey(name, requested, {
       runUnraid: (args) => { commands.push(args); return { id, key, name } },
       inventoryRecords: () => [record],
+      persistIntent: () => undefined, readIntent: () => null, removeIntent: () => undefined,
       persistRecovery: (value) => recovery.push(value),
-    })).toThrow(/identity/u)
-    expect(commands).toHaveLength(1)
-    expect(commands[0]).not.toContain("--delete")
+      removeRecovery: () => undefined,
+      fetchImpl: unavailableFetch as typeof fetch,
+    })).rejects.toThrow(/durable creation intent/u)
+    expect(commands).toHaveLength(0)
     expect(recovery).toEqual([])
+  })
+
+  it("never claims an unrelated concurrent key as transaction recovery", async () => {
+    const { createUnraidKey } = await broker()
+    const intended = {
+      id: "6735a32b-45c4-47e3-8953-910a6442b800", name: "Butler RO Rotation 0123456789abcdef", key: "private-key",
+      permissions: [{ resource: "API_KEY", actions: ["UPDATE_ANY"] }, { resource: "ARRAY", actions: ["READ_ANY"] }], roles: ["GUEST"],
+    }
+    const unrelated = { ...intended, id: "6735a32b-45c4-47e3-8953-910a6442b801", name: "Butler RW Rotation fedcba9876543210", key: "other-private-key" }
+    const recovered: typeof intended[] = []
+    let reads = 0
+    await expect(createUnraidKey(intended.name, ["ARRAY:READ_ANY"], {
+      runUnraid: () => { throw new Error("lost CLI response") },
+      inventoryRecords: () => { reads += 1; return reads === 1 ? [] : [unrelated, intended] },
+      persistIntent: () => undefined, readIntent: () => null, removeIntent: () => undefined,
+      persistRecovery: (record) => recovered.push(record), readRecovery: () => null, removeRecovery: () => undefined,
+      fetchImpl: async () => { throw new Error("must not fetch") },
+    })).rejects.toThrow(/lost CLI response/u)
+    expect(recovered).toEqual([intended])
   })
 
   it("returns bounded async responses after clients half-close their requests", async () => {
@@ -296,6 +510,31 @@ describe("Sanctuary Unit 16 host broker", () => {
         result: { echoed: { operation: "container_snapshot", sequence: 2 } },
       })
       expect(JSON.parse(await request({ reject: true }))).toEqual({ ok: false, error: "host operation failed" })
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+      fs.rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it("destroys a client that never finishes its request during broker shutdown", async () => {
+    const { createBrokerServer } = await broker()
+    const directory = fs.mkdtempSync(path.join(tmpdir(), "ouro-unit16-broker-shutdown-"))
+    const socketPath = path.join(directory, "broker.sock")
+    const { server, destroyConnections } = createBrokerServer(async () => ({ unreachable: true }))
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject)
+        server.listen(socketPath, resolve)
+      })
+      const connection = createConnection(socketPath)
+      await new Promise<void>((resolve, reject) => {
+        connection.once("connect", resolve)
+        connection.once("error", reject)
+      })
+      const closed = new Promise<void>((resolve) => connection.once("close", () => resolve()))
+      destroyConnections()
+      await closed
+      expect(connection.destroyed).toBe(true)
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()))
       fs.rmSync(directory, { recursive: true, force: true })

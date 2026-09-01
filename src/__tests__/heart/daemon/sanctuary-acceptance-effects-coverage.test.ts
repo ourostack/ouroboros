@@ -100,9 +100,22 @@ describe("Sanctuary acceptance callback effect composition", () => {
   afterEach(() => fs.rmSync(probe.agentRoot, { recursive: true, force: true }))
 
   it("uses the default owner-authorized journal, session recorder, and cleanup boundary", async () => {
-    const { executeSanctuaryAcceptanceCallbackProbe } = await import("../../../heart/daemon/sanctuary-acceptance-adapter")
+    const { createSanctuaryAcceptanceAdapterDependencies, executeSanctuaryAcceptanceAdapter, executeSanctuaryAcceptanceCallbackProbe } = await import("../../../heart/daemon/sanctuary-acceptance-adapter")
 
-    await expect(executeSanctuaryAcceptanceCallbackProbe({ callback_query: {} }, false)).resolves.toEqual({ settled: true, claimed: true, mutated: true })
+    const update = { update_id: 1, callback_query: { id: "query", data: "approval:data", from: { id: 42 }, message: { message_id: 7, chat: { id: 43 } } } }
+    await expect(executeSanctuaryAcceptanceCallbackProbe(update, false)).resolves.toEqual({ settled: true, claimed: true, mutated: true })
+
+    const adapterDependencies = createSanctuaryAcceptanceAdapterDependencies()
+    adapterDependencies.readFixedFile = () => '{"nextUpdateId":1}\n'
+    await expect(executeSanctuaryAcceptanceAdapter({ operation: "callback_playback_preflight", update }, adapterDependencies)).resolves.toMatchObject({
+      playbackCount: 1,
+      coordinateDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      journalDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
+    })
+    await expect(executeSanctuaryAcceptanceAdapter({ operation: "callback_playback_preflight", update: { ...update, update_id: 2 } }, adapterDependencies)).resolves.toMatchObject({ playbackCount: 0 })
+    const journalPath = path.join(probe.agentRoot, "state", "approvals", "sanctuary-callback-playback.sqlite")
+    expect(fs.statSync(journalPath).mode & 0o777).toBe(0o600)
+    expect(fs.readFileSync(journalPath).toString("utf8")).not.toMatch(/approval:data|query/u)
 
     expect(probe.deniedReason).toContain("authorization denied")
     expect(probe.apiRequest.mock.calls.map(([method]) => method)).toEqual(["sendMessage", "sendMessage", "editMessageText", "answerCallbackQuery"])
@@ -123,9 +136,10 @@ describe("Sanctuary acceptance callback effect composition", () => {
       createApi: () => ({ request: probe.apiRequest, stop: probe.apiStop }),
       createRuntime: (await import("../../../senses/telegram-approval-runtime")).createTelegramApprovalRuntime,
       toolContext: () => ({ sanctuary: {} }),
+      recordCallbackPlayback: () => undefined,
     }
 
-    await expect(executeSanctuaryAcceptanceCallbackProbe({ callback_query: {} }, false, dependencies as any)).resolves.toEqual({ settled: true, claimed: true, mutated: true })
+    await expect(executeSanctuaryAcceptanceCallbackProbe({ update_id: 1, callback_query: { id: "query", data: "approval:data", from: { id: 42 }, message: { message_id: 7, chat: { id: 43 } } } }, false, dependencies as any)).resolves.toEqual({ settled: true, claimed: true, mutated: true })
     expect(probe.unavailableCalls).toEqual(["sendText", "sendCard", "edit", "acknowledge"])
   })
 })

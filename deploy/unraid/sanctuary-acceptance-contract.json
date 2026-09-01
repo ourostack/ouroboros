@@ -31,7 +31,7 @@
     "telegram-poller-quiescence": { "operation": "quiesce_telegram_poller", "authority": "fixed-managed-telegram-poller-stop-and-count", "modelReachable": false, "timeoutMs": 15000 },
     "telegram-vault-store": { "operation": "store_telegram_bootstrap", "authority": "fixed-runtime-vault-merge", "modelReachable": false, "timeoutMs": 15000 },
     "cursor-snapshot": { "operation": "snapshot", "authority": "fixed-telegram-state-read", "modelReachable": false, "timeoutMs": 15000 },
-    "callback-live": { "operation": "inject_callbacks_concurrently|inject_callback_replay", "authority": "fixed-live-telegram-callback-probe", "modelReachable": false, "timeoutMs": 15000 },
+    "callback-live": { "operation": "callback_playback_preflight|inject_callbacks_concurrently|inject_callback_replay", "authority": "fixed-live-telegram-callback-probe", "modelReachable": false, "timeoutMs": 15000 },
     "key-inventory": { "operation": "inventory_keys", "authority": "fixed-unraid-key-directory-read", "modelReachable": false, "timeoutMs": 15000 },
     "key-create": { "operation": "create_key", "authority": "fixed-unraid-cli-create-and-vault-store", "modelReachable": false, "timeoutMs": 15000 },
     "key-store": { "operation": "store_key", "authority": "fixed-machine-vault-readback", "modelReachable": false, "timeoutMs": 15000 },
