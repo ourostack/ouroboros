@@ -484,8 +484,8 @@ function withPausedTarget(target, operation, dependencies = {}) {
   return result
 }
 
-function dockerTopology() {
-  const rows = runDocker(["container", "ls", "-a", "--no-trunc", "--format", "{{json .}}"])
+function dockerTopology(run = runDocker) {
+  const rows = run(["container", "ls", "-a", "--no-trunc", "--format", '{"ID":{{json .ID}},"Names":{{json .Names}}}'])
   return rows.split(/\r?\n/u).filter(Boolean).map((line) => JSON.parse(line))
     .filter((row) => typeof row.Names === "string" && CANONICAL_NAMES.includes(row.Names))
     .map((row) => {
