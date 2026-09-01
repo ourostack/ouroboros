@@ -51,6 +51,8 @@ import {
   createProviderCredentialRecord,
   splitProviderCredentialFields,
 } from "../provider-credentials"
+import { defaultIsProcessAlive } from "./startup-tui"
+import { readDaemonTombstone } from "./daemon-tombstone"
 
 // ── Default implementations ──
 
@@ -773,6 +775,7 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
     readHealthState: readHealth,
     readHealthUpdatedAt: defaultReadHealthUpdatedAt,
     readRecentDaemonLogLines: defaultReadRecentDaemonLogLines,
+    readDaemonStartupTombstone: readDaemonTombstone,
     sleep: defaultSleep,
     spawnBackgroundCli: defaultSpawnBackgroundCli,
     now: () => Date.now(),
@@ -781,6 +784,7 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
     startupStabilityWindowMs: 1_500,
     startupTimeoutMs: 60_000,
     startupRetryLimit: 1,
+    isProcessAlive: defaultIsProcessAlive,
     listDiscoveredAgents: defaultListDiscoveredAgents,
     runHatchFlow: defaultRunHatchFlow,
     promptInput: defaultPromptInput,

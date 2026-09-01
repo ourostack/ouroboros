@@ -18,6 +18,7 @@ vi.mock("../../../heart/daemon/hooks/bundle-meta", () => ({
 }))
 
 vi.mock("../../../heart/daemon/startup-tui", () => ({
+  defaultIsProcessAlive: vi.fn(() => true),
   pollDaemonStartup: vi.fn(async () => ({ stable: [], degraded: [] })),
 }))
 

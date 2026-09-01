@@ -49,6 +49,11 @@ vi.mock("../../../heart/daemon/agent-discovery", () => ({
   readPrivateRuntimeConfig: vi.fn(() => ({ autoStart: true, source: "privateRuntime" })),
 }))
 
+vi.mock("../../../heart/daemon/agent-config-check", async () => {
+  const actual = await vi.importActual<typeof import("../../../heart/daemon/agent-config-check")>("../../../heart/daemon/agent-config-check")
+  return { ...actual, checkAgentConfigWithProviderHealth: vi.fn(async () => ({ ok: true })) }
+})
+
 vi.mock("../../../heart/habits/habit-scheduler", () => ({
   HabitScheduler: class MockHabitScheduler {
     constructor(public options: { agent: string }) {}

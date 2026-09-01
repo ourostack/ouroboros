@@ -11,20 +11,24 @@ vi.mock("../../../heart/daemon/daemon-tombstone", () => ({
 }))
 
 import {
+  createProviderReadinessPreparationFailure,
   failFastContainerCredentialBootstrapStartup,
   startDaemonAfterContainerCredentialBootstrap,
 } from "../../../heart/daemon/daemon-bootstrap-startup"
 
 describe("daemon container credential bootstrap startup boundary", () => {
-  it("awaits successful credential migration before starting the daemon", async () => {
+  it("awaits successful credential migration and daemon preparation before starting the daemon", async () => {
     let releaseBootstrap!: () => void
+    let releasePreparation!: () => void
     const loadBootstrap = vi.fn(() => new Promise<void>((resolve) => { releaseBootstrap = resolve }))
+    const prepareDaemon = vi.fn(() => new Promise<void>((resolve) => { releasePreparation = resolve }))
     const startDaemon = vi.fn(async () => undefined)
     const markStartupFailure = vi.fn()
     const exit = vi.fn()
 
     const startup = startDaemonAfterContainerCredentialBootstrap({
       loadBootstrap,
+      prepareDaemon,
       startDaemon,
       markStartupFailure,
       exit,
@@ -33,10 +37,17 @@ describe("daemon container credential bootstrap startup boundary", () => {
     expect(startDaemon).not.toHaveBeenCalled()
 
     releaseBootstrap()
+    await Promise.resolve()
+    expect(prepareDaemon).toHaveBeenCalledTimes(1)
+    expect(startDaemon).not.toHaveBeenCalled()
+
+    releasePreparation()
     await expect(startup).resolves.toBe(true)
     expect(startDaemon).toHaveBeenCalledTimes(1)
     expect(markStartupFailure).not.toHaveBeenCalled()
     expect(exit).not.toHaveBeenCalled()
+    expect(loadBootstrap.mock.invocationCallOrder[0]).toBeLessThan(prepareDaemon.mock.invocationCallOrder[0]!)
+    expect(prepareDaemon.mock.invocationCallOrder[0]).toBeLessThan(startDaemon.mock.invocationCallOrder[0]!)
   })
 
   it("terminates the startup branch without starting or forwarding a raw bootstrap rejection", async () => {
@@ -58,6 +69,68 @@ describe("daemon container credential bootstrap startup boundary", () => {
     expect(JSON.stringify(startupMocks.emit.mock.calls)).not.toContain("secret-bearing rejection")
   })
 
+  it("fails closed and redacts daemon preparation failures before startup", async () => {
+    startupMocks.writeTombstone.mockClear()
+    startupMocks.emit.mockClear()
+    const startDaemon = vi.fn(async () => undefined)
+    const markStartupFailure = vi.fn()
+    const exit = vi.fn()
+
+    await expect(startDaemonAfterContainerCredentialBootstrap({
+      loadBootstrap: vi.fn(async () => undefined),
+      prepareDaemon: vi.fn(async () => { throw new Error("raw provider token and vault failure") }),
+      startDaemon,
+      markStartupFailure,
+      exit,
+    })).resolves.toBe(false)
+
+    expect(markStartupFailure).toHaveBeenCalledTimes(1)
+    expect(startDaemon).not.toHaveBeenCalled()
+    expect(exit).toHaveBeenCalledWith(1)
+    expect(startupMocks.writeTombstone).toHaveBeenCalledWith(
+      "startupFailurePublic",
+      expect.objectContaining({
+        message: "provider runtime preparation failed before startup; run `ouro doctor` for diagnosis",
+      }),
+    )
+    expect(startupMocks.emit).toHaveBeenCalledWith(expect.objectContaining({
+      message: "provider runtime preparation failed before startup; run `ouro doctor` for diagnosis",
+    }))
+    expect(JSON.stringify(startupMocks.writeTombstone.mock.calls)).not.toContain("raw provider token")
+    expect(JSON.stringify(startupMocks.emit.mock.calls)).not.toContain("raw provider token")
+  })
+
+  it("surfaces only controlled daemon preparation guidance before startup", async () => {
+    startupMocks.writeTombstone.mockClear()
+    startupMocks.emit.mockClear()
+    const publicMessage = "Provider checks need attention\nslugger: outward provider minimax / MiniMax-M2.5 failed live check\n  human-choice: ouro auth --agent slugger --provider minimax"
+    const exit = vi.fn()
+
+    await expect(startDaemonAfterContainerCredentialBootstrap({
+      loadBootstrap: vi.fn(async () => undefined),
+      prepareDaemon: vi.fn(async () => {
+        throw createProviderReadinessPreparationFailure([{
+          summary: "slugger: outward provider minimax / MiniMax-M2.5 failed live check",
+          actions: [{ actor: "human-choice", command: "ouro auth --agent slugger --provider minimax" }],
+        }])
+      }),
+      startDaemon: vi.fn(async () => undefined),
+      markStartupFailure: vi.fn(),
+      exit,
+    })).resolves.toBe(false)
+
+    expect(startupMocks.writeTombstone).toHaveBeenCalledWith(
+      "startupFailurePublic",
+      expect.objectContaining({ message: publicMessage }),
+    )
+    expect(startupMocks.emit).toHaveBeenCalledWith(expect.objectContaining({
+      event: "daemon.entry_error",
+      message: publicMessage,
+      meta: { error: publicMessage },
+    }))
+    expect(exit).toHaveBeenCalledWith(1)
+  })
+
   it("writes only a fixed redacted startup failure and exits PID 1 nonzero immediately", () => {
     startupMocks.writeTombstone.mockClear()
     startupMocks.emit.mockClear()
@@ -66,7 +139,7 @@ describe("daemon container credential bootstrap startup boundary", () => {
     failFastContainerCredentialBootstrapStartup({ exit })
 
     expect(startupMocks.writeTombstone).toHaveBeenCalledWith(
-      "startupFailure",
+      "startupFailurePublic",
       expect.objectContaining({
         message: "container credential bootstrap rejected; recoverable claim retained for reconciliation",
       }),

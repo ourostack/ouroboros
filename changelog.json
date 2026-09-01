@@ -2,6 +2,15 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.773",
+      "changes": [
+        "Fail daemon startup closed until configured providers are live and their credentials are cached.",
+        "Surface provider startup failures immediately through a fresh redacted tombstone instead of waiting for a dead daemon or echoing raw logs.",
+        "Recover legacy provider dead letters from current-boot readiness once per generation without per-record alert noise.",
+        "Recover expired managed-runtime leases only after newer runtime liveness, with inspect-before-action turns and bounded batch wakeups."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.772",
       "changes": [
         "Make Sanctuary Unraid key rotation crash-resumable with exact transaction and rejection proofs.",

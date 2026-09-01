@@ -68,6 +68,7 @@ vi.mock("../../../heart/versioning/ouro-version-manager", () => ({
 }))
 
 vi.mock("../../../heart/daemon/startup-tui", () => ({
+  defaultIsProcessAlive: vi.fn(() => true),
   pollDaemonStartup: vi.fn(async () => ({ stable: [], degraded: [] })),
 }))
 

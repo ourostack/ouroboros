@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from "vitest"
+import * as fs from "fs"
+import * as os from "os"
+import * as path from "path"
 import { emitNervesEvent } from "../../../nerves/runtime"
 
 // Hoisted mocks
@@ -33,6 +36,7 @@ vi.mock("../../../heart/daemon/stale-bundle-prune", () => ({
 }))
 
 vi.mock("../../../heart/daemon/startup-tui", () => ({
+  defaultIsProcessAlive: vi.fn(() => true),
   pollDaemonStartup: vi.fn(async () => ({ stable: [], degraded: [] })),
 }))
 
@@ -824,6 +828,151 @@ describe("ouro up: UpProgress integration", () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it("stops waiting when a fresh daemon exits before opening its socket", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-startup-exit-"))
+    const logDir = path.join(bundlesRoot, "slugger.ouro", "state", "daemon", "logs")
+    fs.mkdirSync(logDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(logDir, "daemon.ndjson"),
+      `${JSON.stringify({ message: "hostile stale provider response" })}\n`,
+    )
+    const deps = makeDeps({
+      bundlesRoot,
+      checkSocketAlive: vi.fn(async () => false),
+      startDaemonProcess: vi.fn(async () => ({ pid: 456 })),
+      isProcessAlive: vi.fn(() => false),
+      now: vi.fn(() => 2_000),
+      readDaemonStartupTombstone: vi.fn(() => ({
+        reason: "startupFailure",
+        message: "stale tombstone response",
+        timestamp: new Date(1_999).toISOString(),
+        pid: 456,
+      })),
+      startupPollIntervalMs: 1,
+      startupTimeoutMs: 60_000,
+      readRecentDaemonLogLines: vi.fn(() => ["hostile stale provider response"]),
+    })
+
+    try {
+      const result = await runOuroCli(["up"], deps)
+
+      expect(result).toContain("did not finish booting")
+      expect(result).toContain("exited before answering")
+      expect(result).not.toContain("hostile stale provider response")
+      expect(result).not.toContain("stale tombstone response")
+      expect(deps.isProcessAlive).toHaveBeenCalledWith(456)
+    } finally {
+      fs.rmSync(bundlesRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("surfaces a fresh PID-matched startup tombstone before polling the socket", async () => {
+    const deps = makeDeps({
+      healthFilePath: "/tmp/daemon-health.json",
+      readHealthState: vi.fn(() => null),
+      readHealthUpdatedAt: vi.fn(() => null),
+      checkSocketAlive: vi.fn(async () => false),
+      startDaemonProcess: vi.fn(async () => ({ pid: 456 })),
+      isProcessAlive: vi.fn(() => true),
+      now: vi.fn(() => 2_000),
+      sleep: vi.fn(async () => undefined),
+      readDaemonStartupTombstone: vi.fn(() => ({
+        reason: "startupFailurePublic",
+        message: "Provider checks need attention\nslugger: outward provider minimax / MiniMax-M2.5 failed live check",
+        timestamp: new Date(2_000).toISOString(),
+        pid: 456,
+      })),
+      readRecentDaemonLogLines: vi.fn(() => ["secret-bearing raw daemon log"]),
+    })
+
+    const result = await runOuroCli(["up"], deps)
+
+    expect(result).toContain("Provider checks need attention")
+    expect(result).toContain("failed live check")
+    expect(result).not.toContain("secret-bearing raw daemon log")
+    expect(deps.isProcessAlive).not.toHaveBeenCalled()
+  })
+
+  it("stops a health-monitored startup when the fresh daemon process exits", async () => {
+    const deps = makeDeps({
+      healthFilePath: "/tmp/daemon-health.json",
+      readHealthState: vi.fn(() => null),
+      readHealthUpdatedAt: vi.fn(() => null),
+      checkSocketAlive: vi.fn(async () => false),
+      startDaemonProcess: vi.fn(async () => ({ pid: 456 })),
+      isProcessAlive: vi.fn(() => false),
+      sleep: vi.fn(async () => undefined),
+      readDaemonStartupTombstone: vi.fn(() => null),
+    })
+
+    const result = await runOuroCli(["up"], deps)
+
+    expect(result).toContain("new background service exited before answering")
+    expect(deps.isProcessAlive).toHaveBeenCalledWith(456)
+  })
+
+  it("accepts a fresh startup tombstone when launchd does not return a PID", async () => {
+    const deps = makeDeps({
+      checkSocketAlive: vi.fn(async () => false),
+      startDaemonProcess: vi.fn(async () => ({ pid: null })),
+      now: vi.fn(() => 2_000),
+      sleep: vi.fn(async () => undefined),
+      readDaemonStartupTombstone: vi.fn(() => ({
+        reason: "startupFailurePublic",
+        message: "Provider checks need attention",
+        timestamp: new Date(2_000).toISOString(),
+        pid: 999,
+      })),
+    })
+
+    const result = await runOuroCli(["up"], deps)
+
+    expect(result).toContain("Provider checks need attention")
+  })
+
+  it.each([
+    ["stale", { reason: "startupFailurePublic", message: "stale failure", timestamp: new Date(1_999).toISOString(), pid: 456 }],
+    ["PID-mismatched", { reason: "startupFailurePublic", message: "wrong process", timestamp: new Date(2_000).toISOString(), pid: 999 }],
+    ["wrong-reason", { reason: "sigterm", message: "old shutdown", timestamp: new Date(2_000).toISOString(), pid: 456 }],
+  ])("ignores a %s startup tombstone", async (_label, tombstone) => {
+    const checkSocketAlive = vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true)
+    const deps = makeDeps({
+      checkSocketAlive,
+      startDaemonProcess: vi.fn(async () => ({ pid: 456 })),
+      now: vi.fn(() => 2_000),
+      sleep: vi.fn(async () => undefined),
+      readDaemonStartupTombstone: vi.fn(() => tombstone),
+    })
+
+    const result = await runOuroCli(["up"], deps)
+
+    expect(result).not.toContain("did not finish booting")
+    expect(result).not.toContain(tombstone.message)
+  })
+
+  it("redacts a fresh raw startup failure when launchd does not return a PID", async () => {
+    const deps = makeDeps({
+      checkSocketAlive: vi.fn(async () => false),
+      startDaemonProcess: vi.fn(async () => ({ pid: null })),
+      now: vi.fn(() => 2_000),
+      sleep: vi.fn(async () => undefined),
+      readDaemonStartupTombstone: vi.fn(() => ({
+        reason: "startupFailure",
+        message: "raw secret-bearing daemon rejection",
+        timestamp: new Date(2_000).toISOString(),
+        pid: 999,
+      })),
+      readRecentDaemonLogLines: vi.fn(() => ["raw secret-bearing daemon log"]),
+    })
+
+    const result = await runOuroCli(["up"], deps)
+
+    expect(result).toContain("background service failed during startup")
+    expect(result).toContain("ouro doctor")
+    expect(result).not.toContain("raw secret-bearing daemon rejection")
+    expect(result).not.toContain("raw secret-bearing daemon log")
   })
 
   it("uses plain-English replacement breadcrumbs while swapping in a new daemon", async () => {
