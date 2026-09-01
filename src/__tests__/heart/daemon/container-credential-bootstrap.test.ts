@@ -106,6 +106,30 @@ describe("container credential bootstrap", () => {
     expect(fs.existsSync(`${file}.consuming`)).toBe(false)
   })
 
+  it("imports the exact SAB machine-vault envelope through the real loader and deletes both transport files", async () => {
+    bootstrapMocks.machineIdentity.mockReturnValue({ machineId: "sanctuary" })
+    const runtimeCredentials = await vi.importActual<typeof import("../../../heart/runtime-credentials")>("../../../heart/runtime-credentials")
+    bootstrapMocks.validate.mockImplementation(runtimeCredentials.isRuntimeCredentialBootstrapMessage)
+    const file = fixture({
+      type: "ouro.runtimeCredentialBootstrap",
+      agentName: "sanctuary",
+      machineId: "sanctuary",
+      machineRuntimeConfig: { sabnzbdApiKey: "test-only-sab-secret" },
+    })
+    let vaultReadback: Record<string, unknown> | undefined
+    const persist = vi.fn(async (message: unknown) => {
+      vaultReadback = structuredClone((message as { machineRuntimeConfig: Record<string, unknown> }).machineRuntimeConfig)
+      return true
+    })
+
+    await expect(loadContainerCredentialBootstrap(["sanctuary"], { path: file, persist, apply: () => true })).resolves.toEqual(["sanctuary"])
+    expect(vaultReadback).toEqual({ sabnzbdApiKey: "test-only-sab-secret" })
+    expect(fs.existsSync(file)).toBe(false)
+    expect(fs.existsSync(`${file}.consuming`)).toBe(false)
+    bootstrapMocks.validate.mockImplementation(() => true)
+    bootstrapMocks.machineIdentity.mockImplementation(() => ({ machineId: "machine_default" }))
+  })
+
   it("fails closed and preserves the claimed envelope when a durable vault write fails", async () => {
     const file = fixture({ type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", runtimeConfig: {} })
     const apply = vi.fn(() => true)

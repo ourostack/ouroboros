@@ -553,7 +553,7 @@ printf '%s\n' "$*" >> ${JSON.stringify(calls)}
     const template = fs.readFileSync(path.resolve(__dirname, "../../../deploy/unraid/sanctuary.xml"), "utf8")
     expect(template).toContain('Target="/run/ouro-events"')
     expect(template).toContain('Mode="ro"')
-    expect(template).toContain('Target="/run/sanctuary/sabnzbd.ini"')
+    expect(template).not.toContain('Target="/run/sanctuary/sabnzbd.ini"')
   })
 
   it("replaces the exact unmarked legacy Sanctuary cron without duplicating the detector", () => {

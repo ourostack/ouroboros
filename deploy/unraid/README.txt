@@ -793,6 +793,8 @@ Effective-spec audit helper:
       bootstrap_sanctuary_vault "$IMAGE_ID" \
         /mnt/user/appdata/ouro-butler/runtime/container-credentials.json \
         sanctuary-unraid sanctuary || return $?
+      provision_sanctuary_sab_credential "$IMAGE_ID" || return $?
+      verify_sanctuary_sab_readiness "$IMAGE_ID" || return $?
       validate_sanctuary_legacy_staging "$PREPARED_LEGACY_CONTAINER_ID" "$PREPARED_LEGACY_IMAGE_ID" || return $?
       LEGACY_STAGING_CONTAINER_ID=$PREPARED_LEGACY_CONTAINER_ID
       LEGACY_STAGING_IMAGE_ID=$PREPARED_LEGACY_IMAGE_ID
@@ -938,7 +940,6 @@ Effective-spec audit helper:
           --mount "type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli" \
           --mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
           --mount "type=bind,src=/boot/config/custom/ouro-events/spool,dst=/run/ouro-events,readonly" \
-          --mount "type=bind,src=/mnt/user/appdata/sabnzbd/sabnzbd.ini,dst=/run/sanctuary/sabnzbd.ini,readonly" \
           "$IMAGE_ID" \
         && audit_effective ouro-butler-staging "$IMAGE_ID" "$IMAGE_ID" \
         && docker start ouro-butler-staging \
@@ -952,7 +953,6 @@ Effective-spec audit helper:
           --mount "type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli" \
           --mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
           --mount "type=bind,src=/boot/config/custom/ouro-events/spool,dst=/run/ouro-events,readonly" \
-          --mount "type=bind,src=/mnt/user/appdata/sabnzbd/sabnzbd.ini,dst=/run/sanctuary/sabnzbd.ini,readonly" \
           "$IMAGE_ID" \
         && audit_effective ouro-butler "$IMAGE_ID" "$IMAGE_ID" \
         && docker start ouro-butler \
@@ -1186,6 +1186,75 @@ local unlock: available
         test "$(stat -c '%u:%g %a' "$BOOTSTRAP_LEGACY_CREDENTIAL_SOURCE")" = "$BOOTSTRAP_LEGACY_METADATA" || return $?
       fi
       validate_sanctuary_roots "$BOOTSTRAP_RUNTIME_ROOT" "$BOOTSTRAP_AGENT_ROOT" || return $?
+    }
+    provision_sanctuary_sab_credential() {
+      SAB_BOOTSTRAP_IMAGE_ID=$1
+      validate_exact_image_id "$SAB_BOOTSTRAP_IMAGE_ID" || return $?
+      SAB_BOOTSTRAP_SOURCE=/mnt/user/appdata/sabnzbd/sabnzbd.ini
+      SAB_BOOTSTRAP_RUNTIME_ROOT=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli
+      SAB_BOOTSTRAP_AGENT_ROOT=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro
+      SAB_BOOTSTRAP_ENVELOPE="$SAB_BOOTSTRAP_RUNTIME_ROOT/container-credentials.json"
+      SAB_BOOTSTRAP_CLAIM="$SAB_BOOTSTRAP_ENVELOPE.consuming"
+      test -f "$SAB_BOOTSTRAP_SOURCE" || return $?
+      test ! -L "$SAB_BOOTSTRAP_SOURCE" || return 1
+      test ! -e "$SAB_BOOTSTRAP_ENVELOPE" || return 1
+      test ! -e "$SAB_BOOTSTRAP_CLAIM" || return 1
+      ! docker container inspect ouro-butler-sab-credential-bootstrap >/dev/null 2>&1 || return 1
+      SAB_BOOTSTRAP_TMP=$(mktemp "$SAB_BOOTSTRAP_RUNTIME_ROOT/container-credentials.json.tmp.XXXXXX") || return $?
+      trap 'rm -f -- "$SAB_BOOTSTRAP_TMP"' EXIT || return $?
+      /usr/local/bin/node -e '
+        const fs = require("node:fs");
+        const [source, destination] = process.argv.slice(1);
+        const match = fs.readFileSync(source, "utf8").match(/^\s*api_key\s*=\s*(\S+)\s*$/mu);
+        if (!match || !match[1]) process.exit(1);
+        const credential = { type: "ouro.runtimeCredentialBootstrap", agentName: "sanctuary", machineId: "sanctuary", machineRuntimeConfig: { sabnzbdApiKey: match[1] } };
+        const envelope = { schemaVersion: 1, credentials: [credential] };
+        fs.writeFileSync(destination, `${JSON.stringify(envelope)}\n`, { mode: 0o600, flag: "w" });
+      ' "$SAB_BOOTSTRAP_SOURCE" "$SAB_BOOTSTRAP_TMP" || return $?
+      chown 10001:10001 "$SAB_BOOTSTRAP_TMP" || return $?
+      chmod 0600 "$SAB_BOOTSTRAP_TMP" || return $?
+      sync -f "$SAB_BOOTSTRAP_TMP" || return $?
+      mv -f -- "$SAB_BOOTSTRAP_TMP" "$SAB_BOOTSTRAP_ENVELOPE" || return $?
+      sync -f "$SAB_BOOTSTRAP_RUNTIME_ROOT" || return $?
+      trap - EXIT || return $?
+      docker run --rm --pull=never --network host --name ouro-butler-sab-credential-bootstrap --user 10001:10001 \
+        --mount "type=bind,src=$SAB_BOOTSTRAP_RUNTIME_ROOT,dst=/home/ouro/.ouro-cli" \
+        --mount "type=bind,src=$SAB_BOOTSTRAP_AGENT_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
+        --entrypoint node "$SAB_BOOTSTRAP_IMAGE_ID" -e '
+          const { loadContainerCredentialBootstrap } = require("/opt/ouro/dist/heart/daemon/container-credential-bootstrap.js");
+          loadContainerCredentialBootstrap(["sanctuary"]).then(
+            () => process.exit(0),
+            () => { process.stderr.write("SAB credential bootstrap failed\n"); process.exit(1); },
+          );
+        ' || return $?
+      ! docker container inspect ouro-butler-sab-credential-bootstrap >/dev/null 2>&1 || return 1
+      test ! -e "$SAB_BOOTSTRAP_ENVELOPE" || return 1
+      test ! -e "$SAB_BOOTSTRAP_CLAIM" || return 1
+    }
+    verify_sanctuary_sab_readiness() {
+      SAB_READINESS_IMAGE_ID=$1
+      validate_exact_image_id "$SAB_READINESS_IMAGE_ID" || return $?
+      ! docker container inspect ouro-butler-sab-readiness >/dev/null 2>&1 || return 1
+      docker run --rm --pull=never --network host --name ouro-butler-sab-readiness --user 10001:10001 \
+        --mount "type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli" \
+        --mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
+        --entrypoint node "$SAB_READINESS_IMAGE_ID" -e '
+          (async () => {
+            try {
+              const { refreshMachineRuntimeCredentialConfig } = require("/opt/ouro/dist/heart/runtime-credentials.js");
+              const { createSanctuarySabClient } = require("/opt/ouro/dist/senses/sanctuary-sab.js");
+              const current = await refreshMachineRuntimeCredentialConfig("sanctuary", "sanctuary");
+              if (!current.ok || typeof current.config.sabnzbdApiKey !== "string" || !current.config.sabnzbdApiKey.trim()) throw new Error();
+              const snapshot = await createSanctuarySabClient({ loadApiKey: async () => current.config.sabnzbdApiKey }).readQueue();
+              if (typeof snapshot.paused !== "boolean" || !Number.isSafeInteger(snapshot.queuedJobs) || !snapshot.observedAt) throw new Error();
+              process.stdout.write("Sanctuary SAB queue readiness verified.\n");
+            } catch {
+              process.stderr.write("Sanctuary SAB queue readiness verification failed.\n");
+              process.exitCode = 1;
+            }
+          })();
+        ' || return $?
+      ! docker container inspect ouro-butler-sab-readiness >/dev/null 2>&1 || return 1
     }
     authenticate_sanctuary_provider() {
       AUTH_IMAGE_ID=$1
@@ -1606,6 +1675,13 @@ Update:
       "$IMAGE_ID" --template /audit/sanctuary.xml --runtime-policy /audit/container-runtime.json --expected-image "$IMAGE_ID"
     cleanup_event_asset_stage
     trap - EXIT
+    if provision_sanctuary_sab_credential "$IMAGE_ID" \
+      && verify_sanctuary_sab_readiness "$IMAGE_ID"; then
+      :
+    else
+      SAB_READINESS_STATUS=$?
+      (exit "$SAB_READINESS_STATUS")
+    fi
   Guard the atomic autostart disable separately. If it fails, production has not
   been touched and the captured status is propagated:
     if disable_butler_autostart; then
@@ -1712,7 +1788,6 @@ ouro-butler-rollback
       --mount "type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli" \
       --mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
       --mount "type=bind,src=/boot/config/custom/ouro-events/spool,dst=/run/ouro-events,readonly" \
-      --mount "type=bind,src=/mnt/user/appdata/sabnzbd/sabnzbd.ini,dst=/run/sanctuary/sabnzbd.ini,readonly" \
       "$IMAGE_ID" \
       && audit_effective ouro-butler-staging "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" \
       && docker start ouro-butler-staging \
@@ -1761,7 +1836,6 @@ ouro-butler-rollback
       --mount "type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli" \
       --mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
       --mount "type=bind,src=/boot/config/custom/ouro-events/spool,dst=/run/ouro-events,readonly" \
-      --mount "type=bind,src=/mnt/user/appdata/sabnzbd/sabnzbd.ini,dst=/run/sanctuary/sabnzbd.ini,readonly" \
       "$IMAGE_ID" \
       && audit_effective ouro-butler "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" \
       && docker start ouro-butler \
@@ -2065,7 +2139,6 @@ Restore:
       --mount "type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli" \
       --mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
       --mount "type=bind,src=/boot/config/custom/ouro-events/spool,dst=/run/ouro-events,readonly" \
-      --mount "type=bind,src=/mnt/user/appdata/sabnzbd/sabnzbd.ini,dst=/run/sanctuary/sabnzbd.ini,readonly" \
       "$IMAGE_ID" \
       && audit_effective ouro-butler "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" \
       && docker start ouro-butler \
@@ -2131,6 +2204,24 @@ Credential recovery:
   Never print either envelope's contents or place them in logs or command arguments.
   After successful import, both files
   are absent and the vault is the only credential source of truth.
+  `provision_sanctuary_sab_credential "$IMAGE_ID"` is the one-shot migration for
+  the existing SAB key. Root reads the fixed host INI, writes only a mode-0600
+  `ouro.runtimeCredentialBootstrap` envelope owned by 10001:10001, and a
+  same-image one-shot container merges `sabnzbdApiKey` into
+  `runtime/machines/sanctuary/config`; the key never appears in argv, the
+  environment, logs, the Unraid template, or the Butler mounts. The bootstrap
+  reconciler is idempotent for the same value and fails closed on a conflict.
+  `verify_sanctuary_sab_readiness "$IMAGE_ID"` then reloads that machine item
+  from the vault and performs a real bounded queue read before any poller
+  cutover. The runtime and agent roots are persistent binds and package-managed
+  updates do not replace the machine vault item, so the credential survives
+  template and image updates.
+  Bootstrap is not the rotation path. After SAB rotates its key, use the
+  existing hidden-prompt merge command
+  `ouro vault config set --agent sanctuary --key sabnzbdApiKey --scope machine`,
+  restart the reviewed Butler container so its machine-config cache refreshes,
+  and rerun `verify_sanctuary_sab_readiness "$IMAGE_ID"`; a conflicting
+  bootstrap is expected to stop rather than overwrite canonical vault state.
   Never print or place credential values in logs, templates, command arguments,
   backups, or this runbook.
 
