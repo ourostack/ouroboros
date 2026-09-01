@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.765",
+      "changes": [
+        "Require configured turn-local reads before accepting either tool-based or plain-text terminal responses, and fail closed at the bounded provider-turn cap when those reads never run.",
+        "Give Telegram concise phone-native plain-text response guidance instead of Teams Markdown guidance."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.764",
       "changes": [
         "Allow the Sanctuary Telegram bootstrap acceptance command to persist merged runtime credentials while preserving read-only containment for every other acceptance path."

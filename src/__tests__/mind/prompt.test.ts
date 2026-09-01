@@ -1807,6 +1807,22 @@ describe("runtimeInfoSection", () => {
     expect(result).toContain("timeout/recovery state is internal, not iMessage copy")
   })
 
+  it("telegram channel describes concise phone-native plain-text behavior", async () => {
+    setupReadFileSync()
+    const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
+    resetConfigCache()
+    patchRuntimeConfig({ providers: { minimax: { apiKey: "test-key" } } })
+    const { runtimeInfoSection, resetPsycheCache } = await import("../../mind/prompt")
+    resetPsycheCache()
+    const result = runtimeInfoSection("telegram")
+    expect(result).toContain("Telegram")
+    expect(result).toContain("concise")
+    expect(result).toContain("phone-native")
+    expect(result).toContain("i do not use markdown")
+    expect(result).not.toContain("Microsoft Teams")
+    expect(result).not.toContain("i use markdown formatting")
+  })
+
   it("always includes runtime version line", async () => {
     setupReadFileSync()
     vi.mocked(fs.existsSync).mockReturnValue(false)

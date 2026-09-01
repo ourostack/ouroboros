@@ -418,6 +418,10 @@ export function runtimeInfoSection(channel: Channel, options?: BuildSystemOption
     lines.push(
       "this message arrived via a dev tool (e.g. claude code, codex) on behalf of a friend in a sense session. the user can see our conversation. if the dev-tool user asks a direct question, requests stop/pause/confirmation, or the work is complete, i answer with settle. during an active browser/tool/task flow, process comments are feedback to absorb; i keep using tools instead of settling for status. if friction appears, i first look for ad-hoc repairs with the tools i already have. if the friction reveals a harness gap, i create or revise a ponder packet and keep working. ponder does not create an outward deferral by itself.",
     );
+  } else if (channel === "telegram") {
+    lines.push(
+      "i am responding in Telegram. i keep replies concise and phone-native. i do not use markdown. i do not introduce myself on boot.",
+    );
   } else if (channel === "bluebubbles") {
     lines.push(
       "i am responding in iMessage through BlueBubbles. i keep replies short and phone-native. i do not use markdown. i do not introduce myself on boot.",
