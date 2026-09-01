@@ -15,6 +15,7 @@ const { pollDaemonStartupMock, latestStartupEvent, mockedBundlesRoot } = vi.hois
 }))
 
 vi.mock("../../../heart/daemon/startup-tui", () => ({
+  defaultIsProcessAlive: vi.fn(() => true),
   pollDaemonStartup: (...args: unknown[]) => pollDaemonStartupMock(...args),
 }))
 

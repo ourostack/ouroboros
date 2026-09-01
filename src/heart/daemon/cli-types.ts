@@ -217,6 +217,12 @@ export interface OuroCliDeps {
   readHealthState?: (healthPath: string) => DaemonHealthState | null
   readHealthUpdatedAt?: (healthPath: string) => number | null
   readRecentDaemonLogLines?: (lines?: number) => string[]
+  readDaemonStartupTombstone?: () => {
+    reason: string
+    message: string
+    timestamp: string
+    pid: number
+  } | null
   sleep?: (ms: number) => Promise<void>
   spawnBackgroundCli?: (argv: string[]) => Promise<{ pid: number | null }>
   now?: () => number
@@ -224,6 +230,8 @@ export interface OuroCliDeps {
   startupStabilityWindowMs?: number
   startupTimeoutMs?: number
   startupRetryLimit?: number
+  /** Test/alternate-host seam for detecting a child that exits before its socket is ready. */
+  isProcessAlive?: (pid: number) => boolean
   finalDaemonHealthSettleTimeoutMs?: number
   finalDaemonHealthSettlePollIntervalMs?: number
   reportDaemonStartupPhase?: (text: string) => void

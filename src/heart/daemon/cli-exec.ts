@@ -192,6 +192,7 @@ import {
 } from "./human-command-screens"
 import { type TerminalSection } from "./terminal-ui"
 import { pollDaemonStartup } from "./startup-tui"
+import { PUBLIC_DAEMON_STARTUP_FAILURE_REASON } from "./daemon-bootstrap-startup"
 import { pruneStaleEphemeralBundles } from "./stale-bundle-prune"
 import { CommandProgress, UpProgress } from "./up-progress"
 import { createProviderPingProgressReporter } from "./provider-ping-progress"
@@ -1422,6 +1423,7 @@ export function mergeStartupStability(
 interface DaemonStartupFailure {
   reason: string
   retryable: boolean
+  includeRecentLogs?: boolean
 }
 
 export async function ensureDaemonRunning(
@@ -1549,6 +1551,7 @@ export async function ensureDaemonRunning(
       writeRaw: deps.writeRaw ?? ((text) => process.stdout.write(text)),
       /* v8 ignore next -- thin wrapper: real stdout TTY detection injected by default deps @preserve */
       isTTY: deps.isTTY ?? process.stdout.isTTY === true,
+      isProcessAlive: deps.isProcessAlive,
       /* v8 ignore next -- thin wrapper: real Date.now fallback injected by default deps @preserve */
       now: deps.now ?? (() => Date.now()),
       /* v8 ignore next -- thin wrapper: real setTimeout fallback injected by default deps @preserve */
@@ -1602,6 +1605,7 @@ export async function ensureDaemonRunning(
         writeRaw: deps.writeRaw ?? ((text) => process.stdout.write(text)),
         /* v8 ignore next -- thin wrapper: real stdout TTY detection injected by default deps @preserve */
         isTTY: deps.isTTY ?? process.stdout.isTTY === true,
+        isProcessAlive: deps.isProcessAlive,
         /* v8 ignore next -- thin wrapper: real Date.now fallback injected by default deps @preserve */
         now: deps.now ?? (() => Date.now()),
         /* v8 ignore next -- thin wrapper: real setTimeout fallback injected by default deps @preserve */
@@ -1675,13 +1679,29 @@ function formatDaemonStartupFailureMessage(
   const lines = [
     `background service started (pid ${pid ?? "unknown"}) but did not finish booting: ${failure.reason}`,
   ]
-  const recentLogLines = deps.readRecentDaemonLogLines?.(DEFAULT_DAEMON_STARTUP_LOG_LINES) ?? []
+  const recentLogLines = failure.includeRecentLogs === false
+    ? []
+    : deps.readRecentDaemonLogLines?.(DEFAULT_DAEMON_STARTUP_LOG_LINES) ?? []
   if (recentLogLines.length > 0) {
     lines.push("recent daemon logs:")
     lines.push(...recentLogLines.map((line) => `  ${line}`))
   }
   lines.push("Run `ouro logs` to watch live startup logs or `ouro doctor` for a deeper diagnosis.")
   return lines.join("\n")
+}
+
+function readFreshDaemonStartupFailure(
+  deps: OuroCliDeps,
+  options: { bootStartedAtMs: number; pid: number | null },
+): string | null {
+  const tombstone = deps.readDaemonStartupTombstone?.() ?? null
+  if (!tombstone || (tombstone.reason !== PUBLIC_DAEMON_STARTUP_FAILURE_REASON && tombstone.reason !== "startupFailure")) return null
+  const timestampMs = Date.parse(tombstone.timestamp)
+  if (!Number.isFinite(timestampMs) || timestampMs < options.bootStartedAtMs) return null
+  if (options.pid !== null && tombstone.pid !== options.pid) return null
+  return tombstone.reason === PUBLIC_DAEMON_STARTUP_FAILURE_REASON
+    ? tombstone.message
+    : "background service failed during startup; run `ouro doctor` for diagnosis"
 }
 
 async function waitForDaemonStartup(
@@ -1706,6 +1726,15 @@ async function waitForDaemonStartup(
   if (!useHealthMonitor) {
     while (now() < deadline) {
       await sleep(pollIntervalMs)
+      const startupFailure = readFreshDaemonStartupFailure(deps, options)
+      if (startupFailure) return { reason: startupFailure, retryable: false, includeRecentLogs: false }
+      if (options.pid !== null && deps.isProcessAlive && !deps.isProcessAlive(options.pid)) {
+        return {
+          reason: `${options.serviceLabel} exited before answering`,
+          retryable: false,
+          includeRecentLogs: false,
+        }
+      }
       const latestEvent = options.readLatestDaemonEvent?.() ?? null
       deps.reportDaemonStartupPhase?.(formatDaemonStartupProgressLine(options.serviceLabel, "waiting", latestEvent))
       if (await deps.checkSocketAlive(deps.socketPath)) return null
@@ -1718,8 +1747,17 @@ async function waitForDaemonStartup(
 
   while (now() < deadline) {
     await sleep(pollIntervalMs)
+    const startupFailure = readFreshDaemonStartupFailure(deps, options)
+    if (startupFailure) return { reason: startupFailure, retryable: false, includeRecentLogs: false }
     const aliveNow = await deps.checkSocketAlive(deps.socketPath)
     if (!aliveNow) {
+      if (options.pid !== null && deps.isProcessAlive && !deps.isProcessAlive(options.pid)) {
+        return {
+          reason: `${options.serviceLabel} exited before answering`,
+          retryable: false,
+          includeRecentLogs: false,
+        }
+      }
       if (sawSocket) {
         return {
           reason: `${options.serviceLabel} answered once and then disappeared during startup`,

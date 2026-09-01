@@ -1245,6 +1245,7 @@ describe("daemon CLI default dependency branches", () => {
     }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
     vi.doMock("../../../heart/daemon/startup-tui", () => ({
+      defaultIsProcessAlive: vi.fn(() => true),
       pollDaemonStartup: vi.fn(async () => ({ stable: [], degraded: [] })),
     }))
     vi.doMock("fs", () => ({
@@ -1271,6 +1272,7 @@ describe("daemon CLI default dependency branches", () => {
 
     const result = await runOuroCli(["up"], {
       ...deps,
+      readDaemonStartupTombstone: () => null,
       sendCommand: vi.fn(async (_socketPath, command) => {
         if (command.kind === "daemon.status") {
           return {

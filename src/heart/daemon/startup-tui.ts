@@ -401,7 +401,7 @@ function renderStartupLines(lines: string[], prevLineCount: number, isTTY: boole
 }
 
 /* v8 ignore start -- process liveness check: uses real process.kill(0), tested via deployment @preserve */
-function defaultIsProcessAlive(pid: number): boolean {
+export function defaultIsProcessAlive(pid: number): boolean {
   try {
     process.kill(pid, 0)
     return true

@@ -24,6 +24,7 @@ vi.mock("../../../heart/daemon/hooks/bundle-meta", () => ({
 }))
 
 vi.mock("../../../heart/daemon/startup-tui", () => ({
+  defaultIsProcessAlive: vi.fn(() => true),
   pollDaemonStartup: (...a: any[]) => mocks.pollDaemonStartup(...a),
   assessStability: vi.fn(),
   renderStartupProgress: vi.fn(() => ""),

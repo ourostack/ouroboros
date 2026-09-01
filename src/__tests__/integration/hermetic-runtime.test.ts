@@ -38,19 +38,20 @@ describe("hermetic Ouro runtime integration", () => {
     expect(stop.stdout.toLowerCase()).toContain("stopped")
   })
 
-  it("surfaces a truthful degraded message when the selected provider fails its live check", async () => {
+  it("fails closed before serving when the selected provider fails its live check", async () => {
     harness = await createHermeticRuntimeHarness({ providerMode: "fail-live-check" })
 
     const up = await harness.runCli(["up", "--no-repair"])
     expect(up.exitCode).toBe(1)
     expect(up.stdout).toContain("Provider checks need attention")
     expect(up.stdout).toContain("failed live check")
-    expect(up.stdout).not.toContain("daemon not started")
+    expect(up.stdout).toContain("ouro auth --agent slugger")
+    expect(up.stdout).not.toContain("integration test rejected this credential")
+    expect(up.stderr).not.toContain("integration test rejected this credential")
 
     const status = await harness.runCli(["status"])
     expect(status.exitCode).toBe(0)
-    expect(status.stdout).toContain("slugger")
-    expect(status.stdout.toLowerCase()).toContain("running")
+    expect(status.stdout.toLowerCase()).toContain("not running")
   })
 
   it("renders the noninteractive connections screen from the built runtime with live provider truth", async () => {

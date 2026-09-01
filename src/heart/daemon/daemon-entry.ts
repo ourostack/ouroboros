@@ -48,7 +48,7 @@ import {
 import { readMachineRuntimeCredentialConfig, readRuntimeCredentialConfig } from "../runtime-credentials"
 import { loadOrCreateMachineIdentity } from "../machine-identity"
 import { loadContainerCredentialBootstrap } from "./container-credential-bootstrap"
-import { startDaemonAfterContainerCredentialBootstrap } from "./daemon-bootstrap-startup"
+import { createProviderReadinessPreparationFailure, startDaemonAfterContainerCredentialBootstrap } from "./daemon-bootstrap-startup"
 import type { HabitRunTrigger } from "../../arc/flight-recorder"
 import { runSanctuaryHealthHabit } from "../../senses/sanctuary-health-runner"
 import { readSanctuaryAcceptanceMarker } from "./sanctuary-acceptance-marker"
@@ -613,7 +613,7 @@ async function prepareProviderRuntime(): Promise<void> {
   const readiness = await Promise.all(managedAgents.map(async (agent) => {
     try {
       const result = await checkAgentConfigWithProviderHealth(agent, bundlesRoot)
-      if (result.ok) return true
+      if (result.ok) return null
       emitNervesEvent({
         level: "warn",
         component: "daemon",
@@ -621,7 +621,10 @@ async function prepareProviderRuntime(): Promise<void> {
         message: "fresh provider readiness was unavailable before daemon startup",
         meta: { agent },
       })
-      return false
+      return result.issue ?? {
+        summary: `${agent}: provider runtime unavailable`,
+        actions: [{ actor: "agent-runnable", command: "ouro doctor" }],
+      }
     } catch {
       emitNervesEvent({
         level: "warn",
@@ -630,10 +633,13 @@ async function prepareProviderRuntime(): Promise<void> {
         message: "fresh provider readiness check failed before daemon startup",
         meta: { agent },
       })
-      return false
+      throw new Error("provider runtime preparation failed")
     }
   }))
-  if (readiness.some((ready) => !ready)) throw new Error("provider runtime preparation failed")
+  const failures = readiness.filter((entry): entry is NonNullable<typeof entry> => entry !== null)
+  if (failures.length > 0) {
+    throw createProviderReadinessPreparationFailure(failures)
+  }
 }
 
 function scheduleStartupSentinelAfterProviderPreload(agent: string, preload: Promise<void>): void {
