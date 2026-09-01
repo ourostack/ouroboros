@@ -2160,5 +2160,32 @@ describe("runAgent tool loop guard", () => {
       expect(callbacks.onTextChunk).toHaveBeenCalledWith(finalAnswer)
       expect(callbacks.onTextChunk).not.toHaveBeenCalledWith(expect.stringContaining("100%"))
     })
+
+    it("fails closed at the provider iteration cap when required reads never dispatch", async () => {
+      for (let response = 0; response < 8; response += 1) {
+        mockCreate.mockReturnValueOnce(makeStream([makeChunk(`stale answer ${response + 1}`)]))
+      }
+      mockCreate.mockReturnValueOnce(makeStream([makeChunk("")]))
+      const callbacks = makeCallbacks({ settleOutputMode: "final_only" })
+      const { runAgent } = await import("../../heart/core")
+
+      const result = await runAgent([{ role: "user", content: "What's going on with Sanctuary?" }], callbacks, "telegram", undefined, {
+        tools: [readTool("query_active_work")],
+        execTool: vi.fn(),
+        toolContext: { signin: async () => undefined },
+        requiredToolCalls: {
+          names: ["query_active_work"],
+          retryMessage: "Read current work before answering.",
+        },
+      })
+
+      expect(mockCreate).toHaveBeenCalledTimes(8)
+      expect(callbacks.onError).toHaveBeenCalledWith(expect.objectContaining({
+        message: "provider iteration limit exhausted at response 8 before required tool calls completed",
+      }), "terminal")
+      expect(callbacks.onTextChunk).not.toHaveBeenCalled()
+      expect(callbacks.onClearText).toHaveBeenCalled()
+      expect(result.outcome).toBe("errored")
+    })
   })
 })

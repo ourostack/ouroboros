@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.765",
       "changes": [
-        "Require configured turn-local reads before accepting either tool-based or plain-text terminal responses.",
+        "Require configured turn-local reads before accepting either tool-based or plain-text terminal responses, and fail closed at the bounded provider-turn cap when those reads never run.",
         "Give Telegram concise phone-native plain-text response guidance instead of Teams Markdown guidance."
       ]
     },

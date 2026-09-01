@@ -1936,6 +1936,9 @@ export async function runAgent(
         if (requiredToolCallsGate) {
           streamCallbackBuffer?.discard();
           callbacks.onClearText?.();
+          if (providerIterations >= MAX_PROVIDER_ITERATIONS) {
+            throw new Error(`provider iteration limit exhausted at response ${MAX_PROVIDER_ITERATIONS} before required tool calls completed`)
+          }
           pushGenerated(msg);
           messages.push({ role: "user", content: requiredToolCallsGate.message });
           emitNervesEvent({
