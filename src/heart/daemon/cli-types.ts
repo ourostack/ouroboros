@@ -72,6 +72,7 @@ export type OuroCliCommand =
   | { kind: "chat.connect"; agent: string }
   | { kind: "message.send"; from: string; to: string; content: string; sessionId?: string; taskRef?: string }
   | { kind: "external.event.submit"; agent: string; source: string; eventType: string; eventId: string; summary?: string; evidence?: string[]; payloadPath?: string; priority?: string; sessionId?: string; taskRef?: string; wake?: boolean; observationRevision?: string; transition?: import("../external-events/router").ExternalEventTransition }
+  | { kind: "external.event.repair"; manifestPath: string }
   | { kind: "task.poke"; agent: string; taskId: string }
   | { kind: "whoami"; agent?: string }
   | { kind: "session.list"; agent?: string }

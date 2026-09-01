@@ -184,6 +184,42 @@ describe("external event attention lifecycle", () => {
     expect(failedAgain).toMatchObject({ executionState: "dead_letter", recoveryGrant: { generation: 1 } })
   })
 
+  it("reclassifies a consumed provider recovery only when trusted lease reconciliation observes expiry", () => {
+    const eventRoot = root()
+    const first = recordExternalEvent({ agent: "sanctuary", source: "guard", eventType: "health.observed", eventId: "provider-then-expired" }, { root: eventRoot, now: () => "2026-08-29T18:00:00.000Z" })
+    const providerClaim = claimExternalEvent(first.recordPath, { owner: "provider-worker", expectedVersion: first.version, expectedGeneration: 1, now: () => "2026-08-29T18:00:00.000Z" })
+    const providerDead = failExternalEventAttempt(first.recordPath, { owner: "provider-worker", expectedVersion: providerClaim.version, expectedGeneration: 1, error: "provider unavailable", failureClass: "provider_lane_unavailable", maxAttempts: 1, now: () => "2026-08-29T18:00:01.000Z" })
+    const providerRecovery = reviveExternalEventAfterRecovery(first.recordPath, { expectedVersion: providerDead.version, expectedGeneration: 1, evidence: { class: "provider_lane_unavailable", observedAt: "2026-08-29T18:00:02.000Z" }, now: () => "2026-08-29T18:00:02.000Z" })
+    expect(providerRecovery.revived).toBe(true)
+    const recoveryClaim = claimExternalEvent(first.recordPath, { owner: "recovery-worker", expectedVersion: providerRecovery.record.version, expectedGeneration: 1, leaseMs: 1_000, now: () => "2026-08-29T18:00:03.000Z" })
+
+    const leaseDead = reconcileExternalEvent(first.recordPath, { now: () => "2026-08-29T18:00:05.000Z" })
+    expect(leaseDead).toMatchObject({ executionState: "dead_letter", failureProvenance: { class: "execution_lease_expired", failedAt: "2026-08-29T18:00:05.000Z" } })
+    expect(leaseDead.recoveryGrant).toBeUndefined()
+
+    const leaseRecovery = reviveExternalEventAfterRecovery(first.recordPath, { expectedVersion: leaseDead.version, expectedGeneration: 1, evidence: { class: "execution_lease_expired", observedAt: "2026-08-29T18:00:06.000Z" }, now: () => "2026-08-29T18:00:06.000Z" })
+    expect(leaseRecovery.revived).toBe(true)
+    expect(buildExternalEventMessage(leaseRecovery.record)).toContain("Inspect the current system state before taking any action")
+
+    const secondClaim = claimExternalEvent(first.recordPath, { owner: "second-recovery", expectedVersion: leaseRecovery.record.version, expectedGeneration: 1, leaseMs: 1_000, now: () => "2026-08-29T18:00:07.000Z" })
+    const permanentlyDead = reconcileExternalEvent(first.recordPath, { now: () => "2026-08-29T18:00:09.000Z" })
+    expect(permanentlyDead).toMatchObject({ executionState: "dead_letter", recoveryGrant: { generation: 1 }, failureProvenance: { class: "execution_lease_expired" } })
+    expect(reviveExternalEventAfterRecovery(first.recordPath, { expectedVersion: permanentlyDead.version, expectedGeneration: 1, evidence: { class: "execution_lease_expired", observedAt: "2026-08-29T18:00:10.000Z" } })).toMatchObject({ revived: false, reason: "grant_consumed" })
+    expect(recoveryClaim.executionState).toBe("running")
+    expect(secondClaim.executionState).toBe("running")
+  })
+
+  it("does not let the general failure API clear a consumed provider recovery grant", () => {
+    const eventRoot = root()
+    const first = recordExternalEvent({ agent: "sanctuary", source: "guard", eventType: "health.observed", eventId: "untrusted-reclassify" }, { root: eventRoot, now: () => "2026-08-29T18:00:00.000Z" })
+    const claim = claimExternalEvent(first.recordPath, { owner: "provider-worker", expectedVersion: first.version, expectedGeneration: 1 })
+    const dead = failExternalEventAttempt(first.recordPath, { owner: "provider-worker", expectedVersion: claim.version, expectedGeneration: 1, error: "provider unavailable", failureClass: "provider_lane_unavailable", maxAttempts: 1, now: () => "2026-08-29T18:00:01.000Z" })
+    const revived = reviveExternalEventAfterRecovery(first.recordPath, { expectedVersion: dead.version, expectedGeneration: 1, evidence: { class: "provider_lane_unavailable", observedAt: "2026-08-29T18:00:02.000Z" }, now: () => "2026-08-29T18:00:02.000Z" })
+    const recoveredClaim = claimExternalEvent(first.recordPath, { owner: "recovery-worker", expectedVersion: revived.record.version, expectedGeneration: 1 })
+    const failed = failExternalEventAttempt(first.recordPath, { owner: "recovery-worker", expectedVersion: recoveredClaim.version, expectedGeneration: 1, error: "claimed lease timed out", failureClass: "execution_lease_expired", now: () => "2026-08-29T18:00:03.000Z" })
+    expect(failed).toMatchObject({ failureProvenance: { class: "provider_lane_unavailable" }, recoveryGrant: { generation: 1 } })
+  })
+
   it("renews only the exact live claim so a long turn is not reclaimed", () => {
     const eventRoot = root()
     const first = recordExternalEvent({ agent: "sanctuary", source: "guard", eventType: "health.observed", eventId: "long-turn" }, { root: eventRoot, now: () => "2026-08-29T18:00:00.000Z" })

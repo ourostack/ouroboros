@@ -360,13 +360,13 @@ if test "$COMMAND" = cursor-snapshot; then
 fi
 materialize_config "$EXPECTED_CONFIG" "$SNAPSHOT_PHASE"
 cmp -s "$EXPECTED_CONFIG" "$CONFIG_PATH" || exit 1
-case "$COMMAND" in telegram-bootstrap|callback-inject) test -r /proc/self/fd/3 || exit 2 ;; esac
+case "$COMMAND" in callback-inject) test -r /proc/self/fd/3 || exit 2 ;; esac
 prepare_live_facts
 if test "$COMMAND" = telegram-bootstrap; then quiesce_production_telegram_poller; fi
 if test "$COMMAND" = unraid-key-rotate; then stop_exact_production_container; fi
 
 case "$COMMAND" in
-  telegram-bootstrap) TIME_LIMIT=900; NETWORK=host; INPUT=yes; BUNDLE_MODE=readonly; BROKER=no ;;
+  telegram-bootstrap) TIME_LIMIT=900; NETWORK=host; INPUT=no; BUNDLE_MODE=readonly; BROKER=no ;;
   callback-inject) TIME_LIMIT=120; NETWORK=host; INPUT=yes; BUNDLE_MODE=rw; BROKER=no ;;
   unraid-key-rotate) TIME_LIMIT=600; NETWORK=host; INPUT=no; BUNDLE_MODE=readonly; BROKER=yes ;;
   evidence-snapshot) TIME_LIMIT=4950; NETWORK=host; INPUT=no; BUNDLE_MODE=readonly; BROKER=yes ;;
@@ -424,7 +424,7 @@ fi
 run_harness() {
   if test "$BUNDLE_MODE" = rw; then BUNDLE_SUFFIX=; else BUNDLE_SUFFIX=,readonly; fi
   if test "$COMMAND" = telegram-bootstrap; then
-    /usr/bin/timeout -s KILL "$TIME_LIMIT" /usr/bin/docker run --rm -i --pull=never --network "$NETWORK" \
+    /usr/bin/timeout -s KILL "$TIME_LIMIT" /usr/bin/docker run --rm --pull=never --network "$NETWORK" \
       --user 10001:10001 --read-only --cap-drop ALL --security-opt no-new-privileges \
       --mount "type=bind,src=$CONFIG_PATH,dst=/run/ouro-acceptance/config.json,readonly" \
       --mount "type=bind,src=$EVIDENCE_ROOT,dst=/evidence" \
@@ -437,9 +437,8 @@ run_harness() {
       --mount "type=bind,src=$HEALTH_FACT,dst=/run/ouro-acceptance/postboot-health.json,readonly" \
       --mount "type=bind,src=$CONTAINER_INSPECT_FACT,dst=/run/ouro-acceptance/container-inspect.json,readonly" \
       --mount "type=bind,src=/proc/sys/kernel/random/boot_id,dst=/run/ouro-acceptance/boot-id,readonly" \
-      --entrypoint /bin/sh "$IMAGE_ID" -ceu \
-      'exec 3<&0; exec /opt/ouro/deploy/unraid/sanctuary-acceptance-harness.sh "$@" 3<&3' \
-      sanctuary-unit16 "$COMMAND" --config /run/ouro-acceptance/config.json <&3
+      --entrypoint /opt/ouro/deploy/unraid/sanctuary-acceptance-harness.sh "$IMAGE_ID" \
+      "$COMMAND" --config /run/ouro-acceptance/config.json
   elif test "$COMMAND" = callback-inject; then
     /usr/bin/timeout -s KILL "$TIME_LIMIT" /usr/bin/docker run --rm -i --pull=never --network "$NETWORK" \
       --user 10001:10001 --read-only --cap-drop ALL --security-opt no-new-privileges \

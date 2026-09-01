@@ -19,6 +19,8 @@ import { constants as fsConstants } from "node:fs"
 import * as path from "node:path"
 
 import { emitNervesEvent } from "../../nerves/runtime"
+import { loadTelegramSenseCredentials, telegramBotIdFromToken, type TelegramSenseCredentials } from "../../senses/telegram"
+import { mergeRuntimeCredentialConfig, refreshRuntimeCredentialConfig, type RuntimeCredentialConfigReadResult } from "../runtime-credentials"
 
 const MAX_ADAPTER_OUTPUT = 1_048_576
 const DEFAULT_ADAPTER_TIMEOUT_MS = 240_000
@@ -31,6 +33,9 @@ type JsonObject = Record<string, unknown>
 
 export interface AcceptanceHarnessDependencies {
   readSecret(): string
+  refreshRuntime(agentName: string): Promise<RuntimeCredentialConfigReadResult>
+  mergeRuntime(agentName: string, patch: Record<string, unknown>): Promise<RuntimeCredentialConfigReadResult>
+  telegramCredentials(agentName: string): TelegramSenseCredentials
   runAdapter(executable: string, payload: unknown, timeoutMs?: number): Promise<unknown>
   realpath(filePath: string): string
   fetch: typeof fetch
@@ -53,6 +58,9 @@ export function createSanctuaryAcceptanceHarnessDependencies(
   const telegramTimeoutMs = options.telegramTimeoutMs ?? DEFAULT_TELEGRAM_TIMEOUT_MS
   return {
     readSecret: () => readFileSync(secretFd, "utf8"),
+    refreshRuntime: refreshRuntimeCredentialConfig,
+    mergeRuntime: mergeRuntimeCredentialConfig,
+    telegramCredentials: loadTelegramSenseCredentials,
     runAdapter: async (executable, payload, remainingMs) => {
       requireAbsoluteExecutable(executable)
       const result = spawnSync(executable, [], {
@@ -80,6 +88,20 @@ export function createSanctuaryAcceptanceHarnessDependencies(
     randomBytes: nodeRandomBytes,
     sleep: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
     telegramTimeoutMs,
+  }
+}
+
+async function canonicalTelegramBootstrapToken(deps: AcceptanceHarnessDependencies): Promise<string> {
+  let refreshed: RuntimeCredentialConfigReadResult
+  try { refreshed = await deps.refreshRuntime("sanctuary") }
+  catch { throw new Error("Telegram runtime credentials are unavailable; actor: human-required; unlock or repair vault runtime/config") }
+  if (!refreshed.ok) throw new Error("Telegram runtime credentials are unavailable; actor: human-required; unlock or repair vault runtime/config")
+  try {
+    const token = deps.telegramCredentials("sanctuary").botToken.trim()
+    telegramBotIdFromToken(token)
+    return token
+  } catch {
+    throw new Error("Telegram runtime credentials are invalid; actor: human-required; repair vault runtime/config")
   }
 }
 
@@ -284,6 +306,11 @@ async function telegramRequest(
   catch { throw new Error("Telegram returned invalid JSON") }
   if (!response.ok || envelope.ok !== true) throw new Error("Telegram request failed")
   return envelope.result
+}
+
+function telegramBootstrapRequestError(method: "getMe" | "getUpdates", error: unknown): Error {
+  const outcome = error instanceof Error && /timed out/iu.test(error.message) ? "timed out" : "failed"
+  return new Error(`Telegram ${method} ${outcome}; actor: agent-runnable; retry Telegram bootstrap`)
 }
 
 export const SANCTUARY_UNIT_16_EVIDENCE_LABELS = [
@@ -836,18 +863,19 @@ async function telegramBootstrap(config: JsonObject, deps: AcceptanceHarnessDepe
   const noncePath = confinedPath(root, config.noncePath, "noncePath")
   refuseExistingCheckpoint(root, noncePath)
   const pollerAdapter = adapter(config.pollerAdapter, "pollerAdapter")
-  const vaultAdapter = adapter(config.vaultAdapter, "vaultAdapter")
-  if (pollerAdapter !== PACKAGED_PROVENANCE_ADAPTER || vaultAdapter !== PACKAGED_PROVENANCE_ADAPTER) {
-    throw new Error("Telegram bootstrap requires the fixed packaged acceptance adapter")
-  }
+  if (pollerAdapter !== PACKAGED_PROVENANCE_ADAPTER) throw new Error("Telegram bootstrap requires the fixed packaged acceptance adapter")
   const deadlineMs = integer(config.deadlineMs, "deadlineMs", 300_000)
   if (deadlineMs > 900_000) throw new Error("Telegram bootstrap deadline exceeds 15 minutes")
   const pollTimeoutSeconds = integer(config.pollTimeoutSeconds, "pollTimeoutSeconds", 1)
   if (pollTimeoutSeconds > 50) throw new Error("Telegram poll timeout exceeds 50 seconds")
   const token = deps.readSecret().trim()
-  if (!token) throw new Error("Telegram token descriptor is empty")
-  const bot = object(await telegramRequest(deps, token, "getMe"), "Telegram getMe result")
-  if (String(bot.id) !== expectedBotId || bot.username !== expectedUsername) throw new Error("Telegram bot identity mismatch")
+  let getMe: unknown
+  try { getMe = await telegramRequest(deps, token, "getMe") }
+  catch (error) { throw telegramBootstrapRequestError("getMe", error) }
+  const bot = object(getMe, "Telegram getMe result")
+  if (String(bot.id) !== expectedBotId || bot.username !== expectedUsername) {
+    throw new Error("Telegram bot identity mismatch; actor: human-required; repair vault runtime/config")
+  }
 
   const nonce = deps.randomBytes(16).toString("hex")
   const base: JsonObject = {
@@ -871,11 +899,16 @@ async function telegramBootstrap(config: JsonObject, deps: AcceptanceHarnessDepe
     let nextOffset = currentOffset
     let match: JsonObject | undefined
     while (deps.now() < deadline && !match) {
-      const updates = await telegramRequest(deps, token, "getUpdates", {
-        offset: nextOffset,
-        timeout: pollTimeoutSeconds,
-        allowed_updates: ["message"],
-      }, (pollTimeoutSeconds + 5) * 1_000)
+      let updates: unknown
+      try {
+        updates = await telegramRequest(deps, token, "getUpdates", {
+          offset: nextOffset,
+          timeout: pollTimeoutSeconds,
+          allowed_updates: ["message"],
+        }, (pollTimeoutSeconds + 5) * 1_000)
+      } catch (error) {
+        throw telegramBootstrapRequestError("getUpdates", error)
+      }
       if (!Array.isArray(updates)) throw new Error("Telegram getUpdates result must be an array")
       const parsed = updates.map((entry) => object(entry, "Telegram update"))
       const updateIds = parsed.map((entry) => integer(entry.update_id, "Telegram update id"))
@@ -910,13 +943,19 @@ async function telegramBootstrap(config: JsonObject, deps: AcceptanceHarnessDepe
       offsetDigest: digest(nextUpdateId),
     }
     replaceCheckpoint(root, evidencePath, confirmed)
-    const stored = object(await deps.runAdapter(vaultAdapter, {
-      operation: "store_telegram_bootstrap",
-      botToken: token,
-      authorizedUserId: userId,
-      authorizedChatId: chatId,
-    }), "vault adapter result")
-    if (stored.stored !== true) throw new Error("Telegram vault adapter did not attest storage")
+    let stored: RuntimeCredentialConfigReadResult
+    try {
+      stored = await deps.mergeRuntime("sanctuary", {
+        telegramAuthorizedUserId: userId,
+        telegramAuthorizedChatId: chatId,
+      })
+    } catch {
+      throw new Error("Telegram bootstrap vault update failed; actor: agent-runnable; retry Telegram bootstrap")
+    }
+    if (!stored.ok || stored.config.telegramBotToken !== token
+      || stored.config.telegramAuthorizedUserId !== userId || stored.config.telegramAuthorizedChatId !== chatId) {
+      throw new Error("Telegram bootstrap vault readback failed; actor: agent-runnable; retry Telegram bootstrap")
+    }
     replaceCheckpoint(root, evidencePath, { ...confirmed, phase: "vault_committed" })
     atomicPrivateJson(root, offsetPath, { nextUpdateId })
     replaceCheckpoint(root, evidencePath, { ...confirmed, phase: "complete", completedAt: deps.now() })
@@ -1701,7 +1740,11 @@ export async function executeSanctuaryAcceptanceHarness(
   try {
     const config = object(rawConfig, "acceptance config")
     switch (command) {
-      case "telegram-bootstrap": await telegramBootstrap(config, deps); break
+      case "telegram-bootstrap": {
+        const token = await canonicalTelegramBootstrapToken(deps)
+        await telegramBootstrap(config, { ...deps, readSecret: () => token })
+        break
+      }
       case "cursor-snapshot": await cursorSnapshot(config, deps); break
       case "cursor-delta": await cursorDelta(config, deps); break
       case "callback-inject": await callbackInject(config, deps); break

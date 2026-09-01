@@ -498,6 +498,12 @@ describe("ouro CLI parsing", () => {
       wake: false,
     })
 
+    expect(parseOuroCommand(["event", "repair", "--manifest", "/tmp/reviewed.json"])).toEqual({
+      kind: "external.event.repair",
+      manifestPath: "/tmp/reviewed.json",
+    })
+    expect(() => parseOuroCommand(["event", "repair", "--manifest"])).toThrow(/Usage/u)
+
     expect(parseOuroCommand(["poke", "slugger", "--task", "habit-heartbeat"])).toEqual({
       kind: "task.poke",
       agent: "slugger",

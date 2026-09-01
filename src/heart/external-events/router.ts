@@ -20,6 +20,13 @@ export interface ExternalEventRecoveryGrant {
   generation: number
   consumedAt: string
 }
+
+export interface ExternalEventRepairResult {
+  applied: string[]
+  alreadyApplied: string[]
+  failed: Array<{ identity: string; error: string }>
+  pending: string[]
+}
 export type ExternalEventWakePredicate =
   | { kind: "on_change" }
   | { kind: "on_escalation" }
@@ -426,6 +433,207 @@ export function readExternalEventRecord(recordPath: string): ExternalEventRecord
     throw new Error(`External event record identity is invalid: ${recordPath}`)
   }
   return parsed
+}
+
+interface ExternalEventRepairEntry {
+  agent: string
+  source: string
+  eventId: string
+  preimageSha256: string
+  postimageSha256: string
+  version: number
+  generation: number
+  failureProvenance: ExternalEventFailureProvenance
+  recoveryGrant: ExternalEventRecoveryGrant
+}
+
+interface ExternalEventRepairManifest {
+  schemaVersion: 1
+  repairedAt: string
+  reason: string
+  evidence: string[]
+  requestedBy: string
+  reviewedBy: string
+  entries: ExternalEventRepairEntry[]
+}
+
+const MAX_REPAIR_MANIFEST_BYTES = 1024 * 1024
+const MAX_REPAIR_ENTRIES = 512
+const SHA256_HEX = /^[a-f0-9]{64}$/u
+
+function hasExactKeys(value: object, expected: string[]): boolean {
+  const actual = Object.keys(value).sort()
+  return actual.length === expected.length && actual.every((key, index) => key === [...expected].sort()[index])
+}
+
+function repairIdentity(entry: Pick<ExternalEventRepairEntry, "agent" | "source" | "eventId">): string {
+  return `${entry.agent}/${entry.source}/${entry.eventId}`
+}
+
+function repairedRecord(record: ExternalEventRecord, repairedAt: string): ExternalEventRecord {
+  return {
+    ...record,
+    version: record.version + 1,
+    updatedAt: repairedAt,
+    failureProvenance: { class: "execution_lease_expired", failedAt: repairedAt },
+    recoveryGrant: undefined,
+  }
+}
+
+function recordBytes(record: ExternalEventRecord): string {
+  return `${JSON.stringify(record, null, 2)}\n`
+}
+
+function digestBytes(raw: Buffer | string): string {
+  return createHash("sha256").update(raw).digest("hex")
+}
+
+function parseRepairManifest(manifestPath: string): ExternalEventRepairManifest {
+  const descriptor = fs.openSync(manifestPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+  let raw: Buffer
+  try {
+    const stat = fs.fstatSync(descriptor)
+    if (!stat.isFile() || stat.size > MAX_REPAIR_MANIFEST_BYTES) throw new Error("External event repair manifest must be a bounded regular file")
+    raw = fs.readFileSync(descriptor)
+  } finally { fs.closeSync(descriptor) }
+  let parsed: unknown
+  try { parsed = JSON.parse(raw.toString("utf8")) } catch { throw new Error("External event repair manifest is invalid JSON") }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("External event repair manifest is invalid")
+  const value = parsed as Partial<ExternalEventRepairManifest>
+  if (!hasExactKeys(value, ["schemaVersion", "repairedAt", "reason", "evidence", "requestedBy", "reviewedBy", "entries"])
+    || value.schemaVersion !== 1 || !canonicalIso(value.repairedAt)
+    || typeof value.reason !== "string" || value.reason.length < 1 || Buffer.byteLength(value.reason) > 2_000
+    || typeof value.requestedBy !== "string" || value.requestedBy.length < 1 || Buffer.byteLength(value.requestedBy) > 256
+    || typeof value.reviewedBy !== "string" || value.reviewedBy.length < 1 || Buffer.byteLength(value.reviewedBy) > 256
+    || value.requestedBy === value.reviewedBy
+    || !Array.isArray(value.evidence) || value.evidence.length < 1 || value.evidence.length > 32
+    || value.evidence.some((item) => typeof item !== "string" || item.length < 1 || Buffer.byteLength(item) > 1_000)
+    || !Array.isArray(value.entries) || value.entries.length < 1 || value.entries.length > MAX_REPAIR_ENTRIES) throw new Error("External event repair manifest is invalid or unbounded")
+  const seen = new Set<string>()
+  for (const candidate of value.entries) {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) throw new Error("External event repair manifest entry is invalid")
+    const entry = candidate as ExternalEventRepairEntry
+    const identity = repairIdentity(entry)
+    if (!hasExactKeys(entry, ["agent", "source", "eventId", "preimageSha256", "postimageSha256", "version", "generation", "failureProvenance", "recoveryGrant"])
+      || !hasExactKeys(entry.failureProvenance ?? {}, ["class", "failedAt"])
+      || !hasExactKeys(entry.recoveryGrant ?? {}, ["generation", "consumedAt"])
+      || !entry.agent || !entry.source || !entry.eventId || entry.agent !== entry.agent.trim() || entry.source !== entry.source.trim() || entry.eventId !== entry.eventId.trim()
+      || Buffer.byteLength(entry.agent) > 160 || Buffer.byteLength(entry.source) > 160 || Buffer.byteLength(entry.eventId) > 160
+      || !SHA256_HEX.test(entry.preimageSha256) || !SHA256_HEX.test(entry.postimageSha256)
+      || entry.preimageSha256 === entry.postimageSha256
+      || !Number.isSafeInteger(entry.version) || entry.version < 1 || !Number.isSafeInteger(entry.generation) || entry.generation < 1
+      || entry.failureProvenance?.class !== "provider_lane_unavailable" || !canonicalIso(entry.failureProvenance.failedAt)
+      || entry.recoveryGrant?.generation !== entry.generation || !canonicalIso(entry.recoveryGrant.consumedAt)) throw new Error(`External event repair entry is invalid for ${identity}`)
+    if (seen.has(identity)) throw new Error(`External event repair manifest has duplicate identity ${identity}`)
+    seen.add(identity)
+  }
+  return value as ExternalEventRepairManifest
+}
+
+function assertRepairRecordPath(root: string, entry: ExternalEventRepairEntry): string {
+  const resolvedRoot = path.resolve(root)
+  const recordPath = externalEventRecordPath(resolvedRoot, entry)
+  const relative = path.relative(resolvedRoot, path.resolve(recordPath))
+  /* v8 ignore next -- defense in depth: safePathSegment cannot emit traversal @preserve */
+  if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error(`External event repair path escapes its root for ${repairIdentity(entry)}`)
+  for (let candidate = resolvedRoot; ; candidate = path.dirname(candidate)) {
+    const stat = fs.lstatSync(candidate)
+    if (stat.isSymbolicLink()) throw new Error(`External event repair refuses symlink root for ${repairIdentity(entry)}`)
+    if (candidate === path.dirname(candidate)) break
+  }
+  const expected = [
+    [resolvedRoot, "directory"],
+    [path.join(resolvedRoot, safePathSegment(entry.agent)), "directory"],
+    [path.join(resolvedRoot, safePathSegment(entry.agent), safePathSegment(entry.source)), "directory"],
+    [recordPath, "file"],
+  ] as const
+  for (const [candidate, kind] of expected) {
+    const stat = fs.lstatSync(candidate)
+    if (stat.isSymbolicLink()) throw new Error(`External event repair refuses symlink path for ${repairIdentity(entry)}`)
+    if ((kind === "directory" && !stat.isDirectory()) || (kind === "file" && !stat.isFile())) throw new Error(`External event repair path shape is invalid for ${repairIdentity(entry)}`)
+  }
+  return recordPath
+}
+
+function assertRepairPostimage(record: ExternalEventRecord, entry: ExternalEventRepairEntry, repairedAt: string): void {
+  if (record.agent !== entry.agent || record.source !== entry.source || record.eventId !== entry.eventId
+    || record.version !== entry.version + 1 || record.generation !== entry.generation
+    || record.executionState !== "dead_letter"
+    || record.failureProvenance?.class !== "execution_lease_expired" || record.failureProvenance.failedAt !== repairedAt
+    || record.recoveryGrant !== undefined) throw new Error(`External event repair postimage is invalid for ${repairIdentity(entry)}`)
+}
+
+function emitRepairResult(result: ExternalEventRepairResult): ExternalEventRepairResult {
+  emitNervesEvent({
+    ...(result.failed.length > 0 ? { level: "error" as const } : {}),
+    component: "daemon",
+    event: "daemon.external_event_repair",
+    message: "processed reviewed external event repair manifest",
+    meta: { applied: result.applied.length, alreadyApplied: result.alreadyApplied.length, failed: result.failed.length, pending: result.pending.length },
+  })
+  return result
+}
+
+export function repairExternalEventsFromManifest(manifestPath: string, options: { root: string }): ExternalEventRepairResult {
+  const manifest = parseRepairManifest(manifestPath)
+  const root = options.root
+  const prepared: Array<{ entry: ExternalEventRepairEntry; recordPath: string; state: "pre" | "post" }> = []
+  const result: ExternalEventRepairResult = { applied: [], alreadyApplied: [], failed: [], pending: [] }
+  for (const entry of manifest.entries) {
+    const identity = repairIdentity(entry)
+    try {
+      const recordPath = assertRepairRecordPath(root, entry)
+      const raw = fs.readFileSync(recordPath)
+      const digest = digestBytes(raw)
+      const record = readExternalEventRecord(recordPath)
+      if (digest === entry.postimageSha256) {
+        assertRepairPostimage(record, entry, manifest.repairedAt)
+        prepared.push({ entry, recordPath, state: "post" })
+        result.alreadyApplied.push(identity)
+        continue
+      }
+      if (digest !== entry.preimageSha256) throw new Error(`External event repair preimage conflict for ${identity}`)
+      if (record.agent !== entry.agent || record.source !== entry.source || record.eventId !== entry.eventId
+        || record.version !== entry.version || record.generation !== entry.generation
+        || record.failureProvenance?.class !== entry.failureProvenance.class || record.failureProvenance.failedAt !== entry.failureProvenance.failedAt
+        || record.recoveryGrant?.generation !== entry.recoveryGrant.generation || record.recoveryGrant.consumedAt !== entry.recoveryGrant.consumedAt
+        || record.executionState !== "dead_letter"
+        || digestBytes(recordBytes(repairedRecord(record, manifest.repairedAt))) !== entry.postimageSha256) throw new Error(`External event repair preimage is unauthorized for ${identity}`)
+      prepared.push({ entry, recordPath, state: "pre" })
+    } catch (error) {
+      result.failed.push({ identity, error: error instanceof Error ? error.message : /* v8 ignore next -- defensive: validation and filesystem dependencies throw Error instances @preserve */ String(error) })
+    }
+  }
+  if (result.failed.length > 0) {
+    result.pending.push(...prepared.filter(({ state }) => state === "pre").map(({ entry }) => repairIdentity(entry)))
+    return emitRepairResult(result)
+  }
+  for (let index = 0; index < prepared.length; index += 1) {
+    const item = prepared[index]
+    const identity = repairIdentity(item.entry)
+    if (item.state === "post") continue
+    try {
+      withRecordLock(item.recordPath, () => {
+        assertRepairRecordPath(root, item.entry)
+        const raw = fs.readFileSync(item.recordPath)
+        const digest = digestBytes(raw)
+        if (digest === item.entry.postimageSha256) {
+          assertRepairPostimage(readExternalEventRecord(item.recordPath), item.entry, manifest.repairedAt)
+          result.alreadyApplied.push(identity)
+          return
+        }
+        if (digest !== item.entry.preimageSha256) throw new Error("record advanced after prevalidation")
+        const record = readExternalEventRecord(item.recordPath)
+        atomicWrite(item.recordPath, repairedRecord(record, manifest.repairedAt))
+        result.applied.push(identity)
+      })
+    } catch (error) {
+      result.failed.push({ identity, error: error instanceof Error ? error.message : /* v8 ignore next -- defensive: validation and filesystem dependencies throw Error instances @preserve */ String(error) })
+      result.pending.push(...prepared.slice(index + 1).map(({ entry }) => repairIdentity(entry)))
+      break
+    }
+  }
+  return emitRepairResult(result)
 }
 
 export interface ExternalEventStatus {
@@ -1220,7 +1428,15 @@ export function reconcileExternalEvent(recordPath: string, options: { now?: () =
     if (record.executionState !== "running" || record.claimExpiresAt === null || Date.parse(record.claimExpiresAt) > Date.parse(now)) return record
     const maxAttempts = options.maxAttempts ?? 5
     const baseDelayMs = options.baseDelayMs ?? 1_000
-    return commitMutation(recordPath, retryState(record, now, maxAttempts, baseDelayMs, "execution lease expired", "execution_lease_expired"), now)
+    const retried = retryState(record, now, maxAttempts, baseDelayMs, "execution lease expired", "execution_lease_expired")
+    const consumedProviderRecoveryExpired = retried.executionState === "dead_letter"
+      && record.failureProvenance?.class === "provider_lane_unavailable"
+      && record.recoveryGrant?.generation === record.generation
+    return commitMutation(recordPath, consumedProviderRecoveryExpired ? {
+      ...retried,
+      failureProvenance: { class: "execution_lease_expired", failedAt: now },
+      recoveryGrant: undefined,
+    } : retried, now)
   })
 }
 

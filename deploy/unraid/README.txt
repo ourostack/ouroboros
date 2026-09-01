@@ -1331,6 +1331,21 @@ NODE
       ! docker container inspect ouro-butler-provider-readiness >/dev/null 2>&1 || return 1
       validate_sanctuary_roots "$READINESS_RUNTIME_ROOT" "$READINESS_AGENT_ROOT" || return $?
     }
+    verify_sanctuary_telegram_readiness() {
+      TELEGRAM_READINESS_IMAGE_ID=$1
+      validate_exact_image_id "$TELEGRAM_READINESS_IMAGE_ID" || return $?
+      TELEGRAM_READINESS_RUNTIME_ROOT=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli
+      TELEGRAM_READINESS_AGENT_ROOT=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro
+      ! docker container inspect ouro-butler-telegram-readiness >/dev/null 2>&1 || return 1
+      docker run --rm --pull=never --network host --name ouro-butler-telegram-readiness --user 10001:10001 \
+        --read-only --cap-drop ALL --security-opt no-new-privileges \
+        --mount "type=bind,src=$TELEGRAM_READINESS_RUNTIME_ROOT,dst=/home/ouro/.ouro-cli" \
+        --mount "type=bind,src=$TELEGRAM_READINESS_AGENT_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro,readonly" \
+        --entrypoint /opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh \
+        "$TELEGRAM_READINESS_IMAGE_ID" telegram-readiness >/dev/null || return $?
+      ! docker container inspect ouro-butler-telegram-readiness >/dev/null 2>&1 || return 1
+      validate_sanctuary_roots "$TELEGRAM_READINESS_RUNTIME_ROOT" "$TELEGRAM_READINESS_AGENT_ROOT" || return $?
+    }
     run_sanctuary_docker() {
       /usr/bin/timeout -s KILL 20 /usr/bin/docker "$@"
     }
@@ -1676,11 +1691,12 @@ Update:
     cleanup_event_asset_stage
     trap - EXIT
     if provision_sanctuary_sab_credential "$IMAGE_ID" \
-      && verify_sanctuary_sab_readiness "$IMAGE_ID"; then
+      && verify_sanctuary_sab_readiness "$IMAGE_ID" \
+      && verify_sanctuary_telegram_readiness "$IMAGE_ID"; then
       :
     else
-      SAB_READINESS_STATUS=$?
-      (exit "$SAB_READINESS_STATUS")
+      PRECUTOVER_READINESS_STATUS=$?
+      (exit "$PRECUTOVER_READINESS_STATUS")
     fi
   Guard the atomic autostart disable separately. If it fails, production has not
   been touched and the captured status is propagated:
@@ -1734,7 +1750,7 @@ ouro-butler-rollback
   readiness and autostart have passed, commit first durably renames the record;
   a kill then keeps target production in place and the next run validates its
   exact topology/readiness before finishing commit. Migration failure then enters the same exact container
-  rollback arm before staging starts:
+  rollback arm before target production starts:
     if docker stop ouro-butler \
       && remove_stopped_rollback_if_present "$ROLLBACK_IMAGE_ID" \
       && docker rename ouro-butler ouro-butler-rollback \
@@ -1778,52 +1794,13 @@ ouro-butler-rollback
   both recoveries revalidate, start, bounded-wait, atomically restore production-only
   autostart, and propagate the original failure. If neither exact container can
   be found, the failure propagates with Butler autostart disabled.
-  Put the entire post-rename staging phase in one explicit conditional so
-  `set -eu` cannot bypass rollback at the create, effective-audit, start, or
-  bounded-readiness boundary. Staging uses the exact image ID with no command,
-  environment, port, device, capability, privilege, or extra mount override.
-  A passing staging container is stopped and removed inside the same condition,
-  completing the poller handoff before production creation:
-    if docker create --name ouro-butler-staging --network host --restart unless-stopped --user 10001:10001 \
-      --mount "type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli" \
-      --mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
-      --mount "type=bind,src=/boot/config/custom/ouro-events/spool,dst=/run/ouro-events,readonly" \
-      "$IMAGE_ID" \
-      && audit_effective ouro-butler-staging "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" \
-      && docker start ouro-butler-staging \
-      && assert_only_running_butler ouro-butler-staging \
-      && wait_butler_ready ouro-butler-staging \
-      && docker stop ouro-butler-staging \
-      && docker rm ouro-butler-staging \
-      && assert_only_running_butler -; then
-      :
-    else
-      STAGING_ACTIVATION_STATUS=$?
-      if docker container inspect ouro-butler-staging >/dev/null 2>&1; then
-        docker stop ouro-butler-staging >/dev/null 2>&1 || true
-        PARTIAL_STAGING_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler-staging)
-        test "$PARTIAL_STAGING_IMAGE_ID" = "$IMAGE_ID"
-        docker rm --force ouro-butler-staging >/dev/null 2>&1 || true
-      fi
-      ! docker container inspect ouro-butler-staging >/dev/null 2>&1
-      CURRENT_ROLLBACK_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler-rollback)
-      test "$CURRENT_ROLLBACK_IMAGE_ID" = "$ROLLBACK_IMAGE_ID"
-      migrate_sanctuary_package_managed_bundle "$IMAGE_ID" rollback
-      docker rename ouro-butler-rollback ouro-butler
-      assert_update_source "$ROLLBACK_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"
-      docker start ouro-butler
-      assert_only_running_butler ouro-butler
-      wait_butler_ready ouro-butler
-      enable_butler_autostart
-      migrate_sanctuary_package_managed_bundle "$IMAGE_ID" commit
-      (exit "$STAGING_ACTIVATION_STATUS")
-    fi
-  The failure arm safely handles staging that was never created, remains
-  stopped, is running, or exited: it force-removes any partial staging state,
-  verifies the name is absent, restores and revalidates the old production against
-  its exact pre-recorded image ID, starts and bounded-waits it, atomically
-  restores production-only autostart, and propagates the original failure.
-  At no point may production and staging run together against the same Telegram token.
+  Do not start a target-image daemon between the production rename and final
+  production activation. The exact-image static audit, SAB readiness, and
+  vault-backed Telegram identity check have already passed before autostart or
+  container mutation. Provider and complete daemon readiness are exercised only
+  by the transactional production activation below, whose failure arm restores
+  and revalidates the exact prior production. This prevents a disposable daemon
+  from reconciling or claiming live external-event state before cutover.
   Create and activate production from the same exact image ID and exact authority
   in one explicit conditional so `set -eu` cannot exit before rollback. Only a
   successful create, effective audit, start, stopped rollback assertion, and
@@ -2288,28 +2265,12 @@ Packaged Unit 16 acceptance execution:
   the config from the packaged fixed contract and requires byte-for-byte equality.
   Unit 16d-2 stops at the pre-model quarantine boundary: use a genuinely distinct private Telegram sender, confirm the fixed acknowledgement and owner admission card, and do not approve the contact during this scenario. The production-identical allow-to-one-turn continuation is covered by the Telegram admission integration suite when a second live account is unavailable. Unit 16h is acceptance-only: it exercises the delivery path against isolated state, restores exact health and cron bytes, and does not activate a production daily digest.
   The cursor snapshot is deliberately materialized and executed twice around the
-  live scenario. Telegram bootstrap reads the new bot token from host file
-  descriptor 3; callback injection reads the reviewed saved callback-update JSON
-  from the same descriptor. The launcher explicitly maps host fd 3 to Docker
-  stdin and then to in-container fd 3 only for those two commands. Neither value
-  belongs in argv, shell history, a config file, or an unrelated command's stdin.
-  Define this Bash helper in the root shell. It disables terminal echo while
-  reading the token, opens an anonymous descriptor for the launcher, and unsets
-  the short-lived shell value on either launcher success or failure:
-    run_unit16_telegram_bootstrap() {
-      local UNIT16_BOT_TOKEN UNIT16_BOT_STATUS
-      printf 'Telegram bot token: ' >&2
-      IFS= read -r -s UNIT16_BOT_TOKEN || return $?
-      printf '\n' >&2
-      if "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final telegram-bootstrap telegram-bootstrap.json \
-        3< <(printf '%s\n' "$UNIT16_BOT_TOKEN"); then
-        UNIT16_BOT_STATUS=0
-      else
-        UNIT16_BOT_STATUS=$?
-      fi
-      unset UNIT16_BOT_TOKEN
-      return "$UNIT16_BOT_STATUS"
-    }
+  live scenario. Telegram bootstrap refreshes the canonical agent vault
+  `runtime/config` and keeps the bot token inside the consuming harness process.
+  It never reads the retired container credential file or carries the token in a
+  descriptor, argument, environment variable, shell variable, config, evidence,
+  or output. Callback injection alone maps its reviewed saved callback-update
+  JSON from host fd 3 through Docker stdin to in-container fd 3.
   Stage the reviewed callback JSON at the fixed path below in the root-owned
   tmpfs inbox, then use this single fail-closed helper. It opens the input once,
   validates the opened descriptor and its original path refer to the same
@@ -2378,7 +2339,7 @@ Packaged Unit 16 acceptance execution:
       )
     }
     "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final materialize telegram-bootstrap
-    run_unit16_telegram_bootstrap
+    "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final telegram-bootstrap telegram-bootstrap.json
     "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final materialize cursor-snapshot before
     "$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID" --profile final cursor-snapshot cursor-snapshot.json
     # Perform the live scenario whose cursor movement is being measured.

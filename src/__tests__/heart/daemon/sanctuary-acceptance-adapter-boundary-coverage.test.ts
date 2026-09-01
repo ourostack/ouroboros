@@ -580,10 +580,6 @@ describe("Sanctuary production boundary adapter coverage", () => {
     expect(() => interactive.cleanup("unit-16l-duplicate-callback", digest)).not.toThrow()
 
     const base = { readKeyFiles: () => [], readDescriptor: () => "", execFile: async () => ({ status: 0, stdout: "" }), fetch }
-    await expect(executeSanctuaryAcceptanceAdapter({ operation: "store_telegram_bootstrap", botToken: "x", authorizedUserId: "0", authorizedChatId: "1" }, base as never)).rejects.toThrow("authorized user is invalid")
-    await expect(executeSanctuaryAcceptanceAdapter({ operation: "store_telegram_bootstrap", botToken: "x", authorizedUserId: "1", authorizedChatId: "2" }, {
-      ...base, mergeRuntime: async () => ({ ok: false, reason: "locked" }),
-    } as never)).rejects.toThrow("readback failed")
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "inventory_keys", targetServerId: "sanctuary-unraid" }, {
       ...base, hostRequest: async () => ({ keys: null }),
     } as never)).rejects.toThrow("inventory is invalid")

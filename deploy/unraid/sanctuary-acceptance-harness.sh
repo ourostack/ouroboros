@@ -17,7 +17,7 @@ elif test "$#" -gt 1; then
   exit 2
 fi
 
-if test -e /proc/self/fd/3; then
+if test "$COMMAND" = callback-inject && test -e /proc/self/fd/3; then
   exec node --input-type=module -e "$ENTRY" "$COMMAND" "$CONFIG_PATH" 3<&3
 fi
 exec node --input-type=module -e "$ENTRY" "$COMMAND" "$CONFIG_PATH"

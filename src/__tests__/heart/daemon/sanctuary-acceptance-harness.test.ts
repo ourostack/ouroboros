@@ -40,6 +40,9 @@ function jsonResponse(value: unknown, status = 200): Response {
 
 function dependencies(input: {
   secret?: string
+  refreshRuntime?: AcceptanceHarnessDependencies["refreshRuntime"]
+  mergeRuntime?: AcceptanceHarnessDependencies["mergeRuntime"]
+  telegramCredentials?: AcceptanceHarnessDependencies["telegramCredentials"]
   adapter?: (executable: string, payload: unknown, timeoutMs?: number) => Promise<unknown>
   fetch?: typeof fetch
   realpath?: (filePath: string) => string
@@ -49,6 +52,19 @@ function dependencies(input: {
   const emptyIntegrity = { schemaVersion: "sanctuary-postboot-integrity-v1", telegramOffsetDigest: "1".repeat(64), approvalStateDigest: "2".repeat(64), approvalExecutionCount: 0, fingerprintDigest: "3".repeat(64), sweeps: [], deliveries: [], audits: [] }
   return {
     readSecret: () => input.secret ?? "",
+    refreshRuntime: input.refreshRuntime ?? (async () => ({ ok: true, itemPath: "vault:sanctuary:runtime/config", revision: "vault_0123456789abcdef", updatedAt: "2026-08-20T00:00:00.000Z", config: {} })),
+    mergeRuntime: input.mergeRuntime ?? (async (agentName, patch) => ({
+      ok: true,
+      itemPath: "vault:sanctuary:runtime/config",
+      revision: "vault_0123456789abcdef",
+      updatedAt: "2026-08-20T00:00:00.000Z",
+      config: { telegramBotToken: (input.telegramCredentials?.(agentName) ?? { botToken: input.secret?.includes(":") ? input.secret.trim() : `8541786263:${input.secret ?? "test-token"}` }).botToken, ...patch },
+    })),
+    telegramCredentials: input.telegramCredentials ?? (() => ({
+      botToken: input.secret === "" ? "" : input.secret?.includes(":") ? input.secret.trim() : `8541786263:${input.secret ?? "test-token"}`,
+      authorizedUserId: "111",
+      authorizedChatId: "222",
+    })),
     runAdapter: async (executable, payload, timeoutMs) => {
       const operation = (payload as Record<string, unknown>).operation
       if (operation === "reboot_preflight_snapshot") return { arrayReady: true, parityActive: false, moverActive: false, mutationActive: false, safe: true, digest: "e".repeat(64), processBindingDigest: "f".repeat(64) }
@@ -88,7 +104,6 @@ describe("Sanctuary acceptance harness", () => {
   const telegramBootstrapFields = (dir: string, name = "bootstrap") => ({
     noncePath: path.join(dir, `${name}-nonce.txt`),
     pollerAdapter: fixedAdapter,
-    vaultAdapter: fixedAdapter,
     deadlineMs: 300_000,
     pollTimeoutSeconds: 20,
   })
@@ -768,13 +783,15 @@ describe("Sanctuary acceptance harness", () => {
     }, dependencies({
       secret: "descriptor-secret",
       fetch: async () => { throw new Error("network unavailable") },
-    }))).rejects.toThrow(/network unavailable/u)
+    }))).rejects.toThrow("Telegram getMe failed; actor: agent-runnable; retry Telegram bootstrap")
   })
 
   it("packages an exact operator-only adapter contract and config-file invocation", () => {
     const contract = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary-acceptance-contract.json", "utf8")) as Record<string, any>
     const wrapper = fs.readFileSync("deploy/unraid/sanctuary-acceptance-harness.sh", "utf8")
     const adapterWrapper = fs.readFileSync("deploy/unraid/sanctuary-acceptance-adapter.sh", "utf8")
+    expect(wrapper).toContain('if test "$COMMAND" = callback-inject && test -e /proc/self/fd/3; then')
+    expect(adapterWrapper).toContain('if test "${1:-}" = telegram-readiness; then')
     expect(contract).toMatchObject({
       schemaVersion: 1,
       harnessExecutable: "/opt/ouro/deploy/unraid/sanctuary-acceptance-harness.sh",
@@ -1143,7 +1160,6 @@ describe("Sanctuary acceptance harness", () => {
       adapter: async (executable, payload) => {
         adapterCalls.push({ executable, payload })
         if ((payload as any).operation === "quiesce_telegram_poller") return { activePollers: 0, quiesced: true }
-        if ((payload as any).operation === "store_telegram_bootstrap") return { stored: true }
         throw new Error("unexpected adapter")
       },
       fetch: async (input, init) => {
@@ -1173,10 +1189,7 @@ describe("Sanctuary acceptance harness", () => {
     expect(requests[0]!.url).toBe(`https://api.telegram.org/bot${token}/getMe`)
     expect(requests[1]!.url).toBe(`https://api.telegram.org/bot${token}/getUpdates`)
     expect(JSON.parse(String(requests[1]!.init?.body))).toEqual({ offset: 40, timeout: 20, allowed_updates: ["message"] })
-    expect(adapterCalls).toEqual([
-      { executable: fixedAdapter, payload: { operation: "quiesce_telegram_poller", expectedState: "stopped" } },
-      { executable: fixedAdapter, payload: { operation: "store_telegram_bootstrap", botToken: token, authorizedUserId: "111", authorizedChatId: "222" } },
-    ])
+    expect(JSON.stringify(adapterCalls)).not.toContain(token)
     expect(JSON.parse(fs.readFileSync(offsetPath, "utf8"))).toEqual({ nextUpdateId: 42 })
     expect(fs.statSync(offsetPath).mode & 0o777).toBe(0o600)
     expect(fs.statSync(evidencePath).mode & 0o777).toBe(0o600)
@@ -1187,6 +1200,92 @@ describe("Sanctuary acceptance harness", () => {
     expect(rawEvidence).not.toContain("0123456789abcdef0123456789abcdef")
     expect(fs.readFileSync(path.join(dir, "success-nonce.txt"), "utf8")).toBe("0123456789abcdef0123456789abcdef")
     expect(evidence(evidencePath)).toMatchObject({ operation: "telegram-bootstrap", phase: "complete", offsetDigest: sha(42) })
+  })
+
+  it("loads Telegram bootstrap credentials from the canonical vault cache in the harness process", async () => {
+    const dir = root()
+    const canonicalToken = "8541786263:canonical-secret"
+    const retiredDescriptorToken = "8455164372:retired-secret"
+    const refreshes: string[] = []
+    const requests: string[] = []
+    await executeSanctuaryAcceptanceHarness("telegram-bootstrap", {
+      evidencePath: path.join(dir, "evidence.json"), offsetPath: path.join(dir, "offset.json"),
+      expectedBotId: "8541786263", expectedUsername: "MendelowCloudButlerBot", currentOffset: 0,
+      ...telegramBootstrapFields(dir, "vault-backed"),
+    }, dependencies({
+      secret: retiredDescriptorToken,
+      refreshRuntime: async (agentName) => {
+        refreshes.push(agentName)
+        return { ok: true, itemPath: "vault:sanctuary:runtime/config", revision: "vault_0123456789abcdef", updatedAt: "2026-08-20T00:00:00.000Z", config: {} }
+      },
+      telegramCredentials: () => ({ botToken: canonicalToken, authorizedUserId: "111", authorizedChatId: "222" }),
+      adapter: async (_executable, payload) => (payload as any).operation === "quiesce_telegram_poller"
+        ? { activePollers: 0, quiesced: true }
+        : { stored: true },
+      fetch: async (request) => {
+        requests.push(String(request))
+        if (String(request).endsWith("/getMe")) return jsonResponse({ ok: true, result: { id: 8541786263, username: "MendelowCloudButlerBot" } })
+        return jsonResponse({ ok: true, result: [{
+          update_id: 1,
+          message: { date: 1_800_000_000, text: "0123456789abcdef0123456789abcdef", from: { id: 111 }, chat: { id: 222, type: "private" } },
+        }] })
+      },
+    }))
+    expect(refreshes).toEqual(["sanctuary"])
+    expect(requests.every((request) => request.includes(canonicalToken))).toBe(true)
+    expect(JSON.stringify(requests)).not.toContain(retiredDescriptorToken)
+  })
+
+  it("fails Telegram bootstrap with fixed actor guidance when vault refresh or credential loading fails", async () => {
+    const configFor = (dir: string) => ({
+      evidencePath: path.join(dir, "evidence.json"), offsetPath: path.join(dir, "offset.json"),
+      expectedBotId: "8541786263", expectedUsername: "MendelowCloudButlerBot", currentOffset: 0,
+      ...telegramBootstrapFields(dir, "vault-failure"),
+    })
+    const unavailableSecret = "8541786263:must-never-escape"
+    const unavailableRoot = root()
+    await expect(executeSanctuaryAcceptanceHarness("telegram-bootstrap", configFor(unavailableRoot), dependencies({
+      secret: "descriptor-must-be-ignored",
+      refreshRuntime: async () => ({ ok: false, reason: "unavailable", itemPath: "vault:sanctuary:runtime/config", error: unavailableSecret }),
+    }))).rejects.toThrow("Telegram runtime credentials are unavailable; actor: human-required; unlock or repair vault runtime/config")
+    const refreshThrowRoot = root()
+    await expect(executeSanctuaryAcceptanceHarness("telegram-bootstrap", configFor(refreshThrowRoot), dependencies({
+      refreshRuntime: async () => { throw new Error(unavailableSecret) },
+    }))).rejects.toThrow("Telegram runtime credentials are unavailable; actor: human-required; unlock or repair vault runtime/config")
+    const malformedRoot = root()
+    await expect(executeSanctuaryAcceptanceHarness("telegram-bootstrap", configFor(malformedRoot), dependencies({
+      telegramCredentials: () => { throw new Error(`bad token ${unavailableSecret}`) },
+    }))).rejects.toThrow("Telegram runtime credentials are invalid; actor: human-required; repair vault runtime/config")
+    const malformedTokenRoot = root()
+    await expect(executeSanctuaryAcceptanceHarness("telegram-bootstrap", configFor(malformedTokenRoot), dependencies({
+      telegramCredentials: () => ({ botToken: "malformed-secret", authorizedUserId: "111", authorizedChatId: "222" }),
+    }))).rejects.toThrow("Telegram runtime credentials are invalid; actor: human-required; repair vault runtime/config")
+    expect(fs.existsSync(path.join(unavailableRoot, "evidence.json"))).toBe(false)
+    expect(fs.existsSync(path.join(refreshThrowRoot, "evidence.json"))).toBe(false)
+    expect(fs.existsSync(path.join(malformedRoot, "evidence.json"))).toBe(false)
+    expect(fs.existsSync(path.join(malformedTokenRoot, "evidence.json"))).toBe(false)
+    const getMeFailureRoot = root()
+    await expect(executeSanctuaryAcceptanceHarness("telegram-bootstrap", configFor(getMeFailureRoot), dependencies({
+      secret: unavailableSecret,
+      fetch: async () => { throw new Error(unavailableSecret) },
+    }))).rejects.toThrow("Telegram getMe failed; actor: agent-runnable; retry Telegram bootstrap")
+    const retiredRoot = root()
+    await expect(executeSanctuaryAcceptanceHarness("telegram-bootstrap", configFor(retiredRoot), dependencies({
+      secret: "8541786263:canonical-secret",
+      fetch: async () => jsonResponse({ ok: true, result: { id: 8455164372, username: "DevBotAriBot" } }),
+    }))).rejects.toThrow("Telegram bot identity mismatch; actor: human-required; repair vault runtime/config")
+    const updatesFailureRoot = root()
+    await expect(executeSanctuaryAcceptanceHarness("telegram-bootstrap", configFor(updatesFailureRoot), dependencies({
+      secret: unavailableSecret,
+      adapter: async () => ({ activePollers: 0, quiesced: true }),
+      fetch: async (request) => {
+        if (String(request).endsWith("/getMe")) return jsonResponse({ ok: true, result: { id: 8541786263, username: "MendelowCloudButlerBot" } })
+        throw new Error(unavailableSecret)
+      },
+    }))).rejects.toThrow("Telegram getUpdates failed; actor: agent-runnable; retry Telegram bootstrap")
+    expect(fs.existsSync(path.join(getMeFailureRoot, "evidence.json"))).toBe(false)
+    expect(fs.existsSync(path.join(retiredRoot, "evidence.json"))).toBe(false)
+    expect(fs.readFileSync(path.join(updatesFailureRoot, "evidence.json"), "utf8")).not.toContain(unavailableSecret)
   })
 
   it("long-polls for a delayed nonce and times out without storing coordinates", async () => {
@@ -1219,7 +1318,7 @@ describe("Sanctuary acceptance harness", () => {
       },
     }))
     expect(updatePolls).toBe(2)
-    expect(operations).toEqual(["quiesce_telegram_poller", "store_telegram_bootstrap"])
+    expect(operations).toEqual(["quiesce_telegram_poller"])
 
     const timeoutRoot = root()
     let clock = 1_800_000_000_000
@@ -1273,7 +1372,6 @@ describe("Sanctuary acceptance harness", () => {
         expectedBotId: "8541786263", expectedUsername: "MendelowCloudButlerBot", currentOffset: 0,
         ...telegramBootstrapFields(dir, testCase.label),
       }, deps), testCase.label).rejects.toThrow()
-      expect(mutations).not.toContain("store_telegram_bootstrap")
       expect(fs.existsSync(path.join(dir, "offset.json"))).toBe(false)
     }
 
@@ -2136,12 +2234,11 @@ describe("Sanctuary acceptance harness", () => {
       ...telegramBootstrapFields(dir, name),
     })
     await reject("telegram-bootstrap", { ...telegramConfig("wrong-poller"), pollerAdapter: "/wrong" }, dependencies(), /fixed packaged/u)
-    await reject("telegram-bootstrap", { ...telegramConfig("wrong-vault"), vaultAdapter: "/wrong" }, dependencies(), /fixed packaged/u)
     await reject("telegram-bootstrap", { ...telegramConfig("long-deadline"), deadlineMs: 900_001 }, dependencies(), /15 minutes/u)
     await reject("telegram-bootstrap", { ...telegramConfig("long-poll"), pollTimeoutSeconds: 51 }, dependencies(), /50 seconds/u)
-    await reject("telegram-bootstrap", telegramConfig("empty-token"), dependencies({ secret: "" }), /empty/u)
-    await reject("telegram-bootstrap", telegramConfig("bad-json"), dependencies({ secret: "t", fetch: async () => new Response("nope") }), /invalid JSON/u)
-    await reject("telegram-bootstrap", telegramConfig("api-fail"), dependencies({ secret: "t", fetch: async () => jsonResponse({ ok: false }, 401) }), /request failed/u)
+    await reject("telegram-bootstrap", telegramConfig("empty-token"), dependencies({ secret: "" }), /runtime credentials are invalid/u)
+    await reject("telegram-bootstrap", telegramConfig("bad-json"), dependencies({ secret: "t", fetch: async () => new Response("nope") }), /Telegram getMe failed/u)
+    await reject("telegram-bootstrap", telegramConfig("api-fail"), dependencies({ secret: "t", fetch: async () => jsonResponse({ ok: false }, 401) }), /Telegram getMe failed/u)
     await reject("telegram-bootstrap", telegramConfig("poller-fail"), dependencies({
       secret: "t", fetch: async () => jsonResponse({ ok: true, result: { id: 8541786263, username: "MendelowCloudButlerBot" } }),
       adapter: async () => ({ activePollers: 1, quiesced: false }),
@@ -2178,18 +2275,23 @@ describe("Sanctuary acceptance harness", () => {
     await reject("telegram-bootstrap", telegramConfig("vault-fail"), dependencies({
       secret: "t",
       fetch: async (request) => String(request).endsWith("/getMe") ? jsonResponse({ ok: true, result: { id: 8541786263, username: "MendelowCloudButlerBot" } }) : jsonResponse({ ok: true, result: [{ update_id: 1, message: { date: 1_800_000_000, text: "0123456789abcdef0123456789abcdef", from: { id: 1 }, chat: { id: 2, type: "private" } } }] }),
-      adapter: async (_executable, payload) => (payload as any).operation === "quiesce_telegram_poller"
-        ? { activePollers: 0, quiesced: true }
-        : { stored: false },
-    }), /did not attest/u)
+      adapter: async () => ({ activePollers: 0, quiesced: true }),
+      mergeRuntime: async () => ({ ok: false, reason: "unavailable", itemPath: "vault:sanctuary:runtime/config", error: "unavailable" }),
+    }), /vault readback failed/u)
+    await reject("telegram-bootstrap", telegramConfig("vault-throw"), dependencies({
+      secret: "t",
+      fetch: async (request) => String(request).endsWith("/getMe") ? jsonResponse({ ok: true, result: { id: 8541786263, username: "MendelowCloudButlerBot" } }) : jsonResponse({ ok: true, result: [{ update_id: 1, message: { date: 1_800_000_000, text: "0123456789abcdef0123456789abcdef", from: { id: 1 }, chat: { id: 2, type: "private" } } }] }),
+      adapter: async () => ({ activePollers: 0, quiesced: true }),
+      mergeRuntime: async () => { throw new Error("secret vault failure") },
+    }), /vault update failed/u)
     const offsetDirectory = telegramConfig("offset-cleanup")
     await reject("telegram-bootstrap", offsetDirectory, dependencies({
       secret: "t",
       fetch: async (request) => String(request).endsWith("/getMe") ? jsonResponse({ ok: true, result: { id: 8541786263, username: "MendelowCloudButlerBot" } }) : jsonResponse({ ok: true, result: [{ update_id: 1, message: { date: 1_800_000_000, text: "0123456789abcdef0123456789abcdef", from: { id: 1 }, chat: { id: 2, type: "private" } } }] }),
-      adapter: async (_executable, payload) => {
-        if ((payload as any).operation === "quiesce_telegram_poller") return { activePollers: 0, quiesced: true }
+      adapter: async () => ({ activePollers: 0, quiesced: true }),
+      mergeRuntime: async (_agent, patch) => {
         fs.mkdirSync(offsetDirectory.offsetPath)
-        return { stored: true }
+        return { ok: true, itemPath: "vault:sanctuary:runtime/config", revision: "vault_0123456789abcdef", updatedAt: "2026-08-20T00:00:00.000Z", config: { telegramBotToken: "8541786263:t", ...patch } }
       },
     }))
 
@@ -2524,12 +2626,17 @@ describe("Sanctuary acceptance harness", () => {
     const compiledRoot = path.join(dir, "compiled")
     const harnessPath = path.join(compiledRoot, "heart", "daemon", "sanctuary-acceptance-harness.cjs")
     const nervesPath = path.join(compiledRoot, "nerves", "runtime.js")
+    const telegramPath = path.join(compiledRoot, "senses", "telegram.js")
+    const runtimeCredentialsPath = path.join(compiledRoot, "heart", "runtime-credentials.js")
     fs.mkdirSync(path.dirname(harnessPath), { recursive: true })
     fs.mkdirSync(path.dirname(nervesPath), { recursive: true })
+    fs.mkdirSync(path.dirname(telegramPath), { recursive: true })
     const source = fs.readFileSync(path.join(process.cwd(), "src", "heart", "daemon", "sanctuary-acceptance-harness.ts"), "utf8")
     const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText
     fs.writeFileSync(harnessPath, compiled)
     fs.writeFileSync(nervesPath, "exports.emitNervesEvent = () => {};\n")
+    fs.writeFileSync(telegramPath, "exports.loadTelegramSenseCredentials = () => ({ botToken: '1:x', authorizedUserId: '1', authorizedChatId: '1' }); exports.telegramBotIdFromToken = () => '1';\n")
+    fs.writeFileSync(runtimeCredentialsPath, "exports.refreshRuntimeCredentialConfig = async () => ({ ok: true, config: {} });\n")
     const evidencePath = path.join(dir, "claim.json")
     const mutationPath = path.join(dir, "mutations.log")
     const runnerPath = path.join(dir, "runner.cjs")

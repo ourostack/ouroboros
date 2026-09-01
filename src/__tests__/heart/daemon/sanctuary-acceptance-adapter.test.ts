@@ -769,7 +769,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       "interactive-duplicate-driver", "interactive-restart-driver", "interactive-timeout-stale-driver",
       "key-create", "key-inventory", "key-probe", "key-read-old", "key-revoke", "key-store",
       "reboot-final-commit", "reboot-live-request", "reboot-owner-stop", "reboot-poll", "reboot-request", "revoked-key-auth-rejection", "scenario-capture", "scenario-finalize",
-      "telegram-poller-quiescence", "telegram-vault-store", "unraid-key-rotate", "vault-backed-capability-verify",
+      "telegram-poller-quiescence", "unraid-key-rotate", "vault-backed-capability-verify",
     ])
     expect(Object.values(contract.adapters)).toEqual(expect.arrayContaining([
       expect.objectContaining({ modelReachable: false, timeoutMs: 15_000 }),
@@ -788,21 +788,13 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     expect(JSON.stringify(contract)).not.toMatch(/(?:botToken|authorizedUserId|authorizedChatId|descriptor|rawKey)/u)
   })
 
-  it("proves Telegram poller quiescence and stores bootstrap coordinates without returning them", async () => {
-    const calls: unknown[] = []
+  it("proves Telegram poller quiescence", async () => {
     const deps = unit16Deps({
       readFixedFile: (file) => file.endsWith("telegram-poller-count.json")
         ? '{"activePollers":0,"productionContainerStopped":true}'
         : "",
-      mergeRuntime: async (_agent, patch) => { calls.push(patch); return refreshed(patch) },
     })
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "quiesce_telegram_poller", expectedState: "stopped" }, deps)).resolves.toEqual({ quiesced: true, activePollers: 0 })
-    const stored = await executeSanctuaryAcceptanceAdapter({
-      operation: "store_telegram_bootstrap", botToken: "456:rotated", authorizedUserId: "333", authorizedChatId: "444",
-    }, deps)
-    expect(stored).toEqual({ stored: true })
-    expect(calls).toContainEqual({ telegramBotToken: "456:rotated", telegramAuthorizedUserId: "333", telegramAuthorizedChatId: "444" })
-    expect(JSON.stringify(stored)).not.toMatch(/333|444|456:rotated/u)
   })
 
   it("snapshots fixed cursor state and refuses prior direct callback playback from the durable approval journal", async () => {
@@ -1748,6 +1740,72 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "materialize_config", command: "unraid-key-rotate" }, malformed("{}", '{"keys":[{"id":"same"},{"id":"same"}]}'))).rejects.toThrow(/ambiguous/u)
   })
 
+  it("proves canonical Telegram readiness from refreshed vault state and always stops the redacting client", async () => {
+    const calls: unknown[] = []
+    let stopped = 0
+    const result = await executeSanctuaryAcceptanceAdapter({ operation: "telegram_readiness" }, unit16Deps({
+      refreshRuntime: async () => refreshed({}),
+      telegramCredentials: () => ({ botToken: "8541786263:canonical-secret", authorizedUserId: "111", authorizedChatId: "111" }),
+      createTelegramApi: (options) => {
+        expect(options.token).toBe("8541786263:canonical-secret")
+        return {
+          request: async (method, body, signal) => { calls.push({ method, body, bounded: signal instanceof AbortSignal }); return { id: 8541786263, username: "MendelowCloudButlerBot" } },
+          stop: () => { stopped += 1 },
+        }
+      },
+    }))
+    expect(result).toEqual({ ready: true, identityMatches: true })
+    expect(calls).toEqual([{ method: "getMe", body: {}, bounded: true }])
+    expect(stopped).toBe(1)
+  })
+
+  it("fails Telegram readiness closed with secret-free actor guidance", async () => {
+    const secret = "8541786263:must-never-escape"
+    await expect(executeSanctuaryAcceptanceAdapter({ operation: "telegram_readiness" }, unit16Deps({
+      refreshRuntime: async () => ({ ok: false, reason: "unavailable", itemPath: "vault:sanctuary:runtime/config", error: secret }),
+    }))).rejects.toThrow("Telegram runtime credentials are unavailable; actor: human-required; unlock or repair vault runtime/config")
+    await expect(executeSanctuaryAcceptanceAdapter({ operation: "telegram_readiness" }, unit16Deps({
+      refreshRuntime: async () => { throw new Error(secret) },
+    }))).rejects.toThrow("Telegram runtime credentials are unavailable; actor: human-required; unlock or repair vault runtime/config")
+    await expect(executeSanctuaryAcceptanceAdapter({ operation: "telegram_readiness" }, unit16Deps({
+      refreshRuntime: async () => refreshed({}),
+      telegramCredentials: () => { throw new Error(secret) },
+    }))).rejects.toThrow("Telegram runtime credentials are invalid; actor: human-required; repair vault runtime/config")
+    await expect(executeSanctuaryAcceptanceAdapter({ operation: "telegram_readiness" }, unit16Deps({
+      refreshRuntime: async () => refreshed({}),
+      telegramCredentials: () => ({ botToken: "malformed-secret", authorizedUserId: "111", authorizedChatId: "111" }),
+    }))).rejects.toThrow("Telegram runtime credentials are invalid; actor: human-required; repair vault runtime/config")
+    await expect(executeSanctuaryAcceptanceAdapter({ operation: "telegram_readiness" }, unit16Deps({
+      refreshRuntime: async () => refreshed({}),
+      telegramCredentials: () => ({ botToken: secret, authorizedUserId: "111", authorizedChatId: "111" }),
+      createTelegramApi: () => { throw new Error(secret) },
+    }))).rejects.toThrow("Telegram client initialization failed; actor: agent-runnable; retry Telegram readiness")
+    let stopped = 0
+    await expect(executeSanctuaryAcceptanceAdapter({ operation: "telegram_readiness" }, unit16Deps({
+      refreshRuntime: async () => refreshed({}),
+      telegramCredentials: () => ({ botToken: secret, authorizedUserId: "111", authorizedChatId: "111" }),
+      createTelegramApi: () => ({
+        request: async () => ({ id: 8455164372, username: "DevBotAriBot", description: secret }),
+        stop: () => { stopped += 1 },
+      }),
+    }))).rejects.toThrow("Telegram bot identity mismatch; actor: human-required; repair vault runtime/config")
+    expect(stopped).toBe(1)
+    await expect(executeSanctuaryAcceptanceAdapter({ operation: "telegram_readiness" }, unit16Deps({
+      refreshRuntime: async () => refreshed({}),
+      telegramCredentials: () => ({ botToken: secret, authorizedUserId: "111", authorizedChatId: "111" }),
+      createTelegramApi: () => ({ request: async () => { throw new Error(secret) }, stop: () => { stopped += 1 } }),
+    }))).rejects.toThrow("Telegram getMe failed; actor: agent-runnable; retry Telegram readiness")
+    expect(stopped).toBe(2)
+    await expect(executeSanctuaryAcceptanceAdapter({ operation: "telegram_readiness" }, unit16Deps({
+      refreshRuntime: async () => refreshed({}),
+      telegramCredentials: () => ({ botToken: secret, authorizedUserId: "111", authorizedChatId: "111" }),
+      createTelegramApi: () => ({
+        request: async () => ({ id: 8541786263, username: "MendelowCloudButlerBot" }),
+        stop: () => { throw new Error(secret) },
+      }),
+    }))).rejects.toThrow("Telegram client cleanup failed; actor: agent-runnable; retry Telegram readiness")
+  })
+
   it("refuses invalid Unit 16 adapter inputs and failed bounded dependencies", async () => {
     const reject = (payload: Record<string, unknown>, deps = unit16Deps()) => expect(executeSanctuaryAcceptanceAdapter(payload, deps)).rejects.toThrow()
     await reject({ operation: "quiesce_telegram_poller", expectedState: "running" })
@@ -1755,8 +1813,6 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     await reject({ operation: "quiesce_telegram_poller", expectedState: "stopped" }, unit16Deps({ readFixedFile: () => "{}" }))
     await reject({ operation: "quiesce_telegram_poller", expectedState: "stopped" }, unit16Deps({ readFixedFile: () => '{"activePollers":1,"productionContainerStopped":true}' }))
     await reject({ operation: "quiesce_telegram_poller", expectedState: "stopped" }, unit16Deps({ readFixedFile: () => '{"activePollers":0,"productionContainerStopped":false}' }))
-    await reject({ operation: "store_telegram_bootstrap", botToken: "x", authorizedUserId: "1", authorizedChatId: "2" }, unit16Deps({ mergeRuntime: async () => ({ ok: false, reason: "unavailable", itemPath: "x", error: "x" }) }))
-    await reject({ operation: "store_telegram_bootstrap", botToken: "x", authorizedUserId: "1", authorizedChatId: "2" }, unit16Deps({ mergeRuntime: async () => refreshed({ telegramBotToken: "other" }) }))
     await reject({ operation: "snapshot", schema: "telegram-cursor-v1", allowGenesis: false }, unit16Deps({ readFixedFile: () => '{"nextUpdateId":-1}' }))
     await reject({ operation: "snapshot", schema: "telegram-cursor-v1", allowGenesis: false }, { ...unit16Deps(), readFixedFile: undefined })
     for (const concurrency of [1, 17, 2.5]) await reject({ operation: "inject_callbacks_concurrently", update: { callback_query: {} }, concurrency })

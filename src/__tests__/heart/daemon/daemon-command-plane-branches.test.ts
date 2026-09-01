@@ -1066,6 +1066,25 @@ describe("daemon command plane branches", () => {
     fs.rmSync(bundlesRoot, { recursive: true, force: true })
   })
 
+  it("owns event repair with the reconciliation guard and releases it after synchronous failure", async () => {
+    const socketPath = tmpSocketPath("daemon-event-repair-guard")
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-event-repair-bundles-"))
+    const externalEventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-event-repair-events-"))
+    const { daemon } = make(socketPath, bundlesRoot, { externalEventRoot })
+    const internal = daemon as unknown as { externalEventReconcileRunning: boolean }
+    internal.externalEventReconcileRunning = true
+    await expect(daemon.handleCommand({ kind: "external.event.repair", manifestPath: "/does/not/exist" })).resolves.toMatchObject({ ok: false, error: expect.stringContaining("already active") })
+    expect(internal.externalEventReconcileRunning).toBe(true)
+
+    internal.externalEventReconcileRunning = false
+    await expect(daemon.handleCommand({ kind: "external.event.repair", manifestPath: "/does/not/exist" })).resolves.toMatchObject({
+      ok: false,
+      data: { applied: [], alreadyApplied: [], failed: [{ identity: "<manifest>" }], pending: [] },
+    })
+    expect(internal.externalEventReconcileRunning).toBe(false)
+
+  })
+
   it("reconciles a received external event into exactly one typed private turn on startup", async () => {
     const socketPath = tmpSocketPath("daemon-external-event-reconcile")
     const ledgerPath = path.join(os.tmpdir(), `external-event-reconcile-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)

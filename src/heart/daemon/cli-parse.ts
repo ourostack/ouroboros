@@ -220,6 +220,10 @@ function parseMessageCommand(args: string[]): OuroCliCommand {
 
 function parseEventCommand(args: string[]): OuroCliCommand {
   const sub = args[0]
+  if (sub === "repair") {
+    if (args.length !== 3 || args[1] !== "--manifest" || !args[2]) throw new Error(`Usage\n${usage()}`)
+    return { kind: "external.event.repair", manifestPath: args[2] }
+  }
   if (sub !== "submit") throw new Error(`Usage\n${usage()}`)
 
   let agent: string | undefined
