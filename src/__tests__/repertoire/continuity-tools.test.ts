@@ -404,6 +404,10 @@ describe("continuity tools", () => {
       expect(mockResolveCareIncident).toHaveBeenLastCalledWith("/mock/agent-root", "c-docker", expect.objectContaining({
         display: { currentRisk: "another incident remains", nextCheckAt: "2026-09-01T08:15:00.000Z" },
       }))
+      await findTool("care_manage").handler({
+        action: "resolve_incident", id: "c-books", source: "guard", incidentKey: "books", expectedUpdatedAt: "v3", label: "Books service",
+      })
+      expect(mockResolveCareIncident).toHaveBeenLastCalledWith("/mock/agent-root", "c-books", expect.objectContaining({ display: { label: "Books service" } }))
     })
 
     it("preserves omitted metadata during a routine incident refresh", async () => {

@@ -35,6 +35,7 @@ describe("Sanctuary owner full-visibility activation", () => {
         expect(options.emptyResponseFallback()).toBeUndefined()
         prepared = await options.prepareRunAgentOptions({ runAgentOptions: { toolContext: {} } })
         expect(options.emptyResponseFallback()).toBeUndefined()
+        expect(prepared.requiredToolCalls.validateTerminalAnswer("Docker image utilization needs a fresh authoritative check.")).toBeUndefined()
         const results: Record<string, string> = {
           query_active_work: "this is my current top-level live world-state.\nhealthy",
           query_cares: "[]",

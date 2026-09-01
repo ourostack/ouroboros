@@ -219,6 +219,7 @@ describe("Telegram sense", () => {
     expect(prepared.requiredToolCalls.names).toEqual(["query_active_work", "query_cares", "unraid_get_system", "unraid_list_containers", "unraid_get_storage", "unraid_get_notifications", "sanctuary_get_download_queue"])
     expect(prepared.requiredToolCalls.names.filter((name: string) => name === "unraid_get_notifications")).toHaveLength(1)
     expect(prepared.requiredToolCalls.validateToolCallBeforeDispatch("care_manage", { action: "resolve", id: staleCare.id })).toMatch(/notifications/iu)
+    expect(prepared.requiredToolCalls.validateTerminalAnswer("Docker image utilization needs a fresh check.")).toBeUndefined()
     const notifications = JSON.stringify({ ok: true, data: { truncated: false, unacknowledged: [{
       id: "docker-active", createdAt: "2026-09-01T07:55:00.000Z", severity: "warning",
       title: "Docker image disk utilization high", summary: "Docker image disk is critically high", degraded: false,
