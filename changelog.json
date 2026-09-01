@@ -5,7 +5,8 @@
       "version": "0.1.0-alpha.767",
       "changes": [
         "Make Sanctuary status turns preserve completed live checks and report bounded download-queue unavailability without retries, stale guesses, or empty replies.",
-        "Move SAB queue access into the machine vault with guarded one-shot provisioning, live readiness verification, and no persistent host INI mount."
+        "Move SAB queue access into the machine vault with guarded one-shot provisioning, live readiness verification, and no persistent host INI mount.",
+        "Share the owner-status completion fallback across Telegram admission paths and cover its incomplete and complete states."
       ]
     },
     {
