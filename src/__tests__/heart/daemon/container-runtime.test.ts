@@ -1878,6 +1878,23 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
     const launcherPath = "deploy/unraid/sanctuary-unit16-run.sh"
     expect(fs.existsSync(launcherPath)).toBe(true)
     const launcher = fs.readFileSync(launcherPath, "utf8")
+    const section = (start: string, end: string): string => {
+      const startIndex = launcher.indexOf(start)
+      const endIndex = launcher.indexOf(end, startIndex)
+      expect(startIndex, `missing launcher section start: ${start}`).toBeGreaterThanOrEqual(0)
+      expect(endIndex, `missing launcher section end: ${end}`).toBeGreaterThan(startIndex)
+      return launcher.slice(startIndex, endIndex)
+    }
+    const runtimeWritable = '--mount "type=bind,src=$RUNTIME_ROOT,dst=/home/ouro/.ouro-cli"'
+    const runtimeReadonly = '--mount "type=bind,src=$RUNTIME_ROOT,dst=/home/ouro/.ouro-cli,readonly"'
+    const materializeInventory = section('if test -n "$EXTRA_MOUNT"; then', 'elif test -n "$SNAPSHOT_PHASE"; then')
+    const materializeSnapshot = section('elif test -n "$SNAPSHOT_PHASE"; then', "  else\n    /usr/bin/timeout -s KILL 30")
+    const materializeDefault = section("  else\n    /usr/bin/timeout -s KILL 30", "  fi\n  /usr/local/bin/node -e '")
+    const telegramBootstrap = section('if test "$COMMAND" = telegram-bootstrap; then', 'elif test "$COMMAND" = callback-inject; then')
+    const callbackInject = section('elif test "$COMMAND" = callback-inject; then', 'elif test "$COMMAND" = evidence-snapshot; then')
+    const evidenceSnapshot = section('elif test "$COMMAND" = evidence-snapshot; then', 'elif test "$BROKER" = yes; then')
+    const brokerCommands = section('elif test "$BROKER" = yes; then', "  else\n    /usr/bin/timeout -s KILL \"$TIME_LIMIT\"")
+    const defaultCommands = section("  else\n    /usr/bin/timeout -s KILL \"$TIME_LIMIT\"", "  fi\n}\n\nrun_harness")
     const contract = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary-acceptance-contract.json", "utf8")) as {
       commands: Record<string, unknown>
     }
@@ -1892,6 +1909,20 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
     expect(launcher).toContain("type=bind,src=$EVIDENCE_ROOT,dst=/evidence")
     expect(launcher).toContain("type=bind,src=$RUNTIME_ROOT,dst=/home/ouro/.ouro-cli,readonly")
     expect(launcher).toContain("type=bind,src=$BUNDLE_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro,readonly")
+    for (const materialization of [materializeInventory, materializeSnapshot, materializeDefault]) {
+      expect(materialization).toContain(runtimeReadonly)
+      expect(materialization).not.toContain(runtimeWritable)
+    }
+    expect(launcher).toContain('telegram-bootstrap) TIME_LIMIT=900; NETWORK=host; INPUT=yes; BUNDLE_MODE=readonly; BROKER=no')
+    expect(launcher).toContain('if test "$BUNDLE_MODE" = rw; then BUNDLE_SUFFIX=; else BUNDLE_SUFFIX=,readonly; fi')
+    expect(telegramBootstrap).toContain("--user 10001:10001 --read-only --cap-drop ALL --security-opt no-new-privileges")
+    expect(telegramBootstrap).toContain(runtimeWritable)
+    expect(telegramBootstrap).not.toContain(runtimeReadonly)
+    expect(telegramBootstrap).toContain('--mount "type=bind,src=$BUNDLE_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro$BUNDLE_SUFFIX"')
+    for (const nonBootstrap of [callbackInject, evidenceSnapshot, brokerCommands, defaultCommands]) {
+      expect(nonBootstrap).toContain(runtimeReadonly)
+      expect(nonBootstrap).not.toContain(runtimeWritable)
+    }
     expect(launcher).toContain("/opt/ouro/deploy/unraid/sanctuary-acceptance-harness.sh")
     expect(launcher).toContain('"$COMMAND" --config /run/ouro-acceptance/config.json')
     expect(launcher).toContain('3<&3')
