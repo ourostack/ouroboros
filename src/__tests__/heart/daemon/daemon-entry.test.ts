@@ -84,6 +84,16 @@ const { refreshProviderCredentialPoolMock } = vi.hoisted(() => ({
   })),
 }))
 
+const { checkAgentConfigMock, checkAgentConfigWithProviderHealthMock } = vi.hoisted(() => ({
+  checkAgentConfigMock: vi.fn(() => ({ ok: true })),
+  checkAgentConfigWithProviderHealthMock: vi.fn(async () => ({ ok: true })),
+}))
+
+vi.mock("../../../heart/daemon/agent-config-check", async () => {
+  const actual = await vi.importActual<typeof import("../../../heart/daemon/agent-config-check")>("../../../heart/daemon/agent-config-check")
+  return { ...actual, checkAgentConfig: checkAgentConfigMock, checkAgentConfigWithProviderHealth: checkAgentConfigWithProviderHealthMock }
+})
+
 vi.mock("../../../heart/provider-credentials", async () => {
   const actual = await vi.importActual<typeof import("../../../heart/provider-credentials")>("../../../heart/provider-credentials")
   return {
@@ -248,6 +258,10 @@ describe("daemon entrypoint", () => {
         },
       },
     })
+    checkAgentConfigWithProviderHealthMock.mockReset()
+    checkAgentConfigWithProviderHealthMock.mockResolvedValue({ ok: true })
+    checkAgentConfigMock.mockReset()
+    checkAgentConfigMock.mockReturnValue({ ok: true })
     habitSchedulerListJobsMock.mockReturnValue([])
     habitSchedulerGetDegradedHabitsMock.mockReturnValue([])
     awaitSchedulerGetDegradedAwaitsMock.mockReturnValue([])
@@ -267,6 +281,7 @@ describe("daemon entrypoint", () => {
     readPrivateRuntimeConfigMock.mockReset()
     readPrivateRuntimeConfigMock.mockReturnValue({ autoStart: false, source: "default" })
     refreshProviderCredentialPoolMock.mockClear()
+    checkAgentConfigWithProviderHealthMock.mockClear()
     habitSchedulerStartMock.mockReset()
     habitSchedulerStopMock.mockReset()
     habitSchedulerOptionsMock.mockReset()
@@ -315,10 +330,8 @@ describe("daemon entrypoint", () => {
     const daemonCtor = vi.fn()
     const processManagerCtor = vi.fn()
     const handleCommand = vi.fn(async () => ({ ok: true, data: { event: { shouldWake: true } } }))
-    const checkAgentConfig = vi.fn(() => ({ ok: true }))
-    const checkAgentConfigWithProviderHealth = vi.fn(async () => {
-      throw new Error("passive daemon startup must not run live provider health checks")
-    })
+    const checkAgentConfig = checkAgentConfigMock
+    const checkAgentConfigWithProviderHealth = checkAgentConfigWithProviderHealthMock
 
     vi.spyOn(process, "exit").mockImplementation(((code?: number) => code as never) as any)
     vi.spyOn(process, "on").mockImplementation(((_event: string, _cb: () => void) => process) as any)
@@ -354,10 +367,6 @@ describe("daemon entrypoint", () => {
         verdict: "ready",
         summary: "deterministic recovery is ready",
       })),
-    }))
-    vi.doMock("../../../heart/daemon/agent-config-check", () => ({
-      checkAgentConfig,
-      checkAgentConfigWithProviderHealth,
     }))
     vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent }))
     vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
@@ -839,7 +848,7 @@ describe("daemon entrypoint", () => {
 
     await expect(processManagerOptions.configCheck("slugger")).resolves.toEqual({ ok: true })
     expect(checkAgentConfig).toHaveBeenCalledWith("slugger", expect.any(String))
-    expect(checkAgentConfigWithProviderHealth).not.toHaveBeenCalled()
+    expect(checkAgentConfigWithProviderHealth).toHaveBeenCalledWith("slugger", expect.any(String))
     const supervisorOptions = supercronicMocks.options.mock.calls[0]?.[0] as { onFatal: (error: Error) => void }
     supervisorOptions.onFatal(new Error("restart budget exhausted in test"))
     expect(emitNervesEvent).toHaveBeenCalledWith({
@@ -887,12 +896,6 @@ describe("daemon entrypoint", () => {
       agent: "sanctuary", habitName: "sanctuary-health", trigger: "cron", occurrenceId: "occurrence-2", runnerId: "runner-2", schedulerOrigin,
     })).rejects.toThrow("supervisor provenance is unavailable")
     sanctuaryAcceptanceMocks.marker = null
-    await vi.waitFor(() => {
-      expect(refreshProviderCredentialPoolMock).toHaveBeenCalledWith("slugger", {
-        preserveCachedOnFailure: true,
-        providers: ["minimax"],
-      })
-    })
     expect(processManagerOptions.agents[0]?.getRuntimeCredentialBootstrap()).toMatchObject({
       agentName: "slugger",
       runtimeConfig: { mailroom: { mailboxAddress: "slugger@ouro.bot" } },
@@ -910,20 +913,16 @@ describe("daemon entrypoint", () => {
     expect(processManagerOptions.agents[0]?.getRuntimeCredentialBootstrap()).toBeNull()
   })
 
-  it("opens the daemon before provider credential warm-up resolves", async () => {
+  it("completes provider credential warm-up and fresh live readiness before opening the daemon", async () => {
     vi.resetModules()
     listEnabledBundleAgentsMock.mockReturnValue(["slugger"])
     writeAgentConfig("slugger")
-    let resolveProviderRefresh!: (value: {
-      ok: true
-      poolPath: string
-      pool: { schemaVersion: 1; updatedAt: string; providers: {} }
-    }) => void
-    refreshProviderCredentialPoolMock.mockImplementation(() => new Promise((resolve) => {
-      resolveProviderRefresh = resolve
-    }))
+    let resolveProviderReadiness!: (value: { ok: true }) => void
 
     const start = vi.fn(async () => undefined)
+    const checkAgentConfigWithProviderHealth = checkAgentConfigWithProviderHealthMock.mockImplementation(() => new Promise<{ ok: true }>((resolve) => {
+      resolveProviderReadiness = resolve
+    }))
     const refreshContextLossSentinel = vi.fn(async () => ({
       verdict: "ready",
       summary: "deterministic recovery is ready",
@@ -961,28 +960,22 @@ describe("daemon entrypoint", () => {
 
     await import("../../../heart/daemon/daemon-entry")
 
-    await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(1))
-    await vi.waitFor(() => {
-      expect(refreshProviderCredentialPoolMock).toHaveBeenCalledWith("slugger", {
-        preserveCachedOnFailure: true,
-        providers: ["minimax"],
-      })
-    })
+    await vi.waitFor(() => expect(checkAgentConfigWithProviderHealth).toHaveBeenCalledWith("slugger", expect.any(String)))
+    expect(start).not.toHaveBeenCalled()
     expect(refreshContextLossSentinel).not.toHaveBeenCalled()
 
-    resolveProviderRefresh({
-      ok: true,
-      poolPath: "vault:slugger:providers/*",
-      pool: { schemaVersion: 1, updatedAt: "2026-04-13T00:00:00.000Z", providers: {} },
-    })
+    resolveProviderReadiness({ ok: true })
+    await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(1))
+    expect(checkAgentConfigWithProviderHealth.mock.invocationCallOrder[0]).toBeLessThan(start.mock.invocationCallOrder[0]!)
     await vi.waitFor(() => {
       expect(refreshContextLossSentinel).toHaveBeenCalledWith("slugger", expect.any(String), expect.objectContaining({ trigger: "daemon_startup" }))
     })
   })
 
-  it("skips provider credential warm-up when agent config is unreadable", async () => {
+  it("fails closed before daemon startup when provider configuration is unreadable", async () => {
     vi.resetModules()
     listEnabledBundleAgentsMock.mockReturnValue(["slugger"])
+    checkAgentConfigWithProviderHealthMock.mockResolvedValue({ ok: false } as any)
     const emitNervesEvent = vi.fn()
 
     vi.spyOn(process, "exit").mockImplementation(((code?: number) => code as never) as any)
@@ -1022,17 +1015,18 @@ describe("daemon entrypoint", () => {
 
     await vi.waitFor(() => {
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
-        event: "daemon.provider_preload_skipped",
+        event: "daemon.provider_readiness_unavailable",
+        meta: { agent: "slugger" },
       }))
     })
     expect(refreshProviderCredentialPoolMock).not.toHaveBeenCalled()
   })
 
-  it("logs provider credential warm-up failures after daemon startup", async () => {
+  it("redacts thrown provider preparation failures and never opens the daemon", async () => {
     vi.resetModules()
     listEnabledBundleAgentsMock.mockReturnValue(["slugger"])
     writeAgentConfig("slugger")
-    refreshProviderCredentialPoolMock.mockRejectedValue(new Error("vault timeout"))
+    checkAgentConfigWithProviderHealthMock.mockRejectedValue(new Error("raw vault token timeout"))
     const emitNervesEvent = vi.fn()
 
     vi.spyOn(process, "exit").mockImplementation(((code?: number) => code as never) as any)
@@ -1072,22 +1066,18 @@ describe("daemon entrypoint", () => {
 
     await vi.waitFor(() => {
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
-        event: "daemon.provider_preload_error",
-        meta: { error: "vault timeout" },
+        event: "daemon.provider_readiness_unavailable",
+        meta: { agent: "slugger" },
       }))
     })
+    expect(JSON.stringify(emitNervesEvent.mock.calls)).not.toContain("raw vault token")
   })
 
-  it("logs unavailable provider credential warm-up results after daemon startup", async () => {
+  it("fails closed on a structured unavailable provider readiness result", async () => {
     vi.resetModules()
     listEnabledBundleAgentsMock.mockReturnValue(["slugger"])
     writeAgentConfig("slugger")
-    refreshProviderCredentialPoolMock.mockResolvedValue({
-      ok: false,
-      reason: "unavailable",
-      poolPath: "vault:slugger:providers/*",
-      error: "vault timeout",
-    })
+    checkAgentConfigWithProviderHealthMock.mockResolvedValue({ ok: false } as any)
     const emitNervesEvent = vi.fn()
 
     vi.spyOn(process, "exit").mockImplementation(((code?: number) => code as never) as any)
@@ -1128,38 +1118,17 @@ describe("daemon entrypoint", () => {
     await vi.waitFor(() => {
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
         level: "warn",
-        event: "daemon.provider_preload_unavailable",
-        meta: {
-          agent: "slugger",
-          reason: "unavailable",
-          error: "vault timeout",
-        },
+        event: "daemon.provider_readiness_unavailable",
+        meta: { agent: "slugger" },
       }))
     })
   })
 
-  it("does not replace the provider cache when warm-up returns incomplete selected providers", async () => {
+  it("does not replace the provider cache when selected-provider readiness is incomplete", async () => {
     vi.resetModules()
     listEnabledBundleAgentsMock.mockReturnValue(["slugger"])
     writeAgentConfig("slugger", { humanProvider: "minimax", agentProvider: "openai-codex" })
-    refreshProviderCredentialPoolMock.mockResolvedValue({
-      ok: true,
-      poolPath: "vault:slugger:providers/*",
-      pool: {
-        schemaVersion: 1,
-        updatedAt: "2026-04-13T00:00:00.000Z",
-        providers: {
-          minimax: {
-            provider: "minimax",
-            revision: "vault_partial",
-            updatedAt: "2026-04-13T00:00:00.000Z",
-            credentials: { apiKey: "partial-key" },
-            config: {},
-            provenance: { source: "manual", updatedAt: "2026-04-13T00:00:00.000Z" },
-          },
-        },
-      },
-    })
+    checkAgentConfigWithProviderHealthMock.mockResolvedValue({ ok: false } as any)
     const emitNervesEvent = vi.fn()
 
     vi.spyOn(process, "exit").mockImplementation(((code?: number) => code as never) as any)
@@ -1218,12 +1187,8 @@ describe("daemon entrypoint", () => {
     await vi.waitFor(() => {
       expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
         level: "warn",
-        event: "daemon.provider_preload_unavailable",
-        meta: {
-          agent: "slugger",
-          reason: "missing",
-          error: "missing selected providers: openai-codex",
-        },
+        event: "daemon.provider_readiness_unavailable",
+        meta: { agent: "slugger" },
       }))
     })
     expect(providerCredentials.readProviderCredentialPool("slugger")).toBe(cached)
@@ -1840,8 +1805,7 @@ describe("daemon entrypoint", () => {
     const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js"])
 
     await import("../../../heart/daemon/daemon-entry")
-    await Promise.resolve()
-    await Promise.resolve()
+    await vi.waitFor(() => expect(refreshContextLossSentinel).toHaveBeenCalled())
 
     const bundlesRoot = path.join(testHomeRoot, "AgentBundles")
     expect(refreshContextLossSentinel).toHaveBeenCalledWith(

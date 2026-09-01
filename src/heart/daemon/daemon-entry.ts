@@ -32,7 +32,7 @@ import { LaunchdCronManager } from "./os-cron"
 import { readContainerRuntimePolicy } from "./container-runtime"
 import { SupercronicSupervisor } from "./supercronic-supervisor"
 import { writeDaemonTombstone } from "./daemon-tombstone"
-import { checkAgentConfig } from "./agent-config-check"
+import { checkAgentConfig, checkAgentConfigWithProviderHealth } from "./agent-config-check"
 import { flushPulse, type PulsePrivateWakeRequest } from "./pulse"
 import { sendDaemonCommand } from "./socket-client"
 import { buildAwaitPrivateWakeCommand, type AwaitPrivateWakeTriggerSource } from "./await-private-wake"
@@ -42,17 +42,13 @@ import { getPackageVersion } from "../../mind/bundle-manifest"
 import { createMcpStatusCanaryProbe } from "./mcp-canary"
 import { refreshContextLossSentinel, type ContextLossSentinelReceipt, type ContextLossSentinelTrigger } from "../context-loss-sentinel"
 import {
-  cacheProviderCredentialRecords,
   readProviderCredentialPool,
-  refreshProviderCredentialPool,
   type ProviderCredentialRecord,
 } from "../provider-credentials"
 import { readMachineRuntimeCredentialConfig, readRuntimeCredentialConfig } from "../runtime-credentials"
 import { loadOrCreateMachineIdentity } from "../machine-identity"
 import { loadContainerCredentialBootstrap } from "./container-credential-bootstrap"
 import { startDaemonAfterContainerCredentialBootstrap } from "./daemon-bootstrap-startup"
-import { readAgentConfigForAgent } from "../auth/auth-flow"
-import type { AgentProvider } from "../identity"
 import type { HabitRunTrigger } from "../../arc/flight-recorder"
 import { runSanctuaryHealthHabit } from "../../senses/sanctuary-health-runner"
 import { readSanctuaryAcceptanceMarker } from "./sanctuary-acceptance-marker"
@@ -612,81 +608,32 @@ function writeStopCommandHealthState(): void {
   }
 }
 
-function providerPreloadTargets(agent: string): AgentProvider[] {
-  try {
-    const { config } = readAgentConfigForAgent(agent, getAgentBundlesRoot())
-    return [...new Set([config.humanFacing.provider, config.agentFacing.provider])]
-  } catch (error) {
-    emitNervesEvent({
-      level: "warn",
-      component: "daemon",
-      event: "daemon.provider_preload_skipped",
-      message: "skipping provider credential preload because agent config could not be read",
-      meta: {
-        agent,
-        error: error instanceof Error ? error.message : /* v8 ignore next -- defensive non-Error config-read failures @preserve */ String(error),
-      },
-    })
-    return []
-  }
-}
-
-function providerPreloadMissingTargets(
-  result: Extract<Awaited<ReturnType<typeof refreshProviderCredentialPool>>, { ok: true }>,
-  providers: AgentProvider[],
-): AgentProvider[] {
-  return providers.filter((provider) => !result.pool.providers[provider])
-}
-
-async function preloadProviderCredentialPools(): Promise<void> {
-  await Promise.all(managedAgents.map(async (agent) => {
-    const providers = providerPreloadTargets(agent)
-    if (providers.length === 0) return
-    const result = await refreshProviderCredentialPool(agent, { preserveCachedOnFailure: true, providers })
-    if (result.ok) {
-      const missingProviders = providerPreloadMissingTargets(result, providers)
-      if (missingProviders.length > 0) {
-        emitNervesEvent({
-          level: "warn",
-          component: "daemon",
-          event: "daemon.provider_preload_unavailable",
-          message: "provider credential preload returned an incomplete selected provider cache",
-          meta: {
-            agent,
-            reason: "missing",
-            error: `missing selected providers: ${missingProviders.join(", ")}`,
-          },
-        })
-        return
-      }
-      const records = Object.values(result.pool.providers).filter((record): record is ProviderCredentialRecord => !!record)
-      cacheProviderCredentialRecords(agent, records, new Date(result.pool.updatedAt))
-      return
+async function prepareProviderRuntime(): Promise<void> {
+  const bundlesRoot = getAgentBundlesRoot()
+  const readiness = await Promise.all(managedAgents.map(async (agent) => {
+    try {
+      const result = await checkAgentConfigWithProviderHealth(agent, bundlesRoot)
+      if (result.ok) return true
+      emitNervesEvent({
+        level: "warn",
+        component: "daemon",
+        event: "daemon.provider_readiness_unavailable",
+        message: "fresh provider readiness was unavailable before daemon startup",
+        meta: { agent },
+      })
+      return false
+    } catch {
+      emitNervesEvent({
+        level: "warn",
+        component: "daemon",
+        event: "daemon.provider_readiness_unavailable",
+        message: "fresh provider readiness check failed before daemon startup",
+        meta: { agent },
+      })
+      return false
     }
-    emitNervesEvent({
-      level: "warn",
-      component: "daemon",
-      event: "daemon.provider_preload_unavailable",
-      message: "provider credential preload could not refresh selected provider cache",
-      meta: {
-        agent,
-        reason: result.reason,
-        error: result.error,
-      },
-    })
   }))
-}
-
-function startProviderCredentialPoolPreload(): Promise<void> {
-  return preloadProviderCredentialPools().catch((error) => {
-    emitNervesEvent({
-      level: "error",
-      component: "daemon",
-      event: "daemon.provider_preload_error",
-      message: "provider credential preload failed after daemon startup",
-      meta: { error: error instanceof Error ? error.message : /* v8 ignore next -- defensive non-Error provider preload failures @preserve */ String(error) },
-    })
-  })
+  if (readiness.some((ready) => !ready)) throw new Error("provider runtime preparation failed")
 }
 
 function scheduleStartupSentinelAfterProviderPreload(agent: string, preload: Promise<void>): void {
@@ -723,13 +670,14 @@ function scheduleStartupSentinelAfterProviderPreload(agent: string, preload: Pro
 /* v8 ignore start -- habit wiring: lambdas delegate to processManager/fs; tested via HabitScheduler unit tests @preserve */
 void startDaemonAfterContainerCredentialBootstrap({
   loadBootstrap: () => loadContainerCredentialBootstrap(managedAgents),
+  prepareDaemon: prepareProviderRuntime,
   startDaemon: () => daemon.start(),
   markStartupFailure: () => { _tombstoneWritten = true },
   exit: (code) => process.exit(code),
 }).then(async (started) => {
   if (!started) return
   supercronicSupervisor?.start()
-  const providerPreload = startProviderCredentialPoolPreload()
+  const providerPreload = Promise.resolve()
   const bundlesRoot = getAgentBundlesRoot()
   const ouroPath = supercronicSupervisor
     ? "/usr/local/bin/node /opt/ouro/dist/heart/daemon/ouro-entry.js"

@@ -34,8 +34,9 @@ describe("nerves non-blocking sink behavior", () => {
     }))
 
     const { createNdjsonFileSink } = await import("../../nerves")
-    const sink = createNdjsonFileSink("/tmp/non-blocking-test.ndjson")
+    const sink = createNdjsonFileSink("/tmp/non-blocking-test.ndjson", { rotationCheckIntervalBytes: 1 })
 
     expect(() => sink(entry)).not.toThrow()
+    await expect(sink.barrier()).rejects.toThrow("disk full")
   })
 })
