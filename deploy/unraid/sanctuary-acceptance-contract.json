@@ -102,7 +102,7 @@
       "fixed": {
         "allowedRoot": "/evidence",
         "evidencePath": "/evidence/cursor-snapshot.json",
-        "adapters": [{ "schema": "telegram-cursor-v1", "executable": "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh" }]
+        "adapters": [{ "schema": "telegram-cursor-v1", "executable": "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh", "allowGenesis": false }]
       }
     },
     "cursor-delta": {

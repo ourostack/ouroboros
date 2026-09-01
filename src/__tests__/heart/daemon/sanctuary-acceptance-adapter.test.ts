@@ -42,6 +42,7 @@ const READ_PERMISSIONS = ["ARRAY", "DASHBOARD", "DISK", "DOCKER", "INFO", "LOGS"
   .map((resource) => ({ resource, actions: ["READ_ANY"] }))
 const AUDIT_PATH = "/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance/telegram-audit-chain.ndjson"
 const AUDIT_HEAD_PATH = "/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance/telegram-audit-chain.head.json"
+const IDENTITY_KEY_PATH = "/home/ouro/AgentBundles/sanctuary.ouro/state/senses/telegram/identity.key"
 
 function chainedAuditFiles(agentRoot: string, raw: string, identityKey = "k".repeat(43)): Record<string, string> {
   const ledgerRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-audit-fixture-"))
@@ -805,21 +806,150 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     const active: number[] = []
     let inFlight = 0
     let peak = 0
+    const files = chainedAuditFiles("/home/ouro/AgentBundles/sanctuary.ouro", "")
     const deps = unit16Deps({
-      readFixedFile: (file) => file.endsWith("offset.json") ? '{"nextUpdateId":42}\n' : '{"event":"tool"}\n',
+      readFixedFile: (file) => file.endsWith("offset.json") ? '{"nextUpdateId":42}\n' : files[file] ?? (() => { throw new Error(`unexpected ${file}`) })(),
       callbackProbe: async (_update, replay) => {
         inFlight += 1; peak = Math.max(peak, inFlight); active.push(replay ? 2 : 1)
         await Promise.resolve(); inFlight -= 1
         return replay ? { settled: true, claimed: false, mutated: false } : { settled: true, claimed: active.length === 1, mutated: active.length === 1 }
       },
     })
-    await expect(executeSanctuaryAcceptanceAdapter({ operation: "snapshot", schema: "telegram-cursor-v1" }, deps)).resolves.toEqual({
+    await expect(executeSanctuaryAcceptanceAdapter({ operation: "snapshot", schema: "telegram-cursor-v1", allowGenesis: false }, deps)).resolves.toEqual({
       offsetDigest: expect.stringMatching(/^[0-9a-f]{64}$/u), auditCursorDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
     })
     const update = { update_id: 9, callback_query: { id: "q", from: { id: 111 }, data: "opaque", message: { message_id: 7, chat: { id: 222 } } } }
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "inject_callbacks_concurrently", update, concurrency: 3 }, deps)).resolves.toMatchObject({ results: { length: 3 } })
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "inject_callback_replay", update }, deps)).resolves.toEqual({ settled: true, claimed: false, mutated: false })
     expect(peak).toBeGreaterThan(1)
+  })
+
+  it("permits an explicit before-only genesis cursor and rejects absent state otherwise", async () => {
+    const identityKey = "k".repeat(43)
+    const missing = (file: string): string => {
+      if (file.endsWith("offset.json")) return '{"nextUpdateId":42}\n'
+      if (file === IDENTITY_KEY_PATH) return `${identityKey}\n`
+      throw Object.assign(new Error(`missing ${file}`), { code: "ENOENT" })
+    }
+    await expect(executeSanctuaryAcceptanceAdapter(
+      { operation: "snapshot", schema: "telegram-cursor-v1", allowGenesis: true },
+      unit16Deps({ readFixedFile: missing }),
+    )).resolves.toEqual({
+      offsetDigest: createHash("sha256").update(JSON.stringify({ nextUpdateId: 42 })).digest("hex"),
+      auditCursorDigest: createHash("sha256").update("ouroboros.telegram.acceptance.cursor.v1\0genesis").digest("hex"),
+    })
+    await expect(executeSanctuaryAcceptanceAdapter(
+      { operation: "snapshot", schema: "telegram-cursor-v1", allowGenesis: false },
+      unit16Deps({ readFixedFile: missing }),
+    )).rejects.toThrow(/genesis is not authorized/u)
+    await expect(executeSanctuaryAcceptanceAdapter(
+      { operation: "snapshot", schema: "telegram-cursor-v1" },
+      unit16Deps({ readFixedFile: missing }),
+    )).rejects.toThrow(/request/u)
+    await expect(executeSanctuaryAcceptanceAdapter(
+      { operation: "snapshot", schema: "wrong", allowGenesis: true },
+      unit16Deps({ readFixedFile: missing }),
+    )).rejects.toThrow(/request/u)
+    await expect(executeSanctuaryAcceptanceAdapter(
+      { operation: "snapshot", schema: "telegram-cursor-v1", allowGenesis: "yes" },
+      unit16Deps({ readFixedFile: missing }),
+    )).rejects.toThrow(/request/u)
+
+    for (const nextUpdateId of [-1, 1.5]) {
+      await expect(executeSanctuaryAcceptanceAdapter(
+        { operation: "snapshot", schema: "telegram-cursor-v1", allowGenesis: true },
+        unit16Deps({ readFixedFile: (file) => {
+          if (file.endsWith("offset.json")) return JSON.stringify({ nextUpdateId })
+          if (file === IDENTITY_KEY_PATH) return `${identityKey}\n`
+          throw Object.assign(new Error(`missing ${file}`), { code: "ENOENT" })
+        } }),
+      )).rejects.toThrow(/offset is invalid/u)
+    }
+
+    await expect(executeSanctuaryAcceptanceAdapter(
+      { operation: "snapshot", schema: "telegram-cursor-v1", allowGenesis: true },
+      unit16Deps({
+        readFixedFile: (file) => {
+          if (file.endsWith("offset.json")) return '{"nextUpdateId":42}\n'
+          if (file === IDENTITY_KEY_PATH) return `${identityKey}\n`
+          if (file === AUDIT_PATH) return "ledger\n"
+          throw Object.assign(new Error(`missing ${file}`), { code: "ENOENT" })
+        },
+      }),
+    )).rejects.toThrow(/consistently/u)
+
+    await expect(executeSanctuaryAcceptanceAdapter(
+      { operation: "snapshot", schema: "telegram-cursor-v1", allowGenesis: true },
+      unit16Deps({
+        readFixedFile: (file) => {
+          if (file.endsWith("offset.json")) return '{"nextUpdateId":42}\n'
+          throw new Error("storage unavailable")
+        },
+      }),
+    )).rejects.toThrow(/storage unavailable/u)
+  })
+
+  it("authenticates a stable audit pair and fails closed on corruption, missing identity, and TOCTOU", async () => {
+    const agentRoot = "/home/ouro/AgentBundles/sanctuary.ouro"
+    const valid = chainedAuditFiles(agentRoot, "")
+    const nonempty = chainedAuditFiles(agentRoot, `${JSON.stringify({ ts: "2026-08-31T00:00:00.000Z", event: "changed", meta: {} })}\n`)
+    const read = (files: Record<string, string>) => (file: string): string => file.endsWith("offset.json") ? '{"nextUpdateId":42}\n' : files[file] ?? (() => { throw Object.assign(new Error(`missing ${file}`), { code: "ENOENT" }) })()
+    await expect(executeSanctuaryAcceptanceAdapter(
+      { operation: "snapshot", schema: "telegram-cursor-v1", allowGenesis: false },
+      unit16Deps({ readFixedFile: read(valid) }),
+    )).resolves.toEqual({ offsetDigest: expect.stringMatching(/^[0-9a-f]{64}$/u), auditCursorDigest: expect.stringMatching(/^[0-9a-f]{64}$/u) })
+
+    for (const files of [
+      { ...valid, [AUDIT_HEAD_PATH]: `${valid[AUDIT_HEAD_PATH]?.slice(0, -3)}xx` },
+      { ...nonempty, [AUDIT_PATH]: nonempty[AUDIT_PATH]!.replace('"event":"changed"', '"event":"tampered"') },
+      { ...nonempty, [AUDIT_PATH]: nonempty[AUDIT_PATH]!.slice(0, -5) },
+      { ...nonempty, [AUDIT_HEAD_PATH]: valid[AUDIT_HEAD_PATH]! },
+      { ...valid, [IDENTITY_KEY_PATH]: "short\n" },
+    ]) {
+      await expect(executeSanctuaryAcceptanceAdapter(
+        { operation: "snapshot", schema: "telegram-cursor-v1", allowGenesis: false },
+        unit16Deps({ readFixedFile: read(files) }),
+      )).rejects.toThrow(/(?:JSON|MAC|identity key|append-only ledger|invalid)/u)
+    }
+
+    let headReads = 0
+    let ledgerReads = 0
+    await expect(executeSanctuaryAcceptanceAdapter(
+      { operation: "snapshot", schema: "telegram-cursor-v1", allowGenesis: false },
+      unit16Deps({ readFixedFile: (file) => {
+        if (file.endsWith("offset.json")) return '{"nextUpdateId":42}\n'
+        if (file === AUDIT_HEAD_PATH) return (++headReads <= 2 ? valid : nonempty)[AUDIT_HEAD_PATH]!
+        if (file === AUDIT_PATH) { ledgerReads += 1; return nonempty[AUDIT_PATH]! }
+        return nonempty[file]!
+      } }),
+    )).resolves.toEqual({ offsetDigest: expect.stringMatching(/^[0-9a-f]{64}$/u), auditCursorDigest: expect.stringMatching(/^[0-9a-f]{64}$/u) })
+    expect(headReads).toBe(4)
+    expect(ledgerReads).toBe(2)
+
+    headReads = 0
+    await expect(executeSanctuaryAcceptanceAdapter(
+      { operation: "snapshot", schema: "telegram-cursor-v1", allowGenesis: false },
+      unit16Deps({ readFixedFile: (file) => {
+        if (file.endsWith("offset.json")) return '{"nextUpdateId":42}\n'
+        if (file === AUDIT_HEAD_PATH) { headReads += 1; return valid[AUDIT_HEAD_PATH]! }
+        if (file === AUDIT_PATH) return nonempty[AUDIT_PATH]!
+        return valid[file]!
+      } }),
+    )).rejects.toThrow(/consistently/u)
+    expect(headReads).toBe(6)
+
+    let auditReads = 0
+    await expect(executeSanctuaryAcceptanceAdapter(
+      { operation: "snapshot", schema: "telegram-cursor-v1", allowGenesis: true },
+      unit16Deps({ readFixedFile: (file) => {
+        if (file.endsWith("offset.json")) return '{"nextUpdateId":42}\n'
+        if (file === IDENTITY_KEY_PATH) return valid[IDENTITY_KEY_PATH]!
+        auditReads += 1
+        if (auditReads === 1) return valid[AUDIT_HEAD_PATH]!
+        throw Object.assign(new Error(`missing ${file}`), { code: "ENOENT" })
+      } }),
+    )).rejects.toThrow(/consistently/u)
+    expect(auditReads).toBe(9)
   })
 
   it("binds scenario capture to the exact label gate and source contract", async () => {
@@ -1498,12 +1628,11 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
 
   it("captures fixed evidence provenance and bounded reboot request/poll state", async () => {
     const files: Record<string, string> = {
+      ...chainedAuditFiles("/home/ouro/AgentBundles/sanctuary.ouro", ""),
       "/run/ouro-acceptance/image-digest": "a".repeat(64),
       "/run/ouro-acceptance/container-digest": "b".repeat(64),
       "/run/ouro-acceptance/process-binding-digest": "f".repeat(64),
       "/home/ouro/AgentBundles/sanctuary.ouro/state/senses/telegram/offset.json": '{"nextUpdateId":4}\n',
-      [AUDIT_PATH]: "event\n",
-      [AUDIT_HEAD_PATH]: "head\n",
       "/run/ouro-acceptance/postboot-health.json": JSON.stringify({ healthy: true }),
       "/run/ouro-acceptance/boot-id": "boot-after\n",
     }
@@ -1569,7 +1698,8 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       expectedBotId: "8541786263", expectedUsername: "MendelowCloudButlerBot", currentOffset: 91,
       pollerAdapter: "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
     })
-    await expect(executeSanctuaryAcceptanceAdapter({ operation: "materialize_config", command: "cursor-snapshot", phase: "before" }, deps)).resolves.toMatchObject({ evidencePath: "/evidence/cursor-before.json" })
+    await expect(executeSanctuaryAcceptanceAdapter({ operation: "materialize_config", command: "cursor-snapshot", phase: "before" }, deps)).resolves.toMatchObject({ evidencePath: "/evidence/cursor-before.json", adapters: [expect.objectContaining({ allowGenesis: true })] })
+    await expect(executeSanctuaryAcceptanceAdapter({ operation: "materialize_config", command: "cursor-snapshot", phase: "after" }, deps)).resolves.toMatchObject({ evidencePath: "/evidence/cursor-after.json", adapters: [expect.objectContaining({ allowGenesis: false })] })
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "materialize_config", command: "unraid-key-rotate" }, deps)).resolves.toMatchObject({
       oldKeys: [{ id: "old-ro", secretAdapter: "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh" }, { id: "old-rw", secretAdapter: "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh" }],
     })
@@ -1593,8 +1723,8 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     await reject({ operation: "quiesce_telegram_poller", expectedState: "stopped" }, unit16Deps({ readFixedFile: () => '{"activePollers":0,"productionContainerStopped":false}' }))
     await reject({ operation: "store_telegram_bootstrap", botToken: "x", authorizedUserId: "1", authorizedChatId: "2" }, unit16Deps({ mergeRuntime: async () => ({ ok: false, reason: "unavailable", itemPath: "x", error: "x" }) }))
     await reject({ operation: "store_telegram_bootstrap", botToken: "x", authorizedUserId: "1", authorizedChatId: "2" }, unit16Deps({ mergeRuntime: async () => refreshed({ telegramBotToken: "other" }) }))
-    await reject({ operation: "snapshot", schema: "telegram-cursor-v1" }, unit16Deps({ readFixedFile: () => '{"nextUpdateId":-1}' }))
-    await reject({ operation: "snapshot", schema: "telegram-cursor-v1" }, { ...unit16Deps(), readFixedFile: undefined })
+    await reject({ operation: "snapshot", schema: "telegram-cursor-v1", allowGenesis: false }, unit16Deps({ readFixedFile: () => '{"nextUpdateId":-1}' }))
+    await reject({ operation: "snapshot", schema: "telegram-cursor-v1", allowGenesis: false }, { ...unit16Deps(), readFixedFile: undefined })
     for (const concurrency of [1, 17, 2.5]) await reject({ operation: "inject_callbacks_concurrently", update: { callback_query: {} }, concurrency })
     await reject({ operation: "inject_callbacks_concurrently", update: {}, concurrency: 2 })
     await reject({ operation: "inject_callback_replay", update: { callback_query: {} } }, { ...unit16Deps(), callbackProbe: undefined })
