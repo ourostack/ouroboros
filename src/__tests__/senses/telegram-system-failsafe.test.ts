@@ -82,14 +82,13 @@ afterEach(() => {
 
 describe("Telegram system failsafe", () => {
   it("independently rereads SAB and verifies only a currently paused queue without retaining the credential", async () => {
-    const iniPath = path.join(root("sab-verifier"), "sabnzbd.ini")
-    fs.writeFileSync(iniPath, "api_key = test-only-secret\n")
+    const loadApiKey = vi.fn(async () => "test-only-secret")
     const fetchImpl = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ queue: { paused: false } })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ queue: { paused: true } })))
       .mockResolvedValueOnce(new Response(JSON.stringify({ queue: { paused: "yes" } })))
       .mockRejectedValueOnce(new Error("connect failed with credential"))
-    const verify = createSabQueueProtectiveStateVerifier({ iniPath, fetch: fetchImpl, now: () => "2026-08-29T19:58:01.000Z" })
+    const verify = createSabQueueProtectiveStateVerifier({ loadApiKey, fetch: fetchImpl, now: () => "2026-08-29T19:58:01.000Z" })
     const action = { ...record().privilegedProtectiveAction!, verification: { ...record().privilegedProtectiveAction!.verification, digest: createHash("sha256").update("sabnzbd.queue.paused=true").digest("hex") } }
 
     const unpaused = await verify(action)
@@ -100,15 +99,13 @@ describe("Telegram system failsafe", () => {
     expect(JSON.stringify([unpaused, paused])).not.toContain("test-only-secret")
     await expect(verify(action)).rejects.toThrow("response is malformed")
     await expect(verify(action)).rejects.toThrow("request failed")
+    expect(loadApiKey).toHaveBeenCalledTimes(4)
   })
 
   it("rejects missing SAB credentials and non-object queue responses", async () => {
-    const iniPath = path.join(root("sab-verifier-invalid"), "sabnzbd.ini")
-    fs.writeFileSync(iniPath, "host = localhost\n")
     const action = record().privilegedProtectiveAction!
-    await expect(createSabQueueProtectiveStateVerifier({ iniPath, fetch: vi.fn() })(action)).rejects.toThrow("credential is unavailable")
-    fs.writeFileSync(iniPath, "api_key = test-only-secret\n")
-    const verify = createSabQueueProtectiveStateVerifier({ iniPath, fetch: vi.fn(async () => new Response("null")) })
+    await expect(createSabQueueProtectiveStateVerifier({ loadApiKey: async () => "", fetch: vi.fn() })(action)).rejects.toThrow("credential is unavailable")
+    const verify = createSabQueueProtectiveStateVerifier({ loadApiKey: async () => "test-only-secret", fetch: vi.fn(async () => new Response("null")) })
     await expect(verify(action)).rejects.toThrow("response is malformed")
   })
 

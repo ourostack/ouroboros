@@ -122,20 +122,16 @@ describe("Telegram sense coverage contracts", () => {
 
   it("uses verifier defaults and rejects an unsuccessful SAB response", async () => {
     expect(createSabQueueProtectiveStateVerifier()).toBeTypeOf("function")
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "sab-verifier-http-"))
-    const iniPath = path.join(root, "sab.ini")
-    fs.writeFileSync(iniPath, "api_key = secret\n")
     const verify = createSabQueueProtectiveStateVerifier({
-      iniPath,
+      loadApiKey: async () => "secret",
       fetch: vi.fn(async () => ({ ok: false })) as never,
     })
     await expect(verify({ action: "sabnzbd.pause", actionReceipt: "r", transitionId: "t", critical: true, createdAt: "2026-01-01T00:00:00.000Z", expiresAt: "2099-01-01T00:00:00.000Z", verification: { verified: true, digest: "d", observedAt: "2026-01-01T00:00:00.000Z" } })).rejects.toThrow("request failed")
     const verifyWithClockDefault = createSabQueueProtectiveStateVerifier({
-      iniPath,
+      loadApiKey: async () => "secret",
       fetch: vi.fn(async () => ({ ok: true, json: async () => ({ queue: { paused: false } }) })) as never,
     })
     await expect(verifyWithClockDefault({ action: "sabnzbd.pause", actionReceipt: "r", transitionId: "t", critical: true, createdAt: "2026-01-01T00:00:00.000Z", expiresAt: "2099-01-01T00:00:00.000Z", verification: { verified: true, digest: "d", observedAt: "2026-01-01T00:00:00.000Z" } })).resolves.toMatchObject({ verified: false, reference: expect.stringContaining("sabnzbd.queue.paused:") })
-    fs.rmSync(root, { recursive: true, force: true })
   })
 
   it("creates one durable mode-0600 identity key in a repaired mode-0700 directory and rejects corrupt or permissive keys", () => {

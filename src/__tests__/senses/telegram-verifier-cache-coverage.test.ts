@@ -12,7 +12,7 @@ vi.mock("../../senses/sanctuary-sab", () => ({
 import { createSabQueueProtectiveStateVerifier } from "../../senses/telegram"
 
 describe("Telegram SAB verifier cache coverage", () => {
-  it("uses the canonical config path once and reuses the typed SAB client", async () => {
+  it("uses the shared vault loader and reuses the typed SAB client", async () => {
     sab.create.mockReturnValue({ readQueue: sab.readQueue })
     const verify = createSabQueueProtectiveStateVerifier()
     const action = {
@@ -29,7 +29,7 @@ describe("Telegram SAB verifier cache coverage", () => {
     await expect(verify(action)).resolves.toMatchObject({ verified: false })
 
     expect(sab.create).toHaveBeenCalledOnce()
-    expect(sab.create).toHaveBeenCalledWith(expect.objectContaining({ iniPath: "/run/sanctuary/sabnzbd.ini" }))
+    expect(sab.create).toHaveBeenCalledWith(expect.objectContaining({ loadApiKey: expect.any(Function) }))
     expect(sab.readQueue).toHaveBeenCalledTimes(2)
   })
 })

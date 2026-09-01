@@ -1,10 +1,18 @@
 import { createHash } from "node:crypto"
-import { readFileSync } from "node:fs"
 
 import { emitNervesEvent } from "../nerves/runtime"
 
-const DEFAULT_INI_PATH = "/run/sanctuary/sabnzbd.ini"
 const BASE_URL = "http://127.0.0.1:8090/api"
+export const SANCTUARY_SAB_CREDENTIAL_UNAVAILABLE = "SAB queue verification credential is unavailable"
+export type SanctuarySabReadUnavailableCode = "credential_unavailable" | "request_unavailable" | "malformed_response"
+
+export function sanctuarySabReadUnavailableCode(error: unknown): SanctuarySabReadUnavailableCode | undefined {
+  if (!(error instanceof Error)) return undefined
+  if (error.message === SANCTUARY_SAB_CREDENTIAL_UNAVAILABLE) return "credential_unavailable"
+  if (error.message === "SAB queue request failed") return "request_unavailable"
+  if (error.message === "SAB queue response is malformed") return "malformed_response"
+  return undefined
+}
 
 export interface SanctuarySabQueueSnapshot {
   paused: boolean
@@ -14,29 +22,21 @@ export interface SanctuarySabQueueSnapshot {
   stateDigest: string
 }
 
-function apiKey(iniPath: string): string {
-  let contents = ""
-  try { contents = readFileSync(iniPath, "utf8") } catch { throw new Error("SAB queue verification credential is unavailable") }
-  const value = contents.match(/^\s*api_key\s*=\s*(\S+)\s*$/mu)?.[1]
-  if (!value) throw new Error("SAB queue verification credential is unavailable")
-  return value
-}
-
 function queuedJobs(value: unknown): number {
   const parsed = typeof value === "string" && /^\d{1,7}$/u.test(value) ? Number(value) : value
   if (!Number.isSafeInteger(parsed) || Number(parsed) < 0 || Number(parsed) > 1_000_000) throw new Error("SAB queue response is malformed")
   return Number(parsed)
 }
 
-export function createSanctuarySabClient(options: { iniPath?: string; fetch?: typeof fetch; now?: () => string } = {}) {
-  const iniPath = options.iniPath ?? DEFAULT_INI_PATH
+export function createSanctuarySabClient(options: { loadApiKey: () => Promise<string>; fetch?: typeof fetch; now?: () => string }) {
   const fetchImpl = options.fetch ?? fetch
-  let cachedApiKey: string | null = null
   const request = async (mode: "queue" | "resume"): Promise<Response> => {
-    cachedApiKey ??= apiKey(iniPath)
+    let apiKey: string
+    try { apiKey = (await options.loadApiKey()).trim() } catch { throw new Error(SANCTUARY_SAB_CREDENTIAL_UNAVAILABLE) }
+    if (!apiKey) throw new Error(SANCTUARY_SAB_CREDENTIAL_UNAVAILABLE)
     let response: Response
     try {
-      response = await fetchImpl(`${BASE_URL}?mode=${mode}${mode === "queue" ? "&output=json" : ""}&apikey=${encodeURIComponent(cachedApiKey)}`, { signal: AbortSignal.timeout(15_000) })
+      response = await fetchImpl(`${BASE_URL}?mode=${mode}${mode === "queue" ? "&output=json" : ""}&apikey=${encodeURIComponent(apiKey)}`, { signal: AbortSignal.timeout(15_000) })
     } catch {
       throw new Error("SAB queue request failed")
     }

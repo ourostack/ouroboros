@@ -18,13 +18,14 @@ describe("Sanctuary owner full-visibility activation", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-full-visibility-")); roots.push(root)
     let onMessage!: (message: TelegramInboundMessage) => Promise<void>
     let prepared: any
+    const apiRequest = vi.fn(async () => ({ message_id: 71 }))
     const app = createTelegramSenseApp({
       agentName: "sanctuary",
       credentials: { botToken: "test-token", authorizedUserId: "42", authorizedChatId: "42" },
       identityKey: "k".repeat(43),
       _agentRoot: root,
       migrateIdentity: async () => undefined,
-      api: { request: vi.fn(async () => ({ message_id: 71 })), stop: vi.fn() },
+      api: { request: apiRequest, stop: vi.fn() },
       offsetStore: { load: () => 0, save: vi.fn() },
       createLongPoll: (options: TelegramLongPollOptions) => {
         onMessage = options.onMessage
@@ -32,7 +33,17 @@ describe("Sanctuary owner full-visibility activation", () => {
       },
       runTurn: vi.fn(async (options: any) => {
         prepared = await options.prepareRunAgentOptions({ runAgentOptions: { toolContext: {} } })
-        return { response: "", ponderDeferred: false, deliveries: [], deliveryFailures: [] }
+        expect(options.emptyResponseFallback()).toBeUndefined()
+        const results: Record<string, string> = {
+          query_active_work: "this is my current top-level live world-state.\nhealthy",
+          query_cares: "[]",
+          unraid_get_system: JSON.stringify({ ok: true }),
+          unraid_list_containers: JSON.stringify({ ok: true }),
+          unraid_get_storage: JSON.stringify({ ok: true }),
+          sanctuary_get_download_queue: JSON.stringify({ ok: false, error: { code: "request_unavailable" }, observedAt: "2026-08-30T04:00:00.000Z" }),
+        }
+        for (const name of requiredNames) expect(prepared.requiredToolCalls.validateRequiredToolResult(name, results[name])).toBe(true)
+        return { response: options.emptyResponseFallback(), ponderDeferred: false, deliveries: [], deliveryFailures: [] }
       }),
       resolveRelationshipAuthorization: vi.fn(async (input) => ({
         subject: { friendId: input.friendId, trustLevel: "family", admissionState: "active", initiativePolicy: "proactive" },
@@ -53,6 +64,8 @@ describe("Sanctuary owner full-visibility activation", () => {
       validateRequiredToolResult: expect.any(Function),
       validateTerminalAnswer: expect.any(Function),
     })
+    expect(apiRequest.mock.calls.filter(([method]) => method === "sendMessage")).toHaveLength(1)
+    expect(apiRequest).toHaveBeenCalledWith("sendMessage", expect.objectContaining({ text: expect.stringMatching(/won't guess or reuse old alerts/iu) }), undefined)
     await app.stop()
   })
 })

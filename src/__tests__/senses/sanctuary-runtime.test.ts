@@ -32,6 +32,7 @@ const runtimeMocks = vi.hoisted(() => {
     emitNervesEvent: vi.fn(),
     probeSanctuaryEndpoint: vi.fn(),
     sab: { readQueue: vi.fn(), resumeQueue: vi.fn() },
+    createSanctuarySabClient: vi.fn(),
     mediaOptimization: { read: vi.fn() },
     createSanctuaryMediaOptimizationClient: vi.fn(),
     forceUnexpectedGrounding: false,
@@ -57,7 +58,13 @@ vi.mock("../../senses/sanctuary-health", () => ({
   SANCTUARY_PUBLIC_ENDPOINTS: ["https://media.mendelow.cloud/", "https://books.mendelow.cloud/"],
   probeSanctuaryEndpoint: runtimeMocks.probeSanctuaryEndpoint,
 }))
-vi.mock("../../senses/sanctuary-sab", () => ({ createSanctuarySabClient: () => runtimeMocks.sab }))
+vi.mock("../../senses/sanctuary-sab", () => ({
+  sanctuarySabReadUnavailableCode: (error: unknown) => {
+    const message = error instanceof Error ? error.message : ""
+    return message.includes("credential") ? "credential_unavailable" : message.includes("request") ? "request_unavailable" : message.includes("malformed") ? "malformed_response" : undefined
+  },
+  createSanctuarySabClient: runtimeMocks.createSanctuarySabClient,
+}))
 vi.mock("../../senses/sanctuary-media-optimization", () => ({
   createSanctuaryMediaOptimizationClient: runtimeMocks.createSanctuaryMediaOptimizationClient,
 }))
@@ -89,6 +96,7 @@ function configured(overrides: Record<string, unknown> = {}) {
     unraidGraphqlUrl: " https://sanctuary.invalid/graphql ",
     unraidReadApiKey: " synthetic-read-key ",
     unraidWriteApiKey: " synthetic-write-key ",
+    sabnzbdApiKey: " synthetic-sab-key ",
     jellyfin: { userId: " bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb ", accessToken: " aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ", folderIds: " library-a, library-b " },
     ...overrides,
   })
@@ -105,6 +113,7 @@ describe("Sanctuary runtime tool context", () => {
     runtimeMocks.probeSanctuaryEndpoint.mockReset()
     runtimeMocks.sab.readQueue.mockReset()
     runtimeMocks.sab.resumeQueue.mockReset()
+    runtimeMocks.createSanctuarySabClient.mockReset().mockReturnValue(runtimeMocks.sab)
     runtimeMocks.mediaOptimization.read.mockReset()
     runtimeMocks.createSanctuaryMediaOptimizationClient.mockReset().mockReturnValue(runtimeMocks.mediaOptimization)
     runtimeMocks.readMachineRuntimeCredentialConfig.mockReturnValue(configured())
@@ -232,6 +241,10 @@ describe("Sanctuary runtime tool context", () => {
     runtimeMocks.sab.readQueue.mockResolvedValueOnce({ paused: true, queuedJobs: 2 })
     runtimeMocks.sab.resumeQueue.mockResolvedValueOnce({ changed: true, verified: true, receiptDigest: "a".repeat(64) })
     const context = createSanctuaryToolContext("slugger")
+    const loadApiKey = runtimeMocks.createSanctuarySabClient.mock.calls[0]?.[0].loadApiKey as () => Promise<string>
+    await expect(loadApiKey()).resolves.toBe("synthetic-sab-key")
+    runtimeMocks.readMachineRuntimeCredentialConfig.mockReturnValue(configured({ sabnzbdApiKey: " rotated-sab-key " }))
+    await expect(loadApiKey()).resolves.toBe("rotated-sab-key")
     await expect(context.sanctuary!.getDownloadQueue()).resolves.toEqual({ paused: true, queuedJobs: 2 })
     await expect(context.sanctuary!.resumeDownloadQueue()).resolves.toMatchObject({ ok: true, data: { changed: true, verified: true } })
     expect(runtimeMocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({ event: "senses.sanctuary_download_resume_receipt", meta: expect.objectContaining({ changed: true, verified: true, receiptDigest: "a".repeat(64) }) }))
@@ -241,6 +254,25 @@ describe("Sanctuary runtime tool context", () => {
     runtimeMocks.sab.resumeQueue.mockRejectedValueOnce(new TypeError("typed failure"))
     await expect(context.sanctuary!.resumeDownloadQueue()).rejects.toThrow("typed failure")
     expect(runtimeMocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({ event: "senses.sanctuary_download_resume_error", meta: { category: "TypeError" } }))
+  })
+
+  it("returns current typed unavailability only for the read-only queue tool while resume stays fail-closed", async () => {
+    runtimeMocks.sab.readQueue.mockRejectedValueOnce(new Error("SAB queue verification credential is unavailable"))
+    runtimeMocks.sab.resumeQueue.mockRejectedValueOnce(new Error("SAB queue verification credential is unavailable"))
+    const context = createSanctuaryToolContext("slugger")
+
+    await expect(context.sanctuary!.getDownloadQueue()).resolves.toEqual({
+      ok: false,
+      error: { code: "credential_unavailable" },
+      observedAt: expect.stringMatching(/^\d{4}-/u),
+    })
+    await expect(context.sanctuary!.resumeDownloadQueue()).rejects.toThrow("credential is unavailable")
+    for (const [message, code] of [["SAB queue request failed", "request_unavailable"], ["SAB queue response is malformed", "malformed_response"]]) {
+      runtimeMocks.sab.readQueue.mockRejectedValueOnce(new Error(message))
+      await expect(context.sanctuary!.getDownloadQueue()).resolves.toMatchObject({ ok: false, error: { code } })
+    }
+    runtimeMocks.sab.readQueue.mockRejectedValueOnce(new Error("unexpected programming failure"))
+    await expect(context.sanctuary!.getDownloadQueue()).rejects.toThrow("unexpected programming failure")
   })
 
   it("routes routine-action reservation, transition, and recovery observations through the canonical policy seams", async () => {

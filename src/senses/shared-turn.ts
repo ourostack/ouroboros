@@ -187,6 +187,8 @@ export interface RunSenseTurnOptions {
   toolContext?: Partial<ToolContext>
   /** Final sense-owned authorization/context refresh at the shared pipeline's pre-provider boundary. */
   prepareRunAgentOptions?: InboundTurnInput["prepareRunAgentOptions"]
+  /** Sense-owned fallback enabled only after its required-read contract records complete current evidence. */
+  emptyResponseFallback?: () => string | undefined
   /** Truth-bearing presentation context for a transport-specific turn trigger. */
   orientationFrame?: OrientationFrame
   /** Builds a durable approval coordinator after the exact leased session path/revision are known. */
@@ -513,12 +515,13 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
     /* v8 ignore next -- persistPromise set inside v8-ignored postTurn callback; tested via pipeline integration @preserve */
     if (persistPromise) await persistPromise
     const postTurnSession = loadSession(sessPath)
+    const emptyFallback = options.emptyResponseFallback?.()
     if (postTurnSession?.messages) {
       const recovered = extractOutwardSenseDeliveryText(postTurnSession.messages)
-      finalResponse = recovered ?? "(agent responded but response was empty)"
+      finalResponse = recovered ?? emptyFallback ?? "(agent responded but response was empty)"
       if (recovered) responseCausalSessionEventId = newOutwardCoordinates(persistedEvents, existingEventIds).at(-1)?.eventId
     } else {
-      finalResponse = "(agent responded but response was empty)"
+      finalResponse = emptyFallback ?? "(agent responded but response was empty)"
     }
   } else {
     finalResponse = committedResponseText

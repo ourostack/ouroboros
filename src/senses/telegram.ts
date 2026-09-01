@@ -27,6 +27,7 @@ import { readRuntimeCredentialConfig } from "../heart/runtime-credentials"
 import { emitNervesEvent, emitNervesEventDurable } from "../nerves/runtime"
 import { registerGlobalLogSink } from "../nerves"
 import { createSanctuaryInteractiveControl } from "./sanctuary-interactive-control"
+import { loadSanctuarySabApiKey } from "./sanctuary-runtime"
 import { createSanctuarySabClient } from "./sanctuary-sab"
 import { presentSanctuaryDownloadCreditReply } from "./sanctuary-download-credit-presentation"
 import { getSenseSessionPath, runSenseTurn, type RunSenseTurnOptions, type RunSenseTurnResult } from "./shared-turn"
@@ -94,16 +95,14 @@ import {
   type TelegramEffectTarget,
 } from "./telegram-effect-adapter"
 
-const SANCTUARY_SAB_CONFIG_PATH = "/run/sanctuary/sabnzbd.ini"
-
 export function createSabQueueProtectiveStateVerifier(options: {
-  iniPath?: string
+  loadApiKey?: () => Promise<string>
   fetch?: typeof fetch
   now?: () => string
 } = {}): (action: PrivilegedProtectiveAction) => Promise<{ verified: boolean; reference: string }> {
   let client: ReturnType<typeof createSanctuarySabClient> | null = null
   return async (action) => {
-    client ??= createSanctuarySabClient({ iniPath: options.iniPath ?? SANCTUARY_SAB_CONFIG_PATH, fetch: options.fetch, now: options.now })
+    client ??= createSanctuarySabClient({ loadApiKey: options.loadApiKey ?? (() => loadSanctuarySabApiKey("sanctuary")), fetch: options.fetch, now: options.now })
     const snapshot = await client.readQueue()
     const paused = snapshot.paused
     const digest = createHash("sha256").update(`sabnzbd.queue.paused=${String(paused)}`).digest("hex")
@@ -1150,6 +1149,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     chatId: string
     sessionKey: string
     userMessage: string
+    fullVisibilityProgress?: { fallback?: () => string | undefined }
   }): NonNullable<RunSenseTurnOptions["prepareRunAgentOptions"]> => {
     if (!options.resolveRelationshipAuthorization) throw new Error("Telegram relationship authorization resolver is unavailable")
     const relationshipCoordinates = { ...input, botId: botId! }
@@ -1168,10 +1168,20 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     }
     return async ({ runAgentOptions }) => {
       const relationshipAuthorization = await resolveLiveRelationshipAuthorization()
-      const requiredToolCalls = options.agentName === "sanctuary" && relationshipAuthorization.profileId === "sanctuary-owner"
+      const storageOptimization = options.agentName === "sanctuary" && relationshipAuthorization.profileId === "sanctuary-owner"
         ? sanctuaryStorageOptimizationRequiredToolCalls(input.userMessage, relationshipAuthorization.advertisedToolNames)
-          ?? sanctuaryFullVisibilityRequiredToolCalls(input.userMessage, relationshipAuthorization.advertisedToolNames)
         : undefined
+      const fullVisibility = options.agentName === "sanctuary" && relationshipAuthorization.profileId === "sanctuary-owner" && !storageOptimization
+        ? sanctuaryFullVisibilityRequiredToolCalls(input.userMessage, relationshipAuthorization.advertisedToolNames)
+        : undefined
+      if (input.fullVisibilityProgress && fullVisibility) input.fullVisibilityProgress.fallback = fullVisibility.emptyResponseFallback
+      const requiredToolCalls = storageOptimization ?? (fullVisibility ? {
+        names: fullVisibility.names,
+        retryMessage: fullVisibility.retryMessage,
+        requireSuccessfulResults: fullVisibility.requireSuccessfulResults,
+        validateRequiredToolResult: fullVisibility.validateRequiredToolResult,
+        validateTerminalAnswer: fullVisibility.validateTerminalAnswer,
+      } : undefined)
       return {
         ...runAgentOptions,
         ...(requiredToolCalls ? { requiredToolCalls } : {}),
@@ -1221,6 +1231,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
           },
         }
       : undefined
+    const fullVisibilityProgress: { fallback?: () => string | undefined } = {}
     const result = await runTurn({
       agentName: options.agentName,
       channel: "telegram",
@@ -1233,7 +1244,8 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       ...(orientationFrame ? { orientationFrame } : {}),
       toolContext: { ...(toolContext ?? {}), attachmentIds: input.attachmentIds ?? [] },
       prepareRunAgentOptions: prepareRelationshipRunAgentOptions({ friendId: input.friendId, requestId: input.requestId,
-        sessionEventId: input.eventId, userId: input.userId, chatId: input.chatId, sessionKey: input.sessionKey, userMessage: input.text }),
+        sessionEventId: input.eventId, userId: input.userId, chatId: input.chatId, sessionKey: input.sessionKey, userMessage: input.text, fullVisibilityProgress }),
+      emptyResponseFallback: () => fullVisibilityProgress.fallback?.(),
       deliverySink: { onDelivery: (delivery) => deliver(delivery.text, delivery.kind === "settle") },
     })
     if (effects.length === 0 && result.response.trim()) await deliver(result.response, true)
@@ -1406,6 +1418,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
             inbound: { text: message.text, reference: inboundReference, attachmentIds: hydrated.attachmentIds, relations: ingressRelations },
           })
         : null
+      const fullVisibilityProgress: { fallback?: () => string | undefined } = {}
       const collected = await collectToolReceipts(() => runTurn({
         agentName: options.agentName,
         channel: "telegram",
@@ -1421,6 +1434,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         ingressRelations,
         ...(ingressReceipt ? { precommittedIngress: ingressReceipt } : {}),
         turnMetricsObserver,
+        emptyResponseFallback: () => fullVisibilityProgress.fallback?.(),
         deliverySink: {
           onDelivery: async (delivery) => {
             if (groundingIntentTool) {
@@ -1443,6 +1457,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
             chatId: message.chatId,
             sessionKey: currentSessionKey,
             userMessage: message.text,
+            fullVisibilityProgress,
           }),
         } : {}),
         ...(approvalRuntime ? { approvalCoordinatorFactory: approvalRuntime.coordinator } : {}),
