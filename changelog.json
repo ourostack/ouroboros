@@ -5,7 +5,8 @@
       "version": "0.1.0-alpha.772",
       "changes": [
         "Make Sanctuary Unraid key rotation crash-resumable with exact transaction and rejection proofs.",
-        "Require durable zero-playback journal evidence before live callback injection."
+        "Require durable zero-playback journal evidence before live callback injection.",
+        "Reject malformed Unraid rotation checkpoints before mutation with exact slot, attestation, revocation-order, and phase-state validation."
       ]
     },
     {
