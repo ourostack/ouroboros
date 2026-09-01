@@ -261,7 +261,7 @@ export function bindCareIncident(
 
 export function upsertCareForIncident(
   agentRoot: string,
-  input: Omit<CareRecord, "id" | "createdAt" | "updatedAt" | "incidentBindings"> & { id?: string; incident: CareIncidentBinding; expectedUpdatedAt?: string },
+  input: Omit<CareRecord, "id" | "createdAt" | "updatedAt" | "incidentBindings" | "label" | "why" | "kind" | "status" | "salience" | "steward" | "currentRisk" | "nextCheckAt"> & Partial<Pick<CareRecord, "label" | "why" | "kind" | "status" | "salience" | "steward" | "currentRisk" | "nextCheckAt">> & { id?: string; incident: CareIncidentBinding; expectedUpdatedAt?: string },
 ): CareRecord {
   return withCareMutationLock(agentRoot, () => {
     const incident = canonicalIncidentBinding(input.incident)
@@ -270,16 +270,18 @@ export function upsertCareForIncident(
     )
     if (existing) {
       const index = existing.incidentBindings!.findIndex((binding) => binding.source === incident.source && binding.incidentKey === incident.incidentKey)
+      const requestedRisk = input.currentRisk === undefined ? existing.currentRisk : input.currentRisk === null ? null : capStructuredRecordString(input.currentRisk)
+      const requestedNextCheckAt = input.nextCheckAt === undefined ? existing.nextCheckAt : input.nextCheckAt
       const incidentStateUnchanged = JSON.stringify(existing.incidentBindings![index]) === JSON.stringify(incident)
-        && existing.currentRisk === (input.currentRisk === null ? null : capStructuredRecordString(input.currentRisk))
-        && existing.nextCheckAt === input.nextCheckAt
+        && existing.currentRisk === requestedRisk
+        && existing.nextCheckAt === requestedNextCheckAt
       const displayUnchanged = !input.id || (
-        existing.label === capStructuredRecordString(input.label)
-        && existing.why === capStructuredRecordString(input.why)
-        && existing.kind === input.kind
-        && existing.status === input.status
-        && existing.salience === input.salience
-        && existing.steward === input.steward
+        (input.label === undefined || existing.label === capStructuredRecordString(input.label))
+        && (input.why === undefined || existing.why === capStructuredRecordString(input.why))
+        && (input.kind === undefined || existing.kind === input.kind)
+        && (input.status === undefined || existing.status === input.status)
+        && (input.salience === undefined || existing.salience === input.salience)
+        && (input.steward === undefined || existing.steward === input.steward)
       )
       const unchanged = incidentStateUnchanged && displayUnchanged
       if (unchanged) return existing
@@ -288,14 +290,14 @@ export function upsertCareForIncident(
       incidentBindings[index] = incident
       const updated = {
         ...existing,
-        label: capStructuredRecordString(input.label),
-        why: capStructuredRecordString(input.why),
-        kind: input.kind,
-        status: input.status,
-        salience: input.salience,
-        steward: input.steward,
-        currentRisk: input.currentRisk === null ? null : capStructuredRecordString(input.currentRisk),
-        nextCheckAt: input.nextCheckAt,
+        ...(input.id && input.label !== undefined ? { label: capStructuredRecordString(input.label) } : {}),
+        ...(input.id && input.why !== undefined ? { why: capStructuredRecordString(input.why) } : {}),
+        ...(input.id && input.kind !== undefined ? { kind: input.kind } : {}),
+        ...(input.id && input.status !== undefined ? { status: input.status } : {}),
+        ...(input.id && input.salience !== undefined ? { salience: input.salience } : {}),
+        ...(input.id && input.steward !== undefined ? { steward: input.steward } : {}),
+        currentRisk: requestedRisk,
+        nextCheckAt: requestedNextCheckAt,
         incidentBindings,
         updatedAt: nextUpdatedAt(existing.updatedAt),
       }
@@ -304,7 +306,12 @@ export function upsertCareForIncident(
     }
     if (input.id) throw new Error("Care incident upsert target not found")
     const { id: _id, incident: _incident, expectedUpdatedAt: _expectedUpdatedAt, ...careInput } = input
-    return createCareUnlocked(agentRoot, { ...careInput, incidentBindings: [incident] })
+    return createCareUnlocked(agentRoot, {
+      label: careInput.label ?? "untitled", why: careInput.why ?? "", kind: careInput.kind ?? "system", status: careInput.status ?? "active",
+      salience: careInput.salience ?? "medium", steward: careInput.steward ?? "mine", currentRisk: careInput.currentRisk ?? null,
+      nextCheckAt: careInput.nextCheckAt ?? null, relatedFriendIds: careInput.relatedFriendIds, relatedAgentIds: careInput.relatedAgentIds,
+      relatedObligationIds: careInput.relatedObligationIds, relatedEpisodeIds: careInput.relatedEpisodeIds, incidentBindings: [incident],
+    })
   })
 }
 
@@ -315,7 +322,7 @@ export function resolveCareIncident(
     source: string
     incidentKey: string
     expectedUpdatedAt: string
-    display?: Pick<CareRecord, "label" | "why" | "currentRisk" | "nextCheckAt">
+    display?: Partial<Pick<CareRecord, "label" | "why" | "currentRisk" | "nextCheckAt">>
   },
 ): CareRecord {
   return withCareMutationLock(agentRoot, () => {
@@ -326,10 +333,10 @@ export function resolveCareIncident(
     if (index < 0) throw new Error("Care incident binding not found")
     const display = input.display
     const requestedDisplay = display ? {
-      label: capStructuredRecordString(display.label),
-      why: capStructuredRecordString(display.why),
-      currentRisk: display.currentRisk === null ? null : capStructuredRecordString(display.currentRisk),
-      nextCheckAt: display.nextCheckAt,
+      label: display.label === undefined ? care.label : capStructuredRecordString(display.label),
+      why: display.why === undefined ? care.why : capStructuredRecordString(display.why),
+      currentRisk: display.currentRisk === undefined ? care.currentRisk : display.currentRisk === null ? null : capStructuredRecordString(display.currentRisk),
+      nextCheckAt: display.nextCheckAt === undefined ? care.nextCheckAt : display.nextCheckAt,
     } : undefined
     const displayUnchanged = !requestedDisplay || JSON.stringify({
       label: care.label,

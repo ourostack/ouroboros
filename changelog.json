@@ -6,7 +6,8 @@
       "changes": [
         "Keep stale Sanctuary Care evidence out of current context and require provenance-qualified same-turn Docker verification before reporting or mutation.",
         "Recognize natural whole-Sanctuary current-status requests and require all seven current reads, including notifications, before a terminal reply.",
-        "Revive provider-lane and managed-runtime external-event dead letters exactly once per generation after typed, newer recovery evidence."
+        "Revive provider-lane and managed-runtime external-event dead letters exactly once per generation after typed, newer recovery evidence.",
+        "Let verified fresh Docker alerts be reported while preserving unrelated Care display and policy metadata during partial incident refreshes and constraining durable status values."
       ]
     },
     {

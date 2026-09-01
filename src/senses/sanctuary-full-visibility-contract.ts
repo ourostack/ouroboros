@@ -5,7 +5,7 @@ import { emitNervesEvent } from "../nerves/runtime"
 const REQUIRED_TOOL_NAMES = ["query_active_work", "query_cares", "unraid_get_system", "unraid_list_containers", "unraid_get_storage", "unraid_get_notifications", "sanctuary_get_download_queue"] as const
 const WHOLE_STATUS_REQUESTS = new Set(["what are you working on", "what's going on with sanctuary"])
 
-function unsupportedCurrentClaim(answer: string, queueUnavailable: boolean): string | undefined {
+function unsupportedCurrentClaim(answer: string, queueUnavailable: boolean, authorizedDockerClaims: readonly string[]): string | undefined {
   if (queueUnavailable && answer.trim().length === 0) return "Give Ari the current results that did complete and say plainly that the download queue is currently unavailable; do not return an empty answer."
   if (queueUnavailable) {
     const unsupportedQueueClaim = answer.split(/[,;!?\n]|(?<!\d)\.(?!\d)/u).some((clause) => {
@@ -17,6 +17,8 @@ function unsupportedCurrentClaim(answer: string, queueUnavailable: boolean): str
   }
   const unsupported = answer.replace(/docker\.img/giu, "docker image").split(/[,;!?\n]|(?<!\d)\.(?!\d)/u).some((sentence) => {
     if (!/docker image(?: disk)?/iu.test(sentence)) return false
+    const normalizedSentence = sentence.normalize("NFKC").trim().toLocaleLowerCase("en-US")
+    if (authorizedDockerClaims.some((claim) => claim.normalize("NFKC").replace(/[.!?]+$/u, "").trim().toLocaleLowerCase("en-US") === normalizedSentence)) return false
     const uncertaintyOnly = /\b(?:cannot|can't|unable to) (?:currently )?(?:verify|measure)\b|\b(?:unknown|unverified)\b|\bneeds? (?:a )?(?:fresh |authoritative )*(?:check|measurement)\b/iu.test(sentence)
     const stateClaim = /\b\d+(?:\.\d+)?\s*%|\bfull\b|\b(?:no|out of) space\b|\bwrites? (?:will |may )?fail\b|\b(?:healthy|unhealthy|running|stopped)\b/iu.test(sentence)
     return stateClaim || !uncertaintyOnly
@@ -100,7 +102,7 @@ export function sanctuaryFullVisibilityEmptyResponse(request: string): string | 
     : undefined
 }
 
-export function sanctuaryFullVisibilityRequiredToolCalls(request: string, _advertisedToolNames: readonly string[]): { names: readonly string[]; retryMessage: string; requireSuccessfulResults: true; validateRequiredToolResult(name: string, result: string): boolean; validateTerminalAnswer(answer: string): string | undefined; emptyResponseFallback(): string | undefined } | undefined {
+export function sanctuaryFullVisibilityRequiredToolCalls(request: string, _advertisedToolNames: readonly string[], authorizedDockerClaims: () => readonly string[] = () => []): { names: readonly string[]; retryMessage: string; requireSuccessfulResults: true; validateRequiredToolResult(name: string, result: string): boolean; validateTerminalAnswer(answer: string): string | undefined; emptyResponseFallback(): string | undefined } | undefined {
   if (!isSanctuaryCurrentStatusIntent(request)) return undefined
   emitNervesEvent({ component: "senses", event: "senses.sanctuary_full_visibility_reads_required", message: "required current Sanctuary visibility reads", meta: { toolCount: REQUIRED_TOOL_NAMES.length } })
   let queueUnavailable = false
@@ -115,7 +117,7 @@ export function sanctuaryFullVisibilityRequiredToolCalls(request: string, _adver
       if (validation.valid) completed.add(name)
       return validation.valid
     },
-    validateTerminalAnswer: (answer) => unsupportedCurrentClaim(answer, queueUnavailable),
+    validateTerminalAnswer: (answer) => unsupportedCurrentClaim(answer, queueUnavailable, authorizedDockerClaims()),
     emptyResponseFallback: () => REQUIRED_TOOL_NAMES.every((name) => completed.has(name)) ? sanctuaryFullVisibilityEmptyResponse(request) : undefined,
   }
 }
@@ -230,6 +232,7 @@ export function sanctuaryStaleDockerCareRequiredToolCalls(activeCares: readonly 
   validateToolCallBeforeDispatch(name: string, args: Record<string, string>): string | undefined
   requiredToolCallsAfterResult(name: string, args: Record<string, string>, result: string): readonly string[]
   expectedMutations(): readonly StaleDockerMutation[]
+  currentRiskClaims(): readonly string[]
 } | undefined {
   const cares = activeCares.map((care) => qualifyingDockerCare(care, now)).filter((care): care is CapturedDockerCare => !!care)
   if (cares.length === 0) return undefined
@@ -276,5 +279,6 @@ export function sanctuaryStaleDockerCareRequiredToolCalls(activeCares: readonly 
       return ["care_manage"]
     },
     expectedMutations: () => mutations.map((mutation) => ({ ...mutation })),
+    currentRiskClaims: () => mutations.filter((mutation) => mutation.currentRisk === ACTIVE_RISK).map((mutation) => mutation.currentRisk!),
   }
 }

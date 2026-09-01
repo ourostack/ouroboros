@@ -1180,11 +1180,11 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       const storageOptimization = isSanctuaryOwner
         ? sanctuaryStorageOptimizationRequiredToolCalls(input.userMessage, relationshipAuthorization.advertisedToolNames)
         : undefined
-      const fullVisibility = isSanctuaryOwner
-        ? sanctuaryFullVisibilityRequiredToolCalls(input.userMessage, relationshipAuthorization.advertisedToolNames)
-        : undefined
       const staleDockerCare = isSanctuaryOwner
         ? sanctuaryStaleDockerCareRequiredToolCalls(activeCares, careEvidenceNow, relationshipAuthorization.advertisedToolNames)
+        : undefined
+      const fullVisibility = isSanctuaryOwner
+        ? sanctuaryFullVisibilityRequiredToolCalls(input.userMessage, relationshipAuthorization.advertisedToolNames, () => staleDockerCare?.currentRiskClaims() ?? [])
         : undefined
       if (input.fullVisibilityProgress && fullVisibility) input.fullVisibilityProgress.fallback = fullVisibility.emptyResponseFallback
       const contracts = [storageOptimization, fullVisibility, staleDockerCare].filter(Boolean) as Array<NonNullable<RunAgentOptions["requiredToolCalls"]>>

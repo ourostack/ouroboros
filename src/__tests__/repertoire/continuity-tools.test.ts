@@ -316,6 +316,7 @@ describe("continuity tools", () => {
     it("tool exists in baseToolDefinitions", () => {
       const tool = findTool("care_manage")
       expect(tool).toBeDefined()
+      expect((tool.tool.function.parameters.properties as any).status.enum).toEqual(["active", "watching", "resolved", "dormant"])
     })
 
     it("creates a care when action=create", async () => {
@@ -401,8 +402,21 @@ describe("continuity tools", () => {
         currentRisk: "another incident remains", nextCheckAt: "2026-09-01T08:15:00.000Z",
       })
       expect(mockResolveCareIncident).toHaveBeenLastCalledWith("/mock/agent-root", "c-docker", expect.objectContaining({
-        display: { label: "Docker image disk utilization", why: "Verified from current Unraid notifications.", currentRisk: "another incident remains", nextCheckAt: "2026-09-01T08:15:00.000Z" },
+        display: { currentRisk: "another incident remains", nextCheckAt: "2026-09-01T08:15:00.000Z" },
       }))
+    })
+
+    it("preserves omitted metadata during a routine incident refresh", async () => {
+      mockUpsertCareForIncident.mockReturnValue({ id: "c-books", label: "Books service", status: "watching" })
+      await findTool("care_manage").handler({
+        action: "upsert_incident", id: "c-books", source: "sanctuary-health", incidentKey: "container:books",
+        classifiedRevision: "rev-2", currentRisk: "Container is restarting", nextCheckAt: "2026-09-01T08:15:00.000Z", expectedUpdatedAt: "v1",
+      })
+      expect(mockUpsertCareForIncident).toHaveBeenCalledWith("/mock/agent-root", {
+        id: "c-books", currentRisk: "Container is restarting", nextCheckAt: "2026-09-01T08:15:00.000Z",
+        relatedFriendIds: [], relatedAgentIds: [], relatedObligationIds: [], relatedEpisodeIds: [],
+        incident: { source: "sanctuary-health", incidentKey: "container:books", classifiedRevision: "rev-2" }, expectedUpdatedAt: "v1",
+      })
     })
 
     it("atomically upserts one Care for an incident identity", async () => {

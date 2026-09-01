@@ -453,6 +453,22 @@ describe("care store", () => {
       })).toThrow(/target not found/u)
     })
 
+    it("preserves omitted display and policy metadata during an exact-id incident refresh", () => {
+      const first = upsertCareForIncident(tmpDir, {
+        ...baseCareInput, label: "Books service", why: "Keep the library available", kind: "project", status: "watching", salience: "high", steward: "shared",
+        incident: { source: "guard", incidentKey: "books", classifiedRevision: "rev-1" },
+      })
+      const refreshed = upsertCareForIncident(tmpDir, {
+        id: first.id, currentRisk: "Container is restarting", nextCheckAt: "2026-09-01T08:15:00.000Z",
+        relatedFriendIds: [], relatedAgentIds: [], relatedObligationIds: [], relatedEpisodeIds: [],
+        incident: { source: "guard", incidentKey: "books", classifiedRevision: "rev-2" }, expectedUpdatedAt: first.updatedAt,
+      })
+      expect(refreshed).toMatchObject({
+        label: "Books service", why: "Keep the library available", kind: "project", status: "watching", salience: "high", steward: "shared",
+        currentRisk: "Container is restarting", nextCheckAt: "2026-09-01T08:15:00.000Z",
+      })
+    })
+
     it("updates safe display on an already-resolved binding without re-resolving it", () => {
       const care = createCare(tmpDir, { ...baseCareInput, kind: "system", currentRisk: "old" })
       const bound = bindCareIncident(tmpDir, care.id, { source: "guard", incidentKey: "docker", classifiedRevision: "rev", resolvedAt: "2026-09-01T07:00:00.000Z" }, { expectedUpdatedAt: care.updatedAt })
