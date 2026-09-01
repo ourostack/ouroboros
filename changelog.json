@@ -6,7 +6,7 @@
       "changes": [
         "Keep Sanctuary status summaries grounded in successful current reads and stale-care-safe evidence.",
         "Render Butler Telegram replies without literal bold markers while preserving commands and data.",
-        "Keep the packaged visibility contract clear of retired provider-state module markers."
+        "Keep the packaged visibility contract clear of retired module markers."
       ]
     },
     {
