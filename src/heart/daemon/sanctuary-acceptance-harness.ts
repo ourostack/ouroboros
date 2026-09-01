@@ -1143,13 +1143,57 @@ async function rotateOccupiedCanonicalUnraidKeys(input: {
     || !sameStrings(createdKeyIds, transactionKeys.map((entry) => entry.id))) {
     throw new Error("Unraid rotation transaction key metadata is ambiguous")
   }
+  const slots = desired.flatMap((key) => [
+    { ...key, name: `${key.name} Rotation ${suffix}`, temporary: true },
+    { ...key, temporary: false },
+  ])
+  if (transactionKeys.some((entry) => {
+    const slot = slots.find((candidate) => candidate.name === entry.name)
+    return !slot || entry.temporary !== slot.temporary || entry.vaultField !== slot.vaultField
+      || !sameStrings(entry.permissions, slot.permissions)
+  })) throw new Error("Unraid rotation checkpoint transaction slots are invalid")
+  const revocableKeyIds = new Set([
+    ...oldKeys.map((entry) => entry.id),
+    ...transactionKeys.filter((entry) => entry.temporary).map((entry) => entry.id),
+  ])
+  if (revokedKeyIds.some((id) => !revocableKeyIds.has(id))) {
+    throw new Error("Unraid rotation checkpoint contains an unowned revoked key ID")
+  }
+  const temporary = transactionKeys.filter((entry) => entry.temporary)
+  const canonical = transactionKeys.filter((entry) => !entry.temporary)
+  const allOldRevoked = oldKeys.every((entry) => revokedKeyIds.includes(entry.id))
+  const allTemporaryAttested = temporary.length === desired.length && temporary.every((entry) => entry.attested)
+  const allCanonicalAttested = canonical.length === desired.length && canonical.every((entry) => entry.attested)
+  const revokedTemporary = temporary.filter((entry) => revokedKeyIds.includes(entry.id))
+  if (revokedTemporary.some((entry) => !entry.attested)
+    || (oldKeys.some((entry) => revokedKeyIds.includes(entry.id)) && !allTemporaryAttested)
+    || (revokedTemporary.length > 0 && !allCanonicalAttested)
+    || (canonical.length > 0 && !allOldRevoked)) {
+    throw new Error("Unraid rotation checkpoint revocation order is invalid")
+  }
+  const phase = prior ? text(prior.phase, "Unraid rotation phase") : "preflight"
+  const knownPhases = new Set(["preflight", "temporary_key_created", "temporary_key_attested", "key_revoke_attempted", "key_revoked", "canonical_key_created", "canonical_key_attested", "complete"])
+  const resumePhase = phase === "failed" ? text(prior?.resumePhase, "Unraid rotation resume phase") : phase
+  if (!knownPhases.has(resumePhase) || (phase !== "failed" && prior?.resumePhase !== undefined)) {
+    throw new Error("Unraid rotation checkpoint phase is invalid")
+  }
+  const stateMatchesPhase = resumePhase === "preflight" ? transactionKeys.length === 0 && revokedKeyIds.length === 0
+    : resumePhase === "temporary_key_created" ? temporary.length > 0 && canonical.length === 0 && revokedKeyIds.length === 0 && temporary.filter((entry) => !entry.attested).length === 1
+      : resumePhase === "temporary_key_attested" ? temporary.length > 0 && canonical.length === 0 && revokedKeyIds.length === 0 && temporary.every((entry) => entry.attested)
+        : resumePhase === "key_revoke_attempted" ? allTemporaryAttested && (canonical.length === 0 || allCanonicalAttested)
+          : resumePhase === "key_revoked" ? revokedKeyIds.length > 0 && allTemporaryAttested && (canonical.length === 0 || allCanonicalAttested)
+            : resumePhase === "canonical_key_created" ? allTemporaryAttested && canonical.length > 0 && sameStrings(revokedKeyIds, oldKeys.map((entry) => entry.id)) && canonical.filter((entry) => !entry.attested).length === 1
+              : resumePhase === "canonical_key_attested" ? allTemporaryAttested && canonical.length > 0 && sameStrings(revokedKeyIds, oldKeys.map((entry) => entry.id)) && canonical.every((entry) => entry.attested)
+                : transactionKeys.length === slots.length && allTemporaryAttested && allCanonicalAttested
+                  && sameStrings(revokedKeyIds, [...oldKeys.map((entry) => entry.id), ...temporary.map((entry) => entry.id)])
+  if (!stateMatchesPhase) throw new Error("Unraid rotation checkpoint state does not match its phase")
   const base: JsonObject = {
     schemaVersion: 1, operation: "unraid-key-rotate", targetServerId,
     initialInventoryDigest: prior ? text(prior.initialInventoryDigest, "initialInventoryDigest") : digest(initial),
     transactionSuffix: suffix,
   }
   if (!prior) initializeCheckpoint(root, evidencePath, { ...base, phase: "preflight", createdKeyIds, revokedKeyIds, transactionKeys })
-  if (prior?.phase === "complete") {
+  if (phase === "complete") {
     const final = inventory(await deps.runAdapter(adapters.inventory, { operation: "inventory_keys", targetServerId }))
     const canonical = transactionKeys.filter((entry) => !entry.temporary)
       .map(({ id, name, permissions }) => ({ id, name, permissions, roles: [] as string[] }))
@@ -1159,10 +1203,10 @@ async function rotateOccupiedCanonicalUnraidKeys(input: {
     return
   }
   const created: Array<InventoryKey & { handle: string; desired: DesiredInventoryKey; temporary: boolean }> = []
-  let resumePhase = prior ? text(prior.resumePhase ?? prior.phase, "Unraid rotation resume phase") : "preflight"
+  let activePhase = resumePhase
 
   const checkpoint = (phase: string): void => {
-    resumePhase = phase
+    activePhase = phase
     replaceCheckpoint(root, evidencePath, { ...base, phase, createdKeyIds, revokedKeyIds, transactionKeys })
   }
 
@@ -1173,7 +1217,7 @@ async function rotateOccupiedCanonicalUnraidKeys(input: {
     if (transaction && (transaction.temporary !== temporary || transaction.vaultField !== key.vaultField
       || !sameStrings(transaction.permissions, key.permissions))) throw new Error("resumable Unraid key metadata mismatch")
     if (transaction && revokedKeyIds.includes(transaction.id)) {
-      if (!temporary || matches.length !== 0) throw new Error("revoked Unraid transaction key inventory mismatch")
+      if (matches.length !== 0) throw new Error("revoked Unraid transaction key inventory mismatch")
       return
     }
     if (transaction && temporary && matches.length === 0) return
@@ -1182,7 +1226,7 @@ async function rotateOccupiedCanonicalUnraidKeys(input: {
     if (matches.length === 1) {
       const existing = matches[0]!
       if (!sameStrings(existing.permissions, key.permissions) || existing.roles.length !== 0
-        || oldKeys.some((old) => old.id === existing.id) || created.some((entry) => entry.id === existing.id)
+        || oldKeys.some((old) => old.id === existing.id)
         || (transaction && transaction.id !== existing.id)) {
         throw new Error("resumable Unraid key scope or identity mismatch")
       }
@@ -1200,7 +1244,6 @@ async function rotateOccupiedCanonicalUnraidKeys(input: {
         handle = text(recovered.key, "recovered key handle")
       }
     } else {
-      if (transaction) throw new Error("attested Unraid transaction key is absent")
       const response = object(await deps.runAdapter(adapters.create, {
         operation: "create_key", targetServerId, name, permissions: key.permissions,
       }), "created Unraid key")
@@ -1311,7 +1354,7 @@ async function rotateOccupiedCanonicalUnraidKeys(input: {
       completedAt: deps.now(),
     })
   } catch (error) {
-    replaceCheckpoint(root, evidencePath, { ...base, phase: "failed", resumePhase, createdKeyIds, revokedKeyIds, transactionKeys, errorCategory: safeErrorCategory(error) })
+    replaceCheckpoint(root, evidencePath, { ...base, phase: "failed", resumePhase: activePhase, createdKeyIds, revokedKeyIds, transactionKeys, errorCategory: safeErrorCategory(error) })
     throw error
   }
 }

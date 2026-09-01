@@ -27,6 +27,7 @@ import {
   executeSanctuaryAcceptanceRevokedProbe,
   executeSanctuaryAcceptanceVaultProbe,
   evaluateSanctuaryProviderReadinessContract,
+  recordCallbackPlayback,
   proveAttemptedRecoveryWithoutRetry,
   readDefaultSanctuaryScenarioFacts,
   runSanctuaryProductionBoundaryProbe,
@@ -853,6 +854,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       fs.rmSync(agentRoot, { recursive: true, force: true })
     }
     expect(() => callbackPlaybackSnapshot(agentRoot, "bad")).toThrow(/coordinate digest/u)
+    expect(() => recordCallbackPlayback(agentRoot, "bad")).toThrow(/coordinate digest/u)
   })
 
   it("permits an explicit before-only genesis cursor and rejects absent state otherwise", async () => {

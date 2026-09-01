@@ -1914,7 +1914,7 @@ export function callbackPlaybackSnapshot(agentRoot: string, coordinateDigest: st
   })
 }
 
-function recordCallbackPlayback(agentRoot: string, coordinateDigest: string): void {
+export function recordCallbackPlayback(agentRoot: string, coordinateDigest: string): void {
   if (!SHA256.test(coordinateDigest)) throw new Error("callback coordinate digest is invalid")
   withCallbackPlaybackJournal(agentRoot, (database) => {
     database.prepare(`
