@@ -1845,7 +1845,7 @@ function cursorSnapshot(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDep
         auditCursorDigest = sha256(`ouroboros.telegram.acceptance.cursor.v1\0present\0${auditRaw}\0${headAfter}`)
         break
       } catch (error) {
-        verificationFailure = error instanceof Error ? error : new Error(String(error))
+        verificationFailure = error as Error
       }
     }
   }

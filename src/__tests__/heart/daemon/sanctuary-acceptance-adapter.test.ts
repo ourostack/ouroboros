@@ -846,6 +846,25 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       { operation: "snapshot", schema: "telegram-cursor-v1" },
       unit16Deps({ readFixedFile: missing }),
     )).rejects.toThrow(/request/u)
+    await expect(executeSanctuaryAcceptanceAdapter(
+      { operation: "snapshot", schema: "wrong", allowGenesis: true },
+      unit16Deps({ readFixedFile: missing }),
+    )).rejects.toThrow(/request/u)
+    await expect(executeSanctuaryAcceptanceAdapter(
+      { operation: "snapshot", schema: "telegram-cursor-v1", allowGenesis: "yes" },
+      unit16Deps({ readFixedFile: missing }),
+    )).rejects.toThrow(/request/u)
+
+    for (const nextUpdateId of [-1, 1.5]) {
+      await expect(executeSanctuaryAcceptanceAdapter(
+        { operation: "snapshot", schema: "telegram-cursor-v1", allowGenesis: true },
+        unit16Deps({ readFixedFile: (file) => {
+          if (file.endsWith("offset.json")) return JSON.stringify({ nextUpdateId })
+          if (file === IDENTITY_KEY_PATH) return `${identityKey}\n`
+          throw Object.assign(new Error(`missing ${file}`), { code: "ENOENT" })
+        } }),
+      )).rejects.toThrow(/offset is invalid/u)
+    }
 
     await expect(executeSanctuaryAcceptanceAdapter(
       { operation: "snapshot", schema: "telegram-cursor-v1", allowGenesis: true },
