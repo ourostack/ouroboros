@@ -2,7 +2,13 @@ import { describe, expect, it, vi } from "vitest"
 
 const sab = vi.hoisted(() => ({
   create: vi.fn(),
+  loadApiKey: vi.fn(async () => "test-only-secret"),
   readQueue: vi.fn(async () => ({ paused: true, observedAt: "2026-08-29T00:00:00.000Z" })),
+}))
+
+vi.mock("../../senses/sanctuary-runtime", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../senses/sanctuary-runtime")>()),
+  loadSanctuarySabApiKey: sab.loadApiKey,
 }))
 
 vi.mock("../../senses/sanctuary-sab", () => ({
@@ -12,7 +18,7 @@ vi.mock("../../senses/sanctuary-sab", () => ({
 import { createSabQueueProtectiveStateVerifier } from "../../senses/telegram"
 
 describe("Telegram SAB verifier cache coverage", () => {
-  it("uses the canonical config path once and reuses the typed SAB client", async () => {
+  it("uses the shared vault loader and reuses the typed SAB client", async () => {
     sab.create.mockReturnValue({ readQueue: sab.readQueue })
     const verify = createSabQueueProtectiveStateVerifier()
     const action = {
@@ -29,7 +35,9 @@ describe("Telegram SAB verifier cache coverage", () => {
     await expect(verify(action)).resolves.toMatchObject({ verified: false })
 
     expect(sab.create).toHaveBeenCalledOnce()
-    expect(sab.create).toHaveBeenCalledWith(expect.objectContaining({ iniPath: "/run/sanctuary/sabnzbd.ini" }))
+    expect(sab.create).toHaveBeenCalledWith(expect.objectContaining({ loadApiKey: expect.any(Function) }))
+    await expect(sab.create.mock.calls[0]![0].loadApiKey()).resolves.toBe("test-only-secret")
+    expect(sab.loadApiKey).toHaveBeenCalledWith("sanctuary")
     expect(sab.readQueue).toHaveBeenCalledTimes(2)
   })
 })

@@ -829,6 +829,28 @@ describe("runSenseTurn", () => {
     expect(result.ponderDeferred).toBe(false)
   })
 
+  it("returns a truthful Sanctuary whole-status fallback only after the agent settles empty", async () => {
+    mockHandleInboundTurn.mockResolvedValue({
+      resolvedContext: makeResolvedContext(),
+      gateResult: { allowed: true },
+      turnOutcome: "settled",
+      sessionPath: "/tmp/session.json",
+      messages: [],
+    })
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    const result = await runSenseTurn({
+      agentName: "sanctuary",
+      channel: "telegram",
+      sessionKey: "session-123",
+      friendId: "ari",
+      userMessage: "What's going on with Sanctuary?",
+      emptyResponseFallback: () => "I couldn't finish a trustworthy Sanctuary status check because a current check was unavailable. I won't guess or reuse old alerts; please try again shortly.",
+    })
+
+    expect(result.response).toContain("won't guess or reuse old alerts")
+    expect(result.response).not.toContain("response was empty")
+  })
+
   it("handles gate rejection gracefully", async () => {
     mockHandleInboundTurn.mockResolvedValue({
       resolvedContext: makeResolvedContext(),

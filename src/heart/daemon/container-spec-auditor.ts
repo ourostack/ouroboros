@@ -4,14 +4,12 @@ const EXPECTED_BINDS = [
   "/mnt/user/appdata/ouro-butler/runtime/.ouro-cli:/home/ouro/.ouro-cli:rw",
   "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro:/home/ouro/AgentBundles/sanctuary.ouro:rw",
   "/boot/config/custom/ouro-events/spool:/run/ouro-events:ro",
-  "/mnt/user/appdata/sabnzbd/sabnzbd.ini:/run/sanctuary/sabnzbd.ini:ro",
 ] as const
 
 const EXPECTED_MOUNTS = [
   ["/mnt/user/appdata/ouro-butler/runtime/.ouro-cli", "/home/ouro/.ouro-cli", true, "rprivate"],
   ["/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro", "/home/ouro/AgentBundles/sanctuary.ouro", true, "rprivate"],
   ["/boot/config/custom/ouro-events/spool", "/run/ouro-events", false, "rprivate"],
-  ["/mnt/user/appdata/sabnzbd/sabnzbd.ini", "/run/sanctuary/sabnzbd.ini", false, "rprivate"],
 ] as const
 
 const LEGACY_ALPHA742_IMAGE = "sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d"
@@ -154,11 +152,11 @@ export function auditSanctuaryStagedFiles(input: SanctuaryStagedAuditInput): San
       return type === "Path" && target && mode ? `${match[2]}:${target}:${mode}` : "invalid"
     })
   if (
-    configOpenCount !== 4
-    || configEntries.length !== 4
+    configOpenCount !== EXPECTED_BINDS.length
+    || configEntries.length !== EXPECTED_BINDS.length
     || JSON.stringify([...pathConfigs].sort()) !== JSON.stringify([...EXPECTED_BINDS].sort())
   ) {
-    violations.push("template Config entries must equal the canonical four path binds")
+    violations.push("template Config entries must equal the canonical path binds")
   }
   const postArgsOpenCount = [...input.templateXml.matchAll(/<PostArgs\b/gu)].length
   const postArgs = [...input.templateXml.matchAll(/<PostArgs(?:(?:\s*\/>)|>([^<]*)<\/PostArgs>)/gu)]

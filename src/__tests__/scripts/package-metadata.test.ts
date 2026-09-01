@@ -68,6 +68,7 @@ describe("package metadata", () => {
     expect(packageJob.match(/verify_sanctuary_snapshot_provenance \/snapshot "\$1"/gu)).toHaveLength(2)
     expect(packageJob).toContain('test "$UNLABELED_CURRENT_STATUS" != 0')
     expect(packageJob).toContain('sudo rm -rf -- "$PACKAGE_ROOT"')
+    expect(packageJob).not.toContain("/run/sanctuary/sabnzbd.ini")
     expect(packageJob).not.toContain('$(bw --version)')
   })
 

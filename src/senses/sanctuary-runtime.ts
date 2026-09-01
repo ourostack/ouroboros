@@ -14,7 +14,7 @@ import { emitNervesEvent } from "../nerves/runtime"
 import { readSanctuaryAcceptanceApproval, readSanctuaryAcceptanceMarker, sanctuaryAcceptanceEventMeta } from "../heart/daemon/sanctuary-acceptance-marker"
 import { projectSanctuaryGrounding, sanctuaryGroundingDigest, type SanctuaryToolGrounding } from "./sanctuary-grounding"
 import { probeSanctuaryEndpoint, SANCTUARY_PUBLIC_ENDPOINTS } from "./sanctuary-health"
-import { createSanctuarySabClient } from "./sanctuary-sab"
+import { createSanctuarySabClient, sanctuarySabReadUnavailableCode } from "./sanctuary-sab"
 import { createSanctuaryMediaOptimizationClient } from "./sanctuary-media-optimization"
 
 const sanctuaryToolReceipts = new AsyncLocalStorage<string[]>()
@@ -56,6 +56,10 @@ function required(config: Record<string, unknown>, field: string): string {
   const value = config[field]
   if (typeof value !== "string" || value.trim().length === 0) throw new Error(`Sanctuary ${field} is missing`)
   return value.trim()
+}
+
+export async function loadSanctuarySabApiKey(agentName: string): Promise<string> {
+  return required(machineConfig(agentName), "sabnzbdApiKey")
 }
 
 function requiredObject(config: Record<string, unknown>, field: string): Record<string, unknown> {
@@ -138,7 +142,7 @@ export function createSanctuaryToolContext(agentName: string): Pick<ToolContext,
   const endpoint = required(initial, "unraidGraphqlUrl")
   const readClient = new UnraidClient({ endpoint, apiKey: required(initial, "unraidReadApiKey") })
   const reads = createUnraidReadTools(readClient)
-  const sab = createSanctuarySabClient()
+  const sab = createSanctuarySabClient({ loadApiKey: () => loadSanctuarySabApiKey(agentName) })
   const mediaOptimization = createSanctuaryMediaOptimizationClient(optionalJellyfin(initial))
   const acceptanceRead = <TArgs extends unknown[], TResult>(toolName: string, read: (...args: TArgs) => Promise<TResult>) => async (...args: TArgs): Promise<TResult> => {
     try {
@@ -182,7 +186,13 @@ export function createSanctuaryToolContext(agentName: string): Pick<ToolContext,
         const services = await Promise.all(SANCTUARY_PUBLIC_ENDPOINTS.map(async (url) => ({ name: new URL(url).hostname.split(".")[0]!, ...await probeSanctuaryEndpoint(url) })))
         return { ok: true, data: { observedAt: new Date().toISOString(), services, degraded: services.some((service) => !service.ok) } }
       }),
-      getDownloadQueue: acceptanceRead("sanctuary_get_download_queue", sab.readQueue),
+      getDownloadQueue: acceptanceRead("sanctuary_get_download_queue", async () => {
+        try { return await sab.readQueue() } catch (error) {
+          const code = sanctuarySabReadUnavailableCode(error)
+          if (code) return { ok: false, error: { code }, observedAt: new Date().toISOString() }
+          throw error
+        }
+      }),
       getMediaOptimization: acceptanceRead("sanctuary_get_media_optimization", mediaOptimization.read),
       resumeDownloadQueue: async () => {
         try {

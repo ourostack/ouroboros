@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <Container version="2">
   <Name>Mendelow Cloud Butler</Name>
-  <Repository>ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.766</Repository>
+  <Repository>ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.767</Repository>
   <Registry>https://github.com/ourostack/ouroboros/pkgs/container/ouroboros-butler</Registry>
   <Network>host</Network>
   <Shell>sh</Shell>
@@ -24,5 +24,4 @@
   <Config Name="Runtime state" Target="/home/ouro/.ouro-cli" Default="/mnt/user/appdata/ouro-butler/runtime/.ouro-cli" Mode="rw" Description="Machine-scoped runtime" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/ouro-butler/runtime/.ouro-cli</Config>
   <Config Name="Agent bundle" Target="/home/ouro/AgentBundles/sanctuary.ouro" Default="/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro" Mode="rw" Description="Sanctuary bundle" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro</Config>
   <Config Name="Privileged event spool" Target="/run/ouro-events" Default="/boot/config/custom/ouro-events/spool" Mode="ro" Description="Root-owned detector envelopes, read-only inside the Butler" Type="Path" Display="always" Required="true" Mask="false">/boot/config/custom/ouro-events/spool</Config>
-  <Config Name="SAB queue verification" Target="/run/sanctuary/sabnzbd.ini" Default="/mnt/user/appdata/sabnzbd/sabnzbd.ini" Mode="ro" Description="Existing SAB configuration used only for an independent read after a verified protective pause" Type="Path" Display="advanced" Required="true" Mask="false">/mnt/user/appdata/sabnzbd/sabnzbd.ini</Config>
 </Container>

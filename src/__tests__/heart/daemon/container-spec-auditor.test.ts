@@ -32,7 +32,6 @@ function validInspect() {
         { Type: "bind", Source: "/mnt/user/appdata/ouro-butler/runtime/.ouro-cli", Target: "/home/ouro/.ouro-cli", ReadOnly: false },
         { Type: "bind", Source: "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro", Target: "/home/ouro/AgentBundles/sanctuary.ouro", ReadOnly: false },
         { Type: "bind", Source: "/boot/config/custom/ouro-events/spool", Target: "/run/ouro-events", ReadOnly: true },
-        { Type: "bind", Source: "/mnt/user/appdata/sabnzbd/sabnzbd.ini", Target: "/run/sanctuary/sabnzbd.ini", ReadOnly: true },
       ],
       PortBindings: {},
       Devices: [],
@@ -44,7 +43,6 @@ function validInspect() {
       { Type: "bind", Source: "/mnt/user/appdata/ouro-butler/runtime/.ouro-cli", Destination: "/home/ouro/.ouro-cli", RW: true, Propagation: "rprivate" },
       { Type: "bind", Source: "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro", Destination: "/home/ouro/AgentBundles/sanctuary.ouro", RW: true, Propagation: "rprivate" },
       { Type: "bind", Source: "/boot/config/custom/ouro-events/spool", Destination: "/run/ouro-events", RW: false, Propagation: "rprivate" },
-      { Type: "bind", Source: "/mnt/user/appdata/sabnzbd/sabnzbd.ini", Destination: "/run/sanctuary/sabnzbd.ini", RW: false, Propagation: "rprivate" },
     ],
     NetworkSettings: { Ports: {} },
   }
@@ -72,7 +70,6 @@ function stagedTemplate(): string {
     '<Config Target="/home/ouro/.ouro-cli" Mode="rw" Type="Path">/mnt/user/appdata/ouro-butler/runtime/.ouro-cli</Config>',
     '<Config Target="/home/ouro/AgentBundles/sanctuary.ouro" Mode="rw" Type="Path">/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro</Config>',
     '<Config Target="/run/ouro-events" Mode="ro" Type="Path">/boot/config/custom/ouro-events/spool</Config>',
-    '<Config Target="/run/sanctuary/sabnzbd.ini" Mode="ro" Type="Path">/mnt/user/appdata/sabnzbd/sabnzbd.ini</Config>',
     "</Container>",
   ].join("\n")
 }
@@ -490,7 +487,7 @@ describe("Sanctuary pre-activation container auditor", () => {
 
     expect(result).toEqual(expect.objectContaining({
       ok: false,
-      violations: expect.arrayContaining(["template Config entries must equal the canonical four path binds"]),
+      violations: expect.arrayContaining(["template Config entries must equal the canonical path binds"]),
     }))
   })
 

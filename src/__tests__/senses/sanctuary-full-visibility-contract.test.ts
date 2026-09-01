@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { sanctuaryFullVisibilityRequiredToolCalls } from "../../senses/sanctuary-full-visibility-contract"
+import { sanctuaryFullVisibilityEmptyResponse, sanctuaryFullVisibilityRequiredToolCalls } from "../../senses/sanctuary-full-visibility-contract"
 
 const requiredNames = ["query_active_work", "query_cares", "unraid_get_system", "unraid_list_containers", "unraid_get_storage", "sanctuary_get_download_queue"]
 const advertised = [...requiredNames, "settle", "speak"]
@@ -19,6 +19,7 @@ describe("Sanctuary full-visibility read contract", () => {
       requireSuccessfulResults: true,
       validateRequiredToolResult: expect.any(Function),
       validateTerminalAnswer: expect.any(Function),
+      emptyResponseFallback: expect.any(Function),
     })
   })
 
@@ -40,6 +41,55 @@ describe("Sanctuary full-visibility read contract", () => {
     for (const malformed of ["null", "[]", "{}", JSON.stringify({ ok: true }), JSON.stringify({ ...queue, queuedJobs: -1 }), JSON.stringify({ ...queue, extra: true })]) {
       expect(validate("sanctuary_get_download_queue", malformed)).toBe(false)
     }
+  })
+
+  it("accepts only the exact current credential-unavailable observation and then forbids guessed queue state", () => {
+    const contract = sanctuaryFullVisibilityRequiredToolCalls("What's going on with Sanctuary?", advertised)!
+    const unavailable = { ok: false, error: { code: "credential_unavailable" }, observedAt: "2026-08-30T04:00:00.000Z" }
+
+    expect(contract.validateRequiredToolResult("sanctuary_get_download_queue", JSON.stringify(unavailable))).toBe(true)
+    for (const code of ["request_unavailable", "malformed_response"]) {
+      expect(contract.validateRequiredToolResult("sanctuary_get_download_queue", JSON.stringify({ ...unavailable, error: { code } }))).toBe(true)
+    }
+    for (const malformed of [
+      { ...unavailable, stale: true },
+      { ...unavailable, error: { code: "request_failed" } },
+      { ...unavailable, observedAt: "yesterday" },
+      { ...unavailable, error: { code: "credential_unavailable", message: "secret path" } },
+    ]) expect(contract.validateRequiredToolResult("sanctuary_get_download_queue", JSON.stringify(malformed))).toBe(false)
+    expect(contract.validateTerminalAnswer("")).toMatch(/do not return an empty answer/iu)
+    for (const claim of ["Downloads are paused with 12 queued jobs.", "The download queue is healthy.", "The queue is clear.", "The queue is empty.", "Downloads are active.", "Downloads are fine; no problem."]) {
+      expect(contract.validateTerminalAnswer(claim)).toMatch(/could not be verified/iu)
+    }
+    expect(contract.validateTerminalAnswer("The other checks are healthy; I can't currently verify the download queue.")).toBeUndefined()
+    expect(contract.validateTerminalAnswer("The download queue could not be verified.")).toBeUndefined()
+    expect(contract.validateTerminalAnswer("I couldn't verify whether downloads are paused.")).toBeUndefined()
+    expect(contract.validateTerminalAnswer("I don't know whether downloads are paused.")).toBeUndefined()
+  })
+
+  it("provides a narrow post-agent fallback only for whole-status requests", () => {
+    expect(sanctuaryFullVisibilityEmptyResponse("What's going on with Sanctuary?")).toMatch(/won't guess or reuse old alerts/iu)
+    expect(sanctuaryFullVisibilityEmptyResponse("status?")).toBeUndefined()
+  })
+
+  it("does not enable the empty fallback until every required current read completed", () => {
+    const contract = sanctuaryFullVisibilityRequiredToolCalls("What's going on with Sanctuary?", advertised)!
+    expect(contract.emptyResponseFallback()).toBeUndefined()
+    const results: Record<string, string> = {
+      query_active_work: "this is my current top-level live world-state.\nhealthy",
+      query_cares: "[]",
+      unraid_get_system: JSON.stringify({ ok: true }),
+      unraid_list_containers: JSON.stringify({ ok: true }),
+      unraid_get_storage: JSON.stringify({ ok: true }),
+      sanctuary_get_download_queue: JSON.stringify({ ok: false, error: { code: "request_unavailable" }, observedAt: "2026-08-30T04:00:00.000Z" }),
+    }
+    for (const name of requiredNames) {
+      expect(contract.validateRequiredToolResult(name, results[name]!)).toBe(true)
+      if (name !== requiredNames.at(-1)) expect(contract.emptyResponseFallback()).toBeUndefined()
+    }
+    expect(contract.emptyResponseFallback()).toMatch(/won't guess or reuse old alerts/iu)
+    expect(contract.validateRequiredToolResult("query_cares", "not-json")).toBe(false)
+    expect(contract.emptyResponseFallback()).toMatch(/won't guess or reuse old alerts/iu)
   })
 
   it.each([
