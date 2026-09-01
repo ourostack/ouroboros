@@ -7,6 +7,7 @@ import { spawn, spawnSync } from "node:child_process"
 import { describe, expect, it } from "vitest"
 
 type TargetModule = {
+  dockerTopology(runDocker?: (args: string[]) => string): Array<{ id: string; name: string }>
   targetProfile(name: string): { name: string; containerName: string }
   attestDeploymentTarget(input: Record<string, unknown>): Record<string, unknown>
   attestOwnedListeners(input: Record<string, unknown>): Record<string, unknown>
@@ -47,6 +48,19 @@ function input(profile: "staging" | "final") {
 const quiesceTarget = <T>(_target: unknown, operation: () => T) => operation()
 
 describe("Sanctuary fixed deployment target", () => {
+  it("lists only Docker identity fields without invoking the expensive Size getter", async () => {
+    const { dockerTopology } = await load()
+    const calls: string[][] = []
+    const result = dockerTopology((args) => {
+      calls.push(args)
+      const template = args.at(-1) ?? ""
+      if (template === "{{json .}}" || /Size/u.test(template)) throw new Error("Docker Size getter invoked")
+      return `${JSON.stringify({ ID: stagingId, Names: "ouro-butler-staging" })}\n${JSON.stringify({ ID: productionId, Names: "unrelated" })}\n`
+    })
+    expect(result).toEqual([{ id: stagingId, name: "ouro-butler-staging" }])
+    expect(calls).toEqual([["container", "ls", "-a", "--no-trunc", "--format", '{"ID":{{json .ID}},"Names":{{json .Names}}}']])
+  })
+
   it("packages exact staging and final behavioral profiles with no caller-selected container", () => {
     const source = fs.readFileSync("deploy/unraid/sanctuary-unit16-run.sh", "utf8")
     expect(source).toContain("TARGET_PROFILE=staging")
