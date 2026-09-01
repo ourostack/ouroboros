@@ -205,7 +205,7 @@ describe("Mendelow Cloud Butler household UX", () => {
     expect(topUp.tools).toEqual(["sanctuary_get_download_queue", "unraid_get_notifications"])
     const visibility = transcripts.find((entry) => entry.id === "full-visibility")!
     expect(visibility.user).toBe("What are you working on?")
-    expect(visibility.tools).toEqual(["query_active_work", "query_cares", "unraid_get_system", "unraid_list_containers"])
+    expect(visibility.tools).toEqual(["query_active_work", "query_cares", "unraid_get_system", "unraid_list_containers", "unraid_get_storage", "sanctuary_get_download_queue"])
     for (const heading of ["Active:", "Waiting on you:", "Snoozed:", "Quiet by preference:", "Healthy:", "Other known issues:"]) {
       expect(visibility.reply).toContain(heading)
     }

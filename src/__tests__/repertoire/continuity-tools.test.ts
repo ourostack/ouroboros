@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import * as fs from "fs"
 
 // ── Mock continuity store modules ────────────────────────────────
@@ -70,6 +70,8 @@ vi.mock("../../heart/external-events/router", () => ({
   claimExternalEvent: (...args: any[]) => mockClaimExternalEvent(...args),
   commitExternalEventDisposition: (...args: any[]) => mockCommitExternalEventDisposition(...args),
 }))
+
+afterEach(() => vi.useRealTimers())
 
 // Minimal mocks for tools-base dependencies
 vi.mock("fs", () => ({
@@ -236,6 +238,76 @@ describe("continuity tools", () => {
       const tool = findTool("query_cares")
       const result = await tool.handler({ status: "all" })
       expect(mockReadCares).toHaveBeenCalled()
+    })
+
+    it("projects an overdue system care as stale without presenting its old assessment as current", async () => {
+      vi.useFakeTimers()
+      vi.setSystemTime("2026-09-01T02:17:46.315Z")
+      mockReadActiveCares.mockReturnValue([{
+        id: "care-docker",
+        label: "Docker image disk pressure (97% critical)",
+        why: "Docker image utilization was climbing toward 100%.",
+        kind: "system",
+        status: "active",
+        salience: "high",
+        steward: "mine",
+        relatedFriendIds: [],
+        relatedAgentIds: [],
+        relatedObligationIds: [],
+        relatedEpisodeIds: [],
+        currentRisk: "Docker image was measured at 100%.",
+        nextCheckAt: "2026-08-31T14:45:00.000Z",
+        createdAt: "2026-08-31T09:00:05.599Z",
+        updatedAt: "2026-08-31T14:30:36.894Z",
+      }])
+
+      const result = JSON.parse(String(await findTool("query_cares")!.handler({})))
+
+      expect(result).toEqual([expect.objectContaining({
+        id: "care-docker",
+        evidenceStatus: "stale",
+        recheckRequired: true,
+        staleAt: "2026-08-31T14:45:00.000Z",
+      })])
+      expect(JSON.stringify(result)).not.toContain("climbing toward 100%")
+      expect(JSON.stringify(result)).not.toContain("measured at 100%")
+      expect(result[0]).not.toHaveProperty("label")
+      expect(result[0]).not.toHaveProperty("why")
+      expect(result[0]).not.toHaveProperty("currentRisk")
+      expect(JSON.stringify(result)).not.toContain("97%")
+    })
+
+    it("leaves current system cares and non-system cares unchanged", async () => {
+      vi.useFakeTimers()
+      vi.setSystemTime("2026-09-01T02:17:46.315Z")
+      const cares = [
+        { id: "current-system", label: "Current health", kind: "system", status: "active", nextCheckAt: "2026-09-01T03:00:00.000Z", currentRisk: "Current fact" },
+        { id: "project", label: "House project", kind: "project", nextCheckAt: "2026-08-31T03:00:00.000Z", currentRisk: "Still meaningful" },
+      ]
+      mockReadActiveCares.mockReturnValue(cares)
+
+      const result = JSON.parse(String(await findTool("query_cares")!.handler({})))
+
+      expect(result).toEqual(cares)
+    })
+
+    it("fails an invalid system-care next-check timestamp closed as stale", async () => {
+      mockReadActiveCares.mockReturnValue([{
+        id: "invalid-system",
+        label: "Docker image at 100%",
+        why: "Old measurement",
+        kind: "system",
+        status: "active",
+        salience: "high",
+        steward: "mine",
+        nextCheckAt: "not-a-time",
+        updatedAt: "2026-08-31T14:30:36.894Z",
+      }])
+
+      const result = JSON.parse(String(await findTool("query_cares")!.handler({})))
+
+      expect(result).toEqual([expect.objectContaining({ id: "invalid-system", evidenceStatus: "stale", recheckRequired: true, staleAt: "not-a-time" })])
+      expect(JSON.stringify(result)).not.toMatch(/100%|Old measurement/)
     })
   })
 

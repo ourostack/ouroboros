@@ -4,12 +4,29 @@ import { getAgentRoot, getAgentName } from "../heart/identity";
 import { commitExternalEventDisposition, getExternalEventRoot, readExternalEventRecord } from "../heart/external-events/router";
 import { emitNervesEvent } from "../nerves/runtime";
 import { readRecentEpisodes, emitEpisode } from "../arc/episodes";
-import { bindCareIncident, createCare, readActiveCares, readCares, resolveCare, resolveCareIncident, updateCare, upsertCareForIncident } from "../arc/cares";
+import { bindCareIncident, createCare, readActiveCares, readCares, resolveCare, resolveCareIncident, updateCare, upsertCareForIncident, type CareRecord } from "../arc/cares";
 import { readPresence, readPeerPresence } from "../arc/presence";
 import { captureIntention, resolveIntention, dismissIntention } from "../arc/intentions";
 import type { ToolDefinition } from "./tools-base";
 import { readStewardPolicy } from "../heart/steward-policy";
 import { parseAwaitFile } from "../heart/awaiting/await-parser";
+
+function presentCare(care: CareRecord): CareRecord | Record<string, unknown> {
+  const staleAt = care.nextCheckAt ? Date.parse(care.nextCheckAt) : Number.NaN
+  if (care.kind !== "system" || !["active", "watching"].includes(care.status) || care.nextCheckAt === null) return care
+  if (Number.isFinite(staleAt) && staleAt >= Date.now()) return care
+  return {
+    id: care.id,
+    kind: care.kind,
+    status: care.status,
+    salience: care.salience,
+    steward: care.steward,
+    evidenceStatus: "stale",
+    recheckRequired: true,
+    staleAt: care.nextCheckAt,
+    lastAssessedAt: care.updatedAt,
+  }
+}
 
 export const continuityToolDefinitions: ToolDefinition[] = [
   // ── Continuity tools ──────────────────────────────────────────────
@@ -260,7 +277,7 @@ export const continuityToolDefinitions: ToolDefinition[] = [
     },
     handler: (a) => {
       const agentRoot = getAgentRoot();
-      const cares = a.status === "all" ? readCares(agentRoot) : readActiveCares(agentRoot);
+      const cares = (a.status === "all" ? readCares(agentRoot) : readActiveCares(agentRoot)).map(presentCare);
       emitNervesEvent({ component: "repertoire", event: "repertoire.query_cares", message: `queried ${cares.length} cares`, meta: { count: cares.length } });
       return JSON.stringify(cares, null, 2);
     },
