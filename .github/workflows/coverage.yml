@@ -140,22 +140,18 @@ jobs:
           for AUDIT_SOURCE in \
             /mnt/user/appdata/ouro-butler/runtime/.ouro-cli \
             /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro \
-            /boot/config/custom/ouro-events/spool \
-            /mnt/user/appdata/sabnzbd/sabnzbd.ini; do
+            /boot/config/custom/ouro-events/spool; do
             test ! -e "$AUDIT_SOURCE"
           done
           sudo mkdir -p \
             /mnt/user/appdata/ouro-butler/runtime/.ouro-cli \
             /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro \
-            /boot/config/custom/ouro-events/spool \
-            /mnt/user/appdata/sabnzbd
-          sudo touch /mnt/user/appdata/sabnzbd/sabnzbd.ini
-          trap 'docker rm -f ouro-butler-package-audit-canonical >/dev/null 2>&1 || true; sudo rm -rf -- /mnt/user/appdata/ouro-butler/runtime/.ouro-cli /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro /boot/config/custom/ouro-events/spool /mnt/user/appdata/sabnzbd/sabnzbd.ini; sudo rm -rf -- "$PACKAGE_ROOT"' EXIT
+            /boot/config/custom/ouro-events/spool
+          trap 'docker rm -f ouro-butler-package-audit-canonical >/dev/null 2>&1 || true; sudo rm -rf -- /mnt/user/appdata/ouro-butler/runtime/.ouro-cli /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro /boot/config/custom/ouro-events/spool; sudo rm -rf -- "$PACKAGE_ROOT"' EXIT
           docker create --name ouro-butler-package-audit-canonical --network host --restart unless-stopped --user 10001:10001 \
             --mount type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli \
             --mount type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro \
             --mount type=bind,src=/boot/config/custom/ouro-events/spool,dst=/run/ouro-events,readonly \
-            --mount type=bind,src=/mnt/user/appdata/sabnzbd/sabnzbd.ini,dst=/run/sanctuary/sabnzbd.ini,readonly \
             ouro-butler-package-smoke:"$PACKAGE_VERSION"
           docker inspect ouro-butler-package-audit-canonical >"$AUDIT_PERMISSION_ROOT/container.json"
           docker image inspect "$AUDIT_IMAGE_ID" >"$AUDIT_PERMISSION_ROOT/image.json"
