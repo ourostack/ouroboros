@@ -819,6 +819,13 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       offsetDigest: expect.stringMatching(/^[0-9a-f]{64}$/u), auditCursorDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
     })
     const update = { update_id: 9, callback_query: { id: "q", from: { id: 111 }, data: "opaque", message: { message_id: 7, chat: { id: 222 } } } }
+    await expect(executeSanctuaryAcceptanceAdapter({ operation: "callback_playback_preflight", update }, deps)).resolves.toEqual({
+      playbackCount: 1,
+      coordinateDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
+    })
+    await expect(executeSanctuaryAcceptanceAdapter({ operation: "callback_playback_preflight", update }, unit16Deps({
+      readFixedFile: (file) => file.endsWith("offset.json") ? '{"nextUpdateId":9}\n' : files[file] ?? "",
+    }))).resolves.toMatchObject({ playbackCount: 0 })
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "inject_callbacks_concurrently", update, concurrency: 3 }, deps)).resolves.toMatchObject({ results: { length: 3 } })
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "inject_callback_replay", update }, deps)).resolves.toEqual({ settled: true, claimed: false, mutated: false })
     expect(peak).toBeGreaterThan(1)
@@ -1726,6 +1733,15 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     await reject({ operation: "snapshot", schema: "telegram-cursor-v1", allowGenesis: false }, unit16Deps({ readFixedFile: () => '{"nextUpdateId":-1}' }))
     await reject({ operation: "snapshot", schema: "telegram-cursor-v1", allowGenesis: false }, { ...unit16Deps(), readFixedFile: undefined })
     for (const concurrency of [1, 17, 2.5]) await reject({ operation: "inject_callbacks_concurrently", update: { callback_query: {} }, concurrency })
+    await reject({ operation: "callback_playback_preflight", update: { update_id: 1, callback_query: { id: "q", data: "x", from: { id: 1 }, message: { message_id: 2, chat: { id: 3 } } } }, extra: true })
+    for (const update of [
+      { callback_query: { id: "q", data: "x", from: { id: 1 }, message: { message_id: 2, chat: { id: 3 } } } },
+      { update_id: 1, callback_query: { id: "", data: "x", from: { id: 1 }, message: { message_id: 2, chat: { id: 3 } } } },
+      { update_id: 1, callback_query: { id: "q", data: "", from: { id: 1 }, message: { message_id: 2, chat: { id: 3 } } } },
+      { update_id: 1, callback_query: { id: "q", data: "x", from: { id: 0 }, message: { message_id: 2, chat: { id: 3 } } } },
+      { update_id: 1, callback_query: { id: "q", data: "x", from: { id: 1 }, message: { message_id: 0, chat: { id: 3 } } } },
+    ]) await reject({ operation: "callback_playback_preflight", update })
+    await reject({ operation: "callback_playback_preflight", update: { update_id: 1, callback_query: { id: "q", data: "x", from: { id: 1 }, message: { message_id: 2, chat: { id: 3 } } } } }, unit16Deps({ readFixedFile: () => '{"nextUpdateId":-1}' }))
     await reject({ operation: "inject_callbacks_concurrently", update: {}, concurrency: 2 })
     await reject({ operation: "inject_callback_replay", update: { callback_query: {} } }, { ...unit16Deps(), callbackProbe: undefined })
     await reject({ operation: "inventory_keys", targetServerId: "other" })
@@ -1780,6 +1796,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     await expect(executeSanctuaryAcceptanceCallbackProbe(update, false, base({ handled: true, accepted: true, reason: "accepted" }))).resolves.toEqual({ settled: true, claimed: true, mutated: true })
     await expect(executeSanctuaryAcceptanceCallbackProbe(update, false, base({ handled: true, accepted: false, reason: "decision_refused" }))).resolves.toEqual({ settled: true, claimed: true, mutated: false })
     await expect(executeSanctuaryAcceptanceCallbackProbe(update, true, base({ handled: true, accepted: false, reason: "stale_callback" }))).resolves.toEqual({ settled: true, claimed: false, mutated: false })
+    await expect(executeSanctuaryAcceptanceCallbackProbe(update, true, base({ handled: true, accepted: true, reason: "accepted" }))).rejects.toThrow(/replay/u)
     await expect(executeSanctuaryAcceptanceCallbackProbe(update, false, base({}, async () => ({ ok: false, reason: "missing", itemPath: "x", error: "x" })))).rejects.toThrow(/unavailable/u)
     expect(runtimeInputs[0]?.subject).toBe(opaqueTelegramSubject("a".repeat(43), "secret", "1", "2"))
   })

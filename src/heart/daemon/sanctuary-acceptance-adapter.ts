@@ -1877,6 +1877,40 @@ function callbackUpdate(value: unknown): JsonObject {
   return update
 }
 
+function callbackCoordinate(update: JsonObject): { updateId: number; digest: string } {
+  const updateId = update.update_id
+  if (!Number.isSafeInteger(updateId) || Number(updateId) < 0) throw new Error("callback update_id is invalid")
+  const callback = object(update.callback_query, "callback update callback_query")
+  const from = object(callback.from, "callback update sender")
+  const message = object(callback.message, "callback update message")
+  const chat = object(message.chat, "callback update chat")
+  const callbackId = (value: unknown, label: string): string => {
+    if (!Number.isSafeInteger(value) || Number(value) <= 0) throw new Error(`${label} is invalid`)
+    return String(value)
+  }
+  const coordinate = {
+    updateId: Number(updateId),
+    queryId: text(callback.id, "callback query id"),
+    callbackData: text(callback.data, "callback data"),
+    userId: callbackId(from.id, "callback user id"),
+    chatId: callbackId(chat.id, "callback chat id"),
+    messageId: callbackId(message.message_id, "callback message id"),
+  }
+  return {
+    updateId: coordinate.updateId,
+    digest: sha256(`ouroboros.sanctuary.callback-coordinate.v1\0${JSON.stringify(coordinate)}`),
+  }
+}
+
+function callbackPlaybackPreflight(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDependencies): unknown {
+  exactKeys(payload, ["operation", "update"], "callback playback preflight request")
+  const coordinate = callbackCoordinate(callbackUpdate(payload.update))
+  const offset = object(JSON.parse(fixedFile(deps, TELEGRAM_OFFSET)) as unknown, "Telegram offset")
+  exactKeys(offset, ["nextUpdateId"], "Telegram offset")
+  if (!Number.isSafeInteger(offset.nextUpdateId) || Number(offset.nextUpdateId) < 0) throw new Error("Telegram offset is invalid")
+  return { playbackCount: Number(offset.nextUpdateId) > coordinate.updateId ? 1 : 0, coordinateDigest: coordinate.digest }
+}
+
 async function concurrentCallbackProbe(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDependencies): Promise<unknown> {
   const update = callbackUpdate(payload.update)
   if (!Number.isSafeInteger(payload.concurrency) || (payload.concurrency as number) < 2 || (payload.concurrency as number) > 16) {
@@ -2164,6 +2198,7 @@ export async function executeSanctuaryAcceptanceAdapter(
       case "store_telegram_bootstrap": result = await storeTelegramBootstrap(payload, deps); break
       case "quiesce_telegram_poller": result = telegramPollerQuiescence(payload, deps); break
       case "snapshot": result = cursorSnapshot(payload, deps); break
+      case "callback_playback_preflight": result = callbackPlaybackPreflight(payload, deps); break
       case "inject_callbacks_concurrently": result = await concurrentCallbackProbe(payload, deps); break
       case "inject_callback_replay": result = await callbackReplay(payload, deps); break
       case "drive_timeout_stale": result = await interactiveRuntimeOperation(payload, deps); break
@@ -2329,7 +2364,7 @@ export async function executeSanctuaryInteractiveRuntimeOperation(
 
 export async function executeSanctuaryAcceptanceCallbackProbe(
   rawUpdate: unknown,
-  _replay: boolean,
+  replay: boolean,
   deps: SanctuaryAcceptanceCallbackProbeDependencies = {
     refresh: refreshRuntimeCredentialConfig,
     credentials: loadTelegramSenseCredentials,
@@ -2371,6 +2406,9 @@ export async function executeSanctuaryAcceptanceCallbackProbe(
   })
   try {
     const result = await runtime.transport.handleUpdate(update)
+    if (replay && (result.handled !== true || result.accepted !== false || result.reason !== "stale_callback")) {
+      throw new Error("Telegram callback replay did not settle as stale")
+    }
     return {
       settled: result.handled,
       claimed: result.reason === "accepted" || result.reason === "decision_refused",

@@ -71,6 +71,8 @@ function sha(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex")
 }
 
+const zeroCallbackPlayback = { playbackCount: 0, coordinateDigest: "d".repeat(64) }
+
 function executeSanctuaryAcceptanceHarness(command: string, rawConfig: unknown, deps?: AcceptanceHarnessDependencies): Promise<void> {
   if (rawConfig && typeof rawConfig === "object" && !Array.isArray(rawConfig)) {
     const config = rawConfig as Record<string, unknown>
@@ -1317,18 +1319,52 @@ describe("Sanctuary acceptance harness", () => {
       adapter: async (executable, payload) => {
         expect(executable).toBe("/safe/inject")
         calls.push(payload)
-        return (payload as { operation: string }).operation === "inject_callbacks_concurrently"
+        return (payload as { operation: string }).operation === "callback_playback_preflight"
+          ? { playbackCount: 0, coordinateDigest: createHash("sha256").update("coordinate").digest("hex") }
+          : (payload as { operation: string }).operation === "inject_callbacks_concurrently"
           ? { results: [{ settled: true, claimed: true, mutated: true }, { settled: true, claimed: false, mutated: false }] }
           : { settled: true, claimed: false, mutated: false }
       },
     }))
     expect(calls).toEqual([
+      { operation: "callback_playback_preflight", update },
+      { operation: "callback_playback_preflight", update },
       { operation: "inject_callbacks_concurrently", update, concurrency: 2 },
       { operation: "inject_callback_replay", update },
     ])
     const raw = fs.readFileSync(path.join(dir, "callback.json"), "utf8")
     expect(raw).not.toContain("a:opaque")
-    expect(evidence(path.join(dir, "callback.json"))).toMatchObject({ phase: "complete", claims: 1, mutations: 1, replayMutated: false })
+    expect(evidence(path.join(dir, "callback.json"))).toMatchObject({ phase: "complete", claims: 1, mutations: 1, replayMutated: false, zeroPlayback: true, coordinateDigest: createHash("sha256").update("coordinate").digest("hex") })
+  })
+
+  it("refuses callback injection unless two exact preflights prove zero prior playback", async () => {
+    const dir = root()
+    const update = { update_id: 99, callback_query: { id: "opaque", from: { id: 111 }, data: "a:opaque", message: { message_id: 4, chat: { id: 222 } } } }
+    const coordinateDigest = createHash("sha256").update("coordinate").digest("hex")
+    for (const [name, preflights, error] of [
+      ["prior", [{ playbackCount: 1, coordinateDigest }], /zero prior playback/u],
+      ["raced", [{ playbackCount: 0, coordinateDigest }, { playbackCount: 1, coordinateDigest }], /zero prior playback/u],
+      ["drift", [{ playbackCount: 0, coordinateDigest }, { playbackCount: 0, coordinateDigest: "f".repeat(64) }], /coordinate changed/u],
+      ["shape", [{ playbackCount: 0, coordinateDigest, extra: true }], /shape/u],
+      ["count", [{ playbackCount: -1, coordinateDigest }], /count/u],
+      ["digest", [{ playbackCount: 0, coordinateDigest: "raw" }], /coordinate digest/u],
+    ] as const) {
+      let preflightIndex = 0
+      const calls: string[] = []
+      await expect(executeSanctuaryAcceptanceHarness("callback-inject", {
+        evidencePath: path.join(dir, `${name}.json`), adapter: "/safe/inject", concurrency: 2,
+      }, dependencies({
+        secret: JSON.stringify(update),
+        adapter: async (_executable, payload) => {
+          const operation = (payload as { operation: string }).operation
+          calls.push(operation)
+          if (operation === "callback_playback_preflight") return preflights[Math.min(preflightIndex++, preflights.length - 1)]
+          throw new Error("injection must not run")
+        },
+      }))).rejects.toThrow(error)
+      expect(calls.every((operation) => operation === "callback_playback_preflight")).toBe(true)
+      expect(JSON.stringify(evidence(path.join(dir, `${name}.json`)))).not.toContain("a:opaque")
+    }
   })
 
   it("rejects malformed callback material and unexpected callback totals before claiming success", async () => {
@@ -1341,7 +1377,9 @@ describe("Sanctuary acceptance harness", () => {
       evidencePath: path.join(dir, "totals.json"), adapter: "/safe/inject", concurrency: 2,
     }, dependencies({
       secret: JSON.stringify({ update_id: 1, callback_query: { id: "x", from: { id: 1 }, data: "x" } }),
-      adapter: async () => ({ results: [{ settled: true, claimed: true, mutated: false }, { settled: true, claimed: false, mutated: false }] }),
+      adapter: async (_executable, payload) => (payload as { operation: string }).operation === "callback_playback_preflight"
+        ? zeroCallbackPlayback
+        : { results: [{ settled: true, claimed: true, mutated: false }, { settled: true, claimed: false, mutated: false }] },
     }))).rejects.toThrow(/mutation total/u)
     expect(evidence(path.join(dir, "totals.json"))).toMatchObject({ phase: "failed" })
   })
@@ -1824,9 +1862,11 @@ describe("Sanctuary acceptance harness", () => {
     const update = JSON.stringify({ update_id: 1, callback_query: { id: "x", from: { id: 1 }, data: "x" } })
     const run = async (name: string, response: unknown, overrides: Record<string, unknown> = {}) => executeSanctuaryAcceptanceHarness("callback-inject", {
       evidencePath: path.join(dir, `${name}.json`), adapter: "/inject", concurrency: 2, ...overrides,
-    }, dependencies({ secret: update, adapter: async (_executable, payload) => (payload as { operation: string }).operation === "inject_callbacks_concurrently"
-      ? { results: [response, { settled: true, claimed: false, mutated: false }] }
-      : { settled: true, claimed: false, mutated: false } }))
+    }, dependencies({ secret: update, adapter: async (_executable, payload) => (payload as { operation: string }).operation === "callback_playback_preflight"
+      ? zeroCallbackPlayback
+      : (payload as { operation: string }).operation === "inject_callbacks_concurrently"
+        ? { results: [response, { settled: true, claimed: false, mutated: false }] }
+        : { settled: true, claimed: false, mutated: false } }))
     await expect(run("settled", { settled: false, claimed: false, mutated: false })).rejects.toThrow(/did not settle/u)
     await expect(run("claim", { settled: true, claimed: "no", mutated: false })).rejects.toThrow(/claim must be boolean/u)
     await expect(run("mutation", { settled: true, claimed: false, mutated: "no" })).rejects.toThrow(/mutation must be boolean/u)
@@ -1840,16 +1880,21 @@ describe("Sanctuary acceptance harness", () => {
     }, dependencies({ secret: "{" }))).rejects.toThrow(/valid JSON/u)
     await expect(executeSanctuaryAcceptanceHarness("callback-inject", {
       evidencePath: path.join(dir, "replay-shape.json"), adapter: "/inject", concurrency: 2,
-    }, dependencies({ secret: update, adapter: async (_executable, payload) => (payload as { operation: string }).operation === "inject_callbacks_concurrently"
-      ? { results: [{ settled: true, claimed: true, mutated: true }, { settled: true, claimed: false, mutated: false }] }
-      : { settled: true, claimed: false, mutated: undefined } }))).rejects.toThrow(/did not settle canonically/u)
+    }, dependencies({ secret: update, adapter: async (_executable, payload) => (payload as { operation: string }).operation === "callback_playback_preflight"
+      ? zeroCallbackPlayback
+      : (payload as { operation: string }).operation === "inject_callbacks_concurrently"
+        ? { results: [{ settled: true, claimed: true, mutated: true }, { settled: true, claimed: false, mutated: false }] }
+        : { settled: true, claimed: false, mutated: undefined } }))).rejects.toThrow(/did not settle canonically/u)
     let call = 0
     await expect(executeSanctuaryAcceptanceHarness("callback-inject", {
       evidencePath: path.join(dir, "replay-mutated.json"), adapter: "/inject", concurrency: 2,
-    }, dependencies({ secret: update, adapter: async () => (++call === 1 ? { results: [{ settled: true, claimed: true, mutated: true }, { settled: true, claimed: false, mutated: false }] } : { settled: true, claimed: false, mutated: true }) }))).rejects.toThrow(/replay was claimed or mutated/u)
+    }, dependencies({ secret: update, adapter: async (_executable, payload) => {
+      if ((payload as { operation: string }).operation === "callback_playback_preflight") return zeroCallbackPlayback
+      return ++call === 1 ? { results: [{ settled: true, claimed: true, mutated: true }, { settled: true, claimed: false, mutated: false }] } : { settled: true, claimed: false, mutated: true }
+    } }))).rejects.toThrow(/replay was claimed or mutated/u)
     await expect(executeSanctuaryAcceptanceHarness("callback-inject", {
       evidencePath: path.join(dir, "batch-count.json"), adapter: "/inject", concurrency: 2,
-    }, dependencies({ secret: update, adapter: async () => ({ results: [] }) }))).rejects.toThrow(/result count/u)
+    }, dependencies({ secret: update, adapter: async (_executable, payload) => (payload as { operation: string }).operation === "callback_playback_preflight" ? zeroCallbackPlayback : { results: [] } }))).rejects.toThrow(/result count/u)
     const cleanupPath = path.join(dir, "cleanup.json")
     await expect(executeSanctuaryAcceptanceHarness("callback-inject", {
       evidencePath: cleanupPath, adapter: "/inject", concurrency: 2,
@@ -1979,9 +2024,12 @@ describe("Sanctuary acceptance harness", () => {
     await expect(executeSanctuaryAcceptanceHarness("callback-inject", {
       allowedRoot: dir, evidencePath: path.join(dir, "callback.json"), adapter: "/inject", concurrency: 2,
       expectedClaims: 0, expectedMutations: 0, replay: false,
-    }, dependencies({ secret: update, adapter: async () => (++call === 1
-      ? { results: [{ settled: true, claimed: true, mutated: true }, { settled: true, claimed: false, mutated: false }] }
-      : { settled: true, claimed: true, mutated: false }) }))).rejects.toThrow(/replay/u)
+    }, dependencies({ secret: update, adapter: async (_executable, payload) => {
+      if ((payload as { operation: string }).operation === "callback_playback_preflight") return zeroCallbackPlayback
+      return ++call === 1
+        ? { results: [{ settled: true, claimed: true, mutated: true }, { settled: true, claimed: false, mutated: false }] }
+        : { settled: true, claimed: true, mutated: false }
+    } }))).rejects.toThrow(/replay/u)
   })
 
   it("rejects ambiguous Unraid identities and reconciles immediately before exact revoke", async () => {

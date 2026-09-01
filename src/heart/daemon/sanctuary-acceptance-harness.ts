@@ -1016,6 +1016,24 @@ async function callbackInject(config: JsonObject, deps: AcceptanceHarnessDepende
   const base = { schemaVersion: 1, operation: "callback-inject", phase: "preflight", updateDigest: digest(update), concurrency, replay: true }
   initializeCheckpoint(root, evidencePath, base)
   try {
+    const preflight = async (): Promise<{ playbackCount: number; coordinateDigest: string }> => {
+      const result = object(await deps.runAdapter(executable, { operation: "callback_playback_preflight", update }), "callback playback preflight")
+      if (JSON.stringify(Object.keys(result).sort()) !== JSON.stringify(["coordinateDigest", "playbackCount"])) {
+        throw new Error("callback playback preflight shape is invalid")
+      }
+      if (!Number.isSafeInteger(result.playbackCount) || Number(result.playbackCount) < 0) {
+        throw new Error("callback playback preflight count is invalid")
+      }
+      if (typeof result.coordinateDigest !== "string" || !/^[0-9a-f]{64}$/u.test(result.coordinateDigest)) {
+        throw new Error("callback playback preflight coordinate digest is invalid")
+      }
+      return { playbackCount: Number(result.playbackCount), coordinateDigest: result.coordinateDigest }
+    }
+    const firstPreflight = await preflight()
+    if (firstPreflight.playbackCount !== 0) throw new Error("callback injection requires zero prior playback")
+    const secondPreflight = await preflight()
+    if (secondPreflight.playbackCount !== 0) throw new Error("callback injection requires zero prior playback")
+    if (secondPreflight.coordinateDigest !== firstPreflight.coordinateDigest) throw new Error("callback playback coordinate changed between preflights")
     const batch = object(await deps.runAdapter(executable, { operation: "inject_callbacks_concurrently", update, concurrency }), "callback batch result")
     if (!Array.isArray(batch.results) || batch.results.length !== concurrency) throw new Error("callback batch result count mismatch")
     const responses = batch.results
@@ -1036,7 +1054,7 @@ async function callbackInject(config: JsonObject, deps: AcceptanceHarnessDepende
       throw new Error("callback replay did not settle canonically")
     }
     if (replayResult.claimed || replayResult.mutated) throw new Error("callback replay was claimed or mutated state")
-    replaceCheckpoint(root, evidencePath, { ...base, phase: "complete", claims, mutations, replayClaimed: false, replayMutated: false, completedAt: deps.now() })
+    replaceCheckpoint(root, evidencePath, { ...base, phase: "complete", coordinateDigest: firstPreflight.coordinateDigest, zeroPlayback: true, claims, mutations, replayClaimed: false, replayMutated: false, completedAt: deps.now() })
   } catch (error) {
     failedCheckpoint(root, evidencePath, base, error)
     throw error
