@@ -76,6 +76,7 @@ export interface SanctuaryAcceptanceAdapterDependencies {
   captureScenario?(payload: JsonObject): Promise<unknown>
   finalizeScenarios?(): void | Promise<void>
   telegramCredentials?(): TelegramSenseCredentials
+  createTelegramApi?(options: { token: string }): TelegramBotApi
   readProviderCredential?: typeof readProviderCredentialRecord
   providerPing?: typeof pingProvider
   readLiveGrounding?(toolName: SanctuaryGroundingToolName): Promise<{ toolName: SanctuaryGroundingToolName; groundingDigest: string; sourceIdentityDigest: string; observedAt: string; facts: Record<string, unknown> }>
@@ -279,6 +280,7 @@ export function createSanctuaryAcceptanceAdapterDependencies(
     interactiveRuntime: executeSanctuaryInteractiveRuntimeOperation,
     hostRequest: options.hostRequest ?? ((payload) => defaultHostRequest(payload, hostBrokerSocket, adapterTimeoutMs)),
     telegramCredentials: () => loadTelegramSenseCredentials(TARGET_ID),
+    createTelegramApi: createTelegramBotApi,
     readLiveGrounding: readIndependentSanctuaryGrounding,
     runProductionBoundaryProbe: runSanctuaryProductionBoundaryProbe,
   }
@@ -1780,12 +1782,6 @@ function exactKeys(value: JsonObject, keys: string[], label: string): void {
   if (JSON.stringify(Object.keys(value).sort()) !== JSON.stringify([...keys].sort())) throw new Error(`${label} shape is invalid`)
 }
 
-function positiveDecimal(value: unknown, label: string): string {
-  const result = text(value, label)
-  if (!/^[1-9][0-9]*$/u.test(result)) throw new Error(`${label} is invalid`)
-  return result
-}
-
 function sha256(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex")
 }
@@ -1802,19 +1798,6 @@ async function runtimeConfig(
   const result = await dependency(reader, label)(...args)
   if (!result.ok) throw new Error(`${label} is unavailable`)
   return result.config
-}
-
-async function storeTelegramBootstrap(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDependencies): Promise<unknown> {
-  const patch = {
-    telegramBotToken: text(payload.botToken, "Telegram bot credential"),
-    telegramAuthorizedUserId: positiveDecimal(payload.authorizedUserId, "Telegram authorized user"),
-    telegramAuthorizedChatId: positiveDecimal(payload.authorizedChatId, "Telegram authorized chat"),
-  }
-  const stored = await dependency(deps.mergeRuntime, "runtime vault writer")(TARGET_ID, patch)
-  if (!stored.ok || Object.entries(patch).some(([key, value]) => stored.config[key] !== value)) {
-    throw new Error("Telegram bootstrap vault readback failed")
-  }
-  return { stored: true }
 }
 
 function cursorSnapshot(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDependencies): { offsetDigest: string; auditCursorDigest: string } {
@@ -2244,6 +2227,37 @@ function materializeConfig(payload: JsonObject, deps: SanctuaryAcceptanceAdapter
   return config
 }
 
+async function telegramReadiness(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDependencies): Promise<unknown> {
+  exactKeys(payload, ["operation"], "Telegram readiness payload")
+  let refreshed: RuntimeCredentialConfigReadResult
+  try { refreshed = await dependency(deps.refreshRuntime, "runtime credential refresher")(TARGET_ID) }
+  catch { throw new Error("Telegram runtime credentials are unavailable; actor: human-required; unlock or repair vault runtime/config") }
+  if (!refreshed.ok) throw new Error("Telegram runtime credentials are unavailable; actor: human-required; unlock or repair vault runtime/config")
+  let credentials: TelegramSenseCredentials
+  try {
+    credentials = dependency(deps.telegramCredentials, "Telegram credentials")()
+    telegramBotIdFromToken(credentials.botToken)
+  } catch {
+    throw new Error("Telegram runtime credentials are invalid; actor: human-required; repair vault runtime/config")
+  }
+  let api: TelegramBotApi
+  try { api = dependency(deps.createTelegramApi, "Telegram API factory")({ token: credentials.botToken }) }
+  catch { throw new Error("Telegram client initialization failed; actor: agent-runnable; retry Telegram readiness") }
+  let bot: unknown
+  try { bot = await api.request("getMe", {}, AbortSignal.timeout(30_000)) }
+  catch { throw new Error("Telegram getMe failed; actor: agent-runnable; retry Telegram readiness") }
+  finally {
+    try { api.stop() }
+    catch { throw new Error("Telegram client cleanup failed; actor: agent-runnable; retry Telegram readiness") }
+  }
+  if (!bot || typeof bot !== "object" || Array.isArray(bot)
+    || String((bot as JsonObject).id) !== "8541786263"
+    || (bot as JsonObject).username !== "MendelowCloudButlerBot") {
+    throw new Error("Telegram bot identity mismatch; actor: human-required; repair vault runtime/config")
+  }
+  return { ready: true, identityMatches: true }
+}
+
 export async function executeSanctuaryAcceptanceAdapter(
   rawPayload: unknown,
   deps: SanctuaryAcceptanceAdapterDependencies = createSanctuaryAcceptanceAdapterDependencies(),
@@ -2258,7 +2272,6 @@ export async function executeSanctuaryAcceptanceAdapter(
       case "closed-inventory": result = closedInventory(deps); break
       case "exact-id-revoke": result = await exactIdRevoke(payload, deps); break
       case "revoked-key-auth-rejection": result = await revokedKeyAuthRejection(payload, deps); break
-      case "store_telegram_bootstrap": result = await storeTelegramBootstrap(payload, deps); break
       case "quiesce_telegram_poller": result = telegramPollerQuiescence(payload, deps); break
       case "snapshot": result = cursorSnapshot(payload, deps); break
       case "callback_playback_preflight": result = callbackPlaybackPreflight(payload, deps); break
@@ -2290,6 +2303,7 @@ export async function executeSanctuaryAcceptanceAdapter(
       case "request_reboot": result = await requestReboot(payload, deps); break
       case "poll_reboot": result = pollReboot(payload, deps); break
       case "materialize_config": result = materializeConfig(payload, deps); break
+      case "telegram_readiness": result = await telegramReadiness(payload, deps); break
       default: throw new Error("unknown Sanctuary acceptance adapter operation")
     }
     emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_acceptance_adapter_end", message: "Sanctuary acceptance adapter completed", meta: { operation } })
