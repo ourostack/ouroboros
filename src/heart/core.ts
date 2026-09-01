@@ -410,7 +410,13 @@ function createFinalOnlyTextBuffer(callbacks: ChannelCallbacks): HabitCallbackBu
 export interface RunAgentOptions {
   toolChoiceRequired?: boolean;
   /** Turn-local reads that must actually reach their handlers before any terminal response can complete. */
-  requiredToolCalls?: { names: readonly string[]; retryMessage: string };
+  requiredToolCalls?: {
+    names: readonly string[];
+    retryMessage: string;
+    requireSuccessfulResults?: boolean;
+    validateRequiredToolResult?: (name: string, result: string) => boolean;
+    validateTerminalAnswer?: (answer: string) => string | undefined;
+  };
   toolContext?: ToolContext;
   traceId?: string;
   bridgeContext?: string;
@@ -883,6 +889,11 @@ function toolResultIndicatesFailure(content: string): boolean {
     || normalized.startsWith("commerce authority required:")
     || normalized.startsWith("blocked:")
     || normalized.startsWith("rejected:")
+}
+
+function requiredToolResultSucceeded(name: string, content: string, validate?: (name: string, result: string) => boolean): boolean {
+  if (toolResultIndicatesFailure(content)) return false
+  return validate?.(name, content) ?? true
 }
 
 function effectFingerprint(name: string, rawArguments: string): string | null {
@@ -1504,6 +1515,11 @@ export async function runAgent(
       ? { missing, message: `${options!.requiredToolCalls!.retryMessage} Missing required tool calls: ${missing.join(", ")}.` }
       : null;
   };
+  const queueRequiredCorrection = (message: string, limitContext: string): void => {
+    if (providerIterations >= MAX_PROVIDER_ITERATIONS) throw new Error(`provider iteration limit exhausted at response ${MAX_PROVIDER_ITERATIONS} ${limitContext}`)
+    messages.push({ role: "user", content: message })
+    providerRuntime.resetTurnState(messages)
+  }
   const toolLoopState = createToolLoopState();
   const toolFrictionLedger = createToolFrictionLedger();
   const finishTerminalProviderError = (error: Error, classification: ProviderErrorClassification): void => {
@@ -1936,11 +1952,7 @@ export async function runAgent(
         if (requiredToolCallsGate) {
           streamCallbackBuffer?.discard();
           callbacks.onClearText?.();
-          if (providerIterations >= MAX_PROVIDER_ITERATIONS) {
-            throw new Error(`provider iteration limit exhausted at response ${MAX_PROVIDER_ITERATIONS} before required tool calls completed`)
-          }
-          pushGenerated(msg);
-          messages.push({ role: "user", content: requiredToolCallsGate.message });
+          queueRequiredCorrection(requiredToolCallsGate.message, "before required tool calls completed")
           emitNervesEvent({
             level: "warn",
             component: "engine",
@@ -1949,6 +1961,14 @@ export async function runAgent(
             meta: { missingToolNames: requiredToolCallsGate.missing },
           });
           continue;
+        }
+        const requiredAnswerRejection = options?.requiredToolCalls?.validateTerminalAnswer?.(String(msg.content ?? ""))
+        if (requiredAnswerRejection) {
+          streamCallbackBuffer?.discard()
+          callbacks.onClearText?.()
+          queueRequiredCorrection(requiredAnswerRejection, "before required terminal answer validation completed")
+          emitNervesEvent({ level: "warn", component: "engine", event: "engine.required_tool_answer_rejected", message: "unsupported terminal answer rejected after required reads", meta: { answerLength: String(msg.content ?? "").length } })
+          continue
         }
         if (privateReturnTextAckRetryError) {
           streamCallbackBuffer?.discard();
@@ -2175,9 +2195,7 @@ export async function runAgent(
             streamCallbackBuffer?.discard();
             callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs), false);
             callbacks.onClearText?.();
-            pushGenerated(msg);
-            pushGenerated({ role: "tool", tool_call_id: result.toolCalls[0].id, content: requiredToolCallsGate.message });
-            providerRuntime.appendToolOutput(result.toolCalls[0].id, requiredToolCallsGate.message);
+            queueRequiredCorrection(requiredToolCallsGate.message, "before required tool calls completed")
             emitNervesEvent({
               level: "warn",
               component: "engine",
@@ -2203,6 +2221,15 @@ export async function runAgent(
           // Extract answer from the tool call arguments.
           // Supports: {"answer":"text","intent":"..."} or "text" (JSON string).
           const { answer, intent } = parseSettlePayload(result.toolCalls[0].arguments);
+          const requiredAnswerRejection = options?.requiredToolCalls?.validateTerminalAnswer?.(answer)
+          if (requiredAnswerRejection) {
+            streamCallbackBuffer?.discard()
+            callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs), false)
+            callbacks.onClearText?.()
+            queueRequiredCorrection(requiredAnswerRejection, "before required terminal answer validation completed")
+            emitNervesEvent({ level: "warn", component: "engine", event: "engine.required_tool_answer_rejected", message: "unsupported settle answer rejected after required reads", meta: { answerLength: answer.length } })
+            continue
+          }
 
           // Private-runtime settle: no CompletionMetadata, "(settled)" ack
           if (isPrivateRuntimeChannel) {
@@ -2743,7 +2770,7 @@ export async function runAgent(
             const execToolFn = options?.execTool ?? execTool;
             const routineActionSelection = approvalCalls.find((entry) => entry.call.id === tc.id)?.routineActionSelection
             const executionToolContext = routineActionSelection && augmentedToolContext ? { ...augmentedToolContext, routineActionSelection } : augmentedToolContext
-            if (requiredToolCallNames.includes(tc.name)) dispatchedRequiredToolCalls.add(tc.name);
+            if (requiredToolCallNames.includes(tc.name) && !options?.requiredToolCalls?.requireSuccessfulResults) dispatchedRequiredToolCalls.add(tc.name);
             toolResult = await execToolFn(tc.name, args, executionToolContext);
             success = true;
           } catch (e) {
@@ -2751,6 +2778,8 @@ export async function runAgent(
             success = false;
             augmentedToolContext?.habitSession?.recordError?.(toolResult);
           }
+          if (success && requiredToolCallNames.includes(tc.name) && options?.requiredToolCalls?.requireSuccessfulResults
+            && requiredToolResultSucceeded(tc.name, toolResult, options.requiredToolCalls.validateRequiredToolResult)) dispatchedRequiredToolCalls.add(tc.name)
           if (success && currentEffectFingerprint && !toolResultIndicatesFailure(toolResult)) {
             unresolvedHistoricalEffects = unresolvedHistoricalEffects.filter(
               (effect) => effect.fingerprint !== currentEffectFingerprint,

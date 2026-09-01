@@ -93,6 +93,75 @@ describe("Telegram effect adapter", () => {
     expect(JSON.stringify(store.read(prepared.id))).not.toContain("chatId")
   })
 
+  it("persists and delivers butler replies as phone-native plain text", async () => {
+    const store = journal()
+    const request = vi.fn(async () => ({ message_id: 81 }))
+    const authorize = vi.fn(() => authorization)
+    const delivered = vi.fn()
+    const execute = createTelegramAuthorizedEffectExecutor({ store, api: { request }, authorize })
+    const familyTarget = { ...target, friendId: "mom", sessionKey: "telegram:mom" }
+
+    const result = await execute({
+      idempotencyKey: "reply:plain-text",
+      target: familyTarget,
+      authorClass: "butler",
+      effect: {
+        kind: "text",
+        text: "**Sanctuary summary**\n\n- **Docker:** old reading.\n- Use `npm run test` at /mnt/user/app_data and keep **/src/** globs.\n- Login: https://example.com/a_(b).\nOrdinary * and a_b_c stay; arithmetic 2 ** 3 and unmatched ** stay.",
+      },
+      onMessageDelivered: delivered,
+    })
+
+    const expected = "Sanctuary summary\n\n- Docker: old reading.\n- Use `npm run test` at /mnt/user/app_data and keep **/src/** globs.\n- Login: https://example.com/a_(b).\nOrdinary * and a_b_c stay; arithmetic 2 ** 3 and unmatched ** stay."
+    expect(result.effect).toEqual({ kind: "text", text: expected })
+    expect(result.parts).toEqual([expect.objectContaining({ text: expected, state: "accepted" })])
+    expect(store.read(result.id)).toMatchObject({ target: familyTarget, effect: { text: expected }, parts: [{ text: expected }] })
+    expect(authorize.mock.calls.map(([input]) => input)).toEqual([
+      expect.objectContaining({ phase: "prepare", target: familyTarget, effect: { kind: "text", text: expected } }),
+      expect.objectContaining({ phase: "send", target: familyTarget, effect: { kind: "text", text: expected }, artifact: expect.objectContaining({ effect: { kind: "text", text: expected } }) }),
+    ])
+    expect(delivered).toHaveBeenCalledWith(81, expected)
+    expect(request).toHaveBeenCalledWith("sendMessage", { chat_id: "42", text: expected, parse_mode: "HTML" }, undefined)
+    const envelope: SessionEnvelope = {
+      version: 2,
+      events: [],
+      projection: { eventIds: [], trimmed: false, maxTokens: null, contextMargin: null, inputTokens: null, projectedAt: null },
+      lastUsage: null,
+      state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
+    }
+    const appended = appendTelegramArtifactEvents(envelope, result, "2026-09-01T02:17:52.591Z")
+    expect(appended.envelope.events).toEqual([expect.objectContaining({ role: "assistant", content: expected })])
+
+    const duplicate = await execute({
+      idempotencyKey: "reply:plain-text",
+      target: familyTarget,
+      authorClass: "butler",
+      effect: { kind: "text", text: "**Sanctuary summary**\n\n- **Docker:** old reading.\n- Use `npm run test` at /mnt/user/app_data and keep **/src/** globs.\n- Login: https://example.com/a_(b).\nOrdinary * and a_b_c stay; arithmetic 2 ** 3 and unmatched ** stay." },
+    })
+    expect(duplicate).toEqual(result)
+    expect(request).toHaveBeenCalledOnce()
+  })
+
+  it("preserves backtick-delimited commands byte-for-byte", async () => {
+    const store = journal()
+    const execute = createTelegramAuthorizedEffectExecutor({ store, api: { request: vi.fn(async () => ({ message_id: 83 })) }, authorize: () => authorization })
+    const command = "Run echo `date` and keep `**/*.ts` unchanged."
+
+    const result = await execute({ idempotencyKey: "reply:command", target, authorClass: "butler", effect: { kind: "text", text: command } })
+
+    expect(result.effect).toEqual({ kind: "text", text: command })
+  })
+
+  it("does not rewrite control or system-authored text", async () => {
+    const store = journal()
+    const request = vi.fn(async () => ({ message_id: 82 }))
+    const execute = createTelegramAuthorizedEffectExecutor({ store, api: { request }, authorize: () => authorization })
+
+    const result = await execute({ idempotencyKey: "system:literal", target, authorClass: "system_failsafe", effect: { kind: "text", text: "Literal **markers**" } })
+
+    expect(result.effect).toEqual({ kind: "text", text: "Literal **markers**" })
+  })
+
   it("recovers only bounded definitely-unsent outbox work and never retries indeterminate delivery", async () => {
     const store = journal()
     const execute = createTelegramAuthorizedEffectExecutor({

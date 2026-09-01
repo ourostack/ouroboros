@@ -101,6 +101,14 @@ function preparedTexts(effect: TelegramEffect): Array<string | null> {
   return [effect.text?.trim() || null]
 }
 
+function telegramPlainText(text: string): string {
+  return text.replace(/(^|[\s([{])\*\*([\p{L}\p{N}][^*\n]*?)\*\*(?=$|[\s.,;!?)\]}])/gmu, "$1$2")
+}
+
+function presentTelegramEffect(authorClass: TelegramArtifactAuthorClass, effect: TelegramEffect): TelegramEffect {
+  return authorClass === "butler" && effect.kind === "text" ? { ...effect, text: telegramPlainText(effect.text) } : effect
+}
+
 function assertEffectTarget(target: TelegramEffectTarget, effect: TelegramEffect, idempotencyKey: string): void {
   if (target.kind === "admission_gate") {
     if (effect.kind !== "admission_ack" || effect.text !== FIXED_ADMISSION_ACKNOWLEDGEMENT || idempotencyKey !== `ack:${target.admissionId}`) {
@@ -446,10 +454,11 @@ export function createTelegramAuthorizedEffectExecutor(options: {
   return async (input) => {
     if (input.signal?.aborted) throw input.signal.reason
     barrier()
-    const authorization = await options.authorize({ phase: "prepare", ...input })
+    const presentedInput = { ...input, effect: presentTelegramEffect(input.authorClass, input.effect) }
+    const authorization = await options.authorize({ phase: "prepare", ...presentedInput })
     if (!authorization.allowed) throw new Error(`Telegram effect authorization denied: ${authorization.reason}`)
     const store = getStore()
-    const prepared = prepareTelegramEffect(store, { ...input, authorization })
+    const prepared = prepareTelegramEffect(store, { ...presentedInput, authorization })
     try {
       const executed = await executeTelegramEffect(store, prepared.id, options.api, async (artifact) => {
         if (input.signal?.aborted) throw input.signal.reason

@@ -2038,8 +2038,9 @@ describe("runAgent tool loop guard", () => {
       expect(result).toMatchObject({ outcome: "settled", completion: { answer: finalAnswer, intent: "complete" } })
       expect(execTool.mock.calls.map(([name]) => name)).toEqual(["unraid_get_storage", "sanctuary_get_media_optimization"])
       expect(callbacks.onTextChunk).toHaveBeenLastCalledWith(finalAnswer)
-      expect(messages).toContainEqual(expect.objectContaining({ role: "tool", tool_call_id: "settle-before-reads", content: expect.stringMatching(/safe storage reads.*unraid_get_storage.*sanctuary_get_media_optimization/is) }))
-      expect(messages).toContainEqual(expect.objectContaining({ role: "tool", tool_call_id: "settle-before-media", content: expect.stringMatching(/safe storage reads.*sanctuary_get_media_optimization/is) }))
+      expect(messages).not.toContainEqual(expect.objectContaining({ tool_call_id: "settle-before-reads" }))
+      expect(messages).not.toContainEqual(expect.objectContaining({ tool_call_id: "settle-before-media" }))
+      expect(JSON.stringify(messages)).not.toMatch(/Should I run the media read|Storage is full/)
       expect(finalAnswer).toMatch(/largest measured share.*Unmanic.*Jellyfin.*sample encode/is)
       expect(finalAnswer).not.toMatch(/future savings (?:are|of)|QDirStat|shell|should I|shall I/is)
     })
@@ -2070,7 +2071,7 @@ describe("runAgent tool loop guard", () => {
 
       expect(execTool.mock.calls.map(([name]) => name)).toEqual(["sanctuary_get_media_optimization", "unraid_get_storage"])
       expect(messages).toContainEqual(expect.objectContaining({ role: "tool", tool_call_id: "invalid-storage", content: expect.stringContaining("invalid tool arguments") }))
-      expect(messages).toContainEqual(expect.objectContaining({ role: "tool", tool_call_id: "settle-missing-storage", content: expect.stringMatching(/Run the missing reads.*unraid_get_storage/is) }))
+      expect(messages).not.toContainEqual(expect.objectContaining({ tool_call_id: "settle-missing-storage" }))
       expect(result).toMatchObject({ outcome: "blocked", completion: { intent: "blocked" } })
     })
 
@@ -2110,11 +2111,8 @@ describe("runAgent tool loop guard", () => {
 
       expect(result).toMatchObject({ outcome: "settled", completion: { answer: finalAnswer, intent: "complete" } })
       expect(execTool.mock.calls.map(([name]) => name)).toEqual(dispatchedNames)
-      expect(messages).toContainEqual(expect.objectContaining({
-        role: "tool",
-        tool_call_id: "settle-before-current-reads",
-        content: expect.stringMatching(/current active work.*query_active_work.*query_cares.*unraid_get_system.*unraid_list_containers/is),
-      }))
+      expect(messages).not.toContainEqual(expect.objectContaining({ tool_call_id: "settle-before-current-reads" }))
+      expect(JSON.stringify(messages)).not.toContain(staleAnswer)
       expect(callbacks.onTextChunk).toHaveBeenCalledTimes(1)
       expect(callbacks.onTextChunk).toHaveBeenCalledWith(finalAnswer)
       expect(finalAnswer).toMatch(/Active:.*Waiting on you:.*Snoozed:.*Quiet by preference:.*Healthy:.*Other known issues:/is)
@@ -2159,6 +2157,104 @@ describe("runAgent tool loop guard", () => {
       expect(callbacks.onTextChunk).toHaveBeenCalledTimes(1)
       expect(callbacks.onTextChunk).toHaveBeenCalledWith(finalAnswer)
       expect(callbacks.onTextChunk).not.toHaveBeenCalledWith(expect.stringContaining("100%"))
+      expect(JSON.stringify(messages)).not.toContain("**Sanctuary status** Docker is at 100%.")
+    })
+
+    it("requires successful current reads and rejects unsupported Docker-image assertions without persisting them", async () => {
+      const staleAnswer = "Docker image disk is at 100%."
+      const finalAnswer = "Sanctuary is running. Docker image utilization still needs a fresh authoritative check."
+      mockCreate
+        .mockReturnValueOnce(streamed("unraid_get_storage", {}, "storage-failed-envelope"))
+        .mockReturnValueOnce(streamed("settle", { answer: staleAnswer, intent: "blocked" }, "settle-after-failed-envelope"))
+        .mockReturnValueOnce(streamed("unraid_get_storage", {}, "storage-throws"))
+        .mockReturnValueOnce(streamed("settle", { answer: staleAnswer, intent: "blocked" }, "settle-after-throw"))
+        .mockReturnValueOnce(streamed("unraid_get_storage", {}, "storage-current"))
+        .mockReturnValueOnce(streamed("settle", { answer: staleAnswer, intent: "complete" }, "settle-unsupported-claim"))
+        .mockReturnValueOnce(streamed("settle", { answer: finalAnswer, intent: "complete" }, "settle-current"))
+      let readAttempt = 0
+      const execTool = vi.fn(async () => {
+        readAttempt += 1
+        if (readAttempt === 1) return JSON.stringify({ ok: false, error: { code: "offline" } })
+        if (readAttempt === 2) throw new Error("storage transport failed")
+        return JSON.stringify({ ok: true, data: { array: { usedPercent: 74 } } })
+      })
+      const messages: any[] = [{ role: "user", content: "What's going on with Sanctuary?" }]
+      const { runAgent } = await import("../../heart/core")
+
+      const result = await runAgent(messages, makeCallbacks({ settleOutputMode: "final_only" }), "telegram", undefined, {
+        tools: [readTool("unraid_get_storage")],
+        execTool,
+        toolContext: { signin: async () => undefined },
+        requiredToolCalls: {
+          names: ["unraid_get_storage"],
+          retryMessage: "Read current storage before answering.",
+          requireSuccessfulResults: true,
+          validateRequiredToolResult: (_name, output) => JSON.parse(output).ok === true,
+          validateTerminalAnswer: (answer) => /docker image disk is at 100%/iu.test(answer) ? "No current tool supports that Docker image claim; report it only as needing a fresh check." : undefined,
+        },
+      })
+
+      expect(result).toMatchObject({ outcome: "settled", completion: { answer: finalAnswer, intent: "complete" } })
+      expect(execTool).toHaveBeenCalledTimes(3)
+      expect(JSON.stringify(messages)).not.toContain(staleAnswer)
+      expect(messages).toContainEqual(expect.objectContaining({ role: "user", content: expect.stringContaining("No current tool supports that Docker image claim") }))
+    })
+
+    it("snapshots each correction before resetting a stateful provider", async () => {
+      const snapshots: any[][] = []
+      const requests: any[][] = []
+      const responses = [
+        { content: "Docker image is full.", toolCalls: [], outputItems: [] },
+        { content: "", toolCalls: [{ id: "settle-current", name: "settle", arguments: JSON.stringify({ answer: "Docker image utilization needs a fresh check.", intent: "complete" }) }], outputItems: [], settleStreamed: false },
+      ]
+      const streamTurn = vi.fn(async (request: any) => {
+        requests.push(structuredClone(request.messages))
+        return responses[requests.length - 1]
+      })
+      vi.doMock("../../heart/providers/minimax", () => ({
+        createMinimaxProviderRuntime: () => ({
+          id: "minimax", model: "stateful-test", client: {}, capabilities: new Set(), streamTurn,
+          appendToolOutput: vi.fn(), resetTurnState: vi.fn((current: any[]) => snapshots.push(structuredClone(current))),
+          ping: vi.fn(), classifyError: vi.fn(() => "unknown"),
+        }),
+      }))
+      try {
+        const { runAgent } = await import("../../heart/core")
+        const correction = "No current tool measures Docker image state."
+        const result = await runAgent([{ role: "user", content: "status" }], makeCallbacks(), "telegram", undefined, {
+          requiredToolCalls: { names: [], retryMessage: "unused", validateTerminalAnswer: (answer) => answer.includes("full") ? correction : undefined },
+        })
+
+        expect(result).toMatchObject({ outcome: "settled", completion: { answer: "Docker image utilization needs a fresh check." } })
+        expect(snapshots).toHaveLength(2)
+        expect(snapshots.at(-1)?.at(-1)).toEqual({ role: "user", content: correction })
+        expect(requests[1]?.at(-1)).toEqual({ role: "user", content: correction })
+      } finally {
+        vi.doUnmock("../../heart/providers/minimax")
+      }
+    })
+
+    it("caps repeated terminal-answer validation failures at eight provider responses", async () => {
+      const streamTurn = vi.fn(async () => ({ content: "Docker image is full.", toolCalls: [], outputItems: [] }))
+      vi.doMock("../../heart/providers/minimax", () => ({
+        createMinimaxProviderRuntime: () => ({
+          id: "minimax", model: "stateful-test", client: {}, capabilities: new Set(), streamTurn,
+          appendToolOutput: vi.fn(), resetTurnState: vi.fn(), ping: vi.fn(), classifyError: vi.fn(() => "unknown"),
+        }),
+      }))
+      try {
+        const { runAgent } = await import("../../heart/core")
+        const callbacks = makeCallbacks()
+        const result = await runAgent([{ role: "user", content: "status" }], callbacks, "telegram", undefined, {
+          requiredToolCalls: { names: [], retryMessage: "unused", validateTerminalAnswer: () => "Use current evidence." },
+        })
+
+        expect(streamTurn).toHaveBeenCalledTimes(8)
+        expect(result.outcome).toBe("errored")
+        expect(callbacks.onError).toHaveBeenCalledWith(expect.objectContaining({ message: "provider iteration limit exhausted at response 8 before required terminal answer validation completed" }), "terminal")
+      } finally {
+        vi.doUnmock("../../heart/providers/minimax")
+      }
     })
 
     it("fails closed at the provider iteration cap when required reads never dispatch", async () => {
