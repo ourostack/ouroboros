@@ -1281,23 +1281,29 @@ describe("Sanctuary acceptance harness", () => {
 
   it("captures selected cursor snapshots and computes a redacted delta", async () => {
     const dir = root()
-    const before = path.join(dir, "before.json")
+    const before = path.join(dir, "cursor-before.json")
     const after = path.join(dir, "after.json")
     const delta = path.join(dir, "delta.json")
     let offset = 10
+    const seenGenesis: boolean[] = []
     const deps = dependencies({ adapter: async (executable, payload) => {
       expect(executable).toBe("/safe/snapshot")
-      expect(payload).toEqual({ operation: "snapshot", schema: "telegram-cursor-v1" })
+      expect(payload).toEqual({ operation: "snapshot", schema: "telegram-cursor-v1", allowGenesis: expect.any(Boolean) })
+      seenGenesis.push((payload as { allowGenesis: boolean }).allowGenesis)
       return { offsetDigest: createHash("sha256").update(String(offset)).digest("hex"), auditCursorDigest: createHash("sha256").update(String(offset + 5)).digest("hex"), ignoredToken: "must-not-persist" }
     } })
-    const config = { adapters: [{ schema: "telegram-cursor-v1", executable: "/safe/snapshot" }] }
-    await executeSanctuaryAcceptanceHarness("cursor-snapshot", { evidencePath: before, ...config }, deps)
+    const config = { adapters: [{ schema: "telegram-cursor-v1", executable: "/safe/snapshot", allowGenesis: false }] }
+    await executeSanctuaryAcceptanceHarness("cursor-snapshot", { evidencePath: before, adapters: [{ ...config.adapters[0], allowGenesis: true }] }, deps)
     offset = 11
     await executeSanctuaryAcceptanceHarness("cursor-snapshot", { evidencePath: after, ...config }, deps)
     await executeSanctuaryAcceptanceHarness("cursor-delta", { evidencePath: delta, beforePath: before, afterPath: after }, deps)
     expect(evidence(before)).toMatchObject({ operation: "cursor-snapshot", values: { "telegram-cursor-v1.offsetDigest": createHash("sha256").update("10").digest("hex"), "telegram-cursor-v1.auditCursorDigest": createHash("sha256").update("15").digest("hex") } })
     expect(evidence(delta)).toMatchObject({ operation: "cursor-delta", changes: { "telegram-cursor-v1.offsetDigest": expect.any(Object), "telegram-cursor-v1.auditCursorDigest": expect.any(Object) } })
     expect(fs.readFileSync(before, "utf8")).not.toContain("must-not-persist")
+    expect(seenGenesis).toEqual([true, false])
+    await expect(executeSanctuaryAcceptanceHarness("cursor-snapshot", {
+      evidencePath: path.join(dir, "not-before.json"), adapters: [{ ...config.adapters[0], allowGenesis: true }],
+    }, deps)).rejects.toThrow(/only valid for cursor-before/u)
   })
 
   it("injects one saved callback concurrently and proves one-shot mutation plus replay denial", async () => {

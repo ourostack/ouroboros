@@ -967,7 +967,9 @@ async function cursorSnapshot(config: JsonObject, deps: AcceptanceHarnessDepende
     if (schemas.has(schema)) throw new Error("snapshot adapter schemas must be unique")
     schemas.add(schema)
     const executable = adapter(spec.executable, "snapshot adapter executable")
-    const payload = await deps.runAdapter(executable, { operation: "snapshot", schema })
+    const allowGenesis = spec.allowGenesis === undefined ? false : boolean(spec.allowGenesis, "snapshot adapter allowGenesis")
+    if (allowGenesis && evidencePath !== path.join(root, "cursor-before.json")) throw new Error("snapshot adapter genesis authority is only valid for cursor-before evidence")
+    const payload = await deps.runAdapter(executable, { operation: "snapshot", schema, allowGenesis })
     const selected = fixedEvidenceValues(schema, payload)
     for (const [name, value] of Object.entries(selected)) values[`${schema}.${name}`] = value
   }

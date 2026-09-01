@@ -117,6 +117,7 @@ const NETWORK_TIMEOUT_MS = 10_000
 const KEY_DIRECTORY = "/boot/config/plugins/dynamix.my.servers/keys"
 const SELECTED_KEY_RECORD = "/run/ouro-acceptance/unraid-key.json"
 const TELEGRAM_OFFSET = "/home/ouro/AgentBundles/sanctuary.ouro/state/senses/telegram/offset.json"
+const TELEGRAM_IDENTITY_KEY = "/home/ouro/AgentBundles/sanctuary.ouro/state/senses/telegram/identity.key"
 const TELEGRAM_AUDIT = `/home/ouro/AgentBundles/sanctuary.ouro/${TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH}`
 const TELEGRAM_AUDIT_HEAD = `/home/ouro/AgentBundles/sanctuary.ouro/${TELEGRAM_ACCEPTANCE_AUDIT_HEAD_RELATIVE_PATH}`
 const IMAGE_DIGEST_FILE = "/run/ouro-acceptance/image-digest"
@@ -1812,15 +1813,51 @@ async function storeTelegramBootstrap(payload: JsonObject, deps: SanctuaryAccept
   return { stored: true }
 }
 
-function cursorSnapshot(deps: SanctuaryAcceptanceAdapterDependencies): { offsetDigest: string; auditCursorDigest: string } {
+function cursorSnapshot(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDependencies): { offsetDigest: string; auditCursorDigest: string } {
+  exactKeys(payload, ["allowGenesis", "operation", "schema"], "Telegram cursor snapshot request")
+  if (payload.schema !== "telegram-cursor-v1" || typeof payload.allowGenesis !== "boolean") throw new Error("Telegram cursor snapshot request is invalid")
   const offsetRaw = fixedFile(deps, TELEGRAM_OFFSET)
-  const auditRaw = fixedFile(deps, TELEGRAM_AUDIT)
-  const auditHeadRaw = fixedFile(deps, TELEGRAM_AUDIT_HEAD)
+  const identityKey = fixedFile(deps, TELEGRAM_IDENTITY_KEY).trim()
+  if (!/^[A-Za-z0-9_-]{43}$/u.test(identityKey) || Buffer.from(identityKey, "base64url").length !== 32) {
+    throw new Error("Telegram identity key is invalid")
+  }
   const offset = object(JSON.parse(offsetRaw) as unknown, "Telegram offset")
   if (!Number.isSafeInteger(offset.nextUpdateId) || (offset.nextUpdateId as number) < 0) throw new Error("Telegram offset is invalid")
+  let auditCursorDigest: string | undefined
+  let verificationFailure: Error | undefined
+  let observedAuditState = false
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const headBefore = optionalFixedFile(deps, TELEGRAM_AUDIT_HEAD)
+    const auditRaw = optionalFixedFile(deps, TELEGRAM_AUDIT)
+    const headAfter = optionalFixedFile(deps, TELEGRAM_AUDIT_HEAD)
+    if (headBefore === null && auditRaw === null && headAfter === null) {
+      if (payload.allowGenesis !== true) throw new Error("Telegram audit genesis is not authorized for this snapshot")
+      if (!observedAuditState) {
+        auditCursorDigest = sha256("ouroboros.telegram.acceptance.cursor.v1\0genesis")
+        break
+      }
+      continue
+    }
+    observedAuditState = true
+    if (headBefore !== null && auditRaw !== null && headAfter !== null && headBefore === headAfter) {
+      try {
+        verifyTelegramAuditLedger({ ledgerRaw: auditRaw, headRaw: headAfter, identityKey })
+        auditCursorDigest = sha256(`ouroboros.telegram.acceptance.cursor.v1\0present\0${auditRaw}\0${headAfter}`)
+        break
+      } catch (error) {
+        verificationFailure = error instanceof Error ? error : new Error(String(error))
+      }
+    }
+  }
+  if (auditCursorDigest === undefined) {
+    throw new Error(
+      `Telegram acceptance audit state could not be captured consistently${verificationFailure ? `: ${verificationFailure.message}` : ""}`,
+      verificationFailure ? { cause: verificationFailure } : undefined,
+    )
+  }
   return {
     offsetDigest: sha256(JSON.stringify({ nextUpdateId: offset.nextUpdateId })),
-    auditCursorDigest: sha256(`${auditRaw}\0${auditHeadRaw}`),
+    auditCursorDigest,
   }
 }
 
@@ -2020,7 +2057,7 @@ function provenance(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDepende
   const imageDigest = fixedFile(deps, IMAGE_DIGEST_FILE).trim()
   const containerDigest = fixedFile(deps, CONTAINER_DIGEST_FILE).trim()
   if (!SHA256.test(imageDigest) || !SHA256.test(containerDigest)) throw new Error("live provenance digest is invalid")
-  const cursor = cursorSnapshot(deps)
+  const cursor = cursorSnapshot({ operation: "snapshot", schema: "telegram-cursor-v1", allowGenesis: false }, deps)
   return { imageDigest, containerDigest, cursorDigest: sha256(`${cursor.offsetDigest}\0${cursor.auditCursorDigest}`) }
 }
 
@@ -2031,7 +2068,11 @@ function evidenceSnapshot(payload: JsonObject, deps: SanctuaryAcceptanceAdapterD
   if (typeof health.healthy !== "boolean") throw new Error("postboot health is invalid")
   const imageDigest = fixedFile(deps, IMAGE_DIGEST_FILE).trim()
   if (!SHA256.test(imageDigest)) throw new Error("container image digest is invalid")
-  return { healthy: health.healthy, containerImageDigest: imageDigest, telegramOffsetDigest: cursorSnapshot(deps).offsetDigest }
+  return {
+    healthy: health.healthy,
+    containerImageDigest: imageDigest,
+    telegramOffsetDigest: cursorSnapshot({ operation: "snapshot", schema: "telegram-cursor-v1", allowGenesis: false }, deps).offsetDigest,
+  }
 }
 
 function bootId(deps: SanctuaryAcceptanceAdapterDependencies): string {
@@ -2093,6 +2134,7 @@ function materializeConfig(payload: JsonObject, deps: SanctuaryAcceptanceAdapter
     const phase = text(payload.phase, "cursor snapshot phase")
     if (phase !== "before" && phase !== "after") throw new Error("cursor snapshot phase is invalid")
     config.evidencePath = `/evidence/cursor-${phase}.json`
+    config.adapters = (config.adapters as JsonObject[]).map((adapter) => ({ ...adapter, allowGenesis: phase === "before" }))
   } else if (command === "unraid-key-rotate") {
     const closed = object(JSON.parse(fixedFile(deps, CLOSED_INVENTORY_FILE)) as unknown, "closed Unraid inventory")
     if (!Array.isArray(closed.keys) || closed.keys.length === 0) throw new Error("closed Unraid inventory is empty")
@@ -2121,7 +2163,7 @@ export async function executeSanctuaryAcceptanceAdapter(
       case "revoked-key-auth-rejection": result = await revokedKeyAuthRejection(payload, deps); break
       case "store_telegram_bootstrap": result = await storeTelegramBootstrap(payload, deps); break
       case "quiesce_telegram_poller": result = telegramPollerQuiescence(payload, deps); break
-      case "snapshot": result = cursorSnapshot(deps); break
+      case "snapshot": result = cursorSnapshot(payload, deps); break
       case "inject_callbacks_concurrently": result = await concurrentCallbackProbe(payload, deps); break
       case "inject_callback_replay": result = await callbackReplay(payload, deps); break
       case "drive_timeout_stale": result = await interactiveRuntimeOperation(payload, deps); break
