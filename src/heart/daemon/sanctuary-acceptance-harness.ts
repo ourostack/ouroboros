@@ -1214,8 +1214,6 @@ async function rotateOccupiedCanonicalUnraidKeys(input: {
     const live = inventory(await deps.runAdapter(adapters.inventory, { operation: "inventory_keys", targetServerId }))
     const matches = live.filter((entry) => entry.name === name)
     const transaction = transactionKeys.find((entry) => entry.name === name)
-    if (transaction && (transaction.temporary !== temporary || transaction.vaultField !== key.vaultField
-      || !sameStrings(transaction.permissions, key.permissions))) throw new Error("resumable Unraid key metadata mismatch")
     if (transaction && revokedKeyIds.includes(transaction.id)) {
       if (matches.length !== 0) throw new Error("revoked Unraid transaction key inventory mismatch")
       return

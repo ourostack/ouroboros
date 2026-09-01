@@ -1753,7 +1753,60 @@ describe("Sanctuary acceptance harness", () => {
     expect(mutations).toEqual([])
   })
 
-  it.each(["temporary", "vault", "permissions", "live-permissions", "live-roles", "old-id", "live-id", "revoked-live"])("fails closed on resumable transaction %s drift", async (fault) => {
+  it.each(["temporary_key_attested", "key_revoked", "canonical_key_attested"])("accepts legal resumable rotation phase %s", async (resumePhase) => {
+    const dir = root()
+    const fixed = "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh"
+    const evidencePath = path.join(dir, `legal-${resumePhase}.json`)
+    const readPermissions = ["ARRAY:READ_ANY"]
+    const writePermissions = [...readPermissions, "DOCKER:UPDATE_ANY"]
+    const temporary = [
+      { id: "temp-ro", name: "Butler RO Rotation 0123456789abcdef", vaultField: "unraidReadApiKey", permissions: readPermissions, temporary: true, attested: true },
+      { id: "temp-rw", name: "Butler RW Rotation 0123456789abcdef", vaultField: "unraidWriteApiKey", permissions: writePermissions, temporary: true, attested: true },
+    ]
+    const canonical = [{ id: "new-ro", name: "Butler RO", vaultField: "unraidReadApiKey", permissions: readPermissions, temporary: false, attested: true }]
+    const transactionKeys = resumePhase === "temporary_key_attested" ? [temporary[0]!]
+      : resumePhase === "canonical_key_attested" ? [...temporary, ...canonical] : temporary
+    const revokedKeyIds = resumePhase === "temporary_key_attested" ? [] : resumePhase === "key_revoked" ? ["old-ro"] : ["old-ro", "old-rw"]
+    fs.writeFileSync(evidencePath, `${JSON.stringify({
+      schemaVersion: 1, operation: "unraid-key-rotate", phase: "failed", resumePhase, targetServerId: "sanctuary-unraid",
+      initialInventoryDigest: "digest", transactionSuffix: "0123456789abcdef", createdKeyIds: transactionKeys.map((entry) => entry.id), revokedKeyIds, transactionKeys,
+    })}\n`, { mode: 0o600 })
+    let inventoryCalls = 0
+    await expect(executeSanctuaryAcceptanceHarness("unraid-key-rotate", {
+      evidencePath, targetServerId: "sanctuary-unraid", inventoryAdapter: fixed, createAdapter: fixed, storeAdapter: fixed, revokeAdapter: fixed, probeAdapter: fixed,
+      keys: [{ name: "Butler RO", vaultField: "unraidReadApiKey", permissions: readPermissions }, { name: "Butler RW", vaultField: "unraidWriteApiKey", permissions: writePermissions }],
+      oldKeys: [{ id: "old-ro", secretAdapter: fixed }, { id: "old-rw", secretAdapter: fixed }],
+    }, dependencies({ adapter: async () => {
+      if (inventoryCalls++ === 0) return { keys: [] }
+      throw new Error("stop after checkpoint validation")
+    } }))).rejects.toThrow(/stop after checkpoint validation/u)
+  })
+
+  it("rejects a live key recorded as revoked in an otherwise valid transaction", async () => {
+    const dir = root()
+    const fixed = "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh"
+    const evidencePath = path.join(dir, "revoked-live.json")
+    const readPermissions = ["ARRAY:READ_ANY"]
+    const writePermissions = [...readPermissions, "DOCKER:UPDATE_ANY"]
+    const transactionKeys = [
+      { id: "temp-ro", name: "Butler RO Rotation 0123456789abcdef", vaultField: "unraidReadApiKey", permissions: readPermissions, temporary: true, attested: true },
+      { id: "temp-rw", name: "Butler RW Rotation 0123456789abcdef", vaultField: "unraidWriteApiKey", permissions: writePermissions, temporary: true, attested: true },
+      { id: "new-ro", name: "Butler RO", vaultField: "unraidReadApiKey", permissions: readPermissions, temporary: false, attested: true },
+      { id: "new-rw", name: "Butler RW", vaultField: "unraidWriteApiKey", permissions: writePermissions, temporary: false, attested: true },
+    ]
+    fs.writeFileSync(evidencePath, `${JSON.stringify({
+      schemaVersion: 1, operation: "unraid-key-rotate", phase: "failed", resumePhase: "key_revoked", targetServerId: "sanctuary-unraid",
+      initialInventoryDigest: "digest", transactionSuffix: "0123456789abcdef", createdKeyIds: transactionKeys.map((entry) => entry.id),
+      revokedKeyIds: ["old-ro", "old-rw", "temp-ro"], transactionKeys,
+    })}\n`, { mode: 0o600 })
+    await expect(executeSanctuaryAcceptanceHarness("unraid-key-rotate", {
+      evidencePath, targetServerId: "sanctuary-unraid", inventoryAdapter: fixed, createAdapter: fixed, storeAdapter: fixed, revokeAdapter: fixed, probeAdapter: fixed,
+      keys: [{ name: "Butler RO", vaultField: "unraidReadApiKey", permissions: readPermissions }, { name: "Butler RW", vaultField: "unraidWriteApiKey", permissions: writePermissions }],
+      oldKeys: [{ id: "old-ro", secretAdapter: fixed }, { id: "old-rw", secretAdapter: fixed }],
+    }, dependencies({ adapter: async () => ({ keys: [{ id: "temp-ro", name: transactionKeys[0]!.name, permissions: readPermissions, roles: [] }] }) }))).rejects.toThrow(/revoked Unraid transaction key inventory/u)
+  })
+
+  it.each(["temporary", "vault", "permissions", "live-permissions", "live-roles", "old-id", "live-id"])("fails closed on resumable transaction %s drift", async (fault) => {
     const dir = root()
     const fixed = "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh"
     const evidencePath = path.join(dir, `transaction-${fault}.json`)
@@ -1768,7 +1821,7 @@ describe("Sanctuary acceptance harness", () => {
     const checkpoint: any = {
       schemaVersion: 1, operation: "unraid-key-rotate", phase: "failed", targetServerId: "sanctuary-unraid",
       initialInventoryDigest: "digest", transactionSuffix: "0123456789abcdef",
-      createdKeyIds: [transaction.id], revokedKeyIds: fault === "revoked-live" ? [transaction.id] : [],
+      createdKeyIds: [transaction.id], revokedKeyIds: [],
       transactionKeys: [transaction],
     }
     checkpoint.resumePhase = "temporary_key_created"
@@ -1785,8 +1838,7 @@ describe("Sanctuary acceptance harness", () => {
     }, dependencies({ adapter: async (_executable, payload: any) => {
       if (payload.operation === "inventory_keys") return { keys: live }
       throw new Error("stop after checkpoint validation")
-    } }))).rejects.toThrow(fault === "revoked-live" ? /revocation order|revoked Unraid transaction key inventory/u
-      : fault === "temporary" || fault === "vault" || fault === "permissions" ? /transaction slots|metadata mismatch/u
+    } }))).rejects.toThrow(fault === "temporary" || fault === "vault" || fault === "permissions" ? /transaction slots/u
         : /scope or identity mismatch/u)
   })
 
