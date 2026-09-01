@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.772",
+      "changes": [
+        "Make Sanctuary Unraid key rotation crash-resumable with exact transaction and rejection proofs.",
+        "Require durable zero-playback journal evidence before live callback injection."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.771",
       "changes": [
         "Accept and durably attest the exact Unraid 7.2.3 API-key create response before key rotation proceeds."
