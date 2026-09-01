@@ -411,7 +411,7 @@ run_harness() {
       --user 10001:10001 --read-only --cap-drop ALL --security-opt no-new-privileges \
       --mount "type=bind,src=$CONFIG_PATH,dst=/run/ouro-acceptance/config.json,readonly" \
       --mount "type=bind,src=$EVIDENCE_ROOT,dst=/evidence" \
-      --mount "type=bind,src=$RUNTIME_ROOT,dst=/home/ouro/.ouro-cli,readonly" \
+      --mount "type=bind,src=$RUNTIME_ROOT,dst=/home/ouro/.ouro-cli" \
       --mount "type=bind,src=$BUNDLE_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro$BUNDLE_SUFFIX" \
       --mount "type=bind,src=$POLLER_FACT,dst=/run/ouro-acceptance/telegram-poller-count.json,readonly" \
       --mount "type=bind,src=$IMAGE_FACT,dst=/run/ouro-acceptance/image-digest,readonly" \
