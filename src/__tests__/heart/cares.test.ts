@@ -13,6 +13,7 @@ import {
   resolveCareIncident,
   upsertCareForIncident,
   projectCareEvidence,
+  CARE_INCIDENT_RECOVERY_REVIEW_RISK,
   type CareRecord,
 } from "../../arc/cares"
 import { expectCappedAgentContent, makeOversizedAgentContent } from "../helpers/content-cap"
@@ -405,6 +406,104 @@ describe("care store", () => {
       expect(() => bindCareIncident(tmpDir, care.id, { source: "", incidentKey: "usenet", classifiedRevision: "rev-1" }, { expectedUpdatedAt: care.updatedAt })).toThrow(/invalid/u)
       expect(() => resolveCareIncident(tmpDir, care.id, { source: "guard", incidentKey: "missing", expectedUpdatedAt: care.updatedAt })).toThrow(/not found/u)
       expect(() => resolveCareIncident(tmpDir, care.id, { source: "guard", incidentKey: "missing", expectedUpdatedAt: "stale" })).toThrow(/CAS/u)
+    })
+
+    it("atomically resolves an incident and replaces stale display prose under the same CAS", () => {
+      const created = createCare(tmpDir, { ...baseCareInput, kind: "system", label: "Docker at 100%", why: "writes fail", currentRisk: "full", nextCheckAt: "2020-01-01T00:00:00.000Z" })
+      const bound = bindCareIncident(tmpDir, created.id, { source: "sanctuary-health::Docker_critical_image_disk_utilization", incidentKey: "docker-image-disk-100pct-20260831T1427Z", classifiedRevision: "a".repeat(64) }, { expectedUpdatedAt: created.updatedAt })
+      expect(() => resolveCareIncident(tmpDir, created.id, {
+        source: "sanctuary-health::Docker_critical_image_disk_utilization", incidentKey: "docker-image-disk-100pct-20260831T1427Z", expectedUpdatedAt: created.updatedAt,
+        display: { label: "Docker image disk utilization", why: "Verified from current Unraid notifications.", currentRisk: null, nextCheckAt: null },
+      })).toThrow(/CAS/u)
+      expect(readCares(tmpDir).find((care) => care.id === created.id)).toEqual(bound)
+      const resolved = resolveCareIncident(tmpDir, created.id, {
+        source: "sanctuary-health::Docker_critical_image_disk_utilization",
+        incidentKey: "docker-image-disk-100pct-20260831T1427Z",
+        expectedUpdatedAt: bound.updatedAt,
+        display: { label: "Docker image disk utilization", why: "Verified from current Unraid notifications.", currentRisk: null, nextCheckAt: null },
+      })
+      expect(resolved).toMatchObject({ label: "Docker image disk utilization", why: "Verified from current Unraid notifications.", currentRisk: null, nextCheckAt: null })
+      expect(resolved.status).toBe("resolved")
+      expect(resolved.incidentBindings?.[0]?.resolvedAt).toBeTruthy()
+    })
+
+    it("refreshes existing incident display and status through upsert under CAS", () => {
+      const first = upsertCareForIncident(tmpDir, { ...baseCareInput, kind: "system", incident: { source: "guard", incidentKey: "docker", classifiedRevision: "rev-1" } })
+      const refreshed = upsertCareForIncident(tmpDir, {
+        ...baseCareInput,
+        id: first.id,
+        kind: "system",
+        label: "Docker image disk utilization",
+        why: "Verified from current Unraid notifications.",
+        currentRisk: "Docker image disk utilization verification is inconclusive.",
+        nextCheckAt: "2026-09-01T08:00:00.000Z",
+        incident: { source: "guard", incidentKey: "docker", classifiedRevision: "rev-2" },
+        expectedUpdatedAt: first.updatedAt,
+      })
+      expect(refreshed).toMatchObject({ id: first.id, label: "Docker image disk utilization", why: "Verified from current Unraid notifications.", currentRisk: "Docker image disk utilization verification is inconclusive.", nextCheckAt: "2026-09-01T08:00:00.000Z" })
+      expect(upsertCareForIncident(tmpDir, {
+        ...baseCareInput, id: first.id, kind: "system", label: refreshed.label, why: refreshed.why, currentRisk: refreshed.currentRisk,
+        nextCheckAt: refreshed.nextCheckAt, incident: refreshed.incidentBindings![0]!, expectedUpdatedAt: refreshed.updatedAt,
+      })).toEqual(refreshed)
+      expect(() => upsertCareForIncident(tmpDir, {
+        ...baseCareInput, id: "different-care", kind: "system", incident: refreshed.incidentBindings![0]!, expectedUpdatedAt: refreshed.updatedAt,
+      })).toThrow(/target not found/u)
+      expect(() => upsertCareForIncident(tmpDir, {
+        ...baseCareInput, id: first.id, kind: "system", incident: { source: "guard", incidentKey: "missing", classifiedRevision: "rev" }, expectedUpdatedAt: refreshed.updatedAt,
+      })).toThrow(/target not found/u)
+    })
+
+    it("updates safe display on an already-resolved binding without re-resolving it", () => {
+      const care = createCare(tmpDir, { ...baseCareInput, kind: "system", currentRisk: "old" })
+      const bound = bindCareIncident(tmpDir, care.id, { source: "guard", incidentKey: "docker", classifiedRevision: "rev", resolvedAt: "2026-09-01T07:00:00.000Z" }, { expectedUpdatedAt: care.updatedAt })
+      const updated = resolveCareIncident(tmpDir, care.id, {
+        source: "guard", incidentKey: "docker", expectedUpdatedAt: bound.updatedAt,
+        display: { label: "Docker image disk utilization", why: "Current evidence checked.", currentRisk: "another incident remains", nextCheckAt: "2026-09-01T08:15:00.000Z" },
+      })
+      expect(updated).toMatchObject({ status: "active", currentRisk: "another incident remains", nextCheckAt: "2026-09-01T08:15:00.000Z" })
+      expect(updated.incidentBindings![0]!.resolvedAt).toBe("2026-09-01T07:00:00.000Z")
+      expect(resolveCareIncident(tmpDir, care.id, {
+        source: "guard", incidentKey: "docker", expectedUpdatedAt: updated.updatedAt,
+        display: { label: updated.label, why: updated.why, currentRisk: updated.currentRisk, nextCheckAt: updated.nextCheckAt },
+      })).toEqual(updated)
+    })
+
+    it("does not close the whole Care while another incident remains unresolved", () => {
+      const care = createCare(tmpDir, { ...baseCareInput, kind: "system", currentRisk: "old" })
+      const first = bindCareIncident(tmpDir, care.id, { source: "sanctuary-health::Docker_critical_image_disk_utilization", incidentKey: "docker-image-disk-100pct-20260831T1427Z", classifiedRevision: "a".repeat(64) }, { expectedUpdatedAt: care.updatedAt })
+      const second = bindCareIncident(tmpDir, care.id, { source: "guard", incidentKey: "other", classifiedRevision: "rev" }, { expectedUpdatedAt: first.updatedAt })
+      const updated = resolveCareIncident(tmpDir, care.id, {
+        source: "sanctuary-health::Docker_critical_image_disk_utilization", incidentKey: "docker-image-disk-100pct-20260831T1427Z", expectedUpdatedAt: second.updatedAt,
+        display: { label: "Docker image disk utilization", why: "Current evidence checked.", currentRisk: null, nextCheckAt: null },
+      })
+      expect(updated).toMatchObject({ status: "active", currentRisk: CARE_INCIDENT_RECOVERY_REVIEW_RISK })
+      expect(updated.incidentBindings!.filter((binding) => !binding.resolvedAt)).toHaveLength(1)
+    })
+
+    it("lets the sole unresolved managed binding own risk despite a resolved historical neighbor", () => {
+      const target = { source: "sanctuary-health::Docker_critical_image_disk_utilization", incidentKey: "docker-image-disk-100pct-20260831T1427Z", classifiedRevision: "a".repeat(64) }
+      const care = createCare(tmpDir, { ...baseCareInput, kind: "system", currentRisk: "historical Docker risk", incidentBindings: [target, { source: "other", incidentKey: "old", classifiedRevision: "rev", resolvedAt: "2026-08-31T00:00:00.000Z" }] })
+      const updated = resolveCareIncident(tmpDir, care.id, {
+        source: target.source, incidentKey: target.incidentKey, expectedUpdatedAt: care.updatedAt,
+        display: { label: "Docker image disk utilization", why: "Current evidence checked.", currentRisk: null, nextCheckAt: null },
+      })
+      expect(updated).toMatchObject({ status: "resolved", currentRisk: null, nextCheckAt: null })
+      expect(updated.incidentBindings!.every((binding) => binding.resolvedAt)).toBe(true)
+    })
+
+    it("targets duplicate incident identities by exact Care id", () => {
+      const binding = { source: "guard", incidentKey: "duplicate", classifiedRevision: "rev-1" }
+      const first = createCare(tmpDir, { ...baseCareInput, incidentBindings: [binding] })
+      const second = createCare(tmpDir, { ...baseCareInput, label: "second", incidentBindings: [binding] })
+      const secondUpdated = upsertCareForIncident(tmpDir, {
+        ...baseCareInput, id: second.id, label: "second refreshed", incident: { ...binding, classifiedRevision: "rev-2" }, expectedUpdatedAt: second.updatedAt,
+      })
+      const firstUpdated = upsertCareForIncident(tmpDir, {
+        ...baseCareInput, id: first.id, label: "first refreshed", incident: { ...binding, classifiedRevision: "rev-2" }, expectedUpdatedAt: first.updatedAt,
+      })
+      expect([firstUpdated.id, secondUpdated.id]).toEqual([first.id, second.id])
+      expect(firstUpdated.label).toBe("first refreshed")
+      expect(secondUpdated.label).toBe("second refreshed")
     })
 
     it("preserves optional resolved metadata and makes repeated resolution idempotent", () => {

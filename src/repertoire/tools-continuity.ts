@@ -281,6 +281,7 @@ export const continuityToolDefinitions: ToolDefinition[] = [
             why: { type: "string", description: "Why this matters" },
             salience: { type: "string", description: "low, medium, high, or critical" },
             kind: { type: "string", description: "person, agent, project, mission, or system" },
+            status: { type: "string", description: "active, watching, resolved, or dormant" },
             stewardship: { type: "string", description: "mine, shared, or delegated" },
             source: { type: "string", description: "Machine evidence source for an incident binding" },
             incidentKey: { type: "string", description: "Stable incident key within the source" },
@@ -302,7 +303,7 @@ export const continuityToolDefinitions: ToolDefinition[] = [
           label: a.label ?? "untitled",
           why: a.why ?? "",
           kind: (a.kind as any) ?? "project",
-          status: "active",
+          status: (a.status as any) ?? "active",
           salience: (a.salience as any) ?? "medium",
           steward: (a.stewardship as any) ?? "mine",
           relatedFriendIds: [],
@@ -336,13 +337,22 @@ export const continuityToolDefinitions: ToolDefinition[] = [
           source: a.source,
           incidentKey: a.incidentKey,
           expectedUpdatedAt: a.expectedUpdatedAt,
+          ...((a.label !== undefined || a.why !== undefined || a.currentRisk !== undefined || a.nextCheckAt !== undefined) ? {
+            display: {
+              label: String(a.label ?? "Docker image disk utilization"),
+              why: String(a.why ?? "Verified from current Unraid notifications."),
+              currentRisk: a.currentRisk ? String(a.currentRisk) : null,
+              nextCheckAt: a.nextCheckAt ? String(a.nextCheckAt) : null,
+            },
+          } : {}),
         });
       } else if (a.action === "upsert_incident") {
         result = upsertCareForIncident(agentRoot, {
+          ...(a.id ? { id: String(a.id) } : {}),
           label: a.label ?? "untitled",
           why: a.why ?? "",
           kind: (a.kind as any) ?? "system",
-          status: "active",
+          status: (a.status as any) ?? "active",
           salience: (a.salience as any) ?? "medium",
           steward: (a.stewardship as any) ?? "mine",
           relatedFriendIds: [],

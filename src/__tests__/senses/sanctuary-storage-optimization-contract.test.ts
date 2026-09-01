@@ -28,9 +28,11 @@ describe("Sanctuary storage optimization contract", () => {
     ["How much space is left?", requiredTools],
     ["Why is storage so full?", requiredTools],
     ["Make this image smaller", requiredTools],
-    ["What's using all the space, and can we make it smaller?", ["unraid_get_storage"]],
-    ["What's using all the space, and can we make it smaller?", ["sanctuary_get_media_optimization"]],
   ])("does not activate outside the exact authorized capability and intent (%s)", (request, advertised) => {
     expect(sanctuaryStorageOptimizationRequiredToolCalls(request, advertised)).toBeUndefined()
+  })
+
+  it("returns the complete contract when an intent-matched required tool is missing so dispatch can fail closed", () => {
+    expect(sanctuaryStorageOptimizationRequiredToolCalls("What's using all the space, and can we make it smaller?", ["unraid_get_storage"])?.names).toEqual(requiredTools)
   })
 })

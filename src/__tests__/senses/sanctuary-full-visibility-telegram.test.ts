@@ -7,14 +7,14 @@ import { createTelegramSenseApp } from "../../senses/telegram"
 import type { TelegramInboundMessage, TelegramLongPollOptions } from "../../senses/telegram-client"
 
 const roots: string[] = []
-const requiredNames = ["query_active_work", "query_cares", "unraid_get_system", "unraid_list_containers", "unraid_get_storage", "sanctuary_get_download_queue"]
+const requiredNames = ["query_active_work", "query_cares", "unraid_get_system", "unraid_list_containers", "unraid_get_storage", "unraid_get_notifications", "sanctuary_get_download_queue"]
 
 describe("Sanctuary owner full-visibility activation", () => {
   afterEach(() => {
     while (roots.length > 0) fs.rmSync(roots.pop()!, { recursive: true, force: true })
   })
 
-  it.each(["What are you working on?", "What's going on with Sanctuary?"])("binds current reads to the live owner turn for %j", async (text) => {
+  it.each(["What are you working on?", "What's going on with Sanctuary?", "Anything I should care about now?"])("binds current reads to the live owner turn for %j", async (text) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-full-visibility-")); roots.push(root)
     let onMessage!: (message: TelegramInboundMessage) => Promise<void>
     let prepared: any
@@ -41,6 +41,7 @@ describe("Sanctuary owner full-visibility activation", () => {
           unraid_get_system: JSON.stringify({ ok: true }),
           unraid_list_containers: JSON.stringify({ ok: true }),
           unraid_get_storage: JSON.stringify({ ok: true }),
+          unraid_get_notifications: JSON.stringify({ ok: true, data: { unacknowledged: [], truncated: false } }),
           sanctuary_get_download_queue: JSON.stringify({ ok: false, error: { code: "request_unavailable" }, observedAt: "2026-08-30T04:00:00.000Z" }),
         }
         for (const name of requiredNames) expect(prepared.requiredToolCalls.validateRequiredToolResult(name, results[name])).toBe(true)
@@ -60,9 +61,11 @@ describe("Sanctuary owner full-visibility activation", () => {
 
     expect(prepared.requiredToolCalls).toEqual({
       names: requiredNames,
-      retryMessage: "Before answering, read current active work, cares, system health, service state, storage, and the download queue. Current tool facts outrank care history; a stale care is a recheck item, not a present-tense fact. Then give Ari one compact household summary; do not ask him to choose a status slice.",
+      retryMessage: "Before answering, read current active work, cares, system health, service state, storage, notifications, and the download queue. Current tool facts outrank care history; a stale care is a recheck item, not a present-tense fact. Then give Ari one compact household summary; do not ask him to choose a status slice.",
       requireSuccessfulResults: true,
       validateRequiredToolResult: expect.any(Function),
+      validateToolCallBeforeDispatch: expect.any(Function),
+      requiredToolCallsAfterResult: expect.any(Function),
       validateTerminalAnswer: expect.any(Function),
     })
     expect(apiRequest.mock.calls.filter(([method]) => method === "sendMessage")).toHaveLength(1)

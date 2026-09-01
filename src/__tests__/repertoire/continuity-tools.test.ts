@@ -385,6 +385,26 @@ describe("continuity tools", () => {
       expect(mockResolveCare).not.toHaveBeenCalled()
     })
 
+    it("forwards the atomic safe-display replacement with incident resolution", async () => {
+      mockResolveCareIncident.mockReturnValue({ id: "c-docker", status: "resolved" })
+      await findTool("care_manage").handler({
+        action: "resolve_incident", id: "c-docker", source: "sanctuary-health::Docker_critical_image_disk_utilization",
+        incidentKey: "docker-image-disk-100pct-20260831T1427Z", expectedUpdatedAt: "v1",
+        label: "Docker image disk utilization", why: "Verified from current Unraid notifications.", currentRisk: "", nextCheckAt: "",
+      })
+      expect(mockResolveCareIncident).toHaveBeenCalledWith("/mock/agent-root", "c-docker", expect.objectContaining({
+        expectedUpdatedAt: "v1",
+        display: { label: "Docker image disk utilization", why: "Verified from current Unraid notifications.", currentRisk: null, nextCheckAt: null },
+      }))
+      await findTool("care_manage").handler({
+        action: "resolve_incident", id: "c-docker", source: "guard", incidentKey: "docker", expectedUpdatedAt: "v2",
+        currentRisk: "another incident remains", nextCheckAt: "2026-09-01T08:15:00.000Z",
+      })
+      expect(mockResolveCareIncident).toHaveBeenLastCalledWith("/mock/agent-root", "c-docker", expect.objectContaining({
+        display: { label: "Docker image disk utilization", why: "Verified from current Unraid notifications.", currentRisk: "another incident remains", nextCheckAt: "2026-09-01T08:15:00.000Z" },
+      }))
+    })
+
     it("atomically upserts one Care for an incident identity", async () => {
       mockUpsertCareForIncident.mockReturnValue({ id: "c-existing", incidentBindings: [{ source: "sanctuary-health", incidentKey: "container:books" }] })
       const tool = findTool("care_manage")
@@ -401,6 +421,15 @@ describe("continuity tools", () => {
         incident: expect.objectContaining({ source: "sanctuary-health", incidentKey: "container:books", classifiedRevision: "rev-2" }),
       }))
       expect(result).toContain("c-existing")
+    })
+
+    it("forwards exact Care identity and status during incident refresh", async () => {
+      mockUpsertCareForIncident.mockReturnValue({ id: "c-docker", status: "watching" })
+      await findTool("care_manage").handler({
+        action: "upsert_incident", id: "c-docker", label: "Docker image disk utilization", why: "Verified from current Unraid notifications.",
+        kind: "system", status: "watching", salience: "critical", stewardship: "mine", source: "guard", incidentKey: "docker", classifiedRevision: "b".repeat(64), expectedUpdatedAt: "v1",
+      })
+      expect(mockUpsertCareForIncident).toHaveBeenCalledWith("/mock/agent-root", expect.objectContaining({ id: "c-docker", status: "watching", salience: "critical", steward: "mine", expectedUpdatedAt: "v1" }))
     })
 
     it("requires CAS fences for existing Care incident mutations", () => {

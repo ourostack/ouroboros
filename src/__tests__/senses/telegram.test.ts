@@ -183,7 +183,48 @@ describe("Telegram sense", () => {
       requiredToolCalls: { names: ["unraid_get_storage", "sanctuary_get_media_optimization"] },
       toolContext: { relationshipAuthorization: { advertisedToolNames } },
     })
+    expect(preparedOptions[0].requiredToolCalls.validateRequiredToolResult("unraid_get_storage", "current", {})).toBe(true)
+    expect(preparedOptions[0].requiredToolCalls.validateToolCallBeforeDispatch("unraid_get_storage", {})).toBeUndefined()
+    expect(preparedOptions[0].requiredToolCalls.requiredToolCallsAfterResult("unraid_get_storage", {}, "current")).toEqual([])
+    expect(preparedOptions[0].requiredToolCalls.validateTerminalAnswer("current")).toBeUndefined()
     expect(preparedOptions[1].requiredToolCalls).toBeUndefined()
+  })
+
+  it("composes whole-status reads with stale Docker Care verification without duplicate notification reads", async () => {
+    let prepared: any
+    const advertisedToolNames = ["query_active_work", "query_cares", "unraid_get_system", "unraid_list_containers", "unraid_get_storage", "unraid_get_notifications", "sanctuary_get_download_queue", "care_manage", "settle"]
+    const staleCare = {
+      id: "care-docker", label: "stale", why: "stale", kind: "system", status: "active", salience: "critical", steward: "mine",
+      relatedFriendIds: [], relatedAgentIds: [], relatedObligationIds: [], relatedEpisodeIds: [], currentRisk: "stale", nextCheckAt: "2026-09-01T07:45:00.000Z",
+      incidentBindings: [{ source: "sanctuary-health::Docker_critical_image_disk_utilization", incidentKey: "docker-image-disk-100pct-20260831T1427Z", classifiedRevision: "a".repeat(64) }],
+      createdAt: "2026-08-31T14:27:00.000Z", updatedAt: "2026-09-01T07:40:00.000Z",
+    }
+    const f = fixture({
+      agentName: "sanctuary",
+      resolveRelationshipAuthorization: vi.fn(async (coordinates: any) => ({
+        subject: { friendId: coordinates.friendId, admissionState: "active" }, profileId: "sanctuary-owner", authorizedContextScopes: ["household.status"], advertisedToolNames,
+        actor: { friendId: coordinates.friendId }, authorizeTool: vi.fn(async () => ({ allowed: true })),
+      })),
+      runTurn: vi.fn(async (options: any) => {
+        prepared = await options.prepareRunAgentOptions({
+          messages: [], currentUserMessages: [{ role: "user", content: options.userMessage }], resolvedContext: {},
+          activeCares: [staleCare], careEvidenceNow: Date.parse("2026-09-01T08:00:00.000Z"), runAgentOptions: { toolContext: { signin: async () => undefined } },
+        })
+        return { response: "", ponderDeferred: false, deliveries: [], deliveryFailures: [] }
+      }),
+    })
+
+    await f.getOnMessage()({ updateId: 986, messageId: "987", userId: "42", chatId: "42", text: "Everything good?" })
+
+    expect(prepared.requiredToolCalls.names).toEqual(["query_active_work", "query_cares", "unraid_get_system", "unraid_list_containers", "unraid_get_storage", "unraid_get_notifications", "sanctuary_get_download_queue"])
+    expect(prepared.requiredToolCalls.names.filter((name: string) => name === "unraid_get_notifications")).toHaveLength(1)
+    expect(prepared.requiredToolCalls.validateToolCallBeforeDispatch("care_manage", { action: "resolve", id: staleCare.id })).toMatch(/notifications/iu)
+    const notifications = JSON.stringify({ ok: true, data: { truncated: false, unacknowledged: [] } })
+    expect(prepared.requiredToolCalls.validateRequiredToolResult("unraid_get_notifications", notifications, {})).toBe(true)
+    expect(prepared.requiredToolCalls.requiredToolCallsAfterResult("unraid_get_notifications", {}, notifications)).toEqual(["care_manage"])
+    expect(prepared.requiredToolCalls.validateRequiredToolResult("other", "{}", {})).toBe(true)
+    expect(prepared.requiredToolCalls.validateTerminalAnswer("Everything else is currently healthy; Docker image utilization needs a fresh check.")).toBeUndefined()
+    expect(prepared.requiredToolCalls.retryMessage).toContain('"action":"upsert_incident"')
   })
 
   it.each([

@@ -22,6 +22,7 @@ import * as path from "node:path"
 import { FileFriendStore } from "@ouro.bot/friends"
 
 import { getAgentRoot } from "../heart/identity"
+import type { RunAgentOptions } from "../heart/core"
 import { readSanctuaryAcceptanceMarker, sanctuaryAcceptanceEventMeta } from "../heart/daemon/sanctuary-acceptance-marker"
 import { readRuntimeCredentialConfig } from "../heart/runtime-credentials"
 import { emitNervesEvent, emitNervesEventDurable } from "../nerves/runtime"
@@ -46,7 +47,7 @@ import {
   type TelegramUpdate,
 } from "./telegram-client"
 import { createSanctuaryToolContext, runWithSanctuaryToolReceiptCollection, type SanctuaryToolReceiptObserver } from "./sanctuary-runtime"
-import { sanctuaryFullVisibilityRequiredToolCalls } from "./sanctuary-full-visibility-contract"
+import { sanctuaryFullVisibilityRequiredToolCalls, sanctuaryStaleDockerCareRequiredToolCalls } from "./sanctuary-full-visibility-contract"
 import { sanctuaryStorageOptimizationRequiredToolCalls } from "./sanctuary-storage-optimization-contract"
 import { renderSanctuaryGroundedResponse, sanctuaryGroundingDigest } from "./sanctuary-grounding"
 import { createTelegramApprovalRuntime, type TelegramApprovalRuntime } from "./telegram-approval-runtime"
@@ -1173,22 +1174,47 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
           (await options.resolveRelationshipAuthorization!(relationshipCoordinates)).authorizeTool(name, args),
       }
     }
-    return async ({ runAgentOptions }) => {
+    return async ({ runAgentOptions, activeCares = [], careEvidenceNow = Date.now() }) => {
       const relationshipAuthorization = await resolveLiveRelationshipAuthorization()
-      const storageOptimization = options.agentName === "sanctuary" && relationshipAuthorization.profileId === "sanctuary-owner"
+      const isSanctuaryOwner = options.agentName === "sanctuary" && relationshipAuthorization.profileId === "sanctuary-owner"
+      const storageOptimization = isSanctuaryOwner
         ? sanctuaryStorageOptimizationRequiredToolCalls(input.userMessage, relationshipAuthorization.advertisedToolNames)
         : undefined
-      const fullVisibility = options.agentName === "sanctuary" && relationshipAuthorization.profileId === "sanctuary-owner" && !storageOptimization
+      const fullVisibility = isSanctuaryOwner
         ? sanctuaryFullVisibilityRequiredToolCalls(input.userMessage, relationshipAuthorization.advertisedToolNames)
         : undefined
+      const staleDockerCare = isSanctuaryOwner
+        ? sanctuaryStaleDockerCareRequiredToolCalls(activeCares, careEvidenceNow, relationshipAuthorization.advertisedToolNames)
+        : undefined
       if (input.fullVisibilityProgress && fullVisibility) input.fullVisibilityProgress.fallback = fullVisibility.emptyResponseFallback
-      const requiredToolCalls = storageOptimization ?? (fullVisibility ? {
-        names: fullVisibility.names,
-        retryMessage: fullVisibility.retryMessage,
-        requireSuccessfulResults: fullVisibility.requireSuccessfulResults,
-        validateRequiredToolResult: fullVisibility.validateRequiredToolResult,
-        validateTerminalAnswer: fullVisibility.validateTerminalAnswer,
-      } : undefined)
+      const contracts = [storageOptimization, fullVisibility, staleDockerCare].filter(Boolean) as Array<NonNullable<RunAgentOptions["requiredToolCalls"]>>
+      const ownedNames = contracts.map((contract) => new Set(contract.names))
+      const requiredToolCalls = contracts.length === 0 ? undefined : {
+        names: [...new Set(contracts.flatMap((contract) => [...contract.names]))],
+        get retryMessage() { return contracts.map((contract) => contract.retryMessage).join(" ") },
+        requireSuccessfulResults: true,
+        validateRequiredToolResult: (name: string, result: string, args: Record<string, string>) => contracts.every((contract, index) => {
+          if (!ownedNames[index]!.has(name)) return true
+          return contract.validateRequiredToolResult?.(name, result, args) ?? true
+        }),
+        validateToolCallBeforeDispatch: (name: string, args: Record<string, string>) => contracts.map((contract) =>
+          contract.validateToolCallBeforeDispatch?.(name, args),
+        ).find((rejection) => rejection !== undefined),
+        requiredToolCallsAfterResult: (name: string, args: Record<string, string>, result: string) => {
+          const added = new Set<string>()
+          contracts.forEach((contract, index) => {
+            if (!ownedNames[index]!.has(name) || !contract.requiredToolCallsAfterResult) return
+            for (const requiredName of contract.requiredToolCallsAfterResult(name, args, result)) {
+              ownedNames[index]!.add(requiredName)
+              added.add(requiredName)
+            }
+          })
+          return [...added]
+        },
+        validateTerminalAnswer: (answer: string) => contracts.map((contract) =>
+          contract.validateTerminalAnswer?.(answer),
+        ).find((rejection) => rejection !== undefined),
+      }
       return {
         ...runAgentOptions,
         ...(requiredToolCalls ? { requiredToolCalls } : {}),
