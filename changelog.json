@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.764",
+      "changes": [
+        "Allow the Sanctuary Telegram bootstrap acceptance command to persist merged runtime credentials while preserving read-only containment for every other acceptance path."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.763",
       "changes": [
         "Keep the Unit 16 host broker response channel open until asynchronous operations return a bounded success or failure envelope."
