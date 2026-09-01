@@ -802,7 +802,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     expect(JSON.stringify(stored)).not.toMatch(/333|444|456:rotated/u)
   })
 
-  it("snapshots fixed cursor state and runs bounded concurrent callback plus replay probes", async () => {
+  it("snapshots fixed cursor state and refuses prior direct callback playback from the durable approval journal", async () => {
     const active: number[] = []
     let inFlight = 0
     let peak = 0
@@ -814,6 +814,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
         await Promise.resolve(); inFlight -= 1
         return replay ? { settled: true, claimed: false, mutated: false } : { settled: true, claimed: active.length === 1, mutated: active.length === 1 }
       },
+      callbackPlaybackSnapshot: (coordinateDigest) => ({ playbackCount: 1, coordinateDigest, journalDigest: "b".repeat(64) }),
     })
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "snapshot", schema: "telegram-cursor-v1", allowGenesis: false }, deps)).resolves.toEqual({
       offsetDigest: expect.stringMatching(/^[0-9a-f]{64}$/u), auditCursorDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
@@ -822,10 +823,11 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "callback_playback_preflight", update }, deps)).resolves.toEqual({
       playbackCount: 1,
       coordinateDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      journalDigest: "b".repeat(64),
     })
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "callback_playback_preflight", update }, unit16Deps({
       readFixedFile: (file) => file.endsWith("offset.json") ? '{"nextUpdateId":9}\n' : files[file] ?? "",
-    }))).resolves.toMatchObject({ playbackCount: 0 })
+    }))).resolves.toMatchObject({ playbackCount: 0, journalDigest: expect.stringMatching(/^[0-9a-f]{64}$/u) })
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "inject_callbacks_concurrently", update, concurrency: 3 }, deps)).resolves.toMatchObject({ results: { length: 3 } })
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "inject_callback_replay", update }, deps)).resolves.toEqual({ settled: true, claimed: false, mutated: false })
     expect(peak).toBeGreaterThan(1)
@@ -1613,6 +1615,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
         calls.push(payload)
         if (payload.operation === "inventory_keys") return { keys: [oldRecord, { ...oldRecord, id: "z-id", name: "Zed" }] }
         if (payload.operation === "create_key") return { id: "new-id", name: payload.name, key: "new-secret", permissions: READ_PERMISSIONS, roles: [] }
+        if (payload.operation === "acknowledge_key_storage") return { acknowledged: true, id: "new-id" }
         if (payload.operation === "read_key_record") return oldRecord
         if (payload.operation === "revoke_key") return { revoked: true, id: "old-id" }
         if (payload.operation === "probe_revoked_key") return { valid: false, status: 401, id: "old-id" }
@@ -1629,7 +1632,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "read_old_key", targetServerId: "sanctuary-unraid", id: "old-id" }, deps)).resolves.toEqual({ key: "unraid-key:old-id:legacy" })
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "revoke_key", targetServerId: "sanctuary-unraid", id: "old-id" }, deps)).resolves.toEqual({ revoked: true, id: "old-id" })
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "probe_revoked_key", targetServerId: "sanctuary-unraid", id: "old-id", key: "unraid-key:old-id:legacy" }, deps)).resolves.toEqual({ valid: false, status: 401, id: "old-id" })
-    expect(calls.map((call) => call.operation)).toEqual(["inventory_keys", "create_key", "read_key_record", "revoke_key", "probe_revoked_key"])
+    expect(calls.map((call) => call.operation)).toEqual(["inventory_keys", "create_key", "acknowledge_key_storage", "read_key_record", "revoke_key", "probe_revoked_key"])
     expect(JSON.stringify(calls)).not.toContain("old-secret")
   })
 
@@ -1734,6 +1737,18 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     await reject({ operation: "snapshot", schema: "telegram-cursor-v1", allowGenesis: false }, { ...unit16Deps(), readFixedFile: undefined })
     for (const concurrency of [1, 17, 2.5]) await reject({ operation: "inject_callbacks_concurrently", update: { callback_query: {} }, concurrency })
     await reject({ operation: "callback_playback_preflight", update: { update_id: 1, callback_query: { id: "q", data: "x", from: { id: 1 }, message: { message_id: 2, chat: { id: 3 } } } }, extra: true })
+    for (const snapshot of [
+      { playbackCount: -1, coordinateDigest: "a".repeat(64), journalDigest: "b".repeat(64) },
+      { playbackCount: 0, coordinateDigest: "c".repeat(64), journalDigest: "b".repeat(64) },
+      { playbackCount: 0, coordinateDigest: "a".repeat(64), journalDigest: "raw" },
+      { playbackCount: 0, coordinateDigest: "a".repeat(64), journalDigest: "b".repeat(64), extra: true },
+    ]) await reject(
+      { operation: "callback_playback_preflight", update: { update_id: 1, callback_query: { id: "q", data: "x", from: { id: 1 }, message: { message_id: 2, chat: { id: 3 } } } } },
+      unit16Deps({
+        readFixedFile: () => '{"nextUpdateId":1}',
+        callbackPlaybackSnapshot: () => snapshot as any,
+      }),
+    )
     for (const update of [
       { callback_query: { id: "q", data: "x", from: { id: 1 }, message: { message_id: 2, chat: { id: 3 } } } },
       { update_id: 1, callback_query: { id: "", data: "x", from: { id: 1 }, message: { message_id: 2, chat: { id: 3 } } } },
@@ -1758,6 +1773,10 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     await reject({ operation: "store_key", targetServerId: "sanctuary-unraid", vaultField: "other", keyId: "id", key: "x" })
     await reject({ operation: "store_key", targetServerId: "sanctuary-unraid", vaultField: "unraidReadApiKey", keyId: "id", key: "wrong" })
     await reject({ operation: "store_key", targetServerId: "sanctuary-unraid", vaultField: "unraidReadApiKey", keyId: "id", key: "unraid-key:id:unraidReadApiKey" }, unit16Deps({ refreshMachine: async () => refreshed({ unraidReadApiKey: "x", sanctuaryAcceptanceKeyHandles: { id: "y" } }) }))
+    await reject({ operation: "store_key", targetServerId: "sanctuary-unraid", vaultField: "unraidReadApiKey", keyId: "id", key: "unraid-key:id:unraidReadApiKey" }, unit16Deps({
+      refreshMachine: async () => refreshed({ unraidReadApiKey: "x", sanctuaryAcceptanceKeyHandles: { id: "x" } }),
+      hostRequest: async () => ({ acknowledged: false, id: "id" }),
+    }))
     await reject({ operation: "probe_new_key", targetServerId: "sanctuary-unraid", id: "id", key: "bad" })
     const probeConfig = { unraidGraphqlUrl: "http://127.0.0.1/graphql", sanctuaryAcceptanceKeyHandles: { id: "k" } }
     await reject({ operation: "probe_new_key", targetServerId: "sanctuary-unraid", id: "id", key: "unraid-key:id:unraidReadApiKey" }, unit16Deps({ refreshMachine: async () => refreshed(probeConfig), fetch: async () => { throw new Error("x") } }))
@@ -1783,8 +1802,9 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
   })
 
   it("maps live callback transport outcomes without exposing the approval runtime", async () => {
-    const update = { callback_query: {} }
+    const update = { update_id: 9, callback_query: { id: "query", data: "approval:secret", from: { id: 1 }, message: { message_id: 7, chat: { id: 2 } } } }
     const runtimeInputs: Array<Record<string, unknown>> = []
+    const playbackDigests: string[] = []
     const base = (result: Record<string, unknown>, refresh = async () => refreshed({})) => ({
       refresh,
       credentials: () => ({ botToken: "secret", authorizedUserId: "1", authorizedChatId: "2" }),
@@ -1792,12 +1812,16 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       createApi: () => ({ stop: vi.fn() }) as any,
       createRuntime: (input: Record<string, unknown>) => { runtimeInputs.push(input); return ({ transport: { handleUpdate: async () => result }, close: vi.fn() }) as any },
       toolContext: () => ({} as any),
+      recordCallbackPlayback: (coordinateDigest: string) => { playbackDigests.push(coordinateDigest) },
     })
     await expect(executeSanctuaryAcceptanceCallbackProbe(update, false, base({ handled: true, accepted: true, reason: "accepted" }))).resolves.toEqual({ settled: true, claimed: true, mutated: true })
     await expect(executeSanctuaryAcceptanceCallbackProbe(update, false, base({ handled: true, accepted: false, reason: "decision_refused" }))).resolves.toEqual({ settled: true, claimed: true, mutated: false })
     await expect(executeSanctuaryAcceptanceCallbackProbe(update, true, base({ handled: true, accepted: false, reason: "stale_callback" }))).resolves.toEqual({ settled: true, claimed: false, mutated: false })
     await expect(executeSanctuaryAcceptanceCallbackProbe(update, true, base({ handled: true, accepted: true, reason: "accepted" }))).rejects.toThrow(/replay/u)
     await expect(executeSanctuaryAcceptanceCallbackProbe(update, false, base({}, async () => ({ ok: false, reason: "missing", itemPath: "x", error: "x" })))).rejects.toThrow(/unavailable/u)
+    expect(playbackDigests).toHaveLength(4)
+    expect(playbackDigests.every((value) => /^[0-9a-f]{64}$/u.test(value))).toBe(true)
+    expect(JSON.stringify(playbackDigests)).not.toContain("approval:secret")
     expect(runtimeInputs[0]?.subject).toBe(opaqueTelegramSubject("a".repeat(43), "secret", "1", "2"))
   })
 
@@ -1980,6 +2004,7 @@ function unit16Deps(overrides: Partial<SanctuaryAcceptanceAdapterDependencies> =
     refreshMachine: async () => refreshed({}),
     mergeMachine: async (_agent, _machine, patch) => refreshed(patch),
     callbackProbe: async () => ({ settled: true, claimed: false, mutated: false }),
+    callbackPlaybackSnapshot: (coordinateDigest) => ({ playbackCount: 0, coordinateDigest, journalDigest: "a".repeat(64) }),
     hostRequest: async () => ({}),
     runProductionBoundaryProbe: async () => [
       ...["shell", "read_file", "edit_file", "vault_get", "mcp_call", "exec", "credential_get"].map((name, index) => ({ name, reason: "profile_excluded" as const, globallyResolvable: index < 4, invoked: false, sideEffect: false })),

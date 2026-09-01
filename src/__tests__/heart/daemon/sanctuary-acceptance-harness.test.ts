@@ -71,7 +71,7 @@ function sha(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex")
 }
 
-const zeroCallbackPlayback = { playbackCount: 0, coordinateDigest: "d".repeat(64) }
+const zeroCallbackPlayback = { playbackCount: 0, coordinateDigest: "d".repeat(64), journalDigest: "e".repeat(64) }
 
 function executeSanctuaryAcceptanceHarness(command: string, rawConfig: unknown, deps?: AcceptanceHarnessDependencies): Promise<void> {
   if (rawConfig && typeof rawConfig === "object" && !Array.isArray(rawConfig)) {
@@ -799,6 +799,11 @@ describe("Sanctuary acceptance harness", () => {
       "health-probe-status": expect.objectContaining({ operation: "health_probe_status", modelReachable: false }),
       "health-probe-recovery": expect.objectContaining({ operation: "recover_health_probe", modelReachable: false }),
     }))
+    expect(contract.adapters["callback-live"]).toMatchObject({
+      operation: "callback_playback_preflight|inject_callbacks_concurrently|inject_callback_replay",
+      authority: "fixed-live-telegram-callback-probe",
+      modelReachable: false,
+    })
     expect(contract.adapters["health-probe-start"].timeoutMs).toBe(170_000)
     expect(contract.adapters["health-probe-status"].timeoutMs).toBe(170_000)
     expect(contract.adapters["health-probe-recovery"].timeoutMs).toBe(90_000)
@@ -1320,7 +1325,7 @@ describe("Sanctuary acceptance harness", () => {
         expect(executable).toBe("/safe/inject")
         calls.push(payload)
         return (payload as { operation: string }).operation === "callback_playback_preflight"
-          ? { playbackCount: 0, coordinateDigest: createHash("sha256").update("coordinate").digest("hex") }
+          ? { playbackCount: 0, coordinateDigest: createHash("sha256").update("coordinate").digest("hex"), journalDigest: createHash("sha256").update("journal").digest("hex") }
           : (payload as { operation: string }).operation === "inject_callbacks_concurrently"
           ? { results: [{ settled: true, claimed: true, mutated: true }, { settled: true, claimed: false, mutated: false }] }
           : { settled: true, claimed: false, mutated: false }
@@ -1342,12 +1347,14 @@ describe("Sanctuary acceptance harness", () => {
     const update = { update_id: 99, callback_query: { id: "opaque", from: { id: 111 }, data: "a:opaque", message: { message_id: 4, chat: { id: 222 } } } }
     const coordinateDigest = createHash("sha256").update("coordinate").digest("hex")
     for (const [name, preflights, error] of [
-      ["prior", [{ playbackCount: 1, coordinateDigest }], /zero prior playback/u],
-      ["raced", [{ playbackCount: 0, coordinateDigest }, { playbackCount: 1, coordinateDigest }], /zero prior playback/u],
-      ["drift", [{ playbackCount: 0, coordinateDigest }, { playbackCount: 0, coordinateDigest: "f".repeat(64) }], /coordinate changed/u],
-      ["shape", [{ playbackCount: 0, coordinateDigest, extra: true }], /shape/u],
-      ["count", [{ playbackCount: -1, coordinateDigest }], /count/u],
-      ["digest", [{ playbackCount: 0, coordinateDigest: "raw" }], /coordinate digest/u],
+      ["prior", [{ playbackCount: 1, coordinateDigest, journalDigest: "e".repeat(64) }], /zero prior playback/u],
+      ["raced", [{ playbackCount: 0, coordinateDigest, journalDigest: "e".repeat(64) }, { playbackCount: 1, coordinateDigest, journalDigest: "e".repeat(64) }], /zero prior playback/u],
+      ["drift", [{ playbackCount: 0, coordinateDigest, journalDigest: "e".repeat(64) }, { playbackCount: 0, coordinateDigest: "f".repeat(64), journalDigest: "e".repeat(64) }], /coordinate changed/u],
+      ["journal-drift", [{ playbackCount: 0, coordinateDigest, journalDigest: "e".repeat(64) }, { playbackCount: 0, coordinateDigest, journalDigest: "f".repeat(64) }], /journal changed/u],
+      ["shape", [{ playbackCount: 0, coordinateDigest, journalDigest: "e".repeat(64), extra: true }], /shape/u],
+      ["count", [{ playbackCount: -1, coordinateDigest, journalDigest: "e".repeat(64) }], /count/u],
+      ["digest", [{ playbackCount: 0, coordinateDigest: "raw", journalDigest: "e".repeat(64) }], /coordinate digest/u],
+      ["journal-digest", [{ playbackCount: 0, coordinateDigest, journalDigest: "raw" }], /journal digest/u],
     ] as const) {
       let preflightIndex = 0
       const calls: string[] = []
@@ -1447,7 +1454,7 @@ describe("Sanctuary acceptance harness", () => {
     ])
     const operations: Array<{ operation: string; id?: string; name?: string }> = []
     let created = 0
-    await executeSanctuaryAcceptanceHarness("unraid-key-rotate", {
+    const config = {
       evidencePath: path.join(dir, "canonical-rotation.json"), targetServerId: "sanctuary-unraid",
       inventoryAdapter: "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
       createAdapter: "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
@@ -1462,7 +1469,8 @@ describe("Sanctuary acceptance harness", () => {
         { id: "old-ro", secretAdapter: "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh" },
         { id: "old-rw", secretAdapter: "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh" },
       ],
-    }, dependencies({ adapter: async (_executable, rawPayload: any) => {
+    }
+    const deps = dependencies({ adapter: async (_executable, rawPayload: any) => {
       operations.push(rawPayload)
       if (rawPayload.operation === "inventory_keys") return { keys: [...state.values()] }
       if (rawPayload.operation === "create_key") {
@@ -1480,7 +1488,8 @@ describe("Sanctuary acceptance harness", () => {
       }
       if (rawPayload.operation === "probe_revoked_key") return { valid: false, status: 401 }
       throw new Error(`unexpected ${rawPayload.operation}`)
-    } }))
+    } })
+    await executeSanctuaryAcceptanceHarness("unraid-key-rotate", config, deps)
 
     expect([...state.values()].map(({ id, name }) => ({ id, name }))).toEqual([
       { id: "created-3", name: "Butler RO" },
@@ -1496,10 +1505,16 @@ describe("Sanctuary acceptance harness", () => {
       createdKeyIds: ["created-1", "created-2", "created-3", "created-4"],
       revokedKeyIds: ["old-ro", "old-rw", "created-1", "created-2"],
     })
+    state.delete("created-3")
+    state.delete("created-4")
+    state.set("replacement-ro", { id: "replacement-ro", name: "Butler RO", permissions: readPermissions, roles: [] })
+    state.set("replacement-rw", { id: "replacement-rw", name: "Butler RW", permissions: writePermissions, roles: [] })
+    await expect(executeSanctuaryAcceptanceHarness("unraid-key-rotate", config, deps)).rejects.toThrow(/completed Unraid rotation inventory drifted/u)
+    expect(created).toBe(4)
   })
 
   it.each([
-    "create", "store", "new-probe", "temporary-inventory", "revoke", "revoked-status", "old-revoke-inventory", "canonical-inventory", "final-inventory",
+    "create", "store", "new-probe", "temporary-inventory", "old-metadata", "revoke", "revoked-status", "old-revoke-inventory", "canonical-inventory", "final-inventory",
   ])("fails closed and checkpoints an occupied canonical rotation %s fault", async (fault) => {
     const dir = root()
     const fixed = "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh"
@@ -1510,7 +1525,7 @@ describe("Sanctuary acceptance harness", () => {
       ["old-rw", { id: "old-rw", name: "Butler RW", permissions: writePermissions, roles: [] as string[] }],
     ])
     let created = 0
-    let inventoryCall = 0
+    let inventoryFaultActive = false
     const evidencePath = path.join(dir, `${fault}.json`)
     await expect(executeSanctuaryAcceptanceHarness("unraid-key-rotate", {
       evidencePath, targetServerId: "sanctuary-unraid", inventoryAdapter: fixed, createAdapter: fixed, storeAdapter: fixed, revokeAdapter: fixed, probeAdapter: fixed,
@@ -1518,11 +1533,17 @@ describe("Sanctuary acceptance harness", () => {
       oldKeys: [{ id: "old-ro", secretAdapter: fixed }, { id: "old-rw", secretAdapter: fixed }],
     }, dependencies({ adapter: async (_executable, rawPayload: any) => {
       if (rawPayload.operation === "inventory_keys") {
-        inventoryCall += 1
-        if ((fault === "temporary-inventory" && inventoryCall === 2)
-          || (fault === "old-revoke-inventory" && inventoryCall === 3)
-          || (fault === "canonical-inventory" && inventoryCall === 4)
-          || (fault === "final-inventory" && inventoryCall === 5)) return { keys: [] }
+        const values = [...state.values()]
+        const rotations = values.filter((entry) => entry.name.includes(" Rotation ")).length
+        const canonicals = values.filter((entry) => entry.name === "Butler RO" || entry.name === "Butler RW").length
+        inventoryFaultActive ||= (fault === "temporary-inventory" && created === 2 && rotations === 2 && canonicals === 2)
+          || (fault === "old-metadata" && created === 2 && rotations === 2 && canonicals === 2)
+          || (fault === "old-revoke-inventory" && created === 2 && rotations === 2 && canonicals === 0)
+          || (fault === "canonical-inventory" && created === 4 && rotations === 2 && canonicals === 2)
+          || (fault === "final-inventory" && created === 4 && rotations === 0 && canonicals === 2)
+        if (inventoryFaultActive) return fault === "old-metadata"
+          ? { keys: values.map((entry) => entry.id === "old-ro" ? { ...entry, roles: ["GUEST"] } : entry) }
+          : { keys: [] }
         return { keys: [...state.values()] }
       }
       if (rawPayload.operation === "create_key") {
@@ -1543,6 +1564,98 @@ describe("Sanctuary acceptance harness", () => {
       throw new Error(`unexpected ${rawPayload.operation}`)
     } }))).rejects.toThrow()
     expect(evidence(evidencePath)).toMatchObject({ phase: "failed" })
+    if (fault === "old-revoke-inventory") expect(created).toBe(2)
+  })
+
+  it("resumes an occupied canonical rotation after create returned but vault acknowledgement failed", async () => {
+    const dir = root()
+    const fixed = "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh"
+    const readPermissions = ["ARRAY:READ_ANY", "DOCKER:READ_ANY"]
+    const writePermissions = [...readPermissions, "DOCKER:UPDATE_ANY"]
+    const state = new Map([
+      ["old-ro", { id: "old-ro", name: "Butler RO", permissions: readPermissions, roles: [] as string[] }],
+      ["old-rw", { id: "old-rw", name: "Butler RW", permissions: writePermissions, roles: [] as string[] }],
+    ])
+    const evidencePath = path.join(dir, "resumable-rotation.json")
+    const config = {
+      evidencePath, targetServerId: "sanctuary-unraid", inventoryAdapter: fixed, createAdapter: fixed, storeAdapter: fixed, revokeAdapter: fixed, probeAdapter: fixed,
+      keys: [{ name: "Butler RO", vaultField: "unraidReadApiKey", permissions: readPermissions }, { name: "Butler RW", vaultField: "unraidWriteApiKey", permissions: writePermissions }],
+      oldKeys: [{ id: "old-ro", secretAdapter: fixed }, { id: "old-rw", secretAdapter: fixed }],
+    }
+    let createCount = 0
+    let failStore = true
+    const deps = dependencies({ adapter: async (_executable, payload: any) => {
+      if (payload.operation === "inventory_keys") return { keys: [...state.values()] }
+      if (payload.operation === "create_key") {
+        createCount += 1
+        const id = `created-${createCount}`
+        state.set(id, { id, name: payload.name, permissions: payload.permissions, roles: [] })
+        return { id, name: payload.name, permissions: payload.permissions, roles: [], key: `unraid-key:${id}:${payload.name.startsWith("Butler RO") ? "unraidReadApiKey" : "unraidWriteApiKey"}` }
+      }
+      if (payload.operation === "store_key") {
+        if (failStore) { failStore = false; throw new Error("one lost vault acknowledgement") }
+        return { stored: true, keyId: payload.keyId }
+      }
+      if (payload.operation === "probe_new_key") return { valid: true }
+      if (payload.operation === "read_old_key") return { key: `unraid-key:${payload.id}:legacy` }
+      if (payload.operation === "revoke_key") { state.delete(payload.id); return { revoked: true, id: payload.id } }
+      if (payload.operation === "probe_revoked_key") return { valid: false, status: 401 }
+      throw new Error(`unexpected ${payload.operation}`)
+    } })
+    await expect(executeSanctuaryAcceptanceHarness("unraid-key-rotate", config, deps)).rejects.toThrow(/lost vault/u)
+    expect(createCount).toBe(1)
+    expect(evidence(evidencePath)).toMatchObject({ phase: "failed", transactionSuffix: "0123456789abcdef" })
+    await expect(executeSanctuaryAcceptanceHarness("unraid-key-rotate", config, deps)).resolves.toBeUndefined()
+    expect(createCount).toBe(4)
+    expect(evidence(evidencePath)).toMatchObject({ phase: "complete", transactionSuffix: "0123456789abcdef" })
+  })
+
+  it.each(["canonical-store", "first-old-revoke-probe", "second-old-revoke-probe", "first-temp-revoke-probe", "second-temp-revoke-probe"])("resumes an occupied canonical rotation after a %s crash cut", async (cut) => {
+    const dir = root()
+    const fixed = "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh"
+    const readPermissions = ["ARRAY:READ_ANY", "DOCKER:READ_ANY"]
+    const writePermissions = [...readPermissions, "DOCKER:UPDATE_ANY"]
+    const state = new Map([
+      ["old-ro", { id: "old-ro", name: "Butler RO", permissions: readPermissions, roles: [] as string[] }],
+      ["old-rw", { id: "old-rw", name: "Butler RW", permissions: writePermissions, roles: [] as string[] }],
+    ])
+    const evidencePath = path.join(dir, `${cut}.json`)
+    const config = {
+      evidencePath, targetServerId: "sanctuary-unraid", inventoryAdapter: fixed, createAdapter: fixed, storeAdapter: fixed, revokeAdapter: fixed, probeAdapter: fixed,
+      keys: [{ name: "Butler RO", vaultField: "unraidReadApiKey", permissions: readPermissions }, { name: "Butler RW", vaultField: "unraidWriteApiKey", permissions: writePermissions }],
+      oldKeys: [{ id: "old-ro", secretAdapter: fixed }, { id: "old-rw", secretAdapter: fixed }],
+    }
+    let created = 0
+    let failed = false
+    const deps = dependencies({ adapter: async (_executable, payload: any) => {
+      if (payload.operation === "inventory_keys") return { keys: [...state.values()] }
+      if (payload.operation === "create_key") {
+        const id = `created-${++created}`
+        state.set(id, { id, name: payload.name, permissions: payload.permissions, roles: [] })
+        return { id, name: payload.name, permissions: payload.permissions, roles: [], key: `unraid-key:${id}:${payload.name.startsWith("Butler RO") ? "unraidReadApiKey" : "unraidWriteApiKey"}` }
+      }
+      if (payload.operation === "store_key") {
+        if (!failed && cut === "canonical-store" && payload.keyId === "created-3") { failed = true; throw new Error("canonical store crash") }
+        return { stored: true, keyId: payload.keyId }
+      }
+      if (payload.operation === "probe_new_key") return { valid: true }
+      if (payload.operation === "read_old_key") return { key: `unraid-key:${payload.id}:legacy` }
+      if (payload.operation === "revoke_key") { state.delete(payload.id); return { revoked: true, id: payload.id } }
+      if (payload.operation === "probe_revoked_key") {
+        const cutId = {
+          "first-old-revoke-probe": "old-ro", "second-old-revoke-probe": "old-rw",
+          "first-temp-revoke-probe": "created-1", "second-temp-revoke-probe": "created-2",
+        }[cut as string]
+        if (!failed && cutId === payload.id) { failed = true; throw new Error("revoke response crash") }
+        return { valid: false, status: 401 }
+      }
+      throw new Error(`unexpected ${payload.operation}`)
+    } })
+    await expect(executeSanctuaryAcceptanceHarness("unraid-key-rotate", config, deps)).rejects.toThrow(/crash/u)
+    await expect(executeSanctuaryAcceptanceHarness("unraid-key-rotate", config, deps)).resolves.toBeUndefined()
+    expect(created).toBe(4)
+    expect([...state.values()].map((entry) => entry.name).sort()).toEqual(["Butler RO", "Butler RW"])
+    expect(evidence(evidencePath)).toMatchObject({ phase: "complete" })
   })
 
   it("refuses Unraid mutation before checkpoint on existing labels and leaves a failed checkpoint after adapter error", async () => {

@@ -50,9 +50,22 @@ assert_health_probe_cleanup() {
   ' "$ACCEPTANCE_STATE_ROOT" "$BUNDLE_ROOT/state/health/sanctuary-health.json.lease"
 }
 
+terminate_broker() {
+  test -n "$BROKER_PID" || return 0
+  kill "$BROKER_PID" 2>/dev/null || true
+  BROKER_WAIT=0
+  while kill -0 "$BROKER_PID" 2>/dev/null && test "$BROKER_WAIT" -lt 10; do
+    sleep 1
+    BROKER_WAIT=$(( BROKER_WAIT + 1 ))
+  done
+  if kill -0 "$BROKER_PID" 2>/dev/null; then kill -KILL "$BROKER_PID" 2>/dev/null || true; fi
+  wait "$BROKER_PID" 2>/dev/null || true
+  BROKER_PID=
+}
+
 cleanup_unit16() {
   CLEANUP_STATUS=$?
-  if test -n "$BROKER_PID"; then kill "$BROKER_PID" 2>/dev/null || true; wait "$BROKER_PID" 2>/dev/null || true; fi
+  terminate_broker
   if test "$ACCEPTANCE_CANONICAL_PINNED" = yes && ! assert_health_probe_cleanup; then CLEANUP_STATUS=1; fi
   if test "$PRODUCTION_STOPPED" = yes && test "$HOST_REBOOT_COMMIT_STATE" = not_sent; then
     if ! restore_production_container; then CLEANUP_STATUS=1; fi
@@ -73,7 +86,10 @@ cleanup_unit16() {
   if test "$ACCEPTANCE_ALIAS_MOUNTED" = no && test -n "$PRIVATE_ROOT" && test -d "$PRIVATE_ROOT"; then rm -rf -- "$PRIVATE_ROOT"; fi
   return "$CLEANUP_STATUS"
 }
-trap cleanup_unit16 EXIT HUP INT TERM
+trap cleanup_unit16 EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 case "$MODE" in
   materialize)
@@ -347,6 +363,7 @@ cmp -s "$EXPECTED_CONFIG" "$CONFIG_PATH" || exit 1
 case "$COMMAND" in telegram-bootstrap|callback-inject) test -r /proc/self/fd/3 || exit 2 ;; esac
 prepare_live_facts
 if test "$COMMAND" = telegram-bootstrap; then quiesce_production_telegram_poller; fi
+if test "$COMMAND" = unraid-key-rotate; then stop_exact_production_container; fi
 
 case "$COMMAND" in
   telegram-bootstrap) TIME_LIMIT=900; NETWORK=host; INPUT=yes; BUNDLE_MODE=readonly; BROKER=no ;;

@@ -1872,6 +1872,27 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
     expect(runbook).toContain("requires exactly the canonical pair")
     expect(runbook).toContain("revoked-key-proof")
     expect(runbook).toContain("retained across failed retries")
+    expect(runbook).toContain("provisional `GUEST`")
+    expect(runbook).toContain("`API_KEY:UPDATE_ANY`")
+    expect(runbook).toContain("stops the exact production container")
+    expect(runbook).toContain("resumes from the durable redacted transaction checkpoint")
+    expect(runbook).toContain("durable callback playback journal")
+  })
+
+  it("exits through cleanup instead of resuming after a launcher termination signal", () => {
+    const launcher = fs.readFileSync("deploy/unraid/sanctuary-unit16-run.sh", "utf8")
+    const start = launcher.indexOf("terminate_broker()")
+    const end = launcher.indexOf('\n\ncase "$MODE"', start)
+    expect(start).toBeGreaterThanOrEqual(0)
+    expect(end).toBeGreaterThan(start)
+    const marker = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "ouro-unit16-signal-")), "resumed")
+    const prefix = `BROKER_PID=\nPRIVATE_ROOT=\nPRODUCTION_STOPPED=no\nHOST_REBOOT_COMMIT_STATE=not_sent\nACCEPTANCE_ALIAS_MOUNTED=no\nACCEPTANCE_CANONICAL_PINNED=no\nACCEPTANCE_PIN_ROOT=\nACCEPTANCE_STATE_ROOT=\n${launcher.slice(start, end)}\n`
+    const result = spawnSync("/bin/sh", ["-c", `${prefix}kill -TERM $$\nprintf resumed >"$SIGNAL_MARKER"`], {
+      env: { ...process.env, SIGNAL_MARKER: marker },
+    })
+    expect(result.status).toBe(143)
+    expect(fs.existsSync(marker)).toBe(false)
+    fs.rmSync(path.dirname(marker), { recursive: true, force: true })
   })
 
   it("ships a complete exact-image host launcher for every Unit 16 harness command", () => {
@@ -1914,6 +1935,7 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
       expect(materialization).not.toContain(runtimeWritable)
     }
     expect(launcher).toContain('telegram-bootstrap) TIME_LIMIT=900; NETWORK=host; INPUT=yes; BUNDLE_MODE=readonly; BROKER=no')
+    expect(launcher).toContain('if test "$COMMAND" = unraid-key-rotate; then stop_exact_production_container; fi')
     expect(launcher).toContain('if test "$BUNDLE_MODE" = rw; then BUNDLE_SUFFIX=; else BUNDLE_SUFFIX=,readonly; fi')
     expect(telegramBootstrap).toContain("--user 10001:10001 --read-only --cap-drop ALL --security-opt no-new-privileges")
     expect(telegramBootstrap).toContain(runtimeWritable)
@@ -1943,6 +1965,13 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
     expect(launcher).toContain('dst=/run/ouro-acceptance/telegram-poller-count.json,readonly')
     expect(launcher).toContain("'{\"activePollers\":0,\"productionContainerStopped\":true}'")
     expect(launcher).toContain('restore_production_container')
+    expect(launcher).toContain("trap cleanup_unit16 EXIT")
+    expect(launcher).toContain("trap 'exit 129' HUP")
+    expect(launcher).toContain("trap 'exit 130' INT")
+    expect(launcher).toContain("trap 'exit 143' TERM")
+    expect(launcher).not.toContain("trap cleanup_unit16 EXIT HUP INT TERM")
+    expect(launcher).toContain('while kill -0 "$BROKER_PID" 2>/dev/null && test "$BROKER_WAIT" -lt 10')
+    expect(launcher).toContain('kill -KILL "$BROKER_PID"')
     expect(launcher).toContain('/usr/bin/docker start "$EXPECTED_CONTAINER_ID"')
     expect(launcher).toContain('test "$RESTORE_RUNNING" = true && test "$RESTORE_HEALTH" = healthy')
     const startBroker = launcher.slice(launcher.indexOf("start_broker()"), launcher.indexOf("prepare_live_facts()"))

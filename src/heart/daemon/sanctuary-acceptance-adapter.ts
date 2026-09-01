@@ -1,9 +1,10 @@
 import { spawnSync } from "node:child_process"
 import { createHash, timingSafeEqual } from "node:crypto"
-import { closeSync, constants, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs"
+import { chmodSync, closeSync, constants, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs"
 import { createConnection } from "node:net"
 import * as path from "node:path"
 import type OpenAI from "openai"
+import Database from "better-sqlite3"
 import { FileFriendStore } from "@ouro.bot/friends"
 
 import { emitNervesEvent } from "../../nerves/runtime"
@@ -69,6 +70,7 @@ export interface SanctuaryAcceptanceAdapterDependencies {
   refreshMachine?(agentName: string, machineId: string): Promise<RuntimeCredentialConfigReadResult>
   mergeMachine?(agentName: string, machineId: string, patch: JsonObject): Promise<RuntimeCredentialConfigReadResult>
   callbackProbe?(update: JsonObject, replay: boolean): Promise<{ settled: boolean; claimed: boolean; mutated: boolean }>
+  callbackPlaybackSnapshot?(coordinateDigest: string): { playbackCount: number; coordinateDigest: string; journalDigest: string }
   interactiveRuntime?(payload: JsonObject): Promise<unknown>
   hostRequest?(payload: JsonObject): Promise<unknown>
   captureScenario?(payload: JsonObject): Promise<unknown>
@@ -117,6 +119,7 @@ const NETWORK_TIMEOUT_MS = 10_000
 const KEY_DIRECTORY = "/boot/config/plugins/dynamix.my.servers/keys"
 const SELECTED_KEY_RECORD = "/run/ouro-acceptance/unraid-key.json"
 const TELEGRAM_OFFSET = "/home/ouro/AgentBundles/sanctuary.ouro/state/senses/telegram/offset.json"
+const CALLBACK_PLAYBACK_JOURNAL = "state/approvals/sanctuary-callback-playback.sqlite"
 const TELEGRAM_IDENTITY_KEY = "/home/ouro/AgentBundles/sanctuary.ouro/state/senses/telegram/identity.key"
 const TELEGRAM_AUDIT = `/home/ouro/AgentBundles/sanctuary.ouro/${TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH}`
 const TELEGRAM_AUDIT_HEAD = `/home/ouro/AgentBundles/sanctuary.ouro/${TELEGRAM_ACCEPTANCE_AUDIT_HEAD_RELATIVE_PATH}`
@@ -272,6 +275,7 @@ export function createSanctuaryAcceptanceAdapterDependencies(
     refreshMachine: refreshMachineRuntimeCredentialConfig,
     mergeMachine: mergeMachineRuntimeCredentialConfig,
     callbackProbe: executeSanctuaryAcceptanceCallbackProbe,
+    callbackPlaybackSnapshot: (coordinateDigest) => callbackPlaybackSnapshot(getAgentRoot(TARGET_ID), coordinateDigest),
     interactiveRuntime: executeSanctuaryInteractiveRuntimeOperation,
     hostRequest: options.hostRequest ?? ((payload) => defaultHostRequest(payload, hostBrokerSocket, adapterTimeoutMs)),
     telegramCredentials: () => loadTelegramSenseCredentials(TARGET_ID),
@@ -1877,6 +1881,49 @@ function callbackUpdate(value: unknown): JsonObject {
   return update
 }
 
+function withCallbackPlaybackJournal<T>(agentRoot: string, operation: (database: Database.Database) => T): T {
+  const databasePath = path.join(agentRoot, CALLBACK_PLAYBACK_JOURNAL)
+  mkdirSync(path.dirname(databasePath), { recursive: true, mode: 0o700 })
+  const database = new Database(databasePath)
+  try {
+    chmodSync(databasePath, 0o600)
+    database.pragma("journal_mode = DELETE")
+    database.pragma("synchronous = FULL")
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS callback_playback (
+        coordinate_digest TEXT PRIMARY KEY NOT NULL CHECK(length(coordinate_digest) = 64),
+        playback_count INTEGER NOT NULL CHECK(playback_count > 0)
+      )
+    `)
+    return operation(database)
+  } finally {
+    database.close()
+  }
+}
+
+function callbackPlaybackSnapshot(agentRoot: string, coordinateDigest: string): { playbackCount: number; coordinateDigest: string; journalDigest: string } {
+  if (!SHA256.test(coordinateDigest)) throw new Error("callback coordinate digest is invalid")
+  return withCallbackPlaybackJournal(agentRoot, (database) => {
+    const rows = database.prepare("SELECT coordinate_digest, playback_count FROM callback_playback ORDER BY coordinate_digest")
+      .all() as Array<{ coordinate_digest: string; playback_count: number }>
+    if (rows.some((row) => !SHA256.test(row.coordinate_digest) || !Number.isSafeInteger(row.playback_count) || row.playback_count <= 0)) {
+      throw new Error("callback playback journal is invalid")
+    }
+    const playbackCount = rows.find((row) => row.coordinate_digest === coordinateDigest)?.playback_count ?? 0
+    return { playbackCount, coordinateDigest, journalDigest: sha256(JSON.stringify(rows)) }
+  })
+}
+
+function recordCallbackPlayback(agentRoot: string, coordinateDigest: string): void {
+  if (!SHA256.test(coordinateDigest)) throw new Error("callback coordinate digest is invalid")
+  withCallbackPlaybackJournal(agentRoot, (database) => {
+    database.prepare(`
+      INSERT INTO callback_playback (coordinate_digest, playback_count) VALUES (?, 1)
+      ON CONFLICT(coordinate_digest) DO UPDATE SET playback_count = playback_count + 1
+    `).run(coordinateDigest)
+  })
+}
+
 function callbackCoordinate(update: JsonObject): { updateId: number; digest: string } {
   const updateId = update.update_id
   if (!Number.isSafeInteger(updateId) || Number(updateId) < 0) throw new Error("callback update_id is invalid")
@@ -1908,7 +1955,17 @@ function callbackPlaybackPreflight(payload: JsonObject, deps: SanctuaryAcceptanc
   const offset = object(JSON.parse(fixedFile(deps, TELEGRAM_OFFSET)) as unknown, "Telegram offset")
   exactKeys(offset, ["nextUpdateId"], "Telegram offset")
   if (!Number.isSafeInteger(offset.nextUpdateId) || Number(offset.nextUpdateId) < 0) throw new Error("Telegram offset is invalid")
-  return { playbackCount: Number(offset.nextUpdateId) > coordinate.updateId ? 1 : 0, coordinateDigest: coordinate.digest }
+  const snapshot = object(dependency(deps.callbackPlaybackSnapshot, "callback playback journal")(coordinate.digest), "callback playback journal snapshot")
+  exactKeys(snapshot, ["coordinateDigest", "journalDigest", "playbackCount"], "callback playback journal snapshot")
+  if (snapshot.coordinateDigest !== coordinate.digest || typeof snapshot.journalDigest !== "string" || !SHA256.test(snapshot.journalDigest)
+    || !Number.isSafeInteger(snapshot.playbackCount) || Number(snapshot.playbackCount) < 0) {
+    throw new Error("callback playback journal snapshot is invalid")
+  }
+  return {
+    playbackCount: Math.max(Number(snapshot.playbackCount), Number(offset.nextUpdateId) > coordinate.updateId ? 1 : 0),
+    coordinateDigest: coordinate.digest,
+    journalDigest: snapshot.journalDigest,
+  }
 }
 
 async function concurrentCallbackProbe(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDependencies): Promise<unknown> {
@@ -2021,6 +2078,12 @@ async function storeKey(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDep
   const handles = object(stored.sanctuaryAcceptanceKeyHandles, "vault-backed acceptance key handles")
   if (text(handles[id], "vault-backed Unraid credential") !== text(stored[field], "vault-backed Unraid credential")) {
     throw new Error("Unraid key handle does not bind to the active vault field")
+  }
+  const acknowledged = object(await dependency(deps.hostRequest, "Sanctuary host broker")({
+    operation: "acknowledge_key_storage", targetServerId: TARGET_SERVER_ID, keyId: id,
+  }), "Unraid key storage acknowledgement")
+  if (acknowledged.acknowledged !== true || acknowledged.id !== id) {
+    throw new Error("Unraid key storage acknowledgement failed")
   }
   return { stored: true, keyId: id }
 }
@@ -2317,6 +2380,7 @@ export interface SanctuaryAcceptanceCallbackProbeDependencies {
   createRuntime(input: Parameters<typeof createTelegramApprovalRuntime>[0]): Pick<TelegramApprovalRuntime, "transport" | "close">
   toolContext(agentName: string): ReturnType<typeof createSanctuaryToolContext>
   effects?(input: { agentRoot: string; api: TelegramBotApi; subject: string; chatId: string }): { port: TelegramApprovalEffectPort; close(): void }
+  recordCallbackPlayback(coordinateDigest: string): void
 }
 
 function createAcceptanceProbeEffects(input: { agentRoot: string; api: TelegramBotApi; subject: string; chatId: string }): { port: TelegramApprovalEffectPort; close(): void } {
@@ -2373,6 +2437,7 @@ export async function executeSanctuaryAcceptanceCallbackProbe(
     createRuntime: createTelegramApprovalRuntime,
     toolContext: createSanctuaryToolContext,
     effects: createAcceptanceProbeEffects,
+    recordCallbackPlayback: (coordinateDigest) => recordCallbackPlayback(getAgentRoot(TARGET_ID), coordinateDigest),
   },
 ): Promise<{ settled: boolean; claimed: boolean; mutated: boolean }> {
   const update = callbackUpdate(rawUpdate) as unknown as TelegramUpdate
@@ -2405,6 +2470,7 @@ export async function executeSanctuaryAcceptanceCallbackProbe(
     effects: effectBoundary?.port ?? unavailableEffects,
   })
   try {
+    deps.recordCallbackPlayback(callbackCoordinate(update as unknown as JsonObject).digest)
     const result = await runtime.transport.handleUpdate(update)
     if (replay && (result.handled !== true || result.accepted !== false || result.reason !== "stale_callback")) {
       throw new Error("Telegram callback replay did not settle as stale")

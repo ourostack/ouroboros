@@ -2440,6 +2440,9 @@ Packaged Unit 16 acceptance execution:
   failure. It never reads or changes Unraid autostart configuration. Every command
   also receives a freshly generated, redacted typed container-inspect snapshot;
   raw container environment or credential values are never captured.
+  Callback injection requires two stable zero observations from a durable callback playback journal under
+  `state/approvals`; the journal is keyed only by the full callback-coordinate
+  digest and stores no raw update, callback data, user, chat, message, or query ID.
   Evidence-snapshot keeps the bundle mount read-only and overlays only the exact
   canonical `state/acceptance` directory as writable. It first stops the exact
   healthy staging container under recovery responsibility, then opens the
@@ -2459,17 +2462,40 @@ Audit and safety verification:
   stop and restart mutations; only the separate write key may perform the one
   typed approved restart action.
   The packaged `unraid-key-rotate` command is the only canonical key-rotation
-  authority. It inventories the two occupied canonical names by exact immutable
-  ID, creates collision-safe `Butler RO Rotation <suffix>` and
+  authority. Its host launcher stops the exact production container and assumes
+  trap-backed recovery responsibility before key mutation. It inventories the
+  two occupied canonical names by exact immutable ID, creates collision-safe
+  `Butler RO Rotation <suffix>` and
   `Butler RW Rotation <suffix>` keys, stores and capability-probes both through
-  the Sanctuary machine vault, and requires an exact four-key inventory. It then
+  the Sanctuary machine vault, and on the uninterrupted path requires an exact
+  four-key inventory. Because
+  Unraid 7.2.3 cannot create a role-free key through its CLI, the root broker
+  creates each key as provisional `GUEST` with the intended scope plus only
+  `API_KEY:UPDATE_ANY`, then immediately uses that in-memory credential to
+  self-downgrade the same immutable ID to no roles and the exact intended scope.
+  Disk and live-auth proofs must pass before the credential may reach the vault.
+  The provisional credential never reaches argv, logs, evidence, the bundle, or
+  the model. It then
   revokes both old IDs and proves each old credential receives a 401 or 403.
   Only after an exact inventory contains the temporary pair alone does it create,
   store, and probe the canonical `Butler RO` and `Butler RW` pair. It requires an
-  exact four-key temporary-plus-canonical inventory, revokes and rejection-probes
+  exact four-key temporary-plus-canonical inventory on the uninterrupted path,
+  revokes and rejection-probes
   both temporary IDs, and finally requires exactly the canonical pair. Every
   unexpected key, duplicate, malformed permission set, role, name, inventory
-  delta, or probe response fails closed.
+  delta, or probe response fails closed. A resumed path may observe fewer keys
+  only when the transaction checkpoint plus a durable rejection receipt proves
+  that the missing immutable ID was already revoked; it never treats absence
+  alone as success.
+
+  A failed invocation resumes from the durable redacted transaction checkpoint
+  instead of reminting known keys. The checkpoint binds every created immutable
+  ID to its name, scope, vault field, temporary/canonical class, and attestation
+  state. Recovery reconciles exact live inventory and rejection proofs, skips
+  already-attested vault writes after canonical fields advance, and never
+  recreates a temporary key already known revoked. Root-owned recovery ownership
+  survives broker response loss and is cleared only after the harness has
+  checkpointed the immutable ID and the vault has read back the exact binding.
 
   Record only IDs, names, and permission sets in evidence; never raw key values.
   Raw credentials must not appear in argv, shell history, stdout, logs, or
@@ -2477,7 +2503,9 @@ Audit and safety verification:
   socket in process memory. The narrow revocation-retry recovery records under
   `/mnt/user/appdata/ouro-butler/acceptance/revoked-key-proof` are the sole file
   exception: they are root-owned mode 0600 beneath a root-owned mode 0700
-  directory, excluded from backup/evidence, streamed only on standard input to
-  the bounded rejection probe, retained across failed retries, and durably
-  deleted only after the exact authentication rejection is validated. Never
-  substitute names for IDs when revoking keys.
+  directory, excluded from backup/evidence, and readable only by the root broker.
+  Recovery state is retained across failed retries.
+  Creation intent is fsynced before the CLI side effect so an exact provisional
+  key can be adopted after process death. Raw recovery proof is durably deleted
+  only after the exact authentication rejection and its redacted replayable
+  receipt are fsynced. Never substitute names for IDs when revoking keys.
