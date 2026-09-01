@@ -149,6 +149,31 @@ function runUnraid(args) {
   return object(JSON.parse(result.stdout), "Unraid API response")
 }
 
+function createUnraidKey(name, requested, dependencies = { runUnraid, inventoryRecords, persistRecovery }) {
+  const before = dependencies.inventoryRecords()
+  const beforeIds = new Set(before.map((record) => record.id))
+  try {
+    const created = object(dependencies.runUnraid(["apikey", "--name", name, "--create", "--permissions", requested.join(","), "--json"]), "created Unraid key")
+    exactKeys(created, ["id", "key", "name"], "created Unraid key")
+    const id = text(created.id, "created key id", KEY_ID)
+    const key = text(created.key, "created key descriptor")
+    if (created.name !== name || beforeIds.has(id)) throw new Error("created key identity is invalid")
+    const matches = dependencies.inventoryRecords().filter((record) => record.id === id)
+    if (matches.length !== 1 || matches[0].name !== name || matches[0].key !== key
+      || JSON.stringify(flattened(matches[0])) !== JSON.stringify(requested) || matches[0].roles.length !== 0) {
+      throw new Error("created key record does not match the exact CLI result")
+    }
+    return matches[0]
+  } catch (error) {
+    const recoveredIds = new Set()
+    for (const record of dependencies.inventoryRecords().filter((candidate) => !beforeIds.has(candidate.id))) {
+      if (!recoveredIds.has(record.id)) dependencies.persistRecovery(record)
+      recoveredIds.add(record.id)
+    }
+    throw error
+  }
+}
+
 function autostartFileExact() {
   const fd = openSync(AUTOSTART_FILE, constants.O_RDONLY | constants.O_NOFOLLOW)
   let content
@@ -1531,18 +1556,7 @@ async function dispatch(request, dependencies = {
     if (payload.targetServerId !== TARGET_SERVER) throw new Error("target server is invalid")
     const name = text(payload.name, "key name", KEY_NAME)
     const requested = permissions(payload.permissions)
-    const created = runUnraid(["apikey", "--name", name, "--create", "--permissions", requested.join(","), "--json"])
-    const id = text(created.id, "created key id", KEY_ID)
-    const key = text(created.key, "created key descriptor")
-    const actualPermissions = permissions(created.permissions)
-    if (created.name !== name || JSON.stringify(actualPermissions) !== JSON.stringify(requested)
-      || !Array.isArray(created.roles) || created.roles.length !== 0) throw new Error("created key identity is invalid")
-    const matches = inventoryRecords().filter((record) => record.id === id)
-    if (matches.length !== 1 || matches[0].name !== name || matches[0].key !== key
-      || JSON.stringify(flattened(matches[0])) !== JSON.stringify(requested) || matches[0].roles.length !== 0) {
-      throw new Error("created key record does not match the exact CLI result")
-    }
-    return matches[0]
+    return createUnraidKey(name, requested)
   }
   if (operation === "revoke_key") {
     exactKeys(payload, ["operation", "targetServerId", "keyId"], operation)
@@ -1775,6 +1789,7 @@ export {
   createBrokerServer,
   createHealthProbeOperationCoordinator,
   createOwnerMutationCoordinator,
+  createUnraidKey,
   createInteractiveRestartDriver,
   dispatch,
   denialTargetSnapshot,
