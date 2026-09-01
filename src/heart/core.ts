@@ -409,7 +409,7 @@ function createFinalOnlyTextBuffer(callbacks: ChannelCallbacks): HabitCallbackBu
 
 export interface RunAgentOptions {
   toolChoiceRequired?: boolean;
-  /** Turn-local reads that must actually reach their handlers before a sole settle call can complete. */
+  /** Turn-local reads that must actually reach their handlers before any terminal response can complete. */
   requiredToolCalls?: { names: readonly string[]; retryMessage: string };
   toolContext?: ToolContext;
   traceId?: string;
@@ -1498,6 +1498,12 @@ export async function runAgent(
   let providerIterations = 0;
   const requiredToolCallNames = [...new Set(options?.requiredToolCalls?.names ?? [])];
   const dispatchedRequiredToolCalls = new Set<string>();
+  const pendingRequiredToolCalls = (): { missing: string[]; message: string } | null => {
+    const missing = requiredToolCallNames.filter((name) => !dispatchedRequiredToolCalls.has(name));
+    return missing.length > 0
+      ? { missing, message: `${options!.requiredToolCalls!.retryMessage} Missing required tool calls: ${missing.join(", ")}.` }
+      : null;
+  };
   const toolLoopState = createToolLoopState();
   const toolFrictionLedger = createToolFrictionLedger();
   const finishTerminalProviderError = (error: Error, classification: ProviderErrorClassification): void => {
@@ -1926,6 +1932,21 @@ export async function runAgent(
           });
           continue;
         }
+        const requiredToolCallsGate = pendingRequiredToolCalls();
+        if (requiredToolCallsGate) {
+          streamCallbackBuffer?.discard();
+          callbacks.onClearText?.();
+          pushGenerated(msg);
+          messages.push({ role: "user", content: requiredToolCallsGate.message });
+          emitNervesEvent({
+            level: "warn",
+            component: "engine",
+            event: "engine.required_tool_calls_pending",
+            message: "terminal response rejected until required tool handlers dispatch",
+            meta: { missingToolNames: requiredToolCallsGate.missing },
+          });
+          continue;
+        }
         if (privateReturnTextAckRetryError) {
           streamCallbackBuffer?.discard();
           callbacks.onClearText?.();
@@ -2146,21 +2167,20 @@ export async function runAgent(
         if (isSoleSettle) {
           const settleArgs = validatedCallArguments.get(result.toolCalls[0])!
           callbacks.onToolStart("settle", settleArgs);
-          const missingRequiredToolCalls = requiredToolCallNames.filter((name) => !dispatchedRequiredToolCalls.has(name));
-          if (missingRequiredToolCalls.length > 0) {
+          const requiredToolCallsGate = pendingRequiredToolCalls();
+          if (requiredToolCallsGate) {
             streamCallbackBuffer?.discard();
             callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs), false);
             callbacks.onClearText?.();
             pushGenerated(msg);
-            const gateMessage = `${options!.requiredToolCalls!.retryMessage} Missing required tool calls: ${missingRequiredToolCalls.join(", ")}.`;
-            pushGenerated({ role: "tool", tool_call_id: result.toolCalls[0].id, content: gateMessage });
-            providerRuntime.appendToolOutput(result.toolCalls[0].id, gateMessage);
+            pushGenerated({ role: "tool", tool_call_id: result.toolCalls[0].id, content: requiredToolCallsGate.message });
+            providerRuntime.appendToolOutput(result.toolCalls[0].id, requiredToolCallsGate.message);
             emitNervesEvent({
               level: "warn",
               component: "engine",
               event: "engine.required_tool_calls_pending",
               message: "settle rejected until required tool handlers dispatch",
-              meta: { missingToolNames: missingRequiredToolCalls },
+              meta: { missingToolNames: requiredToolCallsGate.missing },
             });
             continue;
           }

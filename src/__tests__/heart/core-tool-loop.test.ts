@@ -2121,5 +2121,44 @@ describe("runAgent tool loop guard", () => {
       expect(finalAnswer).toContain("95%")
       expect(finalAnswer).not.toMatch(/100%|134|daemon|dead-letter|policy lane|private-runtime|SABnzbd|Sonarr|Radarr|Deluge|choose/is)
     })
+
+    it("rejects a text-only final until every required read dispatches", async () => {
+      const requiredNames = ["query_active_work", "query_cares", "unraid_get_system", "unraid_list_containers"]
+      const finalAnswer = "Active: checking downloads. Waiting on you: nothing. Snoozed: nothing. Quiet by preference: Books. Healthy: Sanctuary and Jellyfin. Other known issues: none."
+      mockCreate
+        .mockReturnValueOnce(streamed("query_cares", {}, "cares-read"))
+        .mockReturnValueOnce(makeStream([makeChunk("**Sanctuary status** Docker is at 100%.")]))
+        .mockReturnValueOnce(makeStream([makeChunk(undefined, ["query_active_work", "unraid_get_system", "unraid_list_containers"].map((name, index) => ({
+          index,
+          id: `remaining-read-${index}`,
+          function: { name, arguments: "{}" },
+        })))]))
+        .mockReturnValueOnce(streamed("settle", { answer: finalAnswer, intent: "complete" }, "settle-current-summary"))
+      const execTool = vi.fn(async (name: string) => JSON.stringify({ ok: true, name }))
+      const callbacks = makeCallbacks({ settleOutputMode: "final_only" })
+      const messages: any[] = [{ role: "user", content: "What's going on with Sanctuary?" }]
+      const { runAgent } = await import("../../heart/core")
+
+      const result = await runAgent(messages, callbacks, "telegram", undefined, {
+        tools: requiredNames.map((name) => readTool(name)),
+        execTool,
+        toolContext: { signin: async () => undefined },
+        requiredToolCalls: {
+          names: requiredNames,
+          retryMessage: "Read current active work, cares, system health, and service state before answering.",
+        },
+      })
+
+      expect(result).toMatchObject({ outcome: "settled", completion: { answer: finalAnswer, intent: "complete" } })
+      expect(execTool.mock.calls.map(([name]) => name)).toEqual(["query_cares", "query_active_work", "unraid_get_system", "unraid_list_containers"])
+      expect(messages).toContainEqual(expect.objectContaining({
+        role: "user",
+        content: expect.stringMatching(/current active work.*query_active_work.*unraid_get_system.*unraid_list_containers/is),
+      }))
+      expect(callbacks.onClearText).toHaveBeenCalled()
+      expect(callbacks.onTextChunk).toHaveBeenCalledTimes(1)
+      expect(callbacks.onTextChunk).toHaveBeenCalledWith(finalAnswer)
+      expect(callbacks.onTextChunk).not.toHaveBeenCalledWith(expect.stringContaining("100%"))
+    })
   })
 })
