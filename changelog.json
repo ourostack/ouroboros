@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.775",
+      "changes": [
+        "Let routine Sanctuary updates validate the exact healthy live Telegram control socket, safely tighten known private permission drift, and surface redacted readiness failures."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.774",
       "changes": [
         "Make Sanctuary updates side-effect-safe, move Telegram acceptance to canonical vault credentials, and repair consumed event recoveries through a reviewed daemon command."

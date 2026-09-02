@@ -1649,6 +1649,9 @@ install_from_legacy_staging`
     expect(validator).toContain('"$VALIDATE_AGENT_ROOT/state/habits/*"')
     expect(validator).toContain('"$VALIDATE_AGENT_ROOT/state/arc/context-loss-sentinel-watermark.json"')
     expect(validator).toContain('test ! -S "$VALIDATE_AGENT_ROOT/state/acceptance/telegram-control.sock"')
+    expect(validator).toContain('VALIDATE_CONTEXT=${3:-strict}')
+    expect(validator).toContain('strict|live-precutover')
+    expect(validator).toContain("stat -c '%u:%g:%a'")
     expect(validator).toContain("container-credentials.json")
     expect(preflightHelper).toContain('validate_sanctuary_roots "$BACKUP_ROOT/runtime/.ouro-cli" "$BACKUP_ROOT/agent/sanctuary.ouro"')
     const preflight = restore.indexOf("if assert_restore_preflight; then")
@@ -1809,9 +1812,104 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
       })
       try {
         expect(run().status).not.toBe(0)
+        const liveScript = String.raw`set -u
+find() {
+  case "$*" in *"! -user 10001"*) return 0 ;; *) command find "$@" ;; esac
+}
+stat() {
+  test "$3" = "$AGENT_ROOT/state/acceptance/telegram-control.sock" || return 97
+  printf '%s\n' "$SOCKET_METADATA"
+}
+${validator}
+validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT" live-precutover`
+        const runLive = (metadata = "10001:10001:755") => runConditionalHelper(liveScript, "validate", {
+          RUNTIME_ROOT: runtimeRoot, AGENT_ROOT: agentRoot, SOCKET_METADATA: metadata,
+        })
+        const healthyLive = runLive()
+        expect(healthyLive.status, healthyLive.stderr).toBe(0)
+        expect(runLive("10002:10001:755").status).not.toBe(0)
+        expect(runLive("10001:10001:777").status).not.toBe(0)
+        for (const context of ["restore", "stopped", "live", "live-precutover-extra"]) {
+          const invalidContextScript = `${validator}\nvalidate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT" "${context}"`
+          expect(runConditionalHelper(invalidContextScript, "validate", {
+            RUNTIME_ROOT: runtimeRoot, AGENT_ROOT: agentRoot,
+          }).status, `unknown context ${context} must be rejected`).not.toBe(0)
+        }
       } finally {
         await new Promise<void>((resolve) => controlSocket.close(() => resolve()))
       }
+      buildValidRoots()
+      fs.mkdirSync(path.join(agentRoot, "state", "acceptance"), { recursive: true, mode: 0o700 })
+      fs.writeFileSync(path.join(agentRoot, "state", "acceptance", "telegram-control.sock"), "not a socket", { mode: 0o600 })
+      const liveWithoutSocket = `${validator}\nvalidate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT" live-precutover`
+      expect(runConditionalHelper(liveWithoutSocket, "validate", {
+        RUNTIME_ROOT: runtimeRoot, AGENT_ROOT: agentRoot,
+      }).status).not.toBe(0)
+    } finally {
+      fs.rmSync(testRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("normalizes only exact existing-root private permission candidates before live validation", () => {
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const normalize = extractRunbookFunction(runbook, "normalize_sanctuary_private_permissions")
+    const readiness = extractRunbookFunction(runbook, "verify_sanctuary_telegram_readiness")
+
+    expect(normalize).not.toContain("chmod -R")
+    expect(normalize).toContain("docker run --rm --pull=never --network none --user 10001:10001")
+    expect(normalize).toContain("--read-only --cap-drop ALL --security-opt no-new-privileges")
+    expect(normalize).toContain('type=bind,src=$NORMALIZE_RUNTIME_ROOT,dst=/normalize/runtime')
+    expect(normalize).toContain('type=bind,src=$NORMALIZE_AGENT_ROOT,dst=/normalize/agent')
+    expect(normalize).toContain('validate_exact_image_id "$NORMALIZE_IMAGE_ID"')
+    expect(normalize).toContain("-user 10001")
+    expect(normalize).toContain("-group 10001")
+    expect(normalize).toContain("-links 1")
+    expect(normalize).toContain("-perm 0755")
+    expect(normalize).toContain("-perm 0644")
+    expect(readiness).toContain('normalize_sanctuary_private_permissions "$TELEGRAM_READINESS_RUNTIME_ROOT" "$TELEGRAM_READINESS_AGENT_ROOT" "$TELEGRAM_READINESS_IMAGE_ID"')
+    expect(readiness).toContain('validate_sanctuary_roots "$TELEGRAM_READINESS_RUNTIME_ROOT" "$TELEGRAM_READINESS_AGENT_ROOT" live-precutover')
+    expect(readiness).not.toContain("docker stop")
+    expect(readiness).not.toContain("unlink")
+
+    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-permission-normalization-"))
+    const runtimeRoot = path.join(testRoot, "runtime")
+    const agentRoot = path.join(testRoot, "agent")
+    try {
+      const privateDirectory = path.join(agentRoot, "state", "sessions")
+      const publicDirectory = path.join(agentRoot, "state", "logs")
+      const privateFile = path.join(privateDirectory, "private.json")
+      const publicFile = path.join(publicDirectory, "public.ndjson")
+      const wrongModeFile = path.join(privateDirectory, "wrong-mode.json")
+      const hardlinkedFile = path.join(privateDirectory, "hardlinked.json")
+      fs.mkdirSync(runtimeRoot, { recursive: true, mode: 0o755 })
+      fs.mkdirSync(privateDirectory, { recursive: true, mode: 0o755 })
+      fs.mkdirSync(publicDirectory, { recursive: true, mode: 0o755 })
+      for (const directory of [runtimeRoot, agentRoot, privateDirectory, publicDirectory]) fs.chmodSync(directory, 0o755)
+      fs.writeFileSync(privateFile, "private", { mode: 0o644 })
+      fs.writeFileSync(publicFile, "public", { mode: 0o644 })
+      fs.writeFileSync(wrongModeFile, "wrong", { mode: 0o666 })
+      fs.chmodSync(wrongModeFile, 0o666)
+      fs.writeFileSync(hardlinkedFile, "linked", { mode: 0o644 })
+      fs.linkSync(hardlinkedFile, path.join(privateDirectory, "hardlinked-copy.json"))
+      const commandMarker = "-eu -c '\n"
+      const commandStart = normalize.indexOf(commandMarker)
+      const commandEnd = normalize.indexOf("\n    ' || return $?", commandStart)
+      expect(commandStart).toBeGreaterThan(-1)
+      expect(commandEnd).toBeGreaterThan(commandStart)
+      const candidateRules = normalize.slice(commandStart + commandMarker.length, commandEnd)
+        .replaceAll("-user 10001 -group 10001 ", "")
+        .replaceAll("/normalize/runtime", runtimeRoot)
+        .replaceAll("/normalize/agent", agentRoot)
+      const result = runConditionalHelper(candidateRules, "normalize")
+      expect(result.status, result.stderr).toBe(0)
+      expect(fs.statSync(runtimeRoot).mode & 0o777).toBe(0o700)
+      expect(fs.statSync(agentRoot).mode & 0o777).toBe(0o700)
+      expect(fs.statSync(privateDirectory).mode & 0o777).toBe(0o700)
+      expect(fs.statSync(publicDirectory).mode & 0o777).toBe(0o755)
+      expect(fs.statSync(privateFile).mode & 0o777).toBe(0o600)
+      expect(fs.statSync(publicFile).mode & 0o777).toBe(0o644)
+      expect(fs.statSync(wrongModeFile).mode & 0o777).toBe(0o666)
+      expect(fs.statSync(hardlinkedFile).mode & 0o777).toBe(0o644)
     } finally {
       fs.rmSync(testRoot, { recursive: true, force: true })
     }
