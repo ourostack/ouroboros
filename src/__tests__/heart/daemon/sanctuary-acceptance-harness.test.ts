@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { spawn } from "node:child_process"
+import { spawn, spawnSync } from "node:child_process"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
@@ -792,6 +792,26 @@ describe("Sanctuary acceptance harness", () => {
     const adapterWrapper = fs.readFileSync("deploy/unraid/sanctuary-acceptance-adapter.sh", "utf8")
     expect(wrapper).toContain('if test "$COMMAND" = callback-inject && test -e /proc/self/fd/3; then')
     expect(adapterWrapper).toContain('if test "${1:-}" = telegram-readiness; then')
+    expect(adapterWrapper).toContain("Telegram bot identity mismatch; actor: human-required; repair vault runtime/config")
+    expect(adapterWrapper).toContain("Telegram readiness failed; actor: agent-runnable; inspect packaged readiness")
+    expect(adapterWrapper).toContain("process.stderr.write")
+    const readinessEntry = adapterWrapper.match(/^TELEGRAM_READINESS_ENTRY='(.*)'$/mu)?.[1]
+    expect(readinessEntry).toBeDefined()
+    const catchMarker = ".catch((error) => { "
+    const catchStart = readinessEntry!.indexOf(catchMarker)
+    expect(catchStart).toBeGreaterThan(-1)
+    const catchBody = readinessEntry!.slice(catchStart + catchMarker.length, -3)
+    const surface = (message: string) => spawnSync(process.execPath, ["-e", `const error = new Error(process.argv[1]); ${catchBody}`, message], { encoding: "utf8" })
+    const knownCategory = "Telegram getMe failed; actor: agent-runnable; retry Telegram readiness"
+    const known = surface(knownCategory)
+    expect(known.status).toBe(1)
+    expect(known.stdout).toBe("")
+    expect(known.stderr).toBe(`${knownCategory}\n`)
+    const unknown = surface("secret token should never escape")
+    expect(unknown.status).toBe(1)
+    expect(unknown.stdout).toBe("")
+    expect(unknown.stderr).toBe("Telegram readiness failed; actor: agent-runnable; inspect packaged readiness\n")
+    expect(unknown.stderr).not.toContain("secret token")
     expect(contract).toMatchObject({
       schemaVersion: 1,
       harnessExecutable: "/opt/ouro/deploy/unraid/sanctuary-acceptance-harness.sh",

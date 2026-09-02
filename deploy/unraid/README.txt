@@ -355,11 +355,24 @@ Effective-spec audit helper:
       (
       VALIDATE_RUNTIME_ROOT=$1
       VALIDATE_AGENT_ROOT=$2
+      VALIDATE_CONTEXT=${3:-strict}
+      case "$VALIDATE_CONTEXT" in strict|live-precutover) ;; *) return 1 ;; esac
       test -d "$VALIDATE_RUNTIME_ROOT" || return $?
       test -d "$VALIDATE_AGENT_ROOT" || return $?
-      VALIDATE_BAD_SHAPE=$(find "$VALIDATE_RUNTIME_ROOT" "$VALIDATE_AGENT_ROOT" -xdev \( -type l -o \( ! -type d -a ! -type f \) \) -print -quit) || return $?
+      VALIDATE_CONTROL_SOCKET=$VALIDATE_AGENT_ROOT/state/acceptance/telegram-control.sock
+      if test "$VALIDATE_CONTEXT" = live-precutover; then
+        test ! -L "$VALIDATE_CONTROL_SOCKET" || return 1
+        test -S "$VALIDATE_CONTROL_SOCKET" || return 1
+        test "$(stat -c '%u:%g:%a' "$VALIDATE_CONTROL_SOCKET")" = 10001:10001:755 || return $?
+        VALIDATE_BAD_SHAPE=$(find "$VALIDATE_RUNTIME_ROOT" "$VALIDATE_AGENT_ROOT" -xdev \( -type l -o \( ! -type d -a ! -type f -a ! \( -type s -a -path "$VALIDATE_CONTROL_SOCKET" \) \) \) -print -quit) || return $?
+        VALIDATE_UNEXPECTED_SOCKET=$(find "$VALIDATE_RUNTIME_ROOT" "$VALIDATE_AGENT_ROOT" -xdev -type s ! -path "$VALIDATE_CONTROL_SOCKET" -print -quit) || return $?
+      else
+        test ! -S "$VALIDATE_AGENT_ROOT/state/acceptance/telegram-control.sock" || return $?
+        test ! -e "$VALIDATE_CONTROL_SOCKET" || return $?
+        VALIDATE_BAD_SHAPE=$(find "$VALIDATE_RUNTIME_ROOT" "$VALIDATE_AGENT_ROOT" -xdev \( -type l -o \( ! -type d -a ! -type f \) \) -print -quit) || return $?
+        VALIDATE_UNEXPECTED_SOCKET=$(find "$VALIDATE_RUNTIME_ROOT" "$VALIDATE_AGENT_ROOT" -xdev -type s -print -quit) || return $?
+      fi
       test -z "$VALIDATE_BAD_SHAPE" || return $?
-      VALIDATE_UNEXPECTED_SOCKET=$(find "$VALIDATE_RUNTIME_ROOT" "$VALIDATE_AGENT_ROOT" -xdev -type s -print -quit) || return $?
       test -z "$VALIDATE_UNEXPECTED_SOCKET" || return $?
       for VALIDATE_REQUIRED_FILE in \
         agent.json bundle-meta.json provider-readiness.json tool-profiles.json \
@@ -371,7 +384,6 @@ Effective-spec audit helper:
       test "$(printf '%s\n' "$VALIDATE_UNLOCK_FILES" | awk 'NF { count++ } END { print count + 0 }')" = 1 || return $?
       test ! -e "$VALIDATE_RUNTIME_ROOT/container-credentials.json" || return $?
       test ! -e "$VALIDATE_RUNTIME_ROOT/container-credentials.json.consuming" || return $?
-      test ! -S "$VALIDATE_AGENT_ROOT/state/acceptance/telegram-control.sock" || return $?
       VALIDATE_WRONG_OWNER=$(find "$VALIDATE_RUNTIME_ROOT" "$VALIDATE_AGENT_ROOT" -xdev \( ! -user 10001 -o ! -group 10001 \) -print -quit) || return $?
       test -z "$VALIDATE_WRONG_OWNER" || return $?
       VALIDATE_WRONG_RUNTIME_DIR_MODE=$(find "$VALIDATE_RUNTIME_ROOT" -xdev -type d ! -perm 0700 \
@@ -423,6 +435,44 @@ Effective-spec audit helper:
           ' sanctuary-autonomy-receipt-validator {} "$VALIDATE_AGENT_ROOT/state/autonomy/receipts" \; \
         \) \) -print -quit) || return $?
       test -z "$VALIDATE_WRONG_AGENT_FILE_MODE" || return $?
+      )
+    }
+    normalize_sanctuary_private_permissions() {
+      (
+      NORMALIZE_RUNTIME_ROOT=$1
+      NORMALIZE_AGENT_ROOT=$2
+      NORMALIZE_IMAGE_ID=$3
+      test -d "$NORMALIZE_RUNTIME_ROOT" || return $?
+      test -d "$NORMALIZE_AGENT_ROOT" || return $?
+      validate_exact_image_id "$NORMALIZE_IMAGE_ID" || return $?
+      docker run --rm --pull=never --network none --user 10001:10001 \
+        --read-only --cap-drop ALL --security-opt no-new-privileges \
+        --mount "type=bind,src=$NORMALIZE_RUNTIME_ROOT,dst=/normalize/runtime" \
+        --mount "type=bind,src=$NORMALIZE_AGENT_ROOT,dst=/normalize/agent" \
+        --entrypoint /bin/sh "$NORMALIZE_IMAGE_ID" -eu -c '
+          find /normalize/runtime /normalize/agent -xdev -type d -user 10001 -group 10001 -perm 0755 \
+            ! -path "/normalize/runtime/scheduler" ! -path "/normalize/runtime/scheduler/*" \
+            ! -path "/normalize/runtime/daemon/logs" ! -path "/normalize/runtime/daemon/logs/*" \
+            ! -path "/normalize/runtime/daemon/external-events" ! -path "/normalize/runtime/daemon/external-events/*" \
+            ! -path "/normalize/agent/arc/flight-recorder" ! -path "/normalize/agent/arc/flight-recorder/*" \
+            ! -path "/normalize/agent/state/health" ! -path "/normalize/agent/state/health/*" \
+            ! -path "/normalize/agent/state/logs" ! -path "/normalize/agent/state/logs/*" \
+            ! -path "/normalize/agent/state/habits" ! -path "/normalize/agent/state/habits/*" \
+            -exec chmod 0700 {} +
+          find /normalize/runtime /normalize/agent -xdev -type f -links 1 -user 10001 -group 10001 -perm 0644 \
+            ! -path "/normalize/runtime/daemon/logs/*" \
+            ! -path "/normalize/runtime/scheduler/*" \
+            ! -path "/normalize/runtime/pulse.json" \
+            ! -path "/normalize/runtime/pulse-delivered.json" \
+            ! -path "/normalize/runtime/daemon.pids" \
+            ! -path "/normalize/runtime/daemon-health.json" \
+            ! -path "/normalize/agent/arc/flight-recorder/*" \
+            ! -path "/normalize/agent/state/health/*" \
+            ! -path "/normalize/agent/state/logs/*" \
+            ! -path "/normalize/agent/state/habits/*" \
+            ! -path "/normalize/agent/state/arc/context-loss-sentinel-watermark.json" \
+            -exec chmod 0600 {} +
+        ' || return $?
       )
     }
     verify_sanctuary_snapshot_provenance() {
@@ -1344,7 +1394,8 @@ NODE
         --entrypoint /opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh \
         "$TELEGRAM_READINESS_IMAGE_ID" telegram-readiness >/dev/null || return $?
       ! docker container inspect ouro-butler-telegram-readiness >/dev/null 2>&1 || return 1
-      validate_sanctuary_roots "$TELEGRAM_READINESS_RUNTIME_ROOT" "$TELEGRAM_READINESS_AGENT_ROOT" || return $?
+      normalize_sanctuary_private_permissions "$TELEGRAM_READINESS_RUNTIME_ROOT" "$TELEGRAM_READINESS_AGENT_ROOT" "$TELEGRAM_READINESS_IMAGE_ID" || return $?
+      validate_sanctuary_roots "$TELEGRAM_READINESS_RUNTIME_ROOT" "$TELEGRAM_READINESS_AGENT_ROOT" live-precutover || return $?
     }
     run_sanctuary_docker() {
       /usr/bin/timeout -s KILL 20 /usr/bin/docker "$@"
