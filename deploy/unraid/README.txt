@@ -363,7 +363,7 @@ Effective-spec audit helper:
       if test "$VALIDATE_CONTEXT" = live-precutover; then
         test ! -L "$VALIDATE_CONTROL_SOCKET" || return 1
         test -S "$VALIDATE_CONTROL_SOCKET" || return 1
-        test "$(stat -c '%u:%g:%a' "$VALIDATE_CONTROL_SOCKET")" = 10001:10001:755 || return $?
+        test "$(stat -c '%u:%g:%a' "$VALIDATE_CONTROL_SOCKET")" = 10001:10001:600 || return $?
         VALIDATE_BAD_SHAPE=$(find "$VALIDATE_RUNTIME_ROOT" "$VALIDATE_AGENT_ROOT" -xdev \( -type l -o \( ! -type d -a ! -type f -a ! \( -type s -a -path "$VALIDATE_CONTROL_SOCKET" \) \) \) -print -quit) || return $?
         VALIDATE_UNEXPECTED_SOCKET=$(find "$VALIDATE_RUNTIME_ROOT" "$VALIDATE_AGENT_ROOT" -xdev -type s ! -path "$VALIDATE_CONTROL_SOCKET" -print -quit) || return $?
       else

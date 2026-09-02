@@ -6,6 +6,7 @@ import * as net from "node:net"
 import { createHash } from "node:crypto"
 import { spawnSync } from "node:child_process"
 import { hasManagedAgentProcess, hasManagedSupercronicProcess, hasManagedTelegramProcess, readContainerRuntimePolicy } from "../../../heart/daemon/container-runtime"
+import { createSanctuaryInteractiveControl } from "../../../senses/sanctuary-interactive-control"
 
 function extractRunbookFunction(runbook: string, name: string): string {
   const marker = `    ${name}() {`
@@ -1652,6 +1653,7 @@ install_from_legacy_staging`
     expect(validator).toContain('VALIDATE_CONTEXT=${3:-strict}')
     expect(validator).toContain('strict|live-precutover')
     expect(validator).toContain("stat -c '%u:%g:%a'")
+    expect(validator).toContain("10001:10001:600")
     expect(validator).toContain("container-credentials.json")
     expect(preflightHelper).toContain('validate_sanctuary_roots "$BACKUP_ROOT/runtime/.ouro-cli" "$BACKUP_ROOT/agent/sanctuary.ouro"')
     const preflight = restore.indexOf("if assert_restore_preflight; then")
@@ -1803,32 +1805,55 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT"`
         await new Promise<void>((resolve) => server.close(() => resolve()))
       }
       buildValidRoots()
-      const acceptanceRoot = path.join(agentRoot, "state", "acceptance")
-      fs.mkdirSync(acceptanceRoot, { recursive: true, mode: 0o700 })
-      const controlSocket = net.createServer()
-      await new Promise<void>((resolve, reject) => {
-        controlSocket.once("error", reject)
-        controlSocket.listen(path.join(acceptanceRoot, "telegram-control.sock"), resolve)
+      const control = createSanctuaryInteractiveControl({
+        agentRoot,
+        transport: { handleUpdate: async () => ({ handled: false, accepted: false, reason: "unused" }), listPendingDeliveries: () => [] } as never,
+        authorizedUserId: "42",
+        authorizedChatId: "42",
       })
+      await control.start()
       try {
+        expect(fs.lstatSync(control.socketPath).isSocket()).toBe(true)
+        expect(fs.statSync(control.socketPath).mode & 0o777).toBe(0o600)
         expect(run().status).not.toBe(0)
-        const liveScript = String.raw`set -u
-find() {
-  case "$*" in *"! -user 10001"*) return 0 ;; *) command find "$@" ;; esac
-}
-stat() {
-  test "$3" = "$AGENT_ROOT/state/acceptance/telegram-control.sock" || return 97
-  printf '%s\n' "$SOCKET_METADATA"
-}
-${validator}
+        const actualSocketMetadata = fs.statSync(control.socketPath)
+        const localUid = actualSocketMetadata.uid
+        const localGid = actualSocketMetadata.gid
+        const productionIdenticalValidator = validator
+          .replace("10001:10001:600", `${localUid}:${localGid}:600`)
+          .replaceAll("-user 10001", `-user ${localUid}`)
+          .replaceAll("-group 10001", `-group ${localGid}`)
+        const statCompatibility = process.platform === "darwin" ? String.raw`stat() { command stat -f '%u:%g:%Lp' "$3"; }
+` : ""
+        const liveScript = `${statCompatibility}${productionIdenticalValidator}
 validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT" live-precutover`
-        const runLive = (metadata = "10001:10001:755") => runConditionalHelper(liveScript, "validate", {
-          RUNTIME_ROOT: runtimeRoot, AGENT_ROOT: agentRoot, SOCKET_METADATA: metadata,
+        const runLive = () => runConditionalHelper(liveScript, "validate", {
+          RUNTIME_ROOT: runtimeRoot, AGENT_ROOT: agentRoot,
         })
         const healthyLive = runLive()
         expect(healthyLive.status, healthyLive.stderr).toBe(0)
-        expect(runLive("10002:10001:755").status).not.toBe(0)
-        expect(runLive("10001:10001:777").status).not.toBe(0)
+        const metadataOverrideScript = String.raw`stat() { printf '%s\n' "$SOCKET_METADATA"; }
+${productionIdenticalValidator}
+validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT" live-precutover`
+        const runLiveWithMetadata = (metadata: string) => runConditionalHelper(metadataOverrideScript, "validate", {
+          RUNTIME_ROOT: runtimeRoot, AGENT_ROOT: agentRoot, SOCKET_METADATA: metadata,
+        })
+        expect(runLiveWithMetadata(`${localUid + 1}:${localGid}:600`).status).not.toBe(0)
+        expect(runLiveWithMetadata(`${localUid}:${localGid + 1}:600`).status).not.toBe(0)
+        fs.chmodSync(control.socketPath, 0o755)
+        expect(runLive().status).not.toBe(0)
+        fs.chmodSync(control.socketPath, 0o600)
+        const extraSocket = net.createServer()
+        const extraSocketPath = path.join(agentRoot, "state", "acceptance", "noncanonical.sock")
+        await new Promise<void>((resolve, reject) => {
+          extraSocket.once("error", reject)
+          extraSocket.listen(extraSocketPath, resolve)
+        })
+        try {
+          expect(runLive().status).not.toBe(0)
+        } finally {
+          await new Promise<void>((resolve) => extraSocket.close(() => resolve()))
+        }
         for (const context of ["restore", "stopped", "live", "live-precutover-extra"]) {
           const invalidContextScript = `${validator}\nvalidate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT" "${context}"`
           expect(runConditionalHelper(invalidContextScript, "validate", {
@@ -1836,7 +1861,7 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT" live-precutover`
           }).status, `unknown context ${context} must be rejected`).not.toBe(0)
         }
       } finally {
-        await new Promise<void>((resolve) => controlSocket.close(() => resolve()))
+        await control.stop()
       }
       buildValidRoots()
       fs.mkdirSync(path.join(agentRoot, "state", "acceptance"), { recursive: true, mode: 0o700 })
