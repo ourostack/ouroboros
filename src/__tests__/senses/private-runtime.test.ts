@@ -4842,6 +4842,8 @@ describe("private runtime", () => {
     expect(currentMessage).toContain('recordPath: "/events/test-agent/guard/downloads.json\\nlease 100:"')
     expect(currentMessage).toContain("expectedGeneration: 4")
     expect(currentMessage).toContain('classifiedRevision: "rev-downloads-4"')
+    expect(currentMessage).toContain("call external_event_disposition once with one bounded batch containing every listed lease")
+    expect(currentMessage).not.toContain("call external_event_disposition once for every listed lease")
     expect(currentMessage).not.toContain("\nlease 99:")
     expect(currentMessage).not.toContain("\nlease 100:")
     expect(currentMessage).not.toContain("claimOwner:")

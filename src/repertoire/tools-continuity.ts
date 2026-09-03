@@ -7,136 +7,128 @@ import { readRecentEpisodes, emitEpisode } from "../arc/episodes";
 import { bindCareIncident, createCare, projectCareEvidence, readActiveCares, readCares, resolveCare, resolveCareIncident, updateCare, upsertCareForIncident } from "../arc/cares";
 import { readPresence, readPeerPresence } from "../arc/presence";
 import { captureIntention, resolveIntention, dismissIntention } from "../arc/intentions";
-import type { ToolDefinition } from "./tools-base";
+import type { ToolContext, ToolDefinition } from "./tools-base";
 import { readStewardPolicy } from "../heart/steward-policy";
 import { parseAwaitFile } from "../heart/awaiting/await-parser";
 
-export const continuityToolDefinitions: ToolDefinition[] = [
-  // ── Continuity tools ──────────────────────────────────────────────
-  {
-    tool: {
-      type: "function",
-      function: {
-        name: "external_event_disposition",
-        description: "Classify the exact external-event generation I just investigated. An ask or report is the sole owner-delivery path and sends reason once for this receipt; silent and act only record the disposition.",
-        parameters: {
-          type: "object",
-          properties: {
-            recordPath: { type: "string", description: "Exact receipt path from the external-event message" },
-            expectedGeneration: { type: "number", description: "Exact generation shown in the external-event turn" },
-            classifiedRevision: { type: "string", description: "Exact observation revision investigated in this turn" },
-            classification: { type: "string", enum: ["expected", "needs_attention", "adopted", "snoozed", "dismissed_until_change", "resolved"] },
-            stewardPolicyKind: { type: "string", enum: ["current", "none"], description: "Use current with the exact live policy key/version, or none only for a fresh observation with no applicable policy" },
-            stewardPolicyKey: { type: "string", description: "Exact current policy key used for this decision" },
-            stewardPolicyVersion: { type: "number", description: "Exact current policy version used for this decision" },
-            decision: { type: "string", enum: ["silent", "act", "ask", "report"] },
-            reason: { type: "string", description: "Short plain-language reason for the decision" },
-            nextWake: { type: "string", enum: ["on_change", "on_escalation", "on_recovery", "at"] },
-            wakeAt: { type: "string", description: "ISO time required when nextWake=at" },
-            awaitId: { type: "string", description: "Existing await receipt required when nextWake=at" },
-            careId: { type: "string", description: "Existing Care adopted for this incident, if any" },
-            actionRefs: { type: "array", items: { type: "string" } },
-            verificationRefs: { type: "array", items: { type: "string" } },
-          },
-          required: ["recordPath", "expectedGeneration", "classifiedRevision", "classification", "stewardPolicyKind", "decision", "reason", "nextWake"],
-        },
-      },
-    },
-    handler: (a, ctx) => {
-      const agentName = getAgentName();
-      const agentEventRoot = path.resolve(getExternalEventRoot(), agentName);
-      const recordPath = path.resolve(String(a.recordPath ?? ""));
-      const relative = path.relative(agentEventRoot, recordPath);
-      if (!relative || relative.startsWith("..") || path.isAbsolute(relative) || !recordPath.endsWith(".json")) {
-        throw new Error("External event receipt does not belong to the current agent");
-      }
-      const record = readExternalEventRecord(recordPath);
-      if (record.agent !== agentName) throw new Error("External event receipt does not belong to the current agent");
-      const turnContext = ctx?.currentExternalEvent;
-      const turnEvent = turnContext
-        ? [turnContext, ...(turnContext.relatedEvents ?? [])].find((event) => path.resolve(event.recordPath) === recordPath)
-        : undefined;
-      const expectedGeneration = Number(a.expectedGeneration);
-      const classifiedRevision = String(a.classifiedRevision ?? "");
-      if (!turnEvent || turnEvent.recordPath !== recordPath || turnEvent.agent !== agentName
-        || turnEvent.generation !== expectedGeneration || turnEvent.observationRevision !== classifiedRevision
-        || record.generation !== expectedGeneration || record.observationRevision !== classifiedRevision
-        || record.executionState !== "running" || record.claimOwner !== turnEvent.claimOwner) {
-        throw new Error("External event disposition is not authorized for this exact turn lease");
-      }
-      const classification = String(a.classification);
-      const decision = String(a.decision);
-      const nextWake = String(a.nextWake);
-      const policyVersion = Number(a.stewardPolicyVersion);
-      const policyKind = String(a.stewardPolicyKind ?? "");
-      const reason = String(a.reason ?? "").trim();
-      if (!reason || (policyKind !== "none" && (!Number.isSafeInteger(policyVersion) || policyVersion < 1))
-        || !["current", "none"].includes(policyKind)
-        || !["expected", "needs_attention", "adopted", "snoozed", "dismissed_until_change", "resolved"].includes(classification)
-        || !["silent", "act", "ask", "report"].includes(decision)
-        || !["on_change", "on_escalation", "on_recovery", "at"].includes(nextWake)) {
-        throw new Error("External event disposition is invalid");
-      }
-      const wake = nextWake === "at" ? { kind: "at" as const, at: String(a.wakeAt ?? "") } : { kind: nextWake as "on_change" | "on_escalation" | "on_recovery" };
-      const actionRefs = Array.isArray(a.actionRefs) ? a.actionRefs.map(String) : [];
-      const verificationRefs = Array.isArray(a.verificationRefs) ? a.verificationRefs.map(String) : [];
-      const agentRoot = getAgentRoot();
-      const policy = readStewardPolicy(agentRoot);
-      let stewardPolicy: import("../heart/external-events/router").ExternalEventDisposition["stewardPolicy"];
-      if (policyKind === "none") {
-        if (record.transition !== "opened") throw new Error("External event no-policy disposition requires a fresh observation");
-        stewardPolicy = { kind: "none" };
-      } else {
-        const key = String(a.stewardPolicyKey ?? "").trim();
-        if (!key) throw new Error("External event disposition is invalid");
-        if (policy.version !== policyVersion || (!policy.desiredStates[key] && !policy.routineActionGrants[key])) {
-          throw new Error("External event steward policy is not the exact current key/version");
-        }
-        stewardPolicy = { kind: "current", key, version: policyVersion };
-      }
-      if (typeof a.careId === "string" && a.careId) {
-        const care = readCares(agentRoot).find((candidate) => candidate.id === a.careId);
-        const binding = care?.incidentBindings?.find((candidate) => candidate.source === record.source && candidate.incidentKey === record.eventId && candidate.classifiedRevision === classifiedRevision);
-        if (!care || !binding) throw new Error("External event Care does not belong to this agent and incident revision");
-      }
-      if (classification === "adopted" && !(typeof a.careId === "string" && a.careId)) {
-        throw new Error("External event adopted disposition requires a Care");
-      }
-      if (nextWake === "at") {
-        const awaitId = typeof a.awaitId === "string" ? a.awaitId : "";
-        if (!/^[A-Za-z0-9_-]+$/u.test(awaitId)) throw new Error("External event timed disposition requires a current pending Await");
-        const awaitPath = path.join(agentRoot, "awaiting", `${awaitId}.md`);
-        let pendingAwait;
-        try {
-          const stat = fs.lstatSync(awaitPath);
-          if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("unsafe Await");
-          pendingAwait = parseAwaitFile(fs.readFileSync(awaitPath, "utf8"), awaitPath);
-        } catch {
-          throw new Error("External event timed disposition requires a current pending Await");
-        }
-        const expectedOwnerId = ctx?.context?.friend.id;
-        if (pendingAwait.filed_from !== "external-event" || pendingAwait.filed_from_key !== record.recordPath
-          || (expectedOwnerId && pendingAwait.filed_for_friend_id !== expectedOwnerId)) {
-          throw new Error("External event timed disposition Await is not owned by this exact external event");
-        }
-        if (pendingAwait.status !== "pending" || pendingAwait.wake_at !== String(a.wakeAt)) {
-          throw new Error("External event timed disposition Await does not match the exact wake time");
-        }
-      }
-      const authority = ctx?.externalEventAuthority?.authorizeDisposition({
-        event: turnEvent,
-        classification,
-        decision,
-        stewardPolicy,
-        nextWake,
-        wakeAt: nextWake === "at" ? String(a.wakeAt) : null,
-        awaitId: typeof a.awaitId === "string" && a.awaitId ? a.awaitId : null,
-        careId: typeof a.careId === "string" && a.careId ? a.careId : null,
-        actionRefs,
-        verificationRefs,
-      });
-      if (!authority?.allowed) throw new Error(`External event disposition authority denied: ${authority?.reason ?? "authority unavailable"}`);
-      const finish = async () => {
+const externalEventDispositionProperties = {
+  recordPath: { type: "string", description: "Exact receipt path from the external-event message" },
+  expectedGeneration: { type: "number", description: "Exact generation shown in the external-event turn" },
+  classifiedRevision: { type: "string", description: "Exact observation revision investigated in this turn" },
+  classification: { type: "string", enum: ["expected", "needs_attention", "adopted", "snoozed", "dismissed_until_change", "resolved"] },
+  stewardPolicyKind: { type: "string", enum: ["current", "none"], description: "Use current with the exact live policy key/version, or none only for a fresh observation with no applicable policy" },
+  stewardPolicyKey: { type: "string", description: "Exact current policy key used for this decision" },
+  stewardPolicyVersion: { type: "number", description: "Exact current policy version used for this decision" },
+  decision: { type: "string", enum: ["silent", "act", "ask", "report"] },
+  reason: { type: "string", description: "Short plain-language reason for the decision" },
+  nextWake: { type: "string", enum: ["on_change", "on_escalation", "on_recovery", "at"] },
+  wakeAt: { type: "string", description: "ISO time required when nextWake=at" },
+  awaitId: { type: "string", description: "Existing await receipt required when nextWake=at" },
+  careId: { type: "string", description: "Existing Care adopted for this incident, if any" },
+  actionRefs: { type: "array", items: { type: "string" } },
+  verificationRefs: { type: "array", items: { type: "string" } },
+};
+
+const externalEventDispositionRequired = ["recordPath", "expectedGeneration", "classifiedRevision", "classification", "stewardPolicyKind", "decision", "reason", "nextWake"];
+
+function prepareExternalEventDisposition(a: Record<string, unknown>, ctx?: ToolContext) {
+  const agentName = getAgentName();
+  const agentEventRoot = path.resolve(getExternalEventRoot(), agentName);
+  const recordPath = path.resolve(String(a.recordPath ?? ""));
+  const relative = path.relative(agentEventRoot, recordPath);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative) || !recordPath.endsWith(".json")) {
+    throw new Error("External event receipt does not belong to the current agent");
+  }
+  const record = readExternalEventRecord(recordPath);
+  if (record.agent !== agentName) throw new Error("External event receipt does not belong to the current agent");
+  const turnContext = ctx?.currentExternalEvent;
+  const turnEvent = turnContext
+    ? [turnContext, ...(turnContext.relatedEvents ?? [])].find((event) => path.resolve(event.recordPath) === recordPath)
+    : undefined;
+  const expectedGeneration = Number(a.expectedGeneration);
+  const classifiedRevision = String(a.classifiedRevision ?? "");
+  if (!turnEvent || turnEvent.recordPath !== recordPath || turnEvent.agent !== agentName
+    || turnEvent.generation !== expectedGeneration || turnEvent.observationRevision !== classifiedRevision
+    || record.generation !== expectedGeneration || record.observationRevision !== classifiedRevision
+    || record.executionState !== "running" || record.claimOwner !== turnEvent.claimOwner) {
+    throw new Error("External event disposition is not authorized for this exact turn lease");
+  }
+  const classification = String(a.classification);
+  const decision = String(a.decision);
+  const nextWake = String(a.nextWake);
+  const policyVersion = Number(a.stewardPolicyVersion);
+  const policyKind = String(a.stewardPolicyKind ?? "");
+  const reason = String(a.reason ?? "").trim();
+  if (!reason || (policyKind !== "none" && (!Number.isSafeInteger(policyVersion) || policyVersion < 1))
+    || !["current", "none"].includes(policyKind)
+    || !["expected", "needs_attention", "adopted", "snoozed", "dismissed_until_change", "resolved"].includes(classification)
+    || !["silent", "act", "ask", "report"].includes(decision)
+    || !["on_change", "on_escalation", "on_recovery", "at"].includes(nextWake)) {
+    throw new Error("External event disposition is invalid");
+  }
+  const wake = nextWake === "at" ? { kind: "at" as const, at: String(a.wakeAt ?? "") } : { kind: nextWake as "on_change" | "on_escalation" | "on_recovery" };
+  const actionRefs = Array.isArray(a.actionRefs) ? a.actionRefs.map(String) : [];
+  const verificationRefs = Array.isArray(a.verificationRefs) ? a.verificationRefs.map(String) : [];
+  const agentRoot = getAgentRoot();
+  const policy = readStewardPolicy(agentRoot);
+  let stewardPolicy: import("../heart/external-events/router").ExternalEventDisposition["stewardPolicy"];
+  if (policyKind === "none") {
+    if (record.transition !== "opened") throw new Error("External event no-policy disposition requires a fresh observation");
+    stewardPolicy = { kind: "none" };
+  } else {
+    const key = String(a.stewardPolicyKey ?? "").trim();
+    if (!key) throw new Error("External event disposition is invalid");
+    if (policy.version !== policyVersion || (!policy.desiredStates[key] && !policy.routineActionGrants[key])) {
+      throw new Error("External event steward policy is not the exact current key/version");
+    }
+    stewardPolicy = { kind: "current", key, version: policyVersion };
+  }
+  if (typeof a.careId === "string" && a.careId) {
+    const care = readCares(agentRoot).find((candidate) => candidate.id === a.careId);
+    const binding = care?.incidentBindings?.find((candidate) => candidate.source === record.source && candidate.incidentKey === record.eventId && candidate.classifiedRevision === classifiedRevision);
+    if (!care || !binding) throw new Error("External event Care does not belong to this agent and incident revision");
+  }
+  if (classification === "adopted" && !(typeof a.careId === "string" && a.careId)) {
+    throw new Error("External event adopted disposition requires a Care");
+  }
+  if (nextWake === "at") {
+    const awaitId = typeof a.awaitId === "string" ? a.awaitId : "";
+    if (!/^[A-Za-z0-9_-]+$/u.test(awaitId)) throw new Error("External event timed disposition requires a current pending Await");
+    const awaitPath = path.join(agentRoot, "awaiting", `${awaitId}.md`);
+    let pendingAwait;
+    try {
+      const stat = fs.lstatSync(awaitPath);
+      if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("unsafe Await");
+      pendingAwait = parseAwaitFile(fs.readFileSync(awaitPath, "utf8"), awaitPath);
+    } catch {
+      throw new Error("External event timed disposition requires a current pending Await");
+    }
+    const expectedOwnerId = ctx?.context?.friend.id;
+    if (pendingAwait.filed_from !== "external-event" || pendingAwait.filed_from_key !== record.recordPath
+      || (expectedOwnerId && pendingAwait.filed_for_friend_id !== expectedOwnerId)) {
+      throw new Error("External event timed disposition Await is not owned by this exact external event");
+    }
+    if (pendingAwait.status !== "pending" || pendingAwait.wake_at !== String(a.wakeAt)) {
+      throw new Error("External event timed disposition Await does not match the exact wake time");
+    }
+  }
+  const authority = ctx?.externalEventAuthority?.authorizeDisposition({
+    event: turnEvent,
+    classification,
+    decision,
+    stewardPolicy,
+    nextWake,
+    wakeAt: nextWake === "at" ? String(a.wakeAt) : null,
+    awaitId: typeof a.awaitId === "string" && a.awaitId ? a.awaitId : null,
+    careId: typeof a.careId === "string" && a.careId ? a.careId : null,
+    actionRefs,
+    verificationRefs,
+  });
+  if (!authority?.allowed) throw new Error(`External event disposition authority denied: ${authority?.reason ?? "authority unavailable"}`);
+
+  return {
+    recordPath,
+    finish: async () => {
       if (decision === "ask" || decision === "report") {
         if (Buffer.byteLength(reason, "utf8") > 1_200) throw new Error("External event owner message must be phone-sized");
         if (!ctx?.externalEventEffects) throw new Error("External event owner delivery is unavailable");
@@ -161,9 +153,69 @@ export const continuityToolDefinitions: ToolDefinition[] = [
       });
       ctx?.externalEventAuthority?.recordCommittedDisposition?.(turnEvent);
       emitNervesEvent({ component: "repertoire", event: "repertoire.external_event_disposition", message: "external event disposition recorded", meta: { agentName, eventId: record.eventId, generation: record.generation, classification, decision } });
-      return JSON.stringify(handled, null, 2);
-      };
-      return finish();
+      return handled;
+    },
+  };
+}
+
+export const continuityToolDefinitions: ToolDefinition[] = [
+  // ── Continuity tools ──────────────────────────────────────────────
+  {
+    tool: {
+      type: "function",
+      function: {
+        name: "external_event_disposition",
+        description: "Classify the exact external-event generation I just investigated. An ask or report is the sole owner-delivery path and sends reason once for this receipt; silent and act only record the disposition.",
+        parameters: {
+          type: "object",
+          properties: {
+            ...externalEventDispositionProperties,
+            batch: {
+              type: "array",
+              minItems: 1,
+              maxItems: 32,
+              description: "All exact leases from one coalesced external-event turn",
+              items: { type: "object", properties: externalEventDispositionProperties, required: externalEventDispositionRequired, additionalProperties: false },
+            },
+          },
+          oneOf: [
+            { required: externalEventDispositionRequired },
+            { required: ["batch"] },
+          ],
+          additionalProperties: false,
+        },
+      },
+    },
+    handler: (a, ctx) => {
+      const input = a as unknown as Record<string, unknown>;
+      if (input.batch !== undefined) {
+        if (Object.keys(input).some((key) => key !== "batch")) throw new Error("External event disposition single and batch forms are mutually exclusive");
+        if (!Array.isArray(input.batch) || input.batch.length < 1 || input.batch.length > 32) throw new Error("External event disposition batch must contain 1 to 32 items");
+        if (input.batch.some((item) => !item || typeof item !== "object" || Array.isArray(item))) throw new Error("External event disposition batch item is invalid");
+        const recordPaths = input.batch.map((item) => path.resolve(String((item as Record<string, unknown>).recordPath ?? "")));
+        if (new Set(recordPaths).size !== recordPaths.length) throw new Error("External event disposition batch contains a duplicate receipt");
+        const activeFrame = ctx?.currentExternalEvent
+          ? [ctx.currentExternalEvent, ...(ctx.currentExternalEvent.relatedEvents ?? [])]
+          : [];
+        const activeRecordPaths = new Set(activeFrame.map((event) => path.resolve(event.recordPath)));
+        if (activeRecordPaths.size !== recordPaths.length || recordPaths.some((recordPath) => !activeRecordPaths.has(recordPath))) {
+          throw new Error("External event disposition batch must contain every lease in the active turn frame");
+        }
+        const prepared = input.batch.map((item) => prepareExternalEventDisposition(item as Record<string, unknown>, ctx));
+        return (async () => {
+          const results: Array<{ recordPath: string; ok: boolean; record?: unknown; error?: string }> = [];
+          for (const item of prepared) {
+            try {
+              results.push({ recordPath: item.recordPath, ok: true, record: await item.finish() });
+            } catch (error) {
+              results.push({ recordPath: item.recordPath, ok: false, error: (error instanceof Error ? error.message : String(error)).slice(0, 500) });
+            }
+          }
+          return JSON.stringify({ results }, null, 2);
+        })();
+      }
+      const prepared = prepareExternalEventDisposition(input, ctx);
+      return prepared.finish().then((handled) => JSON.stringify(handled, null, 2));
     },
     riskProfile: { mutates: "durable_state_write", risk: "high", reason: "records the agent's classification on an existing external-event receipt" },
   },

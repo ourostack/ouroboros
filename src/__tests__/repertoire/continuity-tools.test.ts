@@ -472,6 +472,138 @@ describe("continuity tools", () => {
   })
 
   describe("external_event_disposition", () => {
+    const batchMember = (index: number) => ({
+      schemaVersion: 1 as const,
+      recordPath: `/events/ouroboros/sanctuary-health/service-${index}.json`,
+      agent: "ouroboros",
+      source: "sanctuary-health",
+      eventId: `service-${index}`,
+      generation: index + 1,
+      observationRevision: `rev-${index}`,
+      claimOwner: `lease-${index}`,
+    })
+
+    const batchDisposition = (member: ReturnType<typeof batchMember>) => ({
+      recordPath: member.recordPath,
+      expectedGeneration: member.generation,
+      classifiedRevision: member.observationRevision,
+      classification: "expected",
+      stewardPolicyKind: "none",
+      decision: "silent",
+      reason: `${member.eventId} is expected.`,
+      nextWake: "on_change",
+    })
+
+    const batchContext = (members: ReturnType<typeof batchMember>[]) => ({
+      signin: async () => undefined,
+      currentExternalEvent: { ...members[0]!, relatedEvents: members.slice(1) },
+      externalEventAuthority: {
+        authorizeDisposition: vi.fn(() => ({ allowed: true, reason: "approved" })),
+        recordCommittedDisposition: vi.fn(),
+      },
+    })
+
+    it("dispositions all 32 exact coalesced leases through one bounded invocation", async () => {
+      const members = Array.from({ length: 32 }, (_, index) => batchMember(index))
+      const records = new Map(members.map((member, index) => [member.recordPath, {
+        ...member,
+        transition: "opened",
+        version: index + 10,
+        executionState: "running",
+      }]))
+      mockReadExternalEventRecord.mockImplementation((recordPath) => records.get(String(recordPath)))
+      mockCommitExternalEventDisposition.mockImplementation((recordPath) => ({ recordPath, executionState: "handled" }))
+      const context = batchContext(members)
+
+      const result = JSON.parse(await findTool("external_event_disposition").handler({
+        batch: members.map(batchDisposition),
+      } as any, context as any))
+
+      expect(result.results).toHaveLength(32)
+      expect(result.results).toEqual(expect.arrayContaining([
+        expect.objectContaining({ recordPath: members[0]!.recordPath, ok: true }),
+        expect.objectContaining({ recordPath: members[31]!.recordPath, ok: true }),
+      ]))
+      expect(mockCommitExternalEventDisposition).toHaveBeenCalledTimes(32)
+      expect(context.externalEventAuthority.recordCommittedDisposition).toHaveBeenCalledTimes(32)
+    })
+
+    it("prevalidates the whole batch before writing and rejects duplicate, foreign, malformed, and oversized forms", async () => {
+      const members = [batchMember(0), batchMember(1)]
+      mockReadExternalEventRecord.mockImplementation((recordPath) => {
+        const member = members.find((candidate) => candidate.recordPath === recordPath)
+        return member ? { ...member, transition: "opened", version: 1, executionState: "running" } : { agent: "other" }
+      })
+      const context = batchContext(members)
+      const tool = findTool("external_event_disposition")
+      const valid = members.map(batchDisposition)
+
+      for (const batch of [
+        [],
+        [null, valid[1]],
+        [{}, valid[1]],
+        [...valid, valid[0]],
+        [...valid, { ...valid[1], recordPath: "/events/other/sanctuary-health/foreign.json" }],
+        [...valid, { ...valid[1], classifiedRevision: "" }],
+        Array.from({ length: 33 }, (_, index) => batchDisposition(batchMember(index))),
+      ]) {
+        await expect(Promise.resolve().then(() => tool.handler({ batch } as any, context as any))).rejects.toThrow()
+        expect(mockCommitExternalEventDisposition).not.toHaveBeenCalled()
+      }
+
+      await expect(Promise.resolve().then(() => tool.handler({ ...valid[0], batch: valid } as any, context as any))).rejects.toThrow(/mutually exclusive/u)
+      expect(mockCommitExternalEventDisposition).not.toHaveBeenCalled()
+    })
+
+    it("requires an active frame for batch authority and supports a frame with no related leases", async () => {
+      const member = batchMember(0)
+      mockReadExternalEventRecord.mockReturnValue({ ...member, transition: "opened", version: 1, executionState: "running" })
+      mockCommitExternalEventDisposition.mockReturnValue({ recordPath: member.recordPath, executionState: "handled" })
+      const tool = findTool("external_event_disposition")
+
+      await expect(Promise.resolve().then(() => tool.handler({ batch: [batchDisposition(member)] } as any, undefined))).rejects.toThrow(/every lease.*active.*frame/u)
+      await expect(tool.handler({ batch: [batchDisposition(member)] } as any, {
+        ...batchContext([member]),
+        currentExternalEvent: member,
+      } as any)).resolves.toContain('"ok": true')
+    })
+
+    it("rejects a batch that omits any lease from the active coalesced frame before writing", async () => {
+      const members = [batchMember(0), batchMember(1), batchMember(2)]
+      mockReadExternalEventRecord.mockImplementation((recordPath) => {
+        const member = members.find((candidate) => candidate.recordPath === recordPath)!
+        return { ...member, transition: "opened", version: member.generation + 10, executionState: "running" }
+      })
+
+      await expect(Promise.resolve().then(() => findTool("external_event_disposition").handler({
+        batch: members.slice(0, 2).map(batchDisposition),
+      } as any, batchContext(members) as any))).rejects.toThrow(/every lease.*active.*frame/u)
+      expect(mockCommitExternalEventDisposition).not.toHaveBeenCalled()
+    })
+
+    it("returns explicit independent results when one prevalidated member conflicts during commit", async () => {
+      const members = [batchMember(0), batchMember(1), batchMember(2)]
+      mockReadExternalEventRecord.mockImplementation((recordPath) => {
+        const member = members.find((candidate) => candidate.recordPath === recordPath)!
+        return { ...member, transition: "opened", version: member.generation + 10, executionState: "running" }
+      })
+      mockCommitExternalEventDisposition.mockImplementation((recordPath) => {
+        if (recordPath === members[1]!.recordPath) throw new Error("External event CAS mismatch")
+        if (recordPath === members[2]!.recordPath) throw "string conflict"
+        return { recordPath, executionState: "handled" }
+      })
+      const context = batchContext(members)
+
+      const result = JSON.parse(await findTool("external_event_disposition").handler({ batch: members.map(batchDisposition) } as any, context as any))
+
+      expect(result.results).toEqual([
+        expect.objectContaining({ recordPath: members[0]!.recordPath, ok: true }),
+        { recordPath: members[1]!.recordPath, ok: false, error: "External event CAS mismatch" },
+        { recordPath: members[2]!.recordPath, ok: false, error: "string conflict" },
+      ])
+      expect(context.externalEventAuthority.recordCommittedDisposition).toHaveBeenCalledTimes(1)
+    })
+
     it("delivers an explicit current-policy report once before committing the disposition", async () => {
       vi.mocked(fs.existsSync).mockImplementation((filePath) => String(filePath).endsWith("steward.json"))
       vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => String(filePath).endsWith("steward.json")
