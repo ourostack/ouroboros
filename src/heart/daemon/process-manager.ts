@@ -1,4 +1,5 @@
 import { spawn as nodeSpawn, type ChildProcess } from "child_process"
+import { randomUUID } from "crypto"
 import * as path from "path"
 import { getRepoRoot } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
@@ -91,7 +92,13 @@ interface AgentRuntimeState {
   startInFlight: boolean
   startAttemptedAtMs: number | null
   startAttemptId: number
-  pendingIpcMessages: Record<string, unknown>[]
+  pendingIpcMessages: Array<{ message: Record<string, unknown>; dispatchId?: string }>
+  pendingDispatches: Map<string, {
+    child: ChildProcess | null
+    timer: unknown
+    resolve: () => void
+    reject: (error: Error) => void
+  }>
   restartTimer: unknown | null
   crashTimestamps: number[]
   /**
@@ -136,6 +143,7 @@ function startOfHour(ms: number): number {
 export const RESPAWN_GUARD_MAX_RESTARTS = 5
 export const RESPAWN_GUARD_WINDOW_MS = 10 * 60_000
 const MAX_PENDING_IPC_MESSAGES = 20
+export const PRIVATE_RUNTIME_DISPATCH_ACK_TIMEOUT_MS = 8 * 60_000
 
 export class DaemonProcessManager {
   private readonly agents = new Map<string, AgentRuntimeState>()
@@ -259,6 +267,7 @@ export class DaemonProcessManager {
         startAttemptedAtMs: null,
         startAttemptId: 0,
         pendingIpcMessages: [],
+        pendingDispatches: new Map(),
         restartTimer: null,
         crashTimestamps: [],
         orchestratedRestartTimestamps: [],
@@ -435,6 +444,21 @@ export class DaemonProcessManager {
       state.snapshot.status = "running"
       state.snapshot.pid = child.pid ?? null
       state.snapshot.startedAt = new Date(this.currentTimeMs()).toISOString()
+      child.on("message", (message: unknown) => {
+        if (state.process !== child || !message || typeof message !== "object") return
+        const result = message as { type?: unknown; dispatchId?: unknown; ok?: unknown; error?: unknown }
+        if (result.type !== "ouro.privateRuntimeDispatchResult" || typeof result.dispatchId !== "string") return
+        const pending = state.pendingDispatches.get(result.dispatchId)
+        if (!pending || pending.child !== child) return
+        state.pendingDispatches.delete(result.dispatchId)
+        this.clearTimeoutFn(pending.timer)
+        if (result.ok === true) pending.resolve()
+        else pending.reject(new Error(typeof result.error === "string" && result.error.trim() ? result.error.slice(0, 1_000) : "private-runtime dispatch failed"))
+      })
+      child.once("disconnect", () => {
+        if (state.process !== child) return
+        this.rejectPendingDispatchesForChild(state, child, new Error(`Managed agent '${agent}' disconnected before acknowledged dispatch completed.`))
+      })
 
       const bootstrap = state.config.getRuntimeCredentialBootstrap?.() ?? null
       if (bootstrap) {
@@ -471,7 +495,15 @@ export class DaemonProcessManager {
       }
 
       const pendingIpcMessages = state.pendingIpcMessages.splice(0)
-      for (const message of pendingIpcMessages) {
+      for (const pendingMessage of pendingIpcMessages) {
+        const { message, dispatchId } = pendingMessage
+        if (dispatchId) {
+          const pending = state.pendingDispatches.get(dispatchId)
+          if (!pending) continue
+          pending.child = child
+          this.sendAcknowledgedMessage(state, child, dispatchId, message)
+          continue
+        }
         try {
           child.send?.(message)
           emitNervesEvent({
@@ -518,6 +550,9 @@ export class DaemonProcessManager {
       if (this.isStartAttemptCurrent(state, attemptId)) {
         state.startInFlight = false
         state.startAttemptedAtMs = null
+        if (!state.process) {
+          this.rejectPendingDispatchesForChild(state, null, new Error(`Managed agent '${agent}' startup ended before acknowledged dispatch completed.`))
+        }
       }
     }
   }
@@ -527,6 +562,9 @@ export class DaemonProcessManager {
     this.clearRestartTimer(state)
     this.clearCooldownTimer(state)
     state.stopRequested = true
+    for (const [dispatchId] of state.pendingDispatches) {
+      this.rejectPendingDispatch(state, dispatchId, new Error(`Managed agent '${agent}' stopped before acknowledged dispatch completed.`))
+    }
     state.pendingIpcMessages = []
     // NOTE: do not touch state.respawnLoopTripped / orchestratedRestartTimestamps
     // here. restartAgent calls stopAgent internally; clearing the guard here
@@ -748,9 +786,10 @@ export class DaemonProcessManager {
     if (!state.process) {
       if (state.startInFlight) {
         if (state.pendingIpcMessages.length >= MAX_PENDING_IPC_MESSAGES) {
-          state.pendingIpcMessages.shift()
+          const evicted = state.pendingIpcMessages.shift()
+          if (evicted?.dispatchId) this.rejectPendingDispatch(state, evicted.dispatchId, new Error(`Managed agent '${agent}' startup IPC queue evicted acknowledged dispatch.`))
         }
-        state.pendingIpcMessages.push(message)
+        state.pendingIpcMessages.push({ message })
         emitNervesEvent({
           component: "daemon",
           event: "daemon.agent_ipc_queued_during_startup",
@@ -773,6 +812,66 @@ export class DaemonProcessManager {
     }
   }
 
+  dispatchToAgent(agent: string, message: Record<string, unknown>, options: { timeoutMs?: number } = {}): Promise<void> {
+    const state = this.requireAgent(agent)
+    const dispatchId = randomUUID()
+    const timeoutMs = options.timeoutMs ?? PRIVATE_RUNTIME_DISPATCH_ACK_TIMEOUT_MS
+    return new Promise<void>((resolve, reject) => {
+      const timer = this.setTimeoutFn(() => {
+        const pending = state.pendingDispatches.get(dispatchId)
+        if (!pending) return
+        state.pendingDispatches.delete(dispatchId)
+        if (pending.child && state.process === pending.child) {
+          try { pending.child.send?.({ type: "ouro.privateRuntimeDispatchCancel", dispatchId }) } catch { /* cancellation is best effort */ }
+        }
+        reject(new Error(`Private-runtime dispatch timed out after ${timeoutMs}ms.`))
+      }, timeoutMs)
+      const child = state.process?.connected === false ? null : state.process
+      state.pendingDispatches.set(dispatchId, { child, timer, resolve, reject })
+      if (child) {
+        this.sendAcknowledgedMessage(state, child, dispatchId, message)
+        return
+      }
+      if (state.startInFlight) {
+        if (state.pendingIpcMessages.length >= MAX_PENDING_IPC_MESSAGES) {
+          const evicted = state.pendingIpcMessages.shift()
+          if (evicted?.dispatchId) this.rejectPendingDispatch(state, evicted.dispatchId, new Error(`Managed agent '${agent}' startup IPC queue evicted acknowledged dispatch.`))
+        }
+        state.pendingIpcMessages.push({ message, dispatchId })
+        return
+      }
+      this.rejectPendingDispatch(state, dispatchId, new Error(`Managed agent '${agent}' is unavailable for acknowledged dispatch.`))
+    })
+  }
+
+  private rejectPendingDispatch(state: AgentRuntimeState, dispatchId: string, error: Error): void {
+    const pending = state.pendingDispatches.get(dispatchId)
+    if (!pending) return
+    state.pendingDispatches.delete(dispatchId)
+    this.clearTimeoutFn(pending.timer)
+    pending.reject(error)
+  }
+
+  private rejectPendingDispatchesForChild(state: AgentRuntimeState, child: ChildProcess | null, error: Error): void {
+    for (const [dispatchId, pending] of state.pendingDispatches) {
+      if (pending.child === child) this.rejectPendingDispatch(state, dispatchId, error)
+    }
+    if (child === null) state.pendingIpcMessages = state.pendingIpcMessages.filter((pending) => pending.dispatchId === undefined)
+  }
+
+  private sendAcknowledgedMessage(state: AgentRuntimeState, child: ChildProcess, dispatchId: string, message: Record<string, unknown>): void {
+    try {
+      child.send?.({ ...message, dispatchId }, (error) => {
+        if (!error) return
+        const pending = state.pendingDispatches.get(dispatchId)
+        if (!pending || pending.child !== child) return
+        this.rejectPendingDispatch(state, dispatchId, error)
+      })
+    } catch (error) {
+      this.rejectPendingDispatch(state, dispatchId, error instanceof Error ? error : new Error(String(error)))
+    }
+  }
+
   getAgentSnapshot(agent: string): DaemonAgentSnapshot | undefined {
     return this.agents.get(agent)?.snapshot
   }
@@ -784,6 +883,7 @@ export class DaemonProcessManager {
   private onExit(state: AgentRuntimeState, child: ChildProcess, code: number | null, signal: NodeJS.Signals | null): void {
     /* v8 ignore next -- defensive: replacement cannot start before this child's one-shot exit listener drains @preserve */
     if (state.process !== child) return
+    this.rejectPendingDispatchesForChild(state, child, new Error(`Managed agent '${state.config.name}' exited before acknowledged dispatch completed.`))
     state.process = null
     state.startInFlight = false
     state.startAttemptedAtMs = null

@@ -52,7 +52,7 @@ import { awaitNameFromPrivateWakeCommand, buildAwaitPrivateWakeCommand } from ".
 import { buildHabitPrivateWakeCommand, habitMessageFromPrivateWakeCommand } from "./habit-private-wake"
 import { createDegradedHabitFile, parseHabitFile, type HabitFile } from "../habits/habit-parser"
 import { applyHabitRuntimeState } from "../habits/habit-runtime-state"
-import { buildExternalEventMessage, claimExternalEvent, externalEventRecoveryFailure, failExternalEventAttempt, getExternalEventRoot, isExactLegacyProviderRecoveryFailure, listExternalEventStatus, readExternalEventRecord, reconcileExternalEvent, recordExternalEvent, repairExternalEventsFromManifest, reviveExternalEventAfterRecovery, scanPrivilegedEventSpool, type ExternalEventFailureClass, type ExternalEventLeaseContext, type ExternalEventLeaseMember, type ExternalEventRecord, type ExternalEventStatus } from "../external-events/router"
+import { buildExternalEventMessage, claimExternalEvent, externalEventRecoveryFailure, getExternalEventRoot, isExactLegacyProviderRecoveryFailure, listExternalEventStatus, readExternalEventRecord, reconcileExternalEvent, recordExternalEvent, repairExternalEventsFromManifest, reviveExternalEventAfterRecovery, scanPrivilegedEventSpool, settleExternalEventFailureIfOwned, type ExternalEventFailureClass, type ExternalEventLeaseContext, type ExternalEventLeaseMember, type ExternalEventRecord, type ExternalEventStatus } from "../external-events/router"
 import { isRsvpHabitName } from "../../rsvp/habit-policy"
 import { readContainerRuntimePolicy } from "./container-runtime"
 import type { RunNativeRsvpHabitInput, RunNativeRsvpHabitResult } from "../../rsvp/native-habit-runner"
@@ -445,6 +445,7 @@ export interface DaemonProcessManagerLike {
   stopAgent?(agent: string): Promise<void>
   restartAgent?(agent: string, options?: { skipConfigCheck?: boolean }): Promise<void>
   sendToAgent?(agent: string, message: Record<string, unknown>): void
+  dispatchToAgent?(agent: string, message: Record<string, unknown>, options?: { timeoutMs?: number }): Promise<void>
   listAgentSnapshots(): Array<{
     name: string
     channel: string
@@ -592,6 +593,8 @@ export interface OuroDaemonOptions {
   /** Startup barrier that proves no prior Ouro daemon/worker remains before
    *  this daemon opens its socket or autostarts any replacement. */
   orphanStartupDrain?: (socketPath: string) => Promise<void>
+  /** Source-specific credential readiness checked before external-event ownership mutation. */
+  externalEventSourceReadiness?: (agent: string, source: string) => Promise<void>
 }
 
 interface DaemonWorkerRow {
@@ -884,6 +887,7 @@ export class OuroDaemon {
   private readonly schedulerFireVerifier?: OuroDaemonOptions["schedulerFireVerifier"]
   private readonly schedulerFireConsumer?: OuroDaemonOptions["schedulerFireConsumer"]
   private readonly orphanStartupDrain: (socketPath: string) => Promise<void>
+  private readonly externalEventSourceReadiness: (agent: string, source: string) => Promise<void>
 
   constructor(options: OuroDaemonOptions) {
     this.socketPath = options.socketPath
@@ -906,6 +910,10 @@ export class OuroDaemon {
     this.schedulerFireVerifier = options.schedulerFireVerifier
     this.schedulerFireConsumer = options.schedulerFireConsumer
     this.orphanStartupDrain = options.orphanStartupDrain ?? drainOrphanProcessesBeforeStartup
+    this.externalEventSourceReadiness = options.externalEventSourceReadiness ?? (async (agent, source) => {
+      const { ensureSanctuarySourceRuntimeReady } = await import("../../senses/sanctuary-runtime")
+      await ensureSanctuarySourceRuntimeReady(agent, source)
+    })
   }
 
   /* v8 ignore start -- default mailbox server wiring: production-only path, tests inject mailboxServerFactory stub instead. startMailboxHttpServer itself has full coverage in mailbox-http.test.ts @preserve */
@@ -1919,6 +1927,10 @@ export class OuroDaemon {
     const claimed: ExternalEventRecord[] = []
     let failureClass: ExternalEventFailureClass | undefined
     try {
+      for (const key of new Set(records.map((record) => `${record.agent}\0${record.source}`))) {
+        const [agent, source] = key.split("\0") as [string, string]
+        await this.externalEventSourceReadiness(agent, source)
+      }
       for (const record of records) {
         const owner = `external-event:${record.agent}:${record.source}:${record.eventId}:generation:${record.generation}:attempt:${record.attemptCount + 1}`
         claimed.push(claimExternalEvent(record.recordPath, { owner, expectedVersion: record.version, expectedGeneration: record.generation }))
@@ -1962,14 +1974,11 @@ export class OuroDaemon {
       return { events: claimed, event: primary, receipt, wake }
     } catch (error) {
       for (const record of claimed) {
-        const latest = readExternalEventRecord(record.recordPath)
-        if (latest.executionState === "running" && latest.claimOwner === record.claimOwner) {
-          failExternalEventAttempt(latest.recordPath, {
-            owner: record.claimOwner!, expectedVersion: latest.version, expectedGeneration: latest.generation,
-            error: error instanceof Error ? error.message : String(error),
-            ...(failureClass ? { failureClass } : {}),
-          })
-        }
+        settleExternalEventFailureIfOwned(record.recordPath, {
+          owner: record.claimOwner!, expectedGeneration: record.generation,
+          error: failureClass ? `external-event private-runtime dispatch failed: ${failureClass}` : "external-event private-runtime dispatch failed",
+          ...(failureClass ? { failureClass } : {}),
+        })
       }
       throw error
     }
@@ -1989,6 +1998,35 @@ export class OuroDaemon {
         this.privilegedEventScanner({ spoolRoot: this.privilegedEventSpoolRoot, eventRoot: this.externalEventRootPath() })
       }
       const statuses = listExternalEventStatus(this.externalEventRootPath())
+      const readinessKeys = new Set<string>()
+      for (const status of statuses) {
+        if (status.corrupt) continue
+        const candidate = readExternalEventRecord(status.recordPath)
+        if (candidate.dispatchEnabled === false) continue
+        const retryDue = candidate.executionState === "retry_wait" && candidate.nextAttemptAt !== null && Date.parse(candidate.nextAttemptAt) <= Date.parse(now)
+        const leaseExpired = candidate.executionState === "running" && candidate.claimExpiresAt !== null && Date.parse(candidate.claimExpiresAt) <= Date.parse(now)
+        const recoverableDeadLetter = candidate.executionState === "dead_letter"
+          && externalEventRecoveryFailure(candidate) !== null
+          && candidate.recoveryGrant?.generation !== candidate.generation
+        const dispatchable = candidate.executionState === "received" || candidate.executionState === "queued" || retryDue || leaseExpired || recoverableDeadLetter
+        if (dispatchable && (candidate.source === "sanctuary-health" || candidate.source === "sanctuary-usenet")) readinessKeys.add(`${candidate.agent}\0${candidate.source}`)
+      }
+      const blockedReadinessKeys = new Set<string>()
+      for (const key of readinessKeys) {
+        const [agent, source] = key.split("\0") as [string, string]
+        try {
+          await this.externalEventSourceReadiness(agent, source)
+        } catch (error) {
+          blockedReadinessKeys.add(key)
+          emitNervesEvent({
+            level: "warn",
+            component: "daemon",
+            event: "daemon.external_event_readiness_blocked",
+            message: "external-event reconciliation is waiting for source runtime readiness",
+            meta: { agent, source, error: (error instanceof Error ? error.message : String(error)).slice(0, 1_000) },
+          })
+        }
+      }
       const dueRecords: ExternalEventRecord[] = []
       const providerEvidenceByAgent = new Map<string, { observedAt: string } | null>()
       const runtimeEvidenceByAgent = new Map<string, { observedAt: string } | null>()
@@ -1997,6 +2035,7 @@ export class OuroDaemon {
         if (status.corrupt) continue
         let record = readExternalEventRecord(status.recordPath)
         if (record.dispatchEnabled === false) continue
+        if (blockedReadinessKeys.has(`${record.agent}\0${record.source}`)) continue
         if (record.executionState === "dead_letter") {
           const failure = externalEventRecoveryFailure(record)
           if (!failure || record.recoveryGrant?.generation === record.generation) continue
@@ -2125,7 +2164,9 @@ export class OuroDaemon {
 
     await beforeDispatch?.(decision)
     await this.processManager.startAgent(command.agent)
-    this.processManager.sendToAgent?.(command.agent, this.buildPrivateRuntimeWorkerWakeMessage(command, decision, externalEvent))
+    const message = this.buildPrivateRuntimeWorkerWakeMessage(command, decision, externalEvent)
+    if (this.processManager.dispatchToAgent) await this.processManager.dispatchToAgent(command.agent, message)
+    else this.processManager.sendToAgent?.(command.agent, message)
     return {
       ok: true,
       message: `woke private runtime for ${command.agent}`,

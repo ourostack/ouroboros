@@ -18,6 +18,7 @@ import { claimExternalEvent, commitExternalEventDisposition, failExternalEventAt
 import { cacheProviderCredentialRecords, createProviderCredentialRecord, resetProviderCredentialCache } from "../../../heart/provider-credentials"
 import { clearProviderReadinessCache, recordProviderLaneReadiness } from "../../../heart/provider-readiness-cache"
 import * as providerBindingResolver from "../../../heart/provider-binding-resolver"
+import * as sanctuaryRuntime from "../../../senses/sanctuary-runtime"
 
 function tmpSocketPath(name: string): string {
   return path.join(os.tmpdir(), `${name}-${Date.now()}-${Math.random().toString(16).slice(2)}.sock`)
@@ -63,6 +64,8 @@ describe("daemon command plane branches", () => {
       schedulerFireVerifier?: unknown
       schedulerFireConsumer?: unknown
       orphanStartupDrain?: (socketPath: string) => Promise<void>
+      externalEventSourceReadiness?: (agent: string, source: string) => Promise<void>
+      useDefaultExternalEventSourceReadiness?: boolean
     },
   ) => {
     const processManager = {
@@ -125,9 +128,22 @@ describe("daemon command plane branches", () => {
       })),
       onStopCommandComplete: options?.onStopCommandComplete,
       orphanStartupDrain: options?.orphanStartupDrain,
+      ...(!options?.useDefaultExternalEventSourceReadiness
+        ? { externalEventSourceReadiness: options?.externalEventSourceReadiness ?? vi.fn(async () => undefined) }
+        : {}),
     } as any)
     return { daemon, processManager, scheduler, healthMonitor, router, senseManager }
   }
+
+  it("delegates default external-event readiness to the Sanctuary runtime owner", async () => {
+    const socketPath = tmpSocketPath("daemon-default-external-event-readiness")
+    const readiness = vi.spyOn(sanctuaryRuntime, "ensureSanctuarySourceRuntimeReady").mockResolvedValueOnce(undefined)
+    const { daemon } = make(socketPath, undefined, { useDefaultExternalEventSourceReadiness: true })
+
+    await (daemon as any).externalEventSourceReadiness("sanctuary", "sanctuary-health")
+
+    expect(readiness).toHaveBeenCalledWith("sanctuary", "sanctuary-health")
+  })
 
   function registeredSnapshot(name = "slugger") {
     return {
@@ -476,6 +492,7 @@ describe("daemon command plane branches", () => {
 
   it("starts cleanly when no sense manager is installed", async () => {
     const socketPath = tmpSocketPath("daemon-start-no-sense-manager")
+    const externalEventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-start-no-sense-events-"))
     const processManager = {
       listAgentSnapshots: vi.fn(() => []),
       startAutoStartAgents: vi.fn(async () => undefined),
@@ -503,6 +520,8 @@ describe("daemon command plane branches", () => {
         url: "http://127.0.0.1:6876",
         stop: async () => undefined,
       })),
+      externalEventRoot,
+      externalEventSourceReadiness: vi.fn(async () => undefined),
     } as any)
 
     try {
@@ -510,6 +529,7 @@ describe("daemon command plane branches", () => {
       expect(processManager.startAutoStartAgents).toHaveBeenCalledTimes(1)
     } finally {
       await daemon.stop()
+      fs.rmSync(externalEventRoot, { recursive: true, force: true })
     }
   })
 
@@ -1132,6 +1152,250 @@ describe("daemon command plane branches", () => {
     }
   })
 
+  it("waits for source runtime readiness before startup reconciliation acquires ownership", async () => {
+    const socketPath = tmpSocketPath("daemon-external-event-readiness")
+    const ledgerPath = path.join(os.tmpdir(), `external-event-readiness-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const externalEventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "external-event-readiness-root-"))
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "external-event-readiness-bundles-"))
+    const received = recordExternalEvent({ agent: "slugger", source: "sanctuary-health", eventType: "health.observed", eventId: "delayed", observationRevision: "rev-1" }, { root: externalEventRoot })
+    const readiness = createDeferred<void>()
+    const externalEventSourceReadiness = vi.fn(() => readiness.promise)
+    const { daemon, processManager } = make(socketPath, bundlesRoot, {
+      privateRuntimePolicyDeps: privateRuntimePolicyDeps(ledgerPath, "allow"),
+      externalEventRoot,
+      externalEventSourceReadiness,
+    })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+
+    try {
+      const start = daemon.start()
+      await vi.waitFor(() => expect(externalEventSourceReadiness).toHaveBeenCalledWith("slugger", "sanctuary-health"))
+      expect(readExternalEventRecord(received.recordPath)).toEqual(received)
+      expect(processManager.startAgent).not.toHaveBeenCalled()
+      expect(processManager.sendToAgent).not.toHaveBeenCalled()
+
+      readiness.resolve()
+      await start
+      expect(readExternalEventRecord(received.recordPath)).toMatchObject({ executionState: "running", attemptCount: 1 })
+      expect(processManager.sendToAgent).toHaveBeenCalledTimes(1)
+    } finally {
+      await daemon.stop()
+      fs.rmSync(externalEventRoot, { recursive: true, force: true })
+      fs.rmSync(bundlesRoot, { recursive: true, force: true })
+      fs.rmSync(ledgerPath, { force: true })
+    }
+  })
+
+  it("keeps reconciliation records immutable when source readiness fails closed", async () => {
+    const socketPath = tmpSocketPath("daemon-external-event-readiness-failure")
+    const externalEventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "external-event-readiness-failure-root-"))
+    const received = recordExternalEvent({ agent: "slugger", source: "sanctuary-health", eventType: "health.observed", eventId: "blocked", observationRevision: "rev-1" }, { root: externalEventRoot })
+    const externalEventSourceReadiness = vi.fn(async () => { throw new Error("[human-required] attach machine runtime") })
+    const { daemon, processManager } = make(socketPath, undefined, { externalEventRoot, externalEventSourceReadiness })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+
+    try {
+      await expect(daemon.start()).resolves.toBeUndefined()
+      expect(readExternalEventRecord(received.recordPath)).toEqual(received)
+      expect(processManager.startAgent).not.toHaveBeenCalled()
+      expect(processManager.sendToAgent).not.toHaveBeenCalled()
+      expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        event: "daemon.external_event_readiness_blocked",
+        meta: expect.objectContaining({ error: "[human-required] attach machine runtime" }),
+      }))
+    } finally {
+      await daemon.stop()
+      fs.rmSync(externalEventRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("gates only the unready source while reconciling other dispatchable events", async () => {
+    const socketPath = tmpSocketPath("daemon-external-event-source-scoped-readiness")
+    const ledgerPath = path.join(os.tmpdir(), `external-event-source-scoped-readiness-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const externalEventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "external-event-source-scoped-readiness-root-"))
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "external-event-source-scoped-readiness-bundles-"))
+    const blocked = recordExternalEvent({ agent: "slugger", source: "sanctuary-health", eventType: "health.observed", eventId: "blocked" }, { root: externalEventRoot })
+    const ready = recordExternalEvent({ agent: "slugger", source: "other-monitor", eventType: "health.observed", eventId: "ready" }, { root: externalEventRoot })
+    const externalEventSourceReadiness = vi.fn(async (_agent: string, source: string) => {
+      if (source === "sanctuary-health") throw "source runtime unavailable"
+    })
+    const { daemon, processManager } = make(socketPath, bundlesRoot, {
+      privateRuntimePolicyDeps: privateRuntimePolicyDeps(ledgerPath, "allow"),
+      externalEventRoot,
+      externalEventSourceReadiness,
+    })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+
+    try {
+      await daemon.start()
+      expect(readExternalEventRecord(blocked.recordPath)).toEqual(blocked)
+      expect(readExternalEventRecord(ready.recordPath)).toMatchObject({ executionState: "running", attemptCount: 1 })
+      expect(processManager.sendToAgent).toHaveBeenCalledTimes(1)
+      expect(externalEventSourceReadiness).toHaveBeenCalledWith("slugger", "sanctuary-health")
+      expect(externalEventSourceReadiness).toHaveBeenCalledWith("slugger", "other-monitor")
+      expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        event: "daemon.external_event_readiness_blocked",
+        meta: expect.objectContaining({ error: "source runtime unavailable" }),
+      }))
+    } finally {
+      await daemon.stop()
+      fs.rmSync(externalEventRoot, { recursive: true, force: true })
+      fs.rmSync(bundlesRoot, { recursive: true, force: true })
+      fs.rmSync(ledgerPath, { force: true })
+    }
+  })
+
+  it("does not require source readiness for terminal Sanctuary records", async () => {
+    const socketPath = tmpSocketPath("daemon-terminal-event-readiness")
+    const externalEventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "external-event-terminal-readiness-root-"))
+    const received = recordExternalEvent({ agent: "slugger", source: "sanctuary-health", eventType: "health.observed", eventId: "handled", observationRevision: "rev-1" }, { root: externalEventRoot })
+    const claimed = claimExternalEvent(received.recordPath, { owner: "owner", expectedVersion: received.version, expectedGeneration: received.generation })
+    commitExternalEventDisposition(claimed.recordPath, {
+      owner: "owner", expectedVersion: claimed.version, expectedGeneration: claimed.generation,
+      disposition: { classifiedRevision: "rev-1", classification: "expected", stewardPolicy: { kind: "current", key: "service:handled", version: 1 }, decision: "silent", reason: "expected", nextWake: { kind: "on_change" }, careId: null, awaitId: null, actionRefs: [], verificationRefs: [] },
+    })
+    const externalEventSourceReadiness = vi.fn(async () => { throw new Error("should not run") })
+    const { daemon } = make(socketPath, undefined, { externalEventRoot, externalEventSourceReadiness })
+    try {
+      await expect(daemon.start()).resolves.toBeUndefined()
+      expect(externalEventSourceReadiness).not.toHaveBeenCalled()
+    } finally {
+      await daemon.stop()
+      fs.rmSync(externalEventRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("durably records new and changed direct observations without claiming when readiness fails", async () => {
+    const socketPath = tmpSocketPath("daemon-external-event-direct-readiness")
+    const externalEventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "external-event-direct-readiness-root-"))
+    const externalEventSourceReadiness = vi.fn(async () => { throw new Error("[agent-runnable] unlock vault") })
+    const { daemon, processManager } = make(socketPath, undefined, { externalEventRoot, externalEventSourceReadiness })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+    const command = { kind: "external.event.submit" as const, agent: "slugger", source: "sanctuary-health", eventType: "health.observed", eventId: "direct-new", observationRevision: "rev-1", evidence: ["service down"] }
+
+    await expect(daemon.handleCommand(command)).rejects.toThrow(/agent-runnable/u)
+    const recorded = listExternalEventStatus(externalEventRoot)[0]!
+    expect(recorded).toMatchObject({ executionState: "received", attemptCount: 0 })
+    const baseline = recordExternalEvent({ agent: "slugger", source: "sanctuary-health", eventType: "health.observed", eventId: "direct-changed", observationRevision: "baseline", evidence: ["healthy"] }, { root: externalEventRoot })
+    const claimed = claimExternalEvent(baseline.recordPath, { owner: "baseline-owner", expectedVersion: baseline.version, expectedGeneration: baseline.generation })
+    const handled = commitExternalEventDisposition(claimed.recordPath, {
+      owner: "baseline-owner", expectedVersion: claimed.version, expectedGeneration: claimed.generation,
+      disposition: { classifiedRevision: "baseline", classification: "expected", stewardPolicy: { kind: "current", key: "service:direct-changed", version: 1 }, decision: "silent", reason: "healthy baseline", nextWake: { kind: "on_change" }, careId: null, awaitId: null, actionRefs: [], verificationRefs: [] },
+    })
+
+    await expect(daemon.handleCommand({ ...command, eventId: "direct-changed", observationRevision: "rev-2", evidence: ["service down"], transition: "changed" })).rejects.toThrow(/agent-runnable/u)
+    expect(readExternalEventRecord(handled.recordPath)).toMatchObject({ executionState: "received", attemptCount: 0, observationRevision: "rev-2", version: handled.version + 1 })
+    expect(processManager.startAgent).not.toHaveBeenCalled()
+    expect(processManager.sendToAgent).not.toHaveBeenCalled()
+  })
+
+  it("settles an exact external-event claim when acknowledged child dispatch rejects", async () => {
+    const socketPath = tmpSocketPath("daemon-external-event-ack-rejection")
+    const ledgerPath = path.join(os.tmpdir(), `external-event-ack-rejection-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const externalEventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "external-event-ack-rejection-root-"))
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "external-event-ack-rejection-bundles-"))
+    const { daemon, processManager } = make(socketPath, bundlesRoot, {
+      privateRuntimePolicyDeps: privateRuntimePolicyDeps(ledgerPath, "allow"),
+      externalEventRoot,
+      externalEventSourceReadiness: vi.fn(async () => undefined),
+    })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+    const dispatchToAgent = vi.fn(async () => { throw new Error("child ACK contained a secret") })
+    ;(processManager as typeof processManager & { dispatchToAgent: typeof dispatchToAgent }).dispatchToAgent = dispatchToAgent
+
+    try {
+      await expect(daemon.handleCommand({
+        kind: "external.event.submit",
+        agent: "slugger",
+        source: "sanctuary-health",
+        eventType: "health.observed",
+        eventId: "ack-rejected",
+      })).rejects.toThrow("child ACK contained a secret")
+      const [status] = listExternalEventStatus(externalEventRoot)
+      expect(status).toMatchObject({
+        executionState: "retry_wait",
+        attemptCount: 1,
+        claimOwner: null,
+        lastError: "external-event private-runtime dispatch failed",
+      })
+      expect(dispatchToAgent).toHaveBeenCalledOnce()
+      expect(processManager.sendToAgent).not.toHaveBeenCalled()
+    } finally {
+      await daemon.stop()
+      fs.rmSync(externalEventRoot, { recursive: true, force: true })
+      fs.rmSync(bundlesRoot, { recursive: true, force: true })
+      fs.rmSync(ledgerPath, { force: true })
+    }
+  })
+
+  it("keeps daemon-owned acknowledged work alive after the caller disconnects", async () => {
+    const socketPath = tmpSocketPath("daemon-external-event-caller-disconnect")
+    const ledgerPath = path.join(os.tmpdir(), `external-event-caller-disconnect-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const externalEventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "external-event-caller-disconnect-root-"))
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "external-event-caller-disconnect-bundles-"))
+    const ack = createDeferred<void>()
+    const { daemon, processManager } = make(socketPath, bundlesRoot, {
+      privateRuntimePolicyDeps: privateRuntimePolicyDeps(ledgerPath, "allow"),
+      externalEventRoot,
+      externalEventSourceReadiness: vi.fn(async () => undefined),
+    })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+    const dispatchToAgent = vi.fn(() => ack.promise)
+    ;(processManager as typeof processManager & { dispatchToAgent: typeof dispatchToAgent }).dispatchToAgent = dispatchToAgent
+    let client: net.Socket | null = null
+
+    try {
+      await daemon.start()
+      client = net.createConnection(socketPath)
+      client.on("error", () => undefined)
+      await new Promise<void>((resolve, reject) => {
+        client!.once("connect", () => {
+          client!.write(JSON.stringify({
+            kind: "external.event.submit",
+            agent: "slugger",
+            source: "sanctuary-health",
+            eventType: "health.observed",
+            eventId: "caller-left",
+          }), (error) => error ? reject(error) : resolve())
+        })
+        client!.once("error", reject)
+      })
+      await vi.waitFor(() => expect(dispatchToAgent).toHaveBeenCalledOnce())
+      client.destroy()
+
+      const running = readExternalEventRecord(listExternalEventStatus(externalEventRoot)[0]!.recordPath)
+      expect(running).toMatchObject({ executionState: "running", attemptCount: 1 })
+      commitExternalEventDisposition(running.recordPath, {
+        owner: running.claimOwner!,
+        expectedVersion: running.version,
+        expectedGeneration: running.generation,
+        disposition: {
+          classifiedRevision: running.observationRevision,
+          classification: "actionable",
+          stewardPolicy: { kind: "none" },
+          decision: "acted",
+          reason: "The private turn finished after the submitting client disconnected.",
+          nextWake: { kind: "on_change" },
+          careId: null,
+          awaitId: null,
+          actionRefs: ["action:test"],
+          verificationRefs: ["verification:test"],
+        },
+      })
+      ack.resolve(undefined)
+      await new Promise((resolve) => setTimeout(resolve, 25))
+
+      expect(readExternalEventRecord(running.recordPath)).toMatchObject({ executionState: "handled", attemptCount: 1 })
+      expect(dispatchToAgent).toHaveBeenCalledOnce()
+    } finally {
+      client?.destroy()
+      await daemon.stop()
+      fs.rmSync(externalEventRoot, { recursive: true, force: true })
+      fs.rmSync(bundlesRoot, { recursive: true, force: true })
+      fs.rmSync(ledgerPath, { force: true })
+    }
+  })
+
   it("scans the hardened privileged spool on startup and the existing external-event reconciliation tick", async () => {
     const socketPath = tmpSocketPath("daemon-privileged-spool")
     const externalEventRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-privileged-event-root-"))
@@ -1635,7 +1899,7 @@ describe("daemon command plane branches", () => {
 
     try {
       await expect((daemon as any).dispatchExternalEvents([first, second])).rejects.toThrow("external-event private turn was denied")
-      expect(readExternalEventRecord(first.recordPath)).toMatchObject({ executionState: "retry_wait", lastError: "external-event private turn was denied" })
+      expect(readExternalEventRecord(first.recordPath)).toMatchObject({ executionState: "retry_wait", lastError: "external-event private-runtime dispatch failed" })
       expect(readExternalEventRecord(second.recordPath)).toMatchObject({ executionState: "handled" })
     } finally {
       fs.rmSync(externalEventRoot, { recursive: true, force: true })
@@ -1651,7 +1915,7 @@ describe("daemon command plane branches", () => {
 
     try {
       await expect((daemon as any).dispatchExternalEvents([received])).rejects.toBe("string failure")
-      expect(readExternalEventRecord(received.recordPath)).toMatchObject({ executionState: "retry_wait", lastError: "string failure" })
+      expect(readExternalEventRecord(received.recordPath)).toMatchObject({ executionState: "retry_wait", lastError: "external-event private-runtime dispatch failed" })
     } finally {
       fs.rmSync(externalEventRoot, { recursive: true, force: true })
     }
@@ -1677,7 +1941,7 @@ describe("daemon command plane branches", () => {
         claimOwner: null,
         claimExpiresAt: null,
         nextAttemptAt: expect.any(String),
-        lastError: expect.stringContaining("default policy deny"),
+        lastError: "external-event private-runtime dispatch failed",
       })
       expect(processManager.sendToAgent).not.toHaveBeenCalled()
     } finally {

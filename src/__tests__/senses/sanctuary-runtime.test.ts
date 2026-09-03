@@ -19,6 +19,8 @@ const runtimeMocks = vi.hoisted(() => {
     restart,
     state,
     readMachineRuntimeCredentialConfig: vi.fn(),
+    refreshMachineRuntimeCredentialConfig: vi.fn(),
+    loadOrCreateMachineIdentity: vi.fn(() => ({ machineId: "machine-test" })),
     getAgentRoot: vi.fn(),
     unraidClient: vi.fn(function () { return { read: vi.fn() } }),
     createUnraidReadTools: vi.fn(() => readTools),
@@ -42,7 +44,9 @@ const runtimeMocks = vi.hoisted(() => {
 vi.mock("../../heart/identity", () => ({ getAgentRoot: runtimeMocks.getAgentRoot }))
 vi.mock("../../heart/runtime-credentials", () => ({
   readMachineRuntimeCredentialConfig: runtimeMocks.readMachineRuntimeCredentialConfig,
+  refreshMachineRuntimeCredentialConfig: runtimeMocks.refreshMachineRuntimeCredentialConfig,
 }))
+vi.mock("../../heart/machine-identity", () => ({ loadOrCreateMachineIdentity: runtimeMocks.loadOrCreateMachineIdentity }))
 vi.mock("../../repertoire/unraid-client", () => ({ UnraidClient: runtimeMocks.unraidClient }))
 vi.mock("../../repertoire/tools-unraid", () => ({ createUnraidReadTools: runtimeMocks.createUnraidReadTools }))
 vi.mock("../../repertoire/unraid-restart", () => ({
@@ -79,7 +83,7 @@ vi.mock("../../senses/sanctuary-grounding", async (importOriginal) => {
 })
 
 import type { UnraidRestartAttempt } from "../../repertoire/unraid-restart"
-import { createSanctuaryToolContext, runWithSanctuaryToolReceiptCollection } from "../../senses/sanctuary-runtime"
+import { createSanctuaryToolContext, ensureSanctuarySourceRuntimeReady, runWithSanctuaryToolReceiptCollection } from "../../senses/sanctuary-runtime"
 
 function availableConfig(config: Record<string, unknown>) {
   return {
@@ -117,7 +121,59 @@ describe("Sanctuary runtime tool context", () => {
     runtimeMocks.mediaOptimization.read.mockReset()
     runtimeMocks.createSanctuaryMediaOptimizationClient.mockReset().mockReturnValue(runtimeMocks.mediaOptimization)
     runtimeMocks.readMachineRuntimeCredentialConfig.mockReturnValue(configured())
+    runtimeMocks.refreshMachineRuntimeCredentialConfig.mockResolvedValue(configured())
     runtimeMocks.getAgentRoot.mockReturnValue(fs.mkdtempSync(path.join(os.tmpdir(), "ouro-sanctuary-runtime-")))
+  })
+
+  it("waits for a missing machine credential refresh before declaring health work ready", async () => {
+    let resolveRefresh!: (value: ReturnType<typeof configured>) => void
+    runtimeMocks.readMachineRuntimeCredentialConfig.mockReturnValueOnce({ ok: false, reason: "missing" })
+    runtimeMocks.refreshMachineRuntimeCredentialConfig.mockReturnValueOnce(new Promise((resolve) => { resolveRefresh = resolve }))
+
+    const readiness = ensureSanctuarySourceRuntimeReady("sanctuary", "sanctuary-health")
+    let settled = false
+    void readiness.then(() => { settled = true })
+    await Promise.resolve()
+
+    expect(settled).toBe(false)
+    expect(runtimeMocks.refreshMachineRuntimeCredentialConfig).toHaveBeenCalledWith("sanctuary", "machine-test", { preserveCachedOnFailure: true })
+
+    resolveRefresh(configured({ unraidWriteApiKey: undefined, sabnzbdApiKey: undefined }))
+    await expect(readiness).resolves.toBeUndefined()
+  })
+
+  it("requires SAB only for usenet and keeps write authority action-time gated", async () => {
+    runtimeMocks.readMachineRuntimeCredentialConfig.mockReturnValue(configured({ unraidWriteApiKey: undefined, sabnzbdApiKey: undefined }))
+
+    await expect(ensureSanctuarySourceRuntimeReady("sanctuary", "sanctuary-health")).resolves.toBeUndefined()
+    await expect(ensureSanctuarySourceRuntimeReady("sanctuary", "sanctuary-usenet")).rejects.toThrow(/human-required.*sabnzbdApiKey/u)
+  })
+
+  it("fails closed with redacted actor guidance for incomplete Jellyfin and refresh failure", async () => {
+    runtimeMocks.readMachineRuntimeCredentialConfig.mockReturnValueOnce(configured({ jellyfin: undefined }))
+    await expect(ensureSanctuarySourceRuntimeReady("sanctuary", "sanctuary-health")).resolves.toBeUndefined()
+
+    runtimeMocks.readMachineRuntimeCredentialConfig.mockReturnValueOnce(configured({ jellyfin: null }))
+    await expect(ensureSanctuarySourceRuntimeReady("sanctuary", "sanctuary-health")).rejects.toThrow(/human-required.*jellyfin/u)
+
+    runtimeMocks.readMachineRuntimeCredentialConfig.mockReturnValueOnce(configured({ jellyfin: { userId: "user", accessToken: "secret-token", folderIds: "only-one" } }))
+    await expect(ensureSanctuarySourceRuntimeReady("sanctuary", "sanctuary-health")).rejects.toThrow(/human-required.*jellyfin\.folderIds/u)
+
+    runtimeMocks.readMachineRuntimeCredentialConfig.mockReturnValueOnce(configured({ jellyfin: { userId: "user", accessToken: "secret-token" } }))
+    await expect(ensureSanctuarySourceRuntimeReady("sanctuary", "sanctuary-health")).rejects.toThrow(/human-required.*jellyfin/u)
+
+    runtimeMocks.readMachineRuntimeCredentialConfig.mockReturnValueOnce({ ok: false, reason: "missing" })
+    runtimeMocks.refreshMachineRuntimeCredentialConfig.mockResolvedValueOnce({ ok: false, reason: "vault locked: secret-token" })
+    const error = await ensureSanctuarySourceRuntimeReady("sanctuary", "sanctuary-health").catch((value: unknown) => value)
+    expect(error).toBeInstanceOf(Error)
+    expect((error as Error).message).toMatch(/agent-runnable/u)
+    expect((error as Error).message).not.toContain("secret-token")
+  })
+
+  it("is inactive for non-Sanctuary event sources", async () => {
+    await expect(ensureSanctuarySourceRuntimeReady("slugger", "app-store-connect")).resolves.toBeUndefined()
+    expect(runtimeMocks.readMachineRuntimeCredentialConfig).not.toHaveBeenCalled()
+    expect(runtimeMocks.refreshMachineRuntimeCredentialConfig).not.toHaveBeenCalled()
   })
 
   it("wires read tools once and reloads the write credential only for an approved restart", async () => {

@@ -4,7 +4,8 @@ import { createHash, randomUUID } from "node:crypto"
 import { AsyncLocalStorage } from "node:async_hooks"
 
 import { getAgentRoot } from "../heart/identity"
-import { readMachineRuntimeCredentialConfig } from "../heart/runtime-credentials"
+import { loadOrCreateMachineIdentity } from "../heart/machine-identity"
+import { readMachineRuntimeCredentialConfig, refreshMachineRuntimeCredentialConfig } from "../heart/runtime-credentials"
 import { createApprovedUnraidRestartExecutor, type UnraidRestartAttempt } from "../repertoire/unraid-restart"
 import { consumeRoutineActionGrant, recoverRoutineActionReceipts, transitionRoutineActionReceipt } from "../heart/steward-policy"
 import { UnraidClient } from "../repertoire/unraid-client"
@@ -20,6 +21,12 @@ import { createSanctuaryMediaOptimizationClient } from "./sanctuary-media-optimi
 const sanctuaryToolReceipts = new AsyncLocalStorage<string[]>()
 const sanctuaryToolGroundings = new AsyncLocalStorage<SanctuaryToolGrounding[]>()
 const acceptanceLedgerTails = new Map<string, Promise<void>>()
+
+export type SanctuaryExternalEventSource = "sanctuary-health" | "sanctuary-usenet"
+
+function isSanctuaryExternalEventSource(source: string): source is SanctuaryExternalEventSource {
+  return source === "sanctuary-health" || source === "sanctuary-usenet"
+}
 
 export interface SanctuaryToolReceiptObserver { toolResultDigests: string[]; toolGroundings?: SanctuaryToolGrounding[] }
 
@@ -82,6 +89,43 @@ function optionalJellyfin(config: Record<string, unknown>) {
     jellyfinAccessToken: required(jellyfin, "accessToken"),
     jellyfinFolderIds: requiredPair(jellyfin, "folderIds"),
   }
+}
+
+function readinessMissing(agentName: string, field: string): Error {
+  return new Error(`[human-required] Sanctuary ${field} is missing; run ouro connect --agent ${agentName} to attach the required machine credential.`)
+}
+
+function readinessRequired(config: Record<string, unknown>, agentName: string, field: string, label = field): string {
+  const value = config[field]
+  if (typeof value !== "string" || value.trim().length === 0) throw readinessMissing(agentName, label)
+  return value.trim()
+}
+
+function validateSanctuarySourceRuntime(agentName: string, source: SanctuaryExternalEventSource, config: Record<string, unknown>): void {
+  readinessRequired(config, agentName, "unraidGraphqlUrl")
+  readinessRequired(config, agentName, "unraidReadApiKey")
+  if (config.jellyfin !== undefined) {
+    if (!config.jellyfin || typeof config.jellyfin !== "object" || Array.isArray(config.jellyfin)) throw readinessMissing(agentName, "jellyfin")
+    const jellyfin = config.jellyfin as Record<string, unknown>
+    readinessRequired(jellyfin, agentName, "userId", "jellyfin.userId")
+    readinessRequired(jellyfin, agentName, "accessToken", "jellyfin.accessToken")
+    const folderIds = readinessRequired(jellyfin, agentName, "folderIds", "jellyfin.folderIds").split(",").map((value) => value.trim())
+    if (folderIds.length !== 2 || new Set(folderIds).size !== 2 || folderIds.some((value) => value.length === 0)) throw readinessMissing(agentName, "jellyfin.folderIds")
+  }
+  if (source === "sanctuary-usenet") readinessRequired(config, agentName, "sabnzbdApiKey")
+}
+
+export async function ensureSanctuarySourceRuntimeReady(agentName: string, source: string): Promise<void> {
+  if (!isSanctuaryExternalEventSource(source)) return
+  let current = readMachineRuntimeCredentialConfig(agentName)
+  if (!current.ok) {
+    const machine = loadOrCreateMachineIdentity()
+    current = await refreshMachineRuntimeCredentialConfig(agentName, machine.machineId, { preserveCachedOnFailure: true })
+  }
+  if (!current.ok) {
+    throw new Error(`[agent-runnable] Sanctuary machine runtime credentials are unavailable; retry the machine credential refresh for agent ${agentName} after its vault is unlocked.`)
+  }
+  validateSanctuarySourceRuntime(agentName, source, current.config)
 }
 
 function persistAttempt(filePath: string, attempt: UnraidRestartAttempt): void {

@@ -391,6 +391,54 @@ describe("runAgent tool loop guard", () => {
     expect(result.outcome).toBe("errored")
   })
 
+  it("executes one 32-lease disposition batch after 24 investigations and rests on response seven", async () => {
+    const responseCallCounts = [5, 5, 5, 5, 4]
+    let response = 0
+    mockCreate.mockImplementation(() => {
+      response += 1
+      if (response <= responseCallCounts.length) {
+        const count = responseCallCounts[response - 1]!
+        return makeStream([makeChunk(undefined, Array.from({ length: count }, (_, index) => {
+          const ordinal = responseCallCounts.slice(0, response - 1).reduce((sum, value) => sum + value, 0) + index
+          return {
+            index,
+            id: `call_investigate_${ordinal}`,
+            function: { name: "investigate", arguments: JSON.stringify({ target: `service-${ordinal}` }) },
+          }
+        }))])
+      }
+      if (response === 6) {
+        return makeStream([makeChunk(undefined, [{
+          index: 0,
+          id: "call_disposition_batch",
+          function: { name: "external_event_disposition", arguments: JSON.stringify({ batch: Array.from({ length: 32 }, (_, index) => ({ recordPath: `/events/${index}.json` })) }) },
+        }])])
+      }
+      return makeStream([makeChunk(undefined, [{ index: 0, id: "call_rest", function: { name: "rest", arguments: "{}" } }])])
+    })
+    const execTool = vi.fn(async (name: string, args: Record<string, unknown>) => name === "external_event_disposition"
+      ? JSON.stringify({ results: (args.batch as unknown[]).map((_, index) => ({ index, ok: true })) })
+      : "investigated")
+    const callbacks = makeCallbacks()
+    const { runAgent } = await import("../../heart/core")
+
+    const result = await runAgent([{ role: "user", content: "investigate and disposition the batch" }], callbacks, "inner", undefined, {
+      tools: [
+        { type: "function", function: { name: "investigate", description: "investigate", parameters: { type: "object", properties: { target: { type: "string" } }, required: ["target"], additionalProperties: false } } },
+        { type: "function", function: { name: "external_event_disposition", description: "dispose", parameters: { type: "object", properties: { batch: { type: "array", maxItems: 32, items: { type: "object", properties: { recordPath: { type: "string" } }, required: ["recordPath"], additionalProperties: false } } }, required: ["batch"], additionalProperties: false } } },
+      ],
+      execTool,
+      toolContext: { signin: async () => undefined },
+    } as any)
+
+    expect(mockCreate).toHaveBeenCalledTimes(7)
+    expect(execTool).toHaveBeenCalledTimes(25)
+    expect(execTool).toHaveBeenLastCalledWith("external_event_disposition", expect.objectContaining({ batch: expect.any(Array) }), expect.anything())
+    expect((execTool.mock.calls.at(-1)?.[1] as any).batch).toHaveLength(32)
+    expect(result.outcome).toBe("rested")
+    expect(callbacks.onError).not.toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining("provider iteration limit") }), expect.anything())
+  })
+
   it("rejects a fabricated tool call outside the active Telegram profile before any handler runs", async () => {
     mockCreate.mockReturnValueOnce(makeStream([makeChunk(undefined, [{
       index: 0,

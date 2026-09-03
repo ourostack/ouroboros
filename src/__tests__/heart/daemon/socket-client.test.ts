@@ -24,6 +24,13 @@ describe("daemon socket client", () => {
     vi.resetModules()
   })
 
+  it("keeps the private-runtime acknowledgement deadline inside the command transport deadline", async () => {
+    const { DEFAULT_DAEMON_COMMAND_TIMEOUT_MS } = await import("../../../heart/daemon/socket-client")
+    const { PRIVATE_RUNTIME_DISPATCH_ACK_TIMEOUT_MS } = await import("../../../heart/daemon/process-manager")
+    expect(PRIVATE_RUNTIME_DISPATCH_ACK_TIMEOUT_MS).toBe(8 * 60_000)
+    expect(DEFAULT_DAEMON_COMMAND_TIMEOUT_MS - PRIVATE_RUNTIME_DISPATCH_ACK_TIMEOUT_MS).toBeGreaterThanOrEqual(2 * 60_000)
+  })
+
   it("returns null for the legacy wake alias when the daemon socket does not exist", async () => {
     const createConnection = vi.fn()
 

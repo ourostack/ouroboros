@@ -183,6 +183,22 @@ describe("tool loop guard", () => {
     expect(result).toEqual({ stuck: false })
   })
 
+  it("global circuit breaker exempts the mandatory external-event disposition boundary", async () => {
+    const { GLOBAL_CIRCUIT_BREAKER_LIMIT, createToolLoopState, detectToolLoop, recordToolOutcome } = await import("../../heart/tool-loop")
+
+    const state = createToolLoopState()
+    for (let count = 0; count < GLOBAL_CIRCUIT_BREAKER_LIMIT; count++) {
+      recordToolOutcome(state, `investigate_${count}`, { step: String(count) }, `result ${count}`, true)
+    }
+
+    expect(detectToolLoop(state, "external_event_disposition", { batch: "32 exact leases" })).toEqual({ stuck: false })
+    expect(detectToolLoop(state, "read_file", { path: "/tmp/overflow" })).toMatchObject({
+      stuck: true,
+      detector: "global_circuit_breaker",
+      count: GLOBAL_CIRCUIT_BREAKER_LIMIT,
+    })
+  })
+
   it("global circuit breaker still blocks non-exit tools after limit", async () => {
     const { GLOBAL_CIRCUIT_BREAKER_LIMIT, createToolLoopState, detectToolLoop, recordToolOutcome } = await import("../../heart/tool-loop")
 

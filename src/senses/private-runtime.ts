@@ -939,10 +939,13 @@ export function buildHeldReturnWakeMessage(): string {
 
 function buildExternalEventLeaseMessage(event: ExternalEventLeaseContext): string {
   const members = [event, ...(event.relatedEvents ?? [])]
+  const dispositionInstruction = members.length === 1
+    ? "Investigate the current observation, then call external_event_disposition once for this lease before settling."
+    : "Investigate the current observations, then call external_event_disposition once with one bounded batch containing every listed lease before settling."
   return [
     "[current external-event disposition contract]",
     "This exact lease frame is authoritative for this turn. Ignore older receipts, failed tool arguments, held-work summaries, and checkpoints when choosing disposition arguments.",
-    "Investigate the current observation, then call external_event_disposition once for every listed lease before settling.",
+    dispositionInstruction,
     ...members.flatMap((member, index) => [
       "",
       `lease ${index + 1}:`,

@@ -1841,6 +1841,329 @@ describe("daemon process manager", () => {
     expect(() => manager.sendToAgent("slugger", { type: "poke" })).not.toThrow()
   })
 
+  it("resolves acknowledged dispatch only from the current child exact result", async () => {
+    const child = new MockChild()
+    child.send.mockImplementation((_message: unknown, callback?: (error: Error | null) => void) => {
+      callback?.(null)
+      return true
+    })
+    spawn.mockReturnValue(child)
+    now.mockReturnValue(1_000)
+    const manager = new DaemonProcessManager({ agents, spawn, now, setTimeoutFn, clearTimeoutFn })
+    await manager.startAgent("slugger")
+
+    const dispatch = manager.dispatchToAgent("slugger", { type: "message" }, { timeoutMs: 480_000 })
+    const message = child.send.mock.calls.at(-1)?.[0] as { dispatchId: string }
+    let settled = false
+    void dispatch.then(() => { settled = true })
+    child.emit("message", { type: "ouro.privateRuntimeDispatchResult", dispatchId: "other", ok: true })
+    await Promise.resolve()
+    expect(settled).toBe(false)
+
+    child.emit("message", { type: "ouro.privateRuntimeDispatchResult", dispatchId: message.dispatchId, ok: true })
+    await expect(dispatch).resolves.toBeUndefined()
+    expect(clearTimeoutFn).toHaveBeenCalled()
+  })
+
+  it("times out, cancels, and fences a late acknowledged dispatch result", async () => {
+    const child = new MockChild()
+    child.send.mockImplementation((_message: unknown, callback?: (error: Error | null) => void) => {
+      callback?.(null)
+      return true
+    })
+    spawn.mockReturnValue(child)
+    now.mockReturnValue(1_000)
+    const manager = new DaemonProcessManager({ agents, spawn, now, setTimeoutFn, clearTimeoutFn })
+    await manager.startAgent("slugger")
+
+    const dispatch = manager.dispatchToAgent("slugger", { type: "message" }, { timeoutMs: 100 })
+    const message = child.send.mock.calls.at(-1)?.[0] as { dispatchId: string }
+    expect(timers.at(-1)?.delay).toBe(100)
+    timers.at(-1)?.cb()
+
+    await expect(dispatch).rejects.toThrow(/timed out/u)
+    expect(child.send).toHaveBeenCalledWith({ type: "ouro.privateRuntimeDispatchCancel", dispatchId: message.dispatchId })
+    child.emit("message", { type: "ouro.privateRuntimeDispatchResult", dispatchId: message.dispatchId, ok: true })
+    await Promise.resolve()
+  })
+
+  it("ignores malformed, stale, and already-settled acknowledged dispatch signals", async () => {
+    const staleChild = new MockChild()
+    const currentChild = new MockChild()
+    let sendCallback: ((error: Error | null) => void) | undefined
+    currentChild.send.mockImplementation((_message: unknown, callback?: (error: Error | null) => void) => {
+      sendCallback = callback
+      return true
+    })
+    spawn.mockReturnValueOnce(staleChild).mockReturnValueOnce(currentChild)
+    now.mockReturnValue(1_000)
+    const manager = new DaemonProcessManager({ agents, spawn, now, setTimeoutFn, clearTimeoutFn })
+    await manager.startAgent("slugger")
+    await manager.restartAgent("slugger")
+
+    staleChild.emit("message", { type: "ouro.privateRuntimeDispatchResult", dispatchId: "stale", ok: true })
+    currentChild.emit("message", null)
+    currentChild.emit("message", {})
+
+    const dispatch = manager.dispatchToAgent("slugger", { type: "message" })
+    const message = currentChild.send.mock.calls.at(-1)?.[0] as { dispatchId: string }
+    currentChild.emit("message", { type: "ouro.privateRuntimeDispatchResult", dispatchId: message.dispatchId, ok: false, error: "   " })
+    await expect(dispatch).rejects.toThrow("private-runtime dispatch failed")
+
+    sendCallback?.(new Error("late IPC callback"))
+  })
+
+  it("drops a timed-out startup dispatch when startup eventually succeeds", async () => {
+    const child = new MockChild()
+    spawn.mockReturnValue(child)
+    now.mockReturnValue(1_000)
+    const gate = createDeferred<{ ok: boolean }>()
+    const manager = new DaemonProcessManager({ agents, spawn, now, setTimeoutFn, clearTimeoutFn, configCheck: () => gate.promise })
+    const start = manager.startAgent("slugger")
+    await Promise.resolve()
+
+    const dispatch = manager.dispatchToAgent("slugger", { type: "message" }, { timeoutMs: 10 })
+    const dispatchResult = dispatch.catch((error) => error)
+    const timeout = timers.at(-1)?.cb
+    timeout?.()
+    timeout?.()
+    await expect(dispatchResult).resolves.toEqual(expect.objectContaining({ message: "Private-runtime dispatch timed out after 10ms." }))
+
+    gate.resolve({ ok: true })
+    await start
+    expect(child.send).not.toHaveBeenCalledWith(expect.objectContaining({ type: "message" }), expect.any(Function))
+  })
+
+  it("handles both acknowledged and fire-and-forget startup queue eviction", async () => {
+    const child = new MockChild()
+    spawn.mockReturnValue(child)
+    now.mockReturnValue(1_000)
+    const firstGate = createDeferred<{ ok: boolean }>()
+    const manager = new DaemonProcessManager({ agents, spawn, now, setTimeoutFn, clearTimeoutFn, configCheck: () => firstGate.promise })
+    const firstStart = manager.startAgent("slugger")
+    await Promise.resolve()
+
+    const evictedDispatch = manager.dispatchToAgent("slugger", { type: "message" })
+    for (let index = 0; index < 19; index += 1) manager.sendToAgent("slugger", { type: "poke", index })
+    manager.sendToAgent("slugger", { type: "poke", index: 19 })
+    await expect(evictedDispatch).rejects.toThrow(/queue evicted/u)
+
+    firstGate.resolve({ ok: false })
+    await firstStart
+
+    const secondGate = createDeferred<{ ok: boolean }>()
+    const secondManager = new DaemonProcessManager({ agents, spawn, now, setTimeoutFn, clearTimeoutFn, configCheck: () => secondGate.promise })
+    const secondStart = secondManager.startAgent("slugger")
+    await Promise.resolve()
+    for (let index = 0; index < 20; index += 1) secondManager.sendToAgent("slugger", { type: "poke", index })
+    const retainedDispatch = secondManager.dispatchToAgent("slugger", { type: "message" })
+    secondGate.resolve({ ok: false })
+    await secondStart
+    await expect(retainedDispatch).rejects.toThrow(/startup ended/u)
+  })
+
+  it("tolerates callback failure followed by a synchronous send throw", async () => {
+    const child = new MockChild()
+    spawn.mockReturnValue(child)
+    now.mockReturnValue(1_000)
+    const manager = new DaemonProcessManager({ agents, spawn, now, setTimeoutFn, clearTimeoutFn })
+    await manager.startAgent("slugger")
+    child.send.mockImplementationOnce((_message: unknown, callback?: (error: Error | null) => void) => {
+      callback?.(new Error("callback won"))
+      throw new Error("throw came second")
+    })
+
+    await expect(manager.dispatchToAgent("slugger", { type: "message" })).rejects.toThrow("callback won")
+  })
+
+  it("leaves dispatches owned by another child untouched during child-scoped rejection", async () => {
+    const child = new MockChild()
+    spawn.mockReturnValue(child)
+    now.mockReturnValue(1_000)
+    const manager = new DaemonProcessManager({ agents, spawn, now, setTimeoutFn, clearTimeoutFn })
+    await manager.startAgent("slugger")
+    const dispatch = manager.dispatchToAgent("slugger", { type: "message" })
+    const message = child.send.mock.calls.at(-1)?.[0] as { dispatchId: string }
+    const state = (manager as unknown as { agents: Map<string, unknown> }).agents.get("slugger")
+
+    ;(manager as unknown as { rejectPendingDispatchesForChild: (state: unknown, child: null, error: Error) => void })
+      .rejectPendingDispatchesForChild(state, null, new Error("startup-only rejection"))
+
+    child.emit("message", { type: "ouro.privateRuntimeDispatchResult", dispatchId: message.dispatchId, ok: true })
+    await expect(dispatch).resolves.toBeUndefined()
+  })
+
+  it("rejects acknowledged dispatch on negative ACK, async send failure, and child exit", async () => {
+    const child = new MockChild()
+    child.send.mockImplementation((_message: unknown, callback?: (error: Error | null) => void) => {
+      callback?.(null)
+      return true
+    })
+    spawn.mockReturnValue(child)
+    now.mockReturnValue(1_000)
+    const manager = new DaemonProcessManager({ agents, spawn, now, setTimeoutFn, clearTimeoutFn })
+    await manager.startAgent("slugger")
+
+    const denied = manager.dispatchToAgent("slugger", { type: "message" })
+    const deniedMessage = child.send.mock.calls.at(-1)?.[0] as { dispatchId: string }
+    child.emit("message", { type: "ouro.privateRuntimeDispatchResult", dispatchId: deniedMessage.dispatchId, ok: false, error: "worker failed" })
+    await expect(denied).rejects.toThrow("worker failed")
+
+    child.send.mockImplementationOnce((_message: unknown, callback?: (error: Error | null) => void) => {
+      callback?.(new Error("ipc callback failed"))
+      return false
+    })
+    await expect(manager.dispatchToAgent("slugger", { type: "message" })).rejects.toThrow("ipc callback failed")
+
+    child.send.mockImplementation((_message: unknown, callback?: (error: Error | null) => void) => {
+      callback?.(null)
+      return true
+    })
+    const exited = manager.dispatchToAgent("slugger", { type: "message" })
+    child.emit("exit", 1, null)
+    await expect(exited).rejects.toThrow(/exited before acknowledged dispatch/u)
+  })
+
+  it("rejects acknowledged dispatch when IPC send throws synchronously", async () => {
+    const child = new MockChild()
+    spawn.mockReturnValue(child)
+    now.mockReturnValue(1_000)
+    const manager = new DaemonProcessManager({ agents, spawn, now, setTimeoutFn, clearTimeoutFn })
+    await manager.startAgent("slugger")
+
+    child.send.mockImplementationOnce(() => { throw new Error("sync IPC failure") })
+    await expect(manager.dispatchToAgent("slugger", { type: "message" })).rejects.toThrow("sync IPC failure")
+
+    child.send.mockImplementationOnce(() => { throw "raw sync IPC failure" })
+    await expect(manager.dispatchToAgent("slugger", { type: "message" })).rejects.toThrow("raw sync IPC failure")
+  })
+
+  it("rejects every outstanding acknowledged dispatch when the managed agent is stopped", async () => {
+    const child = new MockChild()
+    child.send.mockImplementation((_message: unknown, callback?: (error: Error | null) => void) => {
+      callback?.(null)
+      return true
+    })
+    spawn.mockReturnValue(child)
+    now.mockReturnValue(1_000)
+    const manager = new DaemonProcessManager({ agents, spawn, now, setTimeoutFn, clearTimeoutFn })
+    await manager.startAgent("slugger")
+
+    const first = manager.dispatchToAgent("slugger", { type: "message", seq: 1 })
+    const second = manager.dispatchToAgent("slugger", { type: "message", seq: 2 })
+    const stop = manager.stopAgent("slugger")
+
+    await expect(first).rejects.toThrow(/stopped before acknowledged dispatch/u)
+    await expect(second).rejects.toThrow(/stopped before acknowledged dispatch/u)
+    await stop
+  })
+
+  it("rejects every acknowledged dispatch immediately when the current child disconnects", async () => {
+    const child = new MockChild()
+    child.send.mockImplementation((_message: unknown, callback?: (error: Error | null) => void) => {
+      callback?.(null)
+      return true
+    })
+    spawn.mockReturnValue(child)
+    now.mockReturnValue(1_000)
+    const manager = new DaemonProcessManager({ agents, spawn, now, setTimeoutFn, clearTimeoutFn })
+    await manager.startAgent("slugger")
+
+    const first = manager.dispatchToAgent("slugger", { type: "message", seq: 1 })
+    const second = manager.dispatchToAgent("slugger", { type: "message", seq: 2 })
+    child.connected = false
+    child.emit("disconnect")
+
+    await expect(first).rejects.toThrow(/disconnected before acknowledged dispatch/u)
+    await expect(second).rejects.toThrow(/disconnected before acknowledged dispatch/u)
+    await expect(manager.dispatchToAgent("slugger", { type: "message", seq: 3 })).rejects.toThrow(/unavailable for acknowledged dispatch/u)
+    expect(clearTimeoutFn).toHaveBeenCalledTimes(3)
+  })
+
+  it("ignores a stale child's disconnect without settling the current child's dispatch", async () => {
+    const staleChild = new MockChild()
+    const currentChild = new MockChild()
+    for (const child of [staleChild, currentChild]) {
+      child.send.mockImplementation((_message: unknown, callback?: (error: Error | null) => void) => {
+        callback?.(null)
+        return true
+      })
+    }
+    spawn.mockReturnValueOnce(staleChild).mockReturnValueOnce(currentChild)
+    now.mockReturnValue(1_000)
+    const manager = new DaemonProcessManager({ agents, spawn, now, setTimeoutFn, clearTimeoutFn })
+    await manager.startAgent("slugger")
+    await manager.restartAgent("slugger")
+
+    const dispatch = manager.dispatchToAgent("slugger", { type: "message" })
+    const message = currentChild.send.mock.calls.at(-1)?.[0] as { dispatchId: string }
+    let settled = false
+    void dispatch.then(() => { settled = true })
+    staleChild.emit("disconnect")
+    await Promise.resolve()
+    expect(settled).toBe(false)
+
+    currentChild.emit("message", { type: "ouro.privateRuntimeDispatchResult", dispatchId: message.dispatchId, ok: true })
+    await expect(dispatch).resolves.toBeUndefined()
+  })
+
+  it("rejects and removes every acknowledged dispatch when in-flight startup fails", async () => {
+    const child = new MockChild()
+    child.send.mockImplementation((_message: unknown, callback?: (error: Error | null) => void) => {
+      callback?.(null)
+      return true
+    })
+    spawn.mockReturnValue(child)
+    now.mockReturnValue(1_000)
+    const gate = createDeferred<{ ok: boolean; error?: string }>()
+    const configCheck = vi.fn()
+      .mockImplementationOnce(() => gate.promise)
+      .mockResolvedValue({ ok: true })
+    const manager = new DaemonProcessManager({ agents, spawn, now, setTimeoutFn, clearTimeoutFn, configCheck })
+    const start = manager.startAgent("slugger")
+    await Promise.resolve()
+
+    const first = manager.dispatchToAgent("slugger", { type: "message", seq: 1 })
+    const second = manager.dispatchToAgent("slugger", { type: "message", seq: 2 })
+    manager.sendToAgent("slugger", { type: "poke" })
+    gate.resolve({ ok: false, error: "provider unavailable" })
+    await start
+
+    await expect(first).rejects.toThrow(/startup ended before acknowledged dispatch/u)
+    await expect(second).rejects.toThrow(/startup ended before acknowledged dispatch/u)
+    expect(clearTimeoutFn).toHaveBeenCalledTimes(2)
+
+    await manager.startAgent("slugger")
+    expect(child.send).toHaveBeenCalledTimes(1)
+    expect(child.send).toHaveBeenCalledWith({ type: "poke" })
+  })
+
+  it("retains an acknowledged dispatch across startup and rejects it if the startup queue evicts it", async () => {
+    const child = new MockChild()
+    child.send.mockImplementation((_message: unknown, callback?: (error: Error | null) => void) => {
+      callback?.(null)
+      return true
+    })
+    spawn.mockReturnValue(child)
+    now.mockReturnValue(1_000)
+    const gate = createDeferred<{ ok: boolean }>()
+    const manager = new DaemonProcessManager({ agents, spawn, now, setTimeoutFn, clearTimeoutFn, configCheck: () => gate.promise })
+    const start = manager.startAgent("slugger")
+    await Promise.resolve()
+
+    const first = manager.dispatchToAgent("slugger", { type: "message", seq: 0 })
+    const later = Array.from({ length: 20 }, (_, index) => manager.dispatchToAgent("slugger", { type: "message", seq: index + 1 }))
+    await expect(first).rejects.toThrow(/queue evicted/u)
+
+    gate.resolve({ ok: true })
+    await start
+    const lastMessage = child.send.mock.calls.at(-1)?.[0] as { dispatchId: string }
+    child.emit("message", { type: "ouro.privateRuntimeDispatchResult", dispatchId: lastMessage.dispatchId, ok: true })
+    await expect(later.at(-1)).resolves.toBeUndefined()
+    for (const pending of later.slice(0, -1)) pending.catch(() => undefined)
+    child.emit("exit", 1, null)
+  })
+
   it("skips spawn and sets crashed when configCheck returns not ok", async () => {
     now.mockReturnValue(1_000)
     const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)

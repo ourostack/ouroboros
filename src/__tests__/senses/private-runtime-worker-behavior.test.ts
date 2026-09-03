@@ -18,6 +18,7 @@ const {
   mockReadFileSync,
   MockFileFriendStore,
   mockRenewExternalEventClaim,
+  mockSettleExternalEventFailureIfOwned,
 } = vi.hoisted(() => ({
   mockRunPrivateRuntimeTurn: vi.fn(),
   mockEmitNervesEvent: vi.fn(),
@@ -42,10 +43,12 @@ const {
     listAll = vi.fn(async () => [])
   },
   mockRenewExternalEventClaim: vi.fn(),
+  mockSettleExternalEventFailureIfOwned: vi.fn(() => ({ settled: false })),
 }))
 
 vi.mock("../../heart/external-events/router", () => ({
   renewExternalEventClaim: (...args: any[]) => mockRenewExternalEventClaim(...args),
+  settleExternalEventFailureIfOwned: (...args: any[]) => mockSettleExternalEventFailureIfOwned(...args),
 }))
 
 vi.mock("fs", async (importOriginal) => {
@@ -149,6 +152,7 @@ describe("private-runtime-worker", () => {
     mockReadHabitSessionSummary.mockReset().mockReturnValue(null)
     mockEmitNervesEvent.mockReset()
     mockRenewExternalEventClaim.mockReset().mockReturnValue({ claimExpiresAt: "2026-08-29T18:00:30.000Z" })
+    mockSettleExternalEventFailureIfOwned.mockReset().mockReturnValue({ settled: false })
   })
 
   it("runs boot/habit/instinct cycles and ignores unknown messages", async () => {
@@ -241,6 +245,67 @@ describe("private-runtime-worker", () => {
     expect(runTurn).toHaveBeenCalledTimes(1)
   })
 
+  it.each([
+    {
+      name: "thrown",
+      runTurn: () => Promise.reject(new Error("provider failed")),
+      expectedReason: "private-runtime external-event turn failed",
+      expectedRejection: "provider failed",
+    },
+    {
+      name: "errored",
+      runTurn: () => Promise.resolve({ turnOutcome: "errored" }),
+      expectedReason: "private-runtime external-event turn failed",
+      expectedRejection: "private-runtime external-event turn failed",
+    },
+    {
+      name: "blocked",
+      runTurn: () => Promise.resolve({ turnOutcome: "blocked" }),
+      expectedReason: "external-event turn was blocked",
+      expectedRejection: "external-event turn was blocked",
+    },
+    {
+      name: "suspended",
+      runTurn: () => Promise.resolve({ turnOutcome: "suspended" }),
+      expectedReason: "external-event turn was blocked",
+      expectedRejection: "external-event turn was blocked",
+    },
+    {
+      name: "incomplete",
+      runTurn: () => Promise.resolve(undefined),
+      expectedReason: "external-event turn completed without a terminal disposition",
+      expectedRejection: "external-event turn completed without a terminal disposition",
+    },
+  ])("settles every still-owned related member after a $name external-event turn", async ({ runTurn, expectedReason, expectedRejection }) => {
+    const relatedEvents = [
+      { schemaVersion: 1 as const, recordPath: "/events/slugger/health/jellyfin.json", agent: "slugger", source: "health", eventId: "jellyfin", generation: 2, observationRevision: "rev-2", claimOwner: "lease-2" },
+      { schemaVersion: 1 as const, recordPath: "/events/slugger/health/sonarr.json", agent: "slugger", source: "health", eventId: "sonarr", generation: 3, observationRevision: "rev-3", claimOwner: "lease-3" },
+    ]
+    const externalEvent = { schemaVersion: 1 as const, recordPath: "/events/slugger/health/books.json", agent: "slugger", source: "health", eventId: "books", generation: 1, observationRevision: "rev-1", claimOwner: "lease-1", relatedEvents }
+    mockSettleExternalEventFailureIfOwned.mockReturnValue({ settled: true })
+    const worker = createPrivateRuntimeWorker(vi.fn().mockImplementation(runTurn))
+
+    await expect(worker.handleMessage({ type: "message", dispatchId: `dispatch-${expectedReason}`, externalEvent })).rejects.toThrow(expectedRejection)
+
+    expect(mockSettleExternalEventFailureIfOwned.mock.calls).toEqual([
+      [externalEvent.recordPath, { owner: externalEvent.claimOwner, expectedGeneration: externalEvent.generation, error: expectedReason }],
+      [relatedEvents[0]!.recordPath, { owner: relatedEvents[0]!.claimOwner, expectedGeneration: relatedEvents[0]!.generation, error: expectedReason }],
+      [relatedEvents[1]!.recordPath, { owner: relatedEvents[1]!.claimOwner, expectedGeneration: relatedEvents[1]!.generation, error: expectedReason }],
+    ])
+  })
+
+  it("acknowledges when every external-event member is already terminal or transferred", async () => {
+    const relatedEvent = { schemaVersion: 1 as const, recordPath: "/events/slugger/health/transferred.json", agent: "slugger", source: "health", eventId: "transferred", generation: 2, observationRevision: "rev-2", claimOwner: "lease-2" }
+    const externalEvent = { schemaVersion: 1 as const, recordPath: "/events/slugger/health/handled.json", agent: "slugger", source: "health", eventId: "handled", generation: 1, observationRevision: "rev-1", claimOwner: "lease-1", relatedEvents: [relatedEvent] }
+    mockSettleExternalEventFailureIfOwned
+      .mockReturnValueOnce({ settled: false, record: { executionState: "handled" } })
+      .mockReturnValueOnce({ settled: false, record: { executionState: "running", claimOwner: "new-owner" } })
+    const worker = createPrivateRuntimeWorker(vi.fn().mockResolvedValue(undefined))
+
+    await expect(worker.handleMessage({ type: "message", dispatchId: "dispatch-terminal", externalEvent })).resolves.toBeUndefined()
+    expect(mockSettleExternalEventFailureIfOwned).toHaveBeenCalledTimes(2)
+  })
+
   it("renews every related event lease and reports Error and non-Error renewal failures", async () => {
     const runTurn = vi.fn().mockResolvedValue(undefined)
     const worker = createPrivateRuntimeWorker(runTurn)
@@ -282,7 +347,7 @@ describe("private-runtime-worker", () => {
     const externalEvent = { schemaVersion: 1 as const, recordPath: "/events/slugger/health/books.json", agent: "slugger", source: "health", eventId: "books", generation: 1, observationRevision: "rev-1", claimOwner: "lease-1" }
     try {
       const running = worker.run("boot")
-      await worker.handleMessage({ type: "message", externalEvent })
+      const queued = worker.handleMessage({ type: "message", externalEvent })
       await vi.advanceTimersByTimeAsync(25_000)
       expect(mockRenewExternalEventClaim.mock.calls.length).toBeGreaterThanOrEqual(3)
 
@@ -290,7 +355,7 @@ describe("private-runtime-worker", () => {
       await Promise.resolve()
       await vi.advanceTimersByTimeAsync(40_000)
       releaseEvent()
-      await running
+      await Promise.all([running, queued])
 
       expect(runTurn.mock.calls.filter(([options]) => options.externalEvent)).toHaveLength(1)
       expect(mockRenewExternalEventClaim.mock.calls.length).toBeGreaterThanOrEqual(7)
@@ -577,6 +642,124 @@ describe("private-runtime-worker", () => {
       "habit:none:heartbeat",
       "instinct:none:none",
     ])
+  })
+
+  it("settles each overlapping message only when that exact queued turn completes", async () => {
+    let releaseFirst!: () => void
+    let releaseSecond!: () => void
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve })
+    const secondGate = new Promise<void>((resolve) => { releaseSecond = resolve })
+    const runTurn = vi.fn()
+      .mockImplementationOnce(() => firstGate)
+      .mockImplementationOnce(() => secondGate)
+    const worker = createPrivateRuntimeWorker(runTurn)
+
+    const first = worker.handleMessage({ type: "chat" })
+    const second = worker.handleMessage({ type: "chat" })
+    let firstSettled = false
+    let secondSettled = false
+    void first.then(() => { firstSettled = true })
+    void second.then(() => { secondSettled = true })
+
+    await Promise.resolve()
+    expect(firstSettled).toBe(false)
+    expect(secondSettled).toBe(false)
+
+    releaseFirst()
+    await vi.waitFor(() => expect(runTurn).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(firstSettled).toBe(true))
+    expect(secondSettled).toBe(false)
+
+    releaseSecond()
+    await expect(second).resolves.toBeUndefined()
+    expect(firstSettled).toBe(true)
+  })
+
+  it("cancels an exact queued dispatch without disturbing the active turn", async () => {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const runTurn = vi.fn().mockImplementationOnce(() => gate)
+    const worker = createPrivateRuntimeWorker(runTurn)
+
+    const active = worker.handleMessage({ type: "chat", dispatchId: "active" })
+    const queued = worker.handleMessage({ type: "chat", dispatchId: "queued" })
+    expect(worker.cancelMessage("queued")).toBe(true)
+    await expect(queued).rejects.toThrow(/cancelled/u)
+
+    release()
+    await expect(active).resolves.toBeUndefined()
+    expect(runTurn).toHaveBeenCalledTimes(1)
+  })
+
+  it("reports that an unknown dispatch cannot be cancelled", () => {
+    const worker = createPrivateRuntimeWorker(vi.fn())
+
+    expect(worker.cancelMessage("missing")).toBe(false)
+  })
+
+  it.each([
+    ["habit", { type: "habit", habitName: "daily-check", dispatchId: "habit-dispatch" }],
+    ["await", { type: "await", awaitName: "follow-up", dispatchId: "await-dispatch" }],
+    ["heartbeat", { type: "heartbeat", dispatchId: "heartbeat-dispatch" }],
+    ["poke", { type: "poke", taskId: "task-a", dispatchId: "poke-dispatch" }],
+  ])("rejects an acknowledged %s wake when its exact turn fails", async (_type, message) => {
+    const worker = createPrivateRuntimeWorker(vi.fn().mockRejectedValue(new Error("exact turn failed")))
+
+    await expect(worker.handleMessage(message)).rejects.toThrow("exact turn failed")
+  })
+
+  it("preserves legacy fire-and-forget success semantics when a wake has no dispatch ID", async () => {
+    const worker = createPrivateRuntimeWorker(vi.fn().mockRejectedValue(new Error("legacy turn failed")))
+
+    await expect(worker.handleMessage({ type: "poke", taskId: "legacy" })).resolves.toBeUndefined()
+  })
+
+  it("rejects the later active queue entry when an outer worker failure occurs after dequeue", async () => {
+    let releaseFirst!: () => void
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve })
+    const runTurn = vi.fn().mockImplementationOnce(() => firstGate).mockResolvedValueOnce(undefined)
+    const worker = createPrivateRuntimeWorker(runTurn)
+    const externalEvent = { schemaVersion: 1 as const, recordPath: "/events/slugger/health/queued.json", agent: "slugger", source: "health", eventId: "queued", generation: 1, observationRevision: "rev-1", claimOwner: "lease-1" }
+    mockSettleExternalEventFailureIfOwned.mockImplementationOnce(() => { throw new Error("outer settlement failed") })
+
+    const first = worker.handleMessage({ type: "chat", dispatchId: "first" })
+    const second = worker.handleMessage({ type: "message", dispatchId: "second", externalEvent })
+    let secondError: unknown
+    void second.catch((error) => { secondError = error })
+
+    releaseFirst()
+    await expect(first).resolves.toBeUndefined()
+    await vi.waitFor(() => expect(secondError).toEqual(expect.objectContaining({ message: "outer settlement failed" })))
+  })
+
+  it("rejects and stops heartbeats for entries still queued after an outer worker failure", async () => {
+    vi.useFakeTimers()
+    let releaseFirst!: () => void
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve })
+    const runTurn = vi.fn().mockImplementationOnce(() => firstGate).mockResolvedValueOnce(undefined)
+    const worker = createPrivateRuntimeWorker(runTurn)
+    const activeEvent = { schemaVersion: 1 as const, recordPath: "/events/slugger/health/active.json", agent: "slugger", source: "health", eventId: "active", generation: 1, observationRevision: "rev-1", claimOwner: "lease-1" }
+    const queuedEvent = { schemaVersion: 1 as const, recordPath: "/events/slugger/health/queued.json", agent: "slugger", source: "health", eventId: "queued", generation: 2, observationRevision: "rev-2", claimOwner: "lease-2" }
+    mockSettleExternalEventFailureIfOwned.mockImplementationOnce(() => { throw new Error("outer settlement failed") })
+
+    try {
+      const first = worker.handleMessage({ type: "chat", dispatchId: "first" })
+      const active = worker.handleMessage({ type: "message", dispatchId: "active", externalEvent: activeEvent })
+      const queued = worker.handleMessage({ type: "message", dispatchId: "queued", externalEvent: queuedEvent })
+      const activeResult = active.catch((error) => error)
+      const queuedResult = queued.catch((error) => error)
+      releaseFirst()
+
+      await expect(first).resolves.toBeUndefined()
+      await expect(activeResult).resolves.toEqual(expect.objectContaining({ message: "outer settlement failed" }))
+      await expect(queuedResult).resolves.toEqual(expect.objectContaining({ message: "outer settlement failed" }))
+      expect(runTurn).toHaveBeenCalledTimes(2)
+      const renewalsAfterFailure = mockRenewExternalEventClaim.mock.calls.length
+      await vi.advanceTimersByTimeAsync(20_000)
+      expect(mockRenewExternalEventClaim).toHaveBeenCalledTimes(renewalsAfterFailure)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("hasPendingWork fallback still works after queue is empty", async () => {
@@ -1613,16 +1796,18 @@ describe("private-runtime-worker", () => {
     })
 
     it("resets the instinct counter when an externally-queued message arrives between turns", async () => {
+      let queued: Promise<void> | undefined
       const runTurn = vi.fn().mockImplementation(async () => {
         // Simulate an external poke arriving during the first turn's runtime.
         if (runTurn.mock.calls.length === 1) {
-          void worker.handleMessage({ type: "poke", taskId: "external-poke" })
+          queued = worker.handleMessage({ type: "poke", taskId: "external-poke" })
         }
       })
       const hasPendingWork = vi.fn().mockReturnValue(true)
       const worker = createPrivateRuntimeWorker(runTurn, hasPendingWork)
 
       await worker.run("habit", undefined, "heartbeat")
+      await queued
 
       // Sequence: heartbeat (1) → poke arrived (queued) → poke runs as instinct (counter resets to 1)
       // → 2 more instinct via hasPendingWork → cap at 3 instinct chain
@@ -1841,10 +2026,11 @@ describe("private-runtime-worker", () => {
     it("accepts queued heartbeat fires without another model turn after clean HEARTBEAT_OK", async () => {
       let now = 11_750_000
       let worker!: ReturnType<typeof createPrivateRuntimeWorker>
+      let queued: Promise<void> | undefined
       const runTurn = vi.fn().mockImplementation(async () => {
         if (runTurn.mock.calls.length === 1) {
           now += 60_000
-          await worker.handleMessage({ type: "heartbeat" })
+          queued = worker.handleMessage({ type: "heartbeat" })
         }
         return { turnOutcome: "rested", restStatus: "HEARTBEAT_OK" }
       })
@@ -1852,6 +2038,7 @@ describe("private-runtime-worker", () => {
       worker = createPrivateRuntimeWorker(runTurn, hasPendingWork, () => now)
 
       await worker.handleMessage({ type: "heartbeat" })
+      await queued
 
       expect(runTurn).toHaveBeenCalledTimes(1)
       expect(mockRecordHabitRun).toHaveBeenCalledTimes(2)

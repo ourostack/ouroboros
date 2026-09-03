@@ -218,7 +218,7 @@ export function recordToolOutcome(
 // ponder = continue thinking (private runtime) or hand off to private runtime (outer).
 // rest = end private runtime turn (added in Unit 8b).
 // Blocking these traps the agent: it can think all it wants but can never speak or stop.
-const CIRCUIT_BREAKER_EXEMPT = new Set(["settle", "surface", "ponder", "rest"])
+const CIRCUIT_BREAKER_EXEMPT = new Set(["settle", "surface", "ponder", "rest", "external_event_disposition"])
 
 export function detectToolLoop(
   state: ToolLoopState,

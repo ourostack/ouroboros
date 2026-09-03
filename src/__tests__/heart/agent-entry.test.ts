@@ -65,6 +65,7 @@ function createWorkerControllerMock() {
   return {
     run: vi.fn(async () => undefined),
     handleMessage: vi.fn(async () => undefined),
+    cancelMessage: vi.fn(() => false),
   }
 }
 
@@ -279,7 +280,7 @@ describe("agent entrypoint", () => {
       await vi.waitFor(() => {
         expect(startPrivateRuntimeWorker).toHaveBeenCalledWith({
           attachProcessListeners: false,
-          bufferedMessages: [{ type: "poke", taskId: "testflight-feedback" }],
+          bufferedMessages: [],
         })
       })
 
@@ -372,8 +373,9 @@ describe("agent entrypoint", () => {
         expect(waitForRuntimeCredentialBootstrap).not.toHaveBeenCalled()
         expect(startPrivateRuntimeWorker).toHaveBeenCalledWith({
           attachProcessListeners: false,
-          bufferedMessages: [workMessage],
+          bufferedMessages: [],
         })
+        expect(controller.handleMessage).toHaveBeenCalledWith(workMessage)
       })
     } finally {
       argvSpy.mockRestore()
@@ -445,8 +447,9 @@ describe("agent entrypoint", () => {
       await vi.waitFor(() => {
         expect(startPrivateRuntimeWorker).toHaveBeenCalledWith({
           attachProcessListeners: false,
-          bufferedMessages: [{ type: "poke", taskId: "testflight-feedback" }],
+          bufferedMessages: [],
         })
+        expect(controller.handleMessage).toHaveBeenCalledWith({ type: "poke", taskId: "testflight-feedback" })
       })
     } finally {
       argvSpy.mockRestore()
@@ -696,5 +699,117 @@ describe("agent entrypoint", () => {
     argvSpy.mockRestore()
     exitSpy.mockRestore()
     consoleError.mockRestore()
+  })
+
+  it("awaits Sanctuary source readiness and exact worker completion before acknowledging dispatch", async () => {
+    vi.resetModules()
+    ;(globalThis as unknown as Record<symbol, unknown>)[Symbol.for("ouro.agentEntry.ipcState")] = {
+      bufferedRuntimeCredentialMessages: [], bufferedMessages: [], installed: false, workerMessageHandler: null,
+    }
+    let messageHandler: ((message: unknown) => void) | undefined
+    const processOnSpy = vi.spyOn(process, "on").mockImplementation(((event: string, handler: (...args: unknown[]) => void) => {
+      if (event === "message") messageHandler = handler
+      return process
+    }) as never)
+    const controller = createWorkerControllerMock()
+    const { startPrivateRuntimeWorker } = mockWorkerModules(vi.fn(async () => controller))
+    const readiness = new Promise<void>((resolve) => { (globalThis as any).__resolveSanctuaryReadiness = resolve })
+    const ensureSanctuarySourceRuntimeReady = vi.fn(() => readiness)
+    vi.doMock("../../senses/sanctuary-runtime", () => ({ ensureSanctuarySourceRuntimeReady }))
+    vi.doMock("../../nerves/cli-logging", () => ({ configureCliRuntimeLogger: vi.fn() }))
+    const emitNervesEvent = vi.fn()
+    vi.doMock("../../nerves/runtime", () => ({ emitNervesEvent }))
+    vi.doMock("../../heart/runtime-credentials", () => runtimeCredentialMock({
+      waitForRuntimeCredentialBootstrap: vi.fn(async () => true),
+      readRuntimeCredentialConfig: vi.fn(() => ({ ok: true, config: {}, revision: "rev" })),
+      readMachineRuntimeCredentialConfig: vi.fn(() => ({ ok: true, config: {}, revision: "rev" })),
+    }))
+    const originalSend = process.send
+    const send = vi.fn()
+    process.send = send as typeof process.send
+    const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue(["node", "agent-entry.js", "--agent", "sanctuary"])
+
+    try {
+      await import("../../heart/agent-entry")
+      await vi.waitFor(() => expect(startPrivateRuntimeWorker).toHaveBeenCalledOnce())
+      messageHandler?.({ type: "message", dispatchId: "dispatch-cancelled", externalEvent: { source: "sanctuary-health" } })
+      await vi.waitFor(() => expect(ensureSanctuarySourceRuntimeReady).toHaveBeenCalledWith("sanctuary", "sanctuary-health"))
+      expect(controller.handleMessage).not.toHaveBeenCalled()
+      expect(send).not.toHaveBeenCalled()
+
+      messageHandler?.({ type: "ouro.privateRuntimeDispatchCancel", dispatchId: "dispatch-cancelled" })
+      ;(globalThis as any).__resolveSanctuaryReadiness()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(controller.handleMessage).not.toHaveBeenCalled()
+      expect(send).not.toHaveBeenCalled()
+
+      messageHandler?.({ type: "message", dispatchId: "dispatch-1", externalEvent: { source: "sanctuary-health" } })
+      await vi.waitFor(() => expect(controller.handleMessage).toHaveBeenCalledOnce())
+      await vi.waitFor(() => expect(send).toHaveBeenCalledWith({ type: "ouro.privateRuntimeDispatchResult", dispatchId: "dispatch-1", ok: true }))
+
+      controller.handleMessage.mockRejectedValueOnce(new Error("secret provider payload"))
+      messageHandler?.({ type: "message", dispatchId: "dispatch-2" })
+      await vi.waitFor(() => expect(send).toHaveBeenCalledWith({
+        type: "ouro.privateRuntimeDispatchResult",
+        dispatchId: "dispatch-2",
+        ok: false,
+        error: "private-runtime worker failed; inspect the worker's redacted runtime diagnostics",
+      }))
+      expect(JSON.stringify(send.mock.calls)).not.toContain("secret provider payload")
+
+      controller.handleMessage.mockRejectedValueOnce(new Error("[human-required] secret provider payload"))
+      messageHandler?.({ type: "message", dispatchId: "dispatch-3" })
+      await vi.waitFor(() => expect(send).toHaveBeenCalledWith({
+        type: "ouro.privateRuntimeDispatchResult",
+        dispatchId: "dispatch-3",
+        ok: false,
+        error: "[human-required] Private-runtime work needs human repair; inspect the agent's redacted runtime diagnostics.",
+      }))
+      expect(JSON.stringify(send.mock.calls)).not.toContain("[human-required] secret provider payload")
+
+      for (const [dispatchId, failure, expected] of [
+        ["dispatch-agent-runnable", new Error("[agent-runnable] secret repair payload"), "[agent-runnable] Private-runtime work failed; inspect the agent's redacted runtime diagnostics and run the indicated repair."],
+        ["dispatch-human-choice", new Error("[human-choice] secret choice payload"), "[human-choice] Private-runtime work needs an explicit human decision; inspect the agent's redacted runtime diagnostics."],
+        ["dispatch-string", "secret string payload", "private-runtime worker failed; inspect the worker's redacted runtime diagnostics"],
+      ] as const) {
+        controller.handleMessage.mockRejectedValueOnce(failure)
+        messageHandler?.({ type: "message", dispatchId })
+        await vi.waitFor(() => expect(send).toHaveBeenCalledWith({
+          type: "ouro.privateRuntimeDispatchResult",
+          dispatchId,
+          ok: false,
+          error: expected,
+        }))
+      }
+      expect(JSON.stringify(send.mock.calls)).not.toContain("secret repair payload")
+      expect(JSON.stringify(send.mock.calls)).not.toContain("secret choice payload")
+      expect(JSON.stringify(send.mock.calls)).not.toContain("secret string payload")
+
+      const workerCallsBeforeLegacyExternalEvent = controller.handleMessage.mock.calls.length
+      messageHandler?.({ type: "message", externalEvent: { source: "sanctuary-health" } })
+      await vi.waitFor(() => expect(controller.handleMessage).toHaveBeenCalledTimes(workerCallsBeforeLegacyExternalEvent + 1))
+
+      controller.handleMessage.mockRejectedValueOnce("legacy string failure")
+      messageHandler?.({ type: "message" })
+      await vi.waitFor(() => expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        event: "senses.private_runtime_dispatch_error",
+        meta: expect.objectContaining({ agentName: "sanctuary", error: "legacy string failure" }),
+      })))
+
+      controller.handleMessage.mockRejectedValueOnce(new Error("legacy Error failure"))
+      messageHandler?.({ type: "message" })
+      await vi.waitFor(() => expect(emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        event: "senses.private_runtime_dispatch_error",
+        meta: expect.objectContaining({ agentName: "sanctuary", error: "legacy Error failure" }),
+      })))
+
+      messageHandler?.({ type: "ouro.privateRuntimeDispatchCancel", dispatchId: "dispatch-queued" })
+      await vi.waitFor(() => expect(controller.cancelMessage).toHaveBeenCalledWith("dispatch-queued"))
+    } finally {
+      process.send = originalSend
+      delete (globalThis as any).__resolveSanctuaryReadiness
+      processOnSpy.mockRestore()
+      argvSpy.mockRestore()
+    }
   })
 })
