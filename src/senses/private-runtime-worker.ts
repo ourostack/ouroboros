@@ -3,7 +3,7 @@ import * as path from "path"
 import { runPrivateRuntimeTurn, type PreparedHabitContext } from "./private-runtime"
 import type { PriorHabitSessionSummaryInfo } from "./habit-turn-message"
 import type { PrivateTurnDecision } from "../heart/private-runtime"
-import { renewExternalEventClaim, type ExternalEventLeaseContext } from "../heart/external-events/router"
+import { renewExternalEventClaim, settleExternalEventFailureIfOwned, type ExternalEventLeaseContext } from "../heart/external-events/router"
 import { emitNervesEvent } from "../nerves/runtime"
 import { getAgentName, getAgentRoot } from "../heart/identity"
 import { getPrivateRuntimePendingDir, hasPendingMessages } from "../mind/pending"
@@ -54,6 +54,7 @@ export interface PrivateRuntimeWorkerMessage {
   noSend?: true
   privateTurnDecision?: PrivateTurnDecision
   externalEvent?: ExternalEventLeaseContext
+  dispatchId?: string
 }
 
 export interface PrivateRuntimeWorkerRunOptions {
@@ -79,8 +80,10 @@ export interface PrivateRuntimeWorkerController {
     privateTurnDecision?: PrivateTurnDecision,
     noSend?: true,
     externalEvent?: ExternalEventLeaseContext,
+    dispatchId?: string,
   ): Promise<void>
   handleMessage(message: unknown): Promise<void>
+  cancelMessage(dispatchId: string): boolean
 }
 
 export interface StartPrivateRuntimeWorkerOptions {
@@ -98,6 +101,24 @@ interface QueueEntry {
   privateTurnDecision?: PrivateTurnDecision
   externalEvent?: ExternalEventLeaseContext
   stopExternalEventHeartbeat?: () => void
+  dispatchId?: string
+  completion: {
+    promise: Promise<void>
+    resolve: () => void
+    reject: (error: unknown) => void
+    errors: string[]
+    rejectOnError: boolean
+  }
+}
+
+function createQueueCompletion(rejectOnError: boolean): QueueEntry["completion"] {
+  let resolve!: () => void
+  let reject!: (error: unknown) => void
+  const promise = new Promise<void>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject, errors: [], rejectOnError }
 }
 
 interface PreparedHabitRun {
@@ -587,13 +608,17 @@ export function createPrivateRuntimeWorker(
     privateTurnDecision?: PrivateTurnDecision,
     noSend?: true,
     externalEvent?: ExternalEventLeaseContext,
+    dispatchId?: string,
   ): Promise<void> {
+    const completion = createQueueCompletion(dispatchId !== undefined)
+    let activeCompletion: QueueEntry["completion"] | undefined = completion
     if (running) {
-      queue.push({ reason, taskId, habitName, awaitName, trigger, privateTurnDecision, noSend, externalEvent, ...(externalEvent ? { stopExternalEventHeartbeat: startExternalEventHeartbeat(externalEvent) } : {}) })
-      return
+      queue.push({ reason, taskId, habitName, awaitName, trigger, privateTurnDecision, noSend, externalEvent, dispatchId, completion, ...(externalEvent ? { stopExternalEventHeartbeat: startExternalEventHeartbeat(externalEvent) } : {}) })
+      return completion.promise
     }
 
     running = true
+    void (async () => {
     try {
       let nextReason = reason
       let nextTaskId = taskId
@@ -603,6 +628,7 @@ export function createPrivateRuntimeWorker(
       let nextPrivateTurnDecision = privateTurnDecision
       let nextExternalEvent = externalEvent
       let nextExternalEventHeartbeat = externalEvent ? startExternalEventHeartbeat(externalEvent) : undefined
+      let nextCompletion: QueueEntry["completion"] | undefined = completion
       let nextNoSend = reason === "habit" ? noSend : undefined
       let nextHabitRun: PreparedHabitRun | null = null
       let consecutiveInstinctTurns = reason === "instinct" ? 1 : 0
@@ -614,7 +640,10 @@ export function createPrivateRuntimeWorker(
         const currentNoSend = nextNoSend
         const currentExternalEvent = nextExternalEvent
         const currentExternalEventHeartbeat = nextExternalEventHeartbeat
+        const currentCompletion: QueueEntry["completion"] | undefined = nextCompletion
+        activeCompletion = currentCompletion
         nextExternalEventHeartbeat = undefined
+        nextCompletion = undefined
         const currentHabitRun: PreparedHabitRun | null = currentReason === "habit" && currentHabitName
           ? nextHabitRun && nextHabitRun.habit.name === currentHabitName
             ? nextHabitRun
@@ -707,6 +736,26 @@ export function createPrivateRuntimeWorker(
           })
         }
         currentExternalEventHeartbeat?.()
+        if (currentExternalEvent) {
+          const turnOutcome = turnResult && typeof turnResult === "object" && "turnOutcome" in turnResult
+            ? turnResult.turnOutcome
+            : undefined
+          const failureReason = turnErrors.length > 0 || turnOutcome === "errored"
+            ? "private-runtime external-event turn failed"
+            : blockedAutonomyTurn || turnOutcome === "blocked" || turnOutcome === "suspended"
+              ? "external-event turn was blocked"
+              : "external-event turn completed without a terminal disposition"
+          let settledIncomplete = false
+          for (const member of [currentExternalEvent, ...(currentExternalEvent.relatedEvents ?? [])]) {
+            const result = settleExternalEventFailureIfOwned(member.recordPath, {
+              owner: member.claimOwner,
+              expectedGeneration: member.generation,
+              error: failureReason,
+            })
+            settledIncomplete = result.settled || settledIncomplete
+          }
+          if (settledIncomplete && turnErrors.length === 0) turnErrors.push(failureReason)
+        }
         if (currentReason === "habit" && currentHabitName === "heartbeat") {
           heartbeatOkRestedAt = isHeartbeatOkRestResult(turnResult) ? nowSource() : null
         }
@@ -714,14 +763,27 @@ export function createPrivateRuntimeWorker(
           currentHabitRun.results.push(turnResult)
           currentHabitRun.errors.push(...turnErrors)
         }
+        currentCompletion?.errors.push(...turnErrors)
+        const settleCurrentCompletion = (): void => {
+          /* v8 ignore next -- every run and queued entry is constructed with a completion @preserve */
+          if (!currentCompletion) return
+          if (currentCompletion.rejectOnError && currentCompletion.errors.length > 0) currentCompletion.reject(new Error(currentCompletion.errors.join("; ")))
+          else currentCompletion.resolve()
+          if (activeCompletion === currentCompletion) activeCompletion = undefined
+        }
 
         // Drain queue first. Externally-queued work resets the instinct cap
         // because a real outside trigger arrived between turns.
+        if (queue.length > 0) settleCurrentCompletion()
         while (queue.length > 0) {
           const next = queue.shift()!
+          activeCompletion = next.completion
           if (next.reason === "habit" && next.habitName === "heartbeat" && shouldReuseHeartbeatOkRest(next.habitName)) {
             finalizeCurrentHabitRun()
             await reuseHeartbeatOkRest(next.habitName)
+            next.completion.resolve()
+            /* v8 ignore next -- activeCompletion was assigned from this exact queue entry immediately above @preserve */
+            if (activeCompletion === next.completion) activeCompletion = undefined
             continue
           }
           if (!(next.reason === "habit" && next.habitName === "heartbeat")) {
@@ -736,6 +798,7 @@ export function createPrivateRuntimeWorker(
           nextPrivateTurnDecision = next.privateTurnDecision
           nextExternalEvent = next.externalEvent
           nextExternalEventHeartbeat = next.stopExternalEventHeartbeat
+          nextCompletion = next.completion
           nextNoSend = next.reason === "habit" ? next.noSend : undefined
           consecutiveInstinctTurns = nextReason === "instinct" ? consecutiveInstinctTurns + 1 : 0
           continue runLoop
@@ -743,6 +806,7 @@ export function createPrivateRuntimeWorker(
 
         if (blockedAutonomyTurn) {
           finalizeCurrentHabitRun()
+          settleCurrentCompletion()
           break
         }
 
@@ -754,6 +818,7 @@ export function createPrivateRuntimeWorker(
           if (currentExternalEvent && (turnErrors.length > 0
             || (turnResult && typeof turnResult === "object" && "turnOutcome" in turnResult && turnResult.turnOutcome === "errored"))) {
             finalizeCurrentHabitRun()
+            settleCurrentCompletion()
             break
           }
           clearHeartbeatRestShield()
@@ -770,6 +835,7 @@ export function createPrivateRuntimeWorker(
               },
             })
             finalizeCurrentHabitRun()
+            settleCurrentCompletion()
             break
           }
           if (currentReason === "habit" && currentHabitName && currentHabitRun) {
@@ -797,15 +863,25 @@ export function createPrivateRuntimeWorker(
             nextExternalEventHeartbeat = undefined
             nextNoSend = undefined
           }
+          nextCompletion = currentCompletion
           continue
         }
 
         finalizeCurrentHabitRun()
+        settleCurrentCompletion()
         break
       } while (true)
     } finally {
       running = false
     }
+    })().catch((error) => {
+      activeCompletion?.reject(error)
+      for (const queued of queue.splice(0)) {
+        queued.stopExternalEventHeartbeat?.()
+        queued.completion.reject(error)
+      }
+    })
+    return completion.promise
   }
 
   async function handleMessage(message: unknown): Promise<void> {
@@ -819,7 +895,7 @@ export function createPrivateRuntimeWorker(
         return
       }
       recordHabitFireForRecursion(habitName)
-      await run("habit", undefined, maybeMessage.habitName, undefined, maybeMessage.trigger ?? "overdue", maybeMessage.privateTurnDecision, maybeMessage.noSend)
+      await run("habit", undefined, maybeMessage.habitName, undefined, maybeMessage.trigger ?? "overdue", maybeMessage.privateTurnDecision, maybeMessage.noSend, undefined, maybeMessage.dispatchId)
       return
     }
     if (maybeMessage.type === "await") {
@@ -827,7 +903,7 @@ export function createPrivateRuntimeWorker(
       /* v8 ignore next -- defensive fallback: live await dispatch always sets awaitName @preserve */
       const awaitName = maybeMessage.awaitName ?? "(unnamed)"
       recordHabitFireForRecursion(`await:${awaitName}`)
-      await run("await", undefined, undefined, maybeMessage.awaitName, undefined, maybeMessage.privateTurnDecision)
+      await run("await", undefined, undefined, maybeMessage.awaitName, undefined, maybeMessage.privateTurnDecision, undefined, undefined, maybeMessage.dispatchId)
       return
     }
     if (maybeMessage.type === "heartbeat") {
@@ -837,12 +913,12 @@ export function createPrivateRuntimeWorker(
         return
       }
       recordHabitFireForRecursion("heartbeat")
-      await run("habit", undefined, "heartbeat", undefined, "overdue", maybeMessage.privateTurnDecision)
+      await run("habit", undefined, "heartbeat", undefined, "overdue", maybeMessage.privateTurnDecision, undefined, undefined, maybeMessage.dispatchId)
       return
     }
     if (maybeMessage.type === "poke") {
       clearHeartbeatRestShield()
-      await run("instinct", maybeMessage.taskId, undefined, undefined, undefined, maybeMessage.privateTurnDecision)
+      await run("instinct", maybeMessage.taskId, undefined, undefined, undefined, maybeMessage.privateTurnDecision, undefined, undefined, maybeMessage.dispatchId)
       return
     }
     if (
@@ -850,7 +926,7 @@ export function createPrivateRuntimeWorker(
       maybeMessage.type === "message"
     ) {
       clearHeartbeatRestShield()
-      await run("instinct", undefined, undefined, undefined, undefined, maybeMessage.privateTurnDecision, undefined, maybeMessage.externalEvent)
+      await run("instinct", undefined, undefined, undefined, undefined, maybeMessage.privateTurnDecision, undefined, maybeMessage.externalEvent, maybeMessage.dispatchId)
       return
     }
     if (maybeMessage.type === "shutdown") {
@@ -858,7 +934,16 @@ export function createPrivateRuntimeWorker(
     }
   }
 
-  return { run, handleMessage }
+  function cancelMessage(dispatchId: string): boolean {
+    const index = queue.findIndex((entry) => entry.dispatchId === dispatchId)
+    if (index < 0) return false
+    const [cancelled] = queue.splice(index, 1)
+    cancelled?.stopExternalEventHeartbeat?.()
+    cancelled?.completion.reject(new Error(`Private-runtime dispatch ${dispatchId} was cancelled.`))
+    return true
+  }
+
+  return { run, handleMessage, cancelMessage }
 }
 
 export async function startPrivateRuntimeWorker(

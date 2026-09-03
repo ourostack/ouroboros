@@ -73,6 +73,15 @@ function isPrivateRuntimeWorkMessage(message: unknown): boolean {
     || type === "poke"
     || type === "chat"
     || type === "message"
+    || type === "ouro.privateRuntimeDispatchCancel"
+}
+
+function safeDispatchError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error)
+  if (message.startsWith("[agent-runnable]")) return "[agent-runnable] Private-runtime work failed; inspect the agent's redacted runtime diagnostics and run the indicated repair."
+  if (message.startsWith("[human-required]")) return "[human-required] Private-runtime work needs human repair; inspect the agent's redacted runtime diagnostics."
+  if (message.startsWith("[human-choice]")) return "[human-choice] Private-runtime work needs an explicit human decision; inspect the agent's redacted runtime diagnostics."
+  return "private-runtime worker failed; inspect the worker's redacted runtime diagnostics"
 }
 
 function forwardOrBufferRuntimeMessage(message: unknown): void {
@@ -175,16 +184,64 @@ import("./runtime-credentials")
         .catch(() => undefined)
     }
     const { startPrivateRuntimeWorker } = await import("../senses/private-runtime-worker")
-    const bufferedMessages = ipcState.bufferedMessages.splice(0)
     const worker: PrivateRuntimeWorkerController = await startPrivateRuntimeWorker({
       attachProcessListeners: false,
-      bufferedMessages,
+      bufferedMessages: [],
     })
-    ipcState.workerMessageHandler = (message: unknown) => {
-      void worker.handleMessage(message)
+    const { ensureSanctuarySourceRuntimeReady } = await import("../senses/sanctuary-runtime")
+    const readinessPendingDispatchIds = new Set<string>()
+    const cancelledReadinessDispatchIds = new Set<string>()
+    const handleWorkerMessage = async (message: unknown): Promise<void> => {
+      /* v8 ignore next -- sole caller is gated by isPrivateRuntimeWorkMessage, which rejects falsy payloads @preserve */
+      const envelope = message && typeof message === "object" ? message as {
+        type?: unknown
+        dispatchId?: unknown
+        externalEvent?: { source?: unknown }
+      } : null
+      if (envelope?.type === "ouro.privateRuntimeDispatchCancel" && typeof envelope.dispatchId === "string") {
+        if (readinessPendingDispatchIds.has(envelope.dispatchId)) cancelledReadinessDispatchIds.add(envelope.dispatchId)
+        else worker.cancelMessage(envelope.dispatchId)
+        return
+      }
+      const dispatchId = typeof envelope?.dispatchId === "string" ? envelope.dispatchId : null
+      try {
+        if (typeof envelope?.externalEvent?.source === "string") {
+          if (dispatchId) readinessPendingDispatchIds.add(dispatchId)
+          await ensureSanctuarySourceRuntimeReady(agentName, envelope.externalEvent.source)
+          if (dispatchId) readinessPendingDispatchIds.delete(dispatchId)
+          if (dispatchId && cancelledReadinessDispatchIds.delete(dispatchId)) return
+        }
+        await worker.handleMessage(message)
+        if (dispatchId) process.send?.({ type: "ouro.privateRuntimeDispatchResult", dispatchId, ok: true })
+      } catch (error) {
+        if (dispatchId) {
+          process.send?.({
+            type: "ouro.privateRuntimeDispatchResult",
+            dispatchId,
+            ok: false,
+            error: safeDispatchError(error),
+          })
+          return
+        }
+        emitNervesEvent({
+          level: "error",
+          component: "senses",
+          event: "senses.private_runtime_dispatch_error",
+          message: "private-runtime work message failed",
+          meta: { agentName, error: error instanceof Error ? error.message : String(error) },
+        })
+      } finally {
+        if (dispatchId) {
+          readinessPendingDispatchIds.delete(dispatchId)
+          cancelledReadinessDispatchIds.delete(dispatchId)
+        }
+      }
     }
-    const messagesBufferedDuringStart = ipcState.bufferedMessages.splice(0)
-    for (const message of messagesBufferedDuringStart) {
+    ipcState.workerMessageHandler = (message: unknown) => {
+      void handleWorkerMessage(message)
+    }
+    const bufferedMessages = ipcState.bufferedMessages.splice(0)
+    for (const message of bufferedMessages) {
       ipcState.workerMessageHandler(message)
     }
   })

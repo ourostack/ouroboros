@@ -4,11 +4,14 @@ import * as path from "path"
 import { afterEach, describe, expect, it } from "vitest"
 import {
   buildExternalEventMessage,
+  claimExternalEvent,
   externalEventRecordPath,
   getExternalEventRoot,
   recordExternalEvent,
   readExternalEventRecord,
   listExternalEventStatus,
+  renewExternalEventClaim,
+  settleExternalEventFailureIfOwned,
 } from "../../../heart/external-events/router"
 
 const cleanupPaths: string[] = []
@@ -129,5 +132,87 @@ describe("external event router", () => {
     fs.writeFileSync(path.join(hiddenSource, "lock-race.json"), "{partial")
 
     expect(listExternalEventStatus(root)).toEqual([])
+  })
+
+  it("settles an exact owned generation from current in-lock state despite version churn", () => {
+    const root = tempDir("ouro-external-event-owned-failure-")
+    const initial = recordExternalEvent({
+      agent: "sanctuary",
+      source: "sanctuary-health",
+      eventType: "health.observed",
+      eventId: "books",
+      observationRevision: "revision-1",
+    }, { root, now: () => "2026-09-02T03:00:00.000Z" })
+    const claimed = claimExternalEvent(initial.recordPath, {
+      owner: "turn-1",
+      expectedVersion: initial.version,
+      expectedGeneration: initial.generation,
+      now: () => "2026-09-02T03:00:01.000Z",
+    })
+    renewExternalEventClaim(claimed.recordPath, {
+      owner: "turn-1",
+      expectedGeneration: claimed.generation,
+      now: () => "2026-09-02T03:00:02.000Z",
+    })
+    recordExternalEvent({
+      agent: "sanctuary",
+      source: "sanctuary-health",
+      eventType: "health.observed",
+      eventId: "books",
+      observationRevision: "revision-2",
+      summary: "new observation while the turn is running",
+    }, { root, now: () => "2026-09-02T03:00:03.000Z" })
+
+    const result = settleExternalEventFailureIfOwned(claimed.recordPath, {
+      owner: "turn-1",
+      expectedGeneration: claimed.generation,
+      error: "private turn failed",
+      now: () => "2026-09-02T03:00:04.000Z",
+    })
+
+    expect(result.settled).toBe(true)
+    expect(result.record).toMatchObject({
+      executionState: "retry_wait",
+      claimOwner: null,
+      claimExpiresAt: null,
+      lastError: "private turn failed",
+      pendingObservation: { observationRevision: "revision-2" },
+      version: 5,
+    })
+    expect(readExternalEventRecord(claimed.recordPath)).toEqual(result.record)
+  })
+
+  it("ignores records that are no longer running under the exact owner and generation", () => {
+    const root = tempDir("ouro-external-event-owned-failure-ignore-")
+    const received = recordExternalEvent({
+      agent: "sanctuary",
+      source: "sanctuary-health",
+      eventType: "health.observed",
+      eventId: "books",
+    }, { root, now: () => "2026-09-02T03:10:00.000Z" })
+
+    expect(settleExternalEventFailureIfOwned(received.recordPath, {
+      owner: "turn-1",
+      expectedGeneration: received.generation,
+      error: "must not apply",
+    })).toEqual({ settled: false, record: received })
+
+    const claimed = claimExternalEvent(received.recordPath, {
+      owner: "turn-1",
+      expectedVersion: received.version,
+      expectedGeneration: received.generation,
+      now: () => "2026-09-02T03:10:01.000Z",
+    })
+    expect(settleExternalEventFailureIfOwned(claimed.recordPath, {
+      owner: "turn-2",
+      expectedGeneration: claimed.generation,
+      error: "must not apply",
+    })).toEqual({ settled: false, record: claimed })
+    expect(settleExternalEventFailureIfOwned(claimed.recordPath, {
+      owner: "turn-1",
+      expectedGeneration: claimed.generation + 1,
+      error: "must not apply",
+    })).toEqual({ settled: false, record: claimed })
+    expect(readExternalEventRecord(claimed.recordPath)).toEqual(claimed)
   })
 })

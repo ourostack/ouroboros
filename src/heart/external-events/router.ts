@@ -1354,6 +1354,26 @@ export function failExternalEventAttempt(recordPath: string, input: CasInput & {
   })
 }
 
+export function settleExternalEventFailureIfOwned(recordPath: string, input: {
+  owner: string
+  expectedGeneration: number
+  error: string
+  failureClass?: ExternalEventFailureClass
+  now?: () => string
+}): { settled: boolean; record: ExternalEventRecord } {
+  return withRecordLock(recordPath, () => {
+    const record = readExternalEventRecord(recordPath)
+    const now = input.now?.() ?? new Date().toISOString()
+    if (record.executionState !== "running"
+      || record.claimOwner !== input.owner
+      || record.generation !== input.expectedGeneration) {
+      return { settled: false, record }
+    }
+    const settled = commitMutation(recordPath, retryState(record, now, 5, 1_000, input.error, input.failureClass), now)
+    return { settled: true, record: settled }
+  })
+}
+
 export type ExternalEventRevivalResult =
   | { revived: true; record: ExternalEventRecord }
   | { revived: false; reason: "not_dead_letter" | "dispatch_disabled" | "ineligible_failure" | "grant_consumed" | "evidence_mismatch" | "stale_evidence"; record: ExternalEventRecord }
