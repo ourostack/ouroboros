@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.777",
+      "changes": [
+        "Hold Sanctuary external-event ownership until source-specific machine credentials are ready, acknowledge exact private-runtime turns over existing IPC, complete 32-member dispositions under existing tool limits, and immediately settle failed owned claims."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.776",
       "changes": [
         "Align live Sanctuary root validation with the runtime-created private Telegram control socket and lock the contract with a production-identical integration test."
