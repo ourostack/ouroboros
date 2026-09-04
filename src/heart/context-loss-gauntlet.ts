@@ -96,7 +96,10 @@ function isSettledTurnWait(resume: FlightRecorderResume): boolean {
   return resume.hasCompleteState
     && resume.recorderHealth.status === "ok"
     && resume.blockedBecause.length === 1
-    && resume.blockedBecause[0] === "turn outcome settled; wait for new input before acting"
+    && (
+      resume.blockedBecause[0] === "turn outcome settled; wait for new input before acting"
+      || resume.blockedBecause[0] === "turn outcome rested; wait for new input before acting"
+    )
     && resume.nextSafeAction.value === "inspect the latest session and wait for new input before acting"
 }
 

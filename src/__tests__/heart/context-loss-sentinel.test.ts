@@ -2806,7 +2806,9 @@ describe("context-loss Sentinel core", () => {
     expect(formatContextLossSentinelText(blockedReceipt)).toContain("latest-ready: unavailable")
   })
 
-  it("treats a completed turn waiting for new input as ready instead of blocked", async () => {
+  it.each(["settled", "rested"] as const)(
+    "treats a completed %s turn waiting for new input as ready instead of blocked",
+    async (outcome) => {
     const agentRoot = makeAgentRoot()
     writeFlightRecorderResume(agentRoot, {
       ...readyResume(),
@@ -2814,21 +2816,21 @@ describe("context-loss Sentinel core", () => {
       nextSafeAction: {
         value: "inspect the latest session and wait for new input before acting",
         stopBefore: ["acting on stale context"],
-        sourceEventIds: ["fr-settled-turn"],
+        sourceEventIds: [`fr-${outcome}-turn`],
       },
-      blockedBecause: ["turn outcome settled; wait for new input before acting"],
+      blockedBecause: [`turn outcome ${outcome}; wait for new input before acting`],
       lastSafeCheckpoint: {
         turnId: null,
         sessionRef: "telegram/session",
         recordedAt: "2026-08-28T01:45:34.331Z",
-        sourceEventIds: ["fr-settled-turn"],
+        sourceEventIds: [`fr-${outcome}-turn`],
       },
     })
 
     const receipt = await refreshContextLossSentinel("slugger", agentRoot, {
       trigger: "post_turn",
       now: () => new Date("2026-08-28T01:45:40.000Z"),
-      createReceiptId: () => "sentinel-settled-turn-ready",
+      createReceiptId: () => `sentinel-${outcome}-turn-ready`,
       providerVisibility: providerVisibility(),
       daemonHealthResults: okHealth(),
       gitStatus: () => ({ ok: true, porcelain: "" }),
@@ -2837,7 +2839,8 @@ describe("context-loss Sentinel core", () => {
     expect(receipt.verdict).toBe("ready")
     expect(receipt.gauntlet.failedChecks).not.toContain("next_safe_action")
     expect(receipt.gauntlet.failedChecks).not.toContain("stale_guard")
-  })
+    },
+  )
 
   it("records blocked Sentinel receipts as flight-recorder blocker events", async () => {
     const agentRoot = makeAgentRoot()

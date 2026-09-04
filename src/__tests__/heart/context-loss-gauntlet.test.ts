@@ -214,6 +214,50 @@ describe("context-loss gauntlet", () => {
     expect(report.checks.find((check) => check.id === "current_ask")?.detail).toContain("stale_risky")
   })
 
+  it.each(["settled", "rested"] as const)(
+    "treats a completed %s turn waiting for new input as safe idle state",
+    (outcome) => {
+      const agentRoot = makeAgentRoot()
+      scaffoldDeskRecord(agentRoot)
+      writeFlightRecorderResume(agentRoot, {
+        schemaVersion: 1,
+        hasCompleteState: true,
+        canContinue: false,
+        missing: [],
+        gaps: [],
+        currentAsk: { value: "answer the latest Telegram message", confidence: "current", sourceEventIds: ["fr-idle"] },
+        nextSafeAction: {
+          value: "inspect the latest session and wait for new input before acting",
+          stopBefore: ["acting on stale context"],
+          sourceEventIds: ["fr-idle"],
+        },
+        blockedBecause: [`turn outcome ${outcome}; wait for new input before acting`],
+        activeObligationIds: [],
+        activeReturnObligationIds: [],
+        activePacketIds: [],
+        openEvolutionCaseIds: [],
+        recentClaimIds: [],
+        unverifiedClaimIds: [],
+        lastSafeCheckpoint: {
+          turnId: null,
+          sessionRef: "telegram/session",
+          recordedAt: "2026-08-28T01:45:34.331Z",
+          sourceEventIds: ["fr-idle"],
+        },
+        recorderHealth: { status: "ok", issues: [] },
+      })
+
+      const report = runContextLossGauntlet("slugger", agentRoot, {
+        now: () => new Date("2026-08-28T01:45:40.000Z"),
+        homeDir: agentRoot,
+      })
+
+      expect(report.verdict).toBe("ready")
+      expect(checkStatus(report, "next_safe_action")).toBe("pass")
+      expect(checkStatus(report, "stale_guard")).toBe("pass")
+    },
+  )
+
   it("passes the blocker surface check when waiting work controls the next action", () => {
     const agentRoot = makeAgentRoot()
     scaffoldDeskRecord(agentRoot)
