@@ -1,0 +1,226 @@
+import { PassThrough } from "node:stream"
+import { describe, expect, it, vi } from "vitest"
+
+class FakeFrontendClient {
+  requests: Array<{ method: string; params: any }> = []
+  listener: ((event: any) => void) | null = null
+  close = vi.fn()
+  loadResult: any = { events: [], lastSequence: 0, hasMore: false, degraded: false, incompleteTurnIds: [] }
+
+  async request(method: string, params: any): Promise<any> {
+    this.requests.push({ method, params })
+    if (method === "session.load") return this.loadResult
+    if (method === "turn.cancel") return { cancelled: true }
+    return { accepted: true }
+  }
+
+  onEvent(listener: (event: any) => void): () => void {
+    this.listener = listener
+    return () => { this.listener = null }
+  }
+
+  emit(event: any): void {
+    this.listener?.(event)
+  }
+}
+
+function collect(output: PassThrough) {
+  const messages: any[] = []
+  let buffer = ""
+  output.on("data", (chunk) => {
+    buffer += chunk.toString("utf8")
+    for (;;) {
+      const newline = buffer.indexOf("\n")
+      if (newline < 0) break
+      const line = buffer.slice(0, newline).trim()
+      buffer = buffer.slice(newline + 1)
+      if (line) messages.push(JSON.parse(line))
+    }
+  })
+  return messages
+}
+
+async function waitFor(messages: any[], predicate: (message: any) => boolean): Promise<any> {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const found = messages.find(predicate)
+    if (found) return found
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+  throw new Error("ACP message did not arrive")
+}
+
+async function setup() {
+  const input = new PassThrough()
+  const output = new PassThrough()
+  const client = new FakeFrontendClient()
+  const { createAcpServer } = await import("../../senses/acp-server")
+  const server = createAcpServer({
+    agent: "boss",
+    friendId: "local-ari",
+    frontendSocketPath: "/tmp/frontend.sock",
+    stdin: input,
+    stdout: output,
+    createFrontendClient: async () => client,
+  })
+  server.start()
+  return { input, output, client, server, messages: collect(output) }
+}
+
+describe("Ouro ACP server", () => {
+  it("initializes, creates a session, streams a turn, and returns end_turn", async () => {
+    const { input, client, server, messages } = await setup()
+    input.write('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}\n')
+    expect(await waitFor(messages, (message) => message.id === 1)).toEqual({
+      jsonrpc: "2.0",
+      id: 1,
+      result: { protocolVersion: 1 },
+    })
+
+    input.write('{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/tmp","mcpServers":[]}}\n')
+    const created = await waitFor(messages, (message) => message.id === 2)
+    expect(created.result.sessionId).toMatch(/^[0-9a-f-]{36}$/)
+    expect(client.requests.at(-1)).toEqual({
+      method: "session.subscribe",
+      params: { sessionKey: created.result.sessionId },
+    })
+
+    input.write(`${JSON.stringify({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "session/prompt",
+      params: {
+        sessionId: created.result.sessionId,
+        prompt: [{ type: "text", text: "hello " }, { type: "text", text: "boss" }],
+      },
+    })}\n`)
+    await waitFor(client.requests, (request) => request.method === "turn.start")
+    const started = client.requests.find((request) => request.method === "turn.start")!
+    expect(started.params).toMatchObject({
+      agent: "boss",
+      friendId: "local-ari",
+      channel: "mcp",
+      sessionKey: created.result.sessionId,
+      message: "hello boss",
+    })
+    client.emit({ event: "text.delta", sessionKey: created.result.sessionId, turnId: started.params.turnId, text: "Hi" })
+    client.emit({ event: "reasoning.delta", sessionKey: created.result.sessionId, turnId: started.params.turnId, text: "Think" })
+    client.emit({ event: "tool.started", sessionKey: created.result.sessionId, turnId: started.params.turnId, name: "read_file", args: { path: "/tmp/a" } })
+    client.emit({ event: "tool.completed", sessionKey: created.result.sessionId, turnId: started.params.turnId, name: "read_file", summary: "ok", success: true })
+    client.emit({
+      event: "structured.output",
+      sessionKey: created.result.sessionId,
+      turnId: started.params.turnId,
+      output: { kind: "ordered_list", items: [{ text: "First" }] },
+    })
+    client.emit({ event: "turn.completed", sessionKey: created.result.sessionId, turnId: started.params.turnId })
+
+    expect(await waitFor(messages, (message) => message.id === 3)).toEqual({
+      jsonrpc: "2.0",
+      id: 3,
+      result: { stopReason: "end_turn" },
+    })
+    expect(messages.filter((message) => message.method === "session/update").map((message) => message.params.update.sessionUpdate)).toEqual([
+      "agent_message_chunk",
+      "agent_thought_chunk",
+      "tool_call",
+      "tool_call_update",
+      "plan",
+    ])
+    server.stop()
+  })
+
+  it("loads and replays an existing Ouro session without creating a replacement", async () => {
+    const { input, client, server, messages } = await setup()
+    client.loadResult = {
+      events: [
+        { type: "user_message", data: { text: "question" }, turnId: "turn-1" },
+        { type: "assistant_delivery", data: { text: "answer" }, turnId: "turn-1" },
+        { type: "tool_started", data: { name: "read_file", args: {} }, turnId: "turn-1" },
+        { type: "tool_completed", data: { name: "read_file", summary: "ok", success: true }, turnId: "turn-1" },
+      ],
+      lastSequence: 4,
+      hasMore: false,
+      degraded: false,
+      incompleteTurnIds: [],
+    }
+    input.write('{"jsonrpc":"2.0","id":1,"method":"session/load","params":{"sessionId":"existing-session","cwd":"/tmp","mcpServers":[]}}\n')
+
+    expect(await waitFor(messages, (message) => message.id === 1)).toEqual({
+      jsonrpc: "2.0",
+      id: 1,
+      result: {},
+    })
+    expect(client.requests.filter((request) => request.method === "session.load" || request.method === "session.subscribe")).toEqual([
+      {
+        method: "session.load",
+        params: { agent: "boss", friendId: "local-ari", sessionKey: "existing-session", afterSequence: 0 },
+      },
+      { method: "session.subscribe", params: { sessionKey: "existing-session" } },
+    ])
+    expect(messages.filter((message) => message.method === "session/update").map((message) => message.params.update.sessionUpdate)).toEqual([
+      "user_message_chunk",
+      "agent_message_chunk",
+      "tool_call",
+      "tool_call_update",
+    ])
+    expect(client.requests.some((request) => request.method === "turn.start")).toBe(false)
+    server.stop()
+  })
+
+  it("rejects a missing session instead of silently starting another", async () => {
+    const { input, client, server, messages } = await setup()
+    input.write('{"jsonrpc":"2.0","id":1,"method":"session/load","params":{"sessionId":"missing","cwd":"/tmp","mcpServers":[]}}\n')
+
+    expect(await waitFor(messages, (message) => message.id === 1)).toEqual({
+      jsonrpc: "2.0",
+      id: 1,
+      error: { code: -32001, message: "session not found" },
+    })
+    expect(client.requests.some((request) => request.method === "turn.start")).toBe(false)
+    server.stop()
+  })
+
+  it("cancels the active prompt and returns a cancelled stop reason", async () => {
+    const { input, client, server, messages } = await setup()
+    input.write('{"jsonrpc":"2.0","id":1,"method":"session/new","params":{}}\n')
+    const sessionId = (await waitFor(messages, (message) => message.id === 1)).result.sessionId
+    input.write(`${JSON.stringify({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "session/prompt",
+      params: { sessionId, prompt: [{ type: "text", text: "wait" }] },
+    })}\n`)
+    await waitFor(client.requests, (request) => request.method === "turn.start")
+    const turnId = client.requests.find((request) => request.method === "turn.start")!.params.turnId
+    input.write(`${JSON.stringify({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId } })}\n`)
+
+    await waitFor(client.requests, (request) => request.method === "turn.cancel")
+    expect(client.requests.at(-1)).toEqual({ method: "turn.cancel", params: { turnId } })
+    client.emit({ event: "turn.cancelled", sessionKey: sessionId, turnId })
+    expect(await waitFor(messages, (message) => message.id === 2)).toEqual({
+      jsonrpc: "2.0",
+      id: 2,
+      result: { stopReason: "cancelled" },
+    })
+    server.stop()
+  })
+
+  it("returns typed protocol errors and cleans its frontend client", async () => {
+    const { input, client, server, messages } = await setup()
+    input.write("not-json\n")
+    input.write('{"jsonrpc":"1.0","id":1,"method":"initialize","params":{}}\n')
+    input.write('{"jsonrpc":"2.0","id":2,"method":"unknown","params":{}}\n')
+    input.write('{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"missing","prompt":[]}}\n')
+
+    await waitFor(messages, (message) => message.id === 3)
+    expect(messages.slice(0, 4)).toEqual([
+      { jsonrpc: "2.0", id: null, error: { code: -32700, message: "parse error" } },
+      { jsonrpc: "2.0", id: 1, error: { code: -32600, message: "jsonrpc must be 2.0" } },
+      { jsonrpc: "2.0", id: 2, error: { code: -32601, message: "method not found: unknown" } },
+      { jsonrpc: "2.0", id: 3, error: { code: -32001, message: "unknown session: missing" } },
+    ])
+
+    server.stop()
+    expect(client.close).toHaveBeenCalledOnce()
+  })
+})
