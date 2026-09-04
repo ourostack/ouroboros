@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.786",
       "changes": [
-        "Harden Sanctuary Unit16 evidence snapshot timeout, sharpen Mendelow Cloud Butler personality, and degrade optional media metrics without losing catalog evidence."
+        "Harden Sanctuary Unit16 evidence snapshot timeout, sharpen Mendelow Cloud Butler personality, add a restricted read-only Jellyfin catalog search for household movie/title/taste questions, and degrade optional media metrics without losing catalog evidence."
       ]
     },
     {
