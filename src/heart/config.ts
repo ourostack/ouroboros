@@ -491,6 +491,16 @@ export function sanitizeKey(key: string): string {
   return key.replace(/[/:]/g, "_")
 }
 
+export function canonicalizeTelegramSessionKey(key: string): string {
+  if (key.startsWith("telegram:")) return key
+  if (!key.startsWith("telegram_")) return key
+  const suffix = key.slice("telegram_".length)
+  if (suffix.startsWith("tg_")) return `telegram:${suffix}`
+  const numericSession = suffix.match(/^([0-9]+)_(-?[0-9]+)$/u)
+  if (numericSession) return `telegram:${numericSession[1]}:${numericSession[2]}`
+  return key
+}
+
 export function slugify(value: string): string {
   return value
     .trim()

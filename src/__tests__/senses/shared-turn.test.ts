@@ -469,6 +469,55 @@ describe("runSenseTurn", () => {
     expect(input.callbacks.settleOutputMode).toBe("retractable_buffer")
   })
 
+  it("delivers the authoritative settle answer instead of concatenated buffered prose", async () => {
+    const delivered: string[] = []
+    const settleMessages: ChatCompletionMessageParam[] = [
+      { role: "system", content: "system" },
+      { role: "user", content: "hi" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "call-settle",
+            type: "function",
+            function: {
+              name: "settle",
+              arguments: JSON.stringify({ answer: "Final answer only.", intent: "complete" }),
+            },
+          },
+        ],
+      },
+      { role: "tool", tool_call_id: "call-settle", content: "(delivered)" },
+    ]
+    mockHandleInboundTurn.mockImplementationOnce(async (input: any) => {
+      input.callbacks.onTextChunk("Aww, thanks. Let me take a quick look.")
+      input.callbacks.onTextChunk("Final answer only.")
+      input.callbacks.onToolEnd("settle", "Final answer only.", true)
+      return {
+        resolvedContext: makeResolvedContext(),
+        gateResult: { allowed: true },
+        usage: { input_tokens: 100, output_tokens: 50, reasoning_tokens: 0, total_tokens: 150 },
+        turnOutcome: "settled",
+        sessionPath: "/tmp/session.json",
+        messages: settleMessages,
+      }
+    })
+
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    const result = await runSenseTurn({
+      agentName: "test-agent",
+      channel: "telegram",
+      sessionKey: "telegram:777:42",
+      friendId: "friend-1",
+      userMessage: "hello",
+      deliverySink: { onDelivery: (delivery) => { delivered.push(delivery.text) } },
+    })
+
+    expect(delivered).toEqual(["Final answer only."])
+    expect(result.response).toBe("Final answer only.")
+  })
+
   it("does not fabricate a deferral message when a turn has no callback text", async () => {
     mockHandleInboundTurn.mockResolvedValue({
       resolvedContext: makeResolvedContext(),

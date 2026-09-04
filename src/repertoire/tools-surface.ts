@@ -1,5 +1,7 @@
 import type OpenAI from "openai";
 import * as fs from "fs";
+import { createHash } from "crypto";
+import { canonicalizeTelegramSessionKey } from "../heart/config";
 import { getAgentRoot, getAgentName } from "../heart/identity";
 import { handleSurface, type SurfaceRouteResult } from "../senses/surface-tool";
 import { advanceReturnObligation, findPendingObligationForOrigin, fulfillObligation } from "../arc/obligations";
@@ -150,6 +152,38 @@ export const surfaceToolDefinition: ToolDefinition = {
         const agentRoot = getAgentRoot()
         const sessionsDir = path.join(agentRoot, "state", "sessions")
         const friendsDir = path.join(agentRoot, "friends")
+        const queueToSession = async (target: { friendId: string; channel: string; key: string }, detail: string): Promise<SurfaceRouteResult> => {
+          const { queuePendingMessage, getPendingDir } = await import("../mind/pending")
+          const pendingDir = getPendingDir(agentName, target.friendId, target.channel, target.key)
+          queuePendingMessage(pendingDir, {
+            from: agentName,
+            friendId: target.friendId,
+            channel: target.channel,
+            key: target.key,
+            content,
+            timestamp: Date.now(),
+          })
+          return { status: "queued", detail }
+        }
+        const deliverTelegramOrQueue = async (target: { friendId: string; channel: string; key: string }, detail: string): Promise<SurfaceRouteResult> => {
+          const telegramKey = canonicalizeTelegramSessionKey(target.key)
+          const hash = createHash("sha256").update(`${target.friendId}\0${telegramKey}\0${content}`).digest("hex")
+          const requestId = queueItem?.obligationId ?? `surface:${hash}`
+          const deliveryId = queueItem?.obligationId ? `surface:${queueItem.obligationId}:${hash}` : `surface:${hash}`
+          const { sendTelegramAwaitFollowUp } = await import("../senses/telegram")
+          const delivered = await sendTelegramAwaitFollowUp(agentName, {
+            friendId: target.friendId,
+            channel: "telegram",
+            key: telegramKey,
+            content,
+            requestId,
+            deliveryId,
+            intent: "generic_outreach",
+          })
+          return delivered.status === "delivered_now"
+            ? { status: "delivered", detail: "sent to Telegram now" }
+            : queueToSession(target, detail)
+        }
 
         // Resolve friend name → UUID if needed (agents may pass name instead of UUID)
         let resolvedFriendId = friendId
@@ -196,17 +230,10 @@ export const surfaceToolDefinition: ToolDefinition = {
               ),
             )
             if (bridgeTarget) {
-              const { queuePendingMessage, getPendingDir } = await import("../mind/pending")
-              const pendingDir = getPendingDir(agentName, bridgeTarget.friendId, bridgeTarget.channel, bridgeTarget.key)
-              queuePendingMessage(pendingDir, {
-                from: agentName,
-                friendId: bridgeTarget.friendId,
-                channel: bridgeTarget.channel,
-                key: bridgeTarget.key,
-                content,
-                timestamp: Date.now(),
-              })
-              return { status: "queued", detail: `for next interaction via ${bridgeTarget.channel}` }
+              const detail = `for next interaction via ${bridgeTarget.channel}`
+              return bridgeTarget.channel === "telegram"
+                ? deliverTelegramOrQueue(bridgeTarget, detail)
+                : queueToSession(bridgeTarget, detail)
             }
           }
         }
@@ -216,17 +243,11 @@ export const surfaceToolDefinition: ToolDefinition = {
         // address before considering fresher sessions for the same friend,
         // especially MCP sessions where check_response drains this path.
         if (queueItem?.channel && queueItem.key && queueItem.channel !== "inner") {
-          const { queuePendingMessage, getPendingDir } = await import("../mind/pending")
-          const pendingDir = getPendingDir(agentName, friendId, queueItem.channel, queueItem.key)
-          queuePendingMessage(pendingDir, {
-            from: agentName,
-            friendId,
-            channel: queueItem.channel,
-            key: queueItem.key,
-            content,
-            timestamp: Date.now(),
-          })
-          return { status: "queued", detail: `for originating ${queueItem.channel} session` }
+          const target = { friendId, channel: queueItem.channel, key: queueItem.key }
+          const detail = `for originating ${queueItem.channel} session`
+          return queueItem.channel === "telegram"
+            ? deliverTelegramOrQueue(target, detail)
+            : queueToSession(target, detail)
         }
 
         // Priority 2: Try proactive delivery first, then queue to freshest session
@@ -236,17 +257,10 @@ export const surfaceToolDefinition: ToolDefinition = {
         // Priority 2: Queue to freshest non-private-runtime session
         const freshest = allFriendSessions[0]
         if (freshest) {
-          const { queuePendingMessage, getPendingDir } = await import("../mind/pending")
-          const pendingDir = getPendingDir(agentName, freshest.friendId, freshest.channel, freshest.key)
-          queuePendingMessage(pendingDir, {
-            from: agentName,
-            friendId: freshest.friendId,
-            channel: freshest.channel,
-            key: freshest.key,
-            content,
-            timestamp: Date.now(),
-          })
-          return { status: "queued", detail: `for next interaction via ${freshest.channel}` }
+          const detail = `for next interaction via ${freshest.channel}`
+          return freshest.channel === "telegram"
+            ? deliverTelegramOrQueue(freshest, detail)
+            : queueToSession(freshest, detail)
         }
 
         // Priority 3: Deferred — no active session found

@@ -502,7 +502,12 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
   }
 
   const persistedEvents = persistPromise ? await persistPromise : []
-  await deliverPending(terminalDeliveryKind, { throwOnError: false })
+  const finalDeliveryKind = terminalDeliveryKind as OutwardSenseDeliveryKind
+  if (finalDeliveryKind === "settle" && Array.isArray(turnResult.messages)) {
+    const settledText = extractOutwardSenseDeliveryText(turnResult.messages)
+    if (settledText) pendingResponseText = settledText
+  }
+  await deliverPending(finalDeliveryKind, { throwOnError: false })
 
   const ponderDeferred = false
 

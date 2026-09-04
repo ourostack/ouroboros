@@ -32,6 +32,7 @@ import { loadSanctuarySabApiKey } from "./sanctuary-runtime"
 import { createSanctuarySabClient } from "./sanctuary-sab"
 import { presentSanctuaryDownloadCreditReply } from "./sanctuary-download-credit-presentation"
 import { getSenseSessionPath, runSenseTurn, type RunSenseTurnOptions, type RunSenseTurnResult } from "./shared-turn"
+import { canonicalizeTelegramSessionKey } from "../heart/config"
 import {
   createTelegramBotApi,
   createTelegramLongPoll,
@@ -1107,18 +1108,19 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   }
   const deliverAwaitFollowUp = async (request: CrossChatDeliveryRequest): Promise<CrossChatDirectDeliveryResult> => {
     if (!request.requestId) return { status: "blocked", detail: "Telegram follow-up is missing its request binding" }
+    const sessionKey = canonicalizeTelegramSessionKey(request.key)
     try {
-      const obligation = findPendingObligationForRequest(agentRoot, { requestId: request.requestId, owedTo: { friendId: request.friendId, channel: "telegram", key: request.key } })
+      const obligation = findPendingObligationForRequest(agentRoot, { requestId: request.requestId, owedTo: { friendId: request.friendId, channel: "telegram", key: sessionKey } })
       if (obligation && !obligation.returnReadyAt) markObligationReturnReady(agentRoot, obligation.id, request.deliveryId ?? `telegram-return:${request.requestId}`)
       const expiry = request.deliveryId?.endsWith(":expired") === true
       const artifact = await executeAuthorizedEffect({
         idempotencyKey: `await-${expiry ? "expiry-" : ""}follow-up:${request.requestId}:${createHash("sha256").update(request.deliveryId ?? request.content).digest("hex")}`,
-        target: { kind: "approved_relationship", friendId: request.friendId, sessionKey: request.key, requestId: request.requestId },
+        target: { kind: "approved_relationship", friendId: request.friendId, sessionKey, requestId: request.requestId },
         authorClass: "butler",
         effect: { kind: "text", text: request.content },
         ...(obligation ? { obligationReturnId: obligation.id } : {}),
       })
-      await recordAcceptedEffects(getSenseSessionPath(options.agentName, request.friendId, "telegram", request.key, agentRoot), [artifact])
+      await recordAcceptedEffects(getSenseSessionPath(options.agentName, request.friendId, "telegram", sessionKey, agentRoot), [artifact])
       return { status: "delivered_now", detail: "sent to the exact request-bound Telegram chat" }
     } catch (error) {
       return { status: "blocked", detail: error instanceof Error ? error.message : String(error) }

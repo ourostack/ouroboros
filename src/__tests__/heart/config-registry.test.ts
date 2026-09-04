@@ -303,3 +303,16 @@ describe("config-registry", () => {
     })
   })
 })
+
+describe("canonicalizeTelegramSessionKey", () => {
+  it("recovers canonical Telegram keys from sanitized session filenames", async () => {
+    emitTestEvent("canonicalize Telegram session keys")
+    const { canonicalizeTelegramSessionKey } = await import("../../heart/config")
+
+    expect(canonicalizeTelegramSessionKey("telegram:777:42")).toBe("telegram:777:42")
+    expect(canonicalizeTelegramSessionKey("telegram_777_42")).toBe("telegram:777:42")
+    expect(canonicalizeTelegramSessionKey("telegram_tg_XI30M0giLz_vjeKEmb5PFdDQ10efzHuTohrXz9TzzHI")).toBe("telegram:tg_XI30M0giLz_vjeKEmb5PFdDQ10efzHuTohrXz9TzzHI")
+    expect(canonicalizeTelegramSessionKey("telegram_not_numeric")).toBe("telegram_not_numeric")
+    expect(canonicalizeTelegramSessionKey("chat_any")).toBe("chat_any")
+  })
+})

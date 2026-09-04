@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
-import { resolveSessionPath } from "../heart/config";
+import { createHash } from "crypto";
+import { canonicalizeTelegramSessionKey, resolveSessionPath } from "../heart/config";
 import { getAgentRoot, getAgentName, loadAgentConfig } from "../heart/identity";
 import { capStructuredRecordString } from "../heart/session-events";
 import { emitNervesEvent } from "../nerves/runtime";
@@ -1080,6 +1081,17 @@ export const sessionToolDefinitions: ToolDefinition[] = [
               status: "unavailable",
               detail: "live delivery unavailable right now; queued for the next active turn",
             } as const
+          },
+          telegram: async (request) => {
+            const key = canonicalizeTelegramSessionKey(request.key)
+            const hash = createHash("sha256").update(`${request.friendId}\0${key}\0${request.content}`).digest("hex")
+            const { sendTelegramAwaitFollowUp } = await import("../senses/telegram")
+            return sendTelegramAwaitFollowUp(agentName, {
+              ...request,
+              key,
+              requestId: request.requestId ?? `send-message:${hash}`,
+              deliveryId: request.deliveryId ?? `send-message:${hash}`,
+            })
           },
           voice: async (request) => deliverVoiceChannelMessage(request, agentName, voiceInitialAudio),
         },
