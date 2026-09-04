@@ -355,6 +355,23 @@ describe("frontend session service", () => {
     })).toThrow("journal is unavailable")
     fs.rmSync(root, { recursive: true, force: true })
   })
+
+  it("closes its owned authority runtime", async () => {
+    const authority = {
+      approvalCoordinatorFactory: vi.fn(() => vi.fn()),
+      resumeApproval: vi.fn(),
+      resolvePermission: vi.fn(),
+      cancelTurn: vi.fn(),
+      close: vi.fn(),
+    }
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const service = new FrontendSessionService({ runner: async () => settledResult(), authority: authority as never })
+
+    service.close()
+    service.close()
+
+    expect(authority.close).toHaveBeenCalledOnce()
+  })
 })
 
 function refFor(value: ReturnType<typeof request>) {

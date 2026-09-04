@@ -62,6 +62,7 @@ import { withTurnExecutionLease } from "../turn-execution-lease"
 import { FrontendSessionService } from "../frontend-session-service"
 import { frontendSocketPathForDaemon, startFrontendSocketServer, type FrontendSocketServer } from "../frontend-socket"
 import { FrontendJournalStore } from "../frontend-journal"
+import { createFrontendApprovalRuntime, settleFrontendApproval } from "../frontend-approval-runtime"
 
 const PIDFILE_PATH = path.join(os.homedir(), ".ouro-cli", "daemon.pids")
 
@@ -914,8 +915,13 @@ export class OuroDaemon {
     this.mode = options.mode ?? "production"
     this.mailboxServerFactory = options.mailboxServerFactory ?? this.createDefaultMailboxServer.bind(this)
     this.frontendSocketPath = options.frontendSocketPath ?? frontendSocketPathForDaemon(this.socketPath)
+    const frontendAgentRoot = (agent: string) => path.join(this.bundlesRoot, `${agent}.ouro`)
     this.frontendSessionService = options.frontendSessionService ?? new FrontendSessionService({
-      journal: new FrontendJournalStore(),
+      journal: new FrontendJournalStore({ agentRoot: frontendAgentRoot }),
+      authority: createFrontendApprovalRuntime({
+        agentRoot: frontendAgentRoot,
+        settleApproval: settleFrontendApproval,
+      }),
     })
     this.frontendSocketServerFactory = options.frontendSocketServerFactory ?? startFrontendSocketServer
     this.privateRuntimePolicyDeps = options.privateRuntimePolicyDeps ?? {}
@@ -1438,6 +1444,7 @@ export class OuroDaemon {
       await this.frontendSocketServer.stop()
       this.frontendSocketServer = null
     }
+    this.frontendSessionService.close?.()
     stopUpdateChecker()
     shutdownSharedMcpManager()
     this.scheduler.stop?.()

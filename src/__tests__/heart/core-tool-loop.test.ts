@@ -1839,11 +1839,12 @@ describe("runAgent tool loop guard", () => {
         suspendedSessionRevision: "b".repeat(64),
       })
       const messages: any[] = [{ role: "user", content: "restart calibre-web" }]
+      const toolContext = { signin: async () => undefined }
       const { runAgent } = await import("../../heart/core")
 
       const result = await runAgent(messages, makeCallbacks(), "cli", undefined, {
         execTool,
-        toolContext: { signin: async () => undefined },
+        toolContext,
         approvalCoordinator: { propose },
       } as any)
 
@@ -1860,6 +1861,7 @@ describe("runAgent tool loop guard", () => {
         }),
         arguments: { command: "docker restart calibre-web" },
         preCallMessages: [{ role: "user", content: "restart calibre-web" }],
+        liveToolContext: expect.objectContaining(toolContext),
       }))
     })
 

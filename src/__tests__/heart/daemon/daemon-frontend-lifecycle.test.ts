@@ -99,11 +99,12 @@ describe("daemon frontend socket lifecycle", () => {
     const socketPath = tmpSocketPath("daemon-frontend-cancel")
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-frontend-"))
     const cancelAllTurns = vi.fn(() => 2)
+    const closeFrontend = vi.fn()
     const stop = vi.fn(async () => undefined)
     const daemon = new OuroDaemon({
       socketPath,
       bundlesRoot,
-      frontendSessionService: { cancelAllTurns } as any,
+      frontendSessionService: { cancelAllTurns, close: closeFrontend } as any,
       frontendSocketServerFactory: vi.fn(async () => frontendHandle(stop)),
       ...daemonDeps(),
     } as any)
@@ -112,7 +113,9 @@ describe("daemon frontend socket lifecycle", () => {
     await daemon.stop()
     expect(cancelAllTurns).toHaveBeenCalledOnce()
     expect(stop).toHaveBeenCalledOnce()
+    expect(closeFrontend).toHaveBeenCalledOnce()
     expect(cancelAllTurns.mock.invocationCallOrder[0]).toBeLessThan(stop.mock.invocationCallOrder[0])
+    expect(stop.mock.invocationCallOrder[0]).toBeLessThan(closeFrontend.mock.invocationCallOrder[0])
     fs.rmSync(bundlesRoot, { recursive: true, force: true })
   })
 })

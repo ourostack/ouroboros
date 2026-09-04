@@ -11,7 +11,7 @@ import * as fs from "fs"
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions"
 import type { ApprovalSuspensionResult, ChannelCallbacks, RunAgentOutcome } from "../heart/core"
 import { runAgent } from "../heart/core"
-import { getAgentRoot } from "../heart/identity"
+import { getAgentRoot, setAgentName } from "../heart/identity"
 import { sanitizeKey } from "../heart/config"
 import { stampIngressRelations, stampIngressTime, type SessionEvent, type SessionIngressRelations } from "../heart/session-events"
 import { loadSession } from "../mind/context"
@@ -305,7 +305,10 @@ export function getSenseSessionPath(agentName: string, friendId: string, channel
  * this function handles all pipeline wiring.
  */
 export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSenseTurnResult> {
-  return withTurnExecutionLease(() => runSenseTurnExclusive(options))
+  return withTurnExecutionLease(() => {
+    setAgentName(options.agentName)
+    return runSenseTurnExclusive(options)
+  })
 }
 
 async function runSenseTurnExclusive(options: RunSenseTurnOptions): Promise<RunSenseTurnResult> {

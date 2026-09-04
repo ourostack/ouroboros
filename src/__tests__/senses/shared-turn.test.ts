@@ -87,6 +87,7 @@ vi.mock("../../mind/pending", async () => {
 const mockGetAgentName = vi.fn().mockReturnValue("test-agent")
 const mockGetAgentRoot = vi.fn().mockReturnValue("/tmp/test-agent")
 const mockLoadAgentConfig = vi.fn().mockReturnValue({ provider: "anthropic" })
+const mockSetAgentName = vi.fn()
 
 vi.mock("../../heart/identity", async () => {
   const actual = await vi.importActual<typeof import("../../heart/identity")>("../../heart/identity")
@@ -95,6 +96,7 @@ vi.mock("../../heart/identity", async () => {
     getAgentName: (...args: any[]) => mockGetAgentName(...args),
     getAgentRoot: (...args: any[]) => mockGetAgentRoot(...args),
     loadAgentConfig: (...args: any[]) => mockLoadAgentConfig(...args),
+    setAgentName: (...args: any[]) => mockSetAgentName(...args),
   }
 })
 
@@ -334,6 +336,7 @@ describe("runSenseTurn", () => {
       order.push("lease:released")
       return result
     })
+
     mockLoadSession.mockImplementation(() => { order.push("session:load"); return null })
     mockHandleInboundTurn.mockImplementation(async (input: any) => {
       order.push("provider:start")
@@ -366,6 +369,21 @@ describe("runSenseTurn", () => {
       "outward:delivered",
       "lease:released",
     ])
+  })
+
+  it("sets the requested agent identity inside the whole-turn execution lease", async () => {
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+
+    await runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "hello",
+    })
+
+    expect(mockSetAgentName).toHaveBeenCalledWith("test-agent")
+    expect(mockSetAgentName.mock.invocationCallOrder[0]).toBeLessThan(mockGetSharedMcpManager.mock.invocationCallOrder[0])
   })
 
   it("serializes MCP setup across concurrent shared turns", async () => {

@@ -496,6 +496,8 @@ export interface ApprovalProposalRequest {
   policyDigest: string
   policyId: string
   actionClass: string
+  /** Exact in-memory execution context used to classify this proposal. Never persisted. */
+  liveToolContext?: ToolContext
 }
 
 export interface ApprovalCoordinator {
@@ -2469,6 +2471,7 @@ export async function runAgent(
             policyDigest,
             policyId: protectedCall.policy.policyId,
             actionClass: protectedCall.policy.actionClass,
+            ...(augmentedToolContext ? { liveToolContext: augmentedToolContext } : {}),
           })
           suspension = {
             approvalId: committed.approvalId,

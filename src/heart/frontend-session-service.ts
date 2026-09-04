@@ -63,6 +63,7 @@ export interface FrontendAuthorityRuntime {
   }): Promise<RunSenseTurnResult>
   resolvePermission(requestId: string, optionId: string): boolean
   cancelTurn(turnId: string): void
+  close(): void
 }
 
 export interface FrontendServiceEvent {
@@ -96,6 +97,7 @@ export class FrontendSessionService {
   private readonly runner: FrontendTurnRunner
   private readonly journal: FrontendJournalStore | null
   private readonly authority: FrontendAuthorityRuntime | null
+  private closed = false
 
   constructor(options: {
     runner?: FrontendTurnRunner
@@ -136,6 +138,12 @@ export class FrontendSessionService {
 
   resolvePermission(requestId: string, optionId: string): boolean {
     return this.authority?.resolvePermission(required(requestId, "requestId"), required(optionId, "optionId")) ?? false
+  }
+
+  close(): void {
+    if (this.closed) return
+    this.closed = true
+    this.authority?.close()
   }
 
   loadSession(

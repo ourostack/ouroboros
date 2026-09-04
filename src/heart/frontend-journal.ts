@@ -15,6 +15,8 @@ export type FrontendJournalEventType =
   | "tool_started"
   | "tool_completed"
   | "structured_output"
+  | "permission_requested"
+  | "permission_resolved"
   | "error"
   | "turn_completed"
   | "turn_failed"
@@ -27,6 +29,8 @@ const EVENT_TYPES = new Set<FrontendJournalEventType>([
   "tool_started",
   "tool_completed",
   "structured_output",
+  "permission_requested",
+  "permission_resolved",
   "error",
   "turn_completed",
   "turn_failed",
