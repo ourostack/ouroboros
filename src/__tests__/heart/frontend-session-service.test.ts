@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from "vitest"
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
 
 import type { RunSenseTurnResult } from "../../senses/shared-turn"
 
@@ -132,4 +135,63 @@ describe("frontend session service", () => {
     await Promise.all(turns)
     expect(service.cancelAllTurns()).toBe(0)
   })
+
+  it("writes turn-ahead, stable callback, and terminal events to one journal", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "frontend-service-journal-"))
+    const { FrontendJournalStore } = await import("../../heart/frontend-journal")
+    const journal = new FrontendJournalStore({ agentRoot: (agent) => path.join(root, `${agent}.ouro`) })
+    const observed: any[] = []
+    const runner = vi.fn(async (input: any) => {
+      input.frontendEventSink.onEvent({ type: "text_delta", data: { text: "live" } })
+      input.frontendEventSink.onEvent({ type: "assistant_delivery", data: { kind: "speak", text: "first" } })
+      input.frontendEventSink.onEvent({ type: "assistant_delivery", data: { kind: "settle", text: "second" } })
+      input.frontendEventSink.onEvent({ type: "tool_started", data: { name: "read_file", args: {} } })
+      input.frontendEventSink.onEvent({ type: "tool_completed", data: { name: "read_file", summary: "ok", success: true } })
+      return settledResult("first\nsecond")
+    })
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const service = new FrontendSessionService({ runner, journal })
+    const unsubscribe = service.subscribe((event) => observed.push(event))
+
+    await service.runTurn(request())
+    unsubscribe()
+
+    expect(journal.replay(refFor(request())).events.map((event) => event.type)).toEqual([
+      "user_message",
+      "turn_started",
+      "assistant_delivery",
+      "assistant_delivery",
+      "tool_started",
+      "tool_completed",
+      "turn_completed",
+    ])
+    expect(observed.some((event) => event.type === "text_delta" && event.journalSequence === null)).toBe(true)
+    expect(observed.filter((event) => event.type === "assistant_delivery").map((event) => event.journalSequence)).toEqual([3, 4])
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+
+  it("journals thrown and aborted terminal outcomes", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "frontend-service-outcomes-"))
+    const { FrontendJournalStore } = await import("../../heart/frontend-journal")
+    const journal = new FrontendJournalStore({ agentRoot: (agent) => path.join(root, `${agent}.ouro`) })
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const failed = new FrontendSessionService({
+      journal,
+      runner: async () => { throw new Error("provider down") },
+    })
+    await expect(failed.runTurn(request("failed"))).rejects.toThrow("provider down")
+    const aborted = new FrontendSessionService({
+      journal,
+      runner: async () => ({ ...settledResult(""), turnOutcome: "aborted" }),
+    })
+    await aborted.runTurn({ ...request("aborted"), sessionKey: "session-2" })
+
+    expect(journal.replay(refFor(request())).events.at(-1)?.type).toBe("turn_failed")
+    expect(journal.replay(refFor({ ...request(), sessionKey: "session-2" })).events.at(-1)?.type).toBe("turn_cancelled")
+    fs.rmSync(root, { recursive: true, force: true })
+  })
 })
+
+function refFor(value: ReturnType<typeof request>) {
+  return { agent: value.agent, friendId: value.friendId, sessionId: value.sessionKey }
+}

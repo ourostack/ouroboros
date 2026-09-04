@@ -457,6 +457,54 @@ describe("runSenseTurn", () => {
     expect(mockDeferPostTurnPersist).toHaveBeenCalled()
   })
 
+  it("emits normalized live frontend events and every outward delivery", async () => {
+    const events: any[] = []
+    mockHandleInboundTurn.mockImplementationOnce(async (input: any) => {
+      input.callbacks.onModelStart()
+      input.callbacks.onModelStreamStart()
+      input.callbacks.onTextChunk("first")
+      input.callbacks.onReasoningChunk("thinking")
+      input.callbacks.onToolStart("read_file", { path: "/tmp/a" })
+      input.callbacks.onToolEnd("read_file", "ok", true)
+      input.callbacks.onError(new Error("transient"), "transient")
+      await input.callbacks.flushNow()
+      input.callbacks.onClearText()
+      input.callbacks.onTextChunk("second")
+      await input.postTurn([], "/tmp/session.json")
+      return {
+        resolvedContext: makeResolvedContext(),
+        gateResult: { allowed: true },
+        turnOutcome: "settled",
+        sessionPath: "/tmp/session.json",
+        messages: [],
+      }
+    })
+
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    await runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "hello",
+      frontendEventSink: { onEvent: (event) => events.push(event) },
+    })
+
+    expect(events).toEqual([
+      { type: "model_started", data: {} },
+      { type: "model_stream_started", data: {} },
+      { type: "text_delta", data: { text: "first" } },
+      { type: "reasoning_delta", data: { text: "thinking" } },
+      { type: "tool_started", data: { name: "read_file", args: { path: "/tmp/a" } } },
+      { type: "tool_completed", data: { name: "read_file", summary: "ok", success: true } },
+      { type: "error", data: { message: "transient", severity: "transient" } },
+      { type: "assistant_delivery", data: { kind: "speak", text: "first" } },
+      { type: "text_cleared", data: {} },
+      { type: "text_delta", data: { text: "second" } },
+      { type: "assistant_delivery", data: { kind: "text", text: "second" } },
+    ])
+  })
+
   it("returns an aborted outcome when the pipeline has no persistence work", async () => {
     mockHandleInboundTurn.mockResolvedValueOnce({
       resolvedContext: makeResolvedContext(),
