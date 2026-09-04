@@ -504,14 +504,13 @@ describe("continuity tools", () => {
       },
     })
 
-    it("advertises a batch schema that validates through the production argument boundary", () => {
-      const member = batchMember(0)
-      const tool = findTool("external_event_disposition")
+    it("advertises a schema that accepts both single and batch dispositions", () => {
+      const schema = findTool("external_event_disposition").tool.function.parameters!
+      const single = validateAdvertisedToolArguments(JSON.stringify(batchDisposition(batchMember(0))), schema)
+      const batch = validateAdvertisedToolArguments(JSON.stringify({ batch: [batchDisposition(batchMember(0))] }), schema)
 
-      expect(validateAdvertisedToolArguments(
-        JSON.stringify({ batch: [batchDisposition(member)] }),
-        tool.tool.function.parameters,
-      )).toMatchObject({ ok: true })
+      expect(single).toMatchObject({ ok: true })
+      expect(batch).toMatchObject({ ok: true })
     })
 
     it("dispositions all 32 exact coalesced leases through one bounded invocation", async () => {
