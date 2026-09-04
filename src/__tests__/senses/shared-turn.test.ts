@@ -389,6 +389,7 @@ describe("runSenseTurn", () => {
     mockHandleInboundTurn.mockImplementationOnce(async (input: any) => {
       expect(input.signal).toBe(controller.signal)
       input.callbacks.onTextChunk("partial")
+      await input.postTurn([], "/tmp/session.json")
       return {
         resolvedContext: makeResolvedContext(),
         gateResult: { allowed: true },
@@ -415,6 +416,28 @@ describe("runSenseTurn", () => {
     expect(result.deliveries).toEqual([])
     expect(onDelivery).not.toHaveBeenCalled()
     expect(emptyResponseFallback).not.toHaveBeenCalled()
+    expect(mockDeferPostTurnPersist).toHaveBeenCalled()
+  })
+
+  it("returns an aborted outcome when the pipeline has no persistence work", async () => {
+    mockHandleInboundTurn.mockResolvedValueOnce({
+      resolvedContext: makeResolvedContext(),
+      gateResult: { allowed: true },
+      turnOutcome: "aborted",
+      sessionPath: "/tmp/session.json",
+      messages: [],
+    })
+
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    const result = await runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "hello",
+    })
+
+    expect(result).toMatchObject({ response: "", turnOutcome: "aborted" })
   })
 
   it("claims an exact precommitted ingress event without synthesizing a second user message", async () => {

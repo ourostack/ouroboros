@@ -9,7 +9,7 @@ import * as os from "os"
 import * as path from "path"
 import * as fs from "fs"
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions"
-import type { ChannelCallbacks } from "../heart/core"
+import type { ChannelCallbacks, RunAgentOutcome } from "../heart/core"
 import { runAgent } from "../heart/core"
 import { getAgentRoot } from "../heart/identity"
 import { sanitizeKey } from "../heart/config"
@@ -205,6 +205,8 @@ export interface RunSenseTurnOptions {
   _withSessionTurnLease?: <T>(sessionPath: string, work: (lease: SessionTurnLease) => Promise<T>) => Promise<T>
   /** Mutable per-turn metrics survive a rejected turn for durable transport receipts. */
   turnMetricsObserver?: { providerInvocationCount: number; toolInvocationCount: number }
+  /** Optional caller cancellation forwarded through the full agent turn. */
+  signal?: AbortSignal
 }
 
 export type OutwardSenseDeliveryKind = "speak" | "settle" | "text"
@@ -241,6 +243,8 @@ export interface RunSenseTurnResult {
   causalSessionEventIds?: Array<string | null>
   /** Exact canonical assistant event recovered by the transcript-readback fallback. */
   responseCausalSessionEventId?: string
+  /** Structured outcome returned by the shared pipeline. */
+  turnOutcome?: RunAgentOutcome | "command"
 }
 
 function newOutwardCoordinates(
@@ -458,6 +462,7 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
     /* v8 ignore stop */
     pendingDir,
     friendStore,
+    signal: options.signal,
     provider: resolverParams.provider,
     externalId: resolverParams.externalId,
     tenantId: resolverParams.tenantId,
@@ -498,6 +503,22 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
       providerInvocationCount,
       toolInvocationCount,
       sessionPath: sessPath,
+      turnOutcome: turnResult.turnOutcome,
+    }
+  }
+
+  if (turnResult.turnOutcome === "aborted") {
+    pendingResponseText = ""
+    if (persistPromise) await persistPromise
+    return {
+      response: "",
+      ponderDeferred: false,
+      deliveries,
+      deliveryFailures,
+      providerInvocationCount,
+      toolInvocationCount,
+      sessionPath: sessPath,
+      turnOutcome: "aborted",
     }
   }
 
@@ -572,6 +593,7 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
     providerInvocationCount,
     toolInvocationCount,
     sessionPath: sessPath,
+    turnOutcome: turnResult.turnOutcome,
     ...(deliveries.length > 0 ? { causalSessionEventIds: causalSessionEventIds(persistedEvents, existingEventIds, deliveryAttempts) } : {}),
     ...(responseCausalSessionEventId ? { responseCausalSessionEventId } : {}),
   }
