@@ -56,6 +56,7 @@ export interface FrontendJournalReplay {
   lastSequence: number
   hasMore: boolean
   degraded: boolean
+  incompleteTurnIds: string[]
 }
 
 export class FrontendJournalCorruptError extends Error {
@@ -158,7 +159,7 @@ export class FrontendJournalStore {
 
     const journalPath = this.pathFor(ref)
     if (!fs.existsSync(journalPath)) {
-      return { events: [], lastSequence: 0, hasMore: false, degraded: false }
+      return { events: [], lastSequence: 0, hasMore: false, degraded: false, incompleteTurnIds: [] }
     }
 
     const valid: FrontendJournalEvent[] = []
@@ -173,11 +174,24 @@ export class FrontendJournalStore {
       }
     }
     const matching = valid.filter((event) => event.sequence > afterSequence)
+    const incompleteTurnIds = new Set<string>()
+    for (const event of valid) {
+      if (event.type === "turn_started") {
+        incompleteTurnIds.add(event.turnId)
+      } else if (
+        event.type === "turn_completed"
+        || event.type === "turn_failed"
+        || event.type === "turn_cancelled"
+      ) {
+        incompleteTurnIds.delete(event.turnId)
+      }
+    }
     return {
       events: matching.slice(0, limit),
       lastSequence: valid.at(-1)?.sequence ?? 0,
       hasMore: matching.length > limit,
       degraded,
+      incompleteTurnIds: [...incompleteTurnIds],
     }
   }
 
