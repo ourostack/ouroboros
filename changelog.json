@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.788",
       "changes": [
-        "Allow verified operator CLI and daemon await private wakes by default."
+        "Allow verified operator CLI and daemon await private wakes by default, including queued await-expiry alerts."
       ]
     },
     {

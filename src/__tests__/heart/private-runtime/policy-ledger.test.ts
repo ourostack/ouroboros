@@ -297,7 +297,7 @@ describe("private-runtime policy and ledger", () => {
   it.each([
     ["await-poke", [{ kind: "await", id: "hey_export" }, { kind: "daemon-command", id: "await.poke" }]],
     ["await-scheduler", [{ kind: "await", id: "hey_export" }, { kind: "scheduler", id: "await-scheduler" }]],
-    ["await-expiry", [{ kind: "await", id: "hey_export" }, { kind: "scheduler", id: "await-expiry" }]],
+    ["await-expiry", [{ kind: "await", id: "hey_export" }, { kind: "await-alert", id: "expired" }]],
   ])("allows verified %s private wakes with the default policy", async (triggerSource, originRefs) => {
     const privateRuntime = await loadPrivateRuntime()
     const deps = policyDeps()

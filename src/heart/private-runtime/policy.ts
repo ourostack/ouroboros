@@ -171,7 +171,7 @@ async function evaluatePolicy(
     && (
       hasOriginRef(originRefs, "daemon-command", "await.poke")
       || hasOriginRef(originRefs, "scheduler", "await-scheduler")
-      || hasOriginRef(originRefs, "scheduler", "await-expiry")
+      || hasOriginRef(originRefs, "await-alert", "expired")
     )
   ) {
     return {
