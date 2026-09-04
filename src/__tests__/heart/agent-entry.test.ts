@@ -248,6 +248,7 @@ describe("agent entrypoint", () => {
       resolveBootstrap = resolve
     }))
     vi.doMock("../../nerves/cli-logging", () => ({ configureCliRuntimeLogger }))
+    vi.doMock("../../senses/sanctuary-runtime", () => ({ ensureSanctuarySourceRuntimeReady: vi.fn(async () => undefined) }))
     vi.doMock("../../heart/runtime-credentials", () => runtimeCredentialMock({
       waitForRuntimeCredentialBootstrap,
       readRuntimeCredentialConfig: vi.fn(() => ({ ok: true, itemPath: "runtime/config", config: {}, revision: "rev", updatedAt: "2026-05-08T00:00:00.000Z" })),
@@ -284,8 +285,12 @@ describe("agent entrypoint", () => {
         })
       })
 
-      messageHandler?.({ type: "message" })
       resolveWorkerStart(controller)
+      await vi.waitFor(() => {
+        expect((globalThis as unknown as Record<symbol, { workerMessageHandler: unknown }>)[Symbol.for("ouro.agentEntry.ipcState")].workerMessageHandler).toEqual(expect.any(Function))
+      })
+
+      messageHandler?.({ type: "message" })
       await vi.waitFor(() => {
         expect(controller.handleMessage).toHaveBeenCalledWith({ type: "message" })
       })
@@ -454,6 +459,117 @@ describe("agent entrypoint", () => {
     } finally {
       argvSpy.mockRestore()
       processOnSpy.mockRestore()
+    }
+  })
+
+  it("waits for machine runtime credentials before flushing buffered private-runtime work", async () => {
+    vi.resetModules()
+
+    ;(globalThis as unknown as Record<symbol, unknown>)[Symbol.for("ouro.agentEntry.ipcState")] = {
+      bufferedRuntimeCredentialMessages: [],
+      bufferedMessages: [],
+      installed: false,
+      workerMessageHandler: null,
+    }
+    let messageHandler: ((message: unknown) => void) | undefined
+    const processOnSpy = vi.spyOn(process, "on").mockImplementation(((event: string, handler: (...args: unknown[]) => void) => {
+      if (event === "message") messageHandler = handler
+      return process
+    }) as never)
+    const controller = createWorkerControllerMock()
+    const startPrivateRuntimeWorker = vi.fn(async () => controller)
+    mockWorkerModules(startPrivateRuntimeWorker)
+    const configureCliRuntimeLogger = vi.fn()
+    let resolveMachineRefresh!: () => void
+    const machineRefresh = new Promise((resolve) => {
+      resolveMachineRefresh = () => resolve({
+        ok: true,
+        itemPath: "runtime/machine",
+        config: { jellyfin: { userId: "b".repeat(32), accessToken: "a".repeat(32), folderIds: "library-a,library-b" } },
+        revision: "rev",
+        updatedAt: "2026-05-08T00:00:00.000Z",
+      })
+    })
+    const refreshMachineRuntimeCredentialConfig = vi.fn(() => machineRefresh)
+    vi.doMock("../../heart/machine-identity", () => ({
+      loadOrCreateMachineIdentity: vi.fn(() => ({ machineId: "machine-test" })),
+    }))
+    vi.doMock("../../nerves/cli-logging", () => ({ configureCliRuntimeLogger }))
+    vi.doMock("../../senses/sanctuary-runtime", () => ({ ensureSanctuarySourceRuntimeReady: vi.fn(async () => undefined) }))
+    vi.doMock("../../heart/runtime-credentials", () => runtimeCredentialMock({
+      readRuntimeCredentialConfig: vi.fn(() => ({ ok: true, itemPath: "runtime/config", config: {}, revision: "rev", updatedAt: "2026-05-08T00:00:00.000Z" })),
+      readMachineRuntimeCredentialConfig: vi.fn(() => ({ ok: false, reason: "missing", itemPath: "runtime/machine", error: "missing" })),
+      refreshMachineRuntimeCredentialConfig,
+    }))
+
+    const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue([
+      "node",
+      "agent-entry.js",
+      "--agent",
+      "slugger",
+    ])
+
+    try {
+      await import("../../heart/agent-entry")
+
+      await vi.waitFor(() => {
+        expect(refreshMachineRuntimeCredentialConfig).toHaveBeenCalledWith("slugger", "machine-test", { preserveCachedOnFailure: true })
+      })
+      messageHandler?.({ type: "poke", taskId: "testflight-feedback" })
+      expect(startPrivateRuntimeWorker).not.toHaveBeenCalled()
+
+      resolveMachineRefresh()
+
+      await vi.waitFor(() => {
+        expect(startPrivateRuntimeWorker).toHaveBeenCalledWith({
+          attachProcessListeners: false,
+          bufferedMessages: [],
+        })
+        expect(controller.handleMessage).toHaveBeenCalledWith({ type: "poke", taskId: "testflight-feedback" })
+      })
+    } finally {
+      argvSpy.mockRestore()
+      processOnSpy.mockRestore()
+    }
+  })
+
+  it("continues startup when machine runtime credential refresh is unavailable", async () => {
+    vi.resetModules()
+
+    const controller = createWorkerControllerMock()
+    const startPrivateRuntimeWorker = vi.fn(async () => controller)
+    mockWorkerModules(startPrivateRuntimeWorker)
+    const configureCliRuntimeLogger = vi.fn()
+    const refreshMachineRuntimeCredentialConfig = vi.fn(async () => {
+      throw new Error("vault locked")
+    })
+    vi.doMock("../../heart/machine-identity", () => ({
+      loadOrCreateMachineIdentity: vi.fn(() => ({ machineId: "machine-test" })),
+    }))
+    vi.doMock("../../nerves/cli-logging", () => ({ configureCliRuntimeLogger }))
+    vi.doMock("../../senses/sanctuary-runtime", () => ({ ensureSanctuarySourceRuntimeReady: vi.fn(async () => undefined) }))
+    vi.doMock("../../heart/runtime-credentials", () => runtimeCredentialMock({
+      readRuntimeCredentialConfig: vi.fn(() => ({ ok: true, itemPath: "runtime/config", config: {}, revision: "rev", updatedAt: "2026-05-08T00:00:00.000Z" })),
+      readMachineRuntimeCredentialConfig: vi.fn(() => ({ ok: false, reason: "missing", itemPath: "runtime/machine", error: "missing" })),
+      refreshMachineRuntimeCredentialConfig,
+    }))
+
+    const argvSpy = vi.spyOn(process, "argv", "get").mockReturnValue([
+      "node",
+      "agent-entry.js",
+      "--agent",
+      "slugger",
+    ])
+
+    try {
+      await import("../../heart/agent-entry")
+
+      await vi.waitFor(() => {
+        expect(refreshMachineRuntimeCredentialConfig).toHaveBeenCalledWith("slugger", "machine-test", { preserveCachedOnFailure: true })
+        expect(startPrivateRuntimeWorker).toHaveBeenCalledTimes(1)
+      })
+    } finally {
+      argvSpy.mockRestore()
     }
   })
 
