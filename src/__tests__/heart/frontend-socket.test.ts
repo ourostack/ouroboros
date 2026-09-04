@@ -1,0 +1,196 @@
+import { EventEmitter } from "node:events"
+import * as fs from "node:fs"
+import * as net from "node:net"
+import * as os from "node:os"
+import * as path from "node:path"
+import { afterEach, describe, expect, it, vi } from "vitest"
+
+import type { RunSenseTurnResult } from "../../senses/shared-turn"
+
+function socketPath(name: string): string {
+  return path.join(os.tmpdir(), `${name}-${Date.now()}-${Math.random().toString(16).slice(2)}.sock`)
+}
+
+function settledResult(response = "ok"): RunSenseTurnResult {
+  return {
+    response,
+    ponderDeferred: false,
+    deliveries: [],
+    deliveryFailures: [],
+    turnOutcome: "settled",
+  }
+}
+
+function connect(target: string): Promise<net.Socket> {
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection(target)
+    socket.once("connect", () => resolve(socket))
+    socket.once("error", reject)
+  })
+}
+
+function collectFrames(socket: net.Socket) {
+  const frames: any[] = []
+  let buffer = ""
+  socket.on("data", (chunk) => {
+    buffer += chunk.toString("utf8")
+    for (;;) {
+      const newline = buffer.indexOf("\n")
+      if (newline < 0) break
+      const line = buffer.slice(0, newline).trim()
+      buffer = buffer.slice(newline + 1)
+      if (line) frames.push(JSON.parse(line))
+    }
+  })
+  return frames
+}
+
+async function waitForFrame(frames: any[], predicate: (frame: any) => boolean): Promise<any> {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const found = frames.find(predicate)
+    if (found) return found
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+  throw new Error("frontend frame did not arrive")
+}
+
+describe("frontend socket", () => {
+  const cleanup: Array<() => Promise<void>> = []
+
+  afterEach(async () => {
+    while (cleanup.length > 0) await cleanup.pop()!()
+  })
+
+  it("buffers partial frames and accepts multiple newline-delimited requests", async () => {
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const { startFrontendSocketServer } = await import("../../heart/frontend-socket")
+    const target = socketPath("frontend-frames")
+    const server = await startFrontendSocketServer({
+      socketPath: target,
+      service: new FrontendSessionService({ runner: async () => settledResult() }),
+    })
+    cleanup.push(() => server.stop())
+    const socket = await connect(target)
+    const frames = collectFrames(socket)
+
+    socket.write('{"protocolVersion":1,"id":"one","method":"session.subscribe","params":{"sessionKey":"sess')
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(frames).toEqual([])
+    socket.write('-1"}}\n{"protocolVersion":1,"id":"two","method":"session.unsubscribe","params":{"sessionKey":"sess-1"}}\n')
+
+    await waitForFrame(frames, (frame) => frame.id === "two")
+    expect(frames.filter((frame) => frame.id === "one" || frame.id === "two")).toEqual([
+      { protocolVersion: 1, id: "one", ok: true, result: { subscribed: true } },
+      { protocolVersion: 1, id: "two", ok: true, result: { subscribed: false } },
+    ])
+    socket.destroy()
+  })
+
+  it("starts and cancels an exact turn while publishing its terminal event", async () => {
+    const runner = vi.fn(async (input: any) => {
+      await new Promise<void>((resolve) => input.signal.addEventListener("abort", () => resolve(), { once: true }))
+      return { ...settledResult(""), turnOutcome: "aborted" as const }
+    })
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const { startFrontendSocketServer } = await import("../../heart/frontend-socket")
+    const target = socketPath("frontend-cancel")
+    const server = await startFrontendSocketServer({
+      socketPath: target,
+      service: new FrontendSessionService({ runner }),
+    })
+    cleanup.push(() => server.stop())
+    const socket = await connect(target)
+    const frames = collectFrames(socket)
+
+    socket.write('{"protocolVersion":1,"id":"sub","method":"session.subscribe","params":{"sessionKey":"session-1"}}\n')
+    await waitForFrame(frames, (frame) => frame.id === "sub")
+    socket.write('{"protocolVersion":1,"id":"start","method":"turn.start","params":{"turnId":"turn-1","agent":"boss","friendId":"friend-1","channel":"mcp","sessionKey":"session-1","message":"hello"}}\n')
+    await waitForFrame(frames, (frame) => frame.id === "start")
+    socket.write('{"protocolVersion":1,"id":"cancel","method":"turn.cancel","params":{"turnId":"turn-1"}}\n')
+
+    expect(await waitForFrame(frames, (frame) => frame.id === "cancel")).toMatchObject({
+      ok: true,
+      result: { cancelled: true },
+    })
+    expect(await waitForFrame(frames, (frame) => frame.event === "turn.completed")).toMatchObject({
+      protocolVersion: 1,
+      event: "turn.completed",
+      sessionKey: "session-1",
+      sequence: 1,
+      turnId: "turn-1",
+      result: { outcome: "aborted" },
+    })
+    socket.destroy()
+  })
+
+  it("returns typed errors for malformed and unsupported requests", async () => {
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const { startFrontendSocketServer } = await import("../../heart/frontend-socket")
+    const target = socketPath("frontend-errors")
+    const server = await startFrontendSocketServer({
+      socketPath: target,
+      service: new FrontendSessionService({ runner: async () => settledResult() }),
+    })
+    cleanup.push(() => server.stop())
+    const socket = await connect(target)
+    const frames = collectFrames(socket)
+
+    socket.write('not-json\n')
+    socket.write('{"protocolVersion":2,"id":"version","method":"session.subscribe","params":{"sessionKey":"session-1"}}\n')
+    socket.write('{"protocolVersion":1,"id":"unknown","method":"nope","params":{}}\n')
+    socket.write('{"protocolVersion":1,"id":"invalid","method":"turn.start","params":{"turnId":""}}\n')
+
+    await waitForFrame(frames, (frame) => frame.id === "invalid")
+    expect(frames).toEqual([
+      { protocolVersion: 1, id: null, ok: false, error: { code: "parse_error", message: "invalid JSON frame" } },
+      { protocolVersion: 1, id: "version", ok: false, error: { code: "unsupported_version", message: "protocolVersion must be 1" } },
+      { protocolVersion: 1, id: "unknown", ok: false, error: { code: "method_not_found", message: "unknown frontend method: nope" } },
+      { protocolVersion: 1, id: "invalid", ok: false, error: { code: "invalid_params", message: "turnId must be a non-empty string" } },
+    ])
+    socket.destroy()
+  })
+
+  it("replaces an overflowing event queue with replay-required and closes after drain", async () => {
+    class FakeSocket extends EventEmitter {
+      writes: string[] = []
+      ended = false
+
+      write(chunk: string): boolean {
+        this.writes.push(chunk)
+        return this.writes.length !== 1
+      }
+
+      end(): void {
+        this.ended = true
+      }
+    }
+
+    const { FrontendFrameWriter } = await import("../../heart/frontend-socket")
+    const socket = new FakeSocket()
+    const writer = new FrontendFrameWriter(socket as any, 1)
+    writer.send({ protocolVersion: 1, event: "one", sessionKey: "session-1", sequence: 1 })
+    writer.send({ protocolVersion: 1, event: "two", sessionKey: "session-1", sequence: 2 })
+    writer.send({ protocolVersion: 1, event: "three", sessionKey: "session-1", sequence: 3 })
+    socket.emit("drain")
+
+    expect(socket.writes.map((line) => JSON.parse(line))).toEqual([
+      { protocolVersion: 1, event: "one", sessionKey: "session-1", sequence: 1 },
+      { protocolVersion: 1, event: "replay_required", lastSequence: 1 },
+    ])
+    expect(socket.ended).toBe(true)
+  })
+
+  it("removes its Unix socket on stop", async () => {
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const { startFrontendSocketServer } = await import("../../heart/frontend-socket")
+    const target = socketPath("frontend-stop")
+    const server = await startFrontendSocketServer({
+      socketPath: target,
+      service: new FrontendSessionService({ runner: async () => settledResult() }),
+    })
+
+    expect(fs.existsSync(target)).toBe(true)
+    await server.stop()
+    expect(fs.existsSync(target)).toBe(false)
+  })
+})
