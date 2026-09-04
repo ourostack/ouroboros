@@ -20,20 +20,24 @@ function unsupportedSchemaFeature(value: unknown, seen = new WeakSet<object>()):
   if (typeof value !== "object") return undefined
   if (seen.has(value)) return "cyclic schemas are unsupported"
   seen.add(value)
-  if (Array.isArray(value)) {
-    for (const entry of value) {
+  try {
+    if (Array.isArray(value)) {
+      for (const entry of value) {
+        const reason = unsupportedSchemaFeature(entry, seen)
+        if (reason) return reason
+      }
+      return undefined
+    }
+    for (const [key, entry] of Object.entries(value)) {
+      if (key === "patternProperties") return "patternProperties is unsupported"
+      if (key === "type" && (entry === "null" || (Array.isArray(entry) && entry.includes("null")))) {
+        return "null schema types are unsupported"
+      }
       const reason = unsupportedSchemaFeature(entry, seen)
       if (reason) return reason
     }
-    return undefined
-  }
-  for (const [key, entry] of Object.entries(value)) {
-    if (key === "patternProperties") return "patternProperties is unsupported"
-    if (key === "type" && (entry === "null" || (Array.isArray(entry) && entry.includes("null")))) {
-      return "null schema types are unsupported"
-    }
-    const reason = unsupportedSchemaFeature(entry, seen)
-    if (reason) return reason
+  } finally {
+    seen.delete(value)
   }
   return undefined
 }

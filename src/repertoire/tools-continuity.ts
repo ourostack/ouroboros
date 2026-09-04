@@ -30,6 +30,13 @@ const externalEventDispositionProperties = {
 };
 
 const externalEventDispositionRequired = ["recordPath", "expectedGeneration", "classifiedRevision", "classification", "stewardPolicyKind", "decision", "reason", "nextWake"];
+const externalEventDispositionBatchSchema = {
+  type: "array",
+  minItems: 1,
+  maxItems: 32,
+  description: "All exact leases from one coalesced external-event turn",
+  items: { type: "object", properties: externalEventDispositionProperties, required: externalEventDispositionRequired, additionalProperties: false },
+};
 
 function prepareExternalEventDisposition(a: Record<string, unknown>, ctx?: ToolContext) {
   const agentName = getAgentName();
@@ -170,17 +177,11 @@ export const continuityToolDefinitions: ToolDefinition[] = [
           type: "object",
           properties: {
             ...externalEventDispositionProperties,
-            batch: {
-              type: "array",
-              minItems: 1,
-              maxItems: 32,
-              description: "All exact leases from one coalesced external-event turn",
-              items: { type: "object", properties: externalEventDispositionProperties, required: externalEventDispositionRequired, additionalProperties: false },
-            },
+            batch: externalEventDispositionBatchSchema,
           },
           oneOf: [
-            { required: externalEventDispositionRequired },
-            { required: ["batch"] },
+            { type: "object", properties: externalEventDispositionProperties, required: externalEventDispositionRequired },
+            { type: "object", properties: { batch: externalEventDispositionBatchSchema }, required: ["batch"] },
           ],
           additionalProperties: false,
         },

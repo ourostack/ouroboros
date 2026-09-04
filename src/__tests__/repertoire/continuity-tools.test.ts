@@ -118,6 +118,7 @@ vi.mock("../../repertoire/coding", () => ({
 }))
 
 import { baseToolDefinitions, type ToolDefinition } from "../../repertoire/tools-base"
+import { validateAdvertisedToolArguments } from "../../repertoire/tool-arguments"
 
 // ── Test helpers ─────────────────────────────────────────────────
 
@@ -501,6 +502,16 @@ describe("continuity tools", () => {
         authorizeDisposition: vi.fn(() => ({ allowed: true, reason: "approved" })),
         recordCommittedDisposition: vi.fn(),
       },
+    })
+
+    it("advertises a batch schema that validates through the production argument boundary", () => {
+      const member = batchMember(0)
+      const tool = findTool("external_event_disposition")
+
+      expect(validateAdvertisedToolArguments(
+        JSON.stringify({ batch: [batchDisposition(member)] }),
+        tool.tool.function.parameters,
+      )).toMatchObject({ ok: true })
     })
 
     it("dispositions all 32 exact coalesced leases through one bounded invocation", async () => {
