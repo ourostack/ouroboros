@@ -174,9 +174,8 @@ import("./runtime-credentials")
     if (providerTargets.length > 0 && providerPoolMissingTargets(providerPool, providerTargets)) {
       await refreshProviderCredentialPool(agentName, { preserveCachedOnFailure: true, providers: providerTargets }).catch(() => undefined)
     }
-    /* v8 ignore next 7 -- process-start best-effort machine credential refresh runs in a child entrypoint and is covered operationally by daemon startup tests @preserve */
     if (!readMachineRuntimeCredentialConfig(agentName).ok) {
-      void import("./machine-identity")
+      await import("./machine-identity")
         .then(({ loadOrCreateMachineIdentity }) => {
           const machine = loadOrCreateMachineIdentity()
           return refreshMachineRuntimeCredentialConfig(agentName, machine.machineId, { preserveCachedOnFailure: true })
