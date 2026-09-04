@@ -174,6 +174,21 @@ describe("Sanctuary media optimization read", () => {
     expect(fetch.mock.calls.some(([input]) => String(input).includes("/panel/file_size_metrics/"))).toBe(false)
   })
 
+  it("keeps library evidence available when the optional metrics panel returns an HTML shell", async () => {
+    const result = await client(route({
+      "GET http://127.0.0.1:8888/unmanic/panel/file_size_metrics/totalSizeChange/": new Response("<!doctype html><html><head></head><body></body></html>", { headers: { "content-type": "application/json" } }),
+      "GET http://127.0.0.1:8888/unmanic/panel/file_size_metrics/list/": new Response("<!doctype html><html><head></head><body></body></html>", { headers: { "content-type": "application/json" } }),
+    })).read()
+    expect(result).toMatchObject({
+      ok: true,
+      data: {
+        unmanic: { version: "0.4.0+4922a83", pending: { total: 1 }, history: { available: false, reason: "file_size_metrics panel returned invalid data" } },
+        inventory: { totalItems: 3, analyzedSources: 3 },
+        degraded: true,
+      },
+    })
+  })
+
   it("requires a live restricted Jellyfin identity and never leaks credential material in failures", async () => {
     expect(() => createSanctuaryMediaOptimizationClient({ jellyfinUserId: "bad", jellyfinAccessToken: TOKEN, jellyfinFolderIds: ["library-a", "library-b"] })).toThrow("Jellyfin user ID")
     expect(() => createSanctuaryMediaOptimizationClient({ jellyfinUserId: USER_ID, jellyfinAccessToken: "bad token", jellyfinFolderIds: ["library-a", "library-b"] })).toThrow("Jellyfin access token")
@@ -343,7 +358,6 @@ describe("Sanctuary media optimization read", () => {
       { "GET http://127.0.0.1:8888/unmanic/api/v2/settings/libraries": json({ libraries: [{ name: "x", enable_scanner: "yes", enable_inotify: true }] }) },
       { "POST http://127.0.0.1:8888/unmanic/api/v2/pending/tasks": json({ recordsTotal: -1, results: [] }) },
       { "POST http://127.0.0.1:8888/unmanic/api/v2/pending/tasks": json({ recordsTotal: 21, results: Array.from({ length: 21 }, () => ({})) }) },
-      { "GET http://127.0.0.1:8888/unmanic/panel/file_size_metrics/list/": json({ recordsTotal: 21, data: Array.from({ length: 21 }, (_, id) => ({ id })) }) },
       { "GET http://127.0.0.1:8096/Items": json({ TotalRecordCount: 1, Items: [{ Id: "", Name: "x", Type: "Movie", MediaSources: [] }] }) },
       { "GET http://127.0.0.1:8096/Items": json({ TotalRecordCount: 1, Items: [{ Id: "x".repeat(129), Name: "x", Type: "Movie", MediaSources: [] }] }) },
       { "GET http://127.0.0.1:8096/Items": json({ TotalRecordCount: 1, Items: [{ Id: "1".repeat(32), Name: "x", Type: "Audio", MediaSources: [] }] }) },
@@ -353,6 +367,9 @@ describe("Sanctuary media optimization read", () => {
     for (const overrides of invalidCases) {
       await expect(client(route(overrides)).read()).resolves.toMatchObject({ ok: false, error: { code: "invalid_response" } })
     }
+    await expect(client(route({
+      "GET http://127.0.0.1:8888/unmanic/panel/file_size_metrics/list/": json({ recordsTotal: 21, data: Array.from({ length: 21 }, (_, id) => ({ id })) }),
+    })).read()).resolves.toMatchObject({ ok: true, data: { unmanic: { history: { available: false } }, degraded: true } })
 
     const unavailable = createSanctuaryMediaOptimizationClient({ jellyfinUserId: USER_ID, jellyfinAccessToken: TOKEN, jellyfinFolderIds: ["library-a", "library-b"], fetch: vi.fn(async () => { throw new Error("secret transport detail") }) })
     await expect(unavailable.read()).resolves.toMatchObject({ ok: false, error: { code: "unavailable", message: "Media service is unavailable", degraded: true } })
@@ -399,11 +416,16 @@ describe("Sanctuary media optimization read", () => {
   it.each([
     ["HTTP response", { "GET http://127.0.0.1:8888/unmanic/api/v2/version/read": json({}, 503) }, "unavailable"],
     ["malformed Unmanic response", { "GET http://127.0.0.1:8888/unmanic/api/v2/version/read": json({ version: 4 }) }, "invalid_response"],
-    ["mismatched metric details", { "GET http://127.0.0.1:8888/unmanic/panel/file_size_metrics/conversionDetails/": json([{ type: "source", basename: "a", size: 1 }, { type: "destination", basename: "b", size: 1 }]) }, "invalid_response"],
     ["malformed Jellyfin item", { "GET http://127.0.0.1:8096/Items": json({ TotalRecordCount: 1, Items: [{ Id: "x", Name: "bad", Type: "Movie", MediaSources: "bad" }] }) }, "invalid_response"],
     ["oversized body", { "GET http://127.0.0.1:8888/unmanic/api/v2/version/read": json({ version: "x" }, 200, { "content-length": String(8 * 1024 * 1024 + 1) }) }, "invalid_response"],
   ])("returns one typed failure for %s", async (_label, overrides, code) => {
     await expect(client(route(overrides as any)).read()).resolves.toMatchObject({ ok: false, error: { code, message: expect.any(String), degraded: true } })
+  })
+
+  it("keeps catalog evidence when optional metric details are malformed", async () => {
+    await expect(client(route({
+      "GET http://127.0.0.1:8888/unmanic/panel/file_size_metrics/conversionDetails/": json([{ type: "source", basename: "a", size: 1 }, { type: "destination", basename: "b", size: 1 }]),
+    })).read()).resolves.toMatchObject({ ok: true, data: { unmanic: { history: { available: false } }, inventory: { totalItems: 3 }, degraded: true } })
   })
 
   it("bounds untrusted labels, rejects duplicate metric identities, and reports aborts as timeouts", async () => {
@@ -417,7 +439,7 @@ describe("Sanctuary media optimization read", () => {
 
     await expect(client(route({
       "GET http://127.0.0.1:8888/unmanic/panel/file_size_metrics/list/": json({ recordsTotal: 2, recordsFiltered: 2, data: [{ id: 7, basename: "a", task_success: true, finish_time: "x" }, { id: 7, basename: "b", task_success: true, finish_time: "x" }] }),
-    })).read()).resolves.toMatchObject({ ok: false, error: { code: "invalid_response" } })
+    })).read()).resolves.toMatchObject({ ok: true, data: { unmanic: { history: { available: false } }, inventory: { totalItems: 3 }, degraded: true } })
 
     const aborted = vi.fn(async () => { throw new DOMException("secret timeout detail", "AbortError") })
     const timeout = await client(aborted).read()

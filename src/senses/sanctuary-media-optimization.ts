@@ -259,56 +259,63 @@ export function createSanctuaryMediaOptimizationClient(options: ClientOptions) {
       return { data: { version: boundedLabel(versionPayload.version), libraries, pending, history: { available: false, reason: "file_size_metrics panel is not installed" } }, degraded: true }
     }
 
-    const totals = object(await unmanicGet("/unmanic/panel/file_size_metrics/totalSizeChange/", deadline))
-    const listUrl = new URL(`${UNMANIC_BASE}/unmanic/panel/file_size_metrics/list/`)
-    listUrl.searchParams.set("data", JSON.stringify({ start: 0, length: 20, order_by: "finish_time", order_direction: "desc" }))
-    const historyPayload = object(await unmanicGet(`${listUrl.pathname}${listUrl.search}`, deadline))
-    const rows = array(historyPayload.data)
-    if (rows.length > 20) throw new ReadFailure("invalid_response", "Unmanic returned too much history")
-    const ids = rows.map((entry) => integer(object(entry).id))
-    if (new Set(ids).size !== ids.length) throw new ReadFailure("invalid_response", "Unmanic returned duplicate history identities")
-    const recent = await Promise.all(Array.from({ length: Math.min(4, rows.length) }, async (_unused, worker) => {
-      const results = []
-      for (let index = worker; index < rows.length; index += 4) {
-        const row = object(rows[index])
-        const detailUrl = new URL(`${UNMANIC_BASE}/unmanic/panel/file_size_metrics/conversionDetails/`)
-        detailUrl.searchParams.set("task_id", String(ids[index]))
-        const details = array(await unmanicGet(`${detailUrl.pathname}${detailUrl.search}`, deadline)).map(object)
-        const source = details.find((detail) => detail.type === "source")
-        const destination = details.find((detail) => detail.type === "destination")
-        if (!source || !destination || details.length !== 2 || string(source.basename) !== string(destination.basename) || string(source.basename) !== string(row.basename)) throw new ReadFailure("invalid_response", "Unmanic history details did not match")
-        const sourceBytes = integer(source.size)
-        const destinationBytes = integer(destination.size)
-        const savedBytes = Math.max(0, sourceBytes - destinationBytes)
-        results.push({ index, value: {
-          untrustedName: boundedLabel(source.basename),
-          sourceBytes,
-          destinationBytes,
-          savedBytes,
-          savedPercent: sourceBytes === 0 ? 0 : round((savedBytes / sourceBytes) * 100),
-          completedAt: boundedLabel(row.finish_time),
-        } })
+    let history: Record<string, unknown>
+    try {
+      const totals = object(await unmanicGet("/unmanic/panel/file_size_metrics/totalSizeChange/", deadline))
+      const listUrl = new URL(`${UNMANIC_BASE}/unmanic/panel/file_size_metrics/list/`)
+      listUrl.searchParams.set("data", JSON.stringify({ start: 0, length: 20, order_by: "finish_time", order_direction: "desc" }))
+      const historyPayload = object(await unmanicGet(`${listUrl.pathname}${listUrl.search}`, deadline))
+      const rows = array(historyPayload.data)
+      if (rows.length > 20) throw new ReadFailure("invalid_response", "Unmanic returned too much history")
+      const ids = rows.map((entry) => integer(object(entry).id))
+      if (new Set(ids).size !== ids.length) throw new ReadFailure("invalid_response", "Unmanic returned duplicate history identities")
+      const recent = await Promise.all(Array.from({ length: Math.min(4, rows.length) }, async (_unused, worker) => {
+        const results = []
+        for (let index = worker; index < rows.length; index += 4) {
+          const row = object(rows[index])
+          const detailUrl = new URL(`${UNMANIC_BASE}/unmanic/panel/file_size_metrics/conversionDetails/`)
+          detailUrl.searchParams.set("task_id", String(ids[index]))
+          const details = array(await unmanicGet(`${detailUrl.pathname}${detailUrl.search}`, deadline)).map(object)
+          const source = details.find((detail) => detail.type === "source")
+          const destination = details.find((detail) => detail.type === "destination")
+          if (!source || !destination || details.length !== 2 || string(source.basename) !== string(destination.basename) || string(source.basename) !== string(row.basename)) throw new ReadFailure("invalid_response", "Unmanic history details did not match")
+          const sourceBytes = integer(source.size)
+          const destinationBytes = integer(destination.size)
+          const savedBytes = Math.max(0, sourceBytes - destinationBytes)
+          results.push({ index, value: {
+            untrustedName: boundedLabel(source.basename),
+            sourceBytes,
+            destinationBytes,
+            savedBytes,
+            savedPercent: sourceBytes === 0 ? 0 : round((savedBytes / sourceBytes) * 100),
+            completedAt: boundedLabel(row.finish_time),
+          } })
+        }
+        return results
+      })).then((groups) => groups.flat().sort((left, right) => left.index - right.index).map((entry) => entry.value))
+      const totalSourceBytes = integer(totals.source)
+      const totalDestinationBytes = integer(totals.destination)
+      const totalSavedBytes = Math.max(0, totalSourceBytes - totalDestinationBytes)
+      history = {
+        metricRecords: integer(historyPayload.recordsTotal),
+        totalSourceBytes,
+        totalDestinationBytes,
+        totalSavedBytes,
+        savedPercent: totalSourceBytes === 0 ? 0 : round((totalSavedBytes / totalSourceBytes) * 100),
+        recent,
       }
-      return results
-    })).then((groups) => groups.flat().sort((left, right) => left.index - right.index).map((entry) => entry.value))
-    const totalSourceBytes = integer(totals.source)
-    const totalDestinationBytes = integer(totals.destination)
-    const totalSavedBytes = Math.max(0, totalSourceBytes - totalDestinationBytes)
+    } catch (error) {
+      if (!(error instanceof ReadFailure) || error.code !== "invalid_response") throw error
+      history = { available: false, reason: "file_size_metrics panel returned invalid data" }
+    }
     return {
       data: {
         version: boundedLabel(versionPayload.version),
         libraries,
         pending,
-        history: {
-          metricRecords: integer(historyPayload.recordsTotal),
-          totalSourceBytes,
-          totalDestinationBytes,
-          totalSavedBytes,
-          savedPercent: totalSourceBytes === 0 ? 0 : round((totalSavedBytes / totalSourceBytes) * 100),
-          recent,
-        },
+        history,
       },
-      degraded: false,
+      degraded: history.available === false,
     }
   }
 
