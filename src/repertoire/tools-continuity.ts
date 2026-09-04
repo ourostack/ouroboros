@@ -189,6 +189,7 @@ export const continuityToolDefinitions: ToolDefinition[] = [
         description: "Classify the exact external-event generation I just investigated. An ask or report is the sole owner-delivery path and sends reason once for this receipt; silent and act only record the disposition.",
         parameters: {
           type: "object",
+          properties: {},
           oneOf: [externalEventSingleDispositionSchema(), externalEventBatchDispositionSchema()],
         },
       },
