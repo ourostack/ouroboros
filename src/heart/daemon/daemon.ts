@@ -490,6 +490,7 @@ export interface DaemonRouterLike {
     taskRef?: string
   }): Promise<DaemonMessageReceipt>
   pollInbox(agent: string): Array<{ id: string; from: string; content: string; queuedAt: string; priority: string }>
+  peekInbox?(agent: string): Array<{ id: string; from: string; content: string; queuedAt: string; priority: string }>
 }
 
 export type DaemonCommand =
@@ -1860,6 +1861,33 @@ export class OuroDaemon {
     return { type: "message", privateTurnDecision: decision, ...(externalEvent ? { externalEvent } : {}) }
   }
 
+  private queueOperatorCliMessageForPrivateRuntime(command: Extract<DaemonCommand, { kind: "private.wake" | "inner.wake" }>): void {
+    if (command.kind !== "private.wake" || command.triggerSource !== "operator-cli") return
+    const receiptId = command.originRefs?.find((ref) => ref.kind === "daemon-receipt")?.id
+    if (!receiptId) return
+    const messages = this.router.peekInbox?.(command.agent) ?? []
+    const routed = messages.find((message) => message.id === receiptId)
+    if (!routed) return
+    const pendingDir = path.join(
+      this.bundlesRoot,
+      `${command.agent}.ouro`,
+      "state",
+      "pending",
+      PRIVATE_RUNTIME_PENDING.friendId,
+      PRIVATE_RUNTIME_PENDING.channel,
+      PRIVATE_RUNTIME_PENDING.key,
+    )
+    const queuedAtMs = Date.parse(routed.queuedAt)
+    queuePendingMessageOnce(pendingDir, {
+      from: routed.from,
+      content: routed.content,
+      timestamp: Number.isFinite(queuedAtMs) ? queuedAtMs : Date.now(),
+      mode: "relay",
+      requestId: routed.id,
+      packetId: `operator-cli:${command.agent}:${routed.id}`,
+    })
+  }
+
   private queueExternalEventForPrivateRuntime(record: ExternalEventRecord, quiet = false): void {
     const pendingDir = path.join(
       this.bundlesRoot,
@@ -2162,6 +2190,7 @@ export class OuroDaemon {
       }
     }
 
+    this.queueOperatorCliMessageForPrivateRuntime(command)
     await beforeDispatch?.(decision)
     await this.processManager.startAgent(command.agent)
     const message = this.buildPrivateRuntimeWorkerWakeMessage(command, decision, externalEvent)

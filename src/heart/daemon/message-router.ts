@@ -107,6 +107,25 @@ export class FileMessageRouter {
     return messages
   }
 
+  peekInbox(agent: string): RoutedMessage[] {
+    const inboxPath = this.inboxPath(agent)
+    if (!fs.existsSync(inboxPath)) return []
+
+    const messages: RoutedMessage[] = []
+    const raw = fs.readFileSync(inboxPath, "utf-8")
+    for (const line of raw.split("\n")) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+      try {
+        messages.push(JSON.parse(trimmed) as RoutedMessage)
+      } catch {
+        // Preserve pollInbox semantics: malformed lines stay untouched and
+        // invisible to callers that need valid routed messages.
+      }
+    }
+    return messages
+  }
+
   private inboxPath(agent: string): string {
     return path.join(this.baseDir, `${agent}-inbox.jsonl`)
   }

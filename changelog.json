@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.790",
+      "changes": [
+        "Bind explicit operator CLI private wakes to their queued daemon message payload so private-runtime turns see the text that woke them.",
+        "Add non-destructive daemon inbox peeking for receipt-bound wake routing while preserving queue-only background message delivery.",
+        "Keep unreceipted or unmatched operator wakes from fabricating private pending work."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.789",
       "changes": [
         "Warm private-runtime machine credentials before accepting buffered work, so Sanctuary turns can use machine-scoped tools immediately after startup."
