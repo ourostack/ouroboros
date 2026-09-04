@@ -18,6 +18,8 @@ import {
 import { getAgentRoot, setAgentName } from "./identity"
 import type {
   FrontendAuthorityRuntime,
+  FrontendPermissionRequest,
+  FrontendSessionRef,
   FrontendTurnRequest,
 } from "./frontend-session-service"
 import type { FrontendJournalEventType } from "./frontend-journal"
@@ -38,6 +40,8 @@ interface ApprovalState {
 
 interface PendingApproval {
   requestId: string
+  toolCallId: string
+  title: string
   request: FrontendTurnRequest
   approvalRequest: ApprovalProposalRequest
   expiresAt: number
@@ -364,6 +368,8 @@ export function createFrontendApprovalRuntime(options: {
           })
           const item: PendingApproval = {
             requestId: committed.record.approvalId,
+            toolCallId: request.toolCall.id,
+            title: `Approve ${request.toolCall.function.name}`,
             request: input.request,
             approvalRequest: request,
             expiresAt: Date.parse(committed.record.expiresAt),
@@ -427,6 +433,24 @@ export function createFrontendApprovalRuntime(options: {
       for (const item of pending.values()) {
         if (item.request.turnId === turnId) settlePending(item, "cancelled")
       }
+    },
+
+    pendingPermissions(ref: FrontendSessionRef): FrontendPermissionRequest[] {
+      return [...pending.values()].flatMap((item) => {
+        if (
+          item.settled
+          || item.request.agent !== ref.agent
+          || item.request.friendId !== ref.friendId
+          || item.request.sessionKey !== ref.sessionKey
+        ) return []
+        return [{
+          requestId: item.requestId,
+          turnId: item.request.turnId,
+          toolCallId: item.toolCallId,
+          title: item.title,
+          options: [...PERMISSION_OPTIONS],
+        }]
+      })
     },
 
     close() {

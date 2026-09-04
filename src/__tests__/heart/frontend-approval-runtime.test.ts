@@ -87,6 +87,25 @@ describe("frontend approval runtime", () => {
 
     const suspension = await coordinator.propose(proposal())
 
+    expect(runtime.pendingPermissions({
+      agent: request.agent,
+      friendId: request.friendId,
+      sessionKey: request.sessionKey,
+    })).toEqual([{
+      requestId: suspension.approvalId,
+      turnId: request.turnId,
+      toolCallId: "call-1",
+      title: "Approve unraid_restart_container",
+      options: [
+        { optionId: "allow-once", name: "Allow once", kind: "allow_once" },
+        { optionId: "reject-once", name: "Reject", kind: "reject_once" },
+      ],
+    }])
+    expect(runtime.pendingPermissions({
+      agent: request.agent,
+      friendId: "other",
+      sessionKey: request.sessionKey,
+    })).toEqual([])
     expect(published).toEqual([{
       type: "permission_requested",
       journalType: "permission_requested",
@@ -101,6 +120,11 @@ describe("frontend approval runtime", () => {
       },
     }])
     expect(runtime.resolvePermission(suspension.approvalId, "allow-once")).toBe(true)
+    expect(runtime.pendingPermissions({
+      agent: request.agent,
+      friendId: request.friendId,
+      sessionKey: request.sessionKey,
+    })).toEqual([])
     expect(runtime.resolvePermission(suspension.approvalId, "reject-once")).toBe(false)
     await expect(runtime.resumeApproval({
       request,

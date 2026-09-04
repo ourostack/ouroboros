@@ -40,6 +40,14 @@ export interface FrontendSessionRef {
   sessionKey: string
 }
 
+export interface FrontendPermissionRequest {
+  requestId: string
+  turnId: string
+  toolCallId: string
+  title: string
+  options: Array<{ optionId: string; name: string; kind: string }>
+}
+
 export interface FrontendTurnResult {
   turnId: string
   outcome: NonNullable<RunSenseTurnResult["turnOutcome"]>
@@ -63,6 +71,7 @@ export interface FrontendAuthorityRuntime {
   }): Promise<RunSenseTurnResult>
   resolvePermission(requestId: string, optionId: string): boolean
   cancelTurn(turnId: string): void
+  pendingPermissions(ref: FrontendSessionRef): FrontendPermissionRequest[]
   close(): void
 }
 
@@ -151,11 +160,19 @@ export class FrontendSessionService {
     options: { afterSequence?: number; limit?: number } = {},
   ) {
     if (!this.journal) throw new Error("frontend journal is unavailable")
-    return this.journal.replay({
+    const normalized = {
       agent: required(ref.agent, "agent"),
       friendId: required(ref.friendId, "friendId"),
       sessionId: required(ref.sessionKey, "sessionKey"),
-    }, options)
+    }
+    return {
+      ...this.journal.replay(normalized, options),
+      pendingPermissions: this.authority?.pendingPermissions({
+        agent: normalized.agent,
+        friendId: normalized.friendId,
+        sessionKey: normalized.sessionId,
+      }) ?? [],
+    }
   }
 
   async runTurn(request: FrontendTurnRequest): Promise<FrontendTurnResult> {

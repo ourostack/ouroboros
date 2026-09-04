@@ -356,6 +356,42 @@ describe("frontend session service", () => {
     fs.rmSync(root, { recursive: true, force: true })
   })
 
+  it("returns only in-memory pending permissions with session replay", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "frontend-service-pending-"))
+    const { FrontendJournalStore } = await import("../../heart/frontend-journal")
+    const journal = new FrontendJournalStore({ agentRoot: (agent) => path.join(root, `${agent}.ouro`) })
+    journal.append(refFor(request()), { turnId: "turn-1", type: "turn_started", data: {} })
+    const pendingPermissions = [{
+      requestId: "approval-1",
+      turnId: "turn-1",
+      toolCallId: "call-1",
+      title: "Approve shell",
+      options: [{ optionId: "allow-once", name: "Allow once", kind: "allow_once" }],
+    }]
+    const authority = {
+      approvalCoordinatorFactory: vi.fn(() => vi.fn()),
+      resumeApproval: vi.fn(),
+      resolvePermission: vi.fn(),
+      cancelTurn: vi.fn(),
+      pendingPermissions: vi.fn(() => pendingPermissions),
+      close: vi.fn(),
+    }
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const service = new FrontendSessionService({ runner: async () => settledResult(), journal, authority: authority as never })
+
+    expect(service.loadSession({
+      agent: "boss",
+      friendId: "friend-1",
+      sessionKey: "session-1",
+    })).toMatchObject({ pendingPermissions })
+    expect(authority.pendingPermissions).toHaveBeenCalledWith({
+      agent: "boss",
+      friendId: "friend-1",
+      sessionKey: "session-1",
+    })
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+
   it("closes its owned authority runtime", async () => {
     const authority = {
       approvalCoordinatorFactory: vi.fn(() => vi.fn()),

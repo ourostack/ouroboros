@@ -93,6 +93,26 @@ export function createAcpServer(options: AcpServerOptions): AcpServer {
     write({ jsonrpc: "2.0", method: "session/update", params: { sessionId, update } })
   }
 
+  function permissionRequest(sessionId: string, event: Record<string, any>): void {
+    const requestId = typeof event.requestId === "string" ? event.requestId : ""
+    if (!requestId || [...pendingOutbound.values()].some((pending) => pending.requestId === requestId)) return
+    const rpcId = `ouro:${randomUUID()}`
+    pendingOutbound.set(rpcId, { sessionId, requestId })
+    write({
+      jsonrpc: "2.0",
+      id: rpcId,
+      method: "session/request_permission",
+      params: {
+        sessionId,
+        toolCall: {
+          toolCallId: String(event.toolCallId ?? requestId),
+          title: String(event.title ?? "Permission requested"),
+        },
+        options: Array.isArray(event.options) ? event.options : [],
+      },
+    })
+  }
+
   function replayEvent(sessionId: string, event: Record<string, any>): void {
     const data = event.data ?? {}
     if (event.type === "user_message" && typeof data.text === "string") {
@@ -160,21 +180,7 @@ export function createAcpServer(options: AcpServerOptions): AcpServer {
     } else if (event.event === "permission.requested") {
       const requestId = typeof event.requestId === "string" ? event.requestId : ""
       if (!requestId || !active || active.turnId !== turnId) return
-      const rpcId = `ouro:${randomUUID()}`
-      pendingOutbound.set(rpcId, { sessionId, requestId })
-      write({
-        jsonrpc: "2.0",
-        id: rpcId,
-        method: "session/request_permission",
-        params: {
-          sessionId,
-          toolCall: {
-            toolCallId: String(event.toolCallId ?? requestId),
-            title: String(event.title ?? "Permission requested"),
-          },
-          options: Array.isArray(event.options) ? event.options : [],
-        },
-      })
+      permissionRequest(sessionId, event)
     } else if (active && active.turnId === turnId && event.event === "turn.completed") {
       active.resolve("end_turn")
     } else if (active && active.turnId === turnId && event.event === "turn.cancelled") {
@@ -252,6 +258,7 @@ export function createAcpServer(options: AcpServerOptions): AcpServer {
       }
       for (const event of replay.events) replayEvent(sessionId, event)
       await subscribe(sessionId)
+      for (const pending of replay.pendingPermissions ?? []) permissionRequest(sessionId, pending)
       result(id, {})
       return
     }

@@ -197,6 +197,55 @@ describe("Ouro ACP server", () => {
     server.stop()
   })
 
+  it("reissues an in-memory pending permission after session load", async () => {
+    const { input, client, server, messages } = await setup()
+    client.loadResult = {
+      events: [{ type: "turn_started", data: {}, turnId: "turn-1" }],
+      lastSequence: 1,
+      hasMore: false,
+      degraded: false,
+      incompleteTurnIds: ["turn-1"],
+      pendingPermissions: [{
+        requestId: "approval-1",
+        turnId: "turn-1",
+        toolCallId: "call-1",
+        title: "Approve shell",
+        options: [
+          { optionId: "allow-once", name: "Allow once", kind: "allow_once" },
+          { optionId: "reject-once", name: "Reject", kind: "reject_once" },
+        ],
+      }, {
+        requestId: 7,
+        turnId: "turn-1",
+      }, {
+        requestId: "approval-1",
+        turnId: "turn-1",
+        toolCallId: "call-1",
+        title: "Approve shell",
+        options: [],
+      }],
+    }
+    input.write('{"jsonrpc":"2.0","id":1,"method":"session/load","params":{"sessionId":"existing-session"}}\n')
+
+    await waitFor(messages, (message) => message.id === 1)
+    const permission = await waitFor(messages, (message) => message.method === "session/request_permission")
+    expect(permission.params).toMatchObject({
+      sessionId: "existing-session",
+      toolCall: { toolCallId: "call-1", title: "Approve shell" },
+    })
+    input.write(`${JSON.stringify({
+      jsonrpc: "2.0",
+      id: permission.id,
+      result: { outcome: { outcome: "selected", optionId: "reject-once" } },
+    })}\n`)
+    await waitFor(client.requests, (request) => request.method === "permission.resolve")
+    expect(client.requests.at(-1)).toEqual({
+      method: "permission.resolve",
+      params: { requestId: "approval-1", optionId: "reject-once" },
+    })
+    server.stop()
+  })
+
   it("rejects a missing session instead of silently starting another", async () => {
     const { input, client, server, messages } = await setup()
     input.write('{"jsonrpc":"2.0","id":1,"method":"session/load","params":{"sessionId":"missing","cwd":"/tmp","mcpServers":[]}}\n')
