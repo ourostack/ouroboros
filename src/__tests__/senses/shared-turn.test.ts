@@ -379,6 +379,42 @@ describe("runSenseTurn", () => {
     })
     expect(result.response).toBe("hello from the agent")
     expect(result.ponderDeferred).toBe(false)
+    expect(result.turnOutcome).toBe("settled")
+  })
+
+  it("passes cancellation to the pipeline and does not deliver partial aborted output", async () => {
+    const controller = new AbortController()
+    const onDelivery = vi.fn()
+    const emptyResponseFallback = vi.fn(() => "fallback")
+    mockHandleInboundTurn.mockImplementationOnce(async (input: any) => {
+      expect(input.signal).toBe(controller.signal)
+      input.callbacks.onTextChunk("partial")
+      return {
+        resolvedContext: makeResolvedContext(),
+        gateResult: { allowed: true },
+        turnOutcome: "aborted",
+        sessionPath: "/tmp/session.json",
+        messages: [],
+      }
+    })
+
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    const result = await runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "hello",
+      signal: controller.signal,
+      deliverySink: { onDelivery },
+      emptyResponseFallback,
+    })
+
+    expect(result.turnOutcome).toBe("aborted")
+    expect(result.response).toBe("")
+    expect(result.deliveries).toEqual([])
+    expect(onDelivery).not.toHaveBeenCalled()
+    expect(emptyResponseFallback).not.toHaveBeenCalled()
   })
 
   it("claims an exact precommitted ingress event without synthesizing a second user message", async () => {
