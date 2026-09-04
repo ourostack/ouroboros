@@ -1201,7 +1201,7 @@ export function createTelegramApprovalTransport(options: TelegramApprovalTranspo
     accepted: receipt.accepted,
     reason: receipt.reason,
     acknowledgementState: receipt.acknowledgementState,
-    recoveredAt: receipt.recoveredAt,
+    recoveredAt: receipt.recoveredAt ?? null,
     decisionAttemptDigest: receipt.decisionAttemptDigest,
   })
 
