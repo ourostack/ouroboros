@@ -61,6 +61,18 @@ describe("frontend socket", () => {
     while (cleanup.length > 0) await cleanup.pop()!()
   })
 
+  it("derives a stable frontend path within the Unix socket limit", async () => {
+    const { frontendSocketPathForDaemon } = await import("../../heart/frontend-socket")
+    expect(frontendSocketPathForDaemon("/tmp/ouro.sock")).toBe("/tmp/ouro.sock.frontend")
+
+    const longCommandPath = path.join(os.tmpdir(), `${"long-".repeat(30)}daemon.sock`)
+    const first = frontendSocketPathForDaemon(longCommandPath)
+    const second = frontendSocketPathForDaemon(longCommandPath)
+    expect(Buffer.byteLength(first)).toBeLessThanOrEqual(100)
+    expect(first).toBe(second)
+    expect(frontendSocketPathForDaemon(`${longCommandPath}-other`)).not.toBe(first)
+  })
+
   it("buffers partial frames and accepts multiple newline-delimited requests", async () => {
     const { FrontendSessionService } = await import("../../heart/frontend-session-service")
     const { startFrontendSocketServer } = await import("../../heart/frontend-socket")
