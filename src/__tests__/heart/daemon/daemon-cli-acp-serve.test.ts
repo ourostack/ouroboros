@@ -174,6 +174,12 @@ describe("ouro acp-serve CLI", () => {
     const createAcpServer = vi.fn(() => server)
     const resolveFriend = vi.fn(async () => "11111111-1111-4111-8111-111111111111")
     const mcpPath = "/Applications/Ouro Workbench.app/Contents/MacOS/OuroWorkbenchMCP"
+    const workbenchMcpEnvironment = {
+      BUN_BIN: "/usr/local/bin/bun",
+      CMUX_BUNDLED_CLI_PATH: "/Applications/Ouro Workbench.app/Contents/Resources/bin/cmux",
+      CMUX_SOCKET_PATH: "/tmp/cmux-workbench.sock",
+      CMUX_SOCKET_CAPABILITY: "capability-token",
+    }
     const deps = {
       socketPath: "/tmp/ouro.sock",
       sendCommand: vi.fn(),
@@ -187,6 +193,7 @@ describe("ouro acp-serve CLI", () => {
       createAcpServer,
       resolveFrontendFriendId: resolveFriend,
       existsSync: (candidate: string) => candidate === mcpPath,
+      workbenchMcpEnvironment,
     } as unknown as OuroCliDeps
 
     const running = runOuroCli([
@@ -213,7 +220,7 @@ describe("ouro acp-serve CLI", () => {
       stdin: input,
       stdout: output,
       runtimeMcpServers: {
-        ouro_workbench: { command: mcpPath, args: [] },
+        ouro_workbench: { command: mcpPath, args: [], env: workbenchMcpEnvironment },
       },
     })
     expect(server.stop).toHaveBeenCalledOnce()
@@ -257,6 +264,33 @@ describe("ouro acp-serve CLI", () => {
       stdin: input,
       stdout: output,
     })
+  })
+
+  it("rejects Workbench-enabled ACP before startup when runtime coordinates are missing", async () => {
+    const createAcpServer = vi.fn()
+    const mcpPath = "/Applications/OuroWorkbenchMCP"
+    const deps = {
+      socketPath: "/tmp/ouro.sock",
+      sendCommand: vi.fn(),
+      startDaemonProcess: vi.fn(),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(),
+      createAcpServer,
+      resolveFrontendFriendId: vi.fn(async () => "11111111-1111-4111-8111-111111111111"),
+      existsSync: (candidate: string) => candidate === mcpPath,
+      workbenchMcpEnvironment: {},
+    } as unknown as OuroCliDeps
+
+    await expect(runOuroCli([
+      "acp-serve",
+      "--agent",
+      "Boss",
+      "--workbench-mcp",
+      mcpPath,
+    ], deps)).rejects.toThrow("Workbench MCP runtime coordinates are unavailable")
+    expect(createAcpServer).not.toHaveBeenCalled()
   })
 
   it("starts observe-only ACP without runtime MCP tools", async () => {

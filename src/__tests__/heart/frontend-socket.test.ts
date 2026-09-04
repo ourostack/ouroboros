@@ -201,7 +201,16 @@ describe("frontend socket", () => {
         sessionKey: "session-1",
         message: "hello",
         runtimeMcpServers: {
-          ouro_workbench: { command: executable, args: [] },
+          ouro_workbench: {
+            command: executable,
+            args: [],
+            env: {
+              BUN_BIN: executable,
+              CMUX_BUNDLED_CLI_PATH: executable,
+              CMUX_SOCKET_PATH: target,
+              CMUX_SOCKET_CAPABILITY: "capability-token",
+            },
+          },
         },
       },
     })}\n`)
@@ -212,7 +221,16 @@ describe("frontend socket", () => {
     })
     await vi.waitFor(() => expect(runner).toHaveBeenCalledOnce())
     expect(observedRuntimeMcp).toEqual({
-      ouro_workbench: { command: executable, args: [] },
+      ouro_workbench: {
+        command: executable,
+        args: [],
+        env: {
+          BUN_BIN: executable,
+          CMUX_BUNDLED_CLI_PATH: executable,
+          CMUX_SOCKET_PATH: target,
+          CMUX_SOCKET_CAPABILITY: "capability-token",
+        },
+      },
     })
     socket.destroy()
   })
@@ -327,16 +345,26 @@ describe("frontend socket", () => {
       channel: "mcp",
       message: "hello",
     }
+    const validEnv = {
+      BUN_BIN: "/bin/echo",
+      CMUX_BUNDLED_CLI_PATH: "/bin/echo",
+      CMUX_SOCKET_PATH: target,
+      CMUX_SOCKET_CAPABILITY: "capability-token",
+    }
     const cases = [
       ["empty", {}, null],
-      ["args-omitted", { ouro_workbench: { command: "/bin/echo" } }, null],
-      ["extra", { ouro_workbench: { command: "/bin/echo", cwd: "/tmp" } }, "supports only command and args"],
+      ["args-omitted", { ouro_workbench: { command: "/bin/echo" } }, "env requires exactly"],
+      ["extra", { ouro_workbench: { command: "/bin/echo", cwd: "/tmp" } }, "supports only command, args, and env"],
       ["relative", { ouro_workbench: { command: "echo" } }, "command must be absolute"],
       ["directory", { ouro_workbench: { command: os.tmpdir() } }, "command must be executable"],
       ["missing", { ouro_workbench: { command: "/tmp/does-not-exist" } }, "command must be executable"],
       ["args-object", { ouro_workbench: { command: "/bin/echo", args: {} } }, "args must be an empty string array"],
       ["args-non-string", { ouro_workbench: { command: "/bin/echo", args: [1] } }, "args must be an empty string array"],
       ["args-non-empty", { ouro_workbench: { command: "/bin/echo", args: ["x"] } }, "args must be an empty string array"],
+      ["env-extra", { ouro_workbench: { command: "/bin/echo", env: { ...validEnv, EXTRA: "x" } } }, "env requires exactly"],
+      ["env-bun-relative", { ouro_workbench: { command: "/bin/echo", env: { ...validEnv, BUN_BIN: "bun" } } }, "BUN_BIN must be absolute"],
+      ["env-socket-file", { ouro_workbench: { command: "/bin/echo", env: { ...validEnv, CMUX_SOCKET_PATH: "/bin/echo" } } }, "must be a live Unix socket"],
+      ["env-capability", { ouro_workbench: { command: "/bin/echo", env: { ...validEnv, CMUX_SOCKET_CAPABILITY: "not valid" } } }, "CMUX_SOCKET_CAPABILITY is invalid"],
     ] as const
 
     for (const [id, runtimeMcpServers, error] of cases) {
@@ -358,7 +386,7 @@ describe("frontend socket", () => {
         expect(frame).toMatchObject({ ok: true, result: { accepted: true } })
       }
     }
-    await vi.waitFor(() => expect(runner).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(runner).toHaveBeenCalledOnce())
     socket.destroy()
   })
 

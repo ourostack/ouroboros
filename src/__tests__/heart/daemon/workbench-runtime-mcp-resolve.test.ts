@@ -5,7 +5,7 @@ import type { OuroCliDeps } from "../../../heart/daemon/cli-types"
 
 /**
  * resolveWorkbenchRuntimeMcp turns the parsed --workbench-mcp flag into the
- * concrete { ouro_workbench: { command, args } } override that the mcp-serve
+ * concrete { ouro_workbench: { command, args, env } } override that the mcp-serve
  * bridge forwards on every senseTurn. Covers all flag/discovery branches.
  */
 
@@ -18,6 +18,12 @@ const DEFAULT_USER_CANDIDATE = path.join(
   "MacOS",
   "OuroWorkbenchMCP",
 )
+const RUNTIME_ENV = {
+  BUN_BIN: "/usr/local/bin/bun",
+  CMUX_BUNDLED_CLI_PATH: "/Applications/Ouro Workbench.app/Contents/Resources/bin/cmux",
+  CMUX_SOCKET_PATH: "/tmp/cmux-workbench.sock",
+  CMUX_SOCKET_CAPABILITY: "capability-token",
+}
 
 function deps(existing: Set<string>): OuroCliDeps {
   return {
@@ -33,16 +39,16 @@ describe("resolveWorkbenchRuntimeMcp", () => {
   })
 
   it("self-discovers the installed MCP when the flag is a bare boolean opt-in", () => {
-    const result = resolveWorkbenchRuntimeMcp(true, deps(new Set([DEFAULT_USER_CANDIDATE])))
+    const result = resolveWorkbenchRuntimeMcp(true, deps(new Set([DEFAULT_USER_CANDIDATE])), RUNTIME_ENV)
     expect(result).toEqual({
-      ouro_workbench: { command: DEFAULT_USER_CANDIDATE, args: [] },
+      ouro_workbench: { command: DEFAULT_USER_CANDIDATE, args: [], env: RUNTIME_ENV },
     })
   })
 
   it("uses an explicit string path when it exists", () => {
     const explicit = "/custom/Ouro Workbench.app/Contents/MacOS/OuroWorkbenchMCP"
-    const result = resolveWorkbenchRuntimeMcp(explicit, deps(new Set([explicit])))
-    expect(result).toEqual({ ouro_workbench: { command: explicit, args: [] } })
+    const result = resolveWorkbenchRuntimeMcp(explicit, deps(new Set([explicit])), RUNTIME_ENV)
+    expect(result).toEqual({ ouro_workbench: { command: explicit, args: [], env: RUNTIME_ENV } })
   })
 
   it("falls back to discovery when the explicit path does not exist", () => {
@@ -50,13 +56,22 @@ describe("resolveWorkbenchRuntimeMcp", () => {
     const result = resolveWorkbenchRuntimeMcp(
       missing,
       deps(new Set([DEFAULT_USER_CANDIDATE])),
+      RUNTIME_ENV,
     )
     expect(result).toEqual({
-      ouro_workbench: { command: DEFAULT_USER_CANDIDATE, args: [] },
+      ouro_workbench: { command: DEFAULT_USER_CANDIDATE, args: [], env: RUNTIME_ENV },
     })
   })
 
   it("returns null when the opt-in finds no installed MCP anywhere", () => {
-    expect(resolveWorkbenchRuntimeMcp(true, deps(new Set()))).toBeNull()
+    expect(resolveWorkbenchRuntimeMcp(true, deps(new Set()), RUNTIME_ENV)).toBeNull()
+  })
+
+  it("returns null when any required runtime coordinate is absent", () => {
+    expect(resolveWorkbenchRuntimeMcp(
+      true,
+      deps(new Set([DEFAULT_USER_CANDIDATE])),
+      { ...RUNTIME_ENV, CMUX_SOCKET_CAPABILITY: undefined },
+    )).toBeNull()
   })
 })

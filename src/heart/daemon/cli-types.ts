@@ -264,6 +264,7 @@ export interface OuroCliDeps {
   acpServeInput?: Readable
   acpServeOutput?: Writable
   createAcpServer?: (options: AcpServerOptions) => AcpServer
+  workbenchMcpEnvironment?: Record<string, string | undefined>
   resolveFrontendFriendId?: (input: {
     agent: string
     explicitFriendId?: string

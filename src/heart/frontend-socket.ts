@@ -122,6 +122,59 @@ function requiredString(value: unknown, field: string): string {
   return value.trim()
 }
 
+function requiredExecutable(value: unknown, field: string): string {
+  const executable = requiredString(value, field)
+  if (!path.isAbsolute(executable)) throw new Error(`${field} must be absolute`)
+  try {
+    if (!fs.statSync(executable).isFile()) throw new Error("not a file")
+    fs.accessSync(executable, fs.constants.X_OK)
+  } catch {
+    throw new Error(`${field} must be executable`)
+  }
+  return executable
+}
+
+function validatedRuntimeMcpEnvironment(value: unknown): Record<string, string> {
+  if (value === undefined) {
+    throw new Error("runtimeMcpServers.ouro_workbench.env requires exactly BUN_BIN, CMUX_BUNDLED_CLI_PATH, CMUX_SOCKET_PATH, CMUX_SOCKET_CAPABILITY")
+  }
+  const env = record(value)
+  const keys = [
+    "BUN_BIN",
+    "CMUX_BUNDLED_CLI_PATH",
+    "CMUX_SOCKET_PATH",
+    "CMUX_SOCKET_CAPABILITY",
+  ]
+  if (Object.keys(env).length !== keys.length || Object.keys(env).some((key) => !keys.includes(key))) {
+    throw new Error(`runtimeMcpServers.ouro_workbench.env requires exactly ${keys.join(", ")}`)
+  }
+  const socketPath = requiredString(env.CMUX_SOCKET_PATH, "runtimeMcpServers.ouro_workbench.env.CMUX_SOCKET_PATH")
+  if (!path.isAbsolute(socketPath)) {
+    throw new Error("runtimeMcpServers.ouro_workbench.env.CMUX_SOCKET_PATH must be absolute")
+  }
+  try {
+    if (!fs.lstatSync(socketPath).isSocket()) throw new Error("not a socket")
+  } catch {
+    throw new Error("runtimeMcpServers.ouro_workbench.env.CMUX_SOCKET_PATH must be a live Unix socket")
+  }
+  const capability = requiredString(
+    env.CMUX_SOCKET_CAPABILITY,
+    "runtimeMcpServers.ouro_workbench.env.CMUX_SOCKET_CAPABILITY",
+  )
+  if (capability.length > 2_048 || /\s/u.test(capability)) {
+    throw new Error("runtimeMcpServers.ouro_workbench.env.CMUX_SOCKET_CAPABILITY is invalid")
+  }
+  return {
+    BUN_BIN: requiredExecutable(env.BUN_BIN, "runtimeMcpServers.ouro_workbench.env.BUN_BIN"),
+    CMUX_BUNDLED_CLI_PATH: requiredExecutable(
+      env.CMUX_BUNDLED_CLI_PATH,
+      "runtimeMcpServers.ouro_workbench.env.CMUX_BUNDLED_CLI_PATH",
+    ),
+    CMUX_SOCKET_PATH: socketPath,
+    CMUX_SOCKET_CAPABILITY: capability,
+  }
+}
+
 function validatedRuntimeMcpServers(value: unknown): RuntimeMcpServers | undefined {
   if (value === undefined) return undefined
   const servers = record(value)
@@ -131,22 +184,21 @@ function validatedRuntimeMcpServers(value: unknown): RuntimeMcpServers | undefin
     throw new Error("runtimeMcpServers supports only ouro_workbench")
   }
   const config = record(servers.ouro_workbench)
-  if (Object.keys(config).some((key) => key !== "command" && key !== "args")) {
-    throw new Error("runtimeMcpServers.ouro_workbench supports only command and args")
+  if (Object.keys(config).some((key) => key !== "command" && key !== "args" && key !== "env")) {
+    throw new Error("runtimeMcpServers.ouro_workbench supports only command, args, and env")
   }
-  const command = requiredString(config.command, "runtimeMcpServers.ouro_workbench.command")
-  if (!path.isAbsolute(command)) throw new Error("runtimeMcpServers.ouro_workbench.command must be absolute")
-  try {
-    if (!fs.statSync(command).isFile()) throw new Error("not a file")
-    fs.accessSync(command, fs.constants.X_OK)
-  } catch {
-    throw new Error("runtimeMcpServers.ouro_workbench.command must be executable")
-  }
+  const command = requiredExecutable(config.command, "runtimeMcpServers.ouro_workbench.command")
   const args = config.args ?? []
   if (!Array.isArray(args) || args.some((arg) => typeof arg !== "string") || args.length > 0) {
     throw new Error("runtimeMcpServers.ouro_workbench.args must be an empty string array")
   }
-  return { ouro_workbench: { command, args: [] } }
+  return {
+    ouro_workbench: {
+      command,
+      args: [],
+      env: validatedRuntimeMcpEnvironment(config.env),
+    },
+  }
 }
 
 function removeSocket(socketPath: string): void {
@@ -236,14 +288,14 @@ export async function startFrontendSocketServer(options: {
     }
 
     if (method === "turn.start" || method === "turn.start.observe-only") {
-      const runtimeMcpServers = validatedRuntimeMcpServers(params.runtimeMcpServers)
       const observeOnly = method === "turn.start.observe-only"
       if (params.toolMode !== undefined) {
         throw new Error("toolMode is unsupported; use turn.start.observe-only")
       }
-      if (observeOnly && runtimeMcpServers) {
+      if (observeOnly && params.runtimeMcpServers !== undefined) {
         throw new Error("turn.start.observe-only cannot include runtimeMcpServers")
       }
+      const runtimeMcpServers = validatedRuntimeMcpServers(params.runtimeMcpServers)
       const turnRequest: FrontendTurnRequest = {
         turnId: requiredString(params.turnId, "turnId"),
         agent: requiredString(params.agent, "agent"),

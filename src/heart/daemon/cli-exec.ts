@@ -3590,18 +3590,27 @@ function findInstalledWorkbenchMcp(deps: OuroCliDeps, preferred?: string | null)
  * - a string path → use it if it exists, otherwise fall back to discovery
  *   (treating the string as the preferred candidate).
  *
- * Returns `{ ouro_workbench: { command, args: [] } }` so the daemon merges it
- * into the boss agent's toolset for the turn without writing to agent.json.
+ * Returns the command plus the exact Workbench runtime coordinates needed by
+ * the daemon-spawned MCP process, without writing them to agent.json.
  */
 export function resolveWorkbenchRuntimeMcp(
   flag: string | true | undefined,
   deps: OuroCliDeps,
+  environment: Record<string, string | undefined> = process.env,
 ): RuntimeMcpServers | null {
   if (flag === undefined) return null
   const preferred = typeof flag === "string" ? flag : null
   const command = findInstalledWorkbenchMcp(deps, preferred)
   if (!command) return null
-  return { ouro_workbench: { command, args: [] } }
+  const keys = [
+    "BUN_BIN",
+    "CMUX_BUNDLED_CLI_PATH",
+    "CMUX_SOCKET_PATH",
+    "CMUX_SOCKET_CAPABILITY",
+  ] as const
+  const env = Object.fromEntries(keys.map((key) => [key, environment[key]?.trim()]))
+  if (Object.values(env).some((value) => !value)) return null
+  return { ouro_workbench: { command, args: [], env: env as Record<string, string> } }
 }
 
 export async function resolveFrontendFriendId(input: {
@@ -8609,7 +8618,14 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     // bridge on every senseTurn and merged per-turn in the daemon — nothing is
     // written to agent.json.
     const workbenchMcpFlag = (command as { workbenchMcp?: string | true }).workbenchMcp
-    const runtimeMcp = resolveWorkbenchRuntimeMcp(workbenchMcpFlag, deps)
+    const runtimeMcp = resolveWorkbenchRuntimeMcp(
+      workbenchMcpFlag,
+      deps,
+      deps.workbenchMcpEnvironment ?? process.env,
+    )
+    if (workbenchMcpFlag !== undefined && !runtimeMcp) {
+      throw new Error("Workbench MCP runtime coordinates are unavailable")
+    }
     const server = createMcpServer({
       agent: command.agent,
       friendId,
@@ -8642,7 +8658,14 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     const output = deps.acpServeOutput ?? process.stdout
     const runtimeMcpServers = command.observeOnly
       ? undefined
-      : resolveWorkbenchRuntimeMcp(command.workbenchMcp, deps)
+      : resolveWorkbenchRuntimeMcp(
+        command.workbenchMcp,
+        deps,
+        deps.workbenchMcpEnvironment ?? process.env,
+      )
+    if (!command.observeOnly && command.workbenchMcp !== undefined && !runtimeMcpServers) {
+      throw new Error("Workbench MCP runtime coordinates are unavailable")
+    }
     const server = createAcpServer({
       agent: command.agent,
       friendId,
