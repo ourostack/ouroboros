@@ -37,6 +37,7 @@ describe("frontend journal", () => {
     expect(replay.lastSequence).toBe(3)
     expect(replay.hasMore).toBe(true)
     expect(replay.degraded).toBe(false)
+    expect(replay.incompleteTurnIds).toEqual(["turn-1"])
     expect(fs.statSync(path.dirname(store.pathFor(ref()))).mode & 0o777).toBe(0o700)
     expect(fs.statSync(store.pathFor(ref())).mode & 0o777).toBe(0o600)
   })
@@ -72,6 +73,7 @@ describe("frontend journal", () => {
     })
 
     expect(event.sequence).toBe(2)
+    expect(new FrontendJournalStore(options).replay(ref()).incompleteTurnIds).toEqual([])
   })
 
   it("replays through the last valid record and refuses to append after a corrupt tail", async () => {
