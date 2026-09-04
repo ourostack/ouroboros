@@ -2,9 +2,21 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.779",
+      "changes": [
+        "Treat terminal turns waiting for new input as safe context-loss Sentinel idle states, preventing false critical health alerts after normal private-runtime rests.",
+        "Keep the coverage gate from reinstalling Mailbox UI dependencies during the nerves audit build.",
+        "Bound the release preflight npm audit check, fall back to the local offline audit cache, and surface registry audit endpoint outages without hanging CI.",
+        "Parse npm audit JSON so CI reports the vulnerable package and advisory summary instead of a blind dependency-audit failure.",
+        "Treat shell timeout exit statuses from npm audit as registry timeouts so CI uses the intended offline fallback."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.778",
       "changes": [
-        "Treat rested terminal turns waiting for new input as safe context-loss Sentinel idle states, matching settled turns and preventing false critical health alerts after normal private-runtime rests."
+        "Treat terminal turns waiting for new input as safe context-loss Sentinel idle states, preventing false critical health alerts after normal private-runtime rests.",
+        "Keep the coverage gate from reinstalling Mailbox UI dependencies during the nerves audit build.",
+        "Bound the release preflight npm audit check, fall back to the local offline audit cache, and surface registry audit endpoint outages without hanging CI."
       ]
     },
     {

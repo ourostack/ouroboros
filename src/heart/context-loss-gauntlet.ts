@@ -92,20 +92,22 @@ function currentAskCheck(card: WorkCard): ContextLossGauntletCheck {
   })
 }
 
-function isSettledTurnWait(resume: FlightRecorderResume): boolean {
+const TERMINAL_IDLE_OUTCOMES = new Set(["settled", "observed", "rested", "superseded"])
+
+function isTerminalIdleTurnWait(resume: FlightRecorderResume): boolean {
+  const blocker = resume.blockedBecause[0] ?? ""
+  const match = /^turn outcome ([a-z_]+); wait for new input before acting$/.exec(blocker)
   return resume.hasCompleteState
     && resume.recorderHealth.status === "ok"
     && resume.blockedBecause.length === 1
-    && (
-      resume.blockedBecause[0] === "turn outcome settled; wait for new input before acting"
-      || resume.blockedBecause[0] === "turn outcome rested; wait for new input before acting"
-    )
+    && match !== null
+    && TERMINAL_IDLE_OUTCOMES.has(match[1])
     && resume.nextSafeAction.value === "inspect the latest session and wait for new input before acting"
 }
 
 function nextSafeActionCheck(card: WorkCard, resume: FlightRecorderResume): ContextLossGauntletCheck {
   const evidence = card.nextAction.source ? [card.nextAction.source] : []
-  if (isSettledTurnWait(resume)) {
+  if (isTerminalIdleTurnWait(resume)) {
     return makeCheck({
       id: "next_safe_action",
       label: "Next safe action",
@@ -151,7 +153,7 @@ function staleGuardCheck(resume: FlightRecorderResume, card: WorkCard): ContextL
       evidence,
     })
   }
-  if (isSettledTurnWait(resume)) {
+  if (isTerminalIdleTurnWait(resume)) {
     return makeCheck({
       id: "stale_guard",
       label: "Stale-state guard",

@@ -5,7 +5,7 @@ function npmExecutable(platform = process.platform) {
   return platform === "win32" ? "npm.cmd" : "npm"
 }
 
-function buildSteps(repoRoot, deps = defaultDeps()) {
+function buildSteps(repoRoot, deps = defaultDeps(), options = {}) {
   return [
     {
       label: "clean dist",
@@ -22,11 +22,11 @@ function buildSteps(repoRoot, deps = defaultDeps()) {
       command: deps.execPath,
       args: [deps.join(repoRoot, "scripts", "sanctuary-health-acceptance-probe-entry-smoke.cjs")],
     },
-    {
+    ...(options.skipMailboxUiInstall ? [] : [{
       label: "install Mailbox UI dependencies",
       command: deps.npmExecutable(),
       args: ["install", "--prefix", "packages/mailbox-ui", "--ignore-scripts"],
-    },
+    }]),
     {
       label: "build Mailbox UI",
       command: deps.npmExecutable(),
@@ -38,6 +38,13 @@ function buildSteps(repoRoot, deps = defaultDeps()) {
       args: [deps.join(repoRoot, "scripts", "copy-mailbox-ui.cjs")],
     },
   ]
+}
+
+function parseArgs(argv) {
+  return {
+    repoRoot: argv.find((arg) => arg !== "--skip-mailbox-ui-install"),
+    skipMailboxUiInstall: argv.includes("--skip-mailbox-ui-install"),
+  }
 }
 
 function statusFromSpawnResult(result) {
@@ -53,8 +60,9 @@ function failureSuffix(result) {
 }
 
 function runBuildCli(argv = process.argv.slice(2), deps = defaultDeps()) {
-  const repoRoot = deps.resolve(argv[0] ?? deps.defaultRepoRoot)
-  for (const step of buildSteps(repoRoot, deps)) {
+  const options = parseArgs(argv)
+  const repoRoot = deps.resolve(options.repoRoot ?? deps.defaultRepoRoot)
+  for (const step of buildSteps(repoRoot, deps, options)) {
     const result = deps.spawnSync(step.command, step.args, {
       cwd: repoRoot,
       stdio: "inherit",
@@ -90,5 +98,6 @@ if (require.main === module) {
 module.exports = {
   buildSteps,
   npmExecutable,
+  parseArgs,
   runBuildCli,
 }

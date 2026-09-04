@@ -10,7 +10,7 @@ describe("nerves rename contract", () => {
     }
 
     expect(pkg.scripts["audit:nerves"]).toBe(
-      "npm run build && node dist/nerves/coverage/cli-main.js",
+      "npm run build -- --skip-mailbox-ui-install && node dist/nerves/coverage/cli-main.js",
     )
     expect(pkg.scripts["audit:observability"]).toBeUndefined()
   })
