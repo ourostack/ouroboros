@@ -27,6 +27,7 @@ import type { RsvpSendBoundaryDeps } from "../../rsvp/outbound-state"
 import type { VersionIntent } from "../versioning/version-intent"
 import type { Readable, Writable } from "stream"
 import type { McpServer, McpServerOptions } from "../mcp/mcp-server"
+import type { AcpServer, AcpServerOptions } from "../../senses/acp-server"
 import type { BlueBubblesWebhookRegistrationInput, BlueBubblesWebhookRegistrationResult } from "../../senses/bluebubbles/webhook-registration"
 export type { RsvpCutoverAction } from "../../rsvp/cutover"
 
@@ -108,6 +109,7 @@ export type OuroCliCommand =
   | { kind: "work.sentinel.refresh"; agent?: string; format?: "text" | "json" }
   | { kind: "nerves-review"; agent?: string; process: string; component?: string; event?: string; level?: string; since?: string; limit?: number; json: boolean }
   | { kind: "mcp-serve"; agent: string; friendId?: string; workbenchMcp?: string | true }
+  | { kind: "acp-serve"; agent: string; friendId?: string; socketOverride?: string; workbenchMcp?: string | true }
   | { kind: "setup"; tool: "claude-code" | "codex"; agent?: string }
   | { kind: "plugin.install"; source: string; agent?: string; version?: string }
   | { kind: "plugin.list"; agent?: string }
@@ -259,6 +261,14 @@ export interface OuroCliDeps {
   mcpServeInput?: Readable
   mcpServeOutput?: Writable
   createMcpServer?: (options: McpServerOptions) => McpServer
+  acpServeInput?: Readable
+  acpServeOutput?: Writable
+  createAcpServer?: (options: AcpServerOptions) => AcpServer
+  resolveFrontendFriendId?: (input: {
+    agent: string
+    explicitFriendId?: string
+    bundlesRoot?: string
+  }) => Promise<string>
 }
 
 export interface SessionEntry {
@@ -321,6 +331,7 @@ export type WorkGauntletCliCommand = Extract<OuroCliCommand, { kind: "work.gaunt
 export type WorkSentinelCliCommand = Extract<OuroCliCommand, { kind: "work.sentinel" } | { kind: "work.sentinel.refresh" }>
 export type NervesReviewCliCommand = Extract<OuroCliCommand, { kind: "nerves-review" }>
 export type McpServeCliCommand = Extract<OuroCliCommand, { kind: "mcp-serve" }>
+export type AcpServeCliCommand = Extract<OuroCliCommand, { kind: "acp-serve" }>
 export type SetupCliCommand = Extract<OuroCliCommand, { kind: "setup" }>
 export type HookCliCommand = Extract<OuroCliCommand, { kind: "hook" }>
 export type HabitLocalCliCommand = Extract<OuroCliCommand, { kind: "habit.list" } | { kind: "habit.create" } | { kind: "habit.runs" } | { kind: "habit.inspect" } | { kind: "habit.summary" } | { kind: "habit.cancel" }>

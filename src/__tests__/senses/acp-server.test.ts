@@ -62,7 +62,7 @@ async function waitFor(messages: any[], predicate: (message: any) => boolean): P
   throw new Error("ACP message did not arrive")
 }
 
-async function setup() {
+async function setup(overrides: Record<string, unknown> = {}) {
   const input = new PassThrough()
   const output = new PassThrough()
   const client = new FakeFrontendClient()
@@ -74,6 +74,7 @@ async function setup() {
     stdin: input,
     stdout: output,
     createFrontendClient: async () => client,
+    ...overrides,
   })
   server.start()
   return { input, output, client, server, messages: collect(output) }
@@ -81,7 +82,10 @@ async function setup() {
 
 describe("Ouro ACP server", () => {
   it("initializes, creates a session, streams a turn, and returns end_turn", async () => {
-    const { input, client, server, messages } = await setup()
+    const runtimeMcpServers = {
+      ouro_workbench: { command: "/Applications/OuroWorkbenchMCP", args: [] },
+    }
+    const { input, client, server, messages } = await setup({ runtimeMcpServers })
     input.write('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}\n')
     expect(await waitFor(messages, (message) => message.id === 1)).toEqual({
       jsonrpc: "2.0",
@@ -92,6 +96,7 @@ describe("Ouro ACP server", () => {
     input.write('{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/tmp","mcpServers":[]}}\n')
     const created = await waitFor(messages, (message) => message.id === 2)
     expect(created.result.sessionId).toMatch(/^[0-9a-f-]{36}$/)
+    expect(created.result.friendId).toBe("local-ari")
     expect(client.requests.at(-1)).toEqual({
       method: "session.subscribe",
       params: { sessionKey: created.result.sessionId },
@@ -114,6 +119,7 @@ describe("Ouro ACP server", () => {
       channel: "mcp",
       sessionKey: created.result.sessionId,
       message: "hello boss",
+      runtimeMcpServers,
     })
     client.emit({ event: "text.delta", sessionKey: created.result.sessionId, turnId: started.params.turnId, text: "Hi" })
     client.emit({ event: "reasoning.delta", sessionKey: created.result.sessionId, turnId: started.params.turnId, text: "Think" })

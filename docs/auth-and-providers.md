@@ -126,7 +126,7 @@ If Ouro is already running, the connector recycles the daemon once so the local 
 
 Ouro Workbench is a local machine sense for terminal/TUI agents, but it is not
 enabled by a synced `agent.json` entry. When the native Workbench app launches a
-boss agent, it starts `ouro mcp-serve --agent <agent> --workbench-mcp`, which
+boss agent, it starts `ouro acp-serve --agent <agent> --workbench-mcp`, which
 injects the `ouro_workbench` tools for that served turn without writing
 `senses.workbench.enabled` or `mcpServers.ouro_workbench` into the bundle. The
 authoritative active signal is the presence of `workbench_*` tools in that turn.

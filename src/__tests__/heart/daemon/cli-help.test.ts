@@ -35,7 +35,7 @@ describe("COMMAND_REGISTRY", () => {
       "up", "stop", "down", "status", "logs", "dev", "hatch", "rollback", "versions",
       "doctor", "mailbox", "outlook", "whoami", "config", "changelog", "chat", "msg",
       "habit", "poke", "friend", "link", "auth", "thoughts", "private", "inner",
-      "attention", "session", "mcp", "mcp-serve", "setup", "hook", "connect", "bluebubbles",
+      "attention", "session", "mcp", "mcp-serve", "acp-serve", "setup", "hook", "connect", "bluebubbles",
       // desk umbrella CLI + task alias
       "desk", "task",
       // legacy-tasks-to-desk migrator

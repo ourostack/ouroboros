@@ -65,7 +65,7 @@ describe("prompt MCP serve awareness", () => {
   it("bodyMapSection includes ouro mcp-serve command", async () => {
     const { bodyMapSection } = await import("../../mind/prompt")
     const result = bodyMapSection("testagent")
-    expect(result).toContain("ouro mcp-serve --agent testagent")
+    expect(result).toContain("ouro acp-serve --agent testagent")
 
     emitNervesEvent({
       component: "mind",

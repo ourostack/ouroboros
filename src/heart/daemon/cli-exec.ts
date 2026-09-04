@@ -14,7 +14,7 @@ import * as path from "path"
 import * as semver from "semver"
 import { defaultStableVaultEmail, getAgentBundlesRoot, getAgentRoot, getRepoRoot, resolveVaultConfig, getAgentDaemonLogsDir, type AgentConfig, type AgentProvider } from "../identity"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { FileFriendStore, setFriendTrust, linkExternalId, unlinkExternalId } from "@ouro.bot/friends"
+import { FileFriendStore, FriendResolver, machineOwnerUsername, setFriendTrust, linkExternalId, unlinkExternalId } from "@ouro.bot/friends"
 import type { FriendStore, TrustLevel } from "@ouro.bot/friends"
 import type { DaemonCommand, DaemonResponse } from "./daemon"
 import { getRuntimeMetadata } from "./runtime-metadata"
@@ -118,6 +118,7 @@ import type {
   WorkSentinelCliCommand,
   NervesReviewCliCommand,
   McpServeCliCommand,
+  AcpServeCliCommand,
   McpCanaryCliCommand,
   McpDoctorCliCommand,
   SetupCliCommand,
@@ -1942,7 +1943,7 @@ export async function checkManualCloneBundles(deps: ManualCloneCheckDeps): Promi
 
 // ── toDaemonCommand ──
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | McpCanaryCliCommand | McpDoctorCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | RsvpCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "bluebubbles.context-smoke" } | { kind: "bluebubbles.host" } | { kind: "bluebubbles.host.collect" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "mail.sync-cache" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | AcpServeCliCommand | McpCanaryCliCommand | McpDoctorCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | RsvpCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "bluebubbles.context-smoke" } | { kind: "bluebubbles.host" } | { kind: "bluebubbles.host.collect" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "mail.sync-cache" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
   if (command.kind === "habit.probe") {
     return {
       kind: "habit.probe",
@@ -3601,6 +3602,32 @@ export function resolveWorkbenchRuntimeMcp(
   const command = findInstalledWorkbenchMcp(deps, preferred)
   if (!command) return null
   return { ouro_workbench: { command, args: [] } }
+}
+
+export async function resolveFrontendFriendId(input: {
+  agent: string
+  explicitFriendId?: string
+  bundlesRoot?: string
+  ownerUsername?: string | null
+  store?: FriendStore
+}): Promise<string> {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(input.agent)) throw new Error("frontend requires a safe agent name")
+  const agentRoot = path.join(input.bundlesRoot ?? getAgentBundlesRoot(), `${input.agent}.ouro`)
+  if (!input.store) readAgentConfigForAgent(input.agent, input.bundlesRoot)
+  const store = input.store ?? new FileFriendStore(path.join(agentRoot, "friends"))
+  if (input.explicitFriendId) {
+    const existing = await store.get(input.explicitFriendId)
+    if (!existing) throw new Error(`friend not found: ${input.explicitFriendId}`)
+    return existing.id
+  }
+  const ownerUsername = input.ownerUsername === undefined ? machineOwnerUsername() : input.ownerUsername
+  if (!ownerUsername) throw new Error("local machine owner identity is unavailable")
+  return (await new FriendResolver(store, {
+    provider: "local",
+    externalId: ownerUsername,
+    displayName: ownerUsername,
+    channel: "mcp",
+  }).resolve()).friend.id
 }
 
 function removeWorkbenchMcpRegistration(agent: string, deps: OuroCliDeps): boolean {
@@ -6071,7 +6098,7 @@ async function executeConnectWorkbench(agent: string, deps: OuroCliDeps): Promis
     workbenchHasStaleBundleEntry
       ? "agent.json: removed stale senses.workbench / mcpServers.ouro_workbench entries"
       : "agent.json: no Workbench entries needed or written",
-    `boss launch path: ouro mcp-serve --agent ${agent} --workbench-mcp ${executablePath}`,
+    `boss launch path: ouro acp-serve --agent ${agent} --workbench-mcp ${executablePath}`,
     "Workbench tools are injected per served turn; provider secrets stay in the agent vault.",
     ...(syncSummary ? [syncSummary] : []),
   ].join("\n")
@@ -8598,6 +8625,37 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
       meta: { agent: command.agent, friendId, workbenchRuntimeMcp: !!runtimeMcp },
     })
     await runMcpServeCliLifecycle(server, mcpInput)
+    return ""
+  }
+
+  if (command.kind === "acp-serve") {
+    const createAcpServer = deps.createAcpServer ?? (await import("../../senses/acp-server")).createAcpServer
+    const resolveFriendId = deps.resolveFrontendFriendId ?? resolveFrontendFriendId
+    const friendId = await resolveFriendId({
+      agent: command.agent,
+      ...(command.friendId ? { explicitFriendId: command.friendId } : {}),
+      ...(deps.bundlesRoot ? { bundlesRoot: deps.bundlesRoot } : {}),
+    })
+    const commandSocketPath = command.socketOverride ?? deps.socketPath
+    const { frontendSocketPathForDaemon } = await import("../frontend-socket")
+    const input = deps.acpServeInput ?? process.stdin
+    const output = deps.acpServeOutput ?? process.stdout
+    const runtimeMcpServers = resolveWorkbenchRuntimeMcp(command.workbenchMcp, deps)
+    const server = createAcpServer({
+      agent: command.agent,
+      friendId,
+      frontendSocketPath: frontendSocketPathForDaemon(commandSocketPath),
+      stdin: input,
+      stdout: output,
+      ...(runtimeMcpServers ? { runtimeMcpServers } : {}),
+    })
+    emitNervesEvent({
+      component: "daemon",
+      event: "daemon.acp_serve_started",
+      message: "ACP frontend server started via CLI",
+      meta: { agent: command.agent, friendId, workbenchRuntimeMcp: !!runtimeMcpServers },
+    })
+    await runMcpServeCliLifecycle(server, input)
     return ""
   }
 

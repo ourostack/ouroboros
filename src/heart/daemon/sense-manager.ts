@@ -439,7 +439,7 @@ function senseRepairHint(agent: string, sense: SenseName): string {
   }
   /* v8 ignore next -- Workbench is deliberately not daemon-managed, so getSenseInventory never asks the daemon manager for a repair hint @preserve */
   if (sense === "workbench") {
-    return `Agent-runnable: install Ouro Workbench.app, then launch the boss through Workbench or run 'ouro mcp-serve --agent ${agent} --workbench-mcp'; 'ouro connect workbench --agent ${agent}' only cleans stale bundle entries.`
+    return `Agent-runnable: install Ouro Workbench.app, then launch the boss through Workbench or run 'ouro acp-serve --agent ${agent} --workbench-mcp'; 'ouro connect workbench --agent ${agent}' only cleans stale bundle entries.`
   }
   return `Run 'ouro connect bluebubbles --agent ${agent}' to attach BlueBubbles on this machine; then run 'ouro up' again.`
 }

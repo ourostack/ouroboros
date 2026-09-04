@@ -1501,7 +1501,7 @@ describe("provider CLI command execution", () => {
 
     expect(result).toContain("Workbench runtime injection ready for Slugger")
     expect(result).toContain(`OuroWorkbenchMCP found: ${mcpPath}`)
-    expect(result).toContain(`boss launch path: ouro mcp-serve --agent Slugger --workbench-mcp ${mcpPath}`)
+    expect(result).toContain(`boss launch path: ouro acp-serve --agent Slugger --workbench-mcp ${mcpPath}`)
     expect(result).toContain("provider secrets stay in the agent vault")
     expect(result).not.toContain("bundle sync:")
     expect(config.senses?.workbench).toBeUndefined()

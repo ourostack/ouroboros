@@ -3,6 +3,7 @@ import * as readline from "node:readline"
 import type { Readable, Writable } from "node:stream"
 
 import { SocketFrontendClient, type FrontendProtocolClient } from "../heart/frontend-socket-client"
+import type { RuntimeMcpServers } from "../repertoire/mcp-manager"
 
 interface JsonRpcRequest {
   jsonrpc?: unknown
@@ -25,14 +26,17 @@ export interface AcpServer {
   stop(): void
 }
 
-export function createAcpServer(options: {
+export interface AcpServerOptions {
   agent: string
   friendId: string
   frontendSocketPath: string
   stdin: Readable
   stdout: Writable
+  runtimeMcpServers?: RuntimeMcpServers
   createFrontendClient?: () => Promise<FrontendProtocolClient>
-}): AcpServer {
+}
+
+export function createAcpServer(options: AcpServerOptions): AcpServer {
   const sessions = new Set<string>()
   const activePrompts = new Map<string, {
     rpcId: number | string
@@ -229,7 +233,7 @@ export function createAcpServer(options: {
       if (id === undefined) return
       const sessionId = randomUUID()
       await subscribe(sessionId)
-      result(id, { sessionId })
+      result(id, { sessionId, friendId: options.friendId })
       return
     }
 
@@ -269,6 +273,7 @@ export function createAcpServer(options: {
           channel: "mcp",
           sessionKey: sessionId,
           message,
+          ...(options.runtimeMcpServers ? { runtimeMcpServers: options.runtimeMcpServers } : {}),
         })
         result(id, { stopReason: await completion.promise })
       } finally {
