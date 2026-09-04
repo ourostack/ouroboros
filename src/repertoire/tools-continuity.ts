@@ -30,27 +30,13 @@ const externalEventDispositionProperties = {
 };
 
 const externalEventDispositionRequired = ["recordPath", "expectedGeneration", "classifiedRevision", "classification", "stewardPolicyKind", "decision", "reason", "nextWake"];
-const externalEventDispositionItemProperties = () => structuredClone(externalEventDispositionProperties);
-const externalEventSingleDispositionSchema = () => ({
-  type: "object",
-  properties: externalEventDispositionItemProperties(),
-  required: [...externalEventDispositionRequired],
-  additionalProperties: false,
-});
-const externalEventBatchDispositionSchema = () => ({
-  type: "object",
-  properties: {
-    batch: {
-      type: "array",
-      minItems: 1,
-      maxItems: 32,
-      description: "All exact leases from one coalesced external-event turn",
-      items: externalEventSingleDispositionSchema(),
-    },
-  },
-  required: ["batch"],
-  additionalProperties: false,
-});
+const externalEventDispositionBatchSchema = {
+  type: "array",
+  minItems: 1,
+  maxItems: 32,
+  description: "All exact leases from one coalesced external-event turn",
+  items: { type: "object", properties: externalEventDispositionProperties, required: externalEventDispositionRequired, additionalProperties: false },
+};
 
 function prepareExternalEventDisposition(a: Record<string, unknown>, ctx?: ToolContext) {
   const agentName = getAgentName();
@@ -189,8 +175,15 @@ export const continuityToolDefinitions: ToolDefinition[] = [
         description: "Classify the exact external-event generation I just investigated. An ask or report is the sole owner-delivery path and sends reason once for this receipt; silent and act only record the disposition.",
         parameters: {
           type: "object",
-          properties: {},
-          oneOf: [externalEventSingleDispositionSchema(), externalEventBatchDispositionSchema()],
+          properties: {
+            ...externalEventDispositionProperties,
+            batch: externalEventDispositionBatchSchema,
+          },
+          oneOf: [
+            { type: "object", properties: externalEventDispositionProperties, required: externalEventDispositionRequired },
+            { type: "object", properties: { batch: externalEventDispositionBatchSchema }, required: ["batch"] },
+          ],
+          additionalProperties: false,
         },
       },
     },
