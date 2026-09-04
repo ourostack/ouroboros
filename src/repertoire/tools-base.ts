@@ -169,6 +169,7 @@ export interface ToolContext {
     checkServices(): Promise<unknown>;
     getDownloadQueue(): Promise<unknown>;
     getMediaOptimization(): Promise<unknown>;
+    searchMediaCatalog(args: { query?: string; limit?: number }): Promise<unknown>;
     resumeDownloadQueue(): Promise<unknown>;
     restartContainer(args: { container: string }, execution?: { routine?: import("./unraid-restart").RoutineRestartAuthority }): Promise<unknown>;
     recoverRoutineActions?(): Promise<unknown>;

@@ -75,11 +75,19 @@ describe("Mendelow Cloud Butler household UX", () => {
     expect(psyche("IDENTITY")).toContain("approved household members")
     expect(psyche("IDENTITY")).toContain("People do not need to say Sanctuary")
     expect(psyche("IDENTITY")).not.toContain("serve one trusted operator")
+    const agentConfig = JSON.parse(fs.readFileSync(path.join(bundleRoot, "agent.json"), "utf8")) as { phrases: Record<string, string[]> }
+    expect(agentConfig.phrases.thinking).toEqual(expect.arrayContaining(["consulting the household machinery"]))
+    expect(agentConfig.phrases.tool).toEqual(expect.arrayContaining(["checking the troublesome little machine"]))
+    expect(agentConfig.phrases.followup).toEqual(expect.arrayContaining(["returning with the tray"]))
   })
 
   it("has an original playful, perceptive personality without borrowing Cradle names or catchphrases", () => {
     const soul = psyche("SOUL")
     expect(soul).toContain("wry")
+    expect(soul).toContain("unflappable")
+    expect(soul).toContain("dry little aside")
+    expect(soul).toContain("majordomo")
+    expect(soul).toContain("mischievous systems-gremlin")
     expect(soul).toContain("curious")
     expect(soul).toContain("quietly delighted by a clever fix")
     expect(soul).toContain("gentle theatrical flair")
@@ -112,13 +120,13 @@ describe("Mendelow Cloud Butler household UX", () => {
       "sanctuary-owner": {
         version: 6,
         contextScopes: expect.arrayContaining(["household.status", "household.policy"]),
-        toolNames: expect.arrayContaining(["steward_policy_manage", "unraid_restart_container", "unraid_check_services", "sanctuary_get_download_queue", "sanctuary_resume_download_queue", "list_recent_attachments", "materialize_attachment", "describe_image"]),
+        toolNames: expect.arrayContaining(["steward_policy_manage", "unraid_restart_container", "unraid_check_services", "sanctuary_get_download_queue", "sanctuary_resume_download_queue", "sanctuary_search_media_catalog", "list_recent_attachments", "materialize_attachment", "describe_image"]),
         effectScopes: expect.arrayContaining(["telegram.proactive", "telegram.request_return"]),
       },
       "sanctuary-household": {
         version: 5,
         contextScopes: expect.arrayContaining(["household.status"]),
-        toolNames: expect.arrayContaining(["unraid_get_system", "unraid_check_services", "list_recent_attachments", "materialize_attachment", "describe_image"]),
+        toolNames: expect.arrayContaining(["unraid_get_system", "unraid_check_services", "sanctuary_search_media_catalog", "list_recent_attachments", "materialize_attachment", "describe_image"]),
         effectScopes: ["telegram.request_return"],
       },
       "sanctuary-event": {
@@ -169,13 +177,18 @@ describe("Mendelow Cloud Butler household UX", () => {
 
   it("freezes phone-sized, action-first owner and family conversations", () => {
     const transcripts = JSON.parse(fs.readFileSync(transcriptPath, "utf8")) as Transcript[]
-    expect(transcripts.map((entry) => entry.id)).toEqual(["owner-status", "expected-off", "credit-top-up", "specified-snooze", "storage-creative", "books-troubleshooting", "tv-troubleshooting", "movie-request", "full-visibility", "family-privacy"])
+    expect(transcripts.map((entry) => entry.id)).toEqual(["owner-status", "expected-off", "credit-top-up", "specified-snooze", "storage-creative", "books-troubleshooting", "tv-troubleshooting", "movie-request", "catalog-favorite", "full-visibility", "family-privacy"])
     for (const entry of transcripts) {
       expect(entry.user.trim()).not.toBe("")
       expect(entry.reply.length, entry.id).toBeLessThanOrEqual(420)
       expect(entry.reply, entry.id).not.toMatch(/\b(?:SABnzbd|Sonarr|Radarr|Jellyseerr|daemon|provider lane|model provider)\b/iu)
+      expect(entry.reply, entry.id).not.toMatch(/\b(?:Butler here|responsive|Ready for your prompt|Rattling along fine)\b/u)
       expect(entry.tools, entry.id).not.toEqual(expect.arrayContaining(["shell", "read_file", "write_file", "jellyseerr_request", "sonarr_add", "radarr_add"]))
     }
+    expect(transcripts.find((entry) => entry.id === "owner-status")?.reply).toContain("house remains upright")
+    expect(transcripts.find((entry) => entry.id === "catalog-favorite")?.tools).toEqual(["sanctuary_search_media_catalog"])
+    expect(transcripts.find((entry) => entry.id === "catalog-favorite")?.reply).toContain("From the shelf")
+    expect(transcripts.find((entry) => entry.id === "full-visibility")?.reply).toContain("short ledger")
   })
 
   it("keeps learned expected-off policy scoped and reminders tied to real awaits", () => {
@@ -183,6 +196,7 @@ describe("Mendelow Cloud Butler household UX", () => {
     const expectedOff = transcripts.find((entry) => entry.id === "expected-off")!
     expect(expectedOff.reply).toContain("applies only to Books")
     expect(psyche("LORE")).toContain("Books maps to the exact containers `calibre` and `calibre-web`")
+    expect(psyche("LORE")).toContain("Jellyfin is the household media shelf")
     expect(expectedOff.tools).toEqual(["steward_policy_manage"])
     const reminder = transcripts.find((entry) => entry.id === "specified-snooze")!
     expect(reminder.reply).toContain("Friday at 10:00 AM")
@@ -222,6 +236,11 @@ describe("Mendelow Cloud Butler household UX", () => {
     expect(storage.evidence).toEqual({ pending: 1, opportunities: 1 })
     expect(storage.reply).toContain(`${storage.evidence!.pending === 1 ? "one item" : storage.evidence!.pending} queued`)
     expect(storage.reply).toContain(`${storage.evidence!.opportunities === 1 ? "one" : storage.evidence!.opportunities} unusually large`)
+    const catalog = transcripts.find((entry) => entry.id === "catalog-favorite")!
+    expect(catalog.reply).toContain("From the shelf")
+    expect(catalog.reply).toContain("I can’t watch it")
+    expect(catalog.reply).not.toMatch(/\b(?:just|only|merely)\s+(?:a\s+)?(?:bot|AI|assistant)\b/iu)
+    expect(catalog.tools).toEqual(["sanctuary_search_media_catalog"])
   })
 
   it("does not invent a media API and keeps family replies private", () => {
@@ -284,9 +303,10 @@ describe("Mendelow Cloud Butler household UX", () => {
       .filter((name) => household.evaluator.advertisedToolNames.includes(name))
     setAgentName(path.basename(agentRoot, ".ouro"))
 
-    expect(advertised).toEqual(["save_friend_note", "list_recent_attachments", "materialize_attachment", "describe_image", "await_condition", "resolve_await", "cancel_await", "unraid_list_containers", "unraid_get_storage", "unraid_get_disks", "unraid_get_system", "unraid_check_services", "unraid_restart_container", "settle", "speak"])
+    expect(advertised).toEqual(["save_friend_note", "list_recent_attachments", "materialize_attachment", "describe_image", "await_condition", "resolve_await", "cancel_await", "unraid_list_containers", "unraid_get_storage", "sanctuary_search_media_catalog", "unraid_get_disks", "unraid_get_system", "unraid_check_services", "unraid_restart_container", "settle", "speak"])
     expect(household.evaluator.advertisedToolNames).not.toEqual(expect.arrayContaining(["sanctuary_get_download_queue", "sanctuary_resume_download_queue"]))
     expect(household.evaluator.advertisedToolNames).not.toContain("sanctuary_get_media_optimization")
+    expect(await execTool("sanctuary_search_media_catalog", { query: "Moonstruck" }, { ...household.context, sanctuary: { searchMediaCatalog: async () => ({ ok: true, data: { matchedItems: 0, items: [] } }) } } as any)).toContain('"matchedItems":0')
     expect(await execTool("sanctuary_get_download_queue", {}, { ...household.context, sanctuary: { getDownloadQueue: async () => ({ paused: true }) } } as any)).toContain("relationship authorization required")
     expect(await execTool("sanctuary_resume_download_queue", {}, { ...household.context, sanctuary: { resumeDownloadQueue: async () => ({ ok: true }) } } as any)).toContain("relationship authorization required")
     const deniedRead = await execTool("query_cares", {}, household.context)

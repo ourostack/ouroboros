@@ -2044,7 +2044,7 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT" live-precutover`
     }
     expect(spawnSync("/bin/sh", ["-n", launcherPath]).status).toBe(0)
     expect(launcher).toContain("TIME_LIMIT=900")
-    expect(launcher).toContain("TIME_LIMIT=4950")
+    expect(launcher).toContain("TIME_LIMIT=5700")
     expect(launcher).toContain("TIME_LIMIT=780")
     expect(launcher).toContain('--pull=never --network "$NETWORK"')
     expect(launcher).toContain("--user 10001:10001 --read-only")
@@ -2083,7 +2083,7 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT" live-precutover`
     expect(launcher).toContain('dst=/run/ouro-acceptance/container-digest,readonly')
     expect(launcher).toContain('dst=/run/ouro-acceptance/postboot-health.json,readonly')
     expect(launcher).toContain('dst=/run/ouro-acceptance/container-inspect.json,readonly')
-    expect(launcher).toContain('evidence-snapshot) TIME_LIMIT=4950; NETWORK=host; INPUT=no; BUNDLE_MODE=readonly; BROKER=yes')
+    expect(launcher).toContain('evidence-snapshot) TIME_LIMIT=5700; NETWORK=host; INPUT=no; BUNDLE_MODE=readonly; BROKER=yes')
     expect(launcher).toContain('\nstart_broker\nEXPECTED_CONFIG=')
     expect(launcher).toContain('dst=/run/ouro-acceptance/boot-id,readonly')
     expect(launcher).toContain('/usr/bin/docker stop --time 30 "$EXPECTED_CONTAINER_ID"')

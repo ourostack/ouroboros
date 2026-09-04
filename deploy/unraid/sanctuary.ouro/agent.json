@@ -7,9 +7,9 @@
   "privateRuntime": { "autoStart": true },
   "habitPaidTurnsPerDay": 24,
   "phrases": {
-    "thinking": ["checking sanctuary"],
-    "tool": ["checking the server"],
-    "followup": ["closing the loop"]
+    "thinking": ["consulting the household machinery"],
+    "tool": ["checking the troublesome little machine"],
+    "followup": ["returning with the tray"]
   },
   "senses": {
     "cli": { "enabled": false },

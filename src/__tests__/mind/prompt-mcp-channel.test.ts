@@ -177,6 +177,8 @@ describe("runtimeInfoSection mcp channel", () => {
     resetPsycheCache()
     const result = runtimeInfoSection("telegram")
     expect(result).toContain("telegram handler")
+    expect(result).toContain("phone-native does not mean sterile")
+    expect(result).toContain("warm, dry, and capable")
   })
 
   it("a2a channel includes agent-peer trust guidance", async () => {
