@@ -6,9 +6,12 @@ class FakeFrontendClient {
   listener: ((event: any) => void) | null = null
   close = vi.fn()
   loadResult: any = { events: [], lastSequence: 0, hasMore: false, degraded: false, incompleteTurnIds: [] }
+  failMethod: string | null = null
+  failure: unknown = null
 
   async request(method: string, params: any): Promise<any> {
     this.requests.push({ method, params })
+    if (method === this.failMethod) throw this.failure
     if (method === "session.load") return this.loadResult
     if (method === "turn.cancel") return { cancelled: true }
     return { accepted: true }
@@ -137,8 +140,15 @@ describe("Ouro ACP server", () => {
         { type: "assistant_delivery", data: { text: "answer" }, turnId: "turn-1" },
         { type: "tool_started", data: { name: "read_file", args: {} }, turnId: "turn-1" },
         { type: "tool_completed", data: { name: "read_file", summary: "ok", success: true }, turnId: "turn-1" },
+        { type: "tool_started", data: {}, turnId: "turn-2" },
+        { type: "tool_completed", data: { success: false }, turnId: "turn-2" },
+        { type: "structured_output", data: { output: { items: [{}, { text: " " }, { text: "Valid" }] } }, turnId: "turn-2" },
+        { type: "structured_output", data: {}, turnId: "turn-2" },
+        { type: "user_message", data: {}, turnId: "turn-2" },
+        { type: "assistant_delivery", data: {}, turnId: "turn-2" },
+        { type: "ignored", turnId: "turn-2" },
       ],
-      lastSequence: 4,
+      lastSequence: 11,
       hasMore: false,
       degraded: false,
       incompleteTurnIds: [],
@@ -162,6 +172,10 @@ describe("Ouro ACP server", () => {
       "agent_message_chunk",
       "tool_call",
       "tool_call_update",
+      "tool_call",
+      "tool_call_update",
+      "plan",
+      "plan",
     ])
     expect(client.requests.some((request) => request.method === "turn.start")).toBe(false)
     server.stop()
@@ -211,8 +225,9 @@ describe("Ouro ACP server", () => {
     input.write('{"jsonrpc":"1.0","id":1,"method":"initialize","params":{}}\n')
     input.write('{"jsonrpc":"2.0","id":2,"method":"unknown","params":{}}\n')
     input.write('{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"missing","prompt":[]}}\n')
+    input.write('{"jsonrpc":"2.0","id":4,"method":"session/new","params":{}}\n')
 
-    await waitFor(messages, (message) => message.id === 3)
+    await waitFor(messages, (message) => message.id === 4)
     expect(messages.slice(0, 4)).toEqual([
       { jsonrpc: "2.0", id: null, error: { code: -32700, message: "parse error" } },
       { jsonrpc: "2.0", id: 1, error: { code: -32600, message: "jsonrpc must be 2.0" } },
@@ -222,5 +237,118 @@ describe("Ouro ACP server", () => {
 
     server.stop()
     expect(client.close).toHaveBeenCalledOnce()
+  })
+
+  it("rejects invalid versions, params, prompts, and overlapping turns", async () => {
+    const { input, client, server, messages } = await setup()
+    server.start()
+    input.write("\n")
+    input.write('{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":1}}\n')
+    input.write('{"jsonrpc":"1.0","method":"initialize","params":{}}\n')
+    input.write('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":2}}\n')
+    input.write('{"jsonrpc":"2.0","method":"session/new","params":{}}\n')
+    input.write('{"jsonrpc":"2.0","method":"session/load","params":{}}\n')
+    input.write('{"jsonrpc":"2.0","method":"session/prompt","params":{}}\n')
+    input.write('{"jsonrpc":"2.0","id":2,"method":7,"params":{}}\n')
+    input.write('{"jsonrpc":"2.0","id":3,"method":"session/new","params":[]}\n')
+    input.write('{"jsonrpc":"2.0","id":4,"method":"session/prompt","params":{"sessionId":"missing","prompt":"text"}}\n')
+    input.write('{"jsonrpc":"2.0","id":5,"method":"session/new"}\n')
+    const sessionId = (await waitFor(messages, (message) => message.id === 5)).result.sessionId
+    input.write(`${JSON.stringify({ jsonrpc: "2.0", id: 6, method: "session/prompt", params: { sessionId, prompt: [] } })}\n`)
+    await waitFor(messages, (message) => message.id === 6)
+    input.write(`${JSON.stringify({ jsonrpc: "2.0", id: 7, method: "session/prompt", params: { sessionId, prompt: [{ type: "image" }] } })}\n`)
+    await waitFor(messages, (message) => message.id === 7)
+    input.write(`${JSON.stringify({ jsonrpc: "2.0", id: 10, method: "session/prompt", params: { sessionId, prompt: "text" } })}\n`)
+    await waitFor(messages, (message) => message.id === 10)
+    input.write(`${JSON.stringify({ jsonrpc: "2.0", id: 8, method: "session/prompt", params: { sessionId, prompt: [{ type: "text", text: "first" }] } })}\n`)
+    await waitFor(client.requests, (request) => request.method === "turn.start")
+    input.write(`${JSON.stringify({ jsonrpc: "2.0", id: 9, method: "session/prompt", params: { sessionId, prompt: [{ type: "text", text: "second" }] } })}\n`)
+    input.write(`${JSON.stringify({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId: "no-active" } })}\n`)
+
+    await waitFor(messages, (message) => message.id === 9)
+    expect(messages.find((message) => message.id === 1)?.error).toEqual({ code: -32602, message: "protocolVersion must be 1" })
+    expect(messages.find((message) => message.id === 2)?.error).toEqual({ code: -32602, message: "method must be a non-empty string" })
+    expect(messages.find((message) => message.id === 3)?.error).toEqual({ code: -32602, message: "params must be an object" })
+    expect(messages.find((message) => message.id === 4)?.error).toEqual({ code: -32001, message: "unknown session: missing" })
+    expect(messages.find((message) => message.id === 6)?.error).toEqual({ code: -32602, message: "prompt must contain text" })
+    expect(messages.find((message) => message.id === 7)?.error).toEqual({ code: -32602, message: "prompt must contain text" })
+    expect(messages.find((message) => message.id === 10)?.error).toEqual({ code: -32602, message: "prompt must be an array" })
+    expect(messages.find((message) => message.id === 9)?.error).toEqual({ code: -32002, message: "session already has an active prompt" })
+
+    const active = client.requests.find((request) => request.method === "turn.start")!
+    client.emit({ event: "ignored", sessionKey: 7, turnId: 7 })
+    client.emit({ event: "ignored", sessionKey: sessionId, turnId: 7 })
+    client.emit({ event: "turn.completed", sessionKey: sessionId, turnId: "other" })
+    client.emit({ event: "text.delta", sessionKey: "unknown", turnId: active.params.turnId, text: "ignored" })
+    client.emit({ event: "text.delta", sessionKey: sessionId, turnId: active.params.turnId })
+    client.emit({ event: "reasoning.delta", sessionKey: sessionId, turnId: active.params.turnId })
+    client.emit({ event: "turn.completed", sessionKey: sessionId, turnId: active.params.turnId })
+    await waitFor(messages, (message) => message.id === 8)
+    server.stop()
+    server.stop()
+  })
+
+  it("returns terminal frontend failures and hostile dependency errors", async () => {
+    const { input, client, server, messages } = await setup()
+    input.write('{"jsonrpc":"2.0","id":1,"method":"session/new","params":{}}\n')
+    const sessionId = (await waitFor(messages, (message) => message.id === 1)).result.sessionId
+    input.write(`${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "session/prompt", params: { sessionId, prompt: [{ type: "text", text: "fail" }] } })}\n`)
+    await waitFor(client.requests, (request) => request.method === "turn.start")
+    const turnId = client.requests.find((request) => request.method === "turn.start")!.params.turnId
+    client.emit({ event: "turn.failed", sessionKey: sessionId, turnId })
+    expect((await waitFor(messages, (message) => message.id === 2)).error).toEqual({
+      code: -32000,
+      message: "frontend turn failed",
+    })
+
+    client.failMethod = "session.load"
+    client.failure = "hostile dependency"
+    input.write('{"jsonrpc":"2.0","id":3,"method":"session/load","params":{"sessionId":"existing"}}\n')
+    expect((await waitFor(messages, (message) => message.id === 3)).error).toEqual({
+      code: -32000,
+      message: "hostile dependency",
+    })
+    server.stop()
+  })
+
+  it("stops cleanly before creating a frontend client", async () => {
+    const input = new PassThrough()
+    const output = new PassThrough()
+    const client = new FakeFrontendClient()
+    const { createAcpServer } = await import("../../senses/acp-server")
+    const server = createAcpServer({
+      agent: "boss",
+      friendId: "local-ari",
+      frontendSocketPath: "/tmp/frontend.sock",
+      stdin: input,
+      stdout: output,
+      createFrontendClient: async () => client,
+    })
+
+    server.stop()
+    server.start()
+    server.stop()
+    server.stop()
+    expect(client.close).not.toHaveBeenCalled()
+  })
+
+  it("rejects an active prompt when the ACP server stops", async () => {
+    const { input, client, server, messages } = await setup()
+    input.write('{"jsonrpc":"2.0","id":1,"method":"session/new","params":{}}\n')
+    const sessionId = (await waitFor(messages, (message) => message.id === 1)).result.sessionId
+    input.write(`${JSON.stringify({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "session/prompt",
+      params: { sessionId, prompt: [{ type: "text", text: "wait" }] },
+    })}\n`)
+    await waitFor(client.requests, (request) => request.method === "turn.start")
+
+    server.stop()
+
+    expect((await waitFor(messages, (message) => message.id === 2)).error).toEqual({
+      code: -32000,
+      message: "ACP server stopped",
+    })
   })
 })
