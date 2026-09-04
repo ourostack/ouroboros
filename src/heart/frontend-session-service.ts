@@ -26,6 +26,12 @@ export interface FrontendTurnRequest {
   runtimeMcpServers?: RuntimeMcpServers
 }
 
+export interface FrontendSessionRef {
+  agent: string
+  friendId: string
+  sessionKey: string
+}
+
 export interface FrontendTurnResult {
   turnId: string
   outcome: NonNullable<RunSenseTurnResult["turnOutcome"]>
@@ -95,6 +101,18 @@ export class FrontendSessionService {
   subscribe(listener: FrontendServiceListener): () => void {
     this.listeners.add(listener)
     return () => this.listeners.delete(listener)
+  }
+
+  loadSession(
+    ref: FrontendSessionRef,
+    options: { afterSequence?: number; limit?: number } = {},
+  ) {
+    if (!this.journal) throw new Error("frontend journal is unavailable")
+    return this.journal.replay({
+      agent: required(ref.agent, "agent"),
+      friendId: required(ref.friendId, "friendId"),
+      sessionId: required(ref.sessionKey, "sessionKey"),
+    }, options)
   }
 
   async runTurn(request: FrontendTurnRequest): Promise<FrontendTurnResult> {

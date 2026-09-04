@@ -155,6 +155,19 @@ export async function startFrontendSocketServer(options: {
     const method = requiredString(request.method, "method")
     const params = record(request.params ?? {})
 
+    if (method === "session.load") {
+      const result = options.service.loadSession({
+        agent: requiredString(params.agent, "agent"),
+        friendId: requiredString(params.friendId, "friendId"),
+        sessionKey: requiredString(params.sessionKey, "sessionKey"),
+      }, {
+        ...(params.afterSequence !== undefined ? { afterSequence: params.afterSequence as number } : {}),
+        ...(params.limit !== undefined ? { limit: params.limit as number } : {}),
+      })
+      client.writer.send(response(id, result as unknown as Record<string, unknown>))
+      return
+    }
+
     if (method === "session.subscribe" || method === "session.unsubscribe") {
       const sessionKey = requiredString(params.sessionKey, "sessionKey")
       if (method === "session.subscribe") client.subscriptions.add(sessionKey)

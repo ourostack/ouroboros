@@ -227,6 +227,11 @@ describe("frontend socket", () => {
         degraded: false,
       },
     })
+    socket.write('{"protocolVersion":1,"id":"load-defaults","method":"session.load","params":{"agent":"boss","friendId":"friend-1","sessionKey":"session-1"}}\n')
+    expect(await waitForFrame(frames, (frame) => frame.id === "load-defaults")).toMatchObject({
+      ok: true,
+      result: { lastSequence: 1 },
+    })
     socket.destroy()
   })
 
