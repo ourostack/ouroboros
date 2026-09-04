@@ -197,6 +197,25 @@ describe("Ouro ACP server", () => {
     server.stop()
   })
 
+  it("adopts a safe client-owned session id and rejects invalid or duplicate ids", async () => {
+    const { input, server, messages } = await setup()
+    input.write('{"jsonrpc":"2.0","id":1,"method":"session/new","params":{"sessionId":"boss-session"}}\n')
+    expect(await waitFor(messages, (message) => message.id === 1)).toMatchObject({
+      result: { sessionId: "boss-session", friendId: "local-ari" },
+    })
+    input.write('{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"sessionId":"../unsafe"}}\n')
+    input.write('{"jsonrpc":"2.0","id":3,"method":"session/new","params":{"sessionId":"boss-session"}}\n')
+    expect((await waitFor(messages, (message) => message.id === 2)).error).toMatchObject({
+      code: -32602,
+      message: "sessionId must be a safe identifier",
+    })
+    expect((await waitFor(messages, (message) => message.id === 3)).error).toMatchObject({
+      code: -32002,
+      message: "session already exists: boss-session",
+    })
+    server.stop()
+  })
+
   it("reissues an in-memory pending permission after session load", async () => {
     const { input, client, server, messages } = await setup()
     client.loadResult = {

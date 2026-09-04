@@ -14,6 +14,8 @@ interface JsonRpcRequest {
   error?: unknown
 }
 
+const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/
+
 class AcpProtocolError extends Error {
   constructor(readonly code: number, message: string) {
     super(message)
@@ -237,7 +239,11 @@ export function createAcpServer(options: AcpServerOptions): AcpServer {
 
     if (method === "session/new") {
       if (id === undefined) return
-      const sessionId = randomUUID()
+      const sessionId = requestParams.sessionId === undefined
+        ? randomUUID()
+        : requiredString(requestParams.sessionId, "sessionId")
+      if (!SESSION_ID.test(sessionId)) throw new AcpProtocolError(-32602, "sessionId must be a safe identifier")
+      if (sessions.has(sessionId)) throw new AcpProtocolError(-32002, `session already exists: ${sessionId}`)
       await subscribe(sessionId)
       result(id, { sessionId, friendId: options.friendId })
       return
