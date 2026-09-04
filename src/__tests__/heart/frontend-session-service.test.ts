@@ -112,4 +112,23 @@ describe("frontend session service", () => {
     await expect(service.runTurn({ ...request(), runtimeMcpServers })).rejects.toThrow("omitted its outcome")
     expect(service.hasTurn("turn-1")).toBe(false)
   })
+
+  it("cancels every active frontend turn during daemon shutdown", async () => {
+    const entered = [Promise.withResolvers<AbortSignal>(), Promise.withResolvers<AbortSignal>()]
+    let index = 0
+    const runner = vi.fn(async (input: any) => {
+      entered[index++].resolve(input.signal)
+      await new Promise<void>((resolve) => input.signal.addEventListener("abort", () => resolve(), { once: true }))
+      return { ...settledResult(""), turnOutcome: "aborted" as const }
+    })
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const service = new FrontendSessionService({ runner })
+    const turns = [service.runTurn(request("turn-1")), service.runTurn(request("turn-2"))]
+    const signals = await Promise.all(entered.map((item) => item.promise))
+
+    expect(service.cancelAllTurns()).toBe(2)
+    expect(signals.every((signal) => signal.aborted)).toBe(true)
+    await Promise.all(turns)
+    expect(service.cancelAllTurns()).toBe(0)
+  })
 })
