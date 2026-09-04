@@ -48,6 +48,24 @@ describe("strict advertised tool arguments", () => {
     })
   })
 
+  it("allows shared subschemas that are reused without forming a cycle", () => {
+    const reusableProperty = { type: "string" }
+    const schema = {
+      type: "object",
+      properties: {
+        first: reusableProperty,
+        second: reusableProperty,
+      },
+      required: ["first", "second"],
+      additionalProperties: false,
+    }
+
+    expect(validateAdvertisedToolArguments(
+      '{"first":"one","second":"two"}',
+      schema,
+    )).toMatchObject({ ok: true })
+  })
+
   it("rejects cycles reached through object properties and array entries", () => {
     const objectCycle: Record<string, unknown> = { type: "object" }
     objectCycle.properties = { self: objectCycle }
