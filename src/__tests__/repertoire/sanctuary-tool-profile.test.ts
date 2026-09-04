@@ -28,6 +28,7 @@ describe("Sanctuary active tool profile", () => {
       "unraid_get_container_logs",
       "unraid_get_storage",
       "sanctuary_get_media_optimization",
+      "sanctuary_search_media_catalog",
       "unraid_get_disks",
       "unraid_get_notifications",
       "unraid_get_system",
