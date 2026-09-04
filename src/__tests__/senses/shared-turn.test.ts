@@ -459,6 +459,18 @@ describe("runSenseTurn", () => {
 
   it("emits normalized live frontend events and every outward delivery", async () => {
     const events: any[] = []
+    const structuredOutput = {
+      schemaVersion: 1,
+      id: "structured-1",
+      kind: "ordered_list",
+      sourceEventId: "event-1",
+      recordedAt: "2026-09-03T20:00:00.000Z",
+      items: [{ label: "1", text: "First" }],
+    }
+    mockDeferPostTurnPersist.mockImplementationOnce(async () => {
+      mockLoadSession.mockReturnValue({ messages: [], structuredOutputs: [structuredOutput] })
+      return []
+    })
     mockHandleInboundTurn.mockImplementationOnce(async (input: any) => {
       input.callbacks.onModelStart()
       input.callbacks.onModelStreamStart()
@@ -501,6 +513,7 @@ describe("runSenseTurn", () => {
       { type: "assistant_delivery", data: { kind: "speak", text: "first" } },
       { type: "text_cleared", data: {} },
       { type: "text_delta", data: { text: "second" } },
+      { type: "structured_output", data: { output: structuredOutput } },
       { type: "assistant_delivery", data: { kind: "text", text: "second" } },
     ])
   })
