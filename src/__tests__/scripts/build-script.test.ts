@@ -104,6 +104,20 @@ describe("build script", () => {
     expect(npmExecutable("darwin")).toBe("npm")
   })
 
+  it("can skip the Mailbox UI dependency install when the caller already installed it", () => {
+    const { calls, deps } = makeDeps()
+
+    expect(runBuildCli(["--skip-mailbox-ui-install"], deps)).toBe(0)
+
+    expect(calls.map((call) => call.args.join(" "))).toEqual([
+      "/repo/scripts/clean-dist.cjs",
+      "/repo/node_modules/typescript/bin/tsc",
+      "/repo/scripts/sanctuary-health-acceptance-probe-entry-smoke.cjs",
+      "run build --prefix packages/mailbox-ui",
+      "/repo/scripts/copy-mailbox-ui.cjs",
+    ])
+  })
+
   it("keeps build step definitions pointed at the copied Mailbox UI assets", () => {
     const { deps } = makeDeps()
 

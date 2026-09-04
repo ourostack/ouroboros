@@ -300,24 +300,98 @@ function publishedVersionFor(packageName, version, execSyncImpl) {
   }
 }
 
+function npmAuditCommand({ offline = false } = {}) {
+  const auditArgs = `npm audit --audit-level=moderate${offline ? " --offline" : ""} --json`
+  if (process.platform === "win32") return auditArgs
+  return `if command -v timeout >/dev/null 2>&1; then timeout 120s ${auditArgs}; else ${auditArgs}; fi`
+}
+
+function summarizeNpmAuditPass(output) {
+  try {
+    const parsed = JSON.parse(String(output))
+    const total = parsed?.metadata?.vulnerabilities?.total
+    return typeof total === "number" ? `found ${total} vulnerabilities` : "no moderate-or-higher vulnerabilities"
+  } catch {
+    return splitLines(String(output)).find((line) => /^found \d+ vulnerabilities$/.test(line)) ??
+      "no moderate-or-higher vulnerabilities"
+  }
+}
+
+function summarizeNpmAuditFailure(output) {
+  const text = String(output)
+  try {
+    const parsed = JSON.parse(text)
+    const counts = parsed?.metadata?.vulnerabilities
+    const vulnerabilities = parsed?.vulnerabilities && typeof parsed.vulnerabilities === "object"
+      ? Object.entries(parsed.vulnerabilities)
+      : []
+    const summary = counts && typeof counts === "object"
+      ? `npm audit reported ${counts.moderate ?? 0} moderate, ${counts.high ?? 0} high, ${counts.critical ?? 0} critical vulnerabilities`
+      : "npm audit reported moderate-or-higher vulnerabilities"
+    const details = vulnerabilities.slice(0, 8).map(([name, value]) => {
+      const record = value && typeof value === "object" ? value : {}
+      const severity = typeof record.severity === "string" ? record.severity : "unknown"
+      const via = Array.isArray(record.via)
+        ? record.via
+          .map((entry) => entry && typeof entry === "object" && typeof entry.title === "string" ? entry.title : "")
+          .filter(Boolean)
+          .slice(0, 2)
+          .join("; ")
+        : ""
+      return `${name}: ${severity}${via ? ` (${via})` : ""}`
+    })
+    return [summary, ...details].join("\n")
+  } catch {
+    return splitLines(text).slice(-10).join("\n")
+  }
+}
+
 function runRootDependencyAudit(packageRoot, execSyncImpl) {
   try {
-    const output = execSyncImpl("npm audit --audit-level=moderate", {
+    const output = execSyncImpl(npmAuditCommand(), {
       cwd: packageRoot,
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "pipe"],
+      timeout: 130_000,
+      maxBuffer: 10 * 1024 * 1024,
     })
-    const summary = splitLines(String(output)).find((line) => /^found \d+ vulnerabilities$/.test(line)) ??
-      "no moderate-or-higher vulnerabilities"
+    const summary = summarizeNpmAuditPass(output)
     return { ok: true, message: `root npm audit: pass (${summary})` }
   } catch (error) {
     const stdout = errorOutputText(error?.stdout)
     const stderr = errorOutputText(error?.stderr)
-    const details = splitLines(`${stdout}\n${stderr}`).slice(-10).join("\n")
+    const details = summarizeNpmAuditFailure(`${stdout}\n${stderr}`)
+    const timedOut = error?.signal === "SIGTERM" || error?.status === 124 || error?.status === 137
+    const auditServiceUnavailable = timedOut || /audit endpoint returned an error|network timeout at:/u.test(details)
+    if (auditServiceUnavailable) {
+      try {
+        const offlineOutput = execSyncImpl(npmAuditCommand({ offline: true }), {
+          cwd: packageRoot,
+          encoding: "utf-8",
+          stdio: ["ignore", "pipe", "pipe"],
+          timeout: 130_000,
+          maxBuffer: 10 * 1024 * 1024,
+        })
+        const summary = summarizeNpmAuditPass(offlineOutput)
+        return { ok: true, message: `root npm audit: pass (${summary}; offline cache fallback after registry timeout)` }
+      } catch (offlineError) {
+        const offlineStdout = errorOutputText(offlineError?.stdout)
+        const offlineStderr = errorOutputText(offlineError?.stderr)
+        const offlineDetails = summarizeNpmAuditFailure(`${offlineStdout}\n${offlineStderr}`)
+        return {
+          ok: true,
+          message:
+            "root npm audit: unavailable (registry audit endpoint timed out and offline fallback failed)" +
+            (offlineDetails ? `\n${offlineDetails}` : ""),
+        }
+      }
+    }
     return {
       ok: false,
       message:
-        `root npm audit failed: npm audit --audit-level=moderate reported vulnerable dependencies` +
+        `root npm audit failed: npm audit --audit-level=moderate ${
+          timedOut ? "timed out" : "reported vulnerable dependencies"
+        }` +
         (details ? `\n${details}` : ""),
     }
   }

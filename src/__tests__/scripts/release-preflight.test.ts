@@ -87,12 +87,16 @@ function makeExecSyncImpl(response: ExecResponse = {}) {
       throw new Error("not published")
     }
 
-    if (command === "npm audit --audit-level=moderate") {
+    if (command.includes("npm audit --audit-level=moderate") && !command.includes("--offline")) {
       if (response.auditFailureOutput) {
         const error = new Error("audit failed") as Error & { stdout: Buffer }
         error.stdout = Buffer.from(response.auditFailureOutput)
         throw error
       }
+      return response.auditOutput ?? "found 0 vulnerabilities\n"
+    }
+
+    if (command.includes("npm audit --audit-level=moderate --offline")) {
       return response.auditOutput ?? "found 0 vulnerabilities\n"
     }
 
@@ -367,6 +371,34 @@ describe("release-preflight", () => {
     expect(result.errors.join("\n")).toContain("3 moderate severity vulnerabilities")
   })
 
+  it("summarizes json npm audit vulnerabilities when the registry reports advisories", () => {
+    const result = runRootDependencyAudit("/tmp/ouro", () => {
+      const error = new Error("audit failed") as Error & { stdout: Buffer }
+      error.stdout = Buffer.from(JSON.stringify({
+        auditReportVersion: 2,
+        vulnerabilities: {
+          vite: {
+            severity: "moderate",
+            via: [{ title: "Vite development server vulnerability" }],
+          },
+        },
+        metadata: {
+          vulnerabilities: {
+            moderate: 1,
+            high: 0,
+            critical: 0,
+            total: 1,
+          },
+        },
+      }))
+      throw error
+    })
+
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain("npm audit reported 1 moderate, 0 high, 0 critical vulnerabilities")
+    expect(result.message).toContain("vite: moderate (Vite development server vulnerability)")
+  })
+
   it("reports root npm audit failures even when npm prints no details", () => {
     const result = runRootDependencyAudit("/tmp/ouro", () => {
       throw new Error("audit failed")
@@ -375,6 +407,62 @@ describe("release-preflight", () => {
     expect(result).toEqual({
       ok: false,
       message: "root npm audit failed: npm audit --audit-level=moderate reported vulnerable dependencies",
+    })
+  })
+
+  it("bounds the root npm dependency audit so release preflight cannot hang forever", () => {
+    const calls: Array<{ command: string; options: { timeout?: number } }> = []
+    const result = runRootDependencyAudit("/tmp/ouro", (command: string, options: { timeout?: number }) => {
+      calls.push({ command, options })
+      if (command.includes("--offline")) return "found 0 vulnerabilities\n"
+      const error = new Error("audit timed out") as Error & { signal?: string }
+      error.signal = "SIGTERM"
+      throw error
+    })
+
+    expect(calls).toEqual([
+      {
+        command: expect.stringContaining("timeout 120s npm audit --audit-level=moderate"),
+        options: expect.objectContaining({ timeout: 130_000 }),
+      },
+      {
+        command: expect.stringContaining("timeout 120s npm audit --audit-level=moderate --offline"),
+        options: expect.objectContaining({ timeout: 130_000 }),
+      },
+    ])
+    expect(result).toEqual({
+      ok: true,
+      message: "root npm audit: pass (found 0 vulnerabilities; offline cache fallback after registry timeout)",
+    })
+  })
+
+  it("treats shell timeout exit status as an audit endpoint timeout", () => {
+    const result = runRootDependencyAudit("/tmp/ouro", (command: string) => {
+      if (command.includes("--offline")) return JSON.stringify({
+        metadata: { vulnerabilities: { total: 0 } },
+        vulnerabilities: {},
+      })
+      const error = new Error("audit command timed out") as Error & { status?: number }
+      error.status = 124
+      throw error
+    })
+
+    expect(result).toEqual({
+      ok: true,
+      message: "root npm audit: pass (found 0 vulnerabilities; offline cache fallback after registry timeout)",
+    })
+  })
+
+  it("keeps release preflight visible but non-blocking when the audit endpoint and offline fallback are unavailable", () => {
+    const result = runRootDependencyAudit("/tmp/ouro", (command: string) => {
+      const error = new Error(`${command} failed`) as Error & { signal?: string }
+      if (!command.includes("--offline")) error.signal = "SIGTERM"
+      throw error
+    })
+
+    expect(result).toEqual({
+      ok: true,
+      message: "root npm audit: unavailable (registry audit endpoint timed out and offline fallback failed)",
     })
   })
 

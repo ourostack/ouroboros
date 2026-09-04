@@ -1,6 +1,6 @@
 {
   "name": "@ouro.bot/cli",
-  "version": "0.1.0-alpha.778",
+  "version": "0.1.0-alpha.779",
   "engines": {
     "node": ">=22"
   },
@@ -52,7 +52,7 @@
     "release:trust:repair-plan": "node scripts/npm-trusted-publishers.cjs repair-plan",
     "release:trust:repair": "node scripts/npm-trusted-publishers.cjs repair",
     "release:smoke": "node scripts/release-smoke.cjs",
-    "audit:nerves": "npm run build && node dist/nerves/coverage/cli-main.js"
+    "audit:nerves": "npm run build -- --skip-mailbox-ui-install && node dist/nerves/coverage/cli-main.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
