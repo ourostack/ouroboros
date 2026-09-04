@@ -249,6 +249,96 @@ describe("private-runtime policy and ledger", () => {
     expect(readLedger(deps.ledgerPath as string)).toHaveLength(1)
   })
 
+  it("allows verified operator CLI messages with the default policy", async () => {
+    const privateRuntime = await loadPrivateRuntime()
+    const deps = policyDeps()
+
+    const decision = await privateRuntime.requestPrivateTurnDecision(privateTurnRequest({
+      origin: "daemon.private.wake",
+      reason: "operator CLI message",
+      triggerSource: "operator-cli",
+      idempotencyKey: "cli:message:slugger:msg-1",
+      originRefs: [
+        { kind: "cli-command", id: "ouro msg" },
+        { kind: "daemon-receipt", id: "msg-1" },
+      ],
+    }), { ...deps, evaluatePolicy: undefined })
+
+    expect(decision).toMatchObject({
+      result: "allow",
+      executable: true,
+      reason: "verified operator CLI message",
+      idempotencyKey: "cli:message:slugger:msg-1",
+    })
+    expect(readLedger(deps.ledgerPath as string)).toHaveLength(1)
+  })
+
+  it("keeps spoofed operator CLI private wakes denied by default", async () => {
+    const privateRuntime = await loadPrivateRuntime()
+    const deps = policyDeps()
+
+    const decision = await privateRuntime.requestPrivateTurnDecision(privateTurnRequest({
+      origin: "daemon.private.wake",
+      reason: "operator CLI message without daemon receipt",
+      triggerSource: "operator-cli",
+      idempotencyKey: "cli:message:slugger:spoofed",
+      originRefs: [
+        { kind: "cli-command", id: "ouro msg" },
+      ],
+    }), { ...deps, evaluatePolicy: undefined })
+
+    expect(decision).toMatchObject({
+      result: "deny",
+      executable: false,
+      deniedReason: "default policy deny",
+    })
+  })
+
+  it.each([
+    ["await-poke", [{ kind: "await", id: "hey_export" }, { kind: "daemon-command", id: "await.poke" }]],
+    ["await-scheduler", [{ kind: "await", id: "hey_export" }, { kind: "scheduler", id: "await-scheduler" }]],
+    ["await-expiry", [{ kind: "await", id: "hey_export" }, { kind: "scheduler", id: "await-expiry" }]],
+  ])("allows verified %s private wakes with the default policy", async (triggerSource, originRefs) => {
+    const privateRuntime = await loadPrivateRuntime()
+    const deps = policyDeps()
+
+    const decision = await privateRuntime.requestPrivateTurnDecision(privateTurnRequest({
+      origin: "daemon.private.wake",
+      reason: `${triggerSource} for hey_export`,
+      triggerSource,
+      idempotencyKey: `await:slugger:hey_export:${triggerSource}:2026-07-03T20:00:00.000Z`,
+      originRefs,
+    }), { ...deps, evaluatePolicy: undefined })
+
+    expect(decision).toMatchObject({
+      result: "allow",
+      executable: true,
+      reason: "verified daemon await check",
+      triggerSource,
+    })
+  })
+
+  it("keeps spoofed await private wakes denied by default", async () => {
+    const privateRuntime = await loadPrivateRuntime()
+    const deps = policyDeps()
+
+    const decision = await privateRuntime.requestPrivateTurnDecision(privateTurnRequest({
+      origin: "daemon.private.wake",
+      reason: "await scheduler without scheduler provenance",
+      triggerSource: "await-scheduler",
+      idempotencyKey: "await:slugger:hey_export:spoofed",
+      originRefs: [
+        { kind: "await", id: "hey_export" },
+      ],
+    }), { ...deps, evaluatePolicy: undefined })
+
+    expect(decision).toMatchObject({
+      result: "deny",
+      executable: false,
+      deniedReason: "default policy deny",
+    })
+  })
+
   it("keeps spoofed external-event private wakes denied by default", async () => {
     const privateRuntime = await loadPrivateRuntime()
     const deps = policyDeps()
