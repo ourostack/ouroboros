@@ -219,25 +219,35 @@ prepare_live_facts() {
 refresh_live_facts() {
   REFRESHED_SNAPSHOT=$PRIVATE_ROOT/broker-container-inspect.refresh.json
   rm -f -- "$REFRESHED_SNAPSHOT"
-  /usr/bin/timeout -s KILL 60 /usr/local/bin/node -e '
-    const fs = require("node:fs");
-    const net = require("node:net");
-    const [socketPath, outputPath] = process.argv.slice(1);
-    const socket = net.createConnection(socketPath);
-    let response = "";
-    socket.setEncoding("utf8");
-    socket.on("connect", () => socket.end(JSON.stringify({ operation: "container_snapshot", targetId: "sanctuary" })));
-    socket.on("data", (chunk) => {
-      response += chunk;
-      if (Buffer.byteLength(response) > 1024 * 1024) socket.destroy(new Error("container snapshot response exceeds its bound"));
-    });
-    socket.on("end", () => {
-      const envelope = JSON.parse(response);
-      if (!envelope || envelope.ok !== true || !envelope.result || typeof envelope.result !== "object" || Array.isArray(envelope.result)) process.exit(1);
-      fs.writeFileSync(outputPath, `${JSON.stringify(envelope.result)}\n`, { flag: "wx", mode: 0o600 });
-    });
-    socket.on("error", () => process.exit(1));
-  ' "$BROKER_SOCKET" "$REFRESHED_SNAPSHOT"
+  REFRESH_ATTEMPT=0
+  while test "$REFRESH_ATTEMPT" -lt 5; do
+    rm -f -- "$REFRESHED_SNAPSHOT"
+    if /usr/bin/timeout -s KILL 60 /usr/local/bin/node -e '
+      const fs = require("node:fs");
+      const net = require("node:net");
+      const [socketPath, outputPath] = process.argv.slice(1);
+      const socket = net.createConnection(socketPath);
+      let response = "";
+      socket.setEncoding("utf8");
+      socket.on("connect", () => socket.end(JSON.stringify({ operation: "container_snapshot", targetId: "sanctuary" })));
+      socket.on("data", (chunk) => {
+        response += chunk;
+        if (Buffer.byteLength(response) > 1024 * 1024) socket.destroy(new Error("container snapshot response exceeds its bound"));
+      });
+      socket.on("end", () => {
+        if (!response) process.exit(2);
+        let envelope;
+        try { envelope = JSON.parse(response); } catch { process.exit(2); }
+        if (!envelope || envelope.ok !== true || !envelope.result || typeof envelope.result !== "object" || Array.isArray(envelope.result)) process.exit(1);
+        fs.writeFileSync(outputPath, `${JSON.stringify(envelope.result)}\n`, { flag: "wx", mode: 0o600 });
+      });
+      socket.on("error", () => process.exit(1));
+    ' "$BROKER_SOCKET" "$REFRESHED_SNAPSHOT" && test "$(stat -c '%u:%g %a' "$REFRESHED_SNAPSHOT")" = "0:0 600"; then
+      break
+    fi
+    REFRESH_ATTEMPT=$((REFRESH_ATTEMPT + 1))
+    sleep 1
+  done
   test "$(stat -c '%u:%g %a' "$REFRESHED_SNAPSHOT")" = "0:0 600" || return 1
   mv -f -- "$REFRESHED_SNAPSHOT" "$BROKER_SNAPSHOT"
   prepare_live_facts

@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.782",
+      "changes": [
+        "Retry transient empty host-broker snapshot reads in the Sanctuary Unit16 runner, preventing final acceptance evidence capture from failing before scenario execution."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.781",
       "changes": [
         "Allow reused advertised tool subschemas without mistaking them for cycles, so Sanctuary external-event disposition validation can accept batch schemas."
