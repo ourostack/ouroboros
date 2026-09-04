@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.781",
+      "changes": [
+        "Fix external-event disposition tool schema validation for single and batch forms."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.780",
       "changes": [
         "Keep Sanctuary external-event turns on the disposition path by filtering conversational terminal/delivery tools from detector-event tool advertisements."

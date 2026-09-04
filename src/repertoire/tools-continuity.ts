@@ -21,15 +21,36 @@ const externalEventDispositionProperties = {
   stewardPolicyVersion: { type: "number", description: "Exact current policy version used for this decision" },
   decision: { type: "string", enum: ["silent", "act", "ask", "report"] },
   reason: { type: "string", description: "Short plain-language reason for the decision" },
-  nextWake: { type: "string", enum: ["on_change", "on_escalation", "on_recovery", "at"] },
-  wakeAt: { type: "string", description: "ISO time required when nextWake=at" },
-  awaitId: { type: "string", description: "Existing await receipt required when nextWake=at" },
+  nextWake: { type: "string", enum: ["on_change", "on_escalation", "on_recovery", "at"], description: "Use on_change unless you already called await_condition for this exact event and are supplying its awaitId" },
+  wakeAt: { type: "string", description: "ISO time required only when nextWake=at" },
+  awaitId: { type: "string", description: "Existing await_condition receipt required when nextWake=at; never invent one" },
   careId: { type: "string", description: "Existing Care adopted for this incident, if any" },
   actionRefs: { type: "array", items: { type: "string" } },
   verificationRefs: { type: "array", items: { type: "string" } },
 };
 
 const externalEventDispositionRequired = ["recordPath", "expectedGeneration", "classifiedRevision", "classification", "stewardPolicyKind", "decision", "reason", "nextWake"];
+const externalEventDispositionItemProperties = () => structuredClone(externalEventDispositionProperties);
+const externalEventSingleDispositionSchema = () => ({
+  type: "object",
+  properties: externalEventDispositionItemProperties(),
+  required: [...externalEventDispositionRequired],
+  additionalProperties: false,
+});
+const externalEventBatchDispositionSchema = () => ({
+  type: "object",
+  properties: {
+    batch: {
+      type: "array",
+      minItems: 1,
+      maxItems: 32,
+      description: "All exact leases from one coalesced external-event turn",
+      items: externalEventSingleDispositionSchema(),
+    },
+  },
+  required: ["batch"],
+  additionalProperties: false,
+});
 
 function prepareExternalEventDisposition(a: Record<string, unknown>, ctx?: ToolContext) {
   const agentName = getAgentName();
@@ -168,21 +189,7 @@ export const continuityToolDefinitions: ToolDefinition[] = [
         description: "Classify the exact external-event generation I just investigated. An ask or report is the sole owner-delivery path and sends reason once for this receipt; silent and act only record the disposition.",
         parameters: {
           type: "object",
-          properties: {
-            ...externalEventDispositionProperties,
-            batch: {
-              type: "array",
-              minItems: 1,
-              maxItems: 32,
-              description: "All exact leases from one coalesced external-event turn",
-              items: { type: "object", properties: externalEventDispositionProperties, required: externalEventDispositionRequired, additionalProperties: false },
-            },
-          },
-          oneOf: [
-            { required: externalEventDispositionRequired },
-            { required: ["batch"] },
-          ],
-          additionalProperties: false,
+          oneOf: [externalEventSingleDispositionSchema(), externalEventBatchDispositionSchema()],
         },
       },
     },

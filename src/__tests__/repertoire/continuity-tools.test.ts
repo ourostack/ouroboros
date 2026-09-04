@@ -118,6 +118,7 @@ vi.mock("../../repertoire/coding", () => ({
 }))
 
 import { baseToolDefinitions, type ToolDefinition } from "../../repertoire/tools-base"
+import { validateAdvertisedToolArguments } from "../../repertoire/tool-arguments"
 
 // ── Test helpers ─────────────────────────────────────────────────
 
@@ -501,6 +502,15 @@ describe("continuity tools", () => {
         authorizeDisposition: vi.fn(() => ({ allowed: true, reason: "approved" })),
         recordCommittedDisposition: vi.fn(),
       },
+    })
+
+    it("advertises a schema that accepts both single and batch dispositions", () => {
+      const schema = findTool("external_event_disposition").tool.function.parameters!
+      const single = validateAdvertisedToolArguments(JSON.stringify(batchDisposition(batchMember(0))), schema)
+      const batch = validateAdvertisedToolArguments(JSON.stringify({ batch: [batchDisposition(batchMember(0))] }), schema)
+
+      expect(single).toMatchObject({ ok: true })
+      expect(batch).toMatchObject({ ok: true })
     })
 
     it("dispositions all 32 exact coalesced leases through one bounded invocation", async () => {
