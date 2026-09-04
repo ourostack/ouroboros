@@ -76,6 +76,10 @@ function optionalBoundedLabel(value: unknown): string | null {
   return value === undefined || value === null ? null : boundedLabel(value)
 }
 
+function mediaTitle(item: Record<string, unknown>, type: string): string {
+  return typeof item.Name === "string" ? boundedLabel(item.Name) : `Untitled ${type}`
+}
+
 function basename(value: unknown): string {
   const parts = string(value).replaceAll("\\", "/").split("/")
   return boundedLabel(parts[parts.length - 1]!)
@@ -338,8 +342,8 @@ export function createSanctuaryMediaOptimizationClient(options: ClientOptions) {
     const sourceIds = new Set<string>()
     let sourceCapped = false
     for (const item of catalog.items) {
-      const untrustedTitle = boundedLabel(item.Name)
       const type = string(item.Type)
+      const untrustedTitle = mediaTitle(item, type)
         const mediaSources = array(item.MediaSources)
         if (mediaSources.length > 100) throw new ReadFailure("invalid_response", "Jellyfin returned too many sources for one item")
         for (let sourceIndex = 0; sourceIndex < mediaSources.length; sourceIndex += 1) {
@@ -455,8 +459,8 @@ export function createSanctuaryMediaOptimizationClient(options: ClientOptions) {
         if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20) throw new ReadFailure("invalid_response", "Media catalog limit must be an integer from 1 to 20")
         const catalog = await readJellyfinItems(deadline, { includeMediaSources: false })
         const candidates = catalog.items.map((item) => {
-          const title = boundedLabel(item.Name)
           const type = string(item.Type)
+          const title = mediaTitle(item, type)
           const productionYear = optionalInteger(item.ProductionYear)
           const premiereDate = optionalBoundedLabel(item.PremiereDate)
           return { untrustedTitle: title, type, productionYear, premiereDate }
