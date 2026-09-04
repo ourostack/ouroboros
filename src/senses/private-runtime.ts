@@ -1405,8 +1405,10 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
   if (options?.noSend === true) {
     habitToolsResolved = []
   }
+  const externalEventExcludedTools = new Set(["rest", "settle", "speak"])
   const externalEventToolsResolved = options?.externalEvent
     ? getSanctuaryRelationshipTools(externalEventRelationship!.relationshipAuthorization.advertisedToolNames)
+      .filter((tool) => !externalEventExcludedTools.has(tool.function.name))
     : undefined
   const relationshipAwaitToolsResolved = relationshipAwait
     ? getSanctuaryRelationshipTools(relationshipAwait.relationshipAuthorization.advertisedToolNames)
