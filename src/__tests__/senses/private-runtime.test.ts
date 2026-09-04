@@ -4746,7 +4746,7 @@ describe("private runtime", () => {
       version: 2,
       profiles: {
         "sanctuary-owner": { version: 3, contextScopes: ["household.status"], toolNames: ["external_event_disposition", "await_condition"], effectScopes: [] },
-        "sanctuary-event": { version: 2, contextScopes: ["household.status"], toolNames: ["external_event_disposition", "await_condition"], effectScopes: [] },
+        "sanctuary-event": { version: 2, contextScopes: ["household.status"], toolNames: ["external_event_disposition", "await_condition", "rest", "settle", "speak"], effectScopes: [] },
       },
     }))
     const friendStore = new FileFriendStore(path.join(agentRoot, "friends"))
@@ -4754,6 +4754,9 @@ describe("private runtime", () => {
     mockGetToolsForChannel.mockReturnValue([
       { type: "function", function: { name: "external_event_disposition", description: "dispose", parameters: {} } },
       { type: "function", function: { name: "await_condition", description: "await", parameters: {} } },
+      { type: "function", function: { name: "rest", description: "rest", parameters: {} } },
+      { type: "function", function: { name: "settle", description: "settle", parameters: {} } },
+      { type: "function", function: { name: "speak", description: "speak", parameters: {} } },
       { type: "function", function: { name: "shell", description: "shell", parameters: {} } },
     ])
     const defaultTurn = mockHandleInboundTurn.getMockImplementation()!
