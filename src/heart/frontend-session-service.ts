@@ -54,6 +54,16 @@ export class FrontendSessionService {
     return true
   }
 
+  cancelAllTurns(): number {
+    let cancelled = 0
+    for (const controller of this.activeTurns.values()) {
+      if (controller.signal.aborted) continue
+      controller.abort()
+      cancelled += 1
+    }
+    return cancelled
+  }
+
   async runTurn(request: FrontendTurnRequest): Promise<FrontendTurnResult> {
     const turnId = required(request.turnId, "turnId")
     if (this.activeTurns.has(turnId)) throw new FrontendTurnConflictError(turnId)

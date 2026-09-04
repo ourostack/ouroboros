@@ -136,16 +136,76 @@ describe("frontend socket", () => {
     const frames = collectFrames(socket)
 
     socket.write('not-json\n')
+    socket.write('[]\n')
     socket.write('{"protocolVersion":2,"id":"version","method":"session.subscribe","params":{"sessionKey":"session-1"}}\n')
     socket.write('{"protocolVersion":1,"id":"unknown","method":"nope","params":{}}\n')
     socket.write('{"protocolVersion":1,"id":"invalid","method":"turn.start","params":{"turnId":""}}\n')
+    socket.write('{"protocolVersion":1,"id":7,"method":"session.subscribe"}\n')
 
-    await waitForFrame(frames, (frame) => frame.id === "invalid")
+    await waitForFrame(frames, (frame) => frame.error?.message === "sessionKey must be a non-empty string")
     expect(frames).toEqual([
       { protocolVersion: 1, id: null, ok: false, error: { code: "parse_error", message: "invalid JSON frame" } },
+      { protocolVersion: 1, id: null, ok: false, error: { code: "invalid_params", message: "params must be an object" } },
       { protocolVersion: 1, id: "version", ok: false, error: { code: "unsupported_version", message: "protocolVersion must be 1" } },
       { protocolVersion: 1, id: "unknown", ok: false, error: { code: "method_not_found", message: "unknown frontend method: nope" } },
       { protocolVersion: 1, id: "invalid", ok: false, error: { code: "invalid_params", message: "turnId must be a non-empty string" } },
+      { protocolVersion: 1, id: null, ok: false, error: { code: "invalid_params", message: "sessionKey must be a non-empty string" } },
+    ])
+    socket.destroy()
+  })
+
+  it("publishes ordered events only to subscribed sessions", async () => {
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const { startFrontendSocketServer } = await import("../../heart/frontend-socket")
+    const target = socketPath("frontend-publish")
+    const server = await startFrontendSocketServer({
+      socketPath: target,
+      service: new FrontendSessionService({ runner: async () => settledResult() }),
+    })
+    cleanup.push(() => server.stop())
+    const socket = await connect(target)
+    const frames = collectFrames(socket)
+
+    socket.write('{"protocolVersion":1,"id":"sub","method":"session.subscribe","params":{"sessionKey":"session-1"}}\n')
+    await waitForFrame(frames, (frame) => frame.id === "sub")
+    server.publish("other-session", "ignored")
+    server.publish("session-1", "snapshot")
+    server.publish("session-1", "snapshot", { value: 2 })
+
+    await waitForFrame(frames, (frame) => frame.sequence === 2)
+    expect(frames.filter((frame) => frame.event)).toEqual([
+      { protocolVersion: 1, event: "snapshot", sessionKey: "session-1", sequence: 1 },
+      { protocolVersion: 1, event: "snapshot", sessionKey: "session-1", sequence: 2, value: 2 },
+    ])
+    socket.destroy()
+  })
+
+  it("publishes failed turns and reports unknown cancellation", async () => {
+    const runner = vi.fn()
+      .mockRejectedValueOnce(new Error("provider down"))
+      .mockRejectedValueOnce("transport gone")
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const { startFrontendSocketServer } = await import("../../heart/frontend-socket")
+    const target = socketPath("frontend-failure")
+    const server = await startFrontendSocketServer({
+      socketPath: target,
+      service: new FrontendSessionService({ runner }),
+    })
+    cleanup.push(() => server.stop())
+    const socket = await connect(target)
+    const frames = collectFrames(socket)
+
+    socket.write('{"protocolVersion":1,"id":"sub","method":"session.subscribe","params":{"sessionKey":"session-1"}}\n')
+    await waitForFrame(frames, (frame) => frame.id === "sub")
+    socket.write('{"protocolVersion":1,"id":"cancel","method":"turn.cancel","params":{"turnId":"missing"}}\n')
+    socket.write('{"protocolVersion":1,"id":"one","method":"turn.start","params":{"turnId":"turn-1","agent":"boss","friendId":"friend-1","channel":"mcp","sessionKey":"session-1","message":"hello"}}\n')
+    socket.write('{"protocolVersion":1,"id":"two","method":"turn.start","params":{"turnId":"turn-2","agent":"boss","friendId":"friend-1","channel":"mcp","sessionKey":"session-1","message":"hello"}}\n')
+
+    expect(await waitForFrame(frames, (frame) => frame.id === "cancel")).toMatchObject({ result: { cancelled: false } })
+    await waitForFrame(frames, (frame) => frame.event === "turn.failed" && frame.turnId === "turn-2")
+    expect(frames.filter((frame) => frame.event === "turn.failed")).toEqual([
+      { protocolVersion: 1, event: "turn.failed", sessionKey: "session-1", sequence: 1, turnId: "turn-1", error: "provider down" },
+      { protocolVersion: 1, event: "turn.failed", sessionKey: "session-1", sequence: 2, turnId: "turn-2", error: "transport gone" },
     ])
     socket.destroy()
   })
@@ -171,6 +231,7 @@ describe("frontend socket", () => {
     writer.send({ protocolVersion: 1, event: "one", sessionKey: "session-1", sequence: 1 })
     writer.send({ protocolVersion: 1, event: "two", sessionKey: "session-1", sequence: 2 })
     writer.send({ protocolVersion: 1, event: "three", sessionKey: "session-1", sequence: 3 })
+    writer.send({ protocolVersion: 1, event: "four", sessionKey: "session-1", sequence: 4 })
     socket.emit("drain")
 
     expect(socket.writes.map((line) => JSON.parse(line))).toEqual([
@@ -178,6 +239,76 @@ describe("frontend socket", () => {
       { protocolVersion: 1, event: "replay_required", lastSequence: 1 },
     ])
     expect(socket.ended).toBe(true)
+  })
+
+  it("flushes queued frames across repeated backpressure", async () => {
+    class FakeSocket extends EventEmitter {
+      writes: string[] = []
+      outcomes = [false, false, true]
+
+      write(chunk: string): boolean {
+        this.writes.push(chunk)
+        return this.outcomes.shift() ?? true
+      }
+
+      end(): void {}
+    }
+
+    const { FrontendFrameWriter } = await import("../../heart/frontend-socket")
+    const socket = new FakeSocket()
+    const writer = new FrontendFrameWriter(socket as any, 2)
+    writer.send({ protocolVersion: 1, event: "one", sessionKey: "session-1", sequence: 1 })
+    writer.send({ protocolVersion: 1, event: "two", sessionKey: "session-1", sequence: 2 })
+    socket.emit("drain")
+    writer.send({ protocolVersion: 1, event: "three", sessionKey: "session-1", sequence: 3 })
+    socket.emit("drain")
+
+    expect(socket.writes.map((line) => JSON.parse(line).event)).toEqual(["one", "two", "three"])
+  })
+
+  it("rejects an invalid queue bound and a pre-existing non-socket path", async () => {
+    const { FrontendFrameWriter, startFrontendSocketServer } = await import("../../heart/frontend-socket")
+    expect(() => new FrontendFrameWriter(new EventEmitter() as any, 0)).toThrow("positive integer")
+
+    const target = socketPath("frontend-not-socket")
+    fs.writeFileSync(target, "not a socket")
+    cleanup.push(async () => { fs.rmSync(target, { force: true }) })
+    await expect(startFrontendSocketServer({
+      socketPath: target,
+      service: {} as any,
+    })).rejects.toThrow("not a socket")
+  })
+
+  it("replaces a stale Unix socket and translates a hostile dependency throw", async () => {
+    const target = socketPath("frontend-stale-socket")
+    const stale = net.createServer()
+    await new Promise<void>((resolve, reject) => {
+      stale.once("error", reject)
+      stale.listen(target, resolve)
+    })
+    const { startFrontendSocketServer } = await import("../../heart/frontend-socket")
+    const server = await startFrontendSocketServer({
+      socketPath: target,
+      service: {
+        cancelTurn: () => { throw "hostile failure" },
+      } as any,
+    })
+    cleanup.push(async () => {
+      await server.stop()
+      await new Promise<void>((resolve) => stale.close(() => resolve()))
+    })
+    const socket = await connect(target)
+    const frames = collectFrames(socket)
+
+    socket.write('{"protocolVersion":1,"id":"cancel","method":"turn.cancel","params":{"turnId":"turn-1"}}\n')
+
+    expect(await waitForFrame(frames, (frame) => frame.id === "cancel")).toEqual({
+      protocolVersion: 1,
+      id: "cancel",
+      ok: false,
+      error: { code: "invalid_params", message: "hostile failure" },
+    })
+    socket.destroy()
   })
 
   it("removes its Unix socket on stop", async () => {
@@ -192,5 +323,6 @@ describe("frontend socket", () => {
     expect(fs.existsSync(target)).toBe(true)
     await server.stop()
     expect(fs.existsSync(target)).toBe(false)
+    await expect(server.stop()).resolves.toBeUndefined()
   })
 })

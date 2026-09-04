@@ -64,6 +64,7 @@ describe("frontend session service", () => {
     expect(service.cancelTurn("other-turn")).toBe(false)
     expect(service.cancelTurn("turn-1")).toBe(true)
     expect(service.cancelTurn("turn-1")).toBe(false)
+    expect(service.cancelAllTurns()).toBe(0)
     expect(signal.aborted).toBe(true)
     await expect(running).resolves.toMatchObject({ turnId: "turn-1", outcome: "aborted" })
     expect(service.cancelTurn("turn-1")).toBe(false)

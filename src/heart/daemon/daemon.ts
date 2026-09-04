@@ -59,6 +59,8 @@ import type { RunNativeRsvpHabitInput, RunNativeRsvpHabitResult } from "../../rs
 import { completeHabitRun } from "../habits/habit-session"
 import type { SanctuarySchedulerFireCommand, SanctuarySchedulerOrigin } from "./sanctuary-scheduler-origin"
 import { withTurnExecutionLease } from "../turn-execution-lease"
+import { FrontendSessionService } from "../frontend-session-service"
+import { startFrontendSocketServer, type FrontendSocketServer } from "../frontend-socket"
 
 const PIDFILE_PATH = path.join(os.homedir(), ".ouro-cli", "daemon.pids")
 
@@ -573,6 +575,9 @@ export interface OuroDaemonOptions {
    * wired with the daemon's bundlesRoot and view builders.
    */
   mailboxServerFactory?: () => Promise<MailboxHttpServerHandle>
+  frontendSocketPath?: string
+  frontendSessionService?: FrontendSessionService
+  frontendSocketServerFactory?: typeof startFrontendSocketServer
   privateRuntimePolicyDeps?: PrivateTurnPolicyDeps
   /**
    * Runs after a daemon.stop command has completed daemon-owned cleanup but
@@ -872,12 +877,16 @@ export class OuroDaemon {
   private readonly mode: "dev" | "production"
   private server: net.Server | null = null
   private mailboxServer: MailboxHttpServerHandle | null = null
+  private frontendSocketServer: FrontendSocketServer | null = null
   private socketIdentity: SocketIdentity | null = null
   private senseAutostartTimer: ReturnType<typeof setTimeout> | null = null
   private externalEventReconcileTimer: ReturnType<typeof setInterval> | null = null
   private externalEventReconcileRunning = false
   private readonly constructedAtMs = Date.now()
   private readonly mailboxServerFactory: () => Promise<MailboxHttpServerHandle>
+  private readonly frontendSocketPath: string
+  private readonly frontendSessionService: FrontendSessionService
+  private readonly frontendSocketServerFactory: typeof startFrontendSocketServer
   private readonly privateRuntimePolicyDeps: PrivateTurnPolicyDeps
   private readonly onStopCommandComplete: (() => void | Promise<void>) | null
   private readonly externalEventRoot: string | null
@@ -903,6 +912,9 @@ export class OuroDaemon {
     this.bundlesRoot = options.bundlesRoot ?? getAgentBundlesRoot()
     this.mode = options.mode ?? "production"
     this.mailboxServerFactory = options.mailboxServerFactory ?? this.createDefaultMailboxServer.bind(this)
+    this.frontendSocketPath = options.frontendSocketPath ?? `${this.socketPath}.frontend`
+    this.frontendSessionService = options.frontendSessionService ?? new FrontendSessionService()
+    this.frontendSocketServerFactory = options.frontendSocketServerFactory ?? startFrontendSocketServer
     this.privateRuntimePolicyDeps = options.privateRuntimePolicyDeps ?? {}
     this.onStopCommandComplete = options.onStopCommandComplete ?? null
     this.externalEventRoot = options.externalEventRoot ?? null
@@ -1114,6 +1126,20 @@ export class OuroDaemon {
         event: "daemon.mailbox_start_failed",
         message: `Mailbox server failed to start: ${String(error)}`,
         meta: { port: MAILBOX_DEFAULT_PORT },
+      })
+    }
+    try {
+      this.frontendSocketServer = await this.frontendSocketServerFactory({
+        socketPath: this.frontendSocketPath,
+        service: this.frontendSessionService,
+      })
+    } catch (error) {
+      emitNervesEvent({
+        level: "warn",
+        component: "daemon",
+        event: "daemon.frontend_socket_start_failed",
+        message: `Frontend socket failed to start: ${String(error)}`,
+        meta: { socketPath: this.frontendSocketPath },
       })
     }
   }
@@ -1404,6 +1430,11 @@ export class OuroDaemon {
       meta: { socketPath: this.socketPath },
     })
 
+    this.frontendSessionService.cancelAllTurns()
+    if (this.frontendSocketServer) {
+      await this.frontendSocketServer.stop()
+      this.frontendSocketServer = null
+    }
     stopUpdateChecker()
     shutdownSharedMcpManager()
     this.scheduler.stop?.()
