@@ -106,6 +106,51 @@ describe("frontend journal", () => {
     })
   })
 
+  it("treats every invalid persisted event shape as a degraded tail", async () => {
+    const root = tempRoot()
+    roots.push(root)
+    const { FrontendJournalStore } = await import("../../heart/frontend-journal")
+    const store = new FrontendJournalStore({ agentRoot: (agent) => path.join(root, `${agent}.ouro`) })
+    const base = {
+      version: 1,
+      sequence: 1,
+      agent: "boss",
+      friendId: "friend-1",
+      sessionId: "session-1",
+      turnId: "turn-1",
+      type: "turn_started",
+      occurredAt: "2026-09-03T20:00:00.000Z",
+      data: {},
+    }
+    const invalid = [
+      null,
+      [],
+      { version: 2 },
+      { sequence: 2 },
+      { agent: "other" },
+      { friendId: "other" },
+      { sessionId: "other" },
+      { turnId: 7 },
+      { turnId: "" },
+      { type: 7 },
+      { type: "unknown" },
+      { occurredAt: 7 },
+      { occurredAt: "" },
+      { data: [] },
+    ]
+
+    invalid.forEach((value, index) => {
+      const current = ref(`invalid-${index}`)
+      const journalPath = store.pathFor(current)
+      const persisted = value === null || Array.isArray(value)
+        ? value
+        : { ...base, sessionId: current.sessionId, ...value }
+      fs.mkdirSync(path.dirname(journalPath), { recursive: true })
+      fs.writeFileSync(journalPath, `${JSON.stringify(persisted)}\n`, "utf8")
+      expect(store.replay(current)).toMatchObject({ events: [], lastSequence: 0, degraded: true })
+    })
+  })
+
   it("rejects invalid identities, cursors, limits, and oversized payloads", async () => {
     const root = tempRoot()
     roots.push(root)
@@ -116,13 +161,19 @@ describe("frontend journal", () => {
     })
 
     expect(() => store.pathFor({ ...ref(), agent: " " })).toThrow("agent")
+    expect(() => new FrontendJournalStore({ maxEventBytes: 0 })).toThrow("positive integer")
     expect(() => store.replay(ref(), { afterSequence: -1 })).toThrow("afterSequence")
     expect(() => store.replay(ref(), { limit: 0 })).toThrow("limit")
+    expect(() => store.append(ref(), { turnId: "turn-1", type: "unknown" as any, data: {} })).toThrow("event type")
+    expect(() => store.append(ref(), { turnId: "turn-1", type: "turn_started", data: [] as any })).toThrow("data")
     expect(() => store.append(ref(), {
       turnId: "turn-1",
       type: "assistant_delivery",
       data: { text: "x".repeat(500) },
     })).toThrow(FrontendJournalPayloadTooLargeError)
     expect(fs.existsSync(store.pathFor(ref()))).toBe(false)
+
+    const defaultStore = new FrontendJournalStore()
+    expect(defaultStore.pathFor(ref())).toContain("frontend-sessions")
   })
 })
