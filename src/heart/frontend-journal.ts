@@ -15,6 +15,7 @@ export type FrontendJournalEventType =
   | "tool_started"
   | "tool_completed"
   | "structured_output"
+  | "error"
   | "turn_completed"
   | "turn_failed"
   | "turn_cancelled"
@@ -26,6 +27,7 @@ const EVENT_TYPES = new Set<FrontendJournalEventType>([
   "tool_started",
   "tool_completed",
   "structured_output",
+  "error",
   "turn_completed",
   "turn_failed",
   "turn_cancelled",

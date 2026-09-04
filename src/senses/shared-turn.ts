@@ -208,6 +208,27 @@ export interface RunSenseTurnOptions {
   turnMetricsObserver?: { providerInvocationCount: number; toolInvocationCount: number }
   /** Optional caller cancellation forwarded through the full agent turn. */
   signal?: AbortSignal
+  /** Optional frontend event stream for attached clients and durable journals. */
+  frontendEventSink?: FrontendTurnEventSink
+}
+
+export interface FrontendTurnEvent {
+  type:
+    | "model_started"
+    | "model_stream_started"
+    | "text_delta"
+    | "reasoning_delta"
+    | "tool_started"
+    | "tool_completed"
+    | "error"
+    | "text_cleared"
+    | "assistant_delivery"
+    | "structured_output"
+  data: Record<string, unknown>
+}
+
+export interface FrontendTurnEventSink {
+  onEvent(event: FrontendTurnEvent): void
 }
 
 export type OutwardSenseDeliveryKind = "speak" | "settle" | "text"
@@ -357,6 +378,7 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions): Promise<RunS
     }
   }
   const existingEventIds = new Set(existing?.events?.map((event) => event.id) ?? [])
+  const existingStructuredOutputIds = new Set(existing?.structuredOutputs?.map((output) => output.id) ?? [])
   let sessionState = existing?.state
   let persistPromise: Promise<SessionEvent[]> | undefined
   const sessionMessages: ChatCompletionMessageParam[] = existing?.messages && existing.messages.length > 0
@@ -388,6 +410,9 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions): Promise<RunS
   }
 
   const deliveryErrorMessage = (error: unknown): string => error instanceof Error ? error.message : String(error)
+  const emitFrontendEvent = (event: FrontendTurnEvent): void => {
+    options.frontendEventSink?.onEvent(event)
+  }
 
   const deliverPending = async (
     kind: OutwardSenseDeliveryKind,
@@ -402,9 +427,6 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions): Promise<RunS
     deliveryAttempts.push(attempt)
     try {
       await options.deliverySink?.onDelivery(delivery)
-      attempt.delivered = true
-      deliveries.push(delivery)
-      commitResponseText(text)
     } catch (error) {
       const failure = { ...delivery, error: deliveryErrorMessage(error) }
       deliveryFailures.push(failure)
@@ -417,22 +439,44 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions): Promise<RunS
       })
       if (optionsForDelivery.throwOnError) throw error
       commitResponseText(text)
+      return
     }
+    attempt.delivered = true
+    deliveries.push(delivery)
+    commitResponseText(text)
+    emitFrontendEvent({ type: "assistant_delivery", data: { kind, text } })
   }
 
   /* v8 ignore start — no-op callback stubs; only onTextChunk does real work (covered via mock) */
   const callbacks: ChannelCallbacks = {
     settleOutputMode: "retractable_buffer",
-    onModelStart: () => { providerInvocationCount += 1; if (options.turnMetricsObserver) options.turnMetricsObserver.providerInvocationCount += 1 },
-    onModelStreamStart: () => {},
-    onTextChunk: (chunk: string) => { pendingResponseText += chunk },
-    onReasoningChunk: () => {},
-    onToolStart: () => { toolInvocationCount += 1; if (options.turnMetricsObserver) options.turnMetricsObserver.toolInvocationCount += 1 },
+    onModelStart: () => {
+      providerInvocationCount += 1
+      if (options.turnMetricsObserver) options.turnMetricsObserver.providerInvocationCount += 1
+      emitFrontendEvent({ type: "model_started", data: {} })
+    },
+    onModelStreamStart: () => emitFrontendEvent({ type: "model_stream_started", data: {} }),
+    onTextChunk: (chunk: string) => {
+      pendingResponseText += chunk
+      emitFrontendEvent({ type: "text_delta", data: { text: chunk } })
+    },
+    onReasoningChunk: (chunk: string) => emitFrontendEvent({ type: "reasoning_delta", data: { text: chunk } }),
+    onToolStart: (name: string, args: Record<string, string>) => {
+      toolInvocationCount += 1
+      if (options.turnMetricsObserver) options.turnMetricsObserver.toolInvocationCount += 1
+      emitFrontendEvent({ type: "tool_started", data: { name, args } })
+    },
     onToolEnd: (name: string, _summary: string, success: boolean) => {
       if (name === "settle" && success) terminalDeliveryKind = "settle"
+      emitFrontendEvent({ type: "tool_completed", data: { name, summary: _summary, success } })
     },
-    onError: () => {},
-    onClearText: () => { pendingResponseText = "" },
+    onError: (error: Error, severity: "transient" | "terminal") => {
+      emitFrontendEvent({ type: "error", data: { message: error.message, severity } })
+    },
+    onClearText: () => {
+      pendingResponseText = ""
+      emitFrontendEvent({ type: "text_cleared", data: {} })
+    },
     flushNow: () => deliverPending("speak", { throwOnError: true }),
   }
   /* v8 ignore stop */
@@ -532,6 +576,14 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions): Promise<RunS
   if (finalDeliveryKind === "settle" && Array.isArray(turnResult.messages)) {
     const settledText = extractOutwardSenseDeliveryText(turnResult.messages)
     if (settledText) pendingResponseText = settledText
+  }
+  if (persistPromise && options.frontendEventSink) {
+    const currentStructuredOutputs = loadSession(sessPath)?.structuredOutputs ?? []
+    for (const output of currentStructuredOutputs) {
+      if (!existingStructuredOutputIds.has(output.id)) {
+        emitFrontendEvent({ type: "structured_output", data: { output } })
+      }
+    }
   }
   await deliverPending(finalDeliveryKind, { throwOnError: false })
 

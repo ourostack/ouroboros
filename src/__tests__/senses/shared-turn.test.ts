@@ -518,6 +518,70 @@ describe("runSenseTurn", () => {
     ])
   })
 
+  it("does not re-emit structured output that already existed before the turn", async () => {
+    const existingOutput = {
+      schemaVersion: 1,
+      id: "structured-existing",
+      kind: "ordered_list",
+      sourceEventId: "event-existing",
+      recordedAt: "2026-09-03T20:00:00.000Z",
+      items: [{ label: "1", text: "Existing" }],
+    }
+    mockLoadSession.mockReturnValue({
+      messages: [{ role: "system", content: "system" }],
+      structuredOutputs: [existingOutput],
+    })
+    mockHandleInboundTurn.mockImplementationOnce(async (input: any) => {
+      await input.postTurn([], "/tmp/session.json")
+      return {
+        resolvedContext: makeResolvedContext(),
+        gateResult: { allowed: true },
+        turnOutcome: "settled",
+        sessionPath: "/tmp/session.json",
+        messages: [],
+      }
+    })
+    const events: any[] = []
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+
+    await runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "hello",
+      frontendEventSink: { onEvent: (event) => events.push(event) },
+    })
+
+    expect(events.filter((event) => event.type === "structured_output")).toEqual([])
+  })
+
+  it("emits no structured output when post-persist readback is unavailable", async () => {
+    mockHandleInboundTurn.mockImplementationOnce(async (input: any) => {
+      await input.postTurn([], "/tmp/session.json")
+      return {
+        resolvedContext: makeResolvedContext(),
+        gateResult: { allowed: true },
+        turnOutcome: "settled",
+        sessionPath: "/tmp/session.json",
+        messages: [],
+      }
+    })
+    const events: any[] = []
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+
+    await runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "hello",
+      frontendEventSink: { onEvent: (event) => events.push(event) },
+    })
+
+    expect(events.filter((event) => event.type === "structured_output")).toEqual([])
+  })
+
   it("returns an aborted outcome when the pipeline has no persistence work", async () => {
     mockHandleInboundTurn.mockResolvedValueOnce({
       resolvedContext: makeResolvedContext(),

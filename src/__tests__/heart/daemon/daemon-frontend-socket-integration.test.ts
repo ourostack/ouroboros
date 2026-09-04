@@ -130,7 +130,7 @@ describe("daemon frontend socket integration", () => {
       await expect(sendLegacy(commandSocket, { kind: "daemon.status" })).resolves.toMatchObject({ ok: true })
       second.write('{"protocolVersion":1,"id":"cancel","method":"turn.cancel","params":{"turnId":"turn-1"}}\n')
       await waitForFrame(secondFrames, (frame) => frame.id === "cancel")
-      await waitForFrame(firstFrames, (frame) => frame.event === "turn.completed")
+      await waitForFrame(firstFrames, (frame) => frame.event === "turn.cancelled")
     } finally {
       first?.destroy()
       second?.destroy()

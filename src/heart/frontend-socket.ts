@@ -137,6 +137,13 @@ export async function startFrontendSocketServer(options: {
       if (client.subscriptions.has(sessionKey)) client.writer.send(frame)
     }
   }
+  const unsubscribeFromService = options.service.subscribe((event) => {
+    publish(event.sessionKey, event.type.replaceAll("_", "."), {
+      turnId: event.turnId,
+      journalSequence: event.journalSequence,
+      ...event.data,
+    })
+  })
 
   async function handleRequest(client: FrontendClient, raw: unknown): Promise<void> {
     const request = record(raw)
@@ -171,15 +178,10 @@ export async function startFrontendSocketServer(options: {
         sessionKey: requiredString(params.sessionKey, "sessionKey"),
         message: requiredString(params.message, "message"),
       }
-      const running = options.service.runTurn(turnRequest)
       client.writer.send(response(id, { accepted: true, turnId: turnRequest.turnId }))
-      void running.then(
-        (result) => publish(turnRequest.sessionKey, "turn.completed", { turnId: turnRequest.turnId, result }),
-        (error) => publish(turnRequest.sessionKey, "turn.failed", {
-          turnId: turnRequest.turnId,
-          error: error instanceof Error ? error.message : String(error),
-        }),
-      )
+      queueMicrotask(() => {
+        void options.service.runTurn(turnRequest).catch(() => undefined)
+      })
       return
     }
 
@@ -232,6 +234,7 @@ export async function startFrontendSocketServer(options: {
     async stop(): Promise<void> {
       if (stopped) return
       stopped = true
+      unsubscribeFromService()
       for (const client of clients) client.socket.destroy()
       await new Promise<void>((resolve) => {
         server.close(() => resolve())

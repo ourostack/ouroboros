@@ -185,10 +185,31 @@ describe("frontend session service", () => {
       runner: async () => ({ ...settledResult(""), turnOutcome: "aborted" }),
     })
     await aborted.runTurn({ ...request("aborted"), sessionKey: "session-2" })
+    const hostile = new FrontendSessionService({
+      journal,
+      runner: async () => { throw "transport gone" },
+    })
+    await expect(hostile.runTurn({ ...request("hostile"), sessionKey: "session-3" })).rejects.toBe("transport gone")
+    const errored = new FrontendSessionService({
+      journal,
+      runner: async () => ({ ...settledResult("failed"), turnOutcome: "errored" }),
+    })
+    await errored.runTurn({ ...request("errored"), sessionKey: "session-4" })
 
     expect(journal.replay(refFor(request())).events.at(-1)?.type).toBe("turn_failed")
     expect(journal.replay(refFor({ ...request(), sessionKey: "session-2" })).events.at(-1)?.type).toBe("turn_cancelled")
+    expect(journal.replay(refFor({ ...request(), sessionKey: "session-3" })).events.at(-1)?.data).toEqual({ error: "transport gone" })
+    expect(journal.replay(refFor({ ...request(), sessionKey: "session-4" })).events.at(-1)?.type).toBe("turn_failed")
     fs.rmSync(root, { recursive: true, force: true })
+  })
+
+  it("isolates frontend listener failures from the turn", async () => {
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const service = new FrontendSessionService({ runner: async () => settledResult() })
+    service.subscribe(() => { throw new Error("listener failed") })
+    service.subscribe(() => { throw "hostile listener" })
+
+    await expect(service.runTurn(request())).resolves.toMatchObject({ outcome: "settled" })
   })
 })
 

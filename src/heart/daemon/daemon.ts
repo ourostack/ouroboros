@@ -61,6 +61,7 @@ import type { SanctuarySchedulerFireCommand, SanctuarySchedulerOrigin } from "./
 import { withTurnExecutionLease } from "../turn-execution-lease"
 import { FrontendSessionService } from "../frontend-session-service"
 import { frontendSocketPathForDaemon, startFrontendSocketServer, type FrontendSocketServer } from "../frontend-socket"
+import { FrontendJournalStore } from "../frontend-journal"
 
 const PIDFILE_PATH = path.join(os.homedir(), ".ouro-cli", "daemon.pids")
 
@@ -913,7 +914,9 @@ export class OuroDaemon {
     this.mode = options.mode ?? "production"
     this.mailboxServerFactory = options.mailboxServerFactory ?? this.createDefaultMailboxServer.bind(this)
     this.frontendSocketPath = options.frontendSocketPath ?? frontendSocketPathForDaemon(this.socketPath)
-    this.frontendSessionService = options.frontendSessionService ?? new FrontendSessionService()
+    this.frontendSessionService = options.frontendSessionService ?? new FrontendSessionService({
+      journal: new FrontendJournalStore(),
+    })
     this.frontendSocketServerFactory = options.frontendSocketServerFactory ?? startFrontendSocketServer
     this.privateRuntimePolicyDeps = options.privateRuntimePolicyDeps ?? {}
     this.onStopCommandComplete = options.onStopCommandComplete ?? null

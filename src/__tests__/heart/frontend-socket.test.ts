@@ -124,11 +124,11 @@ describe("frontend socket", () => {
       ok: true,
       result: { cancelled: true },
     })
-    expect(await waitForFrame(frames, (frame) => frame.event === "turn.completed")).toMatchObject({
+    expect(await waitForFrame(frames, (frame) => frame.event === "turn.cancelled")).toMatchObject({
       protocolVersion: 1,
-      event: "turn.completed",
+      event: "turn.cancelled",
       sessionKey: "session-1",
-      sequence: 1,
+      sequence: 3,
       turnId: "turn-1",
       result: { outcome: "aborted" },
     })
@@ -216,8 +216,8 @@ describe("frontend socket", () => {
     expect(await waitForFrame(frames, (frame) => frame.id === "cancel")).toMatchObject({ result: { cancelled: false } })
     await waitForFrame(frames, (frame) => frame.event === "turn.failed" && frame.turnId === "turn-2")
     expect(frames.filter((frame) => frame.event === "turn.failed")).toEqual([
-      { protocolVersion: 1, event: "turn.failed", sessionKey: "session-1", sequence: 1, turnId: "turn-1", error: "provider down" },
-      { protocolVersion: 1, event: "turn.failed", sessionKey: "session-1", sequence: 2, turnId: "turn-2", error: "transport gone" },
+      { protocolVersion: 1, event: "turn.failed", sessionKey: "session-1", sequence: 3, turnId: "turn-1", journalSequence: null, error: "provider down" },
+      { protocolVersion: 1, event: "turn.failed", sessionKey: "session-1", sequence: 6, turnId: "turn-2", journalSequence: null, error: "transport gone" },
     ])
     socket.destroy()
   })
@@ -302,6 +302,7 @@ describe("frontend socket", () => {
     const server = await startFrontendSocketServer({
       socketPath: target,
       service: {
+        subscribe: () => () => undefined,
         cancelTurn: () => { throw "hostile failure" },
       } as any,
     })
