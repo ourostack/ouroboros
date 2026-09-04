@@ -60,6 +60,7 @@ import type { StructuredOutput } from "../heart/structured-output"
 import { readFlightRecorderResume, recordFlightRecorderEvent } from "../arc/flight-recorder"
 import { refreshContextLossSentinel } from "../heart/context-loss-sentinel"
 import { projectCareEvidence, type CareRecord } from "../arc/cares"
+import { withTurnExecutionLease } from "../heart/turn-execution-lease"
 
 export interface FailoverState {
   pending: FailoverContext | null
@@ -703,6 +704,10 @@ function prepareInboundRunLedger(input: Omit<Parameters<typeof buildInboundRunLe
 }
 
 export async function handleInboundTurn(input: InboundTurnInput): Promise<InboundTurnResult> {
+  return withTurnExecutionLease(() => handleInboundTurnExclusive(input))
+}
+
+async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<InboundTurnResult> {
   // Continuity resumption is structured caller intent. Never infer it from the
   // current message or from similarity to prior obligations.
   const resumePriorWork = input.runAgentOptions?.resumePriorWork === true

@@ -58,6 +58,7 @@ import { readContainerRuntimePolicy } from "./container-runtime"
 import type { RunNativeRsvpHabitInput, RunNativeRsvpHabitResult } from "../../rsvp/native-habit-runner"
 import { completeHabitRun } from "../habits/habit-session"
 import type { SanctuarySchedulerFireCommand, SanctuarySchedulerOrigin } from "./sanctuary-scheduler-origin"
+import { withTurnExecutionLease } from "../turn-execution-lease"
 
 const PIDFILE_PATH = path.join(os.homedir(), ".ouro-cli", "daemon.pids")
 
@@ -808,32 +809,34 @@ export async function handleAgentSenseTurn(
   command: Extract<DaemonCommand, { kind: "agent.senseTurn" }>,
   runtime?: { socketPath?: string },
 ): Promise<DaemonResponse> {
-  try {
-    const { setAgentName } = await import("../identity")
-    setAgentName(command.agent)
-    const { runSenseTurn } = await import("../../senses/shared-turn")
-    const result = await runSenseTurn({
-      agentName: command.agent,
-      channel: command.channel as import("@ouro.bot/friends").Channel,
-      sessionKey: command.sessionKey,
-      friendId: command.friendId,
-      userMessage: command.message,
-      ...(runtime?.socketPath ? { toolContext: { daemonSocketPath: runtime.socketPath } } : {}),
-      // Per-turn, per-agent runtime MCP injection (e.g. Workbench's ouro_workbench).
-      // Scoped to THIS turn only — never stored as module state, so a concurrent
-      // turn for a different agent cannot inherit these servers.
-      ...(command.runtimeMcp ? { runtimeMcpServers: command.runtimeMcp } : {}),
-    })
-    return {
-      ok: true,
-      message: result.response,
-      data: { ponderDeferred: result.ponderDeferred },
+  return withTurnExecutionLease(async () => {
+    try {
+      const { setAgentName } = await import("../identity")
+      setAgentName(command.agent)
+      const { runSenseTurn } = await import("../../senses/shared-turn")
+      const result = await runSenseTurn({
+        agentName: command.agent,
+        channel: command.channel as import("@ouro.bot/friends").Channel,
+        sessionKey: command.sessionKey,
+        friendId: command.friendId,
+        userMessage: command.message,
+        ...(runtime?.socketPath ? { toolContext: { daemonSocketPath: runtime.socketPath } } : {}),
+        // Per-turn, per-agent runtime MCP injection (e.g. Workbench's ouro_workbench).
+        // Scoped to THIS turn only — never stored as module state, so a concurrent
+        // turn for a different agent cannot inherit these servers.
+        ...(command.runtimeMcp ? { runtimeMcpServers: command.runtimeMcp } : {}),
+      })
+      return {
+        ok: true,
+        message: result.response,
+        data: { ponderDeferred: result.ponderDeferred },
+      }
+    } catch (error) {
+      /* v8 ignore next -- branch: String(error) fallback only for non-Error throws @preserve */
+      const errorMessage = error instanceof Error ? error.message : String(error)
+      return { ok: false, error: `sense turn failed: ${errorMessage}` }
     }
-  } catch (error) {
-    /* v8 ignore next -- branch: String(error) fallback only for non-Error throws @preserve */
-    const errorMessage = error instanceof Error ? error.message : String(error)
-    return { ok: false, error: `sense turn failed: ${errorMessage}` }
-  }
+  })
 }
 
 export async function handleAgentAskTurn(
@@ -2754,27 +2757,31 @@ export class OuroDaemon {
         return this.handlePrivateRuntimeWake(this.buildAwaitPrivateWakeCommand(command))
       }
       case "mcp.list": {
-        setAgentName(command.agent ?? "default")
-        const mcpManager = await getSharedMcpManager()
-        if (!mcpManager) {
-          return { ok: true, data: [], message: "no MCP servers configured" }
-        }
-        return { ok: true, data: mcpManager.listAllTools() }
+        return withTurnExecutionLease(async () => {
+          setAgentName(command.agent ?? "default")
+          const mcpManager = await getSharedMcpManager()
+          if (!mcpManager) {
+            return { ok: true, data: [], message: "no MCP servers configured" }
+          }
+          return { ok: true, data: mcpManager.listAllTools() }
+        })
       }
       case "mcp.call": {
-        setAgentName(command.agent ?? "default")
-        const mcpCallManager = await getSharedMcpManager()
-        if (!mcpCallManager) {
-          return { ok: false, error: "no MCP servers configured" }
-        }
-        try {
-          const parsedArgs = command.args ? JSON.parse(command.args) as Record<string, unknown> : {}
-          const result = await mcpCallManager.callTool(command.server, command.tool, parsedArgs)
-          return { ok: true, data: result }
-        } catch (error) {
-          /* v8 ignore next -- defensive: callTool errors are always Error instances @preserve */
-          return { ok: false, error: error instanceof Error ? error.message : String(error) }
-        }
+        return withTurnExecutionLease(async () => {
+          setAgentName(command.agent ?? "default")
+          const mcpCallManager = await getSharedMcpManager()
+          if (!mcpCallManager) {
+            return { ok: false, error: "no MCP servers configured" }
+          }
+          try {
+            const parsedArgs = command.args ? JSON.parse(command.args) as Record<string, unknown> : {}
+            const result = await mcpCallManager.callTool(command.server, command.tool, parsedArgs)
+            return { ok: true, data: result }
+          } catch (error) {
+            /* v8 ignore next -- defensive: callTool errors are always Error instances @preserve */
+            return { ok: false, error: error instanceof Error ? error.message : String(error) }
+          }
+        })
       }
       case "hatch.start":
         return {

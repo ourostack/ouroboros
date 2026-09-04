@@ -28,6 +28,7 @@ import { emitNervesEvent } from "../nerves/runtime"
 import type { ToolContext } from "../repertoire/tools-base"
 import { readSessionTransaction, withSessionTurnLease, type SessionTurnLease } from "../mind/session-transaction"
 import type { OrientationFrame } from "../heart/orientation-frame"
+import { withTurnExecutionLease } from "../heart/turn-execution-lease"
 
 const RESPONSE_CAP = 50_000
 const OUTWARD_DELIVERY_TOOL_ACKS = new Map([
@@ -281,6 +282,10 @@ export function getSenseSessionPath(agentName: string, friendId: string, channel
  * this function handles all pipeline wiring.
  */
 export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSenseTurnResult> {
+  return withTurnExecutionLease(() => runSenseTurnExclusive(options))
+}
+
+async function runSenseTurnExclusive(options: RunSenseTurnOptions): Promise<RunSenseTurnResult> {
   const { agentName, channel, sessionKey, friendId, userMessage } = options
 
   emitNervesEvent({
