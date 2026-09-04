@@ -337,7 +337,9 @@ describe("Telegram sense", () => {
   })
 
   it("rejects unsupported receipt MAC values and invalid acceptance scenario handles", () => {
-    expect(() => sanctuaryTelegramTurnReceiptMac("k".repeat(43), { unsupported: undefined })).toThrow("unsupported value")
+    expect(sanctuaryTelegramTurnReceiptMac("k".repeat(43), { omitted: undefined }))
+      .toBe(sanctuaryTelegramTurnReceiptMac("k".repeat(43), {}))
+    expect(() => sanctuaryTelegramTurnReceiptMac("k".repeat(43), { unsupported: () => undefined })).toThrow("unsupported value")
     expect(() => createTelegramSenseApp({
       agentName: "sanctuary", credentials: { botToken: "test-token", authorizedUserId: "42", authorizedChatId: "42" },
       identityKey: "k".repeat(43), _agentRoot: fs.mkdtempSync(path.join(os.tmpdir(), "telegram-invalid-marker-")), _toolContext: {} as never,
