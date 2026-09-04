@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto"
 import * as fs from "node:fs"
 import * as net from "node:net"
+import * as path from "node:path"
 import * as readline from "node:readline"
 
 import type { Channel } from "@ouro.bot/friends"
@@ -7,8 +9,16 @@ import type { Channel } from "@ouro.bot/friends"
 import type { FrontendSessionService, FrontendTurnRequest } from "./frontend-session-service"
 
 const PROTOCOL_VERSION = 1
+const MAX_SOCKET_PATH_BYTES = 100
 
 type FrontendFrame = Record<string, unknown> & { protocolVersion: 1 }
+
+export function frontendSocketPathForDaemon(commandSocketPath: string): string {
+  const candidate = `${commandSocketPath}.frontend`
+  if (Buffer.byteLength(candidate) <= MAX_SOCKET_PATH_BYTES) return candidate
+  const digest = createHash("sha256").update(path.resolve(commandSocketPath)).digest("hex").slice(0, 16)
+  return `/tmp/ouro-frontend-${digest}.sock`
+}
 
 interface FrameSocket {
   write(chunk: string): boolean

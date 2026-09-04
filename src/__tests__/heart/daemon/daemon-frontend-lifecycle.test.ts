@@ -50,6 +50,7 @@ function frontendHandle(stop = vi.fn(async () => undefined)) {
 describe("daemon frontend socket lifecycle", () => {
   it("starts one derived frontend socket and stops it with the daemon", async () => {
     const { OuroDaemon } = await import("../../../heart/daemon/daemon")
+    const { frontendSocketPathForDaemon } = await import("../../../heart/frontend-socket")
     const socketPath = tmpSocketPath("daemon-frontend")
     const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-frontend-"))
     const stop = vi.fn(async () => undefined)
@@ -66,7 +67,7 @@ describe("daemon frontend socket lifecycle", () => {
       await daemon.start()
       expect(factory).toHaveBeenCalledOnce()
       expect(factory).toHaveBeenCalledWith(expect.objectContaining({
-        socketPath: `${socketPath}.frontend`,
+        socketPath: frontendSocketPathForDaemon(socketPath),
         service: expect.any(Object),
       }))
     } finally {
