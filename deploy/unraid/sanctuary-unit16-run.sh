@@ -369,7 +369,7 @@ case "$COMMAND" in
   telegram-bootstrap) TIME_LIMIT=900; NETWORK=host; INPUT=no; BUNDLE_MODE=readonly; BROKER=no ;;
   callback-inject) TIME_LIMIT=120; NETWORK=host; INPUT=yes; BUNDLE_MODE=rw; BROKER=no ;;
   unraid-key-rotate) TIME_LIMIT=600; NETWORK=host; INPUT=no; BUNDLE_MODE=readonly; BROKER=yes ;;
-  evidence-snapshot) TIME_LIMIT=4950; NETWORK=host; INPUT=no; BUNDLE_MODE=readonly; BROKER=yes ;;
+  evidence-snapshot) TIME_LIMIT=5700; NETWORK=host; INPUT=no; BUNDLE_MODE=readonly; BROKER=yes ;;
   reboot-request) TIME_LIMIT=300; NETWORK=none; INPUT=no; BUNDLE_MODE=readonly; BROKER=yes ;;
   reboot-resume) TIME_LIMIT=780; NETWORK=host; INPUT=no; BUNDLE_MODE=readonly; BROKER=yes ;;
   *) TIME_LIMIT=120; NETWORK=none; INPUT=no; BUNDLE_MODE=readonly; BROKER=no ;;

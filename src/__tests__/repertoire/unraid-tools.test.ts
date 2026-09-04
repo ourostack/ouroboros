@@ -319,6 +319,7 @@ describe("Unraid typed read tools", () => {
       checkServices: vi.fn(async () => ({ ok: true, data: "services" })),
       getDownloadQueue: vi.fn(async () => ({ ok: true, data: "download-queue" })),
       getMediaOptimization: vi.fn(async () => ({ ok: true, data: "media-optimization" })),
+      searchMediaCatalog: vi.fn(async (args) => ({ ok: true, data: args })),
       resumeDownloadQueue: vi.fn(async () => ({ ok: true, data: "resumed" })),
       restartContainer: vi.fn(async (args) => ({ ok: true, data: args })),
     }
@@ -326,6 +327,7 @@ describe("Unraid typed read tools", () => {
       const missing = JSON.parse(await definition.handler({}, undefined as any))
       expect(missing).toMatchObject({ ok: false, error: { code: "invalid_response" } })
       const args = definition.tool.function.name === "unraid_get_container_logs" ? { container: "alpha", tailLines: 7 }
+        : definition.tool.function.name === "sanctuary_search_media_catalog" ? { query: "moon", limit: 3 }
         : definition.tool.function.name === "unraid_restart_container" ? { container: "alpha" } : {}
       expect(JSON.parse(await definition.handler(args, { sanctuary } as any)).ok).toBe(true)
     }
@@ -333,6 +335,7 @@ describe("Unraid typed read tools", () => {
     expect(sanctuary.checkServices).toHaveBeenCalledExactlyOnceWith()
     expect(sanctuary.getDownloadQueue).toHaveBeenCalledExactlyOnceWith()
     expect(sanctuary.getMediaOptimization).toHaveBeenCalledExactlyOnceWith()
+    expect(sanctuary.searchMediaCatalog).toHaveBeenCalledExactlyOnceWith({ query: "moon", limit: 3 })
     expect(sanctuary.resumeDownloadQueue).toHaveBeenCalledExactlyOnceWith()
     expect(sanctuary.restartContainer).toHaveBeenCalledExactlyOnceWith({ container: "alpha" }, undefined)
     const restartDefinition = unraidToolDefinitions.find((definition) => definition.tool.function.name === "unraid_restart_container")!

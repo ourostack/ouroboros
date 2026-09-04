@@ -238,6 +238,7 @@ export function createSanctuaryToolContext(agentName: string): Pick<ToolContext,
         }
       }),
       getMediaOptimization: acceptanceRead("sanctuary_get_media_optimization", mediaOptimization.read),
+      searchMediaCatalog: acceptanceRead("sanctuary_search_media_catalog", mediaOptimization.readCatalog),
       resumeDownloadQueue: async () => {
         try {
           const result = await sab.resumeQueue()
