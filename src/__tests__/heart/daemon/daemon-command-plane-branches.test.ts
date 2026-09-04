@@ -94,6 +94,7 @@ describe("daemon command plane branches", () => {
     const router = {
       send: vi.fn(async () => ({ id: "msg-1", queuedAt: "2026-03-05T23:00:00.000Z" })),
       pollInbox: vi.fn(() => [{ id: "m", from: "slugger", content: "hello", queuedAt: "x", priority: "normal" }]),
+      peekInbox: vi.fn(() => [{ id: "msg-1", from: "ouro-cli", content: "hello from the operator", queuedAt: "2026-03-05T23:00:00.000Z", priority: "normal" }]),
     }
 
     const senseManager = {
@@ -903,6 +904,26 @@ describe("daemon command plane branches", () => {
     expect(hatch.message).toContain("hatch flow is stubbed")
   })
 
+  it("keeps operator CLI message.send queue-only until the explicit private wake is allowed", async () => {
+    const socketPath = tmpSocketPath("daemon-operator-cli-private-pending")
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-operator-cli-private-pending-bundles-"))
+    fs.mkdirSync(path.join(bundlesRoot, "slugger.ouro"), { recursive: true })
+    const { daemon, processManager, router } = make(socketPath, bundlesRoot)
+    router.send.mockResolvedValueOnce({ id: "msg-cli-123", queuedAt: "2026-03-05T23:00:00.000Z" })
+
+    const queued = await daemon.handleCommand({
+      kind: "message.send",
+      from: "ouro-cli",
+      to: "slugger",
+      content: "please check the movie catalog",
+    })
+
+    expect(queued.message).toContain("queued message msg-cli-123")
+    expect(processManager.startAgent).not.toHaveBeenCalledWith("slugger")
+    expect(processManager.sendToAgent).not.toHaveBeenCalledWith("slugger", { type: "message" })
+    expect(fs.existsSync(path.join(bundlesRoot, "slugger.ouro", "state", "pending", "self", "inner", "dialog"))).toBe(false)
+  })
+
   it("keeps high-frequency ordinary message sends queue-only with no private-runtime policy evaluation", async () => {
     const socketPath = tmpSocketPath("daemon-message-send-storm")
     const ledgerPath = path.join(os.tmpdir(), `message-send-storm-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
@@ -934,6 +955,213 @@ describe("daemon command plane branches", () => {
     expect(policyDeps.resolveProviderLane).not.toHaveBeenCalled()
     expect(policyDeps.evaluatePolicy).not.toHaveBeenCalled()
     expect(fs.existsSync(ledgerPath)).toBe(false)
+  })
+
+  it("binds an allowed operator CLI private wake to the exact queued message payload", async () => {
+    const socketPath = tmpSocketPath("daemon-operator-cli-private-wake")
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-operator-cli-bundles-"))
+    const ledgerPath = path.join(os.tmpdir(), `operator-cli-wake-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const policyDeps = privateRuntimePolicyDeps(ledgerPath, "allow")
+    const { daemon, processManager, router } = make(socketPath, bundlesRoot, { privateRuntimePolicyDeps: policyDeps })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+
+    try {
+      const wake = await daemon.handleCommand({
+        kind: "private.wake",
+        agent: "slugger",
+        reason: "operator CLI message",
+        triggerSource: "operator-cli",
+        budgetClass: "interactive",
+        idempotencyKey: "cli:message:slugger:msg-1",
+        originRefs: [
+          { kind: "cli-command", id: "ouro msg" },
+          { kind: "daemon-receipt", id: "msg-1" },
+        ],
+      })
+
+      expect(wake).toMatchObject({ ok: true, message: "woke private runtime for slugger" })
+      expect(router.peekInbox).toHaveBeenCalledWith("slugger")
+      expect(processManager.startAgent).toHaveBeenCalledWith("slugger")
+      expect(processManager.sendToAgent).toHaveBeenCalledWith("slugger", expect.objectContaining({ type: "message" }))
+      const pendingRoot = path.join(bundlesRoot, "slugger.ouro", "state", "pending", "self", "inner", "dialog")
+      const [pendingFile] = fs.readdirSync(pendingRoot)
+      const pending = JSON.parse(fs.readFileSync(path.join(pendingRoot, pendingFile!), "utf-8")) as Record<string, unknown>
+      expect(pending).toMatchObject({
+        from: "ouro-cli",
+        content: "hello from the operator",
+        requestId: "msg-1",
+        packetId: "operator-cli:slugger:msg-1",
+      })
+      expect(readPrivateTurnLedger(ledgerPath)).toHaveLength(1)
+    } finally {
+      fs.rmSync(bundlesRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("leaves operator CLI private wakes alone when no daemon receipt is attached", async () => {
+    const socketPath = tmpSocketPath("daemon-operator-cli-private-wake-no-receipt")
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-operator-cli-no-receipt-bundles-"))
+    const ledgerPath = path.join(os.tmpdir(), `operator-cli-no-receipt-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const policyDeps = privateRuntimePolicyDeps(ledgerPath, "allow")
+    const { daemon, processManager, router } = make(socketPath, bundlesRoot, { privateRuntimePolicyDeps: policyDeps })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+
+    try {
+      const wake = await daemon.handleCommand({
+        kind: "private.wake",
+        agent: "slugger",
+        reason: "operator CLI message",
+        triggerSource: "operator-cli",
+        budgetClass: "interactive",
+        idempotencyKey: "cli:message:slugger:missing-receipt",
+        originRefs: [{ kind: "cli-command", id: "ouro msg" }],
+      })
+
+      expect(wake).toMatchObject({ ok: true, message: "woke private runtime for slugger" })
+      expect(router.peekInbox).not.toHaveBeenCalled()
+      expect(fs.existsSync(path.join(bundlesRoot, "slugger.ouro", "state", "pending", "self", "inner", "dialog"))).toBe(false)
+    } finally {
+      fs.rmSync(bundlesRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("leaves operator CLI private wakes alone when the daemon receipt is no longer queued", async () => {
+    const socketPath = tmpSocketPath("daemon-operator-cli-private-wake-missing-message")
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-operator-cli-missing-message-bundles-"))
+    const ledgerPath = path.join(os.tmpdir(), `operator-cli-missing-message-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const policyDeps = privateRuntimePolicyDeps(ledgerPath, "allow")
+    const { daemon, processManager, router } = make(socketPath, bundlesRoot, { privateRuntimePolicyDeps: policyDeps })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+    router.peekInbox.mockReturnValueOnce([])
+
+    try {
+      const wake = await daemon.handleCommand({
+        kind: "private.wake",
+        agent: "slugger",
+        reason: "operator CLI message",
+        triggerSource: "operator-cli",
+        budgetClass: "interactive",
+        idempotencyKey: "cli:message:slugger:missing-message",
+        originRefs: [
+          { kind: "cli-command", id: "ouro msg" },
+          { kind: "daemon-receipt", id: "missing-message" },
+        ],
+      })
+
+      expect(wake).toMatchObject({ ok: true, message: "woke private runtime for slugger" })
+      expect(router.peekInbox).toHaveBeenCalledWith("slugger")
+      expect(fs.existsSync(path.join(bundlesRoot, "slugger.ouro", "state", "pending", "self", "inner", "dialog"))).toBe(false)
+    } finally {
+      fs.rmSync(bundlesRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("leaves operator CLI private wakes alone when the router cannot peek queued messages", async () => {
+    const socketPath = tmpSocketPath("daemon-operator-cli-private-wake-no-peek")
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-operator-cli-no-peek-bundles-"))
+    const ledgerPath = path.join(os.tmpdir(), `operator-cli-no-peek-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const policyDeps = privateRuntimePolicyDeps(ledgerPath, "allow")
+    const { daemon, processManager, router } = make(socketPath, bundlesRoot, { privateRuntimePolicyDeps: policyDeps })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+    router.peekInbox = undefined as never
+
+    try {
+      const wake = await daemon.handleCommand({
+        kind: "private.wake",
+        agent: "slugger",
+        reason: "operator CLI message",
+        triggerSource: "operator-cli",
+        budgetClass: "interactive",
+        idempotencyKey: "cli:message:slugger:no-peek",
+        originRefs: [
+          { kind: "cli-command", id: "ouro msg" },
+          { kind: "daemon-receipt", id: "msg-1" },
+        ],
+      })
+
+      expect(wake).toMatchObject({ ok: true, message: "woke private runtime for slugger" })
+      expect(fs.existsSync(path.join(bundlesRoot, "slugger.ouro", "state", "pending", "self", "inner", "dialog"))).toBe(false)
+    } finally {
+      fs.rmSync(bundlesRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("uses the current clock when an operator CLI routed message has a malformed queuedAt", async () => {
+    const socketPath = tmpSocketPath("daemon-operator-cli-private-wake-invalid-queued-at")
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-operator-cli-invalid-queued-at-bundles-"))
+    const ledgerPath = path.join(os.tmpdir(), `operator-cli-invalid-queued-at-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const policyDeps = privateRuntimePolicyDeps(ledgerPath, "allow")
+    const { daemon, processManager, router } = make(socketPath, bundlesRoot, { privateRuntimePolicyDeps: policyDeps })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+    router.peekInbox.mockReturnValueOnce([
+      { id: "msg-bad-clock", from: "ouro-cli", content: "hello despite the clock", queuedAt: "not-a-date", priority: "normal" },
+    ])
+    vi.spyOn(Date, "now").mockReturnValue(1772751667890)
+
+    try {
+      const wake = await daemon.handleCommand({
+        kind: "private.wake",
+        agent: "slugger",
+        reason: "operator CLI message",
+        triggerSource: "operator-cli",
+        budgetClass: "interactive",
+        idempotencyKey: "cli:message:slugger:msg-bad-clock",
+        originRefs: [
+          { kind: "cli-command", id: "ouro msg" },
+          { kind: "daemon-receipt", id: "msg-bad-clock" },
+        ],
+      })
+
+      expect(wake).toMatchObject({ ok: true, message: "woke private runtime for slugger" })
+      const pendingRoot = path.join(bundlesRoot, "slugger.ouro", "state", "pending", "self", "inner", "dialog")
+      const [pendingFile] = fs.readdirSync(pendingRoot)
+      const pending = JSON.parse(fs.readFileSync(path.join(pendingRoot, pendingFile!), "utf-8")) as Record<string, unknown>
+      expect(pending).toMatchObject({
+        content: "hello despite the clock",
+        timestamp: 1772751667890,
+      })
+    } finally {
+      fs.rmSync(bundlesRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("does not fabricate private pending work for operator wakes without a matching daemon receipt", async () => {
+    const socketPath = tmpSocketPath("daemon-operator-cli-no-receipt")
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-operator-cli-no-receipt-bundles-"))
+    const ledgerPath = path.join(os.tmpdir(), `operator-cli-no-receipt-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`)
+    const policyDeps = privateRuntimePolicyDeps(ledgerPath, "allow")
+    const { daemon, processManager, router } = make(socketPath, bundlesRoot, { privateRuntimePolicyDeps: policyDeps })
+    processManager.listAgentSnapshots.mockReturnValue([registeredSnapshot()])
+    router.peekInbox.mockReturnValueOnce([])
+
+    try {
+      await daemon.handleCommand({
+        kind: "private.wake",
+        agent: "slugger",
+        reason: "operator CLI message",
+        triggerSource: "operator-cli",
+        budgetClass: "interactive",
+        idempotencyKey: "cli:message:slugger:unreceipted",
+        originRefs: [{ kind: "cli-command", id: "ouro msg" }],
+      })
+      await daemon.handleCommand({
+        kind: "private.wake",
+        agent: "slugger",
+        reason: "operator CLI message",
+        triggerSource: "operator-cli",
+        budgetClass: "interactive",
+        idempotencyKey: "cli:message:slugger:msg-missing",
+        originRefs: [
+          { kind: "cli-command", id: "ouro msg" },
+          { kind: "daemon-receipt", id: "msg-missing" },
+        ],
+      })
+
+      expect(fs.existsSync(path.join(bundlesRoot, "slugger.ouro", "state", "pending", "self", "inner", "dialog"))).toBe(false)
+      expect(processManager.sendToAgent).toHaveBeenCalledTimes(2)
+    } finally {
+      fs.rmSync(bundlesRoot, { recursive: true, force: true })
+    }
   })
 
   it("routes task pokes through private-runtime policy and denies without direct poke delivery", async () => {

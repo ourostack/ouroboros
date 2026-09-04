@@ -74,6 +74,47 @@ describe("FileMessageRouter", () => {
     expect(fs.readFileSync(inboxPath, "utf-8")).toBe("")
   })
 
+  it("peeks valid inbox messages without consuming them", async () => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "message-router-"))
+    tempDirs.push(baseDir)
+
+    const router = new FileMessageRouter({
+      baseDir,
+      now: () => "2026-03-07T01:02:03.004Z",
+    })
+    const inboxPath = path.join(baseDir, "ouroboros-inbox.jsonl")
+    await router.send({
+      from: "slugger",
+      to: "ouroboros",
+      content: "still waiting in the inbox",
+    })
+    fs.appendFileSync(inboxPath, "{corrupt\n", "utf-8")
+
+    expect(router.peekInbox("ouroboros")).toEqual([
+      expect.objectContaining({
+        id: "msg-20260307010203004",
+        content: "still waiting in the inbox",
+      }),
+    ])
+    expect(fs.readFileSync(inboxPath, "utf-8")).toContain("still waiting in the inbox")
+    expect(fs.readFileSync(inboxPath, "utf-8")).toContain("{corrupt")
+  })
+
+  it("peeks an absent inbox as empty while using the real clock default", async () => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "message-router-"))
+    tempDirs.push(baseDir)
+
+    const router = new FileMessageRouter({ baseDir })
+
+    expect(router.peekInbox("missing-agent")).toEqual([])
+    const queued = await router.send({
+      from: "slugger",
+      to: "ouroboros",
+      content: "uses the constructor clock default",
+    })
+    expect(Number.isFinite(Date.parse(queued.queuedAt))).toBe(true)
+  })
+
   it("keeps same-millisecond message receipts distinct", async () => {
     const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "message-router-"))
     tempDirs.push(baseDir)
