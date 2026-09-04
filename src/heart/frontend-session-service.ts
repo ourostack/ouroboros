@@ -55,6 +55,13 @@ export interface FrontendTurnResult {
   sessionPath: string | null
 }
 
+export interface PreparedFrontendTurn {
+  request: FrontendTurnRequest
+  sessionIdentity: string
+  controller: AbortController
+  started: boolean
+}
+
 type FrontendTurnRunner = (options: RunSenseTurnOptions) => Promise<RunSenseTurnResult>
 type FrontendServiceListener = (event: FrontendServiceEvent) => void
 
@@ -175,7 +182,7 @@ export class FrontendSessionService {
     }
   }
 
-  async runTurn(request: FrontendTurnRequest): Promise<FrontendTurnResult> {
+  prepareTurn(request: FrontendTurnRequest): PreparedFrontendTurn {
     const turnId = required(request.turnId, "turnId")
     const normalized: FrontendTurnRequest = {
       ...request,
@@ -192,6 +199,20 @@ export class FrontendSessionService {
     const controller = new AbortController()
     this.activeTurns.set(turnId, controller)
     this.activeSessions.set(sessionIdentity, turnId)
+    return { request: normalized, sessionIdentity, controller, started: false }
+  }
+
+  async runTurn(request: FrontendTurnRequest): Promise<FrontendTurnResult> {
+    return this.runPreparedTurn(this.prepareTurn(request))
+  }
+
+  async runPreparedTurn(prepared: PreparedFrontendTurn): Promise<FrontendTurnResult> {
+    if (prepared.started) throw new Error(`frontend turn already started: ${prepared.request.turnId}`)
+    prepared.started = true
+    const normalized = prepared.request
+    const turnId = normalized.turnId
+    const sessionIdentity = prepared.sessionIdentity
+    const controller = prepared.controller
     try {
       this.publish(normalized, "user_message", { text: normalized.message }, "user_message")
       this.publish(normalized, "turn_started", {}, "turn_started")

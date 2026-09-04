@@ -216,6 +216,23 @@ describe("frontend session service", () => {
     expect(authority.resumeApproval).toHaveBeenCalledTimes(8)
   })
 
+  it("runs a prepared turn exactly once", async () => {
+    const release = Promise.withResolvers<void>()
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const service = new FrontendSessionService({
+      runner: async () => {
+        await release.promise
+        return settledResult()
+      },
+    })
+    const prepared = service.prepareTurn(request())
+    const running = service.runPreparedTurn(prepared)
+
+    await expect(service.runPreparedTurn(prepared)).rejects.toThrow("frontend turn already started")
+    release.resolve()
+    await running
+  })
+
   it("forwards runtime MCP configuration and rejects a missing outcome", async () => {
     const runtimeMcpServers = {
       ouro_workbench: { command: "/Applications/OuroWorkbenchMCP", args: [] },

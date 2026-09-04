@@ -1,6 +1,6 @@
 import { McpClient, isMcpTransportError } from "./mcp-client"
 import type { McpToolInfo } from "./mcp-client"
-import { loadAgentConfig, type McpServerConfig } from "../heart/identity"
+import { getAgentName, loadAgentConfig, type McpServerConfig } from "../heart/identity"
 import { emitNervesEvent } from "../nerves/runtime"
 import { getCredentialStore } from "./credential-access"
 import {
@@ -14,6 +14,8 @@ interface ServerEntry {
   client: McpClient
   cachedTools: McpToolInfo[]
   consecutiveFailures: number
+  ownerAgent?: string
+  generation: number
   /**
    * If this server came from a plugin's `.mcp.json`, the plugin id is stored
    * here. Downstream (`mcpToolsAsDefinitions`) uses this to namespace the
@@ -87,13 +89,25 @@ function buildMergedServerConfig(runtimeServers?: RuntimeMcpServers): {
   return { mergedServers, pluginOrigins }
 }
 
+function sameMcpServerConfig(left: McpServerConfig, right: McpServerConfig): boolean {
+  const leftEnv = Object.entries(left.env ?? {}).sort(([a], [b]) => a.localeCompare(b))
+  const rightEnv = Object.entries(right.env ?? {}).sort(([a], [b]) => a.localeCompare(b))
+  return left.command === right.command
+    && JSON.stringify(left.args ?? []) === JSON.stringify(right.args ?? [])
+    && JSON.stringify(leftEnv) === JSON.stringify(rightEnv)
+    && (left.cwd ?? "") === (right.cwd ?? "")
+}
+
 export class McpManager {
   private servers = new Map<string, ServerEntry>()
+  private desiredGenerations = new Map<string, number>()
+  private nextGeneration = 0
   private shuttingDown = false
 
   async start(
     servers: Record<string, McpServerConfig>,
     pluginOrigins: Record<string, string> = {},
+    ownerAgent?: string,
   ): Promise<void> {
     emitNervesEvent({
       event: "mcp.manager_start",
@@ -107,7 +121,7 @@ export class McpManager {
 
     const entries = Object.entries(servers)
     for (const [name, config] of entries) {
-      await this.connectServer(name, config, pluginOrigins[name])
+      await this.connectServer(name, config, pluginOrigins[name], ownerAgent)
     }
   }
 
@@ -190,22 +204,39 @@ export class McpManager {
    *  runtime server (e.g. ouro_workbench) is classified as "removed" and torn
    *  down — which is exactly the desired no-leak behavior for a turn that omits
    *  them. */
-  async reconcile(runtimeServers?: RuntimeMcpServers): Promise<void> {
+  async reconcile(runtimeServers?: RuntimeMcpServers): Promise<boolean> {
     try {
       const { mergedServers, pluginOrigins } = buildMergedServerConfig(runtimeServers)
+      const ownerAgent = getAgentName()
       const currentNames = new Set(this.servers.keys())
       const desiredNames = new Set(Object.keys(mergedServers))
 
       // Connect new servers
       for (const [name, cfg] of Object.entries(mergedServers)) {
-        if (!currentNames.has(name)) {
+        const current = this.servers.get(name)
+        const pluginId = pluginOrigins[name]
+        if (!current) {
           emitNervesEvent({
             event: "mcp.server_added",
             component: "repertoire",
             message: `connecting new MCP server: ${name}`,
             meta: { server: name, command: cfg.command },
           })
-          await this.connectServer(name, cfg, pluginOrigins[name])
+          await this.connectServer(name, cfg, pluginId, ownerAgent)
+        } else if (
+          !sameMcpServerConfig(current.config, cfg)
+          || current.pluginId !== pluginId
+          || current.ownerAgent !== ownerAgent
+        ) {
+          emitNervesEvent({
+            event: "mcp.server_changed",
+            component: "repertoire",
+            message: `reconnecting changed MCP server: ${name}`,
+            meta: { server: name, command: cfg.command },
+          })
+          current.client.shutdown()
+          this.servers.delete(name)
+          await this.connectServer(name, cfg, pluginId, ownerAgent)
         }
       }
 
@@ -222,8 +253,10 @@ export class McpManager {
           /* v8 ignore next -- defensive: name comes from this.servers.keys() this same tick, so entry is always present; the guard only protects against an awaited connectServer crash-handler racing a delete @preserve */
           if (entry) entry.client.shutdown()
           this.servers.delete(name)
+          this.desiredGenerations.delete(name)
         }
       }
+      return true
     } catch (error) {
       emitNervesEvent({
         level: "warn",
@@ -232,6 +265,8 @@ export class McpManager {
         message: "failed to reconcile MCP servers",
         meta: { reason: error instanceof Error ? error.message : String(error) },
       })
+      this.shutdown()
+      return false
     }
   }
 
@@ -250,6 +285,7 @@ export class McpManager {
       entry.client.shutdown()
     }
     this.servers.clear()
+    this.desiredGenerations.clear()
   }
 
   /**
@@ -259,6 +295,7 @@ export class McpManager {
   private async resolveVaultEnv(
     _serverName: string,
     env: Record<string, string>,
+    ownerAgent?: string,
   ): Promise<Record<string, string>> {
     const resolved = { ...env }
     // Short-circuit: only spin up a credential store if at least one env value
@@ -267,7 +304,7 @@ export class McpManager {
     // boot cost (or fail in test envs that have no vault) for those cases.
     const hasVaultRef = Object.values(resolved).some((v) => /^vault:/.test(v))
     if (!hasVaultRef) return resolved
-    const store = getCredentialStore()
+    const store = getCredentialStore(ownerAgent)
 
     for (const [key, value] of Object.entries(resolved)) {
       const match = value.match(/^vault:([^/]+)\/(.+)$/)
@@ -297,12 +334,15 @@ export class McpManager {
     name: string,
     config: McpServerConfig,
     pluginId?: string,
+    ownerAgent?: string,
   ): Promise<void> {
+    const generation = ++this.nextGeneration
+    this.desiredGenerations.set(name, generation)
     // Resolve vault: references in env before spawning
     let resolvedConfig = config
     if (config.env) {
       try {
-        const resolvedEnv = await this.resolveVaultEnv(name, config.env)
+        const resolvedEnv = await this.resolveVaultEnv(name, config.env, ownerAgent)
         resolvedConfig = { ...config, env: resolvedEnv }
       } catch (err) {
         /* v8 ignore next -- reason @preserve */
@@ -314,9 +354,13 @@ export class McpManager {
           message: `skipping MCP server "${name}": ${reason}`,
           meta: { server: name, reason },
         })
+        if (this.desiredGenerations.get(name) === generation) {
+          this.desiredGenerations.delete(name)
+        }
         return // Skip this server, continue to next
       }
     }
+    if (this.shuttingDown || this.desiredGenerations.get(name) !== generation) return
 
     const client = new McpClient(resolvedConfig)
 
@@ -327,18 +371,29 @@ export class McpManager {
       cachedTools: [],
       consecutiveFailures: 0,
       pluginId,
+      ownerAgent,
+      generation,
     }
 
     this.servers.set(name, entry)
 
     client.onClose(() => {
       if (this.shuttingDown) return
-      this.handleServerCrash(name)
+      if (this.servers.get(name)?.client !== client) return
+      this.handleServerCrash(name, client)
     })
 
     try {
       await client.connect()
       const tools = await client.listTools()
+      if (
+        this.shuttingDown
+        || this.desiredGenerations.get(name) !== generation
+        || this.servers.get(name)?.client !== client
+      ) {
+        client.shutdown()
+        return
+      }
       entry.cachedTools = tools
       entry.consecutiveFailures = 0
     } catch (error) {
@@ -358,10 +413,10 @@ export class McpManager {
     }
   }
 
-  private handleServerCrash(name: string): void {
+  private handleServerCrash(name: string, crashedClient: McpClient): void {
     const entry = this.servers.get(name)
-    /* v8 ignore next -- defensive: entry removed between close event and handler @preserve */
-    if (!entry) return
+    /* v8 ignore next -- defensive: entry removed or replaced between close event and handler @preserve */
+    if (!entry || entry.client !== crashedClient) return
 
     entry.consecutiveFailures++
 
@@ -387,7 +442,8 @@ export class McpManager {
     /* v8 ignore start -- timer callback: covered by mcp-manager.test.ts via fake timers but v8 can't trace @preserve */
     setTimeout(() => {
       if (this.shuttingDown) return
-      this.restartServer(name).catch(() => {
+      if (this.servers.get(name)?.client !== crashedClient) return
+      this.restartServer(name, crashedClient).catch(() => {
         // Error handling is inside restartServer
       })
     }, RESTART_DELAY_MS)
@@ -395,14 +451,16 @@ export class McpManager {
   }
 
   /* v8 ignore start -- called from timer callback: covered by mcp-manager.test.ts via fake timers but v8 can't trace @preserve */
-  private async restartServer(name: string): Promise<void> {
+  private async restartServer(name: string, expectedClient?: McpClient): Promise<void> {
     const entry = this.servers.get(name)
     if (!entry) return
+    if (expectedClient && entry.client !== expectedClient) return
 
     // Remove old entry and reconnect
     this.servers.delete(name)
+    this.desiredGenerations.delete(name)
     entry.client.shutdown()
-    await this.connectServer(name, entry.config)
+    await this.connectServer(name, entry.config, entry.pluginId, entry.ownerAgent)
 
     // Preserve failure count
     const newEntry = this.servers.get(name)
@@ -447,7 +505,11 @@ export async function getSharedMcpManager(
   // AND this turn's runtime overrides. Passing runtimeServers per-call is what
   // scopes the runtime MCP to the active agent's turn.
   if (_sharedManager) {
-    await _sharedManager.reconcile(runtimeServers)
+    const reconciled = await _sharedManager.reconcile(runtimeServers)
+    if (!reconciled) {
+      _sharedManager = null
+      return null
+    }
     return _sharedManager
   }
   /* v8 ignore next -- race guard: deduplicates concurrent initialization calls @preserve */
@@ -461,7 +523,7 @@ export async function getSharedMcpManager(
       if (Object.keys(mergedServers).length === 0) return null
 
       const manager = new McpManager()
-      await manager.start(mergedServers, pluginOrigins)
+      await manager.start(mergedServers, pluginOrigins, getAgentName())
       _sharedManager = manager
       return manager
     } catch (error) {

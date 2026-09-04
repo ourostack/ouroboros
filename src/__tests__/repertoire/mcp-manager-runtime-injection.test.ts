@@ -54,10 +54,12 @@ function mockManagerDeps(): { connects: string[]; shutdowns: string[] } {
 
 describe("getSharedMcpManager + runtime Workbench MCP injection", () => {
   afterEach(() => {
+    vi.useRealTimers()
     vi.restoreAllMocks()
     vi.doUnmock("../../repertoire/mcp-client")
     vi.doUnmock("../../heart/identity")
     vi.doUnmock("../../repertoire/plugin-mcp")
+    vi.doUnmock("../../repertoire/credential-access")
   })
 
   it("connects ouro_workbench for a turn that carries runtimeServers", async () => {
@@ -112,6 +114,108 @@ describe("getSharedMcpManager + runtime Workbench MCP injection", () => {
     expect(manager).not.toBeNull()
     // Only the runtime command is spawned; the stale disk path is overridden.
     expect(connects).toEqual(["/Apps/OuroWorkbenchMCP"])
+
+    mod.resetSharedMcpManager()
+  })
+
+  it("reconnects an existing stale builtin when a runtime override arrives later", async () => {
+    vi.resetModules()
+    vi.useFakeTimers()
+    const connects: string[] = []
+    const shutdowns: string[] = []
+    const closeHandlers: Array<() => void> = []
+    const McpClientMock = class {
+      connect: () => Promise<void>
+      listTools = async () => []
+      callTool = vi.fn()
+      isConnected = vi.fn(() => true)
+      private closeHandler: () => void = () => undefined
+      onClose = vi.fn((handler: () => void) => {
+        this.closeHandler = handler
+        closeHandlers.push(handler)
+      })
+      constructor(public config: { command: string }) {
+        this.connect = async () => { connects.push(this.config.command) }
+      }
+      shutdown(): void {
+        shutdowns.push(this.config.command)
+        queueMicrotask(() => this.closeHandler())
+      }
+    }
+    vi.doMock("../../repertoire/mcp-client", () => ({
+      McpClient: McpClientMock,
+      isMcpTransportError: () => false,
+    }))
+    vi.doMock("../../heart/identity", () => ({
+      loadAgentConfig: () => ({
+        mcpServers: { ouro_workbench: { command: "stale-disk-path", args: ["--unsafe"] } },
+      }),
+      getAgentRoot: () => "/tmp/agent",
+      getAgentName: () => "test",
+    }))
+    vi.doMock("../../repertoire/plugin-mcp", () => ({
+      listPluginMcpServers: () => [],
+      pluginMcpServerToConfig: (server: any) => ({ command: server.command }),
+    }))
+
+    const mod = await import("../../repertoire/mcp-manager")
+    await mod.getSharedMcpManager()
+    closeHandlers[0]?.()
+    await mod.getSharedMcpManager({ runtimeServers: WORKBENCH_RUNTIME })
+    await vi.runAllTimersAsync()
+
+    expect(connects).toEqual(["stale-disk-path", "/Apps/OuroWorkbenchMCP"])
+    expect(shutdowns).toEqual(["stale-disk-path"])
+
+    mod.resetSharedMcpManager()
+  })
+
+  it("reconnects identical server configs when the owning agent changes", async () => {
+    vi.resetModules()
+    const connects: string[] = []
+    const shutdowns: string[] = []
+    let agentName = "agent-a"
+    const McpClientMock = class {
+      connect: () => Promise<void>
+      listTools = async () => []
+      callTool = vi.fn()
+      shutdown: () => void
+      isConnected = vi.fn(() => true)
+      onClose = vi.fn()
+      constructor(public config: { command: string }) {
+        const owner = agentName
+        this.connect = async () => { connects.push(`${owner}:${this.config.command}`) }
+        this.shutdown = () => { shutdowns.push(`${owner}:${this.config.command}`) }
+      }
+    }
+    vi.doMock("../../repertoire/mcp-client", () => ({
+      McpClient: McpClientMock,
+      isMcpTransportError: () => false,
+    }))
+    vi.doMock("../../heart/identity", () => ({
+      loadAgentConfig: () => ({
+        mcpServers: { shared: { command: "same-command", env: { TOKEN: "vault:service/token" } } },
+      }),
+      getAgentRoot: () => `/tmp/${agentName}`,
+      getAgentName: () => agentName,
+    }))
+    vi.doMock("../../repertoire/plugin-mcp", () => ({
+      listPluginMcpServers: () => [],
+      pluginMcpServerToConfig: (server: any) => ({ command: server.command }),
+    }))
+    vi.doMock("../../repertoire/credential-access", () => ({
+      getCredentialStore: () => ({
+        getRawSecret: async () => `${agentName}-secret`,
+      }),
+    }))
+
+    const mod = await import("../../repertoire/mcp-manager")
+    await mod.getSharedMcpManager()
+    agentName = "agent-b"
+    await mod.getSharedMcpManager()
+
+    expect(connects).toEqual(["agent-a:same-command", "agent-b:same-command"])
+    expect(shutdowns).toEqual(["agent-a:same-command"])
 
     mod.resetSharedMcpManager()
   })
@@ -207,7 +311,7 @@ describe("getSharedMcpManager + runtime Workbench MCP injection", () => {
     mod.resetSharedMcpManager()
   })
 
-  it("reconcile swallows a buildMergedServerConfig failure on a later turn without throwing", async () => {
+  it("reconcile fails closed when merged configuration cannot be rebuilt", async () => {
     vi.resetModules()
     const connects: string[] = []
     const McpClientMock = class {
@@ -230,8 +334,7 @@ describe("getSharedMcpManager + runtime Workbench MCP injection", () => {
       getAgentRoot: () => "/tmp/agent",
       getAgentName: () => "test",
     }))
-    // First merge (initial start) succeeds; the second (reconcile) throws, so the
-    // reconcile catch block must absorb it and leave the manager intact.
+    // First merge succeeds; the second throws and must tear down stale clients.
     let calls = 0
     vi.doMock("../../repertoire/plugin-mcp", () => ({
       listPluginMcpServers: () => {
@@ -247,15 +350,13 @@ describe("getSharedMcpManager + runtime Workbench MCP injection", () => {
     expect(manager).not.toBeNull()
     expect(connects.sort()).toEqual(["/Apps/OuroWorkbenchMCP", "builtin-calc"])
 
-    // Second call hits reconcile → buildMergedServerConfig throws → caught, no throw.
-    await expect(mod.getSharedMcpManager({ runtimeServers: WORKBENCH_RUNTIME })).resolves.toBe(manager)
-    // Prior servers untouched (reconcile bailed before any teardown).
-    expect(manager!.listAllTools().map((e) => e.server).sort()).toEqual(["calc", "ouro_workbench"])
+    await expect(mod.getSharedMcpManager({ runtimeServers: WORKBENCH_RUNTIME })).resolves.toBeNull()
+    expect(manager!.listAllTools()).toEqual([])
 
     mod.resetSharedMcpManager()
   })
 
-  it("reconcile swallows a non-Error throw on a later turn (String(error) branch)", async () => {
+  it("reconcile fails closed for a non-Error configuration failure", async () => {
     vi.resetModules()
     const McpClientMock = class {
       connect = async () => {}
@@ -289,8 +390,8 @@ describe("getSharedMcpManager + runtime Workbench MCP injection", () => {
     const mod = await import("../../repertoire/mcp-manager")
     const manager = await mod.getSharedMcpManager({ runtimeServers: WORKBENCH_RUNTIME })
     expect(manager).not.toBeNull()
-    await expect(mod.getSharedMcpManager({ runtimeServers: WORKBENCH_RUNTIME })).resolves.toBe(manager)
-    expect(manager!.listAllTools().map((e) => e.server).sort()).toEqual(["calc", "ouro_workbench"])
+    await expect(mod.getSharedMcpManager({ runtimeServers: WORKBENCH_RUNTIME })).resolves.toBeNull()
+    expect(manager!.listAllTools()).toEqual([])
 
     mod.resetSharedMcpManager()
   })

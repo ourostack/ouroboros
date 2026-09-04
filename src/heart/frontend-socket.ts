@@ -7,6 +7,7 @@ import * as readline from "node:readline"
 import type { Channel } from "@ouro.bot/friends"
 
 import type { FrontendSessionService, FrontendTurnRequest } from "./frontend-session-service"
+import type { RuntimeMcpServers } from "../repertoire/mcp-manager"
 
 const PROTOCOL_VERSION = 1
 const MAX_SOCKET_PATH_BYTES = 100
@@ -121,6 +122,33 @@ function requiredString(value: unknown, field: string): string {
   return value.trim()
 }
 
+function validatedRuntimeMcpServers(value: unknown): RuntimeMcpServers | undefined {
+  if (value === undefined) return undefined
+  const servers = record(value)
+  const names = Object.keys(servers)
+  if (names.length === 0) return undefined
+  if (names.length !== 1 || names[0] !== "ouro_workbench") {
+    throw new Error("runtimeMcpServers supports only ouro_workbench")
+  }
+  const config = record(servers.ouro_workbench)
+  if (Object.keys(config).some((key) => key !== "command" && key !== "args")) {
+    throw new Error("runtimeMcpServers.ouro_workbench supports only command and args")
+  }
+  const command = requiredString(config.command, "runtimeMcpServers.ouro_workbench.command")
+  if (!path.isAbsolute(command)) throw new Error("runtimeMcpServers.ouro_workbench.command must be absolute")
+  try {
+    if (!fs.statSync(command).isFile()) throw new Error("not a file")
+    fs.accessSync(command, fs.constants.X_OK)
+  } catch {
+    throw new Error("runtimeMcpServers.ouro_workbench.command must be executable")
+  }
+  const args = config.args ?? []
+  if (!Array.isArray(args) || args.some((arg) => typeof arg !== "string") || args.length > 0) {
+    throw new Error("runtimeMcpServers.ouro_workbench.args must be an empty string array")
+  }
+  return { ouro_workbench: { command, args: [] } }
+}
+
 function removeSocket(socketPath: string): void {
   if (!fs.existsSync(socketPath)) return
   const stat = fs.lstatSync(socketPath)
@@ -204,6 +232,7 @@ export async function startFrontendSocketServer(options: {
     }
 
     if (method === "turn.start") {
+      const runtimeMcpServers = validatedRuntimeMcpServers(params.runtimeMcpServers)
       const turnRequest: FrontendTurnRequest = {
         turnId: requiredString(params.turnId, "turnId"),
         agent: requiredString(params.agent, "agent"),
@@ -211,11 +240,13 @@ export async function startFrontendSocketServer(options: {
         channel: requiredString(params.channel, "channel") as Channel,
         sessionKey: requiredString(params.sessionKey, "sessionKey"),
         message: requiredString(params.message, "message"),
+        ...(runtimeMcpServers ? { runtimeMcpServers } : {}),
       }
+      const prepared = options.service.prepareTurn(turnRequest)
       client.ownedTurnIds.add(turnRequest.turnId)
       client.writer.send(response(id, { accepted: true, turnId: turnRequest.turnId }))
       queueMicrotask(() => {
-        void options.service.runTurn(turnRequest).catch(() => undefined)
+        void options.service.runPreparedTurn(prepared).catch(() => undefined)
       })
       return
     }

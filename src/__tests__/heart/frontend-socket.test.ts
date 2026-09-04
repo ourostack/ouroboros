@@ -135,6 +135,183 @@ describe("frontend socket", () => {
     socket.destroy()
   })
 
+  it("forwards only a validated Workbench runtime MCP into the reserved turn", async () => {
+    const executable = path.join(os.tmpdir(), `workbench-mcp-${Date.now()}`)
+    fs.writeFileSync(executable, "#!/bin/sh\n", { mode: 0o755 })
+    let observedRuntimeMcp: unknown
+    const runner = vi.fn(async (input: any) => {
+      observedRuntimeMcp = input.runtimeMcpServers
+      return settledResult()
+    })
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const { startFrontendSocketServer } = await import("../../heart/frontend-socket")
+    const target = socketPath("frontend-runtime-mcp")
+    const server = await startFrontendSocketServer({
+      socketPath: target,
+      service: new FrontendSessionService({ runner }),
+    })
+    cleanup.push(async () => {
+      await server.stop()
+      fs.rmSync(executable, { force: true })
+    })
+    const socket = await connect(target)
+    const frames = collectFrames(socket)
+
+    socket.write(`${JSON.stringify({
+      protocolVersion: 1,
+      id: "start",
+      method: "turn.start",
+      params: {
+        turnId: "turn-1",
+        agent: "boss",
+        friendId: "friend-1",
+        channel: "mcp",
+        sessionKey: "session-1",
+        message: "hello",
+        runtimeMcpServers: {
+          ouro_workbench: { command: executable, args: [] },
+        },
+      },
+    })}\n`)
+
+    expect(await waitForFrame(frames, (frame) => frame.id === "start")).toMatchObject({
+      ok: true,
+      result: { accepted: true },
+    })
+    await vi.waitFor(() => expect(runner).toHaveBeenCalledOnce())
+    expect(observedRuntimeMcp).toEqual({
+      ouro_workbench: { command: executable, args: [] },
+    })
+    socket.destroy()
+  })
+
+  it("rejects invalid runtime MCP input before accepting the turn", async () => {
+    const runner = vi.fn(async () => settledResult())
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const { startFrontendSocketServer } = await import("../../heart/frontend-socket")
+    const target = socketPath("frmcpbad")
+    const server = await startFrontendSocketServer({
+      socketPath: target,
+      service: new FrontendSessionService({ runner }),
+    })
+    cleanup.push(() => server.stop())
+    const socket = await connect(target)
+    const frames = collectFrames(socket)
+
+    socket.write('{"protocolVersion":1,"id":"start","method":"turn.start","params":{"turnId":"turn-1","agent":"boss","friendId":"friend-1","channel":"mcp","sessionKey":"session-1","message":"hello","runtimeMcpServers":{"other":{"command":"/bin/echo"}}}}\n')
+
+    expect(await waitForFrame(frames, (frame) => frame.id === "start")).toEqual({
+      protocolVersion: 1,
+      id: "start",
+      ok: false,
+      error: {
+        code: "invalid_params",
+        message: "runtimeMcpServers supports only ouro_workbench",
+      },
+    })
+    expect(runner).not.toHaveBeenCalled()
+    socket.destroy()
+  })
+
+  it("validates every Workbench runtime MCP field", async () => {
+    const runner = vi.fn(async () => settledResult())
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const { startFrontendSocketServer } = await import("../../heart/frontend-socket")
+    const target = socketPath("frmcpfields")
+    const server = await startFrontendSocketServer({
+      socketPath: target,
+      service: new FrontendSessionService({ runner }),
+    })
+    cleanup.push(() => server.stop())
+    const socket = await connect(target)
+    const frames = collectFrames(socket)
+    const base = {
+      agent: "boss",
+      friendId: "friend-1",
+      channel: "mcp",
+      message: "hello",
+    }
+    const cases = [
+      ["empty", {}, null],
+      ["args-omitted", { ouro_workbench: { command: "/bin/echo" } }, null],
+      ["extra", { ouro_workbench: { command: "/bin/echo", cwd: "/tmp" } }, "supports only command and args"],
+      ["relative", { ouro_workbench: { command: "echo" } }, "command must be absolute"],
+      ["directory", { ouro_workbench: { command: os.tmpdir() } }, "command must be executable"],
+      ["missing", { ouro_workbench: { command: "/tmp/does-not-exist" } }, "command must be executable"],
+      ["args-object", { ouro_workbench: { command: "/bin/echo", args: {} } }, "args must be an empty string array"],
+      ["args-non-string", { ouro_workbench: { command: "/bin/echo", args: [1] } }, "args must be an empty string array"],
+      ["args-non-empty", { ouro_workbench: { command: "/bin/echo", args: ["x"] } }, "args must be an empty string array"],
+    ] as const
+
+    for (const [id, runtimeMcpServers, error] of cases) {
+      socket.write(`${JSON.stringify({
+        protocolVersion: 1,
+        id,
+        method: "turn.start",
+        params: {
+          ...base,
+          turnId: `turn-${id}`,
+          sessionKey: `session-${id}`,
+          runtimeMcpServers,
+        },
+      })}\n`)
+      const frame = await waitForFrame(frames, (candidate) => candidate.id === id)
+      if (error) {
+        expect(frame).toMatchObject({ ok: false, error: { code: "invalid_params", message: expect.stringContaining(error) } })
+      } else {
+        expect(frame).toMatchObject({ ok: true, result: { accepted: true } })
+      }
+    }
+    await vi.waitFor(() => expect(runner).toHaveBeenCalledTimes(2))
+    socket.destroy()
+  })
+
+  it("rejects a conflicting session start before acknowledging it", async () => {
+    const entered = Promise.withResolvers<AbortSignal>()
+    const runner = vi.fn(async (input: any) => {
+      entered.resolve(input.signal)
+      await new Promise<void>((resolve) => input.signal.addEventListener("abort", () => resolve(), { once: true }))
+      return { ...settledResult(""), turnOutcome: "aborted" as const }
+    })
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const { startFrontendSocketServer } = await import("../../heart/frontend-socket")
+    const target = socketPath("fconflict")
+    const server = await startFrontendSocketServer({
+      socketPath: target,
+      service: new FrontendSessionService({ runner }),
+    })
+    cleanup.push(() => server.stop())
+    const first = await connect(target)
+    const second = await connect(target)
+    const firstFrames = collectFrames(first)
+    const secondFrames = collectFrames(second)
+    const params = {
+      agent: "boss",
+      friendId: "friend-1",
+      channel: "mcp",
+      sessionKey: "session-1",
+      message: "hello",
+    }
+
+    first.write(`${JSON.stringify({ protocolVersion: 1, id: "first", method: "turn.start", params: { ...params, turnId: "turn-1" } })}\n`)
+    await waitForFrame(firstFrames, (frame) => frame.id === "first")
+    await entered.promise
+    second.write(`${JSON.stringify({ protocolVersion: 1, id: "second", method: "turn.start", params: { ...params, turnId: "turn-2" } })}\n`)
+
+    expect(await waitForFrame(secondFrames, (frame) => frame.id === "second")).toEqual({
+      protocolVersion: 1,
+      id: "second",
+      ok: false,
+      error: {
+        code: "invalid_params",
+        message: "frontend session already has an active turn: session-1",
+      },
+    })
+    expect(firstFrames.some((frame) => frame.event === "turn.failed")).toBe(false)
+    first.destroy()
+    second.destroy()
+  })
+
   it("cancels only turns owned by a disconnected client", async () => {
     const entered = Promise.withResolvers<AbortSignal>()
     const runner = vi.fn(async (input: any) => {
