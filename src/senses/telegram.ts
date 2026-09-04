@@ -261,7 +261,7 @@ function canonicalReceiptJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalReceiptJson).join(",")}]`
   if (value && typeof value === "object") {
     const record = value as Record<string, unknown>
-    return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonicalReceiptJson(record[key])}`).join(",")}}`
+    return `{${Object.keys(record).filter((key) => record[key] !== undefined).sort().map((key) => `${JSON.stringify(key)}:${canonicalReceiptJson(record[key])}`).join(",")}}`
   }
   const rendered = JSON.stringify(value)
   if (rendered === undefined) throw new Error("Telegram receipt contains an unsupported value")

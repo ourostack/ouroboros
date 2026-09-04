@@ -5,6 +5,7 @@ import { join } from "node:path"
 import { inspect } from "node:util"
 import { createHash, createHmac } from "node:crypto"
 import { registerGlobalLogSink } from "../../nerves"
+import { sanctuaryTelegramApprovalEvidenceMac } from "../../senses/telegram"
 import { createTelegramAuditLedger } from "../../senses/telegram-audit-ledger"
 
 import {
@@ -1220,6 +1221,7 @@ describe("Telegram approval callback transport", () => {
       records: [{ approvalId: "manual", messageId: "99", deliveryState: "bound", approveCallbackData: "a:approve", denyCallbackData: "d:deny", expiresAt: 2_000_000 }],
       signAcceptanceEvidence: (event, meta) => {
         signed.push({ event, meta })
+        sanctuaryTelegramApprovalEvidenceMac("identity-key", event, meta)
         if (event === "telegram.approval_settlement_receipt_state") expect(JSON.stringify(meta)).toContain("\"recoveredAt\":null")
         return "f".repeat(64)
       },
