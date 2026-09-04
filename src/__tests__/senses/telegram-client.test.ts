@@ -1213,6 +1213,22 @@ describe("Telegram approval callback transport", () => {
     await expect(approvalFixture().transport.handleUpdate(update as any)).resolves.toMatchObject({ reason })
   })
 
+  it("settles a signed manual callback without an acceptance binding", async () => {
+    const signed: Array<{ event: string; meta: Record<string, unknown> }> = []
+    const fixture = approvalFixture({
+      now: () => 1_800_000,
+      records: [{ approvalId: "manual", messageId: "99", deliveryState: "bound", approveCallbackData: "a:approve", denyCallbackData: "d:deny", expiresAt: 2_000_000 }],
+      signAcceptanceEvidence: (event, meta) => {
+        signed.push({ event, meta })
+        if (event === "telegram.approval_settlement_receipt_state") expect(JSON.stringify(meta)).toContain("\"recoveredAt\":null")
+        return "f".repeat(64)
+      },
+    })
+
+    await expect(fixture.transport.handleUpdate(approvalCallback("a:approve"))).resolves.toMatchObject({ handled: true, accepted: true, reason: "accepted" })
+    expect(signed.some(({ event }) => event === "telegram.approval_settlement_receipt_state")).toBe(true)
+  })
+
   it("handles indeterminate, unbound, and expired callback states without authority", async () => {
     const base = { approvalId: "a", messageId: "99", approveCallbackData: "a:x", denyCallbackData: "d:x" }
     for (const [record, reason] of [

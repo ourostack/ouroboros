@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.783",
+      "changes": [
+        "Allow Telegram approval settlement receipts without acceptance-only recovery metadata, so manual approvals can resume from a suspended turn."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.782",
       "changes": [
         "Clarify external-event timed-wake tool guidance and verify single-disposition schema validation."
