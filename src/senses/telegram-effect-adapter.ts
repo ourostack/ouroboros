@@ -264,6 +264,25 @@ export class FileTelegramEffectJournal {
     return fs.existsSync(filePath) ? this.read(id) : null
   }
 
+  quarantineInvalid(id: string, reason: string): void {
+    this.assertRootIdentity()
+    const filePath = this.artifactPath(id)
+    if (!fs.existsSync(filePath)) return
+    const quarantineRoot = path.join(path.dirname(this.root), `${path.basename(this.root)}.quarantine`)
+    fs.mkdirSync(quarantineRoot, { recursive: true, mode: 0o700 })
+    fs.chmodSync(quarantineRoot, 0o700)
+    const quarantinePath = path.join(quarantineRoot, `${id}.${Date.now()}.${process.pid}.invalid.json`)
+    fs.renameSync(filePath, quarantinePath)
+    fs.chmodSync(quarantinePath, 0o600)
+    emitNervesEvent({
+      level: "error",
+      component: "senses",
+      event: "senses.telegram_effect_artifact_quarantined",
+      message: "quarantined invalid Telegram effect artifact",
+      meta: { artifactId: id, reason },
+    })
+  }
+
   write(artifact: TelegramEffectArtifact): void {
     this.assertRootIdentity()
     const filePath = this.artifactPath(artifact.id)
@@ -291,6 +310,28 @@ export class FileTelegramEffectJournal {
       .filter((entry) => entry.isFile() && /^[a-f0-9]{64}\.json$/u.test(entry.name))
       .map((entry) => this.read(entry.name.slice(0, -5)))
   }
+
+  listRecoverable(): TelegramEffectArtifact[] {
+    this.assertRootIdentity()
+    const entries = fs.readdirSync(this.descriptorRoot, { withFileTypes: true })
+    this.assertRootIdentity()
+    const artifacts: TelegramEffectArtifact[] = []
+    for (const entry of entries.filter((candidate) => candidate.isFile() && /^[a-f0-9]{64}\.json$/u.test(candidate.name))) {
+      const id = entry.name.slice(0, -5)
+      try {
+        artifacts.push(this.read(id))
+      } catch (error) {
+        emitNervesEvent({
+          level: "error",
+          component: "senses",
+          event: "senses.telegram_effect_recovery_artifact_skipped",
+          message: "skipped invalid Telegram effect artifact during recovery",
+          meta: { artifactId: id, error: error instanceof Error ? error.message : String(error) },
+        })
+      }
+    }
+    return artifacts
+  }
 }
 
 export function prepareTelegramEffect(store: FileTelegramEffectJournal, input: {
@@ -309,7 +350,13 @@ export function prepareTelegramEffect(store: FileTelegramEffectJournal, input: {
   assertEffectTarget(target, input.effect, idempotencyKey)
   if (target.kind === "admission_gate" && input.authorization.transport.chatId !== target.chatId) throw new Error("Telegram admission transport route changed")
   const id = artifactId(idempotencyKey)
-  const existing = store.readIfExists(id)
+  let existing: TelegramEffectArtifact | null = null
+  try {
+    existing = store.readIfExists(id)
+  } catch (error) {
+    if (!isTransportOnlyControl({ authorClass: input.authorClass, effect: input.effect, target })) throw error
+    store.quarantineInvalid(id, error instanceof Error ? error.message : String(error))
+  }
   if (existing) {
     if (JSON.stringify(existing.target) !== JSON.stringify(target)
       || existing.authorClass !== input.authorClass
@@ -559,7 +606,7 @@ export async function recoverTelegramEffectOutbox(input: {
   matches?: (artifact: TelegramEffectArtifact) => boolean
 }): Promise<{ attempted: number; accepted: number; failed: number }> {
   const limit = Math.min(Math.max(input.maxArtifacts ?? 20, 1), 100)
-  const candidates = input.store.list()
+  const candidates = input.store.listRecoverable()
     .filter((artifact) => (!input.matches || input.matches(artifact))
       && !artifact.parts.some((part) => part.state === "attempting" || part.state === "indeterminate")
       && artifact.parts.some((part) => part.state === "prepared" && (part.attempts ?? 0) < 3))

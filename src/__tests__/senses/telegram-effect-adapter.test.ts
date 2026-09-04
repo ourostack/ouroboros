@@ -192,6 +192,70 @@ describe("Telegram effect adapter", () => {
     expect(failed).toMatchObject({ attempted: 1, accepted: 0, failed: 1 })
   })
 
+  it("skips invalid persisted artifacts during outbox recovery without hiding strict reads", async () => {
+    const store = journal()
+    const valid = prepareTelegramEffect(store, { idempotencyKey: "recover:valid", target, authorClass: "butler", effect: { kind: "text", text: "valid" }, authorization })
+    const poisoned = prepareTelegramEffect(store, { idempotencyKey: "recover:poisoned", target, authorClass: "butler", effect: { kind: "text", text: "poisoned" }, authorization })
+    poisoned.parts[0]!.attempts = 101
+    store.write(poisoned)
+    const execute = vi.fn(async () => {
+      valid.parts[0]!.state = "accepted"
+      valid.parts[0]!.messageId = 44
+      store.write(valid)
+      return valid
+    })
+
+    await expect(() => store.read(poisoned.id)).toThrow("invalid")
+    await expect(recoverTelegramEffectOutbox({ store, execute })).resolves.toMatchObject({ attempted: 1, accepted: 1, failed: 0 })
+    expect(execute).toHaveBeenCalledWith(expect.objectContaining({ idempotencyKey: "recover:valid" }))
+    await expect(() => store.read(poisoned.id)).toThrow("invalid")
+  })
+
+  it("quarantines and reprepares invalid same-key transport-only control artifacts", () => {
+    const store = journal()
+    const input = { idempotencyKey: "approval:expired:edit", target, authorClass: "control" as const, effect: { kind: "edit" as const, messageId: 77, text: "⚠️ Approval expired" }, authorization }
+    const poisoned = prepareTelegramEffect(store, input)
+    poisoned.parts[0]!.attempts = 101
+    store.write(poisoned)
+    const root = (store as unknown as { root: string }).root
+
+    const reprepared = prepareTelegramEffect(store, input)
+
+    expect(reprepared.id).toBe(poisoned.id)
+    expect(reprepared.parts[0]).toMatchObject({ state: "prepared" })
+    expect(reprepared.parts[0]?.attempts).toBeUndefined()
+    expect(fs.existsSync(path.join(root, `${poisoned.id}.json`))).toBe(true)
+    expect(fs.readdirSync(path.join(path.dirname(root), `${path.basename(root)}.quarantine`))).toHaveLength(1)
+
+    const stringFailureStore = journal()
+    vi.spyOn(stringFailureStore, "readIfExists").mockImplementationOnce(() => { throw "string failure" })
+    vi.spyOn(stringFailureStore, "quarantineInvalid")
+    prepareTelegramEffect(stringFailureStore, { ...input, idempotencyKey: "approval:expired:edit:string-failure" })
+    expect(stringFailureStore.quarantineInvalid).toHaveBeenCalledWith(expect.any(String), "string failure")
+  })
+
+  it("keeps invalid same-key user-visible artifacts fail-closed and makes missing quarantine a no-op", () => {
+    const store = journal()
+    const input = { idempotencyKey: "reply:poisoned", target, authorClass: "butler" as const, effect: { kind: "text" as const, text: "maybe sent" }, authorization }
+    const poisoned = prepareTelegramEffect(store, input)
+    poisoned.parts[0]!.attempts = 101
+    store.write(poisoned)
+
+    expect(() => prepareTelegramEffect(store, input)).toThrow("invalid")
+    expect(() => store.quarantineInvalid("f".repeat(64), "already gone")).not.toThrow()
+  })
+
+  it("logs non-Error invalid artifact skips during recoverable listing", () => {
+    const store = journal()
+    const artifact = prepareTelegramEffect(store, { idempotencyKey: "recover:string-throw", target, authorClass: "butler", effect: { kind: "text", text: "valid" }, authorization })
+    const read = vi.spyOn(store, "read").mockImplementation((id) => {
+      if (id === artifact.id) throw "string failure"
+      return read.getMockImplementation()!(id)
+    })
+
+    expect(store.listRecoverable()).toEqual([])
+  })
+
   it("classifies explicit Telegram rejection as definitely unsent but transport loss as indeterminate", async () => {
     const store = journal()
     const rejected = prepareTelegramEffect(store, { idempotencyKey: "retry:rejected", target, authorClass: "butler", effect: { kind: "text", text: "retry me" }, authorization })
