@@ -183,7 +183,11 @@ export async function startFrontendSocketServer(options: {
       ...event.data,
     })
     if (event.type === "turn_completed" || event.type === "turn_cancelled" || event.type === "turn_failed") {
-      for (const client of clients) client.ownedTurnIds.delete(event.turnId)
+      for (const client of clients) {
+        client.ownedTurnIds.delete(event.turnId)
+        if (event.ephemeral) client.subscriptions.delete(event.sessionKey)
+      }
+      if (event.ephemeral) sequences.delete(event.sessionKey)
     }
   })
 
@@ -231,8 +235,15 @@ export async function startFrontendSocketServer(options: {
       return
     }
 
-    if (method === "turn.start") {
+    if (method === "turn.start" || method === "turn.start.observe-only") {
       const runtimeMcpServers = validatedRuntimeMcpServers(params.runtimeMcpServers)
+      const observeOnly = method === "turn.start.observe-only"
+      if (params.toolMode !== undefined) {
+        throw new Error("toolMode is unsupported; use turn.start.observe-only")
+      }
+      if (observeOnly && runtimeMcpServers) {
+        throw new Error("turn.start.observe-only cannot include runtimeMcpServers")
+      }
       const turnRequest: FrontendTurnRequest = {
         turnId: requiredString(params.turnId, "turnId"),
         agent: requiredString(params.agent, "agent"),
@@ -240,6 +251,7 @@ export async function startFrontendSocketServer(options: {
         channel: requiredString(params.channel, "channel") as Channel,
         sessionKey: requiredString(params.sessionKey, "sessionKey"),
         message: requiredString(params.message, "message"),
+        ...(observeOnly ? { disableTools: true, ephemeral: true } : {}),
         ...(runtimeMcpServers ? { runtimeMcpServers } : {}),
       }
       const prepared = options.service.prepareTurn(turnRequest)
@@ -264,6 +276,14 @@ export async function startFrontendSocketServer(options: {
     }
     clients.add(client)
     const lines = readline.createInterface({ input: socket, crlfDelay: Infinity })
+    let cleanedUp = false
+    const cleanupClient = () => {
+      if (cleanedUp) return
+      cleanedUp = true
+      for (const turnId of client.ownedTurnIds) options.service.cancelTurn(turnId)
+      clients.delete(client)
+      lines.close()
+    }
     let dispatch = Promise.resolve()
     lines.on("line", (line) => {
       dispatch = dispatch.then(async () => {
@@ -284,11 +304,15 @@ export async function startFrontendSocketServer(options: {
         }
       })
     })
-    socket.on("close", () => {
-      for (const turnId of client.ownedTurnIds) options.service.cancelTurn(turnId)
-      clients.delete(client)
-      lines.close()
+    socket.on("error", () => {
+      cleanupClient()
+      socket.destroy()
     })
+    lines.on("error", () => {
+      cleanupClient()
+      socket.destroy()
+    })
+    socket.on("close", cleanupClient)
   })
 
   await new Promise<void>((resolve, reject) => {

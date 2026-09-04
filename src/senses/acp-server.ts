@@ -35,6 +35,7 @@ export interface AcpServerOptions {
   stdin: Readable
   stdout: Writable
   runtimeMcpServers?: RuntimeMcpServers
+  disableTools?: boolean
   createFrontendClient?: () => Promise<FrontendProtocolClient>
 }
 
@@ -251,6 +252,9 @@ export function createAcpServer(options: AcpServerOptions): AcpServer {
 
     if (method === "session/load") {
       if (id === undefined) return
+      if (options.disableTools) {
+        throw new AcpProtocolError(-32601, "session/load is unavailable in observe-only mode")
+      }
       const sessionId = requiredString(requestParams.sessionId, "sessionId")
       const frontend = await client()
       const replay = await frontend.request("session.load", {
@@ -279,7 +283,7 @@ export function createAcpServer(options: AcpServerOptions): AcpServer {
       const completion = Promise.withResolvers<string>()
       activePrompts.set(sessionId, { rpcId: id, turnId, resolve: completion.resolve, reject: completion.reject })
       try {
-        await (await client()).request("turn.start", {
+        await (await client()).request(options.disableTools ? "turn.start.observe-only" : "turn.start", {
           turnId,
           agent: options.agent,
           friendId: options.friendId,

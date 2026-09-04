@@ -8640,20 +8640,28 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     const { frontendSocketPathForDaemon } = await import("../frontend-socket")
     const input = deps.acpServeInput ?? process.stdin
     const output = deps.acpServeOutput ?? process.stdout
-    const runtimeMcpServers = resolveWorkbenchRuntimeMcp(command.workbenchMcp, deps)
+    const runtimeMcpServers = command.observeOnly
+      ? undefined
+      : resolveWorkbenchRuntimeMcp(command.workbenchMcp, deps)
     const server = createAcpServer({
       agent: command.agent,
       friendId,
       frontendSocketPath: frontendSocketPathForDaemon(commandSocketPath),
       stdin: input,
       stdout: output,
+      ...(command.observeOnly ? { disableTools: true } : {}),
       ...(runtimeMcpServers ? { runtimeMcpServers } : {}),
     })
     emitNervesEvent({
       component: "daemon",
       event: "daemon.acp_serve_started",
       message: "ACP frontend server started via CLI",
-      meta: { agent: command.agent, friendId, workbenchRuntimeMcp: !!runtimeMcpServers },
+      meta: {
+        agent: command.agent,
+        friendId,
+        observeOnly: command.observeOnly === true,
+        workbenchRuntimeMcp: !!runtimeMcpServers,
+      },
     })
     await runMcpServeCliLifecycle(server, input)
     return ""

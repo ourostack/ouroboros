@@ -1675,17 +1675,22 @@ export function parseMcpServeCommand(args: string[]): OuroCliCommand & { socketO
 }
 
 export function parseAcpServeCommand(args: string[]): OuroCliCommand {
-  const usage = "Usage: ouro acp-serve --agent <name> [--friend-id <id>] [--socket <path>] [--workbench-mcp [path]]"
+  const usage = "Usage: ouro acp-serve --agent <name> [--friend-id <id>] [--socket <path>] [--workbench-mcp [path]] [--observe-only]"
   let agent: string | undefined
   let friendId: string | undefined
   let socketOverride: string | undefined
   let workbenchMcp: string | true | undefined
+  let observeOnly = false
   for (let i = 0; i < args.length; i++) {
     const token = args[i]
     if (token === "--workbench-mcp") {
       const next = args[i + 1]
       if (next && !next.startsWith("--")) workbenchMcp = args[++i]
       else workbenchMcp = true
+      continue
+    }
+    if (token === "--observe-only") {
+      observeOnly = true
       continue
     }
     const next = args[i + 1]
@@ -1707,6 +1712,7 @@ export function parseAcpServeCommand(args: string[]): OuroCliCommand {
     ...(friendId ? { friendId } : {}),
     ...(socketOverride ? { socketOverride } : {}),
     ...(workbenchMcp !== undefined ? { workbenchMcp } : {}),
+    ...(observeOnly ? { observeOnly: true } : {}),
   }
 }
 

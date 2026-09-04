@@ -72,6 +72,19 @@ describe("ouro acp-serve CLI", () => {
       kind: "acp-serve",
       agent: "Boss",
     })
+    expect(parseOuroCommand([
+      "acp-serve",
+      "--agent",
+      "Boss",
+      "--workbench-mcp",
+      "/Applications/OuroWorkbenchMCP",
+      "--observe-only",
+    ])).toEqual({
+      kind: "acp-serve",
+      agent: "Boss",
+      workbenchMcp: "/Applications/OuroWorkbenchMCP",
+      observeOnly: true,
+    })
   })
 
   it.each([
@@ -236,6 +249,7 @@ describe("ouro acp-serve CLI", () => {
       agent: "Boss",
       bundlesRoot: "/tmp/bundles",
     })
+
     expect(createAcpServer).toHaveBeenCalledWith({
       agent: "Boss",
       friendId: "11111111-1111-4111-8111-111111111111",
@@ -243,5 +257,45 @@ describe("ouro acp-serve CLI", () => {
       stdin: input,
       stdout: output,
     })
+  })
+
+  it("starts observe-only ACP without runtime MCP tools", async () => {
+    const input = new EventEmitter()
+    const output = new PassThrough()
+    const server = { start: vi.fn(), stop: vi.fn() }
+    const createAcpServer = vi.fn(() => server)
+    const deps = {
+      socketPath: "/tmp/ouro.sock",
+      sendCommand: vi.fn(),
+      startDaemonProcess: vi.fn(),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(),
+      acpServeInput: input,
+      acpServeOutput: output,
+      createAcpServer,
+      resolveFrontendFriendId: vi.fn(async () => "friend-1"),
+      existsSync: vi.fn(() => true),
+    } as unknown as OuroCliDeps
+
+    const running = runOuroCli([
+      "acp-serve",
+      "--agent",
+      "Boss",
+      "--workbench-mcp",
+      "/Applications/OuroWorkbenchMCP",
+      "--observe-only",
+    ], deps)
+    await vi.waitFor(() => expect(server.start).toHaveBeenCalledOnce())
+    input.emit("end")
+    await running
+
+    expect(createAcpServer).toHaveBeenCalledWith(expect.objectContaining({
+      agent: "Boss",
+      friendId: "friend-1",
+      disableTools: true,
+    }))
+    expect(createAcpServer.mock.calls[0]![0]).not.toHaveProperty("runtimeMcpServers")
   })
 })

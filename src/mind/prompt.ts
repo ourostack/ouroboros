@@ -662,6 +662,7 @@ function uniqueToolsByName(tools: OpenAI.ChatCompletionFunctionTool[]): OpenAI.C
 }
 
 function toolsSection(channel: Channel, options?: BuildSystemOptions, context?: ResolvedContext): string {
+  if (options?.hardDisableTools) return "## my tools\nnone for this observe-only turn";
   const channelTools = options?.tools ?? getToolsForChannel(
     getChannelCapabilities(channel),
     undefined,
@@ -859,6 +860,8 @@ export interface BuildSystemOptions {
   chatModel?: string;
   /** Optional tool subset for restricted inner/habit turns. */
   tools?: OpenAI.ChatCompletionFunctionTool[];
+  /** Hard tool-free prompt profile; unlike `tools: []`, this also omits terminal helpers. */
+  hardDisableTools?: boolean;
   /** When true, the observe tool is available in 1:1 reaction/feedback turns. */
   isReactionSignal?: boolean;
   pendingMessages?: Array<{ from: string; content: string }>;

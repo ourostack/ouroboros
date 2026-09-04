@@ -148,6 +148,40 @@ describe("Ouro ACP server", () => {
     server.stop()
   })
 
+  it("marks observe-only prompts as tool-free frontend turns", async () => {
+    const { input, client, server, messages } = await setup({ disableTools: true })
+    input.write('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}\n')
+    await waitFor(messages, (message) => message.id === 1)
+    input.write('{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/tmp","mcpServers":[]}}\n')
+    const created = await waitFor(messages, (message) => message.id === 2)
+    input.write(`${JSON.stringify({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "session/prompt",
+      params: { sessionId: created.result.sessionId, prompt: [{ type: "text", text: "observe" }] },
+    })}\n`)
+    const started = await waitFor(client.requests, (request) => request.method === "turn.start.observe-only")
+    expect(started.params.runtimeMcpServers).toBeUndefined()
+    client.emit({ event: "turn.completed", sessionKey: created.result.sessionId, turnId: started.params.turnId })
+    await waitFor(messages, (message) => message.id === 3)
+    server.stop()
+  })
+
+  it("does not load durable Ouro sessions in observe-only mode", async () => {
+    const { input, client, server, messages } = await setup({ disableTools: true })
+    input.write('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}\n')
+    await waitFor(messages, (message) => message.id === 1)
+    input.write('{"jsonrpc":"2.0","id":2,"method":"session/load","params":{"sessionId":"existing-session","cwd":"/tmp","mcpServers":[]}}\n')
+
+    expect(await waitFor(messages, (message) => message.id === 2)).toEqual({
+      jsonrpc: "2.0",
+      id: 2,
+      error: { code: -32601, message: "session/load is unavailable in observe-only mode" },
+    })
+    expect(client.requests.some((request) => request.method === "session.load")).toBe(false)
+    server.stop()
+  })
+
   it("loads and replays an existing Ouro session without creating a replacement", async () => {
     const { input, client, server, messages } = await setup()
     client.loadResult = {

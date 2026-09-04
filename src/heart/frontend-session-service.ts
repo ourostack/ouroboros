@@ -32,6 +32,8 @@ export interface FrontendTurnRequest {
   sessionKey: string
   message: string
   runtimeMcpServers?: RuntimeMcpServers
+  disableTools?: boolean
+  ephemeral?: boolean
 }
 
 export interface FrontendSessionRef {
@@ -90,6 +92,7 @@ export interface FrontendServiceEvent {
   type: string
   data: Record<string, unknown>
   journalSequence: number | null
+  ephemeral: boolean
 }
 
 const JOURNALED_FRONTEND_EVENTS = new Set<FrontendJournalEventType>([
@@ -219,10 +222,12 @@ export class FrontendSessionService {
       const frontendEventSink = {
         onEvent: (event: FrontendTurnEvent) => this.publishFrontendEvent(normalized, event),
       }
-      const approvalCoordinatorFactory = this.authority?.approvalCoordinatorFactory({
-        request: normalized,
-        publish: (type, data, journalType) => this.publish(normalized, type, data, journalType),
-      })
+      const approvalCoordinatorFactory = normalized.ephemeral
+        ? undefined
+        : this.authority?.approvalCoordinatorFactory({
+          request: normalized,
+          publish: (type, data, journalType) => this.publish(normalized, type, data, journalType),
+        })
       let result = await this.runner({
         agentName: normalized.agent,
         friendId: normalized.friendId,
@@ -231,6 +236,8 @@ export class FrontendSessionService {
         userMessage: normalized.message,
         signal: controller.signal,
         frontendEventSink,
+        ...(normalized.disableTools ? { disableTools: true } : {}),
+        ...(normalized.ephemeral ? { disablePersistence: true } : {}),
         ...(approvalCoordinatorFactory ? { approvalCoordinatorFactory } : {}),
         ...(normalized.runtimeMcpServers ? { runtimeMcpServers: normalized.runtimeMcpServers } : {}),
       })
@@ -290,7 +297,7 @@ export class FrontendSessionService {
       friendId: request.friendId,
       sessionId: request.sessionKey,
     }
-    const journalSequence = this.journal && journalType
+    const journalSequence = !request.ephemeral && this.journal && journalType
       ? this.journal.append(journalRef, { turnId: request.turnId, type: journalType, data }).sequence
       : null
     const event: FrontendServiceEvent = {
@@ -300,6 +307,7 @@ export class FrontendSessionService {
       type,
       data,
       journalSequence,
+      ephemeral: request.ephemeral === true,
     }
     for (const listener of this.listeners) {
       try {

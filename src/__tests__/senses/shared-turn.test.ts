@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import * as fs from "node:fs"
+import * as path from "node:path"
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions"
 import type { ChannelCallbacks } from "../../heart/core"
 import type { FriendRecord, ResolvedContext, Channel, ChannelCapabilities } from "@ouro.bot/friends"
@@ -958,6 +960,68 @@ describe("runSenseTurn", () => {
     })
 
     expect(mockGetSharedMcpManager).toHaveBeenCalledWith(undefined)
+  })
+
+  it("hard-disables native and MCP tools for observe-only turns", async () => {
+    mockLoadSession.mockReturnValue(null)
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    await runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "observe",
+      disableTools: true,
+      runtimeMcpServers: {
+        ouro_workbench: { command: "/Apps/OuroWorkbenchMCP", args: [] },
+      },
+    })
+
+    expect(mockGetSharedMcpManager).not.toHaveBeenCalled()
+    expect(mockBuildSystem.mock.calls[0][1]).toEqual({ tools: [], hardDisableTools: true })
+    expect(mockHandleInboundTurn.mock.calls[0][0].runAgentOptions.tools).toEqual([])
+    expect(mockHandleInboundTurn.mock.calls[0][0].runAgentOptions.hardDisableTools).toBe(true)
+    expect(mockHandleInboundTurn.mock.calls[0][0].runAgentOptions.mcpManager).toBeUndefined()
+  })
+
+  it("keeps observe-only prompts out of normal session storage", async () => {
+    mockHandleInboundTurn.mockImplementation(async (input: any) => {
+      input.callbacks.onTextChunk("hold")
+      const loaded = await input.sessionLoader.loadOrCreate()
+      await input.postTurn([
+        { role: "system", content: "system" },
+        { role: "user", content: "private worker evidence" },
+        { role: "assistant", content: "hold" },
+      ], loaded.sessionPath)
+      await input.accumulateFriendTokens()
+      input.drainPending()
+      return {
+        resolvedContext: makeResolvedContext(),
+        gateResult: { allowed: true },
+        turnOutcome: "settled",
+        messages: [],
+      }
+    })
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+
+    const result = await runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "session-ephemeral",
+      friendId: "friend-1",
+      userMessage: "private worker evidence",
+      disableTools: true,
+      disablePersistence: true,
+    })
+
+    const leasePath = mockWithSessionTurnLease.mock.calls[0][0]
+    expect(leasePath).toContain("ouro-observe-only-")
+    expect(mockSessionPath).not.toHaveBeenCalled()
+    expect(mockLoadSession).not.toHaveBeenCalled()
+    expect(mockDeferPostTurnPersist).not.toHaveBeenCalled()
+    expect(mockDrainPending).not.toHaveBeenCalled()
+    expect(result.sessionPath).toBeUndefined()
+    expect(fs.existsSync(path.dirname(leasePath))).toBe(false)
   })
 
   it("uses the explicit agentName for session storage instead of process argv", async () => {

@@ -233,6 +233,48 @@ describe("runAgent tool loop guard", () => {
     expect(innerToolNames).toContain("rest")
   })
 
+  it("hard tool exclusion advertises no tools and rejects fabricated tool calls", async () => {
+    const capturedTools: any[][] = []
+    const capturedToolChoices: unknown[] = []
+    mockCreate
+      .mockImplementationOnce((request: any) => {
+        capturedTools.push(request.tools)
+        capturedToolChoices.push(request.tool_choice)
+        return makeStream([
+          makeChunk(undefined, [{
+            index: 0,
+            id: "fabricated-ponder",
+            function: { name: "ponder", arguments: '{"prompt":"mutate"}' },
+          }]),
+        ])
+      })
+      .mockImplementationOnce((request: any) => {
+        capturedTools.push(request.tools)
+        capturedToolChoices.push(request.tool_choice)
+        return makeStream([makeChunk('{"disposition":"hold"}')])
+      })
+    const { runAgent } = await import("../../heart/core")
+    const execTool = vi.fn()
+
+    const result = await runAgent(
+      [{ role: "user", content: "observe only" }],
+      makeCallbacks(),
+      "mcp",
+      undefined,
+      {
+        tools: [],
+        hardDisableTools: true,
+        execTool,
+        toolContext: { signin: async () => undefined },
+      },
+    )
+
+    expect(capturedTools).toEqual([[], []])
+    expect(capturedToolChoices).toEqual([undefined, undefined])
+    expect(execTool).not.toHaveBeenCalled()
+    expect(result.outcome).not.toBe("errored")
+  })
+
   it("advertises exactly send_message and rest for the Sanctuary health private profile", async () => {
     let names: string[] = []
     mockCreate.mockImplementation((request: any) => {

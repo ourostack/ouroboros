@@ -135,6 +135,38 @@ describe("frontend socket", () => {
     socket.destroy()
   })
 
+  it("survives an abrupt frontend disconnect while the owned turn unwinds", async () => {
+    const release = Promise.withResolvers<void>()
+    const runner = vi.fn(async () => {
+      await release.promise
+      return settledResult()
+    })
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const { startFrontendSocketServer } = await import("../../heart/frontend-socket")
+    const service = new FrontendSessionService({ runner })
+    const target = socketPath("frontend-reset")
+    const server = await startFrontendSocketServer({ socketPath: target, service })
+    cleanup.push(() => server.stop())
+    const socket = await connect(target)
+    const frames = collectFrames(socket)
+
+    socket.write('{"protocolVersion":1,"id":"start","method":"turn.start.observe-only","params":{"turnId":"turn-reset","agent":"boss","friendId":"friend-1","channel":"mcp","sessionKey":"session-reset","message":"observe"}}\n')
+    await waitForFrame(frames, (frame) => frame.id === "start")
+    await vi.waitFor(() => expect(runner).toHaveBeenCalledOnce())
+    socket.destroy(new Error("synthetic frontend disconnect"))
+    release.resolve()
+    await vi.waitFor(() => expect(service.hasTurn("turn-reset")).toBe(false))
+
+    const replacement = await connect(target)
+    const replacementFrames = collectFrames(replacement)
+    replacement.write('{"protocolVersion":1,"id":"sub","method":"session.subscribe","params":{"sessionKey":"replacement"}}\n')
+    expect(await waitForFrame(replacementFrames, (frame) => frame.id === "sub")).toMatchObject({
+      ok: true,
+      result: { subscribed: true },
+    })
+    replacement.destroy()
+  })
+
   it("forwards only a validated Workbench runtime MCP into the reserved turn", async () => {
     const executable = path.join(os.tmpdir(), `workbench-mcp-${Date.now()}`)
     fs.writeFileSync(executable, "#!/bin/sh\n", { mode: 0o755 })
@@ -210,6 +242,70 @@ describe("frontend socket", () => {
       },
     })
     expect(runner).not.toHaveBeenCalled()
+    socket.destroy()
+  })
+
+  it("forwards tool-free mode and rejects tool-bearing observe-only turns", async () => {
+    const runner = vi.fn(async (input: any) => {
+      expect(input.disableTools).toBe(true)
+      expect(input.disablePersistence).toBe(true)
+      return settledResult()
+    })
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const { startFrontendSocketServer } = await import("../../heart/frontend-socket")
+    const target = socketPath("tool-free")
+    const server = await startFrontendSocketServer({
+      socketPath: target,
+      service: new FrontendSessionService({ runner }),
+    })
+    cleanup.push(() => server.stop())
+    const socket = await connect(target)
+    const frames = collectFrames(socket)
+
+    socket.write('{"protocolVersion":1,"id":"safe","method":"turn.start.observe-only","params":{"turnId":"turn-safe","agent":"boss","friendId":"friend-1","channel":"mcp","sessionKey":"session-safe","message":"observe"}}\n')
+    expect(await waitForFrame(frames, (frame) => frame.id === "safe")).toMatchObject({
+      ok: true,
+      result: { accepted: true },
+    })
+    await vi.waitFor(() => expect(runner).toHaveBeenCalledOnce())
+
+    socket.write('{"protocolVersion":1,"id":"unsafe","method":"turn.start.observe-only","params":{"turnId":"turn-unsafe","agent":"boss","friendId":"friend-1","channel":"mcp","sessionKey":"session-unsafe","message":"observe","runtimeMcpServers":{"ouro_workbench":{"command":"/bin/echo","args":[]}}}}\n')
+    expect(await waitForFrame(frames, (frame) => frame.id === "unsafe")).toMatchObject({
+      ok: false,
+      error: { code: "invalid_params", message: "turn.start.observe-only cannot include runtimeMcpServers" },
+    })
+    socket.write('{"protocolVersion":1,"id":"legacy-field","method":"turn.start","params":{"turnId":"turn-legacy","agent":"boss","friendId":"friend-1","channel":"mcp","sessionKey":"session-legacy","message":"observe","toolMode":"none"}}\n')
+    expect(await waitForFrame(frames, (frame) => frame.id === "legacy-field")).toMatchObject({
+      ok: false,
+      error: { code: "invalid_params", message: "toolMode is unsupported; use turn.start.observe-only" },
+    })
+    socket.destroy()
+  })
+
+  it("releases ephemeral session sequence state after the terminal event", async () => {
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const { startFrontendSocketServer } = await import("../../heart/frontend-socket")
+    const target = socketPath("ephemeral-sequence")
+    const server = await startFrontendSocketServer({
+      socketPath: target,
+      service: new FrontendSessionService({ runner: async () => settledResult() }),
+    })
+    cleanup.push(() => server.stop())
+    const socket = await connect(target)
+    const frames = collectFrames(socket)
+
+    socket.write('{"protocolVersion":1,"id":"sub","method":"session.subscribe","params":{"sessionKey":"session-ephemeral"}}\n')
+    await waitForFrame(frames, (frame) => frame.id === "sub")
+    socket.write('{"protocolVersion":1,"id":"start","method":"turn.start.observe-only","params":{"turnId":"turn-ephemeral","agent":"boss","friendId":"friend-1","channel":"mcp","sessionKey":"session-ephemeral","message":"observe"}}\n')
+    await waitForFrame(frames, (frame) => frame.event === "turn.completed")
+
+    socket.write('{"protocolVersion":1,"id":"resub","method":"session.subscribe","params":{"sessionKey":"session-ephemeral"}}\n')
+    await waitForFrame(frames, (frame) => frame.id === "resub")
+    server.publish("session-ephemeral", "snapshot")
+    expect(await waitForFrame(frames, (frame) => frame.event === "snapshot")).toMatchObject({
+      sessionKey: "session-ephemeral",
+      sequence: 1,
+    })
     socket.destroy()
   })
 

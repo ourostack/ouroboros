@@ -431,6 +431,8 @@ export interface RunAgentOptions {
   drainSteeringFollowUps?: () => Array<{ text: string; effect?: SteeringFollowUpEffect }>;
   setMustResolveBeforeHandoff?: (value: boolean) => void;
   tools?: OpenAI.ChatCompletionFunctionTool[];
+  /** Hard provider and execution boundary for turns that may not use any tool, including terminal helpers. */
+  hardDisableTools?: boolean;
   execTool?: (name: string, args: Record<string, string>, ctx?: ToolContext) => Promise<string>;
   /** Production batch-boundary observations. Emitted by the same runAgent path that authorizes and dispatches tools. */
   toolBoundaryObserver?: (receipt: ToolCallBoundaryReceipt) => void;
@@ -1336,7 +1338,7 @@ export async function runAgent(
   const facing = channelToFacing(channel);
   let providerRuntime = options?.providerRuntimeOverride ?? await getProviderRuntime(facing);
   const provider = providerRuntime.id;
-  const toolChoiceRequired = options?.toolChoiceRequired ?? true;
+  const toolChoiceRequired = options?.hardDisableTools ? false : options?.toolChoiceRequired ?? true;
   const traceId = options?.traceId;
   emitNervesEvent({
     event: "engine.turn_start",
@@ -1648,7 +1650,9 @@ export async function runAgent(
     const ordinaryActiveTools = relationshipToolNames
       ? unscopedOrdinaryActiveTools.filter((tool) => relationshipToolNames.includes(tool.function.name))
       : unscopedOrdinaryActiveTools
-    const candidateActiveTools = options?.toolProfile === "sanctuary-health-private"
+    const candidateActiveTools = options?.hardDisableTools
+      ? []
+      : options?.toolProfile === "sanctuary-health-private"
       ? (() => {
           const sendTools = baseTools.filter((tool) => tool.function.name === "send_message")
           if (channel !== "inner" || sendTools.length !== 1 || baseTools.length !== 1) {
@@ -1725,7 +1729,7 @@ export async function runAgent(
             callbacks: turnCallbackBufferRef.current?.callbacks ?? callbacks,
             signal,
             traceId,
-            toolChoiceRequired: forcingHistoricalEffect || toolChoiceRequired,
+            toolChoiceRequired: options?.hardDisableTools ? false : forcingHistoricalEffect || toolChoiceRequired,
             reasoningEffort: currentReasoningEffort,
             eagerSettleStreaming: true,
             systemPrompt: structuredSystemPrompt,

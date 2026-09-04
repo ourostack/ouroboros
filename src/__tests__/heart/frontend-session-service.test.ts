@@ -241,11 +241,49 @@ describe("frontend session service", () => {
       expect(input.runtimeMcpServers).toEqual(runtimeMcpServers)
       return { ...settledResult(), turnOutcome: undefined }
     })
+
     const { FrontendSessionService } = await import("../../heart/frontend-session-service")
     const service = new FrontendSessionService({ runner })
 
     await expect(service.runTurn({ ...request(), runtimeMcpServers })).rejects.toThrow("omitted its outcome")
     expect(service.hasTurn("turn-1")).toBe(false)
+  })
+
+  it("forwards hard tool exclusion to the turn runner", async () => {
+    const runner = vi.fn(async (input: any) => {
+      expect(input.disableTools).toBe(true)
+      expect(input.disablePersistence).toBe(true)
+      expect(input.runtimeMcpServers).toBeUndefined()
+      return settledResult()
+    })
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const service = new FrontendSessionService({ runner })
+
+    await service.runTurn({ ...request(), disableTools: true, ephemeral: true })
+    expect(runner).toHaveBeenCalledOnce()
+  })
+
+  it("does not journal ephemeral turn prompts or outcomes", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "frontend-service-ephemeral-"))
+    const { FrontendJournalStore } = await import("../../heart/frontend-journal")
+    const journal = new FrontendJournalStore({ agentRoot: (agent) => path.join(root, `${agent}.ouro`) })
+    const observed: any[] = []
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const service = new FrontendSessionService({
+      journal,
+      runner: async (input) => {
+        input.frontendEventSink?.onEvent({ type: "assistant_delivery", data: { kind: "settle", text: "hold" } })
+        return settledResult("hold")
+      },
+    })
+    service.subscribe((event) => observed.push(event))
+
+    await service.runTurn({ ...request(), message: "private worker evidence", disableTools: true, ephemeral: true })
+
+    expect(journal.replay(refFor(request())).events).toEqual([])
+    expect(observed.length).toBeGreaterThan(0)
+    expect(observed.every((event) => event.journalSequence === null)).toBe(true)
+    fs.rmSync(root, { recursive: true, force: true })
   })
 
   it("cancels every active frontend turn during daemon shutdown", async () => {

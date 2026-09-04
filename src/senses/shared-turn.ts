@@ -202,6 +202,10 @@ export interface RunSenseTurnOptions {
    * turn for a different agent.
    */
   runtimeMcpServers?: RuntimeMcpServers
+  /** Hard turn-local tool exclusion for observe-only frontend passes. */
+  disableTools?: boolean
+  /** Ephemeral frontend pass that may not read or write normal session history. */
+  disablePersistence?: boolean
   /** Test seam for the same production whole-turn lease wrapper. */
   _withSessionTurnLease?: <T>(sessionPath: string, work: (lease: SessionTurnLease) => Promise<T>) => Promise<T>
   /** Mutable per-turn metrics survive a rejected turn for durable transport receipts. */
@@ -362,18 +366,27 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions): Promise<RunS
 
   // Initialize MCP manager so MCP tools appear as first-class tools in the agent's tool list.
   // Runtime MCP servers (e.g. Workbench's ouro_workbench) are passed per-turn for THIS agent only.
-  const mcpManager = await getSharedMcpManager(
-    options.runtimeMcpServers ? { runtimeServers: options.runtimeMcpServers } : undefined,
-  ) ?? undefined
+  const mcpManager = options.disableTools
+    ? undefined
+    : await getSharedMcpManager(
+      options.runtimeMcpServers ? { runtimeServers: options.runtimeMcpServers } : undefined,
+    ) ?? undefined
 
   // Session path and loading
-  const sessionDir = path.join(agentRoot, "state", "sessions", friendId, channel)
+  const ephemeralRoot = options.disablePersistence
+    ? fs.mkdtempSync(path.join(os.tmpdir(), "ouro-observe-only-"))
+    : null
+  const sessionDir = ephemeralRoot ?? path.join(agentRoot, "state", "sessions", friendId, channel)
   fs.mkdirSync(sessionDir, { recursive: true })
-  const sessPath = getSenseSessionPath(agentName, friendId, channel, sessionKey, agentRoot)
+  const sessPath = ephemeralRoot
+    ? path.join(ephemeralRoot, "session.json")
+    : getSenseSessionPath(agentName, friendId, channel, sessionKey, agentRoot)
+  const reportedSessionPath = ephemeralRoot ? undefined : sessPath
   const runWithLease = options._withSessionTurnLease ?? withSessionTurnLease
-  return runWithLease(sessPath, async (sessionTurnLease) => {
+  try {
+  return await runWithLease(sessPath, async (sessionTurnLease) => {
   const baseSessionRevision = readSessionTransaction(sessPath, sessionTurnLease).revision
-  const existing = loadSession(sessPath)
+  const existing = options.disablePersistence ? undefined : loadSession(sessPath)
   if (options.precommittedIngress) {
     const event = existing?.events?.find((candidate) => candidate.id === options.precommittedIngress!.eventId)
     const latestUserEvent = existing?.events?.filter((candidate) => candidate.role === "user").at(-1)
@@ -388,7 +401,14 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions): Promise<RunS
   let persistPromise: Promise<SessionEvent[]> | undefined
   const sessionMessages: ChatCompletionMessageParam[] = existing?.messages && existing.messages.length > 0
     ? existing.messages
-    : [{ role: "system", content: flattenSystemPrompt(await buildSystem(channel, {}, undefined)) }]
+    : [{
+      role: "system",
+      content: flattenSystemPrompt(await buildSystem(
+        channel,
+        options.disableTools ? { tools: [], hardDisableTools: true } : {},
+        undefined,
+      )),
+    }]
 
   // Pending dir
   const pendingDir = getPendingDir(agentName, friendId, channel, sessionKey)
@@ -521,10 +541,11 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions): Promise<RunS
     externalId: resolverParams.externalId,
     tenantId: resolverParams.tenantId,
     enforceTrustGate,
-    drainPending,
+    drainPending: options.disablePersistence ? () => [] : drainPending,
     runAgentOptions: {
       mcpManager,
-      ...(options.approvalCoordinatorFactory ? { approvalCoordinator: options.approvalCoordinatorFactory({ sessionPath: sessPath, baseSessionRevision }) } : {}),
+      ...(options.disableTools ? { tools: [], hardDisableTools: true } : {}),
+      ...(options.approvalCoordinatorFactory && !options.disablePersistence ? { approvalCoordinator: options.approvalCoordinatorFactory({ sessionPath: sessPath, baseSessionRevision }) } : {}),
       ...(options.latencyMode === "live" ? { skipKeptNotes: true } : {}),
       ...(options.orientationFrame ? { orientationFrame: options.orientationFrame } : {}),
       toolContext: {
@@ -539,10 +560,11 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions): Promise<RunS
     postTurn: (turnMessages, sessionPathArg, usage, hooks, state) => {
       const prepared = postTurnTrim(turnMessages, usage, hooks)
       sessionState = state
+      if (options.disablePersistence) return
       persistPromise = deferPostTurnPersist(sessionPathArg, prepared, usage, state)
     },
     /* v8 ignore stop */
-    accumulateFriendTokens,
+    accumulateFriendTokens: options.disablePersistence ? async () => undefined : accumulateFriendTokens,
   })
 
   if (turnResult.gateResult && !turnResult.gateResult.allowed) {
@@ -556,7 +578,7 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions): Promise<RunS
       deliveryFailures,
       providerInvocationCount,
       toolInvocationCount,
-      sessionPath: sessPath,
+      sessionPath: reportedSessionPath,
       turnOutcome: turnResult.turnOutcome ?? "blocked",
     }
   }
@@ -571,7 +593,7 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions): Promise<RunS
       deliveryFailures,
       providerInvocationCount,
       toolInvocationCount,
-      sessionPath: sessPath,
+      sessionPath: reportedSessionPath,
       turnOutcome: "aborted",
     }
   }
@@ -586,7 +608,7 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions): Promise<RunS
       deliveryFailures,
       providerInvocationCount,
       toolInvocationCount,
-      sessionPath: sessPath,
+      sessionPath: reportedSessionPath,
       turnOutcome: "suspended",
       suspension: turnResult.suspension,
     }
@@ -598,7 +620,7 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions): Promise<RunS
     const settledText = extractOutwardSenseDeliveryText(turnResult.messages)
     if (settledText) pendingResponseText = settledText
   }
-  if (persistPromise && options.frontendEventSink) {
+  if (persistPromise && options.frontendEventSink && !options.disablePersistence) {
     const currentStructuredOutputs = loadSession(sessPath)?.structuredOutputs ?? []
     for (const output of currentStructuredOutputs) {
       if (!existingStructuredOutputIds.has(output.id)) {
@@ -618,7 +640,7 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions): Promise<RunS
     // Await deferred persist so the session file is up-to-date before readback
     /* v8 ignore next -- persistPromise set inside v8-ignored postTurn callback; tested via pipeline integration @preserve */
     if (persistPromise) await persistPromise
-    const postTurnSession = loadSession(sessPath)
+    const postTurnSession = options.disablePersistence ? undefined : loadSession(sessPath)
     const emptyFallback = options.emptyResponseFallback?.()
     if (postTurnSession?.messages) {
       const recovered = extractOutwardSenseDeliveryText(postTurnSession.messages)
@@ -670,10 +692,15 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions): Promise<RunS
     deliveryFailures,
     providerInvocationCount,
     toolInvocationCount,
-    sessionPath: sessPath,
+    sessionPath: reportedSessionPath,
     turnOutcome: turnResult.turnOutcome,
     ...(deliveries.length > 0 ? { causalSessionEventIds: causalSessionEventIds(persistedEvents, existingEventIds, deliveryAttempts) } : {}),
     ...(responseCausalSessionEventId ? { responseCausalSessionEventId } : {}),
   }
   })
+  } finally {
+    if (ephemeralRoot) {
+      fs.rmSync(ephemeralRoot, { recursive: true, force: true })
+    }
+  }
 }
