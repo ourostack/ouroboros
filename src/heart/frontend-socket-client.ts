@@ -3,6 +3,7 @@ import * as net from "node:net"
 export interface FrontendProtocolClient {
   request(method: string, params: Record<string, unknown>): Promise<any>
   onEvent(listener: (event: Record<string, any>) => void): () => void
+  onClose(listener: (error?: Error) => void): () => void
   close(): void
 }
 
@@ -10,6 +11,7 @@ export class SocketFrontendClient implements FrontendProtocolClient {
   private readonly socketPath: string
   private readonly pending = new Map<string, { resolve: (value: any) => void; reject: (error: Error) => void }>()
   private readonly listeners = new Set<(event: Record<string, any>) => void>()
+  private readonly closeListeners = new Set<(error?: Error) => void>()
   private socket: net.Socket | null = null
   private connecting: Promise<void> | null = null
   private nextId = 1
@@ -33,6 +35,11 @@ export class SocketFrontendClient implements FrontendProtocolClient {
     return () => this.listeners.delete(listener)
   }
 
+  onClose(listener: (error?: Error) => void): () => void {
+    this.closeListeners.add(listener)
+    return () => this.closeListeners.delete(listener)
+  }
+
   close(): void {
     this.failPending(new Error("frontend socket closed"))
     this.socket?.destroy()
@@ -51,10 +58,15 @@ export class SocketFrontendClient implements FrontendProtocolClient {
       socket.once("error", fail)
       socket.once("connect", () => {
         socket.removeListener("error", fail)
-        socket.on("error", (error) => this.failPending(error))
+        socket.on("error", (error) => {
+          this.failPending(error)
+          for (const listener of this.closeListeners) listener(error)
+        })
         socket.on("data", (chunk) => this.handleData(chunk.toString("utf8")))
         socket.on("close", () => {
-          this.failPending(new Error("frontend socket closed"))
+          const error = new Error("frontend socket closed")
+          this.failPending(error)
+          for (const listener of this.closeListeners) listener(error)
           if (this.socket === socket) this.socket = null
         })
         this.socket = socket

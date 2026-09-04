@@ -970,6 +970,28 @@ describe("runSenseTurn", () => {
     expect(input.messages[0]._ingressAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
   })
 
+  it("stamps explicit ingress relations on the user message", async () => {
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    await runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "related",
+      ingressRelations: {
+        replyToEventId: null,
+        threadRootEventId: null,
+        references: ["event-1"],
+      },
+    })
+
+    expect(mockHandleInboundTurn.mock.calls[0][0].messages[0]._ingressRelations).toEqual({
+      replyToEventId: null,
+      threadRootEventId: null,
+      references: ["event-1"],
+    })
+  })
+
   it("drains pending messages before turn", async () => {
     const { runSenseTurn } = await import("../../senses/shared-turn")
     await runSenseTurn({
@@ -1059,6 +1081,58 @@ describe("runSenseTurn", () => {
     })
     expect(mockHandleInboundTurn.mock.calls[0][0].runAgentOptions.approvalCoordinator)
       .toBe(approvalCoordinator)
+  })
+
+  it("returns a durable approval suspension without fabricating a completed response", async () => {
+    const suspension = {
+      approvalId: "approval-1",
+      toolCallId: "call-1",
+      checkpointDigest: "a".repeat(64),
+      suspendedSessionRevision: "b".repeat(64),
+    }
+    mockHandleInboundTurn.mockResolvedValue({
+      resolvedContext: makeResolvedContext(),
+      gateResult: { allowed: true },
+      turnOutcome: "suspended",
+      suspension,
+      sessionPath: "/tmp/session.json",
+      messages: [],
+    })
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+
+    await expect(runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "approval-session",
+      friendId: "friend-1",
+      userMessage: "restart it",
+      approvalCoordinatorFactory: (() => ({ propose: vi.fn() })) as never,
+    })).resolves.toMatchObject({
+      response: "",
+      turnOutcome: "suspended",
+      suspension,
+    })
+    expect(mockDeferPostTurnPersist).not.toHaveBeenCalled()
+  })
+
+  it("rejects a suspended shared turn without durable suspension metadata", async () => {
+    mockHandleInboundTurn.mockResolvedValue({
+      resolvedContext: makeResolvedContext(),
+      gateResult: { allowed: true },
+      turnOutcome: "suspended",
+      sessionPath: "/tmp/session.json",
+      messages: [],
+    })
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+
+    await expect(runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "approval-session",
+      friendId: "friend-1",
+      userMessage: "restart it",
+      approvalCoordinatorFactory: (() => ({ propose: vi.fn() })) as never,
+    })).rejects.toThrow("omitted durable approval suspension")
   })
 
   it("handles null mcpManager gracefully (no MCP servers)", async () => {

@@ -102,6 +102,120 @@ describe("frontend session service", () => {
     expect(service.hasTurn("turn-1")).toBe(false)
   })
 
+  it("keeps one logical turn active across approval suspension and continuation", async () => {
+    const continued = Promise.withResolvers<void>()
+    const authority = {
+      approvalCoordinatorFactory: vi.fn((input: any) => {
+        input.publish("permission_requested", { requestId: "approval-1" })
+        return vi.fn()
+      }),
+      resumeApproval: vi.fn(async (input: any) => {
+        await continued.promise
+        input.frontendEventSink.onEvent({ type: "text_delta", data: { text: "done" } })
+        return settledResult("done")
+      }),
+      resolvePermission: vi.fn(() => { continued.resolve(); return true }),
+      cancelTurn: vi.fn(),
+      close: vi.fn(),
+    }
+    const suspension = {
+      approvalId: "approval-1",
+      toolCallId: "call-1",
+      checkpointDigest: "a".repeat(64),
+      suspendedSessionRevision: "b".repeat(64),
+    }
+    const runner = vi.fn(async (input: any) => ({
+      ...settledResult(""),
+      turnOutcome: "suspended" as const,
+      suspension,
+      approvalFactory: input.approvalCoordinatorFactory,
+    }))
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const service = new FrontendSessionService({ runner, authority: authority as never })
+    const events: any[] = []
+    service.subscribe((event) => events.push(event))
+
+    const running = service.runTurn(request())
+    await vi.waitFor(() => expect(authority.resumeApproval).toHaveBeenCalledOnce())
+    expect(service.hasTurn("turn-1")).toBe(true)
+    await expect(service.runTurn(request("turn-2"))).rejects.toThrow("frontend session already has an active turn")
+    expect(events.some((event) => event.type.startsWith("turn_") && event.type !== "turn_started")).toBe(false)
+
+    expect(service.resolvePermission("approval-1", "allow-once")).toBe(true)
+    await expect(running).resolves.toMatchObject({ outcome: "settled", response: "done" })
+    expect(authority.approvalCoordinatorFactory).toHaveBeenCalledOnce()
+    expect(authority.resumeApproval).toHaveBeenCalledWith(expect.objectContaining({
+      request: expect.objectContaining({ turnId: "turn-1", sessionKey: "session-1" }),
+      suspension,
+    }))
+    expect(events.at(-1)?.type).toBe("turn_completed")
+  })
+
+  it("fails closed when a suspension omits authority metadata", async () => {
+    const authority = {
+      approvalCoordinatorFactory: vi.fn(() => vi.fn()),
+      resumeApproval: vi.fn(),
+      resolvePermission: vi.fn(),
+      cancelTurn: vi.fn(),
+      close: vi.fn(),
+    }
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const service = new FrontendSessionService({
+      authority: authority as never,
+      runner: async () => ({ ...settledResult(""), turnOutcome: "suspended" }),
+    })
+
+    await expect(service.runTurn(request())).rejects.toThrow("omitted its approval suspension")
+    expect(authority.resumeApproval).not.toHaveBeenCalled()
+  })
+
+  it("fails closed when a runner suspends without an authority runtime", async () => {
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const service = new FrontendSessionService({
+      runner: async () => ({
+        ...settledResult(""),
+        turnOutcome: "suspended",
+        suspension: {
+          approvalId: "approval-1",
+          toolCallId: "call-1",
+          checkpointDigest: "a".repeat(64),
+          suspendedSessionRevision: "b".repeat(64),
+        },
+      }),
+    })
+
+    expect(service.resolvePermission("approval-1", "reject-once")).toBe(false)
+    await expect(service.runTurn(request())).rejects.toThrow("suspended without an authority runtime")
+  })
+
+  it("bounds nested approval suspension rounds", async () => {
+    const suspended = {
+      ...settledResult(""),
+      turnOutcome: "suspended" as const,
+      suspension: {
+        approvalId: "approval-1",
+        toolCallId: "call-1",
+        checkpointDigest: "a".repeat(64),
+        suspendedSessionRevision: "b".repeat(64),
+      },
+    }
+    const authority = {
+      approvalCoordinatorFactory: vi.fn(() => vi.fn()),
+      resumeApproval: vi.fn(async () => suspended),
+      resolvePermission: vi.fn(),
+      cancelTurn: vi.fn(),
+      close: vi.fn(),
+    }
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const service = new FrontendSessionService({
+      authority: authority as never,
+      runner: async () => suspended,
+    })
+
+    await expect(service.runTurn(request())).rejects.toThrow("exceeded its approval suspension limit")
+    expect(authority.resumeApproval).toHaveBeenCalledTimes(8)
+  })
+
   it("forwards runtime MCP configuration and rejects a missing outcome", async () => {
     const runtimeMcpServers = {
       ouro_workbench: { command: "/Applications/OuroWorkbenchMCP", args: [] },
@@ -127,7 +241,10 @@ describe("frontend session service", () => {
     })
     const { FrontendSessionService } = await import("../../heart/frontend-session-service")
     const service = new FrontendSessionService({ runner })
-    const turns = [service.runTurn(request("turn-1")), service.runTurn(request("turn-2"))]
+    const turns = [
+      service.runTurn(request("turn-1")),
+      service.runTurn({ ...request("turn-2"), sessionKey: "session-2" }),
+    ]
     const signals = await Promise.all(entered.map((item) => item.promise))
 
     expect(service.cancelAllTurns()).toBe(2)

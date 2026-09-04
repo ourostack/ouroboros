@@ -9,7 +9,7 @@ import * as os from "os"
 import * as path from "path"
 import * as fs from "fs"
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions"
-import type { ChannelCallbacks, RunAgentOutcome } from "../heart/core"
+import type { ApprovalSuspensionResult, ChannelCallbacks, RunAgentOutcome } from "../heart/core"
 import { runAgent } from "../heart/core"
 import { getAgentRoot } from "../heart/identity"
 import { sanitizeKey } from "../heart/config"
@@ -267,6 +267,8 @@ export interface RunSenseTurnResult {
   responseCausalSessionEventId?: string
   /** Structured outcome returned by the shared pipeline. */
   turnOutcome?: RunAgentOutcome | "command"
+  /** Durable protected-tool suspension awaiting an external authority decision. */
+  suspension?: ApprovalSuspensionResult
 }
 
 function newOutwardCoordinates(
@@ -568,6 +570,22 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions): Promise<RunS
       toolInvocationCount,
       sessionPath: sessPath,
       turnOutcome: "aborted",
+    }
+  }
+
+  if (turnResult.turnOutcome === "suspended") {
+    if (!turnResult.suspension) throw new Error("suspended shared turn omitted durable approval suspension")
+    pendingResponseText = ""
+    return {
+      response: "",
+      ponderDeferred: false,
+      deliveries,
+      deliveryFailures,
+      providerInvocationCount,
+      toolInvocationCount,
+      sessionPath: sessPath,
+      turnOutcome: "suspended",
+      suspension: turnResult.suspension,
     }
   }
 

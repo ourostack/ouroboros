@@ -135,6 +135,34 @@ describe("frontend socket", () => {
     socket.destroy()
   })
 
+  it("cancels only turns owned by a disconnected client", async () => {
+    const entered = Promise.withResolvers<AbortSignal>()
+    const runner = vi.fn(async (input: any) => {
+      entered.resolve(input.signal)
+      await new Promise<void>((resolve) => input.signal.addEventListener("abort", () => resolve(), { once: true }))
+      return { ...settledResult(""), turnOutcome: "aborted" as const }
+    })
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const { startFrontendSocketServer } = await import("../../heart/frontend-socket")
+    const target = socketPath("frontend-disconnect")
+    const service = new FrontendSessionService({ runner })
+    const server = await startFrontendSocketServer({ socketPath: target, service })
+    cleanup.push(() => server.stop())
+    const owner = await connect(target)
+    const observer = await connect(target)
+    const frames = collectFrames(owner)
+
+    owner.write('{"protocolVersion":1,"id":"start","method":"turn.start","params":{"turnId":"turn-owned","agent":"boss","friendId":"friend-1","channel":"mcp","sessionKey":"session-1","message":"hello"}}\n')
+    await waitForFrame(frames, (frame) => frame.id === "start")
+    const signal = await entered.promise
+    observer.destroy()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(signal.aborted).toBe(false)
+
+    owner.destroy()
+    await vi.waitFor(() => expect(signal.aborted).toBe(true))
+  })
+
   it("returns typed errors for malformed and unsupported requests", async () => {
     const { FrontendSessionService } = await import("../../heart/frontend-session-service")
     const { startFrontendSocketServer } = await import("../../heart/frontend-socket")
@@ -163,6 +191,33 @@ describe("frontend socket", () => {
       { protocolVersion: 1, id: "invalid", ok: false, error: { code: "invalid_params", message: "turnId must be a non-empty string" } },
       { protocolVersion: 1, id: null, ok: false, error: { code: "invalid_params", message: "sessionKey must be a non-empty string" } },
     ])
+    socket.destroy()
+  })
+
+  it("routes permission decisions through the frontend service", async () => {
+    const resolvePermission = vi.fn(() => true)
+    const { startFrontendSocketServer } = await import("../../heart/frontend-socket")
+    const target = socketPath("frontend-permission")
+    const server = await startFrontendSocketServer({
+      socketPath: target,
+      service: {
+        subscribe: () => () => undefined,
+        resolvePermission,
+      } as any,
+    })
+    cleanup.push(() => server.stop())
+    const socket = await connect(target)
+    const frames = collectFrames(socket)
+
+    socket.write('{"protocolVersion":1,"id":"permission","method":"permission.resolve","params":{"requestId":"approval-1","optionId":"allow-once"}}\n')
+
+    expect(await waitForFrame(frames, (frame) => frame.id === "permission")).toEqual({
+      protocolVersion: 1,
+      id: "permission",
+      ok: true,
+      result: { resolved: true },
+    })
+    expect(resolvePermission).toHaveBeenCalledWith("approval-1", "allow-once")
     socket.destroy()
   })
 
@@ -282,7 +337,8 @@ describe("frontend socket", () => {
 
     const { FrontendFrameWriter } = await import("../../heart/frontend-socket")
     const socket = new FakeSocket()
-    const writer = new FrontendFrameWriter(socket as any, 1)
+    const replayRequired = vi.fn()
+    const writer = new FrontendFrameWriter(socket as any, 1, replayRequired)
     writer.send({ protocolVersion: 1, event: "one", sessionKey: "session-1", sequence: 1 })
     writer.send({ protocolVersion: 1, event: "two", sessionKey: "session-1", sequence: 2 })
     writer.send({ protocolVersion: 1, event: "three", sessionKey: "session-1", sequence: 3 })
@@ -293,6 +349,8 @@ describe("frontend socket", () => {
       { protocolVersion: 1, event: "one", sessionKey: "session-1", sequence: 1 },
       { protocolVersion: 1, event: "replay_required", lastSequence: 1 },
     ])
+    expect(writer.replayRequired).toBe(true)
+    expect(replayRequired).toHaveBeenCalledOnce()
     expect(socket.ended).toBe(true)
   })
 
@@ -311,7 +369,8 @@ describe("frontend socket", () => {
 
     const { FrontendFrameWriter } = await import("../../heart/frontend-socket")
     const socket = new FakeSocket()
-    const writer = new FrontendFrameWriter(socket as any, 2)
+    const replayRequired = vi.fn()
+    const writer = new FrontendFrameWriter(socket as any, 2, replayRequired)
     writer.send({ protocolVersion: 1, event: "one", sessionKey: "session-1", sequence: 1 })
     writer.send({ protocolVersion: 1, event: "two", sessionKey: "session-1", sequence: 2 })
     socket.emit("drain")
@@ -319,11 +378,13 @@ describe("frontend socket", () => {
     socket.emit("drain")
 
     expect(socket.writes.map((line) => JSON.parse(line).event)).toEqual(["one", "two", "three"])
+    expect(writer.replayRequired).toBe(false)
+    expect(replayRequired).not.toHaveBeenCalled()
   })
 
   it("rejects an invalid queue bound and a pre-existing non-socket path", async () => {
     const { FrontendFrameWriter, startFrontendSocketServer } = await import("../../heart/frontend-socket")
-    expect(() => new FrontendFrameWriter(new EventEmitter() as any, 0)).toThrow("positive integer")
+    expect(() => new FrontendFrameWriter(new EventEmitter() as any, 0, () => undefined)).toThrow("positive integer")
 
     const target = socketPath("frontend-not-socket")
     fs.writeFileSync(target, "not a socket")

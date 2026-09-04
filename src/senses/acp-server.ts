@@ -9,6 +9,8 @@ interface JsonRpcRequest {
   id?: number | string
   method?: unknown
   params?: unknown
+  result?: unknown
+  error?: unknown
 }
 
 class AcpProtocolError extends Error {
@@ -38,10 +40,15 @@ export function createAcpServer(options: {
     resolve: (stopReason: string) => void
     reject: (error: Error) => void
   }>()
+  const pendingOutbound = new Map<string, {
+    sessionId: string
+    requestId: string
+  }>()
   const createClient = options.createFrontendClient ?? (async () => new SocketFrontendClient(options.frontendSocketPath))
   let clientPromise: Promise<FrontendProtocolClient> | null = null
   let frontendClient: FrontendProtocolClient | null = null
   let removeEventListener: (() => void) | null = null
+  let removeCloseListener: (() => void) | null = null
   let lines: readline.Interface | null = null
   let running = false
 
@@ -62,6 +69,11 @@ export function createAcpServer(options: {
       clientPromise = createClient().then((value) => {
         frontendClient = value
         removeEventListener = value.onEvent(handleFrontendEvent)
+        removeCloseListener = value.onClose((error) => {
+          const failure = error ?? new Error("frontend provider disconnected")
+          for (const prompt of activePrompts.values()) prompt.reject(failure)
+          pendingOutbound.clear()
+        })
         return value
       })
     }
@@ -141,6 +153,24 @@ export function createAcpServer(options: {
       replayEvent(sessionId, { type: "tool_completed", turnId, data: event })
     } else if (event.event === "structured.output") {
       replayEvent(sessionId, { type: "structured_output", turnId, data: event })
+    } else if (event.event === "permission.requested") {
+      const requestId = typeof event.requestId === "string" ? event.requestId : ""
+      if (!requestId || !active || active.turnId !== turnId) return
+      const rpcId = `ouro:${randomUUID()}`
+      pendingOutbound.set(rpcId, { sessionId, requestId })
+      write({
+        jsonrpc: "2.0",
+        id: rpcId,
+        method: "session/request_permission",
+        params: {
+          sessionId,
+          toolCall: {
+            toolCallId: String(event.toolCallId ?? requestId),
+            title: String(event.title ?? "Permission requested"),
+          },
+          options: Array.isArray(event.options) ? event.options : [],
+        },
+      })
     } else if (active && active.turnId === turnId && event.event === "turn.completed") {
       active.resolve("end_turn")
     } else if (active && active.turnId === turnId && event.event === "turn.cancelled") {
@@ -167,6 +197,19 @@ export function createAcpServer(options: {
       .join("")
     if (!text.trim()) throw new AcpProtocolError(-32602, "prompt must contain text")
     return text
+  }
+
+  async function handleResponse(response: JsonRpcRequest): Promise<void> {
+    if (response.jsonrpc !== "2.0") throw new AcpProtocolError(-32600, "jsonrpc must be 2.0")
+    if (typeof response.id !== "string") throw new AcpProtocolError(-32602, "response id must be a string")
+    const pending = pendingOutbound.get(response.id)
+    if (!pending) throw new AcpProtocolError(-32602, `unknown response id: ${response.id}`)
+    pendingOutbound.delete(response.id)
+    const outcome = (response.result as any)?.outcome
+    const optionId = outcome?.outcome === "selected" && typeof outcome.optionId === "string"
+      ? outcome.optionId
+      : "cancelled"
+    await (await client()).request("permission.resolve", { requestId: pending.requestId, optionId })
   }
 
   async function handle(request: JsonRpcRequest): Promise<void> {
@@ -253,7 +296,11 @@ export function createAcpServer(options: {
       return
     }
     try {
-      await handle(request)
+      if (request.method === undefined && (request.result !== undefined || request.error !== undefined)) {
+        await handleResponse(request)
+      } else {
+        await handle(request)
+      }
     } catch (caught) {
       const id = request.id ?? null
       const code = caught instanceof AcpProtocolError ? caught.code : -32000
@@ -277,11 +324,14 @@ export function createAcpServer(options: {
       lines = null
       removeEventListener?.()
       removeEventListener = null
+      removeCloseListener?.()
+      removeCloseListener = null
       frontendClient?.close()
       frontendClient = null
       clientPromise = null
       for (const prompt of activePrompts.values()) prompt.reject(new Error("ACP server stopped"))
       activePrompts.clear()
+      pendingOutbound.clear()
       sessions.clear()
     },
   }

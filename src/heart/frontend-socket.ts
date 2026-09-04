@@ -29,17 +29,20 @@ interface FrameSocket {
 export class FrontendFrameWriter {
   private readonly socket: FrameSocket
   private readonly maxQueuedFrames: number
+  private readonly onReplayRequired: () => void
   private readonly queued: string[] = []
   private backpressured = false
   private closeAfterDrain = false
+  private overflowed = false
   private lastSequence = 0
 
-  constructor(socket: FrameSocket, maxQueuedFrames: number) {
+  constructor(socket: FrameSocket, maxQueuedFrames: number, onReplayRequired: () => void) {
     if (!Number.isSafeInteger(maxQueuedFrames) || maxQueuedFrames < 1) {
       throw new Error("maxQueuedFrames must be a positive integer")
     }
     this.socket = socket
     this.maxQueuedFrames = maxQueuedFrames
+    this.onReplayRequired = onReplayRequired
   }
 
   send(frame: FrontendFrame): void {
@@ -54,8 +57,11 @@ export class FrontendFrameWriter {
           lastSequence: this.lastSequence,
         })}\n`)
         this.closeAfterDrain = true
+        this.overflowed = true
+        this.onReplayRequired()
         return
       }
+
       this.queued.push(encoded)
       return
     }
@@ -64,6 +70,10 @@ export class FrontendFrameWriter {
       this.backpressured = true
       this.socket.once("drain", () => this.flush())
     }
+  }
+
+  get replayRequired(): boolean {
+    return this.overflowed
   }
 
   private flush(): void {
@@ -84,6 +94,7 @@ interface FrontendClient {
   socket: net.Socket
   writer: FrontendFrameWriter
   subscriptions: Set<string>
+  ownedTurnIds: Set<string>
 }
 
 export interface FrontendSocketServer {
@@ -143,6 +154,9 @@ export async function startFrontendSocketServer(options: {
       journalSequence: event.journalSequence,
       ...event.data,
     })
+    if (event.type === "turn_completed" || event.type === "turn_cancelled" || event.type === "turn_failed") {
+      for (const client of clients) client.ownedTurnIds.delete(event.turnId)
+    }
   })
 
   async function handleRequest(client: FrontendClient, raw: unknown): Promise<void> {
@@ -182,6 +196,13 @@ export async function startFrontendSocketServer(options: {
       return
     }
 
+    if (method === "permission.resolve") {
+      const requestId = requiredString(params.requestId, "requestId")
+      const optionId = requiredString(params.optionId, "optionId")
+      client.writer.send(response(id, { resolved: options.service.resolvePermission(requestId, optionId) }))
+      return
+    }
+
     if (method === "turn.start") {
       const turnRequest: FrontendTurnRequest = {
         turnId: requiredString(params.turnId, "turnId"),
@@ -191,6 +212,7 @@ export async function startFrontendSocketServer(options: {
         sessionKey: requiredString(params.sessionKey, "sessionKey"),
         message: requiredString(params.message, "message"),
       }
+      client.ownedTurnIds.add(turnRequest.turnId)
       client.writer.send(response(id, { accepted: true, turnId: turnRequest.turnId }))
       queueMicrotask(() => {
         void options.service.runTurn(turnRequest).catch(() => undefined)
@@ -202,10 +224,12 @@ export async function startFrontendSocketServer(options: {
   }
 
   const server = net.createServer((socket) => {
+    const ownedTurnIds = new Set<string>()
     const client: FrontendClient = {
       socket,
-      writer: new FrontendFrameWriter(socket, maxQueuedFrames),
+      writer: new FrontendFrameWriter(socket, maxQueuedFrames, ownedTurnIds.clear.bind(ownedTurnIds)),
       subscriptions: new Set(),
+      ownedTurnIds,
     }
     clients.add(client)
     const lines = readline.createInterface({ input: socket, crlfDelay: Infinity })
@@ -230,6 +254,7 @@ export async function startFrontendSocketServer(options: {
       })
     })
     socket.on("close", () => {
+      for (const turnId of client.ownedTurnIds) options.service.cancelTurn(turnId)
       clients.delete(client)
       lines.close()
     })

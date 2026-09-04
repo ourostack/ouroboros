@@ -122,14 +122,31 @@ describe("frontend socket client", () => {
     const server = await listen(target, (socket) => { accepted = socket })
     cleanup.push(() => close(server))
     const client = new SocketFrontendClient(target)
+    const closes: string[] = []
+    const unsubscribe = client.onClose((error) => closes.push(error?.message ?? "closed"))
     const pending = client.request("wait", {})
     await new Promise((resolve) => setTimeout(resolve, 10))
 
     ;(client as any).socket.emit("error", new Error("transport error"))
 
     await expect(pending).rejects.toThrow("transport error")
+    expect(closes).toContain("transport error")
+    unsubscribe()
     client.close()
     accepted?.destroy()
+  })
+
+  it("notifies close listeners when the connected socket closes", async () => {
+    const target = socketPath("frontend-client-close-listener")
+    const server = await listen(target, (socket) => socket.once("data", () => socket.destroy()))
+    cleanup.push(() => close(server))
+    const client = new SocketFrontendClient(target)
+    const closed = Promise.withResolvers<string>()
+    client.onClose((error) => closed.resolve(error?.message ?? "closed"))
+
+    await expect(client.request("wait", {})).rejects.toThrow("frontend socket closed")
+    await expect(closed.promise).resolves.toBe("frontend socket closed")
+    client.close()
   })
 
   it("can reconnect after an initial connection failure", async () => {

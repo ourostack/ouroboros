@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest"
 class FakeFrontendClient {
   requests: Array<{ method: string; params: any }> = []
   listener: ((event: any) => void) | null = null
+  closeListener: ((error?: Error) => void) | null = null
   close = vi.fn()
   loadResult: any = { events: [], lastSequence: 0, hasMore: false, degraded: false, incompleteTurnIds: [] }
   failMethod: string | null = null
@@ -22,8 +23,17 @@ class FakeFrontendClient {
     return () => { this.listener = null }
   }
 
+  onClose(listener: (error?: Error) => void): () => void {
+    this.closeListener = listener
+    return () => { this.closeListener = null }
+  }
+
   emit(event: any): void {
     this.listener?.(event)
+  }
+
+  disconnect(error?: Error): void {
+    this.closeListener?.(error)
   }
 }
 
@@ -216,6 +226,145 @@ describe("Ouro ACP server", () => {
       id: 2,
       result: { stopReason: "cancelled" },
     })
+    server.stop()
+  })
+
+  it("bridges one correlated Ouro permission request and client response", async () => {
+    const { input, client, server, messages } = await setup()
+    input.write('{"jsonrpc":"2.0","id":1,"method":"session/new","params":{}}\n')
+    const sessionId = (await waitFor(messages, (message) => message.id === 1)).result.sessionId
+    input.write(`${JSON.stringify({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "session/prompt",
+      params: { sessionId, prompt: [{ type: "text", text: "restart it" }] },
+    })}\n`)
+    await waitFor(client.requests, (request) => request.method === "turn.start")
+    const turnId = client.requests.find((request) => request.method === "turn.start")!.params.turnId
+    client.emit({
+      event: "permission.requested",
+      sessionKey: sessionId,
+      turnId,
+      requestId: "approval-1",
+      toolCallId: "call-1",
+      title: "Approve unraid_restart_container",
+      options: [
+        { optionId: "allow-once", name: "Allow once", kind: "allow_once" },
+        { optionId: "reject-once", name: "Reject", kind: "reject_once" },
+      ],
+    })
+
+    const reverse = await waitFor(messages, (message) => message.method === "session/request_permission")
+    expect(reverse).toMatchObject({
+      jsonrpc: "2.0",
+      id: expect.stringMatching(/^ouro:/),
+      params: {
+        sessionId,
+        toolCall: { toolCallId: "call-1", title: "Approve unraid_restart_container" },
+      },
+    })
+    input.write(`${JSON.stringify({
+      jsonrpc: "2.0",
+      id: reverse.id,
+      result: { outcome: { outcome: "selected", optionId: "allow-once" } },
+    })}\n`)
+
+    await waitFor(client.requests, (request) => request.method === "permission.resolve")
+    expect(client.requests.at(-1)).toEqual({
+      method: "permission.resolve",
+      params: { requestId: "approval-1", optionId: "allow-once" },
+    })
+    client.emit({ event: "turn.completed", sessionKey: sessionId, turnId })
+    await expect(waitFor(messages, (message) => message.id === 2)).resolves.toMatchObject({
+      result: { stopReason: "end_turn" },
+    })
+    server.stop()
+  })
+
+  it("rejects an active prompt when the frontend provider disconnects", async () => {
+    const { input, client, server, messages } = await setup()
+    input.write('{"jsonrpc":"2.0","id":1,"method":"session/new","params":{}}\n')
+    const sessionId = (await waitFor(messages, (message) => message.id === 1)).result.sessionId
+    input.write(`${JSON.stringify({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "session/prompt",
+      params: { sessionId, prompt: [{ type: "text", text: "wait" }] },
+    })}\n`)
+    await waitFor(client.requests, (request) => request.method === "turn.start")
+
+    client.disconnect(new Error("frontend provider exited"))
+
+    expect((await waitFor(messages, (message) => message.id === 2)).error).toEqual({
+      code: -32000,
+      message: "frontend provider exited",
+    })
+    server.stop()
+  })
+
+  it("defaults a provider disconnect without an error", async () => {
+    const { input, client, server, messages } = await setup()
+    input.write('{"jsonrpc":"2.0","id":1,"method":"session/new","params":{}}\n')
+    const sessionId = (await waitFor(messages, (message) => message.id === 1)).result.sessionId
+    input.write(`${JSON.stringify({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "session/prompt",
+      params: { sessionId, prompt: [{ type: "text", text: "wait" }] },
+    })}\n`)
+    await waitFor(client.requests, (request) => request.method === "turn.start")
+
+    client.disconnect()
+
+    expect((await waitFor(messages, (message) => message.id === 2)).error).toEqual({
+      code: -32000,
+      message: "frontend provider disconnected",
+    })
+    server.stop()
+  })
+
+  it("validates reverse responses and cancels malformed permission outcomes", async () => {
+    const { input, client, server, messages } = await setup()
+    input.write('{"jsonrpc":"2.0","id":1,"method":"session/new","params":{}}\n')
+    const sessionId = (await waitFor(messages, (message) => message.id === 1)).result.sessionId
+    client.emit({ event: "permission.requested", sessionKey: sessionId, turnId: "none", requestId: "ignored" })
+    input.write(`${JSON.stringify({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "session/prompt",
+      params: { sessionId, prompt: [{ type: "text", text: "restart it" }] },
+    })}\n`)
+    await waitFor(client.requests, (request) => request.method === "turn.start")
+    const turnId = client.requests.find((request) => request.method === "turn.start")!.params.turnId
+    client.emit({ event: "permission.requested", sessionKey: sessionId, turnId, requestId: 7 })
+    client.emit({ event: "permission.requested", sessionKey: sessionId, turnId, requestId: "" })
+    client.emit({ event: "permission.requested", sessionKey: sessionId, turnId: "wrong", requestId: "ignored" })
+    client.emit({ event: "permission.requested", sessionKey: sessionId, turnId, requestId: "approval-2" })
+
+    const reverse = await waitFor(messages, (message) =>
+      message.method === "session/request_permission" && message.params.toolCall.toolCallId === "approval-2")
+    expect(reverse.params).toEqual({
+      sessionId,
+      toolCall: { toolCallId: "approval-2", title: "Permission requested" },
+      options: [],
+    })
+
+    input.write('{"jsonrpc":"2.0","id":7,"result":{}}\n')
+    input.write('{"jsonrpc":"2.0","id":"ouro:missing","result":{}}\n')
+    input.write(`${JSON.stringify({ jsonrpc: "1.0", id: reverse.id, result: {} })}\n`)
+    await waitFor(messages, (message) => message.id === 7)
+    await waitFor(messages, (message) => message.id === "ouro:missing")
+    await waitFor(messages, (message) => message.id === reverse.id && message.error)
+    input.write(`${JSON.stringify({ jsonrpc: "2.0", id: reverse.id, error: { code: -32000, message: "cancel" } })}\n`)
+
+    await waitFor(client.requests, (request) =>
+      request.method === "permission.resolve" && request.params.requestId === "approval-2")
+    expect(client.requests.at(-1)).toEqual({
+      method: "permission.resolve",
+      params: { requestId: "approval-2", optionId: "cancelled" },
+    })
+    client.emit({ event: "turn.completed", sessionKey: sessionId, turnId })
+    await waitFor(messages, (message) => message.id === 2)
     server.stop()
   })
 

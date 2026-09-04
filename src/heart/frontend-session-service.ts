@@ -1,6 +1,7 @@
 import type { Channel } from "@ouro.bot/friends"
 
 import type { RuntimeMcpServers } from "../repertoire/mcp-manager"
+import type { ApprovalSuspensionResult } from "./core"
 import { runSenseTurn, type FrontendTurnEvent, type RunSenseTurnOptions, type RunSenseTurnResult } from "../senses/shared-turn"
 import {
   FrontendJournalStore,
@@ -13,6 +14,13 @@ export class FrontendTurnConflictError extends Error {
   constructor(turnId: string) {
     super(`frontend turn already exists: ${turnId}`)
     this.name = "FrontendTurnConflictError"
+  }
+}
+
+export class FrontendSessionConflictError extends Error {
+  constructor(sessionKey: string) {
+    super(`frontend session already has an active turn: ${sessionKey}`)
+    this.name = "FrontendSessionConflictError"
   }
 }
 
@@ -42,6 +50,21 @@ export interface FrontendTurnResult {
 type FrontendTurnRunner = (options: RunSenseTurnOptions) => Promise<RunSenseTurnResult>
 type FrontendServiceListener = (event: FrontendServiceEvent) => void
 
+export interface FrontendAuthorityRuntime {
+  approvalCoordinatorFactory(input: {
+    request: FrontendTurnRequest
+    publish(type: string, data: Record<string, unknown>, journalType?: FrontendJournalEventType): void
+  }): NonNullable<RunSenseTurnOptions["approvalCoordinatorFactory"]>
+  resumeApproval(input: {
+    request: FrontendTurnRequest
+    suspension: ApprovalSuspensionResult
+    signal: AbortSignal
+    frontendEventSink: NonNullable<RunSenseTurnOptions["frontendEventSink"]>
+  }): Promise<RunSenseTurnResult>
+  resolvePermission(requestId: string, optionId: string): boolean
+  cancelTurn(turnId: string): void
+}
+
 export interface FrontendServiceEvent {
   agent: string
   friendId: string
@@ -68,13 +91,20 @@ function required(value: string, field: string): string {
 
 export class FrontendSessionService {
   private readonly activeTurns = new Map<string, AbortController>()
+  private readonly activeSessions = new Map<string, string>()
   private readonly listeners = new Set<FrontendServiceListener>()
   private readonly runner: FrontendTurnRunner
   private readonly journal: FrontendJournalStore | null
+  private readonly authority: FrontendAuthorityRuntime | null
 
-  constructor(options: { runner?: FrontendTurnRunner; journal?: FrontendJournalStore | null } = {}) {
+  constructor(options: {
+    runner?: FrontendTurnRunner
+    journal?: FrontendJournalStore | null
+    authority?: FrontendAuthorityRuntime | null
+  } = {}) {
     this.runner = options.runner ?? runSenseTurn
     this.journal = options.journal ?? null
+    this.authority = options.authority ?? null
   }
 
   hasTurn(turnId: string): boolean {
@@ -85,6 +115,7 @@ export class FrontendSessionService {
     const controller = this.activeTurns.get(turnId)
     if (!controller || controller.signal.aborted) return false
     controller.abort()
+    this.authority?.cancelTurn(turnId)
     return true
   }
 
@@ -101,6 +132,10 @@ export class FrontendSessionService {
   subscribe(listener: FrontendServiceListener): () => void {
     this.listeners.add(listener)
     return () => this.listeners.delete(listener)
+  }
+
+  resolvePermission(requestId: string, optionId: string): boolean {
+    return this.authority?.resolvePermission(required(requestId, "requestId"), required(optionId, "optionId")) ?? false
   }
 
   loadSession(
@@ -126,24 +161,46 @@ export class FrontendSessionService {
       message: required(request.message, "message"),
     }
     if (this.activeTurns.has(turnId)) throw new FrontendTurnConflictError(turnId)
+    const sessionIdentity = [normalized.agent, normalized.friendId, normalized.channel, normalized.sessionKey].join("\0")
+    if (this.activeSessions.has(sessionIdentity)) throw new FrontendSessionConflictError(normalized.sessionKey)
 
     const controller = new AbortController()
     this.activeTurns.set(turnId, controller)
+    this.activeSessions.set(sessionIdentity, turnId)
     try {
       this.publish(normalized, "user_message", { text: normalized.message }, "user_message")
       this.publish(normalized, "turn_started", {}, "turn_started")
-      const result = await this.runner({
+      const frontendEventSink = {
+        onEvent: (event: FrontendTurnEvent) => this.publishFrontendEvent(normalized, event),
+      }
+      const approvalCoordinatorFactory = this.authority?.approvalCoordinatorFactory({
+        request: normalized,
+        publish: (type, data, journalType) => this.publish(normalized, type, data, journalType),
+      })
+      let result = await this.runner({
         agentName: normalized.agent,
         friendId: normalized.friendId,
         channel: normalized.channel,
         sessionKey: normalized.sessionKey,
         userMessage: normalized.message,
         signal: controller.signal,
-        frontendEventSink: {
-          onEvent: (event) => this.publishFrontendEvent(normalized, event),
-        },
+        frontendEventSink,
+        ...(approvalCoordinatorFactory ? { approvalCoordinatorFactory } : {}),
         ...(normalized.runtimeMcpServers ? { runtimeMcpServers: normalized.runtimeMcpServers } : {}),
       })
+      let suspensionRounds = 0
+      while (result.turnOutcome === "suspended") {
+        if (!result.suspension) throw new Error(`frontend turn ${turnId} omitted its approval suspension`)
+        if (!this.authority) throw new Error(`frontend turn ${turnId} suspended without an authority runtime`)
+        suspensionRounds += 1
+        if (suspensionRounds > 8) throw new Error(`frontend turn ${turnId} exceeded its approval suspension limit`)
+        result = await this.authority.resumeApproval({
+          request: normalized,
+          suspension: result.suspension,
+          signal: controller.signal,
+          frontendEventSink,
+        })
+      }
       if (!result.turnOutcome) throw new Error(`frontend turn ${turnId} omitted its outcome`)
       const frontendResult: FrontendTurnResult = {
         turnId,
@@ -165,6 +222,7 @@ export class FrontendSessionService {
       throw error
     } finally {
       this.activeTurns.delete(turnId)
+      this.activeSessions.delete(sessionIdentity)
     }
   }
 
