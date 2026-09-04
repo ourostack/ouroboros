@@ -150,6 +150,50 @@ describe("Sanctuary media optimization read", () => {
     expect(serialized).not.toContain("111111")
   })
 
+  it("normalizes catalog read failures without leaking credentials", async () => {
+    const tooLong = await client().readCatalog({ query: "x".repeat(201) })
+    expect(tooLong).toMatchObject({ ok: false, error: { code: "invalid_response", degraded: true } })
+    expect(JSON.stringify(tooLong)).not.toContain(TOKEN)
+
+    const invalidLimit = await client().readCatalog({ limit: 0 })
+    expect(invalidLimit).toMatchObject({ ok: false, error: { code: "invalid_response", degraded: true } })
+    expect(JSON.stringify(invalidLimit)).not.toContain(TOKEN)
+
+    const unavailable = await createSanctuaryMediaOptimizationClient({
+      jellyfinUserId: USER_ID,
+      jellyfinAccessToken: TOKEN,
+      jellyfinFolderIds: ["library-a", "library-b"],
+      fetch: route(),
+      now: () => { throw new Error("clock gone") },
+    }).readCatalog({})
+    expect(unavailable).toEqual({ ok: false, error: { code: "unavailable", message: "Media service is unavailable", degraded: true } })
+    expect(JSON.stringify(unavailable)).not.toContain(TOKEN)
+  })
+
+  it("samples the restricted Jellyfin catalog with default query and limit", async () => {
+    const result = await createSanctuaryMediaOptimizationClient({
+      jellyfinUserId: USER_ID,
+      jellyfinAccessToken: TOKEN,
+      jellyfinFolderIds: ["library-a", "library-b"],
+      fetch: route(),
+    }).readCatalog({})
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: {
+        totalItems: 3,
+        matchedItems: 3,
+        items: [
+          { untrustedTitle: "Huge H264 Movie", type: "Movie", productionYear: null, premiereDate: null },
+          { untrustedTitle: "Small HEVC Movie", type: "Movie", productionYear: null, premiereDate: null },
+          { untrustedTitle: "Large H264 Movie", type: "Movie", productionYear: null, premiereDate: null },
+        ],
+        truncated: false,
+      },
+    })
+    expect((result as any).data.observedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/u)
+  })
+
   it("paginates the Jellyfin catalog but returns only the deterministic top twenty", async () => {
     const first = Array.from({ length: 500 }, (_, index) => ({ Id: index.toString(16).padStart(32, "0"), Name: `Movie ${index}`, Type: "Movie", MediaSources: [{ Id: `s${index}`, Size: index + 1, MediaStreams: [{ Type: "Video", Codec: "hevc", Width: 1920, Height: 1080 }] }] }))
     const fetch = route({
@@ -183,6 +227,21 @@ describe("Sanctuary media optimization read", () => {
       ok: true,
       data: {
         unmanic: { version: "0.4.0+4922a83", pending: { total: 1 }, history: { available: false, reason: "file_size_metrics panel returned invalid data" } },
+        inventory: { totalItems: 3, analyzedSources: 3 },
+        degraded: true,
+      },
+    })
+  })
+
+  it("does not hide unavailable optional metrics as malformed panel data", async () => {
+    const result = await client(route({
+      "GET http://127.0.0.1:8888/unmanic/panel/file_size_metrics/totalSizeChange/": json({}, 503),
+    })).read()
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "unavailable", message: "Media service is unavailable", degraded: true },
+      data: {
+        unmanic: { available: false, error: { code: "unavailable" } },
         inventory: { totalItems: 3, analyzedSources: 3 },
         degraded: true,
       },

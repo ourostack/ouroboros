@@ -336,6 +336,9 @@ describe("Unraid typed read tools", () => {
     expect(sanctuary.getDownloadQueue).toHaveBeenCalledExactlyOnceWith()
     expect(sanctuary.getMediaOptimization).toHaveBeenCalledExactlyOnceWith()
     expect(sanctuary.searchMediaCatalog).toHaveBeenCalledExactlyOnceWith({ query: "moon", limit: 3 })
+    const catalogDefinition = unraidToolDefinitions.find((definition) => definition.tool.function.name === "sanctuary_search_media_catalog")!
+    expect(JSON.parse(await catalogDefinition.handler({ query: 7, limit: "3" }, { sanctuary } as any))).toMatchObject({ ok: true })
+    expect(sanctuary.searchMediaCatalog).toHaveBeenLastCalledWith({})
     expect(sanctuary.resumeDownloadQueue).toHaveBeenCalledExactlyOnceWith()
     expect(sanctuary.restartContainer).toHaveBeenCalledExactlyOnceWith({ container: "alpha" }, undefined)
     const restartDefinition = unraidToolDefinitions.find((definition) => definition.tool.function.name === "unraid_restart_container")!
