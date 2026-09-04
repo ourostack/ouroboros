@@ -96,6 +96,14 @@ function emitPolicyEvaluated(
   })
 }
 
+function hasOriginRef(refs: PrivateTurnOriginRef[], kind: string, id: string): boolean {
+  return refs.some((ref) => ref.kind === kind && ref.id === id)
+}
+
+function hasNonEmptyOriginRef(refs: PrivateTurnOriginRef[], kind: string): boolean {
+  return refs.some((ref) => ref.kind === kind && typeof ref.id === "string" && ref.id.trim().length > 0)
+}
+
 async function defaultResolveProviderLane(
   agent: string,
   lane: ProviderLane,
@@ -139,12 +147,36 @@ async function evaluatePolicy(
   const originRefs = request.originRefs ?? []
   if (
     request.triggerSource === "external-event"
-    && originRefs.some((ref) => ref.kind === "external-event" && typeof ref.id === "string" && ref.id.length > 0)
-    && originRefs.some((ref) => ref.kind === "daemon-command" && ref.id === "external.event.submit")
+    && hasNonEmptyOriginRef(originRefs, "external-event")
+    && hasOriginRef(originRefs, "daemon-command", "external.event.submit")
   ) {
     return {
       result: "allow",
       reason: "verified daemon external event",
+    }
+  }
+  if (
+    request.triggerSource === "operator-cli"
+    && hasOriginRef(originRefs, "cli-command", "ouro msg")
+    && hasNonEmptyOriginRef(originRefs, "daemon-receipt")
+  ) {
+    return {
+      result: "allow",
+      reason: "verified operator CLI message",
+    }
+  }
+  if (
+    (request.triggerSource === "await-poke" || request.triggerSource === "await-scheduler" || request.triggerSource === "await-expiry")
+    && hasNonEmptyOriginRef(originRefs, "await")
+    && (
+      hasOriginRef(originRefs, "daemon-command", "await.poke")
+      || hasOriginRef(originRefs, "scheduler", "await-scheduler")
+      || hasOriginRef(originRefs, "await-alert", "expired")
+    )
+  ) {
+    return {
+      result: "allow",
+      reason: "verified daemon await check",
     }
   }
   return {
