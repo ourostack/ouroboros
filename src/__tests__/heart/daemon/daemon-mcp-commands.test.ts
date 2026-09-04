@@ -6,6 +6,10 @@ function tmpSocketPath(name: string): string {
   return path.join(os.tmpdir(), `${name}-${Date.now()}-${Math.random().toString(16).slice(2)}.sock`)
 }
 
+function deferred<T = void>() {
+  return Promise.withResolvers<T>()
+}
+
 describe("daemon mcp command handlers", () => {
   beforeEach(() => {
     vi.resetModules()
@@ -14,6 +18,7 @@ describe("daemon mcp command handlers", () => {
   afterEach(() => {
     vi.restoreAllMocks()
     vi.doUnmock("../../../repertoire/mcp-manager")
+    vi.doUnmock("../../../senses/shared-turn")
   })
 
   function makeDaemonOptions(socketPath: string) {
@@ -189,5 +194,53 @@ describe("daemon mcp command handlers", () => {
     } as any)
     expect(result.ok).toBe(false)
     expect(result.error).toContain("disconnected")
+  })
+
+  it("serializes MCP reconciliation against another agent turn", async () => {
+    const managerEntered = deferred()
+    const releaseManager = deferred()
+    const turnEntered = deferred()
+    const runSenseTurn = vi.fn(async () => {
+      turnEntered.resolve()
+      return {
+        response: "ok",
+        ponderDeferred: false,
+        deliveries: [],
+        deliveryFailures: [],
+        turnOutcome: "settled" as const,
+      }
+    })
+    vi.doMock("../../../repertoire/mcp-manager", () => ({
+      getSharedMcpManager: vi.fn(async () => {
+        managerEntered.resolve()
+        await releaseManager.promise
+        return { listAllTools: vi.fn().mockReturnValue([]) }
+      }),
+      shutdownSharedMcpManager: vi.fn(),
+    }))
+    vi.doMock("../../../senses/shared-turn", () => ({ runSenseTurn }))
+
+    const { OuroDaemon, handleAgentSenseTurn } = await import("../../../heart/daemon/daemon")
+    const daemon = new OuroDaemon(makeDaemonOptions(tmpSocketPath("daemon-mcp-turn-serialization")) as any)
+    const listing = daemon.handleCommand({ kind: "mcp.list", agent: "first-agent" } as any)
+    await managerEntered.promise
+
+    const turn = handleAgentSenseTurn({
+      kind: "agent.senseTurn",
+      agent: "second-agent",
+      friendId: "friend-1",
+      channel: "mcp",
+      sessionKey: "session-1",
+      message: "hello",
+    })
+    const overlapped = await Promise.race([
+      turnEntered.promise.then(() => true),
+      new Promise<false>((resolve) => setTimeout(() => resolve(false), 25)),
+    ])
+    expect(overlapped).toBe(false)
+
+    releaseManager.resolve()
+    await Promise.all([listing, turn])
+    expect(runSenseTurn).toHaveBeenCalledOnce()
   })
 })

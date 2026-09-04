@@ -368,6 +368,44 @@ describe("runSenseTurn", () => {
     ])
   })
 
+  it("serializes MCP setup across concurrent shared turns", async () => {
+    const firstMcpEntered = Promise.withResolvers<void>()
+    const releaseFirstMcp = Promise.withResolvers<void>()
+    let mcpCalls = 0
+    mockGetSharedMcpManager.mockImplementation(async () => {
+      mcpCalls += 1
+      if (mcpCalls === 1) {
+        firstMcpEntered.resolve()
+        await releaseFirstMcp.promise
+      }
+      return null
+    })
+
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    const first = runSenseTurn({
+      agentName: "first-agent",
+      channel: "mcp",
+      sessionKey: "first-session",
+      friendId: "friend-1",
+      userMessage: "first",
+    })
+    await firstMcpEntered.promise
+
+    const second = runSenseTurn({
+      agentName: "second-agent",
+      channel: "mcp",
+      sessionKey: "second-session",
+      friendId: "friend-1",
+      userMessage: "second",
+    })
+    await Promise.resolve()
+    expect(mcpCalls).toBe(1)
+
+    releaseFirstMcp.resolve()
+    await Promise.all([first, second])
+    expect(mcpCalls).toBe(2)
+  })
+
   it("returns response text from a settled turn", async () => {
     const { runSenseTurn } = await import("../../senses/shared-turn")
     const result = await runSenseTurn({
