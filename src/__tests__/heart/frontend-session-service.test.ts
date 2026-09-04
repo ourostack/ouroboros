@@ -211,6 +211,33 @@ describe("frontend session service", () => {
 
     await expect(service.runTurn(request())).resolves.toMatchObject({ outcome: "settled" })
   })
+
+  it("loads journal history by exact identity and rejects unavailable storage", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "frontend-service-load-"))
+    const { FrontendJournalStore } = await import("../../heart/frontend-journal")
+    const journal = new FrontendJournalStore({ agentRoot: (agent) => path.join(root, `${agent}.ouro`) })
+    journal.append(refFor(request()), { turnId: "turn-1", type: "turn_started", data: {} })
+    journal.append(refFor(request()), { turnId: "turn-1", type: "turn_completed", data: {} })
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const service = new FrontendSessionService({ runner: async () => settledResult(), journal })
+
+    expect(service.loadSession({
+      agent: "boss",
+      friendId: "friend-1",
+      sessionKey: "session-1",
+    }, { afterSequence: 1, limit: 1 })).toMatchObject({
+      events: [expect.objectContaining({ sequence: 2, type: "turn_completed" })],
+      lastSequence: 2,
+      hasMore: false,
+      degraded: false,
+    })
+    expect(() => new FrontendSessionService().loadSession({
+      agent: "boss",
+      friendId: "friend-1",
+      sessionKey: "session-1",
+    })).toThrow("journal is unavailable")
+    fs.rmSync(root, { recursive: true, force: true })
+  })
 })
 
 function refFor(value: ReturnType<typeof request>) {

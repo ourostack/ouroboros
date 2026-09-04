@@ -192,6 +192,44 @@ describe("frontend socket", () => {
     socket.destroy()
   })
 
+  it("loads journal history through the framed protocol", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "frontend-socket-load-"))
+    const { FrontendJournalStore } = await import("../../heart/frontend-journal")
+    const journal = new FrontendJournalStore({ agentRoot: (agent) => path.join(root, `${agent}.ouro`) })
+    journal.append({ agent: "boss", friendId: "friend-1", sessionId: "session-1" }, {
+      turnId: "turn-1",
+      type: "turn_started",
+      data: {},
+    })
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const { startFrontendSocketServer } = await import("../../heart/frontend-socket")
+    const target = socketPath("frontend-load")
+    const server = await startFrontendSocketServer({
+      socketPath: target,
+      service: new FrontendSessionService({ runner: async () => settledResult(), journal }),
+    })
+    cleanup.push(async () => {
+      await server.stop()
+      fs.rmSync(root, { recursive: true, force: true })
+    })
+    const socket = await connect(target)
+    const frames = collectFrames(socket)
+
+    socket.write('{"protocolVersion":1,"id":"load","method":"session.load","params":{"agent":"boss","friendId":"friend-1","sessionKey":"session-1","afterSequence":0,"limit":10}}\n')
+
+    expect(await waitForFrame(frames, (frame) => frame.id === "load")).toMatchObject({
+      protocolVersion: 1,
+      ok: true,
+      result: {
+        events: [expect.objectContaining({ type: "turn_started", sequence: 1 })],
+        lastSequence: 1,
+        hasMore: false,
+        degraded: false,
+      },
+    })
+    socket.destroy()
+  })
+
   it("publishes failed turns and reports unknown cancellation", async () => {
     const runner = vi.fn()
       .mockRejectedValueOnce(new Error("provider down"))
