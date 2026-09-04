@@ -28,7 +28,7 @@ describe("frontend session service", () => {
     const runner = vi.fn(async (input: any) => {
       expect(input.signal).toBeInstanceOf(AbortSignal)
       expect(input.signal.aborted).toBe(false)
-      return settledResult("hello")
+      return { ...settledResult("hello"), sessionPath: "/tmp/session.json" }
     })
     const { FrontendSessionService } = await import("../../heart/frontend-session-service")
     const service = new FrontendSessionService({ runner })
@@ -37,8 +37,15 @@ describe("frontend session service", () => {
       turnId: "turn-1",
       outcome: "settled",
       response: "hello",
-      sessionPath: null,
+      sessionPath: "/tmp/session.json",
     })
+    expect(service.hasTurn("turn-1")).toBe(false)
+  })
+
+  it("uses the production runner when no test runner is supplied", async () => {
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const service = new FrontendSessionService()
+
     expect(service.hasTurn("turn-1")).toBe(false)
   })
 
@@ -56,6 +63,7 @@ describe("frontend session service", () => {
 
     expect(service.cancelTurn("other-turn")).toBe(false)
     expect(service.cancelTurn("turn-1")).toBe(true)
+    expect(service.cancelTurn("turn-1")).toBe(false)
     expect(signal.aborted).toBe(true)
     await expect(running).resolves.toMatchObject({ turnId: "turn-1", outcome: "aborted" })
     expect(service.cancelTurn("turn-1")).toBe(false)
@@ -87,6 +95,21 @@ describe("frontend session service", () => {
     const service = new FrontendSessionService({ runner })
 
     await expect(service.runTurn(request())).rejects.toThrow("provider down")
+    expect(service.hasTurn("turn-1")).toBe(false)
+  })
+
+  it("forwards runtime MCP configuration and rejects a missing outcome", async () => {
+    const runtimeMcpServers = {
+      ouro_workbench: { command: "/Applications/OuroWorkbenchMCP", args: [] },
+    }
+    const runner = vi.fn(async (input: any) => {
+      expect(input.runtimeMcpServers).toEqual(runtimeMcpServers)
+      return { ...settledResult(), turnOutcome: undefined }
+    })
+    const { FrontendSessionService } = await import("../../heart/frontend-session-service")
+    const service = new FrontendSessionService({ runner })
+
+    await expect(service.runTurn({ ...request(), runtimeMcpServers })).rejects.toThrow("omitted its outcome")
     expect(service.hasTurn("turn-1")).toBe(false)
   })
 })

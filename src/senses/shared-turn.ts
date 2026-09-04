@@ -508,7 +508,7 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions): Promise<RunS
       providerInvocationCount,
       toolInvocationCount,
       sessionPath: sessPath,
-      turnOutcome: turnResult.turnOutcome,
+      turnOutcome: turnResult.turnOutcome ?? "blocked",
     }
   }
 
