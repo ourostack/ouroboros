@@ -4,7 +4,8 @@
       {
         "version": "0.1.0-alpha.792",
         "changes": [
-          "Catch asynchronous bundle watcher errors so transient pending-message processing files on live filesystems cannot tombstone the daemon or interrupt private-runtime wakes."
+          "Catch asynchronous bundle watcher errors so transient pending-message processing files on live filesystems cannot tombstone the daemon or interrupt private-runtime wakes.",
+          "Warm runtime credentials before private-runtime bootstrap so Telegram-capable workers start with runtime config instead of racing the managed Telegram sense."
         ]
       },
       {

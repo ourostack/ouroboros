@@ -159,12 +159,16 @@ describe("agent entrypoint", () => {
     argvSpy.mockRestore()
   })
 
-  it("starts unified agent runtime without waiting for runtime config refresh", async () => {
+  it("waits for runtime config refresh before starting unified agent runtime", async () => {
     vi.resetModules()
 
     const { startPrivateRuntimeWorker } = mockWorkerModules()
     const configureCliRuntimeLogger = vi.fn()
-    const refreshRuntimeCredentialConfig = vi.fn(() => new Promise(() => undefined))
+    let resolveRuntimeRefresh!: () => void
+    const runtimeRefresh = new Promise<{ ok: false; reason: "missing" }>((resolve) => {
+      resolveRuntimeRefresh = () => resolve({ ok: false, reason: "missing" })
+    })
+    const refreshRuntimeCredentialConfig = vi.fn(() => runtimeRefresh)
     vi.doMock("../../nerves/cli-logging", () => ({ configureCliRuntimeLogger }))
     vi.doMock("../../heart/runtime-credentials", () => runtimeCredentialMock({
       refreshRuntimeCredentialConfig,
@@ -181,8 +185,10 @@ describe("agent entrypoint", () => {
 
     await vi.waitFor(() => {
       expect(refreshRuntimeCredentialConfig).toHaveBeenCalledWith("slugger", { preserveCachedOnFailure: true })
-      expect(startPrivateRuntimeWorker).toHaveBeenCalledTimes(1)
     })
+    expect(startPrivateRuntimeWorker).not.toHaveBeenCalled()
+    resolveRuntimeRefresh()
+    await vi.waitFor(() => expect(startPrivateRuntimeWorker).toHaveBeenCalledTimes(1))
     argvSpy.mockRestore()
   })
 
