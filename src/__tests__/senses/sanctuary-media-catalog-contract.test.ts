@@ -35,15 +35,39 @@ describe("Sanctuary media catalog contract", () => {
     const contract = sanctuaryMediaCatalogRequiredToolCalls("Can you see the library now?", requiredTools)!
     expect(contract.validateRequiredToolResult?.("sanctuary_search_media_catalog", catalogResult(), {})).toBe(true)
     expect(contract.validateTerminalAnswer("Yes—the shelf is visible again. I can currently see 11,870 movies and episodes.")).toBeUndefined()
+    expect(contract.validateTerminalAnswer("Yes—I can see about 11,870 titles on the shelf.")).toBeUndefined()
+    expect(contract.validateTerminalAnswer("Yes—I’ve got access to all 11,870 titles in the library.")).toBeUndefined()
+    expect(contract.validateTerminalAnswer("Yes—I’m looking at all 11,870 titles in the library.")).toBeUndefined()
+    expect(contract.validateTerminalAnswer("Yes—I can clearly see all 11,870 titles on the shelf.")).toBeUndefined()
+    expect(contract.validateTerminalAnswer("Yes—I have all 11,870 titles on the shelf.")).toBeUndefined()
 
     for (const answer of [
       "Yes, the bounded catalog read returned 11,870 inventory items.",
-      "Yes, I can see titles like Moonstruck and The Princess Bride.",
+      "Yes. Jellyfin reports roughly 11,870 items on the shelf right now.",
+      "Yes. The catalog has 11,870 titles.",
+      "Yes. The shelf has 11,870 titles.",
+      "Yes—I have no access to the library, but it lists 11,870 titles.",
+      "Yes, I can see your point. The shelf has 11,870 titles.",
+      "Yes—I can see none of the 11,870 titles on the shelf.",
+      "Yes—I can see zero of the 11,870 titles on the shelf.",
+      "Yes—I can see 11,870 titles on the shelf. The library is not accessible.",
+      "Yes—I can see 11,870 titles on the shelf. I can see 11,870 titles on the shelf.",
+      "Yes—I can never see all 11,870 titles on the shelf.",
+      "Yes—I can probably not see all 11,870 titles on the shelf.",
+      "Yes—I have lost access to all 11,870 titles in the library.",
+      "Yes—I can see all 11,870 titles on the shelf. The shelf is invisible.",
+      "Yes—I can see only 2 of the 11,870 titles on the shelf.",
+      "Yes—I can see fewer than 11,870 titles in the library.",
+      "Yes—I can see 11,870 titles in the library, but access is unavailable.",
+      "Yes—I can see 11,870 titles in the library, though nothing is accessible.",
+      "Yes—I can see your point about the 11,870 titles in the library.",
+      "Yes—I have reservations about the 11,870 titles in the library.",
+      "Yes—I can see 11,870 titles like Moonstruck and The Princess Bride.",
       "Yes, I can see it. What would you like me to pick a favorite from?",
       "Yes, I can see it. Would you like me to recommend something?",
-      "Yes, I can see it. Yes, the library is visible now.",
+      "Yes—yes—I can see 11,870 titles on the shelf.",
       "No—the shelf is not visible, despite the successful read of 11,870 items.",
-      "Yes—the shelf is visible. Anything else?",
+      "Yes—I can see 11,870 titles on the shelf. Anything else?",
       "Yes—the shelf is visible.",
       "Yes, I can see it. This is a third sentence. And this is a fourth.",
       `Yes, I can see it. ${"A".repeat(230)}`,
@@ -53,7 +77,9 @@ describe("Sanctuary media catalog contract", () => {
   it("allows technical language only when the user explicitly asks for technical detail", () => {
     const contract = sanctuaryMediaCatalogRequiredToolCalls("Technically, can you see the Jellyfin library endpoint now?", requiredTools)!
     expect(contract.validateRequiredToolResult?.("sanctuary_search_media_catalog", catalogResult(), {})).toBe(true)
-    expect(contract.validateTerminalAnswer("Yes—the catalog endpoint returned 11,870 items.")).toBeUndefined()
+    expect(contract.validateTerminalAnswer("Yes—I can see all 11,870 titles in the library; the catalog endpoint responded normally.")).toBeUndefined()
+    expect(contract.validateTerminalAnswer("Yes, access is unavailable for all 11,870 titles.")).toBeDefined()
+    expect(contract.validateTerminalAnswer("Yes, I can see only 2 of the 11,870 titles.")).toBeDefined()
   })
 
   it("allows concise grounded title lookup answers without applying visibility-only rules", () => {

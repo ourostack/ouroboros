@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.794",
+      "changes": [
+        "Keep internal model corrections out of durable conversation and approval history.",
+        "Anchor outward delivery evidence to the current inbound message and keep library visibility replies direct, first-person, and contradiction-free."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.793",
       "changes": [
         "Deliver only the authoritative terminal answer after tool-using model passes, preserving causal Telegram binding without duplicate prose.",

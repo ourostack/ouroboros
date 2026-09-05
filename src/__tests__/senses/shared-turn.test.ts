@@ -349,10 +349,14 @@ describe("runSenseTurn", () => {
       threadRootEventId: "evt-000001",
       references: ["telegram-artifact:abc"],
     }
+    mockDeferPostTurnPersist.mockResolvedValue([
+      { id: "evt-user", role: "user", content: "hello", relations: ingressRelations, toolCalls: [] },
+    ])
     mockHandleInboundTurn.mockImplementation(async (input: any) => {
       const { getIngressRelations } = await import("../../heart/session-events")
       expect(getIngressRelations(input.messages[0])).toEqual(ingressRelations)
       input.callbacks.onTextChunk("hello from the agent")
+      await input.postTurn([], "/tmp/session.json")
       return {
         resolvedContext: makeResolvedContext(),
         gateResult: { allowed: true },
@@ -448,9 +452,11 @@ describe("runSenseTurn", () => {
       { role: "assistant", content: "Yes—the shelf is visible again. I can currently see 11,870 movies and episodes." },
     ]
     mockDeferPostTurnPersist.mockResolvedValue([
+      { id: "evt-rematerialized", role: "assistant", content: "Yes—the shelf is visible again. I can currently see 11,870 movies and episodes.", toolCalls: [] },
       { id: "evt-user", role: "user", content: "Can you see the library now?", toolCalls: [] },
       { id: "evt-draft", role: "assistant", content: "Yes, I can see titles like The Pitt.", toolCalls: [{ function: { name: "sanctuary_search_media_catalog" } }] },
       { id: "evt-tool", role: "tool", content: JSON.stringify({ totalItems: 11_870 }), toolCalls: [] },
+      { id: "evt-synthetic", role: "assistant", content: "Yes—the shelf is visible again. I can currently see 11,870 movies and episodes.", toolCalls: [], provenance: { captureKind: "synthetic" } },
       { id: "evt-final", role: "assistant", content: "Yes—the shelf is visible again. I can currently see 11,870 movies and episodes.", toolCalls: [] },
     ])
     mockHandleInboundTurn.mockImplementation(async (input: any) => {
@@ -533,8 +539,9 @@ describe("runSenseTurn", () => {
       { role: "tool", tool_call_id: "settle-1", content: "(delivered)" },
     ]
     mockDeferPostTurnPersist.mockResolvedValue([
+      { id: "evt-user", role: "user", content: "Can you see it?", toolCalls: [] },
       { id: "evt-draft", role: "assistant", content: "An early guess.", toolCalls: [{ function: { name: "sanctuary_search_media_catalog" } }] },
-      { id: "evt-final", role: "assistant", content: null, toolCalls: [{ id: "settle-1", function: { name: "settle" } }] },
+      { id: "evt-final", role: "assistant", content: null, toolCalls: [{ id: "settle-1", function: { name: "settle", arguments: JSON.stringify({ answer: "Yes—the shelf is visible.", intent: "direct_reply" }) } }] },
       { id: "evt-final-ack", role: "tool", content: "(delivered)", toolCallId: "settle-1", toolCalls: [] },
     ])
     mockHandleInboundTurn.mockImplementation(async (input: any) => {
@@ -626,9 +633,10 @@ describe("runSenseTurn", () => {
 
   it("ignores a rejected settle coordinate and binds the accepted settle", async () => {
     mockDeferPostTurnPersist.mockResolvedValue([
-      { id: "evt-rejected", role: "assistant", content: null, toolCalls: [{ id: "settle-reused", function: { name: "settle" } }] },
+      { id: "evt-user", role: "user", content: "hello", toolCalls: [] },
+      { id: "evt-rejected", role: "assistant", content: null, toolCalls: [{ id: "settle-reused", function: { name: "settle", arguments: JSON.stringify({ answer: "unsupported", intent: "complete" }) } }] },
       { id: "evt-rejection", role: "tool", content: "Use current evidence.", toolCallId: "settle-reused", toolCalls: [] },
-      { id: "evt-accepted", role: "assistant", content: null, toolCalls: [{ id: "settle-reused", function: { name: "settle" } }] },
+      { id: "evt-accepted", role: "assistant", content: null, toolCalls: [{ id: "settle-reused", function: { name: "settle", arguments: JSON.stringify({ answer: "Grounded final answer.", intent: "complete" }) } }] },
       { id: "evt-accepted-ack", role: "tool", content: "(delivered)", toolCallId: "settle-reused", toolCalls: [] },
     ])
     mockHandleInboundTurn.mockImplementation(async (input: any) => {
@@ -731,6 +739,34 @@ describe("runSenseTurn", () => {
       precommittedIngress: { eventId: "evt-000002", reference },
     })
     expect(mockHandleInboundTurn).toHaveBeenCalledOnce()
+  })
+
+  it("fails causal binding closed when a persisted snapshot omits the precommitted ingress boundary", async () => {
+    const reference = "telegram-admission:abc123"
+    mockLoadSession.mockReturnValue({
+      messages: [{ role: "system", content: "system" }, { role: "user", content: "approved original" }],
+      events: [{ id: "evt-000002", role: "user", content: "approved original", relations: { references: [reference] } }],
+    })
+    mockDeferPostTurnPersist.mockResolvedValue([
+      { id: "evt-stale", role: "assistant", content: "Visible reply.", toolCalls: [] },
+    ])
+    mockHandleInboundTurn.mockImplementationOnce(async (input: any) => {
+      input.callbacks.onTextChunk("Visible reply.")
+      await input.postTurn([], "/tmp/session.json")
+      return { resolvedContext: makeResolvedContext(), gateResult: { allowed: true }, turnOutcome: "settled", completion: { answer: "Visible reply.", intent: "complete" }, messages: [] }
+    })
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+
+    const result = await runSenseTurn({
+      agentName: "test-agent",
+      channel: "telegram",
+      sessionKey: "telegram:approved",
+      friendId: "friend-1",
+      userMessage: "approved original",
+      precommittedIngress: { eventId: "evt-000002", reference },
+    })
+
+    expect(result.causalSessionEventIds).toEqual([null])
   })
 
   it("fails closed when precommitted ingress is absent, mismatched, or no longer the latest user event", async () => {
@@ -1292,9 +1328,12 @@ describe("runSenseTurn", () => {
   it("delivers speak and settle segments through the outward delivery sink", async () => {
     const delivered: Array<{ kind: string; text: string }> = []
     mockDeferPostTurnPersist.mockResolvedValue([
-      { id: "evt-000001", role: "assistant", content: null, toolCalls: [{ id: "speak-1", function: { name: "speak" } }] },
+      { id: "evt-wrong-kind", role: "assistant", content: "quick voice update", toolCalls: [] },
+      { id: "evt-user", role: "user", content: "hello", toolCalls: [] },
+      { id: "evt-000001", role: "assistant", content: null, toolCalls: [{ id: "speak-1", function: { name: "speak", arguments: JSON.stringify({ message: "quick voice update" }) } }] },
       { id: "evt-speak-ack", role: "tool", content: "(spoken)", toolCallId: "speak-1", toolCalls: [] },
-      { id: "evt-000002", role: "assistant", content: null, toolCalls: [{ id: "settle-1", function: { name: "settle" } }] },
+      { id: "evt-unrelated", role: "assistant", content: "an unrelated rematerialized answer", toolCalls: [] },
+      { id: "evt-000002", role: "assistant", content: null, toolCalls: [{ id: "settle-1", function: { name: "settle", arguments: JSON.stringify({ answer: "final voice answer", intent: "complete" }) } }] },
       { id: "evt-settle-ack", role: "tool", content: "(delivered)", toolCallId: "settle-1", toolCalls: [] },
     ])
     mockHandleInboundTurn.mockImplementation(async (input: any) => {
@@ -1361,6 +1400,7 @@ describe("runSenseTurn", () => {
 
   it("returns no causal coordinate when failed and successful deliveries do not align with persisted events", async () => {
     mockDeferPostTurnPersist.mockResolvedValue([
+      { id: "evt-user", role: "user", content: "hello", toolCalls: [] },
       { id: "evt-speak", role: "assistant", content: null, toolCalls: [{ function: { name: "speak" } }] },
     ])
     mockHandleInboundTurn.mockImplementation(async (input: any) => {
@@ -1377,6 +1417,56 @@ describe("runSenseTurn", () => {
       agentName: "test-agent", channel: "mcp", sessionKey: "session-123", friendId: "friend-1", userMessage: "hello",
       deliverySink: { onDelivery: async () => { if (delivery++ === 0) throw new Error("speaker down") } },
     })
+
+    expect(result.causalSessionEventIds).toEqual([null])
+  })
+
+  it("fails causal binding closed when the current ingress event cannot be resolved", async () => {
+    mockLoadSession.mockReturnValue({
+      messages: [{ role: "user", content: "prior question" }],
+      events: [{ id: "evt-old-user", role: "user", content: "prior question" }],
+    })
+    mockDeferPostTurnPersist.mockResolvedValue([
+      { id: "evt-old-user", role: "user", content: "prior question", toolCalls: [] },
+      { id: "evt-stale", role: "assistant", content: "Same visible answer.", toolCalls: [] },
+    ])
+    mockHandleInboundTurn.mockImplementation(async (input: any) => {
+      input.callbacks.onTextChunk("Failed update.")
+      await expect(input.callbacks.flushNow()).rejects.toThrow("speaker down")
+      input.callbacks.onTextChunk("Same visible answer.")
+      await input.postTurn([], "/tmp/session.json")
+      return { resolvedContext: makeResolvedContext(), gateResult: { allowed: true }, turnOutcome: "settled", completion: { answer: "Same visible answer.", intent: "complete" }, sessionPath: "/tmp/session.json", messages: [] }
+    })
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+
+    let delivery = 0
+    const result = await runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "hello",
+      deliverySink: { onDelivery: async () => { if (delivery++ === 0) throw new Error("speaker down") } },
+    })
+
+    expect(result.causalSessionEventIds).toEqual([null])
+  })
+
+  it("does not bind an acknowledged outward tool with malformed delivery arguments", async () => {
+    mockDeferPostTurnPersist.mockResolvedValue([
+      { id: "evt-user", role: "user", content: "hello", toolCalls: [] },
+      { id: "evt-speak", role: "assistant", content: null, toolCalls: [{ id: "speak-malformed", function: { name: "speak", arguments: "{" } }] },
+      { id: "evt-speak-ack", role: "tool", content: "(spoken)", toolCallId: "speak-malformed", toolCalls: [] },
+    ])
+    mockHandleInboundTurn.mockImplementation(async (input: any) => {
+      input.callbacks.onTextChunk("Visible update.")
+      await input.callbacks.flushNow()
+      await input.postTurn([], "/tmp/session.json")
+      return { resolvedContext: makeResolvedContext(), gateResult: { allowed: true }, turnOutcome: "observed", messages: [] }
+    })
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+
+    const result = await runSenseTurn({ agentName: "test-agent", channel: "mcp", sessionKey: "session-123", friendId: "friend-1", userMessage: "hello" })
 
     expect(result.causalSessionEventIds).toEqual([null])
   })
@@ -1512,7 +1602,7 @@ describe("runSenseTurn", () => {
     })
     // When no text comes from callbacks, runSenseTurn re-loads the session
     const persistedEvents = [
-      { id: "evt-user", role: "user", content: "hi", toolCalls: [] },
+      { id: "evt-user", role: "user", content: "hello", toolCalls: [] },
       { id: "evt-answer", role: "assistant", content: "recovered answer from session", toolCalls: [] },
     ]
     mockDeferPostTurnPersist.mockResolvedValue(persistedEvents)
