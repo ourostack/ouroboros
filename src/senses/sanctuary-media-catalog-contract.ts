@@ -17,8 +17,8 @@ export function sanctuaryMediaCatalogRequiredToolCalls(
 ): { names: readonly string[]; retryMessage: string; validateTerminalAnswer(answer: string): string | undefined } | undefined {
   if (!advertisedToolNames.includes("sanctuary_search_media_catalog")) return undefined
   const normalized = normalizedRequest(request)
-  const mentionsMedia = /\b(?:film|films|movie|movies|show|shows|tv|jellyfin|watch|shelf|stock|catalog|library)\b/u.test(normalized)
-  const asksCatalog = /\b(?:have|got|stock|catalog|library|favorite|favourite|recommend|suggest|pick|watch)\b/u.test(normalized)
+  const mentionsMedia = /\b(?:film|films|movie|movies|show|shows|tv|jellyfin|watch|shelf|stock|catalog|library|lib)\b/u.test(normalized)
+  const asksCatalog = /\b(?:have|got|stock|catalog|library|lib|favorite|favourite|recommend|suggest|pick|watch|see)\b/u.test(normalized)
   const titleInventoryQuestion = /\b(?:do|did|can)\s+(?:we|you)\s+(?:have|got|stock)\s+[a-z0-9'][a-z0-9' ]*\??$/u.test(normalized)
   if ((!mentionsMedia && !titleInventoryQuestion) || !asksCatalog) return undefined
 
@@ -31,10 +31,13 @@ export function sanctuaryMediaCatalogRequiredToolCalls(
   })
   return {
     names,
-    retryMessage: "Use sanctuary_search_media_catalog before answering. If asked for taste or a favorite, form a light recommendation from returned catalog evidence instead of claiming you cannot have preferences. Keep it honest: say you cannot watch, but you can pick from the household shelf.",
+    retryMessage: "Use sanctuary_search_media_catalog before answering. If a broader media-optimization read fails or degrades, treat that as a diagnostic note and still use the catalog tool for ordinary library visibility questions. If asked for taste or a favorite, form a light recommendation from returned catalog evidence instead of claiming you cannot have preferences. Keep it honest: say you cannot watch, but you can pick from the household shelf.",
     validateTerminalAnswer(answer: string): string | undefined {
-      return /\b(?:just|only|actually|merely)\s+(?:a\s+)?(?:bot|ai|assistant)\b|\bi don'?t actually watch\b/iu.test(answer)
-        ? "Answer from the catalog evidence with a truthful but personable recommendation; do not retreat into 'I am just a bot' framing."
+      if (/\b(?:just|only|actually|merely)\s+(?:a\s+)?(?:bot|ai|assistant)\b|\bi don'?t actually watch\b/iu.test(answer)) {
+        return "Answer from the catalog evidence with a truthful but personable recommendation; do not retreat into 'I am just a bot' framing."
+      }
+      return /\b(?:you'?d|you\s+would|you\s+need\s+to|please)\b.*\b(?:check|look at|poke|nudge)\b.*\b(?:log|logs|dashboard|jellyfin|unmanic)\b/iu.test(answer)
+        ? "Do not send Ari to check Jellyfin, Unmanic, dashboards, or logs for ordinary library visibility while safe catalog tools are available. Use the catalog evidence, or if the catalog read itself fails, say exactly what I could and could not verify."
         : undefined
     },
   }

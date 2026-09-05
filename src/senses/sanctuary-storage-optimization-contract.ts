@@ -30,6 +30,6 @@ export function sanctuaryStorageOptimizationRequiredToolCalls(
   })
   return {
     names,
-    retryMessage: "Run both safe reads now, identify the largest measured evidence, report Unmanic and Jellyfin findings, and propose a sample encode without inventing future savings. Do not ask permission or send Ari to a shell or QDirStat while these typed reads are available.",
+    retryMessage: "Run both safe reads now, identify the largest measured evidence, report Unmanic and Jellyfin findings, and propose a sample encode without inventing future savings. If one read returns a degraded or partial result, continue with the other safe reads and bounded container/log tools before answering. Do not ask permission or send Ari to a shell, dashboard, logs, or QDirStat while these typed reads are available.",
   }
 }
