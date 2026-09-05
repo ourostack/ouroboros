@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.797",
+      "changes": [
+        "Render Telegram-native `*bold*`, `_italic_`, and inline-code Butler replies safely while preserving the existing fail-closed behavior for stray or overlapping formatting markers.",
+        "Tighten the Telegram prompt contract so Butler replies avoid report labels and repeated validation lines in phone-native conversation."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.796",
       "changes": [
         "Give Mendelow Cloud Butler a concrete situational voice with casual lowercase, restrained punctuation, and varied activity phrases.",

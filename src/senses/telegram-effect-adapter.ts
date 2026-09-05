@@ -104,17 +104,18 @@ function preparedTexts(effect: TelegramEffect): Array<string | null> {
 function renderTelegramButlerHtml(text: string): string {
   let html = ""
   let cursor = 0
-  for (const match of text.matchAll(/`([^`\n]+)`|\*\*([\p{L}\p{N}](?:[^*`\n]*\S)?)\*\*|\*([\p{L}\p{N}](?:[^*`\n]*\S)?)\*/gu)) {
+  for (const match of text.matchAll(/`([^`\n]+)`|\*\*([\p{L}\p{N}](?:[^*_`\n]*\S)?)\*\*|\*([\p{L}\p{N}](?:[^*_`\n]*\S)?)\*|_([\p{L}\p{N}](?:[^*_`\n]*\S)?)_/gu)) {
     const gap = text.slice(cursor, match.index)
-    if (/[*`]/u.test(gap)) return escapeTelegramHtml(text)
+    if (/[*_`]/u.test(gap)) return escapeTelegramHtml(text)
     html += escapeTelegramHtml(gap)
     if (match[1] !== undefined) html += `<code>${escapeTelegramHtml(match[1])}</code>`
     else if (match[2] !== undefined) html += `<b>${escapeTelegramHtml(match[2])}</b>`
-    else html += `<i>${escapeTelegramHtml(match[3]!)}</i>`
+    else if (match[3] !== undefined) html += `<b>${escapeTelegramHtml(match[3])}</b>`
+    else html += `<i>${escapeTelegramHtml(match[4]!)}</i>`
     cursor = match.index + match[0].length
   }
   const tail = text.slice(cursor)
-  return /[*`]/u.test(tail) ? escapeTelegramHtml(text) : html + escapeTelegramHtml(tail)
+  return /[*_`]/u.test(tail) ? escapeTelegramHtml(text) : html + escapeTelegramHtml(tail)
 }
 
 function assertEffectTarget(target: TelegramEffectTarget, effect: TelegramEffect, idempotencyKey: string): void {

@@ -107,12 +107,12 @@ describe("Telegram effect adapter", () => {
       authorClass: "butler",
       effect: {
         kind: "text",
-        text: "**Sanctuary summary**\n\n*Moonstruck* is ready.\nRun `npm <run> & **keep**` then compare <disk> & queue.",
+        text: "**Sanctuary summary**\n\n_Moonstruck_ is ready.\nRun `npm <run> & **keep**` then compare <disk> & queue.",
       },
       onMessageDelivered: delivered,
     })
 
-    const raw = "**Sanctuary summary**\n\n*Moonstruck* is ready.\nRun `npm <run> & **keep**` then compare <disk> & queue."
+    const raw = "**Sanctuary summary**\n\n_Moonstruck_ is ready.\nRun `npm <run> & **keep**` then compare <disk> & queue."
     const html = "<b>Sanctuary summary</b>\n\n<i>Moonstruck</i> is ready.\nRun <code>npm &lt;run&gt; &amp; **keep**</code> then compare &lt;disk&gt; &amp; queue."
     expect(result.effect).toEqual({ kind: "text", text: raw })
     expect(result.parts).toEqual([expect.objectContaining({ text: raw, state: "accepted" })])
@@ -179,7 +179,7 @@ describe("Telegram effect adapter", () => {
 
   it("falls back from Butler HTML to the identical raw Markdown chunk on Telegram 400", async () => {
     const store = journal()
-    const raw = "**bold** and *italic* with `code` & <unsafe>"
+    const raw = "*bold* and _italic_ with `code` & <unsafe>"
     const request = vi.fn()
       .mockRejectedValueOnce(new TelegramApiError("bad html", { status: 400, errorCode: 400 }))
       .mockResolvedValueOnce({ message_id: 82 })
