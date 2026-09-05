@@ -159,12 +159,15 @@ describe("agent entrypoint", () => {
     argvSpy.mockRestore()
   })
 
-  it("starts unified agent runtime without waiting for runtime config refresh", async () => {
+  it("waits for runtime config refresh before starting unified agent runtime", async () => {
     vi.resetModules()
 
     const { startPrivateRuntimeWorker } = mockWorkerModules()
     const configureCliRuntimeLogger = vi.fn()
-    const refreshRuntimeCredentialConfig = vi.fn(() => new Promise(() => undefined))
+    let resolveRefresh!: () => void
+    const refreshRuntimeCredentialConfig = vi.fn(() => new Promise((resolve) => {
+      resolveRefresh = () => resolve({ ok: true, itemPath: "vault:slugger:runtime/config", config: {}, revision: "rev", updatedAt: "2026-05-08T00:00:00.000Z" })
+    }))
     vi.doMock("../../nerves/cli-logging", () => ({ configureCliRuntimeLogger }))
     vi.doMock("../../heart/runtime-credentials", () => runtimeCredentialMock({
       refreshRuntimeCredentialConfig,
@@ -179,10 +182,10 @@ describe("agent entrypoint", () => {
 
     await import("../../heart/agent-entry")
 
-    await vi.waitFor(() => {
-      expect(refreshRuntimeCredentialConfig).toHaveBeenCalledWith("slugger", { preserveCachedOnFailure: true })
-      expect(startPrivateRuntimeWorker).toHaveBeenCalledTimes(1)
-    })
+    await vi.waitFor(() => expect(refreshRuntimeCredentialConfig).toHaveBeenCalledWith("slugger", { preserveCachedOnFailure: true }))
+    expect(startPrivateRuntimeWorker).not.toHaveBeenCalled()
+    resolveRefresh()
+    await vi.waitFor(() => expect(startPrivateRuntimeWorker).toHaveBeenCalledTimes(1))
     argvSpy.mockRestore()
   })
 
