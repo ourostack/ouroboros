@@ -283,6 +283,25 @@ describe("mailbox http", () => {
       clearTimeout: vi.fn(),
     })
     throwingWatcher.stop()
+
+    const syncErrorClose = vi.fn()
+    const syncErrorChange = vi.fn()
+    const syncErrorWatcher = createBundleWatcher("/bundles", syncErrorChange, {
+      existsSync: () => true,
+      watch: (_root, _options, _callback) => ({
+        close: syncErrorClose,
+        on: (_event, listener) => listener(new Error("watch failed before registration completed")),
+      }),
+      setTimeout: (callback) => {
+        callback()
+        return 1 as any
+      },
+      clearTimeout: vi.fn(),
+    })
+    expect(syncErrorClose).toHaveBeenCalledTimes(1)
+    expect(syncErrorChange).toHaveBeenCalledTimes(1)
+    syncErrorWatcher.stop()
+    expect(syncErrorClose).toHaveBeenCalledTimes(2)
   })
 
   it("keeps default hook composition in an explicit helper seam", async () => {
