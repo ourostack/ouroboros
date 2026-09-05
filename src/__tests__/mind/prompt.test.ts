@@ -1807,7 +1807,7 @@ describe("runtimeInfoSection", () => {
     expect(result).toContain("timeout/recovery state is internal, not iMessage copy")
   })
 
-  it("telegram channel describes concise phone-native plain-text behavior", async () => {
+  it("telegram channel permits only the supported Markdown subset", async () => {
     setupReadFileSync()
     const { patchRuntimeConfig, resetConfigCache } = await import("../../heart/config")
     resetConfigCache()
@@ -1818,7 +1818,10 @@ describe("runtimeInfoSection", () => {
     expect(result).toContain("Telegram")
     expect(result).toContain("concise")
     expect(result).toContain("phone-native")
-    expect(result).toContain("i do not use markdown")
+    expect(result).toContain("i may use only **bold**, *italic*, and `inline code` markdown")
+    expect(result).toContain("no markdown links; i write necessary urls in full")
+    expect(result).toContain("no headings, tables, or raw html")
+    expect(result).not.toContain("i do not use markdown")
     expect(result).not.toContain("Microsoft Teams")
     expect(result).not.toContain("i use markdown formatting")
   })

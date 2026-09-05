@@ -101,12 +101,20 @@ function preparedTexts(effect: TelegramEffect): Array<string | null> {
   return [effect.text?.trim() || null]
 }
 
-function telegramPlainText(text: string): string {
-  return text.replace(/(^|[\s([{])\*\*([\p{L}\p{N}][^*\n]*?)\*\*(?=$|[\s.,;!?)\]}])/gmu, "$1$2")
-}
-
-function presentTelegramEffect(authorClass: TelegramArtifactAuthorClass, effect: TelegramEffect): TelegramEffect {
-  return authorClass === "butler" && effect.kind === "text" ? { ...effect, text: telegramPlainText(effect.text) } : effect
+function renderTelegramButlerHtml(text: string): string {
+  let html = ""
+  let cursor = 0
+  for (const match of text.matchAll(/`([^`\n]+)`|\*\*([\p{L}\p{N}](?:[^*`\n]*\S)?)\*\*|\*([\p{L}\p{N}](?:[^*`\n]*\S)?)\*/gu)) {
+    const gap = text.slice(cursor, match.index)
+    if (/[*`]/u.test(gap)) return escapeTelegramHtml(text)
+    html += escapeTelegramHtml(gap)
+    if (match[1] !== undefined) html += `<code>${escapeTelegramHtml(match[1])}</code>`
+    else if (match[2] !== undefined) html += `<b>${escapeTelegramHtml(match[2])}</b>`
+    else html += `<i>${escapeTelegramHtml(match[3]!)}</i>`
+    cursor = match.index + match[0].length
+  }
+  const tail = text.slice(cursor)
+  return /[*`]/u.test(tail) ? escapeTelegramHtml(text) : html + escapeTelegramHtml(tail)
 }
 
 function assertEffectTarget(target: TelegramEffectTarget, effect: TelegramEffect, idempotencyKey: string): void {
@@ -395,7 +403,8 @@ function canonicalMessageId(result: unknown): number {
 async function executePart(api: TelegramBotApi, artifact: TelegramEffectArtifact, part: TelegramEffectPart, chatId: string, signal?: AbortSignal): Promise<number | undefined> {
   const effect = artifact.effect
   if (effect.kind === "text" || effect.kind === "admission_ack") {
-    const ids = await sendTelegramText(api, chatId, part.text!, signal)
+    const renderHtml = effect.kind === "text" && artifact.authorClass === "butler" ? renderTelegramButlerHtml : undefined
+    const ids = await sendTelegramText(api, chatId, part.text!, { ...(signal ? { signal } : {}), ...(renderHtml ? { renderHtml } : {}) })
     if (ids.length !== 1) throw new Error("Telegram effect chunk renderer returned an unexpected message count")
     return ids[0]
   }
@@ -501,11 +510,10 @@ export function createTelegramAuthorizedEffectExecutor(options: {
   return async (input) => {
     if (input.signal?.aborted) throw input.signal.reason
     barrier()
-    const presentedInput = { ...input, effect: presentTelegramEffect(input.authorClass, input.effect) }
-    const authorization = await options.authorize({ phase: "prepare", ...presentedInput })
+    const authorization = await options.authorize({ phase: "prepare", ...input })
     if (!authorization.allowed) throw new Error(`Telegram effect authorization denied: ${authorization.reason}`)
     const store = getStore()
-    const prepared = prepareTelegramEffect(store, { ...presentedInput, authorization })
+    const prepared = prepareTelegramEffect(store, { ...input, authorization })
     try {
       const executed = await executeTelegramEffect(store, prepared.id, options.api, async (artifact) => {
         if (input.signal?.aborted) throw input.signal.reason

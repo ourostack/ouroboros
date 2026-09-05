@@ -23,7 +23,9 @@ vi.mock("../../heart/identity", async (importOriginal) => {
 const bundleRoot = path.resolve("deploy/unraid/sanctuary.ouro")
 const transcriptPath = path.resolve("src/__tests__/fixtures/sanctuary-butler-transcripts.json")
 
-type Transcript = { id: string; audience: "owner" | "family"; user: string; reply: string; tools: string[]; evidence?: { pending?: number; opportunities?: number; queueError?: string; notifications?: string[] } }
+type VoiceMode = "casual" | "recommendation" | "incident"
+
+type Transcript = { id: string; voice: VoiceMode; audience: "owner" | "family"; user: string; reply: string; tools: string[]; evidence?: { pending?: number; opportunities?: number; queueError?: string; notifications?: string[] } }
 
 function psyche(name: string): string {
   return fs.readFileSync(path.join(bundleRoot, "psyche", `${name}.md`), "utf8")
@@ -76,9 +78,19 @@ describe("Mendelow Cloud Butler household UX", () => {
     expect(psyche("IDENTITY")).toContain("People do not need to say Sanctuary")
     expect(psyche("IDENTITY")).not.toContain("serve one trusted operator")
     const agentConfig = JSON.parse(fs.readFileSync(path.join(bundleRoot, "agent.json"), "utf8")) as { phrases: Record<string, string[]> }
-    expect(agentConfig.phrases.thinking).toEqual(expect.arrayContaining(["consulting the household machinery"]))
-    expect(agentConfig.phrases.tool).toEqual(expect.arrayContaining(["checking the troublesome little machine"]))
-    expect(agentConfig.phrases.followup).toEqual(expect.arrayContaining(["returning with the tray"]))
+    expect(agentConfig.phrases).toMatchObject({
+      thinking: expect.arrayContaining(["consulting the household machinery"]),
+      tool: expect.arrayContaining(["checking the troublesome little machine"]),
+      followup: expect.arrayContaining(["returning with the tray"]),
+    })
+    for (const [name, phrases] of Object.entries(agentConfig.phrases)) {
+      expect(phrases.length, name).toBeGreaterThanOrEqual(4)
+      expect(new Set(phrases).size, name).toBe(phrases.length)
+      for (const phrase of phrases) {
+        expect(phrase, `${name}: ${phrase}`).toMatch(/^[a-z]/u)
+        expect(phrase, `${name}: ${phrase}`).not.toMatch(/[.!?]$/u)
+      }
+    }
   })
 
   it("has an original playful, perceptive personality without borrowing Cradle names or catchphrases", () => {
@@ -94,6 +106,16 @@ describe("Mendelow Cloud Butler household UX", () => {
     expect(soul).toContain("kind, never smug")
     expect(soul).toContain("do not volunteer an ontology disclaimer")
     expect(soul).not.toMatch(/\b(?:Dross|Lindon|Eithan|Cradle|Abidan|Monarch)\b/u)
+  })
+
+  it("encodes casual and incident voice as executable examples rather than adjectives alone", () => {
+    const soul = psyche("SOUL")
+
+    expect(soul).toContain("Low-stakes replies use lowercase and usually leave off terminal punctuation.")
+    expect(soul).toContain("Lowercase remains the default during incidents too")
+    expect(soul).toContain("- **casual**: `the house is behaving itself again, which feels faintly suspicious`")
+    expect(soul).toContain("- **recommendation**: `from the shelf, i’d pick The Princess Bride — nimble, quotable, and suspiciously good for household morale`")
+    expect(soul).toContain("- **incident**: `downloads are paused to protect your prepaid credit. top up the account, then tell me; i’ll resume them and verify one finishes.`")
   })
 
   it("describes health as agent-owned transition work without retired digests or sender-only tooling", () => {
@@ -188,8 +210,22 @@ describe("Mendelow Cloud Butler household UX", () => {
     }
     expect(transcripts.find((entry) => entry.id === "owner-status")?.reply).toContain("house remains upright")
     expect(transcripts.find((entry) => entry.id === "catalog-favorite")?.tools).toEqual(["sanctuary_search_media_catalog"])
-    expect(transcripts.find((entry) => entry.id === "catalog-favorite")?.reply).toContain("From the shelf")
+    expect(transcripts.find((entry) => entry.id === "catalog-favorite")?.reply).toContain("from the shelf")
     expect(transcripts.find((entry) => entry.id === "full-visibility")?.reply).toContain("short ledger")
+  })
+
+  it("keeps low-stakes conversation casual without flattening incident clarity", () => {
+    const transcripts = JSON.parse(fs.readFileSync(transcriptPath, "utf8")) as Transcript[]
+
+    expect([...new Set(transcripts.map((entry) => entry.voice))].sort()).toEqual(["casual", "incident", "recommendation"])
+    for (const entry of transcripts) {
+      expect(entry.reply, entry.id).toMatch(/^[a-z]/u)
+      if (entry.voice === "incident") {
+        expect(entry.reply.split(/[.!?]+(?:\s+|$)/u).filter(Boolean).length, entry.id).toBeGreaterThanOrEqual(2)
+      } else {
+        expect(entry.reply, entry.id).not.toMatch(/[.!?]$/u)
+      }
+    }
   })
 
   it("keeps learned expected-off policy scoped and reminders tied to real awaits", () => {
@@ -211,10 +247,10 @@ describe("Mendelow Cloud Butler household UX", () => {
         "Astraweb prepaid credit exhausted. Usenet indexer has been disabled.",
       ],
     })
-    expect(topUp.reply).toContain("Downloads are paused to protect your prepaid credit")
+    expect(topUp.reply).toContain("downloads are paused to protect your prepaid credit")
     expect(topUp.reply).toContain("https://www.astraweb.com/login")
     expect(topUp.reply).not.toContain("<provider account link>")
-    expect(topUp.reply).toContain("Tell me when you’re done, and I’ll resume downloads and verify one finishes")
+    expect(topUp.reply).toContain("tell me when you’re done, and i’ll resume downloads and verify one finishes")
     expect(topUp.reply).toContain("tomorrow at 9")
     expect(topUp.reply).not.toMatch(/SABnzbd|Sonarr|Radarr|Deluge|auth-check|credential|dead-letter|indexer has been disabled|keep watching/iu)
     expect(topUp.tools).toEqual(["sanctuary_get_download_queue", "unraid_get_notifications"])
@@ -238,7 +274,7 @@ describe("Mendelow Cloud Butler household UX", () => {
     expect(storage.reply).toContain(`${storage.evidence!.pending === 1 ? "one item" : storage.evidence!.pending} queued`)
     expect(storage.reply).toContain(`${storage.evidence!.opportunities === 1 ? "one" : storage.evidence!.opportunities} unusually large`)
     const catalog = transcripts.find((entry) => entry.id === "catalog-favorite")!
-    expect(catalog.reply).toContain("From the shelf")
+    expect(catalog.reply).toContain("from the shelf")
     expect(catalog.reply).not.toMatch(/\bi\s+(?:can[’']?t|cannot|don[’']?t|do not)\s+(?:actually\s+)?watch\b/iu)
     expect(catalog.reply).not.toMatch(/\b(?:just|only|merely)\s+(?:a\s+)?(?:bot|AI|assistant)\b|\b(?:inventory|catalog read|bounded)\b/iu)
     expect(catalog.tools).toEqual(["sanctuary_search_media_catalog"])
@@ -247,7 +283,7 @@ describe("Mendelow Cloud Butler household UX", () => {
   it("does not invent a media API and keeps family replies private", () => {
     const transcripts = JSON.parse(fs.readFileSync(transcriptPath, "utf8")) as Transcript[]
     const movie = transcripts.find((entry) => entry.id === "movie-request")!
-    expect(movie.reply).toContain("I can’t truthfully submit it")
+    expect(movie.reply).toContain("i can’t truthfully submit it")
     expect(movie.tools).toEqual(["care_manage"])
     const family = transcripts.find((entry) => entry.id === "family-privacy")!
     expect(family.audience).toBe("family")
