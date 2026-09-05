@@ -33,6 +33,7 @@ describe("Sanctuary media catalog contract", () => {
 
   it("keeps a simple visibility answer direct, compact, and in household language", () => {
     const contract = sanctuaryMediaCatalogRequiredToolCalls("Can you see the library now?", requiredTools)!
+    expect(contract.validateTerminalAnswer("Yes—I can see the library now.")).toBeUndefined()
     expect(contract.validateRequiredToolResult?.("sanctuary_search_media_catalog", catalogResult(), {})).toBe(true)
     expect(contract.validateTerminalAnswer("Yes—the shelf is visible again. I can currently see 11,870 movies and episodes.")).toBeUndefined()
     expect(contract.validateTerminalAnswer("Yes—I can see about 11,870 titles on the shelf.")).toBeUndefined()
@@ -40,6 +41,16 @@ describe("Sanctuary media catalog contract", () => {
     expect(contract.validateTerminalAnswer("Yes—I’m looking at all 11,870 titles in the library.")).toBeUndefined()
     expect(contract.validateTerminalAnswer("Yes—I can clearly see all 11,870 titles on the shelf.")).toBeUndefined()
     expect(contract.validateTerminalAnswer("Yes—I have all 11,870 titles on the shelf.")).toBeUndefined()
+    expect(contract.validateTerminalAnswer("Yes—I can see the library now. It contains 11,870 titles.")).toBeUndefined()
+    expect(contract.validateTerminalAnswer("Yes, I can see it. There are 11,870 items on the shelf.")).toBeUndefined()
+    expect(contract.validateTerminalAnswer("Yes—I have access to the library now. It holds 11,870 films and shows.")).toBeUndefined()
+    expect(contract.validateTerminalAnswer("Yes. I have access to the shelf, and it currently holds 11,870 movies and episodes.")).toBeUndefined()
+    expect(contract.validateTerminalAnswer("Yes—the full library is visible to me: 11,870 titles.")).toBeUndefined()
+    expect(contract.validateTerminalAnswer("Yes—I’m able to browse it now. The library contains 11,870 items.")).toBeUndefined()
+    expect(contract.validateTerminalAnswer("Yes—I’m looking at the shelf now; there are 11,870 titles.")).toBeUndefined()
+    const singular = sanctuaryMediaCatalogRequiredToolCalls("Can you see the library now?", requiredTools)!
+    expect(singular.validateRequiredToolResult?.("sanctuary_search_media_catalog", catalogResult(1), {})).toBe(true)
+    expect(singular.validateTerminalAnswer("Yes—I can see the library now. It contains 1 item.")).toBeUndefined()
 
     for (const answer of [
       "Yes, the bounded catalog read returned 11,870 inventory items.",
@@ -62,7 +73,15 @@ describe("Sanctuary media catalog contract", () => {
       "Yes—I can see 11,870 titles in the library, though nothing is accessible.",
       "Yes—I can see your point about the 11,870 titles in the library.",
       "Yes—I have reservations about the 11,870 titles in the library.",
+      "Yes—I can see your point. There are 11,870 titles on the shelf.",
+      "Yes—I can see it isn’t working. There are 11,870 items on the shelf.",
+      "Yes—I can see the library failing. There are 11,870 items.",
+      "Yes—I have the library backed up. There are 11,870 items, but it won’t open.",
+      "Yes—I can see the library. It has 11,870 items, but it won’t open.",
+      "Yes—the shelf has 11,870 titles.",
+      "Yes—I can see it. There are 11,870 files on the shelf.",
       "Yes—I can see 11,870 titles like Moonstruck and The Princess Bride.",
+      "Yes—I can see the library now. It has 11,870 items, including Moonstruck.",
       "Yes, I can see it. What would you like me to pick a favorite from?",
       "Yes, I can see it. Would you like me to recommend something?",
       "Yes—yes—I can see 11,870 titles on the shelf.",
@@ -72,6 +91,7 @@ describe("Sanctuary media catalog contract", () => {
       "Yes, I can see it. This is a third sentence. And this is a fourth.",
       `Yes, I can see it. ${"A".repeat(230)}`,
     ]) expect(contract.validateTerminalAnswer(answer), answer).toBeDefined()
+    expect(contract.validateTerminalAnswer("Yes—I can see the library now.")).toContain("11,870 titles")
   })
 
   it("allows technical language only when the user explicitly asks for technical detail", () => {
