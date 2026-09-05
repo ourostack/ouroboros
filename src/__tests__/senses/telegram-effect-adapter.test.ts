@@ -93,7 +93,7 @@ describe("Telegram effect adapter", () => {
     expect(JSON.stringify(store.read(prepared.id))).not.toContain("chatId")
   })
 
-  it("persists and delivers butler replies as phone-native plain text", async () => {
+  it("persists raw Butler Markdown while rendering the supported subset as safe Telegram HTML", async () => {
     const store = journal()
     const request = vi.fn(async () => ({ message_id: 81 }))
     const authorize = vi.fn(() => authorization)
@@ -107,21 +107,22 @@ describe("Telegram effect adapter", () => {
       authorClass: "butler",
       effect: {
         kind: "text",
-        text: "**Sanctuary summary**\n\n- **Docker:** old reading.\n- Use `npm run test` at /mnt/user/app_data and keep **/src/** globs.\n- Login: https://example.com/a_(b).\nOrdinary * and a_b_c stay; arithmetic 2 ** 3 and unmatched ** stay.",
+        text: "**Sanctuary summary**\n\n*Moonstruck* is ready.\nRun `npm <run> & **keep**` then compare <disk> & queue.",
       },
       onMessageDelivered: delivered,
     })
 
-    const expected = "Sanctuary summary\n\n- Docker: old reading.\n- Use `npm run test` at /mnt/user/app_data and keep **/src/** globs.\n- Login: https://example.com/a_(b).\nOrdinary * and a_b_c stay; arithmetic 2 ** 3 and unmatched ** stay."
-    expect(result.effect).toEqual({ kind: "text", text: expected })
-    expect(result.parts).toEqual([expect.objectContaining({ text: expected, state: "accepted" })])
-    expect(store.read(result.id)).toMatchObject({ target: familyTarget, effect: { text: expected }, parts: [{ text: expected }] })
+    const raw = "**Sanctuary summary**\n\n*Moonstruck* is ready.\nRun `npm <run> & **keep**` then compare <disk> & queue."
+    const html = "<b>Sanctuary summary</b>\n\n<i>Moonstruck</i> is ready.\nRun <code>npm &lt;run&gt; &amp; **keep**</code> then compare &lt;disk&gt; &amp; queue."
+    expect(result.effect).toEqual({ kind: "text", text: raw })
+    expect(result.parts).toEqual([expect.objectContaining({ text: raw, state: "accepted" })])
+    expect(store.read(result.id)).toMatchObject({ target: familyTarget, effect: { text: raw }, parts: [{ text: raw }] })
     expect(authorize.mock.calls.map(([input]) => input)).toEqual([
-      expect.objectContaining({ phase: "prepare", target: familyTarget, effect: { kind: "text", text: expected } }),
-      expect.objectContaining({ phase: "send", target: familyTarget, effect: { kind: "text", text: expected }, artifact: expect.objectContaining({ effect: { kind: "text", text: expected } }) }),
+      expect.objectContaining({ phase: "prepare", target: familyTarget, effect: { kind: "text", text: raw } }),
+      expect.objectContaining({ phase: "send", target: familyTarget, effect: { kind: "text", text: raw }, artifact: expect.objectContaining({ effect: { kind: "text", text: raw } }) }),
     ])
-    expect(delivered).toHaveBeenCalledWith(81, expected)
-    expect(request).toHaveBeenCalledWith("sendMessage", { chat_id: "42", text: expected, parse_mode: "HTML" }, undefined)
+    expect(delivered).toHaveBeenCalledWith(81, raw)
+    expect(request).toHaveBeenCalledWith("sendMessage", { chat_id: "42", text: html, parse_mode: "HTML" }, undefined)
     const envelope: SessionEnvelope = {
       version: 2,
       events: [],
@@ -130,16 +131,70 @@ describe("Telegram effect adapter", () => {
       state: { mustResolveBeforeHandoff: false, lastFriendActivityAt: null },
     }
     const appended = appendTelegramArtifactEvents(envelope, result, "2026-09-01T02:17:52.591Z")
-    expect(appended.envelope.events).toEqual([expect.objectContaining({ role: "assistant", content: expected })])
+    expect(appended.envelope.events).toEqual([expect.objectContaining({ role: "assistant", content: raw })])
 
     const duplicate = await execute({
       idempotencyKey: "reply:plain-text",
       target: familyTarget,
       authorClass: "butler",
-      effect: { kind: "text", text: "**Sanctuary summary**\n\n- **Docker:** old reading.\n- Use `npm run test` at /mnt/user/app_data and keep **/src/** globs.\n- Login: https://example.com/a_(b).\nOrdinary * and a_b_c stay; arithmetic 2 ** 3 and unmatched ** stay." },
+      effect: { kind: "text", text: raw },
     })
     expect(duplicate).toEqual(result)
     expect(request).toHaveBeenCalledOnce()
+  })
+
+  it("fails closed to literal escaped text for unmatched, overlapping, and cross-chunk delimiters", async () => {
+    const store = journal()
+    const request = vi.fn(async () => ({ message_id: request.mock.calls.length }))
+    const execute = createTelegramAuthorizedEffectExecutor({ store, api: { request }, authorize: () => authorization })
+    const unmatched = "Keep *Moonstruck literal while **this would otherwise be bold**"
+    const overlapping = "Keep **bold *italic** tail* literal <now> & later"
+
+    await execute({ idempotencyKey: "reply:unmatched", target, authorClass: "butler", effect: { kind: "text", text: unmatched } })
+    await execute({ idempotencyKey: "reply:overlapping", target, authorClass: "butler", effect: { kind: "text", text: overlapping } })
+
+    const spanning = `Prefix *${"word ".repeat(300)}suffix*`
+    const spanningResult = await execute({ idempotencyKey: "reply:cross-chunk", target, authorClass: "butler", effect: { kind: "text", text: spanning } })
+    expect(spanningResult.parts).toHaveLength(2)
+    expect(spanningResult.parts.map((part) => part.text).join("")).toBe(spanning)
+
+    const htmlBodies = request.mock.calls.map(([, body]) => body.text)
+    expect(htmlBodies[0]).toBe(unmatched)
+    expect(htmlBodies[1]).toBe("Keep **bold *italic** tail* literal &lt;now&gt; &amp; later")
+    expect(htmlBodies.slice(2).join("")).toBe(spanning)
+    expect(htmlBodies.every((body) => !String(body).includes("<b>") && !String(body).includes("<i>"))).toBe(true)
+  })
+
+  it("preserves literal asterisks, globs, arithmetic, underscores, and URLs", async () => {
+    const store = journal()
+    const request = vi.fn(async () => ({ message_id: 81 }))
+    const execute = createTelegramAuthorizedEffectExecutor({ store, api: { request }, authorize: () => authorization })
+    const raw = "Keep **/src/** globs, arithmetic 2 ** 3, an ordinary lone *, a_b_c, and https://example.com/a_(b)."
+
+    const result = await execute({ idempotencyKey: "reply:literal-data", target, authorClass: "butler", effect: { kind: "text", text: raw } })
+
+    expect(result.effect).toEqual({ kind: "text", text: raw })
+    expect(request).toHaveBeenCalledWith("sendMessage", { chat_id: "42", text: raw, parse_mode: "HTML" }, undefined)
+  })
+
+  it("falls back from Butler HTML to the identical raw Markdown chunk on Telegram 400", async () => {
+    const store = journal()
+    const raw = "**bold** and *italic* with `code` & <unsafe>"
+    const request = vi.fn()
+      .mockRejectedValueOnce(new TelegramApiError("bad html", { status: 400, errorCode: 400 }))
+      .mockResolvedValueOnce({ message_id: 82 })
+    const delivered = vi.fn()
+    const execute = createTelegramAuthorizedEffectExecutor({ store, api: { request }, authorize: () => authorization })
+
+    const result = await execute({ idempotencyKey: "reply:html-fallback", target, authorClass: "butler", effect: { kind: "text", text: raw }, onMessageDelivered: delivered })
+
+    expect(request.mock.calls).toEqual([
+      ["sendMessage", { chat_id: "42", text: "<b>bold</b> and <i>italic</i> with <code>code</code> &amp; &lt;unsafe&gt;", parse_mode: "HTML" }, undefined],
+      ["sendMessage", { chat_id: "42", text: raw }, undefined],
+    ])
+    expect(result.effect).toEqual({ kind: "text", text: raw })
+    expect(result.parts).toEqual([expect.objectContaining({ text: raw, state: "accepted", messageId: 82 })])
+    expect(delivered).toHaveBeenCalledWith(82, raw)
   })
 
   it("preserves backtick-delimited commands byte-for-byte", async () => {
@@ -152,14 +207,20 @@ describe("Telegram effect adapter", () => {
     expect(result.effect).toEqual({ kind: "text", text: command })
   })
 
-  it("does not rewrite control or system-authored text", async () => {
+  it("does not render control or system-authored text", async () => {
     const store = journal()
     const request = vi.fn(async () => ({ message_id: 82 }))
     const execute = createTelegramAuthorizedEffectExecutor({ store, api: { request }, authorize: () => authorization })
 
-    const result = await execute({ idempotencyKey: "system:literal", target, authorClass: "system_failsafe", effect: { kind: "text", text: "Literal **markers**" } })
+    const system = await execute({ idempotencyKey: "system:literal", target, authorClass: "system_failsafe", effect: { kind: "text", text: "Literal **markers** <safe>" } })
+    const control = await execute({ idempotencyKey: "control:literal", target, authorClass: "control", effect: { kind: "text", text: "Literal *markers* & safe" } })
 
-    expect(result.effect).toEqual({ kind: "text", text: "Literal **markers**" })
+    expect(system.effect).toEqual({ kind: "text", text: "Literal **markers** <safe>" })
+    expect(control.effect).toEqual({ kind: "text", text: "Literal *markers* & safe" })
+    expect(request.mock.calls).toEqual([
+      ["sendMessage", { chat_id: "42", text: "Literal **markers** &lt;safe&gt;", parse_mode: "HTML" }, undefined],
+      ["sendMessage", { chat_id: "42", text: "Literal *markers* &amp; safe", parse_mode: "HTML" }, undefined],
+    ])
   })
 
   it("recovers only bounded definitely-unsent outbox work and never retries indeterminate delivery", async () => {

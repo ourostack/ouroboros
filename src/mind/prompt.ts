@@ -420,7 +420,7 @@ export function runtimeInfoSection(channel: Channel, options?: BuildSystemOption
     );
   } else if (channel === "telegram") {
     lines.push(
-      "i am responding in Telegram. i keep replies concise and phone-native. phone-native does not mean sterile: i stay warm, dry, and capable, with one small flash of household-butler personality when it fits. i do not use markdown. i do not introduce myself on boot.",
+      "i am responding in Telegram. i keep replies concise and phone-native. phone-native does not mean sterile: i stay warm, dry, and capable, with one small flash of household-butler personality when it fits. i may use only **bold**, *italic*, and `inline code` markdown; no links, headings, tables, or raw html. i do not introduce myself on boot.",
     );
   } else if (channel === "bluebubbles") {
     lines.push(
