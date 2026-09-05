@@ -1511,6 +1511,13 @@ export async function runAgent(
   let providerIterations = 0;
   const requiredToolCallNames = [...new Set(options?.requiredToolCalls?.names ?? [])];
   const dispatchedRequiredToolCalls = new Set<string>();
+  const requiredCorrectionMarker = Symbol("requiredCorrection")
+  const messagesWithoutRequiredCorrections = (): OpenAI.ChatCompletionMessageParam[] => messages.filter((message) => (
+    message as OpenAI.ChatCompletionMessageParam & Record<PropertyKey, unknown>
+  )[requiredCorrectionMarker] !== true)
+  const removeRequiredCorrections = (): void => {
+    messages.splice(0, messages.length, ...messagesWithoutRequiredCorrections())
+  }
   const pendingRequiredToolCalls = (): { missing: string[]; message: string } | null => {
     const missing = requiredToolCallNames.filter((name) => !dispatchedRequiredToolCalls.has(name));
     return missing.length > 0
@@ -1519,7 +1526,12 @@ export async function runAgent(
   };
   const queueRequiredCorrection = (message: string, limitContext: string): void => {
     if (providerIterations >= MAX_PROVIDER_ITERATIONS) throw new Error(`provider iteration limit exhausted at response ${MAX_PROVIDER_ITERATIONS} ${limitContext}`)
-    messages.push({ role: "user", content: message })
+    const correction: OpenAI.ChatCompletionUserMessageParam & Record<PropertyKey, unknown> = {
+      role: "user",
+      content: message,
+      [requiredCorrectionMarker]: true,
+    }
+    messages.push(correction)
     providerRuntime.resetTurnState(messages)
   }
   const toolLoopState = createToolLoopState();
@@ -1615,7 +1627,8 @@ export async function runAgent(
   // This prevents stale provider caches from replaying prior-turn context.
   providerRuntime.resetTurnState(messages);
 
-  while (!done) {
+  try {
+    while (!done) {
     // Channel-based tool filtering:
     // - Private runtime: exclude send_message (delivery via surface), observe (no one to observe)
     // - All outward channels (1:1, group, reaction): observe available
@@ -2064,7 +2077,7 @@ export async function runAgent(
       } else {
         // Reset the retry counter on any successful tool call.
         noToolCallRetries = 0;
-        const preCallMessages = structuredClone(messages.filter((message) => message.role !== "system"))
+        const preCallMessages = structuredClone(messagesWithoutRequiredCorrections().filter((message) => message.role !== "system"))
         const validatedCalls = validateToolCallBatchAtProductionBoundary(result.toolCalls, activeTools)
         const invalidCall = validatedCalls.find((entry) => "error" in entry)
         if (invalidCall) {
@@ -2845,7 +2858,7 @@ export async function runAgent(
           callbacks.onToolEnd(tc.name, buildToolResultSummary(tc.name, args, toolResult, success), success);
           pushGenerated({ role: "tool", tool_call_id: tc.id, content: toolResult });
           providerRuntime.appendToolOutput(tc.id, toolResult);
-          callbacks.onToolResult?.(messages);
+          callbacks.onToolResult?.(messagesWithoutRequiredCorrections());
         }
       }
     } catch (e) {
@@ -2866,6 +2879,9 @@ export async function runAgent(
       }
       finishTerminalProviderError(errorForClassification, providerClassification);
     }
+    }
+  } finally {
+    removeRequiredCorrections()
   }
   options?.captureGeneratedMessages?.(structuredClone(generatedMessages));
   emitNervesEvent({

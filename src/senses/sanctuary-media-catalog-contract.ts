@@ -2,7 +2,8 @@ import { emitNervesEvent } from "../nerves/runtime"
 import { normalizeSanctuaryMediaText } from "./sanctuary-media-optimization"
 
 const REQUIRED_TOOL_NAMES = ["sanctuary_search_media_catalog"] as const
-const HOUSEHOLD_JARGON = /\b(?:bounded|catalog read|inventory|endpoint|backend|data shape|pars(?:e|ed|ing)|json|sanctuary_search_media_catalog)\b/iu
+const HOUSEHOLD_JARGON = /\b(?:bounded|catalog|inventory|endpoint|backend|data shape|pars(?:e|ed|ing)|json|jellyfin|unmanic|sanctuary_search_media_catalog)\b/iu
+const NEGATED_MEDIA_ACCESS = /\b(?:not|never|none|nothing|zero|inaccessible|invisible|unavailable)\b|\bno\s+access\b|\b(?:lost|lacks?|lacking|without)\s+access\b|\bonly\s+\d|\bfewer\s+than\b|\bsome\s+of\b|\b(?:part|portion|subset)\s+of\b|\bi\s+(?:can(?:not|[’']t)|do\s+not|don[’']t|have\s+no)\b|\bi[’']m\s+not\b/iu
 const UNSOLICITED_PIVOT = /\b(?:what would you like|what are you in the mood for|would you like me to|do you want me to|want me to|recommend we add)\b/iu
 const TITLE_LIST_GLUE = new Set(["and", "are", "catalog", "film", "films", "from", "have", "here", "in", "is", "library", "movie", "movies", "on", "shelf", "show", "shows", "the", "these", "titles", "we"])
 const COUNT_ANSWER_GLUE = new Set(["and", "are", "currently", "episodes", "film", "films", "have", "in", "items", "library", "movie", "movies", "on", "shelf", "show", "shows", "the", "there", "tv", "we"])
@@ -94,6 +95,16 @@ function sentenceCount(answer: string): number {
   return answer.split(/[.!?]+(?:\s+|$)/u).filter((part) => part.trim()).length
 }
 
+function hasGroundedFirstPersonVisibility(answer: string, formattedCount: string): boolean {
+  if (NEGATED_MEDIA_ACCESS.test(answer) || answer.split(formattedCount).length - 1 !== 1) return false
+  const escapedCount = formattedCount.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")
+  const groundedCollection = new RegExp(`\\b(?:i\\s+can\\s+(?:(?:absolutely|clearly|currently|definitely|now|plainly|readily)\\s+)?(?:see|browse|access|view)|i\\s+(?:(?:currently|now)\\s+)?(?:see|browse|access|view)|i[’']m\\s+(?:(?:currently|now)\\s+)?looking\\s+at|i(?:\\s+have|[’']ve\\s+got)(?:\\s+access\\s+to)?)\\s+(?:all\\s+|about\\s+|around\\s+|exactly\\s+|roughly\\s+)?${escapedCount}\\s+(?:titles?|movies?|films?|shows?|episodes?)(?:\\s+(?:on\\s+the\\s+shelf|in\\s+the\\s+library))?\\b`, "iu")
+  return answer.split(/[.!?]+(?:\s+|$)/u).some((sentence) => (
+    sentence.includes(formattedCount)
+    && groundedCollection.test(sentence)
+  ))
+}
+
 function commonAnswerRejection(answer: string, technicalDetailRequested: boolean): string | undefined {
   if (/\b(?:just|only|actually|merely)\s+(?:a\s+)?(?:bot|ai|assistant)\b|\bi\s+(?:can[’']?t|cannot|don[’']?t|do not)\s+(?:actually\s+)?watch\b|\bif i had to pick\b/iu.test(answer)) {
     return "Answer from the catalog evidence with a confident, personable choice; do not retreat into an AI or 'I cannot watch' disclaimer."
@@ -169,10 +180,10 @@ export function sanctuaryMediaCatalogRequiredToolCalls(
       if (kind === "visibility") {
         if (answer.length > 240 || answer.includes("\n") || sentenceCount(answer) > 2) return "Answer library visibility in no more than two short sentences and 240 characters."
         if (!/^yes\b/iu.test(answer.trim())) return "Lead with a direct yes when the current catalog read succeeds."
+        if (latest && !hasGroundedFirstPersonVisibility(answer, new Intl.NumberFormat("en-US").format(latest.totalItems))) return "Answer in your own voice: say what you can see or access on the household shelf or in the library."
         if (/\b(?:titles? like|such as|including)\b/iu.test(answer)) return "Do not sample titles for a visibility question; answer whether the shelf is visible and give the current count."
         if ([...answer.matchAll(/\byes\b/giu)].length > 1) return "Give one answer once; do not repeat the yes or restate the response."
         if (answer.includes("?")) return "Answer the visibility question and stop without asking a new question."
-        if (latest && !answer.includes(new Intl.NumberFormat("en-US").format(latest.totalItems))) return "Include the current shelf count from the successful catalog evidence."
       }
 
       if (kind === "title_lookup" && latest?.query) {
