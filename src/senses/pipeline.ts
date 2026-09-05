@@ -75,9 +75,20 @@ export interface PrepareRunAgentOptionsInput {
 }
 
 const VOICE_PENDING_MAX_AGE_MS = 15 * 60 * 1_000
-function pendingExpirationReason(channel: Channel, message: PendingMessage, now: number): string | null {
+const TELEGRAM_GENERIC_OUTREACH_PENDING_MAX_AGE_MS = 15 * 60 * 1_000
+function pendingExpirationReason(channel: Channel, message: PendingMessage, now: number, agentName?: string): string | null {
   /* v8 ignore start -- pending expiry edge permutations are covered by the stale voice queue tests; this helper keeps defensive non-voice fallbacks @preserve */
   if (Number.isFinite(message.expiresAt) && Number(message.expiresAt) <= now) return "explicit_expiry"
+  if (channel === "telegram"
+    && agentName
+    && message.from === agentName
+    && !message.delegatedFrom
+    && !message.obligationId
+    && !message.requestId
+    && Number.isFinite(message.timestamp)
+    && now - message.timestamp > TELEGRAM_GENERIC_OUTREACH_PENDING_MAX_AGE_MS) {
+    return "telegram_generic_outreach_freshness_window"
+  }
   if (channel !== "voice") return null
   if (!Number.isFinite(message.timestamp)) return null
   return now - message.timestamp > VOICE_PENDING_MAX_AGE_MS ? "voice_freshness_window" : null
@@ -147,10 +158,13 @@ function filterDeliverablePendingMessages(input: {
 }): PendingMessage[] {
   if (input.messages.length === 0) return input.messages
   const now = input.now ?? Date.now()
+  const agentName = (() => {
+    try { return getAgentName() } catch { return undefined }
+  })()
   const deliverable: PendingMessage[] = []
   const expired: Array<{ message: PendingMessage; reason: string }> = []
   for (const message of input.messages) {
-    const reason = pendingExpirationReason(input.channel, message, now)
+    const reason = pendingExpirationReason(input.channel, message, now, agentName)
     if (reason) {
       expired.push({ message, reason })
     } else {
@@ -1010,6 +1024,15 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     messages: [...deferredReturns, ...sessionPending],
   })
 
+  const promotedPendingUserMessages = input.channel === "inner"
+    ? pending
+      .filter((message) => message.from === "ouro-cli" && message.content.trim().length > 0)
+      .map((message): ChatCompletionMessageParam => ({ role: "user", content: message.content }))
+    : []
+  const backgroundPendingMessages = promotedPendingUserMessages.length > 0
+    ? pending.filter((message) => message.from !== "ouro-cli")
+    : pending
+
   // Assemble messages: session messages + pending + inbound user messages
   // NOTE: live world-state checkpoint and pending messages are rendered via buildSystem (system prompt sections)
   const extraPrefixSections = input.onPendingDrained?.(pending) ?? []
@@ -1019,11 +1042,11 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
   }
 
   // Append user messages from the inbound turn
-  for (const msg of input.messages) {
+  for (const msg of [...input.messages, ...promotedPendingUserMessages]) {
     stampIngressTime(msg)
     sessionMessages.push(msg)
   }
-  const currentUserMessages = input.messages.filter((message) => message.role === "user")
+  const currentUserMessages = [...input.messages, ...promotedPendingUserMessages].filter((message) => message.role === "user")
   const orientationFrame = input.runAgentOptions?.orientationFrame
     ?? (currentUserMessages.length > 0
       ? buildOrientationFrame({
@@ -1117,8 +1140,10 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
 
   // Step 5: runAgent
   const existingToolContext = input.runAgentOptions?.toolContext
-  const currentUserMessage = existingToolContext?.currentUserMessage
-    ?? latestUserAuthoredText(input.messages, input.continuityIngressTexts)
+  const promotedCurrentUserMessage = latestUserAuthoredText(promotedPendingUserMessages, undefined)
+  const currentUserMessage = promotedCurrentUserMessage
+    ?? existingToolContext?.currentUserMessage
+    ?? latestUserAuthoredText([...input.messages, ...promotedPendingUserMessages], input.continuityIngressTexts)
   let runAgentOptions: RunAgentOptions = {
     ...input.runAgentOptions,
     resumePriorWork,
@@ -1128,7 +1153,7 @@ export async function handleInboundTurn(input: InboundTurnInput): Promise<Inboun
     activeWorkFrame,
     delegationDecision,
     startOfTurnPacket: renderedStartOfTurnPacket,
-    pendingMessages: pending.length > 0 ? pending.map((msg) => ({ from: msg.from, content: msg.content })) : undefined,
+    pendingMessages: backgroundPendingMessages.length > 0 ? backgroundPendingMessages.map((msg) => ({ from: msg.from, content: msg.content })) : undefined,
     currentSessionKey: currentSession.key,
     currentObligation,
     mustResolveBeforeHandoff,

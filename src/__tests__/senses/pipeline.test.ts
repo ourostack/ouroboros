@@ -648,6 +648,45 @@ describe("handleInboundTurn", () => {
       }
     })
 
+    it("archives stale generic Telegram outreach while preserving request-bound returns", async () => {
+      const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-pending-expiry-"))
+      const now = Date.parse("2026-05-09T01:30:00.000Z")
+      vi.spyOn(identity, "getAgentRoot" as any).mockReturnValue(agentRoot)
+      vi.spyOn(identity, "getAgentName" as any).mockReturnValue("sanctuary")
+      vi.spyOn(Date, "now").mockReturnValue(now)
+      const pendingDir = path.join(agentRoot, "state", "pending", "friend-1", "telegram", "telegram:777:42")
+      const pendingMsgs: PendingMessage[] = [
+        { from: "sanctuary", content: "stale all-calm chatter", timestamp: now - (16 * 60 * 1_000) },
+        { from: "sanctuary", content: "owed answer", timestamp: now - (16 * 60 * 1_000), requestId: "telegram-inbound:abc" },
+        { from: "trust-gate", content: "old admission notice", timestamp: now - (16 * 60 * 1_000) },
+      ]
+      const input = makeInput({
+        channel: "telegram" as Channel,
+        capabilities: makeCapabilities({ channel: "telegram", senseType: "remote" }),
+        pendingDir,
+        drainPending: vi.fn().mockReturnValue(pendingMsgs),
+      })
+
+      try {
+        await handleInboundTurn(input)
+
+        const runAgentCall = (input.runAgent as ReturnType<typeof vi.fn>).mock.calls[0]
+        const options = runAgentCall[4] as RunAgentOptions
+        expect(options.pendingMessages).toEqual([
+          { from: "sanctuary", content: "owed answer" },
+          { from: "trust-gate", content: "old admission notice" },
+        ])
+        const archiveDir = path.join(agentRoot, "state", "pending-expired", "friend-1", "telegram", "telegram:777:42")
+        const archiveFiles = fs.readdirSync(archiveDir).filter((file) => file.endsWith(".json"))
+        expect(archiveFiles).toHaveLength(1)
+        const archived = JSON.parse(fs.readFileSync(path.join(archiveDir, archiveFiles[0]!), "utf-8")) as { content?: string; expirationReason?: string }
+        expect(archived.content).toBe("stale all-calm chatter")
+        expect(archived.expirationReason).toBe("telegram_generic_outreach_freshness_window")
+      } finally {
+        fs.rmSync(agentRoot, { recursive: true, force: true })
+      }
+    })
+
     it("does not inject live world-state checkpoint in user messages (moved to system prompt)", async () => {
       const input = makeInput({
         continuityIngressTexts: ["what are you up to?"],
@@ -735,6 +774,34 @@ describe("handleInboundTurn", () => {
       const options = runAgentCall[4] as RunAgentOptions
       expect(options.pendingMessages).toEqual([
         { from: "instinct", content: "someone reached out" },
+      ])
+    })
+
+    it("promotes operator CLI pending for self dialog into current user message context", async () => {
+      const pendingMsgs: PendingMessage[] = [
+        { from: "instinct", content: "background thought", timestamp: 999 },
+        { from: "ouro-cli", content: "answer this exact operator request", timestamp: 1000 },
+      ]
+      const input = makeInput({
+        channel: "inner" as Channel,
+        capabilities: makeCapabilities({ channel: "inner", senseType: "internal" }),
+        messages: [{ role: "user", content: "...time passing. anything stirring?" }] as ChatCompletionMessageParam[],
+        drainPending: vi.fn().mockReturnValue(pendingMsgs),
+      })
+
+      await handleInboundTurn(input)
+
+      const runAgentCall = (input.runAgent as ReturnType<typeof vi.fn>).mock.calls[0]
+      const messagesArg = runAgentCall[0] as ChatCompletionMessageParam[]
+      const userMessages = messagesArg.filter((message) => message.role === "user")
+      expect(userMessages.map((message) => typeof message.content === "string" ? message.content : "")).toEqual([
+        "...time passing. anything stirring?",
+        "answer this exact operator request",
+      ])
+      const options = runAgentCall[4] as RunAgentOptions
+      expect(options.toolContext?.currentUserMessage).toBe("answer this exact operator request")
+      expect(options.pendingMessages).toEqual([
+        { from: "instinct", content: "background thought" },
       ])
     })
 

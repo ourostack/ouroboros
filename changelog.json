@@ -1,6 +1,17 @@
 {
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
+      {
+        "version": "0.1.0-alpha.791",
+        "changes": [
+          "Promote operator CLI pending messages into the active inner-turn user message so private-runtime wakes answer the text that woke them instead of stale heartbeat context.",
+          "Keep non-operator pending work in the background pending section so automated noise does not become the live user ask.",
+          "Deliver private-runtime Telegram surface and send_message returns through the existing Telegram effect journal instead of queuing ghost messages for the next chat.",
+          "Canonicalize Telegram session filename keys before live delivery so production sanitized session paths still authorize against the real Telegram binding.",
+          "Prefer the authoritative settle tool answer over incidental streamed prose for shared-turn delivery, preventing concatenated Telegram replies.",
+          "Expire stale generic Telegram outreach from the pending queue while preserving request-bound returns and trust/admission notices."
+        ]
+      },
     {
       "version": "0.1.0-alpha.790",
       "changes": [

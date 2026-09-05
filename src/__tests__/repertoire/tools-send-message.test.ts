@@ -25,6 +25,7 @@ const mockRequestPrivateWake = vi.fn()
 const mockReadPrivateRuntimeConfig = vi.fn()
 const mockSendProactiveBlueBubblesMessageToSession = vi.fn()
 const mockSendProactiveTeamsMessageToSession = vi.fn()
+const mockSendTelegramAwaitFollowUp = vi.fn()
 const mockPlaceConfiguredTwilioPhoneCall = vi.fn()
 
 vi.mock("../../senses/private-runtime", () => ({
@@ -48,6 +49,10 @@ vi.mock("../../senses/bluebubbles", () => ({
 vi.mock("../../senses/teams", () => ({
   sendProactiveTeamsMessageToSession: (...args: any[]) =>
     mockSendProactiveTeamsMessageToSession(...args),
+}))
+
+vi.mock("../../senses/telegram", () => ({
+  sendTelegramAwaitFollowUp: (...args: any[]) => mockSendTelegramAwaitFollowUp(...args),
 }))
 
 vi.mock("../../senses/voice/twilio-phone-runtime", () => ({
@@ -94,6 +99,11 @@ beforeEach(() => {
   mockReadPrivateRuntimeConfig.mockReturnValue({ autoStart: true, source: "privateRuntime" })
   mockSendProactiveBlueBubblesMessageToSession.mockReset()
   mockSendProactiveTeamsMessageToSession.mockReset()
+  mockSendTelegramAwaitFollowUp.mockReset()
+  mockSendTelegramAwaitFollowUp.mockResolvedValue({
+    status: "delivered_now",
+    detail: "sent to the exact request-bound Telegram chat",
+  })
   mockPlaceConfiguredTwilioPhoneCall.mockReset()
   mockPlaceConfiguredTwilioPhoneCall.mockResolvedValue({
     outboundId: "outbound-test",
@@ -423,6 +433,61 @@ describe("send_message tool", () => {
       text: "intentional note from inner",
       intent: "generic_outreach",
       authorizingSession: undefined,
+    }))
+    expect(fs.writeFileSync).not.toHaveBeenCalled()
+  })
+
+  it("lets a private-runtime turn intentionally send a Telegram message through the existing Telegram effect journal", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find(d => d.tool.function.name === "send_message")!
+
+    const result = await tool.handler({
+      friendId: "friend-uuid-1",
+      channel: "telegram",
+      key: "telegram_777_42",
+      content: "intentional note from inner",
+    }, {
+      currentSession: {
+        friendId: "self",
+        channel: "inner",
+        key: "dialog",
+        sessionPath: "/mock/agent-root/state/sessions/self/inner/dialog.json",
+      },
+      context: {
+        friend: {
+          id: "self",
+          name: "Mendelow Cloud Butler",
+          trustLevel: "self",
+          externalIds: [],
+          tenantMemberships: [],
+          toolPreferences: {},
+          notes: {},
+          totalTokens: 0,
+          createdAt: "2026-03-14T00:00:00.000Z",
+          updatedAt: "2026-03-14T00:00:00.000Z",
+          schemaVersion: 1,
+        },
+        channel: {
+          channel: "inner",
+          senseType: "internal",
+          availableIntegrations: [],
+          supportsMarkdown: true,
+          supportsStreaming: true,
+          supportsRichCards: false,
+          maxMessageLength: 1000,
+        },
+      } as any,
+    } as any)
+
+    expect(result).toContain("delivered")
+    expect(mockSendTelegramAwaitFollowUp).toHaveBeenCalledWith("testagent", expect.objectContaining({
+      friendId: "friend-uuid-1",
+      channel: "telegram",
+      key: "telegram:777:42",
+      content: "intentional note from inner",
+      intent: "generic_outreach",
+      requestId: expect.stringMatching(/^send-message:/u),
+      deliveryId: expect.stringMatching(/^send-message:/u),
     }))
     expect(fs.writeFileSync).not.toHaveBeenCalled()
   })

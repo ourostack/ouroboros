@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest"
 
 const mockListSessionActivity = vi.fn()
 const mockSendProactiveBlueBubblesMessageToSession = vi.fn()
+const mockSendTelegramAwaitFollowUp = vi.fn()
 const mockGetBridge = vi.fn()
 const mockPlaceTrustedFriendVoiceOutboundCall = vi.fn()
 
@@ -29,6 +30,10 @@ vi.mock("../../heart/session-activity", () => ({
 vi.mock("../../senses/bluebubbles", () => ({
   sendProactiveBlueBubblesMessageToSession: (...args: unknown[]) =>
     mockSendProactiveBlueBubblesMessageToSession(...args),
+}))
+
+vi.mock("../../senses/telegram", () => ({
+  sendTelegramAwaitFollowUp: (...args: unknown[]) => mockSendTelegramAwaitFollowUp(...args),
 }))
 
 vi.mock("../../heart/bridges/manager", () => ({
@@ -59,6 +64,11 @@ describe("surface tool", () => {
     mockSendProactiveBlueBubblesMessageToSession.mockResolvedValue({
       delivered: false,
       reason: "send_error",
+    })
+    mockSendTelegramAwaitFollowUp.mockReset()
+    mockSendTelegramAwaitFollowUp.mockResolvedValue({
+      status: "delivered_now",
+      detail: "sent to the exact request-bound Telegram chat",
     })
     mockGetBridge.mockReturnValue(null)
     mockPlaceTrustedFriendVoiceOutboundCall.mockReset()
@@ -993,6 +1003,72 @@ describe("surface tool", () => {
       expect(fs.writeFileSync).toHaveBeenCalledWith(
         expect.stringMatching(/\/state\/pending\/friend-1\/bluebubbles\/chat:any;-;ari@mendelow.me\/\d+-[a-z0-9]+\.json$/),
         expect.stringContaining("freshest bluebubbles return should wait"),
+      )
+    })
+
+    it("surfaceToolDefinition delivers freshest Telegram returns immediately through the Telegram effect journal", async () => {
+      const fs = await import("fs")
+      vi.mocked(fs.existsSync).mockImplementation((filePath) =>
+        String(filePath).endsWith("/state/sessions/friend-1"),
+      )
+      mockListSessionActivity.mockReturnValue([
+        {
+          friendId: "friend-1",
+          channel: "telegram",
+          key: "telegram_777_42",
+          sessionPath: "/tmp/test-agent/state/sessions/friend-1/telegram/telegram_777_42.json",
+        },
+      ])
+
+      const { surfaceToolDefinition } = await import("../../repertoire/tools-surface")
+      const result = await surfaceToolDefinition.handler({
+        content: "I checked the noisy alert and took care of it.",
+        friendId: "friend-1",
+      }, { delegatedOrigins: [] } as any)
+
+      expect(result).toContain("delivered")
+      expect(result).toContain("sent to Telegram now")
+      expect(mockSendTelegramAwaitFollowUp).toHaveBeenCalledWith("test", expect.objectContaining({
+        friendId: "friend-1",
+        channel: "telegram",
+        key: "telegram:777:42",
+        content: "I checked the noisy alert and took care of it.",
+        intent: "generic_outreach",
+        requestId: expect.stringMatching(/^surface:/u),
+        deliveryId: expect.stringMatching(/^surface:/u),
+      }))
+      expect(fs.writeFileSync).not.toHaveBeenCalled()
+    })
+
+    it("surfaceToolDefinition falls back to the Telegram pending queue when live Telegram delivery is blocked", async () => {
+      const fs = await import("fs")
+      vi.mocked(fs.existsSync).mockImplementation((filePath) =>
+        String(filePath).endsWith("/state/sessions/friend-1"),
+      )
+      mockListSessionActivity.mockReturnValue([
+        {
+          friendId: "friend-1",
+          channel: "telegram",
+          key: "telegram_777_42",
+          sessionPath: "/tmp/test-agent/state/sessions/friend-1/telegram/telegram_777_42.json",
+        },
+      ])
+      mockSendTelegramAwaitFollowUp.mockResolvedValueOnce({
+        status: "blocked",
+        detail: "relationship follow-up is not bound to an active request await",
+      })
+
+      const { surfaceToolDefinition } = await import("../../repertoire/tools-surface")
+      const result = await surfaceToolDefinition.handler({
+        content: "I can answer this next time.",
+        friendId: "friend-1",
+      }, { delegatedOrigins: [] } as any)
+
+      expect(result).toContain("queued")
+      expect(result).toContain("for next interaction via telegram")
+      expect(fs.writeFileSync).toHaveBeenCalledWith(
+        expect.stringMatching(/\/state\/pending\/friend-1\/telegram\/telegram_777_42\/\d+-[a-z0-9]+\.json$/),
+        expect.stringContaining("I can answer this next time."),
       )
     })
 
