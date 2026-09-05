@@ -6,7 +6,9 @@
         "changes": [
           "Warm portable runtime credentials before private-runtime process bootstrap so Telegram surface and send_message delivery can use the live Telegram effect path instead of falling back to pending ghost messages.",
           "Wait for the private-runtime child credential refresh fallback before starting work, avoiding a race where Telegram delivery tools could run before runtime credentials were available.",
-          "Catch asynchronous bundle watcher errors so transient pending-message processing files on live filesystems cannot tombstone the daemon or interrupt private-runtime wakes."
+          "Catch asynchronous bundle watcher errors so transient pending-message processing files on live filesystems cannot tombstone the daemon or interrupt private-runtime wakes.",
+          "Treat simple Sanctuary library visibility asks like 'see the lib' as catalog reads, and block replies that send Ari to inspect Jellyfin, Unmanic, dashboards, or logs while safe evidence tools are available.",
+          "Degrade optional Unmanic file-size metrics without hiding available media catalog evidence."
         ]
       },
       {
