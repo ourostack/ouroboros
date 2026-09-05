@@ -309,8 +309,8 @@ export function createSanctuaryMediaOptimizationClient(options: ClientOptions) {
         recent,
       }
     } catch (error) {
-      if (!(error instanceof ReadFailure)) throw error
-      history = { available: false, reason: error.code === "invalid_response" ? "file_size_metrics panel returned invalid data" : "file_size_metrics panel is unavailable" }
+      const code = (error as ReadFailure).code
+      history = { available: false, reason: code === "invalid_response" ? "file_size_metrics panel returned invalid data" : "file_size_metrics panel is unavailable" }
     }
     return {
       data: {

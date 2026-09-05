@@ -271,6 +271,23 @@ describe("Sanctuary media optimization read", () => {
     })
   })
 
+  it("keeps media evidence when optional metrics detail fetches fail unexpectedly", async () => {
+    const result = await client(route({
+      "GET http://127.0.0.1:8888/unmanic/panel/file_size_metrics/conversionDetails/": () => {
+        throw new Error("unexpected metrics bug")
+      },
+    })).read()
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: {
+        unmanic: { version: "0.4.0+4922a83", history: { available: false, reason: "file_size_metrics panel is unavailable" } },
+        inventory: { totalItems: 3, analyzedSources: 3 },
+        degraded: true,
+      },
+    })
+  })
+
   it("requires a live restricted Jellyfin identity and never leaks credential material in failures", async () => {
     expect(() => createSanctuaryMediaOptimizationClient({ jellyfinUserId: "bad", jellyfinAccessToken: TOKEN, jellyfinFolderIds: ["library-a", "library-b"] })).toThrow("Jellyfin user ID")
     expect(() => createSanctuaryMediaOptimizationClient({ jellyfinUserId: USER_ID, jellyfinAccessToken: "bad token", jellyfinFolderIds: ["library-a", "library-b"] })).toThrow("Jellyfin access token")

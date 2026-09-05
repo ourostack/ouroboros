@@ -7,7 +7,7 @@
           "Catch asynchronous bundle watcher errors so transient pending-message processing files on live filesystems cannot tombstone the daemon or interrupt private-runtime wakes.",
           "Warm runtime credentials before private-runtime bootstrap so Telegram-capable workers start with runtime config instead of racing the managed Telegram sense.",
           "Treat simple Sanctuary library visibility asks like 'see the lib' as catalog reads, and block replies that send Ari to inspect Jellyfin, Unmanic, dashboards, or logs while safe evidence tools are available.",
-          "Degrade optional Unmanic file-size metrics without hiding available media catalog evidence."
+          "Degrade optional Unmanic file-size metrics, including failed detail reads, without hiding available media catalog evidence."
         ]
       },
       {
