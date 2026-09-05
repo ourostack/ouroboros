@@ -4,7 +4,10 @@
       {
         "version": "0.1.0-alpha.792",
         "changes": [
-          "Catch asynchronous bundle watcher errors so transient pending-message processing files on live filesystems cannot tombstone the daemon or interrupt private-runtime wakes."
+          "Catch asynchronous bundle watcher errors so transient pending-message processing files on live filesystems cannot tombstone the daemon or interrupt private-runtime wakes.",
+          "Warm runtime credentials before private work so machine-scoped Sanctuary tools are available during Telegram/private-runtime turns.",
+          "Treat Unmanic's optional media metrics panel as degraded when it returns unavailable data, without discarding the rest of the media optimization evidence.",
+          "Require the restricted Jellyfin catalog tool for ordinary library visibility phrasing like \"see the lib\" and block replies that send Ari to dashboards or logs while safe tools are available."
         ]
       },
       {
