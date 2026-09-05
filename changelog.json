@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
       {
+        "version": "0.1.0-alpha.792",
+        "changes": [
+          "Catch asynchronous bundle watcher errors so transient pending-message processing files on live filesystems cannot tombstone the daemon or interrupt private-runtime wakes."
+        ]
+      },
+      {
         "version": "0.1.0-alpha.791",
         "changes": [
           "Promote operator CLI pending messages into the active inner-turn user message so private-runtime wakes answer the text that woke them instead of stale heartbeat context.",
