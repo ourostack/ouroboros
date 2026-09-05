@@ -48,7 +48,11 @@ import {
 import { readMachineRuntimeCredentialConfig, readRuntimeCredentialConfig, refreshRuntimeCredentialConfig } from "../runtime-credentials"
 import { loadOrCreateMachineIdentity } from "../machine-identity"
 import { loadContainerCredentialBootstrap } from "./container-credential-bootstrap"
-import { createProviderReadinessPreparationFailure, startDaemonAfterContainerCredentialBootstrap } from "./daemon-bootstrap-startup"
+import {
+  createProviderReadinessPreparationFailure,
+  providerReadinessAgents,
+  startDaemonAfterContainerCredentialBootstrap,
+} from "./daemon-bootstrap-startup"
 import type { HabitRunTrigger } from "../../arc/flight-recorder"
 import { runSanctuaryHealthHabit } from "../../senses/sanctuary-health-runner"
 import { readSanctuaryAcceptanceMarker } from "./sanctuary-acceptance-marker"
@@ -91,6 +95,10 @@ if (mode === "dev") {
 }
 
 const managedAgents = listEnabledBundleAgents()
+const readinessAgents = providerReadinessAgents(
+  managedAgents,
+  process.env.OURO_DAEMON_REQUIRED_AGENT,
+)
 const managedPrivateRuntimes = managedAgents.map((agent) => ({
   agent,
   config: readPrivateRuntimeConfig(agent),
@@ -610,7 +618,7 @@ function writeStopCommandHealthState(): void {
 
 async function prepareProviderRuntime(): Promise<void> {
   const bundlesRoot = getAgentBundlesRoot()
-  const readiness = await Promise.all(managedAgents.map(async (agent) => {
+  const readiness = await Promise.all(readinessAgents.map(async (agent) => {
     try {
       await refreshRuntimeCredentialConfig(agent, { preserveCachedOnFailure: true })
       const result = await checkAgentConfigWithProviderHealth(agent, bundlesRoot)

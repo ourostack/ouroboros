@@ -56,10 +56,10 @@ import { readDaemonTombstone } from "./daemon-tombstone"
 
 // ── Default implementations ──
 
-export async function defaultStartDaemonProcess(socketPath: string): Promise<{ pid: number | null }> {
-  const launchdStarted = await startDaemonProcessViaLaunchd(socketPath)
-  if (launchdStarted) return launchdStarted
-
+function spawnDetachedDaemonProcess(
+  socketPath: string,
+  environment: NodeJS.ProcessEnv = process.env,
+): { pid: number | null } {
   const entry = path.join(getRepoRoot(), "dist", "heart", "daemon", "daemon-entry.js")
   // Redirect stdio to /dev/null via file descriptors — using 'ignore' causes EPIPE
   // when the daemon's logging system writes to stderr after the parent exits.
@@ -68,10 +68,33 @@ export async function defaultStartDaemonProcess(socketPath: string): Promise<{ p
   const child = spawn(process.execPath, [entry, "--socket", socketPath], {
     detached: true,
     stdio: ["ignore", outFd, errFd],
+    env: environment,
   })
   child.unref()
   // Don't close fds — the child process needs them. They'll be cleaned up when the parent exits.
   return { pid: child.pid ?? null }
+}
+
+export async function defaultStartDaemonProcess(socketPath: string): Promise<{ pid: number | null }> {
+  const launchdStarted = await startDaemonProcessViaLaunchd(socketPath)
+  if (launchdStarted) return launchdStarted
+  return spawnDetachedDaemonProcess(socketPath)
+}
+
+export async function defaultStartDaemonForFrontend(
+  socketPath: string,
+  agent: string,
+): Promise<{ pid: number | null }> {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(agent)) {
+    throw new Error("frontend daemon startup requires a safe agent name")
+  }
+  if (process.platform === "darwin") {
+    bootoutDaemonLaunchAgentLabel(currentUserUid())
+  }
+  return spawnDetachedDaemonProcess(socketPath, {
+    ...process.env,
+    OURO_DAEMON_REQUIRED_AGENT: agent,
+  })
 }
 
 function defaultWriteStdout(text: string): void {
@@ -760,6 +783,7 @@ export function createDefaultOuroCliDeps(socketPath = DEFAULT_DAEMON_SOCKET_PATH
         : DEFAULT_DAEMON_COMMAND_TIMEOUT_MS,
     }),
     startDaemonProcess: defaultStartDaemonProcess,
+    startDaemonForFrontend: defaultStartDaemonForFrontend,
     writeStdout: defaultWriteStdout,
     setExitCode: (code: number) => {
       const current = typeof process.exitCode === "number" ? process.exitCode : 0

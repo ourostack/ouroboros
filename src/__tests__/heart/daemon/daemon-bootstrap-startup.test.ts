@@ -13,10 +13,18 @@ vi.mock("../../../heart/daemon/daemon-tombstone", () => ({
 import {
   createProviderReadinessPreparationFailure,
   failFastContainerCredentialBootstrapStartup,
+  providerReadinessAgents,
   startDaemonAfterContainerCredentialBootstrap,
 } from "../../../heart/daemon/daemon-bootstrap-startup"
 
 describe("daemon container credential bootstrap startup boundary", () => {
+  it("scopes Workbench daemon readiness to its selected safe agent", () => {
+    expect(providerReadinessAgents(["ouroboros", "slugger"], "ouroboros")).toEqual(["ouroboros"])
+    expect(providerReadinessAgents(["ouroboros", "slugger"], "missing")).toEqual(["ouroboros", "slugger"])
+    expect(providerReadinessAgents(["ouroboros", "slugger"], "../ouroboros")).toEqual(["ouroboros", "slugger"])
+    expect(providerReadinessAgents(["ouroboros", "slugger"], undefined)).toEqual(["ouroboros", "slugger"])
+  })
+
   it("awaits successful credential migration and daemon preparation before starting the daemon", async () => {
     let releaseBootstrap!: () => void
     let releasePreparation!: () => void

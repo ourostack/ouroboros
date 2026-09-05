@@ -149,6 +149,7 @@ export interface OuroCliDeps {
   socketPath: string
   sendCommand: (socketPath: string, command: DaemonCommand) => Promise<DaemonResponse>
   startDaemonProcess: (socketPath: string) => Promise<{ pid: number | null }>
+  startDaemonForFrontend?: (socketPath: string, agent: string) => Promise<{ pid: number | null }>
   writeStdout: (text: string) => void
   setExitCode?: (code: number) => void
   /** Raw terminal output. Does not append a newline. Use for in-place TTY renderers. */
@@ -264,6 +265,7 @@ export interface OuroCliDeps {
   acpServeInput?: Readable
   acpServeOutput?: Writable
   createAcpServer?: (options: AcpServerOptions) => AcpServer
+  ensureDaemonForFrontend?: (agent: string) => Promise<{ ok: boolean; message: string }>
   workbenchMcpEnvironment?: Record<string, string | undefined>
   resolveFrontendFriendId?: (input: {
     agent: string

@@ -173,6 +173,7 @@ describe("ouro acp-serve CLI", () => {
     const server = { start: vi.fn(), stop: vi.fn() }
     const createAcpServer = vi.fn(() => server)
     const resolveFriend = vi.fn(async () => "11111111-1111-4111-8111-111111111111")
+    const ensureDaemonForFrontend = vi.fn(async (_agent: string) => ({ ok: true, message: "daemon ready" }))
     const mcpPath = "/Applications/Ouro Workbench.app/Contents/MacOS/OuroWorkbenchMCP"
     const workbenchMcpEnvironment = {
       BUN_BIN: "/usr/local/bin/bun",
@@ -191,6 +192,7 @@ describe("ouro acp-serve CLI", () => {
       acpServeInput: input,
       acpServeOutput: output,
       createAcpServer,
+      ensureDaemonForFrontend,
       resolveFrontendFriendId: resolveFriend,
       existsSync: (candidate: string) => candidate === mcpPath,
       workbenchMcpEnvironment,
@@ -213,6 +215,7 @@ describe("ouro acp-serve CLI", () => {
       agent: "Boss",
       explicitFriendId: "friend-explicit",
     }))
+    expect(ensureDaemonForFrontend).toHaveBeenCalledWith("Boss")
     expect(createAcpServer).toHaveBeenCalledWith({
       agent: "Boss",
       friendId: "11111111-1111-4111-8111-111111111111",
@@ -244,6 +247,7 @@ describe("ouro acp-serve CLI", () => {
       acpServeInput: input,
       acpServeOutput: output,
       createAcpServer,
+      ensureDaemonForFrontend: vi.fn(async (_agent: string) => ({ ok: true, message: "daemon ready" })),
       resolveFrontendFriendId: resolveFriend,
     } as unknown as OuroCliDeps
 
@@ -293,6 +297,32 @@ describe("ouro acp-serve CLI", () => {
     expect(createAcpServer).not.toHaveBeenCalled()
   })
 
+  it("surfaces daemon startup failure before creating the ACP server", async () => {
+    const createAcpServer = vi.fn()
+    const deps = {
+      socketPath: "/tmp/ouro.sock",
+      sendCommand: vi.fn(),
+      startDaemonProcess: vi.fn(),
+      writeStdout: vi.fn(),
+      checkSocketAlive: vi.fn(),
+      cleanupStaleSocket: vi.fn(),
+      fallbackPendingMessage: vi.fn(),
+      createAcpServer,
+      ensureDaemonForFrontend: vi.fn(async (_agent: string) => ({
+        ok: false,
+        message: "background service failed to start",
+      })),
+      resolveFrontendFriendId: vi.fn(async () => "friend-1"),
+    } as unknown as OuroCliDeps
+
+    await expect(runOuroCli([
+      "acp-serve",
+      "--agent",
+      "Boss",
+    ], deps)).rejects.toThrow("background service failed to start")
+    expect(createAcpServer).not.toHaveBeenCalled()
+  })
+
   it("starts observe-only ACP without runtime MCP tools", async () => {
     const input = new EventEmitter()
     const output = new PassThrough()
@@ -309,6 +339,7 @@ describe("ouro acp-serve CLI", () => {
       acpServeInput: input,
       acpServeOutput: output,
       createAcpServer,
+      ensureDaemonForFrontend: vi.fn(async (_agent: string) => ({ ok: true, message: "daemon ready" })),
       resolveFrontendFriendId: vi.fn(async () => "friend-1"),
       existsSync: vi.fn(() => true),
     } as unknown as OuroCliDeps
