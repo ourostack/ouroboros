@@ -988,6 +988,7 @@ async function handleInboundTurnExclusive(input: InboundTurnInput): Promise<Inbo
     currentSession,
     channel: input.channel,
     friendStore: input.friendStore,
+    includeAmbientBackgroundDiscovery: !liveLatencyMode,
   })
   // Propagate sync failure from pre-turn pull
   ctx.syncFailure = syncFailure

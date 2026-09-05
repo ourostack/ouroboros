@@ -67,6 +67,11 @@ export interface PreparedFrontendTurn {
 type FrontendTurnRunner = (options: RunSenseTurnOptions) => Promise<RunSenseTurnResult>
 type FrontendServiceListener = (event: FrontendServiceEvent) => void
 
+async function defaultReleaseRuntimeMcpServers(): Promise<void> {
+  const manager = await import("../repertoire/mcp-manager")
+  await manager.releaseRuntimeMcpServers()
+}
+
 export interface FrontendAuthorityRuntime {
   approvalCoordinatorFactory(input: {
     request: FrontendTurnRequest
@@ -116,16 +121,19 @@ export class FrontendSessionService {
   private readonly runner: FrontendTurnRunner
   private readonly journal: FrontendJournalStore | null
   private readonly authority: FrontendAuthorityRuntime | null
+  private readonly releaseRuntimeMcpServers: () => Promise<void>
   private closed = false
 
   constructor(options: {
     runner?: FrontendTurnRunner
     journal?: FrontendJournalStore | null
     authority?: FrontendAuthorityRuntime | null
+    releaseRuntimeMcpServers?: () => Promise<void>
   } = {}) {
     this.runner = options.runner ?? runSenseTurn
     this.journal = options.journal ?? null
     this.authority = options.authority ?? null
+    this.releaseRuntimeMcpServers = options.releaseRuntimeMcpServers ?? defaultReleaseRuntimeMcpServers
   }
 
   hasTurn(turnId: string): boolean {
@@ -235,6 +243,7 @@ export class FrontendSessionService {
         sessionKey: normalized.sessionKey,
         userMessage: normalized.message,
         signal: controller.signal,
+        latencyMode: "live",
         frontendEventSink,
         ...(normalized.disableTools ? { disableTools: true } : {}),
         ...(normalized.ephemeral ? { disablePersistence: true } : {}),
@@ -274,8 +283,14 @@ export class FrontendSessionService {
       }, "turn_failed")
       throw error
     } finally {
-      this.activeTurns.delete(turnId)
-      this.activeSessions.delete(sessionIdentity)
+      try {
+        if (normalized.runtimeMcpServers) {
+          await this.releaseRuntimeMcpServers()
+        }
+      } finally {
+        this.activeTurns.delete(turnId)
+        this.activeSessions.delete(sessionIdentity)
+      }
     }
   }
 

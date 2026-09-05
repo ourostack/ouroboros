@@ -290,6 +290,19 @@ describe("getSharedMcpManager + runtime Workbench MCP injection", () => {
     mod.resetSharedMcpManager()
   })
 
+  it("releases runtime-only servers when the frontend turn ends", async () => {
+    vi.resetModules()
+    const { shutdowns } = mockManagerDeps()
+    const mod = await import("../../repertoire/mcp-manager")
+    const manager = await mod.getSharedMcpManager({ runtimeServers: WORKBENCH_RUNTIME })
+
+    await mod.releaseRuntimeMcpServers()
+
+    expect(manager!.listAllTools().map((entry) => entry.server)).toEqual(["calc"])
+    expect(shutdowns).toEqual(["/Apps/OuroWorkbenchMCP"])
+    mod.resetSharedMcpManager()
+  })
+
   it("re-injects ouro_workbench on a later turn that carries runtimeServers again (stable per-turn)", async () => {
     vi.resetModules()
     const { shutdowns } = mockManagerDeps()

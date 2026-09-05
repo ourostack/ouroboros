@@ -1946,6 +1946,9 @@ describe("handleInboundTurn", () => {
 
       await handleInboundTurn(input)
 
+      expect(mockBuildTurnContext).toHaveBeenCalledWith(expect.objectContaining({
+        includeAmbientBackgroundDiscovery: false,
+      }))
       const runAgentCall = (input.runAgent as ReturnType<typeof vi.fn>).mock.calls[0]
       const options = runAgentCall[4] as RunAgentOptions
       expect(options.skipKeptNotes).toBe(true)

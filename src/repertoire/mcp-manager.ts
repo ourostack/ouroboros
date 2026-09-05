@@ -544,6 +544,13 @@ export async function getSharedMcpManager(
   return _sharedManagerPromise
 }
 
+export async function releaseRuntimeMcpServers(): Promise<void> {
+  if (!_sharedManager) return
+  if (!await _sharedManager.reconcile()) {
+    _sharedManager = null
+  }
+}
+
 /**
  * Shut down the shared MCP manager and clear the singleton.
  * Called during daemon/agent shutdown.

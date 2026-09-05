@@ -111,6 +111,7 @@ export interface BuildTurnContextInput {
   }
   channel: Channel
   friendStore: FriendStore
+  includeAmbientBackgroundDiscovery?: boolean
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -467,6 +468,7 @@ export async function buildTurnContext(input: BuildTurnContextInput): Promise<Tu
     homeDir: process.env.HOME,
     nowMs: Date.now(),
     limit: 5,
+    includeAmbientDiscovery: input.includeAmbientBackgroundDiscovery,
   })
 
   // Private-runtime work state

@@ -31,6 +31,7 @@ describe("frontend session service", () => {
     const runner = vi.fn(async (input: any) => {
       expect(input.signal).toBeInstanceOf(AbortSignal)
       expect(input.signal.aborted).toBe(false)
+      expect(input.latencyMode).toBe("live")
       return { ...settledResult("hello"), sessionPath: "/tmp/session.json" }
     })
     const { FrontendSessionService } = await import("../../heart/frontend-session-service")
@@ -241,11 +242,13 @@ describe("frontend session service", () => {
       expect(input.runtimeMcpServers).toEqual(runtimeMcpServers)
       return { ...settledResult(), turnOutcome: undefined }
     })
+    const releaseRuntimeMcpServers = vi.fn(async () => undefined)
 
     const { FrontendSessionService } = await import("../../heart/frontend-session-service")
-    const service = new FrontendSessionService({ runner })
+    const service = new FrontendSessionService({ runner, releaseRuntimeMcpServers })
 
     await expect(service.runTurn({ ...request(), runtimeMcpServers })).rejects.toThrow("omitted its outcome")
+    expect(releaseRuntimeMcpServers).toHaveBeenCalledOnce()
     expect(service.hasTurn("turn-1")).toBe(false)
   })
 
