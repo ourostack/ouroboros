@@ -45,7 +45,7 @@ import {
   readProviderCredentialPool,
   type ProviderCredentialRecord,
 } from "../provider-credentials"
-import { readMachineRuntimeCredentialConfig, readRuntimeCredentialConfig } from "../runtime-credentials"
+import { readMachineRuntimeCredentialConfig, readRuntimeCredentialConfig, refreshRuntimeCredentialConfig } from "../runtime-credentials"
 import { loadOrCreateMachineIdentity } from "../machine-identity"
 import { loadContainerCredentialBootstrap } from "./container-credential-bootstrap"
 import { createProviderReadinessPreparationFailure, startDaemonAfterContainerCredentialBootstrap } from "./daemon-bootstrap-startup"
@@ -612,6 +612,7 @@ async function prepareProviderRuntime(): Promise<void> {
   const bundlesRoot = getAgentBundlesRoot()
   const readiness = await Promise.all(managedAgents.map(async (agent) => {
     try {
+      await refreshRuntimeCredentialConfig(agent, { preserveCachedOnFailure: true })
       const result = await checkAgentConfigWithProviderHealth(agent, bundlesRoot)
       if (result.ok) return null
       emitNervesEvent({

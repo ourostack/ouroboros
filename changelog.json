@@ -4,6 +4,8 @@
       {
         "version": "0.1.0-alpha.792",
         "changes": [
+          "Warm portable runtime credentials before private-runtime process bootstrap so Telegram surface and send_message delivery can use the live Telegram effect path instead of falling back to pending ghost messages.",
+          "Wait for the private-runtime child credential refresh fallback before starting work, avoiding a race where Telegram delivery tools could run before runtime credentials were available.",
           "Catch asynchronous bundle watcher errors so transient pending-message processing files on live filesystems cannot tombstone the daemon or interrupt private-runtime wakes."
         ]
       },
