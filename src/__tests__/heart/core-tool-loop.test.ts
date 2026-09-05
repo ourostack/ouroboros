@@ -2368,6 +2368,45 @@ describe("runAgent tool loop guard", () => {
       expect(JSON.stringify(messages)).not.toContain("**Sanctuary status** Docker is at 100%.")
     })
 
+    it("emits ordinary tool prose, rejects a bad terminal answer, and accepts the grounded text-only retry", async () => {
+      const draft = "Yes, I can see titles like The Pitt."
+      const rejected = "The bounded catalog read worked. What would you like me to do?"
+      const finalAnswer = "Yes—the shelf is visible again. I can currently see 11,870 movies and episodes."
+      mockCreate
+        .mockReturnValueOnce(makeStream([makeChunk(draft, [{ index: 0, id: "catalog-read", function: { name: "sanctuary_search_media_catalog", arguments: "{}" } }])]))
+        .mockReturnValueOnce(makeStream([makeChunk(rejected)]))
+        .mockReturnValueOnce(makeStream([makeChunk(finalAnswer)]))
+      const catalogResult = JSON.stringify({ ok: true, data: { totalItems: 11_870, matchedItems: 1, items: [{ untrustedTitle: "Moonstruck" }] } })
+      const execTool = vi.fn().mockResolvedValue(catalogResult)
+      const callbacks = makeCallbacks({ settleOutputMode: "retractable_buffer" })
+      const messages: any[] = [{ role: "user", content: "Can you see the library now?" }]
+      const { runAgent } = await import("../../heart/core")
+
+      const result = await runAgent(messages, callbacks, "telegram", undefined, {
+        tools: [readTool("sanctuary_search_media_catalog")],
+        execTool,
+        toolContext: { signin: async () => undefined },
+        requiredToolCalls: {
+          names: ["sanctuary_search_media_catalog"],
+          retryMessage: "Read the current shelf, answer directly, and stop.",
+          requireSuccessfulResults: true,
+          validateRequiredToolResult: (_name, output) => JSON.parse(output).ok === true,
+          validateTerminalAnswer: (answer) => answer === finalAnswer ? undefined : "Use household language, answer once, and stop.",
+        },
+      })
+
+      expect(result).toMatchObject({ outcome: "settled", completion: undefined })
+      expect(execTool).toHaveBeenCalledExactlyOnceWith("sanctuary_search_media_catalog", {}, expect.anything())
+      expect(callbacks.onTextChunk).toHaveBeenCalledWith(draft)
+      expect(callbacks.onTextChunk).toHaveBeenLastCalledWith(finalAnswer)
+      expect(callbacks.onClearText).toHaveBeenCalled()
+      expect(JSON.stringify(messages)).toContain(draft)
+      expect(messages).toContainEqual(expect.objectContaining({ role: "tool", content: catalogResult }))
+      expect(JSON.stringify(messages)).toContain(finalAnswer)
+      expect(JSON.stringify(messages)).not.toContain(rejected)
+      expect(messages).toContainEqual(expect.objectContaining({ role: "user", content: "Use household language, answer once, and stop." }))
+    })
+
     it("requires successful current reads and rejects unsupported Docker-image assertions without persisting them", async () => {
       const staleAnswer = "Docker image disk is at 100%."
       const finalAnswer = "Sanctuary is running. Docker image utilization still needs a fresh authoritative check."

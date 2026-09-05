@@ -92,6 +92,7 @@ describe("Mendelow Cloud Butler household UX", () => {
     expect(soul).toContain("quietly delighted by a clever fix")
     expect(soul).toContain("gentle theatrical flair")
     expect(soul).toContain("kind, never smug")
+    expect(soul).toContain("do not volunteer an ontology disclaimer")
     expect(soul).not.toMatch(/\b(?:Dross|Lindon|Eithan|Cradle|Abidan|Monarch)\b/u)
   })
 
@@ -238,8 +239,8 @@ describe("Mendelow Cloud Butler household UX", () => {
     expect(storage.reply).toContain(`${storage.evidence!.opportunities === 1 ? "one" : storage.evidence!.opportunities} unusually large`)
     const catalog = transcripts.find((entry) => entry.id === "catalog-favorite")!
     expect(catalog.reply).toContain("From the shelf")
-    expect(catalog.reply).toContain("I can’t watch it")
-    expect(catalog.reply).not.toMatch(/\b(?:just|only|merely)\s+(?:a\s+)?(?:bot|AI|assistant)\b/iu)
+    expect(catalog.reply).not.toMatch(/\bi\s+(?:can[’']?t|cannot|don[’']?t|do not)\s+(?:actually\s+)?watch\b/iu)
+    expect(catalog.reply).not.toMatch(/\b(?:just|only|merely)\s+(?:a\s+)?(?:bot|AI|assistant)\b|\b(?:inventory|catalog read|bounded)\b/iu)
     expect(catalog.tools).toEqual(["sanctuary_search_media_catalog"])
   })
 

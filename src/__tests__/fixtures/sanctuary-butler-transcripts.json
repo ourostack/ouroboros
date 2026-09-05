@@ -67,7 +67,7 @@
     "id": "catalog-favorite",
     "audience": "owner",
     "user": "Of the films you have in stock, do you have a favorite?",
-    "reply": "From the shelf, I’d pick The Princess Bride: nimble, quotable, and suspiciously good for household morale. I can’t watch it, but I can recognize excellent inventory when Jellyfin hands me the card.",
+    "reply": "From the shelf, I’d pick The Princess Bride: nimble, quotable, and suspiciously good for household morale.",
     "tools": ["sanctuary_search_media_catalog"]
   },
   {
