@@ -18,7 +18,7 @@ export interface BundleWatcher {
 
 export interface BundleWatcherDeps {
   existsSync(targetPath: string): boolean
-  watch(targetPath: string, options: { recursive: true }, listener: fs.WatchListener<string>): { close(): void }
+  watch(targetPath: string, options: { recursive: true }, listener: fs.WatchListener<string>): { close(): void; on?(event: "error", listener: (error: Error) => void): void }
   setTimeout(callback: () => void, delayMs: number): ReturnType<typeof setTimeout>
   clearTimeout(timer: ReturnType<typeof setTimeout>): void
 }
@@ -88,7 +88,18 @@ export function createBundleWatcher(
 
   try {
     if (deps.existsSync(bundlesRoot)) {
-      watchers.push(deps.watch(bundlesRoot, { recursive: true }, debouncedOnChange))
+      const watcher = deps.watch(bundlesRoot, { recursive: true }, debouncedOnChange)
+      watcher.on?.("error", () => {
+        try {
+          watcher.close()
+        } catch {
+          // Already closed.
+        }
+        const index = watchers.indexOf(watcher)
+        if (index >= 0) watchers.splice(index, 1)
+        debouncedOnChange()
+      })
+      watchers.push(watcher)
     }
   } catch {
     // Watching is best-effort; manual broadcasts still keep Mailbox usable.
