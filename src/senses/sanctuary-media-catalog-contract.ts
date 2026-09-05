@@ -5,6 +5,7 @@ const REQUIRED_TOOL_NAMES = ["sanctuary_search_media_catalog"] as const
 const HOUSEHOLD_JARGON = /\b(?:bounded|catalog|inventory|endpoint|backend|data shape|pars(?:e|ed|ing)|json|jellyfin|unmanic|sanctuary_search_media_catalog)\b/iu
 const NEGATED_MEDIA_ACCESS = /\b(?:not|never|none|nothing|zero|inaccessible|invisible|unavailable|broken|failed|failing)\b|\b(?:isn[’']t|won[’']t)\b|\bno\s+access\b|\b(?:lost|lacks?|lacking|without)\s+access\b|\bonly\s+\d|\bfewer\s+than\b|\bsome\s+of\b|\b(?:part|portion|subset)\s+of\b|\bi\s+(?:can(?:not|[’']t)|do\s+not|don[’']t|have\s+no)\b|\bi[’']m\s+not\b/iu
 const UNSOLICITED_PIVOT = /\b(?:what would you like|what are you in the mood for|would you like me to|do you want me to|want me to|recommend we add)\b/iu
+const REPORT_LABEL = /(?:^|\n)\s*(?:version|house|the house|render check|status|result)\s*:/iu
 const TITLE_LIST_GLUE = new Set(["and", "are", "catalog", "film", "films", "from", "have", "here", "in", "is", "library", "movie", "movies", "on", "shelf", "show", "shows", "the", "these", "titles", "we"])
 const COUNT_ANSWER_GLUE = new Set(["and", "are", "currently", "episodes", "film", "films", "have", "in", "items", "library", "movie", "movies", "on", "shelf", "show", "shows", "the", "there", "tv", "we"])
 
@@ -120,6 +121,7 @@ function commonAnswerRejection(answer: string, technicalDetailRequested: boolean
     return "Do not send Ari to check Jellyfin, Unmanic, dashboards, or logs for ordinary library visibility while safe catalog tools are available. Use the catalog evidence, or if the catalog read itself fails, say exactly what I could and could not verify."
   }
   if (UNSOLICITED_PIVOT.test(answer)) return "Answer the media question that was asked, then stop; do not append an unsolicited question or recommendation pivot."
+  if (REPORT_LABEL.test(answer)) return "Answer conversationally; do not use status-report labels such as version:, house:, render check:, status:, or result:."
   if (!technicalDetailRequested && HOUSEHOLD_JARGON.test(answer)) return "Use household language such as shelf or library; omit implementation jargon unless technical detail was requested."
   return undefined
 }
