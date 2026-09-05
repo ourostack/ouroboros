@@ -262,10 +262,9 @@ describe("Sanctuary media optimization read", () => {
       "GET http://127.0.0.1:8888/unmanic/panel/file_size_metrics/totalSizeChange/": json({}, 503),
     })).read()
     expect(result).toMatchObject({
-      ok: false,
-      error: { code: "unavailable", message: "Media service is unavailable", degraded: true },
+      ok: true,
       data: {
-        unmanic: { available: false, error: { code: "unavailable" } },
+        unmanic: { version: "0.4.0+4922a83", history: { available: false, reason: "file_size_metrics panel is unavailable" } },
         inventory: { totalItems: 3, analyzedSources: 3 },
         degraded: true,
       },
@@ -344,9 +343,9 @@ describe("Sanctuary media optimization read", () => {
 
   it("preserves healthy typed evidence when either upstream source fails", async () => {
     const unmanicFailed = await client(route({ "GET http://127.0.0.1:8888/unmanic/api/v2/version/read": json({}, 503) })).read()
-    expect(unmanicFailed).toMatchObject({ ok: false, error: { code: "unavailable" }, data: { unmanic: { available: false }, inventory: { totalItems: 3 }, degraded: true } })
+    expect(unmanicFailed).toMatchObject({ ok: false, error: { code: "unavailable" }, data: { unmanic: { available: false, error: { code: "unavailable" } }, inventory: { totalItems: 3 }, degraded: true } })
     const jellyfinFailed = await client(route({ "GET http://127.0.0.1:8096/Users/Me": json({}, 503) })).read()
-    expect(jellyfinFailed).toMatchObject({ ok: false, error: { code: "unavailable" }, data: { unmanic: { version: "0.4.0+4922a83" }, inventory: { available: false }, degraded: true } })
+    expect(jellyfinFailed).toMatchObject({ ok: false, error: { code: "unavailable" }, data: { unmanic: { version: "0.4.0+4922a83" }, inventory: { available: false, error: { code: "unavailable" } }, degraded: true } })
   })
 
   it("returns Unmanic-only evidence when optional Jellyfin attachment is absent", async () => {

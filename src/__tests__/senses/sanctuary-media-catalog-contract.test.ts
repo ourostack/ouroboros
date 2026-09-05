@@ -12,13 +12,15 @@ describe("Sanctuary media catalog contract", () => {
     "Of the films you have in stock, do you have a favorite?",
     "Do we have the movie Moonstruck?",
     "What movie should I watch?",
+    "First we gotta get you able to see the lib or this is moot.",
   ])("requires the restricted catalog read for household media shelf questions (%s)", (request) => {
     const contract = sanctuaryMediaCatalogRequiredToolCalls(request, ["unraid_get_system", ...requiredTools, "settle"])
     expect(contract).toMatchObject({
       names: requiredTools,
-      retryMessage: expect.stringMatching(/sanctuary_search_media_catalog.*taste.*favorite.*catalog evidence/is),
+      retryMessage: expect.stringMatching(/sanctuary_search_media_catalog.*degrades.*catalog tool.*taste.*favorite.*catalog evidence/is),
     })
     expect(contract?.validateTerminalAnswer("I don't actually watch films; I am just a bot.")).toContain("catalog evidence")
+    expect(contract?.validateTerminalAnswer("You need to check Jellyfin logs on the host.")).toContain("Do not send Ari")
     expect(contract?.validateTerminalAnswer("From the shelf, I’d pick The Princess Bride. I can’t watch it, but the catalog gives me enough to choose.")).toBeUndefined()
     expect(emitNervesEvent).toHaveBeenLastCalledWith(expect.objectContaining({
       component: "senses",
