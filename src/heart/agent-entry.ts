@@ -167,7 +167,7 @@ import("./runtime-credentials")
       drainBufferedRuntimeCredentialBootstrap(applyRuntimeCredentialBootstrapMessage)
     }
     if (!readRuntimeCredentialConfig(agentName).ok) {
-      void refreshRuntimeCredentialConfig(agentName, { preserveCachedOnFailure: true }).catch(() => undefined)
+      await refreshRuntimeCredentialConfig(agentName, { preserveCachedOnFailure: true }).catch(() => undefined)
     }
     const providerPool = readProviderCredentialPool(agentName)
     const providerTargets = await selectedProviderTargets(agentName)

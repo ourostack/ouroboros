@@ -15,7 +15,7 @@ describe("Sanctuary storage optimization contract", () => {
   ])("requires both safe reads for explicit storage diagnosis plus shrink intent (%s)", (request) => {
     expect(sanctuaryStorageOptimizationRequiredToolCalls(request, ["query_cares", ...requiredTools, "settle"])).toEqual({
       names: requiredTools,
-      retryMessage: expect.stringMatching(/safe reads.*largest.*Unmanic.*Jellyfin.*sample encode.*savings.*shell.*QDirStat/is),
+      retryMessage: expect.stringMatching(/safe reads.*largest.*Unmanic.*Jellyfin.*sample encode.*savings.*degraded.*bounded container\/log tools.*shell.*dashboard.*QDirStat/is),
     })
     expect(emitNervesEvent).toHaveBeenLastCalledWith(expect.objectContaining({
       component: "senses",

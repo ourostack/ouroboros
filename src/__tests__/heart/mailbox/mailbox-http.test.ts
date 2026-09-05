@@ -235,13 +235,19 @@ describe("mailbox http", () => {
 
     const onChange = vi.fn()
     const close = vi.fn()
+    let errorListener: ((error: Error) => void) | null = null
     const clearTimeout = vi.fn()
     let watchedCallback: (() => void) | null = null
     const watcher = createBundleWatcher("/bundles", onChange, {
       existsSync: () => true,
       watch: (_root, _options, callback) => {
         watchedCallback = callback
-        return { close }
+        return {
+          close,
+          on: (event, listener) => {
+            if (event === "error") errorListener = listener
+          },
+        }
       },
       setTimeout: (callback) => {
         callback()
@@ -254,6 +260,9 @@ describe("mailbox http", () => {
     watchedCallback?.()
     expect(clearTimeout).toHaveBeenCalledWith(1)
     expect(onChange).toHaveBeenCalledTimes(2)
+    errorListener?.(new Error("UNKNOWN: unknown error, watch processing file"))
+    expect(close).toHaveBeenCalledTimes(1)
+    expect(onChange).toHaveBeenCalledTimes(3)
     watcher.stop()
     expect(close).toHaveBeenCalledTimes(1)
 
@@ -274,6 +283,25 @@ describe("mailbox http", () => {
       clearTimeout: vi.fn(),
     })
     throwingWatcher.stop()
+
+    const syncErrorClose = vi.fn()
+    const syncErrorChange = vi.fn()
+    const syncErrorWatcher = createBundleWatcher("/bundles", syncErrorChange, {
+      existsSync: () => true,
+      watch: (_root, _options, _callback) => ({
+        close: syncErrorClose,
+        on: (_event, listener) => listener(new Error("watch failed before registration completed")),
+      }),
+      setTimeout: (callback) => {
+        callback()
+        return 1 as any
+      },
+      clearTimeout: vi.fn(),
+    })
+    expect(syncErrorClose).toHaveBeenCalledTimes(1)
+    expect(syncErrorChange).toHaveBeenCalledTimes(1)
+    syncErrorWatcher.stop()
+    expect(syncErrorClose).toHaveBeenCalledTimes(2)
   })
 
   it("keeps default hook composition in an explicit helper seam", async () => {
