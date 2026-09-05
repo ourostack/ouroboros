@@ -78,6 +78,7 @@ export interface SettleFrontendApprovalDependencies {
   approvalPolicyForInvocation: typeof approvalPolicyForInvocation
   execTool: typeof execTool
   getSharedMcpManager: typeof getSharedMcpManager
+  releaseRuntimeMcpServers: () => Promise<void>
   loadSession: typeof loadSession
   postTurnTrim: typeof postTurnTrim
   postTurnPersist: typeof postTurnPersist
@@ -95,6 +96,11 @@ const PERMISSION_OPTIONS = [
   { optionId: "reject-once", name: "Reject", kind: "reject_once" },
 ] as const
 
+async function defaultReleaseRuntimeMcpServers(): Promise<void> {
+  const manager = await import("../repertoire/mcp-manager")
+  await manager.releaseRuntimeMcpServers()
+}
+
 const DEFAULT_SETTLEMENT_DEPENDENCIES: SettleFrontendApprovalDependencies = {
   withTurnExecutionLease,
   setAgentName,
@@ -105,6 +111,7 @@ const DEFAULT_SETTLEMENT_DEPENDENCIES: SettleFrontendApprovalDependencies = {
   approvalPolicyForInvocation,
   execTool,
   getSharedMcpManager,
+  releaseRuntimeMcpServers: defaultReleaseRuntimeMcpServers,
   loadSession,
   postTurnTrim,
   postTurnPersist,
@@ -126,10 +133,11 @@ export async function settleFrontendApproval(
 
   return dependencies.withTurnExecutionLease(async () => {
     dependencies.setAgentName(input.request.agent)
-    const mcpManager = await dependencies.getSharedMcpManager(
-      input.request.runtimeMcpServers ? { runtimeServers: input.request.runtimeMcpServers } : undefined,
-    ) ?? undefined
-    return dependencies.withSessionTurnLease(record.sessionPath, async (lease) => {
+    try {
+      const mcpManager = await dependencies.getSharedMcpManager(
+        input.request.runtimeMcpServers ? { runtimeServers: input.request.runtimeMcpServers } : undefined,
+      ) ?? undefined
+      return await dependencies.withSessionTurnLease(record.sessionPath, async (lease) => {
       const currentRevision = dependencies.readSessionTransaction(record.sessionPath, lease).revision
       const continuationSignal = input.optionId === "cancelled" ? AbortSignal.abort() : input.signal
       const liveToolContext = input.approvalRequest.liveToolContext ?? {
@@ -279,7 +287,12 @@ export async function settleFrontendApproval(
         turnOutcome,
         ...(continuation.suspension ? { suspension: continuation.suspension } : {}),
       }
-    })
+      })
+    } finally {
+      if (input.request.runtimeMcpServers) {
+        await dependencies.releaseRuntimeMcpServers()
+      }
+    }
   })
 }
 

@@ -238,6 +238,7 @@ describe("frontend approval runtime", () => {
 
 describe("frontend approval settlement", () => {
   function settlementFixture() {
+    const leaseOrder: string[] = []
     const revision = { value: "d".repeat(64) }
     const record = {
       approvalId: "approval-1",
@@ -368,7 +369,14 @@ describe("frontend approval settlement", () => {
         approvalCoordinatorFactory,
       },
       deps: {
-        withTurnExecutionLease: async (work: () => Promise<unknown>) => work(),
+        withTurnExecutionLease: async (work: () => Promise<unknown>) => {
+          leaseOrder.push("lease:start")
+          try {
+            return await work()
+          } finally {
+            leaseOrder.push("lease:end")
+          }
+        },
         setAgentName: vi.fn(),
         withSessionTurnLease: async (_path: string, work: (lease: object) => Promise<unknown>) => work({ lease: true }),
         readSessionTransaction: vi.fn(() => ({ revision: revision.value })),
@@ -377,6 +385,9 @@ describe("frontend approval settlement", () => {
         approvalPolicyForInvocation: vi.fn(async () => ({ kind: "required", policyId: record.policyId })),
         execTool: executeTool,
         getSharedMcpManager: vi.fn(async () => ({ manager: true })),
+        releaseRuntimeMcpServers: vi.fn(async () => {
+          leaseOrder.push("runtime:release")
+        }),
         loadSession,
         postTurnTrim: vi.fn((messages) => ({ messages })),
         postTurnPersist,
@@ -393,6 +404,7 @@ describe("frontend approval settlement", () => {
       approvalCoordinatorFactory,
       executeApprovalDecision,
       executeTool,
+      leaseOrder,
       postTurnPersist,
       tokenStore,
     }
@@ -414,6 +426,8 @@ describe("frontend approval settlement", () => {
     expect(fixture.deps.getSharedMcpManager).toHaveBeenCalledWith({
       runtimeServers: fixture.input.request.runtimeMcpServers,
     })
+    expect(fixture.deps.releaseRuntimeMcpServers).toHaveBeenCalledOnce()
+    expect(fixture.leaseOrder).toEqual(["lease:start", "runtime:release", "lease:end"])
     expect(fixture.executeApprovalDecision).toHaveBeenCalledWith(expect.objectContaining({
       currentSessionRevision: "d".repeat(64),
       decision: expect.objectContaining({
@@ -508,6 +522,7 @@ describe("frontend approval settlement", () => {
       deliveries: [],
     })
     expect(fixture.deps.getSharedMcpManager).toHaveBeenCalledWith(undefined)
+    expect(fixture.deps.releaseRuntimeMcpServers).not.toHaveBeenCalled()
 
     const duplicate = settlementFixture()
     duplicate.deps.resumeApprovalContinuation.mockResolvedValueOnce({ outcome: "already_continued", messages: [] })
@@ -535,6 +550,20 @@ describe("frontend approval settlement", () => {
     malformed.deps.resumeApprovalContinuation.mockResolvedValueOnce({ outcome: "suspended", messages: [] })
     await expect(settleFrontendApproval(malformed.input, malformed.deps as never))
       .rejects.toThrow("omitted its nested suspension")
+  })
+
+  it("releases runtime MCPs before the turn lease exits when continuation fails", async () => {
+    const fixture = settlementFixture()
+    fixture.input.request.runtimeMcpServers = {
+      ouro_workbench: { command: "/Applications/OuroWorkbenchMCP" },
+    }
+    fixture.deps.resumeApprovalContinuation.mockRejectedValueOnce(new Error("continuation failed"))
+    const { settleFrontendApproval } = await import("../../heart/frontend-approval-runtime")
+
+    await expect(settleFrontendApproval(fixture.input, fixture.deps as never))
+      .rejects.toThrow("continuation failed")
+    expect(fixture.deps.releaseRuntimeMcpServers).toHaveBeenCalledOnce()
+    expect(fixture.leaseOrder).toEqual(["lease:start", "runtime:release", "lease:end"])
   })
 
   it.each([

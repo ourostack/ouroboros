@@ -242,13 +242,10 @@ describe("frontend session service", () => {
       expect(input.runtimeMcpServers).toEqual(runtimeMcpServers)
       return { ...settledResult(), turnOutcome: undefined }
     })
-    const releaseRuntimeMcpServers = vi.fn(async () => undefined)
-
     const { FrontendSessionService } = await import("../../heart/frontend-session-service")
-    const service = new FrontendSessionService({ runner, releaseRuntimeMcpServers })
+    const service = new FrontendSessionService({ runner })
 
     await expect(service.runTurn({ ...request(), runtimeMcpServers })).rejects.toThrow("omitted its outcome")
-    expect(releaseRuntimeMcpServers).toHaveBeenCalledOnce()
     expect(service.hasTurn("turn-1")).toBe(false)
   })
 

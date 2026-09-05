@@ -36,6 +36,11 @@ const OUTWARD_DELIVERY_TOOL_ACKS = new Map([
   ["speak", "(spoken)"],
 ])
 
+async function releaseRuntimeMcpServersAfterTurn(): Promise<void> {
+  const manager = await import("../repertoire/mcp-manager")
+  await manager.releaseRuntimeMcpServers()
+}
+
 /**
  * Strip MiniMax-style `<think>...</think>` reasoning blocks from a response
  * string. Handles unclosed open tags (treats everything from `<think>` to
@@ -309,9 +314,15 @@ export function getSenseSessionPath(agentName: string, friendId: string, channel
  * this function handles all pipeline wiring.
  */
 export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSenseTurnResult> {
-  return withTurnExecutionLease(() => {
+  return withTurnExecutionLease(async () => {
     setAgentName(options.agentName)
-    return runSenseTurnExclusive(options)
+    try {
+      return await runSenseTurnExclusive(options)
+    } finally {
+      if (options.runtimeMcpServers && !options.disableTools) {
+        await releaseRuntimeMcpServersAfterTurn()
+      }
+    }
   })
 }
 

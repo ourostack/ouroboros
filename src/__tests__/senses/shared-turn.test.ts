@@ -137,12 +137,14 @@ vi.mock("@ouro.bot/friends", async () => {
 })
 
 const mockGetSharedMcpManager = vi.fn().mockResolvedValue(null)
+const mockReleaseRuntimeMcpServers = vi.fn().mockResolvedValue(undefined)
 
 vi.mock("../../repertoire/mcp-manager", async () => {
   const actual = await vi.importActual<typeof import("../../repertoire/mcp-manager")>("../../repertoire/mcp-manager")
   return {
     ...actual,
     getSharedMcpManager: (...args: any[]) => mockGetSharedMcpManager(...args),
+    releaseRuntimeMcpServers: (...args: any[]) => mockReleaseRuntimeMcpServers(...args),
   }
 })
 
@@ -316,6 +318,7 @@ describe("runSenseTurn", () => {
     mockLoadSession.mockReset()
     mockLoadSession.mockReturnValue(null)
     mockDeferPostTurnPersist.mockReset().mockResolvedValue([])
+    mockReleaseRuntimeMcpServers.mockReset().mockResolvedValue(undefined)
     setupSettledTurn()
     mockFriendResolve.mockResolvedValue(makeResolvedContext())
     mockWithSessionTurnLease.mockReset().mockImplementation(async (_sessionPath: string, work: (lease: any) => Promise<any>) => work({
@@ -949,6 +952,80 @@ describe("runSenseTurn", () => {
     expect(mockGetSharedMcpManager).toHaveBeenCalledWith({ runtimeServers: runtimeMcpServers })
   })
 
+  it("releases each runtime MCP before the next queued turn starts", async () => {
+    const firstEntered = Promise.withResolvers<void>()
+    const finishFirst = Promise.withResolvers<void>()
+    const order: string[] = []
+    let runCount = 0
+    let releaseCount = 0
+    mockHandleInboundTurn.mockImplementation(async (input: any) => {
+      runCount += 1
+      const currentRun = runCount
+      order.push(`turn:${currentRun}`)
+      if (currentRun === 1) {
+        firstEntered.resolve()
+        await finishFirst.promise
+      }
+      input.callbacks.onTextChunk(`response ${currentRun}`)
+      return {
+        resolvedContext: makeResolvedContext(),
+        gateResult: { allowed: true },
+        turnOutcome: "settled",
+        messages: [],
+      }
+    })
+    mockReleaseRuntimeMcpServers.mockImplementation(async () => {
+      releaseCount += 1
+      order.push(`release:${releaseCount}`)
+    })
+    const runtimeMcpServers = {
+      ouro_workbench: { command: "/Apps/OuroWorkbenchMCP", args: [] },
+    }
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    const first = runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "session-first",
+      friendId: "friend-1",
+      userMessage: "first",
+      runtimeMcpServers,
+    })
+    await firstEntered.promise
+    const second = runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "session-second",
+      friendId: "friend-1",
+      userMessage: "second",
+      runtimeMcpServers,
+    })
+
+    await Promise.resolve()
+    expect(order).toEqual(["turn:1"])
+    finishFirst.resolve()
+    await Promise.all([first, second])
+
+    expect(order).toEqual(["turn:1", "release:1", "turn:2", "release:2"])
+  })
+
+  it("releases runtime MCPs when a turn fails", async () => {
+    mockHandleInboundTurn.mockRejectedValueOnce(new Error("provider failed"))
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+
+    await expect(runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "session-failed",
+      friendId: "friend-1",
+      userMessage: "hello",
+      runtimeMcpServers: {
+        ouro_workbench: { command: "/Apps/OuroWorkbenchMCP", args: [] },
+      },
+    })).rejects.toThrow("provider failed")
+
+    expect(mockReleaseRuntimeMcpServers).toHaveBeenCalledOnce()
+  })
+
   it("calls getSharedMcpManager with undefined when no runtimeMcpServers are supplied", async () => {
     const { runSenseTurn } = await import("../../senses/shared-turn")
     await runSenseTurn({
@@ -960,6 +1037,7 @@ describe("runSenseTurn", () => {
     })
 
     expect(mockGetSharedMcpManager).toHaveBeenCalledWith(undefined)
+    expect(mockReleaseRuntimeMcpServers).not.toHaveBeenCalled()
   })
 
   it("hard-disables native and MCP tools for observe-only turns", async () => {
@@ -978,6 +1056,7 @@ describe("runSenseTurn", () => {
     })
 
     expect(mockGetSharedMcpManager).not.toHaveBeenCalled()
+    expect(mockReleaseRuntimeMcpServers).not.toHaveBeenCalled()
     expect(mockBuildSystem.mock.calls[0][1]).toEqual({ tools: [], hardDisableTools: true })
     expect(mockHandleInboundTurn.mock.calls[0][0].runAgentOptions.tools).toEqual([])
     expect(mockHandleInboundTurn.mock.calls[0][0].runAgentOptions.hardDisableTools).toBe(true)
