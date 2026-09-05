@@ -266,6 +266,26 @@ describe("mailbox http", () => {
     watcher.stop()
     expect(close).toHaveBeenCalledTimes(1)
 
+    const noErrorEmitterOnChange = vi.fn()
+    const noErrorEmitterClose = vi.fn()
+    let noErrorEmitterCallback: (() => void) | null = null
+    const noErrorEmitterWatcher = createBundleWatcher("/bundles", noErrorEmitterOnChange, {
+      existsSync: () => true,
+      watch: (_root, _options, callback) => {
+        noErrorEmitterCallback = callback
+        return { close: noErrorEmitterClose }
+      },
+      setTimeout: (callback) => {
+        callback()
+        return 2 as any
+      },
+      clearTimeout,
+    })
+    noErrorEmitterCallback?.()
+    expect(noErrorEmitterOnChange).toHaveBeenCalledTimes(1)
+    noErrorEmitterWatcher.stop()
+    expect(noErrorEmitterClose).toHaveBeenCalledTimes(1)
+
     const missingWatcher = createBundleWatcher("/missing", onChange, {
       existsSync: () => false,
       watch: vi.fn(),
