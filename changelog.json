@@ -4,8 +4,7 @@
     {
       "version": "0.1.0-alpha.797",
       "changes": [
-        "Render Telegram-native `*bold*`, `_italic_`, and inline-code Butler replies safely while preserving the existing fail-closed behavior for stray or overlapping formatting markers.",
-        "Tighten the Telegram prompt contract so Butler replies avoid report labels and repeated validation lines in phone-native conversation."
+        "Render Telegram-native Butler emphasis safely at the send boundary and tighten noisy visibility replies, including report labels and repeated validation lines."
       ]
     },
     {

@@ -87,6 +87,8 @@ describe("Sanctuary media catalog contract", () => {
       "Yes—yes—I can see 11,870 titles on the shelf.",
       "No—the shelf is not visible, despite the successful read of 11,870 items.",
       "Yes—I can see 11,870 titles on the shelf. Anything else?",
+      "Version: 0.1.0-alpha.796\nThe house: yes, I can see all 11,870 titles.",
+      "Yes—I can see all 11,870 titles on the shelf. Yes—I can see all 11,870 titles on the shelf.",
       "Yes—the shelf is visible.",
       "Yes, I can see it. This is a third sentence. And this is a fourth.",
       `Yes, I can see it. ${"A".repeat(230)}`,

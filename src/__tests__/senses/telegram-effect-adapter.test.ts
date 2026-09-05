@@ -149,9 +149,11 @@ describe("Telegram effect adapter", () => {
     const execute = createTelegramAuthorizedEffectExecutor({ store, api: { request }, authorize: () => authorization })
     const unmatched = "Keep *Moonstruck literal while **this would otherwise be bold**"
     const overlapping = "Keep **bold *italic** tail* literal <now> & later"
+    const unmatchedUnderscore = "Keep _Moonstruck literal while **this would otherwise be bold**"
 
     await execute({ idempotencyKey: "reply:unmatched", target, authorClass: "butler", effect: { kind: "text", text: unmatched } })
     await execute({ idempotencyKey: "reply:overlapping", target, authorClass: "butler", effect: { kind: "text", text: overlapping } })
+    await execute({ idempotencyKey: "reply:unmatched-underscore", target, authorClass: "butler", effect: { kind: "text", text: unmatchedUnderscore } })
 
     const spanning = `Prefix *${"word ".repeat(300)}suffix*`
     const spanningResult = await execute({ idempotencyKey: "reply:cross-chunk", target, authorClass: "butler", effect: { kind: "text", text: spanning } })
@@ -161,7 +163,8 @@ describe("Telegram effect adapter", () => {
     const htmlBodies = request.mock.calls.map(([, body]) => body.text)
     expect(htmlBodies[0]).toBe(unmatched)
     expect(htmlBodies[1]).toBe("Keep **bold *italic** tail* literal &lt;now&gt; &amp; later")
-    expect(htmlBodies.slice(2).join("")).toBe(spanning)
+    expect(htmlBodies[2]).toBe(unmatchedUnderscore)
+    expect(htmlBodies.slice(3).join("")).toBe(spanning)
     expect(htmlBodies.every((body) => !String(body).includes("<b>") && !String(body).includes("<i>"))).toBe(true)
   })
 
@@ -177,9 +180,22 @@ describe("Telegram effect adapter", () => {
     expect(request).toHaveBeenCalledWith("sendMessage", { chat_id: "42", text: raw, parse_mode: "HTML" }, undefined)
   })
 
+  it("renders Telegram-native bold and italic from Butler text without changing the canonical raw effect", async () => {
+    const store = journal()
+    const request = vi.fn(async () => ({ message_id: 84 }))
+    const execute = createTelegramAuthorizedEffectExecutor({ store, api: { request }, authorize: () => authorization })
+    const raw = "render check: *bold*, _italic_, and `code`"
+
+    const result = await execute({ idempotencyKey: "reply:telegram-native-markup", target, authorClass: "butler", effect: { kind: "text", text: raw } })
+
+    expect(result.effect).toEqual({ kind: "text", text: raw })
+    expect(result.parts).toEqual([expect.objectContaining({ text: raw, state: "accepted", messageId: 84 })])
+    expect(request).toHaveBeenCalledWith("sendMessage", { chat_id: "42", text: "render check: <b>bold</b>, <i>italic</i>, and <code>code</code>", parse_mode: "HTML" }, undefined)
+  })
+
   it("falls back from Butler HTML to the identical raw Markdown chunk on Telegram 400", async () => {
     const store = journal()
-    const raw = "*bold* and _italic_ with `code` & <unsafe>"
+    const raw = "**bold** and _italic_ with `code` & <unsafe>"
     const request = vi.fn()
       .mockRejectedValueOnce(new TelegramApiError("bad html", { status: 400, errorCode: 400 }))
       .mockResolvedValueOnce({ message_id: 82 })
