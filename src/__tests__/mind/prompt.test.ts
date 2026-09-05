@@ -1818,7 +1818,7 @@ describe("runtimeInfoSection", () => {
     expect(result).toContain("Telegram")
     expect(result).toContain("concise")
     expect(result).toContain("phone-native")
-    expect(result).toContain("i may use only **bold**, *italic*, and `inline code` markdown")
+    expect(result).toContain("i may use only Telegram-native *bold*, _italic_, and `inline code` markdown")
     expect(result).toContain("no markdown links; i write necessary urls in full")
     expect(result).toContain("no headings, tables, or raw html")
     expect(result).not.toContain("i do not use markdown")
