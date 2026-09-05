@@ -1,26 +1,33 @@
 {
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
-      {
-        "version": "0.1.0-alpha.792",
-        "changes": [
-          "Catch asynchronous bundle watcher errors so transient pending-message processing files on live filesystems cannot tombstone the daemon or interrupt private-runtime wakes.",
-          "Warm runtime credentials before private-runtime bootstrap so Telegram-capable workers start with runtime config instead of racing the managed Telegram sense.",
-          "Treat simple Sanctuary library visibility asks like 'see the lib' as catalog reads, and block replies that send Ari to inspect Jellyfin, Unmanic, dashboards, or logs while safe evidence tools are available.",
-          "Degrade optional Unmanic file-size metrics, including failed detail reads, without hiding available media catalog evidence."
-        ]
-      },
-      {
-        "version": "0.1.0-alpha.791",
-        "changes": [
-          "Promote operator CLI pending messages into the active inner-turn user message so private-runtime wakes answer the text that woke them instead of stale heartbeat context.",
-          "Keep non-operator pending work in the background pending section so automated noise does not become the live user ask.",
-          "Deliver private-runtime Telegram surface and send_message returns through the existing Telegram effect journal instead of queuing ghost messages for the next chat.",
-          "Canonicalize Telegram session filename keys before live delivery so production sanitized session paths still authorize against the real Telegram binding.",
-          "Prefer the authoritative settle tool answer over incidental streamed prose for shared-turn delivery, preventing concatenated Telegram replies.",
-          "Expire stale generic Telegram outreach from the pending queue while preserving request-bound returns and trust/admission notices."
-        ]
-      },
+    {
+      "version": "0.1.0-alpha.793",
+      "changes": [
+        "Deliver only the authoritative terminal answer after tool-using model passes, preserving causal Telegram binding without duplicate prose.",
+        "Make Sanctuary media visibility, title, favorite, addition, list, and count answers concise, grounded, and free of internal jargon or self-erasing disclaimers."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.792",
+      "changes": [
+        "Catch asynchronous bundle watcher errors so transient pending-message processing files on live filesystems cannot tombstone the daemon or interrupt private-runtime wakes.",
+        "Warm runtime credentials before private-runtime bootstrap so Telegram-capable workers start with runtime config instead of racing the managed Telegram sense.",
+        "Treat simple Sanctuary library visibility asks like 'see the lib' as catalog reads, and block replies that send Ari to inspect Jellyfin, Unmanic, dashboards, or logs while safe evidence tools are available.",
+        "Degrade optional Unmanic file-size metrics, including failed detail reads, without hiding available media catalog evidence."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.791",
+      "changes": [
+        "Promote operator CLI pending messages into the active inner-turn user message so private-runtime wakes answer the text that woke them instead of stale heartbeat context.",
+        "Keep non-operator pending work in the background pending section so automated noise does not become the live user ask.",
+        "Deliver private-runtime Telegram surface and send_message returns through the existing Telegram effect journal instead of queuing ghost messages for the next chat.",
+        "Canonicalize Telegram session filename keys before live delivery so production sanitized session paths still authorize against the real Telegram binding.",
+        "Prefer the authoritative settle tool answer over incidental streamed prose for shared-turn delivery, preventing concatenated Telegram replies.",
+        "Expire stale generic Telegram outreach from the pending queue while preserving request-bound returns and trust/admission notices."
+      ]
+    },
     {
       "version": "0.1.0-alpha.790",
       "changes": [

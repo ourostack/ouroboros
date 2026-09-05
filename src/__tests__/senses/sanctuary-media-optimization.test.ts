@@ -151,6 +151,40 @@ describe("Sanctuary media optimization read", () => {
     expect(serialized).not.toContain("111111")
   })
 
+  it("ranks an exact title ahead of a bounded page of substring decoys", async () => {
+    const decoys = Array.from({ length: 20 }, (_, index) => ({ Id: String(index).padStart(32, "0"), Name: `Backup ${index}`, Type: "Movie" }))
+    const fetch = route({
+      "GET http://127.0.0.1:8096/Items": () => json({ TotalRecordCount: 21, Items: [...decoys, { Id: "f".repeat(32), Name: "Up", Type: "Movie" }] }),
+    })
+
+    const result = await client(fetch).readCatalog({ query: "Up", limit: 1 })
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: {
+        matchedItems: 21,
+        items: [{ untrustedTitle: "Up" }],
+        truncated: true,
+      },
+    })
+  })
+
+  it("matches punctuation-equivalent title searches", async () => {
+    const fetch = route({
+      "GET http://127.0.0.1:8096/Items": () => json({ TotalRecordCount: 1, Items: [{ Id: "f".repeat(32), Name: "Spider-Man", Type: "Movie" }] }),
+    })
+
+    const result = await client(fetch).readCatalog({ query: "Spider Man", limit: 1 })
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: {
+        matchedItems: 1,
+        items: [{ untrustedTitle: "Spider-Man" }],
+      },
+    })
+  })
+
   it("uses a safe title when Jellyfin omits item names", async () => {
     const result = await client(route({
       "GET http://127.0.0.1:8096/Items": json({ TotalRecordCount: 1, Items: [{ Id: "1".repeat(32), Type: "Episode", MediaSources: [{ Id: "source", Size: 1_000, MediaStreams: [] }] }] }),
@@ -178,6 +212,9 @@ describe("Sanctuary media optimization read", () => {
     const tooLong = await client().readCatalog({ query: "x".repeat(201) })
     expect(tooLong).toMatchObject({ ok: false, error: { code: "invalid_response", degraded: true } })
     expect(JSON.stringify(tooLong)).not.toContain(TOKEN)
+
+    const punctuationHeavy = await client().readCatalog({ query: "—".repeat(201) })
+    expect(punctuationHeavy).toMatchObject({ ok: false, error: { code: "invalid_response", degraded: true } })
 
     const invalidLimit = await client().readCatalog({ limit: 0 })
     expect(invalidLimit).toMatchObject({ ok: false, error: { code: "invalid_response", degraded: true } })

@@ -304,6 +304,27 @@ describe("extractOutwardSenseDeliveryText", () => {
 
     expect(extractOutwardSenseDeliveryText([{ role: "user", content: "hello" }])).toBeNull()
   })
+
+  it("does not recover prose attached to an ordinary tool call as outward speech", async () => {
+    const { extractOutwardSenseDeliveryText } = await import("../../senses/shared-turn")
+    const messages: ChatCompletionMessageParam[] = [
+      {
+        role: "assistant",
+        content: "Current draft",
+        tool_calls: [{ id: "read-1", type: "function", function: { name: "sanctuary_search_media_catalog", arguments: "{}" } }],
+      },
+      { role: "tool", tool_call_id: "read-1", content: "{}" },
+    ]
+
+    expect(extractOutwardSenseDeliveryText(messages)).toBeNull()
+  })
+
+  it("treats non-text and blank assistant content as no outward speech", async () => {
+    const { extractOutwardSenseDeliveryText } = await import("../../senses/shared-turn")
+
+    expect(extractOutwardSenseDeliveryText([{ role: "assistant", content: null }])).toBeNull()
+    expect(extractOutwardSenseDeliveryText([{ role: "assistant", content: "   " }])).toBeNull()
+  })
 })
 
 describe("runSenseTurn", () => {
@@ -320,6 +341,38 @@ describe("runSenseTurn", () => {
       ownerToken: "token-a",
       release: vi.fn(),
     }))
+  })
+
+  it("carries authenticated ingress relations on the synthesized user message", async () => {
+    const ingressRelations = {
+      replyToEventId: "evt-000010",
+      threadRootEventId: "evt-000001",
+      references: ["telegram-artifact:abc"],
+    }
+    mockHandleInboundTurn.mockImplementation(async (input: any) => {
+      const { getIngressRelations } = await import("../../heart/session-events")
+      expect(getIngressRelations(input.messages[0])).toEqual(ingressRelations)
+      input.callbacks.onTextChunk("hello from the agent")
+      return {
+        resolvedContext: makeResolvedContext(),
+        gateResult: { allowed: true },
+        turnOutcome: "settled",
+        completion: { answer: "hello from the agent", intent: "complete" },
+        messages: [],
+      }
+    })
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+
+    const result = await runSenseTurn({
+      agentName: "test-agent",
+      channel: "telegram",
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "hello",
+      ingressRelations,
+    })
+
+    expect(result.response).toBe("hello from the agent")
   })
 
   it("behaviorally holds the session lease before load through persistence and accepted delivery", async () => {
@@ -340,7 +393,7 @@ describe("runSenseTurn", () => {
       input.callbacks.onTextChunk("delivered")
       await input.postTurn([], "/tmp/session.json")
       order.push("session:persist")
-      return { resolvedContext: makeResolvedContext(), gateResult: { allowed: true }, turnOutcome: "settled", messages: [] }
+      return { resolvedContext: makeResolvedContext(), gateResult: { allowed: true }, turnOutcome: "settled", completion: { answer: "delivered", intent: "complete" }, messages: [] }
     })
 
     const { runSenseTurn } = await import("../../senses/shared-turn")
@@ -379,6 +432,281 @@ describe("runSenseTurn", () => {
     })
     expect(result.response).toBe("hello from the agent")
     expect(result.ponderDeferred).toBe(false)
+  })
+
+  it("delivers only the authoritative text-only terminal answer after ordinary tool-call prose", async () => {
+    const delivered: Array<{ kind: string; text: string }> = []
+    const messages: ChatCompletionMessageParam[] = [
+      { role: "system", content: "system" },
+      { role: "user", content: "Can you see the library now?" },
+      {
+        role: "assistant",
+        content: "Yes, I can see titles like The Pitt.",
+        tool_calls: [{ id: "catalog-1", type: "function", function: { name: "sanctuary_search_media_catalog", arguments: "{}" } }],
+      },
+      { role: "tool", tool_call_id: "catalog-1", content: JSON.stringify({ totalItems: 11_870 }) },
+      { role: "assistant", content: "Yes—the shelf is visible again. I can currently see 11,870 movies and episodes." },
+    ]
+    mockDeferPostTurnPersist.mockResolvedValue([
+      { id: "evt-user", role: "user", content: "Can you see the library now?", toolCalls: [] },
+      { id: "evt-draft", role: "assistant", content: "Yes, I can see titles like The Pitt.", toolCalls: [{ function: { name: "sanctuary_search_media_catalog" } }] },
+      { id: "evt-tool", role: "tool", content: JSON.stringify({ totalItems: 11_870 }), toolCalls: [] },
+      { id: "evt-final", role: "assistant", content: "Yes—the shelf is visible again. I can currently see 11,870 movies and episodes.", toolCalls: [] },
+    ])
+    mockHandleInboundTurn.mockImplementation(async (input: any) => {
+      input.callbacks.onTextChunk("Yes, I can see titles like The Pitt.")
+      input.callbacks.onTextChunk("Yes—the shelf is visible again. I can currently see 11,870 movies and episodes.")
+      await input.postTurn(messages, "/tmp/session.json")
+      return { resolvedContext: makeResolvedContext(), gateResult: { allowed: true }, turnOutcome: "settled", sessionPath: "/tmp/session.json", messages }
+    })
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+
+    const result = await runSenseTurn({
+      agentName: "test-agent",
+      channel: "telegram",
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "Can you see the library now?",
+      deliverySink: { onDelivery: (delivery) => { delivered.push(delivery) } },
+    })
+
+    expect(delivered).toEqual([{ kind: "text", text: "Yes—the shelf is visible again. I can currently see 11,870 movies and episodes." }])
+    expect(result.response).toBe("Yes—the shelf is visible again. I can currently see 11,870 movies and episodes.")
+    expect(result.causalSessionEventIds).toEqual(["evt-final"])
+  })
+
+  it("never revives a prior answer when the current settled turn has only ordinary tool-call prose", async () => {
+    const delivered: string[] = []
+    const priorMessages: ChatCompletionMessageParam[] = [
+      { role: "user", content: "Old question" },
+      { role: "assistant", content: "Old answer" },
+    ]
+    mockLoadSession.mockReturnValueOnce({
+      messages: priorMessages,
+      events: [
+        { id: "evt-old-user", role: "user", content: "Old question" },
+        { id: "evt-old-answer", role: "assistant", content: "Old answer" },
+      ],
+    })
+    const messages: ChatCompletionMessageParam[] = [
+      ...priorMessages,
+      { role: "user", content: "Current question" },
+      { role: "assistant", content: "Current draft", tool_calls: [{ id: "read-1", type: "function", function: { name: "sanctuary_search_media_catalog", arguments: "{}" } }] },
+      { role: "tool", tool_call_id: "read-1", content: "{}" },
+    ]
+    mockLoadSession.mockReturnValue({ messages })
+    mockDeferPostTurnPersist.mockResolvedValue([
+      { id: "evt-old-user", role: "user", content: "Old question", toolCalls: [] },
+      { id: "evt-old-answer", role: "assistant", content: "Old answer", toolCalls: [] },
+      { id: "evt-current-user", role: "user", content: "Current question", toolCalls: [] },
+      { id: "evt-current-draft", role: "assistant", content: "Current draft", toolCalls: [{ function: { name: "sanctuary_search_media_catalog" } }] },
+      { id: "evt-current-tool", role: "tool", content: "{}", toolCalls: [] },
+    ])
+    mockHandleInboundTurn.mockImplementation(async (input: any) => {
+      input.callbacks.onTextChunk("Current draft")
+      await input.postTurn(messages, "/tmp/session.json")
+      return { resolvedContext: makeResolvedContext(), gateResult: { allowed: true }, turnOutcome: "settled", sessionPath: "/tmp/session.json", messages }
+    })
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+
+    const result = await runSenseTurn({
+      agentName: "test-agent",
+      channel: "telegram",
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "Current question",
+      deliverySink: { onDelivery: (delivery) => { delivered.push(delivery.text) } },
+    })
+
+    expect(delivered).toEqual([])
+    expect(result.response).not.toContain("Old answer")
+    expect(result.response).not.toContain("Current draft")
+    expect(result.causalSessionEventIds).toBeUndefined()
+  })
+
+  it("prefers validated completion text over incidental callback prose", async () => {
+    const messages: ChatCompletionMessageParam[] = [
+      { role: "user", content: "Can you see it?" },
+      { role: "assistant", content: "An early guess.", tool_calls: [{ id: "read-1", type: "function", function: { name: "sanctuary_search_media_catalog", arguments: "{}" } }] },
+      { role: "tool", tool_call_id: "read-1", content: "{}" },
+      { role: "assistant", content: null, tool_calls: [{ id: "settle-1", type: "function", function: { name: "settle", arguments: JSON.stringify({ answer: "Yes—the shelf is visible.", intent: "direct_reply" }) } }] },
+      { role: "tool", tool_call_id: "settle-1", content: "(delivered)" },
+    ]
+    mockDeferPostTurnPersist.mockResolvedValue([
+      { id: "evt-draft", role: "assistant", content: "An early guess.", toolCalls: [{ function: { name: "sanctuary_search_media_catalog" } }] },
+      { id: "evt-final", role: "assistant", content: null, toolCalls: [{ id: "settle-1", function: { name: "settle" } }] },
+      { id: "evt-final-ack", role: "tool", content: "(delivered)", toolCallId: "settle-1", toolCalls: [] },
+    ])
+    mockHandleInboundTurn.mockImplementation(async (input: any) => {
+      input.callbacks.onTextChunk("An early guess.")
+      input.callbacks.onToolEnd("settle", "Yes—the shelf is visible.", true)
+      input.callbacks.onTextChunk("Yes—the shelf is visible.")
+      await input.postTurn(messages, "/tmp/session.json")
+      return { resolvedContext: makeResolvedContext(), gateResult: { allowed: true }, turnOutcome: "settled", completion: { answer: "Yes—the shelf is visible.", intent: "direct_reply" }, sessionPath: "/tmp/session.json", messages }
+    })
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+
+    const result = await runSenseTurn({ agentName: "test-agent", channel: "telegram", sessionKey: "session-123", friendId: "friend-1", userMessage: "Can you see it?" })
+
+    expect(result.response).toBe("Yes—the shelf is visible.")
+    expect(result.causalSessionEventIds).toEqual(["evt-final"])
+  })
+
+  it.each(["observed", "rested", "suspended", "errored", "superseded", "aborted"] as const)("does not deliver discarded callback prose for a %s turn", async (turnOutcome) => {
+    const delivered: string[] = []
+    mockHandleInboundTurn.mockImplementation(async (input: any) => {
+      input.callbacks.onTextChunk("Discarded intermediate prose.")
+      return { resolvedContext: makeResolvedContext(), gateResult: { allowed: true }, turnOutcome, sessionPath: "/tmp/session.json", messages: [] }
+    })
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+
+    const result = await runSenseTurn({
+      agentName: "test-agent",
+      channel: "telegram",
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "hello",
+      deliverySink: { onDelivery: (delivery) => { delivered.push(delivery.text) } },
+    })
+
+    expect(delivered).toEqual([])
+    expect(result.response).not.toContain("Discarded intermediate prose.")
+  })
+
+  it("delivers an intercepted command response without inventing a session coordinate", async () => {
+    const delivered: string[] = []
+    mockHandleInboundTurn.mockImplementation(async (input: any) => {
+      input.callbacks.onTextChunk("Started a fresh conversation.")
+      return { resolvedContext: makeResolvedContext(), gateResult: { allowed: true }, turnOutcome: "command", commandAction: "new" }
+    })
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+
+    const result = await runSenseTurn({
+      agentName: "test-agent",
+      channel: "telegram",
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "/new",
+      deliverySink: { onDelivery: (delivery) => { delivered.push(delivery.text) } },
+    })
+
+    expect(delivered).toEqual(["Started a fresh conversation."])
+    expect(result.response).toBe("Started a fresh conversation.")
+    expect(result.causalSessionEventIds).toEqual([null])
+  })
+
+  it("delivers one validated blocked completion and discards earlier prose", async () => {
+    const delivered: string[] = []
+    mockHandleInboundTurn.mockImplementation(async (input: any) => {
+      input.callbacks.onTextChunk("Unverified early claim.")
+      input.callbacks.onTextChunk("I could not verify the shelf because the catalog read failed.")
+      return {
+        resolvedContext: makeResolvedContext(),
+        gateResult: { allowed: true },
+        turnOutcome: "blocked",
+        completion: { answer: "I could not verify the shelf because the catalog read failed.", intent: "blocked" },
+        sessionPath: "/tmp/session.json",
+        messages: [],
+      }
+    })
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+
+    const result = await runSenseTurn({
+      agentName: "test-agent",
+      channel: "telegram",
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "Can you see it?",
+      deliverySink: { onDelivery: (delivery) => { delivered.push(delivery.text) } },
+    })
+
+    expect(delivered).toEqual(["I could not verify the shelf because the catalog read failed."])
+    expect(result.response).toBe("I could not verify the shelf because the catalog read failed.")
+  })
+
+  it("ignores a rejected settle coordinate and binds the accepted settle", async () => {
+    mockDeferPostTurnPersist.mockResolvedValue([
+      { id: "evt-rejected", role: "assistant", content: null, toolCalls: [{ id: "settle-reused", function: { name: "settle" } }] },
+      { id: "evt-rejection", role: "tool", content: "Use current evidence.", toolCallId: "settle-reused", toolCalls: [] },
+      { id: "evt-accepted", role: "assistant", content: null, toolCalls: [{ id: "settle-reused", function: { name: "settle" } }] },
+      { id: "evt-accepted-ack", role: "tool", content: "(delivered)", toolCallId: "settle-reused", toolCalls: [] },
+    ])
+    mockHandleInboundTurn.mockImplementation(async (input: any) => {
+      input.callbacks.onToolEnd("settle", "unsupported", false)
+      input.callbacks.onClearText()
+      input.callbacks.onToolEnd("settle", "grounded", true)
+      input.callbacks.onTextChunk("Grounded final answer.")
+      await input.postTurn([], "/tmp/session.json")
+      return { resolvedContext: makeResolvedContext(), gateResult: { allowed: true }, turnOutcome: "settled", completion: { answer: "Grounded final answer.", intent: "complete" }, sessionPath: "/tmp/session.json", messages: [] }
+    })
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+
+    const result = await runSenseTurn({ agentName: "test-agent", channel: "telegram", sessionKey: "session-123", friendId: "friend-1", userMessage: "hello" })
+
+    expect(result.causalSessionEventIds).toEqual(["evt-accepted"])
+  })
+
+  it("does not deliver an unvalidated blocked draft when no terminal completion exists", async () => {
+    const delivered: string[] = []
+    mockHandleInboundTurn.mockImplementation(async (input: any) => {
+      input.callbacks.onTextChunk("An unsupported guess.")
+      return { resolvedContext: makeResolvedContext(), gateResult: { allowed: true }, turnOutcome: "blocked", sessionPath: "/tmp/session.json", messages: [] }
+    })
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+
+    const result = await runSenseTurn({
+      agentName: "test-agent",
+      channel: "telegram",
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "Can you see it?",
+      deliverySink: { onDelivery: (delivery) => { delivered.push(delivery.text) } },
+    })
+
+    expect(delivered).toEqual([])
+    expect(result.response).not.toContain("unsupported guess")
+  })
+
+  it("does not deliver provisional callback text when a settled result has no terminal authority", async () => {
+    const delivered: string[] = []
+    mockHandleInboundTurn.mockImplementation(async (input: any) => {
+      input.callbacks.onTextChunk("Provisional text.")
+      return { resolvedContext: makeResolvedContext(), gateResult: { allowed: true }, turnOutcome: "settled", sessionPath: "/tmp/session.json", messages: [] }
+    })
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+
+    const result = await runSenseTurn({
+      agentName: "test-agent",
+      channel: "telegram",
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "hello",
+      deliverySink: { onDelivery: (delivery) => { delivered.push(delivery.text) } },
+    })
+
+    expect(delivered).toEqual([])
+    expect(result.response).not.toContain("Provisional text.")
+  })
+
+  it("delivers the pipeline failover message instead of errored callback prose", async () => {
+    const delivered: string[] = []
+    mockHandleInboundTurn.mockImplementation(async (input: any) => {
+      input.callbacks.onTextChunk("Discarded provider fragment.")
+      return { resolvedContext: makeResolvedContext(), gateResult: { allowed: true }, turnOutcome: "errored", failoverMessage: "The model service is unavailable; I recorded the failure.", sessionPath: "/tmp/session.json", messages: [] }
+    })
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+
+    const result = await runSenseTurn({
+      agentName: "test-agent",
+      channel: "telegram",
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "hello",
+      deliverySink: { onDelivery: (delivery) => { delivered.push(delivery.text) } },
+    })
+
+    expect(delivered).toEqual(["The model service is unavailable; I recorded the failure."])
+    expect(result.response).toBe("The model service is unavailable; I recorded the failure.")
   })
 
   it("claims an exact precommitted ingress event without synthesizing a second user message", async () => {
@@ -945,6 +1273,7 @@ describe("runSenseTurn", () => {
         resolvedContext: makeResolvedContext(),
         gateResult: { allowed: true },
         turnOutcome: "settled",
+        completion: { answer: "hello world", intent: "complete" },
         sessionPath: "/tmp/session.json",
         messages: [],
       }
@@ -963,8 +1292,10 @@ describe("runSenseTurn", () => {
   it("delivers speak and settle segments through the outward delivery sink", async () => {
     const delivered: Array<{ kind: string; text: string }> = []
     mockDeferPostTurnPersist.mockResolvedValue([
-      { id: "evt-000001", role: "assistant", content: null, toolCalls: [{ function: { name: "speak" } }] },
-      { id: "evt-000002", role: "assistant", content: null, toolCalls: [{ function: { name: "settle" } }] },
+      { id: "evt-000001", role: "assistant", content: null, toolCalls: [{ id: "speak-1", function: { name: "speak" } }] },
+      { id: "evt-speak-ack", role: "tool", content: "(spoken)", toolCallId: "speak-1", toolCalls: [] },
+      { id: "evt-000002", role: "assistant", content: null, toolCalls: [{ id: "settle-1", function: { name: "settle" } }] },
+      { id: "evt-settle-ack", role: "tool", content: "(delivered)", toolCallId: "settle-1", toolCalls: [] },
     ])
     mockHandleInboundTurn.mockImplementation(async (input: any) => {
       input.callbacks.onTextChunk("quick voice update")
@@ -977,6 +1308,7 @@ describe("runSenseTurn", () => {
         resolvedContext: makeResolvedContext(),
         gateResult: { allowed: true },
         turnOutcome: "settled",
+        completion: { answer: "final voice answer", intent: "complete" },
         sessionPath: "/tmp/session.json",
         messages: [],
       }
@@ -1018,7 +1350,7 @@ describe("runSenseTurn", () => {
     mockHandleInboundTurn.mockImplementation(async (input: any) => {
       input.callbacks.onTextChunk("new")
       await input.postTurn([], "/tmp/session.json")
-      return { resolvedContext: makeResolvedContext(), gateResult: { allowed: true }, turnOutcome: "settled", sessionPath: "/tmp/session.json", messages: [] }
+      return { resolvedContext: makeResolvedContext(), gateResult: { allowed: true }, turnOutcome: "settled", completion: { answer: "new", intent: "complete" }, sessionPath: "/tmp/session.json", messages: [] }
     })
     const { runSenseTurn } = await import("../../senses/shared-turn")
 
@@ -1036,7 +1368,7 @@ describe("runSenseTurn", () => {
       await expect(input.callbacks.flushNow()).rejects.toThrow("speaker down")
       input.callbacks.onTextChunk("successful text")
       await input.postTurn([], "/tmp/session.json")
-      return { resolvedContext: makeResolvedContext(), gateResult: { allowed: true }, turnOutcome: "settled", sessionPath: "/tmp/session.json", messages: [] }
+      return { resolvedContext: makeResolvedContext(), gateResult: { allowed: true }, turnOutcome: "settled", completion: { answer: "successful text", intent: "complete" }, sessionPath: "/tmp/session.json", messages: [] }
     })
     let delivery = 0
     const { runSenseTurn } = await import("../../senses/shared-turn")
@@ -1057,6 +1389,7 @@ describe("runSenseTurn", () => {
         resolvedContext: makeResolvedContext(),
         gateResult: { allowed: true },
         turnOutcome: "settled",
+        completion: { answer: "final voice answer", intent: "complete" },
         sessionPath: "/tmp/session.json",
         messages: [],
       }
@@ -1091,6 +1424,7 @@ describe("runSenseTurn", () => {
         resolvedContext: makeResolvedContext(),
         gateResult: { allowed: true },
         turnOutcome: "settled",
+        completion: { answer: "final voice answer", intent: "complete" },
         sessionPath: "/tmp/session.json",
         messages: [],
       }
@@ -1202,6 +1536,31 @@ describe("runSenseTurn", () => {
     expect(result.response).toBe("recovered answer from session")
     expect(result.responseCausalSessionEventId).toBe("evt-answer")
     expect(result.ponderDeferred).toBe(false)
+  })
+
+  it("uses a current-turn plain assistant message when callbacks emitted no text", async () => {
+    mockHandleInboundTurn.mockResolvedValue({
+      resolvedContext: makeResolvedContext(),
+      gateResult: { allowed: true },
+      turnOutcome: "settled",
+      sessionPath: "/tmp/session.json",
+      messages: [
+        { role: "system", content: "system" },
+        { role: "user", content: "hello" },
+        { role: "assistant", content: "authoritative current-turn answer" },
+      ],
+    })
+
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    const result = await runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "hello",
+    })
+
+    expect(result.response).toBe("authoritative current-turn answer")
   })
 
   it("recovers delivered settle text from a tool-required assistant message", async () => {
@@ -1513,6 +1872,30 @@ describe("runSenseTurn", () => {
     })).rejects.toThrow("pipeline explosion")
   })
 
+  it("fails closed when an allowed pipeline result omits its outcome", async () => {
+    const delivered: string[] = []
+    mockHandleInboundTurn.mockImplementation(async (input: any) => {
+      input.callbacks.onTextChunk("Malformed incidental text.")
+      const events = [{ role: "assistant", content: "Malformed incidental text." }]
+      await input.postTurn?.(events, "/tmp/session.json")
+      return { resolvedContext: makeResolvedContext(), gateResult: { allowed: true }, messages: events }
+    })
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+
+    const result = await runSenseTurn({
+      agentName: "test-agent",
+      channel: "telegram",
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "hello",
+      deliverySink: { onDelivery: (delivery) => { delivered.push(delivery.text) } },
+    })
+
+    expect(delivered).toEqual([])
+    expect(result.response).toBe("")
+    expect(result.causalSessionEventIds).toBeUndefined()
+  })
+
   it("runs the sense authorization barrier at the pipeline pre-provider boundary", async () => {
     let providerInvocationCount = 0
     mockHandleInboundTurn.mockImplementation(async (input: any) => {
@@ -1578,7 +1961,7 @@ describe("runSenseTurn — only-reasoning recovery", () => {
       // assistant content with the think tags.
       callbacks.onReasoningChunk("turning the question over...")
       // No onTextChunk — that's the bug shape.
-      return {} as InboundTurnResult
+      return { resolvedContext: makeResolvedContext(), gateResult: { allowed: true }, turnOutcome: "settled" } as InboundTurnResult
     })
     mockLoadSession.mockReturnValue({
       messages: [
@@ -1603,11 +1986,35 @@ describe("runSenseTurn — only-reasoning recovery", () => {
     expect(result.response).not.toContain("</think>")
   })
 
+  it("returns the diagnostic when reasoning has no saved session readback", async () => {
+    mockHandleInboundTurn.mockImplementation(async ({ callbacks }: { callbacks: ChannelCallbacks }) => {
+      callbacks.onReasoningChunk("thinking without a terminal answer")
+      return {
+        resolvedContext: makeResolvedContext(),
+        gateResult: { allowed: true },
+        turnOutcome: "settled",
+        messages: [],
+      } as InboundTurnResult
+    })
+    mockLoadSession.mockReturnValue(null)
+
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    const result = await runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "session-only-think-no-readback",
+      friendId: "friend-1",
+      userMessage: "hello",
+    })
+
+    expect(result.response).toContain("agent produced reasoning but no final answer")
+  })
+
   it("strips think blocks from a normal settle response that happened to include reasoning", async () => {
     mockHandleInboundTurn.mockImplementation(async ({ callbacks }: { callbacks: ChannelCallbacks }) => {
       // Model emitted a think block followed by the actual answer through onTextChunk.
       callbacks.onTextChunk("<think>thinking out loud</think>here is the actual answer")
-      return {} as InboundTurnResult
+      return { resolvedContext: makeResolvedContext(), gateResult: { allowed: true }, turnOutcome: "settled", completion: { answer: "<think>thinking out loud</think>here is the actual answer", intent: "complete" } } as InboundTurnResult
     })
     const { runSenseTurn } = await import("../../senses/shared-turn")
     const result = await runSenseTurn({

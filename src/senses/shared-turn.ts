@@ -110,11 +110,11 @@ function outwardDeliveryTextFromAssistantTools(
   assistantIndex: number,
 ): string | null {
   const assistant = messages[assistantIndex] as ChatCompletionMessageParam & { tool_calls?: unknown }
-  if (!Array.isArray(assistant.tool_calls)) return null
+  const toolCalls = assistant.tool_calls as unknown[]
 
   const delivered: string[] = []
-  for (let index = 0; index < assistant.tool_calls.length; index++) {
-    const toolCall = assistant.tool_calls[index]
+  for (let index = 0; index < toolCalls.length; index++) {
+    const toolCall = toolCalls[index]
     const toolCallId = toolCall && typeof toolCall === "object"
       ? (toolCall as { id?: unknown }).id
       : undefined
@@ -152,9 +152,10 @@ function outwardDeliveryTextFromAssistantTools(
 export function extractOutwardSenseDeliveryText(messages: ChatCompletionMessageParam[]): string | null {
   const assistantIndex = messages.findLastIndex((message) => message.role === "assistant")
   if (assistantIndex < 0) return null
-  const assistant = messages[assistantIndex]
-  return assistantContentText(assistant.content)
-    ?? outwardDeliveryTextFromAssistantTools(messages, assistantIndex)
+  const assistant = messages[assistantIndex] as ChatCompletionMessageParam & { tool_calls?: unknown }
+  return Array.isArray(assistant.tool_calls) && assistant.tool_calls.length > 0
+    ? outwardDeliveryTextFromAssistantTools(messages, assistantIndex)
+    : assistantContentText(assistant.content)
 }
 
 export interface RunSenseTurnOptions {
@@ -243,16 +244,40 @@ export interface RunSenseTurnResult {
   responseCausalSessionEventId?: string
 }
 
+function hasAcceptedOutwardSessionAck(events: SessionEvent[], assistantIndex: number, toolCallId: string, toolName: "speak" | "settle"): boolean {
+  const expectedAck = OUTWARD_DELIVERY_TOOL_ACKS.get(toolName)!
+  for (let index = assistantIndex + 1; index < events.length; index++) {
+    const candidate = events[index]!
+    if (candidate.role !== "tool") return false
+    if (candidate.toolCallId === toolCallId && typeof candidate.content === "string" && candidate.content.trim() === expectedAck) return true
+  }
+  return false
+}
+
 function newOutwardCoordinates(
   events: SessionEvent[],
   existingEventIds: ReadonlySet<string>,
 ): Array<{ kind: OutwardSenseDeliveryKind; eventId: string }> {
-  return events.flatMap((event): Array<{ kind: OutwardSenseDeliveryKind; eventId: string }> => {
+  return events.flatMap((event, eventIndex): Array<{ kind: OutwardSenseDeliveryKind; eventId: string }> => {
     if (existingEventIds.has(event.id) || event.role !== "assistant") return []
-    const outwardTools = event.toolCalls.filter((call) => call.function.name === "speak" || call.function.name === "settle")
+    const outwardTools = event.toolCalls.filter((call) => {
+      if (call.function.name !== "speak" && call.function.name !== "settle") return false
+      return hasAcceptedOutwardSessionAck(events, eventIndex, call.id, call.function.name)
+    })
     if (outwardTools.length > 0) return outwardTools.map((call) => ({ kind: call.function.name as "speak" | "settle", eventId: event.id }))
+    if (event.toolCalls.length > 0) return []
     return typeof event.content === "string" && event.content.trim() ? [{ kind: "text" as const, eventId: event.id }] : []
   })
+}
+
+function newestPlainAssistantText(messages: ChatCompletionMessageParam[]): string | null {
+  const message = messages.findLast((candidate) =>
+    candidate.role === "assistant"
+    && (!("tool_calls" in candidate) || !Array.isArray(candidate.tool_calls) || candidate.tool_calls.length === 0)
+    && typeof candidate.content === "string"
+    && candidate.content.trim().length > 0,
+  )
+  return message ? assistantContentText(message.content) : null
 }
 
 function causalSessionEventIds(
@@ -353,6 +378,7 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
   const sessionMessages: ChatCompletionMessageParam[] = existing?.messages && existing.messages.length > 0
     ? existing.messages
     : [{ role: "system", content: flattenSystemPrompt(await buildSystem(channel, {}, undefined)) }]
+  const preTurnMessageCount = sessionMessages.length
 
   // Pending dir
   const pendingDir = getPendingDir(agentName, friendId, channel, sessionKey)
@@ -368,6 +394,7 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
   const deliveryAttempts: Array<{ kind: OutwardSenseDeliveryKind; delivered: boolean }> = []
   let providerInvocationCount = 0
   let toolInvocationCount = 0
+  let hadReasoningChunk = false
 
   const commitResponseText = (text: string): void => {
     const cleaned = stripThinkBlocks(text)
@@ -411,13 +438,13 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
     }
   }
 
-  /* v8 ignore start — no-op callback stubs; only onTextChunk does real work (covered via mock) */
+  /* v8 ignore start — callback stubs are exercised through the pipeline integration */
   const callbacks: ChannelCallbacks = {
     settleOutputMode: "retractable_buffer",
     onModelStart: () => { providerInvocationCount += 1; if (options.turnMetricsObserver) options.turnMetricsObserver.providerInvocationCount += 1 },
     onModelStreamStart: () => {},
     onTextChunk: (chunk: string) => { pendingResponseText += chunk },
-    onReasoningChunk: () => {},
+    onReasoningChunk: () => { hadReasoningChunk = true },
     onToolStart: () => { toolInvocationCount += 1; if (options.turnMetricsObserver) options.turnMetricsObserver.toolInvocationCount += 1 },
     onToolEnd: (name: string, _summary: string, success: boolean) => {
       if (name === "settle" && success) terminalDeliveryKind = "settle"
@@ -503,9 +530,28 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
 
   const persistedEvents = persistPromise ? await persistPromise : []
   const finalDeliveryKind = terminalDeliveryKind as OutwardSenseDeliveryKind
-  if (finalDeliveryKind === "settle" && Array.isArray(turnResult.messages)) {
-    const settledText = extractOutwardSenseDeliveryText(turnResult.messages)
-    if (settledText) pendingResponseText = settledText
+  const acceptedTerminalOutcome = turnResult.turnOutcome === "settled" || turnResult.turnOutcome === "blocked"
+  const failoverText = turnResult.turnOutcome === "errored" ? turnResult.failoverMessage?.trim() : undefined
+  const expectsOutwardResponse = acceptedTerminalOutcome || turnResult.turnOutcome === "command" || Boolean(failoverText)
+  const hadPendingCallbackText = stripThinkBlocks(pendingResponseText).length > 0
+  let recoveredTerminalEventId: string | undefined
+  if (acceptedTerminalOutcome) {
+    const completionText = turnResult.completion?.answer.trim()
+    const currentTurnMessages = Array.isArray(turnResult.messages) ? turnResult.messages.slice(preTurnMessageCount) : []
+    const plainTerminalText = newestPlainAssistantText(currentTurnMessages)
+    const acknowledgedDeliveryText = finalDeliveryKind === "settle"
+      ? extractOutwardSenseDeliveryText(currentTurnMessages)
+      : null
+    const authoritativeText = completionText || acknowledgedDeliveryText || plainTerminalText
+    if (authoritativeText) pendingResponseText = authoritativeText
+    else pendingResponseText = ""
+    if (!hadPendingCallbackText && plainTerminalText) recoveredTerminalEventId = newOutwardCoordinates(persistedEvents, existingEventIds).at(-1)?.eventId
+  } else if (turnResult.turnOutcome === "command") {
+    // Slash-command text is emitted directly by the pipeline and has no assistant event.
+  } else if (failoverText) {
+    pendingResponseText = failoverText
+  } else {
+    pendingResponseText = ""
   }
   await deliverPending(finalDeliveryKind, { throwOnError: false })
 
@@ -513,20 +559,21 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
 
   // Build response
   let finalResponse: string
-  let responseCausalSessionEventId: string | undefined
+  let responseCausalSessionEventId = recoveredTerminalEventId
   if (committedResponseText.length === 0) {
-    // Agent settled but no text came through callbacks — check session transcript for the settle answer
-    // Await deferred persist so the session file is up-to-date before readback
-    /* v8 ignore next -- persistPromise set inside v8-ignored postTurn callback; tested via pipeline integration @preserve */
-    if (persistPromise) await persistPromise
-    const postTurnSession = loadSession(sessPath)
-    const emptyFallback = options.emptyResponseFallback?.()
-    if (postTurnSession?.messages) {
-      const recovered = extractOutwardSenseDeliveryText(postTurnSession.messages)
-      finalResponse = recovered ?? emptyFallback ?? "(agent responded but response was empty)"
-      if (recovered) responseCausalSessionEventId = newOutwardCoordinates(persistedEvents, existingEventIds).at(-1)?.eventId
+    if (!expectsOutwardResponse) {
+      finalResponse = ""
     } else {
-      finalResponse = emptyFallback ?? "(agent responded but response was empty)"
+      // The terminal turn had no committed text — check its session transcript for the delivered answer.
+      const postTurnSession = loadSession(sessPath)
+      const emptyFallback = options.emptyResponseFallback?.()
+      if (postTurnSession?.messages) {
+        const recovered = extractOutwardSenseDeliveryText(postTurnSession.messages.slice(preTurnMessageCount))
+        finalResponse = recovered ?? emptyFallback ?? (hadReasoningChunk ? "" : "(agent responded but response was empty)")
+        if (recovered) responseCausalSessionEventId = newOutwardCoordinates(persistedEvents, existingEventIds).at(-1)?.eventId
+      } else {
+        finalResponse = emptyFallback ?? (hadReasoningChunk ? "" : "(agent responded but response was empty)")
+      }
     }
   } else {
     finalResponse = committedResponseText
@@ -541,7 +588,7 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
   // came through and nothing else, surface a clear diagnostic message
   // instead of a blank response so the operator knows what happened.
   finalResponse = stripThinkBlocks(finalResponse)
-  if (finalResponse.length === 0) {
+  if (finalResponse.length === 0 && expectsOutwardResponse) {
     emitNervesEvent({
       level: "warn",
       component: "senses",
