@@ -7,7 +7,7 @@ type AdapterDependencies = {
   getPackageVersion: () => string
   inspect: (input: { packageRoot: string; agentRoot: string; runtimePackageVersion: string }) => unknown
   migrate: (input: { packageRoot: string; agentRoot: string; retainRollback: boolean; rollbackImageId?: string; targetImageId?: string }) => unknown
-  rollback: (agentRoot: string, options: { retainRecord: boolean }) => boolean
+  rollback: (agentRoot: string, options?: { retainRecord: boolean }) => boolean
   status: (agentRoot: string) => unknown
 }
 
@@ -67,7 +67,7 @@ describe("Sanctuary bundle migration adapter", () => {
     ]) expect(() => runSanctuaryBundleOperation(args, dependencies())).toThrow(/Usage:/u)
   })
 
-  it("preserves migrate, rollback, and commit dispatch and pending-transaction failures", async () => {
+  it("preserves retryable rollback, distinct finalization, migrate, and commit semantics", async () => {
     const { runSanctuaryBundleOperation } = await load()
     const deps = dependencies()
     const rollbackImageId = `sha256:${"1".repeat(64)}`
@@ -76,10 +76,14 @@ describe("Sanctuary bundle migration adapter", () => {
     expect(runSanctuaryBundleOperation([...base, "--operation", "migrate", "--rollback-image-id", rollbackImageId, "--target-image-id", targetImageId], deps)).toEqual({ managedFilesUpdated: 8 })
     expect(deps.migrate).toHaveBeenCalledWith({ packageRoot: base[1], agentRoot: base[3], retainRollback: true, rollbackImageId, targetImageId })
     expect(runSanctuaryBundleOperation([...base, "--operation", "rollback"], deps)).toEqual({ rolledBack: true })
+    expect(deps.rollback).toHaveBeenLastCalledWith(base[3], { retainRecord: true })
+    expect(runSanctuaryBundleOperation([...base, "--operation", "finalize-rollback"], deps)).toEqual({ rolledBack: true })
+    expect(deps.rollback).toHaveBeenLastCalledWith(base[3], { retainRecord: false })
     expect(runSanctuaryBundleOperation([...base, "--operation", "commit"], deps)).toEqual({ committed: true })
 
     expect(() => runSanctuaryBundleOperation([...base, "--operation", "status"], dependencies({ status: vi.fn(() => null) }))).toThrow("status found no pending Sanctuary bundle transaction")
     expect(() => runSanctuaryBundleOperation([...base, "--operation", "rollback"], dependencies({ rollback: vi.fn(() => false) }))).toThrow("rollback found no pending Sanctuary bundle transaction")
+    expect(() => runSanctuaryBundleOperation([...base, "--operation", "finalize-rollback"], dependencies({ rollback: vi.fn(() => false) }))).toThrow("finalize-rollback found no pending Sanctuary bundle transaction")
     expect(() => runSanctuaryBundleOperation([...base, "--operation", "commit"], dependencies({ commit: vi.fn(() => false) }))).toThrow("commit found no pending Sanctuary bundle transaction")
   })
 })

@@ -25,6 +25,7 @@ import {
   SANCTUARY_PACKAGE_MANAGED_FILES,
   inspectSanctuaryPackageManagedBundle,
 } from "../../../heart/daemon/sanctuary-bundle-migration"
+import { resolveSanctuaryPackageManagementActivation } from "../../../heart/daemon/sanctuary-package-management"
 
 const roots: string[] = []
 
@@ -35,7 +36,7 @@ function write(root: string, relative: string, value: string | object): void {
 }
 
 function makeLayout(): { packageRoot: string; agentRoot: string } {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-inspection-io-"))
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-inspection-io-")))
   roots.push(root)
   const packageRoot = path.join(root, "package")
   const agentRoot = path.join(root, "live")
@@ -61,20 +62,34 @@ afterEach(() => {
 })
 
 describe("Sanctuary bundle inspection I/O failures", () => {
-  it.each(["root", "nested path", "JSON read", "journal read"])("maps an unexpected %s failure to the bounded unavailable result", (fault) => {
+  it.each(["root", "nested path", "JSON read", "journal stat", "journal read"])("maps an unexpected %s failure to the bounded unavailable result", (fault) => {
     const { packageRoot, agentRoot } = makeLayout()
     if (fault === "root") faults.lstat = packageRoot
     if (fault === "nested path") faults.lstat = path.join(packageRoot, "habits")
     if (fault === "JSON read") faults.read = path.join(packageRoot, "bundle-meta.json")
-    if (fault === "journal read") {
+    if (fault === "journal stat" || fault === "journal read") {
       const journalPath = path.join(agentRoot, SANCTUARY_BUNDLE_ROLLBACK_FILE)
       fs.writeFileSync(journalPath, "{}\n", { mode: 0o600 })
-      faults.read = journalPath
+      if (fault === "journal stat") faults.lstat = journalPath
+      else faults.read = journalPath
     }
 
     expect(inspectSanctuaryPackageManagedBundle({ packageRoot, agentRoot, runtimePackageVersion: "v" })).toEqual({
       ok: false,
       error: { code: "inspection_unavailable", message: "Sanctuary install state is unavailable", degraded: true, repair: { actor: "human-required", action: "run_verified_update_recovery" } },
     })
+  })
+
+  it("fails package activation closed when filesystem identity inspection fails", () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-activation-io-")))
+    roots.push(root)
+    const repoRoot = path.join(root, "repo")
+    const bundlesRoot = path.join(root, "AgentBundles")
+    const packageRoot = path.join(repoRoot, "deploy", "unraid", "sanctuary.ouro")
+    fs.mkdirSync(packageRoot, { recursive: true })
+    fs.mkdirSync(path.join(bundlesRoot, "sanctuary.ouro"), { recursive: true })
+    faults.lstat = packageRoot
+
+    expect(resolveSanctuaryPackageManagementActivation({ mode: "production", argv: ["node", "daemon-entry.js", "--package-managed-agent", "sanctuary"], managedAgents: ["sanctuary"], repoRoot, bundlesRoot, runtimePackageVersion: "v" }).kind).toBe("invalid")
   })
 })

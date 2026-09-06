@@ -2,7 +2,7 @@
 import * as path from "node:path"
 import { pathToFileURL } from "node:url"
 
-const USAGE = "Usage: migrate-sanctuary-bundle.mjs --package-root <path> --agent-root <path> --operation <migrate|rollback|commit|status|inspect> [--rollback-image-id <sha256:id> --target-image-id <sha256:id>]"
+const USAGE = "Usage: migrate-sanctuary-bundle.mjs --package-root <path> --agent-root <path> --operation <migrate|rollback|finalize-rollback|commit|status|inspect> [--rollback-image-id <sha256:id> --target-image-id <sha256:id>]"
 const BASE_KEYS = ["--package-root", "--agent-root", "--operation"]
 const MIGRATE_KEYS = [...BASE_KEYS, "--rollback-image-id", "--target-image-id"]
 
@@ -16,7 +16,7 @@ function parseArguments(args) {
     values.set(key, value)
   }
   const operation = values.get("--operation")
-  if (!["migrate", "rollback", "commit", "status", "inspect"].includes(operation)) throw new Error(USAGE)
+  if (!["migrate", "rollback", "finalize-rollback", "commit", "status", "inspect"].includes(operation)) throw new Error(USAGE)
   const expectedKeys = operation === "migrate" ? MIGRATE_KEYS : BASE_KEYS
   if (values.size !== expectedKeys.length || expectedKeys.some((key) => !values.has(key)) || [...values.keys()].some((key) => !expectedKeys.includes(key))) throw new Error(USAGE)
   return values
@@ -31,11 +31,14 @@ export function runSanctuaryBundleOperation(args, dependencies) {
     ? dependencies.migrate({ packageRoot, agentRoot, retainRollback: true, rollbackImageId: values.get("--rollback-image-id"), targetImageId: values.get("--target-image-id") })
     : operation === "rollback"
       ? { rolledBack: dependencies.rollback(agentRoot, { retainRecord: true }) }
-      : operation === "commit"
-        ? { committed: dependencies.commit(agentRoot) }
-        : operation === "status"
-          ? dependencies.status(agentRoot)
-          : dependencies.inspect({ packageRoot, agentRoot, runtimePackageVersion: dependencies.getPackageVersion() })
+      // `rollback` keeps crash-retry evidence; the host uses `finalize-rollback` only after old production is audited, ready, and restored to autostart.
+      : operation === "finalize-rollback"
+        ? { rolledBack: dependencies.rollback(agentRoot, { retainRecord: false }) }
+        : operation === "commit"
+          ? { committed: dependencies.commit(agentRoot) }
+          : operation === "status"
+            ? dependencies.status(agentRoot)
+            : dependencies.inspect({ packageRoot, agentRoot, runtimePackageVersion: dependencies.getPackageVersion() })
   if (result === null || ("rolledBack" in result && !result.rolledBack) || ("committed" in result && !result.committed)) throw new Error(`${operation} found no pending Sanctuary bundle transaction`)
   return result
 }
