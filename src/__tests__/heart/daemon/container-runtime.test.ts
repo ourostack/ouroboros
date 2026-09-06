@@ -247,11 +247,13 @@ if audit_effective ouro-butler "$SOURCE_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" canon
     const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-backup-audit-runner-"))
     const audit = extractRunbookFunction(runbook, "audit_effective").replace("/mnt/user/appdata/ouro-butler/staging/inspect.XXXXXX", "$AUDIT_TEST_ROOT/inspect.XXXXXX")
     const validateImage = extractRunbookFunction(runbook, "validate_exact_image_id")
+    const pin = extractRunbookFunction(runbook, "assert_sanctuary_update_source_pin")
     const legacy = extractRunbookFunction(runbook, "assert_legacy_alpha742_source")
     const source = extractRunbookFunction(runbook, "assert_update_source")
     const script = String.raw`set -u
 docker() {
   case "$1 $2" in
+    "inspect --format") command printf '%s\n' "$BACKUP_IMAGE_ID" ;;
     "inspect "*|"image inspect") command printf '{}\n' ;;
     "run --rm")
       case " $* " in *" $AUDIT_RUNNER_IMAGE_ID "*) command printf 'AUDIT_RUN\n' ;; *) return 29 ;; esac ;;
@@ -260,6 +262,7 @@ docker() {
 }
 ${validateImage}
 ${audit}
+${pin}
 ${legacy}
 ${source}
 unset IMAGE_ID
@@ -675,6 +678,129 @@ if assert_restore_preflight; then command printf 'MUTATION\n'; else exit $?; fi`
     fs.rmSync(victim, { force: true })
   })
 
+  it("rejects an unsafe initial adoption source before the full Update prelude can mutate", () => {
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const updateStart = runbook.indexOf("Update:")
+    const preludeEnd = runbook.indexOf("  If extraction or", updateStart)
+    const updateEnd = runbook.indexOf("\nBackup:", updateStart)
+    expect(updateStart).toBeGreaterThan(-1)
+    expect(preludeEnd).toBeGreaterThan(updateStart)
+    expect(updateEnd).toBeGreaterThan(preludeEnd)
+    const update = runbook.slice(updateStart, updateEnd)
+    const updatePrelude = runbook.slice(updateStart, preludeEnd).split("\n")
+      .filter((line) => line.startsWith("    "))
+      .map((line) => line.slice(4))
+      .join("\n")
+      .replace("PACKAGE_VERSION=<released-version>", "PACKAGE_VERSION=0.1.0-alpha.798")
+      .replace("MANIFEST_DIGEST=sha256:<reviewed-release-manifest-digest>", `MANIFEST_DIGEST=sha256:${"f".repeat(64)}`)
+      .replace("IMAGE_ID=sha256:<reviewed-local-image-id>", `IMAGE_ID=sha256:${"e".repeat(64)}`)
+    const gateIndex = update.indexOf("UPDATE_ENTRY_CONTAINER_NAMES=")
+    expect(gateIndex).toBeGreaterThan(-1)
+    for (const mutation of [
+      'docker pull "$VERSION_IMAGE"',
+      "EVENT_ASSET_STAGE=$(mktemp -d",
+      'mkdir "$EVENT_SCRIPT_STAGE"',
+      "trap cleanup_event_asset_stage EXIT",
+      'docker create --pull=never --network none --read-only --entrypoint /bin/false "$IMAGE_ID"',
+      'docker cp "$EVENT_ASSET_CONTAINER:',
+      'docker rm "$EVENT_ASSET_CONTAINER"',
+      'chown 0:0 "$STAGED_TEMPLATE"',
+      '/bin/bash "$EVENT_SCRIPT_STAGE/install-usenet-guard.sh"',
+      "/bin/bash /boot/config/custom/ouro-events/install-usenet-guard.sh --boot",
+      "fs.writeFileSync(destinationPath",
+      "prepare_sanctuary_legacy_adoption",
+      "provision_sanctuary_sab_credential",
+      "disable_butler_autostart",
+      "docker stop ouro-butler",
+    ]) {
+      expect(update.indexOf(mutation), mutation).toBeGreaterThan(gateIndex)
+    }
+
+    const sourcePin = extractRunbookFunction(runbook, "assert_sanctuary_update_source_pin")
+    const script = String.raw`set -eu
+SCENARIO=$1
+source_image() {
+  case "$SCENARIO" in
+    canonical-alpha742) command printf '%s\n' "$ALPHA742_IMAGE_ID" ;;
+    canonical-alpha797|staging-alpha797) command printf '%s\n' "$ALPHA797_IMAGE_ID" ;;
+    package-managed) command printf '%s\n' "$PACKAGE_IMAGE_ID" ;;
+    *) command printf '%s\n' "$UNKNOWN_IMAGE_ID" ;;
+  esac
+}
+docker() {
+  DOCKER_CALL=$*
+  while test "$#" -lt 4; do set -- "$@" ""; done
+  if test "$1 $2 $3" = "container ls -a"; then
+    case "$SCENARIO" in
+      disallowed-name) command printf 'ouro-butler-staging\nouro-butler-shadow\n' ;;
+      staging-*) command printf 'ouro-butler-staging\n' ;;
+      *) command printf 'ouro-butler\n' ;;
+    esac
+    return 0
+  fi
+  if test "$1 $2 $3" = "container ls -q"; then command printf '%s\n' "$LEGACY_CONTAINER_ID"; return 0; fi
+  if test "$1 $2 $3" = "container inspect --format" && test "$4" = "{{.Name}}"; then
+    case "$SCENARIO" in staging-*|disallowed-name) command printf '/ouro-butler-staging\n' ;; *) command printf '/ouro-butler\n' ;; esac
+    return 0
+  fi
+  if test "$1 $2" = "inspect --format"; then
+    case "$3" in
+      "{{.State.Running}}") command printf 'true\n' ;;
+      "{{.Id}}") command printf '%s\n' "$LEGACY_CONTAINER_ID" ;;
+      "{{.Image}}") source_image ;;
+      "{{.Config.Image}}") command printf '%s\n' "$PACKAGE_IMAGE_REFERENCE" ;;
+      '{{with .Config.Labels}}{{index . "net.unraid.docker.managed"}}{{end}}') command printf 'dockerman\n' ;;
+      '{{with .Config.Labels}}{{index . "net.unraid.docker.icon"}}{{end}}') command printf 'https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png\n' ;;
+      *) return 89 ;;
+    esac
+    return 0
+  fi
+  if test "$1 $2 $3 $4" = "image inspect --format {{.Id}}"; then source_image; return 0; fi
+  if test "$1 $2 $3" = "image inspect --format"; then
+    if test "$SCENARIO" = canonical-unknown-image; then command printf 'https://example.invalid/not-ouroboros\n'; else command printf 'https://github.com/ourostack/ouroboros\n'; fi
+    return 0
+  fi
+  if test "$1 $2" = "image inspect"; then return 0; fi
+  if test "$1 $2 $3" = "buildx imagetools inspect"; then command printf '%s\n' "$TARGET_MANIFEST"; return 0; fi
+  command printf 'MUTATION:docker:%s\n' "$DOCKER_CALL" >>"$CALL_LOG"
+  return 91
+}
+${extractRunbookFunction(runbook, "validate_exact_image_id")}
+${extractRunbookFunction(runbook, "assert_only_running_butler")}
+${extractRunbookFunction(runbook, "assert_update_topology")}
+${sourcePin}
+${extractRunbookFunction(runbook, "validate_sanctuary_legacy_staging")}
+${updatePrelude}`
+    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-update-entry-pin-"))
+    try {
+      const callLog = path.join(testRoot, "calls.log")
+      const environment = {
+        CALL_LOG: callLog,
+        LEGACY_CONTAINER_ID: "a".repeat(64),
+        ALPHA742_IMAGE_ID: "sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d",
+        ALPHA797_IMAGE_ID: "sha256:e337dff04c92d116b269052f473b26a47eea933d017d1befc73af50dd37bb08d",
+        PACKAGE_IMAGE_ID: `sha256:${"d".repeat(64)}`,
+        UNKNOWN_IMAGE_ID: `sha256:${"c".repeat(64)}`,
+        PACKAGE_IMAGE_REFERENCE: "ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.796",
+        TARGET_MANIFEST: `sha256:${"f".repeat(64)}`,
+      }
+      for (const scenario of ["staging-unknown-image", "canonical-unknown-image", "disallowed-name"]) {
+        fs.writeFileSync(callLog, "", { mode: 0o600 })
+        const result = runConditionalHelper(script, scenario, environment)
+        expect(result.status, `${scenario}\n${result.stderr}`).not.toBe(0)
+        expect(fs.readFileSync(callLog, "utf8"), scenario).toBe("")
+      }
+      for (const scenario of ["canonical-alpha742", "canonical-alpha797", "staging-alpha797", "package-managed"]) {
+        fs.writeFileSync(callLog, "", { mode: 0o600 })
+        const result = runConditionalHelper(script, scenario, environment)
+        expect(result.status, `${scenario}\n${result.stderr}`).toBe(91)
+        expect(fs.readFileSync(callLog, "utf8"), scenario).toBe("MUTATION:docker:pull ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.798\n")
+      }
+    } finally {
+      fs.rmSync(testRoot, { recursive: true, force: true })
+    }
+  })
+
   it("pins and audits the initial adoption source before any adoption mutation", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     const sourceAssertion = extractRunbookFunction(runbook, "assert_prepackage_alpha797_source")
@@ -720,6 +846,7 @@ audit_effective() {
   command printf 'AUDIT:%s:%s:%s:%s\n' "$1" "$2" "$3" "$4" >>"$CALL_LOG"
   test "$SCENARIO" != third-name || return 29
 }
+${extractRunbookFunction(runbook, "assert_sanctuary_update_source_pin")}
 ${sourceAssertion}
 prepare_canonical_sanctuary_roots() { command printf 'MUTATION:prepare-roots\n' >>"$CALL_LOG"; }
 bootstrap_sanctuary_vault() { command printf 'MUTATION:bootstrap-vault\n' >>"$CALL_LOG"; }
@@ -730,6 +857,10 @@ capture_sanctuary_legacy_evidence() { command printf 'MUTATION:capture-evidence\
 disable_butler_autostart() { command printf 'MUTATION:disable-autostart\n' >>"$CALL_LOG"; }
 enable_butler_autostart() { command printf 'MUTATION:enable-autostart\n' >>"$CALL_LOG"; }
 docker() {
+  if test "$1 $2 $3" = "inspect --format {{.Image}}"; then
+    case "$SCENARIO" in unknown-image) command printf '%s\n' "$UNKNOWN_LEGACY_IMAGE" ;; *) command printf '%s\n' "$PINNED_LEGACY_IMAGE" ;; esac
+    return 0
+  fi
   case "$1" in
     stop|rename|create|rm|start) command printf 'MUTATION:docker:%s\n' "$*" >>"$CALL_LOG" ;;
   esac
@@ -2393,9 +2524,11 @@ await_post_audit_health`
   it("admits only the two exact pinned pre-package-managed source topologies", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     const helper = extractRunbookFunction(runbook, "assert_legacy_alpha742_source")
+    const pin = extractRunbookFunction(runbook, "assert_sanctuary_update_source_pin")
     const dispatch = extractRunbookFunction(runbook, "assert_update_source")
     const imageId = "sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d"
-    expect(helper).toContain(`test "$EXPECTED_SOURCE_IMAGE_ID" = ${imageId}`)
+    expect(pin).toContain(`"ouro-butler ${imageId}"`)
+    expect(helper).toContain('assert_sanctuary_update_source_pin ouro-butler "$EXPECTED_SOURCE_IMAGE_ID"')
     expect(helper).toContain('audit_effective ouro-butler "$EXPECTED_SOURCE_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" legacy-alpha742')
     expect(helper).not.toContain("docker inspect --format")
     expect(dispatch).toContain('assert_legacy_alpha742_source "$EXPECTED_SOURCE_IMAGE_ID"')

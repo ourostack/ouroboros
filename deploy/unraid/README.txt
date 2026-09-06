@@ -338,17 +338,37 @@ Effective-spec audit helper:
       esac
       assert_only_running_butler ouro-butler || return $?
     }
+    assert_sanctuary_update_source_pin() {
+      (
+      PIN_SOURCE_CONTAINER=$1
+      PIN_SOURCE_IMAGE_ID=$2
+      validate_exact_image_id "$PIN_SOURCE_IMAGE_ID" || return $?
+      test "$(docker inspect --format '{{.Image}}' "$PIN_SOURCE_CONTAINER")" = "$PIN_SOURCE_IMAGE_ID" || return $?
+      case "$PIN_SOURCE_CONTAINER $PIN_SOURCE_IMAGE_ID" in
+        "ouro-butler sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d"|"ouro-butler sha256:e337dff04c92d116b269052f473b26a47eea933d017d1befc73af50dd37bb08d"|"ouro-butler-staging sha256:e337dff04c92d116b269052f473b26a47eea933d017d1befc73af50dd37bb08d") return 0 ;;
+        "ouro-butler "*) ;;
+        *) return 1 ;;
+      esac
+      PIN_SOURCE_IMAGE_REFERENCE=$(docker inspect --format '{{.Config.Image}}' "$PIN_SOURCE_CONTAINER") || return $?
+      printf '%s\n' "$PIN_SOURCE_IMAGE_REFERENCE" | grep -Eq '^ghcr\.io/ourostack/ouroboros-butler:[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' || return $?
+      test "$(docker image inspect --format '{{.Id}}' "$PIN_SOURCE_IMAGE_REFERENCE")" = "$PIN_SOURCE_IMAGE_ID" || return $?
+      PIN_SOURCE_IMAGE_ORIGIN=$(docker image inspect --format '{{with .Config.Labels}}{{index . "org.opencontainers.image.source"}}{{end}}' "$PIN_SOURCE_IMAGE_ID") || return $?
+      test "$PIN_SOURCE_IMAGE_ORIGIN" = https://github.com/ourostack/ouroboros || return $?
+      test "$(docker inspect --format '{{with .Config.Labels}}{{index . "net.unraid.docker.managed"}}{{end}}' "$PIN_SOURCE_CONTAINER")" = dockerman || return $?
+      test "$(docker inspect --format '{{with .Config.Labels}}{{index . "net.unraid.docker.icon"}}{{end}}' "$PIN_SOURCE_CONTAINER")" = https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png
+      )
+    }
     assert_legacy_alpha742_source() {
       EXPECTED_SOURCE_IMAGE_ID=$1
       AUDIT_RUNNER_IMAGE_ID=$2
-      test "$EXPECTED_SOURCE_IMAGE_ID" = sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d || return $?
+      assert_sanctuary_update_source_pin ouro-butler "$EXPECTED_SOURCE_IMAGE_ID" || return $?
       audit_effective ouro-butler "$EXPECTED_SOURCE_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" legacy-alpha742
     }
     assert_prepackage_alpha797_source() {
       EXPECTED_SOURCE_IMAGE_ID=$1
       AUDIT_RUNNER_IMAGE_ID=$2
       SOURCE_CONTAINER=$3
-      test "$EXPECTED_SOURCE_IMAGE_ID" = sha256:e337dff04c92d116b269052f473b26a47eea933d017d1befc73af50dd37bb08d || return $?
+      assert_sanctuary_update_source_pin "$SOURCE_CONTAINER" "$EXPECTED_SOURCE_IMAGE_ID" || return $?
       audit_effective "$SOURCE_CONTAINER" "$EXPECTED_SOURCE_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" prepackage-alpha797
     }
     assert_update_source() {
@@ -359,6 +379,7 @@ Effective-spec audit helper:
       elif test "$EXPECTED_SOURCE_IMAGE_ID" = sha256:e337dff04c92d116b269052f473b26a47eea933d017d1befc73af50dd37bb08d; then
         assert_prepackage_alpha797_source "$EXPECTED_SOURCE_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" ouro-butler
       else
+        assert_sanctuary_update_source_pin ouro-butler "$EXPECTED_SOURCE_IMAGE_ID" || return $?
         EXPECTED_SOURCE_IMAGE_REFERENCE=$(docker inspect --format '{{.Config.Image}}' ouro-butler) || return $?
         audit_effective ouro-butler "$EXPECTED_SOURCE_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" canonical "$EXPECTED_SOURCE_IMAGE_REFERENCE" https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png
       fi
@@ -1910,6 +1931,16 @@ NODE
       return 1
     }
 Update:
+  Before downloading or staging anything, classify the live source with the existing topology gates. Initial alpha.797 adoption must prove the exact staging name and image pin; normal updates must prove the existing production topology. This step is read-only:
+    UPDATE_ENTRY_CONTAINER_NAMES=$(docker container ls -a --format '{{.Names}}')
+    if printf '%s\n' "$UPDATE_ENTRY_CONTAINER_NAMES" | grep -Fxq ouro-butler-staging; then
+      validate_sanctuary_legacy_staging
+      assert_sanctuary_update_source_pin ouro-butler-staging "$LEGACY_STAGING_IMAGE_ID"
+    else
+      UPDATE_ENTRY_SOURCE_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler)
+      assert_update_topology "$UPDATE_ENTRY_SOURCE_IMAGE_ID"
+      assert_sanctuary_update_source_pin ouro-butler "$UPDATE_ENTRY_SOURCE_IMAGE_ID"
+    fi
   Set the released package version, its reviewed release-manifest digest, and its reviewed platform-local image ID. The canonical package-version tag is immutable release identity, while the digest and local ID independently prove what the registry and this host resolved:
     PACKAGE_VERSION=<released-version>
     MANIFEST_DIGEST=sha256:<reviewed-release-manifest-digest>
