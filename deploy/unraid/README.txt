@@ -54,6 +54,17 @@ Effective-spec audit helper:
       trap - EXIT || return $?
       )
     }
+    inspect_registry_manifest_digest() {
+      (
+      REGISTRY_MANIFEST_REFERENCE=$1
+      REGISTRY_MANIFEST_PATH=$(mktemp /tmp/ouro-registry-manifest.XXXXXX) || return $?
+      trap 'rm -f -- "$REGISTRY_MANIFEST_PATH"' EXIT || return $?
+      docker buildx imagetools inspect "$REGISTRY_MANIFEST_REFERENCE" --raw >"$REGISTRY_MANIFEST_PATH" || return $?
+      REGISTRY_MANIFEST_SHA256=$(sha256sum -- "$REGISTRY_MANIFEST_PATH") || return $?
+      REGISTRY_MANIFEST_SHA256=${REGISTRY_MANIFEST_SHA256%% *}
+      printf 'sha256:%s\n' "$REGISTRY_MANIFEST_SHA256"
+      )
+    }
   Define these helpers in the same root shell. Each profile change calls Unraid's
   own root-local Docker manager backend, after proving exact durable identities.
   A missing Butler entry is a no-op when disabling; this avoids the backend's
@@ -1471,7 +1482,7 @@ Effective-spec audit helper:
         && test "$CURRENT_LEGACY_EVIDENCE_IMAGE_ID" = "$LEGACY_STAGING_IMAGE_ID" \
         && test "$(docker inspect --format '{{.State.Running}}' ouro-butler-legacy-evidence)" = false \
         && assert_only_running_butler - \
-        && test "$(docker buildx imagetools inspect "$VERSION_IMAGE" --format '{{.Manifest.Digest}}')" = "$MANIFEST_DIGEST" \
+        && test "$(inspect_registry_manifest_digest "$VERSION_IMAGE")" = "$MANIFEST_DIGEST" \
         && test "$(docker image inspect --format '{{.Id}}' "$VERSION_IMAGE")" = "$IMAGE_ID" \
         && docker create --pull=never --name ouro-butler --network host --restart unless-stopped --user 10001:10001 \
           --label net.unraid.docker.managed=dockerman \
@@ -2082,7 +2093,7 @@ Update:
     IMAGE_ID=sha256:<reviewed-local-image-id>
     VERSION_IMAGE="ghcr.io/ourostack/ouroboros-butler:$PACKAGE_VERSION"
     printf '%s\n' "$PACKAGE_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
-    test "$(docker buildx imagetools inspect "$VERSION_IMAGE" --format '{{.Manifest.Digest}}')" = "$MANIFEST_DIGEST"
+    test "$(inspect_registry_manifest_digest "$VERSION_IMAGE")" = "$MANIFEST_DIGEST"
     docker pull "$VERSION_IMAGE"
     validate_exact_image_id "$IMAGE_ID"
     test "$(docker image inspect --format '{{.Id}}' "$VERSION_IMAGE")" = "$IMAGE_ID"
@@ -2309,7 +2320,7 @@ ouro-butler-rollback
   Provider and complete daemon readiness are exercised only by the transactional production activation below. Its failure arm restores and revalidates the exact prior production, so a disposable daemon cannot reconcile or claim live external-event state before cutover.
   Create and activate production from the same exact image ID and exact authority in one explicit conditional so `set -eu` cannot exit before rollback. Only a successful create, effective audit, start, stopped-rollback assertion, and bounded readiness wait may enable production autostart.
   On failure, capture the activation status, remove only a partially created new production container, restore and audit the stopped rollback against its exact old image ID, prove it ready, restore production-only autostart atomically, and return the original failure:
-    if test "$(docker buildx imagetools inspect "$VERSION_IMAGE" --format '{{.Manifest.Digest}}')" = "$MANIFEST_DIGEST" \
+    if test "$(inspect_registry_manifest_digest "$VERSION_IMAGE")" = "$MANIFEST_DIGEST" \
       && test "$(docker image inspect --format '{{.Id}}' "$VERSION_IMAGE")" = "$IMAGE_ID" \
       && docker create --pull=never --name ouro-butler --network host --restart unless-stopped --user 10001:10001 \
       --label net.unraid.docker.managed=dockerman \
