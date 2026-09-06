@@ -187,6 +187,35 @@ describe("Sanctuary runtime tool context", () => {
     expect(JSON.stringify(failure)).not.toMatch(/(?:\/opt\/|\/home\/|sha256:|credential|stack)/u)
   })
 
+  it("passes a real interrupted-write inspection through the owner boundary without filesystem details", async () => {
+    const migration = await vi.importActual<typeof import("../../heart/daemon/sanctuary-bundle-migration")>("../../heart/daemon/sanctuary-bundle-migration")
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ouro-sanctuary-install-state-")))
+    const packageRoot = path.join(root, "package", "sanctuary.ouro")
+    const agentRoot = path.join(root, "live", "sanctuary.ouro")
+    try {
+      fs.mkdirSync(path.dirname(packageRoot), { recursive: true })
+      fs.mkdirSync(agentRoot, { recursive: true })
+      fs.cpSync(path.resolve("deploy/unraid/sanctuary.ouro"), packageRoot, { recursive: true })
+      migration.migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot })
+      fs.mkdirSync(`${path.join(agentRoot, "bundle-meta.json")}.package-migration.owner-boundary`, { mode: 0o700 })
+      const runtimePackageVersion = JSON.parse(fs.readFileSync(path.join(packageRoot, "bundle-meta.json"), "utf8")).runtimeVersion as string
+      const inspected = migration.inspectSanctuaryPackageManagedBundle({ packageRoot, agentRoot, runtimePackageVersion })
+      expect(inspected).toEqual({ ok: false, error: { code: "invalid_journal", message: "Sanctuary update recovery is required", degraded: true, repair: { actor: "human-required", action: "run_verified_update_recovery" } } })
+      runtimeMocks.resolveSanctuaryPackageManagedRoots.mockReturnValueOnce({ packageRoot, agentRoot })
+      runtimeMocks.getPackageVersion.mockReturnValueOnce(runtimePackageVersion)
+      runtimeMocks.inspectSanctuaryPackageManagedBundle.mockImplementationOnce(migration.inspectSanctuaryPackageManagedBundle)
+
+      const result = await createSanctuaryToolContext("sanctuary").sanctuary!.getInstallState()
+
+      expect(result).toEqual(inspected)
+      expect(runtimeMocks.inspectSanctuaryPackageManagedBundle).toHaveBeenCalledExactlyOnceWith({ packageRoot, agentRoot, runtimePackageVersion })
+      expect(JSON.stringify(result)).not.toContain(root)
+      expect(JSON.stringify(result)).not.toMatch(/(?:package-migration|bundle-meta\.json|credential|stack)/u)
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it("waits for a missing machine credential refresh before declaring health work ready", async () => {
     let resolveRefresh!: (value: ReturnType<typeof configured>) => void
     runtimeMocks.readMachineRuntimeCredentialConfig.mockReturnValueOnce({ ok: false, reason: "missing" })
