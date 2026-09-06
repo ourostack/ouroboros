@@ -32,6 +32,7 @@ describe("Sanctuary active tool profile", () => {
       "unraid_get_disks",
       "unraid_get_notifications",
       "unraid_get_system",
+      "sanctuary_get_install_state",
       "unraid_check_services",
       "sanctuary_get_download_queue",
       "sanctuary_resume_download_queue",
@@ -43,7 +44,7 @@ describe("Sanctuary active tool profile", () => {
     ])
     const packaged = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/tool-profiles.json", "utf8"))
     expect(packaged.version).toBe(2)
-    expect(packaged.profiles["sanctuary-owner"].version).toBe(6)
+    expect(packaged.profiles["sanctuary-owner"].version).toBe(7)
     expect(packaged.profiles["sanctuary-household"].version).toBe(5)
     expect(packaged.profiles["sanctuary-event"].version).toBe(4)
     expect(packaged.profiles["sanctuary-owner"].toolNames).toEqual(expect.arrayContaining(names))
@@ -57,9 +58,11 @@ describe("Sanctuary active tool profile", () => {
     expect(packaged.profiles["sanctuary-household"].toolNames).not.toContain("sanctuary_get_download_queue")
     expect(packaged.profiles["sanctuary-household"].toolNames).not.toContain("sanctuary_resume_download_queue")
     expect(packaged.profiles["sanctuary-household"].toolNames).not.toContain("sanctuary_get_media_optimization")
+    expect(packaged.profiles["sanctuary-household"].toolNames).not.toContain("sanctuary_get_install_state")
     expect(packaged.profiles["sanctuary-event"].toolNames).toContain("sanctuary_get_media_optimization")
     expect(packaged.profiles["sanctuary-event"].toolNames).toContain("sanctuary_get_download_queue")
     expect(packaged.profiles["sanctuary-event"].toolNames).not.toContain("sanctuary_resume_download_queue")
+    expect(packaged.profiles["sanctuary-event"].toolNames).not.toContain("sanctuary_get_install_state")
     expect(packaged.profiles["sanctuary-event"].toolNames).toEqual(expect.arrayContaining(["external_event_disposition", "query_cares", "care_manage", "await_condition", "resolve_await", "steward_policy_manage", "rest"]))
     expect(packaged.profiles["sanctuary-event"].toolNames).not.toContain("send_message")
     expect(packaged.profiles["sanctuary-household"].toolNames).not.toContain("ponder")
@@ -152,6 +155,7 @@ describe("Sanctuary active tool profile", () => {
     expect(resolveToolDefinition("unraid_list_containers")?.riskProfile).toMatchObject({ risk: "low", mutates: "none" })
     expect(approvalPolicyForToolName("sanctuary_resume_download_queue", {})).toEqual({ kind: "required", policyId: "sanctuary.downloads.resume.v1", actionClass: "sanctuary.downloads.resume", requiresSoleCall: true })
     expect(resolveToolDefinition("sanctuary_get_download_queue")?.riskProfile).toMatchObject({ risk: "low", mutates: "none" })
+    expect(resolveToolDefinition("sanctuary_get_install_state")?.riskProfile).toMatchObject({ risk: "low", mutates: "none" })
     expect(resolveToolDefinition("sanctuary_resume_download_queue")?.riskProfile).toMatchObject({ risk: "high", mutates: "external_side_effect" })
   })
 })

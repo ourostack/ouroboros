@@ -65,6 +65,11 @@ esac
   return result
 }
 
+function runGateWithReferences(versionReference: string, shaReference: string) {
+  const result = spawnSync(gatePath, [versionReference, shaReference], { encoding: "utf8" })
+  return result
+}
+
 describe("container image release gate", () => {
   it("publishes only when both immutable references are absent", () => {
     const result = runGate("absent", "absent")
@@ -103,5 +108,18 @@ describe("container image release gate", () => {
     expect(result.status).not.toBe(0)
     expect(result.stdout).not.toContain("publish=true")
     expect(result.stderr).toContain("registry inspection failed")
+  })
+
+  it.each([
+    ["ghcr.io/ourostack/ouroboros-butler:latest", shaRef],
+    ["ghcr.io/ourostack/ouroboros-butler", shaRef],
+    [`ghcr.io/ourostack/ouroboros-butler@${sharedDigest}`, shaRef],
+    [versionRef, "ghcr.io/ourostack/ouroboros-butler:sha-short"],
+    [versionRef, "example.invalid/ouroboros-butler:sha-0123456789012345678901234567890123456789"],
+  ])("rejects noncanonical immutable release coordinates before registry access (%s, %s)", (versionReference, shaReference) => {
+    const result = runGateWithReferences(versionReference, shaReference)
+
+    expect(result.status).toBe(64)
+    expect(result.stderr).toContain("canonical immutable")
   })
 })

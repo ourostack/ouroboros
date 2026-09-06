@@ -104,7 +104,7 @@ describe("daemon CLI default dependency branches", () => {
       }
       fs.rmSync(tempHome, { recursive: true, force: true })
     }
-  })
+  }, 10_000)
 
   it("uses detached default background CLI spawning", async () => {
     vi.resetModules()

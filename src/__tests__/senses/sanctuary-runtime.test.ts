@@ -31,6 +31,12 @@ const runtimeMocks = vi.hoisted(() => {
     consumeRoutineActionGrant: vi.fn(() => ({ state: "reserved" })),
     transitionRoutineActionReceipt: vi.fn(() => ({ state: "verified" })),
     recoverRoutineActionReceipts: vi.fn(async () => []),
+    inspectSanctuaryPackageManagedBundle: vi.fn(),
+    resolveSanctuaryPackageManagedRoots: vi.fn(({ repoRoot, bundlesRoot }: { repoRoot: string; bundlesRoot: string }) => ({
+      packageRoot: `${repoRoot}/deploy/unraid/sanctuary.ouro`,
+      agentRoot: `${bundlesRoot}/sanctuary.ouro`,
+    })),
+    getPackageVersion: vi.fn(() => "0.1.0-alpha.798"),
     emitNervesEvent: vi.fn(),
     probeSanctuaryEndpoint: vi.fn(),
     sab: { readQueue: vi.fn(), resumeQueue: vi.fn() },
@@ -41,7 +47,10 @@ const runtimeMocks = vi.hoisted(() => {
   }
 })
 
-vi.mock("../../heart/identity", () => ({ getAgentRoot: runtimeMocks.getAgentRoot }))
+vi.mock("../../heart/identity", () => ({ getAgentRoot: runtimeMocks.getAgentRoot, getRepoRoot: vi.fn(() => "/opt/ouro"), getAgentBundlesRoot: vi.fn(() => "/home/ouro/AgentBundles") }))
+vi.mock("../../heart/daemon/sanctuary-bundle-migration", () => ({ inspectSanctuaryPackageManagedBundle: runtimeMocks.inspectSanctuaryPackageManagedBundle }))
+vi.mock("../../heart/daemon/sanctuary-package-management", () => ({ resolveSanctuaryPackageManagedRoots: runtimeMocks.resolveSanctuaryPackageManagedRoots }))
+vi.mock("../../mind/bundle-manifest", () => ({ getPackageVersion: runtimeMocks.getPackageVersion }))
 vi.mock("../../heart/runtime-credentials", () => ({
   readMachineRuntimeCredentialConfig: runtimeMocks.readMachineRuntimeCredentialConfig,
   refreshMachineRuntimeCredentialConfig: runtimeMocks.refreshMachineRuntimeCredentialConfig,
@@ -113,6 +122,19 @@ describe("Sanctuary runtime tool context", () => {
     runtimeMocks.consumeRoutineActionGrant.mockReset().mockReturnValue({ state: "reserved" })
     runtimeMocks.transitionRoutineActionReceipt.mockReset().mockReturnValue({ state: "verified" })
     runtimeMocks.recoverRoutineActionReceipts.mockReset().mockResolvedValue([])
+    runtimeMocks.inspectSanctuaryPackageManagedBundle.mockReset().mockReturnValue({
+      ok: true,
+      data: {
+        runtimePackageVersion: "0.1.0-alpha.798",
+        packagedBundleVersion: "0.1.0-alpha.798",
+        liveBundleVersion: "0.1.0-alpha.798",
+        parity: "exact",
+        mismatchCodes: [],
+        journalState: "absent",
+        ready: true,
+        repair: { actor: "none", action: "none" },
+      },
+    })
     runtimeMocks.forceUnexpectedGrounding = false
     runtimeMocks.probeSanctuaryEndpoint.mockReset()
     runtimeMocks.sab.readQueue.mockReset()
@@ -123,6 +145,75 @@ describe("Sanctuary runtime tool context", () => {
     runtimeMocks.readMachineRuntimeCredentialConfig.mockReturnValue(configured())
     runtimeMocks.refreshMachineRuntimeCredentialConfig.mockResolvedValue(configured())
     runtimeMocks.getAgentRoot.mockReturnValue(fs.mkdtempSync(path.join(os.tmpdir(), "ouro-sanctuary-runtime-")))
+  })
+
+  it("reads exact package, packaged-bundle, and live-bundle truth through the shared inspector", async () => {
+    const context = createSanctuaryToolContext("sanctuary")
+
+    await expect(context.sanctuary!.getInstallState()).resolves.toEqual({
+      ok: true,
+      data: {
+        runtimePackageVersion: "0.1.0-alpha.798",
+        packagedBundleVersion: "0.1.0-alpha.798",
+        liveBundleVersion: "0.1.0-alpha.798",
+        parity: "exact",
+        mismatchCodes: [],
+        journalState: "absent",
+        ready: true,
+        repair: { actor: "none", action: "none" },
+      },
+    })
+    expect(runtimeMocks.inspectSanctuaryPackageManagedBundle).toHaveBeenCalledExactlyOnceWith({
+      packageRoot: "/opt/ouro/deploy/unraid/sanctuary.ouro",
+      agentRoot: "/home/ouro/AgentBundles/sanctuary.ouro",
+      runtimePackageVersion: "0.1.0-alpha.798",
+    })
+    expect(runtimeMocks.resolveSanctuaryPackageManagedRoots).toHaveBeenCalledExactlyOnceWith({ repoRoot: "/opt/ouro", bundlesRoot: "/home/ouro/AgentBundles" })
+  })
+
+  it("passes bounded install inspection failures through without exposing implementation details", async () => {
+    const failure = {
+      ok: false,
+      error: {
+        code: "invalid_journal",
+        message: "Sanctuary update recovery is required",
+        degraded: true,
+        repair: { actor: "human-required", action: "run_verified_update_recovery" },
+      },
+    }
+    runtimeMocks.inspectSanctuaryPackageManagedBundle.mockReturnValue(failure)
+
+    await expect(createSanctuaryToolContext("sanctuary").sanctuary!.getInstallState()).resolves.toEqual(failure)
+    expect(JSON.stringify(failure)).not.toMatch(/(?:\/opt\/|\/home\/|sha256:|credential|stack)/u)
+  })
+
+  it("passes a real interrupted-write inspection through the owner boundary without filesystem details", async () => {
+    const migration = await vi.importActual<typeof import("../../heart/daemon/sanctuary-bundle-migration")>("../../heart/daemon/sanctuary-bundle-migration")
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ouro-sanctuary-install-state-")))
+    const packageRoot = path.join(root, "package", "sanctuary.ouro")
+    const agentRoot = path.join(root, "live", "sanctuary.ouro")
+    try {
+      fs.mkdirSync(path.dirname(packageRoot), { recursive: true })
+      fs.mkdirSync(agentRoot, { recursive: true })
+      fs.cpSync(path.resolve("deploy/unraid/sanctuary.ouro"), packageRoot, { recursive: true })
+      migration.migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot })
+      fs.mkdirSync(`${path.join(agentRoot, "bundle-meta.json")}.package-migration.owner-boundary`, { mode: 0o700 })
+      const runtimePackageVersion = JSON.parse(fs.readFileSync(path.join(packageRoot, "bundle-meta.json"), "utf8")).runtimeVersion as string
+      const inspected = migration.inspectSanctuaryPackageManagedBundle({ packageRoot, agentRoot, runtimePackageVersion })
+      expect(inspected).toEqual({ ok: false, error: { code: "invalid_journal", message: "Sanctuary update recovery is required", degraded: true, repair: { actor: "human-required", action: "run_verified_update_recovery" } } })
+      runtimeMocks.resolveSanctuaryPackageManagedRoots.mockReturnValueOnce({ packageRoot, agentRoot })
+      runtimeMocks.getPackageVersion.mockReturnValueOnce(runtimePackageVersion)
+      runtimeMocks.inspectSanctuaryPackageManagedBundle.mockImplementationOnce(migration.inspectSanctuaryPackageManagedBundle)
+
+      const result = await createSanctuaryToolContext("sanctuary").sanctuary!.getInstallState()
+
+      expect(result).toEqual(inspected)
+      expect(runtimeMocks.inspectSanctuaryPackageManagedBundle).toHaveBeenCalledExactlyOnceWith({ packageRoot, agentRoot, runtimePackageVersion })
+      expect(JSON.stringify(result)).not.toContain(root)
+      expect(JSON.stringify(result)).not.toMatch(/(?:package-migration|bundle-meta\.json|credential|stack)/u)
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
   })
 
   it("waits for a missing machine credential refresh before declaring health work ready", async () => {
