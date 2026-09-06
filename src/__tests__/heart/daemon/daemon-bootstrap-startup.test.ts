@@ -12,31 +12,46 @@ vi.mock("../../../heart/daemon/daemon-tombstone", () => ({
 
 import {
   createProviderReadinessPreparationFailure,
+  createSanctuaryBundlePreparationFailure,
   failFastContainerCredentialBootstrapStartup,
+  failFastSanctuaryBundlePreparationStartup,
   startDaemonAfterContainerCredentialBootstrap,
 } from "../../../heart/daemon/daemon-bootstrap-startup"
 
 describe("daemon container credential bootstrap startup boundary", () => {
-  it("awaits successful credential migration and daemon preparation before starting the daemon", async () => {
+  it("runs package preflight, credential migration, bundle ensure, and provider preparation in order before starting", async () => {
+    const preflight = vi.fn(async () => undefined)
     let releaseBootstrap!: () => void
+    let releaseBundle!: () => void
     let releasePreparation!: () => void
     const loadBootstrap = vi.fn(() => new Promise<void>((resolve) => { releaseBootstrap = resolve }))
+    const prepareManagedBundle = vi.fn(() => new Promise<void>((resolve) => { releaseBundle = resolve }))
     const prepareDaemon = vi.fn(() => new Promise<void>((resolve) => { releasePreparation = resolve }))
     const startDaemon = vi.fn(async () => undefined)
     const markStartupFailure = vi.fn()
     const exit = vi.fn()
 
     const startup = startDaemonAfterContainerCredentialBootstrap({
+      preflight,
       loadBootstrap,
+      prepareManagedBundle,
       prepareDaemon,
       startDaemon,
       markStartupFailure,
       exit,
     })
     await Promise.resolve()
+    expect(preflight).toHaveBeenCalledTimes(1)
+    expect(loadBootstrap).toHaveBeenCalledTimes(1)
     expect(startDaemon).not.toHaveBeenCalled()
 
     releaseBootstrap()
+    await Promise.resolve()
+    expect(prepareManagedBundle).toHaveBeenCalledTimes(1)
+    expect(prepareDaemon).not.toHaveBeenCalled()
+    expect(startDaemon).not.toHaveBeenCalled()
+
+    releaseBundle()
     await Promise.resolve()
     expect(prepareDaemon).toHaveBeenCalledTimes(1)
     expect(startDaemon).not.toHaveBeenCalled()
@@ -46,8 +61,69 @@ describe("daemon container credential bootstrap startup boundary", () => {
     expect(startDaemon).toHaveBeenCalledTimes(1)
     expect(markStartupFailure).not.toHaveBeenCalled()
     expect(exit).not.toHaveBeenCalled()
+    expect(preflight.mock.invocationCallOrder[0]).toBeLessThan(loadBootstrap.mock.invocationCallOrder[0]!)
     expect(loadBootstrap.mock.invocationCallOrder[0]).toBeLessThan(prepareDaemon.mock.invocationCallOrder[0]!)
+    expect(loadBootstrap.mock.invocationCallOrder[0]).toBeLessThan(prepareManagedBundle.mock.invocationCallOrder[0]!)
+    expect(prepareManagedBundle.mock.invocationCallOrder[0]).toBeLessThan(prepareDaemon.mock.invocationCallOrder[0]!)
     expect(prepareDaemon.mock.invocationCallOrder[0]).toBeLessThan(startDaemon.mock.invocationCallOrder[0]!)
+  })
+
+  it("fails before credential bootstrap when package preflight is invalid", async () => {
+    startupMocks.writeTombstone.mockClear()
+    startupMocks.emit.mockClear()
+    const loadBootstrap = vi.fn(async () => undefined)
+    const prepareManagedBundle = vi.fn(async () => undefined)
+    const prepareDaemon = vi.fn(async () => undefined)
+    const startDaemon = vi.fn(async () => undefined)
+    const markStartupFailure = vi.fn()
+    const exit = vi.fn()
+
+    await expect(startDaemonAfterContainerCredentialBootstrap({
+      preflight: vi.fn(() => { throw createSanctuaryBundlePreparationFailure("roll_back_or_install_verified_release") }),
+      loadBootstrap,
+      prepareManagedBundle,
+      prepareDaemon,
+      startDaemon,
+      markStartupFailure,
+      exit,
+    })).resolves.toBe(false)
+
+    expect(markStartupFailure).toHaveBeenCalledOnce()
+    expect(exit).toHaveBeenCalledOnce()
+    expect(exit).toHaveBeenCalledWith(1)
+    expect(loadBootstrap).not.toHaveBeenCalled()
+    expect(prepareManagedBundle).not.toHaveBeenCalled()
+    expect(prepareDaemon).not.toHaveBeenCalled()
+    expect(startDaemon).not.toHaveBeenCalled()
+    expect(startupMocks.writeTombstone).toHaveBeenCalledWith("startupFailurePublic", expect.objectContaining({ message: "Sanctuary installation needs attention\n  human-required: roll_back_or_install_verified_release" }))
+  })
+
+  it("classifies bundle ensure failure separately and stops before provider preparation", async () => {
+    startupMocks.writeTombstone.mockClear()
+    startupMocks.emit.mockClear()
+    const prepareDaemon = vi.fn(async () => undefined)
+    const startDaemon = vi.fn(async () => undefined)
+    const markStartupFailure = vi.fn()
+    const exit = vi.fn()
+
+    await expect(startDaemonAfterContainerCredentialBootstrap({
+      preflight: vi.fn(),
+      loadBootstrap: vi.fn(async () => undefined),
+      prepareManagedBundle: vi.fn(async () => { throw createSanctuaryBundlePreparationFailure("run_verified_update_recovery") }),
+      prepareDaemon,
+      startDaemon,
+      markStartupFailure,
+      exit,
+    })).resolves.toBe(false)
+
+    expect(markStartupFailure).toHaveBeenCalledOnce()
+    expect(exit).toHaveBeenCalledOnce()
+    expect(prepareDaemon).not.toHaveBeenCalled()
+    expect(startDaemon).not.toHaveBeenCalled()
+    expect(startupMocks.emit).toHaveBeenCalledWith(expect.objectContaining({
+      event: "daemon.entry_error",
+      message: "Sanctuary installation needs attention\n  human-required: run_verified_update_recovery",
+    }))
   })
 
   it("terminates the startup branch without starting or forwarding a raw bootstrap rejection", async () => {
@@ -156,6 +232,21 @@ describe("daemon container credential bootstrap startup boundary", () => {
     expect(exit).toHaveBeenCalledWith(1)
     expect(JSON.stringify(startupMocks.writeTombstone.mock.calls)).not.toContain("secret-bearing rejection")
     expect(JSON.stringify(startupMocks.emit.mock.calls)).not.toContain("secret-bearing rejection")
+  })
+
+  it("reports only controlled or fixed Sanctuary preparation guidance", () => {
+    startupMocks.writeTombstone.mockClear()
+    startupMocks.emit.mockClear()
+    const controlledExit = vi.fn()
+    failFastSanctuaryBundlePreparationStartup({ failure: createSanctuaryBundlePreparationFailure("roll_back_or_install_verified_release"), exit: controlledExit })
+    expect(startupMocks.writeTombstone).toHaveBeenLastCalledWith("startupFailurePublic", expect.objectContaining({ message: "Sanctuary installation needs attention\n  human-required: roll_back_or_install_verified_release" }))
+    expect(controlledExit).toHaveBeenCalledWith(1)
+
+    const redactedExit = vi.fn()
+    failFastSanctuaryBundlePreparationStartup({ failure: new Error("secret raw path"), exit: redactedExit })
+    expect(startupMocks.writeTombstone).toHaveBeenLastCalledWith("startupFailurePublic", expect.objectContaining({ message: "Sanctuary installation needs attention\n  human-required: run_verified_update_recovery" }))
+    expect(JSON.stringify(startupMocks.writeTombstone.mock.calls)).not.toContain("secret raw path")
+    expect(redactedExit).toHaveBeenCalledWith(1)
   })
 
   it("still exits nonzero when tombstone or event reporting fails", () => {

@@ -9,6 +9,18 @@ const { listEnabledBundleAgentsMock, readPrivateRuntimeConfigMock } = vi.hoisted
   readPrivateRuntimeConfigMock: vi.fn(() => ({ autoStart: false, source: "default" })),
 }))
 
+const sanctuaryPackageManagementMocks = vi.hoisted(() => ({
+  resolve: vi.fn(() => ({ kind: "inactive" as const })),
+  require: vi.fn((decision: { kind: string; failure?: Error }) => { if (decision.kind === "invalid") throw decision.failure }),
+  prepare: vi.fn(),
+}))
+
+vi.mock("../../../heart/daemon/sanctuary-package-management", () => ({
+  resolveSanctuaryPackageManagementActivation: sanctuaryPackageManagementMocks.resolve,
+  requireSanctuaryPackageManagementDecision: sanctuaryPackageManagementMocks.require,
+  prepareSanctuaryPackageManagedBundle: sanctuaryPackageManagementMocks.prepare,
+}))
+
 const { runSanctuaryHealthHabitMock } = vi.hoisted(() => ({
   runSanctuaryHealthHabitMock: vi.fn(async (agent: string) => ({ ok: true, message: `health:${agent}` })),
 }))
@@ -273,6 +285,9 @@ describe("daemon entrypoint", () => {
     sanctuaryAcceptanceMocks.recordReceipt.mockReset()
     sanctuaryAcceptanceMocks.verifyFire.mockClear()
     sanctuaryAcceptanceMocks.consumeFire.mockClear()
+    sanctuaryPackageManagementMocks.resolve.mockReset().mockReturnValue({ kind: "inactive" })
+    sanctuaryPackageManagementMocks.require.mockReset().mockImplementation((decision: { kind: string; failure?: Error }) => { if (decision.kind === "invalid") throw decision.failure })
+    sanctuaryPackageManagementMocks.prepare.mockReset()
   })
 
   afterEach(() => {
@@ -395,6 +410,10 @@ describe("daemon entrypoint", () => {
     await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(1))
 
     expect(daemonCtor).toHaveBeenCalledTimes(1)
+    expect(sanctuaryPackageManagementMocks.resolve).toHaveBeenCalledTimes(1)
+    expect(sanctuaryPackageManagementMocks.resolve.mock.invocationCallOrder[0]).toBeLessThan(processManagerCtor.mock.invocationCallOrder[0]!)
+    expect(sanctuaryPackageManagementMocks.prepare).toHaveBeenCalledTimes(1)
+    expect(sanctuaryPackageManagementMocks.prepare.mock.invocationCallOrder[0]).toBeLessThan(start.mock.invocationCallOrder[0]!)
     expect(processManagerCtor).toHaveBeenCalledTimes(1)
 
     return {
@@ -419,6 +438,38 @@ describe("daemon entrypoint", () => {
       },
     }
   }
+
+  it("stops invalid package activation before runtime constructors or health heartbeat", async () => {
+    vi.resetModules()
+    listEnabledBundleAgentsMock.mockReturnValue(["sanctuary"])
+    const { createSanctuaryBundlePreparationFailure } = await import("../../../heart/daemon/daemon-bootstrap-startup")
+    sanctuaryPackageManagementMocks.resolve.mockReturnValue({ kind: "invalid", failure: createSanctuaryBundlePreparationFailure("roll_back_or_install_verified_release") })
+    const daemonCtor = vi.fn()
+    const processManagerCtor = vi.fn()
+    const senseManagerCtor = vi.fn()
+    const startHeartbeat = vi.fn(() => vi.fn())
+    const exit = vi.spyOn(process, "exit").mockImplementation(((code?: number) => code as never) as any)
+
+    vi.doMock("../../../heart/daemon/daemon", () => ({ OuroDaemon: class { constructor() { daemonCtor() } } }))
+    vi.doMock("../../../heart/daemon/process-manager", () => ({ DaemonProcessManager: class { constructor() { processManagerCtor() } } }))
+    vi.doMock("../../../heart/daemon/sense-manager", () => ({ DaemonSenseManager: class { constructor() { senseManagerCtor() } } }))
+    vi.doMock("../../../heart/daemon/daemon-health", async () => {
+      const actual = await vi.importActual<typeof import("../../../heart/daemon/daemon-health")>("../../../heart/daemon/daemon-health")
+      return { ...actual, startDaemonHealthHeartbeat: startHeartbeat }
+    })
+    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
+    vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger: vi.fn() }))
+    vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js", "--package-managed-agent", "sanctuary"])
+
+    await expect(import("../../../heart/daemon/daemon-entry")).rejects.toThrow("human-required: roll_back_or_install_verified_release")
+    expect(exit).toHaveBeenCalledOnce()
+    expect(exit).toHaveBeenCalledWith(1)
+    expect(daemonCtor).not.toHaveBeenCalled()
+    expect(processManagerCtor).not.toHaveBeenCalled()
+    expect(senseManagerCtor).not.toHaveBeenCalled()
+    expect(startHeartbeat).not.toHaveBeenCalled()
+    vi.doUnmock("../../../heart/daemon/daemon-health")
+  })
 
   async function importDaemonEntryWithPulseDispatch(options: {
     socketPath: string
@@ -961,6 +1012,8 @@ describe("daemon entrypoint", () => {
     await import("../../../heart/daemon/daemon-entry")
 
     await vi.waitFor(() => expect(checkAgentConfigWithProviderHealth).toHaveBeenCalledWith("slugger", expect.any(String)))
+    expect(sanctuaryPackageManagementMocks.prepare).toHaveBeenCalledTimes(1)
+    expect(sanctuaryPackageManagementMocks.prepare.mock.invocationCallOrder[0]).toBeLessThan(checkAgentConfigWithProviderHealth.mock.invocationCallOrder[0]!)
     expect(start).not.toHaveBeenCalled()
     expect(refreshContextLossSentinel).not.toHaveBeenCalled()
 

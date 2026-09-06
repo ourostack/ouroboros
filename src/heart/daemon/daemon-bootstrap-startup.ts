@@ -2,6 +2,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { writeDaemonTombstone } from "./daemon-tombstone"
 
 const REDACTED_BOOTSTRAP_STARTUP_ERROR = "container credential bootstrap rejected; recoverable claim retained for reconciliation"
+const REDACTED_SANCTUARY_BUNDLE_PREPARATION_ERROR = "Sanctuary installation needs attention\n  human-required: run_verified_update_recovery"
 const REDACTED_DAEMON_PREPARATION_ERROR = "provider runtime preparation failed before startup; run `ouro doctor` for diagnosis"
 export const PUBLIC_DAEMON_STARTUP_FAILURE_REASON = "startupFailurePublic"
 
@@ -21,12 +22,25 @@ export function createProviderReadinessPreparationFailure(issues: ReadonlyArray<
   return new DaemonPreparationFailure(lines.join("\n"))
 }
 
+export function createSanctuaryBundlePreparationFailure(action: "restart_from_verified_release" | "run_verified_update_recovery" | "roll_back_or_install_verified_release"): Error {
+  return new DaemonPreparationFailure(`Sanctuary installation needs attention\n  human-required: ${action}`)
+}
+
 export interface DaemonBootstrapStartupInput {
+  preflight?: () => Promise<void> | void
   loadBootstrap: () => Promise<unknown>
+  prepareManagedBundle?: () => Promise<void> | void
   prepareDaemon?: () => Promise<void>
   startDaemon: () => Promise<void>
   markStartupFailure: () => void
   exit: (code: number) => void
+}
+
+function failDaemonPreparation(input: Pick<DaemonBootstrapStartupInput, "markStartupFailure" | "exit">, error: unknown, fallback: string): false {
+  input.markStartupFailure()
+  const controlledMessage = error instanceof DaemonPreparationFailure ? error.message : fallback
+  failFastDaemonStartup({ exit: input.exit, errorMessage: controlledMessage, eventMessage: controlledMessage })
+  return false
 }
 
 export function failFastContainerCredentialBootstrapStartup(input: {
@@ -65,9 +79,20 @@ function failFastDaemonStartup(input: {
   input.exit(1)
 }
 
+export function failFastSanctuaryBundlePreparationStartup(input: { failure: unknown; exit: (code: number) => void }): void {
+  const message = input.failure instanceof DaemonPreparationFailure ? input.failure.message : REDACTED_SANCTUARY_BUNDLE_PREPARATION_ERROR
+  failFastDaemonStartup({ exit: input.exit, errorMessage: message, eventMessage: message })
+}
+
 export async function startDaemonAfterContainerCredentialBootstrap(
   input: DaemonBootstrapStartupInput,
 ): Promise<boolean> {
+  try {
+    const preflight = input.preflight?.()
+    if (preflight) await preflight
+  } catch (error) {
+    return failDaemonPreparation(input, error, REDACTED_SANCTUARY_BUNDLE_PREPARATION_ERROR)
+  }
   try {
     await input.loadBootstrap()
   } catch {
@@ -76,16 +101,15 @@ export async function startDaemonAfterContainerCredentialBootstrap(
     return false
   }
   try {
+    const preparation = input.prepareManagedBundle?.()
+    if (preparation) await preparation
+  } catch (error) {
+    return failDaemonPreparation(input, error, REDACTED_SANCTUARY_BUNDLE_PREPARATION_ERROR)
+  }
+  try {
     await input.prepareDaemon?.()
   } catch (error) {
-    input.markStartupFailure()
-    const controlledMessage = error instanceof DaemonPreparationFailure ? error.message : null
-    failFastDaemonStartup({
-      exit: input.exit,
-      errorMessage: controlledMessage ?? REDACTED_DAEMON_PREPARATION_ERROR,
-      eventMessage: controlledMessage ?? REDACTED_DAEMON_PREPARATION_ERROR,
-    })
-    return false
+    return failDaemonPreparation(input, error, REDACTED_DAEMON_PREPARATION_ERROR)
   }
   await input.startDaemon()
   return true

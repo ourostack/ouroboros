@@ -8,9 +8,22 @@ const { statSync, readFileSync, existsSync, homedir, execFileSync } = vi.hoisted
   execFileSync: vi.fn(),
 }))
 
+const packageManagement = vi.hoisted(() => ({
+  resolve: vi.fn(),
+  inspect: vi.fn(),
+}))
+
 vi.mock("node:fs", () => ({ statSync, readFileSync, existsSync }))
 vi.mock("node:os", () => ({ homedir }))
 vi.mock("node:child_process", () => ({ execFileSync }))
+vi.mock("../../../heart/identity", () => ({ getRepoRoot: () => "/opt/ouro", getAgentBundlesRoot: () => "/home/ouro/AgentBundles" }))
+vi.mock("../../../mind/bundle-manifest", () => ({ getPackageVersion: () => "0.1.0-alpha.798" }))
+vi.mock("../../../heart/daemon/sanctuary-package-management", () => ({
+  resolveSanctuaryPackageManagementActivation: packageManagement.resolve,
+}))
+vi.mock("../../../heart/daemon/sanctuary-bundle-migration", () => ({
+  inspectSanctuaryPackageManagedBundle: packageManagement.inspect,
+}))
 
 import { runContainerHealthcheck, runContainerHealthcheckMain } from "../../../heart/daemon/container-healthcheck"
 
@@ -28,7 +41,7 @@ function healthyState(overrides: Record<string, unknown> = {}): Record<string, u
   }
 }
 
-function run(argv = ["node", "healthcheck", "--agent", "sanctuary"]): void {
+function run(argv = ["node", "healthcheck", "--package-managed-agent", "sanctuary", "--agent", "sanctuary"]): void {
   runContainerHealthcheck({ argv, now: () => NOW })
 }
 
@@ -39,6 +52,8 @@ describe("container healthcheck", () => {
     readFileSync.mockReset().mockReturnValue(JSON.stringify(healthyState()))
     existsSync.mockReset().mockReturnValue(true)
     execFileSync.mockReset().mockReturnValue(`${AGENT}\n${TELEGRAM}\n${SUPERCRONIC}\n`)
+    packageManagement.resolve.mockReset().mockReturnValue({ kind: "active", packageRoot: "/opt/ouro/deploy/unraid/sanctuary.ouro", agentRoot: "/home/ouro/AgentBundles/sanctuary.ouro", runtimePackageVersion: "0.1.0-alpha.798" })
+    packageManagement.inspect.mockReset().mockReturnValue({ ok: true, data: { runtimePackageVersion: "0.1.0-alpha.798", packagedBundleVersion: "0.1.0-alpha.798", liveBundleVersion: "0.1.0-alpha.798", parity: "exact", mismatchCodes: [], journalState: "absent", ready: true, repair: { actor: "none", action: "none" } } })
     process.exitCode = undefined
   })
 
@@ -74,10 +89,39 @@ describe("container healthcheck", () => {
     expect(() => run()).not.toThrow()
   })
 
+  it.each([
+    ["invalid package-managed Sanctuary activation", () => packageManagement.resolve.mockReturnValue({ kind: "inactive" })],
+    ["invalid package-managed Sanctuary activation", () => packageManagement.resolve.mockReturnValue({ kind: "invalid", failure: new Error("bounded") })],
+    ["package-managed Sanctuary bundle is not ready", () => packageManagement.inspect.mockReturnValue({ ok: true, data: { runtimePackageVersion: "0.1.0-alpha.798", packagedBundleVersion: "0.1.0-alpha.798", liveBundleVersion: "old", parity: "mismatch", mismatchCodes: ["managed_file_content"], journalState: "absent", ready: false, repair: { actor: "human-required", action: "restart_from_verified_release" } } })],
+    ["package-managed Sanctuary bundle is not ready", () => packageManagement.inspect.mockReturnValue({ ok: true, data: { runtimePackageVersion: "0.1.0-alpha.798", packagedBundleVersion: "0.1.0-alpha.798", liveBundleVersion: "0.1.0-alpha.798", parity: "exact", mismatchCodes: [], journalState: "committing", ready: false, repair: { actor: "human-required", action: "run_verified_update_recovery" } } })],
+    ["package-managed Sanctuary bundle is not ready", () => packageManagement.inspect.mockReturnValue({ ok: false, error: { code: "invalid_journal", message: "Sanctuary update recovery is required", degraded: true, repair: { actor: "human-required", action: "run_verified_update_recovery" } } })],
+    ["package-managed Sanctuary inspection unavailable", () => packageManagement.inspect.mockImplementation(() => { throw new Error("raw path") })],
+  ])("fails readiness before process inventory when %s", (reason, arrange) => {
+    arrange()
+    expect(() => run()).toThrow(reason)
+    expect(execFileSync).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    [["node", "healthcheck", "--agent", "sanctuary"]],
+    [["node", "healthcheck", "--package-managed-agent", "sanctuary", "--package-managed-agent", "sanctuary", "--agent", "sanctuary"]],
+  ])("rejects a missing or duplicate package flag through the shared activation parser", (argv) => {
+    packageManagement.resolve.mockReturnValue({ kind: "invalid", failure: new Error("bounded") })
+    expect(() => run(argv)).toThrow("invalid package-managed Sanctuary activation")
+    expect(packageManagement.resolve).toHaveBeenCalledWith(expect.objectContaining({ mode: "production", argv, managedAgents: ["sanctuary"] }))
+    expect(packageManagement.inspect).not.toHaveBeenCalled()
+    expect(execFileSync).not.toHaveBeenCalled()
+  })
+
+  it("accepts exact parity with a preserved rollback journal", () => {
+    packageManagement.inspect.mockReturnValue({ ok: true, data: { runtimePackageVersion: "0.1.0-alpha.798", packagedBundleVersion: "0.1.0-alpha.798", liveBundleVersion: "0.1.0-alpha.798", parity: "exact", mismatchCodes: [], journalState: "rollback", ready: true, repair: { actor: "none", action: "none" } } })
+    expect(() => run()).not.toThrow()
+  })
+
   it("uses the live process arguments and clock by default", () => {
     const originalArgv = process.argv
     const now = vi.spyOn(Date, "now").mockReturnValue(NOW)
-    process.argv = ["node", "healthcheck", "--agent", "sanctuary"]
+    process.argv = ["node", "healthcheck", "--package-managed-agent", "sanctuary", "--agent", "sanctuary"]
     try {
       expect(() => runContainerHealthcheck()).not.toThrow()
     } finally {
