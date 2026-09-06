@@ -2,7 +2,6 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { createHash } from "node:crypto"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { readStewardPolicy } from "../steward-policy"
 
 export const SANCTUARY_PACKAGE_MANAGED_FILES = [
   "provider-readiness.json",
@@ -20,6 +19,46 @@ const SANCTUARY_BUNDLE_COMMITTING_FILE = `${SANCTUARY_BUNDLE_ROLLBACK_FILE}.comm
 
 const BUNDLE_META_VERSION_FIELDS = ["runtimeVersion", "bundleSchemaVersion", "lastUpdated"] as const
 
+export type SanctuaryInstallMismatchCode =
+  | "managed_file_missing"
+  | "managed_file_content"
+  | "managed_file_mode"
+  | "bundle_meta_missing"
+  | "bundle_meta_field"
+  | "bundle_meta_mode"
+
+export type SanctuaryInstallErrorCode =
+  | "invalid_package_root"
+  | "invalid_package_source"
+  | "packaged_policy_not_empty"
+  | "package_version_mismatch"
+  | "invalid_live_root"
+  | "invalid_live_bundle"
+  | "invalid_journal"
+  | "inspection_unavailable"
+
+export type SanctuaryInstallRepair =
+  | { actor: "none"; action: "none" }
+  | { actor: "human-required"; action: "restart_from_verified_release" | "run_verified_update_recovery" | "roll_back_or_install_verified_release" }
+
+export type SanctuaryInstallErrorMessage =
+  | "verified release contents are invalid"
+  | "installed Sanctuary bundle is invalid"
+  | "Sanctuary update recovery is required"
+  | "Sanctuary install state is unavailable"
+
+export type SanctuaryPackageManagedBundleInspection =
+  | { ok: true; data: { runtimePackageVersion: string; packagedBundleVersion: string; liveBundleVersion: string | null; parity: "exact" | "mismatch"; mismatchCodes: SanctuaryInstallMismatchCode[]; journalState: "absent" | "rollback" | "committing"; ready: boolean; repair: SanctuaryInstallRepair } }
+  | { ok: false; error: { code: SanctuaryInstallErrorCode; message: SanctuaryInstallErrorMessage; degraded: true; repair: Extract<SanctuaryInstallRepair, { actor: "human-required" }> } }
+
+class SanctuaryInspectionFault extends Error {
+  constructor(readonly code: SanctuaryInstallErrorCode) {
+    super(code)
+  }
+}
+
+const CANONICAL_EMPTY_PACKAGED_POLICY = { schemaVersion: 1, version: 0, desiredStates: {}, routineActionGrants: {}, updatedAt: null } as const
+
 export interface SanctuaryBundleMigrationResult {
   managedFilesUpdated: number
 }
@@ -27,6 +66,39 @@ function readObject(filePath: string): Record<string, unknown> {
   const value: unknown = JSON.parse(fs.readFileSync(filePath, "utf8"))
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${path.basename(filePath)} must contain an object`)
   return value as Record<string, unknown>
+}
+
+function isMissing(error: unknown): boolean {
+  return !!error && typeof error === "object" && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT"
+}
+
+function isFilesystemFailure(error: unknown): boolean {
+  return !!error && typeof error === "object" && "code" in error && typeof (error as NodeJS.ErrnoException).code === "string"
+}
+
+function isCanonicalEmptyPackagedPolicy(value: Record<string, unknown>): boolean {
+  return JSON.stringify(Object.keys(value).sort()) === JSON.stringify(Object.keys(CANONICAL_EMPTY_PACKAGED_POLICY).sort())
+    && value.schemaVersion === 1
+    && value.version === 0
+    && value.updatedAt === null
+    && !!value.desiredStates
+    && typeof value.desiredStates === "object"
+    && !Array.isArray(value.desiredStates)
+    && Object.keys(value.desiredStates).length === 0
+    && !!value.routineActionGrants
+    && typeof value.routineActionGrants === "object"
+    && !Array.isArray(value.routineActionGrants)
+    && Object.keys(value.routineActionGrants).length === 0
+}
+
+function validatePackagedPolicy(packageRoot: string): void {
+  const relative = "state/policy/steward.json"
+  validateDestination(packageRoot, relative)
+  requirePlainFile(path.join(packageRoot, relative), "packaged steward policy")
+  const value = readObject(path.join(packageRoot, relative))
+  if (value.routineActionGrants && typeof value.routineActionGrants === "object" && !Array.isArray(value.routineActionGrants) && Object.keys(value.routineActionGrants).length > 0) throw new Error("packaged steward policy must not carry routine action grants; authorize them through an authenticated owner session")
+  if (value.desiredStates && typeof value.desiredStates === "object" && !Array.isArray(value.desiredStates) && Object.keys(value.desiredStates).length > 0) throw new Error("packaged steward policy must not carry desired state")
+  if (!isCanonicalEmptyPackagedPolicy(value)) throw new Error("packaged steward policy must be the canonical empty policy")
 }
 
 function requirePlainFile(filePath: string, label: string): void {
@@ -163,8 +235,9 @@ function readDurableRecord(agentRoot: string): { snapshot: MigrationSnapshot; ro
   const stat = fs.lstatSync(filePath)
   if (stat.isSymbolicLink()) throw new Error("Sanctuary bundle rollback record must not be a symlink")
   if (!stat.isFile() || (stat.mode & 0o777) !== 0o600) throw new Error("Sanctuary bundle rollback record must be a mode-0600 regular file")
+  const serialized = fs.readFileSync(filePath, "utf8")
   let value: unknown
-  try { value = JSON.parse(fs.readFileSync(filePath, "utf8")) } catch { throw new Error("Sanctuary bundle rollback record is invalid JSON") }
+  try { value = JSON.parse(serialized) } catch { throw new Error("Sanctuary bundle rollback record is invalid JSON") }
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Sanctuary bundle rollback record is invalid")
   const record = value as Partial<DurableMigrationSnapshot>
   if (record.schemaVersion !== 1 || typeof record.rollbackImageId !== "string" || !/^sha256:[0-9a-f]{64}$/u.test(record.rollbackImageId) || typeof record.targetImageId !== "string" || !/^sha256:[0-9a-f]{64}$/u.test(record.targetImageId) || record.targetImageId === record.rollbackImageId || typeof record.snapshotDigest !== "string" || !/^[0-9a-f]{64}$/u.test(record.snapshotDigest) || !Array.isArray(record.files) || !Array.isArray(record.directories)) throw new Error("Sanctuary bundle rollback record is invalid")
@@ -199,6 +272,163 @@ function validateAgentRoot(agentRoot: string): void {
   if (!path.isAbsolute(agentRoot)) throw new Error("agent root must be an absolute path")
   const stat = fs.lstatSync(agentRoot)
   if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error("agent root must be a real directory")
+}
+
+function inspectionError(code: SanctuaryInstallErrorCode): SanctuaryPackageManagedBundleInspection {
+  if (code === "invalid_package_root" || code === "invalid_package_source" || code === "packaged_policy_not_empty" || code === "package_version_mismatch") {
+    return { ok: false, error: { code, message: "verified release contents are invalid", degraded: true, repair: { actor: "human-required", action: "roll_back_or_install_verified_release" } } }
+  }
+  if (code === "invalid_live_root" || code === "invalid_live_bundle") {
+    return { ok: false, error: { code, message: "installed Sanctuary bundle is invalid", degraded: true, repair: { actor: "human-required", action: "roll_back_or_install_verified_release" } } }
+  }
+  if (code === "invalid_journal") {
+    return { ok: false, error: { code, message: "Sanctuary update recovery is required", degraded: true, repair: { actor: "human-required", action: "run_verified_update_recovery" } } }
+  }
+  return { ok: false, error: { code, message: "Sanctuary install state is unavailable", degraded: true, repair: { actor: "human-required", action: "run_verified_update_recovery" } } }
+}
+
+function validateInspectionRoot(root: string, code: "invalid_package_root" | "invalid_live_root"): void {
+  if (!path.isAbsolute(root)) throw new SanctuaryInspectionFault(code)
+  let stat: fs.Stats
+  try { stat = fs.lstatSync(root) } catch (error) {
+    if (isMissing(error)) throw new SanctuaryInspectionFault(code)
+    throw error
+  }
+  if (stat.isSymbolicLink() || !stat.isDirectory()) throw new SanctuaryInspectionFault(code)
+}
+
+function inspectRelativeFile(root: string, relative: string, code: "invalid_package_source" | "invalid_live_bundle"): fs.Stats | null {
+  let current = root
+  let result: fs.Stats | null = null
+  const segments = relative.split(path.sep)
+  for (let index = 0; index < segments.length; index += 1) {
+    current = path.join(current, segments[index]!)
+    let stat: fs.Stats
+    try { stat = fs.lstatSync(current) } catch (error) {
+      if (isMissing(error)) return null
+      throw error
+    }
+    if (stat.isSymbolicLink()) throw new SanctuaryInspectionFault(code)
+    if (index < segments.length - 1 && !stat.isDirectory()) throw new SanctuaryInspectionFault(code)
+    if (index === segments.length - 1 && !stat.isFile()) throw new SanctuaryInspectionFault(code)
+    if (index === segments.length - 1) result = stat
+  }
+  return result
+}
+
+function readInspectionObject(filePath: string, code: "invalid_package_source" | "invalid_live_bundle"): Record<string, unknown> {
+  let value: unknown
+  try { value = JSON.parse(fs.readFileSync(filePath, "utf8")) } catch (error) {
+    if (error instanceof SyntaxError) throw new SanctuaryInspectionFault(code)
+    throw error
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new SanctuaryInspectionFault(code)
+  return value as Record<string, unknown>
+}
+
+function inspectPackageSources(packageRoot: string, runtimePackageVersion: string): { managed: Map<string, Buffer>; metadata: Record<string, unknown>; packagedBundleVersion: string } {
+  const managed = new Map<string, Buffer>()
+  for (const relative of SANCTUARY_PACKAGE_MANAGED_FILES) {
+    if (!inspectRelativeFile(packageRoot, relative, "invalid_package_source")) throw new SanctuaryInspectionFault("invalid_package_source")
+    managed.set(relative, fs.readFileSync(path.join(packageRoot, relative)))
+  }
+  if (!inspectRelativeFile(packageRoot, "bundle-meta.json", "invalid_package_source")) throw new SanctuaryInspectionFault("invalid_package_source")
+  const metadata = readInspectionObject(path.join(packageRoot, "bundle-meta.json"), "invalid_package_source")
+  if (typeof metadata.runtimeVersion !== "string" || metadata.runtimeVersion.length === 0 || !Number.isInteger(metadata.bundleSchemaVersion) || typeof metadata.lastUpdated !== "string" || metadata.lastUpdated.length === 0) throw new SanctuaryInspectionFault("invalid_package_source")
+  if (!inspectRelativeFile(packageRoot, "state/policy/steward.json", "invalid_package_source")) throw new SanctuaryInspectionFault("invalid_package_source")
+  const policy = readInspectionObject(path.join(packageRoot, "state/policy/steward.json"), "invalid_package_source")
+  if (!isCanonicalEmptyPackagedPolicy(policy)) throw new SanctuaryInspectionFault("packaged_policy_not_empty")
+  if (runtimePackageVersion.length === 0 || metadata.runtimeVersion !== runtimePackageVersion) throw new SanctuaryInspectionFault("package_version_mismatch")
+  return { managed, metadata, packagedBundleVersion: metadata.runtimeVersion }
+}
+
+function journalRepair(journalState: "absent" | "rollback" | "committing", parity: "exact" | "mismatch"): SanctuaryInstallRepair {
+  if (parity === "exact" && journalState !== "committing") return { actor: "none", action: "none" }
+  if (parity === "mismatch" && journalState === "absent") return { actor: "human-required", action: "restart_from_verified_release" }
+  return { actor: "human-required", action: "run_verified_update_recovery" }
+}
+
+export function inspectSanctuaryPackageManagedBundle(input: { packageRoot: string; agentRoot: string; runtimePackageVersion: string }): SanctuaryPackageManagedBundleInspection {
+  try {
+    validateInspectionRoot(input.packageRoot, "invalid_package_root")
+    const packaged = inspectPackageSources(input.packageRoot, input.runtimePackageVersion)
+    validateInspectionRoot(input.agentRoot, "invalid_live_root")
+
+    let managedMissing = false
+    let managedContent = false
+    let managedMode = false
+    for (const relative of SANCTUARY_PACKAGE_MANAGED_FILES) {
+      const stat = inspectRelativeFile(input.agentRoot, relative, "invalid_live_bundle")
+      if (!stat) {
+        managedMissing = true
+        continue
+      }
+      if (!fs.readFileSync(path.join(input.agentRoot, relative)).equals(packaged.managed.get(relative)!)) managedContent = true
+      if ((stat.mode & 0o777) !== 0o600) managedMode = true
+    }
+
+    let liveBundleVersion: string | null = null
+    let bundleMetaMissing = false
+    let bundleMetaField = false
+    let bundleMetaMode = false
+    const liveMetaStat = inspectRelativeFile(input.agentRoot, "bundle-meta.json", "invalid_live_bundle")
+    if (!liveMetaStat) {
+      bundleMetaMissing = true
+    } else {
+      const liveMeta = readInspectionObject(path.join(input.agentRoot, "bundle-meta.json"), "invalid_live_bundle")
+      liveBundleVersion = typeof liveMeta.runtimeVersion === "string" ? liveMeta.runtimeVersion : null
+      bundleMetaField = BUNDLE_META_VERSION_FIELDS.some((field) => liveMeta[field] !== packaged.metadata[field])
+      bundleMetaMode = (liveMetaStat.mode & 0o777) !== 0o600
+    }
+
+    let journalState: "absent" | "rollback" | "committing" = "absent"
+    try { journalState = readDurableRecord(input.agentRoot)?.state ?? "absent" } catch (error) {
+      if (isFilesystemFailure(error)) throw error
+      throw new SanctuaryInspectionFault("invalid_journal")
+    }
+    const mismatchCodes: SanctuaryInstallMismatchCode[] = []
+    if (managedMissing) mismatchCodes.push("managed_file_missing")
+    if (managedContent) mismatchCodes.push("managed_file_content")
+    if (managedMode) mismatchCodes.push("managed_file_mode")
+    if (bundleMetaMissing) mismatchCodes.push("bundle_meta_missing")
+    if (bundleMetaField) mismatchCodes.push("bundle_meta_field")
+    if (bundleMetaMode) mismatchCodes.push("bundle_meta_mode")
+    const parity = mismatchCodes.length === 0 ? "exact" : "mismatch"
+    const ready = parity === "exact" && journalState !== "committing"
+    return {
+      ok: true,
+      data: {
+        runtimePackageVersion: input.runtimePackageVersion,
+        packagedBundleVersion: packaged.packagedBundleVersion,
+        liveBundleVersion,
+        parity,
+        mismatchCodes,
+        journalState,
+        ready,
+        repair: journalRepair(journalState, parity),
+      },
+    }
+  } catch (error) {
+    return inspectionError(error instanceof SanctuaryInspectionFault ? error.code : "inspection_unavailable")
+  }
+}
+
+export function ensureSanctuaryPackageManagedBundle(
+  input: { packageRoot: string; agentRoot: string; runtimePackageVersion: string },
+  deps: { inspect?: typeof inspectSanctuaryPackageManagedBundle; migrate?: typeof migrateSanctuaryPackageManagedBundle; commit?: typeof commitSanctuaryPackageManagedBundle } = {},
+): SanctuaryPackageManagedBundleInspection {
+  const inspect = deps.inspect ?? inspectSanctuaryPackageManagedBundle
+  const before = inspect(input)
+  if (!before.ok || before.data.ready) return before
+  if (before.data.parity === "mismatch" && before.data.journalState !== "absent") throw new Error("Sanctuary package-managed bundle requires verified update recovery")
+  if (before.data.parity === "exact" && before.data.journalState === "committing") {
+    (deps.commit ?? commitSanctuaryPackageManagedBundle)(input.agentRoot)
+  } else {
+    (deps.migrate ?? migrateSanctuaryPackageManagedBundle)({ packageRoot: input.packageRoot, agentRoot: input.agentRoot })
+  }
+  const after = inspect(input)
+  if (!after.ok || !after.data.ready || after.data.parity !== "exact" || after.data.journalState !== "absent") throw new Error("Sanctuary package-managed bundle did not converge")
+  return after
 }
 
 export function inspectSanctuaryPackageManagedBundleRollback(agentRoot: string): { rollbackImageId: string; targetImageId: string; state: "rollback" | "committing" } | null {
@@ -272,10 +502,7 @@ export function migrateSanctuaryPackageManagedBundle(input: { packageRoot: strin
     validateDestination(input.agentRoot, "bundle-meta.json")
     const packagedMeta = readObject(path.join(input.packageRoot, "bundle-meta.json"))
     for (const field of BUNDLE_META_VERSION_FIELDS) if (!(field in packagedMeta)) throw new Error(`packaged bundle-meta.json is missing ${field}`)
-    const packagedPolicy = readStewardPolicy(input.packageRoot)
-    if (Object.keys(packagedPolicy.routineActionGrants).length > 0) {
-      throw new Error("packaged steward policy must not carry routine action grants; authorize them through an authenticated owner session")
-    }
+    validatePackagedPolicy(input.packageRoot)
     snapshot = captureMigrationSnapshot(input.agentRoot)
     if (input.retainRollback) {
       cleanupInterruptedWrites(existingRollback)
@@ -297,7 +524,7 @@ export function migrateSanctuaryPackageManagedBundle(input: { packageRoot: strin
     const nextMeta = { ...currentMeta }
     for (const field of BUNDLE_META_VERSION_FIELDS) nextMeta[field] = packagedMeta[field]
     const nextMetaText = `${JSON.stringify(nextMeta, null, 2)}\n`
-    if (!fs.existsSync(metaPath) || fs.readFileSync(metaPath, "utf8") !== nextMetaText) writeAtomic(metaPath, nextMetaText)
+    if (!fs.existsSync(metaPath) || fs.readFileSync(metaPath, "utf8") !== nextMetaText || (fs.statSync(metaPath).mode & 0o777) !== 0o600) writeAtomic(metaPath, nextMetaText)
 
     const result = { managedFilesUpdated }
     emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_bundle_migration_end", message: "completed Sanctuary package-managed bundle migration", meta: result })
