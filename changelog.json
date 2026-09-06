@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.799",
+      "changes": [
+        "Allow a fresh Sanctuary host to pull and validate the exact release image during a reviewed update."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.798",
       "changes": [
         "Keep the installed Butler bundle aligned with its verified release before provider and Telegram startup, and expose the same bounded install check to the owner.",
