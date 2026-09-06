@@ -1098,6 +1098,10 @@ describe("Telegram sense coverage contracts", () => {
     mocks.runSenseTurn.mockResolvedValueOnce({ response: "   ", deliveries: [], deliveryFailures: [], ponderDeferred: false })
     await f.getOnMessage()({ updateId: 3, messageId: "4", text: "quiet" })
     expect(mocks.sendTelegramText).not.toHaveBeenCalled()
+
+    mocks.runSenseTurn.mockResolvedValueOnce({ response: "(agent responded but response was empty)", deliveries: [], deliveryFailures: [], ponderDeferred: false })
+    await f.getOnMessage()({ updateId: 4, messageId: "5", text: "still quiet" })
+    expect(mocks.sendTelegramText).not.toHaveBeenCalled()
   })
 
   it.each([new Error("turn failed"), "primitive failure"])("records turn failure and sends one fixed safe response", async (failure) => {
