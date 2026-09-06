@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.801",
+      "changes": [
+        "Keep shared-turn empty-response diagnostics internal on Telegram so tool-only investigation steps do not appear as user-visible Butler messages."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.800",
       "changes": [
         "Make Sanctuary manifest verification compatible with Docker Buildx v0.20.1 by hashing exact raw OCI index bytes."
