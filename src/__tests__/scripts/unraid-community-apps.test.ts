@@ -227,5 +227,8 @@ describe("Mendelow Cloud Butler Community Apps release", () => {
 
     expect(runbook).toContain("mounts the runtime and sanctuary.ouro bundle read-write plus the privileged event spool read-only")
     expect(runbook).not.toContain("SAB configuration read-only")
+    expect(runbook).not.toContain("SAB readiness")
+    expect(runbook).not.toContain("Confirm Config.Image equals the exact reviewed local image ID")
+    expect(runbook).toContain("Confirm `Config.Image` equals the canonical package-version tag and `.Image` equals the exact reviewed local image ID.")
   })
 })

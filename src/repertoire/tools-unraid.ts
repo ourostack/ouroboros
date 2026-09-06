@@ -382,7 +382,7 @@ export const unraidToolDefinitions: ToolDefinition[] = [
   readDefinition("unraid_get_disks", "Read bounded Sanctuary disk SMART, temperature, and parity health.", "getDisks"),
   readDefinition("unraid_get_notifications", "Read bounded unacknowledged Sanctuary notifications.", "getNotifications"),
   readDefinition("unraid_get_system", "Read bounded Sanctuary system and version health.", "getSystem"),
-  readDefinition("sanctuary_get_install_state", "Read the bounded package, packaged-bundle, live-bundle, parity, readiness, and repair state for this Butler installation.", "getInstallState"),
+  readDefinition("sanctuary_get_install_state", "Check whether this Butler installation matches its verified release and report any repair needed.", "getInstallState"),
   readDefinition("unraid_check_services", "Freshly check the fixed public Sanctuary service endpoints and return bounded status with an observation timestamp.", "checkServices"),
   readDefinition("sanctuary_get_download_queue", "Read the bounded live household download queue state, including whether the spend guard has paused it.", "getDownloadQueue"),
   {

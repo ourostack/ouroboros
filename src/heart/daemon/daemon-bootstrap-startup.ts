@@ -2,7 +2,12 @@ import { emitNervesEvent } from "../../nerves/runtime"
 import { writeDaemonTombstone } from "./daemon-tombstone"
 
 const REDACTED_BOOTSTRAP_STARTUP_ERROR = "container credential bootstrap rejected; recoverable claim retained for reconciliation"
-const REDACTED_SANCTUARY_BUNDLE_PREPARATION_ERROR = "Sanctuary installation needs attention\n  human-required: run_verified_update_recovery"
+const SANCTUARY_BUNDLE_RECOVERY_GUIDANCE = {
+  restart_from_verified_release: "restart Mendelow Cloud Butler from its verified release so the installed bundle can finish updating",
+  run_verified_update_recovery: "resume the reviewed Mendelow Cloud Butler update recovery procedure",
+  roll_back_or_install_verified_release: "roll back to a verified Mendelow Cloud Butler release or install that release again",
+} as const
+const REDACTED_SANCTUARY_BUNDLE_PREPARATION_ERROR = `Sanctuary installation needs attention\n  human-required: ${SANCTUARY_BUNDLE_RECOVERY_GUIDANCE.run_verified_update_recovery}`
 const REDACTED_DAEMON_PREPARATION_ERROR = "provider runtime preparation failed before startup; run `ouro doctor` for diagnosis"
 export const PUBLIC_DAEMON_STARTUP_FAILURE_REASON = "startupFailurePublic"
 
@@ -22,8 +27,8 @@ export function createProviderReadinessPreparationFailure(issues: ReadonlyArray<
   return new DaemonPreparationFailure(lines.join("\n"))
 }
 
-export function createSanctuaryBundlePreparationFailure(action: "restart_from_verified_release" | "run_verified_update_recovery" | "roll_back_or_install_verified_release"): Error {
-  return new DaemonPreparationFailure(`Sanctuary installation needs attention\n  human-required: ${action}`)
+export function createSanctuaryBundlePreparationFailure(action: keyof typeof SANCTUARY_BUNDLE_RECOVERY_GUIDANCE): Error {
+  return new DaemonPreparationFailure(`Sanctuary installation needs attention\n  human-required: ${SANCTUARY_BUNDLE_RECOVERY_GUIDANCE[action]}`)
 }
 
 export interface DaemonBootstrapStartupInput {

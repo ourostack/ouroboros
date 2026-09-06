@@ -1927,7 +1927,8 @@ Update:
     DOCKERMAN_TEMPLATE_JOURNAL=/boot/config/custom/ouro-butler/docker-man-template-transaction.json
     test "$DOCKERMAN_TEMPLATE_PATH" = /boot/config/plugins/dockerMan/templates-user/my-ouro-butler.xml
     test "$DOCKERMAN_TEMPLATE_JOURNAL" = /boot/config/custom/ouro-butler/docker-man-template-transaction.json
-  Before stopping, renaming, or creating any Butler container, extract the packaged event, template, runtime-policy, and DockerMan transaction assets from that exact image ID. Install the event assets transactionally, audit the original version-tagged template, create a separate transient exact-local-ID audit copy, and keep the private stage until the outer transaction commits. Do not copy these files from a checkout or another image:
+  Before stopping, renaming, or creating any Butler container, extract the packaged event, template, runtime-policy, and DockerMan transaction assets from that exact image ID. Do not copy these files from a checkout or another image.
+  Install the event assets transactionally, audit the original version-tagged template, create a separate temporary copy for exact local-image-ID auditing, and keep the private stage until the outer transaction commits:
     EVENT_ASSET_STAGE=$(mktemp -d /mnt/user/appdata/ouro-butler/staging/ouro-events.XXXXXX)
     chmod 0700 "$EVENT_ASSET_STAGE"
     EVENT_SCRIPT_STAGE="$EVENT_ASSET_STAGE/ouro-events"
@@ -2023,16 +2024,20 @@ Update:
       --mount "type=bind,src=$STAGED_EXACT_TEMPLATE,dst=/audit/sanctuary.exact-image.xml,readonly" \
       --mount "type=bind,src=$STAGED_RUNTIME_POLICY,dst=/audit/container-runtime.json,readonly" \
       "$IMAGE_ID" --template /audit/sanctuary.exact-image.xml --runtime-policy /audit/container-runtime.json --expected-image "$IMAGE_ID"
-  If extraction, transactional installation, boot activation, or verification fails, abort the update before any Butler mutation. The installer restores the previous assets, go file, and cron on transactional failure; production stays running. If boot activation or verification fails after the transaction commits, leave production untouched, repair or rerun this exact-image installation, and do not continue. Container and DockerMan rollback begin only after the later production preflight succeeds.
-  Initial install/adoption is a separate terminal path for the verified live legacy state: no production or rollback, exactly one running (possibly unhealthy) ouro-butler-staging, and no legacy-evidence container. After the helper definitions above are loaded and IMAGE_ID is resolved, run this exact sequence. MiniMax credentials are imported from the byte-verified legacy bootstrap envelope; do not place credentials in arguments, shell variables, or history.
+  If extraction or transactional installation fails, abort before changing any live Butler container. The installer restores the previous assets, go file, and cron; production stays running.
+  If boot activation or verification fails after that transaction commits, leave production untouched, repair or rerun this exact-image installation, and stop. Container and DockerMan rollback begin only after the later production preflight succeeds.
+  Initial install/adoption is a separate terminal path for the verified older layout: no production or rollback, exactly one running (possibly unhealthy) ouro-butler-staging, and no legacy-evidence container. After the helpers above are loaded and IMAGE_ID is resolved, run this exact sequence.
+  MiniMax credentials come from the byte-verified legacy bootstrap envelope. Never place credentials in arguments, shell variables, or history.
   These provider-readiness commands are adoption-only; do not use them as a normal-update precheck against an active canonical production daemon.
   Sanctuary legacy adoption commands:
     prepare_sanctuary_legacy_adoption "$IMAGE_ID"
     verify_sanctuary_provider_readiness "$IMAGE_ID"
     install_from_legacy_staging
   These commands are one terminal path; after install succeeds, stop and do not continue into the normal update below. The final install is noninteractive: it reruns resumable preparation plus fresh readiness, but never authentication.
-  That function never applies the canonical auditor to the known-noncanonical legacy container or restarts it. It verifies and pins the legacy image, provisions the absent canonical roots from the exact target image's packaged Sanctuary skeleton, proves required files plus exact ownership/modes, and runs same-image vault bootstrap and provider readiness before durably snapshotting both exact container and image inspect records. Any preparation, vault, or readiness failure returns while legacy remains running with autostart untouched. It then installs the original version-tagged template under the crash journal, disables all Butler autostart entries, stops and rechecks the exact legacy container, and renames it to stopped ouro-butler-legacy-evidence. It creates one canonical production container directly from the reviewed version tag with --pull=never, audits it before start, proves it is the only running Butler and healthy, enables only production autostart, proves the exact stopped legacy rollback artifact plus DockerMan and Community Apps recognition, and commits the template journal. Failure removes only a partial target production container, preserves the stopped legacy evidence without deletion or restart, restores the prior template, leaves autostart disabled, and propagates the original status.
-  For normal updates, preflight accepts only the pinned alpha.742 two-mount source, the pinned pre-package-managed alpha.797 source, or an already package-managed canonical source before any autostart or container mutation. The two pinned exceptions are source-only and can never be target creation contracts.
+  That function never applies the package-managed target contract to the older alpha.797 container or restarts it. It first proves the pinned alpha.797 image and exact allowed legacy shape, creates the missing canonical roots from the reviewed target image, checks required files and permissions, and finishes vault plus provider preparation. Any failure leaves the old Butler running with autostart untouched.
+  After preparation succeeds, it records the exact old container and image, installs the original version-tagged template under the crash journal, disables Butler autostart, stops and rechecks the old container, and renames it to stopped ouro-butler-legacy-evidence. It then creates one canonical production container from the reviewed version tag with --pull=never, audits it before start, proves it is the only running healthy Butler, enables only production autostart, proves the stopped rollback plus DockerMan and Community Apps recognition, and commits the template journal.
+  If activation fails, it removes only a partial target container, preserves the stopped legacy evidence, restores the prior template, leaves autostart disabled, and returns the original failure.
+  For normal updates, preflight accepts only the pinned alpha.742 two-mount source, the pinned pre-package-managed alpha.797 source, or an already package-managed canonical source before any autostart or live-container change. The two pinned exceptions may validate an old source, but can never authorize creation of a new target.
   Production must be the only running Butler poller; staging must be absent; rollback may be absent or one stopped container with the exact production image. A stopped legacy-evidence container is preserved. Disable every Butler name in Unraid's array-autostart file and verify that result before stopping production. First resolve and validate the exact image ID of the known-good production container while it is still running, so a lookup failure cannot strand a renamed container:
     recover_dockerman_template_transaction
     recover_pending_sanctuary_bundle_migration "$IMAGE_ID"
@@ -2058,8 +2063,7 @@ Update:
       /usr/local/bin/node "$STAGED_DOCKERMAN_TRANSACTION" rollback >/dev/null
       (exit "$PRECUTOVER_READINESS_STATUS")
     fi
-  Guard the atomic autostart disable separately. If it fails, production has not
-  been touched and the captured status is propagated:
+  Guard the atomic autostart disable separately. If it fails, production has not been touched and the captured status is propagated:
     if disable_butler_autostart; then
       :
     else
@@ -2087,7 +2091,10 @@ ouro-butler-rollback
     }
   Stop production, remove only a stopped stale rollback, rename the known-good container, verify it remains stopped, and apply the exact target image's package-managed bundle migration in one explicit preparation guard.
   Package-managed files are exactly `provider-readiness.json`, `tool-profiles.json`, `habits/sanctuary-health.md`, and the five canonical files under `psyche/`. The migration also merges the three bundle-meta version fields. It never installs or mutates steward policy authority. It preserves agent.json, all steward policy and audit bytes, relationships, sessions, and every other state path. Repeating it is a no-op.
-  Before its first managed write, the migrator atomically fsyncs one mode-0600 rollback record at `.sanctuary-package-managed-rollback.json`. That transient record contains a verified SHA-256 digest over the exact prior bytes, modes, and parent existence for those files plus bundle-meta, bound to distinct exact rollback and target image IDs. It is the migration transaction record, not a second bundle authority. Normal managed-file failure restores it immediately. Every later container rollback restores the exact prior bytes while retaining that record before the old container restarts; only after exact old-production audit, readiness, and autostart does `finalize-rollback` unlink it without entering the target-commit state. A killed updater is reconciled from the same record before update topology preflight: partial new containers are removed, interrupted atomic-write stages are discarded, the exact prior bundle is restored idempotently, and only the image ID recorded in the transaction may resume as production. A malformed record, wrong image, or restore failure leaves autostart disabled and fails closed. Once target readiness and autostart have passed, `commit` first durably renames the record to committing; a kill then keeps target production in place and the next run validates its exact topology/readiness before finishing commit. Migration failure enters the same exact container rollback arm before target production starts:
+  Before its first managed write, the migrator atomically fsyncs one mode-0600 rollback record at `.sanctuary-package-managed-rollback.json`. That record binds the verified prior bytes, modes, and parent existence for every managed file plus bundle-meta to distinct exact rollback and target image IDs. It is the migration receipt, not a second bundle authority.
+  A managed-file failure restores the prior bytes immediately. Every later container rollback also restores those bytes before the old container restarts, while retaining the receipt; only after the old production container is audited, ready, and back on autostart does `finalize-rollback` remove it without marking the new release committed.
+  After an interrupted update, the same receipt removes partial new containers, discards only validated interrupted-write stages, restores the prior bundle idempotently, and permits only the recorded rollback image to resume as production. A malformed receipt, wrong image, or restore failure leaves autostart disabled and stops safely.
+  Once target readiness and autostart pass, `commit` durably marks the receipt as committing. If interruption happens then, the target stays in place and the next run rechecks its exact topology and readiness before finishing. Migration failure enters the same container rollback arm before target production starts:
     if docker stop ouro-butler \
       && remove_stopped_rollback_if_present "$ROLLBACK_IMAGE_ID" \
       && docker rename ouro-butler ouro-butler-rollback \
@@ -2125,9 +2132,12 @@ ouro-butler-rollback
       /usr/local/bin/node "$STAGED_DOCKERMAN_TRANSACTION" rollback >/dev/null
       (exit "$PRODUCTION_PREPARATION_STATUS")
     fi
-  Preparation failure therefore either restores the still-named exact production after removing any stale rollback, or renames the exact stopped rollback back; both recoveries revalidate, start, bounded-wait, atomically restore production-only autostart, and propagate the original failure. If neither exact container can be found, the failure propagates with Butler autostart disabled.
-  Do not start a target-image daemon between the production rename and final production activation. The exact-image static audit, SAB readiness, and vault-backed Telegram identity check have already passed before autostart or container mutation. Provider and complete daemon readiness are exercised only by the transactional production activation below, whose failure arm restores and revalidates the exact prior production. This prevents a disposable daemon from reconciling or claiming live external-event state before cutover.
-  Create and activate production from the same exact image ID and exact authority in one explicit conditional so `set -eu` cannot exit before rollback. Only a successful create, effective audit, start, stopped rollback assertion, and bounded readiness wait may enable production autostart. Any failure captures the activation status, safely removes a partially created new production if it exists, restores the stopped rollback container, audits it against its exact old image ID, proves it ready, atomically enables only production autostart, and then propagates the original activation failure:
+  Preparation failure therefore either restores the still-named exact production after removing any stale rollback, or renames the exact stopped rollback back. Both paths revalidate and start the old container, wait within the fixed bound, restore production-only autostart atomically, and return the original failure.
+  If neither exact container can be found, the failure returns with Butler autostart disabled.
+  Do not start a target-image daemon between the production rename and final production activation. The exact-image static audit, download-queue readiness, and vault-backed Telegram identity check have already passed before autostart or live-container changes.
+  Provider and complete daemon readiness are exercised only by the transactional production activation below. Its failure arm restores and revalidates the exact prior production, so a disposable daemon cannot reconcile or claim live external-event state before cutover.
+  Create and activate production from the same exact image ID and exact authority in one explicit conditional so `set -eu` cannot exit before rollback. Only a successful create, effective audit, start, stopped-rollback assertion, and bounded readiness wait may enable production autostart.
+  On failure, capture the activation status, remove only a partially created new production container, restore and audit the stopped rollback against its exact old image ID, prove it ready, restore production-only autostart atomically, and return the original failure:
     if test "$(docker buildx imagetools inspect "$VERSION_IMAGE" --format '{{.Manifest.Digest}}')" = "$MANIFEST_DIGEST" \
       && test "$(docker image inspect --format '{{.Id}}' "$VERSION_IMAGE")" = "$IMAGE_ID" \
       && docker create --pull=never --name ouro-butler --network host --restart unless-stopped --user 10001:10001 \
@@ -2175,7 +2185,9 @@ ouro-butler-rollback
     /usr/local/bin/node "$STAGED_DOCKERMAN_TRANSACTION" commit --proof "$FINAL_PROOF_PATH" >/dev/null
     cleanup_event_asset_stage
     trap - EXIT
-  Keep ouro-butler-rollback stopped until the new production container is proven or the explicit rollback arm restores it. Never create production from a mutable tag, a bare tag, or a bare local image ID. Docker tab Update, Force Update, Edit/Apply, Update All, and CA Action Centre updates remain visible but are unsupported because stock recreation deletes reviewed rollback evidence. Visibility, start, stop, and autostart remain supported; use only this reviewed version-tag transaction for updates. Community Apps has no independent durable installed-app registry: its canonical previous_apps path derives installed state from DockerMan templates and live container name/image correlation, so the helper validates those source markers and proves the same correlation without invoking the UI/cache-mutating endpoint; the later live CA UI smoke verifies presentation.
+  Keep ouro-butler-rollback stopped until the new production container is proven or the explicit rollback arm restores it. Never create production from a mutable tag, a bare tag, or a bare local image ID.
+  Docker tab Update, Force Update, Edit/Apply, Update All, and CA Action Centre updates remain visible but are unsupported because stock recreation deletes reviewed rollback evidence. Visibility, start, stop, and autostart remain supported; use only this reviewed version-tag transaction for updates.
+  Community Apps determines installed state from the DockerMan template plus the live container name and image. The helper proves that same relationship without calling the endpoint that refreshes Community Apps' UI cache; the later live UI smoke confirms what Ari sees.
 
 Backup:
   Set BACKUP_ROOT to a new absolute snapshot path on the destination filesystem.
@@ -2397,7 +2409,9 @@ Restore:
     ' "$BACKUP_ROOT/provenance/container-inspect.json" "$BACKUP_ROOT/provenance/package-version")
     test "$(docker image inspect --format '{{.Id}}' "$RESTORE_VERSION_IMAGE")" = "$IMAGE_ID"
     audit_registered_dockerman_template "$AUDIT_RUNNER_IMAGE_ID" "$RESTORE_VERSION_IMAGE"
-  Before any autostart, root, or container mutation, run the nounset-safe input, backup-root, image, and topology preflight. It requires a nonempty canonical absolute BACKUP_ROOT (not /), both exact required directories, an exact local sha256 image ID, canonical production as the only running Butler poller, no staging or rollback, and at most one exact stopped legacy-evidence container. It also executes the reviewed runner against the live source container before any autostart, root, or container mutation. Restore never rewrites DockerMan registration outside the reviewed template transaction: the read-only preflight above therefore refuses to continue unless the existing persistent template already names the exact snapshot version, and the post-start check below proves DockerMan and Community Apps still recognize it. If the template version differs, first run the same reviewed version-tag update transaction targeting the snapshot version, then rerun Restore; a mismatch stops before autostart, root, or production-container mutation:
+  Before changing autostart, durable roots, or live containers, run the nounset-safe input, backup-root, image, and topology preflight. It requires a nonempty canonical absolute BACKUP_ROOT other than /, both required directories, an exact local sha256 image ID, canonical production as the only running Butler, no staging or rollback, and at most one exact stopped legacy-evidence container. It also audits the live source container with the reviewed runner.
+  Restore never rewrites DockerMan registration outside the reviewed template transaction. The preflight therefore stops unless the persistent template already names the exact snapshot version, and the post-start check proves DockerMan and Community Apps still recognize it.
+  If the template names another version, first run the same reviewed version-tag update transaction for the snapshot version, then rerun Restore. A mismatch stops before autostart, durable-root, or production-container changes:
     if assert_restore_preflight; then
       :
     else
@@ -2764,12 +2778,7 @@ Packaged Unit 16 acceptance execution:
   inode used by the one-shot for marker correlation.
 
 Audit and safety verification:
-  Inspect AgentBundles/sanctuary.ouro/state/approvals for durable approval and
-  restart-attempt receipts. Confirm no Docker socket/device/host-root mounts and
-  no published ports with docker inspect. Confirm Config.Image equals the exact
-  reviewed local image ID, not the build tag. The read key must reject Docker
-  stop and restart mutations; only the separate write key may perform the one
-  typed approved restart action.
+  Inspect AgentBundles/sanctuary.ouro/state/approvals for durable approval and restart-attempt receipts. Confirm with docker inspect that the container has no Docker socket, device, host-root mount, or published port. Confirm `Config.Image` equals the canonical package-version tag and `.Image` equals the exact reviewed local image ID. The read key must reject Docker stop and restart mutations; only the separate write key may perform the one typed approved restart action.
   The packaged `unraid-key-rotate` command is the only canonical key-rotation
   authority. Its host launcher stops the exact production container and assumes
   trap-backed recovery responsibility before key mutation. It inventories the

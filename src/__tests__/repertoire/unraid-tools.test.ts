@@ -381,6 +381,7 @@ describe("Unraid typed read tools", () => {
     const definition = unraidToolDefinitions.find((entry) => entry.tool.function.name === "sanctuary_get_install_state")!
 
     expect(definition.tool.function.parameters).toEqual({ type: "object", properties: {}, additionalProperties: false })
+    expect(definition.tool.function.description).toBe("Check whether this Butler installation matches its verified release and report any repair needed.")
     expect(definition.riskProfile).toEqual({ mutates: "none", risk: "low" })
     for (const state of states) {
       const getInstallState = vi.fn(async () => structuredClone(state))

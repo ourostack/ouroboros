@@ -3195,7 +3195,7 @@ if audit_registered_dockerman_template "$IMAGE_ID" "$VERSION_IMAGE"; then comman
     expect(runbook).toContain("docker run --rm --pull=never --network=none --read-only --user 10001:10001 \\")
     expect(updateRunbook).toContain("Package-managed files are exactly")
     expect(updateRunbook).toContain("It preserves agent.json, all steward policy and audit bytes, relationships, sessions, and every other state path")
-    expect(updateRunbook).toContain("only after exact old-production audit, readiness, and autostart does `finalize-rollback` unlink it without entering the target-commit state")
+    expect(updateRunbook).toContain("only after the old production container is audited, ready, and back on autostart does `finalize-rollback` remove it without marking the new release committed")
     expect(normalUpdateRunbook).toContain("Do not start a target-image daemon between the production rename and final")
     expect(updateRunbook).toContain("docker rename ouro-butler-rollback ouro-butler")
     const rollbackAudit = normalUpdateRunbook.indexOf('assert_update_source "$ROLLBACK_IMAGE_ID"')

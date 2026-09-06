@@ -101,7 +101,7 @@ describe("Sanctuary package-management activation", () => {
     const { decision } = resolve({ managedAgents, argv })
     expect(decision.kind).toBe("invalid")
     if (decision.kind !== "invalid") throw new Error("expected invalid decision")
-    expect(decision.failure.message).toBe("Sanctuary installation needs attention\n  human-required: roll_back_or_install_verified_release")
+    expect(decision.failure.message).toBe("Sanctuary installation needs attention\n  human-required: roll back to a verified Mendelow Cloud Butler release or install that release again")
   })
 
   it("does not inspect roots or activate package behavior in development", () => {
@@ -292,7 +292,7 @@ describe("Sanctuary package-management activation", () => {
   it("translates invalid activation, stale inspection, and dependency errors into controlled guidance", () => {
     const invalid = resolve({ managedAgents: [] }).decision
     const ensure = vi.fn()
-    expect(() => prepareSanctuaryPackageManagedBundle(invalid, { ensure })).toThrow("human-required: roll_back_or_install_verified_release")
+    expect(() => prepareSanctuaryPackageManagedBundle(invalid, { ensure })).toThrow("human-required: roll back to a verified Mendelow Cloud Butler release or install that release again")
     expect(ensure).not.toHaveBeenCalled()
 
     const { decision } = resolve()
@@ -309,31 +309,31 @@ describe("Sanctuary package-management activation", () => {
         repair: { actor: "human-required" as const, action: "run_verified_update_recovery" as const },
       },
     }))
-    expect(() => prepareSanctuaryPackageManagedBundle(decision, { ensure: stale })).toThrow("human-required: run_verified_update_recovery")
+    expect(() => prepareSanctuaryPackageManagedBundle(decision, { ensure: stale })).toThrow("human-required: resume the reviewed Mendelow Cloud Butler update recovery procedure")
 
     const broken = vi.fn(() => { throw new Error("secret path and raw filesystem failure") })
-    expect(() => prepareSanctuaryPackageManagedBundle(decision, { ensure: broken })).toThrow("human-required: run_verified_update_recovery")
+    expect(() => prepareSanctuaryPackageManagedBundle(decision, { ensure: broken })).toThrow("human-required: resume the reviewed Mendelow Cloud Butler update recovery procedure")
     expect(() => prepareSanctuaryPackageManagedBundle(decision, { ensure: broken })).not.toThrow("secret path")
 
     const invalidInspection = vi.fn(() => ({ ok: false as const, error: { code: "invalid_package_source" as const, message: "verified release contents are invalid" as const, degraded: true as const, repair: { actor: "human-required" as const, action: "roll_back_or_install_verified_release" as const } } }))
-    expect(() => prepareSanctuaryPackageManagedBundle(decision, { ensure: invalidInspection })).toThrow("human-required: roll_back_or_install_verified_release")
+    expect(() => prepareSanctuaryPackageManagedBundle(decision, { ensure: invalidInspection })).toThrow("human-required: roll back to a verified Mendelow Cloud Butler release or install that release again")
 
     const inconsistent = vi.fn(() => ({ ok: true as const, data: { runtimePackageVersion: VERSION, packagedBundleVersion: VERSION, liveBundleVersion: VERSION, parity: "exact" as const, mismatchCodes: [], journalState: "committing" as const, ready: false, repair: { actor: "none" as const, action: "none" as const } } }))
-    expect(() => prepareSanctuaryPackageManagedBundle(decision, { ensure: inconsistent })).toThrow("human-required: run_verified_update_recovery")
+    expect(() => prepareSanctuaryPackageManagedBundle(decision, { ensure: inconsistent })).toThrow("human-required: resume the reviewed Mendelow Cloud Butler update recovery procedure")
 
-    expect(() => prepareSanctuaryPackageManagedBundle(decision)).toThrow("human-required: roll_back_or_install_verified_release")
+    expect(() => prepareSanctuaryPackageManagedBundle(decision)).toThrow("human-required: roll back to a verified Mendelow Cloud Butler release or install that release again")
   })
 
   it.each([
-    ["mismatch", { ok: true, data: { runtimePackageVersion: VERSION, packagedBundleVersion: VERSION, liveBundleVersion: "old", parity: "mismatch", mismatchCodes: ["managed_file_content"], journalState: "absent", ready: false, repair: { actor: "human-required", action: "restart_from_verified_release" } } }, "restart_from_verified_release"],
-    ["invalid package", { ok: false, error: { code: "invalid_package_source", message: "verified release contents are invalid", degraded: true, repair: { actor: "human-required", action: "roll_back_or_install_verified_release" } } }, "roll_back_or_install_verified_release"],
-    ["invalid journal", { ok: false, error: { code: "invalid_journal", message: "Sanctuary update recovery is required", degraded: true, repair: { actor: "human-required", action: "run_verified_update_recovery" } } }, "run_verified_update_recovery"],
-  ] as const)("preserves the approved action from a known non-converged second inspection: %s", (_label, after, action) => {
+    ["mismatch", { ok: true, data: { runtimePackageVersion: VERSION, packagedBundleVersion: VERSION, liveBundleVersion: "old", parity: "mismatch", mismatchCodes: ["managed_file_content"], journalState: "absent", ready: false, repair: { actor: "human-required", action: "restart_from_verified_release" } } }, "restart Mendelow Cloud Butler from its verified release so the installed bundle can finish updating"],
+    ["invalid package", { ok: false, error: { code: "invalid_package_source", message: "verified release contents are invalid", degraded: true, repair: { actor: "human-required", action: "roll_back_or_install_verified_release" } } }, "roll back to a verified Mendelow Cloud Butler release or install that release again"],
+    ["invalid journal", { ok: false, error: { code: "invalid_journal", message: "Sanctuary update recovery is required", degraded: true, repair: { actor: "human-required", action: "run_verified_update_recovery" } } }, "resume the reviewed Mendelow Cloud Butler update recovery procedure"],
+  ] as const)("preserves the approved action from a known non-converged second inspection: %s", (_label, after, guidance) => {
     const { decision } = resolve()
     const before: SanctuaryPackageManagedBundleInspection = { ok: true, data: { runtimePackageVersion: VERSION, packagedBundleVersion: VERSION, liveBundleVersion: "old", parity: "mismatch", mismatchCodes: ["managed_file_content"], journalState: "absent", ready: false, repair: { actor: "human-required", action: "restart_from_verified_release" } } }
     const inspect = vi.fn<() => SanctuaryPackageManagedBundleInspection>().mockReturnValueOnce(before).mockReturnValueOnce(after as SanctuaryPackageManagedBundleInspection)
     const ensure = () => ensureSanctuaryPackageManagedBundle({ packageRoot: "/package", agentRoot: "/live", runtimePackageVersion: VERSION }, { inspect, migrate: vi.fn(() => ({ managedFilesUpdated: 0 })) })
 
-    expect(() => prepareSanctuaryPackageManagedBundle(decision, { ensure })).toThrow(`human-required: ${action}`)
+    expect(() => prepareSanctuaryPackageManagedBundle(decision, { ensure })).toThrow(`human-required: ${guidance}`)
   })
 })
