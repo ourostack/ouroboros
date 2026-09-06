@@ -192,13 +192,16 @@ Effective-spec audit helper:
       sync -f /var/lib/docker || return $?
       AUTOSTART_BACKUP_READY=yes
       snapshot_nonbutler_autostart >"$AUTOSTART_NONBUTLER_BEFORE" || return $?
+      case "$AUTOSTART_PROFILE" in
+        production) AUTOSTART_TARGET=ouro-butler ;;
+        staging) AUTOSTART_TARGET=ouro-butler-staging ;;
+        disabled) AUTOSTART_TARGET=- ;;
+      esac
       for AUTOSTART_CONTAINER in ouro-butler ouro-butler-staging ouro-butler-rollback ouro-butler-legacy-evidence; do
-        AUTOSTART_ENABLED=false
-        case "$AUTOSTART_PROFILE:$AUTOSTART_CONTAINER" in
-          production:ouro-butler|staging:ouro-butler-staging) AUTOSTART_ENABLED=true ;;
-        esac
-        mutate_butler_autostart "$AUTOSTART_CONTAINER" "$AUTOSTART_ENABLED" || return $?
+        test "$AUTOSTART_CONTAINER" = "$AUTOSTART_TARGET" && continue
+        mutate_butler_autostart "$AUTOSTART_CONTAINER" false || return $?
       done
+      test "$AUTOSTART_TARGET" = - || mutate_butler_autostart "$AUTOSTART_TARGET" true || return $?
       case "$AUTOSTART_PROFILE" in
         production) AUTOSTART_EXPECTED_COUNTS="1 0 0 0" ;;
         staging) AUTOSTART_EXPECTED_COUNTS="0 1 0 0" ;;

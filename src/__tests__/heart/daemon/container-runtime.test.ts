@@ -178,7 +178,17 @@ php() {
       fs.writeFileSync(autostartFile, `${ghosts}ouro-butler 0\n`, { mode: 0o644 })
       fs.writeFileSync(callLog, "")
       expect(run("set_butler_autostart staging").status).toBe(0)
+      const stagingTransition = fs.readFileSync(callLog, "utf8")
+      expect(stagingTransition.indexOf("php autostart:false ouro-butler")).toBeGreaterThan(-1)
+      expect(stagingTransition.indexOf("php autostart:false ouro-butler")).toBeLessThan(stagingTransition.indexOf("php autostart:true ouro-butler-staging"))
       expect(fs.readFileSync(autostartFile, "utf8")).toBe(`${ghosts}ouro-butler-staging 0\n`)
+
+      fs.writeFileSync(callLog, "")
+      expect(run("enable_butler_autostart").status).toBe(0)
+      const productionTransition = fs.readFileSync(callLog, "utf8")
+      expect(productionTransition.indexOf("php autostart:false ouro-butler-staging")).toBeGreaterThan(-1)
+      expect(productionTransition.indexOf("php autostart:false ouro-butler-staging")).toBeLessThan(productionTransition.indexOf("php autostart:true ouro-butler"))
+      expect(fs.readFileSync(autostartFile, "utf8")).toBe(`${ghosts}ouro-butler 0\n`)
 
       for (const [initial, command, options] of [
         [`${ghosts}ouro-butler\nouro-butler 4\n`, "enable_butler_autostart", {}],
