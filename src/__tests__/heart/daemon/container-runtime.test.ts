@@ -438,6 +438,7 @@ if assert_only_running_butler ouro-butler; then command printf 'TRANSITION\n'; e
       .replace("const expectedUid = 0;", "const expectedUid = process.getuid();")
       .replace("const expectedGid = 0;", "const expectedGid = process.getgid();")
     const audit = extractRunbookFunction(runbook, "audit_effective").replace("/mnt/user/appdata/ouro-butler/staging/inspect.XXXXXX", "$AUDIT_TEST_ROOT/inspect.XXXXXX")
+    const sourcePin = extractRunbookFunction(runbook, "assert_sanctuary_update_source_pin")
     const legacySource = extractRunbookFunction(runbook, "assert_legacy_alpha742_source")
     const updateSource = extractRunbookFunction(runbook, "assert_update_source")
     expect(preflight.indexOf('assert_update_source "$RESTORE_PRODUCTION_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"')).toBeGreaterThan(preflight.indexOf("assert_only_running_butler ouro-butler"))
@@ -491,6 +492,7 @@ SCENARIO=$1
 docker() {
   case "$*" in
     "image inspect --format {{.Id}} "*) command printf '%s\n' "$VALID_IMAGE" ;;
+    "image inspect --format {{with .Config.Labels}}{{index . \"org.opencontainers.image.source\"}}{{end}} "*) command printf 'https://github.com/ourostack/ouroboros\n' ;;
     "image inspect "*) command printf '{}\n' ;;
     "inspect ouro-butler") command printf '{}\n' ;;
     "run --rm "*) if [ "$SCENARIO" = auditor-fails ]; then return 23; fi ;;
@@ -500,6 +502,8 @@ docker() {
     "inspect --format {{.State.Running}} "*) command printf 'true\n' ;;
     "inspect --format {{.Image}} "*) command printf '%s\n' "$VALID_IMAGE" ;;
     "inspect --format {{.Config.Image}} ouro-butler") command printf '%s\n' "$RESTORE_VERSION_IMAGE" ;;
+    "inspect --format {{with .Config.Labels}}{{index . \"net.unraid.docker.managed\"}}{{end}} ouro-butler") command printf 'dockerman\n' ;;
+    "inspect --format {{with .Config.Labels}}{{index . \"net.unraid.docker.icon\"}}{{end}} ouro-butler") command printf 'https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png\n' ;;
     *) return 23 ;;
   esac
 }
@@ -514,6 +518,7 @@ ${imageValidator}
 ${onlyRunning}
 ${provenance}
 ${audit}
+${sourcePin}
 ${legacySource}
 ${updateSource}
 validate_sanctuary_roots() { test "$SCENARIO" != invalid-roots; }
