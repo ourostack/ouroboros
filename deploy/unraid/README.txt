@@ -2082,9 +2082,9 @@ Update:
     IMAGE_ID=sha256:<reviewed-local-image-id>
     VERSION_IMAGE="ghcr.io/ourostack/ouroboros-butler:$PACKAGE_VERSION"
     printf '%s\n' "$PACKAGE_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
-    validate_exact_image_id "$IMAGE_ID"
     test "$(docker buildx imagetools inspect "$VERSION_IMAGE" --format '{{.Manifest.Digest}}')" = "$MANIFEST_DIGEST"
     docker pull "$VERSION_IMAGE"
+    validate_exact_image_id "$IMAGE_ID"
     test "$(docker image inspect --format '{{.Id}}' "$VERSION_IMAGE")" = "$IMAGE_ID"
     AUDIT_RUNNER_IMAGE_ID=$IMAGE_ID
     validate_exact_image_id "$AUDIT_RUNNER_IMAGE_ID"
