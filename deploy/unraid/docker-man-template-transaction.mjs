@@ -11,6 +11,8 @@ const TARGET_PATH = "/boot/config/plugins/dockerMan/templates-user/my-ouro-butle
 const JOURNAL_PATH = "/boot/config/custom/ouro-butler/docker-man-template-transaction.json"
 const TEMPLATE_URL = "https://raw.githubusercontent.com/ourostack/ouroboros/main/deploy/unraid/sanctuary.xml"
 const ICON = "https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png"
+const COMMUNITY_APPS_ENTRY_PATH = "/usr/local/emhttp/plugins/community.applications/include/exec.php"
+const COMMUNITY_APPS_HELPER_PATH = "/usr/local/emhttp/plugins/community.applications/include/previous_apps_helpers.php"
 const IMAGE_ID = /^sha256:[0-9a-f]{64}$/u
 const VERSION_TAG = /^ghcr\.io\/ourostack\/ouroboros-butler:[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/u
 
@@ -340,7 +342,10 @@ function validateFinalProof(proof, record, state) {
   const dockerMan = object(root.dockerMan, "final DockerMan proof")
   if (dockerMan.templatePath !== state.targetPath || dockerMan.name !== "ouro-butler" || dockerMan.repository !== record.canonicalVersionTag || dockerMan.templateUrl !== record.target.templateUrl || dockerMan.icon !== record.target.icon) throw new Error("final DockerMan proof is invalid")
   const communityApps = object(root.communityApps, "final Community Apps proof")
-  if (communityApps.installed !== true || communityApps.name !== "ouro-butler" || communityApps.repository !== record.canonicalVersionTag || communityApps.templateUrl !== record.target.templateUrl || communityApps.stateModel !== "derived-correlation" || communityApps.sourceFunction !== "previous_apps" || communityApps.sourcePath !== "/usr/local/emhttp/plugins/community.applications/include/exec.php") throw new Error("final Community Apps proof is invalid")
+  const inlineImplementation = communityApps.stateModel === "previous-apps-inline-v1" && communityApps.entryPath === COMMUNITY_APPS_ENTRY_PATH && communityApps.entryFunction === "previous_apps" && communityApps.implementationPath === COMMUNITY_APPS_ENTRY_PATH && communityApps.implementationSymbol === "previous_apps"
+  const helperImplementation = communityApps.stateModel === "previous-apps-helper-v1" && communityApps.entryPath === COMMUNITY_APPS_ENTRY_PATH && communityApps.entryFunction === "previous_apps" && communityApps.implementationPath === COMMUNITY_APPS_HELPER_PATH && communityApps.implementationSymbol === "PreviousAppsHelpers::collectDockerApplications"
+  const recognizedImplementation = inlineImplementation || helperImplementation
+  if (communityApps.installed !== true || communityApps.name !== "ouro-butler" || communityApps.repository !== record.canonicalVersionTag || communityApps.templateUrl !== record.target.templateUrl || !recognizedImplementation) throw new Error("final Community Apps proof is invalid")
 }
 
 export function commitDockerManTemplateTransaction(proof, options = {}) {

@@ -733,11 +733,30 @@ Effective-spec audit helper:
         $expectedPath = "/boot/config/plugins/dockerMan/templates-user/my-ouro-butler.xml";
         $expectedUrl = "https://raw.githubusercontent.com/ourostack/ouroboros/main/deploy/unraid/sanctuary.xml";
         $expectedIcon = "https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png";
-        $communityAppsSourcePath = "/usr/local/emhttp/plugins/community.applications/include/exec.php";
+        $communityAppsEntryPath = "/usr/local/emhttp/plugins/community.applications/include/exec.php";
+        $communityAppsHelperPath = "/usr/local/emhttp/plugins/community.applications/include/previous_apps_helpers.php";
+        $communityAppsDependencies = ["/usr/local/emhttp/plugins/community.applications/include/paths.php", "/usr/local/emhttp/plugins/community.applications/include/plugin_identity.php", "/usr/local/emhttp/plugins/community.applications/include/helpers.php"];
         if (!preg_match("#^ghcr\\.io/ourostack/ouroboros-butler:[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$#", $expectedImage)) exit(2);
-        if (!is_file($communityAppsSourcePath) || is_link($communityAppsSourcePath) || fileowner($communityAppsSourcePath) !== 0) exit(3);
-        $communityAppsSource = file_get_contents($communityAppsSourcePath);
-        if ($communityAppsSource === false || !str_contains($communityAppsSource, "function previous_apps(") || !str_contains($communityAppsSource, "dockerManTemplates") || !str_contains($communityAppsSource, "installedDocker") || !str_contains($communityAppsSource, "startsWith(str_replace(\"library/\",\"\",")) exit(4);
+        $readActivePhp = static function($path) {
+          if (!is_file($path) || is_link($path) || fileowner($path) !== 0 || (fileperms($path) & 0022) !== 0 || realpath($path) !== $path) exit(3);
+          $lint = proc_open(["/usr/bin/php", "-l", $path], [0 => ["file", "/dev/null", "r"], 1 => ["file", "/dev/null", "w"], 2 => ["file", "/dev/null", "w"]], $pipes);
+          if (!is_resource($lint) || proc_close($lint) !== 0) exit(4);
+          $source = php_strip_whitespace($path);
+          if (!is_string($source) || $source === "") exit(4);
+          return $source;
+        };
+        $functionSlice = static function($source, $start, $next) {
+          if (substr_count($source, $start) !== 1 || substr_count($source, $next) !== 1) return false;
+          $startAt = strpos($source, $start);
+          $nextAt = strpos($source, $next, $startAt + strlen($start));
+          return $nextAt !== false && $nextAt > $startAt ? substr($source, $startAt, $nextAt - $startAt) : false;
+        };
+        $entrySource = $readActivePhp($communityAppsEntryPath);
+        $inlineBody = $functionSlice($entrySource, "function previous_apps(", "function remove_application(");
+        $delegatedBody = $functionSlice($entrySource, "function previous_apps(", "function installedAndPreviousCounts(");
+        $isInline = $inlineBody !== false && hash("sha256", $inlineBody) === "1914b9c6b8910b7bb116dad48fe76d4790a069becbf0d68b3822ee3df7f22b1c";
+        $isDelegated = $delegatedBody !== false && hash("sha256", $delegatedBody) === "16b52cd87cc3f74915bf172f8a6eb46f981529208766916d4aeedf4b3344a3a4";
+        if (($isInline ? 1 : 0) + ($isDelegated ? 1 : 0) !== 1) exit(4);
         $_SERVER["DOCUMENT_ROOT"] = "/usr/local/emhttp";
         $docroot = $_SERVER["DOCUMENT_ROOT"];
         require_once "$docroot/plugins/dynamix/include/Wrappers.php";
@@ -749,15 +768,35 @@ Effective-spec audit helper:
         if ($resolved !== $expectedPath) exit(5);
         $xml = @simplexml_load_file($resolved);
         if (!$xml || (string)$xml->Name !== "ouro-butler" || (string)$xml->Repository !== $expectedImage || (string)$xml->TemplateURL !== $expectedUrl || (string)$xml->Icon !== $expectedIcon || trim((string)$xml->WebUI) !== "") exit(6);
-        $matches = array_values(array_filter($client->getDockerContainers(), fn($container) => $container["Name"] === "ouro-butler"));
+        $containers = $client->getDockerContainers();
+        $matches = array_values(array_filter($containers, fn($container) => $container["Name"] === "ouro-butler"));
         if (count($matches) !== 1) exit(7);
         $container = $matches[0];
         if ($container["Image"] !== $expectedImage || $container["Manager"] !== "dockerman" || $container["Icon"] !== $expectedIcon || !empty($container["Url"])) exit(8);
         $communityAppsInstalled = $container["Name"] === (string)$xml->Name && (str_starts_with(str_replace("library/", "", $container["Image"]), (string)$xml->Repository) || str_starts_with($container["Image"], (string)$xml->Repository));
         if (!$communityAppsInstalled) exit(9);
+        if ($isDelegated) {
+          $readActivePhp($communityAppsHelperPath);
+          foreach ($communityAppsDependencies as $dependencyPath) $readActivePhp($dependencyPath);
+          require_once "$docroot/plugins/community.applications/include/helpers.php";
+          require_once $communityAppsHelperPath;
+          if (!is_callable(["PreviousAppsHelpers", "collectDockerApplications"])) exit(4);
+          $helperUpdateCount = 0;
+          $helperRows = PreviousAppsHelpers::collectDockerApplications(true, "true", "docker", $containers, $helperUpdateCount, [], [], [], []);
+          if (!is_array($helperRows)) exit(9);
+          $helperMatches = array_values(array_filter($helperRows, fn($row) => is_array($row) && ($row["InstallPath"] ?? null) === $expectedPath && ($row["Name"] ?? null) === "ouro-butler" && ($row["Repository"] ?? null) === $expectedImage && ($row["TemplateURL"] ?? null) === $expectedUrl && ($row["Icon"] ?? null) === $expectedIcon));
+          if (count($helperMatches) !== 1) exit(9);
+          $communityAppsStateModel = "previous-apps-helper-v1";
+          $communityAppsImplementationPath = $communityAppsHelperPath;
+          $communityAppsImplementationSymbol = "PreviousAppsHelpers::collectDockerApplications";
+        } else {
+          $communityAppsStateModel = "previous-apps-inline-v1";
+          $communityAppsImplementationPath = $communityAppsEntryPath;
+          $communityAppsImplementationSymbol = "previous_apps";
+        }
         $proof = [
           "dockerMan" => ["templatePath" => $resolved, "name" => (string)$xml->Name, "repository" => (string)$xml->Repository, "templateUrl" => (string)$xml->TemplateURL, "icon" => (string)$xml->Icon],
-          "communityApps" => ["installed" => true, "name" => (string)$xml->Name, "repository" => (string)$xml->Repository, "templateUrl" => (string)$xml->TemplateURL, "stateModel" => "derived-correlation", "sourceFunction" => "previous_apps", "sourcePath" => $communityAppsSourcePath],
+          "communityApps" => ["installed" => true, "name" => (string)$xml->Name, "repository" => (string)$xml->Repository, "templateUrl" => (string)$xml->TemplateURL, "stateModel" => $communityAppsStateModel, "entryPath" => $communityAppsEntryPath, "entryFunction" => "previous_apps", "implementationPath" => $communityAppsImplementationPath, "implementationSymbol" => $communityAppsImplementationSymbol],
         ];
         $temporary = $outputPath . ".tmp";
         if (file_exists($temporary) || is_link($temporary) || file_exists($outputPath) || is_link($outputPath)) exit(10);

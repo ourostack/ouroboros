@@ -39,6 +39,8 @@ const image = (character: string) => `sha256:${character.repeat(64)}`
 const canonicalVersionTag = "ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.798"
 const templateUrl = "https://raw.githubusercontent.com/ourostack/ouroboros/main/deploy/unraid/sanctuary.xml"
 const icon = "https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png"
+const communityAppsEntryPath = "/usr/local/emhttp/plugins/community.applications/include/exec.php"
+const communityAppsHelperPath = "/usr/local/emhttp/plugins/community.applications/include/previous_apps_helpers.php"
 
 function template(repository = canonicalVersionTag, name = "ouro-butler"): string {
   return [
@@ -108,7 +110,8 @@ function temporaryPaths(state: ReturnType<typeof fixture>) {
   }
 }
 
-function finalProof(targetPath: string) {
+function finalProof(targetPath: string, stateModel: "previous-apps-inline-v1" | "previous-apps-helper-v1" = "previous-apps-inline-v1") {
+  const delegated = stateModel === "previous-apps-helper-v1"
   return {
     container: {
       name: "/ouro-butler",
@@ -124,7 +127,17 @@ function finalProof(targetPath: string) {
     },
     bundle: { ok: true, data: { parity: "exact", journalState: "absent", ready: true } },
     dockerMan: { templatePath: targetPath, name: "ouro-butler", repository: canonicalVersionTag, templateUrl, icon },
-    communityApps: { installed: true, name: "ouro-butler", repository: canonicalVersionTag, templateUrl, stateModel: "derived-correlation", sourceFunction: "previous_apps", sourcePath: "/usr/local/emhttp/plugins/community.applications/include/exec.php" },
+    communityApps: {
+      installed: true,
+      name: "ouro-butler",
+      repository: canonicalVersionTag,
+      templateUrl,
+      stateModel,
+      entryPath: communityAppsEntryPath,
+      entryFunction: "previous_apps",
+      implementationPath: delegated ? communityAppsHelperPath : communityAppsEntryPath,
+      implementationSymbol: delegated ? "PreviousAppsHelpers::collectDockerApplications" : "previous_apps",
+    },
   }
 }
 
@@ -350,6 +363,15 @@ describe("root-owned DockerMan template transaction", () => {
     expect(readFileSync(state.targetPath, "utf8")).toBe(template())
   })
 
+  it.each(["previous-apps-inline-v1", "previous-apps-helper-v1"] as const)("accepts only the closed %s Community Apps implementation proof", async (stateModel) => {
+    const transaction = await load()
+    const state = fixture("prior-template\n")
+    transaction.prepareDockerManTemplateTransaction(state.input, state.options)
+    transaction.markDockerManTemplateTransactionCommitting(state.options)
+
+    expect(transaction.commitDockerManTemplateTransaction(finalProof(state.targetPath, stateModel), state.options)).toBe(true)
+  })
+
   it("fails closed on incomplete final proofs and never accepts a Docker WebUI label", async () => {
     const transaction = await load()
     for (const mutate of [
@@ -374,8 +396,12 @@ describe("root-owned DockerMan template transaction", () => {
       (proof: any) => { proof.communityApps.repository = "ghcr.io/ourostack/ouroboros-butler:stale" },
       (proof: any) => { delete proof.communityApps.templateUrl },
       (proof: any) => { delete proof.communityApps.stateModel },
-      (proof: any) => { proof.communityApps.sourceFunction = "invented_query" },
-      (proof: any) => { proof.communityApps.sourcePath = "/tmp/pretend.php" },
+      (proof: any) => { proof.communityApps.stateModel = "derived-correlation" },
+      (proof: any) => { proof.communityApps.stateModel = "previous-apps-helper-v1" },
+      (proof: any) => { proof.communityApps.entryFunction = "invented_query" },
+      (proof: any) => { proof.communityApps.entryPath = "/tmp/pretend.php" },
+      (proof: any) => { proof.communityApps.implementationSymbol = "PreviousAppsHelpers::collectDockerApplications" },
+      (proof: any) => { proof.communityApps.implementationPath = communityAppsHelperPath },
     ]) {
       const state = fixture("prior-template\n")
       transaction.prepareDockerManTemplateTransaction(state.input, state.options)
