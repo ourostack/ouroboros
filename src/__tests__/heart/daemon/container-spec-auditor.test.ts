@@ -69,7 +69,8 @@ const expectedIcon = "https://raw.githubusercontent.com/ourostack/ouroboros/main
 
 function stagedTemplate(): string {
   return [
-    "<Container>",
+    "<?xml version=\"1.0\"?>",
+    "<Container version=\"2\">",
     "<Name>ouro-butler</Name>",
     `<Repository>sha256:${"a".repeat(64)}</Repository>`,
     "<Network>host</Network>",
@@ -85,6 +86,21 @@ function stagedTemplate(): string {
     "</Container>",
   ].join("\n")
 }
+
+const semanticMarkup = [
+  ["Name", "<Name>ouro-butler</Name>"],
+  ["Repository", `<Repository>sha256:${"a".repeat(64)}</Repository>`],
+  ["TemplateURL", `<TemplateURL>https://raw.githubusercontent.com/ourostack/ouroboros/main/deploy/unraid/sanctuary.xml</TemplateURL>`],
+  ["Icon", `<Icon>${expectedIcon}</Icon>`],
+  ["WebUI", "<WebUI/>"],
+  ["Config", '<Config Target="/home/ouro/.ouro-cli" Mode="rw" Type="Path">/mnt/user/appdata/ouro-butler/runtime/.ouro-cli</Config>'],
+] as const
+
+const hiddenSemanticMarkup = semanticMarkup.flatMap(([name, markup]) => [
+  [name, "comment", markup, `<!-- ${markup} -->`],
+  [name, "CDATA", markup, `<![CDATA[${markup}]]>`],
+  [name, "nested", markup, `<Wrapper>${markup}</Wrapper>`],
+] as const)
 
 describe("Sanctuary pre-activation container auditor", () => {
   it("runs the CLI only when invoked as the packaged entrypoint", () => {
@@ -335,6 +351,30 @@ describe("Sanctuary pre-activation container auditor", () => {
     })).toBe(1)
   })
 
+  it("fatally rejects invalid UTF-8 at the real static template file boundary", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-invalid-template-utf8-"))
+    const templatePath = path.join(directory, "template.xml")
+    const policyPath = path.join(directory, "runtime.json")
+    const marker = "INVALID-BYTE"
+    const source = Buffer.from(stagedTemplate().replace("<Name>", `<!-- ${marker} -->\n<Name>`))
+    source[source.indexOf(marker) + 1] = 0xFF
+    fs.writeFileSync(templatePath, source)
+    fs.writeFileSync(policyPath, JSON.stringify({ scheduler: "supercronic", updates: "disabled" }))
+    const output: string[] = []
+    try {
+      expect(runContainerSpecAuditorCli([
+        "--template", templatePath,
+        "--runtime-policy", policyPath,
+        "--expected-image", "sha256:" + "a".repeat(64),
+      ], { write: (text) => output.push(text) })).toBe(2)
+      expect(output.join("")).toContain("staged audit inputs are unreadable")
+      expect(fs.readFileSync(templatePath)).toEqual(source)
+      expect(fs.readdirSync(directory).sort()).toEqual(["runtime.json", "template.xml"])
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
   it("audits exactly one effective container against exactly one reviewed image without echoing either payload", () => {
     const output: string[] = []
     const container = validInspect()
@@ -581,7 +621,7 @@ describe("Sanctuary pre-activation container auditor", () => {
   it("rejects a truncated template in both static audit modes", () => {
     const truncated = stagedTemplate().replace("</Container>", "")
     const policy = JSON.stringify({ scheduler: "supercronic", updates: "disabled" })
-    const expectedViolation = "template XML must be well-formed"
+    const expectedViolation = "canonical DockerMan XML structure is invalid"
 
     expect(auditSanctuaryStagedFiles({
       templateXml: truncated,
@@ -593,6 +633,28 @@ describe("Sanctuary pre-activation container auditor", () => {
       runtimePolicyText: policy,
       expectedImageReference,
     }).violations).toContain(expectedViolation)
+  })
+
+  it.each(hiddenSemanticMarkup)("does not treat %s markup hidden in %s as a direct Container child", (_name, _disguise, markup, replacement) => {
+    const result = auditSanctuaryStagedFiles({
+      templateXml: stagedTemplate().replace(markup, replacement),
+      runtimePolicyText: JSON.stringify({ scheduler: "supercronic", updates: "disabled" }),
+      expectedImage: "sha256:" + "a".repeat(64),
+    })
+
+    expect(result.ok).toBe(false)
+    expect(result.violations).toContain("canonical DockerMan XML structure is invalid")
+  })
+
+  it("requires Container itself to be the document root", () => {
+    const result = auditSanctuaryStagedFiles({
+      templateXml: stagedTemplate().replace("<Container version=\"2\">", "<Wrapper><Container version=\"2\">").replace("</Container>", "</Container></Wrapper>"),
+      runtimePolicyText: JSON.stringify({ scheduler: "supercronic", updates: "disabled" }),
+      expectedImage: "sha256:" + "a".repeat(64),
+    })
+
+    expect(result.ok).toBe(false)
+    expect(result.violations).toContain("canonical DockerMan XML structure is invalid")
   })
 
   it("audits the persistent Community Apps template separately from the transient exact-ID copy", () => {

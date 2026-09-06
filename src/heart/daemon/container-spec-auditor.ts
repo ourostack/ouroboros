@@ -1,6 +1,18 @@
 import { emitNervesEvent } from "../../nerves/runtime"
 
-const { isWellFormedDockerManTemplateXml } = require("../../../deploy/unraid/docker-man-template-xml.cjs") as { isWellFormedDockerManTemplateXml(xml: string): boolean }
+interface DockerManTemplateElement {
+  name: string
+  attributes: Record<string, string>
+  form: "empty" | "text"
+  text: string
+}
+
+interface DockerManTemplateDocument {
+  root: { name: "Container"; attributes: { version: "2" } }
+  children: DockerManTemplateElement[]
+}
+
+const { parseDockerManTemplateXml } = require("../../../deploy/unraid/docker-man-template-xml.cjs") as { parseDockerManTemplateXml(input: string | Uint8Array): DockerManTemplateDocument | null }
 
 const EXPECTED_BINDS = [
   "/mnt/user/appdata/ouro-butler/runtime/.ouro-cli:/home/ouro/.ouro-cli:rw",
@@ -43,13 +55,13 @@ export interface SanctuaryContainerAuditResult {
 }
 
 export interface SanctuaryStagedAuditInput {
-  templateXml: string
+  templateXml: string | Uint8Array
   runtimePolicyText: string
   expectedImage: string
 }
 
 export interface SanctuaryPersistentTemplateAuditInput {
-  templateXml: string
+  templateXml: string | Uint8Array
   runtimePolicyText: string
   expectedImageReference: string
 }
@@ -160,19 +172,20 @@ export function auditSanctuaryContainerSpec(
   return result
 }
 
-function tagValues(xml: string, name: string): string[] {
-  return [...xml.matchAll(new RegExp(`<${name}>([^<]*)</${name}>`, "gu"))]
-    .map((match) => match[1]!)
+function directChildren(document: DockerManTemplateDocument | null, name: string): DockerManTemplateElement[] {
+  return document?.children.filter((child) => child.name === name) ?? []
 }
 
-function singleTag(xml: string, name: string): string | undefined {
-  const values = tagValues(xml, name)
-  return values.length === 1 ? values[0] : undefined
+function singleTextChild(document: DockerManTemplateDocument | null, name: string): string | undefined {
+  const children = directChildren(document, name)
+  const child = children.length === 1 ? children[0] : undefined
+  return child?.form === "text" && Object.keys(child.attributes).length === 0 ? child.text : undefined
 }
 
-function auditTemplate(input: { templateXml: string; runtimePolicyText: string }, expectedRepository: string, repositoryIsValid: boolean, repositoryViolation: string): string[] {
+function auditTemplate(input: { templateXml: string | Uint8Array; runtimePolicyText: string }, expectedRepository: string, repositoryIsValid: boolean, repositoryViolation: string): string[] {
   const violations: string[] = []
-  if (!isWellFormedDockerManTemplateXml(input.templateXml)) violations.push("template XML must be well-formed")
+  const template = parseDockerManTemplateXml(input.templateXml)
+  if (!template) violations.push("canonical DockerMan XML structure is invalid")
   let runtimePolicy: unknown
   try {
     runtimePolicy = JSON.parse(input.runtimePolicyText)
@@ -183,40 +196,33 @@ function auditTemplate(input: { templateXml: string; runtimePolicyText: string }
   if (policy?.scheduler !== "supercronic" || policy.updates !== "disabled" || Object.keys(policy).sort().join(",") !== "scheduler,updates") {
     violations.push("container runtime policy must be exactly scheduler=supercronic and updates=disabled")
   }
-  const configOpenCount = [...input.templateXml.matchAll(/<Config\b/gu)].length
-  const configEntries = [...input.templateXml.matchAll(/<Config\b([^>]*)>([^<]*)<\/Config>/gu)]
-  const pathConfigs = configEntries
-    .map((match) => {
-      const type = match[1]!.match(/\bType="([^"]+)"/u)?.[1]
-      const target = match[1]!.match(/\bTarget="([^"]+)"/u)?.[1]
-      const mode = match[1]!.match(/\bMode="([^"]+)"/u)?.[1]
-      return type === "Path" && target && mode ? `${match[2]}:${target}:${mode}` : "invalid"
-    })
+  const configEntries = directChildren(template, "Config")
+  const pathConfigs = configEntries.map((entry) => {
+    const { Type: type, Target: target, Mode: mode } = entry.attributes
+    return entry.form === "text" && type === "Path" && target && mode ? `${entry.text}:${target}:${mode}` : "invalid"
+  })
   if (
-    configOpenCount !== EXPECTED_BINDS.length
-    || configEntries.length !== EXPECTED_BINDS.length
+    configEntries.length !== EXPECTED_BINDS.length
     || JSON.stringify([...pathConfigs].sort()) !== JSON.stringify([...EXPECTED_BINDS].sort())
   ) {
     violations.push("template Config entries must equal the canonical path binds")
   }
-  const postArgsOpenCount = [...input.templateXml.matchAll(/<PostArgs\b/gu)].length
-  const postArgs = [...input.templateXml.matchAll(/<PostArgs(?:(?:\s*\/>)|>([^<]*)<\/PostArgs>)/gu)]
-  if (postArgsOpenCount !== 1 || postArgs.length !== 1 || (postArgs[0]?.[1] ?? "") !== "") {
+  const postArgs = directChildren(template, "PostArgs")
+  if (postArgs.length !== 1 || postArgs[0]?.text !== "" || Object.keys(postArgs[0]?.attributes ?? {}).length !== 0) {
     violations.push("template PostArgs must be present exactly once and empty")
   }
-  const extraParams = singleTag(input.templateXml, "ExtraParams")
+  const extraParams = singleTextChild(template, "ExtraParams")
   if (extraParams !== EXPECTED_EXTRA_PARAMS) violations.push("template ExtraParams must equal the canonical user and restart flags")
-  const repository = singleTag(input.templateXml, "Repository")
+  const repository = singleTextChild(template, "Repository")
   if (!repositoryIsValid) violations.push(repositoryViolation)
   if (repository !== expectedRepository) violations.push("template repository does not match the reviewed image identity")
-  if (singleTag(input.templateXml, "Name") !== EXPECTED_NAME) violations.push("template technical name must be exactly ouro-butler")
-  if (singleTag(input.templateXml, "TemplateURL") !== EXPECTED_TEMPLATE_URL) violations.push("template URL must equal the canonical release template")
-  if (singleTag(input.templateXml, "Icon") !== EXPECTED_ICON) violations.push("template icon must equal the canonical release icon")
-  const webUiOpenCount = [...input.templateXml.matchAll(/<WebUI\b/gu)].length
-  const emptyWebUiCount = [...input.templateXml.matchAll(/<WebUI\s*\/>/gu)].length
-  if (webUiOpenCount !== 1 || emptyWebUiCount !== 1) violations.push("template WebUI must be present exactly once and empty")
-  if (singleTag(input.templateXml, "Network") !== "host") violations.push("network mode must be host")
-  if (singleTag(input.templateXml, "Privileged") !== "false") violations.push("container must not be privileged")
+  if (singleTextChild(template, "Name") !== EXPECTED_NAME) violations.push("template technical name must be exactly ouro-butler")
+  if (singleTextChild(template, "TemplateURL") !== EXPECTED_TEMPLATE_URL) violations.push("template URL must equal the canonical release template")
+  if (singleTextChild(template, "Icon") !== EXPECTED_ICON) violations.push("template icon must equal the canonical release icon")
+  const webUi = directChildren(template, "WebUI")
+  if (webUi.length !== 1 || webUi[0]?.form !== "empty" || Object.keys(webUi[0]?.attributes ?? {}).length !== 0) violations.push("template WebUI must be present exactly once and empty")
+  if (singleTextChild(template, "Network") !== "host") violations.push("network mode must be host")
+  if (singleTextChild(template, "Privileged") !== "false") violations.push("container must not be privileged")
   return violations
 }
 

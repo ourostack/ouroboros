@@ -2,8 +2,10 @@ import * as fs from "node:fs"
 import { emitNervesEvent } from "../../nerves/runtime"
 import { auditSanctuaryContainerSpec, auditSanctuaryPersistentTemplate, auditSanctuaryStagedFiles } from "./container-spec-auditor"
 
+const { decodeUtf8 } = require("../../../deploy/unraid/docker-man-template-xml.cjs") as { decodeUtf8(input: string | Uint8Array): string }
+
 export interface ContainerSpecAuditorCliDeps {
-  readFile?: (filePath: string) => string
+  readFile?: (filePath: string) => string | Uint8Array
   write?: (text: string) => void
 }
 
@@ -33,7 +35,8 @@ function parseSingleInspect(raw: string): Record<string, unknown> | null {
 }
 
 export function runContainerSpecAuditorCli(args: string[], deps: ContainerSpecAuditorCliDeps = {}): number {
-  const readFile = deps.readFile ?? ((filePath: string) => fs.readFileSync(filePath, "utf8"))
+  const readFile = deps.readFile ?? ((filePath: string) => fs.readFileSync(filePath))
+  const readText = (filePath: string) => decodeUtf8(readFile(filePath))
   const write = deps.write ?? ((text: string) => process.stdout.write(text))
   const staged = parseModeArguments(args, ["--template", "--runtime-policy", "--expected-image"])
   const persistent = parseModeArguments(args, ["--persistent-template", "--runtime-policy", "--expected-image-reference"])
@@ -58,8 +61,8 @@ export function runContainerSpecAuditorCli(args: string[], deps: ContainerSpecAu
     let containerText: string
     let imageText: string
     try {
-      containerText = readFile(selectedEffective["--inspect"]!)
-      imageText = readFile(selectedEffective["--image-inspect"]!)
+      containerText = readText(selectedEffective["--inspect"]!)
+      imageText = readText(selectedEffective["--image-inspect"]!)
     } catch (error) {
       write(JSON.stringify({ ok: false, error: "effective audit inputs are unreadable" }) + "\n")
       emitNervesEvent({
@@ -108,8 +111,8 @@ export function runContainerSpecAuditorCli(args: string[], deps: ContainerSpecAu
   let templateXml: string
   let runtimePolicyText: string
   try {
-    templateXml = readFile(templatePath)
-    runtimePolicyText = readFile(templateArguments["--runtime-policy"]!)
+    templateXml = readText(templatePath)
+    runtimePolicyText = readText(templateArguments["--runtime-policy"]!)
   } catch (error) {
     write(JSON.stringify({ ok: false, error: "staged audit inputs are unreadable" }) + "\n")
     emitNervesEvent({

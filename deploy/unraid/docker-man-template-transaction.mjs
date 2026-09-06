@@ -9,8 +9,6 @@ import xmlValidator from "./docker-man-template-xml.cjs"
 
 const TARGET_PATH = "/boot/config/plugins/dockerMan/templates-user/my-ouro-butler.xml"
 const JOURNAL_PATH = "/boot/config/custom/ouro-butler/docker-man-template-transaction.json"
-const JOURNAL_PARENT = dirname(JOURNAL_PATH)
-const CUSTOM_ROOT = dirname(JOURNAL_PARENT)
 const TEMPLATE_URL = "https://raw.githubusercontent.com/ourostack/ouroboros/main/deploy/unraid/sanctuary.xml"
 const ICON = "https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png"
 const IMAGE_ID = /^sha256:[0-9a-f]{64}$/u
@@ -35,25 +33,30 @@ function recordDigest(record) {
   return digest(Buffer.from(JSON.stringify(unsigned)))
 }
 
-function singleTag(xml, name) {
-  const values = [...xml.matchAll(new RegExp(`<${name}>([^<]*)</${name}>`, "gu"))].map((match) => match[1])
-  if (values.length !== 1) throw new Error(`template ${name} must appear exactly once`)
-  return values[0]
+function directChildren(document, name) {
+  return document.children.filter((child) => child.name === name)
+}
+
+function singleTextChild(document, name) {
+  const children = directChildren(document, name)
+  if (children.length !== 1 || children[0].form !== "text" || Object.keys(children[0].attributes).length !== 0) throw new Error(`template ${name} must appear exactly once as plain text`)
+  return children[0].text
 }
 
 function templateIdentity(bytes, expectedRepository) {
-  const xml = bytes.toString("utf8")
-  if (!xmlValidator.isWellFormedDockerManTemplateXml(xml)) throw new Error("template XML must be well-formed")
+  const document = xmlValidator.parseDockerManTemplateXml(bytes)
+  if (!document) throw new Error("canonical DockerMan XML structure is invalid")
   const identity = {
-    name: singleTag(xml, "Name"),
-    repository: singleTag(xml, "Repository"),
-    templateUrl: singleTag(xml, "TemplateURL"),
-    icon: singleTag(xml, "Icon"),
+    name: singleTextChild(document, "Name"),
+    repository: singleTextChild(document, "Repository"),
+    templateUrl: singleTextChild(document, "TemplateURL"),
+    icon: singleTextChild(document, "Icon"),
   }
   if (identity.name !== "ouro-butler" || !/^[a-zA-Z0-9][a-zA-Z0-9_.-]+$/u.test(identity.name)) throw new Error("template technical name is invalid")
   if (identity.repository !== expectedRepository || !VERSION_TAG.test(identity.repository)) throw new Error("template version reference is invalid")
   if (identity.templateUrl !== TEMPLATE_URL || identity.icon !== ICON) throw new Error("template identity is invalid")
-  if ([...xml.matchAll(/<WebUI\s*\/>/gu)].length !== 1 || /<WebUI>[^<]*<\/WebUI>/u.test(xml)) throw new Error("template WebUI must be exactly empty")
+  const webUi = directChildren(document, "WebUI")
+  if (webUi.length !== 1 || webUi[0].form !== "empty" || Object.keys(webUi[0].attributes).length !== 0) throw new Error("template WebUI must be exactly empty")
   return identity
 }
 
@@ -105,12 +108,31 @@ function paths(options = {}) {
   }
 }
 
-function validateParents(state, allowTemporaryResidue = false) {
+function validateTemplateParent(state, allowTemporaryResidue = false) {
   validateDirectory(state.templateParent, state.expectedUid, state.expectedGid)
-  validateDirectory(state.journalParent, state.expectedUid, state.expectedGid)
   const matches = readdirSync(state.templateParent).filter((entry) => entry.toLowerCase() === basename(state.targetPath).toLowerCase())
   if (matches.length > 1 || (matches.length === 1 && matches[0] !== basename(state.targetPath))) throw new Error("case-folded DockerMan template name is ambiguous")
-  if (!allowTemporaryResidue && (metadataIfPresent(state.targetTemporary) || metadataIfPresent(state.journalTemporary))) throw new Error("template transaction temporary state is ambiguous")
+  if (!allowTemporaryResidue && metadataIfPresent(state.targetTemporary)) throw new Error("template transaction temporary state is ambiguous")
+}
+
+function validateJournalParent(state, allowTemporaryResidue = false) {
+  validateDirectory(state.journalParent, state.expectedUid, state.expectedGid)
+  if (!allowTemporaryResidue && metadataIfPresent(state.journalTemporary)) throw new Error("template transaction temporary state is ambiguous")
+}
+
+function validateParents(state, allowTemporaryResidue = false) {
+  validateTemplateParent(state, allowTemporaryResidue)
+  validateJournalParent(state, allowTemporaryResidue)
+}
+
+function ensureJournalParent(state) {
+  if (!metadataIfPresent(state.journalParent)) {
+    const parent = dirname(state.journalParent)
+    validateDirectory(parent, state.expectedUid, state.expectedGid)
+    mkdirSync(state.journalParent, { mode: 0o700 })
+    syncDirectory(parent)
+  }
+  validateJournalParent(state)
 }
 
 function syncDirectory(path) {
@@ -222,14 +244,20 @@ export function inspectDockerManTemplateTransaction(options = {}) {
   return record
 }
 
-export function prepareDockerManTemplateTransaction(input, options = {}) {
-  const state = paths(options)
-  validateParents(state)
+function validateTemplateSource(input, state) {
+  validateTemplateParent(state)
   validateDirectory(dirname(input.sourceTemplatePath), state.expectedUid, state.expectedGid)
   validateRegularFile(input.sourceTemplatePath, state.expectedUid, state.expectedGid, "source template")
   if (!VERSION_TAG.test(input.canonicalVersionTag) || !IMAGE_ID.test(input.reviewedManifestDigest) || !IMAGE_ID.test(input.rollbackImageId) || !IMAGE_ID.test(input.targetImageId) || input.rollbackImageId === input.targetImageId) throw new Error("reviewed release identity is invalid")
   const sourceBytes = readFileSync(input.sourceTemplatePath)
   const identity = templateIdentity(sourceBytes, input.canonicalVersionTag)
+  return { sourceBytes, identity }
+}
+
+export function prepareDockerManTemplateTransaction(input, options = {}) {
+  const state = paths(options)
+  const { sourceBytes, identity } = validateTemplateSource(input, state)
+  ensureJournalParent(state)
   const existing = readJournal(state)
   if (existing) {
     if (existing.canonicalVersionTag !== input.canonicalVersionTag || existing.reviewedManifestDigest !== input.reviewedManifestDigest || existing.rollbackImageId !== input.rollbackImageId || existing.targetImageId !== input.targetImageId || existing.targetTemplateDigest !== digest(sourceBytes) || currentTargetDigest(state) !== existing.targetTemplateDigest) throw new Error("pending template transaction does not match the reviewed release")
@@ -368,18 +396,8 @@ function readRootJson(path, label) {
   try { return JSON.parse(readFileSync(path, "utf8")) } catch { throw new Error(`${label} JSON is invalid`) }
 }
 
-function prepareFixedJournalParent() {
-  validateDirectory(CUSTOM_ROOT, 0, 0)
-  if (!metadataIfPresent(JOURNAL_PARENT)) {
-    mkdirSync(JOURNAL_PARENT, { mode: 0o700 })
-    syncDirectory(CUSTOM_ROOT)
-  }
-  validateDirectory(JOURNAL_PARENT, 0, 0)
-}
-
-function runCli(argv) {
+export function runDockerManTemplateTransactionCli(argv, options = {}, write = (text) => process.stdout.write(text)) {
   const { operation, values } = parseArguments(argv)
-  prepareFixedJournalParent()
   let result
   if (operation === "prepare" && values.size === 5) {
     result = prepareDockerManTemplateTransaction({
@@ -388,25 +406,31 @@ function runCli(argv) {
       reviewedManifestDigest: values.get("--manifest-digest"),
       rollbackImageId: values.get("--rollback-image-id"),
       targetImageId: values.get("--target-image-id"),
-    })
+    }, options)
   } else if (operation === "mark-committing" && values.size === 0) {
-    result = markDockerManTemplateTransactionCommitting()
+    ensureJournalParent(paths(options))
+    result = markDockerManTemplateTransactionCommitting(options)
   } else if (operation === "rollback" && values.size === 0) {
-    result = { rolledBack: rollbackDockerManTemplateTransaction() }
+    ensureJournalParent(paths(options))
+    result = { rolledBack: rollbackDockerManTemplateTransaction(options) }
   } else if (operation === "commit" && values.size === 1 && values.get("--proof")) {
-    result = { committed: commitDockerManTemplateTransaction(readRootJson(values.get("--proof"), "final install proof")) }
+    ensureJournalParent(paths(options))
+    result = { committed: commitDockerManTemplateTransaction(readRootJson(values.get("--proof"), "final install proof"), options) }
   } else if (operation === "status" && values.size === 0) {
-    result = inspectDockerManTemplateTransaction()
+    ensureJournalParent(paths(options))
+    result = inspectDockerManTemplateTransaction(options)
   } else if (operation === "recover-status" && values.size === 0) {
-    result = inspectDockerManTemplateTransactionForRecovery()
+    ensureJournalParent(paths(options))
+    result = inspectDockerManTemplateTransactionForRecovery(options)
   } else if (operation === "recovery-action" && values.size === 1 && values.get("--evidence")) {
-    const record = inspectDockerManTemplateTransaction()
+    ensureJournalParent(paths(options))
+    const record = inspectDockerManTemplateTransaction(options)
     if (!record) throw new Error("template transaction journal is absent")
     result = { action: decideDockerManTemplateRecovery(record, readRootJson(values.get("--evidence"), "template recovery evidence")) }
   } else {
     throw new Error("Usage: docker-man-template-transaction.mjs <prepare|mark-committing|rollback|commit|status|recover-status|recovery-action> [fixed operation arguments]")
   }
-  process.stdout.write(`${JSON.stringify(result)}\n`)
+  write(`${JSON.stringify(result)}\n`)
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) runCli(process.argv.slice(2))
+if (process.argv[1] === fileURLToPath(import.meta.url)) runDockerManTemplateTransactionCli(process.argv.slice(2))

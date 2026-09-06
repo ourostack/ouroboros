@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { existsSync, mkdtempSync, chmodSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, chmodSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
@@ -23,6 +23,7 @@ interface TransactionRecord {
 }
 
 interface TransactionModule {
+  runDockerManTemplateTransactionCli(args: string[], options?: Record<string, unknown>, write?: (text: string) => void): unknown
   prepareDockerManTemplateTransaction(input: Record<string, unknown>, options: Record<string, unknown>): TransactionRecord
   inspectDockerManTemplateTransaction(options: Record<string, unknown>): TransactionRecord | null
   inspectDockerManTemplateTransactionForRecovery(options: Record<string, unknown>): TransactionRecord | null
@@ -52,6 +53,20 @@ function template(repository = canonicalVersionTag, name = "ouro-butler"): strin
     "",
   ].join("\n")
 }
+
+const transactionSemanticMarkup = [
+  ["Name", "<Name>ouro-butler</Name>"],
+  ["Repository", `<Repository>${canonicalVersionTag}</Repository>`],
+  ["TemplateURL", `<TemplateURL>${templateUrl}</TemplateURL>`],
+  ["Icon", `<Icon>${icon}</Icon>`],
+  ["WebUI", "<WebUI/>"],
+] as const
+
+const hiddenTransactionSemanticMarkup = transactionSemanticMarkup.flatMap(([name, markup]) => [
+  [name, "comment", markup, `<!-- ${markup} -->`],
+  [name, "CDATA", markup, `<![CDATA[${markup}]]>`],
+  [name, "nested", markup, `<Wrapper>${markup}</Wrapper>`],
+] as const)
 
 async function load(): Promise<TransactionModule> {
   return import(pathToFileURL(join(process.cwd(), "deploy/unraid/docker-man-template-transaction.mjs")).href) as Promise<TransactionModule>
@@ -83,7 +98,7 @@ function fixture(prior: string | null = null) {
     rollbackImageId: image("a"),
     targetImageId: image("b"),
   }
-  return { root, templateRoot, journalRoot, sourceTemplatePath, targetPath, journalPath, options, input }
+  return { root, templateRoot, customRoot: join(root, "custom"), journalRoot, sourceTemplatePath, targetPath, journalPath, options, input }
 }
 
 function temporaryPaths(state: ReturnType<typeof fixture>) {
@@ -141,11 +156,114 @@ describe("root-owned DockerMan template transaction", () => {
     const state = fixture("prior-template\n")
     writeFileSync(state.sourceTemplatePath, template().replace("</Container>", ""), { mode: 0o600 })
 
-    expect(() => transaction.prepareDockerManTemplateTransaction(state.input, state.options)).toThrow(/well-formed/u)
+    expect(() => transaction.prepareDockerManTemplateTransaction(state.input, state.options)).toThrow(/canonical DockerMan XML structure/u)
     expect(readFileSync(state.targetPath, "utf8")).toBe("prior-template\n")
     expect(existsSync(state.journalPath)).toBe(false)
     expect(existsSync(temporaryPaths(state).target)).toBe(false)
     expect(existsSync(temporaryPaths(state).journal)).toBe(false)
+  })
+
+  it.each(hiddenTransactionSemanticMarkup)("does not accept %s markup hidden in %s as transaction identity", async (_name, _disguise, markup, replacement) => {
+    const transaction = await load()
+    const state = fixture("prior-template\n")
+    writeFileSync(state.sourceTemplatePath, template().replace(markup, replacement), { mode: 0o600 })
+
+    expect(() => transaction.prepareDockerManTemplateTransaction(state.input, state.options)).toThrow(/canonical DockerMan XML structure/u)
+    expect(readFileSync(state.targetPath, "utf8")).toBe("prior-template\n")
+    expect(existsSync(state.journalPath)).toBe(false)
+    expect(existsSync(temporaryPaths(state).target)).toBe(false)
+    expect(existsSync(temporaryPaths(state).journal)).toBe(false)
+  })
+
+  it("requires Container itself to be the transaction template root", async () => {
+    const transaction = await load()
+    const state = fixture("prior-template\n")
+    writeFileSync(state.sourceTemplatePath, template().replace("<Container version=\"2\">", "<Wrapper><Container version=\"2\">").replace("</Container>", "</Container></Wrapper>"), { mode: 0o600 })
+
+    expect(() => transaction.prepareDockerManTemplateTransaction(state.input, state.options)).toThrow(/canonical DockerMan XML structure/u)
+    expect(readFileSync(state.targetPath, "utf8")).toBe("prior-template\n")
+    expect(existsSync(state.journalPath)).toBe(false)
+  })
+
+  it("fatally rejects invalid UTF-8 before any transaction mutation", async () => {
+    const transaction = await load()
+    const state = fixture("prior-template\n")
+    const marker = "INVALID-BYTE"
+    const source = Buffer.from(template().replace("<Name>", `<!-- ${marker} -->\n  <Name>`))
+    source[source.indexOf(marker) + 1] = 0xFF
+    writeFileSync(state.sourceTemplatePath, source, { mode: 0o600 })
+
+    expect(() => transaction.prepareDockerManTemplateTransaction(state.input, state.options)).toThrow(/canonical DockerMan XML structure/u)
+    expect(readFileSync(state.targetPath, "utf8")).toBe("prior-template\n")
+    expect(existsSync(state.journalPath)).toBe(false)
+    expect(existsSync(temporaryPaths(state).target)).toBe(false)
+    expect(existsSync(temporaryPaths(state).journal)).toBe(false)
+  })
+
+  it("runs CLI prepare validation before creating a fresh journal parent", async () => {
+    const transaction = await load()
+    const state = fixture("prior-template\n")
+    writeFileSync(state.sourceTemplatePath, template().replace("</Container>", ""), { mode: 0o600 })
+    rmSync(state.journalRoot, { recursive: true })
+    chmodSync(state.customRoot, 0o700)
+    const entriesBefore = readdirSync(state.root, { recursive: true }).sort()
+
+    expect(() => transaction.runDockerManTemplateTransactionCli([
+      "prepare",
+      "--source-template", state.sourceTemplatePath,
+      "--version-tag", canonicalVersionTag,
+      "--manifest-digest", image("c"),
+      "--rollback-image-id", image("a"),
+      "--target-image-id", image("b"),
+    ], state.options, () => undefined)).toThrow(/canonical DockerMan XML structure/u)
+    expect(readdirSync(state.root, { recursive: true }).sort()).toEqual(entriesBefore)
+    expect(existsSync(state.journalRoot)).toBe(false)
+    expect(existsSync(state.journalPath)).toBe(false)
+    expect(existsSync(temporaryPaths(state).target)).toBe(false)
+    expect(existsSync(temporaryPaths(state).journal)).toBe(false)
+    expect(readFileSync(state.targetPath, "utf8")).toBe("prior-template\n")
+  })
+
+  it("creates a fresh journal parent only after CLI validation and installs the retained bytes", async () => {
+    const transaction = await load()
+    const state = fixture("prior-template\n")
+    const original = readFileSync(state.sourceTemplatePath)
+    rmSync(state.journalRoot, { recursive: true })
+    chmodSync(state.customRoot, 0o700)
+    const output: string[] = []
+
+    transaction.runDockerManTemplateTransactionCli([
+      "prepare",
+      "--source-template", state.sourceTemplatePath,
+      "--version-tag", canonicalVersionTag,
+      "--manifest-digest", image("c"),
+      "--rollback-image-id", image("a"),
+      "--target-image-id", image("b"),
+    ], {
+      ...state.options,
+      checkpoint: (point: string) => {
+        if (point === "after-template-journal") writeFileSync(state.sourceTemplatePath, "changed after validation\n", { mode: 0o600 })
+      },
+    }, (text) => output.push(text))
+
+    expect(lstatSync(state.journalRoot).mode & 0o777).toBe(0o700)
+    expect(readFileSync(state.targetPath)).toEqual(original)
+    expect(existsSync(state.journalPath)).toBe(true)
+    expect(output.join("")).toContain('"state":"rollback"')
+  })
+
+  it.each([
+    ["unknown"],
+    ["status", "--unexpected", "value"],
+  ])("does not create a journal parent for an invalid CLI operation shape: %s", async (...args) => {
+    const transaction = await load()
+    const state = fixture("prior-template\n")
+    rmSync(state.journalRoot, { recursive: true })
+    chmodSync(state.customRoot, 0o700)
+
+    expect(() => transaction.runDockerManTemplateTransactionCli(args, state.options, () => undefined)).toThrow(/Usage/u)
+    expect(existsSync(state.journalRoot)).toBe(false)
+    expect(readFileSync(state.targetPath, "utf8")).toBe("prior-template\n")
   })
 
   it("installs canonical version-tagged bytes only after a durable complete rollback record", async () => {
