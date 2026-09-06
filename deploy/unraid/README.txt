@@ -1005,9 +1005,12 @@ Effective-spec audit helper:
       chmod 0600 "$RECOVERY_EVIDENCE_PATH" || return $?
     }
     recover_dockerman_template_transaction() {
-      TEMPLATE_RECOVERY_STATUS=$(/usr/local/bin/node "$STAGED_DOCKERMAN_TRANSACTION" recover-status) || return $?
-      test "$TEMPLATE_RECOVERY_STATUS" != null || return 0
-      TEMPLATE_RECOVERY_IDENTITIES=$(printf '%s' "$TEMPLATE_RECOVERY_STATUS" | /usr/local/bin/node -e '
+      TEMPLATE_RECOVERY_IDENTITY=$(/usr/local/bin/node "$STAGED_DOCKERMAN_TRANSACTION" recovery-identity) || return $?
+      if test "$TEMPLATE_RECOVERY_IDENTITY" = null; then
+        test "$(/usr/local/bin/node "$STAGED_DOCKERMAN_TRANSACTION" recover-status)" = null || return 1
+        return 0
+      fi
+      TEMPLATE_RECOVERY_IDENTITIES=$(printf '%s' "$TEMPLATE_RECOVERY_IDENTITY" | /usr/local/bin/node -e '
         let input = "";
         process.stdin.setEncoding("utf8");
         process.stdin.on("data", chunk => { input += chunk; });
@@ -1054,6 +1057,8 @@ Effective-spec audit helper:
         test "$TEMPLATE_RECOVERY_BUNDLE_ROLLBACK_IMAGE_ID" = "$TEMPLATE_RECOVERY_ROLLBACK_IMAGE_ID" || return 1
         test "$TEMPLATE_RECOVERY_BUNDLE_TARGET_IMAGE_ID" = "$TEMPLATE_RECOVERY_TARGET_IMAGE_ID" || return 1
       fi
+      TEMPLATE_RECOVERY_STATUS=$(/usr/local/bin/node "$STAGED_DOCKERMAN_TRANSACTION" recover-status) || return $?
+      test "$TEMPLATE_RECOVERY_STATUS" = "$TEMPLATE_RECOVERY_IDENTITY" || return 1
       TEMPLATE_RECOVERY_EVIDENCE=$EVENT_ASSET_STAGE/template-recovery-evidence.json
       TEMPLATE_RECOVERY_INSPECTION=$EVENT_ASSET_STAGE/template-recovery-inspection.json
       TEMPLATE_RECOVERY_FINAL_ROOT=$EVENT_ASSET_STAGE/template-recovery-final

@@ -620,6 +620,10 @@ describe("root-owned DockerMan template transaction", () => {
     writeFileSync(initialTemporary.journal, "partial journal", { mode: 0o600 })
     chmodSync(initialTemporary.journal, 0o600)
     expect(() => transaction.inspectDockerManTemplateTransaction(initialJournal.options)).toThrow(/temporary/u)
+    const initialIdentityOutput: string[] = []
+    transaction.runDockerManTemplateTransactionCli(["recovery-identity"], initialJournal.options, (text) => initialIdentityOutput.push(text))
+    expect(initialIdentityOutput).toEqual(["null\n"])
+    expect(existsSync(initialTemporary.journal)).toBe(true)
     expect(transaction.inspectDockerManTemplateTransactionForRecovery(initialJournal.options)).toBeNull()
     expect(existsSync(initialTemporary.journal)).toBe(false)
     expect(readFileSync(initialJournal.targetPath, "utf8")).toBe("prior-template\n")
@@ -642,6 +646,10 @@ describe("root-owned DockerMan template transaction", () => {
     const committingTemporary = temporaryPaths(committingJournal)
     writeFileSync(committingTemporary.journal, readFileSync(committingJournal.journalPath), { mode: 0o600 })
     chmodSync(committingTemporary.journal, 0o600)
+    const identityOutput: string[] = []
+    transaction.runDockerManTemplateTransactionCli(["recovery-identity"], committingJournal.options, (text) => identityOutput.push(text))
+    expect(JSON.parse(identityOutput.join(""))).toMatchObject({ state: "rollback", jellyfin })
+    expect(existsSync(committingTemporary.journal)).toBe(true)
     const recoveryOutput: string[] = []
     transaction.runDockerManTemplateTransactionCli(["recover-status"], committingJournal.options, (text) => recoveryOutput.push(text))
     expect(JSON.parse(recoveryOutput.join(""))).toMatchObject({ state: "rollback", jellyfin })

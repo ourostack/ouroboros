@@ -240,12 +240,12 @@ function currentTargetDigest(state) {
   return digest(readFileSync(state.targetPath))
 }
 
-function cleanupRecoveryTemporary(state) {
+function inspectRecoveryTemporary(state) {
   validateParents(state, true)
   const residues = [state.targetTemporary, state.journalTemporary]
     .map((path) => ({ path, metadata: metadataIfPresent(path) }))
     .filter((entry) => entry.metadata)
-  if (residues.length === 0) return
+  if (residues.length === 0) return null
   if (residues.length !== 1) throw new Error("template transaction recovery temporary state is ambiguous")
   const residue = residues[0]
   if (!isSafeRecoveryTemporaryMetadata(residue.metadata, state.expectedUid, state.expectedGid)) throw new Error("template transaction recovery temporary file is unsafe")
@@ -258,26 +258,43 @@ function cleanupRecoveryTemporary(state) {
     const allowedDigests = [journal.targetTemplateDigest, journal.priorTemplateDigest]
     if (!(allowedDigests.includes(installedDigest) || (!journal.priorTemplate.present && installedDigest === null))) throw new Error("template transaction recovery target state is ambiguous")
   }
+  return residue
+}
+
+function cleanupRecoveryTemporary(state) {
+  const residue = inspectRecoveryTemporary(state)
+  if (!residue) return
   deleteDurably(residue.path)
+}
+
+function publicJournalRecord(result) {
+  if (!result) return null
+  const { priorBytes: _ignored, ...record } = result
+  return record
+}
+
+export function inspectDockerManTemplateTransactionRecoveryIdentity(options = {}) {
+  const state = paths(options)
+  inspectRecoveryTemporary(state)
+  const current = readJournal(state)
+  const jellyfin = inspectCurrentJellyfinState()
+  if (current && JSON.stringify(jellyfin) !== JSON.stringify(current.jellyfin)) throw new Error("Jellyfin changed during the Butler transaction")
+  return publicJournalRecord(current)
 }
 
 export function inspectDockerManTemplateTransactionForRecovery(options = {}) {
   const state = paths(options)
-  validateParents(state, true)
-  const current = readJournal(state)
-  const jellyfin = inspectCurrentJellyfinState()
-  if (current && JSON.stringify(jellyfin) !== JSON.stringify(current.jellyfin)) throw new Error("Jellyfin changed during the Butler transaction")
+  const expected = inspectDockerManTemplateTransactionRecoveryIdentity(options)
   cleanupRecoveryTemporary(state)
-  return inspectDockerManTemplateTransaction(options)
+  const current = inspectDockerManTemplateTransaction(options)
+  if (JSON.stringify(current) !== JSON.stringify(expected)) throw new Error("template transaction changed during recovery")
+  return current
 }
 
 export function inspectDockerManTemplateTransaction(options = {}) {
   const state = paths(options)
   validateParents(state)
-  const result = readJournal(state)
-  if (!result) return null
-  const { priorBytes: _ignored, ...record } = result
-  return record
+  return publicJournalRecord(readJournal(state))
 }
 
 function validateTemplateSource(input, state) {
@@ -482,6 +499,14 @@ export function runDockerManTemplateTransactionCli(argv, options = {}, write = (
       ensureJournalParent(state)
     }
     result = inspectDockerManTemplateTransactionForRecovery(options)
+  } else if (operation === "recovery-identity" && values.size === 0) {
+    const state = paths(options)
+    if (!metadataIfPresent(state.journalParent)) {
+      inspectCurrentJellyfinState()
+      result = null
+    } else {
+      result = inspectDockerManTemplateTransactionRecoveryIdentity(options)
+    }
   } else if (operation === "recovery-action" && values.size === 1 && values.get("--evidence")) {
     ensureJournalParent(paths(options))
     const record = inspectDockerManTemplateTransaction(options)
@@ -492,7 +517,7 @@ export function runDockerManTemplateTransactionCli(argv, options = {}, write = (
   } else if (operation === "jellyfin-status" && values.size === 0) {
     result = inspectCurrentJellyfinState()
   } else {
-    throw new Error("Usage: docker-man-template-transaction.mjs <prepare|mark-committing|rollback|commit|status|recover-status|recovery-action|verify-jellyfin|jellyfin-status> [fixed operation arguments]")
+    throw new Error("Usage: docker-man-template-transaction.mjs <prepare|mark-committing|rollback|commit|status|recover-status|recovery-identity|recovery-action|verify-jellyfin|jellyfin-status> [fixed operation arguments]")
   }
   write(`${JSON.stringify(result)}\n`)
 }

@@ -2816,6 +2816,12 @@ read_sanctuary_bundle_transaction_status "$IMAGE_ID"`
   it("rejects mismatched bundle and DockerMan recovery identities before mutation", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     const recovery = extractRunbookFunction(runbook, "recover_dockerman_template_transaction").replaceAll("/usr/local/bin/node", "node")
+    const identityRead = recovery.indexOf('"$STAGED_DOCKERMAN_TRANSACTION" recovery-identity')
+    const bundleRead = recovery.indexOf('read_sanctuary_bundle_transaction_status "$IMAGE_ID"')
+    const mutableRecovery = recovery.indexOf('"$STAGED_DOCKERMAN_TRANSACTION" recover-status', bundleRead)
+    expect(identityRead).toBeGreaterThan(-1)
+    expect(bundleRead).toBeGreaterThan(identityRead)
+    expect(mutableRecovery).toBeGreaterThan(bundleRead)
     const oldImage = `sha256:${"a".repeat(64)}`
     const targetImage = `sha256:${"b".repeat(64)}`
     const otherImage = `sha256:${"c".repeat(64)}`
@@ -2823,7 +2829,10 @@ read_sanctuary_bundle_transaction_status "$IMAGE_ID"`
     const manifestDigest = `sha256:${"d".repeat(64)}`
     const script = String.raw`set -u
 node() {
-  if test "$1" = "$STAGED_DOCKERMAN_TRANSACTION" && test "$2" = recover-status; then command printf '%s\n' "$TEMPLATE_STATUS"; else command "$NODE_BINARY" "$@"; fi
+  if test "$1" = "$STAGED_DOCKERMAN_TRANSACTION" && test "$2" = recovery-identity; then command printf '%s\n' "$TEMPLATE_STATUS"
+  elif test "$1" = "$STAGED_DOCKERMAN_TRANSACTION" && test "$2" = recover-status; then command printf 'recover-status\n' >>"$CALL_LOG"; command printf '%s\n' "$TEMPLATE_STATUS"
+  else command "$NODE_BINARY" "$@"
+  fi
 }
 validate_exact_image_id() { return 0; }
 read_sanctuary_bundle_transaction_status() { command printf '%s\n' "$BUNDLE_STATUS"; }
@@ -2976,7 +2985,10 @@ verify_known_good_rollback_artifact "$IMAGE_ID"`
     expect(finalProof).toContain('const jellyfin = JSON.parse(fs.readFileSync(jellyfinPath, "utf8"));')
     expect(finalProof).toContain("const proof = { container:")
     expect(finalProof).toContain(", jellyfin };")
-    expect(recovery.indexOf('"$STAGED_DOCKERMAN_TRANSACTION" recover-status')).toBeLessThan(recovery.indexOf("recover_pending_sanctuary_bundle_migration"))
+    expect(recovery.indexOf('"$STAGED_DOCKERMAN_TRANSACTION" recovery-identity')).toBeLessThan(recovery.indexOf('read_sanctuary_bundle_transaction_status "$IMAGE_ID"'))
+    const checkedRecovery = recovery.indexOf('"$STAGED_DOCKERMAN_TRANSACTION" recover-status', recovery.indexOf('read_sanctuary_bundle_transaction_status "$IMAGE_ID"'))
+    expect(checkedRecovery).toBeGreaterThan(recovery.indexOf('read_sanctuary_bundle_transaction_status "$IMAGE_ID"'))
+    expect(checkedRecovery).toBeLessThan(recovery.indexOf("recover_pending_sanctuary_bundle_migration"))
     const adoptionFailure = adoption.indexOf("ADOPTION_STATUS=$?")
     const adoptionGate = adoption.indexOf('"$STAGED_DOCKERMAN_TRANSACTION" verify-jellyfin', adoptionFailure)
     expect(adoptionGate).toBeGreaterThan(adoptionFailure)
