@@ -13,14 +13,26 @@ const EXPECTED_MOUNTS = [
 ] as const
 
 const LEGACY_ALPHA742_IMAGE = "sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d"
+const PREPACKAGE_ALPHA797_IMAGE = "sha256:e337dff04c92d116b269052f473b26a47eea933d017d1befc73af50dd37bb08d"
 const LEGACY_ALPHA742_MOUNTS = EXPECTED_MOUNTS.slice(0, 2)
 
 const EXPECTED_EXTRA_PARAMS = "--restart=unless-stopped --user=10001:10001"
+const EXPECTED_NAME = "ouro-butler"
+const EXPECTED_TEMPLATE_URL = "https://raw.githubusercontent.com/ourostack/ouroboros/main/deploy/unraid/sanctuary.xml"
+const EXPECTED_ICON = "https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png"
+const EXACT_IMAGE = /^sha256:[a-f0-9]{64}$/u
+const VERSION_REFERENCE = /^ghcr\.io\/ourostack\/ouroboros-butler:[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/u
+const PACKAGE_DAEMON_ARGS = ["/opt/ouro/dist/heart/daemon/daemon-entry.js", "--package-managed-agent", "sanctuary"] as const
+const PACKAGE_ENTRYPOINT = ["node", ...PACKAGE_DAEMON_ARGS] as const
+const LEGACY_DAEMON_ARGS = ["/opt/ouro/dist/heart/daemon/daemon-entry.js"] as const
+const LEGACY_ENTRYPOINT = ["node", ...LEGACY_DAEMON_ARGS] as const
 
 export interface SanctuaryContainerAuditOptions {
   expectedImage: string
   expectedEnvironment: readonly string[]
-  mountContract?: "canonical" | "legacy-alpha742"
+  expectedImageReference?: string
+  expectedIcon?: string
+  mountContract?: "canonical" | "legacy-alpha742" | "prepackage-alpha797"
 }
 
 export interface SanctuaryContainerAuditResult {
@@ -32,6 +44,12 @@ export interface SanctuaryStagedAuditInput {
   templateXml: string
   runtimePolicyText: string
   expectedImage: string
+}
+
+export interface SanctuaryPersistentTemplateAuditInput {
+  templateXml: string
+  runtimePolicyText: string
+  expectedImageReference: string
 }
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -61,15 +79,18 @@ export function auditSanctuaryContainerSpec(
   if (!root || !config || !host) {
     violations.push("inspect payload must contain object Config and HostConfig records")
   } else {
-    if (!/^sha256:[a-f0-9]{64}$/u.test(options.expectedImage)) violations.push("expected image must be an exact local Docker image ID")
+    if (!EXACT_IMAGE.test(options.expectedImage)) violations.push("expected image must be an exact local Docker image ID")
     const mountContract = options.mountContract ?? "canonical"
     if (mountContract === "legacy-alpha742" && options.expectedImage !== LEGACY_ALPHA742_IMAGE) violations.push("legacy mount exception requires the pinned alpha.742 image ID")
+    if (mountContract === "prepackage-alpha797" && options.expectedImage !== PREPACKAGE_ALPHA797_IMAGE) violations.push("pre-package-managed source exception requires the pinned alpha.797 image ID")
     const expectedMounts = mountContract === "legacy-alpha742" ? LEGACY_ALPHA742_MOUNTS : EXPECTED_MOUNTS
+    const expectedArgs = mountContract === "canonical" ? PACKAGE_DAEMON_ARGS : LEGACY_DAEMON_ARGS
+    const expectedEntrypoint = mountContract === "canonical" ? PACKAGE_ENTRYPOINT : LEGACY_ENTRYPOINT
     if (root.Image !== options.expectedImage) violations.push("image does not match the reviewed exact local Docker image ID")
     if (root.Path !== "node") violations.push("effective container path must be node")
-    if (JSON.stringify(root.Args) !== JSON.stringify(["/opt/ouro/dist/heart/daemon/daemon-entry.js"])) violations.push("effective container arguments must be the direct daemon entry")
+    if (JSON.stringify(root.Args) !== JSON.stringify(expectedArgs)) violations.push("effective container arguments must be the reviewed direct daemon entry")
     if (config.User !== "10001:10001") violations.push("container user must be 10001:10001")
-    if (JSON.stringify(config.Entrypoint) !== JSON.stringify(["node", "/opt/ouro/dist/heart/daemon/daemon-entry.js"])) violations.push("entrypoint must be the direct daemon entry")
+    if (JSON.stringify(config.Entrypoint) !== JSON.stringify(expectedEntrypoint)) violations.push("entrypoint must be the reviewed direct daemon entry")
     if (!(config.Cmd === null || (Array.isArray(config.Cmd) && config.Cmd.length === 0))) violations.push("container command must be empty")
     const environment = stringArray(config.Env)
     if (!environment || JSON.stringify(environment) !== JSON.stringify(options.expectedEnvironment)) violations.push("container environment must exactly match the reviewed image environment")
@@ -88,6 +109,24 @@ export function auditSanctuaryContainerSpec(
     if (!(host.CapDrop === null || (Array.isArray(host.CapDrop) && host.CapDrop.length === 0))) violations.push("container must drop no capabilities")
     if (host.PublishAllPorts !== false) violations.push("container must not publish all exposed ports")
     if (!isEmptyRecord(network?.Ports)) violations.push("effective network ports must be empty")
+    if (mountContract !== "legacy-alpha742") {
+      if (root.Name !== `/${EXPECTED_NAME}`) violations.push("container name must be /ouro-butler")
+    }
+    if (mountContract === "prepackage-alpha797") {
+      if (config.Image !== PREPACKAGE_ALPHA797_IMAGE) violations.push("pre-package-managed source configured image must equal the pinned alpha.797 image ID")
+      const labels = record(config.Labels)
+      if (labels && Object.prototype.hasOwnProperty.call(labels, "net.unraid.docker.managed")) violations.push("pre-package-managed source must not carry a DockerMan managed label")
+      if (labels && Object.prototype.hasOwnProperty.call(labels, "net.unraid.docker.icon")) violations.push("pre-package-managed source must not carry a DockerMan icon label")
+      if (labels && Object.prototype.hasOwnProperty.call(labels, "net.unraid.docker.webui")) violations.push("pre-package-managed source must not carry a DockerMan WebUI label")
+    } else if (mountContract === "canonical") {
+      if (!options.expectedImageReference || !VERSION_REFERENCE.test(options.expectedImageReference)) violations.push("expected image reference must be the canonical package-version tag")
+      if (config.Image !== options.expectedImageReference) violations.push("configured image must equal the canonical package-version tag")
+      if (options.expectedIcon !== EXPECTED_ICON) violations.push("expected icon must equal the canonical template icon")
+      const labels = record(config.Labels)
+      if (labels?.["net.unraid.docker.managed"] !== "dockerman") violations.push("container must carry the DockerMan managed label")
+      if (labels?.["net.unraid.docker.icon"] !== options.expectedIcon) violations.push("container icon label must equal the canonical template icon")
+      if (labels && Object.prototype.hasOwnProperty.call(labels, "net.unraid.docker.webui")) violations.push("container must not carry a DockerMan WebUI label")
+    }
     const mounts = Array.isArray(root.Mounts) ? root.Mounts : []
     const normalizedMounts = mounts.map((mount) => {
       const item = record(mount)
@@ -130,7 +169,7 @@ function singleTag(xml: string, name: string): string | undefined {
   return values.length === 1 ? values[0] : undefined
 }
 
-export function auditSanctuaryStagedFiles(input: SanctuaryStagedAuditInput): SanctuaryContainerAuditResult {
+function auditTemplate(input: { templateXml: string; runtimePolicyText: string }, expectedRepository: string, repositoryIsValid: boolean, repositoryViolation: string): string[] {
   const violations: string[] = []
   let runtimePolicy: unknown
   try {
@@ -166,9 +205,25 @@ export function auditSanctuaryStagedFiles(input: SanctuaryStagedAuditInput): San
   const extraParams = singleTag(input.templateXml, "ExtraParams")
   if (extraParams !== EXPECTED_EXTRA_PARAMS) violations.push("template ExtraParams must equal the canonical user and restart flags")
   const repository = singleTag(input.templateXml, "Repository")
-  if (!/^sha256:[a-f0-9]{64}$/u.test(input.expectedImage)) violations.push("expected image must be an exact local Docker image ID")
-  if (repository !== input.expectedImage) violations.push("image does not match the reviewed exact local Docker image ID")
+  if (!repositoryIsValid) violations.push(repositoryViolation)
+  if (repository !== expectedRepository) violations.push("template repository does not match the reviewed image identity")
+  if (singleTag(input.templateXml, "Name") !== EXPECTED_NAME) violations.push("template technical name must be exactly ouro-butler")
+  if (singleTag(input.templateXml, "TemplateURL") !== EXPECTED_TEMPLATE_URL) violations.push("template URL must equal the canonical release template")
+  if (singleTag(input.templateXml, "Icon") !== EXPECTED_ICON) violations.push("template icon must equal the canonical release icon")
+  const webUiOpenCount = [...input.templateXml.matchAll(/<WebUI\b/gu)].length
+  const emptyWebUiCount = [...input.templateXml.matchAll(/<WebUI\s*\/>/gu)].length
+  if (webUiOpenCount !== 1 || emptyWebUiCount !== 1) violations.push("template WebUI must be present exactly once and empty")
   if (singleTag(input.templateXml, "Network") !== "host") violations.push("network mode must be host")
   if (singleTag(input.templateXml, "Privileged") !== "false") violations.push("container must not be privileged")
+  return violations
+}
+
+export function auditSanctuaryStagedFiles(input: SanctuaryStagedAuditInput): SanctuaryContainerAuditResult {
+  const violations = auditTemplate(input, input.expectedImage, EXACT_IMAGE.test(input.expectedImage), "expected image must be an exact local Docker image ID")
+  return { ok: violations.length === 0, violations }
+}
+
+export function auditSanctuaryPersistentTemplate(input: SanctuaryPersistentTemplateAuditInput): SanctuaryContainerAuditResult {
+  const violations = auditTemplate(input, input.expectedImageReference, VERSION_REFERENCE.test(input.expectedImageReference), "expected image reference must be the canonical package-version tag")
   return { ok: violations.length === 0, violations }
 }

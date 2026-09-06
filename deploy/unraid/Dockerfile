@@ -44,5 +44,5 @@ RUN BW_VERIFY_ROOT="$(mktemp -d)" \
   && rm -rf -- "$BW_VERIFY_ROOT" \
   && trap - 0 \
   && test ! -e "/home/ouro/.config/Bitwarden CLI"
-HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 CMD ["node","/opt/ouro/dist/heart/daemon/container-healthcheck.js","--agent","sanctuary"]
-ENTRYPOINT ["node","/opt/ouro/dist/heart/daemon/daemon-entry.js"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 CMD ["node","/opt/ouro/dist/heart/daemon/container-healthcheck.js","--agent","sanctuary","--package-managed-agent","sanctuary"]
+ENTRYPOINT ["node","/opt/ouro/dist/heart/daemon/daemon-entry.js","--package-managed-agent","sanctuary"]

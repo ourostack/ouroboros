@@ -1,6 +1,6 @@
 import * as fs from "node:fs"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { auditSanctuaryContainerSpec, auditSanctuaryStagedFiles } from "./container-spec-auditor"
+import { auditSanctuaryContainerSpec, auditSanctuaryPersistentTemplate, auditSanctuaryStagedFiles } from "./container-spec-auditor"
 
 export interface ContainerSpecAuditorCliDeps {
   readFile?: (filePath: string) => string
@@ -36,12 +36,14 @@ export function runContainerSpecAuditorCli(args: string[], deps: ContainerSpecAu
   const readFile = deps.readFile ?? ((filePath: string) => fs.readFileSync(filePath, "utf8"))
   const write = deps.write ?? ((text: string) => process.stdout.write(text))
   const staged = parseModeArguments(args, ["--template", "--runtime-policy", "--expected-image"])
-  const effective = parseModeArguments(args, ["--inspect", "--image-inspect", "--expected-image"])
-  const legacyCandidate = parseModeArguments(args, ["--inspect", "--image-inspect", "--expected-image", "--mount-contract"])
-  const legacyEffective = legacyCandidate?.["--mount-contract"] === "legacy-alpha742" ? legacyCandidate : null
-  const selectedEffective = effective ?? legacyEffective
-  if (!staged && !selectedEffective) {
-    write(JSON.stringify({ ok: false, error: "usage: staged --template <path> --runtime-policy <path> --expected-image <id>; effective --inspect <path> --image-inspect <path> --expected-image <id> [--mount-contract legacy-alpha742]" }) + "\n")
+  const persistent = parseModeArguments(args, ["--persistent-template", "--runtime-policy", "--expected-image-reference"])
+  const effective = parseModeArguments(args, ["--inspect", "--image-inspect", "--expected-image", "--expected-image-reference", "--expected-icon"])
+  const sourceCandidate = parseModeArguments(args, ["--inspect", "--image-inspect", "--expected-image", "--mount-contract"])
+  const sourceContract = sourceCandidate?.["--mount-contract"]
+  const sourceEffective = sourceContract === "legacy-alpha742" || sourceContract === "prepackage-alpha797" ? sourceCandidate : null
+  const selectedEffective = effective ?? sourceEffective
+  if (!staged && !persistent && !selectedEffective) {
+    write(JSON.stringify({ ok: false, error: "usage: staged --template <path> --runtime-policy <path> --expected-image <id>; persistent --persistent-template <path> --runtime-policy <path> --expected-image-reference <tag>; effective --inspect <path> --image-inspect <path> --expected-image <id> --expected-image-reference <tag> --expected-icon <url>; source compatibility effective --inspect <path> --image-inspect <path> --expected-image <id> --mount-contract <legacy-alpha742|prepackage-alpha797>" }) + "\n")
     emitNervesEvent({
       level: "error",
       component: "daemon",
@@ -89,7 +91,9 @@ export function runContainerSpecAuditorCli(args: string[], deps: ContainerSpecAu
     const result = auditSanctuaryContainerSpec(containerInspect, {
       expectedImage: selectedEffective["--expected-image"]!,
       expectedEnvironment,
-      mountContract: legacyEffective ? "legacy-alpha742" : "canonical",
+      expectedImageReference: selectedEffective["--expected-image-reference"],
+      expectedIcon: selectedEffective["--expected-icon"],
+      mountContract: sourceContract === "legacy-alpha742" || sourceContract === "prepackage-alpha797" ? sourceContract : "canonical",
     })
     if (imageInspect.Id !== selectedEffective["--expected-image"]) {
       result.ok = false
@@ -99,11 +103,13 @@ export function runContainerSpecAuditorCli(args: string[], deps: ContainerSpecAu
     return result.ok ? 0 : 1
   }
 
+  const templateArguments = persistent ?? staged!
+  const templatePath = persistent ? templateArguments["--persistent-template"]! : templateArguments["--template"]!
   let templateXml: string
   let runtimePolicyText: string
   try {
-    templateXml = readFile(staged!["--template"]!)
-    runtimePolicyText = readFile(staged!["--runtime-policy"]!)
+    templateXml = readFile(templatePath)
+    runtimePolicyText = readFile(templateArguments["--runtime-policy"]!)
   } catch (error) {
     write(JSON.stringify({ ok: false, error: "staged audit inputs are unreadable" }) + "\n")
     emitNervesEvent({
@@ -115,7 +121,9 @@ export function runContainerSpecAuditorCli(args: string[], deps: ContainerSpecAu
     })
     return 2
   }
-  const result = auditSanctuaryStagedFiles({ templateXml, runtimePolicyText, expectedImage: staged!["--expected-image"]! })
+  const result = persistent
+    ? auditSanctuaryPersistentTemplate({ templateXml, runtimePolicyText, expectedImageReference: persistent["--expected-image-reference"]! })
+    : auditSanctuaryStagedFiles({ templateXml, runtimePolicyText, expectedImage: staged!["--expected-image"]! })
   write(JSON.stringify(result) + "\n")
   return result.ok ? 0 : 1
 }
