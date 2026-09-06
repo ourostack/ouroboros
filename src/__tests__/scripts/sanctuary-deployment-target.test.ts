@@ -22,7 +22,7 @@ type TargetModule = {
   parseProcStatIdentity(content: string, expectedPid: number): { state: string; starttime: string }
   runThawWatchdog(targetContainerId: string, targetPid: number, parentPid: number, parentBootId: string, parentStarttime: string, root: string, dependencies: Record<string, unknown>): Promise<void>
   withPausedTarget<T>(target: { targetContainerId: string; targetPid: number }, operation: () => T, dependencies: Record<string, unknown>): T
-  runKillableCommand(executable: string, args: string[], timeoutMs: number): Promise<string>
+  runKillableCommand(executable: string, args: string[], timeoutMs: number, dependencies?: Record<string, unknown>): Promise<string>
 }
 
 async function load(): Promise<TargetModule> {
@@ -33,6 +33,63 @@ const imageId = `sha256:${"a".repeat(64)}`
 const productionId = "b".repeat(64)
 const stagingId = "c".repeat(64)
 const rollbackId = "d".repeat(64)
+
+async function spawnTermReadyNode(program: string, signal = AbortSignal.timeout(2_000)) {
+  const child = spawn(process.execPath, ["-e", program], {
+    cwd: "/",
+    detached: true,
+    stdio: ["ignore", "pipe", "ignore"],
+    env: { PATH: "/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin" },
+  })
+  try {
+    await new Promise<void>((resolve, reject) => {
+      let buffered = ""
+      let settled = false
+      const finish = (error?: Error) => {
+        if (settled) return
+        settled = true
+        child.off("error", onError)
+        child.off("close", onPrematureClose)
+        child.stdout.off("data", onData)
+        child.stdout.off("end", onPrematureClose)
+        child.stdout.off("close", onPrematureClose)
+        signal.removeEventListener("abort", onAbort)
+        if (error) reject(error)
+        else resolve()
+      }
+      const invalid = () => new Error("TERM-ignoring test child emitted invalid readiness")
+      const onData = (chunk: Buffer) => {
+        buffered += String(chunk)
+        const newline = buffered.indexOf("\n")
+        if (newline < 0) {
+          if (!"ready\n".startsWith(buffered)) finish(invalid())
+          return
+        }
+        finish(buffered.slice(0, newline + 1) === "ready\n" ? undefined : invalid())
+      }
+      const onError = (error: Error) => finish(error)
+      const onPrematureClose = () => finish(new Error("TERM-ignoring test child closed before readiness"))
+      const onAbort = () => finish(new Error("TERM-ignoring test child readiness timed out"))
+      child.once("error", onError)
+      child.once("close", onPrematureClose)
+      child.stdout.on("data", onData)
+      child.stdout.once("end", onPrematureClose)
+      child.stdout.once("close", onPrematureClose)
+      signal.addEventListener("abort", onAbort, { once: true })
+    })
+    return child
+  } catch (error) {
+    killTestProcessGroup(child.pid)
+    throw error
+  }
+}
+
+function killTestProcessGroup(pid: number | undefined) {
+  if (!Number.isSafeInteger(pid) || !pid || pid <= 0) return
+  try { process.kill(-pid, "SIGKILL") } catch {
+    try { process.kill(pid, "SIGKILL") } catch {}
+  }
+}
 
 function record(name: string, id: string, running: boolean, autoStart: boolean, image = imageId, restartPolicy = "unless-stopped") {
   return { id, names: [`/${name}`], imageId: image, running, autoStart, restartPolicy, pid: running ? 321 : 0, networkMode: "host" }
@@ -566,10 +623,25 @@ describe("Sanctuary fixed deployment target", () => {
 
   it("kills a real TERM-ignoring process group at the hard wall-clock deadline", async () => {
     const { runKillableCommand } = await load()
-    const startedAt = Date.now()
-    await expect(runKillableCommand(process.execPath, ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"], 150))
-      .rejects.toThrow(/deadline|timed out/u)
-    expect(Date.now() - startedAt).toBeLessThan(1_000)
+    const program = "process.on('SIGTERM', () => {}); process.stdout.write('re'); setImmediate(() => process.stdout.write('ady\\n')); setInterval(() => {}, 1000)"
+    const child = await spawnTermReadyNode(program)
+    try {
+      const startedAt = Date.now()
+      await expect(runKillableCommand(process.execPath, ["-e", program], 150, { spawn: () => child }))
+        .rejects.toThrow(/deadline|timed out/u)
+      expect(Date.now() - startedAt).toBeLessThan(1_000)
+    } finally {
+      killTestProcessGroup(child.pid)
+    }
+  })
+
+  it("rejects invalid, truncated, and missing TERM readiness", async () => {
+    await expect(spawnTermReadyNode("process.stdout.write('wrong\\n'); setInterval(() => {}, 1000)"))
+      .rejects.toThrow(/invalid readiness/u)
+    await expect(spawnTermReadyNode("process.stdout.write('re')"))
+      .rejects.toThrow(/closed before readiness/u)
+    await expect(spawnTermReadyNode("setInterval(() => {}, 1000)", AbortSignal.timeout(20)))
+      .rejects.toThrow(/timed out/u)
   })
 
   it("reaps a real TERM-ignoring leader and descendant after bounded recovery kills their process group", async () => {
@@ -588,22 +660,28 @@ describe("Sanctuary fixed deployment target", () => {
       }
       return state
     }
-    const descendantProgram = "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"
+    const descendantProgram = "process.on('SIGTERM', () => {}); process.stdout.write('re'); setImmediate(() => process.stdout.write('ady\\n')); setInterval(() => {}, 1000)"
     const leaderProgram = [
       "const fs = require('node:fs')",
       "const { spawn } = require('node:child_process')",
-      `const child = spawn(process.execPath, ["-e", ${JSON.stringify(descendantProgram)}], { stdio: "ignore" })`,
-      `fs.writeFileSync(${JSON.stringify(receipt)}, JSON.stringify({ leaderPid: process.pid, descendantPid: child.pid }))`,
       "process.on('SIGTERM', () => {})",
+      `const child = spawn(process.execPath, ["-e", ${JSON.stringify(descendantProgram)}], { stdio: ["ignore", "pipe", "ignore"] })`,
+      "let buffered = ''",
+      `child.stdout.on("data", (chunk) => { buffered += String(chunk); const newline = buffered.indexOf("\\n"); if (newline < 0) { if (!"ready\\n".startsWith(buffered)) process.exit(2); return }; if (buffered.slice(0, newline + 1) !== "ready\\n") process.exit(2); fs.writeFileSync(${JSON.stringify(receipt)}, JSON.stringify({ leaderPid: process.pid, descendantPid: child.pid })); process.stdout.write("re"); setImmediate(() => process.stdout.write("ady\\n")) })`,
+      "child.once('error', () => process.exit(2))",
+      "child.stdout.once('end', () => { if (buffered !== 'ready\\n') process.exit(2) })",
+      "child.stdout.once('close', () => { if (buffered !== 'ready\\n') process.exit(2) })",
       "setInterval(() => {}, 1000)",
     ].join(";")
+    const leader = await spawnTermReadyNode(leaderProgram)
     try {
-      await expect(runKillableCommand(process.execPath, ["-e", leaderProgram], 300)).rejects.toThrow(/deadline|timed out/u)
+      await expect(runKillableCommand(process.execPath, ["-e", leaderProgram], 300, { spawn: () => leader })).rejects.toThrow(/deadline|timed out/u)
       const pids = JSON.parse(fs.readFileSync(receipt, "utf8")) as { leaderPid: number; descendantPid: number }
       descendantPid = pids.descendantPid
       await expect(awaitGone(pids.leaderPid)).resolves.toBe("")
       await expect(awaitGone(pids.descendantPid)).resolves.toBe("")
     } finally {
+      killTestProcessGroup(leader.pid)
       if (processState(descendantPid) && !processState(descendantPid).startsWith("Z")) process.kill(descendantPid, "SIGKILL")
       fs.rmSync(root, { recursive: true, force: true })
     }
