@@ -3,7 +3,9 @@ import * as path from "node:path"
 import { createHash, randomUUID } from "node:crypto"
 import { AsyncLocalStorage } from "node:async_hooks"
 
-import { getAgentRoot } from "../heart/identity"
+import { getAgentBundlesRoot, getAgentRoot, getRepoRoot } from "../heart/identity"
+import { inspectSanctuaryPackageManagedBundle } from "../heart/daemon/sanctuary-bundle-migration"
+import { resolveSanctuaryPackageManagedRoots } from "../heart/daemon/sanctuary-package-management"
 import { loadOrCreateMachineIdentity } from "../heart/machine-identity"
 import { readMachineRuntimeCredentialConfig, refreshMachineRuntimeCredentialConfig } from "../heart/runtime-credentials"
 import { createApprovedUnraidRestartExecutor, type UnraidRestartAttempt } from "../repertoire/unraid-restart"
@@ -17,6 +19,7 @@ import { projectSanctuaryGrounding, sanctuaryGroundingDigest, type SanctuaryTool
 import { probeSanctuaryEndpoint, SANCTUARY_PUBLIC_ENDPOINTS } from "./sanctuary-health"
 import { createSanctuarySabClient, sanctuarySabReadUnavailableCode } from "./sanctuary-sab"
 import { createSanctuaryMediaOptimizationClient } from "./sanctuary-media-optimization"
+import { getPackageVersion } from "../mind/bundle-manifest"
 
 const sanctuaryToolReceipts = new AsyncLocalStorage<string[]>()
 const sanctuaryToolGroundings = new AsyncLocalStorage<SanctuaryToolGrounding[]>()
@@ -182,6 +185,7 @@ export function createSanctuaryToolContext(agentName: string): Pick<ToolContext,
     meta: { agentName },
   })
   const agentRoot = getAgentRoot(agentName)
+  const installRoots = resolveSanctuaryPackageManagedRoots({ repoRoot: getRepoRoot(), bundlesRoot: getAgentBundlesRoot() })
   const initial = machineConfig(agentName)
   const endpoint = required(initial, "unraidGraphqlUrl")
   const readClient = new UnraidClient({ endpoint, apiKey: required(initial, "unraidReadApiKey") })
@@ -226,6 +230,7 @@ export function createSanctuaryToolContext(agentName: string): Pick<ToolContext,
       getDisks: acceptanceRead("unraid_get_disks", reads.getDisks),
       getNotifications: acceptanceRead("unraid_get_notifications", reads.getNotifications),
       getSystem: acceptanceRead("unraid_get_system", reads.getSystem),
+      getInstallState: acceptanceRead("sanctuary_get_install_state", async () => inspectSanctuaryPackageManagedBundle({ ...installRoots, runtimePackageVersion: getPackageVersion() })),
       checkServices: acceptanceRead("unraid_check_services", async () => {
         const services = await Promise.all(SANCTUARY_PUBLIC_ENDPOINTS.map(async (url) => ({ name: new URL(url).hostname.split(".")[0]!, ...await probeSanctuaryEndpoint(url) })))
         return { ok: true, data: { observedAt: new Date().toISOString(), services, degraded: services.some((service) => !service.ok) } }

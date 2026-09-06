@@ -166,6 +166,7 @@ export interface ToolContext {
     getDisks(): Promise<unknown>;
     getNotifications(): Promise<unknown>;
     getSystem(): Promise<unknown>;
+    getInstallState(): Promise<unknown>;
     checkServices(): Promise<unknown>;
     getDownloadQueue(): Promise<unknown>;
     getMediaOptimization(): Promise<unknown>;

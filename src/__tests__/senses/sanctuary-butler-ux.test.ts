@@ -141,9 +141,9 @@ describe("Mendelow Cloud Butler household UX", () => {
     expect(config.version).toBe(2)
     expect(config.profiles).toMatchObject({
       "sanctuary-owner": {
-        version: 6,
+        version: 7,
         contextScopes: expect.arrayContaining(["household.status", "household.policy"]),
-        toolNames: expect.arrayContaining(["steward_policy_manage", "unraid_restart_container", "unraid_check_services", "sanctuary_get_download_queue", "sanctuary_resume_download_queue", "sanctuary_search_media_catalog", "list_recent_attachments", "materialize_attachment", "describe_image"]),
+        toolNames: expect.arrayContaining(["steward_policy_manage", "unraid_restart_container", "unraid_check_services", "sanctuary_get_install_state", "sanctuary_get_download_queue", "sanctuary_resume_download_queue", "sanctuary_search_media_catalog", "list_recent_attachments", "materialize_attachment", "describe_image"]),
         effectScopes: expect.arrayContaining(["telegram.proactive", "telegram.request_return"]),
       },
       "sanctuary-household": {
@@ -343,9 +343,11 @@ describe("Mendelow Cloud Butler household UX", () => {
     expect(advertised).toEqual(["save_friend_note", "list_recent_attachments", "materialize_attachment", "describe_image", "await_condition", "resolve_await", "cancel_await", "unraid_list_containers", "unraid_get_storage", "sanctuary_search_media_catalog", "unraid_get_disks", "unraid_get_system", "unraid_check_services", "unraid_restart_container", "settle", "speak"])
     expect(household.evaluator.advertisedToolNames).not.toEqual(expect.arrayContaining(["sanctuary_get_download_queue", "sanctuary_resume_download_queue"]))
     expect(household.evaluator.advertisedToolNames).not.toContain("sanctuary_get_media_optimization")
+    expect(household.evaluator.advertisedToolNames).not.toContain("sanctuary_get_install_state")
     expect(await execTool("sanctuary_search_media_catalog", { query: "Moonstruck" }, { ...household.context, sanctuary: { searchMediaCatalog: async () => ({ ok: true, data: { matchedItems: 0, items: [] } }) } } as any)).toContain('"matchedItems":0')
     expect(await execTool("sanctuary_get_download_queue", {}, { ...household.context, sanctuary: { getDownloadQueue: async () => ({ paused: true }) } } as any)).toContain("relationship authorization required")
     expect(await execTool("sanctuary_resume_download_queue", {}, { ...household.context, sanctuary: { resumeDownloadQueue: async () => ({ ok: true }) } } as any)).toContain("relationship authorization required")
+    expect(await execTool("sanctuary_get_install_state", {}, { ...household.context, sanctuary: { getInstallState: async () => ({ ok: true, data: {} }) } } as any)).toContain("relationship authorization required")
     const deniedRead = await execTool("query_cares", {}, household.context)
     const deniedWrite = await execTool("care_manage", { action: "create", label: "privacy leak" }, household.context)
     expect(deniedRead).toContain("relationship authorization required")
