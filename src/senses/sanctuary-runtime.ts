@@ -185,7 +185,6 @@ export function createSanctuaryToolContext(agentName: string): Pick<ToolContext,
     meta: { agentName },
   })
   const agentRoot = getAgentRoot(agentName)
-  const installRoots = resolveSanctuaryPackageManagedRoots({ repoRoot: getRepoRoot(), bundlesRoot: getAgentBundlesRoot() })
   const initial = machineConfig(agentName)
   const endpoint = required(initial, "unraidGraphqlUrl")
   const readClient = new UnraidClient({ endpoint, apiKey: required(initial, "unraidReadApiKey") })
@@ -230,7 +229,10 @@ export function createSanctuaryToolContext(agentName: string): Pick<ToolContext,
       getDisks: acceptanceRead("unraid_get_disks", reads.getDisks),
       getNotifications: acceptanceRead("unraid_get_notifications", reads.getNotifications),
       getSystem: acceptanceRead("unraid_get_system", reads.getSystem),
-      getInstallState: acceptanceRead("sanctuary_get_install_state", async () => inspectSanctuaryPackageManagedBundle({ ...installRoots, runtimePackageVersion: getPackageVersion() })),
+      getInstallState: acceptanceRead("sanctuary_get_install_state", async () => inspectSanctuaryPackageManagedBundle({
+        ...resolveSanctuaryPackageManagedRoots({ repoRoot: getRepoRoot(), bundlesRoot: getAgentBundlesRoot() }),
+        runtimePackageVersion: getPackageVersion(),
+      })),
       checkServices: acceptanceRead("unraid_check_services", async () => {
         const services = await Promise.all(SANCTUARY_PUBLIC_ENDPOINTS.map(async (url) => ({ name: new URL(url).hostname.split(".")[0]!, ...await probeSanctuaryEndpoint(url) })))
         return { ok: true, data: { observedAt: new Date().toISOString(), services, degraded: services.some((service) => !service.ok) } }
