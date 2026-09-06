@@ -204,6 +204,7 @@ describe("Mendelow Cloud Butler Community Apps release", () => {
     expect(update).toContain('--expected-image "$IMAGE_ID"')
     expect(update).toContain('test "$(docker image inspect --format \'{{.Id}}\' \"$VERSION_IMAGE\")" = "$IMAGE_ID"')
     expect(update).toContain('test "$(docker buildx imagetools inspect \"$VERSION_IMAGE\" --format \'{{.Manifest.Digest}}\')" = "$MANIFEST_DIGEST"')
+    expect(update).not.toContain('validate_exact_image_id "$MANIFEST_DIGEST"')
     expect(update).not.toContain('fs.writeFileSync(templatePath, staged)')
   })
 
