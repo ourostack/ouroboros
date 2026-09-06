@@ -208,7 +208,7 @@ function auditTemplate(input: { templateXml: string | Uint8Array; runtimePolicyT
     violations.push("template Config entries must equal the canonical path binds")
   }
   const postArgs = directChildren(template, "PostArgs")
-  if (postArgs.length !== 1 || postArgs[0]?.text !== "" || Object.keys(postArgs[0]?.attributes ?? {}).length !== 0) {
+  if (postArgs.length !== 1 || postArgs[0]!.text !== "" || Object.keys(postArgs[0]!.attributes).length !== 0) {
     violations.push("template PostArgs must be present exactly once and empty")
   }
   const extraParams = singleTextChild(template, "ExtraParams")
@@ -220,7 +220,7 @@ function auditTemplate(input: { templateXml: string | Uint8Array; runtimePolicyT
   if (singleTextChild(template, "TemplateURL") !== EXPECTED_TEMPLATE_URL) violations.push("template URL must equal the canonical release template")
   if (singleTextChild(template, "Icon") !== EXPECTED_ICON) violations.push("template icon must equal the canonical release icon")
   const webUi = directChildren(template, "WebUI")
-  if (webUi.length !== 1 || webUi[0]?.form !== "empty" || Object.keys(webUi[0]?.attributes ?? {}).length !== 0) violations.push("template WebUI must be present exactly once and empty")
+  if (webUi.length !== 1 || webUi[0]!.form !== "empty" || Object.keys(webUi[0]!.attributes).length !== 0) violations.push("template WebUI must be present exactly once and empty")
   if (singleTextChild(template, "Network") !== "host") violations.push("network mode must be host")
   if (singleTextChild(template, "Privileged") !== "false") violations.push("container must not be privileged")
   return violations
