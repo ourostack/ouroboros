@@ -430,7 +430,7 @@ export function decideDockerManTemplateRecovery(record, evidence) {
   const state = record?.state
   const bundle = evidence?.bundleJournalState
   const production = evidence?.production
-  if (!["rollback", "committing"].includes(state) || !["absent", "rollback", "committing"].includes(bundle) || !["rollback-exact", "target-exact-committing", "target-exact-ready", "adoption-target-exact-ready", "adoption-evidence-exact-stopped"].includes(production)) throw new Error("template transaction recovery evidence is invalid")
+  if (!["rollback", "committing"].includes(state) || !["absent", "rollback", "committing"].includes(bundle) || !["rollback-exact", "target-exact-committing", "target-exact-ready", "adoption-source-exact", "adoption-target-exact-ready", "adoption-evidence-exact-stopped"].includes(production)) throw new Error("template transaction recovery evidence is invalid")
   if (bundle === "rollback" && production === "rollback-exact") return "rollback-both"
   if (state === "committing" && bundle === "committing" && production === "target-exact-committing") {
     const inspection = evidence?.inspection
@@ -443,6 +443,7 @@ export function decideDockerManTemplateRecovery(record, evidence) {
     return "finish-template-commit"
   }
   if (bundle === "absent" && production === "rollback-exact") return "restore-prior-template"
+  if (state === "rollback" && bundle === "absent" && production === "adoption-source-exact") return "restore-prior-template"
   if (state === "rollback" && bundle === "absent" && production === "adoption-target-exact-ready") {
     const inspection = evidence?.inspection
     if (inspection?.ok !== true || inspection?.data?.parity !== "exact" || inspection?.data?.journalState !== "absent" || inspection?.data?.ready !== true) throw new Error("template transaction recovery inspection is invalid")

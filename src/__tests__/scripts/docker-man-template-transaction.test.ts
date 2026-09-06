@@ -568,10 +568,12 @@ describe("root-owned DockerMan template transaction", () => {
     expect(transaction.decideDockerManTemplateRecovery(committing, { bundleJournalState: "committing", production: "target-exact-committing", inspection: committingInspection() })).toBe("finish-bundle-commit")
     expect(transaction.decideDockerManTemplateRecovery(committing, { bundleJournalState: "absent", production: "target-exact-ready", inspection: readyInspection() })).toBe("finish-template-commit")
     expect(transaction.decideDockerManTemplateRecovery(rollback, { bundleJournalState: "absent", production: "rollback-exact" })).toBe("restore-prior-template")
+    expect(transaction.decideDockerManTemplateRecovery(rollback, { bundleJournalState: "absent", production: "adoption-source-exact" })).toBe("restore-prior-template")
     expect(transaction.decideDockerManTemplateRecovery(rollback, { bundleJournalState: "absent", production: "adoption-target-exact-ready", inspection: readyInspection() })).toBe("roll-forward-adoption")
     expect(transaction.decideDockerManTemplateRecovery(rollback, { bundleJournalState: "absent", production: "adoption-evidence-exact-stopped" })).toBe("quarantine-adoption")
     expect(() => transaction.decideDockerManTemplateRecovery(rollback, { bundleJournalState: "committing", production: "rollback-exact" })).toThrow(/incompatible/u)
     expect(() => transaction.decideDockerManTemplateRecovery(committing, { bundleJournalState: "committing", production: "rollback-exact", inspection: committingInspection() })).toThrow(/incompatible/u)
+    expect(() => transaction.decideDockerManTemplateRecovery(committing, { bundleJournalState: "absent", production: "adoption-source-exact" })).toThrow(/incompatible/u)
     expect(() => transaction.decideDockerManTemplateRecovery(committing, { bundleJournalState: "committing", production: "target-exact-committing", inspection: readyInspection() })).toThrow(/inspection/u)
   })
 

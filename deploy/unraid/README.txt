@@ -135,7 +135,7 @@ Effective-spec audit helper:
     set_butler_autostart() {
       (
       AUTOSTART_PROFILE=$1
-      case "$AUTOSTART_PROFILE" in disabled|production) ;; *) return 1 ;; esac
+      case "$AUTOSTART_PROFILE" in disabled|production|staging) ;; *) return 1 ;; esac
       test "$(id -u)" -eq 0 || return $?
       AUTOSTART_FILE=/var/lib/docker/unraid-autostart
       AUTOSTART_INCLUDE=/usr/local/emhttp/plugins/dynamix.docker.manager/include/UpdateConfig.php
@@ -147,9 +147,10 @@ Effective-spec audit helper:
       set -- $AUTOSTART_COUNTS
       test "$#" -eq 4 || return $?
       for AUTOSTART_COUNT in "$@"; do case "$AUTOSTART_COUNT" in 0|1) ;; *) return 1 ;; esac; done
-      if test "$AUTOSTART_PROFILE" = production; then
-        docker container inspect ouro-butler >/dev/null 2>&1 || return $?
-      fi
+      case "$AUTOSTART_PROFILE" in
+        production) docker container inspect ouro-butler >/dev/null 2>&1 || return $? ;;
+        staging) docker container inspect ouro-butler-staging >/dev/null 2>&1 || return $? ;;
+      esac
       AUTOSTART_BACKUP=$(mktemp /var/lib/docker/.unraid-autostart.ouro.XXXXXX) || return $?
       AUTOSTART_NONBUTLER_BEFORE=$(mktemp /run/unraid-autostart.nonbutler-before.XXXXXX) || { rm -f -- "$AUTOSTART_BACKUP"; return 1; }
       AUTOSTART_NONBUTLER_AFTER=$(mktemp /run/unraid-autostart.nonbutler-after.XXXXXX) || { rm -f -- "$AUTOSTART_BACKUP" "$AUTOSTART_NONBUTLER_BEFORE"; return 1; }
@@ -191,16 +192,18 @@ Effective-spec audit helper:
       sync -f /var/lib/docker || return $?
       AUTOSTART_BACKUP_READY=yes
       snapshot_nonbutler_autostart >"$AUTOSTART_NONBUTLER_BEFORE" || return $?
-      mutate_butler_autostart ouro-butler-staging false || return $?
-      mutate_butler_autostart ouro-butler-rollback false || return $?
-      mutate_butler_autostart ouro-butler-legacy-evidence false || return $?
-      if test "$AUTOSTART_PROFILE" = production; then
-        mutate_butler_autostart ouro-butler true || return $?
-        AUTOSTART_EXPECTED_COUNTS="1 0 0 0"
-      else
-        mutate_butler_autostart ouro-butler false || return $?
-        AUTOSTART_EXPECTED_COUNTS="0 0 0 0"
-      fi
+      for AUTOSTART_CONTAINER in ouro-butler ouro-butler-staging ouro-butler-rollback ouro-butler-legacy-evidence; do
+        AUTOSTART_ENABLED=false
+        case "$AUTOSTART_PROFILE:$AUTOSTART_CONTAINER" in
+          production:ouro-butler|staging:ouro-butler-staging) AUTOSTART_ENABLED=true ;;
+        esac
+        mutate_butler_autostart "$AUTOSTART_CONTAINER" "$AUTOSTART_ENABLED" || return $?
+      done
+      case "$AUTOSTART_PROFILE" in
+        production) AUTOSTART_EXPECTED_COUNTS="1 0 0 0" ;;
+        staging) AUTOSTART_EXPECTED_COUNTS="0 1 0 0" ;;
+        disabled) AUTOSTART_EXPECTED_COUNTS="0 0 0 0" ;;
+      esac
       verify_butler_autostart "$AUTOSTART_EXPECTED_COUNTS" || return $?
       snapshot_nonbutler_autostart >"$AUTOSTART_NONBUTLER_AFTER" || return $?
       cmp -s -- "$AUTOSTART_NONBUTLER_BEFORE" "$AUTOSTART_NONBUTLER_AFTER" || return 1
@@ -704,9 +707,24 @@ Effective-spec audit helper:
     read_sanctuary_bundle_transaction_status() {
       READ_BUNDLE_IMAGE_ID=$1
       READ_BUNDLE_AGENT_ROOT=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro
+      READ_BUNDLE_EXPECTED_UID=10001
+      READ_BUNDLE_EXPECTED_GID=10001
       READ_BUNDLE_ROLLBACK_RECORD=$READ_BUNDLE_AGENT_ROOT/.sanctuary-package-managed-rollback.json
       READ_BUNDLE_COMMITTING_RECORD=$READ_BUNDLE_ROLLBACK_RECORD.committing
       validate_exact_image_id "$READ_BUNDLE_IMAGE_ID" || return $?
+      if test ! -e "$READ_BUNDLE_AGENT_ROOT"; then
+        test ! -L "$READ_BUNDLE_AGENT_ROOT" || return 1
+        printf 'null\n'
+        return 0
+      fi
+      /usr/local/bin/node -e '
+        const fs = require("node:fs");
+        const [rootPath, expectedUid, expectedGid] = process.argv.slice(1);
+        const stat = fs.lstatSync(rootPath);
+        if (!stat.isDirectory() || stat.isSymbolicLink()) process.exit(1);
+        if (stat.uid !== Number(expectedUid) || stat.gid !== Number(expectedGid) || (stat.mode & 0o777) !== 0o700) process.exit(1);
+        if (fs.realpathSync(rootPath) !== rootPath) process.exit(1);
+      ' "$READ_BUNDLE_AGENT_ROOT" "$READ_BUNDLE_EXPECTED_UID" "$READ_BUNDLE_EXPECTED_GID" || return $?
       READ_BUNDLE_STAGING_RESIDUE=$(find "$READ_BUNDLE_AGENT_ROOT" -mindepth 1 -maxdepth 1 \( \
         -name '.sanctuary-package-managed-rollback.json.package-migration.*' -o \
         -name '.sanctuary-package-managed-rollback.json.committing.package-migration.*' \
@@ -1101,7 +1119,31 @@ Effective-spec audit helper:
         verify_butler_autostart "1 0 0 0" || return $?
       elif test "$TEMPLATE_RECOVERY_BUNDLE_STATE" = absent && test "$TEMPLATE_RECOVERY_PRODUCTION_PRESENT" = false; then
         test "$TEMPLATE_RECOVERY_STATE" = rollback || return 1
-        ! docker container inspect ouro-butler-staging >/dev/null 2>&1 || return 1
+        if docker container inspect ouro-butler-staging >/dev/null 2>&1; then
+          ! docker container inspect ouro-butler-rollback >/dev/null 2>&1 || return 1
+          ! docker container inspect ouro-butler-legacy-evidence >/dev/null 2>&1 || return 1
+          TEMPLATE_RECOVERY_STAGING_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler-staging) || return $?
+          test "$TEMPLATE_RECOVERY_STAGING_IMAGE_ID" = "$TEMPLATE_RECOVERY_ROLLBACK_IMAGE_ID" || return 1
+          assert_prepackage_alpha797_source "$TEMPLATE_RECOVERY_ROLLBACK_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" ouro-butler-staging || return $?
+          TEMPLATE_RECOVERY_STAGING_RUNNING=$(docker inspect --format '{{.State.Running}}' ouro-butler-staging) || return $?
+          case "$TEMPLATE_RECOVERY_STAGING_RUNNING" in
+            true)
+              assert_only_running_butler ouro-butler-staging || return $?
+              ;;
+            false)
+              assert_only_running_butler - || return $?
+              docker start ouro-butler-staging || return $?
+              assert_only_running_butler ouro-butler-staging || return $?
+              ;;
+            *) return 1 ;;
+          esac
+          wait_butler_ready ouro-butler-staging || return $?
+          set_butler_autostart staging || return $?
+          write_dockerman_recovery_evidence absent adoption-source-exact - "$TEMPLATE_RECOVERY_EVIDENCE" || return $?
+          test "$(/usr/local/bin/node "$STAGED_DOCKERMAN_TRANSACTION" recovery-action --evidence "$TEMPLATE_RECOVERY_EVIDENCE")" = '{"action":"restore-prior-template"}' || return 1
+          /usr/local/bin/node "$STAGED_DOCKERMAN_TRANSACTION" rollback >/dev/null || return $?
+          return 0
+        fi
         assert_only_running_butler - || return $?
         if docker container inspect ouro-butler-rollback >/dev/null 2>&1; then
           TEMPLATE_RECOVERY_CURRENT_ROLLBACK_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler-rollback) || return $?
