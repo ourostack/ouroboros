@@ -2,6 +2,70 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
+
+const durabilityProbe = vi.hoisted(() => ({
+  descriptors: new Map<number, string>(),
+  enabled: false,
+  events: [] as string[],
+  failAfter: null as string | null,
+  failAfterPrefix: null as string | null,
+  failureArmed: false,
+  failureInjected: false,
+}))
+
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>()
+  const note = (event: string): void => {
+    if (!durabilityProbe.enabled) return
+    durabilityProbe.events.push(event)
+    if (event === durabilityProbe.failAfter || (durabilityProbe.failAfterPrefix !== null && event.startsWith(durabilityProbe.failAfterPrefix))) durabilityProbe.failureArmed = true
+  }
+  return {
+    ...actual,
+    chmodSync(target: fs.PathLike, mode: fs.Mode) {
+      actual.chmodSync(target, mode)
+      note(`chmod:${String(target)}:${Number(mode).toString(8)}`)
+    },
+    closeSync(handle: number) {
+      try { return actual.closeSync(handle) } finally { durabilityProbe.descriptors.delete(handle) }
+    },
+    fchmodSync(handle: number, mode: fs.Mode) {
+      actual.fchmodSync(handle, mode)
+      note(`fchmod:${durabilityProbe.descriptors.get(handle) ?? handle}:${Number(mode).toString(8)}`)
+    },
+    fsyncSync(handle: number) {
+      const target = durabilityProbe.descriptors.get(handle) ?? String(handle)
+      note(`fsync:${target}`)
+      if (durabilityProbe.enabled && durabilityProbe.failureArmed && !durabilityProbe.failureInjected) {
+        durabilityProbe.failureInjected = true
+        throw Object.assign(new Error("injected durable restore fsync fault"), { code: "EIO" })
+      }
+      return actual.fsyncSync(handle)
+    },
+    openSync(target: fs.PathLike, flags: fs.OpenMode, mode?: fs.Mode) {
+      const handle = actual.openSync(target, flags, mode)
+      durabilityProbe.descriptors.set(handle, String(target))
+      return handle
+    },
+    renameSync(before: fs.PathLike, after: fs.PathLike) {
+      actual.renameSync(before, after)
+      note(`rename:${String(before)}:${String(after)}`)
+    },
+    rmdirSync(target: fs.PathLike, options?: fs.RmDirOptions) {
+      actual.rmdirSync(target, options)
+      note(`rmdir:${String(target)}`)
+    },
+    rmSync(target: fs.PathLike, options?: fs.RmDirOptions) {
+      actual.rmSync(target, options)
+      note(`rm:${String(target)}`)
+    },
+    unlinkSync(target: fs.PathLike) {
+      actual.unlinkSync(target)
+      note(`unlink:${String(target)}`)
+    },
+  }
+})
+
 import { readStewardPolicy } from "../../../heart/steward-policy"
 import {
   SANCTUARY_BUNDLE_ROLLBACK_FILE,
@@ -101,6 +165,13 @@ function treeSnapshot(root: string): string[] {
 }
 
 afterEach(() => {
+  durabilityProbe.enabled = false
+  durabilityProbe.events = []
+  durabilityProbe.failAfter = null
+  durabilityProbe.failAfterPrefix = null
+  durabilityProbe.failureArmed = false
+  durabilityProbe.failureInjected = false
+  durabilityProbe.descriptors.clear()
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true })
 })
 
@@ -182,7 +253,8 @@ describe("Sanctuary package-managed bundle migration", () => {
     write(agentRoot, "habits/operator-preference.md", "preserve new preference\n")
     const interruptedTarget = path.join(agentRoot, "bundle-meta.json")
     const abandonedStage = fs.mkdtempSync(`${interruptedTarget}.package-migration.`)
-    fs.writeFileSync(path.join(abandonedStage, "value"), "partial restore", { mode: 0o600 })
+    fs.writeFileSync(path.join(abandonedStage, "value"), "partial restore", { mode: 0o640 })
+    fs.chmodSync(path.join(abandonedStage, "value"), 0o640)
     fs.writeFileSync(interruptedTarget, "{\"partiallyRestored\":true}\n")
     write(agentRoot, "state/policy/policy-audit.ndjson", "legitimate live policy change\n")
     expect(rollbackSanctuaryPackageManagedBundle(agentRoot)).toBe(true)
@@ -195,6 +267,103 @@ describe("Sanctuary package-managed bundle migration", () => {
     expect(fs.existsSync(abandonedStage)).toBe(false)
     expect(fs.readFileSync(path.join(agentRoot, "state", "policy", "policy-audit.ndjson"), "utf8")).toBe("legitimate live policy change\n")
     expect(rollbackSanctuaryPackageManagedBundle(agentRoot)).toBe(false)
+  })
+
+  it("persists every restored inode and parent directory before deleting the rollback journal", () => {
+    const packageRoot = makePackageRoot()
+    const agentRoot = makeRoot("sanctuary-durable-restore-order")
+    const soulPath = path.join(agentRoot, "psyche", "SOUL.md")
+    const psychePath = path.dirname(soulPath)
+    const removedFile = path.join(agentRoot, "provider-readiness.json")
+    const removedDirectory = path.join(agentRoot, "habits")
+    const journalPath = path.join(agentRoot, SANCTUARY_BUNDLE_ROLLBACK_FILE)
+    write(agentRoot, "psyche/SOUL.md", "old soul\n")
+    fs.chmodSync(soulPath, 0o640)
+    fs.chmodSync(psychePath, 0o750)
+
+    migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot, retainRollback: true, rollbackImageId: `sha256:${"1".repeat(64)}`, targetImageId: `sha256:${"9".repeat(64)}` })
+    fs.chmodSync(psychePath, 0o700)
+    durabilityProbe.enabled = true
+    expect(rollbackSanctuaryPackageManagedBundle(agentRoot)).toBe(true)
+    durabilityProbe.enabled = false
+
+    const events = durabilityProbe.events
+    const journalRemoval = events.indexOf(`unlink:${journalPath}`)
+    const restoredMode = events.findIndex((event) => event.startsWith(`fchmod:${soulPath}.package-migration.`) && event.endsWith(":640"))
+    const restoredTemporary = restoredMode >= 0 ? events[restoredMode]!.slice("fchmod:".length, -":640".length) : "missing restored temporary"
+    const restoredFileSync = events.indexOf(`fsync:${restoredTemporary}`)
+    const restoredRename = events.indexOf(`rename:${restoredTemporary}:${soulPath}`)
+    const restoredParentSync = events.indexOf(`fsync:${psychePath}`, restoredRename + 1)
+    const removedFileWrite = events.indexOf(`rm:${removedFile}`)
+    const removedFileSync = events.indexOf(`fsync:${agentRoot}`, removedFileWrite + 1)
+    const removedDirectoryWrite = events.indexOf(`rmdir:${removedDirectory}`)
+    const removedDirectorySync = events.indexOf(`fsync:${agentRoot}`, removedDirectoryWrite + 1)
+    const restoredDirectoryMode = events.indexOf(`fchmod:${psychePath}:750`)
+    const restoredDirectorySync = events.indexOf(`fsync:${psychePath}`, restoredDirectoryMode + 1)
+
+    expect(restoredMode).toBeGreaterThanOrEqual(0)
+    expect(restoredFileSync).toBeGreaterThan(restoredMode)
+    expect(restoredRename).toBeGreaterThan(restoredFileSync)
+    expect(restoredParentSync).toBeGreaterThan(restoredRename)
+    expect(events).not.toContain(`chmod:${soulPath}:640`)
+    expect(removedFileSync).toBeGreaterThan(removedFileWrite)
+    expect(removedDirectorySync).toBeGreaterThan(removedDirectoryWrite)
+    expect(restoredDirectorySync).toBeGreaterThan(restoredDirectoryMode)
+    expect(journalRemoval).toBeGreaterThan(removedFileSync)
+    expect(journalRemoval).toBeGreaterThan(removedDirectorySync)
+    expect(journalRemoval).toBeGreaterThan(restoredParentSync)
+    expect(journalRemoval).toBeGreaterThan(restoredDirectorySync)
+  })
+
+  it.each(["restored file", "removed file", "removed directory", "restored directory mode"] as const)("keeps the rollback journal when the %s durability sync fails, then converges on retry", (fault) => {
+    const packageRoot = makePackageRoot()
+    const agentRoot = makeRoot("sanctuary-durable-restore-fault")
+    const psychePath = path.join(agentRoot, "psyche")
+    const soulPath = path.join(psychePath, "SOUL.md")
+    if (fault === "restored file") {
+      write(agentRoot, "psyche/SOUL.md", "old soul\n")
+      fs.chmodSync(soulPath, 0o640)
+    }
+    if (fault === "restored directory mode") {
+      fs.mkdirSync(psychePath, { mode: 0o750 })
+      fs.chmodSync(psychePath, 0o750)
+    }
+    const expected = treeSnapshot(agentRoot)
+    migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot, retainRollback: true, rollbackImageId: `sha256:${"1".repeat(64)}`, targetImageId: `sha256:${"9".repeat(64)}` })
+    if (fault === "restored directory mode") fs.chmodSync(psychePath, 0o700)
+    if (fault === "restored file") durabilityProbe.failAfterPrefix = `fchmod:${soulPath}.package-migration.`
+    if (fault === "removed file") durabilityProbe.failAfter = `rm:${path.join(agentRoot, "provider-readiness.json")}`
+    if (fault === "removed directory") durabilityProbe.failAfter = `rmdir:${path.join(agentRoot, "habits")}`
+    if (fault === "restored directory mode") durabilityProbe.failAfter = `fchmod:${psychePath}:750`
+    durabilityProbe.enabled = true
+
+    expect(() => rollbackSanctuaryPackageManagedBundle(agentRoot)).toThrow("injected durable restore fsync fault")
+    durabilityProbe.enabled = false
+    expect(fs.existsSync(path.join(agentRoot, SANCTUARY_BUNDLE_ROLLBACK_FILE))).toBe(true)
+
+    durabilityProbe.failAfter = null
+    durabilityProbe.failAfterPrefix = null
+    durabilityProbe.failureArmed = false
+    durabilityProbe.failureInjected = false
+    expect(rollbackSanctuaryPackageManagedBundle(agentRoot)).toBe(true)
+    expect(fs.existsSync(path.join(agentRoot, SANCTUARY_BUNDLE_ROLLBACK_FILE))).toBe(false)
+    expect(treeSnapshot(agentRoot)).toEqual(expected)
+  })
+
+  it("rejects an interrupted restore stage whose mode does not match the rollback snapshot", () => {
+    const packageRoot = makePackageRoot()
+    const agentRoot = makeRoot("sanctuary-restore-stage-mode")
+    const target = path.join(agentRoot, "bundle-meta.json")
+    write(agentRoot, "bundle-meta.json", { runtimeVersion: "old", bundleSchemaVersion: 2, lastUpdated: "old" })
+    fs.chmodSync(target, 0o640)
+    migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot, retainRollback: true, rollbackImageId: `sha256:${"1".repeat(64)}`, targetImageId: `sha256:${"9".repeat(64)}` })
+    const stage = fs.mkdtempSync(`${target}.package-migration.`)
+    fs.writeFileSync(path.join(stage, "value"), "partial restore", { mode: 0o620 })
+    fs.chmodSync(path.join(stage, "value"), 0o620)
+
+    expect(() => rollbackSanctuaryPackageManagedBundle(agentRoot)).toThrow(/value is invalid/u)
+    expect(fs.existsSync(stage)).toBe(true)
+    expect(fs.existsSync(path.join(agentRoot, SANCTUARY_BUNDLE_ROLLBACK_FILE))).toBe(true)
   })
 
   it.each([
