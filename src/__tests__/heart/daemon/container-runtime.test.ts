@@ -2777,7 +2777,7 @@ await_post_audit_health`
     expect(recovery).toContain('assert_update_source "$RECOVERY_PRODUCTION_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"')
   })
 
-  it("reports an absent bundle journal without invoking the journal-only status operation", () => {
+  it("reports an absent bundle journal only when no journal staging residue exists", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     const helper = extractRunbookFunction(runbook, "read_sanctuary_bundle_transaction_status").replaceAll("/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro", "$BUNDLE_ROOT")
     const templateRecovery = extractRunbookFunction(runbook, "recover_dockerman_template_transaction")
@@ -2798,6 +2798,19 @@ read_sanctuary_bundle_transaction_status "$IMAGE_ID"`
       expect(absent.status, absent.stderr).toBe(0)
       expect(absent.stdout).toBe("null\n")
       expect(fs.readFileSync(callLog, "utf8")).toBe("")
+
+      for (const residueName of [
+        ".sanctuary-package-managed-rollback.json.package-migration.interrupted",
+        ".sanctuary-package-managed-rollback.json.committing.package-migration.interrupted",
+      ]) {
+        const residue = path.join(bundleRoot, residueName)
+        fs.mkdirSync(residue)
+        const interrupted = runConditionalHelper(script, "interrupted", { BUNDLE_ROOT: bundleRoot, CALL_LOG: callLog, IMAGE_ID: imageId })
+        expect(interrupted.status, residueName).not.toBe(0)
+        expect(interrupted.stdout, residueName).toBe("")
+        expect(fs.readFileSync(callLog, "utf8"), residueName).toBe("")
+        fs.rmdirSync(residue)
+      }
 
       fs.writeFileSync(path.join(bundleRoot, ".sanctuary-package-managed-rollback.json"), "{}\n", { mode: 0o600 })
       const present = runConditionalHelper(script, "present", { BUNDLE_ROOT: bundleRoot, CALL_LOG: callLog, IMAGE_ID: imageId })

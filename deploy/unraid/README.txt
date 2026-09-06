@@ -707,6 +707,11 @@ Effective-spec audit helper:
       READ_BUNDLE_ROLLBACK_RECORD=$READ_BUNDLE_AGENT_ROOT/.sanctuary-package-managed-rollback.json
       READ_BUNDLE_COMMITTING_RECORD=$READ_BUNDLE_ROLLBACK_RECORD.committing
       validate_exact_image_id "$READ_BUNDLE_IMAGE_ID" || return $?
+      READ_BUNDLE_STAGING_RESIDUE=$(find "$READ_BUNDLE_AGENT_ROOT" -mindepth 1 -maxdepth 1 \( \
+        -name '.sanctuary-package-managed-rollback.json.package-migration.*' -o \
+        -name '.sanctuary-package-managed-rollback.json.committing.package-migration.*' \
+      \) -print -quit) || return $?
+      test -z "$READ_BUNDLE_STAGING_RESIDUE" || return 1
       READ_BUNDLE_RECORD_COUNT=0
       for READ_BUNDLE_CANDIDATE in "$READ_BUNDLE_ROLLBACK_RECORD" "$READ_BUNDLE_COMMITTING_RECORD"; do
         test ! -L "$READ_BUNDLE_CANDIDATE" || return 1
