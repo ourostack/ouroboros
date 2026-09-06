@@ -712,19 +712,31 @@ Effective-spec audit helper:
       READ_BUNDLE_ROLLBACK_RECORD=$READ_BUNDLE_AGENT_ROOT/.sanctuary-package-managed-rollback.json
       READ_BUNDLE_COMMITTING_RECORD=$READ_BUNDLE_ROLLBACK_RECORD.committing
       validate_exact_image_id "$READ_BUNDLE_IMAGE_ID" || return $?
-      if test ! -e "$READ_BUNDLE_AGENT_ROOT"; then
-        test ! -L "$READ_BUNDLE_AGENT_ROOT" || return 1
+      READ_BUNDLE_ROOT_STATE=$(/usr/local/bin/node -e '
+        const fs = require("node:fs");
+        const path = require("node:path");
+        const [rootPath, expectedUid, expectedGid] = process.argv.slice(1);
+        if (!path.isAbsolute(rootPath) || path.normalize(rootPath) !== rootPath) process.exit(1);
+        let current = path.parse(rootPath).root;
+        let rootStat;
+        for (const segment of rootPath.slice(current.length).split(path.sep)) {
+          current = path.join(current, segment);
+          let stat;
+          try { stat = fs.lstatSync(current); } catch (error) {
+            if (error?.code === "ENOENT") { process.stdout.write("missing"); process.exit(0); }
+            process.exit(1);
+          }
+          if (!stat.isDirectory() || stat.isSymbolicLink() || fs.realpathSync(current) !== current) process.exit(1);
+          rootStat = stat;
+        }
+        if (!rootStat || rootStat.uid !== Number(expectedUid) || rootStat.gid !== Number(expectedGid) || (rootStat.mode & 0o777) !== 0o700) process.exit(1);
+        process.stdout.write("present");
+      ' "$READ_BUNDLE_AGENT_ROOT" "$READ_BUNDLE_EXPECTED_UID" "$READ_BUNDLE_EXPECTED_GID") || return $?
+      if test "$READ_BUNDLE_ROOT_STATE" = missing; then
         printf 'null\n'
         return 0
       fi
-      /usr/local/bin/node -e '
-        const fs = require("node:fs");
-        const [rootPath, expectedUid, expectedGid] = process.argv.slice(1);
-        const stat = fs.lstatSync(rootPath);
-        if (!stat.isDirectory() || stat.isSymbolicLink()) process.exit(1);
-        if (stat.uid !== Number(expectedUid) || stat.gid !== Number(expectedGid) || (stat.mode & 0o777) !== 0o700) process.exit(1);
-        if (fs.realpathSync(rootPath) !== rootPath) process.exit(1);
-      ' "$READ_BUNDLE_AGENT_ROOT" "$READ_BUNDLE_EXPECTED_UID" "$READ_BUNDLE_EXPECTED_GID" || return $?
+      test "$READ_BUNDLE_ROOT_STATE" = present || return 1
       READ_BUNDLE_STAGING_RESIDUE=$(find "$READ_BUNDLE_AGENT_ROOT" -mindepth 1 -maxdepth 1 \( \
         -name '.sanctuary-package-managed-rollback.json.package-migration.*' -o \
         -name '.sanctuary-package-managed-rollback.json.committing.package-migration.*' \
@@ -1137,7 +1149,6 @@ Effective-spec audit helper:
               ;;
             *) return 1 ;;
           esac
-          wait_butler_ready ouro-butler-staging || return $?
           set_butler_autostart staging || return $?
           write_dockerman_recovery_evidence absent adoption-source-exact - "$TEMPLATE_RECOVERY_EVIDENCE" || return $?
           test "$(/usr/local/bin/node "$STAGED_DOCKERMAN_TRANSACTION" recovery-action --evidence "$TEMPLATE_RECOVERY_EVIDENCE")" = '{"action":"restore-prior-template"}' || return 1
