@@ -160,13 +160,25 @@ function validateDestination(agentRoot: string, relative: string): void {
   }
 }
 
-function writeAtomic(filePath: string, content: string | Buffer): void {
+function syncDirectory(directoryPath: string): void {
+  const directory = fs.openSync(directoryPath, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
+  try { fs.fsyncSync(directory) } finally { fs.closeSync(directory) }
+}
+
+function syncNearestExistingDirectory(directoryPath: string, agentRoot: string): void {
+  let current = directoryPath
+  while (current !== agentRoot && !fs.existsSync(current)) current = path.dirname(current)
+  syncDirectory(current)
+}
+
+function writeAtomic(filePath: string, content: string | Buffer, mode = 0o600): void {
   const stagingDirectory = fs.mkdtempSync(`${filePath}.package-migration.`)
   const temporary = path.join(stagingDirectory, "value")
   try {
     const fd = fs.openSync(temporary, "wx", 0o600)
     try {
       fs.writeFileSync(fd, content)
+      fs.fchmodSync(fd, mode)
       fs.fsyncSync(fd)
     } finally {
       fs.closeSync(fd)
@@ -176,9 +188,7 @@ function writeAtomic(filePath: string, content: string | Buffer): void {
     fs.rmSync(temporary, { force: true })
     fs.rmdirSync(stagingDirectory)
   }
-  fs.chmodSync(filePath, 0o600)
-  const directory = fs.openSync(path.dirname(filePath), fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
-  try { fs.fsyncSync(directory) } finally { fs.closeSync(directory) }
+  syncDirectory(path.dirname(filePath))
 }
 
 const SNAPSHOT_RELATIVES = [...SANCTUARY_PACKAGE_MANAGED_FILES, "bundle-meta.json"] as const
@@ -187,7 +197,7 @@ function packageManagedArtifactPaths(agentRoot: string): string[] {
   return SNAPSHOT_RELATIVES.map((relative) => path.join(agentRoot, relative))
 }
 
-function inspectInterruptedWrites(filePaths: readonly string[]): Array<{ stagingDirectory: string; temporary: string | null }> {
+function inspectInterruptedWrites(filePaths: readonly string[], restoredModes?: ReadonlyMap<string, number>): Array<{ stagingDirectory: string; temporary: string | null }> {
   const stages: Array<{ stagingDirectory: string; temporary: string | null }> = []
   for (const filePath of [...filePaths].sort()) {
     const parent = path.dirname(filePath)
@@ -208,7 +218,8 @@ function inspectInterruptedWrites(filePaths: readonly string[]): Array<{ staging
       const temporary = entries.includes("value") ? path.join(stagingDirectory, "value") : null
       if (temporary) {
         const temporaryStat = fs.lstatSync(temporary)
-        if (temporaryStat.isSymbolicLink() || !temporaryStat.isFile() || (temporaryStat.mode & 0o777) !== 0o600 || temporaryStat.uid !== stagingStat.uid || temporaryStat.gid !== stagingStat.gid) throw new Error(`interrupted package migration value is invalid: ${name}`)
+        const temporaryMode = temporaryStat.mode & 0o777
+        if (temporaryStat.isSymbolicLink() || !temporaryStat.isFile() || (temporaryMode !== 0o600 && temporaryMode !== restoredModes?.get(filePath)) || temporaryStat.uid !== stagingStat.uid || temporaryStat.gid !== stagingStat.gid) throw new Error(`interrupted package migration value is invalid: ${name}`)
       }
       stages.push({ stagingDirectory, temporary })
     }
@@ -216,15 +227,14 @@ function inspectInterruptedWrites(filePaths: readonly string[]): Array<{ staging
   return stages
 }
 
-function cleanupInterruptedWrites(filePaths: readonly string[]): void {
-  const stages = inspectInterruptedWrites(filePaths)
+function cleanupInterruptedWrites(filePaths: readonly string[], restoredModes?: ReadonlyMap<string, number>): void {
+  const stages = inspectInterruptedWrites(filePaths, restoredModes)
   for (const stage of stages) {
     if (stage.temporary) fs.unlinkSync(stage.temporary)
     fs.rmdirSync(stage.stagingDirectory)
   }
   for (const parent of [...new Set(stages.map((stage) => path.dirname(stage.stagingDirectory)))].sort()) {
-    const directory = fs.openSync(parent, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
-    try { fs.fsyncSync(directory) } finally { fs.closeSync(directory) }
+    syncDirectory(parent)
   }
 }
 
@@ -327,8 +337,7 @@ function readDurableRecord(agentRoot: string): { snapshot: MigrationSnapshot; ro
 
 function removeRollbackRecord(agentRoot: string, filePath: string): void {
   fs.unlinkSync(filePath)
-  const root = fs.openSync(agentRoot, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
-  try { fs.fsyncSync(root) } finally { fs.closeSync(root) }
+  syncDirectory(agentRoot)
 }
 
 function validateAgentRoot(agentRoot: string): void {
@@ -514,7 +523,7 @@ export function rollbackSanctuaryPackageManagedBundle(agentRoot: string, options
   const record = readDurableRecord(agentRoot)
   if (!record) return false
   if (record.state === "committing") throw new Error("Sanctuary bundle commit is pending and cannot be rolled back")
-  restoreMigrationSnapshot(record.snapshot)
+  restoreMigrationSnapshot(record.snapshot, agentRoot)
   if (!options.retainRecord) removeRollbackRecord(agentRoot, record.filePath)
   return true
 }
@@ -526,29 +535,40 @@ export function commitSanctuaryPackageManagedBundle(agentRoot: string): boolean 
   const committingPath = path.join(agentRoot, SANCTUARY_BUNDLE_COMMITTING_FILE)
   if (record.filePath !== committingPath) {
     fs.renameSync(record.filePath, committingPath)
-    const root = fs.openSync(agentRoot, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
-    try { fs.fsyncSync(root) } finally { fs.closeSync(root) }
+    syncDirectory(agentRoot)
   }
   removeRollbackRecord(agentRoot, committingPath)
   return true
 }
 
-function restoreMigrationSnapshot(snapshot: MigrationSnapshot): void {
-  cleanupInterruptedWrites(snapshot.files.map((file) => file.path))
+function restoreMigrationSnapshot(snapshot: MigrationSnapshot, agentRoot: string): void {
+  const restoredModes = new Map<string, number>()
+  for (const file of snapshot.files) if (file.mode !== null) restoredModes.set(file.path, file.mode)
+  cleanupInterruptedWrites(snapshot.files.map((file) => file.path), restoredModes)
   for (const file of snapshot.files) {
     if (file.content === null) {
       fs.rmSync(file.path, { force: true })
+      syncNearestExistingDirectory(path.dirname(file.path), agentRoot)
     } else {
-      writeAtomic(file.path, file.content)
-      fs.chmodSync(file.path, file.mode!)
+      writeAtomic(file.path, file.content, file.mode!)
     }
   }
   for (const directory of [...snapshot.directories].reverse()) {
     if (directory.mode === null) {
-      if (!fs.existsSync(directory.path)) continue
-      if (fs.readdirSync(directory.path).length === 0) fs.rmdirSync(directory.path)
+      if (!fs.existsSync(directory.path)) {
+        syncNearestExistingDirectory(path.dirname(directory.path), agentRoot)
+      } else if (fs.readdirSync(directory.path).length === 0) {
+        fs.rmdirSync(directory.path)
+        syncNearestExistingDirectory(path.dirname(directory.path), agentRoot)
+      }
     } else {
-      fs.chmodSync(directory.path, directory.mode)
+      const handle = fs.openSync(directory.path, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
+      try {
+        fs.fchmodSync(handle, directory.mode)
+        fs.fsyncSync(handle)
+      } finally {
+        fs.closeSync(handle)
+      }
     }
   }
 }
@@ -612,7 +632,7 @@ export function migrateSanctuaryPackageManagedBundle(input: { packageRoot: strin
     let failure: unknown = error
     if (snapshot) {
       try {
-        restoreMigrationSnapshot(snapshot)
+        restoreMigrationSnapshot(snapshot, input.agentRoot)
         if (fs.existsSync(rollbackPath(input.agentRoot))) removeRollbackRecord(input.agentRoot, rollbackPath(input.agentRoot))
       } catch (restoreError) {
         failure = new AggregateError([error, restoreError], "Sanctuary bundle migration and rollback both failed")
