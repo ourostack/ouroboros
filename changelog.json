@@ -6,7 +6,8 @@
       "changes": [
         "Keep the installed Butler bundle aligned with its verified release before provider and Telegram startup, and expose the same bounded install check to the owner.",
         "Install and update Mendelow Cloud Butler as a first-class Unraid app through a crash-safe, exact-version DockerMan transaction with known-good rollback and active Community Apps recognition proof.",
-        "Reject unsafe legacy update sources and malformed DockerMan templates before any host or container change."
+        "Reject unsafe legacy update sources and malformed DockerMan templates before any host or container change.",
+        "Make interrupted Sanctuary updates cold-recoverable, compare DockerMan and bundle identities before cleanup, restore package-managed bytes and modes durably, and prove Jellyfin remains unchanged across the transaction."
       ]
     },
     {
