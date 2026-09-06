@@ -10,6 +10,12 @@ fi
 version_reference="$1"
 sha_reference="$2"
 
+if [[ ! "$version_reference" =~ ^ghcr\.io/ourostack/ouroboros-butler:[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] \
+  || [[ ! "$sha_reference" =~ ^ghcr\.io/ourostack/ouroboros-butler:sha-[0-9a-f]{40}$ ]]; then
+  echo "release references must use canonical immutable package-version and full commit-SHA tags" >&2
+  exit 64
+fi
+
 inspect_reference() {
   local reference="$1"
   local inspection

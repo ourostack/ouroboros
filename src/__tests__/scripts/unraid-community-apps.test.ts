@@ -30,7 +30,9 @@ describe("Mendelow Cloud Butler Community Apps release", () => {
   it("publishes one complete versioned Community Apps template", () => {
     const template = fs.readFileSync("deploy/unraid/sanctuary.xml", "utf8")
 
-    expect(template).toContain("<Name>Mendelow Cloud Butler</Name>")
+    expect(template.match(/<Name>[^<]+<\/Name>/gu)).toEqual(["<Name>ouro-butler</Name>"])
+    expect(template.match(/<Repository>[^<]+<\/Repository>/gu)).toEqual([`<Repository>ghcr.io/ourostack/ouroboros-butler:${packageVersion.version}</Repository>`])
+    expect(template.match(/<Config\b/gu)).toHaveLength(3)
     expect(template).toContain("<Category>Tools:Utilities</Category>")
     expect(template).toContain("<Beta>true</Beta>")
     expect(template).toContain("<Overview>Mendelow Cloud Butler")
@@ -46,6 +48,21 @@ describe("Mendelow Cloud Butler Community Apps release", () => {
     expect(template).not.toMatch(/<Project\s*\/>/u)
     expect(template).not.toMatch(/<TemplateURL\s*\/>/u)
     expect(template).not.toMatch(/<Icon\s*\/>/u)
+  })
+
+  it("activates package parity in every published Sanctuary daemon and healthcheck without changing PostArgs", () => {
+    const dockerfile = fs.readFileSync("deploy/unraid/Dockerfile", "utf8")
+    const template = fs.readFileSync("deploy/unraid/sanctuary.xml", "utf8")
+    const entrypoint = dockerfile.match(/^ENTRYPOINT (.+)$/mu)?.[1]
+    const healthcheck = dockerfile.match(/^HEALTHCHECK (.+)$/mu)?.[1]
+
+    expect(entrypoint).toBe('["node","/opt/ouro/dist/heart/daemon/daemon-entry.js","--package-managed-agent","sanctuary"]')
+    expect(healthcheck).toContain('CMD ["node","/opt/ouro/dist/heart/daemon/container-healthcheck.js","--agent","sanctuary","--package-managed-agent","sanctuary"]')
+    expect(entrypoint?.match(/--package-managed-agent/gu)).toHaveLength(1)
+    expect(healthcheck?.match(/--package-managed-agent/gu)).toHaveLength(1)
+    expect(template.match(/<PostArgs\s*\/>/gu)).toHaveLength(1)
+    expect(template).not.toMatch(/<PostArgs>[^<]+<\/PostArgs>/u)
+    expect(JSON.parse(fs.readFileSync("package.json", "utf8")).scripts.daemon).not.toContain("--package-managed-agent")
   })
 
   it("mounts the root-owned privileged event spool read-only without adding secrets", () => {
@@ -118,10 +135,10 @@ describe("Mendelow Cloud Butler Community Apps release", () => {
     const installIndex = update.indexOf('/bin/bash "$EVENT_SCRIPT_STAGE/install-usenet-guard.sh" --source-root "$EVENT_SCRIPT_STAGE"')
     const verifyIndex = update.indexOf("\n    verify_installed_usenet_guard\n")
     const repositoryStageIndex = update.indexOf('const repositories = [...source.matchAll(/<Repository>[^<]*<\\/Repository>/g)];')
-    const stagedAuditIndex = update.indexOf('"$IMAGE_ID" --template /audit/sanctuary.xml --runtime-policy /audit/container-runtime.json --expected-image "$IMAGE_ID"')
+    const stagedAuditIndex = update.indexOf('"$IMAGE_ID" --template /audit/sanctuary.exact-image.xml --runtime-policy /audit/container-runtime.json --expected-image "$IMAGE_ID"')
     const cleanupIndex = update.indexOf("\n    cleanup_event_asset_stage\n")
     const firstButlerStopIndex = update.indexOf("docker stop ouro-butler")
-    const firstButlerCreateIndex = update.indexOf("docker create --name ouro-butler")
+    const firstButlerCreateIndex = update.indexOf("docker create --pull=never --name ouro-butler")
 
     expect(update).toContain('docker create --pull=never --network none --read-only --entrypoint /bin/false "$IMAGE_ID"')
     expect(update).toContain('test "$(docker inspect --format \'{{.Image}}\' "$EVENT_ASSET_CONTAINER")" = "$IMAGE_ID"')
@@ -151,6 +168,45 @@ describe("Mendelow Cloud Butler Community Apps release", () => {
     expect(firstButlerCreateIndex).toBeGreaterThan(verifyIndex)
   })
 
+  it("keeps DockerMan registration inside the reviewed update transaction", () => {
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const update = runbook.slice(runbook.indexOf("Update:"), runbook.indexOf("\nBackup:"))
+
+    expect(update).toContain("/boot/config/plugins/dockerMan/templates-user/my-ouro-butler.xml")
+    expect(update).toContain("/boot/config/custom/ouro-butler/docker-man-template-transaction.json")
+    expect(update).toContain("docker-man-template-transaction.mjs")
+    expect(update).toContain('docker create --pull=never --name ouro-butler')
+    expect(update).toContain('"$VERSION_IMAGE"')
+    expect(update).toContain('--label net.unraid.docker.managed=dockerman')
+    expect(update).toContain('--label "net.unraid.docker.icon=$TEMPLATE_ICON"')
+    expect(runbook).toContain('verify_dockerman_and_community_apps "$FINAL_PROOF_VERSION_IMAGE" "$FINAL_INSTALL_PATH"')
+    expect(update).toContain("write_dockerman_final_proof")
+    expect(update).toContain("recover_dockerman_template_transaction")
+    expect(update.indexOf("recover_dockerman_template_transaction")).toBeLessThan(update.indexOf("recover_pending_sanctuary_bundle_migration"))
+    expect(update).toContain("Docker tab Update, Force Update, Edit/Apply, Update All, and CA Action Centre updates remain visible but are unsupported")
+    expect(update).toContain("Visibility, start, stop, and autostart remain supported")
+    expect(update).not.toContain("update_container")
+  })
+
+  it("audits and installs original version-tagged bytes separately from the transient exact-ID copy", () => {
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const update = runbook.slice(runbook.indexOf("Update:"), runbook.indexOf("\nBackup:"))
+    const persistentAudit = update.indexOf("--persistent-template /audit/sanctuary.xml")
+    const transientCopy = update.indexOf('const [sourcePath, destinationPath, imageId] = process.argv.slice(1);')
+    const transientAudit = update.indexOf("--template /audit/sanctuary.exact-image.xml")
+    const templateInstall = update.indexOf("prepare --source-template \"$STAGED_TEMPLATE\"")
+
+    expect(persistentAudit).toBeGreaterThan(-1)
+    expect(transientCopy).toBeGreaterThan(persistentAudit)
+    expect(transientAudit).toBeGreaterThan(transientCopy)
+    expect(templateInstall).toBeGreaterThan(transientAudit)
+    expect(update).toContain('--expected-image-reference "$VERSION_IMAGE"')
+    expect(update).toContain('--expected-image "$IMAGE_ID"')
+    expect(update).toContain('test "$(docker image inspect --format \'{{.Id}}\' \"$VERSION_IMAGE\")" = "$IMAGE_ID"')
+    expect(update).toContain('test "$(docker buildx imagetools inspect \"$VERSION_IMAGE\" --format \'{{.Manifest.Digest}}\')" = "$MANIFEST_DIGEST"')
+    expect(update).not.toContain('fs.writeFileSync(templatePath, staged)')
+  })
+
   it("stages guard scripts as executable while verifying their vfat-installed Unraid modes", () => {
     const installer = fs.readFileSync("deploy/unraid/ouro-events/install-usenet-guard.sh", "utf8")
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
@@ -165,11 +221,10 @@ describe("Mendelow Cloud Butler Community Apps release", () => {
     expect(verifiedModes).toEqual(Array(5).fill("0:0:600"))
   })
 
-  it("documents the exact two read-write and two read-only production mounts", () => {
+  it("documents the exact two read-write and one read-only production mounts", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
 
-    expect(runbook).toContain("mounts the runtime and sanctuary.ouro bundle read-write plus")
-    expect(runbook).toContain("the privileged event spool and SAB configuration read-only")
-    expect(runbook).not.toContain("mounts only the runtime and sanctuary.ouro bundle paths")
+    expect(runbook).toContain("mounts the runtime and sanctuary.ouro bundle read-write plus the privileged event spool read-only")
+    expect(runbook).not.toContain("SAB configuration read-only")
   })
 })

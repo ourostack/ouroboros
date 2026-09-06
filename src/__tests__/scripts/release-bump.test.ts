@@ -62,6 +62,7 @@ function makeReleaseRoot(): string {
   fs.writeFileSync(path.join(root, "deploy/unraid/sanctuary.xml"), [
     "<?xml version=\"1.0\"?>",
     "<Container version=\"2\">",
+    "  <Name>ouro-butler</Name>",
     "  <Repository>ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.587</Repository>",
     "  <Overview>preserve me</Overview>",
     "</Container>",
@@ -193,9 +194,23 @@ describe("release-bump helper", () => {
   it("fails before writing when the Sanctuary image coordinate is not exact", () => {
     const root = makeReleaseRoot()
     try {
-      fs.writeFileSync(path.join(root, "deploy/unraid/sanctuary.xml"), "<Container><Repository>wrong/image:old</Repository></Container>\n")
+      fs.writeFileSync(path.join(root, "deploy/unraid/sanctuary.xml"), "<Container><Name>ouro-butler</Name><Repository>wrong/image:old</Repository></Container>\n")
       expect(() => bumpReleaseVersion({ root, version: "0.1.0-alpha.588", changes: ["note"] })).toThrow(
         "sanctuary.xml must contain exactly one Butler Repository tag",
+      )
+      expect(readJson(path.join(root, "package.json")).version).toBe("0.1.0-alpha.587")
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it("fails before writing when the Sanctuary technical name is not exactly Docker-valid ouro-butler", () => {
+    const root = makeReleaseRoot()
+    try {
+      const templatePath = path.join(root, "deploy/unraid/sanctuary.xml")
+      fs.writeFileSync(templatePath, fs.readFileSync(templatePath, "utf8").replace("<Name>ouro-butler</Name>", "<Name>Mendelow Cloud Butler</Name>"))
+      expect(() => bumpReleaseVersion({ root, version: "0.1.0-alpha.588", changes: ["note"] })).toThrow(
+        "sanctuary.xml must contain exactly one Docker-valid ouro-butler Name",
       )
       expect(readJson(path.join(root, "package.json")).version).toBe("0.1.0-alpha.587")
     } finally {
