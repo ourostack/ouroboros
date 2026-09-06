@@ -29,7 +29,7 @@ inspect_reference() {
 
   if [ "$status" -eq 0 ]; then
     set +e
-    digest=$(docker buildx imagetools inspect "$reference" --format '{{.Manifest.Digest}}' 2>&1)
+    digest=$(docker buildx imagetools inspect "$reference" --raw | sha256sum | awk '{ print "sha256:" $1 }')
     status=$?
     set -e
     if [ "$status" -ne 0 ]; then

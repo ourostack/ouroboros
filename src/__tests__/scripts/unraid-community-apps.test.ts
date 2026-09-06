@@ -223,6 +223,7 @@ describe("Mendelow Cloud Butler Community Apps release", () => {
 
   it("audits and installs original version-tagged bytes separately from the transient exact-ID copy", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const releaseGate = fs.readFileSync("scripts/container-image-release-gate.sh", "utf8")
     const update = runbook.slice(runbook.indexOf("Update:"), runbook.indexOf("\nBackup:"))
     const persistentAudit = update.indexOf("--persistent-template /audit/sanctuary.xml")
     const transientCopy = update.indexOf('const [sourcePath, destinationPath, imageId] = process.argv.slice(1);')
@@ -236,7 +237,9 @@ describe("Mendelow Cloud Butler Community Apps release", () => {
     expect(update).toContain('--expected-image-reference "$VERSION_IMAGE"')
     expect(update).toContain('--expected-image "$IMAGE_ID"')
     expect(update).toContain('test "$(docker image inspect --format \'{{.Id}}\' \"$VERSION_IMAGE\")" = "$IMAGE_ID"')
-    expect(update).toContain('test "$(docker buildx imagetools inspect \"$VERSION_IMAGE\" --format \'{{.Manifest.Digest}}\')" = "$MANIFEST_DIGEST"')
+    expect(runbook.match(/inspect_registry_manifest_digest "\$VERSION_IMAGE"/gu)).toHaveLength(3)
+    expect(runbook).not.toContain("{{.Manifest.Digest}}")
+    expect(releaseGate).not.toContain("{{.Manifest.Digest}}")
     expect(update).not.toContain('validate_exact_image_id "$MANIFEST_DIGEST"')
     expect(update).not.toContain('fs.writeFileSync(templatePath, staged)')
   })

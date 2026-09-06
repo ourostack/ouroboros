@@ -698,8 +698,72 @@ if assert_restore_preflight; then command printf 'MUTATION\n'; else exit $?; fi`
     fs.rmSync(victim, { force: true })
   })
 
+  it("hashes exact raw registry bytes on old Buildx and fails closed before hashing an inspection error", () => {
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const helper = extractRunbookFunction(runbook, "inspect_registry_manifest_digest")
+      .replaceAll("/tmp/ouro-registry-manifest.", "$TEST_ROOT/ouro-registry-manifest.")
+    const rawManifest = '{"manifests":[],"mediaType":"application/vnd.oci.image.index.v1+json","schemaVersion":2}\n'
+    const expectedDigest = `sha256:${createHash("sha256").update(rawManifest).digest("hex")}`
+    const versionImage = "ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.800"
+    const script = String.raw`set -eu
+SCENARIO=$1
+docker() {
+  command printf 'docker:%s\n' "$*" >>"$CALL_LOG"
+  case "$*" in
+    "buildx imagetools inspect $VERSION_IMAGE --raw")
+      if test "$SCENARIO" = inspection-failure; then
+        command printf 'Name: %s\nMediaType: application/vnd.oci.image.index.v1+json\n' "$VERSION_IMAGE"
+        return 255
+      fi
+      command printf '%s' "$RAW_MANIFEST"
+      ;;
+    *"{{.Manifest.Digest}}"*)
+      command printf 'Name: %s\nMediaType: application/vnd.oci.image.index.v1+json\n' "$VERSION_IMAGE"
+      return 255
+      ;;
+    *) return 64 ;;
+  esac
+}
+mktemp() {
+  command printf 'mktemp:%s\n' "$*" >>"$CALL_LOG"
+  test "$SCENARIO" != staging-failure || return 66
+  command mktemp "$@"
+}
+sha256sum() {
+  command printf 'sha256sum:%s\n' "$*" >>"$CALL_LOG"
+  test "$SCENARIO" != hash-failure || return 77
+  command sha256sum "$@"
+}
+${helper}
+inspect_registry_manifest_digest "$VERSION_IMAGE"`
+    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-registry-manifest-test-"))
+    try {
+      const callLog = path.join(testRoot, "calls.log")
+      for (const scenario of ["success", "staging-failure", "inspection-failure", "hash-failure"]) {
+        fs.writeFileSync(callLog, "")
+        const result = runConditionalHelper(script, scenario, { CALL_LOG: callLog, RAW_MANIFEST: rawManifest, TEST_ROOT: testRoot, VERSION_IMAGE: versionImage })
+        const calls = fs.readFileSync(callLog, "utf8")
+        expect(calls).not.toContain("Manifest.Digest")
+        if (scenario === "success") {
+          expect(result.status, result.stderr).toBe(0)
+          expect(result.stdout).toBe(`${expectedDigest}\n`)
+        } else {
+          expect(result.status).not.toBe(0)
+          expect(result.stdout).toBe("")
+        }
+        expect(calls.includes(`docker:buildx imagetools inspect ${versionImage} --raw\n`), `${scenario}: ${JSON.stringify(calls)}`).toBe(scenario !== "staging-failure")
+        expect(calls.includes("sha256sum:-- "), `${scenario}: ${JSON.stringify(calls)}`).toBe(scenario === "success" || scenario === "hash-failure")
+        expect(fs.readdirSync(testRoot).filter(name => name.startsWith("ouro-registry-manifest."))).toEqual([])
+      }
+    } finally {
+      fs.rmSync(testRoot, { recursive: true, force: true })
+    }
+  })
+
   it("rejects an unsafe initial adoption source before the full Update prelude can mutate", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const targetRawManifest = '{"manifests":[],"schemaVersion":2}\n'
+    const targetManifest = `sha256:${createHash("sha256").update(targetRawManifest).digest("hex")}`
     const updateStart = runbook.indexOf("Update:")
     const preludeEnd = runbook.indexOf("  If extraction or", updateStart)
     const updateEnd = runbook.indexOf("\nBackup:", updateStart)
@@ -712,7 +776,7 @@ if assert_restore_preflight; then command printf 'MUTATION\n'; else exit $?; fi`
       .map((line) => line.slice(4))
       .join("\n")
       .replace("PACKAGE_VERSION=<released-version>", "PACKAGE_VERSION=0.1.0-alpha.798")
-      .replace("MANIFEST_DIGEST=sha256:<reviewed-release-manifest-digest>", `MANIFEST_DIGEST=sha256:${"f".repeat(64)}`)
+      .replace("MANIFEST_DIGEST=sha256:<reviewed-release-manifest-digest>", `MANIFEST_DIGEST=${targetManifest}`)
       .replace("IMAGE_ID=sha256:<reviewed-local-image-id>", `IMAGE_ID=sha256:${"e".repeat(64)}`)
     const gateIndex = update.indexOf("admit_sanctuary_update_entry")
     expect(gateIndex).toBeGreaterThan(-1)
@@ -737,6 +801,7 @@ if assert_restore_preflight; then command printf 'MUTATION\n'; else exit $?; fi`
     }
 
     const sourcePin = extractRunbookFunction(runbook, "assert_sanctuary_update_source_pin")
+    const manifestDigest = extractRunbookFunction(runbook, "inspect_registry_manifest_digest")
     const entryAdmission = extractRunbookFunction(runbook, "admit_sanctuary_update_entry")
       .replaceAll("/boot/config/custom/ouro-butler/docker-man-template-transaction.json", "$ENTRY_JOURNAL")
     const script = String.raw`set -eu
@@ -783,7 +848,7 @@ docker() {
     return 0
   fi
   if test "$1 $2" = "image inspect"; then return 0; fi
-  if test "$1 $2 $3" = "buildx imagetools inspect"; then command printf '%s\n' "$TARGET_MANIFEST"; return 0; fi
+  if test "$*" = "buildx imagetools inspect $VERSION_IMAGE --raw"; then command printf '%s' "$TARGET_RAW_MANIFEST"; return 0; fi
   command printf 'MUTATION:docker:%s\n' "$DOCKER_CALL" >>"$CALL_LOG"
   return 91
 }
@@ -794,6 +859,7 @@ ${sourcePin}
 ${extractRunbookFunction(runbook, "validate_sanctuary_legacy_staging")}
 ${extractRunbookFunction(runbook, "classify_sanctuary_update_source")}
 ${entryAdmission}
+${manifestDigest}
 ${updatePrelude}`
     const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-update-entry-pin-"))
     try {
@@ -807,7 +873,7 @@ ${updatePrelude}`
         PACKAGE_IMAGE_ID: `sha256:${"d".repeat(64)}`,
         UNKNOWN_IMAGE_ID: `sha256:${"c".repeat(64)}`,
         PACKAGE_IMAGE_REFERENCE: "ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.796",
-        TARGET_MANIFEST: `sha256:${"f".repeat(64)}`,
+        TARGET_RAW_MANIFEST: targetRawManifest,
       }
       for (const scenario of ["staging-unknown-image", "canonical-unknown-image", "disallowed-name"]) {
         fs.writeFileSync(callLog, "", { mode: 0o600 })
@@ -969,7 +1035,11 @@ install_from_legacy_staging`
 
   it("preserves legacy evidence while promoting one canonical production poller", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const rawManifest = '{"manifests":[],"schemaVersion":2}\n'
+    const manifestDigest = `sha256:${createHash("sha256").update(rawManifest).digest("hex")}`
     const imageValidator = extractRunbookFunction(runbook, "validate_exact_image_id")
+    const registryDigest = extractRunbookFunction(runbook, "inspect_registry_manifest_digest")
+      .replaceAll("/tmp/ouro-registry-manifest.", "$TEST_ROOT/ouro-registry-manifest.")
     const onlyRunning = extractRunbookFunction(runbook, "assert_only_running_butler")
     const validateLegacy = extractRunbookFunction(runbook, "validate_sanctuary_legacy_staging")
     const adoption = extractRunbookFunction(runbook, "install_from_legacy_staging")
@@ -995,7 +1065,7 @@ docker() {
     "inspect --format {{.Image}} "*) if [ "$SCENARIO" = mismatch ] && [ "$(command cat "$STATE")" = legacy ]; then command printf 'not-an-image\n'; elif [ "$4" = ouro-butler-legacy-evidence ]; then command printf '%s\n' "$LEGACY_IMAGE"; elif [ "$(command cat "$STATE")" = legacy ] || [ "$(command cat "$STATE")" = legacy-stopped ]; then command printf '%s\n' "$LEGACY_IMAGE"; else command printf '%s\n' "$TARGET_IMAGE"; fi ;;
     "inspect --format {{.Id}} ouro-butler-staging") command printf '%064d\n' 1 ;;
     "inspect --format {{.State.Running}} "*) case "$(command cat "$STATE")" in legacy|prod-running) command printf 'true\n' ;; *) command printf 'false\n' ;; esac ;;
-    "buildx imagetools inspect "*) command printf '%s\n' "$MANIFEST_DIGEST" ;;
+    "buildx imagetools inspect "*" --raw") command printf '%s' "$RAW_MANIFEST" ;;
     "image inspect --format {{.Id}} "*) command printf '%s\n' "$TARGET_IMAGE" ;;
     "image inspect "*) return 0 ;;
     "container inspect ouro-butler-staging") command printf '{}\n' ;;
@@ -1024,6 +1094,7 @@ verify_known_good_rollback_artifact() { test "$1" = "$LEGACY_IMAGE"; }
 ${imageValidator}
 ${onlyRunning}
 ${validateLegacy}
+${registryDigest}
 ${adoption}
 if install_from_legacy_staging; then command printf 'ADOPTED\n'; else exit $?; fi`
     const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-adoption-"))
@@ -1032,7 +1103,7 @@ if install_from_legacy_staging; then command printf 'ADOPTED\n'; else exit $?; f
         const callLog = path.join(testRoot, `${scenario}.log`)
         const state = path.join(testRoot, `${scenario}.state`)
         fs.writeFileSync(state, "legacy")
-        const result = runConditionalHelper(script, scenario, { CALL_LOG: callLog, STATE: state, TEST_ROOT: testRoot, EVENT_ASSET_STAGE: testRoot, LEGACY_IMAGE: image, TARGET_IMAGE: `sha256:${"e".repeat(64)}`, IMAGE_ID: `sha256:${"e".repeat(64)}`, STAGED_TEMPLATE: "/stage/sanctuary.xml", VERSION_IMAGE: "ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.798", MANIFEST_DIGEST: `sha256:${"f".repeat(64)}`, TEMPLATE_ICON: "https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png" })
+        const result = runConditionalHelper(script, scenario, { CALL_LOG: callLog, STATE: state, TEST_ROOT: testRoot, EVENT_ASSET_STAGE: testRoot, LEGACY_IMAGE: image, TARGET_IMAGE: `sha256:${"e".repeat(64)}`, IMAGE_ID: `sha256:${"e".repeat(64)}`, STAGED_TEMPLATE: "/stage/sanctuary.xml", VERSION_IMAGE: "ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.798", MANIFEST_DIGEST: manifestDigest, RAW_MANIFEST: rawManifest, TEMPLATE_ICON: "https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png" })
         expect(result.status, `${scenario}\n${result.stderr}`).not.toBe(0)
         expect(result.stdout).not.toContain("ADOPTED")
         expect(fs.readFileSync(callLog, "utf8")).not.toContain("rm ")
@@ -1040,7 +1111,7 @@ if install_from_legacy_staging; then command printf 'ADOPTED\n'; else exit $?; f
       const callLog = path.join(testRoot, "legacy.log")
       const state = path.join(testRoot, "legacy.state")
       fs.writeFileSync(state, "legacy")
-      const success = runConditionalHelper(script, "legacy", { CALL_LOG: callLog, STATE: state, TEST_ROOT: testRoot, EVENT_ASSET_STAGE: testRoot, LEGACY_IMAGE: image, TARGET_IMAGE: `sha256:${"e".repeat(64)}`, IMAGE_ID: `sha256:${"e".repeat(64)}`, STAGED_TEMPLATE: "/stage/sanctuary.xml", VERSION_IMAGE: "ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.798", MANIFEST_DIGEST: `sha256:${"f".repeat(64)}`, TEMPLATE_ICON: "https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png" })
+      const success = runConditionalHelper(script, "legacy", { CALL_LOG: callLog, STATE: state, TEST_ROOT: testRoot, EVENT_ASSET_STAGE: testRoot, LEGACY_IMAGE: image, TARGET_IMAGE: `sha256:${"e".repeat(64)}`, IMAGE_ID: `sha256:${"e".repeat(64)}`, STAGED_TEMPLATE: "/stage/sanctuary.xml", VERSION_IMAGE: "ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.798", MANIFEST_DIGEST: manifestDigest, RAW_MANIFEST: rawManifest, TEMPLATE_ICON: "https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png" })
       expect(success.status, success.stderr).toBe(0)
       expect(success.stdout).toContain("ADOPTED")
       const calls = fs.readFileSync(callLog, "utf8")
@@ -2639,7 +2710,7 @@ await_post_audit_health`
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     const update = runbook.slice(runbook.indexOf("Update:"), runbook.indexOf("Backup:"))
     const production = update.slice(update.indexOf("Create and activate production from the same exact image ID"))
-    const activation = production.slice(production.indexOf('if test "$(docker buildx imagetools inspect "$VERSION_IMAGE"'))
+    const activation = production.slice(production.indexOf('if test "$(inspect_registry_manifest_digest "$VERSION_IMAGE")'))
 
     expect(activation).toContain("&& docker create --pull=never --name ouro-butler --network host --restart unless-stopped --user 10001:10001 \\")
     expect(activation).toContain('&& audit_effective ouro-butler "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" canonical "$VERSION_IMAGE" "$TEMPLATE_ICON" \\')
@@ -2779,7 +2850,7 @@ await_post_audit_health`
     expect(update.indexOf('rollback_sanctuary_bundle_if_pending "$IMAGE_ID"', migration)).toBeLessThan(update.indexOf("docker start ouro-butler", migration))
     expect(update.indexOf('rollback_sanctuary_bundle_if_pending "$IMAGE_ID"', renamedRollbackRecovery)).toBeLessThan(update.indexOf("docker rename ouro-butler-rollback ouro-butler", renamedRollbackRecovery))
     expect(update.indexOf('migrate_sanctuary_package_managed_bundle "$IMAGE_ID" rollback', productionFailure)).toBeLessThan(update.indexOf("docker rename ouro-butler-rollback ouro-butler", productionFailure))
-    const productionCreate = update.lastIndexOf('if test "$(docker buildx imagetools inspect "$VERSION_IMAGE"', productionFailure)
+    const productionCreate = update.lastIndexOf('if test "$(inspect_registry_manifest_digest "$VERSION_IMAGE")"', productionFailure)
     expect(commit).toBeGreaterThan(update.indexOf("wait_butler_ready ouro-butler", productionCreate))
     expect(commit).toBeGreaterThan(update.indexOf("enable_butler_autostart", productionCreate))
     expect(recovery).toContain('test "$(docker inspect --format \'{{.State.Running}}\' ouro-butler-rollback)" = false')
@@ -3544,7 +3615,7 @@ if audit_registered_dockerman_template "$IMAGE_ID" "$VERSION_IMAGE"; then comman
     const updateRunbook = runbook.slice(runbook.indexOf("Update:"), runbook.indexOf("Backup:"))
     const normalUpdateRunbook = updateRunbook.slice(updateRunbook.indexOf("For normal updates"))
     const sourceAdmission = updateRunbook.indexOf("admit_sanctuary_update_entry")
-    const manifestCheck = updateRunbook.indexOf("docker buildx imagetools inspect")
+    const manifestCheck = updateRunbook.indexOf("inspect_registry_manifest_digest")
     const targetPull = updateRunbook.indexOf('docker pull "$VERSION_IMAGE"')
     const targetImageValidation = updateRunbook.indexOf('validate_exact_image_id "$IMAGE_ID"')
     const localImageCheck = updateRunbook.indexOf('docker image inspect --format \'{{.Id}}\' "$VERSION_IMAGE"')
