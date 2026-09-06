@@ -347,8 +347,9 @@ Effective-spec audit helper:
     assert_prepackage_alpha797_source() {
       EXPECTED_SOURCE_IMAGE_ID=$1
       AUDIT_RUNNER_IMAGE_ID=$2
+      SOURCE_CONTAINER=$3
       test "$EXPECTED_SOURCE_IMAGE_ID" = sha256:e337dff04c92d116b269052f473b26a47eea933d017d1befc73af50dd37bb08d || return $?
-      audit_effective ouro-butler "$EXPECTED_SOURCE_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" prepackage-alpha797
+      audit_effective "$SOURCE_CONTAINER" "$EXPECTED_SOURCE_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" prepackage-alpha797
     }
     assert_update_source() {
       EXPECTED_SOURCE_IMAGE_ID=$1
@@ -356,7 +357,7 @@ Effective-spec audit helper:
       if test "$EXPECTED_SOURCE_IMAGE_ID" = sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d; then
         assert_legacy_alpha742_source "$EXPECTED_SOURCE_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"
       elif test "$EXPECTED_SOURCE_IMAGE_ID" = sha256:e337dff04c92d116b269052f473b26a47eea933d017d1befc73af50dd37bb08d; then
-        assert_prepackage_alpha797_source "$EXPECTED_SOURCE_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"
+        assert_prepackage_alpha797_source "$EXPECTED_SOURCE_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" ouro-butler
       else
         EXPECTED_SOURCE_IMAGE_REFERENCE=$(docker inspect --format '{{.Config.Image}}' ouro-butler) || return $?
         audit_effective ouro-butler "$EXPECTED_SOURCE_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" canonical "$EXPECTED_SOURCE_IMAGE_REFERENCE" https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png
@@ -1152,6 +1153,7 @@ Effective-spec audit helper:
       validate_sanctuary_legacy_staging || return $?
       PREPARED_LEGACY_CONTAINER_ID=$LEGACY_STAGING_CONTAINER_ID
       PREPARED_LEGACY_IMAGE_ID=$LEGACY_STAGING_IMAGE_ID
+      assert_prepackage_alpha797_source "$PREPARED_LEGACY_IMAGE_ID" "$IMAGE_ID" ouro-butler-staging || return $?
       prepare_canonical_sanctuary_roots "$IMAGE_ID" || return $?
       bootstrap_sanctuary_vault "$IMAGE_ID" \
         /mnt/user/appdata/ouro-butler/runtime/container-credentials.json \

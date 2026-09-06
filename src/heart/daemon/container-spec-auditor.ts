@@ -109,9 +109,8 @@ export function auditSanctuaryContainerSpec(
     if (!(host.CapDrop === null || (Array.isArray(host.CapDrop) && host.CapDrop.length === 0))) violations.push("container must drop no capabilities")
     if (host.PublishAllPorts !== false) violations.push("container must not publish all exposed ports")
     if (!isEmptyRecord(network?.Ports)) violations.push("effective network ports must be empty")
-    if (mountContract !== "legacy-alpha742") {
-      if (root.Name !== `/${EXPECTED_NAME}`) violations.push("container name must be /ouro-butler")
-    }
+    if (mountContract === "canonical" && root.Name !== `/${EXPECTED_NAME}`) violations.push("container name must be /ouro-butler")
+    if (mountContract === "prepackage-alpha797" && root.Name !== `/${EXPECTED_NAME}` && root.Name !== "/ouro-butler-staging") violations.push("pre-package-managed source name must be /ouro-butler or /ouro-butler-staging")
     if (mountContract === "prepackage-alpha797") {
       if (config.Image !== PREPACKAGE_ALPHA797_IMAGE) violations.push("pre-package-managed source configured image must equal the pinned alpha.797 image ID")
       const labels = record(config.Labels)
