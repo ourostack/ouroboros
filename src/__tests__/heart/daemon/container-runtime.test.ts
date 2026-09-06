@@ -675,6 +675,89 @@ if assert_restore_preflight; then command printf 'MUTATION\n'; else exit $?; fi`
     fs.rmSync(victim, { force: true })
   })
 
+  it("pins and audits the initial adoption source before any adoption mutation", () => {
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const sourceAssertion = extractRunbookFunction(runbook, "assert_prepackage_alpha797_source")
+    const preparation = extractRunbookFunction(runbook, "prepare_sanctuary_legacy_adoption")
+    const adoption = extractRunbookFunction(runbook, "install_from_legacy_staging")
+    const validate = preparation.indexOf("validate_sanctuary_legacy_staging")
+    const sourceAudit = preparation.indexOf('assert_prepackage_alpha797_source "$PREPARED_LEGACY_IMAGE_ID" "$IMAGE_ID" ouro-butler-staging')
+    const adoptionPreparation = adoption.indexOf('prepare_sanctuary_legacy_adoption "$IMAGE_ID"')
+
+    expect(sourceAssertion).toContain("SOURCE_CONTAINER=$3")
+    expect(sourceAssertion).toContain('audit_effective "$SOURCE_CONTAINER" "$EXPECTED_SOURCE_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" prepackage-alpha797')
+    expect(sourceAudit).toBeGreaterThan(validate)
+    for (const mutation of [
+      'prepare_canonical_sanctuary_roots "$IMAGE_ID"',
+      'bootstrap_sanctuary_vault "$IMAGE_ID"',
+      'provision_sanctuary_sab_credential "$IMAGE_ID"',
+    ]) {
+      expect(preparation.indexOf(mutation)).toBeGreaterThan(sourceAudit)
+    }
+    expect(adoptionPreparation).toBeGreaterThan(-1)
+    for (const mutation of [
+      "capture_sanctuary_legacy_evidence",
+      '"$STAGED_DOCKERMAN_TRANSACTION" prepare',
+      "disable_butler_autostart",
+      'docker stop "$LEGACY_STAGING_CONTAINER_ID"',
+      "docker create --pull=never --name ouro-butler",
+    ]) {
+      expect(adoption.indexOf(mutation)).toBeGreaterThan(adoptionPreparation)
+    }
+
+    const script = String.raw`set -u
+SCENARIO=$1
+validate_exact_image_id() { return 0; }
+validate_sanctuary_legacy_staging() {
+  LEGACY_STAGING_CONTAINER_ID=$(command printf '%064d' 1)
+  case "$SCENARIO" in
+    unknown-image) LEGACY_STAGING_IMAGE_ID=$UNKNOWN_LEGACY_IMAGE ;;
+    third-name) LEGACY_STAGING_IMAGE_ID=$PINNED_LEGACY_IMAGE ;;
+    *) return 97 ;;
+  esac
+}
+audit_effective() {
+  command printf 'AUDIT:%s:%s:%s:%s\n' "$1" "$2" "$3" "$4" >>"$CALL_LOG"
+  test "$SCENARIO" != third-name || return 29
+}
+${sourceAssertion}
+prepare_canonical_sanctuary_roots() { command printf 'MUTATION:prepare-roots\n' >>"$CALL_LOG"; }
+bootstrap_sanctuary_vault() { command printf 'MUTATION:bootstrap-vault\n' >>"$CALL_LOG"; }
+provision_sanctuary_sab_credential() { command printf 'MUTATION:provision-sab\n' >>"$CALL_LOG"; }
+verify_sanctuary_sab_readiness() { return 0; }
+verify_sanctuary_provider_readiness() { return 0; }
+capture_sanctuary_legacy_evidence() { command printf 'MUTATION:capture-evidence\n' >>"$CALL_LOG"; }
+disable_butler_autostart() { command printf 'MUTATION:disable-autostart\n' >>"$CALL_LOG"; }
+enable_butler_autostart() { command printf 'MUTATION:enable-autostart\n' >>"$CALL_LOG"; }
+docker() {
+  case "$1" in
+    stop|rename|create|rm|start) command printf 'MUTATION:docker:%s\n' "$*" >>"$CALL_LOG" ;;
+  esac
+  return 0
+}
+${preparation}
+${adoption}
+install_from_legacy_staging`
+    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-adoption-source-pin-"))
+    try {
+      const callLog = path.join(testRoot, "calls.log")
+      const targetImage = `sha256:${"e".repeat(64)}`
+      const unknownLegacyImage = `sha256:${"c".repeat(64)}`
+      const pinnedLegacyImage = "sha256:e337dff04c92d116b269052f473b26a47eea933d017d1befc73af50dd37bb08d"
+      for (const [scenario, expectedStatus, expectedLog] of [
+        ["unknown-image", 1, ""],
+        ["third-name", 29, `AUDIT:ouro-butler-staging:${pinnedLegacyImage}:${targetImage}:prepackage-alpha797\n`],
+      ] as const) {
+        fs.writeFileSync(callLog, "", { mode: 0o600 })
+        const result = runConditionalHelper(script, scenario, { CALL_LOG: callLog, IMAGE_ID: targetImage, UNKNOWN_LEGACY_IMAGE: unknownLegacyImage, PINNED_LEGACY_IMAGE: pinnedLegacyImage })
+        expect(result.status, result.stderr).toBe(expectedStatus)
+        expect(fs.readFileSync(callLog, "utf8")).toBe(expectedLog)
+      }
+    } finally {
+      fs.rmSync(testRoot, { recursive: true, force: true })
+    }
+  })
+
   it("preserves legacy evidence while promoting one canonical production poller", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     const imageValidator = extractRunbookFunction(runbook, "validate_exact_image_id")
@@ -683,7 +766,7 @@ if assert_restore_preflight; then command printf 'MUTATION\n'; else exit $?; fi`
     const adoption = extractRunbookFunction(runbook, "install_from_legacy_staging")
       .replaceAll("/mnt/user/appdata/ouro-butler", "$TEST_ROOT/appdata")
       .replaceAll('/usr/local/bin/node "$STAGED_DOCKERMAN_TRANSACTION"', "docker_man_transaction")
-    const image = `sha256:${"c".repeat(64)}`
+    const image = "sha256:e337dff04c92d116b269052f473b26a47eea933d017d1befc73af50dd37bb08d"
     const script = String.raw`set -u
 SCENARIO=$1
 docker() {
@@ -789,12 +872,13 @@ docker() {
   case "$*" in
     "container ls -a --format {{.Names}}") command printf 'ouro-butler-staging\n' ;;
     "container ls --format {{.Names}}") command printf 'ouro-butler-staging\n' ;;
-    "inspect --format {{.Image}} ouro-butler-staging") command printf '%s\n' "$TARGET_IMAGE" ;;
+    "inspect --format {{.Image}} ouro-butler-staging") command printf '%s\n' "$LEGACY_IMAGE" ;;
     "image inspect "*) return 0 ;;
     *) return 0 ;;
   esac
 }
-validate_sanctuary_legacy_staging() { LEGACY_STAGING_CONTAINER_ID=$(command printf '%064d' 1); LEGACY_STAGING_IMAGE_ID=$TARGET_IMAGE; }
+validate_sanctuary_legacy_staging() { LEGACY_STAGING_CONTAINER_ID=$(command printf '%064d' 1); LEGACY_STAGING_IMAGE_ID=$LEGACY_IMAGE; }
+assert_prepackage_alpha797_source() { command printf 'audit %s %s %s\n' "$1" "$2" "$3" >>"$CALL_LOG"; }
 prepare_canonical_sanctuary_roots() { command printf 'prepare %s\n' "$1" >>"$CALL_LOG"; }
 bootstrap_sanctuary_vault() { command printf 'bootstrap %s\n' "$1" >>"$CALL_LOG"; return 23; }
 validate_exact_image_id() { return 0; }
@@ -805,9 +889,11 @@ prepare_sanctuary_legacy_adoption "$IMAGE_ID"`
     try {
       const callLog = path.join(testRoot, "calls.log")
       const image = `sha256:${"f".repeat(64)}`
-      const result = runConditionalHelper(script, "bootstrap-failure", { CALL_LOG: callLog, TARGET_IMAGE: image, IMAGE_ID: image })
+      const legacyImage = "sha256:e337dff04c92d116b269052f473b26a47eea933d017d1befc73af50dd37bb08d"
+      const result = runConditionalHelper(script, "bootstrap-failure", { CALL_LOG: callLog, LEGACY_IMAGE: legacyImage, IMAGE_ID: image })
       expect(result.status, result.stderr).toBe(23)
       const calls = fs.readFileSync(callLog, "utf8")
+      expect(calls).toContain(`audit ${legacyImage} ${image} ouro-butler-staging`)
       expect(calls).toContain(`prepare ${image}`)
       expect(calls).toContain(`bootstrap ${image}`)
       expect(calls).not.toContain("stop ouro-butler-staging")
@@ -2318,7 +2404,7 @@ await_post_audit_health`
     const audit = extractRunbookFunction(runbook, "audit_effective")
     expect(audit).toContain('legacy-alpha742|prepackage-alpha797) set -- --mount-contract "$AUDIT_MOUNT_CONTRACT" ;;')
     expect(audit).toContain('"$@"')
-    const auditCalls = runbook.split("\n").filter((line) => line.includes("audit_effective ouro-butler"))
+    const auditCalls = runbook.split("\n").filter((line) => line.includes("audit_effective "))
     expect(auditCalls).toHaveLength(9)
     expect(auditCalls.filter((line) => line.includes(" canonical "))).toHaveLength(7)
     expect(auditCalls.filter((line) => line.includes(" legacy-alpha742"))).toHaveLength(1)

@@ -207,12 +207,26 @@ describe("Sanctuary pre-activation container auditor", () => {
       expectedEnvironment,
       mountContract: "prepackage-alpha797",
     })).toEqual({ ok: true, violations: [] })
+    const stagingSource = structuredClone(source)
+    stagingSource.Name = "/ouro-butler-staging"
+    expect(auditSanctuaryContainerSpec(stagingSource, {
+      expectedImage: alpha797Image,
+      expectedEnvironment,
+      mountContract: "prepackage-alpha797",
+    })).toEqual({ ok: true, violations: [] })
     expect(auditSanctuaryContainerSpec(source, { expectedImage: alpha797Image, expectedEnvironment }).ok).toBe(false)
     expect(auditSanctuaryContainerSpec(source, {
       expectedImage: "sha256:" + "b".repeat(64),
       expectedEnvironment,
       mountContract: "prepackage-alpha797",
     }).violations).toContain("pre-package-managed source exception requires the pinned alpha.797 image ID")
+    const unexpectedSource = structuredClone(source)
+    unexpectedSource.Name = "/unreviewed-butler"
+    expect(auditSanctuaryContainerSpec(unexpectedSource, {
+      expectedImage: alpha797Image,
+      expectedEnvironment,
+      mountContract: "prepackage-alpha797",
+    }).violations).toContain("pre-package-managed source name must be /ouro-butler or /ouro-butler-staging")
 
     for (const mutate of [
       (spec: any) => { spec.Config.Image = "ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.797" },
