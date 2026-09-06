@@ -2965,6 +2965,33 @@ verify_known_good_rollback_artifact "$IMAGE_ID"`
     expect(update.indexOf('verify_known_good_rollback_artifact "$ROLLBACK_IMAGE_ID"')).toBeLessThan(update.indexOf('commit --proof "$FINAL_PROOF_PATH"'))
   })
 
+  it("binds every install and crash recovery to one unchanged Jellyfin checkpoint", () => {
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const finalProof = extractRunbookFunction(runbook, "write_dockerman_final_proof")
+    const recovery = extractRunbookFunction(runbook, "recover_dockerman_template_transaction")
+    const adoption = extractRunbookFunction(runbook, "install_from_legacy_staging")
+    const update = runbook.slice(runbook.indexOf("For normal updates"), runbook.indexOf("Backup:"))
+
+    expect(finalProof).toContain('"$STAGED_DOCKERMAN_TRANSACTION" jellyfin-status >"$FINAL_JELLYFIN_PATH"')
+    expect(finalProof).toContain('const jellyfin = JSON.parse(fs.readFileSync(jellyfinPath, "utf8"));')
+    expect(finalProof).toContain("const proof = { container:")
+    expect(finalProof).toContain(", jellyfin };")
+    expect(recovery.indexOf('"$STAGED_DOCKERMAN_TRANSACTION" recover-status')).toBeLessThan(recovery.indexOf("recover_pending_sanctuary_bundle_migration"))
+    const adoptionFailure = adoption.indexOf("ADOPTION_STATUS=$?")
+    const adoptionGate = adoption.indexOf('"$STAGED_DOCKERMAN_TRANSACTION" verify-jellyfin', adoptionFailure)
+    expect(adoptionGate).toBeGreaterThan(adoptionFailure)
+    expect(adoptionGate).toBeLessThan(adoption.indexOf("docker stop ouro-butler", adoptionFailure))
+    const preparationFailure = update.indexOf("PRODUCTION_PREPARATION_STATUS=$?")
+    const preparationGate = update.indexOf('"$STAGED_DOCKERMAN_TRANSACTION" verify-jellyfin', preparationFailure)
+    expect(preparationGate).toBeGreaterThan(preparationFailure)
+    expect(preparationGate).toBeLessThan(update.indexOf("docker stop ouro-butler-rollback", preparationFailure))
+    const activationFailure = update.indexOf("PRODUCTION_ACTIVATION_STATUS=$?")
+    const activationGate = update.indexOf('"$STAGED_DOCKERMAN_TRANSACTION" verify-jellyfin', activationFailure)
+    expect(activationGate).toBeGreaterThan(activationFailure)
+    expect(activationGate).toBeLessThan(update.indexOf("docker stop ouro-butler", activationFailure))
+    expect(runbook).toContain("container ID, image ID, state, and restart count")
+  })
+
   it("recovers only exact normal-update and legacy-adoption template topologies", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     const recovery = extractRunbookFunction(runbook, "recover_dockerman_template_transaction")

@@ -841,29 +841,32 @@ Effective-spec audit helper:
       FINAL_CONTAINER_PATH=$FINAL_PROOF_ROOT/container.json
       FINAL_BUNDLE_PATH=$FINAL_PROOF_ROOT/bundle.json
       FINAL_INSTALL_PATH=$FINAL_PROOF_ROOT/install.json
+      FINAL_JELLYFIN_PATH=$FINAL_PROOF_ROOT/jellyfin.json
       FINAL_PROOF_PATH=$FINAL_PROOF_ROOT/final-proof.json
-      test ! -e "$FINAL_CONTAINER_PATH" && test ! -e "$FINAL_BUNDLE_PATH" && test ! -e "$FINAL_INSTALL_PATH" && test ! -e "$FINAL_PROOF_PATH" || return 1
+      test ! -e "$FINAL_CONTAINER_PATH" && test ! -e "$FINAL_BUNDLE_PATH" && test ! -e "$FINAL_INSTALL_PATH" && test ! -e "$FINAL_JELLYFIN_PATH" && test ! -e "$FINAL_PROOF_PATH" || return 1
       docker inspect ouro-butler >"$FINAL_CONTAINER_PATH" || return $?
       migrate_sanctuary_package_managed_bundle "$FINAL_PROOF_IMAGE_ID" inspect >"$FINAL_BUNDLE_PATH" || return $?
       verify_dockerman_and_community_apps "$FINAL_PROOF_VERSION_IMAGE" "$FINAL_INSTALL_PATH" || return $?
-      chown 0:0 "$FINAL_CONTAINER_PATH" "$FINAL_BUNDLE_PATH" || return $?
-      chmod 0600 "$FINAL_CONTAINER_PATH" "$FINAL_BUNDLE_PATH" || return $?
+      /usr/local/bin/node "$STAGED_DOCKERMAN_TRANSACTION" jellyfin-status >"$FINAL_JELLYFIN_PATH" || return $?
+      chown 0:0 "$FINAL_CONTAINER_PATH" "$FINAL_BUNDLE_PATH" "$FINAL_JELLYFIN_PATH" || return $?
+      chmod 0600 "$FINAL_CONTAINER_PATH" "$FINAL_BUNDLE_PATH" "$FINAL_JELLYFIN_PATH" || return $?
       FINAL_AUTOSTART_COUNT=$(awk '$1 == "ouro-butler" { count++ } END { print count + 0 }' /var/lib/docker/unraid-autostart) || return $?
       /usr/local/bin/node -e '
         const fs = require("node:fs");
-        const [containerPath, bundlePath, installPath, outputPath, imageId, imageReference, icon, autostartCount] = process.argv.slice(1);
+        const [containerPath, bundlePath, installPath, jellyfinPath, outputPath, imageId, imageReference, icon, autostartCount] = process.argv.slice(1);
         const containers = JSON.parse(fs.readFileSync(containerPath, "utf8"));
         const bundle = JSON.parse(fs.readFileSync(bundlePath, "utf8"));
         const install = JSON.parse(fs.readFileSync(installPath, "utf8"));
+        const jellyfin = JSON.parse(fs.readFileSync(jellyfinPath, "utf8"));
         if (!Array.isArray(containers) || containers.length !== 1) process.exit(1);
         const source = containers[0];
         const labels = source.Config?.Labels;
         const health = source.State?.Health?.Status;
         if (source.Name !== "/ouro-butler" || source.Image !== imageId || source.Config?.Image !== imageReference || source.State?.Running !== true || health !== "healthy" || autostartCount !== "1" || labels?.["net.unraid.docker.managed"] !== "dockerman" || labels?.["net.unraid.docker.icon"] !== icon || Object.prototype.hasOwnProperty.call(labels ?? {}, "net.unraid.docker.webui")) process.exit(1);
         if (bundle?.ok !== true || bundle?.data?.parity !== "exact" || bundle?.data?.journalState !== "absent" || bundle?.data?.ready !== true) process.exit(1);
-        const proof = { container: { name: source.Name, imageId: source.Image, imageReference: source.Config.Image, running: source.State.Running, healthy: health === "healthy", autostart: true, labels: { "net.unraid.docker.managed": labels["net.unraid.docker.managed"], "net.unraid.docker.icon": labels["net.unraid.docker.icon"] } }, bundle, ...install };
+        const proof = { container: { name: source.Name, imageId: source.Image, imageReference: source.Config.Image, running: source.State.Running, healthy: health === "healthy", autostart: true, labels: { "net.unraid.docker.managed": labels["net.unraid.docker.managed"], "net.unraid.docker.icon": labels["net.unraid.docker.icon"] } }, bundle, ...install, jellyfin };
         fs.writeFileSync(outputPath, `${JSON.stringify(proof)}\n`, { mode: 0o600, flag: "wx" });
-      ' "$FINAL_CONTAINER_PATH" "$FINAL_BUNDLE_PATH" "$FINAL_INSTALL_PATH" "$FINAL_PROOF_PATH" "$FINAL_PROOF_IMAGE_ID" "$FINAL_PROOF_VERSION_IMAGE" "$FINAL_PROOF_ICON" "$FINAL_AUTOSTART_COUNT" || return $?
+      ' "$FINAL_CONTAINER_PATH" "$FINAL_BUNDLE_PATH" "$FINAL_INSTALL_PATH" "$FINAL_JELLYFIN_PATH" "$FINAL_PROOF_PATH" "$FINAL_PROOF_IMAGE_ID" "$FINAL_PROOF_VERSION_IMAGE" "$FINAL_PROOF_ICON" "$FINAL_AUTOSTART_COUNT" || return $?
       chown 0:0 "$FINAL_PROOF_PATH" || return $?
       chmod 0600 "$FINAL_PROOF_PATH" || return $?
       printf '%s\n' "$FINAL_PROOF_PATH"
@@ -1427,6 +1430,7 @@ Effective-spec audit helper:
       else
         ADOPTION_STATUS=$?
       fi
+      /usr/local/bin/node "$STAGED_DOCKERMAN_TRANSACTION" verify-jellyfin >/dev/null || return $?
       ADOPTION_RECOVERY_NAMES=$(docker container ls -a --format '{{.Names}}') || return $?
       case "
 $ADOPTION_RECOVERY_NAMES
@@ -2137,7 +2141,7 @@ Update:
     install_from_legacy_staging
   These commands are one terminal path; after install succeeds, stop and do not continue into the normal update below. The final install is noninteractive: it reruns resumable preparation plus fresh readiness, but never authentication.
   That function never applies the package-managed target contract to the older alpha.797 container or restarts it. It first proves the pinned alpha.797 image and exact allowed legacy shape, creates the missing canonical roots from the reviewed target image, checks required files and permissions, and finishes vault plus provider preparation. Any failure leaves the old Butler running with autostart untouched.
-  After preparation succeeds, it records the exact old container and image, installs the original version-tagged template under the crash journal, disables Butler autostart, stops and rechecks the old container, and renames it to stopped ouro-butler-legacy-evidence. It then creates one canonical production container from the reviewed version tag with --pull=never, audits it before start, proves it is the only running healthy Butler, enables only production autostart, proves the stopped rollback plus DockerMan and Community Apps recognition, and commits the template journal.
+  After preparation succeeds, it records the exact old container and image, installs the original version-tagged template under the crash journal, disables Butler autostart, stops and rechecks the old container, and renames it to stopped ouro-butler-legacy-evidence. The journal also binds Jellyfin's exact container ID, image ID, state, and restart count under its digest. It then creates one canonical production container from the reviewed version tag with --pull=never, audits it before start, proves it is the only running healthy Butler, enables only production autostart, proves the stopped rollback plus DockerMan and Community Apps recognition, and commits the template journal only while Jellyfin remains unchanged.
   If activation fails, it removes only a partial target container, preserves the stopped legacy evidence, restores the prior template, leaves autostart disabled, and returns the original failure.
   For normal updates, preflight accepts only the pinned alpha.742 two-mount source, the pinned pre-package-managed alpha.797 source, or an already package-managed canonical source before any autostart or live-container change. The two pinned exceptions may validate an old source, but can never authorize creation of a new target.
   Production must be the only running Butler poller; staging must be absent; rollback may be absent or one stopped container with the exact production image. A stopped legacy-evidence container is preserved. Disable every Butler name in Unraid's array-autostart file and verify that result before stopping production. First resolve and validate the exact image ID of the known-good production container while it is still running, so a lookup failure cannot strand a renamed container:
@@ -2204,6 +2208,7 @@ ouro-butler-rollback
       :
     else
       PRODUCTION_PREPARATION_STATUS=$?
+      /usr/local/bin/node "$STAGED_DOCKERMAN_TRANSACTION" verify-jellyfin >/dev/null
       if docker container inspect ouro-butler >/dev/null 2>&1; then
         if docker container inspect ouro-butler-rollback >/dev/null 2>&1; then
           docker stop ouro-butler-rollback >/dev/null 2>&1 || true
@@ -2259,6 +2264,7 @@ ouro-butler-rollback
       :
     else
       PRODUCTION_ACTIVATION_STATUS=$?
+      /usr/local/bin/node "$STAGED_DOCKERMAN_TRANSACTION" verify-jellyfin >/dev/null
       if docker container inspect ouro-butler >/dev/null 2>&1; then
         docker stop ouro-butler >/dev/null 2>&1 || true
         PARTIAL_PRODUCTION_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler)

@@ -1,5 +1,6 @@
 #!/usr/local/bin/node
 
+import { execFileSync } from "node:child_process"
 import { createHash } from "node:crypto"
 import { closeSync, constants, fchmodSync, fchownSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs"
 import { basename, dirname, resolve } from "node:path"
@@ -14,7 +15,10 @@ const ICON = "https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/
 const COMMUNITY_APPS_ENTRY_PATH = "/usr/local/emhttp/plugins/community.applications/include/exec.php"
 const COMMUNITY_APPS_HELPER_PATH = "/usr/local/emhttp/plugins/community.applications/include/previous_apps_helpers.php"
 const IMAGE_ID = /^sha256:[0-9a-f]{64}$/u
+const CONTAINER_ID = /^[0-9a-f]{64}$/u
 const VERSION_TAG = /^ghcr\.io\/ourostack\/ouroboros-butler:[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/u
+const JELLYFIN_STATES = new Set(["created", "running", "paused", "restarting", "removing", "exited", "dead"])
+const JELLYFIN_FORMAT = '{"name":{{json .Name}},"containerId":{{json .Id}},"imageId":{{json .Image}},"state":{{json .State.Status}},"restartCount":{{json .RestartCount}}}'
 
 function object(value, label) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`)
@@ -24,6 +28,31 @@ function object(value, label) {
 function exactKeys(value, expected, label) {
   const keys = Object.keys(value).sort()
   if (JSON.stringify(keys) !== JSON.stringify([...expected].sort())) throw new Error(`${label} has unexpected fields`)
+}
+
+function validateJellyfinState(raw, label = "Jellyfin checkpoint") {
+  const value = object(raw, label)
+  exactKeys(value, ["containerId", "imageId", "state", "restartCount"], label)
+  if (!CONTAINER_ID.test(value.containerId) || !IMAGE_ID.test(value.imageId) || !JELLYFIN_STATES.has(value.state) || !Number.isSafeInteger(value.restartCount) || value.restartCount < 0) throw new Error(`${label} is invalid`)
+  return { containerId: value.containerId, imageId: value.imageId, state: value.state, restartCount: value.restartCount }
+}
+
+export function inspectCurrentJellyfinState() {
+  let inspected
+  try {
+    inspected = JSON.parse(execFileSync("/usr/bin/docker", ["container", "inspect", "--format", JELLYFIN_FORMAT, "jellyfin"], { encoding: "utf8", maxBuffer: 65_536, stdio: ["ignore", "pipe", "ignore"] }).trim())
+  } catch {
+    throw new Error("Jellyfin container inspection failed")
+  }
+  const value = object(inspected, "Jellyfin container inspection")
+  exactKeys(value, ["name", "containerId", "imageId", "state", "restartCount"], "Jellyfin container inspection")
+  if (value.name !== "/jellyfin") throw new Error("Jellyfin container identity is invalid")
+  return validateJellyfinState({ containerId: value.containerId, imageId: value.imageId, state: value.state, restartCount: value.restartCount })
+}
+
+function assertJellyfinUnchanged(expected) {
+  const current = inspectCurrentJellyfinState()
+  if (JSON.stringify(current) !== JSON.stringify(expected)) throw new Error("Jellyfin changed during the Butler transaction")
 }
 
 function digest(bytes) {
@@ -168,7 +197,7 @@ function decodeCanonicalBase64(value) {
 
 function validateJournalRecord(raw, state) {
   const record = object(raw, "template transaction journal")
-  exactKeys(record, ["schemaVersion", "state", "target", "priorTemplate", "priorTemplateDigest", "targetTemplateDigest", "canonicalVersionTag", "reviewedManifestDigest", "rollbackImageId", "targetImageId", "digest"], "template transaction journal")
+  exactKeys(record, ["schemaVersion", "state", "target", "priorTemplate", "priorTemplateDigest", "targetTemplateDigest", "canonicalVersionTag", "reviewedManifestDigest", "rollbackImageId", "targetImageId", "jellyfin", "digest"], "template transaction journal")
   if (record.schemaVersion !== 1 || !["rollback", "committing"].includes(record.state)) throw new Error("template transaction journal state is invalid")
   const target = object(record.target, "template transaction journal target")
   exactKeys(target, ["path", "name", "templateUrl", "icon"], "template transaction journal target")
@@ -186,8 +215,9 @@ function validateJournalRecord(raw, state) {
     throw new Error("template transaction journal absent prior state is invalid")
   }
   if (!VERSION_TAG.test(record.canonicalVersionTag) || !IMAGE_ID.test(record.reviewedManifestDigest) || !IMAGE_ID.test(record.rollbackImageId) || !IMAGE_ID.test(record.targetImageId) || record.rollbackImageId === record.targetImageId || !IMAGE_ID.test(record.targetTemplateDigest)) throw new Error("template transaction journal release identity is invalid")
+  const jellyfin = validateJellyfinState(record.jellyfin, "template transaction journal Jellyfin checkpoint")
   if (!IMAGE_ID.test(record.digest) || record.digest !== recordDigest(record)) throw new Error("template transaction journal digest is invalid")
-  return { ...record, priorBytes }
+  return { ...record, jellyfin, priorBytes }
 }
 
 function readJournal(state) {
@@ -233,6 +263,10 @@ function cleanupRecoveryTemporary(state) {
 
 export function inspectDockerManTemplateTransactionForRecovery(options = {}) {
   const state = paths(options)
+  validateParents(state, true)
+  const current = readJournal(state)
+  const jellyfin = inspectCurrentJellyfinState()
+  if (current && JSON.stringify(jellyfin) !== JSON.stringify(current.jellyfin)) throw new Error("Jellyfin changed during the Butler transaction")
   cleanupRecoveryTemporary(state)
   return inspectDockerManTemplateTransaction(options)
 }
@@ -260,10 +294,11 @@ function validateTemplateSource(input, state) {
 export function prepareDockerManTemplateTransaction(input, options = {}) {
   const state = paths(options)
   const { sourceBytes, identity } = validateTemplateSource(input, state)
+  const jellyfin = inspectCurrentJellyfinState()
   ensureJournalParent(state)
   const existing = readJournal(state)
   if (existing) {
-    if (existing.canonicalVersionTag !== input.canonicalVersionTag || existing.reviewedManifestDigest !== input.reviewedManifestDigest || existing.rollbackImageId !== input.rollbackImageId || existing.targetImageId !== input.targetImageId || existing.targetTemplateDigest !== digest(sourceBytes) || currentTargetDigest(state) !== existing.targetTemplateDigest) throw new Error("pending template transaction does not match the reviewed release")
+    if (existing.canonicalVersionTag !== input.canonicalVersionTag || existing.reviewedManifestDigest !== input.reviewedManifestDigest || existing.rollbackImageId !== input.rollbackImageId || existing.targetImageId !== input.targetImageId || existing.targetTemplateDigest !== digest(sourceBytes) || currentTargetDigest(state) !== existing.targetTemplateDigest || JSON.stringify(existing.jellyfin) !== JSON.stringify(jellyfin)) throw new Error("pending template transaction does not match the reviewed release")
     const { priorBytes: _ignored, ...record } = existing
     return record
   }
@@ -288,6 +323,7 @@ export function prepareDockerManTemplateTransaction(input, options = {}) {
     reviewedManifestDigest: input.reviewedManifestDigest,
     rollbackImageId: input.rollbackImageId,
     targetImageId: input.targetImageId,
+    jellyfin,
   }
   const record = writeJournal(unsigned, state)
   options.checkpoint?.("after-template-journal")
@@ -302,6 +338,7 @@ export function markDockerManTemplateTransactionCommitting(options = {}) {
   const current = readJournal(state)
   if (!current) throw new Error("template transaction journal is absent")
   if (currentTargetDigest(state) !== current.targetTemplateDigest) throw new Error("installed DockerMan template does not match the transaction")
+  assertJellyfinUnchanged(current.jellyfin)
   if (current.state === "committing") {
     const { priorBytes: _ignored, ...record } = current
     return record
@@ -318,6 +355,7 @@ export function rollbackDockerManTemplateTransaction(options = {}) {
   const current = readJournal(state)
   if (!current) return false
   const installedDigest = currentTargetDigest(state)
+  assertJellyfinUnchanged(current.jellyfin)
   if (current.priorTemplate.present) {
     if (installedDigest !== current.targetTemplateDigest && installedDigest !== current.priorTemplateDigest) throw new Error("installed DockerMan template cannot be safely restored")
     if (installedDigest !== current.priorTemplateDigest) atomicWrite(state.targetPath, state.targetTemporary, current.priorBytes, current.priorTemplate.metadata, state.expectedUid, state.expectedGid)
@@ -346,6 +384,8 @@ function validateFinalProof(proof, record, state) {
   const helperImplementation = communityApps.stateModel === "previous-apps-helper-v1" && communityApps.entryPath === COMMUNITY_APPS_ENTRY_PATH && communityApps.entryFunction === "previous_apps" && communityApps.implementationPath === COMMUNITY_APPS_HELPER_PATH && communityApps.implementationSymbol === "PreviousAppsHelpers::collectDockerApplications"
   const recognizedImplementation = inlineImplementation || helperImplementation
   if (communityApps.installed !== true || communityApps.name !== "ouro-butler" || communityApps.repository !== record.canonicalVersionTag || communityApps.templateUrl !== record.target.templateUrl || !recognizedImplementation) throw new Error("final Community Apps proof is invalid")
+  const jellyfin = validateJellyfinState(root.jellyfin, "final Jellyfin proof")
+  if (JSON.stringify(jellyfin) !== JSON.stringify(record.jellyfin)) throw new Error("final Jellyfin proof is invalid")
 }
 
 export function commitDockerManTemplateTransaction(proof, options = {}) {
@@ -355,7 +395,17 @@ export function commitDockerManTemplateTransaction(proof, options = {}) {
   if (!current) return false
   if (current.state !== "committing" || currentTargetDigest(state) !== current.targetTemplateDigest) throw new Error("template transaction is not ready to commit")
   validateFinalProof(proof, current, state)
+  assertJellyfinUnchanged(current.jellyfin)
   deleteDurably(state.journalPath)
+  return true
+}
+
+export function verifyDockerManTemplateTransactionJellyfin(options = {}) {
+  const state = paths(options)
+  validateParents(state)
+  const current = readJournal(state)
+  if (!current) throw new Error("template transaction journal is absent")
+  assertJellyfinUnchanged(current.jellyfin)
   return true
 }
 
@@ -426,15 +476,23 @@ export function runDockerManTemplateTransactionCli(argv, options = {}, write = (
     ensureJournalParent(paths(options))
     result = inspectDockerManTemplateTransaction(options)
   } else if (operation === "recover-status" && values.size === 0) {
-    ensureJournalParent(paths(options))
+    const state = paths(options)
+    if (!metadataIfPresent(state.journalParent)) {
+      inspectCurrentJellyfinState()
+      ensureJournalParent(state)
+    }
     result = inspectDockerManTemplateTransactionForRecovery(options)
   } else if (operation === "recovery-action" && values.size === 1 && values.get("--evidence")) {
     ensureJournalParent(paths(options))
     const record = inspectDockerManTemplateTransaction(options)
     if (!record) throw new Error("template transaction journal is absent")
     result = { action: decideDockerManTemplateRecovery(record, readRootJson(values.get("--evidence"), "template recovery evidence")) }
+  } else if (operation === "verify-jellyfin" && values.size === 0) {
+    result = { unchanged: verifyDockerManTemplateTransactionJellyfin(options) }
+  } else if (operation === "jellyfin-status" && values.size === 0) {
+    result = inspectCurrentJellyfinState()
   } else {
-    throw new Error("Usage: docker-man-template-transaction.mjs <prepare|mark-committing|rollback|commit|status|recover-status|recovery-action> [fixed operation arguments]")
+    throw new Error("Usage: docker-man-template-transaction.mjs <prepare|mark-committing|rollback|commit|status|recover-status|recovery-action|verify-jellyfin|jellyfin-status> [fixed operation arguments]")
   }
   write(`${JSON.stringify(result)}\n`)
 }

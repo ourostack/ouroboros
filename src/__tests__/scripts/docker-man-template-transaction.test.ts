@@ -4,7 +4,11 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
 
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+
+const execFileSync = vi.hoisted(() => vi.fn())
+
+vi.mock("node:child_process", () => ({ execFileSync }))
 
 type JournalState = "rollback" | "committing"
 
@@ -19,7 +23,15 @@ interface TransactionRecord {
   reviewedManifestDigest: string
   rollbackImageId: string
   targetImageId: string
+  jellyfin: JellyfinState
   digest: string
+}
+
+interface JellyfinState {
+  containerId: string
+  imageId: string
+  state: "created" | "running" | "paused" | "restarting" | "removing" | "exited" | "dead"
+  restartCount: number
 }
 
 interface TransactionModule {
@@ -27,6 +39,8 @@ interface TransactionModule {
   prepareDockerManTemplateTransaction(input: Record<string, unknown>, options: Record<string, unknown>): TransactionRecord
   inspectDockerManTemplateTransaction(options: Record<string, unknown>): TransactionRecord | null
   inspectDockerManTemplateTransactionForRecovery(options: Record<string, unknown>): TransactionRecord | null
+  inspectCurrentJellyfinState(): JellyfinState
+  verifyDockerManTemplateTransactionJellyfin(options: Record<string, unknown>): true
   markDockerManTemplateTransactionCommitting(options: Record<string, unknown>): TransactionRecord
   rollbackDockerManTemplateTransaction(options: Record<string, unknown>): boolean
   commitDockerManTemplateTransaction(proof: Record<string, unknown>, options: Record<string, unknown>): boolean
@@ -41,6 +55,12 @@ const templateUrl = "https://raw.githubusercontent.com/ourostack/ouroboros/main/
 const icon = "https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png"
 const communityAppsEntryPath = "/usr/local/emhttp/plugins/community.applications/include/exec.php"
 const communityAppsHelperPath = "/usr/local/emhttp/plugins/community.applications/include/previous_apps_helpers.php"
+const jellyfin: JellyfinState = { containerId: "1".repeat(64), imageId: image("9"), state: "running", restartCount: 3 }
+const jellyfinFormat = '{"name":{{json .Name}},"containerId":{{json .Id}},"imageId":{{json .Image}},"state":{{json .State.Status}},"restartCount":{{json .RestartCount}}}'
+
+function serveJellyfin(value: Partial<JellyfinState> = jellyfin, name = "/jellyfin") {
+  execFileSync.mockReturnValue(`${JSON.stringify({ name, ...value })}\n`)
+}
 
 function template(repository = canonicalVersionTag, name = "ouro-butler"): string {
   return [
@@ -138,6 +158,7 @@ function finalProof(targetPath: string, stateModel: "previous-apps-inline-v1" | 
       implementationPath: delegated ? communityAppsHelperPath : communityAppsEntryPath,
       implementationSymbol: delegated ? "PreviousAppsHelpers::collectDockerApplications" : "previous_apps",
     },
+    jellyfin: structuredClone(jellyfin),
   }
 }
 
@@ -163,7 +184,128 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
+beforeEach(() => {
+  execFileSync.mockReset()
+  serveJellyfin()
+})
+
 describe("root-owned DockerMan template transaction", () => {
+  it("captures only Jellyfin identity, image, state, and restart count under the journal digest", async () => {
+    const transaction = await load()
+    const state = fixture("prior-template\n")
+
+    const record = transaction.prepareDockerManTemplateTransaction(state.input, state.options)
+
+    expect(record.jellyfin).toEqual(jellyfin)
+    expect(Object.keys(record.jellyfin).sort()).toEqual(["containerId", "imageId", "restartCount", "state"])
+    expect(execFileSync).toHaveBeenCalledWith("/usr/bin/docker", ["container", "inspect", "--format", jellyfinFormat, "jellyfin"], { encoding: "utf8", maxBuffer: 65_536, stdio: ["ignore", "pipe", "ignore"] })
+    expect(transaction.inspectCurrentJellyfinState()).toEqual(jellyfin)
+    expect(transaction.verifyDockerManTemplateTransactionJellyfin(state.options)).toBe(true)
+    const output: string[] = []
+    transaction.runDockerManTemplateTransactionCli(["jellyfin-status"], state.options, (text) => output.push(text))
+    transaction.runDockerManTemplateTransactionCli(["verify-jellyfin"], state.options, (text) => output.push(text))
+    expect(output).toEqual([`${JSON.stringify(jellyfin)}\n`, '{"unchanged":true}\n'])
+
+    const absent = fixture("prior-template\n")
+    expect(() => transaction.verifyDockerManTemplateTransactionJellyfin(absent.options)).toThrow(/journal is absent/u)
+  })
+
+  it.each([
+    ["missing container", () => execFileSync.mockImplementation(() => { throw new Error("absent") })],
+    ["wrong name", () => serveJellyfin(jellyfin, "/not-jellyfin")],
+    ["missing container ID", () => serveJellyfin({ ...jellyfin, containerId: undefined })],
+    ["malformed image ID", () => serveJellyfin({ ...jellyfin, imageId: "latest" })],
+    ["unknown state", () => serveJellyfin({ ...jellyfin, state: "unknown" as JellyfinState["state"] })],
+    ["fractional restart count", () => serveJellyfin({ ...jellyfin, restartCount: 1.5 })],
+    ["negative restart count", () => serveJellyfin({ ...jellyfin, restartCount: -1 })],
+  ])("fails before creating or changing transaction state when Jellyfin is %s", async (_scenario, arrange) => {
+    const transaction = await load()
+    const state = fixture("prior-template\n")
+    arrange()
+
+    expect(() => transaction.prepareDockerManTemplateTransaction(state.input, state.options)).toThrow(/Jellyfin/u)
+    expect(readFileSync(state.targetPath, "utf8")).toBe("prior-template\n")
+    expect(existsSync(state.journalPath)).toBe(false)
+    expect(existsSync(temporaryPaths(state).target)).toBe(false)
+    expect(existsSync(temporaryPaths(state).journal)).toBe(false)
+  })
+
+  it("does not create a missing recovery parent when Jellyfin cannot be inspected", async () => {
+    const transaction = await load()
+    const state = fixture("prior-template\n")
+    rmSync(state.journalRoot, { recursive: true })
+    serveJellyfin(jellyfin, "/wrong")
+
+    expect(() => transaction.runDockerManTemplateTransactionCli(["recover-status"], state.options, () => undefined)).toThrow(/Jellyfin/u)
+    expect(existsSync(state.journalRoot)).toBe(false)
+    expect(readFileSync(state.targetPath, "utf8")).toBe("prior-template\n")
+  })
+
+  it.each([
+    ["container ID", { ...jellyfin, containerId: "2".repeat(64) }],
+    ["image ID", { ...jellyfin, imageId: image("8") }],
+    ["state", { ...jellyfin, state: "exited" as const }],
+    ["restart count", { ...jellyfin, restartCount: 4 }],
+  ])("preserves the journal, template, and crash residue when Jellyfin %s changes", async (_field, changed) => {
+    const transaction = await load()
+
+    const recovery = fixture("prior-template\n")
+    transaction.prepareDockerManTemplateTransaction(recovery.input, recovery.options)
+    const recoveryTemporary = temporaryPaths(recovery).target
+    writeFileSync(recoveryTemporary, template(), { mode: 0o600 })
+    chmodSync(recoveryTemporary, 0o600)
+    const recoveryJournal = readFileSync(recovery.journalPath)
+    const recoveryTarget = readFileSync(recovery.targetPath)
+    serveJellyfin(changed)
+    expect(() => transaction.inspectDockerManTemplateTransactionForRecovery(recovery.options)).toThrow(/Jellyfin.*changed/u)
+    expect(readFileSync(recovery.journalPath)).toEqual(recoveryJournal)
+    expect(readFileSync(recovery.targetPath)).toEqual(recoveryTarget)
+    expect(existsSync(recoveryTemporary)).toBe(true)
+
+    serveJellyfin()
+    const rollback = fixture("prior-template\n")
+    transaction.prepareDockerManTemplateTransaction(rollback.input, rollback.options)
+    const rollbackJournal = readFileSync(rollback.journalPath)
+    const rollbackTarget = readFileSync(rollback.targetPath)
+    serveJellyfin(changed)
+    expect(() => transaction.rollbackDockerManTemplateTransaction(rollback.options)).toThrow(/Jellyfin.*changed/u)
+    expect(readFileSync(rollback.journalPath)).toEqual(rollbackJournal)
+    expect(readFileSync(rollback.targetPath)).toEqual(rollbackTarget)
+
+    serveJellyfin()
+    const marking = fixture("prior-template\n")
+    transaction.prepareDockerManTemplateTransaction(marking.input, marking.options)
+    const markingJournal = readFileSync(marking.journalPath)
+    const markingTarget = readFileSync(marking.targetPath)
+    serveJellyfin(changed)
+    expect(() => transaction.markDockerManTemplateTransactionCommitting(marking.options)).toThrow(/Jellyfin.*changed/u)
+    expect(readFileSync(marking.journalPath)).toEqual(markingJournal)
+    expect(readFileSync(marking.targetPath)).toEqual(markingTarget)
+
+    serveJellyfin()
+    const commit = fixture("prior-template\n")
+    transaction.prepareDockerManTemplateTransaction(commit.input, commit.options)
+    transaction.markDockerManTemplateTransactionCommitting(commit.options)
+    const commitJournal = readFileSync(commit.journalPath)
+    const commitTarget = readFileSync(commit.targetPath)
+    serveJellyfin(changed)
+    expect(() => transaction.commitDockerManTemplateTransaction(finalProof(commit.targetPath), commit.options)).toThrow(/Jellyfin.*changed/u)
+    expect(readFileSync(commit.journalPath)).toEqual(commitJournal)
+    expect(readFileSync(commit.targetPath)).toEqual(commitTarget)
+  })
+
+  it("rejects a repeated prepare if Jellyfin changed after the durable checkpoint", async () => {
+    const transaction = await load()
+    const state = fixture("prior-template\n")
+    transaction.prepareDockerManTemplateTransaction(state.input, state.options)
+    const journalBefore = readFileSync(state.journalPath)
+    const targetBefore = readFileSync(state.targetPath)
+    serveJellyfin({ ...jellyfin, restartCount: jellyfin.restartCount + 1 })
+
+    expect(() => transaction.prepareDockerManTemplateTransaction(state.input, state.options)).toThrow(/pending template transaction/u)
+    expect(readFileSync(state.journalPath)).toEqual(journalBefore)
+    expect(readFileSync(state.targetPath)).toEqual(targetBefore)
+  })
   it("rejects a truncated source before creating a journal or replacing the template", async () => {
     const transaction = await load()
     const state = fixture("prior-template\n")
@@ -402,6 +544,8 @@ describe("root-owned DockerMan template transaction", () => {
       (proof: any) => { proof.communityApps.entryPath = "/tmp/pretend.php" },
       (proof: any) => { proof.communityApps.implementationSymbol = "PreviousAppsHelpers::collectDockerApplications" },
       (proof: any) => { proof.communityApps.implementationPath = communityAppsHelperPath },
+      (proof: any) => { delete proof.jellyfin },
+      (proof: any) => { proof.jellyfin.restartCount += 1 },
     ]) {
       const state = fixture("prior-template\n")
       transaction.prepareDockerManTemplateTransaction(state.input, state.options)
@@ -498,7 +642,9 @@ describe("root-owned DockerMan template transaction", () => {
     const committingTemporary = temporaryPaths(committingJournal)
     writeFileSync(committingTemporary.journal, readFileSync(committingJournal.journalPath), { mode: 0o600 })
     chmodSync(committingTemporary.journal, 0o600)
-    expect(transaction.inspectDockerManTemplateTransactionForRecovery(committingJournal.options)?.state).toBe("rollback")
+    const recoveryOutput: string[] = []
+    transaction.runDockerManTemplateTransactionCli(["recover-status"], committingJournal.options, (text) => recoveryOutput.push(text))
+    expect(JSON.parse(recoveryOutput.join(""))).toMatchObject({ state: "rollback", jellyfin })
     expect(transaction.rollbackDockerManTemplateTransaction(committingJournal.options)).toBe(true)
     expect(existsSync(committingTemporary.journal)).toBe(false)
 
@@ -596,6 +742,7 @@ describe("root-owned DockerMan template transaction", () => {
       [(record: any) => { record.priorTemplate.bytesBase64 = "not-base64" }, /prior bytes/u],
       [(record: any) => { record.targetImageId = "mutable" }, /release identity/u],
       [(record: any) => { record.canonicalVersionTag = "ghcr.io/ourostack/ouroboros-butler:latest" }, /release identity/u],
+      [(record: any) => { record.jellyfin.restartCount = -1 }, /Jellyfin checkpoint/u],
     ]) {
       const state = fixture("prior-template\n")
       const valid = transaction.prepareDockerManTemplateTransaction(state.input, state.options)
