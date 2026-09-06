@@ -699,7 +699,7 @@ if assert_restore_preflight; then command printf 'MUTATION\n'; else exit $?; fi`
       .replace("PACKAGE_VERSION=<released-version>", "PACKAGE_VERSION=0.1.0-alpha.798")
       .replace("MANIFEST_DIGEST=sha256:<reviewed-release-manifest-digest>", `MANIFEST_DIGEST=sha256:${"f".repeat(64)}`)
       .replace("IMAGE_ID=sha256:<reviewed-local-image-id>", `IMAGE_ID=sha256:${"e".repeat(64)}`)
-    const gateIndex = update.indexOf("UPDATE_ENTRY_CONTAINER_NAMES=")
+    const gateIndex = update.indexOf("admit_sanctuary_update_entry")
     expect(gateIndex).toBeGreaterThan(-1)
     for (const mutation of [
       'docker pull "$VERSION_IMAGE"',
@@ -722,6 +722,8 @@ if assert_restore_preflight; then command printf 'MUTATION\n'; else exit $?; fi`
     }
 
     const sourcePin = extractRunbookFunction(runbook, "assert_sanctuary_update_source_pin")
+    const entryAdmission = extractRunbookFunction(runbook, "admit_sanctuary_update_entry")
+      .replaceAll("/boot/config/custom/ouro-butler/docker-man-template-transaction.json", "$ENTRY_JOURNAL")
     const script = String.raw`set -eu
 SCENARIO=$1
 source_image() {
@@ -775,12 +777,15 @@ ${extractRunbookFunction(runbook, "assert_only_running_butler")}
 ${extractRunbookFunction(runbook, "assert_update_topology")}
 ${sourcePin}
 ${extractRunbookFunction(runbook, "validate_sanctuary_legacy_staging")}
+${extractRunbookFunction(runbook, "classify_sanctuary_update_source")}
+${entryAdmission}
 ${updatePrelude}`
     const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-update-entry-pin-"))
     try {
       const callLog = path.join(testRoot, "calls.log")
       const environment = {
         CALL_LOG: callLog,
+        ENTRY_JOURNAL: path.join(testRoot, "absent-transaction.json"),
         LEGACY_CONTAINER_ID: "a".repeat(64),
         ALPHA742_IMAGE_ID: "sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d",
         ALPHA797_IMAGE_ID: "sha256:e337dff04c92d116b269052f473b26a47eea933d017d1befc73af50dd37bb08d",
@@ -800,6 +805,59 @@ ${updatePrelude}`
         const result = runConditionalHelper(script, scenario, environment)
         expect(result.status, `${scenario}\n${result.stderr}`).toBe(91)
         expect(fs.readFileSync(callLog, "utf8"), scenario).toBe("MUTATION:docker:pull ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.798\n")
+      }
+    } finally {
+      fs.rmSync(testRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("stages exact recovery tools before repairing an interrupted DockerMan transaction", () => {
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const admission = extractRunbookFunction(runbook, "admit_sanctuary_update_entry")
+      .replaceAll("/boot/config/custom/ouro-butler/docker-man-template-transaction.json", "$JOURNAL_PATH")
+    const updateStart = runbook.indexOf("Update:")
+    const updateEnd = runbook.indexOf("\nBackup:", updateStart)
+    const update = runbook.slice(updateStart, updateEnd)
+    const admissionCall = update.indexOf("admit_sanctuary_update_entry")
+    const pull = update.indexOf('docker pull "$VERSION_IMAGE"')
+    const exactAudit = update.indexOf('"$IMAGE_ID" --template /audit/sanctuary.exact-image.xml')
+    const recoverTemplate = update.indexOf("recover_dockerman_template_transaction")
+    const recoverBundle = update.indexOf('recover_pending_sanctuary_bundle_migration "$IMAGE_ID"')
+    const classifyRecoveredSource = update.indexOf("classify_sanctuary_update_source", recoverBundle)
+    const installGuard = update.indexOf('/bin/bash "$EVENT_SCRIPT_STAGE/install-usenet-guard.sh"')
+
+    expect(admissionCall).toBeGreaterThan(-1)
+    expect(admissionCall).toBeLessThan(pull)
+    expect(recoverTemplate).toBeGreaterThan(exactAudit)
+    expect(recoverBundle).toBeGreaterThan(recoverTemplate)
+    expect(classifyRecoveredSource).toBeGreaterThan(recoverBundle)
+    expect(installGuard).toBeGreaterThan(classifyRecoveredSource)
+    expect(update.indexOf("recover_dockerman_template_transaction", recoverTemplate + 1)).toBe(-1)
+    expect(update.indexOf('recover_pending_sanctuary_bundle_migration "$IMAGE_ID"', recoverBundle + 1)).toBe(-1)
+
+    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-update-recovery-admission-"))
+    try {
+      const journalPath = path.join(testRoot, "docker-man-template-transaction.json")
+      const targetPath = path.join(testRoot, "target")
+      fs.writeFileSync(targetPath, "target\n", { mode: 0o600 })
+      const script = String.raw`set -u
+classify_sanctuary_update_source() { command printf 'classify\n' >>"$CALL_LOG"; return "$CLASSIFY_STATUS"; }
+stat() { command printf '%s\n' "$JOURNAL_METADATA"; }
+${admission}
+admit_sanctuary_update_entry`
+      const callLog = path.join(testRoot, "calls.log")
+      for (const [scenario, prepare, metadata, classifyStatus, expectedStatus, expectedCalls] of [
+        ["absent", () => {}, "0:0:600", "73", 73, "classify\n"],
+        ["safe", () => fs.writeFileSync(journalPath, "{}\n", { mode: 0o600 }), "0:0:600", "73", 0, ""],
+        ["writable", () => fs.writeFileSync(journalPath, "{}\n", { mode: 0o644 }), "0:0:644", "73", 1, ""],
+        ["symlink", () => fs.symlinkSync(targetPath, journalPath), "0:0:600", "73", 1, ""],
+      ] as const) {
+        fs.rmSync(journalPath, { force: true })
+        fs.writeFileSync(callLog, "")
+        prepare()
+        const result = runConditionalHelper(script, "unused", { CALL_LOG: callLog, CLASSIFY_STATUS: classifyStatus, JOURNAL_METADATA: metadata, JOURNAL_PATH: journalPath })
+        expect(result.status, `${scenario}: ${result.stderr}`).toBe(expectedStatus)
+        expect(fs.readFileSync(callLog, "utf8"), scenario).toBe(expectedCalls)
       }
     } finally {
       fs.rmSync(testRoot, { recursive: true, force: true })
@@ -2750,6 +2808,42 @@ read_sanctuary_bundle_transaction_status "$IMAGE_ID"`
       fs.writeFileSync(path.join(bundleRoot, ".sanctuary-package-managed-rollback.json.committing"), "{}\n", { mode: 0o600 })
       const dual = runConditionalHelper(script, "dual", { BUNDLE_ROOT: bundleRoot, CALL_LOG: callLog, IMAGE_ID: imageId })
       expect(dual.status).not.toBe(0)
+    } finally {
+      fs.rmSync(testRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("rejects mismatched bundle and DockerMan recovery identities before mutation", () => {
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const recovery = extractRunbookFunction(runbook, "recover_dockerman_template_transaction").replaceAll("/usr/local/bin/node", "node")
+    const oldImage = `sha256:${"a".repeat(64)}`
+    const targetImage = `sha256:${"b".repeat(64)}`
+    const otherImage = `sha256:${"c".repeat(64)}`
+    const versionImage = "ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.798"
+    const manifestDigest = `sha256:${"d".repeat(64)}`
+    const script = String.raw`set -u
+node() {
+  if test "$1" = "$STAGED_DOCKERMAN_TRANSACTION" && test "$2" = recover-status; then command printf '%s\n' "$TEMPLATE_STATUS"; else command "$NODE_BINARY" "$@"; fi
+}
+validate_exact_image_id() { return 0; }
+read_sanctuary_bundle_transaction_status() { command printf '%s\n' "$BUNDLE_STATUS"; }
+recover_pending_sanctuary_bundle_migration() { command printf 'recover-bundle\n' >>"$CALL_LOG"; return 91; }
+docker() { command printf 'docker:%s\n' "$*" >>"$CALL_LOG"; return 92; }
+${recovery}
+recover_dockerman_template_transaction`
+    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-cross-journal-recovery-"))
+    try {
+      const templateStatus = JSON.stringify({ state: "rollback", rollbackImageId: oldImage, targetImageId: targetImage, canonicalVersionTag: versionImage, reviewedManifestDigest: manifestDigest })
+      for (const [name, bundleStatus] of [
+        ["rollback-image", JSON.stringify({ state: "rollback", rollbackImageId: otherImage, targetImageId: targetImage })],
+        ["target-image", JSON.stringify({ state: "rollback", rollbackImageId: oldImage, targetImageId: otherImage })],
+      ] as const) {
+        const callLog = path.join(testRoot, `${name}.log`)
+        fs.writeFileSync(callLog, "")
+        const result = runConditionalHelper(script, "unused", { AUDIT_RUNNER_IMAGE_ID: targetImage, BUNDLE_STATUS: bundleStatus, CALL_LOG: callLog, EVENT_ASSET_STAGE: testRoot, IMAGE_ID: targetImage, MANIFEST_DIGEST: manifestDigest, NODE_BINARY: process.execPath, STAGED_DOCKERMAN_TRANSACTION: "/tmp/transaction.mjs", TEMPLATE_STATUS: templateStatus, VERSION_IMAGE: versionImage })
+        expect(result.status, `${name}: ${result.stderr}`).not.toBe(0)
+        expect(fs.readFileSync(callLog, "utf8"), name).toBe("")
+      }
     } finally {
       fs.rmSync(testRoot, { recursive: true, force: true })
     }

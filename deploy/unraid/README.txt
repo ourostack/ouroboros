@@ -1026,17 +1026,31 @@ Effective-spec audit helper:
       test "$TEMPLATE_RECOVERY_MANIFEST_DIGEST" = "$MANIFEST_DIGEST" || return 1
       validate_exact_image_id "$TEMPLATE_RECOVERY_ROLLBACK_IMAGE_ID" || return $?
       TEMPLATE_RECOVERY_BUNDLE_STATUS=$(read_sanctuary_bundle_transaction_status "$IMAGE_ID") || return $?
-      TEMPLATE_RECOVERY_BUNDLE_STATE=$(printf '%s' "$TEMPLATE_RECOVERY_BUNDLE_STATUS" | /usr/local/bin/node -e '
+      TEMPLATE_RECOVERY_BUNDLE_IDENTITIES=$(printf '%s' "$TEMPLATE_RECOVERY_BUNDLE_STATUS" | /usr/local/bin/node -e '
         let input = "";
         process.stdin.setEncoding("utf8");
         process.stdin.on("data", chunk => { input += chunk; });
         process.stdin.on("end", () => {
           const value = JSON.parse(input);
-          if (value === null) process.stdout.write("absent");
-          else if (value && ["rollback", "committing"].includes(value.state)) process.stdout.write(value.state);
+          if (value === null) process.stdout.write("absent - -");
+          else if (value && ["rollback", "committing"].includes(value.state) && typeof value.rollbackImageId === "string" && typeof value.targetImageId === "string") process.stdout.write([value.state, value.rollbackImageId, value.targetImageId].join(" "));
           else process.exit(1);
         });
       ') || return $?
+      set -- $TEMPLATE_RECOVERY_BUNDLE_IDENTITIES
+      test "$#" -eq 3 || return 1
+      TEMPLATE_RECOVERY_BUNDLE_STATE=$1
+      TEMPLATE_RECOVERY_BUNDLE_ROLLBACK_IMAGE_ID=$2
+      TEMPLATE_RECOVERY_BUNDLE_TARGET_IMAGE_ID=$3
+      if test "$TEMPLATE_RECOVERY_BUNDLE_STATE" = absent; then
+        test "$TEMPLATE_RECOVERY_BUNDLE_ROLLBACK_IMAGE_ID" = - && test "$TEMPLATE_RECOVERY_BUNDLE_TARGET_IMAGE_ID" = - || return 1
+      else
+        validate_exact_image_id "$TEMPLATE_RECOVERY_BUNDLE_ROLLBACK_IMAGE_ID" || return $?
+        validate_exact_image_id "$TEMPLATE_RECOVERY_BUNDLE_TARGET_IMAGE_ID" || return $?
+        test "$TEMPLATE_RECOVERY_BUNDLE_ROLLBACK_IMAGE_ID" != "$TEMPLATE_RECOVERY_BUNDLE_TARGET_IMAGE_ID" || return 1
+        test "$TEMPLATE_RECOVERY_BUNDLE_ROLLBACK_IMAGE_ID" = "$TEMPLATE_RECOVERY_ROLLBACK_IMAGE_ID" || return 1
+        test "$TEMPLATE_RECOVERY_BUNDLE_TARGET_IMAGE_ID" = "$TEMPLATE_RECOVERY_TARGET_IMAGE_ID" || return 1
+      fi
       TEMPLATE_RECOVERY_EVIDENCE=$EVENT_ASSET_STAGE/template-recovery-evidence.json
       TEMPLATE_RECOVERY_INSPECTION=$EVENT_ASSET_STAGE/template-recovery-inspection.json
       TEMPLATE_RECOVERY_FINAL_ROOT=$EVENT_ASSET_STAGE/template-recovery-final
@@ -1205,6 +1219,26 @@ Effective-spec audit helper:
       if test -n "$EXPECTED_LEGACY_CONTAINER_ID"; then
         test "$LEGACY_STAGING_CONTAINER_ID" = "$EXPECTED_LEGACY_CONTAINER_ID" || return 1
         test "$LEGACY_STAGING_IMAGE_ID" = "$EXPECTED_LEGACY_IMAGE_ID" || return 1
+      fi
+    }
+    classify_sanctuary_update_source() {
+      UPDATE_ENTRY_CONTAINER_NAMES=$(docker container ls -a --format '{{.Names}}') || return $?
+      if printf '%s\n' "$UPDATE_ENTRY_CONTAINER_NAMES" | grep -Fxq ouro-butler-staging; then
+        validate_sanctuary_legacy_staging || return $?
+        assert_sanctuary_update_source_pin ouro-butler-staging "$LEGACY_STAGING_IMAGE_ID"
+      else
+        UPDATE_ENTRY_SOURCE_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler) || return $?
+        assert_update_topology "$UPDATE_ENTRY_SOURCE_IMAGE_ID" || return $?
+        assert_sanctuary_update_source_pin ouro-butler "$UPDATE_ENTRY_SOURCE_IMAGE_ID"
+      fi
+    }
+    admit_sanctuary_update_entry() {
+      UPDATE_ENTRY_RECOVERY_JOURNAL=/boot/config/custom/ouro-butler/docker-man-template-transaction.json
+      if test -e "$UPDATE_ENTRY_RECOVERY_JOURNAL" || test -L "$UPDATE_ENTRY_RECOVERY_JOURNAL"; then
+        test -f "$UPDATE_ENTRY_RECOVERY_JOURNAL" && test ! -L "$UPDATE_ENTRY_RECOVERY_JOURNAL" || return 1
+        test "$(stat -c '%u:%g:%a' "$UPDATE_ENTRY_RECOVERY_JOURNAL")" = 0:0:600
+      else
+        classify_sanctuary_update_source
       fi
     }
     prepare_sanctuary_legacy_adoption() {
@@ -1970,16 +2004,8 @@ NODE
       return 1
     }
 Update:
-  Before downloading or staging anything, classify the live source with the existing topology gates. Initial alpha.797 adoption must prove the exact staging name and image pin; normal updates must prove the existing production topology. This step is read-only:
-    UPDATE_ENTRY_CONTAINER_NAMES=$(docker container ls -a --format '{{.Names}}')
-    if printf '%s\n' "$UPDATE_ENTRY_CONTAINER_NAMES" | grep -Fxq ouro-butler-staging; then
-      validate_sanctuary_legacy_staging
-      assert_sanctuary_update_source_pin ouro-butler-staging "$LEGACY_STAGING_IMAGE_ID"
-    else
-      UPDATE_ENTRY_SOURCE_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler)
-      assert_update_topology "$UPDATE_ENTRY_SOURCE_IMAGE_ID"
-      assert_sanctuary_update_source_pin ouro-butler "$UPDATE_ENTRY_SOURCE_IMAGE_ID"
-    fi
+  Before downloading or staging anything, classify the live source with the existing topology gates unless the fixed root-owned DockerMan transaction journal signals that an interrupted update needs the exact packaged recovery tools. Initial alpha.797 adoption must prove the exact staging name and image pin; normal updates must prove the existing production topology. A recovery journal admits only image acquisition and private staging until the staged transaction implementation validates the full journal and restores a classifiable source:
+    admit_sanctuary_update_entry
   Set the released package version, its reviewed release-manifest digest, and its reviewed platform-local image ID. The canonical package-version tag is immutable release identity, while the digest and local ID independently prove what the registry and this host resolved:
     PACKAGE_VERSION=<released-version>
     MANIFEST_DIGEST=sha256:<reviewed-release-manifest-digest>
@@ -1998,7 +2024,7 @@ Update:
     test "$DOCKERMAN_TEMPLATE_PATH" = /boot/config/plugins/dockerMan/templates-user/my-ouro-butler.xml
     test "$DOCKERMAN_TEMPLATE_JOURNAL" = /boot/config/custom/ouro-butler/docker-man-template-transaction.json
   Before stopping, renaming, or creating any Butler container, extract the packaged event, template, runtime-policy, and DockerMan transaction assets from that exact image ID. Do not copy these files from a checkout or another image.
-  Install the event assets transactionally, audit the original version-tagged template, create a separate temporary copy for exact local-image-ID auditing, and keep the private stage until the outer transaction commits:
+  Stage the event assets, audit the original version-tagged template, create a separate temporary copy for exact local-image-ID auditing, and keep the private stage until the outer transaction commits:
     EVENT_ASSET_STAGE=$(mktemp -d /mnt/user/appdata/ouro-butler/staging/ouro-events.XXXXXX)
     chmod 0700 "$EVENT_ASSET_STAGE"
     EVENT_SCRIPT_STAGE="$EVENT_ASSET_STAGE/ouro-events"
@@ -2039,8 +2065,6 @@ Update:
     ACTUAL_EVENT_ASSETS=$(find "$EVENT_SCRIPT_STAGE" -mindepth 1 -maxdepth 1 -type f -exec basename {} \; | LC_ALL=C sort)
     test "$ACTUAL_EVENT_ASSETS" = "$EXPECTED_EVENT_ASSETS"
     test -z "$(find "$EVENT_SCRIPT_STAGE" -mindepth 1 -maxdepth 1 \( -type l -o ! -type f \) -print -quit)"
-    /bin/bash "$EVENT_SCRIPT_STAGE/install-usenet-guard.sh" --source-root "$EVENT_SCRIPT_STAGE"
-    /bin/bash /boot/config/custom/ouro-events/install-usenet-guard.sh --boot --install-root /boot/config/custom
     verify_installed_usenet_guard() {
       test "$(findmnt -n -o FSTYPE --target /boot/config/custom)" = vfat
       test "$(stat -c '%u:%g:%a' /boot/config/custom/usenet_health.sh)" = 0:0:600
@@ -2070,7 +2094,6 @@ Update:
       INSTALLED_SPOOL_SIZE=$(findmnt -bn -o SIZE --target /boot/config/custom/ouro-events/spool)
       test "$INSTALLED_SPOOL_SIZE" -le 4194304
     }
-    verify_installed_usenet_guard
     docker run --rm --pull=never --network=none \
       --user 0:0 --read-only --cap-drop=ALL --security-opt=no-new-privileges \
       --entrypoint /opt/ouro/deploy/unraid/audit-container-spec.sh \
@@ -2097,6 +2120,12 @@ Update:
       --mount "type=bind,src=$STAGED_EXACT_TEMPLATE,dst=/audit/sanctuary.exact-image.xml,readonly" \
       --mount "type=bind,src=$STAGED_RUNTIME_POLICY,dst=/audit/container-runtime.json,readonly" \
       "$IMAGE_ID" --template /audit/sanctuary.exact-image.xml --runtime-policy /audit/container-runtime.json --expected-image "$IMAGE_ID"
+    recover_dockerman_template_transaction
+    recover_pending_sanctuary_bundle_migration "$IMAGE_ID"
+    classify_sanctuary_update_source
+    /bin/bash "$EVENT_SCRIPT_STAGE/install-usenet-guard.sh" --source-root "$EVENT_SCRIPT_STAGE"
+    /bin/bash /boot/config/custom/ouro-events/install-usenet-guard.sh --boot --install-root /boot/config/custom
+    verify_installed_usenet_guard
   If extraction or transactional installation fails, abort before changing any live Butler container. The installer restores the previous assets, go file, and cron; production stays running.
   If boot activation or verification fails after that transaction commits, leave production untouched, repair or rerun this exact-image installation, and stop. Container and DockerMan rollback begin only after the later production preflight succeeds.
   Initial install/adoption is a separate terminal path for the verified older layout: no production or rollback, exactly one running (possibly unhealthy) ouro-butler-staging, and no legacy-evidence container. After the helpers above are loaded and IMAGE_ID is resolved, run this exact sequence.
@@ -2112,8 +2141,6 @@ Update:
   If activation fails, it removes only a partial target container, preserves the stopped legacy evidence, restores the prior template, leaves autostart disabled, and returns the original failure.
   For normal updates, preflight accepts only the pinned alpha.742 two-mount source, the pinned pre-package-managed alpha.797 source, or an already package-managed canonical source before any autostart or live-container change. The two pinned exceptions may validate an old source, but can never authorize creation of a new target.
   Production must be the only running Butler poller; staging must be absent; rollback may be absent or one stopped container with the exact production image. A stopped legacy-evidence container is preserved. Disable every Butler name in Unraid's array-autostart file and verify that result before stopping production. First resolve and validate the exact image ID of the known-good production container while it is still running, so a lookup failure cannot strand a renamed container:
-    recover_dockerman_template_transaction
-    recover_pending_sanctuary_bundle_migration "$IMAGE_ID"
     /bin/bash /boot/config/custom/ouro-events/bootstrap-spool.sh --mount
     test "$(findmnt -n -o FSTYPE --target /boot/config/custom/ouro-events/spool)" = tmpfs
     test "$(stat -c '%u:%g:%a' /boot/config/custom/ouro-events/spool)" = 0:0:755
