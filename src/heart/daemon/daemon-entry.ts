@@ -67,6 +67,8 @@ function parseSocketPath(argv: string[]): string {
 }
 
 const socketPath = parseSocketPath(process.argv)
+configureDaemonRuntimeLogger("daemon")
+
 const entryPath = path.resolve(__dirname, "daemon-entry.js")
 const mode = detectRuntimeMode(getRepoRoot())
 const managedAgents = listEnabledBundleAgents()
@@ -77,9 +79,6 @@ try {
   failFastSanctuaryBundlePreparationStartup({ failure, exit: (code) => process.exit(code) })
   throw failure
 }
-
-configureDaemonRuntimeLogger("daemon")
-
 emitNervesEvent({
   component: "daemon",
   event: "daemon.entry_start",

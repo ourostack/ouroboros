@@ -7,12 +7,13 @@ import {
   resolveSanctuaryPackageManagementActivation,
   resolveSanctuaryPackageManagedRoots,
 } from "../../../heart/daemon/sanctuary-package-management"
+import { ensureSanctuaryPackageManagedBundle, inspectSanctuaryDirectoryFromBase, sanctuaryDirectoriesShareIdentity, type SanctuaryPackageManagedBundleInspection } from "../../../heart/daemon/sanctuary-bundle-migration"
 
 const roots: string[] = []
 const VERSION = "0.1.0-alpha.798"
 
 function makeLayout(): { repoRoot: string; bundlesRoot: string; packageRoot: string; agentRoot: string } {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-package-activation-"))
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-package-activation-")))
   roots.push(root)
   const repoRoot = path.join(root, "repo")
   const bundlesRoot = path.join(root, "AgentBundles")
@@ -44,6 +45,21 @@ afterEach(() => {
 })
 
 describe("Sanctuary package-management activation", () => {
+  it("rejects relative directory identities", () => {
+    expect(inspectSanctuaryDirectoryFromBase("relative", [])).toBeNull()
+  })
+
+  it("treats a shared device and inode as one directory even when canonical path strings differ", () => {
+    expect(sanctuaryDirectoriesShareIdentity(
+      { realPath: "/first", device: 7, inode: 11 },
+      { realPath: "/second", device: 7, inode: 11 },
+    )).toBe(true)
+    expect(sanctuaryDirectoriesShareIdentity(
+      { realPath: "/first", device: 7, inode: 11 },
+      { realPath: "/second", device: 7, inode: 12 },
+    )).toBe(false)
+  })
+
   it("derives the one fixed root pair for non-argv consumers", () => {
     const layout = makeLayout()
     expect(resolveSanctuaryPackageManagedRoots({ repoRoot: layout.repoRoot, bundlesRoot: layout.bundlesRoot })).toEqual({
@@ -169,6 +185,81 @@ describe("Sanctuary package-management activation", () => {
     }).kind).toBe("invalid")
   })
 
+  it("rejects symlinked root ancestors and aliases that resolve to one real directory", () => {
+    const packageAncestor = makeLayout()
+    const packageAliasParent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-package-parent-alias-")))
+    roots.push(packageAliasParent)
+    const repoAlias = path.join(packageAliasParent, "repo")
+    fs.symlinkSync(packageAncestor.repoRoot, repoAlias)
+    expect(resolveSanctuaryPackageManagementActivation({
+      mode: "production",
+      argv: ["node", "daemon-entry.js", "--package-managed-agent", "sanctuary"],
+      managedAgents: ["sanctuary"],
+      repoRoot: repoAlias,
+      bundlesRoot: packageAncestor.bundlesRoot,
+      runtimePackageVersion: VERSION,
+    }).kind).toBe("invalid")
+
+    const deeperAncestor = makeLayout()
+    const deeperAliasParent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-deeper-parent-alias-")))
+    roots.push(deeperAliasParent)
+    const linkedGrandparent = path.join(deeperAliasParent, "linked-grandparent")
+    fs.symlinkSync(path.dirname(deeperAncestor.repoRoot), linkedGrandparent)
+    const repoBelowLinkedGrandparent = path.join(linkedGrandparent, path.basename(deeperAncestor.repoRoot))
+    expect(resolveSanctuaryPackageManagementActivation({
+      mode: "production",
+      argv: ["node", "daemon-entry.js", "--package-managed-agent", "sanctuary"],
+      managedAgents: ["sanctuary"],
+      repoRoot: repoBelowLinkedGrandparent,
+      bundlesRoot: deeperAncestor.bundlesRoot,
+      runtimePackageVersion: VERSION,
+    }).kind).toBe("invalid")
+
+    for (const segment of ["deploy", path.join("deploy", "unraid")]) {
+      const intermediate = makeLayout()
+      const linkedPath = path.join(intermediate.repoRoot, segment)
+      const realPath = `${linkedPath}-real`
+      fs.renameSync(linkedPath, realPath)
+      fs.symlinkSync(realPath, linkedPath)
+      expect(resolveSanctuaryPackageManagementActivation({
+        mode: "production",
+        argv: ["node", "daemon-entry.js", "--package-managed-agent", "sanctuary"],
+        managedAgents: ["sanctuary"],
+        repoRoot: intermediate.repoRoot,
+        bundlesRoot: intermediate.bundlesRoot,
+        runtimePackageVersion: VERSION,
+      }).kind).toBe("invalid")
+    }
+
+    const liveAncestor = makeLayout()
+    const liveAliasParent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-live-parent-alias-")))
+    roots.push(liveAliasParent)
+    const bundlesAlias = path.join(liveAliasParent, "AgentBundles")
+    fs.symlinkSync(liveAncestor.bundlesRoot, bundlesAlias)
+    expect(resolveSanctuaryPackageManagementActivation({
+      mode: "production",
+      argv: ["node", "daemon-entry.js", "--package-managed-agent", "sanctuary"],
+      managedAgents: ["sanctuary"],
+      repoRoot: liveAncestor.repoRoot,
+      bundlesRoot: bundlesAlias,
+      runtimePackageVersion: VERSION,
+    }).kind).toBe("invalid")
+
+    const sameDirectory = makeLayout()
+    const sameAliasParent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-same-root-alias-")))
+    roots.push(sameAliasParent)
+    const sharedBundlesAlias = path.join(sameAliasParent, "AgentBundles")
+    fs.symlinkSync(path.dirname(sameDirectory.packageRoot), sharedBundlesAlias)
+    expect(resolveSanctuaryPackageManagementActivation({
+      mode: "production",
+      argv: ["node", "daemon-entry.js", "--package-managed-agent", "sanctuary"],
+      managedAgents: ["sanctuary"],
+      repoRoot: sameDirectory.repoRoot,
+      bundlesRoot: sharedBundlesAlias,
+      runtimePackageVersion: VERSION,
+    }).kind).toBe("invalid")
+  })
+
   it("invokes the shared ensure once only for an active decision", () => {
     const { decision } = resolve()
     const ensure = vi.fn(() => ({
@@ -231,5 +322,18 @@ describe("Sanctuary package-management activation", () => {
     expect(() => prepareSanctuaryPackageManagedBundle(decision, { ensure: inconsistent })).toThrow("human-required: run_verified_update_recovery")
 
     expect(() => prepareSanctuaryPackageManagedBundle(decision)).toThrow("human-required: roll_back_or_install_verified_release")
+  })
+
+  it.each([
+    ["mismatch", { ok: true, data: { runtimePackageVersion: VERSION, packagedBundleVersion: VERSION, liveBundleVersion: "old", parity: "mismatch", mismatchCodes: ["managed_file_content"], journalState: "absent", ready: false, repair: { actor: "human-required", action: "restart_from_verified_release" } } }, "restart_from_verified_release"],
+    ["invalid package", { ok: false, error: { code: "invalid_package_source", message: "verified release contents are invalid", degraded: true, repair: { actor: "human-required", action: "roll_back_or_install_verified_release" } } }, "roll_back_or_install_verified_release"],
+    ["invalid journal", { ok: false, error: { code: "invalid_journal", message: "Sanctuary update recovery is required", degraded: true, repair: { actor: "human-required", action: "run_verified_update_recovery" } } }, "run_verified_update_recovery"],
+  ] as const)("preserves the approved action from a known non-converged second inspection: %s", (_label, after, action) => {
+    const { decision } = resolve()
+    const before: SanctuaryPackageManagedBundleInspection = { ok: true, data: { runtimePackageVersion: VERSION, packagedBundleVersion: VERSION, liveBundleVersion: "old", parity: "mismatch", mismatchCodes: ["managed_file_content"], journalState: "absent", ready: false, repair: { actor: "human-required", action: "restart_from_verified_release" } } }
+    const inspect = vi.fn<() => SanctuaryPackageManagedBundleInspection>().mockReturnValueOnce(before).mockReturnValueOnce(after as SanctuaryPackageManagedBundleInspection)
+    const ensure = () => ensureSanctuaryPackageManagedBundle({ packageRoot: "/package", agentRoot: "/live", runtimePackageVersion: VERSION }, { inspect, migrate: vi.fn(() => ({ managedFilesUpdated: 0 })) })
+
+    expect(() => prepareSanctuaryPackageManagedBundle(decision, { ensure })).toThrow(`human-required: ${action}`)
   })
 })

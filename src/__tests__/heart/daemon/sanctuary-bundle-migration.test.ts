@@ -17,7 +17,7 @@ import {
 const roots: string[] = []
 
 function makeRoot(name: string): string {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), `${name}-`))
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), `${name}-`)))
   roots.push(root)
   return root
 }
@@ -193,6 +193,27 @@ describe("Sanctuary package-managed bundle migration", () => {
     expect(rollbackSanctuaryPackageManagedBundle(agentRoot)).toBe(false)
   })
 
+  it.each([
+    ["linked stage", (stage: string) => fs.symlinkSync(path.dirname(stage), stage), /stage is invalid/u],
+    ["unexpected stage entry", (stage: string) => { fs.mkdirSync(stage); fs.writeFileSync(path.join(stage, "unexpected"), "bad") }, /unexpected entries/u],
+    ["empty stage", (stage: string) => fs.mkdirSync(stage), null],
+    ["linked stage value", (stage: string) => { fs.mkdirSync(stage); fs.symlinkSync(path.dirname(stage), path.join(stage, "value")) }, /value is invalid/u],
+  ])("handles an interrupted managed-file %s without trusting it", (_label, arrange, expectedError) => {
+    const packageRoot = makePackageRoot()
+    const agentRoot = makeRoot("sanctuary-managed-file-stage")
+    migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot, retainRollback: true, rollbackImageId: `sha256:${"1".repeat(64)}`, targetImageId: `sha256:${"9".repeat(64)}` })
+    const stage = `${path.join(agentRoot, SANCTUARY_PACKAGE_MANAGED_FILES[0])}.package-migration.interrupted`
+    arrange(stage)
+
+    if (expectedError) {
+      expect(() => rollbackSanctuaryPackageManagedBundle(agentRoot)).toThrow(expectedError)
+      expect(fs.existsSync(stage)).toBe(true)
+    } else {
+      expect(rollbackSanctuaryPackageManagedBundle(agentRoot)).toBe(true)
+      expect(fs.existsSync(stage)).toBe(false)
+    }
+  })
+
   it("commits a proven migration and fails closed on a corrupt or symlinked rollback record", () => {
     const packageRoot = makePackageRoot()
     const agentRoot = makeRoot("sanctuary-live-durable-commit")
@@ -305,25 +326,27 @@ describe("Sanctuary package-managed bundle migration", () => {
     const invalidStage = path.join(agentRoot, `${SANCTUARY_BUNDLE_ROLLBACK_FILE}.package-migration.invalid`)
     fs.mkdirSync(invalidStage)
     fs.writeFileSync(path.join(invalidStage, "unexpected"), "bad")
-    expect(() => migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot, retainRollback: true, rollbackImageId: `sha256:${"6".repeat(64)}`, targetImageId: `sha256:${"9".repeat(64)}` })).toThrow(/unexpected entries/u)
+    expect(() => migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot, retainRollback: true, rollbackImageId: `sha256:${"6".repeat(64)}`, targetImageId: `sha256:${"9".repeat(64)}` })).toThrow(/journal staging residue/u)
     expect(fs.existsSync(invalidStage)).toBe(true)
     fs.unlinkSync(path.join(invalidStage, "unexpected"))
     fs.rmdirSync(invalidStage)
 
     const emptyStage = path.join(agentRoot, `${SANCTUARY_BUNDLE_ROLLBACK_FILE}.package-migration.empty`)
     fs.mkdirSync(emptyStage)
+    expect(() => migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot, retainRollback: true, rollbackImageId: `sha256:${"6".repeat(64)}`, targetImageId: `sha256:${"9".repeat(64)}` })).toThrow(/journal staging residue/u)
+    expect(fs.existsSync(emptyStage)).toBe(true)
+    fs.rmdirSync(emptyStage)
     migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot, retainRollback: true, rollbackImageId: `sha256:${"6".repeat(64)}`, targetImageId: `sha256:${"9".repeat(64)}` })
-    expect(fs.existsSync(emptyStage)).toBe(false)
     expect(rollbackSanctuaryPackageManagedBundle(agentRoot)).toBe(true)
 
     const linkedStage = path.join(agentRoot, `${SANCTUARY_BUNDLE_ROLLBACK_FILE}.package-migration.linked`)
     fs.symlinkSync(makeRoot("sanctuary-linked-stage-target"), linkedStage)
-    expect(() => migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot, retainRollback: true, rollbackImageId: `sha256:${"6".repeat(64)}`, targetImageId: `sha256:${"9".repeat(64)}` })).toThrow(/stage is invalid/u)
+    expect(() => migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot, retainRollback: true, rollbackImageId: `sha256:${"6".repeat(64)}`, targetImageId: `sha256:${"9".repeat(64)}` })).toThrow(/journal staging residue/u)
     fs.unlinkSync(linkedStage)
 
     const invalidValueStage = path.join(agentRoot, `${SANCTUARY_BUNDLE_ROLLBACK_FILE}.package-migration.value`)
     fs.mkdirSync(path.join(invalidValueStage, "value"), { recursive: true })
-    expect(() => migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot, retainRollback: true, rollbackImageId: `sha256:${"6".repeat(64)}`, targetImageId: `sha256:${"9".repeat(64)}` })).toThrow(/value is invalid/u)
+    expect(() => migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot, retainRollback: true, rollbackImageId: `sha256:${"6".repeat(64)}`, targetImageId: `sha256:${"9".repeat(64)}` })).toThrow(/journal staging residue/u)
   })
 
   it("fails closed before writes for missing package files or symlinked destinations", () => {
@@ -412,6 +435,49 @@ describe("Sanctuary package-managed bundle migration", () => {
       ok: true,
       data: { ...exact, journalState: "committing", ready: false, repair: { actor: "human-required", action: "run_verified_update_recovery" } },
     })
+  })
+
+  it("rejects symlinked root ancestors and distinct path aliases to the same real directory before mutation", () => {
+    const packageRoot = makePackageRoot()
+    const agentRoot = makeExactAgentRoot(packageRoot)
+    const aliasParent = makeRoot("sanctuary-inspection-alias-parent")
+    const packageParentAlias = path.join(aliasParent, "package-parent")
+    fs.symlinkSync(path.dirname(packageRoot), packageParentAlias)
+    const packageAlias = path.join(packageParentAlias, path.basename(packageRoot))
+    expect(inspect(packageAlias, agentRoot)).toMatchObject({ ok: false, error: { code: "invalid_package_root" } })
+    expect(() => migrateSanctuaryPackageManagedBundle({ packageRoot: packageAlias, agentRoot })).toThrow(/canonical/u)
+
+    const liveParentAlias = path.join(aliasParent, "live-parent")
+    fs.symlinkSync(path.dirname(agentRoot), liveParentAlias)
+    const liveAlias = path.join(liveParentAlias, path.basename(agentRoot))
+    expect(inspect(packageRoot, liveAlias)).toMatchObject({ ok: false, error: { code: "invalid_live_root" } })
+    expect(() => migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot: liveAlias })).toThrow(/canonical/u)
+
+    const grandparentAlias = path.join(aliasParent, "grandparent")
+    const packageGrandparent = path.dirname(path.dirname(packageRoot))
+    fs.symlinkSync(packageGrandparent, grandparentAlias)
+    const packageBelowLinkedGrandparent = path.join(grandparentAlias, path.basename(path.dirname(packageRoot)), path.basename(packageRoot))
+    expect(inspect(packageBelowLinkedGrandparent, agentRoot)).toMatchObject({ ok: false, error: { code: "invalid_package_root" } })
+    expect(() => migrateSanctuaryPackageManagedBundle({ packageRoot: packageBelowLinkedGrandparent, agentRoot })).toThrow(/canonical/u)
+
+    const sameRootAlias = `${packageRoot}${path.sep}.`
+    const before = treeSnapshot(packageRoot)
+    expect(inspect(packageRoot, sameRootAlias)).toMatchObject({ ok: false, error: { code: "invalid_live_root" } })
+    expect(() => migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot: sameRootAlias })).toThrow(/distinct real directories/u)
+    expect(treeSnapshot(packageRoot)).toEqual(before)
+  })
+
+  it.each(["dangling symlink", "staged directory", "staged file"])("fails closed on %s journal residue", (residue) => {
+    const packageRoot = makePackageRoot()
+    const agentRoot = makeExactAgentRoot(packageRoot)
+    const journalPath = path.join(agentRoot, SANCTUARY_BUNDLE_ROLLBACK_FILE)
+    if (residue === "dangling symlink") fs.symlinkSync(path.join(agentRoot, "missing-journal-target"), journalPath)
+    const stagedPath = `${journalPath}.package-migration.interrupted`
+    if (residue === "staged directory") fs.mkdirSync(stagedPath)
+    if (residue === "staged file") fs.writeFileSync(stagedPath, "partial")
+
+    expect(inspect(packageRoot, agentRoot)).toEqual({ ok: false, error: { code: "invalid_journal", message: "Sanctuary update recovery is required", degraded: true, repair: { actor: "human-required", action: "run_verified_update_recovery" } } })
+    expect(() => inspectSanctuaryPackageManagedBundleRollback(agentRoot)).toThrow(/journal|rollback record/u)
   })
 
   it("emits unique mismatch codes in declaration order and bounds the repair", () => {
@@ -587,7 +653,9 @@ describe("Sanctuary package-managed bundle migration", () => {
       if (state === "committing") fs.renameSync(path.join(mismatchedRoot, SANCTUARY_BUNDLE_ROLLBACK_FILE), path.join(mismatchedRoot, `${SANCTUARY_BUNDLE_ROLLBACK_FILE}.committing`))
       fs.writeFileSync(path.join(mismatchedRoot, SANCTUARY_PACKAGE_MANAGED_FILES[0]), "drift\n")
       const before = treeSnapshot(mismatchedRoot)
-      expect(() => ensureSanctuaryPackageManagedBundle({ packageRoot, agentRoot: mismatchedRoot, runtimePackageVersion: "0.1.0-alpha.743" })).toThrow("Sanctuary package-managed bundle requires verified update recovery")
+      const inspection = inspect(packageRoot, mismatchedRoot)
+      expect(ensureSanctuaryPackageManagedBundle({ packageRoot, agentRoot: mismatchedRoot, runtimePackageVersion: "0.1.0-alpha.743" })).toEqual(inspection)
+      expect(inspection).toMatchObject({ ok: true, data: { ready: false, repair: { action: "run_verified_update_recovery" } } })
       expect(treeSnapshot(mismatchedRoot)).toEqual(before)
     }
   })
@@ -624,18 +692,40 @@ describe("Sanctuary package-managed bundle migration", () => {
     }
   })
 
-  it("returns an initial typed error and rejects every nonconverged post-migration state", () => {
+  it("repairs metadata mode without reserializing operator-owned extension bytes", () => {
+    const packageRoot = makePackageRoot()
+    const agentRoot = makeExactAgentRoot(packageRoot)
+    const metaPath = path.join(agentRoot, "bundle-meta.json")
+    const exactBytes = Buffer.from('{"operatorNote":"keep exact spacing","lastUpdated":"2026-08-30T00:00:00.000Z", "bundleSchemaVersion":3, "runtimeVersion":"0.1.0-alpha.743"}\n')
+    fs.writeFileSync(metaPath, exactBytes)
+    fs.chmodSync(metaPath, 0o640)
+
+    expect(migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot })).toEqual({ managedFilesUpdated: 0 })
+    expect(fs.readFileSync(metaPath)).toEqual(exactBytes)
+    expect(fs.statSync(metaPath).mode & 0o777).toBe(0o600)
+  })
+
+  it("returns every actionable inspection and rejects only structurally inconsistent post-migration readiness", () => {
     const error = { ok: false as const, error: { code: "inspection_unavailable" as const, message: "Sanctuary install state is unavailable" as const, degraded: true as const, repair: { actor: "human-required" as const, action: "run_verified_update_recovery" as const } } }
     expect(ensureSanctuaryPackageManagedBundle({ packageRoot: "/package", agentRoot: "/live", runtimePackageVersion: "v" }, { inspect: vi.fn(() => error) })).toEqual(error)
 
     const before = { ok: true as const, data: { runtimePackageVersion: "v", packagedBundleVersion: "v", liveBundleVersion: "old", parity: "mismatch" as const, mismatchCodes: ["managed_file_content" as const], journalState: "absent" as const, ready: false, repair: { actor: "human-required" as const, action: "restart_from_verified_release" as const } } }
-    const afterStates = [
+    const actionableAfterStates = [
       error,
       { ok: true as const, data: { ...before.data, liveBundleVersion: "v", parity: "exact" as const, mismatchCodes: [], journalState: "committing" as const, ready: false, repair: { actor: "human-required" as const, action: "run_verified_update_recovery" as const } } },
+    ]
+    for (const after of actionableAfterStates) {
+      const inspectDependency = vi.fn().mockReturnValueOnce(before).mockReturnValueOnce(after)
+      const migrate = vi.fn(() => ({ managedFilesUpdated: 0 }))
+      expect(ensureSanctuaryPackageManagedBundle({ packageRoot: "/package", agentRoot: "/live", runtimePackageVersion: "v" }, { inspect: inspectDependency, migrate })).toEqual(after)
+      expect(migrate).toHaveBeenCalledOnce()
+    }
+
+    const inconsistentAfterStates = [
       { ok: true as const, data: { ...before.data, liveBundleVersion: "v", parity: "mismatch" as const, mismatchCodes: ["managed_file_content" as const], journalState: "absent" as const, ready: true, repair: { actor: "human-required" as const, action: "restart_from_verified_release" as const } } },
       { ok: true as const, data: { ...before.data, liveBundleVersion: "v", parity: "exact" as const, mismatchCodes: [], journalState: "rollback" as const, ready: true, repair: { actor: "none" as const, action: "none" as const } } },
     ]
-    for (const after of afterStates) {
+    for (const after of inconsistentAfterStates) {
       const inspectDependency = vi.fn().mockReturnValueOnce(before).mockReturnValueOnce(after)
       const migrate = vi.fn(() => ({ managedFilesUpdated: 0 }))
       expect(() => ensureSanctuaryPackageManagedBundle({ packageRoot: "/package", agentRoot: "/live", runtimePackageVersion: "v" }, { inspect: inspectDependency, migrate })).toThrow("did not converge")

@@ -442,6 +442,11 @@ describe("daemon entrypoint", () => {
   it("stops invalid package activation before runtime constructors or health heartbeat", async () => {
     vi.resetModules()
     listEnabledBundleAgentsMock.mockReturnValue(["sanctuary"])
+    const capturedEvents: Array<{ event: string }> = []
+    const nerves = await import("../../../nerves/runtime")
+    const { createLogger } = await import("../../../nerves")
+    const configureDaemonRuntimeLogger = vi.fn(() => nerves.setRuntimeLogger(createLogger({ sinks: [(entry) => capturedEvents.push(entry)] })))
+    vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger }))
     const { createSanctuaryBundlePreparationFailure } = await import("../../../heart/daemon/daemon-bootstrap-startup")
     sanctuaryPackageManagementMocks.resolve.mockReturnValue({ kind: "invalid", failure: createSanctuaryBundlePreparationFailure("roll_back_or_install_verified_release") })
     const daemonCtor = vi.fn()
@@ -457,17 +462,19 @@ describe("daemon entrypoint", () => {
       const actual = await vi.importActual<typeof import("../../../heart/daemon/daemon-health")>("../../../heart/daemon/daemon-health")
       return { ...actual, startDaemonHealthHeartbeat: startHeartbeat }
     })
-    vi.doMock("../../../nerves/runtime", () => ({ emitNervesEvent: vi.fn() }))
-    vi.doMock("../../../heart/daemon/runtime-logging", () => ({ configureDaemonRuntimeLogger: vi.fn() }))
     vi.spyOn(process, "argv", "get").mockReturnValue(["node", "daemon-entry.js", "--package-managed-agent", "sanctuary"])
 
     await expect(import("../../../heart/daemon/daemon-entry")).rejects.toThrow("human-required: roll_back_or_install_verified_release")
     expect(exit).toHaveBeenCalledOnce()
     expect(exit).toHaveBeenCalledWith(1)
+    expect(configureDaemonRuntimeLogger).toHaveBeenCalledWith("daemon")
+    expect(configureDaemonRuntimeLogger.mock.invocationCallOrder[0]).toBeLessThan(sanctuaryPackageManagementMocks.resolve.mock.invocationCallOrder[0]!)
+    expect(capturedEvents).toContainEqual(expect.objectContaining({ level: "error", component: "daemon", event: "daemon.entry_error" }))
     expect(daemonCtor).not.toHaveBeenCalled()
     expect(processManagerCtor).not.toHaveBeenCalled()
     expect(senseManagerCtor).not.toHaveBeenCalled()
     expect(startHeartbeat).not.toHaveBeenCalled()
+    nerves.setRuntimeLogger(null)
     vi.doUnmock("../../../heart/daemon/daemon-health")
   })
 

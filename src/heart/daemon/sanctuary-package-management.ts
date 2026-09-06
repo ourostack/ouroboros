@@ -1,8 +1,9 @@
-import * as fs from "node:fs"
 import * as path from "node:path"
 import { emitNervesEvent } from "../../nerves/runtime"
 import {
   ensureSanctuaryPackageManagedBundle,
+  inspectSanctuaryDirectoryFromBase,
+  sanctuaryDirectoriesShareIdentity,
   type SanctuaryPackageManagedBundleInspection,
 } from "./sanctuary-bundle-migration"
 import { createSanctuaryBundlePreparationFailure } from "./daemon-bootstrap-startup"
@@ -16,15 +17,6 @@ export function resolveSanctuaryPackageManagedRoots(input: { repoRoot: string; b
   return {
     packageRoot: path.join(input.repoRoot, "deploy", "unraid", "sanctuary.ouro"),
     agentRoot: path.join(input.bundlesRoot, "sanctuary.ouro"),
-  }
-}
-
-function validRealDirectory(root: string): boolean {
-  try {
-    const stat = fs.lstatSync(root)
-    return !stat.isSymbolicLink() && stat.isDirectory()
-  } catch {
-    return false
   }
 }
 
@@ -48,7 +40,13 @@ export function resolveSanctuaryPackageManagementActivation(input: {
   if (value !== "sanctuary" || input.managedAgents.length !== 1 || input.managedAgents[0] !== "sanctuary") return invalidDecision()
   if (!path.isAbsolute(input.repoRoot) || !path.isAbsolute(input.bundlesRoot) || input.runtimePackageVersion.trim() !== input.runtimePackageVersion || input.runtimePackageVersion.length === 0) return invalidDecision()
   const roots = resolveSanctuaryPackageManagedRoots(input)
-  if (path.resolve(roots.packageRoot) === path.resolve(roots.agentRoot) || !validRealDirectory(roots.packageRoot) || !validRealDirectory(roots.agentRoot)) return invalidDecision()
+  try {
+    const packageIdentity = inspectSanctuaryDirectoryFromBase(input.repoRoot, ["deploy", "unraid", "sanctuary.ouro"])
+    const agentIdentity = inspectSanctuaryDirectoryFromBase(input.bundlesRoot, ["sanctuary.ouro"])
+    if (!packageIdentity || !agentIdentity || sanctuaryDirectoriesShareIdentity(packageIdentity, agentIdentity)) return invalidDecision()
+  } catch {
+    return invalidDecision()
+  }
   return { kind: "active", ...roots, runtimePackageVersion: input.runtimePackageVersion }
 }
 

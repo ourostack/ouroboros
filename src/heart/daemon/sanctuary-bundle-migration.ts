@@ -51,6 +51,12 @@ export type SanctuaryPackageManagedBundleInspection =
   | { ok: true; data: { runtimePackageVersion: string; packagedBundleVersion: string; liveBundleVersion: string | null; parity: "exact" | "mismatch"; mismatchCodes: SanctuaryInstallMismatchCode[]; journalState: "absent" | "rollback" | "committing"; ready: boolean; repair: SanctuaryInstallRepair } }
   | { ok: false; error: { code: SanctuaryInstallErrorCode; message: SanctuaryInstallErrorMessage; degraded: true; repair: Extract<SanctuaryInstallRepair, { actor: "human-required" }> } }
 
+export interface SanctuaryDirectoryIdentity {
+  realPath: string
+  device: number
+  inode: number
+}
+
 class SanctuaryInspectionFault extends Error {
   constructor(readonly code: SanctuaryInstallErrorCode) {
     super(code)
@@ -74,6 +80,32 @@ function isMissing(error: unknown): boolean {
 
 function isFilesystemFailure(error: unknown): boolean {
   return !!error && typeof error === "object" && "code" in error && typeof (error as NodeJS.ErrnoException).code === "string"
+}
+
+export function inspectSanctuaryDirectoryFromBase(baseRoot: string, segments: readonly string[]): SanctuaryDirectoryIdentity | null {
+  if (!path.isAbsolute(baseRoot)) return null
+  let current = path.resolve(baseRoot)
+  let stat: fs.Stats | null = null
+  for (const candidate of [current, ...segments.map((segment) => { current = path.join(current, segment); return current })]) {
+    try { stat = fs.lstatSync(candidate) } catch (error) {
+      if (isMissing(error)) return null
+      throw error
+    }
+    if (stat.isSymbolicLink() || !stat.isDirectory()) return null
+  }
+  const realPath = fs.realpathSync(current)
+  if (realPath !== path.resolve(current)) return null
+  return { realPath, device: stat!.dev, inode: stat!.ino }
+}
+
+export function sanctuaryDirectoriesShareIdentity(left: SanctuaryDirectoryIdentity, right: SanctuaryDirectoryIdentity): boolean {
+  return left.realPath === right.realPath || (left.device === right.device && left.inode === right.inode)
+}
+
+function inspectStandaloneSanctuaryDirectory(root: string): SanctuaryDirectoryIdentity | null {
+  if (!path.isAbsolute(root)) return null
+  const resolved = path.resolve(root)
+  return inspectSanctuaryDirectoryFromBase(path.dirname(resolved), [path.basename(resolved)])
 }
 
 function isCanonicalEmptyPackagedPolicy(value: Record<string, unknown>): boolean {
@@ -228,11 +260,18 @@ function durableSnapshot(agentRoot: string, snapshot: MigrationSnapshot, rollbac
 }
 
 function readDurableRecord(agentRoot: string): { snapshot: MigrationSnapshot; rollbackImageId: string; targetImageId: string; filePath: string; state: "rollback" | "committing" } | null {
-  const candidates = [rollbackPath(agentRoot), path.join(agentRoot, SANCTUARY_BUNDLE_COMMITTING_FILE)].filter((candidate) => fs.existsSync(candidate))
+  const names = fs.readdirSync(agentRoot)
+  const stagePrefixes = [`${SANCTUARY_BUNDLE_ROLLBACK_FILE}.package-migration.`, `${SANCTUARY_BUNDLE_COMMITTING_FILE}.package-migration.`]
+  if (names.some((name) => stagePrefixes.some((prefix) => name.startsWith(prefix)))) throw new Error("Sanctuary bundle journal staging residue requires verified recovery")
+  const candidates = [rollbackPath(agentRoot), path.join(agentRoot, SANCTUARY_BUNDLE_COMMITTING_FILE)].flatMap((filePath) => {
+    try { return [{ filePath, stat: fs.lstatSync(filePath) }] } catch (error) {
+      if (isMissing(error)) return []
+      throw error
+    }
+  })
   if (candidates.length === 0) return null
   if (candidates.length !== 1) throw new Error("Sanctuary bundle rollback record state is ambiguous")
-  const [filePath] = candidates
-  const stat = fs.lstatSync(filePath)
+  const [{ filePath, stat }] = candidates
   if (stat.isSymbolicLink()) throw new Error("Sanctuary bundle rollback record must not be a symlink")
   if (!stat.isFile() || (stat.mode & 0o777) !== 0o600) throw new Error("Sanctuary bundle rollback record must be a mode-0600 regular file")
   const serialized = fs.readFileSync(filePath, "utf8")
@@ -270,8 +309,7 @@ function removeRollbackRecord(agentRoot: string, filePath: string): void {
 
 function validateAgentRoot(agentRoot: string): void {
   if (!path.isAbsolute(agentRoot)) throw new Error("agent root must be an absolute path")
-  const stat = fs.lstatSync(agentRoot)
-  if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error("agent root must be a real directory")
+  if (!inspectStandaloneSanctuaryDirectory(agentRoot)) throw new Error("agent root must be a canonical real directory")
 }
 
 function inspectionError(code: SanctuaryInstallErrorCode): SanctuaryPackageManagedBundleInspection {
@@ -287,14 +325,10 @@ function inspectionError(code: SanctuaryInstallErrorCode): SanctuaryPackageManag
   return { ok: false, error: { code, message: "Sanctuary install state is unavailable", degraded: true, repair: { actor: "human-required", action: "run_verified_update_recovery" } } }
 }
 
-function validateInspectionRoot(root: string, code: "invalid_package_root" | "invalid_live_root"): void {
-  if (!path.isAbsolute(root)) throw new SanctuaryInspectionFault(code)
-  let stat: fs.Stats
-  try { stat = fs.lstatSync(root) } catch (error) {
-    if (isMissing(error)) throw new SanctuaryInspectionFault(code)
-    throw error
-  }
-  if (stat.isSymbolicLink() || !stat.isDirectory()) throw new SanctuaryInspectionFault(code)
+function validateInspectionRoot(root: string, code: "invalid_package_root" | "invalid_live_root"): SanctuaryDirectoryIdentity {
+  const identity = inspectStandaloneSanctuaryDirectory(root)
+  if (!identity) throw new SanctuaryInspectionFault(code)
+  return identity
 }
 
 function inspectRelativeFile(root: string, relative: string, code: "invalid_package_source" | "invalid_live_bundle"): fs.Stats | null {
@@ -350,9 +384,10 @@ function journalRepair(journalState: "absent" | "rollback" | "committing", parit
 
 export function inspectSanctuaryPackageManagedBundle(input: { packageRoot: string; agentRoot: string; runtimePackageVersion: string }): SanctuaryPackageManagedBundleInspection {
   try {
-    validateInspectionRoot(input.packageRoot, "invalid_package_root")
+    const packageIdentity = validateInspectionRoot(input.packageRoot, "invalid_package_root")
     const packaged = inspectPackageSources(input.packageRoot, input.runtimePackageVersion)
-    validateInspectionRoot(input.agentRoot, "invalid_live_root")
+    const agentIdentity = validateInspectionRoot(input.agentRoot, "invalid_live_root")
+    if (sanctuaryDirectoriesShareIdentity(packageIdentity, agentIdentity)) throw new SanctuaryInspectionFault("invalid_live_root")
 
     let managedMissing = false
     let managedContent = false
@@ -420,14 +455,15 @@ export function ensureSanctuaryPackageManagedBundle(
   const inspect = deps.inspect ?? inspectSanctuaryPackageManagedBundle
   const before = inspect(input)
   if (!before.ok || before.data.ready) return before
-  if (before.data.parity === "mismatch" && before.data.journalState !== "absent") throw new Error("Sanctuary package-managed bundle requires verified update recovery")
+  if (before.data.parity === "mismatch" && before.data.journalState !== "absent") return before
   if (before.data.parity === "exact" && before.data.journalState === "committing") {
     (deps.commit ?? commitSanctuaryPackageManagedBundle)(input.agentRoot)
   } else {
     (deps.migrate ?? migrateSanctuaryPackageManagedBundle)({ packageRoot: input.packageRoot, agentRoot: input.agentRoot })
   }
   const after = inspect(input)
-  if (!after.ok || !after.data.ready || after.data.parity !== "exact" || after.data.journalState !== "absent") throw new Error("Sanctuary package-managed bundle did not converge")
+  if (!after.ok || !after.data.ready) return after
+  if (after.data.parity !== "exact" || after.data.journalState !== "absent") throw new Error("Sanctuary package-managed bundle did not converge")
   return after
 }
 
@@ -485,11 +521,12 @@ export function migrateSanctuaryPackageManagedBundle(input: { packageRoot: strin
   emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_bundle_migration_start", message: "starting Sanctuary package-managed bundle migration", meta: { agentRoot: input.agentRoot } })
   let snapshot: MigrationSnapshot | null = null
   try {
-    if (!path.isAbsolute(input.packageRoot) || !path.isAbsolute(input.agentRoot) || input.packageRoot === input.agentRoot) throw new Error("package and agent roots must be distinct absolute paths")
-    const packageStat = fs.lstatSync(input.packageRoot)
-    const agentStat = fs.lstatSync(input.agentRoot)
-    if (packageStat.isSymbolicLink() || !packageStat.isDirectory()) throw new Error("package root must be a real directory")
-    if (agentStat.isSymbolicLink() || !agentStat.isDirectory()) throw new Error("agent root must be a real directory")
+    if (!path.isAbsolute(input.packageRoot) || !path.isAbsolute(input.agentRoot)) throw new Error("package and agent roots must be absolute paths")
+    const packageIdentity = inspectStandaloneSanctuaryDirectory(input.packageRoot)
+    const agentIdentity = inspectStandaloneSanctuaryDirectory(input.agentRoot)
+    if (!packageIdentity) throw new Error("package root must be a canonical real directory")
+    if (!agentIdentity) throw new Error("agent root must be a canonical real directory")
+    if (sanctuaryDirectoriesShareIdentity(packageIdentity, agentIdentity)) throw new Error("package and agent roots must be distinct real directories")
     if (input.retainRollback && (!input.rollbackImageId || !/^sha256:[0-9a-f]{64}$/u.test(input.rollbackImageId) || !input.targetImageId || !/^sha256:[0-9a-f]{64}$/u.test(input.targetImageId) || input.targetImageId === input.rollbackImageId)) throw new Error("retained rollback requires distinct exact rollback and target image IDs")
     const existingRollback = rollbackPath(input.agentRoot)
     if (readDurableRecord(input.agentRoot)) throw new Error("Sanctuary bundle rollback is pending; rollback or commit it before another migration")
@@ -520,11 +557,17 @@ export function migrateSanctuaryPackageManagedBundle(input: { packageRoot: strin
     }
 
     const metaPath = path.join(input.agentRoot, "bundle-meta.json")
-    const currentMeta = fs.existsSync(metaPath) ? readObject(metaPath) : {}
+    const metaExists = fs.existsSync(metaPath)
+    const currentMeta = metaExists ? readObject(metaPath) : {}
     const nextMeta = { ...currentMeta }
     for (const field of BUNDLE_META_VERSION_FIELDS) nextMeta[field] = packagedMeta[field]
-    const nextMetaText = `${JSON.stringify(nextMeta, null, 2)}\n`
-    if (!fs.existsSync(metaPath) || fs.readFileSync(metaPath, "utf8") !== nextMetaText || (fs.statSync(metaPath).mode & 0o777) !== 0o600) writeAtomic(metaPath, nextMetaText)
+    if (!metaExists || BUNDLE_META_VERSION_FIELDS.some((field) => currentMeta[field] !== packagedMeta[field])) {
+      writeAtomic(metaPath, `${JSON.stringify(nextMeta, null, 2)}\n`)
+    } else if ((fs.statSync(metaPath).mode & 0o777) !== 0o600) {
+      fs.chmodSync(metaPath, 0o600)
+      const meta = fs.openSync(metaPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+      try { fs.fsyncSync(meta) } finally { fs.closeSync(meta) }
+    }
 
     const result = { managedFilesUpdated }
     emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_bundle_migration_end", message: "completed Sanctuary package-managed bundle migration", meta: result })
