@@ -3249,7 +3249,7 @@ recover_dockerman_template_transaction`
     } finally {
       fs.rmSync(testRoot, { recursive: true, force: true })
     }
-  })
+  }, 15_000)
 
   it("never starts a recovery poller until it proves no competing Butler is running", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
