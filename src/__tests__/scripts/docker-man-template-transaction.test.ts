@@ -136,6 +136,18 @@ afterEach(() => {
 })
 
 describe("root-owned DockerMan template transaction", () => {
+  it("rejects a truncated source before creating a journal or replacing the template", async () => {
+    const transaction = await load()
+    const state = fixture("prior-template\n")
+    writeFileSync(state.sourceTemplatePath, template().replace("</Container>", ""), { mode: 0o600 })
+
+    expect(() => transaction.prepareDockerManTemplateTransaction(state.input, state.options)).toThrow(/well-formed/u)
+    expect(readFileSync(state.targetPath, "utf8")).toBe("prior-template\n")
+    expect(existsSync(state.journalPath)).toBe(false)
+    expect(existsSync(temporaryPaths(state).target)).toBe(false)
+    expect(existsSync(temporaryPaths(state).journal)).toBe(false)
+  })
+
   it("installs canonical version-tagged bytes only after a durable complete rollback record", async () => {
     const transaction = await load()
     const state = fixture("prior-template\n")

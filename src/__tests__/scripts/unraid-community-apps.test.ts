@@ -175,6 +175,7 @@ describe("Mendelow Cloud Butler Community Apps release", () => {
     expect(update).toContain("/boot/config/plugins/dockerMan/templates-user/my-ouro-butler.xml")
     expect(update).toContain("/boot/config/custom/ouro-butler/docker-man-template-transaction.json")
     expect(update).toContain("docker-man-template-transaction.mjs")
+    expect(update).toContain('docker cp "$EVENT_ASSET_CONTAINER:/opt/ouro/deploy/unraid/docker-man-template-xml.cjs" "$STAGED_DOCKERMAN_XML_VALIDATOR"')
     expect(update).toContain('docker create --pull=never --name ouro-butler')
     expect(update).toContain('"$VERSION_IMAGE"')
     expect(update).toContain('--label net.unraid.docker.managed=dockerman')

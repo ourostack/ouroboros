@@ -5,6 +5,8 @@ import { closeSync, constants, fchmodSync, fchownSync, fsyncSync, lstatSync, mkd
 import { basename, dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 
+import xmlValidator from "./docker-man-template-xml.cjs"
+
 const TARGET_PATH = "/boot/config/plugins/dockerMan/templates-user/my-ouro-butler.xml"
 const JOURNAL_PATH = "/boot/config/custom/ouro-butler/docker-man-template-transaction.json"
 const JOURNAL_PARENT = dirname(JOURNAL_PATH)
@@ -41,6 +43,7 @@ function singleTag(xml, name) {
 
 function templateIdentity(bytes, expectedRepository) {
   const xml = bytes.toString("utf8")
+  if (!xmlValidator.isWellFormedDockerManTemplateXml(xml)) throw new Error("template XML must be well-formed")
   const identity = {
     name: singleTag(xml, "Name"),
     repository: singleTag(xml, "Repository"),

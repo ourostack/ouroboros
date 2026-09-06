@@ -1968,6 +1968,7 @@ Update:
     STAGED_EXACT_TEMPLATE="$EVENT_ASSET_STAGE/sanctuary.exact-image.xml"
     STAGED_RUNTIME_POLICY="$EVENT_ASSET_STAGE/container-runtime.json"
     STAGED_DOCKERMAN_TRANSACTION="$EVENT_ASSET_STAGE/docker-man-template-transaction.mjs"
+    STAGED_DOCKERMAN_XML_VALIDATOR="$EVENT_ASSET_STAGE/docker-man-template-xml.cjs"
     EVENT_ASSET_CONTAINER=
     cleanup_event_asset_stage() {
       if test -n "$EVENT_ASSET_CONTAINER"; then
@@ -1982,17 +1983,19 @@ Update:
     docker cp "$EVENT_ASSET_CONTAINER:/opt/ouro/deploy/unraid/sanctuary.xml" "$STAGED_TEMPLATE"
     docker cp "$EVENT_ASSET_CONTAINER:/opt/ouro/deploy/unraid/container-runtime.json" "$STAGED_RUNTIME_POLICY"
     docker cp "$EVENT_ASSET_CONTAINER:/opt/ouro/deploy/unraid/docker-man-template-transaction.mjs" "$STAGED_DOCKERMAN_TRANSACTION"
+    docker cp "$EVENT_ASSET_CONTAINER:/opt/ouro/deploy/unraid/docker-man-template-xml.cjs" "$STAGED_DOCKERMAN_XML_VALIDATOR"
     docker rm "$EVENT_ASSET_CONTAINER"
     EVENT_ASSET_CONTAINER=
-    EXPECTED_RELEASE_ASSETS=$(printf '%s\n' container-runtime.json docker-man-template-transaction.mjs ouro-events sanctuary.xml)
+    EXPECTED_RELEASE_ASSETS=$(printf '%s\n' container-runtime.json docker-man-template-transaction.mjs docker-man-template-xml.cjs ouro-events sanctuary.xml)
     ACTUAL_RELEASE_ASSETS=$(find "$EVENT_ASSET_STAGE" -mindepth 1 -maxdepth 1 -exec basename {} \; | LC_ALL=C sort)
     test "$ACTUAL_RELEASE_ASSETS" = "$EXPECTED_RELEASE_ASSETS"
     test -d "$EVENT_SCRIPT_STAGE" && test ! -L "$EVENT_SCRIPT_STAGE"
     test -f "$STAGED_TEMPLATE" && test ! -L "$STAGED_TEMPLATE"
     test -f "$STAGED_RUNTIME_POLICY" && test ! -L "$STAGED_RUNTIME_POLICY"
     test -f "$STAGED_DOCKERMAN_TRANSACTION" && test ! -L "$STAGED_DOCKERMAN_TRANSACTION"
-    chown 0:0 "$STAGED_TEMPLATE" "$STAGED_RUNTIME_POLICY" "$STAGED_DOCKERMAN_TRANSACTION"
-    chmod 0600 "$STAGED_TEMPLATE" "$STAGED_RUNTIME_POLICY" "$STAGED_DOCKERMAN_TRANSACTION"
+    test -f "$STAGED_DOCKERMAN_XML_VALIDATOR" && test ! -L "$STAGED_DOCKERMAN_XML_VALIDATOR"
+    chown 0:0 "$STAGED_TEMPLATE" "$STAGED_RUNTIME_POLICY" "$STAGED_DOCKERMAN_TRANSACTION" "$STAGED_DOCKERMAN_XML_VALIDATOR"
+    chmod 0600 "$STAGED_TEMPLATE" "$STAGED_RUNTIME_POLICY" "$STAGED_DOCKERMAN_TRANSACTION" "$STAGED_DOCKERMAN_XML_VALIDATOR"
     EXPECTED_EVENT_ASSETS=$(printf '%s\n' bootstrap-spool.sh emit-event.mjs emit-usenet-event.sh install-usenet-guard.sh usenet-health.sh)
     ACTUAL_EVENT_ASSETS=$(find "$EVENT_SCRIPT_STAGE" -mindepth 1 -maxdepth 1 -type f -exec basename {} \; | LC_ALL=C sort)
     test "$ACTUAL_EVENT_ASSETS" = "$EXPECTED_EVENT_ASSETS"

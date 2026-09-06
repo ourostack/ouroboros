@@ -578,6 +578,23 @@ describe("Sanctuary pre-activation container auditor", () => {
     }))
   })
 
+  it("rejects a truncated template in both static audit modes", () => {
+    const truncated = stagedTemplate().replace("</Container>", "")
+    const policy = JSON.stringify({ scheduler: "supercronic", updates: "disabled" })
+    const expectedViolation = "template XML must be well-formed"
+
+    expect(auditSanctuaryStagedFiles({
+      templateXml: truncated,
+      runtimePolicyText: policy,
+      expectedImage: "sha256:" + "a".repeat(64),
+    }).violations).toContain(expectedViolation)
+    expect(auditSanctuaryPersistentTemplate({
+      templateXml: truncated.replace(`sha256:${"a".repeat(64)}`, expectedImageReference),
+      runtimePolicyText: policy,
+      expectedImageReference,
+    }).violations).toContain(expectedViolation)
+  })
+
   it("audits the persistent Community Apps template separately from the transient exact-ID copy", () => {
     const persistent = stagedTemplate().replace(`sha256:${"a".repeat(64)}`, expectedImageReference)
     const policy = JSON.stringify({ scheduler: "supercronic", updates: "disabled" })

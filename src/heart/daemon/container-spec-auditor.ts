@@ -1,5 +1,7 @@
 import { emitNervesEvent } from "../../nerves/runtime"
 
+const { isWellFormedDockerManTemplateXml } = require("../../../deploy/unraid/docker-man-template-xml.cjs") as { isWellFormedDockerManTemplateXml(xml: string): boolean }
+
 const EXPECTED_BINDS = [
   "/mnt/user/appdata/ouro-butler/runtime/.ouro-cli:/home/ouro/.ouro-cli:rw",
   "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro:/home/ouro/AgentBundles/sanctuary.ouro:rw",
@@ -170,6 +172,7 @@ function singleTag(xml: string, name: string): string | undefined {
 
 function auditTemplate(input: { templateXml: string; runtimePolicyText: string }, expectedRepository: string, repositoryIsValid: boolean, repositoryViolation: string): string[] {
   const violations: string[] = []
+  if (!isWellFormedDockerManTemplateXml(input.templateXml)) violations.push("template XML must be well-formed")
   let runtimePolicy: unknown
   try {
     runtimePolicy = JSON.parse(input.runtimePolicyText)

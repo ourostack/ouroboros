@@ -34,6 +34,7 @@ const REQUIRED_PACKAGE_ASSET_PATHS = [
   "deploy/unraid/sanctuary.ouro/state/policy/steward.json",
   "deploy/unraid/migrate-sanctuary-bundle.mjs",
   "deploy/unraid/docker-man-template-transaction.mjs",
+  "deploy/unraid/docker-man-template-xml.cjs",
   "deploy/unraid/sanctuary.ouro/arc/README.md",
   "deploy/unraid/sanctuary.ouro/habits/sanctuary-health.md",
   "deploy/unraid/sanctuary.ouro/psyche/ASPIRATIONS.md",
