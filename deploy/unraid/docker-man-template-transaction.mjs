@@ -246,6 +246,7 @@ export function inspectDockerManTemplateTransaction(options = {}) {
 
 function validateTemplateSource(input, state) {
   validateTemplateParent(state)
+  if (metadataIfPresent(state.targetPath)) validateRegularFile(state.targetPath, state.expectedUid, state.expectedGid, "DockerMan template")
   validateDirectory(dirname(input.sourceTemplatePath), state.expectedUid, state.expectedGid)
   validateRegularFile(input.sourceTemplatePath, state.expectedUid, state.expectedGid, "source template")
   if (!VERSION_TAG.test(input.canonicalVersionTag) || !IMAGE_ID.test(input.reviewedManifestDigest) || !IMAGE_ID.test(input.rollbackImageId) || !IMAGE_ID.test(input.targetImageId) || input.rollbackImageId === input.targetImageId) throw new Error("reviewed release identity is invalid")

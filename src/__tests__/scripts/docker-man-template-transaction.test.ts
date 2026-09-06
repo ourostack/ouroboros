@@ -224,6 +224,27 @@ describe("root-owned DockerMan template transaction", () => {
     expect(readFileSync(state.targetPath, "utf8")).toBe("prior-template\n")
   })
 
+  it.each([
+    ["wrong-mode", (state: ReturnType<typeof fixture>) => chmodSync(state.targetPath, 0o644)],
+    ["symlink", (state: ReturnType<typeof fixture>) => { rmSync(state.targetPath); symlinkSync(state.sourceTemplatePath, state.targetPath) }],
+  ])("validates an existing %s target before creating a fresh journal parent", async (_shape, makeUnsafe) => {
+    const transaction = await load()
+    const state = fixture("prior-template\n")
+    rmSync(state.journalRoot, { recursive: true })
+    chmodSync(state.customRoot, 0o700)
+    makeUnsafe(state)
+
+    expect(() => transaction.runDockerManTemplateTransactionCli([
+      "prepare",
+      "--source-template", state.sourceTemplatePath,
+      "--version-tag", canonicalVersionTag,
+      "--manifest-digest", image("c"),
+      "--rollback-image-id", image("a"),
+      "--target-image-id", image("b"),
+    ], state.options, () => undefined)).toThrow(/DockerMan template metadata/u)
+    expect(existsSync(state.journalRoot)).toBe(false)
+  })
+
   it("creates a fresh journal parent only after CLI validation and installs the retained bytes", async () => {
     const transaction = await load()
     const state = fixture("prior-template\n")
