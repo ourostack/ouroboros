@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import * as os from "node:os"
 import * as path from "node:path"
 
-const faults = vi.hoisted(() => ({ lstat: null as string | null, read: null as string | null }))
+const faults = vi.hoisted(() => ({ lstat: null as string | null, owner: null as string | null, read: null as string | null, readdir: null as string | null, rmdir: null as string | null }))
 
 vi.mock("node:fs", async () => {
   const actual = await vi.importActual<typeof import("node:fs")>("node:fs")
@@ -10,11 +10,26 @@ vi.mock("node:fs", async () => {
     ...actual,
     lstatSync: (target: import("node:fs").PathLike) => {
       if (target === faults.lstat) throw Object.assign(new Error("device failed"), { code: "EIO" })
-      return actual.lstatSync(target)
+      const stat = actual.lstatSync(target)
+      if (target !== faults.owner) return stat
+      const foreign = Object.create(stat) as import("node:fs").Stats
+      Object.defineProperty(foreign, "uid", { value: stat.uid + 1 })
+      return foreign
     },
     readFileSync: (target: import("node:fs").PathOrFileDescriptor, options?: unknown) => {
       if (target === faults.read) throw Object.assign(new Error("device failed"), { code: "EIO" })
       return actual.readFileSync(target, options as never)
+    },
+    readdirSync: (target: import("node:fs").PathLike, options?: unknown) => {
+      if (target === faults.readdir) throw Object.assign(new Error("device failed"), { code: "EIO" })
+      return actual.readdirSync(target, options as never)
+    },
+    rmdirSync: (target: import("node:fs").PathLike, options?: import("node:fs").RmdirOptions) => {
+      if (target === faults.rmdir) {
+        faults.rmdir = null
+        throw Object.assign(new Error("process stopped"), { code: "EIO" })
+      }
+      return actual.rmdirSync(target, options)
     },
   }
 })
@@ -23,6 +38,7 @@ import * as fs from "node:fs"
 import {
   SANCTUARY_BUNDLE_ROLLBACK_FILE,
   SANCTUARY_PACKAGE_MANAGED_FILES,
+  ensureSanctuaryPackageManagedBundle,
   inspectSanctuaryPackageManagedBundle,
 } from "../../../heart/daemon/sanctuary-bundle-migration"
 import { resolveSanctuaryPackageManagementActivation } from "../../../heart/daemon/sanctuary-package-management"
@@ -57,16 +73,20 @@ function makeLayout(): { packageRoot: string; agentRoot: string } {
 
 afterEach(() => {
   faults.lstat = null
+  faults.owner = null
   faults.read = null
+  faults.readdir = null
+  faults.rmdir = null
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true })
 })
 
 describe("Sanctuary bundle inspection I/O failures", () => {
-  it.each(["root", "nested path", "JSON read", "journal stat", "journal read"])("maps an unexpected %s failure to the bounded unavailable result", (fault) => {
+  it.each(["root", "nested path", "JSON read", "stage enumeration", "journal stat", "journal read"])("maps an unexpected %s failure to the bounded unavailable result", (fault) => {
     const { packageRoot, agentRoot } = makeLayout()
     if (fault === "root") faults.lstat = packageRoot
     if (fault === "nested path") faults.lstat = path.join(packageRoot, "habits")
     if (fault === "JSON read") faults.read = path.join(packageRoot, "bundle-meta.json")
+    if (fault === "stage enumeration") faults.readdir = path.join(agentRoot, "psyche")
     if (fault === "journal stat" || fault === "journal read") {
       const journalPath = path.join(agentRoot, SANCTUARY_BUNDLE_ROLLBACK_FILE)
       fs.writeFileSync(journalPath, "{}\n", { mode: 0o600 })
@@ -91,5 +111,32 @@ describe("Sanctuary bundle inspection I/O failures", () => {
     faults.lstat = packageRoot
 
     expect(resolveSanctuaryPackageManagementActivation({ mode: "production", argv: ["node", "daemon-entry.js", "--package-managed-agent", "sanctuary"], managedAgents: ["sanctuary"], repoRoot, bundlesRoot, runtimePackageVersion: "v" }).kind).toBe("invalid")
+  })
+
+  it("retries cleanup after interruption leaves a validated stage empty", () => {
+    const { packageRoot, agentRoot } = makeLayout()
+    const stage = `${path.join(agentRoot, SANCTUARY_PACKAGE_MANAGED_FILES[0])}.package-migration.interrupted-cleanup`
+    fs.mkdirSync(stage, { mode: 0o700 })
+    fs.writeFileSync(path.join(stage, "value"), "partial\n", { mode: 0o600 })
+    faults.rmdir = stage
+
+    expect(ensureSanctuaryPackageManagedBundle({ packageRoot, agentRoot, runtimePackageVersion: "v" })).toEqual({ ok: false, error: { code: "invalid_journal", message: "Sanctuary update recovery is required", degraded: true, repair: { actor: "human-required", action: "run_verified_update_recovery" } } })
+    expect(fs.readdirSync(stage)).toEqual([])
+    expect(ensureSanctuaryPackageManagedBundle({ packageRoot, agentRoot, runtimePackageVersion: "v" })).toMatchObject({ ok: true, data: { parity: "exact", ready: true } })
+    expect(fs.existsSync(stage)).toBe(false)
+  })
+
+  it.each(["stage", "value"])("preserves a structurally foreign-owned %s", (foreignPart) => {
+    const { packageRoot, agentRoot } = makeLayout()
+    const stage = `${path.join(agentRoot, SANCTUARY_PACKAGE_MANAGED_FILES[0])}.package-migration.foreign-owner`
+    const value = path.join(stage, "value")
+    fs.mkdirSync(stage, { mode: 0o700 })
+    fs.writeFileSync(value, "partial\n", { mode: 0o600 })
+    faults.owner = foreignPart === "stage" ? stage : value
+
+    expect(inspectSanctuaryPackageManagedBundle({ packageRoot, agentRoot, runtimePackageVersion: "v" })).toEqual({ ok: false, error: { code: "invalid_journal", message: "Sanctuary update recovery is required", degraded: true, repair: { actor: "human-required", action: "run_verified_update_recovery" } } })
+    expect(ensureSanctuaryPackageManagedBundle({ packageRoot, agentRoot, runtimePackageVersion: "v" })).toEqual({ ok: false, error: { code: "invalid_journal", message: "Sanctuary update recovery is required", degraded: true, repair: { actor: "human-required", action: "run_verified_update_recovery" } } })
+    expect(fs.lstatSync(stage).isDirectory()).toBe(true)
+    expect(fs.lstatSync(value).isFile()).toBe(true)
   })
 })

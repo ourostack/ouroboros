@@ -181,24 +181,50 @@ function writeAtomic(filePath: string, content: string | Buffer): void {
   try { fs.fsyncSync(directory) } finally { fs.closeSync(directory) }
 }
 
-function cleanupInterruptedWrites(filePath: string): void {
-  const parent = path.dirname(filePath)
-  const prefix = `${path.basename(filePath)}.package-migration.`
-  if (!fs.existsSync(parent)) return
-  for (const name of fs.readdirSync(parent)) {
-    if (!name.startsWith(prefix)) continue
-    const stagingDirectory = path.join(parent, name)
-    const stagingStat = fs.lstatSync(stagingDirectory)
-    if (stagingStat.isSymbolicLink() || !stagingStat.isDirectory()) throw new Error(`interrupted package migration stage is invalid: ${name}`)
-    const entries = fs.readdirSync(stagingDirectory)
-    if (entries.some((entry) => entry !== "value")) throw new Error(`interrupted package migration stage contains unexpected entries: ${name}`)
-    const temporary = path.join(stagingDirectory, "value")
-    if (fs.existsSync(temporary)) {
-      const temporaryStat = fs.lstatSync(temporary)
-      if (temporaryStat.isSymbolicLink() || !temporaryStat.isFile()) throw new Error(`interrupted package migration value is invalid: ${name}`)
-      fs.unlinkSync(temporary)
+const SNAPSHOT_RELATIVES = [...SANCTUARY_PACKAGE_MANAGED_FILES, "bundle-meta.json"] as const
+
+function packageManagedArtifactPaths(agentRoot: string): string[] {
+  return SNAPSHOT_RELATIVES.map((relative) => path.join(agentRoot, relative))
+}
+
+function inspectInterruptedWrites(filePaths: readonly string[]): Array<{ stagingDirectory: string; temporary: string | null }> {
+  const stages: Array<{ stagingDirectory: string; temporary: string | null }> = []
+  for (const filePath of [...filePaths].sort()) {
+    const parent = path.dirname(filePath)
+    const prefix = `${path.basename(filePath)}.package-migration.`
+    let names: string[]
+    try { names = fs.readdirSync(parent).sort() } catch (error) {
+      if (isMissing(error)) continue
+      throw error
     }
-    fs.rmdirSync(stagingDirectory)
+    for (const name of names) {
+      if (!name.startsWith(prefix)) continue
+      const stagingDirectory = path.join(parent, name)
+      const parentStat = fs.lstatSync(parent)
+      const stagingStat = fs.lstatSync(stagingDirectory)
+      if (parentStat.isSymbolicLink() || !parentStat.isDirectory() || stagingStat.isSymbolicLink() || !stagingStat.isDirectory() || (stagingStat.mode & 0o777) !== 0o700 || stagingStat.uid !== parentStat.uid || stagingStat.gid !== parentStat.gid) throw new Error(`interrupted package migration stage is invalid: ${name}`)
+      const entries = fs.readdirSync(stagingDirectory)
+      if (entries.some((entry) => entry !== "value")) throw new Error(`interrupted package migration stage contains unexpected entries: ${name}`)
+      const temporary = entries.includes("value") ? path.join(stagingDirectory, "value") : null
+      if (temporary) {
+        const temporaryStat = fs.lstatSync(temporary)
+        if (temporaryStat.isSymbolicLink() || !temporaryStat.isFile() || (temporaryStat.mode & 0o777) !== 0o600 || temporaryStat.uid !== stagingStat.uid || temporaryStat.gid !== stagingStat.gid) throw new Error(`interrupted package migration value is invalid: ${name}`)
+      }
+      stages.push({ stagingDirectory, temporary })
+    }
+  }
+  return stages
+}
+
+function cleanupInterruptedWrites(filePaths: readonly string[]): void {
+  const stages = inspectInterruptedWrites(filePaths)
+  for (const stage of stages) {
+    if (stage.temporary) fs.unlinkSync(stage.temporary)
+    fs.rmdirSync(stage.stagingDirectory)
+  }
+  for (const parent of [...new Set(stages.map((stage) => path.dirname(stage.stagingDirectory)))].sort()) {
+    const directory = fs.openSync(parent, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
+    try { fs.fsyncSync(directory) } finally { fs.closeSync(directory) }
   }
 }
 
@@ -213,8 +239,6 @@ interface DurableMigrationSnapshot {
   files: Array<{ relative: string; contentBase64: string | null; mode: number | null }>
   directories: Array<{ relative: string; mode: number | null }>
 }
-
-const SNAPSHOT_RELATIVES = [...SANCTUARY_PACKAGE_MANAGED_FILES, "bundle-meta.json"] as const
 
 function snapshotDirectoryRelatives(): string[] {
   const directories = new Set<string>()
@@ -417,7 +441,10 @@ export function inspectSanctuaryPackageManagedBundle(input: { packageRoot: strin
     }
 
     let journalState: "absent" | "rollback" | "committing" = "absent"
-    try { journalState = readDurableRecord(input.agentRoot)?.state ?? "absent" } catch (error) {
+    try {
+      if (inspectInterruptedWrites(packageManagedArtifactPaths(input.agentRoot)).length > 0) throw new Error("Sanctuary bundle staging residue requires verified recovery")
+      journalState = readDurableRecord(input.agentRoot)?.state ?? "absent"
+    } catch (error) {
       if (isFilesystemFailure(error)) throw error
       throw new SanctuaryInspectionFault("invalid_journal")
     }
@@ -454,9 +481,18 @@ export function ensureSanctuaryPackageManagedBundle(
 ): SanctuaryPackageManagedBundleInspection {
   const inspect = deps.inspect ?? inspectSanctuaryPackageManagedBundle
   const before = inspect(input)
-  if (!before.ok || before.data.ready) return before
-  if (before.data.parity === "mismatch" && before.data.journalState !== "absent") return before
-  if (before.data.parity === "exact" && before.data.journalState === "committing") {
+  if (!before.ok) {
+    if (before.error.code !== "invalid_journal") return before
+    try {
+      (deps.migrate ?? migrateSanctuaryPackageManagedBundle)({ packageRoot: input.packageRoot, agentRoot: input.agentRoot })
+    } catch {
+      return before
+    }
+  } else if (before.data.ready) {
+    return before
+  } else if (before.data.parity === "mismatch" && before.data.journalState !== "absent") {
+    return before
+  } else if (before.data.parity === "exact" && before.data.journalState === "committing") {
     (deps.commit ?? commitSanctuaryPackageManagedBundle)(input.agentRoot)
   } else {
     (deps.migrate ?? migrateSanctuaryPackageManagedBundle)({ packageRoot: input.packageRoot, agentRoot: input.agentRoot })
@@ -498,8 +534,8 @@ export function commitSanctuaryPackageManagedBundle(agentRoot: string): boolean 
 }
 
 function restoreMigrationSnapshot(snapshot: MigrationSnapshot): void {
+  cleanupInterruptedWrites(snapshot.files.map((file) => file.path))
   for (const file of snapshot.files) {
-    cleanupInterruptedWrites(file.path)
     if (file.content === null) {
       fs.rmSync(file.path, { force: true })
     } else {
@@ -540,9 +576,9 @@ export function migrateSanctuaryPackageManagedBundle(input: { packageRoot: strin
     const packagedMeta = readObject(path.join(input.packageRoot, "bundle-meta.json"))
     for (const field of BUNDLE_META_VERSION_FIELDS) if (!(field in packagedMeta)) throw new Error(`packaged bundle-meta.json is missing ${field}`)
     validatePackagedPolicy(input.packageRoot)
+    cleanupInterruptedWrites(packageManagedArtifactPaths(input.agentRoot))
     snapshot = captureMigrationSnapshot(input.agentRoot)
     if (input.retainRollback) {
-      cleanupInterruptedWrites(existingRollback)
       writeAtomic(existingRollback, `${JSON.stringify(durableSnapshot(input.agentRoot, snapshot, input.rollbackImageId!, input.targetImageId!))}\n`)
     }
 
