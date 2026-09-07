@@ -2748,6 +2748,15 @@ await_post_audit_health`
     expect(propagate).toBeGreaterThan(finalizeRollback)
   })
 
+  it("makes every inverted container-absence assertion fail closed", () => {
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    const unsafeAssertions = runbook
+      .split("\n")
+      .filter((line) => /^\s*! docker container inspect\b/u.test(line) && !/\|\| (?:return|exit) 1$/u.test(line))
+
+    expect(unsafeAssertions).toEqual([])
+  })
+
   it("keeps routine update readiness side-effect-free until the single production activation", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     const update = runbook.slice(runbook.indexOf("Update:"), runbook.indexOf("Backup:"))
