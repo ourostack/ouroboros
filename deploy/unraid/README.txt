@@ -2285,6 +2285,8 @@ ouro-butler-rollback
       :
     else
       PRODUCTION_PREPARATION_STATUS=$?
+      PRODUCTION_PREPARATION_CLEANUP_STATUS=0
+      PRODUCTION_PREPARATION_RECOVERY_SAFE=true
       /usr/local/bin/node "$STAGED_DOCKERMAN_TRANSACTION" verify-jellyfin >/dev/null
       if docker container inspect ouro-butler >/dev/null 2>&1; then
         if docker container inspect ouro-butler-rollback >/dev/null 2>&1; then
@@ -2293,13 +2295,20 @@ ouro-butler-rollback
           test "$CURRENT_ROLLBACK_IMAGE_ID" = "$ROLLBACK_IMAGE_ID"
           docker rm --force ouro-butler-rollback >/dev/null 2>&1 || true
         fi
-        ! docker container inspect ouro-butler-rollback >/dev/null 2>&1 || exit 1
+        if docker container inspect ouro-butler-rollback >/dev/null 2>&1; then
+          PRODUCTION_PREPARATION_CLEANUP_STATUS=1
+          if test "$(docker inspect --format '{{.State.Running}}' ouro-butler-rollback)" != false; then
+            PRODUCTION_PREPARATION_RECOVERY_SAFE=false
+          fi
+        fi
         rollback_sanctuary_bundle_if_pending "$IMAGE_ID"
-        assert_update_source "$ROLLBACK_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"
-        start_only_butler_for_recovery
-        wait_butler_ready ouro-butler
-        enable_butler_autostart
-        finalize_sanctuary_bundle_rollback_if_retained "$IMAGE_ID"
+        if test "$PRODUCTION_PREPARATION_RECOVERY_SAFE" = true; then
+          assert_update_source "$ROLLBACK_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"
+          start_only_butler_for_recovery
+          wait_butler_ready ouro-butler
+          enable_butler_autostart
+          finalize_sanctuary_bundle_rollback_if_retained "$IMAGE_ID"
+        fi
       elif docker container inspect ouro-butler-rollback >/dev/null 2>&1; then
         docker stop ouro-butler-rollback >/dev/null 2>&1 || true
         test "$(docker inspect --format '{{.Image}}' ouro-butler-rollback)" = "$ROLLBACK_IMAGE_ID"
@@ -2312,14 +2321,17 @@ ouro-butler-rollback
         finalize_sanctuary_bundle_rollback_if_retained "$IMAGE_ID"
       fi
       /usr/local/bin/node "$STAGED_DOCKERMAN_TRANSACTION" rollback >/dev/null
+      if test "$PRODUCTION_PREPARATION_CLEANUP_STATUS" -ne 0; then
+        exit "$PRODUCTION_PREPARATION_CLEANUP_STATUS"
+      fi
       (exit "$PRODUCTION_PREPARATION_STATUS")
     fi
-  Preparation failure therefore either restores the still-named exact production after removing any stale rollback, or renames the exact stopped rollback back. Both paths revalidate and start the old container, wait within the fixed bound, restore production-only autostart atomically, and return the original failure.
+  Preparation failure therefore either restores the still-named exact production after attempting to remove any stale rollback, or renames the exact stopped rollback back. Both safe paths revalidate and start the old container, wait within the fixed bound, restore production-only autostart atomically, and return the original failure. If stale rollback removal fails, restore production only when the leftover is proven stopped; otherwise leave both containers untouched, roll back the journals, and return the cleanup failure for repair.
   If neither exact container can be found, the failure returns with Butler autostart disabled.
   Do not start a target-image daemon between the production rename and final production activation. The exact-image static audit, download-queue readiness, and vault-backed Telegram identity check have already passed before autostart or live-container changes.
   Provider and complete daemon readiness are exercised only by the transactional production activation below. Its failure arm restores and revalidates the exact prior production, so a disposable daemon cannot reconcile or claim live external-event state before cutover.
   Create and activate production from the same exact image ID and exact authority in one explicit conditional so `set -eu` cannot exit before rollback. Only a successful create, effective audit, start, stopped-rollback assertion, and bounded readiness wait may enable production autostart.
-  On failure, capture the activation status, remove only a partially created new production container, restore and audit the stopped rollback against its exact old image ID, prove it ready, restore production-only autostart atomically, and return the original failure:
+  On failure, capture the activation status, remove only a partially created new production container, restore and audit the stopped rollback against its exact old image ID, prove it ready, restore production-only autostart atomically, and return the original failure. If the partial target cannot be removed, preserve its matching target bundle and retained migration receipt, roll back the DockerMan journal without attempting the colliding rename, then return the cleanup failure:
     if test "$(inspect_registry_manifest_digest "$VERSION_IMAGE")" = "$MANIFEST_DIGEST" \
       && test "$(docker image inspect --format '{{.Id}}' "$VERSION_IMAGE")" = "$IMAGE_ID" \
       && docker create --pull=never --name ouro-butler --network host --restart unless-stopped --user 10001:10001 \
@@ -2341,6 +2353,7 @@ ouro-butler-rollback
       :
     else
       PRODUCTION_ACTIVATION_STATUS=$?
+      PRODUCTION_ACTIVATION_CLEANUP_STATUS=0
       /usr/local/bin/node "$STAGED_DOCKERMAN_TRANSACTION" verify-jellyfin >/dev/null
       if docker container inspect ouro-butler >/dev/null 2>&1; then
         docker stop ouro-butler >/dev/null 2>&1 || true
@@ -2348,17 +2361,24 @@ ouro-butler-rollback
         test "$PARTIAL_PRODUCTION_IMAGE_ID" = "$IMAGE_ID"
         docker rm --force ouro-butler >/dev/null 2>&1 || true
       fi
-      ! docker container inspect ouro-butler >/dev/null 2>&1 || exit 1
-      CURRENT_ROLLBACK_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler-rollback)
-      test "$CURRENT_ROLLBACK_IMAGE_ID" = "$ROLLBACK_IMAGE_ID"
-      migrate_sanctuary_package_managed_bundle "$IMAGE_ID" rollback
-      docker rename ouro-butler-rollback ouro-butler
-      assert_update_source "$ROLLBACK_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"
-      start_only_butler_for_recovery
-      wait_butler_ready ouro-butler
-      enable_butler_autostart
-      migrate_sanctuary_package_managed_bundle "$IMAGE_ID" finalize-rollback
+      if docker container inspect ouro-butler >/dev/null 2>&1; then
+        PRODUCTION_ACTIVATION_CLEANUP_STATUS=1
+      fi
+      if test "$PRODUCTION_ACTIVATION_CLEANUP_STATUS" -eq 0; then
+        CURRENT_ROLLBACK_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler-rollback)
+        test "$CURRENT_ROLLBACK_IMAGE_ID" = "$ROLLBACK_IMAGE_ID"
+        migrate_sanctuary_package_managed_bundle "$IMAGE_ID" rollback
+        docker rename ouro-butler-rollback ouro-butler
+        assert_update_source "$ROLLBACK_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"
+        start_only_butler_for_recovery
+        wait_butler_ready ouro-butler
+        enable_butler_autostart
+        migrate_sanctuary_package_managed_bundle "$IMAGE_ID" finalize-rollback
+      fi
       /usr/local/bin/node "$STAGED_DOCKERMAN_TRANSACTION" rollback >/dev/null
+      if test "$PRODUCTION_ACTIVATION_CLEANUP_STATUS" -ne 0; then
+        exit "$PRODUCTION_ACTIVATION_CLEANUP_STATUS"
+      fi
       (exit "$PRODUCTION_ACTIVATION_STATUS")
     fi
     migrate_sanctuary_package_managed_bundle "$IMAGE_ID" commit
