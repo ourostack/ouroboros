@@ -39,4 +39,26 @@ describe("nerves non-blocking sink behavior", () => {
     expect(() => sink(entry)).not.toThrow()
     await expect(sink.barrier()).rejects.toThrow("disk full")
   })
+
+  it("normalizes a non-Error async rotation failure", async () => {
+    vi.resetModules()
+    vi.doMock("fs", () => ({
+      appendFile: vi.fn((_path: string, _data: string, _encoding: string, callback: (err: null) => void) => {
+        callback(null)
+      }),
+      closeSync: vi.fn(),
+      existsSync: vi.fn(() => false),
+      fsyncSync: vi.fn(() => {
+        throw "fsync failed"
+      }),
+      mkdirSync: vi.fn(),
+      openSync: vi.fn(() => 1),
+    }))
+
+    const { createNdjsonFileSink } = await import("../../nerves")
+    const sink = createNdjsonFileSink("/tmp/non-error-rotation-test.ndjson", { rotationCheckIntervalBytes: 1 })
+
+    sink(entry)
+    await expect(sink.barrier()).rejects.toThrow("fsync failed")
+  })
 })
