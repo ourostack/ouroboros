@@ -190,6 +190,56 @@ describe("Telegram sense", () => {
     expect(preparedOptions[1].requiredToolCalls).toBeUndefined()
   })
 
+  it("requires a fresh install-state read before answering an explicit owner request", async () => {
+    let prepared: any
+    const advertisedToolNames = ["sanctuary_get_install_state", "settle"]
+    const f = fixture({
+      agentName: "sanctuary",
+      resolveRelationshipAuthorization: vi.fn(async (coordinates: any) => ({
+        subject: { friendId: coordinates.friendId, admissionState: "active" },
+        profileId: "sanctuary-owner",
+        authorizedContextScopes: ["household.status"],
+        advertisedToolNames,
+        actor: { friendId: coordinates.friendId },
+        authorizeTool: vi.fn(async () => ({ allowed: true })),
+      })),
+      runTurn: vi.fn(async (options: any) => {
+        prepared = await options.prepareRunAgentOptions({
+          messages: [],
+          currentUserMessages: [{ role: "user", content: options.userMessage }],
+          resolvedContext: {},
+          runAgentOptions: { toolContext: { signin: async () => undefined } },
+        })
+        return { response: "", ponderDeferred: false, deliveries: [], deliveryFailures: [] }
+      }),
+    })
+
+    await f.getOnMessage()({
+      updateId: 988,
+      messageId: "989",
+      userId: "42",
+      chatId: "42",
+      text: "use sanctuary_get_install_state now. in one compact reply, tell me the runtime package version, packaged bundle version, live bundle version, parity, journal state, ready state, and repair action. don't repeat the answer.",
+    })
+
+    expect(prepared.requiredToolCalls.names).toEqual(["sanctuary_get_install_state"])
+    expect(prepared.requiredToolCalls.validateRequiredToolResult("sanctuary_get_install_state", JSON.stringify({
+      ok: true,
+      data: {
+        runtimePackageVersion: "0.1.0-alpha.805",
+        packagedBundleVersion: "0.1.0-alpha.805",
+        liveBundleVersion: "0.1.0-alpha.805",
+        parity: "exact",
+        mismatchCodes: [],
+        journalState: "absent",
+        ready: true,
+        repair: { actor: "none", action: "none" },
+      },
+    }), {})).toBe(true)
+    expect(prepared.requiredToolCalls.validateTerminalAnswer("Runtime 0.1.0-alpha.799, packaged 0.1.0-alpha.799, live 0.1.0-alpha.799, parity exact, journal absent, ready true, repair none.")).toMatch(/fresh install-state result/iu)
+    expect(prepared.requiredToolCalls.validateTerminalAnswer("Runtime 0.1.0-alpha.805, packaged 0.1.0-alpha.805, live 0.1.0-alpha.805, parity exact, journal absent, ready true, repair none.")).toBeUndefined()
+  })
+
   it("composes whole-status reads with stale Docker Care verification without duplicate notification reads", async () => {
     let prepared: any
     const advertisedToolNames = ["query_active_work", "query_cares", "unraid_get_system", "unraid_list_containers", "unraid_get_storage", "unraid_get_notifications", "sanctuary_get_download_queue", "care_manage", "settle"]

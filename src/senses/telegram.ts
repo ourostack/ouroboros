@@ -49,6 +49,7 @@ import {
 } from "./telegram-client"
 import { createSanctuaryToolContext, runWithSanctuaryToolReceiptCollection, type SanctuaryToolReceiptObserver } from "./sanctuary-runtime"
 import { sanctuaryFullVisibilityRequiredToolCalls, sanctuaryStaleDockerCareRequiredToolCalls } from "./sanctuary-full-visibility-contract"
+import { sanctuaryInstallStateRequiredToolCalls } from "./sanctuary-install-state-contract"
 import { sanctuaryMediaCatalogRequiredToolCalls } from "./sanctuary-media-catalog-contract"
 import { sanctuaryStorageOptimizationRequiredToolCalls } from "./sanctuary-storage-optimization-contract"
 import { renderSanctuaryGroundedResponse, sanctuaryGroundingDigest } from "./sanctuary-grounding"
@@ -1207,8 +1208,11 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       const mediaCatalog = isSanctuaryHouseholdConversation
         ? sanctuaryMediaCatalogRequiredToolCalls(input.userMessage, relationshipAuthorization.advertisedToolNames)
         : undefined
+      const installState = isSanctuaryOwner
+        ? sanctuaryInstallStateRequiredToolCalls(input.userMessage, relationshipAuthorization.advertisedToolNames)
+        : undefined
       if (input.fullVisibilityProgress && fullVisibility) input.fullVisibilityProgress.fallback = fullVisibility.emptyResponseFallback
-      const contracts = [storageOptimization, fullVisibility, staleDockerCare, mediaCatalog].filter(Boolean) as Array<NonNullable<RunAgentOptions["requiredToolCalls"]>>
+      const contracts = [storageOptimization, fullVisibility, staleDockerCare, mediaCatalog, installState].filter(Boolean) as Array<NonNullable<RunAgentOptions["requiredToolCalls"]>>
       const ownedNames = contracts.map((contract) => new Set(contract.names))
       const requiredToolCalls = contracts.length === 0 ? undefined : {
         names: [...new Set(contracts.flatMap((contract) => [...contract.names]))],
