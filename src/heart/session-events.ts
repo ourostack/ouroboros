@@ -1171,10 +1171,14 @@ function buildEventFromMessage(
   }
 }
 
-export function projectProviderMessages(envelope: SessionEnvelope): OpenAI.ChatCompletionMessageParam[] {
-  const eventIds = envelope.projection.eventIds.length > 0
+export function projectedSessionEventIds(envelope: SessionEnvelope): string[] {
+  return envelope.projection.eventIds.length > 0
     ? envelope.projection.eventIds
     : envelope.events.map((event) => event.id)
+}
+
+export function projectProviderMessages(envelope: SessionEnvelope): OpenAI.ChatCompletionMessageParam[] {
+  const eventIds = projectedSessionEventIds(envelope)
   const byId = new Map(envelope.events.map((event) => [event.id, event] as const))
 
   return eventIds
@@ -1199,9 +1203,7 @@ export function annotateMessageTimestamps(
   messages: OpenAI.ChatCompletionMessageParam[],
   nowMs = Date.now(),
 ): OpenAI.ChatCompletionMessageParam[] {
-  const eventIds = envelope.projection.eventIds.length > 0
-    ? envelope.projection.eventIds
-    : envelope.events.map((event) => event.id)
+  const eventIds = projectedSessionEventIds(envelope)
   const byId = new Map(envelope.events.map((event) => [event.id, event] as const))
   const events = eventIds
     .map((id) => byId.get(id))

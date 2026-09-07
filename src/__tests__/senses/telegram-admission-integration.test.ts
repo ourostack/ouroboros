@@ -5,8 +5,9 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { FileFriendStore } from "@ouro.bot/friends"
 import { createProductionTelegramRelationshipComposition, createTelegramSenseApp, opaqueTelegramSubject, readOrCreateTelegramIdentityKey, telegramBotIdFromToken } from "../../senses/telegram"
 import { FileTelegramUpdateInboxStore, type TelegramLongPollOptions } from "../../senses/telegram-client"
-import { loadSessionEnvelopeFile } from "../../heart/session-events"
+import { loadSessionEnvelopeFile, projectProviderMessages } from "../../heart/session-events"
 import { getSenseSessionPath } from "../../senses/shared-turn"
+import { saveSession } from "../../mind/context"
 import { FileTelegramAdmissionStore, FIXED_ADMISSION_ACKNOWLEDGEMENT } from "../../senses/telegram-admission"
 import { openApprovalStore } from "../../heart/approval-store"
 import { FileApprovalCheckpointStore, FileApprovalTokenStore } from "../../heart/approval-files"
@@ -24,6 +25,79 @@ describe("Telegram admission integration", () => {
     expect(telegramBotIdFromToken("777:rotated-secret")).toBe("777")
     expect(opaqueTelegramSubject(identityKey, telegramBotIdFromToken("777:old-secret"), "42", "42"))
       .toBe(opaqueTelegramSubject(identityKey, telegramBotIdFromToken("777:rotated-secret"), "42", "42"))
+  })
+
+  it("retries only a failed final after a successful speak for an approved household turn", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-approved-retry-")); roots.push(root)
+    let pollOptions!: TelegramLongPollOptions
+    let sendAttempt = 0
+    const sends: Record<string, unknown>[] = []
+    const midTurn = "i found it — one last check"
+    const final = "everything is ready"
+    const runTurn = vi.fn(async (options: any) => {
+      await options.deliverySink.onDelivery({ kind: "speak", text: midTurn })
+      await expect(options.deliverySink.onDelivery({ kind: "text", text: final })).rejects.toThrow("final send failed")
+      const sessionPath = getSenseSessionPath("butler", "household-friend", "telegram", "telegram:777:888", root)
+      saveSession(sessionPath, [...projectProviderMessages(loadSessionEnvelopeFile(sessionPath)!), { role: "assistant", content: final }])
+      const finalEvent = loadSessionEnvelopeFile(sessionPath)!.events.findLast((event) => event.role === "assistant" && event.content === final)!
+      return {
+        response: `${midTurn}\n${final}`,
+        ponderDeferred: false,
+        deliveries: [{ kind: "speak", text: midTurn }],
+        deliveryFailures: [{ kind: "text", text: final, error: "final send failed" }],
+        responseCausalSessionEventId: finalEvent.id,
+      }
+    })
+    const app = createTelegramSenseApp({
+      agentName: "butler",
+      credentials: { botToken: "777:secret", authorizedUserId: "42", authorizedChatId: "42" },
+      identityKey: "k".repeat(43),
+      _agentRoot: root,
+      api: {
+        request: vi.fn(async (method: string, body: Record<string, unknown>) => {
+          if (method !== "sendMessage") return true
+          sends.push(structuredClone(body))
+          sendAttempt += 1
+          if (sendAttempt === 2) throw new Error("final send failed")
+          return { message_id: 7000 + sendAttempt }
+        }),
+        stop: vi.fn(),
+      },
+      offsetStore: { load: () => 0, save: vi.fn() },
+      createLongPoll: (options) => { pollOptions = options; return { pollOnce: vi.fn(), run: vi.fn(), stop: vi.fn() } },
+      runTurn,
+      migrateIdentity: async () => undefined,
+      admission: {
+        ownerFriendId: "ari",
+        resolveOwner: vi.fn(async () => null),
+        resolveApprovedFriend: vi.fn(async ({ userId }) => userId === "888" ? { friendId: "household-friend" } : null),
+        claimFriend: vi.fn(async () => ({ kind: "existing" as const, friendId: "household-friend" })),
+        revokeFriend: vi.fn(async () => ({ kind: "revoked" as const })),
+      },
+      authorizeRelationshipEffect: vi.fn(async () => ({ allowed: true, receiptId: "friends:test", expiresAt: "2099-01-01T00:00:00.000Z", transport: { chatId: "888" } })),
+      resolveRelationshipAuthorization: vi.fn(async ({ friendId, sessionEventId }) => ({
+        subject: { friendId, trustLevel: "friend" as const, admissionState: "active" as const, initiativePolicy: "request_follow_up_only" as const },
+        profileId: "sanctuary-household",
+        authorizedContextScopes: [],
+        advertisedToolNames: [],
+        actor: { friendId, trustLevel: "friend" as const, sessionEventId },
+        authorizeTool: vi.fn(async () => ({ allowed: false, reason: "none" })),
+      } as any)),
+    })
+
+    try {
+      await pollOptions.onUnknownMessage!({ updateId: 31, messageId: 32, botId: "777", userId: "888", chatId: "888", text: "is it ready?", displayLabel: "Household", hasAttachments: false })
+
+      expect(runTurn).toHaveBeenCalledTimes(1)
+      expect(sends).toEqual([
+        { chat_id: "888", text: midTurn, parse_mode: "HTML" },
+        { chat_id: "888", text: final, parse_mode: "HTML" },
+        { chat_id: "888", text: final, parse_mode: "HTML" },
+      ])
+      expect(sends.filter((payload) => payload.text === midTurn)).toHaveLength(1)
+    } finally {
+      await app.stop()
+    }
   })
 
   it("keeps the canonical owner identity valid across the default migration and restart", async () => {
