@@ -4207,7 +4207,7 @@ describe("Teams adapter - session persistence", () => {
     expect(order[1]).toBe("start-2")
   })
 
-  it("does not hard-reject concurrent conversations while one turn is in-flight", async () => {
+  it("queues concurrent conversations instead of hard-rejecting them", async () => {
     vi.resetModules()
     let releaseFirst: (() => void) | undefined
     const firstTurn = new Promise<void>((resolve) => { releaseFirst = resolve })
@@ -4233,14 +4233,16 @@ describe("Teams adapter - session persistence", () => {
     }
     expect(runAgentFn).toHaveBeenCalledTimes(1)
 
-    await teams.handleTeamsMessage("second", stream2 as any, "conv-2")
+    const secondMessage = teams.handleTeamsMessage("second", stream2 as any, "conv-2")
+    await new Promise((resolve) => setTimeout(resolve, 10))
     const emitted = stream2.emit.mock.calls.map((c: any[]) => String(c[0] ?? "")).join("\n")
     expect(emitted).not.toContain("single-replica preview")
     expect(emitted).not.toContain("maximum concurrent conversations")
-    expect(runAgentFn).toHaveBeenCalledTimes(2)
+    expect(runAgentFn).toHaveBeenCalledTimes(1)
 
     releaseFirst?.()
-    await firstMessage
+    await Promise.all([firstMessage, secondMessage])
+    expect(runAgentFn).toHaveBeenCalledTimes(2)
   })
 
   it("handleTeamsMessage passes toolContext to runAgent when provided via TeamsMessageContext", async () => {
