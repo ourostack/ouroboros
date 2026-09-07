@@ -7,6 +7,7 @@ import {
   getIngressTime,
   loadSessionEnvelopeFile,
   projectProviderMessages,
+  projectedSessionEventIds,
   sanitizeProviderMessages,
   type SessionEnvelope,
   type SessionEvent,
@@ -43,6 +44,7 @@ export interface SessionContinuityState {
 export interface SessionData {
   messages: OpenAI.ChatCompletionMessageParam[]
   events: SessionEvent[]
+  projectionEventIds: string[]
   structuredOutputs: StructuredOutput[]
   lastUsage?: UsageData
   state?: SessionContinuityState
@@ -395,6 +397,7 @@ export function loadSession(filePath: string): SessionData | null {
     return {
       messages: sanitizeProviderMessages(projectProviderMessages(envelope)),
       events: envelope.events,
+      projectionEventIds: [...projectedSessionEventIds(envelope)],
       structuredOutputs: envelope.structuredOutputs ?? [],
       lastUsage: envelope.lastUsage ?? undefined,
       state: denormalizeContinuityState(envelope.state),

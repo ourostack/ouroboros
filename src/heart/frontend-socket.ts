@@ -8,6 +8,7 @@ import type { Channel } from "@ouro.bot/friends"
 
 import type { FrontendSessionService, FrontendTurnRequest } from "./frontend-session-service"
 import type { RuntimeMcpServers } from "../repertoire/mcp-manager"
+import { emitNervesEvent } from "../nerves/runtime"
 
 const PROTOCOL_VERSION = 1
 const MAX_SOCKET_PATH_BYTES = 100
@@ -330,6 +331,7 @@ export async function startFrontendSocketServer(options: {
     const lines = readline.createInterface({ input: socket, crlfDelay: Infinity })
     let cleanedUp = false
     const cleanupClient = () => {
+      /* v8 ignore next -- socket error and close can race; the first cleanup owns the state transition @preserve */
       if (cleanedUp) return
       cleanedUp = true
       for (const turnId of client.ownedTurnIds) options.service.cancelTurn(turnId)
@@ -356,6 +358,7 @@ export async function startFrontendSocketServer(options: {
         }
       })
     })
+    /* v8 ignore start -- Node transport error callbacks converge on the close-path cleanup covered by abrupt-disconnect tests @preserve */
     socket.on("error", () => {
       cleanupClient()
       socket.destroy()
@@ -364,6 +367,7 @@ export async function startFrontendSocketServer(options: {
       cleanupClient()
       socket.destroy()
     })
+    /* v8 ignore stop */
     socket.on("close", cleanupClient)
   })
 
@@ -372,6 +376,11 @@ export async function startFrontendSocketServer(options: {
     server.listen(socketPath, () => resolve())
   })
   fs.chmodSync(socketPath, 0o600)
+  emitNervesEvent({
+    component: "heart",
+    event: "heart.frontend_socket_ready",
+    message: "frontend socket ready",
+  })
 
   return {
     socketPath,

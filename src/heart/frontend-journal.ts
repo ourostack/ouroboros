@@ -3,6 +3,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 
 import { getAgentRoot } from "./identity"
+import { emitNervesEvent } from "../nerves/runtime"
 
 const JOURNAL_VERSION = 1
 const DEFAULT_MAX_EVENT_BYTES = 256 * 1024
@@ -229,6 +230,12 @@ export class FrontendJournalStore {
     fs.chmodSync(directory, 0o700)
     fs.appendFileSync(journalPath, encoded, { encoding: "utf8", mode: 0o600 })
     fs.chmodSync(journalPath, 0o600)
+    emitNervesEvent({
+      component: "heart",
+      event: "heart.frontend_journal_appended",
+      message: "frontend journal event appended",
+      meta: { type: event.type, sequence: event.sequence },
+    })
     return event
   }
 }

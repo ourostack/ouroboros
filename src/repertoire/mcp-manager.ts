@@ -90,8 +90,8 @@ function buildMergedServerConfig(runtimeServers?: RuntimeMcpServers): {
 }
 
 function sameMcpServerConfig(left: McpServerConfig, right: McpServerConfig): boolean {
-  const leftEnv = Object.entries(left.env ?? {}).sort(([a], [b]) => a.localeCompare(b))
-  const rightEnv = Object.entries(right.env ?? {}).sort(([a], [b]) => a.localeCompare(b))
+  const leftEnv = Object.entries(left.env ?? {}).sort()
+  const rightEnv = Object.entries(right.env ?? {}).sort()
   return left.command === right.command
     && JSON.stringify(left.args ?? []) === JSON.stringify(right.args ?? [])
     && JSON.stringify(leftEnv) === JSON.stringify(rightEnv)

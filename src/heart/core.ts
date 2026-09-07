@@ -2488,7 +2488,7 @@ export async function runAgent(
             policyDigest,
             policyId: protectedCall.policy.policyId,
             actionClass: protectedCall.policy.actionClass,
-            ...(augmentedToolContext ? { liveToolContext: augmentedToolContext } : {}),
+            liveToolContext: augmentedToolContext,
           })
           suspension = {
             approvalId: committed.approvalId,

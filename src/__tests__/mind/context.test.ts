@@ -1073,6 +1073,16 @@ describe("loadSession", () => {
     expect(result!.events).toHaveLength(1)
   })
 
+  it("exposes the effective event order when a v2 provider projection uses its all-events fallback", async () => {
+    const { loadSession } = await import("../../mind/context")
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({ version: 2, events: [{ id: "evt-user", sequence: 1, role: "user", content: "hello" }], projection: { eventIds: [] }, lastUsage: null, state: {} }))
+
+    const result = loadSession("/tmp/session.json")
+
+    expect(result?.projectionEventIds).toEqual(["evt-user"])
+    expect(result?.messages).toEqual([{ role: "user", content: "hello" }])
+  })
+
   it("returns persisted continuity state when the saved envelope has a boolean mustResolveBeforeHandoff", async () => {
     const { loadSession } = await import("../../mind/context")
     const msgs = [{ role: "system", content: "sys" }]

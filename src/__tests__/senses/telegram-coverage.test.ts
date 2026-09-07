@@ -1104,6 +1104,24 @@ describe("Telegram sense coverage contracts", () => {
     expect(mocks.sendTelegramText).not.toHaveBeenCalled()
   })
 
+  it("retries a failed terminal response without inventing a causal session event", async () => {
+    const f = defaultFixture()
+    const failure = { kind: "text" as const, text: "unbound final", error: "send failed before acceptance" }
+    mocks.sendTelegramText.mockRejectedValueOnce(new Error(failure.error)).mockResolvedValueOnce([72])
+    mocks.runSenseTurn.mockImplementationOnce(async (options: any) => {
+      await expect(options.deliverySink.onDelivery({ kind: "text", text: failure.text })).rejects.toThrow(failure.error)
+      return { response: failure.text, deliveries: [], deliveryFailures: [failure], responseDeliveryFailure: failure, ponderDeferred: false }
+    })
+    createTelegramSenseApp({ agentName: "slugger", credentials })
+
+    await f.getOnMessage()({ updateId: 5, messageId: "6", text: "hello" })
+
+    expect(mocks.sendTelegramText).toHaveBeenCalledTimes(2)
+    expect(mocks.sendTelegramText).toHaveBeenNthCalledWith(1, f.api, "43", failure.text, { renderHtml: expect.any(Function) })
+    expect(mocks.sendTelegramText).toHaveBeenNthCalledWith(2, f.api, "43", failure.text, { renderHtml: expect.any(Function) })
+    expect(mocks.emitNervesEvent.mock.calls.findLast(([entry]) => entry.event === "senses.telegram_turn_end")?.[0].meta).toMatchObject({ deliveryCount: 1 })
+  })
+
   it.each([new Error("turn failed"), "primitive failure"])("records turn failure and sends one fixed safe response", async (failure) => {
     const f = defaultFixture()
     mocks.runSenseTurn.mockRejectedValueOnce(failure)

@@ -107,6 +107,12 @@ function hasUserVisibleTurnResponse(response: string): boolean {
   return text.length > 0 && text !== EMPTY_SHARED_TURN_DIAGNOSTIC
 }
 
+function responseFallbackAfterDeliveries(result: RunSenseTurnResult, successfulDeliveryCount: number): string | null {
+  const failedTerminal = result.responseDeliveryFailure?.text ?? (result.responseCausalSessionEventId ? result.deliveryFailures.at(-1)?.text : undefined)
+  const response = failedTerminal ?? (successfulDeliveryCount === 0 && result.deliveryFailures.length === 0 ? result.response : "")
+  return hasUserVisibleTurnResponse(response) ? response : null
+}
+
 function createFullVisibilityProgress(): { progress: FullVisibilityProgress; emptyResponseFallback: () => string | undefined } {
   const progress: FullVisibilityProgress = {}
   return { progress, emptyResponseFallback: () => progress.fallback?.() }
@@ -1296,9 +1302,15 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       emptyResponseFallback: fullVisibility.emptyResponseFallback,
       deliverySink: { onDelivery: (delivery) => deliver(delivery.text, delivery.kind === "settle") },
     })
-    if (effects.length === 0 && result.response.trim()) await deliver(result.response, true)
+    let responseFallbackArtifactId: string | undefined
+    const responseFallback = responseFallbackAfterDeliveries(result, effects.length)
+    if (responseFallback) {
+      await deliver(responseFallback, true)
+      responseFallbackArtifactId = effects.at(-1)?.id
+    }
     const causalEventIds = Object.fromEntries(effects.flatMap((artifact, index) => {
-      const eventId = result.causalSessionEventIds?.[index] ?? (effects.length === 1 ? result.responseCausalSessionEventId : undefined)
+      const eventId = result.causalSessionEventIds?.[index]
+        ?? (artifact.id === responseFallbackArtifactId ? result.responseCausalSessionEventId : undefined)
       return eventId ? [[artifact.id, eventId]] : []
     }))
     await recordAcceptedEffects(sessionPath, effects, undefined, causalEventIds)
@@ -1427,7 +1439,6 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       meta: lifecycleMeta("senses.telegram_turn_start", { agentName: options.agentName, subject, ...acceptanceMeta, ...lifecycleCoordinates }, lifecycleStartedAt),
     })
     acceptanceAuditBarrier()
-    let deliveryCount = 0
     const deliveredMessageIds: number[] = []
     const deliveredChunks: string[] = []
     let receiptStatus: "success" | "error" = "success"
@@ -1489,7 +1500,6 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
               bufferedGroundedDeliveries.push(delivery.kind)
             } else {
               turnEffects.push(await deliverButlerEffect(delivery.text, `turn:${subject}:${message.updateId}:delivery:${deliveryOrdinal++}`, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) }, exactDownloadCreditQuestion))
-              deliveryCount += 1
             }
           },
         },
@@ -1520,11 +1530,13 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
           || (bufferedGroundedDeliveries.length === 1 && bufferedGroundedDeliveries[0] !== "settle")) throw new Error("Canonical Sanctuary query did not produce exactly one matching grounded settle")
         const canonical = renderSanctuaryGroundedResponse(grounding.toolName, grounding.facts)
         turnEffects.push(await deliverButlerEffect(canonical, `turn:${subject}:${message.updateId}:delivery:${deliveryOrdinal++}`, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) }))
-        deliveryCount = 1
-      } else if (deliveryCount === 0 && hasUserVisibleTurnResponse(result.response)) {
-        const artifact = await deliverButlerEffect(result.response, `turn:${subject}:${message.updateId}:delivery:${deliveryOrdinal++}`, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) }, exactDownloadCreditQuestion)
-        turnEffects.push(artifact)
-        responseFallbackArtifactId = artifact.id
+      } else {
+        const responseFallback = responseFallbackAfterDeliveries(result, turnEffects.length)
+        if (responseFallback) {
+          const artifact = await deliverButlerEffect(responseFallback, `turn:${subject}:${message.updateId}:delivery:${deliveryOrdinal++}`, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) }, exactDownloadCreditQuestion)
+          turnEffects.push(artifact)
+          responseFallbackArtifactId = artifact.id
+        }
       }
       if (result.sessionPath) {
         const causalEventIds = Object.fromEntries((groundingIntentTool ? [] : turnEffects).flatMap((artifact, index) => {
@@ -1540,7 +1552,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         component: "senses",
         event: "senses.telegram_turn_end",
         message: "Telegram authorized turn completed",
-        meta: lifecycleMeta("senses.telegram_turn_end", { agentName: options.agentName, subject, deliveryCount: Math.max(deliveryCount, hasUserVisibleTurnResponse(result.response) ? 1 : 0), ...acceptanceMeta, ...lifecycleCoordinates, ...(acceptanceMarker ? { outcome: "success", errorDigest: null } : {}) }, Math.max(Date.now(), lifecycleStartedAt + 1)),
+        meta: lifecycleMeta("senses.telegram_turn_end", { agentName: options.agentName, subject, deliveryCount: turnEffects.length, ...acceptanceMeta, ...lifecycleCoordinates, ...(acceptanceMarker ? { outcome: "success", errorDigest: null } : {}) }, Math.max(Date.now(), lifecycleStartedAt + 1)),
       })
     } catch (error) {
       receiptStatus = "error"

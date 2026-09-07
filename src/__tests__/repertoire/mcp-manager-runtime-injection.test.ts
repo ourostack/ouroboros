@@ -303,6 +303,160 @@ describe("getSharedMcpManager + runtime Workbench MCP injection", () => {
     mod.resetSharedMcpManager()
   })
 
+  it("drops the shared manager when release reconciliation fails", async () => {
+    vi.resetModules()
+    let failReconcile = false
+    const McpClientMock = class {
+      connect = async () => {}
+      listTools = async () => []
+      callTool = vi.fn()
+      shutdown = vi.fn()
+      isConnected = vi.fn(() => true)
+      onClose = vi.fn()
+      constructor(public config: { command: string }) {}
+    }
+    vi.doMock("../../repertoire/mcp-client", () => ({
+      McpClient: McpClientMock,
+      isMcpTransportError: () => false,
+    }))
+    vi.doMock("../../heart/identity", () => ({
+      loadAgentConfig: () => ({ mcpServers: { calc: { command: "builtin-calc" } } }),
+      getAgentRoot: () => "/tmp/agent",
+      getAgentName: () => "test",
+    }))
+    vi.doMock("../../repertoire/plugin-mcp", () => ({
+      listPluginMcpServers: () => {
+        if (failReconcile) throw new Error("plugin scan failed")
+        return []
+      },
+      pluginMcpServerToConfig: (server: any) => ({ command: server.command }),
+    }))
+
+    const mod = await import("../../repertoire/mcp-manager")
+    const manager = await mod.getSharedMcpManager()
+    failReconcile = true
+    await mod.releaseRuntimeMcpServers()
+    expect(manager!.listAllTools()).toEqual([])
+    await expect(mod.releaseRuntimeMcpServers()).resolves.toBeUndefined()
+    mod.resetSharedMcpManager()
+  })
+
+  it("shuts down a connection superseded while it is starting", async () => {
+    vi.resetModules()
+    const firstEntered = Promise.withResolvers<void>()
+    const releaseFirst = Promise.withResolvers<void>()
+    const connects: string[] = []
+    const shutdowns: string[] = []
+    let configuredCommand = "first"
+    const McpClientMock = class {
+      callTool = vi.fn()
+      isConnected = vi.fn(() => true)
+      onClose = vi.fn()
+      constructor(public config: { command: string }) {}
+      async connect(): Promise<void> {
+        connects.push(this.config.command)
+        if (this.config.command === "first") {
+          firstEntered.resolve()
+          await releaseFirst.promise
+        }
+      }
+      async listTools(): Promise<unknown[]> {
+        return [{ name: "status", description: "", inputSchema: {} }]
+      }
+      shutdown(): void { shutdowns.push(this.config.command) }
+    }
+    vi.doMock("../../repertoire/mcp-client", () => ({
+      McpClient: McpClientMock,
+      isMcpTransportError: () => false,
+    }))
+    vi.doMock("../../heart/identity", () => ({
+      loadAgentConfig: () => ({ mcpServers: { shared: { command: configuredCommand } } }),
+      getAgentRoot: () => "/tmp/agent",
+      getAgentName: () => "test",
+    }))
+    vi.doMock("../../repertoire/plugin-mcp", () => ({
+      listPluginMcpServers: () => [],
+      pluginMcpServerToConfig: (server: any) => ({ command: server.command }),
+    }))
+
+    const { McpManager } = await import("../../repertoire/mcp-manager")
+    const manager = new McpManager()
+    const starting = manager.start({ shared: { command: "first" } })
+    await firstEntered.promise
+    configuredCommand = "second"
+    await manager.reconcile()
+    releaseFirst.resolve()
+    await starting
+
+    expect(connects).toEqual(["first", "second"])
+    expect(shutdowns).toEqual(["first", "first"])
+    expect(manager.listAllTools().map((entry) => entry.server)).toEqual(["shared"])
+    manager.shutdown()
+  })
+
+  it.each(["resolve", "reject"] as const)(
+    "keeps the newer server when superseded vault resolution settles by %s",
+    async (outcome) => {
+      vi.resetModules()
+      const vaultEntered = Promise.withResolvers<void>()
+      const vault = Promise.withResolvers<string>()
+      const connects: string[] = []
+      const McpClientMock = class {
+        callTool = vi.fn()
+        isConnected = vi.fn(() => true)
+        onClose = vi.fn()
+        constructor(public config: { command: string }) {}
+        async connect(): Promise<void> { connects.push(this.config.command) }
+        async listTools(): Promise<unknown[]> {
+          return [{ name: "status", description: "", inputSchema: {} }]
+        }
+        shutdown = vi.fn()
+      }
+      vi.doMock("../../repertoire/mcp-client", () => ({
+        McpClient: McpClientMock,
+        isMcpTransportError: () => false,
+      }))
+      vi.doMock("../../heart/identity", () => ({
+        loadAgentConfig: () => ({}),
+        getAgentRoot: () => "/tmp/agent",
+        getAgentName: () => "test",
+      }))
+      vi.doMock("../../repertoire/plugin-mcp", () => ({
+        listPluginMcpServers: () => [],
+        pluginMcpServerToConfig: (server: any) => ({ command: server.command }),
+      }))
+      vi.doMock("../../repertoire/credential-access", () => ({
+        getCredentialStore: () => ({
+          getRawSecret: async () => {
+            vaultEntered.resolve()
+            return vault.promise
+          },
+        }),
+      }))
+
+      const { McpManager } = await import("../../repertoire/mcp-manager")
+      const manager = new McpManager()
+      const stale = manager.start({
+        shared: {
+          command: "first",
+          env: { TOKEN: "vault:service/token" },
+        },
+      })
+      await vaultEntered.promise
+      await manager.start({ shared: { command: "second" } })
+      if (outcome === "resolve") {
+        vault.resolve("stale-secret")
+      } else {
+        vault.reject(new Error("stale vault failure"))
+      }
+      await stale
+
+      expect(connects).toEqual(["second"])
+      expect(manager.listAllTools().map((entry) => entry.server)).toEqual(["shared"])
+      manager.shutdown()
+    },
+  )
+
   it("re-injects ouro_workbench on a later turn that carries runtimeServers again (stable per-turn)", async () => {
     vi.resetModules()
     const { shutdowns } = mockManagerDeps()

@@ -915,6 +915,7 @@ export class OuroDaemon {
     this.mode = options.mode ?? "production"
     this.mailboxServerFactory = options.mailboxServerFactory ?? this.createDefaultMailboxServer.bind(this)
     this.frontendSocketPath = options.frontendSocketPath ?? frontendSocketPathForDaemon(this.socketPath)
+    /* v8 ignore next -- path-only default adapter; frontend service tests inject and verify the same root contract @preserve */
     const frontendAgentRoot = (agent: string) => path.join(this.bundlesRoot, `${agent}.ouro`)
     this.frontendSessionService = options.frontendSessionService ?? new FrontendSessionService({
       journal: new FrontendJournalStore({ agentRoot: frontendAgentRoot }),

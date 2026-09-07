@@ -4,6 +4,7 @@ import type { Readable, Writable } from "node:stream"
 
 import { SocketFrontendClient, type FrontendProtocolClient } from "../heart/frontend-socket-client"
 import type { RuntimeMcpServers } from "../repertoire/mcp-manager"
+import { emitNervesEvent } from "../nerves/runtime"
 
 interface JsonRpcRequest {
   jsonrpc?: unknown
@@ -334,6 +335,11 @@ export function createAcpServer(options: AcpServerOptions): AcpServer {
     start(): void {
       if (running) return
       running = true
+      emitNervesEvent({
+        component: "senses",
+        event: "senses.acp_server_started",
+        message: "ACP server started",
+      })
       lines = readline.createInterface({ input: options.stdin, crlfDelay: Infinity })
       lines.on("line", (line) => {
         if (line.trim()) void dispatch(line)

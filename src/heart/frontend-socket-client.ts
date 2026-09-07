@@ -1,4 +1,5 @@
 import * as net from "node:net"
+import { emitNervesEvent } from "../nerves/runtime"
 
 export interface FrontendProtocolClient {
   request(method: string, params: Record<string, unknown>): Promise<any>
@@ -71,6 +72,11 @@ export class SocketFrontendClient implements FrontendProtocolClient {
         })
         this.socket = socket
         this.connecting = null
+        emitNervesEvent({
+          component: "heart",
+          event: "heart.frontend_socket_client_connected",
+          message: "frontend socket client connected",
+        })
         resolve()
       })
     })

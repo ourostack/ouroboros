@@ -2,11 +2,23 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
-      "version": "0.1.0-alpha.802",
+      "version": "0.1.0-alpha.804",
       "changes": [
         "Add the ACP frontend and daemon socket used by Ouro Workbench to start and supervise a selected boss agent.",
         "Keep Workbench-owned session identity across prompts, approvals, cancellation, journaling, and session subscriptions.",
         "Serialize identity-sensitive turns and per-turn runtime MCP cleanup so frontend state does not carry into the next turn."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.803",
+      "changes": [
+        "Make Sanctuary update topology absence checks fail closed."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.802",
+      "changes": [
+        "Prefer validated completion text for settled replies and bind delivery causality only when the newest validated current-turn session event matches, preventing stale or duplicate Telegram answers."
       ]
     },
     {

@@ -363,6 +363,7 @@ describe("frontend socket", () => {
       ["args-non-empty", { ouro_workbench: { command: "/bin/echo", args: ["x"] } }, "args must be an empty string array"],
       ["env-extra", { ouro_workbench: { command: "/bin/echo", env: { ...validEnv, EXTRA: "x" } } }, "env requires exactly"],
       ["env-bun-relative", { ouro_workbench: { command: "/bin/echo", env: { ...validEnv, BUN_BIN: "bun" } } }, "BUN_BIN must be absolute"],
+      ["env-socket-relative", { ouro_workbench: { command: "/bin/echo", env: { ...validEnv, CMUX_SOCKET_PATH: "workbench.sock" } } }, "CMUX_SOCKET_PATH must be absolute"],
       ["env-socket-file", { ouro_workbench: { command: "/bin/echo", env: { ...validEnv, CMUX_SOCKET_PATH: "/bin/echo" } } }, "must be a live Unix socket"],
       ["env-capability", { ouro_workbench: { command: "/bin/echo", env: { ...validEnv, CMUX_SOCKET_CAPABILITY: "not valid" } } }, "CMUX_SOCKET_CAPABILITY is invalid"],
     ] as const

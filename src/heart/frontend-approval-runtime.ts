@@ -29,6 +29,7 @@ import { loadSession, postTurnPersist, postTurnTrim } from "../mind/context"
 import { readSessionTransaction, withSessionTurnLease } from "../mind/session-transaction"
 import { approvalPolicyForInvocation, execTool, resolveToolDefinition } from "../repertoire/tools"
 import { getSharedMcpManager } from "../repertoire/mcp-manager"
+import { emitNervesEvent } from "../nerves/runtime"
 
 type PermissionOptionId = "allow-once" | "reject-once" | "cancelled" | "expired"
 
@@ -96,10 +97,12 @@ const PERMISSION_OPTIONS = [
   { optionId: "reject-once", name: "Reject", kind: "reject_once" },
 ] as const
 
+/* v8 ignore start -- lazy default adapter avoids widening every daemon test mock; settlement behavior is covered through the injected dependency @preserve */
 async function defaultReleaseRuntimeMcpServers(): Promise<void> {
   const manager = await import("../repertoire/mcp-manager")
   await manager.releaseRuntimeMcpServers()
 }
+/* v8 ignore stop */
 
 const DEFAULT_SETTLEMENT_DEPENDENCIES: SettleFrontendApprovalDependencies = {
   withTurnExecutionLease,
@@ -309,6 +312,11 @@ export function createFrontendApprovalRuntime(options: {
   if (!Number.isSafeInteger(approvalTimeoutMs) || approvalTimeoutMs < 1) {
     throw new Error("approvalTimeoutMs must be a positive integer")
   }
+  emitNervesEvent({
+    component: "heart",
+    event: "heart.frontend_approval_runtime_ready",
+    message: "frontend approval runtime ready",
+  })
   const states = new Map<string, ApprovalState>()
   const pending = new Map<string, PendingApproval>()
   let closed = false
