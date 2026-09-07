@@ -2293,7 +2293,7 @@ ouro-butler-rollback
           test "$CURRENT_ROLLBACK_IMAGE_ID" = "$ROLLBACK_IMAGE_ID"
           docker rm --force ouro-butler-rollback >/dev/null 2>&1 || true
         fi
-        ! docker container inspect ouro-butler-rollback >/dev/null 2>&1
+        ! docker container inspect ouro-butler-rollback >/dev/null 2>&1 || exit 1
         rollback_sanctuary_bundle_if_pending "$IMAGE_ID"
         assert_update_source "$ROLLBACK_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"
         start_only_butler_for_recovery
@@ -2348,7 +2348,7 @@ ouro-butler-rollback
         test "$PARTIAL_PRODUCTION_IMAGE_ID" = "$IMAGE_ID"
         docker rm --force ouro-butler >/dev/null 2>&1 || true
       fi
-      ! docker container inspect ouro-butler >/dev/null 2>&1
+      ! docker container inspect ouro-butler >/dev/null 2>&1 || exit 1
       CURRENT_ROLLBACK_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler-rollback)
       test "$CURRENT_ROLLBACK_IMAGE_ID" = "$ROLLBACK_IMAGE_ID"
       migrate_sanctuary_package_managed_bundle "$IMAGE_ID" rollback
@@ -2674,7 +2674,7 @@ Restore:
         test "$PARTIAL_RESTORE_IMAGE_ID" = "$IMAGE_ID"
         docker rm --force ouro-butler >/dev/null 2>&1 || true
       fi
-      ! docker container inspect ouro-butler >/dev/null 2>&1
+      ! docker container inspect ouro-butler >/dev/null 2>&1 || exit 1
       rm -f "$HOST_RESTORE_INSTALLER"
       rm -f -- "$RESTORE_INSTALL_PROOF_ROOT/install.json"
       rmdir -- "$RESTORE_INSTALL_PROOF_ROOT"
