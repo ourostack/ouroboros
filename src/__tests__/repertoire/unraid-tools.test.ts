@@ -15,6 +15,20 @@ function root(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "unraid-tools-routine-"))
 }
 
+function installData(overrides: Record<string, unknown> = {}) {
+  return {
+    runtimePackageVersion: "0.1.0-alpha.798",
+    packagedBundleVersion: "0.1.0-alpha.798",
+    liveBundleVersion: "0.1.0-alpha.798",
+    parity: "exact",
+    mismatchCodes: [],
+    journalState: "absent",
+    ready: true,
+    repair: { actor: "none", action: "none" },
+    ...overrides,
+  }
+}
+
 describe("Unraid typed read tools", () => {
   it("normalizes only canonical Docker state/status pairs", () => {
     expect(normalizeDockerStatus("RUNNING", "Up 2 months")).toEqual({ state: "running", exitCode: null, degraded: false })
@@ -316,6 +330,7 @@ describe("Unraid typed read tools", () => {
       getDisks: vi.fn(async () => ({ ok: true, data: "disks" })),
       getNotifications: vi.fn(async () => ({ ok: true, data: "notifications" })),
       getSystem: vi.fn(async () => ({ ok: true, data: "system" })),
+      getInstallState: vi.fn(async () => ({ ok: true, data: installData() })),
       checkServices: vi.fn(async () => ({ ok: true, data: "services" })),
       getDownloadQueue: vi.fn(async () => ({ ok: true, data: "download-queue" })),
       getMediaOptimization: vi.fn(async () => ({ ok: true, data: "media-optimization" })),
@@ -333,6 +348,7 @@ describe("Unraid typed read tools", () => {
     }
     expect(sanctuary.getContainerLogs).toHaveBeenCalledExactlyOnceWith({ container: "alpha", tailLines: 7 })
     expect(sanctuary.checkServices).toHaveBeenCalledExactlyOnceWith()
+    expect(sanctuary.getInstallState).toHaveBeenCalledExactlyOnceWith()
     expect(sanctuary.getDownloadQueue).toHaveBeenCalledExactlyOnceWith()
     expect(sanctuary.getMediaOptimization).toHaveBeenCalledExactlyOnceWith()
     expect(sanctuary.searchMediaCatalog).toHaveBeenCalledExactlyOnceWith({ query: "moon", limit: 3 })
@@ -346,6 +362,34 @@ describe("Unraid typed read tools", () => {
     const resumeDefinition = unraidToolDefinitions.find((definition) => definition.tool.function.name === "sanctuary_resume_download_queue")!
     expect(resumeDefinition.approvalPolicy?.({}, {} as any)).toEqual({ kind: "required", policyId: "sanctuary.downloads.resume.v1", actionClass: "sanctuary.downloads.resume", requiresSoleCall: true })
     expect(resumeDefinition.riskProfile).toMatchObject({ mutates: "external_side_effect", risk: "high" })
+  })
+
+  it("returns every bounded install inspection state exactly and preserves the outer missing-runtime shape", async () => {
+    const mismatchCodes = ["managed_file_missing", "managed_file_content", "managed_file_mode", "bundle_meta_missing", "bundle_meta_field", "bundle_meta_mode"]
+    const states = [
+      { ok: true, data: installData() },
+      { ok: true, data: installData({ journalState: "rollback" }) },
+      { ok: true, data: installData({ journalState: "committing", ready: false, repair: { actor: "human-required", action: "run_verified_update_recovery" } }) },
+      { ok: true, data: installData({ liveBundleVersion: "0.1.0-alpha.797", parity: "mismatch", mismatchCodes, ready: false, repair: { actor: "human-required", action: "restart_from_verified_release" } }) },
+      { ok: true, data: installData({ liveBundleVersion: "0.1.0-alpha.797", parity: "mismatch", mismatchCodes, journalState: "rollback", ready: false, repair: { actor: "human-required", action: "run_verified_update_recovery" } }) },
+      { ok: true, data: installData({ liveBundleVersion: "0.1.0-alpha.797", parity: "mismatch", mismatchCodes, journalState: "committing", ready: false, repair: { actor: "human-required", action: "run_verified_update_recovery" } }) },
+      ...["invalid_package_root", "invalid_package_source", "packaged_policy_not_empty", "package_version_mismatch"].map((code) => ({ ok: false, error: { code, message: "verified release contents are invalid", degraded: true, repair: { actor: "human-required", action: "roll_back_or_install_verified_release" } } })),
+      ...["invalid_live_root", "invalid_live_bundle"].map((code) => ({ ok: false, error: { code, message: "installed Sanctuary bundle is invalid", degraded: true, repair: { actor: "human-required", action: "roll_back_or_install_verified_release" } } })),
+      { ok: false, error: { code: "invalid_journal", message: "Sanctuary update recovery is required", degraded: true, repair: { actor: "human-required", action: "run_verified_update_recovery" } } },
+      { ok: false, error: { code: "inspection_unavailable", message: "Sanctuary install state is unavailable", degraded: true, repair: { actor: "human-required", action: "run_verified_update_recovery" } } },
+    ]
+    const definition = unraidToolDefinitions.find((entry) => entry.tool.function.name === "sanctuary_get_install_state")!
+
+    expect(definition.tool.function.parameters).toEqual({ type: "object", properties: {}, additionalProperties: false })
+    expect(definition.tool.function.description).toBe("Check whether this Butler installation matches its verified release and report any repair needed.")
+    expect(definition.riskProfile).toEqual({ mutates: "none", risk: "low" })
+    for (const state of states) {
+      const getInstallState = vi.fn(async () => structuredClone(state))
+      await expect(definition.handler({}, { sanctuary: { getInstallState } } as any)).resolves.toBe(JSON.stringify(state))
+      expect(getInstallState).toHaveBeenCalledExactlyOnceWith()
+      expect(JSON.stringify(state)).not.toMatch(/(?:\/opt\/|\/home\/|sha256:|credential|stack)/u)
+    }
+    await expect(definition.handler({}, undefined as any)).resolves.toBe(JSON.stringify({ ok: false, error: { code: "invalid_response", message: "Sanctuary runtime is unavailable", degraded: true } }))
   })
 
   it("uses standing policy only for an exact family-authorized routine restart and otherwise preserves approval", async () => {

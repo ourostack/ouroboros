@@ -1,5 +1,19 @@
 import { emitNervesEvent } from "../../nerves/runtime"
 
+interface DockerManTemplateElement {
+  name: string
+  attributes: Record<string, string>
+  form: "empty" | "text"
+  text: string
+}
+
+interface DockerManTemplateDocument {
+  root: { name: "Container"; attributes: { version: "2" } }
+  children: DockerManTemplateElement[]
+}
+
+const { parseDockerManTemplateXml } = require("../../../deploy/unraid/docker-man-template-xml.cjs") as { parseDockerManTemplateXml(input: string | Uint8Array): DockerManTemplateDocument | null }
+
 const EXPECTED_BINDS = [
   "/mnt/user/appdata/ouro-butler/runtime/.ouro-cli:/home/ouro/.ouro-cli:rw",
   "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro:/home/ouro/AgentBundles/sanctuary.ouro:rw",
@@ -13,14 +27,26 @@ const EXPECTED_MOUNTS = [
 ] as const
 
 const LEGACY_ALPHA742_IMAGE = "sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d"
+const PREPACKAGE_ALPHA797_IMAGE = "sha256:e337dff04c92d116b269052f473b26a47eea933d017d1befc73af50dd37bb08d"
 const LEGACY_ALPHA742_MOUNTS = EXPECTED_MOUNTS.slice(0, 2)
 
 const EXPECTED_EXTRA_PARAMS = "--restart=unless-stopped --user=10001:10001"
+const EXPECTED_NAME = "ouro-butler"
+const EXPECTED_TEMPLATE_URL = "https://raw.githubusercontent.com/ourostack/ouroboros/main/deploy/unraid/sanctuary.xml"
+const EXPECTED_ICON = "https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png"
+const EXACT_IMAGE = /^sha256:[a-f0-9]{64}$/u
+const VERSION_REFERENCE = /^ghcr\.io\/ourostack\/ouroboros-butler:[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/u
+const PACKAGE_DAEMON_ARGS = ["/opt/ouro/dist/heart/daemon/daemon-entry.js", "--package-managed-agent", "sanctuary"] as const
+const PACKAGE_ENTRYPOINT = ["node", ...PACKAGE_DAEMON_ARGS] as const
+const LEGACY_DAEMON_ARGS = ["/opt/ouro/dist/heart/daemon/daemon-entry.js"] as const
+const LEGACY_ENTRYPOINT = ["node", ...LEGACY_DAEMON_ARGS] as const
 
 export interface SanctuaryContainerAuditOptions {
   expectedImage: string
   expectedEnvironment: readonly string[]
-  mountContract?: "canonical" | "legacy-alpha742"
+  expectedImageReference?: string
+  expectedIcon?: string
+  mountContract?: "canonical" | "legacy-alpha742" | "prepackage-alpha797"
 }
 
 export interface SanctuaryContainerAuditResult {
@@ -29,9 +55,15 @@ export interface SanctuaryContainerAuditResult {
 }
 
 export interface SanctuaryStagedAuditInput {
-  templateXml: string
+  templateXml: string | Uint8Array
   runtimePolicyText: string
   expectedImage: string
+}
+
+export interface SanctuaryPersistentTemplateAuditInput {
+  templateXml: string | Uint8Array
+  runtimePolicyText: string
+  expectedImageReference: string
 }
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -61,15 +93,18 @@ export function auditSanctuaryContainerSpec(
   if (!root || !config || !host) {
     violations.push("inspect payload must contain object Config and HostConfig records")
   } else {
-    if (!/^sha256:[a-f0-9]{64}$/u.test(options.expectedImage)) violations.push("expected image must be an exact local Docker image ID")
+    if (!EXACT_IMAGE.test(options.expectedImage)) violations.push("expected image must be an exact local Docker image ID")
     const mountContract = options.mountContract ?? "canonical"
     if (mountContract === "legacy-alpha742" && options.expectedImage !== LEGACY_ALPHA742_IMAGE) violations.push("legacy mount exception requires the pinned alpha.742 image ID")
+    if (mountContract === "prepackage-alpha797" && options.expectedImage !== PREPACKAGE_ALPHA797_IMAGE) violations.push("pre-package-managed source exception requires the pinned alpha.797 image ID")
     const expectedMounts = mountContract === "legacy-alpha742" ? LEGACY_ALPHA742_MOUNTS : EXPECTED_MOUNTS
+    const expectedArgs = mountContract === "canonical" ? PACKAGE_DAEMON_ARGS : LEGACY_DAEMON_ARGS
+    const expectedEntrypoint = mountContract === "canonical" ? PACKAGE_ENTRYPOINT : LEGACY_ENTRYPOINT
     if (root.Image !== options.expectedImage) violations.push("image does not match the reviewed exact local Docker image ID")
     if (root.Path !== "node") violations.push("effective container path must be node")
-    if (JSON.stringify(root.Args) !== JSON.stringify(["/opt/ouro/dist/heart/daemon/daemon-entry.js"])) violations.push("effective container arguments must be the direct daemon entry")
+    if (JSON.stringify(root.Args) !== JSON.stringify(expectedArgs)) violations.push("effective container arguments must be the reviewed direct daemon entry")
     if (config.User !== "10001:10001") violations.push("container user must be 10001:10001")
-    if (JSON.stringify(config.Entrypoint) !== JSON.stringify(["node", "/opt/ouro/dist/heart/daemon/daemon-entry.js"])) violations.push("entrypoint must be the direct daemon entry")
+    if (JSON.stringify(config.Entrypoint) !== JSON.stringify(expectedEntrypoint)) violations.push("entrypoint must be the reviewed direct daemon entry")
     if (!(config.Cmd === null || (Array.isArray(config.Cmd) && config.Cmd.length === 0))) violations.push("container command must be empty")
     const environment = stringArray(config.Env)
     if (!environment || JSON.stringify(environment) !== JSON.stringify(options.expectedEnvironment)) violations.push("container environment must exactly match the reviewed image environment")
@@ -88,6 +123,23 @@ export function auditSanctuaryContainerSpec(
     if (!(host.CapDrop === null || (Array.isArray(host.CapDrop) && host.CapDrop.length === 0))) violations.push("container must drop no capabilities")
     if (host.PublishAllPorts !== false) violations.push("container must not publish all exposed ports")
     if (!isEmptyRecord(network?.Ports)) violations.push("effective network ports must be empty")
+    if (mountContract === "canonical" && root.Name !== `/${EXPECTED_NAME}`) violations.push("container name must be /ouro-butler")
+    if (mountContract === "prepackage-alpha797" && root.Name !== `/${EXPECTED_NAME}` && root.Name !== "/ouro-butler-staging") violations.push("pre-package-managed source name must be /ouro-butler or /ouro-butler-staging")
+    if (mountContract === "prepackage-alpha797") {
+      if (config.Image !== PREPACKAGE_ALPHA797_IMAGE) violations.push("pre-package-managed source configured image must equal the pinned alpha.797 image ID")
+      const labels = record(config.Labels)
+      if (labels && Object.prototype.hasOwnProperty.call(labels, "net.unraid.docker.managed")) violations.push("pre-package-managed source must not carry a DockerMan managed label")
+      if (labels && Object.prototype.hasOwnProperty.call(labels, "net.unraid.docker.icon")) violations.push("pre-package-managed source must not carry a DockerMan icon label")
+      if (labels && Object.prototype.hasOwnProperty.call(labels, "net.unraid.docker.webui")) violations.push("pre-package-managed source must not carry a DockerMan WebUI label")
+    } else if (mountContract === "canonical") {
+      if (!options.expectedImageReference || !VERSION_REFERENCE.test(options.expectedImageReference)) violations.push("expected image reference must be the canonical package-version tag")
+      if (config.Image !== options.expectedImageReference) violations.push("configured image must equal the canonical package-version tag")
+      if (options.expectedIcon !== EXPECTED_ICON) violations.push("expected icon must equal the canonical template icon")
+      const labels = record(config.Labels)
+      if (labels?.["net.unraid.docker.managed"] !== "dockerman") violations.push("container must carry the DockerMan managed label")
+      if (labels?.["net.unraid.docker.icon"] !== options.expectedIcon) violations.push("container icon label must equal the canonical template icon")
+      if (labels && Object.prototype.hasOwnProperty.call(labels, "net.unraid.docker.webui")) violations.push("container must not carry a DockerMan WebUI label")
+    }
     const mounts = Array.isArray(root.Mounts) ? root.Mounts : []
     const normalizedMounts = mounts.map((mount) => {
       const item = record(mount)
@@ -120,18 +172,20 @@ export function auditSanctuaryContainerSpec(
   return result
 }
 
-function tagValues(xml: string, name: string): string[] {
-  return [...xml.matchAll(new RegExp(`<${name}>([^<]*)</${name}>`, "gu"))]
-    .map((match) => match[1]!)
+function directChildren(document: DockerManTemplateDocument | null, name: string): DockerManTemplateElement[] {
+  return document?.children.filter((child) => child.name === name) ?? []
 }
 
-function singleTag(xml: string, name: string): string | undefined {
-  const values = tagValues(xml, name)
-  return values.length === 1 ? values[0] : undefined
+function singleTextChild(document: DockerManTemplateDocument | null, name: string): string | undefined {
+  const children = directChildren(document, name)
+  const child = children.length === 1 ? children[0] : undefined
+  return child?.form === "text" && Object.keys(child.attributes).length === 0 ? child.text : undefined
 }
 
-export function auditSanctuaryStagedFiles(input: SanctuaryStagedAuditInput): SanctuaryContainerAuditResult {
+function auditTemplate(input: { templateXml: string | Uint8Array; runtimePolicyText: string }, expectedRepository: string, repositoryIsValid: boolean, repositoryViolation: string): string[] {
   const violations: string[] = []
+  const template = parseDockerManTemplateXml(input.templateXml)
+  if (!template) violations.push("canonical DockerMan XML structure is invalid")
   let runtimePolicy: unknown
   try {
     runtimePolicy = JSON.parse(input.runtimePolicyText)
@@ -142,33 +196,42 @@ export function auditSanctuaryStagedFiles(input: SanctuaryStagedAuditInput): San
   if (policy?.scheduler !== "supercronic" || policy.updates !== "disabled" || Object.keys(policy).sort().join(",") !== "scheduler,updates") {
     violations.push("container runtime policy must be exactly scheduler=supercronic and updates=disabled")
   }
-  const configOpenCount = [...input.templateXml.matchAll(/<Config\b/gu)].length
-  const configEntries = [...input.templateXml.matchAll(/<Config\b([^>]*)>([^<]*)<\/Config>/gu)]
-  const pathConfigs = configEntries
-    .map((match) => {
-      const type = match[1]!.match(/\bType="([^"]+)"/u)?.[1]
-      const target = match[1]!.match(/\bTarget="([^"]+)"/u)?.[1]
-      const mode = match[1]!.match(/\bMode="([^"]+)"/u)?.[1]
-      return type === "Path" && target && mode ? `${match[2]}:${target}:${mode}` : "invalid"
-    })
+  const configEntries = directChildren(template, "Config")
+  const pathConfigs = configEntries.map((entry) => {
+    const { Type: type, Target: target, Mode: mode } = entry.attributes
+    return entry.form === "text" && type === "Path" && target && mode ? `${entry.text}:${target}:${mode}` : "invalid"
+  })
   if (
-    configOpenCount !== EXPECTED_BINDS.length
-    || configEntries.length !== EXPECTED_BINDS.length
+    configEntries.length !== EXPECTED_BINDS.length
     || JSON.stringify([...pathConfigs].sort()) !== JSON.stringify([...EXPECTED_BINDS].sort())
   ) {
     violations.push("template Config entries must equal the canonical path binds")
   }
-  const postArgsOpenCount = [...input.templateXml.matchAll(/<PostArgs\b/gu)].length
-  const postArgs = [...input.templateXml.matchAll(/<PostArgs(?:(?:\s*\/>)|>([^<]*)<\/PostArgs>)/gu)]
-  if (postArgsOpenCount !== 1 || postArgs.length !== 1 || (postArgs[0]?.[1] ?? "") !== "") {
+  const postArgs = directChildren(template, "PostArgs")
+  if (postArgs.length !== 1 || postArgs[0]!.text !== "" || Object.keys(postArgs[0]!.attributes).length !== 0) {
     violations.push("template PostArgs must be present exactly once and empty")
   }
-  const extraParams = singleTag(input.templateXml, "ExtraParams")
+  const extraParams = singleTextChild(template, "ExtraParams")
   if (extraParams !== EXPECTED_EXTRA_PARAMS) violations.push("template ExtraParams must equal the canonical user and restart flags")
-  const repository = singleTag(input.templateXml, "Repository")
-  if (!/^sha256:[a-f0-9]{64}$/u.test(input.expectedImage)) violations.push("expected image must be an exact local Docker image ID")
-  if (repository !== input.expectedImage) violations.push("image does not match the reviewed exact local Docker image ID")
-  if (singleTag(input.templateXml, "Network") !== "host") violations.push("network mode must be host")
-  if (singleTag(input.templateXml, "Privileged") !== "false") violations.push("container must not be privileged")
+  const repository = singleTextChild(template, "Repository")
+  if (!repositoryIsValid) violations.push(repositoryViolation)
+  if (repository !== expectedRepository) violations.push("template repository does not match the reviewed image identity")
+  if (singleTextChild(template, "Name") !== EXPECTED_NAME) violations.push("template technical name must be exactly ouro-butler")
+  if (singleTextChild(template, "TemplateURL") !== EXPECTED_TEMPLATE_URL) violations.push("template URL must equal the canonical release template")
+  if (singleTextChild(template, "Icon") !== EXPECTED_ICON) violations.push("template icon must equal the canonical release icon")
+  const webUi = directChildren(template, "WebUI")
+  if (webUi.length !== 1 || webUi[0]!.form !== "empty" || Object.keys(webUi[0]!.attributes).length !== 0) violations.push("template WebUI must be present exactly once and empty")
+  if (singleTextChild(template, "Network") !== "host") violations.push("network mode must be host")
+  if (singleTextChild(template, "Privileged") !== "false") violations.push("container must not be privileged")
+  return violations
+}
+
+export function auditSanctuaryStagedFiles(input: SanctuaryStagedAuditInput): SanctuaryContainerAuditResult {
+  const violations = auditTemplate(input, input.expectedImage, EXACT_IMAGE.test(input.expectedImage), "expected image must be an exact local Docker image ID")
+  return { ok: violations.length === 0, violations }
+}
+
+export function auditSanctuaryPersistentTemplate(input: SanctuaryPersistentTemplateAuditInput): SanctuaryContainerAuditResult {
+  const violations = auditTemplate(input, input.expectedImageReference, VERSION_REFERENCE.test(input.expectedImageReference), "expected image reference must be the canonical package-version tag")
   return { ok: violations.length === 0, violations }
 }

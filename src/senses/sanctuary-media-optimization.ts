@@ -11,6 +11,10 @@ const MAX_PAGES = Math.ceil(MAX_ITEMS / PAGE_SIZE)
 const MAX_SOURCES = 40_000
 const MAX_UNMANIC_BODY_BYTES = 1024 * 1024
 
+export function normalizeSanctuaryMediaText(value: string): string {
+  return value.normalize("NFKC").toLocaleLowerCase("en-US").replace(/[‘’]/gu, "'").replace(/[^a-z0-9']+/gu, " ").trim()
+}
+
 type FailureCode = "authorization" | "invalid_response" | "timeout" | "unavailable"
 
 class ReadFailure extends Error {
@@ -453,8 +457,9 @@ export function createSanctuaryMediaOptimizationClient(options: ClientOptions) {
       try {
         const deadline = Date.now() + (options.totalTimeoutMs ?? 30_000)
         const observedAt = options.now?.() ?? new Date().toISOString()
-        const query = args.query?.normalize("NFKC").trim().toLocaleLowerCase("en-US") ?? ""
-        if (Buffer.byteLength(query) > 200) throw new ReadFailure("invalid_response", "Media catalog query is too long")
+        const rawQuery = args.query?.trim() ?? ""
+        if (Buffer.byteLength(rawQuery) > 200) throw new ReadFailure("invalid_response", "Media catalog query is too long")
+        const query = normalizeSanctuaryMediaText(rawQuery)
         const limit = args.limit === undefined ? 12 : args.limit
         if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20) throw new ReadFailure("invalid_response", "Media catalog limit must be an integer from 1 to 20")
         const catalog = await readJellyfinItems(deadline, { includeMediaSources: false })
@@ -465,7 +470,16 @@ export function createSanctuaryMediaOptimizationClient(options: ClientOptions) {
           const premiereDate = optionalBoundedLabel(item.PremiereDate)
           return { untrustedTitle: title, type, productionYear, premiereDate }
         })
-        const matching = query ? candidates.filter((item) => item.untrustedTitle.toLocaleLowerCase("en-US").includes(query)) : candidates
+        const matching = query
+          ? candidates.filter((item) => normalizeSanctuaryMediaText(item.untrustedTitle).includes(query))
+          : candidates
+        if (query) {
+          matching.sort((left, right) => {
+            const leftExact = normalizeSanctuaryMediaText(left.untrustedTitle) === query
+            const rightExact = normalizeSanctuaryMediaText(right.untrustedTitle) === query
+            return Number(rightExact) - Number(leftExact)
+          })
+        }
         return {
           ok: true as const,
           data: {

@@ -100,6 +100,13 @@ import {
 
 interface FullVisibilityProgress { fallback?: () => string | undefined }
 
+const EMPTY_SHARED_TURN_DIAGNOSTIC = "(agent responded but response was empty)"
+
+function hasUserVisibleTurnResponse(response: string): boolean {
+  const text = response.trim()
+  return text.length > 0 && text !== EMPTY_SHARED_TURN_DIAGNOSTIC
+}
+
 function createFullVisibilityProgress(): { progress: FullVisibilityProgress; emptyResponseFallback: () => string | undefined } {
   const progress: FullVisibilityProgress = {}
   return { progress, emptyResponseFallback: () => progress.fallback?.() }
@@ -1514,7 +1521,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         const canonical = renderSanctuaryGroundedResponse(grounding.toolName, grounding.facts)
         turnEffects.push(await deliverButlerEffect(canonical, `turn:${subject}:${message.updateId}:delivery:${deliveryOrdinal++}`, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) }))
         deliveryCount = 1
-      } else if (deliveryCount === 0 && result.response.trim()) {
+      } else if (deliveryCount === 0 && hasUserVisibleTurnResponse(result.response)) {
         const artifact = await deliverButlerEffect(result.response, `turn:${subject}:${message.updateId}:delivery:${deliveryOrdinal++}`, undefined, (messageId, chunk) => { deliveredMessageIds.push(messageId); deliveredChunks.push(chunk) }, exactDownloadCreditQuestion)
         turnEffects.push(artifact)
         responseFallbackArtifactId = artifact.id
@@ -1533,7 +1540,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         component: "senses",
         event: "senses.telegram_turn_end",
         message: "Telegram authorized turn completed",
-        meta: lifecycleMeta("senses.telegram_turn_end", { agentName: options.agentName, subject, deliveryCount: Math.max(deliveryCount, result.response.trim() ? 1 : 0), ...acceptanceMeta, ...lifecycleCoordinates, ...(acceptanceMarker ? { outcome: "success", errorDigest: null } : {}) }, Math.max(Date.now(), lifecycleStartedAt + 1)),
+        meta: lifecycleMeta("senses.telegram_turn_end", { agentName: options.agentName, subject, deliveryCount: Math.max(deliveryCount, hasUserVisibleTurnResponse(result.response) ? 1 : 0), ...acceptanceMeta, ...lifecycleCoordinates, ...(acceptanceMarker ? { outcome: "success", errorDigest: null } : {}) }, Math.max(Date.now(), lifecycleStartedAt + 1)),
       })
     } catch (error) {
       receiptStatus = "error"

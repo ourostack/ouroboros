@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import type { ChatCompletionMessageParam } from "openai/resources/chat/completions"
 
 function defaultReadFileSync(filePath: any, _encoding?: any): string {
   const target = String(filePath)
@@ -1907,6 +1908,36 @@ describe("runAgent tool loop guard", () => {
       }))
     })
 
+    it("keeps a terminal-answer correction out of an approval suspension checkpoint", async () => {
+      const correction = "Use current evidence before proposing an action."
+      mockCreate
+        .mockReturnValueOnce(makeStream([makeChunk("Everything is already fine.")]))
+        .mockReturnValueOnce(streamedCall("shell", JSON.stringify({ command: "docker restart calibre-web" }), "call_restart_after_correction"))
+      const propose = vi.fn().mockResolvedValue({
+        approvalId: "11111111-1111-4111-8111-111111111111",
+        checkpointDigest: "a".repeat(64),
+        suspendedSessionRevision: "b".repeat(64),
+      })
+      const { resolveToolDefinition } = await import("../../repertoire/tools")
+      const messages: ChatCompletionMessageParam[] = [{ role: "user", content: "restart calibre-web" }]
+      const { runAgent } = await import("../../heart/core")
+
+      const result = await runAgent(messages, makeCallbacks(), "telegram", undefined, {
+        tools: [resolveToolDefinition("shell")!.tool],
+        execTool: vi.fn(),
+        toolContext: { signin: async () => undefined },
+        approvalCoordinator: { propose },
+        requiredToolCalls: { names: [], retryMessage: "unused", validateTerminalAnswer: (answer) => answer.includes("already fine") ? correction : undefined },
+      })
+
+      expect(result.outcome).toBe("suspended")
+      expect(propose).toHaveBeenCalledWith(expect.objectContaining({
+        preCallMessages: [{ role: "user", content: "restart calibre-web" }],
+      }))
+      expect(JSON.stringify(propose.mock.calls)).not.toContain(correction)
+      expect(JSON.stringify(messages)).not.toContain(correction)
+    })
+
     it("freezes intervening assistant and tool messages when protection is reached later in the same loop", async () => {
       mockCreate.mockReturnValueOnce(streamedCall("shell", JSON.stringify({ command: "printf ready" }), "call_prepare"))
       mockCreate.mockReturnValueOnce(streamedCall("shell", JSON.stringify({ command: "docker restart calibre-web" }), "call_restart_after_prepare"))
@@ -2401,7 +2432,7 @@ describe("runAgent tool loop guard", () => {
 
       expect(result).toMatchObject({ outcome: "settled", completion: { answer: finalAnswer, intent: "complete" } })
       expect(execTool.mock.calls.map(([name]) => name)).toEqual(["query_cares", "query_active_work", "unraid_get_system", "unraid_list_containers"])
-      expect(messages).toContainEqual(expect.objectContaining({
+      expect(messages).not.toContainEqual(expect.objectContaining({
         role: "user",
         content: expect.stringMatching(/current active work.*query_active_work.*unraid_get_system.*unraid_list_containers/is),
       }))
@@ -2410,6 +2441,45 @@ describe("runAgent tool loop guard", () => {
       expect(callbacks.onTextChunk).toHaveBeenCalledWith(finalAnswer)
       expect(callbacks.onTextChunk).not.toHaveBeenCalledWith(expect.stringContaining("100%"))
       expect(JSON.stringify(messages)).not.toContain("**Sanctuary status** Docker is at 100%.")
+    })
+
+    it("emits ordinary tool prose, rejects a bad terminal answer, and accepts the grounded text-only retry", async () => {
+      const draft = "Yes, I can see titles like The Pitt."
+      const rejected = "The bounded catalog read worked. What would you like me to do?"
+      const finalAnswer = "Yes—the shelf is visible again. I can currently see 11,870 movies and episodes."
+      mockCreate
+        .mockReturnValueOnce(makeStream([makeChunk(draft, [{ index: 0, id: "catalog-read", function: { name: "sanctuary_search_media_catalog", arguments: "{}" } }])]))
+        .mockReturnValueOnce(makeStream([makeChunk(rejected)]))
+        .mockReturnValueOnce(makeStream([makeChunk(finalAnswer)]))
+      const catalogResult = JSON.stringify({ ok: true, data: { totalItems: 11_870, matchedItems: 1, items: [{ untrustedTitle: "Moonstruck" }] } })
+      const execTool = vi.fn().mockResolvedValue(catalogResult)
+      const callbacks = makeCallbacks({ settleOutputMode: "retractable_buffer" })
+      const messages: any[] = [{ role: "user", content: "Can you see the library now?" }]
+      const { runAgent } = await import("../../heart/core")
+
+      const result = await runAgent(messages, callbacks, "telegram", undefined, {
+        tools: [readTool("sanctuary_search_media_catalog")],
+        execTool,
+        toolContext: { signin: async () => undefined },
+        requiredToolCalls: {
+          names: ["sanctuary_search_media_catalog"],
+          retryMessage: "Read the current shelf, answer directly, and stop.",
+          requireSuccessfulResults: true,
+          validateRequiredToolResult: (_name, output) => JSON.parse(output).ok === true,
+          validateTerminalAnswer: (answer) => answer === finalAnswer ? undefined : "Use household language, answer once, and stop.",
+        },
+      })
+
+      expect(result).toMatchObject({ outcome: "settled", completion: undefined })
+      expect(execTool).toHaveBeenCalledExactlyOnceWith("sanctuary_search_media_catalog", {}, expect.anything())
+      expect(callbacks.onTextChunk).toHaveBeenCalledWith(draft)
+      expect(callbacks.onTextChunk).toHaveBeenLastCalledWith(finalAnswer)
+      expect(callbacks.onClearText).toHaveBeenCalled()
+      expect(JSON.stringify(messages)).toContain(draft)
+      expect(messages).toContainEqual(expect.objectContaining({ role: "tool", content: catalogResult }))
+      expect(JSON.stringify(messages)).toContain(finalAnswer)
+      expect(JSON.stringify(messages)).not.toContain(rejected)
+      expect(messages).not.toContainEqual(expect.objectContaining({ role: "user", content: "Use household language, answer once, and stop." }))
     })
 
     it("requires successful current reads and rejects unsupported Docker-image assertions without persisting them", async () => {
@@ -2449,7 +2519,7 @@ describe("runAgent tool loop guard", () => {
       expect(result).toMatchObject({ outcome: "settled", completion: { answer: finalAnswer, intent: "complete" } })
       expect(execTool).toHaveBeenCalledTimes(3)
       expect(JSON.stringify(messages)).not.toContain(staleAnswer)
-      expect(messages).toContainEqual(expect.objectContaining({ role: "user", content: expect.stringContaining("No current tool supports that Docker image claim") }))
+      expect(messages).not.toContainEqual(expect.objectContaining({ role: "user", content: expect.stringContaining("No current tool supports that Docker image claim") }))
     })
 
     it("retries explicit read failures and rejects unsupported text-only answers after a successful default-validated read", async () => {
@@ -2483,32 +2553,33 @@ describe("runAgent tool loop guard", () => {
       expect(result).toMatchObject({ outcome: "settled", completion: { answer: finalAnswer, intent: "complete" } })
       expect(execTool).toHaveBeenCalledTimes(2)
       expect(JSON.stringify(messages)).not.toContain(staleAnswer)
-      expect(messages).toContainEqual(expect.objectContaining({ role: "user", content: expect.stringContaining("No current tool supports that Docker image claim") }))
+      expect(messages).not.toContainEqual(expect.objectContaining({ role: "user", content: expect.stringContaining("No current tool supports that Docker image claim") }))
       expect(callbacks.onClearText).toHaveBeenCalled()
     })
 
     it("snapshots each correction before resetting a stateful provider", async () => {
-      const snapshots: any[][] = []
-      const requests: any[][] = []
+      const snapshots: ChatCompletionMessageParam[][] = []
+      const requests: ChatCompletionMessageParam[][] = []
       const responses = [
         { content: "Docker image is full.", toolCalls: [], outputItems: [] },
         { content: "", toolCalls: [{ id: "settle-current", name: "settle", arguments: JSON.stringify({ answer: "Docker image utilization needs a fresh check.", intent: "complete" }) }], outputItems: [], settleStreamed: false },
       ]
-      const streamTurn = vi.fn(async (request: any) => {
+      const streamTurn = vi.fn(async (request: { messages: ChatCompletionMessageParam[] }) => {
         requests.push(structuredClone(request.messages))
         return responses[requests.length - 1]
       })
       vi.doMock("../../heart/providers/minimax", () => ({
         createMinimaxProviderRuntime: () => ({
           id: "minimax", model: "stateful-test", client: {}, capabilities: new Set(), streamTurn,
-          appendToolOutput: vi.fn(), resetTurnState: vi.fn((current: any[]) => snapshots.push(structuredClone(current))),
+          appendToolOutput: vi.fn(), resetTurnState: vi.fn((current: ChatCompletionMessageParam[]) => snapshots.push(structuredClone(current))),
           ping: vi.fn(), classifyError: vi.fn(() => "unknown"),
         }),
       }))
       try {
         const { runAgent } = await import("../../heart/core")
         const correction = "No current tool measures Docker image state."
-        const result = await runAgent([{ role: "user", content: "status" }], makeCallbacks(), "telegram", undefined, {
+        const messages: ChatCompletionMessageParam[] = [{ role: "user", content: "status" }]
+        const result = await runAgent(messages, makeCallbacks(), "telegram", undefined, {
           requiredToolCalls: { names: [], retryMessage: "unused", validateTerminalAnswer: (answer) => answer.includes("full") ? correction : undefined },
         })
 
@@ -2516,9 +2587,84 @@ describe("runAgent tool loop guard", () => {
         expect(snapshots).toHaveLength(2)
         expect(snapshots.at(-1)?.at(-1)).toEqual({ role: "user", content: correction })
         expect(requests[1]?.at(-1)).toEqual({ role: "user", content: correction })
+        expect(messages).not.toContainEqual({ role: "user", content: correction })
       } finally {
         vi.doUnmock("../../heart/providers/minimax")
       }
+    })
+
+    it("removes a correction after prompt budgeting clones the provider history", async () => {
+      const correction = `Use current evidence. ${"x".repeat(300_000)}`
+      const responses = [
+        { content: "Docker image is full.", toolCalls: [], outputItems: [] },
+        { content: "", toolCalls: [{ id: "settle-current", name: "settle", arguments: JSON.stringify({ answer: "Docker image utilization needs a fresh check.", intent: "complete" }) }], outputItems: [], settleStreamed: false },
+      ]
+      const streamTurn = vi.fn(async () => responses[streamTurn.mock.calls.length - 1])
+      vi.doMock("../../heart/providers/minimax", () => ({
+        createMinimaxProviderRuntime: () => ({
+          id: "minimax", model: "stateful-test", client: {}, capabilities: new Set(), streamTurn,
+          appendToolOutput: vi.fn(), resetTurnState: vi.fn(), ping: vi.fn(), classifyError: vi.fn(() => "unknown"),
+        }),
+      }))
+      try {
+        const { runAgent } = await import("../../heart/core")
+        const messages: ChatCompletionMessageParam[] = [{ role: "user", content: "status" }]
+        const result = await runAgent(messages, makeCallbacks(), "telegram", undefined, {
+          requiredToolCalls: { names: [], retryMessage: "unused", validateTerminalAnswer: (answer) => answer.includes("full") ? correction : undefined },
+        })
+
+        expect(result.outcome).toBe("settled")
+        expect(streamTurn).toHaveBeenCalledTimes(2)
+        expect(messages.some((message) => message.role === "user" && message.content === correction)).toBe(false)
+      } finally {
+        vi.doUnmock("../../heart/providers/minimax")
+      }
+    })
+
+    it("keeps a correction out of incremental tool-result persistence", async () => {
+      const correction = "Use current evidence."
+      const finalAnswer = "The current system read is healthy."
+      mockCreate
+        .mockReturnValueOnce(makeStream([makeChunk("The system is definitely broken.")]))
+        .mockReturnValueOnce(streamed("unraid_get_system", {}, "system-read-after-correction"))
+        .mockReturnValueOnce(streamed("settle", { answer: finalAnswer, intent: "complete" }, "settle-after-correction"))
+      const persisted: ChatCompletionMessageParam[][] = []
+      const { postTurnTrim } = await import("../../mind/context")
+      const callbacks = makeCallbacks({
+        onToolResult: (turnMessages: ChatCompletionMessageParam[]) => {
+          persisted.push(structuredClone(postTurnTrim(turnMessages).currentMessages))
+        },
+      })
+      const messages: ChatCompletionMessageParam[] = [{ role: "user", content: "status" }]
+      const { runAgent } = await import("../../heart/core")
+
+      const result = await runAgent(messages, callbacks, "telegram", undefined, {
+        tools: [readTool("unraid_get_system")],
+        execTool: vi.fn().mockResolvedValue(JSON.stringify({ ok: true })),
+        toolContext: { signin: async () => undefined },
+        requiredToolCalls: { names: [], retryMessage: "unused", validateTerminalAnswer: (answer) => answer.includes("broken") ? correction : undefined },
+      })
+
+      expect(result).toMatchObject({ outcome: "settled", completion: { answer: finalAnswer } })
+      expect(persisted).toHaveLength(1)
+      expect(JSON.stringify(persisted)).not.toContain(correction)
+      expect(JSON.stringify(messages)).not.toContain(correction)
+    })
+
+    it("removes a correction when a later loop-boundary callback throws", async () => {
+      mockCreate.mockReturnValueOnce(makeStream([makeChunk("Docker image is full.")]))
+      const correction = "Use current evidence."
+      const messages: ChatCompletionMessageParam[] = [{ role: "user", content: "status" }]
+      const drainSteeringFollowUps = vi.fn()
+        .mockReturnValueOnce([])
+        .mockImplementationOnce(() => { throw new Error("steering callback failed") })
+      const { runAgent } = await import("../../heart/core")
+
+      await expect(runAgent(messages, makeCallbacks(), "telegram", undefined, {
+        drainSteeringFollowUps,
+        requiredToolCalls: { names: [], retryMessage: "unused", validateTerminalAnswer: () => correction },
+      })).rejects.toThrow("steering callback failed")
+      expect(messages).not.toContainEqual({ role: "user", content: correction })
     })
 
     it("caps repeated terminal-answer validation failures at eight provider responses", async () => {
@@ -2532,13 +2678,16 @@ describe("runAgent tool loop guard", () => {
       try {
         const { runAgent } = await import("../../heart/core")
         const callbacks = makeCallbacks()
-        const result = await runAgent([{ role: "user", content: "status" }], callbacks, "telegram", undefined, {
+        const messages: ChatCompletionMessageParam[] = [{ role: "user", content: "status" }]
+        const result = await runAgent(messages, callbacks, "telegram", undefined, {
           requiredToolCalls: { names: [], retryMessage: "unused", validateTerminalAnswer: () => "Use current evidence." },
         })
 
         expect(streamTurn).toHaveBeenCalledTimes(8)
         expect(result.outcome).toBe("errored")
         expect(callbacks.onError).toHaveBeenCalledWith(expect.objectContaining({ message: "provider iteration limit exhausted at response 8 before required terminal answer validation completed" }), "terminal")
+        expect(messages).toContainEqual({ role: "user", content: "status" })
+        expect(messages).not.toContainEqual({ role: "user", content: "Use current evidence." })
       } finally {
         vi.doUnmock("../../heart/providers/minimax")
       }

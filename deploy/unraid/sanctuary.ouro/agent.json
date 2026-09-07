@@ -7,9 +7,9 @@
   "privateRuntime": { "autoStart": true },
   "habitPaidTurnsPerDay": 24,
   "phrases": {
-    "thinking": ["consulting the household machinery"],
-    "tool": ["checking the troublesome little machine"],
-    "followup": ["returning with the tray"]
+    "thinking": ["consulting the household machinery", "listening for the suspicious rattle", "seeing what the house has to say", "taking a look behind the panel"],
+    "tool": ["checking the troublesome little machine", "following the cable to its lair", "giving the gears a polite nudge", "opening the service cupboard"],
+    "followup": ["returning with the tray", "bringing the useful bits back", "putting the pieces in order", "taking one last look under the silverware"]
   },
   "senses": {
     "cli": { "enabled": false },

@@ -15,6 +15,7 @@ const CHANGED_FILES = [
 ]
 
 const SANCTUARY_REPOSITORY = /<Repository>ghcr\.io\/ourostack\/ouroboros-butler:[^<]+<\/Repository>/g
+const SANCTUARY_NAME = /<Name>ouro-butler<\/Name>/g
 
 function parseArgs(argv) {
   const options = {
@@ -96,6 +97,9 @@ function updateChangelog(changelog, version, changes) {
 }
 
 function updateSanctuaryRepository(template, version) {
+  if ((template.match(SANCTUARY_NAME) ?? []).length !== 1) {
+    throw new Error("sanctuary.xml must contain exactly one Docker-valid ouro-butler Name")
+  }
   const matches = template.match(SANCTUARY_REPOSITORY) ?? []
   if (matches.length !== 1) {
     throw new Error("deploy/unraid/sanctuary.xml must contain exactly one Butler Repository tag")

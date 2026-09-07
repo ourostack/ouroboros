@@ -1,7 +1,7 @@
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
-import { describe, expect, it, vi } from "vitest"
+import { beforeAll, describe, expect, it, vi } from "vitest"
 
 function tmpSocketPath(name: string): string {
   return path.join(os.tmpdir(), `${name}-${Date.now()}-${Math.random().toString(16).slice(2)}.sock`)
@@ -46,6 +46,13 @@ function frontendHandle(stop = vi.fn(async () => undefined)) {
     stop,
   }
 }
+
+beforeAll(async () => {
+  await Promise.all([
+    import("../../../heart/daemon/daemon"),
+    import("../../../heart/frontend-socket"),
+  ])
+}, 120_000)
 
 describe("daemon frontend socket lifecycle", () => {
   it("starts one derived frontend socket and stops it with the daemon", async () => {

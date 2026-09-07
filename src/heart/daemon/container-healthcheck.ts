@@ -3,7 +3,11 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { execFileSync } from "node:child_process"
 import { emitNervesEvent } from "../../nerves/runtime"
+import { getAgentBundlesRoot, getRepoRoot } from "../identity"
+import { getPackageVersion } from "../../mind/bundle-manifest"
 import { hasManagedAgentProcess, hasManagedSupercronicProcess, hasManagedTelegramProcess } from "./container-runtime"
+import { inspectSanctuaryPackageManagedBundle } from "./sanctuary-bundle-migration"
+import { resolveSanctuaryPackageManagementActivation } from "./sanctuary-package-management"
 
 function fail(reason: string): never {
   emitNervesEvent({ level: "error", component: "daemon", event: "daemon.container_healthcheck_error", message: "container healthcheck failed", meta: { reason } })
@@ -17,6 +21,15 @@ export function runContainerHealthcheck(options: { argv?: string[]; now?: () => 
   const index = argv.indexOf("--agent")
   const agent = index >= 0 ? argv[index + 1] : undefined
   if (!agent) fail("missing agent")
+  const packageManagement = resolveSanctuaryPackageManagementActivation({ mode: "production", argv, managedAgents: [agent], repoRoot: getRepoRoot(), bundlesRoot: getAgentBundlesRoot(), runtimePackageVersion: getPackageVersion() })
+  if (packageManagement.kind !== "active") fail("invalid package-managed Sanctuary activation")
+  let installState
+  try {
+    installState = inspectSanctuaryPackageManagedBundle(packageManagement)
+  } catch {
+    fail("package-managed Sanctuary inspection unavailable")
+  }
+  if (!installState.ok || !installState.data.ready) fail("package-managed Sanctuary bundle is not ready")
   const healthPath = path.join(os.homedir(), ".ouro-cli", "daemon-health.json")
   let stat: fs.Stats
   let health: Record<string, unknown>

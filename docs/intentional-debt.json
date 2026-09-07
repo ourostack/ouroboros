@@ -7,6 +7,13 @@
       "owner": "Mailroom",
       "due": "2026-09-30",
       "removalCriteria": "Replace the hosted encrypted-message upload/commit ordering with a transaction or equivalent lifecycle that guarantees loser cleanup, then deploy a provenance-safe orphan sweeper and verify that no unreferenced encrypted raw objects remain."
+    },
+    {
+      "id": "sanctuary-alpha797-source-compatibility",
+      "status": "open",
+      "owner": "Sanctuary Butler",
+      "due": "2026-09-12",
+      "removalCriteria": "After a verified package-managed release is installed and is the retained rollback, remove the pinned alpha.797 source contract/constant/runbook branch and its tests; never use it for target creation."
     }
   ]
 }

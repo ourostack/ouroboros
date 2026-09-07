@@ -3,21 +3,27 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { describe, expect, it, vi } from "vitest"
 
-import { auditSanctuaryContainerSpec, auditSanctuaryStagedFiles } from "../../../heart/daemon/container-spec-auditor"
+import { auditSanctuaryContainerSpec, auditSanctuaryPersistentTemplate, auditSanctuaryStagedFiles } from "../../../heart/daemon/container-spec-auditor"
 import { runContainerSpecAuditorCli, runContainerSpecAuditorMain } from "../../../heart/daemon/container-spec-auditor-main"
 
 function validInspect() {
   return {
+    Name: "/ouro-butler",
     Image: "sha256:" + "a".repeat(64),
     Path: "node",
-    Args: ["/opt/ouro/dist/heart/daemon/daemon-entry.js"],
+    Args: ["/opt/ouro/dist/heart/daemon/daemon-entry.js", "--package-managed-agent", "sanctuary"],
     Config: {
       User: "10001:10001",
-      Image: "ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.746",
-      Entrypoint: ["node", "/opt/ouro/dist/heart/daemon/daemon-entry.js"],
+      Image: "ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.798",
+      Entrypoint: ["node", "/opt/ouro/dist/heart/daemon/daemon-entry.js", "--package-managed-agent", "sanctuary"],
       Cmd: [],
       Env: ["PATH=/usr/local/bin:/usr/bin:/bin", "NODE_VERSION=22.18.0", "HOME=/home/ouro"],
       ExposedPorts: null,
+      Labels: {
+        "org.opencontainers.image.source": "https://github.com/ourostack/ouroboros",
+        "net.unraid.docker.managed": "dockerman",
+        "net.unraid.docker.icon": "https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png",
+      },
     },
     HostConfig: {
       NetworkMode: "host",
@@ -58,13 +64,20 @@ function validImageInspect() {
 }
 
 const expectedEnvironment = validImageInspect().Config.Env
+const expectedImageReference = "ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.798"
+const expectedIcon = "https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png"
 
 function stagedTemplate(): string {
   return [
-    "<Container>",
+    "<?xml version=\"1.0\"?>",
+    "<Container version=\"2\">",
+    "<Name>ouro-butler</Name>",
     `<Repository>sha256:${"a".repeat(64)}</Repository>`,
     "<Network>host</Network>",
     "<Privileged>false</Privileged>",
+    `<TemplateURL>https://raw.githubusercontent.com/ourostack/ouroboros/main/deploy/unraid/sanctuary.xml</TemplateURL>`,
+    `<Icon>${expectedIcon}</Icon>`,
+    "<WebUI/>",
     "<ExtraParams>--restart=unless-stopped --user=10001:10001</ExtraParams>",
     "<PostArgs></PostArgs>",
     '<Config Target="/home/ouro/.ouro-cli" Mode="rw" Type="Path">/mnt/user/appdata/ouro-butler/runtime/.ouro-cli</Config>',
@@ -73,6 +86,21 @@ function stagedTemplate(): string {
     "</Container>",
   ].join("\n")
 }
+
+const semanticMarkup = [
+  ["Name", "<Name>ouro-butler</Name>"],
+  ["Repository", `<Repository>sha256:${"a".repeat(64)}</Repository>`],
+  ["TemplateURL", `<TemplateURL>https://raw.githubusercontent.com/ourostack/ouroboros/main/deploy/unraid/sanctuary.xml</TemplateURL>`],
+  ["Icon", `<Icon>${expectedIcon}</Icon>`],
+  ["WebUI", "<WebUI/>"],
+  ["Config", '<Config Target="/home/ouro/.ouro-cli" Mode="rw" Type="Path">/mnt/user/appdata/ouro-butler/runtime/.ouro-cli</Config>'],
+] as const
+
+const hiddenSemanticMarkup = semanticMarkup.flatMap(([name, markup]) => [
+  [name, "comment", markup, `<!-- ${markup} -->`],
+  [name, "CDATA", markup, `<![CDATA[${markup}]]>`],
+  [name, "nested", markup, `<Wrapper>${markup}</Wrapper>`],
+] as const)
 
 describe("Sanctuary pre-activation container auditor", () => {
   it("runs the CLI only when invoked as the packaged entrypoint", () => {
@@ -92,6 +120,8 @@ describe("Sanctuary pre-activation container auditor", () => {
   it("accepts only the exact released effective spec", () => {
     expect(auditSanctuaryContainerSpec(validInspect(), {
       expectedImage: "sha256:" + "a".repeat(64),
+      expectedImageReference,
+      expectedIcon,
       expectedEnvironment,
     })).toEqual({ ok: true, violations: [] })
   })
@@ -139,6 +169,8 @@ describe("Sanctuary pre-activation container auditor", () => {
     const legacy = validInspect()
     legacy.Image = legacyImage
     legacy.Config.Image = "ouro-butler:0.1.0-alpha.742-amd64"
+    legacy.Args = ["/opt/ouro/dist/heart/daemon/daemon-entry.js"]
+    legacy.Config.Entrypoint = ["node", "/opt/ouro/dist/heart/daemon/daemon-entry.js"]
     legacy.HostConfig.Binds = [
       "/mnt/user/appdata/ouro-butler/runtime/.ouro-cli:/home/ouro/.ouro-cli",
       "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro:/home/ouro/AgentBundles/sanctuary.ouro",
@@ -174,6 +206,65 @@ describe("Sanctuary pre-activation container auditor", () => {
         mountContract: "legacy-alpha742",
       }).ok).toBe(false)
     }
+  })
+
+  it("allows the exact observed alpha.797 source only through its pinned compatibility contract", () => {
+    const alpha797Image = "sha256:e337dff04c92d116b269052f473b26a47eea933d017d1befc73af50dd37bb08d"
+    const source = validInspect()
+    source.Image = alpha797Image
+    source.Config.Image = alpha797Image
+    source.Args = ["/opt/ouro/dist/heart/daemon/daemon-entry.js"]
+    source.Config.Entrypoint = ["node", "/opt/ouro/dist/heart/daemon/daemon-entry.js"]
+    delete source.Config.Labels["net.unraid.docker.managed"]
+    delete source.Config.Labels["net.unraid.docker.icon"]
+
+    expect(auditSanctuaryContainerSpec(source, {
+      expectedImage: alpha797Image,
+      expectedEnvironment,
+      mountContract: "prepackage-alpha797",
+    })).toEqual({ ok: true, violations: [] })
+    const stagingSource = structuredClone(source)
+    stagingSource.Name = "/ouro-butler-staging"
+    expect(auditSanctuaryContainerSpec(stagingSource, {
+      expectedImage: alpha797Image,
+      expectedEnvironment,
+      mountContract: "prepackage-alpha797",
+    })).toEqual({ ok: true, violations: [] })
+    expect(auditSanctuaryContainerSpec(source, { expectedImage: alpha797Image, expectedEnvironment }).ok).toBe(false)
+    expect(auditSanctuaryContainerSpec(source, {
+      expectedImage: "sha256:" + "b".repeat(64),
+      expectedEnvironment,
+      mountContract: "prepackage-alpha797",
+    }).violations).toContain("pre-package-managed source exception requires the pinned alpha.797 image ID")
+    const unexpectedSource = structuredClone(source)
+    unexpectedSource.Name = "/unreviewed-butler"
+    expect(auditSanctuaryContainerSpec(unexpectedSource, {
+      expectedImage: alpha797Image,
+      expectedEnvironment,
+      mountContract: "prepackage-alpha797",
+    }).violations).toContain("pre-package-managed source name must be /ouro-butler or /ouro-butler-staging")
+
+    for (const mutate of [
+      (spec: any) => { spec.Config.Image = "ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.797" },
+      (spec: any) => { spec.Args.push("--package-managed-agent", "sanctuary"); spec.Config.Entrypoint.push("--package-managed-agent", "sanctuary") },
+      (spec: any) => { spec.Config.Labels["net.unraid.docker.managed"] = "dockerman" },
+      (spec: any) => { spec.Config.Labels["net.unraid.docker.icon"] = expectedIcon },
+      (spec: any) => { spec.Config.Labels["net.unraid.docker.webui"] = "http://localhost" },
+      (spec: any) => { spec.Mounts.pop() },
+    ]) {
+      const changed = structuredClone(source)
+      mutate(changed)
+      expect(auditSanctuaryContainerSpec(changed, { expectedImage: alpha797Image, expectedEnvironment, mountContract: "prepackage-alpha797" }).ok).toBe(false)
+    }
+
+    const debt = JSON.parse(fs.readFileSync("docs/intentional-debt.json", "utf8")) as { items: Array<Record<string, unknown>> }
+    expect(debt.items).toContainEqual({
+      id: "sanctuary-alpha797-source-compatibility",
+      status: "open",
+      owner: "Sanctuary Butler",
+      due: "2026-09-12",
+      removalCriteria: "After a verified package-managed release is installed and is the retained rollback, remove the pinned alpha.797 source contract/constant/runbook branch and its tests; never use it for target creation.",
+    })
   })
 
   it("fails closed across malformed optional inspect fields", () => {
@@ -221,6 +312,20 @@ describe("Sanctuary pre-activation container auditor", () => {
     }))
   })
 
+  it.each([
+    ["wrong technical name", (spec: any) => { spec.Name = "/Mendelow Cloud Butler" }],
+    ["missing package activation", (spec: any) => { spec.Args = ["/opt/ouro/dist/heart/daemon/daemon-entry.js"]; spec.Config.Entrypoint = ["node", "/opt/ouro/dist/heart/daemon/daemon-entry.js"] }],
+    ["duplicate package activation", (spec: any) => { spec.Args.push("--package-managed-agent", "sanctuary"); spec.Config.Entrypoint.push("--package-managed-agent", "sanctuary") }],
+    ["wrong version reference", (spec: any) => { spec.Config.Image = "ghcr.io/ourostack/ouroboros-butler:latest" }],
+    ["missing DockerMan label", (spec: any) => { delete spec.Config.Labels["net.unraid.docker.managed"] }],
+    ["wrong icon label", (spec: any) => { spec.Config.Labels["net.unraid.docker.icon"] = "https://example.invalid/icon.png" }],
+    ["unexpected WebUI label", (spec: any) => { spec.Config.Labels["net.unraid.docker.webui"] = "http://localhost" }],
+  ])("rejects canonical install drift: %s", (_label, mutate) => {
+    const spec = validInspect()
+    mutate(spec)
+    expect(auditSanctuaryContainerSpec(spec, { expectedImage: "sha256:" + "a".repeat(64), expectedImageReference, expectedIcon, expectedEnvironment }).ok).toBe(false)
+  })
+
   it("runs the packaged file-based auditor without echoing the inspect payload", () => {
     const output: string[] = []
     const exitCode = runContainerSpecAuditorCli([
@@ -246,6 +351,30 @@ describe("Sanctuary pre-activation container auditor", () => {
     })).toBe(1)
   })
 
+  it("fatally rejects invalid UTF-8 at the real static template file boundary", () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-invalid-template-utf8-"))
+    const templatePath = path.join(directory, "template.xml")
+    const policyPath = path.join(directory, "runtime.json")
+    const marker = "INVALID-BYTE"
+    const source = Buffer.from(stagedTemplate().replace("<Name>", `<!-- ${marker} -->\n<Name>`))
+    source[source.indexOf(marker) + 1] = 0xFF
+    fs.writeFileSync(templatePath, source)
+    fs.writeFileSync(policyPath, JSON.stringify({ scheduler: "supercronic", updates: "disabled" }))
+    const output: string[] = []
+    try {
+      expect(runContainerSpecAuditorCli([
+        "--template", templatePath,
+        "--runtime-policy", policyPath,
+        "--expected-image", "sha256:" + "a".repeat(64),
+      ], { write: (text) => output.push(text) })).toBe(2)
+      expect(output.join("")).toContain("staged audit inputs are unreadable")
+      expect(fs.readFileSync(templatePath)).toEqual(source)
+      expect(fs.readdirSync(directory).sort()).toEqual(["runtime.json", "template.xml"])
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
   it("audits exactly one effective container against exactly one reviewed image without echoing either payload", () => {
     const output: string[] = []
     const container = validInspect()
@@ -259,6 +388,8 @@ describe("Sanctuary pre-activation container auditor", () => {
       "--inspect", "/audit/container.json",
       "--image-inspect", "/audit/image.json",
       "--expected-image", "sha256:" + "a".repeat(64),
+      "--expected-image-reference", expectedImageReference,
+      "--expected-icon", expectedIcon,
     ], {
       readFile: (filePath) => files[filePath]!,
       write: (text) => output.push(text),
@@ -272,6 +403,8 @@ describe("Sanctuary pre-activation container auditor", () => {
     const container = validInspect()
     container.Image = legacyImage
     container.Config.Image = "ouro-butler:0.1.0-alpha.742-amd64"
+    container.Args = ["/opt/ouro/dist/heart/daemon/daemon-entry.js"]
+    container.Config.Entrypoint = ["node", "/opt/ouro/dist/heart/daemon/daemon-entry.js"]
     container.HostConfig.Binds = [
       "/mnt/user/appdata/ouro-butler/runtime/.ouro-cli:/home/ouro/.ouro-cli",
       "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro:/home/ouro/AgentBundles/sanctuary.ouro",
@@ -294,7 +427,32 @@ describe("Sanctuary pre-activation container auditor", () => {
       "--inspect", "/audit/container.json",
       "--image-inspect", "/audit/image.json",
       "--expected-image", legacyImage,
+      "--expected-image-reference", expectedImageReference,
+      "--expected-icon", expectedIcon,
     ], { readFile: (filePath) => files[filePath]!, write: () => undefined })).toBe(1)
+  })
+
+  it("exposes the pinned alpha.797 source contract only through its explicit CLI mode", () => {
+    const alpha797Image = "sha256:e337dff04c92d116b269052f473b26a47eea933d017d1befc73af50dd37bb08d"
+    const container = validInspect()
+    container.Image = alpha797Image
+    container.Config.Image = alpha797Image
+    container.Args = ["/opt/ouro/dist/heart/daemon/daemon-entry.js"]
+    container.Config.Entrypoint = ["node", "/opt/ouro/dist/heart/daemon/daemon-entry.js"]
+    delete container.Config.Labels["net.unraid.docker.managed"]
+    delete container.Config.Labels["net.unraid.docker.icon"]
+    const image = validImageInspect()
+    image.Id = alpha797Image
+    const files: Record<string, string> = {
+      "/audit/container.json": JSON.stringify([container]),
+      "/audit/image.json": JSON.stringify([image]),
+    }
+    expect(runContainerSpecAuditorCli([
+      "--inspect", "/audit/container.json",
+      "--image-inspect", "/audit/image.json",
+      "--expected-image", alpha797Image,
+      "--mount-contract", "prepackage-alpha797",
+    ], { readFile: (filePath) => files[filePath]!, write: () => undefined })).toBe(0)
   })
 
   it.each([
@@ -316,6 +474,8 @@ describe("Sanctuary pre-activation container auditor", () => {
       "--inspect", "/audit/container.json",
       "--image-inspect", "/audit/image.json",
       "--expected-image", "sha256:" + "a".repeat(64),
+      "--expected-image-reference", expectedImageReference,
+      "--expected-icon", expectedIcon,
     ], {
       readFile: (filePath) => filePath.includes("image") ? imageJson : containerJson,
       write: (text) => output.push(text),
@@ -343,6 +503,8 @@ describe("Sanctuary pre-activation container auditor", () => {
       "--inspect", "/audit/container.json",
       "--image-inspect", "/audit/image.json",
       "--expected-image", "sha256:" + "a".repeat(64),
+      "--expected-image-reference", expectedImageReference,
+      "--expected-icon", expectedIcon,
     ], {
       readFile: (filePath) => JSON.stringify(filePath.includes("image") ? [image] : [validInspect()]),
       write: (text) => output.push(text),
@@ -359,6 +521,8 @@ describe("Sanctuary pre-activation container auditor", () => {
       "--inspect", "/audit/container.json",
       "--image-inspect", "/audit/image.json",
       "--expected-image", "sha256:" + "a".repeat(64),
+      "--expected-image-reference", expectedImageReference,
+      "--expected-icon", expectedIcon,
     ], {
       readFile: (filePath) => JSON.stringify(filePath.includes("image") ? [validImageInspect()] : [container]),
       write: (text) => output.push(text),
@@ -384,6 +548,8 @@ describe("Sanctuary pre-activation container auditor", () => {
       "--inspect", "/audit/container.json",
       "--image-inspect", "/audit/image.json",
       "--expected-image", "sha256:" + "a".repeat(64),
+      "--expected-image-reference", expectedImageReference,
+      "--expected-icon", expectedIcon,
     ]
     expect(runContainerSpecAuditorCli(effectiveArguments, {
       readFile: () => { throw new Error("private path") },
@@ -450,6 +616,63 @@ describe("Sanctuary pre-activation container auditor", () => {
       ok: false,
       violations: expect.arrayContaining(["expected image must be an exact local Docker image ID"]),
     }))
+  })
+
+  it("rejects a truncated template in both static audit modes", () => {
+    const truncated = stagedTemplate().replace("</Container>", "")
+    const policy = JSON.stringify({ scheduler: "supercronic", updates: "disabled" })
+    const expectedViolation = "canonical DockerMan XML structure is invalid"
+
+    expect(auditSanctuaryStagedFiles({
+      templateXml: truncated,
+      runtimePolicyText: policy,
+      expectedImage: "sha256:" + "a".repeat(64),
+    }).violations).toContain(expectedViolation)
+    expect(auditSanctuaryPersistentTemplate({
+      templateXml: truncated.replace(`sha256:${"a".repeat(64)}`, expectedImageReference),
+      runtimePolicyText: policy,
+      expectedImageReference,
+    }).violations).toContain(expectedViolation)
+  })
+
+  it.each(hiddenSemanticMarkup)("does not treat %s markup hidden in %s as a direct Container child", (_name, _disguise, markup, replacement) => {
+    const result = auditSanctuaryStagedFiles({
+      templateXml: stagedTemplate().replace(markup, replacement),
+      runtimePolicyText: JSON.stringify({ scheduler: "supercronic", updates: "disabled" }),
+      expectedImage: "sha256:" + "a".repeat(64),
+    })
+
+    expect(result.ok).toBe(false)
+    expect(result.violations).toContain("canonical DockerMan XML structure is invalid")
+  })
+
+  it("requires Container itself to be the document root", () => {
+    const result = auditSanctuaryStagedFiles({
+      templateXml: stagedTemplate().replace("<Container version=\"2\">", "<Wrapper><Container version=\"2\">").replace("</Container>", "</Container></Wrapper>"),
+      runtimePolicyText: JSON.stringify({ scheduler: "supercronic", updates: "disabled" }),
+      expectedImage: "sha256:" + "a".repeat(64),
+    })
+
+    expect(result.ok).toBe(false)
+    expect(result.violations).toContain("canonical DockerMan XML structure is invalid")
+  })
+
+  it("audits the persistent Community Apps template separately from the transient exact-ID copy", () => {
+    const persistent = stagedTemplate().replace(`sha256:${"a".repeat(64)}`, expectedImageReference)
+    const policy = JSON.stringify({ scheduler: "supercronic", updates: "disabled" })
+
+    expect(auditSanctuaryPersistentTemplate({ templateXml: persistent, runtimePolicyText: policy, expectedImageReference })).toEqual({ ok: true, violations: [] })
+    expect(auditSanctuaryPersistentTemplate({ templateXml: persistent.replace("<Name>ouro-butler</Name>", "<Name>Mendelow Cloud Butler</Name>"), runtimePolicyText: policy, expectedImageReference }).ok).toBe(false)
+    expect(auditSanctuaryPersistentTemplate({ templateXml: persistent.replace(expectedImageReference, "ghcr.io/ourostack/ouroboros-butler:latest"), runtimePolicyText: policy, expectedImageReference }).ok).toBe(false)
+    expect(auditSanctuaryPersistentTemplate({ templateXml: persistent.replace("<WebUI/>", "<WebUI>http://localhost</WebUI>"), runtimePolicyText: policy, expectedImageReference }).ok).toBe(false)
+
+    const output: string[] = []
+    expect(runContainerSpecAuditorCli([
+      "--persistent-template", "/audit/sanctuary.xml",
+      "--runtime-policy", "/audit/container-runtime.json",
+      "--expected-image-reference", expectedImageReference,
+    ], { readFile: (filePath) => filePath.endsWith(".xml") ? persistent : policy, write: (text) => output.push(text) })).toBe(0)
+    expect(output.join("")).toBe('{"ok":true,"violations":[]}\n')
   })
 
   it.each([

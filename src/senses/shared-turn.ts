@@ -116,11 +116,11 @@ function outwardDeliveryTextFromAssistantTools(
   assistantIndex: number,
 ): string | null {
   const assistant = messages[assistantIndex] as ChatCompletionMessageParam & { tool_calls?: unknown }
-  if (!Array.isArray(assistant.tool_calls)) return null
+  const toolCalls = assistant.tool_calls as unknown[]
 
   const delivered: string[] = []
-  for (let index = 0; index < assistant.tool_calls.length; index++) {
-    const toolCall = assistant.tool_calls[index]
+  for (let index = 0; index < toolCalls.length; index++) {
+    const toolCall = toolCalls[index]
     const toolCallId = toolCall && typeof toolCall === "object"
       ? (toolCall as { id?: unknown }).id
       : undefined
@@ -158,9 +158,10 @@ function outwardDeliveryTextFromAssistantTools(
 export function extractOutwardSenseDeliveryText(messages: ChatCompletionMessageParam[]): string | null {
   const assistantIndex = messages.findLastIndex((message) => message.role === "assistant")
   if (assistantIndex < 0) return null
-  const assistant = messages[assistantIndex]
-  return assistantContentText(assistant.content)
-    ?? outwardDeliveryTextFromAssistantTools(messages, assistantIndex)
+  const assistant = messages[assistantIndex] as ChatCompletionMessageParam & { tool_calls?: unknown }
+  return Array.isArray(assistant.tool_calls) && assistant.tool_calls.length > 0
+    ? outwardDeliveryTextFromAssistantTools(messages, assistantIndex)
+    : assistantContentText(assistant.content)
 }
 
 export interface RunSenseTurnOptions {
@@ -280,28 +281,82 @@ export interface RunSenseTurnResult {
   suspension?: ApprovalSuspensionResult
 }
 
+function hasAcceptedOutwardSessionAck(events: SessionEvent[], assistantIndex: number, toolCallId: string, toolName: "speak" | "settle"): boolean {
+  const expectedAck = OUTWARD_DELIVERY_TOOL_ACKS.get(toolName)!
+  for (let index = assistantIndex + 1; index < events.length; index++) {
+    const candidate = events[index]!
+    if (candidate.role !== "tool") return false
+    if (candidate.toolCallId === toolCallId && typeof candidate.content === "string" && candidate.content.trim() === expectedAck) return true
+  }
+  return false
+}
+
 function newOutwardCoordinates(
   events: SessionEvent[],
   existingEventIds: ReadonlySet<string>,
-): Array<{ kind: OutwardSenseDeliveryKind; eventId: string }> {
-  return events.flatMap((event): Array<{ kind: OutwardSenseDeliveryKind; eventId: string }> => {
-    if (existingEventIds.has(event.id) || event.role !== "assistant") return []
-    const outwardTools = event.toolCalls.filter((call) => call.function.name === "speak" || call.function.name === "settle")
-    if (outwardTools.length > 0) return outwardTools.map((call) => ({ kind: call.function.name as "speak" | "settle", eventId: event.id }))
-    return typeof event.content === "string" && event.content.trim() ? [{ kind: "text" as const, eventId: event.id }] : []
+  afterEventId: string,
+): Array<OutwardSenseDelivery & { eventId: string }> {
+  const boundaryIndex = events.findIndex((event) => event.id === afterEventId)
+  if (boundaryIndex < 0) return []
+  return events.flatMap((event, eventIndex): Array<OutwardSenseDelivery & { eventId: string }> => {
+    if (eventIndex <= boundaryIndex || existingEventIds.has(event.id) || event.role !== "assistant" || event.provenance?.captureKind === "synthetic") return []
+    const outwardTools = event.toolCalls.flatMap((call): Array<OutwardSenseDelivery & { eventId: string }> => {
+      if (call.function.name !== "speak" && call.function.name !== "settle") return []
+      if (!hasAcceptedOutwardSessionAck(events, eventIndex, call.id, call.function.name)) return []
+      const text = stripThinkBlocks(parseToolStringArg(call, call.function.name, call.function.name === "speak" ? "message" : "answer") ?? "")
+      return text ? [{ kind: call.function.name, eventId: event.id, text }] : []
+    })
+    if (outwardTools.length > 0) return outwardTools
+    if (event.toolCalls.length > 0) return []
+    const text = stripThinkBlocks(typeof event.content === "string" ? event.content : "")
+    return text ? [{ kind: "text", eventId: event.id, text }] : []
   })
+}
+
+function newestPlainAssistantText(messages: ChatCompletionMessageParam[]): string | null {
+  const message = messages.findLast((candidate) =>
+    candidate.role === "assistant"
+    && (!("tool_calls" in candidate) || !Array.isArray(candidate.tool_calls) || candidate.tool_calls.length === 0)
+    && typeof candidate.content === "string"
+    && candidate.content.trim().length > 0,
+  )
+  return message ? assistantContentText(message.content) : null
 }
 
 function causalSessionEventIds(
   events: SessionEvent[],
   existingEventIds: ReadonlySet<string>,
-  attempts: Array<{ kind: OutwardSenseDeliveryKind; delivered: boolean }>,
+  attempts: Array<OutwardSenseDelivery & { delivered: boolean }>,
+  afterEventId?: string,
 ): Array<string | null> {
-  const coordinates = newOutwardCoordinates(events, existingEventIds)
-  const aligned = coordinates.length === attempts.length && coordinates.every((coordinate, index) => coordinate.kind === attempts[index]!.kind)
-    ? coordinates.map((coordinate) => coordinate.eventId)
-    : attempts.map(() => null)
-  return attempts.flatMap((attempt, index) => attempt.delivered ? [aligned[index] ?? null] : [])
+  if (!afterEventId) return attempts.flatMap((attempt) => attempt.delivered ? [null] : [])
+  const coordinates = newOutwardCoordinates(events, existingEventIds, afterEventId)
+  let nextCoordinate = 0
+  return attempts.flatMap((attempt) => {
+    if (!attempt.delivered) return []
+    const coordinateIndex = coordinates.findIndex((coordinate, index) => index >= nextCoordinate && coordinate.kind === attempt.kind && coordinate.text === attempt.text)
+    if (coordinateIndex < 0) return [null]
+    nextCoordinate = coordinateIndex + 1
+    return [coordinates[coordinateIndex]!.eventId]
+  })
+}
+
+function currentIngressEventId(
+  events: SessionEvent[],
+  existingEventIds: ReadonlySet<string>,
+  userMessage: string,
+  precommittedIngress?: RunSenseTurnOptions["precommittedIngress"],
+  ingressRelations?: SessionIngressRelations,
+): string | undefined {
+  if (precommittedIngress) return precommittedIngress.eventId
+  const reference = ingressRelations?.references[0]
+  return events.findLast((event) => (
+    !existingEventIds.has(event.id)
+    && event.role === "user"
+    && event.content === userMessage
+    && event.provenance?.captureKind !== "synthetic"
+    && (!reference || event.relations?.references.includes(reference))
+  ))?.id
 }
 
 export function getSenseSessionPath(agentName: string, friendId: string, channel: Channel, sessionKey: string, agentRootOverride?: string): string {
@@ -420,6 +475,7 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions): Promise<RunS
         undefined,
       )),
     }]
+  const preTurnMessageCount = sessionMessages.length
 
   // Pending dir
   const pendingDir = getPendingDir(agentName, friendId, channel, sessionKey)
@@ -432,9 +488,10 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions): Promise<RunS
   let terminalDeliveryKind: OutwardSenseDeliveryKind = "text"
   const deliveries: OutwardSenseDelivery[] = []
   const deliveryFailures: OutwardSenseDeliveryFailure[] = []
-  const deliveryAttempts: Array<{ kind: OutwardSenseDeliveryKind; delivered: boolean }> = []
+  const deliveryAttempts: Array<OutwardSenseDelivery & { delivered: boolean }> = []
   let providerInvocationCount = 0
   let toolInvocationCount = 0
+  let hadReasoningChunk = false
 
   const commitResponseText = (text: string): void => {
     const cleaned = stripThinkBlocks(text)
@@ -459,7 +516,7 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions): Promise<RunS
     if (!text) return
 
     const delivery: OutwardSenseDelivery = { kind, text }
-    const attempt = { kind, delivered: false }
+    const attempt = { kind, text, delivered: false }
     deliveryAttempts.push(attempt)
     try {
       await options.deliverySink?.onDelivery(delivery)
@@ -483,7 +540,7 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions): Promise<RunS
     emitFrontendEvent({ type: "assistant_delivery", data: { kind, text } })
   }
 
-  /* v8 ignore start — no-op callback stubs; only onTextChunk does real work (covered via mock) */
+  /* v8 ignore start — callback stubs are exercised through the pipeline integration */
   const callbacks: ChannelCallbacks = {
     settleOutputMode: "retractable_buffer",
     onModelStart: () => {
@@ -496,7 +553,10 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions): Promise<RunS
       pendingResponseText += chunk
       emitFrontendEvent({ type: "text_delta", data: { text: chunk } })
     },
-    onReasoningChunk: (chunk: string) => emitFrontendEvent({ type: "reasoning_delta", data: { text: chunk } }),
+    onReasoningChunk: (chunk: string) => {
+      hadReasoningChunk = true
+      emitFrontendEvent({ type: "reasoning_delta", data: { text: chunk } })
+    },
     onToolStart: (name: string, args: Record<string, string>) => {
       toolInvocationCount += 1
       if (options.turnMetricsObserver) options.turnMetricsObserver.toolInvocationCount += 1
@@ -626,10 +686,36 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions): Promise<RunS
   }
 
   const persistedEvents = persistPromise ? await persistPromise : []
+  const ingressEventId = currentIngressEventId(
+    persistedEvents,
+    existingEventIds,
+    userMessage,
+    options.precommittedIngress,
+    options.ingressRelations,
+  )
   const finalDeliveryKind = terminalDeliveryKind as OutwardSenseDeliveryKind
-  if (finalDeliveryKind === "settle" && Array.isArray(turnResult.messages)) {
-    const settledText = extractOutwardSenseDeliveryText(turnResult.messages)
-    if (settledText) pendingResponseText = settledText
+  const acceptedTerminalOutcome = turnResult.turnOutcome === "settled" || turnResult.turnOutcome === "blocked"
+  const failoverText = turnResult.turnOutcome === "errored" ? turnResult.failoverMessage?.trim() : undefined
+  const expectsOutwardResponse = acceptedTerminalOutcome || turnResult.turnOutcome === "command" || Boolean(failoverText)
+  const hadPendingCallbackText = stripThinkBlocks(pendingResponseText).length > 0
+  let recoveredTerminalEventId: string | undefined
+  if (acceptedTerminalOutcome) {
+    const completionText = turnResult.completion?.answer.trim()
+    const currentTurnMessages = Array.isArray(turnResult.messages) ? turnResult.messages.slice(preTurnMessageCount) : []
+    const plainTerminalText = newestPlainAssistantText(currentTurnMessages)
+    const acknowledgedDeliveryText = finalDeliveryKind === "settle"
+      ? extractOutwardSenseDeliveryText(currentTurnMessages)
+      : null
+    const authoritativeText = completionText || acknowledgedDeliveryText || plainTerminalText
+    if (authoritativeText) pendingResponseText = authoritativeText
+    else pendingResponseText = ""
+    if (!hadPendingCallbackText && plainTerminalText) recoveredTerminalEventId = causalSessionEventIds(persistedEvents, existingEventIds, [{ kind: "text", text: stripThinkBlocks(plainTerminalText), delivered: true }], ingressEventId)[0] ?? undefined
+  } else if (turnResult.turnOutcome === "command") {
+    // Slash-command text is emitted directly by the pipeline and has no assistant event.
+  } else if (failoverText) {
+    pendingResponseText = failoverText
+  } else {
+    pendingResponseText = ""
   }
   if (persistPromise && options.frontendEventSink && !options.disablePersistence) {
     const currentStructuredOutputs = loadSession(sessPath)?.structuredOutputs ?? []
@@ -645,20 +731,21 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions): Promise<RunS
 
   // Build response
   let finalResponse: string
-  let responseCausalSessionEventId: string | undefined
+  let responseCausalSessionEventId = recoveredTerminalEventId
   if (committedResponseText.length === 0) {
-    // Agent settled but no text came through callbacks — check session transcript for the settle answer
-    // Await deferred persist so the session file is up-to-date before readback
-    /* v8 ignore next -- persistPromise set inside v8-ignored postTurn callback; tested via pipeline integration @preserve */
-    if (persistPromise) await persistPromise
-    const postTurnSession = options.disablePersistence ? undefined : loadSession(sessPath)
-    const emptyFallback = options.emptyResponseFallback?.()
-    if (postTurnSession?.messages) {
-      const recovered = extractOutwardSenseDeliveryText(postTurnSession.messages)
-      finalResponse = recovered ?? emptyFallback ?? "(agent responded but response was empty)"
-      if (recovered) responseCausalSessionEventId = newOutwardCoordinates(persistedEvents, existingEventIds).at(-1)?.eventId
+    if (!expectsOutwardResponse) {
+      finalResponse = ""
     } else {
-      finalResponse = emptyFallback ?? "(agent responded but response was empty)"
+      // The terminal turn had no committed text — check its session transcript for the delivered answer.
+      const postTurnSession = options.disablePersistence ? undefined : loadSession(sessPath)
+      const emptyFallback = options.emptyResponseFallback?.()
+      if (postTurnSession?.messages) {
+        const recovered = extractOutwardSenseDeliveryText(postTurnSession.messages.slice(preTurnMessageCount))
+        finalResponse = recovered ?? emptyFallback ?? (hadReasoningChunk ? "" : "(agent responded but response was empty)")
+        if (recovered) responseCausalSessionEventId = causalSessionEventIds(persistedEvents, existingEventIds, [{ kind: finalDeliveryKind, text: stripThinkBlocks(recovered), delivered: true }], ingressEventId)[0] ?? undefined
+      } else {
+        finalResponse = emptyFallback ?? (hadReasoningChunk ? "" : "(agent responded but response was empty)")
+      }
     }
   } else {
     finalResponse = committedResponseText
@@ -673,7 +760,7 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions): Promise<RunS
   // came through and nothing else, surface a clear diagnostic message
   // instead of a blank response so the operator knows what happened.
   finalResponse = stripThinkBlocks(finalResponse)
-  if (finalResponse.length === 0) {
+  if (finalResponse.length === 0 && expectsOutwardResponse) {
     emitNervesEvent({
       level: "warn",
       component: "senses",
@@ -705,13 +792,19 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions): Promise<RunS
     toolInvocationCount,
     sessionPath: reportedSessionPath,
     turnOutcome: turnResult.turnOutcome,
-    ...(deliveries.length > 0 ? { causalSessionEventIds: causalSessionEventIds(persistedEvents, existingEventIds, deliveryAttempts) } : {}),
+    ...(deliveries.length > 0 ? { causalSessionEventIds: causalSessionEventIds(persistedEvents, existingEventIds, deliveryAttempts, ingressEventId) } : {}),
     ...(responseCausalSessionEventId ? { responseCausalSessionEventId } : {}),
   }
   })
   } finally {
     if (ephemeralRoot) {
-      fs.rmSync(ephemeralRoot, { recursive: true, force: true })
+      for (const entry of fs.readdirSync(ephemeralRoot, { withFileTypes: true })) {
+        if (!entry.isFile() && !entry.isSymbolicLink()) {
+          throw new Error(`observe-only session cleanup found unexpected entry: ${entry.name}`)
+        }
+        fs.unlinkSync(path.join(ephemeralRoot, entry.name))
+      }
+      fs.rmdirSync(ephemeralRoot)
     }
   }
 }

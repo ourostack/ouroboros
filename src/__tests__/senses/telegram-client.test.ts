@@ -2411,6 +2411,31 @@ describe("Telegram HTML rendering and chunking", () => {
     ])
   })
 
+  it("accepts a chunk-local HTML renderer without changing raw fallback or delivery callbacks", async () => {
+    const calls: Array<{ method: string; body: Record<string, unknown> }> = []
+    const delivered = vi.fn()
+    const api: TelegramBotApi = {
+      stop: vi.fn(),
+      request: vi.fn(async (method: string, body: Record<string, unknown>) => {
+        calls.push({ method, body })
+        if (calls.length === 1) throw new TelegramApiError("bad html", { status: 400 })
+        return { message_id: 8 }
+      }),
+    }
+    const raw = "**bold** & raw"
+
+    await expect(sendTelegramText(api, "42", raw, {
+      onMessageDelivered: delivered,
+      renderHtml: () => "<b>bold</b> &amp; raw",
+    })).resolves.toEqual([8])
+
+    expect(calls).toEqual([
+      { method: "sendMessage", body: { chat_id: "42", text: "<b>bold</b> &amp; raw", parse_mode: "HTML" } },
+      { method: "sendMessage", body: { chat_id: "42", text: raw } },
+    ])
+    expect(delivered).toHaveBeenCalledWith(8, raw)
+  })
+
   it("refuses to receipt a sendMessage result without one canonical message id", async () => {
     const api: TelegramBotApi = { request: vi.fn(async () => ({ ok: true })), stop: vi.fn() }
     await expect(sendTelegramText(api, "42", "hello")).rejects.toThrow("message_id")
@@ -2454,7 +2479,7 @@ describe("Telegram HTML rendering and chunking", () => {
     const controller = new AbortController()
     let id = 0
     const api: TelegramBotApi = { stop: vi.fn(), request: vi.fn(async () => ({ message_id: ++id })) }
-    await expect(sendTelegramText(api, "42", "x".repeat(1_201), controller.signal)).resolves.toEqual([1, 2])
+    await expect(sendTelegramText(api, "42", "x".repeat(1_201), { signal: controller.signal })).resolves.toEqual([1, 2])
     for (const call of (api.request as any).mock.calls) expect(call[2]).toBe(controller.signal)
   })
 })

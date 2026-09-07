@@ -1,7 +1,7 @@
 import * as fs from "node:fs"
 import * as net from "node:net"
 import * as path from "node:path"
-import { describe, expect, it, vi } from "vitest"
+import { beforeAll, describe, expect, it, vi } from "vitest"
 
 import { FrontendSessionService } from "../../../heart/frontend-session-service"
 import { withTurnExecutionLease } from "../../../heart/turn-execution-lease"
@@ -85,6 +85,10 @@ function daemonDeps() {
     })),
   }
 }
+
+beforeAll(async () => {
+  await import("../../../heart/daemon/daemon")
+}, 120_000)
 
 describe("daemon frontend socket integration", () => {
   it("keeps the legacy socket responsive while another client cancels a frontend turn", async () => {

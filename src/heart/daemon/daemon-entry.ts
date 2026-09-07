@@ -50,9 +50,11 @@ import { loadOrCreateMachineIdentity } from "../machine-identity"
 import { loadContainerCredentialBootstrap } from "./container-credential-bootstrap"
 import {
   createProviderReadinessPreparationFailure,
+  failFastSanctuaryBundlePreparationStartup,
   providerReadinessAgents,
   startDaemonAfterContainerCredentialBootstrap,
 } from "./daemon-bootstrap-startup"
+import { prepareSanctuaryPackageManagedBundle, requireSanctuaryPackageManagementDecision, resolveSanctuaryPackageManagementActivation } from "./sanctuary-package-management"
 import type { HabitRunTrigger } from "../../arc/flight-recorder"
 import { runSanctuaryHealthHabit } from "../../senses/sanctuary-health-runner"
 import { readSanctuaryAcceptanceMarker } from "./sanctuary-acceptance-marker"
@@ -70,12 +72,22 @@ function parseSocketPath(argv: string[]): string {
 }
 
 const socketPath = parseSocketPath(process.argv)
-
 configureDaemonRuntimeLogger("daemon")
 
 const entryPath = path.resolve(__dirname, "daemon-entry.js")
 const mode = detectRuntimeMode(getRepoRoot())
-
+const managedAgents = listEnabledBundleAgents()
+const readinessAgents = providerReadinessAgents(
+  managedAgents,
+  process.env.OURO_DAEMON_REQUIRED_AGENT,
+)
+const sanctuaryPackageManagement = resolveSanctuaryPackageManagementActivation({ mode, argv: process.argv, managedAgents, repoRoot: getRepoRoot(), bundlesRoot: getAgentBundlesRoot(), runtimePackageVersion: getPackageVersion() })
+try {
+  requireSanctuaryPackageManagementDecision(sanctuaryPackageManagement)
+} catch (failure) {
+  failFastSanctuaryBundlePreparationStartup({ failure, exit: (code) => process.exit(code) })
+  throw failure
+}
 emitNervesEvent({
   component: "daemon",
   event: "daemon.entry_start",
@@ -94,11 +106,6 @@ if (mode === "dev") {
   })
 }
 
-const managedAgents = listEnabledBundleAgents()
-const readinessAgents = providerReadinessAgents(
-  managedAgents,
-  process.env.OURO_DAEMON_REQUIRED_AGENT,
-)
 const managedPrivateRuntimes = managedAgents.map((agent) => ({
   agent,
   config: readPrivateRuntimeConfig(agent),
@@ -684,7 +691,9 @@ function scheduleStartupSentinelAfterProviderPreload(agent: string, preload: Pro
 
 /* v8 ignore start -- habit wiring: lambdas delegate to processManager/fs; tested via HabitScheduler unit tests @preserve */
 void startDaemonAfterContainerCredentialBootstrap({
+  preflight: () => { requireSanctuaryPackageManagementDecision(sanctuaryPackageManagement) },
   loadBootstrap: () => loadContainerCredentialBootstrap(managedAgents),
+  prepareManagedBundle: () => { prepareSanctuaryPackageManagedBundle(sanctuaryPackageManagement) },
   prepareDaemon: prepareProviderRuntime,
   startDaemon: () => daemon.start(),
   markStartupFailure: () => { _tombstoneWritten = true },

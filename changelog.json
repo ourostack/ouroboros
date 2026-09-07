@@ -1,26 +1,86 @@
 {
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
-      {
-        "version": "0.1.0-alpha.792",
-        "changes": [
-          "Catch asynchronous bundle watcher errors so transient pending-message processing files on live filesystems cannot tombstone the daemon or interrupt private-runtime wakes.",
-          "Warm runtime credentials before private-runtime bootstrap so Telegram-capable workers start with runtime config instead of racing the managed Telegram sense.",
-          "Treat simple Sanctuary library visibility asks like 'see the lib' as catalog reads, and block replies that send Ari to inspect Jellyfin, Unmanic, dashboards, or logs while safe evidence tools are available.",
-          "Degrade optional Unmanic file-size metrics, including failed detail reads, without hiding available media catalog evidence."
-        ]
-      },
-      {
-        "version": "0.1.0-alpha.791",
-        "changes": [
-          "Promote operator CLI pending messages into the active inner-turn user message so private-runtime wakes answer the text that woke them instead of stale heartbeat context.",
-          "Keep non-operator pending work in the background pending section so automated noise does not become the live user ask.",
-          "Deliver private-runtime Telegram surface and send_message returns through the existing Telegram effect journal instead of queuing ghost messages for the next chat.",
-          "Canonicalize Telegram session filename keys before live delivery so production sanitized session paths still authorize against the real Telegram binding.",
-          "Prefer the authoritative settle tool answer over incidental streamed prose for shared-turn delivery, preventing concatenated Telegram replies.",
-          "Expire stale generic Telegram outreach from the pending queue while preserving request-bound returns and trust/admission notices."
-        ]
-      },
+    {
+      "version": "0.1.0-alpha.801",
+      "changes": [
+        "Keep shared-turn empty-response diagnostics internal on Telegram so tool-only investigation steps do not appear as user-visible Butler messages."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.800",
+      "changes": [
+        "Make Sanctuary manifest verification compatible with Docker Buildx v0.20.1 by hashing exact raw OCI index bytes."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.799",
+      "changes": [
+        "Allow a fresh Sanctuary host to pull and validate the exact release image during a reviewed update."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.798",
+      "changes": [
+        "Keep the installed Butler bundle aligned with its verified release before provider and Telegram startup, and expose the same bounded install check to the owner.",
+        "Install and update Mendelow Cloud Butler as a first-class Unraid app through a crash-safe, exact-version DockerMan transaction with known-good rollback and active Community Apps recognition proof.",
+        "Reject unsafe legacy update sources and malformed DockerMan templates before any host or container change.",
+        "Make interrupted Sanctuary updates and first-install adoption cold-recoverable, reject unsafe bundle roots and uncommitted journal residue before mutation, compare DockerMan and bundle identities before cleanup, restore package-managed bytes and modes durably, preserve exclusive Butler autostart, and prove Jellyfin remains unchanged across the transaction."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.797",
+      "changes": [
+        "Render Telegram-native Butler emphasis safely at the send boundary and tighten noisy visibility replies."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.796",
+      "changes": [
+        "Give Mendelow Cloud Butler a concrete situational voice with casual lowercase, restrained punctuation, and varied activity phrases.",
+        "Render Butler-authored bold, italic, and inline-code Markdown safely in Telegram while preserving canonical raw text, literal data, full URLs, and plain control messages."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.795",
+      "changes": [
+        "Accept natural one- or two-sentence Butler library visibility replies while keeping exact count, grounding, contradiction, repetition, jargon, and follow-up guards."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.794",
+      "changes": [
+        "Keep internal model corrections out of durable conversation and approval history.",
+        "Anchor outward delivery evidence to the current inbound message and keep library visibility replies direct, first-person, and contradiction-free."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.793",
+      "changes": [
+        "Deliver only the authoritative terminal answer after tool-using model passes, preserving causal Telegram binding without duplicate prose.",
+        "Make Sanctuary media visibility, title, favorite, addition, list, and count answers concise, grounded, and free of internal jargon or self-erasing disclaimers."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.792",
+      "changes": [
+        "Catch asynchronous bundle watcher errors so transient pending-message processing files on live filesystems cannot tombstone the daemon or interrupt private-runtime wakes.",
+        "Warm runtime credentials before private-runtime bootstrap so Telegram-capable workers start with runtime config instead of racing the managed Telegram sense.",
+        "Treat simple Sanctuary library visibility asks like 'see the lib' as catalog reads, and block replies that send Ari to inspect Jellyfin, Unmanic, dashboards, or logs while safe evidence tools are available.",
+        "Degrade optional Unmanic file-size metrics, including failed detail reads, without hiding available media catalog evidence."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.791",
+      "changes": [
+        "Promote operator CLI pending messages into the active inner-turn user message so private-runtime wakes answer the text that woke them instead of stale heartbeat context.",
+        "Keep non-operator pending work in the background pending section so automated noise does not become the live user ask.",
+        "Deliver private-runtime Telegram surface and send_message returns through the existing Telegram effect journal instead of queuing ghost messages for the next chat.",
+        "Canonicalize Telegram session filename keys before live delivery so production sanitized session paths still authorize against the real Telegram binding.",
+        "Prefer the authoritative settle tool answer over incidental streamed prose for shared-turn delivery, preventing concatenated Telegram replies.",
+        "Expire stale generic Telegram outreach from the pending queue while preserving request-bound returns and trust/admission notices."
+      ]
+    },
     {
       "version": "0.1.0-alpha.790",
       "changes": [
