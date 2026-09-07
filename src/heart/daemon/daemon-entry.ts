@@ -48,7 +48,12 @@ import {
 import { readMachineRuntimeCredentialConfig, readRuntimeCredentialConfig, refreshRuntimeCredentialConfig } from "../runtime-credentials"
 import { loadOrCreateMachineIdentity } from "../machine-identity"
 import { loadContainerCredentialBootstrap } from "./container-credential-bootstrap"
-import { createProviderReadinessPreparationFailure, failFastSanctuaryBundlePreparationStartup, startDaemonAfterContainerCredentialBootstrap } from "./daemon-bootstrap-startup"
+import {
+  createProviderReadinessPreparationFailure,
+  failFastSanctuaryBundlePreparationStartup,
+  providerReadinessAgents,
+  startDaemonAfterContainerCredentialBootstrap,
+} from "./daemon-bootstrap-startup"
 import { prepareSanctuaryPackageManagedBundle, requireSanctuaryPackageManagementDecision, resolveSanctuaryPackageManagementActivation } from "./sanctuary-package-management"
 import type { HabitRunTrigger } from "../../arc/flight-recorder"
 import { runSanctuaryHealthHabit } from "../../senses/sanctuary-health-runner"
@@ -72,6 +77,10 @@ configureDaemonRuntimeLogger("daemon")
 const entryPath = path.resolve(__dirname, "daemon-entry.js")
 const mode = detectRuntimeMode(getRepoRoot())
 const managedAgents = listEnabledBundleAgents()
+const readinessAgents = providerReadinessAgents(
+  managedAgents,
+  process.env.OURO_DAEMON_REQUIRED_AGENT,
+)
 const sanctuaryPackageManagement = resolveSanctuaryPackageManagementActivation({ mode, argv: process.argv, managedAgents, repoRoot: getRepoRoot(), bundlesRoot: getAgentBundlesRoot(), runtimePackageVersion: getPackageVersion() })
 try {
   requireSanctuaryPackageManagementDecision(sanctuaryPackageManagement)
@@ -616,7 +625,7 @@ function writeStopCommandHealthState(): void {
 
 async function prepareProviderRuntime(): Promise<void> {
   const bundlesRoot = getAgentBundlesRoot()
-  const readiness = await Promise.all(managedAgents.map(async (agent) => {
+  const readiness = await Promise.all(readinessAgents.map(async (agent) => {
     try {
       await refreshRuntimeCredentialConfig(agent, { preserveCachedOnFailure: true })
       const result = await checkAgentConfigWithProviderHealth(agent, bundlesRoot)

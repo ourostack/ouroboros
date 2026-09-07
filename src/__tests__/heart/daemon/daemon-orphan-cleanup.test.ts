@@ -81,6 +81,7 @@ describe("parseOrphanPidsFromPs", () => {
       "  PID  PPID COMMAND",
       " 200     1 node /x/dist/heart/daemon/ouro-entry.js mcp-serve --agent slugger --friend abc",
       " 201     1 node /x/dist/heart/daemon/ouro-entry.js mcp serve --agent slugger --friend abc",
+      " 203     1 node /x/dist/heart/daemon/ouro-entry.js acp-serve --agent slugger",
       " 202     1 node /x/dist/heart/daemon/agent-entry.js --agent slugger",
     ].join("\n")
     // mcp-serve/mcp serve are excluded, and neither line contains

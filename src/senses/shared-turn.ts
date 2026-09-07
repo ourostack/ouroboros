@@ -9,9 +9,9 @@ import * as os from "os"
 import * as path from "path"
 import * as fs from "fs"
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions"
-import type { ChannelCallbacks } from "../heart/core"
+import type { ApprovalSuspensionResult, ChannelCallbacks, RunAgentOutcome } from "../heart/core"
 import { runAgent } from "../heart/core"
-import { getAgentRoot } from "../heart/identity"
+import { getAgentRoot, setAgentName } from "../heart/identity"
 import { sanitizeKey } from "../heart/config"
 import { stampIngressRelations, stampIngressTime, type SessionEvent, type SessionIngressRelations } from "../heart/session-events"
 import { loadSession } from "../mind/context"
@@ -28,12 +28,18 @@ import { emitNervesEvent } from "../nerves/runtime"
 import type { ToolContext } from "../repertoire/tools-base"
 import { readSessionTransaction, withSessionTurnLease, type SessionTurnLease } from "../mind/session-transaction"
 import type { OrientationFrame } from "../heart/orientation-frame"
+import { withTurnExecutionLease } from "../heart/turn-execution-lease"
 
 const RESPONSE_CAP = 50_000
 const OUTWARD_DELIVERY_TOOL_ACKS = new Map([
   ["settle", "(delivered)"],
   ["speak", "(spoken)"],
 ])
+
+async function releaseRuntimeMcpServersAfterTurn(): Promise<void> {
+  const manager = await import("../repertoire/mcp-manager")
+  await manager.releaseRuntimeMcpServers()
+}
 
 /**
  * Strip MiniMax-style `<think>...</think>` reasoning blocks from a response
@@ -202,10 +208,37 @@ export interface RunSenseTurnOptions {
    * turn for a different agent.
    */
   runtimeMcpServers?: RuntimeMcpServers
+  /** Hard turn-local tool exclusion for observe-only frontend passes. */
+  disableTools?: boolean
+  /** Ephemeral frontend pass that may not read or write normal session history. */
+  disablePersistence?: boolean
   /** Test seam for the same production whole-turn lease wrapper. */
   _withSessionTurnLease?: <T>(sessionPath: string, work: (lease: SessionTurnLease) => Promise<T>) => Promise<T>
   /** Mutable per-turn metrics survive a rejected turn for durable transport receipts. */
   turnMetricsObserver?: { providerInvocationCount: number; toolInvocationCount: number }
+  /** Optional caller cancellation forwarded through the full agent turn. */
+  signal?: AbortSignal
+  /** Optional frontend event stream for attached clients and durable journals. */
+  frontendEventSink?: FrontendTurnEventSink
+}
+
+export interface FrontendTurnEvent {
+  type:
+    | "model_started"
+    | "model_stream_started"
+    | "text_delta"
+    | "reasoning_delta"
+    | "tool_started"
+    | "tool_completed"
+    | "error"
+    | "text_cleared"
+    | "assistant_delivery"
+    | "structured_output"
+  data: Record<string, unknown>
+}
+
+export interface FrontendTurnEventSink {
+  onEvent(event: FrontendTurnEvent): void
 }
 
 export type OutwardSenseDeliveryKind = "speak" | "settle" | "text"
@@ -244,6 +277,10 @@ export interface RunSenseTurnResult {
   causalSessionEventIds?: Array<string | null>
   /** Exact canonical assistant event retained for transport retry after a failed final delivery. */
   responseCausalSessionEventId?: string
+  /** Structured outcome returned by the shared pipeline. */
+  turnOutcome?: RunAgentOutcome | "command"
+  /** Durable protected-tool suspension awaiting an external authority decision. */
+  suspension?: ApprovalSuspensionResult
 }
 
 function hasAcceptedOutwardSessionAck(events: SessionEvent[], assistantIndex: number, toolCallId: unknown, toolName: "speak" | "settle"): boolean {
@@ -413,6 +450,19 @@ export function getSenseSessionPath(agentName: string, friendId: string, channel
  * this function handles all pipeline wiring.
  */
 export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSenseTurnResult> {
+  return withTurnExecutionLease(async () => {
+    setAgentName(options.agentName)
+    try {
+      return await runSenseTurnExclusive(options)
+    } finally {
+      if (options.runtimeMcpServers && !options.disableTools) {
+        await releaseRuntimeMcpServersAfterTurn()
+      }
+    }
+  })
+}
+
+async function runSenseTurnExclusive(options: RunSenseTurnOptions): Promise<RunSenseTurnResult> {
   const { agentName, channel, sessionKey, friendId, userMessage } = options
 
   emitNervesEvent({
@@ -463,18 +513,27 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
 
   // Initialize MCP manager so MCP tools appear as first-class tools in the agent's tool list.
   // Runtime MCP servers (e.g. Workbench's ouro_workbench) are passed per-turn for THIS agent only.
-  const mcpManager = await getSharedMcpManager(
-    options.runtimeMcpServers ? { runtimeServers: options.runtimeMcpServers } : undefined,
-  ) ?? undefined
+  const mcpManager = options.disableTools
+    ? undefined
+    : await getSharedMcpManager(
+      options.runtimeMcpServers ? { runtimeServers: options.runtimeMcpServers } : undefined,
+    ) ?? undefined
 
   // Session path and loading
-  const sessionDir = path.join(agentRoot, "state", "sessions", friendId, channel)
+  const ephemeralRoot = options.disablePersistence
+    ? fs.mkdtempSync(path.join(os.tmpdir(), "ouro-observe-only-"))
+    : null
+  const sessionDir = ephemeralRoot ?? path.join(agentRoot, "state", "sessions", friendId, channel)
   fs.mkdirSync(sessionDir, { recursive: true })
-  const sessPath = getSenseSessionPath(agentName, friendId, channel, sessionKey, agentRoot)
+  const sessPath = ephemeralRoot
+    ? path.join(ephemeralRoot, "session.json")
+    : getSenseSessionPath(agentName, friendId, channel, sessionKey, agentRoot)
+  const reportedSessionPath = ephemeralRoot ? undefined : sessPath
   const runWithLease = options._withSessionTurnLease ?? withSessionTurnLease
-  return runWithLease(sessPath, async (sessionTurnLease) => {
+  try {
+  return await runWithLease(sessPath, async (sessionTurnLease) => {
   const baseSessionRevision = readSessionTransaction(sessPath, sessionTurnLease).revision
-  const existing = loadSession(sessPath)
+  const existing = options.disablePersistence ? undefined : loadSession(sessPath)
   const precommittedIngressEvent = options.precommittedIngress
     ? existing?.events?.find((candidate) => candidate.id === options.precommittedIngress!.eventId)
     : undefined
@@ -486,11 +545,19 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
     }
   }
   const existingEventIds = new Set(existing?.events?.map((event) => event.id) ?? [])
+  const existingStructuredOutputIds = new Set(existing?.structuredOutputs?.map((output) => output.id) ?? [])
   let sessionState = existing?.state
   let persistPromise: Promise<SessionEvent[]> | undefined
   const sessionMessages: ChatCompletionMessageParam[] = existing?.messages && existing.messages.length > 0
     ? existing.messages
-    : [{ role: "system", content: flattenSystemPrompt(await buildSystem(channel, {}, undefined)) }]
+    : [{
+      role: "system",
+      content: flattenSystemPrompt(await buildSystem(
+        channel,
+        options.disableTools ? { tools: [], hardDisableTools: true } : {},
+        undefined,
+      )),
+    }]
   if (precommittedIngressEvent) {
     const projectedIngress = exactProjectedIngressMessage(existing!, sessionMessages, precommittedIngressEvent.id)
     if (!projectedIngress || projectedIngress.role !== "user" || projectedIngress.content !== userMessage) throw new Error("shared turn precommitted ingress is absent from the provider projection")
@@ -526,6 +593,9 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
   }
 
   const deliveryErrorMessage = (error: unknown): string => error instanceof Error ? error.message : String(error)
+  const emitFrontendEvent = (event: FrontendTurnEvent): void => {
+    options.frontendEventSink?.onEvent(event)
+  }
 
   const deliverPending = async (
     kind: OutwardSenseDeliveryKind,
@@ -544,6 +614,7 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
       attempt.delivered = true
       deliveries.push(delivery)
       commitResponseText(text)
+      emitFrontendEvent({ type: "assistant_delivery", data: { kind, text } })
     } catch (error) {
       const failure = { ...delivery, error: deliveryErrorMessage(error) }
       deliveryFailures.push(failure)
@@ -563,16 +634,36 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
   /* v8 ignore start — callback stubs are exercised through the pipeline integration */
   const callbacks: ChannelCallbacks = {
     settleOutputMode: "retractable_buffer",
-    onModelStart: () => { providerInvocationCount += 1; if (options.turnMetricsObserver) options.turnMetricsObserver.providerInvocationCount += 1 },
-    onModelStreamStart: () => {},
-    onTextChunk: (chunk: string) => { pendingResponseText += chunk },
-    onReasoningChunk: () => { hadReasoningChunk = true },
-    onToolStart: () => { toolInvocationCount += 1; if (options.turnMetricsObserver) options.turnMetricsObserver.toolInvocationCount += 1 },
+    onModelStart: () => {
+      providerInvocationCount += 1
+      if (options.turnMetricsObserver) options.turnMetricsObserver.providerInvocationCount += 1
+      emitFrontendEvent({ type: "model_started", data: {} })
+    },
+    onModelStreamStart: () => emitFrontendEvent({ type: "model_stream_started", data: {} }),
+    onTextChunk: (chunk: string) => {
+      pendingResponseText += chunk
+      emitFrontendEvent({ type: "text_delta", data: { text: chunk } })
+    },
+    onReasoningChunk: (chunk: string) => {
+      hadReasoningChunk = true
+      emitFrontendEvent({ type: "reasoning_delta", data: { text: chunk } })
+    },
+    onToolStart: (name: string, args: Record<string, string>) => {
+      toolInvocationCount += 1
+      if (options.turnMetricsObserver) options.turnMetricsObserver.toolInvocationCount += 1
+      emitFrontendEvent({ type: "tool_started", data: { name, args } })
+    },
     onToolEnd: (name: string, _summary: string, success: boolean) => {
       if (name === "settle" && success) terminalDeliveryKind = "settle"
+      emitFrontendEvent({ type: "tool_completed", data: { name, summary: _summary, success } })
     },
-    onError: () => {},
-    onClearText: () => { pendingResponseText = "" },
+    onError: (error: Error, severity: "transient" | "terminal") => {
+      emitFrontendEvent({ type: "error", data: { message: error.message, severity } })
+    },
+    onClearText: () => {
+      pendingResponseText = ""
+      emitFrontendEvent({ type: "text_cleared", data: {} })
+    },
     flushNow: async () => { await deliverPending("speak", { throwOnError: true }) },
   }
   /* v8 ignore stop */
@@ -607,14 +698,16 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
     /* v8 ignore stop */
     pendingDir,
     friendStore,
+    signal: options.signal,
     provider: resolverParams.provider,
     externalId: resolverParams.externalId,
     tenantId: resolverParams.tenantId,
     enforceTrustGate,
-    drainPending,
+    drainPending: options.disablePersistence ? () => [] : drainPending,
     runAgentOptions: {
       mcpManager,
-      ...(options.approvalCoordinatorFactory ? { approvalCoordinator: options.approvalCoordinatorFactory({ sessionPath: sessPath, baseSessionRevision }) } : {}),
+      ...(options.disableTools ? { tools: [], hardDisableTools: true } : {}),
+      ...(options.approvalCoordinatorFactory && !options.disablePersistence ? { approvalCoordinator: options.approvalCoordinatorFactory({ sessionPath: sessPath, baseSessionRevision }) } : {}),
       ...(options.latencyMode === "live" ? { skipKeptNotes: true } : {}),
       ...(options.orientationFrame ? { orientationFrame: options.orientationFrame } : {}),
       toolContext: {
@@ -629,10 +722,11 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
     postTurn: (turnMessages, sessionPathArg, usage, hooks, state) => {
       const prepared = postTurnTrim(turnMessages, usage, hooks)
       sessionState = state
+      if (options.disablePersistence) return
       persistPromise = deferPostTurnPersist(sessionPathArg, prepared, usage, state)
     },
     /* v8 ignore stop */
-    accumulateFriendTokens,
+    accumulateFriendTokens: options.disablePersistence ? async () => undefined : accumulateFriendTokens,
   })
 
   if (turnResult.gateResult && !turnResult.gateResult.allowed) {
@@ -646,7 +740,39 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
       deliveryFailures,
       providerInvocationCount,
       toolInvocationCount,
-      sessionPath: sessPath,
+      sessionPath: reportedSessionPath,
+      turnOutcome: turnResult.turnOutcome ?? "blocked",
+    }
+  }
+
+  if (turnResult.turnOutcome === "aborted") {
+    pendingResponseText = ""
+    if (persistPromise) await persistPromise
+    return {
+      response: "",
+      ponderDeferred: false,
+      deliveries,
+      deliveryFailures,
+      providerInvocationCount,
+      toolInvocationCount,
+      sessionPath: reportedSessionPath,
+      turnOutcome: "aborted",
+    }
+  }
+
+  if (turnResult.turnOutcome === "suspended") {
+    if (!turnResult.suspension) throw new Error("suspended shared turn omitted durable approval suspension")
+    pendingResponseText = ""
+    return {
+      response: "",
+      ponderDeferred: false,
+      deliveries,
+      deliveryFailures,
+      providerInvocationCount,
+      toolInvocationCount,
+      sessionPath: reportedSessionPath,
+      turnOutcome: "suspended",
+      suspension: turnResult.suspension,
     }
   }
 
@@ -684,6 +810,14 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
     pendingResponseText = failoverText
   } else {
     pendingResponseText = ""
+  }
+  if (persistPromise && options.frontendEventSink && !options.disablePersistence) {
+    const currentStructuredOutputs = loadSession(sessPath)?.structuredOutputs ?? []
+    for (const output of currentStructuredOutputs) {
+      if (!existingStructuredOutputIds.has(output.id)) {
+        emitFrontendEvent({ type: "structured_output", data: { output } })
+      }
+    }
   }
   const finalDeliveryAttemptIndex = await deliverPending(finalDeliveryKind, { throwOnError: false })
 
@@ -745,9 +879,21 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
     ...(responseDeliveryFailure ? { responseDeliveryFailure } : {}),
     providerInvocationCount,
     toolInvocationCount,
-    sessionPath: sessPath,
+    sessionPath: reportedSessionPath,
+    turnOutcome: turnResult.turnOutcome,
     ...(deliveries.length > 0 ? { causalSessionEventIds: causalSessionEventIds(eventView, deliveryAttempts, finalDeliveryAttemptIndex, finalCausalCoordinate) } : {}),
     ...(responseCausalSessionEventId ? { responseCausalSessionEventId } : {}),
   }
   })
+  } finally {
+    if (ephemeralRoot) {
+      for (const entry of fs.readdirSync(ephemeralRoot, { withFileTypes: true })) {
+        if (!entry.isFile() && !entry.isSymbolicLink()) {
+          throw new Error(`observe-only session cleanup found unexpected entry: ${entry.name}`)
+        }
+        fs.unlinkSync(path.join(ephemeralRoot, entry.name))
+      }
+      fs.rmdirSync(ephemeralRoot)
+    }
+  }
 }

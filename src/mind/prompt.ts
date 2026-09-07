@@ -318,6 +318,7 @@ my bones give me the \`ouro\` cli. always pass \`--agent ${agentName}\`:
   ouro mcp list --agent ${agentName}
   ouro mcp call --agent ${agentName} <server> <tool> --args '{...}'
   ouro mcp-serve --agent ${agentName}
+  ouro acp-serve --agent ${agentName}
   ouro versions --agent ${agentName}
   ouro rollback --agent ${agentName} [<version>]
   ouro --help
@@ -590,7 +591,7 @@ function senseRuntimeGuidance(channel: Channel, preReadStatusLines?: string[]): 
   lines.push("teams setup truth: run `ouro connect teams --agent <agent>` from the connect bay; it stores Teams runtime/config fields and enables `senses.teams.enabled`.")
   lines.push("bluebubbles setup truth: run `ouro connect bluebubbles --agent <agent>` from the connect bay; it stores this machine's BlueBubbles URL/password/listener config in the agent vault machine runtime item.")
   lines.push("a2a setup truth: run `ouro connect a2a --agent <agent>` to enable the A2A sense, `ouro a2a card --agent <agent> --base-url <public-url>` to publish an agent card, and `ouro a2a onboard --agent <agent> --card-url <peer-card-url>` to add a peer as an agent friend. A2A uses the existing friend trust model, not a separate trust registry.")
-  lines.push("workbench setup truth: Ouro Workbench is the local machine sense for terminal/TUI agents. When the Workbench app launches me as its boss it injects the `ouro_workbench` MCP into my turn at runtime (it spawns `ouro mcp-serve --agent <me> --workbench-mcp`), so I receive the tools for the served session without any `agent.json` `mcpServers.ouro_workbench` entry — nothing is written to the bundle, so this stays path-free and cross-machine clean. The authoritative signal that Workbench is active is simply that the `workbench_*` tools are present in my toolset this turn; the sense table may read as disabled when no bundle entry exists, or as `stale_bundle_entry` when legacy bundle config needs cleanup, and neither state proves the runtime-injected tools are absent — I do NOT treat that as blocked or as a trust-level problem. I observe and queue auditable Workbench actions through `workbench_status`, `workbench_sense`, `workbench_transcript_tail`, `workbench_search_transcripts`, `workbench_recovery_drill`, and `workbench_request_action`; raw provider secrets remain in the agent vault, and Apple notarization is unrelated to local use. The explicit `ouro connect workbench --agent <me>` command verifies the installed MCP binary and removes stale Workbench bundle entries; it does not enable `senses.workbench` or write `mcpServers.ouro_workbench`.")
+  lines.push("workbench setup truth: Ouro Workbench is the local machine sense for terminal/TUI agents. When the Workbench app launches me as its boss it injects the `ouro_workbench` MCP into my turn at runtime (it spawns `ouro acp-serve --agent <me> --workbench-mcp`), so I receive the tools for the served session without any `agent.json` `mcpServers.ouro_workbench` entry — nothing is written to the bundle, so this stays path-free and cross-machine clean. The authoritative signal that Workbench is active is simply that the `workbench_*` tools are present in my toolset this turn; the sense table may read as disabled when no bundle entry exists, or as `stale_bundle_entry` when legacy bundle config needs cleanup, and neither state proves the runtime-injected tools are absent — I do NOT treat that as blocked or as a trust-level problem. I observe and queue auditable Workbench actions through `workbench_status`, `workbench_sense`, `workbench_transcript_tail`, `workbench_search_transcripts`, `workbench_recovery_drill`, and `workbench_request_action`; raw provider secrets remain in the agent vault, and Apple notarization is unrelated to local use. The explicit `ouro connect workbench --agent <me>` command verifies the installed MCP binary and removes stale Workbench bundle entries; it does not enable `senses.workbench` or write `mcpServers.ouro_workbench`.")
   lines.push("mail setup AX: if a human asks me to set up email, I do not hand them a terminal checklist. I guide the flow end-to-end: name the current phase, run agent-runnable commands myself with shell/tools when available, ask the human only for human-required facts or browser actions, wait for their reply, verify the result, then continue.")
   lines.push("mail setup hard rule: never tell the human to run `ouro account ensure`, `ouro connect mail`, `ouro mail import-mbox`, `ouro status`, or `ouro doctor` for setup. Say what I am about to run, run it myself, and report the result. If my current surface cannot run shell/tools, I ask for a tool-capable Ouro setup session or companion to continue; I do not offload CLI operation to the human.")
   lines.push("mail setup truth: Agent Mail uses Mailroom, not HEY OAuth/IMAP. For the full work substrate account, the agent-runnable command is `ouro account ensure --agent <agent> --owner-email <email> --source hey`; use `ouro connect mail --agent <agent> --owner-email <email> --source hey` for mail-only repair/provisioning, or `--no-delegated-source` for native-only mail. The detailed runbook is `docs/agent-mail-setup.md`.")
@@ -661,6 +662,7 @@ function uniqueToolsByName(tools: OpenAI.ChatCompletionFunctionTool[]): OpenAI.C
 }
 
 function toolsSection(channel: Channel, options?: BuildSystemOptions, context?: ResolvedContext): string {
+  if (options?.hardDisableTools) return "## my tools\nnone for this observe-only turn";
   const channelTools = options?.tools ?? getToolsForChannel(
     getChannelCapabilities(channel),
     undefined,
@@ -858,6 +860,8 @@ export interface BuildSystemOptions {
   chatModel?: string;
   /** Optional tool subset for restricted inner/habit turns. */
   tools?: OpenAI.ChatCompletionFunctionTool[];
+  /** Hard tool-free prompt profile; unlike `tools: []`, this also omits terminal helpers. */
+  hardDisableTools?: boolean;
   /** When true, the observe tool is available in 1:1 reaction/feedback turns. */
   isReactionSignal?: boolean;
   pendingMessages?: Array<{ from: string; content: string }>;

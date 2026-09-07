@@ -80,6 +80,10 @@ function makeSession() {
   }
 }
 
+function deferred<T = void>() {
+  return Promise.withResolvers<T>()
+}
+
 // Build a full InboundTurnInput using REAL enforceTrustGate (not mocked),
 // with all I/O deps mocked.
 function makeIntegrationInput(overrides: Partial<InboundTurnInput> = {}): InboundTurnInput {
@@ -181,6 +185,37 @@ describe("pipeline integration — full UX/AX scenarios", () => {
       await expect(handleInboundTurn(input)).rejects.toThrow(/leased session path/i)
       expect(runAgent).not.toHaveBeenCalled()
       expect(input.postTurn).not.toHaveBeenCalled()
+    })
+  })
+
+  describe("turn serialization", () => {
+    it("does not overlap direct inbound turns in one process", async () => {
+      const firstEntered = deferred()
+      const releaseFirst = deferred()
+      const secondEntered = deferred()
+      const secondRunAgent = vi.fn(async () => {
+        secondEntered.resolve()
+        return { outcome: "settled", usage: usageData }
+      })
+      const first = handleInboundTurn(makeIntegrationInput({
+        runAgent: vi.fn(async () => {
+          firstEntered.resolve()
+          await releaseFirst.promise
+          return { outcome: "settled", usage: usageData }
+        }),
+      }))
+      await firstEntered.promise
+
+      const second = handleInboundTurn(makeIntegrationInput({ runAgent: secondRunAgent }))
+      const overlapped = await Promise.race([
+        secondEntered.promise.then(() => true),
+        new Promise<false>((resolve) => setTimeout(() => resolve(false), 25)),
+      ])
+      expect(overlapped).toBe(false)
+
+      releaseFirst.resolve()
+      await Promise.all([first, second])
+      expect(secondRunAgent).toHaveBeenCalledOnce()
     })
   })
 

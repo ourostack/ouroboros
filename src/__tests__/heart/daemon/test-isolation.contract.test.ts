@@ -197,6 +197,10 @@ const OURO_DAEMON_INSTANTIATION_ALLOWLIST = new Set<string>([
   // stub and cover the try/catch/stop branches that were previously
   // v8-ignored.
   "src/__tests__/heart/daemon/daemon-mailbox-lifecycle.test.ts",
+  // Frontend lifecycle tests inject temporary bundle/socket roots and every
+  // daemon dependency; start/stop is the behavior under test.
+  "src/__tests__/heart/daemon/daemon-frontend-lifecycle.test.ts",
+  "src/__tests__/heart/daemon/daemon-frontend-socket-integration.test.ts",
   // Exercises the read-only private.decisions command handler directly
   // against an isolated temp bundle ledger. Does not call start(), bind
   // sockets, or touch the production pidfile.

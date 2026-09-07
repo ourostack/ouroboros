@@ -1662,6 +1662,7 @@ export function parseMcpServeCommand(args: string[]): OuroCliCommand & { socketO
       else { workbenchMcp = true }
       continue
     }
+
   }
   if (!agent) throw new Error("mcp-serve requires --agent <name>")
   return {
@@ -1670,6 +1671,48 @@ export function parseMcpServeCommand(args: string[]): OuroCliCommand & { socketO
     ...(friendId ? { friendId } : {}),
     ...(socketOverride ? { socketOverride } : {}),
     ...(workbenchMcp !== undefined ? { workbenchMcp } : {}),
+  }
+}
+
+export function parseAcpServeCommand(args: string[]): OuroCliCommand {
+  const usage = "Usage: ouro acp-serve --agent <name> [--friend-id <id>] [--socket <path>] [--workbench-mcp [path]] [--observe-only]"
+  let agent: string | undefined
+  let friendId: string | undefined
+  let socketOverride: string | undefined
+  let workbenchMcp: string | true | undefined
+  let observeOnly = false
+  for (let i = 0; i < args.length; i++) {
+    const token = args[i]
+    if (token === "--workbench-mcp") {
+      const next = args[i + 1]
+      if (next && !next.startsWith("--")) workbenchMcp = args[++i]
+      else workbenchMcp = true
+      continue
+    }
+    if (token === "--observe-only") {
+      observeOnly = true
+      continue
+    }
+    const next = args[i + 1]
+    if (token === "--agent" || token === "--friend-id" || token === "--socket") {
+      if (!next || next.startsWith("--")) throw new Error(`${token} requires a value\n${usage}`)
+      if (token === "--agent") agent = next
+      else if (token === "--friend-id") friendId = next
+      else socketOverride = next
+      i += 1
+      continue
+    }
+    throw new Error(usage)
+  }
+  if (!agent) throw new Error(`acp-serve requires --agent <name>\n${usage}`)
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(agent)) throw new Error("acp-serve requires a safe agent name")
+  return {
+    kind: "acp-serve",
+    agent,
+    ...(friendId ? { friendId } : {}),
+    ...(socketOverride ? { socketOverride } : {}),
+    ...(workbenchMcp !== undefined ? { workbenchMcp } : {}),
+    ...(observeOnly ? { observeOnly: true } : {}),
   }
 }
 
@@ -2480,6 +2523,7 @@ export function parseOuroCommand(args: string[]): OuroCliCommand {
   if (head === "poke") return parsePokeCommand(args.slice(1))
   if (head === "nerves-review") return parseNervesReviewCommand(args.slice(1))
   if (head === "link") return parseLinkCommand(args.slice(1))
+  if (head === "acp-serve") return parseAcpServeCommand(args.slice(1))
   if (head === "mcp-serve") return parseMcpServeCommand(args.slice(1))
   if (head === "setup") return parseSetupCommand(args.slice(1))
   if (head === "plugin") return parsePluginCommand(args.slice(1))

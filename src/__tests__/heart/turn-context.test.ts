@@ -359,6 +359,17 @@ describe("buildTurnContext", () => {
     ])
   })
 
+  it("can suppress ambient background discovery for live turns", async () => {
+    await buildTurnContext({
+      ...makeInput(),
+      includeAmbientBackgroundDiscovery: false,
+    })
+
+    expect(mockListVisibleBackgroundOperations).toHaveBeenCalledWith(expect.objectContaining({
+      includeAmbientDiscovery: false,
+    }))
+  })
+
   it("populates bridges from bridge manager", async () => {
     const bridge = { id: "b1", state: "active", targetSession: {} }
     mockFindBridgesForSession.mockReturnValue([bridge])

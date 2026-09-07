@@ -1,7 +1,7 @@
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
-import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions"
 import type { ChannelCallbacks } from "../../heart/core"
 import type { FriendRecord, ResolvedContext, Channel, ChannelCapabilities } from "@ouro.bot/friends"
@@ -91,6 +91,7 @@ vi.mock("../../mind/pending", async () => {
 const mockGetAgentName = vi.fn().mockReturnValue("test-agent")
 const mockGetAgentRoot = vi.fn().mockReturnValue("/tmp/test-agent")
 const mockLoadAgentConfig = vi.fn().mockReturnValue({ provider: "anthropic" })
+const mockSetAgentName = vi.fn()
 
 vi.mock("../../heart/identity", async () => {
   const actual = await vi.importActual<typeof import("../../heart/identity")>("../../heart/identity")
@@ -99,6 +100,7 @@ vi.mock("../../heart/identity", async () => {
     getAgentName: (...args: any[]) => mockGetAgentName(...args),
     getAgentRoot: (...args: any[]) => mockGetAgentRoot(...args),
     loadAgentConfig: (...args: any[]) => mockLoadAgentConfig(...args),
+    setAgentName: (...args: any[]) => mockSetAgentName(...args),
   }
 })
 
@@ -137,14 +139,20 @@ vi.mock("@ouro.bot/friends", async () => {
 })
 
 const mockGetSharedMcpManager = vi.fn().mockResolvedValue(null)
+const mockReleaseRuntimeMcpServers = vi.fn().mockResolvedValue(undefined)
 
 vi.mock("../../repertoire/mcp-manager", async () => {
   const actual = await vi.importActual<typeof import("../../repertoire/mcp-manager")>("../../repertoire/mcp-manager")
   return {
     ...actual,
     getSharedMcpManager: (...args: any[]) => mockGetSharedMcpManager(...args),
+    releaseRuntimeMcpServers: (...args: any[]) => mockReleaseRuntimeMcpServers(...args),
   }
 })
+
+beforeAll(async () => {
+  await import("../../senses/shared-turn")
+}, 120_000)
 
 // ── Helpers ────────────────────────────────────────────────────
 
@@ -430,6 +438,7 @@ describe("runSenseTurn", () => {
     mockLoadSession.mockReset()
     mockLoadSession.mockReturnValue(null)
     mockDeferPostTurnPersist.mockReset().mockResolvedValue([])
+    mockReleaseRuntimeMcpServers.mockReset().mockResolvedValue(undefined)
     setupSettledTurn()
     mockFriendResolve.mockResolvedValue(makeResolvedContext())
     mockWithSessionTurnLease.mockReset().mockImplementation(async (_sessionPath: string, work: (lease: any) => Promise<any>) => work({
@@ -525,6 +534,59 @@ describe("runSenseTurn", () => {
     ])
   })
 
+  it("sets the requested agent identity inside the whole-turn execution lease", async () => {
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+
+    await runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "hello",
+    })
+
+    expect(mockSetAgentName).toHaveBeenCalledWith("test-agent")
+    expect(mockSetAgentName.mock.invocationCallOrder[0]).toBeLessThan(mockGetSharedMcpManager.mock.invocationCallOrder[0])
+  })
+
+  it("serializes MCP setup across concurrent shared turns", async () => {
+    const firstMcpEntered = Promise.withResolvers<void>()
+    const releaseFirstMcp = Promise.withResolvers<void>()
+    let mcpCalls = 0
+    mockGetSharedMcpManager.mockImplementation(async () => {
+      mcpCalls += 1
+      if (mcpCalls === 1) {
+        firstMcpEntered.resolve()
+        await releaseFirstMcp.promise
+      }
+      return null
+    })
+
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    const first = runSenseTurn({
+      agentName: "first-agent",
+      channel: "mcp",
+      sessionKey: "first-session",
+      friendId: "friend-1",
+      userMessage: "first",
+    })
+    await firstMcpEntered.promise
+
+    const second = runSenseTurn({
+      agentName: "second-agent",
+      channel: "mcp",
+      sessionKey: "second-session",
+      friendId: "friend-1",
+      userMessage: "second",
+    })
+    await Promise.resolve()
+    expect(mcpCalls).toBe(1)
+
+    releaseFirstMcp.resolve()
+    await Promise.all([first, second])
+    expect(mcpCalls).toBe(2)
+  })
+
   it("returns response text from a settled turn", async () => {
     const { runSenseTurn } = await import("../../senses/shared-turn")
     const result = await runSenseTurn({
@@ -536,6 +598,191 @@ describe("runSenseTurn", () => {
     })
     expect(result.response).toBe("hello from the agent")
     expect(result.ponderDeferred).toBe(false)
+    expect(result.turnOutcome).toBe("settled")
+  })
+
+  it("passes cancellation to the pipeline and does not deliver partial aborted output", async () => {
+    const controller = new AbortController()
+    const onDelivery = vi.fn()
+    const emptyResponseFallback = vi.fn(() => "fallback")
+    mockHandleInboundTurn.mockImplementationOnce(async (input: any) => {
+      expect(input.signal).toBe(controller.signal)
+      input.callbacks.onTextChunk("partial")
+      await input.postTurn([], "/tmp/session.json")
+      return {
+        resolvedContext: makeResolvedContext(),
+        gateResult: { allowed: true },
+        turnOutcome: "aborted",
+        sessionPath: "/tmp/session.json",
+        messages: [],
+      }
+    })
+
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    const result = await runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "hello",
+      signal: controller.signal,
+      deliverySink: { onDelivery },
+      emptyResponseFallback,
+    })
+
+    expect(result.turnOutcome).toBe("aborted")
+    expect(result.response).toBe("")
+    expect(result.deliveries).toEqual([])
+    expect(onDelivery).not.toHaveBeenCalled()
+    expect(emptyResponseFallback).not.toHaveBeenCalled()
+    expect(mockDeferPostTurnPersist).toHaveBeenCalled()
+  })
+
+  it("emits normalized live frontend events and every outward delivery", async () => {
+    const events: any[] = []
+    const structuredOutput = {
+      schemaVersion: 1,
+      id: "structured-1",
+      kind: "ordered_list",
+      sourceEventId: "event-1",
+      recordedAt: "2026-09-03T20:00:00.000Z",
+      items: [{ label: "1", text: "First" }],
+    }
+    mockDeferPostTurnPersist.mockImplementationOnce(async () => {
+      mockLoadSession.mockReturnValue({ messages: [], structuredOutputs: [structuredOutput] })
+      return []
+    })
+    mockHandleInboundTurn.mockImplementationOnce(async (input: any) => {
+      input.callbacks.onModelStart()
+      input.callbacks.onModelStreamStart()
+      input.callbacks.onTextChunk("first")
+      input.callbacks.onReasoningChunk("thinking")
+      input.callbacks.onToolStart("read_file", { path: "/tmp/a" })
+      input.callbacks.onToolEnd("read_file", "ok", true)
+      input.callbacks.onError(new Error("transient"), "transient")
+      await input.callbacks.flushNow()
+      input.callbacks.onClearText()
+      input.callbacks.onTextChunk("second")
+      await input.postTurn([], "/tmp/session.json")
+      return {
+        resolvedContext: makeResolvedContext(),
+        gateResult: { allowed: true },
+        turnOutcome: "settled",
+        completion: { answer: "second", intent: "direct_reply" },
+        sessionPath: "/tmp/session.json",
+        messages: [],
+      }
+    })
+
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    await runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "hello",
+      frontendEventSink: { onEvent: (event) => events.push(event) },
+    })
+
+    expect(events).toEqual([
+      { type: "model_started", data: {} },
+      { type: "model_stream_started", data: {} },
+      { type: "text_delta", data: { text: "first" } },
+      { type: "reasoning_delta", data: { text: "thinking" } },
+      { type: "tool_started", data: { name: "read_file", args: { path: "/tmp/a" } } },
+      { type: "tool_completed", data: { name: "read_file", summary: "ok", success: true } },
+      { type: "error", data: { message: "transient", severity: "transient" } },
+      { type: "assistant_delivery", data: { kind: "speak", text: "first" } },
+      { type: "text_cleared", data: {} },
+      { type: "text_delta", data: { text: "second" } },
+      { type: "structured_output", data: { output: structuredOutput } },
+      { type: "assistant_delivery", data: { kind: "text", text: "second" } },
+    ])
+  })
+
+  it("does not re-emit structured output that already existed before the turn", async () => {
+    const existingOutput = {
+      schemaVersion: 1,
+      id: "structured-existing",
+      kind: "ordered_list",
+      sourceEventId: "event-existing",
+      recordedAt: "2026-09-03T20:00:00.000Z",
+      items: [{ label: "1", text: "Existing" }],
+    }
+    mockLoadSession.mockReturnValue({
+      messages: [{ role: "system", content: "system" }],
+      structuredOutputs: [existingOutput],
+    })
+    mockHandleInboundTurn.mockImplementationOnce(async (input: any) => {
+      await input.postTurn([], "/tmp/session.json")
+      return {
+        resolvedContext: makeResolvedContext(),
+        gateResult: { allowed: true },
+        turnOutcome: "settled",
+        sessionPath: "/tmp/session.json",
+        messages: [],
+      }
+    })
+    const events: any[] = []
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+
+    await runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "hello",
+      frontendEventSink: { onEvent: (event) => events.push(event) },
+    })
+
+    expect(events.filter((event) => event.type === "structured_output")).toEqual([])
+  })
+
+  it("emits no structured output when post-persist readback is unavailable", async () => {
+    mockHandleInboundTurn.mockImplementationOnce(async (input: any) => {
+      await input.postTurn([], "/tmp/session.json")
+      return {
+        resolvedContext: makeResolvedContext(),
+        gateResult: { allowed: true },
+        turnOutcome: "settled",
+        sessionPath: "/tmp/session.json",
+        messages: [],
+      }
+    })
+    const events: any[] = []
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+
+    await runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "hello",
+      frontendEventSink: { onEvent: (event) => events.push(event) },
+    })
+
+    expect(events.filter((event) => event.type === "structured_output")).toEqual([])
+  })
+
+  it("returns an aborted outcome when the pipeline has no persistence work", async () => {
+    mockHandleInboundTurn.mockResolvedValueOnce({
+      resolvedContext: makeResolvedContext(),
+      gateResult: { allowed: true },
+      turnOutcome: "aborted",
+      sessionPath: "/tmp/session.json",
+      messages: [],
+    })
+
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    const result = await runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "hello",
+    })
+
+    expect(result).toMatchObject({ response: "", turnOutcome: "aborted" })
   })
 
   it("delivers only the authoritative text-only terminal answer after ordinary tool-call prose", async () => {
@@ -666,7 +913,21 @@ describe("runSenseTurn", () => {
     const delivered: string[] = []
     mockHandleInboundTurn.mockImplementation(async (input: any) => {
       input.callbacks.onTextChunk("Discarded intermediate prose.")
-      return { resolvedContext: makeResolvedContext(), gateResult: { allowed: true }, turnOutcome, sessionPath: "/tmp/session.json", messages: [] }
+      return {
+        resolvedContext: makeResolvedContext(),
+        gateResult: { allowed: true },
+        turnOutcome,
+        ...(turnOutcome === "suspended" ? {
+          suspension: {
+            approvalId: "approval-1",
+            toolCallId: "call-1",
+            checkpointDigest: "a".repeat(64),
+            suspendedSessionRevision: "b".repeat(64),
+          },
+        } : {}),
+        sessionPath: "/tmp/session.json",
+        messages: [],
+      }
     })
     const { runSenseTurn } = await import("../../senses/shared-turn")
 
@@ -1284,6 +1545,80 @@ describe("runSenseTurn", () => {
     expect(mockGetSharedMcpManager).toHaveBeenCalledWith({ runtimeServers: runtimeMcpServers })
   })
 
+  it("releases each runtime MCP before the next queued turn starts", async () => {
+    const firstEntered = Promise.withResolvers<void>()
+    const finishFirst = Promise.withResolvers<void>()
+    const order: string[] = []
+    let runCount = 0
+    let releaseCount = 0
+    mockHandleInboundTurn.mockImplementation(async (input: any) => {
+      runCount += 1
+      const currentRun = runCount
+      order.push(`turn:${currentRun}`)
+      if (currentRun === 1) {
+        firstEntered.resolve()
+        await finishFirst.promise
+      }
+      input.callbacks.onTextChunk(`response ${currentRun}`)
+      return {
+        resolvedContext: makeResolvedContext(),
+        gateResult: { allowed: true },
+        turnOutcome: "settled",
+        messages: [],
+      }
+    })
+    mockReleaseRuntimeMcpServers.mockImplementation(async () => {
+      releaseCount += 1
+      order.push(`release:${releaseCount}`)
+    })
+    const runtimeMcpServers = {
+      ouro_workbench: { command: "/Apps/OuroWorkbenchMCP", args: [] },
+    }
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    const first = runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "session-first",
+      friendId: "friend-1",
+      userMessage: "first",
+      runtimeMcpServers,
+    })
+    await firstEntered.promise
+    const second = runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "session-second",
+      friendId: "friend-1",
+      userMessage: "second",
+      runtimeMcpServers,
+    })
+
+    await Promise.resolve()
+    expect(order).toEqual(["turn:1"])
+    finishFirst.resolve()
+    await Promise.all([first, second])
+
+    expect(order).toEqual(["turn:1", "release:1", "turn:2", "release:2"])
+  })
+
+  it("releases runtime MCPs when a turn fails", async () => {
+    mockHandleInboundTurn.mockRejectedValueOnce(new Error("provider failed"))
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+
+    await expect(runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "session-failed",
+      friendId: "friend-1",
+      userMessage: "hello",
+      runtimeMcpServers: {
+        ouro_workbench: { command: "/Apps/OuroWorkbenchMCP", args: [] },
+      },
+    })).rejects.toThrow("provider failed")
+
+    expect(mockReleaseRuntimeMcpServers).toHaveBeenCalledOnce()
+  })
+
   it("calls getSharedMcpManager with undefined when no runtimeMcpServers are supplied", async () => {
     const { runSenseTurn } = await import("../../senses/shared-turn")
     await runSenseTurn({
@@ -1295,6 +1630,102 @@ describe("runSenseTurn", () => {
     })
 
     expect(mockGetSharedMcpManager).toHaveBeenCalledWith(undefined)
+    expect(mockReleaseRuntimeMcpServers).not.toHaveBeenCalled()
+  })
+
+  it("hard-disables native and MCP tools for observe-only turns", async () => {
+    mockLoadSession.mockReturnValue(null)
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    await runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "observe",
+      disableTools: true,
+      runtimeMcpServers: {
+        ouro_workbench: { command: "/Apps/OuroWorkbenchMCP", args: [] },
+      },
+    })
+
+    expect(mockGetSharedMcpManager).not.toHaveBeenCalled()
+    expect(mockReleaseRuntimeMcpServers).not.toHaveBeenCalled()
+    expect(mockBuildSystem.mock.calls[0][1]).toEqual({ tools: [], hardDisableTools: true })
+    expect(mockHandleInboundTurn.mock.calls[0][0].runAgentOptions.tools).toEqual([])
+    expect(mockHandleInboundTurn.mock.calls[0][0].runAgentOptions.hardDisableTools).toBe(true)
+    expect(mockHandleInboundTurn.mock.calls[0][0].runAgentOptions.mcpManager).toBeUndefined()
+  })
+
+  it("keeps observe-only prompts out of normal session storage", async () => {
+    mockHandleInboundTurn.mockImplementation(async (input: any) => {
+      input.callbacks.onTextChunk("hold")
+      const loaded = await input.sessionLoader.loadOrCreate()
+      fs.writeFileSync(loaded.sessionPath, "temporary")
+      fs.symlinkSync(loaded.sessionPath, path.join(path.dirname(loaded.sessionPath), "session-link"))
+      await input.postTurn([
+        { role: "system", content: "system" },
+        { role: "user", content: "private worker evidence" },
+        { role: "assistant", content: "hold" },
+      ], loaded.sessionPath)
+      await input.accumulateFriendTokens()
+      input.drainPending()
+      return {
+        resolvedContext: makeResolvedContext(),
+        gateResult: { allowed: true },
+        turnOutcome: "settled",
+        messages: [],
+      }
+    })
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+
+    const result = await runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "session-ephemeral",
+      friendId: "friend-1",
+      userMessage: "private worker evidence",
+      disableTools: true,
+      disablePersistence: true,
+    })
+
+    const leasePath = mockWithSessionTurnLease.mock.calls[0][0]
+    expect(leasePath).toContain("ouro-observe-only-")
+    expect(mockSessionPath).not.toHaveBeenCalled()
+    expect(mockLoadSession).not.toHaveBeenCalled()
+    expect(mockDeferPostTurnPersist).not.toHaveBeenCalled()
+    expect(mockDrainPending).not.toHaveBeenCalled()
+    expect(result.sessionPath).toBeUndefined()
+    expect(fs.existsSync(path.dirname(leasePath))).toBe(false)
+  })
+
+  it("fails closed when observe-only cleanup finds nested state", async () => {
+    let ephemeralRoot = ""
+    mockHandleInboundTurn.mockImplementation(async (input: any) => {
+      const loaded = await input.sessionLoader.loadOrCreate()
+      ephemeralRoot = path.dirname(loaded.sessionPath)
+      fs.mkdirSync(path.join(ephemeralRoot, "unexpected"))
+      return {
+        resolvedContext: makeResolvedContext(),
+        gateResult: { allowed: true },
+        turnOutcome: "settled",
+        messages: [],
+      }
+    })
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+
+    try {
+      await expect(runSenseTurn({
+        agentName: "test-agent",
+        channel: "mcp",
+        sessionKey: "session-ephemeral-invalid",
+        friendId: "friend-1",
+        userMessage: "private worker evidence",
+        disableTools: true,
+        disablePersistence: true,
+      })).rejects.toThrow("observe-only session cleanup found unexpected entry: unexpected")
+    } finally {
+      if (ephemeralRoot) fs.rmSync(ephemeralRoot, { recursive: true, force: true })
+    }
   })
 
   it("uses the explicit agentName for session storage instead of process argv", async () => {
@@ -1323,6 +1754,28 @@ describe("runSenseTurn", () => {
     const input = mockHandleInboundTurn.mock.calls[0][0]
     expect(input.messages).toMatchObject([{ role: "user", content: "what is 2+2?" }])
     expect(input.messages[0]._ingressAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+  })
+
+  it("stamps explicit ingress relations on the user message", async () => {
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    await runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "session-123",
+      friendId: "friend-1",
+      userMessage: "related",
+      ingressRelations: {
+        replyToEventId: null,
+        threadRootEventId: null,
+        references: ["event-1"],
+      },
+    })
+
+    expect(mockHandleInboundTurn.mock.calls[0][0].messages[0]._ingressRelations).toEqual({
+      replyToEventId: null,
+      threadRootEventId: null,
+      references: ["event-1"],
+    })
   })
 
   it("drains pending messages before turn", async () => {
@@ -1414,6 +1867,58 @@ describe("runSenseTurn", () => {
     })
     expect(mockHandleInboundTurn.mock.calls[0][0].runAgentOptions.approvalCoordinator)
       .toBe(approvalCoordinator)
+  })
+
+  it("returns a durable approval suspension without fabricating a completed response", async () => {
+    const suspension = {
+      approvalId: "approval-1",
+      toolCallId: "call-1",
+      checkpointDigest: "a".repeat(64),
+      suspendedSessionRevision: "b".repeat(64),
+    }
+    mockHandleInboundTurn.mockResolvedValue({
+      resolvedContext: makeResolvedContext(),
+      gateResult: { allowed: true },
+      turnOutcome: "suspended",
+      suspension,
+      sessionPath: "/tmp/session.json",
+      messages: [],
+    })
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+
+    await expect(runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "approval-session",
+      friendId: "friend-1",
+      userMessage: "restart it",
+      approvalCoordinatorFactory: (() => ({ propose: vi.fn() })) as never,
+    })).resolves.toMatchObject({
+      response: "",
+      turnOutcome: "suspended",
+      suspension,
+    })
+    expect(mockDeferPostTurnPersist).not.toHaveBeenCalled()
+  })
+
+  it("rejects a suspended shared turn without durable suspension metadata", async () => {
+    mockHandleInboundTurn.mockResolvedValue({
+      resolvedContext: makeResolvedContext(),
+      gateResult: { allowed: true },
+      turnOutcome: "suspended",
+      sessionPath: "/tmp/session.json",
+      messages: [],
+    })
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+
+    await expect(runSenseTurn({
+      agentName: "test-agent",
+      channel: "mcp",
+      sessionKey: "approval-session",
+      friendId: "friend-1",
+      userMessage: "restart it",
+      approvalCoordinatorFactory: (() => ({ propose: vi.fn() })) as never,
+    })).rejects.toThrow("omitted durable approval suspension")
   })
 
   it("handles null mcpManager gracefully (no MCP servers)", async () => {

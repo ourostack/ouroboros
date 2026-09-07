@@ -45,6 +45,7 @@ export interface AmbientMailImportOperationsInput extends MailImportDiscoverySea
 
 export interface VisibleBackgroundOperationsInput extends AmbientMailImportOperationsInput {
   limit?: number
+  includeAmbientDiscovery?: boolean
 }
 
 function sortBackgroundOperationsNewestFirst(left: BackgroundOperationRecord, right: BackgroundOperationRecord): number {
@@ -358,6 +359,9 @@ export function listVisibleBackgroundOperations(input: VisibleBackgroundOperatio
     agentRoot: input.agentRoot,
     limit,
   })
+  if (input.includeAmbientDiscovery === false) {
+    return persisted
+  }
   const ambient = listAmbientMailImportOperations({
     agentName: input.agentName,
     agentRoot: input.agentRoot,

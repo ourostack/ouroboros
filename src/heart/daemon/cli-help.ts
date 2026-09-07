@@ -362,6 +362,12 @@ export const COMMAND_REGISTRY: Record<string, CommandHelp & { category: CommandC
     usage: "ouro mcp-serve --agent <name> [--friend <id>]",
     example: "ouro mcp-serve --agent ouroboros",
   },
+  "acp-serve": {
+    category: "System",
+    description: "Start the ACP frontend adapter for an Ouro agent",
+    usage: "ouro acp-serve --agent <name> [--friend-id <id>] [--workbench-mcp [path]] [--observe-only]",
+    example: "ouro acp-serve --agent ouroboros --workbench-mcp",
+  },
   setup: {
     category: "System",
     description: "Register MCP server and hooks for a dev tool",

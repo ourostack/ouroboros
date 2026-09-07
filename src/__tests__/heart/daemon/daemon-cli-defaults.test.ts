@@ -136,6 +136,60 @@ describe("daemon CLI default dependency branches", () => {
     }
   })
 
+  it("starts a frontend daemon only for a safe scoped agent", async () => {
+    vi.resetModules()
+    const unref = vi.fn()
+    const spawn = vi.fn(() => ({ pid: 54321, unref }))
+    const openSync = vi.fn(() => 10)
+    const bootoutLaunchAgentByLabel = vi.fn()
+    let restorePlatform = withProcessPlatform("darwin")
+
+    try {
+      vi.doMock("child_process", () => ({ spawn, execSync: vi.fn() }))
+      vi.doMock("fs", async () => ({
+        ...await vi.importActual<typeof import("fs")>("fs"),
+        openSync,
+      }))
+      vi.doMock("../../../heart/identity", async () => ({
+        ...await vi.importActual<typeof import("../../../heart/identity")>("../../../heart/identity"),
+        getRepoRoot: () => "/mock/repo",
+        getAgentBundlesRoot: () => "/mock/AgentBundles",
+      }))
+      vi.doMock("../../../heart/daemon/launchd", async () => ({
+        ...await vi.importActual<typeof import("../../../heart/daemon/launchd")>("../../../heart/daemon/launchd"),
+        bootoutLaunchAgentByLabel,
+      }))
+
+      const { defaultStartDaemonForFrontend } = await import("../../../heart/daemon/cli-defaults")
+      await expect(defaultStartDaemonForFrontend("/tmp/frontend.sock", "../boss"))
+        .rejects.toThrow("safe agent name")
+      await expect(defaultStartDaemonForFrontend("/tmp/frontend.sock", "boss"))
+        .resolves.toEqual({ pid: 54321 })
+      expect(bootoutLaunchAgentByLabel).toHaveBeenCalledOnce()
+
+      restorePlatform()
+      restorePlatform = withProcessPlatform("linux")
+      await expect(defaultStartDaemonForFrontend("/tmp/frontend-linux.sock", "boss-linux"))
+        .resolves.toEqual({ pid: 54321 })
+      expect(bootoutLaunchAgentByLabel).toHaveBeenCalledOnce()
+      expect(spawn).toHaveBeenLastCalledWith(
+        process.execPath,
+        ["/mock/repo/dist/heart/daemon/daemon-entry.js", "--socket", "/tmp/frontend-linux.sock"],
+        expect.objectContaining({
+          detached: true,
+          env: expect.objectContaining({ OURO_DAEMON_REQUIRED_AGENT: "boss-linux" }),
+        }),
+      )
+      expect(openSync).toHaveBeenCalledTimes(4)
+      expect(unref).toHaveBeenCalledTimes(2)
+    } finally {
+      restorePlatform()
+      vi.doUnmock("fs")
+      vi.doUnmock("../../../heart/identity")
+      vi.doUnmock("../../../heart/daemon/launchd")
+    }
+  })
+
   it("uses the latest dist-tag for default CLI update checks", async () => {
     vi.resetModules()
 

@@ -15,10 +15,18 @@ import {
   createSanctuaryBundlePreparationFailure,
   failFastContainerCredentialBootstrapStartup,
   failFastSanctuaryBundlePreparationStartup,
+  providerReadinessAgents,
   startDaemonAfterContainerCredentialBootstrap,
 } from "../../../heart/daemon/daemon-bootstrap-startup"
 
 describe("daemon container credential bootstrap startup boundary", () => {
+  it("scopes Workbench daemon readiness to its selected safe agent", () => {
+    expect(providerReadinessAgents(["ouroboros", "slugger"], "ouroboros")).toEqual(["ouroboros"])
+    expect(providerReadinessAgents(["ouroboros", "slugger"], "missing")).toEqual(["ouroboros", "slugger"])
+    expect(providerReadinessAgents(["ouroboros", "slugger"], "../ouroboros")).toEqual(["ouroboros", "slugger"])
+    expect(providerReadinessAgents(["ouroboros", "slugger"], undefined)).toEqual(["ouroboros", "slugger"])
+  })
+
   it("turns structured Sanctuary repair actions into plain guidance", () => {
     const messages = [
       createSanctuaryBundlePreparationFailure("restart_from_verified_release").message,

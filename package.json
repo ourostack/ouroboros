@@ -1,6 +1,6 @@
 {
   "name": "@ouro.bot/cli",
-  "version": "0.1.0-alpha.804",
+  "version": "0.1.0-alpha.805",
   "engines": {
     "node": ">=22"
   },

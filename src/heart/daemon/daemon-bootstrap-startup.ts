@@ -15,6 +15,17 @@ class DaemonPreparationFailure extends Error {
   override readonly name = "DaemonPreparationFailure"
 }
 
+export function providerReadinessAgents(
+  managedAgents: readonly string[],
+  requiredAgent: string | undefined,
+): string[] {
+  const candidate = requiredAgent?.trim()
+  if (!candidate || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(candidate)) {
+    return [...managedAgents]
+  }
+  return managedAgents.includes(candidate) ? [candidate] : [...managedAgents]
+}
+
 export function createProviderReadinessPreparationFailure(issues: ReadonlyArray<{
   summary: string
   actions: ReadonlyArray<{ actor: string; command: string }>

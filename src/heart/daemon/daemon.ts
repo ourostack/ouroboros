@@ -58,6 +58,11 @@ import { readContainerRuntimePolicy } from "./container-runtime"
 import type { RunNativeRsvpHabitInput, RunNativeRsvpHabitResult } from "../../rsvp/native-habit-runner"
 import { completeHabitRun } from "../habits/habit-session"
 import type { SanctuarySchedulerFireCommand, SanctuarySchedulerOrigin } from "./sanctuary-scheduler-origin"
+import { withTurnExecutionLease } from "../turn-execution-lease"
+import { FrontendSessionService } from "../frontend-session-service"
+import { frontendSocketPathForDaemon, startFrontendSocketServer, type FrontendSocketServer } from "../frontend-socket"
+import { FrontendJournalStore } from "../frontend-journal"
+import { createFrontendApprovalRuntime, settleFrontendApproval } from "../frontend-approval-runtime"
 
 const PIDFILE_PATH = path.join(os.homedir(), ".ouro-cli", "daemon.pids")
 
@@ -572,6 +577,9 @@ export interface OuroDaemonOptions {
    * wired with the daemon's bundlesRoot and view builders.
    */
   mailboxServerFactory?: () => Promise<MailboxHttpServerHandle>
+  frontendSocketPath?: string
+  frontendSessionService?: FrontendSessionService
+  frontendSocketServerFactory?: typeof startFrontendSocketServer
   privateRuntimePolicyDeps?: PrivateTurnPolicyDeps
   /**
    * Runs after a daemon.stop command has completed daemon-owned cleanup but
@@ -808,32 +816,34 @@ export async function handleAgentSenseTurn(
   command: Extract<DaemonCommand, { kind: "agent.senseTurn" }>,
   runtime?: { socketPath?: string },
 ): Promise<DaemonResponse> {
-  try {
-    const { setAgentName } = await import("../identity")
-    setAgentName(command.agent)
-    const { runSenseTurn } = await import("../../senses/shared-turn")
-    const result = await runSenseTurn({
-      agentName: command.agent,
-      channel: command.channel as import("@ouro.bot/friends").Channel,
-      sessionKey: command.sessionKey,
-      friendId: command.friendId,
-      userMessage: command.message,
-      ...(runtime?.socketPath ? { toolContext: { daemonSocketPath: runtime.socketPath } } : {}),
-      // Per-turn, per-agent runtime MCP injection (e.g. Workbench's ouro_workbench).
-      // Scoped to THIS turn only — never stored as module state, so a concurrent
-      // turn for a different agent cannot inherit these servers.
-      ...(command.runtimeMcp ? { runtimeMcpServers: command.runtimeMcp } : {}),
-    })
-    return {
-      ok: true,
-      message: result.response,
-      data: { ponderDeferred: result.ponderDeferred },
+  return withTurnExecutionLease(async () => {
+    try {
+      const { setAgentName } = await import("../identity")
+      setAgentName(command.agent)
+      const { runSenseTurn } = await import("../../senses/shared-turn")
+      const result = await runSenseTurn({
+        agentName: command.agent,
+        channel: command.channel as import("@ouro.bot/friends").Channel,
+        sessionKey: command.sessionKey,
+        friendId: command.friendId,
+        userMessage: command.message,
+        ...(runtime?.socketPath ? { toolContext: { daemonSocketPath: runtime.socketPath } } : {}),
+        // Per-turn, per-agent runtime MCP injection (e.g. Workbench's ouro_workbench).
+        // Scoped to THIS turn only — never stored as module state, so a concurrent
+        // turn for a different agent cannot inherit these servers.
+        ...(command.runtimeMcp ? { runtimeMcpServers: command.runtimeMcp } : {}),
+      })
+      return {
+        ok: true,
+        message: result.response,
+        data: { ponderDeferred: result.ponderDeferred },
+      }
+    } catch (error) {
+      /* v8 ignore next -- branch: String(error) fallback only for non-Error throws @preserve */
+      const errorMessage = error instanceof Error ? error.message : String(error)
+      return { ok: false, error: `sense turn failed: ${errorMessage}` }
     }
-  } catch (error) {
-    /* v8 ignore next -- branch: String(error) fallback only for non-Error throws @preserve */
-    const errorMessage = error instanceof Error ? error.message : String(error)
-    return { ok: false, error: `sense turn failed: ${errorMessage}` }
-  }
+  })
 }
 
 export async function handleAgentAskTurn(
@@ -869,12 +879,16 @@ export class OuroDaemon {
   private readonly mode: "dev" | "production"
   private server: net.Server | null = null
   private mailboxServer: MailboxHttpServerHandle | null = null
+  private frontendSocketServer: FrontendSocketServer | null = null
   private socketIdentity: SocketIdentity | null = null
   private senseAutostartTimer: ReturnType<typeof setTimeout> | null = null
   private externalEventReconcileTimer: ReturnType<typeof setInterval> | null = null
   private externalEventReconcileRunning = false
   private readonly constructedAtMs = Date.now()
   private readonly mailboxServerFactory: () => Promise<MailboxHttpServerHandle>
+  private readonly frontendSocketPath: string
+  private readonly frontendSessionService: FrontendSessionService
+  private readonly frontendSocketServerFactory: typeof startFrontendSocketServer
   private readonly privateRuntimePolicyDeps: PrivateTurnPolicyDeps
   private readonly onStopCommandComplete: (() => void | Promise<void>) | null
   private readonly externalEventRoot: string | null
@@ -900,6 +914,17 @@ export class OuroDaemon {
     this.bundlesRoot = options.bundlesRoot ?? getAgentBundlesRoot()
     this.mode = options.mode ?? "production"
     this.mailboxServerFactory = options.mailboxServerFactory ?? this.createDefaultMailboxServer.bind(this)
+    this.frontendSocketPath = options.frontendSocketPath ?? frontendSocketPathForDaemon(this.socketPath)
+    /* v8 ignore next -- path-only default adapter; frontend service tests inject and verify the same root contract @preserve */
+    const frontendAgentRoot = (agent: string) => path.join(this.bundlesRoot, `${agent}.ouro`)
+    this.frontendSessionService = options.frontendSessionService ?? new FrontendSessionService({
+      journal: new FrontendJournalStore({ agentRoot: frontendAgentRoot }),
+      authority: createFrontendApprovalRuntime({
+        agentRoot: frontendAgentRoot,
+        settleApproval: settleFrontendApproval,
+      }),
+    })
+    this.frontendSocketServerFactory = options.frontendSocketServerFactory ?? startFrontendSocketServer
     this.privateRuntimePolicyDeps = options.privateRuntimePolicyDeps ?? {}
     this.onStopCommandComplete = options.onStopCommandComplete ?? null
     this.externalEventRoot = options.externalEventRoot ?? null
@@ -1111,6 +1136,20 @@ export class OuroDaemon {
         event: "daemon.mailbox_start_failed",
         message: `Mailbox server failed to start: ${String(error)}`,
         meta: { port: MAILBOX_DEFAULT_PORT },
+      })
+    }
+    try {
+      this.frontendSocketServer = await this.frontendSocketServerFactory({
+        socketPath: this.frontendSocketPath,
+        service: this.frontendSessionService,
+      })
+    } catch (error) {
+      emitNervesEvent({
+        level: "warn",
+        component: "daemon",
+        event: "daemon.frontend_socket_start_failed",
+        message: `Frontend socket failed to start: ${String(error)}`,
+        meta: { socketPath: this.frontendSocketPath },
       })
     }
   }
@@ -1401,6 +1440,12 @@ export class OuroDaemon {
       meta: { socketPath: this.socketPath },
     })
 
+    this.frontendSessionService.cancelAllTurns()
+    if (this.frontendSocketServer) {
+      await this.frontendSocketServer.stop()
+      this.frontendSocketServer = null
+    }
+    this.frontendSessionService.close?.()
     stopUpdateChecker()
     shutdownSharedMcpManager()
     this.scheduler.stop?.()
@@ -2754,27 +2799,31 @@ export class OuroDaemon {
         return this.handlePrivateRuntimeWake(this.buildAwaitPrivateWakeCommand(command))
       }
       case "mcp.list": {
-        setAgentName(command.agent ?? "default")
-        const mcpManager = await getSharedMcpManager()
-        if (!mcpManager) {
-          return { ok: true, data: [], message: "no MCP servers configured" }
-        }
-        return { ok: true, data: mcpManager.listAllTools() }
+        return withTurnExecutionLease(async () => {
+          setAgentName(command.agent ?? "default")
+          const mcpManager = await getSharedMcpManager()
+          if (!mcpManager) {
+            return { ok: true, data: [], message: "no MCP servers configured" }
+          }
+          return { ok: true, data: mcpManager.listAllTools() }
+        })
       }
       case "mcp.call": {
-        setAgentName(command.agent ?? "default")
-        const mcpCallManager = await getSharedMcpManager()
-        if (!mcpCallManager) {
-          return { ok: false, error: "no MCP servers configured" }
-        }
-        try {
-          const parsedArgs = command.args ? JSON.parse(command.args) as Record<string, unknown> : {}
-          const result = await mcpCallManager.callTool(command.server, command.tool, parsedArgs)
-          return { ok: true, data: result }
-        } catch (error) {
-          /* v8 ignore next -- defensive: callTool errors are always Error instances @preserve */
-          return { ok: false, error: error instanceof Error ? error.message : String(error) }
-        }
+        return withTurnExecutionLease(async () => {
+          setAgentName(command.agent ?? "default")
+          const mcpCallManager = await getSharedMcpManager()
+          if (!mcpCallManager) {
+            return { ok: false, error: "no MCP servers configured" }
+          }
+          try {
+            const parsedArgs = command.args ? JSON.parse(command.args) as Record<string, unknown> : {}
+            const result = await mcpCallManager.callTool(command.server, command.tool, parsedArgs)
+            return { ok: true, data: result }
+          } catch (error) {
+            /* v8 ignore next -- defensive: callTool errors are always Error instances @preserve */
+            return { ok: false, error: error instanceof Error ? error.message : String(error) }
+          }
+        })
       }
       case "hatch.start":
         return {

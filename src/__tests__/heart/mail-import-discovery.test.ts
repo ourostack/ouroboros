@@ -722,4 +722,38 @@ describe("mail import discovery", () => {
       "older",
     ])
   })
+
+  it("returns only persisted operations when ambient discovery is disabled", async () => {
+    const homeDir = tempDir()
+    const repoRoot = path.join(homeDir, "repo")
+    const agentRoot = path.join(homeDir, "AgentBundles", "slugger.ouro")
+    const operationsDir = path.join(agentRoot, "state", "background-operations")
+    const sandboxDir = path.join(repoRoot, ".playwright-mcp")
+    fs.mkdirSync(operationsDir, { recursive: true })
+    fs.mkdirSync(sandboxDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(sandboxDir, "ambient.mbox"),
+      "From MAILER-DAEMON Thu Jan  1 00:00:00 1970\n",
+      "utf-8",
+    )
+    fs.writeFileSync(path.join(operationsDir, "persisted.json"), `${JSON.stringify({
+      schemaVersion: 1,
+      id: "persisted",
+      agentName: "slugger",
+      kind: "mail.import-mbox",
+      title: "mail import",
+      status: "failed",
+      summary: "persisted failure",
+      createdAt: "2026-04-24T05:00:00.000Z",
+      updatedAt: "2026-04-24T05:00:00.000Z",
+    }, null, 2)}\n`, "utf-8")
+
+    expect(listVisibleBackgroundOperations({
+      agentName: "slugger",
+      agentRoot,
+      repoRoot,
+      homeDir,
+      includeAmbientDiscovery: false,
+    }).map((operation) => operation.id)).toEqual(["persisted"])
+  })
 })
