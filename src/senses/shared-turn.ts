@@ -232,6 +232,8 @@ export interface RunSenseTurnResult {
   deliveries: OutwardSenseDelivery[]
   /** Delivery failures observed after the model's terminal answer. Mid-turn `speak` failures are returned to the model immediately. */
   deliveryFailures: OutwardSenseDeliveryFailure[]
+  /** Exact failed terminal attempt, whether or not durable session causality could be established. */
+  responseDeliveryFailure?: OutwardSenseDeliveryFailure
   /** Actual model invocation callbacks observed during this turn. */
   providerInvocationCount?: number
   /** Actual tool invocation callbacks observed during this turn. */
@@ -240,68 +242,89 @@ export interface RunSenseTurnResult {
   sessionPath?: string
   /** Existing canonical session event IDs aligned with successful outward deliveries. */
   causalSessionEventIds?: Array<string | null>
-  /** Exact canonical assistant event recovered by the transcript-readback fallback. */
+  /** Exact canonical assistant event retained for transport retry after a failed final delivery. */
   responseCausalSessionEventId?: string
 }
 
-function hasAcceptedOutwardSessionAck(events: SessionEvent[], assistantIndex: number, toolCallId: string, toolName: "speak" | "settle"): boolean {
+function hasAcceptedOutwardSessionAck(events: SessionEvent[], assistantIndex: number, toolCallId: unknown, toolName: "speak" | "settle"): boolean {
+  if (typeof toolCallId !== "string" || !toolCallId.trim()) return false
   const expectedAck = OUTWARD_DELIVERY_TOOL_ACKS.get(toolName)!
   for (let index = assistantIndex + 1; index < events.length; index++) {
     const candidate = events[index]!
     if (candidate.role !== "tool") return false
-    if (candidate.toolCallId === toolCallId && typeof candidate.content === "string" && candidate.content.trim() === expectedAck) return true
+    if (candidate.toolCallId !== toolCallId && candidate.relations?.toolCallId !== toolCallId) continue
+    return candidate.toolCallId === toolCallId
+      && candidate.relations?.toolCallId === toolCallId
+      && candidate.provenance?.captureKind === "live"
+      && Array.isArray(candidate.toolCalls)
+      && candidate.toolCalls.length === 0
+      && typeof candidate.content === "string"
+      && candidate.content === expectedAck
   }
   return false
+}
+
+type OutwardSessionCoordinate = OutwardSenseDelivery & { eventId: string; eventIndex: number }
+
+interface CurrentTurnEventView {
+  coordinates: OutwardSessionCoordinate[]
+  terminal?: OutwardSessionCoordinate
 }
 
 function newOutwardCoordinates(
   events: SessionEvent[],
   existingEventIds: ReadonlySet<string>,
-  afterEventId: string,
-): Array<OutwardSenseDelivery & { eventId: string }> {
-  const boundaryIndex = events.findIndex((event) => event.id === afterEventId)
-  if (boundaryIndex < 0) return []
-  return events.flatMap((event, eventIndex): Array<OutwardSenseDelivery & { eventId: string }> => {
-    if (eventIndex <= boundaryIndex || existingEventIds.has(event.id) || event.role !== "assistant" || event.provenance?.captureKind === "synthetic") return []
-    const outwardTools = event.toolCalls.flatMap((call): Array<OutwardSenseDelivery & { eventId: string }> => {
-      if (call.function.name !== "speak" && call.function.name !== "settle") return []
-      if (!hasAcceptedOutwardSessionAck(events, eventIndex, call.id, call.function.name)) return []
-      const text = stripThinkBlocks(parseToolStringArg(call, call.function.name, call.function.name === "speak" ? "message" : "answer") ?? "")
-      return text ? [{ kind: call.function.name, eventId: event.id, text }] : []
+  boundaryIndex: number,
+): OutwardSessionCoordinate[] {
+  return events.flatMap((event, eventIndex): OutwardSessionCoordinate[] => {
+    if (eventIndex <= boundaryIndex || existingEventIds.has(event.id) || event.role !== "assistant" || event.provenance?.captureKind !== "live" || !Array.isArray(event.toolCalls)) return []
+    const outwardTools = event.toolCalls.flatMap((call): OutwardSessionCoordinate[] => {
+      const toolName = call?.function?.name
+      if (toolName !== "speak" && toolName !== "settle") return []
+      if (!hasAcceptedOutwardSessionAck(events, eventIndex, call.id, toolName)) return []
+      const text = stripThinkBlocks(parseToolStringArg(call, toolName, toolName === "speak" ? "message" : "answer") ?? "")
+      return text ? [{ kind: toolName, eventId: event.id, eventIndex, text }] : []
     })
     if (outwardTools.length > 0) return outwardTools
     if (event.toolCalls.length > 0) return []
     const text = stripThinkBlocks(typeof event.content === "string" ? event.content : "")
-    return text ? [{ kind: "text", eventId: event.id, text }] : []
+    return text ? [{ kind: "text", eventId: event.id, eventIndex, text }] : []
   })
 }
 
-function newestPlainAssistantText(messages: ChatCompletionMessageParam[]): string | null {
-  const message = messages.findLast((candidate) =>
-    candidate.role === "assistant"
-    && (!("tool_calls" in candidate) || !Array.isArray(candidate.tool_calls) || candidate.tool_calls.length === 0)
-    && typeof candidate.content === "string"
-    && candidate.content.trim().length > 0,
-  )
-  return message ? assistantContentText(message.content) : null
+function alignedDeliveryCoordinates(
+  view: CurrentTurnEventView | null,
+  attempts: Array<OutwardSenseDelivery & { delivered: boolean }>,
+  finalAttemptIndex?: number,
+  finalCoordinate?: OutwardSessionCoordinate,
+): Array<OutwardSessionCoordinate | null> {
+  if (!view) return attempts.flatMap((attempt) => attempt.delivered ? [null] : [])
+  const terminalCoordinate = finalCoordinate ?? (finalAttemptIndex === undefined ? view.terminal : undefined)
+  const reservedAttemptIndex = terminalCoordinate
+    ? finalAttemptIndex !== undefined
+      ? (attempts[finalAttemptIndex]?.delivered && attempts[finalAttemptIndex]?.kind === terminalCoordinate.kind && attempts[finalAttemptIndex]?.text === terminalCoordinate.text ? finalAttemptIndex : -1)
+      : attempts.findLastIndex((attempt) => attempt.delivered && attempt.kind === terminalCoordinate.kind && attempt.text === terminalCoordinate.text)
+    : -1
+  const availableCoordinates = terminalCoordinate ? view.coordinates.filter((coordinate) => coordinate !== terminalCoordinate) : view.coordinates
+  let nextCoordinate = 0
+  return attempts.flatMap((attempt, attemptIndex) => {
+    if (!attempt.delivered) return []
+    if (attemptIndex === finalAttemptIndex) return finalCoordinate && finalCoordinate.kind === attempt.kind && finalCoordinate.text === attempt.text ? [finalCoordinate] : [null]
+    if (attemptIndex === reservedAttemptIndex && terminalCoordinate) return [terminalCoordinate]
+    const coordinateIndex = availableCoordinates.findIndex((coordinate, index) => index >= nextCoordinate && coordinate.kind === attempt.kind && coordinate.text === attempt.text)
+    if (coordinateIndex < 0) return [null]
+    nextCoordinate = coordinateIndex + 1
+    return [availableCoordinates[coordinateIndex]!]
+  })
 }
 
 function causalSessionEventIds(
-  events: SessionEvent[],
-  existingEventIds: ReadonlySet<string>,
+  view: CurrentTurnEventView | null,
   attempts: Array<OutwardSenseDelivery & { delivered: boolean }>,
-  afterEventId?: string,
+  finalAttemptIndex?: number,
+  finalCoordinate?: OutwardSessionCoordinate,
 ): Array<string | null> {
-  if (!afterEventId) return attempts.flatMap((attempt) => attempt.delivered ? [null] : [])
-  const coordinates = newOutwardCoordinates(events, existingEventIds, afterEventId)
-  let nextCoordinate = 0
-  return attempts.flatMap((attempt) => {
-    if (!attempt.delivered) return []
-    const coordinateIndex = coordinates.findIndex((coordinate, index) => index >= nextCoordinate && coordinate.kind === attempt.kind && coordinate.text === attempt.text)
-    if (coordinateIndex < 0) return [null]
-    nextCoordinate = coordinateIndex + 1
-    return [coordinates[coordinateIndex]!.eventId]
-  })
+  return alignedDeliveryCoordinates(view, attempts, finalAttemptIndex, finalCoordinate).map((coordinate) => coordinate?.eventId ?? null)
 }
 
 function currentIngressEventId(
@@ -311,15 +334,73 @@ function currentIngressEventId(
   precommittedIngress?: RunSenseTurnOptions["precommittedIngress"],
   ingressRelations?: SessionIngressRelations,
 ): string | undefined {
-  if (precommittedIngress) return precommittedIngress.eventId
   const reference = ingressRelations?.references[0]
-  return events.findLast((event) => (
-    !existingEventIds.has(event.id)
-    && event.role === "user"
+  const carriesReference = (event: SessionEvent, expected: string): boolean => Array.isArray(event.relations?.references) && event.relations.references.includes(expected)
+  const matches = events.filter((event) => (
+    event.role === "user"
     && event.content === userMessage
-    && event.provenance?.captureKind !== "synthetic"
-    && (!reference || event.relations?.references.includes(reference))
-  ))?.id
+    && event.provenance?.captureKind === "live"
+    && (precommittedIngress
+      ? (
+          (event.id === precommittedIngress.eventId && carriesReference(event, precommittedIngress.reference))
+          || (!existingEventIds.has(event.id) && carriesReference(event, precommittedIngress.reference))
+        )
+      : !existingEventIds.has(event.id) && (!reference || carriesReference(event, reference)))
+  ))
+  return matches.length === 1 ? matches[0]!.id : undefined
+}
+
+function rawSessionEvents(value: unknown): SessionEvent[] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return []
+  const record = value as Record<string, unknown>
+  return record.version === 2 && Array.isArray(record.events) ? record.events as SessionEvent[] : []
+}
+
+function exactProjectedIngressMessage(
+  existing: NonNullable<ReturnType<typeof loadSession>>,
+  messages: ChatCompletionMessageParam[],
+  eventId: string,
+): ChatCompletionMessageParam | null {
+  const eventsById = new Map(existing.events.map((event) => [event.id, event] as const))
+  if (eventsById.size !== existing.events.length) return null
+  const seenProjectionIds = new Set<string>()
+  const projectedEvents: SessionEvent[] = []
+  for (const projectedId of existing.projectionEventIds) {
+    if (typeof projectedId !== "string" || !projectedId.trim() || seenProjectionIds.has(projectedId)) return null
+    const event = eventsById.get(projectedId)
+    if (!event) return null
+    seenProjectionIds.add(projectedId)
+    projectedEvents.push(event)
+  }
+  if (existing.projectionEventIds.filter((projectedId) => projectedId === eventId).length !== 1) return null
+  const projectedUsers = projectedEvents.filter((event) => event.role === "user")
+  const providerUsers = messages.filter((message) => message.role === "user")
+  if (projectedUsers.at(-1)?.id !== eventId || projectedUsers.length !== providerUsers.length) return null
+  return providerUsers.at(-1)!
+}
+
+function currentTurnEventView(
+  events: SessionEvent[],
+  existingEventIds: ReadonlySet<string>,
+  userMessage: string,
+  precommittedIngress?: RunSenseTurnOptions["precommittedIngress"],
+  ingressRelations?: SessionIngressRelations,
+): CurrentTurnEventView | null {
+  const eventIds = new Set<string>()
+  let previousSequence = 0
+  for (const event of events) {
+    if (!event || typeof event !== "object" || typeof event.id !== "string" || !event.id.trim() || eventIds.has(event.id) || !Number.isSafeInteger(event.sequence) || event.sequence <= previousSequence) return null
+    eventIds.add(event.id)
+    previousSequence = event.sequence
+  }
+  const ingressEventId = currentIngressEventId(events, existingEventIds, userMessage, precommittedIngress, ingressRelations)
+  if (!ingressEventId) return null
+  const ingressIndex = events.findIndex((event) => event.id === ingressEventId)
+  if (events.some((event, eventIndex) => eventIndex > ingressIndex && existingEventIds.has(event.id))) return null
+  const coordinates = newOutwardCoordinates(events, existingEventIds, ingressIndex)
+  const newestAssistantIndex = events.findLastIndex((event, eventIndex) => eventIndex > ingressIndex && event.role === "assistant")
+  const terminal = coordinates.findLast((coordinate) => coordinate.eventIndex === newestAssistantIndex)
+  return { coordinates, ...(terminal ? { terminal } : {}) }
 }
 
 export function getSenseSessionPath(agentName: string, friendId: string, channel: Channel, sessionKey: string, agentRootOverride?: string): string {
@@ -394,11 +475,13 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
   return runWithLease(sessPath, async (sessionTurnLease) => {
   const baseSessionRevision = readSessionTransaction(sessPath, sessionTurnLease).revision
   const existing = loadSession(sessPath)
+  const precommittedIngressEvent = options.precommittedIngress
+    ? existing?.events?.find((candidate) => candidate.id === options.precommittedIngress!.eventId)
+    : undefined
   if (options.precommittedIngress) {
-    const event = existing?.events?.find((candidate) => candidate.id === options.precommittedIngress!.eventId)
     const latestUserEvent = existing?.events?.filter((candidate) => candidate.role === "user").at(-1)
-    if (!event || event !== latestUserEvent || event.role !== "user" || event.content !== userMessage
-      || !event.relations.references.includes(options.precommittedIngress.reference)) {
+    if (!precommittedIngressEvent || precommittedIngressEvent !== latestUserEvent || precommittedIngressEvent.role !== "user" || precommittedIngressEvent.content !== userMessage
+      || !precommittedIngressEvent.relations.references.includes(options.precommittedIngress.reference)) {
       throw new Error("shared turn precommitted ingress is missing, mismatched, or no longer current")
     }
   }
@@ -408,8 +491,15 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
   const sessionMessages: ChatCompletionMessageParam[] = existing?.messages && existing.messages.length > 0
     ? existing.messages
     : [{ role: "system", content: flattenSystemPrompt(await buildSystem(channel, {}, undefined)) }]
-  const preTurnMessageCount = sessionMessages.length
-
+  if (precommittedIngressEvent) {
+    const projectedIngress = exactProjectedIngressMessage(existing!, sessionMessages, precommittedIngressEvent.id)
+    if (!projectedIngress || projectedIngress.role !== "user" || projectedIngress.content !== userMessage) throw new Error("shared turn precommitted ingress is absent from the provider projection")
+    stampIngressRelations(projectedIngress, {
+      replyToEventId: precommittedIngressEvent.relations.replyToEventId,
+      threadRootEventId: precommittedIngressEvent.relations.threadRootEventId,
+      references: precommittedIngressEvent.relations.references,
+    })
+  }
   // Pending dir
   const pendingDir = getPendingDir(agentName, friendId, channel, sessionKey)
 
@@ -440,13 +530,14 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
   const deliverPending = async (
     kind: OutwardSenseDeliveryKind,
     optionsForDelivery: { throwOnError: boolean },
-  ): Promise<void> => {
+  ): Promise<number | undefined> => {
     const text = stripThinkBlocks(pendingResponseText)
     pendingResponseText = ""
-    if (!text) return
+    if (!text) return undefined
 
     const delivery: OutwardSenseDelivery = { kind, text }
     const attempt = { kind, text, delivered: false }
+    const attemptIndex = deliveryAttempts.length
     deliveryAttempts.push(attempt)
     try {
       await options.deliverySink?.onDelivery(delivery)
@@ -466,6 +557,7 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
       if (optionsForDelivery.throwOnError) throw error
       commitResponseText(text)
     }
+    return attemptIndex
   }
 
   /* v8 ignore start — callback stubs are exercised through the pipeline integration */
@@ -481,7 +573,7 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
     },
     onError: () => {},
     onClearText: () => { pendingResponseText = "" },
-    flushNow: () => deliverPending("speak", { throwOnError: true }),
+    flushNow: async () => { await deliverPending("speak", { throwOnError: true }) },
   }
   /* v8 ignore stop */
 
@@ -559,30 +651,33 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
   }
 
   const persistedEvents = persistPromise ? await persistPromise : []
-  const ingressEventId = currentIngressEventId(
-    persistedEvents,
+  const terminalEvents = persistedEvents.length > 0
+    ? persistedEvents
+    : rawSessionEvents(readSessionTransaction(sessPath, sessionTurnLease).value)
+  const eventView = currentTurnEventView(
+    terminalEvents,
     existingEventIds,
     userMessage,
     options.precommittedIngress,
     options.ingressRelations,
   )
-  const finalDeliveryKind = terminalDeliveryKind as OutwardSenseDeliveryKind
+  let finalDeliveryKind = terminalDeliveryKind as OutwardSenseDeliveryKind
   const acceptedTerminalOutcome = turnResult.turnOutcome === "settled" || turnResult.turnOutcome === "blocked"
   const failoverText = turnResult.turnOutcome === "errored" ? turnResult.failoverMessage?.trim() : undefined
   const expectsOutwardResponse = acceptedTerminalOutcome || turnResult.turnOutcome === "command" || Boolean(failoverText)
-  const hadPendingCallbackText = stripThinkBlocks(pendingResponseText).length > 0
-  let recoveredTerminalEventId: string | undefined
+  let finalCausalCoordinate: OutwardSessionCoordinate | undefined
   if (acceptedTerminalOutcome) {
-    const completionText = turnResult.completion?.answer.trim()
-    const currentTurnMessages = Array.isArray(turnResult.messages) ? turnResult.messages.slice(preTurnMessageCount) : []
-    const plainTerminalText = newestPlainAssistantText(currentTurnMessages)
-    const acknowledgedDeliveryText = finalDeliveryKind === "settle"
-      ? extractOutwardSenseDeliveryText(currentTurnMessages)
-      : null
-    const authoritativeText = completionText || acknowledgedDeliveryText || plainTerminalText
-    if (authoritativeText) pendingResponseText = authoritativeText
-    else pendingResponseText = ""
-    if (!hadPendingCallbackText && plainTerminalText) recoveredTerminalEventId = causalSessionEventIds(persistedEvents, existingEventIds, [{ kind: "text", text: stripThinkBlocks(plainTerminalText), delivered: true }], ingressEventId)[0] ?? undefined
+    const completionText = stripThinkBlocks(turnResult.completion?.answer ?? "")
+    let authoritativeText = completionText
+    if (!authoritativeText && eventView?.terminal) {
+      authoritativeText = eventView.terminal.text
+      finalDeliveryKind = eventView.terminal.kind
+    }
+    if (eventView?.terminal?.kind === finalDeliveryKind && eventView.terminal.text === authoritativeText) finalCausalCoordinate = eventView.terminal
+    const terminalAlreadyDelivered = finalCausalCoordinate
+      ? alignedDeliveryCoordinates(eventView, deliveryAttempts).includes(finalCausalCoordinate)
+      : false
+    pendingResponseText = authoritativeText && !terminalAlreadyDelivered ? authoritativeText : ""
   } else if (turnResult.turnOutcome === "command") {
     // Slash-command text is emitted directly by the pipeline and has no assistant event.
   } else if (failoverText) {
@@ -590,27 +685,21 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
   } else {
     pendingResponseText = ""
   }
-  await deliverPending(finalDeliveryKind, { throwOnError: false })
+  const finalDeliveryAttemptIndex = await deliverPending(finalDeliveryKind, { throwOnError: false })
 
   const ponderDeferred = false
 
   // Build response
   let finalResponse: string
-  let responseCausalSessionEventId = recoveredTerminalEventId
+  const finalDeliveryAttempt = finalDeliveryAttemptIndex === undefined ? undefined : deliveryAttempts[finalDeliveryAttemptIndex]
+  const responseDeliveryFailure = finalDeliveryAttempt && !finalDeliveryAttempt.delivered ? deliveryFailures.at(-1) : undefined
+  const responseCausalSessionEventId = finalDeliveryAttempt && !finalDeliveryAttempt.delivered ? finalCausalCoordinate?.eventId : undefined
   if (committedResponseText.length === 0) {
     if (!expectsOutwardResponse) {
       finalResponse = ""
     } else {
-      // The terminal turn had no committed text — check its session transcript for the delivered answer.
-      const postTurnSession = loadSession(sessPath)
       const emptyFallback = options.emptyResponseFallback?.()
-      if (postTurnSession?.messages) {
-        const recovered = extractOutwardSenseDeliveryText(postTurnSession.messages.slice(preTurnMessageCount))
-        finalResponse = recovered ?? emptyFallback ?? (hadReasoningChunk ? "" : "(agent responded but response was empty)")
-        if (recovered) responseCausalSessionEventId = causalSessionEventIds(persistedEvents, existingEventIds, [{ kind: finalDeliveryKind, text: stripThinkBlocks(recovered), delivered: true }], ingressEventId)[0] ?? undefined
-      } else {
-        finalResponse = emptyFallback ?? (hadReasoningChunk ? "" : "(agent responded but response was empty)")
-      }
+      finalResponse = emptyFallback ?? (hadReasoningChunk ? "" : "(agent responded but response was empty)")
     }
   } else {
     finalResponse = committedResponseText
@@ -653,10 +742,11 @@ export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSen
     ponderDeferred,
     deliveries,
     deliveryFailures,
+    ...(responseDeliveryFailure ? { responseDeliveryFailure } : {}),
     providerInvocationCount,
     toolInvocationCount,
     sessionPath: sessPath,
-    ...(deliveries.length > 0 ? { causalSessionEventIds: causalSessionEventIds(persistedEvents, existingEventIds, deliveryAttempts, ingressEventId) } : {}),
+    ...(deliveries.length > 0 ? { causalSessionEventIds: causalSessionEventIds(eventView, deliveryAttempts, finalDeliveryAttemptIndex, finalCausalCoordinate) } : {}),
     ...(responseCausalSessionEventId ? { responseCausalSessionEventId } : {}),
   }
   })

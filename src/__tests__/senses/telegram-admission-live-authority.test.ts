@@ -141,7 +141,7 @@ describe("Telegram admission live authority", () => {
       callbacks.onToolStart("observed_tool", {})
       callbacks.onToolEnd("observed_tool", "observed", true)
       callbacks.onTextChunk("Happy to help.")
-      return { outcome: "settled", usage: { input_tokens: 1, output_tokens: 1, reasoning_tokens: 0, total_tokens: 2 } }
+      return { outcome: "settled", completion: { answer: "Happy to help.", intent: "complete" }, usage: { input_tokens: 1, output_tokens: 1, reasoning_tokens: 0, total_tokens: 2 } }
     })
     await pollOptions.onUnknownMessage!({ updateId: 1, messageId: 1, botId: "777", userId: "888", chatId: "888", text: "hello", displayLabel: "Sibling", hasAttachments: false })
     const sessionPath = getSenseSessionPath(pipeline.agentName, "sibling", "telegram", "telegram:777:888", root)
@@ -152,7 +152,9 @@ describe("Telegram admission live authority", () => {
       advertisedToolNames: [],
       actor: { friendId: "sibling", trustLevel: "friend", sessionEventId: positiveIngress.id },
     })
-    expect(requests.filter((request) => request.method === "sendMessage")).toHaveLength(1)
+    expect(requests.filter((request) => request.method === "sendMessage")).toEqual([
+      expect.objectContaining({ body: expect.objectContaining({ chat_id: "888", text: "Happy to help." }) }),
+    ])
     expect({ provider: pipeline.runAgent.mock.calls.length, tools: pipeline.toolCount, deliveries: deliveryCount, effects: effectCount }).toEqual({ provider: 1, tools: 1, deliveries: 1, effects: 1 })
 
     const entered = Promise.withResolvers<void>()
