@@ -457,6 +457,40 @@ describe("approval decision and crash-safe execution", () => {
     fixture.approvalStore.close()
   })
 
+  it.each(["current", "changed", "unavailable"])("A006 reads the %s session revision inside the claimed decision boundary", async (state) => {
+    const fixture = ready()
+    const execute = vi.fn().mockResolvedValue("restarted")
+    const readRevision = vi.fn(() => {
+      expect(fixture.approvalStore.read(UUID)?.state).toBe("claimed")
+      if (state === "unavailable") throw new SyntaxError("invalid session JSON")
+      return state === "current" ? SUSPENDED_REVISION : "0".repeat(64)
+    })
+    try {
+      const record = await executeApprovalDecision(executionOptions(fixture, execute, { currentSessionRevision: readRevision }))
+      expect(readRevision).toHaveBeenCalledOnce()
+      expect(record.state).toBe(state === "current" ? "succeeded" : state === "changed" ? "session_head_changed" : "drifted")
+      if (state === "current") expect(execute).toHaveBeenCalledOnce()
+      else {
+        expect(record.attemptedAt).toBeNull()
+        expect(execute).not.toHaveBeenCalled()
+      }
+    } finally { fixture.approvalStore.close() }
+  })
+
+  it("A006 does not read a session for a denied approval decision", async () => {
+    const fixture = ready()
+    const execute = vi.fn()
+    const readRevision = vi.fn(() => { throw new Error("denied decisions must not read session state") })
+    try {
+      const record = await executeApprovalDecision(executionOptions(fixture, execute, {
+        currentSessionRevision: readRevision, decision: decision(fixture.decisionToken, { decision: "deny" }),
+      }))
+      expect(record.state).toBe("denied")
+      expect(readRevision).not.toHaveBeenCalled()
+      expect(execute).not.toHaveBeenCalled()
+    } finally { fixture.approvalStore.close() }
+  })
+
   it.each([
     ["missing checkpoint", (fixture: ReturnType<typeof ready>) => fixture.checkpoints.records.delete(UUID)],
     ["tampered frozen call", (fixture: ReturnType<typeof ready>) => {

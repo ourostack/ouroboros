@@ -1,12 +1,19 @@
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
+import { createHash } from "node:crypto"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import type { ApprovalProposalRequest } from "../../heart/core"
 import type { ToolContext } from "../../repertoire/tools-base"
 import type { FrontendTurnRequest } from "../../heart/frontend-session-service"
 import type { RunSenseTurnResult } from "../../senses/shared-turn"
+import { openApprovalStore, type JsonObject } from "../../heart/approval-store"
+import { FileApprovalCheckpointStore, FileApprovalTokenStore } from "../../heart/approval-files"
+import { commitApprovalProposal, executeApprovalDecision } from "../../heart/tool-approval"
+import { readSessionTransaction, withSessionTurnLease } from "../../mind/session-transaction"
+import { approvalPolicyForInvocation, resolveToolDefinition } from "../../repertoire/tools"
+import { digestJson, validateAdvertisedToolArguments } from "../../repertoire/tool-arguments"
 
 function turn(): FrontendTurnRequest {
   return {
@@ -409,6 +416,64 @@ describe("frontend approval settlement", () => {
       tokenStore,
     }
   }
+
+  it.each([
+    ["unraid_restart_container", false], ["unraid_restart_container", true], ["shell", false], ["shell", true],
+  ] as const)("A006 preserves frontend %s settlement with supplied context=%s through the real policy and decision owners", async (name, suppliedContext) => {
+    const fixture = settlementFixture()
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "frontend-approval-policy-"))
+    const approvalStore = openApprovalStore({ databasePath: path.join(root, "approvals.sqlite") })
+    const checkpointStore = new FileApprovalCheckpointStore(path.join(root, "checkpoints.json"))
+    const tokens = new FileApprovalTokenStore(path.join(root, "tokens.json"))
+    const argumentsValue: JsonObject = name === "shell" ? { command: "docker restart calibre-web" } : { container: "calibre-web" }
+    const definition = resolveToolDefinition(name)!
+    const validated = validateAdvertisedToolArguments(JSON.stringify(argumentsValue), definition.tool.function.parameters!)
+    if (!validated.ok) throw new Error(validated.reason)
+    const policy = definition.approvalPolicy!(argumentsValue)
+    if (policy.kind !== "required") throw new Error("fixture tool requires a protected policy")
+    const request: ApprovalProposalRequest = {
+      ...proposal(),
+      toolCall: { type: "function", id: "call-1", function: { name, arguments: JSON.stringify(argumentsValue) } },
+      arguments: argumentsValue,
+      frozenAssistantMessage: { role: "assistant", content: null, tool_calls: [{ type: "function", id: "call-1", function: { name, arguments: JSON.stringify(argumentsValue) } }] },
+      schemaDigest: validated.value.schemaDigest,
+      toolDigest: digestJson({ name, schemaDigest: validated.value.schemaDigest, policyId: policy.policyId }),
+      policyDigest: digestJson({ policyId: policy.policyId, actionClass: policy.actionClass, classification: "required" }),
+      policyId: policy.policyId,
+      actionClass: policy.actionClass,
+      ...(suppliedContext ? { liveToolContext: { signin: async () => undefined, agentRoot: root, currentSession: { friendId: turn().friendId, channel: "mcp", key: turn().sessionKey } } } : {}),
+    }
+    const sessionPath = path.join(root, "frontend.json")
+    try {
+      const committed = commitApprovalProposal({
+        approvalStore, checkpointStore, tokenStore: tokens,
+        proposal: {
+          toolCallId: "call-1", toolName: name, arguments: argumentsValue, schemaDigest: request.schemaDigest, toolDigest: request.toolDigest,
+          policyDigest: request.policyDigest, policyId: request.policyId, sessionKey: turn().sessionKey, sessionPath,
+          baseSessionRevision: createHash("sha256").update("").digest("hex"), checkpointDigest: "0".repeat(64),
+          requesterId: turn().friendId, transport: "frontend", transportUserId: turn().friendId, transportChatId: turn().sessionKey,
+          expiresAt: new Date(Date.now() + 300000).toISOString(), frozenAssistantMessage: { role: "assistant", content: null, tool_calls: [{ type: "function", id: "call-1", function: { name, arguments: JSON.stringify(argumentsValue) } }] },
+        },
+        preCallMessages: request.preCallMessages,
+      })
+      const record = approvalStore.bindPrompt({ approvalId: committed.record.approvalId, transport: "frontend", transportChatId: turn().sessionKey, transportMessageId: committed.record.approvalId })
+      const { settleFrontendApproval } = await import("../../heart/frontend-approval-runtime")
+      await settleFrontendApproval({
+        ...fixture.input, approvalRequest: request, agentRoot: root, approvalStore, checkpointStore, tokenStore: tokens,
+        suspension: { approvalId: record.approvalId, toolCallId: record.toolCallId, checkpointDigest: record.checkpointDigest, suspendedSessionRevision: record.suspendedSessionRevision! },
+      }, {
+        ...fixture.deps, withSessionTurnLease, readSessionTransaction, executeApprovalDecision, resolveToolDefinition, approvalPolicyForInvocation,
+        resumeApprovalContinuation: async () => ({ outcome: "settled", messages: [] }),
+        loadSession: () => null,
+      } as never)
+      expect(approvalStore.read(record.approvalId)).toMatchObject({
+        state: name === "shell" ? "succeeded" : "drifted",
+        attemptedAt: name === "shell" ? expect.any(String) : null,
+      })
+      expect(fixture.executeTool).toHaveBeenCalledTimes(name === "shell" ? 1 : 0)
+      if (name === "shell") expect(fixture.executeTool).toHaveBeenCalledWith(name, argumentsValue, expect.any(Object))
+    } finally { approvalStore.close(); fs.rmSync(root, { recursive: true, force: true }) }
+  })
 
   it("executes and resumes under fresh leases with the original tool context and MCP set", async () => {
     const fixture = settlementFixture()

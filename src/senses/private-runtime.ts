@@ -1334,13 +1334,16 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
     ? await (async () => {
         const agentRoot = getAgentRoot(agentName)
         const store = new FileFriendStore(path.join(agentRoot, "friends"))
-        const registry = loadRelationshipCapabilityRegistry(agentRoot)
-        const resolve = () => resolveProfileScopedRelationshipAuthorization({
-          store,
-          registry,
-          relationshipProfileId: "sanctuary-owner",
-          profileId: "sanctuary-event",
-        })
+        const resolve = async () => {
+          const current = await resolveProfileScopedRelationshipAuthorization({
+            store,
+            registry: loadRelationshipCapabilityRegistry(agentRoot),
+            relationshipProfileId: "sanctuary-owner",
+            profileId: "sanctuary-event",
+          })
+          if (current.subject.trustLevel !== "family") throw new Error("external event requires the current owner relationship")
+          return current
+        }
         const initial = await resolve()
         const initialDisposition = initial.authorizeTool("external_event_disposition")
         if (!initialDisposition.allowed) throw new Error(`external event relationship authority denied: ${initialDisposition.reason}`)

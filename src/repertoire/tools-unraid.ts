@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto"
 import { emitNervesEvent } from "../nerves/runtime"
 import { UnraidClient, UnraidClientError, type UnraidErrorCode } from "./unraid-client"
-import { routineActionRequester, type ToolContext, type ToolDefinition } from "./tools-base"
+import { routineActionDenied, type ToolContext, type ToolDefinition } from "./tools-base"
+import { authorizeRestartApprovalRequester, authorizeRoutineActionRequester } from "./relationship-authorization"
+import { canonicalApprovalArguments } from "../heart/approval-store"
 import { inspectRoutineActionGrant } from "../heart/steward-policy"
 import { advanceObligation, createObligation, findPendingObligationForRequest, markObligationReturnReady, type Obligation } from "../arc/obligations"
 
@@ -282,13 +284,12 @@ function missingRuntime(): string {
   return JSON.stringify({ ok: false, error: { code: "invalid_response", message: "Sanctuary runtime is unavailable", degraded: true } })
 }
 
-function householdRepairObligation(ctx: ToolContext, target: string): Obligation | null {
-  const requester = routineActionRequester(ctx)
-  if (requester?.kind !== "household_request") return null
-  if (!ctx.agentRoot) throw new Error("household repair request tracking is unavailable")
-  const existing = findPendingObligationForRequest(ctx.agentRoot, { requestId: requester.requestId, owedTo: requester.origin })
+function householdRepairObligation(selection: ToolContext["routineActionSelection"], target: string): Obligation | null {
+  if (selection?.kind !== "standing" || selection.requester.kind !== "household_request") return null
+  const { agentRoot, requester } = selection
+  const existing = findPendingObligationForRequest(agentRoot, { requestId: requester.requestId, owedTo: requester.origin })
   if (existing) return existing
-  return createObligation(ctx.agentRoot, {
+  return createObligation(agentRoot, {
     origin: requester.origin,
     owedTo: requester.origin,
     requestId: requester.requestId,
@@ -300,7 +301,7 @@ function householdRepairObligation(ctx: ToolContext, target: string): Obligation
 }
 
 async function runTrackedRestart(ctx: ToolContext, target: string, routine?: import("./unraid-restart").RoutineRestartAuthority): Promise<unknown> {
-  const obligation = householdRepairObligation(ctx, target)
+  const obligation = householdRepairObligation(ctx.routineActionSelection, target)
   if (obligation && ctx.agentRoot) advanceObligation(ctx.agentRoot, obligation.id, { status: "updating_runtime", latestNote: `Starting the requested restart of ${target}` })
   try {
     const result = await ctx.sanctuary!.restartContainer({ container: target }, routine ? { routine } : undefined)
@@ -406,23 +407,36 @@ export const unraidToolDefinitions: ToolDefinition[] = [
       },
     },
     handler: async (args, ctx) => {
+      if (ctx?.routineActionSelection?.kind === "denied") return routineActionDenied(ctx.routineActionSelection.reason)
       if (!ctx?.sanctuary) return missingRuntime()
+      if (!ctx.routineActionSelection && !ctx.restartApproval && (ctx.relationshipAuthorization || ctx.currentExternalEvent)) return routineActionDenied("routine action requires its standing selection or owner approval")
       const target = String(args.container)
+      if (ctx.restartApproval) {
+        const approval = ctx.restartApproval
+        if (ctx.routineActionSelection || ctx.currentExternalEvent || ctx.agentRoot !== approval.agentRoot
+          || !approval.ownerBinding || !approval.target || approval.target.name !== target) return routineActionDenied("restart approval binding changed")
+        const authorization = await authorizeRestartApprovalRequester(ctx, args, approval.ownerBinding)
+        if (!authorization.allowed) return routineActionDenied(authorization.reason)
+        if (canonicalApprovalArguments(args).digest !== approval.argumentDigest) return routineActionDenied("restart approval arguments changed")
+      }
       let routine: import("./unraid-restart").RoutineRestartAuthority | undefined
       if (ctx.routineActionSelection) {
-        if (!ctx.agentRoot || !routineActionRequester(ctx)) return JSON.stringify({ ok: false, error: { code: "approval_required", message: "routine action authorization is unavailable", degraded: true } })
-        const { key, expectedPolicyVersion } = ctx.routineActionSelection
-        if (ctx.routineActionSelection.target !== target) return JSON.stringify({ ok: false, error: { code: "approval_required", message: "routine action arguments changed", degraded: true } })
-        const decision = inspectRoutineActionGrant(ctx.agentRoot, { key, action: "unraid.container.restart", target, expectedPolicyVersion })
-        if (!decision.allowed) return JSON.stringify({ ok: false, error: { code: "approval_required", message: decision.reason, degraded: true } })
+        if (!ctx.agentRoot) return routineActionDenied("routine action authorization is unavailable")
+        if (ctx.agentRoot !== ctx.routineActionSelection.agentRoot) return routineActionDenied("routine action agent root changed")
+        const { key, expectedPolicyVersion, expectedDesiredStateVersion, expectedGrantVersion, requester, authorizationVersion } = ctx.routineActionSelection
+        if (ctx.routineActionSelection.target !== target) return routineActionDenied("routine action arguments changed")
+        const decision = inspectRoutineActionGrant(ctx.agentRoot, { key, action: "unraid.container.restart", target, expectedPolicyVersion, expectedDesiredStateVersion, expectedGrantVersion, requester, authorizationVersion })
+        if (!decision.allowed) return routineActionDenied(decision.reason)
         routine = {
           key,
           expectedPolicyVersion: decision.policyVersion,
+          expectedDesiredStateVersion: decision.desiredStateVersion,
+          expectedGrantVersion: decision.grantVersion,
+          requester: structuredClone(decision.requester),
           reauthorize: async () => {
-            const authorization = await ctx.relationshipAuthorization!.authorizeTool("unraid_restart_container", { container: target })
+            const authorization = await authorizeRoutineActionRequester(ctx, { container: target }, { requester, profileVersion: authorizationVersion })
             if (!authorization.allowed) return authorization
-            if (!Number.isInteger(authorization.profileVersion) || Number(authorization.profileVersion) < 1) return { allowed: false, reason: "relationship capability profile is not versioned" }
-            return { allowed: true, receiptId: authorization.receiptId, profileVersion: Number(authorization.profileVersion) }
+            return { allowed: true, receiptId: authorization.receiptId, profileVersion: authorization.profileVersion }
           },
         }
       }

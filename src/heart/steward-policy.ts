@@ -57,6 +57,22 @@ export type StewardPolicyMutation =
   | { kind: "set_desired_state"; key: string; value: string; provenance: LearnedPolicyProvenance; source: string; expiresAt?: string }
   | { kind: "grant_routine_action"; key: string; action: string; targets: string[]; maxCount: number; windowMs: number; verificationRequired: boolean; exclusions: string[]; provenance: ActionGrantProvenance | "observed" | "default"; expiresAt?: string }
 
+export type RoutineActionRequester =
+  | { kind: "owner" | "household_request"; friendId: string; profileId: string; requestId: string; sessionEventId: string; origin: { friendId: string; channel: string; key: string } }
+  | { kind: "owner_event"; friendId: string; profileId: string; event: import("./external-events/router").ExternalEventLeaseMember; target: { id: string; name: string } }
+
+interface RoutineActionGrantInput {
+  key: string
+  action: string
+  target: string
+  requester: RoutineActionRequester
+  authorizationVersion: number
+  expectedPolicyVersion?: number
+  expectedDesiredStateVersion?: number
+  expectedGrantVersion?: number
+  now?: string
+}
+
 export interface RoutineActionReceipt {
   schemaVersion: 2
   id: string
@@ -66,6 +82,8 @@ export interface RoutineActionReceipt {
   target: string
   policyVersion: number
   grantVersion: number
+  desiredStateVersion?: number
+  requester?: RoutineActionRequester
   reservedAt: string
   updatedAt: string
   authorizationReceiptId: string
@@ -81,8 +99,8 @@ export interface RoutineActionReceipt {
 }
 
 export type RoutineActionGrantDecision =
-  | { allowed: true; policyVersion: number; grantVersion: number; key: string; action: string; target: string }
-  | { allowed: false; reason: string }
+  | { allowed: true; policyVersion: number; desiredStateVersion: number; grantVersion: number; key: string; action: string; target: string; requester: RoutineActionRequester; authorizationVersion: number }
+  | { allowed: false; reason: string; approvalFallback?: true }
 
 const EMPTY_POLICY: StewardPolicyRecord = { schemaVersion: 1, version: 0, desiredStates: {}, routineActionGrants: {}, updatedAt: null }
 const MAX_POLICY_BYTES = 1024 * 1024
@@ -431,10 +449,27 @@ export function readRoutineActionReceipts(agentRoot: string): RoutineActionRecei
   return [...latest.values()]
 }
 
-function expectedOff(policy: StewardPolicyRecord, target: string, now: string): boolean {
-  const desired = policy.desiredStates[`container:${target}`]
-  if (!desired || (desired.expiresAt && Date.parse(desired.expiresAt) <= Date.parse(now))) return false
-  return /^(?:off|disabled|paused|intentionally_off|intentionally_paused)$/u.test(desired.value.trim().toLowerCase())
+function currentRequester(value: unknown, target: string): value is RoutineActionRequester {
+  if (!record(value) || !text(value.friendId)) return false
+  if (value.kind === "owner" || value.kind === "household_request") {
+    return exactKeys(value, ["kind", "friendId", "profileId", "requestId", "sessionEventId", "origin"])
+      && value.profileId === (value.kind === "owner" ? "sanctuary-owner" : "sanctuary-household")
+      && text(value.requestId) && text(value.sessionEventId) && record(value.origin)
+      && exactKeys(value.origin, ["friendId", "channel", "key"])
+      && value.origin.friendId === value.friendId && value.origin.channel === "telegram" && text(value.origin.key)
+  }
+  return value.kind === "owner_event" && exactKeys(value, ["kind", "friendId", "profileId", "event", "target"])
+    && value.profileId === "sanctuary-event" && record(value.target) && exactKeys(value.target, ["id", "name"])
+    && text(value.target.id) && value.target.name === target && record(value.event)
+    && exactKeys(value.event, ["schemaVersion", "recordPath", "agent", "source", "eventId", "generation", "observationRevision", "claimOwner"])
+    && value.event.schemaVersion === 1 && value.event.source === "sanctuary-health"
+    && value.event.eventId === `container:${value.target.id}:availability`
+    && text(value.event.recordPath) && text(value.event.agent) && positiveInteger(value.event.generation)
+    && text(value.event.observationRevision) && text(value.event.claimOwner)
+}
+
+function appliedEntry(rows: readonly PolicyAuditRow[], kind: StewardPolicyMutation["kind"], key: string, entry: DesiredStateEntry | RoutineActionGrant): boolean {
+  return rows.some((row) => row.mutationKind === kind && row.key === key && row.postimageVersion === entry.version && isDeepStrictEqual(row.affectedKeyResult, entry))
 }
 
 const UNRESOLVED_ACTION_STATES = new Set<RoutineActionReceipt["state"]>(["reserved", "attempting", "effect_acknowledged", "recovery_pending", "indeterminate"])
@@ -443,26 +478,39 @@ function inspectRoutineActionGrantSnapshot(
   policy: StewardPolicyRecord,
   rows: readonly PolicyAuditRow[],
   receipts: RoutineActionReceipt[],
-  input: { key: string; action: string; target: string; expectedPolicyVersion?: number; now?: string },
+  input: RoutineActionGrantInput,
 ): RoutineActionGrantDecision {
+  const now = input.now === undefined ? new Date().toISOString() : input.now
+  if (!canonicalTime(now)) return { allowed: false, reason: "routine action time must be canonical" }
+  if (!text(input.key) || !text(input.action) || !text(input.target)) return { allowed: false, reason: "routine action requires an exact key, action, and target" }
   if (input.expectedPolicyVersion !== undefined && policy.version !== input.expectedPolicyVersion) return { allowed: false, reason: "routine action policy version changed" }
+  if (!currentRequester(input.requester, input.target) || !positiveInteger(input.authorizationVersion)) return { allowed: false, reason: "routine action requires a current versioned requester" }
+  const desiredKey = `container:${input.target}`
+  const desired = policy.desiredStates[desiredKey]
+  if (input.expectedDesiredStateVersion !== undefined && desired?.version !== input.expectedDesiredStateVersion) return { allowed: false, reason: "routine action desired state version changed" }
+  const activeDesired = desired && (desired.expiresAt === undefined || Date.parse(desired.expiresAt) > Date.parse(now))
+  const desiredValue = desired?.value.toLowerCase()
+  if (activeDesired && /^(?:off|disabled|paused|intentionally_off|intentionally_paused)$/u.test(desiredValue!)) return { allowed: false, reason: "container is expected off" }
   const grant = policy.routineActionGrants[input.key]
-  if (!grant) return { allowed: false, reason: "routine action grant is missing" }
-  if (!rows.some((row) => row.mutationKind === "grant_routine_action" && row.key === input.key && row.postimageVersion === grant.version && isDeepStrictEqual(row.affectedKeyResult, grant))) {
-    return { allowed: false, reason: "routine action grant has no applied owner authorization" }
-  }
+  if (input.expectedGrantVersion !== undefined && grant?.version !== input.expectedGrantVersion) return { allowed: false, reason: "routine action grant version changed" }
+  const fallback = input.requester.kind === "owner" ? { approvalFallback: true as const } : {}
+  if (!grant) return { allowed: false, reason: "routine action grant is missing", ...fallback }
+  if (grant.provenance !== "stated") return { allowed: false, reason: "routine action grant must be owner-stated" }
+  if (!appliedEntry(rows, "grant_routine_action", input.key, grant)) return { allowed: false, reason: "routine action grant has no applied owner authorization" }
   if (grant.action !== input.action) return { allowed: false, reason: "routine action does not match the grant" }
   if (!grant.targets.includes(input.target) || grant.exclusions.includes(input.target)) return { allowed: false, reason: "routine action target is not authorized" }
-  const now = input.now ?? new Date().toISOString()
-  if (grant.expiresAt && Date.parse(grant.expiresAt) <= Date.parse(now)) return { allowed: false, reason: "routine action grant expired" }
-  if (expectedOff(policy, input.target, now)) return { allowed: false, reason: "container is expected off" }
+  if (grant.expiresAt && Date.parse(grant.expiresAt) <= Date.parse(now)) return { allowed: false, reason: "routine action grant expired", ...fallback }
+  if (!activeDesired || desired.provenance !== "stated" || !appliedEntry(rows, "set_desired_state", desiredKey, desired)) return { allowed: false, reason: "container has no active applied owner-stated desired state" }
+  if (!["on", "always_on", "expected_on"].includes(desiredValue!) && !(desiredValue === "on_demand" && input.requester.kind !== "owner_event")) return { allowed: false, reason: "container desired state does not authorize this request" }
   if (receipts.some((receipt) => receipt.action === input.action && receipt.target === input.target && UNRESOLVED_ACTION_STATES.has(receipt.state))) {
     return { allowed: false, reason: "routine action has an unresolved receipt for this target" }
   }
-  return { allowed: true, policyVersion: policy.version, grantVersion: grant.version, key: input.key, action: grant.action, target: input.target }
+  const windowStart = Date.parse(now) - grant.windowMs
+  if (receipts.filter((receipt) => receipt.key === input.key && Date.parse(receipt.reservedAt) > windowStart).length >= grant.maxCount) return { allowed: false, reason: "routine action rate limit reached" }
+  return { allowed: true, policyVersion: policy.version, desiredStateVersion: desired.version, grantVersion: grant.version, key: input.key, action: grant.action, target: input.target, requester: input.requester, authorizationVersion: input.authorizationVersion }
 }
 
-export function inspectRoutineActionGrant(agentRoot: string, input: { key: string; action: string; target: string; expectedPolicyVersion?: number; now?: string }): RoutineActionGrantDecision {
+export function inspectRoutineActionGrant(agentRoot: string, input: RoutineActionGrantInput): RoutineActionGrantDecision {
   try {
     const { policy, rows } = readPolicyState(agentRoot)
     return inspectRoutineActionGrantSnapshot(policy, rows, readRoutineActionReceipts(agentRoot), input)
@@ -475,28 +523,35 @@ export function consumeRoutineActionGrant(agentRoot: string, input: {
   key: string
   target: string
   expectedPolicyVersion: number
+  expectedDesiredStateVersion?: number
+  expectedGrantVersion?: number
+  requester: RoutineActionRequester
   action?: string
-  authorizationReceiptId?: string
-  authorizationVersion?: number
+  authorizationReceiptId: string
+  authorizationVersion: number
   attemptId?: string
   expectedBeforeState?: string
   resolvedTarget?: { id: string; name: string }
   effect?: { operation: string; targetId: string }
   now?: string
 }): RoutineActionReceipt {
+  if (!text(input.authorizationReceiptId)) throw new Error("routine action requires a current authorization receipt")
+  const authorizationReceiptId = input.authorizationReceiptId
   return withImmediateSessionTurnLease(policyPath(agentRoot), (lease) => {
     const snapshot = readAuditedPolicy(agentRoot, lease)
     const policy = snapshot.policy
     const grant = policy.routineActionGrants[input.key]
-    const now = input.now ?? new Date().toISOString()
-    const action = input.action ?? grant?.action ?? ""
+    const now = input.now === undefined ? new Date().toISOString() : input.now
+    const action = input.action === undefined ? grant?.action ?? "" : input.action
     const receipts = readRoutineActionReceipts(agentRoot)
-    const decision = inspectRoutineActionGrantSnapshot(policy, snapshot.rows, receipts, { key: input.key, action, target: input.target, expectedPolicyVersion: input.expectedPolicyVersion, now })
+    const decision = inspectRoutineActionGrantSnapshot(policy, snapshot.rows, receipts, { ...input, action, now })
     if (!decision.allowed) throw new Error(decision.reason)
+    const resolvedTarget = input.resolvedTarget === undefined
+      ? decision.requester.kind === "owner_event" ? decision.requester.target : { id: "unresolved", name: input.target }
+      : input.resolvedTarget
+    if (!record(resolvedTarget) || !text(resolvedTarget.id) || resolvedTarget.name !== input.target) throw new Error("routine action resolved target is invalid")
+    if (decision.requester.kind === "owner_event" && resolvedTarget.id !== decision.requester.target.id) throw new Error("routine action event target binding changed")
     ensureDirectory(agentRoot)
-    const windowStart = Date.parse(now) - grant.windowMs
-    const used = receipts.filter((receipt) => receipt.key === input.key && Date.parse(receipt.reservedAt) > windowStart).length
-    if (used >= grant.maxCount) throw new Error("routine action rate limit reached")
     const id = `action-${randomUUID()}`
     const receipt: RoutineActionReceipt = {
       schemaVersion: 2,
@@ -507,15 +562,17 @@ export function consumeRoutineActionGrant(agentRoot: string, input: {
       target: input.target,
       policyVersion: policy.version,
       grantVersion: grant.version,
+      desiredStateVersion: decision.desiredStateVersion,
+      requester: structuredClone(decision.requester),
       reservedAt: now,
       updatedAt: now,
-      authorizationReceiptId: input.authorizationReceiptId ?? `policy-${grant.issuer}-${grant.authorizingSessionEvent}`,
-      authorizationVersion: input.authorizationVersion ?? grant.version,
+      authorizationReceiptId,
+      authorizationVersion: decision.authorizationVersion,
       attemptId: input.attemptId ?? `attempt-${randomUUID()}`,
       attempt: 1,
       expectedBeforeState: input.expectedBeforeState ?? null,
-      resolvedTarget: input.resolvedTarget ?? { id: "unresolved", name: input.target },
-      effect: input.effect ?? { operation: action, targetId: input.resolvedTarget?.id ?? "unresolved" },
+      resolvedTarget: { id: resolvedTarget.id, name: resolvedTarget.name },
+      effect: input.effect ?? { operation: action, targetId: resolvedTarget.id },
       effectReceipt: null,
       verifiedAfterState: null,
       recoveryState: { state: "not_needed", compensation: "none" },

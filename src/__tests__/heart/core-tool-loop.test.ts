@@ -1790,8 +1790,9 @@ describe("runAgent tool loop guard", () => {
     }
 
     it("carries the one live standing-policy classification into the exact dispatch without rereading it", async () => {
+      const requester = { kind: "owner" as const, friendId: "ari", profileId: "sanctuary-owner", requestId: "request-2", sessionEventId: "evt-2", origin: { friendId: "ari", channel: "telegram", key: "telegram_owner" } }
       const inspect = vi.spyOn(await import("../../heart/steward-policy"), "inspectRoutineActionGrant").mockReturnValue({
-        allowed: true, policyVersion: 1, grantVersion: 1, key: "unraid.restart:calibre-web", action: "unraid.container.restart", target: "calibre-web",
+        allowed: true, policyVersion: 2, desiredStateVersion: 1, grantVersion: 2, key: "unraid.restart:calibre-web", action: "unraid.container.restart", target: "calibre-web", requester, authorizationVersion: 7,
       })
       try {
         const { resolveToolDefinition } = await import("../../repertoire/tools")
@@ -1811,18 +1812,19 @@ describe("runAgent tool loop guard", () => {
         expect(propose).not.toHaveBeenCalled()
         expect(result.outcome).not.toBe("errored")
         expect(mockCreate).toHaveBeenCalledOnce()
-        expect(execTool).toHaveBeenCalledWith("unraid_restart_container", { container: "calibre-web" }, expect.objectContaining({ routineActionSelection: { key: "unraid.restart:calibre-web", target: "calibre-web", expectedPolicyVersion: 1 } }))
+        expect(execTool).toHaveBeenCalledWith("unraid_restart_container", { container: "calibre-web" }, expect.objectContaining({ routineActionSelection: { kind: "standing", agentRoot: "/mock/repo/testagent", key: "unraid.restart:calibre-web", target: "calibre-web", expectedPolicyVersion: 2, expectedDesiredStateVersion: 1, expectedGrantVersion: 2, requester, authorizationVersion: 7 } }))
         expect(relationshipAuthorization.authorizeTool).toHaveBeenCalledOnce()
         expect(inspect).toHaveBeenCalledOnce()
-        expect(inspect).toHaveBeenCalledWith("/mock/repo/testagent", { key: "unraid.restart:calibre-web", action: "unraid.container.restart", target: "calibre-web" })
+        expect(inspect).toHaveBeenCalledWith("/mock/repo/testagent", { key: "unraid.restart:calibre-web", action: "unraid.container.restart", target: "calibre-web", requester, authorizationVersion: 7 })
       } finally {
         inspect.mockRestore()
       }
     })
 
     it("executes the exact family standing-policy restart without an approval coordinator", async () => {
+      const requester = { kind: "owner" as const, friendId: "ari", profileId: "sanctuary-owner", requestId: "request-2", sessionEventId: "evt-2", origin: { friendId: "ari", channel: "telegram", key: "telegram_owner" } }
       const inspect = vi.spyOn(await import("../../heart/steward-policy"), "inspectRoutineActionGrant").mockReturnValue({
-        allowed: true, policyVersion: 1, grantVersion: 1, key: "unraid.restart:calibre-web", action: "unraid.container.restart", target: "calibre-web",
+        allowed: true, policyVersion: 2, desiredStateVersion: 1, grantVersion: 2, key: "unraid.restart:calibre-web", action: "unraid.container.restart", target: "calibre-web", requester, authorizationVersion: 7,
       })
       try {
         const { resolveToolDefinition } = await import("../../repertoire/tools")
@@ -1838,10 +1840,10 @@ describe("runAgent tool loop guard", () => {
           toolContext: { signin: async () => undefined, agentRoot: "/mock/repo/testagent", currentSession: { friendId: "ari", channel: "telegram", key: "telegram_owner" }, relationshipAuthorization },
         } as any)
 
-        expect(execTool).toHaveBeenCalledWith("unraid_restart_container", { container: "calibre-web" }, expect.objectContaining({ routineActionSelection: { key: "unraid.restart:calibre-web", target: "calibre-web", expectedPolicyVersion: 1 } }))
+        expect(execTool).toHaveBeenCalledWith("unraid_restart_container", { container: "calibre-web" }, expect.objectContaining({ routineActionSelection: { kind: "standing", agentRoot: "/mock/repo/testagent", key: "unraid.restart:calibre-web", target: "calibre-web", expectedPolicyVersion: 2, expectedDesiredStateVersion: 1, expectedGrantVersion: 2, requester, authorizationVersion: 7 } }))
         expect(relationshipAuthorization.authorizeTool).toHaveBeenCalledOnce()
         expect(inspect).toHaveBeenCalledOnce()
-        expect(inspect).toHaveBeenCalledWith("/mock/repo/testagent", { key: "unraid.restart:calibre-web", action: "unraid.container.restart", target: "calibre-web" })
+        expect(inspect).toHaveBeenCalledWith("/mock/repo/testagent", { key: "unraid.restart:calibre-web", action: "unraid.container.restart", target: "calibre-web", requester, authorizationVersion: 7 })
       } finally {
         inspect.mockRestore()
       }

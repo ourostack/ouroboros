@@ -1,5 +1,6 @@
 import type OpenAI from "openai";
-import { baseToolDefinitions, editFileReadTracker, routineActionRequester } from "./tools-base";
+import { isDeepStrictEqual } from "node:util";
+import { baseToolDefinitions, editFileReadTracker, routineActionDenied, routineActionRequester } from "./tools-base";
 import type { ToolApprovalPolicy, ToolContext, ToolDefinition } from "./tools-base";
 import { teamsToolDefinitions } from "./tools-teams";
 import { bluebubblesToolDefinitions } from "./tools-bluebubbles";
@@ -22,6 +23,7 @@ import { ponderTool, restTool, settleTool, speakTool } from "./tools-flow";
 import { stewardPolicyToolDefinition } from "./tools-steward-policy";
 import type { ToolHighRiskMutationKind, ToolRiskProfile } from "./tools-base";
 import { inspectRoutineActionGrant } from "../heart/steward-policy";
+import { authorizeRoutineActionRequester } from "./relationship-authorization";
 
 function safeGetAgentRoot(): string | undefined {
   try {
@@ -229,21 +231,20 @@ export function approvalPolicyForToolName(name: string, args: Record<string, unk
   return resolveToolDefinition(name)?.approvalPolicy?.(args) ?? { kind: "not_required" }
 }
 
-async function routineActionInvocation(name: string, args: Record<string, unknown>, ctx?: ToolContext): Promise<NonNullable<ToolContext["routineActionSelection"]> | null> {
-  const target = typeof args.container === "string" ? args.container : ""
-  if (name !== "unraid_restart_container" || !ctx?.agentRoot || !routineActionRequester(ctx) || !target) return null
-  const relationshipAuthorization = ctx.relationshipAuthorization
-  if (!relationshipAuthorization) return null
-  let authorization: Awaited<ReturnType<NonNullable<ToolContext["relationshipAuthorization"]>["authorizeTool"]>>
-  try {
-    authorization = await relationshipAuthorization.authorizeTool(name, args as Record<string, string>)
-  } catch {
-    return null
-  }
-  if (!authorization.allowed || !Number.isInteger(authorization.profileVersion) || Number(authorization.profileVersion) < 1) return null
+async function routineActionInvocation(args: Record<string, unknown>, ctx?: ToolContext): Promise<NonNullable<ToolContext["routineActionSelection"]> | null> {
+  const agentRoot = ctx?.agentRoot
+  const relationship = ctx?.relationshipAuthorization
+  const sanctuary = ctx?.sanctuary
+  const target = typeof args?.container === "string" ? args.container : ""
+  const authorization = await authorizeRoutineActionRequester(ctx, args)
+  if (!authorization.allowed) return { kind: "denied", reason: authorization.reason }
+  const currentRequester = routineActionRequester(ctx, authorization.requester.kind === "owner_event" ? { friendId: authorization.requester.friendId, target: authorization.requester.target } : undefined)
+  if (!ctx || !agentRoot || ctx.agentRoot !== agentRoot || ctx.relationshipAuthorization !== relationship || ctx.sanctuary !== sanctuary
+    || args.container !== target || Object.keys(args).length !== 1 || !isDeepStrictEqual(currentRequester, authorization.requester)) return { kind: "denied", reason: "routine request binding changed after authorization" }
   const key = `unraid.restart:${target}`
-  const decision = inspectRoutineActionGrant(ctx.agentRoot, { key, action: "unraid.container.restart", target })
-  return decision.allowed ? { key, target, expectedPolicyVersion: decision.policyVersion } : null
+  const decision = inspectRoutineActionGrant(agentRoot, { key, action: "unraid.container.restart", target, requester: authorization.requester, authorizationVersion: authorization.profileVersion })
+  if (!decision.allowed) return decision.approvalFallback ? null : { kind: "denied", reason: decision.reason }
+  return Object.freeze({ kind: "standing", agentRoot, key, target, expectedPolicyVersion: decision.policyVersion, expectedDesiredStateVersion: decision.desiredStateVersion, expectedGrantVersion: decision.grantVersion, requester: structuredClone(decision.requester), authorizationVersion: decision.authorizationVersion })
 }
 
 export async function classifyApprovalForInvocation(name: string, args: Record<string, unknown>, ctx?: ToolContext): Promise<{
@@ -252,11 +253,12 @@ export async function classifyApprovalForInvocation(name: string, args: Record<s
 }> {
   const fallback = approvalPolicyForToolName(name, args)
   if (name !== "unraid_restart_container" || fallback.kind !== "required") return { policy: fallback }
-  const routineActionSelection = await routineActionInvocation(name, args, ctx)
+  const routineActionSelection = await routineActionInvocation(args, ctx)
   return routineActionSelection ? { policy: { kind: "not_required" }, routineActionSelection } : { policy: fallback }
 }
 
 export async function approvalPolicyForInvocation(name: string, args: Record<string, unknown>, ctx?: ToolContext): Promise<ToolApprovalPolicy> {
+  // An approval requirement is not execution authority; dispatch needs the full classification.
   return (await classifyApprovalForInvocation(name, args, ctx)).policy
 }
 
@@ -385,6 +387,7 @@ export async function execTool(name: string, args: Record<string, string>, ctx?:
     return `unknown: ${name}`;
   }
 
+  if (name === "unraid_restart_container" && ctx?.routineActionSelection?.kind === "denied") return routineActionDenied(ctx.routineActionSelection.reason)
   const relationshipDecision = await ctx?.relationshipAuthorization?.authorizeTool(name, args)
   if (relationshipDecision && !relationshipDecision.allowed) {
     emitNervesEvent({

@@ -2,12 +2,15 @@ import { createHash } from "node:crypto"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { createUnraidReadTools, normalizeDockerStatus, unraidToolDefinitions } from "../../repertoire/tools-unraid"
-import { consumeRoutineActionGrant, transitionRoutineActionReceipt, updateStewardPolicy } from "../../heart/steward-policy"
+import { consumeRoutineActionGrant, readStewardPolicy, transitionRoutineActionReceipt, updateStewardPolicy } from "../../heart/steward-policy"
 import { approvalPolicyForInvocation, classifyApprovalForInvocation, execTool } from "../../repertoire/tools"
 import { readObligations } from "../../arc/obligations"
+import { claimExternalEvent, readExternalEventRecord, recordExternalEvent } from "../../heart/external-events/router"
+import * as relationshipAuthorizationOwner from "../../repertoire/relationship-authorization"
+import type { ToolContext } from "../../repertoire/tools-base"
 
 const LIVE_SERVER_ID = `${"a".repeat(64)}:vars`
 
@@ -20,6 +23,26 @@ function policyOwner(sessionEventId: string) {
     friendId: "ari", trustLevel: "family" as const, sessionEventId,
     authorization: { profileId: "sanctuary-owner", profileVersion: 7, requestId: `request-${sessionEventId}`, sessionKey: "telegram_owner", receiptId: `authorization-${sessionEventId}` },
   }
+}
+
+const currentOwnerRequester = { kind: "owner" as const, friendId: "ari", profileId: "sanctuary-owner", requestId: "request-2", sessionEventId: "evt-2", origin: { friendId: "ari", channel: "telegram", key: "telegram_owner" } }
+
+function ownerContext(agentRoot: string) {
+  return {
+    signin: async () => undefined, agentRoot, currentSession: { ...currentOwnerRequester.origin },
+    relationshipAuthorization: {
+      profileId: "sanctuary-owner", requestId: "request-2", authorizedContextScopes: [], advertisedToolNames: ["unraid_restart_container"],
+      actor: { friendId: "ari", trustLevel: "family" as const, sessionEventId: "evt-2" },
+      authorizeTool: vi.fn<NonNullable<ToolContext["relationshipAuthorization"]>["authorizeTool"]>(async () => ({ allowed: true as const, receiptId: "relationship-1", profileVersion: 7 })),
+    },
+  }
+}
+
+function expectContainerOn(agentRoot: string, target: string): number {
+  return updateStewardPolicy(agentRoot, {
+    expectedVersion: readStewardPolicy(agentRoot).version, actor: policyOwner(`evt-on-${target}`),
+    mutation: { kind: "set_desired_state", key: `container:${target}`, value: "on", provenance: "stated", source: "current owner fixture" },
+  }).version
 }
 
 function installData(overrides: Record<string, unknown> = {}) {
@@ -399,6 +422,305 @@ describe("Unraid typed read tools", () => {
     await expect(definition.handler({}, undefined as any)).resolves.toBe(JSON.stringify({ ok: false, error: { code: "invalid_response", message: "Sanctuary runtime is unavailable", degraded: true } }))
   })
 
+  describe("A-006 current requester routing", () => {
+    const now = "2026-09-08T00:00:00.000Z"
+    const temporaryRoots: string[] = []
+    type Kind = "owner" | "household_request" | "owner_event"
+    type Policy = "valid" | "missing-grant" | "off" | "observed" | "installed" | "on-demand" | "missing-state"
+
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ["Date"] })
+      vi.setSystemTime(new Date(now))
+    })
+    afterEach(() => {
+      vi.useRealTimers()
+      for (const directory of temporaryRoots.splice(0)) fs.rmSync(directory, { recursive: true, force: true })
+    })
+
+    function fixture(kind: Kind, policy: Policy = "valid") {
+      const agentRoot = root()
+      temporaryRoots.push(agentRoot)
+      let version = 0
+      if (policy !== "missing-state") {
+        version = updateStewardPolicy(agentRoot, {
+          expectedVersion: version, actor: policyOwner("evt-desired"), now,
+          mutation: { kind: "set_desired_state", key: "container:jellyfin", value: policy === "off" ? "off" : policy === "on-demand" ? "on_demand" : "on", provenance: policy === "observed" ? "observed" : "stated", source: "current owner statement" },
+        }).version
+      }
+      if (policy !== "missing-grant") updateStewardPolicy(agentRoot, {
+        expectedVersion: version, actor: policyOwner("evt-grant"), now,
+        mutation: { kind: "grant_routine_action", key: "unraid.restart:jellyfin", action: "unraid.container.restart", targets: ["jellyfin"], maxCount: 2, windowMs: 1_800_000, verificationRequired: true, exclusions: [], provenance: policy === "installed" ? "installed_explicit_policy" : "stated" },
+      })
+      const friendId = kind === "household_request" ? "brother" : "ari"
+      const profileId = kind === "owner" ? "sanctuary-owner" : kind === "household_request" ? "sanctuary-household" : "sanctuary-event"
+      const profileVersion = kind === "owner" ? 7 : kind === "household_request" ? 5 : 4
+      const authorization = { allowed: true as const, receiptId: "live-request-authorization", profileVersion, friendId, profileId }
+      const authorizeTool = vi.fn(async (_name: string, _args: Record<string, string>) => authorization)
+      const relationship = {
+        profileId, ...(kind !== "owner_event" ? { requestId: "request-current" } : {}),
+        actor: kind === "owner_event" ? undefined : { friendId, trustLevel: kind === "owner" ? "family" as const : "friend" as const, sessionEventId: "evt-current" },
+        authorizedContextScopes: ["household.status"], advertisedToolNames: ["unraid_restart_container"], authorizeTool,
+      }
+      const containers = [{ id: "Docker:jellyfin", name: "jellyfin", state: "exited", degraded: false }]
+      const listContainers = vi.fn(async (): Promise<unknown> => ({ ok: true, data: { containers, truncated: false } }))
+      const restartContainer = vi.fn<NonNullable<ToolContext["sanctuary"]>["restartContainer"]>(async (_args, execution) => {
+        if (execution?.routine) {
+          const result = await execution.routine.reauthorize()
+          if (!result.allowed) return { ok: false, error: { code: "stale_target", message: result.reason } }
+        }
+        return { ok: true, data: { container: "jellyfin", state: "running" } }
+      })
+      const unused = vi.fn(async () => { throw new Error("unexpected Sanctuary read") })
+      const context: ToolContext = {
+        signin: async () => undefined, agentRoot, relationshipAuthorization: relationship,
+        ...(kind !== "owner_event" ? { currentSession: { friendId, channel: "telegram", key: `telegram_${friendId}` } } : {}),
+        sanctuary: {
+          listContainers, restartContainer, getContainerLogs: unused, getStorage: unused, getDisks: unused, getNotifications: unused,
+          getSystem: unused, getInstallState: unused, checkServices: unused, getDownloadQueue: unused, getMediaOptimization: unused, searchMediaCatalog: unused, resumeDownloadQueue: unused,
+        },
+      }
+      if (kind === "owner_event") {
+        const observed = recordExternalEvent({ agent: "sanctuary", source: "sanctuary-health", eventType: "health.observed", eventId: "container:Docker:jellyfin:availability", observationRevision: "current-observation", summary: "jellyfin is exited", evidence: ["jellyfin is exited"] }, { root: path.join(agentRoot, "events"), dispatchEnabled: true, now: () => now })
+        const claimed = claimExternalEvent(observed.recordPath, { expectedGeneration: observed.generation, expectedVersion: observed.version, owner: "worker-current", now: () => now })
+        Object.defineProperty(context, "currentExternalEvent", { configurable: true, enumerable: true, value: { schemaVersion: 1, recordPath: claimed.recordPath, agent: claimed.agent, source: claimed.source, eventId: claimed.eventId, generation: claimed.generation, observationRevision: claimed.observationRevision, claimOwner: claimed.claimOwner } })
+      }
+      return { agentRoot, context, relationship, authorization, authorizeTool, restartContainer, listContainers, containers }
+    }
+
+    for (const kind of ["owner", "household_request", "owner_event"] as const) {
+      it(`${kind} carries the exact live policy and requester binding into dispatch`, async () => {
+        const { context, relationship, authorization, restartContainer, listContainers } = fixture(kind)
+        const classification = await classifyApprovalForInvocation("unraid_restart_container", { container: "jellyfin" }, context)
+        expect(classification).toMatchObject({
+          policy: { kind: "not_required" },
+          routineActionSelection: { kind: "standing", key: "unraid.restart:jellyfin", target: "jellyfin", expectedPolicyVersion: 2, expectedDesiredStateVersion: 1, expectedGrantVersion: 2, authorizationVersion: authorization.profileVersion, requester: { kind, friendId: authorization.friendId, profileId: relationship.profileId } },
+        })
+        if (kind === "owner_event") expect(classification.routineActionSelection).toHaveProperty("requester.event", context.currentExternalEvent)
+        else expect(classification.routineActionSelection).toHaveProperty("requester.origin", context.currentSession)
+        const result = JSON.parse(await execTool("unraid_restart_container", { container: "jellyfin" }, { ...context, routineActionSelection: classification.routineActionSelection }))
+        expect(result).toMatchObject({ ok: true })
+        expect(restartContainer).toHaveBeenCalledOnce()
+        if (kind === "owner_event") expect(listContainers).toHaveBeenCalledOnce()
+        else expect(listContainers).not.toHaveBeenCalled()
+      })
+
+      it.each(["missing-grant", "off", "observed", "installed", "on-demand", "missing-state"] as const)(`${kind} denies %s without turning denial into an approval`, async (policy) => {
+        const { agentRoot, context, restartContainer } = fixture(kind, policy)
+        const classification = await classifyApprovalForInvocation("unraid_restart_container", { container: "jellyfin" }, context)
+        if (kind === "owner" && policy === "missing-grant") {
+          expect(classification).toEqual({ policy: { kind: "required", policyId: "sanctuary.unraid.restart.v1", actionClass: "unraid.container.restart", requiresSoleCall: true } })
+          return
+        }
+        if (kind !== "owner_event" && policy === "on-demand") {
+          expect(classification.routineActionSelection).toMatchObject({ kind: "standing" })
+          return
+        }
+        expect(classification).toMatchObject({ policy: { kind: "not_required" }, routineActionSelection: { kind: "denied", reason: expect.any(String) } })
+        const result = JSON.parse(await execTool("unraid_restart_container", { container: "jellyfin" }, { ...context, routineActionSelection: classification.routineActionSelection }))
+        expect(result).toMatchObject({ ok: false, error: { code: "routine_action_denied" } })
+        expect(restartContainer).not.toHaveBeenCalled()
+        expect(fs.existsSync(path.join(agentRoot, "state", "approvals"))).toBe(false)
+      })
+    }
+
+    it.each(["request", "profile", "event", "session", "friend", "key", "cli", "inner"] as const)("rejects a non-current human %s binding even with a family actor", async (missing) => {
+      const { context, relationship, restartContainer } = fixture("owner")
+      if (missing === "request") relationship.requestId = ""
+      if (missing === "profile") relationship.profileId = "unscoped-family"
+      if (missing === "event") relationship.actor!.sessionEventId = ""
+      if (missing === "session") context.currentSession = undefined
+      if (missing === "friend") context.currentSession!.friendId = "someone-else"
+      if (missing === "key") context.currentSession!.key = ""
+      if (missing === "cli" || missing === "inner") context.currentSession!.channel = missing
+      const classification = await classifyApprovalForInvocation("unraid_restart_container", { container: "jellyfin" }, context)
+      expect(classification).toMatchObject({ policy: { kind: "not_required" }, routineActionSelection: { kind: "denied" } })
+      await execTool("unraid_restart_container", { container: "jellyfin" }, { ...context, routineActionSelection: classification.routineActionSelection })
+      expect(restartContainer).not.toHaveBeenCalled()
+    })
+
+    it.each(["request", "profile", "friend", "event", "key", "channel", "relationship", "root", "arguments"] as const)("rejects %s drift while live authorization is awaited", async (drift) => {
+      const { context, relationship, authorization, authorizeTool, restartContainer } = fixture("owner")
+      const args = { container: "jellyfin" }
+      authorizeTool.mockImplementationOnce(async () => {
+        if (drift === "request") relationship.requestId = "request-changed"
+        if (drift === "profile") relationship.profileId = "sanctuary-household"
+        if (drift === "friend") relationship.actor!.friendId = "someone-else"
+        if (drift === "event") relationship.actor!.sessionEventId = "evt-changed"
+        if (drift === "key") context.currentSession!.key = "telegram_changed"
+        if (drift === "channel") context.currentSession!.channel = "inner"
+        if (drift === "relationship") context.relationshipAuthorization = { ...relationship }
+        if (drift === "root") context.agentRoot = path.join(context.agentRoot!, "different")
+        if (drift === "arguments") args.container = "other"
+        return authorization
+      })
+      const classification = await classifyApprovalForInvocation("unraid_restart_container", args, context)
+      expect(classification).toMatchObject({ policy: { kind: "not_required" }, routineActionSelection: { kind: "denied" } })
+      expect(restartContainer).not.toHaveBeenCalled()
+    })
+
+    it.each(["friendId", "profileId", "requestId"] as const)("rejects a live authorization result for a different %s", async (field) => {
+      const { context, authorization, authorizeTool } = fixture("owner")
+      const changed = { ...authorization, [field]: "different-binding" }
+      authorizeTool.mockResolvedValueOnce(changed)
+      expect(await classifyApprovalForInvocation("unraid_restart_container", { container: "jellyfin" }, context))
+        .toMatchObject({ policy: { kind: "not_required" }, routineActionSelection: { kind: "denied" } })
+    })
+
+    it.each([
+      undefined,
+      null,
+      { allowed: false, reason: "relationship revoked" },
+      { allowed: true, receiptId: "unversioned" },
+      { allowed: true, receiptId: "bad-version", profileVersion: 0 },
+      { allowed: true, receiptId: "", profileVersion: 7 },
+    ])("makes invalid live authorization %j non-approvable", async (response) => {
+      const { context, authorizeTool } = fixture("owner")
+      authorizeTool.mockResolvedValueOnce(response === undefined ? undefined : JSON.parse(JSON.stringify(response)))
+      expect(await classifyApprovalForInvocation("unraid_restart_container", { container: "jellyfin" }, context))
+        .toMatchObject({ policy: { kind: "not_required" }, routineActionSelection: { kind: "denied" } })
+    })
+
+    it("keeps a relationship dependency failure non-approvable", async () => {
+      const { context, authorizeTool } = fixture("owner")
+      authorizeTool.mockRejectedValueOnce(new Error("relationship store unavailable"))
+      expect(await classifyApprovalForInvocation("unraid_restart_container", { container: "jellyfin" }, context))
+        .toMatchObject({ policy: { kind: "not_required" }, routineActionSelection: { kind: "denied" } })
+    })
+
+    it.each(["generation", "observationRevision", "claimOwner", "claimExpiresAt", "executionState", "eventId"] as const)("rejects a changed event %s at the selection boundary", async (field) => {
+      const { context, restartContainer } = fixture("owner_event")
+      const event = context.currentExternalEvent!
+      const record = readExternalEventRecord(event.recordPath)
+      fs.writeFileSync(event.recordPath, JSON.stringify({ ...record, [field]: field === "generation" ? record.generation + 1 : field === "claimExpiresAt" ? now : field === "executionState" ? "handled" : "changed" }))
+      const classification = await classifyApprovalForInvocation("unraid_restart_container", { container: "jellyfin" }, context)
+      expect(classification).toMatchObject({ policy: { kind: "not_required" }, routineActionSelection: { kind: "denied" } })
+      await execTool("unraid_restart_container", { container: "jellyfin" }, { ...context, routineActionSelection: classification.routineActionSelection })
+      expect(restartContainer).not.toHaveBeenCalled()
+    })
+
+    it.each(["running", "restarting", "unknown", "duplicate", "replaced"] as const)("rejects an event whose exact target is %s", async (state) => {
+      const { context, containers, restartContainer } = fixture("owner_event")
+      if (state === "duplicate") containers.push({ ...containers[0]! })
+      else if (state === "replaced") containers[0]!.id = "Docker:replacement"
+      else containers[0]!.state = state
+      const classification = await classifyApprovalForInvocation("unraid_restart_container", { container: "jellyfin" }, context)
+      expect(classification).toMatchObject({ policy: { kind: "not_required" }, routineActionSelection: { kind: "denied" } })
+      await execTool("unraid_restart_container", { container: "jellyfin" }, { ...context, routineActionSelection: classification.routineActionSelection })
+      expect(restartContainer).not.toHaveBeenCalled()
+    })
+
+    it("dispatches a captured denial without reauthorization, approval, or adapter work", async () => {
+      const { context, authorization, authorizeTool, restartContainer } = fixture("household_request", "off")
+      authorizeTool.mockResolvedValueOnce(authorization).mockRejectedValue(new Error("must not reauthorize a denial"))
+      const classification = await classifyApprovalForInvocation("unraid_restart_container", { container: "jellyfin" }, context)
+      const result = await execTool("unraid_restart_container", { container: "jellyfin" }, { ...context, routineActionSelection: classification.routineActionSelection })
+      expect(JSON.parse(result)).toMatchObject({ ok: false, error: { code: "routine_action_denied" } })
+      expect(authorizeTool).toHaveBeenCalledOnce()
+      expect(restartContainer).not.toHaveBeenCalled()
+    })
+
+    it("rejects a selection moved to another agent root even when policy and requester values match", async () => {
+      const original = fixture("owner")
+      const other = fixture("owner")
+      const classification = await classifyApprovalForInvocation("unraid_restart_container", { container: "jellyfin" }, original.context)
+      const result = await execTool("unraid_restart_container", { container: "jellyfin" }, { ...original.context, agentRoot: other.agentRoot, routineActionSelection: classification.routineActionSelection })
+      expect(JSON.parse(result)).toMatchObject({ ok: false, error: { code: "routine_action_denied" } })
+      expect(original.restartContainer).not.toHaveBeenCalled()
+      expect(other.restartContainer).not.toHaveBeenCalled()
+    })
+
+    it.each(["owner", "household_request", "owner_event"] as const)("does not let %s discard the denial carrier and dispatch directly", async (kind) => {
+      const { context, restartContainer } = fixture(kind, "off")
+      expect(await approvalPolicyForInvocation("unraid_restart_container", { container: "jellyfin" }, context)).toEqual({ kind: "not_required" })
+      const result = await execTool("unraid_restart_container", { container: "jellyfin" }, context)
+      expect(JSON.parse(result)).toMatchObject({ ok: false, error: { code: "routine_action_denied" } })
+      expect(restartContainer).not.toHaveBeenCalled()
+    })
+
+    it.each(["request", "session", "friend"] as const)("keeps household repair tracking on the selected request despite %s drift", async (field) => {
+      const { context, relationship, agentRoot } = fixture("household_request")
+      const classification = await classifyApprovalForInvocation("unraid_restart_container", { container: "jellyfin" }, context)
+      const origin = { ...context.currentSession! }
+      if (field === "request") relationship.requestId = "request-other"
+      if (field === "session") context.currentSession!.key = "telegram_other"
+      if (field === "friend") {
+        relationship.actor!.friendId = "other-friend"
+        context.currentSession!.friendId = "other-friend"
+      }
+      const result = await execTool("unraid_restart_container", { container: "jellyfin" }, { ...context, routineActionSelection: classification.routineActionSelection })
+      expect(JSON.parse(result)).toMatchObject({ ok: false, error: { code: "stale_target" } })
+      expect(readObligations(agentRoot)).toEqual([expect.objectContaining({ requestId: "request-current", origin, owedTo: origin, status: "investigating" })])
+    })
+
+    it.each(["owner", "household_request", "owner_event"] as const)("rejects the %s profile changing after selection", async (kind) => {
+      const { context, authorization } = fixture(kind)
+      const classification = await classifyApprovalForInvocation("unraid_restart_container", { container: "jellyfin" }, context)
+      authorization.profileVersion += 1
+      const result = await execTool("unraid_restart_container", { container: "jellyfin" }, { ...context, routineActionSelection: classification.routineActionSelection })
+      expect(JSON.parse(result)).toMatchObject({ ok: false, error: { message: expect.stringContaining("profile version changed") } })
+    })
+
+    it.each(["session", "relationship"] as const)("rejects %s binding drift between the real authorization return and its consumer", async (field) => {
+      const { context } = fixture("owner")
+      const authorize = relationshipAuthorizationOwner.authorizeRoutineActionRequester
+      vi.spyOn(relationshipAuthorizationOwner, "authorizeRoutineActionRequester").mockImplementationOnce(async (...input) => {
+        const result = await authorize(...input)
+        if (field === "session") context.currentSession!.key = "telegram_changed_after_authorization"
+        else context.relationshipAuthorization = undefined
+        return result
+      })
+      expect(await classifyApprovalForInvocation("unraid_restart_container", { container: "jellyfin" }, context))
+        .toMatchObject({ policy: { kind: "not_required" }, routineActionSelection: { kind: "denied", reason: expect.stringContaining("after authorization") } })
+    })
+
+    it("preserves a captured denial at the direct handler boundary without authorization or runtime work", async () => {
+      const { context, authorizeTool, restartContainer } = fixture("household_request", "off")
+      const classification = await classifyApprovalForInvocation("unraid_restart_container", { container: "jellyfin" }, context)
+      const restart = unraidToolDefinitions.find((definition) => definition.tool.function.name === "unraid_restart_container")!
+      const result = await restart.handler({ container: "jellyfin" }, { ...context, routineActionSelection: classification.routineActionSelection })
+      expect(JSON.parse(String(result))).toMatchObject({ ok: false, error: { code: "routine_action_denied" } })
+      expect(authorizeTool).toHaveBeenCalledOnce()
+      expect(restartContainer).not.toHaveBeenCalled()
+    })
+
+    it("rejects an event that lost its relationship and selection instead of treating it as legacy approval", async () => {
+      const { context, restartContainer } = fixture("owner_event")
+      context.relationshipAuthorization = undefined
+      const result = await execTool("unraid_restart_container", { container: "jellyfin" }, context)
+      expect(JSON.parse(result)).toMatchObject({ ok: false, error: { code: "routine_action_denied" } })
+      expect(restartContainer).not.toHaveBeenCalled()
+    })
+
+    it.each(["runtime", "profile", "friend"] as const)("rejects an event with missing current %s authority", async (field) => {
+      const { context, authorization, authorizeTool } = fixture("owner_event")
+      if (field === "runtime") context.sanctuary = undefined
+      if (field === "profile") {
+        const { profileId: _profileId, ...unbound } = authorization
+        authorizeTool.mockResolvedValueOnce(JSON.parse(JSON.stringify(unbound)))
+      }
+      if (field === "friend") authorization.friendId = ""
+      expect(await classifyApprovalForInvocation("unraid_restart_container", { container: "jellyfin" }, context))
+        .toMatchObject({ policy: { kind: "not_required" }, routineActionSelection: { kind: "denied", reason: expect.stringContaining("health event authorization is unavailable") } })
+    })
+
+    it.each(["unavailable", null, { ok: false }, { ok: true, data: null }, { ok: true, data: { containers: [], truncated: true } }, { ok: true, data: { containers: null, truncated: false } }])("rejects unavailable or incomplete event inventory %j", async (inventory) => {
+      const { context, listContainers } = fixture("owner_event")
+      if (inventory === "unavailable") listContainers.mockRejectedValueOnce(new Error("inventory unavailable"))
+      else listContainers.mockResolvedValueOnce(inventory)
+      expect(await classifyApprovalForInvocation("unraid_restart_container", { container: "jellyfin" }, context))
+        .toMatchObject({ policy: { kind: "not_required" }, routineActionSelection: { kind: "denied", reason: expect.stringContaining("container status") } })
+    })
+
+    it.each(["kind", "target"] as const)("rejects an event reauthorization with a different expected requester %s", async (field) => {
+      const { context, authorization } = fixture("owner_event")
+      const selection = (await classifyApprovalForInvocation("unraid_restart_container", { container: "jellyfin" }, context)).routineActionSelection
+      if (selection?.kind !== "standing" || selection.requester.kind !== "owner_event") throw new Error("fixture requires a standing event selection")
+      const requester = field === "kind" ? currentOwnerRequester : { ...selection.requester, target: { ...selection.requester.target, name: "other" } }
+      expect(await relationshipAuthorizationOwner.authorizeRoutineActionRequester(context, { container: "jellyfin" }, { requester, profileVersion: authorization.profileVersion }))
+        .toEqual({ allowed: false, reason: "current health event target binding changed" })
+    })
+  })
+
   it("uses standing policy only for an exact family-authorized routine restart and otherwise preserves approval", async () => {
     const agentRoot = root()
     updateStewardPolicy(agentRoot, {
@@ -406,31 +728,32 @@ describe("Unraid typed read tools", () => {
       actor: policyOwner("evt-1"),
       mutation: { kind: "grant_routine_action", key: "unraid.restart:alpha", action: "unraid.container.restart", targets: ["alpha"], maxCount: 2, windowMs: 3_600_000, verificationRequired: true, exclusions: [], provenance: "stated" },
     })
+    const expectedPolicyVersion = expectContainerOn(agentRoot, "alpha")
     const restart = unraidToolDefinitions.find((definition) => definition.tool.function.name === "unraid_restart_container")!
     const restartContainer = vi.fn(async (_args, execution) => {
       expect(await execution.routine.reauthorize()).toEqual({ allowed: true, receiptId: "relationship-1", profileVersion: 7 })
       return { ok: true }
     })
-    const context = { signin: async () => undefined, agentRoot, relationshipAuthorization: { authorizedContextScopes: [], advertisedToolNames: ["unraid_restart_container"], actor: { friendId: "ari", trustLevel: "family" as const, sessionEventId: "evt-2" }, authorizeTool: () => ({ allowed: true as const, receiptId: "relationship-1", profileVersion: 7 }) }, sanctuary: { restartContainer } } as any
+    const context = { ...ownerContext(agentRoot), sanctuary: { restartContainer } } as any
     expect(await approvalPolicyForInvocation("unraid_restart_container", { container: "alpha" }, context)).toEqual({ kind: "not_required" })
     const classification = await classifyApprovalForInvocation("unraid_restart_container", { container: "alpha" }, context)
     await execTool("unraid_restart_container", { container: "alpha" }, { ...context, routineActionSelection: classification.routineActionSelection })
-    expect(context.sanctuary.restartContainer).toHaveBeenCalledWith({ container: "alpha" }, { routine: expect.objectContaining({ key: "unraid.restart:alpha", expectedPolicyVersion: 1, reauthorize: expect.any(Function) }) })
+    expect(context.sanctuary.restartContainer).toHaveBeenCalledWith({ container: "alpha" }, { routine: expect.objectContaining({ key: "unraid.restart:alpha", expectedPolicyVersion, expectedDesiredStateVersion: 2, expectedGrantVersion: 1, requester: currentOwnerRequester, reauthorize: expect.any(Function) }) })
     expect(await approvalPolicyForInvocation("unraid_restart_container", { container: "other" }, context)).toMatchObject({ kind: "required" })
-    expect(await approvalPolicyForInvocation("unraid_restart_container", { container: 7 } as any, context)).toMatchObject({ kind: "required" })
+    expect(await classifyApprovalForInvocation("unraid_restart_container", { container: 7 }, context)).toMatchObject({ policy: { kind: "not_required" }, routineActionSelection: { kind: "denied" } })
     const beforePolicyId = (await approvalPolicyForInvocation("unraid_restart_container", { container: "other" }, context) as { policyId: string }).policyId
-    updateStewardPolicy(agentRoot, { expectedVersion: 1, actor: policyOwner("evt-4"), mutation: { kind: "set_desired_state", key: "container:other", value: "on", provenance: "stated", source: "request" } })
+    updateStewardPolicy(agentRoot, { expectedVersion: expectedPolicyVersion, actor: policyOwner("evt-4"), mutation: { kind: "set_desired_state", key: "container:other", value: "on", provenance: "stated", source: "request" } })
     const afterPolicyId = (await approvalPolicyForInvocation("unraid_restart_container", { container: "other" }, context) as { policyId: string }).policyId
     expect(afterPolicyId).toBe(beforePolicyId)
     const nonFamily = { ...context, relationshipAuthorization: { ...context.relationshipAuthorization, actor: { friendId: "brother", trustLevel: "friend", sessionEventId: "evt-3" } } }
-    expect(await approvalPolicyForInvocation("unraid_restart_container", { container: "alpha" }, nonFamily)).toMatchObject({ kind: "required" })
+    expect(await classifyApprovalForInvocation("unraid_restart_container", { container: "alpha" }, nonFamily)).toMatchObject({ policy: { kind: "not_required" }, routineActionSelection: { kind: "denied" } })
     const missingVersion = { ...context, relationshipAuthorization: { ...context.relationshipAuthorization, authorizeTool: () => ({ allowed: true as const, receiptId: "relationship-unversioned" }) } }
-    expect(await approvalPolicyForInvocation("unraid_restart_container", { container: "alpha" }, missingVersion)).toMatchObject({ kind: "required" })
-    const selection = { key: "unraid.restart:alpha", target: "alpha", expectedPolicyVersion: 1 }
-    expect(JSON.parse(await restart.handler({ container: "alpha" }, { ...context, agentRoot: undefined, routineActionSelection: selection }))).toMatchObject({ ok: false, error: { code: "approval_required" } })
-    expect(JSON.parse(await restart.handler({ container: "alpha" }, { ...context, relationshipAuthorization: nonFamily.relationshipAuthorization, routineActionSelection: selection }))).toMatchObject({ ok: false, error: { code: "approval_required" } })
-    expect(JSON.parse(await restart.handler({ container: "other" }, { ...context, routineActionSelection: { key: "unraid.restart:alpha", target: "alpha", expectedPolicyVersion: 2 } }))).toMatchObject({ ok: false, error: { message: expect.stringContaining("arguments changed") } })
-    expect(JSON.parse(await restart.handler({ container: "alpha" }, { ...context, routineActionSelection: { key: "unraid.restart:alpha", target: "alpha", expectedPolicyVersion: 1 } }))).toMatchObject({ ok: false, error: { message: expect.stringContaining("version changed") } })
+    expect(await classifyApprovalForInvocation("unraid_restart_container", { container: "alpha" }, missingVersion)).toMatchObject({ policy: { kind: "not_required" }, routineActionSelection: { kind: "denied" } })
+    const selection = classification.routineActionSelection!
+    expect(JSON.parse(await restart.handler({ container: "alpha" }, { ...context, agentRoot: undefined, routineActionSelection: selection }))).toMatchObject({ ok: false, error: { code: "routine_action_denied" } })
+    expect(JSON.parse(await restart.handler({ container: "alpha" }, { ...context, relationshipAuthorization: nonFamily.relationshipAuthorization, routineActionSelection: selection }))).toMatchObject({ ok: false, error: { code: "routine_action_denied" } })
+    expect(JSON.parse(await restart.handler({ container: "other" }, { ...context, routineActionSelection: { ...selection, expectedPolicyVersion: expectedPolicyVersion + 1 } }))).toMatchObject({ ok: false, error: { message: expect.stringContaining("arguments changed") } })
+    expect(JSON.parse(await restart.handler({ container: "alpha" }, { ...context, routineActionSelection: selection }))).toMatchObject({ ok: false, error: { message: expect.stringContaining("version changed") } })
   })
 
   it("lets a household request trigger the Butler's standing restart grant and tracks the exact return obligation", async () => {
@@ -440,6 +763,7 @@ describe("Unraid typed read tools", () => {
       actor: policyOwner("evt-owner-grant"),
       mutation: { kind: "grant_routine_action", key: "unraid.restart:books", action: "unraid.container.restart", targets: ["books"], maxCount: 2, windowMs: 3_600_000, verificationRequired: true, exclusions: [], provenance: "stated" },
     })
+    const expectedPolicyVersion = expectContainerOn(agentRoot, "books")
     const restartContainer = vi.fn(async () => ({ ok: true, data: { container: "books", state: "running" } }))
     const authorizeTool = vi.fn(async () => ({ allowed: true as const, receiptId: "household-request-authorization", profileVersion: 1 }))
     const context = {
@@ -447,6 +771,7 @@ describe("Unraid typed read tools", () => {
       agentRoot,
       currentSession: { friendId: "brother", channel: "telegram", key: "telegram:777:888", sessionPath: path.join(agentRoot, "session.json") },
       relationshipAuthorization: {
+        profileId: "sanctuary-household",
         requestId: "telegram-request-1",
         authorizedContextScopes: ["own_requests"],
         advertisedToolNames: ["unraid_restart_container"],
@@ -457,7 +782,7 @@ describe("Unraid typed read tools", () => {
     } as any
 
     const classification = await classifyApprovalForInvocation("unraid_restart_container", { container: "books" }, context)
-    expect(classification).toMatchObject({ policy: { kind: "not_required" }, routineActionSelection: { key: "unraid.restart:books", target: "books", expectedPolicyVersion: 1 } })
+    expect(classification).toMatchObject({ policy: { kind: "not_required" }, routineActionSelection: { kind: "standing", key: "unraid.restart:books", target: "books", expectedPolicyVersion } })
     const result = JSON.parse(await execTool("unraid_restart_container", { container: "books" }, { ...context, routineActionSelection: classification.routineActionSelection }))
     expect(result).toMatchObject({ ok: true })
     expect(restartContainer).toHaveBeenCalledOnce()
@@ -474,10 +799,10 @@ describe("Unraid typed read tools", () => {
     }))
 
     await expect(classifyApprovalForInvocation("unraid_restart_container", { container: "music" }, context))
-      .resolves.toMatchObject({ policy: { kind: "required", policyId: "sanctuary.unraid.restart.v1" } })
+      .resolves.toMatchObject({ policy: { kind: "not_required" }, routineActionSelection: { kind: "denied" } })
     const mismatchedRequester = { ...context, currentSession: { ...context.currentSession, friendId: "someone-else" } }
     await expect(classifyApprovalForInvocation("unraid_restart_container", { container: "books" }, mismatchedRequester))
-      .resolves.toMatchObject({ policy: { kind: "required", policyId: "sanctuary.unraid.restart.v1" } })
+      .resolves.toMatchObject({ policy: { kind: "not_required" }, routineActionSelection: { kind: "denied" } })
     expect(restartContainer).toHaveBeenCalledOnce()
   })
 
@@ -485,12 +810,13 @@ describe("Unraid typed read tools", () => {
     const agentRoot = root()
     updateStewardPolicy(agentRoot, { expectedVersion: 0, actor: policyOwner("evt-owner-grant"),
       mutation: { kind: "grant_routine_action", key: "unraid.restart:books", action: "unraid.container.restart", targets: ["books"], maxCount: 2, windowMs: 3_600_000, verificationRequired: true, exclusions: [], provenance: "stated" } })
+    expectContainerOn(agentRoot, "books")
     const restartContainer = failure === "reported failure"
       ? vi.fn(async () => ({ ok: false, error: { message: "still down" } }))
       : vi.fn(async () => { throw new Error("restart transport failed") })
     const context = { signin: async () => undefined, agentRoot,
       currentSession: { friendId: "brother", channel: "telegram", key: "telegram:777:888", sessionPath: path.join(agentRoot, "session.json") },
-      relationshipAuthorization: { requestId: `request-${failure}`, authorizedContextScopes: ["own_requests"], advertisedToolNames: ["unraid_restart_container"],
+      relationshipAuthorization: { profileId: "sanctuary-household", requestId: `request-${failure}`, authorizedContextScopes: ["own_requests"], advertisedToolNames: ["unraid_restart_container"],
         actor: { friendId: "brother", trustLevel: "friend" as const, sessionEventId: "evt-request" }, authorizeTool: async () => ({ allowed: true as const, receiptId: "request-auth", profileVersion: 1 }) },
       sanctuary: { restartContainer } } as any
     const classification = await classifyApprovalForInvocation("unraid_restart_container", { container: "books" }, context)
@@ -505,90 +831,101 @@ describe("Unraid typed read tools", () => {
   it("reuses the exact pending household return obligation and fails closed when its store is unavailable", async () => {
     const restart = unraidToolDefinitions.find((definition) => definition.tool.function.name === "unraid_restart_container")!
     const agentRoot = root()
+    updateStewardPolicy(agentRoot, { expectedVersion: 0, actor: policyOwner("evt-owner-grant"), mutation: { kind: "grant_routine_action", key: "unraid.restart:books", action: "unraid.container.restart", targets: ["books"], maxCount: 2, windowMs: 3_600_000, verificationRequired: true, exclusions: [], provenance: "stated" } })
+    expectContainerOn(agentRoot, "books")
     const restartContainer = vi.fn(async () => ({ ok: true }))
     const relationshipAuthorization = {
+      profileId: "sanctuary-household",
       requestId: "request-repeat",
+      authorizedContextScopes: ["own_requests"], advertisedToolNames: ["unraid_restart_container"],
       actor: { friendId: "brother", trustLevel: "friend" as const, sessionEventId: "evt-repeat" },
-      authorizeTool: vi.fn(),
+      authorizeTool: vi.fn(async () => ({ allowed: true as const, receiptId: "repeat-authorization", profileVersion: 1 })),
     }
     const currentSession = { friendId: "brother", channel: "telegram", key: "telegram:777:888" }
     const context = { agentRoot, currentSession, relationshipAuthorization, sanctuary: { restartContainer } } as any
+    context.routineActionSelection = (await classifyApprovalForInvocation("unraid_restart_container", { container: "books" }, context)).routineActionSelection
 
     await expect(restart.handler({ container: "books" }, context)).resolves.toContain('"ok":true')
     await expect(restart.handler({ container: "books" }, context)).resolves.toContain('"ok":true')
     expect(readObligations(agentRoot)).toHaveLength(1)
 
-    await expect(restart.handler({ container: "books" }, { currentSession, relationshipAuthorization, sanctuary: { restartContainer } } as any))
-      .rejects.toThrow("household repair request tracking is unavailable")
+    await expect(restart.handler({ container: "books" }, { ...context, agentRoot: undefined }))
+      .resolves.toContain("routine action authorization is unavailable")
+    expect(restartContainer).toHaveBeenCalledTimes(2)
   })
 
   it("preserves the original thrown restart error when no household obligation exists", async () => {
     const restart = unraidToolDefinitions.find((definition) => definition.tool.function.name === "unraid_restart_container")!
-    await expect(restart.handler({ container: "books" }, {
-      relationshipAuthorization: { actor: { friendId: "ari", trustLevel: "family", sessionEventId: "evt-owner" } },
+    const agentRoot = root()
+    updateStewardPolicy(agentRoot, { expectedVersion: 0, actor: policyOwner("evt-owner-grant"), mutation: { kind: "grant_routine_action", key: "unraid.restart:books", action: "unraid.container.restart", targets: ["books"], maxCount: 2, windowMs: 3_600_000, verificationRequired: true, exclusions: [], provenance: "stated" } })
+    expectContainerOn(agentRoot, "books")
+    const context = {
+      ...ownerContext(agentRoot),
       sanctuary: { restartContainer: async () => { throw new Error("restart transport failed") } },
-    } as any)).rejects.toThrow("restart transport failed")
+    } as any
+    context.routineActionSelection = (await classifyApprovalForInvocation("unraid_restart_container", { container: "books" }, context)).routineActionSelection
+    await expect(restart.handler({ container: "books" }, context)).rejects.toThrow("restart transport failed")
   })
 
-  it("falls back to approval if relationship authority disappears between requester classification and revalidation", async () => {
+  it("denies without approval when relationship authority disappears", async () => {
     const agentRoot = root()
     let reads = 0
-    const relationshipAuthorization = {
-      actor: { friendId: "ari", trustLevel: "family" as const, sessionEventId: "evt-owner" },
-      authorizeTool: vi.fn(),
-    }
-    const context = { agentRoot } as any
+    const context = ownerContext(agentRoot)
+    const relationshipAuthorization = context.relationshipAuthorization
     Object.defineProperty(context, "relationshipAuthorization", {
       configurable: true,
       get: () => { reads += 1; return reads === 1 ? relationshipAuthorization : undefined },
     })
 
     await expect(classifyApprovalForInvocation("unraid_restart_container", { container: "books" }, context))
-      .resolves.toMatchObject({ policy: { kind: "required" } })
+      .resolves.toMatchObject({ policy: { kind: "not_required" }, routineActionSelection: { kind: "denied" } })
   })
 
-  it("requires a live versioned relationship capability before bypassing approval and degrades malformed policy to the existing approval", async () => {
+  it("keeps invalid relationship authority and malformed policy non-approvable", async () => {
     const agentRoot = root()
     updateStewardPolicy(agentRoot, {
       expectedVersion: 0,
       actor: policyOwner("evt-1"),
       mutation: { kind: "grant_routine_action", key: "unraid.restart:alpha", action: "unraid.container.restart", targets: ["alpha"], maxCount: 2, windowMs: 3_600_000, verificationRequired: true, exclusions: [], provenance: "stated" },
     })
-    const authorizeTool = vi.fn(async () => ({ allowed: false as const, reason: "relationship revoked" }))
-    const context = { signin: async () => undefined, agentRoot, relationshipAuthorization: { authorizedContextScopes: [], advertisedToolNames: ["unraid_restart_container"], actor: { friendId: "ari", trustLevel: "family" as const, sessionEventId: "evt-2" }, authorizeTool } } as any
+    expectContainerOn(agentRoot, "alpha")
+    const authorizeTool = vi.fn<NonNullable<ToolContext["relationshipAuthorization"]>["authorizeTool"]>(async () => ({ allowed: false as const, reason: "relationship revoked" }))
+    const context = ownerContext(agentRoot)
+    context.relationshipAuthorization.authorizeTool = authorizeTool
 
-    await expect(approvalPolicyForInvocation("unraid_restart_container", { container: "alpha" }, context)).resolves.toMatchObject({ kind: "required", policyId: "sanctuary.unraid.restart.v1" })
+    await expect(classifyApprovalForInvocation("unraid_restart_container", { container: "alpha" }, context)).resolves.toMatchObject({ policy: { kind: "not_required" }, routineActionSelection: { kind: "denied" } })
     expect(authorizeTool).toHaveBeenCalledWith("unraid_restart_container", { container: "alpha" })
 
-    authorizeTool.mockResolvedValueOnce({ allowed: true as const, receiptId: "unversioned" } as any)
-    await expect(approvalPolicyForInvocation("unraid_restart_container", { container: "alpha" }, context)).resolves.toMatchObject({ kind: "required" })
+    authorizeTool.mockResolvedValueOnce({ allowed: true as const, receiptId: "unversioned" })
+    await expect(classifyApprovalForInvocation("unraid_restart_container", { container: "alpha" }, context)).resolves.toMatchObject({ policy: { kind: "not_required" }, routineActionSelection: { kind: "denied" } })
 
     authorizeTool.mockRejectedValueOnce(new Error("relationship store offline"))
-    await expect(approvalPolicyForInvocation("unraid_restart_container", { container: "alpha" }, context)).resolves.toMatchObject({ kind: "required" })
+    await expect(classifyApprovalForInvocation("unraid_restart_container", { container: "alpha" }, context)).resolves.toMatchObject({ policy: { kind: "not_required" }, routineActionSelection: { kind: "denied" } })
 
     fs.writeFileSync(path.join(agentRoot, "state", "policy", "steward.json"), "{\"broken\":true}\n")
-    await expect(approvalPolicyForInvocation("unraid_restart_container", { container: "alpha" }, context)).resolves.toMatchObject({ kind: "required", policyId: "sanctuary.unraid.restart.v1" })
+    authorizeTool.mockResolvedValueOnce({ allowed: true, receiptId: "current", profileVersion: 7 })
+    await expect(classifyApprovalForInvocation("unraid_restart_container", { container: "alpha" }, context)).resolves.toMatchObject({ policy: { kind: "not_required" }, routineActionSelection: { kind: "denied", reason: expect.stringContaining("invalid") } })
   })
 
-  it("falls back to the existing approval without mutation while an outage leaves the exact action and target unresolved", async () => {
+  it("denies without approval or mutation while the exact action and target remain unresolved", async () => {
     const agentRoot = root()
     updateStewardPolicy(agentRoot, {
       expectedVersion: 0,
       actor: policyOwner("evt-1"),
       mutation: { kind: "grant_routine_action", key: "unraid.restart:alpha", action: "unraid.container.restart", targets: ["alpha"], maxCount: 4, windowMs: 3_600_000, verificationRequired: true, exclusions: [], provenance: "stated" },
     })
-    const receipt = consumeRoutineActionGrant(agentRoot, { key: "unraid.restart:alpha", action: "unraid.container.restart", target: "alpha", expectedPolicyVersion: 1, authorizationReceiptId: "relationship-1", authorizationVersion: 7 })
+    const expectedPolicyVersion = expectContainerOn(agentRoot, "alpha")
+    const receipt = consumeRoutineActionGrant(agentRoot, { key: "unraid.restart:alpha", action: "unraid.container.restart", target: "alpha", expectedPolicyVersion, requester: currentOwnerRequester, authorizationReceiptId: "relationship-1", authorizationVersion: 7 })
     transitionRoutineActionReceipt(agentRoot, { id: receipt.id, expectedState: "reserved", state: "attempting" })
     transitionRoutineActionReceipt(agentRoot, { id: receipt.id, expectedState: "attempting", state: "recovery_pending", effectReceipt: "ack", recoveryState: { state: "pending", compensation: "none" } })
     const restartContainer = vi.fn()
     const context = {
-      signin: async () => undefined,
-      agentRoot,
-      relationshipAuthorization: { authorizedContextScopes: [], advertisedToolNames: ["unraid_restart_container"], actor: { friendId: "ari", trustLevel: "family" as const, sessionEventId: "evt-2" }, authorizeTool: async () => ({ allowed: true as const, receiptId: "relationship-2", profileVersion: 8 }) },
+      ...ownerContext(agentRoot),
       sanctuary: { restartContainer },
     } as any
+    context.relationshipAuthorization.authorizeTool = async () => ({ allowed: true as const, receiptId: "relationship-2", profileVersion: 8 })
 
-    await expect(approvalPolicyForInvocation("unraid_restart_container", { container: "alpha" }, context)).resolves.toMatchObject({ kind: "required", policyId: "sanctuary.unraid.restart.v1" })
+    await expect(classifyApprovalForInvocation("unraid_restart_container", { container: "alpha" }, context)).resolves.toMatchObject({ policy: { kind: "not_required" }, routineActionSelection: { kind: "denied", reason: expect.stringContaining("unresolved") } })
     expect(restartContainer).not.toHaveBeenCalled()
   })
 
@@ -598,13 +935,14 @@ describe("Unraid typed read tools", () => {
   ])("passes central relationship denial through the narrow post-resolution routine callback", async (authorization, reason) => {
     const agentRoot = root()
     updateStewardPolicy(agentRoot, { expectedVersion: 0, actor: policyOwner("evt-1"), mutation: { kind: "grant_routine_action", key: "unraid.restart:alpha", action: "unraid.container.restart", targets: ["alpha"], maxCount: 2, windowMs: 3_600_000, verificationRequired: true, exclusions: [], provenance: "stated" } })
+    expectContainerOn(agentRoot, "alpha")
     const restart = unraidToolDefinitions.find((definition) => definition.tool.function.name === "unraid_restart_container")!
     const context = {
-      agentRoot,
-      relationshipAuthorization: { actor: { friendId: "ari", trustLevel: "family" as const, sessionEventId: "evt-2" }, authorizeTool: async () => authorization },
-      routineActionSelection: { key: "unraid.restart:alpha", target: "alpha", expectedPolicyVersion: 1 },
+      ...ownerContext(agentRoot),
       sanctuary: { restartContainer: async (_args: unknown, execution: any) => execution.routine.reauthorize() },
     } as any
+    context.routineActionSelection = (await classifyApprovalForInvocation("unraid_restart_container", { container: "alpha" }, context)).routineActionSelection
+    context.relationshipAuthorization.authorizeTool = async () => authorization
 
     await expect(restart.handler({ container: "alpha" }, context)).resolves.toContain(reason)
   })

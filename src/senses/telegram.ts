@@ -1002,6 +1002,12 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       subject,
       identityKey,
       toolContext: toolContext ?? {},
+      ...(options.resolveRelationshipAuthorization ? {
+        resolveOwnerRelationship: (binding) => options.resolveRelationshipAuthorization!({
+          friendId: binding.friendId, requestId: binding.requestId, sessionEventId: binding.sessionEventId, sessionKey: binding.sessionKey,
+          botId: botId!, userId: authorizedUserId, chatId: authorizedChatId,
+        }),
+      } : {}),
       effects: approvalEffects,
       effectBarrier: acceptanceAuditBarrier,
       dependencies: {

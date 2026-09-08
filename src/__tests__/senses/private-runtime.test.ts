@@ -4792,6 +4792,36 @@ describe("private runtime", () => {
     await expect(toolContext.relationshipAuthorization.authorizeTool("external_event_disposition", {})).resolves.toMatchObject({ allowed: false, reason: expect.stringContaining("admission") })
   })
 
+  it.each(["version", "event capability", "owner capability", "invalid registry", "missing registry", "owner trust"] as const)("A-006 rechecks live event profile %s instead of the turn's cached registry", async (change) => {
+    cacheMachineRuntimeCredentialConfig("test-agent", { unraidGraphqlUrl: "http://unraid.test/graphql", unraidReadApiKey: "read-test", unraidWriteApiKey: "write-test", jellyfin: { userId: "b".repeat(32), accessToken: "a".repeat(32), folderIds: "library-a,library-b" } })
+    const profilePath = path.join(agentRoot, "tool-profiles.json")
+    const registry = { version: 2, profiles: {
+      "sanctuary-owner": { version: 3, contextScopes: ["household.status"], toolNames: ["external_event_disposition", "unraid_restart_container"], effectScopes: [] },
+      "sanctuary-event": { version: 2, contextScopes: ["household.status"], toolNames: ["external_event_disposition", "unraid_restart_container"], effectScopes: [] },
+    } }
+    fs.writeFileSync(profilePath, JSON.stringify(registry))
+    const friendStore = new FileFriendStore(path.join(agentRoot, "friends"))
+    await friendStore.put("owner", { id: "owner", name: "Ari", trustLevel: "family", admissionState: "active", initiativePolicy: "proactive", capabilityProfileId: "sanctuary-owner", externalIds: [], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: "2026-08-29T00:00:00.000Z", updatedAt: "2026-08-29T00:00:00.000Z", schemaVersion: 1 })
+    mockGetToolsForChannel.mockReturnValue([
+      { type: "function", function: { name: "external_event_disposition", description: "dispose", parameters: {} } },
+      { type: "function", function: { name: "unraid_restart_container", description: "restart", parameters: {} } },
+    ])
+    await runApprovedPrivateRuntimeTurn({ reason: "instinct", externalEvent: { schemaVersion: 1, recordPath: "/events/test-agent/sanctuary-health/container.json", agent: "test-agent", source: "sanctuary-health", eventId: "container:Docker:jellyfin:availability", generation: 1, observationRevision: "rev-1", claimOwner: "lease-1" } })
+    const context = mockHandleInboundTurn.mock.calls[0][0].runAgentOptions.toolContext
+    await expect(context.relationshipAuthorization.authorizeTool("unraid_restart_container", { container: "jellyfin" })).resolves.toMatchObject({ allowed: true, profileVersion: 2 })
+    if (change === "version") registry.profiles["sanctuary-event"].version = 3
+    if (change === "event capability") registry.profiles["sanctuary-event"].toolNames = ["external_event_disposition"]
+    if (change === "owner capability") registry.profiles["sanctuary-owner"].toolNames = ["external_event_disposition"]
+    if (change === "owner trust") await friendStore.put("owner", { ...(await friendStore.get("owner"))!, trustLevel: "friend" })
+    if (change === "invalid registry") registry.version = 1
+    if (change === "missing registry") fs.unlinkSync(profilePath)
+    else fs.writeFileSync(profilePath, JSON.stringify(registry))
+    const reauthorization = context.relationshipAuthorization.authorizeTool("unraid_restart_container", { container: "jellyfin" })
+    if (change === "version") await expect(reauthorization).resolves.toMatchObject({ allowed: true, profileVersion: 3 })
+    else if (change === "invalid registry" || change === "missing registry" || change === "owner trust") await expect(reauthorization).rejects.toThrow()
+    else await expect(reauthorization).resolves.toMatchObject({ allowed: false, reason: expect.stringContaining("tool") })
+  })
+
   it("gives Sanctuary usenet event turns the existing Sanctuary tool context", async () => {
     cacheMachineRuntimeCredentialConfig("test-agent", { unraidGraphqlUrl: "http://unraid.test/graphql", unraidReadApiKey: "read-test", unraidWriteApiKey: "write-test", jellyfin: { userId: "b".repeat(32), accessToken: "a".repeat(32), folderIds: "library-a,library-b" } })
     fs.writeFileSync(path.join(agentRoot, "tool-profiles.json"), JSON.stringify({ version: 2, profiles: {

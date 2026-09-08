@@ -25,6 +25,14 @@ export type ApprovalState =
   | "session_head_changed"
   | "abandoned_before_attempt"
 
+export interface ApprovalOwnerBinding {
+  friendId: string
+  requestId: string
+  sessionEventId: string
+  sessionKey: string
+  profileVersion: number
+}
+
 export interface ApprovalRecord {
   approvalId: string
   state: ApprovalState
@@ -56,6 +64,7 @@ export interface ApprovalRecord {
   result: string | null
   reason: string | null
   frozenAssistantMessage: JsonObject
+  ownerBinding?: ApprovalOwnerBinding
 }
 
 export interface PrepareApprovalInput {
@@ -77,6 +86,7 @@ export interface PrepareApprovalInput {
   expiresAt: string
   frozenAssistantMessage: JsonObject
   scenarioHandleDigest?: string
+  ownerBinding?: ApprovalOwnerBinding
 }
 
 export interface ApprovalStoreOptions {
@@ -243,8 +253,14 @@ export function canonicalApprovalArguments(value: JsonObject): { canonical: stri
 
 function hasExactKeys(value: Record<string, unknown>): boolean {
   const actual = Object.keys(value).sort()
-  const expected = [...RECORD_KEYS].sort()
+  const expected = [...RECORD_KEYS, ...("ownerBinding" in value ? ["ownerBinding"] : [])].sort()
   return actual.length === expected.length && actual.every((key, index) => key === expected[index])
+}
+
+function validOwnerBinding(value: unknown): value is ApprovalOwnerBinding {
+  return isObject(value) && Object.keys(value).length === 5
+    && ["friendId", "requestId", "sessionEventId", "sessionKey"].every((key) => isNonEmpty(value[key]) && value[key] === value[key].trim())
+    && typeof value.profileVersion === "number" && Number.isSafeInteger(value.profileVersion) && value.profileVersion > 0
 }
 
 function validStateShape(record: ApprovalRecord): boolean {
@@ -314,6 +330,7 @@ function validStateShape(record: ApprovalRecord): boolean {
 
 export function parseApprovalRecord(value: unknown): ApprovalRecord {
   if (!isObject(value) || !hasExactKeys(value)) fail("corrupt_record")
+  if ("ownerBinding" in value && !validOwnerBinding(value.ownerBinding)) fail("corrupt_record")
   const record = value as unknown as ApprovalRecord
   if (!UUID.test(record.approvalId)) fail("corrupt_record")
   for (const field of [
@@ -345,6 +362,7 @@ function assertHash(value: string, code: string): void {
 }
 
 function assertPrepareInput(input: PrepareApprovalInput): void {
+  if (input.ownerBinding !== undefined && !validOwnerBinding(input.ownerBinding)) fail("invalid_proposal")
   for (const value of [input.toolCallId, input.toolName, input.policyId, input.sessionKey, input.sessionPath,
     input.requesterId, input.transport, input.transportUserId, input.transportChatId]) {
     if (!isNonEmpty(value)) fail("invalid_proposal")
@@ -731,6 +749,7 @@ export function openApprovalStore(options: ApprovalStoreOptions): ApprovalStore 
           result: null,
           reason: null,
           frozenAssistantMessage: structuredClone(input.frozenAssistantMessage),
+          ...(input.ownerBinding ? { ownerBinding: structuredClone(input.ownerBinding) } : {}),
         }
         if (input.scenarioHandleDigest !== undefined) assertHash(input.scenarioHandleDigest, "invalid_proposal")
         insert(parseApprovalRecord(record), input.scenarioHandleDigest)

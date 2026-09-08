@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto"
 import { emitNervesEvent } from "../nerves/runtime"
 import { UnraidClient } from "./unraid-client"
+import type { RoutineActionRequester } from "../heart/steward-policy"
 
 export const SANCTUARY_RESTART_MUTATION = `mutation SanctuaryRestart($id: PrefixedID!) {
   docker { restart(id: $id) { id names state status autoStart } }
@@ -56,6 +57,9 @@ export interface ApprovedUnraidRestartOptions {
     action: "unraid.container.restart"
     target: string
     expectedPolicyVersion: number
+    expectedDesiredStateVersion: number
+    expectedGrantVersion: number
+    requester: RoutineActionRequester
     authorizationReceiptId: string
     authorizationVersion: number
     attemptId: string
@@ -76,6 +80,9 @@ export interface ApprovedUnraidRestartOptions {
 export interface RoutineRestartAuthority {
   key: string
   expectedPolicyVersion: number
+  expectedDesiredStateVersion: number
+  expectedGrantVersion: number
+  requester: RoutineActionRequester
   reauthorize(): Promise<
     | { allowed: true; receiptId: string; profileVersion: number }
     | { allowed: false; reason: string }
@@ -173,6 +180,9 @@ export function createApprovedUnraidRestartExecutor(options: ApprovedUnraidResta
         routineReceipt = options.reserveRoutineAction({
           key: execution.routine.key,
           expectedPolicyVersion: execution.routine.expectedPolicyVersion,
+          expectedDesiredStateVersion: execution.routine.expectedDesiredStateVersion,
+          expectedGrantVersion: execution.routine.expectedGrantVersion,
+          requester: execution.routine.requester,
           authorizationReceiptId: routineAuthorization!.receiptId,
           authorizationVersion: routineAuthorization!.profileVersion,
           action: "unraid.container.restart",

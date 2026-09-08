@@ -427,9 +427,17 @@ describe("Sanctuary runtime tool context", () => {
     const agentRoot = runtimeMocks.getAgentRoot()
     const reserveRoutineAction = runtimeMocks.state.restartOptions?.reserveRoutineAction as (input: Record<string, unknown>) => unknown
     const transitionRoutineAction = runtimeMocks.state.restartOptions?.transitionRoutineAction as (input: Record<string, unknown>) => unknown
-    expect(reserveRoutineAction({ key: "restart:books" })).toEqual({ state: "reserved" })
+    const reservation = {
+      key: "unraid.restart:books", action: "unraid.container.restart", target: "books",
+      expectedPolicyVersion: 2, expectedDesiredStateVersion: 1, expectedGrantVersion: 2,
+      requester: { kind: "owner", friendId: "ari", profileId: "sanctuary-owner", requestId: "request-current", sessionEventId: "evt-current", origin: { friendId: "ari", channel: "telegram", key: "telegram_owner" } },
+      authorizationReceiptId: "relationship-current", authorizationVersion: 3, attemptId: "attempt-current",
+      expectedBeforeState: "exited", resolvedTarget: { id: "Docker:books", name: "books" },
+      effect: { operation: "restart", targetId: "Docker:books" }, now: "2026-09-08T00:00:00.000Z",
+    }
+    expect(reserveRoutineAction(reservation)).toEqual({ state: "reserved" })
     expect(transitionRoutineAction({ id: "receipt-1" })).toEqual({ state: "verified" })
-    expect(runtimeMocks.consumeRoutineActionGrant).toHaveBeenCalledWith(agentRoot, { key: "restart:books" })
+    expect(runtimeMocks.consumeRoutineActionGrant).toHaveBeenCalledExactlyOnceWith(agentRoot, reservation)
     expect(runtimeMocks.transitionRoutineActionReceipt).toHaveBeenCalledWith(agentRoot, { id: "receipt-1" })
 
     const target = { id: "Docker:books", name: "books" }
