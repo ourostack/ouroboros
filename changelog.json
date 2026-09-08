@@ -6,7 +6,8 @@
       "changes": [
         "Keep engine retry controls and rejected attempts out of canonical conversation history while preserving accepted execution receipts.",
         "Honor exact raw session redaction markers consistently across conversation readers and context rebuilds.",
-        "Add a private, confined eight-event Sanctuary session repair with exact manifest, CAS readback, idempotence, and conditional rollback."
+        "Add a private, confined eight-event Sanctuary session repair with exact manifest, CAS readback, idempotence, and conditional rollback.",
+        "Validate required source assets in pre-build release checks while keeping compiled package checks strict."
       ]
     },
     {

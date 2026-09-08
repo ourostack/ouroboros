@@ -45,6 +45,10 @@ const REQUIRED_PACKAGE_ASSET_PATHS = [
   "deploy/unraid/sanctuary.ouro/psyche/TACIT.md",
 ]
 
+const REQUIRED_PACKAGE_ASSET_SOURCES = {
+  "dist/heart/session-redaction-repair-cli-main.js": "src/heart/session-redaction-repair-cli-main.ts",
+}
+
 const DISALLOWED_PACKAGE_ASSET_PATH_PREFIXES = [
   "dist/mailbox-ui/dist/",
   "dist/outlook-ui/",
@@ -157,11 +161,23 @@ function listPackageFiles(packageRoot, deps = defaultDeps()) {
   return files
 }
 
-function validatePackageAssets(packageRoot, deps = defaultDeps()) {
+function validatePackageAssets(packageRoot, deps = defaultDeps(), options = {}) {
   const packageFiles = listPackageFiles(packageRoot, deps)
   const packageFileSet = new Set(packageFiles)
+  let usedSourceAsset = false
   const missing = REQUIRED_PACKAGE_ASSET_PATHS
-    .filter((assetPath) => !packageFileSet.has(assetPath))
+    .filter((assetPath) => {
+      if (packageFileSet.has(assetPath)) return false
+      const sourcePath = options?.sourceTree === true && REQUIRED_PACKAGE_ASSET_SOURCES[assetPath]
+      if (!sourcePath) return true
+      try {
+        if (!deps.lstatSync(deps.join(packageRoot, sourcePath)).isFile()) return true
+        usedSourceAsset = true
+        return false
+      } catch {
+        return true
+      }
+    })
     .sort()
   const disallowedByPath = packageFiles
     .filter((assetPath) => DISALLOWED_PACKAGE_ASSET_PATH_PREFIXES.some((prefix) => assetPath.startsWith(prefix)))
@@ -177,7 +193,7 @@ function validatePackageAssets(packageRoot, deps = defaultDeps()) {
       packageRoot,
       missing,
       disallowed,
-      message: "package assets verified",
+      message: usedSourceAsset ? "source checkout assets verified; built package validation still required" : "package assets verified",
     }
   }
 
@@ -275,6 +291,7 @@ function defaultDeps() {
     dirname: path.dirname,
     existsSync: fs.existsSync,
     join: path.join,
+    lstatSync: fs.lstatSync,
     readFileSync: fs.readFileSync,
     readdirSync: fs.readdirSync,
     realpathSync: fs.realpathSync,
