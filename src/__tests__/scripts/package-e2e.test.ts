@@ -11,6 +11,7 @@ const {
   runLocalTarballBinVersionSmoke,
   runLocalTarballSemanticOwnershipSmoke,
   runLocalTarballBlueBubblesHostSmoke,
+  runLocalTarballAssetSmoke,
   runPackageE2ESuite,
 } = require(path.resolve(__dirname, "../../../scripts/package-e2e.cjs"))
 const {
@@ -109,6 +110,29 @@ describe("package-e2e", () => {
       writeRequiredPackageAssets(root)
       expect(fs.statSync(path.join(root, "dist/heart/session-redaction-repair-cli-main.js")).isFile()).toBe(true)
     } finally { fs.rmSync(root, { recursive: true, force: true }) }
+  })
+  it("A003 refuses an installed package missing the compiled private entrypoint even when its source is present", () => {
+    const { deps, calls, prefixDir } = makePackageInstallDeps(["", "a003 private repair routing verified\n"])
+    const install = deps.execFileSync.getMockImplementation()!
+    deps.execFileSync.mockImplementation((command, args, options) => {
+      const output = install(command, args, options)
+      if (command === "npm" && args[0] === "install") {
+        const packageRoot = path.join(prefixDir, "node_modules", "@ouro.bot", "cli")
+        fs.unlinkSync(path.join(packageRoot, "dist/heart/session-redaction-repair-cli-main.js"))
+        const source = path.join(packageRoot, "src/heart/session-redaction-repair-cli-main.ts")
+        fs.mkdirSync(path.dirname(source), { recursive: true })
+        fs.writeFileSync(source, "export {}")
+      }
+      return output
+    })
+    const result = runLocalTarballAssetSmoke({ tarballPath: "/tmp/a003.tgz", binName: "ouro" }, deps)
+    expect(result).toMatchObject({
+      ok: false,
+      message: "missing required package assets: dist/heart/session-redaction-repair-cli-main.js",
+    })
+    expect(calls).toHaveLength(1)
+    expect(calls[0].command).toBe("npm")
+    expect(fs.existsSync(prefixDir)).toBe(false)
   })
   it("builds npm install args for an isolated prefix and local tarball", () => {
     expect(
