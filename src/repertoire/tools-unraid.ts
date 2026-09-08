@@ -6,6 +6,7 @@ import { authorizeRestartApprovalRequester, authorizeRoutineActionRequester } fr
 import { canonicalApprovalArguments } from "../heart/approval-store"
 import { inspectRoutineActionGrant } from "../heart/steward-policy"
 import { advanceObligation, createObligation, findPendingObligationForRequest, markObligationReturnReady, type Obligation } from "../arc/obligations"
+import type { UnraidRestartExecution } from "./unraid-restart"
 
 export const SANCTUARY_CONTAINERS_QUERY = `query SanctuaryContainers {
   docker { containers(skipCache: true) { id names state status autoStart } }
@@ -152,9 +153,11 @@ function liveSourceIdentityDigest(value: unknown): string {
 }
 
 export function createUnraidReadTools(client: ReadClient) {
-  const listContainers = async (): Promise<ToolResult<ReturnType<typeof mapContainers>>> => {
+  const listContainers = async (signal?: AbortSignal): Promise<ToolResult<ReturnType<typeof mapContainers>>> => {
     try {
-      const data = await client.read<Record<string, unknown>>(SANCTUARY_CONTAINERS_QUERY, {})
+      const data = signal
+        ? await client.read<Record<string, unknown>>(SANCTUARY_CONTAINERS_QUERY, {}, signal)
+        : await client.read<Record<string, unknown>>(SANCTUARY_CONTAINERS_QUERY, {})
       return { ok: true, data: mapContainers(data) }
     } catch (error) { return fail(error) }
   }
@@ -300,11 +303,11 @@ function householdRepairObligation(selection: ToolContext["routineActionSelectio
   })
 }
 
-async function runTrackedRestart(ctx: ToolContext, target: string, routine?: import("./unraid-restart").RoutineRestartAuthority): Promise<unknown> {
+async function runTrackedRestart(ctx: ToolContext, target: string, execution?: UnraidRestartExecution): Promise<unknown> {
   const obligation = householdRepairObligation(ctx.routineActionSelection, target)
   if (obligation && ctx.agentRoot) advanceObligation(ctx.agentRoot, obligation.id, { status: "updating_runtime", latestNote: `Starting the requested restart of ${target}` })
   try {
-    const result = await ctx.sanctuary!.restartContainer({ container: target }, routine ? { routine } : undefined)
+    const result = await ctx.sanctuary!.restartContainer({ container: target }, execution)
     if (obligation && ctx.agentRoot) {
       const succeeded = !!result && typeof result === "object" && !Array.isArray(result) && (result as { ok?: unknown }).ok === true
       if (succeeded) advanceObligation(ctx.agentRoot, obligation.id, {
@@ -411,15 +414,38 @@ export const unraidToolDefinitions: ToolDefinition[] = [
       if (!ctx?.sanctuary) return missingRuntime()
       if (!ctx.routineActionSelection && !ctx.restartApproval && (ctx.relationshipAuthorization || ctx.currentExternalEvent)) return routineActionDenied("routine action requires its standing selection or owner approval")
       const target = String(args.container)
+      let execution: UnraidRestartExecution | undefined
       if (ctx.restartApproval) {
         const approval = ctx.restartApproval
-        if (ctx.routineActionSelection || ctx.currentExternalEvent || ctx.agentRoot !== approval.agentRoot
-          || !approval.ownerBinding || !approval.target || approval.target.name !== target) return routineActionDenied("restart approval binding changed")
-        const authorization = await authorizeRestartApprovalRequester(ctx, args, approval.ownerBinding)
+        const unchanged = () => ctx.restartApproval === approval && !ctx.routineActionSelection && !ctx.currentExternalEvent
+          && ctx.agentRoot === approval.agentRoot && !!approval.ownerBinding && !!approval.target && approval.target.name === target
+          && !!approval.sessionPath && ctx.currentSession?.sessionPath === approval.sessionPath
+        const reauthorize = async (): ReturnType<typeof authorizeRestartApprovalRequester> => {
+          if (!unchanged()) return { allowed: false, reason: "restart approval binding changed" }
+          const authorization = await authorizeRestartApprovalRequester(ctx, args, approval.ownerBinding)
+          if (!authorization.allowed) return authorization
+          if (!unchanged()) return { allowed: false, reason: "restart approval binding changed" }
+          if (canonicalApprovalArguments(args).digest !== approval.argumentDigest) return { allowed: false, reason: "restart approval arguments changed" }
+          return authorization
+        }
+        const authorization = await reauthorize()
         if (!authorization.allowed) return routineActionDenied(authorization.reason)
-        if (canonicalApprovalArguments(args).digest !== approval.argumentDigest) return routineActionDenied("restart approval arguments changed")
+        execution = {
+          approval: {
+            target: approval.target,
+            reauthorize: async () => {
+              const current = await reauthorize()
+              if (!current.allowed) return current
+              const decision = inspectRoutineActionGrant(approval.agentRoot, {
+                key: `unraid.restart:${target}`, action: "unraid.container.restart", target,
+                requester: current.requester, authorizationVersion: current.profileVersion,
+              })
+              if (decision.allowed || !decision.approvalFallback) return { allowed: false, reason: decision.allowed ? "restart approval no longer has owner fallback" : decision.reason }
+              return { allowed: true }
+            },
+          },
+        }
       }
-      let routine: import("./unraid-restart").RoutineRestartAuthority | undefined
       if (ctx.routineActionSelection) {
         if (!ctx.agentRoot) return routineActionDenied("routine action authorization is unavailable")
         if (ctx.agentRoot !== ctx.routineActionSelection.agentRoot) return routineActionDenied("routine action agent root changed")
@@ -427,7 +453,7 @@ export const unraidToolDefinitions: ToolDefinition[] = [
         if (ctx.routineActionSelection.target !== target) return routineActionDenied("routine action arguments changed")
         const decision = inspectRoutineActionGrant(ctx.agentRoot, { key, action: "unraid.container.restart", target, expectedPolicyVersion, expectedDesiredStateVersion, expectedGrantVersion, requester, authorizationVersion })
         if (!decision.allowed) return routineActionDenied(decision.reason)
-        routine = {
+        execution = { routine: {
           key,
           expectedPolicyVersion: decision.policyVersion,
           expectedDesiredStateVersion: decision.desiredStateVersion,
@@ -438,9 +464,9 @@ export const unraidToolDefinitions: ToolDefinition[] = [
             if (!authorization.allowed) return authorization
             return { allowed: true, receiptId: authorization.receiptId, profileVersion: authorization.profileVersion }
           },
-        }
+        } }
       }
-      return JSON.stringify(await runTrackedRestart(ctx, target, routine))
+      return JSON.stringify(await runTrackedRestart(ctx, target, execution))
     },
     riskProfile: { mutates: "external_side_effect", risk: "high", reason: "restarts one existing allowlisted Docker container" },
     approvalPolicy: () => ({

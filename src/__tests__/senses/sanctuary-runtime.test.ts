@@ -30,6 +30,11 @@ const runtimeMocks = vi.hoisted(() => {
     }),
     consumeRoutineActionGrant: vi.fn(() => ({ state: "reserved" })),
     transitionRoutineActionReceipt: vi.fn(() => ({ state: "verified" })),
+    withRoutineActionAttempt: vi.fn(async (_root: string, _reservation: unknown, validate: () => Promise<void>, attempt: () => Promise<void>) => {
+      await validate()
+      await attempt()
+    }),
+    withStewardPolicyLease: vi.fn(async (_root: string, operation: () => Promise<void>) => operation()),
     recoverRoutineActionReceipts: vi.fn(async () => []),
     inspectSanctuaryPackageManagedBundle: vi.fn(),
     resolveSanctuaryPackageManagedRoots: vi.fn(({ repoRoot, bundlesRoot }: { repoRoot: string; bundlesRoot: string }) => ({
@@ -64,6 +69,8 @@ vi.mock("../../repertoire/unraid-restart", () => ({
 vi.mock("../../heart/steward-policy", () => ({
   consumeRoutineActionGrant: runtimeMocks.consumeRoutineActionGrant,
   transitionRoutineActionReceipt: runtimeMocks.transitionRoutineActionReceipt,
+  withRoutineActionAttempt: runtimeMocks.withRoutineActionAttempt,
+  withStewardPolicyLease: runtimeMocks.withStewardPolicyLease,
   recoverRoutineActionReceipts: runtimeMocks.recoverRoutineActionReceipts,
 }))
 vi.mock("../../nerves/runtime", () => ({ emitNervesEvent: runtimeMocks.emitNervesEvent }))
@@ -420,6 +427,36 @@ describe("Sanctuary runtime tool context", () => {
     }
     runtimeMocks.sab.readQueue.mockRejectedValueOnce(new Error("unexpected programming failure"))
     await expect(context.sanctuary!.getDownloadQueue()).rejects.toThrow("unexpected programming failure")
+  })
+
+  it("wires the final routine boundary into the canonical policy owner", async () => {
+    createSanctuaryToolContext("slugger")
+    const withAttempt = runtimeMocks.state.restartOptions?.withRoutineActionAttempt
+    expect(withAttempt).toEqual(expect.any(Function))
+    if (typeof withAttempt !== "function") throw new Error("final routine boundary is missing")
+    const reservation = { id: "reserved-action" }
+    const validate = vi.fn(async () => undefined)
+    const attempt = vi.fn(async () => undefined)
+    await withAttempt(reservation, validate, attempt)
+    expect(runtimeMocks.withRoutineActionAttempt).toHaveBeenCalledExactlyOnceWith(runtimeMocks.getAgentRoot(), reservation, validate, attempt)
+    expect(validate).toHaveBeenCalledOnce()
+    expect(attempt).toHaveBeenCalledOnce()
+    runtimeMocks.withRoutineActionAttempt.mockRejectedValueOnce(new Error("policy lease unavailable"))
+    await expect(withAttempt(reservation, validate, attempt)).rejects.toThrow("policy lease unavailable")
+  })
+
+  it("wires the one-time approval policy lease without creating a routine reservation", async () => {
+    createSanctuaryToolContext("slugger")
+    const withLease = runtimeMocks.state.restartOptions?.withApprovalPolicyLease
+    expect(withLease).toEqual(expect.any(Function))
+    if (typeof withLease !== "function") throw new Error("approval policy lease is missing")
+    const operation = vi.fn(async () => undefined)
+    await withLease(operation)
+    expect(runtimeMocks.withStewardPolicyLease).toHaveBeenCalledExactlyOnceWith(runtimeMocks.getAgentRoot(), operation)
+    expect(operation).toHaveBeenCalledOnce()
+    expect(runtimeMocks.consumeRoutineActionGrant).not.toHaveBeenCalled()
+    runtimeMocks.withStewardPolicyLease.mockRejectedValueOnce(new Error("policy lease unavailable"))
+    await expect(withLease(operation)).rejects.toThrow("policy lease unavailable")
   })
 
   it("routes routine-action reservation, transition, and recovery observations through the canonical policy seams", async () => {

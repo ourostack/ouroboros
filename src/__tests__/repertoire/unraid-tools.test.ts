@@ -4,7 +4,8 @@ import os from "node:os"
 import path from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import { createUnraidReadTools, normalizeDockerStatus, unraidToolDefinitions } from "../../repertoire/tools-unraid"
+import { createUnraidReadTools, normalizeDockerStatus, SANCTUARY_CONTAINERS_QUERY, unraidToolDefinitions } from "../../repertoire/tools-unraid"
+import { UnraidClient } from "../../repertoire/unraid-client"
 import { consumeRoutineActionGrant, readStewardPolicy, transitionRoutineActionReceipt, updateStewardPolicy } from "../../heart/steward-policy"
 import { approvalPolicyForInvocation, classifyApprovalForInvocation, execTool } from "../../repertoire/tools"
 import { readObligations } from "../../arc/obligations"
@@ -60,6 +61,39 @@ function installData(overrides: Record<string, unknown> = {}) {
 }
 
 describe("Unraid typed read tools", () => {
+  it("threads the shared final-read deadline into the actual GraphQL request", async () => {
+    const deadline = new AbortController()
+    const fetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      new Response(JSON.stringify({ data: { docker: { containers: [] } } }), { status: 200 }))
+    const tools = createUnraidReadTools(new UnraidClient({ endpoint: "https://host/graphql", apiKey: "fixture-read", fetch }))
+    await expect(tools.listContainers(deadline.signal)).resolves.toMatchObject({ ok: true, data: { containers: [], truncated: false } })
+    expect(fetch).toHaveBeenCalledExactlyOnceWith("https://host/graphql", expect.objectContaining({
+      method: "POST", headers: { "x-api-key": "fixture-read", "Content-Type": "application/json" },
+      body: JSON.stringify({ query: SANCTUARY_CONTAINERS_QUERY, variables: {} }),
+    }))
+    const requestSignal = fetch.mock.calls[0]![1]!.signal
+    expect(requestSignal?.aborted).toBe(false)
+    deadline.abort()
+    expect(requestSignal?.aborted).toBe(true)
+  })
+
+  it("does not retry a final read after its shared deadline aborts the actual request", async () => {
+    const deadline = new AbortController()
+    const aborted: Array<boolean | undefined> = []
+    const fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      deadline.abort(new DOMException("final read deadline expired", "TimeoutError"))
+      aborted.push(init?.signal?.aborted)
+      throw new Error("request aborted")
+    })
+    const tools = createUnraidReadTools(new UnraidClient({
+      endpoint: "https://host/graphql", apiKey: "fixture-read", fetch, sleep: async () => undefined,
+    }))
+    await expect(tools.listContainers(deadline.signal)).resolves.toMatchObject({ ok: false, error: { code: "transport", degraded: true } })
+    expect(fetch).toHaveBeenCalledOnce()
+    expect(aborted).toEqual([true])
+    expect(fetch.mock.calls[0]![1]?.body).toBe(JSON.stringify({ query: SANCTUARY_CONTAINERS_QUERY, variables: {} }))
+  })
+
   it("normalizes only canonical Docker state/status pairs", () => {
     expect(normalizeDockerStatus("RUNNING", "Up 2 months")).toEqual({ state: "running", exitCode: null, degraded: false })
     expect(normalizeDockerStatus("RUNNING", "Up 2 seconds (healthy)")).toEqual({ state: "running", exitCode: null, degraded: false })

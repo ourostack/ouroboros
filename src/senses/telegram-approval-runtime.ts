@@ -212,7 +212,11 @@ export function createTelegramApprovalRuntime(options: {
         relationshipAuthorization: {
           ...relationship,
           requestId: binding.requestId,
-          authorizeTool: async (name, args) => (await resolve(binding)).authorizeTool(name, args),
+          authorizeTool: async (name, args) => {
+            const current = await resolve(binding)
+            if (!ownerSessionMatches(binding, record.sessionPath)) return { allowed: false, reason: "restart approval owner session changed" }
+            return current.authorizeTool(name, args)
+          },
         },
       }
       const authorization = await authorizeRestartApprovalRequester(context, record.arguments, binding)
@@ -506,7 +510,7 @@ export function createTelegramApprovalRuntime(options: {
                 restartToolContext = {
                   ...restartToolContext,
                   restartApproval: Object.freeze({
-                    approvalId: existing.approvalId, agentRoot,
+                    approvalId: existing.approvalId, agentRoot, sessionPath: existing.sessionPath,
                     ownerBinding: Object.freeze({ ...existing.ownerBinding }),
                     argumentDigest: existing.argumentDigest,
                     target: Object.freeze({ id: target.id, name: String(context.arguments.container) }),

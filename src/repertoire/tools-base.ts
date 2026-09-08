@@ -177,7 +177,7 @@ export interface ToolContext {
     getMediaOptimization(): Promise<unknown>;
     searchMediaCatalog(args: { query?: string; limit?: number }): Promise<unknown>;
     resumeDownloadQueue(): Promise<unknown>;
-    restartContainer(args: { container: string }, execution?: { routine?: import("./unraid-restart").RoutineRestartAuthority }): Promise<unknown>;
+    restartContainer(args: { container: string }, execution?: import("./unraid-restart").UnraidRestartExecution): Promise<unknown>;
     recoverRoutineActions?(): Promise<unknown>;
   };
   /** Immutable standing-policy selection made before this exact tool dispatch. */
@@ -188,6 +188,7 @@ export interface ToolContext {
   restartApproval?: Readonly<{
     approvalId: string;
     agentRoot: string;
+    sessionPath: string;
     ownerBinding: Readonly<ApprovalOwnerBinding>;
     argumentDigest: string;
     target: Readonly<{ id: string; name: string }>;

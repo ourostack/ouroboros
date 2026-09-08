@@ -4,7 +4,7 @@ import { createHash, randomUUID } from "node:crypto"
 import { isDeepStrictEqual } from "node:util"
 import type { TrustLevel } from "@ouro.bot/friends"
 import { emitNervesEvent } from "../nerves/runtime"
-import { readSessionTransaction, withImmediateSessionTurnLease, writeSessionTransaction, type SessionTurnLease } from "../mind/session-transaction"
+import { readSessionTransaction, withImmediateSessionTurnLease, withSessionTurnLease, writeSessionTransaction, type SessionTurnLease } from "../mind/session-transaction"
 
 export type LearnedPolicyProvenance = "stated" | "observed" | "default"
 export type ActionGrantProvenance = "stated" | "installed_explicit_policy"
@@ -580,6 +580,37 @@ export function consumeRoutineActionGrant(agentRoot: string, input: {
     appendReceipt(receiptsPath(agentRoot), receipt)
     emitNervesEvent({ component: "heart", event: "heart.routine_action_reserved", message: "reserved routine action grant", meta: { key: input.key, target: input.target, policyVersion: policy.version } })
     return receipt
+  })
+}
+
+export function withStewardPolicyLease<T>(agentRoot: string, operation: (lease: SessionTurnLease) => Promise<T>): Promise<T> {
+  return withSessionTurnLease(policyPath(agentRoot), operation)
+}
+
+export async function withRoutineActionAttempt(
+  agentRoot: string,
+  reservation: RoutineActionReceipt,
+  validate: () => Promise<void>,
+  attempt: () => Promise<void>,
+): Promise<void> {
+  await withStewardPolicyLease(agentRoot, async (lease) => {
+    await validate()
+    const snapshot = readAuditedPolicy(agentRoot, lease)
+    const receipts = readRoutineActionReceipts(agentRoot)
+    const current = receipts.find((receipt) => receipt.id === reservation.id)
+    if (!current || current.state !== "reserved" || !isDeepStrictEqual(current, reservation)) throw new Error("routine action reservation changed")
+    if (!reservation.requester || reservation.desiredStateVersion === undefined) throw new Error("routine action reservation has no current requester binding")
+    const now = new Date().toISOString()
+    const decision = inspectRoutineActionGrantSnapshot(snapshot.policy, snapshot.rows, receipts.filter((receipt) => receipt.id !== reservation.id), {
+      key: reservation.key, action: reservation.action, target: reservation.target, requester: reservation.requester,
+      authorizationVersion: reservation.authorizationVersion, expectedPolicyVersion: reservation.policyVersion,
+      expectedDesiredStateVersion: reservation.desiredStateVersion, expectedGrantVersion: reservation.grantVersion, now,
+    })
+    if (!decision.allowed) throw new Error(decision.reason)
+    const reservedAt = Date.parse(reservation.reservedAt)
+    const windowStart = Date.parse(now) - snapshot.policy.routineActionGrants[reservation.key]!.windowMs
+    if (!(reservedAt > windowStart && reservedAt <= Date.parse(now))) throw new Error("routine action reservation is outside its rate window")
+    await attempt()
   })
 }
 

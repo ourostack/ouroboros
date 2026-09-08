@@ -10,14 +10,15 @@ import Database from "better-sqlite3"
 import { canonicalApprovalArguments, openApprovalStore, type ApprovalOwnerBinding } from "../../heart/approval-store"
 import type { ApprovalProposalRequest, runAgent } from "../../heart/core"
 import { loadSessionEnvelopeFile, projectProviderMessages } from "../../heart/session-events"
-import { readStewardPolicy, updateStewardPolicy } from "../../heart/steward-policy"
-import { readSessionTransaction, withSessionTurnLease } from "../../mind/session-transaction"
+import { readRoutineActionReceipts, readStewardPolicy, updateStewardPolicy } from "../../heart/steward-policy"
+import { currentSessionTurnLease, readSessionTransaction, withSessionTurnLease } from "../../mind/session-transaction"
 import { createLogger, createNdjsonFileSink, type LogEvent } from "../../nerves"
 import { setRuntimeLogger } from "../../nerves/runtime"
 import { digestJson, validateAdvertisedToolArguments } from "../../repertoire/tool-arguments"
 import { execTool, resolveToolDefinition } from "../../repertoire/tools"
 import { routineActionRequester } from "../../repertoire/relationship-authorization"
 import { stewardPolicyToolDefinition } from "../../repertoire/tools-steward-policy"
+import { createApprovedUnraidRestartExecutor, type ApprovedUnraidRestartOptions, type UnraidRestartAttempt } from "../../repertoire/unraid-restart"
 import { createTelegramApprovalRuntime } from "../../senses/telegram-approval-runtime"
 import { createProductionTelegramRelationshipComposition, createTelegramSenseApp, opaqueTelegramSubject, readOrCreateTelegramIdentityKey, sanctuaryTelegramApprovalEvidenceMac } from "../../senses/telegram"
 import { TelegramApiError, type TelegramBotApi, type TelegramUpdate } from "../../senses/telegram-client"
@@ -178,6 +179,209 @@ afterEach(() => {
 })
 
 describe("production-composed Telegram approval lifecycle", () => {
+  it.each([
+    "unchanged owner", "expired stated fallback", "revoked owner", "downgraded trust", "changed initiative", "advanced profile", "removed capability",
+    "different request", "different event", "different session key", "different session path", "different root", "lost marker", "changed marker digest",
+    "mixed event", "mixed standing", "changed arguments", "extra arguments", "new ingress", "missing session", "corrupt session",
+    "replaced target", "renamed target", "degraded target", "truncated inventory", "replacement after callback",
+    "negative desired state", "standing grant", "installed grant", "expired installed grant",
+    "lost marker during final authorization", "changed marker digest during final authorization",
+    "different session path during final authorization", "mixed standing during final authorization",
+    "revoked owner during final inventory",
+  ])("A006 S4 final approval refuses drift or executes the exact %s after callback and credential acquisition", async (change) => {
+    const agentRoot = root()
+    setRuntimeLogger(createLogger({ sinks: [createNdjsonFileSink(path.join(agentRoot, "telegram-audit.ndjson"))] }))
+    const owner = await ownerFixture(agentRoot, vi.fn())
+    const policyPath = path.join(agentRoot, "state", "policy", "steward.json")
+    const container = { id: "container-1", name: "calibre-web", state: "running" as const, status: "Up", degraded: false }
+    const listContainers = vi.fn<ApprovedUnraidRestartOptions["listContainers"]>(async () => ({ ok: true, data: { containers: [container], truncated: false } }))
+    owner.runtimeContext.sanctuary!.listContainers = listContainers
+    let executionContext: ToolContext | undefined
+    let executionArguments: Record<string, string> | undefined
+    const attempts: UnraidRestartAttempt[] = []
+    let policyLeaseAtMutation = false
+    const mutate = vi.fn(async () => {
+      policyLeaseAtMutation = currentSessionTurnLease(policyPath) !== null
+      return { docker: { restart: { id: "container-1", names: ["/calibre-web"] } } }
+    })
+    const loadWriteApiKey = vi.fn(async () => {
+      if (!executionContext || !executionArguments) throw new Error("fixture did not reach the actual restart handler")
+      const context = executionContext
+      if (["revoked owner", "downgraded trust", "changed initiative"].includes(change)) {
+        const current = (await owner.friends.get(owner.binding.friendId))!
+        if (change === "revoked owner") await owner.friends.put(current.id, { ...current, admissionState: "revoked" })
+        if (change === "downgraded trust") await owner.friends.put(current.id, { ...current, trustLevel: "friend" })
+        if (change === "changed initiative") await owner.friends.put(current.id, { ...current, initiativePolicy: "reactive_only" })
+      }
+      if (change === "advanced profile" || change === "removed capability") {
+        const registryPath = path.join(agentRoot, "tool-profiles.json")
+        const registry = JSON.parse(fs.readFileSync(registryPath, "utf8"))
+        if (change === "advanced profile") registry.profiles["sanctuary-owner"].version += 1
+        else registry.profiles["sanctuary-owner"].toolNames = []
+        fs.writeFileSync(registryPath, JSON.stringify(registry))
+      }
+      if (change === "different request") context.relationshipAuthorization = { ...context.relationshipAuthorization!, requestId: "request-other" }
+      if (change === "different event") context.relationshipAuthorization = {
+        ...context.relationshipAuthorization!, actor: { ...context.relationshipAuthorization!.actor!, sessionEventId: "evt-other" },
+      }
+      if (change === "different session key") context.currentSession = { ...context.currentSession!, key: "telegram:other" }
+      if (change === "different session path") context.currentSession = { ...context.currentSession!, sessionPath: path.join(agentRoot, "other.json") }
+      if (change === "different root") context.agentRoot = path.join(agentRoot, "other")
+      if (change === "lost marker") delete context.restartApproval
+      if (change === "changed marker digest") context.restartApproval = { ...context.restartApproval!, argumentDigest: "0".repeat(64) }
+      if (change === "mixed event") Object.defineProperty(context, "currentExternalEvent", { value: { schemaVersion: 1, source: "sanctuary-health" } })
+      if (change === "mixed standing") context.routineActionSelection = { kind: "denied", reason: "unexpected second authority" }
+      if (change === "changed arguments") executionArguments.container = "jellyfin"
+      if (change === "extra arguments") executionArguments.extra = "not approved"
+      if (change === "new ingress") {
+        const ingress = new FileTelegramEffectJournal(path.join(agentRoot, "state", "telegram", "later-ingress"))
+        effectStores.push(ingress)
+        await recordTelegramEffectsInSession({ store: ingress, sessionPath: owner.sessionPath, artifacts: [], inbound: { text: "A different request", reference: "telegram-inbound:later-request" } })
+      }
+      if (change === "missing session") fs.unlinkSync(owner.sessionPath)
+      if (change === "corrupt session") fs.writeFileSync(owner.sessionPath, "{invalid")
+      if (change === "replaced target") listContainers.mockResolvedValue({ ok: true, data: { containers: [{ ...container, id: "container-2" }], truncated: false } })
+      if (change === "renamed target") listContainers.mockResolvedValue({ ok: true, data: { containers: [{ ...container, name: "jellyfin" }], truncated: false } })
+      if (change === "degraded target") listContainers.mockResolvedValue({ ok: true, data: { containers: [{ ...container, degraded: true }], truncated: false } })
+      if (change === "truncated inventory") listContainers.mockResolvedValue({ ok: true, data: { containers: [container], truncated: true } })
+      if (change === "revoked owner during final inventory") listContainers.mockImplementation(async () => {
+        const current = (await owner.friends.get(owner.binding.friendId))!
+        await owner.friends.put(current.id, { ...current, admissionState: "revoked" })
+        return { ok: true, data: { containers: [container], truncated: false } }
+      })
+      if (change === "negative desired state" || change === "standing grant") await stewardPolicyToolDefinition.handler({
+        action: "set_desired_state", key: "container:calibre-web", value: change === "negative desired state" ? "off" : "on",
+        provenance: "stated", source: "current authenticated fixture owner",
+      }, owner.requestContext)
+      if (change === "standing grant" || change === "installed grant") await grantFixture(owner, change === "standing grant" ? "stated" : "installed_explicit_policy")
+      if (change === "expired stated fallback" || change === "expired installed grant") {
+        vi.useFakeTimers({ toFake: ["Date"] })
+        const expiry = Date.now() + 1000
+        await grantFixture(owner, change === "expired stated fallback" ? "stated" : "installed_explicit_policy", new Date(expiry).toISOString())
+        vi.setSystemTime(expiry)
+      }
+      return "fixture-write"
+    })
+    const restart = createApprovedUnraidRestartExecutor({
+      endpoint: "https://host/graphql", listContainers, loadWriteApiKey, createClient: () => ({ mutate }),
+      persistAttempt: async (attempt) => { attempts.push(structuredClone(attempt)) },
+      withApprovalPolicyLease: (operation: () => Promise<void>) => withSessionTurnLease(policyPath, operation),
+      observationTimeoutMs: 0,
+    })
+    owner.runtimeContext.sanctuary!.restartContainer = vi.fn(restart)
+    const api: TelegramBotApi = { stop: vi.fn(), request: vi.fn(async () => ({ message_id: 101 })) }
+    const runtime = createTelegramApprovalRuntime({
+      agentName: "sanctuary", api, authorizedUserId: "42", authorizedChatId: "42", ...owner.runtimeOptions, effects: approvalEffects(agentRoot, api, owner),
+      resolveOwnerRelationship: async (binding) => {
+        const current = await owner.runtimeOptions.resolveOwnerRelationship(binding)
+        if (loadWriteApiKey.mock.calls.length && executionContext) {
+          if (change === "lost marker during final authorization") delete executionContext.restartApproval
+          if (change === "changed marker digest during final authorization") executionContext.restartApproval = { ...executionContext.restartApproval!, argumentDigest: "0".repeat(64) }
+          if (change === "different session path during final authorization") executionContext.currentSession = { ...executionContext.currentSession!, sessionPath: path.join(agentRoot, "other.json") }
+          if (change === "mixed standing during final authorization") executionContext.routineActionSelection = { kind: "denied", reason: "unexpected second authority" }
+        }
+        return current
+      },
+      dependencies: {
+        agentRoot, acceptanceMarker: () => null, runProvider: async () => ({ outcome: "settled" }),
+        executeTool: async (name, args, context) => {
+          executionContext = context
+          executionArguments = args
+          if (change === "replacement after callback") listContainers.mockResolvedValue({ ok: true, data: { containers: [{ ...container, id: "container-2" }], truncated: false } })
+          return execTool(name, args, context)
+        },
+      },
+    })
+    const store = openApprovalStore({ databasePath: path.join(agentRoot, "state", "approvals", "approvals.sqlite") })
+    try {
+      const suspension = await runtime.coordinator(owner).propose(proposalRequest(owner.requestContext))
+      const bound = pending(agentRoot)[0]!
+      let callbackResult: { accepted: boolean } | undefined
+      let callbackError: unknown
+      try { callbackResult = await runtime.transport.handleUpdate(callback(String(bound.approveCallbackData))) }
+      catch (error) { callbackError = error }
+      const allowed = change === "unchanged owner" || change === "expired stated fallback"
+      expect(loadWriteApiKey).toHaveBeenCalledOnce()
+      expect(mutate).toHaveBeenCalledTimes(allowed ? 1 : 0)
+      expect(store.read(suspension.approvalId)).toMatchObject({ state: allowed ? "succeeded" : "failed", attemptedAt: expect.any(String) })
+      expect(readRoutineActionReceipts(agentRoot)).toEqual([])
+      if (allowed) {
+        expect(callbackError).toBeUndefined()
+        expect(callbackResult?.accepted).toBe(true)
+        expect(policyLeaseAtMutation).toBe(true)
+        expect(attempts.map((attempt) => attempt.state)).toEqual(["attempt_not_started", "attempting", "succeeded"])
+      } else {
+        expect(attempts.map((attempt) => attempt.state)).toEqual(["attempt_not_started"])
+        expect(store.read(suspension.approvalId)).toMatchObject({ result: expect.stringMatching(/^error: .+/u), reason: null })
+        if (["revoked owner", "downgraded trust", "changed initiative", "revoked owner during final inventory"].includes(change)) {
+          expect(callbackError).toBeInstanceOf(Error)
+          if (!(callbackError instanceof Error)) throw new Error("fixture expected a visible effect authorization failure")
+          expect(callbackError.message).toContain("Telegram effect authorization denied")
+        } else if (!["missing session", "corrupt session"].includes(change)) {
+          expect(callbackError).toBeUndefined()
+          expect(callbackResult?.accepted).toBe(false)
+        }
+      }
+      if (change === "corrupt session") expect(fs.readFileSync(owner.sessionPath, "utf8")).toBe("{invalid")
+      expect(Object.keys(store.read(suspension.approvalId)!.ownerBinding!).sort()).toEqual(["friendId", "profileVersion", "requestId", "sessionEventId", "sessionKey"])
+    } finally { vi.useRealTimers(); store.close(); runtime.close() }
+  })
+
+  it.each(["acknowledgement lost", "crash after attempting", "verification failure", "terminal persistence failure"] as const)("A006 S4 keeps real one-time %s truthful and never replays on another callback or recovery", async (failure) => {
+    const agentRoot = root()
+    setRuntimeLogger(createLogger({ sinks: [createNdjsonFileSink(path.join(agentRoot, "telegram-audit.ndjson"))] }))
+    const owner = await ownerFixture(agentRoot, vi.fn())
+    const container = { id: "container-1", name: "calibre-web", state: "running" as const, status: "Up", degraded: false }
+    const attempts: UnraidRestartAttempt[] = []
+    const mutate = vi.fn(async () => {
+      if (failure === "acknowledgement lost") throw new Error("connection reset after effect")
+      return { docker: { restart: { id: container.id, names: ["/calibre-web"] } } }
+    })
+    const listContainers = vi.fn<ApprovedUnraidRestartOptions["listContainers"]>(async () => {
+      if (mutate.mock.calls.length && failure === "verification failure") throw new Error("verification unavailable")
+      return { ok: true, data: { containers: [container], truncated: false } }
+    })
+    owner.runtimeContext.sanctuary!.listContainers = listContainers
+    owner.runtimeContext.sanctuary!.restartContainer = createApprovedUnraidRestartExecutor({
+      endpoint: "https://host/graphql", listContainers, loadWriteApiKey: async () => "fixture-write", createClient: () => ({ mutate }),
+      withApprovalPolicyLease: (operation) => withSessionTurnLease(path.join(agentRoot, "state", "policy", "steward.json"), operation),
+      persistAttempt: async (attempt) => {
+        if (failure === "terminal persistence failure" && attempt.state === "succeeded") throw new Error("terminal receipt unavailable")
+        attempts.push(structuredClone(attempt))
+        if (failure === "crash after attempting" && attempt.state === "attempting") throw new Error("crash after durable attempt")
+      },
+      observationTimeoutMs: 0,
+    })
+    const api: TelegramBotApi = { stop: vi.fn(), request: vi.fn(async () => ({ message_id: 101 })) }
+    const runtime = createTelegramApprovalRuntime({
+      agentName: "sanctuary", api, authorizedUserId: "42", authorizedChatId: "42", ...owner.runtimeOptions, effects: approvalEffects(agentRoot, api, owner),
+      dependencies: { agentRoot, acceptanceMarker: () => null, runProvider: async () => ({ outcome: "settled" }) },
+    })
+    const store = openApprovalStore({ databasePath: path.join(agentRoot, "state", "approvals", "approvals.sqlite") })
+    try {
+      const suspension = await runtime.coordinator(owner).propose(proposalRequest(owner.requestContext))
+      const data = String(pending(agentRoot)[0]!.approveCallbackData)
+      const interrupted = failure === "crash after attempting"
+      if (interrupted) await expect(runtime.transport.handleUpdate(callback(data))).rejects.toThrow("crash after durable attempt")
+      else await expect(runtime.transport.handleUpdate(callback(data))).resolves.toMatchObject({ accepted: false })
+      const record = store.read(suspension.approvalId)!
+      expect(record).toMatchObject({ state: interrupted ? "attempted" : "failed", attemptedAt: expect.any(String), reason: null })
+      if (interrupted) expect(record.result).toBeNull()
+      expect(attempts.map((attempt) => attempt.state).slice(0, 2)).toEqual(["attempt_not_started", "attempting"])
+      expect(attempts.at(-1)?.state).toBe(["acknowledgement lost", "verification failure"].includes(failure) ? "attempted_or_indeterminate" : "attempting")
+      if (failure === "acknowledgement lost" || failure === "verification failure") expect(record.result).toContain("was attempted")
+      if (failure === "terminal persistence failure") expect(record.result).toContain("restart succeeded but its terminal receipt could not be persisted")
+      expect(mutate).toHaveBeenCalledTimes(failure === "crash after attempting" ? 0 : 1)
+      if (interrupted) await expect(runtime.transport.handleUpdate(callback(data, "duplicate-after-failure"))).rejects.toThrow("persisted decision attempt is invalid")
+      else await runtime.transport.handleUpdate(callback(data, "duplicate-after-failure"))
+      await runtime.recover()
+      await runtime.transport.handleUpdate(callback(data, "duplicate-after-recovery"))
+      expect(store.read(suspension.approvalId)).toMatchObject({ state: interrupted ? "attempted_indeterminate" : "failed", attemptedAt: expect.any(String) })
+      expect(mutate).toHaveBeenCalledTimes(failure === "crash after attempting" ? 0 : 1)
+      expect(readRoutineActionReceipts(agentRoot)).toEqual([])
+    } finally { store.close(); runtime.close() }
+  })
+
   it.each(["approve", "deny"] as const)("recovers a MAC-fenced pre-deadline %s through the real store after transport TTL with signed settlement evidence", async (decision) => {
     const agentRoot = root()
     const clock = { value: 1_000_000 }
@@ -290,7 +494,7 @@ describe("production-composed Telegram approval lifecycle", () => {
             actor: { friendId: owner.binding.friendId, trustLevel: "family", sessionEventId: owner.binding.sessionEventId },
           })
           expect(context).toHaveProperty("restartApproval", {
-            approvalId: suspension.approvalId, agentRoot, ownerBinding: owner.binding,
+            approvalId: suspension.approvalId, agentRoot, sessionPath, ownerBinding: owner.binding,
             argumentDigest: canonicalApprovalArguments({ container: "calibre-web" }).digest,
             target: { id: "container-1", name: "calibre-web" },
           })
