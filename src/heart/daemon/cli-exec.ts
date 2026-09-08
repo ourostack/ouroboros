@@ -9697,6 +9697,8 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     const daemonResult = await ensureDaemonRunning(deps)
 
     if (deps.startChat) {
+      const health = await checkProviderHealthBeforeChat(hatchInput.agentName, deps)
+      if (!health.ok) return health.output
       await deps.startChat(hatchInput.agentName)
       return ""
     }
