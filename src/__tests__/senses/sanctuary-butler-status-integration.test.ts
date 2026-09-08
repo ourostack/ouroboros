@@ -48,8 +48,7 @@ vi.mock("../../heart/daemon/socket-client", () => ({
 
 import { patchRuntimeConfig, resetConfigCache } from "../../heart/config"
 import { readStewardPolicy } from "../../heart/steward-policy"
-import { createRelationshipAuthorizationEvaluator, loadRelationshipCapabilityRegistry } from "../../repertoire/relationship-authorization"
-import { createTelegramSenseApp, opaqueTelegramSubject } from "../../senses/telegram"
+import { createProductionTelegramRelationshipComposition, createTelegramSenseApp } from "../../senses/telegram"
 import type { TelegramBotApi, TelegramInboundMessage, TelegramLongPoll } from "../../senses/telegram-client"
 
 function stream(chunks: unknown[]) {
@@ -75,25 +74,19 @@ describe("Sanctuary Telegram stored-status integration", () => {
   })
 
   it("turns Ari's natural Books preference into both exact desired states without restart noise and reverses both", async () => {
-    const identityKey = "k".repeat(43)
     const botToken = "test-token"
+    const botId = "123"
     const userId = "42"
     const chatId = "42"
-    const subject = opaqueTelegramSubject(identityKey, botToken, userId, chatId)
-    const registry = loadRelationshipCapabilityRegistry(harness.agentRoot)
+    const credentials = { botToken, botId, authorizedUserId: userId, authorizedChatId: chatId }
     const owner = {
       id: "ari", name: "Ari", trustLevel: "family" as const, admissionState: "active" as const, initiativePolicy: "proactive" as const,
-      capabilityProfileId: "sanctuary-owner", externalIds: [{ provider: "telegram-user" as const, externalId: subject, linkedAt: "2026-08-29T00:00:00.000Z" }],
+      capabilityProfileId: "sanctuary-owner", externalIds: [{ provider: "telegram-user" as const, externalId: userId, tenantId: botId, linkedAt: "2026-08-29T00:00:00.000Z" }],
       tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: "2026-08-29T00:00:00.000Z", updatedAt: "2026-08-29T00:00:00.000Z", schemaVersion: 1 as const,
     }
-    await new FileFriendStore(path.join(harness.agentRoot, "friends")).put(owner.id, owner)
-    const relationshipAuthorization = createRelationshipAuthorizationEvaluator({
-      friend: owner,
-      registry,
-      requestId: "telegram-status-request",
-      requestPhase: "inbound",
-      sessionEventId: "telegram-status-event",
-    })
+    const friendStore = new FileFriendStore(path.join(harness.agentRoot, "friends"))
+    await friendStore.put(owner.id, owner)
+    const relationship = await createProductionTelegramRelationshipComposition("sanctuary", credentials, harness.agentRoot)
     let advertisedTools: string[] = []
     const invokedTools: string[] = []
     const invoke = (id: string, name: string, args: Record<string, unknown>) => (request: any) => {
@@ -125,10 +118,10 @@ describe("Sanctuary Telegram stored-status integration", () => {
     const sendApproval = vi.fn()
     const app = createTelegramSenseApp({
       agentName: "sanctuary",
-      credentials: { botToken, authorizedUserId: userId, authorizedChatId: chatId },
-      identityKey,
+      credentials,
       _agentRoot: harness.agentRoot,
-      _toolContext: { signin: async () => undefined, agentRoot: harness.agentRoot, relationshipAuthorization } as any,
+      _toolContext: { agentRoot: harness.agentRoot },
+      ...relationship,
       api,
       offsetStore: { load: () => 0, save: vi.fn() },
       createLongPoll: (options) => { onMessage = options.onMessage; return poll },

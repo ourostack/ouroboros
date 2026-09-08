@@ -15,6 +15,13 @@ function root(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "unraid-tools-routine-"))
 }
 
+function policyOwner(sessionEventId: string) {
+  return {
+    friendId: "ari", trustLevel: "family" as const, sessionEventId,
+    authorization: { profileId: "sanctuary-owner", profileVersion: 7, requestId: `request-${sessionEventId}`, sessionKey: "telegram_owner", receiptId: `authorization-${sessionEventId}` },
+  }
+}
+
 function installData(overrides: Record<string, unknown> = {}) {
   return {
     runtimePackageVersion: "0.1.0-alpha.798",
@@ -396,7 +403,7 @@ describe("Unraid typed read tools", () => {
     const agentRoot = root()
     updateStewardPolicy(agentRoot, {
       expectedVersion: 0,
-      actor: { friendId: "ari", trustLevel: "family", sessionEventId: "evt-1" },
+      actor: policyOwner("evt-1"),
       mutation: { kind: "grant_routine_action", key: "unraid.restart:alpha", action: "unraid.container.restart", targets: ["alpha"], maxCount: 2, windowMs: 3_600_000, verificationRequired: true, exclusions: [], provenance: "stated" },
     })
     const restart = unraidToolDefinitions.find((definition) => definition.tool.function.name === "unraid_restart_container")!
@@ -412,7 +419,7 @@ describe("Unraid typed read tools", () => {
     expect(await approvalPolicyForInvocation("unraid_restart_container", { container: "other" }, context)).toMatchObject({ kind: "required" })
     expect(await approvalPolicyForInvocation("unraid_restart_container", { container: 7 } as any, context)).toMatchObject({ kind: "required" })
     const beforePolicyId = (await approvalPolicyForInvocation("unraid_restart_container", { container: "other" }, context) as { policyId: string }).policyId
-    updateStewardPolicy(agentRoot, { expectedVersion: 1, actor: { friendId: "ari", trustLevel: "family", sessionEventId: "evt-4" }, mutation: { kind: "set_desired_state", key: "container:other", value: "on", provenance: "stated", source: "request" } })
+    updateStewardPolicy(agentRoot, { expectedVersion: 1, actor: policyOwner("evt-4"), mutation: { kind: "set_desired_state", key: "container:other", value: "on", provenance: "stated", source: "request" } })
     const afterPolicyId = (await approvalPolicyForInvocation("unraid_restart_container", { container: "other" }, context) as { policyId: string }).policyId
     expect(afterPolicyId).toBe(beforePolicyId)
     const nonFamily = { ...context, relationshipAuthorization: { ...context.relationshipAuthorization, actor: { friendId: "brother", trustLevel: "friend", sessionEventId: "evt-3" } } }
@@ -430,7 +437,7 @@ describe("Unraid typed read tools", () => {
     const agentRoot = root()
     updateStewardPolicy(agentRoot, {
       expectedVersion: 0,
-      actor: { friendId: "ari", trustLevel: "family", sessionEventId: "evt-owner-grant" },
+      actor: policyOwner("evt-owner-grant"),
       mutation: { kind: "grant_routine_action", key: "unraid.restart:books", action: "unraid.container.restart", targets: ["books"], maxCount: 2, windowMs: 3_600_000, verificationRequired: true, exclusions: [], provenance: "stated" },
     })
     const restartContainer = vi.fn(async () => ({ ok: true, data: { container: "books", state: "running" } }))
@@ -476,7 +483,7 @@ describe("Unraid typed read tools", () => {
 
   it.each(["reported failure", "thrown failure"] as const)("keeps the household return obligation visible after a %s", async (failure) => {
     const agentRoot = root()
-    updateStewardPolicy(agentRoot, { expectedVersion: 0, actor: { friendId: "ari", trustLevel: "family", sessionEventId: "evt-owner-grant" },
+    updateStewardPolicy(agentRoot, { expectedVersion: 0, actor: policyOwner("evt-owner-grant"),
       mutation: { kind: "grant_routine_action", key: "unraid.restart:books", action: "unraid.container.restart", targets: ["books"], maxCount: 2, windowMs: 3_600_000, verificationRequired: true, exclusions: [], provenance: "stated" } })
     const restartContainer = failure === "reported failure"
       ? vi.fn(async () => ({ ok: false, error: { message: "still down" } }))
@@ -544,7 +551,7 @@ describe("Unraid typed read tools", () => {
     const agentRoot = root()
     updateStewardPolicy(agentRoot, {
       expectedVersion: 0,
-      actor: { friendId: "ari", trustLevel: "family", sessionEventId: "evt-1" },
+      actor: policyOwner("evt-1"),
       mutation: { kind: "grant_routine_action", key: "unraid.restart:alpha", action: "unraid.container.restart", targets: ["alpha"], maxCount: 2, windowMs: 3_600_000, verificationRequired: true, exclusions: [], provenance: "stated" },
     })
     const authorizeTool = vi.fn(async () => ({ allowed: false as const, reason: "relationship revoked" }))
@@ -567,7 +574,7 @@ describe("Unraid typed read tools", () => {
     const agentRoot = root()
     updateStewardPolicy(agentRoot, {
       expectedVersion: 0,
-      actor: { friendId: "ari", trustLevel: "family", sessionEventId: "evt-1" },
+      actor: policyOwner("evt-1"),
       mutation: { kind: "grant_routine_action", key: "unraid.restart:alpha", action: "unraid.container.restart", targets: ["alpha"], maxCount: 4, windowMs: 3_600_000, verificationRequired: true, exclusions: [], provenance: "stated" },
     })
     const receipt = consumeRoutineActionGrant(agentRoot, { key: "unraid.restart:alpha", action: "unraid.container.restart", target: "alpha", expectedPolicyVersion: 1, authorizationReceiptId: "relationship-1", authorizationVersion: 7 })
@@ -590,7 +597,7 @@ describe("Unraid typed read tools", () => {
     [{ allowed: true as const, receiptId: "unversioned" }, "not versioned"],
   ])("passes central relationship denial through the narrow post-resolution routine callback", async (authorization, reason) => {
     const agentRoot = root()
-    updateStewardPolicy(agentRoot, { expectedVersion: 0, actor: { friendId: "ari", trustLevel: "family", sessionEventId: "evt-1" }, mutation: { kind: "grant_routine_action", key: "unraid.restart:alpha", action: "unraid.container.restart", targets: ["alpha"], maxCount: 2, windowMs: 3_600_000, verificationRequired: true, exclusions: [], provenance: "stated" } })
+    updateStewardPolicy(agentRoot, { expectedVersion: 0, actor: policyOwner("evt-1"), mutation: { kind: "grant_routine_action", key: "unraid.restart:alpha", action: "unraid.container.restart", targets: ["alpha"], maxCount: 2, windowMs: 3_600_000, verificationRequired: true, exclusions: [], provenance: "stated" } })
     const restart = unraidToolDefinitions.find((definition) => definition.tool.function.name === "unraid_restart_container")!
     const context = {
       agentRoot,

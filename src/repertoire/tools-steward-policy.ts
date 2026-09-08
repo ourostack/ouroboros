@@ -14,7 +14,7 @@ export const stewardPolicyToolDefinition: ToolDefinition = {
     type: "function",
     function: {
       name: "steward_policy_manage",
-      description: "Read or update the household steward's typed desired-state and routine-action policy. Updates require the current authenticated family request. expectedVersion is optional; omit it to apply against the current policy version, or supply a version from read for explicit stale-write detection.",
+      description: "Read or update the household steward's typed desired-state and routine-action policy. Updates require the current authenticated owner Telegram request and fresh authorization. expectedVersion is optional; omit it to apply against the current policy version, or supply a version from read for explicit stale-write detection.",
       parameters: {
         type: "object",
         properties: {
@@ -44,12 +44,19 @@ export const stewardPolicyToolDefinition: ToolDefinition = {
       emitNervesEvent({ component: "repertoire", event: "repertoire.steward_policy_tool_call", message: "read steward policy", meta: { action: "read" } })
       return JSON.stringify(readStewardPolicy(ctx.agentRoot))
     }
-    const actor = ctx.relationshipAuthorization?.actor
+    const relationship = ctx.relationshipAuthorization
+    const actor = relationship.actor
     if (!actor) throw new Error("steward policy mutation requires authenticated relationship authority")
-    const expectedVersion = args.expectedVersion === undefined
-      ? readStewardPolicy(ctx.agentRoot).version
-      : Number(args.expectedVersion)
-    if (!Number.isInteger(expectedVersion) || expectedVersion < 0) throw new Error("expectedVersion must be a nonnegative integer")
+    const { friendId, trustLevel, sessionEventId } = actor
+    const { profileId, requestId } = relationship
+    const sessionKey = ctx.currentSession?.key
+    if (trustLevel !== "family" || profileId !== "sanctuary-owner" || typeof requestId !== "string" || !requestId.trim()
+      || typeof sessionKey !== "string" || !sessionKey.trim() || !sessionEventId.trim()
+      || ctx.currentSession?.friendId !== friendId || ctx.currentSession.channel !== "telegram" || ctx.currentExternalEvent) {
+      throw new Error("steward policy mutation requires a current authenticated owner Telegram request and session")
+    }
+    const expectedVersion = args.expectedVersion === undefined ? undefined : Number(args.expectedVersion)
+    if (expectedVersion !== undefined && (!Number.isSafeInteger(expectedVersion) || expectedVersion < 0)) throw new Error("expectedVersion must be a nonnegative integer")
     let mutation: StewardPolicyMutation
     if (args.action === "set_desired_state") {
       if (args.provenance !== "stated" && args.provenance !== "observed" && args.provenance !== "default") throw new Error("desired state provenance is invalid")
@@ -73,11 +80,27 @@ export const stewardPolicyToolDefinition: ToolDefinition = {
         ...(args.expiresAt ? { expiresAt: args.expiresAt } : {}),
       }
     } else throw new Error("steward policy action is invalid")
-    const result = updateStewardPolicy(ctx.agentRoot, { expectedVersion, actor, mutation })
-    emitNervesEvent({ component: "repertoire", event: "repertoire.steward_policy_tool_call", message: "updated steward policy", meta: { action: args.action } })
-    return JSON.stringify(result)
+    const agentRoot = ctx.agentRoot
+    return Promise.resolve(relationship.authorizeTool("steward_policy_manage", args)).then((authorization) => {
+      if (!authorization.allowed) throw new Error(`steward policy authorization denied: ${authorization.reason}`)
+      if (typeof authorization.profileVersion !== "number" || !Number.isSafeInteger(authorization.profileVersion) || authorization.profileVersion < 1 || !authorization.receiptId.trim()) {
+        throw new Error("steward policy owner authorization is not versioned")
+      }
+      if (ctx.relationshipAuthorization !== relationship || relationship.profileId !== profileId || relationship.requestId !== requestId
+        || relationship.actor?.friendId !== friendId || relationship.actor.trustLevel !== trustLevel || relationship.actor.sessionEventId !== sessionEventId
+        || ctx.currentSession?.friendId !== friendId || ctx.currentSession.key !== sessionKey || ctx.currentSession.channel !== "telegram" || ctx.currentExternalEvent) {
+        throw new Error("steward policy owner authorization or session changed before mutation")
+      }
+      const result = updateStewardPolicy(agentRoot, {
+        expectedVersion: expectedVersion ?? readStewardPolicy(agentRoot).version,
+        actor: { friendId, trustLevel, sessionEventId, authorization: { profileId, requestId, sessionKey, receiptId: authorization.receiptId, profileVersion: authorization.profileVersion } },
+        mutation,
+      })
+      emitNervesEvent({ component: "repertoire", event: "repertoire.steward_policy_tool_call", message: "updated steward policy", meta: { action: args.action } })
+      return JSON.stringify(result)
+    })
   },
   riskProfile: (args) => args.action === "read"
     ? { mutates: "none", risk: "low" }
-    : { mutates: "durable_state_write", risk: "high", reason: "updates typed household steward policy under authenticated family authority" },
+    : { mutates: "durable_state_write", risk: "high", reason: "updates typed household steward policy under current authenticated owner authority" },
 }
