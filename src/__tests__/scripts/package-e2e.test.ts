@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest"
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
+import { a003Pair } from "../fixtures/a003-session"
 
 const {
   buildLocalInstallArgs,
@@ -63,6 +64,52 @@ function makePackageInstallDeps(outputs: Array<string | Error>) {
 }
 
 describe("package-e2e", () => {
+  it("A003 boots the exact P0 pre-marker parser against a marker envelope without rewriting bytes", async () => {
+    const { execFileSync } = await import("node:child_process")
+    const { runInNewContext } = await import("node:vm")
+    const ts = await import("typescript")
+    const source = execFileSync("git", ["show", "406fa8c4c7242577a445b439ddc6344ef470462a:src/heart/session-events.ts"], { cwd: path.resolve(__dirname, "../../.."), encoding: "utf8" })
+    const dependencies: Record<string, unknown> = {
+      fs,
+      "node:crypto": await import("node:crypto"),
+      "../nerves/runtime": { emitNervesEvent: vi.fn() },
+      "./structured-output": await import("../../heart/structured-output"),
+    }
+    const old: Record<string, any> = {}
+    runInNewContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, {
+      exports: old, require: (name: string) => { if (!(name in dependencies)) throw new Error(`unapproved old-parser dependency ${name}`); return dependencies[name] }, Buffer,
+    })
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "a003-pre-marker-boot-"))
+    const file = path.join(root, "session.json")
+    const { envelope } = a003Pair()
+    const bytes = JSON.stringify(envelope, null, 2)
+    fs.writeFileSync(file, bytes)
+    try {
+      const loaded = old.loadSessionEnvelopeFile(file)
+      expect(loaded.version).toBe(2)
+      expect(loaded.events).toEqual(envelope.events)
+      expect(fs.readFileSync(file, "utf8")).toBe(bytes)
+    } finally { fs.rmSync(root, { recursive: true, force: true }) }
+  })
+
+  it.each(["a003 private repair routing verified", "wrong marker"])("A003 asset E2E executes private and public installed-entrypoint routing: %s", (marker) => {
+    const { deps, calls } = makePackageInstallDeps(["", "0.1.0-alpha.430\n", "", "Set up providers, portable integrations, and local senses from one guided screen\n", "", "semantic ownership sqlite verified\n", "", "bluebubbles host helper verified\n", "", marker])
+    const results = runPackageE2ESuite({ tarballPath: "/tmp/a003.tgz", version: "0.1.0-alpha.430" }, deps)
+    expect(results[4].ok).toBe(marker.startsWith("a003"))
+    const smoke = calls.find((call) => call.args.some((arg) => arg.includes("session-redaction-repair-cli-main.js")))
+    expect(smoke).toBeDefined()
+    expect(smoke?.args.join("\n")).toContain("spawnSync")
+    expect(smoke?.args.join("\n")).toContain("ouro-entry.js")
+    expect(smoke?.env?.HOME).not.toBe("/Users/real-human")
+  })
+  it("A003 requires the direct repair module in the installed tarball asset inventory", () => {
+    expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("dist/heart/session-redaction-repair-cli-main.js")
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "a003-package-inventory-"))
+    try {
+      writeRequiredPackageAssets(root)
+      expect(fs.statSync(path.join(root, "dist/heart/session-redaction-repair-cli-main.js")).isFile()).toBe(true)
+    } finally { fs.rmSync(root, { recursive: true, force: true }) }
+  })
   it("builds npm install args for an isolated prefix and local tarball", () => {
     expect(
       buildLocalInstallArgs("/tmp/ouro-package-e2e-abcd", "/tmp/ouro-cli-0.1.0.tgz"),
@@ -197,6 +244,7 @@ describe("package-e2e", () => {
       "",
       "bluebubbles host helper verified\n",
       "",
+      "a003 private repair routing verified\n",
     ])
 
     const results = runPackageE2ESuite({

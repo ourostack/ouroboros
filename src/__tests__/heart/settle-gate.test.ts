@@ -207,7 +207,9 @@ describe("rest gate in private runtime", () => {
 
     const toolResults = messages.filter((m: any) => m.role === "tool")
     const rejectionResult = toolResults.find((m: any) => m.content?.includes("current held-work frame still has unsurfaced items"))
-    expect(rejectionResult).toBeDefined()
+    expect(rejectionResult).toBeUndefined()
+    expect(JSON.stringify(mockCreate.mock.calls[1][0].messages)).toContain("current held-work frame still has unsurfaced items")
+    expect(messages.filter((message: any) => message.role === "user")).toEqual([{ role: "user", content: "heartbeat" }])
   })
 
   it("rest succeeds when attention queue is empty", async () => {

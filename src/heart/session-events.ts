@@ -1,12 +1,12 @@
 import * as fs from "fs"
 import { createHash } from "node:crypto"
+import { isDeepStrictEqual } from "node:util"
 import type OpenAI from "openai"
 import type { ApprovalRecord } from "./approval-store"
 import type { ApprovalSuspensionCheckpoint } from "./tool-approval"
 import { emitNervesEvent } from "../nerves/runtime"
 import {
   extractStructuredOutputsFromEvents,
-  normalizeStructuredOutputs,
   type StructuredOutput,
 } from "./structured-output"
 
@@ -1177,13 +1177,16 @@ export function projectedSessionEventIds(envelope: SessionEnvelope): string[] {
     : envelope.events.map((event) => event.id)
 }
 
-export function projectProviderMessages(envelope: SessionEnvelope): OpenAI.ChatCompletionMessageParam[] {
+function providerProjectionEvents(envelope: SessionEnvelope): SessionEvent[] {
   const eventIds = projectedSessionEventIds(envelope)
-  const byId = new Map(envelope.events.map((event) => [event.id, event] as const))
-
+  const byId = new Map(selectEffectiveSessionEvents(envelope.events).map((event) => [event.id, event] as const))
   return eventIds
     .map((id) => byId.get(id))
     .filter((event): event is SessionEvent => Boolean(event))
+}
+
+export function projectProviderMessages(envelope: SessionEnvelope): OpenAI.ChatCompletionMessageParam[] {
+  return providerProjectionEvents(envelope)
     .map((event) => toProviderMessage({
       role: event.role,
       content: event.content,
@@ -1203,11 +1206,7 @@ export function annotateMessageTimestamps(
   messages: OpenAI.ChatCompletionMessageParam[],
   nowMs = Date.now(),
 ): OpenAI.ChatCompletionMessageParam[] {
-  const eventIds = projectedSessionEventIds(envelope)
-  const byId = new Map(envelope.events.map((event) => [event.id, event] as const))
-  const events = eventIds
-    .map((id) => byId.get(id))
-    .filter((event): event is SessionEvent => Boolean(event))
+  const events = providerProjectionEvents(envelope)
 
   return messages.map((msg, i) => {
     const event = events[i]
@@ -1254,6 +1253,7 @@ export function extractEventText(event: SessionEvent): string {
 }
 
 export function deriveSessionChronology(events: SessionEvent[]): SessionChronology {
+  events = selectEffectiveSessionEvents(events)
   let lastInboundAt: string | null = null
   let lastOutboundAt: string | null = null
   let lastActivityAt: string | null = null
@@ -1333,6 +1333,132 @@ export function migrateLegacySessionEnvelope(
   }
 }
 
+function normalizeSessionEvent(event: Record<string, unknown>, index: number, recordedAt: string): SessionEvent {
+  const role = normalizeRole(event.role)
+  const time = event.time as Record<string, unknown> | undefined
+  const relations = event.relations as Record<string, unknown> | undefined
+  const provenance = event.provenance as Record<string, unknown> | undefined
+  const content = sanitizeConversationContent(role, normalizeContent(event.content))
+  return {
+    id: typeof event.id === "string" ? event.id : makeEventId(index + 1),
+    sequence: typeof event.sequence === "number" ? event.sequence : index + 1,
+    role,
+    content,
+    name: typeof event.name === "string" ? event.name : null,
+    toolCallId: typeof event.toolCallId === "string" ? event.toolCallId : null,
+    toolCalls: normalizeToolCalls(event.toolCalls),
+    attachments: Array.isArray(event.attachments) ? event.attachments.filter((item): item is string => typeof item === "string") : [],
+    time: {
+      authoredAt: typeof time?.authoredAt === "string" ? time.authoredAt : null,
+      authoredAtSource: typeof time?.authoredAtSource === "string" ? time.authoredAtSource as SessionEventTimeSource : "unknown",
+      observedAt: typeof time?.observedAt === "string" ? time.observedAt : null,
+      observedAtSource: typeof time?.observedAtSource === "string" ? time.observedAtSource as SessionEventTimeSource : "unknown",
+      recordedAt: typeof time?.recordedAt === "string" ? time.recordedAt : recordedAt,
+      recordedAtSource: typeof time?.recordedAtSource === "string" ? time.recordedAtSource as SessionEventTimeSource : "save",
+    },
+    relations: {
+      replyToEventId: typeof relations?.replyToEventId === "string" ? relations.replyToEventId : null,
+      threadRootEventId: typeof relations?.threadRootEventId === "string" ? relations.threadRootEventId : null,
+      references: Array.isArray(relations?.references) ? relations.references.filter((item): item is string => typeof item === "string") : [],
+      toolCallId: typeof relations?.toolCallId === "string" ? relations.toolCallId : null,
+      supersedesEventId: typeof relations?.supersedesEventId === "string" ? relations.supersedesEventId : null,
+      redactsEventId: typeof relations?.redactsEventId === "string" ? relations.redactsEventId : null,
+    },
+    provenance: {
+      captureKind: typeof provenance?.captureKind === "string" ? provenance.captureKind as SessionEventCaptureKind : "live",
+      legacyVersion: typeof provenance?.legacyVersion === "number" ? provenance.legacyVersion : null,
+      sourceMessageIndex: typeof provenance?.sourceMessageIndex === "number" ? provenance.sourceMessageIndex : null,
+    },
+  }
+}
+
+function exactKeys(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    && Reflect.ownKeys(value).length === keys.length
+    && keys.every((key) => Object.prototype.hasOwnProperty.call(value, key))
+}
+
+function nonblank(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0
+}
+
+function exactIsoTime(value: unknown): value is string {
+  return typeof value === "string" && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value
+}
+
+function exactRawEvent(value: unknown, index: number): value is SessionEvent {
+  if (!exactKeys(value, ["id", "sequence", "role", "content", "name", "toolCallId", "toolCalls", "attachments", "time", "relations", "provenance"])) return false
+  if (!nonblank(value.id) || !Number.isSafeInteger(value.sequence) || Number(value.sequence) <= 0
+    || typeof value.role !== "string" || !["system", "user", "assistant", "tool"].includes(value.role)
+    || !(value.name === null || typeof value.name === "string") || !(value.toolCallId === null || typeof value.toolCallId === "string")
+    || !(value.content === null || typeof value.content === "string" || Array.isArray(value.content))
+    || !Array.isArray(value.attachments) || !value.attachments.every((item) => typeof item === "string")
+    || !Array.isArray(value.toolCalls)) return false
+  for (const call of value.toolCalls) {
+    if (!exactKeys(call, ["id", "type", "function"]) || !nonblank(call.id) || call.type !== "function"
+      || !exactKeys(call.function, ["name", "arguments"]) || !nonblank(call.function.name) || typeof call.function.arguments !== "string") return false
+  }
+  const time = value.time
+  if (!exactKeys(time, ["authoredAt", "authoredAtSource", "observedAt", "observedAtSource", "recordedAt", "recordedAtSource"])
+    || !(time.authoredAt === null || exactIsoTime(time.authoredAt))
+    || !(time.observedAt === null || exactIsoTime(time.observedAt)) || !exactIsoTime(time.recordedAt)) return false
+  for (const key of ["authoredAtSource", "observedAtSource", "recordedAtSource"]) {
+    if (typeof time[key] !== "string" || !["unknown", "local", "ingest", "migration", "save"].includes(time[key])) return false
+  }
+  const relations = value.relations
+  if (!exactKeys(relations, ["replyToEventId", "threadRootEventId", "references", "toolCallId", "supersedesEventId", "redactsEventId"])
+    || !Array.isArray(relations.references) || !relations.references.every((item) => typeof item === "string")) return false
+  for (const key of ["replyToEventId", "threadRootEventId", "toolCallId", "supersedesEventId", "redactsEventId"]) {
+    if (relations[key] !== null && typeof relations[key] !== "string") return false
+  }
+  const provenance = value.provenance
+  if (!exactKeys(provenance, ["captureKind", "legacyVersion", "sourceMessageIndex"])
+    || typeof provenance.captureKind !== "string" || !["live", "synthetic", "migration"].includes(provenance.captureKind)
+    || !(provenance.legacyVersion === null || Number.isSafeInteger(provenance.legacyVersion) && Number(provenance.legacyVersion) > 0)
+    || !(provenance.sourceMessageIndex === null || Number.isSafeInteger(provenance.sourceMessageIndex) && Number(provenance.sourceMessageIndex) >= 0)) return false
+  return isDeepStrictEqual(value, normalizeSessionEvent(value, index, time.recordedAt))
+}
+
+export function isExactRawSessionRedactionMarker(candidate: unknown, rawEvents: unknown[]): candidate is SessionEvent {
+  if (!candidate || typeof candidate !== "object" || (candidate as Record<string, unknown>).role !== "system"
+    || !exactRawEvent(candidate, 0) || candidate.content !== null || candidate.name !== null || candidate.toolCallId !== null
+    || candidate.toolCalls.length !== 0 || candidate.attachments.length !== 0
+    || candidate.time.authoredAt !== null || candidate.time.observedAt !== null
+    || candidate.time.authoredAtSource !== "migration" || candidate.time.observedAtSource !== "migration" || candidate.time.recordedAtSource !== "migration"
+    || candidate.provenance.captureKind !== "migration" || candidate.provenance.legacyVersion !== 2 || candidate.provenance.sourceMessageIndex !== null
+    || candidate.relations.replyToEventId !== null || candidate.relations.threadRootEventId !== null || candidate.relations.references.length !== 0
+    || candidate.relations.toolCallId !== null || candidate.relations.supersedesEventId !== null || !nonblank(candidate.relations.redactsEventId)
+    || !Array.isArray(rawEvents)) return false
+  const ids = new Set<string>()
+  let previousSequence = 0
+  for (const raw of rawEvents) {
+    if (!raw || typeof raw !== "object") return false
+    const event = raw as Record<string, unknown>
+    if (!nonblank(event.id) || ids.has(event.id) || !Number.isSafeInteger(event.sequence) || Number(event.sequence) <= previousSequence) return false
+    ids.add(event.id)
+    previousSequence = Number(event.sequence)
+  }
+  const candidateIndex = rawEvents.findIndex((raw) => (raw as Record<string, unknown>).id === candidate.id)
+  if (candidateIndex < 0 || !isDeepStrictEqual(rawEvents[candidateIndex], candidate)) return false
+  const targetIndex = rawEvents.findIndex((raw) => (raw as Record<string, unknown>).id === candidate.relations.redactsEventId)
+  if (targetIndex < 0 || targetIndex >= candidateIndex) return false
+  const target = rawEvents[targetIndex]
+  if (!exactRawEvent(target, targetIndex) || target.role !== "user" || target.relations.redactsEventId !== null) return false
+  const attempts = rawEvents.map((raw) => (raw as { relations?: { redactsEventId?: unknown } }).relations?.redactsEventId)
+  return attempts.filter((id) => id === target.id).length === 1 && !attempts.includes(candidate.id)
+}
+
+export function selectEffectiveSessionEvents(events: SessionEvent[]): SessionEvent[] {
+  const hidden = new Set<string>()
+  for (const event of events) {
+    if (isExactRawSessionRedactionMarker(event, events)) {
+      hidden.add(event.id)
+      hidden.add(event.relations.redactsEventId!)
+    }
+  }
+  return events.filter((event) => !hidden.has(event.id))
+}
+
 export function parseSessionEnvelope(raw: unknown, options: SessionEnvelopeParseOptions = {}): SessionEnvelope | null {
   const recordedAt = options.recordedAt ?? new Date().toISOString()
   const fileMtimeAt = options.fileMtimeAt ?? null
@@ -1345,46 +1471,23 @@ export function parseSessionEnvelope(raw: unknown, options: SessionEnvelopeParse
     return null
   }
 
+  const validMarkers = new Set<unknown>(record.events.filter((event) => isExactRawSessionRedactionMarker(event, record.events as unknown[])))
+  let invalidMarkers = 0
   const rawEvents = record.events
     .filter((event): event is Record<string, unknown> => event != null && typeof event === "object")
     .map((event, index) => {
-      const role = normalizeRole(event.role)
-      const time = event.time as Record<string, unknown> | undefined
-      const relations = event.relations as Record<string, unknown> | undefined
-      const provenance = event.provenance as Record<string, unknown> | undefined
-      const content = sanitizeConversationContent(role, normalizeContent(event.content))
-      return {
-        id: typeof event.id === "string" ? event.id : makeEventId(index + 1),
-        sequence: typeof event.sequence === "number" ? event.sequence : index + 1,
-        role,
-        content,
-        name: typeof event.name === "string" ? event.name : null,
-        toolCallId: typeof event.toolCallId === "string" ? event.toolCallId : null,
-        toolCalls: normalizeToolCalls(event.toolCalls),
-        attachments: Array.isArray(event.attachments) ? event.attachments.filter((item): item is string => typeof item === "string") : [],
-        time: {
-          authoredAt: typeof time?.authoredAt === "string" ? time.authoredAt : null,
-          authoredAtSource: typeof time?.authoredAtSource === "string" ? time.authoredAtSource as SessionEventTimeSource : "unknown",
-          observedAt: typeof time?.observedAt === "string" ? time.observedAt : null,
-          observedAtSource: typeof time?.observedAtSource === "string" ? time.observedAtSource as SessionEventTimeSource : "unknown",
-          recordedAt: typeof time?.recordedAt === "string" ? time.recordedAt : recordedAt,
-          recordedAtSource: typeof time?.recordedAtSource === "string" ? time.recordedAtSource as SessionEventTimeSource : "save",
-        },
-        relations: {
-          replyToEventId: typeof relations?.replyToEventId === "string" ? relations.replyToEventId : null,
-          threadRootEventId: typeof relations?.threadRootEventId === "string" ? relations.threadRootEventId : null,
-          references: Array.isArray(relations?.references) ? relations.references.filter((item): item is string => typeof item === "string") : [],
-          toolCallId: typeof relations?.toolCallId === "string" ? relations.toolCallId : null,
-          supersedesEventId: typeof relations?.supersedesEventId === "string" ? relations.supersedesEventId : null,
-          redactsEventId: typeof relations?.redactsEventId === "string" ? relations.redactsEventId : null,
-        },
-        provenance: {
-          captureKind: typeof provenance?.captureKind === "string" ? provenance.captureKind as SessionEventCaptureKind : "live",
-          legacyVersion: typeof provenance?.legacyVersion === "number" ? provenance.legacyVersion : null,
-          sourceMessageIndex: typeof provenance?.sourceMessageIndex === "number" ? provenance.sourceMessageIndex : null,
-        },
-      } satisfies SessionEvent
+      const normalized = normalizeSessionEvent(event, index, recordedAt)
+      const attempted = (event.relations as Record<string, unknown> | undefined)?.redactsEventId
+      if (attempted !== undefined && attempted !== null && !validMarkers.has(event)) {
+        normalized.relations.redactsEventId = null
+        invalidMarkers++
+      }
+      return normalized
     })
+  if (invalidMarkers > 0) emitNervesEvent({
+    level: "warn", component: "heart", event: "session.redaction_marker_invalid",
+    message: "invalid raw redaction authority ignored", meta: { count: invalidMarkers },
+  })
 
   // Self-heal duplicate event ids that may have been written by concurrent
   // writers in older harness versions. Last-occurrence-wins by id (later
@@ -1406,9 +1509,7 @@ export function parseSessionEnvelope(raw: unknown, options: SessionEnvelopeParse
       inputTokens: typeof projection.inputTokens === "number" ? projection.inputTokens : null,
       projectedAt: typeof projection.projectedAt === "string" ? projection.projectedAt : null,
     },
-    structuredOutputs: record.structuredOutputs === undefined
-      ? extractStructuredOutputsFromEvents(events, { emitTelemetry: false })
-      : normalizeStructuredOutputs(record.structuredOutputs),
+    structuredOutputs: extractStructuredOutputsFromEvents(selectEffectiveSessionEvents(events), { emitTelemetry: false }),
     lastUsage: normalizeUsage(record.lastUsage),
     state: normalizeContinuityState(record.state),
     approvalSuspensions: normalizeApprovalSuspensions(record.approvalSuspensions),
@@ -1498,9 +1599,7 @@ export function buildCanonicalSessionEnvelope(options: SessionEnvelopeBuildOptio
   const previousMessages = options.previousMessages
   const currentMessages = options.currentMessages
   const trimmedMessages = options.trimmedMessages
-  const previousProjectionIds = existing?.projection.eventIds.length
-    ? [...existing.projection.eventIds]
-    : existing?.events.map((event) => event.id) ?? []
+  const previousProjectionIds = existing ? providerProjectionEvents(existing).map((event) => event.id) : []
 
   // Compare only non-system messages to find the common prefix.
   // System messages change every turn (live world-state in system prompt)
@@ -1561,22 +1660,24 @@ export function buildCanonicalSessionEnvelope(options: SessionEnvelopeBuildOptio
   // Prune events: only keep events whose IDs are in the projection.
   // Events not in projection are returned as evicted for archiving.
   const projectionIdSet = new Set(projectionEventIds)
-  const prunedEvents = events.filter((event) => projectionIdSet.has(event.id))
-  const evictedEvents = events.filter((event) => !projectionIdSet.has(event.id))
+  const effectiveIds = new Set(selectEffectiveSessionEvents(events).map((event) => event.id))
+  const keep = (event: SessionEvent) => projectionIdSet.has(event.id) || !effectiveIds.has(event.id)
+  const prunedEvents = events.filter(keep)
+  const evictedEvents = events.filter((event) => !keep(event))
 
   return {
     envelope: {
       version: 2,
       events: prunedEvents,
       projection: {
-        eventIds: projectionEventIds,
+        eventIds: projectionEventIds.filter((id) => effectiveIds.has(id)),
         trimmed: projectionEventIds.length < currentEventIds.length,
         maxTokens: options.projectionBasis.maxTokens,
         contextMargin: options.projectionBasis.contextMargin,
         inputTokens: options.projectionBasis.inputTokens,
         projectedAt: options.recordedAt,
       },
-      structuredOutputs: extractStructuredOutputsFromEvents(prunedEvents),
+      structuredOutputs: extractStructuredOutputsFromEvents(selectEffectiveSessionEvents(prunedEvents)),
       lastUsage: normalizeUsage(options.lastUsage),
       state: normalizeContinuityState(options.state),
       approvalSuspensions: structuredClone(options.existing?.approvalSuspensions ?? []),
@@ -1605,7 +1706,7 @@ export function appendSyntheticAssistantEvent(
   return {
     ...envelope,
     events: [...envelope.events, event],
-    structuredOutputs: extractStructuredOutputsFromEvents([...envelope.events, event]),
+    structuredOutputs: extractStructuredOutputsFromEvents(selectEffectiveSessionEvents([...envelope.events, event])),
     projection: {
       ...envelope.projection,
       eventIds: [...envelope.projection.eventIds, event.id],

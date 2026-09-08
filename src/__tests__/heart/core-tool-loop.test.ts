@@ -90,7 +90,8 @@ vi.mock("../../mind/note-search", () => ({
 
 import * as fs from "fs"
 import * as identity from "../../heart/identity"
-import type { ChannelCallbacks } from "../../heart/core"
+import type { ChannelCallbacks, ProviderRuntime, RunAgentOptions } from "../../heart/core"
+import type { TurnResult } from "../../heart/streaming"
 
 async function setupMinimax() {
   vi.mocked(identity.loadAgentConfig).mockReturnValue({
@@ -132,6 +133,16 @@ function makeCallbacks(overrides: Partial<ChannelCallbacks> = {}): ChannelCallba
     onClearText: vi.fn(),
     ...overrides,
   }
+}
+
+function expectProviderOnlyRejection(messages: unknown[], callId: string, fragment: string): void {
+  const canonicalCallIds = (messages as ChatCompletionMessageParam[]).flatMap((message) => message.role === "assistant"
+    ? message.tool_calls?.map((call) => call.id) ?? []
+    : message.role === "tool" ? [message.tool_call_id] : [])
+  expect(canonicalCallIds).not.toContain(callId)
+  const outbound = JSON.stringify(mockCreate.mock.calls.slice(1).map(([request]) => request.messages))
+  expect(outbound).toContain(callId)
+  expect(outbound).toContain(fragment)
 }
 
 describe("runAgent tool loop guard", () => {
@@ -386,11 +397,7 @@ describe("runAgent tool loop guard", () => {
     expect(callbacks.onToolEnd).toHaveBeenNthCalledWith(1, "settle", expect.any(String), false)
     expect(callbacks.onToolEnd).toHaveBeenNthCalledWith(2, "settle", expect.any(String), true)
     expect(callbacks.onClearText).toHaveBeenCalled()
-    expect(messages).toContainEqual(expect.objectContaining({
-      role: "tool",
-      tool_call_id: "call_private_settle_gated",
-      content: expect.stringContaining("unsurfaced items"),
-    }))
+    expectProviderOnlyRejection(messages, "call_private_settle_gated", "unsurfaced items")
     expect(messages).toContainEqual({ role: "tool", tool_call_id: "call_private_settle_accepted", content: "(settled)" })
   })
 
@@ -504,11 +511,7 @@ describe("runAgent tool loop guard", () => {
     })
 
     expect(execTool).not.toHaveBeenCalled()
-    expect(messages).toContainEqual(expect.objectContaining({
-      role: "tool",
-      tool_call_id: "call_fabricated_shell",
-      content: expect.stringContaining("was not advertised"),
-    }))
+    expectProviderOnlyRejection(messages, "call_fabricated_shell", "was not advertised")
   })
 
   it("reports excluded and valid calls from the production Telegram batch boundary", async () => {
@@ -756,11 +759,8 @@ describe("runAgent tool loop guard", () => {
     })
     expect(callbacks.onTextChunk).toHaveBeenCalledWith("using the current coding status")
 
-    const toolMessages = messages.filter((message: any) => message.role === "tool")
-    const loopGuardMessage = toolMessages.find((message: any) =>
-      typeof message.content === "string" && message.content.startsWith("loop guard:")
-    )
-    expect(loopGuardMessage?.content).toContain("stop polling")
+    expect(JSON.stringify(messages)).not.toContain("loop guard:")
+    expect(JSON.stringify(mockCreate.mock.calls.slice(1).map(([request]) => request.messages))).toContain("stop polling")
     expect(callbacks.onToolEnd).toHaveBeenCalledWith("coding_status", "sessionId=coding-001", false)
   })
 
@@ -1533,7 +1533,7 @@ describe("runAgent tool loop guard", () => {
     expect(result).toMatchObject({ outcome: "errored", error: expect.any(Error) })
   })
 
-  it("rejects a mixed terminal projection without changing ordinary companion-tool behavior", async () => {
+  it("A003 rejects a mixed terminal projection before every companion handler", async () => {
     const terminalToolName = "synthetic_terminal_projection"
     const { baseToolDefinitions } = await import("../../repertoire/tools-base")
     baseToolDefinitions.push({
@@ -1618,12 +1618,7 @@ describe("runAgent tool loop guard", () => {
     )
 
     expect(mockCreate).toHaveBeenCalledTimes(2)
-    expect(execTool).toHaveBeenCalledTimes(1)
-    expect(execTool).toHaveBeenCalledWith(
-      "write_file",
-      { path: "note.md", content: "side effect" },
-      expect.anything(),
-    )
+    expect(execTool).not.toHaveBeenCalled()
     expect(execTool).not.toHaveBeenCalledWith(terminalToolName, expect.anything(), expect.anything())
     expect(result).toMatchObject({ outcome: "observed" })
   })
@@ -1664,11 +1659,7 @@ describe("runAgent tool loop guard", () => {
 
     expect(result.outcome).toBe("settled")
     expect(execTool).not.toHaveBeenCalled()
-    expect(messages).toContainEqual(expect.objectContaining({
-      role: "tool",
-      tool_call_id: "call_valid_probe",
-      content: expect.stringContaining("another call in this batch had invalid arguments"),
-    }))
+    expectProviderOnlyRejection(messages, "call_valid_probe", "another call in this batch had invalid arguments")
     expect(boundaryReceipts).toEqual([
       expect.objectContaining({ name: "probe", reason: "invalid_arguments", invoked: false }),
       expect.objectContaining({ name: "probe", reason: "invalid_arguments", invoked: false }),
@@ -1703,9 +1694,9 @@ describe("runAgent tool loop guard", () => {
     })
 
     expect(execTool).not.toHaveBeenCalled()
-    expect(messages.filter((message) => message.role === "tool" && message.tool_call_id === "duplicate"))
-      .toHaveLength(2)
-    expect(JSON.stringify(messages)).toContain("duplicate tool call id")
+    expectProviderOnlyRejection(messages, "duplicate", "duplicate tool call id")
+    expect(messages.filter((message) => message.role === "assistant")).toHaveLength(1)
+    expect(messages.filter((message) => message.role === "user")).toHaveLength(1)
   })
 
   it.each([
@@ -1731,11 +1722,7 @@ describe("runAgent tool loop guard", () => {
       toolContext: { signin: async () => undefined },
     })
 
-    expect(messages).toContainEqual(expect.objectContaining({
-      role: "tool",
-      tool_call_id: `call_invalid_${name}`,
-      content: expect.stringContaining("invalid tool arguments"),
-    }))
+    expectProviderOnlyRejection(messages, `call_invalid_${name}`, "invalid tool arguments")
     expect(result.outcome).toBe(channel === "inner" ? "rested" : "observed")
   })
 
@@ -1865,11 +1852,7 @@ describe("runAgent tool loop guard", () => {
 
       expect(result.outcome).toBe("settled")
       expect(execTool).not.toHaveBeenCalled()
-      expect(messages).toContainEqual(expect.objectContaining({
-        role: "tool",
-        tool_call_id: "call_uncoordinated_restart",
-        content: expect.stringContaining("approval coordinator is unavailable"),
-      }))
+      expectProviderOnlyRejection(messages, "call_uncoordinated_restart", "approval coordinator is unavailable")
     })
 
     it("suspends the exact Docker restart before the shell handler despite its low-risk profile", async () => {
@@ -1994,8 +1977,7 @@ describe("runAgent tool loop guard", () => {
       expect(result.outcome).toBe("settled")
       expect(execTool).not.toHaveBeenCalled()
       expect(propose).not.toHaveBeenCalled()
-      const rejectedResults = messages.filter((message) => message.role === "tool" && String(message.content).includes("approval-eligible tool must be the sole call"))
-      expect(rejectedResults).toHaveLength(2)
+      for (const entry of calls) expectProviderOnlyRejection(messages, entry.id, "approval-eligible tool must be the sole call")
     })
 
     it.each([
@@ -2026,11 +2008,7 @@ describe("runAgent tool loop guard", () => {
       expect(result.outcome).toBe("settled")
       expect(propose).not.toHaveBeenCalled()
       expect(execTool).not.toHaveBeenCalled()
-      expect(messages).toContainEqual(expect.objectContaining({
-        role: "tool",
-        tool_call_id: "call_invalid_restart",
-        content: expect.stringContaining("invalid tool arguments"),
-      }))
+      expectProviderOnlyRejection(messages, "call_invalid_restart", "invalid tool arguments")
     })
 
     it.each([
@@ -2062,11 +2040,7 @@ describe("runAgent tool loop guard", () => {
       expect(result.outcome).toBe("settled")
       expect(execTool).not.toHaveBeenCalled()
       expect(propose).not.toHaveBeenCalled()
-      expect(messages).toContainEqual(expect.objectContaining({
-        role: "tool",
-        tool_call_id: "call_schema_drift",
-        content: expect.stringContaining(expectedFragment),
-      }))
+      expectProviderOnlyRejection(messages, "call_schema_drift", expectedFragment)
     })
 
     it("rejects every valid companion when one call in the batch has invalid arguments", async () => {
@@ -2089,11 +2063,7 @@ describe("runAgent tool loop guard", () => {
 
       expect(execTool).not.toHaveBeenCalled()
       expect(propose).not.toHaveBeenCalled()
-      expect(messages).toContainEqual(expect.objectContaining({
-        role: "tool",
-        tool_call_id: "call_valid",
-        content: expect.stringContaining("another call in this batch had invalid arguments"),
-      }))
+      expectProviderOnlyRejection(messages, "call_valid", "another call in this batch had invalid arguments")
     })
 
     it("keeps genuinely non-protected low-risk shell calls unchanged", async () => {
@@ -2113,6 +2083,378 @@ describe("runAgent tool loop guard", () => {
       expect(execTool).toHaveBeenCalledTimes(1)
       expect(execTool).toHaveBeenCalledWith("shell", { command: "printf ok" }, expect.anything())
       expect(propose).not.toHaveBeenCalled()
+    })
+  })
+
+  describe("A003 attempt-local truth", () => {
+    const probeTool = {
+      type: "function" as const,
+      function: { name: "probe", description: "bounded test read", parameters: { type: "object", properties: { value: { type: "string" } }, required: ["value"], additionalProperties: false } },
+    }
+    const call = (name: string, id: string, args: unknown = { value: "safe" }) => ({ name, id, arguments: JSON.stringify(args) })
+    const response = (content: string, toolCalls: TurnResult["toolCalls"] = []): TurnResult => ({ content, toolCalls, outputItems: [] })
+    function runtimeFor(
+      script: TurnResult[],
+      canonical: ChatCompletionMessageParam[],
+    ) {
+      const views: ChatCompletionMessageParam[][] = []
+      const callerViews: ChatCompletionMessageParam[][] = []
+      const runtime: ProviderRuntime = {
+        id: "minimax", model: "a003-fixture", client: {} as never, capabilities: new Set(),
+        streamTurn: vi.fn(async (request) => {
+          views.push(structuredClone(request.messages))
+          callerViews.push(structuredClone(canonical))
+          return script[views.length - 1] ?? response("accepted")
+        }),
+        resetTurnState: vi.fn(), appendToolOutput: vi.fn(), ping: vi.fn(), classifyError: () => "unknown",
+      }
+      return { runtime, views, callerViews }
+    }
+
+    it.each(["text", "settle"] as const)("keeps %s rejections in one scratch block, consumes each correction, and preserves identical human text", async (kind) => {
+      const correction = "Use current evidence."
+      const secondCorrection = "Use the newly returned evidence."
+      const human = { role: "user" as const, content: correction }
+      const messages: ChatCompletionMessageParam[] = [human]
+      const rejected = (text: string, id: string) => kind === "text" ? response(text) : response("", [call("settle", id, { answer: text, intent: "complete" })])
+      const { runtime, views, callerViews } = runtimeFor([
+        rejected("draft-one", "rejected-1"), rejected("draft-two", "rejected-2"),
+        response("accepted read", [call("probe", "accepted-read")]),
+        response("", [call("settle", "accepted-final", { answer: "accepted final", intent: "complete" })]),
+      ], messages)
+      const persisted: ChatCompletionMessageParam[][] = []
+      const captured = vi.fn()
+      const { runAgent } = await import("../../heart/core")
+      const result = await runAgent(messages, makeCallbacks({ settleOutputMode: "final_only", onToolResult: (current) => persisted.push(structuredClone(current)) }), undefined, undefined, {
+        tools: [probeTool], providerRuntimeOverride: runtime, execTool: vi.fn(async () => "receipt"),
+        captureGeneratedMessages: captured,
+        requiredToolCalls: { names: [], retryMessage: "unused", validateTerminalAnswer: (answer) => answer === "draft-one" ? correction : answer === "draft-two" ? secondCorrection : undefined },
+      })
+      expect(result.outcome).toBe("settled")
+      expect(callerViews[1]).toEqual([human])
+      expect(callerViews[2]).toEqual([human])
+      expect(views[1]?.filter((message) => message.role === "user").map((message) => message.content)).toEqual([correction, correction])
+      expect(JSON.stringify(views[1])).toContain("draft-one")
+      expect(JSON.stringify(views[2])).toContain("draft-two")
+      expect(JSON.stringify(views[2])).not.toContain("draft-one")
+      expect(views[2]?.filter((message) => message.role === "user").map((message) => message.content)).toEqual([correction, secondCorrection])
+      expect(views[3]).toEqual(callerViews[3])
+      expect(JSON.stringify([messages, captured.mock.calls, persisted])).not.toMatch(/draft-one|draft-two|newly returned/)
+      expect(messages.filter((message) => message.role === "user")).toEqual([human])
+      expect(captured).toHaveBeenCalledExactlyOnceWith(messages.slice(1))
+      expect(messages.filter((message) => message.role === "assistant")).toHaveLength(2)
+      expect(messages.filter((message) => message.role === "tool")).toHaveLength(2)
+      expect(persisted).toHaveLength(1)
+      const laterViews: ChatCompletionMessageParam[][] = []
+      runtime.streamTurn = vi.fn(async (request) => { laterViews.push(structuredClone(request.messages)); return response("next accepted") })
+      messages.push({ role: "user", content: "next human turn" })
+      await runAgent(messages, makeCallbacks(), undefined, undefined, { providerRuntimeOverride: runtime })
+      expect(JSON.stringify(laterViews)).not.toMatch(/draft-one|draft-two|newly returned/)
+    })
+
+    it.each(["text", "settle"] as const)("keeps missing-required-tool controls out of caller state before %s acceptance", async (kind) => {
+      const messages: ChatCompletionMessageParam[] = [{ role: "user", content: "read it" }]
+      const { runtime, callerViews, views } = runtimeFor([
+        kind === "text" ? response("unsupported draft") : response("", [call("settle", "bad", { answer: "unsupported draft" })]),
+        response("", [call("probe", "read")]), response("accepted"),
+      ], messages)
+      const capture = vi.fn()
+      const { runAgent } = await import("../../heart/core")
+      await runAgent(messages, makeCallbacks(), undefined, undefined, {
+        tools: [probeTool], execTool: vi.fn(async () => "real receipt"), providerRuntimeOverride: runtime, captureGeneratedMessages: capture,
+        requiredToolCalls: { names: ["probe"], retryMessage: "Read before answering." },
+      })
+      expect(callerViews[1]).toEqual([{ role: "user", content: "read it" }])
+      expect(views[1]?.at(-1)).toEqual({ role: "user", content: "Read before answering. Missing required tool calls: probe." })
+      expect(JSON.stringify(views[1])).toContain("unsupported draft")
+      expect(views[2]).toEqual(callerViews[2])
+      expect(JSON.stringify([messages, capture.mock.calls])).not.toMatch(/unsupported draft|Missing required tool calls/)
+    })
+
+    it.each(["network-error", "rate-limit", "auth-failure", "overflow", "refresh-failure", "abort-sleep"] as const)("freezes attempt control/scratch across %s and provider replacement", async (kind) => {
+      vi.useFakeTimers()
+      const messages: ChatCompletionMessageParam[] = [{ role: "user", content: "original" }]
+      const views: ChatCompletionMessageParam[][] = []
+      const callerViews: ChatCompletionMessageParam[][] = []
+      const controller = new AbortController()
+      const streamTurn: ProviderRuntime["streamTurn"] = vi.fn(async (request) => {
+        views.push(structuredClone(request.messages))
+        callerViews.push(structuredClone(messages))
+        if (views.length === 1) return response("rejected draft")
+        if (views.length === 2) throw Object.assign(new Error(kind === "overflow" ? "context_length_exceeded" : "operational retry"), { code: kind === "overflow" ? "context_length_exceeded" : "EAGAIN" })
+        if (views.length === 3) return response("", [call("probe", "accepted-read")])
+        return response("accepted")
+      })
+      const first = runtimeFor([], messages).runtime
+      first.streamTurn = streamTurn
+      first.classifyError = () => kind === "auth-failure" ? "auth-failure" : kind === "rate-limit" ? "rate-limit" : "network-error"
+      if (kind === "auth-failure") first.id = "openai-codex"
+      const replacement = { ...first, id: "minimax" as const, resetTurnState: vi.fn() }
+      const refresh = vi.fn(async () => { if (kind === "refresh-failure") throw new Error("refresh failed"); return {} })
+      vi.doMock("../../heart/provider-credentials", async () => ({
+        ...await vi.importActual<typeof import("../../heart/provider-credentials")>("../../heart/provider-credentials"),
+        refreshProviderCredentialPool: refresh,
+      }))
+      vi.doMock("../../heart/providers/openai-codex-token", () => ({ refreshOpenAICodexProviderCredentials: vi.fn(async () => ({ ok: false })) }))
+      vi.doMock("../../heart/providers/minimax", () => ({ createMinimaxProviderRuntime: () => replacement }))
+      try {
+        const { runAgent } = await import("../../heart/core")
+        const capture = vi.fn()
+        const callbacks = makeCallbacks({ onError: (_error, severity) => { if (kind === "abort-sleep" && severity === "transient") setTimeout(() => controller.abort(), 100) } })
+        const promise = runAgent(messages, callbacks, undefined, controller.signal, {
+          tools: [probeTool], execTool: vi.fn(async () => "real receipt"), providerRuntimeOverride: first, captureGeneratedMessages: capture,
+          requiredToolCalls: { names: [], retryMessage: "unused", validateTerminalAnswer: (answer) => answer === "rejected draft" ? "attempt-only correction" : undefined },
+        })
+        await vi.advanceTimersByTimeAsync(2200)
+        await vi.advanceTimersByTimeAsync(4200)
+        await vi.advanceTimersByTimeAsync(100)
+        const result = await promise
+        expect(result.outcome).toBe(kind === "abort-sleep" ? "aborted" : "settled")
+        expect(callerViews.every((view) => !JSON.stringify(view).match(/attempt-only correction|rejected draft/))).toBe(true)
+        if (kind !== "abort-sleep") {
+          expect(views[2]).toEqual(views[1])
+          expect(views[1]?.at(-1)).toEqual({ role: "user", content: "attempt-only correction" })
+          expect(JSON.stringify(views[1])).toContain("rejected draft")
+          expect(views[3]).toEqual(callerViews[3])
+        }
+        expect(JSON.stringify([messages, capture.mock.calls])).not.toMatch(/attempt-only correction|rejected draft/)
+        if (kind !== "overflow") expect(refresh).toHaveBeenCalled()
+      } finally {
+        vi.useRealTimers()
+        vi.doUnmock("../../heart/provider-credentials")
+        vi.doUnmock("../../heart/providers/minimax")
+        vi.doUnmock("../../heart/providers/openai-codex-token")
+      }
+    })
+
+    it.each(["ordinary request", "this exact request previously reached a tool that is advertised again now."])("keeps historical-effect retries local even when a real request equals control text: %s", async (request) => {
+      const args = { path: "note.txt", content: "approved" }
+      const messages: ChatCompletionMessageParam[] = [
+        { role: "user", content: request },
+        { role: "assistant", content: null, tool_calls: [{ type: "function", id: "previous-effect", function: { name: "write_file", arguments: JSON.stringify(args) } }] },
+        { role: "tool", tool_call_id: "previous-effect", content: "error: write failed" },
+        { role: "user", content: request },
+      ]
+      const before = structuredClone(messages)
+      const { runtime, views, callerViews } = runtimeFor([response("rejected completion"), response("", [call("write_file", "retry-effect", args)]), response("accepted")], messages)
+      const capture = vi.fn()
+      const execTool = vi.fn(async () => "written")
+      const { runAgent } = await import("../../heart/core")
+      await runAgent(messages, makeCallbacks(), undefined, undefined, {
+        providerRuntimeOverride: runtime, captureGeneratedMessages: capture, execTool,
+        tools: [{ type: "function", function: { name: "write_file", description: "write", parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"] } } }],
+      })
+      expect(execTool).toHaveBeenCalledExactlyOnceWith("write_file", args, undefined)
+      expect(callerViews[1]).toEqual(before)
+      expect(JSON.stringify(views[1])).toContain("rejected completion")
+      expect(JSON.stringify(capture.mock.calls)).not.toContain("rejected completion")
+      expect(messages.filter((message) => message.role === "user")).toEqual(before.filter((message) => message.role === "user"))
+    })
+
+    it("uses source rather than the correction-text blacklist for the latest real human request", async () => {
+      const realCorrectionText = "no tool was called this turn. you must end every turn by calling settle with your answer (or ponder/observe). emit the tool call now."
+      const messages: ChatCompletionMessageParam[] = [
+        { role: "user", content: "Think privately and come back to me later." },
+        { role: "assistant", content: "What next?" },
+        { role: "user", content: realCorrectionText },
+      ]
+      const { runtime, views } = runtimeFor([response("The private pass is queued; I will come back to you.")], messages)
+      const { runAgent } = await import("../../heart/core")
+      await runAgent(messages, makeCallbacks(), undefined, undefined, { providerRuntimeOverride: runtime })
+      expect(views).toHaveLength(1)
+      expect(messages[2]?.content).toBe(realCorrectionText)
+    })
+
+    it.each([
+      ["malformed", [call("probe", "safe"), { name: "probe", id: "invalid", arguments: "{" }]],
+      ["unadvertised", [call("probe", "safe"), call("not_advertised", "invalid")]],
+      ["sole-call", [call("probe", "safe"), call("observe", "invalid", {})]],
+      ["required-dispatch", [call("probe", "safe"), call("probe", "invalid", { value: "blocked" })]],
+    ] as const)("rejects the entire %s batch before any sibling, generated history, or persistence", async (kind, batch) => {
+      const messages: ChatCompletionMessageParam[] = [{ role: "user", content: "test batch" }]
+      const { runtime, callerViews, views } = runtimeFor([response("rejected prose", [...batch]), response("", [call("observe", "accepted", {})])], messages)
+      const execTool = vi.fn(async () => "receipt")
+      const propose = vi.fn()
+      const persist = vi.fn()
+      const capture = vi.fn()
+      const callbacks = makeCallbacks({ onToolResult: persist, settleOutputMode: "final_only" })
+      const { runAgent } = await import("../../heart/core")
+      const result = await runAgent(messages, callbacks, undefined, undefined, {
+        tools: [probeTool], execTool, providerRuntimeOverride: runtime, captureGeneratedMessages: capture,
+        approvalCoordinator: { propose },
+        requiredToolCalls: { names: [], retryMessage: "unused", validateToolCallBeforeDispatch: (_name, args) => kind === "required-dispatch" && args.value === "blocked" ? "dependency missing" : undefined },
+      })
+      expect(result.outcome).toBe("observed")
+      expect(execTool).not.toHaveBeenCalled()
+      expect(propose).not.toHaveBeenCalled()
+      expect(persist).not.toHaveBeenCalled()
+      expect(callerViews[1]).toEqual([{ role: "user", content: "test batch" }])
+      expect(JSON.stringify(views[1])).toContain("rejected prose")
+      expect(JSON.stringify([messages, capture.mock.calls])).not.toMatch(/rejected prose|invalid|dependency missing|"safe"/)
+      expect(messages.filter((message) => message.role === "assistant")).toHaveLength(1)
+      expect(messages.filter((message) => message.role === "tool")).toEqual([{ role: "tool", tool_call_id: "accepted", content: "(silenced)" }])
+    })
+
+    it.each(["success", "failure"] as const)("promotes accepted tool/result exactly once after handler %s", async (kind) => {
+      const messages: ChatCompletionMessageParam[] = [{ role: "user", content: "read once" }]
+      const { runtime } = runtimeFor([response("accepted", [call("probe", "real-effect")]), response("final")], messages)
+      const capture = vi.fn()
+      const persisted: ChatCompletionMessageParam[][] = []
+      const execTool = vi.fn(async () => { if (kind === "failure") throw new Error("real execution failed"); return "real receipt" })
+      const { runAgent } = await import("../../heart/core")
+      await runAgent(messages, makeCallbacks({ onToolResult: (current) => persisted.push(structuredClone(current)) }), undefined, undefined, {
+        tools: [probeTool], execTool, providerRuntimeOverride: runtime, captureGeneratedMessages: capture,
+      })
+      expect(execTool).toHaveBeenCalledOnce()
+      expect(messages.filter((message) => message.role === "tool")).toEqual([{
+        role: "tool", tool_call_id: "real-effect", content: kind === "success" ? "real receipt" : "error: Error: real execution failed",
+      }])
+      expect(capture).toHaveBeenCalledExactlyOnceWith(messages.slice(1))
+      expect(persisted).toHaveLength(1)
+      expect(persisted[0]).toEqual(messages.slice(0, 3))
+    })
+
+    it.each(["terminal-error", "abort", "overflow"] as const)("retains the accepted execution receipt through later provider %s", async (kind) => {
+      const messages: ChatCompletionMessageParam[] = [{ role: "user", content: "perform the read" }]
+      const { runtime } = runtimeFor([response("accepted read", [call("probe", "completed-read")]), response("accepted final")], messages)
+      const stream = runtime.streamTurn
+      const controller = new AbortController()
+      let attempts = 0
+      runtime.streamTurn = vi.fn(async (request) => {
+        if (++attempts === 2) {
+          if (kind === "terminal-error") return { ...response("invalid terminal"), settleFinalization: { ok: false, errorCode: "invalid_settle_arguments" } }
+          if (kind === "abort") controller.abort()
+          throw Object.assign(new Error(kind), kind === "overflow" ? { code: "context_length_exceeded" } : {})
+        }
+        return stream(request)
+      })
+      const capture = vi.fn()
+      const persisted: ChatCompletionMessageParam[][] = []
+      const { runAgent } = await import("../../heart/core")
+      const result = await runAgent(messages, makeCallbacks({ onToolResult: (current) => persisted.push(structuredClone(current)) }), undefined, controller.signal, {
+        tools: [probeTool], providerRuntimeOverride: runtime, execTool: vi.fn(async () => "verified execution receipt"), captureGeneratedMessages: capture,
+      })
+      expect(result.outcome).toBe(kind === "terminal-error" ? "errored" : kind === "abort" ? "aborted" : "settled")
+      expect(persisted).toHaveLength(1)
+      const generated = capture.mock.calls[0]![0] as ChatCompletionMessageParam[]
+      expect(generated.filter((message) => message.role === "tool")).toEqual([{ role: "tool", tool_call_id: "completed-read", content: "verified execution receipt" }])
+      expect(generated.filter((message) => message.role === "assistant").flatMap((message) => message.tool_calls?.map((entry) => entry.id) ?? [])).toEqual(["completed-read"])
+      if (kind !== "overflow") expect(messages).toContainEqual({ role: "tool", tool_call_id: "completed-read", content: "verified execution receipt" })
+    })
+
+    it.each(["dependent-validation", "tool-end-observer"] as const)("promotes a completed handler receipt before %s can fail", async (kind) => {
+      const messages: ChatCompletionMessageParam[] = [{ role: "user", content: "perform the read" }]
+      const { runtime } = runtimeFor([response("accepted read", [call("probe", "completed-before-hook")])], messages)
+      const receipt = '{"ok":true,"receipt":"completed"}'
+      const capture = vi.fn()
+      const callbacks = makeCallbacks()
+      if (kind === "tool-end-observer") callbacks.onToolEnd = () => { throw new Error("observer failed") }
+      const { runAgent } = await import("../../heart/core")
+      const result = await runAgent(messages, callbacks, undefined, undefined, {
+        tools: [probeTool], providerRuntimeOverride: runtime, execTool: vi.fn(async () => receipt), captureGeneratedMessages: capture,
+        ...(kind === "dependent-validation" ? { requiredToolCalls: { names: ["probe"], retryMessage: "read", requireSuccessfulResults: true, validateRequiredToolResult: () => true, requiredToolCallsAfterResult: () => ["not-advertised"] } } : {}),
+      })
+      expect(result.outcome).toBe("errored")
+      const expected = { role: "tool", tool_call_id: "completed-before-hook", content: receipt }
+      expect(messages.filter((message) => message.role === "tool")).toEqual([expected])
+      expect(capture.mock.calls[0]![0].filter((message: ChatCompletionMessageParam) => message.role === "tool")).toEqual([expected])
+    })
+
+    it.each(["outer-thinking", "inner-thinking", "private-return"] as const)("does not promote %s scratch or its synthetic nudge", async (kind) => {
+      const messages: ChatCompletionMessageParam[] = [{ role: "user", content: kind === "private-return" ? "Think about this privately and come back to me later." : "actual request" }]
+      const rejected = kind === "private-return" ? "The private pass is queued; I will come back to you." : "<think>rejected scratch</think>"
+      const { runtime, views, callerViews } = runtimeFor([response(rejected), response("", [call(kind === "inner-thinking" ? "rest" : "observe", "accepted", {})])], messages)
+      const captured = vi.fn()
+      const { runAgent } = await import("../../heart/core")
+      await runAgent(messages, makeCallbacks(), kind === "inner-thinking" ? "inner" : undefined, undefined, { providerRuntimeOverride: runtime, captureGeneratedMessages: captured })
+      expect(views).toHaveLength(2)
+      expect(callerViews[1]?.filter((message) => message.role !== "system")).toEqual([expect.objectContaining({ role: "user", content: messages.find((message) => message.role === "user")!.content })])
+      expect(views[1]?.at(-1)?.role).toBe("user")
+      expect(JSON.stringify([messages, captured.mock.calls])).not.toContain(rejected)
+      expect(messages.filter((message) => message.role === "user")).toHaveLength(1)
+    })
+
+    it("rejects a private-return settle acknowledgement before accepting a truthful blocked answer", async () => {
+      const messages: ChatCompletionMessageParam[] = [{ role: "user", content: "Think privately and come back to me later." }]
+      const { runtime, callerViews, views } = runtimeFor([
+        response("", [call("settle", "private-rejected", { answer: "The private pass is queued; I will come back to you.", intent: "complete" })]),
+        response("", [call("settle", "blocked-accepted", { answer: "I could not start that work.", intent: "blocked" })]),
+      ], messages)
+      const { runAgent } = await import("../../heart/core")
+      const result = await runAgent(messages, makeCallbacks({ settleOutputMode: "final_only" }), undefined, undefined, { providerRuntimeOverride: runtime })
+      expect(result.outcome).toBe("blocked")
+      expect(callerViews[1]).toEqual([messages[0]])
+      expect(JSON.stringify(views[1])).toContain("private-rejected")
+      expect(JSON.stringify(messages)).not.toContain("private-rejected")
+      expect(messages.filter((message) => message.role === "assistant")).toHaveLength(1)
+    })
+
+    it("discards all rejected reasoning and controls when private-return retries become a deterministic blocked answer", async () => {
+      const messages: ChatCompletionMessageParam[] = [{ role: "user", content: "Think privately and come back to me later." }]
+      const { runtime, callerViews } = runtimeFor([1, 2, 3].map((index) => response(`<think>REJECTED_REASONING_${index}</think>The private pass is queued; I will come back to you.`)), messages)
+      const capture = vi.fn()
+      const { runAgent } = await import("../../heart/core")
+      const result = await runAgent(messages, makeCallbacks(), undefined, undefined, { providerRuntimeOverride: runtime, captureGeneratedMessages: capture })
+      expect(result.outcome).toBe("blocked")
+      expect(callerViews).toHaveLength(3)
+      expect(callerViews.every((view) => view.length === 1)).toBe(true)
+      expect(JSON.stringify([messages, capture.mock.calls])).not.toMatch(/REJECTED_REASONING|no ponder packet|Emit the ponder/)
+      expect(messages).toHaveLength(2)
+      expect(capture).toHaveBeenCalledExactlyOnceWith([messages[1]])
+    })
+
+    it.each(["abort", "superseded", "throw", "exhaustion", "reset"] as const)("discards attempt controls/scratch on %s", async (kind) => {
+      const messages: ChatCompletionMessageParam[] = [{ role: "user", content: "original" }]
+      const { runtime, callerViews } = runtimeFor(Array.from({ length: 8 }, () => response("rejected draft")), messages)
+      const controller = new AbortController()
+      const boundaryViews: ChatCompletionMessageParam[][] = []
+      let boundaries = 0
+      const options: RunAgentOptions = {
+        providerRuntimeOverride: runtime,
+        requiredToolCalls: { names: [], retryMessage: "unused", validateTerminalAnswer: () => "private correction" },
+        drainSteeringFollowUps: () => {
+          boundaryViews.push(structuredClone(messages))
+          if (++boundaries === 2) {
+            if (kind === "abort") controller.abort()
+            if (kind === "superseded") return [{ text: "stop", effect: "clear_and_supersede" }]
+            if (kind === "throw") throw new Error("boundary failed")
+            if (kind === "reset") { messages.splice(0, messages.length, { role: "user", content: "reset by caller" }); controller.abort() }
+          }
+          return []
+        },
+      }
+      const { runAgent } = await import("../../heart/core")
+      const run = runAgent(messages, makeCallbacks(), undefined, controller.signal, options)
+      if (kind === "throw") await expect(run).rejects.toThrow("boundary failed")
+      else expect((await run).outcome).toBe(kind === "superseded" ? "superseded" : kind === "exhaustion" ? "errored" : "aborted")
+      expect(JSON.stringify(messages)).not.toMatch(/private correction|rejected draft/)
+      expect(callerViews.every((view) => !JSON.stringify(view).includes("private correction"))).toBe(true)
+      expect(JSON.stringify(boundaryViews)).not.toMatch(/private correction|rejected draft/)
+    })
+
+    it.each(["accepted", "proposal-error"] as const)("promotes an approval suspension only after %s preparation", async (kind) => {
+      const { resolveToolDefinition } = await import("../../repertoire/tools")
+      const messages: ChatCompletionMessageParam[] = [{ role: "user", content: "restart calibre-web" }]
+      const { runtime } = runtimeFor([response("accepted proposal", [call("shell", "protected", { command: "docker restart calibre-web" })])], messages)
+      const seenDuringProposal: ChatCompletionMessageParam[][] = []
+      const propose = vi.fn(async () => {
+        seenDuringProposal.push(structuredClone(messages))
+        if (kind === "proposal-error") throw new Error("proposal failed")
+        return { approvalId: "11111111-1111-4111-8111-111111111111", checkpointDigest: "a".repeat(64), suspendedSessionRevision: "b".repeat(64) }
+      })
+      const captured = vi.fn()
+      const execTool = vi.fn()
+      const { runAgent } = await import("../../heart/core")
+      const result = await runAgent(messages, makeCallbacks(), undefined, undefined, {
+        tools: [resolveToolDefinition("shell")!.tool], providerRuntimeOverride: runtime,
+        toolContext: { signin: async () => undefined }, approvalCoordinator: { propose }, execTool, captureGeneratedMessages: captured,
+      })
+      expect(result.outcome).toBe(kind === "accepted" ? "suspended" : "errored")
+      expect(propose).toHaveBeenCalledOnce()
+      expect(execTool).not.toHaveBeenCalled()
+      expect(seenDuringProposal).toEqual([[{ role: "user", content: "restart calibre-web" }]])
+      expect(messages.filter((message) => message.role === "assistant")).toHaveLength(kind === "accepted" ? 1 : 0)
+      expect(captured).toHaveBeenCalledExactlyOnceWith(messages.slice(1))
     })
   })
 
@@ -2152,6 +2494,7 @@ describe("runAgent tool loop guard", () => {
           { index: 0, id: "early-care", function: { name: "care_manage", arguments: JSON.stringify({ action: "resolve", id: "care-a", expectedUpdatedAt: "v1" }) } },
           { index: 1, id: "notifications", function: { name: "unraid_get_notifications", arguments: "{}" } },
         ])]))
+        .mockReturnValueOnce(streamed("unraid_get_notifications", {}, "notifications-admissible"))
         .mockReturnValueOnce(makeStream([makeChunk(undefined, [
           { index: 0, id: "care-a", function: { name: "care_manage", arguments: JSON.stringify({ action: "resolve", id: "care-a", expectedUpdatedAt: "v1" }) } },
           { index: 1, id: "care-b", function: { name: "care_manage", arguments: JSON.stringify({ action: "resolve", id: "care-b", expectedUpdatedAt: "v2" }) } },
@@ -2193,6 +2536,7 @@ describe("runAgent tool loop guard", () => {
         ["care_manage", "care-a"],
         ["care_manage", "care-b"],
       ])
+      expect(mockCreate).toHaveBeenCalledTimes(4)
     })
 
     it("runs dependency rejection before approval classification and reports the blocked boundary", async () => {
@@ -2353,7 +2697,7 @@ describe("runAgent tool loop guard", () => {
       } as any)
 
       expect(execTool.mock.calls.map(([name]) => name)).toEqual(["sanctuary_get_media_optimization", "unraid_get_storage"])
-      expect(messages).toContainEqual(expect.objectContaining({ role: "tool", tool_call_id: "invalid-storage", content: expect.stringContaining("invalid tool arguments") }))
+      expectProviderOnlyRejection(messages, "invalid-storage", "invalid tool arguments")
       expect(messages).not.toContainEqual(expect.objectContaining({ tool_call_id: "settle-missing-storage" }))
       expect(result).toMatchObject({ outcome: "blocked", completion: { intent: "blocked" } })
     })
@@ -2584,8 +2928,8 @@ describe("runAgent tool loop guard", () => {
         })
 
         expect(result).toMatchObject({ outcome: "settled", completion: { answer: "Docker image utilization needs a fresh check." } })
-        expect(snapshots).toHaveLength(2)
-        expect(snapshots.at(-1)?.at(-1)).toEqual({ role: "user", content: correction })
+        expect(snapshots.some((snapshot) => snapshot.at(-1)?.content === correction)).toBe(true)
+        expect(JSON.stringify(snapshots.at(-1))).not.toContain(correction)
         expect(requests[1]?.at(-1)).toEqual({ role: "user", content: correction })
         expect(messages).not.toContainEqual({ role: "user", content: correction })
       } finally {

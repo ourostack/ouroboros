@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
+import { a003Envelope, a003Event, a003Pair, A003_AT } from "../../fixtures/a003-session"
+vi.mock("fs", async (original) => ({ ...await original<typeof import("fs")>() }))
 import {
   writeHabitRunReceipt,
   writeFlightRecorderResume,
@@ -1078,6 +1080,70 @@ describe("mailbox direct reads", () => {
 describe("mailbox deep readers", () => {
   afterEach(() => {
     vi.restoreAllMocks()
+  })
+
+  it.each(["explicit", "mtime", "now", "now-without-events"])("keeps the %s activity fallback for an event-timed system-only envelope", async (kind) => {
+    vi.resetModules()
+    const bundlesRoot = makeBundleRoot()
+    const file = path.join(bundlesRoot, "alpha.ouro", "state", "sessions", "ari", "telegram", "owner.json")
+    const envelope = a003Envelope(kind === "now-without-events" ? [] : [a003Event(1, "system", "system")])
+    if (kind === "explicit") envelope.state.lastFriendActivityAt = A003_AT
+    writeJson(file, envelope)
+    const fileTime = fs.statSync(file).mtime.toISOString()
+    if (kind.startsWith("now")) {
+      vi.doMock("../../../heart/mailbox/readers/shared", async () => ({
+        ...await vi.importActual<typeof import("../../../heart/mailbox/readers/shared")>("../../../heart/mailbox/readers/shared"),
+        safeFileMtime: () => null,
+      }))
+    }
+    try {
+      const { readSessionInventory } = await import("../../../heart/mailbox/mailbox-read")
+      const result = readSessionInventory("alpha", { bundlesRoot, now: () => new Date("2026-09-08T10:00:00.000Z") })
+      expect(result.items[0]?.lastActivityAt).toBe(kind === "explicit" ? A003_AT : kind === "mtime" ? fileTime : "2026-09-08T10:00:00.000Z")
+    } finally {
+      vi.doUnmock("../../../heart/mailbox/readers/shared")
+      vi.resetModules()
+      fs.rmSync(bundlesRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("uses the canonical bundle root for a transcript without an override", async () => {
+    const bundlesRoot = makeBundleRoot()
+    vi.resetModules()
+    vi.doMock("../../../heart/identity", async () => ({
+      ...await vi.importActual<typeof import("../../../heart/identity")>("../../../heart/identity"),
+      getAgentBundlesRoot: () => bundlesRoot,
+    }))
+    writeJson(path.join(bundlesRoot, "alpha.ouro", "state", "sessions", "ari", "telegram", "owner.json"), a003Pair().envelope)
+    try {
+      const { readSessionTranscript } = await import("../../../heart/mailbox/mailbox-read")
+      expect(readSessionTranscript("alpha", "ari", "telegram", "owner")?.messageCount).toBe(2)
+    } finally {
+      vi.doUnmock("../../../heart/identity")
+      vi.resetModules()
+      fs.rmSync(bundlesRoot, { recursive: true, force: true })
+    }
+  })
+
+  it.each([false, true])("A003 mailbox inventory and transcript share effective event visibility (invalid=%s)", async (invalid) => {
+    const bundlesRoot = makeBundleRoot()
+    const alphaRoot = path.join(bundlesRoot, "alpha.ouro")
+    const { envelope, marker } = a003Pair()
+    if (invalid) marker.time.recordedAtSource = "save"
+    const file = path.join(alphaRoot, "state", "sessions", "ari", "telegram", "owner.json")
+    writeJson(file, envelope)
+    const bytes = fs.readFileSync(file, "utf8")
+    try {
+      const { readSessionInventory, readSessionTranscript } = await import("../../../heart/mailbox/mailbox-read")
+      const inventory = readSessionInventory("alpha", { bundlesRoot, now: () => new Date(A003_AT) })
+      expect(inventory.items).toHaveLength(1)
+      expect(inventory.items[0]?.messageCount).toBe(invalid ? 4 : 2)
+      expect(inventory.items[0]?.latestUserExcerpt).toBe(invalid ? "engine-only correction" : "actual human")
+      expect(inventory.items[0]?.lastActivityAt).toBe(invalid ? "2026-09-06T12:00:00.000Z" : A003_AT)
+      const transcript = readSessionTranscript("alpha", "ari", "telegram", "owner", { bundlesRoot })!
+      expect(transcript.messages.map((message) => message.id)).toEqual(invalid ? envelope.events.map((event) => event.id) : ["evt-000001", "evt-000002"])
+      expect(fs.readFileSync(file, "utf8")).toBe(bytes)
+    } finally { fs.rmSync(bundlesRoot, { recursive: true, force: true }) }
   })
 
   describe("readSessionInventory", () => {

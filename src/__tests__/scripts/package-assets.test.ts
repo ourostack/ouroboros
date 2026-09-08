@@ -43,6 +43,25 @@ afterEach(() => {
 })
 
 describe("package asset validation", () => {
+  it("A003 has no production repertoire registration", async () => {
+    const { getToolsForChannel, resolveToolDefinition } = await import("../../repertoire/tools")
+    const names = getToolsForChannel().map((tool) => tool.function.name)
+    expect(names.length).toBeGreaterThan(0)
+    expect(names).not.toContain("session_redaction_repair")
+    expect(names).not.toContain("selectA003LegacyRequiredCorrections")
+    expect(resolveToolDefinition("session_redaction_repair")).toBeUndefined()
+    expect(resolveToolDefinition("session-redaction-repair")).toBeUndefined()
+  })
+  it("A003 ships the direct maintenance entrypoint without public package or command routing", () => {
+    expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("dist/heart/session-redaction-repair-cli-main.js")
+    const root = path.resolve(__dirname, "../../..")
+    const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"))
+    expect(JSON.stringify([pkg.bin, pkg.exports])).not.toContain("session-redaction-repair")
+    for (const file of ["src/heart/daemon/daemon-cli.ts", "src/heart/daemon/daemon.ts", "src/repertoire/tools.ts", "src/senses/telegram.ts"]) {
+      expect(fs.readFileSync(path.join(root, file), "utf8")).not.toMatch(/session-redaction-repair|a003-sanctuary-session-repair/)
+    }
+    expect(fs.existsSync(path.join(root, "dist/heart/session-redaction-repair-cli-main.js"))).toBe(true)
+  })
   it("declares RepairGuide files as required package assets", () => {
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("assets/bluebubbles-host")
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("RepairGuide.ouro/agent.json")

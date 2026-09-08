@@ -162,6 +162,13 @@ import { execSync, spawnSync } from "child_process"
 import * as identity from "../../heart/identity"
 import type { ChannelCallbacks } from "../../heart/core"
 
+function expectProviderOnlyControl(messages: any[], callId: string, reason: string): void {
+  expect(JSON.stringify(messages)).not.toContain(callId)
+  const requests = JSON.stringify(mockCreate.mock.calls.slice(1).map(([params]) => params.messages))
+  expect(requests).toContain(callId)
+  expect(requests).toContain(reason)
+}
+
 // Dynamic config helpers -- must be re-imported after vi.resetModules()
 async function setAgentProvider(provider: "azure" | "minimax" | "anthropic" | "openai-codex") {
   vi.mocked(identity.loadAgentConfig).mockReturnValue({
@@ -1192,11 +1199,8 @@ describe("runAgent", () => {
     expect(recordError).toHaveBeenCalledWith(expect.stringContaining("habit tool 'shell' is denied"))
     expect(toolStarts).toEqual(["rest"])
     expect(textChunks).toEqual([])
-    const toolResults = messages.filter((message: any) => message.role === "tool")
-    expect(toolResults).toEqual(expect.arrayContaining([
-      expect.objectContaining({ tool_call_id: "tc_read", content: expect.stringContaining("blocked") }),
-      expect.objectContaining({ tool_call_id: "tc_shell", content: expect.stringContaining("blocked") }),
-    ]))
+    expectProviderOnlyControl(messages, "tc_read", "blocked")
+    expectProviderOnlyControl(messages, "tc_shell", "blocked")
   })
 
   it("habit mode with no return routes does not advertise send_message or surface", async () => {
@@ -1345,9 +1349,7 @@ describe("runAgent", () => {
     expect(callbacks.flushNow).not.toHaveBeenCalled()
     expect(callbacks.onToolStart).toHaveBeenCalledTimes(1)
     expect(callbacks.onToolStart).toHaveBeenCalledWith("rest", { status: "blocked" })
-    expect(messages.filter((message: any) => message.role === "tool")).toEqual(expect.arrayContaining([
-      expect.objectContaining({ tool_call_id: "tc_shell", content: expect.stringContaining("blocked") }),
-    ]))
+    expectProviderOnlyControl(messages, "tc_shell", "blocked")
   })
 
   it("habit mode blocks non-object tool arguments before execution", async () => {
@@ -1406,10 +1408,8 @@ describe("runAgent", () => {
     })
 
     expect(execTool).not.toHaveBeenCalled()
-    expect(messages.filter((message: any) => message.role === "tool")).toEqual(expect.arrayContaining([
-      expect.objectContaining({ tool_call_id: "tc_array", content: expect.stringContaining("arguments must be a JSON object") }),
-      expect.objectContaining({ tool_call_id: "tc_bad_json", content: expect.stringContaining("malformed JSON") }),
-    ]))
+    expectProviderOnlyControl(messages, "tc_array", "arguments must be a JSON object")
+    expectProviderOnlyControl(messages, "tc_bad_json", "malformed JSON")
   })
 
   it("habit mode blocks malformed JSON tool arguments before execution", async () => {
@@ -1467,9 +1467,7 @@ describe("runAgent", () => {
     })
 
     expect(execTool).not.toHaveBeenCalled()
-    expect(messages.filter((message: any) => message.role === "tool")).toEqual(expect.arrayContaining([
-      expect.objectContaining({ tool_call_id: "tc_bad_json", content: expect.stringContaining("malformed JSON") }),
-    ]))
+    expectProviderOnlyControl(messages, "tc_bad_json", "malformed JSON")
   })
 
   it("habit mode blocks known tools that were not granted", async () => {
@@ -1523,9 +1521,7 @@ describe("runAgent", () => {
     })
 
     expect(execTool).not.toHaveBeenCalled()
-    expect(messages.filter((message: any) => message.role === "tool")).toEqual(expect.arrayContaining([
-      expect.objectContaining({ tool_call_id: "tc_read", content: expect.stringContaining("not granted") }),
-    ]))
+    expectProviderOnlyControl(messages, "tc_read", "not granted")
   })
 
   it("habit mode blocks advertised tools with no executable risk profile", async () => {
@@ -1579,9 +1575,7 @@ describe("runAgent", () => {
     })
 
     expect(execTool).not.toHaveBeenCalled()
-    expect(messages.filter((message: any) => message.role === "tool")).toEqual(expect.arrayContaining([
-      expect.objectContaining({ tool_call_id: "tc_custom", content: expect.stringContaining("known executable risk profile") }),
-    ]))
+    expectProviderOnlyControl(messages, "tc_custom", "known executable risk profile")
   })
 
   it("habit mode blocks granted tools whose executable risk mutates external state", async () => {
@@ -1644,9 +1638,7 @@ describe("runAgent", () => {
     expect(recordError).toHaveBeenCalledWith(expect.stringContaining("external_side_effect"))
     expect(callbacks.onToolStart).toHaveBeenCalledTimes(1)
     expect(callbacks.onToolStart).toHaveBeenCalledWith("rest", { status: "blocked" })
-    expect(messages.filter((message: any) => message.role === "tool")).toEqual(expect.arrayContaining([
-      expect.objectContaining({ tool_call_id: "tc_shell", content: expect.stringContaining("external_side_effect") }),
-    ]))
+    expectProviderOnlyControl(messages, "tc_shell", "external_side_effect")
   })
 
   it("habit mode allows explicitly granted durable-state-only high-risk tools", async () => {
@@ -2005,9 +1997,7 @@ describe("runAgent", () => {
 
     expect(execTool).not.toHaveBeenCalled()
     expect(callbacks.onToolStart).not.toHaveBeenCalledWith("rest", { status: "done" })
-    expect(messages.filter((message: any) => message.role === "tool")).toEqual(expect.arrayContaining([
-      expect.objectContaining({ tool_call_id: "tc_rest", content: expect.stringContaining("denied") }),
-    ]))
+    expectProviderOnlyControl(messages, "tc_rest", "denied")
   })
 
   it("habit mode blocks granted tool calls that were not advertised in the active tool set", async () => {
@@ -2058,9 +2048,7 @@ describe("runAgent", () => {
 
     expect(execTool).not.toHaveBeenCalled()
     expect(callbacks.onToolStart).not.toHaveBeenCalledWith("read_file", { path: "safe.txt" })
-    expect(messages.filter((message: any) => message.role === "tool")).toEqual(expect.arrayContaining([
-      expect.objectContaining({ tool_call_id: "tc_read", content: expect.stringContaining("not advertised") }),
-    ]))
+    expectProviderOnlyControl(messages, "tc_read", "not advertised")
   })
 
   it("habit mode route-checks allowed send_message before handler execution", async () => {
@@ -2147,10 +2135,8 @@ describe("runAgent", () => {
     expect(execTool).not.toHaveBeenCalled()
     expect(callbacks.onToolStart).toHaveBeenCalledTimes(1)
     expect(callbacks.onToolStart).toHaveBeenCalledWith("rest", { status: "blocked" })
-    expect(messages.filter((message: any) => message.role === "tool")).toEqual(expect.arrayContaining([
-      expect.objectContaining({ tool_call_id: "tc_send", content: expect.stringContaining("family") }),
-      expect.objectContaining({ tool_call_id: "tc_read_companion", content: expect.stringContaining("blocked") }),
-    ]))
+    expectProviderOnlyControl(messages, "tc_send", "family")
+    expectProviderOnlyControl(messages, "tc_read_companion", "blocked")
     expect(recordSurfaceAttempt).toHaveBeenCalledWith(expect.objectContaining({
       recipient: "casey",
       channel: "bluebubbles",
@@ -3316,6 +3302,62 @@ describe("runAgent", () => {
     expect(secondCallInput[funcOutputIdx].output).toBe("data")
 
     // config cleanup handled by resetConfigCache in beforeEach
+  })
+
+  it.each([false, true])("A003 real Azure native payload drops consumed control and replaces rejected scratch (transport retry=%s)", async (retry) => {
+    vi.resetModules()
+    vi.mocked(fs.readFileSync).mockImplementation(defaultReadFileSync)
+    await setupAzure()
+    vi.doMock("../../heart/provider-credentials", async () => ({
+      ...await vi.importActual<typeof import("../../heart/provider-credentials")>("../../heart/provider-credentials"),
+      refreshProviderCredentialPool: vi.fn(async () => undefined),
+    }))
+    if (retry) vi.useFakeTimers()
+    try {
+      const native: any[][] = []
+      let responses = 0
+      let retried = false
+      mockResponsesCreate.mockImplementation((params: any) => {
+        native.push(structuredClone(params.input))
+        if (retry && responses === 2 && !retried) { retried = true; throw Object.assign(new Error("server unavailable"), { status: 503 }) }
+        responses++
+        if (responses === 3) {
+          return makeResponsesStream([
+            { type: "response.output_item.added", item: { type: "function_call", call_id: "accepted-read", name: "read_file", arguments: "" } },
+            { type: "response.function_call_arguments.delta", delta: '{"path":"a.txt"}' },
+            { type: "response.output_item.done", item: { type: "function_call", id: "fc-real", call_id: "accepted-read", name: "read_file", arguments: '{"path":"a.txt"}', status: "completed" } },
+          ])
+        }
+        const text = responses < 3 ? `rejected-draft-${responses}` : "accepted answer"
+        return makeResponsesStream([
+          { type: "response.output_text.delta", delta: text },
+          { type: "response.output_item.done", item: { type: "message", id: `native-message-${responses}`, role: "assistant", content: [{ type: "output_text", text }] } },
+        ])
+      })
+      const core = await import("../../heart/core")
+      const messages: any[] = [{ role: "user", content: "real request" }]
+      const captured = vi.fn()
+      const execTool = vi.fn(async () => "real receipt")
+      const callbacks: ChannelCallbacks = { onModelStart: vi.fn(), onModelStreamStart: vi.fn(), onTextChunk: vi.fn(), onReasoningChunk: vi.fn(), onToolStart: vi.fn(), onToolEnd: vi.fn(), onError: vi.fn(), onClearText: vi.fn(), settleOutputMode: "final_only" }
+      const promise = core.runAgent(messages, callbacks, undefined, undefined, {
+        execTool, captureGeneratedMessages: captured,
+        requiredToolCalls: { names: [], retryMessage: "unused", validateTerminalAnswer: (answer) => answer === "rejected-draft-1" ? "CONTROL_A" : answer === "rejected-draft-2" ? "CONTROL_B" : undefined },
+      })
+      if (retry) { await vi.advanceTimersByTimeAsync(2200); await vi.advanceTimersByTimeAsync(4200); await vi.advanceTimersByTimeAsync(100) }
+      expect((await promise).outcome).toBe("settled")
+      for (const index of [1, 2]) {
+        const assistants = native[index]!.filter((item) => item.role === "assistant")
+        expect(assistants).toHaveLength(1)
+        const content = assistants[0].content
+        expect(typeof content === "string" ? content : content.map((part: any) => part.text).join("")).toBe(`rejected-draft-${index}`)
+        expect(native[index]!.filter((item) => item.role === "user" && item.content === (index === 1 ? "CONTROL_A" : "CONTROL_B"))).toHaveLength(1)
+      }
+      if (retry) expect(native[3]).toEqual(native[2])
+      expect(JSON.stringify(native.at(-1))).not.toMatch(/rejected-draft|CONTROL_[AB]/)
+      expect(JSON.stringify(native.at(-1))).toContain("real receipt")
+      expect(JSON.stringify([messages, captured.mock.calls])).not.toMatch(/rejected-draft|CONTROL_[AB]/)
+      expect(execTool).toHaveBeenCalledOnce()
+    } finally { vi.useRealTimers(); vi.doUnmock("../../heart/provider-credentials") }
   })
 
   it("Azure native input: same array reference reused across iterations", async () => {
@@ -7844,7 +7886,7 @@ describe("tool_choice required and settle", () => {
     expect(setMustResolveBeforeHandoff).toHaveBeenCalledWith(true)
   })
 
-  it("settle mixed with other tool calls: other tools execute, settle rejected, loop continues", async () => {
+  it("A003 mixed settle rejects every sibling before dispatch and keeps the rejection provider-only", async () => {
     vi.mocked(fs.readFileSync).mockImplementation(readFileSyncReturning("file data"))
 
     let callCount = 0
@@ -7884,8 +7926,8 @@ describe("tool_choice required and settle", () => {
     const messages: any[] = [{ role: "system", content: "test" }]
     await runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
 
-    // read_file executed normally, settle intercepted (but still fires onToolStart for visibility)
-    expect(toolStarts).toEqual(["read_file", "settle"])
+    // The invalid mixed batch starts no handler; only the later sole settle starts.
+    expect(toolStarts).toEqual(["settle"])
     // Should have 2 API calls (mixed -> sole settle)
     expect(callCount).toBe(2)
     // The final assistant message keeps tool_calls (full msg); answer emitted via onTextChunk
@@ -7893,12 +7935,10 @@ describe("tool_choice required and settle", () => {
     expect(lastAssistant.tool_calls).toBeDefined()
     expect(lastAssistant.tool_calls[0].function.name).toBe("settle")
     expect(textChunks).toEqual(["the real answer"])
-    // There should be a rejection tool result for the mixed settle
+    // Rejection is provider-only; only the accepted terminal is conversation.
     const toolResults = messages.filter((m: any) => m.role === "tool")
-    const rejectionMsg = toolResults.find((m: any) => m.tool_call_id === "call_2")
-    expect(rejectionMsg).toBeDefined()
-    expect(rejectionMsg.content).toContain("rejected")
-    expect(rejectionMsg.content).toContain("settle must be the only tool call")
+    expectProviderOnlyControl(messages, "call_2", "settle must be the only tool call")
+    expectProviderOnlyControl(messages, "call_1", "rejected")
     // There should also be a synthetic "(delivered)" tool result for the sole settle
     const deliveredMsg = toolResults.find((m: any) => m.tool_call_id === "call_3")
     expect(deliveredMsg).toBeDefined()
@@ -8028,7 +8068,7 @@ describe("tool_choice required and settle", () => {
     await core.runAgent(messages, callbacks, undefined, undefined, { toolChoiceRequired: true })
 
     expect(callCount).toBe(2)
-    expect(toolStarts).toEqual(["read_file", "settle"])
+    expect(toolStarts).toEqual(["settle"])
     // Final assistant message keeps tool_calls; answer emitted via onTextChunk
     const lastAssistant = [...messages].reverse().find((m: any) => m.role === "assistant")
     expect(lastAssistant.tool_calls).toBeDefined()

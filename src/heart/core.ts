@@ -877,12 +877,6 @@ function messageContentText(content: unknown): string {
     .join("\n")
 }
 
-function isHarnessCorrectiveUserText(text: string): boolean {
-  return text.startsWith("no tool was called this turn. you must end every turn")
-    || text.startsWith("private-return acknowledgement claimed work was queued, but no ponder packet was created this turn.")
-    || text.startsWith("this exact request previously reached a tool that is advertised again now.")
-}
-
 type HistoricalFailedEffect = { name: string; fingerprint: string }
 
 function toolResultIndicatesFailure(content: string): boolean {
@@ -923,7 +917,7 @@ function historicalFailedEffectsForExactRepeatedRequest(messages: OpenAI.ChatCom
     const message = messages[index]
     if (message?.role !== "user") continue
     const text = messageContentText(message.content).replace(/\s+/g, " ").trim()
-    if (!text || isHarnessCorrectiveUserText(text)) continue
+    if (!text) continue
     userRequests.push({ index, text })
   }
   const current = userRequests.at(-1)
@@ -961,7 +955,6 @@ function latestUserMessageText(messages: OpenAI.ChatCompletionMessageParam[]): s
     const message = messages[i]
     if (message?.role !== "user") continue
     const text = messageContentText(message.content).trim()
-    if (isHarnessCorrectiveUserText(text)) continue
     if (text.length > 0) return text
   }
   return ""
@@ -1331,9 +1324,15 @@ export async function runAgent(
   options?: RunAgentOptions,
 ): Promise<{ usage?: UsageData; outcome: RunAgentOutcome; completion?: CompletionMetadata; suspension?: ApprovalSuspensionResult; error?: Error; errorClassification?: ProviderErrorClassification }> {
   const generatedMessages: OpenAI.ChatCompletionMessageParam[] = [];
+  let nextAttemptControls: OpenAI.ChatCompletionMessageParam[] = [];
+  let rejectedAttempt: OpenAI.ChatCompletionMessageParam[] = [];
   const pushGenerated = (...next: OpenAI.ChatCompletionMessageParam[]): void => {
     messages.push(...next);
     generatedMessages.push(...structuredClone(next));
+    if (rejectedAttempt.length > 0) {
+      rejectedAttempt = [];
+      providerRuntime.resetTurnState(messages);
+    }
   };
   const facing = channelToFacing(channel);
   let providerRuntime = options?.providerRuntimeOverride ?? await getProviderRuntime(facing);
@@ -1515,12 +1514,14 @@ export async function runAgent(
   let providerIterations = 0;
   const requiredToolCallNames = [...new Set(options?.requiredToolCalls?.names ?? [])];
   const dispatchedRequiredToolCalls = new Set<string>();
-  const requiredCorrectionMarker = Symbol("requiredCorrection")
-  const messagesWithoutRequiredCorrections = (): OpenAI.ChatCompletionMessageParam[] => messages.filter((message) => (
-    message as OpenAI.ChatCompletionMessageParam & Record<PropertyKey, unknown>
-  )[requiredCorrectionMarker] !== true)
-  const removeRequiredCorrections = (): void => {
-    messages.splice(0, messages.length, ...messagesWithoutRequiredCorrections())
+  const rejectAttempt = (assistant: OpenAI.ChatCompletionAssistantMessageParam, controls: OpenAI.ChatCompletionMessageParam[]): void => {
+    rejectedAttempt = [structuredClone(assistant)]
+    nextAttemptControls = controls
+  }
+  const rejectToolBatch = (assistant: OpenAI.ChatCompletionAssistantMessageParam, reasons: string[]): void => {
+    rejectAttempt(assistant, assistant.tool_calls!.map((call, index) => ({
+      role: "tool", tool_call_id: call.id, content: reasons[index]!,
+    })))
   }
   const pendingRequiredToolCalls = (): { missing: string[]; message: string } | null => {
     const missing = requiredToolCallNames.filter((name) => !dispatchedRequiredToolCalls.has(name));
@@ -1528,15 +1529,9 @@ export async function runAgent(
       ? { missing, message: `${options!.requiredToolCalls!.retryMessage} Missing required tool calls: ${missing.join(", ")}.` }
       : null;
   };
-  const queueRequiredCorrection = (message: string, limitContext: string): void => {
+  const queueRequiredCorrection = (assistant: OpenAI.ChatCompletionAssistantMessageParam, message: string, limitContext: string): void => {
     if (providerIterations >= MAX_PROVIDER_ITERATIONS) throw new Error(`provider iteration limit exhausted at response ${MAX_PROVIDER_ITERATIONS} ${limitContext}`)
-    const correction: OpenAI.ChatCompletionUserMessageParam & Record<PropertyKey, unknown> = {
-      role: "user",
-      content: message,
-      [requiredCorrectionMarker]: true,
-    }
-    messages.push(correction)
-    providerRuntime.resetTurnState(messages)
+    rejectAttempt(assistant, [{ role: "user", content: message }])
   }
   const toolLoopState = createToolLoopState();
   const toolFrictionLedger = createToolFrictionLedger();
@@ -1580,8 +1575,9 @@ export async function runAgent(
         ),
       },
     });
-    stripLastToolCalls(messages);
-    stripLastToolCalls(generatedMessages);
+    // Only legacy input can still contain unaccepted calls. Generated output
+    // has crossed acceptance; a later provider failure cannot revoke effects.
+    if (generatedMessages.length === 0) stripLastToolCalls(messages);
     outcome = "errored";
     done = true;
   };
@@ -1716,6 +1712,22 @@ export async function runAgent(
       break;
     }
     try {
+      const budgetOptions = {
+        requiredPromptEvidence: options?.requiredPromptEvidence,
+        provider: providerRuntime.id,
+        model: providerRuntime.model,
+        contextWindowTokens: getContextConfig().maxTokens,
+      }
+      const canonicalBudget = applyPromptBudget({ ...budgetOptions, messages })
+      if (canonicalBudget.status !== "within_budget") {
+        messages.splice(0, messages.length, ...canonicalBudget.messages)
+      }
+      // Preserve canonical evidence object identity while freezing the array
+      // and the one attempt's private control/scratch across operational retries.
+      const attemptMessages = rejectedAttempt.length > 0
+        ? [...applyPromptBudget({ ...budgetOptions, messages: [...messages, ...rejectedAttempt, ...nextAttemptControls] }).messages]
+        : [...messages]
+      if (rejectedAttempt.length > 0 || canonicalBudget.status !== "within_budget") providerRuntime.resetTurnState(attemptMessages)
       const turnCallbackBufferRef: { current: HabitCallbackBuffer | null } = { current: null };
       const callProviderTurn = async (): Promise<TurnResult> => {
         callbacks.onModelStart();
@@ -1725,19 +1737,8 @@ export async function runAgent(
             ? createFinalOnlyTextBuffer(callbacks)
             : null;
         try {
-          const promptBudget = applyPromptBudget({
-            messages,
-            requiredPromptEvidence: options?.requiredPromptEvidence,
-            provider: providerRuntime.id,
-            model: providerRuntime.model,
-            contextWindowTokens: getContextConfig().maxTokens,
-          });
-          if (promptBudget.status !== "within_budget") {
-            messages.splice(0, messages.length, ...promptBudget.messages);
-            providerRuntime.resetTurnState(messages);
-          }
           return await providerRuntime.streamTurn({
-            messages,
+            messages: attemptMessages,
             activeTools,
             callbacks: turnCallbackBufferRef.current?.callbacks ?? callbacks,
             signal,
@@ -1762,10 +1763,10 @@ export async function runAgent(
           if (error instanceof ProviderAttemptAbortError) throw error
           if (isContextOverflow(error) && !overflowRetried) {
             overflowRetried = true;
-            stripLastToolCalls(messages);
-            stripLastToolCalls(generatedMessages);
+            const overflowMessages = messages.map((message) => message.role === "assistant" ? { ...message } : message)
+            stripLastToolCalls(overflowMessages);
             const { maxTokens, contextMargin } = getContextConfig();
-            const trimmed = trimMessages(messages, maxTokens, contextMargin, maxTokens * 2);
+            const trimmed = trimMessages(overflowMessages, maxTokens, contextMargin, maxTokens * 2);
             const requiredEvidence = options?.requiredPromptEvidence;
             const requiredMessages = new Set<OpenAI.ChatCompletionMessageParam>([
               ...(requiredEvidence?.verifiedPredecessorMessage ? [requiredEvidence.verifiedPredecessorMessage] : []),
@@ -1774,9 +1775,9 @@ export async function runAgent(
             const trimmedMessages = new Set(trimmed);
             const overflowRetryMessages = requiredMessages.size === 0
               ? trimmed
-              : messages.filter((message) => trimmedMessages.has(message) || requiredMessages.has(message));
+              : overflowMessages.filter((message) => trimmedMessages.has(message) || requiredMessages.has(message));
             messages.splice(0, messages.length, ...overflowRetryMessages);
-            providerRuntime.resetTurnState(messages);
+            providerRuntime.resetTurnState(attemptMessages);
             callbacks.onError(new Error("context trimmed, retrying..."), "transient");
             return callProviderTurn()
           }
@@ -1807,7 +1808,7 @@ export async function runAgent(
             })
             _providerRuntimeFactories[facing] = null
             providerRuntime = await getProviderRuntime(facing)
-            providerRuntime.resetTurnState(messages)
+            providerRuntime.resetTurnState(attemptMessages)
           } catch (refreshError) {
             emitNervesEvent({
               level: "warn",
@@ -1821,7 +1822,7 @@ export async function runAgent(
         },
         sleep: async (delayMs) => {
           await waitForProviderRetry(delayMs, signal)
-          providerRuntime.resetTurnState(messages);
+          providerRuntime.resetTurnState(attemptMessages);
         },
       });
 
@@ -1831,6 +1832,7 @@ export async function runAgent(
       }
 
       const result = attempt.value;
+      nextAttemptControls = [];
       providerIterations += 1
       if (providerIterations === MAX_PROVIDER_ITERATIONS && result.toolCalls.length > 0) {
         throw new Error(`provider iteration limit exhausted at response ${MAX_PROVIDER_ITERATIONS} before tool execution`)
@@ -1945,8 +1947,7 @@ export async function runAgent(
               message: "unresolved historical effect exhausted deterministic tool-call retries; failing closed",
               meta: { provider: providerRuntime.id, model: providerRuntime.model, toolNames: retryableHistoricalTools, cap: NO_TOOL_CALL_MAX_RETRIES },
             });
-            msg.content = blockedAnswer
-            pushGenerated(msg)
+            pushGenerated({ role: "assistant", content: blockedAnswer })
             callbacks.onTextChunk(blockedAnswer)
             completion = { answer: blockedAnswer, intent: "blocked" }
             outcome = "blocked"
@@ -1967,18 +1968,17 @@ export async function runAgent(
               cap: NO_TOOL_CALL_MAX_RETRIES,
             },
           });
-          pushGenerated(msg);
-          messages.push({
+          rejectAttempt(msg, [{
             role: "user",
             content: `this exact request previously reached a tool that is advertised again now. Its unresolved historical effect is through ${retryableHistoricalTools.join(", ")}. Only that tool is available now. Read current state if needed, then retry the exact failed effect. Do not report completion until the effect succeeds.`,
-          });
+          }]);
           continue;
         }
         const requiredToolCallsGate = pendingRequiredToolCalls();
         if (requiredToolCallsGate) {
           streamCallbackBuffer?.discard();
           callbacks.onClearText?.();
-          queueRequiredCorrection(requiredToolCallsGate.message, "before required tool calls completed")
+          queueRequiredCorrection(msg, requiredToolCallsGate.message, "before required tool calls completed")
           emitNervesEvent({
             level: "warn",
             component: "engine",
@@ -1992,7 +1992,7 @@ export async function runAgent(
         if (requiredAnswerRejection) {
           streamCallbackBuffer?.discard()
           callbacks.onClearText?.()
-          queueRequiredCorrection(requiredAnswerRejection, "before required terminal answer validation completed")
+          queueRequiredCorrection(msg, requiredAnswerRejection, "before required terminal answer validation completed")
           emitNervesEvent({ level: "warn", component: "engine", event: "engine.required_tool_answer_rejected", message: "unsupported terminal answer rejected after required reads", meta: { answerLength: String(msg.content ?? "").length } })
           continue
         }
@@ -2015,11 +2015,10 @@ export async function runAgent(
                 contentLength: result.content.length,
               },
             });
-            pushGenerated(msg);
-            messages.push({
+            rejectAttempt(msg, [{
               role: "user",
               content: `${privateReturnTextAckRetryError} Emit the ponder(action=create, ...) tool call now, or ask a blocking clarification without saying the private work is queued.`,
-            });
+            }]);
             continue;
           }
 
@@ -2036,8 +2035,7 @@ export async function runAgent(
               contentLength: result.content.length,
             },
           });
-          msg.content = blockedAnswer;
-          pushGenerated(msg);
+          pushGenerated({ role: "assistant", content: blockedAnswer });
           callbacks.onTextChunk(blockedAnswer);
           completion = { answer: blockedAnswer, intent: "blocked" };
           outcome = "blocked";
@@ -2065,15 +2063,14 @@ export async function runAgent(
               contentLength: result.content!.length,
             },
           });
-          pushGenerated(msg);
-          messages.push({
+          rejectAttempt(msg, [{
             role: "user",
             content: isPrivateRuntimeChannel
               ? augmentedToolContext?.noSend === true
                 ? "no tool was called this turn. this is an immutable no-send turn; call rest now without creating a continuation."
                 : "no tool was called this turn. you must end every turn by calling rest (or surface, ponder, observe). emit the tool call now."
               : "no tool was called this turn. you must end every turn by calling settle with your answer (or ponder/observe). emit the tool call now.",
-          });
+          }]);
           continue;
         }
         // Legitimate text-only response, or cap reached — accept as-is.
@@ -2083,20 +2080,19 @@ export async function runAgent(
       } else {
         // Reset the retry counter on any successful tool call.
         noToolCallRetries = 0;
-        const preCallMessages = structuredClone(messagesWithoutRequiredCorrections().filter((message) => message.role !== "system"))
+        const preCallMessages = structuredClone(messages.filter((message) => message.role !== "system"))
         const validatedCalls = validateToolCallBatchAtProductionBoundary(result.toolCalls, activeTools)
         const invalidCall = validatedCalls.find((entry) => "error" in entry)
         if (invalidCall) {
-          await streamCallbackBuffer?.flush()
-          pushGenerated(msg)
+          streamCallbackBuffer?.discard()
           const unadvertisedCall = validatedCalls.find((entry) => !activeToolNames.has(entry.call.name))
+          const rejections: string[] = []
           for (const entry of validatedCalls) {
             const detail = "error" in entry ? entry.error : "another call in this batch had invalid arguments"
             const rejection = unadvertisedCall
               ? `rejected: ${entry.call.name} was not advertised for this channel; no handler was executed.`
               : `invalid tool arguments: ${detail}`
-            pushGenerated({ role: "tool", tool_call_id: entry.call.id, content: rejection })
-            providerRuntime.appendToolOutput(entry.call.id, rejection)
+            rejections.push(rejection)
             options?.toolBoundaryObserver?.({
               name: entry.call.name,
               reason: activeToolNames.has(entry.call.name) ? "invalid_arguments" : "profile_excluded",
@@ -2105,6 +2101,7 @@ export async function runAgent(
               sideEffect: false,
             })
           }
+          rejectToolBatch(msg, rejections)
           if (unadvertisedCall) {
             emitNervesEvent({
               level: "warn",
@@ -2141,12 +2138,8 @@ export async function runAgent(
         if (habitBlockReason) {
           streamCallbackBuffer?.discard();
           recordBlockedHabitSurfaceAttempts(habitSession, result.toolCalls, habitBlockReason)
-          pushGenerated(msg)
           const blockedOutput = `blocked: ${habitBlockReason}. No tool side effects from this assistant message were executed.`
-          for (const call of result.toolCalls) {
-            pushGenerated({ role: "tool", tool_call_id: call.id, content: blockedOutput })
-            providerRuntime.appendToolOutput(call.id, blockedOutput)
-          }
+          rejectToolBatch(msg, result.toolCalls.map(() => blockedOutput))
           emitNervesEvent({
             level: "warn",
             component: "engine",
@@ -2154,6 +2147,15 @@ export async function runAgent(
             message: "habit tool batch blocked before side effects",
             meta: { reason: habitBlockReason, toolCalls: result.toolCalls.map((call) => call.name) },
           })
+          continue
+        }
+        const soleViolation = result.toolCalls.length > 1
+          ? result.toolCalls.find((call) => SOLE_CALL_REJECTION[call.name] !== undefined || resolveToolDefinition(call.name)?.terminalProjection?.requiresSoleCall === true)
+          : undefined
+        if (soleViolation) {
+          streamCallbackBuffer?.discard()
+          const reason = SOLE_CALL_REJECTION[soleViolation.name] ?? `rejected: ${soleViolation.name} must be the only tool call.`
+          rejectToolBatch(msg, result.toolCalls.map(() => reason))
           continue
         }
         const soleTerminalCall = result.toolCalls.length === 1
@@ -2221,7 +2223,7 @@ export async function runAgent(
             streamCallbackBuffer?.discard();
             callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs), false);
             callbacks.onClearText?.();
-            queueRequiredCorrection(requiredToolCallsGate.message, "before required tool calls completed")
+            queueRequiredCorrection(msg, requiredToolCallsGate.message, "before required tool calls completed")
             emitNervesEvent({
               level: "warn",
               component: "engine",
@@ -2237,10 +2239,8 @@ export async function runAgent(
             streamCallbackBuffer?.discard();
             callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs), false);
             callbacks.onClearText?.();
-            pushGenerated(msg);
             const gateMessage = "current held-work frame still has unsurfaced items — return each listed item with surface(delegationId=...) before you settle. Older transcript claims are historical; only the current held-work frame is the gate.";
-            pushGenerated({ role: "tool", tool_call_id: result.toolCalls[0].id, content: gateMessage });
-            providerRuntime.appendToolOutput(result.toolCalls[0].id, gateMessage);
+            rejectToolBatch(msg, [gateMessage]);
             continue;
           }
 
@@ -2252,7 +2252,7 @@ export async function runAgent(
             streamCallbackBuffer?.discard()
             callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs), false)
             callbacks.onClearText?.()
-            queueRequiredCorrection(requiredAnswerRejection, "before required terminal answer validation completed")
+            queueRequiredCorrection(msg, requiredAnswerRejection, "before required terminal answer validation completed")
             emitNervesEvent({ level: "warn", component: "engine", event: "engine.required_tool_answer_rejected", message: "unsupported settle answer rejected after required reads", meta: { answerLength: answer.length } })
             continue
           }
@@ -2334,10 +2334,7 @@ export async function runAgent(
             streamCallbackBuffer?.discard();
             callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs), false);
             callbacks.onClearText?.();
-            pushGenerated(msg);
-            const toolRetryMessage = retryError
-            pushGenerated({ role: "tool", tool_call_id: result.toolCalls[0].id, content: toolRetryMessage });
-            providerRuntime.appendToolOutput(result.toolCalls[0].id, toolRetryMessage);
+            rejectToolBatch(msg, [retryError]);
           }
           continue;
         }
@@ -2377,20 +2374,16 @@ export async function runAgent(
           const attentionQueue = augmentedToolContext?.delegatedOrigins;
           if (attentionQueue && attentionQueue.length > 0) {
             callbacks.onToolEnd("rest", summarizeArgs("rest", restArgs), false);
-            pushGenerated(msg);
             const gateMessage = "current held-work frame still has unsurfaced items — return each listed item with surface(delegationId=...) before you rest. Older transcript claims are historical; only the current held-work frame is the gate.";
-            pushGenerated({ role: "tool", tool_call_id: result.toolCalls[0].id, content: gateMessage });
-            providerRuntime.appendToolOutput(result.toolCalls[0].id, gateMessage);
+            rejectToolBatch(msg, [gateMessage]);
             continue;
           }
 
           if (hasFreshPendingWork(options) && !freshWorkGateFired) {
             freshWorkGateFired = true;
             callbacks.onToolEnd("rest", summarizeArgs("rest", restArgs), false);
-            pushGenerated(msg);
             const gateMessage = "fresh work arrived for me this turn — inspect the pending messages above and take the next concrete action before you rest.";
-            pushGenerated({ role: "tool", tool_call_id: result.toolCalls[0].id, content: gateMessage });
-            providerRuntime.appendToolOutput(result.toolCalls[0].id, gateMessage);
+            rejectToolBatch(msg, [gateMessage]);
             emitNervesEvent({
               level: "info",
               component: "engine",
@@ -2425,7 +2418,52 @@ export async function runAgent(
           const rejection = options?.requiredToolCalls?.validateToolCallBeforeDispatch?.(entry.call.name, requiredArgs)
           if (rejection) requiredDispatchRejections.set(entry.call.id, { name: entry.call.name, args: requiredArgs, message: rejection })
         }
-        const approvalCalls = await Promise.all(validCalls.filter((entry) => !requiredDispatchRejections.has(entry.call.id)).map(async (entry) => {
+        if (requiredDispatchRejections.size > 0) {
+          streamCallbackBuffer?.discard()
+          for (const rejection of requiredDispatchRejections.values()) {
+            callbacks.onToolStart(rejection.name, rejection.args)
+            callbacks.onToolEnd(rejection.name, summarizeArgs(rejection.name, rejection.args), false)
+            options?.toolBoundaryObserver?.({
+              name: rejection.name, reason: "dependency_rejected",
+              globallyResolvable: typeof resolveToolDefinition(rejection.name)?.handler === "function",
+              invoked: false, sideEffect: false,
+            })
+            emitNervesEvent({
+              level: "warn", component: "engine", event: "engine.required_tool_dispatch_rejected",
+              message: "required tool dependency rejected before approval and handler dispatch",
+              meta: { toolName: rejection.name },
+            })
+          }
+          rejectToolBatch(msg, result.toolCalls.map((call) => requiredDispatchRejections.get(call.id)?.message
+            ?? "rejected: another call in this batch has an unsatisfied required dependency; no handler was executed."))
+          continue
+        }
+        const executionRejections = new Map<string, string>()
+        for (const entry of validCalls) {
+          const args = validatedCallArguments.get(entry.call)!
+          const fingerprint = effectFingerprint(entry.call.name, entry.call.arguments)
+          if (forcingHistoricalEffect && fingerprint && !unresolvedHistoricalEffects.some((effect) => effect.fingerprint === fingerprint)) {
+            executionRejections.set(entry.call.id, "rejected: this turn is retrying an unresolved historical effect, and these mutation arguments do not match it. Read current state or retry the exact failed effect.")
+          } else if (entry.call.name === "send_message" && args.friendId === "self" && !isPrivateRuntimeChannel && looksLikePrivateReturnRequest(latestUserMessageText(messages))) {
+            executionRejections.set(entry.call.id, "private-return requests must use ponder, not send_message(friendId=self). Create a typed ponder packet with the marker/source request preserved, then only acknowledge that the private pass is queued.")
+          } else if (entry.call.name !== "speak" && entry.call.name !== "ponder") {
+            const loop = detectToolLoop(toolLoopState, entry.call.name, args)
+            if (loop.stuck) executionRejections.set(entry.call.id, `loop guard: ${loop.message}`)
+          }
+        }
+        if (executionRejections.size > 0) {
+          streamCallbackBuffer?.discard()
+          for (const entry of validCalls) {
+            if (!executionRejections.has(entry.call.id)) continue
+            const args = validatedCallArguments.get(entry.call)!
+            callbacks.onToolStart(entry.call.name, args)
+            callbacks.onToolEnd(entry.call.name, summarizeArgs(entry.call.name, args), false)
+          }
+          rejectToolBatch(msg, result.toolCalls.map((call) => executionRejections.get(call.id)
+            ?? "rejected: another call in this batch was inadmissible; no handler was executed."))
+          continue
+        }
+        const approvalCalls = await Promise.all(validCalls.map(async (entry) => {
           const classification = await classifyApprovalForInvocation(entry.call.name, entry.validated.arguments, augmentedToolContext)
           return {
             ...entry,
@@ -2435,12 +2473,7 @@ export async function runAgent(
         const protectedCall = approvalCalls.find((entry) => entry.policy.kind === "required")
         if (protectedCall && result.toolCalls.length !== 1) {
           streamCallbackBuffer?.discard()
-          pushGenerated(msg)
-          for (const call of result.toolCalls) {
-            const rejection = "rejected: approval-eligible tool must be the sole call; no call in this batch was executed."
-            pushGenerated({ role: "tool", tool_call_id: call.id, content: rejection })
-            providerRuntime.appendToolOutput(call.id, rejection)
-          }
+          rejectToolBatch(msg, result.toolCalls.map(() => "rejected: approval-eligible tool must be the sole call; no call in this batch was executed."))
           emitNervesEvent({
             level: "warn",
             component: "engine",
@@ -2453,10 +2486,8 @@ export async function runAgent(
         if (protectedCall && protectedCall.policy.kind === "required") {
           if (!options?.approvalCoordinator) {
             streamCallbackBuffer?.discard()
-            pushGenerated(msg)
             const rejection = "rejected: this protected tool requires approval, but the approval coordinator is unavailable; the handler was not invoked."
-            pushGenerated({ role: "tool", tool_call_id: protectedCall.call.id, content: rejection })
-            providerRuntime.appendToolOutput(protectedCall.call.id, rejection)
+            rejectToolBatch(msg, [rejection])
             emitNervesEvent({
               level: "warn",
               component: "engine",
@@ -2467,7 +2498,6 @@ export async function runAgent(
             continue
           }
           streamCallbackBuffer?.discard()
-          pushGenerated(msg)
           const toolDigest = digestJson({
             name: protectedCall.call.name,
             schemaDigest: protectedCall.validated.schemaDigest,
@@ -2490,6 +2520,7 @@ export async function runAgent(
             actionClass: protectedCall.policy.actionClass,
             liveToolContext: augmentedToolContext,
           })
+          pushGenerated(msg)
           suspension = {
             approvalId: committed.approvalId,
             toolCallId: protectedCall.call.id,
@@ -2507,79 +2538,14 @@ export async function runAgent(
           continue
         }
 
-        const containsSoleCallOnlyViolation = result.toolCalls.length > 1
-          && result.toolCalls.some((call) => {
-            const terminalProjection = resolveToolDefinition(call.name)?.terminalProjection
-            return SOLE_CALL_REJECTION[call.name] !== undefined
-              || terminalProjection?.requiresSoleCall === true
-          })
-        if (callbacks.settleOutputMode === "final_only" && containsSoleCallOnlyViolation) {
-          streamCallbackBuffer?.discard()
-        } else {
-          await streamCallbackBuffer?.flush()
-        }
+        await streamCallbackBuffer?.flush()
         pushGenerated(msg);
-        // Execute tools (sole-call tools in mixed calls are rejected inline)
+        // Every pre-dispatch gate accepted the complete batch.
         for (const tc of result.toolCalls) {
           if (signal?.aborted) break;
-          const requiredDispatchRejection = requiredDispatchRejections.get(tc.id)
-          if (requiredDispatchRejection) {
-            callbacks.onToolStart(tc.name, requiredDispatchRejection.args)
-            callbacks.onToolEnd(tc.name, summarizeArgs(tc.name, requiredDispatchRejection.args), false)
-            pushGenerated({ role: "tool", tool_call_id: tc.id, content: requiredDispatchRejection.message })
-            providerRuntime.appendToolOutput(tc.id, requiredDispatchRejection.message)
-            options?.toolBoundaryObserver?.({
-              name: tc.name,
-              reason: "dependency_rejected",
-              globallyResolvable: typeof resolveToolDefinition(tc.name)?.handler === "function",
-              invoked: false,
-              sideEffect: false,
-            })
-            emitNervesEvent({
-              level: "warn",
-              component: "engine",
-              event: "engine.required_tool_dispatch_rejected",
-              message: "required tool dependency rejected before approval and handler dispatch",
-              meta: { toolName: tc.name },
-            })
-            continue
-          }
-          // Reject sole-call tools when mixed with other tool calls
-          const terminalProjection = resolveToolDefinition(tc.name)?.terminalProjection
-          const soleCallRejection = SOLE_CALL_REJECTION[tc.name]
-            ?? (terminalProjection?.requiresSoleCall
-              ? `rejected: ${tc.name} must be the only tool call.`
-              : undefined);
-          if (soleCallRejection) {
-            pushGenerated({ role: "tool", tool_call_id: tc.id, content: soleCallRejection });
-            providerRuntime.appendToolOutput(tc.id, soleCallRejection);
-            continue;
-          }
           const args = validatedCallArguments.get(tc)!
           const currentEffectFingerprint = effectFingerprint(tc.name, tc.arguments)
-          if (
-            forcingHistoricalEffect
-            && currentEffectFingerprint
-            && !unresolvedHistoricalEffects.some((effect) => effect.fingerprint === currentEffectFingerprint)
-          ) {
-            const rejection = "rejected: this turn is retrying an unresolved historical effect, and these mutation arguments do not match it. Read current state or retry the exact failed effect."
-            callbacks.onToolStart(tc.name, args)
-            callbacks.onToolEnd(tc.name, summarizeArgs(tc.name, args), false)
-            pushGenerated({ role: "tool", tool_call_id: tc.id, content: rejection })
-            providerRuntime.appendToolOutput(tc.id, rejection)
-            continue
-          }
           if (tc.name === "send_message" && args.friendId === "self") {
-            const latestUserText = latestUserMessageText(messages)
-            if (!isPrivateRuntimeChannel && looksLikePrivateReturnRequest(latestUserText)) {
-              const argSummary = summarizeArgs(tc.name, args);
-              const rejection = "private-return requests must use ponder, not send_message(friendId=self). Create a typed ponder packet with the marker/source request preserved, then only acknowledge that the private pass is queued.";
-              callbacks.onToolStart(tc.name, args);
-              callbacks.onToolEnd(tc.name, argSummary, false);
-              pushGenerated({ role: "tool", tool_call_id: tc.id, content: rejection });
-              providerRuntime.appendToolOutput(tc.id, rejection);
-              continue;
-            }
             sawSendMessageSelf = true;
           }
           if (tc.name === "speak") {
@@ -2808,16 +2774,6 @@ export async function runAgent(
           if (tc.name === "bridge_manage") sawBridgeManage = true;
           /* v8 ignore next -- flag tested via truth-check integration tests @preserve */
           if (isExternalStateQuery(tc.name, args)) sawExternalStateQuery = true;
-          const argSummary = summarizeArgs(tc.name, args);
-          const toolLoop = detectToolLoop(toolLoopState, tc.name, args);
-          if (toolLoop.stuck) {
-            const rejection = `loop guard: ${toolLoop.message}`;
-            callbacks.onToolStart(tc.name, args);
-            callbacks.onToolEnd(tc.name, argSummary, false);
-            pushGenerated({ role: "tool", tool_call_id: tc.id, content: rejection });
-            providerRuntime.appendToolOutput(tc.id, rejection);
-            continue;
-          }
           callbacks.onToolStart(tc.name, args);
           let toolResult: string;
           let success: boolean;
@@ -2831,8 +2787,11 @@ export async function runAgent(
           } catch (e) {
             toolResult = `error: ${e}`;
             success = false;
-            augmentedToolContext?.habitSession?.recordError?.(toolResult);
           }
+          const modelResult = rewriteToolResultForModel(tc.name, toolResult, toolFrictionLedger);
+          pushGenerated({ role: "tool", tool_call_id: tc.id, content: modelResult });
+          providerRuntime.appendToolOutput(tc.id, modelResult);
+          if (!success) augmentedToolContext?.habitSession?.recordError?.(toolResult);
           const validatedRequiredResult = success && requiredToolCallNames.includes(tc.name) && options?.requiredToolCalls?.requireSuccessfulResults
             ? requiredToolResultSucceeded(tc.name, toolResult, args, options.requiredToolCalls.validateRequiredToolResult)
             : false
@@ -2860,19 +2819,15 @@ export async function runAgent(
             invoked: true,
             sideEffect: success && toolRiskProfile?.mutates !== "none",
           })
-          toolResult = rewriteToolResultForModel(tc.name, toolResult, toolFrictionLedger);
-          recordToolOutcome(toolLoopState, tc.name, args, toolResult, success);
-          callbacks.onToolEnd(tc.name, buildToolResultSummary(tc.name, args, toolResult, success), success);
-          pushGenerated({ role: "tool", tool_call_id: tc.id, content: toolResult });
-          providerRuntime.appendToolOutput(tc.id, toolResult);
-          callbacks.onToolResult?.(messagesWithoutRequiredCorrections());
+          recordToolOutcome(toolLoopState, tc.name, args, modelResult, success);
+          callbacks.onToolEnd(tc.name, buildToolResultSummary(tc.name, args, modelResult, success), success);
+          callbacks.onToolResult?.(messages);
         }
       }
     } catch (e) {
       // Abort is not an error — just stop cleanly
       if (e instanceof ProviderAttemptAbortError || signal?.aborted) {
-        stripLastToolCalls(messages);
-        stripLastToolCalls(generatedMessages);
+        if (generatedMessages.length === 0) stripLastToolCalls(messages);
         outcome = "aborted";
         break;
       }
@@ -2888,7 +2843,9 @@ export async function runAgent(
     }
     }
   } finally {
-    removeRequiredCorrections()
+    nextAttemptControls = []
+    rejectedAttempt = []
+    providerRuntime.resetTurnState(messages)
   }
   options?.captureGeneratedMessages?.(structuredClone(generatedMessages));
   emitNervesEvent({

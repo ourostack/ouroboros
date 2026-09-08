@@ -241,12 +241,29 @@ describe("observe tool in runAgent", () => {
       },
     })
 
-    // Find rejection message for observe
     const toolResults = messages.filter((m: any) => m.role === "tool")
-    const rejection = toolResults.find((m: any) => m.tool_call_id === "call_1")
-    expect(rejection).toBeDefined()
-    expect(rejection.content).toContain("rejected")
-    expect(rejection.content).toContain("observe must be the only tool call")
+    expect(toolResults.map((message: any) => message.tool_call_id)).toEqual(["call_3"])
+    expect(JSON.stringify(mockCreate.mock.calls[1][0].messages)).toContain("observe must be the only tool call")
+    expect(messages.filter((message: any) => message.role === "assistant")).toHaveLength(1)
+  })
+
+  it("preserves an accepted group-context tool call while observe remains a separate terminal", async () => {
+    mockCreate.mockReturnValueOnce(makeStream([makeChunk(undefined, [
+      { index: 0, id: "group-read", function: { name: "read_file", arguments: '{"path":"a.txt"}' } },
+    ])]))
+    mockCreate.mockReturnValueOnce(makeStream([makeChunk(undefined, [
+      { index: 0, id: "group-observe", function: { name: "observe", arguments: "{}" } },
+    ])]))
+    vi.mocked(fs.readFileSync).mockReturnValue("file data")
+    const messages: any[] = [{ role: "system", content: "test" }]
+    await runAgent(messages, makeCallbacks(), undefined, undefined, {
+      toolChoiceRequired: true,
+      toolContext: {
+        signin: async () => undefined,
+        context: { isGroupChat: true, channel: { channel: "bluebubbles", senseType: "open", availableIntegrations: [], supportsMarkdown: false, supportsStreaming: true, supportsRichCards: false, maxMessageLength: Infinity } },
+      },
+    })
+    expect(messages.filter((message: any) => message.role === "tool").map((message: any) => message.tool_call_id)).toEqual(["group-read", "group-observe"])
   })
 
   it("includes observe in activeTools when toolChoiceRequired and isGroupChat", async () => {
