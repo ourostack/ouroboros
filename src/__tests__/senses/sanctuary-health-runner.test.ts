@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest"
 
 import { runSanctuaryHealthHabit } from "../../senses/sanctuary-health-runner"
+import type { ExternalEventInput } from "../../heart/external-events/router"
 
 describe("native Sanctuary health habit", () => {
   it("submits bounded incident evidence and never loads Telegram credentials or runs a model", async () => {
@@ -64,8 +65,8 @@ describe("native Sanctuary health habit", () => {
     expect(submitEvidence).toHaveBeenCalledTimes(1)
   })
 
-  it("keeps each current incident's own transition when another incident recovers", async () => {
-    const submitEvidence = vi.fn(async () => ({ shouldWake: true }))
+  it("keeps each current incident's revision but lets the router derive a new recovery revision", async () => {
+    const submitEvidence = vi.fn(async (_input: ExternalEventInput) => ({ shouldWake: true }))
     await runSanctuaryHealthHabit("sanctuary", {
       createSweep: () => Object.assign(vi.fn(async () => ({
         message: null,
@@ -78,7 +79,9 @@ describe("native Sanctuary health habit", () => {
     })
 
     expect(submitEvidence).toHaveBeenCalledWith(expect.objectContaining({ eventId: "incident:a", observationRevision: "rev-a", transition: "unchanged" }))
-    expect(submitEvidence).toHaveBeenCalledWith(expect.objectContaining({ eventId: "incident:b", observationRevision: "rev-b", transition: "recovered" }))
+    const recovery = submitEvidence.mock.calls.find(([input]) => input.eventId === "incident:b")?.[0]
+    expect(recovery).toMatchObject({ eventId: "incident:b", transition: "recovered" })
+    expect(recovery).not.toHaveProperty("observationRevision")
   })
 
   it("does no paid or delivery work when the sweep has no changed evidence", async () => {

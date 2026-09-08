@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "fs"
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs"
 import { tmpdir } from "os"
 import * as path from "path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
@@ -38,6 +38,30 @@ afterEach(() => {
 })
 
 describe("coverage gate helpers", () => {
+  it("keeps private-turn code outside non-nested legacy coverage ranges", () => {
+    const file = path.resolve(__dirname, "../../senses/private-runtime.ts")
+    let ignoring = false
+    let reachedRuntime = false
+    for (const [index, line] of readFileSync(file, "utf8").split("\n").entries()) {
+      const location = `${file}:${index + 1}`
+      const directive = line.match(/^\s*\/\* v8 ignore (start|stop)\b/)?.[1]
+      if (directive === "start") {
+        expect(ignoring, `nested coverage range at ${location}`).toBe(false)
+        expect(reachedRuntime, `private-turn coverage exclusion at ${location}`).toBe(false)
+        ignoring = true
+      } else if (directive === "stop") {
+        expect(ignoring, `unmatched coverage stop at ${location}`).toBe(true)
+        ignoring = false
+      }
+      if (line.startsWith("export async function runPrivateRuntimeTurn(")) {
+        reachedRuntime = true
+        expect(ignoring, `unmeasured private-turn entrypoint at ${location}`).toBe(false)
+      }
+    }
+    expect(reachedRuntime).toBe(true)
+    expect(ignoring).toBe(false)
+  })
+
   it("derives stable owner ids from checkout paths", () => {
     expect(coverageRunOwner("/tmp/ouro/worktree-a")).toMatch(/^cwd-[0-9a-f]{12}$/)
     expect(coverageRunOwner("/tmp/ouro/worktree-a")).toBe(coverageRunOwner("/tmp/ouro/worktree-a"))

@@ -21,7 +21,7 @@ type ContainerListResult =
   | { ok: false; error: { code: string; message: string; degraded: true } }
 
 type RestartResult =
-  | { ok: true; data: { container: { id: string; name: string }; beforeState: string; afterState: string; observedRestart: true; degraded: false } }
+  | { ok: true; data: { container: { id: string; name: string }; beforeState: string; afterState: string; observedRestart: true; degraded: false; actionRefs?: string[]; verificationRefs?: string[] } }
   | { ok: false; error: { code: "invalid_response" | "not_found" | "ambiguous" | "stale_target"; message: string; degraded: true } }
 
 export interface UnraidRestartAttempt {
@@ -371,7 +371,8 @@ export function createApprovedUnraidRestartExecutor(options: ApprovedUnraidResta
               routineState.current = null
             }
             emitNervesEvent({ component: "repertoire", event: "repertoire.unraid_restart_end", message: "approved Unraid restart completed", meta: { containerId: fresh.id, observedRestart: true } })
-            return { ok: true, data: { container: { id: fresh.id, name: fresh.name }, beforeState: fresh.state, afterState: observed.state, observedRestart: true, degraded: false } }
+            // One routine receipt owns both the effect and its verified after-state.
+            return { ok: true, data: { container: { id: fresh.id, name: fresh.name }, beforeState: fresh.state, afterState: observed.state, observedRestart: true, degraded: false, ...(routineReceipt ? { actionRefs: [routineReceipt.id], verificationRefs: [routineReceipt.id] } : {}) } }
           }
         }
         if (now().getTime() - startedAt >= observationTimeoutMs) break

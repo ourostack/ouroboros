@@ -210,6 +210,8 @@ const OURO_DAEMON_INSTANTIATION_ALLOWLIST = new Set<string>([
   // bundle roots, temp socket paths, fake process/router deps, and explicit
   // daemon.stop cleanup around lifecycle rows.
   "src/__tests__/heart/private-runtime/spend-invariant-matrix.test.ts",
+  // Exercises external.event.submit with an isolated home, fake process manager and local roots; never starts the daemon or binds its server.
+  "src/__tests__/senses/sanctuary-stewardship-integration.test.ts",
 ])
 
 const TESTS_ROOT = join(process.cwd(), "src", "__tests__")
