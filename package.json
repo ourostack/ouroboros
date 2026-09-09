@@ -1,6 +1,6 @@
 {
   "name": "@ouro.bot/cli",
-  "version": "0.1.0-alpha.807",
+  "version": "0.1.0-alpha.808",
   "engines": {
     "node": ">=22"
   },
@@ -100,7 +100,7 @@
   "overrides": {
     "deepmerge-ts": "^8.0.1",
     "form-data": "4.0.6",
-    "multer": "2.2.0",
+    "multer": "2.3.0",
     "tmp": "0.2.7",
     "@microsoft/teams.apps": {
       "@azure/msal-node": "^5.2.2"

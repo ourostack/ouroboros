@@ -500,7 +500,7 @@ function runReleasePreflight(options = {}, deps = {}) {
     messages.push(auditResult.message)
   }
 
-  const packageAssetResult = validatePackageAssets(packageRoot)
+  const packageAssetResult = validatePackageAssets(packageRoot, undefined, { sourceTree: true })
   if (!packageAssetResult.ok) {
     errors.push(packageAssetResult.message)
   } else {

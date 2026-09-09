@@ -13,7 +13,7 @@ import type { ApprovalSuspensionResult, ChannelCallbacks, RunAgentOutcome } from
 import { runAgent } from "../heart/core"
 import { getAgentRoot, setAgentName } from "../heart/identity"
 import { sanitizeKey } from "../heart/config"
-import { stampIngressRelations, stampIngressTime, type SessionEvent, type SessionIngressRelations } from "../heart/session-events"
+import { selectEffectiveSessionEvents, stampIngressRelations, stampIngressTime, type SessionEvent, type SessionIngressRelations } from "../heart/session-events"
 import { loadSession } from "../mind/context"
 import { buildSystem, flattenSystemPrompt } from "../mind/prompt"
 import { getChannelCapabilities, FriendResolver, FileFriendStore, accumulateFriendTokens } from "@ouro.bot/friends"
@@ -373,7 +373,7 @@ function currentIngressEventId(
 ): string | undefined {
   const reference = ingressRelations?.references[0]
   const carriesReference = (event: SessionEvent, expected: string): boolean => Array.isArray(event.relations?.references) && event.relations.references.includes(expected)
-  const matches = events.filter((event) => (
+  const matches = selectEffectiveSessionEvents(events).filter((event) => (
     event.role === "user"
     && event.content === userMessage
     && event.provenance?.captureKind === "live"
@@ -401,13 +401,14 @@ function exactProjectedIngressMessage(
   const eventsById = new Map(existing.events.map((event) => [event.id, event] as const))
   if (eventsById.size !== existing.events.length) return null
   const seenProjectionIds = new Set<string>()
+  const effectiveIds = new Set(selectEffectiveSessionEvents(existing.events).map((event) => event.id))
   const projectedEvents: SessionEvent[] = []
   for (const projectedId of existing.projectionEventIds) {
     if (typeof projectedId !== "string" || !projectedId.trim() || seenProjectionIds.has(projectedId)) return null
     const event = eventsById.get(projectedId)
     if (!event) return null
     seenProjectionIds.add(projectedId)
-    projectedEvents.push(event)
+    if (effectiveIds.has(event.id)) projectedEvents.push(event)
   }
   if (existing.projectionEventIds.filter((projectedId) => projectedId === eventId).length !== 1) return null
   const projectedUsers = projectedEvents.filter((event) => event.role === "user")
@@ -538,7 +539,7 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions): Promise<RunS
     ? existing?.events?.find((candidate) => candidate.id === options.precommittedIngress!.eventId)
     : undefined
   if (options.precommittedIngress) {
-    const latestUserEvent = existing?.events?.filter((candidate) => candidate.role === "user").at(-1)
+    const latestUserEvent = selectEffectiveSessionEvents(existing?.events ?? []).filter((candidate) => candidate.role === "user").at(-1)
     if (!precommittedIngressEvent || precommittedIngressEvent !== latestUserEvent || precommittedIngressEvent.role !== "user" || precommittedIngressEvent.content !== userMessage
       || !precommittedIngressEvent.relations.references.includes(options.precommittedIngress.reference)) {
       throw new Error("shared turn precommitted ingress is missing, mismatched, or no longer current")

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import * as path from "path"
+import { a003Pair, A003_AT } from "../fixtures/a003-session"
 
 vi.mock("fs", () => ({
   existsSync: vi.fn(),
@@ -21,6 +22,22 @@ describe("session activity", () => {
     vi.mocked(fs.readFileSync).mockReset()
     vi.mocked(fs.readdirSync).mockReset()
     vi.mocked(fs.statSync).mockReset()
+  })
+
+  it.each([false, true])("A003 derives activity from the effective conversation, not a repair or hidden ingress (explicit=%s)", async (explicit) => {
+    const { envelope, target } = a003Pair()
+    if (explicit) envelope.state.lastFriendActivityAt = target.time.observedAt
+    const sessionsDir = "/mock/sessions"
+    const friendsDir = "/mock/friends"
+    const nowMs = Date.parse("2026-09-07T12:00:00.000Z")
+    vi.mocked(fs.existsSync).mockReturnValue(true)
+    vi.mocked(fs.readdirSync).mockImplementation(((file: string) => file === sessionsDir ? ["ari"] : file.endsWith("/ari") ? ["telegram"] : ["owner.json"]) as any)
+    vi.mocked(fs.statSync).mockReturnValue({ mtimeMs: nowMs, mtime: new Date(nowMs) } as any)
+    vi.mocked(fs.readFileSync).mockImplementation(((file: string) => file.startsWith(friendsDir) ? '{"name":"Ari"}' : JSON.stringify(envelope)) as any)
+    const { listSessionActivity } = await import("../../heart/session-activity")
+    expect(listSessionActivity({ sessionsDir, friendsDir, agentName: "sanctuary", activeThresholdMs: Number.POSITIVE_INFINITY, nowMs })).toEqual([
+      expect.objectContaining({ lastInboundAt: A003_AT, lastOutboundAt: A003_AT, lastActivityAt: A003_AT, unansweredInboundCount: 0 }),
+    ])
   })
 
   it("prefers explicit friend-facing activity over newer file mtimes", async () => {

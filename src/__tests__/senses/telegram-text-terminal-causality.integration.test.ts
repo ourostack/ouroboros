@@ -49,6 +49,7 @@ import { createTelegramSenseApp, opaqueTelegramSubject } from "../../senses/tele
 import { getSenseSessionPath } from "../../senses/shared-turn"
 import type { TelegramInboundMessage, TelegramLongPollOptions } from "../../senses/telegram-client"
 import * as nervesRuntime from "../../nerves/runtime"
+import type { ProviderRuntime } from "../../heart/core"
 
 const DRAFT = "Yes, I can see titles like The Pitt."
 const MID_TURN = "i found the shelf — checking the final count now"
@@ -146,6 +147,72 @@ describe("Telegram text-terminal delivery causality", () => {
     expect(sessionFiles).toHaveLength(1)
     return loadSessionEnvelopeFile(path.join(harness.agentRoot, "state", "sessions", friendId, "telegram", sessionFiles[0]!))!
   }
+
+  it("A003 runs a rejected attempt through real core before one catalog receipt and one visible terminal", async () => {
+    const prior: any[] = [{ role: "system", content: "System" }]
+    for (let index = 0; index < 12; index++) prior.push({ role: "user", content: `Old question ${index}` }, { role: "assistant", content: OLD_ANSWER })
+    const sessionPath = getSenseSessionPath("sanctuary", friendId, "telegram", sessionKey, harness.agentRoot)
+    fs.mkdirSync(path.dirname(sessionPath), { recursive: true })
+    saveSession(sessionPath, prior)
+    const rejected = "REJECTED UNGROUNDED CATALOG DRAFT"
+    const callerViews: any[][] = []
+    const providerViews: any[][] = []
+    const generated: any[][] = []
+    const execTool = vi.fn(async () => CATALOG_RESULT)
+    harness.runAgent.mockImplementationOnce(async (messages: any[], callbacks: any, channel: string, signal: AbortSignal | undefined, options: any) => {
+      expect(messages.length).toBeGreaterThan(20)
+      const ingress = messages.findLast((message) => message.role === "user")
+      messages.splice(0, messages.length, { role: "system", content: "System" }, ingress)
+      const runtime: ProviderRuntime = {
+        id: "minimax", model: "a003-telegram-fixture", client: {}, capabilities: new Set(),
+        resetTurnState: vi.fn(), appendToolOutput: vi.fn(), ping: vi.fn(), classifyError: () => "unknown",
+        streamTurn: async (request) => {
+          callerViews.push(structuredClone(messages))
+          providerViews.push(structuredClone(request.messages))
+          const step = providerViews.length
+          const content = step === 1 ? rejected : step === 2 ? DRAFT : FINAL
+          request.callbacks.onTextChunk(content)
+          return {
+            content,
+            toolCalls: step === 2 ? [{ id: "a003-catalog-read", name: "sanctuary_search_media_catalog", arguments: '{"query":""}' }] : [],
+            outputItems: [],
+          }
+        },
+      }
+      const actual = await vi.importActual<typeof import("../../heart/core")>("../../heart/core")
+      return actual.runAgent(messages, callbacks, channel as any, signal, {
+        ...options, providerRuntimeOverride: runtime, execTool, skipKeptNotes: true,
+        captureGeneratedMessages: (accepted: any[]) => { generated.push(structuredClone(accepted)); options.captureGeneratedMessages?.(accepted) },
+      })
+    })
+    const apiRequest = vi.fn(async () => ({ message_id: 4243 }))
+    const { app, onMessage } = createAuthorizedApp(apiRequest)
+    try {
+      await onMessage({ updateId: 2001, messageId: "2002", userId, chatId, text: "Can you see the library now?" })
+      expect(execTool).toHaveBeenCalledOnce()
+      expect(apiRequest.mock.calls.filter(([method]) => method === "sendMessage")).toEqual([
+        ["sendMessage", { chat_id: chatId, text: FINAL, parse_mode: "HTML" }, undefined],
+      ])
+      expect(providerViews).toHaveLength(3)
+      expect(JSON.stringify(providerViews[1])).toContain(rejected)
+      expect(JSON.stringify(providerViews[1])).toContain("Missing required tool calls")
+      expect(JSON.stringify(callerViews)).not.toContain(rejected)
+      expect(JSON.stringify(callerViews)).not.toContain("Missing required tool calls")
+      expect(JSON.stringify(generated)).not.toContain(rejected)
+      expect(JSON.stringify(generated)).not.toContain("Missing required tool calls")
+      const envelope = loadOnlySession()
+      expect(JSON.stringify(envelope)).not.toContain(rejected)
+      expect(JSON.stringify(envelope)).not.toContain("Missing required tool calls")
+      expect(envelope.events.filter((event) => event.role === "tool" && event.toolCallId === "a003-catalog-read")).toHaveLength(1)
+      const terminals = envelope.events.filter((event) => event.role === "assistant" && event.content === FINAL)
+      expect(terminals).toHaveLength(1)
+      const artifacts = readArtifacts()
+      expect(artifacts).toHaveLength(1)
+      expect(artifacts[0].parts[0].sessionEventId).toBe(terminals[0]!.id)
+      expect(artifacts[0].effect.text).toBe(FINAL)
+      expect(new Set(FINAL.split(/(?<=[.!?])\s+/u)).size).toBe(FINAL.split(/(?<=[.!?])\s+/u).length)
+    } finally { app.stop() }
+  })
 
   it("sends and journals only the final plain assistant answer after substantial history is replaced", async () => {
     const nerves = vi.spyOn(nervesRuntime, "emitNervesEvent")

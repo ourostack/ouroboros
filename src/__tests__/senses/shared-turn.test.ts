@@ -1,4 +1,5 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
+import { a003Event, a003Marker } from "../fixtures/a003-session"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
@@ -1082,6 +1083,38 @@ describe("runSenseTurn", () => {
     expect(result.response).toBe("The model service is unavailable; I recorded the failure.")
   })
 
+  it.each([false, true])("A003 selects the effective latest precommit and aligns its provider ID (redacted=%s)", async (redacted) => {
+    const reference = "telegram-admission:a003"
+    const ingress = a003Event(redacted ? 2 : 1, "user", "approved original")
+    ingress.relations.references = [reference]
+    const correction = a003Event(redacted ? 1 : 2, "user", "engine-only correction")
+    const marker = a003Marker(redacted ? ingress : correction, 3)
+    const events = [ingress, correction].sort((a, b) => a.sequence - b.sequence).concat(marker)
+    mockSessionTransaction(events)
+    mockLoadSession.mockReturnValue({
+      messages: redacted
+        ? [{ role: "user", content: correction.content }, { role: "user", content: ingress.content }, { role: "system", content: "" }]
+        : [{ role: "user", content: ingress.content }],
+      events,
+      projectionEventIds: events.map((event) => event.id),
+      state: undefined,
+    })
+    mockHandleInboundTurn.mockReset().mockImplementation(async (input: any) => {
+      const loaded = await input.sessionLoader.loadOrCreate()
+      if (!redacted) expect(getIngressRelations(loaded.messages[0])).toEqual({ replyToEventId: null, threadRootEventId: null, references: [reference] })
+      return { resolvedContext: makeResolvedContext(), gateResult: { allowed: true }, turnOutcome: "settled", messages: [] }
+    })
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    const promise = runSenseTurn({ agentName: "test-agent", channel: "telegram", sessionKey: "session", friendId: "ari", userMessage: "approved original", precommittedIngress: { eventId: ingress.id, reference } })
+    if (redacted) {
+      await expect(promise).rejects.toThrow("precommitted ingress")
+      expect(mockHandleInboundTurn).not.toHaveBeenCalled()
+    } else {
+      await promise
+      expect(mockHandleInboundTurn).toHaveBeenCalledOnce()
+    }
+  })
+
   it("claims an exact precommitted ingress event without synthesizing a second user message", async () => {
     const reference = "telegram-admission:abc123"
     const system = makeSessionEvent({ id: "evt-000001", sequence: 1, role: "system", content: "system" })
@@ -1108,6 +1141,16 @@ describe("runSenseTurn", () => {
       precommittedIngress: { eventId: "evt-000002", reference },
     })
     expect(mockHandleInboundTurn).toHaveBeenCalledOnce()
+  })
+
+  it("refuses precommitted ingress when the session itself is missing", async () => {
+    mockLoadSession.mockReturnValue(null)
+    const { runSenseTurn } = await import("../../senses/shared-turn")
+    await expect(runSenseTurn({
+      agentName: "test-agent", channel: "telegram", sessionKey: "session", friendId: "ari", userMessage: "missing",
+      precommittedIngress: { eventId: "evt-missing", reference: "telegram-admission:missing" },
+    })).rejects.toThrow("precommitted ingress")
+    expect(mockHandleInboundTurn).not.toHaveBeenCalled()
   })
 
   it("rejects a precommitted ingress missing from the provider projection before the agent turn", async () => {

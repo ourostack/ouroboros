@@ -5,6 +5,7 @@ import {
   extractEventText,
   formatSessionEventTimestamp,
   loadSessionEnvelopeFile,
+  selectEffectiveSessionEvents,
   type SessionEvent,
   type SessionEventToolCall,
 } from "./session-events"
@@ -87,7 +88,7 @@ function normalizeSessionMessages(
   events: SessionEvent[],
   context: TranscriptContext,
 ): Array<{ id: string; role: string; content: string; timestamp: string }> {
-  return sortEventsForTranscript(events)
+  return sortEventsForTranscript(selectEffectiveSessionEvents(events))
     .map((event) => ({
       id: event.id,
       role: event.role,

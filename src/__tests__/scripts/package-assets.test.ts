@@ -43,6 +43,92 @@ afterEach(() => {
 })
 
 describe("package asset validation", () => {
+  it("allows only an explicit source-checkout validation before compilation while packed assets remain strict", () => {
+    const root = makeRoot()
+    writeRequiredAssets(root)
+    const compiled = "dist/heart/session-redaction-repair-cli-main.js"
+    const source = "src/heart/session-redaction-repair-cli-main.ts"
+    fs.unlinkSync(path.join(root, compiled))
+    writeFile(root, source, "export {}")
+    expect(validatePackageAssets(root).missing).toContain(compiled)
+    expect(validatePackageAssets(root, undefined, { sourceTree: true })).toMatchObject({
+      ok: true,
+      missing: [],
+      message: expect.stringContaining("source checkout"),
+    })
+    expect(validatePackageAssets(root, undefined, { sourceTree: false }).missing).toContain(compiled)
+    fs.unlinkSync(path.join(root, source))
+    expect(validatePackageAssets(root, undefined, { sourceTree: true }).missing).toContain(compiled)
+  })
+
+  it.each([null, {}, { sourceTree: undefined }, { sourceTree: null }, { sourceTree: "true" }, { sourceTree: 1 }])(
+    "keeps package validation strict for inactive or malformed source options %j",
+    (options) => {
+      const root = makeRoot()
+      writeRequiredAssets(root)
+      const compiled = "dist/heart/session-redaction-repair-cli-main.js"
+      fs.unlinkSync(path.join(root, compiled))
+      writeFile(root, "src/heart/session-redaction-repair-cli-main.ts", "export {}")
+      expect(validatePackageAssets(root, undefined, options).missing).toContain(compiled)
+    },
+  )
+
+  it.each(["missing", "directory"])("refuses a %s cold-checkout source asset", (kind) => {
+    const root = makeRoot()
+    writeRequiredAssets(root)
+    const compiled = "dist/heart/session-redaction-repair-cli-main.js"
+    fs.unlinkSync(path.join(root, compiled))
+    if (kind === "directory") {
+      fs.mkdirSync(path.join(root, "src/heart/session-redaction-repair-cli-main.ts"), { recursive: true })
+    }
+    expect(validatePackageAssets(root, undefined, { sourceTree: true }).missing).toContain(compiled)
+  })
+
+  it("does not accept a symlink as a cold-checkout source asset", () => {
+    const root = makeRoot()
+    writeRequiredAssets(root)
+    const compiled = "dist/heart/session-redaction-repair-cli-main.js"
+    const source = path.join(root, "src/heart/session-redaction-repair-cli-main.ts")
+    fs.unlinkSync(path.join(root, compiled))
+    fs.mkdirSync(path.dirname(source), { recursive: true })
+    writeFile(root, "outside.ts", "export {}")
+    fs.symlinkSync(path.join(root, "outside.ts"), source)
+    expect(validatePackageAssets(root, undefined, { sourceTree: true }).missing).toContain(compiled)
+  })
+
+  it("keeps other required assets and disallowed payload checks active in source mode", () => {
+    const root = makeRoot()
+    writeRequiredAssets(root)
+    fs.unlinkSync(path.join(root, "dist/heart/session-redaction-repair-cli-main.js"))
+    writeFile(root, "src/heart/session-redaction-repair-cli-main.ts", "export {}")
+    fs.unlinkSync(path.join(root, "assets/bluebubbles-host"))
+    writeFile(root, "dist/outlook-ui/index.js", "obsolete")
+    expect(validatePackageAssets(root, undefined, { sourceTree: true })).toMatchObject({
+      ok: false,
+      missing: ["assets/bluebubbles-host"],
+      disallowed: ["dist/outlook-ui/index.js"],
+    })
+  })
+
+  it("A003 has no production repertoire registration", async () => {
+    const { getToolsForChannel, resolveToolDefinition } = await import("../../repertoire/tools")
+    const names = getToolsForChannel().map((tool) => tool.function.name)
+    expect(names.length).toBeGreaterThan(0)
+    expect(names).not.toContain("session_redaction_repair")
+    expect(names).not.toContain("selectA003LegacyRequiredCorrections")
+    expect(resolveToolDefinition("session_redaction_repair")).toBeUndefined()
+    expect(resolveToolDefinition("session-redaction-repair")).toBeUndefined()
+  })
+  it("A003 declares the direct maintenance entrypoint without public package or command routing", () => {
+    expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("dist/heart/session-redaction-repair-cli-main.js")
+    const root = path.resolve(__dirname, "../../..")
+    const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"))
+    expect(JSON.stringify([pkg.bin, pkg.exports])).not.toContain("session-redaction-repair")
+    for (const file of ["src/heart/daemon/daemon-cli.ts", "src/heart/daemon/daemon.ts", "src/repertoire/tools.ts", "src/senses/telegram.ts"]) {
+      expect(fs.readFileSync(path.join(root, file), "utf8")).not.toMatch(/session-redaction-repair|a003-sanctuary-session-repair/)
+    }
+    expect(fs.lstatSync(path.join(root, "src/heart/session-redaction-repair-cli-main.ts")).isFile()).toBe(true)
+  })
   it("declares RepairGuide files as required package assets", () => {
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("assets/bluebubbles-host")
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("RepairGuide.ouro/agent.json")

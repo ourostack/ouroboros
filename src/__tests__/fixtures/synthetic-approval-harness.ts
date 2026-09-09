@@ -235,11 +235,14 @@ const tokens = {
   remove: id => { const all = readAll(fixture.tokenPath); delete all[id]; fs.writeFileSync(fixture.tokenPath, JSON.stringify(all)) },
 }
 const store = storeModule.openApprovalStore({ databasePath: fixture.databasePath, now: () => new Date(fixture.originNow) })
-const callbacks = { onModelStart() {}, onModelStreamStart() {}, onTextChunk() {}, onReasoningChunk() {}, onToolStart() {}, onToolEnd() {}, onError(error) { throw error } };
+const persisted = []
+let generated = []
+const callbacks = { onModelStart() {}, onModelStreamStart() {}, onTextChunk() {}, onReasoningChunk() {}, onToolStart() {}, onToolEnd() {}, onToolResult(messages) { persisted.push(structuredClone(messages)) }, onError(error) { throw error } };
 (async () => {
   try {
     const messages = [{ role: "user", content: "restart calibre-web" }]
     const result = await core.runAgent(messages, callbacks, "telegram", undefined, {
+      captureGeneratedMessages: value => { generated = structuredClone(value) },
       tools: fixture.batch ? fixture.batch.map(call => require(process.argv[9]).resolveToolDefinition(call.name).tool) : [shellModule.shellToolDefinitions[0].tool],
       execTool: async () => { append(fixture.traceLogPath, { sequence: 3, pid: process.pid, atMs: 0, type: "handler_start" }); throw new Error("protected handler ran before approval") },
       toolContext: { signin: async () => undefined }, daemonRunning: false, senseStatusLines: [], bundleMeta: null, daemonHealth: null,
@@ -255,8 +258,12 @@ const callbacks = { onModelStart() {}, onModelStreamStart() {}, onTextChunk() {}
     })
     if (fixture.expectRejected) {
       if (result.suspension) throw new Error("rejected origin unexpectedly suspended")
-      const rejectionObserved = messages.some(message => message.role === "tool" && typeof message.content === "string" && (message.content.includes("rejected:") || message.content.includes("invalid tool arguments")))
-      if (!rejectionObserved) throw new Error("runAgent settled without an explicit pre-handler rejection result: " + JSON.stringify(messages))
+      const isRejection = message => message.role === "tool" && typeof message.content === "string" && (message.content.includes("rejected:") || message.content.includes("invalid tool arguments"))
+      if (!providerRequest.messages.some(isRejection)) throw new Error("provider retry did not receive the pre-handler rejection")
+      if (messages.some(isRejection) || generated.some(isRejection) || persisted.length) throw new Error("rejected batch entered canonical/generated/persisted history")
+      const callIds = messages.flatMap(message => message.role === "assistant" ? (message.tool_calls || []).map(call => call.id) : message.role === "tool" ? [message.tool_call_id] : [])
+      if (callIds.some(id => id !== "call_settle")) throw new Error("rejected call entered canonical history")
+      if (JSON.stringify(messages.filter(message => message.role === "user")) !== JSON.stringify([{ role: "user", content: "restart calibre-web" }])) throw new Error("engine control entered user history")
       process.stdout.write(JSON.stringify({ pid: process.pid, rejected: true }) + "\n")
       return
     }

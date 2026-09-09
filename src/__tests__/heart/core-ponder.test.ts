@@ -391,11 +391,8 @@ describe("ponder packets in runAgent", () => {
     expect(mockCreatePonderPacket).not.toHaveBeenCalled()
     expect(mockRevisePonderPacket).not.toHaveBeenCalled()
     expectNoPonderWake()
-    expect(messages).toContainEqual(expect.objectContaining({
-      role: "tool",
-      tool_call_id: "call_ponder",
-      content: expect.stringContaining("was not advertised"),
-    }))
+    expect(JSON.stringify(messages)).not.toContain("was not advertised")
+    expect(JSON.stringify(mockCreate.mock.calls[1][0].messages)).toContain("was not advertised")
     expect(callbacks.onToolStart).not.toHaveBeenCalledWith("ponder", expect.anything())
     expect(callbacks.onToolEnd).not.toHaveBeenCalledWith("ponder", expect.any(String), expect.any(Boolean))
   })
@@ -1179,18 +1176,29 @@ describe("ponder packets in runAgent", () => {
   })
 
   it("rejects legacy send_message(self) for private-return requests so ponder owns the contract", async () => {
-    mockCreate.mockReturnValueOnce(makeStream(sendMessageSelfChunks("AX_PRIVATE_RETURN — ready")))
+    mockCreate.mockReturnValueOnce(makeStream([makeChunk(undefined, [
+      { index: 0, id: "companion_before_private_rejection", function: { name: "read_file", arguments: '{"path":"safe.txt"}' } },
+      { index: 1, id: "private_self_rejected", function: { name: "send_message", arguments: '{"friendId":"self","channel":"inner","key":"dialog","content":"AX_PRIVATE_RETURN — ready"}' } },
+    ])]))
     mockCreate.mockReturnValueOnce(makeStream(settleChunks("handled")))
     const execTool = vi.fn().mockResolvedValue("queued")
     const callbacks = makeCallbacks()
+    const request = "Please think privately and return marker AX_PRIVATE_RETURN later."
+    const messages: any[] = [{ role: "user", content: request }]
+    const callerViews: any[][] = []
+    const captured = vi.fn()
+    const persisted = vi.fn()
+    callbacks.onModelStart = () => callerViews.push(structuredClone(messages))
+    callbacks.onToolResult = persisted
 
     await runAgent(
-      [{ role: "user", content: "Please think privately and return marker AX_PRIVATE_RETURN later." }],
+      messages,
       callbacks,
       "mcp",
       undefined,
       {
         execTool,
+        captureGeneratedMessages: captured,
         toolContext: {
           currentSession: { friendId: "ari", channel: "mcp", key: "session" },
         },
@@ -1199,6 +1207,16 @@ describe("ponder packets in runAgent", () => {
 
     expect(execTool).not.toHaveBeenCalled()
     expect(callbacks.onToolEnd).toHaveBeenCalledWith("send_message", expect.any(String), false)
+    expect(callerViews[1].filter((message) => message.role !== "system")).toEqual([{ role: "user", content: request }])
+    expect(messages.filter((message) => message.role === "user")).toEqual([{ role: "user", content: request }])
+    expect(JSON.stringify([messages, captured.mock.calls])).not.toMatch(/private_self_rejected|companion_before_private_rejection|private-return requests must use ponder/)
+    expect(persisted).not.toHaveBeenCalled()
+    expect(JSON.stringify(mockCreate.mock.calls[1][0].messages)).toContain("private_self_rejected")
+    expect(JSON.stringify(mockCreate.mock.calls[1][0].messages)).toContain("private-return requests must use ponder")
+    mockCreate.mockReturnValueOnce(makeStream(settleChunks("next answer")))
+    messages.push({ role: "user", content: "next request" })
+    await runAgent(messages, makeCallbacks(), "mcp")
+    expect(JSON.stringify(mockCreate.mock.calls[2][0].messages)).not.toMatch(/private_self_rejected|companion_before_private_rejection|private-return requests must use ponder/)
   })
 
   it("normalizes legacy thought into a reflection packet without ending the turn", async () => {
@@ -1278,11 +1296,8 @@ describe("ponder packets in runAgent", () => {
     )
 
     expect(mockCreatePonderPacket).not.toHaveBeenCalled()
-    expect(messages).toContainEqual(expect.objectContaining({
-      role: "tool",
-      tool_call_id: "call_ponder",
-      content: expect.stringContaining("invalid tool arguments"),
-    }))
+    expect(JSON.stringify(messages)).not.toContain("invalid tool arguments")
+    expect(JSON.stringify(mockCreate.mock.calls[1][0].messages)).toContain("invalid tool arguments")
   })
 
   it("rejects create when the packet spec is incomplete", async () => {
@@ -1574,10 +1589,8 @@ describe("ponder packets in runAgent", () => {
 
     expect(mockRevisePonderPacket).not.toHaveBeenCalled()
     expect(callbacks.onToolEnd).not.toHaveBeenCalledWith("ponder", expect.any(String), expect.any(Boolean))
-    expect(messages).toContainEqual(expect.objectContaining({
-      tool_call_id: "call_ponder",
-      content: expect.stringContaining("invalid tool arguments"),
-    }))
+    expect(JSON.stringify(messages)).not.toContain("invalid tool arguments")
+    expect(JSON.stringify(mockCreate.mock.calls[1][0].messages)).toContain("invalid tool arguments")
   })
 
   it("treats malformed ponder JSON and invalid revise specs as tool failures", async () => {
@@ -1598,7 +1611,9 @@ describe("ponder packets in runAgent", () => {
     const result = await runAgent(messages, callbacks, "cli")
 
     expect(result.outcome).toBe("settled")
-    expect(messages).toContainEqual(expect.objectContaining({ tool_call_id: "call_ponder", content: expect.stringContaining("malformed JSON") }))
+    expect(JSON.stringify(messages)).not.toContain("malformed JSON")
+    expect(JSON.stringify(mockCreate.mock.calls[1][0].messages)).toContain("malformed JSON")
+    expect(messages).toContainEqual(expect.objectContaining({ tool_call_id: "call_ponder", content: expect.stringContaining("ponder revise requires packet_id") }))
     expect(callbacks.onToolEnd).toHaveBeenCalledWith("ponder", expect.any(String), false)
   })
 
@@ -1613,7 +1628,8 @@ describe("ponder packets in runAgent", () => {
 
     expect(result.outcome).toBe("settled")
     expect(callbacks.onToolEnd).not.toHaveBeenCalledWith("ponder", expect.any(String), expect.any(Boolean))
-    expect(messages).toContainEqual(expect.objectContaining({ tool_call_id: "call_ponder", content: expect.stringContaining("JSON object") }))
+    expect(JSON.stringify(messages.filter((message) => message.role !== "system"))).not.toContain("JSON object")
+    expect(JSON.stringify(mockCreate.mock.calls[1][0].messages)).toContain("JSON object")
   })
 
   it("coerces non-Error ponder failures into tool output text", async () => {
@@ -1663,7 +1679,8 @@ describe("ponder packets in runAgent", () => {
     const messages: any[] = [{ role: "user", content: "hi" }]
     await runAgent(messages, callbacks, "cli")
 
-    expect(messages).toContainEqual(expect.objectContaining({ tool_call_id: "call_ponder", content: expect.stringContaining("invalid tool arguments") }))
+    expect(JSON.stringify(messages)).not.toContain("invalid tool arguments")
+    expect(JSON.stringify(mockCreate.mock.calls[1][0].messages)).toContain("invalid tool arguments")
     expect(callbacks.onToolEnd).toHaveBeenCalledWith("ponder", expect.any(String), false)
   })
 

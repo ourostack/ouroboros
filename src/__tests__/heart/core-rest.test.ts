@@ -332,6 +332,56 @@ describe("rest tool in runAgent", () => {
 
   // ── Attention queue gating ──────────────────────────────────
 
+  it.each(["held", "fresh"])("A003 keeps %s-work rest admission control out of canonical and generated history", async (kind) => {
+    const messages: any[] = [{ role: "user", content: "heartbeat" }]
+    const canonicalViews: any[][] = []
+    const outbound: any[][] = []
+    const generated = vi.fn()
+    const origins = kind === "held" ? [{ friendId: "alex", channel: "teams", key: "s1", content: "pending", delegationId: "d1" }] : []
+    let calls = 0
+    mockCreate.mockImplementation((request: any) => {
+      calls++
+      canonicalViews.push(structuredClone(messages))
+      outbound.push(structuredClone(request.messages))
+      return makeStream([makeChunk(undefined, [{
+        index: 0, id: calls === 1 ? "rest_rejected_A003" : `rest_accepted_${calls}`,
+        function: { name: "rest", arguments: "{}" },
+      }])])
+    })
+    const callbacks = makeCallbacks({
+      onToolEnd: vi.fn((_name: string, _summary: string, success: boolean) => { if (!success) origins.splice(0) }),
+    })
+    const options = {
+      ...(kind === "fresh" ? { pendingMessages: [{ from: "mailroom", content: "fresh bounded work" }] } : {}),
+      toolContext: { currentSession: { friendId: "self", channel: "inner", key: "dialog" }, delegatedOrigins: origins },
+      captureGeneratedMessages: generated,
+    }
+    const result = await runAgent(messages, callbacks, "inner", undefined, options as any)
+    expect(result.outcome).toBe("rested")
+    expect(calls).toBe(2)
+    expect(JSON.stringify(outbound[1])).toContain("rest_rejected_A003")
+    expect(JSON.stringify(canonicalViews[1])).not.toContain("rest_rejected_A003")
+    expect(JSON.stringify([messages, generated.mock.calls])).not.toContain("rest_rejected_A003")
+    const gate = kind === "held"
+      ? "current held-work frame still has unsurfaced items — return each listed item with surface(delegationId=...) before you rest. Older transcript claims are historical; only the current held-work frame is the gate."
+      : "fresh work arrived for me this turn — inspect the pending messages above and take the next concrete action before you rest."
+    expect(JSON.stringify(outbound[1])).toContain(gate)
+    expect(canonicalViews[1].filter((message) => message.role !== "system")).toEqual([{ role: "user", content: "heartbeat" }])
+    expect(messages.filter((message) => message.role === "user")).toEqual([{ role: "user", content: "heartbeat" }])
+    expect(JSON.stringify([canonicalViews, messages, generated.mock.calls])).not.toContain(gate)
+    expect(generated).toHaveBeenCalledExactlyOnceWith([
+      { role: "assistant", tool_calls: [{ id: "rest_accepted_2", type: "function", function: { name: "rest", arguments: "{}" } }] },
+      { role: "tool", tool_call_id: "rest_accepted_2", content: "(resting)" },
+    ])
+    expect(messages.filter((message) => message.role === "tool")).toEqual([{ role: "tool", tool_call_id: "rest_accepted_2", content: "(resting)" }])
+    messages.push({ role: "user", content: "next turn" })
+    await runAgent(messages, makeCallbacks(), "inner")
+    expect(JSON.stringify(outbound[2])).not.toContain(gate)
+    expect(outbound[2].filter((message) => message.role === "user").map((message) => message.content)).toEqual(["heartbeat", "next turn"])
+    expect(outbound[2].filter((message) => message.role === "assistant").flatMap((message) => message.tool_calls?.map((call: any) => call.id) ?? [])).toEqual(["rest_accepted_2"])
+    expect(outbound[2].filter((message) => message.role === "tool").map((message) => message.content)).toEqual(["(resting)"])
+  })
+
   it("rest is rejected when attention queue has items", async () => {
     vi.useFakeTimers()
     // First call: rest (should be rejected because attention queue has items)
@@ -530,10 +580,8 @@ describe("rest tool in runAgent", () => {
       },
     )
 
-    const rejected = messages.find((message: any) =>
-      message.role === "tool" && message.tool_call_id === "call_rest" && message.content.includes("malformed JSON")
-    )
-    expect(rejected).toBeDefined()
+    expect(JSON.stringify(messages)).not.toContain("malformed JSON")
+    expect(JSON.stringify(mockCreate.mock.calls[1][0].messages)).toContain("malformed JSON")
     expect(result.outcome).toBe("rested")
   })
 
@@ -735,7 +783,9 @@ describe("rest tool in runAgent", () => {
 
     expect(execTool).toHaveBeenCalledTimes(1)
     expect(execTool).toHaveBeenCalledWith("steward_policy_manage", expect.objectContaining({ key: "container:calibre", expectedVersion: 3 }), expect.anything())
-    expect(generated.flat().find((message) => message.role === "tool" && message.tool_call_id === "call_wrong_policy")?.content).toContain("do not match")
+    expect(JSON.stringify(generated)).not.toContain("call_wrong_policy")
+    expect(JSON.stringify(mockCreate.mock.calls[1][0].messages)).toContain("call_wrong_policy")
+    expect(JSON.stringify(mockCreate.mock.calls[1][0].messages)).toContain("do not match")
   })
 
   it("keeps forcing a matching effect after a non-throwing relationship denial", async () => {
