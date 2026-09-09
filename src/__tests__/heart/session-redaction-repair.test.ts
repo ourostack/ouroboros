@@ -950,6 +950,52 @@ describe("A003 fixed session repair", () => {
     expect(fs.readFileSync(sessionPath, "utf8")).toBe(expected.postimage)
   })
 
+  it("D005 retains tool calls and results through real repair, native loading and playback", async () => {
+    const { projectProviderMessages, sanitizeProviderMessages, validateSessionMessages } = await import("../../heart/session-events")
+    const { loadSession } = await import("../../mind/context")
+    const { runSessionPlayback } = await import("../../heart/session-playback")
+    const raw = a003LegacyEnvelope()
+    const calls = [0, 1, 2, 3].map((index) => ({
+      id: `d005-call-${index}`, type: "function" as const,
+      function: { name: "fixture_read", arguments: JSON.stringify({ index }) },
+    }))
+    const replacements = new Map<number, SessionEvent>([
+      [346, a003Event(346, "assistant", "Checking.")],
+      [348, { ...a003Event(348, "assistant", null), toolCalls: calls }],
+      [353, a003Event(353, "assistant", "Done.")],
+    ])
+    calls.forEach((call, index) => {
+      const result = a003Event(349 + index, "tool", `fixture result ${index}`)
+      result.toolCallId = call.id
+      result.relations.toolCallId = call.id
+      replacements.set(result.sequence, result)
+    })
+    raw.events = raw.events.map((event) => replacements.get(event.sequence) ?? event)
+    raw.projection.eventIds = ["evt-000509", ...raw.events.filter((event) => event.sequence >= 345 && event.sequence <= 353).map((event) => event.id)]
+    const before = JSON.stringify(raw, null, 2)
+    fs.writeFileSync(sessionPath, before)
+    const projectedBefore = projectProviderMessages(raw)
+    expect(sanitizeProviderMessages(projectedBefore)).toEqual(projectedBefore)
+    expect(validateSessionMessages(projectedBefore)).toEqual([])
+    const r = await runner()
+    const artifact = await inspect()
+    expect((await r.applyA003SessionRepair(artifact)).status).toBe("applied")
+    const post = fs.readFileSync(sessionPath, "utf8")
+    const loaded = loadSession(sessionPath)!
+    expect(loaded.messages.flatMap((message) => message.role === "assistant" ? message.tool_calls ?? [] : [])).toEqual(calls)
+    expect(loaded.messages.filter((message) => message.role === "tool")).toEqual(
+      calls.map((call, index) => ({ role: "tool", tool_call_id: call.id, content: `fixture result ${index}` })),
+    )
+    expect(validateSessionMessages(loaded.messages)).toEqual([])
+    expect(runSessionPlayback({ sessionPath })).toMatchObject({
+      inputMessageCount: 9, sanitizedMessageCount: 8,
+      totals: { dropped: 0, modifiedContent: 0, syntheticAdded: 0 }, changes: [],
+    })
+    expect(loaded.events.slice(0, raw.events.length)).toEqual(raw.events)
+    expect(loaded.events.slice(-8).map((event) => event.relations.redactsEventId)).toEqual(A003_NATIVE_TARGETS.map((target) => target.id))
+    expect(fs.readFileSync(sessionPath, "utf8")).toBe(post)
+  })
+
   it("applies one reviewed CAS, retains all raw evidence, and is idempotent before and after ordinary append", async () => {
     const r = await runner()
     const artifact = await inspect()

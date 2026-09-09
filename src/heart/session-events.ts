@@ -765,6 +765,7 @@ export function repairSessionMessages(messages: OpenAI.ChatCompletionMessagePara
           continue
         }
         prev.content = `${prevContent}\n\n${curContent}`
+        prev.toolCalls = msg.toolCalls
         continue
       }
     }

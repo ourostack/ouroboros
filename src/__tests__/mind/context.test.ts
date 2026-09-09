@@ -1974,6 +1974,56 @@ describe("validateSessionMessages", () => {
 describe("repairSessionMessages", () => {
   beforeEach(() => { vi.resetModules() })
 
+  const d005ContentCases: Array<{ name: string; content: OpenAI.ChatCompletionAssistantMessageParam["content"]; text: string }> = [
+    { name: "missing", content: undefined, text: "" },
+    { name: "null", content: null, text: "" },
+    { name: "empty", content: "", text: "" },
+    { name: "different text", content: "Continuing.", text: "Continuing." },
+    { name: "identical text", content: "Checking.", text: "Checking." },
+    { name: "multipart text", content: [{ type: "text", text: "Continuing." }], text: "Continuing." },
+  ]
+  it.each(d005ContentCases.flatMap((row) => [false, true].map((emptyPreviousCalls) => ({ ...row, emptyPreviousCalls }))))(
+    "D005 retains calls/results for $name and emptyPreviousCalls=$emptyPreviousCalls",
+    async ({ content, text, emptyPreviousCalls }) => {
+      const { repairSessionMessages, validateSessionMessages } = await import("../../mind/context")
+      const { sanitizeProviderMessages } = await import("../../heart/session-events")
+      const calls = [0, 1].map((index) => ({
+        id: `d005-call-${index}`, type: "function" as const,
+        function: { name: "fixture_read", arguments: JSON.stringify({ index }) },
+      }))
+      const results = calls.map((call, index) => ({ role: "tool" as const, tool_call_id: call.id, content: `fixture result ${index}` }))
+      const messages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: "system", content: "sys" },
+        { role: "user", content: "Please inspect." },
+        { role: "assistant", content: "Checking.", ...(emptyPreviousCalls ? { tool_calls: [] } : {}) },
+        { role: "assistant", ...(content === undefined ? {} : { content }), tool_calls: calls },
+        ...results,
+        { role: "assistant", content: "Done." },
+      ]
+      const before = structuredClone(messages)
+      const expected: OpenAI.ChatCompletionMessageParam[] = [
+        messages[0]!, messages[1]!,
+        { role: "assistant", content: `Checking.\n\n${text}`, tool_calls: calls },
+        ...results, messages.at(-1)!,
+      ]
+      expect(repairSessionMessages(messages)).toEqual(expected)
+      expect(sanitizeProviderMessages(messages)).toEqual(expected)
+      expect(validateSessionMessages(expected)).toEqual([])
+      expect(messages).toEqual(before)
+    },
+  )
+
+  it.each([false, true])("D005 preserves existing empty-call field behavior when the previous field is %s", async (previousFieldPresent) => {
+    const { repairSessionMessages } = await import("../../mind/context")
+    const messages: OpenAI.ChatCompletionMessageParam[] = [
+      { role: "assistant", content: "First.", ...(previousFieldPresent ? { tool_calls: [] } : {}) },
+      { role: "assistant", content: "Second.", tool_calls: [] },
+    ]
+    expect(repairSessionMessages(messages)).toEqual([
+      { role: "assistant", content: "First.\n\nSecond.", ...(previousFieldPresent ? { tool_calls: [] } : {}) },
+    ])
+  })
+
   it("merges back-to-back assistant messages", async () => {
     const { repairSessionMessages } = await import("../../mind/context")
     const messages: OpenAI.ChatCompletionMessageParam[] = [
