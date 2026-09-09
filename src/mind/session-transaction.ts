@@ -49,7 +49,7 @@ interface HeldLease extends LeaseRecord {
 interface SessionConfinement {
   root: string
   sessionPath: string
-  directories: Array<{ path: string; dev: number; ino: number }>
+  directories: Array<{ path: string; dev: bigint; ino: bigint }>
 }
 
 export interface AcquireSessionTurnLeaseOptions {
@@ -109,9 +109,9 @@ function refuseConfinement(): never {
   throw new SessionTransactionError("session confinement is invalid or changed")
 }
 
-function confinedFile(filePath: string): fs.Stats | null {
-  let stat: fs.Stats
-  try { stat = fs.lstatSync(filePath) } catch (error) {
+function confinedFile(filePath: string): fs.BigIntStats | null {
+  let stat: fs.BigIntStats
+  try { stat = fs.lstatSync(filePath, { bigint: true }) } catch (error) {
     if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return null
     return refuseConfinement()
   }
@@ -122,8 +122,8 @@ function confinedFile(filePath: string): fs.Stats | null {
 function checkConfinement(pin: SessionConfinement | null): void {
   if (!pin) return
   for (const directory of pin.directories) {
-    let stat: fs.Stats
-    try { stat = fs.lstatSync(directory.path) } catch { return refuseConfinement() }
+    let stat: fs.BigIntStats
+    try { stat = fs.lstatSync(directory.path, { bigint: true }) } catch { return refuseConfinement() }
     if (!stat.isDirectory() || stat.isSymbolicLink() || stat.dev !== directory.dev || stat.ino !== directory.ino) return refuseConfinement()
   }
   for (const suffix of ["", ".turn.lock", ".turn.lock-journal", ".turn.lock-wal", ".turn.lock-shm"]) {
@@ -145,8 +145,8 @@ function pinConfinement(sessionPath: string, root: unknown): SessionConfinement 
     paths.push(current)
   }
   const directories = paths.map((directory) => {
-    let stat: fs.Stats
-    try { stat = fs.lstatSync(directory) } catch { return refuseConfinement() }
+    let stat: fs.BigIntStats
+    try { stat = fs.lstatSync(directory, { bigint: true }) } catch { return refuseConfinement() }
     if (!stat.isDirectory() || stat.isSymbolicLink()) return refuseConfinement()
     return { path: directory, dev: stat.dev, ino: stat.ino }
   })
@@ -160,7 +160,7 @@ function retainConfinement(held: HeldLease, requestedRoot: unknown): void {
   checkConfinement(held.confinement)
 }
 
-function checkTemporary(pin: SessionConfinement, filePath: string, identity: fs.Stats | null): void {
+function checkTemporary(pin: SessionConfinement, filePath: string, identity: fs.BigIntStats | null): void {
   checkConfinement(pin)
   const current = confinedFile(filePath)
   if (!current || !identity || current.dev !== identity.dev || current.ino !== identity.ino) return refuseConfinement()
@@ -486,10 +486,10 @@ export function writeSessionTransaction(
   const bytes = JSON.stringify(value, null, 2)
   const tempPath = path.join(path.dirname(canonical), `.${path.basename(canonical)}.tmp-${process.pid}-${randomUUID()}`)
   let fd: number | null = null
-  let temporaryIdentity: fs.Stats | null = null
+  let temporaryIdentity: fs.BigIntStats | null = null
   try {
     fd = fs.openSync(tempPath, "wx", 0o600)
-    if (confinement) temporaryIdentity = fs.fstatSync(fd)
+    if (confinement) temporaryIdentity = fs.fstatSync(fd, { bigint: true })
     fs.writeFileSync(fd, bytes, "utf8")
     fs.fsyncSync(fd)
     fs.closeSync(fd)
