@@ -3,8 +3,8 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { createHash } from "node:crypto"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { a003Event, a003LegacyEnvelope, a003Marker, A003_LEGACY_MEDIA, A003_POSITIONS, A003_REPAIR_AT } from "../fixtures/a003-session"
-import type { SessionEvent } from "../../heart/session-events"
+import { a003Event, a003LegacyEnvelope, a003Marker, A003_LEGACY_MEDIA, A003_NATIVE_TARGETS, A003_REPAIR_AT } from "../fixtures/a003-session"
+import type { SessionEnvelope, SessionEvent } from "../../heart/session-events"
 import * as transactions from "../../mind/session-transaction"
 
 const context = vi.hoisted(() => ({ root: "" }))
@@ -38,6 +38,21 @@ async function runner(): Promise<Runner> {
   return import(modulePath) as Promise<Runner>
 }
 const hash = (bytes: string | Buffer) => createHash("sha256").update(bytes).digest("hex")
+const nativeSequences = A003_NATIVE_TARGETS.map((target) => target.sequence)
+
+function fixtureTarget(raw: Pick<SessionEnvelope, "events">, ordinal = 0): SessionEvent {
+  const target = raw.events.find((event) => event.sequence === A003_NATIVE_TARGETS[ordinal]!.sequence)
+  if (!target) throw new Error("missing independently pinned fixture target")
+  return target
+}
+
+function reintroduceFixtureTarget(raw: Pick<SessionEnvelope, "events" | "projection">): void {
+  const target = fixtureTarget(raw)
+  const order = new Map(raw.events.map((event) => [event.id, event.sequence]))
+  const index = raw.projection.eventIds.findIndex((id, offset) => offset > 0 && Number(order.get(id)) > target.sequence)
+  expect(index).toBeGreaterThan(0)
+  raw.projection.eventIds.splice(index, 0, target.id)
+}
 
 function canonicalValue(value: any): any {
   if (Array.isArray(value)) return value.map(canonicalValue)
@@ -45,7 +60,7 @@ function canonicalValue(value: any): any {
   return value
 }
 
-function expectedRepair(bytes: string, sequences: readonly number[] = A003_POSITIONS) {
+function expectedRepair(bytes: string, sequences: readonly number[] = nativeSequences) {
   const raw = JSON.parse(bytes) as ReturnType<typeof a003LegacyEnvelope>
   const entries = sequences.map((sequence, index) => {
     const position = raw.events.findIndex((event) => event.sequence === sequence)
@@ -121,18 +136,200 @@ describe("A003 fixed session repair", () => {
     } finally { fs.closeSync(fd) }
   })
 
-  it("selects all eight exact constructor outputs without accepting target coordinates", async () => {
+  it("P4b selects all eight native pairs from retained gapped history without coordinate input", async () => {
     const r = await runner()
     const raw = JSON.parse(original)
     const before = structuredClone(raw)
     const selected = r.selectA003LegacyRequiredCorrections(raw.events)
-    expect(selected.map((event) => event.sequence)).toEqual(A003_POSITIONS)
-    expect(selected).toEqual(A003_POSITIONS.map((sequence) => raw.events[sequence - 1]))
+    expect(selected.map(({ id, sequence }) => ({ id, sequence }))).toEqual(A003_NATIVE_TARGETS)
+    expect(selected).toEqual(A003_NATIVE_TARGETS.map((_target, ordinal) => fixtureTarget(raw, ordinal)))
     expect(raw).toEqual(before)
     const shuffledContent = structuredClone(raw.events)
-    shuffledContent[220].content = A003_LEGACY_MEDIA.replace("Missing required tool calls:", "Missing required tool call:")
+    fixtureTarget({ events: shuffledContent }, 6).content = A003_LEGACY_MEDIA.replace("Missing required tool calls:", "Missing required tool call:")
     expect(() => r.selectA003LegacyRequiredCorrections(shuffledContent)).toThrow()
   })
+
+  it("P4b independently pins canonical native pairs and a system-first gapped fixture", async () => {
+    const { isExactRawSessionRedactionMarker, parseSessionEnvelope } = await import("../../heart/session-events")
+    const raw = a003LegacyEnvelope()
+    expect(raw.events).toHaveLength(219)
+    expect(raw.events[0]!.sequence).toBe(290)
+    expect(raw.events.at(-1)!.sequence).toBe(512)
+    expect(raw.events.some((event, index) => index > 0 && event.sequence > raw.events[index - 1]!.sequence + 1)).toBe(true)
+    expect(raw.projection.eventIds.slice(0, 2)).toEqual(["evt-000509", "evt-000290"])
+    expect(parseSessionEnvelope(raw)!.events).toEqual(raw.events)
+    for (let ordinal = 0; ordinal < A003_NATIVE_TARGETS.length; ordinal++) {
+      const target = fixtureTarget(raw, ordinal)
+      expect({ id: target.id, sequence: target.sequence }).toEqual(A003_NATIVE_TARGETS[ordinal])
+      const candidate = a003Marker(target, 513)
+      expect(isExactRawSessionRedactionMarker(candidate, [...raw.events, candidate])).toBe(true)
+    }
+  })
+
+  it.each(A003_NATIVE_TARGETS)("P4b refuses right sequence with wrong native ID for $id", async ({ id, sequence }) => {
+    const r = await runner()
+    const { isExactRawSessionRedactionMarker } = await import("../../heart/session-events")
+    const raw = a003LegacyEnvelope()
+    const target = raw.events.find((event) => event.sequence === sequence)!
+    target.id = `unbound-${id}`
+    const candidate = a003Marker(target, 513)
+    expect(isExactRawSessionRedactionMarker(candidate, [...raw.events, candidate])).toBe(true)
+    expect(() => r.selectA003LegacyRequiredCorrections(raw.events)).toThrow()
+  })
+
+  it.each(A003_NATIVE_TARGETS)("P4b refuses right native ID with wrong sequence for $id", async ({ id, sequence }) => {
+    const r = await runner()
+    const { isExactRawSessionRedactionMarker } = await import("../../heart/session-events")
+    const raw = a003LegacyEnvelope()
+    const index = raw.events.findIndex((event) => event.id === id)
+    const [target] = raw.events.splice(index, 1)
+    target!.sequence = 1000 + sequence
+    raw.events.push(target!)
+    const candidate = a003Marker(target!, target!.sequence + 1)
+    expect(isExactRawSessionRedactionMarker(candidate, [...raw.events, candidate])).toBe(true)
+    expect(() => r.selectA003LegacyRequiredCorrections(raw.events)).toThrow()
+  })
+
+  it("P4b refuses swapped approved IDs even when both complete coordinate sets remain present", async () => {
+    const r = await runner()
+    const { isExactRawSessionRedactionMarker } = await import("../../heart/session-events")
+    const raw = a003LegacyEnvelope()
+    const first = fixtureTarget(raw)
+    const second = fixtureTarget(raw, 1)
+    ;[first.id, second.id] = [second.id, first.id]
+    const targets = A003_NATIVE_TARGETS.map((_target, ordinal) => fixtureTarget(raw, ordinal))
+    expect(targets.map((target) => target.sequence)).toEqual(nativeSequences)
+    expect(targets.map((target) => target.id).sort()).toEqual(A003_NATIVE_TARGETS.map((target) => target.id).sort())
+    for (const target of [first, second]) {
+      const candidate = a003Marker(target, 513)
+      expect(isExactRawSessionRedactionMarker(candidate, [...raw.events, candidate])).toBe(true)
+    }
+    expect(() => r.selectA003LegacyRequiredCorrections(raw.events)).toThrow()
+  })
+
+  it.each(["historical audit ordinals", "zero-based offsets", "one-based offsets"])(
+    "P4b refuses %s as native target aliases",
+    async (kind) => {
+      const r = await runner()
+      const raw = a003LegacyEnvelope()
+      const targets = A003_NATIVE_TARGETS.map((_target, ordinal) => fixtureTarget(raw, ordinal))
+      const aliases = kind === "historical audit ordinals" ? [86, 99, 107, 110, 113, 151, 221, 222]
+        : targets.map((target) => raw.events.indexOf(target) + (kind === "one-based offsets" ? 1 : 0))
+      const aliased = targets.map((target, index) => ({
+        ...target,
+        id: `evt-${String(aliases[index]).padStart(6, "0")}`,
+        sequence: aliases[index]!,
+      }))
+      raw.events = [...aliased, ...raw.events.filter((event) => !targets.includes(event))]
+      expect(raw.events.every((event, index) => index === 0 || event.sequence > raw.events[index - 1]!.sequence)).toBe(true)
+      expect(() => r.selectA003LegacyRequiredCorrections(raw.events)).toThrow()
+    },
+  )
+
+  it("P4b characterizes a real two-turn canonical-builder system refresh", async () => {
+    const { buildCanonicalSessionEnvelope } = await import("../../heart/session-events")
+    const basis = { maxTokens: null, contextMargin: null, inputTokens: null }
+    const previous = [{ role: "system" as const, content: "system v1" }, { role: "user" as const, content: "retained user" }]
+    const first = buildCanonicalSessionEnvelope({
+      existing: null, previousMessages: [], currentMessages: previous, trimmedMessages: previous,
+      recordedAt: "2026-09-05T12:00:00.000Z", projectionBasis: basis,
+    }).envelope
+    const current = [{ role: "system" as const, content: "system v2" }, previous[1]!, { role: "assistant" as const, content: "new answer" }]
+    const refreshed = buildCanonicalSessionEnvelope({
+      existing: first, previousMessages: previous, currentMessages: current, trimmedMessages: current,
+      recordedAt: A003_REPAIR_AT, projectionBasis: basis,
+    }).envelope
+    expect(refreshed.events.map((event) => event.sequence)).toEqual([2, 3, 4])
+    expect(refreshed.projection.eventIds).toEqual(["evt-000003", "evt-000002", "evt-000004"])
+    expect(refreshed.events.find((event) => event.id === refreshed.projection.eventIds[0])!.role).toBe("system")
+  })
+
+  it("P4b inspects and repairs real canonical-builder system refresh without reordering preimage", async () => {
+    const r = await runner()
+    const { buildCanonicalSessionEnvelope, projectProviderMessages } = await import("../../heart/session-events")
+    const base = a003LegacyEnvelope()
+    const previous = projectProviderMessages(base)
+    const current = [{ role: "system" as const, content: "system prompt v2" }, ...previous.slice(1)]
+    const refreshed = buildCanonicalSessionEnvelope({
+      existing: base, previousMessages: previous, currentMessages: current, trimmedMessages: current,
+      recordedAt: A003_REPAIR_AT, lastUsage: base.lastUsage, state: base.state,
+      projectionBasis: { maxTokens: 80000, contextMargin: 20, inputTokens: 100 },
+    }).envelope
+    expect(refreshed.events[0]!.sequence).toBe(290)
+    expect(refreshed.events.at(-1)!.sequence).toBe(513)
+    expect(refreshed.projection.eventIds.slice(0, 2)).toEqual(["evt-000513", "evt-000290"])
+    for (let ordinal = 0; ordinal < A003_NATIVE_TARGETS.length; ordinal++) {
+      expect(fixtureTarget(refreshed, ordinal)).toEqual(fixtureTarget(base, ordinal))
+    }
+    const bytes = JSON.stringify(refreshed, null, 2)
+    fs.writeFileSync(sessionPath, bytes)
+    const write = vi.spyOn(transactions, "writeSessionTransaction")
+    const artifact = await inspect()
+    const expected = expectedRepair(bytes)
+    expect(write).not.toHaveBeenCalled()
+    expect(fs.readFileSync(sessionPath, "utf8")).toBe(bytes)
+    expect(fs.readFileSync(artifact.preimagePath, "utf8")).toBe(bytes)
+    expect(JSON.parse(fs.readFileSync(artifact.manifestPath, "utf8"))).toEqual(expected.manifest)
+    expect((await r.applyA003SessionRepair(artifact)).status).toBe("applied")
+    expect(write).toHaveBeenCalledOnce()
+    expect(fs.readFileSync(sessionPath, "utf8")).toBe(expected.postimage)
+    const post = JSON.parse(expected.postimage)
+    expect(post.events.slice(0, refreshed.events.length)).toEqual(refreshed.events)
+    expect(post.projection.eventIds).toEqual(refreshed.projection.eventIds.filter((id) => !A003_NATIVE_TARGETS.some((target) => target.id === id)))
+    expect(post.projection.eventIds.slice(0, 2)).toEqual(["evt-000513", "evt-000290"])
+    expect((await r.applyA003SessionRepair(artifact)).status).toBe("already_applied")
+    expect(write).toHaveBeenCalledOnce()
+    expect(fs.readFileSync(sessionPath, "utf8")).toBe(expected.postimage)
+    expect((await r.rollbackA003SessionRepair(artifact)).status).toBe("rolled_back")
+    expect(write).toHaveBeenCalledTimes(2)
+    expect(fs.readFileSync(sessionPath, "utf8")).toBe(bytes)
+  })
+
+  it.each(["empty", "system-only", "no-system", "monotonic", "monotonic-leading-system", "monotonic-later-system"])(
+    "P4b preserves %s projection compatibility",
+    async (kind) => {
+      const raw = a003LegacyEnvelope()
+      if (kind === "empty") raw.projection.eventIds = []
+      if (kind === "system-only") raw.projection.eventIds = ["evt-000509"]
+      if (kind === "no-system") raw.projection.eventIds = raw.events.filter((event) => event.role !== "system").map((event) => event.id)
+      if (kind === "monotonic") raw.projection.eventIds = raw.events.map((event) => event.id)
+      if (kind === "monotonic-leading-system") raw.projection.eventIds = ["evt-000509", "evt-000510", "evt-000512"]
+      if (kind === "monotonic-later-system") raw.projection.eventIds = ["evt-000290", "evt-000509", "evt-000512"]
+      const bytes = JSON.stringify(raw, null, 2)
+      fs.writeFileSync(sessionPath, bytes)
+      const artifact = await inspect()
+      expect(JSON.parse(fs.readFileSync(artifact.manifestPath, "utf8"))).toEqual(expectedRepair(bytes).manifest)
+      expect(fs.readFileSync(sessionPath, "utf8")).toBe(bytes)
+      expect(fs.readFileSync(artifact.preimagePath, "utf8")).toBe(bytes)
+    },
+  )
+
+  it.each(["unknown-first", "unknown-later", "duplicate-conversation", "duplicate-leading-system", "duplicate-system-only", "non-system-reversal", "first-non-system-reversal", "leading-role-not-system", "later-system-reversal", "later-system-after-leading"])(
+    "P4b refuses %s projection before publishing",
+    async (kind) => {
+      const raw = a003LegacyEnvelope()
+      if (kind === "unknown-first") raw.projection.eventIds.unshift("unknown-native-event")
+      if (kind === "unknown-later") raw.projection.eventIds.push("unknown-native-event")
+      if (kind === "duplicate-conversation") raw.projection.eventIds = ["evt-000509", "evt-000290", "evt-000290"]
+      if (kind === "duplicate-leading-system") raw.projection.eventIds = ["evt-000509", ...raw.events.map((event) => event.id)]
+      if (kind === "duplicate-system-only") raw.projection.eventIds = ["evt-000509", "evt-000509"]
+      if (kind === "non-system-reversal") [raw.projection.eventIds[1], raw.projection.eventIds[2]] = [raw.projection.eventIds[2]!, raw.projection.eventIds[1]!]
+      if (kind === "first-non-system-reversal") raw.projection.eventIds = ["evt-000291", "evt-000290"]
+      if (kind === "leading-role-not-system") raw.events.find((event) => event.id === "evt-000509")!.role = "assistant"
+      if (kind === "later-system-reversal") raw.projection.eventIds = ["evt-000512", "evt-000509"]
+      if (kind === "later-system-after-leading") {
+        raw.events[raw.events.findIndex((event) => event.sequence === 500)] = a003Event(500, "system", "later system")
+        raw.projection.eventIds = ["evt-000509", "evt-000512", "evt-000500"]
+      }
+      const bytes = JSON.stringify(raw, null, 2)
+      fs.writeFileSync(sessionPath, bytes)
+      const write = vi.spyOn(transactions, "writeSessionTransaction")
+      await expect(inspect()).rejects.toThrow("invalid projection order or identity")
+      expect(write).not.toHaveBeenCalled()
+      expect(fs.readdirSync(artifactsDir)).toEqual([])
+      expect(fs.readFileSync(sessionPath, "utf8")).toBe(bytes)
+    },
+  )
 
   it.each([
     // Exact historical constructor inputs: 201a88ec, 9631b6a0, 088601d7, cf15cbdd.
@@ -140,12 +337,12 @@ describe("A003 fixed session repair", () => {
     "Before answering, read current active work, cares, system health, service state, storage, and the download queue. Current tool facts outrank care history; a stale care is a recheck item, not a present-tense fact. Then give Ari one compact household summary; do not ask him to choose a status slice. Missing required tool calls: query_active_work, query_cares, unraid_get_system, unraid_list_containers, unraid_get_storage, sanctuary_get_download_queue.",
     "Run both safe reads now, identify the largest measured evidence, report Unmanic and Jellyfin findings, and propose a sample encode without inventing future savings. Do not ask permission or send Ari to a shell or QDirStat while these typed reads are available. Missing required tool calls: unraid_get_storage, sanctuary_get_media_optimization.",
     "Use sanctuary_search_media_catalog before answering. If a broader media-optimization read fails or degrades, treat that as a diagnostic note and still use the catalog tool for ordinary library visibility questions. If asked for taste or a favorite, form a light recommendation from returned catalog evidence instead of claiming you cannot have preferences. Keep it honest: say you cannot watch, but you can pick from the household shelf. Missing required tool calls: sanctuary_search_media_catalog.",
-  ])("accepts the exact audited-position set with historical constructor %s", async (content) => {
+  ])("accepts the exact native-pair set with historical constructor %s", async (content) => {
     const r = await runner()
     const raw = JSON.parse(original)
-    for (const sequence of A003_POSITIONS) raw.events[sequence - 1].content = content
-    expect(r.selectA003LegacyRequiredCorrections(raw.events)).toEqual(A003_POSITIONS.map((sequence) => raw.events[sequence - 1]))
-    raw.events[223].content = content
+    for (let ordinal = 0; ordinal < A003_NATIVE_TARGETS.length; ordinal++) fixtureTarget(raw, ordinal).content = content
+    expect(r.selectA003LegacyRequiredCorrections(raw.events)).toEqual(A003_NATIVE_TARGETS.map((_target, ordinal) => fixtureTarget(raw, ordinal)))
+    raw.events.at(-1).content = content
     expect(() => r.selectA003LegacyRequiredCorrections(raw.events)).toThrow()
   })
 
@@ -154,12 +351,13 @@ describe("A003 fixed session repair", () => {
     async (mutation) => {
       const r = await runner()
       const raw = JSON.parse(original)
-      const target = raw.events[85]
-      if (mutation === "absent") raw.events.splice(85, 1)
-      if (mutation === "extra") raw.events[223] = a003Event(224, "user", A003_LEGACY_MEDIA)
-      if (mutation === "ambiguous-id") raw.events[84].id = target.id
-      if (mutation === "ambiguous-sequence") raw.events[84].sequence = target.sequence
-      if (mutation === "reordered") [raw.events[85], raw.events[86]] = [raw.events[86], raw.events[85]]
+      const target: any = fixtureTarget(raw)
+      const targetIndex = raw.events.indexOf(target)
+      if (mutation === "absent") raw.events.splice(targetIndex, 1)
+      if (mutation === "extra") raw.events[raw.events.length - 1] = a003Event(512, "user", A003_LEGACY_MEDIA)
+      if (mutation === "ambiguous-id") raw.events[targetIndex - 1].id = target.id
+      if (mutation === "ambiguous-sequence") raw.events[targetIndex - 1].sequence = target.sequence
+      if (mutation === "reordered") [raw.events[targetIndex], raw.events[targetIndex + 1]] = [raw.events[targetIndex + 1], raw.events[targetIndex]]
       if (mutation === "wrong-role") target.role = "assistant"
       if (mutation === "name") target.name = "Ari"
       if (mutation === "tool-call") target.toolCalls = [{ id: "x", type: "function", function: { name: "probe", arguments: "{}" } }]
@@ -169,7 +367,7 @@ describe("A003 fixed session repair", () => {
       if (mutation === "relation") target.relations.references = ["human-ingress"]
       if (mutation === "unknown-field") target.extra = true
       if (mutation === "constructor") target.content += " "
-      if (mutation === "partial-marker") raw.events.push(a003Marker(target, 231))
+      if (mutation === "partial-marker") raw.events.push(a003Marker(target, 513))
       expect(() => r.selectA003LegacyRequiredCorrections(mutation === "non-array" ? null : raw.events)).toThrow()
     },
   )
@@ -196,12 +394,14 @@ describe("A003 fixed session repair", () => {
     expect(manifest.agent).toBe("sanctuary")
     expect(manifest.sessionRelativePath).toBe("ari/telegram/owner.json")
     expect(manifest.entries).toHaveLength(8)
-    expect(manifest.entries.map((entry: any) => entry.target.sequence)).toEqual(A003_POSITIONS)
-    expect(manifest.entries.map((entry: any) => entry.marker.sequence)).toEqual([231, 232, 233, 234, 235, 236, 237, 238])
+    expect(manifest.entries.map((entry: any) => ({ id: entry.target.id, sequence: entry.target.sequence }))).toEqual(A003_NATIVE_TARGETS)
+    expect(manifest.entries.map((entry: any) => entry.marker.sequence)).toEqual([513, 514, 515, 516, 517, 518, 519, 520])
     for (const entry of manifest.entries) {
-      expect(entry.target).toEqual(JSON.parse(original).events[entry.target.sequence - 1])
-      expect(entry.previousEventId).toBe(`evt-${String(entry.target.sequence - 1).padStart(6, "0")}`)
-      expect(entry.nextEventId).toBe(`evt-${String(entry.target.sequence + 1).padStart(6, "0")}`)
+      const preimage = JSON.parse(original)
+      const targetIndex = preimage.events.findIndex((event: SessionEvent) => event.id === entry.target.id)
+      expect(entry.target).toEqual(preimage.events[targetIndex])
+      expect(entry.previousEventId).toBe(preimage.events[targetIndex - 1].id)
+      expect(entry.nextEventId).toBe(preimage.events[targetIndex + 1].id)
       expect(entry.marker.relations.redactsEventId).toBe(entry.target.id)
     }
     const inode = fs.statSync(result.manifestPath).ino
@@ -464,9 +664,10 @@ describe("A003 fixed session repair", () => {
     const r = await runner()
     const raw = JSON.parse(original)
     if (kind === "manifest") {
-      const priorId = raw.events[85].id
-      raw.events[85].id = "x".repeat(600_000)
-      raw.projection.eventIds = raw.projection.eventIds.map((id: string) => id === priorId ? raw.events[85].id : id)
+      const neighbor = raw.events[raw.events.indexOf(fixtureTarget(raw)) - 1]
+      const priorId = neighbor.id
+      neighbor.id = "x".repeat(1_100_000)
+      raw.projection.eventIds = raw.projection.eventIds.map((id: string) => id === priorId ? neighbor.id : id)
     } else raw.events[0].content = "x".repeat(32 * 1024 * 1024)
     const bytes = JSON.stringify(raw, null, 2)
     const oracle = expectedRepair(bytes)
@@ -514,12 +715,12 @@ describe("A003 fixed session repair", () => {
     expect(write).toHaveBeenCalledWith(sessionPath, JSON.parse(oracle.postimage), expect.objectContaining({ expectedRevision: hash(original) }))
     expect(hash(post)).toBe(artifact.postimageRevision)
     const raw = JSON.parse(post)
-    expect(raw.events).toHaveLength(238)
-    expect(raw.events.slice(0, 230)).toEqual(JSON.parse(original).events)
-    expect(raw.events.slice(-8).map((event: SessionEvent) => event.relations.redactsEventId)).toEqual(A003_POSITIONS.map((sequence) => `evt-${String(sequence).padStart(6, "0")}`))
+    expect(raw.events).toHaveLength(227)
+    expect(raw.events.slice(0, 219)).toEqual(JSON.parse(original).events)
+    expect(raw.events.slice(-8).map((event: SessionEvent) => event.relations.redactsEventId)).toEqual(A003_NATIVE_TARGETS.map((target) => target.id))
     const { projectProviderMessages, parseSessionEnvelope } = await import("../../heart/session-events")
     expect(JSON.stringify(projectProviderMessages(parseSessionEnvelope(raw)!))).not.toContain("Missing required tool calls")
-    expect(raw.projection.eventIds).toHaveLength(222)
+    expect(raw.projection.eventIds).toHaveLength(211)
     expect(raw.projection.eventIds).toEqual(JSON.parse(oracle.postimage).projection.eventIds)
     expect(raw.events.slice(-8)).toEqual(oracle.manifest.entries.map((entry) => entry.marker))
     expect(raw.structuredOutputs).toEqual(a003LegacyEnvelope().structuredOutputs)
@@ -529,7 +730,7 @@ describe("A003 fixed session repair", () => {
     await transactions.withSessionTurnLease(sessionPath, async (lease) => {
       const current = transactions.readSessionTransaction(sessionPath, lease)
       const value = current.value as typeof raw
-      const event = a003Event(239, "user", "later ordinary append")
+      const event = a003Event(521, "user", "later ordinary append")
       value.events.push(event); value.projection.eventIds.push(event.id)
       transactions.writeSessionTransaction(sessionPath, value, { lease, expectedRevision: current.revision })
     })
@@ -544,7 +745,7 @@ describe("A003 fixed session repair", () => {
   it("refuses an internally consistent reviewed-hash manifest selecting ordinary human events", async () => {
     const r = await runner()
     const artifact = await inspect()
-    const forged = expectedRepair(original, [85, ...A003_POSITIONS.slice(1)])
+    const forged = expectedRepair(original, [345, ...nativeSequences.slice(1)])
     const manifestSha256 = writeManifest(artifact.manifestPath, forged.manifest)
     const write = vi.spyOn(transactions, "writeSessionTransaction")
     await expect(r.applyA003SessionRepair({ ...artifact, manifestSha256 })).rejects.toThrow()
@@ -666,7 +867,7 @@ describe("A003 fixed session repair", () => {
     expect(finished).toBe(false)
     const current = transactions.readSessionTransaction(sessionPath, lease)
     const value = current.value as ReturnType<typeof a003LegacyEnvelope>
-    const added = a003Event(231, "user", "racing user")
+    const added = a003Event(513, "user", "racing user")
     value.events.push(added); value.projection.eventIds.push(added.id)
     transactions.writeSessionTransaction(sessionPath, value, { lease, expectedRevision: current.revision })
     const raced = fs.readFileSync(sessionPath, "utf8")
@@ -700,10 +901,10 @@ describe("A003 fixed session repair", () => {
     const raw = JSON.parse(fs.readFileSync(sessionPath, "utf8"))
     if (mutation === "partial") raw.events.pop()
     if (mutation === "duplicate") raw.events.push(structuredClone(raw.events.at(-1)))
-    if (mutation === "reordered") [raw.events[230], raw.events[231]] = [raw.events[231], raw.events[230]]
-    if (mutation === "mutated") raw.events[230].time.recordedAt = "2026-09-08T12:00:00.000Z"
-    if (mutation === "target-mutated") raw.events[85].content = "changed target snapshot"
-    if (mutation === "resurrected-projection") raw.projection.eventIds.push(raw.events[85].id)
+    if (mutation === "reordered") [raw.events[219], raw.events[220]] = [raw.events[220], raw.events[219]]
+    if (mutation === "mutated") raw.events[219].time.recordedAt = "2026-09-08T12:00:00.000Z"
+    if (mutation === "target-mutated") fixtureTarget(raw).content = "changed target snapshot"
+    if (mutation === "resurrected-projection") reintroduceFixtureTarget(raw)
     if (mutation === "forged-structured-output") raw.structuredOutputs = [{ forged: true }]
     const bytes = JSON.stringify(raw, null, 2)
     fs.writeFileSync(sessionPath, bytes)
@@ -762,9 +963,9 @@ describe("A003 fixed session repair", () => {
       if (kind === "projection-time") raw.projection.projectedAt = "bad"
       if (kind === "normalization") raw.events[0].extra = true
       if (kind === "marker-collision" || kind === "manifest-limit") {
-        const position = kind === "marker-collision" ? 0 : 85
+        const position = kind === "marker-collision" ? 0 : raw.events.indexOf(fixtureTarget(raw)) - 1
         const previous = raw.events[position].id
-        raw.events[position].id = kind === "marker-collision" ? "evt-000232" : "x".repeat(600_000)
+        raw.events[position].id = kind === "marker-collision" ? "evt-000514" : "x".repeat(1_100_000)
         raw.projection.eventIds = raw.projection.eventIds.map((id: string) => id === previous ? raw.events[position].id : id)
       }
       if (kind === "postimage-limit") raw.events[0].content += "x".repeat(32 * 1024 * 1024 - Buffer.byteLength(JSON.stringify(raw, null, 2)))
@@ -790,7 +991,7 @@ describe("A003 fixed session repair", () => {
   it("binds null immediate neighbors for a retained first and last audited target", async () => {
     const r = await runner()
     const raw = JSON.parse(original)
-    raw.events = raw.events.filter((event: SessionEvent) => event.sequence >= 86 && event.sequence <= 222)
+    raw.events = raw.events.filter((event: SessionEvent) => event.sequence >= 347 && event.sequence <= 448)
     const ids = new Set(raw.events.map((event: SessionEvent) => event.id))
     raw.projection.eventIds = raw.projection.eventIds.filter((id: string) => ids.has(id))
     raw.structuredOutputs = []
@@ -905,17 +1106,13 @@ describe("A003 fixed session repair", () => {
     const artifact = await inspect()
     await r.applyA003SessionRepair(artifact)
     const raw = JSON.parse(fs.readFileSync(sessionPath, "utf8"))
-    const later = a003Event(239, "user", "later")
+    const later = a003Event(521, "user", "later")
     raw.events.push(later); raw.projection.eventIds.push(later.id)
-    if (kind === "target-text") raw.events[85].content = "not a correction"
-    if (kind === "target-valid-constructor") raw.events[85].content = A003_LEGACY_MEDIA
-    if (kind === "target-id") raw.events[85].id = "changed-target-id"
-    if (kind === "extra-marker") raw.events.push(a003Marker(later, 240))
-    if (kind === "projection") {
-      raw.projection.eventIds.push(raw.events[85].id)
-      const order = new Map(raw.events.map((event: SessionEvent) => [event.id, event.sequence]))
-      raw.projection.eventIds.sort((left: string, right: string) => Number(order.get(left)) - Number(order.get(right)))
-    }
+    if (kind === "target-text") fixtureTarget(raw).content = "not a correction"
+    if (kind === "target-valid-constructor") fixtureTarget(raw).content = A003_LEGACY_MEDIA
+    if (kind === "target-id") fixtureTarget(raw).id = "changed-target-id"
+    if (kind === "extra-marker") raw.events.push(a003Marker(later, 522))
+    if (kind === "projection") reintroduceFixtureTarget(raw)
     if (kind === "structured") raw.structuredOutputs = []
     const bytes = JSON.stringify(raw, null, 2)
     fs.writeFileSync(sessionPath, bytes)

@@ -18,7 +18,16 @@ import { readSessionTransaction, withSessionTurnLease, writeSessionTransaction, 
 
 const SCHEMA = "a003-sanctuary-session-repair-v1"
 const SELECTOR = "a003-legacy-required-corrections-v1"
-const POSITIONS = [86, 99, 107, 110, 113, 151, 221, 222] as const
+const TARGET_BINDINGS = [
+  { id: "evt-000347", sequence: 347 },
+  { id: "evt-000355", sequence: 355 },
+  { id: "evt-000363", sequence: 363 },
+  { id: "evt-000366", sequence: 366 },
+  { id: "evt-000369", sequence: 369 },
+  { id: "evt-000400", sequence: 400 },
+  { id: "evt-000447", sequence: 447 },
+  { id: "evt-000448", sequence: 448 },
+] as const
 const SESSION_LIMIT = 32 * 1024 * 1024
 const MANIFEST_LIMIT = 1024 * 1024
 const HASH = /^[a-f0-9]{64}$/u
@@ -187,7 +196,7 @@ export function selectA003LegacyRequiredCorrections(rawEvents: unknown): Session
   const events = rawEvents as SessionEvent[]
   if (events.some((event) => !event || typeof event !== "object" || event.relations?.redactsEventId != null)) refuse("legacy event set has a redaction conflict")
   const max = events.reduce((value, event) => Math.max(value, event.sequence), 0)
-  const targets = POSITIONS.map((sequence) => events.find((event) => event.sequence === sequence))
+  const targets = TARGET_BINDINGS.map(({ id, sequence }) => events.find((event) => event.id === id && event.sequence === sequence))
   for (const target of targets) {
     if (!target || typeof target.content !== "string" || !LEGACY_CORRECTIONS.has(target.content)
       || !isExactRawSessionRedactionMarker(marker(target, max + 1, "1970-01-01T00:00:00.000Z"), [...events, marker(target, max + 1, "1970-01-01T00:00:00.000Z")])
@@ -197,7 +206,7 @@ export function selectA003LegacyRequiredCorrections(rawEvents: unknown): Session
       || target.time.recordedAtSource !== "save" || target.time.observedAt !== target.time.recordedAt
       || !isDeepStrictEqual(target.relations, { replyToEventId: null, threadRootEventId: null, references: [], toolCallId: null, supersedesEventId: null, redactsEventId: null })) refuse("legacy correction constructor mismatch")
   }
-  if (events.filter((event) => typeof event.content === "string" && LEGACY_CORRECTIONS.has(event.content)).length !== POSITIONS.length) refuse("extra or ambiguous legacy corrections")
+  if (events.filter((event) => typeof event.content === "string" && LEGACY_CORRECTIONS.has(event.content)).length !== TARGET_BINDINGS.length) refuse("extra or ambiguous legacy corrections")
   return targets as SessionEvent[]
 }
 
@@ -216,10 +225,14 @@ function rawEnvelope(bytes: string): SessionEnvelope {
     || ![projection.maxTokens, projection.contextMargin, projection.inputTokens].every((value) => value === null || typeof value === "number")
     || !(projection.projectedAt === null || iso(projection.projectedAt))) refuse("invalid session projection")
   const byId = new Map(envelope.events.map((event) => [event.id, event]))
+  const seenIds = new Set<string>()
   let sequence = 0
-  for (const id of projection.eventIds as string[]) {
+  for (const [index, id] of (projection.eventIds as string[]).entries()) {
     const event = byId.get(id)
-    if (!event || event.sequence <= sequence) refuse("invalid projection order or identity")
+    if (!event || seenIds.has(id)) refuse("invalid projection order or identity")
+    seenIds.add(id)
+    if (index === 0 && event.role === "system") continue
+    if (event.sequence <= sequence) refuse("invalid projection order or identity")
     sequence = event.sequence
   }
   return envelope
@@ -264,7 +277,7 @@ function readManifest(authority: Authority): Manifest {
     || typeof value.sessionRelativePath !== "string" || !iso(value.capturedAt)
     || typeof value.preimageRevision !== "string" || !HASH.test(value.preimageRevision)
     || typeof value.postimageRevision !== "string" || !HASH.test(value.postimageRevision)
-    || !Array.isArray(value.entries) || value.entries.length !== POSITIONS.length
+    || !Array.isArray(value.entries) || value.entries.length !== TARGET_BINDINGS.length
     || JSON.stringify(value, null, 2) !== bytes.toString("utf8")) refuse("invalid closed repair manifest")
   for (const entry of value.entries) {
     if (!exactKeys(entry, ["target", "targetSha256", "previousEventId", "nextEventId", "marker"])
@@ -367,7 +380,7 @@ export async function inspectA003SessionRepair(input: { agent: string; sessionPa
 
 function alreadyApplied(envelope: SessionEnvelope, manifest: Manifest, currentRevision: string): boolean {
   const blockIndex = envelope.events.findIndex((event) => event.id === manifest.entries[0]!.marker.id)
-  if (blockIndex < 0 || !isDeepStrictEqual(envelope.events.slice(blockIndex, blockIndex + POSITIONS.length), manifest.entries.map((entry) => entry.marker))) return false
+  if (blockIndex < 0 || !isDeepStrictEqual(envelope.events.slice(blockIndex, blockIndex + TARGET_BINDINGS.length), manifest.entries.map((entry) => entry.marker))) return false
   if (currentRevision !== manifest.postimageRevision && envelope.events.at(-1)!.sequence <= manifest.entries.at(-1)!.marker.sequence) return false
   try {
     const targets = selectA003LegacyRequiredCorrections(envelope.events.slice(0, blockIndex))

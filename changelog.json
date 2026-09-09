@@ -6,8 +6,9 @@
       "changes": [
         "Keep engine retry controls and rejected attempts out of canonical conversation history while preserving accepted execution receipts.",
         "Honor exact raw session redaction markers consistently across conversation readers and context rebuilds.",
-        "Add a private, confined eight-event Sanctuary session repair with exact manifest, CAS readback, idempotence, and conditional rollback.",
-        "Validate required source assets in pre-build release checks while keeping compiled package checks strict."
+        "Add a private, confined eight-event Sanctuary session repair bound to exact native IDs, with canonical system-first projection, manifest/CAS readback, idempotence, and conditional rollback.",
+        "Validate required source assets in pre-build release checks while keeping compiled package checks strict.",
+        "Refresh existing multipart, mail-parsing, and test-tool dependencies to clear security advisories without changing the Bitwarden CLI version."
       ]
     },
     {
