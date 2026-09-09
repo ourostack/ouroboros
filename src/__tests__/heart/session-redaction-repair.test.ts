@@ -4,6 +4,7 @@ import * as path from "node:path"
 import { createHash } from "node:crypto"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { a003Event, a003LegacyEnvelope, a003Marker, A003_LEGACY_MEDIA, A003_NATIVE_TARGETS, A003_REPAIR_AT } from "../fixtures/a003-session"
+import { D004_INODE_A, D004_INODE_B, d004IdentityKey, installD004StatMetadata } from "../fixtures/d004-native-stats"
 import type { SessionEnvelope, SessionEvent } from "../../heart/session-events"
 import * as transactions from "../../mind/session-transaction"
 
@@ -122,6 +123,252 @@ describe("A003 fixed session repair", () => {
     fs.writeFileSync(file, bytes, { mode: 0o600 })
     return hash(bytes)
   }
+
+  describe("D004 native artifact identity lifecycle", () => {
+    const shifted = (physical: fs.BigIntStats, base: bigint) => ({
+      dev: base + physical.dev * 4n,
+      ino: base + physical.ino * 4n,
+    })
+
+    function artifactSnapshot(directory: string): Record<string, string> {
+      return Object.fromEntries(fs.readdirSync(directory).sort().map((name) => [name, hash(fs.readFileSync(path.join(directory, name)))]))
+    }
+
+    it.each([D004_INODE_A, D004_INODE_B])("keeps exact large identity %s valid through inspect/apply/idempotence/rollback and JSON", async (base) => {
+      const r = await runner()
+      installD004StatMetadata(fs, (physical) => shifted(physical, base))
+      const artifact = await inspect()
+      expect(() => JSON.stringify(artifact)).not.toThrow()
+      expect(Object.keys(artifact).sort()).toEqual(["manifestPath", "manifestSha256", "postimageRevision", "preimagePath", "preimageRevision", "status"])
+      expect(fs.readdirSync(artifactsDir).sort()).toEqual(["a003-session-manifest.json", "a003-session-preimage.json"])
+      expect(fs.readFileSync(artifact.preimagePath, "utf8")).toBe(original)
+      expect(JSON.parse(fs.readFileSync(artifact.manifestPath, "utf8"))).toEqual(expectedRepair(original).manifest)
+      const applied = await r.applyA003SessionRepair(artifact)
+      expect(applied.status).toBe("applied")
+      expect(() => JSON.stringify(applied)).not.toThrow()
+      expect(fs.readFileSync(sessionPath, "utf8")).toBe(expectedRepair(original).postimage)
+      const repeated = await r.applyA003SessionRepair(artifact)
+      expect(repeated.status).toBe("already_applied")
+      expect(() => JSON.stringify(repeated)).not.toThrow()
+      const rollback = await r.rollbackA003SessionRepair(artifact)
+      expect(rollback.status).toBe("rolled_back")
+      expect(() => JSON.stringify(rollback)).not.toThrow()
+      expect(fs.readFileSync(sessionPath, "utf8")).toBe(original)
+    })
+
+    it.each(["ino", "dev"].flatMap((coordinate) => ["apply", "rollback"].flatMap((operation) => ["before-open", "after-read"].map((timing) => ({ coordinate, operation, timing })))))(
+      "refuses a rounded $coordinate artifact replacement at $timing before $operation",
+      async ({ coordinate, operation, timing }) => {
+        const r = await runner()
+        const artifact = await inspect()
+        if (operation === "rollback") await r.applyA003SessionRepair(artifact)
+        const beforeSession = fs.readFileSync(sessionPath, "utf8")
+        const target = operation === "apply" ? artifact.manifestPath : artifact.preimagePath
+        const native = await vi.importActual<typeof import("node:fs")>("node:fs")
+        const bytes = fs.readFileSync(target)
+        const originalIdentity = d004IdentityKey(native.lstatSync(target, { bigint: true }))
+        let replacementIdentity = ""
+        let fired = false
+        let targetFd = -1
+        installD004StatMetadata(fs, (physical) => {
+          const key = d004IdentityKey(physical)
+          if (key !== originalIdentity && key !== replacementIdentity) return undefined
+          const value = key === originalIdentity ? D004_INODE_A : D004_INODE_B
+          return coordinate === "ino" ? { dev: 43n, ino: value } : { dev: value, ino: 7n }
+        })
+        const replace = () => {
+          fired = true
+          fs.renameSync(target, `${target}.original`)
+          fs.writeFileSync(target, bytes, { mode: 0o600, flag: "wx" })
+          replacementIdentity = d004IdentityKey(native.lstatSync(target, { bigint: true }))
+          expect(replacementIdentity).not.toBe(originalIdentity)
+        }
+        const open = fs.openSync
+        vi.spyOn(fs, "openSync").mockImplementation(((file: fs.PathLike, ...args: any[]) => {
+          const observed = String(file) === target
+          if (observed && timing === "before-open" && !fired) replace()
+          const fd = (open as any)(file, ...args)
+          if (observed) targetFd = fd
+          return fd
+        }) as typeof fs.openSync)
+        const read = fs.readFileSync
+        vi.spyOn(fs, "readFileSync").mockImplementation(((file: fs.PathOrFileDescriptor, ...args: any[]) => {
+          const result = (read as any)(file, ...args)
+          if (timing === "after-read" && file === targetFd && !fired) replace()
+          return result
+        }) as typeof fs.readFileSync)
+        const write = vi.spyOn(transactions, "writeSessionTransaction")
+        const failure = await (operation === "apply" ? r.applyA003SessionRepair(artifact) : r.rollbackA003SessionRepair(artifact))
+          .then(() => null, (error: unknown) => error)
+        expect(fired).toBe(true)
+        expect(write).not.toHaveBeenCalled()
+        expect(failure).toBeInstanceOf(Error)
+        expect(fs.readFileSync(sessionPath, "utf8")).toBe(beforeSession)
+        expect(fs.readFileSync(target)).toEqual(bytes)
+        expect(d004IdentityKey(native.lstatSync(target, { bigint: true }))).toBe(replacementIdentity)
+      },
+    )
+
+    it.each(["ino", "dev"].flatMap((coordinate) => ["a003-session-preimage.json", "a003-session-manifest.json"].map((basename) => ({ coordinate, basename }))))(
+      "refuses a rounded $coordinate replacement at $basename publication readback and preserves the foreign final",
+      async ({ coordinate, basename }) => {
+        const r = await runner()
+        const native = await vi.importActual<typeof import("node:fs")>("node:fs")
+        const final = path.join(artifactsDir, basename)
+        const open = fs.openSync
+        let originalIdentity = ""
+        let replacementIdentity = ""
+        let bytes = Buffer.alloc(0)
+        let fired = false
+        installD004StatMetadata(fs, (physical) => {
+          const key = d004IdentityKey(physical)
+          if (key !== originalIdentity && key !== replacementIdentity) return undefined
+          const value = key === originalIdentity ? D004_INODE_A : D004_INODE_B
+          return coordinate === "ino" ? { dev: 43n, ino: value } : { dev: value, ino: 7n }
+        })
+        vi.spyOn(fs, "openSync").mockImplementation(((file: fs.PathLike, flags: string | number, mode?: number) => {
+          if (String(file) === final && !fired) {
+            fired = true
+            bytes = fs.readFileSync(final)
+            fs.renameSync(final, `${final}.original`)
+            fs.writeFileSync(final, bytes, { flag: "wx", mode: 0o600 })
+            replacementIdentity = d004IdentityKey(native.lstatSync(final, { bigint: true }))
+            expect(replacementIdentity).not.toBe(originalIdentity)
+          }
+          const fd = open(file, flags, mode)
+          if (String(file).startsWith(`${artifactsDir}/.${basename}.`) && typeof flags === "number" && (flags & fs.constants.O_CREAT)) {
+            originalIdentity = d004IdentityKey(native.fstatSync(fd, { bigint: true }))
+          }
+          return fd
+        }) as typeof fs.openSync)
+        const failure = await r.inspectA003SessionRepair({ agent: "sanctuary", sessionPath, artifactsDir }).then(() => null, (error: unknown) => error)
+        expect(fired).toBe(true)
+        expect(failure).toBeInstanceOf(Error)
+        expect(fs.readFileSync(final)).toEqual(bytes)
+        expect(d004IdentityKey(native.lstatSync(final, { bigint: true }))).toBe(replacementIdentity)
+        expect(fs.readFileSync(sessionPath, "utf8")).toBe(original)
+      },
+    )
+
+    it.each(["ino", "dev"].flatMap((coordinate) => ["final", "sibling"].map((kind) => ({ coordinate, kind }))))("preserves foreign $kind bytes and the primary error during rounded $coordinate cleanup", async ({ coordinate, kind }) => {
+      const r = await runner()
+      const native = await vi.importActual<typeof import("node:fs")>("node:fs")
+      const primary = new Error("primary D004 artifact failure")
+      const foreignBytes = "foreign artifact must survive"
+      const final = path.join(artifactsDir, "a003-session-preimage.json")
+      let temporary = ""
+      let originalIdentity = ""
+      let replacementIdentity = ""
+      let targetFd = -1
+      installD004StatMetadata(fs, (physical) => {
+        const key = d004IdentityKey(physical)
+        if (key !== originalIdentity && key !== replacementIdentity) return undefined
+        const value = key === originalIdentity ? D004_INODE_A : D004_INODE_B
+        return coordinate === "ino" ? { dev: 43n, ino: value } : { dev: value, ino: 7n }
+      })
+      const replace = (file: string) => {
+        fs.renameSync(file, `${file}.original`)
+        fs.writeFileSync(file, foreignBytes, { flag: "wx", mode: 0o600 })
+        replacementIdentity = d004IdentityKey(native.lstatSync(file, { bigint: true }))
+        expect(replacementIdentity).not.toBe(originalIdentity)
+      }
+      const open = fs.openSync
+      vi.spyOn(fs, "openSync").mockImplementation(((file: fs.PathLike, flags: string | number, mode?: number) => {
+        const fd = open(file, flags, mode)
+        if (String(file).startsWith(`${artifactsDir}/.a003-session-preimage.json.`) && typeof flags === "number" && (flags & fs.constants.O_CREAT)) {
+          temporary = String(file)
+          targetFd = fd
+          originalIdentity = d004IdentityKey(native.fstatSync(fd, { bigint: true }))
+        }
+        return fd
+      }) as typeof fs.openSync)
+      if (kind === "final") {
+        const link = fs.linkSync
+        let calls = 0
+        vi.spyOn(fs, "linkSync").mockImplementation((from, to) => {
+          if (++calls === 2) { replace(final); throw primary }
+          return link(from, to)
+        })
+      } else {
+        const write = fs.writeFileSync
+        vi.spyOn(fs, "writeFileSync").mockImplementation(((file: fs.PathOrFileDescriptor, ...args: any[]) => {
+          const value = (write as any)(file, ...args)
+          if (file === targetFd) { replace(temporary); throw primary }
+          return value
+        }) as typeof fs.writeFileSync)
+      }
+      await expect(r.inspectA003SessionRepair({ agent: "sanctuary", sessionPath, artifactsDir })).rejects.toBe(primary)
+      const foreign = kind === "final" ? final : temporary
+      expect(fs.existsSync(foreign)).toBe(true)
+      expect(fs.readFileSync(foreign, "utf8")).toBe(foreignBytes)
+      expect(d004IdentityKey(native.lstatSync(foreign, { bigint: true }))).toBe(replacementIdentity)
+      expect(fs.readFileSync(sessionPath, "utf8")).toBe(original)
+    })
+
+    it.each(["ino", "dev"])("refuses a real artifact-directory replacement hidden by rounded %s before foreign publication", async (coordinate) => {
+      const r = await runner()
+      const native = await vi.importActual<typeof import("node:fs")>("node:fs")
+      const foreign = path.join(context.root, "foreign-artifacts")
+      const saved = `${artifactsDir}.original`
+      fs.mkdirSync(foreign, { mode: 0o700 })
+      const originalIdentity = d004IdentityKey(native.lstatSync(artifactsDir, { bigint: true }))
+      const replacementIdentity = d004IdentityKey(native.lstatSync(foreign, { bigint: true }))
+      expect(replacementIdentity).not.toBe(originalIdentity)
+      installD004StatMetadata(fs, (physical) => {
+        const key = d004IdentityKey(physical)
+        if (key !== originalIdentity && key !== replacementIdentity) return undefined
+        const value = key === originalIdentity ? D004_INODE_A : D004_INODE_B
+        return coordinate === "ino" ? { dev: 43n, ino: value } : { dev: value, ino: 7n }
+      })
+      const open = fs.openSync
+      let targetFd = -1
+      vi.spyOn(fs, "openSync").mockImplementation(((file: fs.PathLike, flags: string | number, mode?: number) => {
+        const fd = open(file, flags, mode)
+        if (String(file).startsWith(`${artifactsDir}/.`) && typeof flags === "number" && (flags & fs.constants.O_CREAT) && targetFd === -1) targetFd = fd
+        return fd
+      }) as typeof fs.openSync)
+      const write = fs.writeFileSync
+      let swapped = false
+      let before: Record<string, string> = {}
+      vi.spyOn(fs, "writeFileSync").mockImplementation(((file: fs.PathOrFileDescriptor, ...args: any[]) => {
+        const value = (write as any)(file, ...args)
+        if (file === targetFd && !swapped) {
+          fs.cpSync(artifactsDir, foreign, { recursive: true })
+          before = artifactSnapshot(foreign)
+          fs.renameSync(artifactsDir, saved)
+          fs.renameSync(foreign, artifactsDir)
+          swapped = true
+        }
+        return value
+      }) as typeof fs.writeFileSync)
+      const failure = await r.inspectA003SessionRepair({ agent: "sanctuary", sessionPath, artifactsDir }).then(() => null, (error: unknown) => error)
+      expect(swapped).toBe(true)
+      expect(fs.lstatSync(artifactsDir).isSymbolicLink()).toBe(false)
+      expect(failure).toBeInstanceOf(Error)
+      expect(artifactSnapshot(artifactsDir)).toEqual(before)
+      expect(fs.readdirSync(saved).some((name) => name.startsWith("."))).toBe(true)
+      expect(fs.readFileSync(sessionPath, "utf8")).toBe(original)
+    })
+
+    it.each(["session-mode", "session-size", "manifest-mode", "manifest-size"])("keeps %s refusal under exact large identities", async (kind) => {
+      const r = await runner()
+      installD004StatMetadata(fs, (physical) => shifted(physical, D004_INODE_B))
+      if (kind.startsWith("session")) {
+        if (kind === "session-mode") fs.chmodSync(sessionPath, 0o644)
+        else fs.truncateSync(sessionPath, 32 * 1024 * 1024 + 1)
+        await expect(inspect()).rejects.toThrow(kind === "session-mode" ? "session must have mode 0600" : "session exceeds 32 MiB")
+        expect(fs.readdirSync(artifactsDir)).toEqual([])
+      } else {
+        const artifact = await inspect()
+        if (kind === "manifest-mode") fs.chmodSync(artifact.manifestPath, 0o644)
+        else fs.appendFileSync(artifact.manifestPath, " ".repeat(1024 * 1024))
+        const write = vi.spyOn(transactions, "writeSessionTransaction")
+        await expect(r.applyA003SessionRepair(artifact)).rejects.toThrow(kind === "manifest-mode" ? "manifest must have mode 0600" : "manifest exceeds 1 MiB")
+        expect(write).not.toHaveBeenCalled()
+        expect(fs.readFileSync(sessionPath, "utf8")).toBe(original)
+      }
+    })
+  })
 
   it("uses real filesystem functions through the configurable fault-injection facade", async () => {
     const native = await vi.importActual<typeof import("node:fs")>("node:fs")
@@ -1202,6 +1449,28 @@ describe("A003 fixed session repair", () => {
     expect(result.code).toBe(2)
     expect(result.value.status).toBe("refused")
     expect(fs.readdirSync(artifactsDir)).toEqual([])
+    expect(fs.readFileSync(sessionPath, "utf8")).toBe(original)
+  })
+
+  // CLI imports reset the module cache; keep them after the owner-spy cases.
+  it("D004 keeps private direct-CLI JSON unchanged with exact large filesystem identities", async () => {
+    installD004StatMetadata(fs, (physical) => ({
+      dev: D004_INODE_B + physical.dev * 4n,
+      ino: D004_INODE_B + physical.ino * 4n,
+    }))
+    const inspected = await invokeCli(["inspect", "--agent", "sanctuary", "--session", sessionPath, "--artifacts-dir", artifactsDir])
+    expect(inspected.code).toBe(0)
+    expect(inspected.value.status).toBe("inspected")
+    const artifact = inspected.value as InspectResult
+    const applied = await invokeCli(["apply", "--manifest-sha256", artifact.manifestSha256, artifact.manifestPath])
+    expect(applied.code).toBe(0)
+    expect(applied.value.status).toBe("applied")
+    const repeated = await invokeCli(["apply", "--manifest-sha256", artifact.manifestSha256, artifact.manifestPath])
+    expect(repeated.code).toBe(0)
+    expect(repeated.value.status).toBe("already_applied")
+    const rolledBack = await invokeCli(["rollback", "--manifest-sha256", artifact.manifestSha256, artifact.manifestPath, artifact.preimagePath])
+    expect(rolledBack.code).toBe(0)
+    expect(rolledBack.value.status).toBe("rolled_back")
     expect(fs.readFileSync(sessionPath, "utf8")).toBe(original)
   })
 })

@@ -6,6 +6,7 @@ import { createHash } from "node:crypto"
 import Database from "better-sqlite3"
 
 import { afterEach, describe, expect, it, vi } from "vitest"
+import { D004_INODE_A, D004_INODE_B, d004IdentityKey, installD004StatMetadata } from "../fixtures/d004-native-stats"
 
 vi.mock("node:fs", async (original) => ({ ...await original<typeof import("node:fs")>() }))
 
@@ -498,6 +499,282 @@ describe("A003 confined session transaction owner", () => {
         walk(root)
         return result
       }
+
+      describe("D004 exact native identity consumers", () => {
+        async function directoryPair(original: string, replacement: string, coordinate: "ino" | "dev" = "ino") {
+          const native = await vi.importActual<typeof import("node:fs")>("node:fs")
+          const first = native.lstatSync(original, { bigint: true })
+          const second = native.lstatSync(replacement, { bigint: true })
+          expect(d004IdentityKey(first)).not.toBe(d004IdentityKey(second))
+          const identities = new Map([
+            [d004IdentityKey(first), coordinate === "ino" ? { dev: 43n, ino: D004_INODE_A } : { dev: D004_INODE_A, ino: 7n }],
+            [d004IdentityKey(second), coordinate === "ino" ? { dev: 43n, ino: D004_INODE_B } : { dev: D004_INODE_B, ino: 7n }],
+          ])
+          installD004StatMetadata(fs, (physical) => identities.get(d004IdentityKey(physical)))
+          return native
+        }
+
+        it("reports faithful Number and BigInt metadata while directory I/O remains real", async () => {
+          const f = fixture()
+          const other = path.join(f.root, "other")
+          fs.mkdirSync(other, { mode: 0o700 })
+          const native = await directoryPair(f.parent, other)
+          const first = fs.lstatSync(f.parent)
+          const second = fs.lstatSync(other)
+          expect(first.ino).toBe(second.ino)
+          expect(Number.isSafeInteger(first.ino)).toBe(false)
+          expect(first.isDirectory()).toBe(true)
+          expect(first.isSymbolicLink()).toBe(false)
+          expect(first.mode).toBe(native.lstatSync(f.parent).mode)
+          expect(fs.lstatSync(f.parent, { bigint: true }).ino).toBe(D004_INODE_A)
+          expect(fs.lstatSync(other, { bigint: true }).ino).toBe(D004_INODE_B)
+          expect(typeof fs.lstatSync(other, { bigint: true }).mode).toBe("bigint")
+          expect(fs.readdirSync(f.parent)).toContain("owner.json")
+        })
+
+        it.each([D004_INODE_A, D004_INODE_B])("keeps stable large identity %s valid through async/immediate transactions and JSON", async (baseIdentity) => {
+          const f = fixture()
+          const tx = await subject()
+          installD004StatMetadata(fs, (physical) => ({
+            dev: baseIdentity + physical.dev * 4n,
+            ino: baseIdentity + physical.ino * 4n,
+          }))
+          await tx.withSessionTurnLease(f.sessionPath, async (lease: any) => {
+            expect(Object.keys(lease).sort()).toEqual(["ownerId", "ownerToken", "release", "sessionPath"])
+            const before = tx.readSessionTransaction(f.sessionPath, lease)
+            const revision = tx.writeSessionTransaction(f.sessionPath, { version: 2, marker: "large" }, { lease, expectedRevision: before.revision })
+            const nested = await tx.acquireSessionTurnLease(f.sessionPath, { ownerId: lease.ownerId, ownerToken: lease.ownerToken })
+            expect(tx.readSessionTransaction(f.sessionPath, nested).revision).toBe(revision)
+            await nested.release()
+            expect(tx.withImmediateSessionTurnLease(f.sessionPath, (inner: any) => {
+              expect(inner).toBe(lease)
+              return tx.readSessionTransaction(f.sessionPath, inner).value
+            })).toEqual({ version: 2, marker: "large" })
+            expect(() => JSON.stringify({ lease, snapshot: tx.readSessionTransaction(f.sessionPath, lease) })).not.toThrow()
+          }, { confinementRoot: f.confinementRoot })
+          expect(readLock(f.sessionPath)).toBeNull()
+          tx.withImmediateSessionTurnLease(f.sessionPath, (lease: any) => {
+            const before = tx.readSessionTransaction(f.sessionPath, lease)
+            tx.writeSessionTransaction(f.sessionPath, { marker: "immediate" }, { lease, expectedRevision: before.revision })
+            expect(tx.readSessionTransaction(f.sessionPath, lease).value).toEqual({ marker: "immediate" })
+            tx.deleteSessionTransaction(f.sessionPath, lease)
+            expect(tx.readSessionTransaction(f.sessionPath, lease).value).toBeNull()
+          }, { confinementRoot: f.confinementRoot })
+          expect(fs.existsSync(f.sessionPath)).toBe(false)
+          expect(readLock(f.sessionPath)).toBeNull()
+        })
+
+        it("keeps a large-identity confined parent interoperable with an ordinary real child lease and CAS", async () => {
+          const f = fixture()
+          const tx = await subject()
+          installD004StatMetadata(fs, (physical) => ({
+            dev: D004_INODE_B + physical.dev * 4n,
+            ino: D004_INODE_B + physical.ino * 4n,
+          }))
+          const modulePath = path.resolve(__dirname, "../../mind/session-transaction.ts")
+          const child = spawn(process.execPath, ["-e", childScript(), modulePath, f.sessionPath, "hold"], { stdio: ["pipe", "pipe", "pipe"] })
+          await waitForOutput(child, "READY")
+          try {
+            await expect(tx.acquireSessionTurnLease(f.sessionPath, { confinementRoot: f.confinementRoot, timeoutMs: 10, pollIntervalMs: 1 })).rejects.toBeInstanceOf(tx.SessionTurnBusyError)
+          } finally {
+            const released = waitForOutput(child, "RELEASED")
+            const exited = waitForCleanExit(child)
+            child.stdin!.end()
+            await released
+            await exited
+          }
+          let beforeRevision = ""
+          await tx.withSessionTurnLease(f.sessionPath, async (lease: any) => {
+            beforeRevision = tx.readSessionTransaction(f.sessionPath, lease).revision
+            tx.writeSessionTransaction(f.sessionPath, { marker: "large-parent" }, { lease, expectedRevision: beforeRevision })
+          }, { confinementRoot: f.confinementRoot })
+          const stale = spawn(process.execPath, ["-e", childScript(), modulePath, f.sessionPath, "stale-write", beforeRevision], { stdio: ["ignore", "pipe", "pipe"] })
+          const exited = waitForCleanExit(stale)
+          expect(await waitForOutput(stale, "STALE:")).toContain("STALE:")
+          await exited
+          expect(JSON.parse(fs.readFileSync(f.sessionPath, "utf8"))).toEqual({ marker: "large-parent" })
+        })
+
+        it.each([false, true])("refuses adjacent large directory identity during real lease wait (foreign database=%s)", async (existing) => {
+          const f = fixture()
+          const tx = await subject()
+          await tx.withSessionTurnLease(f.sessionPath, async () => undefined)
+          const foreign = path.join(f.root, "foreign")
+          fs.cpSync(f.parent, foreign, { recursive: true })
+          if (!existing) fs.unlinkSync(path.join(foreign, "owner.json.turn.lock"))
+          await directoryPair(f.parent, foreign)
+          const before = snapshot(foreign)
+          const blocker = await tx.acquireSessionTurnLease(f.sessionPath)
+          const entered = vi.fn()
+          const pending = tx.withSessionTurnLease(f.sessionPath, async () => {
+            entered()
+            throw new Error("foreign work must not begin")
+          }, { confinementRoot: f.confinementRoot, timeoutMs: 500, pollIntervalMs: 1 }).then(() => null, (error: unknown) => error)
+          await new Promise((resolve) => setImmediate(resolve))
+          const saved = `${f.parent}.saved`
+          fs.renameSync(f.parent, saved)
+          fs.renameSync(foreign, f.parent)
+          try {
+            expect(fs.lstatSync(f.parent).isSymbolicLink()).toBe(false)
+            const error = await pending
+            expect(snapshot(f.parent)).toEqual(before)
+            expect(entered).not.toHaveBeenCalled()
+            expect(error).toBeInstanceOf(tx.SessionTransactionError)
+          } finally {
+            fs.renameSync(f.parent, foreign)
+            fs.renameSync(saved, f.parent)
+            await blocker.release()
+          }
+        })
+
+        it.each(["ino", "dev"].flatMap((coordinate) => ["read", "write", "delete", "release", "explicit-reuse", "contextual-reuse"].map((operation) => ({ coordinate, operation }))))(
+          "rejects a rounded $coordinate collision before held $operation",
+          async ({ coordinate, operation }) => {
+            const f = fixture()
+            const tx = await subject()
+            const foreign = path.join(f.root, "foreign")
+            fs.mkdirSync(foreign, { mode: 0o700 })
+            await directoryPair(f.parent, foreign, coordinate as "ino" | "dev")
+            await tx.withSessionTurnLease(f.sessionPath, async (lease: any) => {
+              const base = tx.readSessionTransaction(f.sessionPath, lease)
+              fs.cpSync(f.parent, foreign, { recursive: true })
+              const before = snapshot(foreign)
+              const saved = `${f.parent}.saved`
+              fs.renameSync(f.parent, saved)
+              fs.renameSync(foreign, f.parent)
+              let error: unknown
+              const entered = vi.fn()
+              try {
+                try {
+                  if (operation === "read") tx.readSessionTransaction(f.sessionPath, lease)
+                  if (operation === "write") tx.writeSessionTransaction(f.sessionPath, { changed: true }, { lease, expectedRevision: base.revision })
+                  if (operation === "delete") tx.deleteSessionTransaction(f.sessionPath, lease)
+                  if (operation === "release") await lease.release()
+                  if (operation === "explicit-reuse") {
+                    const nested = await tx.acquireSessionTurnLease(f.sessionPath, { ownerId: lease.ownerId, ownerToken: lease.ownerToken })
+                    entered()
+                    await nested.release()
+                  }
+                  if (operation === "contextual-reuse") tx.withImmediateSessionTurnLease(f.sessionPath, (inner: any) => {
+                    entered()
+                    tx.readSessionTransaction(f.sessionPath, inner)
+                  })
+                } catch (caught) { error = caught }
+                expect(snapshot(f.parent)).toEqual(before)
+                expect(error).toBeInstanceOf(tx.SessionTransactionError)
+                expect(entered).not.toHaveBeenCalled()
+                if (operation === "release") {
+                  expect(() => tx.assertSessionTurnLease(f.sessionPath, lease)).toThrow(/owner token/u)
+                  const original = new Database(path.join(saved, "owner.json.turn.lock"), { readonly: true })
+                  try { expect(original.prepare("SELECT owner_token FROM session_turn_lease").get()).toEqual({ owner_token: lease.ownerToken }) }
+                  finally { original.close() }
+                }
+              } finally {
+                fs.renameSync(f.parent, foreign)
+                fs.renameSync(saved, f.parent)
+              }
+            }, { confinementRoot: f.confinementRoot })
+          },
+        )
+
+        it.each(["ino", "dev"].flatMap((coordinate) => [false, true].map((primaryThrows) => ({ coordinate, primaryThrows }))))(
+          "preserves a foreign temporary file across a rounded $coordinate collision (primary=$primaryThrows)",
+          async ({ coordinate, primaryThrows }) => {
+            const f = fixture()
+            const tx = await subject()
+            const native = await vi.importActual<typeof import("node:fs")>("node:fs")
+            let originalIdentity = ""
+            let replacementIdentity = ""
+            installD004StatMetadata(fs, (physical, target) => {
+              if (!originalIdentity && typeof target === "number" && physical.isFile()) originalIdentity = d004IdentityKey(physical)
+              const key = d004IdentityKey(physical)
+              if (key !== originalIdentity && key !== replacementIdentity) return undefined
+              const value = key === replacementIdentity ? D004_INODE_B : D004_INODE_A
+              return coordinate === "ino" ? { dev: 43n, ino: value } : { dev: value, ino: 7n }
+            })
+            const primary = new Error("original native-identity write failure")
+            const foreignBytes = '{"foreign":"do not publish or delete"}'
+            let temporary = ""
+            let caught: unknown
+            await tx.withSessionTurnLease(f.sessionPath, async (lease: any) => {
+              const before = tx.readSessionTransaction(f.sessionPath, lease)
+              try {
+                tx.writeSessionTransaction(f.sessionPath, { version: 2, marker: "new" }, {
+                  lease, expectedRevision: before.revision,
+                  hooks: { beforeRename: () => {
+                    temporary = path.join(f.parent, fs.readdirSync(f.parent).find((name) => name.includes(".tmp-"))!)
+                    expect(originalIdentity).not.toBe("")
+                    fs.renameSync(temporary, `${temporary}.original`)
+                    fs.writeFileSync(temporary, foreignBytes, { mode: 0o600 })
+                    replacementIdentity = d004IdentityKey(native.lstatSync(temporary, { bigint: true }))
+                    expect(replacementIdentity).not.toBe(originalIdentity)
+                    if (primaryThrows) throw primary
+                  } },
+                })
+              } catch (error) { caught = error }
+              expect(fs.readFileSync(f.sessionPath, "utf8")).toBe(before.bytes)
+              expect(fs.existsSync(temporary)).toBe(true)
+              expect(fs.readFileSync(temporary, "utf8")).toBe(foreignBytes)
+              expect(fs.existsSync(`${temporary}.original`)).toBe(true)
+              if (primaryThrows) expect(caught).toBe(primary)
+              else expect(caught).toBeInstanceOf(tx.SessionTransactionError)
+            }, { confinementRoot: f.confinementRoot })
+          },
+        )
+
+        it("preserves the primary work error and foreign lease bytes when large-identity release refuses", async () => {
+          const f = fixture()
+          const tx = await subject()
+          const foreign = path.join(f.root, "foreign")
+          fs.mkdirSync(foreign, { mode: 0o700 })
+          await directoryPair(f.parent, foreign)
+          const saved = `${f.parent}.saved`
+          const primary = new Error("primary work failure")
+          let before: Record<string, string> = {}
+          let caught: unknown
+          try {
+            await tx.withSessionTurnLease(f.sessionPath, async () => {
+              fs.cpSync(f.parent, foreign, { recursive: true })
+              before = snapshot(foreign)
+              fs.renameSync(f.parent, saved)
+              fs.renameSync(foreign, f.parent)
+              throw primary
+            }, { confinementRoot: f.confinementRoot })
+          } catch (error) { caught = error }
+          try {
+            expect(caught).toBe(primary)
+            expect(snapshot(f.parent)).toEqual(before)
+          } finally {
+            fs.renameSync(f.parent, foreign)
+            fs.renameSync(saved, f.parent)
+          }
+        })
+
+        it.each(["async", "immediate"])("keeps omitted confinement on its existing %s symlink route without new stat guards", async (kind) => {
+          const f = fixture()
+          const tx = await subject()
+          const alias = path.join(f.root, "legacy-alias")
+          fs.symlinkSync(f.parent, alias)
+          const file = path.join(alias, "owner.json")
+          const lstat = vi.spyOn(fs, "lstatSync")
+          const fstat = vi.spyOn(fs, "fstatSync")
+          const exercise = (lease: any) => {
+            const before = tx.readSessionTransaction(file, lease)
+            tx.writeSessionTransaction(file, { marker: "unconfined" }, { lease, expectedRevision: before.revision })
+            expect(tx.withImmediateSessionTurnLease(file, (nested: any) => {
+              expect(nested).toBe(lease)
+              return tx.readSessionTransaction(file, nested).value
+            })).toEqual({ marker: "unconfined" })
+            tx.deleteSessionTransaction(file, lease)
+            expect(tx.readSessionTransaction(file, lease).value).toBeNull()
+          }
+          if (kind === "async") await tx.withSessionTurnLease(file, async (lease: any) => exercise(lease))
+          else tx.withImmediateSessionTurnLease(file, exercise)
+          expect(lstat).not.toHaveBeenCalled()
+          expect(fstat).not.toHaveBeenCalled()
+          expect(readLock(file)).toBeNull()
+        })
+      })
 
       it.each(["null", "empty", "relative", "normalized", "missing", "file", "symlink", "outside", "root-as-session"])(
         "refuses initial %s confinement before creating any lease or sidecar",

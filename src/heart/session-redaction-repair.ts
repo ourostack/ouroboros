@@ -53,7 +53,7 @@ interface Manifest {
 
 interface Authority { manifestPath: string; manifestSha256: string }
 interface RepairResult { status: "applied" | "not_applied" | "already_applied" | "indeterminate" | "rolled_back" | "already_rolled_back"; revision?: string }
-interface DirectoryIdentity { path: string; dev: number; ino: number }
+interface DirectoryIdentity { path: string; dev: bigint; ino: bigint }
 
 function sha(bytes: string | Buffer): string {
   return createHash("sha256").update(bytes).digest("hex")
@@ -76,7 +76,7 @@ function iso(value: unknown): value is string {
   return typeof value === "string" && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value
 }
 
-function sameInode(a: { dev: number; ino: number }, b: { dev: number; ino: number }): boolean {
+function sameInode(a: { dev: bigint; ino: bigint }, b: { dev: bigint; ino: bigint }): boolean {
   return a.dev === b.dev && a.ino === b.ino
 }
 
@@ -89,7 +89,7 @@ function directoryChain(directory: string): DirectoryIdentity[] {
     parts.push(current)
   }
   return parts.map((file) => {
-    const stat = fs.lstatSync(file)
+    const stat = fs.lstatSync(file, { bigint: true })
     if (!stat.isDirectory() || stat.isSymbolicLink()) refuse("directory symlink or type mismatch")
     return { path: file, dev: stat.dev, ino: stat.ino }
   })
@@ -97,24 +97,24 @@ function directoryChain(directory: string): DirectoryIdentity[] {
 
 function checkDirectories(pin: DirectoryIdentity[]): void {
   for (const entry of pin) {
-    const stat = fs.lstatSync(entry.path)
+    const stat = fs.lstatSync(entry.path, { bigint: true })
     if (!stat.isDirectory() || stat.isSymbolicLink() || !sameInode(entry, stat)) refuse("directory identity changed")
   }
 }
 
 function privateDirectory(directory: string): DirectoryIdentity[] {
   const pin = directoryChain(directory)
-  if ((fs.lstatSync(directory).mode & 0o777) !== 0o700) refuse("artifact directory must have mode 0700")
+  if ((fs.lstatSync(directory, { bigint: true }).mode & 0o777n) !== 0o700n) refuse("artifact directory must have mode 0700")
   return pin
 }
 
-function privateFile(file: string, label: string, limit: number): fs.Stats {
+function privateFile(file: string, label: string, limit: number): fs.BigIntStats {
   if (!path.isAbsolute(file) || path.resolve(file) !== file) refuse("noncanonical file path")
   directoryChain(path.dirname(file))
-  const stat = fs.lstatSync(file)
+  const stat = fs.lstatSync(file, { bigint: true })
   if (!stat.isFile() || stat.isSymbolicLink()) refuse(`${label} must be a regular file`)
-  if ((stat.mode & 0o777) !== 0o600) refuse(`${label} must have mode 0600`)
-  if (stat.size > limit) refuse(`${label} exceeds ${limit / (1024 * 1024)} MiB`)
+  if ((stat.mode & 0o777n) !== 0o600n) refuse(`${label} must have mode 0600`)
+  if (stat.size > BigInt(limit)) refuse(`${label} exceeds ${limit / (1024 * 1024)} MiB`)
   return stat
 }
 
@@ -123,11 +123,11 @@ function readArtifact(file: string, label: string, limit: number): Buffer {
   const original = privateFile(file, label, limit)
   const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
   try {
-    const opened = fs.fstatSync(fd)
-    if (!opened.isFile() || !sameInode(original, opened) || (opened.mode & 0o777) !== 0o600 || opened.size > limit) refuse("artifact identity changed")
+    const opened = fs.fstatSync(fd, { bigint: true })
+    if (!opened.isFile() || !sameInode(original, opened) || (opened.mode & 0o777n) !== 0o600n || opened.size > BigInt(limit)) refuse("artifact identity changed")
     const bytes = fs.readFileSync(fd)
     checkDirectories(pin)
-    if (bytes.length > limit || !sameInode(opened, fs.lstatSync(file))) refuse("artifact changed during read")
+    if (bytes.length > limit || !sameInode(opened, fs.lstatSync(file, { bigint: true }))) refuse("artifact changed during read")
     return bytes
   } finally { fs.closeSync(fd) }
 }
@@ -300,19 +300,19 @@ function readManifest(authority: Authority): Manifest {
 function publishArtifacts(directory: string, artifacts: Array<{ path: string; bytes: Buffer }>): void {
   const pin = privateDirectory(directory)
   for (const artifact of artifacts) {
-    try { fs.lstatSync(artifact.path); refuse("final artifact already exists") } catch (error) {
+    try { fs.lstatSync(artifact.path, { bigint: true }); refuse("final artifact already exists") } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
     }
   }
-  const created: Array<{ temporary: string; final: string; identity: fs.Stats | null; published: boolean }> = []
+  const created: Array<{ temporary: string; final: string; identity: fs.BigIntStats | null; published: boolean }> = []
   try {
     for (const artifact of artifacts) {
       checkDirectories(pin)
-      const record = { temporary: path.join(directory, `.${path.basename(artifact.path)}.${randomUUID()}`), final: artifact.path, identity: null as fs.Stats | null, published: false }
+      const record = { temporary: path.join(directory, `.${path.basename(artifact.path)}.${randomUUID()}`), final: artifact.path, identity: null as fs.BigIntStats | null, published: false }
       created.push(record)
       const fd = fs.openSync(record.temporary, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600)
       try {
-        record.identity = fs.fstatSync(fd)
+        record.identity = fs.fstatSync(fd, { bigint: true })
         fs.writeFileSync(fd, artifact.bytes)
         fs.fsyncSync(fd)
       } catch (error) {
@@ -330,8 +330,8 @@ function publishArtifacts(directory: string, artifacts: Array<{ path: string; by
       checkDirectories(pin)
       const readFd = fs.openSync(record.final, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
       try {
-        const stat = fs.fstatSync(readFd)
-        if (!stat.isFile() || !sameInode(record.identity, stat) || (stat.mode & 0o777) !== 0o600 || stat.size !== artifact.bytes.length
+        const stat = fs.fstatSync(readFd, { bigint: true })
+        if (!stat.isFile() || !sameInode(record.identity, stat) || (stat.mode & 0o777n) !== 0o600n || stat.size !== BigInt(artifact.bytes.length)
           || sha(fs.readFileSync(readFd)) !== sha(artifact.bytes)) refuse("published artifact identity or hash mismatch")
       } finally { fs.closeSync(readFd) }
     }
@@ -340,7 +340,7 @@ function publishArtifacts(directory: string, artifacts: Array<{ path: string; by
       if (!record.published || !record.identity) continue
       try {
         checkDirectories(pin)
-        const current = fs.lstatSync(record.final)
+        const current = fs.lstatSync(record.final, { bigint: true })
         if (current.isFile() && !current.isSymbolicLink() && sameInode(current, record.identity)) fs.unlinkSync(record.final)
       } catch {
         emitNervesEvent({ level: "warn", component: "heart", event: "heart.session_repair_artifact_cleanup_refused", message: "artifact cleanup could not safely address its original file", meta: { stage: "final" } })
@@ -352,7 +352,7 @@ function publishArtifacts(directory: string, artifacts: Array<{ path: string; by
       if (!record.identity) continue
       try {
         checkDirectories(pin)
-        const current = fs.lstatSync(record.temporary)
+        const current = fs.lstatSync(record.temporary, { bigint: true })
         if (current.isFile() && !current.isSymbolicLink() && sameInode(current, record.identity)) fs.unlinkSync(record.temporary)
       } catch {
         emitNervesEvent({ level: "warn", component: "heart", event: "heart.session_repair_artifact_cleanup_refused", message: "artifact cleanup could not safely address its original file", meta: { stage: "sibling" } })
