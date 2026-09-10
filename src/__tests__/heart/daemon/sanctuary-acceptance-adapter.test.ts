@@ -11,7 +11,8 @@ import { openApprovalStore } from "../../../heart/approval-store"
 import { opaqueTelegramSubject, sanctuaryTelegramApprovalEvidenceMac, sanctuaryTelegramAuditLifecycleMac, sanctuaryTelegramTurnReceiptDigest, sanctuaryTelegramTurnReceiptMac } from "../../../senses/telegram"
 import { createTelegramAuditLedger } from "../../../senses/telegram-audit-ledger"
 import * as sanctuaryAcceptanceAdapter from "../../../heart/daemon/sanctuary-acceptance-adapter"
-import { SANCTUARY_SCENARIO_GATES, SANCTUARY_SCENARIO_SOURCES } from "../../../heart/daemon/sanctuary-acceptance-harness"
+import { SANCTUARY_SCENARIO_GATES, SANCTUARY_SCENARIO_SOURCES, validateSanctuaryUnit16EvidenceAssertions } from "../../../heart/daemon/sanctuary-acceptance-harness"
+import { deriveSanctuaryScenarioAssertions } from "../../../heart/daemon/sanctuary-acceptance-scenarios"
 
 import {
   createSanctuaryAcceptanceAdapterDependencies,
@@ -348,6 +349,59 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       expect(facts.sourceValues["containment-audit"]).toEqual(facts.containment)
       for (const boundary of Object.values(facts.containment!.profileBoundaries!)) expect(boundary.globallyResolvableExcludedToolCount).toBeGreaterThanOrEqual(1)
       expect(JSON.stringify(facts.sourceValues["containment-audit"])).not.toMatch(/ro-private-id|rw-private-id|read-only-key/u)
+    } finally { fs.rmSync(agentRoot, { recursive: true, force: true }) }
+  })
+
+  it.each([
+    { name: "missing" },
+    { name: "undefined", value: undefined },
+    { name: "null", value: null },
+    { name: "number", value: 0 },
+    { name: "string", value: "false" },
+    { name: "array", value: [] },
+    { name: "object", value: {} },
+  ])("rejects $name root-mode observations on the live host-request path", async (sample) => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-containment-root-mode-"))
+    const label = "unit-16e-containment-audit"
+    const scenarioHandleDigest = "a".repeat(64)
+    const identityKey = "k".repeat(43)
+    const snapshot: Record<string, unknown> = validOwnerSnapshot()
+    const audit = [
+      { event: "senses.telegram_turn_start", ts: "2026-08-20T16:00:00.000Z", meta: { scenarioHandleDigest } },
+      { event: "senses.telegram_turn_end", ts: "2026-08-20T16:00:01.000Z", meta: { scenarioHandleDigest, deliveryCount: 1 } },
+    ].map(({ event, ts, meta }) => JSON.stringify({
+      event, ts, meta: { ...meta, lifecycleMac: sanctuaryTelegramAuditLifecycleMac(identityKey, "sanctuary-telegram-turn-receipt-v3", event, meta) },
+    })).join("\n") + "\n"
+    const files = chainedAuditFiles(agentRoot, audit, identityKey)
+    fs.copyFileSync("deploy/unraid/sanctuary.ouro/tool-profiles.json", path.join(agentRoot, "tool-profiles.json"))
+    const deps = unit16Deps({
+      readFixedFile: (file) => { if (file in files) return files[file]!; throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
+      telegramCredentials: () => ({ botToken: "123:token", authorizedUserId: "123456789", authorizedChatId: "987654321" }),
+      hostRequest: async (payload) => {
+        if (payload.operation === "container_snapshot") {
+          expect(payload).toEqual({ operation: "container_snapshot", targetId: "sanctuary" })
+          return structuredClone(snapshot)
+        }
+        expect(payload).toEqual({ operation: "inventory_keys", targetServerId: "sanctuary-unraid" })
+        return { keys: [
+          { id: "ro-private-id", name: "Butler RO", permissions: READ_PERMISSIONS, roles: [] },
+          { id: "rw-private-id", name: "Butler RW", permissions: [...READ_PERMISSIONS, { resource: "DOCKER", actions: ["UPDATE_ANY"] }], roles: [] },
+        ] }
+      },
+    })
+    const readFacts = () => readDefaultSanctuaryScenarioFacts(label, scenarioHandleDigest, deps, agentRoot)
+    try {
+      const canonical = await readFacts()
+      const assertions = deriveSanctuaryScenarioAssertions(label, canonical, canonical, canonical.capturedAt, scenarioHandleDigest)
+      expect(assertions).not.toBeNull()
+      expect(validateSanctuaryUnit16EvidenceAssertions(label, assertions)).toMatchObject({ readOnlyRoot: false })
+      snapshot.readOnlyRoot = true
+      const noncanonical = await readFacts()
+      expect(noncanonical.containment?.readOnlyRoot).toBe(true)
+      expect(deriveSanctuaryScenarioAssertions(label, noncanonical, noncanonical, noncanonical.capturedAt, scenarioHandleDigest)).toBeNull()
+      if ("value" in sample) snapshot.readOnlyRoot = sample.value
+      else delete snapshot.readOnlyRoot
+      await expect(readFacts()).rejects.toThrow("containment root-mode observation must be boolean")
     } finally { fs.rmSync(agentRoot, { recursive: true, force: true }) }
   })
 

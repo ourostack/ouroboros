@@ -1556,6 +1556,7 @@ export async function readDefaultSanctuaryScenarioFacts(
     }
     const rawWriteMaterialFieldCount = rawInventory.reduce((count, record) => count
       + Object.keys(record).filter((field) => /^(?:key|credential|secret|token)$/iu.test(field)).length, 0)
+    if (container && typeof container.readOnlyRoot !== "boolean") throw new Error("containment root-mode observation must be boolean")
     containment = {
       schemaVersion: "sanctuary-containment-audit-v2",
       keyCount: inventory.length,
