@@ -706,6 +706,13 @@ describe("turn-owned realtime selection", () => {
       expect(acquire).toHaveBeenCalledExactlyOnceWith(owner)
       if (state === "failed") expect(events).toHaveBeenCalledWith(expect.objectContaining({ event: "senses.voice_mcp_discovery_error" }))
       if (state === "closed") {
+        if (transport === "openai-sip") {
+          // REST acceptance can precede the control socket's late-configuration listener.
+          await vi.waitFor(() => expect(events).toHaveBeenCalledWith(expect.objectContaining({ event: "senses.voice_openai_sip_control_open" })))
+          const sessionKey = twilioPhoneVoiceSessionKey({ defaultFriendId: "ari", from: "+15551234567", to: "+15557654321", callSid: "call_tool_selection" })
+          const sessionPath = path.join(owner.agentRoot, "state", "sessions", "ari", "voice", `${sessionKey}.json`)
+          await vi.waitFor(() => expect(loadSession(sessionPath)?.messages[0]?.role).toBe("system"))
+        }
         const before = fixture.publications().length
         await fixture.close()
         closed = true
