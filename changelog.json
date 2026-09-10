@@ -5,6 +5,7 @@
       "version": "0.1.0-alpha.811",
       "changes": [
         "Bind tool discovery and execution to the initiating agent with canonical schemas, per-owner MCP connections and current authorization.",
+        "Keep tool schema validation isolated so repeated schema IDs work across turns without borrowing another tool's schema registrations.",
         "Expose Sanctuary's resident native tools only to the configured owner while preserving household and event exclusions and role-specific containment.",
         "Preserve approval effect outcomes without replay, confine session reads and isolate foreground and background shell ownership.",
         "Keep CLI and realtime voice tool contexts owner-bound across delayed discovery, transport failure and cancellation.",
