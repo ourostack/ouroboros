@@ -514,12 +514,13 @@ export function validateSanctuaryUnit16EvidenceAssertions(label: SanctuaryUnit16
       allZero(["publishedPortCount", "rawWriteMaterialFieldCount", "mutationCount"])
       requiredFalse(value, "sensitiveMaterialObserved", label)
       requiredFalse(value, "writableKeyExposure", label)
+      requiredFalse(value, "readOnlyRoot", label)
       integer(value.auditRecordCount, `${label} auditRecordCount`, 2)
       integer(value.auditLifecyclePairCount, `${label} auditLifecyclePairCount`, 1)
       if (text(value.containerUser, `${label} containerUser`) !== "10001:10001" || text(value.liveProcessUser, `${label} liveProcessUser`) !== "10001:10001" || text(value.networkMode, `${label} networkMode`) !== "host") throw new Error(`${label} container identity or network is invalid`)
-      requiredInteger(value, "mountCount", 4, label)
+      requiredInteger(value, "mountCount", 3, label)
       requiredInteger(value, "typedWriteExecutorCount", 1, label)
-      allTrue(["writeApprovalPolicyExact", "readOnlyRoot", "mountsExact", "securityExact", "updaterDisabled"])
+      allTrue(["writeApprovalPolicyExact", "mountsExact", "securityExact", "updaterDisabled"])
       break
     case "unit-16e-1-stop-denial":
     case "unit-16e-2-restart-denial":

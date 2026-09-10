@@ -130,8 +130,8 @@ function validOwnerSnapshot(patch: Record<string, unknown> = {}) {
     user: "10001:10001",
     liveProcessUser: "10001:10001",
     processBindingDigest: "4".repeat(64),
-    readOnlyRoot: true,
-    mountCount: 4,
+    readOnlyRoot: false,
+    mountCount: 3,
     mountsDigest: "3".repeat(64),
     mountsExact: true,
     publishedPortCount: 0,
@@ -338,8 +338,8 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
         keyCount: 2, keyRoleAssignmentCount: 0,
         profileBoundaries: expectedBoundaries,
         auditRecordCount: 2, auditLifecyclePairCount: 1,
-        containerUser: "10001:10001", liveProcessUser: "10001:10001", mountCount: 4, publishedPortCount: 0, networkMode: "host",
-        readOnlyRoot: true, mountsExact: true, securityExact: true, updaterDisabled: true, writableKeyExposure: false,
+        containerUser: "10001:10001", liveProcessUser: "10001:10001", mountCount: 3, publishedPortCount: 0, networkMode: "host",
+        readOnlyRoot: false, mountsExact: true, securityExact: true, updaterDisabled: true, writableKeyExposure: false,
         rawWriteMaterialFieldCount: 0, typedWriteExecutorCount: 1, writeApprovalPolicyExact: true, sensitiveMaterialObserved: false,
       })
       for (const field of ["keyInventoryDigest", "readScopeDigest", "writeScopeDigest", "auditPathDigest", "auditLedgerDigest", "writeApprovalPolicyDigest"] as const) {

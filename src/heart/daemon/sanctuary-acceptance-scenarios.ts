@@ -449,8 +449,8 @@ function exactContainmentAudit(evidence: SanctuaryContainmentAuditEvidence): boo
     && exactSanctuaryContainmentProfileBoundaries(evidence.profileBoundaries)
     && evidence.auditPathDigest === createHash("sha256").update(CONTAINMENT_AUDIT_PATH).digest("hex")
     && evidence.auditRecordCount >= 2 && evidence.auditLifecyclePairCount >= 1
-    && evidence.containerUser === "10001:10001" && evidence.liveProcessUser === "10001:10001" && evidence.mountCount === 4 && evidence.publishedPortCount === 0
-    && evidence.networkMode === "host" && evidence.readOnlyRoot && evidence.mountsExact && evidence.securityExact && evidence.updaterDisabled
+    && evidence.containerUser === "10001:10001" && evidence.liveProcessUser === "10001:10001" && evidence.mountCount === 3 && evidence.publishedPortCount === 0
+    && evidence.networkMode === "host" && evidence.readOnlyRoot === false && evidence.mountsExact && evidence.securityExact && evidence.updaterDisabled
     && !evidence.writableKeyExposure && evidence.rawWriteMaterialFieldCount === 0 && evidence.typedWriteExecutorCount === 1
     && evidence.writeApprovalPolicyExact && !evidence.sensitiveMaterialObserved
     && digestFields.every((value) => SHA256.test(value))

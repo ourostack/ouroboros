@@ -184,7 +184,7 @@ const validDenialReceiptForFacts = () => {
   const boundary = { ownerSnapshotDigest: "1".repeat(64), targetSnapshotDigest: "2".repeat(64), targetRestartCount: 7, targetContainerIdDigest: "7".repeat(64), auditCursorDigest: "3".repeat(64), providerUsageCursorDigest: "4".repeat(64), sessionCursorDigest: "5".repeat(64), toolActionCursorDigest: "6".repeat(64) }
   return { schemaVersion: "sanctuary-read-only-denial-receipt-v1" as const, phase: "complete" as const, label: "unit-16e-1-stop-denial" as const, scenarioHandleDigest: "a".repeat(64), operation: "stop" as const, targetDigest: "7".repeat(64), attemptCount: 1, httpStatus: 403, errorCode: "FORBIDDEN", before: boundary, after: { ...boundary } }
 }
-const base = (): SanctuaryScenarioFacts => ({
+const base = (physical = { readOnlyRoot: false, mountCount: 3 }): SanctuaryScenarioFacts => ({
   capturedAt: 0,
   sourceValues: Object.fromEntries(["identity-key", "telegram-audit", "telegram-offset", "telegram-turn-receipts", "live-grounding-read", "approval-journal", "approval-checkpoints", "container-inspect", "provider-live-check", "cron-runtime", "health-runtime", "digest-runtime", "health-probe-receipt", "scheduler-liveness-receipt", "reboot-checkpoint", "read-only-denial-receipt"].map((key) => [key, { key }])),
   events: [], approvals: [],
@@ -194,7 +194,7 @@ const base = (): SanctuaryScenarioFacts => ({
   telegramNextUpdateId: 10,
   zeroWork: { providerToolDigest: "1".repeat(64), outwardDigest: "2".repeat(64), approvalMutationDigest: "3".repeat(64), sessionFriendDigest: "4".repeat(64) },
   identity: { keyPresent: true, subjectOpaque: true, rawIdentityAbsent: true, liveSubjectObserved: true, inspectedRecordCount: 1, opaqueSubjectCount: 1, mismatchCount: 0, rawLeakCount: 0, surfaceDigest: "a".repeat(64), canonicalSessionCount: 1, canonicalFriendCount: 1, sessionSurfaceDigest: "b".repeat(64), friendSurfaceDigest: "c".repeat(64) },
-  container: { exactImage: true, running: true, healthy: true, user: "10001:10001", readOnlyRoot: true, mountCount: 4, mountsExact: true, publishedPortCount: 0, restartPolicy: "unless-stopped", restartCount: 0, autostartExact: true, updaterDisabled: true, vaultUnlocked: true, manualAuthRequired: false },
+  container: { exactImage: true, running: true, healthy: true, user: "10001:10001", readOnlyRoot: physical.readOnlyRoot, mountCount: physical.mountCount, mountsExact: true, publishedPortCount: 0, restartPolicy: "unless-stopped", restartCount: 0, autostartExact: true, updaterDisabled: true, vaultUnlocked: true, manualAuthRequired: false },
   provider: { outwardReady: true, innerReady: true, silentFallback: false, credentialRevisionsPresent: true, requestSemanticsExact: true, fallbackAttemptCount: 0, laneSelectionExact: true, vaultCoordinatesExact: true, singleCredentialExact: true },
   cron: { registered: true, fingerprint: "a".repeat(64), receiptDigest: "b".repeat(64), sweepCount: 0 },
   health: { transitionCount: 0, alertCount: 0, productionRestored: true },
@@ -208,7 +208,7 @@ const base = (): SanctuaryScenarioFacts => ({
     keyRoleAssignmentCount: 0, profileBoundaries: sanctuaryContainmentBoundariesFixture(),
     auditPathDigest: createHash("sha256").update("/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance/telegram-audit-chain.ndjson").digest("hex"),
     auditLedgerDigest: "4".repeat(64), auditRecordCount: 2, auditLifecyclePairCount: 1,
-    containerUser: "10001:10001", liveProcessUser: "10001:10001", mountCount: 4, publishedPortCount: 0, networkMode: "host", readOnlyRoot: true, mountsExact: true, securityExact: true, updaterDisabled: true,
+    containerUser: "10001:10001", liveProcessUser: "10001:10001", mountCount: physical.mountCount, publishedPortCount: 0, networkMode: "host", readOnlyRoot: physical.readOnlyRoot, mountsExact: true, securityExact: true, updaterDisabled: true,
     writableKeyExposure: false, rawWriteMaterialFieldCount: 0, typedWriteExecutorCount: 1,
     writeApprovalPolicyDigest: "9".repeat(64), writeApprovalPolicyExact: true,
     sensitiveMaterialObserved: false, stopDenied: true, restartDenied: true, denialAuditCount: 1, denialStateUnchanged: true, denialProbeCompleted: true,
@@ -394,8 +394,9 @@ describe("Sanctuary live scenario capture", () => {
 
   it("derives every Unit 16 assertion contract from event, journal, and runtime facts", () => {
     for (const label of SANCTUARY_UNIT_16_EVIDENCE_LABELS) {
-      const before = base()
-      const after = base()
+      const physical = label === "unit-16b-runtime-vault-containment" ? { readOnlyRoot: true, mountCount: 4 } : undefined
+      const before = base(physical)
+      const after = base(physical)
       if (label === "unit-16a-pre-reboot-checkpoint") after.reboot = { ...after.reboot!, phase: "preflight", requestCount: 0, bootIdentityChanged: false }
       if (label === "unit-16a-reboot-request") after.reboot = { ...after.reboot!, phase: "requested", bootIdentityChanged: false }
       if (label === "unit-16a-boot-recovery-milestones") after.postbootIntegrity = { ...after.postbootIntegrity!, activeScenarioHandleDigest: "a".repeat(64) }
@@ -816,8 +817,10 @@ describe("Sanctuary live scenario capture", () => {
       const noReboot = base(); noReboot.reboot = undefined
       expect(deriveSanctuaryScenarioAssertions(label, base(), noReboot, 400_000, scenarioHandleDigest)).toBeNull()
     }
-    const noContainer = base(); noContainer.container = undefined
-    expect(deriveSanctuaryScenarioAssertions("unit-16b-runtime-vault-containment", base(), noContainer, 400_000)).toBeNull()
+    const legacyRuntimeControl = base({ readOnlyRoot: true, mountCount: 4 })
+    expect(deriveSanctuaryScenarioAssertions("unit-16b-runtime-vault-containment", legacyRuntimeControl, legacyRuntimeControl, 400_000)).toMatchObject({ mountCount: 4, readOnlyRoot: true })
+    const noContainer = structuredClone(legacyRuntimeControl); noContainer.container = undefined
+    expect(deriveSanctuaryScenarioAssertions("unit-16b-runtime-vault-containment", legacyRuntimeControl, noContainer, 400_000)).toBeNull()
 
     const expiredApproval = base(); expiredApproval.approvals = [{ ...approval("succeeded"), terminalPrompt: false }]
     expiredApproval.restartAttempts = successfulRestart(); expiredApproval.events = [...auditTurn(), ...approvalEvidence("approve", 1_000, 121_000)]
@@ -1560,12 +1563,32 @@ describe("Sanctuary live scenario capture", () => {
     }
   })
 
+  it.each([
+    ["four mounts", { mountCount: 4 }],
+    ["read-only root", { readOnlyRoot: true }],
+    ["missing root mode", { readOnlyRoot: undefined }],
+    ["null root mode", { readOnlyRoot: null }],
+    ["numeric root mode", { readOnlyRoot: 0 }],
+    ["text root mode", { readOnlyRoot: "false" }],
+    ["array root mode", { readOnlyRoot: [] }],
+    ["object root mode", { readOnlyRoot: {} }],
+  ])("rejects non-canonical Unit-16e physical facts: %s", (_label, patch) => {
+    const before = base()
+    const after = base()
+    expect(deriveSanctuaryScenarioAssertions("unit-16e-containment-audit", before, after, 400_000)).not.toBeNull()
+    Object.assign(after.containment!, patch)
+    expect(deriveSanctuaryScenarioAssertions("unit-16e-containment-audit", before, after, 400_000)).toBeNull()
+  })
+
   it("waits instead of self-attesting absent negative and containment facts", () => {
     const before = base()
-    const containment = base(); containment.container!.updaterDisabled = false
-    expect(deriveSanctuaryScenarioAssertions("unit-16b-runtime-vault-containment", before, containment, 400_000)).toBeNull()
-    const staleMountContract = base(); staleMountContract.container!.mountCount = 2
-    expect(deriveSanctuaryScenarioAssertions("unit-16b-runtime-vault-containment", before, staleMountContract, 400_000)).toBeNull()
+    const legacyRuntimeControl = base({ readOnlyRoot: true, mountCount: 4 })
+    expect(deriveSanctuaryScenarioAssertions("unit-16b-runtime-vault-containment", legacyRuntimeControl, legacyRuntimeControl, 400_000)).toMatchObject({ mountCount: 4, readOnlyRoot: true })
+    const containment = structuredClone(legacyRuntimeControl); containment.container!.updaterDisabled = false
+    expect(deriveSanctuaryScenarioAssertions("unit-16b-runtime-vault-containment", legacyRuntimeControl, containment, 400_000)).toBeNull()
+    expect(deriveSanctuaryScenarioAssertions("unit-16b-runtime-vault-containment", legacyRuntimeControl, legacyRuntimeControl, 400_000)).toMatchObject({ mountCount: 4, readOnlyRoot: true })
+    const staleMountContract = structuredClone(legacyRuntimeControl); staleMountContract.container!.mountCount = 2
+    expect(deriveSanctuaryScenarioAssertions("unit-16b-runtime-vault-containment", legacyRuntimeControl, staleMountContract, 400_000)).toBeNull()
     const unauthorized = base(); unauthorized.events.push(event("telegram.update_dropped"))
     expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unknown-admission", before, unauthorized, 400_000)).toBeNull()
     const denial = base(); denial.approvals = [{ ...approval("denied"), replayMutationCount: 1 }]
