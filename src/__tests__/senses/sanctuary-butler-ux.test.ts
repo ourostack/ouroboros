@@ -33,6 +33,7 @@ vi.mock("../../heart/identity", async (importOriginal) => {
   return {
     ...actual,
     getAgentRoot: (agentName?: string) => identityTestState.agentRoot ?? actual.getAgentRoot(agentName),
+    getAgentStateRoot: (agentName?: string) => identityTestState.agentRoot === null ? actual.getAgentStateRoot(agentName) : path.join(identityTestState.agentRoot, "state"),
   }
 })
 
@@ -328,6 +329,7 @@ describe("Mendelow Cloud Butler household UX", () => {
     const pending = getPendingDir("sanctuary", RESIDENT_OWNER, "cli", "resident-target")
     expect(fs.readdirSync(pending)).toHaveLength(1)
     expect(fs.readFileSync(path.join(pending, fs.readdirSync(pending)[0]), "utf8")).toContain("resident queued message")
+    expect(fs.existsSync(path.join(fixture.root, "state", "bridges"))).toBe(true)
     for (const [name, spy] of spies) expect(spy, name).toHaveBeenCalledTimes(["restart_runtime", "revive_sense"].includes(name) || (name === "set_reasoning_effort" && !reasoning) ? 0 : name === "shell" ? 2 : 1)
     expect(message).toHaveBeenCalledOnce()
     expect(fixture.http.mock.calls.filter(([url]) => String(url) === "https://api.perplexity.ai/search")).toEqual([[
