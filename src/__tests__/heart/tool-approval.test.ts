@@ -11,6 +11,7 @@ import {
   ApprovalExecutionFailedError,
   commitApprovalProposal,
   digestApprovalSuspensionCheckpointPayload,
+  digestApprovalToolDefinition,
   executeApprovalDecision,
   recoverAttemptedApproval,
   recoverClaimedApproval,
@@ -18,9 +19,12 @@ import {
   type ApprovalSuspensionCheckpointStore,
   type ApprovalTokenStore,
 } from "../../heart/tool-approval"
-import { digestJson } from "../../repertoire/tool-arguments"
-import { approvalPolicyForToolName } from "../../repertoire/tools"
+import { digestJson, validateAdvertisedToolArguments } from "../../repertoire/tool-arguments"
+import { approvalPolicyForToolName, executeTool, preflightToolCall } from "../../repertoire/tools"
 import { shellToolDefinitions } from "../../repertoire/tools-shell"
+import { mcpToolsAsDefinitions } from "../../repertoire/mcp-tools"
+import type { McpToolBinding } from "../../repertoire/mcp-manager"
+import { makeMcpView, MCP_CONTEXT, shutdownMcpFixtures } from "../repertoire/mcp-fixture"
 import { telegramApprovalDecisionBarrierHooks } from "../../senses/telegram-approval-runtime"
 
 const UUID = "11111111-1111-4111-8111-111111111111"
@@ -69,7 +73,7 @@ function liveDigests(argumentsValue: JsonObject = { command: "docker restart cal
   const schemaDigest = digestJson(definition.tool.function.parameters as any)
   const policy = approvalPolicyForToolName("shell", argumentsValue)
   if (policy.kind !== "required") throw new Error("test policy must require approval")
-  const toolDigest = digestJson({ name: "shell", schemaDigest, policyId: policy.policyId })
+  const toolDigest = digestApprovalToolDefinition(definition, schemaDigest, policy.policyId)
   const policyDigest = digestJson({
     policyId: policy.policyId,
     actionClass: policy.actionClass,
@@ -109,7 +113,7 @@ function proposal(argumentsValue: JsonObject = { command: "docker restart calibr
   }
 }
 
-function ready(options: { hooks?: Parameters<typeof openApprovalStore>[0]["hooks"]; argumentsValue?: JsonObject } = {}) {
+function ready(options: { hooks?: Parameters<typeof openApprovalStore>[0]["hooks"]; argumentsValue?: JsonObject; proposalValue?: PrepareApprovalInput } = {}) {
   const directory = makeRoot()
   const databasePath = path.join(directory, "approvals.sqlite")
   let now = "2026-08-17T17:30:00.000Z"
@@ -126,7 +130,7 @@ function ready(options: { hooks?: Parameters<typeof openApprovalStore>[0]["hooks
     approvalStore,
     checkpointStore: checkpoints,
     tokenStore: tokens,
-    proposal: proposal(options.argumentsValue),
+    proposal: options.proposalValue ?? proposal(options.argumentsValue),
     preCallMessages: [{ role: "user", content: "restart calibre-web" }],
   })
   approvalStore.bindPrompt({
@@ -163,7 +167,11 @@ function executionOptions(fixture: ReturnType<typeof ready>, execute = vi.fn().m
     resolveTool: () => shellToolDefinitions[0],
     liveGuard: () => ({ ok: true as const }),
     liveRisk: () => ({ ok: true as const }),
-    execute,
+    preflight: () => ({ ok: true as const }),
+    execute: async (name: string, args: JsonObject) => {
+      const result = await execute(name, args)
+      return typeof result === "string" ? { kind: "handler_succeeded" as const, text: result } : result
+    },
     ...overrides,
   }
 }
@@ -205,11 +213,194 @@ function resignCheckpointEvidence(fixture: ReturnType<typeof ready>): void {
   database.close()
 }
 
-afterEach(() => {
+afterEach(async () => {
+  await shutdownMcpFixtures()
   for (const directory of roots.splice(0)) fs.rmSync(directory, { recursive: true, force: true })
 })
 
 describe("approval decision and crash-safe execution", () => {
+  it.each([
+    { change: "stable reconstruction", binding: {} },
+    { change: "name", binding: { agentName: "other-agent" } },
+    { change: "root", binding: { agentRoot: "/other.ouro" } },
+    { change: "server", binding: { server: "other" } },
+    { change: "raw name", binding: { rawName: "other" } },
+    { change: "surfaced name", binding: { surfacedName: "other" } },
+    { change: "source", binding: { source: "plugin" } },
+    { change: "plugin", binding: { pluginId: "other-plugin" } },
+    { change: "configuration", binding: { configDigest: "b".repeat(64) } },
+  ] satisfies Array<{ change: string; binding: Partial<McpToolBinding> }>)(
+    "binds durable approval to stable MCP identity but not manager instance or generation: $change",
+    async ({ change, binding }) => {
+      const groups = [{
+        server: "fixture", tools: [{
+          name: "inspect", description: "Controlled inspection",
+          inputSchema: { type: "object", properties: { value: { type: "string" } }, required: ["value"], additionalProperties: false },
+        }],
+      }]
+      const original = makeMcpView(groups)
+      const replacement = makeMcpView(groups)
+      const policy = { kind: "required", policyId: "fixture-mcp-approval", actionClass: "controlled_mcp_effect", reason: "fixture approval" } as const
+      const definition = { ...mcpToolsAsDefinitions(original)[0]!, approvalPolicy: () => policy }
+      const rebuilt = {
+        ...mcpToolsAsDefinitions({ ...replacement, entries: replacement.entries.map((entry) => ({ ...entry, generation: 97 })) })[0]!,
+        approvalPolicy: () => policy,
+      }
+      rebuilt.mcpBinding = { ...rebuilt.mcpBinding!, ...binding }
+      const args = { value: "safe" }
+      const validated = validateAdvertisedToolArguments(JSON.stringify(args), definition.tool.function.parameters!)
+      if (!validated.ok) throw new Error(validated.reason)
+      const draft = proposal(args)
+      draft.toolName = definition.tool.function.name
+      draft.schemaDigest = validated.value.schemaDigest
+      draft.toolDigest = digestApprovalToolDefinition(definition, draft.schemaDigest, policy.policyId)
+      draft.policyId = policy.policyId
+      draft.policyDigest = digestJson({ policyId: policy.policyId, actionClass: policy.actionClass, classification: "required" })
+      draft.frozenAssistantMessage = {
+        role: "assistant", content: null,
+        tool_calls: [{ id: draft.toolCallId, type: "function", function: { name: draft.toolName, arguments: JSON.stringify(args) } }],
+      }
+      const fixture = ready({ proposalValue: draft })
+      const context = { ...MCP_CONTEXT, toolSelection: { ordinary: [rebuilt], engine: [] } }
+      const execute = vi.fn((name: string, argumentsValue: Record<string, string>) => executeTool(name, argumentsValue, context))
+      const record = await executeApprovalDecision(executionOptions(fixture, execute, {
+        resolveTool: () => rebuilt,
+        preflight: async () => {
+          const result = await preflightToolCall(draft.toolName, args, context)
+          return result.kind === "ready" ? { ok: true } : { ok: false, reason: result.text }
+        },
+      }))
+      const stable = change === "stable reconstruction"
+      expect(record.state).toBe(stable ? "succeeded" : "drifted")
+      expect(execute).toHaveBeenCalledTimes(stable ? 1 : 0)
+      expect(replacement.manager.callTool).toHaveBeenCalledTimes(stable ? 1 : 0)
+      expect(original.manager.callTool).not.toHaveBeenCalled()
+      if (!stable) expect(record.attemptedAt).toBeNull()
+      await expect(executeApprovalDecision(executionOptions(fixture, execute))).rejects.toMatchObject({ code: "decision_not_eligible" })
+      expect(replacement.manager.callTool).toHaveBeenCalledTimes(stable ? 1 : 0)
+      fixture.approvalStore.close()
+    },
+  )
+
+  it.each(["guard", "risk"] as const)("rejects definition drift during the asynchronous live %s before canonical preflight", async (phase) => {
+    const fixture = ready()
+    let changed = false
+    const original = shellToolDefinitions[0]!
+    const altered = { ...original, tool: structuredClone(original.tool) }
+    altered.tool.function.description = "Changed during live metadata reconstruction"
+    const preflight = vi.fn(() => ({ ok: true }))
+    const execute = vi.fn()
+    const drift = async () => { await Promise.resolve(); changed = true; return { ok: true } }
+    const record = await executeApprovalDecision(executionOptions(fixture, execute, {
+      resolveTool: () => changed ? altered : original,
+      liveGuard: phase === "guard" ? drift : async () => ({ ok: true }),
+      liveRisk: phase === "risk" ? drift : async () => ({ ok: true }),
+      preflight,
+    }))
+    expect(record).toMatchObject({ state: "drifted", attemptedAt: null })
+    expect(preflight).not.toHaveBeenCalled()
+    expect(execute).not.toHaveBeenCalled()
+    fixture.approvalStore.close()
+  })
+
+  it("fails closed before attempt when the canonical preflight is unavailable", async () => {
+    const fixture = ready()
+    const execute = vi.fn().mockResolvedValue("must not run")
+    const record = await executeApprovalDecision(executionOptions(fixture, execute, { preflight: undefined }))
+    expect(record).toMatchObject({ state: "drifted", attemptedAt: null })
+    expect(execute).not.toHaveBeenCalled()
+    fixture.approvalStore.close()
+  })
+
+  it.each(["guard", "risk"] as const)("rechecks canonical authority after the live %s and before marking an attempt", async (changedAfter) => {
+    const fixture = ready()
+    const execute = vi.fn().mockResolvedValue("must not run")
+    const phases: string[] = []
+    let current = true
+    const record = await executeApprovalDecision(executionOptions(fixture, execute, {
+      liveGuard: () => { phases.push("guard"); if (changedAfter === "guard") current = false; return { ok: true } },
+      liveRisk: () => { phases.push("risk"); if (changedAfter === "risk") current = false; return { ok: true } },
+      preflight: () => { phases.push("preflight"); return current ? { ok: true } : { ok: false, reason: "current authority revoked" } },
+    }))
+    expect(record).toMatchObject({ state: "drifted", attemptedAt: null, reason: "current authority revoked" })
+    expect(phases).toEqual(["guard", "risk", "preflight"])
+    expect(execute).not.toHaveBeenCalled()
+    fixture.approvalStore.close()
+  })
+
+  it.each([
+    { kind: "rejected_before_handler", text: "successful-looking rejection", state: "failed" },
+    { kind: "handler_failed", text: "successful-looking failure", state: "failed" },
+    { kind: "handler_indeterminate", text: "possibly completed", state: "attempted_indeterminate" },
+    { kind: "handler_succeeded", text: "error-looking successful content", state: "succeeded" },
+    { kind: "handler_succeeded", text: "", state: "succeeded" },
+  ] as const)("records typed $kind truth without interpreting result wording or replaying", async ({ kind, text, state }) => {
+    const fixture = ready()
+    const execute = vi.fn().mockResolvedValue({ kind, text })
+    const record = await executeApprovalDecision(executionOptions(fixture, execute, {
+      preflight: () => ({ ok: true }),
+    }))
+    expect(record.state).toBe(state)
+    expect(record.result).toContain(text)
+    if (kind === "rejected_before_handler") expect(record.result).toMatch(/no action (?:was )?taken|not executed/i)
+    await expect(executeApprovalDecision(executionOptions(fixture, execute))).rejects.toMatchObject({ code: "decision_not_eligible" })
+    expect(execute).toHaveBeenCalledOnce()
+    fixture.approvalStore.close()
+  })
+
+  it.each([null, "successful-looking untyped result", { kind: "unknown", text: "done" }, { kind: "handler_succeeded", text: null }])(
+    "preserves an indeterminate attempt for an invalid executor outcome: %j",
+    async (result) => {
+      const fixture = ready()
+      const execute = vi.fn().mockResolvedValue(result)
+      await expect(executeApprovalDecision(executionOptions(fixture, execute, {
+        execute, preflight: () => ({ ok: true }),
+      }))).rejects.toBeInstanceOf(ApprovalExecutionIndeterminateError)
+      expect(fixture.approvalStore.read(UUID)?.state).toBe("attempted")
+      expect(execute).toHaveBeenCalledOnce()
+      fixture.approvalStore.close()
+    },
+  )
+
+  it("rejects a changed complete tool schema even when the argument schema is unchanged", async () => {
+    const fixture = ready()
+    const execute = vi.fn().mockResolvedValue("must not run")
+    const definition = { ...shellToolDefinitions[0], tool: structuredClone(shellToolDefinitions[0].tool) }
+    definition.tool.function.description = "A different advertised action"
+    const record = await executeApprovalDecision(executionOptions(fixture, execute, {
+      resolveTool: () => definition,
+      preflight: () => ({ ok: true }),
+    }))
+    expect(record.state).toBe("drifted")
+    expect(record.attemptedAt).toBeNull()
+    expect(execute).not.toHaveBeenCalled()
+    fixture.approvalStore.close()
+  })
+
+  it("records no action when real dispatch rejects authority revoked after markAttempted", async () => {
+    const fixture = ready()
+    let active = true
+    const handler = vi.fn(async () => "must not run")
+    const context = {
+      agentName: "testagent", agentRoot: path.dirname(fixture.databasePath), signin: async () => undefined,
+      toolSelection: { ordinary: [shellToolDefinitions[0]], engine: [] },
+      relationshipAuthorization: {
+        profileId: "test-owner", authorizedContextScopes: [], advertisedToolNames: ["shell"],
+        authorizeTool: () => active ? { allowed: true as const, receiptId: "live" } : { allowed: false as const, reason: "revoked after attempt" },
+      },
+    }
+    const execute = vi.fn((name: string, args: Record<string, string>) => executeTool(name, args, context, handler))
+    const record = await executeApprovalDecision(executionOptions(fixture, execute, {
+      preflight: () => ({ ok: true }),
+      hooks: { afterAttempt: () => { active = false } },
+    }))
+    expect(record.state).toBe("failed")
+    expect(record.result).toMatch(/no action (?:was )?taken|not executed/i)
+    expect(record.result).toContain("revoked after attempt")
+    expect(handler).not.toHaveBeenCalled()
+    fixture.approvalStore.close()
+  })
+
   it.each([
     [2, "claimed", false],
     [3, "attempted", false],

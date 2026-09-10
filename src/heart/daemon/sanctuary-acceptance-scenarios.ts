@@ -15,7 +15,8 @@ import {
   secureRenameBoundInodeSync,
   writeSanctuaryAcceptanceMarker,
 } from "./sanctuary-acceptance-marker"
-import { validateSanctuaryUnit16EvidenceAssertions, type SanctuaryUnit16EvidenceLabel } from "./sanctuary-acceptance-harness"
+import { exactSanctuaryContainmentProfileBoundaries, validateSanctuaryUnit16EvidenceAssertions, type SanctuaryUnit16EvidenceLabel } from "./sanctuary-acceptance-harness"
+import type { ProviderCapability } from "../core"
 import { sanctuaryGroundedResponseAccurate, sanctuaryGroundingDigest, type SanctuaryGroundingToolName, type SanctuaryToolGrounding } from "../../senses/sanctuary-grounding"
 import { TELEGRAM_APPROVAL_TERMINAL_EDIT_TIMEOUT_MS, TELEGRAM_APPROVAL_TTL_MS } from "../../senses/telegram-client"
 
@@ -320,23 +321,21 @@ export interface SanctuaryScenarioFacts {
   containment?: SanctuaryContainmentAuditEvidence
 }
 
-export interface SanctuaryContainmentAuditEvidence {
-  schemaVersion: "sanctuary-containment-audit-v1"
-  keyCount: number
-  keyInventoryDigest: string
-  readScopeDigest: string
-  writeScopeDigest: string
-  keyRoleAssignmentCount: number
-  telegramToolCount: number
-  telegramProfileDigest: string
-  telegramSchemaDigest: string
-  privateToolCount: number
-  privateProfileDigest: string
-  privateSchemaDigest: string
-  resolvedHandlerCount: number
-  relationshipProfilesExact: boolean
+export interface SanctuaryContainmentProfileBoundary {
+  profileId: "sanctuary-owner" | "sanctuary-household" | "sanctuary-event"
+  profileVersion: number
+  profileDigest: string
+  profileToolNames: string[]
+  providerCapabilities: ProviderCapability[]
+  schemaDigest: string
+  schemaToolNames: string[]
+  ordinaryDefinitionCount: number
+  engineSchemaCount: number
+  profileExact: boolean
+  schemasExact: boolean
   handlersExact: boolean
-  excludedToolCount: number
+  poisonedSchemaIntersectionCount: number
+  excludedToolNames: string[]
   excludedSchemaIntersectionCount: number
   fabricatedHandlerInvocationCount: number
   excludedToolAttemptCount: number
@@ -344,6 +343,16 @@ export interface SanctuaryContainmentAuditEvidence {
   excludedToolInvokedCount: number
   excludedToolSideEffectCount: number
   globallyResolvableExcludedToolCount: number
+}
+
+export interface SanctuaryContainmentAuditEvidence {
+  schemaVersion: "sanctuary-containment-audit-v2"
+  keyCount: number
+  keyInventoryDigest: string
+  readScopeDigest: string
+  writeScopeDigest: string
+  keyRoleAssignmentCount: number
+  profileBoundaries: Record<SanctuaryContainmentProfileBoundary["profileId"], SanctuaryContainmentProfileBoundary> | null
   auditPathDigest: string
   auditLedgerDigest: string
   auditRecordCount: number
@@ -428,31 +437,20 @@ function hash(value: unknown): string {
 
 const CONTAINMENT_READ_SCOPE = ["ARRAY", "DASHBOARD", "DISK", "DOCKER", "INFO", "LOGS", "NOTIFICATIONS", "SHARE", "VARS"]
   .map((resource) => `${resource}:READ_ANY`).sort()
-const CONTAINMENT_EXCLUDED_TOOLS = ["shell", "read_file", "edit_file", "vault_get", "mcp_call", "exec", "credential_get"]
 const CONTAINMENT_AUDIT_PATH = "/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance/telegram-audit-chain.ndjson"
 
 function exactContainmentAudit(evidence: SanctuaryContainmentAuditEvidence): boolean {
-  const digestFields = [evidence.keyInventoryDigest, evidence.telegramProfileDigest, evidence.telegramSchemaDigest, evidence.privateProfileDigest, evidence.privateSchemaDigest, evidence.auditLedgerDigest, evidence.writeApprovalPolicyDigest]
-  return evidence.schemaVersion === "sanctuary-containment-audit-v1"
+  const digestFields = [evidence.keyInventoryDigest, evidence.auditLedgerDigest, evidence.writeApprovalPolicyDigest]
+  return evidence.schemaVersion === "sanctuary-containment-audit-v2"
     && evidence.keyCount === 2
     && evidence.readScopeDigest === hash(CONTAINMENT_READ_SCOPE)
     && evidence.writeScopeDigest === hash([...CONTAINMENT_READ_SCOPE, "DOCKER:UPDATE_ANY"].sort())
     && evidence.keyRoleAssignmentCount === 0
-    && Number.isSafeInteger(evidence.telegramToolCount) && evidence.telegramToolCount > 0
-    && Number.isSafeInteger(evidence.privateToolCount) && evidence.privateToolCount > 0
-    && evidence.relationshipProfilesExact && evidence.handlersExact
-    && evidence.resolvedHandlerCount === evidence.telegramToolCount + evidence.privateToolCount
-    && evidence.excludedToolCount === CONTAINMENT_EXCLUDED_TOOLS.length
-    && evidence.excludedSchemaIntersectionCount === 0
-    && evidence.fabricatedHandlerInvocationCount === 0
-    && evidence.excludedToolAttemptCount === CONTAINMENT_EXCLUDED_TOOLS.length
-    && evidence.excludedToolRejectedCount === CONTAINMENT_EXCLUDED_TOOLS.length
-    && evidence.excludedToolInvokedCount === 0 && evidence.excludedToolSideEffectCount === 0
-    && evidence.globallyResolvableExcludedToolCount >= 1
+    && exactSanctuaryContainmentProfileBoundaries(evidence.profileBoundaries)
     && evidence.auditPathDigest === createHash("sha256").update(CONTAINMENT_AUDIT_PATH).digest("hex")
     && evidence.auditRecordCount >= 2 && evidence.auditLifecyclePairCount >= 1
-    && evidence.containerUser === "10001:10001" && evidence.liveProcessUser === "10001:10001" && evidence.mountCount === 4 && evidence.publishedPortCount === 0
-    && evidence.networkMode === "host" && evidence.readOnlyRoot && evidence.mountsExact && evidence.securityExact && evidence.updaterDisabled
+    && evidence.containerUser === "10001:10001" && evidence.liveProcessUser === "10001:10001" && evidence.mountCount === 3 && evidence.publishedPortCount === 0
+    && evidence.networkMode === "host" && evidence.readOnlyRoot === false && evidence.mountsExact && evidence.securityExact && evidence.updaterDisabled
     && !evidence.writableKeyExposure && evidence.rawWriteMaterialFieldCount === 0 && evidence.typedWriteExecutorCount === 1
     && evidence.writeApprovalPolicyExact && !evidence.sensitiveMaterialObserved
     && digestFields.every((value) => SHA256.test(value))
@@ -808,16 +806,7 @@ export function deriveSanctuaryScenarioAssertions(
         keyCount: after.containment.keyCount, keyInventoryDigest: after.containment.keyInventoryDigest,
         readScopeDigest: after.containment.readScopeDigest, writeScopeDigest: after.containment.writeScopeDigest,
         keyRoleAssignmentCount: after.containment.keyRoleAssignmentCount,
-        telegramToolCount: after.containment.telegramToolCount, telegramProfileDigest: after.containment.telegramProfileDigest,
-        telegramSchemaDigest: after.containment.telegramSchemaDigest,
-        privateToolCount: after.containment.privateToolCount, privateProfileDigest: after.containment.privateProfileDigest,
-        privateSchemaDigest: after.containment.privateSchemaDigest, resolvedHandlerCount: after.containment.resolvedHandlerCount,
-        relationshipProfilesExact: after.containment.relationshipProfilesExact, handlersExact: after.containment.handlersExact,
-        excludedToolCount: after.containment.excludedToolCount, excludedSchemaIntersectionCount: after.containment.excludedSchemaIntersectionCount,
-        fabricatedHandlerInvocationCount: after.containment.fabricatedHandlerInvocationCount,
-        excludedToolAttemptCount: after.containment.excludedToolAttemptCount, excludedToolRejectedCount: after.containment.excludedToolRejectedCount,
-        excludedToolInvokedCount: after.containment.excludedToolInvokedCount, excludedToolSideEffectCount: after.containment.excludedToolSideEffectCount,
-        globallyResolvableExcludedToolCount: after.containment.globallyResolvableExcludedToolCount,
+        profileBoundaries: after.containment.profileBoundaries,
         auditPathDigest: after.containment.auditPathDigest, auditLedgerDigest: after.containment.auditLedgerDigest,
         auditRecordCount: after.containment.auditRecordCount, auditLifecyclePairCount: after.containment.auditLifecyclePairCount,
         containerUser: after.containment.containerUser, liveProcessUser: after.containment.liveProcessUser, mountCount: after.containment.mountCount,

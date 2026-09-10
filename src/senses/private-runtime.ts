@@ -7,7 +7,7 @@ import { getAgentName, getAgentRoot, type AgentProvider } from "../heart/identit
 import { loadSession, postTurnTrim, deferPostTurnPersist, type UsageData } from "../mind/context"
 import { buildSystem, flattenSystemPrompt } from "../mind/prompt"
 import { getSharedMcpManager } from "../repertoire/mcp-manager"
-import { getSanctuaryRelationshipTools, getToolsForChannel } from "../repertoire/tools"
+import { getToolsForChannel } from "../repertoire/tools"
 import { cancelStaleAwait, hasActiveExternalEventAwait, inspectRelationshipFollowUp } from "../repertoire/tools-awaiting"
 import { renderRelationshipPreferences } from "../repertoire/relationship-authorization"
 import { appendRunLedgerRecordNonFatal, createRunLedgerRecord, usageMetadataFromUsageData } from "../heart/run-ledger"
@@ -1267,7 +1267,8 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
   const selfFriend = createSelfFriend(agentName)
   const selfContext: ResolvedContext = { friend: selfFriend, channel: innerCapabilities }
 
-  const mcpManager = await getSharedMcpManager() ?? undefined
+  const mcpOwner = { agentName, agentRoot: getAgentRoot(agentName) }
+  const mcpManager = await getSharedMcpManager(mcpOwner) ?? undefined
   const relationshipAwaitCoordinatesValue = parsedAwait ? relationshipAwaitCoordinates(parsedAwait) : null
   const relationshipAwait = relationshipAwaitCoordinatesValue
       ? await (async () => {
@@ -1407,11 +1408,15 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
   }
   const externalEventExcludedTools = new Set(["rest", "settle", "speak"])
   const externalEventToolsResolved = options?.externalEvent
-    ? getSanctuaryRelationshipTools(externalEventRelationship!.relationshipAuthorization.advertisedToolNames)
+    ? getToolsForChannel(innerCapabilities, undefined, undefined, undefined, undefined, undefined, {
+      agentName, relationshipAuthorization: externalEventRelationship!.relationshipAuthorization,
+    })
       .filter((tool) => !externalEventExcludedTools.has(tool.function.name))
     : undefined
   const relationshipAwaitToolsResolved = relationshipAwait
-    ? getSanctuaryRelationshipTools(relationshipAwait.relationshipAuthorization.advertisedToolNames)
+    ? getToolsForChannel(innerCapabilities, undefined, undefined, undefined, undefined, undefined, {
+      agentName, relationshipAuthorization: relationshipAwait.relationshipAuthorization,
+    })
     : undefined
 
   const effectiveHabitSession = options?.noSend === true
@@ -1537,6 +1542,7 @@ export async function runPrivateRuntimeTurn(options?: RunPrivateRuntimeTurnOptio
         } : {}),
         ...(options?.noSend ? { noSend: true } : {}),
         ...(effectiveHabitSession ? { habitSession: effectiveHabitSession } : {}),
+        ...mcpOwner,
       },
       ...(effectiveHabitSession ? { habitSession: effectiveHabitSession } : {}),
     },

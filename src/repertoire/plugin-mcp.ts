@@ -136,7 +136,7 @@ function readPluginMcpManifest(pluginRoot: string): Record<string, RawServerEntr
  *
  * `homeDir` is an optional override for the `~/.ouro-cli/` root (test-only).
  */
-export function listPluginMcpServers(homeDir?: string): PluginMcpServer[] {
+export function listPluginMcpServers(homeDir?: string, owner?: Parameters<typeof loadAgentConfig>[0]): PluginMcpServer[] {
   emitNervesEvent({
     event: "plugin_mcp.list_start",
     component: "repertoire",
@@ -144,14 +144,14 @@ export function listPluginMcpServers(homeDir?: string): PluginMcpServer[] {
     meta: { operation: "listPluginMcpServers" },
   })
 
-  const config = loadAgentConfig()
+  const config = owner === undefined ? loadAgentConfig() : loadAgentConfig(owner)
   const declaredPlugins = config.plugins ?? []
   const pluginsRoot = getPluginsRoot(homeDir)
 
   // Per-agent override: DESK defaults to <bundleRoot>/desk/ when not explicitly set.
   const overrides: Record<string, string> = {}
   if (process.env.DESK === undefined) {
-    overrides.DESK = path.join(getAgentRoot(), "desk")
+    overrides.DESK = path.join(owner === undefined ? getAgentRoot() : owner.agentRoot, "desk")
   }
 
   const out: PluginMcpServer[] = []

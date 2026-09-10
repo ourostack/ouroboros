@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest"
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
+import { createHash } from "node:crypto"
 
 const {
   REQUIRED_PACKAGE_ASSET_PATHS,
@@ -43,6 +44,23 @@ afterEach(() => {
 })
 
 describe("package asset validation", () => {
+  it("ships the owner v8 identity correction without changing any other psyche content or containment source", () => {
+    const root = path.resolve(__dirname, "../../../deploy/unraid")
+    const identity = fs.readFileSync(path.join(root, "sanctuary.ouro/psyche/IDENTITY.md"), "utf8")
+    const oldSentence = "My primary server interface is the typed Unraid GraphQL repertoire, never shell."
+    const newSentence = "I use the typed Unraid GraphQL repertoire for server operations and owner-authorized native tools for resident work inside my existing container boundary."
+    expect(identity).toContain(newSentence)
+    expect(createHash("sha256").update(identity.replace(newSentence, oldSentence)).digest("hex")).toBe("024a02ad975deadb6d22afd4b0683047210a993e00f73d9f7f499898c6229590")
+    for (const [name, expected] of Object.entries({
+      "ASPIRATIONS.md": "2a0ab1c8084e0d703ea614341d08f041e01dbd50c4d2dec347b955c3a29a4c94",
+      "LORE.md": "2de6a92caa99491b1baba64d755bca45e71a13999f9e958bc8f1ab37f6129476",
+      "SOUL.md": "35c7c22c6ce9627db3a72ade5b6132fa9ec5f51b45ebd10d7f8906154b54019a",
+      "TACIT.md": "858b79b2b5dc2df63b20ef611ee873d1491aab075120faac8dd22cd57d7fcf83",
+    })) expect(createHash("sha256").update(fs.readFileSync(path.join(root, "sanctuary.ouro/psyche", name))).digest("hex")).toBe(expected)
+    const contract = JSON.parse(fs.readFileSync(path.join(root, "sanctuary-acceptance-contract.json"), "utf8"))
+    expect(JSON.stringify(contract.scenarioSources["containment-audit"])).toContain("sanctuary-containment-audit-v2")
+  })
+
   it("allows only an explicit source-checkout validation before compilation while packed assets remain strict", () => {
     const root = makeRoot()
     writeRequiredAssets(root)

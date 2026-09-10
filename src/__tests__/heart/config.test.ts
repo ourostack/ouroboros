@@ -2,12 +2,19 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import * as path from "path"
 import * as os from "os"
 
+vi.mock("path", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("path")>()
+  return { ...actual, relative: vi.fn(actual.relative) }
+})
+
 // Mock fs before importing config
 vi.mock("fs", () => ({
   readFileSync: vi.fn(),
   mkdirSync: vi.fn(),
   writeFileSync: vi.fn(),
   unlinkSync: vi.fn(),
+  existsSync: vi.fn(() => false),
+  realpathSync: vi.fn((filePath) => String(filePath)),
 }))
 
 // Mock identity module -- config.ts will import from ./identity
@@ -37,6 +44,8 @@ beforeEach(() => {
   vi.mocked(fs.readFileSync).mockReset()
   vi.mocked(fs.mkdirSync).mockReset()
   vi.mocked(fs.writeFileSync).mockReset()
+  vi.mocked(fs.existsSync).mockReset().mockReturnValue(false)
+  vi.mocked(fs.realpathSync).mockReset().mockImplementation((filePath) => String(filePath))
   vi.mocked(identity.loadAgentConfig).mockReturnValue({
     version: 2,
     enabled: true,
@@ -566,6 +575,44 @@ describe("sessionPath", () => {
   beforeEach(async () => {
     vi.resetModules()
     vi.mocked(fs.mkdirSync).mockReset()
+  })
+
+  it.each([
+    { friend: "..", channel: "cli", key: "session", root: "/owned" },
+    { friend: "friend", channel: "..", key: "session", root: "/owned" },
+    { friend: "friend", channel: "cli", key: null, root: "/owned" },
+    { friend: "friend", channel: "cli", key: "bad\0key", root: "/owned" },
+    { friend: "friend", channel: "cli", key: "session", root: "relative" },
+  ])("refuses invalid confined query coordinates without creating directories: %j", async ({ friend, channel, key, root }) => {
+    const { resolveSessionPath, InvalidSessionPathError } = await import("../../heart/config")
+    expect(() => Reflect.apply(resolveSessionPath, undefined, [friend, channel, key, { agentRoot: root, confined: true, ensureDir: true }]))
+      .toThrow(InvalidSessionPathError)
+    expect(fs.mkdirSync).not.toHaveBeenCalled()
+    expect(fs.readFileSync).not.toHaveBeenCalled()
+  })
+
+  it.each(["", "..", `..${path.sep}elsewhere`, `${path.sep}elsewhere`])("rejects a non-descendant resolved query path: %j", async (relative) => {
+    const { resolveSessionPath, InvalidSessionPathError } = await import("../../heart/config")
+    const actual = await vi.importActual<typeof import("path")>("path")
+    const compare = vi.mocked(path.relative).mockReturnValueOnce(relative)
+    try {
+      expect(() => resolveSessionPath("friend", "cli", "session", { agentRoot: "/owned", confined: true }))
+        .toThrow(InvalidSessionPathError)
+      expect(fs.readFileSync).not.toHaveBeenCalled()
+    } finally {
+      compare.mockReset().mockImplementation(actual.relative)
+    }
+  })
+
+  it("retains key normalization when every real path stays within the initiating root", async () => {
+    const { resolveSessionPath } = await import("../../heart/config")
+    vi.mocked(fs.existsSync).mockReturnValue(true)
+    expect(resolveSessionPath("friend", "telegram", "telegram:1:2", { agentRoot: "/owned", confined: true }))
+      .toBe("/owned/state/sessions/friend/telegram/telegram_1_2.json")
+    expect(fs.realpathSync).toHaveBeenCalledWith("/owned")
+    expect(fs.realpathSync).toHaveBeenCalledWith("/owned/state/sessions")
+    expect(fs.realpathSync).toHaveBeenCalledWith("/owned/state/sessions/friend/telegram/telegram_1_2.json")
+    expect(fs.mkdirSync).not.toHaveBeenCalled()
   })
 
   it("returns correct path with friendId, channel, and key (3-arg signature)", async () => {

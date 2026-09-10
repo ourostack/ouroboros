@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import * as mcp from "../../repertoire/mcp-manager"
+import { makeMcpView, shutdownMcpFixtures } from "../repertoire/mcp-fixture"
 
 // Tests for main() in agent.ts -- the CLI entry point that wires readline,
 // input loop, SIGINT handling, postTurn, and history.
@@ -510,6 +512,58 @@ describe("agent.ts main()", () => {
     expect(flatLogs.some((l) => l.includes("testagent") || l.includes("/commands"))).toBe(true)
     expect(flatLogs.some((l) => l.includes("bye"))).toBe(true)
     expect(runAgentCalls.length).toBe(1) // "hello world" only (no boot greeting)
+  })
+
+  it("uses a fresh turn-owned MCP view for each model turn, not command turns", async () => {
+    setupBasic({ inputSequence: ["/commands", "first", "second", "/exit"] })
+    const owner = { agentName: "testagent", agentRoot: "/mock/agent/root" }
+    const first = makeMcpView([{ server: "owned", tools: [{ name: "status", description: "Status", inputSchema: { type: "object" } }] }], undefined, undefined, owner)
+    const acquire = vi.spyOn(mcp, "getSharedMcpManager").mockResolvedValueOnce(first).mockResolvedValue(null)
+    try {
+      await testMain(undefined, { pasteDebounceMs: 0 })
+      expect(acquire).toHaveBeenCalledTimes(2)
+      expect(acquire).toHaveBeenNthCalledWith(1, owner)
+      expect(acquire).toHaveBeenNthCalledWith(2, owner)
+      expect(mocks.runAgent).toHaveBeenCalledTimes(2)
+      expect(mocks.runAgent.mock.calls[0]![4].mcpManager).toBe(first)
+      expect(mocks.runAgent.mock.calls[1]![4].mcpManager).toBeUndefined()
+      expect(mocks.runAgent.mock.calls[1]![4].toolContext).toMatchObject(owner)
+    } finally {
+      acquire.mockRestore()
+      await shutdownMcpFixtures()
+    }
+  })
+
+  it("does not acquire turn-owned MCP for a command-only CLI session", async () => {
+    setupBasic({ inputSequence: ["/commands", "/exit"] })
+    const acquire = vi.spyOn(mcp, "getSharedMcpManager").mockResolvedValue(null)
+    await testMain(undefined, { pasteDebounceMs: 0 })
+    expect(acquire).not.toHaveBeenCalled()
+    expect(mocks.runAgent).not.toHaveBeenCalled()
+  })
+
+  it("A001a coverage binds the actual CLI model boundary even without an upstream tool context", async () => {
+    setupBasic({ inputSequence: ["hello", "/exit"] })
+    await testMain(undefined, { pasteDebounceMs: 0 })
+    const input = mocks.handleInboundTurn.mock.calls[0][0]
+    await input.runAgent([], input.callbacks, "cli", undefined, {})
+    expect(mocks.runAgent.mock.calls.at(-1)![4].toolContext).toMatchObject({
+      agentName: "testagent", agentRoot: "/mock/agent/root",
+    })
+  })
+
+  it("does not acquire turn-owned MCP when the pipeline disables tools", async () => {
+    setupBasic({ inputSequence: ["first", "/exit"] })
+    const pipeline = mocks.handleInboundTurn.getMockImplementation()!
+    mocks.handleInboundTurn.mockImplementation((input) => pipeline({
+      ...input,
+      runAgentOptions: { ...input.runAgentOptions, hardDisableTools: true },
+    }))
+    const acquire = vi.spyOn(mcp, "getSharedMcpManager").mockResolvedValue(null)
+    await testMain(undefined, { pasteDebounceMs: 0 })
+    expect(acquire).not.toHaveBeenCalled()
+    expect(mocks.runAgent).toHaveBeenCalledTimes(1)
+    expect(mocks.runAgent.mock.calls[0]![4]).toMatchObject({ hardDisableTools: true, mcpManager: undefined })
   })
 
   it("skips empty input without calling runAgent", async () => {

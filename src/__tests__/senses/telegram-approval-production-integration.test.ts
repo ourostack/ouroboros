@@ -9,7 +9,10 @@ import { createLogger, createNdjsonFileSink, type LogEvent } from "../../nerves"
 import { setRuntimeLogger } from "../../nerves/runtime"
 import { digestJson, validateAdvertisedToolArguments } from "../../repertoire/tool-arguments"
 import { resolveToolDefinition } from "../../repertoire/tools"
-import { createTelegramApprovalRuntime } from "../../senses/telegram-approval-runtime"
+import { createTelegramApprovalRuntime as createNativeTelegramApprovalRuntime } from "../../senses/telegram-approval-runtime"
+import { digestApprovalToolDefinition } from "../../heart/tool-approval"
+import { createMinimaxProviderRuntime } from "../../heart/providers/minimax"
+import type { ToolContext } from "../../repertoire/tools-base"
 import { sanctuaryTelegramApprovalEvidenceMac } from "../../senses/telegram"
 import { TelegramApiError, type TelegramBotApi, type TelegramUpdate } from "../../senses/telegram-client"
 import { createTelegramApprovalEffectPort, createTelegramAuthorizedEffectExecutor, FileTelegramEffectJournal, recordTelegramEffectsInSession, type TelegramApprovalEffectPort } from "../../senses/telegram-effect-adapter"
@@ -20,6 +23,30 @@ const scenarioHandleDigest = "a".repeat(64)
 const subject = `tg_${"s".repeat(43)}`
 const roots: string[] = []
 const effectStores: FileTelegramEffectJournal[] = []
+
+function createTelegramApprovalRuntime(options: Parameters<typeof createNativeTelegramApprovalRuntime>[0]) {
+  const agentRoot = options.dependencies?.agentRoot
+  if (!agentRoot) throw new Error("production lifecycle fixture requires its own root")
+  const friendId = `telegram-user:${options.subject}`
+  return createNativeTelegramApprovalRuntime({
+    ...options,
+    resolveLiveToolContext: async (record) => ({
+      signin: async () => undefined, agentName: options.agentName, agentRoot,
+      currentSession: { friendId, channel: "telegram", key: record.sessionKey, sessionPath: record.sessionPath },
+      context: { friend: { id: friendId, trustLevel: "family" }, channel: "telegram" } as ToolContext["context"],
+      relationshipAuthorization: {
+        profileId: "sanctuary-owner", authorizedContextScopes: [], advertisedToolNames: [record.toolName],
+        actor: { friendId, trustLevel: "family", sessionEventId: "fixture-ingress" },
+        authorizeTool: async () => ({ allowed: true, receiptId: "fixture-owner", profileId: "sanctuary-owner" }),
+      },
+    }),
+    dependencies: {
+      getProviderRuntime: async () => createMinimaxProviderRuntime("MiniMax-M3", { apiKey: "isolated-fixture" }),
+      getSharedMcpManager: async () => null,
+      ...options.dependencies,
+    },
+  })
+}
 
 function root(): string {
   const value = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-approval-production-"))
@@ -38,7 +65,7 @@ function proposalRequest() {
     toolCall: { id: "call-restart", type: "function", function: { name: "unraid_restart_container", arguments: JSON.stringify(args) } },
     arguments: args,
     schemaDigest: validated.value.schemaDigest,
-    toolDigest: digestJson({ name: "unraid_restart_container", schemaDigest: validated.value.schemaDigest, policyId: policy.policyId }),
+    toolDigest: digestApprovalToolDefinition(definition, validated.value.schemaDigest, policy.policyId),
     policyDigest: digestJson({ policyId: policy.policyId, actionClass: policy.actionClass, classification: "required" }),
     policyId: policy.policyId,
     frozenAssistantMessage: { role: "assistant", content: null, tool_calls: [{ id: "call-restart", type: "function", function: { name: "unraid_restart_container", arguments: JSON.stringify(args) } }] },
@@ -82,6 +109,59 @@ afterEach(() => {
 })
 
 describe("production-composed Telegram approval lifecycle", () => {
+  it.each(["valid", "terminal-mac", "terminal-text", "attempt", "message", "missing-record"] as const)(
+    "admits only an intact pending terminal control after restart: %s",
+    async (change) => {
+      const agentRoot = root()
+      const sessionPath = path.join(agentRoot, "state", "sessions", "terminal-control.json")
+      setRuntimeLogger(createLogger({ sinks: [createNdjsonFileSink(path.join(agentRoot, "audit.ndjson"))] }))
+      const api: TelegramBotApi = {
+        stop: vi.fn(),
+        request: vi.fn(async (method) => {
+          if (method === "sendMessage") return { message_id: 101 }
+          if (method === "answerCallbackQuery") throw new TelegramApiError("controlled acknowledgement failure", { status: 503 })
+          return true
+        }),
+      }
+      const options = {
+        agentName: "sanctuary", api, authorizedUserId: "42", authorizedChatId: "43", subject, identityKey,
+        toolContext: {}, effects: approvalEffects(agentRoot, api, sessionPath),
+        dependencies: {
+          agentRoot, now: () => 1_000_000, acceptanceMarker: () => null,
+          executeTool: async () => '{"ok":true,"data":{"container":{"id":"fixture","name":"calibre-web"},"beforeState":"running","afterState":"running","observedRestart":true,"degraded":false}}',
+          runProvider: async () => ({ outcome: "settled" as const }),
+        },
+      }
+      const first = createTelegramApprovalRuntime(options)
+      let saved: ReturnType<typeof first.transport.listPendingDeliveries>[number]
+      try {
+        await first.coordinator({ sessionPath, baseSessionRevision: createHash("sha256").update("").digest("hex") }).propose(proposalRequest() as never)
+        const initial = first.transport.listPendingDeliveries()[0]!
+        await expect(first.transport.handleUpdate(callback(initial.approveCallbackData))).rejects.toThrow("controlled acknowledgement failure")
+        saved = structuredClone(first.transport.listPendingDeliveries()[0]!)
+        if (!saved.terminal || !saved.decisionAttempt) throw new Error("fixture did not reach a signed terminal")
+        expect(saved.terminalMac).toMatch(/^[a-f0-9]{64}$/)
+      } finally { first.close() }
+      if (change === "terminal-mac") saved.terminalMac = "0".repeat(64)
+      if (change === "terminal-text") saved.terminal!.terminalText = "arbitrary replacement content"
+      if (change === "attempt") saved.decisionAttempt!.queryIdDigest = "1".repeat(64)
+      if (change === "message") saved.messageId = "102"
+      if (change === "missing-record") saved.approvalId = "unknown-approval"
+      fs.writeFileSync(path.join(agentRoot, "state", "approvals", "telegram-pending.json"), JSON.stringify([saved]))
+      const restarted = createTelegramApprovalRuntime(options)
+      try {
+        const text = saved.terminal!.terminalText
+        const result = Promise.resolve().then(() => restarted.isPendingTerminalControl!({
+          authorClass: "control", effect: { kind: "edit", messageId: Number(saved.messageId), text },
+          idempotencyKey: `approval:${saved.approvalId}:edit:${createHash("sha256").update(text).digest("hex")}`,
+        }))
+        if (change === "terminal-mac" || change === "terminal-text" || change === "attempt") {
+          await expect(result).rejects.toThrow(/persisted .* invalid/)
+        } else await expect(result).resolves.toBe(change === "valid")
+      } finally { restarted.close() }
+    },
+  )
+
   it.each(["approve", "deny"] as const)("recovers a MAC-fenced pre-deadline %s through the real store after transport TTL with signed settlement evidence", async (decision) => {
     const agentRoot = root()
     const sessionPath = path.join(agentRoot, "state", "sessions", "telegram.json")

@@ -404,7 +404,7 @@ describe("Unraid typed read tools", () => {
       expect(await execution.routine.reauthorize()).toEqual({ allowed: true, receiptId: "relationship-1", profileVersion: 7 })
       return { ok: true }
     })
-    const context = { signin: async () => undefined, agentRoot, relationshipAuthorization: { authorizedContextScopes: [], advertisedToolNames: ["unraid_restart_container"], actor: { friendId: "ari", trustLevel: "family" as const, sessionEventId: "evt-2" }, authorizeTool: () => ({ allowed: true as const, receiptId: "relationship-1", profileVersion: 7 }) }, sanctuary: { restartContainer } } as any
+    const context = { signin: async () => undefined, agentName: "testagent", agentRoot, relationshipAuthorization: { authorizedContextScopes: [], advertisedToolNames: ["unraid_restart_container"], actor: { friendId: "ari", trustLevel: "family" as const, sessionEventId: "evt-2" }, authorizeTool: () => ({ allowed: true as const, receiptId: "relationship-1", profileVersion: 7 }) }, sanctuary: { restartContainer } } as any
     expect(await approvalPolicyForInvocation("unraid_restart_container", { container: "alpha" }, context)).toEqual({ kind: "not_required" })
     const classification = await classifyApprovalForInvocation("unraid_restart_container", { container: "alpha" }, context)
     await execTool("unraid_restart_container", { container: "alpha" }, { ...context, routineActionSelection: classification.routineActionSelection })
@@ -437,6 +437,7 @@ describe("Unraid typed read tools", () => {
     const authorizeTool = vi.fn(async () => ({ allowed: true as const, receiptId: "household-request-authorization", profileVersion: 1 }))
     const context = {
       signin: async () => undefined,
+      agentName: "testagent",
       agentRoot,
       currentSession: { friendId: "brother", channel: "telegram", key: "telegram:777:888", sessionPath: path.join(agentRoot, "session.json") },
       relationshipAuthorization: {
@@ -481,7 +482,7 @@ describe("Unraid typed read tools", () => {
     const restartContainer = failure === "reported failure"
       ? vi.fn(async () => ({ ok: false, error: { message: "still down" } }))
       : vi.fn(async () => { throw new Error("restart transport failed") })
-    const context = { signin: async () => undefined, agentRoot,
+    const context = { signin: async () => undefined, agentName: "testagent", agentRoot,
       currentSession: { friendId: "brother", channel: "telegram", key: "telegram:777:888", sessionPath: path.join(agentRoot, "session.json") },
       relationshipAuthorization: { requestId: `request-${failure}`, authorizedContextScopes: ["own_requests"], advertisedToolNames: ["unraid_restart_container"],
         actor: { friendId: "brother", trustLevel: "friend" as const, sessionEventId: "evt-request" }, authorizeTool: async () => ({ allowed: true as const, receiptId: "request-auth", profileVersion: 1 }) },

@@ -1,6 +1,7 @@
-import { mkdtempSync, rmSync, writeFileSync } from "fs"
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs"
 import { tmpdir } from "os"
 import * as path from "path"
+import { runInNewContext } from "node:vm"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
 import { emitNervesEvent } from "../../nerves/runtime"
@@ -21,6 +22,55 @@ const {
 
 let tempDirs: string[] = []
 
+function runCoverageCli(argv: string[], failure?: string) {
+  const dir = mkdtempSync(path.join(tmpdir(), "ouro-coverage-cli-"))
+  tempDirs.push(dir)
+  const script = path.resolve(__dirname, "../../../scripts/run-coverage-gate.cjs")
+  const ownerRoot = path.join(dir, "ouroboros-test-runs", "ouroboros-agent-harness", coverageRunOwner(dir))
+  const calls: string[][] = []
+  const fixtureModule = { exports: {} }
+  const fixtureExit = Symbol("coverage-cli-exit")
+  let exitCode: number | undefined
+  const spawnSync = (_command: string, args: string[]) => {
+    calls.push(args)
+    const stage = args[0]!.endsWith("changelog-gate.cjs") ? "changelog" : args[1]
+    if (stage === "test:coverage:vitest" && failure !== "captures") {
+      const { run_dir: runDir } = JSON.parse(readFileSync(path.join(ownerRoot, ".active-run.json"), "utf8"))
+      writeFileSync(path.join(runDir, "vitest-events.ndjson"), "{}\n")
+      writeFileSync(path.join(runDir, "vitest-events-per-test.ndjson"), '{"testName":"fixture","events":[]}\n')
+    }
+    if (stage === "audit:nerves") {
+      writeFileSync(args[args.indexOf("--output") + 1]!, JSON.stringify({
+        overall_status: failure === "report" ? "fail" : "pass",
+        required_actions: failure === "report" ? [{ type: "logging", target: "fixture", reason: "fixture report failure" }] : [],
+      }))
+    }
+    return { status: stage === failure ? 7 : 0 }
+  }
+  const fixtureRequire = Object.assign((name: string) => {
+    if (name === "child_process") return { spawnSync }
+    if (name === "os") return { tmpdir: () => dir }
+    return require(name)
+  }, { main: fixtureModule })
+  try {
+    runInNewContext(readFileSync(script, "utf8"), {
+      require: fixtureRequire, module: fixtureModule, __dirname: path.dirname(script),
+      console: { log: () => undefined },
+      process: {
+        argv: [process.execPath, script, ...argv], execPath: process.execPath,
+        cwd: () => dir, platform: process.platform,
+        exit: (code: number) => { exitCode = code; throw fixtureExit },
+      },
+    }, { filename: script })
+  } catch (error) {
+    if (error !== fixtureExit) throw error
+  }
+  if (exitCode === undefined) throw new Error("coverage CLI entry point did not execute")
+  const { run_dir: runDir } = JSON.parse(readFileSync(path.join(ownerRoot, "latest-run.json"), "utf8"))
+  const summary = JSON.parse(readFileSync(path.join(runDir, "coverage-gate-summary.json"), "utf8"))
+  return { exitCode, calls, summary }
+}
+
 beforeEach(() => {
   emitNervesEvent({
     component: "nerves",
@@ -38,6 +88,31 @@ afterEach(() => {
 })
 
 describe("coverage gate helpers", () => {
+  it.each([
+    { argv: [], skip: false },
+    { argv: ["--skip-mailbox-ui-install"], skip: true },
+    { argv: ["--skip-mailbox-ui-install-extra"], skip: false },
+  ])("wires the exact install option through the real CLI without changing gates: $argv", ({ argv, skip }) => {
+    const result = runCoverageCli(argv)
+    expect(result.exitCode).toBe(0)
+    expect(result.summary.overall_status).toBe("pass")
+    expect(result.calls.map((args) => args[0]!.endsWith("changelog-gate.cjs") ? "changelog" : args[0] === "install" ? "install" : args[1])).toEqual([
+      "lint", "changelog", ...(skip ? [] : ["install"]), "typecheck:mailbox-ui", "test:mailbox-ui", "test:coverage:vitest", "audit:nerves",
+    ])
+    expect(result.calls.filter((args) => args[0] === "install")).toEqual(skip ? [] : [["install", "--prefix", "packages/mailbox-ui"]])
+  })
+
+  it.each(["lint", "changelog", "typecheck:mailbox-ui", "test:mailbox-ui", "test:coverage:vitest", "captures", "audit:nerves", "report"])("keeps %s failures fatal when dependency preparation is skipped", (failure) => {
+    const result = runCoverageCli(["--skip-mailbox-ui-install"], failure)
+    expect(result.exitCode).toBe(1)
+    expect(result.summary.overall_status).toBe("fail")
+    if (failure !== "audit:nerves") expect(result.summary.required_actions.length).toBeGreaterThan(0)
+    expect(result.calls.some((args) => args[0] === "install")).toBe(false)
+    if (["test:coverage:vitest", "audit:nerves", "report"].includes(failure)) {
+      expect(result.calls.some((args) => args[1] === "audit:nerves")).toBe(true)
+    }
+  })
+
   it("derives stable owner ids from checkout paths", () => {
     expect(coverageRunOwner("/tmp/ouro/worktree-a")).toMatch(/^cwd-[0-9a-f]{12}$/)
     expect(coverageRunOwner("/tmp/ouro/worktree-a")).toBe(coverageRunOwner("/tmp/ouro/worktree-a"))

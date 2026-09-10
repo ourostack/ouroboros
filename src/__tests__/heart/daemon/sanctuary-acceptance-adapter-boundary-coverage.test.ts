@@ -14,6 +14,11 @@ import { sanctuarySchedulerLivenessReceiptMac } from "../../../heart/daemon/sanc
 
 const boundary = vi.hoisted(() => ({
   controlOutput: "",
+  controlResult: undefined as unknown,
+  controlOutputCount: 1,
+  controlReceiptCount: 1,
+  controlReceiptPatch: {} as Partial<{ reason: string; invoked: boolean; sideEffect: boolean }>,
+  resultDigests: null as string[] | null,
   mode: "success" as "success" | "bad-outcome" | "duplicate-control" | "invalid-control" | "ungrounded",
   sourceIdentityDigest: "9".repeat(64),
   agentRoot: "/tmp/sanctuary-adapter-boundary-unset",
@@ -49,24 +54,24 @@ vi.mock("../../../senses/sanctuary-runtime", () => ({
   } }),
   runWithSanctuaryToolReceiptCollection: async (operation: () => Promise<unknown>) => ({
     result: await operation(),
-    toolResultDigests: boundary.controlOutput ? [createHash("sha256").update(boundary.controlOutput).digest("hex")] : [],
+    toolResultDigests: boundary.resultDigests ?? (boundary.controlOutput ? [createHash("sha256").update(boundary.controlOutput).digest("hex")] : []),
   }),
 }))
 
 vi.mock("../../../heart/core", () => ({
+  getProviderRuntime: async () => ({ id: "minimax", model: "fixture", capabilities: new Set(["reasoning-effort"]) }),
   runAgent: async (_messages: unknown, _callbacks: unknown, _channel: unknown, _signal: unknown, options: any) => {
     for (const callback of Object.values(_callbacks as Record<string, (...args: unknown[]) => unknown>)) callback("synthetic", "synthetic")
     const runtime = options.providerRuntimeOverride
-    const excluded = ["shell", "read_file", "edit_file", "vault_get", "mcp_call", "exec", "credential_get"]
-    for (const name of excluded) options.toolBoundaryObserver({ name, reason: "not_in_profile", invoked: false, sideEffect: false })
+    const excluded = (await runtime.streamTurn()).toolCalls.map((call: { name: string }) => call.name)
+    for (const name of excluded) options.toolBoundaryObserver({ name, reason: "profile_excluded", invoked: false, sideEffect: false })
     const system = await options.toolContext.sanctuary.getSystem()
-    boundary.controlOutput = JSON.stringify(boundary.mode === "invalid-control" ? { ok: true, data: { sourceIdentityDigest: "bad" } } : system)
+    boundary.controlOutput = JSON.stringify(boundary.controlResult !== undefined ? boundary.controlResult : boundary.mode === "invalid-control" ? { ok: true, data: { sourceIdentityDigest: "bad" } } : system)
     runtime.appendToolOutput("synthetic-non-control", "ignored")
-    runtime.appendToolOutput("sanctuary-valid-system", boundary.controlOutput)
-    options.toolBoundaryObserver({ name: "unraid_get_system", reason: "dispatched", invoked: true, sideEffect: false })
+    for (let index = 0; index < boundary.controlOutputCount; index++) runtime.appendToolOutput("sanctuary-valid-system", boundary.controlOutput)
+    for (let index = 0; index < boundary.controlReceiptCount; index++) options.toolBoundaryObserver({ name: "unraid_get_system", reason: "dispatched", invoked: true, sideEffect: false, ...boundary.controlReceiptPatch })
     if (boundary.mode === "duplicate-control") options.toolBoundaryObserver({ name: "unraid_get_system", reason: "dispatched", invoked: true, sideEffect: false })
-    options.toolBoundaryObserver({ name: "settle", reason: "dispatched", invoked: true, sideEffect: false })
-    await runtime.streamTurn()
+    options.toolBoundaryObserver({ name: _channel === "inner" ? "rest" : "settle", reason: "dispatched", invoked: true, sideEffect: false })
     await runtime.streamTurn()
     await runtime.streamTurn()
     await runtime.streamTurn().catch(() => undefined)
@@ -74,7 +79,7 @@ vi.mock("../../../heart/core", () => ({
     await runtime.ping()
     runtime.classifyError(new Error("synthetic"))
     await options.toolContext.signin()
-    return { outcome: boundary.mode === "bad-outcome" ? "failed" : "settled" }
+    return { outcome: boundary.mode === "bad-outcome" ? "failed" : _channel === "inner" ? "rested" : "settled" }
   },
 }))
 
@@ -91,6 +96,15 @@ import {
 } from "../../../heart/daemon/sanctuary-acceptance-adapter"
 import { SANCTUARY_SCENARIO_GATES, SANCTUARY_SCENARIO_SOURCES } from "../../../heart/daemon/sanctuary-acceptance-harness"
 
+async function withBoundaryInput<T>(run: (input: Parameters<typeof runSanctuaryProductionBoundaryProbe>[0]) => Promise<T>): Promise<T> {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-boundary-input-"))
+  boundary.agentRoot = root
+  fs.copyFileSync("deploy/unraid/sanctuary.ouro/tool-profiles.json", path.join(root, "tool-profiles.json"))
+  try {
+    return await run({ agentRoot: root, profileId: "sanctuary-owner", providerRuntime: { id: "minimax", model: "fixture", capabilities: new Set(["reasoning-effort"]) } })
+  } finally { fs.rmSync(root, { recursive: true, force: true }) }
+}
+
 function healthProbeReceipt(scenarioHandleDigest: string, patch: Record<string, unknown> = {}) {
   const phases = [{ ordinal: 1, name: "digest", trigger: "acceptance", fixtureStatus: 503, opened: 0, recovered: 0, digestDue: true, deliveryKind: "digest", sweepReceiptDigest: "5".repeat(64), deliveryReceiptDigest: "6".repeat(64) }]
   return { schemaVersion: "sanctuary-health-probe-receipt-v1", label: "unit-16h-acceptance-delivery-probe", scenarioHandleDigest, ownerImageDigestBefore: "1".repeat(64), ownerImageDigestAfter: "1".repeat(64), ownerContainerDigestBefore: "2".repeat(64), ownerContainerDigestAfter: "2".repeat(64), beforeStateDigest: "3".repeat(64), restoredStateDigest: "3".repeat(64), cronFingerprintBefore: "4".repeat(64), cronFingerprintAfter: "4".repeat(64), cronRegisteredBefore: true, cronRegisteredAfter: true, cronDegradedBefore: false, cronDegradedAfter: false, fixtureSequenceDigest: createHash("sha256").update(JSON.stringify([503])).digest("hex"), clockMode: "local-daily-boundary", effectiveNow: "2026-08-20T16:00:00.000Z", phases, privateTurnCount: 1, providerInvocationCount: 1, deliveryCount: 1, workspaceAbsent: true, socketAbsent: true, snapshotAbsent: true, realCheckEquivalent: true, productionRestored: true, schedulerReceipt: null, acceptanceOnly: true, productionScheduleChanged: false, ...patch }
@@ -105,6 +119,11 @@ function cronHealthProbeReceipt(scenarioHandleDigest: string) {
 describe("Sanctuary production boundary adapter coverage", () => {
   beforeEach(() => {
     boundary.controlOutput = ""
+    boundary.controlResult = undefined
+    boundary.controlOutputCount = 1
+    boundary.controlReceiptCount = 1
+    boundary.controlReceiptPatch = {}
+    boundary.resultDigests = null
     boundary.mode = "success"
     boundary.sourceIdentityDigest = "9".repeat(64)
     boundary.machineRuntime = { ok: false, reason: "missing", itemPath: "vault:missing", error: "missing" }
@@ -156,19 +175,54 @@ describe("Sanctuary production boundary adapter coverage", () => {
   })
 
   it("proves excluded tools stay blocked while one live read dispatches", async () => {
-    const receipts = await runSanctuaryProductionBoundaryProbe([])
-    expect(receipts).toHaveLength(8)
-    expect(receipts.filter(({ invoked }) => invoked)).toEqual([expect.objectContaining({ name: "unraid_get_system", reason: "dispatched" })])
+    await withBoundaryInput(async (input) => {
+      const receipts = await runSanctuaryProductionBoundaryProbe(input)
+      expect(receipts).toHaveLength(5)
+      expect(receipts.filter(({ invoked }) => invoked)).toEqual([expect.objectContaining({ name: "unraid_get_system", reason: "dispatched" })])
+    })
   })
 
   it.each(["bad-outcome", "duplicate-control"] as const)("rejects an invalid control execution: %s", async (mode) => {
     boundary.mode = mode
-    await expect(runSanctuaryProductionBoundaryProbe([])).rejects.toThrow("valid control did not dispatch")
+    await withBoundaryInput((input) => expect(runSanctuaryProductionBoundaryProbe(input)).rejects.toThrow("valid control did not dispatch"))
   })
 
   it("rejects an invalid live control result", async () => {
     boundary.mode = "invalid-control"
-    await expect(runSanctuaryProductionBoundaryProbe([])).rejects.toThrow("control result is invalid")
+    await withBoundaryInput((input) => expect(runSanctuaryProductionBoundaryProbe(input)).rejects.toThrow("control result is invalid"))
+  })
+
+  it.each([
+    { controlReceiptCount: 0 },
+    { controlReceiptPatch: { reason: "profile_excluded" } },
+    { controlReceiptPatch: { invoked: false } },
+    { controlReceiptPatch: { sideEffect: true } },
+    { resultDigests: [] },
+    { resultDigests: ["a".repeat(64), "b".repeat(64)] },
+    { resultDigests: ["a".repeat(64)] },
+    { controlOutputCount: 0 },
+    { controlOutputCount: 2 },
+  ])("rejects missing, mismatched or effectful Unit-16e control evidence: %j", async (patch) => {
+    Object.assign(boundary, patch)
+    await withBoundaryInput((input) => expect(runSanctuaryProductionBoundaryProbe(input)).rejects.toThrow("valid control did not dispatch"))
+  })
+
+  it.each([
+    { ok: false, data: { sourceIdentityDigest: "9".repeat(64) } },
+    { ok: true, data: { sourceIdentityDigest: 9 } },
+    { ok: true },
+    null,
+  ])("rejects unsuccessful or malformed Unit-16e control data: %j", async (result) => {
+    boundary.controlResult = result
+    await withBoundaryInput((input) => expect(runSanctuaryProductionBoundaryProbe(input)).rejects.toThrow(/control.*(?:invalid|must be)/u))
+  })
+
+  it("refuses a missing current role before the production boundary probe runs", async () => {
+    await withBoundaryInput(async (input) => {
+      fs.writeFileSync(path.join(input.agentRoot, "tool-profiles.json"), JSON.stringify({ version: 2, profiles: {} }))
+      await expect(runSanctuaryProductionBoundaryProbe(input)).rejects.toThrow("containment profile is missing")
+      expect(boundary.controlOutput).toBe("")
+    })
   })
 
   it("executes both independent live-grounding readers and rejects invalid source identity", async () => {
@@ -870,22 +924,23 @@ describe("Sanctuary production boundary adapter coverage", () => {
           readKeyFiles: () => [], readDescriptor: () => "", execFile: async () => ({ status: 0, stdout: "" }), fetch,
           readFixedFile: () => { throw missing },
           hostRequest: async () => ({ keys }), runProductionBoundaryProbe: async () => receipts,
+          providerRuntime: async () => ({ id: "minimax", model: "fixture", capabilities: new Set(["reasoning-effort"]) }),
         } as never, root, { skipContainerSnapshot: true })
       } finally { fs.rmSync(root, { recursive: true, force: true }) }
     }
-    const sparse = await run({}, [], [])
-    expect(sparse.containment).toMatchObject({ keyCount: 0, telegramToolCount: 0, privateToolCount: 0, containerUser: "", liveProcessUser: "", mountCount: -1, publishedPortCount: -1, networkMode: "" })
-    const shaped = await run({
+    const packaged = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/tool-profiles.json", "utf8"))
+    const sparse = await run(packaged.profiles, [], [])
+    expect(sparse.containment).toMatchObject({ keyCount: 0, containerUser: "", liveProcessUser: "", mountCount: -1, publishedPortCount: -1, networkMode: "" })
+    await expect(run({}, [], [])).rejects.toThrow("containment profiles")
+    await expect(run({
       "sanctuary-owner": { version: 1, contextScopes: [], toolNames: ["ponder"], effectScopes: [] },
       "sanctuary-event": { version: 1, contextScopes: [], toolNames: [], effectScopes: [] },
-    }, [], [])
-    expect(shaped.containment).toMatchObject({ telegramToolCount: 1, privateToolCount: 0 })
-    const unresolved = await run({
+    }, [], [])).rejects.toThrow("containment profiles")
+    await expect(run({
       "sanctuary-owner": { version: 1, contextScopes: [], toolNames: ["not_a_registered_tool"], effectScopes: [] },
       "sanctuary-event": { version: 1, contextScopes: [], toolNames: ["rest"], effectScopes: [] },
-    }, [], [])
-    expect(unresolved.containment).toMatchObject({ relationshipProfilesExact: true, handlersExact: false, telegramToolCount: 1, privateToolCount: 1, resolvedHandlerCount: 1 })
-    await expect(run({ "sanctuary-owner": "bad", "sanctuary-event": "bad" }, [], [])).rejects.toThrow("relationship capability profile")
+    }, [], [])).rejects.toThrow("containment profiles")
+    await expect(run({ "sanctuary-owner": "bad", "sanctuary-event": "bad" }, [], [])).rejects.toThrow("containment profiles")
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-containment-invalid-"))
     try {
       await expect(readDefaultSanctuaryScenarioFacts("unit-16e-containment-audit", digest, {

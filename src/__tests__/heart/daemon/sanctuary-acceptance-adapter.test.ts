@@ -11,7 +11,8 @@ import { openApprovalStore } from "../../../heart/approval-store"
 import { opaqueTelegramSubject, sanctuaryTelegramApprovalEvidenceMac, sanctuaryTelegramAuditLifecycleMac, sanctuaryTelegramTurnReceiptDigest, sanctuaryTelegramTurnReceiptMac } from "../../../senses/telegram"
 import { createTelegramAuditLedger } from "../../../senses/telegram-audit-ledger"
 import * as sanctuaryAcceptanceAdapter from "../../../heart/daemon/sanctuary-acceptance-adapter"
-import { SANCTUARY_SCENARIO_GATES, SANCTUARY_SCENARIO_SOURCES } from "../../../heart/daemon/sanctuary-acceptance-harness"
+import { SANCTUARY_SCENARIO_GATES, SANCTUARY_SCENARIO_SOURCES, validateSanctuaryUnit16EvidenceAssertions } from "../../../heart/daemon/sanctuary-acceptance-harness"
+import { deriveSanctuaryScenarioAssertions } from "../../../heart/daemon/sanctuary-acceptance-scenarios"
 
 import {
   createSanctuaryAcceptanceAdapterDependencies,
@@ -37,6 +38,7 @@ import { sanctuarySchedulerLivenessReceiptMac } from "../../../heart/daemon/sanc
 import { writeSanctuaryAcceptanceMarker } from "../../../heart/daemon/sanctuary-acceptance-marker"
 import { FileTelegramAdmissionStore } from "../../../senses/telegram-admission"
 import { FileTelegramEffectJournal, FIXED_ADMISSION_ACKNOWLEDGEMENT, prepareTelegramEffect } from "../../../senses/telegram-effect-adapter"
+import { SANCTUARY_OWNER_ADDITIONS, sanctuaryContainmentBoundariesFixture } from "../../fixtures/sanctuary-containment"
 
 const READ_QUERY = "query AcceptanceAuthProbe { info { os { hostname } } }"
 const WRITE_QUERY = "mutation AcceptanceWriteProbe($id: PrefixedID!) { docker { restart(id: $id) { id } } }"
@@ -129,8 +131,8 @@ function validOwnerSnapshot(patch: Record<string, unknown> = {}) {
     user: "10001:10001",
     liveProcessUser: "10001:10001",
     processBindingDigest: "4".repeat(64),
-    readOnlyRoot: true,
-    mountCount: 4,
+    readOnlyRoot: false,
+    mountCount: 3,
     mountsDigest: "3".repeat(64),
     mountsExact: true,
     publishedPortCount: 0,
@@ -301,14 +303,12 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     expect(auditContainsSensitiveMaterial(raw, credentials)).toBe(true)
   })
 
-  it("captures exact redacted Unit-16e containment evidence from packaged profiles, host inventory, audit, and container policy", async () => {
+  it.each([true, false])("captures exact redacted Unit-16e v2 evidence with reasoning=%s", async (reasoning) => {
     const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-containment-audit-"))
     const scenarioHandleDigest = "a".repeat(64)
     const identityKey = "k".repeat(43)
     const packagedProfilesRaw = fs.readFileSync("deploy/unraid/sanctuary.ouro/tool-profiles.json", "utf8")
-    const packagedProfiles = JSON.parse(packagedProfilesRaw) as { profiles: Record<string, { toolNames: string[] }> }
-    const telegramTools = packagedProfiles.profiles["sanctuary-owner"]!.toolNames
-    const privateTools = packagedProfiles.profiles["sanctuary-event"]!.toolNames
+    const expectedBoundaries = sanctuaryContainmentBoundariesFixture(reasoning ? ["reasoning-effort"] : [])
     const lifecycle = (event: string, ts: string, meta: Record<string, unknown>) => ({ ts, event, meta: { ...meta, lifecycleMac: sanctuaryTelegramAuditLifecycleMac(identityKey, "sanctuary-telegram-turn-receipt-v3", event, meta) } })
     const audit = [
       lifecycle("senses.telegram_turn_start", "2026-08-20T16:00:00.000Z", { scenarioHandleDigest }),
@@ -327,24 +327,184 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
         readFixedFile: (file) => { if (file in files) return files[file]!; throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
         telegramCredentials: () => ({ botToken: "123:token", authorizedUserId: "123456789", authorizedChatId: "987654321" }),
         hostRequest,
+        providerRuntime: async () => ({
+          id: "minimax", model: "fixture", client: null, capabilities: new Set(reasoning ? ["reasoning-effort"] : []),
+          streamTurn: async () => { throw new Error("the containment producer must not request a real model turn") },
+          appendToolOutput: () => undefined, resetTurnState: () => undefined, ping: async () => undefined, classifyError: () => "unknown",
+        }),
       }), agentRoot)
       expect(hostRequest).toHaveBeenCalledWith({ operation: "inventory_keys", targetServerId: "sanctuary-unraid" })
       expect(facts.containment).toMatchObject({
-        schemaVersion: "sanctuary-containment-audit-v1",
+        schemaVersion: "sanctuary-containment-audit-v2",
         keyCount: 2, keyRoleAssignmentCount: 0,
-        telegramToolCount: telegramTools.length, privateToolCount: privateTools.length, resolvedHandlerCount: telegramTools.length + privateTools.length,
-        excludedToolCount: 7, excludedSchemaIntersectionCount: 0, fabricatedHandlerInvocationCount: 0, excludedToolAttemptCount: 7, excludedToolRejectedCount: 7, excludedToolInvokedCount: 0, excludedToolSideEffectCount: 0, globallyResolvableExcludedToolCount: expect.any(Number),
+        profileBoundaries: expectedBoundaries,
         auditRecordCount: 2, auditLifecyclePairCount: 1,
-        containerUser: "10001:10001", liveProcessUser: "10001:10001", mountCount: 4, publishedPortCount: 0, networkMode: "host",
-        readOnlyRoot: true, mountsExact: true, securityExact: true, updaterDisabled: true, writableKeyExposure: false,
-        rawWriteMaterialFieldCount: 0, typedWriteExecutorCount: 1, relationshipProfilesExact: true, handlersExact: true, writeApprovalPolicyExact: true, sensitiveMaterialObserved: false,
+        containerUser: "10001:10001", liveProcessUser: "10001:10001", mountCount: 3, publishedPortCount: 0, networkMode: "host",
+        readOnlyRoot: false, mountsExact: true, securityExact: true, updaterDisabled: true, writableKeyExposure: false,
+        rawWriteMaterialFieldCount: 0, typedWriteExecutorCount: 1, writeApprovalPolicyExact: true, sensitiveMaterialObserved: false,
       })
-      for (const field of ["keyInventoryDigest", "readScopeDigest", "writeScopeDigest", "telegramSchemaDigest", "privateSchemaDigest", "auditPathDigest", "auditLedgerDigest", "writeApprovalPolicyDigest"] as const) {
+      for (const field of ["keyInventoryDigest", "readScopeDigest", "writeScopeDigest", "auditPathDigest", "auditLedgerDigest", "writeApprovalPolicyDigest"] as const) {
         expect(facts.containment?.[field]).toMatch(/^[0-9a-f]{64}$/u)
       }
       expect(facts.sourceValues["containment-audit"]).toEqual(facts.containment)
-      expect(facts.containment!.globallyResolvableExcludedToolCount).toBeGreaterThanOrEqual(1)
+      for (const boundary of Object.values(facts.containment!.profileBoundaries!)) expect(boundary.globallyResolvableExcludedToolCount).toBeGreaterThanOrEqual(1)
       expect(JSON.stringify(facts.sourceValues["containment-audit"])).not.toMatch(/ro-private-id|rw-private-id|read-only-key/u)
+    } finally { fs.rmSync(agentRoot, { recursive: true, force: true }) }
+  })
+
+  it.each([
+    { name: "missing" },
+    { name: "undefined", value: undefined },
+    { name: "null", value: null },
+    { name: "number", value: 0 },
+    { name: "string", value: "false" },
+    { name: "array", value: [] },
+    { name: "object", value: {} },
+  ])("rejects $name root-mode observations on the live host-request path", async (sample) => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-containment-root-mode-"))
+    const label = "unit-16e-containment-audit"
+    const scenarioHandleDigest = "a".repeat(64)
+    const identityKey = "k".repeat(43)
+    const snapshot: Record<string, unknown> = validOwnerSnapshot()
+    const audit = [
+      { event: "senses.telegram_turn_start", ts: "2026-08-20T16:00:00.000Z", meta: { scenarioHandleDigest } },
+      { event: "senses.telegram_turn_end", ts: "2026-08-20T16:00:01.000Z", meta: { scenarioHandleDigest, deliveryCount: 1 } },
+    ].map(({ event, ts, meta }) => JSON.stringify({
+      event, ts, meta: { ...meta, lifecycleMac: sanctuaryTelegramAuditLifecycleMac(identityKey, "sanctuary-telegram-turn-receipt-v3", event, meta) },
+    })).join("\n") + "\n"
+    const files = chainedAuditFiles(agentRoot, audit, identityKey)
+    fs.copyFileSync("deploy/unraid/sanctuary.ouro/tool-profiles.json", path.join(agentRoot, "tool-profiles.json"))
+    const deps = unit16Deps({
+      readFixedFile: (file) => { if (file in files) return files[file]!; throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
+      telegramCredentials: () => ({ botToken: "123:token", authorizedUserId: "123456789", authorizedChatId: "987654321" }),
+      hostRequest: async (payload) => {
+        if (payload.operation === "container_snapshot") {
+          expect(payload).toEqual({ operation: "container_snapshot", targetId: "sanctuary" })
+          return structuredClone(snapshot)
+        }
+        expect(payload).toEqual({ operation: "inventory_keys", targetServerId: "sanctuary-unraid" })
+        return { keys: [
+          { id: "ro-private-id", name: "Butler RO", permissions: READ_PERMISSIONS, roles: [] },
+          { id: "rw-private-id", name: "Butler RW", permissions: [...READ_PERMISSIONS, { resource: "DOCKER", actions: ["UPDATE_ANY"] }], roles: [] },
+        ] }
+      },
+    })
+    const readFacts = () => readDefaultSanctuaryScenarioFacts(label, scenarioHandleDigest, deps, agentRoot)
+    try {
+      const canonical = await readFacts()
+      const assertions = deriveSanctuaryScenarioAssertions(label, canonical, canonical, canonical.capturedAt, scenarioHandleDigest)
+      expect(assertions).not.toBeNull()
+      expect(validateSanctuaryUnit16EvidenceAssertions(label, assertions)).toMatchObject({ readOnlyRoot: false })
+      snapshot.readOnlyRoot = true
+      const noncanonical = await readFacts()
+      expect(noncanonical.containment?.readOnlyRoot).toBe(true)
+      expect(deriveSanctuaryScenarioAssertions(label, noncanonical, noncanonical, noncanonical.capturedAt, scenarioHandleDigest)).toBeNull()
+      if ("value" in sample) snapshot.readOnlyRoot = sample.value
+      else delete snapshot.readOnlyRoot
+      await expect(readFacts()).rejects.toThrow("containment root-mode observation must be boolean")
+    } finally { fs.rmSync(agentRoot, { recursive: true, force: true }) }
+  })
+
+  it.each(["sanctuary-owner", "sanctuary-household", "sanctuary-event"] as const)("uses real Unit-16e v2 dispatch and the native read control for %s", async (profileId) => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-role-boundary-"))
+    const identity = await import("../../../heart/identity")
+    const runtimeCredentials = await import("../../../heart/runtime-credentials")
+    const { UnraidClient } = await import("../../../repertoire/unraid-client")
+    const { SANCTUARY_SYSTEM_QUERY } = await import("../../../repertoire/tools-unraid")
+    const { resolveToolDefinition } = await import("../../../repertoire/tools")
+    fs.copyFileSync("deploy/unraid/sanctuary.ouro/tool-profiles.json", path.join(agentRoot, "tool-profiles.json"))
+    const rootSpy = vi.spyOn(identity, "getAgentRoot").mockReturnValue(agentRoot)
+    const nameSpy = vi.spyOn(identity, "getAgentName").mockReturnValue("sanctuary")
+    const configSpy = vi.spyOn(identity, "loadAgentConfig").mockReturnValue({
+      name: "sanctuary", humanFacing: { provider: "minimax", model: "MiniMax-M3" }, agentFacing: { provider: "minimax", model: "MiniMax-M3" },
+    })
+    const credentials = vi.spyOn(runtimeCredentials, "readMachineRuntimeCredentialConfig").mockReturnValue(refreshed({
+      unraidGraphqlUrl: "https://sanctuary.invalid/graphql", unraidReadApiKey: "synthetic-read-key",
+    }))
+    const read = vi.spyOn(UnraidClient.prototype, "read").mockResolvedValue({
+      vars: { id: `${"a".repeat(64)}:vars`, name: "Sanctuary", version: "7.2.3" },
+      info: { time: "2026-09-10T00:00:00.000Z", os: { uptime: 10 }, versions: { core: { unraid: "7.2.3", api: "4.37.1" } } },
+      array: { state: "STARTED" },
+    })
+    const effects = [...SANCTUARY_OWNER_ADDITIONS, "credential_get"].map((name) => vi.spyOn(resolveToolDefinition(name)!, "handler").mockImplementation(async () => {
+      throw new Error(`Unit-16e must not invoke ${name}`)
+    }))
+    try {
+      const receipts = await runSanctuaryProductionBoundaryProbe({
+        agentRoot, profileId, providerRuntime: { id: "minimax", model: "fixture", capabilities: new Set(["reasoning-effort"]) },
+      })
+      expect(receipts.filter(({ invoked }) => invoked)).toEqual([expect.objectContaining({ name: "unraid_get_system", reason: "dispatched", sideEffect: false })])
+      expect(receipts.filter(({ reason }) => reason === "profile_excluded")).toHaveLength(profileId === "sanctuary-owner" ? 4 : 22)
+      expect(read).toHaveBeenCalledExactlyOnceWith(SANCTUARY_SYSTEM_QUERY, {})
+      for (const effect of effects) expect(effect).not.toHaveBeenCalled()
+    } finally {
+      for (const effect of effects) effect.mockRestore()
+      read.mockRestore(); credentials.mockRestore(); configSpy.mockRestore(); nameSpy.mockRestore(); rootSpy.mockRestore()
+      fs.rmSync(agentRoot, { recursive: true, force: true })
+    }
+  })
+
+  it.each(["duplicate", "missing", "extra", "stale", "expanded"] as const)("rejects %s raw role profiles before Unit-16e v2 effects", async (change) => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-role-profile-invalid-"))
+    const registry = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/tool-profiles.json", "utf8"))
+    if (change === "duplicate") registry.profiles["sanctuary-owner"].toolNames.push(registry.profiles["sanctuary-owner"].toolNames[0])
+    if (change === "missing") delete registry.profiles["sanctuary-household"]
+    if (change === "extra") registry.profiles.extra = registry.profiles["sanctuary-owner"]
+    if (change === "stale") registry.profiles["sanctuary-event"].version = 3
+    if (change === "expanded") registry.profiles["sanctuary-household"].toolNames.push("shell")
+    fs.writeFileSync(path.join(agentRoot, "tool-profiles.json"), JSON.stringify(registry))
+    const probe = vi.fn(async () => [])
+    try {
+      await expect(readDefaultSanctuaryScenarioFacts("unit-16e-containment-audit", "a".repeat(64), unit16Deps({
+        hostRequest: async () => ({ keys: [] }), runProductionBoundaryProbe: probe,
+        readFixedFile: () => { throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
+      }), agentRoot, { skipContainerSnapshot: true })).rejects.toThrow(/profile/u)
+      expect(probe).not.toHaveBeenCalled()
+    } finally { fs.rmSync(agentRoot, { recursive: true, force: true }) }
+  })
+
+  it.each(["provider", "probe"] as const)("rejects Unit-16e profile drift during an awaited %s operation", async (stage) => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-role-profile-drift-"))
+    const profilePath = path.join(agentRoot, "tool-profiles.json")
+    fs.copyFileSync("deploy/unraid/sanctuary.ouro/tool-profiles.json", profilePath)
+    const drift = () => {
+      const registry = JSON.parse(fs.readFileSync(profilePath, "utf8"))
+      registry.profiles["sanctuary-owner"].version += 1
+      fs.writeFileSync(profilePath, JSON.stringify(registry))
+    }
+    const deps = unit16Deps({
+      hostRequest: async () => ({ keys: [] }),
+      readFixedFile: () => { throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
+    })
+    const provider = deps.providerRuntime!
+    const probe = deps.runProductionBoundaryProbe!
+    if (stage === "provider") deps.providerRuntime = vi.fn(provider).mockImplementationOnce(async (...args) => {
+      const runtime = await provider(...args)
+      drift()
+      return runtime
+    })
+    else deps.runProductionBoundaryProbe = vi.fn(probe).mockImplementationOnce(async (input) => {
+      const receipts = await probe(input)
+      drift()
+      return receipts
+    })
+    try {
+      await expect(readDefaultSanctuaryScenarioFacts("unit-16e-containment-audit", "a".repeat(64), deps, agentRoot, { skipContainerSnapshot: true })).rejects.toThrow(/containment profiles/u)
+    } finally { fs.rmSync(agentRoot, { recursive: true, force: true }) }
+  })
+
+  it.each(["missing", "failed"] as const)("refuses %s current provider metadata before a Unit-16e probe", async (state) => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-role-provider-unavailable-"))
+    fs.copyFileSync("deploy/unraid/sanctuary.ouro/tool-profiles.json", path.join(agentRoot, "tool-profiles.json"))
+    const probe = vi.fn(async () => [])
+    const deps = unit16Deps({
+      hostRequest: async () => ({ keys: [] }), runProductionBoundaryProbe: probe,
+      readFixedFile: () => { throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
+      providerRuntime: state === "missing" ? undefined : async () => { throw new Error("current provider metadata unavailable") },
+    })
+    try {
+      await expect(readDefaultSanctuaryScenarioFacts("unit-16e-containment-audit", "a".repeat(64), deps, agentRoot, { skipContainerSnapshot: true })).rejects.toThrow(/current provider/u)
+      expect(probe).not.toHaveBeenCalled()
     } finally { fs.rmSync(agentRoot, { recursive: true, force: true }) }
   })
 
@@ -2086,8 +2246,13 @@ function unit16Deps(overrides: Partial<SanctuaryAcceptanceAdapterDependencies> =
     callbackProbe: async () => ({ settled: true, claimed: false, mutated: false }),
     callbackPlaybackSnapshot: (coordinateDigest) => ({ playbackCount: 0, coordinateDigest, journalDigest: "a".repeat(64) }),
     hostRequest: async () => ({}),
-    runProductionBoundaryProbe: async () => [
-      ...["shell", "read_file", "edit_file", "vault_get", "mcp_call", "exec", "credential_get"].map((name, index) => ({ name, reason: "profile_excluded" as const, globallyResolvable: index < 4, invoked: false, sideEffect: false })),
+    providerRuntime: async () => ({
+      id: "minimax", model: "fixture", client: null, capabilities: new Set(["reasoning-effort"]),
+      streamTurn: async () => { throw new Error("the containment producer must not request a real model turn") },
+      appendToolOutput: () => undefined, resetTurnState: () => undefined, ping: async () => undefined, classifyError: () => "unknown",
+    }),
+    runProductionBoundaryProbe: async ({ profileId }) => [
+      ...["vault_get", "mcp_call", "exec", "credential_get", ...(profileId === "sanctuary-owner" ? [] : SANCTUARY_OWNER_ADDITIONS)].map((name) => ({ name, reason: "profile_excluded" as const, globallyResolvable: name === "credential_get" || SANCTUARY_OWNER_ADDITIONS.includes(name), invoked: false, sideEffect: false })),
       { name: "unraid_get_system", reason: "dispatched", globallyResolvable: true, invoked: true, sideEffect: false },
     ],
     ...overrides,

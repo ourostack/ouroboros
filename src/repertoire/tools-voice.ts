@@ -99,12 +99,12 @@ export const voiceToolDefinitions: ToolDefinition[] = [{
     const source: NonNullable<VoiceCallAudioRequest["source"]> = args.source === "url" || args.source === "file" || args.source === "tone"
       ? args.source
       : "tone"
-    const durationMs = typeof args.durationMs === "string" && args.durationMs.trim()
-      ? Number(args.durationMs)
-      : undefined
-    const toneHz = typeof args.toneHz === "string" && args.toneHz.trim()
-      ? Number(args.toneHz)
-      : undefined
+    const duration: unknown = args.durationMs
+    const frequency: unknown = args.toneHz
+    const durationMs = typeof duration === "number" ? duration
+      : typeof duration === "string" && duration.trim() ? Number(duration) : undefined
+    const toneHz = typeof frequency === "number" ? frequency
+      : typeof frequency === "string" && frequency.trim() ? Number(frequency) : undefined
     const request: VoiceCallAudioRequest = {
       source,
       /* v8 ignore next -- sparse playback argument permutations are covered in the transport-level voice_play_audio tests @preserve */

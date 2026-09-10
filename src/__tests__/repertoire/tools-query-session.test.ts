@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
+import * as os from "node:os"
+import * as path from "node:path"
 
 vi.mock("fs", () => ({
   existsSync: vi.fn(),
@@ -6,6 +8,7 @@ vi.mock("fs", () => ({
   writeFileSync: vi.fn(),
   readdirSync: vi.fn(),
   mkdirSync: vi.fn(),
+  realpathSync: vi.fn((filePath) => String(filePath)),
 }))
 
 vi.mock("child_process", () => ({
@@ -31,6 +34,7 @@ vi.mock("../../heart/identity", () => ({
 }))
 
 import * as fs from "fs"
+import * as identity from "../../heart/identity"
 
 const QUERY_SESSION_SEARCH_DEPRECATION_STUB = {
   kind: "deprecated",
@@ -46,12 +50,133 @@ beforeEach(() => {
   vi.mocked(fs.existsSync).mockReset()
   vi.mocked(fs.readFileSync).mockReset()
   vi.mocked(fs.readdirSync).mockReset()
+  vi.mocked(fs.realpathSync).mockReset().mockImplementation((filePath) => String(filePath))
+  vi.mocked(identity.getAgentRoot).mockReturnValue("/mock/agent-root")
   vi.doUnmock("../../heart/session-transcript")
 })
 
 describe("query_session tool", () => {
   beforeEach(() => {
     vi.resetModules()
+  })
+
+  it.each(["missing-name", "missing-root", "missing-both"].flatMap((missing) => ["transcript", "status"].map((mode) => ({ missing, mode }))))(
+    "refuses $mode reads before borrowing ambient ownership: $missing",
+    async ({ missing, mode }) => {
+      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+      const tool = baseToolDefinitions.find((entry) => entry.tool.function.name === "query_session")!
+      vi.mocked(identity.getAgentRoot).mockClear()
+      vi.mocked(identity.getAgentName).mockClear()
+      vi.mocked(fs.readFileSync).mockClear()
+      const context = {
+        signin: async () => undefined,
+        ...(missing === "missing-name" || missing === "missing-both" ? {} : { agentName: "owner-a" }),
+        ...(missing === "missing-root" || missing === "missing-both" ? {} : { agentRoot: "/bundles/a.ouro" }),
+        relationshipAuthorization: {
+          advertisedToolNames: ["query_session"], authorizedContextScopes: [],
+          authorizeTool: () => ({ allowed: true as const, receiptId: "fixture" }),
+        },
+      }
+      await expect(tool.handler({ friendId: "self", channel: "inner", mode }, context))
+        .rejects.toThrow(/explicit.*owner|owner.*required/i)
+      expect(identity.getAgentRoot).not.toHaveBeenCalled()
+      expect(identity.getAgentName).not.toHaveBeenCalled()
+      expect(fs.readFileSync).not.toHaveBeenCalled()
+    },
+  )
+
+  it.each(["friendId", "channel"].flatMap((field) => ["", ".", "..", "../outside", "/outside", "a/b", "a\\b", "a\0b"].map((value) => ({ field, value }))))(
+    "rejects invalid $field coordinates before any session read: $value",
+    async ({ field, value }) => {
+      const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+      const tool = baseToolDefinitions.find((definition) => definition.tool.function.name === "query_session")!
+      vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({ version: 1, messages: [{ role: "user", content: "must not read" }] }))
+      vi.mocked(fs.readFileSync).mockClear()
+      const result = await tool.handler({ friendId: "friend", channel: "cli", [field]: value })
+      expect(result).toBe("no session found for that friend/channel/key combination.")
+      expect(fs.readFileSync).not.toHaveBeenCalled()
+      expect(result).not.toContain("/mock/agent-root")
+    },
+  )
+
+  it("queries the exact initiating root instead of a different ambient agent", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find((definition) => definition.tool.function.name === "query_session")!
+    vi.mocked(fs.readFileSync).mockImplementation((file) => JSON.stringify({
+      version: 1, messages: [{ role: "user", content: String(file).startsWith("/bundles/a.ouro/") ? "owner a" : "wrong owner" }],
+    }))
+    const result = await tool.handler({ friendId: "friend", channel: "cli", key: "session" }, {
+      signin: async () => undefined, agentName: "owner-a", agentRoot: "/bundles/a.ouro",
+    })
+    expect(result).toContain("owner a")
+    expect(result).not.toContain("wrong owner")
+    expect(fs.readFileSync).toHaveBeenCalledWith("/bundles/a.ouro/state/sessions/friend/cli/session.json", "utf-8")
+  })
+
+  it("binds both private-runtime status paths to the exact initiating owner", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const thoughts = await import("../../heart/daemon/thoughts")
+    const read = vi.spyOn(thoughts, "readPrivateRuntimeStatus").mockReturnValue({
+      queue: "empty", wake: "idle", processing: "idle", surfaced: "nothing recent",
+    })
+    const tool = baseToolDefinitions.find((definition) => definition.tool.function.name === "query_session")!
+    try {
+      await tool.handler({ friendId: "self", channel: "inner", mode: "status" }, {
+        signin: async () => undefined, agentName: "owner-a", agentRoot: "/bundles/a.ouro",
+      })
+      expect(read).toHaveBeenCalledExactlyOnceWith(
+        "/bundles/a.ouro/state/sessions/self/inner/dialog.json",
+        "/bundles/a.ouro/state/pending/self/inner/dialog",
+      )
+    } finally {
+      read.mockRestore()
+    }
+  })
+
+  it("propagates a failed confinement read rather than reading an unchecked session", async () => {
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find((definition) => definition.tool.function.name === "query_session")!
+    const failure = new Error("confinement check unavailable")
+    vi.mocked(fs.existsSync).mockReturnValue(true)
+    vi.mocked(fs.realpathSync).mockImplementation(() => { throw failure })
+    vi.mocked(fs.readFileSync).mockClear()
+    await expect(tool.handler({ friendId: "friend", channel: "cli" })).rejects.toBe(failure)
+    expect(fs.readFileSync).not.toHaveBeenCalled()
+  })
+
+  it.each(["file", "friend", "sessions"] as const)("refuses a real %s symlink escape before reading its target", async (coordinate) => {
+    const actual = await vi.importActual<typeof import("fs")>("fs")
+    const root = actual.mkdtempSync(path.join(os.tmpdir(), "ouro-session-confinement-"))
+    const agentRoot = path.join(root, "a.ouro")
+    const sessions = path.join(agentRoot, "state", "sessions")
+    const outside = path.join(root, "outside")
+    const { baseToolDefinitions } = await import("../../repertoire/tools-base")
+    const tool = baseToolDefinitions.find((definition) => definition.tool.function.name === "query_session")!
+    try {
+      const target = coordinate === "file" ? path.join(outside, "session.json")
+        : coordinate === "friend" ? path.join(outside, "cli", "session.json")
+          : path.join(outside, "friend", "cli", "session.json")
+      const link = coordinate === "file" ? path.join(sessions, "friend", "cli", "session.json")
+        : coordinate === "friend" ? path.join(sessions, "friend") : sessions
+      actual.mkdirSync(path.dirname(target), { recursive: true })
+      actual.writeFileSync(target, JSON.stringify({ version: 1, messages: [{ role: "user", content: "outside private transcript" }] }))
+      actual.mkdirSync(path.dirname(link), { recursive: true })
+      actual.symlinkSync(coordinate === "file" ? target : outside, link)
+      vi.mocked(identity.getAgentRoot).mockReturnValue(agentRoot)
+      vi.mocked(fs.existsSync).mockImplementation(actual.existsSync)
+      vi.mocked(fs.realpathSync).mockImplementation(actual.realpathSync)
+      vi.mocked(fs.readFileSync).mockImplementation(actual.readFileSync)
+      vi.mocked(fs.readFileSync).mockClear()
+
+      const result = await tool.handler({ friendId: "friend", channel: "cli" }, {
+        signin: async () => undefined, agentName: "owner-a", agentRoot,
+      })
+      expect(result).toBe("no session found for that friend/channel/key combination.")
+      expect(result).not.toContain(root)
+      expect(fs.readFileSync).not.toHaveBeenCalled()
+    } finally {
+      actual.rmSync(root, { recursive: true, force: true })
+    }
   })
 
   it("is registered in baseToolDefinitions", async () => {

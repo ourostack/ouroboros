@@ -19,7 +19,7 @@ import {
   writeFileSync,
 } from "node:fs"
 import * as path from "node:path"
-import { FileFriendStore } from "@ouro.bot/friends"
+import { FileFriendStore, getChannelCapabilities } from "@ouro.bot/friends"
 
 import { getAgentRoot } from "../heart/identity"
 import type { RunAgentOptions } from "../heart/core"
@@ -56,7 +56,8 @@ import { renderSanctuaryGroundedResponse, sanctuaryGroundingDigest } from "./san
 import { createTelegramApprovalRuntime, type TelegramApprovalRuntime } from "./telegram-approval-runtime"
 import type { SanctuaryHealthSweepResult } from "./sanctuary-health"
 import { createTelegramAuditLedger, type TelegramAuditLedger } from "./telegram-audit-ledger"
-import { loadSessionEnvelopeFile } from "../heart/session-events"
+import { extractEventText, loadSessionEnvelopeFile, selectEffectiveSessionEvents } from "../heart/session-events"
+import type { ToolContext } from "../repertoire/tools-base"
 import { getExternalEventRoot, type PrivilegedProtectiveAction } from "../heart/external-events/router"
 import { withSessionTurnLease } from "../mind/session-transaction"
 import { FileApprovalCheckpointStore, FileApprovalTokenStore } from "../heart/approval-files"
@@ -939,6 +940,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     throw primaryError
   }
   let effectJournal: FileTelegramEffectJournal | undefined
+  let approvalRuntime: TelegramApprovalRuntime | undefined
   const getEffectJournal = (): FileTelegramEffectJournal => {
     effectJournal ??= new FileTelegramEffectJournal(path.join(agentRoot, "state", "telegram", "effects"))
     return effectJournal
@@ -959,6 +961,13 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     }
     if (input.authorClass === "system_failsafe" && (input.effect.kind !== "text" || input.effect.text !== FIXED_USENET_SYSTEM_FAILSAFE || !input.idempotencyKey.startsWith("system-failsafe:"))) {
       return { allowed: false, reason: "system failsafe shape is not fixed" }
+    }
+    if (target.friendId === configuredOwnerFriendId && target.sessionKey === configuredOwnerSessionKey
+      && await approvalRuntime?.isPendingTerminalControl?.(input)) {
+      return {
+        allowed: true, receiptId: `approval-terminal:${createHash("sha256").update(input.idempotencyKey).digest("hex")}`,
+        expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(), transport: { chatId: authorizedChatId },
+      }
     }
     if (options.authorizeRelationshipEffect) {
       if (target.friendId === configuredOwnerFriendId && target.sessionKey !== configuredOwnerSessionKey) return { allowed: false, reason: "owner relationship session binding changed" }
@@ -988,7 +997,6 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   }
   const approvalEffects = createTelegramApprovalEffectPort({ target: configuredOwnerTarget(), chatId: authorizedChatId, execute: executeAuthorizedEffect, record: recordConfiguredOwnerEffect })
   let toolContext: ReturnType<typeof createSanctuaryToolContext> | undefined
-  let approvalRuntime: TelegramApprovalRuntime | undefined
   let approvalTransport: TelegramApprovalTransport | undefined
   let interactiveControl: ReturnType<typeof createSanctuaryInteractiveControl> | undefined
   try {
@@ -1002,9 +1010,35 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       subject,
       identityKey,
       toolContext: toolContext ?? {},
+      resolveLiveToolContext: async (record) => {
+        const sessionPath = getSenseSessionPath(options.agentName, configuredOwnerFriendId, "telegram", configuredOwnerSessionKey, agentRoot)
+        if (record.transport !== "telegram" || record.requesterId !== subject
+          || record.transportUserId !== subject || record.transportChatId !== subject
+          || record.sessionKey !== configuredOwnerSessionKey || path.resolve(record.sessionPath) !== path.resolve(sessionPath)) {
+          throw new Error("approval is not bound to the configured owner session")
+        }
+        const envelope = loadSessionEnvelopeFile(sessionPath)
+        const ingress = envelope && selectEffectiveSessionEvents(envelope.events).findLast((event) => event.role === "user")
+        if (!ingress) throw new Error("approval owner ingress is unavailable")
+        const relationshipAuthorization = await resolveLiveRelationshipAuthorization({
+          friendId: configuredOwnerFriendId, requestId: `approval:${record.approvalId}`, sessionEventId: ingress.id,
+          botId: botId!, userId: authorizedUserId, chatId: authorizedChatId, sessionKey: configuredOwnerSessionKey,
+        })
+        if (relationshipAuthorization.profileId !== "sanctuary-owner") throw new Error("approval owner profile is unavailable")
+        const friendStore = new FileFriendStore(path.join(agentRoot, "friends"))
+        const friend = await friendStore.get(configuredOwnerFriendId)
+        if (!friend) throw new Error("approval owner Friend is unavailable")
+        return {
+          ...toolContext, signin: async () => undefined, agentName: options.agentName, agentRoot,
+          currentSession: { friendId: friend.id, channel: "telegram", key: configuredOwnerSessionKey, sessionPath },
+          currentUserMessage: extractEventText(ingress),
+          context: { friend, channel: getChannelCapabilities("telegram") }, friendStore, relationshipAuthorization,
+        }
+      },
       effects: approvalEffects,
       effectBarrier: acceptanceAuditBarrier,
       dependencies: {
+        agentRoot,
         acceptanceMarker: () => {
           const scenarioHandleDigest = readScenarioHandleDigest()
           return scenarioHandleDigest ? { scenarioHandleDigest } : null
@@ -1166,6 +1200,22 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       emitNervesEvent({ level: "error", component: "senses", event: "senses.telegram_system_failsafe_error", message: "Telegram system failsafe reconciliation failed", meta: { agentName: options.agentName, subject, error: transportError(error) } })
     }
   }
+  async function resolveLiveRelationshipAuthorization(
+    input: Parameters<NonNullable<CreateTelegramSenseAppOptions["resolveRelationshipAuthorization"]>>[0],
+  ): Promise<NonNullable<ToolContext["relationshipAuthorization"]>> {
+    if (!options.resolveRelationshipAuthorization) throw new Error("Telegram relationship authorization resolver is unavailable")
+    const authorization = await options.resolveRelationshipAuthorization(input)
+    if (authorization.subject.friendId !== input.friendId || authorization.subject.admissionState !== "active") throw new Error("Telegram relationship admission is not active")
+    return {
+      requestId: input.requestId,
+      profileId: authorization.profileId,
+      authorizedContextScopes: authorization.authorizedContextScopes,
+      advertisedToolNames: authorization.advertisedToolNames,
+      actor: authorization.actor,
+      resolveCurrent: () => resolveLiveRelationshipAuthorization(input),
+      authorizeTool: async (name, args) => (await options.resolveRelationshipAuthorization!(input)).authorizeTool(name, args),
+    }
+  }
   const prepareRelationshipRunAgentOptions = (input: {
     friendId: string
     requestId: string
@@ -1178,21 +1228,8 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   }): NonNullable<RunSenseTurnOptions["prepareRunAgentOptions"]> => {
     if (!options.resolveRelationshipAuthorization) throw new Error("Telegram relationship authorization resolver is unavailable")
     const relationshipCoordinates = { ...input, botId: botId! }
-    const resolveLiveRelationshipAuthorization = async () => {
-      const authorization = await options.resolveRelationshipAuthorization!(relationshipCoordinates)
-      if (authorization.subject.friendId !== input.friendId || authorization.subject.admissionState !== "active") throw new Error("Telegram relationship admission is not active")
-      return {
-        requestId: input.requestId,
-        profileId: authorization.profileId,
-        authorizedContextScopes: authorization.authorizedContextScopes,
-        advertisedToolNames: authorization.advertisedToolNames,
-        actor: authorization.actor,
-        authorizeTool: async (name: string, args: Record<string, string>) =>
-          (await options.resolveRelationshipAuthorization!(relationshipCoordinates)).authorizeTool(name, args),
-      }
-    }
     return async ({ runAgentOptions, activeCares = [], careEvidenceNow = Date.now() }) => {
-      const relationshipAuthorization = await resolveLiveRelationshipAuthorization()
+      const relationshipAuthorization = await resolveLiveRelationshipAuthorization(relationshipCoordinates)
       const isSanctuaryOwner = options.agentName === "sanctuary" && relationshipAuthorization.profileId === "sanctuary-owner"
       const isSanctuaryHouseholdConversation = options.agentName === "sanctuary"
         && (relationshipAuthorization.profileId === "sanctuary-owner" || relationshipAuthorization.profileId === "sanctuary-household")
