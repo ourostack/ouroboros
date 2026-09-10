@@ -2787,12 +2787,9 @@ Packaged deployment-target containment gates:
   closed after eight attempts. It always makes bounded exact-ID unpause attempts,
   verifies the same ID and PID resumed their original running, unpaused state,
   and only then performs the final full-profile topology capture. It
-  rejects every owned UDP listener and every externally reachable owned TCP listener. Only loopback
-  Mailbox port 6876 plus stream-listening endpoints at the fixed daemon and
-  acceptance Unix control paths are permitted; all other named Unix endpoint
-  types (including datagrams) fail closed. Inherited descriptors for the same
-  socket inode are deduplicated, while unknown loopback ports, wildcard/host-address
-  listeners, process/socket/listener drift, or ambiguous ownership fail closed.
+  rejects every owned UDP listener and every externally reachable owned TCP listener.
+  Only loopback Mailbox port 6876 plus stream-listening endpoints at /tmp/ouroboros-daemon.sock, /tmp/ouroboros-daemon.sock.frontend, and /home/ouro/AgentBundles/sanctuary.ouro/state/acceptance/telegram-control.sock are permitted; all other named Unix endpoint types (including datagrams) fail closed.
+  Inherited descriptors for the same socket inode are deduplicated, while unknown loopback ports, wildcard/host-address listeners, process/socket/listener drift, or ambiguous ownership fail closed.
   Unit 18 uses the separately packaged fixed final command after activation.
   It accepts either the legacy-adoption topology with no canonical rollback or
   exactly one stopped, non-autostarted rollback; running/autostarted rollback,
