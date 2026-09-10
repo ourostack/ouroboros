@@ -21,14 +21,6 @@ export function assertRelationshipToolOwner(ctx?: ToolContext): void {
   }
 }
 
-const ajv = new Ajv({
-  strict: true,
-  allErrors: true,
-  coerceTypes: false,
-  removeAdditional: false,
-  useDefaults: false,
-})
-
 const validators = new WeakMap<object, ValidateFunction>()
 
 function unsupportedSchemaFeature(value: unknown, seen = new WeakSet<object>()): string | undefined {
@@ -136,7 +128,14 @@ export function validateAdvertisedToolArguments(
 
   let validator = validators.get(schema)
   try {
-    validator ??= ajv.compile(schema)
+    // Each snapshot owns its compiler registry; only the weak cache is shared.
+    validator ??= new Ajv({
+      strict: true,
+      allErrors: true,
+      coerceTypes: false,
+      removeAdditional: false,
+      useDefaults: false,
+    }).compile(schema)
     validators.set(schema, validator)
   } catch (error) {
     const reason = String(error)

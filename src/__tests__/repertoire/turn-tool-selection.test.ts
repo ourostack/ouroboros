@@ -225,6 +225,36 @@ describe("turn-local canonical tool selection", () => {
     expect(b.manager.callTool).not.toHaveBeenCalled()
   })
 
+  it("keeps repeated and cross-owner MCP schema IDs independently callable through canonical selection", async () => {
+    const schema = {
+      $id: "urn:ouro:test:canonical-mcp-schema",
+      type: "object",
+      properties: { value: { type: "string" } },
+      required: ["value"],
+      additionalProperties: false,
+    }
+    const a = makeMcpView([{ server: "schema", tools: [{ name: "status", description: "Owned schema", inputSchema: schema }] }], { content: [{ type: "text", text: "A result" }] })
+    const b = makeMcpView([{
+      server: "schema",
+      tools: [{ name: "status", description: "Owned schema", inputSchema: { ...schema, properties: { value: { type: "number" } } } }],
+    }], { content: [{ type: "text", text: "B result" }] }, undefined, { agentName: "owner-b", agentRoot: "/mock/owner-b.ouro" })
+    const turn = (view: ReturnType<typeof makeMcpView>): ToolContext => {
+      const selectCurrentTools = () => selectToolsForChannel(getChannelCapabilities("cli"), undefined, undefined, undefined, view, undefined, view.owner)
+      return { ...MCP_CONTEXT, ...view.owner, mcpManager: view, toolSelection: selectCurrentTools(), selectCurrentTools }
+    }
+    const first = turn(a)
+    const second = turn(a)
+    expect(first.toolSelection!.ordinary.find(({ tool }) => tool.function.name === "schema_status")!.tool.function.parameters)
+      .not.toBe(second.toolSelection!.ordinary.find(({ tool }) => tool.function.name === "schema_status")!.tool.function.parameters)
+
+    expect(await executeTool("schema_status", { value: "safe" }, first)).toEqual({ kind: "handler_succeeded", text: "A result" })
+    expect(await executeTool("schema_status", { value: "safe" }, second)).toEqual({ kind: "handler_succeeded", text: "A result" })
+    expect(await execTool("schema_status", { value: 2 }, turn(b))).toBe("B result")
+    expect(await execTool("schema_status", { value: 2 }, turn(a))).toContain("invalid tool arguments: /value")
+    expect(a.manager.callTool).toHaveBeenCalledTimes(2)
+    expect(b.manager.callTool).toHaveBeenCalledOnce()
+  })
+
   it("does not dispatch a prior turn's MCP name when the new turn has no MCP selection", async () => {
     const view = makeMcpView([{ server: "shared", tools: [{ name: "status", description: "Status", inputSchema: {} }] }])
     getToolsForChannel(undefined, undefined, undefined, undefined, view)

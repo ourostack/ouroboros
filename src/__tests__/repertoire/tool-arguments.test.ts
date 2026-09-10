@@ -48,6 +48,56 @@ describe("strict advertised tool arguments", () => {
     })
   })
 
+  it.each(["fragment", "absolute"])("keeps %s self-references valid across independently cloned schemas", (reference) => {
+    const id = `urn:ouro:test:tool-arguments:${reference}`
+    const schema = {
+      $id: id,
+      type: "object",
+      definitions: { value: { type: "integer", minimum: 1 } },
+      properties: { value: { $ref: `${reference === "absolute" ? id : ""}#/definitions/value` } },
+      required: ["value"],
+      additionalProperties: false,
+    }
+    const cloned = structuredClone(schema)
+
+    expect(validateAdvertisedToolArguments('{"value":1}', schema)).toMatchObject({ ok: true })
+    expect(validateAdvertisedToolArguments('{"value":1}', cloned)).toMatchObject({ ok: true })
+    expect(validateAdvertisedToolArguments('{"value":"1"}', cloned)).toMatchObject({ ok: false, reason: expect.stringContaining("/value") })
+    expect(validateAdvertisedToolArguments('{"value":0}', cloned)).toMatchObject({ ok: false, reason: expect.stringContaining("/value") })
+    expect(validateAdvertisedToolArguments('{"value":1,"extra":true}', cloned)).toMatchObject({ ok: false, reason: expect.stringContaining("additional") })
+  })
+
+  it("does not resolve a tool's external reference from another tool's compiled schema", () => {
+    const schema = {
+      $id: "urn:ouro:test:tool-arguments:independent",
+      type: "object",
+      properties: { value: { type: "string" } },
+      required: ["value"],
+      additionalProperties: false,
+    }
+    expect(validateAdvertisedToolArguments('{"value":"own"}', schema)).toMatchObject({ ok: true })
+    expect(validateAdvertisedToolArguments('{"value":"own"}', { $ref: schema.$id })).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("advertised schema is invalid"),
+    })
+  })
+
+  it("does not retain a schema ID after failed compilation", () => {
+    const id = "urn:ouro:test:tool-arguments:failed-compilation"
+    expect(validateAdvertisedToolArguments("{}", { $id: id, type: "not-a-json-schema-type" })).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("advertised schema is invalid"),
+    })
+    expect(validateAdvertisedToolArguments("{}", { $id: id, type: "object" })).toMatchObject({ ok: true })
+  })
+
+  it("keeps built-in meta-schema aliases available for fresh schema snapshots", () => {
+    const schema = { $schema: "http://json-schema.org/schema#", type: "object" }
+    for (let turn = 0; turn < 2; turn++) {
+      expect(validateAdvertisedToolArguments("{}", structuredClone(schema))).toMatchObject({ ok: true })
+    }
+  })
+
   it("allows shared subschemas that are reused without forming a cycle", () => {
     const reusableProperty = { type: "string" }
     const schema = {
