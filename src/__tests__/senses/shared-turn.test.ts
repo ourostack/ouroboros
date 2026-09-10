@@ -1583,9 +1583,13 @@ describe("runSenseTurn", () => {
       friendId: "friend-1",
       userMessage: "hello",
       runtimeMcpServers,
+      toolContext: { agentName: "other-agent", agentRoot: "/other/agent.ouro" },
     })
 
-    expect(mockGetSharedMcpManager).toHaveBeenCalledWith({ runtimeServers: runtimeMcpServers })
+    const owner = { agentName: "test-agent", agentRoot: "/tmp/test-agent" }
+    expect(mockGetSharedMcpManager).toHaveBeenCalledWith({ ...owner, runtimeServers: runtimeMcpServers })
+    expect(mockReleaseRuntimeMcpServers).toHaveBeenCalledWith(owner)
+    expect(mockHandleInboundTurn.mock.calls[0][0].runAgentOptions.toolContext).toMatchObject(owner)
   })
 
   it("releases each runtime MCP before the next queued turn starts", async () => {
@@ -1642,6 +1646,10 @@ describe("runSenseTurn", () => {
     await Promise.all([first, second])
 
     expect(order).toEqual(["turn:1", "release:1", "turn:2", "release:2"])
+    expect(mockReleaseRuntimeMcpServers.mock.calls).toEqual([
+      [{ agentName: "test-agent", agentRoot: "/tmp/test-agent" }],
+      [{ agentName: "test-agent", agentRoot: "/tmp/test-agent" }],
+    ])
   })
 
   it("releases runtime MCPs when a turn fails", async () => {
@@ -1660,9 +1668,10 @@ describe("runSenseTurn", () => {
     })).rejects.toThrow("provider failed")
 
     expect(mockReleaseRuntimeMcpServers).toHaveBeenCalledOnce()
+    expect(mockReleaseRuntimeMcpServers).toHaveBeenCalledWith({ agentName: "test-agent", agentRoot: "/tmp/test-agent" })
   })
 
-  it("calls getSharedMcpManager with undefined when no runtimeMcpServers are supplied", async () => {
+  it("keeps explicit owner coordinates when no runtimeMcpServers are supplied", async () => {
     const { runSenseTurn } = await import("../../senses/shared-turn")
     await runSenseTurn({
       agentName: "test-agent",
@@ -1672,7 +1681,9 @@ describe("runSenseTurn", () => {
       userMessage: "hello",
     })
 
-    expect(mockGetSharedMcpManager).toHaveBeenCalledWith(undefined)
+    expect(mockGetSharedMcpManager).toHaveBeenCalledWith({
+      agentName: "test-agent", agentRoot: "/tmp/test-agent", runtimeServers: undefined,
+    })
     expect(mockReleaseRuntimeMcpServers).not.toHaveBeenCalled()
   })
 

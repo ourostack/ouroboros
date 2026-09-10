@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { createHash } from "node:crypto"
+import { createHash, createHmac } from "node:crypto"
 
 const runtimeMocks = vi.hoisted(() => {
   const store = {
@@ -29,6 +29,7 @@ const runtimeMocks = vi.hoisted(() => {
     sendApproval: vi.fn(),
     terminalizeOrphaned: vi.fn(),
     terminalizeRecovered: vi.fn(),
+    validatePendingTerminalControl: vi.fn(),
   }
   return {
     store,
@@ -50,6 +51,11 @@ const runtimeMocks = vi.hoisted(() => {
     readSessionTransaction: vi.fn(() => ({ revision: "revision-current" })),
     withSessionTurnLease: vi.fn(async (_path: string, callback: (lease: object) => unknown) => callback({ lease: true })),
     execTool: vi.fn(),
+    executeTool: vi.fn(),
+    preflightToolCall: vi.fn(),
+    selectToolsForChannel: vi.fn(),
+    getProviderRuntime: vi.fn(),
+    getSharedMcpManager: vi.fn(),
     resolveToolDefinition: vi.fn(),
     approvalPolicyForInvocation: vi.fn(async () => ({ kind: "required", policyId: "restart-policy", actionClass: "unraid.container.restart", requiresSoleCall: true })),
     emitNervesEvent: vi.fn(),
@@ -87,6 +93,7 @@ vi.mock("../../heart/tool-approval", async (importOriginal) => {
 vi.mock("../../heart/core", () => ({
   resumeApprovalContinuation: runtimeMocks.resumeApprovalContinuation,
   runAgent: runtimeMocks.runAgent,
+  getProviderRuntime: runtimeMocks.getProviderRuntime,
 }))
 
 vi.mock("../../heart/identity", () => ({ getAgentRoot: runtimeMocks.getAgentRoot }))
@@ -98,8 +105,15 @@ vi.mock("../../mind/session-transaction", () => ({
 }))
 vi.mock("../../repertoire/tools", () => ({
   execTool: runtimeMocks.execTool,
+  executeTool: runtimeMocks.executeTool,
+  preflightToolCall: runtimeMocks.preflightToolCall,
+  selectToolsForChannel: runtimeMocks.selectToolsForChannel,
   resolveToolDefinition: runtimeMocks.resolveToolDefinition,
   approvalPolicyForInvocation: runtimeMocks.approvalPolicyForInvocation,
+}))
+vi.mock("../../repertoire/mcp-manager", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../repertoire/mcp-manager")>(),
+  getSharedMcpManager: runtimeMocks.getSharedMcpManager,
 }))
 vi.mock("../../nerves/runtime", () => ({ emitNervesEvent: runtimeMocks.emitNervesEvent, emitNervesEventDurable: runtimeMocks.emitNervesEventDurable }))
 vi.mock("../../heart/daemon/sanctuary-acceptance-marker", () => ({
@@ -120,6 +134,9 @@ import {
   formatTelegramApprovalPrompt,
 } from "../../senses/telegram-approval-runtime"
 import { ApprovalExecutionFailedError } from "../../heart/tool-approval"
+import type { ToolContext } from "../../repertoire/tools-base"
+
+function success(text: string) { return { kind: "handler_succeeded" as const, text } }
 
 it("renders phone-clear Sanctuary approval prompts without internal names or JSON", () => {
   expect(formatTelegramApprovalPrompt("sanctuary_resume_download_queue", {})).toBe("Resume household downloads? This can spend prepaid download credit. I’ll verify the queue actually resumed.")
@@ -140,7 +157,7 @@ const baseRecord = {
   continuationEpoch: 7,
 }
 
-function makeRuntime(effectBarrier: () => void = vi.fn(), toolContext: Record<string, unknown> = { agentName: "sanctuary" }) {
+function makeRuntime(effectBarrier: () => void = vi.fn(), toolContext: Partial<ToolContext> = { agentName: "sanctuary" }) {
   const effects = {
     sendText: runtimeMocks.approvalSendText,
     sendCard: vi.fn(),
@@ -155,6 +172,19 @@ function makeRuntime(effectBarrier: () => void = vi.fn(), toolContext: Record<st
     subject: "tg_stable-subject",
     identityKey: "k".repeat(43),
     toolContext,
+    resolveLiveToolContext: async (record) => ({
+      signin: async () => undefined,
+      agentName: "sanctuary", agentRoot: "/agents/sanctuary.ouro",
+      ...toolContext,
+      currentSession: { friendId: "owner", channel: "telegram", key: record.sessionKey, sessionPath: record.sessionPath },
+      context: { friend: { id: "owner", trustLevel: "family" }, channel: "telegram" } as ToolContext["context"],
+      relationshipAuthorization: {
+        profileId: "sanctuary-owner", authorizedContextScopes: [], advertisedToolNames: [record.toolName],
+        actor: { friendId: "owner", trustLevel: "family", sessionEventId: "evt-1" },
+        authorizeTool: async () => ({ allowed: true, receiptId: "current-owner" }),
+        ...toolContext.relationshipAuthorization,
+      },
+    }),
     effects,
     effectBarrier,
   })
@@ -178,6 +208,7 @@ beforeEach(() => {
   runtimeMocks.transport.recoverDecisionAttempt.mockResolvedValue(true)
   runtimeMocks.transport.terminalizeOrphaned.mockResolvedValue({ terminalEditSucceeded: true })
   runtimeMocks.transport.terminalizeRecovered.mockResolvedValue(undefined)
+  runtimeMocks.transport.validatePendingTerminalControl.mockResolvedValue(undefined)
   runtimeMocks.commitApprovalProposal.mockReturnValue({
     record: { ...baseRecord, state: "awaiting_prompt_binding" },
     decisionToken: "server-secret",
@@ -200,9 +231,31 @@ beforeEach(() => {
   runtimeMocks.approvalSendText.mockImplementation(async (input: { chatId: string; text: string }) => runtimeMocks.sendTelegramText({}, input.chatId, input.text))
   runtimeMocks.sendTelegramText.mockResolvedValue(undefined)
   runtimeMocks.readSanctuaryAcceptanceMarker.mockReturnValue(null)
+  runtimeMocks.getProviderRuntime.mockResolvedValue({ model: "fixture-model", capabilities: new Set() })
+  runtimeMocks.getSharedMcpManager.mockResolvedValue(null)
+  runtimeMocks.selectToolsForChannel.mockReturnValue({
+    ordinary: [{ tool: { type: "function", function: { name: "unraid_restart_container" } } }], engine: [],
+  })
+  runtimeMocks.resolveToolDefinition.mockImplementation((name, selection) => selection?.ordinary.find((definition) => definition.tool.function.name === name))
+  runtimeMocks.preflightToolCall.mockResolvedValue({ kind: "ready" })
+  runtimeMocks.executeTool.mockResolvedValue(success('{"ok":true,"data":{"container":{"id":"abc","name":"calibre-web"},"beforeState":"running","afterState":"running","observedRestart":true,"degraded":false}}'))
 })
 
 describe("Telegram approval runtime safety", () => {
+  it.each(["handler_failed", "handler_indeterminate", "rejected_before_handler"] as const)(
+    "preserves typed %s outcomes without treating successful-looking output as an effect",
+    async (kind) => {
+      const outcome = { kind, text: "Everything completed successfully." }
+      await expect(executeApprovedTelegramTool("unraid_restart_container", {}, async () => outcome, kind === "handler_failed" ? "scenario" : undefined, kind === "handler_failed" ? "approval" : undefined)).resolves.toBe(outcome)
+      expect(runtimeMocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
+        event: "senses.telegram_approved_restart_error", meta: expect.objectContaining({ outcome: kind }),
+      }))
+      runtimeMocks.emitNervesEvent.mockClear()
+      await expect(executeApprovedTelegramTool("other_tool", {}, async () => outcome)).resolves.toBe(outcome)
+      expect(runtimeMocks.emitNervesEvent).not.toHaveBeenCalled()
+    },
+  )
+
   it("checks the acceptance barrier before approval delivery and approved tool execution", async () => {
     const barrierFailure = new Error("acceptance audit exhausted")
     const barrier = vi.fn(() => { throw barrierFailure })
@@ -236,25 +289,26 @@ describe("Telegram approval runtime safety", () => {
 
   it("preserves a successful approved restart result", async () => {
     const result = '{"ok":true,"data":{"container":{"id":"abc","name":"calibre-web"},"beforeState":"running","afterState":"running","observedRestart":true,"degraded":false}}'
-    const execute = vi.fn().mockResolvedValue(result)
+    const outcome = success(result)
+    const execute = vi.fn().mockResolvedValue(outcome)
 
     await expect(executeApprovedTelegramTool("unraid_restart_container", { container: "calibre-web" }, execute))
-      .resolves.toBe(result)
+      .resolves.toBe(outcome)
   })
 
   it("accepts only an independently verified approved download resume", async () => {
     const result = '{"ok":true,"data":{"verified":true,"after":{"paused":false}}}'
-    await expect(executeApprovedTelegramTool("sanctuary_resume_download_queue", {}, vi.fn().mockResolvedValue(result))).resolves.toBe(result)
-    await expect(executeApprovedTelegramTool("sanctuary_resume_download_queue", {}, vi.fn().mockResolvedValue('{"ok":true,"data":{"verified":false,"after":{"paused":true}}}'))).rejects.toThrow("not independently verified")
+    await expect(executeApprovedTelegramTool("sanctuary_resume_download_queue", {}, vi.fn().mockResolvedValue(success(result)))).resolves.toEqual(success(result))
+    await expect(executeApprovedTelegramTool("sanctuary_resume_download_queue", {}, vi.fn().mockResolvedValue(success('{"ok":true,"data":{"verified":false,"after":{"paused":true}}}')))).rejects.toThrow("not independently verified")
     for (const malformed of ["null", '{"ok":true,"data":null}', '{"ok":true,"data":{"verified":true,"after":null}}']) {
-      await expect(executeApprovedTelegramTool("sanctuary_resume_download_queue", {}, vi.fn().mockResolvedValue(malformed))).rejects.toThrow("not independently verified")
+      await expect(executeApprovedTelegramTool("sanctuary_resume_download_queue", {}, vi.fn().mockResolvedValue(success(malformed)))).rejects.toThrow("not independently verified")
     }
-    await expect(executeApprovedTelegramTool("sanctuary_resume_download_queue", {}, vi.fn().mockResolvedValue("invalid"))).rejects.toThrow("invalid result")
+    await expect(executeApprovedTelegramTool("sanctuary_resume_download_queue", {}, vi.fn().mockResolvedValue(success("invalid")))).rejects.toThrow("invalid result")
   })
 
   it("binds approved restart lifecycle events to the exact approval and scenario", async () => {
     const result = '{"ok":true,"data":{"container":{"id":"abc","name":"calibre-web"},"beforeState":"running","afterState":"running","observedRestart":true,"degraded":false}}'
-    await executeApprovedTelegramTool("unraid_restart_container", { container: "calibre-web" }, vi.fn().mockResolvedValue(result), "a".repeat(64), "approval-1")
+    await executeApprovedTelegramTool("unraid_restart_container", { container: "calibre-web" }, vi.fn().mockResolvedValue(success(result)), "a".repeat(64), "approval-1")
     expect(runtimeMocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({ event: "senses.telegram_approved_restart_start", meta: { scenarioHandleDigest: "a".repeat(64), approvalId: "approval-1" } }))
     expect(runtimeMocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({ event: "senses.telegram_approved_restart_end", meta: { scenarioHandleDigest: "a".repeat(64), approvalId: "approval-1", observedRestart: true } }))
 
@@ -287,16 +341,17 @@ describe("Telegram approval runtime safety", () => {
     ['{"ok":true,"data":{"container":{"id":"abc","name":"calibre-web"},"beforeState":"running","afterState":"running","observedRestart":false,"degraded":false}}', "approved restart returned an invalid result"],
     ['{"ok":true,"data":{"container":{"id":"abc","name":"calibre-web"},"beforeState":"running","afterState":"running","observedRestart":true,"degraded":true}}', "approved restart returned an invalid result"],
   ])("turns failed and structurally invalid approved restarts into failed approvals", async (result, message) => {
-    const execute = vi.fn().mockResolvedValue(result)
+    const execute = vi.fn().mockResolvedValue(success(result))
 
     await expect(executeApprovedTelegramTool("unraid_restart_container", { container: "calibre-web" }, execute))
       .rejects.toEqual(expect.objectContaining({ name: ApprovalExecutionFailedError.name, message }))
   })
 
   it("does not reinterpret ordinary approved tool output", async () => {
-    const execute = vi.fn().mockResolvedValue("ordinary output")
+    const outcome = success("ordinary output")
+    const execute = vi.fn().mockResolvedValue(outcome)
 
-    await expect(executeApprovedTelegramTool("ponder", {}, execute)).resolves.toBe("ordinary output")
+    await expect(executeApprovedTelegramTool("other_tool", {}, execute)).resolves.toBe(outcome)
   })
 
   it("rethrows ordinary and non-Error restart failures without misclassifying private detail", async () => {
@@ -312,6 +367,104 @@ describe("Telegram approval runtime safety", () => {
 })
 
 describe("Telegram approval runtime orchestration", () => {
+  it.each(["missing-producer", "wrong-root", "non-error"] as const)("refuses unavailable current authority at every decision seam: %s", async (change) => {
+    if (change === "missing-producer") createTelegramApprovalRuntime({
+      agentName: "sanctuary", api: { request: vi.fn(), stop: vi.fn() }, authorizedUserId: "10", authorizedChatId: "20",
+      subject: "tg_stable-subject", identityKey: "k".repeat(43), toolContext: {},
+      effects: { sendText: vi.fn(), sendCard: vi.fn(), edit: vi.fn(), acknowledge: vi.fn() },
+    })
+    else makeRuntime(vi.fn(), change === "wrong-root" ? { agentRoot: "/other.ouro" } : {})
+    if (change === "non-error") runtimeMocks.getProviderRuntime.mockRejectedValue("provider unavailable")
+    runtimeMocks.store.read.mockReturnValue({ ...baseRecord, state: "proposed" })
+    runtimeMocks.executeApprovalDecision.mockImplementation(async (options) => {
+      await expect(options.resolveTool(baseRecord.toolName)).resolves.toBeUndefined()
+      await expect(options.resolveApprovalPolicy(baseRecord.toolName, baseRecord.arguments)).resolves.toEqual({ kind: "not_required" })
+      await expect(options.preflight({ record: baseRecord, arguments: baseRecord.arguments })).resolves.toMatchObject({ ok: false })
+      await expect(options.execute(baseRecord.toolName, baseRecord.arguments)).resolves.toMatchObject({ kind: "rejected_before_handler" })
+      return { ...baseRecord, state: "drifted" }
+    })
+    await transportOptions().onDecision({ approvalId: "approval-1", decision: "approve" })
+    expect(runtimeMocks.executeTool).not.toHaveBeenCalled()
+    expect(runtimeMocks.preflightToolCall).not.toHaveBeenCalled()
+  })
+
+  it("passes a canonical guard rejection back to the pre-attempt decision owner", async () => {
+    makeRuntime()
+    runtimeMocks.store.read.mockReturnValue({ ...baseRecord, state: "proposed" })
+    runtimeMocks.preflightToolCall.mockResolvedValue({ kind: "rejected_before_handler", text: "guard hold" })
+    runtimeMocks.executeApprovalDecision.mockImplementation(async (options) => {
+      const definition = await options.resolveTool(baseRecord.toolName)
+      await expect(options.preflight({ record: baseRecord, arguments: baseRecord.arguments, definition })).resolves.toEqual({ ok: false, reason: "guard hold" })
+      return { ...baseRecord, state: "drifted" }
+    })
+    await transportOptions().onDecision({ approvalId: "approval-1", decision: "approve" })
+    expect(runtimeMocks.executeTool).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    "edit", "ack", "author", "new-text", "missing-record", "message-null", "transport", "requester", "user", "chat", "session",
+    "message-binding", "not-terminal", "accepted", "ack-text", "ack-alert", "ack-query", "ack-key",
+    "edit-text", "edit-message", "edit-key", "missing-terminal", "expired-deadline", "expired-observation", "integrity-error",
+  ])("keeps terminal controls bound to their exact existing record and payload: %s", async (change) => {
+    const runtime = makeRuntime()
+    const subject = "tg_stable-subject"
+    const query = "query-1"
+    const digest = createHash("sha256").update(query).digest("hex")
+    const pending = {
+      approvalId: baseRecord.approvalId, messageId: "99" as string | null,
+      expiresAt: 1_300_000,
+      terminal: { accepted: true, terminalText: "completed" } as { accepted: boolean; terminalText: string } | undefined,
+      decisionAttempt: { queryIdDigest: digest },
+      expiryObservation: undefined as { deadlineAt: number; observedAt: number } | undefined,
+    }
+    const record = {
+      ...baseRecord, requesterId: subject, transportUserId: subject, transportChatId: subject,
+      transport: "telegram", transportMessageId: `tgm_${createHmac("sha256", subject).update("message:99").digest("base64url")}`,
+    }
+    if (change === "message-null") pending.messageId = null
+    if (change === "transport") record.transport = "frontend"
+    if (change === "requester") record.requesterId = "other"
+    if (change === "user") record.transportUserId = "other"
+    if (change === "chat") record.transportChatId = "other"
+    if (change === "session") record.sessionKey = "other"
+    if (change === "message-binding") record.transportMessageId = "other"
+    if (change === "not-terminal") record.state = "proposed"
+    if (change === "accepted") pending.terminal!.accepted = false
+    if (change === "missing-terminal") pending.terminal = undefined
+    if (change.startsWith("expired-")) {
+      record.state = "expired"
+      pending.terminal = undefined
+      pending.expiryObservation = {
+        deadlineAt: change === "expired-deadline" ? 1_200_000 : pending.expiresAt,
+        observedAt: change === "expired-observation" ? 1_200_000 : pending.expiresAt,
+      }
+    }
+    runtimeMocks.store.read.mockReturnValue(change === "missing-record" ? undefined : record)
+    runtimeMocks.transport.listPendingDeliveries.mockReturnValue([pending])
+    if (change === "integrity-error") runtimeMocks.transport.validatePendingTerminalControl.mockRejectedValueOnce(new Error("native integrity rejected"))
+    const acknowledgement = change === "ack" || change.startsWith("ack-")
+    const text = change === "edit-text" ? "arbitrary" : change.startsWith("expired-") ? "⚠️ Approval expired" : "completed"
+    const input: Parameters<NonNullable<typeof runtime.isPendingTerminalControl>>[0] = {
+      authorClass: change === "author" ? "butler" : "control",
+      idempotencyKey: acknowledgement
+        ? change === "ack-key" ? "other" : `approval-callback:${digest}`
+        : change === "edit-key" ? "other" : `approval:${baseRecord.approvalId}:edit:${createHash("sha256").update(text).digest("hex")}`,
+      effect: change === "new-text" ? { kind: "text", text: "arbitrary" }
+        : acknowledgement ? {
+          kind: "callback_ack", callbackQueryId: change === "ack-query" ? "other" : query,
+          ...(change === "ack-text" ? { text: "arbitrary" } : {}),
+          ...(change === "ack-alert" ? { showAlert: true } : {}),
+        }
+          : { kind: "edit", messageId: change === "edit-message" ? 100 : 99, text },
+    }
+    if (change === "integrity-error") {
+      await expect(runtime.isPendingTerminalControl!(input)).rejects.toThrow("native integrity rejected")
+    } else {
+      await expect(runtime.isPendingTerminalControl!(input)).resolves.toBe(change === "edit" || change === "ack")
+      expect(runtimeMocks.transport.validatePendingTerminalControl).toHaveBeenCalledTimes(change === "edit" || change === "ack" ? 1 : 0)
+    }
+  })
+
   it("executes every default transport adapter and both durable settlement emitters", async () => {
     makeRuntime()
     const options = transportOptions()
@@ -414,7 +567,7 @@ describe("Telegram approval runtime orchestration", () => {
     const scenarioHandleDigest = "a".repeat(64)
     runtimeMocks.readSanctuaryAcceptanceMarker.mockReturnValue({ scenarioHandleDigest })
     runtimeMocks.sendTelegramText.mockResolvedValue([77])
-    runtimeMocks.resumeApprovalContinuation.mockImplementation(async (options) => { await options.deliver("observed restart result") })
+    runtimeMocks.resumeApprovalContinuation.mockImplementation(async (options) => { await options.revalidate(); await options.deliver("observed restart result") })
     const runtime = makeRuntime()
     const coordinator = runtime.coordinator({ sessionPath: "/sessions/telegram.json", baseSessionRevision: "base-revision" })
     await coordinator.propose({
@@ -488,12 +641,13 @@ describe("Telegram approval runtime orchestration", () => {
   it("executes a proposed decision under the session lease and passes the approved tool seam", async () => {
     makeRuntime()
     runtimeMocks.store.read.mockReturnValue({ ...baseRecord, state: "proposed" })
-    runtimeMocks.execTool.mockResolvedValue("ordinary output")
     runtimeMocks.executeApprovalDecision.mockImplementation(async (options) => {
       await expect(options.liveGuard()).resolves.toEqual({ ok: true })
       await expect(options.liveRisk()).resolves.toEqual({ ok: true })
-      expect(options.resolveTool).toBe(runtimeMocks.resolveToolDefinition)
-      await expect(options.execute("ponder", { thought: "safe" })).resolves.toBe("ordinary output")
+      const definition = await options.resolveTool("unraid_restart_container")
+      expect(definition).toBeDefined()
+      await expect(options.preflight({ record: baseRecord, arguments: baseRecord.arguments, definition })).resolves.toEqual({ ok: true })
+      await expect(options.execute("unraid_restart_container", baseRecord.arguments)).resolves.toMatchObject({ kind: "handler_succeeded" })
       return { ...baseRecord, state: "succeeded" }
     })
 
@@ -510,25 +664,25 @@ describe("Telegram approval runtime orchestration", () => {
       }),
       currentSessionRevision: "revision-current",
     }))
-    expect(runtimeMocks.execTool).toHaveBeenCalledWith("ponder", { thought: "safe" }, { agentName: "sanctuary" })
+    expect(runtimeMocks.executeTool).toHaveBeenCalledWith("unraid_restart_container", baseRecord.arguments, expect.objectContaining({
+      agentName: "sanctuary", agentRoot: "/agents/sanctuary.ouro",
+      relationshipAuthorization: expect.objectContaining({ profileId: "sanctuary-owner" }),
+    }), undefined)
   })
 
-  it("keeps a proposed human approval authoritative when the standing relationship capability is later lost", async () => {
+  it("does not let a proposed approval replace a lost relationship capability", async () => {
     const authorizeTool = vi.fn(async () => ({ allowed: false as const, reason: "relationship revoked" }))
     makeRuntime(vi.fn(), { agentName: "sanctuary", relationshipAuthorization: { authorizedContextScopes: [], advertisedToolNames: [], authorizeTool } })
     runtimeMocks.store.read.mockReturnValue({ ...baseRecord, state: "proposed" })
-    runtimeMocks.execTool.mockImplementation(async (_name, _args, context) => {
-      expect(context.relationshipAuthorization).toBeUndefined()
-      return JSON.stringify({ ok: true, data: { container: { id: "Docker:abc", name: "calibre-web" }, beforeState: "running", afterState: "running", observedRestart: true, degraded: false } })
-    })
+    runtimeMocks.selectToolsForChannel.mockReturnValue({ ordinary: [], engine: [] })
     runtimeMocks.executeApprovalDecision.mockImplementation(async (options) => {
-      await expect(options.resolveApprovalPolicy("unraid_restart_container", { container: "calibre-web" })).resolves.toMatchObject({ kind: "required" })
-      await options.execute("unraid_restart_container", { container: "calibre-web" })
-      return { ...baseRecord, state: "succeeded" }
+      await expect(options.resolveTool("unraid_restart_container")).resolves.toBeUndefined()
+      await expect(options.execute("unraid_restart_container", { container: "calibre-web" })).resolves.toMatchObject({ kind: "rejected_before_handler" })
+      return { ...baseRecord, state: "drifted" }
     })
 
-    await expect(transportOptions().onDecision({ approvalId: "approval-1", decision: "approve" })).resolves.toEqual({ accepted: true, terminalText: "✅ Approved — action completed" })
-    expect(runtimeMocks.execTool).toHaveBeenCalledOnce()
+    await expect(transportOptions().onDecision({ approvalId: "approval-1", decision: "approve" })).resolves.toMatchObject({ accepted: false })
+    expect(runtimeMocks.executeTool).not.toHaveBeenCalled()
   })
 
   it.each([
@@ -584,13 +738,14 @@ describe("Telegram approval runtime orchestration", () => {
     }])
     runtimeMocks.store.read.mockReturnValue({ ...baseRecord, state: "succeeded" })
     runtimeMocks.resumeApprovalContinuation.mockImplementation(async (options) => {
+      const currentOptions = await options.revalidate()
       expect(options.claimContinuation()).toEqual(expect.objectContaining({ claimed: true }))
       options.markContinuationMaterialized()
       options.markContinuationAttempted()
       options.completeContinuation()
       await options.persist([{ role: "assistant", content: "done" }], { usage: { inputTokens: 1 } })
       await options.deliver("calibre-web is back")
-      await options.runAgentOptions.approvalCoordinator.propose({
+      await currentOptions.approvalCoordinator.propose({
         toolCall: { id: "call-2", type: "function", function: { name: "unraid_restart_container", arguments: "{}" } },
         arguments: { container: "calibre" },
         schemaDigest: "schema",
@@ -650,11 +805,11 @@ describe("Telegram approval runtime orchestration", () => {
     expect(runtimeMocks.transport.terminalizeRecovered).toHaveBeenCalledTimes(3)
     expect(runtimeMocks.transport.terminalizeOrphaned).toHaveBeenCalledWith(
       "missing",
-      "⚠️ Approval record is unavailable — no action was taken",
+      "⚠️ Approval record is unavailable — the action outcome is unknown and will not be retried",
     )
     expect(runtimeMocks.transport.terminalizeOrphaned).toHaveBeenCalledWith(
       "missing-terminal",
-      "⚠️ Approval record is unavailable — no action was taken",
+      "⚠️ Approval record is unavailable — the action outcome is unknown and will not be retried",
     )
     expect(runtimeMocks.store.expire).not.toHaveBeenCalled()
     expect(runtimeMocks.emitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({

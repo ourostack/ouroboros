@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 import { getChannelCapabilities } from "@ouro.bot/friends"
-import { execTool, getToolsForChannel } from "../../repertoire/tools"
+import { execTool, getToolsForChannel, selectToolsForChannel } from "../../repertoire/tools"
 
 describe("voice lifecycle tools", () => {
   it("exposes voice call controls only on the voice channel", () => {
@@ -74,6 +74,18 @@ describe("voice lifecycle tools", () => {
 
     expect(playAudio).toHaveBeenCalled()
     expect(result).toBe("Render the SIP tone cue now.")
+  })
+
+  it("preserves schema-valid numeric audio arguments through selected dispatch", async () => {
+    const playAudio = vi.fn(async () => ({ label: "numeric tone", durationMs: 120 }))
+    const toolSelection = selectToolsForChannel(getChannelCapabilities("voice"))
+    const result = await execTool("voice_play_audio", JSON.parse('{"source":"tone","toneHz":550,"durationMs":120}'), {
+      signin: async () => undefined,
+      toolSelection,
+      voiceCall: { requestEnd: vi.fn(), playAudio },
+    })
+    expect(playAudio).toHaveBeenCalledExactlyOnceWith({ source: "tone", toneHz: 550, durationMs: 120 })
+    expect(result).toBe("(played audio: numeric tone, 120ms)")
   })
 
   it("reports missing voice audio path without throwing", async () => {

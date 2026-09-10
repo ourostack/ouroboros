@@ -82,12 +82,43 @@ vi.mock("../../heart/identity", () => {
 })
 
 import { execSync, spawn } from "child_process"
-import { loadAgentConfig } from "../../heart/identity"
+import { getAgentName, getAgentRoot, loadAgentConfig } from "../../heart/identity"
 import { EventEmitter } from "events"
 import { resetShellSessions } from "../../repertoire/shell-sessions"
 
+const SHELL_OWNER = { agentName: "testagent", agentRoot: "/mock/repo/testagent" }
+
 describe("shell tool", () => {
   let execTool: (name: string, args: any, ctx?: any) => Promise<string>
+
+  it.each(["missing-name", "missing-root", "missing-both"].flatMap((missing) => ["shell", "shell_status", "shell_tail"].map((name) => ({ missing, name }))))(
+    "refuses $name before borrowing ambient ownership: $missing",
+    async ({ missing, name }) => {
+      const { shellToolDefinitions } = await import("../../repertoire/tools-shell")
+      const tool = shellToolDefinitions.find((entry) => entry.tool.function.name === name)!
+      const context = {
+        signin: async () => undefined,
+        ...(missing === "missing-name" || missing === "missing-both" ? {} : { agentName: "owner-a" }),
+        ...(missing === "missing-root" || missing === "missing-both" ? {} : { agentRoot: "/bundles/a.ouro" }),
+        relationshipAuthorization: {
+          advertisedToolNames: [name], authorizedContextScopes: [],
+          authorizeTool: () => ({ allowed: true as const, receiptId: "fixture" }),
+        },
+      }
+      vi.mocked(getAgentName).mockClear()
+      vi.mocked(getAgentRoot).mockClear()
+      vi.mocked(loadAgentConfig).mockClear()
+      vi.mocked(spawn).mockClear()
+      vi.mocked(execSync).mockReturnValue("wrong ambient output")
+      await expect(Promise.resolve().then(() => tool.handler({ command: "printf fixture", id: "foreign" }, context)))
+        .rejects.toThrow(/explicit.*owner|owner.*required/i)
+      expect(getAgentName).not.toHaveBeenCalled()
+      expect(getAgentRoot).not.toHaveBeenCalled()
+      expect(loadAgentConfig).not.toHaveBeenCalled()
+      expect(spawn).not.toHaveBeenCalled()
+      expect(execSync).not.toHaveBeenCalled()
+    },
+  )
 
   afterEach(() => {
     vi.restoreAllMocks()
@@ -125,6 +156,25 @@ describe("shell tool", () => {
   // ── Unit 3.1a: Configurable Shell Timeout ──
 
   describe("configurable timeout", () => {
+    it.each([false, true])("surfaces unavailable explicit-owner configuration without a foreground effect: explicit=%s", async (explicit) => {
+      const error = new Error("configuration unavailable")
+      vi.mocked(loadAgentConfig).mockImplementation(() => { throw error })
+      vi.mocked(execSync).mockReturnValue("legacy foreground")
+      if (explicit) {
+        await expect(execTool("shell", { command: "pwd" }, { ...SHELL_OWNER, signin: async () => undefined })).rejects.toBe(error)
+        expect(execSync).not.toHaveBeenCalled()
+      } else {
+        expect(await execTool("shell", { command: "pwd" })).toBe("legacy foreground")
+        expect(execSync).toHaveBeenCalledWith("pwd", expect.objectContaining({ timeout: 30000 }))
+      }
+    })
+
+    it("keeps legacy root-only context while naming its ambient owner explicitly", async () => {
+      vi.mocked(execSync).mockReturnValue("legacy foreground")
+      await execTool("shell", { command: "pwd" }, { signin: async () => undefined, agentRoot: "/legacy/root" })
+      expect(loadAgentConfig).toHaveBeenCalledWith({ agentName: "testagent", agentRoot: "/legacy/root" })
+    })
+
     it("shell tool schema includes optional timeout_ms parameter", async () => {
       const toolsBase = await import("../../repertoire/tools-base")
       const shellDef = toolsBase.baseToolDefinitions.find(
@@ -220,6 +270,68 @@ describe("shell tool", () => {
   // ── Unit 3.2a: Background Shell Mode ──
 
   describe("background mode", () => {
+    it("confines each process record to the initiating name and root before projecting output", async () => {
+      const shellSessions = await import("../../repertoire/shell-sessions")
+      const owner = { agentName: "owner-a", agentRoot: "/bundles/a.ouro" }
+      const originalOwner = { ...owner }
+      const other = { agentName: "owner-b", agentRoot: "/bundles/b.ouro" }
+      const proc = Object.assign(new EventEmitter(), {
+        pid: 90123, stdout: new EventEmitter(), stderr: new EventEmitter(), kill: vi.fn(),
+      })
+      vi.mocked(spawn).mockReturnValue(proc as ReturnType<typeof spawn>)
+      const a = shellSessions.spawnBackgroundShell("private command a", owner)
+      const b = shellSessions.spawnBackgroundShell("private command b", other)
+      proc.stdout.emit("data", Buffer.from("private output"))
+      owner.agentRoot = other.agentRoot
+
+      expect(shellSessions.listShellSessions(originalOwner).map((entry) => entry.id)).toEqual([a.id])
+      for (const wrong of [other, owner, { ...originalOwner, agentName: other.agentName }]) {
+        expect(shellSessions.getShellSession(a.id, wrong)).toBeUndefined()
+        expect(shellSessions.tailShellSession(a.id, wrong)).toBeUndefined()
+      }
+      expect(shellSessions.getShellSession(a.id, originalOwner)?.command).toBe("private command a")
+      expect(shellSessions.tailShellSession(a.id, originalOwner)).toBe("private output")
+      expect(shellSessions.listShellSessions(other).map((entry) => entry.id)).toEqual([b.id])
+      expect(JSON.stringify(shellSessions.getShellSession(a.id, originalOwner))).not.toContain(originalOwner.agentRoot)
+      expect(JSON.stringify(shellSessions.getShellSession(a.id, originalOwner))).not.toContain(originalOwner.agentName)
+      shellSessions.resetShellSessions()
+    })
+
+    it("reauthorizes status and tail before reading the process registry", async () => {
+      const shellSessions = await import("../../repertoire/shell-sessions")
+      const { shellToolDefinitions } = await import("../../repertoire/tools-shell")
+      const list = vi.spyOn(shellSessions, "listShellSessions")
+      const get = vi.spyOn(shellSessions, "getShellSession")
+      const tail = vi.spyOn(shellSessions, "tailShellSession")
+      const context = {
+        ...SHELL_OWNER, signin: async () => undefined,
+        toolSelection: { ordinary: shellToolDefinitions, engine: [] },
+        relationshipAuthorization: {
+          profileId: "test-owner", authorizedContextScopes: [],
+          advertisedToolNames: ["shell_status", "shell_tail"],
+          authorizeTool: vi.fn(() => ({ allowed: false as const, reason: "revoked" })),
+        },
+      }
+      expect(await execTool("shell_status", {}, context)).toContain("revoked")
+      expect(await execTool("shell_status", { id: "owned" }, context)).toContain("revoked")
+      expect(await execTool("shell_tail", { id: "owned" }, context)).toContain("revoked")
+      expect(list).not.toHaveBeenCalled()
+      expect(get).not.toHaveBeenCalled()
+      expect(tail).not.toHaveBeenCalled()
+    })
+
+    it("uses the initiating owner's shell defaults rather than the ambient config", async () => {
+      vi.mocked(loadAgentConfig).mockImplementation((owner) => ({
+        name: "testagent", provider: "minimax", context: { maxTokens: 80000, contextMargin: 20 },
+        shell: { defaultTimeout: owner?.agentRoot === "/bundles/a.ouro" ? 47000 : 30000 },
+      }) as ReturnType<typeof loadAgentConfig>)
+      vi.mocked(execSync).mockReturnValue("owned foreground")
+      const owner = { agentName: "owner-a", agentRoot: "/bundles/a.ouro" }
+      expect(await execTool("shell", { command: "pwd" }, { ...owner, signin: async () => undefined })).toBe("owned foreground")
+      expect(loadAgentConfig).toHaveBeenCalledWith(owner)
+      expect(execSync).toHaveBeenCalledWith("pwd", expect.objectContaining({ timeout: 47000 }))
+    })
+
     it("shell tool schema includes optional background parameter", async () => {
       const toolsBase = await import("../../repertoire/tools-base")
       const shellDef = toolsBase.baseToolDefinitions.find(
@@ -241,7 +353,7 @@ describe("shell tool", () => {
       })
       vi.mocked(spawn).mockReturnValue(mockProc as any)
 
-      const result = await execTool("shell", { command: "sleep 100", background: "true" })
+      const result = await execTool("shell", { command: "sleep 100", background: true })
       const parsed = JSON.parse(result)
       expect(parsed.id).toBeDefined()
       expect(typeof parsed.id).toBe("string")
@@ -285,7 +397,7 @@ describe("shell tool", () => {
         kill: vi.fn(),
       })
       vi.mocked(spawn).mockReturnValue(mockProc as any)
-      await execTool("shell", { command: "sleep 100", background: "true" })
+      await execTool("shell", { command: "sleep 100", background: true })
 
       const result = await execTool("shell_status", {})
       const parsed = JSON.parse(result)
@@ -305,7 +417,7 @@ describe("shell tool", () => {
         kill: vi.fn(),
       })
       vi.mocked(spawn).mockReturnValue(mockProc as any)
-      const bgResult = await execTool("shell", { command: "sleep 50", background: "true" })
+      const bgResult = await execTool("shell", { command: "sleep 50", background: true })
       const { id } = JSON.parse(bgResult)
 
       const result = await execTool("shell_status", { id })
@@ -331,7 +443,7 @@ describe("shell tool", () => {
         kill: vi.fn(),
       })
       vi.mocked(spawn).mockReturnValue(mockProc as any)
-      await execTool("shell", { command: "echo hello", background: "true" })
+      await execTool("shell", { command: "echo hello", background: true })
 
       // Simulate stdout data
       stdoutEmitter.emit("data", Buffer.from("hello world\n"))
@@ -362,12 +474,12 @@ describe("shell tool", () => {
       })
       vi.mocked(spawn).mockReturnValue(mockProc as any)
 
-      const session = spawnBackgroundShell("echo test")
+      const session = spawnBackgroundShell("echo test", SHELL_OWNER)
 
       // Simulate stdout data
       stdoutEmitter.emit("data", Buffer.from("line one\nline two\n"))
 
-      const output = tailShellSession(session.id)
+      const output = tailShellSession(session.id, SHELL_OWNER)
       expect(output).toContain("line one")
       expect(output).toContain("line two")
     })
@@ -386,13 +498,13 @@ describe("shell tool", () => {
       })
       vi.mocked(spawn).mockReturnValue(mockProc as any)
 
-      const session = spawnBackgroundShell("exit 0")
+      const session = spawnBackgroundShell("exit 0", SHELL_OWNER)
       expect(session.status).toBe("running")
 
       // Simulate process close
       procEmitter.emit("close", 0)
 
-      const updated = getShellSession(session.id)
+      const updated = getShellSession(session.id, SHELL_OWNER)
       expect(updated!.status).toBe("exited")
       expect(updated!.exitCode).toBe(0)
     })
@@ -410,14 +522,14 @@ describe("shell tool", () => {
       })
       vi.mocked(spawn).mockReturnValue(mockProc as any)
 
-      shellSessions.spawnBackgroundShell("sleep 999")
-      const before = shellSessions.listShellSessions()
+      shellSessions.spawnBackgroundShell("sleep 999", SHELL_OWNER)
+      const before = shellSessions.listShellSessions(SHELL_OWNER)
       expect(before.length).toBe(1)
 
       shellSessions.resetShellSessions()
       expect(mockKill).toHaveBeenCalled()
 
-      const after = shellSessions.listShellSessions()
+      const after = shellSessions.listShellSessions(SHELL_OWNER)
       expect(after.length).toBe(0)
     })
 
@@ -434,13 +546,13 @@ describe("shell tool", () => {
       })
       vi.mocked(spawn).mockReturnValue(mockProc as any)
 
-      const session = shellSessions.spawnBackgroundShell("generate-lots")
+      const session = shellSessions.spawnBackgroundShell("generate-lots", SHELL_OWNER)
 
       // Emit 250 lines (over the 200 cap)
       const bigOutput = Array.from({ length: 250 }, (_, i) => `line-${i}`).join("\n")
       stdoutEmitter.emit("data", Buffer.from(bigOutput))
 
-      const output = shellSessions.tailShellSession(session.id, 300)
+      const output = shellSessions.tailShellSession(session.id, SHELL_OWNER, 300)
       const lines = output!.split("\n").filter((l) => l.length > 0)
       expect(lines.length).toBeLessThanOrEqual(200)
     })
@@ -459,10 +571,10 @@ describe("shell tool", () => {
       })
       vi.mocked(spawn).mockReturnValue(mockProc as any)
 
-      const session = shellSessions.spawnBackgroundShell("some-cmd")
+      const session = shellSessions.spawnBackgroundShell("some-cmd", SHELL_OWNER)
       stderrEmitter.emit("data", Buffer.from("error output\n"))
 
-      const output = shellSessions.tailShellSession(session.id)
+      const output = shellSessions.tailShellSession(session.id, SHELL_OWNER)
       expect(output).toContain("error output")
     })
 
@@ -479,12 +591,12 @@ describe("shell tool", () => {
       })
       vi.mocked(spawn).mockReturnValue(mockProc as any)
 
-      const session = shellSessions.spawnBackgroundShell("cmd")
+      const session = shellSessions.spawnBackgroundShell("cmd", SHELL_OWNER)
 
       // Emit data that splits into an empty first line (output is empty, line is empty -> skip)
       stdoutEmitter.emit("data", Buffer.from("\nfirst real line\n"))
 
-      const output = shellSessions.tailShellSession(session.id)
+      const output = shellSessions.tailShellSession(session.id, SHELL_OWNER)
       // The first empty line should be skipped, only "first real line" and trailing empty
       expect(output).not.toMatch(/^\n/)
     })
@@ -502,7 +614,7 @@ describe("shell tool", () => {
       })
       vi.mocked(spawn).mockReturnValue(mockProc as any)
 
-      shellSessions.spawnBackgroundShell("done-cmd")
+      shellSessions.spawnBackgroundShell("done-cmd", SHELL_OWNER)
       // Simulate process exiting
       procEmitter.emit("close", 0)
 
@@ -523,7 +635,7 @@ describe("shell tool", () => {
       })
       vi.mocked(spawn).mockReturnValue(mockProc as any)
 
-      const session = shellSessions.spawnBackgroundShell("silent-cmd")
+      const session = shellSessions.spawnBackgroundShell("silent-cmd", SHELL_OWNER)
 
       const result = await execTool("shell_tail", { id: session.id })
       expect(result).toBe("(no output yet)")

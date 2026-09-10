@@ -1,569 +1,500 @@
+import * as path from "node:path"
 import { McpClient, isMcpTransportError } from "./mcp-client"
 import type { McpToolInfo } from "./mcp-client"
-import { getAgentName, loadAgentConfig, type McpServerConfig } from "../heart/identity"
+import { loadAgentConfig, type McpServerConfig } from "../heart/identity"
 import { emitNervesEvent } from "../nerves/runtime"
 import { getCredentialStore } from "./credential-access"
-import {
-  listPluginMcpServers,
-  pluginMcpServerToConfig,
-} from "./plugin-mcp"
+import { listPluginMcpServers, pluginMcpServerToConfig } from "./plugin-mcp"
+import { digestJson, freezeToolValue } from "./tool-arguments"
+import { McpCallRejectedError, mcpToolSchema } from "./mcp-tools"
 
-interface ServerEntry {
-  name: string
+export type McpOwner = Readonly<{ agentName: string; agentRoot: string }>
+export type RuntimeMcpServers = Record<string, McpServerConfig>
+type McpSource = "builtin" | "plugin" | "runtime"
+type ToolResult = Awaited<ReturnType<McpClient["callTool"]>>
+
+interface DesiredServer {
   config: McpServerConfig
+  source: McpSource
+  pluginId?: string
+}
+
+interface ServerEntry extends DesiredServer {
+  owner: McpOwner
+  name: string
   client: McpClient
   cachedTools: McpToolInfo[]
-  consecutiveFailures: number
-  ownerAgent?: string
+  configDigest: string
   generation: number
-  /**
-   * If this server came from a plugin's `.mcp.json`, the plugin id is stored
-   * here. Downstream (`mcpToolsAsDefinitions`) uses this to namespace the
-   * surfaced tool names as `mcp__<server>__<tool>` per the Anthropic public
-   * naming convention. Builtin (agent.json mcpServers) entries leave it unset.
-   */
-  pluginId?: string
+  consecutiveFailures: number
+  restartTimer?: ReturnType<typeof setTimeout>
+}
+
+export interface McpServerView {
+  readonly server: string
+  readonly source: McpSource
+  readonly pluginId?: string
+  readonly configDigest: string
+  readonly generation: number
+  readonly tools: readonly McpToolInfo[]
+}
+
+export interface McpTurnView {
+  readonly manager: McpManager
+  readonly owner: McpOwner
+  readonly entries: readonly McpServerView[]
+}
+
+export interface McpToolBinding {
+  readonly manager: McpManager
+  readonly agentName: string
+  readonly agentRoot: string
+  readonly server: string
+  readonly rawName: string
+  readonly surfacedName: string
+  readonly source: McpSource
+  readonly pluginId?: string
+  readonly configDigest: string
+  readonly generation: number
+  readonly schemaDigest: string
 }
 
 const MAX_RESTART_RETRIES = 5
 const RESTART_DELAY_MS = 1000
 
-/**
- * Per-turn, per-agent runtime MCP server overrides.
- *
- * Threaded as parameter data from the `agent.senseTurn` daemon command through
- * `runSenseTurn` into the MCP manager for a SINGLE turn of a SINGLE agent. It is
- * NEVER stored as module-global state — the daemon is one process for all agents
- * on the machine, so a global override would leak into a concurrent turn for a
- * different agent. Used by the Workbench runtime-injection path so the boss agent
- * receives `ouro_workbench` without writing it to `agent.json`.
- */
-export type RuntimeMcpServers = Record<string, McpServerConfig>
-
-/**
- * Merge builtin (agent.json mcpServers) + plugin-declared (.mcp.json) servers.
- *
- * Builtin wins on name collision. Returns the merged config map plus a
- * `pluginOrigins` map (server-name → plugin-id) for tools-surfacing namespace.
- *
- * Shared by `getSharedMcpManager()` (initial start) and `McpManager.reconcile()`
- * (re-read on each turn). Both code paths MUST use the same merge logic — if
- * reconcile reads only builtin, plugin servers get classified as "removed"
- * on the second turn and torn down. See alpha.635 fix.
- *
- * `runtimeServers` are per-turn, per-agent overrides (e.g. Workbench's
- * `ouro_workbench`) supplied as PARAMETER data for the current turn — never read
- * from module state. They merge with the HIGHEST precedence (after builtin), so
- * a stale `agent.json` entry loses to the live runtime path. Because they are a
- * parameter, a turn that omits them produces a merged set WITHOUT them, and
- * `reconcile()` then tears the runtime server down — this is the no-leak
- * invariant that keeps the runtime MCP from bleeding into a different agent's
- * concurrent turn on the shared daemon.
- */
-function buildMergedServerConfig(runtimeServers?: RuntimeMcpServers): {
-  mergedServers: Record<string, McpServerConfig>
-  pluginOrigins: Record<string, string>
-} {
-  const config = loadAgentConfig()
-  const builtinServers = config.mcpServers ?? {}
-  const pluginServers = listPluginMcpServers()
-  const mergedServers: Record<string, McpServerConfig> = {}
-  const pluginOrigins: Record<string, string> = {}
-  for (const p of pluginServers) {
-    if (builtinServers[p.serverName] !== undefined) continue
-    mergedServers[p.serverName] = pluginMcpServerToConfig(p)
-    pluginOrigins[p.serverName] = p.pluginId
-  }
-  for (const [name, cfg] of Object.entries(builtinServers)) {
-    mergedServers[name] = cfg
-  }
-  // Runtime overrides win over both plugin and builtin (highest precedence).
-  // They are NOT recorded in pluginOrigins, so they surface as builtin-style
-  // (un-namespaced) tools — matching how an agent.json mcpServers entry would.
-  if (runtimeServers) {
-    for (const [name, cfg] of Object.entries(runtimeServers)) {
-      mergedServers[name] = cfg
-      delete pluginOrigins[name]
-    }
-  }
-  return { mergedServers, pluginOrigins }
+function isOwner(value: unknown): value is McpOwner {
+  return typeof value === "object" && value !== null
+    && "agentName" in value && typeof value.agentName === "string" && value.agentName.length > 0
+    && "agentRoot" in value && typeof value.agentRoot === "string" && path.isAbsolute(value.agentRoot)
 }
 
-function sameMcpServerConfig(left: McpServerConfig, right: McpServerConfig): boolean {
-  const leftEnv = Object.entries(left.env ?? {}).sort()
-  const rightEnv = Object.entries(right.env ?? {}).sort()
-  return left.command === right.command
-    && JSON.stringify(left.args ?? []) === JSON.stringify(right.args ?? [])
-    && JSON.stringify(leftEnv) === JSON.stringify(rightEnv)
-    && (left.cwd ?? "") === (right.cwd ?? "")
+function captureOwner(owner: McpOwner): McpOwner {
+  if (!isOwner(owner)) {
+    emitNervesEvent({
+      level: "warn", event: "mcp.owner_invalid", component: "repertoire",
+      message: "MCP requires an explicit owner", meta: { reason: "agent name and absolute root are required" },
+    })
+    throw new McpCallRejectedError("MCP requires an explicit owner")
+  }
+  return Object.freeze({ agentName: owner.agentName, agentRoot: owner.agentRoot })
+}
+
+function sameOwner(left: McpOwner, right: McpOwner): boolean {
+  return left.agentName === right.agentName && left.agentRoot === right.agentRoot
+}
+
+function serverKey(owner: McpOwner, name: string): string {
+  return JSON.stringify([owner.agentName, owner.agentRoot, name])
+}
+
+function buildMergedServerConfig(owner: McpOwner, runtimeServers?: RuntimeMcpServers): Map<string, DesiredServer> {
+  const config = loadAgentConfig(owner)
+  const desired = new Map<string, DesiredServer>()
+  for (const plugin of listPluginMcpServers(undefined, owner)) {
+    if (desired.has(plugin.serverName)) throw new McpCallRejectedError(`MCP server name collision: ${plugin.serverName}`)
+    desired.set(plugin.serverName, {
+      config: pluginMcpServerToConfig(plugin), source: "plugin", pluginId: plugin.pluginId,
+    })
+  }
+  for (const [name, server] of Object.entries(config.mcpServers ?? {})) {
+    desired.set(name, { config: server, source: "builtin" })
+  }
+  for (const [name, server] of Object.entries(runtimeServers ?? {})) {
+    desired.set(name, { config: server, source: "runtime" })
+  }
+  return desired
+}
+
+function configurationDigest(owner: McpOwner, desired: DesiredServer): string {
+  return digestJson({
+    agentName: owner.agentName, agentRoot: owner.agentRoot,
+    source: desired.source, pluginId: desired.pluginId ?? null,
+    command: desired.config.command, args: desired.config.args ?? [],
+    env: desired.config.env ?? {}, cwd: desired.config.cwd ?? "",
+  })
 }
 
 export class McpManager {
   private servers = new Map<string, ServerEntry>()
   private desiredGenerations = new Map<string, number>()
   private nextGeneration = 0
-  private shuttingDown = false
+  private lifecycle: Promise<void> = Promise.resolve()
+  private shutdownPromise?: Promise<void>
 
-  async start(
-    servers: Record<string, McpServerConfig>,
-    pluginOrigins: Record<string, string> = {},
-    ownerAgent?: string,
-  ): Promise<void> {
+  constructor() {
     emitNervesEvent({
-      event: "mcp.manager_start",
-      component: "repertoire",
-      message: "starting MCP manager",
-      meta: {
-        serverCount: Object.keys(servers).length,
-        pluginServerCount: Object.keys(pluginOrigins).length,
-      },
+      event: "mcp.manager_start", component: "repertoire",
+      message: "starting MCP manager", meta: { serverCount: 0 },
     })
-
-    const entries = Object.entries(servers)
-    for (const [name, config] of entries) {
-      await this.connectServer(name, config, pluginOrigins[name], ownerAgent)
-    }
   }
 
-  listAllTools(): Array<{ server: string; tools: McpToolInfo[]; pluginId?: string }> {
-    const result: Array<{ server: string; tools: McpToolInfo[]; pluginId?: string }> = []
-    for (const [name, entry] of this.servers) {
-      result.push({ server: name, tools: entry.cachedTools, pluginId: entry.pluginId })
-    }
+  // One lifecycle tail; external tool and canary results do not hold it.
+  private enqueue<T>(operation: () => T | Promise<T>): Promise<T> {
+    const result = this.lifecycle.then(operation)
+    this.lifecycle = result.then(() => undefined, () => undefined)
     return result
   }
 
-  async callTool(
-    server: string,
-    tool: string,
-    args: Record<string, unknown>,
-  ): Promise<{ content: Array<{ type: string; text: string }> }> {
-    let entry = this.servers.get(server)
-    if (!entry) {
-      throw new Error(`Unknown server: ${server}`)
-    }
+  private enqueueBackground(operation: () => void | Promise<void>): void {
+    void this.enqueue(operation).catch((error: unknown) => {
+      emitNervesEvent({
+        level: "error", event: "mcp.lifecycle_error", component: "repertoire",
+        message: "MCP background lifecycle operation failed",
+        meta: { reason: error instanceof Error ? error.message : String(error) },
+      })
+    })
+  }
 
-    if (!entry.client.isConnected()) {
-      await this.recoverStaleTransport(server, "pre-call disconnected")
-      entry = this.servers.get(server)
-      if (!entry?.client.isConnected()) {
-        throw new Error(`Server "${server}" is disconnected`)
+  async start(
+    ownerInput: McpOwner,
+    servers: Record<string, McpServerConfig>,
+    pluginOrigins: Record<string, string> = {},
+  ): Promise<McpTurnView | null> {
+    const owner = captureOwner(ownerInput)
+    const desired = new Map(Object.entries(structuredClone(servers)).map(([name, config]) => [
+      name, { config, source: pluginOrigins[name] ? "plugin" as const : "builtin" as const, pluginId: pluginOrigins[name] },
+    ]))
+    return this.enqueue(async () => {
+      if (this.shutdownPromise) return null
+      await this.applyDesired(owner, desired)
+      return this.shutdownPromise ? null : this.freezeView(owner)
+    })
+  }
+
+  async reconcile(ownerInput: McpOwner, runtimeServers?: RuntimeMcpServers): Promise<McpTurnView | null> {
+    const owner = captureOwner(ownerInput)
+    const runtime = runtimeServers ? structuredClone(runtimeServers) : undefined
+    return this.enqueue(async () => {
+      if (this.shutdownPromise) return null
+      try {
+        const desired = buildMergedServerConfig(owner, runtime)
+        await this.applyDesired(owner, desired)
+        return this.shutdownPromise || desired.size === 0 ? null : this.freezeView(owner)
+      } catch (error) {
+        emitNervesEvent({
+          level: "warn", event: "mcp.reconcile_error", component: "repertoire",
+          message: "failed to reconcile MCP servers",
+          meta: { reason: error instanceof Error ? error.message : String(error) },
+        })
+        for (const entry of this.ownedEntries(owner)) this.removeEntry(entry)
+        return null
       }
-    }
+    })
+  }
 
+  listAllTools(owner: McpOwner): Array<{ server: string; tools: McpToolInfo[]; pluginId?: string }> {
+    captureOwner(owner)
+    return this.ownedEntries(owner).filter((entry) => this.isCurrentEntry(entry)).map((entry) => ({
+      server: entry.name, tools: structuredClone(entry.cachedTools), pluginId: entry.pluginId,
+    }))
+  }
+
+  async callTool(binding: McpToolBinding, args: Record<string, unknown>, ownerInput: McpOwner): Promise<ToolResult> {
+    const owner = captureOwner(ownerInput)
+    const call = await this.enqueue(async () => {
+      let entry = this.currentBinding(binding, owner)
+      if (!entry.client.isConnected()) {
+        await this.recoverStaleTransport(entry, "pre-call disconnected")
+        entry = this.currentBinding(binding, owner)
+        if (!entry.client.isConnected()) throw new McpCallRejectedError(`Server "${entry.name}" is disconnected`)
+      }
+      return { entry, result: entry.client.callTool(binding.rawName, args) }
+    })
     try {
-      return await entry.client.callTool(tool, args)
+      return await call.result
     } catch (error) {
-      if (!isMcpTransportError(error)) {
-        throw error
-      }
+      if (!isMcpTransportError(error)) throw error
       const reason = error instanceof Error ? error.message : String(error)
-      await this.recoverStaleTransport(server, reason)
-      const recovered = this.servers.get(server)
-      if (!recovered?.client.isConnected()) {
-        throw new Error(`Server "${server}" is disconnected after recovery: ${reason}`)
-      }
-      return recovered.client.callTool(tool, args)
+      // Recovery prepares later calls; the server may already have performed this one.
+      this.enqueueBackground(async () => {
+        if (this.isCurrentEntry(call.entry)) await this.recoverStaleTransport(call.entry, reason)
+      })
+      throw error
     }
   }
 
-  async runCanaries(): Promise<Array<{ server: string; ok: boolean; detail: string }>> {
+  async validateToolBinding(binding: McpToolBinding, ownerInput: McpOwner): Promise<void> {
+    const owner = captureOwner(ownerInput)
+    await this.enqueue(() => { this.currentBinding(binding, owner) })
+  }
+
+  async runCanaries(ownerInput: McpOwner): Promise<Array<{ server: string; ok: boolean; detail: string }>> {
+    const owner = captureOwner(ownerInput)
+    const entries = await this.enqueue(() => this.ownedEntries(owner))
     const results: Array<{ server: string; ok: boolean; detail: string }> = []
-    for (const [server, entry] of [...this.servers]) {
+    for (const entry of entries) {
+      let current = entry
       try {
-        if (!entry.client.isConnected()) {
-          await this.recoverStaleTransport(server, "canary disconnected")
-        }
-        const current = this.servers.get(server)
-        if (!current?.client.isConnected()) {
-          results.push({ server, ok: false, detail: "disconnected after recovery attempt" })
+        const refresh = await this.enqueue(async () => {
+          if (!this.isCurrentEntry(entry)) return null
+          if (!entry.client.isConnected()) await this.recoverStaleTransport(entry, "canary disconnected")
+          const recovered = this.servers.get(serverKey(owner, entry.name))
+          if (!recovered || !this.isCurrentEntry(recovered) || !recovered.client.isConnected()) return null
+          current = recovered
+          return { result: recovered.client.refreshTools() }
+        })
+        if (!refresh) {
+          results.push({ server: entry.name, ok: false, detail: "disconnected after recovery attempt" })
           continue
         }
-        const tools = await current.client.refreshTools()
-        current.cachedTools = tools
-        current.consecutiveFailures = 0
-        results.push({ server, ok: true, detail: `${tools.length} tools listed` })
+        const tools = await refresh.result
+        const updated = await this.enqueue(() => {
+          if (!this.isCurrentEntry(current)) return false
+          current.cachedTools = structuredClone(tools)
+          current.consecutiveFailures = 0
+          return true
+        })
+        results.push({
+          server: entry.name, ok: updated,
+          detail: updated ? `${tools.length} tools listed` : "server changed during canary",
+        })
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error)
         if (isMcpTransportError(error)) {
-          await this.recoverStaleTransport(server, reason)
+          await this.enqueue(async () => {
+            if (this.isCurrentEntry(current)) await this.recoverStaleTransport(current, reason)
+          })
         }
-        results.push({ server, ok: false, detail: reason })
+        results.push({ server: entry.name, ok: false, detail: reason })
       }
     }
     return results
   }
 
-  /** Re-read agent config AND enabled-plugin .mcp.json files, then connect new
-   *  servers / disconnect removed ones. Must include plugin-declared servers
-   *  in the desired set — otherwise plugin servers (e.g. mcp__desk__*) are
-   *  treated as "removed" on every call and get torn down between turns.
-   *
-   *  `runtimeServers` are the current turn's per-agent overrides. They MUST be
-   *  passed on every reconcile for the agent that owns them, otherwise the
-   *  runtime server (e.g. ouro_workbench) is classified as "removed" and torn
-   *  down — which is exactly the desired no-leak behavior for a turn that omits
-   *  them. */
-  async reconcile(runtimeServers?: RuntimeMcpServers): Promise<boolean> {
-    try {
-      const { mergedServers, pluginOrigins } = buildMergedServerConfig(runtimeServers)
-      const ownerAgent = getAgentName()
-      const currentNames = new Set(this.servers.keys())
-      const desiredNames = new Set(Object.keys(mergedServers))
-
-      // Connect new servers
-      for (const [name, cfg] of Object.entries(mergedServers)) {
-        const current = this.servers.get(name)
-        const pluginId = pluginOrigins[name]
-        if (!current) {
-          emitNervesEvent({
-            event: "mcp.server_added",
-            component: "repertoire",
-            message: `connecting new MCP server: ${name}`,
-            meta: { server: name, command: cfg.command },
-          })
-          await this.connectServer(name, cfg, pluginId, ownerAgent)
-        } else if (
-          !sameMcpServerConfig(current.config, cfg)
-          || current.pluginId !== pluginId
-          || current.ownerAgent !== ownerAgent
-        ) {
-          emitNervesEvent({
-            event: "mcp.server_changed",
-            component: "repertoire",
-            message: `reconnecting changed MCP server: ${name}`,
-            meta: { server: name, command: cfg.command },
-          })
-          current.client.shutdown()
-          this.servers.delete(name)
-          await this.connectServer(name, cfg, pluginId, ownerAgent)
-        }
-      }
-
-      // Disconnect removed servers
-      for (const name of currentNames) {
-        if (!desiredNames.has(name)) {
-          emitNervesEvent({
-            event: "mcp.server_removed",
-            component: "repertoire",
-            message: `disconnecting removed MCP server: ${name}`,
-            meta: { server: name },
-          })
-          const entry = this.servers.get(name)
-          /* v8 ignore next -- defensive: name comes from this.servers.keys() this same tick, so entry is always present; the guard only protects against an awaited connectServer crash-handler racing a delete @preserve */
-          if (entry) entry.client.shutdown()
-          this.servers.delete(name)
-          this.desiredGenerations.delete(name)
-        }
-      }
-      return true
-    } catch (error) {
+  shutdown(): Promise<void> {
+    if (this.shutdownPromise) return this.shutdownPromise
+    // Publish closing before queued cleanup so pending network work cannot revive clients.
+    this.shutdownPromise = this.enqueue(() => {
       emitNervesEvent({
-        level: "warn",
-        event: "mcp.reconcile_error",
-        component: "repertoire",
-        message: "failed to reconcile MCP servers",
-        meta: { reason: error instanceof Error ? error.message : String(error) },
+        event: "mcp.manager_end", component: "repertoire",
+        message: "shutting down MCP manager", meta: { serverCount: this.servers.size },
       })
-      this.shutdown()
-      return false
-    }
-  }
-
-  shutdown(): void {
-    this.shuttingDown = true
-    // `_end` (not `_stop`) to pair with `mcp.manager_start` under the
-    // nerves audit start/end pairing rule.
-    emitNervesEvent({
-      event: "mcp.manager_end",
-      component: "repertoire",
-      message: "shutting down MCP manager",
-      meta: { serverCount: this.servers.size },
+      for (const entry of [...this.servers.values()]) this.removeEntry(entry)
+      this.desiredGenerations.clear()
     })
-
-    for (const [, entry] of this.servers) {
-      entry.client.shutdown()
-    }
-    this.servers.clear()
-    this.desiredGenerations.clear()
+    return this.shutdownPromise
   }
 
-  /**
-   * Resolve `vault:DOMAIN/FIELD` references in server env config.
-   * Returns resolved env or throws with a descriptive error.
-   */
-  private async resolveVaultEnv(
-    _serverName: string,
-    env: Record<string, string>,
-    ownerAgent?: string,
-  ): Promise<Record<string, string>> {
-    const resolved = { ...env }
-    // Short-circuit: only spin up a credential store if at least one env value
-    // actually requests vault resolution. Plugin MCP servers commonly ship with
-    // `env: {}` or pure-string envs, and we shouldn't pay the credential-store
-    // boot cost (or fail in test envs that have no vault) for those cases.
-    const hasVaultRef = Object.values(resolved).some((v) => /^vault:/.test(v))
-    if (!hasVaultRef) return resolved
-    const store = getCredentialStore(ownerAgent)
+  private ownedEntries(owner: McpOwner): ServerEntry[] {
+    return [...this.servers.values()].filter((entry) => sameOwner(entry.owner, owner))
+  }
 
+  private isCurrentEntry(entry: ServerEntry): boolean {
+    const key = serverKey(entry.owner, entry.name)
+    return !this.shutdownPromise && this.servers.get(key) === entry
+      && this.desiredGenerations.get(key) === entry.generation
+  }
+
+  private freezeView(owner: McpOwner): McpTurnView {
+    const entries = this.ownedEntries(owner).filter((entry) => this.isCurrentEntry(entry)).map((entry) => Object.freeze({
+      server: entry.name, source: entry.source, pluginId: entry.pluginId,
+      configDigest: entry.configDigest, generation: entry.generation,
+      tools: freezeToolValue(structuredClone(entry.cachedTools)),
+    }))
+    return Object.freeze({ manager: this, owner, entries: Object.freeze(entries) })
+  }
+
+  private matchesBinding(entry: ServerEntry, binding: McpToolBinding, owner: McpOwner): boolean {
+    if (binding.manager !== this || !sameOwner(binding, owner) || !sameOwner(entry.owner, owner)
+      || !this.isCurrentEntry(entry) || entry.name !== binding.server
+      || entry.source !== binding.source || entry.pluginId !== binding.pluginId
+      || entry.configDigest !== binding.configDigest || entry.generation !== binding.generation) return false
+    const tools = entry.cachedTools.filter((tool) => tool.name === binding.rawName)
+    if (tools.length !== 1) return false
+    const schema = mcpToolSchema({ server: entry.name, pluginId: entry.pluginId }, tools[0])
+    return schema.function.name === binding.surfacedName && digestJson(schema) === binding.schemaDigest
+  }
+
+  private currentBinding(binding: McpToolBinding, owner: McpOwner): ServerEntry {
+    const entry = this.servers.get(serverKey(owner, binding.server))
+    if (!entry || !this.matchesBinding(entry, binding, owner)) {
+      emitNervesEvent({
+        level: "warn", event: "mcp.tool_rejected", component: "repertoire",
+        message: "MCP tool binding is no longer current", meta: { reason: "stale or unavailable owned tool" },
+      })
+      throw new McpCallRejectedError("MCP tool binding is stale or unavailable")
+    }
+    return entry
+  }
+
+  private removeEntry(entry: ServerEntry): void {
+    const key = serverKey(entry.owner, entry.name)
+    this.desiredGenerations.delete(key)
+    if (entry.restartTimer) clearTimeout(entry.restartTimer)
+    entry.client.shutdown()
+    this.servers.delete(key)
+  }
+
+  private async applyDesired(owner: McpOwner, desired: Map<string, DesiredServer>): Promise<void> {
+    for (const [name, requested] of desired) {
+      if (this.shutdownPromise) return
+      const descriptor = { ...requested, config: structuredClone(requested.config) }
+      const configDigest = configurationDigest(owner, descriptor)
+      const current = this.servers.get(serverKey(owner, name))
+      if (current && this.isCurrentEntry(current) && current.configDigest === configDigest) continue
+      if (current) {
+        emitNervesEvent({
+          event: "mcp.server_changed", component: "repertoire",
+          message: `reconnecting changed MCP server: ${name}`, meta: { server: name },
+        })
+        this.removeEntry(current)
+      } else {
+        emitNervesEvent({
+          event: "mcp.server_added", component: "repertoire",
+          message: `connecting new MCP server: ${name}`, meta: { server: name },
+        })
+      }
+      await this.connectServer({
+        ...descriptor, owner, name, configDigest, generation: ++this.nextGeneration, consecutiveFailures: 0,
+      })
+    }
+    for (const entry of this.ownedEntries(owner)) {
+      if (desired.has(entry.name)) continue
+      emitNervesEvent({
+        event: "mcp.server_removed", component: "repertoire",
+        message: `disconnecting removed MCP server: ${entry.name}`, meta: { server: entry.name },
+      })
+      this.removeEntry(entry)
+    }
+  }
+
+  private async resolveVaultEnv(env: Record<string, string>, owner: McpOwner): Promise<Record<string, string>> {
+    const resolved = { ...env }
+    if (!Object.values(resolved).some((value) => /^vault:/.test(value))) return resolved
+    const store = getCredentialStore(owner.agentName)
     for (const [key, value] of Object.entries(resolved)) {
       const match = value.match(/^vault:([^/]+)\/(.+)$/)
       if (!match) continue
-
       const [, domain, field] = match
       try {
         resolved[key] = await store.getRawSecret(domain, field)
-      } catch (err) {
-        /* v8 ignore next -- reason @preserve */
-        const reason = err instanceof Error ? err.message : String(err)
-        // Classify the error for actionable messaging
-        let classification = "vault unreachable"
-        if (reason.includes("no credential found")) {
-          classification = "item not found"
-        } else if (reason.includes("field") && reason.includes("not found")) {
-          classification = "field empty"
-        }
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error)
+        const classification = reason.includes("no credential found") ? "item not found"
+          : reason.includes("field") && reason.includes("not found") ? "field empty" : "vault unreachable"
         throw new Error(`vault:${domain}/${field} could not be resolved: ${classification}`)
       }
     }
-
     return resolved
   }
 
-  private async connectServer(
-    name: string,
-    config: McpServerConfig,
-    pluginId?: string,
-    ownerAgent?: string,
-  ): Promise<void> {
-    const generation = ++this.nextGeneration
-    this.desiredGenerations.set(name, generation)
-    // Resolve vault: references in env before spawning
-    let resolvedConfig = config
+  private async connectServer(desired: Omit<ServerEntry, "client" | "cachedTools" | "restartTimer">): Promise<void> {
+    const key = serverKey(desired.owner, desired.name)
+    this.desiredGenerations.set(key, desired.generation)
+    let config = desired.config
     if (config.env) {
       try {
-        const resolvedEnv = await this.resolveVaultEnv(name, config.env, ownerAgent)
-        resolvedConfig = { ...config, env: resolvedEnv }
-      } catch (err) {
-        /* v8 ignore next -- reason @preserve */
-        const reason = err instanceof Error ? err.message : String(err)
+        config = { ...config, env: await this.resolveVaultEnv(config.env, desired.owner) }
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error)
         emitNervesEvent({
-          level: "error",
-          event: "mcp.vault_resolve_error",
-          component: "repertoire",
-          message: `skipping MCP server "${name}": ${reason}`,
-          meta: { server: name, reason },
+          level: "error", event: "mcp.vault_resolve_error", component: "repertoire",
+          message: `skipping MCP server "${desired.name}": ${reason}`, meta: { server: desired.name, reason },
         })
-        if (this.desiredGenerations.get(name) === generation) {
-          this.desiredGenerations.delete(name)
-        }
-        return // Skip this server, continue to next
+        this.desiredGenerations.delete(key)
+        return
       }
     }
-    if (this.shuttingDown || this.desiredGenerations.get(name) !== generation) return
-
-    const client = new McpClient(resolvedConfig)
-
-    const entry: ServerEntry = {
-      name,
-      config,
-      client,
-      cachedTools: [],
-      consecutiveFailures: 0,
-      pluginId,
-      ownerAgent,
-      generation,
-    }
-
-    this.servers.set(name, entry)
-
-    client.onClose(() => {
-      if (this.shuttingDown) return
-      if (this.servers.get(name)?.client !== client) return
-      this.handleServerCrash(name, client)
-    })
-
+    if (this.shutdownPromise || this.desiredGenerations.get(key) !== desired.generation) return
+    const client = new McpClient(config)
+    const entry: ServerEntry = { ...desired, client, cachedTools: [] }
+    this.servers.set(key, entry)
+    client.onClose(() => { this.enqueueBackground(() => this.handleServerCrash(entry)) })
     try {
       await client.connect()
-      const tools = await client.listTools()
-      if (
-        this.shuttingDown
-        || this.desiredGenerations.get(name) !== generation
-        || this.servers.get(name)?.client !== client
-      ) {
+      if (!this.isCurrentEntry(entry)) {
         client.shutdown()
         return
       }
-      entry.cachedTools = tools
-      entry.consecutiveFailures = 0
+      const tools = await client.listTools()
+      if (!this.isCurrentEntry(entry)) {
+        client.shutdown()
+        return
+      }
+      entry.cachedTools = structuredClone(tools)
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error)
       emitNervesEvent({
-        level: "error",
-        event: "mcp.connect_error",
-        component: "repertoire",
-        message: `failed to connect MCP server "${name}" (command: ${config.command}). Check that the command exists and is properly configured. Reason: ${reason}`,
-        meta: {
-          server: name,
-          command: config.command,
-          args: config.args,
-          reason,
-        },
+        level: "error", event: "mcp.connect_error", component: "repertoire",
+        message: `failed to connect MCP server "${desired.name}"`,
+        meta: { server: desired.name, reason },
       })
     }
   }
 
-  private handleServerCrash(name: string, crashedClient: McpClient): void {
-    const entry = this.servers.get(name)
-    /* v8 ignore next -- defensive: entry removed or replaced between close event and handler @preserve */
-    if (!entry || entry.client !== crashedClient) return
-
+  private handleServerCrash(entry: ServerEntry): void {
+    if (!this.isCurrentEntry(entry) || entry.restartTimer) return
     entry.consecutiveFailures++
-
     if (entry.consecutiveFailures > MAX_RESTART_RETRIES) {
       emitNervesEvent({
-        level: "error",
-        event: "mcp.connect_error",
-        component: "repertoire",
-        message: `MCP server "${name}" exceeded max restart retries (${MAX_RESTART_RETRIES}). Giving up — check that "${entry.config.command}" exists and is properly configured in agent.json mcpServers.`,
-        meta: { server: name, command: entry.config.command, failures: entry.consecutiveFailures },
+        level: "error", event: "mcp.connect_error", component: "repertoire",
+        message: `MCP server "${entry.name}" exceeded max restart retries`,
+        meta: { server: entry.name, failures: entry.consecutiveFailures },
       })
       return
     }
-
     emitNervesEvent({
-      level: "warn",
-      event: "mcp.server_restart",
-      component: "repertoire",
-      message: `restarting crashed MCP server: ${name}`,
-      meta: { server: name, attempt: entry.consecutiveFailures },
+      level: "warn", event: "mcp.server_restart", component: "repertoire",
+      message: `restarting crashed MCP server: ${entry.name}`,
+      meta: { server: entry.name, attempt: entry.consecutiveFailures },
     })
-
-    /* v8 ignore start -- timer callback: covered by mcp-manager.test.ts via fake timers but v8 can't trace @preserve */
-    setTimeout(() => {
-      if (this.shuttingDown) return
-      if (this.servers.get(name)?.client !== crashedClient) return
-      this.restartServer(name, crashedClient).catch(() => {
-        // Error handling is inside restartServer
+    entry.restartTimer = setTimeout(() => {
+      this.enqueueBackground(async () => {
+        if (!this.isCurrentEntry(entry)) return
+        delete entry.restartTimer
+        await this.restartServer(entry)
       })
     }, RESTART_DELAY_MS)
-    /* v8 ignore stop */
   }
 
-  /* v8 ignore start -- called from timer callback: covered by mcp-manager.test.ts via fake timers but v8 can't trace @preserve */
-  private async restartServer(name: string, expectedClient?: McpClient): Promise<void> {
-    const entry = this.servers.get(name)
-    if (!entry) return
-    if (expectedClient && entry.client !== expectedClient) return
-
-    // Remove old entry and reconnect
-    this.servers.delete(name)
-    this.desiredGenerations.delete(name)
-    entry.client.shutdown()
-    await this.connectServer(name, entry.config, entry.pluginId, entry.ownerAgent)
-
-    // Preserve failure count
-    const newEntry = this.servers.get(name)
-    if (newEntry) {
-      newEntry.consecutiveFailures = entry.consecutiveFailures
-    }
-  }
-  /* v8 ignore stop */
-
-  private async recoverStaleTransport(name: string, reason: string): Promise<void> {
-    emitNervesEvent({
-      level: "warn",
-      event: "mcp.transport_recovery",
-      component: "repertoire",
-      message: `recovering stale MCP transport: ${name}`,
-      meta: { server: name, reason },
+  private async restartServer(entry: ServerEntry): Promise<void> {
+    this.removeEntry(entry)
+    await this.connectServer({
+      owner: entry.owner, name: entry.name, config: entry.config,
+      source: entry.source, pluginId: entry.pluginId,
+      configDigest: entry.configDigest, generation: entry.generation,
+      consecutiveFailures: entry.consecutiveFailures,
     })
-    await this.restartServer(name)
+  }
+
+  private async recoverStaleTransport(entry: ServerEntry, reason: string): Promise<void> {
+    emitNervesEvent({
+      level: "warn", event: "mcp.transport_recovery", component: "repertoire",
+      message: `recovering stale MCP transport: ${entry.name}`, meta: { server: entry.name, reason },
+    })
+    await this.restartServer(entry)
   }
 }
 
 let _sharedManager: McpManager | null = null
-let _sharedManagerPromise: Promise<McpManager | null> | null = null
 
-/**
- * Get or create a shared McpManager instance from the agent's config.
- * Returns null if no mcpServers are configured.
- * Safe to call from multiple senses — will only create one instance.
- *
- * `options.runtimeServers` are the current turn's per-agent MCP overrides (e.g.
- * Workbench's `ouro_workbench`). They are PARAMETER data for this call only —
- * passed into the merge for both the initial `start()` and every subsequent
- * `reconcile()`, and never persisted as module state. A call that omits them
- * reconciles to a set WITHOUT them, tearing any prior runtime server down — the
- * no-leak invariant for the shared multi-agent daemon.
- */
+/** Every caller applies its own desired state and freezes its own view in the shared manager's lifecycle tail. */
 export async function getSharedMcpManager(
-  options?: { runtimeServers?: RuntimeMcpServers },
-): Promise<McpManager | null> {
-  const runtimeServers = options?.runtimeServers
-  // If manager exists, reconcile to pick up config changes (new/removed servers)
-  // AND this turn's runtime overrides. Passing runtimeServers per-call is what
-  // scopes the runtime MCP to the active agent's turn.
-  if (_sharedManager) {
-    const reconciled = await _sharedManager.reconcile(runtimeServers)
-    if (!reconciled) {
-      _sharedManager = null
-      return null
-    }
-    return _sharedManager
+  options: McpOwner & { runtimeServers?: RuntimeMcpServers },
+): Promise<McpTurnView | null> {
+  if (!isOwner(options)) {
+    emitNervesEvent({
+      level: "warn", event: "mcp.owner_invalid", component: "repertoire",
+      message: "MCP requires an explicit owner", meta: { reason: "agent name and absolute root are required" },
+    })
+    return null
   }
-  /* v8 ignore next -- race guard: deduplicates concurrent initialization calls @preserve */
-  if (_sharedManagerPromise) return _sharedManagerPromise
-
-  // Always re-check config — agent may have added servers since last call
-
-  _sharedManagerPromise = (async () => {
-    try {
-      const { mergedServers, pluginOrigins } = buildMergedServerConfig(runtimeServers)
-      if (Object.keys(mergedServers).length === 0) return null
-
-      const manager = new McpManager()
-      await manager.start(mergedServers, pluginOrigins, getAgentName())
-      _sharedManager = manager
-      return manager
-    } catch (error) {
-      emitNervesEvent({
-        level: "error",
-        event: "mcp.manager_start",
-        component: "repertoire",
-        message: "failed to initialize shared MCP manager",
-        /* v8 ignore next -- both branches tested: Error in wiring test, non-Error is defensive @preserve */
-        meta: { reason: error instanceof Error ? error.message : String(error) },
-      })
-      return null
-    } finally {
-      _sharedManagerPromise = null
-    }
-  })()
-
-  return _sharedManagerPromise
+  const manager = _sharedManager ??= new McpManager()
+  return manager.reconcile(options, options.runtimeServers)
 }
 
-export async function releaseRuntimeMcpServers(): Promise<void> {
-  if (!_sharedManager) return
-  if (!await _sharedManager.reconcile()) {
-    _sharedManager = null
-  }
+export async function releaseRuntimeMcpServers(owner: McpOwner): Promise<void> {
+  if (_sharedManager) await _sharedManager.reconcile(owner)
 }
 
-/**
- * Shut down the shared MCP manager and clear the singleton.
- * Called during daemon/agent shutdown.
- */
-export function shutdownSharedMcpManager(): void {
-  if (_sharedManager) {
-    _sharedManager.shutdown()
-    _sharedManager = null
-  }
+export async function shutdownSharedMcpManager(): Promise<void> {
+  const manager = _sharedManager
+  if (!manager) return
+  await manager.shutdown()
+  if (_sharedManager === manager) _sharedManager = null
 }
 
-/** Reset for testing only */
-export function resetSharedMcpManager(): void {
-  _sharedManager = null
-  _sharedManagerPromise = null
+/** Reset for testing only. */
+export async function resetSharedMcpManager(): Promise<void> {
+  await shutdownSharedMcpManager()
 }

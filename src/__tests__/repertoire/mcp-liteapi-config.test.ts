@@ -63,6 +63,8 @@ vi.mock("../../heart/identity", () => ({
 
 import { McpManager } from "../../repertoire/mcp-manager"
 
+const OWNER = Object.freeze({ agentName: "test", agentRoot: "/tmp/test.ouro" })
+
 function createMockClient(tools: McpToolInfo[] = []): MockClient {
   return {
     connect: vi.fn().mockResolvedValue(undefined),
@@ -92,7 +94,7 @@ describe("LiteAPI MCP configuration", () => {
     mockGetRawSecret.mockResolvedValue("liteapi-test-key-123")
 
     const manager = new McpManager()
-    await manager.start({
+    await manager.start(OWNER, {
       liteapi: {
         command: "npx",
         args: ["tsx", "src/index.ts"],
@@ -108,14 +110,14 @@ describe("LiteAPI MCP configuration", () => {
     expect(clientInstances[0]._spawnedEnv?.LITEAPI_API_KEY).toBe("liteapi-test-key-123")
     expect(clientInstances[0]._spawnedCwd).toBe("/path/to/liteapi-mcp-server")
 
-    manager.shutdown()
+    await manager.shutdown()
   })
 
   it("skips LiteAPI when vault resolution fails", async () => {
     mockGetRawSecret.mockRejectedValue(new Error('no credential found for domain "liteapi.travel"'))
 
     const manager = new McpManager()
-    await manager.start({
+    await manager.start(OWNER, {
       liteapi: {
         command: "npx",
         args: ["tsx", "src/index.ts"],
@@ -141,7 +143,7 @@ describe("LiteAPI MCP configuration", () => {
     expect(errorEvents.length).toBeGreaterThan(0)
     expect((errorEvents[0].message as string)).toContain("could not be resolved")
 
-    manager.shutdown()
+    await manager.shutdown()
   })
 
   it("LiteAPI config uses correct command shape: npx tsx src/index.ts", async () => {
@@ -157,13 +159,13 @@ describe("LiteAPI MCP configuration", () => {
     }
 
     const manager = new McpManager()
-    await manager.start({ liteapi: liteApiConfig })
+    await manager.start(OWNER, { liteapi: liteApiConfig })
 
     expect(clientInstances).toHaveLength(1)
     // The client received the resolved config
     expect(clientInstances[0]._spawnedEnv?.LITEAPI_API_KEY).toBe("test-key")
     expect(clientInstances[0]._spawnedCwd).toBe("/opt/liteapi-mcp-server")
 
-    manager.shutdown()
+    await manager.shutdown()
   })
 })

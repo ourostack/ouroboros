@@ -10283,6 +10283,96 @@ describe("provider runtime turn isolation", () => {
 })
 
 describe("provider runtime freshness", () => {
+  it.each(["initial", "retry", "judge"] as const)("keeps real turn provider construction and credential refresh on the initiating owner: %s", async (phase) => {
+    vi.useFakeTimers()
+    vi.resetModules()
+    await setupMinimax("ambient-key", "ambient-model")
+    const credentials = await import("../../heart/provider-credentials")
+    const owner = { agentName: "approval-turn", agentRoot: "/bundles/approval-turn.ouro" }
+    credentials.cacheProviderCredentialRecords(owner.agentName, [credentials.createProviderCredentialRecord({
+      provider: "minimax", credentials: { apiKey: "approval-turn-key" }, config: {}, provenance: { source: "auth" },
+    })])
+    vi.mocked(identity.loadAgentConfig).mockImplementation((coordinate) => ({
+      name: coordinate?.agentName ?? "testagent",
+      humanFacing: { provider: "minimax", model: coordinate ? "approval-turn-model" : "ambient-model" },
+      agentFacing: { provider: "minimax", model: "inner-model" },
+    }))
+    const read = vi.spyOn(credentials, "readProviderCredentialRecord")
+    const refresh = vi.spyOn(credentials, "refreshProviderCredentialPool").mockImplementation(async (name) => credentials.readProviderCredentialPool(name))
+    const core = await import("../../heart/core")
+    const initialRuntime = phase === "retry" ? await core.getProviderRuntime("human", owner) : undefined
+    read.mockClear()
+    mockOpenAICtor.mockClear()
+    mockCreate.mockReset()
+    let attempts = 0
+    mockCreate.mockImplementation(() => {
+      attempts += 1
+      if (phase === "retry" && attempts === 1) throw new Error("fetch failed")
+      return { async *[Symbol.asyncIterator]() { yield { choices: [{ delta: { content: "owned turn completed" } }] } } }
+    })
+    if (phase === "judge") mockInjectKeptNotes.mockImplementationOnce(async (_messages, { judge }) => {
+      await judge({})
+      return { status: "none", elapsedMs: 0, pressure: [] }
+    })
+    try {
+      const running = core.runAgent([{ role: "user", content: "Use this turn's owner." }], noopCallbacks, "cli", undefined, {
+        hardDisableTools: true, skipKeptNotes: phase !== "judge", providerRuntimeOverride: initialRuntime,
+        toolContext: { ...owner, signin: async () => undefined },
+      })
+      await advanceProviderRetryTimers()
+      expect((await running).outcome).toBe("settled")
+      expect(attempts).toBe(phase === "retry" ? 2 : 1)
+      expect(read.mock.calls.map(([name]) => name)).toEqual(phase === "judge" ? [owner.agentName, owner.agentName] : [owner.agentName])
+      expect(mockOpenAICtor.mock.calls.map(([options]) => options.apiKey)).toEqual(phase === "judge" ? ["approval-turn-key", "approval-turn-key"] : ["approval-turn-key"])
+      if (phase === "retry") expect(refresh).toHaveBeenCalledWith(owner.agentName, { preserveCachedOnFailure: true, providers: ["minimax"] })
+      else expect(refresh).not.toHaveBeenCalled()
+    } finally {
+      read.mockRestore()
+      refresh.mockRestore()
+      vi.useRealTimers()
+    }
+  })
+
+  it.each(["human", "agent"] as const)("loads approval provider metadata from the exact owner rather than ambient state: %s", async (facing) => {
+    vi.resetModules()
+    await setupMinimax("ambient-key", "ambient-model")
+    const credentials = await import("../../heart/provider-credentials")
+    const owners = [
+      { agentName: "approval-a", agentRoot: "/bundles/approval-a.ouro" },
+      { agentName: "approval-b", agentRoot: "/bundles/approval-b.ouro" },
+    ]
+    for (const owner of owners) {
+      credentials.cacheProviderCredentialRecords(owner.agentName, [credentials.createProviderCredentialRecord({
+        provider: "minimax", credentials: { apiKey: `${owner.agentName}-key` }, config: {},
+        provenance: { source: "auth" },
+      })])
+    }
+    vi.mocked(identity.loadAgentConfig).mockImplementation((owner) => ({
+      name: owner?.agentName ?? "testagent",
+      humanFacing: { provider: "minimax", model: `${owner?.agentName ?? "ambient"}-human` },
+      agentFacing: { provider: "minimax", model: `${owner?.agentName ?? "ambient"}-agent` },
+    }))
+    const core = await import("../../heart/core")
+    const read = vi.spyOn(credentials, "readProviderCredentialRecord")
+    vi.mocked(identity.loadAgentConfig).mockClear()
+    vi.mocked(identity.getAgentName).mockClear()
+    mockOpenAICtor.mockClear()
+    mockCreate.mockClear()
+    try {
+      for (const owner of [owners[0], owners[1], owners[0]]) {
+        const runtime = await Reflect.apply(core.getProviderRuntime, undefined, [facing, owner])
+        expect(runtime.model).toBe(`${owner.agentName}-${facing}`)
+      }
+      expect(vi.mocked(identity.loadAgentConfig).mock.calls).toEqual([[owners[0]], [owners[1]], [owners[0]]])
+      expect(read.mock.calls.map(([name]) => name)).toEqual(["approval-a", "approval-b", "approval-a"])
+      expect(mockOpenAICtor.mock.calls.map(([options]) => options.apiKey)).toEqual(["approval-a-key", "approval-b-key", "approval-a-key"])
+      expect(identity.getAgentName).not.toHaveBeenCalled()
+      expect(mockCreate).not.toHaveBeenCalled()
+    } finally {
+      read.mockRestore()
+    }
+  })
+
   it("re-creates the provider runtime when the selected model changes", async () => {
     vi.resetModules()
     await setupMinimax("key-1", "model-1")

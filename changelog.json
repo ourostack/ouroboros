@@ -2,6 +2,16 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.811",
+      "changes": [
+        "Bind tool discovery and execution to the initiating agent with canonical schemas, per-owner MCP connections and current authorization.",
+        "Expose Sanctuary's resident native tools only to the configured owner while preserving household and event exclusions and role-specific containment.",
+        "Preserve approval effect outcomes without replay, confine session reads and isolate foreground and background shell ownership.",
+        "Keep CLI and realtime voice tool contexts owner-bound across delayed discovery, transport failure and cancellation.",
+        "Allow coverage gates to reuse installed Mailbox UI dependencies through an explicit skip-install option without skipping validation."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.810",
       "changes": [
         "Preserve tool calls and matching results when adjacent assistant messages are compacted, including after history repair."

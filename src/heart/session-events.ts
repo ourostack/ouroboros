@@ -189,11 +189,18 @@ export function materializeApprovalTerminal(input: {
   }
   const advanced = input.currentSessionRevision !== input.checkpoint.suspendedSessionRevision
   if (advanced) {
+    const notice = input.record.state === "succeeded"
+      ? "the approved action completed, but the session changed; no model continuation was run"
+      : input.record.state === "failed"
+        ? "the approved action failed, but the session changed; no model continuation was run"
+        : input.record.state === "attempted_indeterminate"
+          ? `${APPROVAL_TERMINAL_TEXT.attempted_indeterminate}; the session changed`
+          : "the session changed before this approval could be applied; the protected action was not executed"
     return {
       messages,
       materialized: false,
       resumeProvider: false,
-      directNotice: "the session changed before this approval could be applied; the protected action was not executed",
+      directNotice: notice,
       revision: messagesRevision(messages),
     }
   }

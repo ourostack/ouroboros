@@ -3,9 +3,9 @@ import { createHash, timingSafeEqual } from "node:crypto"
 import { chmodSync, closeSync, constants, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs"
 import { createConnection } from "node:net"
 import * as path from "node:path"
-import type OpenAI from "openai"
+import { isDeepStrictEqual } from "node:util"
 import Database from "better-sqlite3"
-import { FileFriendStore } from "@ouro.bot/friends"
+import { FileFriendStore, getChannelCapabilities } from "@ouro.bot/friends"
 
 import { emitNervesEvent } from "../../nerves/runtime"
 import { createTelegramApprovalRuntime, type TelegramApprovalRuntime } from "../../senses/telegram-approval-runtime"
@@ -25,16 +25,16 @@ import { loadTelegramSenseCredentials, opaqueTelegramSubject, readOrCreateTelegr
 import { TELEGRAM_ACCEPTANCE_AUDIT_HEAD_RELATIVE_PATH, TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH, verifyTelegramAuditLedger } from "../../senses/telegram-audit-ledger"
 import { createSanctuaryToolContext, runWithSanctuaryToolReceiptCollection } from "../../senses/sanctuary-runtime"
 import { projectSanctuaryGrounding, sanctuaryGroundingDigest, type SanctuaryGroundingToolName, type SanctuaryToolGrounding } from "../../senses/sanctuary-grounding"
-import { ponderTool, resolveToolDefinition, restTool, settleTool, speakTool } from "../../repertoire/tools"
-import { loadRelationshipCapabilityRegistry } from "../../repertoire/relationship-authorization"
-import { runAgent, type ProviderRuntime, type ToolCallBoundaryReceipt } from "../core"
+import { SANCTUARY_OWNER_ADDITIONS, ponderTool, resolveToolDefinition, restTool, selectToolsForChannel, settleTool, speakTool, toolSelectionSchemas, type ToolContext } from "../../repertoire/tools"
+import { authorizeRelationshipAccess, loadRelationshipCapabilityRegistry } from "../../repertoire/relationship-authorization"
+import { getProviderRuntime, runAgent, type ProviderRuntime, type ToolCallBoundaryReceipt } from "../core"
 import { getAgentRoot } from "../identity"
 import { readApprovalsByScenarioHandleDigest, type ApprovalAcceptanceProjection } from "../approval-store"
 import { readProviderCredentialRecord } from "../provider-credentials"
 import { pingProvider, type PingResult } from "../provider-ping"
 import { SANCTUARY_SCENARIO_GATES, SANCTUARY_SCENARIO_SOURCES, SANCTUARY_UNIT_16_EVIDENCE_LABELS, type SanctuaryUnit16EvidenceLabel } from "./sanctuary-acceptance-harness"
 import { readSanctuaryAcceptanceMarker } from "./sanctuary-acceptance-marker"
-import { createSanctuaryScenarioCapture, finalizeSanctuaryScenarioCapture, type SanctuaryHealthProbeReceipt, type SanctuaryInteractiveDriverReceipt, type SanctuaryPostbootIntegritySnapshot, type SanctuaryReadOnlyDenialReceipt, type SanctuaryScenarioFacts } from "./sanctuary-acceptance-scenarios"
+import { createSanctuaryScenarioCapture, finalizeSanctuaryScenarioCapture, type SanctuaryContainmentProfileBoundary, type SanctuaryHealthProbeReceipt, type SanctuaryInteractiveDriverReceipt, type SanctuaryPostbootIntegritySnapshot, type SanctuaryReadOnlyDenialReceipt, type SanctuaryScenarioFacts } from "./sanctuary-acceptance-scenarios"
 import { verifySanctuarySchedulerLivenessReceiptMac } from "./sanctuary-scheduler-liveness"
 import {
   mergeMachineRuntimeCredentialConfig,
@@ -80,7 +80,8 @@ export interface SanctuaryAcceptanceAdapterDependencies {
   readProviderCredential?: typeof readProviderCredentialRecord
   providerPing?: typeof pingProvider
   readLiveGrounding?(toolName: SanctuaryGroundingToolName): Promise<{ toolName: SanctuaryGroundingToolName; groundingDigest: string; sourceIdentityDigest: string; observedAt: string; facts: Record<string, unknown> }>
-  runProductionBoundaryProbe?(schemas: OpenAI.ChatCompletionFunctionTool[]): Promise<ToolCallBoundaryReceipt[]>
+  providerRuntime?: typeof getProviderRuntime
+  runProductionBoundaryProbe?: typeof runSanctuaryProductionBoundaryProbe
   now?(): number
 }
 
@@ -283,6 +284,7 @@ export function createSanctuaryAcceptanceAdapterDependencies(
     createTelegramApi: createTelegramBotApi,
     readLiveGrounding: readIndependentSanctuaryGrounding,
     runProductionBoundaryProbe: runSanctuaryProductionBoundaryProbe,
+    providerRuntime: getProviderRuntime,
   }
   const healthDriver = createSanctuaryHealthAcceptanceScenarioDriver(dependencies.hostRequest!)
   const scenarioAgentRoot = options.scenarioCapture?.agentRoot ?? getAgentRoot(TARGET_ID)
@@ -924,31 +926,60 @@ export function canonicalDockerIdFromUnraidPrefixedId(value: unknown): string {
   return value.slice(65)
 }
 
-export async function runSanctuaryProductionBoundaryProbe(telegramSchemas: OpenAI.ChatCompletionFunctionTool[]): Promise<ToolCallBoundaryReceipt[]> {
-  const excludedNames = ["shell", "read_file", "edit_file", "vault_get", "mcp_call", "exec", "credential_get"]
+function containmentToolContext(agentRoot: string, profileId: SanctuaryContainmentProfileBoundary["profileId"]): ToolContext {
+  const profile = loadRelationshipCapabilityRegistry(agentRoot).profiles[profileId]
+  if (!profile) throw new Error("Sanctuary containment profile is missing")
+  return {
+    signin: async () => undefined, agentName: TARGET_ID, agentRoot,
+    relationshipAuthorization: {
+      profileId, authorizedContextScopes: profile.contextScopes, advertisedToolNames: profile.toolNames,
+      // This request-bound subject audits the profile contract; it is not a persisted Friend or grant.
+      authorizeTool: async (name) => authorizeRelationshipAccess({
+        relationship: { friendId: "sanctuary-containment-probe", trustLevel: profileId === "sanctuary-household" ? "friend" : "family", admissionState: "active", initiativePolicy: "reactive_only", capabilityProfileId: profileId },
+        profiles: Object.values(loadRelationshipCapabilityRegistry(agentRoot).profiles),
+        request: { kind: "tool", name, requestId: "sanctuary-containment-probe", returnTargetFriendId: "sanctuary-containment-probe" },
+        activeRequestId: "sanctuary-containment-probe", requestPhase: "inbound",
+      }),
+    },
+  }
+}
+
+export async function runSanctuaryProductionBoundaryProbe(input: {
+  agentRoot: string
+  profileId: SanctuaryContainmentProfileBoundary["profileId"]
+  providerRuntime: Pick<ProviderRuntime, "id" | "model" | "capabilities">
+}): Promise<ToolCallBoundaryReceipt[]> {
+  const excludedNames = ["vault_get", "mcp_call", "exec", "credential_get", ...(input.profileId === "sanctuary-owner" ? [] : SANCTUARY_OWNER_ADDITIONS)]
+  const inner = input.profileId === "sanctuary-event"
+  const terminal = inner ? "rest" : "settle"
   const turns = [
     { content: "", toolCalls: excludedNames.map((name, index) => ({ id: `sanctuary-excluded-${index}`, name, arguments: "{}" })), outputItems: [] },
     { content: "", toolCalls: [{ id: "sanctuary-valid-system", name: "unraid_get_system", arguments: "{}" }], outputItems: [] },
-    { content: "", toolCalls: [{ id: "sanctuary-boundary-settle", name: "settle", arguments: JSON.stringify({ answer: "boundary complete" }) }], outputItems: [] },
+    { content: "", toolCalls: [{ id: "sanctuary-boundary-terminal", name: terminal, arguments: JSON.stringify(inner ? { note: "boundary complete" } : { answer: "boundary complete", intent: "complete" }) }], outputItems: [] },
   ]
   let turn = 0
   const controlOutputs: string[] = []
   const providerRuntime: ProviderRuntime = {
-    id: "minimax", model: "sanctuary-production-boundary-probe", client: null, capabilities: new Set(),
+    ...input.providerRuntime, client: null,
     streamTurn: async () => turns[turn++] ?? (() => { throw new Error("production boundary probe exceeded its turn budget") })(),
     appendToolOutput: (callId, output) => { if (callId === "sanctuary-valid-system") controlOutputs.push(output) }, resetTurnState: () => undefined, ping: async () => undefined, classifyError: () => "unknown",
   }
   const receipts: ToolCallBoundaryReceipt[] = []
   const sanctuary = createSanctuaryToolContext(TARGET_ID).sanctuary
+  const context = containmentToolContext(input.agentRoot, input.profileId)
+  const relationship = context.relationshipAuthorization!
+  const poisonedContext = { ...context, sanctuary, relationshipAuthorization: {
+    ...relationship, advertisedToolNames: [...relationship.advertisedToolNames, ...excludedNames, "mcp__containment_poison"],
+  } }
   const observed = await runWithSanctuaryToolReceiptCollection(() => runAgent([{ role: "user", content: "Run the bounded production tool authorization probe." }], {
       onModelStart: () => undefined, onModelStreamStart: () => undefined, onTextChunk: () => undefined, onReasoningChunk: () => undefined,
       onToolStart: () => undefined, onToolEnd: () => undefined, onError: () => undefined, onClearText: () => undefined,
-    }, "telegram", undefined, {
-      tools: telegramSchemas, providerRuntimeOverride: providerRuntime, toolBoundaryObserver: (receipt) => receipts.push(receipt),
-      toolContext: { signin: async () => undefined, sanctuary },
+    }, inner ? "inner" : "telegram", undefined, {
+      skipKeptNotes: true, providerRuntimeOverride: providerRuntime, toolBoundaryObserver: (receipt) => receipts.push(receipt),
+      toolContext: poisonedContext,
     }))
   const controlReceipts = receipts.filter((receipt) => receipt.name === "unraid_get_system")
-  if (observed.result.outcome !== "settled" || controlReceipts.length !== 1
+  if (observed.result.outcome !== (inner ? "rested" : "settled") || controlReceipts.length !== 1
     || controlReceipts[0]!.reason !== "dispatched" || !controlReceipts[0]!.invoked || controlReceipts[0]!.sideEffect
     || observed.toolResultDigests.length !== 1 || controlOutputs.length !== 1
     || createHash("sha256").update(controlOutputs[0]!).digest("hex") !== observed.toolResultDigests[0]) {
@@ -959,7 +990,7 @@ export async function runSanctuaryProductionBoundaryProbe(telegramSchemas: OpenA
   if (controlResult.ok !== true || typeof controlData.sourceIdentityDigest !== "string" || !SHA256.test(controlData.sourceIdentityDigest)) {
     throw new Error("production boundary valid control result is invalid")
   }
-  return receipts.filter((receipt) => receipt.name !== "settle")
+  return receipts.filter((receipt) => receipt.name !== terminal)
 }
 
 function parseInteractiveDriverReceipt(raw: string | null, label: SanctuaryUnit16EvidenceLabel, scenarioHandleDigest: string): SanctuaryInteractiveDriverReceipt | undefined {
@@ -1467,26 +1498,50 @@ export async function readDefaultSanctuaryScenarioFacts(
     })).sort((left, right) => left.name.localeCompare(right.name))
     const readRecord = inventory.find((record) => record.name === "Butler RO")
     const writeRecord = inventory.find((record) => record.name === "Butler RW")
+    const rawProfiles = readFileSync(path.join(agentRoot, "tool-profiles.json"), "utf8")
+    const packagedProfiles = readFileSync(path.resolve(__dirname, "../../../deploy/unraid/sanctuary.ouro/tool-profiles.json"), "utf8")
+    if (!isDeepStrictEqual(JSON.parse(rawProfiles), JSON.parse(packagedProfiles))) throw new Error("Sanctuary containment profiles do not match the verified package")
     const relationshipRegistry = loadRelationshipCapabilityRegistry(agentRoot)
-    const telegramProfile = relationshipRegistry.profiles["sanctuary-owner"]
-    const privateProfile = relationshipRegistry.profiles["sanctuary-event"]
-    const telegramNames = telegramProfile?.toolNames ?? []
-    const privateNames = privateProfile?.toolNames ?? []
-    const relationshipProfilesExact = telegramNames.length > 0 && privateNames.length > 0
-    const flowSchemas = new Map([ponderTool, settleTool, speakTool, restTool].map((tool) => [tool.function.name, tool]))
-    const schemasFor = (names: string[]) => names.flatMap((name) => {
-      const schema = resolveToolDefinition(name)?.tool ?? flowSchemas.get(name)
-      return schema ? [schema] : []
-    })
-    const telegramSchemas = schemasFor(telegramNames)
-    const privateSchemas = schemasFor(privateNames)
-    const handlerResolves = (name: string): boolean => typeof resolveToolDefinition(name)?.handler === "function" || flowSchemas.has(name)
-    const resolvedHandlerCount = [...telegramNames, ...privateNames].filter(handlerResolves).length
-    const handlersExact = resolvedHandlerCount === telegramNames.length + privateNames.length
-    const excludedNames = ["shell", "read_file", "edit_file", "vault_get", "mcp_call", "exec", "credential_get"]
-    const excludedSchemaIntersection = excludedNames.filter((name) => telegramNames.includes(name) || privateNames.includes(name))
-    const productionBoundaryReceipts = await dependency(deps.runProductionBoundaryProbe, "production tool boundary probe")(telegramSchemas)
-    const excludedAttempts = productionBoundaryReceipts.filter((receipt) => excludedNames.includes(receipt.name))
+    const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex")
+    const boundaryFor = async (profileId: SanctuaryContainmentProfileBoundary["profileId"]): Promise<SanctuaryContainmentProfileBoundary> => {
+      const profile = relationshipRegistry.profiles[profileId]!
+      const inner = profileId === "sanctuary-event"
+      const runtime = await dependency(deps.providerRuntime, "current provider runtime")(inner ? "agent" : "human", { agentName: TARGET_ID, agentRoot })
+      const context = containmentToolContext(agentRoot, profileId)
+      const select = (toolContext: ToolContext) => selectToolsForChannel(getChannelCapabilities(inner ? "inner" : "telegram"), undefined, undefined, runtime.capabilities, undefined, undefined, toolContext)
+      const selection = select(context)
+      const schemas = toolSelectionSchemas(selection)
+      const schemaToolNames = schemas.map((tool) => tool.function.name)
+      const expectedNames = profile.toolNames.filter((name) => (inner || name !== "rest") && (name !== "set_reasoning_effort" || runtime.capabilities.has("reasoning-effort")))
+      const excludedNames = ["vault_get", "mcp_call", "exec", "credential_get", ...(profileId === "sanctuary-owner" ? [] : SANCTUARY_OWNER_ADDITIONS)]
+      const poisoned = select({ ...context, relationshipAuthorization: {
+        ...context.relationshipAuthorization!, advertisedToolNames: [...profile.toolNames, ...excludedNames, "mcp__containment_poison"],
+      } })
+      const productionBoundaryReceipts = await dependency(deps.runProductionBoundaryProbe, "production tool boundary probe")({ agentRoot, profileId, providerRuntime: runtime })
+      const excludedAttempts = productionBoundaryReceipts.filter((receipt) => receipt.name !== "unraid_get_system")
+      return {
+        profileId, profileVersion: profile.version, profileDigest: digest(profile), profileToolNames: profile.toolNames,
+        providerCapabilities: [...runtime.capabilities], schemaDigest: digest(schemas), schemaToolNames,
+        ordinaryDefinitionCount: selection.ordinary.length, engineSchemaCount: selection.engine.length,
+        profileExact: true, schemasExact: isDeepStrictEqual([...schemaToolNames].sort(), [...expectedNames].sort()),
+        handlersExact: selection.ordinary.every((definition) => typeof definition.handler === "function") && selection.engine.every((schema) => [ponderTool, settleTool, speakTool, restTool].includes(schema)),
+        poisonedSchemaIntersectionCount: toolSelectionSchemas(poisoned).filter((schema) => !schemaToolNames.includes(schema.function.name)).length,
+        excludedToolNames: excludedAttempts.map((receipt) => receipt.name),
+        excludedSchemaIntersectionCount: schemaToolNames.filter((name) => excludedNames.includes(name)).length,
+        fabricatedHandlerInvocationCount: excludedAttempts.filter((receipt) => receipt.invoked).length,
+        excludedToolAttemptCount: excludedAttempts.length,
+        excludedToolRejectedCount: excludedAttempts.filter((receipt) => receipt.reason === "profile_excluded").length,
+        excludedToolInvokedCount: excludedAttempts.filter((receipt) => receipt.invoked).length,
+        excludedToolSideEffectCount: excludedAttempts.filter((receipt) => receipt.sideEffect).length,
+        globallyResolvableExcludedToolCount: excludedAttempts.filter((receipt) => receipt.globallyResolvable).length,
+      }
+    }
+    const profileBoundaries = {
+      "sanctuary-owner": await boundaryFor("sanctuary-owner"),
+      "sanctuary-household": await boundaryFor("sanctuary-household"),
+      "sanctuary-event": await boundaryFor("sanctuary-event"),
+    }
+    if (readFileSync(path.join(agentRoot, "tool-profiles.json"), "utf8") !== rawProfiles) throw new Error("Sanctuary containment profiles changed during the audit")
     const restartDefinition = resolveToolDefinition("unraid_restart_container")!
     const writeApprovalPolicy = restartDefinition.approvalPolicy!({ container: "calibre-web" })
     const writeApprovalPolicyExact = writeApprovalPolicy.kind === "required"
@@ -1502,29 +1557,13 @@ export async function readDefaultSanctuaryScenarioFacts(
     const rawWriteMaterialFieldCount = rawInventory.reduce((count, record) => count
       + Object.keys(record).filter((field) => /^(?:key|credential|secret|token)$/iu.test(field)).length, 0)
     containment = {
-      schemaVersion: "sanctuary-containment-audit-v1",
+      schemaVersion: "sanctuary-containment-audit-v2",
       keyCount: inventory.length,
       keyInventoryDigest: createHash("sha256").update(JSON.stringify(redactedInventory)).digest("hex"),
       readScopeDigest: createHash("sha256").update(JSON.stringify(readRecord ? flattenedPermissions(readRecord) : [])).digest("hex"),
       writeScopeDigest: createHash("sha256").update(JSON.stringify(writeRecord ? flattenedPermissions(writeRecord) : [])).digest("hex"),
       keyRoleAssignmentCount: inventory.reduce((count, record) => count + record.roles.length, 0),
-      telegramToolCount: telegramNames.length,
-      telegramProfileDigest: createHash("sha256").update(JSON.stringify(telegramNames)).digest("hex"),
-      telegramSchemaDigest: createHash("sha256").update(JSON.stringify(telegramSchemas)).digest("hex"),
-      privateToolCount: privateNames.length,
-      privateProfileDigest: createHash("sha256").update(JSON.stringify(privateNames)).digest("hex"),
-      privateSchemaDigest: createHash("sha256").update(JSON.stringify(privateSchemas)).digest("hex"),
-      resolvedHandlerCount,
-      relationshipProfilesExact,
-      handlersExact,
-      excludedToolCount: excludedNames.length,
-      excludedSchemaIntersectionCount: excludedSchemaIntersection.length,
-      fabricatedHandlerInvocationCount: excludedSchemaIntersection.filter(handlerResolves).length,
-      excludedToolAttemptCount: excludedAttempts.length,
-      excludedToolRejectedCount: excludedAttempts.filter((attempt) => attempt.reason === "profile_excluded").length,
-      excludedToolInvokedCount: excludedAttempts.filter((attempt) => attempt.invoked).length,
-      excludedToolSideEffectCount: excludedAttempts.filter((attempt) => attempt.sideEffect).length,
-      globallyResolvableExcludedToolCount: excludedAttempts.filter((attempt) => attempt.globallyResolvable).length,
+      profileBoundaries,
       auditPathDigest: createHash("sha256").update(TELEGRAM_AUDIT).digest("hex"),
       auditLedgerDigest: createHash("sha256").update(JSON.stringify(auditLedgerEntries)).digest("hex"),
       auditRecordCount: auditLedgerEntries.length,
@@ -1540,7 +1579,7 @@ export async function readDefaultSanctuaryScenarioFacts(
       updaterDisabled: container?.updaterDisabled === true,
       writableKeyExposure: container?.writableKeyExposure !== false,
       rawWriteMaterialFieldCount,
-      typedWriteExecutorCount: telegramNames.filter((name) => name === "unraid_restart_container" && writeApprovalPolicy.kind === "required").length,
+      typedWriteExecutorCount: relationshipRegistry.profiles["sanctuary-owner"]!.toolNames.filter((name) => name === "unraid_restart_container" && writeApprovalPolicy.kind === "required").length,
       writeApprovalPolicyDigest: createHash("sha256").update(JSON.stringify(writeApprovalPolicy)).digest("hex"),
       writeApprovalPolicyExact,
       sensitiveMaterialObserved: auditContainsSensitiveMaterial(auditRaw ?? "", deps.telegramCredentials?.()) || rawWriteMaterialFieldCount > 0 || container?.writableKeyExposure === true,
@@ -1614,9 +1653,8 @@ export async function readDefaultSanctuaryScenarioFacts(
     digest: health && digestFiredWithinMs !== null ? { scheduleObserved: Boolean(cronRaw && canonicalSanctuaryHealthCronRegistered(cronRaw)), messageCount: scenarioDeliveries.filter((receipt) => receipt.kind === "digest" || receipt.kind === "transition_and_digest").length, firedWithinMs: digestFiredWithinMs, productionRestored: container?.running === true && container.health === "healthy" } : undefined,
     reboot,
     containment: containment ?? {
-      schemaVersion: "sanctuary-containment-audit-v1", keyCount: 0, keyInventoryDigest: "", readScopeDigest: "", writeScopeDigest: "", keyRoleAssignmentCount: 0,
-      telegramToolCount: 0, telegramProfileDigest: "", telegramSchemaDigest: "", privateToolCount: 0, privateProfileDigest: "", privateSchemaDigest: "", resolvedHandlerCount: 0, relationshipProfilesExact: false, handlersExact: false,
-      excludedToolCount: 0, excludedSchemaIntersectionCount: 0, fabricatedHandlerInvocationCount: 0, excludedToolAttemptCount: 0, excludedToolRejectedCount: 0, excludedToolInvokedCount: 0, excludedToolSideEffectCount: 0, globallyResolvableExcludedToolCount: 0, auditPathDigest: "", auditLedgerDigest: "", auditRecordCount: 0, auditLifecyclePairCount: 0,
+      schemaVersion: "sanctuary-containment-audit-v2", keyCount: 0, keyInventoryDigest: "", readScopeDigest: "", writeScopeDigest: "", keyRoleAssignmentCount: 0,
+      profileBoundaries: null, auditPathDigest: "", auditLedgerDigest: "", auditRecordCount: 0, auditLifecyclePairCount: 0,
       containerUser: "", liveProcessUser: "", mountCount: 0, publishedPortCount: 0, networkMode: "", readOnlyRoot: false, mountsExact: false, securityExact: false, updaterDisabled: false,
       writableKeyExposure: container?.writableKeyExposure === true, rawWriteMaterialFieldCount: 0, typedWriteExecutorCount: 0, writeApprovalPolicyDigest: "", writeApprovalPolicyExact: false,
       sensitiveMaterialObserved: auditContainsSensitiveMaterial(auditRaw ?? "") || container?.writableKeyExposure === true,

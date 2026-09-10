@@ -23,7 +23,7 @@ import { postTurnTrim, deferPostTurnPersist } from "../mind/context"
 import { enforceTrustGate } from "./trust-gate"
 import { handleInboundTurn, type InboundTurnInput } from "./pipeline"
 import { getSharedMcpManager } from "../repertoire/mcp-manager"
-import type { RuntimeMcpServers } from "../repertoire/mcp-manager"
+import type { McpOwner, RuntimeMcpServers } from "../repertoire/mcp-manager"
 import { emitNervesEvent } from "../nerves/runtime"
 import type { ToolContext } from "../repertoire/tools-base"
 import { readSessionTransaction, withSessionTurnLease, type SessionTurnLease } from "../mind/session-transaction"
@@ -36,9 +36,9 @@ const OUTWARD_DELIVERY_TOOL_ACKS = new Map([
   ["speak", "(spoken)"],
 ])
 
-async function releaseRuntimeMcpServersAfterTurn(): Promise<void> {
+async function releaseRuntimeMcpServersAfterTurn(owner: McpOwner): Promise<void> {
   const manager = await import("../repertoire/mcp-manager")
-  await manager.releaseRuntimeMcpServers()
+  await manager.releaseRuntimeMcpServers(owner)
 }
 
 /**
@@ -452,19 +452,21 @@ export function getSenseSessionPath(agentName: string, friendId: string, channel
  */
 export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSenseTurnResult> {
   return withTurnExecutionLease(async () => {
-    setAgentName(options.agentName)
+    const owner = Object.freeze({ agentName: options.agentName, agentRoot: getAgentRoot(options.agentName) })
+    setAgentName(owner.agentName)
     try {
-      return await runSenseTurnExclusive(options)
+      return await runSenseTurnExclusive(options, owner)
     } finally {
       if (options.runtimeMcpServers && !options.disableTools) {
-        await releaseRuntimeMcpServersAfterTurn()
+        await releaseRuntimeMcpServersAfterTurn(owner)
       }
     }
   })
 }
 
-async function runSenseTurnExclusive(options: RunSenseTurnOptions): Promise<RunSenseTurnResult> {
-  const { agentName, channel, sessionKey, friendId, userMessage } = options
+async function runSenseTurnExclusive(options: RunSenseTurnOptions, owner: McpOwner): Promise<RunSenseTurnResult> {
+  const { channel, sessionKey, friendId, userMessage } = options
+  const { agentName, agentRoot } = owner
 
   emitNervesEvent({
     component: "senses",
@@ -474,7 +476,6 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions): Promise<RunS
   })
 
   // Resolve context
-  const agentRoot = getAgentRoot(agentName)
   const friendsPath = path.join(agentRoot, "friends")
   const friendStore = new FileFriendStore(friendsPath)
   const capabilities = getChannelCapabilities(channel)
@@ -516,9 +517,7 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions): Promise<RunS
   // Runtime MCP servers (e.g. Workbench's ouro_workbench) are passed per-turn for THIS agent only.
   const mcpManager = options.disableTools
     ? undefined
-    : await getSharedMcpManager(
-      options.runtimeMcpServers ? { runtimeServers: options.runtimeMcpServers } : undefined,
-    ) ?? undefined
+    : await getSharedMcpManager({ ...owner, runtimeServers: options.runtimeMcpServers }) ?? undefined
 
   // Session path and loading
   const ephemeralRoot = options.disablePersistence
@@ -714,6 +713,8 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions): Promise<RunS
       toolContext: {
         signin: async () => undefined,
         ...(options.toolContext ? options.toolContext as ToolContext : {}),
+        agentName,
+        agentRoot,
         currentUserMessage: userMessage,
       },
     },

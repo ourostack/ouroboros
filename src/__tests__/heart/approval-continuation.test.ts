@@ -91,6 +91,106 @@ function record(state: ApprovalState, result: string | null = null): ApprovalRec
 }
 
 describe("approval terminal transcript projection", () => {
+  it.each(["denied", "expired", "drifted", "abandoned_before_attempt"] as const)(
+    "A001a coverage preserves no-action truth for %s after the conversation advances",
+    (state) => {
+      const messages = [...checkpoint().preCallMessages, { role: "user" as const, content: "new conversation" }]
+      expect(sessionEvents.materializeApprovalTerminal({
+        messages, checkpoint: checkpoint(), record: record(state), currentSessionRevision: "0".repeat(64),
+      })).toMatchObject({
+        messages, materialized: false, resumeProvider: false,
+        directNotice: "the session changed before this approval could be applied; the protected action was not executed",
+      })
+    },
+  )
+
+  it.each(["succeeded", "failed", "attempted_indeterminate"] as const)(
+    "does not relabel a prior %s effect as no action when the conversation has advanced",
+    (state) => {
+      const advanced = [...checkpoint().preCallMessages, { role: "user" as const, content: "new conversation" }]
+      const result = sessionEvents.materializeApprovalTerminal({
+        messages: advanced, checkpoint: checkpoint(), record: record(state, "recorded outcome"),
+        currentSessionRevision: "0".repeat(64),
+      })
+      expect(result.messages).toEqual(advanced)
+      expect(result.materialized).toBe(false)
+      expect(result.resumeProvider).toBe(false)
+      expect(result.directNotice).not.toMatch(/not executed|no action/)
+      expect(result.directNotice).toMatch(state === "succeeded" ? /completed/ : state === "failed" ? /failed/ : /do not retry/)
+    },
+  )
+
+  it("does not continue a relationship-bound approval without a fresh authority producer", async () => {
+    const runAgent = vi.fn(async () => ({ outcome: "settled" as const }))
+    const result = await core.resumeApprovalContinuation({
+      record: record("succeeded", "completed"), checkpoint: checkpoint(), currentSessionRevision: REVISION,
+      sessionMessages: checkpoint().preCallMessages, callbacks: {},
+      claimContinuation: () => continuationClaim(true),
+      ...continuationLifecycle(), runAgent, persist: vi.fn(), deliver: vi.fn(),
+      runAgentOptions: {
+        toolContext: {
+          signin: async () => undefined,
+          relationshipAuthorization: {
+            profileId: "test-owner", authorizedContextScopes: [], advertisedToolNames: ["shell"],
+            authorizeTool: () => ({ allowed: true, receiptId: "stale" }),
+          },
+        },
+      },
+    })
+    expect(result.outcome).toBe("terminal_notice")
+    expect(runAgent).not.toHaveBeenCalled()
+  })
+
+  it.each(["succeeded", "failed", "denied", "expired", "drifted", "attempted_indeterminate"] as const)(
+    "rebuilds authority before a %s continuation and retains effect truth when access is unavailable",
+    async (state) => {
+      const lifecycle = continuationLifecycle()
+      const runAgent = vi.fn(async () => ({ outcome: "settled" as const }))
+      const deliver = vi.fn()
+      const revalidate = vi.fn(async () => null)
+      const action = record(state, state === "succeeded" ? "the action completed" : "recorded outcome")
+      const options = {
+        record: action, checkpoint: checkpoint(), currentSessionRevision: REVISION,
+        sessionMessages: checkpoint().preCallMessages, callbacks: {},
+        claimContinuation: () => continuationClaim(true),
+        ...lifecycle, runAgent, persist: vi.fn(), deliver, revalidate,
+      }
+      const result = await core.resumeApprovalContinuation(options)
+      expect(result.outcome).toBe("terminal_notice")
+      expect(revalidate).toHaveBeenCalledOnce()
+      expect(runAgent).not.toHaveBeenCalled()
+      expect(lifecycle.markContinuationAttempted).not.toHaveBeenCalled()
+      expect(lifecycle.completeContinuation).toHaveBeenCalledOnce()
+      expect(deliver).toHaveBeenCalledOnce()
+      if (state === "succeeded") {
+        expect(deliver.mock.calls[0][0]).toContain("completed")
+        expect(deliver.mock.calls[0][0]).not.toMatch(/no action|not executed/)
+      }
+      if (state === "attempted_indeterminate") {
+        expect(deliver.mock.calls[0][0]).toContain("do not retry")
+        expect(deliver.mock.calls[0][0]).not.toMatch(/no action|not executed/)
+      }
+      expect(action.state).toBe(state)
+    },
+  )
+
+  it("passes freshly rebuilt execution options to the sole authorized continuation", async () => {
+    const currentOptions = { toolContext: { signin: async () => undefined, agentName: "owner-a", agentRoot: "/current/a.ouro" } }
+    const staleOptions = { toolContext: { signin: async () => undefined, agentName: "other", agentRoot: "/stale/b.ouro" } }
+    const runAgent = vi.fn(async () => ({ outcome: "settled" as const }))
+    const revalidate = vi.fn(async () => currentOptions)
+    const options = {
+      record: record("succeeded", "completed"), checkpoint: checkpoint(), currentSessionRevision: REVISION,
+      sessionMessages: checkpoint().preCallMessages, callbacks: {}, channel: "telegram" as const,
+      claimContinuation: () => continuationClaim(true),
+      ...continuationLifecycle(), runAgent, persist: vi.fn(), deliver: vi.fn(),
+      runAgentOptions: staleOptions, revalidate,
+    }
+    await core.resumeApprovalContinuation(options)
+    expect(runAgent).toHaveBeenCalledExactlyOnceWith(expect.any(Array), expect.any(Object), "telegram", undefined, currentOptions)
+    expect(revalidate).toHaveBeenCalledOnce()
+  })
+
   it.each([
     ["succeeded", "restarted", "restarted", true],
     ["failed", "error: restart refused", "error: restart refused", true],

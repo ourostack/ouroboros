@@ -1,4 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from "vitest"
+import { afterEach, describe, it, expect, vi, beforeEach } from "vitest"
+import { makeMcpView as makeMockMcpManager, MCP_CONTEXT, MCP_OWNER, shutdownMcpFixtures } from "./mcp-fixture"
 
 // Track nerves events
 const nervesEvents: Array<Record<string, unknown>> = []
@@ -8,22 +9,8 @@ vi.mock("../../nerves/runtime", () => ({
   }),
 }))
 
-import type { McpManager } from "../../repertoire/mcp-manager"
 import { mcpToolsAsDefinitions } from "../../repertoire/mcp-tools"
-
-function makeMockMcpManager(
-  allTools: Array<{ server: string; tools: Array<{ name: string; description: string; inputSchema: Record<string, unknown> }>; pluginId?: string }>,
-  callToolResult?: { content: Array<{ type: string; text: string }> },
-  callToolError?: Error,
-): McpManager {
-  return {
-    listAllTools: () => allTools,
-    callTool: vi.fn().mockImplementation(async () => {
-      if (callToolError) throw callToolError
-      return callToolResult ?? { content: [{ type: "text", text: "ok" }] }
-    }),
-  } as unknown as McpManager
-}
+afterEach(shutdownMcpFixtures)
 
 describe("mcpToolsAsDefinitions", () => {
   beforeEach(() => {
@@ -38,8 +25,8 @@ describe("mcpToolsAsDefinitions", () => {
   })
 
   it("returns empty array when mcpManager is null/undefined", () => {
-    expect(mcpToolsAsDefinitions(null as unknown as McpManager)).toEqual([])
-    expect(mcpToolsAsDefinitions(undefined as unknown as McpManager)).toEqual([])
+    expect(Reflect.apply(mcpToolsAsDefinitions, undefined, [null])).toEqual([])
+    expect(Reflect.apply(mcpToolsAsDefinitions, undefined, [undefined])).toEqual([])
   })
 
   it("converts a single server's tools into ToolDefinition[] with {server}_{tool} naming", () => {
@@ -95,25 +82,30 @@ describe("mcpToolsAsDefinitions", () => {
   })
 
   it("uses fallback inputSchema when tool has no inputSchema", () => {
+    const tool = { name: "ping", description: "Ping", inputSchema: {} }
+    Reflect.deleteProperty(tool, "inputSchema")
     const mgr = makeMockMcpManager([{
       server: "myserver",
-      tools: [{ name: "ping", description: "Ping", inputSchema: undefined as unknown as Record<string, unknown> }],
+      tools: [tool],
     }])
 
     const result = mcpToolsAsDefinitions(mgr)
     expect(result[0].tool.function.parameters).toEqual({ type: "object", properties: {} })
   })
 
-  it("generated handler calls McpManager.callTool(server, tool, args) and returns concatenated text", async () => {
+  it("generated handler calls the owned manager with its advertised binding and returns concatenated text", async () => {
     const mgr = makeMockMcpManager(
       [{ server: "browser", tools: [{ name: "navigate", description: "Nav", inputSchema: { type: "object" } }] }],
       { content: [{ type: "text", text: "hello " }, { type: "text", text: "world" }] },
     )
 
     const result = mcpToolsAsDefinitions(mgr)
-    const output = await result[0].handler({ url: "https://example.com" })
+    const output = await result[0].handler({ url: "https://example.com" }, MCP_CONTEXT)
 
-    expect(mgr.callTool).toHaveBeenCalledWith("browser", "navigate", { url: "https://example.com" })
+    expect(mgr.manager.callTool).toHaveBeenCalledWith(
+      expect.objectContaining({ ...MCP_OWNER, server: "browser", rawName: "navigate", surfacedName: "browser_navigate" }),
+      { url: "https://example.com" }, MCP_OWNER,
+    )
     expect(output).toBe("hello world")
   })
 
@@ -124,13 +116,13 @@ describe("mcpToolsAsDefinitions", () => {
     )
 
     const result = mcpToolsAsDefinitions(mgr)
-    const output = await result[0].handler({})
+    const output = await result[0].handler({}, MCP_CONTEXT)
 
     // Non-text items with empty text still get concatenated, but the full result goes through
     expect(typeof output).toBe("string")
   })
 
-  it("handler returns error string (not throw) when callTool fails", async () => {
+  it("handler preserves an indeterminate effect when callTool fails", async () => {
     const mgr = makeMockMcpManager(
       [{ server: "browser", tools: [{ name: "navigate", description: "Nav", inputSchema: { type: "object" } }] }],
       undefined,
@@ -138,9 +130,10 @@ describe("mcpToolsAsDefinitions", () => {
     )
 
     const result = mcpToolsAsDefinitions(mgr)
-    const output = await result[0].handler({ url: "https://example.com" })
-
-    expect(output).toBe("[mcp error] browser/navigate: connection refused")
+    await expect(result[0].handler({ url: "https://example.com" }, MCP_CONTEXT)).rejects.toMatchObject({
+      kind: "handler_indeterminate",
+      message: "[mcp error] browser/navigate: connection refused",
+    })
   })
 
   it("emits nerves events for MCP tool start/end on success", async () => {
@@ -150,7 +143,7 @@ describe("mcpToolsAsDefinitions", () => {
     )
 
     const result = mcpToolsAsDefinitions(mgr)
-    await result[0].handler({ url: "https://example.com" })
+    await result[0].handler({ url: "https://example.com" }, MCP_CONTEXT)
 
     const startEvent = nervesEvents.find((e) => e.event === "mcp.tool_start")
     const endEvent = nervesEvents.find((e) => e.event === "mcp.tool_end")
@@ -170,7 +163,7 @@ describe("mcpToolsAsDefinitions", () => {
     )
 
     const result = mcpToolsAsDefinitions(mgr)
-    await result[0].handler({})
+    await expect(result[0].handler({}, MCP_CONTEXT)).rejects.toMatchObject({ kind: "handler_indeterminate" })
 
     const startEvent = nervesEvents.find((e) => e.event === "mcp.tool_start")
     const errorEvent = nervesEvents.find((e) => e.event === "mcp.tool_error")
@@ -181,18 +174,16 @@ describe("mcpToolsAsDefinitions", () => {
   })
 
   it("handler handles non-Error throw values", async () => {
-    const mgr = {
-      listAllTools: () => [{
+    const mgr = makeMockMcpManager([{
         server: "broken",
         tools: [{ name: "crash", description: "Crash", inputSchema: { type: "object" } }],
-      }],
-      callTool: vi.fn().mockRejectedValue("string-error-value"),
-    } as unknown as McpManager
+      }], undefined, "string-error-value")
 
     const result = mcpToolsAsDefinitions(mgr)
-    const output = await result[0].handler({})
-
-    expect(output).toBe("[mcp error] broken/crash: string-error-value")
+    await expect(result[0].handler({}, MCP_CONTEXT)).rejects.toMatchObject({
+      kind: "handler_indeterminate",
+      message: "[mcp error] broken/crash: string-error-value",
+    })
   })
 
   it("tool definition has type 'function'", () => {
@@ -294,9 +285,12 @@ describe("mcpToolsAsDefinitions", () => {
       }], { content: [{ type: "text", text: "ok" }] })
 
       const result = mcpToolsAsDefinitions(mgr)
-      await result[0].handler({})
+      await result[0].handler({}, MCP_CONTEXT)
       // mgr.callTool gets called with the un-prefixed name
-      expect(mgr.callTool).toHaveBeenCalledWith("desk", "task_create", {})
+      expect(mgr.manager.callTool).toHaveBeenCalledWith(
+        expect.objectContaining({ ...MCP_OWNER, server: "desk", rawName: "task_create", source: "plugin" }),
+        {}, MCP_OWNER,
+      )
     })
 
     it("mixes builtin (no pluginId) + plugin tools in one listing", () => {

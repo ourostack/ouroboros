@@ -1,9 +1,25 @@
 import { createHash } from "node:crypto"
+import { isAbsolute } from "node:path"
 
 import Ajv, { type ErrorObject, type ValidateFunction } from "ajv"
 
 import { emitNervesEvent } from "../nerves/runtime"
 import type { JsonObject, JsonValue } from "../heart/approval-store"
+import type { ToolContext } from "./tools-base"
+
+export function assertRelationshipToolOwner(ctx?: ToolContext): void {
+  if (ctx?.relationshipAuthorization && (
+    typeof ctx.agentName !== "string" || ctx.agentName.length === 0
+    || typeof ctx.agentRoot !== "string" || !isAbsolute(ctx.agentRoot)
+  )) {
+    emitNervesEvent({
+      level: "warn", component: "tools", event: "tool.owner_context_rejected",
+      message: "relationship-scoped tool has no valid explicit owner",
+      meta: { reason: "owner_coordinates_unavailable" },
+    })
+    throw new Error("an explicit owner name and absolute root are required for relationship-scoped tools")
+  }
+}
 
 const ajv = new Ajv({
   strict: true,
@@ -69,6 +85,14 @@ export type ToolArgumentValidationResult =
 
 export function digestJson(value: JsonValue): string {
   return digest(canonicalize(value))
+}
+
+export function freezeToolValue<T>(value: T): T {
+  if (value !== null && typeof value === "object") {
+    for (const child of Object.values(value)) freezeToolValue(child)
+    Object.freeze(value)
+  }
+  return value
 }
 
 export function validateAdvertisedToolArguments(

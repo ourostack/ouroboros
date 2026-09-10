@@ -649,6 +649,8 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
   _withSessionTurnLease?: <T>(sessionPath: string, work: (lease: SessionTurnLease) => Promise<T>) => Promise<T>
 }): Promise<void> {
   const turnKey = teamsTurnKey(conversationId)
+  const agentName = getAgentName()
+  const owner = { agentName, agentRoot: getAgentRoot(agentName) }
   // NOTE: Confirmation resolution is handled in the app.on("message") handler
   // BEFORE the conversation lock.  By the time we get here, any pending
   // confirmation has already been resolved and the reply consumed.
@@ -678,7 +680,7 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
   const traceId = createTraceId()
   const sessPath = sessionPath(friendId, "teams", conversationId)
   const teamsCapabilities = getChannelCapabilities("teams")
-  const pendingDir = getPendingDir(getAgentName(), friendId, "teams", conversationId)
+  const pendingDir = getPendingDir(agentName, friendId, "teams", conversationId)
   const runWithLease = runtimeOverrides?._withSessionTurnLease ?? withSessionTurnLease
 
   try {
@@ -689,7 +691,7 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
   }
   await new Promise(r => setImmediate(r))
   // Build Teams-specific toolContext fields for injection into the pipeline
-  const teamsToolContext: Partial<ToolContext> = teamsContext ? {
+  const teamsToolContext: Partial<ToolContext> = { ...owner, ...(teamsContext ? {
     graphToken: teamsContext.graphToken,
     adoToken: teamsContext.adoToken,
     githubToken: teamsContext.githubToken,
@@ -697,10 +699,10 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
     summarize: createSummarize("human"),
     tenantId: teamsContext.tenantId,
     botApi: teamsContext.botApi,
-  } : {}
+  } : {}) }
 
   let currentText = text
-  const mcpManager = await getSharedMcpManager() ?? undefined
+  const mcpManager = await getSharedMcpManager(owner) ?? undefined
 
   while (true) {
     let drainedSteeringFollowUps: Array<{ text: string; effect?: SteeringFollowUpEffect }> = []
@@ -776,13 +778,14 @@ export async function handleTeamsMessage(text: string, stream: TeamsStream, conv
       hasExistingGroupWithFamily: false,
       enforceTrustGate,
       drainPending,
-      drainDeferredReturns: (deferredFriendId) => drainDeferredReturns(getAgentName(), deferredFriendId),
+      drainDeferredReturns: (deferredFriendId) => drainDeferredReturns(agentName, deferredFriendId),
       runAgent: (msgs, cb, channel, sig, opts) => runAgent(msgs, cb, channel, sig, {
         ...opts,
         toolContext: {
           /* v8 ignore next -- default no-op signin; pipeline provides the real one @preserve */
           signin: async () => undefined,
           ...opts?.toolContext,
+          ...owner,
           summarize: teamsToolContext.summarize,
         },
       }),

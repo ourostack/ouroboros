@@ -995,7 +995,9 @@ export async function main(agentName?: string, options?: {
   getProvider("human")
 
   // Resolve context kernel (identity + channel) for CLI
-  const friendsPath = path.join(getAgentRoot(), "friends")
+  const currentAgentName = getAgentName()
+  const owner = { agentName: currentAgentName, agentRoot: getAgentRoot(currentAgentName) }
+  const friendsPath = path.join(owner.agentRoot, "friends")
   const friendStore = new FileFriendStore(friendsPath)
   const username = os.userInfo().username
   const localExternalId = username
@@ -1021,14 +1023,12 @@ export async function main(agentName?: string, options?: {
   let existing: ReturnType<typeof loadSession> = null
   let sessionState: SessionContinuityState | undefined
   let sessionEvents: import("../heart/session-events").SessionEvent[] = []
-  const mcpManager = await getSharedMcpManager() ?? undefined
   const sessionMessages: OpenAI.ChatCompletionMessageParam[] = [
     { role: "system", content: flattenSystemPrompt(await buildSystem("cli", {}, resolvedContext)) },
   ]
 
   // Per-turn pipeline input: CLI capabilities and pending dir
   const cliCapabilities = getChannelCapabilities("cli")
-  const currentAgentName = getAgentName()
   const pendingDir = getPendingDir(currentAgentName, friendId, "cli", "session")
   const summarize = createSummarize("human")
   const cliFailoverState: import("./pipeline").FailoverState = { pending: null }
@@ -1125,12 +1125,14 @@ export async function main(agentName?: string, options?: {
           enforceTrustGate,
           drainPending,
           drainDeferredReturns: (deferredFriendId) => drainDeferredReturns(currentAgentName, deferredFriendId),
-          runAgent: (msgs, cb, channel, sig, opts) => runAgent(msgs, cb, channel, sig, {
+          runAgent: async (msgs, cb, channel, sig, opts) => runAgent(msgs, cb, channel, sig, {
             ...opts,
+            mcpManager: opts?.hardDisableTools ? undefined : await getSharedMcpManager(owner) ?? undefined,
             toolContext: {
               /* v8 ignore next -- default no-op signin; pipeline provides the real one @preserve */
               signin: async () => undefined,
               ...opts?.toolContext,
+              ...owner,
               summarize,
             },
           }),
@@ -1150,7 +1152,6 @@ export async function main(agentName?: string, options?: {
           runAgentOptions: {
             toolChoiceRequired: getToolChoiceRequired(),
             traceId: createTraceId(),
-            mcpManager,
             toolContext,
           },
           failoverState,

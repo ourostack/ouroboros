@@ -368,6 +368,7 @@ describe("notes/friend tools", () => {
         friend,
         channel: { channel: "telegram", availableIntegrations: [], supportsMarkdown: true, supportsStreaming: false, supportsRichCards: false, maxMessageLength: 4096 },
       },
+      agentName: "testagent", agentRoot,
       currentSession: { friendId: friend.id, channel: "telegram", key: "owner" },
       relationshipAuthorization: {
         actor: { friendId: friend.id, trustLevel: "family", sessionEventId: "evt-preference" },

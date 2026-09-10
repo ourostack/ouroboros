@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
+import { SANCTUARY_OWNER_ADDITIONS } from "../../fixtures/sanctuary-containment"
 
 const durabilityProbe = vi.hoisted(() => ({
   descriptors: new Map<number, string>(),
@@ -176,6 +177,35 @@ afterEach(() => {
 })
 
 describe("Sanctuary package-managed bundle migration", () => {
+  it("converges the real owner v8 profile and identity through the existing managed-file transaction", () => {
+    const packageRoot = path.resolve("deploy/unraid/sanctuary.ouro")
+    const agentRoot = makeExactAgentRoot(packageRoot)
+    const profiles = JSON.parse(fs.readFileSync(path.join(agentRoot, "tool-profiles.json"), "utf8"))
+    profiles.profiles["sanctuary-owner"].version = 7
+    profiles.profiles["sanctuary-owner"].toolNames = profiles.profiles["sanctuary-owner"].toolNames.filter((name: string) => !SANCTUARY_OWNER_ADDITIONS.includes(name))
+    write(agentRoot, "tool-profiles.json", profiles)
+    const identity = fs.readFileSync(path.join(agentRoot, "psyche/IDENTITY.md"), "utf8")
+    write(agentRoot, "psyche/IDENTITY.md", identity.replace("I use the typed Unraid GraphQL repertoire for server operations and owner-authorized native tools for resident work inside my existing container boundary.", "My primary server interface is the typed Unraid GraphQL repertoire, never shell."))
+    write(agentRoot, "bundle-meta.json", { runtimeVersion: "old", bundleSchemaVersion: 2, operatorNote: "keep" })
+    write(agentRoot, "state/policy/steward.json", emptyPackagedPolicy())
+    write(agentRoot, "state/sessions/owner.json", "private history\n")
+    const tacit = fs.readFileSync(path.join(agentRoot, "psyche/TACIT.md"), "utf8")
+    const result = migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot })
+    expect(JSON.parse(fs.readFileSync(path.join(agentRoot, "tool-profiles.json"), "utf8")).profiles["sanctuary-owner"].version).toBe(8)
+    expect(result.managedFilesUpdated).toBe(2)
+    for (const relative of SANCTUARY_PACKAGE_MANAGED_FILES) {
+      expect(fs.readFileSync(path.join(agentRoot, relative), "utf8")).toBe(fs.readFileSync(path.join(packageRoot, relative), "utf8"))
+      expect(fs.statSync(path.join(agentRoot, relative)).mode & 0o777).toBe(0o600)
+    }
+    expect(fs.readFileSync(path.join(agentRoot, "psyche/TACIT.md"), "utf8")).toBe(tacit)
+    expect(fs.readFileSync(path.join(agentRoot, "state/sessions/owner.json"), "utf8")).toBe("private history\n")
+    expect(JSON.parse(fs.readFileSync(path.join(agentRoot, "state/policy/steward.json"), "utf8"))).toEqual(emptyPackagedPolicy())
+    expect(JSON.parse(fs.readFileSync(path.join(agentRoot, "bundle-meta.json"), "utf8"))).toMatchObject({
+      ...JSON.parse(fs.readFileSync(path.join(packageRoot, "bundle-meta.json"), "utf8")), operatorNote: "keep",
+    })
+    expect(migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot }).managedFilesUpdated).toBe(0)
+  })
+
   it("updates only package-managed files and bundle versions while preserving live policy bytes", () => {
     const packageRoot = makePackageRoot()
     const agentRoot = makeRoot("sanctuary-live")

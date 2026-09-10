@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
 import * as os from "os"
 import * as path from "path"
+import { getAgentRoot } from "../../../heart/identity"
+import type { McpToolInfo } from "../../../repertoire/mcp-client"
 
 function tmpSocketPath(name: string): string {
   return path.join(os.tmpdir(), `${name}-${Date.now()}-${Math.random().toString(16).slice(2)}.sock`)
@@ -8,6 +10,19 @@ function tmpSocketPath(name: string): string {
 
 function deferred<T = void>() {
   return Promise.withResolvers<T>()
+}
+
+function mockView(manager: object, entries: Array<{ server: string; tools: McpToolInfo[] }> = [{
+  server: "ado",
+  tools: [{ name: "get_items", description: "Get work items", inputSchema: { type: "object" } }],
+}]) {
+  return {
+    manager,
+    owner: { agentName: "default", agentRoot: getAgentRoot("default") },
+    entries: entries.map((entry) => ({
+      ...entry, source: "builtin", configDigest: "a".repeat(64), generation: 1,
+    })),
+  }
 }
 
 describe("daemon mcp command handlers", () => {
@@ -64,7 +79,7 @@ describe("daemon mcp command handlers", () => {
     }
 
     vi.doMock("../../../repertoire/mcp-manager", () => ({
-      getSharedMcpManager: vi.fn().mockResolvedValue(mockManager),
+      getSharedMcpManager: vi.fn().mockResolvedValue(mockView(mockManager, mockManager.listAllTools())),
       shutdownSharedMcpManager: vi.fn(),
     }))
 
@@ -108,7 +123,7 @@ describe("daemon mcp command handlers", () => {
     }
 
     vi.doMock("../../../repertoire/mcp-manager", () => ({
-      getSharedMcpManager: vi.fn().mockResolvedValue(mockManager),
+      getSharedMcpManager: vi.fn().mockResolvedValue(mockView(mockManager)),
       shutdownSharedMcpManager: vi.fn(),
     }))
 
@@ -126,7 +141,11 @@ describe("daemon mcp command handlers", () => {
     expect(result.data).toEqual({
       content: [{ type: "text", text: "call result" }],
     })
-    expect(mockManager.callTool).toHaveBeenCalledWith("ado", "get_items", { query: "test" })
+    const owner = { agentName: "default", agentRoot: getAgentRoot("default") }
+    expect(mockManager.callTool).toHaveBeenCalledWith(
+      expect.objectContaining({ ...owner, server: "ado", rawName: "get_items", surfacedName: "ado_get_items" }),
+      { query: "test" }, owner,
+    )
   })
 
   it("mcp.call returns error when no manager available", async () => {
@@ -156,7 +175,7 @@ describe("daemon mcp command handlers", () => {
     }
 
     vi.doMock("../../../repertoire/mcp-manager", () => ({
-      getSharedMcpManager: vi.fn().mockResolvedValue(mockManager),
+      getSharedMcpManager: vi.fn().mockResolvedValue(mockView(mockManager)),
       shutdownSharedMcpManager: vi.fn(),
     }))
 
@@ -170,16 +189,19 @@ describe("daemon mcp command handlers", () => {
       tool: "get_items",
     } as any)
     expect(result.ok).toBe(true)
-    expect(mockManager.callTool).toHaveBeenCalledWith("ado", "get_items", {})
+    expect(mockManager.callTool).toHaveBeenCalledWith(
+      expect.objectContaining({ server: "ado", rawName: "get_items" }), {},
+      { agentName: "default", agentRoot: getAgentRoot("default") },
+    )
   })
 
-  it("mcp.call propagates tool errors", async () => {
+  it.each([new Error("Server 'ado' is disconnected"), "Server 'ado' is disconnected"])("mcp.call propagates tool errors: %s", async (error) => {
     const mockManager = {
-      callTool: vi.fn().mockRejectedValue(new Error("Server 'ado' is disconnected")),
+      callTool: vi.fn().mockRejectedValue(error),
     }
 
     vi.doMock("../../../repertoire/mcp-manager", () => ({
-      getSharedMcpManager: vi.fn().mockResolvedValue(mockManager),
+      getSharedMcpManager: vi.fn().mockResolvedValue(mockView(mockManager)),
       shutdownSharedMcpManager: vi.fn(),
     }))
 
@@ -194,6 +216,21 @@ describe("daemon mcp command handlers", () => {
     } as any)
     expect(result.ok).toBe(false)
     expect(result.error).toContain("disconnected")
+  })
+
+  it.each(["missing", "ambiguous"] as const)("A001a coverage rejects a %s exact daemon MCP binding", async (kind) => {
+    const manager = { callTool: vi.fn() }
+    const tool = { name: "get_items", description: "Get work items", inputSchema: { type: "object" } }
+    vi.doMock("../../../repertoire/mcp-manager", () => ({
+      getSharedMcpManager: vi.fn().mockResolvedValue(mockView(manager, [{ server: "ado", tools: kind === "missing" ? [] : [tool, tool] }])),
+      shutdownSharedMcpManager: vi.fn(),
+    }))
+    const { OuroDaemon } = await import("../../../heart/daemon/daemon")
+    const daemon = new OuroDaemon(makeDaemonOptions(tmpSocketPath("daemon-mcp-unavailable")) as ConstructorParameters<typeof OuroDaemon>[0])
+    expect(await daemon.handleCommand({ kind: "mcp.call", server: "ado", tool: "get_items" })).toEqual({
+      ok: false, error: "MCP tool is unavailable or ambiguous",
+    })
+    expect(manager.callTool).not.toHaveBeenCalled()
   })
 
   it("serializes MCP reconciliation against another agent turn", async () => {
@@ -214,7 +251,7 @@ describe("daemon mcp command handlers", () => {
       getSharedMcpManager: vi.fn(async () => {
         managerEntered.resolve()
         await releaseManager.promise
-        return { listAllTools: vi.fn().mockReturnValue([]) }
+        return mockView({}, [])
       }),
       shutdownSharedMcpManager: vi.fn(),
     }))
@@ -242,5 +279,24 @@ describe("daemon mcp command handlers", () => {
     releaseManager.resolve()
     await Promise.all([listing, turn])
     expect(runSenseTurn).toHaveBeenCalledOnce()
+  })
+
+  it("waits for MCP lifecycle shutdown before reporting daemon stop", async () => {
+    const release = deferred()
+    vi.doMock("../../../repertoire/mcp-manager", () => ({
+      getSharedMcpManager: vi.fn().mockResolvedValue(null),
+      shutdownSharedMcpManager: vi.fn(() => release.promise),
+    }))
+    const { OuroDaemon } = await import("../../../heart/daemon/daemon")
+    const daemon = new OuroDaemon(makeDaemonOptions(tmpSocketPath("daemon-mcp-stop")) as never)
+    let stopped = false
+    const stopping = daemon.stop().then(() => { stopped = true })
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      expect(stopped).toBe(false)
+    } finally {
+      release.resolve()
+      await stopping
+    }
   })
 })

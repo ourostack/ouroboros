@@ -12,6 +12,7 @@ import {
   commitApprovalProposal,
   coordinateApprovalDecision,
   digestApprovalSuspensionCheckpointPayload,
+  digestApprovalToolDefinition,
   executeApprovalDecision,
   recoverAttemptedApproval,
   recoverClaimedApproval,
@@ -136,7 +137,7 @@ function proposal(sessionPath: string, args: JsonObject): PrepareApprovalInput {
   return {
     toolCallId: "call_restart", toolName: "shell", arguments: args,
     schemaDigest,
-    toolDigest: digestJson({ name: "shell", schemaDigest, policyId: policy.policyId }),
+    toolDigest: digestApprovalToolDefinition(definition, schemaDigest, policy.policyId),
     policyDigest: digestJson({ policyId: policy.policyId, actionClass: policy.actionClass, classification: "required" }),
     policyId: policy.policyId,
     sessionKey: "telegram:chat-7", sessionPath, baseSessionRevision: BASE_REVISION,
@@ -364,10 +365,20 @@ async function resume(record) {
         decision: fixture.decision, ownerId, currentSessionRevision,
         resolveTool: liveDefinition,
         liveGuard: () => ({ ok: true }), liveRisk: () => ({ ok: true }),
+        preflight: async ({ record, arguments: args, definition }) => {
+          const tools = require(require("path").resolve("src/repertoire/tools.ts"))
+          const checked = await tools.preflightToolCall(record.toolName, args, {
+            signin: async () => undefined, agentName: "synthetic", agentRoot: fixture.root,
+            context: { friend: { id: "friend-ari", trustLevel: "family" } },
+            toolSelection: { ordinary: [definition], engine: [] },
+            selectCurrentTools: () => ({ ordinary: [liveDefinition()], engine: [] }),
+          })
+          return checked.kind === "ready" ? { ok: true } : { ok: false, reason: checked.text }
+        },
         execute: async () => {
           trace("handler_start")
           if (fixture.handlerMode === "observable_failure") throw new approval.ApprovalExecutionFailedError("restart failed")
-          append(fixture.effectsLogPath, { pid: process.pid, command: "docker restart calibre-web" }); return "restarted"
+          append(fixture.effectsLogPath, { pid: process.pid, command: "docker restart calibre-web" }); return { kind: "handler_succeeded", text: "restarted" }
         },
         hooks: {
           afterClaim: async () => { accepted = true; reason = "claimed"; trace("decision_received"); await hooks.afterClaim(); if (fixture.crashAt === "after_claim") throw new Error("synthetic_crash") },

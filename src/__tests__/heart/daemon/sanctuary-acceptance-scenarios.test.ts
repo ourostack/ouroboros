@@ -4,6 +4,7 @@ import * as path from "node:path"
 import { createHash } from "node:crypto"
 
 import { afterEach, describe, expect, it, vi } from "vitest"
+import { sanctuaryContainmentBoundariesFixture } from "../../fixtures/sanctuary-containment"
 
 const fsFaults = vi.hoisted(() => ({
   lstatSync: null as null | ((actual: typeof import("node:fs").lstatSync, target: import("node:fs").PathLike, options?: unknown) => import("node:fs").Stats),
@@ -201,13 +202,10 @@ const base = (): SanctuaryScenarioFacts => ({
   reboot: { phase: "complete", requestDigest: "c".repeat(64), processBindingDigest: "d".repeat(64), requestCount: 1, checkpointPersisted: true, unrelatedHostOperations: 0, bootIdentityChanged: true, hostReady: true, arrayReady: true, dockerReady: true, butlerReady: true, tailscaleReady: true, sshReady: true },
   denial: validDenialReceiptForFacts(),
   containment: {
-    schemaVersion: "sanctuary-containment-audit-v1", keyCount: 2, keyInventoryDigest: "1".repeat(64),
+    schemaVersion: "sanctuary-containment-audit-v2", keyCount: 2, keyInventoryDigest: "1".repeat(64),
     readScopeDigest: createHash("sha256").update(JSON.stringify(["ARRAY", "DASHBOARD", "DISK", "DOCKER", "INFO", "LOGS", "NOTIFICATIONS", "SHARE", "VARS"].map((resource) => `${resource}:READ_ANY`).sort())).digest("hex"),
     writeScopeDigest: createHash("sha256").update(JSON.stringify([...(["ARRAY", "DASHBOARD", "DISK", "DOCKER", "INFO", "LOGS", "NOTIFICATIONS", "SHARE", "VARS"].map((resource) => `${resource}:READ_ANY`)), "DOCKER:UPDATE_ANY"].sort())).digest("hex"),
-    keyRoleAssignmentCount: 0, telegramToolCount: 25,
-    telegramProfileDigest: "5".repeat(64), telegramSchemaDigest: "6".repeat(64), privateToolCount: 17,
-    privateProfileDigest: "7".repeat(64), privateSchemaDigest: "8".repeat(64), resolvedHandlerCount: 42, relationshipProfilesExact: true, handlersExact: true,
-    excludedToolCount: 7, excludedSchemaIntersectionCount: 0, fabricatedHandlerInvocationCount: 0, excludedToolAttemptCount: 7, excludedToolRejectedCount: 7, excludedToolInvokedCount: 0, excludedToolSideEffectCount: 0, globallyResolvableExcludedToolCount: 4,
+    keyRoleAssignmentCount: 0, profileBoundaries: sanctuaryContainmentBoundariesFixture(),
     auditPathDigest: createHash("sha256").update("/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance/telegram-audit-chain.ndjson").digest("hex"),
     auditLedgerDigest: "4".repeat(64), auditRecordCount: 2, auditLifecyclePairCount: 1,
     containerUser: "10001:10001", liveProcessUser: "10001:10001", mountCount: 4, publishedPortCount: 0, networkMode: "host", readOnlyRoot: true, mountsExact: true, securityExact: true, updaterDisabled: true,
@@ -1549,6 +1547,19 @@ describe("Sanctuary live scenario capture", () => {
     expect(() => finalizeSanctuaryScenarioCapture(gate, receipts)).toThrow(AggregateError)
   })
 
+  it.each([true, false])("derives Unit-16e v2 only from exact role evidence with reasoning=%s", (reasoning) => {
+    const after = base()
+    after.containment!.profileBoundaries = sanctuaryContainmentBoundariesFixture(reasoning ? ["reasoning-effort"] : [])
+    const assertions = deriveSanctuaryScenarioAssertions("unit-16e-containment-audit", base(), after, 400_000)
+    expect(assertions).toMatchObject({ schemaVersion: "sanctuary-containment-audit-v2", profileBoundaries: after.containment!.profileBoundaries, mutationCount: 0 })
+    expect(() => validateSanctuaryUnit16EvidenceAssertions("unit-16e-containment-audit", assertions!)).not.toThrow()
+    for (const id of ["sanctuary-owner", "sanctuary-household", "sanctuary-event"] as const) {
+      const invalid = base()
+      invalid.containment!.profileBoundaries[id].profileToolNames.push("credential_get")
+      expect(deriveSanctuaryScenarioAssertions("unit-16e-containment-audit", base(), invalid, 400_000)).toBeNull()
+    }
+  })
+
   it("waits instead of self-attesting absent negative and containment facts", () => {
     const before = base()
     const containment = base(); containment.container!.updaterDisabled = false
@@ -1563,9 +1574,9 @@ describe("Sanctuary live scenario capture", () => {
     expect(deriveSanctuaryScenarioAssertions("unit-16e-containment-audit", before, audit, 400_000)).toBeNull()
     const staleAuditMountContract = base(); staleAuditMountContract.containment!.mountCount = 2
     expect(deriveSanctuaryScenarioAssertions("unit-16e-containment-audit", before, staleAuditMountContract, 400_000)).toBeNull()
-    const missingRelationshipProfiles = base(); missingRelationshipProfiles.containment!.relationshipProfilesExact = false
+    const missingRelationshipProfiles = base(); missingRelationshipProfiles.containment!.profileBoundaries["sanctuary-owner"].profileExact = false
     expect(deriveSanctuaryScenarioAssertions("unit-16e-containment-audit", before, missingRelationshipProfiles, 400_000)).toBeNull()
-    const unresolvedPackagedHandler = base(); unresolvedPackagedHandler.containment!.handlersExact = false
+    const unresolvedPackagedHandler = base(); unresolvedPackagedHandler.containment!.profileBoundaries["sanctuary-owner"].handlersExact = false
     expect(deriveSanctuaryScenarioAssertions("unit-16e-containment-audit", before, unresolvedPackagedHandler, 400_000)).toBeNull()
     const wrongWritePolicy = base(); wrongWritePolicy.containment!.writeApprovalPolicyExact = false
     expect(deriveSanctuaryScenarioAssertions("unit-16e-containment-audit", before, wrongWritePolicy, 400_000)).toBeNull()

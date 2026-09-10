@@ -6,6 +6,13 @@ import { WebSocket, WebSocketServer } from "ws"
 import { describe, expect, it, vi } from "vitest"
 import { buildVoiceTranscript, closeTwilioPhoneBridgeServer } from "../../../senses/voice"
 import { loadSession } from "../../../mind/context"
+import * as mcp from "../../../repertoire/mcp-manager"
+import { McpClient } from "../../../repertoire/mcp-client"
+import { getChannelCapabilities } from "@ouro.bot/friends"
+import { getToolsForChannel, resolveToolDefinition } from "../../../repertoire/tools"
+import { baseToolDefinitions } from "../../../repertoire/tools-base"
+import * as nerves from "../../../nerves/runtime"
+import { voiceToolDefinitions } from "../../../repertoire/tools-voice"
 import {
   computeOpenAIWebhookSignature,
   computeTwilioSignature,
@@ -126,7 +133,7 @@ function closeWebSocketServer(server: WebSocketServer): Promise<void> {
   })
 }
 
-function startOpenAISipMock(expectedCallId: string) {
+function startOpenAISipMock(expectedCallId: string, onConnection?: (socket: WebSocket) => void) {
   const openaiMessages: Record<string, unknown>[] = []
   const openaiSockets: WebSocket[] = []
   const openaiRequests: Array<{ input: string; body: string; auth: string | null }> = []
@@ -140,6 +147,7 @@ function startOpenAISipMock(expectedCallId: string) {
     ws.on("message", (raw) => {
       openaiMessages.push(JSON.parse(Buffer.from(raw as Buffer).toString("utf8")) as Record<string, unknown>)
     })
+    onConnection?.(ws)
   })
   const openaiFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const headers = init?.headers instanceof Headers ? init.headers : new Headers(init?.headers)
@@ -203,6 +211,518 @@ function baseBridgeOptions(outputDir: string) {
     playbackMode: "buffered" as const,
   }
 }
+
+async function startToolSelectionVoice(outputDir: string, transport: "openai-sip" | "openai-realtime", onConnection?: (socket: WebSocket) => void, input: {
+  configure?: (options: Parameters<typeof startTwilioPhoneBridgeServer>[0]) => void
+  caller?: Partial<{ friendId: string; from: string; to: string; direction: string; outboundId: string }>
+} = {}) {
+  const callId = "call_tool_selection"
+  const mock = startOpenAISipMock(callId, onConnection)
+  const base = baseBridgeOptions(outputDir)
+  const webhookSecret = `whsec_${Buffer.from("tool-selection-fixture").toString("base64")}`
+  await fs.mkdir(path.join(base.agentRoot, "friends"), { recursive: true })
+  await fs.writeFile(path.join(base.agentRoot, "friends", "ari.json"), JSON.stringify({
+    id: "ari", name: "Ari", role: "primary", trustLevel: "family", connections: [],
+    externalIds: [{ provider: "imessage-handle", externalId: "+15551234567", linkedAt: "2026-09-09T00:00:00Z" }],
+    tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0,
+    createdAt: "2026-09-09T00:00:00Z", updatedAt: "2026-09-09T00:00:00Z", schemaVersion: 1, kind: "human",
+  }))
+  const caller = { friendId: "ari", from: "+15551234567", to: "+15557654321", direction: "inbound", outboundId: "", ...input.caller }
+  const options: Parameters<typeof startTwilioPhoneBridgeServer>[0] = {
+    ...base, port: 0, defaultFriendId: caller.friendId, conversationEngine: transport, transportMode: "media-stream",
+    openaiRealtime: { apiKey: "openai-secret", websocketUrl: `${mock.websocketBaseUrl}?call_id=${callId}` },
+    openaiSip: {
+      projectId: "proj_test", webhookPath: "/voice/sip", webhookSecret,
+      websocketBaseUrl: mock.websocketBaseUrl, apiBaseUrl: "https://api.openai.test/v1", fetch: mock.openaiFetch,
+    },
+  }
+  input.configure?.(options)
+  const server = await startTwilioPhoneBridgeServer(options)
+  let socket: WebSocket | undefined
+  if (transport === "openai-sip") {
+    const payload = JSON.stringify({
+      type: "realtime.call.incoming", data: { call_id: callId, sip_headers: [
+        { name: "X-Ouro-From", value: caller.from }, { name: "X-Ouro-To", value: caller.to }, { name: "X-Ouro-Friend-Id", value: caller.friendId },
+        { name: "X-Ouro-Direction", value: caller.direction }, { name: "X-Ouro-Outbound-Id", value: caller.outboundId },
+      ] },
+    })
+    const timestamp = String(Math.floor(Date.now() / 1_000))
+    const response = await server.bridge.handle({
+      method: "POST", path: "/voice/sip", body: payload,
+      headers: { "webhook-id": "selection", "webhook-timestamp": timestamp, "webhook-signature": `v1,${computeOpenAIWebhookSignature({ secret: webhookSecret, webhookId: "selection", timestamp, payload })}` },
+    })
+    expect(response.statusCode).toBe(200)
+  } else {
+    socket = new WebSocket(`${server.localUrl.replace("http:", "ws:")}/voice/twilio/media-stream?engine=openai-realtime`)
+    await waitForSocketOpen(socket)
+    sendSocketJson(socket, {
+      event: "start", start: { streamSid: "MZSELECTION", callSid: callId, customParameters: { From: caller.from, To: caller.to, FriendId: caller.friendId } },
+    })
+  }
+  return {
+    owner: { agentName: base.agentName, agentRoot: base.agentRoot },
+    mock,
+    bridge: server.bridge,
+    send(event: Record<string, unknown>) {
+      expect(mock.openaiSockets).toHaveLength(1)
+      sendSocketJson(mock.openaiSockets[0]!, event)
+    },
+    publications: () => [
+      ...mock.openaiRequests.filter((request) => request.input.endsWith("/accept")).map((request) => JSON.parse(request.body).tools as Array<{ name: string }>),
+      ...mock.openaiMessages.filter((event) => event.type === "session.update").map((event) => (event.session as { tools?: Array<{ name: string }> }).tools ?? []),
+    ],
+    async call(name: string, args: unknown, callId: string, rawArguments: unknown = JSON.stringify(args), responseId?: string): Promise<string> {
+      await vi.waitFor(() => expect(mock.openaiSockets).toHaveLength(1))
+      sendSocketJson(mock.openaiSockets[0]!, { type: "response.function_call_arguments.done", name, arguments: rawArguments, call_id: callId, response_id: responseId })
+      let output: string | undefined
+      await vi.waitFor(() => {
+        const event = mock.openaiMessages.find((event) => event.type === "conversation.item.create" && (event.item as { call_id?: string })?.call_id === callId)
+        output = (event?.item as { output?: string } | undefined)?.output
+        expect(typeof output).toBe("string")
+      })
+      return output!
+    },
+    async close() {
+      if (socket?.readyState === WebSocket.OPEN) await closeSocket(socket)
+      await mock.close()
+      await closeTwilioPhoneBridgeServer(server)
+    },
+  }
+}
+
+describe("turn-owned realtime selection", () => {
+  const transports = ["openai-sip", "openai-realtime"] as const
+
+  it.each(transports)("A001a coverage preserves native context and bounded protocol defaults: %s", async (transport) => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "ouro-voice-boundaries-"))
+    const definition = voiceToolDefinitions.find(({ tool }) => tool.function.name === "voice_end_call")!
+    const { description, parameters } = definition.tool.function
+    const handler = vi.spyOn(resolveToolDefinition("read_file")!, "handler")
+    vi.spyOn(mcp, "getSharedMcpManager").mockResolvedValue(null)
+    let fixture: Awaited<ReturnType<typeof startToolSelectionVoice>> | undefined
+    try {
+      delete definition.tool.function.description
+      delete definition.tool.function.parameters
+      fixture = await startToolSelectionVoice(outputDir, transport, undefined, {
+        caller: { friendId: "", from: "", to: "" },
+        configure: (options) => { options.openaiRealtime!.model = "fixture-realtime"; options.openaiRealtime!.reasoningEffort = "low" },
+      })
+      await vi.waitFor(() => expect(fixture!.publications().length).toBeGreaterThan(0))
+      const published = fixture.publications().flat().find(({ name }) => name === "voice_end_call")!
+      expect(published).toEqual({ type: "function", name: "voice_end_call", parameters: { type: "object", properties: {} } })
+      await vi.waitFor(() => expect(fixture!.mock.openaiSockets).toHaveLength(1))
+      fixture.send({ type: "response.function_call_arguments.done", name: 7, call_id: "invalid-name", arguments: "{}" })
+      fixture.send({ type: "response.function_call_arguments.done", name: "read_file", call_id: 7, arguments: "{}" })
+      expect(await fixture.call("unadvertised_probe", {}, "unknown")).toMatch(/not advertised|unknown/i)
+      fixture.send({ type: "input_audio_buffer.speech_stopped" })
+      const target = path.join(fixture.owner.agentRoot, "native.txt")
+      await fs.writeFile(target, "native voice context")
+      expect(await fixture.call("read_file", { path: target }, "read", undefined, "coordinated-read")).toContain("native voice context")
+      expect(handler).toHaveBeenCalledOnce()
+      const context = handler.mock.calls[0]![1]!
+      expect(context).toMatchObject(fixture.owner)
+      expect(context.context?.friend.id).toBeTruthy()
+      expect(context.friendStore).toBeDefined()
+      expect(await context.signin("fixture")).toBeUndefined()
+      expect(await fixture.call("voice_end_call", {}, "end", undefined, "coordinated-end")).not.toContain("[tool error]")
+    } finally {
+      definition.tool.function.description = description
+      definition.tool.function.parameters = parameters
+      if (fixture) await fixture.close()
+      vi.restoreAllMocks()
+      await fs.rm(outputDir, { recursive: true, force: true })
+    }
+  })
+
+  it.each(transports.flatMap((transport) => (["missing", "empty", "missing-key"] as const).map((state) => ({ transport, state }))))("A001a coverage fails closed before tool discovery with invalid realtime credentials: $transport / $state", async ({ transport, state }) => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "ouro-voice-credentials-"))
+    const acquire = vi.spyOn(mcp, "getSharedMcpManager").mockResolvedValue(null)
+    const events = vi.spyOn(nerves, "emitNervesEvent")
+    let fixture: Awaited<ReturnType<typeof startToolSelectionVoice>> | undefined
+    try {
+      fixture = await startToolSelectionVoice(outputDir, transport, undefined, {
+        configure: (options) => {
+          if (state === "missing") delete options.openaiRealtime
+          else if (state === "missing-key") Reflect.deleteProperty(options.openaiRealtime!, "apiKey")
+          else options.openaiRealtime!.apiKey = ""
+        },
+      })
+      await vi.waitFor(() => expect(events).toHaveBeenCalledWith(expect.objectContaining({
+        event: transport === "openai-sip" ? "senses.voice_openai_sip_call_error" : "senses.voice_twilio_realtime_start_error",
+        meta: expect.objectContaining({ error: "OpenAI Realtime API key is not configured" }),
+      })))
+      expect(acquire).not.toHaveBeenCalled()
+      expect(fixture.publications()).toEqual([])
+      expect(fixture.mock.openaiSockets).toEqual([])
+    } finally {
+      if (fixture) await fixture.close()
+      vi.restoreAllMocks()
+      await fs.rm(outputDir, { recursive: true, force: true })
+    }
+  })
+
+  it.each(transports.flatMap((transport) => (["configuration", "publication"] as const).map((failure) => ({ transport, failure }))))("A001a coverage closes rather than publishing a failed late configuration: $transport / $failure", async ({ transport, failure }) => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "ouro-voice-config-failure-"))
+    const pending = Promise.withResolvers<mcp.McpTurnView | null>()
+    vi.spyOn(mcp, "getSharedMcpManager").mockReturnValue(pending.promise)
+    const events = vi.spyOn(nerves, "emitNervesEvent")
+    const originalSend = WebSocket.prototype.send
+    let client: WebSocket | undefined
+    let failPublication = false
+    vi.spyOn(WebSocket.prototype, "send").mockImplementation(function (this: WebSocket, data, ...args) {
+      if (this.url?.includes("call_id=call_tool_selection")) client = this
+      if (failPublication && typeof data === "string" && data.startsWith('{"type":"session.update"')) throw new Error("fixture publication failure")
+      return originalSend.call(this, data, ...args)
+    })
+    let duplicate: typeof baseToolDefinitions[number] | undefined
+    let fixture: Awaited<ReturnType<typeof startToolSelectionVoice>> | undefined
+    try {
+      fixture = await startToolSelectionVoice(outputDir, transport, undefined, {
+        configure: (options) => { options.openaiRealtime!.reasoningEffort = "low" },
+      })
+      await vi.waitFor(() => expect(fixture!.publications().length).toBeGreaterThan(0))
+      await vi.waitFor(() => expect(client).toBeDefined())
+      client!.emit("error", new Error("fixture socket notification"))
+      expect(events).toHaveBeenCalledWith(expect.objectContaining({
+        event: transport === "openai-sip" ? "senses.voice_openai_sip_control_error" : "senses.voice_twilio_realtime_openai_error",
+      }))
+      if (failure === "configuration") {
+        duplicate = { ...baseToolDefinitions[0]! }
+        baseToolDefinitions.push(duplicate)
+      } else failPublication = true
+      const published = fixture.publications().length
+      pending.resolve(null)
+      await vi.waitFor(() => expect(events).toHaveBeenCalledWith(expect.objectContaining({
+        event: transport === "openai-sip" ? "senses.voice_openai_sip_tool_config_error" : "senses.voice_twilio_realtime_tool_config_error",
+      })))
+      await vi.waitFor(() => expect(client!.readyState).toBe(WebSocket.CLOSED))
+      expect(fixture.publications()).toHaveLength(published)
+    } finally {
+      if (duplicate) baseToolDefinitions.splice(baseToolDefinitions.indexOf(duplicate), 1)
+      pending.resolve(null)
+      if (fixture) await fixture.close()
+      vi.restoreAllMocks()
+      await fs.rm(outputDir, { recursive: true, force: true })
+    }
+  })
+
+  it("A001a coverage preserves bounded bootstrap instructions when session storage fails", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "ouro-voice-instructions-"))
+    vi.spyOn(mcp, "getSharedMcpManager").mockResolvedValue(null)
+    let fixture: Awaited<ReturnType<typeof startToolSelectionVoice>> | undefined
+    try {
+      const root = path.join(outputDir, "slugger.ouro")
+      await fs.mkdir(root)
+      await fs.writeFile(path.join(root, "state"), "not a session directory")
+      fixture = await startToolSelectionVoice(outputDir, "openai-realtime")
+      await vi.waitFor(() => expect(fixture!.publications().length).toBeGreaterThan(0))
+      const publication = fixture.mock.openaiMessages.find(({ type }) => type === "session.update")!
+      expect(publication).toMatchObject({ session: { instructions: expect.stringContaining("slugger") } })
+      expect(JSON.stringify(publication.session)).not.toContain("Resolved voice friend:")
+      expect(fixture.publications()[0]!.map(({ name }) => name)).toContain("read_file")
+    } finally {
+      if (fixture) await fixture.close()
+      vi.restoreAllMocks()
+      await fs.rm(outputDir, { recursive: true, force: true })
+    }
+  })
+
+  it("A001a coverage refuses an invalid tool catalog before its first realtime publication", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "ouro-voice-before-publication-"))
+    const pending = Promise.withResolvers<mcp.McpTurnView | null>()
+    const opened = Promise.withResolvers<void>()
+    vi.spyOn(mcp, "getSharedMcpManager").mockReturnValue(pending.promise)
+    const emit = nerves.emitNervesEvent
+    const events = vi.spyOn(nerves, "emitNervesEvent").mockImplementation((event) => {
+      emit(event)
+      if (event.event === "senses.voice_twilio_realtime_openai_open") opened.resolve()
+    })
+    const duplicate = { ...baseToolDefinitions[0]! }
+    let inserted = false
+    let fixture: Awaited<ReturnType<typeof startToolSelectionVoice>> | undefined
+    try {
+      fixture = await startToolSelectionVoice(outputDir, "openai-realtime")
+      await opened.promise
+      baseToolDefinitions.push(duplicate)
+      inserted = true
+      pending.resolve(null)
+      await vi.waitFor(() => expect(events).toHaveBeenCalledWith(expect.objectContaining({
+        event: "senses.voice_twilio_realtime_tool_config_error",
+      })))
+      expect(fixture.publications()).toEqual([])
+    } finally {
+      if (inserted) baseToolDefinitions.splice(baseToolDefinitions.indexOf(duplicate), 1)
+      pending.resolve(null)
+      if (fixture) await fixture.close()
+      vi.restoreAllMocks()
+      await fs.rm(outputDir, { recursive: true, force: true })
+    }
+  })
+
+  it("A001a coverage rejects SIP configuration removed after webhook signature validation", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "ouro-voice-sip-options-"))
+    const events = vi.spyOn(nerves, "emitNervesEvent")
+    const acquire = vi.spyOn(mcp, "getSharedMcpManager").mockResolvedValue(null)
+    let fixture: Awaited<ReturnType<typeof startToolSelectionVoice>> | undefined
+    try {
+      fixture = await startToolSelectionVoice(outputDir, "openai-sip", undefined, {
+        configure: (options) => {
+          const sip = options.openaiSip!
+          const secret = sip.webhookSecret
+          Object.defineProperty(sip, "webhookSecret", { get: () => { delete options.openaiSip; return secret } })
+        },
+      })
+      await vi.waitFor(() => expect(events).toHaveBeenCalledWith(expect.objectContaining({
+        event: "senses.voice_openai_sip_call_error",
+        meta: expect.objectContaining({ error: "OpenAI SIP options are not configured" }),
+      })))
+      expect(acquire).not.toHaveBeenCalled()
+      expect(fixture.mock.openaiRequests).toEqual([])
+    } finally {
+      if (fixture) await fixture.close()
+      vi.restoreAllMocks()
+      await fs.rm(outputDir, { recursive: true, force: true })
+    }
+  })
+
+  it.each([false, true])("A001a coverage reports failed SIP acceptance with unreadable body=%s", async (unreadable) => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "ouro-voice-sip-refusal-"))
+    const events = vi.spyOn(nerves, "emitNervesEvent")
+    vi.spyOn(mcp, "getSharedMcpManager").mockResolvedValue(null)
+    let fixture: Awaited<ReturnType<typeof startToolSelectionVoice>> | undefined
+    try {
+      fixture = await startToolSelectionVoice(outputDir, "openai-sip", undefined, {
+        configure: (options) => {
+          const capture = options.openaiSip!.fetch!
+          vi.stubGlobal("fetch", async (...args: Parameters<typeof fetch>) => {
+            await capture(...args)
+            const response = new Response("rejected", { status: 503 })
+            if (unreadable) vi.spyOn(response, "text").mockRejectedValue(new Error("response stream failed"))
+            return response
+          })
+          delete options.openaiSip!.fetch
+        },
+      })
+      await vi.waitFor(() => expect(events).toHaveBeenCalledWith(expect.objectContaining({
+        event: "senses.voice_openai_sip_call_error",
+        meta: expect.objectContaining({ error: unreadable ? "OpenAI SIP call accept failed: 503" : "OpenAI SIP call accept failed: 503 rejected" }),
+      })))
+      expect(fixture.mock.openaiSockets).toEqual([])
+      expect(fixture.mock.openaiRequests).toHaveLength(1)
+      expect(fixture.mock.openaiRequests[0]!.input).toMatch(/\/call_tool_selection\/accept$/)
+    } finally {
+      if (fixture) await fixture.close()
+      vi.unstubAllGlobals()
+      vi.restoreAllMocks()
+      await fs.rm(outputDir, { recursive: true, force: true })
+    }
+  })
+
+  it.each(["preclassified", "configuration", "accept"] as const)("A001a coverage does not connect a SIP call stopped at %s", async (phase) => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "ouro-voice-sip-stopped-"))
+    const pending = Promise.withResolvers<mcp.McpTurnView | null>()
+    const accepted = Promise.withResolvers<Response>()
+    const acquire = vi.spyOn(mcp, "getSharedMcpManager").mockImplementation(async () => phase === "configuration" ? pending.promise : null)
+    const events = vi.spyOn(nerves, "emitNervesEvent")
+    let fixture: Awaited<ReturnType<typeof startToolSelectionVoice>> | undefined
+    try {
+      await writeTwilioOutboundCallJob(outputDir, {
+        schemaVersion: 1, outboundId: "out-stopped", agentName: "slugger", friendId: "ari",
+        from: "+15557654321", to: "+15551234567", reason: "isolated cancellation fixture",
+        createdAt: "2026-09-10T00:00:00.000Z",
+        status: phase === "preclassified" ? "voicemail" : "requested",
+      })
+      fixture = await startToolSelectionVoice(outputDir, "openai-sip", undefined, {
+        caller: { direction: "outbound", outboundId: "out-stopped" },
+        configure: (options) => {
+          const capture = options.openaiSip!.fetch!
+          options.openaiSip!.fetch = async (...args) => {
+            const response = await capture(...args)
+            return phase === "accept" && String(args[0]).endsWith("/accept") ? accepted.promise : response
+          }
+        },
+      })
+      if (phase !== "preclassified") {
+        if (phase === "configuration") await vi.waitFor(() => expect(acquire).toHaveBeenCalledOnce())
+        else await vi.waitFor(() => expect(fixture!.mock.openaiRequests.some(({ input }) => input.endsWith("/accept"))).toBe(true))
+        expect((await fixture.bridge.handle({
+          method: "POST", path: "/voice/twilio/outgoing/out-stopped/amd", headers: {},
+          body: formBody({ CallSid: "call_tool_selection", AnsweredBy: "machine_end_beep" }),
+        })).statusCode).toBe(200)
+      }
+      await vi.waitFor(() => expect(events).toHaveBeenCalledWith(expect.objectContaining({
+        event: "senses.voice_openai_sip_call_stop",
+      })))
+      pending.resolve(null)
+      accepted.resolve(new Response("", { status: 200 }))
+      await new Promise((resolve) => setImmediate(resolve))
+      expect(fixture.mock.openaiSockets).toEqual([])
+      const actions = fixture.mock.openaiRequests.map(({ input }) => input.split("/").at(-1))
+      expect(actions).toEqual(phase === "preclassified" ? ["reject"] : phase === "accept" ? ["accept", "hangup"] : ["hangup"])
+    } finally {
+      pending.resolve(null)
+      accepted.resolve(new Response("", { status: 200 }))
+      if (fixture) await fixture.close()
+      vi.restoreAllMocks()
+      await fs.rm(outputDir, { recursive: true, force: true })
+    }
+  })
+
+  it("does not dispatch native tools before the first transport advertisement", async () => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "ouro-voice-advertisement-"))
+    const pending = Promise.withResolvers<mcp.McpTurnView | null>()
+    vi.spyOn(mcp, "getSharedMcpManager").mockReturnValue(pending.promise)
+    const handler = vi.spyOn(resolveToolDefinition("write_file")!, "handler")
+    const target = path.join(outputDir, "slugger.ouro", "advertisement.txt")
+    const args = { path: target, content: "authorized only after advertisement" }
+    let fixture: Awaited<ReturnType<typeof startToolSelectionVoice>> | undefined
+    try {
+      fixture = await startToolSelectionVoice(outputDir, "openai-realtime", (socket) => {
+        sendSocketJson(socket, { type: "response.function_call_arguments.done", name: "write_file", arguments: JSON.stringify(args), call_id: "before-advertisement" })
+      })
+      await vi.waitFor(() => expect(fixture!.publications().length).toBeGreaterThan(0))
+      expect(handler).not.toHaveBeenCalled()
+      expect(await fs.access(target).then(() => true, () => false)).toBe(false)
+      await fixture.call("write_file", args, "after-advertisement")
+      expect(handler).toHaveBeenCalledTimes(1)
+      expect(await fs.readFile(target, "utf8")).toBe(args.content)
+    } finally {
+      pending.resolve(null)
+      if (fixture) await fixture.close()
+      vi.restoreAllMocks()
+      await fs.rm(outputDir, { recursive: true, force: true })
+    }
+  })
+
+  it.each(transports.flatMap((transport) => (["ready", "delayed"] as const).map((timing) => ({ transport, timing }))))("retains advertised MCP definitions across another owner: $transport / $timing", async ({ transport, timing }) => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "ouro-voice-selection-"))
+    const owner = { agentName: "slugger", agentRoot: path.join(outputDir, "slugger.ouro") }
+    const clients: McpClient[] = []
+    vi.spyOn(McpClient.prototype, "connect").mockImplementation(async function () { clients.push(this) })
+    vi.spyOn(McpClient.prototype, "isConnected").mockReturnValue(true)
+    vi.spyOn(McpClient.prototype, "listTools").mockResolvedValue([{
+      name: "status", description: "Owned status",
+      inputSchema: { type: "object", properties: { enabled: { type: "boolean" } }, required: ["enabled"], additionalProperties: false },
+    }])
+    const call = vi.spyOn(McpClient.prototype, "callTool").mockImplementation(async function () {
+      return { content: [{ type: "text", text: this === clients[0] ? "owner-a" : "owner-b" }] }
+    })
+    const manager = new mcp.McpManager()
+    const pending = Promise.withResolvers<mcp.McpTurnView | null>()
+    let fixture: Awaited<ReturnType<typeof startToolSelectionVoice>> | undefined
+    try {
+      const view = await manager.start(owner, { owned: { command: "fixture-a" } })
+      const acquire = vi.spyOn(mcp, "getSharedMcpManager").mockImplementation(async () => timing === "ready" ? view : pending.promise)
+      fixture = await startToolSelectionVoice(outputDir, transport)
+      await vi.waitFor(() => expect(fixture!.publications().length).toBeGreaterThan(0))
+      if (timing === "delayed") {
+        expect(fixture.publications().flat().map((tool) => tool.name)).not.toContain("owned_status")
+        pending.resolve(view)
+      }
+      await vi.waitFor(() => expect(fixture!.publications().flat().map((tool) => tool.name)).toContain("owned_status"), { timeout: 2_000 })
+      expect(acquire).toHaveBeenCalledExactlyOnceWith(owner)
+      for (const name of ["speak", "settle", "rest", "observe", "ponder"]) {
+        expect(fixture.publications().flat().map((tool) => tool.name)).not.toContain(name)
+      }
+      expect(JSON.stringify(fixture.publications())).not.toContain(owner.agentRoot)
+      expect(JSON.stringify(fixture.publications())).not.toContain(view!.entries[0]!.configDigest)
+
+      const other = { agentName: "other", agentRoot: path.join(outputDir, "other.ouro") }
+      const otherView = await manager.start(other, { owned: { command: "fixture-b" } })
+      getToolsForChannel(getChannelCapabilities("voice"), undefined, undefined, undefined, otherView!)
+      expect(await fixture.call("owned_status", { enabled: true }, "owned-first")).toBe("owner-a")
+      expect(call).toHaveBeenCalledExactlyOnceWith("status", { enabled: true })
+      expect(call.mock.contexts[0]).toBe(clients[0])
+      await manager.start(owner, {})
+      expect(await fixture.call("owned_status", { enabled: true }, "owned-stale")).toMatch(/stale|changed|rejected/i)
+      expect(call).toHaveBeenCalledTimes(1)
+      expect(manager.listAllTools(other)).toHaveLength(1)
+    } finally {
+      pending.resolve(null)
+      if (fixture) await fixture.close()
+      await manager.shutdown()
+      vi.restoreAllMocks()
+      await fs.rm(outputDir, { recursive: true, force: true })
+    }
+  })
+
+  it.each(transports)("rejects primitive type coercion before a native write: %s", async (transport) => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "ouro-voice-arguments-"))
+    vi.spyOn(mcp, "getSharedMcpManager").mockResolvedValue(null)
+    let fixture: Awaited<ReturnType<typeof startToolSelectionVoice>> | undefined
+    try {
+      fixture = await startToolSelectionVoice(outputDir, transport)
+      await vi.waitFor(() => expect(fixture!.publications().length).toBeGreaterThan(0))
+      const target = path.join(fixture.owner.agentRoot, "must-not-write.txt")
+      const output = await fixture.call("write_file", { path: target, content: 7 }, "invalid-content")
+      const exists = await fs.access(target).then(() => true, () => false)
+      expect(exists).toBe(false)
+      expect(output).toMatch(/invalid tool arguments/i)
+      expect(await fixture.call("voice_play_audio", { source: "tone", durationMs: 120, toneHz: 550 }, "numeric-tone")).toMatch(/120/)
+    } finally {
+      if (fixture) await fixture.close()
+      vi.restoreAllMocks()
+      await fs.rm(outputDir, { recursive: true, force: true })
+    }
+  })
+
+  it.each(transports.flatMap((transport) => [7, "", "[]"].map((raw) => ({ transport, raw }))))("rejects malformed argument envelopes without a handler: $transport / $raw", async ({ transport, raw }) => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "ouro-voice-envelope-"))
+    vi.spyOn(mcp, "getSharedMcpManager").mockResolvedValue(null)
+    const handler = vi.spyOn(voiceToolDefinitions.find((definition) => definition.tool.function.name === "voice_play_audio")!, "handler")
+    let fixture: Awaited<ReturnType<typeof startToolSelectionVoice>> | undefined
+    try {
+      fixture = await startToolSelectionVoice(outputDir, transport)
+      await vi.waitFor(() => expect(fixture!.publications().length).toBeGreaterThan(0))
+      const output = await fixture.call("voice_play_audio", {}, "bad-envelope", raw)
+      expect(handler).not.toHaveBeenCalled()
+      expect(output).toMatch(/invalid tool arguments/i)
+    } finally {
+      if (fixture) await fixture.close()
+      vi.restoreAllMocks()
+      await fs.rm(outputDir, { recursive: true, force: true })
+    }
+  })
+
+  it.each(transports.flatMap((transport) => (["absent", "empty", "failed", "closed"] as const).map((state) => ({ transport, state }))))("preserves the native route and closed boundary: $transport / $state", async ({ transport, state }) => {
+    const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), "ouro-voice-inactive-"))
+    const owner = { agentName: "slugger", agentRoot: path.join(outputDir, "slugger.ouro") }
+    const manager = new mcp.McpManager()
+    const pending = Promise.withResolvers<mcp.McpTurnView | null>()
+    const events = vi.spyOn(nerves, "emitNervesEvent")
+    let fixture: Awaited<ReturnType<typeof startToolSelectionVoice>> | undefined
+    let closed = false
+    try {
+      const empty = await manager.start(owner, {})
+      const acquire = vi.spyOn(mcp, "getSharedMcpManager").mockImplementation(async () => {
+        if (state === "failed") throw new Error("optional MCP unavailable")
+        return state === "empty" ? empty : state === "closed" ? pending.promise : null
+      })
+      fixture = await startToolSelectionVoice(outputDir, transport)
+      await vi.waitFor(() => expect(fixture!.publications().length).toBeGreaterThan(0))
+      const names = fixture.publications().at(-1)!.map((tool) => tool.name)
+      expect(names).toEqual(expect.arrayContaining(["voice_end_call", "voice_play_audio", "read_file"]))
+      expect(names).not.toContain("owned_status")
+      expect(acquire).toHaveBeenCalledExactlyOnceWith(owner)
+      if (state === "failed") expect(events).toHaveBeenCalledWith(expect.objectContaining({ event: "senses.voice_mcp_discovery_error" }))
+      if (state === "closed") {
+        const before = fixture.publications().length
+        await fixture.close()
+        closed = true
+        if (transport === "openai-sip") await vi.waitFor(() => expect(events).toHaveBeenCalledWith(expect.objectContaining({ event: "senses.voice_openai_sip_call_stop" })))
+        pending.resolve(empty)
+        await new Promise((resolve) => setImmediate(resolve))
+        expect(fixture.publications()).toHaveLength(before)
+      }
+    } finally {
+      pending.resolve(null)
+      if (fixture && !closed) await fixture.close()
+      await manager.shutdown()
+      vi.restoreAllMocks()
+      await fs.rm(outputDir, { recursive: true, force: true })
+    }
+  })
+})
 
 describe("Twilio phone voice bridge", () => {
   it("normalizes transport webhook paths for single-agent and agent-scoped routes", () => {
@@ -740,6 +1260,7 @@ describe("Twilio phone voice bridge", () => {
     if (!address || typeof address === "string") throw new Error("OpenAI test server did not bind to a TCP port")
     const openaiUrl = `ws://127.0.0.1:${address.port}/v1/realtime`
     const webhookSecret = `whsec_${Buffer.from("sip-webhook-secret").toString("base64")}`
+    const mcpAcquire = vi.spyOn(mcp, "getSharedMcpManager").mockResolvedValue(null)
     try {
       await fs.mkdir(path.join(agentRoot, "friends"), { recursive: true })
       const now = new Date().toISOString()
@@ -941,12 +1462,14 @@ describe("Twilio phone voice bridge", () => {
         const item = event.item as { type?: string; call_id?: string; output?: string } | undefined
         return item?.type === "function_call_output" && item.call_id === "tool-end" && item.output?.includes("voice call ending")
       })).toBe(true)
+      expect(mcpAcquire).toHaveBeenCalledWith({ agentName: "slugger", agentRoot })
     } finally {
       for (const openaiSocket of openaiSockets) {
         if (openaiSocket.readyState === WebSocket.OPEN) await closeSocket(openaiSocket)
       }
       await closeWebSocketServer(openaiServer)
       await fs.rm(outputDir, { recursive: true, force: true })
+      mcpAcquire.mockRestore()
     }
   }, 20_000)
 
@@ -1275,6 +1798,7 @@ describe("Twilio phone voice bridge", () => {
     }
     let server: Awaited<ReturnType<typeof startTwilioPhoneBridgeServer>> | undefined
     let socket: WebSocket | undefined
+    const mcpAcquire = vi.spyOn(mcp, "getSharedMcpManager").mockResolvedValue(null)
     try {
       openaiServer.on("connection", (ws, request) => {
         openaiSockets.push(ws as WebSocket)
@@ -1452,6 +1976,7 @@ describe("Twilio phone voice bridge", () => {
       expect(options.runSenseTurn).not.toHaveBeenCalled()
       expect(options.tts.synthesize).not.toHaveBeenCalled()
       expect(options.transcriber.transcribe).not.toHaveBeenCalled()
+      expect(mcpAcquire).toHaveBeenCalledWith({ agentName: "slugger", agentRoot: options.agentRoot })
     } finally {
       for (const openaiSocket of openaiSockets) {
         if (openaiSocket.readyState === WebSocket.OPEN) await closeSocket(openaiSocket)
@@ -1460,6 +1985,7 @@ describe("Twilio phone voice bridge", () => {
       if (server) await closeTwilioPhoneBridgeServer(server)
       await closeWebSocketServer(openaiServer)
       await fs.rm(outputDir, { recursive: true, force: true })
+      mcpAcquire.mockRestore()
     }
   }, 15_000)
 

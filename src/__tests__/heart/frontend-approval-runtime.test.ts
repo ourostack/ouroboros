@@ -7,6 +7,17 @@ import type { ApprovalProposalRequest } from "../../heart/core"
 import type { ToolContext } from "../../repertoire/tools-base"
 import type { FrontendTurnRequest } from "../../heart/frontend-session-service"
 import type { RunSenseTurnResult } from "../../senses/shared-turn"
+import { channelToFacing } from "@ouro.bot/friends"
+import { approvalPolicyForInvocation, executeTool, preflightToolCall, resolveToolDefinition, selectToolsForChannel } from "../../repertoire/tools"
+import type { ExecuteApprovalDecisionOptions } from "../../heart/tool-approval"
+import { ApprovalExecutionFailedError, digestApprovalToolDefinition, executeApprovalDecision } from "../../heart/tool-approval"
+import { resumeApprovalContinuation } from "../../heart/core"
+import { readSessionTransaction, withSessionTurnLease } from "../../mind/session-transaction"
+import { loadSession, postTurnPersist } from "../../mind/context"
+import { withTurnExecutionLease } from "../../heart/turn-execution-lease"
+import { openApprovalStore } from "../../heart/approval-store"
+import { digestJson, validateAdvertisedToolArguments } from "../../repertoire/tool-arguments"
+import { createMinimaxProviderRuntime } from "../../heart/providers/minimax"
 
 function turn(): FrontendTurnRequest {
   return {
@@ -302,9 +313,12 @@ describe("frontend approval settlement", () => {
     }))
     const nestedFactory = vi.fn(() => ({ propose: nestedPropose }))
     const approvalCoordinatorFactory = vi.fn(() => nestedFactory)
-    const executeTool = vi.fn(async () => "restarted")
+    const executeTool = vi.fn(async () => ({ kind: "handler_succeeded", text: "restarted" }))
+    const definition = resolveToolDefinition(record.toolName)!
+    const selection = Object.freeze({ ordinary: Object.freeze([definition]), engine: Object.freeze([]) })
+    const providerRuntime = { model: "fixture-model", capabilities: new Set() }
     const executeApprovalDecision = vi.fn(async (options: any) => {
-      options.resolveTool(record.toolName)
+      await options.resolveTool(record.toolName)
       await options.resolveApprovalPolicy(record.toolName, record.arguments)
       await options.liveGuard({})
       await options.liveRisk({})
@@ -381,9 +395,12 @@ describe("frontend approval settlement", () => {
         withSessionTurnLease: async (_path: string, work: (lease: object) => Promise<unknown>) => work({ lease: true }),
         readSessionTransaction: vi.fn(() => ({ revision: revision.value })),
         executeApprovalDecision,
-        resolveToolDefinition: vi.fn(() => ({ tool: { function: { name: record.toolName } } })),
+        resolveToolDefinition: vi.fn(resolveToolDefinition),
         approvalPolicyForInvocation: vi.fn(async () => ({ kind: "required", policyId: record.policyId })),
-        execTool: executeTool,
+        executeTool,
+        preflightToolCall: vi.fn(async () => ({ kind: "ready" })),
+        selectToolsForChannel: vi.fn(() => selection),
+        getProviderRuntime: vi.fn(async () => providerRuntime),
         getSharedMcpManager: vi.fn(async () => ({ manager: true })),
         releaseRuntimeMcpServers: vi.fn(async () => {
           leaseOrder.push("runtime:release")
@@ -407,8 +424,234 @@ describe("frontend approval settlement", () => {
       leaseOrder,
       postTurnPersist,
       tokenStore,
+      definition,
+      selection,
+      providerRuntime,
     }
   }
+
+  it("refreshes exact owner metadata, selection and preflight before execution and continuation", async () => {
+    const fixture = settlementFixture()
+    const envelope = {
+      profileId: "scoped-profile",
+      authorizedContextScopes: ["session.read"],
+      advertisedToolNames: [fixture.record.toolName],
+      actor: { friendId: turn().friendId, trustLevel: "family" as const, sessionEventId: "evt-1" },
+      authorizeTool: vi.fn(() => ({ allowed: true as const, receiptId: "current" })),
+    }
+    const refresh = vi.fn(async () => envelope)
+    Object.assign(fixture.liveToolContext, {
+      agentName: "boss", agentRoot: fixture.input.agentRoot,
+      relationshipAuthorization: { ...envelope, resolveCurrent: refresh },
+    })
+    fixture.deps.executeApprovalDecision.mockImplementationOnce(async (options: ExecuteApprovalDecisionOptions) => {
+      const definition = await options.resolveTool(fixture.record.toolName)
+      expect(definition).toBe(fixture.definition)
+      await options.resolveApprovalPolicy(fixture.record.toolName, fixture.record.arguments)
+      expect(await options.preflight({
+        record: fixture.record as never, arguments: fixture.record.arguments, definition: definition!,
+      })).toEqual({ ok: true })
+      expect(await options.execute(fixture.record.toolName, fixture.record.arguments))
+        .toEqual({ kind: "handler_succeeded", text: "restarted" })
+      return { ...fixture.record, state: "succeeded", result: "restarted" }
+    })
+    fixture.deps.resumeApprovalContinuation.mockImplementationOnce(async (options) => {
+      const current = await options.revalidate()
+      expect(current.toolContext.relationshipAuthorization).toBe(envelope)
+      expect(current.toolContext.toolSelection).toBe(fixture.selection)
+      expect(current.providerRuntimeOverride).toBe(fixture.providerRuntime)
+      expect(current.approvalCoordinator).toBeDefined()
+      return { outcome: "settled", messages: [] }
+    })
+    const { settleFrontendApproval } = await import("../../heart/frontend-approval-runtime")
+    await settleFrontendApproval(fixture.input, fixture.deps as never)
+    expect(refresh.mock.calls.length).toBeGreaterThanOrEqual(5)
+    expect(fixture.deps.getProviderRuntime).toHaveBeenCalledWith(channelToFacing(turn().channel), {
+      agentName: "boss", agentRoot: fixture.input.agentRoot,
+    })
+    expect(fixture.deps.preflightToolCall).toHaveBeenCalledWith(fixture.record.toolName, fixture.record.arguments, expect.objectContaining({
+      agentName: "boss", agentRoot: fixture.input.agentRoot,
+      relationshipAuthorization: envelope, selectCurrentTools: expect.any(Function),
+    }))
+  })
+
+  it.each(["missing-producer", "missing-name", "missing-root", "revoked", "non-error", "wrong-name", "wrong-root", "unscoped-wrong-name", "unscoped-wrong-root", "wrong-friend", "profile", "trust", "scopes", "provider", "mcp"] as const)(
+    "fails closed instead of borrowing suspended frontend authority: %s",
+    async (change) => {
+      const fixture = settlementFixture()
+      const envelope = {
+        profileId: "scoped-profile",
+        authorizedContextScopes: ["session.read"],
+        advertisedToolNames: [fixture.record.toolName],
+        actor: { friendId: turn().friendId, trustLevel: "family" as const, sessionEventId: "evt-1" },
+        authorizeTool: vi.fn(() => ({ allowed: true as const, receiptId: "stale" })),
+      }
+      const current = { ...envelope, actor: { ...envelope.actor, trustLevel: change === "trust" ? "stranger" as const : envelope.actor.trustLevel } }
+      const refresh = vi.fn(async () => current)
+      Object.assign(fixture.liveToolContext, {
+        agentName: change === "wrong-name" || change === "unscoped-wrong-name" ? "other" : "boss",
+        agentRoot: change === "wrong-root" || change === "unscoped-wrong-root" ? "/agents/other.ouro" : fixture.input.agentRoot,
+        relationshipAuthorization: { ...envelope, ...(change === "missing-producer" ? {} : { resolveCurrent: refresh }) },
+      })
+      if (change === "missing-name") delete fixture.liveToolContext.agentName
+      if (change === "missing-root") delete fixture.liveToolContext.agentRoot
+      if (change.startsWith("unscoped-")) delete fixture.liveToolContext.relationshipAuthorization
+      if (change === "revoked") refresh.mockRejectedValue(new Error("relationship revoked"))
+      if (change === "non-error") refresh.mockRejectedValue("relationship revoked")
+      if (change === "wrong-friend") current.actor.friendId = "other"
+      if (change === "profile") current.profileId = "different-profile"
+      if (change === "scopes") current.authorizedContextScopes = []
+      if (change === "provider") fixture.deps.getProviderRuntime.mockRejectedValue(new Error("provider unavailable"))
+      if (change === "mcp") fixture.deps.getSharedMcpManager.mockRejectedValue(new Error("MCP configuration unavailable"))
+      fixture.deps.executeApprovalDecision.mockImplementationOnce(async (options: ExecuteApprovalDecisionOptions) => {
+        expect(await options.resolveTool(fixture.record.toolName)).toBeUndefined()
+        expect(await options.resolveApprovalPolicy(fixture.record.toolName, fixture.record.arguments)).toEqual({ kind: "not_required" })
+        expect(await options.preflight({
+          record: fixture.record as never, arguments: fixture.record.arguments, definition: fixture.definition,
+        })).toMatchObject({ ok: false })
+        expect(await options.execute(fixture.record.toolName, fixture.record.arguments)).toMatchObject({ kind: "rejected_before_handler" })
+        return { ...fixture.record, state: "drifted", result: null }
+      })
+      fixture.deps.resumeApprovalContinuation.mockImplementationOnce(async (options) => {
+        expect(await options.revalidate()).toBeNull()
+        return { outcome: "terminal_notice", messages: [] }
+      })
+      const { settleFrontendApproval } = await import("../../heart/frontend-approval-runtime")
+      await settleFrontendApproval(fixture.input, fixture.deps as never)
+      expect(fixture.executeTool).not.toHaveBeenCalled()
+      expect(fixture.deps.runAgent).not.toHaveBeenCalled()
+    },
+  )
+
+  it("keeps disabled frontend approvals empty without MCP startup or cleanup", async () => {
+    const fixture = settlementFixture()
+    fixture.input.request.disableTools = true
+    fixture.input.request.runtimeMcpServers = { ignored: { command: "must-not-start" } }
+    fixture.deps.executeApprovalDecision.mockImplementationOnce(async (options: ExecuteApprovalDecisionOptions) => {
+      expect(await options.resolveTool(fixture.record.toolName)).toBeUndefined()
+      return { ...fixture.record, state: "drifted", result: null }
+    })
+    fixture.deps.resumeApprovalContinuation.mockImplementationOnce(async (options) => {
+      expect(await options.revalidate()).toMatchObject({
+        hardDisableTools: true, tools: [],
+        toolContext: { toolSelection: { ordinary: [], engine: [] } },
+      })
+      return { outcome: "settled", messages: [] }
+    })
+    const { settleFrontendApproval } = await import("../../heart/frontend-approval-runtime")
+    await settleFrontendApproval(fixture.input, fixture.deps as never)
+    expect(fixture.deps.getSharedMcpManager).not.toHaveBeenCalled()
+    expect(fixture.deps.releaseRuntimeMcpServers).not.toHaveBeenCalled()
+    expect(fixture.deps.selectToolsForChannel).not.toHaveBeenCalled()
+    expect(fixture.executeTool).not.toHaveBeenCalled()
+  })
+
+  it.each(["unchanged", "before-decision", "guard-held", "after-attempt", "before-continuation", "known-failure", "uncertain-effect"] as const)(
+    "uses the real store, dispatcher and continuation without replay: %s",
+    async (change) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "frontend-native-approval-"))
+      const fixture = settlementFixture()
+      const request = { ...turn(), agent: "sanctuary" }
+      const sessionPath = path.join(root, "state", "sessions", request.friendId, request.channel, "session-1.json")
+      let active = true
+      let effects = 0
+      const handler = vi.fn(async () => {
+        if (change === "known-failure") throw new ApprovalExecutionFailedError("verified action failure")
+        effects += 1
+        if (change === "uncertain-effect") throw new Error("response lost after effect")
+        return { ok: true }
+      })
+      const model = vi.fn(async (_messages, callbacks) => {
+        callbacks.onTextChunk(change === "known-failure" ? "The action failed." : "The action completed.")
+        return { outcome: "settled" as const }
+      })
+      const relationship = {
+        profileId: "sanctuary-owner", authorizedContextScopes: ["session.read"], advertisedToolNames: ["unraid_restart_container"],
+        actor: { friendId: request.friendId, trustLevel: "family" as const, sessionEventId: "fixture-ingress" },
+        authorizeTool: async () => active ? { allowed: true as const, receiptId: "current-owner" } : { allowed: false as const, reason: "revoked" },
+        resolveCurrent: async () => {
+          if (!active) throw new Error("revoked")
+          return relationship
+        },
+      }
+      const liveToolContext: ToolContext = {
+        signin: async () => undefined, agentName: request.agent, agentRoot: root, relationshipAuthorization: relationship,
+        currentSession: { friendId: request.friendId, channel: request.channel, key: request.sessionKey, sessionPath },
+        context: { friend: { id: request.friendId, trustLevel: "family" }, channel: request.channel } as ToolContext["context"],
+        sanctuary: { restartContainer: handler } as ToolContext["sanctuary"],
+      }
+      if (change === "guard-held") liveToolContext.orientationFrame = {
+        actionPolicy: { mode: "correction_hold", blockedMutationKinds: ["external_side_effect"], reason: "current guard hold" },
+      } as ToolContext["orientationFrame"]
+      const { createFrontendApprovalRuntime, settleFrontendApproval } = await import("../../heart/frontend-approval-runtime")
+      const runtime = createFrontendApprovalRuntime({
+        agentRoot: () => root,
+        settleApproval: (input) => settleFrontendApproval(input, {
+          ...fixture.deps,
+          withTurnExecutionLease, withSessionTurnLease, readSessionTransaction,
+          executeApprovalDecision: (options) => executeApprovalDecision({
+            ...options, hooks: { ...options.hooks, afterAttempt: async (context) => {
+              await options.hooks?.afterAttempt?.(context)
+              if (change === "after-attempt") active = false
+            } },
+          }),
+          executeTool: async (name, args, context) => {
+            const outcome = await executeTool(name, args, context)
+            if (change === "before-continuation") active = false
+            return outcome
+          },
+          approvalPolicyForInvocation, resolveToolDefinition, selectToolsForChannel, preflightToolCall,
+          getProviderRuntime: async () => createMinimaxProviderRuntime("MiniMax-M3", { apiKey: "isolated-fixture" }),
+          getSharedMcpManager: async () => null,
+          loadSession, postTurnPersist, resumeApprovalContinuation, runAgent: model,
+          postTurnTrim: (messages) => ({
+            currentMessages: [...messages], trimmedMessages: [...messages],
+            currentIngressTimes: messages.map(() => null), currentIngressRelations: messages.map(() => null),
+            maxTokens: 80_000, contextMargin: 20,
+          }),
+        }),
+      })
+      try {
+        const definition = resolveToolDefinition("unraid_restart_container")!
+        const draft = proposal()
+        const validation = validateAdvertisedToolArguments(JSON.stringify(draft.arguments), definition.tool.function.parameters!)
+        if (!validation.ok) throw new Error(validation.reason)
+        const policy = definition.approvalPolicy!(draft.arguments)
+        if (policy.kind !== "required") throw new Error("fixture action must require approval")
+        const suspension = await withSessionTurnLease(sessionPath, async (lease) => runtime.approvalCoordinatorFactory({ request, publish: vi.fn() })({
+          sessionPath, baseSessionRevision: readSessionTransaction(sessionPath, lease).revision,
+        }).propose({
+          ...draft, liveToolContext, schemaDigest: validation.value.schemaDigest, policyId: policy.policyId,
+          toolDigest: digestApprovalToolDefinition(definition, validation.value.schemaDigest, policy.policyId),
+          policyDigest: digestJson({ policyId: policy.policyId, actionClass: policy.actionClass, classification: "required" }),
+        }))
+        if (change === "before-decision") active = false
+        expect(runtime.resolvePermission(suspension.approvalId, "allow-once")).toBe(true)
+        const result = await runtime.resumeApproval({
+          request, suspension, signal: new AbortController().signal, frontendEventSink: { onEvent: vi.fn() },
+        })
+        const store = openApprovalStore({ databasePath: path.join(root, "state", "approvals", "approvals.sqlite") })
+        try {
+          const record = store.read(suspension.approvalId)!
+          expect(record.state).toBe(change === "before-decision" || change === "guard-held" ? "drifted" : change === "after-attempt" || change === "known-failure" ? "failed" : change === "uncertain-effect" ? "attempted_indeterminate" : "succeeded")
+          expect(store.claimContinuation({ approvalId: suspension.approvalId, ownerId: "late-continuation" }))
+            .toMatchObject({ claimed: false, record: { continuationState: "completed" } })
+        } finally { store.close() }
+        expect(handler).toHaveBeenCalledTimes(change === "before-decision" || change === "guard-held" || change === "after-attempt" ? 0 : 1)
+        expect(effects).toBe(change === "before-decision" || change === "guard-held" || change === "after-attempt" || change === "known-failure" ? 0 : 1)
+        expect(model).toHaveBeenCalledTimes(change === "unchanged" || change === "known-failure" ? 1 : 0)
+        if (change === "before-continuation") {
+          expect(result.response).toContain("action completed")
+          expect(result.response).not.toMatch(/not executed|no action/i)
+        }
+        expect(runtime.resolvePermission(suspension.approvalId, "allow-once")).toBe(false)
+        expect(loadSession(sessionPath)).not.toBeNull()
+      } finally {
+        runtime.close()
+        fs.rmSync(root, { recursive: true, force: true })
+      }
+    },
+  )
 
   it("executes and resumes under fresh leases with the original tool context and MCP set", async () => {
     const fixture = settlementFixture()
@@ -424,9 +667,14 @@ describe("frontend approval settlement", () => {
     })
     expect(fixture.deps.setAgentName).toHaveBeenCalledWith("boss")
     expect(fixture.deps.getSharedMcpManager).toHaveBeenCalledWith({
+      agentName: "boss",
+      agentRoot: fixture.input.agentRoot,
       runtimeServers: fixture.input.request.runtimeMcpServers,
     })
     expect(fixture.deps.releaseRuntimeMcpServers).toHaveBeenCalledOnce()
+    expect(fixture.deps.releaseRuntimeMcpServers).toHaveBeenCalledWith({
+      agentName: "boss", agentRoot: fixture.input.agentRoot,
+    })
     expect(fixture.leaseOrder).toEqual(["lease:start", "runtime:release", "lease:end"])
     expect(fixture.executeApprovalDecision).toHaveBeenCalledWith(expect.objectContaining({
       currentSessionRevision: "d".repeat(64),
@@ -440,7 +688,12 @@ describe("frontend approval settlement", () => {
     expect(fixture.executeTool).toHaveBeenCalledWith(
       "unraid_restart_container",
       { container: "calibre-web" },
-      fixture.liveToolContext,
+      expect.objectContaining({
+        ...fixture.liveToolContext,
+        agentName: "boss", agentRoot: fixture.input.agentRoot,
+        toolSelection: { ordinary: [fixture.definition], engine: [] },
+        selectCurrentTools: expect.any(Function),
+      }),
     )
     expect(fixture.approvalCoordinatorFactory).toHaveBeenLastCalledWith(expect.objectContaining({
       request: fixture.input.request,
@@ -503,6 +756,7 @@ describe("frontend approval settlement", () => {
     fixture.deps.resumeApprovalContinuation.mockImplementationOnce(async (options: any) => {
       await expect(options.runAgentOptions.toolContext.signin("none")).resolves.toBeUndefined()
       expect(options.runAgentOptions.toolContext).toMatchObject({
+        agentName: "boss",
         agentRoot: "/agents/boss.ouro",
         currentSession: {
           friendId: turn().friendId,
@@ -521,7 +775,9 @@ describe("frontend approval settlement", () => {
       response: "",
       deliveries: [],
     })
-    expect(fixture.deps.getSharedMcpManager).toHaveBeenCalledWith(undefined)
+    expect(fixture.deps.getSharedMcpManager).toHaveBeenCalledWith({
+      agentName: "boss", agentRoot: fixture.input.agentRoot, runtimeServers: undefined,
+    })
     expect(fixture.deps.releaseRuntimeMcpServers).not.toHaveBeenCalled()
 
     const duplicate = settlementFixture()
@@ -563,7 +819,30 @@ describe("frontend approval settlement", () => {
     await expect(settleFrontendApproval(fixture.input, fixture.deps as never))
       .rejects.toThrow("continuation failed")
     expect(fixture.deps.releaseRuntimeMcpServers).toHaveBeenCalledOnce()
+    expect(fixture.deps.releaseRuntimeMcpServers).toHaveBeenCalledWith({
+      agentName: "boss", agentRoot: fixture.input.agentRoot,
+    })
     expect(fixture.leaseOrder).toEqual(["lease:start", "runtime:release", "lease:end"])
+  })
+
+  it("routes the default runtime release adapter through the initiating owner", async () => {
+    const fixture = settlementFixture()
+    fixture.input.request.runtimeMcpServers = { ouro_workbench: { command: "/Applications/OuroWorkbenchMCP" } }
+    vi.resetModules()
+    const manager = await import("../../repertoire/mcp-manager")
+    const transaction = await import("../../mind/session-transaction")
+    const acquire = vi.spyOn(manager, "getSharedMcpManager").mockResolvedValue(null)
+    const release = vi.spyOn(manager, "releaseRuntimeMcpServers").mockResolvedValue(undefined)
+    const lease = vi.spyOn(transaction, "withSessionTurnLease").mockRejectedValue(new Error("controlled stop before action"))
+    const { settleFrontendApproval } = await import("../../heart/frontend-approval-runtime")
+    try {
+      await expect(settleFrontendApproval(fixture.input)).rejects.toThrow("controlled stop before action")
+      expect(release).toHaveBeenCalledExactlyOnceWith({ agentName: "boss", agentRoot: fixture.input.agentRoot })
+    } finally {
+      acquire.mockRestore()
+      release.mockRestore()
+      lease.mockRestore()
+    }
   })
 
   it.each([

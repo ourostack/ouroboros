@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto"
 import * as path from "node:path"
+import { channelToFacing, getChannelCapabilities } from "@ouro.bot/friends"
 
 import { FileApprovalCheckpointStore, FileApprovalTokenStore } from "./approval-files"
 import { openApprovalStore, type ApprovalStore } from "./approval-store"
@@ -11,9 +12,11 @@ import {
 } from "./tool-approval"
 import {
   resumeApprovalContinuation,
+  getProviderRuntime,
   runAgent,
   type ApprovalProposalRequest,
   type ChannelCallbacks,
+  type RunAgentOptions,
 } from "./core"
 import { getAgentRoot, setAgentName } from "./identity"
 import type {
@@ -27,8 +30,9 @@ import type { FrontendTurnEventSink, RunSenseTurnResult } from "../senses/shared
 import { withTurnExecutionLease } from "./turn-execution-lease"
 import { loadSession, postTurnPersist, postTurnTrim } from "../mind/context"
 import { readSessionTransaction, withSessionTurnLease } from "../mind/session-transaction"
-import { approvalPolicyForInvocation, execTool, resolveToolDefinition } from "../repertoire/tools"
-import { getSharedMcpManager } from "../repertoire/mcp-manager"
+import { approvalPolicyForInvocation, executeTool, preflightToolCall, resolveToolDefinition, selectToolsForChannel } from "../repertoire/tools"
+import type { ToolContext, ToolDefinition } from "../repertoire/tools-base"
+import { getSharedMcpManager, type McpOwner } from "../repertoire/mcp-manager"
 import { emitNervesEvent } from "../nerves/runtime"
 
 type PermissionOptionId = "allow-once" | "reject-once" | "cancelled" | "expired"
@@ -77,9 +81,12 @@ export interface SettleFrontendApprovalDependencies {
   executeApprovalDecision: typeof executeApprovalDecision
   resolveToolDefinition: typeof resolveToolDefinition
   approvalPolicyForInvocation: typeof approvalPolicyForInvocation
-  execTool: typeof execTool
+  executeTool: typeof executeTool
+  preflightToolCall: typeof preflightToolCall
+  selectToolsForChannel: typeof selectToolsForChannel
+  getProviderRuntime: typeof getProviderRuntime
   getSharedMcpManager: typeof getSharedMcpManager
-  releaseRuntimeMcpServers: () => Promise<void>
+  releaseRuntimeMcpServers: (owner: McpOwner) => Promise<void>
   loadSession: typeof loadSession
   postTurnTrim: typeof postTurnTrim
   postTurnPersist: typeof postTurnPersist
@@ -97,12 +104,10 @@ const PERMISSION_OPTIONS = [
   { optionId: "reject-once", name: "Reject", kind: "reject_once" },
 ] as const
 
-/* v8 ignore start -- lazy default adapter avoids widening every daemon test mock; settlement behavior is covered through the injected dependency @preserve */
-async function defaultReleaseRuntimeMcpServers(): Promise<void> {
+async function defaultReleaseRuntimeMcpServers(owner: McpOwner): Promise<void> {
   const manager = await import("../repertoire/mcp-manager")
-  await manager.releaseRuntimeMcpServers()
+  await manager.releaseRuntimeMcpServers(owner)
 }
-/* v8 ignore stop */
 
 const DEFAULT_SETTLEMENT_DEPENDENCIES: SettleFrontendApprovalDependencies = {
   withTurnExecutionLease,
@@ -112,7 +117,10 @@ const DEFAULT_SETTLEMENT_DEPENDENCIES: SettleFrontendApprovalDependencies = {
   executeApprovalDecision,
   resolveToolDefinition,
   approvalPolicyForInvocation,
-  execTool,
+  executeTool,
+  preflightToolCall,
+  selectToolsForChannel,
+  getProviderRuntime,
   getSharedMcpManager,
   releaseRuntimeMcpServers: defaultReleaseRuntimeMcpServers,
   loadSession,
@@ -134,17 +142,18 @@ export async function settleFrontendApproval(
   const record = input.approvalStore.read(input.suspension.approvalId)
   if (!record) throw new Error(`frontend approval record is unavailable: ${input.suspension.approvalId}`)
 
+  const owner = Object.freeze({ agentName: input.request.agent, agentRoot: input.agentRoot })
+  const toolsDisabled = input.request.disableTools === true
+  const runtimeServers = input.request.runtimeMcpServers
   return dependencies.withTurnExecutionLease(async () => {
-    dependencies.setAgentName(input.request.agent)
+    dependencies.setAgentName(owner.agentName)
     try {
-      const mcpManager = await dependencies.getSharedMcpManager(
-        input.request.runtimeMcpServers ? { runtimeServers: input.request.runtimeMcpServers } : undefined,
-      ) ?? undefined
       return await dependencies.withSessionTurnLease(record.sessionPath, async (lease) => {
       const currentRevision = dependencies.readSessionTransaction(record.sessionPath, lease).revision
       const continuationSignal = input.optionId === "cancelled" ? AbortSignal.abort() : input.signal
       const liveToolContext = input.approvalRequest.liveToolContext ?? {
         signin: async () => undefined,
+        agentName: owner.agentName,
         agentRoot: input.agentRoot,
         currentSession: {
           friendId: input.request.friendId,
@@ -154,6 +163,49 @@ export async function settleFrontendApproval(
         },
         currentUserMessage: input.request.message,
       }
+      const currentOptions = async (): Promise<(RunAgentOptions & { toolContext: ToolContext }) | null> => {
+        try {
+          if ((liveToolContext.agentName !== undefined && liveToolContext.agentName !== owner.agentName)
+            || (liveToolContext.agentRoot !== undefined && liveToolContext.agentRoot !== owner.agentRoot)) {
+            throw new Error("approval context owner coordinates changed")
+          }
+          let context: ToolContext = { ...liveToolContext, ...owner }
+          const original = liveToolContext.relationshipAuthorization
+          if (original) {
+            if (liveToolContext.agentName !== owner.agentName || liveToolContext.agentRoot !== owner.agentRoot) {
+              throw new Error("approval context owner coordinates changed")
+            }
+            const current = await original.resolveCurrent?.()
+            if (!current?.actor || current.actor.friendId !== input.request.friendId
+              || current.actor.trustLevel !== original.actor?.trustLevel || current.profileId !== original.profileId
+              || original.authorizedContextScopes.some((scope) => !current.authorizedContextScopes.includes(scope))) {
+              throw new Error("current approval relationship authority is unavailable")
+            }
+            context = { ...context, relationshipAuthorization: current }
+          }
+          const providerRuntime = await dependencies.getProviderRuntime(channelToFacing(input.request.channel), owner)
+          const mcpManager = toolsDisabled ? undefined : await dependencies.getSharedMcpManager({ ...owner, runtimeServers }) ?? undefined
+          const selectCurrentTools = () => toolsDisabled
+            ? Object.freeze({ ordinary: Object.freeze([]), engine: Object.freeze([]) })
+            : dependencies.selectToolsForChannel(
+              getChannelCapabilities(input.request.channel), context.context?.friend.toolPreferences, context.context,
+              providerRuntime.capabilities, mcpManager, providerRuntime.model, context,
+            )
+          return {
+            providerRuntimeOverride: providerRuntime, mcpManager,
+            ...(toolsDisabled ? { tools: [], hardDisableTools: true } : {}),
+            toolContext: { ...context, toolSelection: selectCurrentTools(), selectCurrentTools },
+          }
+        } catch (error) {
+          emitNervesEvent({
+            level: "warn", component: "heart", event: "heart.frontend_approval_authority_unavailable",
+            message: "current approval authority could not be reconstructed; execution remains disabled",
+            meta: { approvalId: record.approvalId, category: error instanceof Error ? error.name : "unknown" },
+          })
+          return null
+        }
+      }
+      let definition: ToolDefinition | undefined
       const terminal = await dependencies.executeApprovalDecision({
         approvalStore: input.approvalStore,
         checkpointStore: input.checkpointStore,
@@ -171,11 +223,34 @@ export async function settleFrontendApproval(
         },
         ownerId: `frontend-decision-${dependencies.randomUUID()}`,
         currentSessionRevision: currentRevision,
-        resolveTool: dependencies.resolveToolDefinition,
-        resolveApprovalPolicy: (name, args) => dependencies.approvalPolicyForInvocation(name, args, liveToolContext),
+        resolveTool: async (name) => {
+          const current = await currentOptions()
+          definition = current ? dependencies.resolveToolDefinition(name, current.toolContext.toolSelection) : undefined
+          return definition
+        },
+        resolveApprovalPolicy: async (name, args) => {
+          const current = await currentOptions()
+          return current ? dependencies.approvalPolicyForInvocation(name, args, current.toolContext) : { kind: "not_required" }
+        },
         liveGuard: async () => ({ ok: true }),
         liveRisk: async () => ({ ok: true }),
-        execute: (name, args) => dependencies.execTool(name, args as Record<string, string>, liveToolContext),
+        preflight: async (context) => {
+          const current = await currentOptions()
+          if (!current) return { ok: false, reason: "current tool authority is unavailable" }
+          const result = await dependencies.preflightToolCall(context.record.toolName, context.arguments as Record<string, string>, {
+            ...current.toolContext,
+            toolSelection: Object.freeze({ ordinary: Object.freeze([context.definition]), engine: Object.freeze([]) }),
+          })
+          return result.kind === "ready" ? { ok: true } : { ok: false, reason: result.text }
+        },
+        execute: async (name, args) => {
+          const current = await currentOptions()
+          if (!current || !definition) return { kind: "rejected_before_handler", text: "current approved tool authority is unavailable" }
+          return dependencies.executeTool(name, args as Record<string, string>, {
+            ...current.toolContext,
+            toolSelection: Object.freeze({ ordinary: Object.freeze([definition]), engine: Object.freeze([]) }),
+          })
+        },
       })
       input.tokenStore.remove(record.approvalId)
 
@@ -255,9 +330,12 @@ export async function settleFrontendApproval(
         },
         runAgent: dependencies.runAgent,
         runAgentOptions: {
-          mcpManager,
           toolContext: liveToolContext,
           approvalCoordinator: nestedCoordinator,
+        },
+        revalidate: async () => {
+          const current = await currentOptions()
+          return current ? { ...current, approvalCoordinator: nestedCoordinator } : null
         },
         persist,
         deliver: async (text) => {
@@ -292,8 +370,8 @@ export async function settleFrontendApproval(
       }
       })
     } finally {
-      if (input.request.runtimeMcpServers) {
-        await dependencies.releaseRuntimeMcpServers()
+      if (runtimeServers && !toolsDisabled) {
+        await dependencies.releaseRuntimeMcpServers(owner)
       }
     }
   })
