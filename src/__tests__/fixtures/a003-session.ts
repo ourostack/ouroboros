@@ -123,3 +123,30 @@ export function a003Pair(): { target: SessionEvent; marker: SessionEvent; envelo
   const marker = a003Marker(target, 4)
   return { target, marker, envelope: a003Envelope([a003Event(1, "user", "actual human"), a003Event(2, "assistant", "accepted answer"), target, marker]) }
 }
+
+export function a003RetainedHistoryEnvelope(): SessionEnvelope {
+  const call = a003Event(3, "assistant", null)
+  call.toolCalls = [{ id: "historical-read", type: "function", function: { name: "read_file", arguments: '{"path":"history.txt"}' } }]
+  const result = a003Event(4, "tool", "historical tool receipt")
+  result.toolCallId = "historical-read"
+  result.relations.toolCallId = "historical-read"
+  const target = a003Event(6, "user", "engine-only correction")
+  target.time.observedAt = "2026-09-06T12:00:00.000Z"
+  const envelope = a003Envelope([
+    a003Event(1, "user", "historical human request"),
+    a003Event(2, "assistant", "Older choices:\n1. First\n2. Second"),
+    call,
+    result,
+    a003Event(5, "user", "current question"),
+    target,
+    a003Marker(target, 7),
+  ])
+  envelope.projection.eventIds = ["evt-000001", "evt-000002", "evt-000003", "evt-000004", "evt-000005"]
+  envelope.projection.maxTokens = 800
+  envelope.projection.contextMargin = 20
+  envelope.structuredOutputs = [{
+    schemaVersion: 1, id: "structured-evt-000002-1", kind: "ordered_list", sourceEventId: "evt-000002",
+    recordedAt: A003_AT, heading: "Older choices:", items: [{ label: "1", text: "First" }, { label: "2", text: "Second" }],
+  }]
+  return envelope
+}

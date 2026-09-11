@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest"
 import type OpenAI from "openai"
 import { registerGlobalLogSink } from "../../nerves"
+import { a003Event, a003RetainedHistoryEnvelope } from "../fixtures/a003-session"
+import { parseSessionEnvelope, projectProviderMessages } from "../../heart/session-events"
 import {
   buildOrientationFrame,
   extractMessageText,
@@ -10,6 +12,28 @@ import {
 } from "../../heart/orientation-frame"
 
 describe("orientation frame", () => {
+  it.each([
+    { name: "older selected output", eventIds: ["evt-000002"], trimmed: true, outputs: ["evt-000002"], referent: "evt-000002" },
+    { name: "newer selected output", eventIds: ["evt-000008"], trimmed: true, outputs: ["evt-000008"], referent: "evt-000008" },
+    { name: "intentional empty window", eventIds: [], trimmed: true, outputs: [], referent: undefined },
+    { name: "legacy empty window", eventIds: [], trimmed: false, outputs: ["evt-000002", "evt-000008"], referent: "evt-000008" },
+  ])("D006 uses only the $name from retained native history as an active referent", ({ eventIds, trimmed, outputs, referent }) => {
+    const raw = a003RetainedHistoryEnvelope()
+    raw.events.push(a003Event(8, "assistant", "New choices:\n1. Current\n2. Fresh"))
+    raw.projection = { ...raw.projection, eventIds, trimmed }
+    const parsed = parseSessionEnvelope(raw)!
+    const frame = buildOrientationFrame({
+      channel: "mcp",
+      messages: [...projectProviderMessages(parsed), { role: "user", content: "number 2" }],
+      structuredOutputs: parsed.structuredOutputs,
+    })
+    expect(parsed.events).toEqual(raw.events)
+    expect(parsed.structuredOutputs?.map((output) => output.sourceEventId)).toEqual(outputs)
+    expect(frame.latestStructuredOutput?.sourceEventId).toBe(referent)
+    expect(frame.actionPolicy.mode).toBe(referent ? "correction_hold" : "normal")
+    if (!referent) expect(renderOrientationFrame(frame)).not.toContain("Older choices")
+  })
+
   it("separates current user speech from prior assistant referents", () => {
     const messages: OpenAI.ChatCompletionMessageParam[] = [
       { role: "system", content: "system prompt" },

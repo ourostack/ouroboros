@@ -20,6 +20,8 @@ import * as flightRecorderModule from "../../arc/flight-recorder"
 import { handleInboundTurn, selectCheckpointCurrentAsk } from "../../senses/pipeline"
 import type { InboundTurnInput, InboundTurnResult } from "../../senses/pipeline"
 import { readAgentProviderSelectionFixture, writeAgentProviderSelectionFixture, type AgentProviderSelectionFixture } from "../helpers/agent-provider-selection"
+import { a003Event, a003RetainedHistoryEnvelope } from "../fixtures/a003-session"
+import { parseSessionEnvelope, projectProviderMessages } from "../../heart/session-events"
 
 const mockEmitNervesEvent = vi.hoisted(() => vi.fn())
 const mockFindBridgesForSession = vi.fn()
@@ -826,6 +828,38 @@ describe("handleInboundTurn", () => {
 
   // Step 5: runAgent
   describe("runAgent call", () => {
+    it.each((["cli", "teams", "bluebubbles", "mcp", "inner"] as Channel[]).flatMap((channel) =>
+      [true, false].map((visible) => ({ channel, visible })),
+    ))("D006 forwards retained-history projection visibility $visible into the actual $channel orientation frame", async ({ channel, visible }) => {
+      const raw = a003RetainedHistoryEnvelope()
+      raw.events.push(
+        a003Event(20, "system", "You are helpful."),
+        a003Event(21, "assistant", "Current choices:\n1. Current\n2. Fresh"),
+      )
+      raw.projection = { ...raw.projection, eventIds: visible ? ["evt-000020", "evt-000021"] : ["evt-000020"], trimmed: true }
+      const parsed = parseSessionEnvelope(raw)!
+      const caps = makeCapabilities({ channel })
+      const runAgent = vi.fn<InboundTurnInput["runAgent"]>(async () => ({ outcome: "settled" }))
+      const input = makeInput({
+        channel, capabilities: caps, runAgent,
+        friendResolver: { resolve: vi.fn().mockResolvedValue({ friend: makeFriend(), channel: caps }) },
+        messages: [{ role: "user", content: "number 2" }],
+        continuityIngressTexts: ["number 2"],
+        sessionLoader: { loadOrCreate: vi.fn().mockResolvedValue({
+          messages: projectProviderMessages(parsed), sessionPath: "/tmp/test-session.json",
+          events: parsed.events, structuredOutputs: parsed.structuredOutputs,
+        }) },
+      })
+      await handleInboundTurn(input)
+      expect(runAgent).toHaveBeenCalledOnce()
+      const options = runAgent.mock.calls[0]![4]!
+      expect(options.orientationFrame?.currentUserSpeech).toEqual(["number 2"])
+      expect(options.orientationFrame?.latestStructuredOutput?.sourceEventId).toBe(visible ? "evt-000021" : undefined)
+      expect(options.orientationFrame?.actionPolicy.mode).toBe(visible ? "correction_hold" : "normal")
+      expect(options.toolContext?.orientationFrame).toBe(options.orientationFrame)
+      expect(parsed.events).toEqual(raw.events)
+    })
+
     it("calls runAgent with session messages, callbacks, channel, signal, options", async () => {
       const signal = new AbortController().signal
       const runAgentOpts: RunAgentOptions = { traceId: "test-trace" }

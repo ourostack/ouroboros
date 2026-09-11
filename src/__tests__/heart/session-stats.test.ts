@@ -1,7 +1,7 @@
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { computeSessionStats, formatStatsReport, runSessionStats, runSessionStatsCli } from "../../heart/session-stats"
 import type { SessionEnvelope, SessionEvent } from "../../heart/session-events"
 
@@ -56,6 +56,24 @@ function envelope(events: SessionEvent[], overrides: Partial<SessionEnvelope> = 
 }
 
 describe("computeSessionStats", () => {
+  it("uses observed time when authored time is absent and ignores invalid authored time", () => {
+    const env = envelope([
+      event({ time: { authoredAt: null, authoredAtSource: "unknown", observedAt: "2026-04-25T11:30:00.000Z", observedAtSource: "unknown" } }),
+      event({ time: { authoredAt: "invalid", authoredAtSource: "unknown", observedAt: "2026-04-25T09:00:00.000Z", observedAtSource: "unknown" } }),
+      event(),
+    ])
+    expect(computeSessionStats(env, "/tmp/times").timeRange).toEqual({
+      earliest: "2026-04-25T10:00:00.000Z", latest: "2026-04-25T11:30:00.000Z", durationMs: 5_400_000,
+    })
+  })
+
+  it("keeps the existing defensive counter for a role supplied by an untyped caller", () => {
+    const fromJavaScript = JSON.parse(JSON.stringify({ ...event(), role: "external" }))
+    const stats = computeSessionStats(envelope([fromJavaScript]), "/tmp/external")
+    expect(stats.totalEvents).toBe(1)
+    expect(stats.byRole).toEqual({ system: 0, user: 0, assistant: 0, tool: 0, external: 1 })
+  })
+
   it("counts events by role and rolls up tool calls", () => {
     const env = envelope([
       event({ role: "system" }),
@@ -123,6 +141,89 @@ describe("computeSessionStats", () => {
 })
 
 describe("runSessionStats / formatStatsReport / CLI", () => {
+  it("D006 prints retained native counts separately from the active projection through the real CLI", () => {
+    const env = envelope([
+      event({ id: "e1", attachments: ["artifact-a"] }),
+      event({ id: "e2", role: "assistant", toolCalls: [{ id: "call-1", type: "function", function: { name: "shell", arguments: "{}" } }] }),
+      event({ id: "e3", role: "tool", toolCallId: "call-1", time: { authoredAt: "2026-04-25T10:00:02.000Z", authoredAtSource: "unknown", observedAt: null, observedAtSource: "unknown" } }),
+    ])
+    env.projection.eventIds = ["e2"]
+    env.projection.trimmed = true
+    env.lastUsage = { input_tokens: 7, output_tokens: 2, reasoning_tokens: 0, total_tokens: 9 }
+    const file = tempFile(env)
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined)
+    try {
+      expect(runSessionStatsCli([file])).toBe(0)
+      expect(log.mock.calls).toEqual([[
+        [
+          `Session stats: ${file}`,
+          "  envelope version: 2",
+          "  total events:     3",
+          "  by role:          system=0 user=1 assistant=1 tool=1",
+          "  tool calls:       1 (1 distinct names)",
+          "  top tools:",
+          "    shell: 1",
+          "  attachments:      1",
+          "  time range:       2026-04-25T10:00:00.000Z \u2192 2026-04-25T10:00:02.000Z (2s)",
+          "  projection:",
+          "    in projection:  1",
+          "    omitted:        2",
+          "    input tokens:   12345",
+          "    max tokens:     200000",
+          "    trimmed:        true",
+          '  last usage:       {"input_tokens":7,"output_tokens":2,"reasoning_tokens":0,"total_tokens":9}',
+        ].join("\n"),
+      ]])
+    } finally {
+      log.mockRestore()
+    }
+  })
+
+  it("formats an empty recognized session without inventing optional measurements", () => {
+    const env = envelope([])
+    env.projection.inputTokens = null
+    env.projection.maxTokens = null
+    expect(formatStatsReport(computeSessionStats(env, "/tmp/empty"))).toBe([
+      "Session stats: /tmp/empty",
+      "  envelope version: 2",
+      "  total events:     0",
+      "  by role:          system=0 user=0 assistant=0 tool=0",
+      "  tool calls:       0 (0 distinct names)",
+      "  attachments:      0",
+      "  projection:",
+      "    in projection:  0",
+      "    omitted:        0",
+    ].join("\n"))
+  })
+
+  it.each([
+    { earliest: "2026-04-25T10:00:00.000Z", latest: null, expected: null },
+    { earliest: null, latest: "2026-04-25T10:00:00.000Z", expected: null },
+    { earliest: "2026-04-25T10:00:00.000Z", latest: "2026-04-25T10:01:00.000Z", expected: "  time range:       2026-04-25T10:00:00.000Z \u2192 2026-04-25T10:01:00.000Z" },
+  ])("formats externally supplied time bounds without a duration: $earliest, $latest", ({ earliest, latest, expected }) => {
+    const report = computeSessionStats(envelope([]), "/tmp/partial-time")
+    report.timeRange = { earliest, latest, durationMs: null }
+    expect(formatStatsReport(report).split("\n").filter((line) => line.includes("time range:"))).toEqual(expected === null ? [] : [expected])
+  })
+
+  it("handles explicit help without reading the supplied path", () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined)
+    try {
+      expect(runSessionStatsCli(["not-a-session-file", "--help"])).toBe(0)
+      expect(log).toHaveBeenCalledExactlyOnceWith("usage: ouro session-stats <session.json> [--json]")
+    } finally {
+      log.mockRestore()
+    }
+  })
+
+  it("keeps filesystem and JSON failures visible rather than returning an empty report", () => {
+    const file = tempFile({})
+    fs.writeFileSync(file, '{"unfinished":')
+    expect(() => runSessionStats(file)).toThrow(SyntaxError)
+    fs.unlinkSync(file)
+    expect(() => runSessionStats(file)).toThrow(/ENOENT/)
+  })
+
   it("returns the unrecognized stub for an unparsable envelope", () => {
     const file = tempFile({ unrecognized: true })
     const stats = runSessionStats(file)

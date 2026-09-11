@@ -3,10 +3,12 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import type { ApprovalProposalRequest } from "../../heart/core"
+import type { ApprovalProposalRequest, ChannelCallbacks } from "../../heart/core"
+import type { ChatCompletionMessageParam } from "openai/resources/chat/completions"
 import type { ToolContext } from "../../repertoire/tools-base"
 import type { FrontendTurnRequest } from "../../heart/frontend-session-service"
-import type { RunSenseTurnResult } from "../../senses/shared-turn"
+import type { FrontendTurnEvent, RunSenseTurnResult } from "../../senses/shared-turn"
+import { a003RetainedHistoryEnvelope } from "../fixtures/a003-session"
 import { channelToFacing } from "@ouro.bot/friends"
 import { approvalPolicyForInvocation, executeTool, preflightToolCall, resolveToolDefinition, selectToolsForChannel } from "../../repertoire/tools"
 import type { ExecuteApprovalDecisionOptions } from "../../heart/tool-approval"
@@ -546,13 +548,23 @@ describe("frontend approval settlement", () => {
     expect(fixture.executeTool).not.toHaveBeenCalled()
   })
 
-  it.each(["unchanged", "before-decision", "guard-held", "after-attempt", "before-continuation", "known-failure", "uncertain-effect"] as const)(
+  it.each(["unchanged", "retained-history", "before-decision", "guard-held", "after-attempt", "before-continuation", "known-failure", "uncertain-effect"] as const)(
     "uses the real store, dispatcher and continuation without replay: %s",
     async (change) => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), "frontend-native-approval-"))
       const fixture = settlementFixture()
       const request = { ...turn(), agent: "sanctuary" }
       const sessionPath = path.join(root, "state", "sessions", request.friendId, request.channel, "session-1.json")
+      const retainedHistory = change === "retained-history" ? a003RetainedHistoryEnvelope() : null
+      if (retainedHistory) {
+        retainedHistory.events[4]!.content = request.message
+        retainedHistory.projection = { ...retainedHistory.projection, eventIds: ["evt-000005"], trimmed: true }
+        fs.mkdirSync(path.dirname(sessionPath), { recursive: true })
+        fs.writeFileSync(sessionPath, JSON.stringify(retainedHistory), { mode: 0o600 })
+        expect(loadSession(sessionPath)!.structuredOutputs).toEqual([])
+      }
+      const frontendEvents: FrontendTurnEvent[] = []
+      const answer = retainedHistory ? "New choices:\n1. Completed\n2. Ready" : change === "known-failure" ? "The action failed." : "The action completed."
       let active = true
       let effects = 0
       const handler = vi.fn(async () => {
@@ -561,13 +573,14 @@ describe("frontend approval settlement", () => {
         if (change === "uncertain-effect") throw new Error("response lost after effect")
         return { ok: true }
       })
-      const model = vi.fn(async (_messages, callbacks) => {
-        callbacks.onTextChunk(change === "known-failure" ? "The action failed." : "The action completed.")
+      const model = vi.fn(async (messages: ChatCompletionMessageParam[], callbacks: ChannelCallbacks) => {
+        callbacks.onTextChunk(answer)
+        if (retainedHistory) messages.push({ role: "assistant", content: answer })
         return { outcome: "settled" as const }
       })
       const relationship = {
         profileId: "sanctuary-owner", authorizedContextScopes: ["session.read"], advertisedToolNames: ["unraid_restart_container"],
-        actor: { friendId: request.friendId, trustLevel: "family" as const, sessionEventId: "fixture-ingress" },
+        actor: { friendId: request.friendId, trustLevel: "family" as const, sessionEventId: retainedHistory ? "evt-000005" : "fixture-ingress" },
         authorizeTool: async () => active ? { allowed: true as const, receiptId: "current-owner" } : { allowed: false as const, reason: "revoked" },
         resolveCurrent: async () => {
           if (!active) throw new Error("revoked")
@@ -628,7 +641,7 @@ describe("frontend approval settlement", () => {
         if (change === "before-decision") active = false
         expect(runtime.resolvePermission(suspension.approvalId, "allow-once")).toBe(true)
         const result = await runtime.resumeApproval({
-          request, suspension, signal: new AbortController().signal, frontendEventSink: { onEvent: vi.fn() },
+          request, suspension, signal: new AbortController().signal, frontendEventSink: { onEvent: (event) => frontendEvents.push(event) },
         })
         const store = openApprovalStore({ databasePath: path.join(root, "state", "approvals", "approvals.sqlite") })
         try {
@@ -639,7 +652,18 @@ describe("frontend approval settlement", () => {
         } finally { store.close() }
         expect(handler).toHaveBeenCalledTimes(change === "before-decision" || change === "guard-held" || change === "after-attempt" ? 0 : 1)
         expect(effects).toBe(change === "before-decision" || change === "guard-held" || change === "after-attempt" || change === "known-failure" ? 0 : 1)
-        expect(model).toHaveBeenCalledTimes(change === "unchanged" || change === "known-failure" ? 1 : 0)
+        expect(model).toHaveBeenCalledTimes(change === "unchanged" || change === "retained-history" || change === "known-failure" ? 1 : 0)
+        if (retainedHistory) {
+          const after = loadSession(sessionPath)!
+          expect(after.events.slice(0, retainedHistory.events.length)).toEqual(retainedHistory.events)
+          expect(after.events).toHaveLength(10)
+          expect(after.events.filter((event) => event.role === "user" && event.content === request.message).map((event) => event.id)).toEqual(["evt-000005"])
+          expect(after.structuredOutputs.map((output) => output.sourceEventId)).toEqual(["evt-000010"])
+          expect(frontendEvents.filter((event) => event.type === "structured_output")).toEqual([{
+            type: "structured_output", data: { output: expect.objectContaining({ sourceEventId: "evt-000010", heading: "New choices:" }) },
+          }])
+          expect(result.response).toBe(answer)
+        }
         if (change === "before-continuation") {
           expect(result.response).toContain("action completed")
           expect(result.response).not.toMatch(/not executed|no action/i)
