@@ -207,9 +207,10 @@ export function createSanctuaryInteractiveControl(options: {
   let stopPromise: Promise<void> | undefined
   let updateId = 2_100_000_000
   const readEndpoint = () => lstatSync(socketPath, { bigint: true, throwIfNoEntry: false })
+  // Socket mtime, unlike ctime, survives permission-only changes.
   const matches = (observed: BigIntStats, current: BigIntStats | undefined): current is BigIntStats =>
     current !== undefined && current.isSocket() && current.dev === observed.dev && current.ino === observed.ino
-      && current.birthtimeNs === observed.birthtimeNs
+      && current.birthtimeNs === observed.birthtimeNs && current.mtimeNs === observed.mtimeNs
   const stopListener = async (): Promise<void> => {
     const active = server
     if (!active) return
@@ -227,7 +228,8 @@ export function createSanctuaryInteractiveControl(options: {
     start() {
       if (startPromise) return startPromise
       const previousStop = stopPromise
-      startPromise = (async () => {
+      stopPromise = undefined
+      const starting = (async () => {
         if (previousStop) await previousStop
         if (server) {
           if (endpoint && matches(endpoint, readEndpoint())) return
@@ -318,17 +320,20 @@ export function createSanctuaryInteractiveControl(options: {
           catch (cleanupError) { throw new AggregateError([error, cleanupError], "Sanctuary interactive control startup and ownership cleanup failed") }
           throw error
         }
-      })().finally(() => { startPromise = undefined })
-      return startPromise
+      })().finally(() => { if (startPromise === starting) startPromise = undefined })
+      startPromise = starting
+      return starting
     },
     stop() {
       if (stopPromise) return stopPromise
       const starting = startPromise
-      stopPromise = (async () => {
+      startPromise = undefined
+      const stopping = (async () => {
         if (starting) await starting
         await stopListener()
-      })().finally(() => { stopPromise = undefined })
-      return stopPromise
+      })().finally(() => { if (stopPromise === stopping) stopPromise = undefined })
+      stopPromise = stopping
+      return stopping
     },
   }
 }
