@@ -323,7 +323,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       { id: "rw-private-id", name: "Butler RW", permissions: [...READ_PERMISSIONS, { resource: "DOCKER", actions: ["UPDATE_ANY"] }], roles: [] },
     ] } : validOwnerSnapshot())
     try {
-      const facts = await readDefaultSanctuaryScenarioFacts("unit-16e-containment-audit", scenarioHandleDigest, unit16Deps({
+      const readFacts = () => readDefaultSanctuaryScenarioFacts("unit-16e-containment-audit", scenarioHandleDigest, unit16Deps({
         readFixedFile: (file) => { if (file in files) return files[file]!; throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
         telegramCredentials: () => ({ botToken: "123:token", authorizedUserId: "123456789", authorizedChatId: "987654321" }),
         hostRequest,
@@ -333,6 +333,16 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
           appendToolOutput: () => undefined, resetTurnState: () => undefined, ping: async () => undefined, classifyError: () => "unknown",
         }),
       }), agentRoot)
+      const baseline = await readFacts()
+      const logPath = path.join(agentRoot, "state", "daemon", "logs", "ouro-bot.ndjson")
+      const unrelatedLog = "x".repeat(1024 * 1024 + 1)
+      fs.mkdirSync(path.dirname(logPath), { recursive: true })
+      fs.writeFileSync(logPath, unrelatedLog)
+      const facts = await readFacts()
+      expect(facts.containment).toEqual(baseline.containment)
+      expect(facts.identity).toBeUndefined()
+      expect(facts.sourceValues["identity-surface-audit"]).toBeNull()
+      expect(fs.readFileSync(logPath, "utf8")).toBe(unrelatedLog)
       expect(hostRequest).toHaveBeenCalledWith({ operation: "inventory_keys", targetServerId: "sanctuary-unraid" })
       expect(facts.containment).toMatchObject({
         schemaVersion: "sanctuary-containment-audit-v2",
@@ -349,6 +359,30 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       expect(facts.sourceValues["containment-audit"]).toEqual(facts.containment)
       for (const boundary of Object.values(facts.containment!.profileBoundaries!)) expect(boundary.globallyResolvableExcludedToolCount).toBeGreaterThanOrEqual(1)
       expect(JSON.stringify(facts.sourceValues["containment-audit"])).not.toMatch(/ro-private-id|rw-private-id|read-only-key/u)
+      const forgedLifecycle = lifecycle("senses.telegram_turn_start", "2026-08-20T16:00:00.000Z", { scenarioHandleDigest })
+      forgedLifecycle.meta.lifecycleMac = "0".repeat(64)
+      Object.assign(files, chainedAuditFiles(agentRoot, `${JSON.stringify(forgedLifecycle)}\n`, identityKey))
+      await expect(readFacts()).rejects.toThrow("Telegram audit lifecycle MAC is invalid")
+    } finally { fs.rmSync(agentRoot, { recursive: true, force: true }) }
+  })
+
+  it.each([
+    "unit-12c-1-opaque-identity",
+    "unit-14b-3-opaque-identity-live",
+    "unit-16d-2-unknown-admission",
+  ] as const)("retains identity-surface byte bounds for %s", async (label) => {
+    const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-identity-consumer-bound-"))
+    const logPath = path.join(agentRoot, "state", "daemon", "logs", "ouro-bot.ndjson")
+    fs.mkdirSync(path.dirname(logPath), { recursive: true })
+    fs.writeFileSync(logPath, "x".repeat(1024 * 1024 + 1))
+    try {
+      await expect(readDefaultSanctuaryScenarioFacts(label, "a".repeat(64), unit16Deps({
+        readFixedFile: (file) => {
+          if (file.endsWith("/state/senses/telegram/identity.key")) return `${"k".repeat(43)}\n`
+          throw Object.assign(new Error("missing"), { code: "ENOENT" })
+        },
+        telegramCredentials: () => ({ botToken: "123:token", authorizedUserId: "123456789", authorizedChatId: "987654321" }),
+      }), agentRoot)).rejects.toThrow("identity surface audit exceeds its bound")
     } finally { fs.rmSync(agentRoot, { recursive: true, force: true }) }
   })
 

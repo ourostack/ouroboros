@@ -452,7 +452,7 @@ describe("Sanctuary production boundary adapter coverage", () => {
     } finally { fs.rmSync(captureRoot, { recursive: true, force: true }) }
   })
 
-  it("projects a real succeeded approval and its signed audit evidence", async () => {
+  it.each(["unit-16f-cron-fingerprint", "unit-12c-1-opaque-identity"] as const)("projects a real succeeded approval and its signed audit evidence for %s", async (label) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-approval-projection-"))
     const scenario = "a".repeat(64)
     const identityKey = "k".repeat(43)
@@ -481,7 +481,7 @@ describe("Sanctuary production boundary adapter coverage", () => {
     audit.append({ ts: "2026-08-20T16:00:02.000Z", level: "info", event: "telegram.approval_stale_callback_settled", component: "senses", trace_id: "trace-2", message: "stale", meta: { ...staleUnsigned, evidenceMac: sanctuaryTelegramApprovalEvidenceMac(identityKey, "telegram.approval_stale_callback_settled", staleUnsigned) } })
     const missing = Object.assign(new Error("missing"), { code: "ENOENT" })
     try {
-      const facts = await readDefaultSanctuaryScenarioFacts("unit-16f-cron-fingerprint", scenario, {
+      const facts = await readDefaultSanctuaryScenarioFacts(label, scenario, {
         readKeyFiles: () => [], readDescriptor: () => "", execFile: async () => ({ status: 0, stdout: "" }), fetch,
         telegramCredentials: () => ({ botToken: "bot-token", authorizedUserId: "42", authorizedChatId: "42" }),
         readFixedFile: (file) => {
@@ -508,7 +508,7 @@ describe("Sanctuary production boundary adapter coverage", () => {
       secondStore.markAttempted({ approvalId: secondId, ownerId: secondClaim.ownerId!, epoch: secondClaim.epoch })
       secondStore.complete({ approvalId: secondId, ownerId: secondClaim.ownerId!, epoch: secondClaim.epoch, state: "succeeded", result: JSON.stringify({ ok: true, data: { container: { id: "x".repeat(129), name: "calibre-web" }, beforeState: "running", afterState: "running", observedRestart: true, degraded: false } }) })
       secondStore.close()
-      await expect(readDefaultSanctuaryScenarioFacts("unit-16f-cron-fingerprint", scenario, {
+      await expect(readDefaultSanctuaryScenarioFacts(label, scenario, {
         readKeyFiles: () => [], readDescriptor: () => "", execFile: async () => ({ status: 0, stdout: "" }), fetch,
         telegramCredentials: () => ({ botToken: "bot-token", authorizedUserId: "42", authorizedChatId: "42" }),
         readFixedFile: (file) => {
@@ -586,7 +586,7 @@ describe("Sanctuary production boundary adapter coverage", () => {
     await new Promise<void>((resolve) => server.listen(socketPath, resolve))
     const missing = Object.assign(new Error("missing"), { code: "ENOENT" })
     try {
-      await expect(readDefaultSanctuaryScenarioFacts("unit-16f-cron-fingerprint", "a".repeat(64), {
+      await expect(readDefaultSanctuaryScenarioFacts("unit-12c-1-opaque-identity", "a".repeat(64), {
         readKeyFiles: () => [], readDescriptor: () => "", execFile: async () => ({ status: 0, stdout: "" }), fetch,
         telegramCredentials: () => ({ botToken: "bot-token", authorizedUserId: "42", authorizedChatId: "42" }),
         readFixedFile: (file) => file.endsWith("/state/senses/telegram/identity.key") ? `${"k".repeat(43)}\n` : (() => { throw missing })(),
@@ -684,7 +684,7 @@ describe("Sanctuary production boundary adapter coverage", () => {
   it("enforces identity-surface depth, count, and byte bounds", async () => {
     const digest = "a".repeat(64)
     const missing = Object.assign(new Error("missing"), { code: "ENOENT" })
-    const facts = (root: string) => readDefaultSanctuaryScenarioFacts("unit-16f-cron-fingerprint", digest, {
+    const facts = (root: string) => readDefaultSanctuaryScenarioFacts("unit-12c-1-opaque-identity", digest, {
       readKeyFiles: () => [], readDescriptor: () => "", execFile: async () => ({ status: 0, stdout: "" }), fetch,
       telegramCredentials: () => ({ botToken: "12345:abcdefghijklmnopqrst", authorizedUserId: "42", authorizedChatId: "42" }),
       readFixedFile: (file) => file.endsWith("identity.key") ? `${"k".repeat(43)}\n` : (() => { throw missing })(),

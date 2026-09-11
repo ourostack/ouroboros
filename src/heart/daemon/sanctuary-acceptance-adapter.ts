@@ -1336,62 +1336,65 @@ export async function readDefaultSanctuaryScenarioFacts(
         throw new Error("Telegram approval evidence MAC is invalid")
       }
     }
-    const expectedSubject = opaqueTelegramSubject(
-      identityKey,
-      credentials.botToken,
-      credentials.authorizedUserId,
-      credentials.authorizedChatId,
-    )
-    const observedSubjects = auditEntries.flatMap((entry) => typeof entry.meta.subject === "string" ? [entry.meta.subject] : [])
-    const approvalSubjects = approvalRecords.map((projection) => projection.approval).filter((record) => record.transport === "telegram").map((record) => record.requesterId)
-    const rawValues = [...new Set([credentials.botToken, credentials.authorizedUserId, credentials.authorizedChatId])]
-    const persistedIdentitySurfaces = readBoundedIdentitySurfaces(agentRoot)
-    const surfacePairs = Array.from({ length: Math.floor(persistedIdentitySurfaces.length / 2) }, (_, index) => ({
-      relativePath: persistedIdentitySurfaces[index * 2]!,
-      raw: persistedIdentitySurfaces[index * 2 + 1]!,
-    }))
-    const canonicalSessionPath = path.join("state", "sessions", `telegram-user:${expectedSubject}`, "telegram", `telegram_${expectedSubject}.json`)
-    const canonicalSessionCount = surfacePairs.filter(({ relativePath, raw }) => {
-      if (relativePath !== canonicalSessionPath) return false
-      object(JSON.parse(raw) as unknown, "canonical Telegram session")
-      return true
-    }).length
-    const sessionSurfaceDigest = createHash("sha256").update(JSON.stringify(surfacePairs.filter(({ relativePath }) =>
-      relativePath === path.join("state", "senses", "telegram", "identity-subjects.json")
-      || relativePath.startsWith(`state${path.sep}sessions${path.sep}`)
-      || relativePath.startsWith(`state${path.sep}pending${path.sep}`)
-      || relativePath.startsWith(`state${path.sep}pending-returns${path.sep}`),
-    ))).digest("hex")
-    const friendSurfaceDigest = createHash("sha256").update(JSON.stringify(surfacePairs.filter(({ relativePath }) => relativePath.startsWith(`friends${path.sep}`)))).digest("hex")
-    const canonicalFriendCount = surfacePairs.reduce((count, { relativePath, raw }) => {
-      if (!relativePath.startsWith(`friends${path.sep}`) || !relativePath.endsWith(".json")) return count
-      const record = object(JSON.parse(raw) as unknown, "Telegram Friend identity")
-      if (!Array.isArray(record.externalIds)) return count
-      return count + record.externalIds.filter((value) => {
-        const identity = object(value, "Telegram Friend external identity")
-        return identity.provider === "telegram-user" && identity.externalId === expectedSubject
+    // Unknown admission needs the same surfaces for its zero-work digest.
+    if (SANCTUARY_SCENARIO_SOURCES[label].includes("identity-surface-audit") || label === "unit-16d-2-unknown-admission") {
+      const expectedSubject = opaqueTelegramSubject(
+        identityKey,
+        credentials.botToken,
+        credentials.authorizedUserId,
+        credentials.authorizedChatId,
+      )
+      const observedSubjects = auditEntries.flatMap((entry) => typeof entry.meta.subject === "string" ? [entry.meta.subject] : [])
+      const approvalSubjects = approvalRecords.map((projection) => projection.approval).filter((record) => record.transport === "telegram").map((record) => record.requesterId)
+      const rawValues = [...new Set([credentials.botToken, credentials.authorizedUserId, credentials.authorizedChatId])]
+      const persistedIdentitySurfaces = readBoundedIdentitySurfaces(agentRoot)
+      const surfacePairs = Array.from({ length: Math.floor(persistedIdentitySurfaces.length / 2) }, (_, index) => ({
+        relativePath: persistedIdentitySurfaces[index * 2]!,
+        raw: persistedIdentitySurfaces[index * 2 + 1]!,
+      }))
+      const canonicalSessionPath = path.join("state", "sessions", `telegram-user:${expectedSubject}`, "telegram", `telegram_${expectedSubject}.json`)
+      const canonicalSessionCount = surfacePairs.filter(({ relativePath, raw }) => {
+        if (relativePath !== canonicalSessionPath) return false
+        object(JSON.parse(raw) as unknown, "canonical Telegram session")
+        return true
       }).length
-    }, 0)
-    const surfaceRecords = [...persistedIdentitySurfaces, auditRaw ?? "", auditHeadRaw ?? "", JSON.stringify(approvalRecords)]
-    const surfaceSubjects = surfaceRecords.flatMap((raw) => raw.match(/tg_[A-Za-z0-9_-]{43}/gu) ?? [])
-    const structuredRawId = /"(?:authorizedUserId|authorizedChatId|transportUserId|transportChatId|userId|chatId|updateId|messageId)"\s*:\s*"?\d{1,20}"?/gu
-    const rawLeakCount = surfaceRecords.reduce((count, raw) => count + rawValues.filter((value) => raw.includes(value)).length + (raw.match(structuredRawId)?.length ?? 0), 0)
-    const mismatchCount = [...surfaceSubjects, ...observedSubjects, ...approvalSubjects].filter((subject) => subject !== expectedSubject).length
-    identity = {
-      keyPresent: true,
-      subjectOpaque: /^tg_[A-Za-z0-9_-]{43}$/u.test(expectedSubject)
-        && mismatchCount === 0,
-      rawIdentityAbsent: rawLeakCount === 0,
-      liveSubjectObserved: observedSubjects.includes(expectedSubject) && telegramTurns.some((turn) => turn.status === "success"),
-      inspectedRecordCount: surfaceRecords.length,
-      opaqueSubjectCount: [...surfaceSubjects, ...observedSubjects, ...approvalSubjects].filter((subject) => subject === expectedSubject).length,
-      mismatchCount,
-      rawLeakCount,
-      canonicalSessionCount,
-      canonicalFriendCount,
-      sessionSurfaceDigest,
-      friendSurfaceDigest,
-      surfaceDigest: createHash("sha256").update(JSON.stringify(surfaceRecords)).digest("hex"),
+      const sessionSurfaceDigest = createHash("sha256").update(JSON.stringify(surfacePairs.filter(({ relativePath }) =>
+        relativePath === path.join("state", "senses", "telegram", "identity-subjects.json")
+        || relativePath.startsWith(`state${path.sep}sessions${path.sep}`)
+        || relativePath.startsWith(`state${path.sep}pending${path.sep}`)
+        || relativePath.startsWith(`state${path.sep}pending-returns${path.sep}`),
+      ))).digest("hex")
+      const friendSurfaceDigest = createHash("sha256").update(JSON.stringify(surfacePairs.filter(({ relativePath }) => relativePath.startsWith(`friends${path.sep}`)))).digest("hex")
+      const canonicalFriendCount = surfacePairs.reduce((count, { relativePath, raw }) => {
+        if (!relativePath.startsWith(`friends${path.sep}`) || !relativePath.endsWith(".json")) return count
+        const record = object(JSON.parse(raw) as unknown, "Telegram Friend identity")
+        if (!Array.isArray(record.externalIds)) return count
+        return count + record.externalIds.filter((value) => {
+          const identity = object(value, "Telegram Friend external identity")
+          return identity.provider === "telegram-user" && identity.externalId === expectedSubject
+        }).length
+      }, 0)
+      const surfaceRecords = [...persistedIdentitySurfaces, auditRaw ?? "", auditHeadRaw ?? "", JSON.stringify(approvalRecords)]
+      const surfaceSubjects = surfaceRecords.flatMap((raw) => raw.match(/tg_[A-Za-z0-9_-]{43}/gu) ?? [])
+      const structuredRawId = /"(?:authorizedUserId|authorizedChatId|transportUserId|transportChatId|userId|chatId|updateId|messageId)"\s*:\s*"?\d{1,20}"?/gu
+      const rawLeakCount = surfaceRecords.reduce((count, raw) => count + rawValues.filter((value) => raw.includes(value)).length + (raw.match(structuredRawId)?.length ?? 0), 0)
+      const mismatchCount = [...surfaceSubjects, ...observedSubjects, ...approvalSubjects].filter((subject) => subject !== expectedSubject).length
+      identity = {
+        keyPresent: true,
+        subjectOpaque: /^tg_[A-Za-z0-9_-]{43}$/u.test(expectedSubject)
+          && mismatchCount === 0,
+        rawIdentityAbsent: rawLeakCount === 0,
+        liveSubjectObserved: observedSubjects.includes(expectedSubject) && telegramTurns.some((turn) => turn.status === "success"),
+        inspectedRecordCount: surfaceRecords.length,
+        opaqueSubjectCount: [...surfaceSubjects, ...observedSubjects, ...approvalSubjects].filter((subject) => subject === expectedSubject).length,
+        mismatchCount,
+        rawLeakCount,
+        canonicalSessionCount,
+        canonicalFriendCount,
+        sessionSurfaceDigest,
+        friendSurfaceDigest,
+        surfaceDigest: createHash("sha256").update(JSON.stringify(surfaceRecords)).digest("hex"),
+      }
     }
   }
   const container = options.skipContainerSnapshot === true
