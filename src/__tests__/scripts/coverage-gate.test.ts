@@ -88,6 +88,11 @@ afterEach(() => {
 })
 
 describe("coverage gate helpers", () => {
+  it("D006 includes changed native session statistics in the maintained coverage gate", async () => {
+    const { default: config } = await import("../../../vitest.config")
+    expect(config.test.coverage.exclude).not.toContain("src/heart/session-stats.ts")
+  })
+
   it.each([
     { argv: [], skip: false },
     { argv: ["--skip-mailbox-ui-install"], skip: true },

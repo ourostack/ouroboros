@@ -79,6 +79,7 @@ export interface SessionEvent {
 }
 
 export interface SessionProjection {
+  /** Empty means all effective events unless trimmed is true, when it means none. */
   eventIds: string[]
   trimmed: boolean
   maxTokens: number | null
@@ -357,6 +358,16 @@ interface NormalizedProviderMessage {
   toolCallId: string | null
   toolCalls: SessionEventToolCall[]
   hadToolCallsField: boolean
+  sourceEventIds?: string[]
+}
+
+// Native origins survive replay normalization, but never enter serialized provider or session data.
+const messageSourceEventIds = Symbol("messageSourceEventIds")
+type SourceMappedMessage = OpenAI.ChatCompletionMessageParam & { [messageSourceEventIds]?: string[] }
+
+function withMessageSourceEventIds(message: OpenAI.ChatCompletionMessageParam, eventIds: string[] | undefined): SourceMappedMessage {
+  if (eventIds) Object.defineProperty(message, messageSourceEventIds, { value: eventIds })
+  return message
 }
 
 export const EVENT_CONTENT_MAX_CHARS = 256 * 1024
@@ -521,7 +532,7 @@ function normalizeRole(role: unknown): SessionEventRole {
     : "user"
 }
 
-function normalizeMessage(message: OpenAI.ChatCompletionMessageParam): NormalizedProviderMessage {
+function normalizeMessage(message: SourceMappedMessage): NormalizedProviderMessage {
   const record = message as {
     role?: unknown
     content?: unknown
@@ -531,6 +542,7 @@ function normalizeMessage(message: OpenAI.ChatCompletionMessageParam): Normalize
   }
   const role = normalizeRole(record.role)
   const normalizedContent = sanitizeConversationContent(role, normalizeContent(record.content))
+  const sourceEventIds = message[messageSourceEventIds]
 
   if (role === "assistant") {
     return {
@@ -540,6 +552,7 @@ function normalizeMessage(message: OpenAI.ChatCompletionMessageParam): Normalize
       toolCallId: null,
       toolCalls: normalizeToolCalls(record.tool_calls),
       hadToolCallsField: Array.isArray(record.tool_calls),
+      sourceEventIds,
     }
   }
 
@@ -551,6 +564,7 @@ function normalizeMessage(message: OpenAI.ChatCompletionMessageParam): Normalize
       toolCallId: typeof record.tool_call_id === "string" ? record.tool_call_id : null,
       toolCalls: [],
       hadToolCallsField: false,
+      sourceEventIds,
     }
   }
 
@@ -561,6 +575,7 @@ function normalizeMessage(message: OpenAI.ChatCompletionMessageParam): Normalize
     toolCallId: null,
     toolCalls: [],
     hadToolCallsField: false,
+    sourceEventIds,
   }
 }
 
@@ -599,37 +614,43 @@ function toProviderMessage(message: NormalizedProviderMessage): OpenAI.ChatCompl
         },
       }))
     }
-    return assistant as OpenAI.ChatCompletionAssistantMessageParam & { name?: string }
+    return withMessageSourceEventIds(assistant as OpenAI.ChatCompletionAssistantMessageParam & { name?: string }, message.sourceEventIds)
   }
 
   if (message.role === "tool") {
-    return {
+    return withMessageSourceEventIds({
       role: "tool",
       content: typeof message.content === "string" ? message.content : contentText(message.content),
       tool_call_id: message.toolCallId ?? "",
-    } as OpenAI.ChatCompletionToolMessageParam
+    }, message.sourceEventIds)
   }
 
   if (message.role === "system") {
-    return {
+    return withMessageSourceEventIds({
       role: "system",
       content: typeof message.content === "string" ? message.content : contentText(message.content),
       ...(message.name ? { name: message.name } : {}),
-    } as OpenAI.ChatCompletionSystemMessageParam & { name?: string }
+    }, message.sourceEventIds)
   }
 
-  return {
+  return withMessageSourceEventIds({
     role: "user",
     content: (typeof message.content === "string" || Array.isArray(message.content) ? message.content : "") as OpenAI.ChatCompletionUserMessageParam["content"],
     ...(message.name ? { name: message.name } : {}),
-  } as OpenAI.ChatCompletionUserMessageParam & { name?: string }
+  }, message.sourceEventIds)
 }
 
-function messageFingerprint(message: OpenAI.ChatCompletionMessageParam): string {
+function messageSourcesAgree(left: SourceMappedMessage, right: SourceMappedMessage): boolean {
+  const leftIds = left[messageSourceEventIds]
+  const rightIds = right[messageSourceEventIds]
+  return !leftIds || !rightIds || leftIds.length === rightIds.length && leftIds.every((id, index) => id === rightIds[index])
+}
+
+function messageFingerprint(message: OpenAI.ChatCompletionMessageParam, captureContent = false): string {
   const normalized = normalizeMessage(message)
   return JSON.stringify({
     role: normalized.role,
-    content: normalized.content,
+    content: captureContent ? truncateLargeEventContent(normalized.content, EVENT_CONTENT_MAX_CHARS).content : normalized.content,
     name: normalized.name,
     tool_call_id: normalized.toolCallId,
     tool_calls: normalized.toolCalls,
@@ -760,6 +781,7 @@ export function repairSessionMessages(messages: OpenAI.ChatCompletionMessagePara
     if (msg.role === "assistant" && result.length > 0) {
       const prev = result[result.length - 1]
       if (prev.role === "assistant" && prev.toolCalls.length === 0) {
+        if (prev.sourceEventIds) prev.sourceEventIds = [...new Set([...prev.sourceEventIds, ...(msg.sourceEventIds ?? [])])]
         const prevContent = contentText(prev.content)
         const curContent = contentText(msg.content)
         // Drop the second of two consecutive assistants when the content is
@@ -999,7 +1021,7 @@ function repairInlineReasoningOnReplay(
     const stripped = stripInlineThinkBlocks(a.content)
     repaired++
     for (const tc of a.tool_calls) inlineReasoningStrippedCallIds.add(tc.id)
-    return { ...a, content: stripped.length > 0 ? stripped : null } as OpenAI.ChatCompletionAssistantMessageParam
+    return withMessageSourceEventIds({ ...a, content: stripped.length > 0 ? stripped : null }, (msg as SourceMappedMessage)[messageSourceEventIds])
   })
   if (repaired > 0) {
     emitNervesEvent({
@@ -1180,29 +1202,32 @@ function buildEventFromMessage(
 }
 
 export function projectedSessionEventIds(envelope: SessionEnvelope): string[] {
-  return envelope.projection.eventIds.length > 0
-    ? envelope.projection.eventIds
-    : envelope.events.map((event) => event.id)
+  return providerProjectionEvents(envelope).map((event) => event.id)
 }
 
 function providerProjectionEvents(envelope: SessionEnvelope): SessionEvent[] {
-  const eventIds = projectedSessionEventIds(envelope)
-  const byId = new Map(selectEffectiveSessionEvents(envelope.events).map((event) => [event.id, event] as const))
-  return eventIds
+  const events = selectEffectiveSessionEvents(envelope.events)
+  if (envelope.projection.eventIds.length === 0) return envelope.projection.trimmed ? [] : events
+  const byId = new Map(events.map((event) => [event.id, event] as const))
+  return envelope.projection.eventIds
     .map((id) => byId.get(id))
     .filter((event): event is SessionEvent => Boolean(event))
 }
 
+function providerMessageFromEvent(event: SessionEvent): OpenAI.ChatCompletionMessageParam {
+  return toProviderMessage({
+    role: event.role,
+    content: event.content,
+    name: event.name,
+    toolCallId: event.toolCallId,
+    toolCalls: event.toolCalls,
+    hadToolCallsField: event.toolCalls.length > 0,
+    sourceEventIds: [event.id],
+  })
+}
+
 export function projectProviderMessages(envelope: SessionEnvelope): OpenAI.ChatCompletionMessageParam[] {
-  return providerProjectionEvents(envelope)
-    .map((event) => toProviderMessage({
-      role: event.role,
-      content: event.content,
-      name: event.name,
-      toolCallId: event.toolCallId,
-      toolCalls: event.toolCalls,
-      hadToolCallsField: event.toolCalls.length > 0,
-    }))
+  return providerProjectionEvents(envelope).map(providerMessageFromEvent)
 }
 
 /**
@@ -1506,7 +1531,7 @@ export function parseSessionEnvelope(raw: unknown, options: SessionEnvelopeParse
 
   const projection = record.projection as Record<string, unknown>
 
-  return {
+  const envelope: SessionEnvelope = {
     version: 2,
     events,
     projection: {
@@ -1517,11 +1542,12 @@ export function parseSessionEnvelope(raw: unknown, options: SessionEnvelopeParse
       inputTokens: typeof projection.inputTokens === "number" ? projection.inputTokens : null,
       projectedAt: typeof projection.projectedAt === "string" ? projection.projectedAt : null,
     },
-    structuredOutputs: extractStructuredOutputsFromEvents(selectEffectiveSessionEvents(events), { emitTelemetry: false }),
     lastUsage: normalizeUsage(record.lastUsage),
     state: normalizeContinuityState(record.state),
     approvalSuspensions: normalizeApprovalSuspensions(record.approvalSuspensions),
   }
+  envelope.structuredOutputs = extractStructuredOutputsFromEvents(providerProjectionEvents(envelope), { emitTelemetry: false })
+  return envelope
 }
 
 export function loadSessionEnvelopeFile(filePath: string): SessionEnvelope | null {
@@ -1556,12 +1582,13 @@ function filterNonSystem(messages: OpenAI.ChatCompletionMessageParam[]): OpenAI.
  * System messages (whose content changes every turn due to live world-state)
  * are excluded so that prefix matching is not defeated by system prompt updates.
  */
-function findCommonPrefixLength(a: OpenAI.ChatCompletionMessageParam[], b: OpenAI.ChatCompletionMessageParam[]): number {
+function findCommonPrefixLength(a: OpenAI.ChatCompletionMessageParam[], b: OpenAI.ChatCompletionMessageParam[], captureContent = false): number {
   const aNonSys = filterNonSystem(a)
   const bNonSys = filterNonSystem(b)
   const max = Math.min(aNonSys.length, bNonSys.length)
   for (let i = 0; i < max; i++) {
-    if (messageFingerprint(aNonSys[i]!) !== messageFingerprint(bNonSys[i]!)) return i
+    if (!messageSourcesAgree(aNonSys[i]!, bNonSys[i]!)) return i
+    if (messageFingerprint(aNonSys[i]!, captureContent) !== messageFingerprint(bNonSys[i]!, captureContent)) return i
   }
   return max
 }
@@ -1569,11 +1596,12 @@ function findCommonPrefixLength(a: OpenAI.ChatCompletionMessageParam[], b: OpenA
 
 function selectProjectedEventIds(
   currentMessages: OpenAI.ChatCompletionMessageParam[],
-  currentEventIds: string[],
+  currentEventIds: string[][],
   trimmedMessages: OpenAI.ChatCompletionMessageParam[],
 ): string[] {
   if (trimmedMessages.length === 0) return []
   const result: string[] = []
+  const currentIdentities = new Set(currentMessages)
   let needle = 0
   let trimmedFingerprint: string | null = null
 
@@ -1582,11 +1610,13 @@ function selectProjectedEventIds(
     const trimmedMessage = trimmedMessages[needle]!
 
     if (currentMessage !== trimmedMessage) {
+      if (currentIdentities.has(trimmedMessage)) continue
+      if (!messageSourcesAgree(currentMessage, trimmedMessage)) continue
       trimmedFingerprint ??= messageFingerprint(trimmedMessage)
       if (messageFingerprint(currentMessage) !== trimmedFingerprint) continue
     }
 
-    result.push(currentEventIds[i]!)
+    result.push(...currentEventIds[i]!)
     needle++
     trimmedFingerprint = null
   }
@@ -1596,7 +1626,25 @@ function selectProjectedEventIds(
 
 export interface SessionEnvelopeBuildResult {
   envelope: SessionEnvelope
+  /** Effective retained events outside the projection, not deleted or archived records. */
   evictedEvents: SessionEvent[]
+}
+
+function retainedSourceEventIds(
+  message: SourceMappedMessage,
+  existing: ReadonlyMap<string, SessionEvent>,
+  used: ReadonlySet<string>,
+): string[] | null {
+  const ids = message[messageSourceEventIds]
+  if (!ids?.length || ids.some((id) => !existing.has(id) || used.has(id))) return null
+  const originals = ids.map((id) => providerMessageFromEvent(existing.get(id)!))
+  const fingerprint = messageFingerprint(message, true)
+  const matches = (candidate: SourceMappedMessage): boolean => (
+    candidate[messageSourceEventIds] !== undefined
+    && messageSourcesAgree(candidate, message)
+    && messageFingerprint(candidate, true) === fingerprint
+  )
+  return originals.some(matches) || sanitizeProviderMessages(originals).some(matches) ? ids : null
 }
 
 export function buildCanonicalSessionEnvelope(options: SessionEnvelopeBuildOptions): SessionEnvelopeBuildResult {
@@ -1604,47 +1652,72 @@ export function buildCanonicalSessionEnvelope(options: SessionEnvelopeBuildOptio
   // Callers pass pre-sanitized messages + pre-captured ingress times.
   const currentIngressTimes = options.currentIngressTimes ?? options.currentMessages.map(getIngressTime)
   const currentIngressRelations = options.currentIngressRelations ?? options.currentMessages.map(getIngressRelations)
-  const previousMessages = options.previousMessages
+  let previousMessages = options.previousMessages
   const currentMessages = options.currentMessages
   const trimmedMessages = options.trimmedMessages
-  const previousProjectionIds = existing ? providerProjectionEvents(existing).map((event) => event.id) : []
+  let previousProjectionGroups = existing ? providerProjectionEvents(existing).map((event) => [event.id]) : []
 
   // Compare only non-system messages to find the common prefix.
   // System messages change every turn (live world-state in system prompt)
   // and must not defeat prefix matching of the actual conversation.
-  const nonSystemPrefix = findCommonPrefixLength(previousMessages, currentMessages)
+  let nonSystemPrefix = findCommonPrefixLength(previousMessages, currentMessages, true)
+  // A repaired provider message can represent several original native records.
+  const repairedPrevious = sanitizeProviderMessages(previousMessages.map((message, index) =>
+    withMessageSourceEventIds({ ...message }, previousProjectionGroups[index]),
+  ))
+  const repairedPrefix = findCommonPrefixLength(repairedPrevious, currentMessages)
+  if (repairedPrefix > nonSystemPrefix) {
+    previousMessages = repairedPrevious
+    previousProjectionGroups = repairedPrevious.map((message: SourceMappedMessage) => message[messageSourceEventIds] ?? [])
+    nonSystemPrefix = repairedPrefix
+  }
 
   // Build a lookup of non-system previous projection IDs.
-  const prevNonSystemIds: string[] = []
+  const prevNonSystemIds: string[][] = []
   for (let i = 0; i < previousMessages.length; i++) {
     if (messageRole(previousMessages[i]!) !== "system") {
-      prevNonSystemIds.push(previousProjectionIds[i]!)
+      prevNonSystemIds.push(previousProjectionGroups[i]!)
     }
   }
 
   // Walk currentMessages and build currentEventIds + new events.
   // Non-system messages within the prefix reuse old event IDs.
-  // System messages and post-prefix messages get new events.
+  // Other messages reuse a matching native origin or create a new event.
   const events = [...(existing?.events ?? [])]
-  const currentEventIds: string[] = []
+  const sourceEvents = new Map(selectEffectiveSessionEvents(events).map((event) => [event.id, event] as const))
+  const excludedSourceIds = new Set(events.filter((event) => !sourceEvents.has(event.id)).map((event) => event.id))
+  const usedEventIds = new Set<string>()
+  const currentEventIds: string[][] = []
   let nonSystemSeen = 0
 
   for (let i = 0; i < currentMessages.length; i++) {
+    const sourceIds = (currentMessages[i] as SourceMappedMessage)[messageSourceEventIds]
+    if (sourceIds?.some((id) => excludedSourceIds.has(id))) {
+      throw new Error("cannot persist messages derived from redacted session events")
+    }
     const role = messageRole(currentMessages[i]!)
     const isSystem = role === "system"
     const inPrefix = !isSystem && nonSystemSeen < nonSystemPrefix
 
-    if (inPrefix) {
+    if (inPrefix && prevNonSystemIds[nonSystemSeen]!.every((id) => !usedEventIds.has(id))) {
       // Reuse existing event ID for this matched non-system message
       currentEventIds.push(prevNonSystemIds[nonSystemSeen]!)
       nonSystemSeen++
     } else if (isSystem && i < previousMessages.length
       && messageRole(previousMessages[i]!) === "system"
-      && messageFingerprint(currentMessages[i]!) === messageFingerprint(previousMessages[i]!)) {
+      && messageSourcesAgree(currentMessages[i]!, previousMessages[i]!)
+      && previousProjectionGroups[i]!.every((id) => !usedEventIds.has(id))
+      && messageFingerprint(currentMessages[i]!, true) === messageFingerprint(previousMessages[i]!, true)) {
       // System message at same position with identical content -- reuse event ID
-      currentEventIds.push(previousProjectionIds[i]!)
+      currentEventIds.push(previousProjectionGroups[i]!)
     } else {
       if (!isSystem) nonSystemSeen++
+      const retainedIds = retainedSourceEventIds(currentMessages[i]!, sourceEvents, usedEventIds)
+      if (retainedIds) {
+        currentEventIds.push(retainedIds)
+        for (const id of retainedIds) usedEventIds.add(id)
+        continue
+      }
       // Create a new event. Use nextEventSequence(events) instead of
       // `events.length + 1` so that any gap (from pruning, archive replay,
       // or self-heal dedup) cannot collide with an existing id.
@@ -1659,39 +1732,35 @@ export function buildCanonicalSessionEnvelope(options: SessionEnvelopeBuildOptio
         currentIngressRelations[i],
       )
       events.push(event)
-      currentEventIds.push(event.id)
+      currentEventIds.push([event.id])
     }
+    for (const id of currentEventIds.at(-1)!) usedEventIds.add(id)
   }
 
   const projectionEventIds = selectProjectedEventIds(currentMessages, currentEventIds, trimmedMessages)
 
-  // Prune events: only keep events whose IDs are in the projection.
-  // Events not in projection are returned as evicted for archiving.
+  // Projection omissions are not authority to delete native history.
   const projectionIdSet = new Set(projectionEventIds)
-  const effectiveIds = new Set(selectEffectiveSessionEvents(events).map((event) => event.id))
-  const keep = (event: SessionEvent) => projectionIdSet.has(event.id) || !effectiveIds.has(event.id)
-  const prunedEvents = events.filter(keep)
-  const evictedEvents = events.filter((event) => !keep(event))
-
-  return {
-    envelope: {
-      version: 2,
-      events: prunedEvents,
-      projection: {
-        eventIds: projectionEventIds.filter((id) => effectiveIds.has(id)),
-        trimmed: projectionEventIds.length < currentEventIds.length,
-        maxTokens: options.projectionBasis.maxTokens,
-        contextMargin: options.projectionBasis.contextMargin,
-        inputTokens: options.projectionBasis.inputTokens,
-        projectedAt: options.recordedAt,
-      },
-      structuredOutputs: extractStructuredOutputsFromEvents(selectEffectiveSessionEvents(prunedEvents)),
-      lastUsage: normalizeUsage(options.lastUsage),
-      state: normalizeContinuityState(options.state),
-      approvalSuspensions: structuredClone(options.existing?.approvalSuspensions ?? []),
+  const effectiveEvents = selectEffectiveSessionEvents(events)
+  const effectiveIds = new Set(effectiveEvents.map((event) => event.id))
+  const evictedEvents = effectiveEvents.filter((event) => !projectionIdSet.has(event.id))
+  const envelope: SessionEnvelope = {
+    version: 2,
+    events,
+    projection: {
+      eventIds: projectionEventIds.filter((id) => effectiveIds.has(id)),
+      trimmed: evictedEvents.length > 0,
+      maxTokens: options.projectionBasis.maxTokens,
+      contextMargin: options.projectionBasis.contextMargin,
+      inputTokens: options.projectionBasis.inputTokens,
+      projectedAt: options.recordedAt,
     },
-    evictedEvents,
+    lastUsage: normalizeUsage(options.lastUsage),
+    state: normalizeContinuityState(options.state),
+    approvalSuspensions: structuredClone(options.existing?.approvalSuspensions ?? []),
   }
+  envelope.structuredOutputs = extractStructuredOutputsFromEvents(providerProjectionEvents(envelope))
+  return { envelope, evictedEvents }
 }
 
 export function appendSyntheticAssistantEvent(
@@ -1711,15 +1780,17 @@ export function appendSyntheticAssistantEvent(
     null,
     null,
   )
-  return {
+  const priorIds = projectedSessionEventIds(envelope)
+  const updated: SessionEnvelope = {
     ...envelope,
     events: [...envelope.events, event],
-    structuredOutputs: extractStructuredOutputsFromEvents(selectEffectiveSessionEvents([...envelope.events, event])),
     projection: {
       ...envelope.projection,
-      eventIds: [...envelope.projection.eventIds, event.id],
+      eventIds: [...priorIds, event.id],
       projectedAt: recordedAt,
-      trimmed: false,
+      trimmed: new Set(priorIds).size < selectEffectiveSessionEvents(envelope.events).length,
     },
   }
+  updated.structuredOutputs = extractStructuredOutputsFromEvents(providerProjectionEvents(updated))
+  return updated
 }

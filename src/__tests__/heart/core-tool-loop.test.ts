@@ -2553,7 +2553,7 @@ describe("runAgent tool loop guard", () => {
       const generated = capture.mock.calls[0]![0] as ChatCompletionMessageParam[]
       expect(generated.filter((message) => message.role === "tool")).toEqual([{ role: "tool", tool_call_id: "completed-read", content: "verified execution receipt" }])
       expect(generated.filter((message) => message.role === "assistant").flatMap((message) => message.tool_calls?.map((entry) => entry.id) ?? [])).toEqual(["completed-read"])
-      if (kind !== "overflow") expect(messages).toContainEqual({ role: "tool", tool_call_id: "completed-read", content: "verified execution receipt" })
+      expect(messages).toContainEqual({ role: "tool", tool_call_id: "completed-read", content: "verified execution receipt" })
     })
 
     it.each(["dependent-validation", "tool-end-observer"] as const)("promotes a completed handler receipt before %s can fail", async (kind) => {

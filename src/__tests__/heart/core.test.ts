@@ -4011,9 +4011,11 @@ describe("runAgent", () => {
     expect(callCount).toBe(2) // retry succeeded via .code check
   })
 
-  it("overflow on cold start with only system message still retries", async () => {
+  it.each([false, true])("D006 cold-start overflow preserves the supplied request (empty input=%s)", async (emptyInput) => {
     let callCount = 0
-    mockCreate.mockImplementation(() => {
+    const requestMessages: unknown[] = []
+    mockCreate.mockImplementation((request) => {
+      requestMessages.push(structuredClone(request.messages))
       callCount++
       if (callCount === 1) {
         throw new Error("context_length_exceeded")
@@ -4032,11 +4034,17 @@ describe("runAgent", () => {
       onError: (err) => errors.push(err),
     }
 
-    // Only system message -- can't trim further, but retry should still happen
-    const messages: any[] = [{ role: "system", content: "sys" }]
+    const messages = emptyInput ? [] : [{ role: "system" as const, content: "sys" }]
     await runAgent(messages, callbacks)
 
     expect(callCount).toBe(2) // retry attempted
+    if (emptyInput) {
+      expect(requestMessages[0]).toEqual([])
+    } else {
+      expect(requestMessages[0]).toEqual(expect.arrayContaining([expect.objectContaining({ role: "system" })]))
+    }
+    expect(requestMessages[0]).not.toEqual(expect.arrayContaining([expect.objectContaining({ role: "user" })]))
+    expect(requestMessages[1]).toEqual(requestMessages[0])
   })
 
   // ── transient network error retry ──

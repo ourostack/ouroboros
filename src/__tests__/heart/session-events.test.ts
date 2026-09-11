@@ -3,6 +3,20 @@ import type OpenAI from "openai"
 import { a003Event, a003Marker, a003Pair, A003_AT } from "../fixtures/a003-session"
 import type { SessionEvent } from "../../heart/session-events"
 
+describe("D006 native source metadata", () => {
+  it("keeps new untagged assistant text during normalization without serializing native origins", async () => {
+    const { projectProviderMessages, sanitizeProviderMessages } = await import("../../heart/session-events")
+    const { envelope } = a003Pair()
+    const historical = projectProviderMessages(envelope)[1]!
+    const combined = sanitizeProviderMessages([historical, { role: "assistant", content: "A newly generated continuation." }])
+    expect(combined).toHaveLength(1)
+    expect(combined[0]!.content).toContain("accepted answer")
+    expect(combined[0]!.content).toContain("A newly generated continuation.")
+    expect(Object.keys(combined[0]!).sort()).toEqual(["content", "role"])
+    expect(JSON.stringify(combined)).not.toContain("evt-")
+  })
+})
+
 describe("A003 strict raw redaction authority", () => {
   async function api() {
     return await import("../../heart/session-events") as typeof import("../../heart/session-events") & {
@@ -755,8 +769,8 @@ describe("session events", () => {
       },
     })
 
-    // Pruned envelope only contains projected events
-    expect(updated.events).toHaveLength(3)
+    expect(updated.events).toHaveLength(5)
+    expect(updated.events.slice(0, envelope.events.length)).toEqual(envelope.events)
     expect(updated.projection.eventIds).toEqual(["evt-000001", "evt-000004", "evt-000005"])
     expect(projectProviderMessages(updated)).toEqual(trimmedMessages)
   })
@@ -1706,8 +1720,8 @@ describe("session events", () => {
       },
     })
 
-    // Pruned envelope only contains projected events (old events 2,3 evicted)
-    expect(updated.events).toHaveLength(3)
+    expect(updated.events).toHaveLength(5)
+    expect(updated.events.slice(0, existing.events.length)).toEqual(existing.events)
     expect(updated.projection.eventIds).toEqual(["evt-000001", "evt-000004", "evt-000005"])
     expect(projectProviderMessages(updated)).toEqual(currentMessages)
   })
@@ -2226,8 +2240,10 @@ describe("session events", () => {
       // so ALL 5 messages are created as new events (3 existing + 5 new = 8 total)
       // With the fix: prefix match skips system messages, matches user+assistant,
       // creates new events only for: 1 changed system + 2 genuinely new messages = 3 new
-      // Pruned envelope: 6 total events created, 5 projected (old sys_v1 event evicted)
-      expect(updated.events).toHaveLength(5)
+      // Keep all six native records while projecting the five current messages.
+      expect(updated.events).toHaveLength(6)
+      expect(updated.events.slice(0, existing.events.length)).toEqual(existing.events)
+      expect(updated.projection.eventIds).toHaveLength(5)
     })
 
     it("matches non-system messages correctly when system prompt changes between turns", async () => {
@@ -2270,14 +2286,11 @@ describe("session events", () => {
         projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
       })
 
-      // Pruned envelope: 5 projected events (old sys_v1 event evicted)
-      expect(updated.events).toHaveLength(5)
-      // Reused events first (qA, aA), then new events (sys_v2, qB, aB)
-      expect(updated.events[0]!.content).toBe("question A")
-      expect(updated.events[1]!.content).toBe("answer A")
-      expect(updated.events[2]!.role).toBe("system")
-      expect(updated.events[3]!.content).toBe("question B")
-      expect(updated.events[4]!.content).toBe("answer B")
+      expect(updated.events).toHaveLength(6)
+      expect(updated.events.slice(0, existing.events.length)).toEqual(existing.events)
+      expect(updated.events[3]!.role).toBe("system")
+      expect(updated.events[4]!.content).toBe("question B")
+      expect(updated.events[5]!.content).toBe("answer B")
 
       // Projection should include the new system event + reused non-system + new non-system
       const projected = projectProviderMessages(updated)
@@ -2360,8 +2373,9 @@ describe("session events", () => {
         projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
       })
 
-      // Pruned envelope: 5 projected events (old sys1_v1 and sys2_v1 evicted)
-      expect(updated.events).toHaveLength(5)
+      expect(updated.events).toHaveLength(7)
+      expect(updated.events.slice(0, existing.events.length)).toEqual(existing.events)
+      expect(updated.projection.eventIds).toHaveLength(5)
     })
 
     it("handles all system messages with no other roles", async () => {
@@ -2395,8 +2409,9 @@ describe("session events", () => {
         projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
       })
 
-      // No non-system messages to match, system changed. Pruned: only new sys event projected.
-      expect(updated.events).toHaveLength(1)
+      expect(updated.events).toHaveLength(2)
+      expect(updated.events[0]).toEqual(existing.events[0])
+      expect(updated.projection.eventIds).toEqual(["evt-000002"])
     })
 
     it("handles empty arrays", async () => {
@@ -2463,16 +2478,12 @@ describe("session events", () => {
         projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
       })
 
-      // Evicted events are those not in the projection
+      // Omission reporting does not remove events from native history.
       expect(result.evictedEvents.length).toBeGreaterThan(0)
-      // The pruned envelope should only contain projected events
-      expect(result.envelope.events.length).toBeLessThan(7)
-      // Evicted + remaining should account for all events
-      const allEventIds = new Set([
-        ...result.envelope.events.map((e: any) => e.id),
-        ...result.evictedEvents.map((e: any) => e.id),
-      ])
-      expect(allEventIds.size).toBe(result.envelope.events.length + result.evictedEvents.length)
+      expect(result.envelope.events).toHaveLength(7)
+      expect(result.envelope.events.slice(0, existing.events.length)).toEqual(existing.events)
+      expect(result.envelope.projection.eventIds).toHaveLength(3)
+      expect(result.evictedEvents).toEqual(result.envelope.events.filter((event) => !result.envelope.projection.eventIds.includes(event.id)))
     })
 
     it("returns empty evictedEvents when all events are in projection", async () => {
@@ -2499,7 +2510,7 @@ describe("session events", () => {
       expect(result.envelope.events).toHaveLength(3)
     })
 
-    it("first-prune migration: large existing envelope with no prior pruning returns all non-projected as evicted", async () => {
+    it("reports the first window's omissions while retaining the original large envelope", async () => {
       const { buildCanonicalSessionEnvelope } = await import("../../heart/session-events")
 
       // Build a large existing envelope
@@ -2540,9 +2551,10 @@ describe("session events", () => {
         projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
       })
 
-      // Most events should be evicted (only sys + q9 + a9 in projection)
+      // Only sys + q9 + a9 are projected; all original records remain.
       expect(result.evictedEvents.length).toBe(18) // 20 non-system events minus 2 in projection
-      expect(result.envelope.events).toHaveLength(3) // only projected events remain
+      expect(result.envelope.events).toEqual(existing.events)
+      expect(result.envelope.projection.eventIds).toHaveLength(3)
     })
 
     it("handles no existing envelope", async () => {
@@ -2565,9 +2577,10 @@ describe("session events", () => {
         projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
       })
 
-      // Two events evicted (user and assistant not in trimmed)
+      // Report the omitted user and assistant without discarding either.
       expect(result.evictedEvents).toHaveLength(2)
-      expect(result.envelope.events).toHaveLength(1) // only system
+      expect(result.envelope.events).toHaveLength(3)
+      expect(result.envelope.projection.eventIds).toEqual(["evt-000001"])
     })
   })
 
@@ -2580,8 +2593,8 @@ describe("session events", () => {
     })
   })
 
-  describe("integration: full session lifecycle with pruning", () => {
-    it("builds envelope, changes system prompt, prunes, and replays the envelope projection only", async () => {
+  describe("integration: retained session history with bounded projection", () => {
+    it("retains history across system refresh and trimming while replaying only the projection", async () => {
       const fs = await import("fs")
       const os = await import("os")
       const path = await import("path")
@@ -2641,13 +2654,14 @@ describe("session events", () => {
         projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
       })
 
-      // Key assertions: only 2 new events created (not 22 as the bug would cause)
+      // Only the new system and the two new dialogue messages create records.
       // Total events created = 21 original + 1 new system + 2 new messages = 24
       // But only 3 in projection (sys_v2, new_q, new_a)
-      expect(result2.envelope.events.length).toBeLessThanOrEqual(3) // only projected events
-      expect(result2.evictedEvents.length).toBeGreaterThan(0) // old events evicted
+      expect(result2.envelope.events).toHaveLength(24)
+      expect(result2.envelope.events.slice(0, result1.envelope.events.length)).toEqual(result1.envelope.events)
+      expect(result2.evictedEvents).toHaveLength(21)
 
-      // Phase 3: The session envelope remains a bounded projection only.
+      // Phase 3: The native envelope retains history without a separate archive.
       fs.writeFileSync(sessPath, JSON.stringify(result2.envelope))
       expect(fs.existsSync(sessPath.replace(/\.json$/, ".archive.ndjson"))).toBe(false)
 

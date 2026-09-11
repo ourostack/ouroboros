@@ -397,20 +397,30 @@ function exactProjectedIngressMessage(
   existing: NonNullable<ReturnType<typeof loadSession>>,
   messages: ChatCompletionMessageParam[],
   eventId: string,
+  nativeValue: unknown,
 ): ChatCompletionMessageParam | null {
+  if (!nativeValue || typeof nativeValue !== "object" || Array.isArray(nativeValue)) return null
+  const native = nativeValue as Record<string, unknown>
+  if (native.version !== 2 || !native.projection || typeof native.projection !== "object" || Array.isArray(native.projection)) return null
+  const projection = native.projection as Record<string, unknown>
+  if (!Array.isArray(projection.eventIds)) return null
+  // Authorization must inspect stored IDs before a reader filters unresolved entries.
+  const projectionIds = projection.eventIds.length > 0
+    ? projection.eventIds
+    : projection.trimmed === true ? [] : existing.projectionEventIds
   const eventsById = new Map(existing.events.map((event) => [event.id, event] as const))
   if (eventsById.size !== existing.events.length) return null
   const seenProjectionIds = new Set<string>()
   const effectiveIds = new Set(selectEffectiveSessionEvents(existing.events).map((event) => event.id))
   const projectedEvents: SessionEvent[] = []
-  for (const projectedId of existing.projectionEventIds) {
+  for (const projectedId of projectionIds) {
     if (typeof projectedId !== "string" || !projectedId.trim() || seenProjectionIds.has(projectedId)) return null
     const event = eventsById.get(projectedId)
     if (!event) return null
     seenProjectionIds.add(projectedId)
     if (effectiveIds.has(event.id)) projectedEvents.push(event)
   }
-  if (existing.projectionEventIds.filter((projectedId) => projectedId === eventId).length !== 1) return null
+  if (projectionIds.filter((projectedId) => projectedId === eventId).length !== 1) return null
   const projectedUsers = projectedEvents.filter((event) => event.role === "user")
   const providerUsers = messages.filter((message) => message.role === "user")
   if (projectedUsers.at(-1)?.id !== eventId || projectedUsers.length !== providerUsers.length) return null
@@ -532,7 +542,8 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions, owner: McpOwn
   const runWithLease = options._withSessionTurnLease ?? withSessionTurnLease
   try {
   return await runWithLease(sessPath, async (sessionTurnLease) => {
-  const baseSessionRevision = readSessionTransaction(sessPath, sessionTurnLease).revision
+  const baseSession = readSessionTransaction(sessPath, sessionTurnLease)
+  const baseSessionRevision = baseSession.revision
   const existing = options.disablePersistence ? undefined : loadSession(sessPath)
   const precommittedIngressEvent = options.precommittedIngress
     ? existing?.events?.find((candidate) => candidate.id === options.precommittedIngress!.eventId)
@@ -559,7 +570,7 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions, owner: McpOwn
       )),
     }]
   if (precommittedIngressEvent) {
-    const projectedIngress = exactProjectedIngressMessage(existing!, sessionMessages, precommittedIngressEvent.id)
+    const projectedIngress = exactProjectedIngressMessage(existing!, sessionMessages, precommittedIngressEvent.id, baseSession.value)
     if (!projectedIngress || projectedIngress.role !== "user" || projectedIngress.content !== userMessage) throw new Error("shared turn precommitted ingress is absent from the provider projection")
     stampIngressRelations(projectedIngress, {
       replyToEventId: precommittedIngressEvent.relations.replyToEventId,

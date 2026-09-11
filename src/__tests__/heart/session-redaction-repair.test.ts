@@ -5,7 +5,7 @@ import { createHash } from "node:crypto"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { a003Event, a003LegacyEnvelope, a003Marker, A003_LEGACY_MEDIA, A003_NATIVE_TARGETS, A003_REPAIR_AT } from "../fixtures/a003-session"
 import { D004_INODE_A, D004_INODE_B, d004IdentityKey, installD004StatMetadata } from "../fixtures/d004-native-stats"
-import type { SessionEnvelope, SessionEvent } from "../../heart/session-events"
+import { projectedSessionEventIds, type SessionEnvelope, type SessionEvent } from "../../heart/session-events"
 import * as transactions from "../../mind/session-transaction"
 
 const context = vi.hoisted(() => ({ root: "" }))
@@ -75,11 +75,18 @@ function expectedRepair(bytes: string, sequences: readonly number[] = nativeSequ
     }
   })
   const removed = new Set(entries.flatMap((entry) => [entry.target.id, entry.marker.id]))
+  const effectiveIds = new Set(raw.events.filter((event) => !removed.has(event.id)).map((event) => event.id))
+  const selectedIds = new Set(raw.projection.eventIds.length > 0
+    ? raw.projection.eventIds.filter((id) => effectiveIds.has(id))
+    : raw.projection.trimmed ? [] : effectiveIds)
   const postimage = JSON.stringify({
     ...raw,
     events: [...raw.events, ...entries.map((entry) => entry.marker)],
-    projection: { ...raw.projection, eventIds: raw.projection.eventIds.filter((id) => !removed.has(id)) },
-    structuredOutputs: a003LegacyEnvelope().structuredOutputs,
+    projection: {
+      ...raw.projection, eventIds: raw.projection.eventIds.filter((id) => !removed.has(id)),
+      trimmed: raw.projection.trimmed || selectedIds.size < effectiveIds.size,
+    },
+    structuredOutputs: a003LegacyEnvelope().structuredOutputs!.filter((output) => selectedIds.has(output.sourceEventId)),
   }, null, 2)
   const manifest = {
     schemaVersion: "a003-sanctuary-session-repair-v1",
@@ -123,6 +130,86 @@ describe("A003 fixed session repair", () => {
     fs.writeFileSync(file, bytes, { mode: 0o600 })
     return hash(bytes)
   }
+
+  it("D006 bounds fixed-repair summaries to the selected native projection without changing target/marker history", async () => {
+    const r = await runner()
+    const before = a003LegacyEnvelope()
+    before.events.find((event) => event.id === "evt-000512")!.content = "Current choices:\n1. Fresh\n2. Current"
+    before.projection = { ...before.projection, eventIds: ["evt-000509", "evt-000511", "evt-000512"], trimmed: true }
+    before.structuredOutputs = [{
+      schemaVersion: 1, id: "structured-evt-000512-1", kind: "ordered_list", sourceEventId: "evt-000512",
+      recordedAt: "2026-09-05T12:00:00.000Z", heading: "Current choices:",
+      items: [{ label: "1", text: "Fresh" }, { label: "2", text: "Current" }],
+    }]
+    fs.writeFileSync(sessionPath, JSON.stringify(before, null, 2))
+    const artifact = await inspect()
+    expect((await r.applyA003SessionRepair(artifact)).status).toBe("applied")
+    const bytes = fs.readFileSync(sessionPath, "utf8")
+    const after = JSON.parse(bytes) as SessionEnvelope
+    expect(after.structuredOutputs).toEqual(before.structuredOutputs)
+    expect(after.events.slice(0, before.events.length)).toEqual(before.events)
+    expect(after.events.slice(-8)).toEqual(A003_NATIVE_TARGETS.map((_target, index) => a003Marker(fixtureTarget(before, index), 513 + index)))
+    expect(after.projection).toEqual(before.projection)
+    expect((await r.applyA003SessionRepair(artifact)).status).toBe("already_applied")
+    expect(fs.readFileSync(sessionPath, "utf8")).toBe(bytes)
+  })
+
+  it("D006 remains already applied after real later retained events select a new bounded summary", async () => {
+    const r = await runner()
+    const artifact = await inspect()
+    expect((await r.applyA003SessionRepair(artifact)).status).toBe("applied")
+    const repaired = JSON.parse(fs.readFileSync(sessionPath, "utf8")) as SessionEnvelope
+    const laterAt = "2026-09-08T12:00:00.000Z"
+    const user = a003Event(521, "user", "later question")
+    user.time = { ...user.time, observedAt: laterAt, recordedAt: laterAt }
+    const answer = a003Event(522, "assistant", "Later choices:\n1. Fresh\n2. Current")
+    answer.time = { ...answer.time, authoredAt: laterAt, observedAt: laterAt, recordedAt: laterAt }
+    const continued: SessionEnvelope = {
+      ...repaired,
+      events: [...repaired.events, user, answer],
+      projection: { ...repaired.projection, eventIds: [user.id, answer.id], trimmed: true, projectedAt: laterAt },
+      structuredOutputs: [{
+        schemaVersion: 1, id: "structured-evt-000522-1", kind: "ordered_list", sourceEventId: "evt-000522",
+        recordedAt: laterAt, heading: "Later choices:", items: [{ label: "1", text: "Fresh" }, { label: "2", text: "Current" }],
+      }],
+    }
+    await transactions.withSessionTurnLease(sessionPath, (lease) => {
+      const current = transactions.readSessionTransaction(sessionPath, lease)
+      transactions.writeSessionTransaction(sessionPath, continued, { lease, expectedRevision: current.revision })
+    })
+    const bytes = fs.readFileSync(sessionPath, "utf8")
+    const write = vi.spyOn(transactions, "writeSessionTransaction")
+    expect((await r.applyA003SessionRepair(artifact)).status).toBe("already_applied")
+    expect((await r.applyA003SessionRepair(artifact)).status).toBe("already_applied")
+    expect(write).not.toHaveBeenCalled()
+    expect(fs.readFileSync(sessionPath, "utf8")).toBe(bytes)
+    expect((JSON.parse(bytes) as SessionEnvelope).events.slice(0, repaired.events.length)).toEqual(repaired.events)
+  })
+
+  it.each([
+    { name: "legacy empty", eventIds: [], trimmed: false, expectedTrimmed: false, visibleHistory: true },
+    { name: "intentionally empty", eventIds: [], trimmed: true, expectedTrimmed: true, visibleHistory: false },
+    { name: "explicitly selected redaction targets", eventIds: A003_NATIVE_TARGETS.map((target) => target.id), trimmed: false, expectedTrimmed: true, visibleHistory: false },
+  ])("D006 preserves $name semantics across repair and repeated apply", async ({ eventIds, trimmed, expectedTrimmed, visibleHistory }) => {
+    const r = await runner()
+    const before = a003LegacyEnvelope()
+    before.projection = { ...before.projection, eventIds, trimmed }
+    if (!visibleHistory) before.structuredOutputs = []
+    const targetIds = new Set<string>(A003_NATIVE_TARGETS.map((target) => target.id))
+    const expectedProjection = visibleHistory ? before.events.filter((event) => !targetIds.has(event.id)).map((event) => event.id) : []
+    fs.writeFileSync(sessionPath, JSON.stringify(before, null, 2))
+    const artifact = await inspect()
+    expect((await r.applyA003SessionRepair(artifact)).status).toBe("applied")
+    const bytes = fs.readFileSync(sessionPath, "utf8")
+    const after = JSON.parse(bytes) as SessionEnvelope
+    expect(after.structuredOutputs?.map((output) => output.sourceEventId)).toEqual(visibleHistory ? ["evt-000294"] : [])
+    expect(projectedSessionEventIds(after)).toEqual(expectedProjection)
+    expect(after.projection.trimmed).toBe(expectedTrimmed)
+    expect(after.events.slice(0, before.events.length)).toEqual(before.events)
+    expect(after.events.slice(-8)).toEqual(A003_NATIVE_TARGETS.map((_target, index) => a003Marker(fixtureTarget(before, index), 513 + index)))
+    expect((await r.applyA003SessionRepair(artifact)).status).toBe("already_applied")
+    expect(fs.readFileSync(sessionPath, "utf8")).toBe(bytes)
+  })
 
   describe("D004 native artifact identity lifecycle", () => {
     const shifted = (physical: fs.BigIntStats, base: bigint) => ({
@@ -486,7 +573,8 @@ describe("A003 fixed session repair", () => {
       existing: first, previousMessages: previous, currentMessages: current, trimmedMessages: current,
       recordedAt: A003_REPAIR_AT, projectionBasis: basis,
     }).envelope
-    expect(refreshed.events.map((event) => event.sequence)).toEqual([2, 3, 4])
+    expect(refreshed.events.map((event) => event.sequence)).toEqual([1, 2, 3, 4])
+    expect(refreshed.events.slice(0, first.events.length)).toEqual(first.events)
     expect(refreshed.projection.eventIds).toEqual(["evt-000003", "evt-000002", "evt-000004"])
     expect(refreshed.events.find((event) => event.id === refreshed.projection.eventIds[0])!.role).toBe("system")
   })

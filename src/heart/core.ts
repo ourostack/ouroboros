@@ -1744,14 +1744,16 @@ export async function runAgent(
         contextWindowTokens: getContextConfig().maxTokens,
       }
       const canonicalBudget = applyPromptBudget({ ...budgetOptions, messages })
-      if (canonicalBudget.status !== "within_budget") {
-        messages.splice(0, messages.length, ...canonicalBudget.messages)
-      }
-      // Preserve canonical evidence object identity while freezing the array
-      // and the one attempt's private control/scratch across operational retries.
-      const attemptMessages = rejectedAttempt.length > 0
-        ? [...applyPromptBudget({ ...budgetOptions, messages: [...messages, ...rejectedAttempt, ...nextAttemptControls] }).messages]
-        : [...messages]
+      const currentUserMessage = budgetOptions.requiredPromptEvidence?.currentUserMessage
+        ?? canonicalBudget.messages.findLast((message) => message.role === "user")
+      // Keep retry controls attached to the genuine request, not to canonical history.
+      let attemptMessages = rejectedAttempt.length > 0
+        ? [...applyPromptBudget({
+            ...budgetOptions,
+            requiredPromptEvidence: budgetOptions.requiredPromptEvidence ?? (currentUserMessage ? { currentUserMessage } : undefined),
+            messages: [...canonicalBudget.messages, ...rejectedAttempt, ...nextAttemptControls],
+          }).messages]
+        : [...canonicalBudget.messages]
       if (rejectedAttempt.length > 0 || canonicalBudget.status !== "within_budget") providerRuntime.resetTurnState(attemptMessages)
       const turnCallbackBufferRef: { current: HabitCallbackBuffer | null } = { current: null };
       const callProviderTurn = async (): Promise<TurnResult> => {
@@ -1788,20 +1790,22 @@ export async function runAgent(
           if (error instanceof ProviderAttemptAbortError) throw error
           if (isContextOverflow(error) && !overflowRetried) {
             overflowRetried = true;
-            const overflowMessages = messages.map((message) => message.role === "assistant" ? { ...message } : message)
+            const protectedStart = currentUserMessage ? Math.max(0, attemptMessages.indexOf(currentUserMessage)) : 0
+            const currentAttempt = attemptMessages.slice(protectedStart)
+            const overflowMessages = attemptMessages.slice(0, protectedStart).map((message) => message.role === "assistant" ? { ...message } : message)
             stripLastToolCalls(overflowMessages);
+            overflowMessages.push(...currentAttempt)
             const { maxTokens, contextMargin } = getContextConfig();
             const trimmed = trimMessages(overflowMessages, maxTokens, contextMargin, maxTokens * 2);
             const requiredEvidence = options?.requiredPromptEvidence;
             const requiredMessages = new Set<OpenAI.ChatCompletionMessageParam>([
               ...(requiredEvidence?.verifiedPredecessorMessage ? [requiredEvidence.verifiedPredecessorMessage] : []),
-              ...(requiredEvidence?.currentUserMessage ? [requiredEvidence.currentUserMessage] : []),
+              ...currentAttempt,
             ]);
             const trimmedMessages = new Set(trimmed);
-            const overflowRetryMessages = requiredMessages.size === 0
+            attemptMessages = requiredMessages.size === 0
               ? trimmed
               : overflowMessages.filter((message) => trimmedMessages.has(message) || requiredMessages.has(message));
-            messages.splice(0, messages.length, ...overflowRetryMessages);
             providerRuntime.resetTurnState(attemptMessages);
             callbacks.onError(new Error("context trimmed, retrying..."), "transient");
             return callProviderTurn()
