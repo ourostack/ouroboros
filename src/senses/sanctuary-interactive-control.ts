@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto"
-import { chmodSync, existsSync, mkdirSync, unlinkSync } from "node:fs"
+import { chmodSync, existsSync, lstatSync, mkdirSync, unlinkSync, type BigIntStats } from "node:fs"
 import { createConnection, createServer, type Server } from "node:net"
 import * as path from "node:path"
 
@@ -202,58 +202,134 @@ export function createSanctuaryInteractiveControl(options: {
   const socketPath = path.join(options.agentRoot, "state", "acceptance", "telegram-control.sock")
   const runRequest = options.runRequest ?? (async <T>(operation: () => T | Promise<T>): Promise<T> => operation())
   let server: Server | undefined
+  let endpoint: BigIntStats | undefined
+  let startPromise: Promise<void> | undefined
+  let stopPromise: Promise<void> | undefined
   let updateId = 2_100_000_000
+  const readEndpoint = () => lstatSync(socketPath, { bigint: true, throwIfNoEntry: false })
+  const matches = (observed: BigIntStats, current: BigIntStats | undefined): current is BigIntStats =>
+    current !== undefined && current.isSocket() && current.dev === observed.dev && current.ino === observed.ino
+      && current.birthtimeNs === observed.birthtimeNs
+  const stopListener = async (): Promise<void> => {
+    const active = server
+    if (!active) return
+    if (active.listening) {
+      const current = readEndpoint()
+      // Native Server.close() also unlinks its pathname, so ownership must precede it.
+      if (current && (!endpoint || !matches(endpoint, current))) throw new Error("Sanctuary interactive control socket ownership was replaced")
+      await new Promise<void>((resolve, reject) => active.close((error) => error ? reject(error) : resolve()))
+    }
+    server = undefined
+    endpoint = undefined
+  }
   return {
     socketPath,
-    async start() {
-      if (server) return
-      mkdirSync(path.dirname(socketPath), { recursive: true, mode: 0o700 })
-      if (existsSync(socketPath)) unlinkSync(socketPath)
-      server = createServer({ allowHalfOpen: true }, (connection) => {
-        let raw = ""
-        connection.setEncoding("utf8")
-        connection.on("error", () => undefined)
-        connection.on("data", (chunk) => { raw += chunk; if (Buffer.byteLength(raw) > MAX_CONTROL_REQUEST) connection.destroy() })
-        connection.on("end", () => { void runRequest(async () => {
-          try {
-            emitNervesEvent({ component: "senses", event: "senses.sanctuary_interactive_control_request", message: "Sanctuary interactive control request received", meta: { bytes: Buffer.byteLength(raw) } })
-            const parsed = object(JSON.parse(raw), "interactive control request")
-            if (parsed.operation === "interactive_runtime_ready") {
-              exactKeys(parsed, ["operation", "label", "scenarioHandleDigest"], "interactive readiness request")
-              if (parsed.label !== "unit-16m-restart-continuation" || typeof parsed.scenarioHandleDigest !== "string" || !SHA256.test(parsed.scenarioHandleDigest)) throw new Error("interactive readiness binding is invalid")
-              connection.end(`${JSON.stringify({ ok: true, result: { ready: true } })}\n`)
-              return
-            }
-            const result = await executeSanctuaryInteractiveEngine(parsed, {
-              agentRoot: options.agentRoot,
-              readApprovals: (digest) => readApprovalsByScenarioHandleDigest(path.join(options.agentRoot, "state", "approvals", "approvals.sqlite"), digest),
-              readPending: () => new FileTelegramPendingApprovalStore(path.join(options.agentRoot, "state", "approvals", "telegram-pending.json")).load(),
-              createSession: async () => ({
-                handle: ({ callbackData, queryId, messageId }) => runRequest(() => options.transport.handleUpdate({
-                  update_id: updateId++,
-                  callback_query: {
-                    id: queryId,
-                    from: { id: Number(options.authorizedUserId) },
-                    data: callbackData,
-                    message: {
-                      message_id: Number(messageId),
-                      chat: { id: Number(options.authorizedChatId) },
+    start() {
+      if (startPromise) return startPromise
+      const previousStop = stopPromise
+      startPromise = (async () => {
+        if (previousStop) await previousStop
+        if (server) {
+          if (endpoint && matches(endpoint, readEndpoint())) return
+          await stopListener()
+        }
+        mkdirSync(path.dirname(socketPath), { recursive: true, mode: 0o700 })
+        const previous = readEndpoint()
+        if (previous) {
+          if (!previous.isSocket()) throw new Error("Sanctuary interactive control endpoint is not a socket")
+          await new Promise<void>((resolve, reject) => {
+            const socket = createConnection(socketPath)
+            const finish = (error?: Error) => { socket.destroy(); if (error) reject(error); else resolve() }
+            socket.setTimeout(1_000, () => finish(new Error("Sanctuary interactive control ownership probe timed out")))
+            socket.once("connect", () => finish(new Error("Sanctuary interactive control endpoint has another live listener")))
+            socket.once("error", (error: NodeJS.ErrnoException) => finish(error.code === "ECONNREFUSED" ? undefined : error))
+          })
+          const current = readEndpoint()
+          if (!matches(previous, current) || current.ctimeNs !== previous.ctimeNs) throw new Error("Sanctuary interactive control endpoint was replaced during the ownership probe")
+          unlinkSync(socketPath)
+        }
+        server = createServer({ allowHalfOpen: true }, (connection) => {
+          let raw = ""
+          connection.setEncoding("utf8")
+          connection.on("error", () => undefined)
+          connection.on("data", (chunk) => { raw += chunk; if (Buffer.byteLength(raw) > MAX_CONTROL_REQUEST) connection.destroy() })
+          connection.on("end", () => { void runRequest(async () => {
+            try {
+              emitNervesEvent({ component: "senses", event: "senses.sanctuary_interactive_control_request", message: "Sanctuary interactive control request received", meta: { bytes: Buffer.byteLength(raw) } })
+              const parsed = object(JSON.parse(raw), "interactive control request")
+              if (parsed.operation === "interactive_runtime_ready") {
+                exactKeys(parsed, ["operation", "label", "scenarioHandleDigest"], "interactive readiness request")
+                if (parsed.label !== "unit-16m-restart-continuation" || typeof parsed.scenarioHandleDigest !== "string" || !SHA256.test(parsed.scenarioHandleDigest)) throw new Error("interactive readiness binding is invalid")
+                connection.end(`${JSON.stringify({ ok: true, result: { ready: true } })}\n`)
+                return
+              }
+              const result = await executeSanctuaryInteractiveEngine(parsed, {
+                agentRoot: options.agentRoot,
+                readApprovals: (digest) => readApprovalsByScenarioHandleDigest(path.join(options.agentRoot, "state", "approvals", "approvals.sqlite"), digest),
+                readPending: () => new FileTelegramPendingApprovalStore(path.join(options.agentRoot, "state", "approvals", "telegram-pending.json")).load(),
+                createSession: async () => ({
+                  handle: ({ callbackData, queryId, messageId }) => runRequest(() => options.transport.handleUpdate({
+                    update_id: updateId++,
+                    callback_query: {
+                      id: queryId,
+                      from: { id: Number(options.authorizedUserId) },
+                      data: callbackData,
+                      message: {
+                        message_id: Number(messageId),
+                        chat: { id: Number(options.authorizedChatId) },
+                      },
                     },
-                  },
-                })),
-                pendingApprovalIds: () => options.transport.listPendingDeliveries().map(({ approvalId }) => approvalId),
-                close: () => undefined,
-              }),
-              proveIndeterminateRecovery: (approval, digest) => proveSanctuaryAttemptedRecoveryWithoutRetry(options.agentRoot, digest, approval),
-              writeCredentialObserved: () => /credential|api[_-]?key|token|secret/iu.test(raw),
-            })
-            connection.end(`${JSON.stringify({ ok: true, result })}\n`)
-          } catch { connection.end(`${JSON.stringify({ ok: false, error: "interactive runtime operation failed" })}\n`) }
-        }).catch(() => { if (!connection.destroyed) connection.end(`${JSON.stringify({ ok: false, error: "interactive runtime operation failed" })}\n`) }) })
-      })
-      await new Promise<void>((resolve, reject) => { server!.once("error", reject); server!.listen(socketPath, () => { server!.off("error", reject); chmodSync(socketPath, 0o600); resolve() }) })
+                  })),
+                  pendingApprovalIds: () => options.transport.listPendingDeliveries().map(({ approvalId }) => approvalId),
+                  close: () => undefined,
+                }),
+                proveIndeterminateRecovery: (approval, digest) => proveSanctuaryAttemptedRecoveryWithoutRetry(options.agentRoot, digest, approval),
+                writeCredentialObserved: () => /credential|api[_-]?key|token|secret/iu.test(raw),
+              })
+              connection.end(`${JSON.stringify({ ok: true, result })}\n`)
+            } catch { connection.end(`${JSON.stringify({ ok: false, error: "interactive runtime operation failed" })}\n`) }
+          }).catch(() => { if (!connection.destroyed) connection.end(`${JSON.stringify({ ok: false, error: "interactive runtime operation failed" })}\n`) }) })
+        })
+        const active = server
+        try {
+          await new Promise<void>((resolve, reject) => {
+            const onError = (error: unknown) => { active.off("listening", onListening); reject(error) }
+            const onListening = () => {
+              active.off("error", onError)
+              try {
+                if (!endpoint || !matches(endpoint, readEndpoint())) throw new Error("Sanctuary interactive control socket ownership was replaced during startup")
+                resolve()
+              } catch (error) { reject(error) }
+            }
+            active.once("error", onError)
+            active.once("listening", onListening)
+            try {
+              active.listen(socketPath)
+              if (active.listening) {
+                endpoint = readEndpoint()
+                if (!endpoint?.isSocket()) throw new Error("Sanctuary interactive control startup ownership is unproven")
+                chmodSync(socketPath, 0o600)
+                endpoint = readEndpoint()
+              }
+            } catch (error) { active.off("error", onError); onError(error) }
+          })
+        } catch (error) {
+          try { await stopListener() }
+          catch (cleanupError) { throw new AggregateError([error, cleanupError], "Sanctuary interactive control startup and ownership cleanup failed") }
+          throw error
+        }
+      })().finally(() => { startPromise = undefined })
+      return startPromise
     },
-    async stop() { const active = server; server = undefined; if (active) await new Promise<void>((resolve) => active.close(() => resolve())); if (existsSync(socketPath)) unlinkSync(socketPath) },
+    stop() {
+      if (stopPromise) return stopPromise
+      const starting = startPromise
+      stopPromise = (async () => {
+        if (starting) await starting
+        await stopListener()
+      })().finally(() => { stopPromise = undefined })
+      return stopPromise
+    },
   }
 }
 

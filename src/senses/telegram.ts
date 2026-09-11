@@ -1761,6 +1761,27 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     releaseAcceptanceAudit(error)
   }
 
+  const pendingCleanup = new Set<() => void | Promise<void>>([
+    () => poll.stop(),
+    async () => { await runPromise?.catch(() => undefined) },
+    async () => { await Promise.all([...approvalReconciliationsInFlight]) },
+    async () => { await interactiveControl?.stop() },
+    () => api.stop(),
+    () => approvalRuntime?.close(),
+    () => effectJournal?.close(),
+    () => admissionStore?.close(),
+    () => resetAwaitToolDeps(),
+    () => runWithAcceptanceAuditOwner(() => {
+      emitNervesEvent({
+        component: "senses",
+        event: "senses.telegram_poll_end",
+        message: "Telegram long poll stopped",
+        meta: { agentName: options.agentName, subject },
+      })
+    }),
+    retireAcceptanceAudit,
+  ])
+
   return {
     run(signal) {
       if (runPromise) return runPromise
@@ -1847,30 +1868,12 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       if (stopPromise) return stopPromise
       stopPromise = (async () => {
         const errors: unknown[] = []
-        const attempt = async (operation: () => void | Promise<void>): Promise<void> => {
-          try { await operation() } catch (error) { errors.push(error) }
+        for (const operation of pendingCleanup) {
+          try { await operation(); pendingCleanup.delete(operation) } catch (error) { errors.push(error) }
         }
-        await attempt(() => poll.stop())
-        await attempt(async () => { await runPromise?.catch(() => undefined) })
-        await attempt(async () => { await Promise.all([...approvalReconciliationsInFlight]) })
-        await attempt(async () => { await interactiveControl?.stop() })
-        await attempt(() => api.stop())
-        await attempt(() => approvalRuntime?.close())
-        await attempt(() => effectJournal?.close())
-        await attempt(() => admissionStore?.close())
-        await attempt(() => resetAwaitToolDeps())
-        await attempt(() => runWithAcceptanceAuditOwner(() => {
-          emitNervesEvent({
-            component: "senses",
-            event: "senses.telegram_poll_end",
-            message: "Telegram long poll stopped",
-            meta: { agentName: options.agentName, subject },
-          })
-        }))
-        await attempt(retireAcceptanceAudit)
         if (errors.length === 1) throw errors[0]
         if (errors.length > 1) throw new AggregateError(errors, "Telegram sense cleanup failed")
-      })()
+      })().catch((error: unknown) => { stopPromise = undefined; throw error })
       return stopPromise
     },
   }
