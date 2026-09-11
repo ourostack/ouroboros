@@ -21,6 +21,14 @@ function pair() {
   return { first, second }
 }
 
+async function waitForTimestampAfter(socketPath: string, previous: bigint): Promise<void> {
+  await vi.waitFor(() => {
+    const marker = `${socketPath}.clock`
+    fs.writeFileSync(marker, "tick", { mode: 0o600 })
+    expect(fs.statSync(marker, { bigint: true }).mtimeNs).toBeGreaterThan(previous)
+  })
+}
+
 afterEach(async () => {
   vi.restoreAllMocks()
   for (const control of controls.splice(0).reverse()) await control.stop()
@@ -144,6 +152,7 @@ describe("D-007 ordered transitions and zero-birthtime ownership", () => {
     try {
       await first.start()
       original = fs.lstatSync(first.socketPath, { bigint: true })
+      await waitForTimestampAfter(first.socketPath, original.mtimeNs)
       fs.unlinkSync(first.socketPath)
       await second.start()
       const replacement = fs.lstatSync(second.socketPath, { bigint: true })
@@ -167,6 +176,7 @@ describe("D-007 ordered transitions and zero-birthtime ownership", () => {
     })
     await first.start()
     const before = fs.lstatSync(first.socketPath, { bigint: true })
+    await waitForTimestampAfter(first.socketPath, before.ctimeNs)
     fs.chmodSync(first.socketPath, 0o755)
     fs.chmodSync(first.socketPath, 0o600)
     const after = fs.lstatSync(first.socketPath, { bigint: true })

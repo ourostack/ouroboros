@@ -4,7 +4,8 @@
     {
       "version": "0.1.0-alpha.815",
       "changes": [
-        "Protect Sanctuary's resident control socket from transient Telegram app disposal, and safely retry interrupted startup and cleanup without stealing another listener."
+        "Protect Sanctuary's resident control socket from transient Telegram app disposal, and safely retry interrupted startup and cleanup without stealing another listener.",
+        "Preserve the order of overlapping startup and shutdown requests, and check socket modification time without mistaking permission changes for replacement."
       ]
     },
     {
