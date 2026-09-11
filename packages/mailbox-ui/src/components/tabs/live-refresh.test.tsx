@@ -537,7 +537,7 @@ describe("Mailbox deep-tab live refresh", () => {
     expect(ui.container.textContent).toContain("yes, loud and clear.")
   })
 
-  it("shows a footnote when a session transcript has truncated history", async () => {
+  it.each([true, false])("D006 distinguishes a trimmed model window from retained history (trimmed=%s)", async (truncatedHistory) => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
       if (url.endsWith("/sessions")) {
@@ -554,11 +554,11 @@ describe("Mailbox deep-tab live refresh", () => {
             lastActivityAt: "2026-04-09T17:00:00.000Z",
             activitySource: "event-timeline",
             replyState: "monitoring",
-            messageCount: 1,
+            messageCount: 2,
             lastUsage: null,
             continuity: null,
             latestUserExcerpt: "still here",
-            latestAssistantExcerpt: null,
+            latestAssistantExcerpt: "current answer",
             latestToolCallNames: [],
             estimatedTokens: 12,
           }],
@@ -567,7 +567,8 @@ describe("Mailbox deep-tab live refresh", () => {
       if (url.endsWith("/sessions/ari/bluebubbles/main")) {
         return jsonResponse(transcriptPayload([
           transcriptMessage(1, "user", "still here"),
-        ], "bluebubbles", true))
+          transcriptMessage(2, "assistant", "current answer"),
+        ], "bluebubbles", truncatedHistory))
       }
       throw new Error(`unexpected url: ${url}`)
     })
@@ -586,7 +587,13 @@ describe("Mailbox deep-tab live refresh", () => {
     )
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
-    expect(await ui.findByText("older context not available; the agent's curated record is in Desk record")).toBeTruthy()
+    await waitFor(() => expect(ui.getByTestId("session-transcript-scroll").textContent).toContain("still here"))
+    if (truncatedHistory) {
+      expect(await ui.findByText("Model context is trimmed; retained history is shown below.")).toBeTruthy()
+    } else {
+      expect(ui.queryByText("Model context is trimmed; retained history is shown below.")).toBeNull()
+    }
+    expect(ui.queryByText("older context not available; the agent's curated record is in Desk record")).toBeNull()
   })
 
   it("does not yank an open session transcript back to the bottom while the reader is scrolled up", async () => {
