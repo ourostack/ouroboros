@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.816",
+      "changes": [
+        "Support bounded Sanctuary service restarts only when a fresh request or health event intersects with explicit owner-stated desired state and restart grants.",
+        "Record applied policy changes, recheck authority and exact service identity before each restart, enforce durable restart limits, and preserve honest action and verification outcomes through approvals and event recovery.",
+        "Document fresh post-install owner provisioning and retire the fulfilled alpha.797 source-adoption path while preserving current package-managed update, recovery and empty packaged authority."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.815",
       "changes": [
         "Protect Sanctuary's resident control socket from transient Telegram app disposal, and safely retry interrupted startup and cleanup without stealing another listener.",
