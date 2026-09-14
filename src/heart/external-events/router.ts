@@ -363,7 +363,8 @@ function atomicWrite(recordPath: string, record: ExternalEventRecord): void {
   atomicWriteJson(recordPath, record, "External event record")
 }
 
-function withRecordLock<T>(recordPath: string, operation: () => T): T {
+function withRecordLock<T>(recordPath: string, operation: () => T): T
+function withRecordLock<T>(recordPath: string, operation: () => T | Promise<T>): T | Promise<T> {
   fs.mkdirSync(path.dirname(recordPath), { recursive: true })
   const lockPath = `${recordPath}.lock`
   const ownerPath = path.join(lockPath, "owner")
@@ -391,9 +392,7 @@ function withRecordLock<T>(recordPath: string, operation: () => T): T {
     }
   }
   acquire()
-  try {
-    return operation()
-  } finally {
+  const release = (): void => {
     try {
       /* v8 ignore else -- concurrency fence: a replaced owner must not release its successor's lock @preserve */
       if (fs.readFileSync(ownerPath, "utf8") === owner) {
@@ -403,6 +402,15 @@ function withRecordLock<T>(recordPath: string, operation: () => T): T {
     } catch {
       // A stale owner must never remove a successor's lock.
     }
+  }
+  try {
+    const result = operation()
+    if (result instanceof Promise) return result.finally(release)
+    release()
+    return result
+  } catch (error) {
+    release()
+    throw error
   }
 }
 
@@ -1254,15 +1262,26 @@ export function claimExternalEvent(recordPath: string, input: CasInput & { owner
   })
 }
 
-export function renewExternalEventClaim(recordPath: string, input: { owner: string; expectedGeneration: number; leaseMs?: number; now?: () => string }): ExternalEventRecord {
+interface ClaimRenewalInput { owner: string; expectedGeneration: number; leaseMs?: number; now?: () => string }
+
+function renewClaimLocked(recordPath: string, input: ClaimRenewalInput, requireCurrent: boolean): ExternalEventRecord {
+  const record = readExternalEventRecord(recordPath)
+  if (record.executionState !== "running" || record.claimOwner !== input.owner) throw new Error("External event claim owner mismatch")
+  if (record.generation !== input.expectedGeneration) throw new Error("External event generation mismatch")
+  const leaseMs = input.leaseMs ?? 30_000
+  if (!Number.isSafeInteger(leaseMs) || leaseMs <= 0) throw new Error("External event claim renewal is invalid")
+  const now = input.now?.() ?? new Date().toISOString()
+  if (requireCurrent && !(Date.parse(record.claimExpiresAt ?? "") > Date.parse(now))) throw new Error("External event claim expired")
+  return commitMutation(recordPath, { ...record, claimExpiresAt: new Date(Date.parse(now) + leaseMs).toISOString() }, now)
+}
+
+export function renewExternalEventClaim(recordPath: string, input: ClaimRenewalInput): ExternalEventRecord
+export function renewExternalEventClaim<T>(recordPath: string, input: ClaimRenewalInput, operation: (record: ExternalEventRecord, signal: AbortSignal) => Promise<T>): Promise<T>
+export function renewExternalEventClaim<T>(recordPath: string, input: ClaimRenewalInput, operation?: (record: ExternalEventRecord, signal: AbortSignal) => Promise<T>): ExternalEventRecord | Promise<T> {
   return withRecordLock(recordPath, () => {
-    const record = readExternalEventRecord(recordPath)
-    if (record.executionState !== "running" || record.claimOwner !== input.owner) throw new Error("External event claim owner mismatch")
-    if (record.generation !== input.expectedGeneration) throw new Error("External event generation mismatch")
-    const leaseMs = input.leaseMs ?? 30_000
-    if (!Number.isSafeInteger(leaseMs) || leaseMs <= 0) throw new Error("External event claim renewal is invalid")
-    const now = input.now?.() ?? new Date().toISOString()
-    return commitMutation(recordPath, { ...record, claimExpiresAt: new Date(Date.parse(now) + leaseMs).toISOString() }, now)
+    if (!operation) return renewClaimLocked(recordPath, input, false)
+    const signal = AbortSignal.timeout(25_000)
+    return operation(renewClaimLocked(recordPath, input, true), signal)
   })
 }
 

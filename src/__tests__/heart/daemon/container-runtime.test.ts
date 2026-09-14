@@ -760,7 +760,19 @@ inspect_registry_manifest_digest "$VERSION_IMAGE"`
     }
   })
 
-  it("rejects an unsafe initial adoption source before the full Update prelude can mutate", () => {
+  it("retires obsolete source admission and adoption entrypoints", () => {
+    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
+    for (const retired of [
+      "prepackage-alpha797", "assert_prepackage_alpha797_source", "validate_sanctuary_legacy_staging",
+      "prepare_sanctuary_legacy_adoption", "capture_sanctuary_legacy_evidence", "install_from_legacy_staging",
+      "adoption-source-exact", "docker start ouro-butler-staging",
+    ]) expect(runbook).not.toContain(retired)
+    expect(runbook).toContain("assert_legacy_alpha742_source")
+    expect(runbook).toContain('test "$IMAGE_ID" != sha256:e337dff04c92d116b269052f473b26a47eea933d017d1befc73af50dd37bb08d')
+    expect(runbook).toContain('test "$AUDIT_RUNNER_IMAGE_ID" != sha256:e337dff04c92d116b269052f473b26a47eea933d017d1befc73af50dd37bb08d')
+  })
+
+  it("rejects retired or unsafe sources before the full Update prelude can mutate", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     const targetRawManifest = '{"manifests":[],"schemaVersion":2}\n'
     const targetManifest = `sha256:${createHash("sha256").update(targetRawManifest).digest("hex")}`
@@ -792,8 +804,6 @@ inspect_registry_manifest_digest "$VERSION_IMAGE"`
       '/bin/bash "$EVENT_SCRIPT_STAGE/install-usenet-guard.sh"',
       "/bin/bash /boot/config/custom/ouro-events/install-usenet-guard.sh --boot",
       "fs.writeFileSync(destinationPath",
-      "prepare_sanctuary_legacy_adoption",
-      "provision_sanctuary_sab_credential",
       "disable_butler_autostart",
       "docker stop ouro-butler",
     ]) {
@@ -804,6 +814,8 @@ inspect_registry_manifest_digest "$VERSION_IMAGE"`
     const manifestDigest = extractRunbookFunction(runbook, "inspect_registry_manifest_digest")
     const entryAdmission = extractRunbookFunction(runbook, "admit_sanctuary_update_entry")
       .replaceAll("/boot/config/custom/ouro-butler/docker-man-template-transaction.json", "$ENTRY_JOURNAL")
+    const legacyStaging = runbook.includes("    validate_sanctuary_legacy_staging() {")
+      ? extractRunbookFunction(runbook, "validate_sanctuary_legacy_staging") : ""
     const script = String.raw`set -eu
 SCENARIO=$1
 source_image() {
@@ -835,7 +847,7 @@ docker() {
       "{{.State.Running}}") command printf 'true\n' ;;
       "{{.Id}}") command printf '%s\n' "$LEGACY_CONTAINER_ID" ;;
       "{{.Image}}") source_image ;;
-      "{{.Config.Image}}") command printf '%s\n' "$PACKAGE_IMAGE_REFERENCE" ;;
+      "{{.Config.Image}}") case "$SCENARIO" in canonical-alpha797|staging-alpha797) source_image ;; *) command printf '%s\n' "$PACKAGE_IMAGE_REFERENCE" ;; esac ;;
       '{{with .Config.Labels}}{{index . "net.unraid.docker.managed"}}{{end}}') command printf 'dockerman\n' ;;
       '{{with .Config.Labels}}{{index . "net.unraid.docker.icon"}}{{end}}') command printf 'https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png\n' ;;
       *) return 89 ;;
@@ -856,7 +868,7 @@ ${extractRunbookFunction(runbook, "validate_exact_image_id")}
 ${extractRunbookFunction(runbook, "assert_only_running_butler")}
 ${extractRunbookFunction(runbook, "assert_update_topology")}
 ${sourcePin}
-${extractRunbookFunction(runbook, "validate_sanctuary_legacy_staging")}
+${legacyStaging}
 ${extractRunbookFunction(runbook, "classify_sanctuary_update_source")}
 ${entryAdmission}
 ${manifestDigest}
@@ -875,13 +887,13 @@ ${updatePrelude}`
         PACKAGE_IMAGE_REFERENCE: "ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.796",
         TARGET_RAW_MANIFEST: targetRawManifest,
       }
-      for (const scenario of ["staging-unknown-image", "canonical-unknown-image", "disallowed-name"]) {
+      for (const scenario of ["canonical-alpha797", "staging-alpha797", "staging-unknown-image", "canonical-unknown-image", "disallowed-name"]) {
         fs.writeFileSync(callLog, "", { mode: 0o600 })
         const result = runConditionalHelper(script, scenario, environment)
         expect(result.status, `${scenario}\n${result.stderr}`).not.toBe(0)
         expect(fs.readFileSync(callLog, "utf8"), scenario).toBe("")
       }
-      for (const scenario of ["canonical-alpha742", "canonical-alpha797", "staging-alpha797", "package-managed"]) {
+      for (const scenario of ["canonical-alpha742", "package-managed"]) {
         fs.writeFileSync(callLog, "", { mode: 0o600 })
         const result = runConditionalHelper(script, scenario, environment)
         expect(result.status, `${scenario}\n${result.stderr}`).toBe(91)
@@ -940,243 +952,6 @@ admit_sanctuary_update_entry`
         expect(result.status, `${scenario}: ${result.stderr}`).toBe(expectedStatus)
         expect(fs.readFileSync(callLog, "utf8"), scenario).toBe(expectedCalls)
       }
-    } finally {
-      fs.rmSync(testRoot, { recursive: true, force: true })
-    }
-  })
-
-  it("pins and audits the initial adoption source before any adoption mutation", () => {
-    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
-    const sourceAssertion = extractRunbookFunction(runbook, "assert_prepackage_alpha797_source")
-    const preparation = extractRunbookFunction(runbook, "prepare_sanctuary_legacy_adoption")
-    const adoption = extractRunbookFunction(runbook, "install_from_legacy_staging")
-    const validate = preparation.indexOf("validate_sanctuary_legacy_staging")
-    const sourceAudit = preparation.indexOf('assert_prepackage_alpha797_source "$PREPARED_LEGACY_IMAGE_ID" "$IMAGE_ID" ouro-butler-staging')
-    const adoptionPreparation = adoption.indexOf('prepare_sanctuary_legacy_adoption "$IMAGE_ID"')
-
-    expect(sourceAssertion).toContain("SOURCE_CONTAINER=$3")
-    expect(sourceAssertion).toContain('audit_effective "$SOURCE_CONTAINER" "$EXPECTED_SOURCE_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" prepackage-alpha797')
-    expect(sourceAudit).toBeGreaterThan(validate)
-    for (const mutation of [
-      'prepare_canonical_sanctuary_roots "$IMAGE_ID"',
-      'bootstrap_sanctuary_vault "$IMAGE_ID"',
-      'provision_sanctuary_sab_credential "$IMAGE_ID"',
-    ]) {
-      expect(preparation.indexOf(mutation)).toBeGreaterThan(sourceAudit)
-    }
-    expect(adoptionPreparation).toBeGreaterThan(-1)
-    for (const mutation of [
-      "capture_sanctuary_legacy_evidence",
-      '"$STAGED_DOCKERMAN_TRANSACTION" prepare',
-      "disable_butler_autostart",
-      'docker stop "$LEGACY_STAGING_CONTAINER_ID"',
-      "docker create --pull=never --name ouro-butler",
-    ]) {
-      expect(adoption.indexOf(mutation)).toBeGreaterThan(adoptionPreparation)
-    }
-
-    const script = String.raw`set -u
-SCENARIO=$1
-validate_exact_image_id() { return 0; }
-validate_sanctuary_legacy_staging() {
-  LEGACY_STAGING_CONTAINER_ID=$(command printf '%064d' 1)
-  case "$SCENARIO" in
-    unknown-image) LEGACY_STAGING_IMAGE_ID=$UNKNOWN_LEGACY_IMAGE ;;
-    third-name) LEGACY_STAGING_IMAGE_ID=$PINNED_LEGACY_IMAGE ;;
-    *) return 97 ;;
-  esac
-}
-audit_effective() {
-  command printf 'AUDIT:%s:%s:%s:%s\n' "$1" "$2" "$3" "$4" >>"$CALL_LOG"
-  test "$SCENARIO" != third-name || return 29
-}
-${extractRunbookFunction(runbook, "assert_sanctuary_update_source_pin")}
-${sourceAssertion}
-prepare_canonical_sanctuary_roots() { command printf 'MUTATION:prepare-roots\n' >>"$CALL_LOG"; }
-bootstrap_sanctuary_vault() { command printf 'MUTATION:bootstrap-vault\n' >>"$CALL_LOG"; }
-provision_sanctuary_sab_credential() { command printf 'MUTATION:provision-sab\n' >>"$CALL_LOG"; }
-verify_sanctuary_sab_readiness() { return 0; }
-verify_sanctuary_provider_readiness() { return 0; }
-capture_sanctuary_legacy_evidence() { command printf 'MUTATION:capture-evidence\n' >>"$CALL_LOG"; }
-disable_butler_autostart() { command printf 'MUTATION:disable-autostart\n' >>"$CALL_LOG"; }
-enable_butler_autostart() { command printf 'MUTATION:enable-autostart\n' >>"$CALL_LOG"; }
-docker() {
-  if test "$1 $2 $3" = "inspect --format {{.Image}}"; then
-    case "$SCENARIO" in unknown-image) command printf '%s\n' "$UNKNOWN_LEGACY_IMAGE" ;; *) command printf '%s\n' "$PINNED_LEGACY_IMAGE" ;; esac
-    return 0
-  fi
-  case "$1" in
-    stop|rename|create|rm|start) command printf 'MUTATION:docker:%s\n' "$*" >>"$CALL_LOG" ;;
-  esac
-  return 0
-}
-${preparation}
-${adoption}
-install_from_legacy_staging`
-    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-adoption-source-pin-"))
-    try {
-      const callLog = path.join(testRoot, "calls.log")
-      const targetImage = `sha256:${"e".repeat(64)}`
-      const unknownLegacyImage = `sha256:${"c".repeat(64)}`
-      const pinnedLegacyImage = "sha256:e337dff04c92d116b269052f473b26a47eea933d017d1befc73af50dd37bb08d"
-      for (const [scenario, expectedStatus, expectedLog] of [
-        ["unknown-image", 1, ""],
-        ["third-name", 29, `AUDIT:ouro-butler-staging:${pinnedLegacyImage}:${targetImage}:prepackage-alpha797\n`],
-      ] as const) {
-        fs.writeFileSync(callLog, "", { mode: 0o600 })
-        const result = runConditionalHelper(script, scenario, { CALL_LOG: callLog, IMAGE_ID: targetImage, UNKNOWN_LEGACY_IMAGE: unknownLegacyImage, PINNED_LEGACY_IMAGE: pinnedLegacyImage })
-        expect(result.status, result.stderr).toBe(expectedStatus)
-        expect(fs.readFileSync(callLog, "utf8")).toBe(expectedLog)
-      }
-    } finally {
-      fs.rmSync(testRoot, { recursive: true, force: true })
-    }
-  })
-
-  it("preserves legacy evidence while promoting one canonical production poller", () => {
-    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
-    const rawManifest = '{"manifests":[],"schemaVersion":2}\n'
-    const manifestDigest = `sha256:${createHash("sha256").update(rawManifest).digest("hex")}`
-    const imageValidator = extractRunbookFunction(runbook, "validate_exact_image_id")
-    const registryDigest = extractRunbookFunction(runbook, "inspect_registry_manifest_digest")
-      .replaceAll("/tmp/ouro-registry-manifest.", "$TEST_ROOT/ouro-registry-manifest.")
-    const onlyRunning = extractRunbookFunction(runbook, "assert_only_running_butler")
-    const validateLegacy = extractRunbookFunction(runbook, "validate_sanctuary_legacy_staging")
-    const adoption = extractRunbookFunction(runbook, "install_from_legacy_staging")
-      .replaceAll("/mnt/user/appdata/ouro-butler", "$TEST_ROOT/appdata")
-      .replaceAll('/usr/local/bin/node "$STAGED_DOCKERMAN_TRANSACTION"', "docker_man_transaction")
-    const image = "sha256:e337dff04c92d116b269052f473b26a47eea933d017d1befc73af50dd37bb08d"
-    const script = String.raw`set -u
-SCENARIO=$1
-docker() {
-  command printf '%s\n' "$*" >>"$CALL_LOG"
-  case "$*" in
-    "container ls -a --format {{.Names}}")
-      if [ "$SCENARIO" = extra ]; then command printf 'ouro-butler-staging\nouro-butler-rollback\n'
-      else case "$(command cat "$STATE")" in
-        legacy|legacy-stopped) command printf 'ouro-butler-staging\n' ;;
-        evidence) command printf 'ouro-butler-legacy-evidence\n' ;;
-        prod-created|prod-running) command printf 'ouro-butler\nouro-butler-legacy-evidence\n' ;;
-      esac; fi ;;
-    "container ls -q")
-      case "$(command cat "$STATE")" in legacy) command printf 'staging-id\n' ;; prod-running) command printf 'production-id\n' ;; esac ;;
-    "container inspect --format {{.Name}} staging-id") command printf '/ouro-butler-staging\n' ;;
-    "container inspect --format {{.Name}} production-id") command printf '/ouro-butler\n' ;;
-    "inspect --format {{.Image}} "*) if [ "$SCENARIO" = mismatch ] && [ "$(command cat "$STATE")" = legacy ]; then command printf 'not-an-image\n'; elif [ "$4" = ouro-butler-legacy-evidence ]; then command printf '%s\n' "$LEGACY_IMAGE"; elif [ "$(command cat "$STATE")" = legacy ] || [ "$(command cat "$STATE")" = legacy-stopped ]; then command printf '%s\n' "$LEGACY_IMAGE"; else command printf '%s\n' "$TARGET_IMAGE"; fi ;;
-    "inspect --format {{.Id}} ouro-butler-staging") command printf '%064d\n' 1 ;;
-    "inspect --format {{.State.Running}} "*) case "$(command cat "$STATE")" in legacy|prod-running) command printf 'true\n' ;; *) command printf 'false\n' ;; esac ;;
-    "buildx imagetools inspect "*" --raw") command printf '%s' "$RAW_MANIFEST" ;;
-    "image inspect --format {{.Id}} "*) command printf '%s\n' "$TARGET_IMAGE" ;;
-    "image inspect "*) return 0 ;;
-    "container inspect ouro-butler-staging") command printf '{}\n' ;;
-    "stop "*) case "$(command cat "$STATE")" in legacy) command printf legacy-stopped >"$STATE" ;; esac ;;
-    "rename "*" ouro-butler-legacy-evidence") command printf evidence >"$STATE" ;;
-    "create --pull=never --name ouro-butler "*) command printf prod-created >"$STATE" ;;
-    "start ouro-butler") command printf prod-running >"$STATE" ;;
-    *) return 0 ;;
-  esac
-}
-install() { eval "INSTALL_LAST=\${$#}"; command mkdir -p "$INSTALL_LAST"; }
-chmod() { return 0; }
-sync() { return 0; }
-audit_effective() { return 0; }
-disable_butler_autostart() { return 0; }
-enable_butler_autostart() { return 0; }
-wait_butler_ready() { return 0; }
-prepare_canonical_sanctuary_roots() { return 0; }
-bootstrap_sanctuary_vault() { return 0; }
-prepare_sanctuary_legacy_adoption() { LEGACY_STAGING_CONTAINER_ID=$(command printf '%064d' 1); LEGACY_STAGING_IMAGE_ID=$LEGACY_IMAGE; }
-verify_sanctuary_provider_readiness() { return 0; }
-capture_sanctuary_legacy_evidence() { return 0; }
-docker_man_transaction() { command printf 'transaction:%s\n' "$1" >>"$CALL_LOG"; }
-write_dockerman_final_proof() { command printf '%s\n' "$TEST_ROOT/final-proof.json"; }
-verify_known_good_rollback_artifact() { test "$1" = "$LEGACY_IMAGE"; }
-${imageValidator}
-${onlyRunning}
-${validateLegacy}
-${registryDigest}
-${adoption}
-if install_from_legacy_staging; then command printf 'ADOPTED\n'; else exit $?; fi`
-    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-adoption-"))
-    try {
-      for (const scenario of ["extra", "mismatch"]) {
-        const callLog = path.join(testRoot, `${scenario}.log`)
-        const state = path.join(testRoot, `${scenario}.state`)
-        fs.writeFileSync(state, "legacy")
-        const result = runConditionalHelper(script, scenario, { CALL_LOG: callLog, STATE: state, TEST_ROOT: testRoot, EVENT_ASSET_STAGE: testRoot, LEGACY_IMAGE: image, TARGET_IMAGE: `sha256:${"e".repeat(64)}`, IMAGE_ID: `sha256:${"e".repeat(64)}`, STAGED_TEMPLATE: "/stage/sanctuary.xml", VERSION_IMAGE: "ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.798", MANIFEST_DIGEST: manifestDigest, RAW_MANIFEST: rawManifest, TEMPLATE_ICON: "https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png" })
-        expect(result.status, `${scenario}\n${result.stderr}`).not.toBe(0)
-        expect(result.stdout).not.toContain("ADOPTED")
-        expect(fs.readFileSync(callLog, "utf8")).not.toContain("rm ")
-      }
-      const callLog = path.join(testRoot, "legacy.log")
-      const state = path.join(testRoot, "legacy.state")
-      fs.writeFileSync(state, "legacy")
-      const success = runConditionalHelper(script, "legacy", { CALL_LOG: callLog, STATE: state, TEST_ROOT: testRoot, EVENT_ASSET_STAGE: testRoot, LEGACY_IMAGE: image, TARGET_IMAGE: `sha256:${"e".repeat(64)}`, IMAGE_ID: `sha256:${"e".repeat(64)}`, STAGED_TEMPLATE: "/stage/sanctuary.xml", VERSION_IMAGE: "ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.798", MANIFEST_DIGEST: manifestDigest, RAW_MANIFEST: rawManifest, TEMPLATE_ICON: "https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png" })
-      expect(success.status, success.stderr).toBe(0)
-      expect(success.stdout).toContain("ADOPTED")
-      const calls = fs.readFileSync(callLog, "utf8")
-      expect(calls).toContain(`stop ${"0".repeat(63)}1`)
-      expect(calls).toContain(`rename ${"0".repeat(63)}1 ouro-butler-legacy-evidence`)
-      expect(calls).not.toContain("create --name ouro-butler-staging")
-      expect(calls).not.toContain("start ouro-butler-staging")
-      expect(calls).not.toContain("rm ouro-butler-staging")
-      expect(calls).toContain("create --pull=never --name ouro-butler")
-      expect(calls).toContain("start ouro-butler")
-      expect(calls).not.toContain("rm ouro-butler-legacy-evidence")
-      expect(calls).toContain("transaction:prepare")
-      expect(calls).toContain("transaction:mark-committing")
-      expect(calls).toContain("transaction:commit")
-    } finally {
-      fs.rmSync(testRoot, { recursive: true, force: true })
-    }
-  })
-
-  it("prepares and bootstraps canonical roots from the exact image before stopping legacy", () => {
-    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
-    const adoption = extractRunbookFunction(runbook, "install_from_legacy_staging")
-    const preparation = extractRunbookFunction(runbook, "prepare_sanctuary_legacy_adoption")
-    const prepare = preparation.indexOf('prepare_canonical_sanctuary_roots "$IMAGE_ID"')
-    const bootstrap = preparation.indexOf('bootstrap_sanctuary_vault "$IMAGE_ID"', prepare)
-    const readiness = adoption.indexOf('verify_sanctuary_provider_readiness "$IMAGE_ID"')
-    const stopLegacy = adoption.indexOf("docker stop ouro-butler-staging", readiness)
-
-    expect(prepare).toBeGreaterThan(-1)
-    expect(bootstrap).toBeGreaterThan(prepare)
-    expect(stopLegacy).toBeGreaterThan(bootstrap)
-    expect(runbook).not.toContain('discardProviderCredentialRecords: { providers: ["minimax"] }')
-
-    const script = String.raw`set -u
-SCENARIO=$1
-docker() {
-  command printf '%s\n' "$*" >>"$CALL_LOG"
-  case "$*" in
-    "container ls -a --format {{.Names}}") command printf 'ouro-butler-staging\n' ;;
-    "container ls --format {{.Names}}") command printf 'ouro-butler-staging\n' ;;
-    "inspect --format {{.Image}} ouro-butler-staging") command printf '%s\n' "$LEGACY_IMAGE" ;;
-    "image inspect "*) return 0 ;;
-    *) return 0 ;;
-  esac
-}
-validate_sanctuary_legacy_staging() { LEGACY_STAGING_CONTAINER_ID=$(command printf '%064d' 1); LEGACY_STAGING_IMAGE_ID=$LEGACY_IMAGE; }
-assert_prepackage_alpha797_source() { command printf 'audit %s %s %s\n' "$1" "$2" "$3" >>"$CALL_LOG"; }
-prepare_canonical_sanctuary_roots() { command printf 'prepare %s\n' "$1" >>"$CALL_LOG"; }
-bootstrap_sanctuary_vault() { command printf 'bootstrap %s\n' "$1" >>"$CALL_LOG"; return 23; }
-validate_exact_image_id() { return 0; }
-assert_only_running_butler() { return 0; }
-${preparation}
-prepare_sanctuary_legacy_adoption "$IMAGE_ID"`
-    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-adoption-prestop-"))
-    try {
-      const callLog = path.join(testRoot, "calls.log")
-      const image = `sha256:${"f".repeat(64)}`
-      const legacyImage = "sha256:e337dff04c92d116b269052f473b26a47eea933d017d1befc73af50dd37bb08d"
-      const result = runConditionalHelper(script, "bootstrap-failure", { CALL_LOG: callLog, LEGACY_IMAGE: legacyImage, IMAGE_ID: image })
-      expect(result.status, result.stderr).toBe(23)
-      const calls = fs.readFileSync(callLog, "utf8")
-      expect(calls).toContain(`audit ${legacyImage} ${image} ouro-butler-staging`)
-      expect(calls).toContain(`prepare ${image}`)
-      expect(calls).toContain(`bootstrap ${image}`)
-      expect(calls).not.toContain("stop ouro-butler-staging")
     } finally {
       fs.rmSync(testRoot, { recursive: true, force: true })
     }
@@ -1407,24 +1182,15 @@ fi`
     expect(helper).not.toContain("ouro-entry.js auth verify --agent sanctuary")
   })
 
-  it("splits legacy preparation, provider authentication, readiness, and noninteractive install authority", () => {
+  it("keeps explicit provider authentication separate from bootstrap and readiness", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
-    const prepare = extractRunbookFunction(runbook, "prepare_sanctuary_legacy_adoption")
     const bootstrap = extractRunbookFunction(runbook, "bootstrap_sanctuary_vault")
     const authenticate = extractRunbookFunction(runbook, "authenticate_sanctuary_provider")
     const readiness = extractRunbookFunction(runbook, "verify_sanctuary_provider_readiness")
-    const install = extractRunbookFunction(runbook, "install_from_legacy_staging")
-
-    expect(prepare).toMatch(/bootstrap_sanctuary_vault "\$IMAGE_ID" \\\n\s+\/mnt\/user\/appdata\/ouro-butler\/runtime\/container-credentials\.json \\\n\s+sanctuary-unraid sanctuary/u)
     expect(bootstrap).toContain("sourceMachineId: process.argv[1]")
     expect(bootstrap).toContain("targetMachineId: process.argv[2]")
-    expect(prepare).not.toContain("verify_sanctuary_provider_readiness")
-    expect(prepare).not.toContain("disable_butler_autostart")
-    expect(prepare).not.toMatch(/docker (?:stop|rename|create|rm) /u)
     expect(authenticate).not.toContain("install_from_legacy_staging")
     expect(readiness).not.toContain("ouro auth verify")
-    expect(install).not.toContain("authenticate_sanctuary_provider")
-    expect(install).not.toMatch(/ouro-entry\.js auth|ouro auth/u)
   })
 
   it("rejects non-allowlisted provider authentication before Docker and keeps secrets off argv", () => {
@@ -1557,365 +1323,6 @@ authenticate_sanctuary_provider "$IMAGE_ID" "$PROVIDER"`
     }
   })
 
-  it.each([
-    "prepare-failure",
-    "readiness-failure",
-    "container-id-changed",
-    "image-id-changed",
-    "extra-butler",
-    "legacy-stopped",
-    "legacy-missing",
-  ])("revalidates the exact prepared legacy instance after fresh readiness before mutation: %s", (scenario) => {
-    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
-    const install = extractRunbookFunction(runbook, "install_from_legacy_staging")
-    const image = `sha256:${"9".repeat(64)}`
-    const legacyImage = `sha256:${"a".repeat(64)}`
-    const script = String.raw`set -u
-SCENARIO=$1
-prepare_sanctuary_legacy_adoption() {
-  command printf 'prepare\n' >>"$CALL_LOG"
-  test "$SCENARIO" != prepare-failure || return 23
-  LEGACY_STAGING_CONTAINER_ID=$(command printf '%064d' 1)
-  LEGACY_STAGING_IMAGE_ID=$LEGACY_IMAGE
-}
-verify_sanctuary_provider_readiness() { command printf 'readiness\n' >>"$CALL_LOG"; test "$SCENARIO" != readiness-failure; }
-docker() {
-  case "$*" in
-    "container ls -a --format {{.Names}}") case "$SCENARIO" in extra-butler) command printf 'ouro-butler-staging\nother-butler\n' ;; legacy-missing) : ;; *) command printf 'ouro-butler-staging\n' ;; esac ;;
-    "container ls --format {{.Names}}") case "$SCENARIO" in legacy-stopped|legacy-missing) : ;; *) command printf 'ouro-butler-staging\n' ;; esac ;;
-    "inspect --format {{.Id}} ouro-butler-staging") if [ "$SCENARIO" = container-id-changed ]; then command printf '%064d\n' 2; else command printf '%064d\n' 1; fi ;;
-    "inspect --format {{.Image}} ouro-butler-staging") if [ "$SCENARIO" = image-id-changed ]; then command printf 'sha256:%064d\n' 0; else command printf '%s\n' "$LEGACY_IMAGE"; fi ;;
-    "inspect --format {{.State.Running}} ouro-butler-staging") if [ "$SCENARIO" = legacy-stopped ]; then command printf 'false\n'; else command printf 'true\n'; fi ;;
-    stop\ *|rename\ *|create\ *|rm\ *) command printf 'MUTATION:%s\n' "$*" >>"$CALL_LOG"; return 23 ;;
-    *) return 0 ;;
-  esac
-}
-disable_butler_autostart() { command printf 'MUTATION:disable-autostart\n' >>"$CALL_LOG"; return 23; }
-${install}
-install_from_legacy_staging`
-    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-adoption-race-"))
-    try {
-      const callLog = path.join(testRoot, "calls.log")
-      const result = runConditionalHelper(script, scenario, { CALL_LOG: callLog, IMAGE_ID: image, LEGACY_IMAGE: legacyImage })
-      expect(result.status, `${scenario}\n${result.stderr}`).not.toBe(0)
-      const calls = fs.existsSync(callLog) ? fs.readFileSync(callLog, "utf8") : ""
-      expect(calls).toContain("prepare")
-      if (scenario !== "prepare-failure") expect(calls).toContain("readiness")
-      expect(calls).not.toContain("MUTATION:")
-    } finally {
-      fs.rmSync(testRoot, { recursive: true, force: true })
-    }
-  })
-
-  it("keeps preparation resumable and requires fresh readiness on every final-install retry", () => {
-    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
-    const prepare = extractRunbookFunction(runbook, "prepare_sanctuary_legacy_adoption")
-    const bootstrap = extractRunbookFunction(runbook, "bootstrap_sanctuary_vault")
-    const install = extractRunbookFunction(runbook, "install_from_legacy_staging")
-
-    expect(bootstrap).toContain("legacy-credentials-imported.json")
-    expect(bootstrap).toContain(".consuming")
-    expect(bootstrap).toContain("cmp -s")
-    expect(bootstrap).toContain("validate_sanctuary_legacy_import_marker")
-    expect(bootstrap).not.toMatch(/rm[^\n]*legacy[^\n]*container-credentials|mv[^\n]*legacy[^\n]*container-credentials/iu)
-    expect(prepare).toContain('validate_sanctuary_legacy_staging "$PREPARED_LEGACY_CONTAINER_ID" "$PREPARED_LEGACY_IMAGE_ID"')
-    expect(install.match(/prepare_sanctuary_legacy_adoption/g)).toHaveLength(1)
-    expect(install.match(/verify_sanctuary_provider_readiness/g)).toHaveLength(1)
-    expect(install.indexOf("prepare_sanctuary_legacy_adoption")).toBeLessThan(install.indexOf("verify_sanctuary_provider_readiness"))
-    expect(install.indexOf("verify_sanctuary_provider_readiness")).toBeLessThan(install.indexOf("disable_butler_autostart"))
-    expect(install).not.toMatch(/receipt|READINESS_OK|READY_MARKER/iu)
-  })
-
-  it.each([
-    ["empty", "empty"],
-    ["partial", "partial"],
-    ["complete", "complete"],
-  ])("resumes exact legacy evidence capture from a %s evidence directory", (_label, scenario) => {
-    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
-    const capture = extractRunbookFunction(runbook, "capture_sanctuary_legacy_evidence").replaceAll("/usr/local/bin/node", "node")
-    const containerId = "0".repeat(63) + "1"
-    const imageId = `sha256:${"a".repeat(64)}`
-    const containerJson = `${JSON.stringify([{ Id: containerId, Image: imageId }])}\n`
-    const imageJson = `${JSON.stringify([{ Id: imageId }])}\n`
-    const script = String.raw`set -u
-docker() {
-  command printf '%s\n' "$*" >>"$CALL_LOG"
-  case "$*" in
-    "container inspect $CONTAINER_ID") command printf '%s' "$CONTAINER_JSON" ;;
-    "image inspect $IMAGE_ID") command printf '%s' "$IMAGE_JSON" ;;
-    *) return 23 ;;
-  esac
-}
-install() { eval "TARGET=\${$#}"; command mkdir -p "$TARGET"; command chmod 0700 "$TARGET"; }
-sync() { return 0; }
-validate_exact_image_id() { return 0; }
-file_inode() { node -e 'const fs = require("node:fs"); process.stdout.write(String(fs.statSync(process.argv[1]).ino))' "$1"; }
-${capture}
-EVIDENCE_DIR="$EVIDENCE_ROOT/${imageId.slice("sha256:".length)}"
-command mkdir -p "$EVIDENCE_DIR"
-command chmod 0700 "$EVIDENCE_ROOT" "$EVIDENCE_DIR"
-case "$SCENARIO" in
-  partial) command printf '%s' "$CONTAINER_JSON" >"$EVIDENCE_DIR/container.json" ;;
-  complete)
-    command printf '%s' "$CONTAINER_JSON" >"$EVIDENCE_DIR/container.json"
-    command printf '%s' "$IMAGE_JSON" >"$EVIDENCE_DIR/image.json"
-    ;;
-esac
-test ! -e "$EVIDENCE_DIR/container.json" || test "$SCENARIO" = partial || command chmod 0600 "$EVIDENCE_DIR/container.json"
-test ! -e "$EVIDENCE_DIR/image.json" || command chmod 0600 "$EVIDENCE_DIR/image.json"
-BEFORE_CONTAINER_INODE=$(test -e "$EVIDENCE_DIR/container.json" && file_inode "$EVIDENCE_DIR/container.json" || command printf missing)
-BEFORE_IMAGE_INODE=$(test -e "$EVIDENCE_DIR/image.json" && file_inode "$EVIDENCE_DIR/image.json" || command printf missing)
-capture_sanctuary_legacy_evidence "$CONTAINER_ID" "$IMAGE_ID" "$EVIDENCE_ROOT" || exit $?
-command printf 'container-inode:%s:%s\n' "$BEFORE_CONTAINER_INODE" "$(file_inode "$EVIDENCE_DIR/container.json")"
-command printf 'image-inode:%s:%s\n' "$BEFORE_IMAGE_INODE" "$(file_inode "$EVIDENCE_DIR/image.json")"`
-    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-legacy-evidence-resume-"))
-    try {
-      const evidenceRoot = path.join(testRoot, "legacy-evidence")
-      const callLog = path.join(testRoot, "calls.log")
-      const result = runConditionalHelper(script, scenario, {
-        SCENARIO: scenario, EVIDENCE_ROOT: evidenceRoot, CALL_LOG: callLog,
-        CONTAINER_ID: containerId, IMAGE_ID: imageId, CONTAINER_JSON: containerJson, IMAGE_JSON: imageJson,
-      })
-      expect(result.status, result.stderr).toBe(0)
-      const evidenceDir = path.join(evidenceRoot, imageId.slice("sha256:".length))
-      expect(fs.readFileSync(path.join(evidenceDir, "container.json"), "utf8")).toBe(containerJson)
-      expect(fs.readFileSync(path.join(evidenceDir, "image.json"), "utf8")).toBe(imageJson)
-      expect(fs.statSync(path.join(evidenceDir, "container.json")).mode & 0o777).toBe(0o600)
-      expect(fs.statSync(path.join(evidenceDir, "image.json")).mode & 0o777).toBe(0o600)
-      const calls = fs.existsSync(callLog) ? fs.readFileSync(callLog, "utf8").trim().split("\n") : []
-      expect(calls.filter(call => call.startsWith("container inspect"))).toHaveLength(scenario === "empty" ? 1 : 0)
-      expect(calls.filter(call => call.startsWith("image inspect"))).toHaveLength(scenario === "complete" ? 0 : 1)
-      if (scenario === "partial") expect(result.stdout).toMatch(/container-inode:(\d+):\1/u)
-      if (scenario === "complete") {
-        expect(result.stdout).toMatch(/container-inode:(\d+):\1/u)
-        expect(result.stdout).toMatch(/image-inode:(\d+):\1/u)
-      }
-    } finally {
-      fs.rmSync(testRoot, { recursive: true, force: true })
-    }
-  })
-
-  it.each([
-    ["mismatched container evidence", "mismatch"],
-    ["symbolic-link evidence", "symlink"],
-    ["unexpected evidence entry", "extra"],
-    ["failed fresh evidence capture", "capture-failure"],
-  ])("fails closed without overwriting or mutating legacy for %s", (_label, scenario) => {
-    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
-    const capture = extractRunbookFunction(runbook, "capture_sanctuary_legacy_evidence").replaceAll("/usr/local/bin/node", "node")
-    const containerId = "0".repeat(63) + "1"
-    const imageId = `sha256:${"a".repeat(64)}`
-    const conflicting = `${JSON.stringify([{ Id: "0".repeat(63) + "2", Image: imageId }])}\n`
-    const validImage = `${JSON.stringify([{ Id: imageId }])}\n`
-    const script = String.raw`set -u
-docker() { command printf 'INSPECT:%s\n' "$*" >>"$CALL_LOG"; return 23; }
-install() { eval "TARGET=\${$#}"; command mkdir -p "$TARGET"; command chmod 0700 "$TARGET"; }
-sync() { return 0; }
-validate_exact_image_id() { return 0; }
-${capture}
-EVIDENCE_DIR="$EVIDENCE_ROOT/${imageId.slice("sha256:".length)}"
-command mkdir -p "$EVIDENCE_DIR"
-command chmod 0700 "$EVIDENCE_ROOT" "$EVIDENCE_DIR"
-command printf '%s' "$CONFLICTING" >"$PRESERVED"
-case "$SCENARIO" in
-  mismatch) command cp "$PRESERVED" "$EVIDENCE_DIR/container.json" ;;
-  symlink) command ln -s "$PRESERVED" "$EVIDENCE_DIR/container.json" ;;
-  extra)
-    command printf '%s' "$VALID_IMAGE" >"$EVIDENCE_DIR/image.json"
-    command printf 'unexpected\n' >"$EVIDENCE_DIR/unexpected"
-    ;;
-esac
-test ! -L "$EVIDENCE_DIR/container.json" && test -e "$EVIDENCE_DIR/container.json" && command chmod 0600 "$EVIDENCE_DIR/container.json" || true
-test ! -L "$EVIDENCE_DIR/image.json" && test -e "$EVIDENCE_DIR/image.json" && command chmod 0600 "$EVIDENCE_DIR/image.json" || true
-capture_sanctuary_legacy_evidence "$CONTAINER_ID" "$IMAGE_ID" "$EVIDENCE_ROOT"`
-    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-legacy-evidence-reject-"))
-    try {
-      const evidenceRoot = path.join(testRoot, "legacy-evidence")
-      const callLog = path.join(testRoot, "calls.log")
-      const preserved = path.join(testRoot, "preserved.json")
-      const result = runConditionalHelper(script, scenario, {
-        SCENARIO: scenario, EVIDENCE_ROOT: evidenceRoot, CALL_LOG: callLog, PRESERVED: preserved,
-        CONTAINER_ID: containerId, IMAGE_ID: imageId, CONFLICTING: conflicting, VALID_IMAGE: validImage,
-      })
-      expect(result.status, result.stderr).not.toBe(0)
-      expect(fs.readFileSync(preserved, "utf8")).toBe(conflicting)
-      const evidenceDir = path.join(evidenceRoot, imageId.slice("sha256:".length))
-      if (scenario === "mismatch") expect(fs.readFileSync(path.join(evidenceDir, "container.json"), "utf8")).toBe(conflicting)
-      if (scenario === "symlink") expect(fs.lstatSync(path.join(evidenceDir, "container.json")).isSymbolicLink()).toBe(true)
-      const calls = fs.existsSync(callLog) ? fs.readFileSync(callLog, "utf8") : ""
-      if (scenario === "capture-failure") expect(calls).toContain("INSPECT:container inspect")
-      else expect(calls).toBe("")
-      expect(fs.readdirSync(evidenceRoot).some(name => name.startsWith(".capture."))).toBe(false)
-    } finally {
-      fs.rmSync(testRoot, { recursive: true, force: true })
-    }
-  })
-
-  it("documents the executable noninteractive adoption phase order", () => {
-    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
-    const heading = "Sanctuary legacy adoption commands:"
-    const start = runbook.indexOf(heading)
-    const end = runbook.indexOf("\n  These commands", start + heading.length)
-    const commands = runbook.slice(start, end === -1 ? undefined : end)
-
-    expect(start).toBeGreaterThan(-1)
-    const prepare = commands.indexOf('prepare_sanctuary_legacy_adoption "$IMAGE_ID"')
-    const verify = commands.indexOf('verify_sanctuary_provider_readiness "$IMAGE_ID"')
-    const install = commands.indexOf("install_from_legacy_staging")
-    expect(prepare).toBeGreaterThan(-1)
-    expect(commands).not.toContain('authenticate_sanctuary_provider "$IMAGE_ID" openai-compatible')
-    expect(verify).toBeGreaterThan(prepare)
-    expect(install).toBeGreaterThan(verify)
-    expect(commands).not.toMatch(/(?:api[-_]?key|secret|token)=/iu)
-  })
-
-  it.each([
-    ["container replacement", "replace-id"],
-    ["image replacement", "replace-image"],
-  ])("rechecks a successfully prechecked legacy instance immediately before mutation: %s", (_name, scenario) => {
-    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
-    const install = extractRunbookFunction(runbook, "install_from_legacy_staging")
-      .replaceAll("/mnt/user/appdata/ouro-butler", "$TEST_ROOT/appdata")
-    const validateLegacy = extractRunbookFunction(runbook, "validate_sanctuary_legacy_staging")
-    const image = `sha256:${"8".repeat(64)}`
-    const legacyImage = `sha256:${"7".repeat(64)}`
-    const script = String.raw`set -u
-SCENARIO=$1
-prepare_sanctuary_legacy_adoption() {
-  LEGACY_STAGING_CONTAINER_ID=$(command printf '%064d' 1)
-  LEGACY_STAGING_IMAGE_ID=$LEGACY_IMAGE
-}
-verify_sanctuary_provider_readiness() { return 0; }
-capture_sanctuary_legacy_evidence() { return 0; }
-docker() {
-  command printf '%s\n' "$*" >>"$CALL_LOG"
-  case "$*" in
-    "container ls -a --format {{.Names}}"|"container ls --format {{.Names}}") command printf 'ouro-butler-staging\n' ;;
-    "inspect --format {{.State.Running}} ouro-butler-staging") command printf 'true\n' ;;
-    "inspect --format {{.Id}} ouro-butler-staging")
-      COUNT=$(command cat "$ID_COUNT"); COUNT=$((COUNT + 1)); command printf '%s' "$COUNT" >"$ID_COUNT"
-      if [ "$SCENARIO" = replace-id ] && [ "$COUNT" -eq 2 ]; then command printf '%064d\n' 2; else command printf '%064d\n' 1; fi ;;
-    "inspect --format {{.Image}} ouro-butler-staging")
-      COUNT=$(command cat "$IMAGE_COUNT"); COUNT=$((COUNT + 1)); command printf '%s' "$COUNT" >"$IMAGE_COUNT"
-      if [ "$SCENARIO" = replace-image ] && [ "$COUNT" -eq 2 ]; then command printf 'sha256:%064d\n' 0; else command printf '%s\n' "$LEGACY_IMAGE"; fi ;;
-    "container inspect ouro-butler-staging") command printf '{}\n' ;;
-    "image inspect "*) command printf '{}\n' ;;
-    stop\ *|rename\ *|create\ *|rm\ *) command printf 'MUTATION:%s\n' "$*" >>"$CALL_LOG"; return 23 ;;
-    *) return 0 ;;
-  esac
-}
-assert_only_running_butler() { docker container ls --format '{{.Names}}' >/dev/null; }
-validate_exact_image_id() { return 0; }
-install() { eval "TARGET=\${$#}"; command mkdir -p "$TARGET"; }
-mkdir() { eval "TARGET=\${$#}"; command mkdir -p "$TARGET"; }
-chmod() { return 0; }
-sync() { return 0; }
-disable_butler_autostart() { command printf 'MUTATION:disable-autostart\n' >>"$CALL_LOG"; return 23; }
-${validateLegacy}
-${install}
-install_from_legacy_staging`
-    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-adoption-outgoing-race-"))
-    try {
-      const callLog = path.join(testRoot, "calls.log")
-      const idCount = path.join(testRoot, "id-count")
-      const imageCount = path.join(testRoot, "image-count")
-      fs.writeFileSync(idCount, "0")
-      fs.writeFileSync(imageCount, "0")
-      const result = runConditionalHelper(script, scenario, {
-        CALL_LOG: callLog, ID_COUNT: idCount, IMAGE_COUNT: imageCount, IMAGE_ID: image,
-        LEGACY_IMAGE: legacyImage, TEST_ROOT: testRoot,
-      })
-      expect(result.status, result.stderr).not.toBe(0)
-      const calls = fs.readFileSync(callLog, "utf8").trim().split("\n")
-      expect(calls.filter(call => call === "inspect --format {{.Id}} ouro-butler-staging"), `${result.stderr}\n${calls.join("\n")}`).toHaveLength(2)
-      if (scenario === "replace-image") {
-        expect(calls.filter(call => call === "inspect --format {{.Image}} ouro-butler-staging")).toHaveLength(2)
-      }
-      expect(calls.some(call => call.startsWith("MUTATION:"))).toBe(false)
-    } finally {
-      fs.rmSync(testRoot, { recursive: true, force: true })
-    }
-  })
-
-  it("targets the captured container ID after the outgoing exact-instance inspection", () => {
-    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
-    const install = extractRunbookFunction(runbook, "install_from_legacy_staging")
-    const outgoing = install.lastIndexOf('validate_sanctuary_legacy_staging "$ADOPTION_PREPARED_CONTAINER_ID" "$ADOPTION_PREPARED_IMAGE_ID"')
-    const disable = install.indexOf("disable_butler_autostart", outgoing)
-    const stop = install.indexOf('docker stop "$LEGACY_STAGING_CONTAINER_ID"', disable)
-    const rename = install.indexOf('docker rename "$LEGACY_STAGING_CONTAINER_ID" ouro-butler-legacy-evidence', stop)
-
-    expect(outgoing).toBeGreaterThan(-1)
-    expect(disable).toBeGreaterThan(outgoing)
-    expect(stop).toBeGreaterThan(disable)
-    expect(rename).toBeGreaterThan(stop)
-    expect(install.slice(outgoing, disable).match(/validate_sanctuary_legacy_staging/g)).toHaveLength(1)
-  })
-
-  it("never stops a same-name replacement introduced after the outgoing inspection succeeds", () => {
-    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
-    const validateLegacy = extractRunbookFunction(runbook, "validate_sanctuary_legacy_staging")
-    const install = extractRunbookFunction(runbook, "install_from_legacy_staging")
-      .replaceAll("/mnt/user/appdata/ouro-butler", "$TEST_ROOT/appdata")
-      .replaceAll('/usr/local/bin/node "$STAGED_DOCKERMAN_TRANSACTION"', "docker_man_transaction")
-    const targetImage = `sha256:${"6".repeat(64)}`
-    const legacyImage = `sha256:${"5".repeat(64)}`
-    const originalId = "0".repeat(63) + "1"
-    const replacementId = "0".repeat(63) + "2"
-    const script = String.raw`set -u
-prepare_sanctuary_legacy_adoption() { LEGACY_STAGING_CONTAINER_ID=$ORIGINAL_ID; LEGACY_STAGING_IMAGE_ID=$LEGACY_IMAGE; }
-verify_sanctuary_provider_readiness() { return 0; }
-capture_sanctuary_legacy_evidence() { return 0; }
-docker() {
-  command printf '%s\n' "$*" >>"$CALL_LOG"
-  case "$*" in
-    "container ls -a --format {{.Names}}"|"container ls --format {{.Names}}") command printf 'ouro-butler-staging\n' ;;
-    "inspect --format {{.State.Running}} ouro-butler-staging") command printf 'true\n' ;;
-    "inspect --format {{.Id}} ouro-butler-staging") if [ -e "$REPLACED" ]; then command printf '%s\n' "$REPLACEMENT_ID"; else command printf '%s\n' "$ORIGINAL_ID"; fi ;;
-    "inspect --format {{.Image}} ouro-butler-staging") command printf '%s\n' "$LEGACY_IMAGE" ;;
-    "container inspect "*) command printf '{}\n' ;;
-    "image inspect "*) command printf '{}\n' ;;
-    "stop $ORIGINAL_ID") return 23 ;;
-    stop\ *|rename\ *|create\ *|rm\ *) command printf 'TOPOLOGY:%s\n' "$*" >>"$CALL_LOG"; return 23 ;;
-    *) return 0 ;;
-  esac
-}
-assert_only_running_butler() { docker container ls --format '{{.Names}}' >/dev/null; }
-validate_exact_image_id() { return 0; }
-install() { eval "TARGET=\${$#}"; command mkdir -p "$TARGET"; }
-mkdir() { eval "TARGET=\${$#}"; command mkdir -p "$TARGET"; }
-chmod() { return 0; }
-sync() { return 0; }
-disable_butler_autostart() { command : >"$REPLACED"; command printf 'DISABLE\n' >>"$CALL_LOG"; }
-docker_man_transaction() { command printf 'transaction:%s\n' "$1" >>"$CALL_LOG"; }
-${validateLegacy}
-${install}
-install_from_legacy_staging`
-    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-adoption-post-check-replacement-"))
-    try {
-      const callLog = path.join(testRoot, "calls.log")
-      const result = runConditionalHelper(script, "replacement", {
-        CALL_LOG: callLog, REPLACED: path.join(testRoot, "replaced"), TEST_ROOT: testRoot,
-        IMAGE_ID: targetImage, LEGACY_IMAGE: legacyImage, ORIGINAL_ID: originalId, REPLACEMENT_ID: replacementId,
-        STAGED_TEMPLATE: "/stage/sanctuary.xml", VERSION_IMAGE: "ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.798", MANIFEST_DIGEST: `sha256:${"f".repeat(64)}`,
-      })
-      expect(result.status, result.stderr).not.toBe(0)
-      const calls = fs.readFileSync(callLog, "utf8").trim().split("\n")
-      const outgoingIdInspect = calls.filter(call => call === "inspect --format {{.Id}} ouro-butler-staging")
-      const outgoingImageInspect = calls.filter(call => call === "inspect --format {{.Image}} ouro-butler-staging")
-      const disable = calls.indexOf("DISABLE")
-      const stopCaptured = calls.indexOf(`stop ${originalId}`)
-      expect(outgoingIdInspect).toHaveLength(3)
-      expect(outgoingImageInspect).toHaveLength(3)
-      expect(disable).toBeGreaterThan(calls.lastIndexOf("inspect --format {{.Image}} ouro-butler-staging", disable))
-      expect(stopCaptured).toBeGreaterThan(disable)
-      expect(calls).not.toContain("stop ouro-butler-staging")
-      expect(calls.some(call => call.startsWith("TOPOLOGY:"))).toBe(false)
-    } finally {
-      fs.rmSync(testRoot, { recursive: true, force: true })
-    }
-  })
-
   it("retries failed authentication with the same bounded ephemeral command and no persisted secret argument", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     const authenticate = extractRunbookFunction(runbook, "authenticate_sanctuary_provider")
@@ -1944,67 +1351,6 @@ authenticate_sanctuary_provider "$IMAGE_ID" openai-compatible`
       expect(calls[0]).toContain("run --rm -it")
       expect(calls[0]).toContain(image)
       expect(calls[0]).not.toMatch(/api[-_]?key|secret|token=/iu)
-    } finally {
-      fs.rmSync(testRoot, { recursive: true, force: true })
-    }
-  })
-
-  it("reruns preparation and fresh verification after an interrupted final-install attempt", () => {
-    const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
-    const install = extractRunbookFunction(runbook, "install_from_legacy_staging")
-      .replaceAll("/mnt/user/appdata/ouro-butler", "$TEST_ROOT/appdata")
-      .replaceAll('/usr/local/bin/node "$STAGED_DOCKERMAN_TRANSACTION"', "docker_man_transaction")
-    const image = `sha256:${"c".repeat(64)}`
-    const legacyImage = `sha256:${"d".repeat(64)}`
-    const script = String.raw`set -u
-prepare_sanctuary_legacy_adoption() {
-  command printf 'prepare\n' >>"$CALL_LOG"
-  LEGACY_STAGING_CONTAINER_ID=$(command printf '%064d' 1)
-  LEGACY_STAGING_IMAGE_ID=$LEGACY_IMAGE
-}
-verify_sanctuary_provider_readiness() {
-  command printf 'verify\n' >>"$CALL_LOG"
-  COUNT=$(command cat "$VERIFY_COUNT"); COUNT=$((COUNT + 1)); command printf '%s' "$COUNT" >"$VERIFY_COUNT"
-  test "$COUNT" -gt 1
-}
-capture_sanctuary_legacy_evidence() { return 0; }
-docker() {
-  case "$*" in
-    "container ls -a --format {{.Names}}"|"container ls --format {{.Names}}") command printf 'ouro-butler-staging\n' ;;
-    "inspect --format {{.Id}} ouro-butler-staging") command printf '%064d\n' 1 ;;
-    "inspect --format {{.Image}} ouro-butler-staging") command printf '%s\n' "$LEGACY_IMAGE" ;;
-    "inspect --format {{.State.Running}} ouro-butler-staging") command printf 'true\n' ;;
-    "container inspect ouro-butler-staging") command printf '{}\n' ;;
-    "image inspect "*) command printf '{}\n' ;;
-    stop\ *|rename\ *|create\ *|rm\ *) command printf 'MUTATION:%s\n' "$*" >>"$CALL_LOG"; return 23 ;;
-    *) return 0 ;;
-  esac
-}
-validate_exact_image_id() { return 0; }
-assert_only_running_butler() { return 0; }
-install() { eval "TARGET=\${$#}"; command mkdir -p "$TARGET"; }
-mkdir() { eval "TARGET=\${$#}"; command mkdir -p "$TARGET"; }
-chmod() { return 0; }
-sync() { return 0; }
-disable_butler_autostart() { command printf 'MUTATION:disable-autostart\n' >>"$CALL_LOG"; return 23; }
-docker_man_transaction() { command printf 'transaction:%s\n' "$1" >>"$CALL_LOG"; }
-validate_sanctuary_legacy_staging() { return 0; }
-${install}
-if install_from_legacy_staging; then exit 91; fi
-install_from_legacy_staging`
-    const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-adoption-resume-"))
-    try {
-      const callLog = path.join(testRoot, "calls.log")
-      const verifyCount = path.join(testRoot, "verify-count")
-      fs.writeFileSync(verifyCount, "0")
-      const result = runConditionalHelper(script, "resume", {
-        CALL_LOG: callLog, VERIFY_COUNT: verifyCount, IMAGE_ID: image, LEGACY_IMAGE: legacyImage, TEST_ROOT: testRoot,
-        STAGED_TEMPLATE: "/stage/sanctuary.xml", VERSION_IMAGE: "ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.798", MANIFEST_DIGEST: `sha256:${"f".repeat(64)}`,
-      })
-      expect(result.status, result.stderr).toBe(23)
-      expect(fs.readFileSync(callLog, "utf8").trim().split("\n")).toEqual([
-        "prepare", "verify", "prepare", "verify", "transaction:prepare", "MUTATION:disable-autostart", "transaction:rollback",
-      ])
     } finally {
       fs.rmSync(testRoot, { recursive: true, force: true })
     }
@@ -2322,13 +1668,11 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT" live-precutover`
     }
   })
 
-  it("keeps provider readiness scoped to legacy adoption instead of normal updates", () => {
+  it("keeps standalone provider readiness out of normal updates", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
-    const adoption = runbook.slice(runbook.indexOf("Initial install/adoption"), runbook.indexOf("For this cutover"))
-    const normalUpdate = runbook.slice(runbook.indexOf("For this cutover"), runbook.indexOf("Restore:"))
-
-    expect(adoption).toContain('verify_sanctuary_provider_readiness "$IMAGE_ID"')
-    expect(adoption).toContain("adoption-only")
+    const normalUpdate = runbook.slice(runbook.indexOf("Update:"), runbook.indexOf("Backup:"))
+    expect(normalUpdate).toContain("For normal updates")
+    expect(runbook).toContain("    verify_sanctuary_provider_readiness() {")
     expect(normalUpdate).not.toContain("verify_sanctuary_provider_readiness")
   })
 
@@ -2670,7 +2014,7 @@ await_post_audit_health`
     expect(productionCreate).toBeGreaterThan(sourcePreflight)
   })
 
-  it("admits only the two exact pinned pre-package-managed source topologies", () => {
+  it("admits only canonical sources and the remaining pinned alpha.742 exception", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     const helper = extractRunbookFunction(runbook, "assert_legacy_alpha742_source")
     const pin = extractRunbookFunction(runbook, "assert_sanctuary_update_source_pin")
@@ -2681,16 +2025,16 @@ await_post_audit_health`
     expect(helper).toContain('audit_effective ouro-butler "$EXPECTED_SOURCE_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" legacy-alpha742')
     expect(helper).not.toContain("docker inspect --format")
     expect(dispatch).toContain('assert_legacy_alpha742_source "$EXPECTED_SOURCE_IMAGE_ID"')
-    expect(dispatch).toContain('assert_prepackage_alpha797_source "$EXPECTED_SOURCE_IMAGE_ID"')
+    expect(dispatch).not.toContain("assert_prepackage_alpha797_source")
     expect(dispatch).toContain('audit_effective ouro-butler "$EXPECTED_SOURCE_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"')
     const audit = extractRunbookFunction(runbook, "audit_effective")
-    expect(audit).toContain('legacy-alpha742|prepackage-alpha797) set -- --mount-contract "$AUDIT_MOUNT_CONTRACT" ;;')
+    expect(audit).toContain('legacy-alpha742) set -- --mount-contract "$AUDIT_MOUNT_CONTRACT" ;;')
     expect(audit).toContain('"$@"')
     const auditCalls = runbook.split("\n").filter((line) => line.includes("audit_effective "))
-    expect(auditCalls).toHaveLength(9)
-    expect(auditCalls.filter((line) => line.includes(" canonical "))).toHaveLength(7)
+    expect(auditCalls).toHaveLength(7)
+    expect(auditCalls.filter((line) => line.includes(" canonical "))).toHaveLength(6)
     expect(auditCalls.filter((line) => line.includes(" legacy-alpha742"))).toHaveLength(1)
-    expect(auditCalls.filter((line) => line.includes(" prepackage-alpha797"))).toHaveLength(1)
+    expect(auditCalls.filter((line) => line.includes(" prepackage-alpha797"))).toHaveLength(0)
     expect(auditCalls.every((line) => line.includes(" canonical ") ? line.includes("https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png") || line.includes('"$TEMPLATE_ICON"') : true)).toBe(true)
   })
 
@@ -3131,10 +2475,8 @@ verify_known_good_rollback_artifact "$IMAGE_ID"`
     for (const scenario of ["missing", "running", "duplicate"]) expect(runConditionalHelper(script, scenario, { IMAGE_ID: imageId }).status, scenario).not.toBe(0)
 
     const templateRecovery = extractRunbookFunction(runbook, "recover_dockerman_template_transaction")
-    const adoption = extractRunbookFunction(runbook, "install_from_legacy_staging")
     const update = runbook.slice(runbook.indexOf("For normal updates"), runbook.indexOf("Backup:"))
     expect(templateRecovery.indexOf('verify_known_good_rollback_artifact "$TEMPLATE_RECOVERY_ROLLBACK_IMAGE_ID"')).toBeLessThan(templateRecovery.indexOf('commit --proof "$TEMPLATE_RECOVERY_FINAL_PROOF"'))
-    expect(adoption.indexOf('verify_known_good_rollback_artifact "$LEGACY_STAGING_IMAGE_ID"')).toBeLessThan(adoption.indexOf('commit --proof "$ADOPTION_FINAL_PROOF"'))
     expect(update.indexOf('verify_known_good_rollback_artifact "$ROLLBACK_IMAGE_ID"')).toBeLessThan(update.indexOf('commit --proof "$FINAL_PROOF_PATH"'))
   })
 
@@ -3142,7 +2484,6 @@ verify_known_good_rollback_artifact "$IMAGE_ID"`
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     const finalProof = extractRunbookFunction(runbook, "write_dockerman_final_proof")
     const recovery = extractRunbookFunction(runbook, "recover_dockerman_template_transaction")
-    const adoption = extractRunbookFunction(runbook, "install_from_legacy_staging")
     const update = runbook.slice(runbook.indexOf("For normal updates"), runbook.indexOf("Backup:"))
 
     expect(finalProof).toContain('"$STAGED_DOCKERMAN_TRANSACTION" jellyfin-status >"$FINAL_JELLYFIN_PATH"')
@@ -3153,10 +2494,6 @@ verify_known_good_rollback_artifact "$IMAGE_ID"`
     const checkedRecovery = recovery.indexOf('"$STAGED_DOCKERMAN_TRANSACTION" recover-status', recovery.indexOf('read_sanctuary_bundle_transaction_status "$IMAGE_ID"'))
     expect(checkedRecovery).toBeGreaterThan(recovery.indexOf('read_sanctuary_bundle_transaction_status "$IMAGE_ID"'))
     expect(checkedRecovery).toBeLessThan(recovery.indexOf("recover_pending_sanctuary_bundle_migration"))
-    const adoptionFailure = adoption.indexOf("ADOPTION_STATUS=$?")
-    const adoptionGate = adoption.indexOf('"$STAGED_DOCKERMAN_TRANSACTION" verify-jellyfin', adoptionFailure)
-    expect(adoptionGate).toBeGreaterThan(adoptionFailure)
-    expect(adoptionGate).toBeLessThan(adoption.indexOf("docker stop ouro-butler", adoptionFailure))
     const preparationFailure = update.indexOf("PRODUCTION_PREPARATION_STATUS=$?")
     const preparationGate = update.indexOf('"$STAGED_DOCKERMAN_TRANSACTION" verify-jellyfin', preparationFailure)
     expect(preparationGate).toBeGreaterThan(preparationFailure)
@@ -3168,7 +2505,7 @@ verify_known_good_rollback_artifact "$IMAGE_ID"`
     expect(runbook).toContain("container ID, image ID, state, and restart count")
   })
 
-  it("recovers only exact normal-update and legacy-adoption template topologies", () => {
+  it("recovers exact current template topologies while preserving quarantined legacy evidence", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     const recovery = extractRunbookFunction(runbook, "recover_dockerman_template_transaction")
 
@@ -3187,17 +2524,7 @@ verify_known_good_rollback_artifact "$IMAGE_ID"`
     expect(recovery.slice(recoverBundle, currentAction)).not.toContain("write_dockerman_recovery_evidence rollback rollback-exact")
 
     const noProduction = recovery.indexOf('elif test "$TEMPLATE_RECOVERY_BUNDLE_STATE" = absent && test "$TEMPLATE_RECOVERY_PRODUCTION_PRESENT" = false; then')
-    const adoptionSource = recovery.indexOf("if docker container inspect ouro-butler-staging >/dev/null 2>&1; then", noProduction)
-    const adoptionRejectRollback = recovery.indexOf("! docker container inspect ouro-butler-rollback >/dev/null 2>&1", adoptionSource)
-    const adoptionRejectEvidence = recovery.indexOf("! docker container inspect ouro-butler-legacy-evidence >/dev/null 2>&1", adoptionRejectRollback)
-    const adoptionSourceImage = recovery.indexOf("TEMPLATE_RECOVERY_STAGING_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler-staging)", adoptionRejectEvidence)
-    const adoptionSourceExact = recovery.indexOf('test "$TEMPLATE_RECOVERY_STAGING_IMAGE_ID" = "$TEMPLATE_RECOVERY_ROLLBACK_IMAGE_ID"', adoptionSourceImage)
-    const adoptionSourceAudit = recovery.indexOf('assert_prepackage_alpha797_source "$TEMPLATE_RECOVERY_ROLLBACK_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" ouro-butler-staging', adoptionSourceExact)
-    const adoptionSourceState = recovery.indexOf("TEMPLATE_RECOVERY_STAGING_RUNNING=$(docker inspect --format '{{.State.Running}}' ouro-butler-staging)", adoptionSourceAudit)
-    const adoptionSourceStart = recovery.indexOf("docker start ouro-butler-staging", adoptionSourceState)
-    const adoptionSourceAutostart = recovery.indexOf("set_butler_autostart staging", adoptionSourceStart)
-    const adoptionSourceEvidence = recovery.indexOf("adoption-source-exact", adoptionSourceAutostart)
-    const adoptionSourceRollback = recovery.indexOf('"$STAGED_DOCKERMAN_TRANSACTION" rollback', adoptionSourceEvidence)
+    const rejectStaging = recovery.indexOf("! docker container inspect ouro-butler-staging >/dev/null 2>&1 || return 1", noProduction)
     const normalRollback = recovery.indexOf("if docker container inspect ouro-butler-rollback >/dev/null 2>&1; then", noProduction)
     const normalRollbackImage = recovery.indexOf("TEMPLATE_RECOVERY_CURRENT_ROLLBACK_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler-rollback)", normalRollback)
     const normalRollbackExact = recovery.indexOf('test "$TEMPLATE_RECOVERY_CURRENT_ROLLBACK_IMAGE_ID" = "$TEMPLATE_RECOVERY_ROLLBACK_IMAGE_ID"', normalRollbackImage)
@@ -3209,19 +2536,8 @@ verify_known_good_rollback_artifact "$IMAGE_ID"`
     const normalAutostart = recovery.indexOf("enable_butler_autostart", normalReady)
     const normalTemplateRollback = recovery.indexOf('"$STAGED_DOCKERMAN_TRANSACTION" rollback', normalAutostart)
     expect(noProduction).toBeGreaterThan(-1)
-    expect(adoptionSource).toBeGreaterThan(noProduction)
-    expect(adoptionRejectRollback).toBeGreaterThan(adoptionSource)
-    expect(adoptionRejectEvidence).toBeGreaterThan(adoptionRejectRollback)
-    expect(adoptionSourceImage).toBeGreaterThan(adoptionRejectEvidence)
-    expect(adoptionSourceExact).toBeGreaterThan(adoptionSourceImage)
-    expect(adoptionSourceAudit).toBeGreaterThan(adoptionSourceExact)
-    expect(adoptionSourceState).toBeGreaterThan(adoptionSourceAudit)
-    expect(adoptionSourceStart).toBeGreaterThan(adoptionSourceState)
-    expect(adoptionSourceAutostart).toBeGreaterThan(adoptionSourceStart)
-    expect(recovery.slice(adoptionSource, adoptionSourceAutostart)).not.toContain("wait_butler_ready")
-    expect(adoptionSourceEvidence).toBeGreaterThan(adoptionSourceAutostart)
-    expect(adoptionSourceRollback).toBeGreaterThan(adoptionSourceEvidence)
-    expect(normalRollback).toBeGreaterThan(adoptionSourceRollback)
+    expect(rejectStaging).toBeGreaterThan(noProduction)
+    expect(normalRollback).toBeGreaterThan(rejectStaging)
     expect(normalRollbackImage).toBeGreaterThan(normalRollback)
     expect(normalRollbackExact).toBeGreaterThan(normalRollbackImage)
     expect(normalRollbackStopped).toBeGreaterThan(normalRollbackExact)
@@ -3267,10 +2583,10 @@ verify_known_good_rollback_artifact "$IMAGE_ID"`
     expect(adoptionCommitting).toBeGreaterThan(adoptionAutostart)
   })
 
-  it("restores an exact legacy staging source after adoption crashes before quarantine", () => {
+  it("rejects retired staging recovery without restarting or changing autostart", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     const recovery = extractRunbookFunction(runbook, "recover_dockerman_template_transaction").replaceAll("/usr/local/bin/node", "node")
-    const oldImage = `sha256:${"a".repeat(64)}`
+    const oldImage = "sha256:e337dff04c92d116b269052f473b26a47eea933d017d1befc73af50dd37bb08d"
     const targetImage = `sha256:${"b".repeat(64)}`
     const versionImage = "ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.798"
     const manifestDigest = `sha256:${"c".repeat(64)}`
@@ -3317,23 +2633,8 @@ recover_dockerman_template_transaction`
         fs.writeFileSync(callLog, "")
         const result = runConditionalHelper(script, scenario, { AUDIT_RUNNER_IMAGE_ID: targetImage, CALL_LOG: callLog, EVENT_ASSET_STAGE: testRoot, IMAGE_ID: targetImage, MANIFEST_DIGEST: manifestDigest, NODE_BINARY: process.execPath, OLD_IMAGE: oldImage, STAGED_DOCKERMAN_TRANSACTION: "/tmp/transaction.mjs", TARGET_IMAGE: targetImage, TEMPLATE_STATUS: templateStatus, VERSION_IMAGE: versionImage })
         const calls = fs.readFileSync(callLog, "utf8")
-        if (["wrong-image", "rollback-present", "evidence-present", "invalid-state"].includes(scenario)) {
-          expect(result.status).not.toBe(0)
-          if (scenario === "invalid-state") expect(calls).toBe("audit-source\n")
-          else expect(calls).toBe("")
-          continue
-        }
-        expect(result.status, `${scenario}: ${result.stderr}`).toBe(0)
-        expect(calls).toContain("audit-source\n")
-        expect(calls).not.toContain("unexpected-wait:")
-        expect(calls.indexOf("audit-source\n")).toBeLessThan(calls.indexOf("autostart:staging\n"))
-        expect(calls.indexOf("autostart:staging\n")).toBeLessThan(calls.indexOf("evidence:absent:adoption-source-exact\n"))
-        expect(calls.indexOf("evidence:absent:adoption-source-exact\n")).toBeLessThan(calls.indexOf("rollback-template\n"))
-        if (scenario === "stopped") expect(calls).toContain("assert:-\nstart-staging\nassert:ouro-butler-staging\n")
-        else {
-          expect(calls).toContain("assert:ouro-butler-staging\n")
-          expect(calls).not.toContain("start-staging\n")
-        }
+        expect(result.status, `${scenario}: ${result.stderr}`).not.toBe(0)
+        expect(calls, scenario).toBe("")
       }
     } finally {
       fs.rmSync(testRoot, { recursive: true, force: true })
@@ -3383,12 +2684,10 @@ start_only_butler_for_recovery`
 
   it("proves zero running pollers immediately before every changed deployment start and one immediately after", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
-    const adoption = extractRunbookFunction(runbook, "install_from_legacy_staging")
     const update = runbook.slice(runbook.indexOf("For normal updates"), runbook.indexOf("Backup:"))
     const backup = runbook.slice(runbook.indexOf("Backup:"), runbook.indexOf("Restore:"))
     const restore = runbook.slice(runbook.indexOf("Restore:"), runbook.indexOf("Credential recovery:"))
 
-    expect(adoption).toContain("&& assert_only_running_butler - \\\n    && docker start ouro-butler \\\n    && assert_only_running_butler ouro-butler \\")
     expect(update).toContain("&& assert_only_running_butler - \\\n      && docker start ouro-butler \\\n      && assert_only_running_butler ouro-butler \\")
     expect(backup).toContain("&& assert_only_running_butler - \\\n      && docker start ouro-butler \\\n      && assert_only_running_butler ouro-butler \\")
     expect(restore).toContain("&& assert_only_running_butler - \\\n      && docker start ouro-butler \\\n      && assert_only_running_butler ouro-butler \\")

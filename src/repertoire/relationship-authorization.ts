@@ -1,8 +1,113 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { createHash } from "node:crypto"
+import { isDeepStrictEqual } from "node:util"
 import type { FriendRecord, FriendStore, RelationshipPolicyProvenance, TrustLevel } from "@ouro.bot/friends"
+import type { RoutineActionRequester } from "../heart/steward-policy"
+import type { ApprovalOwnerBinding } from "../heart/approval-store"
+import { readExternalEventRecord } from "../heart/external-events/router"
 import { emitNervesEvent } from "../nerves/runtime"
+import type { ToolContext } from "./tools-base"
+
+export function routineActionRequester(ctx?: ToolContext, eventTarget?: { friendId: string; target: { id: string; name: string } }): RoutineActionRequester | null {
+  const relationship = ctx?.relationshipAuthorization
+  if (!relationship) return null
+  if (ctx?.currentExternalEvent) {
+    if (!eventTarget || relationship.profileId !== "sanctuary-event") return null
+    const events = [ctx.currentExternalEvent, ...(ctx.currentExternalEvent.relatedEvents ?? [])].filter((event) =>
+      event.schemaVersion === 1 && event.source === "sanctuary-health" && event.eventId === `container:${eventTarget.target.id}:availability`)
+    if (events.length !== 1) return null
+    const event = events[0]!
+    return {
+      kind: "owner_event", friendId: eventTarget.friendId, profileId: relationship.profileId,
+      event: { schemaVersion: 1, recordPath: event.recordPath, agent: event.agent, source: event.source, eventId: event.eventId, generation: event.generation, observationRevision: event.observationRevision, claimOwner: event.claimOwner },
+      target: { ...eventTarget.target },
+    }
+  }
+  const actor = relationship.actor
+  const session = ctx?.currentSession
+  if (!actor || !session || session.channel !== "telegram" || session.friendId !== actor.friendId
+    || [actor.friendId, actor.sessionEventId, relationship.requestId, session.key].some((value) => typeof value !== "string" || !value.trim())) return null
+  const kind = actor.trustLevel === "family" && relationship.profileId === "sanctuary-owner" ? "owner"
+    : actor.trustLevel === "friend" && relationship.profileId === "sanctuary-household" ? "household_request" : null
+  if (!kind) return null
+  return { kind, friendId: actor.friendId, profileId: relationship.profileId!, requestId: relationship.requestId!, sessionEventId: actor.sessionEventId, origin: { friendId: session.friendId, channel: session.channel, key: session.key } }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+}
+
+export function authorizeRestartApprovalRequester(ctx: ToolContext | undefined, args: Record<string, unknown>, binding: ApprovalOwnerBinding) {
+  return authorizeRoutineActionRequester(ctx, args, {
+    requester: {
+      kind: "owner", friendId: binding.friendId, profileId: "sanctuary-owner", requestId: binding.requestId,
+      sessionEventId: binding.sessionEventId, origin: { friendId: binding.friendId, channel: "telegram", key: binding.sessionKey },
+    },
+    profileVersion: binding.profileVersion,
+  })
+}
+
+export async function authorizeRoutineActionRequester(ctx: ToolContext | undefined, args: Record<string, unknown>, expected?: { requester: RoutineActionRequester; profileVersion: number }): Promise<
+  | { allowed: true; requester: RoutineActionRequester; receiptId: string; profileVersion: number }
+  | { allowed: false; reason: string }
+> {
+  if (!isRecord(args) || Object.keys(args).length !== 1 || typeof args.container !== "string"
+    || !args.container || args.container !== args.container.trim() || Buffer.byteLength(args.container) > 128 || args.container.includes("\uFFFD")
+    || !ctx?.agentRoot || !ctx.relationshipAuthorization) return { allowed: false, reason: "routine action requires one exact target and current relationship" }
+  const target = args.container
+  const agentRoot = ctx.agentRoot
+  const relationship = ctx.relationshipAuthorization
+  const sanctuary = ctx.sanctuary
+  const initialRequester = routineActionRequester(ctx)
+  const event = ctx.currentExternalEvent && structuredClone(ctx.currentExternalEvent)
+  if (!initialRequester && (!event || event.source !== "sanctuary-health" || relationship.profileId !== "sanctuary-event")) return { allowed: false, reason: "routine action requires a current human request or health event" }
+  const unchanged = () => ctx.agentRoot === agentRoot && ctx.relationshipAuthorization === relationship && ctx.sanctuary === sanctuary
+    && args.container === target && Object.keys(args).length === 1
+    && isDeepStrictEqual(initialRequester, routineActionRequester(ctx)) && isDeepStrictEqual(event, ctx.currentExternalEvent)
+  let authorization: Awaited<ReturnType<NonNullable<ToolContext["relationshipAuthorization"]>["authorizeTool"]>>
+  try { authorization = await relationship.authorizeTool("unraid_restart_container", { container: target }) }
+  catch { return { allowed: false, reason: "routine relationship authorization is unavailable" } }
+  if (!authorization?.allowed) return { allowed: false, reason: authorization?.allowed === false ? authorization.reason : "routine relationship authorization is unavailable" }
+  if (typeof authorization.profileVersion !== "number" || !Number.isSafeInteger(authorization.profileVersion) || authorization.profileVersion < 1
+    || typeof authorization.receiptId !== "string" || !authorization.receiptId.trim()) return { allowed: false, reason: "routine relationship authorization is not versioned" }
+  if (expected && authorization.profileVersion !== expected.profileVersion) return { allowed: false, reason: "routine relationship profile version changed" }
+  if (!unchanged() || (authorization.profileId !== undefined && authorization.profileId !== relationship.profileId)) return { allowed: false, reason: "routine request binding changed during authorization" }
+  if (!event) {
+    if (!initialRequester || initialRequester.kind === "owner_event"
+      || (authorization.friendId !== undefined && authorization.friendId !== initialRequester.friendId)
+      || (authorization.requestId !== undefined && authorization.requestId !== initialRequester.requestId)
+      || (expected && !isDeepStrictEqual(expected.requester, initialRequester))) return { allowed: false, reason: "routine request binding does not match live authorization" }
+    return { allowed: true, requester: initialRequester, receiptId: authorization.receiptId, profileVersion: authorization.profileVersion }
+  }
+  if (!sanctuary || authorization.profileId !== "sanctuary-event" || typeof authorization.friendId !== "string" || !authorization.friendId.trim()) return { allowed: false, reason: "current health event authorization is unavailable" }
+  let eventTarget: { id: string; name: string }
+  if (expected) {
+    if (expected.requester.kind !== "owner_event" || expected.requester.target.name !== target) return { allowed: false, reason: "current health event target binding changed" }
+    eventTarget = expected.requester.target
+  } else {
+    let listed: unknown
+    try { listed = await sanctuary.listContainers() }
+    catch { return { allowed: false, reason: "current health event container status is unavailable" } }
+    if (!isRecord(listed) || listed.ok !== true || !isRecord(listed.data) || listed.data.truncated !== false || !Array.isArray(listed.data.containers)) return { allowed: false, reason: "current health event container status is invalid" }
+    const matches = listed.data.containers.filter((value): value is Record<string, unknown> => isRecord(value) && value.name === target)
+    const container = matches[0]
+    if (matches.length !== 1 || !container || typeof container.id !== "string" || !container.id.trim()
+      || container.state !== "exited" || container.degraded !== false) return { allowed: false, reason: "current health event target is not exactly stopped" }
+    eventTarget = { id: container.id, name: target }
+  }
+  const requester = routineActionRequester(ctx, { friendId: authorization.friendId, target: eventTarget })
+  if (!requester || requester.kind !== "owner_event" || !unchanged() || (expected && !isDeepStrictEqual(expected.requester, requester))) return { allowed: false, reason: "current health event target or request binding changed" }
+  let current: ReturnType<typeof readExternalEventRecord>
+  try { current = readExternalEventRecord(requester.event.recordPath) }
+  catch { return { allowed: false, reason: "current health event record is unavailable" } }
+  const lease = requester.event
+  if (current.agent !== lease.agent || current.source !== lease.source || current.eventId !== lease.eventId || current.eventType !== "health.observed"
+    || current.generation !== lease.generation || current.observationRevision !== lease.observationRevision || current.claimOwner !== lease.claimOwner
+    || current.executionState !== "running" || !(Date.parse(current.claimExpiresAt ?? "") > Date.now())
+    || current.transition === "recovered" || current.pendingObservation !== null) return { allowed: false, reason: "current health event claim or observation changed" }
+  return { allowed: true, requester, receiptId: authorization.receiptId, profileVersion: authorization.profileVersion }
+}
 
 export function renderRelationshipPreferences(friend: Pick<FriendRecord, "relationshipPolicy">): string[] {
   const now = Date.now()

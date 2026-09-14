@@ -9,7 +9,7 @@ import { resolveSanctuaryPackageManagedRoots } from "../heart/daemon/sanctuary-p
 import { loadOrCreateMachineIdentity } from "../heart/machine-identity"
 import { readMachineRuntimeCredentialConfig, refreshMachineRuntimeCredentialConfig } from "../heart/runtime-credentials"
 import { createApprovedUnraidRestartExecutor, type UnraidRestartAttempt } from "../repertoire/unraid-restart"
-import { consumeRoutineActionGrant, recoverRoutineActionReceipts, transitionRoutineActionReceipt } from "../heart/steward-policy"
+import { consumeRoutineActionGrant, recoverRoutineActionReceipts, transitionRoutineActionReceipt, withRoutineActionAttempt, withStewardPolicyLease } from "../heart/steward-policy"
 import { UnraidClient } from "../repertoire/unraid-client"
 import { createUnraidReadTools } from "../repertoire/tools-unraid"
 import type { ToolContext } from "../repertoire/tools-base"
@@ -219,6 +219,8 @@ export function createSanctuaryToolContext(agentName: string): Pick<ToolContext,
     acceptanceApproval: readSanctuaryAcceptanceApproval,
     reserveRoutineAction: (input) => consumeRoutineActionGrant(agentRoot, input),
     transitionRoutineAction: (input) => transitionRoutineActionReceipt(agentRoot, input),
+    withRoutineActionAttempt: (reservation, validate, attempt) => withRoutineActionAttempt(agentRoot, reservation, validate, attempt),
+    withApprovalPolicyLease: (operation) => withStewardPolicyLease(agentRoot, operation),
   })
   return {
     agentRoot,

@@ -4,6 +4,9 @@ import type { BridgeRecord, BridgeSessionRef } from "../heart/bridges/store";
 import type { ActiveWorkFrame } from "../heart/active-work";
 import type { FlightRecorderProducedRef, HabitPermissionEnvelope, HabitSurfaceAttempt, HabitToolPolicy } from "../arc/flight-recorder";
 import type { RsvpHabitRuntimePolicy } from "../rsvp/habit-policy";
+import type { RoutineActionRequester } from "../heart/steward-policy";
+import type { ApprovalOwnerBinding } from "../heart/approval-store";
+import { emitNervesEvent } from "../nerves/runtime";
 import type { McpToolBinding } from "./mcp-manager";
 
 import { fileToolDefinitions } from "./tools-files";
@@ -40,6 +43,8 @@ export { ponderTool, observeTool, settleTool, restTool, speakTool } from "./tool
 
 // Re-export renderInnerProgressStatus for consumers
 export { renderInnerProgressStatus } from "./tools-session";
+export { routineActionRequester } from "./relationship-authorization";
+export type { RoutineActionRequester } from "../heart/steward-policy";
 
 export interface CodingFeedbackTarget {
   send: (message: string) => Promise<void>;
@@ -157,7 +162,7 @@ export interface ToolContext {
     readonly resolveCurrent?: () => Promise<NonNullable<ToolContext["relationshipAuthorization"]>>;
     authorizedContextScopes: readonly string[];
     advertisedToolNames: readonly string[];
-    authorizeTool(name: string, args: Record<string, string>): { allowed: true; receiptId: string; profileVersion?: number; profileId?: string } | { allowed: false; reason: string } | Promise<{ allowed: true; receiptId: string; profileVersion?: number; profileId?: string } | { allowed: false; reason: string }>;
+    authorizeTool(name: string, args: Record<string, string>): { allowed: true; receiptId: string; profileVersion?: number; friendId?: string; profileId?: string; requestId?: string | null } | { allowed: false; reason: string } | Promise<{ allowed: true; receiptId: string; profileVersion?: number; friendId?: string; profileId?: string; requestId?: string | null } | { allowed: false; reason: string }>;
     readonly actor?: Readonly<{ friendId: string; trustLevel: import("@ouro.bot/friends").TrustLevel; sessionEventId: string }>;
   };
   commerceAuthority?: {
@@ -177,11 +182,22 @@ export interface ToolContext {
     getMediaOptimization(): Promise<unknown>;
     searchMediaCatalog(args: { query?: string; limit?: number }): Promise<unknown>;
     resumeDownloadQueue(): Promise<unknown>;
-    restartContainer(args: { container: string }, execution?: { routine?: import("./unraid-restart").RoutineRestartAuthority }): Promise<unknown>;
+    restartContainer(args: { container: string }, execution?: import("./unraid-restart").UnraidRestartExecution): Promise<unknown>;
     recoverRoutineActions?(): Promise<unknown>;
   };
   /** Immutable standing-policy selection made before this exact tool dispatch. */
-  routineActionSelection?: Readonly<{ key: string; target: string; expectedPolicyVersion: number }>;
+  routineActionSelection?: Readonly<
+    | { kind: "standing"; agentRoot: string; key: string; target: string; expectedPolicyVersion: number; expectedDesiredStateVersion: number; expectedGrantVersion: number; requester: RoutineActionRequester; authorizationVersion: number }
+    | { kind: "denied"; reason: string }
+  >;
+  restartApproval?: Readonly<{
+    approvalId: string;
+    agentRoot: string;
+    sessionPath: string;
+    ownerBinding: Readonly<ApprovalOwnerBinding>;
+    argumentDigest: string;
+    target: Readonly<{ id: string; name: string }>;
+  }>;
   telegramContactManager?: {
     list(input: { actorFriendId: string }): Promise<{ contacts: unknown[]; blocked: unknown[] }>;
     revoke(input: { actorFriendId: string; friendId: string }): Promise<{ revoked: true; friendId: string }>;
@@ -189,18 +205,10 @@ export interface ToolContext {
   };
 }
 
-export type RoutineActionRequester =
-  | { kind: "owner"; friendId: string }
-  | { kind: "household_request"; friendId: string; requestId: string; origin: { friendId: string; channel: string; key: string } }
-
-export function routineActionRequester(ctx?: ToolContext): RoutineActionRequester | null {
-  const actor = ctx?.relationshipAuthorization?.actor
-  if (!actor) return null
-  if (actor.trustLevel === "family") return { kind: "owner", friendId: actor.friendId }
-  const requestId = ctx?.relationshipAuthorization?.requestId
-  const session = ctx?.currentSession
-  if (actor.trustLevel !== "friend" || !requestId || !session || session.friendId !== actor.friendId) return null
-  return { kind: "household_request", friendId: actor.friendId, requestId, origin: { friendId: session.friendId, channel: session.channel, key: session.key } }
+export function routineActionDenied(reason: string): string {
+  const message = reason.slice(0, 500)
+  emitNervesEvent({ component: "repertoire", event: "repertoire.routine_action_denied", message: "routine action denied", meta: { reason: message } })
+  return JSON.stringify({ ok: false, error: { code: "routine_action_denied", message, degraded: true } })
 }
 
 export type ToolHandler = (args: Record<string, string>, ctx?: ToolContext) => string | Promise<string>;

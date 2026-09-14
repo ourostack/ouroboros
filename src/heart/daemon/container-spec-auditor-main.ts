@@ -43,10 +43,10 @@ export function runContainerSpecAuditorCli(args: string[], deps: ContainerSpecAu
   const effective = parseModeArguments(args, ["--inspect", "--image-inspect", "--expected-image", "--expected-image-reference", "--expected-icon"])
   const sourceCandidate = parseModeArguments(args, ["--inspect", "--image-inspect", "--expected-image", "--mount-contract"])
   const sourceContract = sourceCandidate?.["--mount-contract"]
-  const sourceEffective = sourceContract === "legacy-alpha742" || sourceContract === "prepackage-alpha797" ? sourceCandidate : null
+  const sourceEffective = sourceContract === "legacy-alpha742" ? sourceCandidate : null
   const selectedEffective = effective ?? sourceEffective
   if (!staged && !persistent && !selectedEffective) {
-    write(JSON.stringify({ ok: false, error: "usage: staged --template <path> --runtime-policy <path> --expected-image <id>; persistent --persistent-template <path> --runtime-policy <path> --expected-image-reference <tag>; effective --inspect <path> --image-inspect <path> --expected-image <id> --expected-image-reference <tag> --expected-icon <url>; source compatibility effective --inspect <path> --image-inspect <path> --expected-image <id> --mount-contract <legacy-alpha742|prepackage-alpha797>" }) + "\n")
+    write(JSON.stringify({ ok: false, error: "usage: staged --template <path> --runtime-policy <path> --expected-image <id>; persistent --persistent-template <path> --runtime-policy <path> --expected-image-reference <tag>; effective --inspect <path> --image-inspect <path> --expected-image <id> --expected-image-reference <tag> --expected-icon <url>; source compatibility effective --inspect <path> --image-inspect <path> --expected-image <id> --mount-contract legacy-alpha742" }) + "\n")
     emitNervesEvent({
       level: "error",
       component: "daemon",
@@ -96,7 +96,7 @@ export function runContainerSpecAuditorCli(args: string[], deps: ContainerSpecAu
       expectedEnvironment,
       expectedImageReference: selectedEffective["--expected-image-reference"],
       expectedIcon: selectedEffective["--expected-icon"],
-      mountContract: sourceContract === "legacy-alpha742" || sourceContract === "prepackage-alpha797" ? sourceContract : "canonical",
+      mountContract: sourceContract === "legacy-alpha742" ? sourceContract : "canonical",
     })
     if (imageInspect.Id !== selectedEffective["--expected-image"]) {
       result.ok = false

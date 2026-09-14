@@ -17,6 +17,10 @@ describe("Sanctuary media catalog contract", () => {
     "Do we have the movie Moonstruck?",
     "What movie should I watch?",
     "First we gotta get you able to see the lib or this is moot.",
+    "What is in Jellyfin?",
+    "Find Moonstruck in Jellyfin",
+    "Find Running in Jellyfin",
+    "Is Running in Jellyfin?",
   ])("requires the restricted catalog read for household media shelf questions (%s)", (request) => {
     const contract = sanctuaryMediaCatalogRequiredToolCalls(request, ["unraid_get_system", ...requiredTools, "settle"])
     expect(contract).toMatchObject({
@@ -29,6 +33,29 @@ describe("Sanctuary media catalog contract", () => {
       event: "senses.sanctuary_media_catalog_obligation",
       meta: { requiredToolNames: requiredTools },
     }))
+  })
+
+  it.each([
+    "Please restart Jellyfin.",
+    "Restart the Jellyfin container.",
+    "Is Jellyfin running?",
+    "Jellyfin is down; please investigate.",
+    "Jellyfin should stay stopped.",
+    "Please reboot Jellyfin.",
+    "Start Jellyfin.",
+    "Stop Jellyfin.",
+    "Jellyfin is stopping.",
+    "Investigate Jellyfin.",
+    "Redeploy Jellyfin.",
+    "Deploy Jellyfin.",
+    "Did Jellyfin crash?",
+    "Jellyfin crashed.",
+  ])("does not turn a service request into a catalog obligation (%s)", (request) => {
+    expect(sanctuaryMediaCatalogRequiredToolCalls(request, requiredTools)).toBeUndefined()
+  })
+
+  it("retains catalog grounding when a service request also asks for a movie", () => {
+    expect(sanctuaryMediaCatalogRequiredToolCalls("Restart Jellyfin and recommend a movie.", requiredTools)).toMatchObject({ names: requiredTools })
   })
 
   it("keeps a simple visibility answer direct, compact, and in household language", () => {

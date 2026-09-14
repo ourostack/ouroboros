@@ -161,7 +161,7 @@ describe("Sanctuary pre-activation container auditor", () => {
     }
   })
 
-  it("allows the exact observed alpha.797 source only through its pinned compatibility contract", () => {
+  it.each(["prepackage-alpha797", "unsupported-contract"])("rejects retired and unsupported runtime mount contracts: %s", (mountContract) => {
     const alpha797Image = "sha256:e337dff04c92d116b269052f473b26a47eea933d017d1befc73af50dd37bb08d"
     const source = validInspect()
     source.Image = alpha797Image
@@ -171,53 +171,31 @@ describe("Sanctuary pre-activation container auditor", () => {
     delete source.Config.Labels["net.unraid.docker.managed"]
     delete source.Config.Labels["net.unraid.docker.icon"]
 
-    expect(auditSanctuaryContainerSpec(source, {
+    const options = {
       expectedImage: alpha797Image,
       expectedEnvironment,
-      mountContract: "prepackage-alpha797",
-    })).toEqual({ ok: true, violations: [] })
-    const stagingSource = structuredClone(source)
-    stagingSource.Name = "/ouro-butler-staging"
-    expect(auditSanctuaryContainerSpec(stagingSource, {
-      expectedImage: alpha797Image,
-      expectedEnvironment,
-      mountContract: "prepackage-alpha797",
-    })).toEqual({ ok: true, violations: [] })
-    expect(auditSanctuaryContainerSpec(source, { expectedImage: alpha797Image, expectedEnvironment }).ok).toBe(false)
-    expect(auditSanctuaryContainerSpec(source, {
-      expectedImage: "sha256:" + "b".repeat(64),
-      expectedEnvironment,
-      mountContract: "prepackage-alpha797",
-    }).violations).toContain("pre-package-managed source exception requires the pinned alpha.797 image ID")
-    const unexpectedSource = structuredClone(source)
-    unexpectedSource.Name = "/unreviewed-butler"
-    expect(auditSanctuaryContainerSpec(unexpectedSource, {
-      expectedImage: alpha797Image,
-      expectedEnvironment,
-      mountContract: "prepackage-alpha797",
-    }).violations).toContain("pre-package-managed source name must be /ouro-butler or /ouro-butler-staging")
-
-    for (const mutate of [
-      (spec: any) => { spec.Config.Image = "ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.797" },
-      (spec: any) => { spec.Args.push("--package-managed-agent", "sanctuary"); spec.Config.Entrypoint.push("--package-managed-agent", "sanctuary") },
-      (spec: any) => { spec.Config.Labels["net.unraid.docker.managed"] = "dockerman" },
-      (spec: any) => { spec.Config.Labels["net.unraid.docker.icon"] = expectedIcon },
-      (spec: any) => { spec.Config.Labels["net.unraid.docker.webui"] = "http://localhost" },
-      (spec: any) => { spec.Mounts.pop() },
-    ]) {
-      const changed = structuredClone(source)
-      mutate(changed)
-      expect(auditSanctuaryContainerSpec(changed, { expectedImage: alpha797Image, expectedEnvironment, mountContract: "prepackage-alpha797" }).ok).toBe(false)
     }
+    Reflect.set(options, "mountContract", mountContract)
+    for (const name of ["/ouro-butler", "/ouro-butler-staging"]) {
+      source.Name = name
+      const result = auditSanctuaryContainerSpec(source, options)
+      expect(result.ok).toBe(false)
+      expect(result.violations).toContain("unsupported mount contract")
+    }
+  })
 
+  it("records completed source retirement without moving either debt deadline", () => {
     const debt = JSON.parse(fs.readFileSync("docs/intentional-debt.json", "utf8")) as { items: Array<Record<string, unknown>> }
     expect(debt.items).toContainEqual({
       id: "sanctuary-alpha797-source-compatibility",
-      status: "open",
+      status: "resolved",
       owner: "Sanctuary Butler",
       due: "2026-09-12",
       removalCriteria: "After a verified package-managed release is installed and is the retained rollback, remove the pinned alpha.797 source contract/constant/runbook branch and its tests; never use it for target creation.",
     })
+    expect(debt.items).toContainEqual(expect.objectContaining({
+      id: "mailroom-encrypted-raw-orphans", status: "open", owner: "Mailroom", due: "2026-09-30",
+    }))
   })
 
   it("fails closed across malformed optional inspect fields", () => {
@@ -385,7 +363,7 @@ describe("Sanctuary pre-activation container auditor", () => {
     ], { readFile: (filePath) => files[filePath]!, write: () => undefined })).toBe(1)
   })
 
-  it("exposes the pinned alpha.797 source contract only through its explicit CLI mode", () => {
+  it.each(["prepackage-alpha797", "unsupported-contract"])("rejects retired and unsupported CLI mount contracts before reading files: %s", (mountContract) => {
     const alpha797Image = "sha256:e337dff04c92d116b269052f473b26a47eea933d017d1befc73af50dd37bb08d"
     const container = validInspect()
     container.Image = alpha797Image
@@ -400,12 +378,16 @@ describe("Sanctuary pre-activation container auditor", () => {
       "/audit/container.json": JSON.stringify([container]),
       "/audit/image.json": JSON.stringify([image]),
     }
+    const readFile = vi.fn((filePath: string) => files[filePath]!)
+    const output: string[] = []
     expect(runContainerSpecAuditorCli([
       "--inspect", "/audit/container.json",
       "--image-inspect", "/audit/image.json",
       "--expected-image", alpha797Image,
-      "--mount-contract", "prepackage-alpha797",
-    ], { readFile: (filePath) => files[filePath]!, write: () => undefined })).toBe(0)
+      "--mount-contract", mountContract,
+    ], { readFile, write: (text) => output.push(text) })).toBe(2)
+    expect(readFile).not.toHaveBeenCalled()
+    expect(JSON.parse(output.join("")).error).toContain("usage:")
   })
 
   it.each([

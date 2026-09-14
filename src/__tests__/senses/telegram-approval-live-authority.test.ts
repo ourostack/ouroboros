@@ -7,7 +7,7 @@ import { FileFriendStore } from "@ouro.bot/friends"
 import { createProductionTelegramRelationshipComposition, createTelegramSenseApp, opaqueTelegramSubject, readOrCreateTelegramIdentityKey } from "../../senses/telegram"
 import { createTelegramApprovalRuntime, type TelegramApprovalRuntime } from "../../senses/telegram-approval-runtime"
 import { createMinimaxProviderRuntime } from "../../heart/providers/minimax"
-import { buildCanonicalSessionEnvelope } from "../../heart/session-events"
+import { loadSessionEnvelopeFile, projectProviderMessages } from "../../heart/session-events"
 import { readSessionTransaction, withSessionTurnLease } from "../../mind/session-transaction"
 import { openApprovalStore } from "../../heart/approval-store"
 import { digestApprovalToolDefinition } from "../../heart/tool-approval"
@@ -16,11 +16,14 @@ import { resolveToolDefinition } from "../../repertoire/tools"
 import { getSenseSessionPath } from "../../senses/shared-turn"
 import { createLogger, createNdjsonFileSink } from "../../nerves"
 import { setRuntimeLogger } from "../../nerves/runtime"
+import { FileTelegramEffectJournal, recordTelegramEffectsInSession } from "../../senses/telegram-effect-adapter"
 
 const roots: string[] = []
+const ingressStores: FileTelegramEffectJournal[] = []
 afterEach(() => {
   setRuntimeLogger(null)
   vi.restoreAllMocks()
+  for (const store of ingressStores.splice(0)) store.close()
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true })
 })
 
@@ -48,14 +51,17 @@ describe("configured-owner Telegram approval authority", () => {
       const subject = opaqueTelegramSubject(identityKey, "777", "42", "42")
       const key = `telegram:${subject}`
       const sessionPath = getSenseSessionPath("sanctuary", friendId, "telegram", key, root)
-      const messages = [{ role: "user" as const, content: "restart calibre-web" }]
-      const envelope = buildCanonicalSessionEnvelope({
-        existing: null, previousMessages: [], currentMessages: messages, trimmedMessages: messages,
-        recordedAt: now, projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
-      }).envelope
-      fs.mkdirSync(path.dirname(sessionPath), { recursive: true })
-      fs.writeFileSync(sessionPath, JSON.stringify(envelope))
+      const ingressStore = new FileTelegramEffectJournal(path.join(root, "state", "telegram", "fixture-ingress"))
+      ingressStores.push(ingressStore)
+      const ingress = await recordTelegramEffectsInSession({
+        store: ingressStore, sessionPath, artifacts: [],
+        inbound: { text: "restart calibre-web", reference: "telegram-inbound:owner-request" },
+      })
+      const messages = projectProviderMessages(loadSessionEnvelopeFile(sessionPath)!)
       const unused = vi.fn(async () => { throw new Error("unexpected fixture service call") })
+      const inventory = vi.fn(async () => ({
+        ok: true, data: { containers: [{ id: "fixture-container", name: "calibre-web", state: "running", degraded: false }], truncated: false },
+      }))
       const mutation = vi.fn(async () => ({
         ok: true,
         data: { container: { id: "fixture-container", name: "calibre-web" }, beforeState: "running", afterState: "running", observedRestart: true, degraded: false },
@@ -86,7 +92,7 @@ describe("configured-owner Telegram approval authority", () => {
         healthSweep: unused,
         _createInteractiveControl: () => ({ socketPath: path.join(root, "unused.sock"), start: unused, stop: async () => undefined }),
         _toolContext: { agentRoot: root, sanctuary: {
-          listContainers: unused, getContainerLogs: unused, getStorage: unused, getDisks: unused,
+          listContainers: inventory, getContainerLogs: unused, getStorage: unused, getDisks: unused,
           getNotifications: unused, getSystem: unused, getInstallState: unused, checkServices: unused,
           getDownloadQueue: unused, getMediaOptimization: unused, searchMediaCatalog: unused,
           resumeDownloadQueue: unused, restartContainer: mutation,
@@ -129,6 +135,10 @@ describe("configured-owner Telegram approval authority", () => {
         const policy = definition.approvalPolicy!(args)
         if (policy.kind !== "required") throw new Error("fixture action requires approval")
         const call = { id: "owner-restart", type: "function" as const, function: { name: "unraid_restart_container", arguments: JSON.stringify(args) } }
+        const relationship = await composition.resolveRelationshipAuthorization!({
+          friendId, requestId: ingress.reference, sessionEventId: ingress.eventId, sessionKey: key,
+          botId: "777", userId: "42", chatId: "42",
+        })
         const suspension = await withSessionTurnLease(sessionPath, async (lease) => runtime.coordinator({ sessionPath, baseSessionRevision: readSessionTransaction(sessionPath, lease).revision }).propose({
           toolCall: call, arguments: args, preCallMessages: messages,
           frozenAssistantMessage: { role: "assistant", content: null, tool_calls: [call] },
@@ -136,6 +146,11 @@ describe("configured-owner Telegram approval authority", () => {
           toolDigest: digestApprovalToolDefinition(definition, validated.value.schemaDigest, policy.policyId),
           policyDigest: digestJson({ policyId: policy.policyId, actionClass: policy.actionClass, classification: "required" }),
           policyId: policy.policyId, actionClass: policy.actionClass,
+          liveToolContext: {
+            ...appOptions._toolContext, signin: async () => undefined, agentName: "sanctuary", agentRoot: root,
+            currentSession: { friendId, channel: "telegram", key, sessionPath },
+            relationshipAuthorization: { ...relationship, requestId: ingress.reference },
+          },
         }))
         const friend = (await friends.get(friendId))!
         faultActive = true

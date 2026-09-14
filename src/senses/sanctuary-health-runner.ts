@@ -45,7 +45,6 @@ function evidenceInputs(agentName: string, result: SanctuaryHealthSweepResult): 
     source: "sanctuary-health",
     eventType: "health.observed",
     eventId: incident.id,
-    observationRevision: incident.observationRevision ?? revision,
     transition: "recovered" as const,
     summary: `recovered: ${incident.summary}`,
     evidence: [`recovered: ${incident.summary}`],

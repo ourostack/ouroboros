@@ -44,6 +44,23 @@ afterEach(() => {
 })
 
 describe("package asset validation", () => {
+  it("documents owner-only sequential Jellyfin provisioning without installation authority or weak rollback", () => {
+    const readme = fs.readFileSync(path.resolve(__dirname, "../../../deploy/unraid/README.txt"), "utf8")
+    const heading = "Bounded Jellyfin stewardship"
+    expect(readme).toContain(heading)
+    const section = readme.slice(readme.indexOf(heading))
+    for (const requirement of [
+      "fresh authenticated owner Telegram message after installation",
+      "set_desired_state -> read -> grant_routine_action -> read",
+      "container:jellyfin=on", "unraid.restart:jellyfin", "unraid.container.restart",
+      "2 attempts per 1800000 ms", "365 days after authorization",
+      "verificationRequired=true", "exclusions=[]", "provenance=stated",
+      "Packaged desired states and grants remain empty",
+      "Do not start a weak predecessor after policy exists",
+      "state/policy/policy-audit.ndjson", "state/policy/action-receipts.ndjson",
+    ]) expect(section).toContain(requirement)
+  })
+
   it("ships the owner v8 identity correction without changing any other psyche content or containment source", () => {
     const root = path.resolve(__dirname, "../../../deploy/unraid")
     const identity = fs.readFileSync(path.join(root, "sanctuary.ouro/psyche/IDENTITY.md"), "utf8")

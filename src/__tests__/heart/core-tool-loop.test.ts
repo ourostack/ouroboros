@@ -1990,66 +1990,63 @@ describe("runAgent tool loop guard", () => {
     }
 
     it("carries the one live standing-policy classification into the exact dispatch without rereading it", async () => {
-      const policy = {
-        schemaVersion: 1,
-        version: 1,
-        desiredStates: {},
-        routineActionGrants: {
-          "unraid.restart:calibre-web": { action: "unraid.container.restart", targets: ["calibre-web"], maxCount: 2, windowMs: 3_600_000, verificationRequired: true, exclusions: [], provenance: "stated", issuer: "ari", authorizedAt: "2026-08-29T17:00:00.000Z", authorizingSessionEvent: "evt-1", version: 1 },
-        },
-        updatedAt: "2026-08-29T17:00:00.000Z",
+      const requester = { kind: "owner" as const, friendId: "ari", profileId: "sanctuary-owner", requestId: "request-2", sessionEventId: "evt-2", origin: { friendId: "ari", channel: "telegram", key: "telegram_owner" } }
+      const inspect = vi.spyOn(await import("../../heart/steward-policy"), "inspectRoutineActionGrant").mockReturnValue({
+        allowed: true, policyVersion: 2, desiredStateVersion: 1, grantVersion: 2, key: "unraid.restart:calibre-web", action: "unraid.container.restart", target: "calibre-web", requester, authorizationVersion: 7,
+      })
+      try {
+        const { resolveToolDefinition } = await import("../../repertoire/tools")
+        const tool = resolveToolDefinition("unraid_restart_container")!.tool
+        mockCreate.mockReturnValueOnce(streamedCall("unraid_restart_container", JSON.stringify({ container: "calibre-web" }), "call_routine_restart"))
+        const controller = new AbortController()
+        const execTool = vi.fn(async () => { controller.abort(); return JSON.stringify({ ok: true }) })
+        const propose = vi.fn()
+        const relationshipAuthorization = { profileId: "sanctuary-owner", requestId: "request-2", authorizedContextScopes: [], advertisedToolNames: ["unraid_restart_container"], actor: { friendId: "ari", trustLevel: "family" as const, sessionEventId: "evt-2" }, authorizeTool: vi.fn(async () => ({ allowed: true as const, receiptId: "relationship-1", profileVersion: 7 })) }
+        const { runAgent } = await import("../../heart/core")
+
+        const result = await runAgent([{ role: "user", content: "restart calibre-web" }], makeCallbacks(), "telegram", controller.signal, {
+          tools: [tool], execTool, approvalCoordinator: { propose },
+          toolContext: { signin: async () => undefined, agentName: "testagent", agentRoot: "/mock/repo/testagent", currentSession: { friendId: "ari", channel: "telegram", key: "telegram_owner" }, relationshipAuthorization },
+        } as any)
+
+        expect(propose).not.toHaveBeenCalled()
+        expect(result.outcome).not.toBe("errored")
+        expect(mockCreate).toHaveBeenCalledOnce()
+        expect(execTool).toHaveBeenCalledWith("unraid_restart_container", { container: "calibre-web" }, expect.objectContaining({ routineActionSelection: { kind: "standing", agentRoot: "/mock/repo/testagent", key: "unraid.restart:calibre-web", target: "calibre-web", expectedPolicyVersion: 2, expectedDesiredStateVersion: 1, expectedGrantVersion: 2, requester, authorizationVersion: 7 } }))
+        expect(relationshipAuthorization.authorizeTool).toHaveBeenCalledTimes(3)
+        expect(inspect).toHaveBeenCalledOnce()
+        expect(inspect).toHaveBeenCalledWith("/mock/repo/testagent", { key: "unraid.restart:calibre-web", action: "unraid.container.restart", target: "calibre-web", requester, authorizationVersion: 7 })
+      } finally {
+        inspect.mockRestore()
       }
-      vi.mocked(fs.existsSync).mockImplementation((filePath) => String(filePath).endsWith("steward.json"))
-      vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => String(filePath).endsWith("steward.json") ? JSON.stringify(policy) : defaultReadFileSync(filePath))
-      const { resolveToolDefinition } = await import("../../repertoire/tools")
-      const tool = resolveToolDefinition("unraid_restart_container")!.tool
-      mockCreate.mockReturnValueOnce(streamedCall("unraid_restart_container", JSON.stringify({ container: "calibre-web" }), "call_routine_restart"))
-      const controller = new AbortController()
-      const execTool = vi.fn(async () => { controller.abort(); return JSON.stringify({ ok: true }) })
-      const propose = vi.fn()
-      const relationshipAuthorization = { profileId: "sanctuary-owner", authorizedContextScopes: [], advertisedToolNames: ["unraid_restart_container"], actor: { friendId: "ari", trustLevel: "family" as const, sessionEventId: "evt-2" }, authorizeTool: vi.fn(async () => ({ allowed: true as const, receiptId: "relationship-1", profileVersion: 7 })) }
-      const { runAgent } = await import("../../heart/core")
-
-      const result = await runAgent([{ role: "user", content: "restart calibre-web" }], makeCallbacks(), "cli", controller.signal, {
-        tools: [tool], execTool, approvalCoordinator: { propose },
-        toolContext: { signin: async () => undefined, agentName: "testagent", agentRoot: "/mock/repo/testagent", relationshipAuthorization },
-      } as any)
-
-      expect(propose).not.toHaveBeenCalled()
-      expect(result.outcome).not.toBe("errored")
-      expect(mockCreate).toHaveBeenCalledOnce()
-      expect(execTool).toHaveBeenCalledWith("unraid_restart_container", { container: "calibre-web" }, expect.objectContaining({ routineActionSelection: { key: "unraid.restart:calibre-web", target: "calibre-web", expectedPolicyVersion: 1 } }))
-      expect(relationshipAuthorization.authorizeTool).toHaveBeenCalledTimes(3)
-      expect(vi.mocked(fs.readFileSync).mock.calls.filter(([filePath]) => String(filePath).endsWith("steward.json"))).toHaveLength(1)
     })
 
     it("executes the exact family standing-policy restart without an approval coordinator", async () => {
-      const policy = {
-        schemaVersion: 1,
-        version: 1,
-        desiredStates: {},
-        routineActionGrants: {
-          "unraid.restart:calibre-web": { action: "unraid.container.restart", targets: ["calibre-web"], maxCount: 2, windowMs: 3_600_000, verificationRequired: true, exclusions: [], provenance: "stated", issuer: "ari", authorizedAt: "2026-08-29T17:00:00.000Z", authorizingSessionEvent: "evt-1", version: 1 },
-        },
-        updatedAt: "2026-08-29T17:00:00.000Z",
+      const requester = { kind: "owner" as const, friendId: "ari", profileId: "sanctuary-owner", requestId: "request-2", sessionEventId: "evt-2", origin: { friendId: "ari", channel: "telegram", key: "telegram_owner" } }
+      const inspect = vi.spyOn(await import("../../heart/steward-policy"), "inspectRoutineActionGrant").mockReturnValue({
+        allowed: true, policyVersion: 2, desiredStateVersion: 1, grantVersion: 2, key: "unraid.restart:calibre-web", action: "unraid.container.restart", target: "calibre-web", requester, authorizationVersion: 7,
+      })
+      try {
+        const { resolveToolDefinition } = await import("../../repertoire/tools")
+        const tool = resolveToolDefinition("unraid_restart_container")!.tool
+        mockCreate.mockReturnValueOnce(streamedCall("unraid_restart_container", JSON.stringify({ container: "calibre-web" }), "call_routine_restart_without_coordinator"))
+        const controller = new AbortController()
+        const execTool = vi.fn(async () => { controller.abort(); return JSON.stringify({ ok: true }) })
+        const relationshipAuthorization = { profileId: "sanctuary-owner", requestId: "request-2", authorizedContextScopes: [], advertisedToolNames: ["unraid_restart_container"], actor: { friendId: "ari", trustLevel: "family" as const, sessionEventId: "evt-2" }, authorizeTool: vi.fn(async () => ({ allowed: true as const, receiptId: "relationship-1", profileVersion: 7 })) }
+        const { runAgent } = await import("../../heart/core")
+
+        await runAgent([{ role: "user", content: "restart calibre-web" }], makeCallbacks(), "telegram", controller.signal, {
+          tools: [tool], execTool,
+          toolContext: { signin: async () => undefined, agentName: "testagent", agentRoot: "/mock/repo/testagent", currentSession: { friendId: "ari", channel: "telegram", key: "telegram_owner" }, relationshipAuthorization },
+        } as any)
+
+        expect(execTool).toHaveBeenCalledWith("unraid_restart_container", { container: "calibre-web" }, expect.objectContaining({ routineActionSelection: { kind: "standing", agentRoot: "/mock/repo/testagent", key: "unraid.restart:calibre-web", target: "calibre-web", expectedPolicyVersion: 2, expectedDesiredStateVersion: 1, expectedGrantVersion: 2, requester, authorizationVersion: 7 } }))
+        expect(relationshipAuthorization.authorizeTool).toHaveBeenCalledTimes(3)
+        expect(inspect).toHaveBeenCalledOnce()
+        expect(inspect).toHaveBeenCalledWith("/mock/repo/testagent", { key: "unraid.restart:calibre-web", action: "unraid.container.restart", target: "calibre-web", requester, authorizationVersion: 7 })
+      } finally {
+        inspect.mockRestore()
       }
-      vi.mocked(fs.existsSync).mockImplementation((filePath) => String(filePath).endsWith("steward.json"))
-      vi.mocked(fs.readFileSync).mockImplementation((filePath: any) => String(filePath).endsWith("steward.json") ? JSON.stringify(policy) : defaultReadFileSync(filePath))
-      const { resolveToolDefinition } = await import("../../repertoire/tools")
-      const tool = resolveToolDefinition("unraid_restart_container")!.tool
-      mockCreate.mockReturnValueOnce(streamedCall("unraid_restart_container", JSON.stringify({ container: "calibre-web" }), "call_routine_restart_without_coordinator"))
-      const controller = new AbortController()
-      const execTool = vi.fn(async () => { controller.abort(); return JSON.stringify({ ok: true }) })
-      const relationshipAuthorization = { profileId: "sanctuary-owner", authorizedContextScopes: [], advertisedToolNames: ["unraid_restart_container"], actor: { friendId: "ari", trustLevel: "family" as const, sessionEventId: "evt-2" }, authorizeTool: vi.fn(async () => ({ allowed: true as const, receiptId: "relationship-1", profileVersion: 7 })) }
-      const { runAgent } = await import("../../heart/core")
-
-      await runAgent([{ role: "user", content: "restart calibre-web" }], makeCallbacks(), "inner", controller.signal, {
-        tools: [tool], execTool,
-        toolContext: { signin: async () => undefined, agentName: "testagent", agentRoot: "/mock/repo/testagent", relationshipAuthorization },
-      } as any)
-
-      expect(execTool).toHaveBeenCalledWith("unraid_restart_container", { container: "calibre-web" }, expect.objectContaining({ routineActionSelection: { key: "unraid.restart:calibre-web", target: "calibre-web", expectedPolicyVersion: 1 } }))
-      expect(relationshipAuthorization.authorizeTool).toHaveBeenCalledTimes(3)
     })
 
     it("fails a protected call closed before its handler when no approval coordinator exists", async () => {

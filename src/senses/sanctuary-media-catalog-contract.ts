@@ -135,7 +135,10 @@ export function sanctuaryMediaCatalogRequiredToolCalls(
   const mentionsMedia = /\b(?:film|films|movie|movies|shows|tv|jellyfin|watch|shelf|stock|catalog|library|lib)\b/u.test(normalized)
   const asksCatalog = /\b(?:have|got|stock|catalog|library|lib|shelf|jellyfin|favorite|favourite|recommend|suggest|pick|watch|add|see|show|list|browse|access)\b/u.test(normalized)
   const requestedTitleQuery = requestedTitle(normalized)
-  if ((!mentionsMedia && !requestedTitleQuery) || !asksCatalog) return undefined
+  const operationalOnly = /\b(?:restart|reboot|start|stop|stopped|stopping|running|down|investigate|redeploy|deploy|crash|crashed)\b/u.test(normalized)
+    && !requestedTitleQuery
+    && !/\b(?:film|films|movie|movies|shows|tv|watch|shelf|stock|catalog|library|lib|have|got|favorite|favourite|recommend|suggest|pick|add|see|show|list|browse|access|find|search|count|contents)\b/u.test(normalized)
+  if (operationalOnly || (!mentionsMedia && !requestedTitleQuery) || !asksCatalog) return undefined
 
   const kind = requestKind(normalized, requestedTitleQuery)
   const asksForAddition = /\b(?:add|missing from|must get)\b/u.test(normalized)

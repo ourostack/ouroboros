@@ -132,7 +132,7 @@ export interface ExecuteApprovalDecisionOptions {
   checkpointStore: ApprovalSuspensionCheckpointStore
   decision: Omit<Parameters<ApprovalStore["decide"]>[0], "ownerId">
   ownerId: string
-  currentSessionRevision: string
+  currentSessionRevision: string | (() => string)
   resolveTool(toolName: string): ToolDefinition | undefined | Promise<ToolDefinition | undefined>
   resolveApprovalPolicy?: (toolName: string, argumentsValue: JsonObject) => ReturnType<NonNullable<ToolDefinition["approvalPolicy"]>> | Promise<ReturnType<NonNullable<ToolDefinition["approvalPolicy"]>>>
   liveGuard(context: ApprovalLiveContext): { ok: true } | { ok: false; reason: string } | Promise<{ ok: true } | { ok: false; reason: string }>
@@ -406,7 +406,13 @@ export async function executeApprovalDecision(options: ExecuteApprovalDecisionOp
   const decided = options.approvalStore.decide({ ...options.decision, ownerId: options.ownerId })
   if (decided.state !== "claimed") return decided
   await options.hooks?.afterClaim?.()
-  if (options.currentSessionRevision !== decided.suspendedSessionRevision) {
+  let currentSessionRevision: string
+  try {
+    currentSessionRevision = typeof options.currentSessionRevision === "function" ? options.currentSessionRevision() : options.currentSessionRevision
+  } catch {
+    return terminalizeClaimed(options.approvalStore, decided, "drifted", "current session revision is unavailable")
+  }
+  if (currentSessionRevision !== decided.suspendedSessionRevision) {
     return terminalizeClaimed(options.approvalStore, decided, "session_head_changed", "suspended session revision changed")
   }
   const checkpoint = options.checkpointStore.read(decided.approvalId)
