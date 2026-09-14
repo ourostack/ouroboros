@@ -52,6 +52,8 @@ vi.mock("../../repertoire/mcp-client", () => ({
 
 import { McpManager } from "../../repertoire/mcp-manager"
 
+const OWNER = Object.freeze({ agentName: "test", agentRoot: "/tmp/test.ouro" })
+
 const BROWSER_TOOLS: McpToolInfo[] = [
   { name: "browser_navigate", description: "Navigate to URL", inputSchema: {} },
   { name: "browser_click", description: "Click element", inputSchema: {} },
@@ -79,7 +81,7 @@ describe("Browser MCP config through McpManager", () => {
   it("creates browser server entry when config includes browser MCP", async () => {
     const manager = new McpManager()
 
-    await manager.start({
+    await manager.start(OWNER, {
       browser: {
         command: "npx",
         args: [
@@ -98,14 +100,14 @@ describe("Browser MCP config through McpManager", () => {
   it("lists browser tools when browser server is configured", async () => {
     const manager = new McpManager()
 
-    await manager.start({
+    await manager.start(OWNER, {
       browser: {
         command: "npx",
         args: ["@playwright/mcp"],
       },
     })
 
-    const allToolGroups = manager.listAllTools()
+    const allToolGroups = manager.listAllTools(OWNER)
     const browserGroup = allToolGroups.find((g) => g.server === "browser")
     expect(browserGroup).toBeDefined()
     const toolNames = browserGroup!.tools.map((t) => t.name)
@@ -124,7 +126,7 @@ describe("Browser MCP config through McpManager", () => {
       },
     }
 
-    await manager.start(config)
+    await manager.start(OWNER, config)
 
     // Verify the config has the expected structure
     expect(config.browser.command).toBe("npx")
@@ -144,12 +146,12 @@ describe("Browser MCP config through McpManager", () => {
     }
 
     const manager = new McpManager()
-    await manager.start({
+    await manager.start(OWNER, {
       browser: { command: "npx", args: ["@playwright/mcp"] },
       duffel: { command: "npx", args: ["duffel-mcp"] },
     })
 
-    const allToolGroups = manager.listAllTools()
+    const allToolGroups = manager.listAllTools(OWNER)
     const serverNames = allToolGroups.map((g) => g.server)
     expect(serverNames).toContain("browser")
     expect(serverNames).toContain("duffel")

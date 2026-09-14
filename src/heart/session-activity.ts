@@ -2,7 +2,7 @@ import * as fs from "fs"
 import * as path from "path"
 import { emitNervesEvent } from "../nerves/runtime"
 import { sanitizeKey } from "./config"
-import { deriveSessionChronology, loadSessionEnvelopeFile } from "./session-events"
+import { deriveSessionChronology, loadSessionEnvelopeFile, selectEffectiveSessionEvents } from "./session-events"
 
 export interface SessionActivityRecord {
   friendId: string
@@ -74,7 +74,9 @@ function parseFriendActivity(sessionPath: string, activeThresholdMs: number, now
 
   const envelope = loadSessionEnvelopeFile(sessionPath)
   const chronology = envelope ? deriveSessionChronology(envelope.events) : null
-  const explicit = envelope?.state.lastFriendActivityAt
+  const explicit = envelope && envelope.events.length > 0 && selectEffectiveSessionEvents(envelope.events).length !== envelope.events.length
+    ? chronology?.lastInboundAt
+    : envelope?.state.lastFriendActivityAt
   if (typeof explicit === "string") {
     const parsedMs = Date.parse(explicit)
     if (Number.isFinite(parsedMs)) {

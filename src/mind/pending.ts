@@ -28,8 +28,8 @@ export interface PendingMessage {
   requestId?: string
 }
 
-export function getPendingDir(agentName: string, friendId: string, channel: string, key: string): string {
-  return path.join(getAgentRoot(agentName), "state", "pending", friendId, channel, key)
+export function getPendingDir(agentName: string, friendId: string, channel: string, key: string, agentRoot = getAgentRoot(agentName)): string {
+  return path.join(agentRoot, "state", "pending", friendId, channel, key)
 }
 
 export function getDeferredReturnDir(agentName: string, friendId: string): string {
@@ -40,8 +40,8 @@ export function getDeferredReturnDir(agentName: string, friendId: string): strin
 export const PRIVATE_RUNTIME_PENDING = { friendId: "self", channel: "inner", key: "dialog" } as const
 
 /** Returns the pending dir for this agent's private runtime. */
-export function getPrivateRuntimePendingDir(agentName: string): string {
-  return getPendingDir(agentName, PRIVATE_RUNTIME_PENDING.friendId, PRIVATE_RUNTIME_PENDING.channel, PRIVATE_RUNTIME_PENDING.key)
+export function getPrivateRuntimePendingDir(agentName: string, agentRoot?: string): string {
+  return getPendingDir(agentName, PRIVATE_RUNTIME_PENDING.friendId, PRIVATE_RUNTIME_PENDING.channel, PRIVATE_RUNTIME_PENDING.key, agentRoot)
 }
 
 export function hasPendingMessages(pendingDir: string): boolean {

@@ -3,12 +3,13 @@ import type { ChildProcess } from "child_process"
 import { createInterface } from "readline"
 import { emitNervesEvent } from "../nerves/runtime"
 import type { McpServerConfig } from "../heart/identity"
+import type { JsonObject } from "../heart/approval-store"
 import { recoverRuntimeCwd } from "../heart/runtime-cwd"
 
 export interface McpToolInfo {
   name: string
   description: string
-  inputSchema: Record<string, unknown>
+  inputSchema: JsonObject
 }
 
 interface PendingRequest {
@@ -147,7 +148,7 @@ export class McpClient {
     name: string,
     args: Record<string, unknown>,
     timeout: number = DEFAULT_TOOL_CALL_TIMEOUT,
-  ): Promise<{ content: Array<{ type: string; text: string }> }> {
+  ): Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }> {
     emitNervesEvent({
       event: "mcp.tool_call_start",
       component: "repertoire",
@@ -159,7 +160,7 @@ export class McpClient {
       const result = await this.sendRequest("tools/call", {
         name,
         arguments: args,
-      }, timeout) as { content: Array<{ type: string; text: string }> }
+      }, timeout) as { content: Array<{ type: string; text: string }>; isError?: boolean }
 
       emitNervesEvent({
         event: "mcp.tool_call_end",

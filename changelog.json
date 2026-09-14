@@ -2,6 +2,66 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.815",
+      "changes": [
+        "Protect Sanctuary's resident control socket from transient Telegram app disposal, and safely retry interrupted startup and cleanup without stealing another listener.",
+        "Preserve the order of overlapping startup and shutdown requests, and check socket modification time without mistaking permission changes for replacement."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.814",
+      "changes": [
+        "Preserve native session history and delivery references while keeping model context and active outputs bounded.",
+        "Keep precommitted ingress validation strict when loading effective projections."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.813",
+      "changes": [
+        "Unrelated logs no longer block Sanctuary containment checks; identity and authenticated audit safeguards remain intact."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.812",
+      "changes": [
+        "Accept Sanctuary's existing private frontend socket during deployment audits while retaining exact listener and ownership checks."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.811",
+      "changes": [
+        "Bind tool discovery and execution to the initiating agent with canonical schemas, per-owner MCP connections and current authorization.",
+        "Keep tool schema validation isolated so repeated schema IDs work across turns without borrowing another tool's schema registrations.",
+        "Expose Sanctuary's resident native tools only to the configured owner while preserving household and event exclusions and role-specific containment.",
+        "Match Sanctuary's Unit-16e containment evidence to the canonical three-mount deployment and reject malformed root-mode observations at both the broker and adapter boundaries.",
+        "Preserve approval effect outcomes without replay, confine session reads and isolate foreground and background shell ownership.",
+        "Keep CLI and realtime voice tool contexts owner-bound across delayed discovery, transport failure and cancellation.",
+        "Allow coverage gates to reuse installed Mailbox UI dependencies through an explicit skip-install option without skipping validation."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.810",
+      "changes": [
+        "Preserve tool calls and matching results when adjacent assistant messages are compacted, including after history repair."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.809",
+      "changes": [
+        "D-004: keep native device/inode checks exact for large filesystem identities in confined session transactions and private repair artifacts."
+      ]
+    },
+    {
+      "version": "0.1.0-alpha.808",
+      "changes": [
+        "Keep engine retry controls and rejected attempts out of canonical conversation history while preserving accepted execution receipts.",
+        "Honor exact raw session redaction markers consistently across conversation readers and context rebuilds.",
+        "Add a private, confined eight-event Sanctuary session repair bound to exact native IDs, with canonical system-first projection, manifest/CAS readback, idempotence, and conditional rollback.",
+        "Validate required source assets in pre-build release checks while keeping compiled package checks strict.",
+        "Refresh existing multipart, mail-parsing, and test-tool dependencies to clear security advisories without changing the Bitwarden CLI version."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.807",
       "changes": [
         "Check provider readiness before opening chat after an explicit hatch."

@@ -1,4 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from "vitest"
+import { afterEach, describe, it, expect, vi, beforeEach } from "vitest"
+import { makeMcpView as makeMockMcpManager, MCP_CONTEXT, MCP_OWNER, shutdownMcpFixtures } from "./mcp-fixture"
 
 // Track nerves events. vi.mock factories cannot reference top-level variables
 // because they hoist above imports — use vi.hoisted so the mock and the
@@ -57,23 +58,13 @@ vi.mock("../../repertoire/github-client", () => ({
 }))
 
 
-import type { McpManager } from "../../repertoire/mcp-manager"
-import { getToolsForChannel, execTool, summarizeArgs, resetMcpDefinitions } from "../../repertoire/tools"
-
-function makeMockMcpManager(
-  allTools: Array<{ server: string; tools: Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> }>,
-): McpManager {
-  return {
-    listAllTools: () => allTools,
-    callTool: vi.fn().mockResolvedValue({ content: [{ type: "text", text: "ok" }] }),
-  } as unknown as McpManager
-}
+import { getToolsForChannel, selectToolsForChannel, execTool, summarizeArgs } from "../../repertoire/tools"
+afterEach(shutdownMcpFixtures)
 
 describe("getToolsForChannel with mcpManager", () => {
   beforeEach(() => {
     vi.clearAllMocks()
     nervesEvents.length = 0
-    resetMcpDefinitions()
   })
 
   it("without mcpManager: returns same tools as before (no MCP tools)", () => {
@@ -135,40 +126,38 @@ describe("execTool with MCP tools", () => {
   beforeEach(() => {
     vi.clearAllMocks()
     nervesEvents.length = 0
-    resetMcpDefinitions()
   })
 
-  it("MCP tool name found in mcpDefinitions: handler is called, result returned", async () => {
+  it("MCP tool name found in the retained selection: handler is called, result returned", async () => {
     const mgr = makeMockMcpManager([{
       server: "browser",
       tools: [{ name: "navigate", description: "Nav", inputSchema: { type: "object" } }],
     }])
-    // Populate mcpDefinitions by calling getToolsForChannel
-    getToolsForChannel(undefined, undefined, undefined, undefined, mgr)
+    const toolSelection = selectToolsForChannel(undefined, undefined, undefined, undefined, mgr)
 
-    const result = await execTool("browser_navigate", { url: "https://example.com" })
+    const result = await execTool("browser_navigate", { url: "https://example.com" }, { ...MCP_CONTEXT, toolSelection })
     expect(result).toBe("ok")
-    expect(mgr.callTool).toHaveBeenCalledWith("browser", "navigate", { url: "https://example.com" })
+    expect(mgr.manager.callTool).toHaveBeenCalledWith(
+      expect.objectContaining({ ...MCP_OWNER, server: "browser", rawName: "navigate" }),
+      { url: "https://example.com" }, MCP_OWNER,
+    )
   })
 
   it("MCP tool name NOT found anywhere: returns unknown", async () => {
-    const result = await execTool("nonexistent_tool_xyz", {})
+    const result = await execTool("nonexistent_tool_xyz", {}, MCP_CONTEXT)
     expect(result).toBe("unknown: nonexistent_tool_xyz")
   })
 
   it("MCP tool handler error: error propagated through handler (returns error string)", async () => {
-    const mgr = {
-      listAllTools: () => [{
+    const mgr = makeMockMcpManager([{
         server: "broken",
         tools: [{ name: "fail", description: "Fails", inputSchema: { type: "object" } }],
-      }],
-      callTool: vi.fn().mockRejectedValue(new Error("connection lost")),
-    } as unknown as McpManager
+      }], undefined, new Error("connection lost"))
 
-    getToolsForChannel(undefined, undefined, undefined, undefined, mgr)
+    const toolSelection = selectToolsForChannel(undefined, undefined, undefined, undefined, mgr)
 
     // The MCP handler catches errors and returns error string (no throw)
-    const result = await execTool("broken_fail", {})
+    const result = await execTool("broken_fail", {}, { ...MCP_CONTEXT, toolSelection })
     expect(result).toContain("[mcp error]")
     expect(result).toContain("connection lost")
   })
@@ -178,9 +167,9 @@ describe("execTool with MCP tools", () => {
       server: "browser",
       tools: [{ name: "navigate", description: "Nav", inputSchema: { type: "object" } }],
     }])
-    getToolsForChannel(undefined, undefined, undefined, undefined, mgr)
+    const toolSelection = selectToolsForChannel(undefined, undefined, undefined, undefined, mgr)
 
-    const summary = summarizeArgs("browser_navigate", { url: "https://example.com" })
+    const summary = summarizeArgs("browser_navigate", { url: "https://example.com" }, toolSelection)
     expect(summary).toContain("url=https://example.com")
   })
 })

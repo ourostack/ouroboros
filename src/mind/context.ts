@@ -460,7 +460,34 @@ export function postTurnTrim(
   const currentIngressTimes = preTrimMessages.map(getIngressTime)
   const currentIngressRelations = preTrimMessages.map(getIngressRelations)
   const currentMessages = sanitizeProviderMessages(messages)
-  const tokenTrimmedMessages = trimMessages(currentMessages, maxTokens, contextMargin, usage?.input_tokens)
+  let tokenTrimmedMessages = trimMessages(currentMessages, maxTokens, contextMargin, usage?.input_tokens)
+  const estimatedTokens = estimateTokensForMessages(tokenTrimmedMessages)
+  if (estimatedTokens > maxTokens) {
+    const targetTokens = Math.floor(maxTokens * (1 - contextMargin / 100))
+    const lastUser = tokenTrimmedMessages.findLastIndex((message) => message.role === "user")
+    const lastAssistant = tokenTrimmedMessages.findLastIndex((message) => message.role === "assistant")
+    const dropped = new Set<number>()
+    let remaining = estimatedTokens
+    for (const block of buildTrimmableBlocks(tokenTrimmedMessages)) {
+      if (remaining <= targetTokens) break
+      if (block.indices.includes(lastUser) || lastAssistant > lastUser && block.indices.includes(lastAssistant)) continue
+      for (const index of block.indices) dropped.add(index)
+      remaining -= block.estimatedTokens
+    }
+    tokenTrimmedMessages = remaining > maxTokens ? [] : tokenTrimmedMessages.filter((_message, index) => !dropped.has(index))
+    emitNervesEvent({
+      level: tokenTrimmedMessages.length === 0 ? "warn" : "info",
+      event: "mind.step_end",
+      component: "mind",
+      message: "bounded post-turn projection using canonical token estimates",
+      meta: {
+        maxTokens, targetTokens, estimated_before: estimatedTokens,
+        estimated_after: estimateTokensForMessages(tokenTrimmedMessages),
+        reported_input_tokens: usage?.input_tokens ?? null,
+        emptyProjection: tokenTrimmedMessages.length === 0,
+      },
+    })
+  }
   const trimmedMessages = compactIdleRestOnlyTurns(tokenTrimmedMessages)
   messages.splice(0, messages.length, ...trimmedMessages)
   return { currentMessages, trimmedMessages, currentIngressTimes, currentIngressRelations, maxTokens, contextMargin }

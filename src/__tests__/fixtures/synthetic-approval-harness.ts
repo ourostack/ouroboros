@@ -12,6 +12,7 @@ import {
   commitApprovalProposal,
   coordinateApprovalDecision,
   digestApprovalSuspensionCheckpointPayload,
+  digestApprovalToolDefinition,
   executeApprovalDecision,
   recoverAttemptedApproval,
   recoverClaimedApproval,
@@ -136,7 +137,7 @@ function proposal(sessionPath: string, args: JsonObject): PrepareApprovalInput {
   return {
     toolCallId: "call_restart", toolName: "shell", arguments: args,
     schemaDigest,
-    toolDigest: digestJson({ name: "shell", schemaDigest, policyId: policy.policyId }),
+    toolDigest: digestApprovalToolDefinition(definition, schemaDigest, policy.policyId),
     policyDigest: digestJson({ policyId: policy.policyId, actionClass: policy.actionClass, classification: "required" }),
     policyId: policy.policyId,
     sessionKey: "telegram:chat-7", sessionPath, baseSessionRevision: BASE_REVISION,
@@ -235,11 +236,14 @@ const tokens = {
   remove: id => { const all = readAll(fixture.tokenPath); delete all[id]; fs.writeFileSync(fixture.tokenPath, JSON.stringify(all)) },
 }
 const store = storeModule.openApprovalStore({ databasePath: fixture.databasePath, now: () => new Date(fixture.originNow) })
-const callbacks = { onModelStart() {}, onModelStreamStart() {}, onTextChunk() {}, onReasoningChunk() {}, onToolStart() {}, onToolEnd() {}, onError(error) { throw error } };
+const persisted = []
+let generated = []
+const callbacks = { onModelStart() {}, onModelStreamStart() {}, onTextChunk() {}, onReasoningChunk() {}, onToolStart() {}, onToolEnd() {}, onToolResult(messages) { persisted.push(structuredClone(messages)) }, onError(error) { throw error } };
 (async () => {
   try {
     const messages = [{ role: "user", content: "restart calibre-web" }]
     const result = await core.runAgent(messages, callbacks, "telegram", undefined, {
+      captureGeneratedMessages: value => { generated = structuredClone(value) },
       tools: fixture.batch ? fixture.batch.map(call => require(process.argv[9]).resolveToolDefinition(call.name).tool) : [shellModule.shellToolDefinitions[0].tool],
       execTool: async () => { append(fixture.traceLogPath, { sequence: 3, pid: process.pid, atMs: 0, type: "handler_start" }); throw new Error("protected handler ran before approval") },
       toolContext: { signin: async () => undefined }, daemonRunning: false, senseStatusLines: [], bundleMeta: null, daemonHealth: null,
@@ -255,8 +259,12 @@ const callbacks = { onModelStart() {}, onModelStreamStart() {}, onTextChunk() {}
     })
     if (fixture.expectRejected) {
       if (result.suspension) throw new Error("rejected origin unexpectedly suspended")
-      const rejectionObserved = messages.some(message => message.role === "tool" && typeof message.content === "string" && (message.content.includes("rejected:") || message.content.includes("invalid tool arguments")))
-      if (!rejectionObserved) throw new Error("runAgent settled without an explicit pre-handler rejection result: " + JSON.stringify(messages))
+      const isRejection = message => message.role === "tool" && typeof message.content === "string" && (message.content.includes("rejected:") || message.content.includes("invalid tool arguments"))
+      if (!providerRequest.messages.some(isRejection)) throw new Error("provider retry did not receive the pre-handler rejection")
+      if (messages.some(isRejection) || generated.some(isRejection) || persisted.length) throw new Error("rejected batch entered canonical/generated/persisted history")
+      const callIds = messages.flatMap(message => message.role === "assistant" ? (message.tool_calls || []).map(call => call.id) : message.role === "tool" ? [message.tool_call_id] : [])
+      if (callIds.some(id => id !== "call_settle")) throw new Error("rejected call entered canonical history")
+      if (JSON.stringify(messages.filter(message => message.role === "user")) !== JSON.stringify([{ role: "user", content: "restart calibre-web" }])) throw new Error("engine control entered user history")
       process.stdout.write(JSON.stringify({ pid: process.pid, rejected: true }) + "\n")
       return
     }
@@ -357,10 +365,20 @@ async function resume(record) {
         decision: fixture.decision, ownerId, currentSessionRevision,
         resolveTool: liveDefinition,
         liveGuard: () => ({ ok: true }), liveRisk: () => ({ ok: true }),
+        preflight: async ({ record, arguments: args, definition }) => {
+          const tools = require(require("path").resolve("src/repertoire/tools.ts"))
+          const checked = await tools.preflightToolCall(record.toolName, args, {
+            signin: async () => undefined, agentName: "synthetic", agentRoot: fixture.root,
+            context: { friend: { id: "friend-ari", trustLevel: "family" } },
+            toolSelection: { ordinary: [definition], engine: [] },
+            selectCurrentTools: () => ({ ordinary: [liveDefinition()], engine: [] }),
+          })
+          return checked.kind === "ready" ? { ok: true } : { ok: false, reason: checked.text }
+        },
         execute: async () => {
           trace("handler_start")
           if (fixture.handlerMode === "observable_failure") throw new approval.ApprovalExecutionFailedError("restart failed")
-          append(fixture.effectsLogPath, { pid: process.pid, command: "docker restart calibre-web" }); return "restarted"
+          append(fixture.effectsLogPath, { pid: process.pid, command: "docker restart calibre-web" }); return { kind: "handler_succeeded", text: "restarted" }
         },
         hooks: {
           afterClaim: async () => { accepted = true; reason = "claimed"; trace("decision_received"); await hooks.afterClaim(); if (fixture.crashAt === "after_claim") throw new Error("synthetic_crash") },

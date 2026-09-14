@@ -7,6 +7,7 @@ import type { RsvpHabitRuntimePolicy } from "../rsvp/habit-policy";
 import type { RoutineActionRequester } from "../heart/steward-policy";
 import type { ApprovalOwnerBinding } from "../heart/approval-store";
 import { emitNervesEvent } from "../nerves/runtime";
+import type { McpToolBinding } from "./mcp-manager";
 
 import { fileToolDefinitions } from "./tools-files";
 import { shellToolDefinitions } from "./tools-shell";
@@ -147,7 +148,10 @@ export interface ToolContext {
   readonly noSend?: true;
   habitSession?: HabitSessionToolContext;
   daemonSocketPath?: string;
+  agentName?: string;
   agentRoot?: string;
+  readonly toolSelection?: ToolSelection;
+  readonly selectCurrentTools?: () => ToolSelection;
   currentUserMessage?: string;
   /** Exact attachments bound to the current ingress; when present, attachment tools fail closed outside it. */
   attachmentIds?: readonly string[];
@@ -155,6 +159,7 @@ export interface ToolContext {
   relationshipAuthorization?: {
     readonly requestId?: string;
     readonly profileId?: string;
+    readonly resolveCurrent?: () => Promise<NonNullable<ToolContext["relationshipAuthorization"]>>;
     authorizedContextScopes: readonly string[];
     advertisedToolNames: readonly string[];
     authorizeTool(name: string, args: Record<string, string>): { allowed: true; receiptId: string; profileVersion?: number; friendId?: string; profileId?: string; requestId?: string | null } | { allowed: false; reason: string } | Promise<{ allowed: true; receiptId: string; profileVersion?: number; friendId?: string; profileId?: string; requestId?: string | null } | { allowed: false; reason: string }>;
@@ -242,7 +247,17 @@ export interface ToolDefinition {
   };
   /** For first-class MCP tools: the server this tool belongs to. */
   mcpServer?: string;
+  mcpBinding?: McpToolBinding;
 }
+
+export interface ToolSelection {
+  readonly ordinary: readonly ToolDefinition[];
+  readonly engine: readonly OpenAI.ChatCompletionFunctionTool[];
+}
+
+export type ToolExecutionOutcome =
+  | { kind: "handler_succeeded"; text: string }
+  | { kind: "rejected_before_handler" | "handler_failed" | "handler_indeterminate"; text: string; error?: unknown };
 
 // Tracks which file paths have been read via read_file in this session.
 // edit_file requires a file to be read first (must-read-first guard).

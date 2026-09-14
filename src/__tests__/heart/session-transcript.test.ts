@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { a003Pair } from "../fixtures/a003-session"
 
 vi.mock("fs", () => ({
   readFileSync: vi.fn(),
@@ -49,6 +50,29 @@ describe("session transcript", () => {
   beforeEach(() => {
     vi.resetModules()
     vi.mocked(fs.readFileSync).mockReset()
+  })
+
+  it.each([false, true])("A003 transcript, summary, and playback snapshot share effective truth (invalid=%s)", async (invalid) => {
+    const { envelope, marker } = a003Pair()
+    if (invalid) marker.time.recordedAtSource = "save"
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(envelope))
+    const summarize = vi.fn(async (text: string) => text)
+    const { summarizeSessionTail } = await import("../../heart/session-transcript")
+    const result = await summarizeSessionTail({ sessionPath: "/mock/session.json", friendId: "ari", channel: "telegram", key: "owner", messageCount: 20, summarize })
+    expect(result.kind).toBe("ok")
+    if (result.kind !== "ok") throw new Error("expected conversational tail")
+    expect(result.tailMessages.map((message) => message.id)).toEqual(invalid ? ["evt-000001", "evt-000002", "evt-000003"] : ["evt-000001", "evt-000002"])
+    for (const surface of [result.transcript, result.summary, result.snapshot, summarize.mock.calls[0]![0]]) {
+      expect(surface.includes("engine-only correction")).toBe(invalid)
+    }
+  })
+
+  it("A003 reports an empty conversational tail when the only raw user has been redacted", async () => {
+    const { envelope } = a003Pair()
+    envelope.events.shift()
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(envelope))
+    const { summarizeSessionTail } = await import("../../heart/session-transcript")
+    expect(await summarizeSessionTail({ sessionPath: "/mock/session.json", friendId: "ari", channel: "telegram", key: "owner", messageCount: 10 })).toEqual({ kind: "empty", reason: "envelope_trimmed" })
   })
 
   it("extracts a canonical transcript tail and compact snapshot", async () => {

@@ -3,12 +3,43 @@
  * so the model can call them directly without shell indirection.
  */
 
-import type { McpManager } from "./mcp-manager"
+import type { McpServerView, McpToolBinding, McpTurnView } from "./mcp-manager"
+import type { McpToolInfo } from "./mcp-client"
 import type { ToolDefinition } from "./tools-base"
 import { emitNervesEvent } from "../nerves/runtime"
+import { digestJson } from "./tool-arguments"
+
+export class McpCallRejectedError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "McpCallRejectedError"
+  }
+}
+
+export class McpToolExecutionError extends Error {
+  constructor(readonly kind: "handler_failed" | "handler_indeterminate", message: string) {
+    super(message)
+    this.name = "McpToolExecutionError"
+  }
+}
+
+export function mcpToolSchema(entry: Pick<McpServerView, "server" | "pluginId">, tool: McpToolInfo) {
+  return {
+    type: "function" as const,
+    function: {
+      name: entry.pluginId
+        ? `mcp__${entry.server}__${tool.name}`
+        : tool.name.startsWith(`${entry.server}_`) || tool.name === entry.server
+          ? tool.name
+          : `${entry.server}_${tool.name}`,
+      description: tool.description || `MCP tool: ${tool.name} (server: ${entry.server})`,
+      parameters: tool.inputSchema ?? { type: "object", properties: {} },
+    },
+  }
+}
 
 /**
- * Convert all tools from an McpManager into ToolDefinition objects.
+ * Convert an owned frozen MCP view into ToolDefinition objects.
  *
  * Naming rules:
  *  - Builtin servers (agent.json `mcpServers`) — legacy `{server}_{tool}`
@@ -19,33 +50,35 @@ import { emitNervesEvent } from "../nerves/runtime"
  *    This matches Claude Code's external naming and the on-prompt promise
  *    in `desk-section.ts` (`mcp__desk__*`).
  *
- * The handler always calls `mcpManager.callTool()` with the un-prefixed
- * `(server, tool)` pair regardless of how the surfaced name was shaped.
+ * The handler carries the exact frozen binding to the manager's client fence.
  */
-export function mcpToolsAsDefinitions(mcpManager: McpManager): ToolDefinition[] {
-  if (!mcpManager) return []
+export function mcpToolsAsDefinitions(view: McpTurnView): ToolDefinition[] {
+  if (!view) return []
 
-  return mcpManager.listAllTools().flatMap((entry) => {
-    const isPluginSourced = Boolean(entry.pluginId)
-    return entry.tools.map((tool) => ({
-      tool: {
-        type: "function" as const,
-        function: {
-          name: isPluginSourced
-            ? `mcp__${entry.server}__${tool.name}`
-            : tool.name.startsWith(`${entry.server}_`) || tool.name === entry.server
-              ? tool.name
-              : `${entry.server}_${tool.name}`,
-          description: tool.description || `MCP tool: ${tool.name} (server: ${entry.server})`,
-          parameters: tool.inputSchema ?? { type: "object", properties: {} },
-        },
-      },
+  return view.entries.flatMap((entry) => entry.tools.map((tool): ToolDefinition => {
+    const schema = mcpToolSchema(entry, tool)
+    const binding: McpToolBinding = Object.freeze({
+      manager: view.manager, ...view.owner, server: entry.server,
+      rawName: tool.name, surfacedName: schema.function.name,
+      source: entry.source, pluginId: entry.pluginId,
+      configDigest: entry.configDigest, generation: entry.generation,
+      schemaDigest: digestJson(schema),
+    })
+    return {
+      tool: schema,
       riskProfile: {
         mutates: "external_side_effect" as const,
         risk: "high" as const,
         reason: "MCP tools may mutate external systems",
       },
-      handler: async (args: Record<string, string>): Promise<string> => {
+      handler: async (args, ctx): Promise<string> => {
+        if (ctx?.agentName !== binding.agentName || ctx.agentRoot !== binding.agentRoot) {
+          emitNervesEvent({
+            level: "warn", event: "mcp.tool_rejected", component: "repertoire",
+            message: "MCP tool owner does not match its caller", meta: { reason: "owner mismatch" },
+          })
+          throw new McpCallRejectedError("MCP tool owner does not match its caller")
+        }
         emitNervesEvent({
           event: "mcp.tool_start",
           component: "repertoire",
@@ -54,12 +87,15 @@ export function mcpToolsAsDefinitions(mcpManager: McpManager): ToolDefinition[] 
         })
 
         try {
-          const result = await mcpManager.callTool(entry.server, tool.name, args)
+          const result = await view.manager.callTool(binding, args, { agentName: ctx.agentName, agentRoot: ctx.agentRoot })
           const text = result.content
             .filter((c: { type: string; text?: string }) => c.type === "text" && c.text)
             .map((c: { text: string }) => c.text)
             .join("")
 
+          if (result.isError === true) {
+            throw new McpToolExecutionError("handler_failed", `[mcp error] ${entry.server}/${tool.name}: ${text}`)
+          }
           emitNervesEvent({
             event: "mcp.tool_end",
             component: "repertoire",
@@ -77,10 +113,12 @@ export function mcpToolsAsDefinitions(mcpManager: McpManager): ToolDefinition[] 
             message: `MCP tool ${entry.server}/${tool.name} failed: ${reason}`,
             meta: { server: entry.server, tool: tool.name, reason },
           })
-          return `[mcp error] ${entry.server}/${tool.name}: ${reason}`
+          if (error instanceof McpCallRejectedError || error instanceof McpToolExecutionError) throw error
+          throw new McpToolExecutionError("handler_indeterminate", `[mcp error] ${entry.server}/${tool.name}: ${reason}`)
         }
       },
       mcpServer: entry.server,
-    }))
-  })
+      mcpBinding: binding,
+    }
+  }))
 }

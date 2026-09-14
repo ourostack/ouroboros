@@ -4,12 +4,12 @@ import * as os from "node:os"
 import * as path from "node:path"
 
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { FileFriendStore } from "@ouro.bot/friends"
+import { FileFriendStore, getChannelCapabilities } from "@ouro.bot/friends"
 import Database from "better-sqlite3"
 
-import { canonicalApprovalArguments, openApprovalStore, type ApprovalOwnerBinding } from "../../heart/approval-store"
+import { canonicalApprovalArguments, openApprovalStore, type ApprovalOwnerBinding, type ApprovalRecord } from "../../heart/approval-store"
 import type { ApprovalProposalRequest, runAgent } from "../../heart/core"
-import { loadSessionEnvelopeFile, projectProviderMessages } from "../../heart/session-events"
+import { isExactRawSessionRedactionMarker, loadSessionEnvelopeFile, projectProviderMessages, selectEffectiveSessionEvents } from "../../heart/session-events"
 import { readRoutineActionReceipts, readStewardPolicy, updateStewardPolicy } from "../../heart/steward-policy"
 import { currentSessionTurnLease, readSessionTransaction, withSessionTurnLease } from "../../mind/session-transaction"
 import { createLogger, createNdjsonFileSink, type LogEvent } from "../../nerves"
@@ -19,12 +19,15 @@ import { execTool, resolveToolDefinition } from "../../repertoire/tools"
 import { routineActionRequester } from "../../repertoire/relationship-authorization"
 import { stewardPolicyToolDefinition } from "../../repertoire/tools-steward-policy"
 import { createApprovedUnraidRestartExecutor, type ApprovedUnraidRestartOptions, type UnraidRestartAttempt } from "../../repertoire/unraid-restart"
-import { createTelegramApprovalRuntime } from "../../senses/telegram-approval-runtime"
 import { createProductionTelegramRelationshipComposition, createTelegramSenseApp, opaqueTelegramSubject, readOrCreateTelegramIdentityKey, sanctuaryTelegramApprovalEvidenceMac } from "../../senses/telegram"
+import { createTelegramApprovalRuntime as createNativeTelegramApprovalRuntime } from "../../senses/telegram-approval-runtime"
+import { digestApprovalToolDefinition } from "../../heart/tool-approval"
+import { createMinimaxProviderRuntime } from "../../heart/providers/minimax"
 import { TelegramApiError, type TelegramBotApi, type TelegramUpdate } from "../../senses/telegram-client"
 import { createTelegramApprovalEffectPort, createTelegramAuthorizedEffectExecutor, FileTelegramEffectJournal, recordTelegramEffectsInSession, type TelegramApprovalEffectPort } from "../../senses/telegram-effect-adapter"
 import { getSenseSessionPath } from "../../senses/shared-turn"
 import type { ToolContext } from "../../repertoire/tools-base"
+import { a003RetainedHistoryEnvelope } from "../fixtures/a003-session"
 
 const scenarioHandleDigest = "a".repeat(64)
 const roots: string[] = []
@@ -46,6 +49,19 @@ const invalidInventories: Record<string, unknown> = {
   "numeric target id": { ok: true, data: { truncated: false, containers: [{ id: 42, name: "calibre-web", degraded: false }] } },
 }
 
+function createTelegramApprovalRuntime(options: Parameters<typeof createNativeTelegramApprovalRuntime>[0]) {
+  const agentRoot = options.dependencies?.agentRoot
+  if (!agentRoot) throw new Error("production lifecycle fixture requires its own root")
+  return createNativeTelegramApprovalRuntime({
+    ...options,
+    dependencies: {
+      getProviderRuntime: async () => createMinimaxProviderRuntime("MiniMax-M3", { apiKey: "isolated-fixture" }),
+      getSharedMcpManager: async () => null,
+      ...options.dependencies,
+    },
+  })
+}
+
 function root(): string {
   const value = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-approval-production-"))
   roots.push(value)
@@ -62,7 +78,7 @@ function proposalRequest(liveToolContext: ToolContext, name = "unraid_restart_co
     toolCall: { id: "call-restart", type: "function", function: { name, arguments: JSON.stringify(args) } },
     arguments: args,
     schemaDigest: validated.value.schemaDigest,
-    toolDigest: digestJson({ name, schemaDigest: validated.value.schemaDigest, policyId: policy.policyId }),
+    toolDigest: digestApprovalToolDefinition(definition, validated.value.schemaDigest, policy.policyId),
     policyDigest: digestJson({ policyId: policy.policyId, actionClass: policy.actionClass, classification: "required" }),
     policyId: policy.policyId,
     actionClass: policy.actionClass,
@@ -105,7 +121,7 @@ async function ownerFixture(agentRoot: string, restartContainer: () => Promise<u
   })
   const runtimeContext: ToolContext = {
     signin: async () => undefined,
-    agentRoot,
+    agentName: "sanctuary", agentRoot,
     sanctuary: {
       listContainers: vi.fn(async () => ({ ok: true, data: { containers: [{ id: "container-1", name: "calibre-web", state: "running", status: "Up", degraded: false }], truncated: false } })),
       restartContainer: vi.fn(restartContainer),
@@ -122,10 +138,23 @@ async function ownerFixture(agentRoot: string, restartContainer: () => Promise<u
       authorizeTool: async (name, args) => (await resolveOwnerRelationship(binding)).authorizeTool(name, args),
     },
   }
+  const resolveLiveToolContext = async (record: ApprovalRecord): Promise<ToolContext> => {
+    const envelope = loadSessionEnvelopeFile(sessionPath)
+    const ingress = envelope && selectEffectiveSessionEvents(envelope.events).findLast((event) => event.role === "user")
+    const friend = await friends.get(binding.friendId)
+    if (!ingress || !friend) throw new Error("current fixture owner ingress is unavailable")
+    const current = await resolveOwnerRelationship({ ...binding, requestId: `approval:${record.approvalId}`, sessionEventId: ingress.id })
+    return {
+      ...runtimeContext,
+      currentSession: { friendId: binding.friendId, channel: "telegram", key: sessionKey, sessionPath },
+      context: { friend, channel: getChannelCapabilities("telegram") }, friendStore: friends,
+      relationshipAuthorization: current,
+    }
+  }
   return {
     friends, binding, sessionPath, requestContext, runtimeContext, composition, credentials,
     baseSessionRevision: await withSessionTurnLease(sessionPath, async (lease) => readSessionTransaction(sessionPath, lease).revision),
-    runtimeOptions: { toolContext: runtimeContext, resolveOwnerRelationship, subject, identityKey },
+    runtimeOptions: { toolContext: runtimeContext, resolveOwnerRelationship, resolveLiveToolContext, subject, identityKey },
   }
 }
 
@@ -180,9 +209,111 @@ afterEach(() => {
 
 describe("production-composed Telegram approval lifecycle", () => {
   it.each([
+    { phase: "live guard", contextRead: 3, terminalState: "drifted" },
+    { phase: "dispatch", contextRead: 7, terminalState: "failed" },
+  ] as const)("A006 contains authority loss during $phase without reaching the restart handler", async ({ phase, contextRead, terminalState }) => {
+    const agentRoot = root()
+    const auditPath = path.join(agentRoot, "telegram-audit.ndjson")
+    setRuntimeLogger(createLogger({ sinks: [createNdjsonFileSink(auditPath)] }))
+    const restart = vi.fn()
+    const owner = await ownerFixture(agentRoot, restart)
+    const api: TelegramBotApi = { stop: vi.fn(), request: vi.fn(async () => ({ message_id: 101 })) }
+    let contextReads = 0
+    let faultReached = false
+    const runtime = createTelegramApprovalRuntime({
+      agentName: "sanctuary", api, authorizedUserId: "42", authorizedChatId: "42", ...owner.runtimeOptions,
+      effects: approvalEffects(agentRoot, api, owner),
+      dependencies: {
+        agentRoot, acceptanceMarker: () => null, runProvider: async () => ({ outcome: "settled" }),
+        getProviderRuntime: async () => {
+          // Context reads: definition, policy, guard, definition, policy, preflight, dispatch.
+          if (++contextReads === contextRead) {
+            faultReached = true
+            if (phase === "dispatch") return Promise.reject("provider fixture unavailable")
+            const friend = (await owner.friends.get(owner.binding.friendId))!
+            await owner.friends.put(friend.id, { ...friend, admissionState: "revoked" })
+          }
+          return createMinimaxProviderRuntime("MiniMax-M3", { apiKey: "isolated-fixture" })
+        },
+      },
+    })
+    const store = openApprovalStore({ databasePath: path.join(agentRoot, "state", "approvals", "approvals.sqlite") })
+    try {
+      const suspension = await runtime.coordinator(owner).propose(proposalRequest(owner.requestContext))
+      const bound = pending(agentRoot)[0]!
+      const decision = runtime.transport.handleUpdate(callback(String(bound.approveCallbackData)))
+      if (phase === "live guard") {
+        await expect(decision).rejects.toThrow("Telegram effect authorization denied: relationship admission is not active or canonical")
+      } else {
+        await expect(decision).resolves.toMatchObject({ accepted: false })
+      }
+      expect(faultReached).toBe(true)
+      const record = store.read(suspension.approvalId)
+      expect(record).toMatchObject({ state: terminalState })
+      expect(owner.runtimeContext.sanctuary!.listContainers).toHaveBeenCalledTimes(phase === "live guard" ? 0 : 1)
+      expect(restart).not.toHaveBeenCalled()
+      expect(readRoutineActionReceipts(agentRoot)).toEqual([])
+      if (phase === "live guard") {
+        expect(record?.attemptedAt).toBeNull()
+        expect(await owner.friends.get(owner.binding.friendId)).toMatchObject({ admissionState: "revoked" })
+      } else {
+        expect(record?.attemptedAt).toEqual(expect.any(String))
+        const events = fs.readFileSync(auditPath, "utf8").trim().split("\n").map((line) => JSON.parse(line) as LogEvent)
+        expect(events).toContainEqual(expect.objectContaining({
+          event: "senses.telegram_approval_authority_unavailable",
+          meta: expect.objectContaining({ approvalId: suspension.approvalId, category: "unknown" }),
+        }))
+      }
+    } finally { store.close(); runtime.close() }
+  })
+
+  it.each(["before inventory", "after inventory"] as const)("A006 integration refuses a different current owner %s instead of transplanting the original request", async (timing) => {
+    const agentRoot = root()
+    setRuntimeLogger(createLogger({ sinks: [createNdjsonFileSink(path.join(agentRoot, "telegram-audit.ndjson"))] }))
+    const restart = vi.fn(async () => ({
+      ok: true, data: { container: { id: "container-1", name: "calibre-web" }, beforeState: "running", afterState: "running", observedRestart: true, degraded: false },
+    }))
+    const owner = await ownerFixture(agentRoot, restart)
+    let differentOwner = timing === "before inventory"
+    const listContainers = owner.runtimeContext.sanctuary!.listContainers
+    owner.runtimeContext.sanctuary!.listContainers = async () => {
+      const result = await listContainers()
+      differentOwner = true
+      return result
+    }
+    const api: TelegramBotApi = { stop: vi.fn(), request: vi.fn(async () => ({ message_id: 101 })) }
+    const runtime = createTelegramApprovalRuntime({
+      agentName: "sanctuary", api, authorizedUserId: "42", authorizedChatId: "42", ...owner.runtimeOptions,
+      resolveLiveToolContext: async (record) => {
+        const current = await owner.runtimeOptions.resolveLiveToolContext(record)
+        if (!differentOwner) return current
+        return {
+          ...current,
+          currentSession: { ...current.currentSession!, friendId: "different-current-owner" },
+          context: { ...current.context!, friend: { ...current.context!.friend, id: "different-current-owner" } },
+          relationshipAuthorization: {
+            ...current.relationshipAuthorization!,
+            actor: { ...current.relationshipAuthorization!.actor!, friendId: "different-current-owner" },
+          },
+        }
+      },
+      effects: approvalEffects(agentRoot, api, owner),
+      dependencies: { agentRoot, acceptanceMarker: () => null, runProvider: async () => ({ outcome: "settled" }) },
+    })
+    const store = openApprovalStore({ databasePath: path.join(agentRoot, "state", "approvals", "approvals.sqlite") })
+    try {
+      const suspension = await runtime.coordinator(owner).propose(proposalRequest(owner.requestContext))
+      const bound = pending(agentRoot)[0]!
+      await expect(runtime.transport.handleUpdate(callback(String(bound.approveCallbackData)))).resolves.toMatchObject({ accepted: false })
+      expect(store.read(suspension.approvalId)).toMatchObject({ state: "drifted", attemptedAt: null })
+      expect(restart).not.toHaveBeenCalled()
+    } finally { store.close(); runtime.close() }
+  })
+
+  it.each([
     "unchanged owner", "expired stated fallback", "revoked owner", "downgraded trust", "changed initiative", "advanced profile", "removed capability",
     "different request", "different event", "different session key", "different session path", "different root", "lost marker", "changed marker digest",
-    "mixed event", "mixed standing", "changed arguments", "extra arguments", "new ingress", "missing session", "corrupt session",
+    "mixed event", "mixed standing", "changed arguments", "extra arguments", "new ingress", "redacted ingress", "missing session", "corrupt session",
     "replaced target", "renamed target", "degraded target", "truncated inventory", "replacement after callback",
     "negative desired state", "standing grant", "installed grant", "expired installed grant",
     "lost marker during final authorization", "changed marker digest during final authorization",
@@ -237,6 +368,20 @@ describe("production-composed Telegram approval lifecycle", () => {
         const ingress = new FileTelegramEffectJournal(path.join(agentRoot, "state", "telegram", "later-ingress"))
         effectStores.push(ingress)
         await recordTelegramEffectsInSession({ store: ingress, sessionPath: owner.sessionPath, artifacts: [], inbound: { text: "A different request", reference: "telegram-inbound:later-request" } })
+      }
+      if (change === "redacted ingress") {
+        const envelope = loadSessionEnvelopeFile(owner.sessionPath)!
+        const template = a003RetainedHistoryEnvelope().events.find((event) => event.relations.redactsEventId)!
+        const sequence = envelope.events.at(-1)!.sequence + 1
+        const marker = {
+          ...template, id: `evt-${String(sequence).padStart(6, "0")}`, sequence,
+          time: { ...template.time, recordedAt: new Date().toISOString() },
+          relations: { ...template.relations, redactsEventId: owner.binding.sessionEventId },
+        }
+        const events = [...envelope.events, marker]
+        expect(isExactRawSessionRedactionMarker(marker, events)).toBe(true)
+        fs.writeFileSync(owner.sessionPath, JSON.stringify({ ...envelope, events }))
+        expect(selectEffectiveSessionEvents(loadSessionEnvelopeFile(owner.sessionPath)!.events).some((event) => event.id === owner.binding.sessionEventId)).toBe(false)
       }
       if (change === "missing session") fs.unlinkSync(owner.sessionPath)
       if (change === "corrupt session") fs.writeFileSync(owner.sessionPath, "{invalid")
@@ -301,7 +446,8 @@ describe("production-composed Telegram approval lifecycle", () => {
       try { callbackResult = await runtime.transport.handleUpdate(callback(String(bound.approveCallbackData))) }
       catch (error) { callbackError = error }
       const allowed = change === "unchanged owner" || change === "expired stated fallback"
-      expect(loadWriteApiKey).toHaveBeenCalledOnce()
+      const decided = store.read(suspension.approvalId)
+      expect(loadWriteApiKey, JSON.stringify({ state: decided?.state, result: decided?.result, reason: decided?.reason })).toHaveBeenCalledOnce()
       expect(mutate).toHaveBeenCalledTimes(allowed ? 1 : 0)
       expect(store.read(suspension.approvalId)).toMatchObject({ state: allowed ? "succeeded" : "failed", attemptedAt: expect.any(String) })
       expect(readRoutineActionReceipts(agentRoot)).toEqual([])
@@ -327,7 +473,7 @@ describe("production-composed Telegram approval lifecycle", () => {
     } finally { vi.useRealTimers(); store.close(); runtime.close() }
   })
 
-  it.each(["acknowledgement lost", "crash after attempting", "verification failure", "terminal persistence failure"] as const)("A006 S4 keeps real one-time %s truthful and never replays on another callback or recovery", async (failure) => {
+  it.each(["acknowledgement lost", "handler interruption after attempting", "verification failure", "terminal persistence failure"] as const)("A006 S4 keeps real one-time %s truthful and never replays on another callback or recovery", async (failure) => {
     const agentRoot = root()
     setRuntimeLogger(createLogger({ sinks: [createNdjsonFileSink(path.join(agentRoot, "telegram-audit.ndjson"))] }))
     const owner = await ownerFixture(agentRoot, vi.fn())
@@ -348,7 +494,7 @@ describe("production-composed Telegram approval lifecycle", () => {
       persistAttempt: async (attempt) => {
         if (failure === "terminal persistence failure" && attempt.state === "succeeded") throw new Error("terminal receipt unavailable")
         attempts.push(structuredClone(attempt))
-        if (failure === "crash after attempting" && attempt.state === "attempting") throw new Error("crash after durable attempt")
+        if (failure === "handler interruption after attempting" && attempt.state === "attempting") throw new Error("handler interrupted after durable attempt")
       },
       observationTimeoutMs: 0,
     })
@@ -361,27 +507,79 @@ describe("production-composed Telegram approval lifecycle", () => {
     try {
       const suspension = await runtime.coordinator(owner).propose(proposalRequest(owner.requestContext))
       const data = String(pending(agentRoot)[0]!.approveCallbackData)
-      const interrupted = failure === "crash after attempting"
-      if (interrupted) await expect(runtime.transport.handleUpdate(callback(data))).rejects.toThrow("crash after durable attempt")
-      else await expect(runtime.transport.handleUpdate(callback(data))).resolves.toMatchObject({ accepted: false })
+      const interrupted = failure === "handler interruption after attempting"
+      await expect(runtime.transport.handleUpdate(callback(data))).resolves.toMatchObject({ accepted: false })
       const record = store.read(suspension.approvalId)!
-      expect(record).toMatchObject({ state: interrupted ? "attempted" : "failed", attemptedAt: expect.any(String), reason: null })
-      if (interrupted) expect(record.result).toBeNull()
+      expect(record).toMatchObject({ state: interrupted ? "attempted_indeterminate" : "failed", attemptedAt: expect.any(String), reason: null })
+      if (interrupted) expect(record.result).toContain("handler interrupted after durable attempt")
       expect(attempts.map((attempt) => attempt.state).slice(0, 2)).toEqual(["attempt_not_started", "attempting"])
       expect(attempts.at(-1)?.state).toBe(["acknowledgement lost", "verification failure"].includes(failure) ? "attempted_or_indeterminate" : "attempting")
       if (failure === "acknowledgement lost" || failure === "verification failure") expect(record.result).toContain("was attempted")
       if (failure === "terminal persistence failure") expect(record.result).toContain("restart succeeded but its terminal receipt could not be persisted")
-      expect(mutate).toHaveBeenCalledTimes(failure === "crash after attempting" ? 0 : 1)
-      if (interrupted) await expect(runtime.transport.handleUpdate(callback(data, "duplicate-after-failure"))).rejects.toThrow("persisted decision attempt is invalid")
-      else await runtime.transport.handleUpdate(callback(data, "duplicate-after-failure"))
+      expect(mutate).toHaveBeenCalledTimes(interrupted ? 0 : 1)
+      const attemptsAfterFailure = structuredClone(attempts)
+      await runtime.transport.handleUpdate(callback(data, "duplicate-after-failure"))
       await runtime.recover()
       await runtime.transport.handleUpdate(callback(data, "duplicate-after-recovery"))
       expect(store.read(suspension.approvalId)).toMatchObject({ state: interrupted ? "attempted_indeterminate" : "failed", attemptedAt: expect.any(String) })
-      expect(mutate).toHaveBeenCalledTimes(failure === "crash after attempting" ? 0 : 1)
+      expect(mutate).toHaveBeenCalledTimes(interrupted ? 0 : 1)
+      expect(attempts).toEqual(attemptsAfterFailure)
       expect(readRoutineActionReceipts(agentRoot)).toEqual([])
     } finally { store.close(); runtime.close() }
   })
-
+  it.each(["valid", "terminal-mac", "terminal-text", "attempt", "message", "missing-record"] as const)(
+    "admits only an intact pending terminal control after restart: %s",
+    async (change) => {
+      const agentRoot = root()
+      const owner = await ownerFixture(agentRoot, async () => ({
+        ok: true, data: { container: { id: "container-1", name: "calibre-web" }, beforeState: "running", afterState: "running", observedRestart: true, degraded: false },
+      }))
+      setRuntimeLogger(createLogger({ sinks: [createNdjsonFileSink(path.join(agentRoot, "audit.ndjson"))] }))
+      const api: TelegramBotApi = {
+        stop: vi.fn(),
+        request: vi.fn(async (method) => {
+          if (method === "sendMessage") return { message_id: 101 }
+          if (method === "answerCallbackQuery") throw new TelegramApiError("controlled acknowledgement failure", { status: 503 })
+          return true
+        }),
+      }
+      const options = {
+        agentName: "sanctuary", api, authorizedUserId: "42", authorizedChatId: "42", ...owner.runtimeOptions,
+        effects: approvalEffects(agentRoot, api, owner),
+        dependencies: {
+          agentRoot, now: () => 1_000_000, acceptanceMarker: () => null,
+          runProvider: async () => ({ outcome: "settled" as const }),
+        },
+      }
+      const first = createTelegramApprovalRuntime(options)
+      let saved: ReturnType<typeof first.transport.listPendingDeliveries>[number]
+      try {
+        await first.coordinator(owner).propose(proposalRequest(owner.requestContext))
+        const initial = first.transport.listPendingDeliveries()[0]!
+        await expect(first.transport.handleUpdate(callback(initial.approveCallbackData))).rejects.toThrow("controlled acknowledgement failure")
+        saved = structuredClone(first.transport.listPendingDeliveries()[0]!)
+        if (!saved.terminal || !saved.decisionAttempt) throw new Error("fixture did not reach a signed terminal")
+        expect(saved.terminalMac).toMatch(/^[a-f0-9]{64}$/)
+      } finally { first.close() }
+      if (change === "terminal-mac") saved.terminalMac = "0".repeat(64)
+      if (change === "terminal-text") saved.terminal!.terminalText = "arbitrary replacement content"
+      if (change === "attempt") saved.decisionAttempt!.queryIdDigest = "1".repeat(64)
+      if (change === "message") saved.messageId = "102"
+      if (change === "missing-record") saved.approvalId = "unknown-approval"
+      fs.writeFileSync(path.join(agentRoot, "state", "approvals", "telegram-pending.json"), JSON.stringify([saved]))
+      const restarted = createTelegramApprovalRuntime(options)
+      try {
+        const text = saved.terminal!.terminalText
+        const result = Promise.resolve().then(() => restarted.isPendingTerminalControl!({
+          authorClass: "control", effect: { kind: "edit", messageId: Number(saved.messageId), text },
+          idempotencyKey: `approval:${saved.approvalId}:edit:${createHash("sha256").update(text).digest("hex")}`,
+        }))
+        if (change === "terminal-mac" || change === "terminal-text" || change === "attempt") {
+          await expect(result).rejects.toThrow(/persisted .* invalid/)
+        } else await expect(result).resolves.toBe(change === "valid")
+      } finally { restarted.close() }
+    },
+  )
   it.each(["approve", "deny"] as const)("recovers a MAC-fenced pre-deadline %s through the real store after transport TTL with signed settlement evidence", async (decision) => {
     const agentRoot = root()
     const clock = { value: 1_000_000 }
@@ -885,6 +1083,10 @@ describe("production-composed Telegram approval lifecycle", () => {
       expect(context.restartApproval).toBeUndefined()
       expect(context.relationshipAuthorization?.advertisedToolNames).toEqual([])
       expect(context.relationshipAuthorization?.authorizedContextScopes).toEqual([])
+      expect(context.toolSelection).toEqual({ ordinary: [], engine: [] })
+      expect(context.selectCurrentTools?.()).toEqual({ ordinary: [], engine: [] })
+      expect(context.context?.friend.id).toBe(owner.binding.friendId)
+      expect(options.providerRuntimeOverride?.model).toBe("MiniMax-M3")
       expect(await context.relationshipAuthorization!.authorizeTool("unraid_restart_container", { container: "calibre-web" })).toMatchObject({ allowed: false })
       await expect(options.approvalCoordinator.propose(proposalRequest(context))).rejects.toThrow("current owner request")
       return { outcome: "settled" as const }

@@ -3,15 +3,15 @@ import {
   getContextConfig,
 } from "./config";
 import { loadAgentConfig } from "./identity";
-import { classifyApprovalForInvocation, execTool, summarizeArgs, buildToolResultSummary, settleTool, observeTool, ponderTool, restTool, speakTool, getToolsForChannel, riskProfileForToolName, resolveToolDefinition } from "../repertoire/tools";
-import type { HabitSessionToolContext, ToolContext, ToolRiskProfile } from "../repertoire/tools-base";
+import { classifyApprovalForInvocation, executeTool, preflightToolCall, summarizeArgs, buildToolResultSummary, restTool, selectToolsForChannel, reduceToolSelection, ToolSelectionError, riskProfileForToolName, resolveToolDefinition } from "../repertoire/tools";
+import type { HabitSessionToolContext, ToolContext, ToolRiskProfile, ToolSelection } from "../repertoire/tools-base";
 import { digestJson, validateAdvertisedToolArguments } from "../repertoire/tool-arguments";
 import type { ValidatedToolArguments } from "../repertoire/tool-arguments";
 import type { ApprovalContinuationClaim, ApprovalRecord, JsonObject } from "./approval-store";
 import { materializeApprovalTerminal } from "./session-events";
+import { digestApprovalToolDefinition } from "./tool-approval";
 import type { ApprovalSuspensionCheckpoint } from "./tool-approval";
 import { getChannelCapabilities, channelToFacing, type Facing } from "@ouro.bot/friends"
-import { surfaceToolDef } from "../repertoire/tools";
 import type { AssistantMessageWithReasoning, ResponseItem } from "./streaming";
 import { SettleFinalizationCallbackError } from "./streaming";
 import { emitNervesEvent } from "../nerves/runtime";
@@ -40,7 +40,7 @@ import {
 } from "../mind/prompt-budget";
 import { buildSystem, flattenSystemPrompt } from "../mind/prompt";
 import type { SystemPrompt } from "../mind/prompt";
-import type { McpManager } from "../repertoire/mcp-manager";
+import type { McpTurnView } from "../repertoire/mcp-manager";
 import type { Channel } from "../mind/prompt";
 import { createKeptNotesJudge, injectKeptNotes } from "./kept-notes";
 import { extractProviderErrorDetails, summarizeProviderError } from "./providers/error-classification";
@@ -149,20 +149,22 @@ interface RuntimeProviderBinding {
   model: string;
 }
 
+type RuntimeOwner = NonNullable<Parameters<typeof loadAgentConfig>[0]>
+
 function providerLaneForFacing(facing: Facing): ProviderLane {
   return facing === "human" ? "outward" : "inner";
 }
 
-function resolveRuntimeProviderBinding(facing: Facing): RuntimeProviderBinding {
+function resolveRuntimeProviderBinding(facing: Facing, owner?: RuntimeOwner): RuntimeProviderBinding {
   const lane = providerLaneForFacing(facing);
-  const config = loadAgentConfig();
+  const config = loadAgentConfig(owner);
   const facingConfig = facing === "human" ? config.humanFacing : config.agentFacing;
   return { lane, provider: facingConfig.provider, model: facingConfig.model };
 }
 
-async function getProviderRuntimeFingerprint(facing: Facing): Promise<{ binding: RuntimeProviderBinding; fingerprint: string; credential: ProviderCredentialRecord }> {
-  const agentName = getAgentName();
-  const binding = resolveRuntimeProviderBinding(facing);
+async function getProviderRuntimeFingerprint(facing: Facing, owner?: RuntimeOwner): Promise<{ binding: RuntimeProviderBinding; fingerprint: string; credential: ProviderCredentialRecord }> {
+  const agentName = owner?.agentName ?? getAgentName();
+  const binding = resolveRuntimeProviderBinding(facing, owner);
   const credential = await readProviderCredentialRecord(agentName, binding.provider);
   if (!credential.ok) {
     throw new Error([
@@ -184,6 +186,7 @@ async function getProviderRuntimeFingerprint(facing: Facing): Promise<{ binding:
   return {
     binding,
     fingerprint: JSON.stringify({
+      ...(owner ? { agentName: owner.agentName, agentRoot: owner.agentRoot } : {}),
       lane: binding.lane,
       provider: binding.provider,
       model: binding.model,
@@ -216,10 +219,11 @@ export function createProviderRegistry(): ProviderRegistry {
   };
 }
 
-async function getProviderRuntime(facing: Facing = "human"): Promise<ProviderRuntime> {
+export async function getProviderRuntime(facing: Facing = "human", owner?: RuntimeOwner): Promise<ProviderRuntime> {
+  const scope = owner ? { agentName: owner.agentName, agentRoot: owner.agentRoot } : undefined
   let runtime: ProviderRuntime | null = null;
   try {
-    const { binding, fingerprint, credential } = await getProviderRuntimeFingerprint(facing);
+    const { binding, fingerprint, credential } = await getProviderRuntimeFingerprint(facing, scope);
     const cached = _providerRuntimeFactories[facing];
     if (!cached || cached.fingerprint !== fingerprint) {
       const create = () => createProviderRegistry().resolve(binding.provider, binding.model, credential);
@@ -438,7 +442,7 @@ export interface RunAgentOptions {
   toolBoundaryObserver?: (receipt: ToolCallBoundaryReceipt) => void;
   /** Exact provider runtime injection for bounded production-path acceptance probes. */
   providerRuntimeOverride?: ProviderRuntime;
-  mcpManager?: McpManager;
+  mcpManager?: McpTurnView;
   /** When true, the observe tool is available in 1:1 chats (normally group-only).
    *  Used for reaction/feedback signals where silence is natural even in DMs. */
   isReactionSignal?: boolean;
@@ -538,6 +542,7 @@ export interface ResumeApprovalContinuationOptions {
   markContinuationAttempted: () => void | Promise<void>
   completeContinuation: () => void | Promise<void>
   runAgentOptions?: RunAgentOptions
+  revalidate?: () => Promise<RunAgentOptions | null>
   signal?: AbortSignal
   materializedApprovalIds?: string[]
   repairOrphans?: (messages: OpenAI.ChatCompletionMessageParam[]) => void
@@ -602,8 +607,17 @@ export async function resumeApprovalContinuation(options: ResumeApprovalContinua
     await options.persist(materialized.messages)
     await options.markContinuationMaterialized()
   }
-  if (!materialized.resumeProvider) {
-    await options.deliver(materialized.directNotice!)
+  const currentOptions = options.revalidate ? await options.revalidate()
+    : options.runAgentOptions?.toolContext?.relationshipAuthorization ? null : options.runAgentOptions
+  if (!materialized.resumeProvider || currentOptions === null) {
+    if (currentOptions === null) emitNervesEvent({
+      level: "warn", component: "engine", event: "engine.approval_continuation_authority_block",
+      message: "approval continuation has no current relationship authority",
+      meta: { approvalId: options.record.approvalId, state: options.record.state },
+    })
+    const effect = options.record.state === "succeeded" ? "the approved action completed"
+      : options.record.state === "failed" ? "the approved action failed" : "the protected action was not executed"
+    await options.deliver(materialized.directNotice ?? `${effect}; current relationship access is unavailable, so no model continuation was run`)
     await options.completeContinuation()
     return { outcome: "terminal_notice", messages: materialized.messages }
   }
@@ -616,7 +630,7 @@ export async function resumeApprovalContinuation(options: ResumeApprovalContinua
     callbacks,
     options.channel,
     options.signal,
-    options.runAgentOptions,
+    currentOptions,
   )
   if (result.outcome === "suspended") {
     await options.completeContinuation()
@@ -702,6 +716,7 @@ async function habitToolBatchBlockReason(
   habitSession: HabitSessionToolContext | undefined,
   toolCalls: Array<{ name: string; arguments: string }>,
   delegatedOrigins: ToolContext["delegatedOrigins"] | undefined,
+  selection: ToolSelection,
 ): Promise<string | null> {
   if (!habitSession) return null
   const granted = new Set(habitSession.toolPolicy.grantedTools)
@@ -712,7 +727,7 @@ async function habitToolBatchBlockReason(
     if (!granted.has(call.name)) return `habit tool '${call.name}' was not granted to this habit session`
     // The canonical pre-batch schema gate guarantees object arguments here.
     const args = JSON.parse(call.arguments) as Record<string, string>
-    const riskProfile = riskProfileForToolName(call.name, args)
+    const riskProfile = riskProfileForToolName(call.name, args, selection)
     if (!riskProfile) return `habit tool '${call.name}' does not have a known executable risk profile`
     const externalMutation = highRiskExternalMutation(riskProfile)
     if (externalMutation && call.name !== "send_message" && call.name !== "surface") {
@@ -877,12 +892,6 @@ function messageContentText(content: unknown): string {
     .join("\n")
 }
 
-function isHarnessCorrectiveUserText(text: string): boolean {
-  return text.startsWith("no tool was called this turn. you must end every turn")
-    || text.startsWith("private-return acknowledgement claimed work was queued, but no ponder packet was created this turn.")
-    || text.startsWith("this exact request previously reached a tool that is advertised again now.")
-}
-
 type HistoricalFailedEffect = { name: string; fingerprint: string }
 
 function toolResultIndicatesFailure(content: string): boolean {
@@ -902,7 +911,7 @@ function requiredToolResultSucceeded(name: string, content: string, args: Record
   return validate?.(name, content, args) ?? true
 }
 
-function effectFingerprint(name: string, rawArguments: string): string | null {
+function effectFingerprint(name: string, rawArguments: string, selection: ToolSelection): string | null {
   let args: Record<string, string>
   try {
     const parsed: unknown = JSON.parse(rawArguments)
@@ -911,19 +920,19 @@ function effectFingerprint(name: string, rawArguments: string): string | null {
   } catch {
     return null
   }
-  const profile = riskProfileForToolName(name, args)
+  const profile = riskProfileForToolName(name, args, selection)
   if (!profile || profile.mutates === "none") return null
   delete args.expectedVersion
   return digestJson({ name, args })
 }
 
-function historicalFailedEffectsForExactRepeatedRequest(messages: OpenAI.ChatCompletionMessageParam[]): HistoricalFailedEffect[] {
+function historicalFailedEffectsForExactRepeatedRequest(messages: OpenAI.ChatCompletionMessageParam[], selection: ToolSelection): HistoricalFailedEffect[] {
   const userRequests: Array<{ index: number; text: string }> = []
   for (let index = 0; index < messages.length; index += 1) {
     const message = messages[index]
     if (message?.role !== "user") continue
     const text = messageContentText(message.content).replace(/\s+/g, " ").trim()
-    if (!text || isHarnessCorrectiveUserText(text)) continue
+    if (!text) continue
     userRequests.push({ index, text })
   }
   const current = userRequests.at(-1)
@@ -938,7 +947,7 @@ function historicalFailedEffectsForExactRepeatedRequest(messages: OpenAI.ChatCom
     if (message?.role === "assistant" && Array.isArray(message.tool_calls)) {
       for (const call of message.tool_calls) {
         if (call.type !== "function" || !call.id || !call.function.name) continue
-        const fingerprint = effectFingerprint(call.function.name, call.function.arguments)
+        const fingerprint = effectFingerprint(call.function.name, call.function.arguments, selection)
         if (fingerprint) effectsByCallId.set(call.id, { name: call.function.name, fingerprint })
       }
       continue
@@ -961,7 +970,6 @@ function latestUserMessageText(messages: OpenAI.ChatCompletionMessageParam[]): s
     const message = messages[i]
     if (message?.role !== "user") continue
     const text = messageContentText(message.content).trim()
-    if (isHarnessCorrectiveUserText(text)) continue
     if (text.length > 0) return text
   }
   return ""
@@ -1331,12 +1339,21 @@ export async function runAgent(
   options?: RunAgentOptions,
 ): Promise<{ usage?: UsageData; outcome: RunAgentOutcome; completion?: CompletionMetadata; suspension?: ApprovalSuspensionResult; error?: Error; errorClassification?: ProviderErrorClassification }> {
   const generatedMessages: OpenAI.ChatCompletionMessageParam[] = [];
+  let nextAttemptControls: OpenAI.ChatCompletionMessageParam[] = [];
+  let rejectedAttempt: OpenAI.ChatCompletionMessageParam[] = [];
   const pushGenerated = (...next: OpenAI.ChatCompletionMessageParam[]): void => {
     messages.push(...next);
     generatedMessages.push(...structuredClone(next));
+    if (rejectedAttempt.length > 0) {
+      rejectedAttempt = [];
+      providerRuntime.resetTurnState(messages);
+    }
   };
   const facing = channelToFacing(channel);
-  let providerRuntime = options?.providerRuntimeOverride ?? await getProviderRuntime(facing);
+  const owner = options?.toolContext?.agentName && options.toolContext.agentRoot
+    ? { agentName: options.toolContext.agentName, agentRoot: options.toolContext.agentRoot }
+    : undefined
+  let providerRuntime = options?.providerRuntimeOverride ?? await getProviderRuntime(facing, owner);
   const provider = providerRuntime.id;
   const toolChoiceRequired = options?.hardDisableTools ? false : options?.toolChoiceRequired ?? true;
   const traceId = options?.traceId;
@@ -1473,7 +1490,7 @@ export async function runAgent(
     await injectKeptNotes(messages, {
       channel,
       friend: currentContext?.friend,
-      judge: async (input) => createKeptNotesJudge(await getProviderRuntime("agent"), signal)(input),
+      judge: async (input) => createKeptNotesJudge(await getProviderRuntime("agent", owner), signal)(input),
       signal,
       traceId,
     });
@@ -1510,17 +1527,19 @@ export async function runAgent(
   // a ponder packet created the return obligation in this turn.
   let noToolCallRetries = 0;
   const NO_TOOL_CALL_MAX_RETRIES = 2;
-  let unresolvedHistoricalEffects = historicalFailedEffectsForExactRepeatedRequest(messages);
+  let unresolvedHistoricalEffects: HistoricalFailedEffect[] = [];
   let historicalToolFailureRetries = 0;
   let providerIterations = 0;
   const requiredToolCallNames = [...new Set(options?.requiredToolCalls?.names ?? [])];
   const dispatchedRequiredToolCalls = new Set<string>();
-  const requiredCorrectionMarker = Symbol("requiredCorrection")
-  const messagesWithoutRequiredCorrections = (): OpenAI.ChatCompletionMessageParam[] => messages.filter((message) => (
-    message as OpenAI.ChatCompletionMessageParam & Record<PropertyKey, unknown>
-  )[requiredCorrectionMarker] !== true)
-  const removeRequiredCorrections = (): void => {
-    messages.splice(0, messages.length, ...messagesWithoutRequiredCorrections())
+  const rejectAttempt = (assistant: OpenAI.ChatCompletionAssistantMessageParam, controls: OpenAI.ChatCompletionMessageParam[]): void => {
+    rejectedAttempt = [structuredClone(assistant)]
+    nextAttemptControls = controls
+  }
+  const rejectToolBatch = (assistant: OpenAI.ChatCompletionAssistantMessageParam, reasons: string[]): void => {
+    rejectAttempt(assistant, assistant.tool_calls!.map((call, index) => ({
+      role: "tool", tool_call_id: call.id, content: reasons[index]!,
+    })))
   }
   const pendingRequiredToolCalls = (): { missing: string[]; message: string } | null => {
     const missing = requiredToolCallNames.filter((name) => !dispatchedRequiredToolCalls.has(name));
@@ -1528,15 +1547,9 @@ export async function runAgent(
       ? { missing, message: `${options!.requiredToolCalls!.retryMessage} Missing required tool calls: ${missing.join(", ")}.` }
       : null;
   };
-  const queueRequiredCorrection = (message: string, limitContext: string): void => {
+  const queueRequiredCorrection = (assistant: OpenAI.ChatCompletionAssistantMessageParam, message: string, limitContext: string): void => {
     if (providerIterations >= MAX_PROVIDER_ITERATIONS) throw new Error(`provider iteration limit exhausted at response ${MAX_PROVIDER_ITERATIONS} ${limitContext}`)
-    const correction: OpenAI.ChatCompletionUserMessageParam & Record<PropertyKey, unknown> = {
-      role: "user",
-      content: message,
-      [requiredCorrectionMarker]: true,
-    }
-    messages.push(correction)
-    providerRuntime.resetTurnState(messages)
+    rejectAttempt(assistant, [{ role: "user", content: message }])
   }
   const toolLoopState = createToolLoopState();
   const toolFrictionLedger = createToolFrictionLedger();
@@ -1580,23 +1593,51 @@ export async function runAgent(
         ),
       },
     });
-    stripLastToolCalls(messages);
-    stripLastToolCalls(generatedMessages);
+    // Only legacy input can still contain unaccepted calls. Generated output
+    // has crossed acceptance; a later provider failure cannot revoke effects.
+    if (generatedMessages.length === 0) stripLastToolCalls(messages);
     outcome = "errored";
     done = true;
   };
   // Prevent MaxListenersExceeded warning — each iteration adds a listener
   try { require("events").setMaxListeners(50, signal); } catch { /* unsupported */ }
 
+  try {
   const toolPreferences = currentContext?.friend?.toolPreferences;
-  const unboundBaseTools = options?.tools ?? getToolsForChannel(
-      channel ? getChannelCapabilities(channel) : undefined,
-      toolPreferences && Object.keys(toolPreferences).length > 0 ? toolPreferences : undefined,
-      currentContext,
-      providerRuntime.capabilities,
-      options?.mcpManager,
-      providerRuntime.model,
-    );
+  const filterTrustedTools = (tools: OpenAI.ChatCompletionFunctionTool[], selected: ToolSelection) => tools.filter((tool) =>
+    !selected.engine.some((engine) => engine.function.name === tool.function.name)
+    && (channel !== "inner" || options?.toolProfile === "sanctuary-health-private" || !["send_message", "surface"].includes(tool.function.name)
+      || selected.ordinary.some((definition) => definition.tool.function.name === tool.function.name)))
+  const selectCurrentTools = (): ToolSelection => {
+    if (options?.hardDisableTools) return Object.freeze({ ordinary: Object.freeze([]), engine: Object.freeze([]) })
+    const selected = selectToolsForChannel(
+      channel ? getChannelCapabilities(channel) : undefined, toolPreferences, currentContext,
+      providerRuntime.capabilities, options?.mcpManager, providerRuntime.model,
+      { ...options?.toolContext, ...(options?.habitSession ? { habitSession: options.habitSession } : {}) },
+    )
+    const ordinary = options?.tools !== undefined && !options.toolContext?.relationshipAuthorization
+      ? filterTrustedTools(options.tools, selected).flatMap((tool) => {
+        const definition = resolveToolDefinition(tool.function.name, selected) ?? resolveToolDefinition(tool.function.name)
+        return definition ? [{ ...definition, tool }] : []
+      })
+      : selected.ordinary
+    const bound = bindCurrentIngressEvidenceLocator(ordinary.map((definition) => definition.tool), options?.toolContext?.currentIngressEvidence)
+    return Object.freeze({
+      ordinary: Object.freeze(ordinary.map((definition, index) => definition.tool === bound[index]
+        ? definition : Object.freeze({ ...definition, tool: bound[index]! }))),
+      engine: selected.engine,
+    })
+  }
+  let toolSelection = selectCurrentTools()
+  const relationship = options?.toolContext?.relationshipAuthorization
+  if (!options?.hardDisableTools && options?.tools !== undefined) {
+    if (relationship) {
+      toolSelection = reduceToolSelection(toolSelection, options.tools)
+    }
+  }
+  const unboundBaseTools = !options?.hardDisableTools && !relationship && options?.tools
+    ? filterTrustedTools(options.tools, toolSelection)
+    : toolSelection.ordinary.map((definition) => definition.tool)
   const relationshipToolNames = options?.toolContext?.relationshipAuthorization?.advertisedToolNames
   const relationshipScopedTools = relationshipToolNames
     ? unboundBaseTools.filter((tool) => relationshipToolNames.includes(tool.function.name))
@@ -1606,32 +1647,26 @@ export async function runAgent(
     options?.toolContext?.currentIngressEvidence,
   )
   // Augment tool context with reasoning effort controls from provider
-  const baseToolContext: ToolContext | undefined = options?.toolContext
-    ?? (turnOrientationFrame ? { signin: async () => undefined, orientationFrame: turnOrientationFrame } : undefined)
+  const baseToolContext: ToolContext = options?.toolContext
+    ?? { signin: async () => undefined, ...(turnOrientationFrame ? { orientationFrame: turnOrientationFrame } : {}) }
   const habitSession = options?.habitSession ?? baseToolContext?.habitSession
-  const augmentedToolContext: ToolContext | undefined = baseToolContext
-      ? {
+  const augmentedToolContext: ToolContext = {
         ...baseToolContext,
         supportedReasoningEfforts: providerRuntime.supportedReasoningEfforts,
         setReasoningEffort: (level: string) => { currentReasoningEffort = level; },
         activeWorkFrame: options?.activeWorkFrame,
         orientationFrame: turnOrientationFrame ?? baseToolContext.orientationFrame,
         ...(habitSession ? { habitSession } : {}),
-      }
-    : habitSession
-      ? {
-        signin: async () => undefined,
-        habitSession,
-        supportedReasoningEfforts: providerRuntime.supportedReasoningEfforts,
-        setReasoningEffort: (level: string) => { currentReasoningEffort = level; },
-      }
-    : undefined;
+        toolSelection,
+        selectCurrentTools,
+      };
+  const trustedToolContext = options?.toolContext || turnOrientationFrame || habitSession ? augmentedToolContext : undefined
+  unresolvedHistoricalEffects = historicalFailedEffectsForExactRepeatedRequest(messages, toolSelection)
 
   // Rebase provider-owned turn state from canonical messages at user-turn start.
   // This prevents stale provider caches from replaying prior-turn context.
   providerRuntime.resetTurnState(messages);
 
-  try {
     while (!done) {
     // Channel-based tool filtering:
     // - Private runtime: exclude send_message (delivery via surface), observe (no one to observe)
@@ -1642,23 +1677,9 @@ export async function runAgent(
     // Private runtime gets restTool instead of settleTool (rest = end turn, gated by attention queue).
     // toolChoiceRequired only controls whether tool_choice: "required" is set in the API call.
     const isPrivateRuntimeChannel = channel === "inner";
-    const privateRuntimeHabitCanSendMessage = isPrivateRuntimeChannel
-      && habitSession?.toolPolicy.outwardMessagingAllowed === true
-      && habitSession.toolPolicy.grantedTools.includes("send_message");
-    const privateRuntimeHabitCanSurface = isPrivateRuntimeChannel
-      && (!habitSession || (habitSession.toolPolicy.outwardMessagingAllowed === true
-        && habitSession.toolPolicy.grantedTools.includes("surface")));
-    const filteredBaseTools = isPrivateRuntimeChannel
-      ? baseTools.filter((t) => privateRuntimeHabitCanSendMessage || t.function.name !== "send_message")
-      : baseTools;
     const unscopedOrdinaryActiveTools = [
-        ...filteredBaseTools,
-        ...(augmentedToolContext?.noSend === true ? [] : [ponderTool]),
-        ...(isPrivateRuntimeChannel && privateRuntimeHabitCanSurface ? [surfaceToolDef] : []),
-        ...(isPrivateRuntimeChannel ? [restTool] : []),
-        ...(!isPrivateRuntimeChannel ? [observeTool] : []),
-        ...(!isPrivateRuntimeChannel ? [settleTool] : []),
-        ...(isChatStyleChannel(channel ?? "") ? [speakTool] : []),
+        ...baseTools,
+        ...toolSelection.engine,
       ];
     const ordinaryActiveTools = relationshipToolNames
       ? unscopedOrdinaryActiveTools.filter((tool) => relationshipToolNames.includes(tool.function.name))
@@ -1716,28 +1737,35 @@ export async function runAgent(
       break;
     }
     try {
+      const budgetOptions = {
+        requiredPromptEvidence: options?.requiredPromptEvidence,
+        provider: providerRuntime.id,
+        model: providerRuntime.model,
+        contextWindowTokens: getContextConfig().maxTokens,
+      }
+      const canonicalBudget = applyPromptBudget({ ...budgetOptions, messages })
+      const currentUserMessage = budgetOptions.requiredPromptEvidence?.currentUserMessage
+        ?? canonicalBudget.messages.findLast((message) => message.role === "user")
+      // Keep retry controls attached to the genuine request, not to canonical history.
+      let attemptMessages = rejectedAttempt.length > 0
+        ? [...applyPromptBudget({
+            ...budgetOptions,
+            requiredPromptEvidence: budgetOptions.requiredPromptEvidence ?? (currentUserMessage ? { currentUserMessage } : undefined),
+            messages: [...canonicalBudget.messages, ...rejectedAttempt, ...nextAttemptControls],
+          }).messages]
+        : [...canonicalBudget.messages]
+      if (rejectedAttempt.length > 0 || canonicalBudget.status !== "within_budget") providerRuntime.resetTurnState(attemptMessages)
       const turnCallbackBufferRef: { current: HabitCallbackBuffer | null } = { current: null };
       const callProviderTurn = async (): Promise<TurnResult> => {
         callbacks.onModelStart();
         turnCallbackBufferRef.current = habitSession
           ? createHabitCallbackBuffer(callbacks)
-          : callbacks.settleOutputMode === "final_only"
+          : callbacks.settleOutputMode === "final_only" || relationship !== undefined
             ? createFinalOnlyTextBuffer(callbacks)
             : null;
         try {
-          const promptBudget = applyPromptBudget({
-            messages,
-            requiredPromptEvidence: options?.requiredPromptEvidence,
-            provider: providerRuntime.id,
-            model: providerRuntime.model,
-            contextWindowTokens: getContextConfig().maxTokens,
-          });
-          if (promptBudget.status !== "within_budget") {
-            messages.splice(0, messages.length, ...promptBudget.messages);
-            providerRuntime.resetTurnState(messages);
-          }
           return await providerRuntime.streamTurn({
-            messages,
+            messages: attemptMessages,
             activeTools,
             callbacks: turnCallbackBufferRef.current?.callbacks ?? callbacks,
             signal,
@@ -1762,21 +1790,23 @@ export async function runAgent(
           if (error instanceof ProviderAttemptAbortError) throw error
           if (isContextOverflow(error) && !overflowRetried) {
             overflowRetried = true;
-            stripLastToolCalls(messages);
-            stripLastToolCalls(generatedMessages);
+            const protectedStart = currentUserMessage ? Math.max(0, attemptMessages.indexOf(currentUserMessage)) : 0
+            const currentAttempt = attemptMessages.slice(protectedStart)
+            const overflowMessages = attemptMessages.slice(0, protectedStart).map((message) => message.role === "assistant" ? { ...message } : message)
+            stripLastToolCalls(overflowMessages);
+            overflowMessages.push(...currentAttempt)
             const { maxTokens, contextMargin } = getContextConfig();
-            const trimmed = trimMessages(messages, maxTokens, contextMargin, maxTokens * 2);
+            const trimmed = trimMessages(overflowMessages, maxTokens, contextMargin, maxTokens * 2);
             const requiredEvidence = options?.requiredPromptEvidence;
             const requiredMessages = new Set<OpenAI.ChatCompletionMessageParam>([
               ...(requiredEvidence?.verifiedPredecessorMessage ? [requiredEvidence.verifiedPredecessorMessage] : []),
-              ...(requiredEvidence?.currentUserMessage ? [requiredEvidence.currentUserMessage] : []),
+              ...currentAttempt,
             ]);
             const trimmedMessages = new Set(trimmed);
-            const overflowRetryMessages = requiredMessages.size === 0
+            attemptMessages = requiredMessages.size === 0
               ? trimmed
-              : messages.filter((message) => trimmedMessages.has(message) || requiredMessages.has(message));
-            messages.splice(0, messages.length, ...overflowRetryMessages);
-            providerRuntime.resetTurnState(messages);
+              : overflowMessages.filter((message) => trimmedMessages.has(message) || requiredMessages.has(message));
+            providerRuntime.resetTurnState(attemptMessages);
             callbacks.onError(new Error("context trimmed, retrying..."), "transient");
             return callProviderTurn()
           }
@@ -1795,19 +1825,20 @@ export async function runAgent(
           const seconds = delayMs / 1000
           const cause = RETRY_LABELS[record.classification as ProviderErrorClassification]
           try {
+            const agentName = owner?.agentName ?? getAgentName()
             if (record.provider === "openai-codex" && record.classification === "auth-failure") {
-              await refreshOpenAICodexProviderCredentials(getAgentName(), {
+              await refreshOpenAICodexProviderCredentials(agentName, {
                 force: true,
                 reason: "turn-auth-failure",
               })
             }
-            await refreshProviderCredentialPool(getAgentName(), {
+            await refreshProviderCredentialPool(agentName, {
               preserveCachedOnFailure: true,
               providers: [record.provider],
             })
             _providerRuntimeFactories[facing] = null
-            providerRuntime = await getProviderRuntime(facing)
-            providerRuntime.resetTurnState(messages)
+            providerRuntime = await getProviderRuntime(facing, owner)
+            providerRuntime.resetTurnState(attemptMessages)
           } catch (refreshError) {
             emitNervesEvent({
               level: "warn",
@@ -1821,7 +1852,7 @@ export async function runAgent(
         },
         sleep: async (delayMs) => {
           await waitForProviderRetry(delayMs, signal)
-          providerRuntime.resetTurnState(messages);
+          providerRuntime.resetTurnState(attemptMessages);
         },
       });
 
@@ -1831,6 +1862,7 @@ export async function runAgent(
       }
 
       const result = attempt.value;
+      nextAttemptControls = [];
       providerIterations += 1
       if (providerIterations === MAX_PROVIDER_ITERATIONS && result.toolCalls.length > 0) {
         throw new Error(`provider iteration limit exhausted at response ${MAX_PROVIDER_ITERATIONS} before tool execution`)
@@ -1945,8 +1977,7 @@ export async function runAgent(
               message: "unresolved historical effect exhausted deterministic tool-call retries; failing closed",
               meta: { provider: providerRuntime.id, model: providerRuntime.model, toolNames: retryableHistoricalTools, cap: NO_TOOL_CALL_MAX_RETRIES },
             });
-            msg.content = blockedAnswer
-            pushGenerated(msg)
+            pushGenerated({ role: "assistant", content: blockedAnswer })
             callbacks.onTextChunk(blockedAnswer)
             completion = { answer: blockedAnswer, intent: "blocked" }
             outcome = "blocked"
@@ -1967,18 +1998,17 @@ export async function runAgent(
               cap: NO_TOOL_CALL_MAX_RETRIES,
             },
           });
-          pushGenerated(msg);
-          messages.push({
+          rejectAttempt(msg, [{
             role: "user",
             content: `this exact request previously reached a tool that is advertised again now. Its unresolved historical effect is through ${retryableHistoricalTools.join(", ")}. Only that tool is available now. Read current state if needed, then retry the exact failed effect. Do not report completion until the effect succeeds.`,
-          });
+          }]);
           continue;
         }
         const requiredToolCallsGate = pendingRequiredToolCalls();
         if (requiredToolCallsGate) {
           streamCallbackBuffer?.discard();
           callbacks.onClearText?.();
-          queueRequiredCorrection(requiredToolCallsGate.message, "before required tool calls completed")
+          queueRequiredCorrection(msg, requiredToolCallsGate.message, "before required tool calls completed")
           emitNervesEvent({
             level: "warn",
             component: "engine",
@@ -1992,7 +2022,7 @@ export async function runAgent(
         if (requiredAnswerRejection) {
           streamCallbackBuffer?.discard()
           callbacks.onClearText?.()
-          queueRequiredCorrection(requiredAnswerRejection, "before required terminal answer validation completed")
+          queueRequiredCorrection(msg, requiredAnswerRejection, "before required terminal answer validation completed")
           emitNervesEvent({ level: "warn", component: "engine", event: "engine.required_tool_answer_rejected", message: "unsupported terminal answer rejected after required reads", meta: { answerLength: String(msg.content ?? "").length } })
           continue
         }
@@ -2015,11 +2045,10 @@ export async function runAgent(
                 contentLength: result.content.length,
               },
             });
-            pushGenerated(msg);
-            messages.push({
+            rejectAttempt(msg, [{
               role: "user",
               content: `${privateReturnTextAckRetryError} Emit the ponder(action=create, ...) tool call now, or ask a blocking clarification without saying the private work is queued.`,
-            });
+            }]);
             continue;
           }
 
@@ -2036,8 +2065,7 @@ export async function runAgent(
               contentLength: result.content.length,
             },
           });
-          msg.content = blockedAnswer;
-          pushGenerated(msg);
+          pushGenerated({ role: "assistant", content: blockedAnswer });
           callbacks.onTextChunk(blockedAnswer);
           completion = { answer: blockedAnswer, intent: "blocked" };
           outcome = "blocked";
@@ -2065,15 +2093,14 @@ export async function runAgent(
               contentLength: result.content!.length,
             },
           });
-          pushGenerated(msg);
-          messages.push({
+          rejectAttempt(msg, [{
             role: "user",
             content: isPrivateRuntimeChannel
               ? augmentedToolContext?.noSend === true
                 ? "no tool was called this turn. this is an immutable no-send turn; call rest now without creating a continuation."
                 : "no tool was called this turn. you must end every turn by calling rest (or surface, ponder, observe). emit the tool call now."
               : "no tool was called this turn. you must end every turn by calling settle with your answer (or ponder/observe). emit the tool call now.",
-          });
+          }]);
           continue;
         }
         // Legitimate text-only response, or cap reached — accept as-is.
@@ -2083,20 +2110,19 @@ export async function runAgent(
       } else {
         // Reset the retry counter on any successful tool call.
         noToolCallRetries = 0;
-        const preCallMessages = structuredClone(messagesWithoutRequiredCorrections().filter((message) => message.role !== "system"))
+        const preCallMessages = structuredClone(messages.filter((message) => message.role !== "system"))
         const validatedCalls = validateToolCallBatchAtProductionBoundary(result.toolCalls, activeTools)
         const invalidCall = validatedCalls.find((entry) => "error" in entry)
         if (invalidCall) {
-          await streamCallbackBuffer?.flush()
-          pushGenerated(msg)
+          streamCallbackBuffer?.discard()
           const unadvertisedCall = validatedCalls.find((entry) => !activeToolNames.has(entry.call.name))
+          const rejections: string[] = []
           for (const entry of validatedCalls) {
             const detail = "error" in entry ? entry.error : "another call in this batch had invalid arguments"
             const rejection = unadvertisedCall
               ? `rejected: ${entry.call.name} was not advertised for this channel; no handler was executed.`
               : `invalid tool arguments: ${detail}`
-            pushGenerated({ role: "tool", tool_call_id: entry.call.id, content: rejection })
-            providerRuntime.appendToolOutput(entry.call.id, rejection)
+            rejections.push(rejection)
             options?.toolBoundaryObserver?.({
               name: entry.call.name,
               reason: activeToolNames.has(entry.call.name) ? "invalid_arguments" : "profile_excluded",
@@ -2105,6 +2131,7 @@ export async function runAgent(
               sideEffect: false,
             })
           }
+          rejectToolBatch(msg, rejections)
           if (unadvertisedCall) {
             emitNervesEvent({
               level: "warn",
@@ -2133,20 +2160,29 @@ export async function runAgent(
           entry.call,
           entry.validated.arguments as Record<string, string>,
         ]))
+        const preflightRejections = new Map<string, string>()
+        for (const entry of validCalls) {
+          if (!relationship && !toolSelection.engine.some((tool) => tool.function.name === entry.call.name)) continue
+          const prepared = await preflightToolCall(entry.call.name, validatedCallArguments.get(entry.call)!, augmentedToolContext)
+          if (prepared.kind !== "ready") preflightRejections.set(entry.call.id, prepared.text)
+        }
+        if (preflightRejections.size > 0) {
+          streamCallbackBuffer?.discard()
+          rejectToolBatch(msg, result.toolCalls.map((call) => preflightRejections.get(call.id)
+            ?? "rejected: another call in this batch failed current authorization; no handler was executed."))
+          continue
+        }
         const habitBlockReason = await habitToolBatchBlockReason(
           habitSession,
           result.toolCalls,
           augmentedToolContext?.delegatedOrigins,
+          toolSelection,
         )
         if (habitBlockReason) {
           streamCallbackBuffer?.discard();
           recordBlockedHabitSurfaceAttempts(habitSession, result.toolCalls, habitBlockReason)
-          pushGenerated(msg)
           const blockedOutput = `blocked: ${habitBlockReason}. No tool side effects from this assistant message were executed.`
-          for (const call of result.toolCalls) {
-            pushGenerated({ role: "tool", tool_call_id: call.id, content: blockedOutput })
-            providerRuntime.appendToolOutput(call.id, blockedOutput)
-          }
+          rejectToolBatch(msg, result.toolCalls.map(() => blockedOutput))
           emitNervesEvent({
             level: "warn",
             component: "engine",
@@ -2156,11 +2192,20 @@ export async function runAgent(
           })
           continue
         }
+        const soleViolation = result.toolCalls.length > 1
+          ? result.toolCalls.find((call) => SOLE_CALL_REJECTION[call.name] !== undefined || resolveToolDefinition(call.name, toolSelection)?.terminalProjection?.requiresSoleCall === true)
+          : undefined
+        if (soleViolation) {
+          streamCallbackBuffer?.discard()
+          const reason = SOLE_CALL_REJECTION[soleViolation.name] ?? `rejected: ${soleViolation.name} must be the only tool call.`
+          rejectToolBatch(msg, result.toolCalls.map(() => reason))
+          continue
+        }
         const soleTerminalCall = result.toolCalls.length === 1
           ? result.toolCalls[0]
           : null
         const soleTerminalProjection = soleTerminalCall
-          ? resolveToolDefinition(soleTerminalCall.name)?.terminalProjection
+          ? resolveToolDefinition(soleTerminalCall.name, toolSelection)?.terminalProjection
           : undefined
         if (soleTerminalCall && soleTerminalProjection?.mode === "verbatim") {
           const terminalArgs = validatedCallArguments.get(soleTerminalCall)!
@@ -2175,40 +2220,32 @@ export async function runAgent(
           if (soleTerminalProjection.clearBufferedText) callbacks.onClearText?.()
           callbacks.onToolStart(soleTerminalCall.name, terminalArgs)
           let terminalResult: string
+          let terminalSucceeded = false
           try {
-            const execToolFn = options?.execTool ?? execTool
-            terminalResult = await execToolFn(
-              soleTerminalCall.name,
-              terminalArgs,
-              augmentedToolContext,
-            )
+            if (options?.execTool && !relationship) {
+              terminalResult = await options.execTool(soleTerminalCall.name, terminalArgs, trustedToolContext)
+              terminalSucceeded = true
+            } else {
+              const execution = await executeTool(soleTerminalCall.name, terminalArgs, augmentedToolContext, options?.execTool)
+              terminalResult = "error" in execution
+                ? `error: ${execution.error instanceof Error ? execution.error.message : String(execution.error)}`
+                : execution.text
+              terminalSucceeded = execution.kind === "handler_succeeded"
+            }
           } catch (error) {
-            callbacks.onToolEnd(
-              soleTerminalCall.name,
-              summarizeArgs(soleTerminalCall.name, terminalArgs),
-              false,
-            )
-            pushGenerated(msg)
-            const failure = error instanceof Error ? `error: ${error.message}` : `error: ${String(error)}`
-            pushGenerated({ role: "tool", tool_call_id: soleTerminalCall.id, content: failure })
-            providerRuntime.appendToolOutput(soleTerminalCall.id, failure)
-            callbacks.onTextChunk(failure)
-            completion = { answer: failure, intent: "blocked" }
-            outcome = "blocked"
-            done = true
-            continue
+            terminalResult = error instanceof Error ? `error: ${error.message}` : `error: ${String(error)}`
           }
           callbacks.onToolEnd(
             soleTerminalCall.name,
-            summarizeArgs(soleTerminalCall.name, terminalArgs),
-            true,
+            summarizeArgs(soleTerminalCall.name, terminalArgs, toolSelection),
+            terminalSucceeded,
           )
           pushGenerated(msg)
           pushGenerated({ role: "tool", tool_call_id: soleTerminalCall.id, content: terminalResult })
           providerRuntime.appendToolOutput(soleTerminalCall.id, terminalResult)
           callbacks.onTextChunk(terminalResult)
-          completion = { answer: terminalResult, intent: "complete" }
-          outcome = "settled"
+          completion = { answer: terminalResult, intent: terminalSucceeded ? "complete" : "blocked" }
+          outcome = terminalSucceeded ? "settled" : "blocked"
           done = true
           continue
         }
@@ -2219,9 +2256,9 @@ export async function runAgent(
           const requiredToolCallsGate = pendingRequiredToolCalls();
           if (requiredToolCallsGate) {
             streamCallbackBuffer?.discard();
-            callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs), false);
+            callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs, toolSelection), false);
             callbacks.onClearText?.();
-            queueRequiredCorrection(requiredToolCallsGate.message, "before required tool calls completed")
+            queueRequiredCorrection(msg, requiredToolCallsGate.message, "before required tool calls completed")
             emitNervesEvent({
               level: "warn",
               component: "engine",
@@ -2235,12 +2272,10 @@ export async function runAgent(
           const attentionQueue = augmentedToolContext?.delegatedOrigins;
           if (isPrivateRuntimeChannel && attentionQueue && attentionQueue.length > 0) {
             streamCallbackBuffer?.discard();
-            callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs), false);
+            callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs, toolSelection), false);
             callbacks.onClearText?.();
-            pushGenerated(msg);
             const gateMessage = "current held-work frame still has unsurfaced items — return each listed item with surface(delegationId=...) before you settle. Older transcript claims are historical; only the current held-work frame is the gate.";
-            pushGenerated({ role: "tool", tool_call_id: result.toolCalls[0].id, content: gateMessage });
-            providerRuntime.appendToolOutput(result.toolCalls[0].id, gateMessage);
+            rejectToolBatch(msg, [gateMessage]);
             continue;
           }
 
@@ -2250,9 +2285,9 @@ export async function runAgent(
           const requiredAnswerRejection = options?.requiredToolCalls?.validateTerminalAnswer?.(answer)
           if (requiredAnswerRejection) {
             streamCallbackBuffer?.discard()
-            callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs), false)
+            callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs, toolSelection), false)
             callbacks.onClearText?.()
-            queueRequiredCorrection(requiredAnswerRejection, "before required terminal answer validation completed")
+            queueRequiredCorrection(msg, requiredAnswerRejection, "before required terminal answer validation completed")
             emitNervesEvent({ level: "warn", component: "engine", event: "engine.required_tool_answer_rejected", message: "unsupported settle answer rejected after required reads", meta: { answerLength: answer.length } })
             continue
           }
@@ -2260,7 +2295,7 @@ export async function runAgent(
           // Private-runtime settle: no CompletionMetadata, "(settled)" ack
           if (isPrivateRuntimeChannel) {
             streamCallbackBuffer?.discard();
-            callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs), true);
+            callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs, toolSelection), true);
             pushGenerated(msg);
             const settled = "(settled)";
             pushGenerated({ role: "tool", tool_call_id: result.toolCalls[0].id, content: settled });
@@ -2301,7 +2336,7 @@ export async function runAgent(
               }
               await streamCallbackBuffer?.flush()
             } catch (error) {
-              callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs), false)
+              callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs, toolSelection), false)
               streamCallbackBuffer?.discard()
               finishTerminalProviderError(
                 new SettleFinalizationCallbackError(error),
@@ -2309,7 +2344,7 @@ export async function runAgent(
               )
               continue
             }
-            callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs), true);
+            callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs, toolSelection), true);
             completion = {
               answer: deliveredAnswer,
               intent: validDirectReply ? "direct_reply" : intent === "blocked" ? "blocked" : "complete",
@@ -2332,12 +2367,9 @@ export async function runAgent(
             // The payload is structurally final, but a semantic continuation
             // gate rejected it. Return that exact gate reason to the model.
             streamCallbackBuffer?.discard();
-            callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs), false);
+            callbacks.onToolEnd("settle", summarizeArgs("settle", settleArgs, toolSelection), false);
             callbacks.onClearText?.();
-            pushGenerated(msg);
-            const toolRetryMessage = retryError
-            pushGenerated({ role: "tool", tool_call_id: result.toolCalls[0].id, content: toolRetryMessage });
-            providerRuntime.appendToolOutput(result.toolCalls[0].id, toolRetryMessage);
+            rejectToolBatch(msg, [retryError]);
           }
           continue;
         }
@@ -2356,7 +2388,7 @@ export async function runAgent(
             message: "agent observed without responding",
             meta: { ...(reason ? { reason } : {}) },
           });
-          callbacks.onToolEnd("observe", summarizeArgs("observe", observeArgs), true);
+          callbacks.onToolEnd("observe", summarizeArgs("observe", observeArgs, toolSelection), true);
           pushGenerated(msg);
           const silenced = "(silenced)";
           pushGenerated({ role: "tool", tool_call_id: result.toolCalls[0].id, content: silenced });
@@ -2376,21 +2408,17 @@ export async function runAgent(
           // Attention queue gate: reject rest if items remain
           const attentionQueue = augmentedToolContext?.delegatedOrigins;
           if (attentionQueue && attentionQueue.length > 0) {
-            callbacks.onToolEnd("rest", summarizeArgs("rest", restArgs), false);
-            pushGenerated(msg);
+            callbacks.onToolEnd("rest", summarizeArgs("rest", restArgs, toolSelection), false);
             const gateMessage = "current held-work frame still has unsurfaced items — return each listed item with surface(delegationId=...) before you rest. Older transcript claims are historical; only the current held-work frame is the gate.";
-            pushGenerated({ role: "tool", tool_call_id: result.toolCalls[0].id, content: gateMessage });
-            providerRuntime.appendToolOutput(result.toolCalls[0].id, gateMessage);
+            rejectToolBatch(msg, [gateMessage]);
             continue;
           }
 
           if (hasFreshPendingWork(options) && !freshWorkGateFired) {
             freshWorkGateFired = true;
-            callbacks.onToolEnd("rest", summarizeArgs("rest", restArgs), false);
-            pushGenerated(msg);
+            callbacks.onToolEnd("rest", summarizeArgs("rest", restArgs, toolSelection), false);
             const gateMessage = "fresh work arrived for me this turn — inspect the pending messages above and take the next concrete action before you rest.";
-            pushGenerated({ role: "tool", tool_call_id: result.toolCalls[0].id, content: gateMessage });
-            providerRuntime.appendToolOutput(result.toolCalls[0].id, gateMessage);
+            rejectToolBatch(msg, [gateMessage]);
             emitNervesEvent({
               level: "info",
               component: "engine",
@@ -2401,7 +2429,7 @@ export async function runAgent(
             continue;
           }
 
-          callbacks.onToolEnd("rest", summarizeArgs("rest", restArgs), true);
+          callbacks.onToolEnd("rest", summarizeArgs("rest", restArgs, toolSelection), true);
           pushGenerated(msg);
           const ack = "(resting)";
           pushGenerated({ role: "tool", tool_call_id: result.toolCalls[0].id, content: ack });
@@ -2425,7 +2453,52 @@ export async function runAgent(
           const rejection = options?.requiredToolCalls?.validateToolCallBeforeDispatch?.(entry.call.name, requiredArgs)
           if (rejection) requiredDispatchRejections.set(entry.call.id, { name: entry.call.name, args: requiredArgs, message: rejection })
         }
-        const approvalCalls = await Promise.all(validCalls.filter((entry) => !requiredDispatchRejections.has(entry.call.id)).map(async (entry) => {
+        if (requiredDispatchRejections.size > 0) {
+          streamCallbackBuffer?.discard()
+          for (const rejection of requiredDispatchRejections.values()) {
+            callbacks.onToolStart(rejection.name, rejection.args)
+            callbacks.onToolEnd(rejection.name, summarizeArgs(rejection.name, rejection.args, toolSelection), false)
+            options?.toolBoundaryObserver?.({
+              name: rejection.name, reason: "dependency_rejected",
+              globallyResolvable: typeof resolveToolDefinition(rejection.name)?.handler === "function",
+              invoked: false, sideEffect: false,
+            })
+            emitNervesEvent({
+              level: "warn", component: "engine", event: "engine.required_tool_dispatch_rejected",
+              message: "required tool dependency rejected before approval and handler dispatch",
+              meta: { toolName: rejection.name },
+            })
+          }
+          rejectToolBatch(msg, result.toolCalls.map((call) => requiredDispatchRejections.get(call.id)?.message
+            ?? "rejected: another call in this batch has an unsatisfied required dependency; no handler was executed."))
+          continue
+        }
+        const executionRejections = new Map<string, string>()
+        for (const entry of validCalls) {
+          const args = validatedCallArguments.get(entry.call)!
+          const fingerprint = effectFingerprint(entry.call.name, entry.call.arguments, toolSelection)
+          if (forcingHistoricalEffect && fingerprint && !unresolvedHistoricalEffects.some((effect) => effect.fingerprint === fingerprint)) {
+            executionRejections.set(entry.call.id, "rejected: this turn is retrying an unresolved historical effect, and these mutation arguments do not match it. Read current state or retry the exact failed effect.")
+          } else if (entry.call.name === "send_message" && args.friendId === "self" && !isPrivateRuntimeChannel && looksLikePrivateReturnRequest(latestUserMessageText(messages))) {
+            executionRejections.set(entry.call.id, "private-return requests must use ponder, not send_message(friendId=self). Create a typed ponder packet with the marker/source request preserved, then only acknowledge that the private pass is queued.")
+          } else if (entry.call.name !== "speak" && entry.call.name !== "ponder") {
+            const loop = detectToolLoop(toolLoopState, entry.call.name, args)
+            if (loop.stuck) executionRejections.set(entry.call.id, `loop guard: ${loop.message}`)
+          }
+        }
+        if (executionRejections.size > 0) {
+          streamCallbackBuffer?.discard()
+          for (const entry of validCalls) {
+            if (!executionRejections.has(entry.call.id)) continue
+            const args = validatedCallArguments.get(entry.call)!
+            callbacks.onToolStart(entry.call.name, args)
+            callbacks.onToolEnd(entry.call.name, summarizeArgs(entry.call.name, args, toolSelection), false)
+          }
+          rejectToolBatch(msg, result.toolCalls.map((call) => executionRejections.get(call.id)
+            ?? "rejected: another call in this batch was inadmissible; no handler was executed."))
+          continue
+        }
+        const approvalCalls = await Promise.all(validCalls.map(async (entry) => {
           const classification = await classifyApprovalForInvocation(entry.call.name, entry.validated.arguments, augmentedToolContext)
           return {
             ...entry,
@@ -2435,12 +2508,7 @@ export async function runAgent(
         const protectedCall = approvalCalls.find((entry) => entry.policy.kind === "required")
         if (protectedCall && result.toolCalls.length !== 1) {
           streamCallbackBuffer?.discard()
-          pushGenerated(msg)
-          for (const call of result.toolCalls) {
-            const rejection = "rejected: approval-eligible tool must be the sole call; no call in this batch was executed."
-            pushGenerated({ role: "tool", tool_call_id: call.id, content: rejection })
-            providerRuntime.appendToolOutput(call.id, rejection)
-          }
+          rejectToolBatch(msg, result.toolCalls.map(() => "rejected: approval-eligible tool must be the sole call; no call in this batch was executed."))
           emitNervesEvent({
             level: "warn",
             component: "engine",
@@ -2453,10 +2521,8 @@ export async function runAgent(
         if (protectedCall && protectedCall.policy.kind === "required") {
           if (!options?.approvalCoordinator) {
             streamCallbackBuffer?.discard()
-            pushGenerated(msg)
             const rejection = "rejected: this protected tool requires approval, but the approval coordinator is unavailable; the handler was not invoked."
-            pushGenerated({ role: "tool", tool_call_id: protectedCall.call.id, content: rejection })
-            providerRuntime.appendToolOutput(protectedCall.call.id, rejection)
+            rejectToolBatch(msg, [rejection])
             emitNervesEvent({
               level: "warn",
               component: "engine",
@@ -2467,12 +2533,11 @@ export async function runAgent(
             continue
           }
           streamCallbackBuffer?.discard()
-          pushGenerated(msg)
-          const toolDigest = digestJson({
-            name: protectedCall.call.name,
-            schemaDigest: protectedCall.validated.schemaDigest,
-            policyId: protectedCall.policy.policyId,
-          })
+          const toolDigest = digestApprovalToolDefinition(
+            resolveToolDefinition(protectedCall.call.name, toolSelection)!,
+            protectedCall.validated.schemaDigest,
+            protectedCall.policy.policyId,
+          )
           const policyDigest = digestJson({
             policyId: protectedCall.policy.policyId,
             actionClass: protectedCall.policy.actionClass,
@@ -2490,6 +2555,7 @@ export async function runAgent(
             actionClass: protectedCall.policy.actionClass,
             liveToolContext: augmentedToolContext,
           })
+          pushGenerated(msg)
           suspension = {
             approvalId: committed.approvalId,
             toolCallId: protectedCall.call.id,
@@ -2507,86 +2573,21 @@ export async function runAgent(
           continue
         }
 
-        const containsSoleCallOnlyViolation = result.toolCalls.length > 1
-          && result.toolCalls.some((call) => {
-            const terminalProjection = resolveToolDefinition(call.name)?.terminalProjection
-            return SOLE_CALL_REJECTION[call.name] !== undefined
-              || terminalProjection?.requiresSoleCall === true
-          })
-        if (callbacks.settleOutputMode === "final_only" && containsSoleCallOnlyViolation) {
-          streamCallbackBuffer?.discard()
-        } else {
-          await streamCallbackBuffer?.flush()
-        }
+        await streamCallbackBuffer?.flush()
         pushGenerated(msg);
-        // Execute tools (sole-call tools in mixed calls are rejected inline)
+        // Every pre-dispatch gate accepted the complete batch.
         for (const tc of result.toolCalls) {
           if (signal?.aborted) break;
-          const requiredDispatchRejection = requiredDispatchRejections.get(tc.id)
-          if (requiredDispatchRejection) {
-            callbacks.onToolStart(tc.name, requiredDispatchRejection.args)
-            callbacks.onToolEnd(tc.name, summarizeArgs(tc.name, requiredDispatchRejection.args), false)
-            pushGenerated({ role: "tool", tool_call_id: tc.id, content: requiredDispatchRejection.message })
-            providerRuntime.appendToolOutput(tc.id, requiredDispatchRejection.message)
-            options?.toolBoundaryObserver?.({
-              name: tc.name,
-              reason: "dependency_rejected",
-              globallyResolvable: typeof resolveToolDefinition(tc.name)?.handler === "function",
-              invoked: false,
-              sideEffect: false,
-            })
-            emitNervesEvent({
-              level: "warn",
-              component: "engine",
-              event: "engine.required_tool_dispatch_rejected",
-              message: "required tool dependency rejected before approval and handler dispatch",
-              meta: { toolName: tc.name },
-            })
-            continue
-          }
-          // Reject sole-call tools when mixed with other tool calls
-          const terminalProjection = resolveToolDefinition(tc.name)?.terminalProjection
-          const soleCallRejection = SOLE_CALL_REJECTION[tc.name]
-            ?? (terminalProjection?.requiresSoleCall
-              ? `rejected: ${tc.name} must be the only tool call.`
-              : undefined);
-          if (soleCallRejection) {
-            pushGenerated({ role: "tool", tool_call_id: tc.id, content: soleCallRejection });
-            providerRuntime.appendToolOutput(tc.id, soleCallRejection);
-            continue;
-          }
           const args = validatedCallArguments.get(tc)!
-          const currentEffectFingerprint = effectFingerprint(tc.name, tc.arguments)
-          if (
-            forcingHistoricalEffect
-            && currentEffectFingerprint
-            && !unresolvedHistoricalEffects.some((effect) => effect.fingerprint === currentEffectFingerprint)
-          ) {
-            const rejection = "rejected: this turn is retrying an unresolved historical effect, and these mutation arguments do not match it. Read current state or retry the exact failed effect."
-            callbacks.onToolStart(tc.name, args)
-            callbacks.onToolEnd(tc.name, summarizeArgs(tc.name, args), false)
-            pushGenerated({ role: "tool", tool_call_id: tc.id, content: rejection })
-            providerRuntime.appendToolOutput(tc.id, rejection)
-            continue
-          }
+          const currentEffectFingerprint = effectFingerprint(tc.name, tc.arguments, toolSelection)
           if (tc.name === "send_message" && args.friendId === "self") {
-            const latestUserText = latestUserMessageText(messages)
-            if (!isPrivateRuntimeChannel && looksLikePrivateReturnRequest(latestUserText)) {
-              const argSummary = summarizeArgs(tc.name, args);
-              const rejection = "private-return requests must use ponder, not send_message(friendId=self). Create a typed ponder packet with the marker/source request preserved, then only acknowledge that the private pass is queued.";
-              callbacks.onToolStart(tc.name, args);
-              callbacks.onToolEnd(tc.name, argSummary, false);
-              pushGenerated({ role: "tool", tool_call_id: tc.id, content: rejection });
-              providerRuntime.appendToolOutput(tc.id, rejection);
-              continue;
-            }
             sawSendMessageSelf = true;
           }
           if (tc.name === "speak") {
             // The canonical pre-batch schema gate guarantees a required string.
             const speakArgs = JSON.parse(tc.arguments) as { message: string };
             const speakMessage = speakArgs.message;
-            const argSummary = summarizeArgs("speak", { message: speakMessage });
+            const argSummary = summarizeArgs("speak", { message: speakMessage }, toolSelection);
             callbacks.onToolStart("speak", { message: speakMessage });
             if (speakMessage.trim().length === 0) {
               const err = "speak requires a non-empty `message` string.";
@@ -2637,7 +2638,7 @@ export async function runAgent(
           }
           if (tc.name === "ponder") {
             const parsedArgs = normalizeLegacyPonderArgs(parsePonderPayload(tc.arguments));
-            const argSummary = summarizeArgs(tc.name, parsedArgs as Record<string, string>);
+            const argSummary = summarizeArgs(tc.name, parsedArgs as Record<string, string>, toolSelection);
             callbacks.onToolStart(tc.name, parsedArgs as Record<string, string>);
             let toolResult: string;
             let success = false;
@@ -2808,31 +2809,32 @@ export async function runAgent(
           if (tc.name === "bridge_manage") sawBridgeManage = true;
           /* v8 ignore next -- flag tested via truth-check integration tests @preserve */
           if (isExternalStateQuery(tc.name, args)) sawExternalStateQuery = true;
-          const argSummary = summarizeArgs(tc.name, args);
-          const toolLoop = detectToolLoop(toolLoopState, tc.name, args);
-          if (toolLoop.stuck) {
-            const rejection = `loop guard: ${toolLoop.message}`;
-            callbacks.onToolStart(tc.name, args);
-            callbacks.onToolEnd(tc.name, argSummary, false);
-            pushGenerated({ role: "tool", tool_call_id: tc.id, content: rejection });
-            providerRuntime.appendToolOutput(tc.id, rejection);
-            continue;
-          }
           callbacks.onToolStart(tc.name, args);
           let toolResult: string;
           let success: boolean;
+          let invoked = false;
           try {
-            const execToolFn = options?.execTool ?? execTool;
             const routineActionSelection = approvalCalls.find((entry) => entry.call.id === tc.id)?.routineActionSelection
             const executionToolContext = routineActionSelection && augmentedToolContext ? { ...augmentedToolContext, routineActionSelection } : augmentedToolContext
-            if (requiredToolCallNames.includes(tc.name) && !options?.requiredToolCalls?.requireSuccessfulResults) dispatchedRequiredToolCalls.add(tc.name);
-            toolResult = await execToolFn(tc.name, args, executionToolContext);
-            success = true;
+            if (options?.execTool && !relationship) {
+              invoked = true
+              toolResult = await options.execTool(tc.name, args, trustedToolContext)
+              success = true
+            } else {
+              const execution = await executeTool(tc.name, args, executionToolContext, options?.execTool)
+              invoked = execution.kind !== "rejected_before_handler"
+              success = execution.kind === "handler_succeeded"
+              toolResult = "error" in execution ? `error: ${execution.error}` : execution.text
+            }
           } catch (e) {
             toolResult = `error: ${e}`;
             success = false;
-            augmentedToolContext?.habitSession?.recordError?.(toolResult);
           }
+          if (invoked && requiredToolCallNames.includes(tc.name) && !options?.requiredToolCalls?.requireSuccessfulResults) dispatchedRequiredToolCalls.add(tc.name);
+          const modelResult = rewriteToolResultForModel(tc.name, toolResult, toolFrictionLedger);
+          pushGenerated({ role: "tool", tool_call_id: tc.id, content: modelResult });
+          providerRuntime.appendToolOutput(tc.id, modelResult);
+          if (!success) augmentedToolContext?.habitSession?.recordError?.(toolResult);
           const validatedRequiredResult = success && requiredToolCallNames.includes(tc.name) && options?.requiredToolCalls?.requireSuccessfulResults
             ? requiredToolResultSucceeded(tc.name, toolResult, args, options.requiredToolCalls.validateRequiredToolResult)
             : false
@@ -2851,28 +2853,24 @@ export async function runAgent(
               (effect) => effect.fingerprint !== currentEffectFingerprint,
             )
           }
-          const resolvedRiskProfile = resolveToolDefinition(tc.name)?.riskProfile
+          const resolvedRiskProfile = resolveToolDefinition(tc.name, toolSelection)?.riskProfile
           const toolRiskProfile = typeof resolvedRiskProfile === "function" ? resolvedRiskProfile(args) : resolvedRiskProfile
           options?.toolBoundaryObserver?.({
             name: tc.name,
             reason: "dispatched",
-            globallyResolvable: typeof resolveToolDefinition(tc.name)?.handler === "function",
-            invoked: true,
+            globallyResolvable: typeof resolveToolDefinition(tc.name, toolSelection)?.handler === "function",
+            invoked,
             sideEffect: success && toolRiskProfile?.mutates !== "none",
           })
-          toolResult = rewriteToolResultForModel(tc.name, toolResult, toolFrictionLedger);
-          recordToolOutcome(toolLoopState, tc.name, args, toolResult, success);
-          callbacks.onToolEnd(tc.name, buildToolResultSummary(tc.name, args, toolResult, success), success);
-          pushGenerated({ role: "tool", tool_call_id: tc.id, content: toolResult });
-          providerRuntime.appendToolOutput(tc.id, toolResult);
-          callbacks.onToolResult?.(messagesWithoutRequiredCorrections());
+          recordToolOutcome(toolLoopState, tc.name, args, modelResult, success);
+          callbacks.onToolEnd(tc.name, buildToolResultSummary(tc.name, args, modelResult, success, toolSelection), success);
+          callbacks.onToolResult?.(messages);
         }
       }
     } catch (e) {
       // Abort is not an error — just stop cleanly
       if (e instanceof ProviderAttemptAbortError || signal?.aborted) {
-        stripLastToolCalls(messages);
-        stripLastToolCalls(generatedMessages);
+        if (generatedMessages.length === 0) stripLastToolCalls(messages);
         outcome = "aborted";
         break;
       }
@@ -2887,8 +2885,13 @@ export async function runAgent(
       finishTerminalProviderError(errorForClassification, providerClassification);
     }
     }
+  } catch (error) {
+    if (!(error instanceof ToolSelectionError)) throw error
+    finishTerminalProviderError(error, "unknown")
   } finally {
-    removeRequiredCorrections()
+    nextAttemptControls = []
+    rejectedAttempt = []
+    providerRuntime.resetTurnState(messages)
   }
   options?.captureGeneratedMessages?.(structuredClone(generatedMessages));
   emitNervesEvent({

@@ -4,6 +4,7 @@ import { getAgentBundlesRoot } from "../../identity"
 import {
   deriveSessionChronology,
   extractEventText,
+  selectEffectiveSessionEvents,
   type SessionEvent,
 } from "../../session-events"
 import {
@@ -102,7 +103,6 @@ function resolveAllSessionPaths(sessionsDir: string): Array<{ friendId: string; 
 
 /* v8 ignore stop */
 
-/* v8 ignore start — defensive parsing */
 export function readSessionInventory(agentName: string, options: MailboxReadOptions = {}): MailboxSessionInventory {
   const bundlesRoot = options.bundlesRoot ?? getAgentBundlesRoot()
   const now = options.now?.() ?? new Date()
@@ -117,7 +117,7 @@ export function readSessionInventory(agentName: string, options: MailboxReadOpti
     if (friendId === "self" && channel === "inner") continue
 
     const envelope = readSessionEnvelope(sessionPath)
-    const events = envelope?.events ?? []
+    const events = selectEffectiveSessionEvents(envelope?.events ?? [])
     const chronology = deriveSessionChronology(events)
     const lastUsage = parseSessionUsage(envelope?.lastUsage)
     const continuity = parseSessionContinuity(envelope?.state)
@@ -212,7 +212,7 @@ export function readSessionTranscript(
   const envelope = readSessionEnvelope(sessionPath)
   if (!envelope) return null
 
-  const rawMessages = envelope.events
+  const rawMessages = selectEffectiveSessionEvents(envelope.events)
   const friendsDir = path.join(agentRoot, "friends")
   const friendName = resolveFriendName(friendsDir, friendId)
 

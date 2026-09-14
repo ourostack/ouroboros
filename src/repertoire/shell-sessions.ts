@@ -12,7 +12,10 @@ export interface ShellSession {
   output: string[]
 }
 
+export type ShellSessionOwner = Readonly<{ agentName: string; agentRoot: string }>
+
 interface LiveSession {
+  owner: ShellSessionOwner
   process: ChildProcess
   info: ShellSession
 }
@@ -20,13 +23,14 @@ interface LiveSession {
 const sessions = new Map<string, LiveSession>()
 const MAX_OUTPUT_LINES = 200
 
-export function spawnBackgroundShell(command: string): ShellSession {
+export function spawnBackgroundShell(command: string, owner: ShellSessionOwner): ShellSession {
   const id = randomUUID()
   const proc = spawn("sh", ["-c", command], {
     stdio: ["pipe", "pipe", "pipe"],
   })
 
   const session: LiveSession = {
+    owner: Object.freeze({ ...owner }),
     process: proc,
     info: {
       id,
@@ -78,9 +82,9 @@ export function spawnBackgroundShell(command: string): ShellSession {
   return { ...session.info }
 }
 
-export function getShellSession(id: string): ShellSession | undefined {
+export function getShellSession(id: string, owner: ShellSessionOwner): ShellSession | undefined {
   const session = sessions.get(id)
-  if (!session) return undefined
+  if (!session || session.owner.agentName !== owner.agentName || session.owner.agentRoot !== owner.agentRoot) return undefined
   emitNervesEvent({
     component: "repertoire",
     event: "repertoire.shell.status_check",
@@ -90,8 +94,9 @@ export function getShellSession(id: string): ShellSession | undefined {
   return { ...session.info }
 }
 
-export function listShellSessions(): ShellSession[] {
-  return Array.from(sessions.values()).map((s) => ({
+export function listShellSessions(owner: ShellSessionOwner): ShellSession[] {
+  return Array.from(sessions.values()).filter((session) =>
+    session.owner.agentName === owner.agentName && session.owner.agentRoot === owner.agentRoot).map((s) => ({
     id: s.info.id,
     command: s.info.command,
     status: s.info.status,
@@ -102,9 +107,9 @@ export function listShellSessions(): ShellSession[] {
   }))
 }
 
-export function tailShellSession(id: string, lines = 50): string | undefined {
+export function tailShellSession(id: string, owner: ShellSessionOwner, lines = 50): string | undefined {
   const session = sessions.get(id)
-  if (!session) return undefined
+  if (!session || session.owner.agentName !== owner.agentName || session.owner.agentRoot !== owner.agentRoot) return undefined
   const tail = session.info.output.slice(-lines)
   emitNervesEvent({
     component: "repertoire",

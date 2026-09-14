@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest"
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
+import { createHash } from "node:crypto"
 
 const {
   REQUIRED_PACKAGE_ASSET_PATHS,
@@ -43,6 +44,126 @@ afterEach(() => {
 })
 
 describe("package asset validation", () => {
+  it("documents owner-only sequential Jellyfin provisioning without installation authority or weak rollback", () => {
+    const readme = fs.readFileSync(path.resolve(__dirname, "../../../deploy/unraid/README.txt"), "utf8")
+    const heading = "Bounded Jellyfin stewardship"
+    expect(readme).toContain(heading)
+    const section = readme.slice(readme.indexOf(heading))
+    for (const requirement of [
+      "fresh authenticated owner Telegram message after installation",
+      "set_desired_state -> read -> grant_routine_action -> read",
+      "container:jellyfin=on", "unraid.restart:jellyfin", "unraid.container.restart",
+      "2 attempts per 1800000 ms", "365 days after authorization",
+      "verificationRequired=true", "exclusions=[]", "provenance=stated",
+      "Packaged desired states and grants remain empty",
+      "Do not start a weak predecessor after policy exists",
+      "state/policy/policy-audit.ndjson", "state/policy/action-receipts.ndjson",
+    ]) expect(section).toContain(requirement)
+  })
+
+  it("ships the owner v8 identity correction without changing any other psyche content or containment source", () => {
+    const root = path.resolve(__dirname, "../../../deploy/unraid")
+    const identity = fs.readFileSync(path.join(root, "sanctuary.ouro/psyche/IDENTITY.md"), "utf8")
+    const oldSentence = "My primary server interface is the typed Unraid GraphQL repertoire, never shell."
+    const newSentence = "I use the typed Unraid GraphQL repertoire for server operations and owner-authorized native tools for resident work inside my existing container boundary."
+    expect(identity).toContain(newSentence)
+    expect(createHash("sha256").update(identity.replace(newSentence, oldSentence)).digest("hex")).toBe("024a02ad975deadb6d22afd4b0683047210a993e00f73d9f7f499898c6229590")
+    for (const [name, expected] of Object.entries({
+      "ASPIRATIONS.md": "2a0ab1c8084e0d703ea614341d08f041e01dbd50c4d2dec347b955c3a29a4c94",
+      "LORE.md": "2de6a92caa99491b1baba64d755bca45e71a13999f9e958bc8f1ab37f6129476",
+      "SOUL.md": "35c7c22c6ce9627db3a72ade5b6132fa9ec5f51b45ebd10d7f8906154b54019a",
+      "TACIT.md": "858b79b2b5dc2df63b20ef611ee873d1491aab075120faac8dd22cd57d7fcf83",
+    })) expect(createHash("sha256").update(fs.readFileSync(path.join(root, "sanctuary.ouro/psyche", name))).digest("hex")).toBe(expected)
+    const contract = JSON.parse(fs.readFileSync(path.join(root, "sanctuary-acceptance-contract.json"), "utf8"))
+    expect(JSON.stringify(contract.scenarioSources["containment-audit"])).toContain("sanctuary-containment-audit-v2")
+  })
+
+  it("allows only an explicit source-checkout validation before compilation while packed assets remain strict", () => {
+    const root = makeRoot()
+    writeRequiredAssets(root)
+    const compiled = "dist/heart/session-redaction-repair-cli-main.js"
+    const source = "src/heart/session-redaction-repair-cli-main.ts"
+    fs.unlinkSync(path.join(root, compiled))
+    writeFile(root, source, "export {}")
+    expect(validatePackageAssets(root).missing).toContain(compiled)
+    expect(validatePackageAssets(root, undefined, { sourceTree: true })).toMatchObject({
+      ok: true,
+      missing: [],
+      message: expect.stringContaining("source checkout"),
+    })
+    expect(validatePackageAssets(root, undefined, { sourceTree: false }).missing).toContain(compiled)
+    fs.unlinkSync(path.join(root, source))
+    expect(validatePackageAssets(root, undefined, { sourceTree: true }).missing).toContain(compiled)
+  })
+
+  it.each([null, {}, { sourceTree: undefined }, { sourceTree: null }, { sourceTree: "true" }, { sourceTree: 1 }])(
+    "keeps package validation strict for inactive or malformed source options %j",
+    (options) => {
+      const root = makeRoot()
+      writeRequiredAssets(root)
+      const compiled = "dist/heart/session-redaction-repair-cli-main.js"
+      fs.unlinkSync(path.join(root, compiled))
+      writeFile(root, "src/heart/session-redaction-repair-cli-main.ts", "export {}")
+      expect(validatePackageAssets(root, undefined, options).missing).toContain(compiled)
+    },
+  )
+
+  it.each(["missing", "directory"])("refuses a %s cold-checkout source asset", (kind) => {
+    const root = makeRoot()
+    writeRequiredAssets(root)
+    const compiled = "dist/heart/session-redaction-repair-cli-main.js"
+    fs.unlinkSync(path.join(root, compiled))
+    if (kind === "directory") {
+      fs.mkdirSync(path.join(root, "src/heart/session-redaction-repair-cli-main.ts"), { recursive: true })
+    }
+    expect(validatePackageAssets(root, undefined, { sourceTree: true }).missing).toContain(compiled)
+  })
+
+  it("does not accept a symlink as a cold-checkout source asset", () => {
+    const root = makeRoot()
+    writeRequiredAssets(root)
+    const compiled = "dist/heart/session-redaction-repair-cli-main.js"
+    const source = path.join(root, "src/heart/session-redaction-repair-cli-main.ts")
+    fs.unlinkSync(path.join(root, compiled))
+    fs.mkdirSync(path.dirname(source), { recursive: true })
+    writeFile(root, "outside.ts", "export {}")
+    fs.symlinkSync(path.join(root, "outside.ts"), source)
+    expect(validatePackageAssets(root, undefined, { sourceTree: true }).missing).toContain(compiled)
+  })
+
+  it("keeps other required assets and disallowed payload checks active in source mode", () => {
+    const root = makeRoot()
+    writeRequiredAssets(root)
+    fs.unlinkSync(path.join(root, "dist/heart/session-redaction-repair-cli-main.js"))
+    writeFile(root, "src/heart/session-redaction-repair-cli-main.ts", "export {}")
+    fs.unlinkSync(path.join(root, "assets/bluebubbles-host"))
+    writeFile(root, "dist/outlook-ui/index.js", "obsolete")
+    expect(validatePackageAssets(root, undefined, { sourceTree: true })).toMatchObject({
+      ok: false,
+      missing: ["assets/bluebubbles-host"],
+      disallowed: ["dist/outlook-ui/index.js"],
+    })
+  })
+
+  it("A003 has no production repertoire registration", async () => {
+    const { getToolsForChannel, resolveToolDefinition } = await import("../../repertoire/tools")
+    const names = getToolsForChannel().map((tool) => tool.function.name)
+    expect(names.length).toBeGreaterThan(0)
+    expect(names).not.toContain("session_redaction_repair")
+    expect(names).not.toContain("selectA003LegacyRequiredCorrections")
+    expect(resolveToolDefinition("session_redaction_repair")).toBeUndefined()
+    expect(resolveToolDefinition("session-redaction-repair")).toBeUndefined()
+  })
+  it("A003 declares the direct maintenance entrypoint without public package or command routing", () => {
+    expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("dist/heart/session-redaction-repair-cli-main.js")
+    const root = path.resolve(__dirname, "../../..")
+    const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"))
+    expect(JSON.stringify([pkg.bin, pkg.exports])).not.toContain("session-redaction-repair")
+    for (const file of ["src/heart/daemon/daemon-cli.ts", "src/heart/daemon/daemon.ts", "src/repertoire/tools.ts", "src/senses/telegram.ts"]) {
+      expect(fs.readFileSync(path.join(root, file), "utf8")).not.toMatch(/session-redaction-repair|a003-sanctuary-session-repair/)
+    }
+    expect(fs.lstatSync(path.join(root, "src/heart/session-redaction-repair-cli-main.ts")).isFile()).toBe(true)
+  })
   it("declares RepairGuide files as required package assets", () => {
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("assets/bluebubbles-host")
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("RepairGuide.ouro/agent.json")

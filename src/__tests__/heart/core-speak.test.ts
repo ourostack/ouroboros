@@ -220,13 +220,9 @@ describe("speak interception in runAgent", () => {
     expect(callbacks.flushNow).not.toHaveBeenCalled()
     expect(callbacks.onTextChunk).not.toHaveBeenCalledWith("stale mid-turn reply")
     expect(callbacks.onTextChunk).toHaveBeenCalledWith("current final reply")
-    expect(messages).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        role: "tool",
-        tool_call_id: "call_speak_1",
-        content: expect.stringContaining("was not advertised"),
-      }),
-    ]))
+    expect(JSON.stringify(messages)).not.toContain("call_speak_1")
+    expect(JSON.stringify(mockCreate.mock.calls[1][0].messages)).toContain("call_speak_1")
+    expect(JSON.stringify(mockCreate.mock.calls[1][0].messages)).toContain("was not advertised")
     expect(mockEmitNervesEvent).toHaveBeenCalledWith(expect.objectContaining({
       event: "engine.unadvertised_tool_blocked",
       component: "engine",
@@ -260,7 +256,7 @@ describe("speak interception in runAgent", () => {
     expect(execTool).toHaveBeenCalledWith("read_file", { path: "/tmp/x" }, expect.anything())
   })
 
-  it("speak + settle in same response: settle rejected, speak runs, follow-up settle terminates", async () => {
+  it("A003 speak + settle rejects the entire batch before speech, then the sole settle terminates", async () => {
     // Iter 1: speak + settle (settle rejected by sole-call enforcement)
     mockCreate.mockReturnValueOnce(makeStream([
       makeChunk(undefined, [
@@ -278,14 +274,10 @@ describe("speak interception in runAgent", () => {
     })
 
     expect(result.outcome).toBe("settled")
-    // speak ran (text emitted + flushed + (spoken) tool result)
-    expect(callbacks.onTextChunk).toHaveBeenCalledWith("hi")
-    expect(callbacks.flushNow).toHaveBeenCalledTimes(1)
-    // settle was rejected with the SOLE_CALL_REJECTION message
-    const rejection = messages.find((m: any) =>
-      m.role === "tool" && typeof m.content === "string" && m.content.startsWith("rejected: settle must be the only tool call")
-    )
-    expect(rejection).toBeDefined()
+    expect(callbacks.onTextChunk).not.toHaveBeenCalledWith("hi")
+    expect(callbacks.flushNow).not.toHaveBeenCalled()
+    expect(JSON.stringify(messages)).not.toMatch(/call_speak_se|call_settle_se|rejected:/u)
+    expect(JSON.stringify(mockCreate.mock.calls[1][0].messages)).toContain("settle must be the only tool call")
   })
 
   it("empty message: no onTextChunk, no flushNow, error result, nerves engine.speak_invalid", async () => {
@@ -324,10 +316,9 @@ describe("speak interception in runAgent", () => {
     })
 
     expect(callbacks.flushNow).not.toHaveBeenCalled()
-    const errMsg = messages.find((m: any) =>
-      m.role === "tool" && m.content.includes("invalid tool arguments") && m.content.includes("message")
-    )
-    expect(errMsg).toBeDefined()
+    expect(JSON.stringify(messages)).not.toContain("invalid tool arguments")
+    expect(JSON.stringify(mockCreate.mock.calls[1][0].messages)).toContain("invalid tool arguments")
+    expect(JSON.stringify(mockCreate.mock.calls[1][0].messages)).toContain("message")
     expect(callbacks.onToolStart).not.toHaveBeenCalledWith("speak", expect.anything())
   })
 
@@ -342,10 +333,8 @@ describe("speak interception in runAgent", () => {
     })
 
     expect(callbacks.flushNow).not.toHaveBeenCalled()
-    const errMsg = messages.find((m: any) =>
-      m.role === "tool" && m.content.includes("invalid tool arguments: malformed JSON")
-    )
-    expect(errMsg).toBeDefined()
+    expect(JSON.stringify(messages)).not.toContain("invalid tool arguments")
+    expect(JSON.stringify(mockCreate.mock.calls[1][0].messages)).toContain("invalid tool arguments: malformed JSON")
     expect(callbacks.onToolStart).not.toHaveBeenCalledWith("speak", expect.anything())
   })
 

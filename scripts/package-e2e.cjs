@@ -123,12 +123,42 @@ function runLocalTarballAssetSmoke(input, deps = defaultDeps()) {
 
     const packageRoot = path.join(prefixDir, "node_modules", "@ouro.bot", "cli")
     const result = validatePackageAssets(packageRoot)
+    let repairOutput = ""
+    if (result.ok) {
+      repairOutput = deps.execFileSync(deps.execPath || process.execPath, [
+        "-e",
+        [
+          "const path = require('node:path')",
+          "const { spawnSync } = require('node:child_process')",
+          "const root = process.argv[1]",
+          "const repair = path.join(root, 'dist/heart/session-redaction-repair-cli-main.js')",
+          "const publicEntry = path.join(root, 'dist/heart/daemon/ouro-entry.js')",
+          "const options = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 30000, maxBuffer: 1048576 }",
+          "const privateResult = spawnSync(process.execPath, [repair, 'inspect', '--agent', 'not-sanctuary', '--session', '/unused', '--artifacts-dir', '/unused'], options)",
+          "if (privateResult.error || privateResult.status !== 2 || JSON.parse(privateResult.stdout.trim()).status !== 'refused') throw new Error('private repair refusal did not execute')",
+          "const help = spawnSync(process.execPath, [publicEntry, 'help'], options)",
+          "if (help.error || help.status !== 0 || /session-redaction-repair|a003-sanctuary-session-repair/.test(help.stdout + help.stderr)) throw new Error('private repair leaked into public help')",
+          "const route = spawnSync(process.execPath, [publicEntry, 'session-redaction-repair'], options)",
+          "if (route.error || /\\\"status\\\":\\\"(?:refused|inspected|applied|rolled_back)\\\"/.test(route.stdout)) throw new Error('public CLI reached private repair routing')",
+          "process.stdout.write('a003 private repair routing verified\\n')",
+        ].join("\n"),
+        packageRoot,
+      ], {
+        cwd: prefixDir,
+        env: localSmokeEnv(prefixDir, deps.env),
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "pipe"],
+      })
+    }
+    const repairVerified = repairOutput.includes("a003 private repair routing verified")
     return {
-      ok: result.ok,
+      ok: result.ok && repairVerified,
       binName: input.binName,
       resolvedPath: packageRoot,
-      output: "",
-      message: result.message,
+      output: repairOutput,
+      message: !result.ok ? result.message : repairVerified
+        ? `${result.message}; private repair routing verified`
+        : "installed private repair routing smoke failed",
     }
   } finally {
     deps.rmSync(prefixDir, { recursive: true, force: true })

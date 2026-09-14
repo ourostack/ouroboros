@@ -186,6 +186,26 @@ function makePackageRootWithRequiredAssets(): string {
 }
 
 describe("release-preflight", () => {
+  it("checks the required source asset before build without weakening packed-artifact validation", () => {
+    const packageRoot = makePackageRootWithRequiredAssets()
+    const compiled = path.join(packageRoot, "dist/heart/session-redaction-repair-cli-main.js")
+    const source = path.join(packageRoot, "src/heart/session-redaction-repair-cli-main.ts")
+    fs.unlinkSync(compiled)
+    fs.mkdirSync(path.dirname(source), { recursive: true })
+    fs.writeFileSync(source, "export {}")
+    try {
+      const result = runReleasePreflight({}, {
+        execSyncImpl: makeExecSyncImpl(),
+        readFileSyncImpl: makeReadFileSyncImpl(),
+        packageRoot,
+      })
+      expect(result.ok).toBe(true)
+      expect(result.messages.join("\n")).toContain("source checkout")
+      const { validatePackageAssets } = require(path.resolve(__dirname, "../../../scripts/package-assets.cjs"))
+      expect(validatePackageAssets(packageRoot).ok).toBe(false)
+    } finally { fs.rmSync(packageRoot, { recursive: true, force: true }) }
+  })
+
   it("flags releasable source and packaged skill changes but ignores src test churn", () => {
     expect(versionBumpRequired(["src/heart/daemon/daemon-cli.ts"])).toBe(true)
     expect(versionBumpRequired(["skills/work-planner/SKILL.md"])).toBe(true)

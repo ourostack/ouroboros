@@ -162,7 +162,7 @@ function main() {
   }
 
   // Install workspace deps before running workspace tests (root npm ci doesn't install them)
-  runNpm(["install", "--prefix", "packages/mailbox-ui"])
+  if (!process.argv.slice(2).includes("--skip-mailbox-ui-install")) runNpm(["install", "--prefix", "packages/mailbox-ui"])
   const mailboxUiTypecheckExit = runNpm(["run", "typecheck:mailbox-ui"]).status ?? 1
   if (mailboxUiTypecheckExit !== 0) {
     const summary = {

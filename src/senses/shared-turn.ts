@@ -13,7 +13,7 @@ import type { ApprovalSuspensionResult, ChannelCallbacks, RunAgentOutcome } from
 import { runAgent } from "../heart/core"
 import { getAgentRoot, setAgentName } from "../heart/identity"
 import { sanitizeKey } from "../heart/config"
-import { stampIngressRelations, stampIngressTime, type SessionEvent, type SessionIngressRelations } from "../heart/session-events"
+import { selectEffectiveSessionEvents, stampIngressRelations, stampIngressTime, type SessionEvent, type SessionIngressRelations } from "../heart/session-events"
 import { loadSession } from "../mind/context"
 import { buildSystem, flattenSystemPrompt } from "../mind/prompt"
 import { getChannelCapabilities, FriendResolver, FileFriendStore, accumulateFriendTokens } from "@ouro.bot/friends"
@@ -23,7 +23,7 @@ import { postTurnTrim, deferPostTurnPersist } from "../mind/context"
 import { enforceTrustGate } from "./trust-gate"
 import { handleInboundTurn, type InboundTurnInput } from "./pipeline"
 import { getSharedMcpManager } from "../repertoire/mcp-manager"
-import type { RuntimeMcpServers } from "../repertoire/mcp-manager"
+import type { McpOwner, RuntimeMcpServers } from "../repertoire/mcp-manager"
 import { emitNervesEvent } from "../nerves/runtime"
 import type { ToolContext } from "../repertoire/tools-base"
 import { readSessionTransaction, withSessionTurnLease, type SessionTurnLease } from "../mind/session-transaction"
@@ -36,9 +36,9 @@ const OUTWARD_DELIVERY_TOOL_ACKS = new Map([
   ["speak", "(spoken)"],
 ])
 
-async function releaseRuntimeMcpServersAfterTurn(): Promise<void> {
+async function releaseRuntimeMcpServersAfterTurn(owner: McpOwner): Promise<void> {
   const manager = await import("../repertoire/mcp-manager")
-  await manager.releaseRuntimeMcpServers()
+  await manager.releaseRuntimeMcpServers(owner)
 }
 
 /**
@@ -373,7 +373,7 @@ function currentIngressEventId(
 ): string | undefined {
   const reference = ingressRelations?.references[0]
   const carriesReference = (event: SessionEvent, expected: string): boolean => Array.isArray(event.relations?.references) && event.relations.references.includes(expected)
-  const matches = events.filter((event) => (
+  const matches = selectEffectiveSessionEvents(events).filter((event) => (
     event.role === "user"
     && event.content === userMessage
     && event.provenance?.captureKind === "live"
@@ -397,19 +397,30 @@ function exactProjectedIngressMessage(
   existing: NonNullable<ReturnType<typeof loadSession>>,
   messages: ChatCompletionMessageParam[],
   eventId: string,
+  nativeValue: unknown,
 ): ChatCompletionMessageParam | null {
+  if (!nativeValue || typeof nativeValue !== "object" || Array.isArray(nativeValue)) return null
+  const native = nativeValue as Record<string, unknown>
+  if (native.version !== 2 || !native.projection || typeof native.projection !== "object" || Array.isArray(native.projection)) return null
+  const projection = native.projection as Record<string, unknown>
+  if (!Array.isArray(projection.eventIds)) return null
+  // Authorization must inspect stored IDs before a reader filters unresolved entries.
+  const projectionIds = projection.eventIds.length > 0
+    ? projection.eventIds
+    : projection.trimmed === true ? [] : existing.projectionEventIds
   const eventsById = new Map(existing.events.map((event) => [event.id, event] as const))
   if (eventsById.size !== existing.events.length) return null
   const seenProjectionIds = new Set<string>()
+  const effectiveIds = new Set(selectEffectiveSessionEvents(existing.events).map((event) => event.id))
   const projectedEvents: SessionEvent[] = []
-  for (const projectedId of existing.projectionEventIds) {
+  for (const projectedId of projectionIds) {
     if (typeof projectedId !== "string" || !projectedId.trim() || seenProjectionIds.has(projectedId)) return null
     const event = eventsById.get(projectedId)
     if (!event) return null
     seenProjectionIds.add(projectedId)
-    projectedEvents.push(event)
+    if (effectiveIds.has(event.id)) projectedEvents.push(event)
   }
-  if (existing.projectionEventIds.filter((projectedId) => projectedId === eventId).length !== 1) return null
+  if (projectionIds.filter((projectedId) => projectedId === eventId).length !== 1) return null
   const projectedUsers = projectedEvents.filter((event) => event.role === "user")
   const providerUsers = messages.filter((message) => message.role === "user")
   if (projectedUsers.at(-1)?.id !== eventId || projectedUsers.length !== providerUsers.length) return null
@@ -451,19 +462,21 @@ export function getSenseSessionPath(agentName: string, friendId: string, channel
  */
 export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSenseTurnResult> {
   return withTurnExecutionLease(async () => {
-    setAgentName(options.agentName)
+    const owner = Object.freeze({ agentName: options.agentName, agentRoot: getAgentRoot(options.agentName) })
+    setAgentName(owner.agentName)
     try {
-      return await runSenseTurnExclusive(options)
+      return await runSenseTurnExclusive(options, owner)
     } finally {
       if (options.runtimeMcpServers && !options.disableTools) {
-        await releaseRuntimeMcpServersAfterTurn()
+        await releaseRuntimeMcpServersAfterTurn(owner)
       }
     }
   })
 }
 
-async function runSenseTurnExclusive(options: RunSenseTurnOptions): Promise<RunSenseTurnResult> {
-  const { agentName, channel, sessionKey, friendId, userMessage } = options
+async function runSenseTurnExclusive(options: RunSenseTurnOptions, owner: McpOwner): Promise<RunSenseTurnResult> {
+  const { channel, sessionKey, friendId, userMessage } = options
+  const { agentName, agentRoot } = owner
 
   emitNervesEvent({
     component: "senses",
@@ -473,7 +486,6 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions): Promise<RunS
   })
 
   // Resolve context
-  const agentRoot = getAgentRoot(agentName)
   const friendsPath = path.join(agentRoot, "friends")
   const friendStore = new FileFriendStore(friendsPath)
   const capabilities = getChannelCapabilities(channel)
@@ -515,9 +527,7 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions): Promise<RunS
   // Runtime MCP servers (e.g. Workbench's ouro_workbench) are passed per-turn for THIS agent only.
   const mcpManager = options.disableTools
     ? undefined
-    : await getSharedMcpManager(
-      options.runtimeMcpServers ? { runtimeServers: options.runtimeMcpServers } : undefined,
-    ) ?? undefined
+    : await getSharedMcpManager({ ...owner, runtimeServers: options.runtimeMcpServers }) ?? undefined
 
   // Session path and loading
   const ephemeralRoot = options.disablePersistence
@@ -532,13 +542,14 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions): Promise<RunS
   const runWithLease = options._withSessionTurnLease ?? withSessionTurnLease
   try {
   return await runWithLease(sessPath, async (sessionTurnLease) => {
-  const baseSessionRevision = readSessionTransaction(sessPath, sessionTurnLease).revision
+  const baseSession = readSessionTransaction(sessPath, sessionTurnLease)
+  const baseSessionRevision = baseSession.revision
   const existing = options.disablePersistence ? undefined : loadSession(sessPath)
   const precommittedIngressEvent = options.precommittedIngress
     ? existing?.events?.find((candidate) => candidate.id === options.precommittedIngress!.eventId)
     : undefined
   if (options.precommittedIngress) {
-    const latestUserEvent = existing?.events?.filter((candidate) => candidate.role === "user").at(-1)
+    const latestUserEvent = selectEffectiveSessionEvents(existing?.events ?? []).filter((candidate) => candidate.role === "user").at(-1)
     if (!precommittedIngressEvent || precommittedIngressEvent !== latestUserEvent || precommittedIngressEvent.role !== "user" || precommittedIngressEvent.content !== userMessage
       || !precommittedIngressEvent.relations.references.includes(options.precommittedIngress.reference)) {
       throw new Error("shared turn precommitted ingress is missing, mismatched, or no longer current")
@@ -559,7 +570,7 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions): Promise<RunS
       )),
     }]
   if (precommittedIngressEvent) {
-    const projectedIngress = exactProjectedIngressMessage(existing!, sessionMessages, precommittedIngressEvent.id)
+    const projectedIngress = exactProjectedIngressMessage(existing!, sessionMessages, precommittedIngressEvent.id, baseSession.value)
     if (!projectedIngress || projectedIngress.role !== "user" || projectedIngress.content !== userMessage) throw new Error("shared turn precommitted ingress is absent from the provider projection")
     stampIngressRelations(projectedIngress, {
       replyToEventId: precommittedIngressEvent.relations.replyToEventId,
@@ -713,6 +724,8 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions): Promise<RunS
       toolContext: {
         signin: async () => undefined,
         ...(options.toolContext ? options.toolContext as ToolContext : {}),
+        agentName,
+        agentRoot,
         currentUserMessage: userMessage,
       },
     },

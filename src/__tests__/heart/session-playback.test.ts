@@ -4,6 +4,7 @@ import * as path from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 import { formatPlaybackReport, runSessionPlayback } from "../../heart/session-playback"
 import { runSessionPlaybackCli } from "../../heart/session-playback-cli"
+import { a003Pair } from "../fixtures/a003-session"
 
 const tempFiles: string[] = []
 
@@ -21,6 +22,14 @@ afterEach(() => {
 })
 
 describe("runSessionPlayback", () => {
+  it("A003 playback consumes effective messages without rewriting the raw audit pair", () => {
+    const { envelope } = a003Pair()
+    const sessionPath = tempFile(envelope)
+    const before = fs.readFileSync(sessionPath, "utf8")
+    expect(runSessionPlayback({ sessionPath })).toMatchObject({ envelopeShape: "v2", inputMessageCount: 2, sanitizedMessageCount: 2, changes: [] })
+    expect(fs.readFileSync(sessionPath, "utf8")).toBe(before)
+    expect(JSON.parse(before).events).toHaveLength(4)
+  })
   it("reports zero changes for a clean legacy envelope", () => {
     const sessionPath = tempFile({
       version: 1,

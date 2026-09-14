@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest"
 
+const OWNER = Object.freeze({ agentName: "test", agentRoot: "/tmp/agent" })
+
 /**
  * Workbench runtime-injection: per-turn, per-agent MCP override.
  *
@@ -67,15 +69,15 @@ describe("getSharedMcpManager + runtime Workbench MCP injection", () => {
     const { connects } = mockManagerDeps()
 
     const mod = await import("../../repertoire/mcp-manager")
-    const manager = await mod.getSharedMcpManager({ runtimeServers: WORKBENCH_RUNTIME })
+    const manager = await mod.getSharedMcpManager({ ...OWNER, runtimeServers: WORKBENCH_RUNTIME })
     expect(manager).not.toBeNull()
 
     // Both the builtin server and the runtime-injected Workbench MCP are live.
     expect(connects.sort()).toEqual(["/Apps/OuroWorkbenchMCP", "builtin-calc"])
-    const servers = manager!.listAllTools().map((e) => e.server).sort()
+    const servers = manager!.entries.map((e) => e.server).sort()
     expect(servers).toEqual(["calc", "ouro_workbench"])
 
-    mod.resetSharedMcpManager()
+    await mod.resetSharedMcpManager()
   })
 
   it("runtime server takes highest precedence over a colliding builtin", async () => {
@@ -110,12 +112,12 @@ describe("getSharedMcpManager + runtime Workbench MCP injection", () => {
     }))
 
     const mod = await import("../../repertoire/mcp-manager")
-    const manager = await mod.getSharedMcpManager({ runtimeServers: WORKBENCH_RUNTIME })
+    const manager = await mod.getSharedMcpManager({ ...OWNER, runtimeServers: WORKBENCH_RUNTIME })
     expect(manager).not.toBeNull()
     // Only the runtime command is spawned; the stale disk path is overridden.
     expect(connects).toEqual(["/Apps/OuroWorkbenchMCP"])
 
-    mod.resetSharedMcpManager()
+    await mod.resetSharedMcpManager()
   })
 
   it("reconnects an existing stale builtin when a runtime override arrives later", async () => {
@@ -159,18 +161,18 @@ describe("getSharedMcpManager + runtime Workbench MCP injection", () => {
     }))
 
     const mod = await import("../../repertoire/mcp-manager")
-    await mod.getSharedMcpManager()
+    await mod.getSharedMcpManager(OWNER)
     closeHandlers[0]?.()
-    await mod.getSharedMcpManager({ runtimeServers: WORKBENCH_RUNTIME })
+    await mod.getSharedMcpManager({ ...OWNER, runtimeServers: WORKBENCH_RUNTIME })
     await vi.runAllTimersAsync()
 
     expect(connects).toEqual(["stale-disk-path", "/Apps/OuroWorkbenchMCP"])
     expect(shutdowns).toEqual(["stale-disk-path"])
 
-    mod.resetSharedMcpManager()
+    await mod.resetSharedMcpManager()
   })
 
-  it("reconnects identical server configs when the owning agent changes", async () => {
+  it("keeps distinct clients for identical configs owned by different agents", async () => {
     vi.resetModules()
     const connects: string[] = []
     const shutdowns: string[] = []
@@ -210,14 +212,17 @@ describe("getSharedMcpManager + runtime Workbench MCP injection", () => {
     }))
 
     const mod = await import("../../repertoire/mcp-manager")
-    await mod.getSharedMcpManager()
+    const first = await mod.getSharedMcpManager({ agentName, agentRoot: `/tmp/${agentName}` })
     agentName = "agent-b"
-    await mod.getSharedMcpManager()
+    const second = await mod.getSharedMcpManager({ agentName, agentRoot: `/tmp/${agentName}` })
 
     expect(connects).toEqual(["agent-a:same-command", "agent-b:same-command"])
-    expect(shutdowns).toEqual(["agent-a:same-command"])
+    expect(shutdowns).toEqual([])
+    expect(first!.owner.agentName).toBe("agent-a")
+    expect(second!.owner.agentName).toBe("agent-b")
+    expect(first!.manager).toBe(second!.manager)
 
-    mod.resetSharedMcpManager()
+    await mod.resetSharedMcpManager()
   })
 
   it("runtime server overrides a colliding PLUGIN server and surfaces un-namespaced", async () => {
@@ -253,16 +258,16 @@ describe("getSharedMcpManager + runtime Workbench MCP injection", () => {
     }))
 
     const mod = await import("../../repertoire/mcp-manager")
-    const manager = await mod.getSharedMcpManager({ runtimeServers: WORKBENCH_RUNTIME })
+    const manager = await mod.getSharedMcpManager({ ...OWNER, runtimeServers: WORKBENCH_RUNTIME })
     expect(manager).not.toBeNull()
     // Runtime command wins over the plugin's command.
     expect(connects).toEqual(["/Apps/OuroWorkbenchMCP"])
-    const entry = manager!.listAllTools().find((e) => e.server === "ouro_workbench")
+    const entry = manager!.entries.find((e) => e.server === "ouro_workbench")
     expect(entry).toBeTruthy()
     // pluginId cleared → surfaces as a builtin-style (un-namespaced) tool.
     expect((entry as { pluginId?: string }).pluginId).toBeUndefined()
 
-    mod.resetSharedMcpManager()
+    await mod.resetSharedMcpManager()
   })
 
   // ── THE load-bearing isolation / no-leak test ──
@@ -272,38 +277,40 @@ describe("getSharedMcpManager + runtime Workbench MCP injection", () => {
 
     const mod = await import("../../repertoire/mcp-manager")
 
-    // Turn 1 — agent A carries runtimeServers → ouro_workbench connected.
-    const turnA = await mod.getSharedMcpManager({ runtimeServers: WORKBENCH_RUNTIME })
+    // The first turn carries its owner's runtime override.
+    const turnA = await mod.getSharedMcpManager({ ...OWNER, runtimeServers: WORKBENCH_RUNTIME })
     expect(turnA).not.toBeNull()
-    expect(turnA!.listAllTools().map((e) => e.server).sort()).toEqual(["calc", "ouro_workbench"])
+    expect(turnA!.entries.map((e) => e.server).sort()).toEqual(["calc", "ouro_workbench"])
     expect(connects.sort()).toEqual(["/Apps/OuroWorkbenchMCP", "builtin-calc"])
 
-    // Turn 2 — agent B's turn (same daemon, same singleton) WITHOUT runtimeServers.
-    // The runtime server must be torn down and absent: no cross-agent leak.
-    const turnB = await mod.getSharedMcpManager()
-    expect(turnB).toBe(turnA) // same process-wide singleton
-    const turnBServers = turnB!.listAllTools().map((e) => e.server).sort()
-    expect(turnBServers).toEqual(["calc"]) // ASSERTION: ouro_workbench is GONE for agent B
+    // The next turn of this same owner omits the override.
+    const turnB = await mod.getSharedMcpManager(OWNER)
+    expect(turnB!.manager).toBe(turnA!.manager)
+    expect(turnB).not.toBe(turnA)
+    const turnBServers = turnB!.entries.map((e) => e.server).sort()
+    expect(turnBServers).toEqual(["calc"])
     expect(turnBServers).not.toContain("ouro_workbench")
+    expect(turnA!.entries.map((entry) => entry.server)).toContain("ouro_workbench")
     expect(shutdowns).toEqual(["/Apps/OuroWorkbenchMCP"]) // explicitly torn down
 
-    mod.resetSharedMcpManager()
+    await mod.resetSharedMcpManager()
   })
 
   it("releases runtime-only servers when the frontend turn ends", async () => {
     vi.resetModules()
     const { shutdowns } = mockManagerDeps()
     const mod = await import("../../repertoire/mcp-manager")
-    const manager = await mod.getSharedMcpManager({ runtimeServers: WORKBENCH_RUNTIME })
+    const manager = await mod.getSharedMcpManager({ ...OWNER, runtimeServers: WORKBENCH_RUNTIME })
 
-    await mod.releaseRuntimeMcpServers()
+    await mod.releaseRuntimeMcpServers(OWNER)
 
-    expect(manager!.listAllTools().map((entry) => entry.server)).toEqual(["calc"])
+    expect(manager!.manager.listAllTools(OWNER).map((entry) => entry.server)).toEqual(["calc"])
+    expect(manager!.entries.map((entry) => entry.server)).toEqual(["calc", "ouro_workbench"])
     expect(shutdowns).toEqual(["/Apps/OuroWorkbenchMCP"])
-    mod.resetSharedMcpManager()
+    await mod.resetSharedMcpManager()
   })
 
-  it("drops the shared manager when release reconciliation fails", async () => {
+  it("clears the owner's live servers when release reconciliation fails", async () => {
     vi.resetModules()
     let failReconcile = false
     const McpClientMock = class {
@@ -333,15 +340,16 @@ describe("getSharedMcpManager + runtime Workbench MCP injection", () => {
     }))
 
     const mod = await import("../../repertoire/mcp-manager")
-    const manager = await mod.getSharedMcpManager()
+    const manager = await mod.getSharedMcpManager(OWNER)
     failReconcile = true
-    await mod.releaseRuntimeMcpServers()
-    expect(manager!.listAllTools()).toEqual([])
-    await expect(mod.releaseRuntimeMcpServers()).resolves.toBeUndefined()
-    mod.resetSharedMcpManager()
+    await mod.releaseRuntimeMcpServers(OWNER)
+    expect(manager!.manager.listAllTools(OWNER)).toEqual([])
+    expect(manager!.entries.map((entry) => entry.server)).toEqual(["calc"])
+    await expect(mod.releaseRuntimeMcpServers(OWNER)).resolves.toBeUndefined()
+    await mod.resetSharedMcpManager()
   })
 
-  it("shuts down a connection superseded while it is starting", async () => {
+  it("serializes replacement after a pending connection and preserves its first frozen view", async () => {
     vi.resetModules()
     const firstEntered = Promise.withResolvers<void>()
     const releaseFirst = Promise.withResolvers<void>()
@@ -381,21 +389,23 @@ describe("getSharedMcpManager + runtime Workbench MCP injection", () => {
 
     const { McpManager } = await import("../../repertoire/mcp-manager")
     const manager = new McpManager()
-    const starting = manager.start({ shared: { command: "first" } })
+    const starting = manager.start(OWNER, { shared: { command: "first" } })
     await firstEntered.promise
     configuredCommand = "second"
-    await manager.reconcile()
+    const reconciling = manager.reconcile(OWNER)
+    expect(connects).toEqual(["first"])
     releaseFirst.resolve()
-    await starting
+    const [first, second] = await Promise.all([starting, reconciling])
 
     expect(connects).toEqual(["first", "second"])
-    expect(shutdowns).toEqual(["first", "first"])
-    expect(manager.listAllTools().map((entry) => entry.server)).toEqual(["shared"])
-    manager.shutdown()
+    expect(shutdowns).toEqual(["first"])
+    expect(first!.entries[0].generation).not.toBe(second!.entries[0].generation)
+    expect(manager.listAllTools(OWNER).map((entry) => entry.server)).toEqual(["shared"])
+    await manager.shutdown()
   })
 
   it.each(["resolve", "reject"] as const)(
-    "keeps the newer server when superseded vault resolution settles by %s",
+    "keeps the newer desired server after queued vault resolution settles by %s",
     async (outcome) => {
       vi.resetModules()
       const vaultEntered = Promise.withResolvers<void>()
@@ -436,24 +446,25 @@ describe("getSharedMcpManager + runtime Workbench MCP injection", () => {
 
       const { McpManager } = await import("../../repertoire/mcp-manager")
       const manager = new McpManager()
-      const stale = manager.start({
+      const stale = manager.start(OWNER, {
         shared: {
           command: "first",
           env: { TOKEN: "vault:service/token" },
         },
       })
       await vaultEntered.promise
-      await manager.start({ shared: { command: "second" } })
+      const newer = manager.start(OWNER, { shared: { command: "second" } })
+      expect(connects).toEqual([])
       if (outcome === "resolve") {
         vault.resolve("stale-secret")
       } else {
         vault.reject(new Error("stale vault failure"))
       }
-      await stale
+      await Promise.all([stale, newer])
 
-      expect(connects).toEqual(["second"])
-      expect(manager.listAllTools().map((entry) => entry.server)).toEqual(["shared"])
-      manager.shutdown()
+      expect(connects).toEqual(outcome === "resolve" ? ["first", "second"] : ["second"])
+      expect(manager.listAllTools(OWNER).map((entry) => entry.server)).toEqual(["shared"])
+      await manager.shutdown()
     },
   )
 
@@ -464,18 +475,18 @@ describe("getSharedMcpManager + runtime Workbench MCP injection", () => {
     const mod = await import("../../repertoire/mcp-manager")
 
     // Turn 1 with runtime → present.
-    const t1 = await mod.getSharedMcpManager({ runtimeServers: WORKBENCH_RUNTIME })
-    expect(t1!.listAllTools().map((e) => e.server).sort()).toEqual(["calc", "ouro_workbench"])
+    const t1 = await mod.getSharedMcpManager({ ...OWNER, runtimeServers: WORKBENCH_RUNTIME })
+    expect(t1!.entries.map((e) => e.server).sort()).toEqual(["calc", "ouro_workbench"])
 
     // Turn 2 without runtime → gone.
-    await mod.getSharedMcpManager()
+    await mod.getSharedMcpManager(OWNER)
     expect(shutdowns).toEqual(["/Apps/OuroWorkbenchMCP"])
 
     // Turn 3 with runtime again → re-connected (boss sends the flag every turn).
-    const t3 = await mod.getSharedMcpManager({ runtimeServers: WORKBENCH_RUNTIME })
-    expect(t3!.listAllTools().map((e) => e.server).sort()).toEqual(["calc", "ouro_workbench"])
+    const t3 = await mod.getSharedMcpManager({ ...OWNER, runtimeServers: WORKBENCH_RUNTIME })
+    expect(t3!.entries.map((e) => e.server).sort()).toEqual(["calc", "ouro_workbench"])
 
-    mod.resetSharedMcpManager()
+    await mod.resetSharedMcpManager()
   })
 
   it("reconcile fails closed when merged configuration cannot be rebuilt", async () => {
@@ -513,14 +524,14 @@ describe("getSharedMcpManager + runtime Workbench MCP injection", () => {
     }))
 
     const mod = await import("../../repertoire/mcp-manager")
-    const manager = await mod.getSharedMcpManager({ runtimeServers: WORKBENCH_RUNTIME })
+    const manager = await mod.getSharedMcpManager({ ...OWNER, runtimeServers: WORKBENCH_RUNTIME })
     expect(manager).not.toBeNull()
     expect(connects.sort()).toEqual(["/Apps/OuroWorkbenchMCP", "builtin-calc"])
 
-    await expect(mod.getSharedMcpManager({ runtimeServers: WORKBENCH_RUNTIME })).resolves.toBeNull()
-    expect(manager!.listAllTools()).toEqual([])
+    await expect(mod.getSharedMcpManager({ ...OWNER, runtimeServers: WORKBENCH_RUNTIME })).resolves.toBeNull()
+    expect(manager!.manager.listAllTools(OWNER)).toEqual([])
 
-    mod.resetSharedMcpManager()
+    await mod.resetSharedMcpManager()
   })
 
   it("reconcile fails closed for a non-Error configuration failure", async () => {
@@ -555,12 +566,12 @@ describe("getSharedMcpManager + runtime Workbench MCP injection", () => {
     }))
 
     const mod = await import("../../repertoire/mcp-manager")
-    const manager = await mod.getSharedMcpManager({ runtimeServers: WORKBENCH_RUNTIME })
+    const manager = await mod.getSharedMcpManager({ ...OWNER, runtimeServers: WORKBENCH_RUNTIME })
     expect(manager).not.toBeNull()
-    await expect(mod.getSharedMcpManager({ runtimeServers: WORKBENCH_RUNTIME })).resolves.toBeNull()
-    expect(manager!.listAllTools()).toEqual([])
+    await expect(mod.getSharedMcpManager({ ...OWNER, runtimeServers: WORKBENCH_RUNTIME })).resolves.toBeNull()
+    expect(manager!.manager.listAllTools(OWNER)).toEqual([])
 
-    mod.resetSharedMcpManager()
+    await mod.resetSharedMcpManager()
   })
 
   it("repeated turns that both carry runtimeServers keep ouro_workbench stable (no churn)", async () => {
@@ -569,16 +580,16 @@ describe("getSharedMcpManager + runtime Workbench MCP injection", () => {
 
     const mod = await import("../../repertoire/mcp-manager")
 
-    await mod.getSharedMcpManager({ runtimeServers: WORKBENCH_RUNTIME })
+    await mod.getSharedMcpManager({ ...OWNER, runtimeServers: WORKBENCH_RUNTIME })
     expect(connects.sort()).toEqual(["/Apps/OuroWorkbenchMCP", "builtin-calc"])
 
     // Second turn ALSO carries runtime — the server must NOT be torn down and
     // re-created (no per-turn churn for the same agent).
-    await mod.getSharedMcpManager({ runtimeServers: WORKBENCH_RUNTIME })
+    await mod.getSharedMcpManager({ ...OWNER, runtimeServers: WORKBENCH_RUNTIME })
     expect(shutdowns).toEqual([]) // no churn
     // No duplicate reconnect of the runtime server.
     expect(connects.filter((c) => c === "/Apps/OuroWorkbenchMCP")).toEqual(["/Apps/OuroWorkbenchMCP"])
 
-    mod.resetSharedMcpManager()
+    await mod.resetSharedMcpManager()
   })
 })

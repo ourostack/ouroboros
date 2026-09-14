@@ -1,5 +1,309 @@
 import { describe, expect, it, vi } from "vitest"
 import type OpenAI from "openai"
+import { a003Event, a003Marker, a003Pair, A003_AT } from "../fixtures/a003-session"
+import type { SessionEvent } from "../../heart/session-events"
+
+describe("D006 native source metadata", () => {
+  it("keeps new untagged assistant text during normalization without serializing native origins", async () => {
+    const { projectProviderMessages, sanitizeProviderMessages } = await import("../../heart/session-events")
+    const { envelope } = a003Pair()
+    const historical = projectProviderMessages(envelope)[1]!
+    const combined = sanitizeProviderMessages([historical, { role: "assistant", content: "A newly generated continuation." }])
+    expect(combined).toHaveLength(1)
+    expect(combined[0]!.content).toContain("accepted answer")
+    expect(combined[0]!.content).toContain("A newly generated continuation.")
+    expect(Object.keys(combined[0]!).sort()).toEqual(["content", "role"])
+    expect(JSON.stringify(combined)).not.toContain("evt-")
+  })
+})
+
+describe("A003 strict raw redaction authority", () => {
+  async function api() {
+    return await import("../../heart/session-events") as typeof import("../../heart/session-events") & {
+      isExactRawSessionRedactionMarker(candidate: unknown, events: unknown[]): boolean
+      selectEffectiveSessionEvents(events: SessionEvent[]): SessionEvent[]
+    }
+  }
+
+  it("accepts only the exact raw migration pair and leaves both raw values intact", async () => {
+    const { target, marker, envelope } = a003Pair()
+    const before = structuredClone(envelope)
+    const { isExactRawSessionRedactionMarker, selectEffectiveSessionEvents, parseSessionEnvelope } = await api()
+    expect(isExactRawSessionRedactionMarker(marker, envelope.events)).toBe(true)
+    expect(selectEffectiveSessionEvents(envelope.events).map((event) => event.id)).toEqual(["evt-000001", "evt-000002"])
+    const parsed = parseSessionEnvelope(envelope)!
+    expect(parsed.events).toEqual(before.events)
+    expect(parsed.events).toContainEqual(target)
+    expect(parsed.events).toContainEqual(marker)
+    expect(envelope).toEqual(before)
+  })
+
+  it("refuses an otherwise exact marker that is absent from the raw document", async () => {
+    const { marker, envelope } = a003Pair()
+    const { isExactRawSessionRedactionMarker } = await api()
+    expect(isExactRawSessionRedactionMarker(marker, envelope.events.slice(0, -1))).toBe(false)
+  })
+
+  const markerMutations: Array<[string, unknown]> = [
+    ["id", ""], ["id", " "], ["id", 4], ["sequence", 0], ["sequence", -1], ["sequence", 2.5], ["sequence", "4"],
+    ["role", "developer"], ["role", "user"], ["role", "assistant"], ["role", null],
+    ["content", ""], ["content", "hidden payload"], ["content", []], ["name", ""], ["name", "migration"],
+    ["toolCallId", ""], ["toolCalls", [{}]], ["toolCalls", null], ["attachments", ["secret"]], ["attachments", null],
+    ["time.authoredAt", A003_AT], ["time.observedAt", A003_AT], ["time.recordedAt", ""],
+    ["time.recordedAt", "not-a-time"], ["time.recordedAt", "2026-09-07"], ["time.recordedAt", 0],
+    ["time.authoredAtSource", "local"], ["time.observedAtSource", "ingest"], ["time.recordedAtSource", "save"],
+    ["time.authoredAtSource", null], ["time.observedAtSource", true], ["time.recordedAtSource", "MIGRATION"],
+    ["relations.replyToEventId", "evt-000001"], ["relations.threadRootEventId", "evt-000001"],
+    ["relations.references", ["evt-000001"]], ["relations.toolCallId", "call-x"],
+    ["relations.supersedesEventId", "evt-000001"], ["relations.redactsEventId", "evt-000004"],
+    ["relations.redactsEventId", "absent"], ["relations.redactsEventId", ""], ["relations.redactsEventId", 3],
+    ["provenance.captureKind", "live"], ["provenance.captureKind", "synthetic"], ["provenance.captureKind", null],
+    ["provenance.legacyVersion", null], ["provenance.legacyVersion", 1], ["provenance.legacyVersion", "2"],
+    ["provenance.sourceMessageIndex", 3], ["provenance.sourceMessageIndex", "3"],
+    ["extra", "unknown"], ["time.extra", true], ["relations.extra", true], ["provenance.extra", true],
+  ]
+  const originalMarker = a003Pair().marker
+  for (const key of Object.keys(originalMarker)) markerMutations.push([key, undefined])
+  for (const section of ["time", "relations", "provenance"] as const) {
+    for (const key of Object.keys(originalMarker[section])) markerMutations.push([`${section}.${key}`, undefined])
+  }
+
+  function change(value: unknown, field: string, replacement: unknown): void {
+    const keys = field.split(".")
+    let owner = value as Record<string, unknown>
+    for (const key of keys.slice(0, -1)) owner = owner[key] as Record<string, unknown>
+    const key = keys.at(-1)!
+    if (replacement === undefined) delete owner[key]
+    else owner[key] = replacement
+  }
+
+  it.each(markerMutations)("refuses raw marker %s = %j without normalization granting authority", async (field, replacement) => {
+    const { envelope, marker, target } = a003Pair()
+    change(marker, field, replacement)
+    const { isExactRawSessionRedactionMarker, parseSessionEnvelope, selectEffectiveSessionEvents } = await api()
+    expect(isExactRawSessionRedactionMarker(marker, envelope.events)).toBe(false)
+    const parsed = parseSessionEnvelope(envelope)!
+    expect(selectEffectiveSessionEvents(parsed.events).some((event) => event.id === target.id)).toBe(true)
+    expect(parsed.events.every((event) => event.relations.redactsEventId === null)).toBe(true)
+    const fs = await import("node:fs")
+    const os = await import("node:os")
+    const path = await import("node:path")
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "a003-marker-mutation-"))
+    const file = path.join(root, "session.json")
+    const bytes = JSON.stringify(envelope)
+    fs.writeFileSync(file, bytes)
+    try {
+      const { loadSessionEnvelopeFile } = await api()
+      const loaded = loadSessionEnvelopeFile(file)!
+      expect(selectEffectiveSessionEvents(loaded.events).map((event) => event.id)).toEqual(["evt-000001", "evt-000002", target.id, typeof marker.id === "string" ? marker.id : "evt-000004"])
+      expect(fs.readFileSync(file, "utf8")).toBe(bytes)
+    } finally { fs.rmSync(root, { recursive: true, force: true }) }
+  })
+
+  const targetMutations: Array<[string, unknown]> = [
+    ["content", "[just now] engine-only correction"], ["content", 99],
+    ["role", "developer"], ["role", "assistant"], ["role", "tool"], ["role", null],
+    ["id", ""], ["id", " "], ["sequence", 0], ["sequence", 4], ["sequence", "3"],
+    ["toolCalls", [{ id: "call-x", function: { name: "final_answer", arguments: {} } }]],
+    ["attachments", [1]], ["relations.references", [1]], ["relations.redactsEventId", "evt-000001"],
+    ["time.recordedAt", "bad"], ["time.observedAt", false], ["time.observedAtSource", "invented"],
+    ["provenance.captureKind", "invented"], ["provenance.sourceMessageIndex", "3"], ["extra", true],
+    ["time.extra", true], ["relations.extra", true], ["provenance.extra", true],
+  ]
+  const originalTarget = a003Pair().target
+  for (const key of Object.keys(originalTarget)) targetMutations.push([key, undefined])
+  for (const section of ["time", "relations", "provenance"] as const) {
+    for (const key of Object.keys(originalTarget[section])) targetMutations.push([`${section}.${key}`, undefined])
+  }
+  it.each(targetMutations)("refuses a non-lossless or invalid raw target %s = %j", async (field, replacement) => {
+    const { target, marker, envelope } = a003Pair()
+    change(target, field as string, replacement)
+    const { isExactRawSessionRedactionMarker, selectEffectiveSessionEvents, parseSessionEnvelope } = await api()
+    expect(isExactRawSessionRedactionMarker(marker, envelope.events)).toBe(false)
+    const parsed = parseSessionEnvelope(envelope)!
+    const targetId = typeof target.id === "string" ? target.id : "evt-000003"
+    expect(parsed.events).toHaveLength(4)
+    expect(selectEffectiveSessionEvents(parsed.events).map((event) => event.id)).toEqual(["evt-000001", "evt-000002", targetId, marker.id])
+    expect(parsed.events.every((event) => event.relations.redactsEventId === null)).toBe(true)
+    const fs = await import("node:fs")
+    const os = await import("node:os")
+    const path = await import("node:path")
+    const nerves = await import("../../nerves/runtime")
+    const warning = vi.spyOn(nerves, "emitNervesEvent")
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "a003-target-mutation-"))
+    const file = path.join(root, "session.json")
+    const bytes = JSON.stringify(envelope)
+    fs.writeFileSync(file, bytes)
+    try {
+      const { loadSessionEnvelopeFile } = await api()
+      const loaded = loadSessionEnvelopeFile(file)!
+      expect(selectEffectiveSessionEvents(loaded.events).map((event) => event.id)).toEqual(["evt-000001", "evt-000002", targetId, marker.id])
+      expect(fs.readFileSync(file, "utf8")).toBe(bytes)
+      const warnings = warning.mock.calls.filter(([event]) => event.event === "session.redaction_marker_invalid")
+      expect(warnings).toHaveLength(1)
+      expect(JSON.stringify(warnings)).not.toContain("engine-only correction")
+      expect(JSON.stringify(warnings).length).toBeLessThan(1024)
+    } finally { warning.mockRestore(); fs.rmSync(root, { recursive: true, force: true }) }
+  })
+
+  it.each([null, false, 1, "marker", [], {}].map((candidate) => ({ candidate })))("refuses a scalar/null/array raw candidate $candidate", async ({ candidate }) => {
+    const { envelope } = a003Pair()
+    const { isExactRawSessionRedactionMarker } = await api()
+    expect(isExactRawSessionRedactionMarker(candidate, envelope.events)).toBe(false)
+    expect(isExactRawSessionRedactionMarker(envelope.events[3], [null, ...envelope.events])).toBe(false)
+  })
+
+  it.each(["later", "document-order", "duplicate-id", "duplicate-sequence", "conflicting-marker", "chained", "unrelated-duplicate", "missing"])(
+    "refuses %s relations before deduplication or normalization",
+    async (kind) => {
+      const { target, marker, envelope } = a003Pair()
+      if (kind === "later") { target.sequence = 5; envelope.events = [envelope.events[0]!, envelope.events[1]!, marker, target] }
+      if (kind === "document-order") envelope.events = [envelope.events[0]!, envelope.events[1]!, marker, target]
+      if (kind === "duplicate-id") envelope.events.push({ ...structuredClone(target), sequence: 5 })
+      if (kind === "duplicate-sequence") envelope.events.push({ ...a003Event(5, "assistant", "duplicate"), sequence: target.sequence })
+      if (kind === "conflicting-marker") envelope.events.push(a003Marker(target, 5))
+      if (kind === "chained") target.relations.redactsEventId = envelope.events[0]!.id
+      if (kind === "unrelated-duplicate") envelope.events.push({ ...a003Event(5, "user", "duplicate"), id: envelope.events[0]!.id })
+      if (kind === "missing") envelope.events.splice(2, 1)
+      const { isExactRawSessionRedactionMarker, parseSessionEnvelope, selectEffectiveSessionEvents } = await api()
+      expect(isExactRawSessionRedactionMarker(marker, envelope.events)).toBe(false)
+      const parsed = parseSessionEnvelope(envelope)!
+      expect(parsed.events.every((event) => event.relations.redactsEventId === null)).toBe(true)
+      expect(selectEffectiveSessionEvents(parsed.events)).toEqual(parsed.events)
+      const ids = envelope.events.map((event) => event.id)
+      expect(parsed.events.map((event) => ({ id: event.id, role: event.role, content: event.content }))).toEqual(envelope.events.filter((event, index) => ids.lastIndexOf(event.id) === index).map((event) => ({ id: event.id, role: event.role, content: event.content })))
+    },
+  )
+
+  it.each([false, true])("loads a real raw file without writing its bytes (invalid=%s)", async (invalid) => {
+    const fs = await import("node:fs")
+    const os = await import("node:os")
+    const path = await import("node:path")
+    const nerves = await import("../../nerves/runtime")
+    const warning = vi.spyOn(nerves, "emitNervesEvent")
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "a003-raw-load-"))
+    const file = path.join(dir, "session.json")
+    const { envelope, marker, target } = a003Pair()
+    if (invalid) { marker.role = "user"; marker.content = "PRIVATE VALUE MUST NEVER BE LOGGED"; envelope.events.push(a003Marker(target, 5)) }
+    const bytes = JSON.stringify(envelope, null, 2)
+    fs.writeFileSync(file, bytes)
+    try {
+      const { loadSessionEnvelopeFile, selectEffectiveSessionEvents } = await api()
+      const parsed = loadSessionEnvelopeFile(file)!
+      expect(selectEffectiveSessionEvents(parsed.events).some((event) => event.id === target.id)).toBe(invalid)
+      expect(fs.readFileSync(file, "utf8")).toBe(bytes)
+      const warnings = warning.mock.calls.filter(([event]) => event.event === "session.redaction_marker_invalid")
+      expect(warnings).toHaveLength(invalid ? 1 : 0)
+      expect(JSON.stringify(warnings)).not.toContain("PRIVATE VALUE")
+      expect(JSON.stringify(warnings).length).toBeLessThan(1024)
+    } finally { warning.mockRestore(); fs.rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it("aligns provider projection, timestamp view, chronology, and derived structured outputs", async () => {
+    const { envelope, target, marker } = a003Pair()
+    const answer = envelope.events[1]!
+    answer.id = "evt-000003"; answer.sequence = 3
+    target.id = "evt-000002"; target.sequence = 2
+    marker.relations.redactsEventId = target.id
+    envelope.events = [envelope.events[0]!, target, answer, marker]
+    envelope.projection.eventIds = envelope.events.map((event) => event.id)
+    answer.content = "Accepted choices:\n1. First\n2. Second"
+    envelope.structuredOutputs = [{
+      schemaVersion: 1, id: "forged", kind: "ordered_list", sourceEventId: target.id, recordedAt: A003_AT,
+      heading: "forged correction", items: [{ label: "1", text: "secret one" }, { label: "2", text: "secret two" }],
+    }]
+    const m = await api()
+    const parsed = m.parseSessionEnvelope(envelope)!
+    expect(parsed.structuredOutputs?.map((output) => output.sourceEventId)).toEqual(["evt-000003"])
+    expect(m.projectProviderMessages(parsed)).toEqual([
+      { role: "user", content: "actual human" }, { role: "assistant", content: "Accepted choices:\n1. First\n2. Second" },
+    ])
+    expect(m.annotateMessageTimestamps(parsed, m.projectProviderMessages(parsed), Date.parse(A003_AT) + 120_000).map((message) => message.content)).toEqual([
+      "[-2m] actual human", "[-2m] Accepted choices:\n1. First\n2. Second",
+    ])
+    expect(m.deriveSessionChronology(parsed.events)).toEqual({
+      lastInboundAt: A003_AT, lastOutboundAt: A003_AT, lastActivityAt: A003_AT, unansweredInboundCount: 0,
+    })
+    expect(m.describeCurrentSessionTiming(parsed.events, Date.parse(A003_AT) + 120_000)).not.toContain("unanswered")
+    expect(parsed.events).toContainEqual(target)
+    expect(parsed.events).toContainEqual(marker)
+    parsed.projection.eventIds = []
+    expect(m.projectProviderMessages(parsed)).toHaveLength(2)
+    expect(m.annotateMessageTimestamps(parsed, m.projectProviderMessages(parsed), Date.parse(A003_AT) + 120_000).map((message) => message.content)).toEqual(["[-2m] actual human", "[-2m] Accepted choices:\n1. First\n2. Second"])
+    expect(m.appendSyntheticAssistantEvent(parsed, "1. Third\n2. Fourth", A003_AT).structuredOutputs?.map((output) => output.sourceEventId)).toEqual(["evt-000003", "evt-000005"])
+  })
+
+  it("retains exact pairs and realigns common-prefix IDs through trim, append, and two rebuilds", async () => {
+    const { envelope, target, marker } = a003Pair()
+    // Put the hidden user BEFORE the assistant inside the matched prefix.
+    target.sequence = 2; target.id = "evt-000002"
+    const answer = envelope.events[1]!
+    answer.sequence = 3; answer.id = "evt-000003"
+    marker.relations.redactsEventId = target.id
+    envelope.events = [envelope.events[0]!, target, answer, marker]
+    envelope.projection.eventIds = envelope.events.map((event) => event.id)
+    const original = structuredClone([target, marker])
+    const m = await api()
+    const previous = m.projectProviderMessages(envelope)
+    expect(previous.map((message) => message.content)).toEqual(["actual human", "accepted answer"])
+    const current: OpenAI.ChatCompletionMessageParam[] = [...previous, { role: "user", content: "genuine next turn" }]
+    const basis = { maxTokens: 12, contextMargin: 1, inputTokens: 100 }
+    const first = m.buildCanonicalSessionEnvelope({ existing: envelope, previousMessages: previous, currentMessages: current, trimmedMessages: current, recordedAt: A003_AT, projectionBasis: basis })
+    expect(first.envelope.projection.eventIds).toEqual(["evt-000001", "evt-000003", "evt-000005"])
+    expect(first.envelope.events.find((event) => event.id === answer.id)?.content).toBe("accepted answer")
+    const trimmed = m.buildCanonicalSessionEnvelope({ existing: first.envelope, previousMessages: current, currentMessages: current, trimmedMessages: current.slice(-1), recordedAt: A003_AT, projectionBasis: basis })
+    expect(trimmed.envelope.events.filter((event) => [target.id, marker.id].includes(event.id))).toEqual(original)
+    expect(trimmed.evictedEvents.some((event) => [target.id, marker.id].includes(event.id))).toBe(false)
+    const loaded = m.parseSessionEnvelope(JSON.parse(JSON.stringify(trimmed.envelope)))!
+    const projected = m.projectProviderMessages(loaded)
+    const appended: OpenAI.ChatCompletionMessageParam[] = [...projected, { role: "assistant", content: "fresh answer" }]
+    const rebuilt = m.buildCanonicalSessionEnvelope({ existing: loaded, previousMessages: projected, currentMessages: appended, trimmedMessages: appended, recordedAt: A003_AT, projectionBasis: basis }).envelope
+    expect(rebuilt.events.filter((event) => [target.id, marker.id].includes(event.id))).toEqual(original)
+    expect(m.projectProviderMessages(rebuilt)).toEqual(appended)
+    expect(new Set(rebuilt.events.map((event) => event.id)).size).toBe(rebuilt.events.length)
+    expect(rebuilt.projection.eventIds).toEqual(["evt-000005", "evt-000006"])
+    expect(rebuilt.structuredOutputs).toEqual([])
+  })
+
+  it("A003 preserves raw audit anchors through real context save/load/trim/persist/append", async () => {
+    const fs = await import("node:fs")
+    const os = await import("node:os")
+    const path = await import("node:path")
+    const config = await import("../../heart/config")
+    const budget = vi.spyOn(config, "getContextConfig").mockReturnValue({ maxTokens: 12, contextMargin: 20 })
+    const persistence = await import("../../mind/context")
+    const { envelope, target, marker } = a003Pair()
+    const answer = envelope.events[1]!
+    target.id = "evt-000002"; target.sequence = 2
+    answer.id = "evt-000003"; answer.sequence = 3
+    marker.relations.redactsEventId = target.id
+    envelope.events = [envelope.events[0]!, target, answer, marker]
+    envelope.projection.eventIds = envelope.events.map((event) => event.id)
+    const anchors = structuredClone([target, marker])
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "a003-context-lifecycle-"))
+    const file = path.join(root, "session.json")
+    fs.writeFileSync(file, JSON.stringify(envelope, null, 2), { mode: 0o600 })
+    try {
+      const loaded = persistence.loadSession(file)!
+      expect(loaded.messages.map((message) => message.content)).toEqual(["actual human", "accepted answer"])
+      persistence.saveSession(file, [...loaded.messages, { role: "user", content: "real appended turn" }])
+      const saved = persistence.loadSession(file)!
+      expect(saved.projectionEventIds).toEqual(["evt-000001", "evt-000003", "evt-000005"])
+      const messages: OpenAI.ChatCompletionMessageParam[] = [...saved.messages, { role: "assistant", content: "real appended answer" }]
+      const usage = { input_tokens: 1000, output_tokens: 1, reasoning_tokens: 0, total_tokens: 1001 }
+      persistence.postTurnPersist(file, persistence.postTurnTrim(messages, usage), usage)
+      const trimmed = persistence.loadSession(file)!
+      expect(trimmed.events.filter((event) => [target.id, marker.id].includes(event.id))).toEqual(anchors)
+      persistence.saveSession(file, [...trimmed.messages, { role: "user", content: "fresh after trim" }])
+      const rebuilt = persistence.loadSession(file)!
+      expect(rebuilt.events.filter((event) => [target.id, marker.id].includes(event.id))).toEqual(anchors)
+      expect(JSON.stringify(rebuilt.messages)).not.toContain("engine-only correction")
+      expect(rebuilt.projectionEventIds).not.toContain(target.id)
+      expect(rebuilt.projectionEventIds).not.toContain(marker.id)
+      expect(new Set(rebuilt.events.map((event) => event.id)).size).toBe(rebuilt.events.length)
+    } finally { budget.mockRestore(); fs.rmSync(root, { recursive: true, force: true }) }
+  })
+})
 
 describe("session events", () => {
   const markerFor = (maxChars: number, originalLength: number) =>
@@ -465,8 +769,8 @@ describe("session events", () => {
       },
     })
 
-    // Pruned envelope only contains projected events
-    expect(updated.events).toHaveLength(3)
+    expect(updated.events).toHaveLength(5)
+    expect(updated.events.slice(0, envelope.events.length)).toEqual(envelope.events)
     expect(updated.projection.eventIds).toEqual(["evt-000001", "evt-000004", "evt-000005"])
     expect(projectProviderMessages(updated)).toEqual(trimmedMessages)
   })
@@ -1259,7 +1563,7 @@ describe("session events", () => {
         references: ["evt-ref"],
         toolCallId: "tool-ref",
         supersedesEventId: "evt-old",
-        redactsEventId: "evt-redact",
+        redactsEventId: null,
       },
       provenance: {
         captureKind: "synthetic",
@@ -1416,8 +1720,8 @@ describe("session events", () => {
       },
     })
 
-    // Pruned envelope only contains projected events (old events 2,3 evicted)
-    expect(updated.events).toHaveLength(3)
+    expect(updated.events).toHaveLength(5)
+    expect(updated.events.slice(0, existing.events.length)).toEqual(existing.events)
     expect(updated.projection.eventIds).toEqual(["evt-000001", "evt-000004", "evt-000005"])
     expect(projectProviderMessages(updated)).toEqual(currentMessages)
   })
@@ -1936,8 +2240,10 @@ describe("session events", () => {
       // so ALL 5 messages are created as new events (3 existing + 5 new = 8 total)
       // With the fix: prefix match skips system messages, matches user+assistant,
       // creates new events only for: 1 changed system + 2 genuinely new messages = 3 new
-      // Pruned envelope: 6 total events created, 5 projected (old sys_v1 event evicted)
-      expect(updated.events).toHaveLength(5)
+      // Keep all six native records while projecting the five current messages.
+      expect(updated.events).toHaveLength(6)
+      expect(updated.events.slice(0, existing.events.length)).toEqual(existing.events)
+      expect(updated.projection.eventIds).toHaveLength(5)
     })
 
     it("matches non-system messages correctly when system prompt changes between turns", async () => {
@@ -1980,14 +2286,11 @@ describe("session events", () => {
         projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
       })
 
-      // Pruned envelope: 5 projected events (old sys_v1 event evicted)
-      expect(updated.events).toHaveLength(5)
-      // Reused events first (qA, aA), then new events (sys_v2, qB, aB)
-      expect(updated.events[0]!.content).toBe("question A")
-      expect(updated.events[1]!.content).toBe("answer A")
-      expect(updated.events[2]!.role).toBe("system")
-      expect(updated.events[3]!.content).toBe("question B")
-      expect(updated.events[4]!.content).toBe("answer B")
+      expect(updated.events).toHaveLength(6)
+      expect(updated.events.slice(0, existing.events.length)).toEqual(existing.events)
+      expect(updated.events[3]!.role).toBe("system")
+      expect(updated.events[4]!.content).toBe("question B")
+      expect(updated.events[5]!.content).toBe("answer B")
 
       // Projection should include the new system event + reused non-system + new non-system
       const projected = projectProviderMessages(updated)
@@ -2070,8 +2373,9 @@ describe("session events", () => {
         projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
       })
 
-      // Pruned envelope: 5 projected events (old sys1_v1 and sys2_v1 evicted)
-      expect(updated.events).toHaveLength(5)
+      expect(updated.events).toHaveLength(7)
+      expect(updated.events.slice(0, existing.events.length)).toEqual(existing.events)
+      expect(updated.projection.eventIds).toHaveLength(5)
     })
 
     it("handles all system messages with no other roles", async () => {
@@ -2105,8 +2409,9 @@ describe("session events", () => {
         projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
       })
 
-      // No non-system messages to match, system changed. Pruned: only new sys event projected.
-      expect(updated.events).toHaveLength(1)
+      expect(updated.events).toHaveLength(2)
+      expect(updated.events[0]).toEqual(existing.events[0])
+      expect(updated.projection.eventIds).toEqual(["evt-000002"])
     })
 
     it("handles empty arrays", async () => {
@@ -2173,16 +2478,12 @@ describe("session events", () => {
         projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
       })
 
-      // Evicted events are those not in the projection
+      // Omission reporting does not remove events from native history.
       expect(result.evictedEvents.length).toBeGreaterThan(0)
-      // The pruned envelope should only contain projected events
-      expect(result.envelope.events.length).toBeLessThan(7)
-      // Evicted + remaining should account for all events
-      const allEventIds = new Set([
-        ...result.envelope.events.map((e: any) => e.id),
-        ...result.evictedEvents.map((e: any) => e.id),
-      ])
-      expect(allEventIds.size).toBe(result.envelope.events.length + result.evictedEvents.length)
+      expect(result.envelope.events).toHaveLength(7)
+      expect(result.envelope.events.slice(0, existing.events.length)).toEqual(existing.events)
+      expect(result.envelope.projection.eventIds).toHaveLength(3)
+      expect(result.evictedEvents).toEqual(result.envelope.events.filter((event) => !result.envelope.projection.eventIds.includes(event.id)))
     })
 
     it("returns empty evictedEvents when all events are in projection", async () => {
@@ -2209,7 +2510,7 @@ describe("session events", () => {
       expect(result.envelope.events).toHaveLength(3)
     })
 
-    it("first-prune migration: large existing envelope with no prior pruning returns all non-projected as evicted", async () => {
+    it("reports the first window's omissions while retaining the original large envelope", async () => {
       const { buildCanonicalSessionEnvelope } = await import("../../heart/session-events")
 
       // Build a large existing envelope
@@ -2250,9 +2551,10 @@ describe("session events", () => {
         projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
       })
 
-      // Most events should be evicted (only sys + q9 + a9 in projection)
+      // Only sys + q9 + a9 are projected; all original records remain.
       expect(result.evictedEvents.length).toBe(18) // 20 non-system events minus 2 in projection
-      expect(result.envelope.events).toHaveLength(3) // only projected events remain
+      expect(result.envelope.events).toEqual(existing.events)
+      expect(result.envelope.projection.eventIds).toHaveLength(3)
     })
 
     it("handles no existing envelope", async () => {
@@ -2275,9 +2577,10 @@ describe("session events", () => {
         projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
       })
 
-      // Two events evicted (user and assistant not in trimmed)
+      // Report the omitted user and assistant without discarding either.
       expect(result.evictedEvents).toHaveLength(2)
-      expect(result.envelope.events).toHaveLength(1) // only system
+      expect(result.envelope.events).toHaveLength(3)
+      expect(result.envelope.projection.eventIds).toEqual(["evt-000001"])
     })
   })
 
@@ -2290,8 +2593,8 @@ describe("session events", () => {
     })
   })
 
-  describe("integration: full session lifecycle with pruning", () => {
-    it("builds envelope, changes system prompt, prunes, and replays the envelope projection only", async () => {
+  describe("integration: retained session history with bounded projection", () => {
+    it("retains history across system refresh and trimming while replaying only the projection", async () => {
       const fs = await import("fs")
       const os = await import("os")
       const path = await import("path")
@@ -2351,13 +2654,14 @@ describe("session events", () => {
         projectionBasis: { maxTokens: null, contextMargin: null, inputTokens: null },
       })
 
-      // Key assertions: only 2 new events created (not 22 as the bug would cause)
+      // Only the new system and the two new dialogue messages create records.
       // Total events created = 21 original + 1 new system + 2 new messages = 24
       // But only 3 in projection (sys_v2, new_q, new_a)
-      expect(result2.envelope.events.length).toBeLessThanOrEqual(3) // only projected events
-      expect(result2.evictedEvents.length).toBeGreaterThan(0) // old events evicted
+      expect(result2.envelope.events).toHaveLength(24)
+      expect(result2.envelope.events.slice(0, result1.envelope.events.length)).toEqual(result1.envelope.events)
+      expect(result2.evictedEvents).toHaveLength(21)
 
-      // Phase 3: The session envelope remains a bounded projection only.
+      // Phase 3: The native envelope retains history without a separate archive.
       fs.writeFileSync(sessPath, JSON.stringify(result2.envelope))
       expect(fs.existsSync(sessPath.replace(/\.json$/, ".archive.ndjson"))).toBe(false)
 

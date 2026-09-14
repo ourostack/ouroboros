@@ -30,7 +30,8 @@ vi.mock("../../nerves/runtime", () => ({
 }))
 
 import * as fs from "fs"
-import { loadAgentConfig } from "../../heart/identity"
+import { getAgentRoot, loadAgentConfig } from "../../heart/identity"
+import { FULL_AGENT_JSON } from "../heart/identity-fixture"
 
 const MUTATED_ENV_KEYS = [
   "DESK",
@@ -81,6 +82,36 @@ describe("plugin-mcp.ts — listPluginMcpServers", () => {
     vi.mocked(fs.existsSync).mockReturnValue(false)
     const { listPluginMcpServers } = await import("../../repertoire/plugin-mcp")
     expect(listPluginMcpServers()).toEqual([])
+  })
+
+  it.each([undefined, "/explicit/shared-desk"])("binds plugin selection and DESK fallback to the initiating owner (DESK=%s)", async (desk) => {
+    const owner = { agentName: "owner-a", agentRoot: "/mock/bundles/owner-a.ouro" }
+    if (desk !== undefined) process.env.DESK = desk
+    const owned = { ...FULL_AGENT_JSON, plugins: [{ id: "owned", enabled: true }] }
+    const other = { ...FULL_AGENT_JSON, plugins: [{ id: "other", enabled: true }] }
+    vi.mocked(loadAgentConfig).mockImplementation((coordinates?: typeof owner) =>
+      coordinates?.agentName === owner.agentName && coordinates.agentRoot === owner.agentRoot ? owned : other,
+    )
+    vi.mocked(getAgentRoot).mockClear()
+    vi.mocked(fs.existsSync).mockReturnValue(true)
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({
+      mcpServers: { desk: { command: "node", args: ["--root", "${DESK:-./desk}"] } },
+    }))
+    const { listPluginMcpServers } = await import("../../repertoire/plugin-mcp")
+
+    const servers = listPluginMcpServers(undefined, owner)
+
+    expect(servers).toHaveLength(1)
+    expect(servers[0]).toMatchObject({
+      pluginId: "owned",
+      args: ["--root", desk ?? path.join(owner.agentRoot, "desk")],
+    })
+    expect(loadAgentConfig).toHaveBeenCalledExactlyOnceWith(owner)
+    expect(getAgentRoot).not.toHaveBeenCalled()
+    expect(fs.readFileSync).toHaveBeenCalledExactlyOnceWith(
+      path.join("/mock/home/.ouro-cli", "plugins", "owned", ".mcp.json"),
+      "utf-8",
+    )
   })
 
   it("returns one server entry for a plugin with .mcp.json present", async () => {

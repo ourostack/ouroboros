@@ -64,6 +64,8 @@ vi.mock("../../heart/identity", () => ({
 
 import { McpManager } from "../../repertoire/mcp-manager"
 
+const OWNER = Object.freeze({ agentName: "test", agentRoot: "/tmp/test.ouro" })
+
 function createMockClient(tools: McpToolInfo[] = []): MockClient {
   return {
     connect: vi.fn().mockResolvedValue(undefined),
@@ -93,7 +95,7 @@ describe("McpManager vault env resolution", () => {
     mockGetRawSecret.mockResolvedValue("resolved-api-key")
 
     const manager = new McpManager()
-    await manager.start({
+    await manager.start(OWNER, {
       liteapi: {
         command: "npx",
         args: ["tsx", "src/index.ts"],
@@ -105,12 +107,12 @@ describe("McpManager vault env resolution", () => {
     expect(clientInstances).toHaveLength(1)
     expect(clientInstances[0]._spawnedEnv?.LITEAPI_API_KEY).toBe("resolved-api-key")
 
-    manager.shutdown()
+    await manager.shutdown()
   })
 
   it("passes non-vault env values through unchanged", async () => {
     const manager = new McpManager()
-    await manager.start({
+    await manager.start(OWNER, {
       test: {
         command: "echo",
         env: { NORMAL_KEY: "plain-value" },
@@ -120,14 +122,14 @@ describe("McpManager vault env resolution", () => {
     expect(mockGetRawSecret).not.toHaveBeenCalled()
     expect(clientInstances[0]._spawnedEnv?.NORMAL_KEY).toBe("plain-value")
 
-    manager.shutdown()
+    await manager.shutdown()
   })
 
   it("leaves non-vault env entries untouched while resolving vault refs in the same env", async () => {
     mockGetRawSecret.mockResolvedValueOnce("the-token")
 
     const manager = new McpManager()
-    await manager.start({
+    await manager.start(OWNER, {
       mixed: {
         command: "test",
         env: {
@@ -143,7 +145,7 @@ describe("McpManager vault env resolution", () => {
     expect(clientInstances[0]._spawnedEnv?.DEBUG).toBe("true")
     expect(clientInstances[0]._spawnedEnv?.REGION).toBe("us-west-2")
 
-    manager.shutdown()
+    await manager.shutdown()
   })
 
   it("resolves multiple vault refs in same server config", async () => {
@@ -152,7 +154,7 @@ describe("McpManager vault env resolution", () => {
       .mockResolvedValueOnce("key-2")
 
     const manager = new McpManager()
-    await manager.start({
+    await manager.start(OWNER, {
       multi: {
         command: "test",
         env: {
@@ -166,14 +168,14 @@ describe("McpManager vault env resolution", () => {
     expect(clientInstances[0]._spawnedEnv?.API_KEY).toBe("key-1")
     expect(clientInstances[0]._spawnedEnv?.SECRET).toBe("key-2")
 
-    manager.shutdown()
+    await manager.shutdown()
   })
 
   it("skips server on vault unreachable and continues to next", async () => {
     mockGetRawSecret.mockRejectedValueOnce(new Error("vault unreachable"))
 
     const manager = new McpManager()
-    await manager.start({
+    await manager.start(OWNER, {
       failing: {
         command: "test",
         env: { KEY: "vault:broken.com/key" },
@@ -194,14 +196,14 @@ describe("McpManager vault env resolution", () => {
     expect(errorEvents[0].message).toContain("could not be resolved")
     expect(errorEvents[0].message).toContain("vault unreachable")
 
-    manager.shutdown()
+    await manager.shutdown()
   })
 
   it("skips server on item not found", async () => {
     mockGetRawSecret.mockRejectedValueOnce(new Error('no credential found for domain "missing.com"'))
 
     const manager = new McpManager()
-    await manager.start({
+    await manager.start(OWNER, {
       missing: {
         command: "test",
         env: { KEY: "vault:missing.com/key" },
@@ -216,14 +218,14 @@ describe("McpManager vault env resolution", () => {
     expect(errorEvents[0].message).toContain("could not be resolved")
     expect(errorEvents[0].message).toContain("item not found")
 
-    manager.shutdown()
+    await manager.shutdown()
   })
 
   it("skips server on field empty", async () => {
     mockGetRawSecret.mockRejectedValueOnce(new Error('field "apiKey" not found for domain "empty.com"'))
 
     const manager = new McpManager()
-    await manager.start({
+    await manager.start(OWNER, {
       empty: {
         command: "test",
         env: { KEY: "vault:empty.com/apiKey" },
@@ -238,12 +240,12 @@ describe("McpManager vault env resolution", () => {
     expect(errorEvents[0].message).toContain("could not be resolved")
     expect(errorEvents[0].message).toContain("field empty")
 
-    manager.shutdown()
+    await manager.shutdown()
   })
 
   it("passes cwd to McpClient config", async () => {
     const manager = new McpManager()
-    await manager.start({
+    await manager.start(OWNER, {
       withCwd: {
         command: "npx",
         args: ["tsx", "src/index.ts"],
@@ -254,6 +256,6 @@ describe("McpManager vault env resolution", () => {
     expect(clientInstances).toHaveLength(1)
     expect(clientInstances[0]._spawnedCwd).toBe("/path/to/liteapi-mcp")
 
-    manager.shutdown()
+    await manager.shutdown()
   })
 })

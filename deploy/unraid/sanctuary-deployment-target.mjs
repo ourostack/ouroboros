@@ -16,6 +16,7 @@ const PROFILES = Object.freeze({
 })
 const DOCUMENTED_UNIX_CONTROLS = [
   "/tmp/ouroboros-daemon.sock",
+  "/tmp/ouroboros-daemon.sock.frontend",
   "/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance/telegram-control.sock",
 ]
 const DOCUMENTED_LOOPBACK_TCP_CONTROLS = new Set([6876])

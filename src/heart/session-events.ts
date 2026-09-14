@@ -1,12 +1,12 @@
 import * as fs from "fs"
 import { createHash } from "node:crypto"
+import { isDeepStrictEqual } from "node:util"
 import type OpenAI from "openai"
 import type { ApprovalRecord } from "./approval-store"
 import type { ApprovalSuspensionCheckpoint } from "./tool-approval"
 import { emitNervesEvent } from "../nerves/runtime"
 import {
   extractStructuredOutputsFromEvents,
-  normalizeStructuredOutputs,
   type StructuredOutput,
 } from "./structured-output"
 
@@ -79,6 +79,7 @@ export interface SessionEvent {
 }
 
 export interface SessionProjection {
+  /** Empty means all effective events unless trimmed is true, when it means none. */
   eventIds: string[]
   trimmed: boolean
   maxTokens: number | null
@@ -189,11 +190,18 @@ export function materializeApprovalTerminal(input: {
   }
   const advanced = input.currentSessionRevision !== input.checkpoint.suspendedSessionRevision
   if (advanced) {
+    const notice = input.record.state === "succeeded"
+      ? "the approved action completed, but the session changed; no model continuation was run"
+      : input.record.state === "failed"
+        ? "the approved action failed, but the session changed; no model continuation was run"
+        : input.record.state === "attempted_indeterminate"
+          ? `${APPROVAL_TERMINAL_TEXT.attempted_indeterminate}; the session changed`
+          : "the session changed before this approval could be applied; the protected action was not executed"
     return {
       messages,
       materialized: false,
       resumeProvider: false,
-      directNotice: "the session changed before this approval could be applied; the protected action was not executed",
+      directNotice: notice,
       revision: messagesRevision(messages),
     }
   }
@@ -350,6 +358,16 @@ interface NormalizedProviderMessage {
   toolCallId: string | null
   toolCalls: SessionEventToolCall[]
   hadToolCallsField: boolean
+  sourceEventIds?: string[]
+}
+
+// Native origins survive replay normalization, but never enter serialized provider or session data.
+const messageSourceEventIds = Symbol("messageSourceEventIds")
+type SourceMappedMessage = OpenAI.ChatCompletionMessageParam & { [messageSourceEventIds]?: string[] }
+
+function withMessageSourceEventIds(message: OpenAI.ChatCompletionMessageParam, eventIds: string[] | undefined): SourceMappedMessage {
+  if (eventIds) Object.defineProperty(message, messageSourceEventIds, { value: eventIds })
+  return message
 }
 
 export const EVENT_CONTENT_MAX_CHARS = 256 * 1024
@@ -514,7 +532,7 @@ function normalizeRole(role: unknown): SessionEventRole {
     : "user"
 }
 
-function normalizeMessage(message: OpenAI.ChatCompletionMessageParam): NormalizedProviderMessage {
+function normalizeMessage(message: SourceMappedMessage): NormalizedProviderMessage {
   const record = message as {
     role?: unknown
     content?: unknown
@@ -524,6 +542,7 @@ function normalizeMessage(message: OpenAI.ChatCompletionMessageParam): Normalize
   }
   const role = normalizeRole(record.role)
   const normalizedContent = sanitizeConversationContent(role, normalizeContent(record.content))
+  const sourceEventIds = message[messageSourceEventIds]
 
   if (role === "assistant") {
     return {
@@ -533,6 +552,7 @@ function normalizeMessage(message: OpenAI.ChatCompletionMessageParam): Normalize
       toolCallId: null,
       toolCalls: normalizeToolCalls(record.tool_calls),
       hadToolCallsField: Array.isArray(record.tool_calls),
+      sourceEventIds,
     }
   }
 
@@ -544,6 +564,7 @@ function normalizeMessage(message: OpenAI.ChatCompletionMessageParam): Normalize
       toolCallId: typeof record.tool_call_id === "string" ? record.tool_call_id : null,
       toolCalls: [],
       hadToolCallsField: false,
+      sourceEventIds,
     }
   }
 
@@ -554,6 +575,7 @@ function normalizeMessage(message: OpenAI.ChatCompletionMessageParam): Normalize
     toolCallId: null,
     toolCalls: [],
     hadToolCallsField: false,
+    sourceEventIds,
   }
 }
 
@@ -592,37 +614,43 @@ function toProviderMessage(message: NormalizedProviderMessage): OpenAI.ChatCompl
         },
       }))
     }
-    return assistant as OpenAI.ChatCompletionAssistantMessageParam & { name?: string }
+    return withMessageSourceEventIds(assistant as OpenAI.ChatCompletionAssistantMessageParam & { name?: string }, message.sourceEventIds)
   }
 
   if (message.role === "tool") {
-    return {
+    return withMessageSourceEventIds({
       role: "tool",
       content: typeof message.content === "string" ? message.content : contentText(message.content),
       tool_call_id: message.toolCallId ?? "",
-    } as OpenAI.ChatCompletionToolMessageParam
+    }, message.sourceEventIds)
   }
 
   if (message.role === "system") {
-    return {
+    return withMessageSourceEventIds({
       role: "system",
       content: typeof message.content === "string" ? message.content : contentText(message.content),
       ...(message.name ? { name: message.name } : {}),
-    } as OpenAI.ChatCompletionSystemMessageParam & { name?: string }
+    }, message.sourceEventIds)
   }
 
-  return {
+  return withMessageSourceEventIds({
     role: "user",
     content: (typeof message.content === "string" || Array.isArray(message.content) ? message.content : "") as OpenAI.ChatCompletionUserMessageParam["content"],
     ...(message.name ? { name: message.name } : {}),
-  } as OpenAI.ChatCompletionUserMessageParam & { name?: string }
+  }, message.sourceEventIds)
 }
 
-function messageFingerprint(message: OpenAI.ChatCompletionMessageParam): string {
+function messageSourcesAgree(left: SourceMappedMessage, right: SourceMappedMessage): boolean {
+  const leftIds = left[messageSourceEventIds]
+  const rightIds = right[messageSourceEventIds]
+  return !leftIds || !rightIds || leftIds.length === rightIds.length && leftIds.every((id, index) => id === rightIds[index])
+}
+
+function messageFingerprint(message: OpenAI.ChatCompletionMessageParam, captureContent = false): string {
   const normalized = normalizeMessage(message)
   return JSON.stringify({
     role: normalized.role,
-    content: normalized.content,
+    content: captureContent ? truncateLargeEventContent(normalized.content, EVENT_CONTENT_MAX_CHARS).content : normalized.content,
     name: normalized.name,
     tool_call_id: normalized.toolCallId,
     tool_calls: normalized.toolCalls,
@@ -753,6 +781,7 @@ export function repairSessionMessages(messages: OpenAI.ChatCompletionMessagePara
     if (msg.role === "assistant" && result.length > 0) {
       const prev = result[result.length - 1]
       if (prev.role === "assistant" && prev.toolCalls.length === 0) {
+        if (prev.sourceEventIds) prev.sourceEventIds = [...new Set([...prev.sourceEventIds, ...(msg.sourceEventIds ?? [])])]
         const prevContent = contentText(prev.content)
         const curContent = contentText(msg.content)
         // Drop the second of two consecutive assistants when the content is
@@ -765,6 +794,7 @@ export function repairSessionMessages(messages: OpenAI.ChatCompletionMessagePara
           continue
         }
         prev.content = `${prevContent}\n\n${curContent}`
+        prev.toolCalls = msg.toolCalls
         continue
       }
     }
@@ -991,7 +1021,7 @@ function repairInlineReasoningOnReplay(
     const stripped = stripInlineThinkBlocks(a.content)
     repaired++
     for (const tc of a.tool_calls) inlineReasoningStrippedCallIds.add(tc.id)
-    return { ...a, content: stripped.length > 0 ? stripped : null } as OpenAI.ChatCompletionAssistantMessageParam
+    return withMessageSourceEventIds({ ...a, content: stripped.length > 0 ? stripped : null }, (msg as SourceMappedMessage)[messageSourceEventIds])
   })
   if (repaired > 0) {
     emitNervesEvent({
@@ -1172,26 +1202,32 @@ function buildEventFromMessage(
 }
 
 export function projectedSessionEventIds(envelope: SessionEnvelope): string[] {
-  return envelope.projection.eventIds.length > 0
-    ? envelope.projection.eventIds
-    : envelope.events.map((event) => event.id)
+  return providerProjectionEvents(envelope).map((event) => event.id)
+}
+
+function providerProjectionEvents(envelope: SessionEnvelope): SessionEvent[] {
+  const events = selectEffectiveSessionEvents(envelope.events)
+  if (envelope.projection.eventIds.length === 0) return envelope.projection.trimmed ? [] : events
+  const byId = new Map(events.map((event) => [event.id, event] as const))
+  return envelope.projection.eventIds
+    .map((id) => byId.get(id))
+    .filter((event): event is SessionEvent => Boolean(event))
+}
+
+function providerMessageFromEvent(event: SessionEvent): OpenAI.ChatCompletionMessageParam {
+  return toProviderMessage({
+    role: event.role,
+    content: event.content,
+    name: event.name,
+    toolCallId: event.toolCallId,
+    toolCalls: event.toolCalls,
+    hadToolCallsField: event.toolCalls.length > 0,
+    sourceEventIds: [event.id],
+  })
 }
 
 export function projectProviderMessages(envelope: SessionEnvelope): OpenAI.ChatCompletionMessageParam[] {
-  const eventIds = projectedSessionEventIds(envelope)
-  const byId = new Map(envelope.events.map((event) => [event.id, event] as const))
-
-  return eventIds
-    .map((id) => byId.get(id))
-    .filter((event): event is SessionEvent => Boolean(event))
-    .map((event) => toProviderMessage({
-      role: event.role,
-      content: event.content,
-      name: event.name,
-      toolCallId: event.toolCallId,
-      toolCalls: event.toolCalls,
-      hadToolCallsField: event.toolCalls.length > 0,
-    }))
+  return providerProjectionEvents(envelope).map(providerMessageFromEvent)
 }
 
 /**
@@ -1203,11 +1239,7 @@ export function annotateMessageTimestamps(
   messages: OpenAI.ChatCompletionMessageParam[],
   nowMs = Date.now(),
 ): OpenAI.ChatCompletionMessageParam[] {
-  const eventIds = projectedSessionEventIds(envelope)
-  const byId = new Map(envelope.events.map((event) => [event.id, event] as const))
-  const events = eventIds
-    .map((id) => byId.get(id))
-    .filter((event): event is SessionEvent => Boolean(event))
+  const events = providerProjectionEvents(envelope)
 
   return messages.map((msg, i) => {
     const event = events[i]
@@ -1254,6 +1286,7 @@ export function extractEventText(event: SessionEvent): string {
 }
 
 export function deriveSessionChronology(events: SessionEvent[]): SessionChronology {
+  events = selectEffectiveSessionEvents(events)
   let lastInboundAt: string | null = null
   let lastOutboundAt: string | null = null
   let lastActivityAt: string | null = null
@@ -1333,6 +1366,132 @@ export function migrateLegacySessionEnvelope(
   }
 }
 
+function normalizeSessionEvent(event: Record<string, unknown>, index: number, recordedAt: string): SessionEvent {
+  const role = normalizeRole(event.role)
+  const time = event.time as Record<string, unknown> | undefined
+  const relations = event.relations as Record<string, unknown> | undefined
+  const provenance = event.provenance as Record<string, unknown> | undefined
+  const content = sanitizeConversationContent(role, normalizeContent(event.content))
+  return {
+    id: typeof event.id === "string" ? event.id : makeEventId(index + 1),
+    sequence: typeof event.sequence === "number" ? event.sequence : index + 1,
+    role,
+    content,
+    name: typeof event.name === "string" ? event.name : null,
+    toolCallId: typeof event.toolCallId === "string" ? event.toolCallId : null,
+    toolCalls: normalizeToolCalls(event.toolCalls),
+    attachments: Array.isArray(event.attachments) ? event.attachments.filter((item): item is string => typeof item === "string") : [],
+    time: {
+      authoredAt: typeof time?.authoredAt === "string" ? time.authoredAt : null,
+      authoredAtSource: typeof time?.authoredAtSource === "string" ? time.authoredAtSource as SessionEventTimeSource : "unknown",
+      observedAt: typeof time?.observedAt === "string" ? time.observedAt : null,
+      observedAtSource: typeof time?.observedAtSource === "string" ? time.observedAtSource as SessionEventTimeSource : "unknown",
+      recordedAt: typeof time?.recordedAt === "string" ? time.recordedAt : recordedAt,
+      recordedAtSource: typeof time?.recordedAtSource === "string" ? time.recordedAtSource as SessionEventTimeSource : "save",
+    },
+    relations: {
+      replyToEventId: typeof relations?.replyToEventId === "string" ? relations.replyToEventId : null,
+      threadRootEventId: typeof relations?.threadRootEventId === "string" ? relations.threadRootEventId : null,
+      references: Array.isArray(relations?.references) ? relations.references.filter((item): item is string => typeof item === "string") : [],
+      toolCallId: typeof relations?.toolCallId === "string" ? relations.toolCallId : null,
+      supersedesEventId: typeof relations?.supersedesEventId === "string" ? relations.supersedesEventId : null,
+      redactsEventId: typeof relations?.redactsEventId === "string" ? relations.redactsEventId : null,
+    },
+    provenance: {
+      captureKind: typeof provenance?.captureKind === "string" ? provenance.captureKind as SessionEventCaptureKind : "live",
+      legacyVersion: typeof provenance?.legacyVersion === "number" ? provenance.legacyVersion : null,
+      sourceMessageIndex: typeof provenance?.sourceMessageIndex === "number" ? provenance.sourceMessageIndex : null,
+    },
+  }
+}
+
+function exactKeys(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    && Reflect.ownKeys(value).length === keys.length
+    && keys.every((key) => Object.prototype.hasOwnProperty.call(value, key))
+}
+
+function nonblank(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0
+}
+
+function exactIsoTime(value: unknown): value is string {
+  return typeof value === "string" && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value
+}
+
+function exactRawEvent(value: unknown, index: number): value is SessionEvent {
+  if (!exactKeys(value, ["id", "sequence", "role", "content", "name", "toolCallId", "toolCalls", "attachments", "time", "relations", "provenance"])) return false
+  if (!nonblank(value.id) || !Number.isSafeInteger(value.sequence) || Number(value.sequence) <= 0
+    || typeof value.role !== "string" || !["system", "user", "assistant", "tool"].includes(value.role)
+    || !(value.name === null || typeof value.name === "string") || !(value.toolCallId === null || typeof value.toolCallId === "string")
+    || !(value.content === null || typeof value.content === "string" || Array.isArray(value.content))
+    || !Array.isArray(value.attachments) || !value.attachments.every((item) => typeof item === "string")
+    || !Array.isArray(value.toolCalls)) return false
+  for (const call of value.toolCalls) {
+    if (!exactKeys(call, ["id", "type", "function"]) || !nonblank(call.id) || call.type !== "function"
+      || !exactKeys(call.function, ["name", "arguments"]) || !nonblank(call.function.name) || typeof call.function.arguments !== "string") return false
+  }
+  const time = value.time
+  if (!exactKeys(time, ["authoredAt", "authoredAtSource", "observedAt", "observedAtSource", "recordedAt", "recordedAtSource"])
+    || !(time.authoredAt === null || exactIsoTime(time.authoredAt))
+    || !(time.observedAt === null || exactIsoTime(time.observedAt)) || !exactIsoTime(time.recordedAt)) return false
+  for (const key of ["authoredAtSource", "observedAtSource", "recordedAtSource"]) {
+    if (typeof time[key] !== "string" || !["unknown", "local", "ingest", "migration", "save"].includes(time[key])) return false
+  }
+  const relations = value.relations
+  if (!exactKeys(relations, ["replyToEventId", "threadRootEventId", "references", "toolCallId", "supersedesEventId", "redactsEventId"])
+    || !Array.isArray(relations.references) || !relations.references.every((item) => typeof item === "string")) return false
+  for (const key of ["replyToEventId", "threadRootEventId", "toolCallId", "supersedesEventId", "redactsEventId"]) {
+    if (relations[key] !== null && typeof relations[key] !== "string") return false
+  }
+  const provenance = value.provenance
+  if (!exactKeys(provenance, ["captureKind", "legacyVersion", "sourceMessageIndex"])
+    || typeof provenance.captureKind !== "string" || !["live", "synthetic", "migration"].includes(provenance.captureKind)
+    || !(provenance.legacyVersion === null || Number.isSafeInteger(provenance.legacyVersion) && Number(provenance.legacyVersion) > 0)
+    || !(provenance.sourceMessageIndex === null || Number.isSafeInteger(provenance.sourceMessageIndex) && Number(provenance.sourceMessageIndex) >= 0)) return false
+  return isDeepStrictEqual(value, normalizeSessionEvent(value, index, time.recordedAt))
+}
+
+export function isExactRawSessionRedactionMarker(candidate: unknown, rawEvents: unknown[]): candidate is SessionEvent {
+  if (!candidate || typeof candidate !== "object" || (candidate as Record<string, unknown>).role !== "system"
+    || !exactRawEvent(candidate, 0) || candidate.content !== null || candidate.name !== null || candidate.toolCallId !== null
+    || candidate.toolCalls.length !== 0 || candidate.attachments.length !== 0
+    || candidate.time.authoredAt !== null || candidate.time.observedAt !== null
+    || candidate.time.authoredAtSource !== "migration" || candidate.time.observedAtSource !== "migration" || candidate.time.recordedAtSource !== "migration"
+    || candidate.provenance.captureKind !== "migration" || candidate.provenance.legacyVersion !== 2 || candidate.provenance.sourceMessageIndex !== null
+    || candidate.relations.replyToEventId !== null || candidate.relations.threadRootEventId !== null || candidate.relations.references.length !== 0
+    || candidate.relations.toolCallId !== null || candidate.relations.supersedesEventId !== null || !nonblank(candidate.relations.redactsEventId)
+    || !Array.isArray(rawEvents)) return false
+  const ids = new Set<string>()
+  let previousSequence = 0
+  for (const raw of rawEvents) {
+    if (!raw || typeof raw !== "object") return false
+    const event = raw as Record<string, unknown>
+    if (!nonblank(event.id) || ids.has(event.id) || !Number.isSafeInteger(event.sequence) || Number(event.sequence) <= previousSequence) return false
+    ids.add(event.id)
+    previousSequence = Number(event.sequence)
+  }
+  const candidateIndex = rawEvents.findIndex((raw) => (raw as Record<string, unknown>).id === candidate.id)
+  if (candidateIndex < 0 || !isDeepStrictEqual(rawEvents[candidateIndex], candidate)) return false
+  const targetIndex = rawEvents.findIndex((raw) => (raw as Record<string, unknown>).id === candidate.relations.redactsEventId)
+  if (targetIndex < 0 || targetIndex >= candidateIndex) return false
+  const target = rawEvents[targetIndex]
+  if (!exactRawEvent(target, targetIndex) || target.role !== "user" || target.relations.redactsEventId !== null) return false
+  const attempts = rawEvents.map((raw) => (raw as { relations?: { redactsEventId?: unknown } }).relations?.redactsEventId)
+  return attempts.filter((id) => id === target.id).length === 1 && !attempts.includes(candidate.id)
+}
+
+export function selectEffectiveSessionEvents(events: SessionEvent[]): SessionEvent[] {
+  const hidden = new Set<string>()
+  for (const event of events) {
+    if (isExactRawSessionRedactionMarker(event, events)) {
+      hidden.add(event.id)
+      hidden.add(event.relations.redactsEventId!)
+    }
+  }
+  return events.filter((event) => !hidden.has(event.id))
+}
+
 export function parseSessionEnvelope(raw: unknown, options: SessionEnvelopeParseOptions = {}): SessionEnvelope | null {
   const recordedAt = options.recordedAt ?? new Date().toISOString()
   const fileMtimeAt = options.fileMtimeAt ?? null
@@ -1345,46 +1504,23 @@ export function parseSessionEnvelope(raw: unknown, options: SessionEnvelopeParse
     return null
   }
 
+  const validMarkers = new Set<unknown>(record.events.filter((event) => isExactRawSessionRedactionMarker(event, record.events as unknown[])))
+  let invalidMarkers = 0
   const rawEvents = record.events
     .filter((event): event is Record<string, unknown> => event != null && typeof event === "object")
     .map((event, index) => {
-      const role = normalizeRole(event.role)
-      const time = event.time as Record<string, unknown> | undefined
-      const relations = event.relations as Record<string, unknown> | undefined
-      const provenance = event.provenance as Record<string, unknown> | undefined
-      const content = sanitizeConversationContent(role, normalizeContent(event.content))
-      return {
-        id: typeof event.id === "string" ? event.id : makeEventId(index + 1),
-        sequence: typeof event.sequence === "number" ? event.sequence : index + 1,
-        role,
-        content,
-        name: typeof event.name === "string" ? event.name : null,
-        toolCallId: typeof event.toolCallId === "string" ? event.toolCallId : null,
-        toolCalls: normalizeToolCalls(event.toolCalls),
-        attachments: Array.isArray(event.attachments) ? event.attachments.filter((item): item is string => typeof item === "string") : [],
-        time: {
-          authoredAt: typeof time?.authoredAt === "string" ? time.authoredAt : null,
-          authoredAtSource: typeof time?.authoredAtSource === "string" ? time.authoredAtSource as SessionEventTimeSource : "unknown",
-          observedAt: typeof time?.observedAt === "string" ? time.observedAt : null,
-          observedAtSource: typeof time?.observedAtSource === "string" ? time.observedAtSource as SessionEventTimeSource : "unknown",
-          recordedAt: typeof time?.recordedAt === "string" ? time.recordedAt : recordedAt,
-          recordedAtSource: typeof time?.recordedAtSource === "string" ? time.recordedAtSource as SessionEventTimeSource : "save",
-        },
-        relations: {
-          replyToEventId: typeof relations?.replyToEventId === "string" ? relations.replyToEventId : null,
-          threadRootEventId: typeof relations?.threadRootEventId === "string" ? relations.threadRootEventId : null,
-          references: Array.isArray(relations?.references) ? relations.references.filter((item): item is string => typeof item === "string") : [],
-          toolCallId: typeof relations?.toolCallId === "string" ? relations.toolCallId : null,
-          supersedesEventId: typeof relations?.supersedesEventId === "string" ? relations.supersedesEventId : null,
-          redactsEventId: typeof relations?.redactsEventId === "string" ? relations.redactsEventId : null,
-        },
-        provenance: {
-          captureKind: typeof provenance?.captureKind === "string" ? provenance.captureKind as SessionEventCaptureKind : "live",
-          legacyVersion: typeof provenance?.legacyVersion === "number" ? provenance.legacyVersion : null,
-          sourceMessageIndex: typeof provenance?.sourceMessageIndex === "number" ? provenance.sourceMessageIndex : null,
-        },
-      } satisfies SessionEvent
+      const normalized = normalizeSessionEvent(event, index, recordedAt)
+      const attempted = (event.relations as Record<string, unknown> | undefined)?.redactsEventId
+      if (attempted !== undefined && attempted !== null && !validMarkers.has(event)) {
+        normalized.relations.redactsEventId = null
+        invalidMarkers++
+      }
+      return normalized
     })
+  if (invalidMarkers > 0) emitNervesEvent({
+    level: "warn", component: "heart", event: "session.redaction_marker_invalid",
+    message: "invalid raw redaction authority ignored", meta: { count: invalidMarkers },
+  })
 
   // Self-heal duplicate event ids that may have been written by concurrent
   // writers in older harness versions. Last-occurrence-wins by id (later
@@ -1395,7 +1531,7 @@ export function parseSessionEnvelope(raw: unknown, options: SessionEnvelopeParse
 
   const projection = record.projection as Record<string, unknown>
 
-  return {
+  const envelope: SessionEnvelope = {
     version: 2,
     events,
     projection: {
@@ -1406,13 +1542,12 @@ export function parseSessionEnvelope(raw: unknown, options: SessionEnvelopeParse
       inputTokens: typeof projection.inputTokens === "number" ? projection.inputTokens : null,
       projectedAt: typeof projection.projectedAt === "string" ? projection.projectedAt : null,
     },
-    structuredOutputs: record.structuredOutputs === undefined
-      ? extractStructuredOutputsFromEvents(events, { emitTelemetry: false })
-      : normalizeStructuredOutputs(record.structuredOutputs),
     lastUsage: normalizeUsage(record.lastUsage),
     state: normalizeContinuityState(record.state),
     approvalSuspensions: normalizeApprovalSuspensions(record.approvalSuspensions),
   }
+  envelope.structuredOutputs = extractStructuredOutputsFromEvents(providerProjectionEvents(envelope), { emitTelemetry: false })
+  return envelope
 }
 
 export function loadSessionEnvelopeFile(filePath: string): SessionEnvelope | null {
@@ -1447,12 +1582,13 @@ function filterNonSystem(messages: OpenAI.ChatCompletionMessageParam[]): OpenAI.
  * System messages (whose content changes every turn due to live world-state)
  * are excluded so that prefix matching is not defeated by system prompt updates.
  */
-function findCommonPrefixLength(a: OpenAI.ChatCompletionMessageParam[], b: OpenAI.ChatCompletionMessageParam[]): number {
+function findCommonPrefixLength(a: OpenAI.ChatCompletionMessageParam[], b: OpenAI.ChatCompletionMessageParam[], captureContent = false): number {
   const aNonSys = filterNonSystem(a)
   const bNonSys = filterNonSystem(b)
   const max = Math.min(aNonSys.length, bNonSys.length)
   for (let i = 0; i < max; i++) {
-    if (messageFingerprint(aNonSys[i]!) !== messageFingerprint(bNonSys[i]!)) return i
+    if (!messageSourcesAgree(aNonSys[i]!, bNonSys[i]!)) return i
+    if (messageFingerprint(aNonSys[i]!, captureContent) !== messageFingerprint(bNonSys[i]!, captureContent)) return i
   }
   return max
 }
@@ -1460,11 +1596,12 @@ function findCommonPrefixLength(a: OpenAI.ChatCompletionMessageParam[], b: OpenA
 
 function selectProjectedEventIds(
   currentMessages: OpenAI.ChatCompletionMessageParam[],
-  currentEventIds: string[],
+  currentEventIds: string[][],
   trimmedMessages: OpenAI.ChatCompletionMessageParam[],
 ): string[] {
   if (trimmedMessages.length === 0) return []
   const result: string[] = []
+  const currentIdentities = new Set(currentMessages)
   let needle = 0
   let trimmedFingerprint: string | null = null
 
@@ -1473,11 +1610,13 @@ function selectProjectedEventIds(
     const trimmedMessage = trimmedMessages[needle]!
 
     if (currentMessage !== trimmedMessage) {
+      if (currentIdentities.has(trimmedMessage)) continue
+      if (!messageSourcesAgree(currentMessage, trimmedMessage)) continue
       trimmedFingerprint ??= messageFingerprint(trimmedMessage)
       if (messageFingerprint(currentMessage) !== trimmedFingerprint) continue
     }
 
-    result.push(currentEventIds[i]!)
+    result.push(...currentEventIds[i]!)
     needle++
     trimmedFingerprint = null
   }
@@ -1487,7 +1626,25 @@ function selectProjectedEventIds(
 
 export interface SessionEnvelopeBuildResult {
   envelope: SessionEnvelope
+  /** Effective retained events outside the projection, not deleted or archived records. */
   evictedEvents: SessionEvent[]
+}
+
+function retainedSourceEventIds(
+  message: SourceMappedMessage,
+  existing: ReadonlyMap<string, SessionEvent>,
+  used: ReadonlySet<string>,
+): string[] | null {
+  const ids = message[messageSourceEventIds]
+  if (!ids?.length || ids.some((id) => !existing.has(id) || used.has(id))) return null
+  const originals = ids.map((id) => providerMessageFromEvent(existing.get(id)!))
+  const fingerprint = messageFingerprint(message, true)
+  const matches = (candidate: SourceMappedMessage): boolean => (
+    candidate[messageSourceEventIds] !== undefined
+    && messageSourcesAgree(candidate, message)
+    && messageFingerprint(candidate, true) === fingerprint
+  )
+  return originals.some(matches) || sanitizeProviderMessages(originals).some(matches) ? ids : null
 }
 
 export function buildCanonicalSessionEnvelope(options: SessionEnvelopeBuildOptions): SessionEnvelopeBuildResult {
@@ -1495,49 +1652,72 @@ export function buildCanonicalSessionEnvelope(options: SessionEnvelopeBuildOptio
   // Callers pass pre-sanitized messages + pre-captured ingress times.
   const currentIngressTimes = options.currentIngressTimes ?? options.currentMessages.map(getIngressTime)
   const currentIngressRelations = options.currentIngressRelations ?? options.currentMessages.map(getIngressRelations)
-  const previousMessages = options.previousMessages
+  let previousMessages = options.previousMessages
   const currentMessages = options.currentMessages
   const trimmedMessages = options.trimmedMessages
-  const previousProjectionIds = existing?.projection.eventIds.length
-    ? [...existing.projection.eventIds]
-    : existing?.events.map((event) => event.id) ?? []
+  let previousProjectionGroups = existing ? providerProjectionEvents(existing).map((event) => [event.id]) : []
 
   // Compare only non-system messages to find the common prefix.
   // System messages change every turn (live world-state in system prompt)
   // and must not defeat prefix matching of the actual conversation.
-  const nonSystemPrefix = findCommonPrefixLength(previousMessages, currentMessages)
+  let nonSystemPrefix = findCommonPrefixLength(previousMessages, currentMessages, true)
+  // A repaired provider message can represent several original native records.
+  const repairedPrevious = sanitizeProviderMessages(previousMessages.map((message, index) =>
+    withMessageSourceEventIds({ ...message }, previousProjectionGroups[index]),
+  ))
+  const repairedPrefix = findCommonPrefixLength(repairedPrevious, currentMessages)
+  if (repairedPrefix > nonSystemPrefix) {
+    previousMessages = repairedPrevious
+    previousProjectionGroups = repairedPrevious.map((message: SourceMappedMessage) => message[messageSourceEventIds] ?? [])
+    nonSystemPrefix = repairedPrefix
+  }
 
   // Build a lookup of non-system previous projection IDs.
-  const prevNonSystemIds: string[] = []
+  const prevNonSystemIds: string[][] = []
   for (let i = 0; i < previousMessages.length; i++) {
     if (messageRole(previousMessages[i]!) !== "system") {
-      prevNonSystemIds.push(previousProjectionIds[i]!)
+      prevNonSystemIds.push(previousProjectionGroups[i]!)
     }
   }
 
   // Walk currentMessages and build currentEventIds + new events.
   // Non-system messages within the prefix reuse old event IDs.
-  // System messages and post-prefix messages get new events.
+  // Other messages reuse a matching native origin or create a new event.
   const events = [...(existing?.events ?? [])]
-  const currentEventIds: string[] = []
+  const sourceEvents = new Map(selectEffectiveSessionEvents(events).map((event) => [event.id, event] as const))
+  const excludedSourceIds = new Set(events.filter((event) => !sourceEvents.has(event.id)).map((event) => event.id))
+  const usedEventIds = new Set<string>()
+  const currentEventIds: string[][] = []
   let nonSystemSeen = 0
 
   for (let i = 0; i < currentMessages.length; i++) {
+    const sourceIds = (currentMessages[i] as SourceMappedMessage)[messageSourceEventIds]
+    if (sourceIds?.some((id) => excludedSourceIds.has(id))) {
+      throw new Error("cannot persist messages derived from redacted session events")
+    }
     const role = messageRole(currentMessages[i]!)
     const isSystem = role === "system"
     const inPrefix = !isSystem && nonSystemSeen < nonSystemPrefix
 
-    if (inPrefix) {
+    if (inPrefix && prevNonSystemIds[nonSystemSeen]!.every((id) => !usedEventIds.has(id))) {
       // Reuse existing event ID for this matched non-system message
       currentEventIds.push(prevNonSystemIds[nonSystemSeen]!)
       nonSystemSeen++
     } else if (isSystem && i < previousMessages.length
       && messageRole(previousMessages[i]!) === "system"
-      && messageFingerprint(currentMessages[i]!) === messageFingerprint(previousMessages[i]!)) {
+      && messageSourcesAgree(currentMessages[i]!, previousMessages[i]!)
+      && previousProjectionGroups[i]!.every((id) => !usedEventIds.has(id))
+      && messageFingerprint(currentMessages[i]!, true) === messageFingerprint(previousMessages[i]!, true)) {
       // System message at same position with identical content -- reuse event ID
-      currentEventIds.push(previousProjectionIds[i]!)
+      currentEventIds.push(previousProjectionGroups[i]!)
     } else {
       if (!isSystem) nonSystemSeen++
+      const retainedIds = retainedSourceEventIds(currentMessages[i]!, sourceEvents, usedEventIds)
+      if (retainedIds) {
+        currentEventIds.push(retainedIds)
+        for (const id of retainedIds) usedEventIds.add(id)
+        continue
+      }
       // Create a new event. Use nextEventSequence(events) instead of
       // `events.length + 1` so that any gap (from pruning, archive replay,
       // or self-heal dedup) cannot collide with an existing id.
@@ -1552,37 +1732,35 @@ export function buildCanonicalSessionEnvelope(options: SessionEnvelopeBuildOptio
         currentIngressRelations[i],
       )
       events.push(event)
-      currentEventIds.push(event.id)
+      currentEventIds.push([event.id])
     }
+    for (const id of currentEventIds.at(-1)!) usedEventIds.add(id)
   }
 
   const projectionEventIds = selectProjectedEventIds(currentMessages, currentEventIds, trimmedMessages)
 
-  // Prune events: only keep events whose IDs are in the projection.
-  // Events not in projection are returned as evicted for archiving.
+  // Projection omissions are not authority to delete native history.
   const projectionIdSet = new Set(projectionEventIds)
-  const prunedEvents = events.filter((event) => projectionIdSet.has(event.id))
-  const evictedEvents = events.filter((event) => !projectionIdSet.has(event.id))
-
-  return {
-    envelope: {
-      version: 2,
-      events: prunedEvents,
-      projection: {
-        eventIds: projectionEventIds,
-        trimmed: projectionEventIds.length < currentEventIds.length,
-        maxTokens: options.projectionBasis.maxTokens,
-        contextMargin: options.projectionBasis.contextMargin,
-        inputTokens: options.projectionBasis.inputTokens,
-        projectedAt: options.recordedAt,
-      },
-      structuredOutputs: extractStructuredOutputsFromEvents(prunedEvents),
-      lastUsage: normalizeUsage(options.lastUsage),
-      state: normalizeContinuityState(options.state),
-      approvalSuspensions: structuredClone(options.existing?.approvalSuspensions ?? []),
+  const effectiveEvents = selectEffectiveSessionEvents(events)
+  const effectiveIds = new Set(effectiveEvents.map((event) => event.id))
+  const evictedEvents = effectiveEvents.filter((event) => !projectionIdSet.has(event.id))
+  const envelope: SessionEnvelope = {
+    version: 2,
+    events,
+    projection: {
+      eventIds: projectionEventIds.filter((id) => effectiveIds.has(id)),
+      trimmed: evictedEvents.length > 0,
+      maxTokens: options.projectionBasis.maxTokens,
+      contextMargin: options.projectionBasis.contextMargin,
+      inputTokens: options.projectionBasis.inputTokens,
+      projectedAt: options.recordedAt,
     },
-    evictedEvents,
+    lastUsage: normalizeUsage(options.lastUsage),
+    state: normalizeContinuityState(options.state),
+    approvalSuspensions: structuredClone(options.existing?.approvalSuspensions ?? []),
   }
+  envelope.structuredOutputs = extractStructuredOutputsFromEvents(providerProjectionEvents(envelope))
+  return { envelope, evictedEvents }
 }
 
 export function appendSyntheticAssistantEvent(
@@ -1602,15 +1780,17 @@ export function appendSyntheticAssistantEvent(
     null,
     null,
   )
-  return {
+  const priorIds = projectedSessionEventIds(envelope)
+  const updated: SessionEnvelope = {
     ...envelope,
     events: [...envelope.events, event],
-    structuredOutputs: extractStructuredOutputsFromEvents([...envelope.events, event]),
     projection: {
       ...envelope.projection,
-      eventIds: [...envelope.projection.eventIds, event.id],
+      eventIds: [...priorIds, event.id],
       projectedAt: recordedAt,
-      trimmed: false,
+      trimmed: new Set(priorIds).size < selectEffectiveSessionEvents(envelope.events).length,
     },
   }
+  updated.structuredOutputs = extractStructuredOutputsFromEvents(providerProjectionEvents(updated))
+  return updated
 }

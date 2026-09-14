@@ -470,16 +470,30 @@ function validateFacingConfig(
 
 /**
  * Load and parse `<agentRoot>/agent.json`.
- * Reads the file fresh on each call unless an override is set.
+ * Reads the explicit owner's file fresh, or preserves the legacy ambient override when no owner is supplied.
  * If the config is v1, auto-migrates to v2 via migrateAgentConfigV1ToV2 and re-reads.
  * Throws descriptive error if file is missing or contains invalid JSON.
  */
-export function loadAgentConfig(): AgentConfig {
-  if (_agentConfigOverride) {
+export function loadAgentConfig(owner?: Readonly<{ agentName: string; agentRoot: string }>): AgentConfig {
+  if (owner !== undefined && (
+    typeof owner !== "object" || owner === null
+    || typeof owner.agentName !== "string" || owner.agentName.length === 0
+    || typeof owner.agentRoot !== "string" || !path.isAbsolute(owner.agentRoot)
+  )) {
+    emitNervesEvent({
+      level: "error",
+      event: "config_identity.error",
+      component: "config/identity",
+      message: "invalid agent configuration owner",
+      meta: { reason: "explicit owner requires an agent name and absolute root" },
+    })
+    throw new Error("invalid agent configuration owner")
+  }
+  if (owner === undefined && _agentConfigOverride) {
     return _agentConfigOverride
   }
 
-  const agentRoot = getAgentRoot()
+  const agentRoot = owner === undefined ? getAgentRoot() : owner.agentRoot
   const configFile = path.join(agentRoot, "agent.json")
 
   let parsed = readAndParseAgentJson(configFile)
@@ -573,7 +587,7 @@ export function loadAgentConfig(): AgentConfig {
     enabled,
     humanFacing,
     agentFacing,
-    habitPaidTurnsPerDay: normalizeHabitPaidTurnsPerDay(getAgentName(), parsed.habitPaidTurnsPerDay, configFile),
+    habitPaidTurnsPerDay: normalizeHabitPaidTurnsPerDay(owner === undefined ? getAgentName() : owner.agentName, parsed.habitPaidTurnsPerDay, configFile),
     senses: normalizeSenses(parsed.senses, configFile),
     phrases: parsed.phrases as AgentConfig["phrases"],
   }

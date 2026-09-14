@@ -1,5 +1,5 @@
 import * as fs from "node:fs"
-import { parseSessionEnvelope, type SessionEnvelope, type SessionEvent, type SessionEventRole } from "./session-events"
+import { parseSessionEnvelope, projectedSessionEventIds, type SessionEnvelope, type SessionEvent, type SessionEventRole } from "./session-events"
 
 export interface SessionStatsReport {
   sessionPath: string
@@ -44,6 +44,7 @@ function eventTimeMs(event: SessionEvent): number | null {
 
 export function computeSessionStats(envelope: SessionEnvelope, sessionPath: string): SessionStatsReport {
   const byRole = emptyByRole()
+  const projectionCount = projectedSessionEventIds(envelope).length
   let toolCallTotal = 0
   let attachments = 0
   const toolNameCounts = new Map<string, number>()
@@ -85,8 +86,8 @@ export function computeSessionStats(envelope: SessionEnvelope, sessionPath: stri
       durationMs: earliestMs !== null && latestMs !== null ? latestMs - earliestMs : null,
     },
     projection: {
-      eventCount: envelope.projection.eventIds.length,
-      omittedFromProjection: Math.max(0, envelope.events.length - envelope.projection.eventIds.length),
+      eventCount: projectionCount,
+      omittedFromProjection: Math.max(0, envelope.events.length - projectionCount),
       inputTokens: envelope.projection.inputTokens,
       maxTokens: envelope.projection.maxTokens,
       trimmed: envelope.projection.trimmed,

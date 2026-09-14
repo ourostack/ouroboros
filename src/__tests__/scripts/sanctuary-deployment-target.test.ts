@@ -6,6 +6,8 @@ import { spawn, spawnSync } from "node:child_process"
 
 import { describe, expect, it } from "vitest"
 
+import { frontendSocketPathForDaemon } from "../../heart/frontend-socket"
+
 type TargetModule = {
   dockerTopology(runDocker?: (args: string[]) => string): Array<{ id: string; name: string }>
   targetProfile(name: string): { name: string; containerName: string }
@@ -187,6 +189,35 @@ describe("Sanctuary fixed deployment target", () => {
       readUnixSockets: () => [{ inode: "900", path: "/tmp/ouroboros-daemon.sock", flags: "00010000", type: "0001", state: "01" }],
       quiesceTarget,
     })).resolves.toMatchObject({ deployment: { targetContainerId: stagingId }, listeners: { inboundTcpListenerCount: 0, inboundUdpListenerCount: 0 } })
+    expect(snapshots).toHaveLength(0)
+  })
+
+  it.each(["staging", "final"] as const)("accepts the ordinary frontend control through the complete %s audit", async (profile) => {
+    const { runDeploymentTargetAudit } = await load()
+    const targetId = profile === "staging" ? stagingId : productionId
+    const snapshots = [input(profile).topologyBefore, input(profile).topologyAfter]
+    const daemonPath = "/tmp/ouroboros-daemon.sock"
+    const unixSockets = [
+      ...[daemonPath, frontendSocketPathForDaemon(daemonPath), "/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance/telegram-control.sock"]
+        .map((socketPath, index) => ({ inode: String(900 + index), path: socketPath, flags: "00010000", type: "0001", state: "01" })),
+      { inode: "903", path: "", flags: "00000000", type: "0001", state: "03" },
+      { inode: "904", path: "", flags: "00000000", type: "0001", state: "03" },
+    ]
+    let unixReads = 0
+    await expect(runDeploymentTargetAudit(profile, imageId, {
+      captureCanonicalRecords: () => snapshots.shift(),
+      readNetns: () => "net:[42]",
+      cgroupProcessIds: () => ({ path: `/docker/${targetId}`, processIds: [321], threadIds: [321, 401] }),
+      ownedSocketInodes: () => unixSockets.map(({ inode }) => inode),
+      readTcpListeners: () => [],
+      readUdpListeners: () => [],
+      readUnixSockets: () => { unixReads += 1; return unixSockets },
+      quiesceTarget,
+    })).resolves.toMatchObject({
+      deployment: { profile, targetContainerId: targetId, targetPid: 321 },
+      listeners: { ownedSocketCount: 5, unixControlSocketCount: 3, inboundTcpListenerCount: 0, inboundUdpListenerCount: 0 },
+    })
+    expect(unixReads).toBe(4)
     expect(snapshots).toHaveLength(0)
   })
 
@@ -952,6 +983,31 @@ describe("Sanctuary fixed deployment target", () => {
 })
 
 describe("Sanctuary effective listener containment", () => {
+  it.each([
+    ["lookalike suffix", { path: "/tmp/ouroboros-daemon.sock.frontend.extra" }],
+    ["different command socket", { path: frontendSocketPathForDaemon("/tmp/other-daemon.sock") }],
+    ["different directory", { path: frontendSocketPathForDaemon("/var/tmp/ouroboros-daemon.sock") }],
+    ["hashed fallback", { path: frontendSocketPathForDaemon(`/tmp/${"a".repeat(100)}.sock`) }],
+    ["non-listening flags", { flags: "00000000" }],
+    ["additional flags", { flags: "00010001" }],
+    ["missing flags", { flags: undefined }],
+    ["datagram type", { type: "0002" }],
+    ["missing type", { type: undefined }],
+    ["connected state", { state: "03" }],
+    ["missing state", { state: undefined }],
+  ])("rejects a frontend control with %s", async (_label, mutation) => {
+    const { attestOwnedListeners } = await load()
+    const control = { inode: "900", path: frontendSocketPathForDaemon("/tmp/ouroboros-daemon.sock"), flags: "00010000", type: "0001", state: "01", ...mutation }
+    expect(() => attestOwnedListeners({
+      rootPid: 321, netnsBefore: "net:[42]", netnsAfter: "net:[42]",
+      processIdsBefore: [321], processIdsAfter: [321],
+      socketInodesBefore: ["900"], socketInodesAfter: ["900"], socketInodesTerminal: ["900"],
+      tcpListenersBefore: [], tcpListenersAfter: [], tcpListenersTerminal: [],
+      udpListenersBefore: [], udpListenersAfter: [], udpListenersTerminal: [],
+      unixSocketsBefore: [control], unixSocketsAfter: [control], unixSocketsTerminal: [control],
+    })).toThrow("target runtime owns an undocumented Unix endpoint")
+  })
+
   it("accepts a stable target process tree with only Unix control sockets", async () => {
     const { attestOwnedListeners } = await load()
     const control = { inode: "900", path: "/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance/telegram-control.sock", flags: "00010000", type: "0001", state: "01" }

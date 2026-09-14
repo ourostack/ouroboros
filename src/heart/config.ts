@@ -510,17 +510,45 @@ export function slugify(value: string): string {
     .replace(/-+$/, "")
 }
 
+export class InvalidSessionPathError extends Error {}
+
+export function isValidSessionCoordinate(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value !== "." && value !== ".." && !/[/\\\0]/.test(value)
+}
+
+function isInsideSessionRoot(root: string, target: string): boolean {
+  const relative = path.relative(root, target)
+  return relative !== "" && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
+}
+
 export function resolveSessionPath(
   friendId: string,
   channel: string,
   key: string,
-  options?: { ensureDir?: boolean },
+  options?: { ensureDir?: boolean; agentRoot?: string; confined?: boolean },
 ): string {
-  const dir = path.join(getAgentRoot(), "state", "sessions", friendId, channel)
+  const agentRoot = options?.agentRoot ?? getAgentRoot()
+  if (options?.confined && (!isValidSessionCoordinate(friendId) || !isValidSessionCoordinate(channel)
+    || typeof key !== "string" || key.includes("\0") || !path.isAbsolute(agentRoot))) {
+    throw new InvalidSessionPathError("invalid session coordinates")
+  }
+  const sessionsRoot = path.join(agentRoot, "state", "sessions")
+  const dir = path.join(sessionsRoot, friendId, channel)
+  const file = path.join(dir, sanitizeKey(key) + ".json")
+  if (options?.confined) {
+    if (!isInsideSessionRoot(sessionsRoot, file)) throw new InvalidSessionPathError("session path escapes its root")
+    if (fs.existsSync(file)) {
+      const realSessionsRoot = fs.realpathSync(sessionsRoot)
+      if (!isInsideSessionRoot(fs.realpathSync(agentRoot), realSessionsRoot)
+        || !isInsideSessionRoot(realSessionsRoot, fs.realpathSync(file))) {
+        throw new InvalidSessionPathError("session path escapes the initiating agent")
+      }
+    }
+  }
   if (options?.ensureDir) {
     fs.mkdirSync(dir, { recursive: true })
   }
-  return path.join(dir, sanitizeKey(key) + ".json")
+  return file
 }
 
 export function sessionPath(friendId: string, channel: string, key: string): string {
