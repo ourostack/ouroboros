@@ -69,7 +69,7 @@ function fixture() {
   })
   const updates = [message(10)]
   const api: TelegramBotApi = {
-    request: vi.fn(async () => updates),
+    request: vi.fn(async (method) => method === "getUpdates" ? updates : { method }),
     stop: vi.fn(),
   }
   return { api, gateway, service: new SanctuaryTelegramAuthorityService({ api, gateway }) }
@@ -124,6 +124,96 @@ describe("Sanctuary Telegram authority service", () => {
     })
     vi.mocked(f.api.request).mockResolvedValueOnce([])
     await expect(unavailable.dispatch("telegram.poll", {})).rejects.toThrow(/unavailable/u)
+  })
+
+  it("proxies only exact owner, observed callback, and observed file requests", async () => {
+    const f = fixture()
+    await f.service.dispatch("telegram.poll", {})
+    await expect(f.service.dispatch("telegram.request", { method: "getMe", body: {} })).resolves.toEqual({ method: "getMe" })
+    await expect(f.service.dispatch("telegram.request", {
+      method: "sendMessage",
+      body: { chat_id: "42", text: "hello", parse_mode: "HTML" },
+    })).resolves.toEqual({ method: "sendMessage" })
+    await expect(f.service.dispatch("telegram.request", {
+      method: "editMessageText",
+      body: { chat_id: "42", message_id: 71, text: "updated" },
+    })).resolves.toEqual({ method: "editMessageText" })
+    await expect(f.service.dispatch("telegram.request", {
+      method: "sendMessage",
+      body: { chat_id: "84", text: "wrong target" },
+    })).rejects.toThrow(/target/u)
+    await expect(f.service.dispatch("telegram.request", {
+      method: "getUpdates",
+      body: {},
+    })).rejects.toThrow(/method/u)
+    await expect(f.service.dispatch("telegram.request", {
+      method: "sendMessage",
+      body: { chat_id: "42", text: "" },
+    })).rejects.toThrow(/body/u)
+    for (const body of [
+      null,
+      { chat_id: "42" },
+      { chat_id: "42", text: "hello", parse_mode: "Markdown" },
+      { chat_id: "42", text: "hello", reply_markup: "bad" },
+      { chat_id: "42", text: "hello", extra: true },
+    ]) {
+      await expect(f.service.dispatch("telegram.request", { method: "sendMessage", body })).rejects.toThrow(/body|target/u)
+    }
+    for (const body of [
+      { chat_id: "84", message_id: 71, text: "updated" },
+      { chat_id: "42", message_id: 0, text: "updated" },
+      { chat_id: "42", message_id: 71, text: "" },
+      { chat_id: "42", message_id: 71, text: "updated", parse_mode: "Markdown" },
+      { chat_id: "42", message_id: 71, text: "updated", reply_markup: "bad" },
+    ]) {
+      await expect(f.service.dispatch("telegram.request", { method: "editMessageText", body })).rejects.toThrow(/body|target/u)
+    }
+    await expect(f.service.dispatch("telegram.request", { method: "getMe", body: { extra: true } })).rejects.toThrow(/body/u)
+    await expect(f.service.dispatch("telegram.request", { body: {} } as never)).rejects.toThrow(/params/u)
+  })
+
+  it("allows callback acknowledgement and file lookup only after root observation", async () => {
+    const keys = generateKeyPairSync("ed25519")
+    let nonce = 0
+    const gateway = new FileSanctuaryTelegramAuthorityGateway(root(), {
+      targetHost: "sanctuary", botId: "123456", ownerUserId: "42", ownerChatId: "42", keyId: "issuer-1",
+      publicKeyDigest: sanctuaryAuthorityPublicKeyDigest(keys.privateKey), privateKey: keys.privateKey,
+      now: () => "2026-09-16T22:30:00.000Z", nonce: () => Buffer.alloc(32, ++nonce).toString("base64url"),
+    })
+    gateway.capture([
+      { update_id: 20, callback_query: { id: "callback-20", from: { id: 42 }, message: { message_id: 120, chat: { id: 42 } } } },
+      { update_id: 21, message: { message_id: 121, from: { id: 42 }, chat: { id: 42, type: "private" }, document: { file_id: "file-21" } } },
+    ])
+    const api = { request: vi.fn(async (method: string) => ({ method })), stop: vi.fn() }
+    const service = new SanctuaryTelegramAuthorityService({ api, gateway })
+    await expect(service.dispatch("telegram.request", {
+      method: "answerCallbackQuery",
+      body: { callback_query_id: "callback-20" },
+    })).resolves.toEqual({ method: "answerCallbackQuery" })
+    await expect(service.dispatch("telegram.request", {
+      method: "getFile",
+      body: { file_id: "file-21" },
+    })).resolves.toEqual({ method: "getFile" })
+    await expect(service.dispatch("telegram.request", {
+      method: "answerCallbackQuery",
+      body: { callback_query_id: "callback-missing" },
+    })).rejects.toThrow(/callback/u)
+    await expect(service.dispatch("telegram.request", {
+      method: "getFile",
+      body: { file_id: "file-missing" },
+    })).rejects.toThrow(/file/u)
+    for (const body of [
+      {},
+      { callback_query_id: "" },
+      { callback_query_id: "callback-20", text: "" },
+      { callback_query_id: "callback-20", show_alert: false },
+      { callback_query_id: "callback-20", extra: true },
+    ]) {
+      await expect(service.dispatch("telegram.request", { method: "answerCallbackQuery", body })).rejects.toThrow(/callback/u)
+    }
+    for (const body of [{}, { file_id: "" }, { file_id: "file-21", extra: true }]) {
+      await expect(service.dispatch("telegram.request", { method: "getFile", body })).rejects.toThrow(/file/u)
+    }
   })
 
   it("round-trips bounded requests over the Unix socket and closes cleanly", async () => {

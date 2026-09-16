@@ -81,6 +81,15 @@ export interface SanctuaryTelegramSettlement {
   outcome: "completed" | "indeterminate"
 }
 
+export interface SanctuaryTelegramAuthorityIdentity {
+  targetHost: string
+  botId: string
+  ownerUserId: string
+  ownerChatId: string
+  keyId: string
+  publicKeyDigest: string
+}
+
 export function sanctuaryTelegramAuthorityStatePath(agentRoot: string): string {
   return path.join(agentRoot, "authority", "telegram-state.json")
 }
@@ -389,6 +398,39 @@ export class FileSanctuaryTelegramAuthorityGateway {
 
   cursor(): number {
     return this.#read((state) => state.cursor)
+  }
+
+  identity(): SanctuaryTelegramAuthorityIdentity {
+    return {
+      targetHost: this.#options.targetHost,
+      botId: this.#options.botId,
+      ownerUserId: this.#options.ownerUserId,
+      ownerChatId: this.#options.ownerChatId,
+      keyId: this.#options.keyId,
+      publicKeyDigest: this.#options.publicKeyDigest,
+    }
+  }
+
+  ownsCallbackQuery(callbackQueryId: string): boolean {
+    if (typeof callbackQueryId !== "string" || callbackQueryId.length === 0) return false
+    return this.#read((state) => Object.values(state.records).some((record) =>
+      record.disposition === "dispatch"
+      && record.rawUpdate.callback_query?.id === callbackQueryId))
+  }
+
+  ownsFileId(fileId: string): boolean {
+    if (typeof fileId !== "string" || fileId.length === 0) return false
+    return this.#read((state) => Object.values(state.records).some((record) => {
+      if (record.disposition !== "dispatch") return false
+      const message = record.rawUpdate.message
+      return message?.document?.file_id === fileId
+        || message?.audio?.file_id === fileId
+        || message?.video?.file_id === fileId
+        || message?.voice?.file_id === fileId
+        || message?.animation?.file_id === fileId
+        || message?.sticker?.file_id === fileId
+        || message?.photo?.some((photo) => photo.file_id === fileId) === true
+    }))
   }
 
   record(updateId: number): SanctuaryTelegramAuthorityRecord | null {

@@ -192,6 +192,43 @@ describe("Sanctuary root Telegram authority gateway state", () => {
       callbackQueryId: "callback-70",
       ownerEligible: true,
     })
+    expect(gateway.ownsCallbackQuery("callback-70")).toBe(true)
+    expect(gateway.ownsCallbackQuery("callback-missing")).toBe(false)
+    expect(gateway.ownsCallbackQuery("")).toBe(false)
+    expect(gateway.ownsCallbackQuery(1 as never)).toBe(false)
+    expect(gateway.identity()).toEqual({
+      targetHost: "sanctuary",
+      botId: "123456",
+      ownerUserId: "42",
+      ownerChatId: "42",
+      keyId: "sanctuary-root-2026-09-16",
+      publicKeyDigest: f.configuration.publicKeyDigest,
+    })
+  })
+
+  it("recognizes only file ids captured from root-observed updates", () => {
+    const f = fixture()
+    f.gateway.capture([{
+      update_id: 71,
+      message: {
+        message_id: 171,
+        from: { id: 42 },
+        chat: { id: 42, type: "private" },
+        document: { file_id: "document-1" },
+        photo: [{ file_id: "photo-1" }],
+        audio: { file_id: "audio-1" },
+        video: { file_id: "video-1" },
+        voice: { file_id: "voice-1" },
+        animation: { file_id: "animation-1" },
+        sticker: { file_id: "sticker-1" },
+      },
+    }, { update_id: 72 }])
+    for (const fileId of ["document-1", "photo-1", "audio-1", "video-1", "voice-1", "animation-1", "sticker-1"]) {
+      expect(f.gateway.ownsFileId(fileId)).toBe(true)
+    }
+    expect(f.gateway.ownsFileId("missing")).toBe(false)
+    expect(f.gateway.ownsFileId("")).toBe(false)
+    expect(f.gateway.ownsFileId(1 as never)).toBe(false)
   })
 
   it("refuses invalid configuration, clocks, nonces, stale updates, and settlement shapes", () => {

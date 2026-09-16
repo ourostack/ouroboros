@@ -27,6 +27,17 @@ function emptyParams(value: unknown): value is Record<string, never> {
   return isObject(value) && Object.keys(value).length === 0
 }
 
+function exactBody(value: unknown, required: readonly string[], optional: readonly string[] = []): value is Record<string, unknown> {
+  if (!isObject(value)) return false
+  const keys = Object.keys(value)
+  return required.every((key) => keys.includes(key))
+    && keys.every((key) => required.includes(key) || optional.includes(key))
+}
+
+function boundedText(value: unknown, maxLength: number): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= maxLength
+}
+
 export class SanctuaryTelegramAuthorityService {
   readonly #api: TelegramBotApi
   readonly #gateway: FileSanctuaryTelegramAuthorityGateway
@@ -61,6 +72,73 @@ export class SanctuaryTelegramAuthorityService {
     if (method === "telegram.cursor") {
       if (!emptyParams(params)) throw new Error("Sanctuary Telegram cursor params are invalid")
       return { cursor: this.#gateway.cursor() }
+    }
+    if (method === "telegram.request") {
+      if (!exactKeys(params, ["method", "body"]) || typeof params.method !== "string") {
+        throw new Error("Sanctuary Telegram request params are invalid")
+      }
+      const requestMethod = params.method
+      const body = params.body
+      const ownerChatId = this.#gateway.identity().ownerChatId
+      if (requestMethod === "getMe") {
+        if (!emptyParams(body)) throw new Error("Sanctuary Telegram getMe body is invalid")
+      } else if (requestMethod === "sendMessage") {
+        if (
+          !exactBody(body, ["chat_id", "text"], ["parse_mode", "reply_markup"])
+          || String(body.chat_id) !== ownerChatId
+        ) {
+          throw new Error("Sanctuary Telegram send target is invalid")
+        }
+        if (
+          !boundedText(body.text, 4_096)
+          || (body.parse_mode !== undefined && body.parse_mode !== "HTML")
+          || (body.reply_markup !== undefined && !isObject(body.reply_markup))
+        ) {
+          throw new Error("Sanctuary Telegram send body is invalid")
+        }
+      } else if (requestMethod === "editMessageText") {
+        if (
+          !exactBody(body, ["chat_id", "message_id", "text"], ["parse_mode", "reply_markup"])
+          || String(body.chat_id) !== ownerChatId
+        ) {
+          throw new Error("Sanctuary Telegram edit target is invalid")
+        }
+        if (
+          !Number.isSafeInteger(body.message_id)
+          || (body.message_id as number) <= 0
+          || !boundedText(body.text, 4_096)
+          || (body.parse_mode !== undefined && body.parse_mode !== "HTML")
+          || (body.reply_markup !== undefined && !isObject(body.reply_markup))
+        ) {
+          throw new Error("Sanctuary Telegram edit body is invalid")
+        }
+      } else if (requestMethod === "answerCallbackQuery") {
+        if (!exactBody(body, ["callback_query_id"], ["text", "show_alert"])) {
+          throw new Error("Sanctuary Telegram callback body is invalid")
+        }
+        if (
+          !boundedText(body.callback_query_id, 256)
+          || !this.#gateway.ownsCallbackQuery(body.callback_query_id)
+        ) {
+          throw new Error("Sanctuary Telegram callback is not root-observed")
+        }
+        if (
+          (body.text !== undefined && !boundedText(body.text, 200))
+          || (body.show_alert !== undefined && body.show_alert !== true)
+        ) {
+          throw new Error("Sanctuary Telegram callback body is invalid")
+        }
+      } else if (requestMethod === "getFile") {
+        if (!exactBody(body, ["file_id"]) || !boundedText(body.file_id, 512)) {
+          throw new Error("Sanctuary Telegram file body is invalid")
+        }
+        if (!this.#gateway.ownsFileId(body.file_id)) {
+          throw new Error("Sanctuary Telegram file is not root-observed")
+        }
+      } else {
+        throw new Error("Sanctuary Telegram request method is not available")
+      }
+      return this.#api.request(requestMethod, body as Record<string, unknown>)
     }
     throw new Error("Sanctuary authority method is not available")
   }

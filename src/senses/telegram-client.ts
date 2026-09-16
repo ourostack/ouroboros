@@ -610,6 +610,7 @@ export interface TelegramLongPollOptions {
   acceptanceEventMeta?: (update?: TelegramUpdate, distinctAccount?: boolean) => Record<string, unknown>
   onBeforeDispatch?: () => void
   onDispatchSettled?: () => void
+  settleTransport?: (update: TelegramUpdate, outcome: "completed" | "indeterminate") => Promise<void>
 }
 
 export function createTelegramLongPoll(options: TelegramLongPollOptions): TelegramLongPoll {
@@ -771,6 +772,9 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
       if (newlyCaptured) {
         if (requiresDurableDispatch && options.inboxStore && !options.inboxStore.claim(update)) {
           options.onDispatchSettled?.()
+          const indeterminate = options.inboxStore.loadIndeterminate()
+            .some((receipt) => sameReceipt(receipt, updateReceipt(update)))
+          await options.settleTransport?.(update, indeterminate ? "indeterminate" : "completed")
           options.offsetStore.save(next)
           nextUpdateId = next
           options.inboxStore.commit?.(update)
@@ -790,8 +794,23 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
           if (dispatchError !== undefined) throw new AggregateError([dispatchError, auditError], "Telegram dispatch and acceptance audit verification failed")
           throw auditError
         }
+        try {
+          if (requiresDurableDispatch) {
+            await options.settleTransport?.(update, dispatchError === undefined ? "completed" : "indeterminate")
+          }
+        } catch (settlementError) {
+          if (dispatchError !== undefined) throw new AggregateError([dispatchError, settlementError], "Telegram dispatch and transport settlement failed")
+          throw settlementError
+        }
         if (dispatchError !== undefined) throw dispatchError
-      } else options.onDispatchSettled?.()
+      } else {
+        options.onDispatchSettled?.()
+        if (requiresDurableDispatch) {
+          const indeterminate = options.inboxStore?.loadIndeterminate()
+            .some((receipt) => sameReceipt(receipt, updateReceipt(update))) ?? false
+          await options.settleTransport?.(update, indeterminate ? "indeterminate" : "completed")
+        }
+      }
       options.offsetStore.save(next)
       nextUpdateId = next
       if (requiresDurableDispatch) options.inboxStore?.commit?.(update)
