@@ -329,6 +329,35 @@ describe("Sanctuary Telegram authority service", () => {
     expect(() => createSanctuaryTelegramAuthorityServer({ socketPath: path.join(root(), "timeout.sock"), connectionTimeoutMs: 0, dispatch: vi.fn() })).toThrow(/timeout/u)
     expect(() => new SocketSanctuaryTelegramAuthorityClient("relative.sock")).toThrow(/absolute/u)
 
+    const regularSocketPath = path.join(root(), "regular.sock")
+    fs.writeFileSync(regularSocketPath, "do not delete")
+    await expect(createSanctuaryTelegramAuthorityServer({
+      socketPath: regularSocketPath,
+      dispatch: vi.fn(),
+    }).listen()).rejects.toThrow(/socket path/u)
+    expect(fs.readFileSync(regularSocketPath, "utf8")).toBe("do not delete")
+
+    const linkedRoot = root()
+    const actualDirectory = path.join(linkedRoot, "actual")
+    const linkedDirectory = path.join(linkedRoot, "linked")
+    fs.mkdirSync(actualDirectory)
+    fs.symlinkSync(actualDirectory, linkedDirectory)
+    await expect(createSanctuaryTelegramAuthorityServer({
+      socketPath: path.join(linkedDirectory, "authority.sock"),
+      dispatch: vi.fn(),
+    }).listen()).rejects.toThrow(/directory/u)
+
+    const missingDirectory = path.join(os.tmpdir(), `sat-${process.pid}-${Date.now()}`)
+    roots.push(missingDirectory)
+    const nestedSocketPath = path.join(missingDirectory, "authority.sock")
+    const nestedServer = createSanctuaryTelegramAuthorityServer({
+      socketPath: nestedSocketPath,
+      dispatch: vi.fn(async () => true),
+    })
+    await nestedServer.listen()
+    expect(fs.statSync(path.dirname(nestedSocketPath)).isDirectory()).toBe(true)
+    await nestedServer.close()
+
     const socketPath = path.join(root(), "authority.sock")
     const server = createSanctuaryTelegramAuthorityServer({ socketPath, dispatch: vi.fn(async () => true) })
     await server.listen()

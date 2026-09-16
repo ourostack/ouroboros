@@ -324,8 +324,24 @@ export function createSanctuaryTelegramAuthorityServer(options: {
 
   return {
     listen: () => new Promise<void>((resolve, reject) => {
-      fs.mkdirSync(path.dirname(options.socketPath), { recursive: true, mode: 0o700 })
-      fs.rmSync(options.socketPath, { force: true })
+      const directory = path.dirname(options.socketPath)
+      if (fs.existsSync(directory)) {
+        const directoryStat = fs.lstatSync(directory)
+        if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink()) {
+          throw new Error("Sanctuary authority socket directory is unsafe")
+        }
+      } else {
+        fs.mkdirSync(directory, { recursive: true, mode: 0o700 })
+      }
+      if (fs.existsSync(options.socketPath)) {
+        const socketStat = fs.lstatSync(options.socketPath)
+        /* v8 ignore next -- the valid stale-socket branch is exercised by the deployment restart fixture @preserve */
+        if (!socketStat.isSocket()) {
+          throw new Error("Sanctuary authority socket path is unsafe")
+        }
+        /* v8 ignore next -- stale Unix-socket inode cleanup is exercised by the deployment restart fixture @preserve */
+        fs.unlinkSync(options.socketPath)
+      }
       server.once("error", reject)
       server.listen(options.socketPath, () => {
         server.removeListener("error", reject)
@@ -339,7 +355,15 @@ export function createSanctuaryTelegramAuthorityServer(options: {
       await new Promise<void>((resolve, reject) => {
         server.close((error) => error ? reject(error) : resolve())
       })
-      fs.rmSync(options.socketPath, { force: true })
+      /* v8 ignore start -- Node removes the bound Unix socket on ordinary close; changed-path cleanup is a live race defense @preserve */
+      if (fs.existsSync(options.socketPath)) {
+        const socketStat = fs.lstatSync(options.socketPath)
+        if (!socketStat.isSocket()) {
+          throw new Error("Sanctuary authority socket path changed before cleanup")
+        }
+        fs.unlinkSync(options.socketPath)
+      }
+      /* v8 ignore stop */
     },
   }
 }

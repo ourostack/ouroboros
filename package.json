@@ -8,7 +8,8 @@
   "bin": {
     "cli": "dist/heart/daemon/ouro-bot-entry.js",
     "ouro": "dist/heart/daemon/ouro-entry.js",
-    "ouro.bot": "dist/heart/daemon/ouro-bot-entry.js"
+    "ouro.bot": "dist/heart/daemon/ouro-bot-entry.js",
+    "ouro-sanctuary-authority": "dist/heart/daemon/sanctuary-telegram-authority-entry.js"
   },
   "files": [
     "dist/",
