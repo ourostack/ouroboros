@@ -45,6 +45,8 @@ function fixture() {
     if (method === "telegram.settle") return { settled: true, cursor: 11 }
     if (method === "telegram.request") return { message_id: 71 }
     if (method === "telegram.file") return { bodyBase64: Buffer.from("file-body").toString("base64"), contentType: "text/plain" }
+    if (method === "telegram.chat.admit") return { admitted: true }
+    if (method === "telegram.chat.revoke") return { revoked: true }
     throw new Error("unexpected method")
   })
   const close = vi.fn()
@@ -66,19 +68,59 @@ describe("Sanctuary Telegram authority transport", () => {
       observationDigest: authorityArtifactDigest(observation.domain, observation.payload),
       outcome: "completed",
     })
+    await f.transport.api.request("getMe", {})
+    expect(f.request).toHaveBeenLastCalledWith("telegram.request", { method: "getMe", body: {} })
+  })
+
+  it("retains a newer current observation when an older captured update settles", async () => {
+    const f = fixture()
+    await f.transport.api.request("getUpdates", {
+      offset: 0, timeout: 50, allowed_updates: ["message", "callback_query"],
+    })
+    const update11 = { ...update, update_id: 11 }
+    const observation11 = { ...observation, payload: { ...observation.payload, updateId: 11 } }
+    f.request.mockResolvedValueOnce({ observation: observation11, update: update11 })
+    await f.transport.api.request("getUpdates", {
+      offset: 0, timeout: 50, allowed_updates: ["message", "callback_query"],
+    })
+    await f.transport.settleTransport(update, "completed")
+    await f.transport.api.request("getMe", {})
+    expect(f.request).toHaveBeenLastCalledWith("telegram.request", {
+      method: "getMe",
+      body: {},
+      observation: {
+        updateId: 11,
+        observationDigest: authorityArtifactDigest(observation11.domain, observation11.payload),
+      },
+    })
   })
 
   it("proxies non-poll Telegram methods through the closed root request operation", async () => {
     const f = fixture()
+    await f.transport.api.request("getUpdates", {
+      offset: 0,
+      timeout: 50,
+      allowed_updates: ["message", "callback_query"],
+    })
     await expect(f.transport.api.request("sendMessage", { chat_id: "42", text: "hello" })).resolves.toEqual({ message_id: 71 })
     expect(f.request).toHaveBeenCalledWith("telegram.request", {
       method: "sendMessage",
       body: { chat_id: "42", text: "hello" },
+      observation: {
+        updateId: 10,
+        observationDigest: authorityArtifactDigest(observation.domain, observation.payload),
+      },
     })
     const response = await f.transport.downloadFile("documents/file.txt")
     await expect(response.text()).resolves.toBe("file-body")
     expect(response.headers.get("content-type")).toBe("text/plain")
     expect(f.request).toHaveBeenCalledWith("telegram.file", { filePath: "documents/file.txt" })
+    await f.transport.admitChat({ admissionId: "a".repeat(20), updateId: 10, userId: "84", chatId: "84" })
+    expect(f.request).toHaveBeenCalledWith("telegram.chat.admit", {
+      admissionId: "a".repeat(20), updateId: 10, userId: "84", chatId: "84",
+    })
+    await f.transport.revokeChat({ userId: "84", chatId: "84" })
+    expect(f.request).toHaveBeenCalledWith("telegram.chat.revoke", { userId: "84", chatId: "84" })
   })
 
   it("returns an empty poll, refuses missing settlement authority, respects abort, and closes once", async () => {

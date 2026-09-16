@@ -15,6 +15,7 @@ import {
   sanctuaryAuthorityPublicKeyDigest,
 } from "../../../heart/daemon/sanctuary-telegram-authority-gateway"
 import { authorityArtifactDigest } from "../../../heart/daemon/sanctuary-authority-codec"
+import { FIXED_ADMISSION_ACKNOWLEDGEMENT } from "../../../senses/telegram-effect-adapter"
 import type { TelegramBotApi, TelegramUpdate } from "../../../senses/telegram-client"
 
 const roots: string[] = []
@@ -183,6 +184,7 @@ describe("Sanctuary Telegram authority service", () => {
     gateway.capture([
       { update_id: 20, callback_query: { id: "callback-20", from: { id: 42 }, message: { message_id: 120, chat: { id: 42 } } } },
       { update_id: 21, message: { message_id: 121, from: { id: 42 }, chat: { id: 42, type: "private" }, document: { file_id: "file-21" } } },
+      { update_id: 22, message: { message_id: 122, from: { id: 84 }, chat: { id: 84, type: "private" }, text: "hello" } },
     ])
     const api = { request: vi.fn(async (method: string) => method === "getFile" ? { file_path: "documents/file-21.bin", file_size: 4 } : { method }), stop: vi.fn() }
     const downloadFile = vi.fn(async () => ({ body: Buffer.from("data"), contentType: "application/octet-stream" }))
@@ -202,6 +204,31 @@ describe("Sanctuary Telegram authority service", () => {
       contentType: "application/octet-stream",
     })
     expect(downloadFile).toHaveBeenCalledWith("documents/file-21.bin")
+    const strangerObservation = gateway.record(22)!
+    if (strangerObservation.disposition !== "dispatch") throw new Error("expected dispatch")
+    const observationDigest = authorityArtifactDigest(strangerObservation.observation.domain, strangerObservation.observation.payload)
+    await expect(service.dispatch("telegram.request", {
+      method: "sendMessage",
+      body: { chat_id: "84", text: FIXED_ADMISSION_ACKNOWLEDGEMENT },
+      observation: { updateId: 22, observationDigest },
+    })).resolves.toEqual({ method: "sendMessage" })
+    await expect(service.dispatch("telegram.request", {
+      method: "sendMessage",
+      body: { chat_id: "84", text: "changed" },
+      observation: { updateId: 22, observationDigest },
+    })).rejects.toThrow(/target/u)
+    await service.dispatch("telegram.chat.admit", {
+      admissionId: "a".repeat(20), updateId: 22, userId: "84", chatId: "84",
+    })
+    await expect(service.dispatch("telegram.request", {
+      method: "sendMessage",
+      body: { chat_id: "84", text: "welcome" },
+    })).resolves.toEqual({ method: "sendMessage" })
+    await service.dispatch("telegram.chat.revoke", { userId: "84", chatId: "84" })
+    await expect(service.dispatch("telegram.request", {
+      method: "sendMessage",
+      body: { chat_id: "84", text: "after revoke" },
+    })).rejects.toThrow(/target/u)
     await expect(service.dispatch("telegram.request", {
       method: "answerCallbackQuery",
       body: { callback_query_id: "callback-missing" },

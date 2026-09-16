@@ -19,6 +19,9 @@ const OBSERVATION_DOMAIN = "ouro.sanctuary.telegram-observation.v1"
 const RAW_UPDATE_DIGEST = /^tgu_[A-Za-z0-9_-]{43}$/u
 const DECIMAL_ID = /^[1-9][0-9]*$/u
 const NONCE = /^[A-Za-z0-9_-]{43}$/u
+const ADMISSION_ID = /^[a-f0-9]{20}$/u
+const MAX_AUTHORIZED_CHATS = 64
+const AUTHORIZED_CHAT_IDLE_MS = 365 * 24 * 60 * 60 * 1_000
 
 export interface TelegramTransportObservationV1 {
   targetHost: string
@@ -61,6 +64,14 @@ interface SanctuaryTelegramAuthorityState {
   schemaVersion: typeof SCHEMA_VERSION
   cursor: number
   records: Record<string, SanctuaryTelegramAuthorityRecord>
+  authorizedChats: Record<string, {
+    admissionId: string
+    updateId: number
+    userId: string
+    chatId: string
+    admittedAt: string
+    lastUsedAt: string
+  }>
 }
 
 export interface SanctuaryTelegramAuthorityGatewayOptions {
@@ -174,7 +185,7 @@ function updateCoordinates(update: TelegramUpdate): {
 }
 
 function initialState(): SanctuaryTelegramAuthorityState {
-  return { schemaVersion: SCHEMA_VERSION, cursor: 0, records: {} }
+  return { schemaVersion: SCHEMA_VERSION, cursor: 0, records: {}, authorizedChats: {} }
 }
 
 function validateObservation(value: unknown): asserts value is SignedAuthorityPayload<TelegramTransportObservationV1> {
@@ -222,11 +233,12 @@ function validateRecord(value: unknown, updateId: number): asserts value is Sanc
 function validateState(value: unknown): asserts value is SanctuaryTelegramAuthorityState {
   if (
     !isObject(value)
-    || !exactKeys(value, ["schemaVersion", "cursor", "records"])
+    || !exactKeys(value, ["schemaVersion", "cursor", "records", "authorizedChats"])
     || value.schemaVersion !== SCHEMA_VERSION
     || !Number.isSafeInteger(value.cursor)
     || (value.cursor as number) < 0
     || !isObject(value.records)
+    || !isObject(value.authorizedChats)
   ) {
     throw new Error("Sanctuary Telegram authority state is malformed")
   }
@@ -235,6 +247,26 @@ function validateState(value: unknown): asserts value is SanctuaryTelegramAuthor
       throw new Error("Sanctuary Telegram authority state has an invalid update key")
     }
     validateRecord(record, Number(key))
+  }
+  if (Object.keys(value.authorizedChats).length > MAX_AUTHORIZED_CHATS) {
+    throw new Error("Sanctuary Telegram authority chat registry exceeds its limit")
+  }
+  for (const [key, entry] of Object.entries(value.authorizedChats)) {
+    if (
+      !isObject(entry)
+      || !exactKeys(entry, ["admissionId", "updateId", "userId", "chatId", "admittedAt", "lastUsedAt"])
+      || key !== `${entry.userId}:${entry.chatId}`
+      || !ADMISSION_ID.test(String(entry.admissionId))
+      || !Number.isSafeInteger(entry.updateId)
+      || (entry.updateId as number) < 0
+      || !DECIMAL_ID.test(String(entry.userId))
+      || !DECIMAL_ID.test(String(entry.chatId))
+      || !validTime(entry.admittedAt)
+      || !validTime(entry.lastUsedAt)
+      || Date.parse(entry.lastUsedAt) < Date.parse(entry.admittedAt)
+    ) {
+      throw new Error("Sanctuary Telegram authority chat registry is malformed")
+    }
   }
 }
 
@@ -433,6 +465,112 @@ export class FileSanctuaryTelegramAuthorityGateway {
     }))
   }
 
+  ownsCurrentObservation(input: {
+    updateId: number
+    observationDigest: string
+    chatId: string
+  }): boolean {
+    if (
+      !Number.isSafeInteger(input.updateId)
+      || input.updateId < 0
+      || !/^sha256:[a-f0-9]{64}$/u.test(input.observationDigest)
+      || !DECIMAL_ID.test(input.chatId)
+    ) return false
+    return this.#read((state) => {
+      const record = state.records[String(input.updateId)]
+      return Boolean(
+        record
+        && record.disposition === "dispatch"
+        && record.settlement === "pending"
+        && record.observation.payload.chatId === input.chatId
+        && authorityArtifactDigest(record.observation.domain, record.observation.payload) === input.observationDigest,
+      )
+    })
+  }
+
+  admitChat(input: {
+    admissionId: string
+    updateId: number
+    userId: string
+    chatId: string
+  }): void {
+    if (
+      !ADMISSION_ID.test(input.admissionId)
+      || !Number.isSafeInteger(input.updateId)
+      || input.updateId < 0
+      || !DECIMAL_ID.test(input.userId)
+      || !DECIMAL_ID.test(input.chatId)
+    ) {
+      throw new Error("Sanctuary Telegram authority chat admission is malformed")
+    }
+    withImmediateSessionTurnLease(this.#statePath, (lease) => {
+      const transaction = readSessionTransaction(this.#statePath, lease)
+      const state = transactionState(transaction)
+      const record = state.records[String(input.updateId)]
+      if (
+        !record
+        || record.disposition !== "dispatch"
+        || record.observation.payload.userId !== input.userId
+        || record.observation.payload.chatId !== input.chatId
+        || record.observation.payload.ownerEligible
+      ) {
+        throw new Error("Sanctuary Telegram authority chat admission is not root-observed")
+      }
+      const now = this.#now()
+      this.#pruneAuthorizedChats(state, now)
+      const key = `${input.userId}:${input.chatId}`
+      const existing = state.authorizedChats[key]
+      if (existing) {
+        if (existing.admissionId !== input.admissionId || existing.updateId !== input.updateId) {
+          throw new Error("Sanctuary Telegram authority chat admission changed")
+        }
+        return
+      }
+      if (Object.keys(state.authorizedChats).length >= MAX_AUTHORIZED_CHATS) {
+        throw new Error("Sanctuary Telegram authority chat registry limit reached")
+      }
+      state.authorizedChats[key] = {
+        ...input,
+        admittedAt: now,
+        lastUsedAt: now,
+      }
+      this.#write(state, transaction.revision, lease)
+    })
+  }
+
+  revokeChat(input: { userId: string; chatId: string }): void {
+    if (!DECIMAL_ID.test(input.userId) || !DECIMAL_ID.test(input.chatId)) {
+      throw new Error("Sanctuary Telegram authority chat revocation is malformed")
+    }
+    withImmediateSessionTurnLease(this.#statePath, (lease) => {
+      const transaction = readSessionTransaction(this.#statePath, lease)
+      const state = transactionState(transaction)
+      const key = `${input.userId}:${input.chatId}`
+      if (!state.authorizedChats[key]) return
+      delete state.authorizedChats[key]
+      this.#write(state, transaction.revision, lease)
+    })
+  }
+
+  isAuthorizedChat(chatId: string): boolean {
+    if (!DECIMAL_ID.test(chatId)) return false
+    if (chatId === this.#options.ownerChatId) return true
+    return withImmediateSessionTurnLease(this.#statePath, (lease) => {
+      const transaction = readSessionTransaction(this.#statePath, lease)
+      const state = transactionState(transaction)
+      const now = this.#now()
+      const changed = this.#pruneAuthorizedChats(state, now)
+      const entry = Object.values(state.authorizedChats).find((candidate) => candidate.chatId === chatId)
+      if (!entry) {
+        if (changed) this.#write(state, transaction.revision, lease)
+        return false
+      }
+      entry.lastUsedAt = now
+      this.#write(state, transaction.revision, lease)
+      return true
+    })
+  }
+
   record(updateId: number): SanctuaryTelegramAuthorityRecord | null {
     if (!Number.isSafeInteger(updateId) || updateId < 0) {
       throw new Error("Sanctuary Telegram authority update id is invalid")
@@ -448,6 +586,24 @@ export class FileSanctuaryTelegramAuthorityGateway {
       if (record.disposition === "dispatch" && record.settlement === "pending") break
       state.cursor = record.updateId + 1
     }
+  }
+
+  #now(): string {
+    const now = this.#options.now()
+    if (!validTime(now)) throw new Error("Sanctuary Telegram authority clock is invalid")
+    return now
+  }
+
+  #pruneAuthorizedChats(state: SanctuaryTelegramAuthorityState, now: string): boolean {
+    let changed = false
+    const cutoff = Date.parse(now) - AUTHORIZED_CHAT_IDLE_MS
+    for (const [key, entry] of Object.entries(state.authorizedChats)) {
+      if (Date.parse(entry.lastUsedAt) < cutoff) {
+        delete state.authorizedChats[key]
+        changed = true
+      }
+    }
+    return changed
   }
 
   #read<T>(read: (state: SanctuaryTelegramAuthorityState) => T): T {

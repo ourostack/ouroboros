@@ -49,6 +49,8 @@ function fixture(input: {
   limits?: ConstructorParameters<typeof FileTelegramAdmissionStore>[1]
   claim?: ReturnType<typeof vi.fn>
   revoke?: ReturnType<typeof vi.fn>
+  registerCommunication?: ReturnType<typeof vi.fn>
+  revokeCommunication?: ReturnType<typeof vi.fn>
   queue?: ReturnType<typeof vi.fn>
   sendEffect?: (request: TelegramAdmissionEffectRequest) => Promise<string>
 } = {}) {
@@ -76,6 +78,8 @@ function fixture(input: {
     resolveOwnerCardMessageId: (artifactId) => artifactId === "artifact-2" ? 102 : null,
     claimFriend: claim,
     revokeFriend: input.revoke ?? vi.fn(async () => ({ kind: "revoked" as const })),
+    registerCommunication: input.registerCommunication,
+    revokeCommunication: input.revokeCommunication,
     commitApprovedIngress: commit,
     enqueueApprovedWork: enqueue,
     dispatchApprovedWork: queue,
@@ -171,10 +175,14 @@ describe("Telegram household admission", () => {
 
   it("compensates Friends and terminalizes when dispatch throws after claim", async () => {
     const revoke = vi.fn(async () => ({ kind: "revoked" as const }))
-    const value = fixture({ revoke, queue: vi.fn(async () => { throw new Error("worker crashed") }) })
+    const registerCommunication = vi.fn(async () => undefined)
+    const revokeCommunication = vi.fn(async () => undefined)
+    const value = fixture({ revoke, registerCommunication, revokeCommunication, queue: vi.fn(async () => { throw new Error("worker crashed") }) })
     const pending = await value.controller.handleUnknown(unknown())
     await expect(value.controller.decide({ admissionId: pending.admissionId, decision: "allow", actorFriendId: "ari" })).rejects.toThrow("worker crashed")
     expect(revoke).toHaveBeenCalledOnce()
+    expect(registerCommunication).toHaveBeenCalledWith({ id: pending.admissionId, updateId: 11, userId: "888", chatId: "888" })
+    expect(revokeCommunication).toHaveBeenCalledWith({ userId: "888", chatId: "888" })
     expect(value.store.read(pending.admissionId)).toMatchObject({ status: "indeterminate", quarantinedText: null })
   })
 

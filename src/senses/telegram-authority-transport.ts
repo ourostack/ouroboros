@@ -11,6 +11,8 @@ export interface SanctuaryTelegramAuthorityTransport {
   api: TelegramBotApi
   settleTransport(update: TelegramUpdate, outcome: "completed" | "indeterminate"): Promise<void>
   downloadFile(filePath: string): Promise<Response>
+  admitChat(input: { admissionId: string; updateId: number; userId: string; chatId: string }): Promise<void>
+  revokeChat(input: { userId: string; chatId: string }): Promise<void>
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -32,13 +34,23 @@ export function createSanctuaryTelegramAuthorityTransport(
   client: SanctuaryTelegramAuthorityProtocolClient,
 ): SanctuaryTelegramAuthorityTransport {
   const observations = new Map<number, SignedAuthorityPayload<TelegramTransportObservationV1>>()
+  let currentObservation: SignedAuthorityPayload<TelegramTransportObservationV1> | null = null
   let stopped = false
   const api: TelegramBotApi = {
     async request<T>(method: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
       if (signal?.aborted) throw signal.reason
       if (stopped) throw new Error("Sanctuary Telegram authority transport is stopped")
       if (method !== "getUpdates") {
-        return await client.request("telegram.request", { method, body }) as T
+        return await client.request("telegram.request", {
+          method,
+          body,
+          ...(currentObservation ? {
+            observation: {
+              updateId: currentObservation.payload.updateId,
+              observationDigest: authorityArtifactDigest(currentObservation.domain, currentObservation.payload),
+            },
+          } : {}),
+        }) as T
       }
       if (!validPollBody(body)) throw new Error("Sanctuary Telegram authority poll request is invalid")
       const result = await client.request("telegram.poll", {})
@@ -64,6 +76,7 @@ export function createSanctuaryTelegramAuthorityTransport(
         throw new Error("Sanctuary Telegram authority observation changed during redelivery")
       }
       observations.set(update.update_id, observation)
+      currentObservation = observation
       return [update] as T
     },
     stop() {
@@ -92,6 +105,12 @@ export function createSanctuaryTelegramAuthorityTransport(
         headers: result.contentType ? { "content-type": result.contentType } : undefined,
       })
     },
+    async admitChat(input) {
+      await client.request("telegram.chat.admit", input)
+    },
+    async revokeChat(input) {
+      await client.request("telegram.chat.revoke", input)
+    },
     async settleTransport(update, outcome) {
       const observation = observations.get(update.update_id)
       if (!observation) throw new Error("Sanctuary Telegram authority observation is unavailable for settlement")
@@ -101,6 +120,7 @@ export function createSanctuaryTelegramAuthorityTransport(
         outcome,
       })
       observations.delete(update.update_id)
+      if (currentObservation?.payload.updateId === update.update_id) currentObservation = null
     },
   }
 }

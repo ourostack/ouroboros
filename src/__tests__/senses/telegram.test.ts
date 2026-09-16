@@ -393,7 +393,7 @@ describe("Telegram sense", () => {
     const app = createTelegramSenseApp({
       agentName: "sanctuary",
       credentials: { botId: "777", authorizedUserId: "42", authorizedChatId: "42" },
-      authorityTransport: { api, settleTransport, downloadFile: vi.fn() },
+      authorityTransport: { api, settleTransport, downloadFile: vi.fn(), admitChat: vi.fn(), revokeChat: vi.fn() },
       identityKey: "k".repeat(43),
       _agentRoot: fs.mkdtempSync(path.join(os.tmpdir(), "telegram-gateway-routing-")),
       _toolContext: {} as never,
@@ -418,13 +418,13 @@ describe("Telegram sense", () => {
     expect(() => createTelegramSenseApp({
       agentName: "sanctuary",
       credentials: { botToken: "resident-secret", botId: "777", authorizedUserId: "42", authorizedChatId: "42" },
-      authorityTransport: { api, settleTransport, downloadFile: vi.fn() },
+      authorityTransport: { api, settleTransport, downloadFile: vi.fn(), admitChat: vi.fn(), revokeChat: vi.fn() },
       identityKey: "k".repeat(43),
     })).toThrow(/token/u)
     expect(() => createTelegramSenseApp({
       agentName: "butler",
       credentials: { botId: "777", authorizedUserId: "42", authorizedChatId: "42" },
-      authorityTransport: { api, settleTransport, downloadFile: vi.fn() },
+      authorityTransport: { api, settleTransport, downloadFile: vi.fn(), admitChat: vi.fn(), revokeChat: vi.fn() },
       identityKey: "k".repeat(43),
     })).toThrow(/Sanctuary/u)
   })

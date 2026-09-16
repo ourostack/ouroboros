@@ -231,6 +231,87 @@ describe("Sanctuary root Telegram authority gateway state", () => {
     expect(f.gateway.ownsFileId(1 as never)).toBe(false)
   })
 
+  it("binds stranger acknowledgement and admitted egress to durable root-observed coordinates", () => {
+    const agentRoot = root()
+    const keys = generateKeyPairSync("ed25519")
+    let now = "2026-09-16T22:00:00.000Z"
+    let nonce = 0
+    const configuration = {
+      targetHost: "sanctuary",
+      botId: "123456",
+      ownerUserId: "42",
+      ownerChatId: "42",
+      keyId: "sanctuary-root-2026-09-16",
+      publicKeyDigest: sanctuaryAuthorityPublicKeyDigest(keys.privateKey),
+      privateKey: keys.privateKey,
+      now: () => now,
+      nonce: () => Buffer.alloc(32, ++nonce).toString("base64url"),
+    }
+    const gateway = new FileSanctuaryTelegramAuthorityGateway(agentRoot, configuration)
+    gateway.capture([message(100, 84)])
+    const observation = gateway.poll()!
+    const observationDigest = authorityArtifactDigest(observation.domain, observation.payload)
+    expect(gateway.ownsCurrentObservation({ updateId: 100, observationDigest, chatId: "84" })).toBe(true)
+    expect(gateway.ownsCurrentObservation({ updateId: 100, observationDigest: `sha256:${"f".repeat(64)}`, chatId: "84" })).toBe(false)
+    for (const invalid of [
+      { updateId: -1, observationDigest, chatId: "84" },
+      { updateId: 1.5, observationDigest, chatId: "84" },
+      { updateId: 100, observationDigest: "bad", chatId: "84" },
+      { updateId: 100, observationDigest, chatId: "0" },
+    ]) expect(gateway.ownsCurrentObservation(invalid)).toBe(false)
+    expect(gateway.isAuthorizedChat("84")).toBe(false)
+    expect(gateway.isAuthorizedChat("0")).toBe(false)
+    expect(gateway.isAuthorizedChat("42")).toBe(true)
+
+    gateway.admitChat({ admissionId: "a".repeat(20), updateId: 100, userId: "84", chatId: "84" })
+    gateway.admitChat({ admissionId: "a".repeat(20), updateId: 100, userId: "84", chatId: "84" })
+    expect(() => gateway.admitChat({ admissionId: "b".repeat(20), updateId: 100, userId: "84", chatId: "84" })).toThrow(/changed/u)
+    expect(gateway.isAuthorizedChat("84")).toBe(true)
+    now = "not-time"
+    expect(() => gateway.isAuthorizedChat("84")).toThrow(/clock/u)
+    now = "2026-09-16T22:00:00.000Z"
+    expect(new FileSanctuaryTelegramAuthorityGateway(agentRoot, configuration).isAuthorizedChat("84")).toBe(true)
+    expect(() => gateway.admitChat({ admissionId: "short", updateId: 100, userId: "84", chatId: "84" })).toThrow(/malformed/u)
+    expect(() => gateway.admitChat({ admissionId: "b".repeat(20), updateId: -1, userId: "84", chatId: "84" })).toThrow(/malformed/u)
+    expect(() => gateway.admitChat({ admissionId: "b".repeat(20), updateId: 999, userId: "84", chatId: "84" })).toThrow(/root-observed/u)
+    expect(() => gateway.admitChat({ admissionId: "b".repeat(20), updateId: 100, userId: "85", chatId: "84" })).toThrow(/root-observed/u)
+    expect(() => gateway.admitChat({ admissionId: "b".repeat(20), updateId: 100, userId: "84", chatId: "85" })).toThrow(/root-observed/u)
+    gateway.capture([message(101)])
+    expect(() => gateway.admitChat({ admissionId: "b".repeat(20), updateId: 101, userId: "42", chatId: "42" })).toThrow(/root-observed/u)
+    expect(() => gateway.revokeChat({ userId: "0", chatId: "84" })).toThrow(/malformed/u)
+    gateway.revokeChat({ userId: "85", chatId: "85" })
+    gateway.revokeChat({ userId: "84", chatId: "84" })
+    expect(gateway.isAuthorizedChat("84")).toBe(false)
+
+    gateway.admitChat({ admissionId: "a".repeat(20), updateId: 100, userId: "84", chatId: "84" })
+    now = "2027-09-17T22:00:00.000Z"
+    expect(gateway.isAuthorizedChat("84")).toBe(false)
+  })
+
+  it("caps admitted Telegram communication coordinates at 64 live entries", () => {
+    const f = fixture()
+    for (let index = 0; index < 65; index += 1) {
+      const updateId = 200 + index
+      const userId = 1_000 + index
+      f.gateway.capture([message(updateId, userId)])
+      if (index < 64) {
+        f.gateway.admitChat({
+          admissionId: index.toString(16).padStart(20, "0"),
+          updateId,
+          userId: String(userId),
+          chatId: String(userId),
+        })
+      } else {
+        expect(() => f.gateway.admitChat({
+          admissionId: index.toString(16).padStart(20, "0"),
+          updateId,
+          userId: String(userId),
+          chatId: String(userId),
+        })).toThrow(/limit/u)
+      }
+    }
+  })
+
   it("refuses invalid configuration, clocks, nonces, stale updates, and settlement shapes", () => {
     const f = fixture()
     for (const [overrides, pattern] of [
@@ -297,6 +378,10 @@ describe("Sanctuary root Telegram authority gateway state", () => {
       { ...valid, cursor: -1 },
       { ...valid, cursor: "0" },
       { ...valid, records: [] },
+      { ...valid, authorizedChats: [] },
+      { ...valid, authorizedChats: { bad: null } },
+      { ...valid, authorizedChats: { "84:84": { admissionId: "short", updateId: 90, userId: "84", chatId: "84", admittedAt: "2026-09-16T22:00:00.000Z", lastUsedAt: "2026-09-16T22:00:00.000Z" } } },
+      { ...valid, authorizedChats: Object.fromEntries(Array.from({ length: 65 }, (_, index) => [`${1000 + index}:${1000 + index}`, { admissionId: index.toString(16).padStart(20, "0"), updateId: 90, userId: String(1000 + index), chatId: String(1000 + index), admittedAt: "2026-09-16T22:00:00.000Z", lastUsedAt: "2026-09-16T22:00:00.000Z" }])) },
       { ...valid, records: { invalid: record } },
       { ...valid, records: { "90": null } },
       { ...valid, records: { "90": { ...record, extra: true } } },
@@ -312,7 +397,7 @@ describe("Sanctuary root Telegram authority gateway state", () => {
     ]
     for (const state of malformed) {
       fs.writeFileSync(file, JSON.stringify(state), "utf8")
-      expect(() => f.gateway.cursor(), JSON.stringify(state)).toThrow(/state|record|observation|settlement|ignored|update key/u)
+      expect(() => f.gateway.cursor(), JSON.stringify(state)).toThrow(/state|record|observation|settlement|ignored|update key|registry/u)
     }
   })
 })

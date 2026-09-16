@@ -3,6 +3,7 @@ import * as net from "node:net"
 import * as path from "node:path"
 
 import type { TelegramBotApi, TelegramUpdate } from "../../senses/telegram-client"
+import { FIXED_ADMISSION_ACKNOWLEDGEMENT } from "../../senses/telegram-effect-adapter"
 import { SocketFrontendClient } from "../frontend-socket-client"
 import {
   FileSanctuaryTelegramAuthorityGateway,
@@ -82,8 +83,24 @@ export class SanctuaryTelegramAuthorityService {
       if (!emptyParams(params)) throw new Error("Sanctuary Telegram cursor params are invalid")
       return { cursor: this.#gateway.cursor() }
     }
+    if (method === "telegram.chat.admit") {
+      this.#gateway.admitChat(params as {
+        admissionId: string
+        updateId: number
+        userId: string
+        chatId: string
+      })
+      return { admitted: true }
+    }
+    if (method === "telegram.chat.revoke") {
+      this.#gateway.revokeChat(params as { userId: string; chatId: string })
+      return { revoked: true }
+    }
     if (method === "telegram.request") {
-      if (!exactKeys(params, ["method", "body"]) || typeof params.method !== "string") {
+      if (
+        (!exactKeys(params, ["method", "body"]) && !exactKeys(params, ["method", "body", "observation"]))
+        || typeof params.method !== "string"
+      ) {
         throw new Error("Sanctuary Telegram request params are invalid")
       }
       const requestMethod = params.method
@@ -94,9 +111,8 @@ export class SanctuaryTelegramAuthorityService {
       } else if (requestMethod === "sendMessage") {
         if (
           !exactBody(body, ["chat_id", "text"], ["parse_mode", "reply_markup"])
-          || String(body.chat_id) !== ownerChatId
         ) {
-          throw new Error("Sanctuary Telegram send target is invalid")
+          throw new Error("Sanctuary Telegram send body is invalid")
         }
         if (
           !boundedText(body.text, 4_096)
@@ -104,6 +120,22 @@ export class SanctuaryTelegramAuthorityService {
           || (body.reply_markup !== undefined && !isObject(body.reply_markup))
         ) {
           throw new Error("Sanctuary Telegram send body is invalid")
+        }
+        const chatId = String(body.chat_id)
+        const observedStrangerAcknowledgement = body.text === FIXED_ADMISSION_ACKNOWLEDGEMENT
+          && isObject(params.observation)
+          && exactKeys(params.observation, ["updateId", "observationDigest"])
+          && this.#gateway.ownsCurrentObservation({
+            updateId: params.observation.updateId as number,
+            observationDigest: params.observation.observationDigest as string,
+            chatId,
+          })
+        if (
+          chatId !== ownerChatId
+          && !observedStrangerAcknowledgement
+          && !this.#gateway.isAuthorizedChat(chatId)
+        ) {
+          throw new Error("Sanctuary Telegram send target is invalid")
         }
       } else if (requestMethod === "editMessageText") {
         if (

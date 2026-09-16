@@ -1413,6 +1413,15 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     },
     claimFriend: options.admission.claimFriend,
     revokeFriend: options.admission.revokeFriend,
+    ...(authorityTransport ? {
+      registerCommunication: (input: { id: string; updateId: number; userId: string; chatId: string }) => authorityTransport.admitChat({
+        admissionId: input.id,
+        updateId: input.updateId,
+        userId: input.userId,
+        chatId: input.chatId,
+      }),
+      revokeCommunication: (input: { userId: string; chatId: string }) => authorityTransport.revokeChat(input),
+    } : {}),
     commitApprovedIngress: async (input) => {
       const sessionKey = `telegram:${input.botId}:${input.userId}`
       const reference = `telegram-admission:${input.admissionId}`
@@ -1922,7 +1931,12 @@ export function loadTelegramSenseCredentials(agentName: string): TelegramSenseCr
   return parseTelegramSenseCredentials(runtime.config)
 }
 
-export async function createProductionTelegramRelationshipComposition(agentName: string, credentials: TelegramSenseCredentials, agentRootOverride?: string): Promise<Pick<CreateTelegramSenseAppOptions,
+export async function createProductionTelegramRelationshipComposition(
+  agentName: string,
+  credentials: TelegramSenseCredentials,
+  agentRootOverride?: string,
+  authorityTransport?: SanctuaryTelegramAuthorityTransport,
+): Promise<Pick<CreateTelegramSenseAppOptions,
   "admission" | "authorizeRelationshipEffect" | "resolveRelationshipAuthorization"> & { telegramContactManager: TelegramContactManager }> {
   const agentRoot = agentRootOverride ?? getAgentRoot(agentName)
   const botId = canonicalTelegramId(credentials.botId ?? telegramBotIdFromToken(credentials.botToken), "bot id")
@@ -2011,6 +2025,7 @@ export async function createProductionTelegramRelationshipComposition(agentName:
         invalidatePendingApprovals(sessionPath)
         const live = await store.get(current.id)
         if (!live || !exactTelegramIdentity(live, bindings[0]!.externalId)) throw new Error("Telegram contact identity changed")
+        await authorityTransport?.revokeChat({ userId: bindings[0]!.externalId, chatId: bindings[0]!.externalId })
         const { capabilityProfileId: _removedProfile, ...withoutProfile } = live
         await store.put(live.id, { ...withoutProfile, admissionState: "revoked", initiativePolicy: "none", updatedAt: new Date().toISOString() })
         cancelRelationshipFollowUps(agentRoot, agentName, { friendId: live.id, channel: "telegram", key: sessionKey })

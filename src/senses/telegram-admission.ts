@@ -611,6 +611,8 @@ export interface TelegramAdmissionControllerOptions {
   resolveOwnerCardMessageId?(artifactId: string): number | null
   claimFriend(input: TelegramAdmissionFriendClaim): Promise<TelegramAdmissionFriendClaimResult>
   revokeFriend(input: TelegramAdmissionFriendRevocation): Promise<TelegramAdmissionFriendRevocationResult>
+  registerCommunication?(input: Pick<TelegramAdmissionRecord, "id" | "updateId" | "userId" | "chatId">): Promise<void>
+  revokeCommunication?(input: Pick<TelegramAdmissionRecord, "userId" | "chatId">): Promise<void>
   commitApprovedIngress(input: TelegramApprovedTurn): Promise<Omit<TelegramCommittedAdmissionIngress, "orientation">>
   enqueueApprovedWork(input: Omit<TelegramCommittedAdmissionIngress, "orientation">): Promise<void>
   dispatchApprovedWork(input: TelegramCommittedAdmissionIngress): Promise<"settled" | "indeterminate">
@@ -689,6 +691,7 @@ export function createTelegramAdmissionController(options: TelegramAdmissionCont
 
   const compensateFriend = async (record: TelegramAdmissionRecord): Promise<void> => {
     if (!record.friendId) return
+    await options.revokeCommunication?.({ userId: record.userId, chatId: record.chatId })
     const revocation = await options.revokeFriend({
       provider: "telegram-user",
       botId: record.botId,
@@ -727,6 +730,12 @@ export function createTelegramAdmissionController(options: TelegramAdmissionCont
     }
     try {
       if (record.status === "friend_bound") {
+        await options.registerCommunication?.({
+          id: record.id,
+          updateId: record.updateId,
+          userId: record.userId,
+          chatId: record.chatId,
+        })
         if (record.quarantinedText === null || !record.friendId) throw new Error("Telegram admission lost input before durable ingress")
         const committedBase = await options.commitApprovedIngress({
           admissionId: record.id,

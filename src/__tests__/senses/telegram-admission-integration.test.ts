@@ -440,7 +440,19 @@ describe("Telegram admission integration", () => {
       "sanctuary-owner": { version: 1, contextScopes: [], toolNames: ["telegram_contact_manage"], effectScopes: [] },
       "sanctuary-household": { version: 1, contextScopes: [], toolNames: [], effectScopes: [] },
     } }))
-    const composition = await createProductionTelegramRelationshipComposition("sanctuary", { botToken: "777:secret", botId: "777", authorizedUserId: "42", authorizedChatId: "42" }, root)
+    const revokeChat = vi.fn(async () => undefined)
+    const composition = await createProductionTelegramRelationshipComposition(
+      "sanctuary",
+      { botToken: "777:secret", botId: "777", authorizedUserId: "42", authorizedChatId: "42" },
+      root,
+      {
+        api: { request: vi.fn(), stop: vi.fn() },
+        settleTransport: vi.fn(),
+        downloadFile: vi.fn(),
+        admitChat: vi.fn(),
+        revokeChat,
+      },
+    )
     const manager = composition.telegramContactManager!
 
     const approvalRoot = path.join(root, "state", "approvals")
@@ -465,6 +477,7 @@ describe("Telegram admission integration", () => {
     await expect(manager.revoke({ actorFriendId: "ari", friendId: "sibling" })).rejects.toThrow("missing its decision token")
     tokens.put(committed.record.approvalId, committed.decisionToken)
     await expect(manager.revoke({ actorFriendId: "ari", friendId: "sibling" })).resolves.toEqual(expect.objectContaining({ revoked: true, friendId: "sibling" }))
+    expect(revokeChat).toHaveBeenCalledWith({ userId: "888", chatId: "888" })
     expect(await friends.get("sibling")).toEqual(expect.objectContaining({ admissionState: "revoked", initiativePolicy: "none" }))
     const reopened = openApprovalStore({ databasePath: path.join(approvalRoot, "approvals.sqlite") })
     expect(reopened.read(committed.record.approvalId)?.state).toBe("denied")
