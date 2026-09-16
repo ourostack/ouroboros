@@ -44,6 +44,7 @@ function fixture() {
     if (method === "telegram.poll") return { observation, update }
     if (method === "telegram.settle") return { settled: true, cursor: 11 }
     if (method === "telegram.request") return { message_id: 71 }
+    if (method === "telegram.file") return { bodyBase64: Buffer.from("file-body").toString("base64"), contentType: "text/plain" }
     throw new Error("unexpected method")
   })
   const close = vi.fn()
@@ -74,6 +75,10 @@ describe("Sanctuary Telegram authority transport", () => {
       method: "sendMessage",
       body: { chat_id: "42", text: "hello" },
     })
+    const response = await f.transport.downloadFile("documents/file.txt")
+    await expect(response.text()).resolves.toBe("file-body")
+    expect(response.headers.get("content-type")).toBe("text/plain")
+    expect(f.request).toHaveBeenCalledWith("telegram.file", { filePath: "documents/file.txt" })
   })
 
   it("returns an empty poll, refuses missing settlement authority, respects abort, and closes once", async () => {
@@ -128,5 +133,28 @@ describe("Sanctuary Telegram authority transport", () => {
       timeout: 50,
       allowed_updates: ["message", "callback_query"],
     })).rejects.toThrow(/changed/u)
+  })
+
+  it("refuses malformed root file responses", async () => {
+    for (const candidate of [
+      null,
+      {},
+      { bodyBase64: 42 },
+      { bodyBase64: "", contentType: 42 },
+      { bodyBase64: "*" },
+      { bodyBase64: Buffer.alloc(20_000_001).toString("base64") },
+    ]) {
+      const transport = createSanctuaryTelegramAuthorityTransport({
+        request: vi.fn(async () => candidate),
+        close: vi.fn(),
+      })
+      await expect(transport.downloadFile("documents/file.bin")).rejects.toThrow(/file response/u)
+    }
+    const transport = createSanctuaryTelegramAuthorityTransport({
+      request: vi.fn(async () => ({ bodyBase64: Buffer.from("data").toString("base64") })),
+      close: vi.fn(),
+    })
+    const response = await transport.downloadFile("documents/file.bin")
+    expect(response.headers.get("content-type")).toBeNull()
   })
 })

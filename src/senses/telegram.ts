@@ -47,6 +47,7 @@ import {
   type TelegramUpdateInboxStore,
   type TelegramUpdate,
 } from "./telegram-client"
+import type { SanctuaryTelegramAuthorityTransport } from "./telegram-authority-transport"
 import { createSanctuaryToolContext, runWithSanctuaryToolReceiptCollection, type SanctuaryToolReceiptObserver } from "./sanctuary-runtime"
 import { sanctuaryFullVisibilityRequiredToolCalls, sanctuaryStaleDockerCareRequiredToolCalls } from "./sanctuary-full-visibility-contract"
 import { sanctuaryInstallStateRequiredToolCalls } from "./sanctuary-install-state-contract"
@@ -139,6 +140,13 @@ export function createSabQueueProtectiveStateVerifier(options: {
 export interface TelegramSenseCredentials {
   botToken: string
   botId?: string
+  authorizedUserId: string
+  authorizedChatId: string
+}
+
+export interface TelegramGatewaySenseCredentials {
+  botToken?: never
+  botId: string
   authorizedUserId: string
   authorizedChatId: string
 }
@@ -447,11 +455,12 @@ async function appendSanctuaryTurnReceipt(
 
 export interface CreateTelegramSenseAppOptions {
   agentName: string
-  credentials: TelegramSenseCredentials
+  credentials: TelegramSenseCredentials | TelegramGatewaySenseCredentials
   api?: TelegramBotApi
   offsetStore?: TelegramOffsetStore
   inboxStore?: TelegramUpdateInboxStore
   createLongPoll?: TelegramLongPollFactory
+  authorityTransport?: SanctuaryTelegramAuthorityTransport
   runTurn?: TelegramTurnRunner
   approvalTransport?: TelegramApprovalTransport
   approvalRuntime?: TelegramApprovalRuntime
@@ -768,7 +777,9 @@ export function migrateTelegramSessionIdentity(agentRoot: string, legacyUserId: 
 
 function redactTelegramPrivateValues(error: unknown, privateValues: readonly string[]): string {
   let message = error instanceof Error ? error.message : String(error)
-  for (const privateValue of privateValues) message = message.split(privateValue).join("[redacted]")
+  for (const privateValue of privateValues) {
+    if (privateValue) message = message.split(privateValue).join("[redacted]")
+  }
   return message
 }
 
@@ -781,22 +792,38 @@ export function parseTelegramSenseCredentials(value: Record<string, unknown>): T
 }
 
 export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): TelegramSenseApp {
-  const botToken = requiredText(options.credentials.botToken, "bot token")
+  const authorityTransport = options.authorityTransport
+  if (authorityTransport && options.agentName !== "sanctuary") {
+    throw new Error("Sanctuary Telegram authority transport cannot serve another agent")
+  }
+  if (authorityTransport && options.credentials.botToken !== undefined) {
+    throw new Error("Sanctuary Telegram authority transport forbids a resident bot token")
+  }
+  const botToken = options.credentials.botToken === undefined
+    ? null
+    : requiredText(options.credentials.botToken, "bot token")
+  if (!botToken && !authorityTransport) {
+    throw new Error("Telegram bot token is missing; Sanctuary requires an explicit gateway transport")
+  }
   const botId = options.credentials.botId !== undefined
     ? canonicalTelegramId(options.credentials.botId, "bot id")
-    : options.admission ? telegramBotIdFromToken(botToken) : null
+    : options.admission && botToken ? telegramBotIdFromToken(botToken) : null
+  if (authorityTransport && botId === null) {
+    throw new Error("Sanctuary Telegram authority transport requires a pinned bot id")
+  }
   const authorizedUserId = canonicalTelegramId(options.credentials.authorizedUserId, "authorized user id")
   const authorizedChatId = canonicalTelegramId(options.credentials.authorizedChatId, "authorized chat id")
   const agentRoot = options._agentRoot ?? getAgentRoot(options.agentName)
   const identityKey = options.identityKey === undefined
     ? readOrCreateTelegramIdentityKey(agentRoot)
     : canonicalTelegramIdentityKey(options.identityKey)
-  const subject = opaqueTelegramSubject(identityKey, botId ?? botToken, authorizedUserId, authorizedChatId)
+  const subject = opaqueTelegramSubject(identityKey, botId ?? botToken!, authorizedUserId, authorizedChatId)
+  const transportPrivateValues = [botToken ?? "", authorizedUserId, authorizedChatId]
   const transportError = (error: unknown): string => redactTelegramPrivateValues(
     error,
-    [botToken, authorizedUserId, authorizedChatId],
+    transportPrivateValues,
   )
-  const api = options.api ?? createTelegramBotApi({ token: botToken })
+  const api = authorityTransport?.api ?? options.api ?? createTelegramBotApi({ token: botToken! })
   const offsetStore = options.offsetStore ?? new FileTelegramOffsetStore(
     path.join(agentRoot, "state", "senses", "telegram", "offset.json"),
   )
@@ -844,7 +871,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         options.acceptanceReceiptRoot ?? agentRoot,
         options.agentName,
         identityKey,
-        [botToken, authorizedUserId, authorizedChatId],
+        transportPrivateValues,
         scenarioHandleDigest,
         options._acceptanceAuditReleaseHook,
         options._acceptanceAuditMaxBytes,
@@ -855,7 +882,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         options.acceptanceReceiptRoot ?? agentRoot,
         options.agentName,
         identityKey,
-        [botToken, authorizedUserId, authorizedChatId],
+        transportPrivateValues,
         scenarioHandleDigest,
         options._acceptanceAuditReleaseHook,
         options._acceptanceAuditMaxBytes,
@@ -1442,8 +1469,9 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     const ingested = await ingestTelegramAttachments({
       agentName: options.agentName,
       agentRoot,
-      botToken,
+      ...(botToken ? { botToken } : {}),
       api,
+      ...(authorityTransport ? { downloadFile: authorityTransport.downloadFile } : {}),
       ...(options.attachmentFetch ? { fetch: options.attachmentFetch } : {}),
       attachments: message.attachments ?? [],
     })
@@ -1616,9 +1644,9 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
           ...lifecycleCoordinates,
           ...(acceptanceMarker ? {
             outcome: "error",
-            errorDigest: auditDigest("error", redactTelegramPrivateValues(error, [botToken, authorizedUserId, authorizedChatId, String(message.updateId), message.messageId])),
+            errorDigest: auditDigest("error", redactTelegramPrivateValues(error, [...transportPrivateValues, String(message.updateId), message.messageId])),
             deliveryCount: deliveredMessageIds.length,
-          } : { error: redactTelegramPrivateValues(error, [botToken, authorizedUserId, authorizedChatId, String(message.updateId), message.messageId]) }),
+          } : { error: redactTelegramPrivateValues(error, [...transportPrivateValues, String(message.updateId), message.messageId]) }),
         }, Math.max(Date.now(), lifecycleStartedAt + 1)),
       })
       const fallback = "I couldn't complete that turn. The failure was recorded; please try again."
@@ -1630,7 +1658,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         const grounded = groundedAcceptance
         const schemaVersion = grounded ? "sanctuary-telegram-turn-receipt-v4" : "sanctuary-telegram-turn-receipt-v3"
         const hmac = (purpose: string, value: string): string => sanctuaryTelegramTurnReceiptDigest(identityKey, schemaVersion, purpose, value)
-        const redact = (value: string): string => [botToken, authorizedUserId, authorizedChatId, String(message.updateId), message.messageId]
+        const redact = (value: string): string => [...transportPrivateValues, String(message.updateId), message.messageId]
           .reduce((text, privateValue) => privateValue.length >= 5 ? text.replaceAll(privateValue, "[REDACTED]") : text, value)
         const deliveries = deliveredMessageIds.map((messageId, index) => {
           const chunk = deliveredChunks[index]!
@@ -1738,6 +1766,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       inboxStore,
       onMessage,
       onUpdate,
+      ...(authorityTransport ? { settleTransport: authorityTransport.settleTransport } : {}),
       acceptanceEventMeta: (update, distinctAccount) => {
         const marker = options.acceptanceMarker ? options.acceptanceMarker() : readSanctuaryAcceptanceMarker(options.agentName)
         if (!marker) return {}

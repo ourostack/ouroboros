@@ -10,6 +10,7 @@ export interface SanctuaryTelegramAuthorityProtocolClient {
 export interface SanctuaryTelegramAuthorityTransport {
   api: TelegramBotApi
   settleTransport(update: TelegramUpdate, outcome: "completed" | "indeterminate"): Promise<void>
+  downloadFile(filePath: string): Promise<Response>
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -74,6 +75,23 @@ export function createSanctuaryTelegramAuthorityTransport(
 
   return {
     api,
+    async downloadFile(filePath) {
+      const result = await client.request("telegram.file", { filePath })
+      if (
+        !isObject(result)
+        || typeof result.bodyBase64 !== "string"
+        || (result.contentType !== undefined && typeof result.contentType !== "string")
+      ) {
+        throw new Error("Sanctuary Telegram authority file response is invalid")
+      }
+      const body = Buffer.from(result.bodyBase64, "base64")
+      if (body.toString("base64") !== result.bodyBase64 || body.length > 20_000_000) {
+        throw new Error("Sanctuary Telegram authority file response is invalid")
+      }
+      return new Response(body, {
+        headers: result.contentType ? { "content-type": result.contentType } : undefined,
+      })
+    },
     async settleTransport(update, outcome) {
       const observation = observations.get(update.update_id)
       if (!observation) throw new Error("Sanctuary Telegram authority observation is unavailable for settlement")

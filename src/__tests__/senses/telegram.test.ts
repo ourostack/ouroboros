@@ -386,6 +386,49 @@ describe("Telegram sense", () => {
     expect(opaqueTelegramSubject(identityKey, "bot-a", "42", "45")).not.toBe(baseline)
   })
 
+  it("selects an explicit tokenless Sanctuary authority transport without changing direct agents", async () => {
+    const api = { request: vi.fn(), stop: vi.fn() }
+    const settleTransport = vi.fn(async () => undefined)
+    let pollOptions: any
+    const app = createTelegramSenseApp({
+      agentName: "sanctuary",
+      credentials: { botId: "777", authorizedUserId: "42", authorizedChatId: "42" },
+      authorityTransport: { api, settleTransport, downloadFile: vi.fn() },
+      identityKey: "k".repeat(43),
+      _agentRoot: fs.mkdtempSync(path.join(os.tmpdir(), "telegram-gateway-routing-")),
+      _toolContext: {} as never,
+      acceptanceMarker: () => null,
+      migrateIdentity: async () => undefined,
+      offsetStore: { load: () => 0, save: vi.fn() },
+      createLongPoll: (options) => {
+        pollOptions = options
+        return { pollOnce: vi.fn(), run: vi.fn(), stop: vi.fn() }
+      },
+    })
+    expect(pollOptions.api).toBe(api)
+    expect(pollOptions.settleTransport).toBe(settleTransport)
+    await app.stop()
+    expect(api.stop).toHaveBeenCalledOnce()
+
+    expect(() => createTelegramSenseApp({
+      agentName: "sanctuary",
+      credentials: { authorizedUserId: "42", authorizedChatId: "42" },
+      identityKey: "k".repeat(43),
+    })).toThrow(/gateway transport/u)
+    expect(() => createTelegramSenseApp({
+      agentName: "sanctuary",
+      credentials: { botToken: "resident-secret", botId: "777", authorizedUserId: "42", authorizedChatId: "42" },
+      authorityTransport: { api, settleTransport, downloadFile: vi.fn() },
+      identityKey: "k".repeat(43),
+    })).toThrow(/token/u)
+    expect(() => createTelegramSenseApp({
+      agentName: "butler",
+      credentials: { botId: "777", authorizedUserId: "42", authorizedChatId: "42" },
+      authorityTransport: { api, settleTransport, downloadFile: vi.fn() },
+      identityKey: "k".repeat(43),
+    })).toThrow(/Sanctuary/u)
+  })
+
   it("rejects unsupported receipt MAC values and invalid acceptance scenario handles", () => {
     expect(sanctuaryTelegramTurnReceiptMac("k".repeat(43), { omitted: undefined }))
       .toBe(sanctuaryTelegramTurnReceiptMac("k".repeat(43), {}))

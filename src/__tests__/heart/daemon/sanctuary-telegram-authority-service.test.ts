@@ -184,8 +184,9 @@ describe("Sanctuary Telegram authority service", () => {
       { update_id: 20, callback_query: { id: "callback-20", from: { id: 42 }, message: { message_id: 120, chat: { id: 42 } } } },
       { update_id: 21, message: { message_id: 121, from: { id: 42 }, chat: { id: 42, type: "private" }, document: { file_id: "file-21" } } },
     ])
-    const api = { request: vi.fn(async (method: string) => ({ method })), stop: vi.fn() }
-    const service = new SanctuaryTelegramAuthorityService({ api, gateway })
+    const api = { request: vi.fn(async (method: string) => method === "getFile" ? { file_path: "documents/file-21.bin", file_size: 4 } : { method }), stop: vi.fn() }
+    const downloadFile = vi.fn(async () => ({ body: Buffer.from("data"), contentType: "application/octet-stream" }))
+    const service = new SanctuaryTelegramAuthorityService({ api, gateway, downloadFile })
     await expect(service.dispatch("telegram.request", {
       method: "answerCallbackQuery",
       body: { callback_query_id: "callback-20" },
@@ -193,7 +194,14 @@ describe("Sanctuary Telegram authority service", () => {
     await expect(service.dispatch("telegram.request", {
       method: "getFile",
       body: { file_id: "file-21" },
-    })).resolves.toEqual({ method: "getFile" })
+    })).resolves.toEqual({ file_path: "documents/file-21.bin", file_size: 4 })
+    await expect(service.dispatch("telegram.file", {
+      filePath: "documents/file-21.bin",
+    })).resolves.toEqual({
+      bodyBase64: Buffer.from("data").toString("base64"),
+      contentType: "application/octet-stream",
+    })
+    expect(downloadFile).toHaveBeenCalledWith("documents/file-21.bin")
     await expect(service.dispatch("telegram.request", {
       method: "answerCallbackQuery",
       body: { callback_query_id: "callback-missing" },
@@ -202,6 +210,41 @@ describe("Sanctuary Telegram authority service", () => {
       method: "getFile",
       body: { file_id: "file-missing" },
     })).rejects.toThrow(/file/u)
+    await expect(service.dispatch("telegram.file", { filePath: "documents/unobserved.bin" })).rejects.toThrow(/file/u)
+    for (const invalid of [
+      null,
+      {},
+      { file_path: "../secret" },
+      { file_path: "documents/file-21.bin", file_size: 1.5 },
+      { file_path: "documents/file-21.bin", file_size: -1 },
+      { file_path: "documents/file-21.bin", file_size: 20_000_001 },
+    ]) {
+      api.request.mockResolvedValueOnce(invalid as never)
+      await expect(service.dispatch("telegram.request", {
+        method: "getFile",
+        body: { file_id: "file-21" },
+      })).rejects.toThrow(/metadata/u)
+    }
+    for (const invalid of [
+      { body: "not-a-buffer" },
+      { body: Buffer.alloc(20_000_001) },
+      { body: Buffer.from("data"), contentType: "" },
+    ]) {
+      downloadFile.mockResolvedValueOnce(invalid as never)
+      await expect(service.dispatch("telegram.file", {
+        filePath: "documents/file-21.bin",
+      })).rejects.toThrow(/response/u)
+    }
+    downloadFile.mockResolvedValueOnce({ body: Buffer.from("data") })
+    await expect(service.dispatch("telegram.file", {
+      filePath: "documents/file-21.bin",
+    })).resolves.toEqual({ bodyBase64: Buffer.from("data").toString("base64") })
+    const serviceWithoutFileTransport = new SanctuaryTelegramAuthorityService({ api, gateway })
+    api.request.mockResolvedValueOnce({ file_path: "documents/file-21.bin", file_size: 4 })
+    await serviceWithoutFileTransport.dispatch("telegram.request", { method: "getFile", body: { file_id: "file-21" } })
+    await expect(serviceWithoutFileTransport.dispatch("telegram.file", {
+      filePath: "documents/file-21.bin",
+    })).rejects.toThrow(/unavailable/u)
     for (const body of [
       {},
       { callback_query_id: "" },

@@ -57,9 +57,10 @@ async function atomicWrite(filePath: string, buffer: Buffer): Promise<void> {
 export async function ingestTelegramAttachments(input: {
   agentName: string
   agentRoot: string
-  botToken: string
+  botToken?: string
   api: TelegramBotApi
   fetch?: typeof globalThis.fetch
+  downloadFile?: (filePath: string) => Promise<Response>
   attachments: readonly TelegramInboundAttachment[]
 }): Promise<{ attachments: TelegramAttachmentRecord[]; notices: string[] }> {
   const fetchImpl = input.fetch ?? globalThis.fetch
@@ -106,7 +107,11 @@ export async function ingestTelegramAttachments(input: {
       const remote = await input.api.request<{ file_path?: unknown; file_size?: unknown }>("getFile", { file_id: candidate.fileId })
       if (typeof remote.file_path !== "string" || !SAFE_FILE_PATH.test(remote.file_path)) throw new Error("invalid remote path")
       if (remote.file_size !== undefined && (!Number.isSafeInteger(remote.file_size) || (remote.file_size as number) < 0 || (remote.file_size as number) > MAX_TELEGRAM_ATTACHMENT_BYTES)) throw new Error("advertised size exceeds limit")
-      const response = await fetchImpl(`https://api.telegram.org/file/bot${input.botToken}/${remote.file_path}`, { signal: AbortSignal.timeout(30_000) })
+      const response = input.downloadFile
+        ? await input.downloadFile(remote.file_path)
+        : input.botToken
+          ? await fetchImpl(`https://api.telegram.org/file/bot${input.botToken}/${remote.file_path}`, { signal: AbortSignal.timeout(30_000) })
+          : (() => { throw new Error("attachment transport is unavailable") })()
       if (!response.ok) throw new Error(`download failed with HTTP ${response.status}`)
       const buffer = await readBounded(response, MAX_TELEGRAM_ATTACHMENT_BYTES)
       const provisional = buildTelegramAttachmentRecord({

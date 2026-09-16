@@ -12,6 +12,8 @@ import {
 const PROTOCOL_VERSION = 1
 const DEFAULT_MAX_REQUEST_BYTES = 256 * 1024
 const DEFAULT_CONNECTION_TIMEOUT_MS = 30_000
+const MAX_TELEGRAM_ATTACHMENT_BYTES = 20_000_000
+const SAFE_TELEGRAM_FILE_PATH = /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9._/-]{1,512}$/u
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -41,10 +43,17 @@ function boundedText(value: unknown, maxLength: number): value is string {
 export class SanctuaryTelegramAuthorityService {
   readonly #api: TelegramBotApi
   readonly #gateway: FileSanctuaryTelegramAuthorityGateway
+  readonly #downloadFile: ((filePath: string) => Promise<{ body: Buffer; contentType?: string }>) | undefined
+  readonly #allowedFilePaths = new Set<string>()
 
-  constructor(options: { api: TelegramBotApi; gateway: FileSanctuaryTelegramAuthorityGateway }) {
+  constructor(options: {
+    api: TelegramBotApi
+    gateway: FileSanctuaryTelegramAuthorityGateway
+    downloadFile?: (filePath: string) => Promise<{ body: Buffer; contentType?: string }>
+  }) {
     this.#api = options.api
     this.#gateway = options.gateway
+    this.#downloadFile = options.downloadFile
   }
 
   async dispatch(method: string, params: Record<string, unknown>): Promise<unknown> {
@@ -138,7 +147,45 @@ export class SanctuaryTelegramAuthorityService {
       } else {
         throw new Error("Sanctuary Telegram request method is not available")
       }
-      return this.#api.request(requestMethod, body as Record<string, unknown>)
+      const result = await this.#api.request(requestMethod, body as Record<string, unknown>)
+      if (requestMethod === "getFile") {
+        if (
+          !isObject(result)
+          || typeof result.file_path !== "string"
+          || !SAFE_TELEGRAM_FILE_PATH.test(result.file_path)
+          || (result.file_size !== undefined
+            && (!Number.isSafeInteger(result.file_size)
+              || (result.file_size as number) < 0
+              || (result.file_size as number) > MAX_TELEGRAM_ATTACHMENT_BYTES))
+        ) {
+          throw new Error("Sanctuary Telegram file metadata is invalid")
+        }
+        this.#allowedFilePaths.add(result.file_path)
+      }
+      return result
+    }
+    if (method === "telegram.file") {
+      if (
+        !exactKeys(params, ["filePath"])
+        || typeof params.filePath !== "string"
+        || !SAFE_TELEGRAM_FILE_PATH.test(params.filePath)
+        || !this.#allowedFilePaths.has(params.filePath)
+      ) {
+        throw new Error("Sanctuary Telegram file path is not root-observed")
+      }
+      if (!this.#downloadFile) throw new Error("Sanctuary Telegram file transport is unavailable")
+      const result = await this.#downloadFile(params.filePath)
+      if (
+        !Buffer.isBuffer(result.body)
+        || result.body.length > MAX_TELEGRAM_ATTACHMENT_BYTES
+        || (result.contentType !== undefined && !boundedText(result.contentType, 256))
+      ) {
+        throw new Error("Sanctuary Telegram file response is invalid")
+      }
+      return {
+        bodyBase64: result.body.toString("base64"),
+        ...(result.contentType ? { contentType: result.contentType } : {}),
+      }
     }
     throw new Error("Sanctuary authority method is not available")
   }
