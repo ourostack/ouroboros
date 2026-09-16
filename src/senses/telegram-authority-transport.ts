@@ -1,6 +1,7 @@
-import { authorityArtifactDigest, type SignedAuthorityPayload } from "../heart/daemon/sanctuary-authority-codec"
+import { createHash, type KeyLike } from "node:crypto"
+import { authorityArtifactDigest, verifyAuthorityPayload, type SignedAuthorityPayload } from "../heart/daemon/sanctuary-authority-codec"
 import type { TelegramTransportObservationV1 } from "../heart/daemon/sanctuary-telegram-authority-gateway"
-import type { TelegramBotApi, TelegramUpdate } from "./telegram-client"
+import type { TelegramAuthorityTransportMetadata, TelegramBotApi, TelegramUpdate } from "./telegram-client"
 
 export interface SanctuaryTelegramAuthorityProtocolClient {
   request(method: string, params: Record<string, unknown>): Promise<unknown>
@@ -13,6 +14,17 @@ export interface SanctuaryTelegramAuthorityTransport {
   downloadFile(filePath: string): Promise<Response>
   admitChat(input: { admissionId: string; updateId: number; userId: string; chatId: string }): Promise<void>
   revokeChat(input: { userId: string; chatId: string }): Promise<void>
+  metadataForUpdate(update: TelegramUpdate): TelegramAuthorityTransportMetadata | null
+}
+
+export interface SanctuaryTelegramAuthorityVerification {
+  expectedTargetHost: string
+  expectedBotId: string
+  expectedOwnerUserId: string
+  expectedOwnerChatId: string
+  expectedKeyId: string
+  expectedPublicKeyDigest: string
+  publicKey: KeyLike
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -30,10 +42,109 @@ function validPollBody(body: Record<string, unknown>): boolean {
     && body.allowed_updates[1] === "callback_query"
 }
 
+function rawUpdateDigest(update: TelegramUpdate): string {
+  return `tgu_${createHash("sha256")
+    .update(`ouroboros.telegram.update.v1\0${JSON.stringify(update)}`, "utf8")
+    .digest("base64url")}`
+}
+
+function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const actual = Object.keys(value).sort()
+  const expected = [...keys].sort()
+  return actual.length === expected.length && actual.every((key, index) => key === expected[index])
+}
+
+function canonicalTime(value: unknown): value is string {
+  if (typeof value !== "string") return false
+  const instant = new Date(value)
+  return !Number.isNaN(instant.getTime()) && instant.toISOString() === value
+}
+
+function verifyObservation(
+  artifact: SignedAuthorityPayload<TelegramTransportObservationV1>,
+  update: TelegramUpdate,
+  verification: SanctuaryTelegramAuthorityVerification,
+): TelegramAuthorityTransportMetadata {
+  let payload: TelegramTransportObservationV1
+  try {
+    payload = verifyAuthorityPayload({
+      artifact,
+      expectedDomain: "ouro.sanctuary.telegram-observation.v1",
+      expectedKeyId: verification.expectedKeyId,
+      publicKey: verification.publicKey,
+    })
+  } catch (error) {
+    throw new Error("Sanctuary Telegram authority poll response is invalid", { cause: error })
+  }
+  if (
+    !isObject(payload)
+    || !exactKeys(payload, [
+      "targetHost", "botId", "updateId", "updateClass", "userId", "chatId", "ownerEligible",
+      "messageId", "callbackQueryId", "rawUpdateDigest", "observedAt", "settlement", "nonce", "publicKeyDigest",
+    ])
+    || payload.targetHost !== verification.expectedTargetHost
+    || payload.botId !== verification.expectedBotId
+    || payload.publicKeyDigest !== verification.expectedPublicKeyDigest
+    || payload.updateId !== update.update_id
+    || !["message", "callback"].includes(String(payload.updateClass))
+    || typeof payload.userId !== "string"
+    || typeof payload.chatId !== "string"
+    || typeof payload.ownerEligible !== "boolean"
+    || (payload.messageId !== null && typeof payload.messageId !== "string")
+    || (payload.callbackQueryId !== null && typeof payload.callbackQueryId !== "string")
+    || payload.rawUpdateDigest !== rawUpdateDigest(update)
+    || !canonicalTime(payload.observedAt)
+    || payload.settlement !== "pending"
+    || typeof payload.nonce !== "string"
+    || !/^[A-Za-z0-9_-]{43}$/u.test(payload.nonce)
+  ) {
+    throw new Error("Sanctuary Telegram authority observation payload is invalid")
+  }
+  const callback = update.callback_query
+  const message = update.message
+  if ((!callback && !message) || (callback && message) || (callback && (!callback.message || !callback.from)) || (message && !message.from)) {
+    throw new Error("Sanctuary Telegram authority observation update is unsupported")
+  }
+  const updateClass = callback ? "callback" : "message"
+  const userId = String(callback ? callback.from.id : message!.from!.id)
+  const chatId = String(callback ? callback.message!.chat.id : message!.chat.id)
+  const messageId = String(callback ? callback.message!.message_id : message!.message_id)
+  const callbackQueryId = callback ? callback.id : null
+  if (
+    payload.updateClass !== updateClass
+    || payload.userId !== userId
+    || payload.chatId !== chatId
+    || payload.messageId !== messageId
+    || payload.callbackQueryId !== callbackQueryId
+    || payload.ownerEligible !== (userId === verification.expectedOwnerUserId && chatId === verification.expectedOwnerChatId)
+  ) {
+    throw new Error("Sanctuary Telegram authority observation coordinates changed")
+  }
+  return Object.freeze({
+    schemaVersion: 1,
+    observationDigest: authorityArtifactDigest(artifact.domain, payload),
+    targetHost: payload.targetHost,
+    botId: payload.botId,
+    updateId: payload.updateId,
+    updateClass: payload.updateClass,
+    userId: payload.userId,
+    chatId: payload.chatId,
+    ownerEligible: payload.ownerEligible,
+    messageId: payload.messageId,
+    callbackQueryId: payload.callbackQueryId,
+    rawUpdateDigest: payload.rawUpdateDigest,
+    observedAt: payload.observedAt,
+    keyId: artifact.keyId,
+    publicKeyDigest: payload.publicKeyDigest,
+  })
+}
+
 export function createSanctuaryTelegramAuthorityTransport(
   client: SanctuaryTelegramAuthorityProtocolClient,
+  verification: SanctuaryTelegramAuthorityVerification,
 ): SanctuaryTelegramAuthorityTransport {
   const observations = new Map<number, SignedAuthorityPayload<TelegramTransportObservationV1>>()
+  const metadata = new Map<number, TelegramAuthorityTransportMetadata>()
   let currentObservation: SignedAuthorityPayload<TelegramTransportObservationV1> | null = null
   let stopped = false
   const api: TelegramBotApi = {
@@ -67,6 +178,7 @@ export function createSanctuaryTelegramAuthorityTransport(
       }
       const update = result.update as unknown as TelegramUpdate
       const observation = result.observation as unknown as SignedAuthorityPayload<TelegramTransportObservationV1>
+      const verifiedMetadata = verifyObservation(observation, update, verification)
       const existing = observations.get(update.update_id)
       if (
         existing
@@ -76,6 +188,7 @@ export function createSanctuaryTelegramAuthorityTransport(
         throw new Error("Sanctuary Telegram authority observation changed during redelivery")
       }
       observations.set(update.update_id, observation)
+      metadata.set(update.update_id, verifiedMetadata)
       currentObservation = observation
       return [update] as T
     },
@@ -111,6 +224,14 @@ export function createSanctuaryTelegramAuthorityTransport(
     async revokeChat(input) {
       await client.request("telegram.chat.revoke", input)
     },
+    metadataForUpdate(update) {
+      const value = metadata.get(update.update_id)
+      if (!value) return null
+      if (value.rawUpdateDigest !== rawUpdateDigest(update)) {
+        throw new Error("Sanctuary Telegram authority update changed after verification")
+      }
+      return value
+    },
     async settleTransport(update, outcome) {
       const observation = observations.get(update.update_id)
       if (!observation) throw new Error("Sanctuary Telegram authority observation is unavailable for settlement")
@@ -120,6 +241,7 @@ export function createSanctuaryTelegramAuthorityTransport(
         outcome,
       })
       observations.delete(update.update_id)
+      metadata.delete(update.update_id)
       if (currentObservation?.payload.updateId === update.update_id) currentObservation = null
     },
   }

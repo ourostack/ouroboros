@@ -1775,7 +1775,10 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       inboxStore,
       onMessage,
       onUpdate,
-      ...(authorityTransport ? { settleTransport: authorityTransport.settleTransport } : {}),
+      ...(authorityTransport ? {
+        settleTransport: authorityTransport.settleTransport,
+        transportMetadata: authorityTransport.metadataForUpdate,
+      } : {}),
       acceptanceEventMeta: (update, distinctAccount) => {
         const marker = options.acceptanceMarker ? options.acceptanceMarker() : readSanctuaryAcceptanceMarker(options.agentName)
         if (!marker) return {}

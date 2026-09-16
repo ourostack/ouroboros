@@ -2058,6 +2058,60 @@ describe("Telegram durable authorized long poll", () => {
     expect(restartedRequest).toHaveBeenCalledWith("getUpdates", expect.objectContaining({ offset: 7 }), expect.any(AbortSignal))
   })
 
+  it("propagates verified authority metadata to owner, stranger, and callback dispatch without affecting direct polling", async () => {
+    const updates = [
+      { update_id: 21, message: { message_id: 121, from: { id: 10 }, chat: { id: 10, type: "private" }, text: "owner" } },
+      { update_id: 22, message: { message_id: 122, from: { id: 20 }, chat: { id: 20, type: "private" }, text: "stranger" } },
+      { update_id: 23, callback_query: { id: "callback-23", from: { id: 10 }, message: { message_id: 123, chat: { id: 10, type: "private" } }, data: "approve" } },
+    ]
+    const metadata = (telegramUpdate: TelegramUpdate) => Object.freeze({
+      schemaVersion: 1 as const,
+      observationDigest: `auth_${telegramUpdate.update_id}`,
+      targetHost: "sanctuary",
+      botId: "123456",
+      updateId: telegramUpdate.update_id,
+      updateClass: telegramUpdate.callback_query ? "callback" as const : "message" as const,
+      userId: String(telegramUpdate.callback_query?.from.id ?? telegramUpdate.message!.from!.id),
+      chatId: String(telegramUpdate.callback_query?.message?.chat.id ?? telegramUpdate.message!.chat.id),
+      ownerEligible: telegramUpdate.update_id !== 22,
+      messageId: String(telegramUpdate.callback_query?.message?.message_id ?? telegramUpdate.message!.message_id),
+      callbackQueryId: telegramUpdate.callback_query?.id ?? null,
+      rawUpdateDigest: `tgu_${"a".repeat(43)}`,
+      observedAt: "2026-09-16T23:00:00.000Z",
+      keyId: "issuer-1",
+      publicKeyDigest: `sha256:${"b".repeat(64)}`,
+    })
+    const onMessage = vi.fn(async () => undefined)
+    const onUnknownMessage = vi.fn(async () => undefined)
+    const onUpdate = vi.fn(async () => false)
+    const poll = createTelegramLongPoll({
+      api: { request: vi.fn(async () => updates), stop: vi.fn() },
+      expectedUserId: "10",
+      expectedChatId: "10",
+      botId: "123456",
+      offsetStore: { load: () => 0, save: vi.fn() },
+      onMessage,
+      onUnknownMessage,
+      onUpdate,
+      transportMetadata: metadata,
+    })
+    await poll.pollOnce()
+    expect(onMessage).toHaveBeenCalledWith(expect.objectContaining({ authority: metadata(updates[0]!) }))
+    expect(onUnknownMessage).toHaveBeenCalledWith(expect.objectContaining({ authority: metadata(updates[1]!) }))
+    expect(onUpdate).toHaveBeenCalledWith(updates[2], metadata(updates[2]!))
+
+    const directMessage = vi.fn(async () => undefined)
+    const direct = createTelegramLongPoll({
+      api: { request: vi.fn(async () => [updates[0]]), stop: vi.fn() },
+      expectedUserId: "10",
+      expectedChatId: "10",
+      offsetStore: { load: () => 0, save: vi.fn() },
+      onMessage: directMessage,
+    })
+    await direct.pollOnce()
+    expect(directMessage).toHaveBeenCalledWith(expect.not.objectContaining({ authority: expect.anything() }))
+  })
+
   it("routes every supported authorized Telegram media type with captions or attachment-only text exactly once", async () => {
     const onMessage = vi.fn(async () => undefined)
     const request = vi.fn(async () => [

@@ -123,6 +123,7 @@ export interface TelegramInboundMessage {
   attachments?: TelegramInboundAttachment[]
   attachmentNotices?: string[]
   replyToMessageId?: string
+  authority?: TelegramAuthorityTransportMetadata
 }
 
 export interface TelegramInboundAttachment {
@@ -144,6 +145,25 @@ export interface TelegramUnknownInboundMessage {
   hasAttachments: boolean
   attachments?: TelegramInboundAttachment[]
   attachmentNotices?: string[]
+  authority?: TelegramAuthorityTransportMetadata
+}
+
+export interface TelegramAuthorityTransportMetadata {
+  readonly schemaVersion: 1
+  readonly observationDigest: string
+  readonly targetHost: string
+  readonly botId: string
+  readonly updateId: number
+  readonly updateClass: "message" | "callback"
+  readonly userId: string
+  readonly chatId: string
+  readonly ownerEligible: boolean
+  readonly messageId: string | null
+  readonly callbackQueryId: string | null
+  readonly rawUpdateDigest: string
+  readonly observedAt: string
+  readonly keyId: string
+  readonly publicKeyDigest: string
 }
 
 export interface TelegramUpdateInboxStore {
@@ -606,7 +626,8 @@ export interface TelegramLongPollOptions {
   inboxStore?: TelegramUpdateInboxStore
   onMessage: (message: TelegramInboundMessage) => Promise<void>
   onUnknownMessage?: (message: TelegramUnknownInboundMessage) => Promise<void>
-  onUpdate?: (update: TelegramUpdate) => Promise<boolean>
+  onUpdate?: (update: TelegramUpdate, authority?: TelegramAuthorityTransportMetadata) => Promise<boolean>
+  transportMetadata?: (update: TelegramUpdate) => TelegramAuthorityTransportMetadata | null
   acceptanceEventMeta?: (update?: TelegramUpdate, distinctAccount?: boolean) => Record<string, unknown>
   onBeforeDispatch?: () => void
   onDispatchSettled?: () => void
@@ -655,7 +676,7 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
     message.document, message.audio, message.video, message.voice, message.animation, message.sticker,
   ].filter(Boolean).length + (message.photo?.length ? 1 : 0)
 
-  const authorizedMessage = (update: TelegramUpdate): TelegramInboundMessage | null => {
+  const authorizedMessage = (update: TelegramUpdate, authority?: TelegramAuthorityTransportMetadata): TelegramInboundMessage | null => {
     const message = update.message
     const userId = message?.from ? String(message.from.id) : ""
     const chatId = message ? String(message.chat.id) : ""
@@ -678,10 +699,11 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
       ...(Number.isSafeInteger(message.reply_to_message?.message_id) && message.reply_to_message!.message_id > 0
         ? { replyToMessageId: String(message.reply_to_message!.message_id) }
         : {}),
+      ...(authority ? { authority } : {}),
     }
   }
 
-  const unknownMessage = (update: TelegramUpdate): TelegramUnknownInboundMessage | null => {
+  const unknownMessage = (update: TelegramUpdate, authority?: TelegramAuthorityTransportMetadata): TelegramUnknownInboundMessage | null => {
     const message = update.message
     if (!options.onUnknownMessage || !options.botId || !message?.from || message.chat.type !== "private") return null
     const userId = String(message.from.id)
@@ -702,6 +724,7 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
       hasAttachments: attachmentCount > 0,
       attachments,
       ...(attachmentCount > attachments.length ? { attachmentNotices: ["attachment unavailable: Telegram media metadata was incomplete"] } : {}),
+      ...(authority ? { authority } : {}),
     }
   }
 
@@ -713,16 +736,17 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
   }
 
   const dispatch = async (update: TelegramUpdate): Promise<void> => {
+    const authority = options.transportMetadata?.(update) ?? undefined
     const handled = !update.callback_query || authorizedCallback(update)
-      ? await options.onUpdate?.(update) ?? false
+      ? await options.onUpdate?.(update, authority) ?? false
       : false
     if (handled) return
-    const message = authorizedMessage(update)
+    const message = authorizedMessage(update, authority)
     if (message) {
       await options.onMessage(message)
       return
     }
-    const stranger = unknownMessage(update)
+    const stranger = unknownMessage(update, authority)
     if (stranger) {
       await options.onUnknownMessage!(stranger)
       return

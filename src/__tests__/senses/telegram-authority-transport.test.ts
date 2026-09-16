@@ -1,6 +1,11 @@
+import { createHash, generateKeyPairSync } from "node:crypto"
 import { describe, expect, it, vi } from "vitest"
 
-import { authorityArtifactDigest } from "../../heart/daemon/sanctuary-authority-codec"
+import { authorityArtifactDigest, signAuthorityPayload } from "../../heart/daemon/sanctuary-authority-codec"
+import {
+  sanctuaryAuthorityPublicKeyDigest,
+  type TelegramTransportObservationV1,
+} from "../../heart/daemon/sanctuary-telegram-authority-gateway"
 import {
   createSanctuaryTelegramAuthorityTransport,
   type SanctuaryTelegramAuthorityProtocolClient,
@@ -16,11 +21,18 @@ const update = {
   },
 }
 
-const observation = {
-  schemaVersion: 1 as const,
+const keys = generateKeyPairSync("ed25519")
+const publicKeyDigest = sanctuaryAuthorityPublicKeyDigest(keys.privateKey)
+const digestUpdate = (value: unknown): string => `tgu_${createHash("sha256")
+  .update(`ouroboros.telegram.update.v1\0${JSON.stringify(value)}`, "utf8")
+  .digest("base64url")}`
+const signObservation = (payload: TelegramTransportObservationV1) => signAuthorityPayload({
   domain: "ouro.sanctuary.telegram-observation.v1",
   keyId: "issuer-1",
-  payload: {
+  payload,
+  privateKey: keys.privateKey,
+})
+const observation = signObservation({
     targetHost: "sanctuary",
     botId: "123456",
     updateId: 10,
@@ -30,13 +42,47 @@ const observation = {
     ownerEligible: true,
     messageId: "110",
     callbackQueryId: null,
-    rawUpdateDigest: "tgu_" + "a".repeat(43),
+    rawUpdateDigest: digestUpdate(update),
     observedAt: "2026-09-16T23:00:00.000Z",
     settlement: "pending" as const,
     nonce: "b".repeat(43),
-    publicKeyDigest: `sha256:${"c".repeat(64)}`,
+    publicKeyDigest,
+})
+const verification = {
+  expectedTargetHost: "sanctuary",
+  expectedBotId: "123456",
+  expectedOwnerUserId: "42",
+  expectedOwnerChatId: "42",
+  expectedKeyId: "issuer-1",
+  expectedPublicKeyDigest: publicKeyDigest,
+  publicKey: keys.publicKey,
+}
+const observationFor = (
+  telegramUpdate: typeof update | {
+    update_id: number
+    callback_query: {
+      id: string
+      from: { id: number }
+      message: { message_id: number; chat: { id: number; type: string } }
+      data: string
+    }
   },
-  signature: "d".repeat(86),
+  ownerEligible: boolean,
+) => {
+  const callback = "callback_query" in telegramUpdate ? telegramUpdate.callback_query : undefined
+  const message = "message" in telegramUpdate ? telegramUpdate.message : undefined
+  return signObservation({
+    ...observation.payload,
+    updateId: telegramUpdate.update_id,
+    updateClass: callback ? "callback" : "message",
+    userId: String(callback?.from.id ?? message!.from.id),
+    chatId: String(callback?.message.chat.id ?? message!.chat.id),
+    ownerEligible,
+    messageId: String(callback?.message.message_id ?? message!.message_id),
+    callbackQueryId: callback?.id ?? null,
+    rawUpdateDigest: digestUpdate(telegramUpdate),
+    nonce: createHash("sha256").update(JSON.stringify(telegramUpdate)).digest("base64url"),
+  })
 }
 
 function fixture() {
@@ -51,7 +97,7 @@ function fixture() {
   })
   const close = vi.fn()
   const client: SanctuaryTelegramAuthorityProtocolClient = { request, close }
-  return { client, close, request, transport: createSanctuaryTelegramAuthorityTransport(client) }
+  return { client, close, request, transport: createSanctuaryTelegramAuthorityTransport(client, verification) }
 }
 
 describe("Sanctuary Telegram authority transport", () => {
@@ -62,14 +108,124 @@ describe("Sanctuary Telegram authority transport", () => {
       timeout: 50,
       allowed_updates: ["message", "callback_query"],
     })).resolves.toEqual([update])
+    const metadata = f.transport.metadataForUpdate(update)
+    expect(metadata).toMatchObject({
+      schemaVersion: 1,
+      observationDigest: authorityArtifactDigest(observation.domain, observation.payload),
+      targetHost: "sanctuary",
+      botId: "123456",
+      updateId: 10,
+      userId: "42",
+      chatId: "42",
+      ownerEligible: true,
+      keyId: "issuer-1",
+      publicKeyDigest,
+    })
+
+    expect(Object.isFrozen(metadata)).toBe(true)
+    expect(() => f.transport.metadataForUpdate({
+      ...update,
+      message: { ...update.message, text: "changed" },
+    })).toThrow(/changed after verification/u)
     await f.transport.settleTransport(update, "completed")
     expect(f.request).toHaveBeenNthCalledWith(2, "telegram.settle", {
       updateId: 10,
       observationDigest: authorityArtifactDigest(observation.domain, observation.payload),
       outcome: "completed",
     })
+    expect(f.transport.metadataForUpdate(update)).toBeNull()
     await f.transport.api.request("getMe", {})
     expect(f.request).toHaveBeenLastCalledWith("telegram.request", { method: "getMe", body: {} })
+  })
+
+  it("accepts signed non-owner messages and owner callbacks with exact immutable metadata", async () => {
+    const strangerUpdate = {
+      update_id: 12,
+      message: {
+        message_id: 112,
+        from: { id: 84 },
+        chat: { id: 84, type: "private" },
+        text: "hello",
+      },
+    }
+    const callbackUpdate = {
+      update_id: 13,
+      callback_query: {
+        id: "callback-13",
+        from: { id: 42 },
+        message: { message_id: 113, chat: { id: 42, type: "private" } },
+        data: "approve",
+      },
+    }
+    for (const [telegramUpdate, ownerEligible] of [[strangerUpdate, false], [callbackUpdate, true]] as const) {
+      const transport = createSanctuaryTelegramAuthorityTransport({
+        request: vi.fn(async () => ({ update: telegramUpdate, observation: observationFor(telegramUpdate, ownerEligible) })),
+        close: vi.fn(),
+      }, verification)
+      await expect(transport.api.request("getUpdates", {
+        offset: 0, timeout: 50, allowed_updates: ["message", "callback_query"],
+      })).resolves.toEqual([telegramUpdate])
+      expect(transport.metadataForUpdate(telegramUpdate)).toMatchObject({
+        updateId: telegramUpdate.update_id,
+        ownerEligible,
+        updateClass: "callback_query" in telegramUpdate ? "callback" : "message",
+      })
+    }
+  })
+
+  it("refuses altered signatures, pins, payload fields, coordinates, eligibility, and payload shape", async () => {
+    const otherKeys = generateKeyPairSync("ed25519")
+    const signed = (payload: TelegramTransportObservationV1, domain = observation.domain, keyId = observation.keyId) =>
+      signAuthorityPayload({ domain, keyId, payload, privateKey: keys.privateKey })
+    const candidates = [
+      { artifact: { ...observation, signature: `${observation.signature[0] === "A" ? "B" : "A"}${observation.signature.slice(1)}` } },
+      { artifact: signed(observation.payload, "wrong.domain") },
+      { artifact: signed(observation.payload, observation.domain, "wrong-key") },
+      { artifact: signed({ ...observation.payload, targetHost: "wrong-host" }) },
+      { artifact: signed({ ...observation.payload, botId: "654321" }) },
+      { artifact: signed({ ...observation.payload, rawUpdateDigest: `tgu_${"a".repeat(43)}` }) },
+      { artifact: signed({ ...observation.payload, userId: "84" }) },
+      { artifact: signed({ ...observation.payload, chatId: "84" }) },
+      { artifact: signed({ ...observation.payload, messageId: "999" }) },
+      { artifact: signed({ ...observation.payload, ownerEligible: false }) },
+      { artifact: signed({ ...observation.payload, observedAt: 42 } as TelegramTransportObservationV1) },
+      { artifact: signed({ ...observation.payload, observedAt: "not-a-time" }) },
+      { artifact: signed({ ...observation.payload, extra: true } as TelegramTransportObservationV1) },
+    ]
+    for (const candidate of candidates) {
+      const transport = createSanctuaryTelegramAuthorityTransport({
+        request: vi.fn(async () => ({ observation: candidate.artifact, update })),
+        close: vi.fn(),
+      }, verification)
+      await expect(transport.api.request("getUpdates", {
+        offset: 0, timeout: 50, allowed_updates: ["message", "callback_query"],
+      })).rejects.toThrow(/invalid|changed/u)
+    }
+    const wrongKeyTransport = createSanctuaryTelegramAuthorityTransport({
+      request: vi.fn(async () => ({ observation, update })),
+      close: vi.fn(),
+    }, { ...verification, publicKey: otherKeys.publicKey })
+    await expect(wrongKeyTransport.api.request("getUpdates", {
+      offset: 0, timeout: 50, allowed_updates: ["message", "callback_query"],
+    })).rejects.toThrow(/invalid/u)
+
+    const unsupportedUpdate = { update_id: 14 }
+    const unsupportedArtifact = signObservation({
+      ...observation.payload,
+      updateId: 14,
+      userId: "",
+      chatId: "",
+      ownerEligible: false,
+      messageId: null,
+      rawUpdateDigest: digestUpdate(unsupportedUpdate),
+    })
+    const unsupportedTransport = createSanctuaryTelegramAuthorityTransport({
+      request: vi.fn(async () => ({ observation: unsupportedArtifact, update: unsupportedUpdate })),
+      close: vi.fn(),
+    }, verification)
+    await expect(unsupportedTransport.api.request("getUpdates", {
+      offset: 0, timeout: 50, allowed_updates: ["message", "callback_query"],
+    })).rejects.toThrow(/unsupported/u)
   })
 
   it("retains a newer current observation when an older captured update settles", async () => {
@@ -78,7 +234,11 @@ describe("Sanctuary Telegram authority transport", () => {
       offset: 0, timeout: 50, allowed_updates: ["message", "callback_query"],
     })
     const update11 = { ...update, update_id: 11 }
-    const observation11 = { ...observation, payload: { ...observation.payload, updateId: 11 } }
+    const observation11 = signObservation({
+      ...observation.payload,
+      updateId: 11,
+      rawUpdateDigest: digestUpdate(update11),
+    })
     f.request.mockResolvedValueOnce({ observation: observation11, update: update11 })
     await f.transport.api.request("getUpdates", {
       offset: 0, timeout: 50, allowed_updates: ["message", "callback_query"],
@@ -152,7 +312,7 @@ describe("Sanctuary Telegram authority transport", () => {
       { observation, update: { ...update, update_id: 11 } },
     ]) {
       const request = vi.fn(async () => candidate)
-      const transport = createSanctuaryTelegramAuthorityTransport({ request, close: vi.fn() })
+      const transport = createSanctuaryTelegramAuthorityTransport({ request, close: vi.fn() }, verification)
       await expect(transport.api.request("getUpdates", {
         offset: 0,
         timeout: 50,
@@ -167,7 +327,7 @@ describe("Sanctuary Telegram authority transport", () => {
       allowed_updates: ["message", "callback_query"],
     })
     f.request.mockResolvedValueOnce({
-      observation: { ...observation, payload: { ...observation.payload, nonce: "e".repeat(43) } },
+      observation: signObservation({ ...observation.payload, nonce: "e".repeat(43) }),
       update,
     })
     await expect(f.transport.api.request("getUpdates", {
@@ -189,13 +349,13 @@ describe("Sanctuary Telegram authority transport", () => {
       const transport = createSanctuaryTelegramAuthorityTransport({
         request: vi.fn(async () => candidate),
         close: vi.fn(),
-      })
+        }, verification)
       await expect(transport.downloadFile("documents/file.bin")).rejects.toThrow(/file response/u)
     }
     const transport = createSanctuaryTelegramAuthorityTransport({
       request: vi.fn(async () => ({ bodyBase64: Buffer.from("data").toString("base64") })),
       close: vi.fn(),
-    })
+    }, verification)
     const response = await transport.downloadFile("documents/file.bin")
     expect(response.headers.get("content-type")).toBeNull()
   })

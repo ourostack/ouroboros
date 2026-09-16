@@ -389,11 +389,12 @@ describe("Telegram sense", () => {
   it("selects an explicit tokenless Sanctuary authority transport without changing direct agents", async () => {
     const api = { request: vi.fn(), stop: vi.fn() }
     const settleTransport = vi.fn(async () => undefined)
+    const metadataForUpdate = vi.fn(() => null)
     let pollOptions: any
     const app = createTelegramSenseApp({
       agentName: "sanctuary",
       credentials: { botId: "777", authorizedUserId: "42", authorizedChatId: "42" },
-      authorityTransport: { api, settleTransport, downloadFile: vi.fn(), admitChat: vi.fn(), revokeChat: vi.fn() },
+      authorityTransport: { api, settleTransport, downloadFile: vi.fn(), admitChat: vi.fn(), revokeChat: vi.fn(), metadataForUpdate },
       identityKey: "k".repeat(43),
       _agentRoot: fs.mkdtempSync(path.join(os.tmpdir(), "telegram-gateway-routing-")),
       _toolContext: {} as never,
@@ -407,6 +408,7 @@ describe("Telegram sense", () => {
     })
     expect(pollOptions.api).toBe(api)
     expect(pollOptions.settleTransport).toBe(settleTransport)
+    expect(pollOptions.transportMetadata).toBe(metadataForUpdate)
     await app.stop()
     expect(api.stop).toHaveBeenCalledOnce()
 
@@ -418,13 +420,13 @@ describe("Telegram sense", () => {
     expect(() => createTelegramSenseApp({
       agentName: "sanctuary",
       credentials: { botToken: "resident-secret", botId: "777", authorizedUserId: "42", authorizedChatId: "42" },
-      authorityTransport: { api, settleTransport, downloadFile: vi.fn(), admitChat: vi.fn(), revokeChat: vi.fn() },
+      authorityTransport: { api, settleTransport, downloadFile: vi.fn(), admitChat: vi.fn(), revokeChat: vi.fn(), metadataForUpdate: vi.fn(() => null) },
       identityKey: "k".repeat(43),
     })).toThrow(/token/u)
     expect(() => createTelegramSenseApp({
       agentName: "butler",
       credentials: { botId: "777", authorizedUserId: "42", authorizedChatId: "42" },
-      authorityTransport: { api, settleTransport, downloadFile: vi.fn(), admitChat: vi.fn(), revokeChat: vi.fn() },
+      authorityTransport: { api, settleTransport, downloadFile: vi.fn(), admitChat: vi.fn(), revokeChat: vi.fn(), metadataForUpdate: vi.fn(() => null) },
       identityKey: "k".repeat(43),
     })).toThrow(/Sanctuary/u)
   })
