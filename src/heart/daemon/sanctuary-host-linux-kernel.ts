@@ -3,6 +3,7 @@ import { createHash } from "node:crypto"
 import * as fs from "node:fs"
 import * as path from "node:path"
 import type { Readable } from "node:stream"
+import { emitNervesEvent } from "../../nerves/runtime"
 
 import type {
   SanctuaryHostSupervisorChild,
@@ -10,6 +11,26 @@ import type {
 } from "./sanctuary-host-supervisor"
 
 const OUTPUT_LIMIT = 64 * 1024
+
+function requireRootOwnedProgram(filePath: string, links = new Set<string>()): void {
+  const parts = path.resolve(filePath).split("/").filter(Boolean)
+  let current = "/"
+  let stat = fs.lstatSync(current)
+  for (let index = 0; index < parts.length; index += 1) {
+    current = path.join(current, parts[index]!)
+    stat = fs.lstatSync(current)
+    if (stat.uid !== 0) throw new Error("Sanctuary host program path must be root-owned")
+    if (stat.isSymbolicLink()) {
+      if (links.has(current)) throw new Error("Sanctuary host program path has a symlink cycle")
+      links.add(current)
+      return requireRootOwnedProgram(path.resolve(path.dirname(current), fs.readlinkSync(current), ...parts.slice(index + 1)), links)
+    }
+    if ((stat.mode & 0o022) !== 0 || (index < parts.length - 1 && !stat.isDirectory())) {
+      throw new Error("Sanctuary host program path must be root-owned and non-writable by other users")
+    }
+  }
+  if (!stat.isFile() || (stat.mode & 0o111) === 0) throw new Error("Sanctuary host program must be an executable regular file")
+}
 
 export interface LinuxSanctuaryHostKernelOptions {
   cgroupRoot: string
@@ -197,6 +218,7 @@ export class LinuxSanctuaryHostSupervisorKernel implements SanctuaryHostSupervis
   }
 
   async launch(input: Parameters<SanctuaryHostSupervisorKernel["launch"]>[0]): Promise<SanctuaryHostSupervisorChild> {
+    requireRootOwnedProgram(input.executable)
     const spawnImpl = this.#options.spawn ?? spawn
     const child = spawnImpl(this.#options.shellPath, [
       this.#options.launcherPath,
@@ -212,6 +234,7 @@ export class LinuxSanctuaryHostSupervisorKernel implements SanctuaryHostSupervis
       stdio: ["ignore", "pipe", "pipe", "pipe"],
     })
     if (!child.pid || !child.stdio[3]) throw new Error("Sanctuary host launcher failed to start")
+    emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_host_launcher_spawned", message: "Sanctuary host launcher spawned; handshake pending" })
     const handshake = child.stdio[3] as Readable
     const ready = new Promise<void>((resolve, reject) => {
       let bytes = ""
@@ -253,7 +276,13 @@ export class LinuxSanctuaryHostSupervisorKernel implements SanctuaryHostSupervis
       ready,
       completion: observedCompletion,
       drained,
-      signalGroup: (signal) => { (this.#options.kill ?? process.kill)(-child.pid!, signal) },
+      signalGroup: (signal) => {
+        try {
+          (this.#options.kill ?? process.kill)(-child.pid!, signal)
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error
+        }
+      },
     }
   }
 

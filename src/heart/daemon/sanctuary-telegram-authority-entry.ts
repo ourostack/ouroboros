@@ -2,6 +2,7 @@
 import { createPrivateKey, createPublicKey } from "node:crypto"
 import * as fs from "node:fs"
 import * as path from "node:path"
+import { emitNervesEvent } from "../../nerves/runtime"
 
 import { createTelegramBotApi, type TelegramBotApi } from "../../senses/telegram-client"
 import { FileSanctuaryTelegramAuthorityGateway, sanctuaryTelegramAuthorityStatePath } from "./sanctuary-telegram-authority-gateway"
@@ -235,6 +236,7 @@ async function readBoundedFileResponse(response: Response): Promise<{ body: Buff
 }
 
 export async function startSanctuaryTelegramAuthority(options: StartOptions): Promise<SanctuaryTelegramAuthorityProcess> {
+  emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_authority_boot_requested", message: "Sanctuary authority boot requested; prerequisite verification pending" })
   const expectedUid = options.expectedUid ?? 0
   if ((process.getuid as () => number)() !== expectedUid) {
     throw new Error("Sanctuary Telegram authority must run as the configured root owner")

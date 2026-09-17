@@ -56,10 +56,28 @@ async function fixture(enabled = true, duringCreate?: (options: Parameters<typeo
     migrateIdentity: async () => undefined,
   })
   const message = () => handlers.onMessage({ updateId: 10, messageId: "110", userId: "42", chatId: "42", text: "run id", authority: observation })
-  return { app, handlers, create, host, port, transport, ordinary, message, observation, friend, friends, agentRoot, api, hostPropose, ordinaryPropose, prepared: () => prepared, turn: () => turn }
+  return { app, handlers, create, host, port, transport, ordinary, message, observation, friend, friends, agentRoot, api, runTurn, hostPropose, ordinaryPropose, prepared: () => prepared, turn: () => turn }
 }
 
 describe("root host Telegram production routing", () => {
+  it("registers an existing household contact from its current observation before any ordinary turn", async () => {
+    const f = await fixture()
+    try {
+      await f.friends.put("household", {
+        ...f.friend, id: "household", trustLevel: "friend", initiativePolicy: "request_follow_up_only", capabilityProfileId: "sanctuary-household",
+        externalIds: [{ provider: "telegram-user", tenantId: "777", externalId: "84", linkedAt: f.friend.createdAt }],
+      })
+      f.runTurn.mockResolvedValue({ response: "", deliveries: [], deliveryFailures: [] } as never)
+      f.transport.admitChat.mockRejectedValueOnce(new Error("gateway unavailable"))
+      const incoming = { updateId: 12, messageId: 112, botId: "777", userId: "84", chatId: "84", text: "hello", displayLabel: "Household", hasAttachments: false }
+      await expect(f.handlers.onUnknownMessage(incoming)).rejects.toThrow("gateway unavailable")
+      expect(f.runTurn).not.toHaveBeenCalled()
+      await f.handlers.onUnknownMessage(incoming)
+      expect(f.transport.admitChat).toHaveBeenLastCalledWith({ admissionId: expect.stringMatching(/^[a-f0-9]{20}$/u), updateId: 12, userId: "84", chatId: "84" })
+      expect(f.runTurn).toHaveBeenCalledOnce()
+    } finally { await f.app.stop() }
+  })
+
   it("refuses an unpinned gateway bot and a host proposal before its runtime exists", async () => {
     expect(() => createTelegramSenseApp({ agentName: "sanctuary", credentials: { authorizedUserId: "42", authorizedChatId: "42" }, authorityTransport: {} as any })).toThrow("pinned bot id")
     const f = await fixture(true, (options) => {

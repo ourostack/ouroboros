@@ -101,6 +101,21 @@ function fixture() {
 }
 
 describe("Sanctuary Telegram authority transport", () => {
+  it("verifies a redacted host callback without replacing its signed raw-update commitment", async () => {
+    const raw = { update_id: 12, callback_query: { id: "host-12", from: { id: 42 }, message: { message_id: 112, chat: { id: 42, type: "private" } }, data: "ouh:private" } }
+    const projected = { ...raw, callback_query: { ...raw.callback_query, data: "root-host-callback" } }
+    const artifact = signObservation({
+      ...observationFor(raw, true).payload,
+      deliveryUpdateDigest: digestUpdate(projected),
+    } as TelegramTransportObservationV1)
+    const f = fixture()
+    f.request.mockResolvedValueOnce({ observation: artifact, update: projected } as never)
+    await expect(f.transport.api.request("getUpdates", { offset: 0, timeout: 50, allowed_updates: ["message", "callback_query"] })).resolves.toEqual([projected])
+    expect(f.transport.metadataForUpdate(projected)).toMatchObject({ rawUpdateDigest: digestUpdate(raw), deliveryUpdateDigest: digestUpdate(projected) })
+    expect(() => f.transport.metadataForUpdate(raw)).toThrow(/changed after verification/u)
+    await expect(f.transport.settleTransport(projected, "completed")).resolves.toBeUndefined()
+  })
+
   it("converts root polling into the existing Bot API update shape and settles the exact observation", async () => {
     const f = fixture()
     await expect(f.transport.api.request("getUpdates", {

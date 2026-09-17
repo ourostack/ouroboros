@@ -1,3 +1,4 @@
+import { emitNervesEvent } from "../nerves/runtime"
 import { createHash } from "node:crypto"
 import { authorityArtifactDigest, canonicalAuthorityJson, verifyAuthorityPayload, type SignedAuthorityPayload } from "../heart/daemon/sanctuary-authority-codec"
 import { validateHostProposalRequest, type FileSanctuaryHostAuthority, type HostProposalRequestV1 } from "../heart/daemon/sanctuary-host-authority"
@@ -129,6 +130,7 @@ export function createRootHostApprovalPort(
     stopped(): boolean
   },
 ): RootHostApprovalPort {
+  emitNervesEvent({ component: "senses", event: "senses.sanctuary_root_approval_port_created", message: "Pinned Sanctuary root approval port created" })
   const pins = Object.freeze({ ...verification })
   let healthyAt = Number.NEGATIVE_INFINITY
   function verify(value: unknown, domain: string, keys: readonly string[]): Artifact {

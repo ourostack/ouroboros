@@ -55,6 +55,53 @@ function fixture(agentRoot = root()) {
 }
 
 describe("Sanctuary root Telegram authority gateway state", () => {
+  it("signs both the raw host callback and its handle-free delivery projection", () => {
+    const f = fixture()
+    const update: TelegramUpdate = {
+      update_id: 9,
+      callback_query: { id: "host-9", from: { id: 42 }, message: { message_id: 109, chat: { id: 42 } }, data: "ouh:private-handle" },
+    }
+    f.gateway.capture([update])
+    const record = f.gateway.record(9)!
+    expect(record.disposition).toBe("dispatch")
+    if (record.disposition !== "dispatch") throw new Error("missing dispatch")
+    const hash = (value: TelegramUpdate) => `tgu_${createHash("sha256").update(`ouroboros.telegram.update.v1\0${JSON.stringify(value)}`, "utf8").digest("base64url")}`
+    expect(record.observation.payload.rawUpdateDigest).toBe(hash(update))
+    expect(record.observation.payload).toHaveProperty("deliveryUpdateDigest", hash(record.deliveryUpdate!))
+    expect(JSON.stringify(record.deliveryUpdate)).not.toContain("private-handle")
+    f.gateway.capture([update])
+    expect(f.gateway.record(9)).toEqual(record)
+  })
+
+  it("expires communication authority by new inbound observations, never outbound use or replay", () => {
+    const f = fixture()
+    let now = "2026-09-16T22:00:00.000Z"
+    const gateway = new FileSanctuaryTelegramAuthorityGateway(f.agentRoot, { ...f.configuration, now: () => now })
+    gateway.capture([message(10, 84), message(11, 85)])
+    gateway.admitChat({ admissionId: "a".repeat(20), updateId: 10, userId: "84", chatId: "84" })
+    gateway.admitChat({ admissionId: "b".repeat(20), updateId: 11, userId: "85", chatId: "85" })
+    now = "2027-09-15T22:00:00.000Z"
+    expect(gateway.isAuthorizedChat("84")).toBe(true)
+    gateway.capture([message(10, 84), message(12, 85)])
+    now = "2027-09-17T22:00:00.000Z"
+    expect(gateway.isAuthorizedChat("85")).toBe(true)
+    expect(gateway.isAuthorizedChat("84")).toBe(false)
+    expect(() => gateway.admitChat({ admissionId: "a".repeat(20), updateId: 10, userId: "84", chatId: "84" })).toThrow(/expired/u)
+    gateway.revokeChat({ userId: "85", chatId: "85" })
+    gateway.capture([message(13, 85)])
+    expect(gateway.isAuthorizedChat("85")).toBe(false)
+  })
+
+  it("keeps a live communication binding unchanged when a fresh matching inbound contact registers again", () => {
+    const f = fixture()
+    f.gateway.capture([message(10, 84)])
+    f.gateway.admitChat({ admissionId: "a".repeat(20), updateId: 10, userId: "84", chatId: "84" })
+    f.gateway.capture([message(11, 84)])
+    const before = fs.readFileSync(sanctuaryTelegramAuthorityStatePath(f.agentRoot), "utf8")
+    expect(() => f.gateway.admitChat({ admissionId: "b".repeat(20), updateId: 11, userId: "84", chatId: "84" })).not.toThrow()
+    expect(fs.readFileSync(sanctuaryTelegramAuthorityStatePath(f.agentRoot), "utf8")).toBe(before)
+  })
+
   it("durably captures and re-delivers one byte-identical signed owner observation", () => {
     const f = fixture()
     const update = message(10)

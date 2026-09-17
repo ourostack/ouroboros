@@ -1,6 +1,7 @@
 import { createHash, type KeyLike } from "node:crypto"
 import * as fs from "node:fs"
 import * as path from "node:path"
+import { emitNervesEvent } from "../../nerves/runtime"
 
 import {
   authorityArtifactDigest,
@@ -8,7 +9,7 @@ import {
   verifyAuthorityPayload,
   type SignedAuthorityPayload,
 } from "./sanctuary-authority-codec"
-import type { HostCommandV1 } from "./sanctuary-host-authority"
+import { hasHostInlineCodeSwitch, type HostCommandV1 } from "./sanctuary-host-authority"
 import type { FileSanctuaryAuthorityLedger } from "./sanctuary-authority-ledger"
 
 const PERMIT_DOMAIN = "ouro.sanctuary.host-permit.v1"
@@ -19,7 +20,6 @@ const REGISTRATION_ID = /^hostreg-[A-Za-z0-9_-]{43}$/u
 const NONCE = /^[A-Za-z0-9_-]{64}$/u
 const PRINTABLE = /^[\x20-\x7e]+$/u
 const SCRIPT_BYTES = /^[\x0a\x20-\x7e]+$/u
-const INLINE_CODE_SWITCHES = new Set(["-c", "-e", "--eval", "--evaluate"])
 const OUTPUT_LIMIT = 64 * 1024
 const EXCERPT_LIMIT = 4_096
 const ACKNOWLEDGED_SUFFIX = ".acknowledged"
@@ -163,7 +163,7 @@ function validateCommand(command: unknown, scriptDigest: unknown): asserts comma
     || !Array.isArray(command.arguments)
     || command.arguments.length > 64
     || !command.arguments.every((argument) => printable(argument, 512))
-    || command.arguments.some((argument) => INLINE_CODE_SWITCHES.has(argument))
+    || hasHostInlineCodeSwitch(command.arguments, command.kind === "script" ? command.interpreter : command.executable)
   ) {
     throw new Error("Sanctuary host permit command is invalid")
   }
@@ -363,6 +363,7 @@ export class SanctuaryHostPermitExecutor {
   }
 
   async execute(artifact: unknown): Promise<SignedAuthorityPayload<Record<string, unknown>>> {
+    emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_host_permit_submitted", message: "Sanctuary host permit submitted for verification" })
     return this.#execute(artifact, false)
   }
 

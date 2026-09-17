@@ -88,6 +88,21 @@ function fixture(overrides: {
 }
 
 describe("Sanctuary root host authority", () => {
+  it.each([
+    ["/bin/sh", "-ec", "printf unapproved"],
+    ["/bin/sh", "-xc", "printf unapproved"],
+    ["/usr/bin/node", "-p", "1+1"],
+    ["/usr/bin/node", "--print=1+1", ""],
+    ["/usr/bin/node", "-pe", "1+1"],
+    ["/usr/bin/perl", "-E", "say 1"],
+    ["/usr/bin/ruby", "-we", "puts 1"],
+  ])("refuses inline code through %s %s before preparing a card", (interpreter, flag, source) => {
+    const f = fixture()
+    expect(() => f.authority.prepare(proposal({
+      command: { kind: "script", interpreter, arguments: [flag, source].filter(Boolean), script: "printf safe\n" },
+    }))).toThrow(/command is invalid/u)
+  })
+
   it("retires registrations and unreserved permits without disguising reserved execution as cleanup", () => {
     const f = fixture()
     const ledger = new FileSanctuaryAuthorityLedger(f.root)

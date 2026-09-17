@@ -6,6 +6,7 @@ import type { TelegramBotApi, TelegramUpdate } from "../../senses/telegram-clien
 import { FIXED_ADMISSION_ACKNOWLEDGEMENT } from "../../senses/telegram-effect-adapter"
 import { SocketFrontendClient } from "../frontend-socket-client"
 import { authorityArtifactDigest } from "./sanctuary-authority-codec"
+import { emitNervesEvent } from "../../nerves/runtime"
 import {
   FileSanctuaryTelegramAuthorityGateway,
   type SanctuaryTelegramSettlement,
@@ -82,6 +83,7 @@ export class SanctuaryTelegramAuthorityService {
   }
 
   async dispatch(method: string, params: Record<string, unknown>): Promise<unknown> {
+    emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_authority_request_received", message: "Sanctuary authority protocol request received; validation pending" })
     if (this.#hostAuthority) {
       for (const registrationId of this.#hostAuthority.expireRegistrations()) {
         await this.#maintainHostCard(registrationId)

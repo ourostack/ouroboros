@@ -1,6 +1,7 @@
 import { createHash, randomBytes, type KeyLike } from "node:crypto"
 import * as fs from "node:fs"
 import * as path from "node:path"
+import { emitNervesEvent } from "../../nerves/runtime"
 
 import {
   readSessionTransaction,
@@ -205,9 +206,14 @@ function validArguments(value: unknown): value is string[] {
     && value.every((argument) => printable(argument, MAX_ARGUMENT_BYTES))
 }
 
-function hasInlineCodeSwitch(arguments_: readonly string[]): boolean {
+export function hasHostInlineCodeSwitch(arguments_: readonly string[], program: unknown): boolean {
+  const name = typeof program === "string" ? path.posix.basename(program) : ""
   return arguments_.some((argument) => INLINE_CODE_SWITCHES.has(argument)
-    || [...INLINE_CODE_SWITCHES].some((flag) => argument.startsWith(`${flag}=`)))
+    || [...INLINE_CODE_SWITCHES].some((flag) => argument.startsWith(`${flag}=`))
+    || /^-[A-Za-z]*c/u.test(argument)
+    || (/^(node|nodejs)$/u.test(name) && (/^-[A-Za-z]*[ep]/u.test(argument) || /^--print(?:=|$)/u.test(argument)))
+    || (name === "perl" && /^-[A-Za-z]*[eE]/u.test(argument))
+    || (name === "ruby" && /^-[A-Za-z]*e/u.test(argument)))
 }
 
 function validateCommand(value: unknown): asserts value is HostCommandV1 {
@@ -217,7 +223,7 @@ function validateCommand(value: unknown): asserts value is HostCommandV1 {
       !exactKeys(value, ["kind", "executable", "arguments"])
       || !absoluteExecutable(value.executable)
       || !validArguments(value.arguments)
-      || hasInlineCodeSwitch(value.arguments)
+      || hasHostInlineCodeSwitch(value.arguments, value.executable)
     ) {
       throw new Error("Sanctuary host executable command is invalid")
     }
@@ -228,7 +234,7 @@ function validateCommand(value: unknown): asserts value is HostCommandV1 {
     || !exactKeys(value, ["kind", "interpreter", "arguments", "script"])
     || !absoluteExecutable(value.interpreter)
     || !validArguments(value.arguments)
-    || hasInlineCodeSwitch(value.arguments)
+    || hasHostInlineCodeSwitch(value.arguments, value.interpreter)
     || typeof value.script !== "string"
     || Buffer.byteLength(value.script, "utf8") === 0
     || Buffer.byteLength(value.script, "utf8") > MAX_SCRIPT_BYTES
@@ -616,6 +622,7 @@ export class FileSanctuaryHostAuthority {
       if (state.records[registrationId]) throw new Error("Sanctuary host registration id already exists")
       state.records[registrationId] = record
     })
+    emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_host_approval_prepared", message: "Sanctuary host approval intent durably prepared", meta: { proposalDigest } })
     return {
       registrationId,
       proposalDigest,

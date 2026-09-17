@@ -2,6 +2,7 @@
 import { createHash, createPublicKey } from "node:crypto"
 import * as fs from "node:fs"
 import * as path from "node:path"
+import { emitNervesEvent } from "../../nerves/runtime"
 
 import type { HostExecutionPermitPayloadV1, HostSupervisorAttempt } from "./sanctuary-host-executor"
 import { verifyAuthorityPayload, type SignedAuthorityPayload } from "./sanctuary-authority-codec"
@@ -111,6 +112,7 @@ function writePrivateJson(filePath: string, value: unknown): void {
   }
 
   fs.renameSync(temporaryPath, filePath)
+  emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_host_supervisor_state_written", message: "Sanctuary host supervisor state atomically written" })
   fs.chmodSync(filePath, 0o600)
 }
 

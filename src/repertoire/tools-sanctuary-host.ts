@@ -1,6 +1,7 @@
 import * as path from "node:path"
 import { isDeepStrictEqual } from "node:util"
 import type { FriendRecord } from "@ouro.bot/friends"
+import { emitNervesEvent } from "../nerves/runtime"
 import type { ProviderCapability } from "../heart/core"
 import { validateHostProposalRequest, type HostProposalRequestV1 } from "../heart/daemon/sanctuary-host-authority"
 import { loadSessionEnvelopeFile, selectEffectiveSessionEvents } from "../heart/session-events"
@@ -183,4 +184,5 @@ export async function authorizeRootHostToolInvocation(ctx: ToolContext | undefin
   await authorizeRootHostContext(ctx, provenance.recovery ? selected.binding : undefined)
   requireOwner(selectRootHostTool(ctx, selected.capabilities))
   validateRootHostToolArguments(args, selected.binding.targetHost)
+  emitNervesEvent({ component: "repertoire", event: "repertoire.sanctuary_host_invocation_admitted", message: "Owner host-tool invocation admitted to the root approval path" })
 }

@@ -109,6 +109,27 @@ function fixture(execute: (input: any) => Promise<HostSupervisorAttempt> = async
 }
 
 describe("Sanctuary host permit executor", () => {
+  it("refuses a signed non-string executable before spawn", async () => {
+    const f = fixture()
+    await expect(f.executor.execute(permit(payload({ command: { kind: "executable", executable: 1, arguments: [] } as never })))).rejects.toThrow(/executable is invalid/u)
+    expect(f.supervisor.execute).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ["/bin/sh", "-ec", "printf unapproved"],
+    ["/usr/bin/node", "--eval=process.exit()", ""],
+    ["/usr/bin/node", "-p1+1", ""],
+    ["/usr/bin/perl", "-E", "say 1"],
+  ])("refuses signed inline-code arguments at execution for %s %s", async (interpreter, flag, source) => {
+    const f = fixture()
+    const script = "printf safe\n"
+    await expect(f.executor.execute(permit(payload({
+      command: { kind: "script", interpreter, arguments: [flag, source].filter(Boolean), script },
+      scriptDigest: digest(script),
+    })))).rejects.toThrow(/command is invalid/u)
+    expect(f.supervisor.execute).not.toHaveBeenCalled()
+  })
+
   it("verifies, durably reserves before spawn, and terminalizes one signed executable permit", async () => {
     let f!: ReturnType<typeof fixture>
     f = fixture(async (input) => {

@@ -161,6 +161,7 @@ export interface TelegramAuthorityTransportMetadata {
   readonly messageId: string | null
   readonly callbackQueryId: string | null
   readonly rawUpdateDigest: string
+  readonly deliveryUpdateDigest?: string
   readonly observedAt: string
   readonly keyId: string
   readonly publicKeyDigest: string
@@ -830,9 +831,10 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
       } else {
         options.onDispatchSettled?.()
         if (options.settleTransport) {
-          const indeterminate = options.inboxStore?.loadIndeterminate()
-            .some((receipt) => sameReceipt(receipt, updateReceipt(update))) ?? false
-          await options.settleTransport?.(update, indeterminate ? "indeterminate" : "completed")
+          // Only an existing inbox can report that this update was already captured.
+          const indeterminate = options.inboxStore!.loadIndeterminate()
+            .some((receipt) => sameReceipt(receipt, updateReceipt(update)))
+          await options.settleTransport(update, indeterminate ? "indeterminate" : "completed")
         }
       }
       options.offsetStore.save(next)

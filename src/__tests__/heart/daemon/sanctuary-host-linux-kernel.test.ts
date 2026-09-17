@@ -7,6 +7,22 @@ import { PassThrough } from "node:stream"
 
 import { describe, expect, it, vi } from "vitest"
 
+const programMetadata = vi.hoisted(() => ({ fault: "" }))
+vi.mock("node:fs", async (importOriginal) => {
+  const original = await importOriginal<typeof import("node:fs")>()
+  return {
+    ...original,
+    lstatSync: (name: import("node:fs").PathLike, options?: unknown) => name === "/program" && programMetadata.fault ? {
+      uid: 0,
+      mode: programMetadata.fault === "writable" ? 0o777 : programMetadata.fault === "non-executable" ? 0o644 : 0o755,
+      isFile: () => programMetadata.fault !== "directory",
+      isDirectory: () => programMetadata.fault === "directory",
+      isSymbolicLink: () => programMetadata.fault === "cycle",
+    } : original.lstatSync(name, options as never),
+    readlinkSync: (name: import("node:fs").PathLike, options?: unknown) => name === "/program" ? "/program" : original.readlinkSync(name, options as never),
+  }
+})
+
 import { LinuxSanctuaryHostSupervisorKernel } from "../../../heart/daemon/sanctuary-host-linux-kernel"
 
 function fakeChild() {
@@ -59,6 +75,37 @@ const launchInput = {
 }
 
 describe("Linux Sanctuary host supervisor kernel", () => {
+  it.each(["cycle", "writable", "non-directory", "directory", "non-executable"])("refuses a root-owned program with %s metadata", async (fault) => {
+    const f = fixture()
+    programMetadata.fault = fault
+    try {
+      const executable = fault === "non-directory" ? "/program/child" : "/program"
+      await expect(new LinuxSanctuaryHostSupervisorKernel(f.options).launch({ ...launchInput, executable } as never)).rejects.toThrow(/program/u)
+      expect(f.spawn).not.toHaveBeenCalled()
+    } finally { programMetadata.fault = "" }
+  })
+
+  it("refuses resident-writable program paths before starting the launcher", async () => {
+    const f = fixture()
+    const executable = path.join(f.root, "resident-program")
+    fs.writeFileSync(executable, "#!/bin/sh\nexit 0\n", { mode: 0o777 })
+    fs.chmodSync(executable, 0o777)
+    const kernel = new LinuxSanctuaryHostSupervisorKernel(f.options)
+    await expect(kernel.launch({ ...launchInput, executable } as never)).rejects.toThrow(/root-owned/u)
+    expect(f.spawn).not.toHaveBeenCalled()
+  })
+
+  it("continues cgroup cleanup after a missing process group without hiding other signal failures", async () => {
+    const f = fixture()
+    const kernel = new LinuxSanctuaryHostSupervisorKernel(f.options)
+    const launched = await kernel.launch(launchInput as never)
+    f.kill.mockImplementation(() => { throw Object.assign(new Error("gone"), { code: "ESRCH" }) })
+    expect(() => launched.signalGroup("SIGTERM")).not.toThrow()
+    f.kill.mockImplementation(() => { throw Object.assign(new Error("denied"), { code: "EPERM" }) })
+    expect(() => launched.signalGroup("SIGTERM")).toThrow("denied")
+    f.child.emit("close", 0, null)
+  })
+
   it("creates fixed cgroup limits and drives the one-use launcher handshake", async () => {
     const f = fixture()
     const kernel = new LinuxSanctuaryHostSupervisorKernel(f.options)

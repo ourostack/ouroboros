@@ -1781,6 +1781,13 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       await admissionController.handleUnknown(message)
       return
     }
+    // Existing household Friends need a root-observed communication binding after gateway migration.
+    await authorityTransport?.admitChat({
+      admissionId: createHash("sha256").update(`telegram-communication-v1\0${message.botId}\0${message.userId}\0${message.chatId}`).digest("hex").slice(0, 20),
+      updateId: message.updateId,
+      userId: message.userId,
+      chatId: message.chatId,
+    })
     const hydrated = await hydrateAuthorizedMessage({
       updateId: message.updateId,
       messageId: String(message.messageId),

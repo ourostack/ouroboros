@@ -1,6 +1,7 @@
 import { createHash, createPublicKey, randomBytes, type KeyLike } from "node:crypto"
 import * as fs from "node:fs"
 import * as path from "node:path"
+import { emitNervesEvent } from "../../nerves/runtime"
 
 import type { TelegramUpdate } from "../../senses/telegram-client"
 import {
@@ -34,6 +35,7 @@ export interface TelegramTransportObservationV1 {
   messageId: string | null
   callbackQueryId: string | null
   rawUpdateDigest: string
+  deliveryUpdateDigest?: string
   observedAt: string
   settlement: "pending"
   nonce: string
@@ -71,7 +73,7 @@ interface SanctuaryTelegramAuthorityState {
     userId: string
     chatId: string
     admittedAt: string
-    lastUsedAt: string
+    lastObservedAt: string
   }>
 }
 
@@ -279,7 +281,7 @@ function validateState(value: unknown): asserts value is SanctuaryTelegramAuthor
   for (const [key, entry] of Object.entries(value.authorizedChats)) {
     if (
       !isObject(entry)
-      || !exactKeys(entry, ["admissionId", "updateId", "userId", "chatId", "admittedAt", "lastUsedAt"])
+      || !exactKeys(entry, ["admissionId", "updateId", "userId", "chatId", "admittedAt", "lastObservedAt"])
       || key !== `${entry.userId}:${entry.chatId}`
       || !ADMISSION_ID.test(String(entry.admissionId))
       || !Number.isSafeInteger(entry.updateId)
@@ -287,8 +289,7 @@ function validateState(value: unknown): asserts value is SanctuaryTelegramAuthor
       || !DECIMAL_ID.test(String(entry.userId))
       || !DECIMAL_ID.test(String(entry.chatId))
       || !validTime(entry.admittedAt)
-      || !validTime(entry.lastUsedAt)
-      || Date.parse(entry.lastUsedAt) < Date.parse(entry.admittedAt)
+      || !validTime(entry.lastObservedAt)
     ) {
       throw new Error("Sanctuary Telegram authority chat registry is malformed")
     }
@@ -403,6 +404,9 @@ export class FileSanctuaryTelegramAuthorityGateway {
         }
         const observedAt = this.#options.now()
         if (!validTime(observedAt)) throw new Error("Sanctuary Telegram authority clock is invalid")
+        this.#pruneAuthorizedChats(state, observedAt)
+        const admitted = state.authorizedChats[`${coordinates.userId}:${coordinates.chatId}`]
+        if (admitted) admitted.lastObservedAt = observedAt
         const nonce = this.#options.nonce()
         if (!NONCE.test(nonce)) throw new Error("Sanctuary Telegram authority nonce is invalid")
         if (Object.values(state.records).some((record) => record.observation?.payload.nonce === nonce)) {
@@ -415,7 +419,8 @@ export class FileSanctuaryTelegramAuthorityGateway {
           ...coordinates,
           ownerEligible: coordinates.userId === this.#options.ownerUserId
             && coordinates.chatId === this.#options.ownerChatId,
-          rawUpdateDigest: rawUpdateDigest(residentUpdate(update)),
+          rawUpdateDigest: digest,
+          ...(rawUpdateDigest(residentUpdate(update)) !== digest ? { deliveryUpdateDigest: rawUpdateDigest(residentUpdate(update)) } : {}),
           observedAt,
           settlement: "pending",
           nonce,
@@ -439,6 +444,7 @@ export class FileSanctuaryTelegramAuthorityGateway {
       }
       this.#advanceCursor(state)
       if (changed) this.#write(state, transaction.revision, lease)
+      emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_telegram_capture_settled", message: "Sanctuary Telegram ingress capture settled", meta: { changed } })
     })
   }
 
@@ -597,10 +603,13 @@ export class FileSanctuaryTelegramAuthorityGateway {
       }
       const now = this.#now()
       this.#pruneAuthorizedChats(state, now)
+      if (Date.parse(record.observation.payload.observedAt) <= Date.parse(now) - AUTHORIZED_CHAT_IDLE_MS) {
+        throw new Error("Sanctuary Telegram authority chat observation expired")
+      }
       const key = `${input.userId}:${input.chatId}`
       const existing = state.authorizedChats[key]
       if (existing) {
-        if (existing.admissionId !== input.admissionId || existing.updateId !== input.updateId) {
+        if (input.updateId <= existing.updateId && (existing.admissionId !== input.admissionId || existing.updateId !== input.updateId)) {
           throw new Error("Sanctuary Telegram authority chat admission changed")
         }
         return
@@ -611,7 +620,7 @@ export class FileSanctuaryTelegramAuthorityGateway {
       state.authorizedChats[key] = {
         ...input,
         admittedAt: now,
-        lastUsedAt: now,
+        lastObservedAt: record.observation.payload.observedAt,
       }
       this.#write(state, transaction.revision, lease)
     })
@@ -644,8 +653,7 @@ export class FileSanctuaryTelegramAuthorityGateway {
         if (changed) this.#write(state, transaction.revision, lease)
         return false
       }
-      entry.lastUsedAt = now
-      this.#write(state, transaction.revision, lease)
+      if (changed) this.#write(state, transaction.revision, lease)
       return true
     })
   }
@@ -677,7 +685,7 @@ export class FileSanctuaryTelegramAuthorityGateway {
     let changed = false
     const cutoff = Date.parse(now) - AUTHORIZED_CHAT_IDLE_MS
     for (const [key, entry] of Object.entries(state.authorizedChats)) {
-      if (Date.parse(entry.lastUsedAt) < cutoff) {
+      if (Date.parse(entry.lastObservedAt) <= cutoff) {
         delete state.authorizedChats[key]
         changed = true
       }

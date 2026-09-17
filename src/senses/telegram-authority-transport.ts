@@ -1,4 +1,5 @@
 import { createHash, type KeyLike } from "node:crypto"
+import { emitNervesEvent } from "../nerves/runtime"
 import { authorityArtifactDigest, verifyAuthorityPayload, type SignedAuthorityPayload } from "../heart/daemon/sanctuary-authority-codec"
 import type { TelegramTransportObservationV1 } from "../heart/daemon/sanctuary-telegram-authority-gateway"
 import type { TelegramAuthorityTransportMetadata, TelegramBotApi, TelegramUpdate } from "./telegram-client"
@@ -83,6 +84,7 @@ function verifyObservation(
     || !exactKeys(payload, [
       "targetHost", "botId", "updateId", "updateClass", "userId", "chatId", "ownerEligible",
       "messageId", "callbackQueryId", "rawUpdateDigest", "observedAt", "settlement", "nonce", "publicKeyDigest",
+      ...(Object.hasOwn(payload, "deliveryUpdateDigest") ? ["deliveryUpdateDigest"] : []),
     ])
     || payload.targetHost !== verification.expectedTargetHost
     || payload.botId !== verification.expectedBotId
@@ -94,7 +96,10 @@ function verifyObservation(
     || typeof payload.ownerEligible !== "boolean"
     || (payload.messageId !== null && typeof payload.messageId !== "string")
     || (payload.callbackQueryId !== null && typeof payload.callbackQueryId !== "string")
-    || payload.rawUpdateDigest !== rawUpdateDigest(update)
+    || typeof payload.rawUpdateDigest !== "string"
+    || !/^tgu_[A-Za-z0-9_-]{43}$/u.test(payload.rawUpdateDigest)
+    || (Object.hasOwn(payload, "deliveryUpdateDigest") && typeof payload.deliveryUpdateDigest !== "string")
+    || (payload.deliveryUpdateDigest ?? payload.rawUpdateDigest) !== rawUpdateDigest(update)
     || !canonicalTime(payload.observedAt)
     || payload.settlement !== "pending"
     || typeof payload.nonce !== "string"
@@ -135,6 +140,7 @@ function verifyObservation(
     messageId: payload.messageId,
     callbackQueryId: payload.callbackQueryId,
     rawUpdateDigest: payload.rawUpdateDigest,
+    ...(payload.deliveryUpdateDigest ? { deliveryUpdateDigest: payload.deliveryUpdateDigest } : {}),
     observedAt: payload.observedAt,
     keyId: artifact.keyId,
     publicKeyDigest: payload.publicKeyDigest,
@@ -145,6 +151,7 @@ export function createSanctuaryTelegramAuthorityTransport(
   client: SanctuaryTelegramAuthorityProtocolClient,
   verification: SanctuaryTelegramAuthorityVerification,
 ): SanctuaryTelegramAuthorityTransport {
+  emitNervesEvent({ component: "senses", event: "senses.sanctuary_authority_transport_created", message: "Tokenless Sanctuary Telegram authority transport created" })
   verification = Object.freeze({ ...verification })
   const observations = new Map<number, SignedAuthorityPayload<TelegramTransportObservationV1>>()
   const metadata = new Map<number, TelegramAuthorityTransportMetadata>()
@@ -232,7 +239,7 @@ export function createSanctuaryTelegramAuthorityTransport(
     metadataForUpdate(update) {
       const value = metadata.get(update.update_id)
       if (!value) return null
-      if (value.rawUpdateDigest !== rawUpdateDigest(update)) {
+      if ((value.deliveryUpdateDigest ?? value.rawUpdateDigest) !== rawUpdateDigest(update)) {
         throw new Error("Sanctuary Telegram authority update changed after verification")
       }
       return value

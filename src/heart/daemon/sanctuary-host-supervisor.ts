@@ -1,3 +1,4 @@
+import { emitNervesEvent } from "../../nerves/runtime"
 import type {
   HostExecutionPermitPayloadV1,
   HostSupervisor,
@@ -111,6 +112,7 @@ export class KernelSanctuaryHostSupervisor implements HostSupervisor {
       const verificationAfter = input.permit.verification
         ? await this.#kernel.verify(input.permit.verification, "after", input.permit) as HostSupervisorAttempt["verificationAfter"]
         : null
+      emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_host_cleanup_observed", message: "Sanctuary host cgroup cleanup and output drain observed", meta: { timedOut, outputOverflow: completion.outputOverflow } })
       return {
         startedAt,
         completedAt: this.#kernel.now(),

@@ -1,4 +1,5 @@
 import { createHash, sign, verify, type KeyLike } from "node:crypto"
+import { emitNervesEvent } from "../../nerves/runtime"
 
 export interface SignedAuthorityPayload<T> {
   schemaVersion: 1
@@ -87,5 +88,6 @@ export function verifyAuthorityPayload<T>(input: {
   if (!verify(null, signingBytes(artifact.domain, artifact.payload), input.publicKey, Buffer.from(artifact.signature, "base64url"))) {
     throw new Error("authority artifact signature is invalid")
   }
+  emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_authority_signature_verified", message: "Sanctuary authority signature verified" })
   return artifact.payload as T
 }

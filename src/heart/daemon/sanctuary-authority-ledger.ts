@@ -1,5 +1,6 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
+import { emitNervesEvent } from "../../nerves/runtime"
 
 import {
   readSessionTransaction,
@@ -211,6 +212,7 @@ export class FileSanctuaryAuthorityLedger {
       state.records[record.permitId] = record
       state.nonces[record.nonce] = record.permitId
       this.#write(state, transaction.revision, lease)
+      emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_authority_permit_reserved", message: "Sanctuary host permit durably reserved", meta: { permitDigest: record.permitDigest } })
       return record
     })
   }

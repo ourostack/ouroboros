@@ -2,6 +2,7 @@ import { createHash } from "node:crypto"
 import { spawn } from "node:child_process"
 import * as fs from "node:fs"
 import * as path from "node:path"
+import { emitNervesEvent } from "../../nerves/runtime"
 
 import type {
   HostSupervisor,
@@ -226,6 +227,7 @@ export class DetachedSanctuaryHostSupervisor implements HostSupervisor {
   }
 
   async execute(input: Parameters<HostSupervisor["execute"]>[0]): Promise<HostSupervisorAttempt> {
+    emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_host_supervision_requested", message: "Independent Sanctuary host supervision requested" })
     return this.#run(input, false)
   }
 
