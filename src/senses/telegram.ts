@@ -24,7 +24,7 @@ import { FileFriendStore, getChannelCapabilities } from "@ouro.bot/friends"
 import { getAgentRoot } from "../heart/identity"
 import type { RunAgentOptions } from "../heart/core"
 import { readSanctuaryAcceptanceMarker, sanctuaryAcceptanceEventMeta } from "../heart/daemon/sanctuary-acceptance-marker"
-import { readRuntimeCredentialConfig } from "../heart/runtime-credentials"
+import { readRuntimeCredentialConfig, readMachineRuntimeCredentialConfig } from "../heart/runtime-credentials"
 import { emitNervesEvent, emitNervesEventDurable } from "../nerves/runtime"
 import { registerGlobalLogSink } from "../nerves"
 import { createSanctuaryInteractiveControl } from "./sanctuary-interactive-control"
@@ -48,6 +48,7 @@ import {
   type TelegramUpdate,
 } from "./telegram-client"
 import type { SanctuaryTelegramAuthorityTransport } from "./telegram-authority-transport"
+import { openSanctuaryResidentAuthority } from "./sanctuary-authority-resident"
 import { createRootHostApprovalRuntime } from "./root-host-approval-runtime"
 import { authorizeRootHostContext } from "../repertoire/tools-sanctuary-host"
 import { createSanctuaryToolContext, runWithSanctuaryToolReceiptCollection, type SanctuaryToolReceiptObserver } from "./sanctuary-runtime"
@@ -1994,13 +1995,13 @@ export function loadTelegramSenseCredentials(agentName: string): TelegramSenseCr
 
 export async function createProductionTelegramRelationshipComposition(
   agentName: string,
-  credentials: TelegramSenseCredentials,
+  credentials: TelegramSenseCredentials | TelegramGatewaySenseCredentials,
   agentRootOverride?: string,
   authorityTransport?: SanctuaryTelegramAuthorityTransport,
 ): Promise<Pick<CreateTelegramSenseAppOptions,
   "admission" | "authorizeRelationshipEffect" | "resolveRelationshipAuthorization"> & { telegramContactManager: TelegramContactManager }> {
   const agentRoot = agentRootOverride ?? getAgentRoot(agentName)
-  const botId = canonicalTelegramId(credentials.botId ?? telegramBotIdFromToken(credentials.botToken), "bot id")
+  const botId = canonicalTelegramId(credentials.botId ?? telegramBotIdFromToken(credentials.botToken!), "bot id")
   const ownerUserId = canonicalTelegramId(credentials.authorizedUserId, "authorized user id")
   const ownerChatId = canonicalTelegramId(credentials.authorizedChatId, "authorized chat id")
   if (ownerUserId !== ownerChatId) throw new Error("Telegram owner relationship requires a private user-bound chat")
@@ -2202,18 +2203,47 @@ export async function createProductionTelegramRelationshipComposition(
   }
 }
 
-export async function startTelegramSenseApp(agentName: string): Promise<TelegramSenseApp> {
-  const loaded = loadTelegramSenseCredentials(agentName)
-  const credentials = { ...loaded, botId: telegramBotIdFromToken(loaded.botToken) }
-  const app = createTelegramSenseApp({
-    agentName,
-    credentials,
-    ...(await createProductionTelegramRelationshipComposition(agentName, credentials)),
-    ...(agentName === "sanctuary" ? { privilegedFailsafe: {
-      eventRoot: getExternalEventRoot(),
-      verifyProtectiveState: createSabQueueProtectiveStateVerifier(),
-    } } : {}),
-  })
+export async function startTelegramSenseApp(agentName: string, waitForAuthority = false): Promise<TelegramSenseApp> {
+  let authorityTransport: SanctuaryTelegramAuthorityTransport | undefined
+  let credentials: TelegramSenseCredentials | TelegramGatewaySenseCredentials
+  if (agentName === "sanctuary") {
+    const runtime = readRuntimeCredentialConfig(agentName)
+    const machine = readMachineRuntimeCredentialConfig(agentName)
+    if (!runtime.ok || !machine.ok) throw new Error("Sanctuary Telegram credential inventory is unavailable; migration readback is required")
+    let waiting = false
+    for (;;) {
+      try {
+        ;({ credentials, authorityTransport } = openSanctuaryResidentAuthority(runtime.config, machine.config))
+        break
+      } catch (error) {
+        if (!waitForAuthority || (error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error
+        if (!waiting) {
+          waiting = true
+          emitNervesEvent({ level: "warn", component: "senses", event: "senses.sanctuary_gateway_waiting", message: "Telegram is unavailable while root gateway pins are not yet published", meta: { agentName } })
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1000))
+      }
+    }
+  } else {
+    const loaded = loadTelegramSenseCredentials(agentName)
+    credentials = { ...loaded, botId: telegramBotIdFromToken(loaded.botToken) }
+  }
+  let app: TelegramSenseApp
+  try {
+    app = createTelegramSenseApp({
+      agentName,
+      credentials,
+      authorityTransport,
+      ...(await createProductionTelegramRelationshipComposition(agentName, credentials, undefined, authorityTransport)),
+      ...(agentName === "sanctuary" ? { privilegedFailsafe: {
+        eventRoot: getExternalEventRoot(),
+        verifyProtectiveState: createSabQueueProtectiveStateVerifier(),
+      } } : {}),
+    })
+  } catch (error) {
+    authorityTransport?.api.stop()
+    throw error
+  }
   emitNervesEvent({
     component: "senses",
     event: "senses.telegram_app_ready",

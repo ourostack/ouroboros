@@ -47,6 +47,7 @@ interface DispatchRecord {
   disposition: "dispatch"
   settlement: "pending" | "completed" | "indeterminate"
   observation: SignedAuthorityPayload<TelegramTransportObservationV1>
+  deliveryUpdate?: TelegramUpdate
 }
 
 interface IgnoredRecord {
@@ -101,6 +102,13 @@ export interface SanctuaryTelegramAuthorityIdentity {
   publicKeyDigest: string
 }
 
+export interface SanctuaryTelegramCursorSnapshot extends SanctuaryTelegramAuthorityIdentity {
+  cursor: number
+  pendingUpdateIds: number[]
+  progressDigest: string
+  observedAt: string
+}
+
 export function sanctuaryTelegramAuthorityStatePath(agentRoot: string): string {
   return path.join(agentRoot, "authority", "telegram-state.json")
 }
@@ -133,6 +141,20 @@ function rawUpdateDigest(update: TelegramUpdate): string {
   return `tgu_${createHash("sha256")
     .update(`ouroboros.telegram.update.v1\0${JSON.stringify(update)}`, "utf8")
     .digest("base64url")}`
+}
+
+function residentUpdate(update: TelegramUpdate): TelegramUpdate {
+  const callback = update.callback_query
+  if (!callback?.data?.startsWith("ouh:") || !callback.message) return structuredClone(update)
+  return {
+    update_id: update.update_id,
+    callback_query: {
+      id: callback.id,
+      from: { id: callback.from.id },
+      message: { message_id: callback.message.message_id, chat: { id: callback.message.chat.id } },
+      data: "root-host-callback",
+    },
+  }
 }
 
 function validUpdate(value: unknown): value is TelegramUpdate {
@@ -206,7 +228,7 @@ function validateObservation(value: unknown): asserts value is SignedAuthorityPa
 function validateRecord(value: unknown, updateId: number): asserts value is SanctuaryTelegramAuthorityRecord {
   if (
     !isObject(value)
-    || !exactKeys(value, ["updateId", "rawUpdateDigest", "rawUpdate", "disposition", "settlement", "observation"])
+    || !exactKeys(value, ["updateId", "rawUpdateDigest", "rawUpdate", "disposition", "settlement", "observation", ...(Object.hasOwn(value, "deliveryUpdate") ? ["deliveryUpdate"] : [])])
     || value.updateId !== updateId
     || typeof value.rawUpdateDigest !== "string"
     || !RAW_UPDATE_DIGEST.test(value.rawUpdateDigest)
@@ -228,6 +250,9 @@ function validateRecord(value: unknown, updateId: number): asserts value is Sanc
     throw new Error(`Sanctuary Telegram authority record ${updateId} has invalid settlement`)
   }
   validateObservation(value.observation)
+  if (Object.hasOwn(value, "deliveryUpdate") && JSON.stringify(value.deliveryUpdate) !== JSON.stringify(residentUpdate(value.rawUpdate as unknown as TelegramUpdate))) {
+    throw new Error("Sanctuary Telegram authority delivery projection changed")
+  }
 }
 
 function validateState(value: unknown): asserts value is SanctuaryTelegramAuthorityState {
@@ -310,6 +335,37 @@ export class FileSanctuaryTelegramAuthorityGateway {
     }
   }
 
+  initializeCursor(cursor: number): void {
+    if (!Number.isSafeInteger(cursor) || cursor < 0) throw new Error("Sanctuary Telegram migration cursor is invalid")
+    withImmediateSessionTurnLease(this.#statePath, (lease) => {
+      const transaction = readSessionTransaction(this.#statePath, lease)
+      const state = transactionState(transaction)
+      if (Object.keys(state.records).length !== 0 || (transaction.value !== null && state.cursor !== cursor)) throw new Error("Sanctuary Telegram migration cursor is already owned")
+      if (transaction.value !== null) return
+      state.cursor = cursor
+      this.#write(state, transaction.revision, lease)
+    })
+  }
+
+  cursorSnapshot(): SignedAuthorityPayload<SanctuaryTelegramCursorSnapshot> {
+    return this.#read((state) => {
+      const records = Object.values(state.records).sort((a, b) => a.updateId - b.updateId)
+      const progress = { cursor: state.cursor, records: records.map(({ updateId, rawUpdateDigest, settlement }) => ({ updateId, rawUpdateDigest, settlement })) }
+      return signAuthorityPayload({
+        domain: "ouro.sanctuary.telegram-cursor.v1",
+        keyId: this.#options.keyId,
+        privateKey: this.#options.privateKey,
+        payload: {
+          ...this.identity(),
+          cursor: state.cursor,
+          pendingUpdateIds: records.filter((record) => record.settlement === "pending").map((record) => record.updateId),
+          progressDigest: authorityArtifactDigest("ouro.sanctuary.telegram-progress.v1", progress),
+          observedAt: this.#now(),
+        },
+      })
+    }, true)
+  }
+
   capture(updates: readonly TelegramUpdate[]): void {
     if (!Array.isArray(updates)) throw new Error("Sanctuary Telegram authority updates must be an array")
     withImmediateSessionTurnLease(this.#statePath, (lease) => {
@@ -359,7 +415,7 @@ export class FileSanctuaryTelegramAuthorityGateway {
           ...coordinates,
           ownerEligible: coordinates.userId === this.#options.ownerUserId
             && coordinates.chatId === this.#options.ownerChatId,
-          rawUpdateDigest: digest,
+          rawUpdateDigest: rawUpdateDigest(residentUpdate(update)),
           observedAt,
           settlement: "pending",
           nonce,
@@ -377,6 +433,7 @@ export class FileSanctuaryTelegramAuthorityGateway {
             payload,
             privateKey: this.#options.privateKey,
           }),
+          ...(rawUpdateDigest(residentUpdate(update)) !== digest ? { deliveryUpdate: residentUpdate(update) } : {}),
         }
         changed = true
       }
@@ -628,9 +685,10 @@ export class FileSanctuaryTelegramAuthorityGateway {
     return changed
   }
 
-  #read<T>(read: (state: SanctuaryTelegramAuthorityState) => T): T {
+  #read<T>(read: (state: SanctuaryTelegramAuthorityState) => T, requirePersisted = false): T {
     return withImmediateSessionTurnLease(this.#statePath, (lease) => {
       const transaction = readSessionTransaction(this.#statePath, lease)
+      if (requirePersisted && transaction.value === null) throw new Error("Sanctuary Telegram authority cursor state is absent")
       return read(transactionState(transaction))
     })
   }

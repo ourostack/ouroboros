@@ -32,7 +32,9 @@ describe("Mendelow Cloud Butler Community Apps release", () => {
 
     expect(template.match(/<Name>[^<]+<\/Name>/gu)).toEqual(["<Name>ouro-butler</Name>"])
     expect(template.match(/<Repository>[^<]+<\/Repository>/gu)).toEqual([`<Repository>ghcr.io/ourostack/ouroboros-butler:${packageVersion.version}</Repository>`])
-    expect(template.match(/<Config\b/gu)).toHaveLength(3)
+    expect(template.match(/<Config\b/gu)).toHaveLength(4)
+    expect(template).toContain('Target="/run/ouro-authority"')
+    expect(template).toContain('Default="/run/ouro-authority" Mode="ro"')
     expect(template).toContain("<Category>Tools:Utilities</Category>")
     expect(template).toContain("<Beta>true</Beta>")
     expect(template).toContain("<Overview>Mendelow Cloud Butler")
@@ -138,7 +140,7 @@ describe("Mendelow Cloud Butler Community Apps release", () => {
     const stagedAuditIndex = update.indexOf('"$IMAGE_ID" --template /audit/sanctuary.exact-image.xml --runtime-policy /audit/container-runtime.json --expected-image "$IMAGE_ID"')
     const cleanupIndex = update.indexOf("\n    cleanup_event_asset_stage\n")
     const firstButlerStopIndex = update.indexOf("docker stop ouro-butler")
-    const firstButlerCreateIndex = update.indexOf("docker create --pull=never --name ouro-butler")
+    const firstButlerCreateIndex = update.indexOf('create_sanctuary_container "$IMAGE_ID"')
 
     expect(update).toContain('docker create --pull=never --network none --read-only --entrypoint /bin/false "$IMAGE_ID"')
     expect(update).toContain('test "$(docker inspect --format \'{{.Image}}\' "$EVENT_ASSET_CONTAINER")" = "$IMAGE_ID"')
@@ -175,11 +177,12 @@ describe("Mendelow Cloud Butler Community Apps release", () => {
     expect(update).toContain("/boot/config/plugins/dockerMan/templates-user/my-ouro-butler.xml")
     expect(update).toContain("/boot/config/custom/ouro-butler/docker-man-template-transaction.json")
     expect(update).toContain("docker-man-template-transaction.mjs")
-    expect(update).toContain('docker cp "$EVENT_ASSET_CONTAINER:/opt/ouro/deploy/unraid/docker-man-template-xml.cjs" "$STAGED_DOCKERMAN_XML_VALIDATOR"')
-    expect(update).toContain('docker create --pull=never --name ouro-butler')
+    expect(update).toContain('docker cp "$EVENT_ASSET_CONTAINER:/opt/ouro/." "$STAGED_PACKAGE_ROOT/"')
+    expect(update).toContain('STAGED_DOCKERMAN_XML_VALIDATOR="$STAGED_PACKAGE_ROOT/deploy/unraid/docker-man-template-xml.cjs"')
+    expect(update).toContain('create_sanctuary_container "$IMAGE_ID"')
     expect(update).toContain('"$VERSION_IMAGE"')
-    expect(update).toContain('--label net.unraid.docker.managed=dockerman')
-    expect(update).toContain('--label "net.unraid.docker.icon=$TEMPLATE_ICON"')
+    expect(runbook).toContain('--label net.unraid.docker.managed=dockerman')
+    expect(runbook).toContain('--label "net.unraid.docker.icon=https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png"')
     expect(runbook).toContain('verify_dockerman_and_community_apps "$FINAL_PROOF_VERSION_IMAGE" "$FINAL_INSTALL_PATH"')
     expect(update).toContain("write_dockerman_final_proof")
     expect(update).toContain("recover_dockerman_template_transaction")
@@ -259,10 +262,11 @@ describe("Mendelow Cloud Butler Community Apps release", () => {
     expect(verifiedModes).toEqual(Array(5).fill("0:0:600"))
   })
 
-  it("documents the exact two read-write and one read-only production mounts", () => {
+  it("documents the exact two read-write and two read-only gateway production mounts", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
 
     expect(runbook).toContain("mounts the runtime and sanctuary.ouro bundle read-write plus the privileged event spool read-only")
+    expect(runbook).toContain("appends exactly /run/ouro-authority -> /run/ouro-authority, readonly, rprivate")
     expect(runbook).not.toContain("SAB configuration read-only")
     expect(runbook).not.toContain("SAB readiness")
     expect(runbook).not.toContain("Confirm Config.Image equals the exact reviewed local image ID")

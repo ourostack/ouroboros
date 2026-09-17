@@ -42,6 +42,7 @@ describe("Sanctuary health acceptance integration", () => {
       await sweep()
 
       const dependencies: SanctuaryAcceptanceAdapterDependencies = {
+        gatewayCursor: async () => ({ nextUpdateId: 0, progressDigest: `sha256:${"a".repeat(64)}` }),
         readKeyFiles: () => [],
         readDescriptor: () => "",
         execFile: async () => ({ status: 0, stdout: "" }),

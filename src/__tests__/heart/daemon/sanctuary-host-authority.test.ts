@@ -3,7 +3,7 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 
 import { authorityArtifactDigest, verifyAuthorityPayload } from "../../../heart/daemon/sanctuary-authority-codec"
 import {
@@ -16,6 +16,7 @@ import {
   type TelegramTransportObservationV1,
 } from "../../../heart/daemon/sanctuary-telegram-authority-gateway"
 import { signAuthorityPayload } from "../../../heart/daemon/sanctuary-authority-codec"
+import { FileSanctuaryAuthorityLedger } from "../../../heart/daemon/sanctuary-authority-ledger"
 
 const keys = generateKeyPairSync("ed25519")
 const publicKeyDigest = sanctuaryAuthorityPublicKeyDigest(keys.privateKey)
@@ -87,6 +88,51 @@ function fixture(overrides: {
 }
 
 describe("Sanctuary root host authority", () => {
+  it("retires registrations and unreserved permits without disguising reserved execution as cleanup", () => {
+    const f = fixture()
+    const ledger = new FileSanctuaryAuthorityLedger(f.root)
+    const committed = f.authority.prepare(proposal())
+    f.authority.commit({ registrationId: committed.registrationId, telegramMessageId: 500 })
+    expect(f.authority.retireRegistrations(ledger)).toEqual([])
+    expect(f.authority.status(committed.registrationId)?.state).toBe("expired")
+    const pending = f.authority.prepare(proposal())
+    expect(f.authority.retireRegistrations(ledger)).toEqual([])
+    expect(f.authority.status(pending.registrationId)?.state).toBe("orphaned")
+    const permit = (messageId: number) => {
+      const prepared = f.authority.prepare(proposal())
+      f.authority.commit({ registrationId: prepared.registrationId, telegramMessageId: messageId })
+      f.authority.decide({ callbackQueryId: `retire-${messageId}`, callbackData: prepared.replyMarkup.inline_keyboard[0]![0]!.callback_data, telegramMessageId: messageId, userId: "42", chatId: "42", callbackObservationDigest: `sha256:${"c".repeat(64)}`, decidedAt: "2026-09-16T20:00:00.000Z" })
+      const artifact = f.authority.issuePermit({ registrationId: prepared.registrationId, residentFriendId: "friend-owner", relationshipProfileId: "sanctuary-owner", relationshipProfileVersion: 7, requestId: `request-${messageId}`, sessionKey: "telegram:123456:42", sessionEventId: "evt_1234567890", residentApprovalId: `approval-${messageId}`, stewardPolicy: null })
+      return { prepared, artifact }
+    }
+    const unreserved = permit(501)
+    expect(f.authority.retireRegistrations(ledger)).toEqual([])
+    expect(f.authority.status(unreserved.prepared.registrationId)?.state).toBe("retired")
+    const reserved = permit(502)
+    ledger.reserve({ permitId: String(reserved.artifact.payload.permitId), nonce: String(reserved.artifact.payload.nonce), permitDigest: authorityArtifactDigest(reserved.artifact.domain, reserved.artifact.payload), reservedAt: "2026-09-16T20:00:00.000Z" })
+    expect(f.authority.retireRegistrations(ledger)).toEqual([reserved.prepared.registrationId])
+    expect(f.authority.status(pending.registrationId)?.state).toBe("orphaned")
+    expect(f.authority.status(committed.registrationId)?.state).toBe("expired")
+    expect(f.authority.status(unreserved.prepared.registrationId)?.state).toBe("retired")
+    expect(ledger.read(String(unreserved.artifact.payload.permitId))?.state).toBe("refused")
+    expect(ledger.read(String(reserved.artifact.payload.permitId))?.state).toBe("reserved")
+    expect(f.authority.retireRegistrations(ledger)).toEqual([reserved.prepared.registrationId])
+    expect(f.authority.ownsMessage(501)).toBe(true)
+    const existing = ledger.read(String(unreserved.artifact.payload.permitId))!
+    const read = ledger.read.bind(ledger)
+    const fault = vi.spyOn(ledger, "read").mockImplementation((id) => id === existing.permitId ? { ...existing, outcomeDigest: `sha256:${"f".repeat(64)}` } : read(id))
+    try { expect(() => f.authority.retireRegistrations(ledger)).toThrow(/ledger changed/u) } finally { fault.mockRestore() }
+  })
+  it("does not claim another chat's card or renew an already-observed callback with a substituted digest", () => {
+    const f = fixture()
+    const prepared = f.authority.prepare(proposal())
+    f.authority.commit({ registrationId: prepared.registrationId, telegramMessageId: 500 })
+    const input = { callbackQueryId: "callback-new", callbackData: "unrelated", telegramMessageId: 500, userId: "42", chatId: "43", callbackObservationDigest: `sha256:${"c".repeat(64)}`, decidedAt: "2026-09-16T20:00:00.000Z" }
+    expect(f.authority.claimCallback(input)).toBeNull()
+    const valid = { ...input, chatId: "42", callbackData: prepared.replyMarkup.inline_keyboard[0]![0]!.callback_data }
+    expect(f.authority.claimCallback(valid)?.payload.decision).not.toBeNull()
+    expect(f.authority.claimCallback({ ...valid, callbackObservationDigest: `sha256:${"d".repeat(64)}` })?.payload.decision).toBeNull()
+  })
   it("commits deterministic executable proposals and renders every blast-radius field", () => {
     const value = proposal()
     const committed = { ...value, expiresAt: "2026-09-16T20:05:00.000Z" }

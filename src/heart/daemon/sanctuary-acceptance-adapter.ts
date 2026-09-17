@@ -8,8 +8,9 @@ import Database from "better-sqlite3"
 import { FileFriendStore, getChannelCapabilities } from "@ouro.bot/friends"
 
 import { emitNervesEvent } from "../../nerves/runtime"
+import { openSanctuaryResidentAuthority } from "../../senses/sanctuary-authority-resident"
 import { createTelegramApprovalRuntime, type TelegramApprovalRuntime } from "../../senses/telegram-approval-runtime"
-import { createTelegramBotApi, type TelegramBotApi, type TelegramUpdate } from "../../senses/telegram-client"
+import { type TelegramBotApi, type TelegramUpdate } from "../../senses/telegram-client"
 import {
   createTelegramApprovalEffectPort,
   createTelegramAuthorizedEffectExecutor,
@@ -21,7 +22,7 @@ import {
 import { FileTelegramAdmissionStore } from "../../senses/telegram-admission"
 import { executeSanctuaryInteractiveEngine, proveSanctuaryAttemptedRecoveryWithoutRetry, type SanctuaryInteractiveEngineDependencies } from "../../senses/sanctuary-interactive-control"
 import { getSenseSessionPath } from "../../senses/shared-turn"
-import { loadTelegramSenseCredentials, opaqueTelegramSubject, readOrCreateTelegramIdentityKey, sanctuaryTelegramApprovalEvidenceMac, sanctuaryTelegramAuditLifecycleMac, sanctuaryTelegramTurnReceiptDigest, sanctuaryTelegramTurnReceiptMac, telegramBotIdFromToken, type TelegramSenseCredentials } from "../../senses/telegram"
+import { opaqueTelegramSubject, readOrCreateTelegramIdentityKey, sanctuaryTelegramApprovalEvidenceMac, sanctuaryTelegramAuditLifecycleMac, sanctuaryTelegramTurnReceiptDigest, sanctuaryTelegramTurnReceiptMac, type TelegramGatewaySenseCredentials } from "../../senses/telegram"
 import { TELEGRAM_ACCEPTANCE_AUDIT_HEAD_RELATIVE_PATH, TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH, verifyTelegramAuditLedger } from "../../senses/telegram-audit-ledger"
 import { createSanctuaryToolContext, runWithSanctuaryToolReceiptCollection } from "../../senses/sanctuary-runtime"
 import { projectSanctuaryGrounding, sanctuaryGroundingDigest, type SanctuaryGroundingToolName, type SanctuaryToolGrounding } from "../../senses/sanctuary-grounding"
@@ -59,6 +60,8 @@ export interface SanctuaryAcceptanceKeyRecord extends SanctuaryAcceptanceKeyMeta
 }
 
 export interface SanctuaryAcceptanceAdapterDependencies {
+  gateway?(): ReturnType<typeof openSanctuaryResidentAuthority>
+  gatewayCursor?(): Promise<{ nextUpdateId: number; progressDigest: string }>
   readKeyFiles(): SanctuaryAcceptanceKeyMetadata[]
   readKeyRecords?(): SanctuaryAcceptanceKeyRecord[]
   readDescriptor(): string
@@ -75,8 +78,7 @@ export interface SanctuaryAcceptanceAdapterDependencies {
   hostRequest?(payload: JsonObject): Promise<unknown>
   captureScenario?(payload: JsonObject): Promise<unknown>
   finalizeScenarios?(): void | Promise<void>
-  telegramCredentials?(): TelegramSenseCredentials
-  createTelegramApi?(options: { token: string }): TelegramBotApi
+  telegramCredentials?(): TelegramGatewaySenseCredentials
   readProviderCredential?: typeof readProviderCredentialRecord
   providerPing?: typeof pingProvider
   readLiveGrounding?(toolName: SanctuaryGroundingToolName): Promise<{ toolName: SanctuaryGroundingToolName; groundingDigest: string; sourceIdentityDigest: string; observedAt: string; facts: Record<string, unknown> }>
@@ -120,7 +122,6 @@ const ADAPTER_TIMEOUT_MS = 240_000
 const NETWORK_TIMEOUT_MS = 10_000
 const KEY_DIRECTORY = "/boot/config/plugins/dynamix.my.servers/keys"
 const SELECTED_KEY_RECORD = "/run/ouro-acceptance/unraid-key.json"
-const TELEGRAM_OFFSET = "/home/ouro/AgentBundles/sanctuary.ouro/state/senses/telegram/offset.json"
 const CALLBACK_PLAYBACK_JOURNAL = "state/approvals/sanctuary-callback-playback.sqlite"
 const TELEGRAM_IDENTITY_KEY = "/home/ouro/AgentBundles/sanctuary.ouro/state/senses/telegram/identity.key"
 const TELEGRAM_AUDIT = `/home/ouro/AgentBundles/sanctuary.ouro/${TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH}`
@@ -130,7 +131,6 @@ const CONTAINER_DIGEST_FILE = "/run/ouro-acceptance/container-digest"
 const PROCESS_BINDING_DIGEST_FILE = "/run/ouro-acceptance/process-binding-digest"
 const POSTBOOT_HEALTH_FILE = "/run/ouro-acceptance/postboot-health.json"
 const BOOT_ID_FILE = "/run/ouro-acceptance/boot-id"
-const TELEGRAM_POLLER_COUNT_FILE = "/run/ouro-acceptance/telegram-poller-count.json"
 const CONTRACT_FILE = "/opt/ouro/deploy/unraid/sanctuary-acceptance-contract.json"
 const CLOSED_INVENTORY_FILE = "/run/ouro-acceptance/closed-inventory.json"
 const HOST_BROKER_SOCKET = "/run/ouro-host-acceptance/adapter.sock"
@@ -252,6 +252,11 @@ async function defaultHostRequest(payload: JsonObject, socketPath: string, timeo
   })
 }
 
+function acceptanceTelegramIdentity(): TelegramGatewaySenseCredentials {
+  const gateway = openSanctuaryResidentAuthority({}, {})
+  try { return gateway.credentials } finally { gateway.authorityTransport.api.stop() }
+}
+
 export function createSanctuaryAcceptanceAdapterDependencies(
   secretFd = 3,
   options: {
@@ -266,6 +271,14 @@ export function createSanctuaryAcceptanceAdapterDependencies(
   const adapterTimeoutMs = options.adapterTimeoutMs ?? ADAPTER_TIMEOUT_MS
   const hostBrokerSocket = options.hostBrokerSocket ?? HOST_BROKER_SOCKET
   const dependencies: SanctuaryAcceptanceAdapterDependencies = {
+    gateway: () => openSanctuaryResidentAuthority({}, {}),
+    gatewayCursor: async () => {
+      const gateway = openSanctuaryResidentAuthority({}, {})
+      try {
+        const snapshot = await gateway.cursorSnapshot()
+        return { nextUpdateId: snapshot.cursor, progressDigest: snapshot.progressDigest }
+      } finally { gateway.authorityTransport.api.stop() }
+    },
     readKeyFiles: () => readKeyDirectory(keyDirectory),
     readKeyRecords: () => readKeyRecords(keyDirectory),
     readDescriptor: () => readFileSync(secretFd, "utf8"),
@@ -280,8 +293,7 @@ export function createSanctuaryAcceptanceAdapterDependencies(
     callbackPlaybackSnapshot: (coordinateDigest) => callbackPlaybackSnapshot(getAgentRoot(TARGET_ID), coordinateDigest),
     interactiveRuntime: executeSanctuaryInteractiveRuntimeOperation,
     hostRequest: options.hostRequest ?? ((payload) => defaultHostRequest(payload, hostBrokerSocket, adapterTimeoutMs)),
-    telegramCredentials: () => loadTelegramSenseCredentials(TARGET_ID),
-    createTelegramApi: createTelegramBotApi,
+    telegramCredentials: acceptanceTelegramIdentity,
     readLiveGrounding: readIndependentSanctuaryGrounding,
     runProductionBoundaryProbe: runSanctuaryProductionBoundaryProbe,
     providerRuntime: getProviderRuntime,
@@ -535,7 +547,7 @@ function parsedJson(raw: string | null): JsonObject | null {
 
 async function projectTelegramAdmissions(
   agentRoot: string,
-  credentials: TelegramSenseCredentials,
+  credentials: TelegramGatewaySenseCredentials,
   identityKey: string | null,
 ): Promise<NonNullable<SanctuaryScenarioFacts["telegramAdmissions"]>> {
   const admissionsRoot = path.join(agentRoot, "state", "senses", "telegram", "admissions")
@@ -545,7 +557,7 @@ async function projectTelegramAdmissions(
   const effectStore = new FileTelegramEffectJournal(effectsRoot)
   try {
     const effects = new Map(effectStore.list().map((artifact) => [artifact.id, artifact]))
-    const botId = telegramBotIdFromToken(credentials.botToken)
+    const botId = credentials.botId
     const ownerSessionKey = `telegram:${opaqueTelegramSubject(identityKey, botId, credentials.authorizedUserId, credentials.authorizedChatId)}`
     const friendsRoot = path.join(agentRoot, "friends")
     const friendStore = existsSync(friendsRoot) ? new FileFriendStore(friendsRoot) : null
@@ -660,7 +672,7 @@ function parseHealthAcceptanceState(raw: string | null): JsonObject | null {
 }
 
 function buildPostbootIntegritySnapshot(input: {
-  offsetRaw: string | null; checkpointsRaw: string | null; restartAttempts: SanctuaryScenarioFacts["restartAttempts"]
+  telegramNextUpdateId: number; checkpointsRaw: string | null; restartAttempts: SanctuaryScenarioFacts["restartAttempts"]
   cronRaw: string | null; health: JsonObject | null; auditLedgerEntries: SanctuaryScenarioFacts["events"]
   activeScenarioHandleDigest: string | null
 }): SanctuaryPostbootIntegritySnapshot {
@@ -670,10 +682,6 @@ function buildPostbootIntegritySnapshot(input: {
     return JSON.stringify(value)!
   }
   const digest = (value: unknown) => createHash("sha256").update(canonical(value)).digest("hex")
-  const offset = input.offsetRaw === null ? { nextUpdateId: 0 } : object(JSON.parse(input.offsetRaw) as unknown, "Telegram offset state")
-  if (JSON.stringify(Object.keys(offset).sort()) !== JSON.stringify(["nextUpdateId"]) || !Number.isSafeInteger(offset.nextUpdateId) || Number(offset.nextUpdateId) < 0) {
-    throw new Error("Telegram offset state is invalid")
-  }
   const checkpoints = input.checkpointsRaw === null ? {} : object(JSON.parse(input.checkpointsRaw) as unknown, "approval checkpoint state")
   const approvalCheckpoints = Object.entries(checkpoints).map(([id, record]) => ({ idDigest: digest(id), recordDigest: digest(record) }))
     .sort((left, right) => left.idDigest.localeCompare(right.idDigest))
@@ -688,7 +696,7 @@ function buildPostbootIntegritySnapshot(input: {
   }))
   return {
     schemaVersion: "sanctuary-postboot-integrity-v2", activeScenarioHandleDigest: input.activeScenarioHandleDigest,
-    telegramNextUpdateId: Number(offset.nextUpdateId), approvalCheckpoints,
+    telegramNextUpdateId: input.telegramNextUpdateId, approvalCheckpoints,
     approvalExecutionCount: new Set(restartAttempts.filter((row) => row.state !== "attempt_not_started").map((row) => row.idDigest)).size, restartAttempts,
     fingerprintDigest: digest(input.cronRaw), sweeps, deliveries,
     audits: input.auditLedgerEntries.map((row) => ({ idDigest: digest(row), recordDigest: digest(row), scenarioHandleDigest: typeof row.meta.scenarioHandleDigest === "string" ? row.meta.scenarioHandleDigest : null, scenarioRelevant: scenarioRelevantEvents.has(row.event) })),
@@ -783,8 +791,8 @@ function parseHealthProbeReceipt(raw: string | null, label: SanctuaryUnit16Evide
   return { ...validated, phases } as SanctuaryHealthProbeReceipt
 }
 
-export function auditContainsSensitiveMaterial(raw: string, credentials?: TelegramSenseCredentials): boolean {
-  const knownValues = credentials ? [credentials.botToken, credentials.authorizedUserId, credentials.authorizedChatId] : []
+export function auditContainsSensitiveMaterial(raw: string, credentials?: { botToken?: string; authorizedUserId: string; authorizedChatId: string }): boolean {
+  const knownValues = credentials ? [credentials.botToken ?? "", credentials.authorizedUserId, credentials.authorizedChatId] : []
   return knownValues.some((value) => value.length > 0 && raw.includes(value))
     || /\b\d{5,16}:[A-Za-z0-9_-]{20,}\b/u.test(raw)
     || /"(?:authorized_?user_?id|authorized_?chat_?id|transport_?user_?id|transport_?chat_?id|user_?id|chat_?id|update_?id|message_?id)"\s*:\s*"?\d{5,16}"?/iu.test(raw)
@@ -1210,7 +1218,7 @@ export async function readDefaultSanctuaryScenarioFacts(
   const identityRaw = optionalFixedFile(deps, pathFor(agentRoot, "state/senses/telegram/identity.key"))
   const auditRaw = optionalFixedFile(deps, TELEGRAM_AUDIT)
   const auditHeadRaw = optionalFixedFile(deps, TELEGRAM_AUDIT_HEAD)
-  const offsetRaw = optionalFixedFile(deps, TELEGRAM_OFFSET)
+  const gatewayCursor = await readGatewayCursor(deps)
   const checkpointsRaw = optionalFixedFile(deps, pathFor(agentRoot, "state/approvals/checkpoints.json"))
   const restartAttemptsRaw = optionalFixedFile(deps, pathFor(agentRoot, "state/acceptance/restart-attempts.ndjson")) ?? ""
   const telegramTurnsRaw = optionalFixedFile(deps, pathFor(agentRoot, "state/acceptance/telegram-turns.ndjson")) ?? ""
@@ -1296,10 +1304,7 @@ export async function readDefaultSanctuaryScenarioFacts(
   })
   const restartAttempts = parseRestartAttempts(restartAttemptsRaw, scenarioHandleDigest)
   const telegramTurns = parseTelegramTurnReceipts(telegramTurnsRaw, scenarioHandleDigest, identityRaw?.trim() ?? null)
-  const telegramOffsetState = offsetRaw === null ? { nextUpdateId: 0 } : object(JSON.parse(offsetRaw) as unknown, "Telegram offset state")
-  if (JSON.stringify(Object.keys(telegramOffsetState).sort()) !== JSON.stringify(["nextUpdateId"])
-    || !Number.isSafeInteger(telegramOffsetState.nextUpdateId) || Number(telegramOffsetState.nextUpdateId) < 0) throw new Error("Telegram offset state is invalid")
-  const telegramNextUpdateId = Number(telegramOffsetState.nextUpdateId)
+  const telegramNextUpdateId = gatewayCursor.nextUpdateId
   const groundingTool = label === "unit-16d-whats-up" ? "unraid_get_system" : label === "unit-16d-1-space" ? "unraid_get_storage" : null
   const liveGrounding = groundingTool && deps.readLiveGrounding ? await deps.readLiveGrounding(groundingTool) : undefined
   let identity: SanctuaryScenarioFacts["identity"]
@@ -1307,7 +1312,7 @@ export async function readDefaultSanctuaryScenarioFacts(
     throw new Error("Telegram approval identity key is missing or malformed")
   }
   if (identityRaw && /^[A-Za-z0-9_-]{43}\n?$/u.test(identityRaw)) {
-    const credentials = deps.telegramCredentials ? deps.telegramCredentials() : loadTelegramSenseCredentials(TARGET_ID)
+    const credentials = deps.telegramCredentials ? deps.telegramCredentials() : acceptanceTelegramIdentity()
     const identityKey = identityRaw.trim()
     const auditSchema = label === "unit-16d-whats-up" || label === "unit-16d-1-space" ? "sanctuary-telegram-turn-receipt-v4" : "sanctuary-telegram-turn-receipt-v3"
     for (const entry of auditEntries.filter((candidate) => candidate.event === "senses.telegram_turn_start" || candidate.event === "senses.telegram_turn_end" || candidate.event === "senses.telegram_turn_error")) {
@@ -1340,13 +1345,13 @@ export async function readDefaultSanctuaryScenarioFacts(
     if (SANCTUARY_SCENARIO_SOURCES[label].includes("identity-surface-audit") || label === "unit-16d-2-unknown-admission") {
       const expectedSubject = opaqueTelegramSubject(
         identityKey,
-        credentials.botToken,
+        credentials.botId,
         credentials.authorizedUserId,
         credentials.authorizedChatId,
       )
       const observedSubjects = auditEntries.flatMap((entry) => typeof entry.meta.subject === "string" ? [entry.meta.subject] : [])
       const approvalSubjects = approvalRecords.map((projection) => projection.approval).filter((record) => record.transport === "telegram").map((record) => record.requesterId)
-      const rawValues = [...new Set([credentials.botToken, credentials.authorizedUserId, credentials.authorizedChatId])]
+      const rawValues = [...new Set([credentials.authorizedUserId, credentials.authorizedChatId])]
       const persistedIdentitySurfaces = readBoundedIdentitySurfaces(agentRoot)
       const surfacePairs = Array.from({ length: Math.floor(persistedIdentitySurfaces.length / 2) }, (_, index) => ({
         relativePath: persistedIdentitySurfaces[index * 2]!,
@@ -1377,7 +1382,7 @@ export async function readDefaultSanctuaryScenarioFacts(
       const surfaceRecords = [...persistedIdentitySurfaces, auditRaw ?? "", auditHeadRaw ?? "", JSON.stringify(approvalRecords)]
       const surfaceSubjects = surfaceRecords.flatMap((raw) => raw.match(/tg_[A-Za-z0-9_-]{43}/gu) ?? [])
       const structuredRawId = /"(?:authorizedUserId|authorizedChatId|transportUserId|transportChatId|userId|chatId|updateId|messageId)"\s*:\s*"?\d{1,20}"?/gu
-      const rawLeakCount = surfaceRecords.reduce((count, raw) => count + rawValues.filter((value) => raw.includes(value)).length + (raw.match(structuredRawId)?.length ?? 0), 0)
+      const rawLeakCount = surfaceRecords.reduce((count, raw) => count + rawValues.filter((value) => raw.includes(value)).length + (raw.match(structuredRawId)?.length ?? 0) + Number(auditContainsSensitiveMaterial(raw)), 0)
       const mismatchCount = [...surfaceSubjects, ...observedSubjects, ...approvalSubjects].filter((subject) => subject !== expectedSubject).length
       identity = {
         keyPresent: true,
@@ -1429,7 +1434,7 @@ export async function readDefaultSanctuaryScenarioFacts(
   }
   const health = parseHealthAcceptanceState(healthRaw)
   const activeMarker = readSanctuaryAcceptanceMarker(TARGET_ID, agentRoot)
-  const postbootIntegrity = buildPostbootIntegritySnapshot({ offsetRaw, checkpointsRaw, restartAttempts: parseRestartAttempts(restartAttemptsRaw, null), cronRaw, health, auditLedgerEntries, activeScenarioHandleDigest: activeMarker?.scenarioHandleDigest ?? null })
+  const postbootIntegrity = buildPostbootIntegritySnapshot({ telegramNextUpdateId, checkpointsRaw, restartAttempts: parseRestartAttempts(restartAttemptsRaw, null), cronRaw, health, auditLedgerEntries, activeScenarioHandleDigest: activeMarker?.scenarioHandleDigest ?? null })
   const prebootIntegrity = rebootCheckpoint && typeof rebootCheckpoint.prebootIntegrity === "object" && !Array.isArray(rebootCheckpoint.prebootIntegrity)
     ? rebootCheckpoint.prebootIntegrity as unknown as SanctuaryPostbootIntegritySnapshot : undefined
   const healthProbe = parseHealthProbeReceipt(healthProbeRaw, label, scenarioHandleDigest, identityRaw?.trim() ?? null)
@@ -1598,7 +1603,7 @@ export async function readDefaultSanctuaryScenarioFacts(
       )
     : []
   const sourceValues: Record<string, unknown> = {
-    "identity-key": identityRaw, "telegram-audit": auditEntries, "telegram-offset": offsetRaw,
+    "identity-key": identityRaw, "telegram-audit": auditEntries, "telegram-offset": gatewayCursor.progressDigest,
     "approval-journal": approvals, "approval-checkpoints": checkpointsRaw, "container-inspect": container,
     "provider-live-check": liveProvider ?? null, "cron-runtime": cronRaw, "health-runtime": health, "restart-attempt-ledger": restartAttempts,
     "digest-runtime": health, "reboot-checkpoint": rebootCheckpoint, "telegram-turn-receipts": telegramTurns, "read-only-denial-receipt": denialReceipt ?? null,
@@ -1667,7 +1672,7 @@ export async function readDefaultSanctuaryScenarioFacts(
   }
 }
 
-function postbootIntegritySnapshot(deps: SanctuaryAcceptanceAdapterDependencies): SanctuaryPostbootIntegritySnapshot {
+async function postbootIntegritySnapshot(deps: SanctuaryAcceptanceAdapterDependencies): Promise<SanctuaryPostbootIntegritySnapshot> {
   const agentRoot = getAgentRoot(TARGET_ID)
   const identityRaw = optionalFixedFile(deps, pathFor(agentRoot, "state/senses/telegram/identity.key"))
   const auditRaw = optionalFixedFile(deps, TELEGRAM_AUDIT)
@@ -1681,7 +1686,7 @@ function postbootIntegritySnapshot(deps: SanctuaryAcceptanceAdapterDependencies)
   })
   const restartAttemptsRaw = optionalFixedFile(deps, pathFor(agentRoot, "state/acceptance/restart-attempts.ndjson")) ?? ""
   return buildPostbootIntegritySnapshot({
-    offsetRaw: optionalFixedFile(deps, TELEGRAM_OFFSET), checkpointsRaw: optionalFixedFile(deps, pathFor(agentRoot, "state/approvals/checkpoints.json")),
+    telegramNextUpdateId: (await readGatewayCursor(deps)).nextUpdateId, checkpointsRaw: optionalFixedFile(deps, pathFor(agentRoot, "state/approvals/checkpoints.json")),
     restartAttempts: parseRestartAttempts(restartAttemptsRaw, null), cronRaw: optionalFixedFile(deps, "/home/ouro/.ouro-cli/scheduler/sanctuary.crontab"),
     health: parseHealthAcceptanceState(optionalFixedFile(deps, pathFor(agentRoot, "state/health/sanctuary-health.json"))), auditLedgerEntries,
     activeScenarioHandleDigest: readSanctuaryAcceptanceMarker(TARGET_ID)?.scenarioHandleDigest ?? null,
@@ -1842,16 +1847,20 @@ async function runtimeConfig(
   return result.config
 }
 
-function cursorSnapshot(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDependencies): { offsetDigest: string; auditCursorDigest: string } {
+async function readGatewayCursor(deps: SanctuaryAcceptanceAdapterDependencies): Promise<{ nextUpdateId: number; progressDigest: string }> {
+  const cursor = await dependency(deps.gatewayCursor, "signed gateway cursor")()
+  if (!cursor || !Number.isSafeInteger(cursor.nextUpdateId) || cursor.nextUpdateId < 0 || typeof cursor.progressDigest !== "string" || !/^sha256:[a-f0-9]{64}$/u.test(cursor.progressDigest)) throw new Error("signed gateway cursor is invalid")
+  return cursor
+}
+
+async function cursorSnapshot(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDependencies): Promise<{ offsetDigest: string; auditCursorDigest: string }> {
   exactKeys(payload, ["allowGenesis", "operation", "schema"], "Telegram cursor snapshot request")
   if (payload.schema !== "telegram-cursor-v1" || typeof payload.allowGenesis !== "boolean") throw new Error("Telegram cursor snapshot request is invalid")
-  const offsetRaw = fixedFile(deps, TELEGRAM_OFFSET)
+  const cursor = await readGatewayCursor(deps)
   const identityKey = fixedFile(deps, TELEGRAM_IDENTITY_KEY).trim()
   if (!/^[A-Za-z0-9_-]{43}$/u.test(identityKey) || Buffer.from(identityKey, "base64url").length !== 32) {
     throw new Error("Telegram identity key is invalid")
   }
-  const offset = object(JSON.parse(offsetRaw) as unknown, "Telegram offset")
-  if (!Number.isSafeInteger(offset.nextUpdateId) || (offset.nextUpdateId as number) < 0) throw new Error("Telegram offset is invalid")
   let auditCursorDigest: string | undefined
   let verificationFailure: Error | undefined
   let observedAuditState = false
@@ -1885,19 +1894,29 @@ function cursorSnapshot(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDep
     )
   }
   return {
-    offsetDigest: sha256(JSON.stringify({ nextUpdateId: offset.nextUpdateId })),
+    offsetDigest: cursor.progressDigest.slice("sha256:".length),
     auditCursorDigest,
   }
 }
 
-function telegramPollerQuiescence(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDependencies): unknown {
+async function telegramPollerQuiescence(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDependencies): Promise<unknown> {
   if (payload.expectedState !== "stopped" || JSON.stringify(Object.keys(payload).sort()) !== JSON.stringify(["expectedState", "operation"])) {
     throw new Error("Telegram poller quiescence request is invalid")
   }
-  const fact = object(JSON.parse(fixedFile(deps, TELEGRAM_POLLER_COUNT_FILE)) as unknown, "Telegram poller count")
-  exactKeys(fact, ["activePollers", "productionContainerStopped"], "Telegram poller count")
-  if (fact.activePollers !== 0 || fact.productionContainerStopped !== true) throw new Error("Telegram poller is not quiescent")
-  return { quiesced: true, activePollers: 0 }
+  const fact = object(await dependency(deps.hostRequest, "Sanctuary host broker")({ operation: "telegram_gateway_quiescence", targetId: TARGET_ID }), "Telegram root poller proof")
+  exactKeys(fact, ["schemaVersion", "activePollers", "residentStopped", "processBindingDigest", "keyId", "publicKeyDigest", "botId", "observedAt"], "Telegram root poller proof")
+  const gateway = dependency(deps.gateway, "Telegram root gateway")()
+  try {
+    if (!await gateway.authorityTransport.hostApproval?.refresh()) throw new Error("Telegram root gateway health is unavailable")
+    const cursor = await gateway.cursorSnapshot()
+    const now = (deps.now ?? Date.now)()
+    if (fact.schemaVersion !== 1 || fact.activePollers !== 1 || fact.residentStopped !== true
+      || typeof fact.processBindingDigest !== "string" || !SHA256.test(fact.processBindingDigest)
+      || fact.keyId !== cursor.keyId || fact.publicKeyDigest !== cursor.publicKeyDigest || fact.botId !== cursor.botId
+      || typeof fact.observedAt !== "string" || !Number.isFinite(Date.parse(fact.observedAt))
+      || Date.parse(fact.observedAt) > now || now - Date.parse(fact.observedAt) > 30_000) throw new Error("Telegram root poller proof is invalid or stale")
+    return { quiesced: true, activePollers: 1 }
+  } finally { gateway.authorityTransport.api.stop() }
 }
 
 function callbackUpdate(value: unknown): JsonObject {
@@ -1974,12 +1993,10 @@ function callbackCoordinate(update: JsonObject): { updateId: number; digest: str
   }
 }
 
-function callbackPlaybackPreflight(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDependencies): unknown {
+async function callbackPlaybackPreflight(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDependencies): Promise<unknown> {
   exactKeys(payload, ["operation", "update"], "callback playback preflight request")
   const coordinate = callbackCoordinate(callbackUpdate(payload.update))
-  const offset = object(JSON.parse(fixedFile(deps, TELEGRAM_OFFSET)) as unknown, "Telegram offset")
-  exactKeys(offset, ["nextUpdateId"], "Telegram offset")
-  if (!Number.isSafeInteger(offset.nextUpdateId) || Number(offset.nextUpdateId) < 0) throw new Error("Telegram offset is invalid")
+  const offset = await readGatewayCursor(deps)
   const snapshot = object(dependency(deps.callbackPlaybackSnapshot, "callback playback journal")(coordinate.digest), "callback playback journal snapshot")
   exactKeys(snapshot, ["coordinateDigest", "journalDigest", "playbackCount"], "callback playback journal snapshot")
   if (snapshot.coordinateDigest !== coordinate.digest || typeof snapshot.journalDigest !== "string" || !SHA256.test(snapshot.journalDigest)
@@ -2174,16 +2191,16 @@ async function probeRevokedKey(payload: JsonObject, deps: SanctuaryAcceptanceAda
   return { valid: false, status: response.status, id }
 }
 
-function provenance(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDependencies): unknown {
+async function provenance(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDependencies): Promise<unknown> {
   if (payload.schema !== "sanctuary-unit-16-provenance-v1") throw new Error("provenance schema is invalid")
   const imageDigest = fixedFile(deps, IMAGE_DIGEST_FILE).trim()
   const containerDigest = fixedFile(deps, CONTAINER_DIGEST_FILE).trim()
   if (!SHA256.test(imageDigest) || !SHA256.test(containerDigest)) throw new Error("live provenance digest is invalid")
-  const cursor = cursorSnapshot({ operation: "snapshot", schema: "telegram-cursor-v1", allowGenesis: false }, deps)
+  const cursor = await cursorSnapshot({ operation: "snapshot", schema: "telegram-cursor-v1", allowGenesis: false }, deps)
   return { imageDigest, containerDigest, cursorDigest: sha256(`${cursor.offsetDigest}\0${cursor.auditCursorDigest}`) }
 }
 
-function evidenceSnapshot(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDependencies): unknown {
+async function evidenceSnapshot(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDependencies): Promise<unknown> {
   if (payload.schema !== "postboot-health-v1") throw new Error("evidence schema is invalid")
   const health = object(JSON.parse(fixedFile(deps, POSTBOOT_HEALTH_FILE)) as unknown, "postboot health")
   exactKeys(health, ["healthy"], "postboot health")
@@ -2193,7 +2210,7 @@ function evidenceSnapshot(payload: JsonObject, deps: SanctuaryAcceptanceAdapterD
   return {
     healthy: health.healthy,
     containerImageDigest: imageDigest,
-    telegramOffsetDigest: cursorSnapshot({ operation: "snapshot", schema: "telegram-cursor-v1", allowGenesis: false }, deps).offsetDigest,
+    telegramOffsetDigest: (await cursorSnapshot({ operation: "snapshot", schema: "telegram-cursor-v1", allowGenesis: false }, deps)).offsetDigest,
   }
 }
 
@@ -2241,7 +2258,7 @@ function pollReboot(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDepende
   return { targetId: TARGET_ID, requestId, state: "ready", bootId: bootId(deps) }
 }
 
-function materializeConfig(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDependencies): unknown {
+async function materializeConfig(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDependencies): Promise<unknown> {
   const command = text(payload.command, "materializer command")
   const contract = object(JSON.parse(fixedFile(deps, CONTRACT_FILE)) as unknown, "acceptance contract")
   const templates = object(contract.configTemplates, "acceptance config templates")
@@ -2249,8 +2266,7 @@ function materializeConfig(payload: JsonObject, deps: SanctuaryAcceptanceAdapter
   const config = { ...object(template.fixed, "acceptance fixed config") }
   const adapterPath = "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh"
   if (command === "telegram-bootstrap") {
-    const offset = object(JSON.parse(fixedFile(deps, TELEGRAM_OFFSET)) as unknown, "Telegram offset")
-    if (!Number.isSafeInteger(offset.nextUpdateId) || (offset.nextUpdateId as number) < 0) throw new Error("Telegram offset is invalid")
+    const offset = await readGatewayCursor(deps)
     Object.assign(config, { expectedBotId: "8541786263", expectedUsername: "MendelowCloudButlerBot", currentOffset: offset.nextUpdateId })
   } else if (command === "cursor-snapshot") {
     const phase = text(payload.phase, "cursor snapshot phase")
@@ -2271,31 +2287,24 @@ function materializeConfig(payload: JsonObject, deps: SanctuaryAcceptanceAdapter
 
 async function telegramReadiness(payload: JsonObject, deps: SanctuaryAcceptanceAdapterDependencies): Promise<unknown> {
   exactKeys(payload, ["operation"], "Telegram readiness payload")
-  let refreshed: RuntimeCredentialConfigReadResult
-  try { refreshed = await dependency(deps.refreshRuntime, "runtime credential refresher")(TARGET_ID) }
-  catch { throw new Error("Telegram runtime credentials are unavailable; actor: human-required; unlock or repair vault runtime/config") }
-  if (!refreshed.ok) throw new Error("Telegram runtime credentials are unavailable; actor: human-required; unlock or repair vault runtime/config")
-  let credentials: TelegramSenseCredentials
-  try {
-    credentials = dependency(deps.telegramCredentials, "Telegram credentials")()
-    telegramBotIdFromToken(credentials.botToken)
-  } catch {
-    throw new Error("Telegram runtime credentials are invalid; actor: human-required; repair vault runtime/config")
-  }
-  let api: TelegramBotApi
-  try { api = dependency(deps.createTelegramApi, "Telegram API factory")({ token: credentials.botToken }) }
-  catch { throw new Error("Telegram client initialization failed; actor: agent-runnable; retry Telegram readiness") }
+  let gateway: ReturnType<typeof openSanctuaryResidentAuthority>
+  try { gateway = dependency(deps.gateway, "Telegram root gateway")() }
+  catch { throw new Error("Telegram gateway inventory or pins are unavailable; actor: agent-runnable; inspect root migration") }
+  const api = gateway.authorityTransport.api
   let bot: unknown
-  try { bot = await api.request("getMe", {}, AbortSignal.timeout(30_000)) }
-  catch { throw new Error("Telegram getMe failed; actor: agent-runnable; retry Telegram readiness") }
+  try {
+    if (!await gateway.authorityTransport.hostApproval?.refresh()) throw new Error("root authority is unhealthy")
+    await gateway.cursorSnapshot()
+    bot = await api.request("getMe", {}, AbortSignal.timeout(30_000))
+  } catch { throw new Error("Telegram gateway health or identity probe failed; actor: agent-runnable; inspect root authority") }
   finally {
     try { api.stop() }
     catch { throw new Error("Telegram client cleanup failed; actor: agent-runnable; retry Telegram readiness") }
   }
   if (!bot || typeof bot !== "object" || Array.isArray(bot)
-    || String((bot as JsonObject).id) !== "8541786263"
+    || String((bot as JsonObject).id) !== gateway.credentials.botId || gateway.credentials.botId !== "8541786263"
     || (bot as JsonObject).username !== "MendelowCloudButlerBot") {
-    throw new Error("Telegram bot identity mismatch; actor: human-required; repair vault runtime/config")
+    throw new Error("Telegram bot identity mismatch; actor: human-required; repair root gateway identity")
   }
   return { ready: true, identityMatches: true }
 }
@@ -2314,9 +2323,9 @@ export async function executeSanctuaryAcceptanceAdapter(
       case "closed-inventory": result = closedInventory(deps); break
       case "exact-id-revoke": result = await exactIdRevoke(payload, deps); break
       case "revoked-key-auth-rejection": result = await revokedKeyAuthRejection(payload, deps); break
-      case "quiesce_telegram_poller": result = telegramPollerQuiescence(payload, deps); break
-      case "snapshot": result = cursorSnapshot(payload, deps); break
-      case "callback_playback_preflight": result = callbackPlaybackPreflight(payload, deps); break
+      case "quiesce_telegram_poller": result = await telegramPollerQuiescence(payload, deps); break
+      case "snapshot": result = await cursorSnapshot(payload, deps); break
+      case "callback_playback_preflight": result = await callbackPlaybackPreflight(payload, deps); break
       case "inject_callbacks_concurrently": result = await concurrentCallbackProbe(payload, deps); break
       case "inject_callback_replay": result = await callbackReplay(payload, deps); break
       case "drive_timeout_stale": result = await interactiveRuntimeOperation(payload, deps); break
@@ -2331,8 +2340,8 @@ export async function executeSanctuaryAcceptanceAdapter(
       case "read_old_key": result = await readOldKey(payload, deps); break
       case "revoke_key": result = await revokeKey(payload, deps); break
       case "probe_revoked_key": result = await probeRevokedKey(payload, deps); break
-      case "evidence_snapshot": result = evidenceSnapshot(payload, deps); break
-      case "capture_evidence_provenance": result = provenance(payload, deps); break
+      case "evidence_snapshot": result = await evidenceSnapshot(payload, deps); break
+      case "capture_evidence_provenance": result = await provenance(payload, deps); break
       case "capture_acceptance_scenario": result = await captureAcceptanceScenario(payload, deps); break
       case "finalize_acceptance_scenarios":
         exactKeys(payload, ["operation"], "scenario finalization payload")
@@ -2341,10 +2350,10 @@ export async function executeSanctuaryAcceptanceAdapter(
         result = { finalized: true }
         break
       case "reboot_preflight_snapshot": result = await rebootPreflight(payload, deps); break
-      case "postboot_integrity_snapshot": result = postbootIntegritySnapshot(deps); break
+      case "postboot_integrity_snapshot": result = await postbootIntegritySnapshot(deps); break
       case "request_reboot": result = await requestReboot(payload, deps); break
       case "poll_reboot": result = pollReboot(payload, deps); break
-      case "materialize_config": result = materializeConfig(payload, deps); break
+      case "materialize_config": result = await materializeConfig(payload, deps); break
       case "telegram_readiness": result = await telegramReadiness(payload, deps); break
       default: throw new Error("unknown Sanctuary acceptance adapter operation")
     }
@@ -2429,10 +2438,8 @@ export async function executeSanctuaryAcceptanceRevokedProbe(
 }
 
 export interface SanctuaryAcceptanceCallbackProbeDependencies {
-  refresh(agentName: string): Promise<RuntimeCredentialConfigReadResult>
-  credentials(agentName: string): TelegramSenseCredentials
+  gateway(): ReturnType<typeof openSanctuaryResidentAuthority>
   identityKey(agentRoot: string): string
-  createApi(options: { token: string }): TelegramBotApi
   createRuntime(input: Parameters<typeof createTelegramApprovalRuntime>[0]): Pick<TelegramApprovalRuntime, "transport" | "close">
   toolContext(agentName: string): ReturnType<typeof createSanctuaryToolContext>
   effects?(input: { agentRoot: string; api: TelegramBotApi; subject: string; chatId: string }): { port: TelegramApprovalEffectPort; close(): void }
@@ -2486,10 +2493,8 @@ export async function executeSanctuaryAcceptanceCallbackProbe(
   rawUpdate: unknown,
   replay: boolean,
   deps: SanctuaryAcceptanceCallbackProbeDependencies = {
-    refresh: refreshRuntimeCredentialConfig,
-    credentials: loadTelegramSenseCredentials,
+    gateway: () => openSanctuaryResidentAuthority({}, {}),
     identityKey: readOrCreateTelegramIdentityKey,
-    createApi: createTelegramBotApi,
     createRuntime: createTelegramApprovalRuntime,
     toolContext: createSanctuaryToolContext,
     effects: createAcceptanceProbeEffects,
@@ -2497,17 +2502,16 @@ export async function executeSanctuaryAcceptanceCallbackProbe(
   },
 ): Promise<{ settled: boolean; claimed: boolean; mutated: boolean }> {
   const update = callbackUpdate(rawUpdate) as unknown as TelegramUpdate
-  const refreshed = await deps.refresh(TARGET_ID)
-  if (!refreshed.ok) throw new Error("Telegram runtime credentials are unavailable")
-  const credentials = deps.credentials(TARGET_ID)
+  const gateway = deps.gateway()
+  const credentials = gateway.credentials
   const identityKey = deps.identityKey(getAgentRoot(TARGET_ID))
   const subject = opaqueTelegramSubject(
     identityKey,
-    credentials.botToken,
+    credentials.botId,
     credentials.authorizedUserId,
     credentials.authorizedChatId,
   )
-  const api = deps.createApi({ token: credentials.botToken })
+  const api = gateway.authorityTransport.api
   const effectBoundary = deps.effects?.({ agentRoot: getAgentRoot(TARGET_ID), api, subject, chatId: credentials.authorizedChatId })
   const unavailableEffects: TelegramApprovalEffectPort = {
     sendText: async () => { throw new Error("Telegram acceptance probe effect boundary is unavailable") },

@@ -44,7 +44,7 @@ const CORRELATION_KEYS = ["registrationId", "residentFriendId", "relationshipPro
 const PERMIT_KEYS = [
   "targetHost", "publicKeyDigest", "permitId", "registrationId", "registrationDigest", "ownerUserId", "ownerChatId", "ownerObservationDigest", "callbackObservationDigest",
   ...CORRELATION_KEYS.slice(1), "effectClass", "executionProfile", "targetResource", "command", "scriptDigest", "workingDirectoryProfile",
-  "environmentProfile", "environmentProfileDigest", "timeoutMs", "verification", "issuedAt", "expiresAt", "nonce",
+  "environmentProfile", "environmentProfileDigest", "timeoutMs", "verification", "issuedAt", "expiresAt", "nonce", "permitDigest",
 ]
 const RECEIPT_KEYS = [
   "targetHost", "publicKeyDigest", "permitId", "permitDigest", "registrationId", "state", "startedAt", "completedAt", "exitCode", "signal", "timedOut", "cancelled",
@@ -195,8 +195,9 @@ export function createRootHostApprovalPort(
     return result
   }
   function permit(value: unknown, reg: RootHostRegistration, approved: Artifact): Artifact {
-    const result = verify(value, "permit", PERMIT_KEYS)
+    const result = verify(value, "attempt", PERMIT_KEYS)
     const p = result.payload
+    requireValid(matches(p.permitDigest, DIGEST))
     correlation(Object.fromEntries(CORRELATION_KEYS.map((key) => [key, p[key]])))
     const r = reg.registration.payload
     for (const key of ["registrationId", "targetResource", "ownerUserId", "ownerChatId", "ownerObservationDigest", "command", "workingDirectoryProfile", "environmentProfile", "timeoutMs", "verification"]) same(p[key], r[key])
@@ -221,7 +222,7 @@ export function createRootHostApprovalPort(
     const p = result.payload
     same(p.registrationId, reg.registrationId)
     same(p.permitId, permitted.payload.permitId)
-    same(p.permitDigest, artifactDigest(permitted))
+    same(p.permitDigest, permitted.payload.permitDigest)
     requireValid(typeof p.state === "string" && ["verified", "failed", "ambiguous"].includes(p.state))
     requireValid(time(p.startedAt) >= time(permitted.payload.issuedAt))
     requireValid(time(p.completedAt) >= time(p.startedAt))

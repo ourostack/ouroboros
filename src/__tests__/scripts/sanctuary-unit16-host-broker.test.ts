@@ -1239,6 +1239,11 @@ describe("Sanctuary Unit 16 host broker", () => {
     }
     const snapshot = { imageId: `sha256:${"b".repeat(64)}`, containerId: "c".repeat(64), running: true, health: "healthy" }
     expect(() => requireHealthProbeCompleteAttestation(receipt, snapshot, request, () => key)).not.toThrow()
+    for (const manifest of [null, [], [{ ...unsignedScheduler.supervisor.manifest[0], lastRun: "not-a-date" }]]) {
+      const changed = JSON.parse(JSON.stringify(receipt))
+      changed.schedulerReceipt.supervisor.manifest = manifest
+      expect(() => requireHealthProbeCompleteAttestation(changed, snapshot, request, () => key)).toThrow()
+    }
     ;(receipt.schedulerReceipt as Record<string, unknown>).runnerId = "33333333-3333-4333-8333-333333333333"
     expect(() => requireHealthProbeCompleteAttestation(receipt, snapshot, request, () => key)).toThrow(/complete attestation/u)
   })
@@ -1606,7 +1611,7 @@ describe("Sanctuary Unit 16 host broker", () => {
     const { parseVaultStatus } = await broker()
     expect(parseVaultStatus("local unlock: available\nruntime credentials: missing\nprovider credentials: unavailable (network)\n", true))
       .toEqual({ vaultUnlocked: false, manualAuthRequired: true })
-    expect(parseVaultStatus("local unlock: available\nruntime credentials: telegramAuthorizedChatId, telegramAuthorizedUserId, telegramBotToken (runtime_revision)\nprovider credentials: \n  openai-compatible: credential fields apiKey, config fields baseUrl\n  openai-compatible-gemini: credential fields apiKey, config fields baseUrl\n", true))
+    expect(parseVaultStatus("local unlock: available\nruntime credentials: identitySeed (runtime_revision)\nprovider credentials: \n  minimax: credential fields apiKey, config fields baseUrl\n", true))
       .toEqual({ vaultUnlocked: true, manualAuthRequired: false })
     expect(parseVaultStatus("local unlock: available\nruntime credentials: telegramAuthorizedChatId, telegramAuthorizedUserId, telegramBotToken (runtime_revision)\nprovider credentials: \n  openai-compatible: credential fields apiKey, config fields baseUrl\n", true))
       .toEqual({ vaultUnlocked: false, manualAuthRequired: true })

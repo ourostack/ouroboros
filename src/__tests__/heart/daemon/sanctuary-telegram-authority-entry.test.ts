@@ -11,6 +11,7 @@ import {
 } from "../../../heart/daemon/sanctuary-telegram-authority-entry"
 import {
   FileSanctuaryTelegramAuthorityGateway,
+  sanctuaryTelegramAuthorityStatePath,
   sanctuaryAuthorityPublicKeyDigest,
 } from "../../../heart/daemon/sanctuary-telegram-authority-gateway"
 import { FileSanctuaryHostAuthority } from "../../../heart/daemon/sanctuary-host-authority"
@@ -18,9 +19,13 @@ import { authorityArtifactDigest, signAuthorityPayload } from "../../../heart/da
 import { SocketSanctuaryTelegramAuthorityClient } from "../../../heart/daemon/sanctuary-telegram-authority-service"
 
 const roots: string[] = []
+const installation = vi.hoisted(() => ({ verify: vi.fn(), epoch: vi.fn() }))
+vi.mock("../../../heart/daemon/sanctuary-authority-installation", () => ({ verifySanctuaryAuthorityInstallation: installation.verify }))
+vi.mock("../../../heart/daemon/sanctuary-authority-epoch", () => ({ readSanctuaryAuthorityEpoch: installation.epoch }))
+vi.mock("node:fs", async (original) => ({ ...await original<typeof fs>() }))
 
-function fixture() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-telegram-entry-"))
+function fixture(predecessorCursor = 0) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "sta-")))
   roots.push(root)
   const keys = generateKeyPairSync("ed25519")
   const tokenPath = path.join(root, "token")
@@ -63,19 +68,154 @@ function fixture() {
     hostSetsidDigest: fileDigest("setsid"),
     hostShellPath: hostFiles.shell,
     hostShellDigest: fileDigest("shell"),
+    epochRoot: root,
+    packageRoot: path.join(root, "package"),
+    packageManifestPath: path.join(root, "manifest.json"),
+    packageManifestDigest: fileDigest("supervisor"),
   }
+  installation.verify.mockReset()
+  installation.epoch.mockReset().mockReturnValue({
+    state: "prepared", epochId: config.keyId, botId: config.botId, ownerUserId: config.ownerUserId, ownerChatId: config.ownerChatId,
+    publicKeyDigest: config.publicKeyDigest, tokenPath: config.tokenPath, packageDigest: config.packageManifestDigest,
+    predecessorCursor,
+  })
   fs.mkdirSync(config.hostCgroupRoot)
+  fs.mkdirSync(path.dirname(config.socketPath), { mode: 0o750 })
   fs.writeFileSync(configPath, JSON.stringify(config), { mode: 0o600 })
+  new FileSanctuaryTelegramAuthorityGateway(config.agentRoot, { ...config, privateKey: keys.privateKey }).initializeCursor(predecessorCursor)
   return { root, config, configPath, keys }
 }
 
 afterEach(() => {
+  vi.restoreAllMocks()
+  vi.unstubAllGlobals()
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true })
 })
 
 describe("Sanctuary Telegram authority process", () => {
-  it("loads only exact private root configuration and owns startup through graceful close", async () => {
+  it.each([false, true])("refuses missing persisted cursor state during startup or retirement (%s)", async (retireOnly) => {
     const f = fixture()
+    fs.unlinkSync(sanctuaryTelegramAuthorityStatePath(f.config.agentRoot))
+    await expect(startSanctuaryTelegramAuthority({
+      configPath: f.configPath, expectedUid: process.getuid!(), retireOnly,
+      createApi: () => ({ request: vi.fn(async () => ({ id: 123456 })), stop: vi.fn() }),
+      createServer: () => ({ listen: vi.fn(async () => undefined), close: vi.fn(async () => undefined) }),
+    })).rejects.toThrow(/cursor state is absent/u)
+    expect(fs.existsSync(sanctuaryTelegramAuthorityStatePath(f.config.agentRoot))).toBe(false)
+    expect(fs.existsSync(f.config.readinessPath)).toBe(false)
+  })
+
+  it("drains an in-flight execution before attempting retirement reconciliation", async () => {
+    const f = fixture()
+    let finish!: () => void
+    let active = false
+    const executing = new Promise<void>((resolve) => { finish = resolve })
+    const executor = {
+      execute: vi.fn(async () => { active = true; await executing; active = false; throw new Error("attempt must reconcile") }),
+      reconcile: vi.fn(async () => { if (active) throw new Error("already active"); return [] }),
+    }
+    vi.spyOn(FileSanctuaryHostAuthority.prototype, "issuePermit").mockReturnValue({ payload: { permitId: "attempt" } } as never)
+    let service!: import("../../../heart/daemon/sanctuary-telegram-authority-service").SanctuaryTelegramAuthorityService
+    const server = { listen: vi.fn(async () => undefined), close: vi.fn(async () => undefined) }
+    const authority = await startSanctuaryTelegramAuthority({
+      configPath: f.configPath, expectedUid: process.getuid!(), createHostExecutor: () => executor,
+      createApi: () => ({ request: vi.fn(async () => ({ id: 123456 })), stop: vi.fn() }),
+      createServer: (input) => { service = input.service; return server },
+    })
+    await service.dispatch("host.execute", { correlation: { registrationId: "registration" } })
+    let settled = false
+    const retirement = authority.retire().finally(() => { settled = true })
+    const observed = retirement.catch((error) => error)
+    await new Promise((resolve) => setImmediate(resolve))
+    const drainedPrematurely = settled
+    finish()
+    expect(await observed).toBeUndefined()
+    expect(drainedPrematurely).toBe(false)
+    expect(executor.reconcile).toHaveBeenCalledTimes(2)
+    expect(JSON.parse(fs.readFileSync(path.join(f.config.epochRoot, "retirement.json"), "utf8")).quiescent).toBe(true)
+  })
+  it("leaves interrupted retirement fail-closed until known executions and cgroups are reconciled", async () => {
+    const f = fixture()
+    fs.writeFileSync(path.join(f.config.hostCgroupRoot, "cgroup.procs"), "")
+    const options = { configPath: f.configPath, expectedUid: process.getuid!(), retireOnly: true, createHostExecutor: () => ({ execute: vi.fn(), reconcile: vi.fn(async () => []) }) }
+    const retire = vi.spyOn(FileSanctuaryHostAuthority.prototype, "retireRegistrations").mockReturnValueOnce([]).mockReturnValueOnce(["unfinished"])
+    await expect(startSanctuaryTelegramAuthority(options)).rejects.toThrow(/cleanup/u)
+    retire.mockRestore()
+    await expect(startSanctuaryTelegramAuthority({ ...options, retireOnly: false })).rejects.toThrow(/retirement must finish/u)
+    fs.mkdirSync(path.join(f.config.hostCgroupRoot, "still-populated"))
+    await expect(startSanctuaryTelegramAuthority(options)).rejects.toThrow(/cleanup/u)
+    fs.rmdirSync(path.join(f.config.hostCgroupRoot, "still-populated"))
+    await startSanctuaryTelegramAuthority(options)
+    expect(JSON.parse(fs.readFileSync(path.join(f.config.epochRoot, "retirement.json"), "utf8")).quiescent).toBe(true)
+  })
+  it("refuses a gateway cursor that precedes its epoch before publishing readiness", async () => {
+    const f = fixture()
+    installation.epoch.mockReturnValue({ ...installation.epoch(), predecessorCursor: 80 })
+    vi.spyOn(FileSanctuaryTelegramAuthorityGateway.prototype, "cursor").mockReturnValue(79)
+    await expect(startSanctuaryTelegramAuthority({ configPath: f.configPath, expectedUid: process.getuid!(), retireOnly: true })).rejects.toThrow(/precedes/u)
+  })
+  it("rejects linked private files and immutable parent mode drift without repairing either", async () => {
+    const f = fixture()
+    fs.linkSync(f.config.tokenPath, path.join(f.root, "token-alias"))
+    expect(() => loadSanctuaryTelegramAuthorityConfig(f.configPath, { expectedUid: process.getuid!() })).toThrow(/private/u)
+    fs.unlinkSync(path.join(f.root, "token-alias"))
+    fs.mkdirSync(path.dirname(f.config.lockPath), { mode: 0o777 })
+    fs.chmodSync(path.dirname(f.config.lockPath), 0o777)
+    await expect(startSanctuaryTelegramAuthority({ configPath: f.configPath, expectedUid: process.getuid!() })).rejects.toThrow(/directory/u)
+    expect(fs.statSync(path.dirname(f.config.lockPath)).mode & 0o777).toBe(0o777)
+  })
+  it("removes its own unpublished readiness temporary after an interrupted write", async () => {
+    const f = fixture()
+    const rename = fs.renameSync
+    vi.spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      if (String(to) === f.config.readinessPath) throw new Error("readiness publication interrupted")
+      return rename(from, to)
+    })
+    await expect(startSanctuaryTelegramAuthority({
+      configPath: f.configPath, expectedUid: process.getuid!(),
+      createApi: () => ({ request: vi.fn(async () => ({ id: 123456 })), stop: vi.fn() }),
+      createServer: () => ({ listen: vi.fn(async () => undefined), close: vi.fn(async () => undefined) }),
+    })).rejects.toThrow("readiness publication interrupted")
+    expect(fs.existsSync(`${f.config.readinessPath}.${process.pid}.tmp`)).toBe(false)
+  })
+  it("quiesces ingress, retires authority and reconciles executions before publishing stop proof", async () => {
+    const f = fixture()
+    const api = { request: vi.fn(async () => ({ id: 123456 })), stop: vi.fn() }
+    const server = { listen: vi.fn(async () => undefined), close: vi.fn(async () => undefined) }
+    const authority = await startSanctuaryTelegramAuthority({ configPath: f.configPath, expectedUid: process.getuid!(), createApi: () => api, createServer: () => server, setSocketOwnership: () => undefined })
+    await authority.retire()
+    expect(JSON.parse(fs.readFileSync(path.join(f.config.epochRoot, "retirement.json"), "utf8"))).toMatchObject({ schemaVersion: 1, keyId: f.config.keyId, cursor: 0, quiescent: true })
+    expect(fs.existsSync(f.config.lockPath)).toBe(false)
+    expect(fs.existsSync(f.config.readinessPath)).toBe(false)
+    expect(server.close).toHaveBeenCalledOnce()
+    expect(api.stop).toHaveBeenCalledOnce()
+  })
+  it("can finish retirement after a gateway crash without acquiring Telegram ingress", async () => {
+    const f = fixture()
+    const createApi = vi.fn()
+    const createServer = vi.fn()
+    const authority = await startSanctuaryTelegramAuthority({ configPath: f.configPath, expectedUid: process.getuid!(), retireOnly: true, createApi, createServer })
+    expect(createApi).not.toHaveBeenCalled()
+    expect(createServer).not.toHaveBeenCalled()
+    expect(JSON.parse(fs.readFileSync(path.join(f.config.epochRoot, "retirement.json"), "utf8")).quiescent).toBe(true)
+    await authority.close()
+  })
+  it("refuses an unsafe installation or retired/mismatched epoch before acquiring Telegram ingress", async () => {
+    for (const mutate of [
+      () => installation.verify.mockImplementation(() => { throw new Error("installation changed") }),
+      () => installation.epoch.mockReturnValue({ state: "retired" }),
+      () => installation.epoch.mockReturnValue({ state: "prepared", epochId: "another-epoch" }),
+    ]) {
+      const f = fixture()
+      mutate()
+      const createApi = vi.fn()
+      await expect(startSanctuaryTelegramAuthority({ configPath: f.configPath, expectedUid: process.getuid!(), createApi })).rejects.toThrow(/installation|epoch/u)
+      expect(createApi).not.toHaveBeenCalled()
+      expect(fs.existsSync(f.config.readinessPath)).toBe(false)
+    }
+  })
+  it("loads only exact private root configuration and owns startup through graceful close", async () => {
+    const f = fixture(80)
     const uid = process.getuid?.() ?? 0
     expect(loadSanctuaryTelegramAuthorityConfig(f.configPath, { expectedUid: uid })).toEqual(f.config)
     if (uid !== 0) expect(() => loadSanctuaryTelegramAuthorityConfig(f.configPath)).toThrow(/private/u)
@@ -85,18 +225,26 @@ describe("Sanctuary Telegram authority process", () => {
     }
     const server = { listen: vi.fn(async () => undefined), close: vi.fn(async () => undefined) }
     const setSocketOwnership = vi.fn()
+    let observedCursor: number | undefined
     const authority = await startSanctuaryTelegramAuthority({
       configPath: f.configPath,
       expectedUid: uid,
       createApi: () => api,
-      createServer: () => server,
+      createServer: ({ gateway }) => { observedCursor = gateway.cursor(); return server },
       now: () => "2026-09-16T23:00:00.000Z",
       setSocketOwnership,
     })
 
     expect(api.request).toHaveBeenCalledWith("getMe", {})
+    expect(observedCursor).toBe(80)
     expect(server.listen).toHaveBeenCalledOnce()
     expect(setSocketOwnership).toHaveBeenCalledWith(f.config)
+    const residentPinsPath = path.join(path.dirname(f.config.socketPath), "resident.json")
+    const residentPins = JSON.parse(fs.readFileSync(residentPinsPath, "utf8"))
+    expect(residentPins).toMatchObject({ schemaVersion: 1, targetHost: "sanctuary", botId: "123456", ownerUserId: "42", ownerChatId: "42", keyId: f.config.keyId, publicKeyDigest: f.config.publicKeyDigest })
+    expect(Object.keys(residentPins).sort()).toEqual(["schemaVersion", "targetHost", "botId", "ownerUserId", "ownerChatId", "keyId", "publicKeyDigest", "publicKeyPem"].sort())
+    expect(fs.lstatSync(residentPinsPath).mode & 0o777).toBe(0o640)
+    expect(fs.lstatSync(path.dirname(f.config.socketPath)).mode & 0o777).toBe(0o750)
     expect(JSON.parse(fs.readFileSync(f.config.readinessPath, "utf8"))).toMatchObject({
       schemaVersion: 1,
       status: "ready",
@@ -124,7 +272,7 @@ describe("Sanctuary Telegram authority process", () => {
       expectedUid: uid,
       createApi: () => ({ request: vi.fn(async () => ({ id: 999 })), stop: vi.fn() }),
     })).rejects.toThrow(/identity/u)
-    fs.mkdirSync(path.dirname(f.config.lockPath), { recursive: true })
+    fs.mkdirSync(path.dirname(f.config.lockPath), { recursive: true, mode: 0o700 })
     fs.writeFileSync(f.config.lockPath, String(process.pid), { mode: 0o600 })
     await expect(startSanctuaryTelegramAuthority({
       configPath: f.configPath,
@@ -156,7 +304,7 @@ describe("Sanctuary Telegram authority process", () => {
       expect(() => loadSanctuaryTelegramAuthorityConfig(f.configPath, { expectedUid: uid })).toThrow(/configuration/u)
     }
     write(f.config)
-    fs.mkdirSync(path.dirname(f.config.lockPath), { recursive: true })
+    fs.mkdirSync(path.dirname(f.config.lockPath), { recursive: true, mode: 0o700 })
     fs.writeFileSync(f.config.lockPath, "not-a-pid", { mode: 0o600 })
     expect(fs.readFileSync(f.config.lockPath, "utf8")).toBe("not-a-pid")
     fs.chmodSync(f.config.lockPath, 0o644)
@@ -231,7 +379,7 @@ describe("Sanctuary Telegram authority process", () => {
   it("uses the default Bot API and socket owners and removes a stale singleton", async () => {
     const f = fixture()
     const uid = process.getuid?.() ?? 0
-    fs.mkdirSync(path.dirname(f.config.lockPath), { recursive: true })
+    fs.mkdirSync(path.dirname(f.config.lockPath), { recursive: true, mode: 0o700 })
     fs.writeFileSync(f.config.lockPath, "99999999", { mode: 0o600 })
     const fetch = vi.fn(async (url: string) => new Response(JSON.stringify({
       ok: true,
@@ -273,6 +421,17 @@ describe("Sanctuary Telegram authority process", () => {
       expect(chmod).toHaveBeenCalledWith(path.dirname(f.config.socketPath), 0o750)
       expect(chmod).toHaveBeenCalledWith(f.config.socketPath, 0o660)
       await authority.close()
+      vi.spyOn(fs, "chownSync").mockImplementation(chown)
+      vi.spyOn(fs, "chmodSync").mockImplementation(chmod)
+      const defaults = await startSanctuaryTelegramAuthority({
+        configPath: f.configPath,
+        loadConfig: () => f.config,
+        readPrivateText: (filePath) => filePath === f.config.tokenPath ? "123456:abcdefghijklmnopqrstuvwxyz" : privateKey,
+        createApi: () => ({ request: vi.fn(async () => ({ id: 123456 })), stop: vi.fn() }),
+        createServer: () => ({ listen: vi.fn(async () => undefined), close: vi.fn(async () => undefined) }),
+        createHostExecutor: () => ({ execute: vi.fn() }),
+      })
+      await defaults.close()
     } finally {
       getuid.mockRestore()
     }
@@ -496,7 +655,8 @@ describe("Sanctuary Telegram authority process", () => {
     await expect(runSanctuaryTelegramAuthorityCli()).rejects.toThrow(/--config/u)
     process.argv = originalArgv
     const close = vi.fn(async () => undefined)
-    const start = vi.fn(async () => ({ close }))
+    const retire = vi.fn(async () => undefined)
+    const start = vi.fn(async () => ({ close, retire }))
     const listeners = new Map<string, () => void>()
     const exit = vi.fn()
     await runSanctuaryTelegramAuthorityCli({
@@ -516,8 +676,9 @@ describe("Sanctuary Telegram authority process", () => {
       argv: ["node", "entry", "--config", "/missing/config.json"],
     })).rejects.toThrow()
 
-    const processOnce = vi.spyOn(process, "once").mockImplementation(((_event: string, listener: () => void) => {
+    const processOnce = vi.spyOn(process, "once").mockImplementation(((event: string, listener: () => void) => {
       listeners.set("default", listener)
+      listeners.set(event, listener)
       return process
     }) as never)
     const processExit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never)
@@ -527,6 +688,21 @@ describe("Sanctuary Telegram authority process", () => {
     })
     listeners.get("default")!()
     await vi.waitFor(() => expect(processExit).toHaveBeenCalledWith(0))
+    listeners.get("SIGTERM")!()
+    await vi.waitFor(() => expect(processExit).toHaveBeenCalledTimes(2))
+    retire.mockRejectedValue(new Error("cleanup unproven"))
+    listeners.get("SIGUSR2")!()
+    await vi.waitFor(() => expect(processExit).toHaveBeenCalledWith(1))
+    await runSanctuaryTelegramAuthorityCli({
+      argv: ["node", "entry", "--config", "/root/authority.json", "--retire-only"], start,
+      once: (event, listener) => { listeners.set(event, listener) }, exit,
+    })
+    expect(start).toHaveBeenLastCalledWith({ configPath: "/root/authority.json", retireOnly: true })
+    listeners.get("SIGUSR2")!()
+    await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(1))
+    retire.mockResolvedValue(undefined)
+    listeners.get("SIGUSR2")!()
+    await vi.waitFor(() => expect(exit.mock.calls.filter(([code]) => code === 0).length).toBeGreaterThan(2))
     processOnce.mockRestore()
     processExit.mockRestore()
   })

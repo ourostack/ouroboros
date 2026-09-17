@@ -24,4 +24,5 @@
   <Config Name="Runtime state" Target="/home/ouro/.ouro-cli" Default="/mnt/user/appdata/ouro-butler/runtime/.ouro-cli" Mode="rw" Description="Machine-scoped runtime" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/ouro-butler/runtime/.ouro-cli</Config>
   <Config Name="Agent bundle" Target="/home/ouro/AgentBundles/sanctuary.ouro" Default="/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro" Mode="rw" Description="Sanctuary bundle" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro</Config>
   <Config Name="Privileged event spool" Target="/run/ouro-events" Default="/boot/config/custom/ouro-events/spool" Mode="ro" Description="Root-owned detector envelopes, read-only inside the Butler" Type="Path" Display="always" Required="true" Mask="false">/boot/config/custom/ouro-events/spool</Config>
+  <Config Name="Root authority socket" Target="/run/ouro-authority" Default="/run/ouro-authority" Mode="ro" Description="Root-owned gateway socket and public issuer pins only" Type="Path" Display="always" Required="true" Mask="false">/run/ouro-authority</Config>
 </Container>

@@ -228,6 +228,10 @@ function runtimeConfigUnavailableDetail(
   return `vault ${itemName} unavailable (${compactRuntimeConfigError(agent, runtimeConfig.error)})`
 }
 
+function needsMachineRuntimeConfig(agent: string, sense: SenseName): boolean {
+  return sense === "bluebubbles" || sense === "voice" || sense === "a2a" || (agent === "sanctuary" && sense === "telegram")
+}
+
 function senseFactsFromRuntimeConfig(
   agent: string,
   senses: AgentSensesConfig,
@@ -258,7 +262,13 @@ function senseFactsFromRuntimeConfig(
   const voice = machinePayload.voice as Record<string, unknown> | undefined
   const a2a = machinePayload.a2a as Record<string, unknown> | undefined
 
-  if (senses.telegram.enabled) {
+  if (senses.telegram.enabled && agent === "sanctuary") {
+    const ready = runtimeConfig.ok && machineRuntimeConfig.ok
+      && !Object.hasOwn(payload, "telegramBotToken") && !Object.hasOwn(machinePayload, "telegramBotToken")
+    base.telegram = ready
+      ? { configured: true, detail: "root authority transport; gateway validated at process startup" }
+      : { configured: false, detail: "root authority migration requires available tokenless credential inventories" }
+  } else if (senses.telegram.enabled) {
     const missing = ["telegramBotToken", "telegramAuthorizedUserId", "telegramAuthorizedChatId"]
       .filter((field) => !textField(payload, field))
     base.telegram = missing.length === 0
@@ -435,7 +445,9 @@ function senseRepairHint(agent: string, sense: SenseName): string {
     return `Agent-runnable: run 'ouro connect a2a --agent ${agent}', then restart with 'ouro up'.`
   }
   if (sense === "telegram") {
-    return `Agent-runnable: store Telegram bot/user/chat coordinates with 'ouro connect telegram --agent ${agent}', then restart with 'ouro up'.`
+    return agent === "sanctuary"
+      ? "Agent-runnable: complete or recover the root authority migration; do not restore a resident Telegram token."
+      : `Agent-runnable: store Telegram bot/user/chat coordinates with 'ouro connect telegram --agent ${agent}', then restart with 'ouro up'.`
   }
   /* v8 ignore next -- Workbench is deliberately not daemon-managed, so getSenseInventory never asks the daemon manager for a repair hint @preserve */
   if (sense === "workbench") {
@@ -789,13 +801,14 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
   }
 
   private shouldRetryConfigRefresh(
+    agent: string,
     sense: SenseName,
     runtimeConfig: RuntimeCredentialConfigReadResult,
     machineRuntimeConfig: RuntimeCredentialConfigReadResult,
   ): boolean {
     if (!runtimeConfig.ok && runtimeConfig.reason === "unavailable") return true
     if (
-      (sense === "bluebubbles" || sense === "voice" || sense === "a2a") &&
+      needsMachineRuntimeConfig(agent, sense) &&
       !machineRuntimeConfig.ok &&
       machineRuntimeConfig.reason === "unavailable"
     ) return true
@@ -806,7 +819,7 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
     let retryAfterMs: number | null = null
     try {
       const refreshed = await refreshRuntimeCredentialConfig(parsed.agent, { preserveCachedOnFailure: true })
-      const machineRefreshed = parsed.sense === "bluebubbles" || parsed.sense === "voice" || parsed.sense === "a2a"
+      const machineRefreshed = needsMachineRuntimeConfig(parsed.agent, parsed.sense)
         ? await refreshMachineRuntimeCredentialConfig(parsed.agent, currentMachineId(), { preserveCachedOnFailure: true })
         : readMachineRuntimeCredentialConfig(parsed.agent)
       const context = this.contexts.get(parsed.agent)
@@ -814,7 +827,7 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
       if (!context) return
       context.facts = senseFactsFromRuntimeConfig(parsed.agent, context.senses, refreshed, machineRefreshed, context.workbenchHasStaleBundleEntry)
       if (!context.facts[parsed.sense].configured) {
-        if (this.shouldRetryConfigRefresh(parsed.sense, refreshed, machineRefreshed)) {
+        if (this.shouldRetryConfigRefresh(parsed.agent, parsed.sense, refreshed, machineRefreshed)) {
           retryAfterMs = this.nextConfigRetryDelayMs(name)
         } else {
           this.clearConfigRetryState(name)
@@ -858,13 +871,11 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
       /* v8 ignore next -- periodic refresh work only exists when a managed background sense is enabled @preserve */
       if (enabledManagedSenses.length === 0) return
 
-      /* v8 ignore start -- periodic freshness refresh uses the same runtime readers covered by startup integration tests @preserve */
       const runtimeConfig = await refreshRuntimeCredentialConfig(agent, { preserveCachedOnFailure: true })
-      const needsMachineConfig = enabledManagedSenses.some((sense) => sense === "bluebubbles" || sense === "voice" || sense === "a2a")
+      const needsMachineConfig = enabledManagedSenses.some((sense) => needsMachineRuntimeConfig(agent, sense))
       const machineRuntimeConfig = needsMachineConfig
         ? await refreshMachineRuntimeCredentialConfig(agent, currentMachineId(), { preserveCachedOnFailure: true })
         : readMachineRuntimeCredentialConfig(agent)
-      /* v8 ignore stop */
 
       context.facts = senseFactsFromRuntimeConfig(agent, context.senses, runtimeConfig, machineRuntimeConfig, context.workbenchHasStaleBundleEntry)
     })
@@ -979,7 +990,7 @@ export class DaemonSenseManager implements DaemonSenseManagerLike {
 
     const managedName = `${parsed.agent}:${parsed.sense}`
     const runtimeConfig = await refreshRuntimeCredentialConfig(parsed.agent, { preserveCachedOnFailure: true })
-    const needsMachineConfig = parsed.sense === "bluebubbles" || parsed.sense === "voice" || parsed.sense === "a2a"
+    const needsMachineConfig = needsMachineRuntimeConfig(parsed.agent, parsed.sense)
     const machineRuntimeConfig = needsMachineConfig
       ? await refreshMachineRuntimeCredentialConfig(parsed.agent, currentMachineId(), { preserveCachedOnFailure: true })
       : readMachineRuntimeCredentialConfig(parsed.agent)

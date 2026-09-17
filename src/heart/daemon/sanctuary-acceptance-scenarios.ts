@@ -449,7 +449,7 @@ function exactContainmentAudit(evidence: SanctuaryContainmentAuditEvidence): boo
     && exactSanctuaryContainmentProfileBoundaries(evidence.profileBoundaries)
     && evidence.auditPathDigest === createHash("sha256").update(CONTAINMENT_AUDIT_PATH).digest("hex")
     && evidence.auditRecordCount >= 2 && evidence.auditLifecyclePairCount >= 1
-    && evidence.containerUser === "10001:10001" && evidence.liveProcessUser === "10001:10001" && evidence.mountCount === 3 && evidence.publishedPortCount === 0
+    && evidence.containerUser === "10001:10001" && evidence.liveProcessUser === "10001:10001" && evidence.mountCount === 4 && evidence.publishedPortCount === 0
     && evidence.networkMode === "host" && evidence.readOnlyRoot === false && evidence.mountsExact && evidence.securityExact && evidence.updaterDisabled
     && !evidence.writableKeyExposure && evidence.rawWriteMaterialFieldCount === 0 && evidence.typedWriteExecutorCount === 1
     && evidence.writeApprovalPolicyExact && !evidence.sensitiveMaterialObserved
@@ -746,13 +746,11 @@ export function deriveSanctuaryScenarioAssertions(
     case "unit-16a-boot-recovery-milestones":
       if (!after.reboot || after.reboot.phase !== "complete" || !SHA256.test(after.reboot.processBindingDigest) || !after.reboot.bootIdentityChanged || !after.reboot.arrayReady || !after.reboot.butlerReady || !after.reboot.dockerReady || !after.reboot.hostReady || !after.reboot.sshReady || !after.reboot.tailscaleReady || !postbootIntegrity) return null
       return { arrayReady: after.reboot.arrayReady, bootIdentityChanged: true, butlerReady: after.reboot.butlerReady, dockerReady: after.reboot.dockerReady, hostReady: after.reboot.hostReady, postbootIntegrityPreserved: true, processBindingDigest: after.reboot.processBindingDigest, sshReady: after.reboot.sshReady, tailscaleReady: after.reboot.tailscaleReady }
-    case "unit-16b-runtime-vault-containment":
+    case "unit-16b-runtime-vault-readiness":
       if (!after.container) return null
       if (!after.container.autostartExact || !after.container.exactImage || !after.container.mountsExact || after.container.manualAuthRequired
-        || after.container.mountCount !== 4 || Number(after.container.user.split(":")[0]) !== 10001
-        || after.container.publishedPortCount !== 0 || !after.container.readOnlyRoot
         || !after.container.updaterDisabled || !after.container.vaultUnlocked) return null
-      return { autostartExact: after.container.autostartExact, exactImage: after.container.exactImage, manualAuthRequired: after.container.manualAuthRequired, mountCount: after.container.mountCount, mountsExact: after.container.mountsExact, nonRootUid: Number(after.container.user.split(":")[0]), publishedPortCount: after.container.publishedPortCount, readOnlyRoot: after.container.readOnlyRoot, updaterDisabled: after.container.updaterDisabled, vaultUnlocked: after.container.vaultUnlocked }
+      return { autostartExact: after.container.autostartExact, exactImage: after.container.exactImage, manualAuthRequired: after.container.manualAuthRequired, updaterDisabled: after.container.updaterDisabled, vaultUnlocked: after.container.vaultUnlocked }
     case "unit-16c-provider-readiness":
       return after.provider && after.provider.outwardReady && after.provider.innerReady && !after.provider.silentFallback
         && after.provider.credentialRevisionsPresent === true && after.provider.requestSemanticsExact === true && after.provider.fallbackAttemptCount === 0
@@ -933,6 +931,7 @@ export function deriveSanctuaryScenarioAssertions(
         state: approval.state,
       }
   }
+  return null
 }
 
 export function createSanctuaryScenarioCapture(deps: SanctuaryScenarioCaptureDependencies) {

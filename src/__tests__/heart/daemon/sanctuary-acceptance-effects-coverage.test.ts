@@ -28,6 +28,12 @@ vi.mock("../../../senses/telegram-client", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../../senses/telegram-client")>(),
   createTelegramBotApi: () => ({ request: probe.apiRequest, stop: probe.apiStop }),
 }))
+vi.mock("../../../senses/sanctuary-authority-resident", () => ({
+  openSanctuaryResidentAuthority: () => ({
+    credentials: { botId: "12345", authorizedUserId: "42", authorizedChatId: "43" },
+    authorityTransport: { api: { request: probe.apiRequest, stop: probe.apiStop } },
+  }),
+}))
 vi.mock("../../../senses/sanctuary-runtime", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../../senses/sanctuary-runtime")>(),
   createSanctuaryToolContext: () => ({ sanctuary: {} }),
@@ -106,6 +112,7 @@ describe("Sanctuary acceptance callback effect composition", () => {
     await expect(executeSanctuaryAcceptanceCallbackProbe(update, false)).resolves.toEqual({ settled: true, claimed: true, mutated: true })
 
     const adapterDependencies = createSanctuaryAcceptanceAdapterDependencies()
+    adapterDependencies.gatewayCursor = async () => ({ nextUpdateId: 1, progressDigest: `sha256:${"a".repeat(64)}` })
     adapterDependencies.readFixedFile = () => '{"nextUpdateId":1}\n'
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "callback_playback_preflight", update }, adapterDependencies)).resolves.toMatchObject({
       playbackCount: 1,
@@ -130,10 +137,11 @@ describe("Sanctuary acceptance callback effect composition", () => {
     probe.mode = "unavailable"
     const { executeSanctuaryAcceptanceCallbackProbe } = await import("../../../heart/daemon/sanctuary-acceptance-adapter")
     const dependencies = {
-      refresh: async () => ({ ok: true as const, itemPath: "vault:test", revision: "test", updatedAt: "2026-08-29T00:00:00.000Z", config: {} }),
-      credentials: () => ({ botToken: "12345:abcdefghijklmnopqrst", authorizedUserId: "42", authorizedChatId: "43" }),
+      gateway: () => ({
+        credentials: { botId: "12345", authorizedUserId: "42", authorizedChatId: "43" },
+        authorityTransport: { api: { request: probe.apiRequest, stop: probe.apiStop } },
+      }),
       identityKey: () => "k".repeat(43),
-      createApi: () => ({ request: probe.apiRequest, stop: probe.apiStop }),
       createRuntime: (await import("../../../senses/telegram-approval-runtime")).createTelegramApprovalRuntime,
       toolContext: () => ({ sanctuary: {} }),
       recordCallbackPlayback: () => undefined,

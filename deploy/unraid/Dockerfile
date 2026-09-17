@@ -1,6 +1,7 @@
 FROM node:22-bookworm-slim
 
 LABEL org.opencontainers.image.source="https://github.com/ourostack/ouroboros"
+LABEL bot.ouro.sanctuary.mount-contract="canonical-gateway"
 
 ARG TARGETARCH
 ARG SUPERCRONIC_AMD64_SHA256=5adff01c5a797663948e656d2b61d10932369ee437eb5cb54fa872b2960f222b
@@ -26,6 +27,7 @@ COPY skills ./skills
 COPY changelog.json ./changelog.json
 COPY deploy/unraid/container-runtime.json ./container-runtime.json
 COPY deploy/unraid /opt/ouro/deploy/unraid
+COPY assets/sanctuary-host-launcher.sh /opt/ouro/deploy/unraid/sanctuary-host-launcher.sh
 RUN chown -R 10001:10001 /opt/ouro /home/ouro
 
 USER 10001:10001

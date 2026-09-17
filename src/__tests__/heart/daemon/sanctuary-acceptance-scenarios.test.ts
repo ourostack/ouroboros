@@ -184,7 +184,7 @@ const validDenialReceiptForFacts = () => {
   const boundary = { ownerSnapshotDigest: "1".repeat(64), targetSnapshotDigest: "2".repeat(64), targetRestartCount: 7, targetContainerIdDigest: "7".repeat(64), auditCursorDigest: "3".repeat(64), providerUsageCursorDigest: "4".repeat(64), sessionCursorDigest: "5".repeat(64), toolActionCursorDigest: "6".repeat(64) }
   return { schemaVersion: "sanctuary-read-only-denial-receipt-v1" as const, phase: "complete" as const, label: "unit-16e-1-stop-denial" as const, scenarioHandleDigest: "a".repeat(64), operation: "stop" as const, targetDigest: "7".repeat(64), attemptCount: 1, httpStatus: 403, errorCode: "FORBIDDEN", before: boundary, after: { ...boundary } }
 }
-const base = (physical = { readOnlyRoot: false, mountCount: 3 }): SanctuaryScenarioFacts => ({
+const base = (physical = { readOnlyRoot: false, mountCount: 4 }): SanctuaryScenarioFacts => ({
   capturedAt: 0,
   sourceValues: Object.fromEntries(["identity-key", "telegram-audit", "telegram-offset", "telegram-turn-receipts", "live-grounding-read", "approval-journal", "approval-checkpoints", "container-inspect", "provider-live-check", "cron-runtime", "health-runtime", "digest-runtime", "health-probe-receipt", "scheduler-liveness-receipt", "reboot-checkpoint", "read-only-denial-receipt"].map((key) => [key, { key }])),
   events: [], approvals: [],
@@ -394,9 +394,8 @@ describe("Sanctuary live scenario capture", () => {
 
   it("derives every Unit 16 assertion contract from event, journal, and runtime facts", () => {
     for (const label of SANCTUARY_UNIT_16_EVIDENCE_LABELS) {
-      const physical = label === "unit-16b-runtime-vault-containment" ? { readOnlyRoot: true, mountCount: 4 } : undefined
-      const before = base(physical)
-      const after = base(physical)
+      const before = base()
+      const after = base()
       if (label === "unit-16a-pre-reboot-checkpoint") after.reboot = { ...after.reboot!, phase: "preflight", requestCount: 0, bootIdentityChanged: false }
       if (label === "unit-16a-reboot-request") after.reboot = { ...after.reboot!, phase: "requested", bootIdentityChanged: false }
       if (label === "unit-16a-boot-recovery-milestones") after.postbootIntegrity = { ...after.postbootIntegrity!, activeScenarioHandleDigest: "a".repeat(64) }
@@ -818,9 +817,9 @@ describe("Sanctuary live scenario capture", () => {
       expect(deriveSanctuaryScenarioAssertions(label, base(), noReboot, 400_000, scenarioHandleDigest)).toBeNull()
     }
     const legacyRuntimeControl = base({ readOnlyRoot: true, mountCount: 4 })
-    expect(deriveSanctuaryScenarioAssertions("unit-16b-runtime-vault-containment", legacyRuntimeControl, legacyRuntimeControl, 400_000)).toMatchObject({ mountCount: 4, readOnlyRoot: true })
+    expect(deriveSanctuaryScenarioAssertions("unit-16b-runtime-vault-readiness", legacyRuntimeControl, legacyRuntimeControl, 400_000)).toMatchObject({ vaultUnlocked: true })
     const noContainer = structuredClone(legacyRuntimeControl); noContainer.container = undefined
-    expect(deriveSanctuaryScenarioAssertions("unit-16b-runtime-vault-containment", legacyRuntimeControl, noContainer, 400_000)).toBeNull()
+    expect(deriveSanctuaryScenarioAssertions("unit-16b-runtime-vault-readiness", legacyRuntimeControl, noContainer, 400_000)).toBeNull()
 
     const expiredApproval = base(); expiredApproval.approvals = [{ ...approval("succeeded"), terminalPrompt: false }]
     expiredApproval.restartAttempts = successfulRestart(); expiredApproval.events = [...auditTurn(), ...approvalEvidence("approve", 1_000, 121_000)]
@@ -1564,7 +1563,7 @@ describe("Sanctuary live scenario capture", () => {
   })
 
   it.each([
-    ["four mounts", { mountCount: 4 }],
+    ["three mounts", { mountCount: 3 }],
     ["read-only root", { readOnlyRoot: true }],
     ["missing root mode", { readOnlyRoot: undefined }],
     ["null root mode", { readOnlyRoot: null }],
@@ -1583,12 +1582,12 @@ describe("Sanctuary live scenario capture", () => {
   it("waits instead of self-attesting absent negative and containment facts", () => {
     const before = base()
     const legacyRuntimeControl = base({ readOnlyRoot: true, mountCount: 4 })
-    expect(deriveSanctuaryScenarioAssertions("unit-16b-runtime-vault-containment", legacyRuntimeControl, legacyRuntimeControl, 400_000)).toMatchObject({ mountCount: 4, readOnlyRoot: true })
+    expect(deriveSanctuaryScenarioAssertions("unit-16b-runtime-vault-readiness", legacyRuntimeControl, legacyRuntimeControl, 400_000)).toMatchObject({ vaultUnlocked: true })
     const containment = structuredClone(legacyRuntimeControl); containment.container!.updaterDisabled = false
-    expect(deriveSanctuaryScenarioAssertions("unit-16b-runtime-vault-containment", legacyRuntimeControl, containment, 400_000)).toBeNull()
-    expect(deriveSanctuaryScenarioAssertions("unit-16b-runtime-vault-containment", legacyRuntimeControl, legacyRuntimeControl, 400_000)).toMatchObject({ mountCount: 4, readOnlyRoot: true })
-    const staleMountContract = structuredClone(legacyRuntimeControl); staleMountContract.container!.mountCount = 2
-    expect(deriveSanctuaryScenarioAssertions("unit-16b-runtime-vault-containment", legacyRuntimeControl, staleMountContract, 400_000)).toBeNull()
+    expect(deriveSanctuaryScenarioAssertions("unit-16b-runtime-vault-readiness", legacyRuntimeControl, containment, 400_000)).toBeNull()
+    expect(deriveSanctuaryScenarioAssertions("unit-16b-runtime-vault-containment" as never, legacyRuntimeControl, legacyRuntimeControl, 400_000)).toBeNull()
+    const staleMountContract = structuredClone(legacyRuntimeControl); staleMountContract.container!.mountsExact = false
+    expect(deriveSanctuaryScenarioAssertions("unit-16b-runtime-vault-readiness", legacyRuntimeControl, staleMountContract, 400_000)).toBeNull()
     const unauthorized = base(); unauthorized.events.push(event("telegram.update_dropped"))
     expect(deriveSanctuaryScenarioAssertions("unit-16d-2-unknown-admission", before, unauthorized, 400_000)).toBeNull()
     const denial = base(); denial.approvals = [{ ...approval("denied"), replayMutationCount: 1 }]

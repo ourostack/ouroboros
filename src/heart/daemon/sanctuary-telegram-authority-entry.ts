@@ -4,12 +4,14 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 
 import { createTelegramBotApi, type TelegramBotApi } from "../../senses/telegram-client"
-import { FileSanctuaryTelegramAuthorityGateway } from "./sanctuary-telegram-authority-gateway"
+import { FileSanctuaryTelegramAuthorityGateway, sanctuaryTelegramAuthorityStatePath } from "./sanctuary-telegram-authority-gateway"
 import { FileSanctuaryHostAuthority } from "./sanctuary-host-authority"
 import { FileSanctuaryAuthorityLedger } from "./sanctuary-authority-ledger"
 import { authorityArtifactDigest, type SignedAuthorityPayload } from "./sanctuary-authority-codec"
 import { DetachedSanctuaryHostSupervisor } from "./sanctuary-host-detached-supervisor"
 import { SanctuaryHostPermitExecutor } from "./sanctuary-host-executor"
+import { verifySanctuaryAuthorityInstallation } from "./sanctuary-authority-installation"
+import { readSanctuaryAuthorityEpoch } from "./sanctuary-authority-epoch"
 import {
   createSanctuaryTelegramAuthorityServer,
   SanctuaryTelegramAuthorityService,
@@ -48,14 +50,20 @@ export interface SanctuaryTelegramAuthorityConfig {
   hostSetsidDigest: string
   hostShellPath: string
   hostShellDigest: string
+  epochRoot: string
+  packageRoot: string
+  packageManifestPath: string
+  packageManifestDigest: string
 }
 
 export interface SanctuaryTelegramAuthorityProcess {
   close(): Promise<void>
+  retire(): Promise<void>
 }
 
 interface StartOptions {
   configPath: string
+  retireOnly?: boolean
   expectedUid?: number
   createApi?: (token: string) => TelegramBotApi
   createServer?: (options: {
@@ -95,13 +103,11 @@ function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boo
 
 function readPrivateFile(filePath: string, expectedUid: number): string {
   if (!path.isAbsolute(filePath)) throw new Error("Sanctuary Telegram authority private path must be absolute")
-  const stat = fs.lstatSync(filePath)
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== expectedUid || (stat.mode & 0o777) !== 0o600
-    || stat.size < 1 || stat.size > MAX_PRIVATE_FILE_BYTES) {
-    throw new Error("Sanctuary Telegram authority private file is unsafe")
-  }
   const handle = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
   try {
+    const stat = fs.fstatSync(handle)
+    if (!stat.isFile() || stat.nlink !== 1 || stat.uid !== expectedUid || stat.gid !== (expectedUid === 0 ? 0 : process.getgid!())
+      || (stat.mode & 0o7777) !== 0o600 || fs.realpathSync(filePath) !== filePath || stat.size < 1 || stat.size > MAX_PRIVATE_FILE_BYTES) throw new Error("Sanctuary Telegram authority private file is unsafe")
     return fs.readFileSync(handle, "utf8")
   } finally {
     fs.closeSync(handle)
@@ -121,6 +127,7 @@ export function loadSanctuaryTelegramAuthorityConfig(
     "hostSupervisorProgramDigest", "hostLauncherPath", "hostLauncherDigest", "hostPrlimitPath",
     "hostPrlimitDigest", "hostSetsidPath", "hostSetsidDigest",
     "hostShellPath", "hostShellDigest",
+    "epochRoot", "packageRoot", "packageManifestPath", "packageManifestDigest",
   ]
   if (
     !isObject(value)
@@ -131,13 +138,14 @@ export function loadSanctuaryTelegramAuthorityConfig(
       "hostStagingRoot", "hostExecutionStateRoot", "hostSupervisorStateRoot", "hostCgroupRoot", "hostSupervisorProgramPath",
       "hostLauncherPath", "hostPrlimitPath", "hostSetsidPath",
       "hostShellPath",
+      "epochRoot", "packageRoot", "packageManifestPath",
     ]
       .every((key) => typeof value[key] === "string" && path.isAbsolute(value[key] as string))
     || !["targetHost", "keyId"].every((key) => typeof value[key] === "string" && (value[key] as string).length > 0)
     || !["botId", "ownerUserId", "ownerChatId"].every((key) => typeof value[key] === "string" && /^[1-9][0-9]*$/u.test(value[key] as string))
     || typeof value.publicKeyDigest !== "string"
     || !/^sha256:[a-f0-9]{64}$/u.test(value.publicKeyDigest)
-    || !["hostSupervisorProgramDigest", "hostLauncherDigest", "hostPrlimitDigest", "hostSetsidDigest", "hostShellDigest"]
+    || !["hostSupervisorProgramDigest", "hostLauncherDigest", "hostPrlimitDigest", "hostSetsidDigest", "hostShellDigest", "packageManifestDigest"]
       .every((key) => typeof value[key] === "string" && /^sha256:[a-f0-9]{64}$/u.test(value[key] as string))
     || !Number.isSafeInteger(value.socketGroupId)
     || (value.socketGroupId as number) < 1
@@ -149,19 +157,30 @@ export function loadSanctuaryTelegramAuthorityConfig(
   return value as unknown as SanctuaryTelegramAuthorityConfig
 }
 
-function writePrivateJson(filePath: string, value: unknown): void {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 })
-  fs.chmodSync(path.dirname(filePath), 0o700)
+function privateDirectory(directory: string, mode: number): void {
+  fs.mkdirSync(directory, { recursive: true, mode })
+  const stat = fs.lstatSync(directory)
+  if (!stat.isDirectory() || fs.realpathSync(directory) !== directory || (stat.mode & 0o7777) !== mode) throw new Error("Sanctuary Telegram authority directory is unsafe")
+}
+
+function writePrivateJson(filePath: string, value: unknown, mode = 0o600): void {
+  const directoryMode = mode === 0o600 ? 0o700 : 0o750
+  privateDirectory(path.dirname(filePath), directoryMode)
   const temporaryPath = `${filePath}.${process.pid}.tmp`
   const handle = fs.openSync(temporaryPath, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY | fs.constants.O_NOFOLLOW, 0o600)
   try {
-    fs.writeFileSync(handle, `${JSON.stringify(value)}\n`, "utf8")
-    fs.fsyncSync(handle)
-  } finally {
-    fs.closeSync(handle)
+    try {
+      fs.writeFileSync(handle, `${JSON.stringify(value)}\n`, "utf8")
+      fs.fsyncSync(handle)
+    } finally { fs.closeSync(handle) }
+    fs.renameSync(temporaryPath, filePath)
+  } catch (error) {
+    fs.unlinkSync(temporaryPath)
+    throw error
   }
-  fs.renameSync(temporaryPath, filePath)
-  fs.chmodSync(filePath, 0o600)
+  fs.chmodSync(filePath, mode)
+  const directory = fs.openSync(path.dirname(filePath), fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
+  try { fs.fsyncSync(directory) } finally { fs.closeSync(directory) }
 }
 
 function acquireProcessLock(
@@ -169,8 +188,7 @@ function acquireProcessLock(
   expectedUid: number,
   processAlive: (pid: number) => boolean,
 ): () => void {
-  fs.mkdirSync(path.dirname(lockPath), { recursive: true, mode: 0o700 })
-  fs.chmodSync(path.dirname(lockPath), 0o700)
+  privateDirectory(path.dirname(lockPath), 0o700)
   try {
     const existing = readPrivateFile(lockPath, expectedUid).trim()
     const pid = Number(existing)
@@ -224,6 +242,17 @@ export async function startSanctuaryTelegramAuthority(options: StartOptions): Pr
   const config = options.loadConfig
     ? options.loadConfig(options.configPath, expectedUid)
     : loadSanctuaryTelegramAuthorityConfig(options.configPath, { expectedUid })
+  const expectedGid = expectedUid === 0 ? 0 : (process.getgid as () => number)()
+  verifySanctuaryAuthorityInstallation({
+    packageRoot: config.packageRoot, manifestPath: config.packageManifestPath, manifestDigest: config.packageManifestDigest,
+    stateRoot: config.epochRoot, stagingRoot: config.hostStagingRoot, socketRoot: path.dirname(config.socketPath),
+    cgroupRoot: config.hostCgroupRoot, expectedUid, expectedGid, socketGroupId: config.socketGroupId,
+  })
+  const epoch = readSanctuaryAuthorityEpoch(config.epochRoot, { expectedUid, expectedGid })
+  if (epoch.state !== "prepared" || epoch.epochId !== config.keyId || epoch.botId !== config.botId
+    || epoch.ownerUserId !== config.ownerUserId || epoch.ownerChatId !== config.ownerChatId || epoch.publicKeyDigest !== config.publicKeyDigest
+    || epoch.tokenPath !== config.tokenPath || epoch.packageDigest !== config.packageManifestDigest) throw new Error("Sanctuary authority epoch is retired or does not match its installation")
+  if (!options.retireOnly && fs.existsSync(path.join(config.epochRoot, "retiring.json"))) throw new Error("Sanctuary authority retirement must finish before restart")
   const readPrivateText = options.readPrivateText ?? readPrivateFile
   const processAlive = options.processAlive ?? ((pid: number) => {
     try {
@@ -236,6 +265,7 @@ export async function startSanctuaryTelegramAuthority(options: StartOptions): Pr
   const releaseLock = acquireProcessLock(config.lockPath, expectedUid, processAlive)
   let api: TelegramBotApi | undefined
   let server: SanctuaryTelegramAuthorityServer | undefined
+  let service: SanctuaryTelegramAuthorityService | undefined
   let closed = false
   try {
     const token = readPrivateText(config.tokenPath, expectedUid).trim()
@@ -244,10 +274,12 @@ export async function startSanctuaryTelegramAuthority(options: StartOptions): Pr
     }
     const privateKey = createPrivateKey(readPrivateText(config.privateKeyPath, expectedUid))
     const publicKey = createPublicKey(privateKey)
-    api = (options.createApi ?? ((value) => createTelegramBotApi({ token: value })))(token)
-    const identity = await api.request<{ id?: unknown }>("getMe", {})
-    if (!isObject(identity) || String(identity.id) !== config.botId) {
-      throw new Error("Sanctuary Telegram authority bot identity changed")
+    if (!options.retireOnly) {
+      api = (options.createApi ?? ((value) => createTelegramBotApi({ token: value })))(token)
+      const identity = await api.request<{ id?: unknown }>("getMe", {})
+      if (!isObject(identity) || String(identity.id) !== config.botId) {
+        throw new Error("Sanctuary Telegram authority bot identity changed")
+      }
     }
     const gateway = new FileSanctuaryTelegramAuthorityGateway(config.agentRoot, {
       targetHost: config.targetHost,
@@ -259,6 +291,8 @@ export async function startSanctuaryTelegramAuthority(options: StartOptions): Pr
       privateKey,
       now: options.now,
     })
+    if (!fs.existsSync(sanctuaryTelegramAuthorityStatePath(config.agentRoot))) throw new Error("Sanctuary authority cursor state is absent")
+    if (gateway.cursor() < epoch.predecessorCursor) throw new Error("Sanctuary authority cursor precedes its epoch")
     const hostAuthority = new FileSanctuaryHostAuthority(config.agentRoot, {
       targetHost: config.targetHost,
       botId: config.botId,
@@ -306,7 +340,8 @@ export async function startSanctuaryTelegramAuthority(options: StartOptions): Pr
         now: options.now,
       })
     })()
-    for (const receipt of await hostExecutor.reconcile?.() ?? []) {
+    async function reconcileExecutions() {
+      for (const receipt of await hostExecutor.reconcile?.() ?? []) {
       const registrationId = String(receipt.payload.registrationId)
       const status = hostAuthority.status(registrationId)
       if (status?.state === "permitted") {
@@ -317,8 +352,43 @@ export async function startSanctuaryTelegramAuthority(options: StartOptions): Pr
       ) {
         throw new Error("Sanctuary host execution receipt is not incorporated into authority state")
       }
-      hostExecutor.acknowledge?.(String(receipt.payload.permitId))
+        hostExecutor.acknowledge?.(String(receipt.payload.permitId))
+      }
     }
+    const ledger = new FileSanctuaryAuthorityLedger(config.agentRoot)
+    const control: SanctuaryTelegramAuthorityProcess = {
+      close: async () => {
+        if (closed) return
+        closed = true
+        fs.rmSync(config.readinessPath, { force: true })
+        await server?.close()
+        api?.stop()
+        releaseLock()
+      },
+      retire: async () => {
+        writePrivateJson(path.join(config.epochRoot, "retiring.json"), { schemaVersion: 1, keyId: config.keyId })
+        fs.rmSync(config.readinessPath, { force: true })
+        await server?.close()
+        server = undefined
+        await service?.drainHostExecutions()
+        api?.stop()
+        api = undefined
+        hostAuthority.retireRegistrations(ledger)
+        await reconcileExecutions()
+        if (hostAuthority.retireRegistrations(ledger).length !== 0
+          || fs.readdirSync(config.hostCgroupRoot).some((entry) => fs.lstatSync(path.join(config.hostCgroupRoot, entry)).isDirectory())) throw new Error("Sanctuary authority retirement cleanup is unproven")
+        writePrivateJson(path.join(config.epochRoot, "retirement.json"), {
+          schemaVersion: 1, keyId: config.keyId, publicKeyDigest: config.publicKeyDigest,
+          cursor: gateway.cursor(), quiescent: true,
+        })
+        await control.close()
+      },
+    }
+    if (options.retireOnly) {
+      await control.retire()
+      return control
+    }
+    await reconcileExecutions()
 
     function sameSignedReceipt(
       left: unknown,
@@ -335,8 +405,8 @@ export async function startSanctuaryTelegramAuthority(options: StartOptions): Pr
         && authorityArtifactDigest(left.domain, left.payload) === authorityArtifactDigest(right.domain, right.payload)
     }
     const fetchImpl = options.fetch ?? globalThis.fetch
-    const service = new SanctuaryTelegramAuthorityService({
-      api,
+    service = new SanctuaryTelegramAuthorityService({
+      api: api!,
       gateway,
       hostAuthority,
       hostExecutor,
@@ -350,16 +420,18 @@ export async function startSanctuaryTelegramAuthority(options: StartOptions): Pr
       dispatch: (method, params) => value.service.dispatch(method, params),
     })))({ socketPath: config.socketPath, service, gateway })
     await server.listen()
+    const residentPinsPath = path.join(path.dirname(config.socketPath), "resident.json")
+    writePrivateJson(residentPinsPath, {
+      schemaVersion: 1, ...gateway.identity(), publicKeyPem: publicKey.export({ type: "spki", format: "pem" }).toString(),
+    }, 0o640)
     if (options.setSocketOwnership) {
       options.setSocketOwnership(config)
-    /* v8 ignore next -- the root-owned production branch is live-verified by the deployment slice @preserve */
     } else if (expectedUid === 0) {
-      /* v8 ignore start -- root-only ownership syscalls are live-verified by the deployment slice @preserve */
       ;(options.chown ?? fs.chownSync)(path.dirname(config.socketPath), 0, config.socketGroupId)
       ;(options.chmod ?? fs.chmodSync)(path.dirname(config.socketPath), 0o750)
       ;(options.chown ?? fs.chownSync)(config.socketPath, 0, config.socketGroupId)
       ;(options.chmod ?? fs.chmodSync)(config.socketPath, 0o660)
-      /* v8 ignore stop */
+      ;(options.chown ?? fs.chownSync)(residentPinsPath, 0, config.socketGroupId)
     }
     const startedAt = options.now?.() ?? new Date().toISOString()
     writePrivateJson(config.readinessPath, {
@@ -370,16 +442,7 @@ export async function startSanctuaryTelegramAuthority(options: StartOptions): Pr
       publicKeyDigest: config.publicKeyDigest,
       startedAt,
     })
-    return {
-      close: async () => {
-        if (closed) return
-        closed = true
-        fs.rmSync(config.readinessPath, { force: true })
-        await server?.close()
-        api?.stop()
-        releaseLock()
-      },
-    }
+    return control
   } catch (error) {
     await server?.close().catch(() => undefined)
     api?.stop()
@@ -392,14 +455,14 @@ export async function startSanctuaryTelegramAuthority(options: StartOptions): Pr
 export async function runSanctuaryTelegramAuthorityCli(options: {
   argv?: string[]
   start?: typeof startSanctuaryTelegramAuthority
-  once?: (event: "SIGINT" | "SIGTERM", listener: () => void) => void
+  once?: (event: "SIGINT" | "SIGTERM" | "SIGUSR2", listener: () => void) => void
   exit?: (code: number) => void
 } = {}): Promise<void> {
   const argv = options.argv ?? process.argv
   const configIndex = argv.indexOf("--config")
   const configPath = configIndex >= 0 ? argv[configIndex + 1] : undefined
   if (!configPath) throw new Error("Sanctuary Telegram authority requires --config")
-  const authority = await (options.start ?? startSanctuaryTelegramAuthority)({ configPath })
+  const authority = await (options.start ?? startSanctuaryTelegramAuthority)({ configPath, ...(argv.includes("--retire-only") ? { retireOnly: true } : {}) })
   const close = async () => {
     await authority.close()
     const exit = options.exit ?? process.exit
@@ -408,10 +471,12 @@ export async function runSanctuaryTelegramAuthorityCli(options: {
   const once = options.once ?? ((event, listener) => { process.once(event, listener) })
   once("SIGINT", () => { void close() })
   once("SIGTERM", () => { void close() })
+  once("SIGUSR2", () => {
+    void authority.retire().then(() => (options.exit ?? process.exit)(0)).catch(() => (options.exit ?? process.exit)(1))
+  })
 }
 
-/* v8 ignore next 6 -- executable guard delegates to the fully tested CLI runner @preserve */
-if (require.main === module) {
+if (process.argv[1] && fs.existsSync(process.argv[1]) && fs.realpathSync(process.argv[1]) === __filename) {
   void runSanctuaryTelegramAuthorityCli().catch((error) => {
     process.stderr.write(`${error instanceof Error ? error.message : "Sanctuary Telegram authority failed"}\n`)
     process.exitCode = 1

@@ -132,7 +132,7 @@ function validOwnerSnapshot(patch: Record<string, unknown> = {}) {
     liveProcessUser: "10001:10001",
     processBindingDigest: "4".repeat(64),
     readOnlyRoot: false,
-    mountCount: 3,
+    mountCount: 4,
     mountsDigest: "3".repeat(64),
     mountsExact: true,
     publishedPortCount: 0,
@@ -203,7 +203,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     }
     const deps = unit16Deps({
       readFixedFile: (file) => { if (file in files) return files[file]!; throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
-      telegramCredentials: () => ({ botToken: "123:token", authorizedUserId: "10", authorizedChatId: "10" }),
+      telegramCredentials: () => ({ botId: "123", authorizedUserId: "10", authorizedChatId: "10" }),
     })
     try {
       await expect(readDefaultSanctuaryScenarioFacts("unit-16i-delayed-approval", scenarioHandleDigest, deps, agentRoot, { skipContainerSnapshot: true })).resolves.toMatchObject({ events: [{ event: eventName }] })
@@ -298,7 +298,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     ['{"meta":{"update_id":8541786263}}', undefined],
     ['{"meta":{"messageId":"8541786263"}}', undefined],
     ['{"meta":{"error":"provider rejected bearer sk-live-secret-material"}}', undefined],
-    ['{"meta":{"note":"authorized subject 123456789"}}', { botToken: "12345:private-token-value", authorizedUserId: "123456789", authorizedChatId: "987654321" }],
+    ['{"meta":{"note":"authorized subject 123456789"}}', { botId: "12345", authorizedUserId: "123456789", authorizedChatId: "987654321" }],
   ] as const)("detects forbidden Telegram/provider material in audit text %#", (raw, credentials) => {
     expect(auditContainsSensitiveMaterial(raw, credentials)).toBe(true)
   })
@@ -325,7 +325,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     try {
       const readFacts = () => readDefaultSanctuaryScenarioFacts("unit-16e-containment-audit", scenarioHandleDigest, unit16Deps({
         readFixedFile: (file) => { if (file in files) return files[file]!; throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
-        telegramCredentials: () => ({ botToken: "123:token", authorizedUserId: "123456789", authorizedChatId: "987654321" }),
+        telegramCredentials: () => ({ botId: "123", authorizedUserId: "123456789", authorizedChatId: "987654321" }),
         hostRequest,
         providerRuntime: async () => ({
           id: "minimax", model: "fixture", client: null, capabilities: new Set(reasoning ? ["reasoning-effort"] : []),
@@ -349,7 +349,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
         keyCount: 2, keyRoleAssignmentCount: 0,
         profileBoundaries: expectedBoundaries,
         auditRecordCount: 2, auditLifecyclePairCount: 1,
-        containerUser: "10001:10001", liveProcessUser: "10001:10001", mountCount: 3, publishedPortCount: 0, networkMode: "host",
+        containerUser: "10001:10001", liveProcessUser: "10001:10001", mountCount: 4, publishedPortCount: 0, networkMode: "host",
         readOnlyRoot: false, mountsExact: true, securityExact: true, updaterDisabled: true, writableKeyExposure: false,
         rawWriteMaterialFieldCount: 0, typedWriteExecutorCount: 1, writeApprovalPolicyExact: true, sensitiveMaterialObserved: false,
       })
@@ -381,7 +381,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
           if (file.endsWith("/state/senses/telegram/identity.key")) return `${"k".repeat(43)}\n`
           throw Object.assign(new Error("missing"), { code: "ENOENT" })
         },
-        telegramCredentials: () => ({ botToken: "123:token", authorizedUserId: "123456789", authorizedChatId: "987654321" }),
+        telegramCredentials: () => ({ botId: "123", authorizedUserId: "123456789", authorizedChatId: "987654321" }),
       }), agentRoot)).rejects.toThrow("identity surface audit exceeds its bound")
     } finally { fs.rmSync(agentRoot, { recursive: true, force: true }) }
   })
@@ -410,7 +410,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     fs.copyFileSync("deploy/unraid/sanctuary.ouro/tool-profiles.json", path.join(agentRoot, "tool-profiles.json"))
     const deps = unit16Deps({
       readFixedFile: (file) => { if (file in files) return files[file]!; throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
-      telegramCredentials: () => ({ botToken: "123:token", authorizedUserId: "123456789", authorizedChatId: "987654321" }),
+      telegramCredentials: () => ({ botId: "123", authorizedUserId: "123456789", authorizedChatId: "987654321" }),
       hostRequest: async (payload) => {
         if (payload.operation === "container_snapshot") {
           expect(payload).toEqual({ operation: "container_snapshot", targetId: "sanctuary" })
@@ -545,7 +545,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
   it("projects an exact opaque pre-model admission from the production stores", async () => {
     const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-admission-evidence-"))
     const identityKey = "k".repeat(43)
-    const credentials = { botToken: "777:secret", authorizedUserId: "42", authorizedChatId: "42" }
+    const credentials = { botId: "777", authorizedUserId: "42", authorizedChatId: "42" }
     const now = "2026-08-20T16:00:00.000Z"
     fs.writeFileSync(path.join(agentRoot, "tool-profiles.json"), fs.readFileSync("deploy/unraid/sanctuary.ouro/tool-profiles.json", "utf8"), { mode: 0o600 })
     const friends = new FileFriendStore(path.join(agentRoot, "friends"))
@@ -582,7 +582,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     admissionStore.close()
     const files: Record<string, string> = {
       [`${agentRoot}/state/senses/telegram/identity.key`]: identityKey,
-      [`${agentRoot}/state/senses/telegram/offset.json`]: JSON.stringify({ nextUpdateId: 11 }),
+      [`${agentRoot}/state/acceptance/fixture-gateway-cursor.json`]: JSON.stringify({ nextUpdateId: 11 }),
     }
     try {
       const facts = await readDefaultSanctuaryScenarioFacts("unit-16d-2-unknown-admission", "a".repeat(64), unit16Deps({
@@ -615,7 +615,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
   it("projects incomplete quarantine stores without inventing effects or relationships", async () => {
     const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-admission-incomplete-evidence-"))
     const identityKey = "k".repeat(43)
-    const credentials = { botToken: "777:secret", authorizedUserId: "42", authorizedChatId: "42" }
+    const credentials = { botId: "777", authorizedUserId: "42", authorizedChatId: "42" }
     fs.writeFileSync(path.join(agentRoot, "tool-profiles.json"), fs.readFileSync("deploy/unraid/sanctuary.ouro/tool-profiles.json", "utf8"), { mode: 0o600 })
     const admissionStore = new FileTelegramAdmissionStore(path.join(agentRoot, "state", "senses", "telegram", "admissions"), {}, () => Date.parse("2026-08-20T16:00:00.000Z"))
     const captured = admissionStore.capture({ updateId: 10, messageId: 20, botId: "777", userId: "888", chatId: "888", text: "quarantined", displayLabel: "Guest", hasAttachments: false }, "PINE-4821")
@@ -627,7 +627,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     emptyEffects.close()
     const files: Record<string, string> = {
       [`${agentRoot}/state/senses/telegram/identity.key`]: identityKey,
-      [`${agentRoot}/state/senses/telegram/offset.json`]: JSON.stringify({ nextUpdateId: 11 }),
+      [`${agentRoot}/state/acceptance/fixture-gateway-cursor.json`]: JSON.stringify({ nextUpdateId: 11 }),
     }
     try {
       const facts = await readDefaultSanctuaryScenarioFacts("unit-16d-2-unknown-admission", "a".repeat(64), unit16Deps({
@@ -870,6 +870,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       hostRequest,
       scenarioCapture: { agentRoot, gateStatusPath },
     })
+    deps.gatewayCursor = async () => ({ nextUpdateId: 0, progressDigest: `sha256:${"a".repeat(64)}` })
     const healthState = '{"incidents":{},"lastDigestDay":null,"updatedAt":"1970-01-01T00:00:00.000Z","outbox":null,"indeterminateDeliveries":[],"deliveredReceipts":[],"sweepReceipts":[]}\n'
     const cron = "# ouro:habit:sanctuary:sanctuary:sanctuary-health\n*/15 * * * * /usr/local/bin/node /opt/ouro/dist/heart/daemon/ouro-entry.js poke sanctuary --habit sanctuary-health --trigger cron\n"
     deps.readFixedFile = (file) => {
@@ -982,13 +983,13 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     expect(JSON.stringify(contract)).not.toMatch(/(?:botToken|authorizedUserId|authorizedChatId|descriptor|rawKey)/u)
   })
 
-  it("proves Telegram poller quiescence", async () => {
+  it("refuses the retired hardcoded zero-poller fact without a root proof", async () => {
     const deps = unit16Deps({
       readFixedFile: (file) => file.endsWith("telegram-poller-count.json")
         ? '{"activePollers":0,"productionContainerStopped":true}'
         : "",
     })
-    await expect(executeSanctuaryAcceptanceAdapter({ operation: "quiesce_telegram_poller", expectedState: "stopped" }, deps)).resolves.toEqual({ quiesced: true, activePollers: 0 })
+    await expect(executeSanctuaryAcceptanceAdapter({ operation: "quiesce_telegram_poller", expectedState: "stopped" }, deps)).rejects.toThrow(/root poller proof/u)
   })
 
   it("snapshots fixed cursor state and refuses prior direct callback playback from the durable approval journal", async () => {
@@ -997,7 +998,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     let peak = 0
     const files = chainedAuditFiles("/home/ouro/AgentBundles/sanctuary.ouro", "")
     const deps = unit16Deps({
-      readFixedFile: (file) => file.endsWith("offset.json") ? '{"nextUpdateId":42}\n' : files[file] ?? (() => { throw new Error(`unexpected ${file}`) })(),
+      readFixedFile: (file) => file.endsWith("fixture-gateway-cursor.json") ? '{"nextUpdateId":42}\n' : files[file] ?? (() => { throw new Error(`unexpected ${file}`) })(),
       callbackProbe: async (_update, replay) => {
         inFlight += 1; peak = Math.max(peak, inFlight); active.push(replay ? 2 : 1)
         await Promise.resolve(); inFlight -= 1
@@ -1015,7 +1016,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       journalDigest: "b".repeat(64),
     })
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "callback_playback_preflight", update }, unit16Deps({
-      readFixedFile: (file) => file.endsWith("offset.json") ? '{"nextUpdateId":9}\n' : files[file] ?? "",
+      readFixedFile: (file) => file.endsWith("fixture-gateway-cursor.json") ? '{"nextUpdateId":9}\n' : files[file] ?? "",
     }))).resolves.toMatchObject({ playbackCount: 0, journalDigest: expect.stringMatching(/^[0-9a-f]{64}$/u) })
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "inject_callbacks_concurrently", update, concurrency: 3 }, deps)).resolves.toMatchObject({ results: { length: 3 } })
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "inject_callback_replay", update }, deps)).resolves.toEqual({ settled: true, claimed: false, mutated: false })
@@ -1046,7 +1047,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
   it("permits an explicit before-only genesis cursor and rejects absent state otherwise", async () => {
     const identityKey = "k".repeat(43)
     const missing = (file: string): string => {
-      if (file.endsWith("offset.json")) return '{"nextUpdateId":42}\n'
+      if (file.endsWith("fixture-gateway-cursor.json")) return '{"nextUpdateId":42}\n'
       if (file === IDENTITY_KEY_PATH) return `${identityKey}\n`
       throw Object.assign(new Error(`missing ${file}`), { code: "ENOENT" })
     }
@@ -1077,19 +1078,18 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     for (const nextUpdateId of [-1, 1.5]) {
       await expect(executeSanctuaryAcceptanceAdapter(
         { operation: "snapshot", schema: "telegram-cursor-v1", allowGenesis: true },
-        unit16Deps({ readFixedFile: (file) => {
-          if (file.endsWith("offset.json")) return JSON.stringify({ nextUpdateId })
+        unit16Deps({ gatewayCursor: async () => ({ nextUpdateId, progressDigest: `sha256:${"a".repeat(64)}` }), readFixedFile: (file) => {
           if (file === IDENTITY_KEY_PATH) return `${identityKey}\n`
           throw Object.assign(new Error(`missing ${file}`), { code: "ENOENT" })
         } }),
-      )).rejects.toThrow(/offset is invalid/u)
+      )).rejects.toThrow(/gateway cursor is invalid/u)
     }
 
     await expect(executeSanctuaryAcceptanceAdapter(
       { operation: "snapshot", schema: "telegram-cursor-v1", allowGenesis: true },
       unit16Deps({
         readFixedFile: (file) => {
-          if (file.endsWith("offset.json")) return '{"nextUpdateId":42}\n'
+          if (file.endsWith("fixture-gateway-cursor.json")) return '{"nextUpdateId":42}\n'
           if (file === IDENTITY_KEY_PATH) return `${identityKey}\n`
           if (file === AUDIT_PATH) return "ledger\n"
           throw Object.assign(new Error(`missing ${file}`), { code: "ENOENT" })
@@ -1101,7 +1101,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       { operation: "snapshot", schema: "telegram-cursor-v1", allowGenesis: true },
       unit16Deps({
         readFixedFile: (file) => {
-          if (file.endsWith("offset.json")) return '{"nextUpdateId":42}\n'
+          if (file.endsWith("fixture-gateway-cursor.json")) return '{"nextUpdateId":42}\n'
           throw new Error("storage unavailable")
         },
       }),
@@ -1112,7 +1112,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     const agentRoot = "/home/ouro/AgentBundles/sanctuary.ouro"
     const valid = chainedAuditFiles(agentRoot, "")
     const nonempty = chainedAuditFiles(agentRoot, `${JSON.stringify({ ts: "2026-08-31T00:00:00.000Z", event: "changed", meta: {} })}\n`)
-    const read = (files: Record<string, string>) => (file: string): string => file.endsWith("offset.json") ? '{"nextUpdateId":42}\n' : files[file] ?? (() => { throw Object.assign(new Error(`missing ${file}`), { code: "ENOENT" }) })()
+    const read = (files: Record<string, string>) => (file: string): string => file.endsWith("fixture-gateway-cursor.json") ? '{"nextUpdateId":42}\n' : files[file] ?? (() => { throw Object.assign(new Error(`missing ${file}`), { code: "ENOENT" }) })()
     await expect(executeSanctuaryAcceptanceAdapter(
       { operation: "snapshot", schema: "telegram-cursor-v1", allowGenesis: false },
       unit16Deps({ readFixedFile: read(valid) }),
@@ -1136,7 +1136,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     await expect(executeSanctuaryAcceptanceAdapter(
       { operation: "snapshot", schema: "telegram-cursor-v1", allowGenesis: false },
       unit16Deps({ readFixedFile: (file) => {
-        if (file.endsWith("offset.json")) return '{"nextUpdateId":42}\n'
+        if (file.endsWith("fixture-gateway-cursor.json")) return '{"nextUpdateId":42}\n'
         if (file === AUDIT_HEAD_PATH) return (++headReads <= 2 ? valid : nonempty)[AUDIT_HEAD_PATH]!
         if (file === AUDIT_PATH) { ledgerReads += 1; return nonempty[AUDIT_PATH]! }
         return nonempty[file]!
@@ -1149,7 +1149,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     await expect(executeSanctuaryAcceptanceAdapter(
       { operation: "snapshot", schema: "telegram-cursor-v1", allowGenesis: false },
       unit16Deps({ readFixedFile: (file) => {
-        if (file.endsWith("offset.json")) return '{"nextUpdateId":42}\n'
+        if (file.endsWith("fixture-gateway-cursor.json")) return '{"nextUpdateId":42}\n'
         if (file === AUDIT_HEAD_PATH) { headReads += 1; return valid[AUDIT_HEAD_PATH]! }
         if (file === AUDIT_PATH) return nonempty[AUDIT_PATH]!
         return valid[file]!
@@ -1161,7 +1161,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     await expect(executeSanctuaryAcceptanceAdapter(
       { operation: "snapshot", schema: "telegram-cursor-v1", allowGenesis: true },
       unit16Deps({ readFixedFile: (file) => {
-        if (file.endsWith("offset.json")) return '{"nextUpdateId":42}\n'
+        if (file.endsWith("fixture-gateway-cursor.json")) return '{"nextUpdateId":42}\n'
         if (file === IDENTITY_KEY_PATH) return valid[IDENTITY_KEY_PATH]!
         auditReads += 1
         if (auditReads === 1) return valid[AUDIT_HEAD_PATH]!
@@ -1357,8 +1357,8 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-scenario-facts-"))
     const scenarioHandleDigest = "a".repeat(64)
     const identityKey = "k".repeat(43)
-    const credentials = { botToken: "12345:private-token-value", authorizedUserId: "123456789", authorizedChatId: "123456789" }
-    const subject = opaqueTelegramSubject(identityKey, credentials.botToken, credentials.authorizedUserId, credentials.authorizedChatId)
+    const credentials = { botId: "12345", authorizedUserId: "123456789", authorizedChatId: "123456789" }
+    const subject = opaqueTelegramSubject(identityKey, credentials.botId, credentials.authorizedUserId, credentials.authorizedChatId)
     const canonicalSession = path.join(agentRoot, "state", "sessions", `telegram-user:${subject}`, "telegram", `telegram_${subject}.json`)
     fs.mkdirSync(path.dirname(canonicalSession), { recursive: true })
     fs.writeFileSync(canonicalSession, "{}\n")
@@ -1375,7 +1375,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     const files: Record<string, string> = {
       [`${agentRoot}/state/senses/telegram/identity.key`]: `${identityKey}\n`,
       ...chainedAuditFiles(agentRoot, audit, identityKey),
-      "/home/ouro/AgentBundles/sanctuary.ouro/state/senses/telegram/offset.json": '{"nextUpdateId":10}\n',
+      "/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance/fixture-gateway-cursor.json": '{"nextUpdateId":10}\n',
       [`${agentRoot}/state/approvals/checkpoints.json`]: "{}\n",
       [`${agentRoot}/state/acceptance/telegram-turns.ndjson`]: `${JSON.stringify({ schemaVersion: "sanctuary-telegram-turn-receipt-v3", scenarioHandleDigest, status: "success", errorCategory: null, updateDigest: "1".repeat(64), sequenceDigest: "2".repeat(64), responseDigest: "3".repeat(64), toolResultDigests: [], providerInvocationCount: 1, toolInvocationCount: 0, deliveryCount: 1, deliveries: [{ messageIdDigest: "4".repeat(64), chunkDigest: "5".repeat(64) }], completedAt: "2026-08-20T16:00:01.000Z" })}\n`,
       "/home/ouro/.ouro-cli/scheduler/sanctuary.crontab": cron,
@@ -1395,7 +1395,15 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     expect(facts.container).toMatchObject({ exactImage: true, autostartExact: true, updaterDisabled: true, vaultUnlocked: true, manualAuthRequired: false })
     expect(facts.cron?.registered).toBe(true)
     expect(facts.containment?.sensitiveMaterialObserved).toBe(false)
-    expect(JSON.stringify(facts.sourceValues)).not.toContain(credentials.botToken)
+    expect(JSON.stringify(facts.sourceValues)).not.toContain(credentials.botId)
+    fs.writeFileSync(canonicalSession, JSON.stringify({ unrelated: "99999:abcdefghijklmnopqrstuvwx" }))
+    const leakedToken = await readDefaultSanctuaryScenarioFacts("unit-14b-3-opaque-identity-live", scenarioHandleDigest, unit16Deps({
+      readFixedFile: (file) => { if (!(file in files)) throw Object.assign(new Error("missing fixture"), { code: "ENOENT" }); return files[file]! },
+      telegramCredentials: () => credentials,
+    }), agentRoot, { skipContainerSnapshot: true })
+    expect(leakedToken.identity?.rawIdentityAbsent).toBe(false)
+    expect(leakedToken.identity?.rawLeakCount).toBeGreaterThan(0)
+    fs.writeFileSync(canonicalSession, "{}\n")
     const baselineSessionDigest = facts.identity?.sessionSurfaceDigest
     const sessionDerivedMutations = [
       [path.join(agentRoot, "state", "pending", "telegram", "pending.json"), "{}\n"],
@@ -1456,7 +1464,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     const agentRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ouro-identity-path-leak-"))
     const scenarioHandleDigest = "a".repeat(64)
     const identityKey = "k".repeat(43)
-    const credentials = { botToken: "12345:private-token-value", authorizedUserId: "123456789", authorizedChatId: "987654321" }
+    const credentials = { botId: "12345", authorizedUserId: "123456789", authorizedChatId: "987654321" }
     const leakedDirectory = path.join(agentRoot, "state", "sessions", credentials.authorizedUserId)
     fs.mkdirSync(leakedDirectory, { recursive: true })
     fs.writeFileSync(path.join(leakedDirectory, "session.json"), "{}\n")
@@ -1479,7 +1487,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     const identityPath = `${agentRoot}/state/senses/telegram/identity.key`
     await expect(readDefaultSanctuaryScenarioFacts("unit-12c-1-opaque-identity", "a".repeat(64), unit16Deps({
       readFixedFile: (file) => { if (file === identityPath) return `${"k".repeat(43)}\n`; throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
-      telegramCredentials: () => ({ botToken: "123:token", authorizedUserId: "123456789", authorizedChatId: "987654321" }),
+      telegramCredentials: () => ({ botId: "123", authorizedUserId: "123456789", authorizedChatId: "987654321" }),
     }), agentRoot)).rejects.toThrow("refuses symbolic links")
     fs.rmSync(agentRoot, { recursive: true, force: true })
   })
@@ -1502,7 +1510,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     const files = chainedAuditFiles(agentRoot, audit)
     const facts = await readDefaultSanctuaryScenarioFacts("unit-16m-restart-continuation", scenarioHandleDigest, unit16Deps({
       readFixedFile: (file) => { if (file in files) return files[file]!; throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
-      telegramCredentials: () => ({ botToken: "123:token", authorizedUserId: "123456789", authorizedChatId: "987654321" }),
+      telegramCredentials: () => ({ botId: "123", authorizedUserId: "123456789", authorizedChatId: "987654321" }),
       hostRequest: async () => ({ running: true, health: "healthy", imageId: "sha256:missing", user: "10001:10001", readOnlyRoot: true, mountCount: 2, publishedPortCount: 0, restartPolicy: "unless-stopped", restartCount: 0, autostartExact: true, updaterDisabled: true, vaultUnlocked: true, manualAuthRequired: false }),
     }), agentRoot)
     expect(facts.events).toEqual([{ event: "senses.telegram_approved_restart_end", at: Date.parse("2026-08-20T16:00:00.000Z"), meta: { scenarioHandleDigest, approvalId: "approval-1", observedRestart: true } }])
@@ -1524,7 +1532,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     }
     const deps = unit16Deps({
       readFixedFile: (file) => { if (file === receiptPath) return JSON.stringify(receipt); if (file.endsWith("/state/senses/telegram/identity.key")) return `${"k".repeat(43)}\n`; throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
-      telegramCredentials: () => ({ botToken: "123:token", authorizedUserId: "10", authorizedChatId: "10" }),
+      telegramCredentials: () => ({ botId: "123", authorizedUserId: "10", authorizedChatId: "10" }),
       hostRequest: async () => validOwnerSnapshot(),
     })
     try {
@@ -1614,7 +1622,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     const deps = unit16Deps({
       readFixedFile: (file) => { if (file === ledgerPath) return `${JSON.stringify(receipt)}\n`; if (file === identityPath) return identityKey; throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
       readLiveGrounding: vi.fn(async () => ({ toolName: "unraid_get_system", groundingDigest, sourceIdentityDigest, observedAt: "2026-08-20T16:00:02.000Z", facts })),
-      telegramCredentials: () => ({ botToken: "12345:synthetic-token", authorizedUserId: "123456789", authorizedChatId: "123456789" }),
+      telegramCredentials: () => ({ botId: "12345", authorizedUserId: "123456789", authorizedChatId: "123456789" }),
       hostRequest: async () => ({ running: true, health: "healthy", imageId: "sha256:missing", user: "10001:10001", readOnlyRoot: true, mountCount: 2, publishedPortCount: 0, restartPolicy: "unless-stopped", restartCount: 0, autostartExact: true, updaterDisabled: true, vaultUnlocked: true, manualAuthRequired: false }),
     } as any)
     const observed = await readDefaultSanctuaryScenarioFacts("unit-16d-whats-up", scenarioHandleDigest, deps, agentRoot)
@@ -1759,7 +1767,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     try {
       const facts = await readDefaultSanctuaryScenarioFacts("unit-16f-cron-fingerprint", scenarioHandleDigest, unit16Deps({
         readFixedFile: (file) => { if (file === receiptPath) return JSON.stringify(validCronHealthProbeReceipt(scenarioHandleDigest)); if (file === `${agentRoot}/state/senses/telegram/identity.key`) return "k".repeat(43); throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
-        telegramCredentials: () => ({ botToken: "123:test", authorizedUserId: "1", authorizedChatId: "1" }),
+        telegramCredentials: () => ({ botId: "123", authorizedUserId: "1", authorizedChatId: "1" }),
         hostRequest: async () => ({ running: true, health: "healthy", imageId: "sha256:missing", user: "10001:10001", readOnlyRoot: true, mountCount: 2, publishedPortCount: 0, restartPolicy: "unless-stopped", restartCount: 0, autostartExact: true, updaterDisabled: true, vaultUnlocked: true, manualAuthRequired: false }),
       }), agentRoot)
       expect(facts.healthProbe?.schedulerReceipt).toMatchObject({ trigger: "cron", sweepDelta: 1, deliveryDelta: 0, nonReplay: true, supervisor: { daemonPid: 1, childCount: 1, healthy: true, namespace: "habit:sanctuary" } })
@@ -1775,7 +1783,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     ;(receipt.schedulerReceipt as Record<string, unknown>).runnerId = "33333333-3333-4333-8333-333333333333"
     await expect(readDefaultSanctuaryScenarioFacts("unit-16f-cron-fingerprint", scenarioHandleDigest, unit16Deps({
       readFixedFile: (file) => { if (file === receiptPath) return JSON.stringify(receipt); if (file === `${agentRoot}/state/senses/telegram/identity.key`) return "k".repeat(43); throw Object.assign(new Error("missing"), { code: "ENOENT" }) },
-      telegramCredentials: () => ({ botToken: "123:test", authorizedUserId: "1", authorizedChatId: "1" }),
+      telegramCredentials: () => ({ botId: "123", authorizedUserId: "1", authorizedChatId: "1" }),
     }), agentRoot)).rejects.toThrow(/scheduler liveness receipt/u)
   })
 
@@ -1852,7 +1860,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
       "/run/ouro-acceptance/image-digest": "a".repeat(64),
       "/run/ouro-acceptance/container-digest": "b".repeat(64),
       "/run/ouro-acceptance/process-binding-digest": "f".repeat(64),
-      "/home/ouro/AgentBundles/sanctuary.ouro/state/senses/telegram/offset.json": '{"nextUpdateId":4}\n',
+      "/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance/fixture-gateway-cursor.json": '{"nextUpdateId":4}\n',
       "/run/ouro-acceptance/postboot-health.json": JSON.stringify({ healthy: true }),
       "/run/ouro-acceptance/boot-id": "boot-after\n",
     }
@@ -1895,7 +1903,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     })
     const snapshot = async (beforeState = "running") => executeSanctuaryAcceptanceAdapter({ operation: "postboot_integrity_snapshot" }, unit16Deps({
       readFixedFile: (file) => {
-        if (file.endsWith("offset.json")) return '{"nextUpdateId":42}\n'
+        if (file.endsWith("fixture-gateway-cursor.json")) return '{"nextUpdateId":42}\n'
         if (file.endsWith("restart-attempts.ndjson")) return [attempt("attempt_not_started", beforeState), attempt("attempting", beforeState), attempt("succeeded", beforeState)].map((row) => JSON.stringify(row)).join("\n") + "\n"
         throw Object.assign(new Error("absent"), { code: "ENOENT" })
       },
@@ -1910,7 +1918,7 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     const contract = fs.readFileSync("deploy/unraid/sanctuary-acceptance-contract.json", "utf8")
     const deps = unit16Deps({ readFixedFile: (file) => {
       if (file.endsWith("sanctuary-acceptance-contract.json")) return contract
-      if (file.endsWith("offset.json")) return '{"nextUpdateId":91}'
+      if (file.endsWith("fixture-gateway-cursor.json")) return '{"nextUpdateId":91}'
       if (file.endsWith("closed-inventory.json")) return '{"keys":[{"id":"old-rw"},{"id":"old-ro"}]}'
       throw new Error("unexpected fixed file")
     } })
@@ -1928,76 +1936,10 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "materialize_config", command: "evidence-bundle-verify" }, deps)).resolves.toMatchObject({ evidencePath: "/evidence/unit-16-evidence-bundle.json" })
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "materialize_config", command: "missing" }, deps)).rejects.toThrow(/template/u)
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "materialize_config", command: "cursor-snapshot", phase: "invalid" }, deps)).rejects.toThrow(/phase/u)
-    const malformed = (offset: string, inventory: string) => unit16Deps({ readFixedFile: (file) => file.endsWith("contract.json") ? contract : file.endsWith("offset.json") ? offset : inventory })
+    const malformed = (offset: string, inventory: string) => unit16Deps({ readFixedFile: (file) => file.endsWith("contract.json") ? contract : file.endsWith("fixture-gateway-cursor.json") ? offset : inventory })
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "materialize_config", command: "telegram-bootstrap" }, malformed('{"nextUpdateId":-1}', "{}"))).rejects.toThrow(/offset/u)
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "materialize_config", command: "unraid-key-rotate" }, malformed("{}", '{"keys":[]}'))).rejects.toThrow(/empty/u)
     await expect(executeSanctuaryAcceptanceAdapter({ operation: "materialize_config", command: "unraid-key-rotate" }, malformed("{}", '{"keys":[{"id":"same"},{"id":"same"}]}'))).rejects.toThrow(/ambiguous/u)
-  })
-
-  it("proves canonical Telegram readiness from refreshed vault state and always stops the redacting client", async () => {
-    const calls: unknown[] = []
-    let stopped = 0
-    const result = await executeSanctuaryAcceptanceAdapter({ operation: "telegram_readiness" }, unit16Deps({
-      refreshRuntime: async () => refreshed({}),
-      telegramCredentials: () => ({ botToken: "8541786263:canonical-secret", authorizedUserId: "111", authorizedChatId: "111" }),
-      createTelegramApi: (options) => {
-        expect(options.token).toBe("8541786263:canonical-secret")
-        return {
-          request: async (method, body, signal) => { calls.push({ method, body, bounded: signal instanceof AbortSignal }); return { id: 8541786263, username: "MendelowCloudButlerBot" } },
-          stop: () => { stopped += 1 },
-        }
-      },
-    }))
-    expect(result).toEqual({ ready: true, identityMatches: true })
-    expect(calls).toEqual([{ method: "getMe", body: {}, bounded: true }])
-    expect(stopped).toBe(1)
-  })
-
-  it("fails Telegram readiness closed with secret-free actor guidance", async () => {
-    const secret = "8541786263:must-never-escape"
-    await expect(executeSanctuaryAcceptanceAdapter({ operation: "telegram_readiness" }, unit16Deps({
-      refreshRuntime: async () => ({ ok: false, reason: "unavailable", itemPath: "vault:sanctuary:runtime/config", error: secret }),
-    }))).rejects.toThrow("Telegram runtime credentials are unavailable; actor: human-required; unlock or repair vault runtime/config")
-    await expect(executeSanctuaryAcceptanceAdapter({ operation: "telegram_readiness" }, unit16Deps({
-      refreshRuntime: async () => { throw new Error(secret) },
-    }))).rejects.toThrow("Telegram runtime credentials are unavailable; actor: human-required; unlock or repair vault runtime/config")
-    await expect(executeSanctuaryAcceptanceAdapter({ operation: "telegram_readiness" }, unit16Deps({
-      refreshRuntime: async () => refreshed({}),
-      telegramCredentials: () => { throw new Error(secret) },
-    }))).rejects.toThrow("Telegram runtime credentials are invalid; actor: human-required; repair vault runtime/config")
-    await expect(executeSanctuaryAcceptanceAdapter({ operation: "telegram_readiness" }, unit16Deps({
-      refreshRuntime: async () => refreshed({}),
-      telegramCredentials: () => ({ botToken: "malformed-secret", authorizedUserId: "111", authorizedChatId: "111" }),
-    }))).rejects.toThrow("Telegram runtime credentials are invalid; actor: human-required; repair vault runtime/config")
-    await expect(executeSanctuaryAcceptanceAdapter({ operation: "telegram_readiness" }, unit16Deps({
-      refreshRuntime: async () => refreshed({}),
-      telegramCredentials: () => ({ botToken: secret, authorizedUserId: "111", authorizedChatId: "111" }),
-      createTelegramApi: () => { throw new Error(secret) },
-    }))).rejects.toThrow("Telegram client initialization failed; actor: agent-runnable; retry Telegram readiness")
-    let stopped = 0
-    await expect(executeSanctuaryAcceptanceAdapter({ operation: "telegram_readiness" }, unit16Deps({
-      refreshRuntime: async () => refreshed({}),
-      telegramCredentials: () => ({ botToken: secret, authorizedUserId: "111", authorizedChatId: "111" }),
-      createTelegramApi: () => ({
-        request: async () => ({ id: 8455164372, username: "DevBotAriBot", description: secret }),
-        stop: () => { stopped += 1 },
-      }),
-    }))).rejects.toThrow("Telegram bot identity mismatch; actor: human-required; repair vault runtime/config")
-    expect(stopped).toBe(1)
-    await expect(executeSanctuaryAcceptanceAdapter({ operation: "telegram_readiness" }, unit16Deps({
-      refreshRuntime: async () => refreshed({}),
-      telegramCredentials: () => ({ botToken: secret, authorizedUserId: "111", authorizedChatId: "111" }),
-      createTelegramApi: () => ({ request: async () => { throw new Error(secret) }, stop: () => { stopped += 1 } }),
-    }))).rejects.toThrow("Telegram getMe failed; actor: agent-runnable; retry Telegram readiness")
-    expect(stopped).toBe(2)
-    await expect(executeSanctuaryAcceptanceAdapter({ operation: "telegram_readiness" }, unit16Deps({
-      refreshRuntime: async () => refreshed({}),
-      telegramCredentials: () => ({ botToken: secret, authorizedUserId: "111", authorizedChatId: "111" }),
-      createTelegramApi: () => ({
-        request: async () => ({ id: 8541786263, username: "MendelowCloudButlerBot" }),
-        stop: () => { throw new Error(secret) },
-      }),
-    }))).rejects.toThrow("Telegram client cleanup failed; actor: agent-runnable; retry Telegram readiness")
   })
 
   it("refuses invalid Unit 16 adapter inputs and failed bounded dependencies", async () => {
@@ -2079,11 +2021,12 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     const update = { update_id: 9, callback_query: { id: "query", data: "approval:secret", from: { id: 1 }, message: { message_id: 7, chat: { id: 2 } } } }
     const runtimeInputs: Array<Record<string, unknown>> = []
     const playbackDigests: string[] = []
-    const base = (result: Record<string, unknown>, refresh = async () => refreshed({})) => ({
-      refresh,
-      credentials: () => ({ botToken: "secret", authorizedUserId: "1", authorizedChatId: "2" }),
+    const base = (result: Record<string, unknown>, unavailable = false) => ({
+      gateway: () => {
+        if (unavailable) throw new Error("gateway unavailable")
+        return { credentials: { botId: "12345", authorizedUserId: "1", authorizedChatId: "2" }, authorityTransport: { api: { stop: vi.fn() } } } as never
+      },
       identityKey: () => "a".repeat(43),
-      createApi: () => ({ stop: vi.fn() }) as any,
       createRuntime: (input: Record<string, unknown>) => { runtimeInputs.push(input); return ({ transport: { handleUpdate: async () => result }, close: vi.fn() }) as any },
       toolContext: () => ({} as any),
       recordCallbackPlayback: (coordinateDigest: string) => { playbackDigests.push(coordinateDigest) },
@@ -2092,11 +2035,11 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
     await expect(executeSanctuaryAcceptanceCallbackProbe(update, false, base({ handled: true, accepted: false, reason: "decision_refused" }))).resolves.toEqual({ settled: true, claimed: true, mutated: false })
     await expect(executeSanctuaryAcceptanceCallbackProbe(update, true, base({ handled: true, accepted: false, reason: "stale_callback" }))).resolves.toEqual({ settled: true, claimed: false, mutated: false })
     await expect(executeSanctuaryAcceptanceCallbackProbe(update, true, base({ handled: true, accepted: true, reason: "accepted" }))).rejects.toThrow(/replay/u)
-    await expect(executeSanctuaryAcceptanceCallbackProbe(update, false, base({}, async () => ({ ok: false, reason: "missing", itemPath: "x", error: "x" })))).rejects.toThrow(/unavailable/u)
+    await expect(executeSanctuaryAcceptanceCallbackProbe(update, false, base({}, true))).rejects.toThrow(/unavailable/u)
     expect(playbackDigests).toHaveLength(4)
     expect(playbackDigests.every((value) => /^[0-9a-f]{64}$/u.test(value))).toBe(true)
     expect(JSON.stringify(playbackDigests)).not.toContain("approval:secret")
-    expect(runtimeInputs[0]?.subject).toBe(opaqueTelegramSubject("a".repeat(43), "secret", "1", "2"))
+    expect(runtimeInputs[0]?.subject).toBe(opaqueTelegramSubject("a".repeat(43), "12345", "1", "2"))
   })
 
   it("loads fixed default adapter records and files", () => {
@@ -2267,6 +2210,14 @@ describe("Sanctuary acceptance adapter semantic proofs", () => {
 
 function unit16Deps(overrides: Partial<SanctuaryAcceptanceAdapterDependencies> = {}): SanctuaryAcceptanceAdapterDependencies {
   return {
+    // Retained offset fixtures now model the cursor imported into the root gateway.
+    gatewayCursor: async () => {
+      let raw = ""
+      try { raw = overrides.readFixedFile?.("/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance/fixture-gateway-cursor.json") ?? "" } catch { /* This fixture's independent root cursor starts at zero. */ }
+      const value = raw ? JSON.parse(raw) : { nextUpdateId: 0 }
+      if (!value || Object.keys(value).join(",") !== "nextUpdateId" || !Number.isSafeInteger(value.nextUpdateId) || value.nextUpdateId < 0) throw new Error("Telegram offset state is invalid")
+      return { nextUpdateId: value.nextUpdateId, progressDigest: `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}` }
+    },
     readKeyFiles: () => [],
     readKeyRecords: () => [],
     readDescriptor: () => "",

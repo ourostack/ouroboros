@@ -3,9 +3,24 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { describe, expect, it, vi } from "vitest"
 
-import { auditSanctuaryContainerSpec, auditSanctuaryPersistentTemplate, auditSanctuaryStagedFiles } from "../../../heart/daemon/container-spec-auditor"
-import { runContainerSpecAuditorCli, runContainerSpecAuditorMain } from "../../../heart/daemon/container-spec-auditor-main"
+import { auditSanctuaryContainerSpec as auditSpec, auditSanctuaryPersistentTemplate as auditPersistent, auditSanctuaryStagedFiles as auditStaged } from "../../../heart/daemon/container-spec-auditor"
+import { runContainerSpecAuditorCli as runAuditorCli, runContainerSpecAuditorMain } from "../../../heart/daemon/container-spec-auditor-main"
 import { sanctuaryContainerInspectFixture as validInspect } from "../../fixtures/sanctuary-container"
+
+// These retained fixtures describe the pre-gateway package image.
+type PreGatewayInput<T> = Omit<T, "mountContract"> & { mountContract?: T extends { mountContract: infer C } ? C : never }
+function auditSanctuaryContainerSpec(value: unknown, options: PreGatewayInput<Parameters<typeof auditSpec>[1]>) {
+  return auditSpec(value, { mountContract: "canonical-pre-gateway", ...options })
+}
+function auditSanctuaryPersistentTemplate(input: PreGatewayInput<Parameters<typeof auditPersistent>[0]>) {
+  return auditPersistent({ mountContract: "canonical-pre-gateway", ...input })
+}
+function auditSanctuaryStagedFiles(input: PreGatewayInput<Parameters<typeof auditStaged>[0]>) {
+  return auditStaged({ mountContract: "canonical-pre-gateway", ...input })
+}
+function runContainerSpecAuditorCli(args: string[], deps?: Parameters<typeof runAuditorCli>[1]) {
+  return runAuditorCli(args.includes("--mount-contract") ? args : [...args, "--mount-contract", "canonical-pre-gateway"], deps)
+}
 
 function validImageInspect() {
   return {

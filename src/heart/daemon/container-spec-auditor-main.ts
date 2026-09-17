@@ -1,6 +1,6 @@
 import * as fs from "node:fs"
 import { emitNervesEvent } from "../../nerves/runtime"
-import { auditSanctuaryContainerSpec, auditSanctuaryPersistentTemplate, auditSanctuaryStagedFiles } from "./container-spec-auditor"
+import { auditSanctuaryContainerSpec, auditSanctuaryPersistentTemplate, auditSanctuaryStagedFiles, type SanctuaryContainerAuditOptions } from "./container-spec-auditor"
 
 const { decodeUtf8 } = require("../../../deploy/unraid/docker-man-template-xml.cjs") as { decodeUtf8(input: string | Uint8Array): string }
 
@@ -38,15 +38,15 @@ export function runContainerSpecAuditorCli(args: string[], deps: ContainerSpecAu
   const readFile = deps.readFile ?? ((filePath: string) => fs.readFileSync(filePath))
   const readText = (filePath: string) => decodeUtf8(readFile(filePath))
   const write = deps.write ?? ((text: string) => process.stdout.write(text))
-  const staged = parseModeArguments(args, ["--template", "--runtime-policy", "--expected-image"])
-  const persistent = parseModeArguments(args, ["--persistent-template", "--runtime-policy", "--expected-image-reference"])
-  const effective = parseModeArguments(args, ["--inspect", "--image-inspect", "--expected-image", "--expected-image-reference", "--expected-icon"])
+  const staged = parseModeArguments(args, ["--template", "--runtime-policy", "--expected-image", "--mount-contract"])
+  const persistent = parseModeArguments(args, ["--persistent-template", "--runtime-policy", "--expected-image-reference", "--mount-contract"])
+  const effective = parseModeArguments(args, ["--inspect", "--image-inspect", "--expected-image", "--expected-image-reference", "--expected-icon", "--mount-contract"])
   const sourceCandidate = parseModeArguments(args, ["--inspect", "--image-inspect", "--expected-image", "--mount-contract"])
   const sourceContract = sourceCandidate?.["--mount-contract"]
   const sourceEffective = sourceContract === "legacy-alpha742" ? sourceCandidate : null
   const selectedEffective = effective ?? sourceEffective
   if (!staged && !persistent && !selectedEffective) {
-    write(JSON.stringify({ ok: false, error: "usage: staged --template <path> --runtime-policy <path> --expected-image <id>; persistent --persistent-template <path> --runtime-policy <path> --expected-image-reference <tag>; effective --inspect <path> --image-inspect <path> --expected-image <id> --expected-image-reference <tag> --expected-icon <url>; source compatibility effective --inspect <path> --image-inspect <path> --expected-image <id> --mount-contract legacy-alpha742" }) + "\n")
+    write(JSON.stringify({ ok: false, error: "usage: all modes require --mount-contract canonical-pre-gateway|canonical-gateway; staged --template <path> --runtime-policy <path> --expected-image <id>; persistent --persistent-template <path> --runtime-policy <path> --expected-image-reference <tag>; effective --inspect <path> --image-inspect <path> --expected-image <id> --expected-image-reference <tag> --expected-icon <url>; source compatibility effective --inspect <path> --image-inspect <path> --expected-image <id> --mount-contract legacy-alpha742" }) + "\n")
     emitNervesEvent({
       level: "error",
       component: "daemon",
@@ -96,7 +96,7 @@ export function runContainerSpecAuditorCli(args: string[], deps: ContainerSpecAu
       expectedEnvironment,
       expectedImageReference: selectedEffective["--expected-image-reference"],
       expectedIcon: selectedEffective["--expected-icon"],
-      mountContract: sourceContract === "legacy-alpha742" ? sourceContract : "canonical",
+      mountContract: selectedEffective["--mount-contract"] as SanctuaryContainerAuditOptions["mountContract"],
     })
     if (imageInspect.Id !== selectedEffective["--expected-image"]) {
       result.ok = false
@@ -107,6 +107,7 @@ export function runContainerSpecAuditorCli(args: string[], deps: ContainerSpecAu
   }
 
   const templateArguments = persistent ?? staged!
+  const mountContract = templateArguments["--mount-contract"] as SanctuaryContainerAuditOptions["mountContract"]
   const templatePath = persistent ? templateArguments["--persistent-template"]! : templateArguments["--template"]!
   let templateXml: string
   let runtimePolicyText: string
@@ -125,8 +126,8 @@ export function runContainerSpecAuditorCli(args: string[], deps: ContainerSpecAu
     return 2
   }
   const result = persistent
-    ? auditSanctuaryPersistentTemplate({ templateXml, runtimePolicyText, expectedImageReference: persistent["--expected-image-reference"]! })
-    : auditSanctuaryStagedFiles({ templateXml, runtimePolicyText, expectedImage: staged!["--expected-image"]! })
+    ? auditSanctuaryPersistentTemplate({ templateXml, runtimePolicyText, expectedImageReference: persistent["--expected-image-reference"]!, mountContract })
+    : auditSanctuaryStagedFiles({ templateXml, runtimePolicyText, expectedImage: staged!["--expected-image"]!, mountContract })
   write(JSON.stringify(result) + "\n")
   return result.ok ? 0 : 1
 }

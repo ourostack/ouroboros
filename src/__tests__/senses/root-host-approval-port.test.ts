@@ -31,9 +31,10 @@ function fixture() {
     now: () => new Date().toISOString(), nonce: () => Buffer.alloc(32, ++nonce).toString("base64url"),
   }
   const gateway = new FileSanctuaryTelegramAuthorityGateway(root, options)
+  gateway.initializeCursor(0)
   const authority = new FileSanctuaryHostAuthority(root, { ...options, resolveOwnerObservation: (input) => gateway.ownerObservation(input) })
   const updates: TelegramUpdate[] = [{ update_id: 10, message: { message_id: 110, from: { id: 42 }, chat: { id: 42, type: "private" }, text: "run id" } }]
-  const api = { request: vi.fn(async (method: string) => method === "getUpdates" ? updates : { message_id: 501 }), stop: vi.fn() }
+  const api = { request: vi.fn(async (method: string) => method === "getUpdates" ? updates : method === "getMe" ? { id: 123456 } : { message_id: 501 }), stop: vi.fn() }
   const executor = { execute: vi.fn(async (permit: any) => signed("receipt", {
     targetHost: "sanctuary", permitId: permit.payload.permitId, permitDigest: authorityArtifactDigest(permit.domain, permit.payload),
     registrationId: permit.payload.registrationId, state: "verified", startedAt: new Date().toISOString(), completedAt: new Date().toISOString(),
@@ -411,13 +412,14 @@ describe("root host approval port", () => {
     const { update, registered } = await f.register()
     await f.transport.settleTransport(update, "completed")
     const callback = await f.callback()
+    const rawCallback = structuredClone(f.updates[0]!.callback_query!)
     await f.transport.settleTransport(callback, "completed")
     f.updates.splice(0, 1, { update_id: 12, callback_query: { ...callback.callback_query!, data: "not-a-root-handle" } })
     const repeated = await f.poll()
     expect(f.port.callbackForUpdate(repeated)).toEqual({ handled: true, registrationId: registered.registrationId })
     expect((await f.request("telegram.poll", {}) as any).hostCallback.payload.decision).toBeNull()
     await f.transport.settleTransport(repeated, "completed")
-    f.updates.splice(0, 1, { update_id: 13, callback_query: { ...callback.callback_query!, id: "wrong-message", message: { ...callback.callback_query!.message!, message_id: 999 } } })
+    f.updates.splice(0, 1, { update_id: 13, callback_query: { ...rawCallback, id: "wrong-message", message: { ...rawCallback.message!, message_id: 999 } } })
     expect(f.port.callbackForUpdate(await f.poll())).toEqual({ handled: true, registrationId: registered.registrationId })
   })
 

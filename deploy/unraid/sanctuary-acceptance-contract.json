@@ -3,7 +3,7 @@
   "harnessExecutable": "/opt/ouro/deploy/unraid/sanctuary-acceptance-harness.sh",
   "adapterExecutable": "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh",
   "adapterTimeoutMs": 240000,
-  "telegramTimeoutMs": 10000,
+  "telegramTimeoutMs": 65000,
   "deploymentTargetProfiles": {
     "staging": { "command": "sanctuary-unit16-run.sh", "acceptanceInvocation": "sanctuary-unit16-run.sh <image-id> ...", "containerName": "ouro-butler-staging", "requiredRunning": 1, "restartPolicy": "unless-stopped", "networkMode": "host", "inboundTcpListeners": 0, "inboundUdpListeners": 0, "loopbackTcpControls": [6876] },
     "final": { "command": "sanctuary-unit18-target-audit.sh", "acceptanceInvocation": "sanctuary-unit16-run.sh <image-id> --profile final ...", "containerName": "ouro-butler", "requiredRunning": 1, "optionalStopped": "ouro-butler-rollback", "restartPolicy": "unless-stopped", "networkMode": "host", "inboundTcpListeners": 0, "inboundUdpListeners": 0, "loopbackTcpControls": [6876] }
@@ -11,9 +11,9 @@
   "configMaterializer": {
     "invocation": "sanctuary-acceptance-adapter.sh materialize-config <command> [before|after]",
     "output": "complete harness config JSON on stdout",
-    "authority": "fixed-contract-offset-inventory-evidence-read",
+    "authority": "fixed-contract-signed-gateway-cursor-inventory-evidence-read",
     "modelReachable": false,
-    "timeoutMs": 15000
+    "timeoutMs": 90000
   },
   "commands": {
     "telegram-bootstrap": { "invocation": "sanctuary-acceptance-harness.sh telegram-bootstrap --config <private-json>" },
@@ -28,7 +28,7 @@
     "evidence-bundle-verify": { "invocation": "sanctuary-acceptance-harness.sh evidence-bundle-verify --config <private-json>" }
   },
   "adapters": {
-    "telegram-poller-quiescence": { "operation": "quiesce_telegram_poller", "authority": "fixed-managed-telegram-poller-stop-and-count", "modelReachable": false, "timeoutMs": 15000 },
+    "telegram-poller-quiescence": { "operation": "quiesce_telegram_poller", "authority": "fresh-pinned-gateway-health-and-root-lock-process-with-stopped-resident", "modelReachable": false, "timeoutMs": 120000 },
     "cursor-snapshot": { "operation": "snapshot", "authority": "fixed-telegram-state-read", "modelReachable": false, "timeoutMs": 15000 },
     "callback-live": { "operation": "callback_playback_preflight|inject_callbacks_concurrently|inject_callback_replay", "authority": "fixed-live-telegram-callback-probe", "modelReachable": false, "timeoutMs": 15000 },
     "key-inventory": { "operation": "inventory_keys", "authority": "fixed-unraid-key-directory-read", "modelReachable": false, "timeoutMs": 15000 },
@@ -50,7 +50,7 @@
     "callback-inject": { "operation": "callback-inject", "authority": "fixed-harness-orchestration", "modelReachable": false, "timeoutMs": 120000 },
     "reboot-request": { "operation": "reboot-request", "authority": "fixed-harness-orchestration", "modelReachable": false, "timeoutMs": 120000 },
     "unraid-key-rotate": { "operation": "unraid-key-rotate", "authority": "fixed-harness-orchestration", "modelReachable": false, "timeoutMs": 120000 },
-    "config-materializer": { "operation": "materialize_config", "authority": "fixed-contract-offset-inventory-evidence-read", "modelReachable": false, "timeoutMs": 120000 },
+    "config-materializer": { "operation": "materialize_config", "authority": "fixed-contract-signed-gateway-cursor-inventory-evidence-read", "modelReachable": false, "timeoutMs": 120000 },
     "scenario-capture": { "operation": "capture_acceptance_scenario", "authority": "fixed-runtime-audit-telegram-container-scenario", "modelReachable": false, "timeoutMs": 210000, "phases": ["begin", "poll"], "publicGateStatus": "/evidence/current-scenario-gate.json contains only label,gate,phase,startedAt", "response": "waiting:{state,checkpointDigest}|complete:{state,checkpointDigest,sourceDigests,assertions}" },
     "scenario-finalize": { "operation": "finalize_acceptance_scenarios", "authority": "fixed-public-gate-private-marker-receipt-cleanup", "modelReachable": false, "timeoutMs": 120000, "response": "{finalized:true}" },
     "health-probe-start": { "operation": "start_health_probe", "authority": "fixed-owner-bound-packaged-health-probe-start", "modelReachable": false, "timeoutMs": 170000, "response": "{state:started,operationDigest}" },
@@ -64,7 +64,7 @@
     "identity-key": { "kind": "fixed-file", "path": "/home/ouro/AgentBundles/sanctuary.ouro/state/senses/telegram/identity.key", "redaction": "sha256-only" },
     "identity-surface-audit": { "kind": "bounded-bundle-surface-audit", "path": "/home/ouro/AgentBundles/sanctuary.ouro", "redaction": "record-match-raw-leak-counts-and-surface-digest-only" },
     "telegram-audit": { "kind": "fixed-mac-chain", "path": "/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance/telegram-audit-chain.ndjson", "headPath": "/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance/telegram-audit-chain.head.json", "redaction": "canonical-redacted-rows-with-hmac-chain" },
-    "telegram-offset": { "kind": "fixed-json", "path": "/home/ouro/AgentBundles/sanctuary.ouro/state/senses/telegram/offset.json", "redaction": "sha256-only" },
+    "telegram-offset": { "kind": "signed-gateway-cursor", "operation": "telegram.cursor.snapshot", "redaction": "stable-logical-progress-digest-only" },
     "approval-journal": { "kind": "fixed-sqlite", "path": "/home/ouro/AgentBundles/sanctuary.ouro/state/approvals/approvals.sqlite", "redaction": "typed-state-counters-and-digests-only" },
     "approval-checkpoints": { "kind": "fixed-json", "path": "/home/ouro/AgentBundles/sanctuary.ouro/state/approvals/checkpoints.json", "redaction": "typed-state-counters-and-digests-only" },
     "restart-attempt-ledger": { "kind": "fixed-ndjson", "path": "/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance/restart-attempts.ndjson", "redaction": "scenario-action-target-digests-and-state-only" },
@@ -93,7 +93,7 @@
         "deadlineMs": 600000,
         "pollTimeoutSeconds": 20
       },
-      "dynamic": ["expectedBotId:getMe.id", "expectedUsername:getMe.username", "currentOffset:fixed-cursor-read"]
+      "dynamic": ["expectedBotId:pinned-gateway-getMe.id", "expectedUsername:pinned-gateway-getMe.username", "currentOffset:signed-gateway-cursor"]
     },
     "cursor-snapshot": {
       "fixed": {

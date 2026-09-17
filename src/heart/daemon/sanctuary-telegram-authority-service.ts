@@ -15,7 +15,7 @@ import type { SignedAuthorityPayload } from "./sanctuary-authority-codec"
 
 const PROTOCOL_VERSION = 1
 const DEFAULT_MAX_REQUEST_BYTES = 256 * 1024
-const DEFAULT_CONNECTION_TIMEOUT_MS = 30_000
+const DEFAULT_CONNECTION_TIMEOUT_MS = 65_000
 const MAX_TELEGRAM_ATTACHMENT_BYTES = 20_000_000
 const SAFE_TELEGRAM_FILE_PATH = /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9._/-]{1,512}$/u
 
@@ -45,7 +45,7 @@ function boundedText(value: unknown, maxLength: number): value is string {
 }
 
 export class SanctuaryTelegramAuthorityService {
-  readonly #api: TelegramBotApi
+  readonly #api: Pick<TelegramBotApi, "request">
   readonly #gateway: FileSanctuaryTelegramAuthorityGateway
   readonly #downloadFile: ((filePath: string) => Promise<{ body: Buffer; contentType?: string }>) | undefined
   readonly #hostAuthority: FileSanctuaryHostAuthority | undefined
@@ -68,11 +68,17 @@ export class SanctuaryTelegramAuthorityService {
     }
     downloadFile?: (filePath: string) => Promise<{ body: Buffer; contentType?: string }>
   }) {
-    this.#api = options.api
+    this.#api = {
+      request: (method, body) => options.api.request(method, body, AbortSignal.timeout(method === "getUpdates" ? 60_000 : 15_000)),
+    }
     this.#gateway = options.gateway
     this.#hostAuthority = options.hostAuthority
     this.#hostExecutor = options.hostExecutor
     this.#downloadFile = options.downloadFile
+  }
+
+  async drainHostExecutions(): Promise<void> {
+    await Promise.allSettled(this.#hostExecutions.values())
   }
 
   async dispatch(method: string, params: Record<string, unknown>): Promise<unknown> {
@@ -111,7 +117,7 @@ export class SanctuaryTelegramAuthorityService {
         if (hostCallback) await this.#maintainHostCard(hostCallback.payload.registrationId as string)
       }
       return {
-        observation, update: record.rawUpdate,
+        observation, update: record.deliveryUpdate ?? record.rawUpdate,
         ...(hostCallback ? {
           hostClaimed: true, hostCallback,
           ...(hostCallback.payload.decision ? { hostDecision: hostCallback.payload.decision } : {}),
@@ -125,6 +131,10 @@ export class SanctuaryTelegramAuthorityService {
     if (method === "telegram.cursor") {
       if (!emptyParams(params)) throw new Error("Sanctuary Telegram cursor params are invalid")
       return { cursor: this.#gateway.cursor() }
+    }
+    if (method === "telegram.cursor.snapshot") {
+      if (!emptyParams(params)) throw new Error("Sanctuary Telegram cursor snapshot params are invalid")
+      return this.#gateway.cursorSnapshot()
     }
     if (method === "telegram.chat.admit") {
       this.#gateway.admitChat(params as {
@@ -289,6 +299,9 @@ export class SanctuaryTelegramAuthorityService {
         throw new Error("Sanctuary host status params are invalid")
       }
       if (params.registrationId === null) {
+        this.#gateway.cursorSnapshot()
+        const identity = await this.#api.request("getMe", {})
+        if (!isObject(identity) || String(identity.id) !== this.#gateway.identity().botId) throw new Error("Sanctuary Telegram authority bot identity is invalid")
         return { health: this.#hostAuthority.attestStatus(Boolean(this.#hostExecutor) && !this.#hostAuthority.ownerMutationFrozen()) }
       }
       let status = this.#hostAuthority.status(params.registrationId)

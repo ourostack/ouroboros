@@ -240,7 +240,7 @@ docker() {
 ${imageValidator}
 ${helper}
 unset IMAGE_ID
-if audit_effective ouro-butler "$SOURCE_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" canonical "$SOURCE_IMAGE_REFERENCE" "$EXPECTED_ICON"; then command printf 'TRANSITION\n'; else STATUS=$?; set -- "$AUDIT_TEST_ROOT"/inspect.*; if [ -e "$1" ]; then command printf 'LEAK\n'; fi; command printf 'FAILED:%s\n' "$STATUS"; exit "$STATUS"; fi`
+if audit_effective ouro-butler "$SOURCE_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" canonical-pre-gateway "$SOURCE_IMAGE_REFERENCE" "$EXPECTED_ICON"; then command printf 'TRANSITION\n'; else STATUS=$?; set -- "$AUDIT_TEST_ROOT"/inspect.*; if [ -e "$1" ]; then command printf 'LEAK\n'; fi; command printf 'FAILED:%s\n' "$STATUS"; exit "$STATUS"; fi`
     try {
       for (const failKey of ["mktemp", "chmod-0700", "docker-inspect", "docker-image", "chmod-0600", "docker-run"]) {
         const result = runConditionalHelper(script, failKey, { AUDIT_TEST_ROOT: testRoot, SOURCE_IMAGE_ID: `sha256:${"a".repeat(64)}`, AUDIT_RUNNER_IMAGE_ID: `sha256:${"b".repeat(64)}`, SOURCE_IMAGE_REFERENCE: "ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.798", EXPECTED_ICON: "https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png" })
@@ -507,6 +507,7 @@ SCENARIO=$1
 docker() {
   case "$*" in
     "image inspect --format {{.Id}} "*) command printf '%s\n' "$VALID_IMAGE" ;;
+        "image inspect --format {{with .Config.Labels}}{{index . \"bot.ouro.sanctuary.mount-contract\"}}{{end}} "*) command printf 'canonical-gateway\n' ;;
     "image inspect --format {{with .Config.Labels}}{{index . \"org.opencontainers.image.source\"}}{{end}} "*) command printf 'https://github.com/ourostack/ouroboros\n' ;;
     "image inspect "*) command printf '{}\n' ;;
     "inspect ouro-butler") command printf '{}\n' ;;
@@ -535,6 +536,7 @@ ${provenance}
 ${audit}
 ${sourcePin}
 ${legacySource}
+${extractRunbookFunction(runbook, "sanctuary_image_mount_contract")}
 ${updateSource}
 validate_sanctuary_roots() { test "$SCENARIO" != invalid-roots; }
 ${preflight}
@@ -1758,8 +1760,8 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT" live-precutover`
     const runtimeWritable = '--mount "type=bind,src=$RUNTIME_ROOT,dst=/home/ouro/.ouro-cli"'
     const runtimeReadonly = '--mount "type=bind,src=$RUNTIME_ROOT,dst=/home/ouro/.ouro-cli,readonly"'
     const materializeInventory = section('if test -n "$EXTRA_MOUNT"; then', 'elif test -n "$SNAPSHOT_PHASE"; then')
-    const materializeSnapshot = section('elif test -n "$SNAPSHOT_PHASE"; then', "  else\n    /usr/bin/timeout -s KILL 30")
-    const materializeDefault = section("  else\n    /usr/bin/timeout -s KILL 30", "  fi\n  /usr/local/bin/node -e '")
+    const materializeSnapshot = section('elif test -n "$SNAPSHOT_PHASE"; then', "  else\n    /usr/bin/timeout -s KILL 90")
+    const materializeDefault = section("  else\n    /usr/bin/timeout -s KILL 90", "  fi\n  /usr/local/bin/node -e '")
     const telegramBootstrap = section('if test "$COMMAND" = telegram-bootstrap; then', 'elif test "$COMMAND" = callback-inject; then')
     const callbackInject = section('elif test "$COMMAND" = callback-inject; then', 'elif test "$COMMAND" = evidence-snapshot; then')
     const evidenceSnapshot = section('elif test "$COMMAND" = evidence-snapshot; then', 'elif test "$BROKER" = yes; then')
@@ -1783,12 +1785,12 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT" live-precutover`
       expect(materialization).toContain(runtimeReadonly)
       expect(materialization).not.toContain(runtimeWritable)
     }
-    expect(launcher).toContain('telegram-bootstrap) TIME_LIMIT=900; NETWORK=host; INPUT=no; BUNDLE_MODE=readonly; BROKER=no')
+    expect(launcher).toContain('telegram-bootstrap) TIME_LIMIT=900; NETWORK=none; INPUT=no; BUNDLE_MODE=readonly; BROKER=no')
     expect(launcher).toContain('if test "$COMMAND" = unraid-key-rotate; then stop_exact_production_container; fi')
     expect(launcher).toContain('if test "$BUNDLE_MODE" = rw; then BUNDLE_SUFFIX=; else BUNDLE_SUFFIX=,readonly; fi')
     expect(telegramBootstrap).toContain("--user 10001:10001 --read-only --cap-drop ALL --security-opt no-new-privileges")
-    expect(telegramBootstrap).toContain(runtimeWritable)
-    expect(telegramBootstrap).not.toContain(runtimeReadonly)
+    expect(telegramBootstrap).toContain(runtimeReadonly)
+    expect(telegramBootstrap).not.toContain(runtimeWritable)
     expect(telegramBootstrap).toContain('--mount "type=bind,src=$BUNDLE_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro$BUNDLE_SUFFIX"')
     expect(telegramBootstrap).not.toContain("3<&0")
     expect(telegramBootstrap).not.toContain("<&3")
@@ -1815,8 +1817,11 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT" live-precutover`
     expect(launcher).toContain('/usr/bin/docker stop --time 30 "$EXPECTED_CONTAINER_ID"')
     expect(launcher).toContain("--format '{{.State.Pid}}'")
     expect(launcher).toContain('PRODUCTION_STOPPED=yes')
-    expect(launcher).toContain('dst=/run/ouro-acceptance/telegram-poller-count.json,readonly')
-    expect(launcher).toContain("'{\"activePollers\":0,\"productionContainerStopped\":true}'")
+    expect(launcher).not.toContain('telegram-poller-count.json')
+    expect(telegramBootstrap).toContain('dst=/run/ouro-host-acceptance,readonly')
+    for (const container of [materializeInventory, materializeSnapshot, materializeDefault, telegramBootstrap, callbackInject, evidenceSnapshot, brokerCommands, defaultCommands]) {
+      expect(container).toContain('--mount "type=bind,src=/run/ouro-authority,dst=/run/ouro-authority,readonly"')
+    }
     expect(launcher).toContain('restore_production_container')
     expect(launcher).toContain("trap cleanup_unit16 EXIT")
     expect(launcher).toContain("trap 'exit 129' HUP")
@@ -1854,7 +1859,7 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT" live-precutover`
     expect(launcher).toContain('stdio: ["ignore", "ignore", "ignore", source]')
     expect(launcher).toContain('stop_exact_production_container')
     expect(launcher).toContain('/bin/mount --bind "$ACCEPTANCE_PIN_ROOT" "$ACCEPTANCE_STATE_ROOT"')
-    const stopExact = launcher.slice(launcher.indexOf("stop_exact_production_container()"), launcher.indexOf("quiesce_production_telegram_poller()"))
+    const stopExact = launcher.slice(launcher.indexOf("stop_exact_production_container()"), launcher.indexOf("materialize_config()"))
     expect(stopExact.indexOf("PRODUCTION_STOPPED=yes")).toBeLessThan(stopExact.indexOf('/usr/bin/docker stop --time 30 "$EXPECTED_CONTAINER_ID"'))
     expect(stopExact).toContain("EXPECTED_CONTAINER_ID=$(cat \"$CONTAINER_FACT\")")
     expect(stopExact).toContain('test "$EXPECTED_CONTAINER_ID" = "$TARGET_CONTAINER_ID"')
@@ -1902,7 +1907,7 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT" live-precutover`
     expect(runbook).toContain('"$UNIT16_ROOT/configs" "$UNIT16_ROOT/evidence"')
     expect(runbook).toContain('"$UNIT16_ROOT/sanctuary-unit16-run.sh" "$IMAGE_ID"')
     expect(runbook).not.toContain("UNIT16_BOT_TOKEN")
-    expect(runbook).toContain("Telegram bootstrap refreshes the canonical agent vault")
+    expect(runbook).toContain("Telegram bootstrap confirms the already pinned root owner through gateway poll/settle")
     const callbackHelper = extractRunbookFunction(runbook, "run_unit16_callback_inject")
     expect(callbackHelper.match(/exec 3<"\$UNIT16_CALLBACK_FILE"/gu)).toHaveLength(1)
     expect(callbackHelper).toContain("/proc/self/fd/3")
@@ -2008,7 +2013,7 @@ await_post_audit_health`
     const update = runbook.slice(runbook.indexOf("Update:"), runbook.indexOf("Backup:"))
     const topology = update.indexOf('if assert_update_topology "$ROLLBACK_IMAGE_ID"; then')
     const sourcePreflight = update.indexOf('assert_update_source "$ROLLBACK_IMAGE_ID"')
-    const productionCreate = update.indexOf("docker create --pull=never --name ouro-butler", topology)
+    const productionCreate = update.indexOf('create_sanctuary_container "$IMAGE_ID"', topology)
     expect(topology).toBeGreaterThan(-1)
     expect(sourcePreflight).toBeGreaterThan(topology)
     expect(productionCreate).toBeGreaterThan(sourcePreflight)
@@ -2032,10 +2037,13 @@ await_post_audit_health`
     expect(audit).toContain('"$@"')
     const auditCalls = runbook.split("\n").filter((line) => line.includes("audit_effective "))
     expect(auditCalls).toHaveLength(7)
-    expect(auditCalls.filter((line) => line.includes(" canonical "))).toHaveLength(6)
+    expect(auditCalls.filter((line) => line.includes('"$TARGET_MOUNT_CONTRACT"'))).toHaveLength(4)
+    expect(auditCalls.filter((line) => line.includes('"$EXPECTED_SOURCE_MOUNT_CONTRACT"'))).toHaveLength(1)
+    expect(auditCalls.filter((line) => line.includes('"$RESTORE_MOUNT_CONTRACT"'))).toHaveLength(1)
+    expect(auditCalls.filter((line) => line.includes(" canonical "))).toHaveLength(0)
     expect(auditCalls.filter((line) => line.includes(" legacy-alpha742"))).toHaveLength(1)
     expect(auditCalls.filter((line) => line.includes(" prepackage-alpha797"))).toHaveLength(0)
-    expect(auditCalls.every((line) => line.includes(" canonical ") ? line.includes("https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png") || line.includes('"$TEMPLATE_ICON"') : true)).toBe(true)
+    expect(auditCalls.filter((line) => !line.includes("legacy-alpha742")).every((line) => line.includes("https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png") || line.includes('"$TEMPLATE_ICON"'))).toBe(true)
   })
 
   it("locks deployment and credential rotation to the canonical bot and exact key IDs", () => {
@@ -2056,9 +2064,9 @@ await_post_audit_health`
     const production = update.slice(update.indexOf("Create and activate production from the same exact image ID"))
     const activation = production.slice(production.indexOf('if test "$(inspect_registry_manifest_digest "$VERSION_IMAGE")'))
 
-    expect(activation).toContain("&& docker create --pull=never --name ouro-butler --network host --restart unless-stopped --user 10001:10001 \\")
-    expect(activation).toContain('&& audit_effective ouro-butler "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" canonical "$VERSION_IMAGE" "$TEMPLATE_ICON" \\')
-    expect(activation).toContain("&& docker start ouro-butler \\")
+    expect(activation).toContain('&& create_sanctuary_container "$IMAGE_ID" "$VERSION_IMAGE" "$TARGET_MOUNT_CONTRACT" \\')
+    expect(activation).toContain('&& audit_effective ouro-butler "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" "$TARGET_MOUNT_CONTRACT" "$VERSION_IMAGE" "$TEMPLATE_ICON" \\')
+    expect(activation).toContain('&& /usr/local/bin/node "$STAGED_DOCKERMAN_TRANSACTION" authority-activate >/dev/null \\')
     expect(activation).toContain("&& wait_butler_ready ouro-butler \\")
     expect(activation).toContain("&& enable_butler_autostart \\")
     expect(activation).toContain('&& /usr/local/bin/node "$STAGED_DOCKERMAN_TRANSACTION" mark-committing >/dev/null; then')
@@ -2118,13 +2126,14 @@ await_post_audit_health`
 
     expect(routine).toContain("verify_sanctuary_telegram_readiness")
     expect(routine.indexOf('verify_sanctuary_sab_readiness "$IMAGE_ID"')).toBeLessThan(disable)
-    expect(routine.indexOf('verify_sanctuary_telegram_readiness "$IMAGE_ID"')).toBeLessThan(disable)
+    expect(routine.indexOf('verify_sanctuary_telegram_readiness "$ROLLBACK_IMAGE_ID"')).toBeLessThan(disable)
+    expect(routine.indexOf('verify_sanctuary_telegram_readiness "$IMAGE_ID"')).toBeGreaterThan(routine.indexOf('"$STAGED_DOCKERMAN_TRANSACTION" authority-install'))
     expect(update.indexOf("audit the original version-tagged template")).toBeLessThan(update.indexOf("For normal updates"))
     expect(routine).not.toContain('verify_sanctuary_provider_readiness "$IMAGE_ID"')
     expect(routine).not.toContain("docker create --name ouro-butler-staging")
     expect(routine).not.toContain("docker start ouro-butler-staging")
     expect(routine).not.toContain("wait_butler_ready ouro-butler-staging")
-    expect(routine.match(/docker create --pull=never --name ouro-butler /gu)).toHaveLength(1)
+    expect(routine.match(/create_sanctuary_container "\$IMAGE_ID"/gu)).toHaveLength(1)
     expect(routine).toContain("wait_butler_ready ouro-butler")
     expect(routine).toContain("PRODUCTION_ACTIVATION_STATUS=$?")
     expect(routine).toContain("docker rename ouro-butler-rollback ouro-butler")
@@ -2209,7 +2218,7 @@ await_post_audit_health`
     const commit = update.indexOf('migrate_sanctuary_package_managed_bundle "$IMAGE_ID" commit', productionFailure)
     const renamedRollbackRecovery = update.indexOf("elif docker container inspect ouro-butler-rollback", preparationFailure)
     expect(migration).toBeGreaterThan(-1)
-    expect(update.indexOf('rollback_sanctuary_bundle_if_pending "$IMAGE_ID"', migration)).toBeLessThan(update.indexOf("docker start ouro-butler", migration))
+    expect(update.indexOf('rollback_sanctuary_bundle_if_pending "$IMAGE_ID"', migration)).toBeLessThan(update.indexOf('authority-activate', migration))
     expect(update.indexOf('rollback_sanctuary_bundle_if_pending "$IMAGE_ID"', renamedRollbackRecovery)).toBeLessThan(update.indexOf("docker rename ouro-butler-rollback ouro-butler", renamedRollbackRecovery))
     expect(update.indexOf('migrate_sanctuary_package_managed_bundle "$IMAGE_ID" rollback', productionFailure)).toBeLessThan(update.indexOf("docker rename ouro-butler-rollback ouro-butler", productionFailure))
     const productionCreate = update.lastIndexOf('if test "$(inspect_registry_manifest_digest "$VERSION_IMAGE")"', productionFailure)
@@ -2646,6 +2655,7 @@ recover_dockerman_template_transaction`
     const helper = extractRunbookFunction(runbook, "start_only_butler_for_recovery")
     const script = String.raw`set -u
 SCENARIO=$1
+read_sanctuary_authority_state() { printf none; }
 docker() {
   case "$*" in
     "inspect --format {{.State.Running}} ouro-butler") case "$SCENARIO" in running) command printf 'true\n' ;; stopped|competing) command printf 'false\n' ;; *) command printf 'unknown\n' ;; esac ;;
@@ -2682,13 +2692,13 @@ start_only_butler_for_recovery`
     }
   })
 
-  it("proves zero running pollers immediately before every changed deployment start and one immediately after", () => {
+  it("proves zero running residents before lifecycle activation and one after without claiming zero root pollers", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     const update = runbook.slice(runbook.indexOf("For normal updates"), runbook.indexOf("Backup:"))
     const backup = runbook.slice(runbook.indexOf("Backup:"), runbook.indexOf("Restore:"))
     const restore = runbook.slice(runbook.indexOf("Restore:"), runbook.indexOf("Credential recovery:"))
 
-    expect(update).toContain("&& assert_only_running_butler - \\\n      && docker start ouro-butler \\\n      && assert_only_running_butler ouro-butler \\")
+    expect(update).toContain('&& assert_only_running_butler - \\\n      && /usr/local/bin/node "$STAGED_DOCKERMAN_TRANSACTION" authority-activate >/dev/null \\\n      && assert_only_running_butler ouro-butler \\')
     expect(backup).toContain("&& assert_only_running_butler - \\\n      && docker start ouro-butler \\\n      && assert_only_running_butler ouro-butler \\")
     expect(restore).toContain("&& assert_only_running_butler - \\\n      && docker start ouro-butler \\\n      && assert_only_running_butler ouro-butler \\")
 
@@ -2761,6 +2771,7 @@ start_only_butler_for_recovery`
     const targetImage = `sha256:${"b".repeat(64)}`
     const startOnly = extractRunbookFunction(runbook, "start_only_butler_for_recovery")
     const script = `
+read_sanctuary_authority_state() { printf none; }
 docker() {
   command printf '%s\n' "docker $*" >>"$CALL_LOG"
   case "$*" in
@@ -2853,7 +2864,7 @@ recover_test`
     const stopOld = restore.indexOf("if { docker stop ouro-butler >/dev/null 2>&1 || true; } \\", disableGuard)
     const restoreRuntime = restore.indexOf('&& rsync -a --delete "$BACKUP_ROOT/runtime/.ouro-cli/"', stopOld)
     const restoreBundle = restore.indexOf('&& rsync -a --delete "$BACKUP_ROOT/agent/sanctuary.ouro/"', restoreRuntime)
-    const create = restore.indexOf("&& docker create --pull=never --name ouro-butler --network host --restart unless-stopped --user 10001:10001 \\", restoreBundle)
+    const create = restore.indexOf('&& create_sanctuary_container "$IMAGE_ID" "$RESTORE_VERSION_IMAGE" "$RESTORE_MOUNT_CONTRACT" \\', restoreBundle)
     expect(registeredTemplateAudit).toBeGreaterThan(-1)
     expect(disableGuard).toBeGreaterThan(registeredTemplateAudit)
     expect(disableStatus).toBeGreaterThan(disableGuard)
@@ -2862,7 +2873,7 @@ recover_test`
     expect(restoreRuntime).toBeGreaterThan(stopOld)
     expect(restoreBundle).toBeGreaterThan(restoreRuntime)
     expect(create).toBeGreaterThan(restoreBundle)
-    expect(restore).toContain('&& audit_effective ouro-butler "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" canonical "$RESTORE_VERSION_IMAGE" https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png \\')
+    expect(restore).toContain('&& audit_effective ouro-butler "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" "$RESTORE_MOUNT_CONTRACT" "$RESTORE_VERSION_IMAGE" https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png \\')
     expect(restore).toContain('&& verify_dockerman_and_community_apps "$RESTORE_VERSION_IMAGE" "$RESTORE_INSTALL_PROOF_ROOT/install.json" \\')
     expect(restore).toContain("&& docker start ouro-butler \\")
     expect(restore).toContain("&& wait_butler_ready ouro-butler \\")
@@ -2896,7 +2907,7 @@ recover_test`
 validate_exact_image_id() { return 0; }
 docker() { return 23; }
 ${helper}
-if audit_registered_dockerman_template "$IMAGE_ID" "$VERSION_IMAGE"; then command printf 'MUTATION\n'; else exit $?; fi`
+if audit_registered_dockerman_template "$IMAGE_ID" "$VERSION_IMAGE" canonical-pre-gateway; then command printf 'MUTATION\n'; else exit $?; fi`
       const result = runConditionalHelper(script, "mismatch", { IMAGE_ID: imageId, REGISTERED_TEMPLATE_TEST_PATH: templatePath, VERSION_IMAGE: "ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.798" })
       expect(result.status, result.stderr).toBe(23)
       expect(result.stdout).not.toContain("MUTATION")
@@ -2968,7 +2979,8 @@ if audit_registered_dockerman_template "$IMAGE_ID" "$VERSION_IMAGE"; then comman
     expect(updateRunbook.indexOf('verify_sanctuary_sab_readiness "$IMAGE_ID"')).toBeGreaterThanOrEqual(0)
     expect(updateRunbook.indexOf('verify_sanctuary_sab_readiness "$IMAGE_ID"')).toBeLessThan(updateRunbook.indexOf("disable_butler_autostart"))
     expect(normalUpdateRunbook.indexOf('verify_sanctuary_telegram_readiness "$IMAGE_ID"')).toBeGreaterThanOrEqual(0)
-    expect(normalUpdateRunbook.indexOf('verify_sanctuary_telegram_readiness "$IMAGE_ID"')).toBeLessThan(normalUpdateRunbook.indexOf("disable_butler_autostart"))
+    expect(normalUpdateRunbook.indexOf('verify_sanctuary_telegram_readiness "$ROLLBACK_IMAGE_ID"')).toBeLessThan(normalUpdateRunbook.indexOf("disable_butler_autostart"))
+    expect(normalUpdateRunbook.indexOf('verify_sanctuary_telegram_readiness "$IMAGE_ID"')).toBeGreaterThan(normalUpdateRunbook.indexOf("authority-install"))
     const backupRunbook = runbook.slice(runbook.indexOf("Backup:"), runbook.indexOf("Restore:"))
     const restoreRunbook = runbook.slice(runbook.indexOf("Restore:"), runbook.indexOf("Credential recovery:"))
     expect(runbook).toContain("AUTOSTART_FILE=/var/lib/docker/unraid-autostart")
@@ -2982,9 +2994,10 @@ if audit_registered_dockerman_template "$IMAGE_ID" "$VERSION_IMAGE"; then comman
     expect(runbook).toContain('verify_butler_autostart "0 0 0 0" || return $?')
     expect(runbook).toContain('verify_butler_autostart "1 0 0 0" || return $?')
     expect(normalUpdateRunbook).not.toContain('docker create --name ouro-butler-staging')
-    expect(updateRunbook).toContain('--mount "type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli" \\')
-    expect(updateRunbook).toContain('--mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \\')
-    expect(updateRunbook).toContain('--mount "type=bind,src=/boot/config/custom/ouro-events/spool,dst=/run/ouro-events,readonly" \\')
+    const createContainer = extractRunbookFunction(runbook, "create_sanctuary_container")
+    expect(createContainer).toContain('--mount "type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli" \\')
+    expect(createContainer).toContain('--mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \\')
+    expect(createContainer).toContain('--mount "type=bind,src=/boot/config/custom/ouro-events/spool,dst=/run/ouro-events,readonly" \\')
     expect(updateRunbook.indexOf("bootstrap-spool.sh --mount")).toBeLessThan(updateRunbook.indexOf("disable_butler_autostart"))
     expect(backupRunbook).toContain("--exclude='/state/acceptance/telegram-control.sock'")
     expect(backupRunbook).toContain('test ! -S "$BACKUP_TMP/agent/sanctuary.ouro/state/acceptance/telegram-control.sock"')
@@ -3033,7 +3046,7 @@ if audit_registered_dockerman_template "$IMAGE_ID" "$VERSION_IMAGE"; then comman
     expect(backupRunbook.indexOf('chmod 0600 "$BACKUP_TMP/provenance/container-inspect.json"')).toBeLessThan(backupRunbook.indexOf('mv -- "$BACKUP_TMP" "$BACKUP_ROOT"'))
     expect(extractRunbookFunction(runbook, "assert_restore_preflight")).toContain('verify_sanctuary_snapshot_provenance "$BACKUP_ROOT" "$IMAGE_ID"')
     expect(extractRunbookFunction(runbook, "assert_restore_preflight")).toContain('test "$IMAGE_ID" != sha256:e337dff04c92d116b269052f473b26a47eea933d017d1befc73af50dd37bb08d')
-    expect(restoreRunbook).toContain('--mount "type=bind,src=/boot/config/custom/ouro-events/spool,dst=/run/ouro-events,readonly" \\')
+    expect(restoreRunbook).toContain('create_sanctuary_container "$IMAGE_ID" "$RESTORE_VERSION_IMAGE" "$RESTORE_MOUNT_CONTRACT"')
     expect(restoreRunbook).toContain('--restore-root "$BACKUP_ROOT/host"')
     expect(restoreRunbook).toContain('HOST_RESTORE_INSTALLER=$(mktemp /tmp/ouro-usenet-host-restore.XXXXXX)')
     expect(backupRunbook).toContain('host_file_contains_inline_credential "$BACKUP_HOST_SOURCE"')
@@ -3064,15 +3077,15 @@ if audit_registered_dockerman_template "$IMAGE_ID" "$VERSION_IMAGE"; then comman
     expect(normalUpdateRunbook).toContain("Do not start a target-image daemon between the production rename and final")
     expect(updateRunbook).toContain("docker rename ouro-butler-rollback ouro-butler")
     const rollbackAudit = normalUpdateRunbook.indexOf('assert_update_source "$ROLLBACK_IMAGE_ID"')
-    const rollbackStart = normalUpdateRunbook.indexOf("docker start ouro-butler", rollbackAudit)
+    const rollbackStart = normalUpdateRunbook.indexOf("start_only_butler_for_recovery", rollbackAudit)
     expect(rollbackStart).toBeGreaterThan(rollbackAudit)
     const productionBlock = normalUpdateRunbook.slice(normalUpdateRunbook.indexOf("Create and activate production from the same exact image ID"))
-    const productionCreate = productionBlock.indexOf("&& docker create --pull=never --name ouro-butler ")
+    const productionCreate = productionBlock.indexOf('&& create_sanctuary_container "$IMAGE_ID"')
     const productionAudit = productionBlock.indexOf('&& audit_effective ouro-butler "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"', productionCreate)
-    const productionStart = productionBlock.indexOf("&& docker start ouro-butler", productionAudit)
+    const productionStart = productionBlock.indexOf('"$STAGED_DOCKERMAN_TRANSACTION" authority-activate', productionAudit)
     expect(productionCreate).toBeGreaterThan(-1)
     expect(productionStart).toBeGreaterThan(productionAudit)
-    expect(normalUpdateRunbook).toContain("docker start ouro-butler")
+    expect(normalUpdateRunbook).not.toContain("docker start ouro-butler")
     expect(runbook).toContain("set_butler_autostart production || return $?")
     expect(runbook).toContain('verify_butler_autostart "1 0 0 0" || return $?')
     const rollbackReady = normalUpdateRunbook.indexOf("wait_butler_ready ouro-butler", rollbackStart)
@@ -3083,7 +3096,7 @@ if audit_registered_dockerman_template "$IMAGE_ID" "$VERSION_IMAGE"; then comman
     const productionEnable = productionBlock.indexOf("enable_butler_autostart", productionReady)
     expect(productionReady).toBeGreaterThan(productionStart)
     expect(productionEnable).toBeGreaterThan(productionReady)
-    expect(restoreRunbook).toContain("docker create --pull=never --name ouro-butler")
+    expect(restoreRunbook).toContain('create_sanctuary_container "$IMAGE_ID"')
     expect(restoreRunbook).toContain('audit_effective ouro-butler "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"')
     expect(restoreRunbook.indexOf("docker start ouro-butler")).toBeGreaterThan(restoreRunbook.indexOf('audit_effective ouro-butler "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"'))
     expect(restoreRunbook.indexOf("wait_butler_ready ouro-butler")).toBeGreaterThan(restoreRunbook.indexOf("docker start ouro-butler"))

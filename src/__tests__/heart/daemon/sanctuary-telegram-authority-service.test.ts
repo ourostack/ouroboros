@@ -13,6 +13,7 @@ import {
 import {
   FileSanctuaryTelegramAuthorityGateway,
   sanctuaryAuthorityPublicKeyDigest,
+  sanctuaryTelegramAuthorityStatePath,
 } from "../../../heart/daemon/sanctuary-telegram-authority-gateway"
 import { authorityArtifactDigest, signAuthorityPayload, verifyAuthorityPayload } from "../../../heart/daemon/sanctuary-authority-codec"
 import { FileSanctuaryHostAuthority, type HostProposalRequestV1 } from "../../../heart/daemon/sanctuary-host-authority"
@@ -134,14 +135,33 @@ function hostProposal(observationDigest: string, updateId = 10, messageId = 110)
 }
 
 describe("Sanctuary Telegram authority service", () => {
+  it("bounds root API requests without timing out an idle 50-second Telegram poll early", async () => {
+    const f = fixture()
+    const controller = new AbortController()
+    const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(controller.signal)
+    vi.mocked(f.api.request).mockImplementation(async (_method, _body, signal) => {
+      if (!signal) throw new Error("root request has no deadline")
+      return new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }))
+    })
+    try {
+      const polled = f.service.dispatch("telegram.poll", {})
+      void polled.catch(() => undefined)
+      expect(timeout).toHaveBeenCalledWith(60_000)
+      controller.abort(new Error("bounded root request"))
+      await expect(polled).rejects.toThrow("bounded root request")
+    } finally { timeout.mockRestore() }
+  })
   it("signs bounded host capability health and the complete registration status using root identity", async () => {
     const f = fixture()
+    f.gateway.initializeCursor(0)
+    vi.mocked(f.api.request).mockResolvedValueOnce({ id: 123456 })
     const health = await f.service.dispatch("host.status", { registrationId: null }) as any
     expect(health.health).toMatchObject({
       domain: "ouro.sanctuary.host-health.v1",
       payload: { healthy: true, targetHost: "sanctuary", botId: "123456", ownerUserId: "42", ownerChatId: "42" },
     })
     const withoutExecutor = new SanctuaryTelegramAuthorityService({ api: f.api, gateway: f.gateway, hostAuthority: f.hostAuthority })
+    vi.mocked(f.api.request).mockResolvedValueOnce({ id: 123456 })
     expect(await withoutExecutor.dispatch("host.status", { registrationId: null })).toMatchObject({
       health: { payload: { healthy: false } },
     })
@@ -157,6 +177,22 @@ describe("Sanctuary Telegram authority service", () => {
       payload: { status: legacy, observedAt: "2026-09-16T22:30:00.000Z" },
     })
     expect(() => verifyAuthorityPayload({ artifact: authority, expectedDomain: authority.domain, expectedKeyId: "issuer-1", publicKey: generateKeyPairSync("ed25519").publicKey })).toThrow()
+  })
+
+  it.each(["missing-state", "invalid-state", "token", "identity", "null-identity"])("does not issue healthy root status with %s", async (fault) => {
+    const f = fixture()
+    f.gateway.initializeCursor(0)
+    vi.mocked(f.api.request).mockResolvedValueOnce({ id: 123456 })
+    await expect(f.service.dispatch("host.status", { registrationId: null })).resolves.toMatchObject({ health: { payload: { healthy: true } } })
+    if (fault === "missing-state" || fault === "invalid-state") {
+      const stateFile = sanctuaryTelegramAuthorityStatePath(roots[roots.length - 1]!)
+      if (fault === "missing-state") fs.unlinkSync(stateFile)
+      else fs.writeFileSync(stateFile, "{}")
+    }
+    if (fault === "token") vi.mocked(f.api.request).mockRejectedValueOnce(new Error("revoked token"))
+    if (fault === "identity") vi.mocked(f.api.request).mockResolvedValueOnce({ id: 999 })
+    if (fault === "null-identity") vi.mocked(f.api.request).mockResolvedValueOnce(null)
+    await expect(f.service.dispatch("host.status", { registrationId: null })).rejects.toThrow()
   })
 
   it("claims another owner's host callback without deciding or rejecting transport delivery", async () => {
@@ -182,7 +218,7 @@ describe("Sanctuary Telegram authority service", () => {
       offset: 0,
       timeout: 50,
       allowed_updates: ["message", "callback_query"],
-    })
+    }, expect.any(AbortSignal))
     expect(result).toMatchObject({
       update: message(10),
       observation: { domain: "ouro.sanctuary.telegram-observation.v1", payload: { updateId: 10 } },
@@ -264,11 +300,14 @@ describe("Sanctuary Telegram authority service", () => {
       },
     })
     const decision = await f.service.dispatch("telegram.poll", {}) as any
+    expect(JSON.stringify(decision)).not.toContain(approveHandle)
+    expect(decision.update.callback_query.data).toBe("root-host-callback")
+    expect(f.gateway.record(11)!.rawUpdate.callback_query!.data).toBe(approveHandle)
     expect(decision.hostDecision).toMatchObject({
       domain: "ouro.sanctuary.host-decision.v1",
       payload: { registrationId: registered.registrationId, decision: "approve" },
     })
-    expect(vi.mocked(f.api.request).mock.calls).toContainEqual([
+    expect(vi.mocked(f.api.request).mock.calls.map(([method, body]) => [method, body])).toContainEqual([
       "editMessageText",
       expect.objectContaining({
         chat_id: "42",
@@ -303,6 +342,10 @@ describe("Sanctuary Telegram authority service", () => {
       state: "executing",
     })
     expect(f.hostExecutor.execute).toHaveBeenCalledOnce()
+    const residentStatus = await f.service.dispatch("host.status", { registrationId: registered.registrationId }) as any
+    expect(residentStatus.permit.domain).toBe("ouro.sanctuary.host-attempt.v1")
+    expect(JSON.stringify(residentStatus)).not.toContain(f.hostExecutor.execute.mock.calls[0]![0].signature)
+    expect(JSON.stringify(residentStatus)).not.toContain("ouro.sanctuary.host-permit.v1")
     await expect(f.service.dispatch("host.status", { registrationId: registered.registrationId })).resolves.toMatchObject({
       state: "permitted",
       execution: "running",
@@ -345,7 +388,7 @@ describe("Sanctuary Telegram authority service", () => {
       receipt: { payload: { state: "verified" } },
     })
     expect(f.hostExecutor.acknowledge).toHaveBeenCalledTimes(3)
-    expect(vi.mocked(f.api.request).mock.calls.at(-1)).toEqual([
+    expect(vi.mocked(f.api.request).mock.calls.at(-1)?.slice(0, 2)).toEqual([
       "editMessageText",
       expect.objectContaining({ text: expect.stringContaining("Execution completed and verification succeeded.") }),
     ])
@@ -627,7 +670,7 @@ describe("Sanctuary Telegram authority service", () => {
       },
     })).rejects.toThrow(/root-owned/u)
     expect(hostAuthority.markCardEdited).toHaveBeenCalledWith("hostreg-expired", "expired")
-    expect(api.request).toHaveBeenCalledWith("editMessageText", expect.objectContaining({ message_id: 12 }))
+    expect(api.request).toHaveBeenCalledWith("editMessageText", expect.objectContaining({ message_id: 12 }), expect.any(AbortSignal))
 
     const harmless = fixture()
     await expect(harmless.service.dispatch("telegram.request", {

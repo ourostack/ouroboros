@@ -2,7 +2,7 @@
 
 import { spawn, spawnSync } from "node:child_process"
 import { createHash, createHmac, timingSafeEqual } from "node:crypto"
-import { chmodSync, chownSync, closeSync, constants, fstatSync, fsyncSync, mkdirSync, openSync, opendirSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs"
+import { chmodSync, chownSync, closeSync, constants, fstatSync, fsyncSync, mkdirSync, openSync, opendirSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs"
 import { createServer } from "node:net"
 import { targetProfile } from "./sanctuary-deployment-target.mjs"
 
@@ -18,6 +18,7 @@ const RUNTIME_POLICY_FILE = "/opt/ouro/container-runtime.json"
 const PRODUCTION_RUNTIME_SOURCE = "/mnt/user/appdata/ouro-butler/runtime/.ouro-cli"
 const PRODUCTION_BUNDLE_SOURCE = "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro"
 const PRODUCTION_EVENT_SPOOL_SOURCE = "/boot/config/custom/ouro-events/spool"
+const AUTHORITY_ROOT = "/mnt/user/appdata/ouro-authority"
 const GRAPHQL_ENDPOINT = "http://127.0.0.1/graphql"
 const BOOT_ID = "/proc/sys/kernel/random/boot_id"
 const MDCMD = "/usr/local/sbin/mdcmd"
@@ -361,8 +362,8 @@ function parseVaultStatus(output, succeeded) {
     return match[1].split(", ").includes("apiKey") && match[2].split(", ").includes("baseUrl")
   }
   const unlocked = succeeded && /^local unlock: available$/mu.test(output)
-    && ["telegramBotToken", "telegramAuthorizedUserId", "telegramAuthorizedChatId"].every((field) => runtimeFields.includes(field))
-    && providerReady("openai-compatible") && providerReady("openai-compatible-gemini")
+    && runtimeMatch !== null && !runtimeFields.includes("telegramBotToken")
+    && providerReady("minimax")
   return { vaultUnlocked: unlocked, manualAuthRequired: !unlocked }
 }
 
@@ -503,6 +504,7 @@ async function containerSnapshot(expectedImage) {
     { destination: "/home/ouro/.ouro-cli", source: PRODUCTION_RUNTIME_SOURCE, propagation: "rprivate", rw: true, type: "bind" },
     { destination: "/home/ouro/AgentBundles/sanctuary.ouro", source: PRODUCTION_BUNDLE_SOURCE, propagation: "rprivate", rw: true, type: "bind" },
     { destination: "/run/ouro-events", source: PRODUCTION_EVENT_SPOOL_SOURCE, propagation: "rprivate", rw: false, type: "bind" },
+    { destination: "/run/ouro-authority", source: "/run/ouro-authority", propagation: "rprivate", rw: false, type: "bind" },
   ]
   const mountsExact = mounts.length === expectedMounts.length && expectedMounts.every((expected) => mounts.some((mount) => mount.destination === expected.destination && mount.source === expected.source && mount.propagation === expected.propagation && mount.rw === expected.rw && mount.type === expected.type))
   const securityExact = value.privileged === false && (value.capAdd === null || (Array.isArray(value.capAdd) && value.capAdd.length === 0))
@@ -552,7 +554,7 @@ async function containerSnapshot(expectedImage) {
   }
 }
 
-function inspectRebootOwner(containerId = PRODUCTION_CONTAINER) {
+function inspectRebootOwner(containerId = activeContainerId) {
   const template = '{"containerId":{{json .Id}},"name":{{json .Name}},"imageId":{{json .Image}},"running":{{json .State.Running}},"pid":{{json .State.Pid}},"startedAt":{{json .State.StartedAt}},"health":{{json .State.Health.Status}},"restartCount":{{json .RestartCount}}}'
   const result = spawnSync(DOCKER, ["inspect", "--format", template, containerId], {
     cwd: "/", encoding: "utf8", timeout: 20_000, maxBuffer: 64 * 1024,
@@ -562,9 +564,55 @@ function inspectRebootOwner(containerId = PRODUCTION_CONTAINER) {
   return object(JSON.parse(result.stdout ?? ""), "reboot owner inspection")
 }
 
+function readAuthorityText(file) {
+  if (!file.startsWith(`${AUTHORITY_ROOT}/`) || realpathSync(file) !== file) throw new Error("root authority path is unsafe")
+  const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW)
+  try {
+    const stat = fstatSync(fd)
+    if (!stat.isFile() || stat.uid !== 0 || stat.gid !== 0 || stat.nlink !== 1 || (stat.mode & 0o7777) !== 0o600 || stat.size < 1 || stat.size > 65536) throw new Error("root authority metadata is unsafe")
+    return readFileSync(fd, "utf8")
+  } finally { closeSync(fd) }
+}
+
+function telegramGatewayQuiescence() {
+  const observe = () => {
+    const config = object(JSON.parse(readAuthorityText(`${AUTHORITY_ROOT}/active.json`)), "root authority configuration")
+    const keyId = text(config.keyId, "root issuer", /^[A-Za-z0-9_-]{1,128}$/u)
+    const botId = text(config.botId, "root bot identity", /^[1-9][0-9]*$/u)
+    const publicKeyDigest = text(config.publicKeyDigest, "root issuer digest", /^sha256:[a-f0-9]{64}$/u)
+    const epochRoot = `${AUTHORITY_ROOT}/epochs/${keyId}`
+    if (config.lockPath !== `${epochRoot}/authority.lock`) throw new Error("root authority lock path changed")
+    const epoch = object(JSON.parse(readAuthorityText(`${epochRoot}/epoch.json`)), "root authority epoch")
+    if (epoch.schemaVersion !== 1 || epoch.state !== "prepared" || epoch.epochId !== keyId || epoch.botId !== botId || epoch.publicKeyDigest !== publicKeyDigest
+      || epoch.revokedTokenStatus !== 401 || !/^sha256:[a-f0-9]{64}$/u.test(epoch.tokenDigest) || !/^sha256:[a-f0-9]{64}$/u.test(epoch.previousTokenDigest)
+      || epoch.tokenDigest === epoch.previousTokenDigest) throw new Error("root authority token epoch is invalid")
+    const pid = Number(readAuthorityText(config.lockPath))
+    if (!Number.isSafeInteger(pid) || pid <= 0 || pid > 4_194_304) throw new Error("root authority lock PID is invalid")
+    const processes = spawnSync(PGREP, ["-f", "sanctuary-telegram-authority-entry[.]js"], {
+      cwd: "/", encoding: "utf8", timeout: 5_000, maxBuffer: 64 * 1024, stdio: ["ignore", "pipe", "ignore"],
+    })
+    if (processes.error || processes.status !== 0 || processes.stdout.trim() !== String(pid)) throw new Error("root authority does not have exactly one live poller")
+    const status = readBoundedProcStatus(`/proc/${pid}/status`)
+    if (!status.split("\n").includes("Uid:\t0\t0\t0\t0") || !status.split("\n").includes("Gid:\t0\t0\t0\t0")) throw new Error("root authority process identity is invalid")
+    const command = readBoundedProcStatus(`/proc/${pid}/cmdline`)
+    if (command !== ["/usr/local/bin/node", `${AUTHORITY_ROOT}/package/dist/heart/daemon/sanctuary-telegram-authority-entry.js`, "--config", `${AUTHORITY_ROOT}/active.json`, ""].join("\0")) throw new Error("root authority process command changed")
+    const processStartTime = parseProcStartTime(readBoundedProcStatus(`/proc/${pid}/stat`))
+    const resident = inspectRebootOwner(activeContainerId)
+    if (resident.containerId !== activeContainerId || resident.name !== `/${activeContainer}` || resident.imageId !== expectedImageId || resident.running !== false || resident.pid !== 0) throw new Error("resident Telegram owner is not stopped")
+    return { keyId, botId, publicKeyDigest, pid, processStartTime, bootId: readFileSync(BOOT_ID, "utf8"), resident }
+  }
+  const before = observe()
+  const after = observe()
+  if (JSON.stringify(before) !== JSON.stringify(after)) throw new Error("root authority process generation changed")
+  return {
+    schemaVersion: 1, activePollers: 1, residentStopped: true, keyId: after.keyId, botId: after.botId, publicKeyDigest: after.publicKeyDigest,
+    processBindingDigest: createHash("sha256").update(JSON.stringify(after)).digest("hex"), observedAt: new Date().toISOString(),
+  }
+}
+
 function runningRebootOwnerGeneration() {
   const before = inspectRebootOwner()
-  if (before.name !== `/${PRODUCTION_CONTAINER}` || before.imageId !== expectedImageId || before.running !== true || before.health !== "healthy"
+  if (before.name !== `/${activeContainer}` || before.imageId !== expectedImageId || before.running !== true || before.health !== "healthy"
     || !Number.isSafeInteger(before.pid) || before.pid <= 0 || !Number.isSafeInteger(before.restartCount) || before.restartCount < 0) {
     throw new Error("reboot owner generation is invalid")
   }
@@ -591,7 +639,7 @@ function stopExactRebootOwner(expectedBinding) {
 
 function verifyStoppedRebootOwner(proof) {
   const value = inspectRebootOwner(text(proof.containerId, "stopped owner container id", SHA256))
-  if (value.containerId !== proof.containerId || value.name !== `/${PRODUCTION_CONTAINER}` || value.imageId !== proof.imageId
+  if (value.containerId !== proof.containerId || value.name !== `/${activeContainer}` || value.imageId !== proof.imageId
     || value.restartCount !== proof.restartCount || value.startedAt !== proof.startedAt || value.running !== false || value.pid !== 0) {
     throw new Error("exact stopped production owner generation changed")
   }
@@ -1280,7 +1328,7 @@ function createOwnerMutationCoordinator() {
   const enqueue = (operation) => {
     if (rebootReservation !== null) return Promise.reject(new Error("owner mutation refused by reboot reservation"))
     pendingOperations += 1
-    const task = ownerTail.catch(() => {}).then(async () => {
+    const task = ownerTail.then(async () => {
       try { return await operation() } finally { pendingOperations -= 1 }
     })
     ownerTail = task.then(() => {}, () => {})
@@ -1294,7 +1342,7 @@ function createOwnerMutationCoordinator() {
       if (rebootReservation !== null) throw new Error("reboot reservation already exists")
       rebootReservation = { id: reservationId, processBindingDigest, stoppedProof: null, attempted: false }
       try {
-        await ownerTail.catch(() => {})
+        await ownerTail
         if (pendingOperations !== 0 || activeHealth.size !== 0) throw new Error("reboot reservation could not drain owner mutations")
         return await operation()
       } catch (error) {
@@ -1376,7 +1424,7 @@ function createInteractiveRestartDriver() {
           (error) => { records.set(key, { state: "failed", errorDigest: createHash("sha256").update(interactiveFailureCategory(error)).digest("hex") }) },
       )
       tasks.add(task)
-      void task.finally(() => tasks.delete(task)).catch(() => {})
+      void task.finally(() => tasks.delete(task))
     },
     async stopAndDrain() { await Promise.allSettled([...tasks]) },
   }
@@ -1747,6 +1795,11 @@ async function dispatch(request, dependencies = {
 }) {
   const payload = object(request, "broker request")
   const operation = text(payload.operation, "operation")
+  if (operation === "telegram_gateway_quiescence") {
+    exactKeys(payload, ["operation", "targetId"], operation)
+    if (payload.targetId !== TARGET_HOST) throw new Error("target host is invalid")
+    return telegramGatewayQuiescence()
+  }
   if (operation === "inventory_keys") {
     exactKeys(payload, ["operation", "targetServerId"], operation)
     if (payload.targetServerId !== TARGET_SERVER) throw new Error("target server is invalid")

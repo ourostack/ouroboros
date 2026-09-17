@@ -15,6 +15,7 @@ import {
   type SignedAuthorityPayload,
 } from "./sanctuary-authority-codec"
 import type { TelegramTransportObservationV1 } from "./sanctuary-telegram-authority-gateway"
+import type { FileSanctuaryAuthorityLedger } from "./sanctuary-authority-ledger"
 
 const SCHEMA_VERSION = 1 as const
 const PROPOSAL_DOMAIN = "ouro.sanctuary.host-proposal.v1"
@@ -22,6 +23,7 @@ const REGISTRATION_DOMAIN = "ouro.sanctuary.host-registration.v1"
 const DECISION_DOMAIN = "ouro.sanctuary.host-decision.v1"
 const PERMIT_DOMAIN = "ouro.sanctuary.host-permit.v1"
 const RECEIPT_DOMAIN = "ouro.sanctuary.host-receipt.v1"
+const RETIREMENT_DOMAIN = "ouro.sanctuary.host-retirement.v1"
 const ROOT_HOST_PREFIX = "<b>OURO ROOT HOST APPROVAL</b>"
 const APPROVAL_TTL_MS = 300_000
 const MAX_TIMEOUT_MS = 900_000
@@ -131,7 +133,7 @@ interface PreparedRecord {
 }
 
 interface CommittedRecord extends Omit<PreparedRecord, "state"> {
-  state: "committed" | "approved" | "denied" | "expired" | "permitted" | "executed"
+  state: "committed" | "approved" | "denied" | "expired" | "permitted" | "executed" | "retired"
   telegramMessageId: number
   registration: SignedAuthorityPayload<Record<string, unknown>>
   callbackQueryId: string | null
@@ -140,8 +142,8 @@ interface CommittedRecord extends Omit<PreparedRecord, "state"> {
   decision: SignedAuthorityPayload<Record<string, unknown>> | null
   permit: SignedAuthorityPayload<Record<string, unknown>> | null
   receipt: SignedAuthorityPayload<Record<string, unknown>> | null
-  cardRevision: "committed" | "approved" | "denied" | "expired" | "executed_verified" | "executed_failed" | "executed_ambiguous"
-  cardRenderedRevision: "committed" | "approved" | "denied" | "expired" | "executed_verified" | "executed_failed" | "executed_ambiguous"
+  cardRevision: "committed" | "approved" | "denied" | "expired" | "executed_verified" | "executed_failed" | "executed_ambiguous" | "retired"
+  cardRenderedRevision: "committed" | "approved" | "denied" | "expired" | "executed_verified" | "executed_failed" | "executed_ambiguous" | "retired"
 }
 
 interface OrphanedRecord extends Omit<PreparedRecord, "state" | "approveHandle" | "denyHandle"> {
@@ -159,6 +161,7 @@ const CARD_STATUS: Record<CommittedRecord["cardRevision"], string> = {
   executed_verified: "Execution completed and verification succeeded.",
   executed_failed: "Execution failed or was interrupted.",
   executed_ambiguous: "Execution finished, but verification is ambiguous.",
+  retired: "Authority retired before execution. This permit is refused.",
 }
 
 interface HostAuthorityState {
@@ -419,7 +422,7 @@ function validateStoredRecord(
   } else if (record.state === "prepared") {
     requireState(exactKeys(record, preparedKeys))
   } else {
-    requireState(["committed", "approved", "denied", "expired", "permitted", "executed"].includes(record.state as string))
+    requireState(["committed", "approved", "denied", "expired", "permitted", "executed", "retired"].includes(record.state as string))
     requireState(exactKeys(record, committedKeys))
   }
   requireState(record.schemaVersion === SCHEMA_VERSION)
@@ -509,13 +512,13 @@ function validateStoredRecord(
     return
   }
 
-  const receipt = validateStoredArtifact(record.receipt, RECEIPT_DOMAIN, options)
+  const receipt = validateStoredArtifact(record.receipt, record.state === "retired" ? RETIREMENT_DOMAIN : RECEIPT_DOMAIN, options)
   requireState(receipt.registrationId === registrationId)
   requireState(receipt.permitId === permit.permitId)
   requireState(receipt.permitDigest === authorityArtifactDigest(PERMIT_DOMAIN, permit))
   requireState(receipt.targetHost === options.targetHost)
   requireState(receipt.publicKeyDigest === options.publicKeyDigest)
-  requireState(record.cardRevision === `executed_${String(receipt.state)}`)
+  requireState(record.cardRevision === (record.state === "retired" ? "retired" : `executed_${String(receipt.state)}`))
 }
 
 function validateHostAuthorityState(value: unknown, options: SanctuaryHostAuthorityOptions): HostAuthorityState {
@@ -763,6 +766,49 @@ export class FileSanctuaryHostAuthority {
       }
     })
     return orphaned
+  }
+
+  // Caller has fenced ingress. Journal refusal intent in the registration before
+  // reserving its replay tombstone, so interruption cannot turn it into execution.
+  retireRegistrations(ledger: FileSanctuaryAuthorityLedger): string[] {
+    this.reconcilePrepared()
+    const pending: string[] = []
+    this.#transaction((state) => {
+      for (const [id, record] of Object.entries(state.records)) {
+        if (record.state === "committed" || record.state === "approved") {
+          state.records[id] = { ...record, state: "expired", cardRevision: "expired" }
+        } else if (record.state === "permitted") {
+          const permit = record.permit!
+          if (ledger.read(String(permit.payload.permitId))) {
+            pending.push(id)
+            continue
+          }
+          const receipt = signAuthorityPayload({
+            domain: RETIREMENT_DOMAIN, keyId: this.#options.keyId, privateKey: this.#options.privateKey,
+            payload: {
+              registrationId: id, permitId: permit.payload.permitId,
+              permitDigest: authorityArtifactDigest(permit.domain, permit.payload),
+              targetHost: this.#options.targetHost, publicKeyDigest: this.#options.publicKeyDigest,
+              state: "refused", reason: "epoch_retired_before_reservation", retiredAt: this.#now(),
+            },
+          })
+          state.records[id] = { ...record, state: "retired", cardRevision: "retired", receipt }
+        }
+      }
+    })
+    for (const record of Object.values(this.#read().records)) {
+      if (record.state !== "retired") continue
+      const permit = record.permit!
+      const permitId = String(permit.payload.permitId)
+      const permitDigest = authorityArtifactDigest(permit.domain, permit.payload)
+      const outcomeDigest = authorityArtifactDigest(record.receipt!.domain, record.receipt!.payload)
+      const retiredAt = String(record.receipt!.payload.retiredAt)
+      const current = ledger.read(permitId)
+      if (current && (current.permitDigest !== permitDigest || (current.state !== "reserved" && (current.state !== "refused" || current.outcomeDigest !== outcomeDigest)))) throw new Error("Sanctuary retired permit ledger changed")
+      if (!current) ledger.reserve({ permitId, nonce: String(permit.payload.nonce), permitDigest, reservedAt: retiredAt })
+      if (!current || current.state === "reserved") ledger.terminalize({ permitId, state: "refused", outcomeDigest, updatedAt: retiredAt })
+    }
+    return pending
   }
 
   issuePermit(input: {
@@ -1066,7 +1112,14 @@ export class FileSanctuaryHostAuthority {
       expiresAt: record.expiresAt,
       ...("telegramMessageId" in record ? { telegramMessageId: record.telegramMessageId } : {}),
       ...("decision" in record && record.decision ? { decision: record.decision } : {}),
-      ...("permit" in record && record.permit ? { permit: record.permit } : {}),
+      ...("permit" in record && record.permit ? {
+        permit: signAuthorityPayload({
+          domain: "ouro.sanctuary.host-attempt.v1",
+          keyId: this.#options.keyId,
+          privateKey: this.#options.privateKey,
+          payload: { ...record.permit.payload, permitDigest: authorityArtifactDigest(record.permit.domain, record.permit.payload) },
+        }),
+      } : {}),
       ...("receipt" in record && record.receipt ? { receipt: record.receipt } : {}),
       ...("cardRevision" in record ? { cardPending: record.cardRevision !== record.cardRenderedRevision } : {}),
     }
