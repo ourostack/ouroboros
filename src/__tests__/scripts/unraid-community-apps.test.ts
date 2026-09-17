@@ -5,6 +5,17 @@ import { describe, expect, it } from "vitest"
 const packageVersion = JSON.parse(fs.readFileSync("package.json", "utf8")) as { version: string }
 
 describe("Mendelow Cloud Butler Community Apps release", () => {
+  it("builds and loads SQLite against the image libc instead of trusting an incompatible prebuild", () => {
+    const dockerfile = fs.readFileSync("deploy/unraid/Dockerfile", "utf8")
+    expect(dockerfile).toContain("npm run build-release --prefix node_modules/better-sqlite3")
+    expect(dockerfile).toContain('node_modules/better-sqlite3/prebuilds/linux-$(node -p process.arch).node')
+    expect(dockerfile).toContain("SELECT 1 AS ready")
+    expect(dockerfile.indexOf("npm run build-release")).toBeLessThan(dockerfile.indexOf("USER 10001:10001"))
+    const workflow = fs.readFileSync(".github/workflows/coverage.yml", "utf8")
+    expect(workflow).toContain('require("/opt/ouro/node_modules/better-sqlite3")')
+    expect(workflow).toContain("SELECT 1 AS ready")
+  })
+
   it("serializes repository container publications without cancelling an in-flight release", () => {
     const workflow = fs.readFileSync(".github/workflows/container-publish.yml", "utf8")
     const concurrencyIndex = workflow.indexOf("\nconcurrency:\n")

@@ -7,7 +7,8 @@
         "Add root-authenticated Sanctuary host execution with exact owner approval, one-time permits, durable receipts, and tokenless Telegram transport.",
         "Package journaled token/cursor migration and rollback with exact read-only authority socket mounts, preserving typed tools and owner-authored steward policy.",
         "Keep Telegram and retirement available during execution-pin maintenance, with a root-only reviewed-hash refresh command that preserves authority identity and state.",
-        "Verify Linux system executable aliases against their resolved owned bytes without changing invocation paths or relaxing package-script pinning."
+        "Verify Linux system executable aliases against their resolved owned bytes without changing invocation paths or relaxing package-script pinning.",
+        "Build the pinned SQLite native binding for the published image libc and verify a real database load before publication."
       ]
     },
     {
