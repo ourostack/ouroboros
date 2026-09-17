@@ -129,6 +129,7 @@ describe("authority handoff inside the DockerMan deployment transaction", () => 
       }
     }
     vi.doMock("../../../dist/mind/session-transaction.js", () => ({ withSessionTurnLease }))
+    vi.doMock("/dist/mind/session-transaction.js", () => ({ withSessionTurnLease }))
     vi.doMock("../../../dist/heart/daemon/sanctuary-authority-root-lifecycle.js", () => ({ SanctuaryAuthorityRootLifecycle: RootLifecycle }))
     vi.doMock("/dist/heart/daemon/sanctuary-authority-root-lifecycle.js", () => ({ SanctuaryAuthorityRootLifecycle: RootLifecycle }))
     try {
@@ -139,6 +140,7 @@ describe("authority handoff inside the DockerMan deployment transaction", () => 
       expect(complete.size).toBe(6)
     } finally {
       vi.doUnmock("../../../dist/mind/session-transaction.js")
+      vi.doUnmock("/dist/mind/session-transaction.js")
       vi.doUnmock("../../../dist/heart/daemon/sanctuary-authority-root-lifecycle.js")
       vi.doUnmock("/dist/heart/daemon/sanctuary-authority-root-lifecycle.js")
     }

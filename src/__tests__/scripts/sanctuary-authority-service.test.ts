@@ -49,12 +49,21 @@ afterAll(() => {
   fs.mkdirSync("coverage", { recursive: true })
   fs.writeFileSync("coverage/s6-root-service-traces.json", JSON.stringify({
     sourcePath: "deploy/unraid/sanctuary-authority-service.sh", sourceSha256: createHash("sha256").update(source).digest("hex"),
-    method: "POSIX shell -x native line traces; fixed path/command fixtures only, unchanged control flow",
+    method: "Bash POSIX-mode native line traces with /bin/sh behavioral parity on fresh fixed-path fixtures; unchanged control flow",
     executableLines: executable, branchOutcomes: Object.fromEntries([...branches].map(([key, set]) => [key, [...set].sort()])), summary, traces,
   }, null, 2))
 })
 
-async function launchFixture(input: { args?: string[]; rootMode?: number; configMode?: number; owner?: string; delayed?: boolean; delayedConfig?: boolean; missingConfig?: boolean; unavailable?: boolean; malformedRoot?: boolean; linkedConfig?: boolean; linkedRoot?: boolean; programExit?: number } = {}) {
+type LaunchInput = { args?: string[]; rootMode?: number; configMode?: number; owner?: string; delayed?: boolean; delayedConfig?: boolean; missingConfig?: boolean; unavailable?: boolean; malformedRoot?: boolean; linkedConfig?: boolean; linkedRoot?: boolean; programExit?: number }
+
+async function launchFixture(input: LaunchInput = {}) {
+  const native = await runLaunchFixture(input, "/bin/sh")
+  const traced = await runLaunchFixture(input, "/bin/bash")
+  for (const key of ["status", "normalizedOutput", "waits", "dockerCalls"] as const) expect(traced[key], `${key} shell parity`).toEqual(native[key])
+  return native
+}
+
+async function runLaunchFixture(input: LaunchInput, shell: "/bin/sh" | "/bin/bash") {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "sas-")))
   const authority = path.join(root, "authority")
   const bin = path.join(root, "bin")
@@ -85,11 +94,12 @@ async function launchFixture(input: { args?: string[]; rootMode?: number; config
   const scriptPath = path.join(root, "service.sh")
   fs.writeFileSync(scriptPath, script, { mode: 0o700 })
   try {
-    const result = spawnSync("/bin/sh", ["-x", scriptPath, ...input.args ?? []], { encoding: "utf8", timeout: 30_000, env: { PATH: `${bin}:/usr/bin:/bin`, PS4: "+${LINENO}: ", FORBIDDEN_SECRET: "must-not-reach-child" } })
+    const result = spawnSync(shell, [...shell === "/bin/bash" ? ["--posix"] : [], "-x", scriptPath, ...input.args ?? []], { encoding: "utf8", timeout: 30_000, env: { PATH: `${bin}:/usr/bin:/bin`, PS4: "+${LINENO}: ", FORBIDDEN_SECRET: "must-not-reach-child" } })
     if (result.error) throw result.error
-    traces.push({ scenario: input, status: result.status, trace: result.stderr, output: result.stdout })
+    if (shell === "/bin/bash") traces.push({ scenario: input, status: result.status, trace: result.stderr, output: result.stdout })
     return {
       ...result,
+      normalizedOutput: result.stdout.replaceAll(root, "<fixture>"),
       waits: fs.existsSync(path.join(root, "waits")) ? Number(fs.readFileSync(path.join(root, "waits"))) : 0,
       dockerCalls: fs.existsSync(path.join(root, "docker-calls")) ? fs.readFileSync(path.join(root, "docker-calls"), "utf8") : "",
     }
@@ -113,7 +123,7 @@ describe("packaged root authority launch assets", () => {
     expect(result.status).not.toBe(0)
     expect(result.waits).toBe(300)
     expect(result.stdout).not.toContain("invocation:")
-  })
+  }, 60_000)
   it.each([
     { args: [], rootMode: 0o700, configMode: 0o600 },
     { args: ["--boot"] },

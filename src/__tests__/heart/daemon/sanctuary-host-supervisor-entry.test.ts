@@ -108,6 +108,17 @@ function fixture() {
 }
 
 describe("Sanctuary host supervisor entry", () => {
+  it.each(["shellPath", "prlimitPath", "setsidPath"] as const)("verifies system alias %s without changing the recorded invocation path", async (field) => {
+    const f = fixture()
+    const target = `${f.spec[field]}.real`
+    fs.renameSync(f.spec[field], target)
+    fs.symlinkSync(target, f.spec[field])
+    await expect(runSanctuaryHostSupervisor(f.specPath, {
+      expectedUid: process.getuid?.() ?? 0, processId: 321, bootId: () => "boot-1", processStartTime: () => "456", kernel: f.kernel,
+    })).resolves.toMatchObject({ exitCode: 0, cleanup: "cgroup_empty" })
+    expect(JSON.parse(fs.readFileSync(f.specPath, "utf8"))[field]).toBe(f.spec[field])
+  })
+
   it("loads root-owned supervisor JavaScript without requiring an executable bit", async () => {
     const f = fixture()
     fs.chmodSync(f.spec.supervisorProgramPath, 0o600)

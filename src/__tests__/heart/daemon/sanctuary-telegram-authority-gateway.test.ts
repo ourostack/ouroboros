@@ -359,17 +359,17 @@ describe("Sanctuary root Telegram authority gateway state", () => {
 
   it("caps admitted Telegram communication coordinates at 64 live entries", () => {
     const f = fixture()
+    f.gateway.capture(Array.from({ length: 65 }, (_, index) => message(200 + index, 1_000 + index)))
     for (let index = 0; index < 65; index += 1) {
       const updateId = 200 + index
       const userId = 1_000 + index
-      f.gateway.capture([message(updateId, userId)])
       if (index < 64) {
         f.gateway.admitChat({
           admissionId: index.toString(16).padStart(20, "0"),
           updateId,
           userId: String(userId),
           chatId: String(userId),
-        })
+        }, 30_000)
       } else {
         expect(() => f.gateway.admitChat({
           admissionId: index.toString(16).padStart(20, "0"),

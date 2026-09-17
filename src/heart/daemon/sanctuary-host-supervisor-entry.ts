@@ -72,19 +72,20 @@ function readPrivateSpec(specPath: string, expectedUid: number): { bytes: string
   }
 }
 
-function assertDigest(filePath: string, expectedDigest: string, expectedUid: number, executable = true): void {
-  const stat = fs.lstatSync(filePath)
+function assertDigest(filePath: string, expectedDigest: string, expectedUid: number, kind: "source" | "executable" | "system" = "executable"): void {
+  const actual = kind === "system" ? fs.realpathSync(filePath) : filePath
+  const stat = fs.lstatSync(actual)
   if (
     !DIGEST.test(expectedDigest)
     || !stat.isFile()
     || stat.isSymbolicLink()
     || stat.uid !== expectedUid
-    || (executable && (stat.mode & 0o111) === 0)
+    || (kind !== "source" && (stat.mode & 0o111) === 0)
     || (stat.mode & 0o022) !== 0
   ) {
     throw new Error(`Sanctuary host supervisor primitive metadata is invalid: ${filePath}`)
   }
-  const descriptor = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+  const descriptor = fs.openSync(actual, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
   try {
     if (digest(fs.readFileSync(descriptor)) === expectedDigest) return
   } finally {
@@ -153,10 +154,10 @@ export async function runSanctuaryHostSupervisor(specPath: string, options: {
     throw new Error("Sanctuary host supervisor permit key digest changed")
   }
   assertDigest(spec.launcherPath, spec.launcherDigest, expectedUid)
-  assertDigest(spec.prlimitPath, spec.prlimitDigest, expectedUid)
-  assertDigest(spec.setsidPath, spec.setsidDigest, expectedUid)
-  assertDigest(spec.shellPath, spec.shellDigest, expectedUid)
-  assertDigest(spec.supervisorProgramPath, spec.supervisorProgramDigest, expectedUid, false)
+  assertDigest(spec.prlimitPath, spec.prlimitDigest, expectedUid, "system")
+  assertDigest(spec.setsidPath, spec.setsidDigest, expectedUid, "system")
+  assertDigest(spec.shellPath, spec.shellDigest, expectedUid, "system")
+  assertDigest(spec.supervisorProgramPath, spec.supervisorProgramDigest, expectedUid, "source")
   const specDigest = digest(bytes)
   const processId = options.processId ?? process.pid
   const bootId = options.bootId?.() ?? fs.readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim()

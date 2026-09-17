@@ -13,7 +13,7 @@ vi.mock("node:fs", async (importOriginal) => {
   return {
     ...original,
     lstatSync: (name: import("node:fs").PathLike, options?: unknown) => name === "/program" && programMetadata.fault ? {
-      uid: 0,
+      uid: programMetadata.fault === "owner" ? 10001 : 0,
       mode: programMetadata.fault === "writable" ? 0o777 : programMetadata.fault === "non-executable" ? 0o644 : 0o755,
       isFile: () => programMetadata.fault !== "directory",
       isDirectory: () => programMetadata.fault === "directory",
@@ -75,7 +75,7 @@ const launchInput = {
 }
 
 describe("Linux Sanctuary host supervisor kernel", () => {
-  it.each(["cycle", "writable", "non-directory", "directory", "non-executable"])("refuses a root-owned program with %s metadata", async (fault) => {
+  it.each(["owner", "cycle", "writable", "non-directory", "directory", "non-executable"])("refuses a root-owned program with %s metadata", async (fault) => {
     const f = fixture()
     programMetadata.fault = fault
     try {

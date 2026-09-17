@@ -59,15 +59,19 @@ describe("S6 executable runbook integration", () => {
       fs.symlinkSync("../dependency/index.js", path.join(source, "node_modules/.bin/tool"))
       fs.mkdirSync(state, { mode: 0o700 })
       const token = path.join(state, "incoming-token")
+      const nodePrimitive = path.join(root, "node-primitive")
+      const shellPrimitive = path.join(root, "shell-primitive")
+      fs.writeFileSync(nodePrimitive, "reviewed node fixture", { mode: 0o755 })
+      fs.writeFileSync(shellPrimitive, "reviewed shell fixture", { mode: 0o755 })
       const input = helper("prepare_sanctuary_authority_inputs")
       const program = input.slice(input.indexOf("\n", input.indexOf("<<'NODE'")) + 1, input.indexOf("\nNODE"))
         .replaceAll("/mnt/user/appdata/ouro-authority", state)
         .replaceAll("stat.uid !== 0", `stat.uid !== ${process.getuid!()}`)
         .replaceAll("stat.gid !== 0", `stat.gid !== ${process.getgid!()}`)
-        .replaceAll('primitive("/usr/local/bin/node")', `primitive(${JSON.stringify(process.execPath)})`)
-        .replaceAll('primitive("/usr/bin/prlimit")', 'primitive("/bin/sh")')
-        .replaceAll('primitive("/usr/bin/setsid")', 'primitive("/bin/sh")')
-        .replaceAll('stat.uid !== ' + process.getuid!() + ' || stat.gid !== ' + process.getgid!() + ' || (stat.mode & 0o022)', '(stat.mode & 0o022)')
+        .replaceAll(`primitive(${JSON.stringify(process.execPath)})`, `primitive(${JSON.stringify(nodePrimitive)})`)
+        .replaceAll('primitive("/usr/bin/prlimit")', `primitive(${JSON.stringify(shellPrimitive)})`)
+        .replaceAll('primitive("/usr/bin/setsid")', `primitive(${JSON.stringify(shellPrimitive)})`)
+        .replaceAll('primitive("/bin/sh")', `primitive(${JSON.stringify(shellPrimitive)})`)
       const run = (epoch = "epoch1", bot = "8541786263", owner = "42") => spawnSync(process.execPath, ["-", source, epoch, bot, owner], { input: program, encoding: "utf8" })
       const first = run()
       expect(first.status, first.stderr).toBe(0)
@@ -81,8 +85,8 @@ describe("S6 executable runbook integration", () => {
       const request = JSON.parse(requestBytes.toString())
       expect(request).toEqual({
         schemaVersion: 1, epochId: "epoch1", botId: "8541786263", ownerUserId: "42", ownerChatId: "42",
-        packageDigest: sha(manifestBytes), nodeDigest: sha(fs.readFileSync(process.execPath)),
-        prlimitDigest: sha(fs.readFileSync("/bin/sh")), setsidDigest: sha(fs.readFileSync("/bin/sh")), shellDigest: sha(fs.readFileSync("/bin/sh")),
+        packageDigest: sha(manifestBytes), nodeDigest: sha(fs.readFileSync(nodePrimitive)),
+        prlimitDigest: sha(fs.readFileSync(shellPrimitive)), setsidDigest: sha(fs.readFileSync(shellPrimitive)), shellDigest: sha(fs.readFileSync(shellPrimitive)),
       })
       expect(Object.keys(manifest.files)).toHaveLength(10)
       for (const [file, pin] of Object.entries(manifest.files) as [string, { digest: string; mode: number }][]) {

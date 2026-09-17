@@ -5,9 +5,9 @@
       "version": "0.1.0-alpha.817",
       "changes": [
         "Add root-authenticated Sanctuary host execution with exact owner approval, one-time permits, durable receipts, and tokenless Telegram transport.",
-        "Package journaled root gateway installation and rollback with versioned read-only socket mounts; preserve owner-authored steward policy and existing typed tools.",
-        "Preserve Telegram and rollback when host execution pins need refresh, reconcile interrupted supervisors without replay, and keep root-only helpers off the public command path.",
-        "Provide a root-only reviewed-hash command to refresh execution primitives without changing tokens, issuer identity, owner state or policy."
+        "Package journaled token/cursor migration and rollback with exact read-only authority socket mounts, preserving typed tools and owner-authored steward policy.",
+        "Keep Telegram and retirement available during execution-pin maintenance, with a root-only reviewed-hash refresh command that preserves authority identity and state.",
+        "Verify Linux system executable aliases against their resolved owned bytes without changing invocation paths or relaxing package-script pinning."
       ]
     },
     {

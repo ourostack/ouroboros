@@ -129,6 +129,17 @@ const input = {
 }
 
 describe("detached Sanctuary host supervisor", () => {
+  it.each(["shellPath", "prlimitPath", "setsidPath"] as const)("pins the actual owned bytes behind the system alias %s", (field) => {
+    const f = fixture()
+    const target = `${f.options[field]}.real`
+    fs.renameSync(f.options[field], target)
+    fs.symlinkSync(target, f.options[field])
+    const supervisor = new DetachedSanctuaryHostSupervisor(f.options)
+    expect(() => supervisor.verifyInstallation()).not.toThrow()
+    fs.chmodSync(target, 0o777)
+    expect(() => supervisor.verifyInstallation()).toThrow(/metadata/u)
+  })
+
   it("accepts non-executable supervisor source but still requires executable host primitives", () => {
     const f = fixture()
     fs.chmodSync(f.options.programPath, 0o600)

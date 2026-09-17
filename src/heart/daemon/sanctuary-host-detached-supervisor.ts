@@ -107,19 +107,20 @@ function assertAbsolute(value: string, label: string): void {
   if (!path.isAbsolute(value)) throw new Error(`Sanctuary host ${label} path must be absolute`)
 }
 
-function assertPinnedProgram(filePath: string, expectedDigest: string, expectedUid: number, executable: boolean): void {
+function assertPinnedProgram(filePath: string, expectedDigest: string, expectedUid: number, kind: "source" | "executable" | "system"): void {
   if (!DIGEST.test(expectedDigest)) throw new Error("Sanctuary host program digest is invalid")
-  const stat = fs.lstatSync(filePath)
+  const actual = kind === "system" ? fs.realpathSync(filePath) : filePath
+  const stat = fs.lstatSync(actual)
   if (
     !stat.isFile()
     || stat.isSymbolicLink()
     || stat.uid !== expectedUid
-    || (executable && (stat.mode & 0o111) === 0)
+    || (kind !== "source" && (stat.mode & 0o111) === 0)
     || (stat.mode & 0o022) !== 0
   ) {
     throw new Error(`Sanctuary host program metadata is invalid: ${filePath}`)
   }
-  const descriptor = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+  const descriptor = fs.openSync(actual, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
   try {
     if (digest(fs.readFileSync(descriptor)) !== expectedDigest) {
       throw new Error(`Sanctuary host program digest changed: ${filePath}`)
@@ -407,13 +408,13 @@ export class DetachedSanctuaryHostSupervisor implements HostSupervisor {
   }
 
   #assertPins(): void {
-    for (const [filePath, expectedDigest] of [
-      [this.#options.programPath, this.#options.programDigest],
-      [this.#options.launcherPath, this.#options.launcherDigest],
-      [this.#options.prlimitPath, this.#options.prlimitDigest],
-      [this.#options.setsidPath, this.#options.setsidDigest],
-      [this.#options.shellPath, this.#options.shellDigest],
-    ]) assertPinnedProgram(filePath, expectedDigest, this.#options.expectedUid, filePath !== this.#options.programPath)
+    for (const [filePath, expectedDigest, kind] of [
+      [this.#options.programPath, this.#options.programDigest, "source"],
+      [this.#options.launcherPath, this.#options.launcherDigest, "executable"],
+      [this.#options.prlimitPath, this.#options.prlimitDigest, "system"],
+      [this.#options.setsidPath, this.#options.setsidDigest, "system"],
+      [this.#options.shellPath, this.#options.shellDigest, "system"],
+    ] as const) assertPinnedProgram(filePath, expectedDigest, this.#options.expectedUid, kind)
   }
 
   #assertLiveBinding(value: SupervisorBinding, lockPath: string): void {
