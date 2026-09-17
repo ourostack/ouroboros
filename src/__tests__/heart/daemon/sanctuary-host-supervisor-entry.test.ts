@@ -108,6 +108,14 @@ function fixture() {
 }
 
 describe("Sanctuary host supervisor entry", () => {
+  it("loads root-owned supervisor JavaScript without requiring an executable bit", async () => {
+    const f = fixture()
+    fs.chmodSync(f.spec.supervisorProgramPath, 0o600)
+    await expect(runSanctuaryHostSupervisor(f.specPath, {
+      expectedUid: process.getuid?.() ?? 0, processId: 321, bootId: () => "boot-1", processStartTime: () => "456", kernel: f.kernel,
+    })).resolves.toMatchObject({ exitCode: 0, cleanup: "cgroup_empty" })
+  })
+
   it("pins its private spec and programs, holds readiness identity, and writes a terminal attempt", async () => {
     const f = fixture()
     await expect(runSanctuaryHostSupervisor(f.specPath, {

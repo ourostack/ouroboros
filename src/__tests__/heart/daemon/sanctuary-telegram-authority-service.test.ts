@@ -800,6 +800,11 @@ describe("Sanctuary Telegram authority service", () => {
     })).resolves.toEqual({ method: "sendMessage" })
     await expect(service.dispatch("telegram.request", {
       method: "sendMessage",
+      body: { chat_id: "84", text: FIXED_ADMISSION_ACKNOWLEDGEMENT, reply_markup: { inline_keyboard: [[{ text: "Injected action", callback_data: "unrelated" }]] } },
+      observation: { updateId: 22, observationDigest },
+    })).rejects.toThrow(/target/u)
+    await expect(service.dispatch("telegram.request", {
+      method: "sendMessage",
       body: { chat_id: "84", text: "changed" },
       observation: { updateId: 22, observationDigest },
     })).rejects.toThrow(/target/u)

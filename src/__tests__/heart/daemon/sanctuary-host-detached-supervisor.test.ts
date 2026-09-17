@@ -129,6 +129,33 @@ const input = {
 }
 
 describe("detached Sanctuary host supervisor", () => {
+  it("accepts non-executable supervisor source but still requires executable host primitives", () => {
+    const f = fixture()
+    fs.chmodSync(f.options.programPath, 0o600)
+    const supervisor = new DetachedSanctuaryHostSupervisor(f.options)
+    expect(() => supervisor.verifyInstallation()).not.toThrow()
+    fs.chmodSync(f.options.launcherPath, 0o600)
+    expect(() => supervisor.verifyInstallation()).toThrow(/metadata/u)
+  })
+
+  it("refuses startup when an orphan cgroup cannot be emptied", async () => {
+    const f = fixture()
+    fs.mkdirSync(path.join(f.options.cgroupRoot, permit.permitId))
+    const supervisor = new DetachedSanctuaryHostSupervisor({
+      ...f.options, killCgroup: vi.fn(), cgroupEmpty: () => false,
+    })
+    await expect(supervisor.reconcileOrphans([])).rejects.toThrow(/cleanup/u)
+  })
+
+  it("recovers a reservation without a cgroup even after host primitives change, without spawning", async () => {
+    const f = fixture()
+    fs.writeFileSync(f.options.prlimitPath, "updated by the OS")
+    await expect(new DetachedSanctuaryHostSupervisor(f.options).resume(input)).resolves.toMatchObject({
+      exitCode: null, cleanup: "cgroup_empty", containment: "unprovable_after_approved_root_migration",
+    })
+    expect(f.spawn).not.toHaveBeenCalled()
+  })
+
   it("pins package and host primitives, writes a private spec, and adopts the bound terminal record", async () => {
     const f = fixture()
     const supervisor = new DetachedSanctuaryHostSupervisor(f.options)
@@ -156,7 +183,7 @@ describe("detached Sanctuary host supervisor", () => {
     const missing = fixture()
     await expect(new DetachedSanctuaryHostSupervisor(missing.options).resume(input)).resolves.toMatchObject({
       exitCode: null,
-      cleanup: "cleanup_unproven",
+      cleanup: "cgroup_empty",
       containment: "unprovable_after_approved_root_migration",
     })
     expect(missing.spawn).not.toHaveBeenCalled()
@@ -285,7 +312,7 @@ describe("detached Sanctuary host supervisor", () => {
     await expect(new DetachedSanctuaryHostSupervisor({ ...base.options, programDigest: "bad" }).execute(input)).rejects.toThrow(/digest/u)
 
     for (const mutate of [
-      (f: ReturnType<typeof fixture>) => fs.chmodSync(f.options.programPath, 0o644),
+      (f: ReturnType<typeof fixture>) => fs.chmodSync(f.options.launcherPath, 0o644),
       (f: ReturnType<typeof fixture>) => fs.chmodSync(f.options.programPath, 0o777),
       (f: ReturnType<typeof fixture>) => { fs.rmSync(f.options.programPath); fs.mkdirSync(f.options.programPath) },
       (f: ReturnType<typeof fixture>) => {
@@ -557,9 +584,11 @@ describe("detached Sanctuary host supervisor", () => {
     const unboundRoot = path.join(unbound.options.stateRoot, permit.permitId)
     for (const name of ["terminal.json", "ready.json", "spawn.json", "start.json"]) fs.unlinkSync(path.join(unboundRoot, name))
     await expect(new DetachedSanctuaryHostSupervisor(unbound.options).resume(input)).resolves.toMatchObject({
-      cleanup: "cleanup_unproven",
+      cleanup: "cgroup_empty",
       containment: "unprovable_after_approved_root_migration",
     })
+    fs.writeFileSync(path.join(unboundRoot, "supervisor.lock"), "unidentified supervisor", { mode: 0o600 })
+    await expect(new DetachedSanctuaryHostSupervisor(unbound.options).resume(input)).resolves.toMatchObject({ cleanup: "cleanup_unproven" })
 
     const changedLock = fixture()
     changedLock.options.spawn = vi.fn((value) => {

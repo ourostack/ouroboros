@@ -917,6 +917,7 @@ export class FileSanctuaryHostAuthority {
           environmentProfile: current.proposal.environmentProfile,
           environmentProfileDigest: digestText(current.proposal.environmentProfile),
           timeoutMs: current.proposal.timeoutMs,
+          // Resident-supplied audit correlation, like the session IDs above; never a root authorization input.
           stewardPolicy: input.stewardPolicy,
           verification: current.proposal.verification,
           issuedAt,

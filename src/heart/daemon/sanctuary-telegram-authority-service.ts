@@ -53,6 +53,7 @@ export class SanctuaryTelegramAuthorityService {
   readonly #hostExecutor: {
     execute(permit: SignedAuthorityPayload<Record<string, unknown>>): Promise<unknown>
     acknowledge?(permitId: string): void
+    isHealthy?(): boolean
   } | undefined
   readonly #allowedFilePaths = new Set<string>()
   readonly #hostExecutions = new Map<string, Promise<void>>()
@@ -66,6 +67,7 @@ export class SanctuaryTelegramAuthorityService {
     hostExecutor?: {
       execute(permit: SignedAuthorityPayload<Record<string, unknown>>): Promise<unknown>
       acknowledge?(permitId: string): void
+      isHealthy?(): boolean
     }
     downloadFile?: (filePath: string) => Promise<{ body: Buffer; contentType?: string }>
   }) {
@@ -80,6 +82,10 @@ export class SanctuaryTelegramAuthorityService {
 
   async drainHostExecutions(): Promise<void> {
     await Promise.allSettled(this.#hostExecutions.values())
+  }
+
+  #hostReady(): boolean {
+    return this.#hostExecutor !== undefined && (this.#hostExecutor.isHealthy?.() ?? true)
   }
 
   async dispatch(method: string, params: Record<string, unknown>): Promise<unknown> {
@@ -185,6 +191,7 @@ export class SanctuaryTelegramAuthorityService {
           throw new Error("Sanctuary Telegram host approval content is root-owned")
         }
         const observedStrangerAcknowledgement = body.text === FIXED_ADMISSION_ACKNOWLEDGEMENT
+          && body.reply_markup === undefined
           && isObject(params.observation)
           && exactKeys(params.observation, ["updateId", "observationDigest"])
           && this.#gateway.ownsCurrentObservation({
@@ -267,7 +274,7 @@ export class SanctuaryTelegramAuthorityService {
       return result
     }
     if (method === "host.approval") {
-      if (!this.#hostAuthority) throw new Error("Sanctuary host authority is unavailable")
+      if (!this.#hostAuthority || !this.#hostReady()) throw new Error("Sanctuary host authority is unavailable")
       if (!exactKeys(params, ["proposal"])) throw new Error("Sanctuary host approval params are invalid")
       const prepared = this.#hostAuthority.prepare(params.proposal as HostProposalRequestV1)
       try {
@@ -304,7 +311,7 @@ export class SanctuaryTelegramAuthorityService {
         this.#gateway.cursorSnapshot()
         const identity = await this.#api.request("getMe", {})
         if (!isObject(identity) || String(identity.id) !== this.#gateway.identity().botId) throw new Error("Sanctuary Telegram authority bot identity is invalid")
-        return { health: this.#hostAuthority.attestStatus(Boolean(this.#hostExecutor) && !this.#hostAuthority.ownerMutationFrozen()) }
+        return { health: this.#hostAuthority.attestStatus(this.#hostReady() && !this.#hostAuthority.ownerMutationFrozen()) }
       }
       let status = this.#hostAuthority.status(params.registrationId)
       if (!status) return null
@@ -359,7 +366,7 @@ export class SanctuaryTelegramAuthorityService {
       return { ...result, authority: this.#hostAuthority.attestStatus(result) }
     }
     if (method === "host.execute") {
-      if (!this.#hostAuthority || !this.#hostExecutor) throw new Error("Sanctuary host execution is unavailable")
+      if (!this.#hostAuthority || !this.#hostReady()) throw new Error("Sanctuary host execution is unavailable")
       if (!exactKeys(params, ["correlation"]) || !isObject(params.correlation)) {
         throw new Error("Sanctuary host execution params are invalid")
       }

@@ -10,6 +10,11 @@ const {
 } = require(path.resolve(__dirname, "../../../scripts/package-assets.cjs"))
 
 describe("package metadata", () => {
+  it("keeps root-only Sanctuary entrypoints off the public command path", () => {
+    expect(packageJson.bin).not.toHaveProperty("ouro-sanctuary-authority")
+    expect(packageJson.bin).not.toHaveProperty("ouro-sanctuary-host-supervisor")
+  })
+
   it("keeps both root lockfile executable maps aligned with the published package", () => {
     for (const name of ["package-lock.json", "npm-shrinkwrap.json"]) {
       const lock = JSON.parse(fs.readFileSync(path.resolve(__dirname, "../../../", name), "utf8"))

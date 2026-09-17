@@ -36,9 +36,7 @@
       "bin": {
         "cli": "dist/heart/daemon/ouro-bot-entry.js",
         "ouro": "dist/heart/daemon/ouro-entry.js",
-        "ouro.bot": "dist/heart/daemon/ouro-bot-entry.js",
-        "ouro-sanctuary-authority": "dist/heart/daemon/sanctuary-telegram-authority-entry.js",
-        "ouro-sanctuary-host-supervisor": "dist/heart/daemon/sanctuary-host-supervisor-entry.js"
+        "ouro.bot": "dist/heart/daemon/ouro-bot-entry.js"
       },
       "devDependencies": {
         "@testing-library/react": "^16.3.2",

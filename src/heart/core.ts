@@ -259,6 +259,7 @@ export async function getProviderRuntime(facing: Facing = "human", owner?: Runti
     console.error(`\n[fatal] ${msg}\n`);
     throw new Error(msg);
   }
+  // The shared tool loop supplies approval continuation to every provider adapter.
   return { ...runtime, capabilities: new Set([...runtime.capabilities, "approval-continuation"]) };
 }
 

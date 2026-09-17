@@ -87,6 +87,7 @@ interface StartOptions {
     execute: SanctuaryHostPermitExecutor["execute"]
     reconcile?: SanctuaryHostPermitExecutor["reconcile"]
     acknowledge?: SanctuaryHostPermitExecutor["acknowledge"]
+    isHealthy?: SanctuaryHostPermitExecutor["isHealthy"]
   }
   chown?: typeof fs.chownSync
   chmod?: typeof fs.chmodSync
@@ -326,7 +327,6 @@ export async function startSanctuaryTelegramAuthority(options: StartOptions): Pr
         keyId: config.keyId,
         publicKeyPem: publicKey.export({ type: "spki", format: "pem" }).toString(),
       })
-      hostSupervisor.verifyInstallation()
       return new SanctuaryHostPermitExecutor({
         ledger: new FileSanctuaryAuthorityLedger(config.agentRoot),
         expectedTargetHost: config.targetHost,

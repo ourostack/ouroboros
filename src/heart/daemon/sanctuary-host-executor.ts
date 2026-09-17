@@ -88,6 +88,7 @@ export interface HostSupervisorAttempt {
 }
 
 export interface HostSupervisor {
+  verifyInstallation?(): void
   execute(input: {
     permit: HostExecutionPermitPayloadV1
     permitArtifact: SignedAuthorityPayload<HostExecutionPermitPayloadV1>
@@ -365,6 +366,16 @@ export class SanctuaryHostPermitExecutor {
   async execute(artifact: unknown): Promise<SignedAuthorityPayload<Record<string, unknown>>> {
     emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_host_permit_submitted", message: "Sanctuary host permit submitted for verification" })
     return this.#execute(artifact, false)
+  }
+
+  isHealthy(): boolean {
+    try {
+      this.#options.supervisor.verifyInstallation?.()
+      return true
+    } catch {
+      emitNervesEvent({ level: "warn", component: "daemon", event: "daemon.sanctuary_host_authority_unavailable", message: "Host execution is unavailable until root program pins are reviewed and refreshed", meta: { reason: "program_pin_verification" } })
+      return false
+    }
   }
 
   async reconcile(): Promise<SignedAuthorityPayload<Record<string, unknown>>[]> {

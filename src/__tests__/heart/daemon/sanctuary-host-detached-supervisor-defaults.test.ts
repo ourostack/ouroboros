@@ -188,7 +188,7 @@ describe("detached supervisor production defaults", () => {
         ...timeout.input,
         timeoutMs: -19_999,
       })
-      await vi.advanceTimersByTimeAsync(25)
+      await vi.advanceTimersByTimeAsync(10_025)
       await expect(pending).resolves.toMatchObject({
         cleanup: "cleanup_unproven",
         containment: "unprovable_after_approved_root_migration",

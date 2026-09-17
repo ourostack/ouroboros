@@ -72,14 +72,14 @@ function readPrivateSpec(specPath: string, expectedUid: number): { bytes: string
   }
 }
 
-function assertDigest(filePath: string, expectedDigest: string, expectedUid: number): void {
+function assertDigest(filePath: string, expectedDigest: string, expectedUid: number, executable = true): void {
   const stat = fs.lstatSync(filePath)
   if (
     !DIGEST.test(expectedDigest)
     || !stat.isFile()
     || stat.isSymbolicLink()
     || stat.uid !== expectedUid
-    || (stat.mode & 0o111) === 0
+    || (executable && (stat.mode & 0o111) === 0)
     || (stat.mode & 0o022) !== 0
   ) {
     throw new Error(`Sanctuary host supervisor primitive metadata is invalid: ${filePath}`)
@@ -156,7 +156,7 @@ export async function runSanctuaryHostSupervisor(specPath: string, options: {
   assertDigest(spec.prlimitPath, spec.prlimitDigest, expectedUid)
   assertDigest(spec.setsidPath, spec.setsidDigest, expectedUid)
   assertDigest(spec.shellPath, spec.shellDigest, expectedUid)
-  assertDigest(spec.supervisorProgramPath, spec.supervisorProgramDigest, expectedUid)
+  assertDigest(spec.supervisorProgramPath, spec.supervisorProgramDigest, expectedUid, false)
   const specDigest = digest(bytes)
   const processId = options.processId ?? process.pid
   const bootId = options.bootId?.() ?? fs.readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim()

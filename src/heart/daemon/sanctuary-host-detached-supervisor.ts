@@ -107,14 +107,14 @@ function assertAbsolute(value: string, label: string): void {
   if (!path.isAbsolute(value)) throw new Error(`Sanctuary host ${label} path must be absolute`)
 }
 
-function assertPinnedProgram(filePath: string, expectedDigest: string, expectedUid: number): void {
+function assertPinnedProgram(filePath: string, expectedDigest: string, expectedUid: number, executable: boolean): void {
   if (!DIGEST.test(expectedDigest)) throw new Error("Sanctuary host program digest is invalid")
   const stat = fs.lstatSync(filePath)
   if (
     !stat.isFile()
     || stat.isSymbolicLink()
     || stat.uid !== expectedUid
-    || (stat.mode & 0o111) === 0
+    || (executable && (stat.mode & 0o111) === 0)
     || (stat.mode & 0o022) !== 0
   ) {
     throw new Error(`Sanctuary host program metadata is invalid: ${filePath}`)
@@ -236,7 +236,6 @@ export class DetachedSanctuaryHostSupervisor implements HostSupervisor {
   }
 
   async reconcileOrphans(knownPermitIds: readonly string[]): Promise<void> {
-    this.verifyInstallation()
     const known = new Set(knownPermitIds)
     let stateEntries: string[] = []
     try {
@@ -254,7 +253,9 @@ export class DetachedSanctuaryHostSupervisor implements HostSupervisor {
       const cgroupPath = path.join(this.#options.cgroupRoot, permitId)
       if (!fs.lstatSync(cgroupPath).isDirectory()) continue
       if (!PERMIT_ID.test(permitId)) throw new Error("Sanctuary host cgroup entry is invalid")
-      if (!known.has(permitId)) await this.#reconcileCgroup(cgroupPath)
+      if (!known.has(permitId) && !await this.#reconcileCgroup(cgroupPath)) {
+        throw new Error("Sanctuary orphan cgroup cleanup is unproven")
+      }
     }
   }
 
@@ -309,7 +310,7 @@ export class DetachedSanctuaryHostSupervisor implements HostSupervisor {
     if (!PERMIT_ID.test(input.permit.permitId)) throw new Error("Sanctuary detached host permit id is invalid")
     this.#active = true
     try {
-      this.verifyInstallation()
+      if (!resume) this.verifyInstallation()
       const permitRoot = path.join(this.#options.stateRoot, input.permit.permitId)
       const specPath = path.join(permitRoot, "spec.json")
       const readyPath = path.join(permitRoot, "ready.json")
@@ -412,7 +413,7 @@ export class DetachedSanctuaryHostSupervisor implements HostSupervisor {
       [this.#options.prlimitPath, this.#options.prlimitDigest],
       [this.#options.setsidPath, this.#options.setsidDigest],
       [this.#options.shellPath, this.#options.shellDigest],
-    ]) assertPinnedProgram(filePath, expectedDigest, this.#options.expectedUid)
+    ]) assertPinnedProgram(filePath, expectedDigest, this.#options.expectedUid, filePath !== this.#options.programPath)
   }
 
   #assertLiveBinding(value: SupervisorBinding, lockPath: string): void {
@@ -491,9 +492,12 @@ export class DetachedSanctuaryHostSupervisor implements HostSupervisor {
       }
     }
     const cgroupPath = path.join(this.#options.cgroupRoot, permitId)
-    let cleanup: HostSupervisorAttempt["cleanup"] = fs.existsSync(cgroupPath) && await this.#reconcileCgroup(cgroupPath)
+    let cleanup: HostSupervisorAttempt["cleanup"] = !fs.existsSync(cgroupPath) || await this.#reconcileCgroup(cgroupPath)
       ? "cgroup_empty"
       : "cleanup_unproven"
+    if (!supervisor && fs.existsSync(path.join(this.#options.stateRoot, permitId, "supervisor.lock"))) {
+      cleanup = "cleanup_unproven"
+    }
     if (cleanup === "cgroup_empty" && supervisor) {
       const processAlive = this.#options.processAlive ?? defaultProcessAlive
       for (let attempt = 0; attempt < 400 && processAlive(supervisor.supervisorPid); attempt += 1) {

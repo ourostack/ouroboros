@@ -93,6 +93,25 @@ afterEach(() => {
 })
 
 describe("Sanctuary Telegram authority process", () => {
+  it.each(["hostPrlimitPath", "hostSetsidPath"] as const)("keeps Telegram and rollback available after an OS update changes %s", async (primitive) => {
+    const f = fixture()
+    fs.writeFileSync(f.config[primitive], "updated by the OS")
+    let service!: import("../../../heart/daemon/sanctuary-telegram-authority-service").SanctuaryTelegramAuthorityService
+    const authority = await startSanctuaryTelegramAuthority({
+      configPath: f.configPath, expectedUid: process.getuid!(),
+      createApi: () => ({ request: vi.fn(async (method) => method === "getUpdates" ? [] : { id: 123456 }), stop: vi.fn() }),
+      createServer: (input) => { service = input.service; return { listen: vi.fn(async () => undefined), close: vi.fn(async () => undefined) } },
+    })
+    try {
+      await expect(service.dispatch("telegram.request", { method: "getMe", body: {} })).resolves.toEqual({ id: 123456 })
+      await expect(service.dispatch("host.status", { registrationId: null })).resolves.toMatchObject({ health: { payload: { healthy: false } } })
+      await expect(service.dispatch("host.approval", { proposal: {} })).rejects.toThrow(/unavailable/u)
+      await expect(service.dispatch("host.execute", { correlation: {} })).rejects.toThrow(/unavailable/u)
+      await authority.retire()
+      expect(JSON.parse(fs.readFileSync(path.join(f.config.epochRoot, "retirement.json"), "utf8")).quiescent).toBe(true)
+    } finally { await authority.close() }
+  })
+
   it.each([false, true])("refuses missing persisted cursor state during startup or retirement (%s)", async (retireOnly) => {
     const f = fixture()
     fs.unlinkSync(sanctuaryTelegramAuthorityStatePath(f.config.agentRoot))

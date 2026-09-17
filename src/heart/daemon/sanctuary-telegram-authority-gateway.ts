@@ -649,12 +649,8 @@ export class FileSanctuaryTelegramAuthorityGateway {
       const now = this.#now()
       const changed = this.#pruneAuthorizedChats(state, now)
       const entry = Object.values(state.authorizedChats).find((candidate) => candidate.chatId === chatId)
-      if (!entry) {
-        if (changed) this.#write(state, transaction.revision, lease)
-        return false
-      }
       if (changed) this.#write(state, transaction.revision, lease)
-      return true
+      return Boolean(entry)
     })
   }
 
