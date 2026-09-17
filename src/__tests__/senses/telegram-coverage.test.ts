@@ -8,6 +8,8 @@ import { TELEGRAM_ACCEPTANCE_AUDIT_HEAD_RELATIVE_PATH, TELEGRAM_ACCEPTANCE_AUDIT
 const mocks = vi.hoisted(() => ({
   getAgentRoot: vi.fn(),
   readRuntimeCredentialConfig: vi.fn(),
+  readMachineRuntimeCredentialConfig: vi.fn(() => ({ ok: true, config: {} })),
+  openSanctuaryResidentAuthority: vi.fn(),
   runSenseTurn: vi.fn(),
   createTelegramBotApi: vi.fn(),
   createTelegramLongPoll: vi.fn(),
@@ -23,7 +25,8 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock("../../heart/identity", () => ({ getAgentRoot: mocks.getAgentRoot, getAgentName: () => "butler" }))
-vi.mock("../../heart/runtime-credentials", () => ({ readRuntimeCredentialConfig: mocks.readRuntimeCredentialConfig }))
+vi.mock("../../heart/runtime-credentials", () => ({ readRuntimeCredentialConfig: mocks.readRuntimeCredentialConfig, readMachineRuntimeCredentialConfig: mocks.readMachineRuntimeCredentialConfig }))
+vi.mock("../../senses/sanctuary-authority-resident", () => ({ openSanctuaryResidentAuthority: mocks.openSanctuaryResidentAuthority }))
 vi.mock("../../senses/shared-turn", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../senses/shared-turn")>(),
   runSenseTurn: mocks.runSenseTurn,
@@ -1165,6 +1168,23 @@ describe("Telegram sense coverage contracts", () => {
     expect(logged).toContain("[redacted]")
   })
 
+  it("redacts tokenless gateway failures without treating an absent token as a secret", async () => {
+    const f = defaultFixture()
+    f.transport.reconcileExpired.mockRejectedValue(new Error("private owner 908172635401234567"))
+    const app = createTelegramSenseApp({
+      agentName: "sanctuary",
+      credentials: { botId: "777", authorizedUserId: "908172635401234567", authorizedChatId: "908172635401234567" },
+      authorityTransport: {
+        api: f.api, settleTransport: vi.fn(), downloadFile: vi.fn(), metadataForUpdate: vi.fn(),
+        admitChat: vi.fn(), revokeChat: vi.fn(),
+      } as never,
+    })
+    await app.run()
+    await app.stop()
+    const logged = JSON.stringify(mocks.emitNervesEvent.mock.calls)
+    expect(logged).not.toContain("908172635401234567")
+    expect(logged).toContain("private owner [redacted]")
+  })
   it("declines non-callback updates and callbacks when no approval transport exists", async () => {
     const f = defaultFixture()
     mocks.createTelegramApprovalRuntime.mockReturnValue(undefined)
@@ -1251,6 +1271,69 @@ describe("Telegram sense coverage contracts", () => {
     expect(mocks.createTelegramBotApi).not.toHaveBeenCalled()
   })
 
+  it.each(["runtime", "machine"])("refuses Sanctuary startup when the %s credential inventory is unavailable", async (owner) => {
+    defaultFixture()
+    mocks.readRuntimeCredentialConfig.mockReturnValue({ ok: owner !== "runtime", config: {} })
+    mocks.readMachineRuntimeCredentialConfig.mockReturnValue({ ok: owner !== "machine", config: {} })
+    await expect(startTelegramSenseApp("sanctuary")).rejects.toThrow("credential inventory is unavailable")
+    expect(mocks.openSanctuaryResidentAuthority).not.toHaveBeenCalled()
+    expect(mocks.createTelegramBotApi).not.toHaveBeenCalled()
+  })
+
+  it("keeps managed startup pending through delayed gateway pins instead of repeatedly exiting", async () => {
+    vi.useFakeTimers()
+    const f = defaultFixture()
+    fs.copyFileSync("deploy/unraid/sanctuary.ouro/tool-profiles.json", path.join(isolatedRoot, "tool-profiles.json"))
+    const now = new Date().toISOString()
+    await new FileFriendStore(path.join(isolatedRoot, "friends")).put("ari", {
+      id: "ari", name: "Ari", trustLevel: "family", admissionState: "active", initiativePolicy: "proactive", capabilityProfileId: "sanctuary-owner",
+      externalIds: [{ provider: "telegram-user", externalId: "42", tenantId: "777", linkedAt: now }], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: now, updatedAt: now, schemaVersion: 1,
+    })
+    mocks.readRuntimeCredentialConfig.mockReturnValue({ ok: true, config: {} })
+    mocks.readMachineRuntimeCredentialConfig.mockReturnValue({ ok: true, config: {} })
+    const gateway = { credentials: { botId: "777", authorizedUserId: "42", authorizedChatId: "42" }, authorityTransport: {
+      api: f.api, settleTransport: vi.fn(), downloadFile: vi.fn(), metadataForUpdate: vi.fn(), admitChat: vi.fn(), revokeChat: vi.fn(),
+    } }
+    mocks.openSanctuaryResidentAuthority.mockImplementation(() => { throw Object.assign(new Error("pins not published"), { code: "ENOENT" }) })
+    let finished = false
+    const start = startTelegramSenseApp("sanctuary", true).finally(() => { finished = true })
+    const observed = start.catch((error) => error)
+    try {
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(finished).toBe(false)
+      expect(mocks.createTelegramBotApi).not.toHaveBeenCalled()
+      mocks.openSanctuaryResidentAuthority.mockReturnValue(gateway)
+      await vi.advanceTimersByTimeAsync(1_000)
+      const app = await observed
+      expect(app).not.toBeInstanceOf(Error)
+      await app.stop()
+      expect(f.api.stop).toHaveBeenCalledOnce()
+    } finally { vi.useRealTimers() }
+  })
+
+  it.each([Object.assign(new Error("unsafe pins"), { code: "EACCES" }), null])("never waits or falls back on unsafe gateway metadata (%s)", async (failure) => {
+    defaultFixture()
+    mocks.readRuntimeCredentialConfig.mockReturnValue({ ok: true, config: {} })
+    mocks.readMachineRuntimeCredentialConfig.mockReturnValue({ ok: true, config: {} })
+    mocks.openSanctuaryResidentAuthority.mockImplementation(() => { throw failure })
+    await expect(startTelegramSenseApp("sanctuary", true)).rejects.toBe(failure)
+    expect(mocks.createTelegramBotApi).not.toHaveBeenCalled()
+  })
+  it.each(["sanctuary", "butler"])("closes only its owned gateway when %s composition fails", async (agentName) => {
+    defaultFixture()
+    const stop = vi.fn()
+    mocks.readRuntimeCredentialConfig.mockReturnValue({ ok: true, config: {
+      telegramBotToken: "777:secret", telegramAuthorizedUserId: "42", telegramAuthorizedChatId: "43",
+    } })
+    mocks.readMachineRuntimeCredentialConfig.mockReturnValue({ ok: true, config: {} })
+    mocks.openSanctuaryResidentAuthority.mockReturnValue({
+      credentials: { botId: "777", authorizedUserId: "42", authorizedChatId: "43" },
+      authorityTransport: { api: { stop } },
+    })
+    await expect(startTelegramSenseApp(agentName)).rejects.toThrow("private user-bound chat")
+    expect(stop).toHaveBeenCalledTimes(agentName === "sanctuary" ? 1 : 0)
+  })
+
   it("runs one-shot production event and await adapters through a transient Telegram app", async () => {
     const f = defaultFixture()
     f.api.request.mockResolvedValue({ message_id: 71 })
@@ -1268,8 +1351,20 @@ describe("Telegram sense coverage contracts", () => {
     await friends.put("ari", { id: "ari", name: "Ari", trustLevel: "family", admissionState: "active", initiativePolicy: "proactive", capabilityProfileId: "sanctuary-owner",
       externalIds: [{ provider: "telegram-user", externalId: "42", tenantId: "777", linkedAt: now }], tenantMemberships: [], toolPreferences: {}, notes: {}, totalTokens: 0, createdAt: now, updatedAt: now, schemaVersion: 1 })
 
+    const gatewayApi = { request: vi.fn(), stop: vi.fn() }
+    const authorityTransport = {
+      api: gatewayApi, settleTransport: vi.fn(), downloadFile: vi.fn(), metadataForUpdate: vi.fn(),
+      admitChat: vi.fn(), revokeChat: vi.fn(),
+    }
+    mocks.readRuntimeCredentialConfig.mockReturnValueOnce({ ok: true, config: { telegramAuthorizedUserId: "42", telegramAuthorizedChatId: "42" } })
+    mocks.readMachineRuntimeCredentialConfig.mockReturnValue({ ok: true, config: {} })
+    mocks.openSanctuaryResidentAuthority.mockReturnValue({
+      credentials: { botId: "777", authorizedUserId: "42", authorizedChatId: "42" }, authorityTransport,
+    })
     const sanctuary = await startTelegramSenseApp("sanctuary")
+    expect(mocks.openSanctuaryResidentAuthority).toHaveBeenCalledWith({ telegramAuthorizedUserId: "42", telegramAuthorizedChatId: "42" }, {})
     await sanctuary.stop()
+    expect(gatewayApi.stop).toHaveBeenCalledOnce()
 
     await sendTelegramExternalEventDecision("butler", { source: "health", eventId: "books", generation: 1, text: "Books recovered." })
     await expect(sendTelegramAwaitFollowUp("butler", { friendId: "sibling", channel: "telegram", key: "telegram:777:888", content: "Ready", intent: "generic_outreach" })).resolves.toMatchObject({ status: "blocked" })
@@ -1277,6 +1372,6 @@ describe("Telegram sense coverage contracts", () => {
     expect(mocks.sendTelegramText).toHaveBeenCalledWith(f.api, "42", "Books recovered.", {
       renderHtml: expect.any(Function),
     })
-    expect(f.api.stop).toHaveBeenCalledTimes(3)
+    expect(f.api.stop).toHaveBeenCalledTimes(2)
   })
 })

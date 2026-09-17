@@ -17,8 +17,15 @@ vi.mock("../../heart/identity", async (importActual) => ({
 vi.mock("../../heart/runtime-credentials", async (importActual) => ({
   ...await importActual<typeof import("../../heart/runtime-credentials")>(),
   readRuntimeCredentialConfig: () => ({ ok: true, config: {
-    telegramBotToken: "777:fixture", telegramAuthorizedUserId: "42", telegramAuthorizedChatId: "42",
+    telegramAuthorizedUserId: "42", telegramAuthorizedChatId: "42",
   } }),
+  readMachineRuntimeCredentialConfig: () => ({ ok: true, config: {} }),
+}))
+vi.mock("../../senses/sanctuary-authority-resident", () => ({
+  openSanctuaryResidentAuthority: () => ({
+    credentials: { botId: "777", authorizedUserId: "42", authorizedChatId: "42" },
+    authorityTransport: { api: { request: mocks.request, stop: mocks.stop }, metadataForUpdate: () => null, settleTransport: vi.fn(), downloadFile: vi.fn(), admitChat: vi.fn(), revokeChat: vi.fn() },
+  }),
 }))
 vi.mock("../../senses/sanctuary-runtime", async (importActual) => ({
   ...await importActual<typeof import("../../senses/sanctuary-runtime")>(),

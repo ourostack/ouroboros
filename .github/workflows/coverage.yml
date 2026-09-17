@@ -133,6 +133,10 @@ jobs:
             const packageVersion = require("/opt/ouro/package.json").version
             const shrinkwrap = require("/opt/ouro/npm-shrinkwrap.json")
             if (packageVersion !== expected || shrinkwrap.version !== expected || shrinkwrap.packages[""].version !== expected) process.exit(1)
+            const Database = require("/opt/ouro/node_modules/better-sqlite3")
+            const db = new Database(":memory:")
+            if (db.prepare("SELECT 1 AS ready").get().ready !== 1) process.exit(1)
+            db.close()
           ' "$PACKAGE_VERSION"
           AUDIT_PERMISSION_ROOT="$PACKAGE_ROOT/audit-permissions"
           mkdir "$AUDIT_PERMISSION_ROOT"
@@ -142,14 +146,16 @@ jobs:
           for AUDIT_SOURCE in \
             /mnt/user/appdata/ouro-butler/runtime/.ouro-cli \
             /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro \
-            /boot/config/custom/ouro-events/spool; do
+            /boot/config/custom/ouro-events/spool \
+            /run/ouro-authority; do
             test ! -e "$AUDIT_SOURCE"
           done
           sudo mkdir -p \
             /mnt/user/appdata/ouro-butler/runtime/.ouro-cli \
             /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro \
-            /boot/config/custom/ouro-events/spool
-          trap 'docker rm -f ouro-butler >/dev/null 2>&1 || true; sudo rm -rf -- /mnt/user/appdata/ouro-butler/runtime/.ouro-cli /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro /boot/config/custom/ouro-events/spool; sudo rm -rf -- "$PACKAGE_ROOT"' EXIT
+            /boot/config/custom/ouro-events/spool \
+            /run/ouro-authority
+          trap 'docker rm -f ouro-butler >/dev/null 2>&1 || true; sudo rm -rf -- /mnt/user/appdata/ouro-butler/runtime/.ouro-cli /mnt/user/appdata/ouro-butler/agent/sanctuary.ouro /boot/config/custom/ouro-events/spool /run/ouro-authority; sudo rm -rf -- "$PACKAGE_ROOT"' EXIT
           AUDIT_ICON="https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png"
           docker create --pull=never --name ouro-butler --network host --restart unless-stopped --user 10001:10001 \
             --label net.unraid.docker.managed=dockerman \
@@ -157,6 +163,7 @@ jobs:
             --mount type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli \
             --mount type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro \
             --mount type=bind,src=/boot/config/custom/ouro-events/spool,dst=/run/ouro-events,readonly \
+            --mount type=bind,src=/run/ouro-authority,dst=/run/ouro-authority,readonly \
             "$AUDIT_VERSION_IMAGE"
           test "$(docker inspect --format '{{.Config.Image}}' ouro-butler)" = "$AUDIT_VERSION_IMAGE"
           test "$(docker inspect --format '{{.Image}}' ouro-butler)" = "$AUDIT_IMAGE_ID"
@@ -186,7 +193,7 @@ jobs:
             --mount "type=bind,src=$AUDIT_PERMISSION_ROOT/container.json,dst=/audit/container.json,readonly" \
             --mount "type=bind,src=$AUDIT_PERMISSION_ROOT/image.json,dst=/audit/image.json,readonly" \
             ouro-butler-package-smoke:"$PACKAGE_VERSION" \
-            --inspect /audit/container.json --image-inspect /audit/image.json --expected-image "$AUDIT_IMAGE_ID" --expected-image-reference "$AUDIT_VERSION_IMAGE" --expected-icon "$AUDIT_ICON" \
+            --inspect /audit/container.json --image-inspect /audit/image.json --expected-image "$AUDIT_IMAGE_ID" --expected-image-reference "$AUDIT_VERSION_IMAGE" --expected-icon "$AUDIT_ICON" --mount-contract canonical-gateway \
             2>&1)
           AUDIT_STATUS=$?
           set -e
@@ -202,7 +209,7 @@ jobs:
             --mount "type=bind,src=$AUDIT_PERMISSION_ROOT/sanctuary.xml,dst=/audit/sanctuary.xml,readonly" \
             --mount "type=bind,src=$AUDIT_PERMISSION_ROOT/container-runtime.json,dst=/audit/container-runtime.json,readonly" \
             ouro-butler-package-smoke:"$PACKAGE_VERSION" \
-            --persistent-template /audit/sanctuary.xml --runtime-policy /audit/container-runtime.json --expected-image-reference "$AUDIT_VERSION_IMAGE" \
+            --persistent-template /audit/sanctuary.xml --runtime-policy /audit/container-runtime.json --expected-image-reference "$AUDIT_VERSION_IMAGE" --mount-contract canonical-gateway \
             2>&1)
           PERSISTENT_AUDIT_STATUS=$?
           set -e
@@ -214,7 +221,7 @@ jobs:
             --mount "type=bind,src=$AUDIT_PERMISSION_ROOT/sanctuary.exact-image.xml,dst=/audit/sanctuary.exact-image.xml,readonly" \
             --mount "type=bind,src=$AUDIT_PERMISSION_ROOT/container-runtime.json,dst=/audit/container-runtime.json,readonly" \
             ouro-butler-package-smoke:"$PACKAGE_VERSION" \
-            --template /audit/sanctuary.exact-image.xml --runtime-policy /audit/container-runtime.json --expected-image "$AUDIT_IMAGE_ID" \
+            --template /audit/sanctuary.exact-image.xml --runtime-policy /audit/container-runtime.json --expected-image "$AUDIT_IMAGE_ID" --mount-contract canonical-gateway \
             2>&1)
           STAGED_AUDIT_STATUS=$?
           set -e

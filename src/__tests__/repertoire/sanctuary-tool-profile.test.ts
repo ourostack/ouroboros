@@ -11,15 +11,16 @@ import { SANCTUARY_OWNER_ADDITIONS } from "../fixtures/sanctuary-containment"
 describe("Sanctuary active tool profile", () => {
   afterEach(() => resetIdentity())
 
-  it("ships exactly owner v8 while preserving the complete prior owner and non-owner profiles", () => {
+  it("ships exactly owner v9 while preserving the complete prior owner and non-owner profiles", () => {
     const packaged = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/tool-profiles.json", "utf8"))
     const owner = packaged.profiles["sanctuary-owner"]
     const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex")
-    expect(owner.version).toBe(8)
-    expect(owner.toolNames).toHaveLength(49)
-    expect(new Set(owner.toolNames).size).toBe(49)
+    expect(owner.version).toBe(9)
+    expect(owner.toolNames).toHaveLength(50)
+    expect(new Set(owner.toolNames).size).toBe(50)
+    expect(owner.toolNames).toContain("sanctuary_host_execute")
     expect(owner.toolNames).toEqual(expect.arrayContaining(SANCTUARY_OWNER_ADDITIONS))
-    expect(digest({ ...owner, version: 7, toolNames: owner.toolNames.filter((name: string) => !SANCTUARY_OWNER_ADDITIONS.includes(name)) })).toBe("19b06666b7f087ceddecc5c0721d4497fdabcb06b3bfee614092f9966bb3f8df")
+    expect(digest({ ...owner, version: 7, toolNames: owner.toolNames.filter((name: string) => name !== "sanctuary_host_execute" && !SANCTUARY_OWNER_ADDITIONS.includes(name)) })).toBe("19b06666b7f087ceddecc5c0721d4497fdabcb06b3bfee614092f9966bb3f8df")
     expect(digest(packaged.profiles["sanctuary-household"])).toBe("3e28129c914c45857e2f202ebd225a298354d1636d7a515d8f28818f8bdce19f")
     expect(digest(packaged.profiles["sanctuary-event"])).toBe("84f54acd06d07c42c01bf0da29697c7ad07004df35d3d582cd367476c4404b56")
   })
@@ -31,10 +32,10 @@ describe("Sanctuary active tool profile", () => {
       agentName: "sanctuary",
       relationshipAuthorization: { profileId: "sanctuary-owner", advertisedToolNames: packaged.profiles["sanctuary-owner"].toolNames },
     }).map((tool) => tool.function.name)
-    expect(names.toSorted()).toEqual(packaged.profiles["sanctuary-owner"].toolNames.filter((name: string) => name !== "rest").toSorted())
+    expect(names.toSorted()).toEqual(packaged.profiles["sanctuary-owner"].toolNames.filter((name: string) => name !== "rest" && name !== "sanctuary_host_execute").toSorted())
     expect(names).toContain("send_message")
     expect(packaged.version).toBe(2)
-    expect(packaged.profiles["sanctuary-owner"].version).toBe(8)
+    expect(packaged.profiles["sanctuary-owner"].version).toBe(9)
     expect(packaged.profiles["sanctuary-household"].version).toBe(5)
     expect(packaged.profiles["sanctuary-event"].version).toBe(4)
     expect(packaged.profiles["sanctuary-owner"].toolNames).toEqual(expect.arrayContaining(names))
@@ -77,7 +78,7 @@ describe("Sanctuary active tool profile", () => {
     }))]
 
     for (const profile of ["sanctuary-owner", "sanctuary-household", "sanctuary-event"]) {
-      expect(resolve(profile).toSorted()).toEqual(packaged.profiles[profile]!.toolNames.toSorted())
+      expect(resolve(profile).toSorted()).toEqual(packaged.profiles[profile]!.toolNames.filter((name) => name !== "sanctuary_host_execute").toSorted())
     }
     expect(resolve("sanctuary-event")).toEqual(expect.arrayContaining([
       "external_event_disposition",

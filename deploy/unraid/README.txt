@@ -1,6 +1,14 @@
 Mendelow Cloud Butler operator runbook
 
-The production container is ouro-butler. It runs as UID/GID 10001, publishes no ports, uses host networking only so its loopback-only Unraid GraphQL client can reach 127.0.0.1, mounts the runtime and sanctuary.ouro bundle read-write plus the privileged event spool read-only, and uses restart policy unless-stopped.
+The production container is ouro-butler. It runs as UID/GID 10001, publishes no ports, uses host networking only so its loopback-only Unraid GraphQL client can reach 127.0.0.1, mounts the runtime and sanctuary.ouro bundle read-write plus the privileged event spool read-only, and uses restart policy unless-stopped. The canonical-gateway image appends exactly /run/ouro-authority -> /run/ouro-authority, readonly, rprivate. The pinned alpha.816 predecessor has only the first three mounts. Root token, issuer, package and authority state are never mounted into the resident.
+
+Root authority lifecycle
+
+The existing DockerMan transaction owns authority-install, authority-activate, authority-retire and authority-restore. A complete exact-image package, including dist and production dependencies, must remain at its package-relative paths; extracting only the old five deployment assets cannot execute this lifecycle. The reviewed root-only inputs are /mnt/user/appdata/ouro-authority/incoming-package, package-manifest.json, request.json and incoming-token. They are not a new resident credential policy. The human rotates the existing bot token directly into root custody; the root owner proves the previous token returns 401 and the fresh token belongs to the same numeric bot before continuing.
+
+During installation the resident is stopped, the root gateway is installed and proven, tokenless readiness runs, and authority-activate starts the exact four-mount target. On failure, authority-retire must finish before restoring bundle/config/mounts or starting the exact three-mount predecessor; authority-restore proves that rollback before the outer template journal is removed. An uncertain or interrupted handoff leaves autostart disabled and preserves both journals and root inputs for the same reviewed recovery, never a raw old-template start. Retired keys, policy, history and Jellyfin remain untouched. Re-enabling authority requires a new human token rotation and issuer epoch, not reuse of retired authority.
+
+On installed cold boot, the original unless-stopped and DockerMan autostart remain unchanged: /boot/config/custom/ouro-authority/start.sh --boot waits for the array and responsive Docker, then starts the fenced root gateway. Docker may already have started the tokenless resident; it fails closed until the gateway is ready. There is no pre-Docker gate, whole-array gate, resident direct poller or resident token fallback.
 
 Bounded Jellyfin stewardship
 
@@ -39,17 +47,17 @@ Effective-spec audit helper:
       AUDIT_CONTAINER=$1
       AUDIT_EXPECTED_IMAGE=$2
       AUDIT_RUNNER_IMAGE_ID=$3
-      AUDIT_MOUNT_CONTRACT=${4-canonical}
+      AUDIT_MOUNT_CONTRACT=${4-}
       AUDIT_EXPECTED_IMAGE_REFERENCE=${5-}
       AUDIT_EXPECTED_ICON=${6-}
       validate_exact_image_id "$AUDIT_EXPECTED_IMAGE" || return $?
       validate_exact_image_id "$AUDIT_RUNNER_IMAGE_ID" || return $?
       test "$AUDIT_RUNNER_IMAGE_ID" != sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d || return $?
       case "$AUDIT_MOUNT_CONTRACT" in
-        canonical)
+        canonical-pre-gateway|canonical-gateway)
         test -n "$AUDIT_EXPECTED_IMAGE_REFERENCE" || return 1
         test "$AUDIT_EXPECTED_ICON" = https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png || return 1
-        set -- --expected-image-reference "$AUDIT_EXPECTED_IMAGE_REFERENCE" --expected-icon "$AUDIT_EXPECTED_ICON"
+        set -- --mount-contract "$AUDIT_MOUNT_CONTRACT" --expected-image-reference "$AUDIT_EXPECTED_IMAGE_REFERENCE" --expected-icon "$AUDIT_EXPECTED_ICON"
         ;;
         legacy-alpha742) set -- --mount-contract "$AUDIT_MOUNT_CONTRACT" ;;
         *) return 1 ;;
@@ -296,6 +304,41 @@ Effective-spec audit helper:
       esac
       docker image inspect "$VALIDATE_IMAGE_ID" >/dev/null || return $?
     }
+    sanctuary_image_mount_contract() {
+      (
+      CONTRACT_IMAGE_ID=$1
+      validate_exact_image_id "$CONTRACT_IMAGE_ID" || return $?
+      CONTRACT_LABEL=$(docker image inspect --format '{{with .Config.Labels}}{{index . "bot.ouro.sanctuary.mount-contract"}}{{end}}' "$CONTRACT_IMAGE_ID") || return $?
+      case "$CONTRACT_IMAGE_ID:$CONTRACT_LABEL" in
+        sha256:589b7cf8f96d139ee9fd86204a183126aadcbd3fbfb406063709be303397b1b2:) printf '%s\n' canonical-pre-gateway ;;
+        sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d:) printf '%s\n' legacy-alpha742 ;;
+        sha256:589b7cf8f96d139ee9fd86204a183126aadcbd3fbfb406063709be303397b1b2:*|sha256:681449ad47a2621705cd339b481e6339236b31dc65e195b1cf5025d0f2191d7d:*) return 1 ;;
+        *:canonical-gateway) printf '%s\n' canonical-gateway ;;
+        *) printf '%s\n' 'Unreviewed image mount contract; refusing version-only classification.' >&2; return 1 ;;
+      esac
+      )
+    }
+    create_sanctuary_container() {
+      (
+      CREATE_IMAGE_ID=$1
+      CREATE_IMAGE_REFERENCE=$2
+      CREATE_MOUNT_CONTRACT=$3
+      test "$(sanctuary_image_mount_contract "$CREATE_IMAGE_ID")" = "$CREATE_MOUNT_CONTRACT" || return 1
+      test "$(docker image inspect --format '{{.Id}}' "$CREATE_IMAGE_REFERENCE")" = "$CREATE_IMAGE_ID" || return 1
+      case "$CREATE_MOUNT_CONTRACT" in
+        canonical-gateway) set -- --mount "type=bind,src=/run/ouro-authority,dst=/run/ouro-authority,readonly" ;;
+        canonical-pre-gateway) set -- ;;
+        *) return 1 ;;
+      esac
+      docker create --pull=never --name ouro-butler --network host --restart unless-stopped --user 10001:10001 \
+        --label net.unraid.docker.managed=dockerman \
+        --label "net.unraid.docker.icon=https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png" \
+        --mount "type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli" \
+        --mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
+        --mount "type=bind,src=/boot/config/custom/ouro-events/spool,dst=/run/ouro-events,readonly" \
+        "$@" "$CREATE_IMAGE_REFERENCE" || return $?
+      )
+    }
     assert_only_running_butler() {
       (
       EXPECTED_RUNNING_BUTLER=$1
@@ -407,7 +450,8 @@ Effective-spec audit helper:
       else
         assert_sanctuary_update_source_pin ouro-butler "$EXPECTED_SOURCE_IMAGE_ID" || return $?
         EXPECTED_SOURCE_IMAGE_REFERENCE=$(docker inspect --format '{{.Config.Image}}' ouro-butler) || return $?
-        audit_effective ouro-butler "$EXPECTED_SOURCE_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" canonical "$EXPECTED_SOURCE_IMAGE_REFERENCE" https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png
+        EXPECTED_SOURCE_MOUNT_CONTRACT=$(sanctuary_image_mount_contract "$EXPECTED_SOURCE_IMAGE_ID") || return $?
+        audit_effective ouro-butler "$EXPECTED_SOURCE_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" "$EXPECTED_SOURCE_MOUNT_CONTRACT" "$EXPECTED_SOURCE_IMAGE_REFERENCE" https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png
       fi
     }
     validate_sanctuary_roots() {
@@ -867,11 +911,12 @@ Effective-spec audit helper:
     audit_registered_dockerman_template() {
       REGISTERED_TEMPLATE_RUNNER_IMAGE_ID=$1
       REGISTERED_TEMPLATE_VERSION_IMAGE=$2
+      REGISTERED_TEMPLATE_MOUNT_CONTRACT=$3
       REGISTERED_TEMPLATE_PATH=/boot/config/plugins/dockerMan/templates-user/my-ouro-butler.xml
       validate_exact_image_id "$REGISTERED_TEMPLATE_RUNNER_IMAGE_ID" || return $?
       printf '%s\n' "$REGISTERED_TEMPLATE_VERSION_IMAGE" | grep -Eq '^ghcr\.io/ourostack/ouroboros-butler:[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' || return $?
       test -f "$REGISTERED_TEMPLATE_PATH" && test ! -L "$REGISTERED_TEMPLATE_PATH" || return 1
-      docker run --rm --pull=never --network=none --user 0:0 --read-only --cap-drop=ALL --security-opt=no-new-privileges --entrypoint /opt/ouro/deploy/unraid/audit-container-spec.sh --mount "type=bind,src=$REGISTERED_TEMPLATE_PATH,dst=/audit/sanctuary.xml,readonly" "$REGISTERED_TEMPLATE_RUNNER_IMAGE_ID" --persistent-template /audit/sanctuary.xml --runtime-policy /opt/ouro/deploy/unraid/container-runtime.json --expected-image-reference "$REGISTERED_TEMPLATE_VERSION_IMAGE" || return $?
+      docker run --rm --pull=never --network=none --user 0:0 --read-only --cap-drop=ALL --security-opt=no-new-privileges --entrypoint /opt/ouro/deploy/unraid/audit-container-spec.sh --mount "type=bind,src=$REGISTERED_TEMPLATE_PATH,dst=/audit/sanctuary.xml,readonly" "$REGISTERED_TEMPLATE_RUNNER_IMAGE_ID" --persistent-template /audit/sanctuary.xml --runtime-policy /opt/ouro/deploy/unraid/container-runtime.json --expected-image-reference "$REGISTERED_TEMPLATE_VERSION_IMAGE" --mount-contract "$REGISTERED_TEMPLATE_MOUNT_CONTRACT" || return $?
     }
     verify_known_good_rollback_artifact() {
       EXPECTED_KNOWN_GOOD_IMAGE_ID=$1
@@ -930,6 +975,12 @@ Effective-spec audit helper:
       printf '%s\n' "$FINAL_PROOF_PATH"
     }
     start_only_butler_for_recovery() {
+      RECOVERY_AUTHORITY_STATE=$(read_sanctuary_authority_state) || return $?
+      if test "$RECOVERY_AUTHORITY_STATE" != none; then
+        /usr/local/bin/node "$STAGED_DOCKERMAN_TRANSACTION" authority-restore >/dev/null || return $?
+        assert_only_running_butler ouro-butler || return $?
+        return 0
+      fi
       RECOVERY_START_STATE=$(docker inspect --format '{{.State.Running}}' ouro-butler) || return $?
       case "$RECOVERY_START_STATE" in
         true)
@@ -982,6 +1033,7 @@ Effective-spec audit helper:
         migrate_sanctuary_package_managed_bundle "$RECOVERY_IMAGE_ID" commit || return $?
         return 0
       fi
+      retire_sanctuary_authority_if_pending || return $?
       if docker container inspect ouro-butler-rollback >/dev/null 2>&1; then
         RECOVERY_CURRENT_ROLLBACK_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler-rollback) || return $?
         test "$RECOVERY_CURRENT_ROLLBACK_IMAGE_ID" = "$RECOVERY_ROLLBACK_IMAGE_ID" || return 1
@@ -1120,6 +1172,10 @@ Effective-spec audit helper:
       TEMPLATE_RECOVERY_EVIDENCE=$EVENT_ASSET_STAGE/template-recovery-evidence.json
       TEMPLATE_RECOVERY_INSPECTION=$EVENT_ASSET_STAGE/template-recovery-inspection.json
       TEMPLATE_RECOVERY_FINAL_ROOT=$EVENT_ASSET_STAGE/template-recovery-final
+      if test "$TEMPLATE_RECOVERY_STATE" = rollback; then
+        disable_butler_autostart || return $?
+        retire_sanctuary_authority_if_pending || return $?
+      fi
       if test "$TEMPLATE_RECOVERY_BUNDLE_STATE" = rollback; then
         recover_pending_sanctuary_bundle_migration "$IMAGE_ID" || return $?
         TEMPLATE_RECOVERY_POST_BUNDLE_STATUS=$(read_sanctuary_bundle_transaction_status "$IMAGE_ID") || return $?
@@ -1143,7 +1199,7 @@ Effective-spec audit helper:
         test "$(docker inspect --format '{{.Image}}' ouro-butler-rollback)" = "$TEMPLATE_RECOVERY_ROLLBACK_IMAGE_ID" || return 1
         test "$(docker inspect --format '{{.State.Running}}' ouro-butler-rollback)" = false || return 1
         assert_only_running_butler ouro-butler || return $?
-        audit_effective ouro-butler "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" canonical "$VERSION_IMAGE" "$TEMPLATE_ICON" || return $?
+        audit_effective ouro-butler "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" "$TARGET_MOUNT_CONTRACT" "$VERSION_IMAGE" "$TEMPLATE_ICON" || return $?
         migrate_sanctuary_package_managed_bundle "$IMAGE_ID" inspect >"$TEMPLATE_RECOVERY_INSPECTION" || return $?
         chown 0:0 "$TEMPLATE_RECOVERY_INSPECTION" && chmod 0600 "$TEMPLATE_RECOVERY_INSPECTION" || return $?
         write_dockerman_recovery_evidence committing target-exact-committing "$TEMPLATE_RECOVERY_INSPECTION" "$TEMPLATE_RECOVERY_EVIDENCE" || return $?
@@ -1195,7 +1251,7 @@ Effective-spec audit helper:
         TEMPLATE_RECOVERY_LEGACY_EVIDENCE_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler-legacy-evidence) || return $?
         test "$TEMPLATE_RECOVERY_LEGACY_EVIDENCE_IMAGE_ID" = "$TEMPLATE_RECOVERY_ROLLBACK_IMAGE_ID" || return 1
         test "$(docker inspect --format '{{.State.Running}}' ouro-butler-legacy-evidence)" = false || return 1
-        audit_effective ouro-butler "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" canonical "$VERSION_IMAGE" "$TEMPLATE_ICON" || return $?
+        audit_effective ouro-butler "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" "$TARGET_MOUNT_CONTRACT" "$VERSION_IMAGE" "$TEMPLATE_ICON" || return $?
         start_only_butler_for_recovery || return $?
         wait_butler_ready ouro-butler || return $?
         migrate_sanctuary_package_managed_bundle "$IMAGE_ID" inspect >"$TEMPLATE_RECOVERY_INSPECTION" || return $?
@@ -1205,7 +1261,7 @@ Effective-spec audit helper:
         enable_butler_autostart || return $?
         /usr/local/bin/node "$STAGED_DOCKERMAN_TRANSACTION" mark-committing >/dev/null || return $?
       elif test "$TEMPLATE_RECOVERY_BUNDLE_STATE" = absent && test "$TEMPLATE_RECOVERY_STATE" = committing && test "$TEMPLATE_RECOVERY_PRODUCTION_IMAGE_ID" = "$IMAGE_ID"; then
-        audit_effective ouro-butler "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" canonical "$VERSION_IMAGE" "$TEMPLATE_ICON" || return $?
+        audit_effective ouro-butler "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" "$TARGET_MOUNT_CONTRACT" "$VERSION_IMAGE" "$TEMPLATE_ICON" || return $?
         wait_butler_ready ouro-butler || return $?
         verify_butler_autostart "1 0 0 0" || return $?
         migrate_sanctuary_package_managed_bundle "$IMAGE_ID" inspect >"$TEMPLATE_RECOVERY_INSPECTION" || return $?
@@ -1610,6 +1666,12 @@ NODE
     verify_sanctuary_telegram_readiness() {
       TELEGRAM_READINESS_IMAGE_ID=$1
       validate_exact_image_id "$TELEGRAM_READINESS_IMAGE_ID" || return $?
+      TELEGRAM_READINESS_CONTRACT=$(sanctuary_image_mount_contract "$TELEGRAM_READINESS_IMAGE_ID") || return $?
+      case "$TELEGRAM_READINESS_CONTRACT" in
+        canonical-gateway) set -- --mount "type=bind,src=/run/ouro-authority,dst=/run/ouro-authority,readonly" ;;
+        canonical-pre-gateway) set -- ;;
+        *) return 1 ;;
+      esac
       TELEGRAM_READINESS_RUNTIME_ROOT=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli
       TELEGRAM_READINESS_AGENT_ROOT=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro
       ! docker container inspect ouro-butler-telegram-readiness >/dev/null 2>&1 || return 1
@@ -1618,10 +1680,142 @@ NODE
         --mount "type=bind,src=$TELEGRAM_READINESS_RUNTIME_ROOT,dst=/home/ouro/.ouro-cli" \
         --mount "type=bind,src=$TELEGRAM_READINESS_AGENT_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro,readonly" \
         --entrypoint /opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh \
-        "$TELEGRAM_READINESS_IMAGE_ID" telegram-readiness >/dev/null || return $?
+        "$@" "$TELEGRAM_READINESS_IMAGE_ID" telegram-readiness >/dev/null || return $?
       ! docker container inspect ouro-butler-telegram-readiness >/dev/null 2>&1 || return 1
       normalize_sanctuary_private_permissions "$TELEGRAM_READINESS_RUNTIME_ROOT" "$TELEGRAM_READINESS_AGENT_ROOT" "$TELEGRAM_READINESS_IMAGE_ID" || return $?
-      validate_sanctuary_roots "$TELEGRAM_READINESS_RUNTIME_ROOT" "$TELEGRAM_READINESS_AGENT_ROOT" live-precutover || return $?
+      if test "$TELEGRAM_READINESS_CONTRACT" = canonical-gateway; then
+        validate_sanctuary_roots "$TELEGRAM_READINESS_RUNTIME_ROOT" "$TELEGRAM_READINESS_AGENT_ROOT" || return $?
+      else
+        validate_sanctuary_roots "$TELEGRAM_READINESS_RUNTIME_ROOT" "$TELEGRAM_READINESS_AGENT_ROOT" live-precutover || return $?
+      fi
+    }
+    read_sanctuary_authority_state() {
+      (
+      test -n "${STAGED_DOCKERMAN_TRANSACTION-}" || return 1
+      AUTHORITY_STATUS=$(/usr/local/bin/node "$STAGED_DOCKERMAN_TRANSACTION" status) || return $?
+      printf '%s' "$AUTHORITY_STATUS" | /usr/local/bin/node -e '
+        let input = "";
+        process.stdin.setEncoding("utf8");
+        process.stdin.on("data", chunk => { input += chunk; });
+        process.stdin.on("end", () => {
+          const record = JSON.parse(input);
+          if (record === null || (record && !Object.hasOwn(record, "authority"))) process.stdout.write("none");
+          else if (["installing", "active", "retiring", "retired"].includes(record?.authority?.state)) process.stdout.write(record.authority.state);
+          else process.exit(1);
+        });
+      ' || return $?
+      )
+    }
+    retire_sanctuary_authority_if_pending() {
+      (
+      AUTHORITY_STATE=$(read_sanctuary_authority_state) || return $?
+      test "$AUTHORITY_STATE" != none || return 0
+      /usr/local/bin/node "$STAGED_DOCKERMAN_TRANSACTION" authority-retire >/dev/null || return $?
+      )
+    }
+    receive_sanctuary_authority_token() {
+      (
+      test "$(id -u)" = 0 && test -t 0 || return 1
+      test "$(stat -c '%u:%g:%a' /mnt/user/appdata/ouro-authority)" = 0:0:700 || return 1
+      test ! -e /mnt/user/appdata/ouro-authority/incoming-token && test ! -L /mnt/user/appdata/ouro-authority/incoming-token || return 1
+      TOKEN_TERMINAL_MODE=$(stty -g) || return $?
+      trap 'stty "$TOKEN_TERMINAL_MODE"' EXIT
+      trap 'exit 129' HUP
+      trap 'exit 130' INT
+      trap 'exit 143' TERM
+      printf '%s\n' 'Human: paste the freshly rotated same-bot token, press Enter, then Ctrl-D. Input is hidden.' >&2
+      stty -echo || return $?
+      umask 077
+      set -C
+      dd status=none > /mnt/user/appdata/ouro-authority/incoming-token || return $?
+      test -s /mnt/user/appdata/ouro-authority/incoming-token || return 1
+      sync -f /mnt/user/appdata/ouro-authority/incoming-token || return $?
+      )
+    }
+    prepare_sanctuary_authority_inputs() {
+      (
+      AUTHORITY_SOURCE=$1
+      test "$(id -u)" = 0 || return 1
+      /usr/local/bin/node - "$AUTHORITY_SOURCE" "$AUTHORITY_EPOCH_ID" "$AUTHORITY_BOT_ID" "$AUTHORITY_OWNER_ID" <<'NODE'
+        const fs = require("node:fs");
+        const path = require("node:path");
+        const crypto = require("node:crypto");
+        const [source, epochId, botId, ownerId] = process.argv.slice(2);
+        const root = "/mnt/user/appdata/ouro-authority";
+        const incoming = `${root}/incoming-package`;
+        const sha = bytes => `sha256:${crypto.createHash("sha256").update(bytes).digest("hex")}`;
+        const directory = target => {
+          if (!fs.existsSync(target)) fs.mkdirSync(target, { mode: 0o700 });
+          const stat = fs.lstatSync(target);
+          if (!stat.isDirectory() || fs.realpathSync(target) !== target || stat.uid !== 0 || stat.gid !== 0 || (stat.mode & 0o7777) !== 0o700) throw new Error("unsafe authority input directory");
+        };
+        const owned = (target, mode) => {
+          const stat = fs.lstatSync(target);
+          if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.uid !== 0 || stat.gid !== 0 || (stat.mode & 0o7777) !== mode) throw new Error("unsafe authority input file");
+          return fs.readFileSync(target);
+        };
+        const persist = (target, bytes, mode) => {
+          if (fs.existsSync(target)) {
+            if (!owned(target, mode).equals(bytes)) throw new Error("authority input conflicts with retained recovery bytes");
+          } else {
+            const fd = fs.openSync(target, "wx", mode);
+            try { fs.writeFileSync(fd, bytes); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+          }
+        };
+        if (!/^[A-Za-z0-9_-]{1,128}$/.test(epochId) || !/^[1-9][0-9]*$/.test(botId) || !/^[1-9][0-9]*$/.test(ownerId)) throw new Error("invalid reviewed identity");
+        directory(root);
+        directory(incoming);
+        const sourceRoot = fs.realpathSync(source);
+        const files = {};
+        const walk = (relative, ancestors = []) => {
+          const input = path.join(sourceRoot, relative);
+          const resolved = fs.realpathSync(input);
+          if (resolved !== sourceRoot && !resolved.startsWith(`${sourceRoot}/`)) throw new Error("package link escapes exact image payload");
+          if (ancestors.includes(resolved)) throw new Error("package link cycle");
+          const stat = fs.statSync(input);
+          if (stat.isDirectory()) {
+            directory(path.join(incoming, relative));
+            for (const name of fs.readdirSync(input).sort()) {
+              if (!/^[A-Za-z0-9_@.-]+$/.test(name) || name === "." || name === "..") throw new Error("unsupported package path");
+              walk(path.join(relative, name), [...ancestors, resolved]);
+            }
+          } else {
+            if (!stat.isFile()) throw new Error("non-file package payload");
+            const bytes = fs.readFileSync(input);
+            const mode = stat.mode & 0o111 ? 0o700 : 0o600;
+            persist(path.join(incoming, relative), bytes, mode);
+            files[relative] = { digest: sha(bytes), mode };
+          }
+        };
+        walk("");
+        const actual = [];
+        const inventory = relative => {
+          for (const entry of fs.readdirSync(path.join(incoming, relative), { withFileTypes: true })) {
+            const name = path.join(relative, entry.name);
+            if (entry.isDirectory()) inventory(name); else actual.push(name);
+          }
+        };
+        inventory("");
+        if (JSON.stringify(actual.sort()) !== JSON.stringify(Object.keys(files).sort())) throw new Error("unexpected incoming package residue");
+        for (const required of ["package.json", "npm-shrinkwrap.json", "dist/heart/daemon/sanctuary-authority-root-lifecycle.js", "dist/heart/daemon/sanctuary-telegram-authority-entry.js", "dist/heart/daemon/sanctuary-host-supervisor-entry.js", "deploy/unraid/sanctuary-host-launcher.sh", "deploy/unraid/sanctuary-authority-service.sh"]) {
+          if (!files[required]) throw new Error(`missing authority package asset: ${required}`);
+        }
+        if (!Object.keys(files).some(name => name.startsWith("node_modules/"))) throw new Error("production dependencies are absent");
+        const manifest = Buffer.from(`${JSON.stringify({ schemaVersion: 1, files })}\n`);
+        if (manifest.byteLength > 8388608) throw new Error("complete package manifest exceeds the root lifecycle 8388608-byte limit; stop before token rotation");
+        persist(`${root}/package-manifest.json`, manifest, 0o600);
+        const primitive = file => {
+          const stat = fs.statSync(file);
+          if (!stat.isFile() || stat.uid !== 0 || stat.gid !== 0 || (stat.mode & 0o022) || !(stat.mode & 0o111)) throw new Error("unsafe host primitive");
+          return sha(fs.readFileSync(file));
+        };
+        const request = { schemaVersion: 1, epochId, botId, ownerUserId: ownerId, ownerChatId: ownerId, packageDigest: sha(manifest), nodeDigest: primitive("/usr/local/bin/node"), prlimitDigest: primitive("/usr/bin/prlimit"), setsidDigest: primitive("/usr/bin/setsid"), shellDigest: primitive("/bin/sh") };
+        persist(`${root}/request.json`, Buffer.from(`${JSON.stringify(request)}\n`), 0o600);
+        if (fs.existsSync(`${root}/incoming-token`)) owned(`${root}/incoming-token`, 0o600);
+        const fd = fs.openSync(root, "r");
+        try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+NODE
+      )
     }
     run_sanctuary_docker() {
       /usr/bin/timeout -s KILL 20 /usr/bin/docker "$@"
@@ -1829,22 +2023,26 @@ Update:
     test "$(docker image inspect --format '{{.Id}}' "$VERSION_IMAGE")" = "$IMAGE_ID"
     AUDIT_RUNNER_IMAGE_ID=$IMAGE_ID
     validate_exact_image_id "$AUDIT_RUNNER_IMAGE_ID"
+    TARGET_MOUNT_CONTRACT=$(sanctuary_image_mount_contract "$IMAGE_ID")
+    test "$TARGET_MOUNT_CONTRACT" = canonical-gateway
     TEMPLATE_ICON=https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png
     DOCKERMAN_TEMPLATE_PATH=/boot/config/plugins/dockerMan/templates-user/my-ouro-butler.xml
     DOCKERMAN_TEMPLATE_JOURNAL=/boot/config/custom/ouro-butler/docker-man-template-transaction.json
     test "$DOCKERMAN_TEMPLATE_PATH" = /boot/config/plugins/dockerMan/templates-user/my-ouro-butler.xml
     test "$DOCKERMAN_TEMPLATE_JOURNAL" = /boot/config/custom/ouro-butler/docker-man-template-transaction.json
-  Before stopping, renaming, or creating any Butler container, extract the packaged event, template, runtime-policy, and DockerMan transaction assets from that exact image ID. Do not copy these files from a checkout or another image.
+  Before stopping, renaming, or creating any Butler container, extract the complete /opt/ouro package from that exact image ID, including production node_modules and package-relative dist. Do not copy these files from a checkout or another image. Use the package version extracted from the selected immutable image; version alone is not the mount contract. Only the reviewed new image's bot.ouro.sanctuary.mount-contract=canonical-gateway label admits the fourth mount. The immutable source alpha.816 ID above remains canonical-pre-gateway and must never be retagged as the gateway release.
   Stage the event assets, audit the original version-tagged template, create a separate temporary copy for exact local-image-ID auditing, and keep the private stage until the outer transaction commits:
     EVENT_ASSET_STAGE=$(mktemp -d /mnt/user/appdata/ouro-butler/staging/ouro-events.XXXXXX)
     chmod 0700 "$EVENT_ASSET_STAGE"
     EVENT_SCRIPT_STAGE="$EVENT_ASSET_STAGE/ouro-events"
     mkdir "$EVENT_SCRIPT_STAGE"
+    STAGED_PACKAGE_ROOT="$EVENT_ASSET_STAGE/package"
+    mkdir "$STAGED_PACKAGE_ROOT"
     STAGED_TEMPLATE="$EVENT_ASSET_STAGE/sanctuary.xml"
     STAGED_EXACT_TEMPLATE="$EVENT_ASSET_STAGE/sanctuary.exact-image.xml"
     STAGED_RUNTIME_POLICY="$EVENT_ASSET_STAGE/container-runtime.json"
-    STAGED_DOCKERMAN_TRANSACTION="$EVENT_ASSET_STAGE/docker-man-template-transaction.mjs"
-    STAGED_DOCKERMAN_XML_VALIDATOR="$EVENT_ASSET_STAGE/docker-man-template-xml.cjs"
+    STAGED_DOCKERMAN_TRANSACTION="$STAGED_PACKAGE_ROOT/deploy/unraid/docker-man-template-transaction.mjs"
+    STAGED_DOCKERMAN_XML_VALIDATOR="$STAGED_PACKAGE_ROOT/deploy/unraid/docker-man-template-xml.cjs"
     EVENT_ASSET_CONTAINER=
     cleanup_event_asset_stage() {
       if test -n "$EVENT_ASSET_CONTAINER"; then
@@ -1855,14 +2053,13 @@ Update:
     trap cleanup_event_asset_stage EXIT
     EVENT_ASSET_CONTAINER=$(docker create --pull=never --network none --read-only --entrypoint /bin/false "$IMAGE_ID")
     test "$(docker inspect --format '{{.Image}}' "$EVENT_ASSET_CONTAINER")" = "$IMAGE_ID"
+    docker cp "$EVENT_ASSET_CONTAINER:/opt/ouro/." "$STAGED_PACKAGE_ROOT/"
     docker cp "$EVENT_ASSET_CONTAINER:/opt/ouro/deploy/unraid/ouro-events/." "$EVENT_SCRIPT_STAGE/"
     docker cp "$EVENT_ASSET_CONTAINER:/opt/ouro/deploy/unraid/sanctuary.xml" "$STAGED_TEMPLATE"
     docker cp "$EVENT_ASSET_CONTAINER:/opt/ouro/deploy/unraid/container-runtime.json" "$STAGED_RUNTIME_POLICY"
-    docker cp "$EVENT_ASSET_CONTAINER:/opt/ouro/deploy/unraid/docker-man-template-transaction.mjs" "$STAGED_DOCKERMAN_TRANSACTION"
-    docker cp "$EVENT_ASSET_CONTAINER:/opt/ouro/deploy/unraid/docker-man-template-xml.cjs" "$STAGED_DOCKERMAN_XML_VALIDATOR"
     docker rm "$EVENT_ASSET_CONTAINER"
     EVENT_ASSET_CONTAINER=
-    EXPECTED_RELEASE_ASSETS=$(printf '%s\n' container-runtime.json docker-man-template-transaction.mjs docker-man-template-xml.cjs ouro-events sanctuary.xml)
+    EXPECTED_RELEASE_ASSETS=$(printf '%s\n' container-runtime.json ouro-events package sanctuary.xml)
     ACTUAL_RELEASE_ASSETS=$(find "$EVENT_ASSET_STAGE" -mindepth 1 -maxdepth 1 -exec basename {} \; | LC_ALL=C sort)
     test "$ACTUAL_RELEASE_ASSETS" = "$EXPECTED_RELEASE_ASSETS"
     test -d "$EVENT_SCRIPT_STAGE" && test ! -L "$EVENT_SCRIPT_STAGE"
@@ -1872,6 +2069,8 @@ Update:
     test -f "$STAGED_DOCKERMAN_XML_VALIDATOR" && test ! -L "$STAGED_DOCKERMAN_XML_VALIDATOR"
     chown 0:0 "$STAGED_TEMPLATE" "$STAGED_RUNTIME_POLICY" "$STAGED_DOCKERMAN_TRANSACTION" "$STAGED_DOCKERMAN_XML_VALIDATOR"
     chmod 0600 "$STAGED_TEMPLATE" "$STAGED_RUNTIME_POLICY" "$STAGED_DOCKERMAN_TRANSACTION" "$STAGED_DOCKERMAN_XML_VALIDATOR"
+    chown -R 0:0 "$STAGED_PACKAGE_ROOT"
+    chmod 0700 "$STAGED_PACKAGE_ROOT"
     EXPECTED_EVENT_ASSETS=$(printf '%s\n' bootstrap-spool.sh emit-event.mjs emit-usenet-event.sh install-usenet-guard.sh usenet-health.sh)
     ACTUAL_EVENT_ASSETS=$(find "$EVENT_SCRIPT_STAGE" -mindepth 1 -maxdepth 1 -type f -exec basename {} \; | LC_ALL=C sort)
     test "$ACTUAL_EVENT_ASSETS" = "$EXPECTED_EVENT_ASSETS"
@@ -1910,7 +2109,7 @@ Update:
       --entrypoint /opt/ouro/deploy/unraid/audit-container-spec.sh \
       --mount "type=bind,src=$STAGED_TEMPLATE,dst=/audit/sanctuary.xml,readonly" \
       --mount "type=bind,src=$STAGED_RUNTIME_POLICY,dst=/audit/container-runtime.json,readonly" \
-      "$IMAGE_ID" --persistent-template /audit/sanctuary.xml --runtime-policy /audit/container-runtime.json --expected-image-reference "$VERSION_IMAGE"
+      "$IMAGE_ID" --persistent-template /audit/sanctuary.xml --runtime-policy /audit/container-runtime.json --expected-image-reference "$VERSION_IMAGE" --mount-contract "$TARGET_MOUNT_CONTRACT"
     /usr/local/bin/node -e '
       const fs = require("node:fs");
       const [sourcePath, destinationPath, imageId] = process.argv.slice(1);
@@ -1930,7 +2129,7 @@ Update:
       --entrypoint /opt/ouro/deploy/unraid/audit-container-spec.sh \
       --mount "type=bind,src=$STAGED_EXACT_TEMPLATE,dst=/audit/sanctuary.exact-image.xml,readonly" \
       --mount "type=bind,src=$STAGED_RUNTIME_POLICY,dst=/audit/container-runtime.json,readonly" \
-      "$IMAGE_ID" --template /audit/sanctuary.exact-image.xml --runtime-policy /audit/container-runtime.json --expected-image "$IMAGE_ID"
+      "$IMAGE_ID" --template /audit/sanctuary.exact-image.xml --runtime-policy /audit/container-runtime.json --expected-image "$IMAGE_ID" --mount-contract "$TARGET_MOUNT_CONTRACT"
     recover_dockerman_template_transaction
     recover_pending_sanctuary_bundle_migration "$IMAGE_ID"
     classify_sanctuary_update_source
@@ -1941,12 +2140,20 @@ Update:
   If boot activation or verification fails after that transaction commits, leave production untouched, repair or rerun this exact-image installation, and stop. Container and DockerMan rollback begin only after the later production preflight succeeds.
   For normal updates, preflight accepts only the pinned alpha.742 two-mount source or an already package-managed canonical source before any autostart or live-container change. The pinned exception may validate an old source, but can never authorize creation of a new target. Provider authentication and standalone credential-readiness helpers are not normal-update prechecks; never place credentials in arguments, shell variables or history.
   The DockerMan transaction binds Jellyfin's container ID, image ID, state, and restart count. Update, rollback and recovery must preserve that checkpoint.
-  Production must be the only running Butler poller; staging must be absent; rollback may be absent or one stopped container with the exact production image. A stopped legacy-evidence container is preserved. Disable every Butler name in Unraid's array-autostart file and verify that result before stopping production. First resolve and validate the exact image ID of the known-good production container while it is still running, so a lookup failure cannot strand a renamed container:
+  For this authority migration, only the exact pinned alpha.816 predecessor may become rollback. The legacy-alpha742 digest remains supported for historical source audits, not a policy-weak authority rollback. Preserve one exact stopped alpha.816 predecessor, Jellyfin and every policy/history byte. Staging must be absent and production must be the only running resident. Capture the non-secret reviewed bot/owner/epoch inputs; OWNER_ID is the already authenticated private Telegram user/chat, never inferred from resident-written prose:
+    AUTHORITY_EPOCH_ID=<new-reviewed-epoch-id>
+    AUTHORITY_BOT_ID=8541786263
+    AUTHORITY_OWNER_ID=<reviewed-private-owner-user-and-chat-id>
+    install -d -m 0700 -o 0 -g 0 /mnt/user/appdata/ouro-authority
+  Disable every Butler name in Unraid's array-autostart file before authority-install freezes the resident. First resolve and validate the exact known-good image while it is still running:
     /bin/bash /boot/config/custom/ouro-events/bootstrap-spool.sh --mount
     test "$(findmnt -n -o FSTYPE --target /boot/config/custom/ouro-events/spool)" = tmpfs
     test "$(stat -c '%u:%g:%a' /boot/config/custom/ouro-events/spool)" = 0:0:755
     ROLLBACK_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler)
     validate_exact_image_id "$ROLLBACK_IMAGE_ID"
+    ROLLBACK_MOUNT_CONTRACT=$(sanctuary_image_mount_contract "$ROLLBACK_IMAGE_ID")
+    test "$ROLLBACK_IMAGE_ID" = sha256:589b7cf8f96d139ee9fd86204a183126aadcbd3fbfb406063709be303397b1b2
+    test "$ROLLBACK_MOUNT_CONTRACT" = canonical-pre-gateway
     if assert_update_topology "$ROLLBACK_IMAGE_ID"; then
       :
     else
@@ -1954,23 +2161,43 @@ Update:
       (exit "$UPDATE_PREFLIGHT_STATUS")
     fi
     assert_update_source "$ROLLBACK_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"
-    /usr/local/bin/node "$STAGED_DOCKERMAN_TRANSACTION" prepare --source-template "$STAGED_TEMPLATE" --version-tag "$VERSION_IMAGE" --manifest-digest "$MANIFEST_DIGEST" --rollback-image-id "$ROLLBACK_IMAGE_ID" --target-image-id "$IMAGE_ID" >/dev/null
     if provision_sanctuary_sab_credential "$IMAGE_ID" \
       && verify_sanctuary_sab_readiness "$IMAGE_ID" \
-      && verify_sanctuary_telegram_readiness "$IMAGE_ID"; then
+      && verify_sanctuary_telegram_readiness "$ROLLBACK_IMAGE_ID"; then
       :
     else
       PRECUTOVER_READINESS_STATUS=$?
-      /usr/local/bin/node "$STAGED_DOCKERMAN_TRANSACTION" rollback >/dev/null
       (exit "$PRECUTOVER_READINESS_STATUS")
     fi
-  Guard the atomic autostart disable separately. If it fails, production has not been touched and the captured status is propagated:
+  Prepare the complete package and request before human token revocation. The input helper's manifest-size check must pass the root lifecycle reader's 8388608-byte manifest limit; ordinary private records retain their 1048576-byte limit. Do not prune dependencies or split the inventory to bypass either bound. If this check refuses the full payload, leave the existing token, autostart and resident unchanged:
+    prepare_sanctuary_authority_inputs "$STAGED_PACKAGE_ROOT"
+  The input helper copies every regular package file and materializes only package-internal dependency symlinks as independent files, hashes the complete inventory with exact modes, and writes mode-0600 manifest/request files. The request binds schemaVersion, epochId, botId, ownerUserId, ownerChatId, packageDigest and the actual root node/prlimit/setsid/shell hashes. Review those hashes against the approved package and host primitives before prepare. Repeated preparation accepts only identical retained inputs; unknown extra files, external links or changed bytes fail closed. No network token probe or resident start occurs in preparation.
+  Prepare the durable transaction and disable autostart before the human rotates any token:
+    /usr/local/bin/node "$STAGED_DOCKERMAN_TRANSACTION" prepare --source-template "$STAGED_TEMPLATE" --version-tag "$VERSION_IMAGE" --manifest-digest "$MANIFEST_DIGEST" --rollback-image-id "$ROLLBACK_IMAGE_ID" --target-image-id "$IMAGE_ID" >/dev/null
+  Guard the atomic autostart disable separately. If it fails, the original token remains valid and production has not been touched; restore the template and propagate the captured status:
     if disable_butler_autostart; then
       :
     else
       AUTOSTART_DISABLE_STATUS=$?
       /usr/local/bin/node "$STAGED_DOCKERMAN_TRANSACTION" rollback >/dev/null
       (exit "$AUTOSTART_DISABLE_STATUS")
+    fi
+  Only after pinned old-image readiness, full-package preparation, durable transaction preparation and autostart disabling pass, the human rotates MendelowCloudButlerBot's token for that same numeric bot and uses the hidden root-terminal input helper. Do not echo the token, put it in argv/environment/history, copy it into the resident, or replace retained incoming-token during recovery. A failed or interrupted paste must be reconciled by the human before retry; retain the journal and disabled autostart, and do not invent a token:
+    receive_sanctuary_authority_token
+    test "$(stat -c '%u:%g:%a' /mnt/user/appdata/ouro-authority/incoming-token)" = 0:0:600
+  Gateway installation and its tokenless readiness belong inside the stopped-resident transaction, never in the old live precheck. A failure attempts retirement and exact old-image restoration; failure of either keeps autostart disabled and the journals/root inputs intact:
+    if /usr/local/bin/node "$STAGED_DOCKERMAN_TRANSACTION" authority-install >/dev/null \
+      && verify_sanctuary_telegram_readiness "$IMAGE_ID"; then
+      :
+    else
+      AUTHORITY_INSTALL_STATUS=$?
+      retire_sanctuary_authority_if_pending
+      assert_update_source "$ROLLBACK_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"
+      start_only_butler_for_recovery
+      wait_butler_ready ouro-butler
+      enable_butler_autostart
+      /usr/local/bin/node "$STAGED_DOCKERMAN_TRANSACTION" rollback >/dev/null
+      (exit "$AUTHORITY_INSTALL_STATUS")
     fi
   Define the stale-rollback cleanup used by the preparation guard:
     remove_stopped_rollback_if_present() {
@@ -2008,6 +2235,7 @@ ouro-butler-rollback
       PRODUCTION_PREPARATION_CLEANUP_STATUS=0
       PRODUCTION_PREPARATION_RECOVERY_SAFE=true
       /usr/local/bin/node "$STAGED_DOCKERMAN_TRANSACTION" verify-jellyfin >/dev/null
+      retire_sanctuary_authority_if_pending
       if docker container inspect ouro-butler >/dev/null 2>&1; then
         if docker container inspect ouro-butler-rollback >/dev/null 2>&1; then
           docker stop ouro-butler-rollback >/dev/null 2>&1 || true
@@ -2048,22 +2276,16 @@ ouro-butler-rollback
     fi
   Preparation failure therefore either restores the still-named exact production after attempting to remove any stale rollback, or renames the exact stopped rollback back. Both safe paths revalidate and start the old container, wait within the fixed bound, restore production-only autostart atomically, and return the original failure. If stale rollback removal fails, restore production only when the leftover is proven stopped; otherwise leave both containers untouched, roll back the journals, and return the cleanup failure for repair.
   If neither exact container can be found, the failure returns with Butler autostart disabled.
-  Do not start a target-image daemon between the production rename and final production activation. The exact-image static audit, download-queue readiness, and vault-backed Telegram identity check have already passed before autostart or live-container changes.
+  Do not start a target-image daemon between the production rename and final production activation. The exact-image static audit and download-queue readiness have passed. The old image's pinned pre-gateway readiness ran before cutover; the new image's socket-mounted tokenless readiness ran only after authority-install proved the root gateway.
   Provider and complete daemon readiness are exercised only by the transactional production activation below. Its failure arm restores and revalidates the exact prior production, so a disposable daemon cannot reconcile or claim live external-event state before cutover.
   Create and activate production from the same exact image ID and exact authority in one explicit conditional so `set -eu` cannot exit before rollback. Only a successful create, effective audit, start, stopped-rollback assertion, and bounded readiness wait may enable production autostart.
   On failure, capture the activation status, remove only a partially created new production container, restore and audit the stopped rollback against its exact old image ID, prove it ready, restore production-only autostart atomically, and return the original failure. If the partial target cannot be removed, preserve its matching target bundle and retained migration receipt, roll back the DockerMan journal without attempting the colliding rename, then return the cleanup failure:
     if test "$(inspect_registry_manifest_digest "$VERSION_IMAGE")" = "$MANIFEST_DIGEST" \
       && test "$(docker image inspect --format '{{.Id}}' "$VERSION_IMAGE")" = "$IMAGE_ID" \
-      && docker create --pull=never --name ouro-butler --network host --restart unless-stopped --user 10001:10001 \
-      --label net.unraid.docker.managed=dockerman \
-      --label "net.unraid.docker.icon=$TEMPLATE_ICON" \
-      --mount "type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli" \
-      --mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
-      --mount "type=bind,src=/boot/config/custom/ouro-events/spool,dst=/run/ouro-events,readonly" \
-      "$VERSION_IMAGE" \
-      && audit_effective ouro-butler "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" canonical "$VERSION_IMAGE" "$TEMPLATE_ICON" \
+      && create_sanctuary_container "$IMAGE_ID" "$VERSION_IMAGE" "$TARGET_MOUNT_CONTRACT" \
+      && audit_effective ouro-butler "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" "$TARGET_MOUNT_CONTRACT" "$VERSION_IMAGE" "$TEMPLATE_ICON" \
       && assert_only_running_butler - \
-      && docker start ouro-butler \
+      && /usr/local/bin/node "$STAGED_DOCKERMAN_TRANSACTION" authority-activate >/dev/null \
       && assert_only_running_butler ouro-butler \
       && test "$(docker inspect --format '{{.Image}}' ouro-butler)" = "$IMAGE_ID" \
       && test "$(docker inspect --format '{{.State.Running}}' ouro-butler-rollback)" = false \
@@ -2075,6 +2297,7 @@ ouro-butler-rollback
       PRODUCTION_ACTIVATION_STATUS=$?
       PRODUCTION_ACTIVATION_CLEANUP_STATUS=0
       /usr/local/bin/node "$STAGED_DOCKERMAN_TRANSACTION" verify-jellyfin >/dev/null
+      retire_sanctuary_authority_if_pending
       if docker container inspect ouro-butler >/dev/null 2>&1; then
         docker stop ouro-butler >/dev/null 2>&1 || true
         PARTIAL_PRODUCTION_IMAGE_ID=$(docker inspect --format '{{.Image}}' ouro-butler)
@@ -2108,9 +2331,20 @@ ouro-butler-rollback
     /usr/local/bin/node "$STAGED_DOCKERMAN_TRANSACTION" commit --proof "$FINAL_PROOF_PATH" >/dev/null
     cleanup_event_asset_stage
     trap - EXIT
-  Keep ouro-butler-rollback stopped until the new production container is proven or the explicit rollback arm restores it. Never create production from a mutable tag, a bare tag, or a bare local image ID.
+  Keep ouro-butler-rollback stopped until the new production container is proven or the explicit rollback arm restores it. The rollback arm first retires root registrations and executions, stops the gateway, ends the epoch and restores the current valid token/cursor. Only then does it restore the prior bundle and rename the untouched three-mount alpha.816 container. start_only_butler_for_recovery invokes authority-restore while the authority journal exists; it cannot bypass retirement with docker start. Never create production from a mutable tag, a bare tag, or a bare local image ID.
   Docker tab Update, Force Update, Edit/Apply, Update All, and CA Action Centre updates remain visible but are unsupported because stock recreation deletes reviewed rollback evidence. Visibility, start, stop, and autostart remain supported; use only this reviewed version-tag transaction for updates.
   Community Apps determines installed state from the DockerMan template plus the live container name and image. The helper proves that same relationship without calling the endpoint that refreshes Community Apps' UI cache; the later live UI smoke confirms what Ari sees.
+
+Execution-only primitive refresh:
+
+  A reviewed Unraid update to prlimit or setsid makes new host execution unavailable, but the installed gateway can still boot for Telegram and retire for rollback. Package, Node and shell pins remain mandatory. Gateway launch uses Node's native detached process support; it does not execute an unreviewed setsid binary.
+
+  Root maintainer: stop the verified gateway process using its exact root-owned lock/PID identity, then confirm there is no pending DockerMan transaction or unresolved execution, supervisor or cgroup state. Review the current prlimit and setsid file hashes and ownership before supplying their full SHA-256 digests to the package-owned command below. The command verifies those exact bytes and metadata; it never adopts current hashes implicitly. It changes no token, issuer, owner, cursor, policy or grant. An interrupted two-file publication remains fail-closed and can be completed by repeating the same reviewed command.
+
+    /usr/local/bin/node /mnt/user/appdata/ouro-authority/package/dist/heart/daemon/sanctuary-authority-root-lifecycle.js repin-execution sha256:REVIEWED_PRLIMIT_SHA256 sha256:REVIEWED_SETSID_SHA256
+    /usr/local/bin/node /mnt/user/appdata/ouro-authority/package/dist/heart/daemon/sanctuary-authority-root-lifecycle.js boot
+
+  Replace each REVIEWED_*_SHA256 placeholder with its reviewed 64 hexadecimal digits. After restart, verify the signed host.status health result before proposing a new host command. Changed package, Node or shell pins require repair of that separate boundary, not this execution-only refresh.
 
 Backup:
   Set BACKUP_ROOT to a new absolute snapshot path on the destination filesystem.
@@ -2331,7 +2565,12 @@ Restore:
       process.stdout.write(expected);
     ' "$BACKUP_ROOT/provenance/container-inspect.json" "$BACKUP_ROOT/provenance/package-version")
     test "$(docker image inspect --format '{{.Id}}' "$RESTORE_VERSION_IMAGE")" = "$IMAGE_ID"
-    audit_registered_dockerman_template "$AUDIT_RUNNER_IMAGE_ID" "$RESTORE_VERSION_IMAGE"
+    RESTORE_MOUNT_CONTRACT=$(sanctuary_image_mount_contract "$IMAGE_ID")
+    audit_registered_dockerman_template "$AUDIT_RUNNER_IMAGE_ID" "$RESTORE_VERSION_IMAGE" "$RESTORE_MOUNT_CONTRACT"
+  This data-snapshot Restore is not authority rollback. It must not overwrite a current gateway cursor, reintroduce a revoked resident token or remove a gateway mount behind the root owner. Refuse before mutation if a root epoch/config or deployment journal exists; use the retained Update transaction's authority-retire/authority-restore recovery instead. After a committed authority installation, obtain a reviewed root-aware restore transaction rather than applying this historical data snapshot:
+    test ! -e /mnt/user/appdata/ouro-authority/active.json && test ! -L /mnt/user/appdata/ouro-authority/active.json
+    test ! -e /boot/config/custom/ouro-butler/docker-man-template-transaction.json && test ! -L /boot/config/custom/ouro-butler/docker-man-template-transaction.json
+    test "$RESTORE_MOUNT_CONTRACT" = canonical-pre-gateway
   Before changing autostart, durable roots, or live containers, run the nounset-safe input, backup-root, image, and topology preflight. It requires a nonempty canonical absolute BACKUP_ROOT other than /, both required directories, an exact local sha256 image ID, canonical production as the only running Butler, no staging or rollback, and at most one exact stopped legacy-evidence container. It also audits the live source container with the reviewed runner.
   Restore never rewrites DockerMan registration outside the reviewed template transaction. The preflight therefore stops unless the persistent template already names the exact snapshot version, and the post-start check proves DockerMan and Community Apps still recognize it.
   If the template names another version, first run the same reviewed version-tag update transaction for the snapshot version, then rerun Restore. A mismatch stops before autostart, durable-root, or production-container changes:
@@ -2388,14 +2627,8 @@ Restore:
       && /bin/bash "$HOST_RESTORE_INSTALLER" --restore-root "$BACKUP_ROOT/host" \
       && rm -f "$HOST_RESTORE_INSTALLER" \
       && docker image inspect "$IMAGE_ID" >/dev/null \
-      && docker create --pull=never --name ouro-butler --network host --restart unless-stopped --user 10001:10001 \
-      --label net.unraid.docker.managed=dockerman \
-      --label "net.unraid.docker.icon=https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png" \
-      --mount "type=bind,src=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli,dst=/home/ouro/.ouro-cli" \
-      --mount "type=bind,src=/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro,dst=/home/ouro/AgentBundles/sanctuary.ouro" \
-      --mount "type=bind,src=/boot/config/custom/ouro-events/spool,dst=/run/ouro-events,readonly" \
-      "$RESTORE_VERSION_IMAGE" \
-      && audit_effective ouro-butler "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" canonical "$RESTORE_VERSION_IMAGE" https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png \
+      && create_sanctuary_container "$IMAGE_ID" "$RESTORE_VERSION_IMAGE" "$RESTORE_MOUNT_CONTRACT" \
+      && audit_effective ouro-butler "$IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID" "$RESTORE_MOUNT_CONTRACT" "$RESTORE_VERSION_IMAGE" https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png \
       && assert_only_running_butler - \
       && docker start ouro-butler \
       && assert_only_running_butler ouro-butler \
@@ -2546,13 +2779,8 @@ Packaged Unit 16 acceptance execution:
   execute it in the order below. Before every execution the launcher regenerates
   the config from the packaged fixed contract and requires byte-for-byte equality.
   Unit 16d-2 stops at the pre-model quarantine boundary: use a genuinely distinct private Telegram sender, confirm the fixed acknowledgement and owner admission card, and do not approve the contact during this scenario. The production-identical allow-to-one-turn continuation is covered by the Telegram admission integration suite when a second live account is unavailable. Unit 16h is acceptance-only: it exercises the delivery path against isolated state, restores exact health and cron bytes, and does not activate a production daily digest.
-  The cursor snapshot is deliberately materialized and executed twice around the
-  live scenario. Telegram bootstrap refreshes the canonical agent vault
-  `runtime/config` and keeps the bot token inside the consuming harness process.
-  It never reads the retired container credential file or carries the token in a
-  descriptor, argument, environment variable, shell variable, config, evidence,
-  or output. Callback injection alone maps its reviewed saved callback-update
-  JSON from host fd 3 through Docker stdin to in-container fd 3.
+  The cursor snapshot is deliberately materialized and executed twice around the live scenario. Every telegram-offset proof uses the fresh signed telegram.cursor.snapshot logical progress digest, excluding snapshot time/signature rather than hashing a fixed resident offset file. Stale, absent or frozen resident offsets cannot satisfy cursor evidence. Telegram bootstrap confirms the already pinned root owner through gateway poll/settle; it performs no token acquisition, vault credential write or direct getUpdates. Its one-shot has network=none and a readonly runtime mount. Callback injection alone maps reviewed saved callback-update JSON from host fd 3 through Docker stdin to in-container fd 3.
+  Allow the 90-second config materializer budget and the existing 65-second gateway socket wait; do not replace timeout failure with resident token readiness. Unit16b is explicitly retired as a production containment assertion and remains runtime-vault-readiness. Unit16e is the exact four-mount production snapshot with readOnlyRoot=false; mountsExact remains strict.
   Stage the reviewed callback JSON at the fixed path below in the root-owned
   tmpfs inbox, then use this single fail-closed helper. It opens the input once,
   validates the opened descriptor and its original path refer to the same
@@ -2674,15 +2902,7 @@ Packaged Unit 16 acceptance execution:
   Telegram runtime fields and both configured provider records were freshly read.
   Scenario handles remain private to the scenario adapter. The main one-shot
   never receives the Docker socket, Unraid key directory, or a host-root mount.
-  Telegram bootstrap additionally brackets its one-shot with a host-controlled
-  poller quiescence guard: it verifies the exact healthy staging container,
-  assumes recovery responsibility before attempting the stop, stops it with a
-  30-second grace bound, proves it is stopped, and mounts a
-  root-owned typed zero-poller fact. Its exit/signal trap restarts that same exact
-  container and waits up to 120 seconds for healthy recovery on both success and
-  failure. It never reads or changes Unraid autostart configuration. Every command
-  also receives a freshly generated, redacted typed container-inspect snapshot;
-  raw container environment or credential values are never captured.
+  Telegram bootstrap brackets its one-shot with a host-controlled quiescence guard: it verifies the exact healthy profile-selected resident, assumes recovery responsibility before stopping it with a 30-second grace bound, and proves it is stopped while one live root gateway owns polling. The broker proves the exact root lock/command/start identity and revoked predecessor token epoch; it does not accept a zero-poller file or a resident offset as authority. Every separately launched gateway consumer mounts only /run/ouro-authority readonly. The exit/signal trap restarts the same resident and waits up to 120 seconds for healthy recovery on success or failure without changing Unraid autostart. Every command receives a fresh redacted typed container snapshot, never raw environment or credential values.
   Callback injection requires two stable zero observations from a durable callback playback journal under
   `state/approvals`; the journal is keyed only by the full callback-coordinate
   digest and stores no raw update, callback data, user, chat, message, or query ID.

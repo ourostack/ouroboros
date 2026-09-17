@@ -21,15 +21,15 @@ import { isDeepStrictEqual } from "node:util"
 import { getChannelCapabilities } from "@ouro.bot/friends"
 
 import { emitNervesEvent } from "../../nerves/runtime"
-import { loadTelegramSenseCredentials, telegramBotIdFromToken, type TelegramSenseCredentials } from "../../senses/telegram"
-import { mergeRuntimeCredentialConfig, refreshRuntimeCredentialConfig, type RuntimeCredentialConfigReadResult } from "../runtime-credentials"
+import type { TelegramUpdate } from "../../senses/telegram-client"
+import { openSanctuaryResidentAuthority } from "../../senses/sanctuary-authority-resident"
 import { loadRelationshipCapabilityRegistry } from "../../repertoire/relationship-authorization"
 import { SANCTUARY_OWNER_ADDITIONS, resolveToolDefinition, selectToolsForChannel, toolSelectionSchemas } from "../../repertoire/tools"
 import type { ProviderCapability } from "../core"
 
 const MAX_ADAPTER_OUTPUT = 1_048_576
 const DEFAULT_ADAPTER_TIMEOUT_MS = 240_000
-const DEFAULT_TELEGRAM_TIMEOUT_MS = 10_000
+const DEFAULT_TELEGRAM_TIMEOUT_MS = 65_000
 const PACKAGED_PROVENANCE_ADAPTER = "/opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh"
 const OPAQUE_DIGEST = /^[0-9a-f]{64}$/u
 type FixedEvidenceSchema = "telegram-cursor-v1" | "postboot-health-v1"
@@ -39,7 +39,7 @@ type JsonObject = Record<string, unknown>
 export function exactSanctuaryContainmentProfileBoundaries(value: unknown): boolean {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false
   const boundaries = value as JsonObject
-  const versions = { "sanctuary-owner": 8, "sanctuary-household": 5, "sanctuary-event": 4 }
+  const versions = { "sanctuary-owner": 9, "sanctuary-household": 5, "sanctuary-event": 4 }
   if (!isDeepStrictEqual(Object.keys(boundaries).sort(), Object.keys(versions).sort())) return false
   const packageRoot = path.resolve(__dirname, "../../../deploy/unraid/sanctuary.ouro")
   const registry = loadRelationshipCapabilityRegistry(packageRoot)
@@ -49,7 +49,7 @@ export function exactSanctuaryContainmentProfileBoundaries(value: unknown): bool
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false
     const boundary = raw as JsonObject
     const capabilities = boundary.providerCapabilities
-    if (!Array.isArray(capabilities) || !capabilities.every((entry): entry is ProviderCapability => entry === "reasoning-effort" || entry === "phase-annotation")
+    if (!Array.isArray(capabilities) || !capabilities.every((entry): entry is ProviderCapability => entry === "reasoning-effort" || entry === "phase-annotation" || entry === "approval-continuation")
       || new Set(capabilities).size !== capabilities.length) return false
     const profile = registry.profiles[id]!
     if (profile.version !== version) return false
@@ -72,13 +72,10 @@ export function exactSanctuaryContainmentProfileBoundaries(value: unknown): bool
 }
 
 export interface AcceptanceHarnessDependencies {
+  gateway?(): ReturnType<typeof openSanctuaryResidentAuthority>
   readSecret(): string
-  refreshRuntime(agentName: string): Promise<RuntimeCredentialConfigReadResult>
-  mergeRuntime(agentName: string, patch: Record<string, unknown>): Promise<RuntimeCredentialConfigReadResult>
-  telegramCredentials(agentName: string): TelegramSenseCredentials
   runAdapter(executable: string, payload: unknown, timeoutMs?: number): Promise<unknown>
   realpath(filePath: string): string
-  fetch: typeof fetch
   now(): number
   randomBytes(size: number): Buffer
   sleep(milliseconds: number): Promise<void>
@@ -97,10 +94,8 @@ export function createSanctuaryAcceptanceHarnessDependencies(
   const adapterTimeoutMs = options.adapterTimeoutMs ?? DEFAULT_ADAPTER_TIMEOUT_MS
   const telegramTimeoutMs = options.telegramTimeoutMs ?? DEFAULT_TELEGRAM_TIMEOUT_MS
   return {
+    gateway: () => openSanctuaryResidentAuthority({}, {}),
     readSecret: () => readFileSync(secretFd, "utf8"),
-    refreshRuntime: refreshRuntimeCredentialConfig,
-    mergeRuntime: mergeRuntimeCredentialConfig,
-    telegramCredentials: loadTelegramSenseCredentials,
     runAdapter: async (executable, payload, remainingMs) => {
       requireAbsoluteExecutable(executable)
       const result = spawnSync(executable, [], {
@@ -123,25 +118,10 @@ export function createSanctuaryAcceptanceHarnessDependencies(
       }
     },
     realpath: realpathSync,
-    fetch,
     now: Date.now,
     randomBytes: nodeRandomBytes,
     sleep: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
     telegramTimeoutMs,
-  }
-}
-
-async function canonicalTelegramBootstrapToken(deps: AcceptanceHarnessDependencies): Promise<string> {
-  let refreshed: RuntimeCredentialConfigReadResult
-  try { refreshed = await deps.refreshRuntime("sanctuary") }
-  catch { throw new Error("Telegram runtime credentials are unavailable; actor: human-required; unlock or repair vault runtime/config") }
-  if (!refreshed.ok) throw new Error("Telegram runtime credentials are unavailable; actor: human-required; unlock or repair vault runtime/config")
-  try {
-    const token = deps.telegramCredentials("sanctuary").botToken.trim()
-    telegramBotIdFromToken(token)
-    return token
-  } catch {
-    throw new Error("Telegram runtime credentials are invalid; actor: human-required; repair vault runtime/config")
   }
 }
 
@@ -316,38 +296,6 @@ function failedCheckpoint(root: string, filePath: string, base: JsonObject, erro
   replaceCheckpoint(root, filePath, { ...base, phase: "failed", errorCategory: safeErrorCategory(error) })
 }
 
-async function telegramRequest(
-  deps: AcceptanceHarnessDependencies,
-  token: string,
-  method: string,
-  body?: JsonObject,
-  requestTimeoutMs = deps.telegramTimeoutMs ?? DEFAULT_TELEGRAM_TIMEOUT_MS,
-): Promise<unknown> {
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), requestTimeoutMs)
-  let response: Response
-  try {
-    response = await deps.fetch(`https://api.telegram.org/bot${token}/${method}`, {
-      ...(body ? {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-      } : {}),
-      signal: controller.signal,
-    })
-  } catch (error) {
-    if (controller.signal.aborted) throw new Error("Telegram request timed out")
-    throw error
-  } finally {
-    clearTimeout(timeout)
-  }
-  let envelope: JsonObject
-  try { envelope = object(await response.json(), "Telegram response") }
-  catch { throw new Error("Telegram returned invalid JSON") }
-  if (!response.ok || envelope.ok !== true) throw new Error("Telegram request failed")
-  return envelope.result
-}
-
 function telegramBootstrapRequestError(method: "getMe" | "getUpdates", error: unknown): Error {
   const outcome = error instanceof Error && /timed out/iu.test(error.message) ? "timed out" : "failed"
   return new Error(`Telegram ${method} ${outcome}; actor: agent-runnable; retry Telegram bootstrap`)
@@ -360,7 +308,7 @@ export const SANCTUARY_UNIT_16_EVIDENCE_LABELS = [
   "unit-16a-pre-reboot-checkpoint",
   "unit-16a-reboot-request",
   "unit-16a-boot-recovery-milestones",
-  "unit-16b-runtime-vault-containment",
+  "unit-16b-runtime-vault-readiness",
   "unit-16c-provider-readiness",
   "unit-16d-whats-up",
   "unit-16d-1-space",
@@ -430,6 +378,7 @@ function requiredInteger(value: JsonObject, key: string, expected: number, label
 }
 
 export function validateSanctuaryUnit16EvidenceAssertions(label: SanctuaryUnit16EvidenceLabel, raw: unknown): JsonObject {
+  if (!SANCTUARY_UNIT_16_EVIDENCE_LABELS.includes(label)) throw new Error("Sanctuary evidence label is retired or unsupported")
   const value = object(raw, `${label} assertions`)
   const exact = (keys: string[]): void => exactObjectKeys(value, keys, `${label} assertions`)
   const allTrue = (keys: string[]): void => keys.forEach((key) => requiredTrue(value, key, label))
@@ -464,13 +413,10 @@ export function validateSanctuaryUnit16EvidenceAssertions(label: SanctuaryUnit16
       allTrue(["arrayReady", "bootIdentityChanged", "butlerReady", "dockerReady", "hostReady", "postbootIntegrityPreserved", "sshReady", "tailscaleReady"])
       opaqueDigest(value.processBindingDigest, `${label} processBindingDigest`)
       break
-    case "unit-16b-runtime-vault-containment":
-      exact(["autostartExact", "exactImage", "manualAuthRequired", "mountCount", "mountsExact", "nonRootUid", "publishedPortCount", "readOnlyRoot", "updaterDisabled", "vaultUnlocked"])
-      allTrue(["autostartExact", "exactImage", "mountsExact", "readOnlyRoot", "updaterDisabled", "vaultUnlocked"])
+    case "unit-16b-runtime-vault-readiness":
+      exact(["autostartExact", "exactImage", "manualAuthRequired", "updaterDisabled", "vaultUnlocked"])
+      allTrue(["autostartExact", "exactImage", "updaterDisabled", "vaultUnlocked"])
       requiredFalse(value, "manualAuthRequired", label)
-      requiredInteger(value, "mountCount", 4, label)
-      requiredInteger(value, "nonRootUid", 10001, label)
-      requiredInteger(value, "publishedPortCount", 0, label)
       break
     case "unit-16c-provider-readiness":
       exact(["innerReady", "laneSelectionExact", "outwardReady", "silentFallback", "singleCredentialExact", "vaultCoordinatesExact"])
@@ -518,7 +464,7 @@ export function validateSanctuaryUnit16EvidenceAssertions(label: SanctuaryUnit16
       integer(value.auditRecordCount, `${label} auditRecordCount`, 2)
       integer(value.auditLifecyclePairCount, `${label} auditLifecyclePairCount`, 1)
       if (text(value.containerUser, `${label} containerUser`) !== "10001:10001" || text(value.liveProcessUser, `${label} liveProcessUser`) !== "10001:10001" || text(value.networkMode, `${label} networkMode`) !== "host") throw new Error(`${label} container identity or network is invalid`)
-      requiredInteger(value, "mountCount", 3, label)
+      requiredInteger(value, "mountCount", 4, label)
       requiredInteger(value, "typedWriteExecutorCount", 1, label)
       allTrue(["writeApprovalPolicyExact", "mountsExact", "securityExact", "updaterDisabled"])
       break
@@ -662,7 +608,7 @@ export const SANCTUARY_SCENARIO_GATES: Record<SanctuaryUnit16EvidenceLabel, Sanc
   "unit-16a-pre-reboot-checkpoint": "none",
   "unit-16a-reboot-request": "none",
   "unit-16a-boot-recovery-milestones": "none",
-  "unit-16b-runtime-vault-containment": "none",
+  "unit-16b-runtime-vault-readiness": "none",
   "unit-16c-provider-readiness": "none",
   "unit-16d-whats-up": "authorized-telegram-message",
   "unit-16d-1-space": "authorized-telegram-message",
@@ -693,7 +639,7 @@ export const SANCTUARY_SCENARIO_SOURCES: Record<SanctuaryUnit16EvidenceLabel, Sa
   "unit-16a-pre-reboot-checkpoint": ["telegram-audit", "telegram-offset", "approval-journal", "container-inspect", "cron-runtime", "reboot-checkpoint"],
   "unit-16a-reboot-request": ["reboot-checkpoint"],
   "unit-16a-boot-recovery-milestones": ["reboot-checkpoint", "container-inspect"],
-  "unit-16b-runtime-vault-containment": ["container-inspect"],
+  "unit-16b-runtime-vault-readiness": ["container-inspect"],
   "unit-16c-provider-readiness": ["provider-live-check"],
   "unit-16d-whats-up": ["telegram-audit", "telegram-offset", "telegram-turn-receipts", "live-grounding-read"],
   "unit-16d-1-space": ["telegram-audit", "telegram-offset", "telegram-turn-receipts", "restart-attempt-ledger", "container-inspect", "live-grounding-read"],
@@ -902,101 +848,73 @@ async function telegramBootstrap(config: JsonObject, deps: AcceptanceHarnessDepe
   if (deadlineMs > 900_000) throw new Error("Telegram bootstrap deadline exceeds 15 minutes")
   const pollTimeoutSeconds = integer(config.pollTimeoutSeconds, "pollTimeoutSeconds", 1)
   if (pollTimeoutSeconds > 50) throw new Error("Telegram poll timeout exceeds 50 seconds")
-  const token = deps.readSecret().trim()
-  let getMe: unknown
-  try { getMe = await telegramRequest(deps, token, "getMe") }
-  catch (error) { throw telegramBootstrapRequestError("getMe", error) }
-  const bot = object(getMe, "Telegram getMe result")
-  if (String(bot.id) !== expectedBotId || bot.username !== expectedUsername) {
-    throw new Error("Telegram bot identity mismatch; actor: human-required; repair vault runtime/config")
-  }
-
-  const nonce = deps.randomBytes(16).toString("hex")
-  const base: JsonObject = {
-    schemaVersion: 1,
-    operation: "telegram-bootstrap",
-    phase: "preflight",
-    botIdentityDigest: digest({ id: expectedBotId, username: expectedUsername }),
-    startedAt: deps.now(),
-  }
-  initializeCheckpoint(root, evidencePath, base)
-  try {
-    const quiesced = object(await deps.runAdapter(pollerAdapter, {
-      operation: "quiesce_telegram_poller",
-      expectedState: "stopped",
-    }), "Telegram poller precondition")
-    exactObjectKeys(quiesced, ["activePollers", "quiesced"], "Telegram poller precondition")
-    if (quiesced.quiesced !== true || quiesced.activePollers !== 0) throw new Error("Telegram competing poller is not quiescent")
-    writeAtomicPrivateText(root, noncePath, nonce)
-
-    const deadline = deps.now() + deadlineMs
-    let nextOffset = currentOffset
-    let match: JsonObject | undefined
-    while (deps.now() < deadline && !match) {
-      let updates: unknown
-      try {
-        updates = await telegramRequest(deps, token, "getUpdates", {
-          offset: nextOffset,
-          timeout: pollTimeoutSeconds,
-          allowed_updates: ["message"],
-        }, (pollTimeoutSeconds + 5) * 1_000)
-      } catch (error) {
-        throw telegramBootstrapRequestError("getUpdates", error)
-      }
-      if (!Array.isArray(updates)) throw new Error("Telegram getUpdates result must be an array")
-      const parsed = updates.map((entry) => object(entry, "Telegram update"))
-      const updateIds = parsed.map((entry) => integer(entry.update_id, "Telegram update id"))
-      if (updateIds.length > 0) nextOffset = Math.max(nextOffset, ...updateIds.map((id) => id + 1))
-      const matches = parsed.filter((entry) => {
-        const message = entry.message && typeof entry.message === "object" && !Array.isArray(entry.message) ? entry.message as JsonObject : null
-        const chat = message?.chat && typeof message.chat === "object" && !Array.isArray(message.chat) ? message.chat as JsonObject : null
-        return message?.text === nonce
-          && chat?.type === "private"
-          && typeof message?.from === "object"
-          && message.from !== null
-          && !Array.isArray(message.from)
-          && !Object.keys(message).some((key) => key.startsWith("forward_"))
-          && Number.isSafeInteger(message.date)
-          && (message.date as number) >= Math.floor((base.startedAt as number) / 1000)
-      })
-      if (matches.length > 1) throw new Error("Telegram nonce update is ambiguous")
-      match = matches[0]
-    }
-    if (!match) throw new Error("Telegram nonce confirmation timed out")
-    const message = object(match.message, "Telegram nonce message")
-    const from = object(message.from, "Telegram nonce sender")
-    const chat = object(message.chat, "Telegram nonce chat")
-    const userId = String(integer(from.id, "Telegram user id", 1))
-    const chatId = String(integer(chat.id, "Telegram chat id", 1))
-    const nextUpdateId = nextOffset
-    const confirmed = {
-      ...base,
-      phase: "nonce_confirmed",
-      updateDigest: digest(match),
-      coordinateDigest: digest({ userId, chatId }),
-      offsetDigest: digest(nextUpdateId),
-    }
-    replaceCheckpoint(root, evidencePath, confirmed)
-    let stored: RuntimeCredentialConfigReadResult
+  const gateway = deps.gateway?.()
+  if (!gateway) throw new Error("Telegram root gateway is unavailable")
+  async function bounded<T>(operation: () => Promise<T>, timeoutMs = deps.telegramTimeoutMs ?? DEFAULT_TELEGRAM_TIMEOUT_MS): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined
     try {
-      stored = await deps.mergeRuntime("sanctuary", {
-        telegramAuthorizedUserId: userId,
-        telegramAuthorizedChatId: chatId,
-      })
-    } catch {
-      throw new Error("Telegram bootstrap vault update failed; actor: agent-runnable; retry Telegram bootstrap")
-    }
-    if (!stored.ok || stored.config.telegramBotToken !== token
-      || stored.config.telegramAuthorizedUserId !== userId || stored.config.telegramAuthorizedChatId !== chatId) {
-      throw new Error("Telegram bootstrap vault readback failed; actor: agent-runnable; retry Telegram bootstrap")
-    }
-    replaceCheckpoint(root, evidencePath, { ...confirmed, phase: "vault_committed" })
-    atomicPrivateJson(root, offsetPath, { nextUpdateId })
-    replaceCheckpoint(root, evidencePath, { ...confirmed, phase: "complete", completedAt: deps.now() })
-  } catch (error) {
-    failedCheckpoint(root, evidencePath, base, error)
-    throw error
+      return await Promise.race([
+        operation(),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error("Telegram gateway request timed out")), timeoutMs)
+        }),
+      ])
+    } finally { clearTimeout(timer) }
   }
+  try {
+    if (!await bounded(async () => gateway.authorityTransport.hostApproval?.refresh())) throw new Error("Telegram root gateway health is unavailable")
+    const initialCursor = await bounded(() => gateway.cursorSnapshot())
+    if (initialCursor.cursor !== currentOffset) throw new Error("Telegram gateway cursor changed before bootstrap")
+    let getMe: unknown
+    try { getMe = await bounded(() => gateway.authorityTransport.api.request("getMe", {})) }
+    catch (error) { throw telegramBootstrapRequestError("getMe", error) }
+    const bot = object(getMe, "Telegram getMe result")
+    if (String(bot.id) !== expectedBotId || gateway.credentials.botId !== expectedBotId || bot.username !== expectedUsername) {
+      throw new Error("Telegram bot identity mismatch; repair root gateway identity")
+    }
+    const nonce = deps.randomBytes(16).toString("hex")
+    const base: JsonObject = {
+      schemaVersion: 1, operation: "telegram-bootstrap", phase: "preflight",
+      botIdentityDigest: digest({ id: expectedBotId, username: expectedUsername }), startedAt: deps.now(),
+    }
+    initializeCheckpoint(root, evidencePath, base)
+    try {
+      const quiesced = object(await deps.runAdapter(pollerAdapter, { operation: "quiesce_telegram_poller", expectedState: "stopped" }), "Telegram poller precondition")
+      exactObjectKeys(quiesced, ["activePollers", "quiesced"], "Telegram poller precondition")
+      if (quiesced.quiesced !== true || quiesced.activePollers !== 1) throw new Error("Telegram root poller or stopped resident is not proven")
+      writeAtomicPrivateText(root, noncePath, nonce)
+      const deadline = deps.now() + deadlineMs
+      let match: TelegramUpdate | undefined
+      while (deps.now() < deadline && !match) {
+        let updates: TelegramUpdate[]
+        try {
+          updates = await bounded(() => gateway.authorityTransport.api.request("getUpdates", { offset: currentOffset, timeout: pollTimeoutSeconds, allowed_updates: ["message", "callback_query"] }), Math.min(deps.telegramTimeoutMs ?? DEFAULT_TELEGRAM_TIMEOUT_MS, deadline - deps.now()))
+        } catch (error) { throw telegramBootstrapRequestError("getUpdates", error) }
+        if (!Array.isArray(updates) || updates.length > 1) throw new Error("Telegram gateway delivery is ambiguous")
+        if (updates.length === 0) continue
+        const candidate = updates[0]!
+        const message = candidate.message as (NonNullable<TelegramUpdate["message"]> & { date?: number }) | undefined
+        const observation = gateway.authorityTransport.metadataForUpdate(candidate)
+        if (!message || message.text !== nonce || message.chat.type !== "private" || !message.from
+          || Object.keys(message).some((key) => key.startsWith("forward_")) || !Number.isSafeInteger(message.date) || message.date! < Math.floor(Number(base.startedAt) / 1000)
+          || !observation?.ownerEligible || observation.userId !== gateway.credentials.authorizedUserId || observation.chatId !== gateway.credentials.authorizedChatId) {
+          throw new Error("Telegram gateway has a pending non-bootstrap owner update; resume resident dispatch without discarding it")
+        }
+        match = candidate
+      }
+      if (!match) throw new Error("Telegram nonce confirmation timed out")
+      const confirmed = { ...base, phase: "nonce_confirmed", updateDigest: digest(match), coordinateDigest: digest({ userId: gateway.credentials.authorizedUserId, chatId: gateway.credentials.authorizedChatId }) }
+      replaceCheckpoint(root, evidencePath, confirmed)
+      await bounded(() => gateway.authorityTransport.settleTransport(match, "completed"))
+      const settled = await bounded(() => gateway.cursorSnapshot())
+      if (settled.cursor <= match.update_id) throw new Error("Telegram gateway settlement readback did not advance")
+      atomicPrivateJson(root, offsetPath, { nextUpdateId: settled.cursor, progressDigest: settled.progressDigest })
+      replaceCheckpoint(root, evidencePath, { ...confirmed, phase: "complete", offsetDigest: settled.progressDigest.slice("sha256:".length), completedAt: deps.now() })
+    } catch (error) {
+      failedCheckpoint(root, evidencePath, base, error)
+      throw error
+    }
+  } finally { gateway.authorityTransport.api.stop() }
 }
 
 function atomicPrivateJson(root: string, filePath: string, value: unknown): void {
@@ -1775,8 +1693,7 @@ export async function executeSanctuaryAcceptanceHarness(
     const config = object(rawConfig, "acceptance config")
     switch (command) {
       case "telegram-bootstrap": {
-        const token = await canonicalTelegramBootstrapToken(deps)
-        await telegramBootstrap(config, { ...deps, readSecret: () => token })
+        await telegramBootstrap(config, deps)
         break
       }
       case "cursor-snapshot": await cursorSnapshot(config, deps); break

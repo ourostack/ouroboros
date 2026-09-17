@@ -19,6 +19,8 @@ const CONTAINER_ID = /^[0-9a-f]{64}$/u
 const VERSION_TAG = /^ghcr\.io\/ourostack\/ouroboros-butler:[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/u
 const JELLYFIN_STATES = new Set(["created", "running", "paused", "restarting", "removing", "exited", "dead"])
 const JELLYFIN_FORMAT = '{"name":{{json .Name}},"containerId":{{json .Id}},"imageId":{{json .Image}},"state":{{json .State.Status}},"restartCount":{{json .RestartCount}}}'
+const AUTHORITY_INSTALL_STEPS = ["freeze-resident", "stage-authority", "verify-token-rotation", "transfer-cursor", "remove-resident-token", "start-gateway", "configure-resident", "start-resident", "verify-install"]
+const AUTHORITY_ROLLBACK_STEPS = ["freeze-resident", "retire-registrations", "reconcile-executions", "stop-gateway", "end-epoch", "restore-token-cursor", "restore-resident", "verify-rollback"]
 
 function object(value, label) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`)
@@ -171,12 +173,12 @@ function syncDirectory(path) {
   try { fsyncSync(fd) } finally { closeSync(fd) }
 }
 
-function atomicWrite(path, temporaryPath, bytes, metadata, expectedUid, expectedGid) {
+function atomicWrite(path, temporaryPath, bytes, metadata) {
   const fd = openSync(temporaryPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, metadata.mode)
   try {
     writeFileSync(fd, bytes)
     fchmodSync(fd, metadata.mode)
-    fchownSync(fd, metadata.uid ?? expectedUid, metadata.gid ?? expectedGid)
+    fchownSync(fd, metadata.uid, metadata.gid)
     fsyncSync(fd)
   } finally {
     closeSync(fd)
@@ -197,7 +199,8 @@ function decodeCanonicalBase64(value) {
 
 function validateJournalRecord(raw, state) {
   const record = object(raw, "template transaction journal")
-  exactKeys(record, ["schemaVersion", "state", "target", "priorTemplate", "priorTemplateDigest", "targetTemplateDigest", "canonicalVersionTag", "reviewedManifestDigest", "rollbackImageId", "targetImageId", "jellyfin", "digest"], "template transaction journal")
+  exactKeys(record, ["schemaVersion", "state", "target", "priorTemplate", "priorTemplateDigest", "targetTemplateDigest", "canonicalVersionTag", "reviewedManifestDigest", "rollbackImageId", "targetImageId", "jellyfin", "digest", ...(Object.hasOwn(record, "authority") ? ["authority"] : [])], "template transaction journal")
+  if (Object.hasOwn(record, "authority")) validateAuthorityHandoff(record.authority, record)
   if (record.schemaVersion !== 1 || !["rollback", "committing"].includes(record.state)) throw new Error("template transaction journal state is invalid")
   const target = object(record.target, "template transaction journal target")
   exactKeys(target, ["path", "name", "templateUrl", "icon"], "template transaction journal target")
@@ -230,7 +233,7 @@ function readJournal(state) {
 
 function writeJournal(record, state) {
   const complete = { ...record, digest: recordDigest(record) }
-  atomicWrite(state.journalPath, state.journalTemporary, Buffer.from(`${JSON.stringify(complete)}\n`), { uid: state.expectedUid, gid: state.expectedGid, mode: 0o600 }, state.expectedUid, state.expectedGid)
+  atomicWrite(state.journalPath, state.journalTemporary, Buffer.from(`${JSON.stringify(complete)}\n`), { uid: state.expectedUid, gid: state.expectedGid, mode: 0o600 })
   return complete
 }
 
@@ -344,7 +347,7 @@ export function prepareDockerManTemplateTransaction(input, options = {}) {
   }
   const record = writeJournal(unsigned, state)
   options.checkpoint?.("after-template-journal")
-  atomicWrite(state.targetPath, state.targetTemporary, sourceBytes, { uid: state.expectedUid, gid: state.expectedGid, mode: 0o600 }, state.expectedUid, state.expectedGid)
+  atomicWrite(state.targetPath, state.targetTemporary, sourceBytes, { uid: state.expectedUid, gid: state.expectedGid, mode: 0o600 })
   options.checkpoint?.("after-template-replacement")
   return record
 }
@@ -354,6 +357,7 @@ export function markDockerManTemplateTransactionCommitting(options = {}) {
   validateParents(state)
   const current = readJournal(state)
   if (!current) throw new Error("template transaction journal is absent")
+  requireActiveAuthority(current, state)
   if (currentTargetDigest(state) !== current.targetTemplateDigest) throw new Error("installed DockerMan template does not match the transaction")
   assertJellyfinUnchanged(current.jellyfin)
   if (current.state === "committing") {
@@ -371,11 +375,12 @@ export function rollbackDockerManTemplateTransaction(options = {}) {
   validateParents(state)
   const current = readJournal(state)
   if (!current) return false
+  if (current.authority && current.authority.state !== "retired") throw new Error("authority epoch must be retired before template rollback")
   const installedDigest = currentTargetDigest(state)
   assertJellyfinUnchanged(current.jellyfin)
   if (current.priorTemplate.present) {
     if (installedDigest !== current.targetTemplateDigest && installedDigest !== current.priorTemplateDigest) throw new Error("installed DockerMan template cannot be safely restored")
-    if (installedDigest !== current.priorTemplateDigest) atomicWrite(state.targetPath, state.targetTemporary, current.priorBytes, current.priorTemplate.metadata, state.expectedUid, state.expectedGid)
+    if (installedDigest !== current.priorTemplateDigest) atomicWrite(state.targetPath, state.targetTemporary, current.priorBytes, current.priorTemplate.metadata)
   } else if (installedDigest !== null) {
     if (installedDigest !== current.targetTemplateDigest) throw new Error("installed DockerMan template cannot be safely removed")
     deleteDurably(state.targetPath)
@@ -410,11 +415,152 @@ export function commitDockerManTemplateTransaction(proof, options = {}) {
   validateParents(state)
   const current = readJournal(state)
   if (!current) return false
+  requireActiveAuthority(current, state)
   if (current.state !== "committing" || currentTargetDigest(state) !== current.targetTemplateDigest) throw new Error("template transaction is not ready to commit")
   validateFinalProof(proof, current, state)
   assertJellyfinUnchanged(current.jellyfin)
   deleteDurably(state.journalPath)
   return true
+}
+
+function requireActiveAuthority(current, state) {
+  const document = xmlValidator.parseDockerManTemplateXml(readFileSync(state.targetPath))
+  const gateway = document?.children.some((child) => child.name === "Config" && child.attributes.Target === "/run/ouro-authority")
+  if ((gateway || current.authority) && current.authority?.state !== "active") throw new Error("authority handoff is not verified")
+}
+
+function validateAuthorityPlan(raw) {
+  const plan = object(raw, "authority handoff plan")
+  exactKeys(plan, ["schemaVersion", "epochId", "packageDigest", "publicKeyDigest", "botId", "ownerUserId", "ownerChatId", "predecessorContract", "targetContract"], "authority handoff plan")
+  if (plan.schemaVersion !== 1 || !/^[A-Za-z0-9_-]{1,128}$/u.test(plan.epochId) || !IMAGE_ID.test(plan.packageDigest) || (plan.publicKeyDigest !== null && !IMAGE_ID.test(plan.publicKeyDigest))
+    || !["botId", "ownerUserId", "ownerChatId"].every((key) => typeof plan[key] === "string" && /^[1-9][0-9]*$/u.test(plan[key]))
+    || plan.ownerUserId !== plan.ownerChatId || plan.predecessorContract !== "canonical-pre-gateway" || plan.targetContract !== "canonical-gateway") throw new Error("authority handoff plan is invalid")
+  return plan
+}
+
+function authorityEffectIdentity(record, effect) {
+  return digest(Buffer.from(JSON.stringify([record.targetImageId, record.rollbackImageId, record.reviewedManifestDigest, record.authority.plan, effect.direction, effect.step, effect.beforeDigest, effect.afterDigest])))
+}
+
+function validateAuthorityHandoff(raw, record) {
+  const handoff = object(raw, "authority handoff")
+  exactKeys(handoff, ["plan", "state", "completed", "rollbackCompleted", "pending", "cancelled"], "authority handoff")
+  validateAuthorityPlan(handoff.plan)
+  if (!["installing", "active", "retiring", "retired"].includes(handoff.state) || !Array.isArray(handoff.completed) || !Array.isArray(handoff.rollbackCompleted) || !Array.isArray(handoff.cancelled)) throw new Error("authority handoff state is invalid")
+  const validateEffect = (effect, direction, step) => {
+    object(effect, "authority effect")
+    exactKeys(effect, ["direction", "step", "effectId", "beforeDigest", "afterDigest"], "authority effect")
+    if (effect.direction !== direction || effect.step !== step || !IMAGE_ID.test(effect.beforeDigest) || !IMAGE_ID.test(effect.afterDigest) || effect.beforeDigest === effect.afterDigest
+      || effect.effectId !== authorityEffectIdentity(record, effect)) throw new Error("authority effect identity is invalid")
+  }
+  for (const [direction, entries, steps] of [["install", handoff.completed, AUTHORITY_INSTALL_STEPS], ["rollback", handoff.rollbackCompleted, AUTHORITY_ROLLBACK_STEPS]]) {
+    if (entries.length > steps.length) throw new Error("authority effect order is invalid")
+    entries.forEach((effect, index) => validateEffect(effect, direction, steps[index]))
+  }
+  const rollback = handoff.state === "retiring" || handoff.state === "retired"
+  if (handoff.cancelled.length > 1 || (handoff.cancelled.length !== 0 && !rollback)) throw new Error("authority cancelled effect is invalid")
+  for (const effect of handoff.cancelled) validateEffect(effect, "install", AUTHORITY_INSTALL_STEPS[handoff.completed.length])
+  if ((!rollback && handoff.rollbackCompleted.length !== 0) || (handoff.state === "active" && handoff.completed.length !== AUTHORITY_INSTALL_STEPS.length)
+    || (handoff.state === "retired" && handoff.rollbackCompleted.length !== AUTHORITY_ROLLBACK_STEPS.length)) throw new Error("authority terminal handoff is invalid")
+  if (handoff.pending !== null) {
+    if (handoff.state === "active" || handoff.state === "retired") throw new Error("authority terminal handoff has a pending effect")
+    const steps = rollback ? AUTHORITY_ROLLBACK_STEPS : AUTHORITY_INSTALL_STEPS
+    const completed = rollback ? handoff.rollbackCompleted : handoff.completed
+    validateEffect(handoff.pending, rollback ? "rollback" : "install", steps[completed.length])
+  }
+  return handoff
+}
+
+function writeAuthorityHandoff(record, authority, state) {
+  const { priorBytes: _bytes, digest: _digest, ...unsigned } = record
+  const next = { ...unsigned, authority }
+  validateAuthorityHandoff(authority, next)
+  return writeJournal(next, state)
+}
+
+export function beginDockerManAuthorityHandoff(plan, options = {}) {
+  validateAuthorityPlan(plan)
+  const state = paths(options)
+  validateParents(state)
+  const current = readJournal(state)
+  if (!current || (!current.authority && current.state !== "rollback")) throw new Error("authority handoff requires the prepared deployment transaction")
+  assertJellyfinUnchanged(current.jellyfin)
+  if (current.authority) {
+    if (JSON.stringify(current.authority.plan) !== JSON.stringify(plan)) throw new Error("authority handoff plan changed")
+    return current.authority
+  }
+  return writeAuthorityHandoff(current, { plan, state: "installing", completed: [], rollbackCompleted: [], cancelled: [], pending: null }, state).authority
+}
+
+async function withAuthorityLease(options, work) {
+  const state = paths(options)
+  validateParents(state)
+  const withLease = options.withLease ?? (await import("../../dist/mind/session-transaction.js")).withSessionTurnLease
+  return withLease(state.journalPath, () => work(state), { timeoutMs: 0, confinementRoot: state.journalParent })
+}
+
+export async function runDockerManAuthorityEffect(name, effect, options = {}) {
+  return withAuthorityLease(options, (state) => runAuthorityEffectLocked(name, effect, state))
+}
+
+export async function beginDockerManAuthorityRollback(readback, options = {}) {
+  return withAuthorityLease(options, (state) => beginAuthorityRollbackLocked(readback, state))
+}
+
+async function beginAuthorityRollbackLocked(readback, state) {
+    const current = readJournal(state)
+    if (!current?.authority) throw new Error("authority handoff is absent")
+    const handoff = current.authority
+    if (handoff.state === "retired" || handoff.state === "retiring") return handoff
+    const pending = handoff.pending
+    const observed = pending ? await readback() : null
+    if (pending && observed !== pending.beforeDigest && observed !== pending.afterDigest) throw new Error("authority pending effect is ambiguous")
+    if (readJournal(state).digest !== current.digest) throw new Error("authority transaction changed during recovery")
+    assertJellyfinUnchanged(current.jellyfin)
+    return writeAuthorityHandoff(current, {
+      ...handoff, state: "retiring", pending: null,
+      completed: pending && observed === pending.afterDigest ? [...handoff.completed, pending] : handoff.completed,
+      cancelled: pending && observed === pending.beforeDigest ? [...handoff.cancelled, pending] : handoff.cancelled,
+    }, state).authority
+}
+
+async function runAuthorityEffectLocked(name, effect, state) {
+  let current = readJournal(state)
+  if (!current?.authority) throw new Error("authority handoff is absent")
+  assertJellyfinUnchanged(current.jellyfin)
+  const direction = name.startsWith("rollback:") ? "rollback" : "install"
+  const step = direction === "rollback" ? name.slice("rollback:".length) : name
+  const steps = direction === "rollback" ? AUTHORITY_ROLLBACK_STEPS : AUTHORITY_INSTALL_STEPS
+  if (!steps.includes(step)) throw new Error("authority handoff step is invalid")
+  if (!IMAGE_ID.test(effect.beforeDigest) || !IMAGE_ID.test(effect.afterDigest) || effect.beforeDigest === effect.afterDigest) throw new Error("authority effect identity is invalid")
+  let handoff = current.authority
+  if (direction === "install" && ["retiring", "retired"].includes(handoff.state)) throw new Error("authority handoff is retiring")
+  const expected = { direction, step, beforeDigest: effect.beforeDigest, afterDigest: effect.afterDigest }
+  const intent = { ...expected, effectId: authorityEffectIdentity(current, expected) }
+  const completedKey = direction === "install" ? "completed" : "rollbackCompleted"
+  const completed = handoff[completedKey]
+  const prior = completed.find((entry) => entry.step === step)
+  if (prior) {
+    if (prior.effectId !== intent.effectId || await effect.readback() !== prior.afterDigest) throw new Error("authority completed effect changed")
+    return prior
+  }
+  if (steps[completed.length] !== step) throw new Error("authority handoff effect order is invalid")
+  if (handoff.pending && handoff.pending.effectId !== intent.effectId) throw new Error("authority pending effect changed; recovery is required before rollback")
+  if (!handoff.pending) {
+    handoff = { ...handoff, state: direction === "rollback" ? "retiring" : "installing", pending: intent }
+    current = writeAuthorityHandoff(current, handoff, state)
+  }
+  const observed = await effect.readback()
+  if (observed !== intent.beforeDigest && observed !== intent.afterDigest) throw new Error("authority handoff effect is ambiguous")
+  if (observed === intent.beforeDigest) await effect.apply(intent.effectId)
+  if (await effect.readback() !== intent.afterDigest) throw new Error("authority handoff effect readback failed")
+  const latest = readJournal(state)
+  if (latest.digest !== current.digest) throw new Error("authority transaction changed during effect")
+  assertJellyfinUnchanged(latest.jellyfin)
+  const entries = [...completed, intent]
+  handoff = { ...handoff, [completedKey]: entries, pending: null, state: entries.length === steps.length ? direction === "install" ? "active" : "retired" : direction === "install" ? "installing" : "retiring" }
+  writeAuthorityHandoff(latest, handoff, state)
+  return intent
 }
 
 export function verifyDockerManTemplateTransactionJellyfin(options = {}) {
@@ -472,6 +618,9 @@ function readRootJson(path, label) {
 
 export function runDockerManTemplateTransactionCli(argv, options = {}, write = (text) => process.stdout.write(text)) {
   const { operation, values } = parseArguments(argv)
+  if (operation?.startsWith("authority-") && values.size === 0) {
+    return runRootLifecycle(operation, options).then((result) => write(`${JSON.stringify(result)}\n`))
+  }
   let result
   if (operation === "prepare" && values.size === 5) {
     result = prepareDockerManTemplateTransaction({
@@ -523,4 +672,40 @@ export function runDockerManTemplateTransactionCli(argv, options = {}, write = (
   write(`${JSON.stringify(result)}\n`)
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) runDockerManTemplateTransactionCli(process.argv.slice(2))
+async function runRootLifecycle(operation, options) {
+  const selected = {
+    "authority-install": AUTHORITY_INSTALL_STEPS.slice(0, 6),
+    "authority-activate": AUTHORITY_INSTALL_STEPS.slice(6),
+    "authority-retire": AUTHORITY_ROLLBACK_STEPS.slice(0, 6).map((step) => `rollback:${step}`),
+    "authority-restore": AUTHORITY_ROLLBACK_STEPS.slice(6).map((step) => `rollback:${step}`),
+  }[operation]
+  if (!selected) throw new Error("authority lifecycle operation is invalid")
+  return withAuthorityLease(options, async (state) => {
+  let record = readJournal(state)
+  if (!record) throw new Error("authority lifecycle requires the prepared deployment transaction")
+  const RootLifecycle = options.RootLifecycle ?? (await import("../../dist/heart/daemon/sanctuary-authority-root-lifecycle.js")).SanctuaryAuthorityRootLifecycle
+  const lifecycle = new RootLifecycle(record, options.rootLifecycleOptions)
+  beginDockerManAuthorityHandoff(lifecycle.plan(), options)
+  record = readJournal(state)
+  if (["authority-install", "authority-activate"].includes(operation) && ["retiring", "retired"].includes(record.authority.state)) throw new Error("authority epoch is retiring or retired")
+  if (operation === "authority-activate" && record.authority.completed.length < 6) throw new Error("gateway installation must finish before resident activation")
+  if (operation === "authority-restore" && record.authority.rollbackCompleted.length < 6) throw new Error("authority retirement must finish before resident restoration")
+  if (operation === "authority-retire") {
+    const pending = record.authority.pending
+    await beginAuthorityRollbackLocked(pending ? lifecycle.effect(pending.step).readback : null, state)
+  }
+  for (const name of selected) {
+    const rollback = name.startsWith("rollback:")
+    const step = rollback ? name.slice("rollback:".length) : name
+    const current = readJournal(state).authority
+    // Completed historical effects may have intentionally changed at later
+    // steps (a frozen resident becomes running). Recheck the next real boundary,
+    // never replay earlier physical work merely to reproduce a historical hash.
+    if (current[rollback ? "rollbackCompleted" : "completed"].some((entry) => entry.step === step)) continue
+    await runAuthorityEffectLocked(name, lifecycle.effect(name), state)
+  }
+  return readJournal(state).authority
+  })
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) await runDockerManTemplateTransactionCli(process.argv.slice(2))

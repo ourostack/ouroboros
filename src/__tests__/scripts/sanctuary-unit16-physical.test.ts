@@ -128,7 +128,7 @@ beforeEach(() => {
   originalArgv = process.argv
   originalExitCode = process.exitCode
   originalSignals = new Map(signals.map((signal) => [signal, new Set(process.listeners(signal))]))
-  spec = sanctuaryContainerInspectFixture()
+  spec = sanctuaryContainerInspectFixture(true)
   state.inspection = {
     containerId: "0".repeat(64), imageId: spec.Image, running: true, pid: 4242,
     startedAt: "2026-09-10T00:00:00.000Z", health: "healthy", user: spec.Config.User,
@@ -178,10 +178,12 @@ async function launchBroker() {
   await vi.waitFor(() => {
     expect(process.exitCode === 1 || state.servers.some((server) => server.listening)).toBe(true)
   })
-  return createSanctuaryAcceptanceAdapterDependencies(3, {
+  const dependencies = createSanctuaryAcceptanceAdapterDependencies(3, {
     hostBrokerSocket: path.join(state.root, "s.sock"),
     scenarioCapture: { agentRoot: path.join(state.root, "agent") },
   })
+  dependencies.gatewayCursor = async () => ({ nextUpdateId: 0, progressDigest: `sha256:${"a".repeat(64)}` })
+  return dependencies
 }
 
 const emptyRepresentations: Array<string[] | null> = [null, []]
@@ -192,6 +194,7 @@ describe("native Sanctuary physical evidence producer", () => {
     Object.assign(state.inspection, security)
     Object.assign(spec.HostConfig, { CapAdd: security.capAdd, CapDrop: security.capDrop, SecurityOpt: security.securityOpt })
     expect(auditSanctuaryContainerSpec(spec, {
+      mountContract: "canonical-gateway",
       expectedImage: spec.Image, expectedEnvironment: spec.Config.Env,
       expectedImageReference: spec.Config.Image, expectedIcon: spec.Config.Labels["net.unraid.docker.icon"],
     })).toEqual({ ok: true, violations: [] })
@@ -200,7 +203,7 @@ describe("native Sanctuary physical evidence producer", () => {
     const snapshot = await dependencies.hostRequest!({ operation: "container_snapshot", targetId: "sanctuary" })
     expect(snapshot).toMatchObject({
       containerId: "0".repeat(64), imageId: spec.Image, user: "10001:10001", liveProcessUser: "10001:10001",
-      mountCount: 3, readOnlyRoot: false, mountsExact: true, securityExact: true,
+      mountCount: 4, readOnlyRoot: false, mountsExact: true, securityExact: true,
       publishedPortCount: 0, networkMode: "host", updaterDisabled: true, writableKeyExposure: false,
     })
   })
@@ -242,11 +245,11 @@ describe("native Sanctuary physical evidence producer", () => {
   ])("rejects changed event-spool $field = $value after a passing control", async ({ field, value }) => {
     const dependencies = await launchBroker()
     const request = { operation: "container_snapshot", targetId: "sanctuary" }
-    expect(await dependencies.hostRequest!(request)).toMatchObject({ mountsExact: true, mountCount: 3 })
+    expect(await dependencies.hostRequest!(request)).toMatchObject({ mountsExact: true, mountCount: 4 })
     const mounts = spec.Mounts.map((mount) => ({ ...mount, Mode: "" }))
     Object.assign(mounts[2]!, { [field]: value })
     state.inspection.mounts = mounts
-    expect(await dependencies.hostRequest!(request)).toMatchObject({ mountsExact: false, mountCount: 3 })
+    expect(await dependencies.hostRequest!(request)).toMatchObject({ mountsExact: false, mountCount: 4 })
   })
 
   it.each([true, false])("rejects a Docker socket with extra-mount=%s", async (extra) => {
@@ -255,8 +258,8 @@ describe("native Sanctuary physical evidence producer", () => {
     expect(await dependencies.hostRequest!(request)).toMatchObject({ mountsExact: true, writableKeyExposure: false })
     const mounts = spec.Mounts.map((mount) => ({ ...mount, Mode: "" }))
     const socket = { ...mounts[2]!, Source: "/var/run/docker.sock", Destination: "/var/run/docker.sock", RW: true }
-    state.inspection.mounts = extra ? [...mounts, socket] : [...mounts.slice(0, 2), socket]
-    expect(await dependencies.hostRequest!(request)).toMatchObject({ mountsExact: false, mountCount: extra ? 4 : 3, writableKeyExposure: true })
+    state.inspection.mounts = extra ? [...mounts, socket] : [...mounts.slice(0, -1), socket]
+    expect(await dependencies.hostRequest!(request)).toMatchObject({ mountsExact: false, mountCount: extra ? 5 : 4, writableKeyExposure: true })
   })
 
   it("records advisory Mode changes without substituting them for actual RW", async () => {
@@ -266,7 +269,7 @@ describe("native Sanctuary physical evidence producer", () => {
     expect(before).toMatchObject({ mountsExact: true })
     state.inspection.mounts = spec.Mounts.map((mount) => ({ ...mount, Mode: mount.RW ? "ro" : "rw" }))
     const after = await dependencies.hostRequest!(request)
-    expect(after).toMatchObject({ mountsExact: true, mountCount: 3 })
+    expect(after).toMatchObject({ mountsExact: true, mountCount: 4 })
     expect(after).not.toEqual(before)
   })
 
@@ -304,7 +307,7 @@ describe("native Sanctuary physical evidence producer", () => {
       if (file in files) return files[file]!
       throw Object.assign(new Error(`absent fixture file: ${file}`), { code: "ENOENT" })
     }
-    dependencies.telegramCredentials = () => ({ botToken: "123:token", authorizedUserId: "123456789", authorizedChatId: "987654321" })
+    dependencies.telegramCredentials = () => ({ botId: "123", authorizedUserId: "123456789", authorizedChatId: "987654321" })
     dependencies.providerRuntime = async () => ({
       id: "minimax", model: "fixture", client: null, capabilities: new Set(["reasoning-effort"]),
       streamTurn: async () => { throw new Error("the physical audit must not request a live model turn") },
@@ -336,7 +339,7 @@ describe("native Sanctuary physical evidence producer", () => {
     const now = Date.parse("2026-09-10T00:00:02.000Z")
     const assertions = deriveSanctuaryScenarioAssertions(label, facts, facts, now, handle)
     expect(assertions).not.toBeNull()
-    expect(validateSanctuaryUnit16EvidenceAssertions(label, assertions)).toMatchObject({ mountCount: 3, readOnlyRoot: false, mountsExact: true, securityExact: true })
+    expect(validateSanctuaryUnit16EvidenceAssertions(label, assertions)).toMatchObject({ mountCount: 4, readOnlyRoot: false, mountsExact: true, securityExact: true })
     state.inspection.readOnlyRoot = true
     const noncanonical = await readDefaultSanctuaryScenarioFacts(label, handle, dependencies, agentRoot)
     expect(noncanonical.containment?.readOnlyRoot).toBe(true)

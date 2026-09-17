@@ -3,7 +3,11 @@ const path = require("path")
 
 const REQUIRED_PACKAGE_ASSET_PATHS = [
   "dist/heart/session-redaction-repair-cli-main.js",
+  "dist/heart/daemon/sanctuary-authority-root-lifecycle.js",
+  "dist/heart/daemon/sanctuary-telegram-authority-entry.js",
+  "dist/heart/daemon/sanctuary-host-supervisor-entry.js",
   "assets/bluebubbles-host",
+  "assets/sanctuary-host-launcher.sh",
   "RepairGuide.ouro/agent.json",
   "RepairGuide.ouro/psyche/IDENTITY.md",
   "RepairGuide.ouro/psyche/SOUL.md",
@@ -15,6 +19,8 @@ const REQUIRED_PACKAGE_ASSET_PATHS = [
   "deploy/unraid/audit-container-spec.sh",
   "deploy/unraid/README.txt",
   "deploy/unraid/container-runtime.json",
+  "deploy/unraid/sanctuary-authority-service.sh",
+  "deploy/unraid/sanctuary-authority-installation.json",
   "deploy/unraid/ouro-events/emit-event.mjs",
   "deploy/unraid/ouro-events/bootstrap-spool.sh",
   "deploy/unraid/ouro-events/emit-usenet-event.sh",
@@ -47,6 +53,9 @@ const REQUIRED_PACKAGE_ASSET_PATHS = [
 
 const REQUIRED_PACKAGE_ASSET_SOURCES = {
   "dist/heart/session-redaction-repair-cli-main.js": "src/heart/session-redaction-repair-cli-main.ts",
+  "dist/heart/daemon/sanctuary-authority-root-lifecycle.js": "src/heart/daemon/sanctuary-authority-root-lifecycle.ts",
+  "dist/heart/daemon/sanctuary-telegram-authority-entry.js": "src/heart/daemon/sanctuary-telegram-authority-entry.ts",
+  "dist/heart/daemon/sanctuary-host-supervisor-entry.js": "src/heart/daemon/sanctuary-host-supervisor-entry.ts",
 }
 
 const DISALLOWED_PACKAGE_ASSET_PATH_PREFIXES = [

@@ -10370,6 +10370,7 @@ describe("provider runtime freshness", () => {
       for (const owner of [owners[0], owners[1], owners[0]]) {
         const runtime = await Reflect.apply(core.getProviderRuntime, undefined, [facing, owner])
         expect(runtime.model).toBe(`${owner.agentName}-${facing}`)
+        expect(runtime.capabilities.has("approval-continuation")).toBe(true)
       }
       expect(vi.mocked(identity.loadAgentConfig).mock.calls).toEqual([[owners[0]], [owners[1]], [owners[0]]])
       expect(read.mock.calls.map(([name]) => name)).toEqual(["approval-a", "approval-b", "approval-a"])

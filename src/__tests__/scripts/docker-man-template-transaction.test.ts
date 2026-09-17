@@ -3,14 +3,20 @@ import { existsSync, mkdtempSync, chmodSync, lstatSync, mkdirSync, readFileSync,
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { pathToFileURL } from "node:url"
+import * as filesystem from "node:fs"
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { withSessionTurnLease } from "../../mind/session-transaction"
 
 const execFileSync = vi.hoisted(() => vi.fn())
 
 vi.mock("node:child_process", () => ({ execFileSync }))
+vi.mock("node:fs", async (original) => ({ ...await original<typeof filesystem>() }))
 
 type JournalState = "rollback" | "committing"
+
+const authorityInstallSteps = ["freeze-resident", "stage-authority", "verify-token-rotation", "transfer-cursor", "remove-resident-token", "start-gateway", "configure-resident", "start-resident", "verify-install"]
+const authorityRollbackSteps = ["freeze-resident", "retire-registrations", "reconcile-executions", "stop-gateway", "end-epoch", "restore-token-cursor", "restore-resident", "verify-rollback"]
 
 interface TransactionRecord {
   schemaVersion: 1
@@ -35,9 +41,12 @@ interface JellyfinState {
 }
 
 interface TransactionModule {
+  beginDockerManAuthorityRollback(readback: () => Promise<string>, options: Record<string, unknown>): Promise<unknown>
+  beginDockerManAuthorityHandoff(plan: Record<string, unknown>, options: Record<string, unknown>): unknown
+  runDockerManAuthorityEffect(step: string, effect: { beforeDigest: string; afterDigest: string; readback(): Promise<string>; apply(effectId: string): Promise<void> }, options: Record<string, unknown>): Promise<unknown>
   runDockerManTemplateTransactionCli(args: string[], options?: Record<string, unknown>, write?: (text: string) => void): unknown
   prepareDockerManTemplateTransaction(input: Record<string, unknown>, options: Record<string, unknown>): TransactionRecord
-  inspectDockerManTemplateTransaction(options: Record<string, unknown>): TransactionRecord | null
+  inspectDockerManTemplateTransaction(options?: Record<string, unknown>): TransactionRecord | null
   inspectDockerManTemplateTransactionForRecovery(options: Record<string, unknown>): TransactionRecord | null
   inspectCurrentJellyfinState(): JellyfinState
   verifyDockerManTemplateTransactionJellyfin(options: Record<string, unknown>): true
@@ -57,6 +66,224 @@ const communityAppsEntryPath = "/usr/local/emhttp/plugins/community.applications
 const communityAppsHelperPath = "/usr/local/emhttp/plugins/community.applications/include/previous_apps_helpers.php"
 const jellyfin: JellyfinState = { containerId: "1".repeat(64), imageId: image("9"), state: "running", restartCount: 3 }
 const jellyfinFormat = '{"name":{{json .Name}},"containerId":{{json .Id}},"imageId":{{json .Image}},"state":{{json .State.Status}},"restartCount":{{json .RestartCount}}}'
+
+describe("authority handoff inside the DockerMan deployment transaction", () => {
+  const plan = { schemaVersion: 1, epochId: "epoch-123", packageDigest: image("d"), publicKeyDigest: image("e"), botId: "777", ownerUserId: "42", ownerChatId: "42", predecessorContract: "canonical-pre-gateway", targetContract: "canonical-gateway" }
+  it("rejects malformed handoff state, effect identities, terminal states and cancelled histories", async () => {
+    const module = await load()
+    const state = fixture("prior")
+    module.prepareDockerManTemplateTransaction(state.input, state.options)
+    module.beginDockerManAuthorityHandoff(plan, state.options)
+    const effect = { beforeDigest: image("1"), afterDigest: image("2"), readback: async () => image("2"), apply: vi.fn() }
+    for (const name of authorityInstallSteps) await module.runDockerManAuthorityEffect(name, effect, state.options)
+    const record = JSON.parse(readFileSync(state.journalPath, "utf8"))
+    const first = record.authority.completed[0]
+    for (const mutate of [
+      (r: any) => { r.authority.state = "unknown" },
+      (r: any) => { r.authority.completed = {} },
+      (r: any) => { r.authority.completed[0].afterDigest = image("f") },
+      (r: any) => { r.authority.completed.push(first) },
+      (r: any) => { r.authority.cancelled = [first, first] },
+      (r: any) => { r.authority.completed = []; r.authority.cancelled = [first] },
+      (r: any) => { r.authority.completed = [] },
+      (r: any) => { r.authority.state = "retired" },
+    ]) {
+      writeFileSync(state.journalPath, JSON.stringify(signedRecord(record, mutate)))
+      expect(() => module.inspectDockerManTemplateTransaction(state.options)).toThrow(/authority/u)
+    }
+    writeFileSync(state.journalPath, JSON.stringify(signedRecord(record, (r) => { r.authority.pending = first })))
+    expect(() => module.inspectDockerManTemplateTransaction(state.options)).toThrow(/terminal handoff has a pending effect/u)
+  })
+  it("fences absent handoffs, completed effect drift, retiring installs and concurrent journal replacement", async () => {
+    const module = await load()
+    const state = fixture("prior")
+    const effect = { beforeDigest: image("1"), afterDigest: image("2"), readback: async () => image("2"), apply: vi.fn() }
+    await expect(module.runDockerManAuthorityEffect("freeze-resident", effect, state.options)).rejects.toThrow(/absent/u)
+    await expect(module.beginDockerManAuthorityRollback(effect.readback, state.options)).rejects.toThrow(/absent/u)
+    module.prepareDockerManTemplateTransaction(state.input, state.options)
+    module.beginDockerManAuthorityHandoff(plan, state.options)
+    await module.runDockerManAuthorityEffect("freeze-resident", effect, state.options)
+    await expect(module.runDockerManAuthorityEffect("freeze-resident", { ...effect, readback: async () => image("1") }, state.options)).rejects.toThrow(/completed effect changed/u)
+    await module.beginDockerManAuthorityRollback(effect.readback, state.options)
+    expect(await module.beginDockerManAuthorityRollback(effect.readback, state.options)).toMatchObject({ state: "retiring" })
+    await expect(module.runDockerManAuthorityEffect("stage-authority", effect, state.options)).rejects.toThrow(/retiring/u)
+    const other = fixture("prior")
+    module.prepareDockerManTemplateTransaction(other.input, other.options)
+    module.beginDockerManAuthorityHandoff(plan, other.options)
+    const replace = () => {
+      const record = JSON.parse(readFileSync(other.journalPath, "utf8"))
+      writeFileSync(other.journalPath, JSON.stringify(signedRecord(record, (r) => { r.state = r.state === "rollback" ? "committing" : "rollback" })))
+    }
+    let observed = image("1")
+    await expect(module.runDockerManAuthorityEffect("freeze-resident", { ...effect, readback: async () => observed, apply: async () => { observed = image("2"); replace() } }, other.options)).rejects.toThrow(/changed during effect/u)
+    await expect(module.beginDockerManAuthorityRollback(async () => { replace(); return observed }, other.options)).rejects.toThrow(/changed during recovery/u)
+  })
+  it("loads the package-owned lease and root lifecycle at their default invocation boundary", async () => {
+    const state = fixture("prior")
+    const complete = new Set<string>()
+    const RootLifecycle = class {
+      constructor(record: TransactionRecord) { expect(record.targetImageId).toBe(image("b")) }
+      plan() { return plan }
+      effect(step: string) {
+        return { beforeDigest: image("1"), afterDigest: image("2"), readback: async () => complete.has(step) ? image("2") : image("1"), apply: async () => { complete.add(step) } }
+      }
+    }
+    vi.doMock("../../../dist/mind/session-transaction.js", () => ({ withSessionTurnLease }))
+    vi.doMock("/dist/mind/session-transaction.js", () => ({ withSessionTurnLease }))
+    vi.doMock("../../../dist/heart/daemon/sanctuary-authority-root-lifecycle.js", () => ({ SanctuaryAuthorityRootLifecycle: RootLifecycle }))
+    vi.doMock("/dist/heart/daemon/sanctuary-authority-root-lifecycle.js", () => ({ SanctuaryAuthorityRootLifecycle: RootLifecycle }))
+    try {
+      const module = await load()
+      module.prepareDockerManTemplateTransaction(state.input, state.options)
+      const options = { ...state.options, withLease: undefined }
+      await module.runDockerManTemplateTransactionCli(["authority-install"], options, () => undefined)
+      expect(complete.size).toBe(6)
+    } finally {
+      vi.doUnmock("../../../dist/mind/session-transaction.js")
+      vi.doUnmock("/dist/mind/session-transaction.js")
+      vi.doUnmock("../../../dist/heart/daemon/sanctuary-authority-root-lifecycle.js")
+      vi.doUnmock("/dist/heart/daemon/sanctuary-authority-root-lifecycle.js")
+    }
+  })
+  it("requires an authority handoff for a gateway target even if the optional handoff field was omitted", async () => {
+    const module = await load()
+    const state = fixture("prior-template\n")
+    writeFileSync(state.sourceTemplatePath, template().replace("</Container>", '<Config Target="/run/ouro-authority" Type="Path" Mode="ro">/run/ouro-authority</Config></Container>'))
+    module.prepareDockerManTemplateTransaction(state.input, state.options)
+    expect(() => module.markDockerManTemplateTransactionCommitting(state.options)).toThrow(/authority/u)
+  })
+  it("uses the existing fenced deployment lease rather than reclaiming a PID file", async () => {
+    const module = await load()
+    const state = fixture("prior-template\n")
+    module.prepareDockerManTemplateTransaction(state.input, state.options)
+    module.beginDockerManAuthorityHandoff(plan, state.options)
+    const withLease = vi.fn(async () => { throw new Error("fenced driver") })
+    await expect(module.runDockerManAuthorityEffect("freeze-resident", { beforeDigest: image("1"), afterDigest: image("2"), readback: async () => image("2"), apply: vi.fn() }, { ...state.options, withLease })).rejects.toThrow("fenced driver")
+    expect(withLease).toHaveBeenCalledOnce()
+  })
+  it.each(["before", "after", "ambiguous"])("recovers a pending failed install into rollback only with %s evidence", async (position) => {
+    const module = await load()
+    const state = fixture("prior-template\n")
+    module.prepareDockerManTemplateTransaction(state.input, state.options)
+    module.beginDockerManAuthorityHandoff(plan, state.options)
+    let current = image("1")
+    const effect = { beforeDigest: image("1"), afterDigest: image("2"), readback: async () => current, apply: async () => { throw new Error("stage unavailable") } }
+    await expect(module.runDockerManAuthorityEffect("freeze-resident", effect, state.options)).rejects.toThrow("stage unavailable")
+    current = image(position === "before" ? "1" : position === "after" ? "2" : "3")
+    if (position === "ambiguous") {
+      await expect(module.beginDockerManAuthorityRollback(effect.readback, state.options)).rejects.toThrow(/ambiguous/u)
+      return
+    }
+    await module.beginDockerManAuthorityRollback(effect.readback, state.options)
+    const authority = JSON.parse(readFileSync(state.journalPath, "utf8")).authority
+    expect(authority).toMatchObject({ state: "retiring", pending: null })
+    expect(authority.completed).toHaveLength(position === "after" ? 1 : 0)
+    expect(authority.cancelled).toHaveLength(position === "before" ? 1 : 0)
+    await module.runDockerManAuthorityEffect("rollback:freeze-resident", { ...effect, readback: async () => image("2") }, state.options)
+  })
+  it("journals every effect before applying it and requires exact readback before resident startup or template commit", async () => {
+    const module = await load()
+    const state = fixture("prior-template\n")
+    module.prepareDockerManTemplateTransaction(state.input, state.options)
+    module.beginDockerManAuthorityHandoff(plan, state.options)
+    expect(() => module.markDockerManTemplateTransactionCommitting(state.options)).toThrow(/authority/u)
+    expect(() => module.rollbackDockerManTemplateTransaction(state.options)).toThrow(/authority/u)
+    for (const [index, step] of authorityInstallSteps.entries()) {
+      const beforeDigest = image("1")
+      const afterDigest = image("2")
+      let current = beforeDigest
+      const effect = {
+        beforeDigest, afterDigest,
+        readback: async () => current,
+        apply: vi.fn(async (effectId: string) => {
+          const journal = JSON.parse(readFileSync(state.journalPath, "utf8"))
+          expect(journal.authority.pending).toMatchObject({ step, effectId, beforeDigest, afterDigest, direction: "install" })
+          expect(journal.authority.completed).toHaveLength(index)
+          expect(effectId).toMatch(/^sha256:[a-f0-9]{64}$/u)
+          current = afterDigest
+        }),
+      }
+      await module.runDockerManAuthorityEffect(step, effect, state.options)
+      await module.runDockerManAuthorityEffect(step, effect, state.options)
+      expect(effect.apply).toHaveBeenCalledOnce()
+    }
+    expect(module.markDockerManTemplateTransactionCommitting(state.options).state).toBe("committing")
+    expect(module.beginDockerManAuthorityHandoff(plan, state.options)).toMatchObject({ state: "active" })
+    expect(JSON.parse(readFileSync(state.journalPath, "utf8")).authority.state).toBe("active")
+    expect(readFileSync(state.journalPath, "utf8")).not.toContain("botToken")
+  })
+
+  it.each(authorityInstallSteps)("recovers an interrupted %s only from exact before/after evidence", async (interruptedStep) => {
+    const module = await load()
+    const state = fixture("prior-template\n")
+    module.prepareDockerManTemplateTransaction(state.input, state.options)
+    module.beginDockerManAuthorityHandoff(plan, state.options)
+    for (const step of authorityInstallSteps) {
+      let current = image("1")
+      const effect = { beforeDigest: image("1"), afterDigest: image("2"), readback: async () => current, apply: vi.fn(async () => { current = image("2"); if (step === interruptedStep) throw new Error("interrupted after mutation") }) }
+      if (step !== interruptedStep) { await module.runDockerManAuthorityEffect(step, effect, state.options); continue }
+      await expect(module.runDockerManAuthorityEffect(step, effect, state.options)).rejects.toThrow(/interrupted/u)
+      current = image("3")
+      await expect(module.runDockerManAuthorityEffect(step, effect, state.options)).rejects.toThrow(/ambiguous/u)
+      expect(effect.apply).toHaveBeenCalledOnce()
+      current = image("2")
+      await module.runDockerManAuthorityEffect(step, effect, state.options)
+      expect(effect.apply).toHaveBeenCalledOnce()
+      break
+    }
+  })
+
+  it("ends the authority epoch and proves ordered rollback before restoring the predecessor template", async () => {
+    const module = await load()
+    const state = fixture("prior-template\n")
+    module.prepareDockerManTemplateTransaction(state.input, state.options)
+    module.beginDockerManAuthorityHandoff(plan, state.options)
+    for (const step of authorityRollbackSteps) {
+      let current = image("1")
+      await module.runDockerManAuthorityEffect(`rollback:${step}`, { beforeDigest: image("1"), afterDigest: image("2"), readback: async () => current, apply: async () => { current = image("2") } }, state.options)
+      if (step !== "verify-rollback") expect(() => module.rollbackDockerManTemplateTransaction(state.options)).toThrow(/authority/u)
+    }
+    expect(JSON.parse(readFileSync(state.journalPath, "utf8")).authority.state).toBe("retired")
+    expect(module.rollbackDockerManTemplateTransaction(state.options)).toBe(true)
+    expect(readFileSync(state.targetPath, "utf8")).toBe("prior-template\n")
+  })
+
+  it("fences concurrent effect drivers before either can duplicate a side effect", async () => {
+    const module = await load()
+    const state = fixture("prior-template\n")
+    module.prepareDockerManTemplateTransaction(state.input, state.options)
+    module.beginDockerManAuthorityHandoff(plan, state.options)
+    let current = image("1")
+    let release!: () => void
+    const effect = { beforeDigest: image("1"), afterDigest: image("2"), readback: async () => current, apply: vi.fn(async () => { if (release) throw new Error("duplicate effect reached"); await new Promise<void>((resolve) => { release = resolve }); current = image("2") }) }
+    const first = module.runDockerManAuthorityEffect("freeze-resident", effect, state.options)
+    await vi.waitFor(() => expect(effect.apply).toHaveBeenCalledOnce())
+    await expect(module.runDockerManAuthorityEffect("freeze-resident", effect, state.options)).rejects.toThrow(/busy/u)
+    release()
+    await first
+    expect(effect.apply).toHaveBeenCalledOnce()
+  })
+
+  it("refuses substituted plans, effects, ordering, duplicate identities, absent journals and readback failures", async () => {
+    const module = await load()
+    const state = fixture("prior-template\n")
+    expect(() => module.beginDockerManAuthorityHandoff(plan, state.options)).toThrow()
+    module.prepareDockerManTemplateTransaction(state.input, state.options)
+    for (const changed of [{ ...plan, epochId: "" }, { ...plan, ownerChatId: "43" }, { ...plan, packageDigest: "bad" }, { ...plan, botId: "0" }, { ...plan, targetContract: "canonical" }, { ...plan, extra: "secret" }]) {
+      expect(() => module.beginDockerManAuthorityHandoff(changed, state.options)).toThrow()
+    }
+    module.beginDockerManAuthorityHandoff(plan, state.options)
+    module.beginDockerManAuthorityHandoff(plan, state.options)
+    expect(() => module.beginDockerManAuthorityHandoff({ ...plan, epochId: "another-epoch" }, state.options)).toThrow()
+    const effect = { beforeDigest: image("1"), afterDigest: image("2"), readback: vi.fn(async () => image("1")), apply: vi.fn(async () => undefined) }
+    await expect(module.runDockerManAuthorityEffect("start-resident", effect, state.options)).rejects.toThrow(/order/u)
+    await expect(module.runDockerManAuthorityEffect("not-a-step", effect, state.options)).rejects.toThrow(/step/u)
+    await expect(module.runDockerManAuthorityEffect("freeze-resident", { ...effect, afterDigest: image("1") }, state.options)).rejects.toThrow(/identity/u)
+    await expect(module.runDockerManAuthorityEffect("freeze-resident", effect, state.options)).rejects.toThrow(/readback/u)
+    expect(effect.apply).toHaveBeenCalledOnce()
+    await expect(module.runDockerManAuthorityEffect("freeze-resident", { ...effect, afterDigest: image("3") }, state.options)).rejects.toThrow(/changed/u)
+  })
+})
 
 function serveJellyfin(value: Partial<JellyfinState> = jellyfin, name = "/jellyfin") {
   execFileSync.mockReturnValue(`${JSON.stringify({ name, ...value })}\n`)
@@ -91,7 +318,7 @@ const hiddenTransactionSemanticMarkup = transactionSemanticMarkup.flatMap(([name
 ] as const)
 
 async function load(): Promise<TransactionModule> {
-  return import(pathToFileURL(join(process.cwd(), "deploy/unraid/docker-man-template-transaction.mjs")).href) as Promise<TransactionModule>
+  return import("../../../deploy/unraid/docker-man-template-transaction.mjs") as Promise<TransactionModule>
 }
 
 function fixture(prior: string | null = null) {
@@ -112,7 +339,7 @@ function fixture(prior: string | null = null) {
     writeFileSync(targetPath, prior, { mode: 0o600 })
     chmodSync(targetPath, 0o600)
   }
-  const options = { targetPath, journalPath, expectedUid: process.getuid?.() ?? 0, expectedGid: process.getgid?.() ?? 0 }
+  const options = { targetPath, journalPath, expectedUid: process.getuid?.() ?? 0, expectedGid: process.getgid?.() ?? 0, withLease: withSessionTurnLease }
   const input = {
     sourceTemplatePath,
     canonicalVersionTag,
@@ -181,6 +408,7 @@ function readyInspection() {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
@@ -190,6 +418,143 @@ beforeEach(() => {
 })
 
 describe("root-owned DockerMan template transaction", () => {
+  it("resolves fixed root defaults read-only and leaves absent recovery state absent", async () => {
+    const module = await load()
+    const state = fixture()
+    const lstat = filesystem.lstatSync
+    const realpath = filesystem.realpathSync
+    const readdir = filesystem.readdirSync
+    const parents = ["/boot/config/plugins/dockerMan/templates-user", "/boot/config/custom/ouro-butler"]
+    vi.spyOn(filesystem, "lstatSync").mockImplementation(((file, options) => {
+      if (parents.includes(String(file))) return Object.assign(lstat(state.templateRoot, options), { uid: 0, gid: 0 })
+      if (String(file).startsWith("/boot/")) throw Object.assign(new Error("fixture absent"), { code: "ENOENT" })
+      return lstat(file, options)
+    }) as typeof filesystem.lstatSync)
+    vi.spyOn(filesystem, "realpathSync").mockImplementation(((file, options) => parents.includes(String(file)) ? file : realpath(file, options)) as typeof filesystem.realpathSync)
+    vi.spyOn(filesystem, "readdirSync").mockImplementation(((file, options) => parents.includes(String(file)) ? [] : readdir(file, options)) as typeof filesystem.readdirSync)
+    expect(module.inspectDockerManTemplateTransaction()).toBeNull()
+    const output = vi.fn()
+    rmSync(state.journalRoot, { recursive: true })
+    module.runDockerManTemplateTransactionCli(["recovery-identity"], state.options, output)
+    expect(output).toHaveBeenCalledWith("null\n")
+    expect(existsSync(state.journalRoot)).toBe(false)
+  })
+  it("refuses semantically invalid source templates before mutation", async () => {
+    const module = await load()
+    for (const bytes of [
+      template().replace("<Name>ouro-butler</Name>", '<Name extra="value">ouro-butler</Name>'),
+      template("wrong-image"), template(canonicalVersionTag, "wrong-name"),
+      template().replace(icon, "https://example.invalid/icon"),
+      template().replace("<WebUI/>", '<WebUI extra="x"/>'),
+    ]) {
+      const state = fixture("prior")
+      writeFileSync(state.sourceTemplatePath, bytes)
+      expect(() => module.prepareDockerManTemplateTransaction(state.input, state.options)).toThrow(/template/u)
+      expect(existsSync(state.journalPath)).toBe(false)
+    }
+  })
+  it.each([
+    (r: any) => { r.target.name = "wrong" },
+    (r: any) => { r.priorTemplate.present = "yes" },
+    (r: any) => { r.priorTemplate.metadata.uid += 1 },
+    (r: any) => { r.priorTemplateDigest = image("f") },
+    (r: any) => { r.canonicalVersionTag = "latest" },
+    (r: any) => { r.priorTemplate = { present: false, bytesBase64: "", metadata: null }; r.priorTemplateDigest = null },
+  ])("rejects root-journal semantic substitution even with a recomputed digest", async (mutate) => {
+    const module = await load()
+    const state = fixture("prior")
+    const record = module.prepareDockerManTemplateTransaction(state.input, state.options)
+    writeFileSync(state.journalPath, JSON.stringify(signedRecord(record, mutate)))
+    expect(() => module.inspectDockerManTemplateTransaction(state.options)).toThrow(/journal/u)
+  })
+  it("refuses invalid journal JSON and unsafe target removal or restoration", async () => {
+    const module = await load()
+    for (const prior of [null, "prior"]) {
+      const state = fixture(prior)
+      const record = module.prepareDockerManTemplateTransaction(state.input, state.options)
+      writeFileSync(state.targetPath, "foreign")
+      expect(() => module.markDockerManTemplateTransactionCommitting(state.options)).toThrow(/match/u)
+      expect(() => module.rollbackDockerManTemplateTransaction(state.options)).toThrow(/safely/u)
+      expect(() => module.commitDockerManTemplateTransaction(finalProof(state.targetPath), state.options)).toThrow(/ready/u)
+      writeFileSync(state.journalPath, "{invalid")
+      expect(() => module.inspectDockerManTemplateTransaction(state.options)).toThrow(/JSON/u)
+      writeFileSync(state.journalPath, JSON.stringify(record))
+    }
+    const state = fixture()
+    expect(() => module.markDockerManTemplateTransactionCommitting(state.options)).toThrow(/absent/u)
+  })
+  it("refuses invalid release identities and incompatible recovery evidence", async () => {
+    const module = await load()
+    const state = fixture("prior")
+    expect(() => module.prepareDockerManTemplateTransaction({ ...state.input, targetImageId: "bad" }, state.options)).toThrow(/release/u)
+    const record = module.prepareDockerManTemplateTransaction(state.input, state.options)
+    for (const evidence of [
+      {}, { bundleJournalState: "absent", production: "adoption-target-exact-ready", inspection: {} },
+      { bundleJournalState: "absent", production: "target-exact-ready", inspection: {} },
+    ]) expect(() => module.decideDockerManTemplateRecovery(evidence.production === "target-exact-ready" ? { ...record, state: "committing" } : record, evidence)).toThrow()
+  })
+  it("drives all fixed CLI transaction call points, including private root proof inputs", async () => {
+    const module = await load()
+    const state = fixture("prior")
+    const out: string[] = []
+    const write = (text: string) => { out.push(text) }
+    module.runDockerManTemplateTransactionCli(["prepare", "--source-template", state.sourceTemplatePath, "--version-tag", canonicalVersionTag, "--manifest-digest", image("c"), "--rollback-image-id", image("a"), "--target-image-id", image("b")], state.options, write)
+    module.runDockerManTemplateTransactionCli(["status"], state.options, write)
+    module.runDockerManTemplateTransactionCli(["mark-committing"], state.options, write)
+    module.runDockerManTemplateTransactionCli(["mark-committing"], state.options, write)
+    const evidence = join(state.root, "evidence.json")
+    const proof = join(state.root, "proof.json")
+    writeFileSync(evidence, JSON.stringify({ bundleJournalState: "absent", production: "target-exact-ready", inspection: readyInspection() }), { mode: 0o600 })
+    writeFileSync(proof, JSON.stringify(finalProof(state.targetPath)), { mode: 0o600 })
+    const lstat = filesystem.lstatSync
+    vi.spyOn(filesystem, "lstatSync").mockImplementation(((file, options) => {
+      const stat = lstat(file, options)
+      return file === evidence || file === proof ? Object.assign(stat, { uid: 0, gid: 0 }) : stat
+    }) as typeof filesystem.lstatSync)
+    module.runDockerManTemplateTransactionCli(["recovery-action", "--evidence", evidence], state.options, write)
+    expect(JSON.parse(out.at(-1)!)).toEqual({ action: "finish-template-commit" })
+    writeFileSync(evidence, "{")
+    expect(() => module.runDockerManTemplateTransactionCli(["recovery-action", "--evidence", evidence], state.options, write)).toThrow(/JSON/u)
+    module.runDockerManTemplateTransactionCli(["commit", "--proof", proof], state.options, write)
+    module.runDockerManTemplateTransactionCli(["rollback"], state.options, write)
+    expect(() => module.runDockerManTemplateTransactionCli(["recovery-action", "--evidence", evidence], state.options, write)).toThrow(/absent/u)
+    const output = vi.spyOn(process.stdout, "write").mockReturnValue(true)
+    module.runDockerManTemplateTransactionCli(["jellyfin-status"], state.options)
+    expect(output).toHaveBeenCalled()
+    for (const args of [["status", "bad", "value"], ["status", "--flag"], ["status", "--x", "1", "--x", "2"]]) expect(() => module.runDockerManTemplateTransactionCli(args, state.options, write)).toThrow(/arguments/u)
+    for (const args of [["commit"], ["commit", "--other", "x"], ["recovery-action"], ["recovery-action", "--other", "x"]]) expect(() => module.runDockerManTemplateTransactionCli(args, state.options, write)).toThrow(/Usage/u)
+  })
+  it("does not hide filesystem failures or a journal changed during recovery", async () => {
+    const module = await load()
+    const state = fixture("prior")
+    module.prepareDockerManTemplateTransaction(state.input, state.options)
+    const lstat = filesystem.lstatSync
+    const fault = vi.spyOn(filesystem, "lstatSync").mockImplementation(((file, options) => {
+      if (file === state.journalPath) throw Object.assign(new Error("permission failure"), { code: "EACCES" })
+      return lstat(file, options)
+    }) as typeof filesystem.lstatSync)
+    expect(() => module.inspectDockerManTemplateTransaction(state.options)).toThrow("permission failure")
+    fault.mockRestore()
+    const residue = temporaryPaths(state).journal
+    writeFileSync(residue, "partial", { mode: 0o600 })
+    const unlink = filesystem.unlinkSync
+    vi.spyOn(filesystem, "unlinkSync").mockImplementation((file) => {
+      unlink(file)
+      if (file === residue) unlink(state.journalPath)
+    })
+    expect(() => module.inspectDockerManTemplateTransactionForRecovery(state.options)).toThrow(/changed/u)
+  })
+  it("refuses ambiguous target residue and tolerates an already-removed originally absent target", async () => {
+    const module = await load()
+    const state = fixture()
+    module.prepareDockerManTemplateTransaction(state.input, state.options)
+    writeFileSync(temporaryPaths(state).target, "partial", { mode: 0o600 })
+    writeFileSync(state.targetPath, "foreign")
+    expect(() => module.inspectDockerManTemplateTransactionForRecovery(state.options)).toThrow(/ambiguous/u)
+    rmSync(state.targetPath)
+    expect(module.inspectDockerManTemplateTransactionForRecovery(state.options)).not.toBeNull()
+    expect(module.rollbackDockerManTemplateTransaction(state.options)).toBe(true)
+  })
   it("captures only Jellyfin identity, image, state, and restart count under the journal digest", async () => {
     const transaction = await load()
     const state = fixture("prior-template\n")

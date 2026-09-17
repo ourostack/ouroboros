@@ -1,8 +1,10 @@
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 import { createHash } from "node:crypto"
+import { createRequire } from "node:module"
+import * as vm from "node:vm"
 
 const {
   REQUIRED_PACKAGE_ASSET_PATHS,
@@ -15,7 +17,7 @@ const {
   packageRootFromBinPath,
   runPackageAssetsCli,
   validatePackageAssets,
-} = require(path.resolve(__dirname, "../../../scripts/package-assets.cjs"))
+} = createRequire(path.resolve("scripts/package-assets.cjs"))("./package-assets.cjs")
 
 const roots: string[] = []
 
@@ -44,8 +46,80 @@ afterEach(() => {
 })
 
 describe("package asset validation", () => {
+  it("runs the native CLI main with default argv and both real output adapters", () => {
+    const filename = path.resolve("scripts/package-assets.cjs")
+    const source = fs.readFileSync(filename, "utf8")
+    const root = makeRoot()
+    writeRequiredAssets(root)
+    for (const valid of [true, false]) {
+      if (!valid) fs.unlinkSync(path.join(root, "deploy/unraid/sanctuary-authority-service.sh"))
+      const stdout: string[] = []
+      const stderr: string[] = []
+      const entryModule = { exports: {} }
+      const nativeRequire = createRequire(filename)
+      const runtime = { argv: ["node", filename, root], cwd: () => root, exitCode: undefined as number | undefined, stdout: { write: (text: string) => stdout.push(text) }, stderr: { write: (text: string) => stderr.push(text) } }
+      vm.runInNewContext(source, { require: Object.assign((id: string) => nativeRequire(id), { main: entryModule }), module: entryModule, process: runtime }, { filename })
+      expect(runtime.exitCode).toBe(valid ? 0 : 1)
+      expect(stdout.join("")).toBe(valid ? "package assets verified\n" : "")
+      expect(stderr.join("")).toBe(valid ? "" : "missing required package assets: deploy/unraid/sanctuary-authority-service.sh\n")
+    }
+  })
+
+  it("uses cwd with default dependencies and scans both missing and disallowed payloads", () => {
+    const root = makeRoot()
+    writeRequiredAssets(root)
+    const cwd = vi.spyOn(process, "cwd").mockReturnValue(root)
+    const out = vi.spyOn(process.stdout, "write").mockReturnValue(true)
+    const err = vi.spyOn(process.stderr, "write").mockReturnValue(true)
+    try {
+      expect(runPackageAssetsCli([])).toBe(0)
+      fs.unlinkSync(path.join(root, "deploy/unraid/sanctuary-authority-service.sh"))
+      writeFile(root, "dist/outlook-ui/index.js", "obsolete")
+      expect(runPackageAssetsCli([])).toBe(1)
+      expect(err).toHaveBeenCalledWith(expect.stringContaining("; disallowed package assets:"))
+    } finally { cwd.mockRestore(); out.mockRestore(); err.mockRestore() }
+  })
+
+  it("characterizes unreadable text, non-files, missing roots and failed realpath without excluding native code", () => {
+    const root = makeRoot()
+    writeRequiredAssets(root)
+    const deps = { ...fs, ...path, readFileSync: () => { throw new Error("unreadable") } }
+    expect(validatePackageAssets(root, deps).ok).toBe(true)
+    expect(listPackageFiles(path.join(root, "missing"))).toEqual([])
+    fs.symlinkSync("missing", path.join(root, "assets", "not-a-file"))
+    expect(listPackageFiles(root)).not.toContain("assets/not-a-file")
+    const bin = path.join(root, "dist", "ouro")
+    writeFile(root, "package.json", JSON.stringify({ name: "@ouro.bot/cli" }))
+    writeFile(root, "dist/ouro", "entry")
+    expect(packageRootFromBinPath(bin, undefined, { ...fs, ...path, realpathSync: () => { throw new Error("not a link") } })).toBe(root)
+  })
+
+  it.each([
+    ["sanctuary-authority-root-lifecycle", "daemon"],
+    ["sanctuary-telegram-authority-entry", "daemon"],
+    ["sanctuary-host-supervisor-entry", "daemon"],
+  ])("keeps compiled %s mandatory outside explicit source-tree checks", (name, directory) => {
+    const root = makeRoot()
+    writeRequiredAssets(root)
+    const compiled = `dist/heart/${directory}/${name}.js`
+    fs.unlinkSync(path.join(root, compiled))
+    writeFile(root, `src/heart/${directory}/${name}.ts`, "export {}")
+    expect(validatePackageAssets(root).missing).toContain(compiled)
+    expect(validatePackageAssets(root, undefined, { sourceTree: true }).ok).toBe(true)
+  })
+  it("requires the complete compiled root lifecycle entry surface, not just deployment scripts", () => {
+    for (const asset of [
+      "dist/heart/daemon/sanctuary-authority-root-lifecycle.js",
+      "dist/heart/daemon/sanctuary-telegram-authority-entry.js",
+      "dist/heart/daemon/sanctuary-host-supervisor-entry.js",
+      "assets/sanctuary-host-launcher.sh",
+      "deploy/unraid/sanctuary-authority-service.sh",
+      "deploy/unraid/sanctuary-authority-installation.json",
+    ]) expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain(asset)
+    expect(fs.readFileSync("deploy/unraid/Dockerfile", "utf8")).toContain("COPY assets/sanctuary-host-launcher.sh /opt/ouro/deploy/unraid/sanctuary-host-launcher.sh")
+  })
   it("documents owner-only sequential Jellyfin provisioning without installation authority or weak rollback", () => {
-    const readme = fs.readFileSync(path.resolve(__dirname, "../../../deploy/unraid/README.txt"), "utf8")
+    const readme = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     const heading = "Bounded Jellyfin stewardship"
     expect(readme).toContain(heading)
     const section = readme.slice(readme.indexOf(heading))
@@ -62,7 +136,7 @@ describe("package asset validation", () => {
   })
 
   it("ships the owner v8 identity correction without changing any other psyche content or containment source", () => {
-    const root = path.resolve(__dirname, "../../../deploy/unraid")
+    const root = path.resolve("deploy/unraid")
     const identity = fs.readFileSync(path.join(root, "sanctuary.ouro/psyche/IDENTITY.md"), "utf8")
     const oldSentence = "My primary server interface is the typed Unraid GraphQL repertoire, never shell."
     const newSentence = "I use the typed Unraid GraphQL repertoire for server operations and owner-authorized native tools for resident work inside my existing container boundary."
@@ -156,7 +230,7 @@ describe("package asset validation", () => {
   })
   it("A003 declares the direct maintenance entrypoint without public package or command routing", () => {
     expect(REQUIRED_PACKAGE_ASSET_PATHS).toContain("dist/heart/session-redaction-repair-cli-main.js")
-    const root = path.resolve(__dirname, "../../..")
+    const root = path.resolve(".")
     const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"))
     expect(JSON.stringify([pkg.bin, pkg.exports])).not.toContain("session-redaction-repair")
     for (const file of ["src/heart/daemon/daemon-cli.ts", "src/heart/daemon/daemon.ts", "src/repertoire/tools.ts", "src/senses/telegram.ts"]) {
@@ -195,7 +269,7 @@ describe("package asset validation", () => {
   })
 
   it("ships no restart authority or fabricated owner session identity", () => {
-    const policy = JSON.parse(fs.readFileSync(path.resolve(__dirname, "../../../deploy/unraid/sanctuary.ouro/state/policy/steward.json"), "utf8"))
+    const policy = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/state/policy/steward.json", "utf8"))
     expect(policy.desiredStates).toEqual({})
     expect(policy.routineActionGrants).toEqual({})
     expect(JSON.stringify(policy)).not.toContain("owner-contract")

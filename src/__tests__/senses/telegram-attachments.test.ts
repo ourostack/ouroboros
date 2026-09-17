@@ -87,6 +87,34 @@ describe("Telegram attachment ingestion", () => {
     expect(request).toHaveBeenCalledOnce()
   })
 
+  it("downloads through the root authority transport without exposing a resident bot token", async () => {
+    const agentRoot = root()
+    const request = vi.fn(async () => ({ file_path: "documents/file.pdf", file_size: 4 }))
+    const downloadFile = vi.fn(async () => new Response(Buffer.from("data"), { status: 200, headers: { "content-type": "application/pdf" } }))
+
+    const result = await ingestTelegramAttachments({
+      agentName: "sanctuary",
+      agentRoot,
+      api: { request, stop: vi.fn() },
+      downloadFile,
+      attachments: [{ fileId: "file-1", kind: "document", displayName: "notes.pdf" }],
+    })
+
+    expect(result.notices).toEqual([])
+    expect(downloadFile).toHaveBeenCalledWith("documents/file.pdf")
+    expect(fs.readFileSync(result.attachments[0]!.sourceData.localPath, "utf8")).toBe("data")
+  })
+
+  it("fails closed when no direct or authority attachment transport is available", async () => {
+    const result = await ingestTelegramAttachments({
+      agentName: "sanctuary",
+      agentRoot: root(),
+      api: { request: vi.fn(async () => ({ file_path: "documents/file.pdf", file_size: 4 })), stop: vi.fn() },
+      attachments: [{ fileId: "file-1", kind: "document", displayName: "notes.pdf" }],
+    })
+    expect(result).toEqual({ attachments: [], notices: ["attachment unavailable: notes.pdf"] })
+  })
+
   it("deduplicates file ids and reports malformed, oversized, HTTP, and streamed-overflow failures without caching them", async () => {
     const agentRoot = root()
     const request = vi.fn(async (_method: string, body: Record<string, unknown>) => {

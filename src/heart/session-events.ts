@@ -158,7 +158,7 @@ function hasExactMaterializedApprovalPair(
 export function materializeApprovalTerminal(input: {
   messages: OpenAI.ChatCompletionMessageParam[]
   checkpoint: ApprovalSuspensionCheckpoint
-  record: ApprovalRecord
+  record: Pick<ApprovalRecord, "approvalId" | "toolCallId" | "state" | "result">
   currentSessionRevision: string
   materializedApprovalIds?: string[]
 }): MaterializedApprovalTerminal {

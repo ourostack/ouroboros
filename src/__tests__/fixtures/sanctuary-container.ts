@@ -1,5 +1,5 @@
-export function sanctuaryContainerInspectFixture() {
-  return {
+export function sanctuaryContainerInspectFixture(gateway = false) {
+  const spec = {
     Name: "/ouro-butler",
     Image: "sha256:" + "a".repeat(64),
     Path: "node",
@@ -44,4 +44,9 @@ export function sanctuaryContainerInspectFixture() {
     ],
     NetworkSettings: { Ports: {} },
   }
+  if (gateway) {
+    spec.HostConfig.Mounts.push({ Type: "bind", Source: "/run/ouro-authority", Target: "/run/ouro-authority", ReadOnly: true })
+    spec.Mounts.push({ Type: "bind", Source: "/run/ouro-authority", Destination: "/run/ouro-authority", RW: false, Propagation: "rprivate" })
+  }
+  return spec
 }

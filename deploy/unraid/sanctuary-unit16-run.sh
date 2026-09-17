@@ -132,7 +132,6 @@ IMAGE_FACT=$PRIVATE_ROOT/image-digest
 CONTAINER_FACT=$PRIVATE_ROOT/container-digest
 PROCESS_BINDING_FACT=$PRIVATE_ROOT/process-binding-digest
 HEALTH_FACT=$PRIVATE_ROOT/postboot-health.json
-POLLER_FACT=$PRIVATE_ROOT/telegram-poller-count.json
 CONTAINER_INSPECT_FACT=$PRIVATE_ROOT/container-inspect.json
 
 start_broker() {
@@ -280,13 +279,6 @@ stop_exact_production_container() {
   test "$(/usr/bin/timeout -s KILL 20 /usr/bin/docker inspect --format '{{.State.Pid}}' "$EXPECTED_CONTAINER_ID")" = 0 || return 1
 }
 
-quiesce_production_telegram_poller() {
-  stop_exact_production_container
-  printf '%s\n' '{"activePollers":0,"productionContainerStopped":true}' >"$POLLER_FACT"
-  chmod 0444 "$POLLER_FACT"
-  chown 0:0 "$POLLER_FACT"
-}
-
 materialize_config() {
   OUTPUT=$1
   SNAPSHOT_PHASE=${2:-}
@@ -297,8 +289,9 @@ materialize_config() {
     EXTRA_MOUNT=$PRIVATE_ROOT/container-inventory.json
   fi
   if test -n "$EXTRA_MOUNT"; then
-    /usr/bin/timeout -s KILL 30 /usr/bin/docker run --rm --pull=never --network none \
+    /usr/bin/timeout -s KILL 90 /usr/bin/docker run --rm --pull=never --network none \
       --user 10001:10001 --read-only \
+      --mount "type=bind,src=/run/ouro-authority,dst=/run/ouro-authority,readonly" \
       --mount "type=bind,src=$EVIDENCE_ROOT,dst=/evidence,readonly" \
       --mount "type=bind,src=$EXTRA_MOUNT,dst=/run/ouro-acceptance/closed-inventory.json,readonly" \
       --mount "type=bind,src=$RUNTIME_ROOT,dst=/home/ouro/.ouro-cli,readonly" \
@@ -306,16 +299,18 @@ materialize_config() {
       --entrypoint /opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh \
       "$IMAGE_ID" materialize-config "$COMMAND" >"$OUTPUT"
   elif test -n "$SNAPSHOT_PHASE"; then
-    /usr/bin/timeout -s KILL 30 /usr/bin/docker run --rm --pull=never --network none \
+    /usr/bin/timeout -s KILL 90 /usr/bin/docker run --rm --pull=never --network none \
       --user 10001:10001 --read-only \
+      --mount "type=bind,src=/run/ouro-authority,dst=/run/ouro-authority,readonly" \
       --mount "type=bind,src=$EVIDENCE_ROOT,dst=/evidence,readonly" \
       --mount "type=bind,src=$RUNTIME_ROOT,dst=/home/ouro/.ouro-cli,readonly" \
       --mount "type=bind,src=$BUNDLE_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro,readonly" \
       --entrypoint /opt/ouro/deploy/unraid/sanctuary-acceptance-adapter.sh \
       "$IMAGE_ID" materialize-config "$COMMAND" "$SNAPSHOT_PHASE" >"$OUTPUT"
   else
-    /usr/bin/timeout -s KILL 30 /usr/bin/docker run --rm --pull=never --network none \
+    /usr/bin/timeout -s KILL 90 /usr/bin/docker run --rm --pull=never --network none \
       --user 10001:10001 --read-only \
+      --mount "type=bind,src=/run/ouro-authority,dst=/run/ouro-authority,readonly" \
       --mount "type=bind,src=$EVIDENCE_ROOT,dst=/evidence,readonly" \
       --mount "type=bind,src=$RUNTIME_ROOT,dst=/home/ouro/.ouro-cli,readonly" \
       --mount "type=bind,src=$BUNDLE_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro,readonly" \
@@ -362,11 +357,11 @@ materialize_config "$EXPECTED_CONFIG" "$SNAPSHOT_PHASE"
 cmp -s "$EXPECTED_CONFIG" "$CONFIG_PATH" || exit 1
 case "$COMMAND" in callback-inject) test -r /proc/self/fd/3 || exit 2 ;; esac
 prepare_live_facts
-if test "$COMMAND" = telegram-bootstrap; then quiesce_production_telegram_poller; fi
+if test "$COMMAND" = telegram-bootstrap; then stop_exact_production_container; fi
 if test "$COMMAND" = unraid-key-rotate; then stop_exact_production_container; fi
 
 case "$COMMAND" in
-  telegram-bootstrap) TIME_LIMIT=900; NETWORK=host; INPUT=no; BUNDLE_MODE=readonly; BROKER=no ;;
+  telegram-bootstrap) TIME_LIMIT=900; NETWORK=none; INPUT=no; BUNDLE_MODE=readonly; BROKER=no ;;
   callback-inject) TIME_LIMIT=120; NETWORK=host; INPUT=yes; BUNDLE_MODE=rw; BROKER=no ;;
   unraid-key-rotate) TIME_LIMIT=600; NETWORK=host; INPUT=no; BUNDLE_MODE=readonly; BROKER=yes ;;
   evidence-snapshot) TIME_LIMIT=5700; NETWORK=host; INPUT=no; BUNDLE_MODE=readonly; BROKER=yes ;;
@@ -426,11 +421,12 @@ run_harness() {
   if test "$COMMAND" = telegram-bootstrap; then
     /usr/bin/timeout -s KILL "$TIME_LIMIT" /usr/bin/docker run --rm --pull=never --network "$NETWORK" \
       --user 10001:10001 --read-only --cap-drop ALL --security-opt no-new-privileges \
+      --mount "type=bind,src=/run/ouro-authority,dst=/run/ouro-authority,readonly" \
       --mount "type=bind,src=$CONFIG_PATH,dst=/run/ouro-acceptance/config.json,readonly" \
       --mount "type=bind,src=$EVIDENCE_ROOT,dst=/evidence" \
-      --mount "type=bind,src=$RUNTIME_ROOT,dst=/home/ouro/.ouro-cli" \
+      --mount "type=bind,src=$RUNTIME_ROOT,dst=/home/ouro/.ouro-cli,readonly" \
       --mount "type=bind,src=$BUNDLE_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro$BUNDLE_SUFFIX" \
-      --mount "type=bind,src=$POLLER_FACT,dst=/run/ouro-acceptance/telegram-poller-count.json,readonly" \
+      --mount "type=bind,src=$SOCKET_ROOT,dst=/run/ouro-host-acceptance,readonly" \
       --mount "type=bind,src=$IMAGE_FACT,dst=/run/ouro-acceptance/image-digest,readonly" \
       --mount "type=bind,src=$CONTAINER_FACT,dst=/run/ouro-acceptance/container-digest,readonly" \
       --mount "type=bind,src=$PROCESS_BINDING_FACT,dst=/run/ouro-acceptance/process-binding-digest,readonly" \
@@ -442,6 +438,7 @@ run_harness() {
   elif test "$COMMAND" = callback-inject; then
     /usr/bin/timeout -s KILL "$TIME_LIMIT" /usr/bin/docker run --rm -i --pull=never --network "$NETWORK" \
       --user 10001:10001 --read-only --cap-drop ALL --security-opt no-new-privileges \
+      --mount "type=bind,src=/run/ouro-authority,dst=/run/ouro-authority,readonly" \
       --mount "type=bind,src=$CONFIG_PATH,dst=/run/ouro-acceptance/config.json,readonly" \
       --mount "type=bind,src=$EVIDENCE_ROOT,dst=/evidence" \
       --mount "type=bind,src=$RUNTIME_ROOT,dst=/home/ouro/.ouro-cli,readonly" \
@@ -457,6 +454,7 @@ run_harness() {
   elif test "$COMMAND" = evidence-snapshot; then
     /usr/bin/timeout -s KILL "$TIME_LIMIT" /usr/bin/docker run --rm --pull=never --network "$NETWORK" \
       --user 10001:10001 --read-only --cap-drop ALL --security-opt no-new-privileges \
+      --mount "type=bind,src=/run/ouro-authority,dst=/run/ouro-authority,readonly" \
       --mount "type=bind,src=$CONFIG_PATH,dst=/run/ouro-acceptance/config.json,readonly" \
       --mount "type=bind,src=$EVIDENCE_ROOT,dst=/evidence" \
       --mount "type=bind,src=$RUNTIME_ROOT,dst=/home/ouro/.ouro-cli,readonly" \
@@ -475,6 +473,7 @@ run_harness() {
     if test "$COMMAND" = reboot-request || test "$COMMAND" = reboot-resume; then ACCEPTANCE_MOUNT="--mount type=bind,src=$ACCEPTANCE_PIN_ROOT,dst=/home/ouro/AgentBundles/sanctuary.ouro/state/acceptance"; else ACCEPTANCE_MOUNT=; fi
     /usr/bin/timeout -s KILL "$TIME_LIMIT" /usr/bin/docker run --rm --pull=never --network "$NETWORK" \
       --user 10001:10001 --read-only --cap-drop ALL --security-opt no-new-privileges \
+      --mount "type=bind,src=/run/ouro-authority,dst=/run/ouro-authority,readonly" \
       --mount "type=bind,src=$CONFIG_PATH,dst=/run/ouro-acceptance/config.json,readonly" \
       --mount "type=bind,src=$EVIDENCE_ROOT,dst=/evidence" \
       --mount "type=bind,src=$RUNTIME_ROOT,dst=/home/ouro/.ouro-cli,readonly" \
@@ -492,6 +491,7 @@ run_harness() {
   else
     /usr/bin/timeout -s KILL "$TIME_LIMIT" /usr/bin/docker run --rm --pull=never --network "$NETWORK" \
       --user 10001:10001 --read-only --cap-drop ALL --security-opt no-new-privileges \
+      --mount "type=bind,src=/run/ouro-authority,dst=/run/ouro-authority,readonly" \
       --mount "type=bind,src=$CONFIG_PATH,dst=/run/ouro-acceptance/config.json,readonly" \
       --mount "type=bind,src=$EVIDENCE_ROOT,dst=/evidence" \
       --mount "type=bind,src=$RUNTIME_ROOT,dst=/home/ouro/.ouro-cli,readonly" \

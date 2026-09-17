@@ -26,6 +26,7 @@ import type { ToolHighRiskMutationKind, ToolRiskProfile } from "./tools-base";
 import { inspectRoutineActionGrant } from "../heart/steward-policy";
 import { authorizeRoutineActionRequester } from "./relationship-authorization";
 import { ApprovalExecutionFailedError } from "../heart/tool-approval";
+import { authorizeRootHostToolInvocation, rootHostToolDefinition, selectRootHostTool, type RootHostSelectionContext } from "./tools-sanctuary-host";
 
 function safeGetAgentRoot(): string | undefined {
   try {
@@ -98,9 +99,7 @@ function applyPreference(tool: OpenAI.ChatCompletionFunctionTool, pref: string):
   };
 }
 
-type SelectionContext = Pick<ToolContext, "agentName" | "noSend" | "habitSession"> & {
-  relationshipAuthorization?: Pick<NonNullable<ToolContext["relationshipAuthorization"]>, "profileId" | "advertisedToolNames">
-}
+type SelectionContext = Pick<ToolContext, "noSend" | "habitSession"> & RootHostSelectionContext
 
 export function selectToolsForChannel(
   capabilities?: ChannelCapabilities,
@@ -120,7 +119,7 @@ export function selectToolsForChannel(
   const mcp = mcpManager ? mcpToolsAsDefinitions(mcpManager) : []
   const native = [...baseToolDefinitions, ...additionalDefinitions]
   assertUniqueToolSchemas([
-    ...native.map((definition) => definition.tool), ...mcp.map((definition) => definition.tool),
+    ...native.map((definition) => definition.tool), rootHostToolDefinition.tool, ...mcp.map((definition) => definition.tool),
     ponderTool, restTool, observeTool, settleTool, speakTool,
   ])
   let ordinary: ToolDefinition[]
@@ -148,6 +147,10 @@ export function selectToolsForChannel(
       ...integrations, ...mcp,
     ]
   }
+  const hostTool = capabilities?.channel === "telegram"
+    ? selectRootHostTool({ ...context, context: _context ?? context?.context }, providerCapabilities)
+    : undefined
+  if (hostTool) ordinary.push(hostTool)
   const inner = capabilities?.channel === "inner"
   const habit = context?.habitSession
   if (inner) {
@@ -167,7 +170,7 @@ export function selectToolsForChannel(
   ].filter((tool) => (!sanctuary || (knownSanctuaryProfile && tool.function.name !== "observe"))
     && (!relationship || relationship.advertisedToolNames.includes(tool.function.name)))
   return Object.freeze({
-    ordinary: Object.freeze(ordinary.map((definition) => Object.freeze({
+    ordinary: Object.freeze(ordinary.map((definition) => definition === hostTool ? definition : Object.freeze({
       ...definition,
       tool: freezeToolValue(structuredClone(definition.tool)),
       ...(definition.riskProfile && typeof definition.riskProfile !== "function"
@@ -350,6 +353,7 @@ export async function preflightToolCall(name: string, args: Record<string, strin
       emitNervesEvent({ level: "error", event: "tool.error", component: "tools", message: "unknown or unselected tool requested", meta: { name } })
       return { kind: "rejected_before_handler", text: `unknown: ${name}` }
     }
+    if (name === rootHostToolDefinition.tool.function.name) await authorizeRootHostToolInvocation(ctx, def, args)
     if (selection || ctx?.relationshipAuthorization) {
       const validation = validateAdvertisedToolArguments(JSON.stringify(args), schema.function.parameters ?? {})
       if (!validation.ok) return { kind: "rejected_before_handler", text: `invalid tool arguments: ${validation.reason}` }
@@ -360,7 +364,7 @@ export async function preflightToolCall(name: string, args: Record<string, strin
       return { kind: "rejected_before_handler", text: routineActionDenied(ctx.routineActionSelection.reason) }
     }
     const relationship = ctx?.relationshipAuthorization
-    const decision = await relationship?.authorizeTool(name, args)
+    const decision = name === rootHostToolDefinition.tool.function.name ? undefined : await relationship?.authorizeTool(name, args)
     if (decision && (!decision.allowed || !relationship!.advertisedToolNames.includes(name)
       || (decision.profileId !== undefined && decision.profileId !== relationship!.profileId))) {
       const reason = decision.allowed ? "current relationship selection changed" : decision.reason
@@ -372,7 +376,8 @@ export async function preflightToolCall(name: string, args: Record<string, strin
     }
 
     const currentSelection = ctx?.selectCurrentTools?.()
-      ?? (relationship?.profileId?.startsWith("sanctuary-") || (relationship && ctx?.agentName === "sanctuary")
+      ?? (name === rootHostToolDefinition.tool.function.name ? selection
+        : relationship?.profileId?.startsWith("sanctuary-") || (relationship && ctx?.agentName === "sanctuary")
         ? selectToolsForChannel(undefined, undefined, undefined, undefined, undefined, undefined, ctx)
         : undefined)
     const current = currentSelection ? findDefinition(name, currentSelection) : def?.mcpBinding ? def : findDefinition(name)

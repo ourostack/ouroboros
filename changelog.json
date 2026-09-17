@@ -2,6 +2,16 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.817",
+      "changes": [
+        "Add root-authenticated Sanctuary host execution with exact owner approval, one-time permits, durable receipts, and tokenless Telegram transport.",
+        "Package journaled token/cursor migration and rollback with exact read-only authority socket mounts, preserving typed tools and owner-authored steward policy.",
+        "Keep Telegram and retirement available during execution-pin maintenance, with a root-only reviewed-hash refresh command that preserves authority identity and state.",
+        "Verify Linux system executable aliases against their resolved owned bytes without changing invocation paths or relaxing package-script pinning.",
+        "Build the pinned SQLite binding for the image libc, verify a real database load, and remove build-only artifacts before publication."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.816",
       "changes": [
         "Support bounded Sanctuary service restarts only when a fresh request or health event intersects with explicit owner-stated desired state and restart grants.",

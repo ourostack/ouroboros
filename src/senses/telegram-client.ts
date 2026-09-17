@@ -123,6 +123,7 @@ export interface TelegramInboundMessage {
   attachments?: TelegramInboundAttachment[]
   attachmentNotices?: string[]
   replyToMessageId?: string
+  authority?: TelegramAuthorityTransportMetadata
 }
 
 export interface TelegramInboundAttachment {
@@ -144,6 +145,26 @@ export interface TelegramUnknownInboundMessage {
   hasAttachments: boolean
   attachments?: TelegramInboundAttachment[]
   attachmentNotices?: string[]
+  authority?: TelegramAuthorityTransportMetadata
+}
+
+export interface TelegramAuthorityTransportMetadata {
+  readonly schemaVersion: 1
+  readonly observationDigest: string
+  readonly targetHost: string
+  readonly botId: string
+  readonly updateId: number
+  readonly updateClass: "message" | "callback"
+  readonly userId: string
+  readonly chatId: string
+  readonly ownerEligible: boolean
+  readonly messageId: string | null
+  readonly callbackQueryId: string | null
+  readonly rawUpdateDigest: string
+  readonly deliveryUpdateDigest?: string
+  readonly observedAt: string
+  readonly keyId: string
+  readonly publicKeyDigest: string
 }
 
 export interface TelegramUpdateInboxStore {
@@ -606,10 +627,12 @@ export interface TelegramLongPollOptions {
   inboxStore?: TelegramUpdateInboxStore
   onMessage: (message: TelegramInboundMessage) => Promise<void>
   onUnknownMessage?: (message: TelegramUnknownInboundMessage) => Promise<void>
-  onUpdate?: (update: TelegramUpdate) => Promise<boolean>
+  onUpdate?: (update: TelegramUpdate, authority?: TelegramAuthorityTransportMetadata) => Promise<boolean>
+  transportMetadata?: (update: TelegramUpdate) => TelegramAuthorityTransportMetadata | null
   acceptanceEventMeta?: (update?: TelegramUpdate, distinctAccount?: boolean) => Record<string, unknown>
   onBeforeDispatch?: () => void
   onDispatchSettled?: () => void
+  settleTransport?: (update: TelegramUpdate, outcome: "completed" | "indeterminate") => Promise<void>
 }
 
 export function createTelegramLongPoll(options: TelegramLongPollOptions): TelegramLongPoll {
@@ -654,7 +677,7 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
     message.document, message.audio, message.video, message.voice, message.animation, message.sticker,
   ].filter(Boolean).length + (message.photo?.length ? 1 : 0)
 
-  const authorizedMessage = (update: TelegramUpdate): TelegramInboundMessage | null => {
+  const authorizedMessage = (update: TelegramUpdate, authority?: TelegramAuthorityTransportMetadata): TelegramInboundMessage | null => {
     const message = update.message
     const userId = message?.from ? String(message.from.id) : ""
     const chatId = message ? String(message.chat.id) : ""
@@ -677,10 +700,11 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
       ...(Number.isSafeInteger(message.reply_to_message?.message_id) && message.reply_to_message!.message_id > 0
         ? { replyToMessageId: String(message.reply_to_message!.message_id) }
         : {}),
+      ...(authority ? { authority } : {}),
     }
   }
 
-  const unknownMessage = (update: TelegramUpdate): TelegramUnknownInboundMessage | null => {
+  const unknownMessage = (update: TelegramUpdate, authority?: TelegramAuthorityTransportMetadata): TelegramUnknownInboundMessage | null => {
     const message = update.message
     if (!options.onUnknownMessage || !options.botId || !message?.from || message.chat.type !== "private") return null
     const userId = String(message.from.id)
@@ -701,6 +725,7 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
       hasAttachments: attachmentCount > 0,
       attachments,
       ...(attachmentCount > attachments.length ? { attachmentNotices: ["attachment unavailable: Telegram media metadata was incomplete"] } : {}),
+      ...(authority ? { authority } : {}),
     }
   }
 
@@ -712,16 +737,17 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
   }
 
   const dispatch = async (update: TelegramUpdate): Promise<void> => {
+    const authority = options.transportMetadata?.(update) ?? undefined
     const handled = !update.callback_query || authorizedCallback(update)
-      ? await options.onUpdate?.(update) ?? false
+      ? await options.onUpdate?.(update, authority) ?? false
       : false
     if (handled) return
-    const message = authorizedMessage(update)
+    const message = authorizedMessage(update, authority)
     if (message) {
       await options.onMessage(message)
       return
     }
-    const stranger = unknownMessage(update)
+    const stranger = unknownMessage(update, authority)
     if (stranger) {
       await options.onUnknownMessage!(stranger)
       return
@@ -763,14 +789,17 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
     }, requestSignal)
     if (!Array.isArray(updates)) throw new Error("Telegram getUpdates result must be an array")
     for (const update of updates) {
-      if (!update || !Number.isSafeInteger(update.update_id) || update.update_id < nextUpdateId) continue
+      if (!update || !Number.isSafeInteger(update.update_id) || (update.update_id < nextUpdateId && !options.settleTransport)) continue
       options.onBeforeDispatch?.()
-      const next = update.update_id + 1
+      const next = Math.max(nextUpdateId, update.update_id + 1)
       const requiresDurableDispatch = Boolean(authorizedCallback(update) || authorizedMessage(update) || unknownMessage(update))
       const newlyCaptured = requiresDurableDispatch ? (options.inboxStore?.capture(update) ?? true) : true
       if (newlyCaptured) {
         if (requiresDurableDispatch && options.inboxStore && !options.inboxStore.claim(update)) {
           options.onDispatchSettled?.()
+          const indeterminate = options.inboxStore.loadIndeterminate()
+            .some((receipt) => sameReceipt(receipt, updateReceipt(update)))
+          await options.settleTransport?.(update, indeterminate ? "indeterminate" : "completed")
           options.offsetStore.save(next)
           nextUpdateId = next
           options.inboxStore.commit?.(update)
@@ -790,8 +819,24 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
           if (dispatchError !== undefined) throw new AggregateError([dispatchError, auditError], "Telegram dispatch and acceptance audit verification failed")
           throw auditError
         }
+        try {
+          if (options.settleTransport) {
+            await options.settleTransport?.(update, dispatchError === undefined ? "completed" : "indeterminate")
+          }
+        } catch (settlementError) {
+          if (dispatchError !== undefined) throw new AggregateError([dispatchError, settlementError], "Telegram dispatch and transport settlement failed")
+          throw settlementError
+        }
         if (dispatchError !== undefined) throw dispatchError
-      } else options.onDispatchSettled?.()
+      } else {
+        options.onDispatchSettled?.()
+        if (options.settleTransport) {
+          // Only an existing inbox can report that this update was already captured.
+          const indeterminate = options.inboxStore!.loadIndeterminate()
+            .some((receipt) => sameReceipt(receipt, updateReceipt(update)))
+          await options.settleTransport(update, indeterminate ? "indeterminate" : "completed")
+        }
+      }
       options.offsetStore.save(next)
       nextUpdateId = next
       if (requiresDurableDispatch) options.inboxStore?.commit?.(update)

@@ -24,7 +24,7 @@ import { FileFriendStore, getChannelCapabilities } from "@ouro.bot/friends"
 import { getAgentRoot } from "../heart/identity"
 import type { RunAgentOptions } from "../heart/core"
 import { readSanctuaryAcceptanceMarker, sanctuaryAcceptanceEventMeta } from "../heart/daemon/sanctuary-acceptance-marker"
-import { readRuntimeCredentialConfig } from "../heart/runtime-credentials"
+import { readRuntimeCredentialConfig, readMachineRuntimeCredentialConfig } from "../heart/runtime-credentials"
 import { emitNervesEvent, emitNervesEventDurable } from "../nerves/runtime"
 import { registerGlobalLogSink } from "../nerves"
 import { createSanctuaryInteractiveControl } from "./sanctuary-interactive-control"
@@ -47,6 +47,10 @@ import {
   type TelegramUpdateInboxStore,
   type TelegramUpdate,
 } from "./telegram-client"
+import type { SanctuaryTelegramAuthorityTransport } from "./telegram-authority-transport"
+import { openSanctuaryResidentAuthority } from "./sanctuary-authority-resident"
+import { createRootHostApprovalRuntime } from "./root-host-approval-runtime"
+import { authorizeRootHostContext } from "../repertoire/tools-sanctuary-host"
 import { createSanctuaryToolContext, runWithSanctuaryToolReceiptCollection, type SanctuaryToolReceiptObserver } from "./sanctuary-runtime"
 import { sanctuaryFullVisibilityRequiredToolCalls, sanctuaryStaleDockerCareRequiredToolCalls } from "./sanctuary-full-visibility-contract"
 import { sanctuaryInstallStateRequiredToolCalls } from "./sanctuary-install-state-contract"
@@ -139,6 +143,13 @@ export function createSabQueueProtectiveStateVerifier(options: {
 export interface TelegramSenseCredentials {
   botToken: string
   botId?: string
+  authorizedUserId: string
+  authorizedChatId: string
+}
+
+export interface TelegramGatewaySenseCredentials {
+  botToken?: never
+  botId: string
   authorizedUserId: string
   authorizedChatId: string
 }
@@ -447,11 +458,12 @@ async function appendSanctuaryTurnReceipt(
 
 export interface CreateTelegramSenseAppOptions {
   agentName: string
-  credentials: TelegramSenseCredentials
+  credentials: TelegramSenseCredentials | TelegramGatewaySenseCredentials
   api?: TelegramBotApi
   offsetStore?: TelegramOffsetStore
   inboxStore?: TelegramUpdateInboxStore
   createLongPoll?: TelegramLongPollFactory
+  authorityTransport?: SanctuaryTelegramAuthorityTransport
   runTurn?: TelegramTurnRunner
   approvalTransport?: TelegramApprovalTransport
   approvalRuntime?: TelegramApprovalRuntime
@@ -768,7 +780,9 @@ export function migrateTelegramSessionIdentity(agentRoot: string, legacyUserId: 
 
 function redactTelegramPrivateValues(error: unknown, privateValues: readonly string[]): string {
   let message = error instanceof Error ? error.message : String(error)
-  for (const privateValue of privateValues) message = message.split(privateValue).join("[redacted]")
+  for (const privateValue of privateValues) {
+    if (privateValue) message = message.split(privateValue).join("[redacted]")
+  }
   return message
 }
 
@@ -781,22 +795,38 @@ export function parseTelegramSenseCredentials(value: Record<string, unknown>): T
 }
 
 export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): TelegramSenseApp {
-  const botToken = requiredText(options.credentials.botToken, "bot token")
+  const authorityTransport = options.authorityTransport
+  if (authorityTransport && options.agentName !== "sanctuary") {
+    throw new Error("Sanctuary Telegram authority transport cannot serve another agent")
+  }
+  if (authorityTransport && options.credentials.botToken !== undefined) {
+    throw new Error("Sanctuary Telegram authority transport forbids a resident bot token")
+  }
+  const botToken = options.credentials.botToken === undefined
+    ? null
+    : requiredText(options.credentials.botToken, "bot token")
+  if (!botToken && !authorityTransport) {
+    throw new Error("Telegram bot token is missing; Sanctuary requires an explicit gateway transport")
+  }
   const botId = options.credentials.botId !== undefined
     ? canonicalTelegramId(options.credentials.botId, "bot id")
-    : options.admission ? telegramBotIdFromToken(botToken) : null
+    : options.admission && botToken ? telegramBotIdFromToken(botToken) : null
+  if (authorityTransport && botId === null) {
+    throw new Error("Sanctuary Telegram authority transport requires a pinned bot id")
+  }
   const authorizedUserId = canonicalTelegramId(options.credentials.authorizedUserId, "authorized user id")
   const authorizedChatId = canonicalTelegramId(options.credentials.authorizedChatId, "authorized chat id")
   const agentRoot = options._agentRoot ?? getAgentRoot(options.agentName)
   const identityKey = options.identityKey === undefined
     ? readOrCreateTelegramIdentityKey(agentRoot)
     : canonicalTelegramIdentityKey(options.identityKey)
-  const subject = opaqueTelegramSubject(identityKey, botId ?? botToken, authorizedUserId, authorizedChatId)
+  const subject = opaqueTelegramSubject(identityKey, botId ?? botToken!, authorizedUserId, authorizedChatId)
+  const transportPrivateValues = [botToken ?? "", authorizedUserId, authorizedChatId]
   const transportError = (error: unknown): string => redactTelegramPrivateValues(
     error,
-    [botToken, authorizedUserId, authorizedChatId],
+    transportPrivateValues,
   )
-  const api = options.api ?? createTelegramBotApi({ token: botToken })
+  const api = authorityTransport?.api ?? options.api ?? createTelegramBotApi({ token: botToken! })
   const offsetStore = options.offsetStore ?? new FileTelegramOffsetStore(
     path.join(agentRoot, "state", "senses", "telegram", "offset.json"),
   )
@@ -844,7 +874,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         options.acceptanceReceiptRoot ?? agentRoot,
         options.agentName,
         identityKey,
-        [botToken, authorizedUserId, authorizedChatId],
+        transportPrivateValues,
         scenarioHandleDigest,
         options._acceptanceAuditReleaseHook,
         options._acceptanceAuditMaxBytes,
@@ -855,7 +885,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         options.acceptanceReceiptRoot ?? agentRoot,
         options.agentName,
         identityKey,
-        [botToken, authorizedUserId, authorizedChatId],
+        transportPrivateValues,
         scenarioHandleDigest,
         options._acceptanceAuditReleaseHook,
         options._acceptanceAuditMaxBytes,
@@ -941,6 +971,16 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   }
   let effectJournal: FileTelegramEffectJournal | undefined
   let approvalRuntime: TelegramApprovalRuntime | undefined
+  let rootHostRuntime: ReturnType<typeof createRootHostApprovalRuntime> | undefined
+  const approvalCoordinatorFactory = (context: { sessionPath: string; baseSessionRevision: string }): import("../heart/core").ApprovalCoordinator => ({
+    propose: (request) => {
+      if (request.toolCall.type === "function" && request.toolCall.function.name === "sanctuary_host_execute") {
+        if (!rootHostRuntime) throw new Error("root host approval coordinator is unavailable")
+        return rootHostRuntime.coordinator(context).propose(request)
+      }
+      return approvalRuntime!.coordinator(context).propose(request)
+    },
+  })
   const getEffectJournal = (): FileTelegramEffectJournal => {
     effectJournal ??= new FileTelegramEffectJournal(path.join(agentRoot, "state", "telegram", "effects"))
     return effectJournal
@@ -1053,6 +1093,39 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       },
     }) : undefined)
     approvalTransport = options.approvalTransport ?? approvalRuntime?.transport
+    const port = authorityTransport?.hostApproval
+    if (useSanctuaryRuntime && port?.pins.expectedBotId === botId
+      && port.pins.expectedOwnerUserId === authorizedUserId && port.pins.expectedOwnerChatId === authorizedChatId) {
+      rootHostRuntime = createRootHostApprovalRuntime({
+        agentRoot, port, effectBarrier: acceptanceAuditBarrier, approvalCoordinatorFactory,
+        resolveContext: async (binding) => {
+          const sessionPath = getSenseSessionPath(options.agentName, configuredOwnerFriendId, "telegram", configuredOwnerSessionKey, agentRoot)
+          if (binding.agentRoot !== agentRoot || binding.friendId !== configuredOwnerFriendId
+            || binding.sessionKey !== configuredOwnerSessionKey || binding.sessionPath !== sessionPath) {
+            throw new Error("root host continuation owner session changed")
+          }
+          const relationshipAuthorization = await resolveLiveRelationshipAuthorization({
+            friendId: binding.friendId, requestId: binding.requestId, sessionEventId: binding.sessionEventId,
+            sessionKey: binding.sessionKey, botId: botId!, userId: authorizedUserId, chatId: authorizedChatId,
+          })
+          const friendStore = new FileFriendStore(path.join(agentRoot, "friends"))
+          const friend = await friendStore.get(binding.friendId)
+          if (!friend) throw new Error("root host owner Friend is unavailable")
+          return {
+            ...toolContext, signin: async () => undefined, agentName: options.agentName, agentRoot,
+            currentSession: { friendId: friend.id, channel: "telegram", key: binding.sessionKey, sessionPath },
+            context: { friend, channel: getChannelCapabilities("telegram") }, friendStore, relationshipAuthorization,
+            rootHost: { port },
+          }
+        },
+        deliver: async (text, approvalId) => {
+          await approvalEffects.sendText({
+            idempotencyKey: `root-host:${approvalId}:continuation:${createHash("sha256").update(text).digest("hex")}`,
+            chatId: authorizedChatId, text, authorClass: "butler",
+          })
+        },
+      })
+    }
     interactiveControl = useSanctuaryRuntime && approvalTransport
       ? (options._createInteractiveControl ?? createSanctuaryInteractiveControl)({
         agentRoot,
@@ -1110,7 +1183,10 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     approvalReconcileTimer = setTimeout(() => {
       approvalReconcileTimer = undefined
       scheduleApprovalReconcile()
-      const reconciliation = runWithAcceptanceAuditOwner(() => approvalTransport.reconcileExpired()).catch((error) => {
+      const reconciliation = runWithAcceptanceAuditOwner(async () => {
+        await approvalTransport.reconcileExpired()
+        await rootHostRuntime?.recover()
+      }).catch((error) => {
         acceptanceAuditBarrier()
         emitNervesEvent({
           level: "error",
@@ -1230,6 +1306,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     chatId: string
     sessionKey: string
     userMessage: string
+    authority?: TelegramInboundMessage["authority"]
     fullVisibilityProgress?: FullVisibilityProgress
   }): NonNullable<RunSenseTurnOptions["prepareRunAgentOptions"]> => {
     if (!options.resolveRelationshipAuthorization) throw new Error("Telegram relationship authorization resolver is unavailable")
@@ -1283,10 +1360,16 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
           contract.validateTerminalAnswer?.(answer),
         ).find((rejection) => rejection !== undefined),
       }
+      const currentToolContext: ToolContext = { ...runAgentOptions.toolContext!, relationshipAuthorization }
+      if (isSanctuaryOwner && rootHostRuntime && input.authority && await authorityTransport!.hostApproval!.refresh()) {
+        currentToolContext.rootHost = { port: authorityTransport!.hostApproval!, observation: input.authority }
+        try { await authorizeRootHostContext(currentToolContext) }
+        catch { delete currentToolContext.rootHost }
+      }
       return {
         ...runAgentOptions,
         ...(requiredToolCalls ? { requiredToolCalls } : {}),
-        toolContext: { ...runAgentOptions.toolContext!, relationshipAuthorization },
+        toolContext: currentToolContext,
       }
     }
   }
@@ -1386,6 +1469,15 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     },
     claimFriend: options.admission.claimFriend,
     revokeFriend: options.admission.revokeFriend,
+    ...(authorityTransport ? {
+      registerCommunication: (input: { id: string; updateId: number; userId: string; chatId: string }) => authorityTransport.admitChat({
+        admissionId: input.id,
+        updateId: input.updateId,
+        userId: input.userId,
+        chatId: input.chatId,
+      }),
+      revokeCommunication: (input: { userId: string; chatId: string }) => authorityTransport.revokeChat(input),
+    } : {}),
     commitApprovedIngress: async (input) => {
       const sessionKey = `telegram:${input.botId}:${input.userId}`
       const reference = `telegram-admission:${input.admissionId}`
@@ -1442,8 +1534,9 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     const ingested = await ingestTelegramAttachments({
       agentName: options.agentName,
       agentRoot,
-      botToken,
+      ...(botToken ? { botToken } : {}),
       api,
+      ...(authorityTransport ? { downloadFile: authorityTransport.downloadFile } : {}),
       ...(options.attachmentFetch ? { fetch: options.attachmentFetch } : {}),
       attachments: message.attachments ?? [],
     })
@@ -1562,10 +1655,11 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
             chatId: message.chatId,
             sessionKey: currentSessionKey,
             userMessage: message.text,
+            authority: message.authority,
             fullVisibilityProgress: fullVisibility.progress,
           }),
         } : {}),
-        ...(approvalRuntime ? { approvalCoordinatorFactory: approvalRuntime.coordinator } : {}),
+        ...(approvalRuntime ? { approvalCoordinatorFactory: rootHostRuntime ? approvalCoordinatorFactory : approvalRuntime.coordinator } : {}),
       }), toolReceiptObserver)
       const result = collected.result
       let responseFallbackArtifactId: string | undefined
@@ -1616,9 +1710,9 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
           ...lifecycleCoordinates,
           ...(acceptanceMarker ? {
             outcome: "error",
-            errorDigest: auditDigest("error", redactTelegramPrivateValues(error, [botToken, authorizedUserId, authorizedChatId, String(message.updateId), message.messageId])),
+            errorDigest: auditDigest("error", redactTelegramPrivateValues(error, [...transportPrivateValues, String(message.updateId), message.messageId])),
             deliveryCount: deliveredMessageIds.length,
-          } : { error: redactTelegramPrivateValues(error, [botToken, authorizedUserId, authorizedChatId, String(message.updateId), message.messageId]) }),
+          } : { error: redactTelegramPrivateValues(error, [...transportPrivateValues, String(message.updateId), message.messageId]) }),
         }, Math.max(Date.now(), lifecycleStartedAt + 1)),
       })
       const fallback = "I couldn't complete that turn. The failure was recorded; please try again."
@@ -1630,7 +1724,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
         const grounded = groundedAcceptance
         const schemaVersion = grounded ? "sanctuary-telegram-turn-receipt-v4" : "sanctuary-telegram-turn-receipt-v3"
         const hmac = (purpose: string, value: string): string => sanctuaryTelegramTurnReceiptDigest(identityKey, schemaVersion, purpose, value)
-        const redact = (value: string): string => [botToken, authorizedUserId, authorizedChatId, String(message.updateId), message.messageId]
+        const redact = (value: string): string => [...transportPrivateValues, String(message.updateId), message.messageId]
           .reduce((text, privateValue) => privateValue.length >= 5 ? text.replaceAll(privateValue, "[REDACTED]") : text, value)
         const deliveries = deliveredMessageIds.map((messageId, index) => {
           const chunk = deliveredChunks[index]!
@@ -1687,6 +1781,13 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       await admissionController.handleUnknown(message)
       return
     }
+    // Existing household Friends need a root-observed communication binding after gateway migration.
+    await authorityTransport?.admitChat({
+      admissionId: createHash("sha256").update(`telegram-communication-v1\0${message.botId}\0${message.userId}\0${message.chatId}`).digest("hex").slice(0, 20),
+      updateId: message.updateId,
+      userId: message.userId,
+      chatId: message.chatId,
+    })
     const hydrated = await hydrateAuthorizedMessage({
       updateId: message.updateId,
       messageId: String(message.messageId),
@@ -1706,6 +1807,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
 
   const onUpdate = async (update: TelegramUpdate): Promise<boolean> => {
     const callback = update.callback_query
+    if (callback && rootHostRuntime && await runWithAcceptanceAuditOwner(() => rootHostRuntime.handleUpdate(update))) return true
     if (callback?.data?.startsWith("admit:") && admissionController && callback.message) {
       return runWithAcceptanceAuditOwner(async () => {
         const actor = await options.admission?.resolveOwner({ botId: botId!, userId: String(callback.from.id), chatId: String(callback.message!.chat.id), sessionKey: configuredOwnerSessionKey })
@@ -1738,6 +1840,10 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       inboxStore,
       onMessage,
       onUpdate,
+      ...(authorityTransport ? {
+        settleTransport: authorityTransport.settleTransport,
+        transportMetadata: authorityTransport.metadataForUpdate,
+      } : {}),
       acceptanceEventMeta: (update, distinctAccount) => {
         const marker = options.acceptanceMarker ? options.acceptanceMarker() : readSanctuaryAcceptanceMarker(options.agentName)
         if (!marker) return {}
@@ -1803,6 +1909,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
           emitNervesEvent({ level: "error", component: "senses", event: "senses.sanctuary_routine_recovery_error", message: "Sanctuary routine action recovery requires inspection", meta: { agentName: options.agentName, subject, category: error instanceof Error ? error.name : "unknown" } })
         }
         await runWithAcceptanceAuditOwner(async () => { await approvalRuntime?.recover() })
+        await runWithAcceptanceAuditOwner(async () => { await rootHostRuntime?.recover() })
         await runWithAcceptanceAuditOwner(async () => { await interactiveControl?.start() })
         try {
           await runWithAcceptanceAuditOwner(async () => { await approvalTransport?.reconcileExpired() })
@@ -1893,10 +2000,15 @@ export function loadTelegramSenseCredentials(agentName: string): TelegramSenseCr
   return parseTelegramSenseCredentials(runtime.config)
 }
 
-export async function createProductionTelegramRelationshipComposition(agentName: string, credentials: TelegramSenseCredentials, agentRootOverride?: string): Promise<Pick<CreateTelegramSenseAppOptions,
+export async function createProductionTelegramRelationshipComposition(
+  agentName: string,
+  credentials: TelegramSenseCredentials | TelegramGatewaySenseCredentials,
+  agentRootOverride?: string,
+  authorityTransport?: SanctuaryTelegramAuthorityTransport,
+): Promise<Pick<CreateTelegramSenseAppOptions,
   "admission" | "authorizeRelationshipEffect" | "resolveRelationshipAuthorization"> & { telegramContactManager: TelegramContactManager }> {
   const agentRoot = agentRootOverride ?? getAgentRoot(agentName)
-  const botId = canonicalTelegramId(credentials.botId ?? telegramBotIdFromToken(credentials.botToken), "bot id")
+  const botId = canonicalTelegramId(credentials.botId ?? telegramBotIdFromToken(credentials.botToken!), "bot id")
   const ownerUserId = canonicalTelegramId(credentials.authorizedUserId, "authorized user id")
   const ownerChatId = canonicalTelegramId(credentials.authorizedChatId, "authorized chat id")
   if (ownerUserId !== ownerChatId) throw new Error("Telegram owner relationship requires a private user-bound chat")
@@ -1982,6 +2094,7 @@ export async function createProductionTelegramRelationshipComposition(agentName:
         invalidatePendingApprovals(sessionPath)
         const live = await store.get(current.id)
         if (!live || !exactTelegramIdentity(live, bindings[0]!.externalId)) throw new Error("Telegram contact identity changed")
+        await authorityTransport?.revokeChat({ userId: bindings[0]!.externalId, chatId: bindings[0]!.externalId })
         const { capabilityProfileId: _removedProfile, ...withoutProfile } = live
         await store.put(live.id, { ...withoutProfile, admissionState: "revoked", initiativePolicy: "none", updatedAt: new Date().toISOString() })
         cancelRelationshipFollowUps(agentRoot, agentName, { friendId: live.id, channel: "telegram", key: sessionKey })
@@ -2097,18 +2210,47 @@ export async function createProductionTelegramRelationshipComposition(agentName:
   }
 }
 
-export async function startTelegramSenseApp(agentName: string): Promise<TelegramSenseApp> {
-  const loaded = loadTelegramSenseCredentials(agentName)
-  const credentials = { ...loaded, botId: telegramBotIdFromToken(loaded.botToken) }
-  const app = createTelegramSenseApp({
-    agentName,
-    credentials,
-    ...(await createProductionTelegramRelationshipComposition(agentName, credentials)),
-    ...(agentName === "sanctuary" ? { privilegedFailsafe: {
-      eventRoot: getExternalEventRoot(),
-      verifyProtectiveState: createSabQueueProtectiveStateVerifier(),
-    } } : {}),
-  })
+export async function startTelegramSenseApp(agentName: string, waitForAuthority = false): Promise<TelegramSenseApp> {
+  let authorityTransport: SanctuaryTelegramAuthorityTransport | undefined
+  let credentials: TelegramSenseCredentials | TelegramGatewaySenseCredentials
+  if (agentName === "sanctuary") {
+    const runtime = readRuntimeCredentialConfig(agentName)
+    const machine = readMachineRuntimeCredentialConfig(agentName)
+    if (!runtime.ok || !machine.ok) throw new Error("Sanctuary Telegram credential inventory is unavailable; migration readback is required")
+    let waiting = false
+    for (;;) {
+      try {
+        ;({ credentials, authorityTransport } = openSanctuaryResidentAuthority(runtime.config, machine.config))
+        break
+      } catch (error) {
+        if (!waitForAuthority || (error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error
+        if (!waiting) {
+          waiting = true
+          emitNervesEvent({ level: "warn", component: "senses", event: "senses.sanctuary_gateway_waiting", message: "Telegram is unavailable while root gateway pins are not yet published", meta: { agentName } })
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1000))
+      }
+    }
+  } else {
+    const loaded = loadTelegramSenseCredentials(agentName)
+    credentials = { ...loaded, botId: telegramBotIdFromToken(loaded.botToken) }
+  }
+  let app: TelegramSenseApp
+  try {
+    app = createTelegramSenseApp({
+      agentName,
+      credentials,
+      authorityTransport,
+      ...(await createProductionTelegramRelationshipComposition(agentName, credentials, undefined, authorityTransport)),
+      ...(agentName === "sanctuary" ? { privilegedFailsafe: {
+        eventRoot: getExternalEventRoot(),
+        verifyProtectiveState: createSabQueueProtectiveStateVerifier(),
+      } } : {}),
+    })
+  } catch (error) {
+    authorityTransport?.api.stop()
+    throw error
+  }
   emitNervesEvent({
     component: "senses",
     event: "senses.telegram_app_ready",

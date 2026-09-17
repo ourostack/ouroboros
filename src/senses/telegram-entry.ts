@@ -32,7 +32,7 @@ Promise.all([
     }
     const machine = loadOrCreateMachineIdentity()
     await refreshMachineRuntimeCredentialConfig(agentName, machine.machineId, { preserveCachedOnFailure: true }).catch(() => undefined)
-    const app = await startTelegramSenseApp(agentName)
+    const app = await startTelegramSenseApp(agentName, true)
     let stopping: Promise<void> | undefined
     const stop = (): void => { stopping ??= app.stop() }
     process.once("SIGTERM", stop)

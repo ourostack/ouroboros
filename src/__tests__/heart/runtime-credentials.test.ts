@@ -1167,9 +1167,14 @@ describe("runtime credentials vault config", () => {
     emitTestEvent("runtime credentials machine writer inventory")
 
     const srcRoot = path.join(process.cwd(), "src")
-    const allowedRawWriter = path.join("src", "heart", "runtime-credentials.ts")
+    const allowedRawWriters = [
+      path.join("src", "heart", "runtime-credentials.ts"),
+      // Root-only migration replaces a freshly read complete owner to remove a revoked token.
+      // Its own contract tests prove preservation of every sibling field and both owners.
+      path.join("src", "heart", "daemon", "sanctuary-authority-vault-migration.ts"),
+    ]
     const offenders = listProductionTsFiles(srcRoot)
-      .filter((filePath) => path.relative(process.cwd(), filePath) !== allowedRawWriter)
+      .filter((filePath) => !allowedRawWriters.includes(path.relative(process.cwd(), filePath)))
       .filter((filePath) => fs.readFileSync(filePath, "utf-8").includes("upsertMachineRuntimeCredentialConfig("))
       .map((filePath) => path.relative(process.cwd(), filePath))
 

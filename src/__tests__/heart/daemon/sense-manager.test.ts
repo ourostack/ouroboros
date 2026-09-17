@@ -33,6 +33,98 @@ async function cacheProviderCredentials(agent: string): Promise<void> {
 }
 
 describe("daemon sense manager", () => {
+  it("refreshes Sanctuary Telegram machine inventory on cold startup, retry and revival", async () => {
+    vi.useFakeTimers()
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "gateway-sense-refresh-"))
+    writeAgentJson(bundlesRoot, "sanctuary", { version: 1, enabled: true, provider: "anthropic", senses: { telegram: { enabled: true } }, phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] } })
+    const runtime = { ok: true, config: {} }
+    let available = false
+    let machine: Record<string, unknown> = { ok: false, reason: "unavailable", itemPath: "vault:sanctuary:runtime/machines/sanctuary/config", error: "vault locked" }
+    const refreshMachine = vi.fn(async () => {
+      if (available) machine = { ok: true, config: {} }
+      return machine
+    })
+    const startAgent = vi.fn(async () => undefined)
+    let check!: (name: string) => Promise<{ ok: boolean }>
+    vi.doMock("../../../heart/runtime-credentials", () => ({
+      readRuntimeCredentialConfig: () => runtime,
+      readMachineRuntimeCredentialConfig: () => machine,
+      refreshRuntimeCredentialConfig: async () => runtime,
+      refreshMachineRuntimeCredentialConfig: refreshMachine,
+    }))
+    vi.doMock("../../../heart/daemon/process-manager", () => ({
+      DaemonProcessManager: class {
+        constructor(options: { configCheck: typeof check }) { check = options.configCheck }
+        startAutoStartAgents = vi.fn(async () => undefined)
+        startAgent = startAgent
+        stopAll = vi.fn(async () => undefined)
+        listAgentSnapshots = vi.fn(() => [])
+      },
+    }))
+    try {
+      const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+      const manager = new DaemonSenseManager({ agents: ["sanctuary"], bundlesRoot })
+      await manager.startAutoStartSenses()
+      expect(refreshMachine).toHaveBeenCalledOnce()
+      expect((await check("sanctuary:telegram")).ok).toBe(false)
+      await vi.advanceTimersByTimeAsync(0)
+      const attempts = refreshMachine.mock.calls.length
+      available = true
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(refreshMachine.mock.calls.length).toBeGreaterThan(attempts)
+      expect(startAgent).toHaveBeenCalledWith("sanctuary:telegram")
+      expect(await check("sanctuary:telegram")).toEqual({ ok: true })
+      refreshMachine.mockClear()
+      await manager.reviveSense("sanctuary", "telegram")
+      expect(refreshMachine).toHaveBeenCalledOnce()
+      await manager.stopAll()
+      writeAgentJson(bundlesRoot, "other", { version: 1, enabled: true, provider: "anthropic", senses: { telegram: { enabled: true } }, phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] } })
+      const ordinary = new DaemonSenseManager({ agents: ["other"], bundlesRoot })
+      refreshMachine.mockClear()
+      await ordinary.startAutoStartSenses()
+      expect(refreshMachine).not.toHaveBeenCalled()
+      await ordinary.stopAll()
+    } finally { vi.useRealTimers(); fs.rmSync(bundlesRoot, { recursive: true, force: true }) }
+  })
+  it("starts tokenless Sanctuary Telegram through the real daemon preflight, with no direct-token fallback", async () => {
+    const bundlesRoot = fs.mkdtempSync(path.join(os.tmpdir(), "gateway-sense-manager-"))
+    writeAgentJson(bundlesRoot, "sanctuary", { version: 1, enabled: true, provider: "anthropic", senses: { telegram: { enabled: true } }, phrases: { thinking: ["t"], tool: ["t"], followup: ["f"] } })
+    let runtime: Record<string, unknown> = { ok: true, config: {} }
+    let machine: Record<string, unknown> = { ok: true, config: {} }
+    let check!: (name: string) => Promise<{ ok: boolean }>
+    vi.doMock("../../../heart/runtime-credentials", () => ({
+      readRuntimeCredentialConfig: () => runtime,
+      readMachineRuntimeCredentialConfig: () => machine,
+      refreshRuntimeCredentialConfig: async () => runtime,
+      refreshMachineRuntimeCredentialConfig: async () => machine,
+    }))
+    vi.doMock("../../../heart/daemon/process-manager", () => ({
+      DaemonProcessManager: class {
+        constructor(options: { configCheck: typeof check }) { check = options.configCheck }
+        startAutoStartAgents = vi.fn(async () => undefined)
+        stopAll = vi.fn(async () => undefined)
+        listAgentSnapshots = vi.fn(() => [])
+      },
+    }))
+    try {
+      const { DaemonSenseManager } = await import("../../../heart/daemon/sense-manager")
+      new DaemonSenseManager({ agents: ["sanctuary"], bundlesRoot })
+      expect(await check("sanctuary:telegram")).toEqual({ ok: true })
+      for (const token of ["revoked-token", "", undefined]) {
+        runtime = { ok: true, config: { telegramBotToken: token } }
+        expect((await check("sanctuary:telegram")).ok).toBe(false)
+        runtime = { ok: true, config: {} }
+        machine = { ok: true, config: { telegramBotToken: token } }
+        expect((await check("sanctuary:telegram")).ok).toBe(false)
+        machine = { ok: true, config: {} }
+      }
+      runtime = { ok: false, reason: "missing", itemPath: "vault:sanctuary:runtime/config" }
+      expect((await check("sanctuary:telegram")).ok).toBe(false)
+      runtime = { ok: true, config: {} }
+      machine = { ok: false, reason: "missing", itemPath: "vault:sanctuary:runtime/machines/sanctuary/config" }
+      expect((await check("sanctuary:telegram")).ok).toBe(false)
+    } finally { fs.rmSync(bundlesRoot, { recursive: true, force: true }) }
+  })
   afterEach(() => {
     vi.restoreAllMocks()
     vi.doUnmock("../../../heart/runtime-credentials")

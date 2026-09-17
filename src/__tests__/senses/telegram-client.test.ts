@@ -1851,6 +1851,203 @@ describe("Telegram durable authorized long poll", () => {
     expect(JSON.parse(persisted).indeterminate[0].warningAcknowledged).toBe(true)
   })
 
+  it("settles the gateway transport only after durable resident completion and before offset advance", async () => {
+    const directory = makeTempDirectory("ouro-telegram-gateway-settlement-")
+    const inboxStore = new FileTelegramUpdateInboxStore(join(directory, "inbox.json"))
+    let offset = 0
+    const update = { update_id: 12, message: { message_id: 2, from: { id: 10 }, chat: { id: 10, type: "private" }, text: "status" } }
+    const settleTransport = vi.fn(async () => {
+      expect(inboxStore.loadPending()).toEqual([])
+      expect(inboxStore.loadIndeterminate()).toEqual([])
+      expect(offset).toBe(0)
+    })
+    const poll = createTelegramLongPoll({
+      api: { stop: vi.fn(), request: vi.fn(async () => [update]) },
+      expectedUserId: "10",
+      expectedChatId: "10",
+      offsetStore: { load: () => offset, save: (value) => { offset = value } },
+      inboxStore,
+      onMessage: vi.fn(async () => undefined),
+      settleTransport,
+    })
+
+    await expect(poll.pollOnce()).resolves.toBe(13)
+    expect(settleTransport).toHaveBeenCalledWith(update, "completed")
+    expect(offset).toBe(13)
+  })
+
+  it("settles an indeterminate gateway observation after quarantining a failed resident dispatch", async () => {
+    const directory = makeTempDirectory("ouro-telegram-gateway-indeterminate-")
+    const inboxStore = new FileTelegramUpdateInboxStore(join(directory, "inbox.json"))
+    const update = { update_id: 13, message: { message_id: 3, from: { id: 10 }, chat: { id: 10, type: "private" }, text: "restart" } }
+    const settleTransport = vi.fn(async () => {
+      expect(inboxStore.loadIndeterminate()).toHaveLength(1)
+    })
+    const poll = createTelegramLongPoll({
+      api: { stop: vi.fn(), request: vi.fn(async () => [update]) },
+      expectedUserId: "10",
+      expectedChatId: "10",
+      offsetStore: { load: () => 0, save: vi.fn() },
+      inboxStore,
+      onMessage: vi.fn(async () => { throw new Error("turn failed") }),
+      settleTransport,
+    })
+
+    await expect(poll.pollOnce()).rejects.toThrow("turn failed")
+    expect(settleTransport).toHaveBeenCalledWith(update, "indeterminate")
+  })
+
+  it("retries gateway settlement without redispatch after settlement failed", async () => {
+    const directory = makeTempDirectory("ouro-telegram-gateway-retry-")
+    const inboxStore = new FileTelegramUpdateInboxStore(join(directory, "inbox.json"))
+    let offset = 0
+    const update = { update_id: 14, message: { message_id: 4, from: { id: 10 }, chat: { id: 10, type: "private" }, text: "status" } }
+    const onMessage = vi.fn(async () => undefined)
+    const failedSettlement = createTelegramLongPoll({
+      api: { stop: vi.fn(), request: vi.fn(async () => [update]) },
+      expectedUserId: "10",
+      expectedChatId: "10",
+      offsetStore: { load: () => offset, save: (value) => { offset = value } },
+      inboxStore,
+      onMessage,
+      settleTransport: vi.fn(async () => { throw new Error("gateway unavailable") }),
+    })
+    await expect(failedSettlement.pollOnce()).rejects.toThrow("gateway unavailable")
+    expect(offset).toBe(0)
+
+    const settleTransport = vi.fn(async () => undefined)
+    const retry = createTelegramLongPoll({
+      api: { stop: vi.fn(), request: vi.fn(async () => [update]) },
+      expectedUserId: "10",
+      expectedChatId: "10",
+      offsetStore: { load: () => offset, save: (value) => { offset = value } },
+      inboxStore,
+      onMessage,
+      settleTransport,
+    })
+    await expect(retry.pollOnce()).resolves.toBe(15)
+    expect(onMessage).toHaveBeenCalledOnce()
+    expect(settleTransport).toHaveBeenCalledWith(update, "completed")
+    expect(offset).toBe(15)
+  })
+
+  it("settles an unclaimable completed receipt without dispatch", async () => {
+    const update = { update_id: 15, callback_query: { id: "query-15", from: { id: 10 }, message: { message_id: 5, chat: { id: 10 } } } }
+    const settleTransport = vi.fn(async () => undefined)
+    const poll = createTelegramLongPoll({
+      api: { stop: vi.fn(), request: vi.fn(async () => [update]) },
+      expectedUserId: "10",
+      expectedChatId: "10",
+      offsetStore: { load: () => 0, save: vi.fn() },
+      inboxStore: {
+        quarantineStranded: vi.fn(() => []), loadIndeterminate: vi.fn(() => []), loadPending: vi.fn(() => []),
+        acknowledgeIndeterminateWarning: vi.fn(() => true), capture: vi.fn(() => true), claim: vi.fn(() => false),
+        complete: vi.fn(), commit: vi.fn(), load: vi.fn(),
+      },
+      onMessage: vi.fn(),
+      onUpdate: vi.fn(async () => true),
+      settleTransport,
+    })
+    await poll.pollOnce()
+    expect(settleTransport).toHaveBeenCalledWith(update, "completed")
+  })
+
+  it("settles an unclaimable indeterminate receipt without dispatch", async () => {
+    const directory = makeTempDirectory("ouro-telegram-gateway-unclaimable-indeterminate-")
+    const persisted = new FileTelegramUpdateInboxStore(join(directory, "inbox.json"))
+    const update = { update_id: 18, callback_query: { id: "query-18", from: { id: 10 }, message: { message_id: 8, chat: { id: 10 } } } }
+    persisted.capture(update)
+    persisted.claim(update)
+    const receipt = persisted.quarantineStranded()[0]!
+    const settleTransport = vi.fn(async () => undefined)
+    const poll = createTelegramLongPoll({
+      api: { stop: vi.fn(), request: vi.fn(async () => [update]) },
+      expectedUserId: "10",
+      expectedChatId: "10",
+      offsetStore: { load: () => 0, save: vi.fn() },
+      inboxStore: {
+        quarantineStranded: vi.fn(() => []), loadIndeterminate: vi.fn(() => [receipt]), loadPending: vi.fn(() => []),
+        acknowledgeIndeterminateWarning: vi.fn(() => true), capture: vi.fn(() => true), claim: vi.fn(() => false),
+        complete: vi.fn(), commit: vi.fn(), load: vi.fn(),
+      },
+      onMessage: vi.fn(),
+      onUpdate: vi.fn(async () => true),
+      settleTransport,
+    })
+    await poll.pollOnce()
+    expect(settleTransport).toHaveBeenCalledWith(update, "indeterminate")
+  })
+
+  it("settles a duplicate indeterminate receipt without redispatch", async () => {
+    const directory = makeTempDirectory("ouro-telegram-gateway-indeterminate-retry-")
+    const store = new FileTelegramUpdateInboxStore(join(directory, "inbox.json"))
+    const update = { update_id: 16, message: { message_id: 6, from: { id: 10 }, chat: { id: 10, type: "private" }, text: "retry" } }
+    store.capture(update)
+    store.claim(update)
+    store.quarantineStranded()
+    const settleTransport = vi.fn(async () => undefined)
+    const onMessage = vi.fn()
+    const poll = createTelegramLongPoll({
+      api: { stop: vi.fn(), request: vi.fn(async () => [update]) },
+      expectedUserId: "10",
+      expectedChatId: "10",
+      offsetStore: { load: () => 0, save: vi.fn() },
+      inboxStore: store,
+      onMessage,
+      settleTransport,
+    })
+    await poll.pollOnce()
+    expect(onMessage).not.toHaveBeenCalled()
+    expect(settleTransport).toHaveBeenCalledWith(update, "indeterminate")
+  })
+
+  it("preserves both dispatch and gateway settlement failures", async () => {
+    const dispatchFailure = new Error("turn failed")
+    const settlementFailure = new Error("gateway failed")
+    const update = { update_id: 17, message: { message_id: 7, from: { id: 10 }, chat: { id: 10, type: "private" }, text: "restart" } }
+    const poll = createTelegramLongPoll({
+      api: { stop: vi.fn(), request: vi.fn(async () => [update]) },
+      expectedUserId: "10",
+      expectedChatId: "10",
+      offsetStore: { load: () => 0, save: vi.fn() },
+      inboxStore: new FileTelegramUpdateInboxStore(join(makeTempDirectory("ouro-telegram-gateway-double-failure-"), "inbox.json")),
+      onMessage: vi.fn(async () => { throw dispatchFailure }),
+      settleTransport: vi.fn(async () => { throw settlementFailure }),
+    })
+
+    const error = await poll.pollOnce().catch((caught) => caught as AggregateError)
+    expect(error).toBeInstanceOf(AggregateError)
+    expect(error.errors).toEqual([dispatchFailure, settlementFailure])
+  })
+
+  it("settles a root-redelivered non-owner callback even when the resident offset is already ahead", async () => {
+    const update = {
+      update_id: 18,
+      callback_query: {
+        id: "foreign-callback",
+        from: { id: 84 },
+        data: "button",
+        message: { message_id: 8, chat: { id: 84, type: "private" } },
+      },
+    }
+    const settleTransport = vi.fn(async () => undefined)
+    const onDispatchSettled = vi.fn()
+    const save = vi.fn()
+    const poll = createTelegramLongPoll({
+      api: { stop: vi.fn(), request: vi.fn(async () => [update]) },
+      expectedUserId: "10",
+      expectedChatId: "10",
+      offsetStore: { load: () => 20, save },
+      onMessage: vi.fn(async () => undefined),
+      settleTransport,
+      onDispatchSettled,
+    })
+    await expect(poll.pollOnce()).resolves.toBe(20)
+    expect(settleTransport).toHaveBeenCalledWith(update, "completed")
+    expect(onDispatchSettled).toHaveBeenCalledOnce()
+    expect(save).toHaveBeenCalledWith(20)
+  })
+
   it("rejects a conflicting durable update with the same update id", () => {
     const directory = makeTempDirectory("ouro-telegram-inbox-conflict-")
     const store = new FileTelegramUpdateInboxStore(join(directory, "inbox.json"))
@@ -1888,6 +2085,60 @@ describe("Telegram durable authorized long poll", () => {
     })
     await restarted.pollOnce()
     expect(restartedRequest).toHaveBeenCalledWith("getUpdates", expect.objectContaining({ offset: 7 }), expect.any(AbortSignal))
+  })
+
+  it("propagates verified authority metadata to owner, stranger, and callback dispatch without affecting direct polling", async () => {
+    const updates = [
+      { update_id: 21, message: { message_id: 121, from: { id: 10 }, chat: { id: 10, type: "private" }, text: "owner" } },
+      { update_id: 22, message: { message_id: 122, from: { id: 20 }, chat: { id: 20, type: "private" }, text: "stranger" } },
+      { update_id: 23, callback_query: { id: "callback-23", from: { id: 10 }, message: { message_id: 123, chat: { id: 10, type: "private" } }, data: "approve" } },
+    ]
+    const metadata = (telegramUpdate: TelegramUpdate) => Object.freeze({
+      schemaVersion: 1 as const,
+      observationDigest: `auth_${telegramUpdate.update_id}`,
+      targetHost: "sanctuary",
+      botId: "123456",
+      updateId: telegramUpdate.update_id,
+      updateClass: telegramUpdate.callback_query ? "callback" as const : "message" as const,
+      userId: String(telegramUpdate.callback_query?.from.id ?? telegramUpdate.message!.from!.id),
+      chatId: String(telegramUpdate.callback_query?.message?.chat.id ?? telegramUpdate.message!.chat.id),
+      ownerEligible: telegramUpdate.update_id !== 22,
+      messageId: String(telegramUpdate.callback_query?.message?.message_id ?? telegramUpdate.message!.message_id),
+      callbackQueryId: telegramUpdate.callback_query?.id ?? null,
+      rawUpdateDigest: `tgu_${"a".repeat(43)}`,
+      observedAt: "2026-09-16T23:00:00.000Z",
+      keyId: "issuer-1",
+      publicKeyDigest: `sha256:${"b".repeat(64)}`,
+    })
+    const onMessage = vi.fn(async () => undefined)
+    const onUnknownMessage = vi.fn(async () => undefined)
+    const onUpdate = vi.fn(async () => false)
+    const poll = createTelegramLongPoll({
+      api: { request: vi.fn(async () => updates), stop: vi.fn() },
+      expectedUserId: "10",
+      expectedChatId: "10",
+      botId: "123456",
+      offsetStore: { load: () => 0, save: vi.fn() },
+      onMessage,
+      onUnknownMessage,
+      onUpdate,
+      transportMetadata: metadata,
+    })
+    await poll.pollOnce()
+    expect(onMessage).toHaveBeenCalledWith(expect.objectContaining({ authority: metadata(updates[0]!) }))
+    expect(onUnknownMessage).toHaveBeenCalledWith(expect.objectContaining({ authority: metadata(updates[1]!) }))
+    expect(onUpdate).toHaveBeenCalledWith(updates[2], metadata(updates[2]!))
+
+    const directMessage = vi.fn(async () => undefined)
+    const direct = createTelegramLongPoll({
+      api: { request: vi.fn(async () => [updates[0]]), stop: vi.fn() },
+      expectedUserId: "10",
+      expectedChatId: "10",
+      offsetStore: { load: () => 0, save: vi.fn() },
+      onMessage: directMessage,
+    })
+    await direct.pollOnce()
+    expect(directMessage).toHaveBeenCalledWith(expect.not.objectContaining({ authority: expect.anything() }))
   })
 
   it("routes every supported authorized Telegram media type with captions or attachment-only text exactly once", async () => {

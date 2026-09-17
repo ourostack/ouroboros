@@ -35,6 +35,18 @@ vi.mock("openai", () => {
 vi.mock("../../repertoire/mcp-manager", () => ({
   getSharedMcpManager: vi.fn().mockResolvedValue(null),
 }))
+vi.mock("../../senses/sanctuary-authority-resident", async () => {
+  const { createTelegramBotApi } = await import("../../senses/telegram-client")
+  return {
+    openSanctuaryResidentAuthority: () => ({
+      credentials: { botId: "123", authorizedUserId: "42", authorizedChatId: "42" },
+      authorityTransport: {
+        api: createTelegramBotApi({ token: "123:fixture-only-token" }),
+        metadataForUpdate: () => null, settleTransport: vi.fn(), downloadFile: vi.fn(), admitChat: vi.fn(), revokeChat: vi.fn(),
+      },
+    }),
+  }
+})
 vi.mock("../../heart/daemon/socket-client", () => ({
   DEFAULT_DAEMON_SOCKET_PATH: "/not-a-live-daemon.sock",
   requestPrivateWake: vi.fn().mockResolvedValue(null),
@@ -172,7 +184,7 @@ async function fixture(desired = "intentionally_off", grant = true) {
     provider: "minimax", credentials: { apiKey: "fixture-only-key" }, config: {}, provenance: { source: "manual" },
   })])
   cacheRuntimeCredentialConfig("sanctuary", {
-    telegramBotToken: "123:fixture-only-token", telegramAuthorizedUserId: "42", telegramAuthorizedChatId: "42",
+    telegramAuthorizedUserId: "42", telegramAuthorizedChatId: "42",
   })
   cacheMachineRuntimeCredentialConfig("sanctuary", {
     unraidGraphqlUrl: "https://unraid.fixture/graphql", unraidReadApiKey: "fixture-read", unraidWriteApiKey: "fixture-write",

@@ -1,6 +1,7 @@
 FROM node:22-bookworm-slim
 
 LABEL org.opencontainers.image.source="https://github.com/ourostack/ouroboros"
+LABEL bot.ouro.sanctuary.mount-contract="canonical-gateway"
 
 ARG TARGETARCH
 ARG SUPERCRONIC_AMD64_SHA256=5adff01c5a797663948e656d2b61d10932369ee437eb5cb54fa872b2960f222b
@@ -18,6 +19,10 @@ RUN apt-get update \
 WORKDIR /opt/ouro
 COPY package.json npm-shrinkwrap.json ./
 RUN npm ci --omit=dev --legacy-peer-deps --workspaces=false --no-audit --no-fund \
+  && npm run build-release --prefix node_modules/better-sqlite3 \
+  && cp node_modules/better-sqlite3/build/Release/better_sqlite3.node "node_modules/better-sqlite3/prebuilds/linux-$(node -p process.arch).node" \
+  && node -e 'const Database = require("better-sqlite3"); const db = new Database(":memory:"); if (db.prepare("SELECT 1 AS ready").get().ready !== 1) process.exit(1); db.close()' \
+  && rm -rf node_modules/better-sqlite3/build \
   && test -x /opt/ouro/node_modules/.bin/bw \
   && ln -s /opt/ouro/node_modules/.bin/bw /usr/local/bin/bw
 COPY dist ./dist
@@ -26,6 +31,7 @@ COPY skills ./skills
 COPY changelog.json ./changelog.json
 COPY deploy/unraid/container-runtime.json ./container-runtime.json
 COPY deploy/unraid /opt/ouro/deploy/unraid
+COPY assets/sanctuary-host-launcher.sh /opt/ouro/deploy/unraid/sanctuary-host-launcher.sh
 RUN chown -R 10001:10001 /opt/ouro /home/ouro
 
 USER 10001:10001
