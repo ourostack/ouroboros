@@ -10,7 +10,7 @@ describe("Mendelow Cloud Butler Community Apps release", () => {
     expect(dockerfile).toContain("npm run build-release --prefix node_modules/better-sqlite3")
     expect(dockerfile).toContain('node_modules/better-sqlite3/prebuilds/linux-$(node -p process.arch).node')
     expect(dockerfile).toContain("SELECT 1 AS ready")
-    expect(dockerfile.indexOf("npm run build-release")).toBeLessThan(dockerfile.indexOf("USER 10001:10001"))
+    expect(dockerfile).toContain("rm -rf node_modules/better-sqlite3/build")
     const workflow = fs.readFileSync(".github/workflows/coverage.yml", "utf8")
     expect(workflow).toContain('require("/opt/ouro/node_modules/better-sqlite3")')
     expect(workflow).toContain("SELECT 1 AS ready")

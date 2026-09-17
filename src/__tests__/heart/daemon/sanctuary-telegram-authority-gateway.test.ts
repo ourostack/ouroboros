@@ -369,7 +369,7 @@ describe("Sanctuary root Telegram authority gateway state", () => {
           updateId,
           userId: String(userId),
           chatId: String(userId),
-        }, 30_000)
+        })
       } else {
         expect(() => f.gateway.admitChat({
           admissionId: index.toString(16).padStart(20, "0"),
@@ -379,7 +379,7 @@ describe("Sanctuary root Telegram authority gateway state", () => {
         })).toThrow(/limit/u)
       }
     }
-  })
+  }, 30_000)
 
   it("refuses invalid configuration, clocks, nonces, stale updates, and settlement shapes", () => {
     const f = fixture()

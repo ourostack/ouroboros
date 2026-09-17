@@ -22,6 +22,7 @@ RUN npm ci --omit=dev --legacy-peer-deps --workspaces=false --no-audit --no-fund
   && npm run build-release --prefix node_modules/better-sqlite3 \
   && cp node_modules/better-sqlite3/build/Release/better_sqlite3.node "node_modules/better-sqlite3/prebuilds/linux-$(node -p process.arch).node" \
   && node -e 'const Database = require("better-sqlite3"); const db = new Database(":memory:"); if (db.prepare("SELECT 1 AS ready").get().ready !== 1) process.exit(1); db.close()' \
+  && rm -rf node_modules/better-sqlite3/build \
   && test -x /opt/ouro/node_modules/.bin/bw \
   && ln -s /opt/ouro/node_modules/.bin/bw /usr/local/bin/bw
 COPY dist ./dist
