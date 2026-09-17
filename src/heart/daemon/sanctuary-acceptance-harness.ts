@@ -39,7 +39,7 @@ type JsonObject = Record<string, unknown>
 export function exactSanctuaryContainmentProfileBoundaries(value: unknown): boolean {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false
   const boundaries = value as JsonObject
-  const versions = { "sanctuary-owner": 8, "sanctuary-household": 5, "sanctuary-event": 4 }
+  const versions = { "sanctuary-owner": 9, "sanctuary-household": 5, "sanctuary-event": 4 }
   if (!isDeepStrictEqual(Object.keys(boundaries).sort(), Object.keys(versions).sort())) return false
   const packageRoot = path.resolve(__dirname, "../../../deploy/unraid/sanctuary.ouro")
   const registry = loadRelationshipCapabilityRegistry(packageRoot)
@@ -49,7 +49,7 @@ export function exactSanctuaryContainmentProfileBoundaries(value: unknown): bool
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false
     const boundary = raw as JsonObject
     const capabilities = boundary.providerCapabilities
-    if (!Array.isArray(capabilities) || !capabilities.every((entry): entry is ProviderCapability => entry === "reasoning-effort" || entry === "phase-annotation")
+    if (!Array.isArray(capabilities) || !capabilities.every((entry): entry is ProviderCapability => entry === "reasoning-effort" || entry === "phase-annotation" || entry === "approval-continuation")
       || new Set(capabilities).size !== capabilities.length) return false
     const profile = registry.profiles[id]!
     if (profile.version !== version) return false

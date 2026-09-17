@@ -177,12 +177,12 @@ afterEach(() => {
 })
 
 describe("Sanctuary package-managed bundle migration", () => {
-  it("converges the real owner v8 profile and identity through the existing managed-file transaction", () => {
+  it("converges the real owner v9 profile and identity through the existing managed-file transaction", () => {
     const packageRoot = path.resolve("deploy/unraid/sanctuary.ouro")
     const agentRoot = makeExactAgentRoot(packageRoot)
     const profiles = JSON.parse(fs.readFileSync(path.join(agentRoot, "tool-profiles.json"), "utf8"))
     profiles.profiles["sanctuary-owner"].version = 7
-    profiles.profiles["sanctuary-owner"].toolNames = profiles.profiles["sanctuary-owner"].toolNames.filter((name: string) => !SANCTUARY_OWNER_ADDITIONS.includes(name))
+    profiles.profiles["sanctuary-owner"].toolNames = profiles.profiles["sanctuary-owner"].toolNames.filter((name: string) => name !== "sanctuary_host_execute" && !SANCTUARY_OWNER_ADDITIONS.includes(name))
     write(agentRoot, "tool-profiles.json", profiles)
     const identity = fs.readFileSync(path.join(agentRoot, "psyche/IDENTITY.md"), "utf8")
     write(agentRoot, "psyche/IDENTITY.md", identity.replace("I use the typed Unraid GraphQL repertoire for server operations and owner-authorized native tools for resident work inside my existing container boundary.", "My primary server interface is the typed Unraid GraphQL repertoire, never shell."))
@@ -191,7 +191,7 @@ describe("Sanctuary package-managed bundle migration", () => {
     write(agentRoot, "state/sessions/owner.json", "private history\n")
     const tacit = fs.readFileSync(path.join(agentRoot, "psyche/TACIT.md"), "utf8")
     const result = migrateSanctuaryPackageManagedBundle({ packageRoot, agentRoot })
-    expect(JSON.parse(fs.readFileSync(path.join(agentRoot, "tool-profiles.json"), "utf8")).profiles["sanctuary-owner"].version).toBe(8)
+    expect(JSON.parse(fs.readFileSync(path.join(agentRoot, "tool-profiles.json"), "utf8")).profiles["sanctuary-owner"].version).toBe(9)
     expect(result.managedFilesUpdated).toBe(2)
     for (const relative of SANCTUARY_PACKAGE_MANAGED_FILES) {
       expect(fs.readFileSync(path.join(agentRoot, relative), "utf8")).toBe(fs.readFileSync(path.join(packageRoot, relative), "utf8"))

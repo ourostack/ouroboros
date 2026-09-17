@@ -322,8 +322,8 @@ describe("Sanctuary acceptance harness", () => {
     expect(() => validateSanctuaryUnit16EvidenceAssertions("unit-16e-containment-audit", value)).not.toThrow()
   })
 
-  it("accepts the current phase-annotation capability without advertising unsupported reasoning", () => {
-    const value = { ...validAssertions("unit-16e-containment-audit"), profileBoundaries: sanctuaryContainmentBoundariesFixture(["phase-annotation"]) }
+  it("accepts current engine capabilities without advertising host approval absent an owner observation", () => {
+    const value = { ...validAssertions("unit-16e-containment-audit"), profileBoundaries: sanctuaryContainmentBoundariesFixture(["phase-annotation", "approval-continuation"]) }
     expect(value.profileBoundaries["sanctuary-owner"].schemaToolNames).not.toContain("set_reasoning_effort")
     expect(() => validateSanctuaryUnit16EvidenceAssertions("unit-16e-containment-audit", value)).not.toThrow()
   })

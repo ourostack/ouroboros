@@ -78,7 +78,7 @@ export class SanctuaryTelegramAuthorityService {
   async dispatch(method: string, params: Record<string, unknown>): Promise<unknown> {
     if (this.#hostAuthority) {
       for (const registrationId of this.#hostAuthority.expireRegistrations()) {
-        await this.#flushHostCard(registrationId)
+        await this.#maintainHostCard(registrationId)
       }
     }
     if (method === "telegram.poll") {
@@ -97,20 +97,26 @@ export class SanctuaryTelegramAuthorityService {
         throw new Error("Sanctuary Telegram pending observation state is unavailable")
       }
       const callback = record.rawUpdate.callback_query
-      let hostDecision: unknown
-      if (callback && callback.message && this.#hostAuthority?.ownsHandle(callback.data ?? "")) {
-        hostDecision = this.#hostAuthority.decisionForCallback(callback.id) ?? this.#hostAuthority.decide({
+      let hostCallback: SignedAuthorityPayload<Record<string, unknown>> | null = null
+      if (callback && callback.message && this.#hostAuthority) {
+        hostCallback = this.#hostAuthority.claimCallback({
           callbackQueryId: callback.id,
-          callbackData: callback.data!,
+          callbackData: callback.data ?? "",
           telegramMessageId: callback.message.message_id,
           userId: String(callback.from.id),
           chatId: String(callback.message.chat.id),
           callbackObservationDigest: authorityArtifactDigest(observation.domain, observation.payload),
           decidedAt: observation.payload.observedAt,
         })
-        if (hostDecision) await this.#maintainHostCard(String((hostDecision as SignedAuthorityPayload<Record<string, unknown>>).payload.registrationId))
+        if (hostCallback) await this.#maintainHostCard(hostCallback.payload.registrationId as string)
       }
-      return { observation, update: record.rawUpdate, ...(hostDecision ? { hostDecision } : {}) }
+      return {
+        observation, update: record.rawUpdate,
+        ...(hostCallback ? {
+          hostClaimed: true, hostCallback,
+          ...(hostCallback.payload.decision ? { hostDecision: hostCallback.payload.decision } : {}),
+        } : {}),
+      }
     }
     if (method === "telegram.settle") {
       this.#gateway.settle(params as unknown as SanctuaryTelegramSettlement)
@@ -279,8 +285,11 @@ export class SanctuaryTelegramAuthorityService {
     }
     if (method === "host.status") {
       if (!this.#hostAuthority) throw new Error("Sanctuary host authority is unavailable")
-      if (!exactKeys(params, ["registrationId"]) || typeof params.registrationId !== "string") {
+      if (!exactKeys(params, ["registrationId"]) || (params.registrationId !== null && typeof params.registrationId !== "string")) {
         throw new Error("Sanctuary host status params are invalid")
+      }
+      if (params.registrationId === null) {
+        return { health: this.#hostAuthority.attestStatus(Boolean(this.#hostExecutor) && !this.#hostAuthority.ownerMutationFrozen()) }
       }
       let status = this.#hostAuthority.status(params.registrationId)
       if (!status) return null
@@ -316,7 +325,7 @@ export class SanctuaryTelegramAuthorityService {
         await this.#maintainHostCard(params.registrationId)
         status = this.#hostAuthority.status(params.registrationId)!
       }
-      return {
+      const result = {
         ...status,
         execution: this.#hostExecutions.has(params.registrationId)
           ? "running"
@@ -332,6 +341,7 @@ export class SanctuaryTelegramAuthorityService {
           ? { maintenanceError: this.#hostMaintenanceFailures.get(params.registrationId) }
           : {}),
       }
+      return { ...result, authority: this.#hostAuthority.attestStatus(result) }
     }
     if (method === "host.execute") {
       if (!this.#hostAuthority || !this.#hostExecutor) throw new Error("Sanctuary host execution is unavailable")

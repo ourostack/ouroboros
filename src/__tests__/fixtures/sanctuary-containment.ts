@@ -17,9 +17,7 @@ export function sanctuaryContainmentBoundariesFixture(providerCapabilities: Prov
     const original = packaged.profiles[id]
     const profile = {
       id, ...original, version,
-      toolNames: id === "sanctuary-owner"
-        ? [...original.toolNames.filter((name: string) => !SANCTUARY_OWNER_ADDITIONS.includes(name)), ...SANCTUARY_OWNER_ADDITIONS]
-        : original.toolNames,
+      toolNames: original.toolNames,
     }
     const selection = selectToolsForChannel(getChannelCapabilities(id === "sanctuary-event" ? "inner" : "telegram"), undefined, undefined, new Set(providerCapabilities), undefined, undefined, {
       agentName: "sanctuary", relationshipAuthorization: { profileId: id, advertisedToolNames: profile.toolNames },
@@ -38,7 +36,7 @@ export function sanctuaryContainmentBoundariesFixture(providerCapabilities: Prov
     }
   }
   return {
-    "sanctuary-owner": boundary("sanctuary-owner", 8),
+    "sanctuary-owner": boundary("sanctuary-owner", 9),
     "sanctuary-household": boundary("sanctuary-household", 5),
     "sanctuary-event": boundary("sanctuary-event", 4),
   }

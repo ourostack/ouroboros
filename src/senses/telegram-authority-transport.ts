@@ -2,6 +2,7 @@ import { createHash, type KeyLike } from "node:crypto"
 import { authorityArtifactDigest, verifyAuthorityPayload, type SignedAuthorityPayload } from "../heart/daemon/sanctuary-authority-codec"
 import type { TelegramTransportObservationV1 } from "../heart/daemon/sanctuary-telegram-authority-gateway"
 import type { TelegramAuthorityTransportMetadata, TelegramBotApi, TelegramUpdate } from "./telegram-client"
+import { createRootHostApprovalPort, type RootHostApprovalPort } from "./root-host-approval-port"
 
 export interface SanctuaryTelegramAuthorityProtocolClient {
   request(method: string, params: Record<string, unknown>): Promise<unknown>
@@ -15,6 +16,7 @@ export interface SanctuaryTelegramAuthorityTransport {
   admitChat(input: { admissionId: string; updateId: number; userId: string; chatId: string }): Promise<void>
   revokeChat(input: { userId: string; chatId: string }): Promise<void>
   metadataForUpdate(update: TelegramUpdate): TelegramAuthorityTransportMetadata | null
+  hostApproval?: RootHostApprovalPort
 }
 
 export interface SanctuaryTelegramAuthorityVerification {
@@ -143,8 +145,10 @@ export function createSanctuaryTelegramAuthorityTransport(
   client: SanctuaryTelegramAuthorityProtocolClient,
   verification: SanctuaryTelegramAuthorityVerification,
 ): SanctuaryTelegramAuthorityTransport {
+  verification = Object.freeze({ ...verification })
   const observations = new Map<number, SignedAuthorityPayload<TelegramTransportObservationV1>>()
   const metadata = new Map<number, TelegramAuthorityTransportMetadata>()
+  const callbacks = new Map<number, unknown>()
   let currentObservation: SignedAuthorityPayload<TelegramTransportObservationV1> | null = null
   let stopped = false
   const api: TelegramBotApi = {
@@ -189,6 +193,7 @@ export function createSanctuaryTelegramAuthorityTransport(
       }
       observations.set(update.update_id, observation)
       metadata.set(update.update_id, verifiedMetadata)
+      callbacks.set(update.update_id, result.hostCallback)
       currentObservation = observation
       return [update] as T
     },
@@ -199,7 +204,7 @@ export function createSanctuaryTelegramAuthorityTransport(
     },
   }
 
-  return {
+  const transport: SanctuaryTelegramAuthorityTransport = {
     api,
     async downloadFile(filePath) {
       const result = await client.request("telegram.file", { filePath })
@@ -242,7 +247,17 @@ export function createSanctuaryTelegramAuthorityTransport(
       })
       observations.delete(update.update_id)
       metadata.delete(update.update_id)
+      callbacks.delete(update.update_id)
       if (currentObservation?.payload.updateId === update.update_id) currentObservation = null
     },
   }
+  transport.hostApproval = createRootHostApprovalPort(client, verification, {
+    current: () => currentObservation ? metadata.get(currentObservation.payload.updateId)! : null,
+    lookup: (update) => {
+      const value = transport.metadataForUpdate(update)
+      return value ? { metadata: value, hostCallback: callbacks.get(update.update_id) } : null
+    },
+    stopped: () => stopped,
+  })
+  return transport
 }

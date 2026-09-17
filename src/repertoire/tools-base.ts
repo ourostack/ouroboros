@@ -150,6 +150,11 @@ export interface ToolContext {
   daemonSocketPath?: string;
   agentName?: string;
   agentRoot?: string;
+  rootHost?: {
+    port: import("../senses/root-host-approval-port").RootHostApprovalPort;
+    observation?: import("../senses/telegram-client").TelegramAuthorityTransportMetadata;
+    binding?: import("./tools-sanctuary-host").RootHostBinding;
+  };
   readonly toolSelection?: ToolSelection;
   readonly selectCurrentTools?: () => ToolSelection;
   currentUserMessage?: string;

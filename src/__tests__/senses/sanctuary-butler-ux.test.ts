@@ -303,7 +303,7 @@ describe("Mendelow Cloud Butler household UX", () => {
     const { api, result } = await fixture.runTelegram("sanctuary-owner", scripted.runtime)
     expect(result?.turnOutcome, JSON.stringify(fixture.errors())).toBe("settled")
     expect(scripted.requests).toHaveLength(5)
-    const expectedNames = loadRelationshipCapabilityRegistry(bundleRoot).profiles["sanctuary-owner"].toolNames.filter((name) => name !== "rest" && (reasoning || name !== "set_reasoning_effort"))
+    const expectedNames = loadRelationshipCapabilityRegistry(bundleRoot).profiles["sanctuary-owner"].toolNames.filter((name) => name !== "sanctuary_host_execute" && name !== "rest" && (reasoning || name !== "set_reasoning_effort"))
     for (const request of scripted.requests) expect(request.names.toSorted()).toEqual(expectedNames.toSorted())
     expect.soft(scripted.requests[4].reasoningEffort, JSON.stringify([...scripted.outputs])).toBe(reasoning ? "high" : scripted.requests[0].reasoningEffort)
     expect(scripted.outputs.get("foreground")).toContain("resident-foreground")
@@ -557,7 +557,7 @@ describe("Mendelow Cloud Butler household UX", () => {
     expect(config.version).toBe(2)
     expect(config.profiles).toMatchObject({
       "sanctuary-owner": {
-        version: 8,
+        version: 9,
         contextScopes: expect.arrayContaining(["household.status", "household.policy"]),
         toolNames: expect.arrayContaining(["steward_policy_manage", "unraid_restart_container", "unraid_check_services", "sanctuary_get_install_state", "sanctuary_get_download_queue", "sanctuary_resume_download_queue", "sanctuary_search_media_catalog", "list_recent_attachments", "materialize_attachment", "describe_image"]),
         effectScopes: expect.arrayContaining(["telegram.proactive", "telegram.request_return"]),

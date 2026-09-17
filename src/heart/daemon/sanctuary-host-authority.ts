@@ -236,7 +236,7 @@ function validateCommand(value: unknown): asserts value is HostCommandV1 {
   }
 }
 
-function validateProposal(value: unknown, expectedHost: string): asserts value is HostProposalRequestV1 {
+export function validateHostProposalRequest(value: unknown, expectedHost: string): asserts value is HostProposalRequestV1 {
   if (!isObject(value) || !exactKeys(value, [
     "targetHost",
     "targetResource",
@@ -359,7 +359,7 @@ function validateStoredProposal(value: unknown, expectedHost: string): asserts v
     "expiresAt",
   ]))
   const { expiresAt, ...request } = proposal
-  validateProposal(request, expectedHost)
+  validateHostProposalRequest(request, expectedHost)
   requireState(validTime(expiresAt))
 }
 
@@ -557,7 +557,7 @@ export class FileSanctuaryHostAuthority {
 
   prepare(request: HostProposalRequestV1): PreparedHostApproval {
     const now = this.#now()
-    validateProposal(request, this.#options.targetHost)
+    validateHostProposalRequest(request, this.#options.targetHost)
     const proposal: HostProposalV1 = {
       ...request,
       expiresAt: new Date(Date.parse(now) + APPROVAL_TTL_MS).toISOString(),
@@ -650,6 +650,7 @@ export class FileSanctuaryHostAuthority {
         payload: {
           targetHost: this.#options.targetHost,
           botId: this.#options.botId,
+          targetResource: current.proposal.targetResource,
           registrationId: current.registrationId,
           proposalDigest: current.proposalDigest,
           ownerObservationDigest: current.proposal.ownerObservation.digest,
@@ -996,6 +997,64 @@ export class FileSanctuaryHostAuthority {
     return (state.records[registrationId] as CommittedRecord).decision
   }
 
+  claimCallback(input: HostDecisionInput): SignedAuthorityPayload<Record<string, unknown>> | null {
+    const callbackDigest = digestText(input.callbackData)
+    const record = Object.values(this.#read().records).find((record) =>
+      record.approveHandleDigest === callbackDigest || record.denyHandleDigest === callbackDigest
+      || ("telegramMessageId" in record && record.telegramMessageId === input.telegramMessageId && input.chatId === this.#options.ownerChatId))
+    if (!record) return null
+    let decision: SignedAuthorityPayload<Record<string, unknown>> | null = null
+    const previous = this.decisionForCallback(input.callbackQueryId)
+    if (previous) {
+      if (previous.payload.callbackObservationDigest === input.callbackObservationDigest) decision = previous
+    } else if (
+      record.state === "committed"
+      && record.telegramMessageId === input.telegramMessageId
+      && (record.approveHandle === input.callbackData || record.denyHandle === input.callbackData)
+      && input.userId === this.#options.ownerUserId
+      && input.chatId === this.#options.ownerChatId
+      && Date.parse(input.decidedAt) <= Date.parse(record.expiresAt)
+    ) {
+      decision = this.decide(input)
+    }
+    return signAuthorityPayload({
+      domain: "ouro.sanctuary.host-callback.v1",
+      keyId: this.#options.keyId,
+      privateKey: this.#options.privateKey,
+      payload: {
+        ...this.#identity(),
+        handled: true,
+        registrationId: record.registrationId,
+        callbackQueryId: input.callbackQueryId,
+        observationDigest: input.callbackObservationDigest,
+        decision,
+      },
+    })
+  }
+
+  attestStatus(status: Record<string, unknown> | boolean): SignedAuthorityPayload<Record<string, unknown>> {
+    return signAuthorityPayload({
+      domain: `ouro.sanctuary.host-${typeof status === "boolean" ? "health" : "status"}.v1`,
+      keyId: this.#options.keyId,
+      privateKey: this.#options.privateKey,
+      payload: {
+        ...this.#identity(),
+        observedAt: this.#now(),
+        ...(typeof status === "boolean" ? { healthy: status } : { status }),
+      },
+    })
+  }
+
+  #identity(): Record<string, unknown> {
+    return {
+      targetHost: this.#options.targetHost,
+      botId: this.#options.botId,
+      ownerUserId: this.#options.ownerUserId,
+      ownerChatId: this.#options.ownerChatId,
+      publicKeyDigest: this.#options.publicKeyDigest,
+    }
+  }
+
   status(registrationId: string): Record<string, unknown> | null {
     if (!REGISTRATION_ID.test(registrationId)) throw new Error("Sanctuary host registration id is invalid")
     const record = this.#read().records[registrationId]
@@ -1007,6 +1066,7 @@ export class FileSanctuaryHostAuthority {
       expiresAt: record.expiresAt,
       ...("telegramMessageId" in record ? { telegramMessageId: record.telegramMessageId } : {}),
       ...("decision" in record && record.decision ? { decision: record.decision } : {}),
+      ...("permit" in record && record.permit ? { permit: record.permit } : {}),
       ...("receipt" in record && record.receipt ? { receipt: record.receipt } : {}),
       ...("cardRevision" in record ? { cardPending: record.cardRevision !== record.cardRenderedRevision } : {}),
     }

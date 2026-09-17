@@ -82,7 +82,7 @@ import { refreshOpenAICodexProviderCredentials } from "./providers/openai-codex-
 
 export type ProviderId = "azure" | "anthropic" | "minimax" | "openai-codex" | "github-copilot" | "openai-compatible" | "openai-compatible-gemini";
 
-export type ProviderCapability = "reasoning-effort" | "phase-annotation";
+export type ProviderCapability = "reasoning-effort" | "phase-annotation" | "approval-continuation";
 
 export type ProviderErrorClassification =
   | "auth-failure"
@@ -259,7 +259,7 @@ export async function getProviderRuntime(facing: Facing = "human", owner?: Runti
     console.error(`\n[fatal] ${msg}\n`);
     throw new Error(msg);
   }
-  return runtime;
+  return { ...runtime, capabilities: new Set([...runtime.capabilities, "approval-continuation"]) };
 }
 
 /**
@@ -522,7 +522,7 @@ export interface ApprovalSuspensionResult {
 }
 
 export interface ResumeApprovalContinuationOptions {
-  record: ApprovalRecord
+  record: Pick<ApprovalRecord, "approvalId" | "toolCallId" | "state" | "result">
   checkpoint: ApprovalSuspensionCheckpoint
   currentSessionRevision: string
   sessionMessages: OpenAI.ChatCompletionMessageParam[]
@@ -537,7 +537,7 @@ export interface ResumeApprovalContinuationOptions {
   ) => Promise<{ usage?: UsageData; outcome: RunAgentOutcome; completion?: CompletionMetadata; suspension?: ApprovalSuspensionResult }>
   persist: (messages: OpenAI.ChatCompletionMessageParam[], result?: { usage?: UsageData; outcome: RunAgentOutcome }) => void | Promise<void>
   deliver: (text: string) => void | Promise<void>
-  claimContinuation: () => ApprovalContinuationClaim
+  claimContinuation: () => Pick<ApprovalContinuationClaim, "claimed" | "interruptedAfterAttempt"> & { record: Pick<ApprovalContinuationClaim["record"], "continuationState"> }
   markContinuationMaterialized: () => void | Promise<void>
   markContinuationAttempted: () => void | Promise<void>
   completeContinuation: () => void | Promise<void>

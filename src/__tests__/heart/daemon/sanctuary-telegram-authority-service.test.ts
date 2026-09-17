@@ -14,7 +14,7 @@ import {
   FileSanctuaryTelegramAuthorityGateway,
   sanctuaryAuthorityPublicKeyDigest,
 } from "../../../heart/daemon/sanctuary-telegram-authority-gateway"
-import { authorityArtifactDigest, signAuthorityPayload } from "../../../heart/daemon/sanctuary-authority-codec"
+import { authorityArtifactDigest, signAuthorityPayload, verifyAuthorityPayload } from "../../../heart/daemon/sanctuary-authority-codec"
 import { FileSanctuaryHostAuthority, type HostProposalRequestV1 } from "../../../heart/daemon/sanctuary-host-authority"
 import { FIXED_ADMISSION_ACKNOWLEDGEMENT } from "../../../senses/telegram-effect-adapter"
 import type { TelegramBotApi, TelegramUpdate } from "../../../senses/telegram-client"
@@ -22,7 +22,7 @@ import type { TelegramBotApi, TelegramUpdate } from "../../../senses/telegram-cl
 const roots: string[] = []
 
 function root(): string {
-  const value = fs.mkdtempSync(path.join(os.tmpdir(), "sanctuary-telegram-service-"))
+  const value = fs.mkdtempSync(path.join(os.tmpdir(), "s-"))
   roots.push(value)
   return value
 }
@@ -134,6 +134,47 @@ function hostProposal(observationDigest: string, updateId = 10, messageId = 110)
 }
 
 describe("Sanctuary Telegram authority service", () => {
+  it("signs bounded host capability health and the complete registration status using root identity", async () => {
+    const f = fixture()
+    const health = await f.service.dispatch("host.status", { registrationId: null }) as any
+    expect(health.health).toMatchObject({
+      domain: "ouro.sanctuary.host-health.v1",
+      payload: { healthy: true, targetHost: "sanctuary", botId: "123456", ownerUserId: "42", ownerChatId: "42" },
+    })
+    const withoutExecutor = new SanctuaryTelegramAuthorityService({ api: f.api, gateway: f.gateway, hostAuthority: f.hostAuthority })
+    expect(await withoutExecutor.dispatch("host.status", { registrationId: null })).toMatchObject({
+      health: { payload: { healthy: false } },
+    })
+    const polled = await f.service.dispatch("telegram.poll", {}) as any
+    vi.mocked(f.api.request).mockResolvedValueOnce({ message_id: 501 } as never)
+    const registered = await f.service.dispatch("host.approval", {
+      proposal: hostProposal(authorityArtifactDigest(polled.observation.domain, polled.observation.payload)),
+    }) as any
+    const status = await f.service.dispatch("host.status", { registrationId: registered.registrationId }) as any
+    const { authority, ...legacy } = status
+    expect(authority).toMatchObject({
+      domain: "ouro.sanctuary.host-status.v1",
+      payload: { status: legacy, observedAt: "2026-09-16T22:30:00.000Z" },
+    })
+    expect(() => verifyAuthorityPayload({ artifact: authority, expectedDomain: authority.domain, expectedKeyId: "issuer-1", publicKey: generateKeyPairSync("ed25519").publicKey })).toThrow()
+  })
+
+  it("claims another owner's host callback without deciding or rejecting transport delivery", async () => {
+    const f = fixture()
+    const polled = await f.service.dispatch("telegram.poll", {}) as any
+    vi.mocked(f.api.request).mockResolvedValueOnce({ message_id: 501 } as never)
+    await f.service.dispatch("host.approval", { proposal: hostProposal(authorityArtifactDigest(polled.observation.domain, polled.observation.payload)) })
+    const sent = vi.mocked(f.api.request).mock.calls.find(([method]) => method === "sendMessage")!
+    const handle = (sent[1] as any).reply_markup.inline_keyboard[0][0].callback_data
+    await f.service.dispatch("telegram.settle", { updateId: 10, observationDigest: authorityArtifactDigest(polled.observation.domain, polled.observation.payload), outcome: "completed" })
+    f.updates.splice(0, 1, { update_id: 11, callback_query: { id: "other-owner", from: { id: 84 }, message: { message_id: 501, chat: { id: 42, type: "private" } }, data: handle } })
+    const result = await f.service.dispatch("telegram.poll", {}) as any
+    expect(result).toMatchObject({ hostClaimed: true, hostCallback: { domain: "ouro.sanctuary.host-callback.v1", payload: { handled: true, observationDigest: authorityArtifactDigest(result.observation.domain, result.observation.payload), decision: null } } })
+    expect(result).not.toHaveProperty("hostDecision")
+    expect(f.hostExecutor.execute).not.toHaveBeenCalled()
+    expect(await f.service.dispatch("telegram.poll", {})).toEqual(result)
+  })
+
   it("polls Telegram from the root cursor and returns the exact signed observation with raw update", async () => {
     const f = fixture()
     const result = await f.service.dispatch("telegram.poll", {})
@@ -849,7 +890,7 @@ describe("Sanctuary Telegram authority service", () => {
       dispatch: vi.fn(),
     }).listen()).rejects.toThrow(/directory/u)
 
-    const missingDirectory = path.join(os.tmpdir(), `sat-${process.pid}-${Date.now()}`)
+    const missingDirectory = path.join(os.tmpdir(), `s-${process.pid}`)
     roots.push(missingDirectory)
     const nestedSocketPath = path.join(missingDirectory, "authority.sock")
     const nestedServer = createSanctuaryTelegramAuthorityServer({

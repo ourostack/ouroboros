@@ -8,6 +8,8 @@ import { buildToolResultSummary, execTool, executeTool, getToolsForChannel, pref
 import { McpCallRejectedError, mcpToolsAsDefinitions } from "../../repertoire/mcp-tools"
 import { teamsToolDefinitions } from "../../repertoire/tools-teams"
 import { makeMcpView, MCP_CONTEXT, MCP_OWNER, shutdownMcpFixtures } from "./mcp-fixture"
+import * as identity from "../../heart/identity"
+import * as guardrails from "../../repertoire/guardrails"
 
 const OWNER_ADDITIONS = [
   "shell", "shell_status", "shell_tail", "read_file", "write_file", "edit_file", "glob", "grep",
@@ -60,6 +62,7 @@ function addProbe() {
 describe("turn-local canonical tool selection", () => {
   beforeEach(() => setAgentName("sanctuary"))
   afterEach(async () => {
+    vi.restoreAllMocks()
     await shutdownMcpFixtures()
     for (const definition of temporaryDefinitions.splice(0)) {
       baseToolDefinitions.splice(baseToolDefinitions.indexOf(definition), 1)
@@ -146,6 +149,32 @@ describe("turn-local canonical tool selection", () => {
     expect(buildToolResultSummary(name, {}, "", true)).toBe(expected)
   })
 
+  it("S5 containment preserves no-send engine reduction and failure summaries", () => {
+    const selection = selectToolsForChannel(getChannelCapabilities("cli"), undefined, undefined, undefined, undefined, undefined, { noSend: true })
+    expect(selection.engine.map((tool) => tool.function.name)).not.toContain("ponder")
+    expect(buildToolResultSummary("edit_file", { path: "file.txt" }, "", false)).toBe("path=file.txt")
+    expect(buildToolResultSummary("shell", { command: "id" }, "", false)).toBe("$ id (exit 1)")
+    expect(buildToolResultSummary("coding_spawn", { taskRef: "task" }, "", false)).toBe("task -> failed")
+  })
+
+  it("S5 containment preserves structural guard rejection before any resident handler", async () => {
+    const executor = vi.fn(async () => "must not run")
+    expect(await executeTool("write_file", { path: "/mock/agent.json", content: "{}" }, MCP_CONTEXT, executor)).toMatchObject({
+      kind: "rejected_before_handler", text: expect.stringContaining("protected"),
+    })
+    expect(executor).not.toHaveBeenCalled()
+  })
+
+  it("S5 containment preserves explicit group guards and unavailable ambient owner handling", async () => {
+    const guard = vi.spyOn(guardrails, "guardInvocation").mockReturnValue({ allowed: true })
+    vi.spyOn(identity, "getAgentRoot").mockImplementation(() => { throw new Error("ambient identity absent") })
+    const context = { signin: async () => undefined, context: { isGroupChat: true, friend: { id: "reader", trustLevel: "family" } } } as any
+    const executor = vi.fn(async () => "fixture response")
+    expect(await executeTool("stripe_create_card", {}, context, executor)).toEqual({ kind: "handler_succeeded", text: "fixture response" })
+    expect(guard).toHaveBeenCalledWith("stripe_create_card", {}, expect.objectContaining({ isGroupChat: true, friendId: "reader", agentRoot: undefined }))
+    expect(executor).toHaveBeenCalledWith("stripe_create_card", {}, context)
+  })
+
   it.each([undefined, new Set<string>(), new Set(["reasoning-effort"])])(
     "retains owner send_message and admits exactly the approved additions subject to provider capability: %j",
     (provider) => {
@@ -153,6 +182,7 @@ describe("turn-local canonical tool selection", () => {
       const names = schemas(context, undefined, provider).map((tool) => tool.function.name)
       const expected = [...new Set([...registry.profiles["sanctuary-owner"].toolNames, ...OWNER_ADDITIONS])]
         .filter((name) => name !== "rest")
+        .filter((name) => name !== "sanctuary_host_execute")
         .filter((name) => provider?.has("reasoning-effort") || name !== "set_reasoning_effort")
 
       expect(names.toSorted()).toEqual(expected.toSorted())

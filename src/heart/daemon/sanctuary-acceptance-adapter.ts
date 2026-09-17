@@ -1515,7 +1515,7 @@ export async function readDefaultSanctuaryScenarioFacts(
       const selection = select(context)
       const schemas = toolSelectionSchemas(selection)
       const schemaToolNames = schemas.map((tool) => tool.function.name)
-      const expectedNames = profile.toolNames.filter((name) => (inner || name !== "rest") && (name !== "set_reasoning_effort" || runtime.capabilities.has("reasoning-effort")))
+      const expectedNames = profile.toolNames.filter((name) => name !== "sanctuary_host_execute" && (inner || name !== "rest") && (name !== "set_reasoning_effort" || runtime.capabilities.has("reasoning-effort")))
       const excludedNames = ["vault_get", "mcp_call", "exec", "credential_get", ...(profileId === "sanctuary-owner" ? [] : SANCTUARY_OWNER_ADDITIONS)]
       const poisoned = select({ ...context, relationshipAuthorization: {
         ...context.relationshipAuthorization!, advertisedToolNames: [...profile.toolNames, ...excludedNames, "mcp__containment_poison"],

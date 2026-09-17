@@ -48,6 +48,8 @@ import {
   type TelegramUpdate,
 } from "./telegram-client"
 import type { SanctuaryTelegramAuthorityTransport } from "./telegram-authority-transport"
+import { createRootHostApprovalRuntime } from "./root-host-approval-runtime"
+import { authorizeRootHostContext } from "../repertoire/tools-sanctuary-host"
 import { createSanctuaryToolContext, runWithSanctuaryToolReceiptCollection, type SanctuaryToolReceiptObserver } from "./sanctuary-runtime"
 import { sanctuaryFullVisibilityRequiredToolCalls, sanctuaryStaleDockerCareRequiredToolCalls } from "./sanctuary-full-visibility-contract"
 import { sanctuaryInstallStateRequiredToolCalls } from "./sanctuary-install-state-contract"
@@ -968,6 +970,16 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   }
   let effectJournal: FileTelegramEffectJournal | undefined
   let approvalRuntime: TelegramApprovalRuntime | undefined
+  let rootHostRuntime: ReturnType<typeof createRootHostApprovalRuntime> | undefined
+  const approvalCoordinatorFactory = (context: { sessionPath: string; baseSessionRevision: string }): import("../heart/core").ApprovalCoordinator => ({
+    propose: (request) => {
+      if (request.toolCall.type === "function" && request.toolCall.function.name === "sanctuary_host_execute") {
+        if (!rootHostRuntime) throw new Error("root host approval coordinator is unavailable")
+        return rootHostRuntime.coordinator(context).propose(request)
+      }
+      return approvalRuntime!.coordinator(context).propose(request)
+    },
+  })
   const getEffectJournal = (): FileTelegramEffectJournal => {
     effectJournal ??= new FileTelegramEffectJournal(path.join(agentRoot, "state", "telegram", "effects"))
     return effectJournal
@@ -1080,6 +1092,39 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       },
     }) : undefined)
     approvalTransport = options.approvalTransport ?? approvalRuntime?.transport
+    const port = authorityTransport?.hostApproval
+    if (useSanctuaryRuntime && port?.pins.expectedBotId === botId
+      && port.pins.expectedOwnerUserId === authorizedUserId && port.pins.expectedOwnerChatId === authorizedChatId) {
+      rootHostRuntime = createRootHostApprovalRuntime({
+        agentRoot, port, effectBarrier: acceptanceAuditBarrier, approvalCoordinatorFactory,
+        resolveContext: async (binding) => {
+          const sessionPath = getSenseSessionPath(options.agentName, configuredOwnerFriendId, "telegram", configuredOwnerSessionKey, agentRoot)
+          if (binding.agentRoot !== agentRoot || binding.friendId !== configuredOwnerFriendId
+            || binding.sessionKey !== configuredOwnerSessionKey || binding.sessionPath !== sessionPath) {
+            throw new Error("root host continuation owner session changed")
+          }
+          const relationshipAuthorization = await resolveLiveRelationshipAuthorization({
+            friendId: binding.friendId, requestId: binding.requestId, sessionEventId: binding.sessionEventId,
+            sessionKey: binding.sessionKey, botId: botId!, userId: authorizedUserId, chatId: authorizedChatId,
+          })
+          const friendStore = new FileFriendStore(path.join(agentRoot, "friends"))
+          const friend = await friendStore.get(binding.friendId)
+          if (!friend) throw new Error("root host owner Friend is unavailable")
+          return {
+            ...toolContext, signin: async () => undefined, agentName: options.agentName, agentRoot,
+            currentSession: { friendId: friend.id, channel: "telegram", key: binding.sessionKey, sessionPath },
+            context: { friend, channel: getChannelCapabilities("telegram") }, friendStore, relationshipAuthorization,
+            rootHost: { port },
+          }
+        },
+        deliver: async (text, approvalId) => {
+          await approvalEffects.sendText({
+            idempotencyKey: `root-host:${approvalId}:continuation:${createHash("sha256").update(text).digest("hex")}`,
+            chatId: authorizedChatId, text, authorClass: "butler",
+          })
+        },
+      })
+    }
     interactiveControl = useSanctuaryRuntime && approvalTransport
       ? (options._createInteractiveControl ?? createSanctuaryInteractiveControl)({
         agentRoot,
@@ -1137,7 +1182,10 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     approvalReconcileTimer = setTimeout(() => {
       approvalReconcileTimer = undefined
       scheduleApprovalReconcile()
-      const reconciliation = runWithAcceptanceAuditOwner(() => approvalTransport.reconcileExpired()).catch((error) => {
+      const reconciliation = runWithAcceptanceAuditOwner(async () => {
+        await approvalTransport.reconcileExpired()
+        await rootHostRuntime?.recover()
+      }).catch((error) => {
         acceptanceAuditBarrier()
         emitNervesEvent({
           level: "error",
@@ -1257,6 +1305,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     chatId: string
     sessionKey: string
     userMessage: string
+    authority?: TelegramInboundMessage["authority"]
     fullVisibilityProgress?: FullVisibilityProgress
   }): NonNullable<RunSenseTurnOptions["prepareRunAgentOptions"]> => {
     if (!options.resolveRelationshipAuthorization) throw new Error("Telegram relationship authorization resolver is unavailable")
@@ -1310,10 +1359,16 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
           contract.validateTerminalAnswer?.(answer),
         ).find((rejection) => rejection !== undefined),
       }
+      const currentToolContext: ToolContext = { ...runAgentOptions.toolContext!, relationshipAuthorization }
+      if (isSanctuaryOwner && rootHostRuntime && input.authority && await authorityTransport!.hostApproval!.refresh()) {
+        currentToolContext.rootHost = { port: authorityTransport!.hostApproval!, observation: input.authority }
+        try { await authorizeRootHostContext(currentToolContext) }
+        catch { delete currentToolContext.rootHost }
+      }
       return {
         ...runAgentOptions,
         ...(requiredToolCalls ? { requiredToolCalls } : {}),
-        toolContext: { ...runAgentOptions.toolContext!, relationshipAuthorization },
+        toolContext: currentToolContext,
       }
     }
   }
@@ -1599,10 +1654,11 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
             chatId: message.chatId,
             sessionKey: currentSessionKey,
             userMessage: message.text,
+            authority: message.authority,
             fullVisibilityProgress: fullVisibility.progress,
           }),
         } : {}),
-        ...(approvalRuntime ? { approvalCoordinatorFactory: approvalRuntime.coordinator } : {}),
+        ...(approvalRuntime ? { approvalCoordinatorFactory: rootHostRuntime ? approvalCoordinatorFactory : approvalRuntime.coordinator } : {}),
       }), toolReceiptObserver)
       const result = collected.result
       let responseFallbackArtifactId: string | undefined
@@ -1743,6 +1799,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
 
   const onUpdate = async (update: TelegramUpdate): Promise<boolean> => {
     const callback = update.callback_query
+    if (callback && rootHostRuntime && await runWithAcceptanceAuditOwner(() => rootHostRuntime.handleUpdate(update))) return true
     if (callback?.data?.startsWith("admit:") && admissionController && callback.message) {
       return runWithAcceptanceAuditOwner(async () => {
         const actor = await options.admission?.resolveOwner({ botId: botId!, userId: String(callback.from.id), chatId: String(callback.message!.chat.id), sessionKey: configuredOwnerSessionKey })
@@ -1844,6 +1901,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
           emitNervesEvent({ level: "error", component: "senses", event: "senses.sanctuary_routine_recovery_error", message: "Sanctuary routine action recovery requires inspection", meta: { agentName: options.agentName, subject, category: error instanceof Error ? error.name : "unknown" } })
         }
         await runWithAcceptanceAuditOwner(async () => { await approvalRuntime?.recover() })
+        await runWithAcceptanceAuditOwner(async () => { await rootHostRuntime?.recover() })
         await runWithAcceptanceAuditOwner(async () => { await interactiveControl?.start() })
         try {
           await runWithAcceptanceAuditOwner(async () => { await approvalTransport?.reconcileExpired() })
