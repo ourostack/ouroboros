@@ -557,14 +557,14 @@ function privateTurnExecutionPath(decision: PrivateTurnDecision): string {
 
 function claimPrivateTurnExecution(decision: PrivateTurnDecision, now: () => Date): boolean {
   const executionPath = privateTurnExecutionPath(decision)
-  fs.mkdirSync(path.dirname(executionPath), { recursive: true })
+  fs.mkdirSync(path.dirname(executionPath), { recursive: true, mode: 0o700 })
   try {
     fs.writeFileSync(executionPath, JSON.stringify({
       receiptId: decision.receiptId,
       idempotencyKey: decision.idempotencyKey,
       requestFingerprint: decision.requestFingerprint,
       claimedAt: now().toISOString(),
-    }), { encoding: "utf-8", flag: "wx" })
+    }), { encoding: "utf-8", flag: "wx", mode: 0o600 })
     return true
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "EEXIST") return false

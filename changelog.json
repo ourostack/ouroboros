@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.818",
+      "changes": [
+        "Keep private execution claims owner-only and check Sanctuary upgrade permissions with the predecessor stopped."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.817",
       "changes": [
         "Add root-authenticated Sanctuary host execution with exact owner approval, one-time permits, durable receipts, and tokenless Telegram transport.",

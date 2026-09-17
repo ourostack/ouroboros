@@ -19,6 +19,71 @@ function helper(name: string): string {
 }
 
 describe("S6 executable runbook integration", () => {
+  it.each([
+    ["canonical-pre-gateway", "", "live-precutover"],
+    ["canonical-pre-gateway", "strict", "strict"],
+    ["canonical-gateway", "", "strict"],
+    ["canonical-gateway", "strict", "strict"],
+    ["canonical-gateway", "live-precutover", null],
+    ["canonical-pre-gateway", "unknown", null],
+    ["unknown", "strict", null],
+  ])("keeps %s Telegram readiness context %s inside the existing strict contracts", (contract, context, expected) => {
+    const script = `set -eu
+validate_exact_image_id() { return 0; }
+sanctuary_image_mount_contract() { printf '%s' "$CONTRACT"; }
+docker() { if test "$1" = container; then return 1; fi; printf 'probe\\n'; }
+normalize_sanctuary_private_permissions() { printf 'normalize\\n'; }
+validate_sanctuary_roots() { printf 'context:%s\\n' "$3"; }
+${helper("verify_sanctuary_telegram_readiness")}
+verify_sanctuary_telegram_readiness image "$CONTEXT"`
+    const result = spawnSync("/bin/bash", ["-c", script], { encoding: "utf8", env: { PATH: "/usr/bin:/bin", CONTRACT: contract!, CONTEXT: context! } })
+    expect(result.status === 0, result.stderr).toBe(expected !== null)
+    if (expected) expect(result.stdout).toBe(`normalize\ncontext:${expected}\n`)
+    else expect(result.stdout).toBe("")
+  })
+
+  it("checks predecessor permissions only while stopped and restores readiness failures before token rotation", () => {
+    const update = runbook.slice(runbook.indexOf("Update:"), runbook.indexOf("\nBackup:"))
+    const start = update.indexOf("    if docker stop --time 30 ouro-butler")
+    const endMarker = '      (exit "$PRECUTOVER_QUIESCENCE_STATUS")\n    fi'
+    const end = update.indexOf(endMarker, start)
+    expect(start).toBeGreaterThan(-1)
+    expect(end).toBeGreaterThan(start)
+    expect(start).toBeGreaterThan(update.indexOf('"$STAGED_DOCKERMAN_TRANSACTION" prepare'))
+    expect(start).toBeGreaterThan(update.indexOf("if disable_butler_autostart"))
+    expect(end).toBeLessThan(update.indexOf("\n    receive_sanctuary_authority_token\n"))
+    expect(update).toContain('( provision_sanctuary_sab_credential "$IMAGE_ID" )')
+    const block = update.slice(start, end + endMarker.length).replace(/^ {4}/gmu, "").replaceAll("/usr/local/bin/node", "transaction")
+    for (const failure of ["none", "stop", "readiness", "restore"] as const) {
+      const script = `set -eu
+running=true
+record() { printf '%s\\n' "$*" >&2; }
+docker() { record stop; test "$FAILURE" != stop || return 31; running=false; }
+assert_only_running_butler() { test "$1:$running" = "-:false"; }
+verify_sanctuary_telegram_readiness() { record "readiness:$2:$running"; test "$2:$running" = strict:false; test "$FAILURE" != readiness && test "$FAILURE" != restore || return 32; }
+assert_update_source() { record source-audit; }
+start_only_butler_for_recovery() { record restore; test "$FAILURE" != restore || return 33; running=true; }
+wait_butler_ready() { test "$running" = true; record ready; }
+enable_butler_autostart() { test "$running" = true; record autostart; }
+transaction() { test "$running" = true; record "transaction:$2"; }
+${block}
+test "$running" = false
+record token-boundary`
+      const result = spawnSync("/bin/bash", ["-c", script], { encoding: "utf8", env: { PATH: "/usr/bin:/bin", FAILURE: failure, ROLLBACK_IMAGE_ID: oldImage, AUDIT_RUNNER_IMAGE_ID: newImage, STAGED_DOCKERMAN_TRANSACTION: "transaction" } })
+      expect(result.status, result.stderr).toBe(failure === "none" ? 0 : failure === "stop" ? 31 : failure === "restore" ? 33 : 32)
+      if (failure === "none") {
+        expect(result.stderr).toContain("readiness:strict:false")
+        expect(result.stderr).toContain("token-boundary")
+        expect(result.stderr).not.toContain("restore")
+      } else {
+        expect(result.stderr).not.toContain("token-boundary")
+        expect(result.stderr).toContain("restore")
+        if (failure === "restore") expect(result.stderr).not.toContain("autostart")
+        else expect(result.stderr).toContain("transaction:rollback")
+      }
+    }
+  })
+
   it("documents reviewed execution-only re-pinning through the package-owned command", () => {
     const section = runbook.slice(runbook.indexOf("Execution-only primitive refresh:"), runbook.indexOf("\nBackup:"))
     expect(section).toContain("repin-execution sha256:REVIEWED_PRLIMIT_SHA256 sha256:REVIEWED_SETSID_SHA256")
