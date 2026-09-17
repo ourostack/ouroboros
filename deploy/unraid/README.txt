@@ -1667,9 +1667,14 @@ NODE
       TELEGRAM_READINESS_IMAGE_ID=$1
       validate_exact_image_id "$TELEGRAM_READINESS_IMAGE_ID" || return $?
       TELEGRAM_READINESS_CONTRACT=$(sanctuary_image_mount_contract "$TELEGRAM_READINESS_IMAGE_ID") || return $?
+      TELEGRAM_READINESS_CONTEXT=${2-}
       case "$TELEGRAM_READINESS_CONTRACT" in
-        canonical-gateway) set -- --mount "type=bind,src=/run/ouro-authority,dst=/run/ouro-authority,readonly" ;;
-        canonical-pre-gateway) set -- ;;
+        canonical-gateway) TELEGRAM_READINESS_CONTEXT=${TELEGRAM_READINESS_CONTEXT:-strict}; set -- --mount "type=bind,src=/run/ouro-authority,dst=/run/ouro-authority,readonly" ;;
+        canonical-pre-gateway) TELEGRAM_READINESS_CONTEXT=${TELEGRAM_READINESS_CONTEXT:-live-precutover}; set -- ;;
+        *) return 1 ;;
+      esac
+      case "$TELEGRAM_READINESS_CONTRACT:$TELEGRAM_READINESS_CONTEXT" in
+        canonical-gateway:strict|canonical-pre-gateway:strict|canonical-pre-gateway:live-precutover) ;;
         *) return 1 ;;
       esac
       TELEGRAM_READINESS_RUNTIME_ROOT=/mnt/user/appdata/ouro-butler/runtime/.ouro-cli
@@ -1683,11 +1688,7 @@ NODE
         "$@" "$TELEGRAM_READINESS_IMAGE_ID" telegram-readiness >/dev/null || return $?
       ! docker container inspect ouro-butler-telegram-readiness >/dev/null 2>&1 || return 1
       normalize_sanctuary_private_permissions "$TELEGRAM_READINESS_RUNTIME_ROOT" "$TELEGRAM_READINESS_AGENT_ROOT" "$TELEGRAM_READINESS_IMAGE_ID" || return $?
-      if test "$TELEGRAM_READINESS_CONTRACT" = canonical-gateway; then
-        validate_sanctuary_roots "$TELEGRAM_READINESS_RUNTIME_ROOT" "$TELEGRAM_READINESS_AGENT_ROOT" || return $?
-      else
-        validate_sanctuary_roots "$TELEGRAM_READINESS_RUNTIME_ROOT" "$TELEGRAM_READINESS_AGENT_ROOT" live-precutover || return $?
-      fi
+      validate_sanctuary_roots "$TELEGRAM_READINESS_RUNTIME_ROOT" "$TELEGRAM_READINESS_AGENT_ROOT" "$TELEGRAM_READINESS_CONTEXT" || return $?
     }
     read_sanctuary_authority_state() {
       (
@@ -2161,9 +2162,8 @@ Update:
       (exit "$UPDATE_PREFLIGHT_STATUS")
     fi
     assert_update_source "$ROLLBACK_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"
-    if provision_sanctuary_sab_credential "$IMAGE_ID" \
-      && verify_sanctuary_sab_readiness "$IMAGE_ID" \
-      && verify_sanctuary_telegram_readiness "$ROLLBACK_IMAGE_ID"; then
+    if ( provision_sanctuary_sab_credential "$IMAGE_ID" ) \
+      && verify_sanctuary_sab_readiness "$IMAGE_ID"; then
       :
     else
       PRECUTOVER_READINESS_STATUS=$?
@@ -2182,7 +2182,21 @@ Update:
       /usr/local/bin/node "$STAGED_DOCKERMAN_TRANSACTION" rollback >/dev/null
       (exit "$AUTOSTART_DISABLE_STATUS")
     fi
-  Only after pinned old-image readiness, full-package preparation, durable transaction preparation and autostart disabling pass, the human rotates MendelowCloudButlerBot's token for that same numeric bot and uses the hidden root-terminal input helper. Do not echo the token, put it in argv/environment/history, copy it into the resident, or replace retained incoming-token during recovery. A failed or interrupted paste must be reconciled by the human before retry; retain the journal and disabled autostart, and do not invent a token:
+  Stop the exact predecessor before its final Telegram and filesystem readiness check. Otherwise a concurrent private-runtime receipt can appear between permission normalization and strict validation. The full package and durable transaction are already prepared, and autostart is disabled. Keep the stopped-resident mode strict: no live control socket or mode exception is allowed. Before token rotation, any failure restores the same policy-aware predecessor and propagates the failure; an interrupted stop remains recoverable from the prepared transaction:
+    if docker stop --time 30 ouro-butler \
+      && assert_only_running_butler - \
+      && verify_sanctuary_telegram_readiness "$ROLLBACK_IMAGE_ID" strict; then
+      :
+    else
+      PRECUTOVER_QUIESCENCE_STATUS=$?
+      assert_update_source "$ROLLBACK_IMAGE_ID" "$AUDIT_RUNNER_IMAGE_ID"
+      start_only_butler_for_recovery
+      wait_butler_ready ouro-butler
+      enable_butler_autostart
+      /usr/local/bin/node "$STAGED_DOCKERMAN_TRANSACTION" rollback >/dev/null
+      (exit "$PRECUTOVER_QUIESCENCE_STATUS")
+    fi
+  Only after pinned stopped-image readiness, full-package preparation, durable transaction preparation and autostart disabling pass, the human rotates MendelowCloudButlerBot's token for that same numeric bot and uses the hidden root-terminal input helper. Do not echo the token, put it in argv/environment/history, copy it into the resident, or replace retained incoming-token during recovery. A failed or interrupted paste must be reconciled by the human before retry; retain the journal and disabled autostart, and do not invent a token:
     receive_sanctuary_authority_token
     test "$(stat -c '%u:%g:%a' /mnt/user/appdata/ouro-authority/incoming-token)" = 0:0:600
   Gateway installation and its tokenless readiness belong inside the stopped-resident transaction, never in the old live precheck. A failure attempts retirement and exact old-image restoration; failure of either keeps autostart disabled and the journals/root inputs intact:

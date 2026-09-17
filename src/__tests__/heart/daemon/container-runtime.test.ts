@@ -1622,7 +1622,8 @@ validate_sanctuary_roots "$RUNTIME_ROOT" "$AGENT_ROOT" live-precutover`
     expect(normalize).toContain("-perm 0755")
     expect(normalize).toContain("-perm 0644")
     expect(readiness).toContain('normalize_sanctuary_private_permissions "$TELEGRAM_READINESS_RUNTIME_ROOT" "$TELEGRAM_READINESS_AGENT_ROOT" "$TELEGRAM_READINESS_IMAGE_ID"')
-    expect(readiness).toContain('validate_sanctuary_roots "$TELEGRAM_READINESS_RUNTIME_ROOT" "$TELEGRAM_READINESS_AGENT_ROOT" live-precutover')
+    expect(readiness).toContain('validate_sanctuary_roots "$TELEGRAM_READINESS_RUNTIME_ROOT" "$TELEGRAM_READINESS_AGENT_ROOT" "$TELEGRAM_READINESS_CONTEXT"')
+    expect(readiness).toContain("canonical-gateway:strict|canonical-pre-gateway:strict|canonical-pre-gateway:live-precutover")
     expect(readiness).not.toContain("docker stop")
     expect(readiness).not.toContain("unlink")
 
@@ -2118,7 +2119,7 @@ await_post_audit_health`
     expect(unsafeAssertions).toEqual([])
   })
 
-  it("keeps routine update readiness side-effect-free until the single production activation", () => {
+  it("keeps readiness probes separate from daemon activation and checks predecessor permissions after quiescence", () => {
     const runbook = fs.readFileSync("deploy/unraid/README.txt", "utf8")
     const update = runbook.slice(runbook.indexOf("Update:"), runbook.indexOf("Backup:"))
     const routine = update.slice(update.indexOf("For normal updates"))
@@ -2126,7 +2127,10 @@ await_post_audit_health`
 
     expect(routine).toContain("verify_sanctuary_telegram_readiness")
     expect(routine.indexOf('verify_sanctuary_sab_readiness "$IMAGE_ID"')).toBeLessThan(disable)
-    expect(routine.indexOf('verify_sanctuary_telegram_readiness "$ROLLBACK_IMAGE_ID"')).toBeLessThan(disable)
+    const predecessorReadiness = routine.indexOf('verify_sanctuary_telegram_readiness "$ROLLBACK_IMAGE_ID" strict')
+    expect(routine.indexOf("docker stop --time 30 ouro-butler")).toBeGreaterThan(disable)
+    expect(predecessorReadiness).toBeGreaterThan(routine.indexOf("docker stop --time 30 ouro-butler"))
+    expect(predecessorReadiness).toBeLessThan(routine.indexOf("\n    receive_sanctuary_authority_token\n"))
     expect(routine.indexOf('verify_sanctuary_telegram_readiness "$IMAGE_ID"')).toBeGreaterThan(routine.indexOf('"$STAGED_DOCKERMAN_TRANSACTION" authority-install'))
     expect(update.indexOf("audit the original version-tagged template")).toBeLessThan(update.indexOf("For normal updates"))
     expect(routine).not.toContain('verify_sanctuary_provider_readiness "$IMAGE_ID"')
@@ -2979,7 +2983,8 @@ if audit_registered_dockerman_template "$IMAGE_ID" "$VERSION_IMAGE" canonical-pr
     expect(updateRunbook.indexOf('verify_sanctuary_sab_readiness "$IMAGE_ID"')).toBeGreaterThanOrEqual(0)
     expect(updateRunbook.indexOf('verify_sanctuary_sab_readiness "$IMAGE_ID"')).toBeLessThan(updateRunbook.indexOf("disable_butler_autostart"))
     expect(normalUpdateRunbook.indexOf('verify_sanctuary_telegram_readiness "$IMAGE_ID"')).toBeGreaterThanOrEqual(0)
-    expect(normalUpdateRunbook.indexOf('verify_sanctuary_telegram_readiness "$ROLLBACK_IMAGE_ID"')).toBeLessThan(normalUpdateRunbook.indexOf("disable_butler_autostart"))
+    expect(normalUpdateRunbook.indexOf('verify_sanctuary_telegram_readiness "$ROLLBACK_IMAGE_ID" strict')).toBeGreaterThan(normalUpdateRunbook.indexOf("docker stop --time 30 ouro-butler"))
+    expect(normalUpdateRunbook.indexOf('verify_sanctuary_telegram_readiness "$ROLLBACK_IMAGE_ID" strict')).toBeLessThan(normalUpdateRunbook.indexOf("\n    receive_sanctuary_authority_token\n"))
     expect(normalUpdateRunbook.indexOf('verify_sanctuary_telegram_readiness "$IMAGE_ID"')).toBeGreaterThan(normalUpdateRunbook.indexOf("authority-install"))
     const backupRunbook = runbook.slice(runbook.indexOf("Backup:"), runbook.indexOf("Restore:"))
     const restoreRunbook = runbook.slice(runbook.indexOf("Restore:"), runbook.indexOf("Credential recovery:"))

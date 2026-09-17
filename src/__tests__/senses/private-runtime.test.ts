@@ -1377,6 +1377,26 @@ describe("private runtime", () => {
       expect(mockRunAgent).toHaveBeenCalledTimes(1)
     })
 
+    it("creates owner-private execution claims and preserves their bytes on duplicate dispatch", async () => {
+      const decision = writeLedgeredPrivateTurnDecision()
+      const options = {
+        reason: "instinct",
+        privateTurnDecision: decision,
+        instincts: [{ id: "heartbeat", prompt: "Instinct: check in.", enabled: true }],
+        now: () => new Date("2026-03-06T12:00:00.000Z"),
+      }
+      await (runPrivateRuntimeTurn as any)(options)
+      const directory = path.join(path.dirname(decision.ledgerLocator.path), "executions")
+      const receipt = path.join(directory, `${decision.receiptId}.json`)
+      const bytes = fs.readFileSync(receipt)
+      expect(fs.statSync(directory).mode & 0o777).toBe(0o700)
+      expect(fs.statSync(receipt).mode & 0o777).toBe(0o600)
+      await (runPrivateRuntimeTurn as any)(options)
+      expect(fs.readFileSync(receipt)).toEqual(bytes)
+      expect(fs.statSync(receipt).mode & 0o777).toBe(0o600)
+      expect(mockRunAgent).toHaveBeenCalledTimes(1)
+    })
+
     it("collapses sequential duplicate execution claims for the same approved decision", async () => {
       const decision = writeLedgeredPrivateTurnDecision()
       const options = {
