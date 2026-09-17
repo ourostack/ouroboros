@@ -19,6 +19,15 @@ function helper(name: string): string {
 }
 
 describe("S6 executable runbook integration", () => {
+  it("documents reviewed execution-only re-pinning through the package-owned command", () => {
+    const section = runbook.slice(runbook.indexOf("Execution-only primitive refresh:"), runbook.indexOf("\nBackup:"))
+    expect(section).toContain("repin-execution sha256:REVIEWED_PRLIMIT_SHA256 sha256:REVIEWED_SETSID_SHA256")
+    expect(section).toContain("verified gateway process")
+    expect(section).toContain("no token, issuer, owner, cursor, policy or grant")
+    expect(section).toContain("sanctuary-authority-root-lifecycle.js boot")
+    expect(runbook).not.toContain("The branch still has package version alpha.816")
+  })
+
   it("retains the small private-record cap separately from the complete package manifest", () => {
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "s6-runbook-reader-cap-")))
     const state = path.join(root, "mnt/user/appdata/ouro-authority")

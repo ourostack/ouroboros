@@ -6,7 +6,8 @@
       "changes": [
         "Add root-authenticated Sanctuary host execution with exact owner approval, one-time permits, durable receipts, and tokenless Telegram transport.",
         "Package journaled root gateway installation and rollback with versioned read-only socket mounts; preserve owner-authored steward policy and existing typed tools.",
-        "Preserve Telegram and rollback when host execution pins need refresh, reconcile interrupted supervisors without replay, and keep root-only helpers off the public command path."
+        "Preserve Telegram and rollback when host execution pins need refresh, reconcile interrupted supervisors without replay, and keep root-only helpers off the public command path.",
+        "Provide a root-only reviewed-hash command to refresh execution primitives without changing tokens, issuer identity, owner state or policy."
       ]
     },
     {

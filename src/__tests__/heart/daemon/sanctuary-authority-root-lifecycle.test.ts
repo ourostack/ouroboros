@@ -139,8 +139,99 @@ async function preparedFixture() {
   host.spawn.mockImplementation(() => { publish(); return { unref: vi.fn(), once: vi.fn() } })
   return { ...f, lifecycle, epochRoot, epoch, publish }
 }
+async function installedStoppedGatewayFixture() {
+  const f = await preparedFixture()
+  await f.lifecycle.effect("start-gateway").apply()
+  f.createTarget()
+  for (const step of ["configure-resident", "start-resident", "verify-install"]) await f.lifecycle.effect(step).apply()
+  fs.rmSync(f.p("/proc/45678"), { recursive: true })
+  return f
+}
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.resetAllMocks(); for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }) })
 describe("fixed root installation effects", () => {
+  it("refreshes only explicitly reviewed execution pins and preserves authority, cursor and owner state", async () => {
+    const f = await installedStoppedGatewayFixture()
+    const beforeRequest = JSON.parse(fs.readFileSync(f.p(`${rootPath}/request.json`), "utf8"))
+    const beforeConfig = JSON.parse(fs.readFileSync(f.p(`${rootPath}/active.json`), "utf8"))
+    const retained = ["epoch.json", "issuer.pem", "current-token", "agent/authority/telegram-state.json"]
+    const before = retained.map(name => fs.readFileSync(f.p(`${f.epochRoot}/${name}`), "utf8"))
+    f.write("/usr/bin/prlimit", "reviewed-prlimit")
+    f.write("/usr/bin/setsid", "reviewed-setsid")
+    for (const name of ["executions", "supervisors"]) fs.mkdirSync(f.p(`${f.epochRoot}/${name}`), { mode: 0o700 })
+    host.spawn.mockClear()
+    host.exec.mockClear()
+    const pins = [digest("reviewed-prlimit"), digest("reviewed-setsid")] as const
+    f.lifecycle.repinExecution(...pins)
+    f.lifecycle.repinExecution(...pins)
+    expect(JSON.parse(fs.readFileSync(f.p(`${rootPath}/request.json`), "utf8"))).toEqual({ ...beforeRequest, prlimitDigest: pins[0], setsidDigest: pins[1] })
+    expect(JSON.parse(fs.readFileSync(f.p(`${rootPath}/active.json`), "utf8"))).toEqual({ ...beforeConfig, hostPrlimitDigest: pins[0], hostSetsidDigest: pins[1] })
+    expect(retained.map(name => fs.readFileSync(f.p(`${f.epochRoot}/${name}`), "utf8"))).toEqual(before)
+    expect(host.spawn).not.toHaveBeenCalled()
+    expect(host.exec).not.toHaveBeenCalled()
+  })
+
+  it.each(["live", "journal", "executions", "supervisors", "cgroup", "digest", "hash", "request", "config"])("refuses execution re-pinning with %s ambiguity before writing", async (fault) => {
+    const f = await installedStoppedGatewayFixture()
+    if (fault === "live") f.publish()
+    if (fault === "journal") f.write("/boot/config/custom/ouro-butler/docker-man-template-transaction.json", "pending")
+    if (fault === "executions" || fault === "supervisors") f.write(`${f.epochRoot}/${fault}/unresolved`, "pending")
+    if (fault === "cgroup") fs.mkdirSync(f.p("/sys/fs/cgroup/ouro-authority/unresolved"))
+    if (fault === "request") f.write(`${rootPath}/request.json`, { ...f.request, prlimitDigest: digest("concurrent request") })
+    if (fault === "config") {
+      const config = JSON.parse(fs.readFileSync(f.p(`${rootPath}/active.json`), "utf8"))
+      f.write(`${rootPath}/active.json`, { ...config, ownerUserId: "43" })
+    }
+    const before = ["/request.json", "/active.json"].map(name => fs.readFileSync(f.p(`${rootPath}${name}`), "utf8"))
+    expect(() => f.lifecycle.repinExecution(fault === "digest" ? "bad" : fault === "hash" ? digest("not current") : f.request.prlimitDigest, f.request.setsidDigest)).toThrow()
+    expect(["/request.json", "/active.json"].map(name => fs.readFileSync(f.p(`${rootPath}${name}`), "utf8"))).toEqual(before)
+  })
+
+  it("retries interrupted execution-pin publication without changing its reviewed values", async () => {
+    const f = await installedStoppedGatewayFixture()
+    f.write("/usr/bin/prlimit", "reviewed-prlimit")
+    const rename = fs.renameSync
+    const failure = vi.spyOn(fs, "renameSync").mockImplementation((source, destination) => {
+      if (destination === f.p(`${rootPath}/active.json`)) throw new Error("interrupted config write")
+      return rename(source, destination)
+    })
+    const pins = [digest("reviewed-prlimit"), f.request.setsidDigest] as const
+    expect(() => f.lifecycle.repinExecution(...pins)).toThrow("interrupted config write")
+    failure.mockRestore()
+    new SanctuaryAuthorityRootLifecycle(f.transaction, f.rootOptions).repinExecution(...pins)
+    expect(JSON.parse(fs.readFileSync(f.p(`${rootPath}/active.json`), "utf8")).hostPrlimitDigest).toBe(pins[0])
+  })
+
+  it.each(["/usr/bin/prlimit", "/usr/bin/setsid"])("boots and retires the installed gateway after %s changes without executing it", async (primitive) => {
+    const f = await preparedFixture()
+    await f.lifecycle.effect("start-gateway").apply()
+    f.createTarget()
+    for (const step of ["configure-resident", "start-resident", "verify-install"]) await f.lifecycle.effect(step).apply()
+    f.write(primitive, "updated by the OS")
+    for (let cycle = 0; cycle < 2; cycle++) {
+      fs.rmSync(f.p("/proc/45678"), { recursive: true })
+      await expect(f.lifecycle.boot()).resolves.toBe(true)
+      expect(host.spawn).toHaveBeenLastCalledWith(f.p("/usr/local/bin/node"), [
+        f.p(`${rootPath}/package/dist/heart/daemon/sanctuary-telegram-authority-entry.js`), "--config", f.p(`${rootPath}/active.json`),
+      ], expect.objectContaining({ detached: true }))
+    }
+    await f.lifecycle.effect("rollback:freeze-resident").apply()
+    fs.rmSync(f.p("/proc/45678"), { recursive: true })
+    await f.lifecycle.effect("rollback:retire-registrations").apply()
+    expect(JSON.parse(fs.readFileSync(f.p(`${f.epochRoot}/retirement.json`), "utf8")).quiescent).toBe(true)
+  })
+
+  it("retires a staged pre-epoch migration after execution primitives change", async () => {
+    const f = fixture()
+    const lifecycle = f.staged()
+    f.write(`${rootPath}/incoming-token`, "123:newTokenabcdefghijklmnopqrstuvwxyz")
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => new Response(JSON.stringify(String(url).includes("oldToken") ? { ok: false } : { ok: true, result: { id: 123 } }), { status: String(url).includes("oldToken") ? 401 : 200 }))
+    await lifecycle.effect("freeze-resident").apply()
+    await lifecycle.effect("stage-authority").apply()
+    f.write("/usr/bin/prlimit", "updated by the OS")
+    await lifecycle.effect("rollback:retire-registrations").apply()
+    expect(JSON.parse(fs.readFileSync(f.p(`${rootPath}/epochs/fixture-epoch/retirement.json`), "utf8")).quiescent).toBe(true)
+  })
+
   it("publishes the boot hook through a safe public boot parent without weakening private state parents", async () => {
     const f = fixture()
     const lifecycle = f.staged()
@@ -292,7 +383,7 @@ describe("fixed root installation effects", () => {
     vi.spyOn(process, "getgid").mockReturnValue(10001)
     await expect(runSanctuaryAuthorityRootCli(["vault", "snapshot"])).rejects.toThrow(/root/u)
     vi.mocked(process.getgid!).mockReturnValue(0)
-    for (const args of [[], ["unexpected"], ["boot", "extra"], ["other", "two"]]) await expect(runSanctuaryAuthorityRootCli(args)).rejects.toThrow(/Usage/u)
+    for (const args of [[], ["unexpected"], ["boot", "extra"], ["other", "two"], ["repin-execution"], ["repin-execution", digest("one")], ["repin-execution", digest("one"), digest("two"), "extra"]]) await expect(runSanctuaryAuthorityRootCli(args)).rejects.toThrow(/Usage/u)
     const output = vi.spyOn(process.stdout, "write").mockReturnValue(true)
     vault.mockResolvedValue({ tokenPresent: false })
     await runSanctuaryAuthorityRootCli(["vault", "presence"])
@@ -306,12 +397,14 @@ describe("fixed root installation effects", () => {
     const f = fixture()
     const sessions = await import("../../../mind/session-transaction")
     const boot = vi.spyOn(SanctuaryAuthorityRootLifecycle.prototype, "boot").mockResolvedValue(true)
+    const repin = vi.spyOn(SanctuaryAuthorityRootLifecycle.prototype, "repinExecution").mockImplementation(() => undefined)
     vi.spyOn(sessions, "withSessionTurnLease").mockImplementation(async (_file, work) => work({} as never))
     vi.spyOn(process, "getuid").mockReturnValue(0)
     vi.spyOn(process, "getgid").mockReturnValue(0)
     const exists = fs.existsSync
     const existsMock = vi.spyOn(fs, "existsSync").mockImplementation((file) => String(file) === `${rootPath}/activation.json` ? false : exists(file))
     await runSanctuaryAuthorityRootCli(["boot"])
+    await expect(runSanctuaryAuthorityRootCli(["repin-execution", digest("prlimit"), digest("setsid")])).rejects.toThrow(/not active/u)
     expect(boot).not.toHaveBeenCalled()
     existsMock.mockRestore()
     f.write(`${rootPath}/activation.json`, f.transaction)
@@ -325,6 +418,10 @@ describe("fixed root installation effects", () => {
     vi.spyOn(fs, "readFileSync").mockImplementation(((file, options) => read(typeof file === "number" ? file : mapped(file), options)) as typeof fs.readFileSync)
     await runSanctuaryAuthorityRootCli(["boot"])
     expect(boot).toHaveBeenCalledOnce()
+    const write = vi.fn()
+    await runSanctuaryAuthorityRootCli(["repin-execution", digest("prlimit"), digest("setsid")], write)
+    expect(repin).toHaveBeenCalledWith(digest("prlimit"), digest("setsid"))
+    expect(write).toHaveBeenCalledWith('{"repinned":true,"gatewayRestartRequired":true}\n')
     expect(sessions.withSessionTurnLease).toHaveBeenCalledWith("/boot/config/custom/ouro-butler/docker-man-template-transaction.json", expect.any(Function), { timeoutMs: 0, confinementRoot: "/boot/config/custom/ouro-butler" })
   })
   it("preserves unrelated running containers and refuses rollback before the token and health are restored", async () => {

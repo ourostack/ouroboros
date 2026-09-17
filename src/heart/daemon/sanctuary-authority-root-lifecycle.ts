@@ -84,11 +84,41 @@ export class SanctuaryAuthorityRootLifecycle {
     this.#target()
     if (this.#containers().some((container) => container.Name !== "/ouro-butler" && container.State.Running)) throw new Error("Sanctuary rollback resident is running")
     this.#runtimeDirectories()
-    this.#verifyPackage()
+    this.#verifyPackage(undefined, false)
     // Boot may already have a tokenless resident under Docker's restart policy.
     // Only handoff requires us to start it strictly after gateway readiness.
     await this.#startGateway(true)
     return true
+  }
+
+  repinExecution(prlimitDigest: string, setsidDigest: string): void {
+    if (![prlimitDigest, setsidDigest].every(pin => DIGEST.test(pin))) throw new Error("Reviewed execution digests are required")
+    if (fs.existsSync(this.#p("/boot/config/custom/ouro-butler/docker-man-template-transaction.json"))) throw new Error("Finish the pending installation before re-pinning")
+    this.#record(`${ROOT}/activation.json`, { ...this.#transaction, state: "active", epochId: this.#request.epochId })
+    this.#verifyPackage(undefined, false)
+    if (this.#pid() !== null) throw new Error("Stop the verified gateway process before re-pinning")
+    for (const name of ["executions", "supervisors"]) {
+      const directory = `${this.#epochRoot()}/${name}`
+      if (fs.existsSync(this.#p(directory))) {
+        this.#directory(directory)
+        if (fs.readdirSync(this.#p(directory)).length !== 0) throw new Error("Resolve pending execution state before re-pinning")
+      }
+    }
+    if (fs.readdirSync(this.#p(CGROUP)).some(name => fs.lstatSync(this.#p(`${CGROUP}/${name}`)).isDirectory())) throw new Error("Resolve pending cgroups before re-pinning")
+    this.#verifyPrimitive("/usr/bin/prlimit", prlimitDigest)
+    this.#verifyPrimitive("/usr/bin/setsid", setsidDigest)
+    const currentRequest = JSON.parse(this.#private(`${ROOT}/request.json`))
+    if (JSON.stringify(currentRequest) !== JSON.stringify(this.#request)) throw new Error("Sanctuary re-pin request changed")
+    const configuration = { ...this.#configuration(), hostPrlimitDigest: prlimitDigest, hostSetsidDigest: setsidDigest }
+    const current = JSON.parse(this.#private(`${ROOT}/active.json`))
+    if (JSON.stringify({ ...current, hostPrlimitDigest: prlimitDigest, hostSetsidDigest: setsidDigest }) !== JSON.stringify(configuration)) throw new Error("Sanctuary re-pin configuration changed")
+    const request = { ...this.#request, prlimitDigest, setsidDigest }
+    // Request-first interruption leaves the old runtime pins fail-closed; repeating the command completes publication.
+    this.#write(`${ROOT}/request.json`, JSON.stringify(request))
+    this.#write(`${ROOT}/active.json`, JSON.stringify(configuration))
+    this.#request.prlimitDigest = prlimitDigest
+    this.#request.setsidDigest = setsidDigest
+    emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_execution_pins_refreshed", message: "Reviewed Sanctuary execution pins refreshed; gateway restart required", meta: { prlimitDigest, setsidDigest } })
   }
 
   effect(step: string) {
@@ -170,7 +200,7 @@ export class SanctuaryAuthorityRootLifecycle {
     const stat = fs.lstatSync(directory)
     if (!stat.isDirectory() || stat.uid !== this.#uid || stat.gid !== gid || (stat.mode & 0o7777) !== mode || fs.realpathSync(directory) !== directory) throw new Error("Sanctuary root lifecycle directory is unsafe")
   }
-  #verifyPackage(packageRoot = `${ROOT}/package`): void {
+  #verifyPackage(packageRoot = `${ROOT}/package`, hostExecution = true): void {
     verifySanctuaryAuthorityInstallation({
       packageRoot: this.#p(packageRoot), manifestPath: this.#p(`${ROOT}/package-manifest.json`), manifestDigest: this.#request.packageDigest,
       stateRoot: this.#p(this.#epochRoot()), stagingRoot: this.#p(STAGING), socketRoot: this.#p(SOCKET), cgroupRoot: this.#p(CGROUP),
@@ -180,16 +210,22 @@ export class SanctuaryAuthorityRootLifecycle {
     for (const program of ["dist/heart/daemon/sanctuary-telegram-authority-entry.js", "dist/heart/daemon/sanctuary-authority-root-lifecycle.js", "dist/heart/daemon/sanctuary-host-supervisor-entry.js", "deploy/unraid/sanctuary-host-launcher.sh", "deploy/unraid/sanctuary-authority-service.sh"]) {
       if (!Object.hasOwn(manifest.files, program)) throw new Error("Sanctuary authority package program is absent")
     }
-    for (const [file, expected] of [["/usr/local/bin/node", this.#request.nodeDigest], ["/usr/bin/prlimit", this.#request.prlimitDigest], ["/usr/bin/setsid", this.#request.setsidDigest], ["/bin/sh", this.#request.shellDigest]]) {
-      const actual = this.#p(file!)
-      const stat = fs.statSync(actual)
-      if (!stat.isFile() || stat.uid !== this.#uid || stat.gid !== this.#gid || (stat.mode & 0o022) !== 0 || (stat.mode & 0o111) === 0 || digest(fs.readFileSync(actual)) !== expected) throw new Error("Sanctuary host primitive pin changed")
+    for (const [file, expected] of [
+      ["/usr/local/bin/node", this.#request.nodeDigest], ["/bin/sh", this.#request.shellDigest],
+      ...(hostExecution ? [["/usr/bin/prlimit", this.#request.prlimitDigest], ["/usr/bin/setsid", this.#request.setsidDigest]] : []),
+    ]) {
+      this.#verifyPrimitive(file!, expected!)
     }
   }
-  #staged(): boolean {
+  #verifyPrimitive(file: string, expected: string): void {
+    const actual = this.#p(file)
+    const stat = fs.statSync(actual)
+    if (!stat.isFile() || stat.uid !== this.#uid || stat.gid !== this.#gid || (stat.mode & 0o022) !== 0 || (stat.mode & 0o111) === 0 || digest(fs.readFileSync(actual)) !== expected) throw new Error("Sanctuary host primitive pin changed")
+  }
+  #staged(hostExecution = true): boolean {
     if (!fs.existsSync(this.#p(`${this.#epochRoot()}/stage.json`))) return false
     this.#record(`${this.#epochRoot()}/stage.json`, { packageDigest: this.#request.packageDigest })
-    this.#verifyPackage()
+    this.#verifyPackage(undefined, hostExecution)
     if (this.#bootScript().text.split("\n").filter((line) => line === BOOT_LINE).length !== 1
       || digest(this.#private(BOOT)) !== digest(fs.readFileSync(this.#p(`${ROOT}/package/deploy/unraid/sanctuary-authority-service.sh`)))) throw new Error("Sanctuary installed boot lifecycle changed")
     return true
@@ -207,10 +243,10 @@ export class SanctuaryAuthorityRootLifecycle {
       }
     }
   }
-  #stage(): void {
+  #stage(hostExecution = true): void {
     this.#migration()
     this.#runtimeDirectories()
-    this.#verifyPackage(`${ROOT}/incoming-package`)
+    this.#verifyPackage(`${ROOT}/incoming-package`, hostExecution)
     const manifest = JSON.parse(this.#private(`${ROOT}/package-manifest.json`, 0o600, 8 * 1024 * 1024)) as { files: Record<string, { digest: string; mode: number }> }
     this.#directory(`${ROOT}/package`)
     for (const [relative, pin] of Object.entries(manifest.files)) {
@@ -225,7 +261,7 @@ export class SanctuaryAuthorityRootLifecycle {
       }
       fs.chmodSync(this.#p(destination), pin.mode)
     }
-    this.#verifyPackage()
+    this.#verifyPackage(undefined, hostExecution)
     const { text: boot, mode: bootMode } = this.#bootScript()
     if (boot.split("\n").some((line) => line.includes("ouro-authority") && line !== BOOT_LINE)) throw new Error("Sanctuary boot ownership is ambiguous")
     this.#write(BOOT, fs.readFileSync(this.#p(`${ROOT}/package/deploy/unraid/sanctuary-authority-service.sh`), "utf8"))
@@ -244,8 +280,8 @@ export class SanctuaryAuthorityRootLifecycle {
     if (this.#epoch().state !== "prepared") throw new Error("Sanctuary root epoch is retired")
     return true
   }
-  async #rotate(): Promise<void> {
-    if (!this.#frozen() || !this.#staged()) throw new Error("Sanctuary root installation must be frozen and staged")
+  async #rotate(hostExecution = true): Promise<void> {
+    if (!this.#frozen() || !this.#staged(hostExecution)) throw new Error("Sanctuary root installation must be frozen and staged")
     const token = this.#private(`${ROOT}/incoming-token`).trim()
     this.#write(`${this.#epochRoot()}/current-token`, token)
     await prepareSanctuaryAuthorityEpoch({
@@ -343,11 +379,11 @@ export class SanctuaryAuthorityRootLifecycle {
   }
   async #startGateway(boot = false): Promise<void> {
     if (!boot) this.#requireStopped()
-    this.#verifyPackage()
+    this.#verifyPackage(undefined, !boot)
     if (!this.#tokensAbsent() || !this.#rotated()) throw new Error("Sanctuary root token custody is not exclusive")
     if (this.#pid() === null) {
       this.#remove(`${this.#epochRoot()}/readiness.json`)
-      const child = spawn("/usr/bin/setsid", [this.#p("/usr/local/bin/node"), this.#p(`${ROOT}/package/dist/heart/daemon/sanctuary-telegram-authority-entry.js`), "--config", this.#p(`${ROOT}/active.json`)], {
+      const child = spawn(this.#p("/usr/local/bin/node"), [this.#p(`${ROOT}/package/dist/heart/daemon/sanctuary-telegram-authority-entry.js`), "--config", this.#p(`${ROOT}/active.json`)], {
         cwd: "/", env: { PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" }, detached: true, stdio: "ignore",
       })
       child.unref()
@@ -412,11 +448,11 @@ export class SanctuaryAuthorityRootLifecycle {
     // Complete only the root prerequisites needed to retire it; never start
     // ingress or a resident while recovering this rollback intent.
     if (!fs.existsSync(this.#p(`${this.#epochRoot()}/epoch.json`))) {
-      if (!this.#staged()) this.#stage()
-      await this.#rotate()
+      if (!this.#staged(false)) this.#stage(false)
+      await this.#rotate(false)
     }
     if (!fs.existsSync(this.#p(`${ROOT}/active.json`)) || JSON.parse(this.#private(`${ROOT}/active.json`)).keyId !== this.#request.epochId) this.#transfer()
-    this.#verifyPackage()
+    this.#verifyPackage(undefined, false)
     const pid = this.#pid()
     if (pid !== null) {
       process.kill(pid, "SIGUSR2")
@@ -588,13 +624,20 @@ export async function runSanctuaryAuthorityRootCli(argv: string[], write = (text
     write(`${JSON.stringify(await migrateSanctuaryAuthorityVault(argv[1]!, input))}\n`)
     return
   }
-  if (argv.length !== 1 || argv[0] !== "boot") throw new Error("Usage: sanctuary-authority-root-lifecycle <boot|vault snapshot|vault presence|vault remove|vault restore>")
+  const repin = argv.length === 3 && argv[0] === "repin-execution"
+  if (!repin && (argv.length !== 1 || argv[0] !== "boot")) throw new Error("Usage: sanctuary-authority-root-lifecycle <boot|repin-execution <prlimit-sha256> <setsid-sha256>|vault snapshot|vault presence|vault remove|vault restore>")
   await withSessionTurnLease("/boot/config/custom/ouro-butler/docker-man-template-transaction.json", async () => {
     const activationPath = `${ROOT}/activation.json`
-    if (!fs.existsSync(activationPath)) return
+    if (!fs.existsSync(activationPath)) {
+      if (repin) throw new Error("Sanctuary authority is not active")
+      return
+    }
     const activation = JSON.parse(fs.readFileSync(activationPath, "utf8")) as Transaction
     const lifecycle = new SanctuaryAuthorityRootLifecycle(activation)
-    await lifecycle.boot()
+    if (repin) {
+      lifecycle.repinExecution(argv[1]!, argv[2]!)
+      write('{"repinned":true,"gatewayRestartRequired":true}\n')
+    } else await lifecycle.boot()
   }, { timeoutMs: 0, confinementRoot: "/boot/config/custom/ouro-butler" })
 }
 

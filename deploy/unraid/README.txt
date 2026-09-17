@@ -2030,7 +2030,7 @@ Update:
     DOCKERMAN_TEMPLATE_JOURNAL=/boot/config/custom/ouro-butler/docker-man-template-transaction.json
     test "$DOCKERMAN_TEMPLATE_PATH" = /boot/config/plugins/dockerMan/templates-user/my-ouro-butler.xml
     test "$DOCKERMAN_TEMPLATE_JOURNAL" = /boot/config/custom/ouro-butler/docker-man-template-transaction.json
-  Before stopping, renaming, or creating any Butler container, extract the complete /opt/ouro package from that exact image ID, including production node_modules and package-relative dist. Do not copy these files from a checkout or another image. The branch still has package version alpha.816; version alone is not the mount contract. Only the reviewed new image's bot.ouro.sanctuary.mount-contract=canonical-gateway label admits the fourth mount. The immutable source alpha.816 ID above remains canonical-pre-gateway even when its npm version equals the target package version; no version bump or retag is implied.
+  Before stopping, renaming, or creating any Butler container, extract the complete /opt/ouro package from that exact image ID, including production node_modules and package-relative dist. Do not copy these files from a checkout or another image. Use the package version extracted from the selected immutable image; version alone is not the mount contract. Only the reviewed new image's bot.ouro.sanctuary.mount-contract=canonical-gateway label admits the fourth mount. The immutable source alpha.816 ID above remains canonical-pre-gateway and must never be retagged as the gateway release.
   Stage the event assets, audit the original version-tagged template, create a separate temporary copy for exact local-image-ID auditing, and keep the private stage until the outer transaction commits:
     EVENT_ASSET_STAGE=$(mktemp -d /mnt/user/appdata/ouro-butler/staging/ouro-events.XXXXXX)
     chmod 0700 "$EVENT_ASSET_STAGE"
@@ -2334,6 +2334,17 @@ ouro-butler-rollback
   Keep ouro-butler-rollback stopped until the new production container is proven or the explicit rollback arm restores it. The rollback arm first retires root registrations and executions, stops the gateway, ends the epoch and restores the current valid token/cursor. Only then does it restore the prior bundle and rename the untouched three-mount alpha.816 container. start_only_butler_for_recovery invokes authority-restore while the authority journal exists; it cannot bypass retirement with docker start. Never create production from a mutable tag, a bare tag, or a bare local image ID.
   Docker tab Update, Force Update, Edit/Apply, Update All, and CA Action Centre updates remain visible but are unsupported because stock recreation deletes reviewed rollback evidence. Visibility, start, stop, and autostart remain supported; use only this reviewed version-tag transaction for updates.
   Community Apps determines installed state from the DockerMan template plus the live container name and image. The helper proves that same relationship without calling the endpoint that refreshes Community Apps' UI cache; the later live UI smoke confirms what Ari sees.
+
+Execution-only primitive refresh:
+
+  A reviewed Unraid update to prlimit or setsid makes new host execution unavailable, but the installed gateway can still boot for Telegram and retire for rollback. Package, Node and shell pins remain mandatory. Gateway launch uses Node's native detached process support; it does not execute an unreviewed setsid binary.
+
+  Root maintainer: stop the verified gateway process using its exact root-owned lock/PID identity, then confirm there is no pending DockerMan transaction or unresolved execution, supervisor or cgroup state. Review the current prlimit and setsid file hashes and ownership before supplying their full SHA-256 digests to the package-owned command below. The command verifies those exact bytes and metadata; it never adopts current hashes implicitly. It changes no token, issuer, owner, cursor, policy or grant. An interrupted two-file publication remains fail-closed and can be completed by repeating the same reviewed command.
+
+    /usr/local/bin/node /mnt/user/appdata/ouro-authority/package/dist/heart/daemon/sanctuary-authority-root-lifecycle.js repin-execution sha256:REVIEWED_PRLIMIT_SHA256 sha256:REVIEWED_SETSID_SHA256
+    /usr/local/bin/node /mnt/user/appdata/ouro-authority/package/dist/heart/daemon/sanctuary-authority-root-lifecycle.js boot
+
+  Replace each REVIEWED_*_SHA256 placeholder with its reviewed 64 hexadecimal digits. After restart, verify the signed host.status health result before proposing a new host command. Changed package, Node or shell pins require repair of that separate boundary, not this execution-only refresh.
 
 Backup:
   Set BACKUP_ROOT to a new absolute snapshot path on the destination filesystem.
