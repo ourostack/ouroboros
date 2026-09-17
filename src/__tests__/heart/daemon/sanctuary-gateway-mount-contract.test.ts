@@ -34,6 +34,19 @@ ${gateway ? '<Config Target="/run/ouro-authority" Mode="ro" Type="Path">/run/our
 }
 
 describe("versioned Sanctuary gateway deployment mounts", () => {
+  it("runs packaged-image CI against the exact gateway mounts and every explicit audit mode", () => {
+    const workflow = fs.readFileSync(".github/workflows/coverage.yml", "utf8")
+    const create = workflow.match(/docker create --pull=never --name ouro-butler[\s\S]*?"\$AUDIT_VERSION_IMAGE"/u)?.[0] ?? ""
+    expect(create.match(/--mount type=bind,/gu)).toHaveLength(4)
+    expect(create).toContain("--mount type=bind,src=/run/ouro-authority,dst=/run/ouro-authority,readonly")
+    const preparation = workflow.slice(workflow.indexOf("for AUDIT_SOURCE in"), workflow.indexOf('AUDIT_ICON='))
+    expect(preparation.match(/\/run\/ouro-authority/gu)).toHaveLength(3)
+    for (const mode of ["--inspect", "--persistent-template", "--template"]) {
+      const call = workflow.split("\n").find(line => line.trimStart().startsWith(`${mode} `))
+      expect(call).toContain("--mount-contract canonical-gateway")
+    }
+  })
+
   it("packages the gateway image contract and the one narrow read-only socket mount", () => {
     const xml = fs.readFileSync("deploy/unraid/sanctuary.xml", "utf8")
     const packageVersion = JSON.parse(fs.readFileSync("package.json", "utf8")).version

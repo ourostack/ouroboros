@@ -2,6 +2,13 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.817",
+      "changes": [
+        "Add root-authenticated Sanctuary host execution with exact owner approval, one-time permits, durable receipts, and tokenless Telegram transport.",
+        "Package journaled root gateway installation and rollback with versioned read-only socket mounts; preserve owner-authored steward policy and existing typed tools."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.816",
       "changes": [
         "Support bounded Sanctuary service restarts only when a fresh request or health event intersects with explicit owner-stated desired state and restart grants.",
