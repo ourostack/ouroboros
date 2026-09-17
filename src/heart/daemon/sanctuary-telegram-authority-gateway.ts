@@ -488,6 +488,28 @@ export class FileSanctuaryTelegramAuthorityGateway {
     })
   }
 
+  ownerObservation(input: {
+    updateId: number
+    observationDigest: string
+  }): SignedAuthorityPayload<TelegramTransportObservationV1> | null {
+    if (
+      !Number.isSafeInteger(input.updateId)
+      || input.updateId < 0
+      || !/^sha256:[a-f0-9]{64}$/u.test(input.observationDigest)
+    ) return null
+    return this.#read((state) => {
+      const record = state.records[String(input.updateId)]
+      if (
+        !record
+        || record.disposition !== "dispatch"
+        || record.settlement !== "pending"
+        || !record.observation.payload.ownerEligible
+        || authorityArtifactDigest(record.observation.domain, record.observation.payload) !== input.observationDigest
+      ) return null
+      return record.observation
+    })
+  }
+
   admitChat(input: {
     admissionId: string
     updateId: number

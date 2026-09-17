@@ -5,10 +5,13 @@ import * as path from "node:path"
 import type { TelegramBotApi, TelegramUpdate } from "../../senses/telegram-client"
 import { FIXED_ADMISSION_ACKNOWLEDGEMENT } from "../../senses/telegram-effect-adapter"
 import { SocketFrontendClient } from "../frontend-socket-client"
+import { authorityArtifactDigest } from "./sanctuary-authority-codec"
 import {
   FileSanctuaryTelegramAuthorityGateway,
   type SanctuaryTelegramSettlement,
 } from "./sanctuary-telegram-authority-gateway"
+import { FileSanctuaryHostAuthority, type HostProposalRequestV1 } from "./sanctuary-host-authority"
+import type { SignedAuthorityPayload } from "./sanctuary-authority-codec"
 
 const PROTOCOL_VERSION = 1
 const DEFAULT_MAX_REQUEST_BYTES = 256 * 1024
@@ -45,19 +48,39 @@ export class SanctuaryTelegramAuthorityService {
   readonly #api: TelegramBotApi
   readonly #gateway: FileSanctuaryTelegramAuthorityGateway
   readonly #downloadFile: ((filePath: string) => Promise<{ body: Buffer; contentType?: string }>) | undefined
+  readonly #hostAuthority: FileSanctuaryHostAuthority | undefined
+  readonly #hostExecutor: {
+    execute(permit: SignedAuthorityPayload<Record<string, unknown>>): Promise<unknown>
+    acknowledge?(permitId: string): void
+  } | undefined
   readonly #allowedFilePaths = new Set<string>()
+  readonly #hostExecutions = new Map<string, Promise<void>>()
+  readonly #hostExecutionFailures = new Map<string, string>()
+  readonly #hostMaintenanceFailures = new Map<string, string>()
 
   constructor(options: {
     api: TelegramBotApi
     gateway: FileSanctuaryTelegramAuthorityGateway
+    hostAuthority?: FileSanctuaryHostAuthority
+    hostExecutor?: {
+      execute(permit: SignedAuthorityPayload<Record<string, unknown>>): Promise<unknown>
+      acknowledge?(permitId: string): void
+    }
     downloadFile?: (filePath: string) => Promise<{ body: Buffer; contentType?: string }>
   }) {
     this.#api = options.api
     this.#gateway = options.gateway
+    this.#hostAuthority = options.hostAuthority
+    this.#hostExecutor = options.hostExecutor
     this.#downloadFile = options.downloadFile
   }
 
   async dispatch(method: string, params: Record<string, unknown>): Promise<unknown> {
+    if (this.#hostAuthority) {
+      for (const registrationId of this.#hostAuthority.expireRegistrations()) {
+        await this.#flushHostCard(registrationId)
+      }
+    }
     if (method === "telegram.poll") {
       if (!emptyParams(params)) throw new Error("Sanctuary Telegram poll params are invalid")
       const updates = await this.#api.request<TelegramUpdate[]>("getUpdates", {
@@ -73,7 +96,21 @@ export class SanctuaryTelegramAuthorityService {
       if (!record || record.disposition !== "dispatch") {
         throw new Error("Sanctuary Telegram pending observation state is unavailable")
       }
-      return { observation, update: record.rawUpdate }
+      const callback = record.rawUpdate.callback_query
+      let hostDecision: unknown
+      if (callback && callback.message && this.#hostAuthority?.ownsHandle(callback.data ?? "")) {
+        hostDecision = this.#hostAuthority.decisionForCallback(callback.id) ?? this.#hostAuthority.decide({
+          callbackQueryId: callback.id,
+          callbackData: callback.data!,
+          telegramMessageId: callback.message.message_id,
+          userId: String(callback.from.id),
+          chatId: String(callback.message.chat.id),
+          callbackObservationDigest: authorityArtifactDigest(observation.domain, observation.payload),
+          decidedAt: observation.payload.observedAt,
+        })
+        if (hostDecision) await this.#maintainHostCard(String((hostDecision as SignedAuthorityPayload<Record<string, unknown>>).payload.registrationId))
+      }
+      return { observation, update: record.rawUpdate, ...(hostDecision ? { hostDecision } : {}) }
     }
     if (method === "telegram.settle") {
       this.#gateway.settle(params as unknown as SanctuaryTelegramSettlement)
@@ -122,6 +159,13 @@ export class SanctuaryTelegramAuthorityService {
           throw new Error("Sanctuary Telegram send body is invalid")
         }
         const chatId = String(body.chat_id)
+        if (
+          this.#hostAuthority?.ownsPrompt(body.text)
+          || (chatId === ownerChatId && body.reply_markup !== undefined && this.#hostAuthority?.ownerMutationFrozen())
+          || (body.reply_markup !== undefined && this.#replyMarkupContainsHostHandle(body.reply_markup))
+        ) {
+          throw new Error("Sanctuary Telegram host approval content is root-owned")
+        }
         const observedStrangerAcknowledgement = body.text === FIXED_ADMISSION_ACKNOWLEDGEMENT
           && isObject(params.observation)
           && exactKeys(params.observation, ["updateId", "observationDigest"])
@@ -143,6 +187,14 @@ export class SanctuaryTelegramAuthorityService {
           || String(body.chat_id) !== ownerChatId
         ) {
           throw new Error("Sanctuary Telegram edit target is invalid")
+        }
+        if (
+          this.#hostAuthority?.ownsMessage(body.message_id as number)
+          || this.#hostAuthority?.ownerMutationFrozen()
+          || this.#hostAuthority?.ownsPrompt(body.text as string)
+          || (body.reply_markup !== undefined && this.#replyMarkupContainsHostHandle(body.reply_markup))
+        ) {
+          throw new Error("Sanctuary Telegram host approval message is root-owned")
         }
         if (
           !Number.isSafeInteger(body.message_id)
@@ -196,6 +248,107 @@ export class SanctuaryTelegramAuthorityService {
       }
       return result
     }
+    if (method === "host.approval") {
+      if (!this.#hostAuthority) throw new Error("Sanctuary host authority is unavailable")
+      if (!exactKeys(params, ["proposal"])) throw new Error("Sanctuary host approval params are invalid")
+      const prepared = this.#hostAuthority.prepare(params.proposal as HostProposalRequestV1)
+      try {
+        const sent = await this.#api.request("sendMessage", {
+          chat_id: this.#gateway.identity().ownerChatId,
+          text: prepared.prompt,
+          parse_mode: "HTML",
+          reply_markup: prepared.replyMarkup,
+        })
+        if (!isObject(sent) || !Number.isSafeInteger(sent.message_id) || (sent.message_id as number) <= 0) {
+          throw new Error("Sanctuary host approval message result is invalid")
+        }
+        const registration = this.#hostAuthority.commit({
+          registrationId: prepared.registrationId,
+          telegramMessageId: sent.message_id as number,
+        })
+        return {
+          registration,
+          registrationId: prepared.registrationId,
+          telegramMessageId: sent.message_id,
+          expiresAt: prepared.expiresAt,
+        }
+      } catch (error) {
+        this.#hostAuthority.reconcilePrepared()
+        throw error
+      }
+    }
+    if (method === "host.status") {
+      if (!this.#hostAuthority) throw new Error("Sanctuary host authority is unavailable")
+      if (!exactKeys(params, ["registrationId"]) || typeof params.registrationId !== "string") {
+        throw new Error("Sanctuary host status params are invalid")
+      }
+      let status = this.#hostAuthority.status(params.registrationId)
+      if (!status) return null
+      if (status.state === "executed") {
+        try {
+          if (
+            !isObject(status.receipt)
+            || status.receipt.schemaVersion !== 1
+            || typeof status.receipt.domain !== "string"
+            || typeof status.receipt.keyId !== "string"
+            || typeof status.receipt.signature !== "string"
+            || !isObject(status.receipt.payload)
+          ) {
+            throw new Error("Sanctuary host terminal receipt is invalid")
+          }
+          const terminalReceipt: SignedAuthorityPayload<Record<string, unknown>> = {
+            schemaVersion: 1,
+            domain: status.receipt.domain,
+            keyId: status.receipt.keyId,
+            signature: status.receipt.signature,
+            payload: status.receipt.payload,
+          }
+          await this.#completeHostMaintenance(
+            params.registrationId,
+            terminalReceipt,
+          )
+          this.#hostMaintenanceFailures.delete(params.registrationId)
+          status = this.#hostAuthority.status(params.registrationId)!
+        } catch {
+          this.#hostMaintenanceFailures.set(params.registrationId, "Sanctuary host terminal cleanup is pending")
+        }
+      } else {
+        await this.#maintainHostCard(params.registrationId)
+        status = this.#hostAuthority.status(params.registrationId)!
+      }
+      return {
+        ...status,
+        execution: this.#hostExecutions.has(params.registrationId)
+          ? "running"
+          : this.#hostExecutionFailures.has(params.registrationId)
+            ? "reconciliation_required"
+            : status.state === "permitted"
+              ? "reconciliation_required"
+              : "terminal",
+        ...(this.#hostExecutionFailures.has(params.registrationId)
+          ? { executionError: this.#hostExecutionFailures.get(params.registrationId) }
+          : {}),
+        ...(this.#hostMaintenanceFailures.has(params.registrationId)
+          ? { maintenanceError: this.#hostMaintenanceFailures.get(params.registrationId) }
+          : {}),
+      }
+    }
+    if (method === "host.execute") {
+      if (!this.#hostAuthority || !this.#hostExecutor) throw new Error("Sanctuary host execution is unavailable")
+      if (!exactKeys(params, ["correlation"]) || !isObject(params.correlation)) {
+        throw new Error("Sanctuary host execution params are invalid")
+      }
+      const permit = this.#hostAuthority.issuePermit(params.correlation as Parameters<FileSanctuaryHostAuthority["issuePermit"]>[0])
+      const registrationId = (params.correlation as Record<string, unknown>).registrationId as string
+      const execution = this.#completeHostExecution(registrationId, permit)
+      this.#hostExecutions.set(registrationId, execution)
+      void execution.finally(() => this.#hostExecutions.delete(registrationId)).catch(() => undefined)
+      return {
+        registrationId,
+        permitId: permit.payload.permitId,
+        state: "executing",
+      }
+    }
     if (method === "telegram.file") {
       if (
         !exactKeys(params, ["filePath"])
@@ -220,6 +373,65 @@ export class SanctuaryTelegramAuthorityService {
       }
     }
     throw new Error("Sanctuary authority method is not available")
+  }
+
+  #replyMarkupContainsHostHandle(value: unknown): boolean {
+    if (typeof value === "string") return this.#hostAuthority?.ownsHandle(value) ?? false
+    if (Array.isArray(value)) return value.some((entry) => this.#replyMarkupContainsHostHandle(entry))
+    if (!isObject(value)) return false
+    return Object.values(value).some((entry) => this.#replyMarkupContainsHostHandle(entry))
+  }
+
+  async #flushHostCard(registrationId: string): Promise<void> {
+    const hostAuthority = this.#hostAuthority!
+    const pending = hostAuthority.pendingCardEdit(registrationId)
+    if (!pending) return
+    await this.#api.request("editMessageText", {
+      chat_id: this.#gateway.identity().ownerChatId,
+      message_id: pending.telegramMessageId,
+      text: pending.text,
+      parse_mode: "HTML",
+      reply_markup: { inline_keyboard: [] },
+    })
+    hostAuthority.markCardEdited(registrationId, pending.revision)
+  }
+
+  async #maintainHostCard(registrationId: string): Promise<void> {
+    try {
+      await this.#flushHostCard(registrationId)
+      this.#hostMaintenanceFailures.delete(registrationId)
+    } catch {
+      this.#hostMaintenanceFailures.set(registrationId, "Sanctuary host terminal cleanup is pending")
+    }
+  }
+
+  async #completeHostExecution(
+    registrationId: string,
+    permit: SignedAuthorityPayload<Record<string, unknown>>,
+  ): Promise<void> {
+    let receipt: SignedAuthorityPayload<Record<string, unknown>>
+    try {
+      receipt = await this.#hostExecutor!.execute(permit) as SignedAuthorityPayload<Record<string, unknown>>
+      this.#hostAuthority!.completeExecution(registrationId, receipt)
+      this.#hostExecutionFailures.delete(registrationId)
+    } catch (error) {
+      this.#hostExecutionFailures.set(registrationId, "Sanctuary host execution failed")
+      throw error
+    }
+    try {
+      await this.#completeHostMaintenance(registrationId, receipt)
+      this.#hostMaintenanceFailures.delete(registrationId)
+    } catch {
+      this.#hostMaintenanceFailures.set(registrationId, "Sanctuary host terminal cleanup is pending")
+    }
+  }
+
+  async #completeHostMaintenance(
+    registrationId: string,
+    receipt: SignedAuthorityPayload<Record<string, unknown>>,
+  ): Promise<void> {
+    this.#hostExecutor!.acknowledge?.(String(receipt.payload.permitId))
+    await this.#flushHostCard(registrationId)
   }
 }
 

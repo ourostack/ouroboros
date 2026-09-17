@@ -1,10 +1,15 @@
 #!/usr/bin/env node
-import { createPrivateKey } from "node:crypto"
+import { createPrivateKey, createPublicKey } from "node:crypto"
 import * as fs from "node:fs"
 import * as path from "node:path"
 
 import { createTelegramBotApi, type TelegramBotApi } from "../../senses/telegram-client"
 import { FileSanctuaryTelegramAuthorityGateway } from "./sanctuary-telegram-authority-gateway"
+import { FileSanctuaryHostAuthority } from "./sanctuary-host-authority"
+import { FileSanctuaryAuthorityLedger } from "./sanctuary-authority-ledger"
+import { authorityArtifactDigest, type SignedAuthorityPayload } from "./sanctuary-authority-codec"
+import { DetachedSanctuaryHostSupervisor } from "./sanctuary-host-detached-supervisor"
+import { SanctuaryHostPermitExecutor } from "./sanctuary-host-executor"
 import {
   createSanctuaryTelegramAuthorityServer,
   SanctuaryTelegramAuthorityService,
@@ -29,6 +34,20 @@ export interface SanctuaryTelegramAuthorityConfig {
   socketGroupId: number
   readinessPath: string
   lockPath: string
+  hostStagingRoot: string
+  hostExecutionStateRoot: string
+  hostSupervisorStateRoot: string
+  hostCgroupRoot: string
+  hostSupervisorProgramPath: string
+  hostSupervisorProgramDigest: string
+  hostLauncherPath: string
+  hostLauncherDigest: string
+  hostPrlimitPath: string
+  hostPrlimitDigest: string
+  hostSetsidPath: string
+  hostSetsidDigest: string
+  hostShellPath: string
+  hostShellDigest: string
 }
 
 export interface SanctuaryTelegramAuthorityProcess {
@@ -50,6 +69,16 @@ interface StartOptions {
   setSocketOwnership?: (config: SanctuaryTelegramAuthorityConfig) => void
   loadConfig?: (configPath: string, expectedUid: number) => SanctuaryTelegramAuthorityConfig
   readPrivateText?: (filePath: string, expectedUid: number) => string
+  createHostExecutor?: (input: {
+    config: SanctuaryTelegramAuthorityConfig
+    privateKey: ReturnType<typeof createPrivateKey>
+    publicKey: ReturnType<typeof createPublicKey>
+    expectedUid: number
+  }) => {
+    execute: SanctuaryHostPermitExecutor["execute"]
+    reconcile?: SanctuaryHostPermitExecutor["reconcile"]
+    acknowledge?: SanctuaryHostPermitExecutor["acknowledge"]
+  }
   chown?: typeof fs.chownSync
   chmod?: typeof fs.chmodSync
 }
@@ -88,17 +117,28 @@ export function loadSanctuaryTelegramAuthorityConfig(
   const keys = [
     "schemaVersion", "agentRoot", "targetHost", "botId", "ownerUserId", "ownerChatId", "keyId",
     "publicKeyDigest", "tokenPath", "privateKeyPath", "socketPath", "socketGroupId", "readinessPath", "lockPath",
+    "hostStagingRoot", "hostExecutionStateRoot", "hostSupervisorStateRoot", "hostCgroupRoot", "hostSupervisorProgramPath",
+    "hostSupervisorProgramDigest", "hostLauncherPath", "hostLauncherDigest", "hostPrlimitPath",
+    "hostPrlimitDigest", "hostSetsidPath", "hostSetsidDigest",
+    "hostShellPath", "hostShellDigest",
   ]
   if (
     !isObject(value)
     || !exactKeys(value, keys)
     || value.schemaVersion !== 1
-    || !["agentRoot", "tokenPath", "privateKeyPath", "socketPath", "readinessPath", "lockPath"]
+    || ![
+      "agentRoot", "tokenPath", "privateKeyPath", "socketPath", "readinessPath", "lockPath",
+      "hostStagingRoot", "hostExecutionStateRoot", "hostSupervisorStateRoot", "hostCgroupRoot", "hostSupervisorProgramPath",
+      "hostLauncherPath", "hostPrlimitPath", "hostSetsidPath",
+      "hostShellPath",
+    ]
       .every((key) => typeof value[key] === "string" && path.isAbsolute(value[key] as string))
     || !["targetHost", "keyId"].every((key) => typeof value[key] === "string" && (value[key] as string).length > 0)
     || !["botId", "ownerUserId", "ownerChatId"].every((key) => typeof value[key] === "string" && /^[1-9][0-9]*$/u.test(value[key] as string))
     || typeof value.publicKeyDigest !== "string"
     || !/^sha256:[a-f0-9]{64}$/u.test(value.publicKeyDigest)
+    || !["hostSupervisorProgramDigest", "hostLauncherDigest", "hostPrlimitDigest", "hostSetsidDigest", "hostShellDigest"]
+      .every((key) => typeof value[key] === "string" && /^sha256:[a-f0-9]{64}$/u.test(value[key] as string))
     || !Number.isSafeInteger(value.socketGroupId)
     || (value.socketGroupId as number) < 1
   ) {
@@ -203,6 +243,7 @@ export async function startSanctuaryTelegramAuthority(options: StartOptions): Pr
       throw new Error("Sanctuary Telegram authority token is invalid")
     }
     const privateKey = createPrivateKey(readPrivateText(config.privateKeyPath, expectedUid))
+    const publicKey = createPublicKey(privateKey)
     api = (options.createApi ?? ((value) => createTelegramBotApi({ token: value })))(token)
     const identity = await api.request<{ id?: unknown }>("getMe", {})
     if (!isObject(identity) || String(identity.id) !== config.botId) {
@@ -218,10 +259,87 @@ export async function startSanctuaryTelegramAuthority(options: StartOptions): Pr
       privateKey,
       now: options.now,
     })
+    const hostAuthority = new FileSanctuaryHostAuthority(config.agentRoot, {
+      targetHost: config.targetHost,
+      botId: config.botId,
+      ownerUserId: config.ownerUserId,
+      ownerChatId: config.ownerChatId,
+      keyId: config.keyId,
+      publicKeyDigest: config.publicKeyDigest,
+      publicKey,
+      privateKey,
+      now: options.now,
+      resolveOwnerObservation: (input) => gateway.ownerObservation(input),
+    })
+    hostAuthority.reconcilePrepared()
+    const hostExecutor = options.createHostExecutor?.({ config, privateKey, publicKey, expectedUid }) ?? (() => {
+      const hostSupervisor = new DetachedSanctuaryHostSupervisor({
+        stateRoot: config.hostSupervisorStateRoot,
+        cgroupRoot: config.hostCgroupRoot,
+        programPath: config.hostSupervisorProgramPath,
+        programDigest: config.hostSupervisorProgramDigest,
+        launcherPath: config.hostLauncherPath,
+        launcherDigest: config.hostLauncherDigest,
+        prlimitPath: config.hostPrlimitPath,
+        prlimitDigest: config.hostPrlimitDigest,
+        setsidPath: config.hostSetsidPath,
+        setsidDigest: config.hostSetsidDigest,
+        shellPath: config.hostShellPath,
+        shellDigest: config.hostShellDigest,
+        expectedUid,
+        keyId: config.keyId,
+        publicKeyPem: publicKey.export({ type: "spki", format: "pem" }).toString(),
+      })
+      hostSupervisor.verifyInstallation()
+      return new SanctuaryHostPermitExecutor({
+        ledger: new FileSanctuaryAuthorityLedger(config.agentRoot),
+        expectedTargetHost: config.targetHost,
+        expectedOwnerUserId: config.ownerUserId,
+        expectedOwnerChatId: config.ownerChatId,
+        expectedKeyId: config.keyId,
+        expectedPublicKeyDigest: config.publicKeyDigest,
+        publicKey,
+        privateKey,
+        stagingRoot: config.hostStagingRoot,
+        stateRoot: config.hostExecutionStateRoot,
+        supervisor: hostSupervisor,
+        now: options.now,
+      })
+    })()
+    for (const receipt of await hostExecutor.reconcile?.() ?? []) {
+      const registrationId = String(receipt.payload.registrationId)
+      const status = hostAuthority.status(registrationId)
+      if (status?.state === "permitted") {
+        hostAuthority.completeExecution(registrationId, receipt)
+      } else if (
+        status?.state !== "executed"
+        || !sameSignedReceipt(status.receipt, receipt)
+      ) {
+        throw new Error("Sanctuary host execution receipt is not incorporated into authority state")
+      }
+      hostExecutor.acknowledge?.(String(receipt.payload.permitId))
+    }
+
+    function sameSignedReceipt(
+      left: unknown,
+      right: SignedAuthorityPayload<Record<string, unknown>>,
+    ): boolean {
+      return isObject(left)
+        && typeof left.domain === "string"
+        && typeof left.keyId === "string"
+        && typeof left.signature === "string"
+        && isObject(left.payload)
+        && left.domain === right.domain
+        && left.keyId === right.keyId
+        && left.signature === right.signature
+        && authorityArtifactDigest(left.domain, left.payload) === authorityArtifactDigest(right.domain, right.payload)
+    }
     const fetchImpl = options.fetch ?? globalThis.fetch
     const service = new SanctuaryTelegramAuthorityService({
       api,
       gateway,
+      hostAuthority,
+      hostExecutor,
       downloadFile: async (filePath) => readBoundedFileResponse(await fetchImpl(
         `https://api.telegram.org/file/bot${token}/${filePath}`,
         { signal: AbortSignal.timeout(30_000) },

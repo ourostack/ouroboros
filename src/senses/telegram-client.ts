@@ -788,9 +788,9 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
     }, requestSignal)
     if (!Array.isArray(updates)) throw new Error("Telegram getUpdates result must be an array")
     for (const update of updates) {
-      if (!update || !Number.isSafeInteger(update.update_id) || update.update_id < nextUpdateId) continue
+      if (!update || !Number.isSafeInteger(update.update_id) || (update.update_id < nextUpdateId && !options.settleTransport)) continue
       options.onBeforeDispatch?.()
-      const next = update.update_id + 1
+      const next = Math.max(nextUpdateId, update.update_id + 1)
       const requiresDurableDispatch = Boolean(authorizedCallback(update) || authorizedMessage(update) || unknownMessage(update))
       const newlyCaptured = requiresDurableDispatch ? (options.inboxStore?.capture(update) ?? true) : true
       if (newlyCaptured) {
@@ -819,7 +819,7 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
           throw auditError
         }
         try {
-          if (requiresDurableDispatch) {
+          if (options.settleTransport) {
             await options.settleTransport?.(update, dispatchError === undefined ? "completed" : "indeterminate")
           }
         } catch (settlementError) {
@@ -829,7 +829,7 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
         if (dispatchError !== undefined) throw dispatchError
       } else {
         options.onDispatchSettled?.()
-        if (requiresDurableDispatch) {
+        if (options.settleTransport) {
           const indeterminate = options.inboxStore?.loadIndeterminate()
             .some((receipt) => sameReceipt(receipt, updateReceipt(update))) ?? false
           await options.settleTransport?.(update, indeterminate ? "indeterminate" : "completed")

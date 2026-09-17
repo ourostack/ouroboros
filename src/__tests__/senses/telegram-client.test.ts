@@ -2014,9 +2014,38 @@ describe("Telegram durable authorized long poll", () => {
       onMessage: vi.fn(async () => { throw dispatchFailure }),
       settleTransport: vi.fn(async () => { throw settlementFailure }),
     })
+
     const error = await poll.pollOnce().catch((caught) => caught as AggregateError)
     expect(error).toBeInstanceOf(AggregateError)
     expect(error.errors).toEqual([dispatchFailure, settlementFailure])
+  })
+
+  it("settles a root-redelivered non-owner callback even when the resident offset is already ahead", async () => {
+    const update = {
+      update_id: 18,
+      callback_query: {
+        id: "foreign-callback",
+        from: { id: 84 },
+        data: "button",
+        message: { message_id: 8, chat: { id: 84, type: "private" } },
+      },
+    }
+    const settleTransport = vi.fn(async () => undefined)
+    const onDispatchSettled = vi.fn()
+    const save = vi.fn()
+    const poll = createTelegramLongPoll({
+      api: { stop: vi.fn(), request: vi.fn(async () => [update]) },
+      expectedUserId: "10",
+      expectedChatId: "10",
+      offsetStore: { load: () => 20, save },
+      onMessage: vi.fn(async () => undefined),
+      settleTransport,
+      onDispatchSettled,
+    })
+    await expect(poll.pollOnce()).resolves.toBe(20)
+    expect(settleTransport).toHaveBeenCalledWith(update, "completed")
+    expect(onDispatchSettled).toHaveBeenCalledOnce()
+    expect(save).toHaveBeenCalledWith(20)
   })
 
   it("rejects a conflicting durable update with the same update id", () => {

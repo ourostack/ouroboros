@@ -1,4 +1,4 @@
-import { generateKeyPairSync } from "node:crypto"
+import { createHash, generateKeyPairSync } from "node:crypto"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
@@ -9,7 +9,12 @@ import {
   runSanctuaryTelegramAuthorityCli,
   startSanctuaryTelegramAuthority,
 } from "../../../heart/daemon/sanctuary-telegram-authority-entry"
-import { sanctuaryAuthorityPublicKeyDigest } from "../../../heart/daemon/sanctuary-telegram-authority-gateway"
+import {
+  FileSanctuaryTelegramAuthorityGateway,
+  sanctuaryAuthorityPublicKeyDigest,
+} from "../../../heart/daemon/sanctuary-telegram-authority-gateway"
+import { FileSanctuaryHostAuthority } from "../../../heart/daemon/sanctuary-host-authority"
+import { authorityArtifactDigest, signAuthorityPayload } from "../../../heart/daemon/sanctuary-authority-codec"
 import { SocketSanctuaryTelegramAuthorityClient } from "../../../heart/daemon/sanctuary-telegram-authority-service"
 
 const roots: string[] = []
@@ -23,6 +28,12 @@ function fixture() {
   const configPath = path.join(root, "config.json")
   fs.writeFileSync(tokenPath, "123456:abcdefghijklmnopqrstuvwxyz\n", { mode: 0o600 })
   fs.writeFileSync(privateKeyPath, keys.privateKey.export({ type: "pkcs8", format: "pem" }), { mode: 0o600 })
+  const hostFiles = Object.fromEntries(["supervisor", "launcher", "prlimit", "setsid", "shell"].map((name) => {
+    const filePath = path.join(root, name)
+    fs.writeFileSync(filePath, name, { mode: 0o755 })
+    return [name, filePath]
+  })) as Record<"supervisor" | "launcher" | "prlimit" | "setsid" | "shell", string>
+  const fileDigest = (name: keyof typeof hostFiles) => `sha256:${createHash("sha256").update(name).digest("hex")}`
   const config = {
     schemaVersion: 1,
     agentRoot: path.join(root, "agent"),
@@ -38,9 +49,24 @@ function fixture() {
     socketGroupId: 10001,
     readinessPath: path.join(root, "state", "readiness.json"),
     lockPath: path.join(root, "state", "authority.lock"),
+    hostStagingRoot: path.join(root, "host-staging"),
+    hostExecutionStateRoot: path.join(root, "host-executions"),
+    hostSupervisorStateRoot: path.join(root, "host-supervisors"),
+    hostCgroupRoot: path.join(root, "cgroup"),
+    hostSupervisorProgramPath: hostFiles.supervisor,
+    hostSupervisorProgramDigest: fileDigest("supervisor"),
+    hostLauncherPath: hostFiles.launcher,
+    hostLauncherDigest: fileDigest("launcher"),
+    hostPrlimitPath: hostFiles.prlimit,
+    hostPrlimitDigest: fileDigest("prlimit"),
+    hostSetsidPath: hostFiles.setsid,
+    hostSetsidDigest: fileDigest("setsid"),
+    hostShellPath: hostFiles.shell,
+    hostShellDigest: fileDigest("shell"),
   }
+  fs.mkdirSync(config.hostCgroupRoot)
   fs.writeFileSync(configPath, JSON.stringify(config), { mode: 0o600 })
-  return { root, config, configPath }
+  return { root, config, configPath, keys }
 }
 
 afterEach(() => {
@@ -238,6 +264,7 @@ describe("Sanctuary Telegram authority process", () => {
         readPrivateText: (filePath) => filePath === f.config.tokenPath ? "123456:abcdefghijklmnopqrstuvwxyz" : privateKey,
         createApi: () => ({ request: vi.fn(async () => ({ id: 123456 })), stop: vi.fn() }),
         createServer: () => ({ listen: vi.fn(async () => undefined), close: vi.fn(async () => undefined) }),
+        createHostExecutor: () => ({ execute: vi.fn() }),
         chown,
         chmod,
       })
@@ -270,6 +297,196 @@ describe("Sanctuary Telegram authority process", () => {
     expect(close).toHaveBeenCalledOnce()
     expect(api.stop).toHaveBeenCalledOnce()
     expect(fs.existsSync(f.config.lockPath)).toBe(false)
+  })
+
+  it("reconciles a durable terminal receipt before readiness and preserves the live observation resolver", async () => {
+    const f = fixture()
+    const uid = process.getuid?.() ?? 0
+    let nonce = 0
+    const privateKey = f.keys.privateKey
+    const gateway = new FileSanctuaryTelegramAuthorityGateway(f.config.agentRoot, {
+      targetHost: f.config.targetHost,
+      botId: f.config.botId,
+      ownerUserId: f.config.ownerUserId,
+      ownerChatId: f.config.ownerChatId,
+      keyId: f.config.keyId,
+      publicKeyDigest: f.config.publicKeyDigest,
+      privateKey,
+      now: () => "2026-09-16T22:00:00.000Z",
+      nonce: () => Buffer.alloc(32, ++nonce).toString("base64url"),
+    })
+    gateway.capture([{
+      update_id: 1,
+      message: { message_id: 101, from: { id: 42 }, chat: { id: 42, type: "private" }, text: "approve" },
+    }])
+    const observation = gateway.poll()!
+    const hostAuthority = new FileSanctuaryHostAuthority(f.config.agentRoot, {
+      targetHost: f.config.targetHost,
+      botId: f.config.botId,
+      ownerUserId: f.config.ownerUserId,
+      ownerChatId: f.config.ownerChatId,
+      keyId: f.config.keyId,
+      publicKeyDigest: f.config.publicKeyDigest,
+      publicKey: f.keys.publicKey,
+      privateKey,
+      now: () => "2026-09-16T22:00:00.000Z",
+      nonce: () => Buffer.alloc(32, ++nonce).toString("base64url"),
+      resolveOwnerObservation: (input) => gateway.ownerObservation(input),
+    })
+    const prepared = hostAuthority.prepare({
+      targetHost: "sanctuary",
+      targetResource: "host",
+      command: { kind: "executable", executable: "/usr/bin/id", arguments: ["-u"] },
+      workingDirectoryProfile: "host.root.v1",
+      environmentProfile: "host.clean.v1",
+      timeoutMs: 60_000,
+      ownerObservation: {
+        updateId: 1,
+        digest: authorityArtifactDigest(observation.domain, observation.payload),
+        userId: "42",
+        chatId: "42",
+        messageId: "101",
+      },
+      verification: null,
+    })
+    hostAuthority.commit({ registrationId: prepared.registrationId, telegramMessageId: 501 })
+    hostAuthority.decide({
+      callbackQueryId: "callback-1",
+      callbackData: prepared.replyMarkup.inline_keyboard[0]![0]!.callback_data,
+      telegramMessageId: 501,
+      userId: "42",
+      chatId: "42",
+      callbackObservationDigest: `sha256:${"d".repeat(64)}`,
+      decidedAt: "2026-09-16T22:00:00.000Z",
+    })
+    const permit = hostAuthority.issuePermit({
+      registrationId: prepared.registrationId,
+      residentFriendId: "friend",
+      relationshipProfileId: "owner",
+      relationshipProfileVersion: 1,
+      requestId: "request",
+      sessionKey: "session",
+      sessionEventId: "event",
+      residentApprovalId: "approval",
+      stewardPolicy: null,
+    })
+    const receipt = signAuthorityPayload({
+      domain: "ouro.sanctuary.host-receipt.v1",
+      keyId: f.config.keyId,
+      privateKey: f.keys.privateKey,
+      payload: {
+        targetHost: f.config.targetHost,
+        registrationId: prepared.registrationId,
+        permitId: permit.payload.permitId,
+        permitDigest: authorityArtifactDigest(permit.domain, permit.payload),
+        state: "verified",
+        startedAt: "2026-09-16T22:00:00.000Z",
+        completedAt: "2026-09-16T22:00:01.000Z",
+        publicKeyDigest: f.config.publicKeyDigest,
+      },
+    })
+    const alreadySettledReceipt = signAuthorityPayload({
+      domain: receipt.domain,
+      keyId: receipt.keyId,
+      privateKey: f.keys.privateKey,
+      payload: {
+        ...receipt.payload,
+        registrationId: `hostreg-${"z".repeat(43)}`,
+        permitId: `permit-${"y".repeat(43)}`,
+      },
+    })
+    const acknowledge = vi.fn()
+    let serverOptions: any
+    const api = {
+      request: vi.fn(async (method: string) => method === "getMe"
+        ? { id: 123456 }
+        : method === "sendMessage"
+          ? { message_id: 502 }
+          : []),
+      stop: vi.fn(),
+    }
+    const authority = await startSanctuaryTelegramAuthority({
+      configPath: f.configPath,
+      expectedUid: uid,
+      createApi: () => api,
+      createHostExecutor: () => ({
+        execute: vi.fn(),
+        reconcile: vi.fn(async () => [receipt]),
+        acknowledge,
+      }),
+      createServer: (options) => {
+        serverOptions = options
+        return { listen: vi.fn(async () => undefined), close: vi.fn(async () => undefined) }
+      },
+      setSocketOwnership: vi.fn(),
+      now: () => "2026-09-16T22:00:00.000Z",
+    })
+    expect(acknowledge).toHaveBeenCalledWith(permit.payload.permitId)
+    expect(acknowledge).toHaveBeenCalledOnce()
+    expect(hostAuthority.status(prepared.registrationId)).toMatchObject({ state: "executed" })
+
+    gateway.settle({
+      updateId: 1,
+      observationDigest: authorityArtifactDigest(observation.domain, observation.payload),
+      outcome: "completed",
+    })
+    serverOptions.gateway.capture([{
+      update_id: 2,
+      message: { message_id: 102, from: { id: 42 }, chat: { id: 42, type: "private" }, text: "approve next" },
+    }])
+    const next = serverOptions.gateway.poll()
+    await expect(serverOptions.service.dispatch("host.approval", {
+      proposal: {
+        targetHost: "sanctuary",
+        targetResource: "host",
+        command: { kind: "executable", executable: "/usr/bin/id", arguments: [] },
+        workingDirectoryProfile: "host.root.v1",
+        environmentProfile: "host.clean.v1",
+        timeoutMs: 60_000,
+        ownerObservation: {
+          updateId: 2,
+          digest: authorityArtifactDigest(next.domain, next.payload),
+          userId: "42",
+          chatId: "42",
+          messageId: "102",
+        },
+        verification: null,
+      },
+    })).resolves.toMatchObject({ telegramMessageId: 502 })
+    await authority.close()
+
+    acknowledge.mockClear()
+    const restarted = await startSanctuaryTelegramAuthority({
+      configPath: f.configPath,
+      expectedUid: uid,
+      createApi: () => api,
+      createHostExecutor: () => ({
+        execute: vi.fn(),
+        reconcile: vi.fn(async () => [receipt]),
+        acknowledge,
+      }),
+      createServer: () => ({ listen: vi.fn(async () => undefined), close: vi.fn(async () => undefined) }),
+      setSocketOwnership: vi.fn(),
+      now: () => "2026-09-17T00:00:00.000Z",
+    })
+    expect(acknowledge).toHaveBeenCalledWith(permit.payload.permitId)
+    await restarted.close()
+
+    acknowledge.mockClear()
+    await expect(startSanctuaryTelegramAuthority({
+      configPath: f.configPath,
+      expectedUid: uid,
+      createApi: () => api,
+      createHostExecutor: () => ({
+        execute: vi.fn(),
+        reconcile: vi.fn(async () => [alreadySettledReceipt]),
+        acknowledge,
+      }),
+      createServer: () => ({ listen: vi.fn(async () => undefined), close: vi.fn(async () => undefined) }),
+      setSocketOwnership: vi.fn(),
+      now: () => "2026-09-17T00:00:00.000Z",
+    })).rejects.toThrow(/not incorporated/u)
+    expect(acknowledge).not.toHaveBeenCalled()
   })
 
   it("runs the CLI contract and closes on either termination signal", async () => {

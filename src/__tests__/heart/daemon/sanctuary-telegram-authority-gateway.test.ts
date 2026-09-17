@@ -133,6 +133,28 @@ describe("Sanctuary root Telegram authority gateway state", () => {
     expect(f.gateway.poll()!.payload.updateId).toBe(41)
   })
 
+  it("resolves only an exact pending owner observation for root host approval", () => {
+    const f = fixture()
+    expect(f.gateway.ownerObservation({ updateId: 1.5, observationDigest: `sha256:${"a".repeat(64)}` })).toBeNull()
+    expect(f.gateway.ownerObservation({ updateId: -1, observationDigest: `sha256:${"a".repeat(64)}` })).toBeNull()
+    expect(f.gateway.ownerObservation({ updateId: 1, observationDigest: "bad" })).toBeNull()
+    expect(f.gateway.ownerObservation({ updateId: 999, observationDigest: `sha256:${"a".repeat(64)}` })).toBeNull()
+
+    f.gateway.capture([{ update_id: 79 }, message(80), message(81, 84)])
+    const owner = f.gateway.poll()!
+    const ownerDigest = authorityArtifactDigest(owner.domain, owner.payload)
+    expect(f.gateway.ownerObservation({ updateId: 79, observationDigest: `sha256:${"a".repeat(64)}` })).toBeNull()
+    expect(f.gateway.ownerObservation({ updateId: 80, observationDigest: `sha256:${"a".repeat(64)}` })).toBeNull()
+    expect(f.gateway.ownerObservation({ updateId: 80, observationDigest: ownerDigest })).toEqual(owner)
+    f.gateway.settle({ updateId: 80, observationDigest: ownerDigest, outcome: "completed" })
+    expect(f.gateway.ownerObservation({ updateId: 80, observationDigest: ownerDigest })).toBeNull()
+    const nonOwner = f.gateway.poll()!
+    expect(f.gateway.ownerObservation({
+      updateId: 81,
+      observationDigest: authorityArtifactDigest(nonOwner.domain, nonOwner.payload),
+    })).toBeNull()
+  })
+
   it("refuses changed duplicate updates, duplicate settlement, malformed state, and invalid capture input", () => {
     const f = fixture()
     f.gateway.capture([message(50)])

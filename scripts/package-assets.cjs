@@ -4,6 +4,7 @@ const path = require("path")
 const REQUIRED_PACKAGE_ASSET_PATHS = [
   "dist/heart/session-redaction-repair-cli-main.js",
   "assets/bluebubbles-host",
+  "assets/sanctuary-host-launcher.sh",
   "RepairGuide.ouro/agent.json",
   "RepairGuide.ouro/psyche/IDENTITY.md",
   "RepairGuide.ouro/psyche/SOUL.md",
