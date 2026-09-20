@@ -26,6 +26,11 @@ import { createProductionTelegramRelationshipComposition, createTelegramSenseApp
 import type { TelegramLongPollOptions } from "../../senses/telegram-client"
 import { SANCTUARY_OWNER_ADDITIONS } from "../fixtures/sanctuary-containment"
 
+// Authorized on the owner profile but provided by the packaged `media` MCP
+// server, so they resolve only when a manager is attached to the turn.
+const MEDIA_MCP_TOOLS = ["media_search", "media_request", "media_request_status", "media_diagnose_and_fix", "media_chain_health", "media_play_or_resolve"]
+const withoutMediaMcp = (names: string[]) => names.filter((name) => !MEDIA_MCP_TOOLS.includes(name))
+
 const identityTestState = vi.hoisted(() => ({ agentRoot: null as string | null }))
 
 vi.mock("../../heart/identity", async (importOriginal) => {
@@ -303,7 +308,7 @@ describe("Mendelow Cloud Butler household UX", () => {
     const { api, result } = await fixture.runTelegram("sanctuary-owner", scripted.runtime)
     expect(result?.turnOutcome, JSON.stringify(fixture.errors())).toBe("settled")
     expect(scripted.requests).toHaveLength(5)
-    const expectedNames = loadRelationshipCapabilityRegistry(bundleRoot).profiles["sanctuary-owner"].toolNames.filter((name) => name !== "sanctuary_host_execute" && name !== "rest" && (reasoning || name !== "set_reasoning_effort"))
+    const expectedNames = withoutMediaMcp(loadRelationshipCapabilityRegistry(bundleRoot).profiles["sanctuary-owner"].toolNames).filter((name) => name !== "sanctuary_host_execute" && name !== "rest" && (reasoning || name !== "set_reasoning_effort"))
     for (const request of scripted.requests) expect(request.names.toSorted()).toEqual(expectedNames.toSorted())
     expect.soft(scripted.requests[4].reasoningEffort, JSON.stringify([...scripted.outputs])).toBe(reasoning ? "high" : scripted.requests[0].reasoningEffort)
     expect(scripted.outputs.get("foreground")).toContain("resident-foreground")
@@ -372,7 +377,7 @@ describe("Mendelow Cloud Butler household UX", () => {
     } : {}
     if (profile === "sanctuary-event") expect((await fixture.runEventProfile(scripted.runtime, augment)).outcome).toBe("rested")
     else expect((await fixture.runTelegram(profile, scripted.runtime, augment)).result?.turnOutcome, JSON.stringify(fixture.errors())).toBe("settled")
-    for (const request of scripted.requests) expect(request.names.toSorted()).toEqual(loadRelationshipCapabilityRegistry(bundleRoot).profiles[profile].toolNames.toSorted())
+    for (const request of scripted.requests) expect(request.names.toSorted()).toEqual(withoutMediaMcp(loadRelationshipCapabilityRegistry(bundleRoot).profiles[profile].toolNames).toSorted())
     expect(fixture.receipts.slice(0, SANCTUARY_OWNER_ADDITIONS.length)).toEqual(SANCTUARY_OWNER_ADDITIONS.map((name) => ({
       name, reason: "profile_excluded", globallyResolvable: true, invoked: false, sideEffect: false,
     })))
@@ -557,7 +562,7 @@ describe("Mendelow Cloud Butler household UX", () => {
     expect(config.version).toBe(2)
     expect(config.profiles).toMatchObject({
       "sanctuary-owner": {
-        version: 9,
+        version: 10,
         contextScopes: expect.arrayContaining(["household.status", "household.policy"]),
         toolNames: expect.arrayContaining(["steward_policy_manage", "unraid_restart_container", "unraid_check_services", "sanctuary_get_install_state", "sanctuary_get_download_queue", "sanctuary_resume_download_queue", "sanctuary_search_media_catalog", "list_recent_attachments", "materialize_attachment", "describe_image"]),
         effectScopes: expect.arrayContaining(["telegram.proactive", "telegram.request_return"]),

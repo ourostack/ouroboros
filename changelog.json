@@ -2,6 +2,16 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.819",
+      "changes": [
+        "Give the Sanctuary Butler a media request and diagnosis surface: a packaged media MCP server with search, request, status, diagnose-and-fix, chain-health and play tools, authorized on the owner profile.",
+        "The MCP wiring stays in host-owned agent.json rather than the packaged template, so the bundle carries no absolute host path.",
+        "media_request resolves an existing request by TMDB id rather than scanning a page of the request list, so idempotency holds in a household with more requests than one page.",
+        "Point the Butler's lore at the media tools, and require establishing the acquisition-chain cause before blaming a title or prepaid credit for a missing download.",
+        "media_search walks further discover pages when filtering by shelf state, so browsing what the household already owns does not read as an almost-empty shelf."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.818",
       "changes": [
         "Keep private execution claims owner-only and check Sanctuary upgrade permissions with the predecessor stopped."

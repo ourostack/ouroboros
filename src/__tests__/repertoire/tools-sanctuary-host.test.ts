@@ -284,7 +284,9 @@ describe("S5 exact current owner advertisement", () => {
     const f = await fixture()
     const expected = await f.activate()
     const current = await f.authorizeTool(name)
-    for (const value of [undefined, field === "profileVersion" ? 10 : "other"]) {
+    // Derive the mismatch from the live decision so a profile-version bump cannot
+    // silently turn this negative case into a matching value.
+    for (const value of [undefined, field === "profileVersion" ? (current.profileVersion as number) + 1 : "other"]) {
       f.authorizeTool.mockResolvedValue({ ...current, [field]: value } as any)
       await expect(authorizeRootHostContext(f.ctx, expected)).rejects.toThrow()
     }

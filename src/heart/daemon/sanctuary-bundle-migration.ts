@@ -6,6 +6,7 @@ import { emitNervesEvent } from "../../nerves/runtime"
 export const SANCTUARY_PACKAGE_MANAGED_FILES = [
   "provider-readiness.json",
   "tool-profiles.json",
+  "mcp/media-mcp.mjs",
   "habits/sanctuary-health.md",
   "psyche/ASPIRATIONS.md",
   "psyche/IDENTITY.md",

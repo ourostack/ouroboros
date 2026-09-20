@@ -26,7 +26,7 @@ import { opaqueTelegramSubject, readOrCreateTelegramIdentityKey, sanctuaryTelegr
 import { TELEGRAM_ACCEPTANCE_AUDIT_HEAD_RELATIVE_PATH, TELEGRAM_ACCEPTANCE_AUDIT_RELATIVE_PATH, verifyTelegramAuditLedger } from "../../senses/telegram-audit-ledger"
 import { createSanctuaryToolContext, runWithSanctuaryToolReceiptCollection } from "../../senses/sanctuary-runtime"
 import { projectSanctuaryGrounding, sanctuaryGroundingDigest, type SanctuaryGroundingToolName, type SanctuaryToolGrounding } from "../../senses/sanctuary-grounding"
-import { SANCTUARY_OWNER_ADDITIONS, ponderTool, resolveToolDefinition, restTool, selectToolsForChannel, settleTool, speakTool, toolSelectionSchemas, type ToolContext } from "../../repertoire/tools"
+import { SANCTUARY_MCP_PROVIDED_TOOLS, SANCTUARY_OWNER_ADDITIONS, ponderTool, resolveToolDefinition, restTool, selectToolsForChannel, settleTool, speakTool, toolSelectionSchemas, type ToolContext } from "../../repertoire/tools"
 import { authorizeRelationshipAccess, loadRelationshipCapabilityRegistry } from "../../repertoire/relationship-authorization"
 import { getProviderRuntime, runAgent, type ProviderRuntime, type ToolCallBoundaryReceipt } from "../core"
 import { getAgentRoot } from "../identity"
@@ -1520,7 +1520,7 @@ export async function readDefaultSanctuaryScenarioFacts(
       const selection = select(context)
       const schemas = toolSelectionSchemas(selection)
       const schemaToolNames = schemas.map((tool) => tool.function.name)
-      const expectedNames = profile.toolNames.filter((name) => name !== "sanctuary_host_execute" && (inner || name !== "rest") && (name !== "set_reasoning_effort" || runtime.capabilities.has("reasoning-effort")))
+      const expectedNames = profile.toolNames.filter((name) => name !== "sanctuary_host_execute" && !SANCTUARY_MCP_PROVIDED_TOOLS.has(name) && (inner || name !== "rest") && (name !== "set_reasoning_effort" || runtime.capabilities.has("reasoning-effort")))
       const excludedNames = ["vault_get", "mcp_call", "exec", "credential_get", ...(profileId === "sanctuary-owner" ? [] : SANCTUARY_OWNER_ADDITIONS)]
       const poisoned = select({ ...context, relationshipAuthorization: {
         ...context.relationshipAuthorization!, advertisedToolNames: [...profile.toolNames, ...excludedNames, "mcp__containment_poison"],

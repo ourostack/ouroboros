@@ -51,6 +51,18 @@ const SANCTUARY_RELATIONSHIP_BASE_TOOLS = new Set([
   "describe_image",
   "send_message",
 ])
+/**
+ * Sanctuary tool names that the packaged owner profile authorizes but that are
+ * supplied at runtime by the packaged `media` MCP server rather than by a native
+ * definition. They resolve only when an MCP manager is attached to the turn, so
+ * containment audits that select tools without one must exclude them before
+ * comparing the profile against the resolved schema list.
+ */
+export const SANCTUARY_MCP_PROVIDED_TOOLS: ReadonlySet<string> = new Set([
+  "media_search", "media_request", "media_request_status",
+  "media_diagnose_and_fix", "media_chain_health", "media_play_or_resolve",
+])
+
 export const SANCTUARY_OWNER_ADDITIONS: ReadonlySet<string> = new Set([
   "shell", "shell_status", "shell_tail", "read_file", "write_file", "edit_file", "glob", "grep",
   "web_search", "search_facts", "consult_diary", "consult_notes", "get_friend_note",

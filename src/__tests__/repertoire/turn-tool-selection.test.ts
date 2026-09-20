@@ -11,6 +11,11 @@ import { makeMcpView, MCP_CONTEXT, MCP_OWNER, shutdownMcpFixtures } from "./mcp-
 import * as identity from "../../heart/identity"
 import * as guardrails from "../../repertoire/guardrails"
 
+// Authorized in the packaged profile but provided by the `media` MCP server,
+// so they only resolve when a manager is attached to the turn.
+const MEDIA_MCP_TOOLS = ["media_search", "media_request", "media_request_status", "media_diagnose_and_fix", "media_chain_health", "media_play_or_resolve"]
+const withoutMediaMcp = (names: string[]) => names.filter((name) => !MEDIA_MCP_TOOLS.includes(name))
+
 const OWNER_ADDITIONS = [
   "shell", "shell_status", "shell_tail", "read_file", "write_file", "edit_file", "glob", "grep",
   "web_search", "search_facts", "consult_diary", "consult_notes", "get_friend_note",
@@ -180,7 +185,7 @@ describe("turn-local canonical tool selection", () => {
     (provider) => {
       const context = relationshipContext("sanctuary-owner", OWNER_ADDITIONS)
       const names = schemas(context, undefined, provider).map((tool) => tool.function.name)
-      const expected = [...new Set([...registry.profiles["sanctuary-owner"].toolNames, ...OWNER_ADDITIONS])]
+      const expected = withoutMediaMcp([...new Set([...registry.profiles["sanctuary-owner"].toolNames, ...OWNER_ADDITIONS])])
         .filter((name) => name !== "rest")
         .filter((name) => name !== "sanctuary_host_execute")
         .filter((name) => provider?.has("reasoning-effort") || name !== "set_reasoning_effort")
