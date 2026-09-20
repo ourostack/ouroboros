@@ -321,3 +321,27 @@ describe("Sanctuary media catalog contract with the media tools", () => {
     expect(contract.validateRequiredToolResult("media_search", JSON.stringify({ error: "credentials_unavailable" }), {})).toBe(false)
   })
 })
+
+describe("Sanctuary media catalog contract media_search edge cases", () => {
+  it("treats malformed media_search output as unusable evidence", () => {
+    const contract = sanctuaryMediaCatalogRequiredToolCalls("What movie should I watch?", ["settle", ...mediaTools])!
+    expect(contract.validateRequiredToolResult("media_search", "not json at all", {})).toBe(false)
+  })
+
+  it("skips media_search entries that are not usable titles", () => {
+    const contract = sanctuaryMediaCatalogRequiredToolCalls("What movie should I watch?", ["settle", ...mediaTools])!
+    const noisy = JSON.stringify({
+      matched: 2,
+      items: [null, "not an object", ["array"], { title: 42 }, { title: "   " }, { title: "Little Women", on_shelf: true }],
+    })
+    expect(contract.validateRequiredToolResult("media_search", noisy, {})).toBe(true)
+    expect(contract.validateTerminalAnswer("Little Women it is.")).toBeUndefined()
+  })
+
+  it("grounds a general shelf listing in the titles media_search returned", () => {
+    const contract = sanctuaryMediaCatalogRequiredToolCalls("Show me 3 films from the shelf.", ["settle", ...mediaTools])!
+    expect(contract.validateRequiredToolResult("media_search", mediaSearchResult([{ title: "Little Women" }, { title: "Knives Out" }]), {})).toBe(true)
+    expect(contract.validateTerminalAnswer("Little Women and Knives Out are both there.")).toBeUndefined()
+    expect(contract.validateTerminalAnswer("Casablanca and Vertigo are both there.")).toMatch(/do not add unverified/u)
+  })
+})
