@@ -146,15 +146,27 @@ async function mediaSearch(a) {
       .filter((n) => Number.isFinite(n))
     const [yMin, yMax] = a.year_range ?? []
     const paths = kind === "series" ? ["/discover/tv"] : kind === "movie" ? ["/discover/movies"] : ["/discover/movies", "/discover/tv"]
+    // One page of discover is ~20 popular titles, of which only a couple are
+    // usually on this shelf — answering "what cozy autumn films do we own?" from
+    // that reads as though the shelf is nearly empty. When the caller filters by
+    // shelf state, walk further pages until enough matches accumulate.
+    const maxPages = onShelf === undefined ? 1 : 5
     for (const p of paths) {
       const isTv = p.endsWith("/tv")
-      const q = { page: 1, sortBy: a.sort === "release_year" ? "primary_release_date.desc" : "popularity.desc" }
-      if (genreIds.length) q.genre = genreIds.join(",")
-      if (keywordIds.length) q.keywords = keywordIds.join(",")
-      if (yMin) q[isTv ? "firstAirDateGte" : "primaryReleaseDateGte"] = `${yMin}-01-01`
-      if (yMax) q[isTv ? "firstAirDateLte" : "primaryReleaseDateLte"] = `${yMax}-12-31`
-      const body = await seerr(p, { query: q })
-      raw.push(...(body.results ?? []).map((r) => ({ ...r, mediaType: isTv ? "tv" : "movie" })))
+      for (let page = 1; page <= maxPages; page += 1) {
+        const q = { page, sortBy: a.sort === "release_year" ? "primary_release_date.desc" : "popularity.desc" }
+        if (genreIds.length) q.genre = genreIds.join(",")
+        if (keywordIds.length) q.keywords = keywordIds.join(",")
+        if (yMin) q[isTv ? "firstAirDateGte" : "primaryReleaseDateGte"] = `${yMin}-01-01`
+        if (yMax) q[isTv ? "firstAirDateLte" : "primaryReleaseDateLte"] = `${yMax}-12-31`
+        const body = await seerr(p, { query: q })
+        const results = body.results ?? []
+        raw.push(...results.map((r) => ({ ...r, mediaType: isTv ? "tv" : "movie" })))
+        const matchesSoFar = raw
+          .map((r) => (r.mediaInfo?.status === 5 || r.mediaInfo?.status === 4))
+          .filter((hit) => hit === (onShelf === true)).length
+        if (results.length === 0 || page >= (body.totalPages ?? 1) || matchesSoFar >= limit) break
+      }
     }
   }
 
