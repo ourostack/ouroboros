@@ -1,7 +1,9 @@
 import { emitNervesEvent } from "../nerves/runtime"
 import { normalizeSanctuaryMediaText } from "./sanctuary-media-optimization"
 
-const REQUIRED_TOOL_NAMES = ["sanctuary_search_media_catalog"] as const
+const LEGACY_CATALOG_TOOL = "sanctuary_search_media_catalog"
+const MEDIA_SEARCH_TOOL = "media_search"
+const MEDIA_REQUEST_TOOL = "media_request"
 const HOUSEHOLD_JARGON = /\b(?:bounded|catalog|inventory|endpoint|backend|data shape|pars(?:e|ed|ing)|json|jellyfin|unmanic|sanctuary_search_media_catalog)\b/iu
 const NEGATED_MEDIA_ACCESS = /\b(?:not|never|none|nothing|zero|inaccessible|invisible|unavailable|broken|failed|failing)\b|\b(?:isn[’']t|won[’']t)\b|\bno\s+access\b|\b(?:lost|lacks?|lacking|without)\s+access\b|\bonly\s+\d|\bfewer\s+than\b|\bsome\s+of\b|\b(?:part|portion|subset)\s+of\b|\bi\s+(?:can(?:not|[’']t)|do\s+not|don[’']t|have\s+no)\b|\bi[’']m\s+not\b/iu
 const UNSOLICITED_PIVOT = /\b(?:what would you like|what are you in the mood for|would you like me to|do you want me to|want me to|recommend we add)\b/iu
@@ -16,6 +18,10 @@ interface CatalogEvidence {
   totalItems: number
   matchedItems: number
   titles: string[]
+  /** Titles the evidence marks as absent from the shelf. Empty for the legacy read, which cannot say. */
+  offShelfTitles: string[]
+  /** True when the evidence came from media_search, which reports per-title shelf state. */
+  fromMediaSearch: boolean
 }
 
 function requestKind(request: string, titleQuery: string): MediaRequestKind {
@@ -86,6 +92,39 @@ function parseCatalogEvidence(result: string, args: Record<string, string>): Cat
       totalItems: parsed.data.totalItems as number,
       matchedItems: parsed.data.matchedItems as number,
       titles,
+      offShelfTitles: [],
+      fromMediaSearch: false,
+    }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * media_search reports shelf state per title, so it can ground both "what do we own"
+ * and "what is worth adding" from one read. The legacy catalog read can only prove
+ * absence by returning zero matches for an exact title query.
+ */
+function parseMediaSearchEvidence(result: string, args: Record<string, string>): CatalogEvidence | null {
+  try {
+    const parsed = JSON.parse(result) as { matched?: unknown; items?: unknown }
+    if (!Number.isSafeInteger(parsed.matched) || !Array.isArray(parsed.items)) return null
+    const titles: string[] = []
+    const offShelfTitles: string[] = []
+    for (const entry of parsed.items) {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue
+      const item = entry as { title?: unknown; on_shelf?: unknown }
+      if (typeof item.title !== "string" || !item.title.trim()) continue
+      titles.push(item.title.trim())
+      if (item.on_shelf === false) offShelfTitles.push(item.title.trim())
+    }
+    return {
+      query: normalizeSanctuaryMediaText(args.query ?? ""),
+      totalItems: parsed.matched as number,
+      matchedItems: parsed.matched as number,
+      titles,
+      offShelfTitles,
+      fromMediaSearch: true,
     }
   } catch {
     return null
@@ -130,7 +169,11 @@ export function sanctuaryMediaCatalogRequiredToolCalls(
   request: string,
   advertisedToolNames: readonly string[],
 ): { names: readonly string[]; retryMessage: string; requireSuccessfulResults: true; validateRequiredToolResult(name: string, result: string, args: Record<string, string>): boolean; validateToolCallBeforeDispatch(name: string, args: Record<string, string>): string | undefined; validateTerminalAnswer(answer: string): string | undefined } | undefined {
-  if (!advertisedToolNames.includes("sanctuary_search_media_catalog")) return undefined
+  // Prefer media_search when the media surface is installed: it grounds both what is
+  // on the shelf and what is worth adding. Fall back to the legacy restricted read.
+  const catalogTool = advertisedToolNames.includes(MEDIA_SEARCH_TOOL) ? MEDIA_SEARCH_TOOL : LEGACY_CATALOG_TOOL
+  const canRequestMedia = advertisedToolNames.includes(MEDIA_REQUEST_TOOL)
+  if (!advertisedToolNames.includes(catalogTool)) return undefined
   const normalized = normalizeSanctuaryMediaText(request)
   const mentionsMedia = /\b(?:film|films|movie|movies|shows|tv|jellyfin|watch|shelf|stock|catalog|library|lib)\b/u.test(normalized)
   const asksCatalog = /\b(?:have|got|stock|catalog|library|lib|shelf|jellyfin|favorite|favourite|recommend|suggest|pick|watch|add|see|show|list|browse|access)\b/u.test(normalized)
@@ -146,7 +189,7 @@ export function sanctuaryMediaCatalogRequiredToolCalls(
   const listCount = requestedListCount(normalized)
   const technicalDetailRequested = /\b(?:technical|technically|implementation|endpoint|backend|debug|detail|internals?)\b/u.test(normalized)
   let latestEvidence: CatalogEvidence | undefined
-  const names = [...REQUIRED_TOOL_NAMES]
+  const names = [catalogTool]
   emitNervesEvent({
     component: "senses",
     event: "senses.sanctuary_media_catalog_obligation",
@@ -157,30 +200,32 @@ export function sanctuaryMediaCatalogRequiredToolCalls(
     names,
     requireSuccessfulResults: true,
     retryMessage: asksForCount
-      ? "Use sanctuary_search_media_catalog before answering, then report only the current shelf count in ordinary household language."
+      ? `Use ${catalogTool} before answering, then report only the current shelf count in ordinary household language.`
       : kind === "visibility"
-      ? "Use sanctuary_search_media_catalog before answering. Lead with the direct answer from current catalog evidence, report the shelf count in ordinary household language, and stop without sampled titles or a follow-up question."
+      ? `Use ${catalogTool} before answering. Lead with the direct answer from current catalog evidence, report the shelf count in ordinary household language, and stop without sampled titles or a follow-up question.`
       : kind === "title_lookup"
-        ? "Use sanctuary_search_media_catalog with the requested title before answering. Confirm its presence or absence directly from current catalog evidence."
+        ? `Use ${catalogTool} with the requested title before answering. Confirm its presence or absence directly from current catalog evidence.`
         : kind === "taste_recommendation"
-          ? "Use sanctuary_search_media_catalog before answering. Make one concise, decisive choice grounded in returned catalog evidence; do not volunteer an AI or 'I cannot watch' disclaimer."
+          ? `Use ${catalogTool} before answering. Make one concise, decisive choice grounded in returned catalog evidence; do not volunteer an AI or 'I cannot watch' disclaimer.`
           : listCount
-            ? `Use sanctuary_search_media_catalog with limit ${listCount} before answering, then name exactly the returned catalog titles.`
-            : "Use sanctuary_search_media_catalog before answering and base any named titles on the returned catalog evidence.",
+            ? `Use ${catalogTool} with limit ${listCount} before answering, then name exactly the returned catalog titles.`
+            : `Use ${catalogTool} before answering and base any named titles on the returned catalog evidence.`,
     validateRequiredToolResult(name: string, result: string, args: Record<string, string>): boolean {
-      if (name !== "sanctuary_search_media_catalog") return false
-      const current = parseCatalogEvidence(result, args)
+      if (name !== catalogTool) return false
+      const current = catalogTool === MEDIA_SEARCH_TOOL ? parseMediaSearchEvidence(result, args) : parseCatalogEvidence(result, args)
       if (!current) return false
       latestEvidence = current
       return true
     },
     validateToolCallBeforeDispatch(name: string, args: Record<string, string>): string | undefined {
-      if (name !== "sanctuary_search_media_catalog") return undefined
+      if (name !== catalogTool) return undefined
       const query = normalizeSanctuaryMediaText(args.query ?? "")
       if (kind === "title_lookup" && !query) return "Search for the requested title by name before answering whether it is on the shelf."
       if (kind === "title_lookup" && query !== requestedTitleQuery) return `Search for the requested title ${requestedTitleQuery} before answering whether it is on the shelf.`
-      if (asksForAddition && !query) return "Search for one candidate title by name before recommending it as an addition."
-      if (listCount && Number(args.limit) !== listCount) return `Set the catalog limit to ${listCount} so the answer is grounded in exactly the requested number of titles.`
+      // media_search browses by genre, keyword and year and reports shelf state per
+      // title, so an addition question does not need a per-candidate title query.
+      if (asksForAddition && !query && catalogTool !== MEDIA_SEARCH_TOOL) return "Search for one candidate title by name before recommending it as an addition."
+      if (listCount && Number(args.limit) !== listCount && catalogTool !== MEDIA_SEARCH_TOOL) return `Set the catalog limit to ${listCount} so the answer is grounded in exactly the requested number of titles.`
       return undefined
     },
     validateTerminalAnswer(answer: string): string | undefined {
@@ -210,13 +255,28 @@ export function sanctuaryMediaCatalogRequiredToolCalls(
 
       if (kind === "taste_recommendation" && latest) {
         if (asksForAddition) {
-          if (!latest.query || latest.matchedItems !== 0 || !includesNormalizedPhrase(answer, latest.query)) return "Recommend an addition only after an exact current catalog search shows that candidate is absent."
-          if (/\b(?:i|we)\s+(?:added|requested|submitted|queued)\b/iu.test(answer)) return "Do not claim the title was added or requested when no media-request action was available."
+          if (latest.fromMediaSearch) {
+            // media_search states shelf membership per title, so a recommendation is
+            // grounded when the named candidate came back marked absent.
+            if (!latest.offShelfTitles.some((title) => includesNormalizedPhrase(answer, title))) {
+              return "Recommend only a title the current search returned as not on the shelf."
+            }
+          } else if (!latest.query || latest.matchedItems !== 0 || !includesNormalizedPhrase(answer, latest.query)) {
+            return "Recommend an addition only after an exact current catalog search shows that candidate is absent."
+          }
+          if (!canRequestMedia && /\b(?:i|we)\s+(?:added|requested|submitted|queued)\b/iu.test(answer)) {
+            return "Do not claim the title was added or requested when no media-request action was available."
+          }
         } else if (!latest.titles.some((title) => includesNormalizedPhrase(answer, title))) {
           return "Make the choice from a title returned by the current catalog evidence."
         }
       }
-      if (kind === "other" && latest) return catalogTitleGroundingRejection(answer, latest, listCount)
+      if (kind === "other" && latest) {
+        if (!latest.fromMediaSearch) return catalogTitleGroundingRejection(answer, latest, listCount)
+        if (latest.titles.length > 0 && !latest.titles.some((title) => includesNormalizedPhrase(answer, title))) {
+          return "Name titles the current search returned; do not add unverified ones."
+        }
+      }
       return undefined
     },
   }

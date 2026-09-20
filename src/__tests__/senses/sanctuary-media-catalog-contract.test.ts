@@ -258,3 +258,90 @@ describe("Sanctuary media catalog contract", () => {
     expect(sanctuaryMediaCatalogRequiredToolCalls("Do we have Moonstruck?", ["unraid_get_system"])).toBeUndefined()
   })
 })
+
+const mediaTools = ["media_search", "media_request", "media_request_status"]
+
+function mediaSearchResult(items: { title: string; year?: number; on_shelf?: boolean }[]): string {
+  return JSON.stringify({
+    source: "discover",
+    matched: items.length,
+    items: items.map(({ title, year = 1999, on_shelf = true }) => ({ title, year, kind: "movie", on_shelf, shelf_state: on_shelf ? "available" : "not_on_shelf", tmdb_id: 1 })),
+    applied_filters: { kind: "movie", on_shelf: "any" },
+  })
+}
+
+describe("Sanctuary media catalog contract with the media tools", () => {
+  it("requires media_search instead of the legacy catalog read when it is advertised", () => {
+    const contract = sanctuaryMediaCatalogRequiredToolCalls("What movie should I watch?", ["settle", ...requiredTools, ...mediaTools])
+    expect(contract?.names).toEqual(["media_search"])
+    expect(contract?.retryMessage).toMatch(/media_search/u)
+  })
+
+  it("keeps the legacy catalog read when the media tools are absent", () => {
+    const contract = sanctuaryMediaCatalogRequiredToolCalls("What movie should I watch?", ["settle", ...requiredTools])
+    expect(contract?.names).toEqual(requiredTools)
+  })
+
+  it("accepts media_search output as catalog evidence and grounds the choice in a returned title", () => {
+    const contract = sanctuaryMediaCatalogRequiredToolCalls("What movie should I watch?", ["settle", ...mediaTools])!
+    expect(contract.validateRequiredToolResult("media_search", mediaSearchResult([{ title: "Little Women" }, { title: "Knives Out" }]), {})).toBe(true)
+    expect(contract.validateTerminalAnswer("Little Women — New England autumn, candlelight, and real leaves.")).toBeUndefined()
+    expect(contract.validateTerminalAnswer("Try Autumn Sonata; it suits the mood.")).toMatch(/current catalog evidence/u)
+  })
+
+  it("allows recommending an addition that media_search returned as not on the shelf", () => {
+    const contract = sanctuaryMediaCatalogRequiredToolCalls("What fall films should we add that we're missing?", ["settle", ...mediaTools])!
+    expect(contract.validateRequiredToolResult("media_search", mediaSearchResult([{ title: "Practical Magic", on_shelf: false }]), {})).toBe(true)
+    expect(contract.validateTerminalAnswer("Practical Magic isn't on the shelf — worth adding for a coastal New England autumn.")).toBeUndefined()
+  })
+
+  it("refuses an addition the evidence shows is already on the shelf", () => {
+    const contract = sanctuaryMediaCatalogRequiredToolCalls("What fall films should we add that we're missing?", ["settle", ...mediaTools])!
+    contract.validateRequiredToolResult("media_search", mediaSearchResult([{ title: "Knives Out", on_shelf: true }]), {})
+    expect(contract.validateTerminalAnswer("Knives Out is worth adding.")).toMatch(/not on the shelf/u)
+  })
+
+  it("permits an added-it claim only when a media request tool is advertised", () => {
+    const withRequest = sanctuaryMediaCatalogRequiredToolCalls("What fall films should we add that we're missing?", ["settle", ...mediaTools])!
+    withRequest.validateRequiredToolResult("media_search", mediaSearchResult([{ title: "Practical Magic", on_shelf: false }]), {})
+    expect(withRequest.validateTerminalAnswer("Practical Magic wasn't here, so I requested it.")).toBeUndefined()
+
+    const withoutRequest = sanctuaryMediaCatalogRequiredToolCalls("What fall films should we add that we're missing?", ["settle", "media_search"])!
+    withoutRequest.validateRequiredToolResult("media_search", mediaSearchResult([{ title: "Practical Magic", on_shelf: false }]), {})
+    expect(withoutRequest.validateTerminalAnswer("Practical Magic wasn't here, so I requested it.")).toMatch(/no media-request action/u)
+  })
+
+  it("does not force a title query on media_search, which browses by filters", () => {
+    const contract = sanctuaryMediaCatalogRequiredToolCalls("What fall films should we add that we're missing?", ["settle", ...mediaTools])!
+    expect(contract.validateToolCallBeforeDispatch("media_search", { genres: "Drama" })).toBeUndefined()
+  })
+
+  it("rejects a media_search result that is not usable evidence", () => {
+    const contract = sanctuaryMediaCatalogRequiredToolCalls("What movie should I watch?", ["settle", ...mediaTools])!
+    expect(contract.validateRequiredToolResult("media_search", JSON.stringify({ error: "credentials_unavailable" }), {})).toBe(false)
+  })
+})
+
+describe("Sanctuary media catalog contract media_search edge cases", () => {
+  it("treats malformed media_search output as unusable evidence", () => {
+    const contract = sanctuaryMediaCatalogRequiredToolCalls("What movie should I watch?", ["settle", ...mediaTools])!
+    expect(contract.validateRequiredToolResult("media_search", "not json at all", {})).toBe(false)
+  })
+
+  it("skips media_search entries that are not usable titles", () => {
+    const contract = sanctuaryMediaCatalogRequiredToolCalls("What movie should I watch?", ["settle", ...mediaTools])!
+    const noisy = JSON.stringify({
+      matched: 2,
+      items: [null, "not an object", ["array"], { title: 42 }, { title: "   " }, { title: "Little Women", on_shelf: true }],
+    })
+    expect(contract.validateRequiredToolResult("media_search", noisy, {})).toBe(true)
+    expect(contract.validateTerminalAnswer("Little Women it is.")).toBeUndefined()
+  })
+
+  it("grounds a general shelf listing in the titles media_search returned", () => {
+    const contract = sanctuaryMediaCatalogRequiredToolCalls("Show me 3 films from the shelf.", ["settle", ...mediaTools])!
+    expect(contract.validateRequiredToolResult("media_search", mediaSearchResult([{ title: "Little Women" }, { title: "Knives Out" }]), {})).toBe(true)
+    expect(contract.validateTerminalAnswer("Little Women and Knives Out are both there.")).toBeUndefined()
+    expect(contract.validateTerminalAnswer("Casablanca and Vertigo are both there.")).toMatch(/do not add unverified/u)
+  })
+})
