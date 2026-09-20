@@ -180,9 +180,32 @@ async function mediaSearch(a) {
 
 // ------------------------------------------------------------ tool: request
 
-async function findExistingRequest(tmdbId) {
-  const body = await seerr("/request", { query: { take: 100, skip: 0, sort: "added" } })
-  return (body.results ?? []).find((r) => r.media?.tmdbId === tmdbId) ?? null
+// Resolve by TMDB id against the title itself rather than scanning the request
+// list: this household has over a thousand requests, so a page-limited scan
+// silently misses older ones and would file a duplicate.
+async function findExistingRequest(tmdbId, kind) {
+  const kinds = kind ? [kind] : ["movie", "series"]
+  for (const k of kinds) {
+    let detail
+    try {
+      detail = await seerr(`/${k === "series" ? "tv" : "movie"}/${tmdbId}`)
+    } catch {
+      continue
+    }
+    const info = detail?.mediaInfo
+    if (!info) continue
+    const requests = info.requests ?? []
+    const latest = requests.length ? requests[requests.length - 1] : null
+    return {
+      id: latest?.id ?? null,
+      status: latest?.status ?? null,
+      createdAt: latest?.createdAt ?? null,
+      type: k === "series" ? "tv" : "movie",
+      media: { ...info, tmdbId, title: detail.title ?? detail.name ?? null },
+      hasRequest: requests.length > 0,
+    }
+  }
+  return null
 }
 
 async function mediaRequest(a) {
@@ -208,11 +231,11 @@ async function mediaRequest(a) {
     resolvedYear = Number((pick.releaseDate ?? pick.firstAirDate ?? "").slice(0, 4)) || null
   }
 
-  const existing = await findExistingRequest(tmdbId)
-  if (existing) {
+  const existing = await findExistingRequest(tmdbId, kind)
+  if (existing?.hasRequest) {
     const shelf = MEDIA_STATUS[existing.media?.status] ?? "unknown"
     return {
-      resolved: true, title: resolvedTitle, year: resolvedYear, kind, tmdb_id: tmdbId,
+      resolved: true, title: resolvedTitle ?? existing.media?.title ?? null, year: resolvedYear, kind, tmdb_id: tmdbId,
       request_id: `jellyseerr:${existing.id}`,
       approval_state: "already_requested",
       duplicate_of: `jellyseerr:${existing.id}`,
@@ -304,17 +327,22 @@ async function chainHealth() {
 
 async function resolveTarget(a) {
   if (a.tmdb_id) {
-    const r = await findExistingRequest(a.tmdb_id)
-    if (r) return r
+    const r = await findExistingRequest(a.tmdb_id, a.kind)
+    if (r?.hasRequest) return r
   }
   if (a.request_id) {
     const id = Number(String(a.request_id).replace(/^jellyseerr:/, ""))
-    if (Number.isFinite(id)) return seerr(`/request/${id}`)
+    if (Number.isFinite(id)) {
+      try { return await seerr(`/request/${id}`) } catch { /* fall through to title */ }
+    }
   }
   if (a.title) {
     const body = await seerr("/search", { query: { query: a.title, page: 1 } })
-    const pick = (body.results ?? []).find((r) => r.mediaInfo)
-    if (pick) return findExistingRequest(pick.id)
+    // Only titles Jellyseerr already knows about can have a request behind them.
+    for (const pick of (body.results ?? []).filter((r) => r.mediaInfo)) {
+      const found = await findExistingRequest(pick.id, pick.mediaType === "tv" ? "series" : "movie")
+      if (found?.hasRequest) return found
+    }
   }
   return null
 }
