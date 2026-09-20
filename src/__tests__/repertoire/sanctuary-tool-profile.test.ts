@@ -8,19 +8,29 @@ import { approvalPolicyForToolName, execTool, getToolsForChannel, resolveToolDef
 import { baseToolDefinitions } from "../../repertoire/tools-base"
 import { SANCTUARY_OWNER_ADDITIONS } from "../fixtures/sanctuary-containment"
 
+// Provided at runtime by the packaged `media` MCP server, not by a native
+// definition, so these names are authorized in the profile but only resolve
+// when an MCP manager is attached to the turn.
+const SANCTUARY_MEDIA_MCP_TOOLS = [
+  "media_search", "media_request", "media_request_status",
+  "media_diagnose_and_fix", "media_chain_health", "media_play_or_resolve",
+] as const
+const withoutMediaMcp = (names: string[]) => names.filter((name) => !SANCTUARY_MEDIA_MCP_TOOLS.includes(name as typeof SANCTUARY_MEDIA_MCP_TOOLS[number]))
+
 describe("Sanctuary active tool profile", () => {
   afterEach(() => resetIdentity())
 
-  it("ships exactly owner v9 while preserving the complete prior owner and non-owner profiles", () => {
+  it("ships exactly owner v10 while preserving the complete prior owner and non-owner profiles", () => {
     const packaged = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/tool-profiles.json", "utf8"))
     const owner = packaged.profiles["sanctuary-owner"]
     const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex")
-    expect(owner.version).toBe(9)
-    expect(owner.toolNames).toHaveLength(50)
-    expect(new Set(owner.toolNames).size).toBe(50)
+    expect(owner.version).toBe(10)
+    expect(owner.toolNames).toHaveLength(56)
+    expect(new Set(owner.toolNames).size).toBe(56)
     expect(owner.toolNames).toContain("sanctuary_host_execute")
     expect(owner.toolNames).toEqual(expect.arrayContaining(SANCTUARY_OWNER_ADDITIONS))
-    expect(digest({ ...owner, version: 7, toolNames: owner.toolNames.filter((name: string) => name !== "sanctuary_host_execute" && !SANCTUARY_OWNER_ADDITIONS.includes(name)) })).toBe("19b06666b7f087ceddecc5c0721d4497fdabcb06b3bfee614092f9966bb3f8df")
+    expect(owner.toolNames).toEqual(expect.arrayContaining([...SANCTUARY_MEDIA_MCP_TOOLS]))
+    expect(digest({ ...owner, version: 7, toolNames: withoutMediaMcp(owner.toolNames).filter((name: string) => name !== "sanctuary_host_execute" && !SANCTUARY_OWNER_ADDITIONS.includes(name)) })).toBe("19b06666b7f087ceddecc5c0721d4497fdabcb06b3bfee614092f9966bb3f8df")
     expect(digest(packaged.profiles["sanctuary-household"])).toBe("3e28129c914c45857e2f202ebd225a298354d1636d7a515d8f28818f8bdce19f")
     expect(digest(packaged.profiles["sanctuary-event"])).toBe("84f54acd06d07c42c01bf0da29697c7ad07004df35d3d582cd367476c4404b56")
   })
@@ -32,10 +42,10 @@ describe("Sanctuary active tool profile", () => {
       agentName: "sanctuary",
       relationshipAuthorization: { profileId: "sanctuary-owner", advertisedToolNames: packaged.profiles["sanctuary-owner"].toolNames },
     }).map((tool) => tool.function.name)
-    expect(names.toSorted()).toEqual(packaged.profiles["sanctuary-owner"].toolNames.filter((name: string) => name !== "rest" && name !== "sanctuary_host_execute").toSorted())
+    expect(names.toSorted()).toEqual(withoutMediaMcp(packaged.profiles["sanctuary-owner"].toolNames).filter((name: string) => name !== "rest" && name !== "sanctuary_host_execute").toSorted())
     expect(names).toContain("send_message")
     expect(packaged.version).toBe(2)
-    expect(packaged.profiles["sanctuary-owner"].version).toBe(9)
+    expect(packaged.profiles["sanctuary-owner"].version).toBe(10)
     expect(packaged.profiles["sanctuary-household"].version).toBe(5)
     expect(packaged.profiles["sanctuary-event"].version).toBe(4)
     expect(packaged.profiles["sanctuary-owner"].toolNames).toEqual(expect.arrayContaining(names))
@@ -63,6 +73,49 @@ describe("Sanctuary active tool profile", () => {
     expect(Object.keys(packaged.profiles)).toEqual(["sanctuary-owner", "sanctuary-household", "sanctuary-event"])
   })
 
+  it("surfaces the packaged media MCP tools to the owner and withholds them from the household", () => {
+    setAgentName("sanctuary")
+    const packaged = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/tool-profiles.json", "utf8"))
+    const mcpManager = {
+      manager: {} as never,
+      owner: { agentName: "sanctuary", agentRoot: "/mock/sanctuary.ouro" },
+      entries: [{
+        server: "media",
+        source: "builtin" as const,
+        configDigest: "digest",
+        generation: 1,
+        tools: SANCTUARY_MEDIA_MCP_TOOLS.map((name) => ({ name, description: `${name} description`, inputSchema: { type: "object", properties: {} } })),
+      }],
+    }
+    const resolve = (profile: string) => getToolsForChannel(
+      getChannelCapabilities("telegram"), undefined, undefined, new Set(["reasoning-effort"]), mcpManager, undefined,
+      { agentName: "sanctuary", relationshipAuthorization: { profileId: profile, advertisedToolNames: packaged.profiles[profile].toolNames } },
+    ).map((tool) => tool.function.name)
+
+    // The server is named `media` precisely so its tools surface under their own
+    // names rather than the `media_media_search` the `{server}_{tool}` rule would
+    // otherwise produce — those names are what the packaged profile authorizes.
+    const ownerNames = resolve("sanctuary-owner")
+    expect(ownerNames).toEqual(expect.arrayContaining([...SANCTUARY_MEDIA_MCP_TOOLS]))
+    expect(ownerNames.toSorted()).toEqual(packaged.profiles["sanctuary-owner"].toolNames.filter((name: string) => name !== "rest" && name !== "sanctuary_host_execute").toSorted())
+
+    // MCP tools are owner-gated in tool selection, so an authorized household
+    // name still must not resolve.
+    for (const name of SANCTUARY_MEDIA_MCP_TOOLS) {
+      expect(packaged.profiles["sanctuary-household"].toolNames).not.toContain(name)
+      expect(packaged.profiles["sanctuary-event"].toolNames).not.toContain(name)
+      expect(resolve("sanctuary-household")).not.toContain(name)
+    }
+
+    // Without a manager the same profile resolves none of them, so a failed MCP
+    // connection degrades to "tool absent" rather than a broken tool list.
+    const withoutManager = getToolsForChannel(
+      getChannelCapabilities("telegram"), undefined, undefined, new Set(["reasoning-effort"]), undefined, undefined,
+      { agentName: "sanctuary", relationshipAuthorization: { profileId: "sanctuary-owner", advertisedToolNames: packaged.profiles["sanctuary-owner"].toolNames } },
+    ).map((tool) => tool.function.name)
+    for (const name of SANCTUARY_MEDIA_MCP_TOOLS) expect(withoutManager).not.toContain(name)
+  })
+
   it("resolves every relationship profile from the same canonical Sanctuary definition pool", () => {
     setAgentName("sanctuary")
     const packaged = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/tool-profiles.json", "utf8")) as {
@@ -78,7 +131,7 @@ describe("Sanctuary active tool profile", () => {
     }))]
 
     for (const profile of ["sanctuary-owner", "sanctuary-household", "sanctuary-event"]) {
-      expect(resolve(profile).toSorted()).toEqual(packaged.profiles[profile]!.toolNames.filter((name) => name !== "sanctuary_host_execute").toSorted())
+      expect(resolve(profile).toSorted()).toEqual(withoutMediaMcp(packaged.profiles[profile]!.toolNames).filter((name) => name !== "sanctuary_host_execute").toSorted())
     }
     expect(resolve("sanctuary-event")).toEqual(expect.arrayContaining([
       "external_event_disposition",

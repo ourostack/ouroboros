@@ -39,7 +39,7 @@ type JsonObject = Record<string, unknown>
 export function exactSanctuaryContainmentProfileBoundaries(value: unknown): boolean {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false
   const boundaries = value as JsonObject
-  const versions = { "sanctuary-owner": 9, "sanctuary-household": 5, "sanctuary-event": 4 }
+  const versions = { "sanctuary-owner": 10, "sanctuary-household": 5, "sanctuary-event": 4 }
   if (!isDeepStrictEqual(Object.keys(boundaries).sort(), Object.keys(versions).sort())) return false
   const packageRoot = path.resolve(__dirname, "../../../deploy/unraid/sanctuary.ouro")
   const registry = loadRelationshipCapabilityRegistry(packageRoot)
