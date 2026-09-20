@@ -62,13 +62,5 @@
   },
   "sync": {
     "enabled": false
-  },
-  "mcpServers": {
-    "media": {
-      "command": "node",
-      "args": [
-        "/home/ouro/AgentBundles/sanctuary.ouro/mcp/media-mcp.mjs"
-      ]
-    }
   }
 }

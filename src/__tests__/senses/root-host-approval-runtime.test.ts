@@ -599,7 +599,10 @@ describe("separate root host approval continuation", () => {
     const f = await fixture()
     await f.propose()
     const terminal = f.terminal()
-    ;(terminal.permit.payload as any)[field] = field === "relationshipProfileVersion" ? 10 : "other"
+    // Derive the mismatch from the live value so a profile-version bump cannot turn
+    // this negative case into a matching one.
+    const payload = terminal.permit.payload as any
+    payload[field] = field === "relationshipProfileVersion" ? (payload.relationshipProfileVersion as number) + 1 : "other"
     f.setStatus(terminal)
     await f.value.recover()
     expect(f.provider).not.toHaveBeenCalled()
