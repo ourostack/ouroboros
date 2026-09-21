@@ -486,3 +486,19 @@ jobs:
 
       - name: Smoke published package binaries
         run: npm run release:smoke
+
+      # container-publish triggers on this workflow concluding success, so a failure
+      # anywhere after the package is on npm silently skips the container image and
+      # leaves npm and GHCR diverged with nothing saying so. Keep that gate — an
+      # image should only come from a commit that passed everything — but stop the
+      # skip being silent, and say exactly how to recover it.
+      - name: Warn when a published version will not get a container image
+        if: failure()
+        run: |
+          LOCAL=$(node -p "require('./package.json').version")
+          PUBLISHED=$(npm view "@ouro.bot/cli@${LOCAL}" version 2>/dev/null || echo "")
+          if [ "$PUBLISHED" = "$LOCAL" ]; then
+            echo "::error::@ouro.bot/cli@${LOCAL} is published on npm, but this run is failing so container-publish will not fire and ghcr.io/ourostack/ouroboros-butler:${LOCAL} will NOT be built. Re-run the failed jobs on this run to produce the image; the publish steps are idempotent and skip an already-published version."
+          else
+            echo "::warning::This run is failing before @ouro.bot/cli@${LOCAL} was published, so no container image is expected."
+          fi
