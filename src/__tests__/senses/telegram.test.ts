@@ -1924,6 +1924,19 @@ describe("Telegram sense", () => {
     expect(artifact).toMatchObject({ authorClass: "butler", effect: { kind: "text", text: "Array recovered" }, parts: [{ state: "session_recorded", messageId: 71 }] })
   })
 
+  it("does not send a proactive message that repeats the one just sent", async () => {
+    const f = fixture()
+    const probe = (clock: string) => `Fresh probe at ${clock} UTC confirms media, books, requests, and readarr all returning status 0.`
+    await f.app.sendProactive(probe("05:16:08"))
+    // Same sentence, new clock reading — the shape of the storm Ari actually got.
+    await f.app.sendProactive(probe("05:16:37"))
+    const sends = f.api.request.mock.calls.filter(([method]: [string]) => method === "sendMessage")
+    expect(sends).toHaveLength(1)
+    // A genuinely different message still goes out.
+    await f.app.sendProactive("Books went offline; I restarted calibre-web.")
+    expect(f.api.request.mock.calls.filter(([method]: [string]) => method === "sendMessage")).toHaveLength(2)
+  })
+
   it("records one event-generation owner decision through the existing effect and Telegram session", async () => {
     const f = fixture()
     await f.app.sendExternalEventDecision({ source: "sanctuary-health", eventId: "container:books", generation: 4, text: "Books is still down. I’m looking into it." })
