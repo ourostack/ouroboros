@@ -101,21 +101,50 @@ function preparedTexts(effect: TelegramEffect): Array<string | null> {
   return [effect.text?.trim() || null]
 }
 
+// Bold spans may carry one level of emphasis inside them, because `**bold with
+// *italic* inside**` is ordinary model prose. The inner span is rendered by the
+// same conservative scan, so a bold run that does not resolve cleanly still
+// degrades the whole message to literal text rather than emitting partial
+// markup. Everything else stays as strict as before: a span must open on a
+// letter or digit and close on a non-space, which is what keeps `**/src/**`,
+// `2 ** 3` and `a_b_c` literal.
+const TELEGRAM_BOLD_WITH_NESTING = /`([^`\n]+)`|\*\*([\p{L}\p{N}](?:[^*_`\n]|\*(?!\*)|_)*\S|[\p{L}\p{N}])\*\*|\*([\p{L}\p{N}](?:[^*_`\n]*\S)?)\*|_([\p{L}\p{N}](?:[^*_`\n]*\S)?)_/gu
+const TELEGRAM_EMPHASIS_ONLY = /`([^`\n]+)`|\*([\p{L}\p{N}](?:[^*_`\n]*\S)?)\*|_([\p{L}\p{N}](?:[^*_`\n]*\S)?)_/gu
+
 function renderTelegramButlerHtml(text: string): string {
+  return renderTelegramStyledSpan(text, true) ?? escapeTelegramHtml(text)
+}
+
+// Returns null when the span cannot be rendered cleanly, so every caller falls
+// back to escaping rather than emitting half-applied markup.
+function renderTelegramStyledSpan(text: string, allowBold: boolean): string | null {
   let html = ""
   let cursor = 0
-  const styledText = /`([^`\n]+)`|\*\*([\p{L}\p{N}](?:[^*_`\n]*\S)?)\*\*|\*([\p{L}\p{N}](?:[^*_`\n]*\S)?)\*|_([\p{L}\p{N}](?:[^*_`\n]*\S)?)_/gu
-  for (const match of text.matchAll(styledText)) {
+  const pattern = allowBold ? TELEGRAM_BOLD_WITH_NESTING : TELEGRAM_EMPHASIS_ONLY
+  pattern.lastIndex = 0
+  for (const match of text.matchAll(pattern)) {
     const gap = text.slice(cursor, match.index)
-    if (/[*_`]/u.test(gap)) return escapeTelegramHtml(text)
+    if (/[*_`]/u.test(gap)) return null
     html += escapeTelegramHtml(gap)
-    if (match[1] !== undefined) html += `<code>${escapeTelegramHtml(match[1])}</code>`
-    else if (match[2] !== undefined || match[3] !== undefined) html += `<b>${escapeTelegramHtml((match[2] ?? match[3])!)}</b>`
-    else html += `<i>${escapeTelegramHtml(match[4]!)}</i>`
+    const code = match[1]
+    const bold = allowBold ? match[2] : undefined
+    const italic = allowBold ? match[3] : match[2]
+    const underscored = allowBold ? match[4] : match[3]
+    if (code !== undefined) html += `<code>${escapeTelegramHtml(code)}</code>`
+    else if (bold !== undefined) {
+      const inner = renderTelegramStyledSpan(bold, false)
+      if (inner === null) return null
+      html += `<b>${inner}</b>`
+    // A single-marker span is bold at the top level, which is the long-standing
+    // convention here, but inside a bold run it is the nested emphasis the
+    // author meant - and nesting <b> in <b> would be markup Telegram has no
+    // reason to accept.
+    } else if (italic !== undefined) html += allowBold ? `<b>${escapeTelegramHtml(italic)}</b>` : `<i>${escapeTelegramHtml(italic)}</i>`
+    else html += `<i>${escapeTelegramHtml(underscored!)}</i>`
     cursor = match.index + match[0].length
   }
   const tail = text.slice(cursor)
-  return /[*_`]/u.test(tail) ? escapeTelegramHtml(text) : html + escapeTelegramHtml(tail)
+  return /[*_`]/u.test(tail) ? null : html + escapeTelegramHtml(tail)
 }
 
 function assertEffectTarget(target: TelegramEffectTarget, effect: TelegramEffect, idempotencyKey: string): void {

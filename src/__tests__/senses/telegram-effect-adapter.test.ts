@@ -193,6 +193,38 @@ describe("Telegram effect adapter", () => {
     expect(request).toHaveBeenCalledWith("sendMessage", { chat_id: "42", text: "render check: <b>bold</b>, <i>italic</i>, and <code>code</code>", parse_mode: "HTML" }, undefined)
   })
 
+  it("renders one level of emphasis nested inside a bold run instead of degrading the whole reply", async () => {
+    const store = journal()
+    const request = vi.fn(async () => ({ message_id: 85 }))
+    const execute = createTelegramAuthorizedEffectExecutor({ store, api: { request }, authorize: () => authorization })
+    // Exactly the shape the live Butler produced on 2026-09-21, which reached
+    // Ari as visible asterisks because one nested span made the entire message
+    // fall back to literal text.
+    const raw = "**My pick tonight: *Office Space* (1999).** Already on the shelf."
+
+    const result = await execute({ idempotencyKey: "reply:nested-emphasis", target, authorClass: "butler", effect: { kind: "text", text: raw } })
+
+    expect(result.effect).toEqual({ kind: "text", text: raw })
+    expect(request).toHaveBeenCalledWith("sendMessage", { chat_id: "42", text: "<b>My pick tonight: <i>Office Space</i> (1999).</b> Already on the shelf.", parse_mode: "HTML" }, undefined)
+  })
+
+  it.each([
+    ["overlapping rather than nested emphasis", "Keep **bold *italic** tail* literal"],
+    ["a glob that looks like bold", "Keep **/src/** globs literal"],
+    ["arithmetic that looks like bold", "arithmetic 2 ** 3 stays literal"],
+    ["an unbalanced marker inside a bold run", "Keep **bold with a lone * inside** literal"],
+  ])("still degrades to literal text for %s", async (_label, raw) => {
+    const store = journal()
+    const request = vi.fn(async () => ({ message_id: 86 }))
+    const execute = createTelegramAuthorizedEffectExecutor({ store, api: { request }, authorize: () => authorization })
+
+    await execute({ idempotencyKey: `reply:literal:${_label.replace(/\W+/gu, "-")}`, target, authorClass: "butler", effect: { kind: "text", text: raw } })
+
+    const sent = String((request.mock.calls[0]![1] as { text: string }).text)
+    expect(sent).not.toContain("<b>")
+    expect(sent).not.toContain("<i>")
+  })
+
   it("falls back from Butler HTML to the identical raw Markdown chunk on Telegram 400", async () => {
     const store = journal()
     const raw = "**bold** and _italic_ with `code` & <unsafe>"
