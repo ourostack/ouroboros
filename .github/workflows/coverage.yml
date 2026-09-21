@@ -447,24 +447,35 @@ jobs:
           CLI_TAG="${{ steps.cli-publish-tag.outputs.tag }}"
           WRAPPER_TAG="${{ steps.wrapper-publish-tag.outputs.tag }}"
 
+          # npm's public read path can lag a successful publish by minutes — observed
+          # at roughly four minutes for 0.1.0-alpha.821. A window shorter than that
+          # fails a release that actually succeeded, and because container-publish
+          # only runs when this workflow concludes success, a false failure here also
+          # silently skips the container image.
+          PROPAGATION_DEADLINE_SECONDS=600
+
           verify_tag() {
             package_ref="$1"
             expected="$2"
+            started=$(date +%s)
+            deadline=$((started + PROPAGATION_DEADLINE_SECONDS))
 
-            for attempt in 1 2 3 4 5 6; do
+            while :; do
               actual=$(npm view "$package_ref" version 2>/dev/null || echo "")
               if [ "$actual" = "$expected" ]; then
-                echo "${package_ref} verified at ${expected}"
+                echo "${package_ref} verified at ${expected} after $(( $(date +%s) - started ))s"
                 return 0
               fi
 
-              if [ "$attempt" != "6" ]; then
-                echo "${package_ref} points at ${actual:-missing}, expected ${expected}; retrying after npm propagation delay"
-                sleep 10
+              if [ "$(date +%s)" -ge "$deadline" ]; then
+                break
               fi
+
+              echo "${package_ref} points at ${actual:-missing}, expected ${expected}; retrying after npm propagation delay"
+              sleep 15
             done
 
-            echo "::error::${package_ref} points at ${actual:-missing}, expected ${expected}"
+            echo "::error::${package_ref} points at ${actual:-missing}, expected ${expected} after $(( $(date +%s) - started ))s"
             return 1
           }
 
