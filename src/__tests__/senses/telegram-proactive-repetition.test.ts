@@ -44,6 +44,14 @@ describe("proactive repetition guard", () => {
     expect(guard.shouldSend("Checked at 2026-09-20T05:17:41.000Z — all healthy.")).toBe(false)
   })
 
+  it("works on its defaults, with no options supplied", () => {
+    const guard = createProactiveRepetitionGuard()
+    const text = "Books is the main problem: calibre-web is still exited."
+    expect(guard.shouldSend(text)).toBe(true)
+    expect(guard.shouldSend(text)).toBe(false)
+    expect(guard.shouldSend("Something else entirely.")).toBe(true)
+  })
+
   it("treats different messages independently and bounds what it remembers", () => {
     let t = 0
     const guard = createProactiveRepetitionGuard({ windowMs: 900_000, now: () => t, maxEntries: 2 })

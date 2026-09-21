@@ -2334,9 +2334,12 @@ export function createProactiveRepetitionGuard(options?: {
       const previous = seen.get(key)
       if (previous !== undefined && at - previous < windowMs) return false
       seen.set(key, at)
-      while (seen.size > maxEntries) {
-        const oldest = [...seen.entries()].reduce((a, b) => (a[1] <= b[1] ? a : b))
-        seen.delete(oldest[0])
+      // A Map keeps insertion order and entries are inserted in send order, so
+      // the earliest key is the oldest; scanning for a minimum would carry a
+      // comparison branch that monotonic time can never take.
+      for (const oldest of seen.keys()) {
+        if (seen.size <= maxEntries) break
+        seen.delete(oldest)
       }
       return true
     },
