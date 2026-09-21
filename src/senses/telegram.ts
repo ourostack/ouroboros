@@ -829,6 +829,7 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
   const api = authorityTransport?.api ?? options.api ?? createTelegramBotApi({ token: botToken! })
   // Only the root authority transport admits sendChatAction, so presence is offered
   // exactly where it is actually supported rather than attempted everywhere.
+  const proactiveRepetitionGuard = createProactiveRepetitionGuard()
   const sendTypingIndicator = authorityTransport
     ? async (chatId: string): Promise<void> => { await api.request("sendChatAction", { chat_id: chatId, action: "typing" }) }
     : undefined
@@ -1969,7 +1970,20 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     },
     async sendProactive(text, signal) {
       await runWithAcceptanceAuditOwner(async () => {
-        const effect = await deliverButlerEffect(requiredText(text, "proactive message"), `proactive:${randomUUID()}`, signal)
+        const proactiveText = requiredText(text, "proactive message")
+        // Unsolicited repetition is the one thing a household agent cannot take
+        // back. External-event decisions are deliberately not guarded here:
+        // dropping one could leave its event undispositioned.
+        if (!proactiveRepetitionGuard.shouldSend(proactiveText)) {
+          emitNervesEvent({
+            component: "senses",
+            event: "senses.telegram_proactive_repetition_suppressed",
+            message: "suppressed a proactive message repeating a recent one",
+            meta: { agentName: options.agentName, subject },
+          })
+          return
+        }
+        const effect = await deliverButlerEffect(proactiveText, `proactive:${randomUUID()}`, signal)
         const sessionPath = getSenseSessionPath(options.agentName, configuredOwnerFriendId, "telegram", configuredOwnerSessionKey, agentRoot)
         await recordAcceptedEffects(sessionPath, [effect])
       })
@@ -2280,6 +2294,52 @@ export async function sendTelegramExternalEventDecision(
     await app.sendExternalEventDecision(input)
   } finally {
     await app.stop()
+  }
+}
+
+/**
+ * Suppresses a proactive message that repeats one sent recently.
+ *
+ * Ari received four probe messages in about two minutes, three of them identical
+ * apart from the clock reading. Only the clock is normalised away — counts and
+ * every other number are the payload, so "3 of 10 episodes" and "7 of 10" stay
+ * distinct and both send.
+ *
+ * This catches verbatim-apart-from-the-clock repetition, not semantic near
+ * duplicates: a message reworded between sends still goes out.
+ */
+export function createProactiveRepetitionGuard(options?: {
+  windowMs?: number
+  now?: () => number
+  maxEntries?: number
+}): { shouldSend(text: string): boolean } {
+  const windowMs = options?.windowMs ?? 900_000
+  const now = options?.now ?? ((): number => Date.now())
+  const maxEntries = options?.maxEntries ?? 32
+  const seen = new Map<string, number>()
+
+  const normalize = (text: string): string => text
+    .trim()
+    .replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?/gu, "<timestamp>")
+    .replace(/\b\d{1,2}:\d{2}(?::\d{2})?\b/gu, "<clock>")
+    .replace(/\s+/gu, " ")
+
+  return {
+    shouldSend(text: string): boolean {
+      const at = now()
+      for (const [key, sentAt] of [...seen]) {
+        if (at - sentAt >= windowMs) seen.delete(key)
+      }
+      const key = normalize(text)
+      const previous = seen.get(key)
+      if (previous !== undefined && at - previous < windowMs) return false
+      seen.set(key, at)
+      while (seen.size > maxEntries) {
+        const oldest = [...seen.entries()].reduce((a, b) => (a[1] <= b[1] ? a : b))
+        seen.delete(oldest[0])
+      }
+      return true
+    },
   }
 }
 
