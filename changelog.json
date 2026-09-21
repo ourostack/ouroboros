@@ -4,7 +4,8 @@
     {
       "version": "0.1.0-alpha.822",
       "changes": [
-        "Suppress a proactive Telegram message that repeats a recent one apart from its clock reading."
+        "Suppress a proactive Telegram message that repeats a recent one apart from its clock reading.",
+        "Evict the repetition guard's oldest entry in insertion order, removing a comparison branch monotonic time could never take."
       ]
     },
     {
