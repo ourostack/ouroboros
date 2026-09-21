@@ -612,6 +612,7 @@ export class SanctuaryAuthorityRootLifecycle {
       "--mount", `type=bind,src=${BUNDLE},dst=/home/ouro/AgentBundles/sanctuary.ouro,readonly`,
       "--tmpfs", "/home/ouro/.ouro-cli/bitwarden:rw,nosuid,nodev,noexec,mode=0700",
       "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,mode=0700",
+      "--env", `OURO_AUTHORITY_REMOVE_INTERLOCK=${this.#request.epochId}`,
       this.#transaction.targetImageId, "/opt/ouro/dist/heart/daemon/sanctuary-authority-root-lifecycle.js", "vault", operation,
     ], input === undefined ? undefined : JSON.stringify(input)))
   }
@@ -620,6 +621,17 @@ export class SanctuaryAuthorityRootLifecycle {
 export async function runSanctuaryAuthorityRootCli(argv: string[], write = (text: string) => process.stdout.write(text)): Promise<void> {
   if (process.getuid!() !== 0 || process.getgid!() !== 0) throw new Error("Sanctuary root lifecycle requires root")
   if (argv.length === 2 && argv[0] === "vault") {
+    // `remove` is the one vault verb that can strand the household. It is safe
+    // only inside the install transaction, which has already proven the same
+    // token into root custody at `verify-token-rotation`. Run bare against a
+    // host with no installed root authority it leaves the Butler with no route
+    // to Telegram at all, which is how Sanctuary lost its front door on
+    // 2026-09-21. This is a safety interlock against invoking it outside its
+    // transaction, not a privilege boundary: root can always set the variable,
+    // but it can no longer do this by reaching for a documented verb.
+    if (argv[1] === "remove" && !process.env.OURO_AUTHORITY_REMOVE_INTERLOCK) {
+      throw new Error("Sanctuary vault removal runs only inside the authority install transaction; use docker-man-template-transaction.mjs authority-install")
+    }
     const input = argv[1] === "restore" ? JSON.parse(fs.readFileSync(0, "utf8")) : undefined
     write(`${JSON.stringify(await migrateSanctuaryAuthorityVault(argv[1]!, input))}\n`)
     return

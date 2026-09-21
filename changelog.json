@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.824",
+      "changes": [
+        "Sanctuary: vault removal is reachable only from the authority install transaction, so the destructive verb can no longer be run bare against a host with no root authority installed."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.823",
       "changes": [
         "Make a promised follow-up an obligation the Butler returns to unasked."
