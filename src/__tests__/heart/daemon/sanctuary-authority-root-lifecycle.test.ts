@@ -393,6 +393,26 @@ describe("fixed root installation effects", () => {
     await runSanctuaryAuthorityRootCli(["vault", "restore"], () => undefined)
     expect(vault).toHaveBeenLastCalledWith("restore", { fixture: "private" })
   })
+
+  it("refuses a bare vault removal and admits it only from inside the install transaction", async () => {
+    fixture()
+    vi.spyOn(process, "getuid").mockReturnValue(0)
+    vi.spyOn(process, "getgid").mockReturnValue(0)
+    const previous = process.env.OURO_AUTHORITY_REMOVE_INTERLOCK
+    delete process.env.OURO_AUTHORITY_REMOVE_INTERLOCK
+    try {
+      await expect(runSanctuaryAuthorityRootCli(["vault", "remove"], () => undefined)).rejects.toThrow(/only inside the authority install transaction/u)
+      expect(vault).not.toHaveBeenCalledWith("remove", undefined)
+
+      process.env.OURO_AUTHORITY_REMOVE_INTERLOCK = "epoch-under-test"
+      vault.mockResolvedValue({ tokenAbsent: true })
+      await runSanctuaryAuthorityRootCli(["vault", "remove"], () => undefined)
+      expect(vault).toHaveBeenLastCalledWith("remove", undefined)
+    } finally {
+      if (previous === undefined) delete process.env.OURO_AUTHORITY_REMOVE_INTERLOCK
+      else process.env.OURO_AUTHORITY_REMOVE_INTERLOCK = previous
+    }
+  })
   it("fences boot under the existing deployment lease and constructs the root default owner only with an activation", async () => {
     const f = fixture()
     const sessions = await import("../../../mind/session-transaction")
