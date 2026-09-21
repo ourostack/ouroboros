@@ -827,6 +827,11 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     transportPrivateValues,
   )
   const api = authorityTransport?.api ?? options.api ?? createTelegramBotApi({ token: botToken! })
+  // Only the root authority transport admits sendChatAction, so presence is offered
+  // exactly where it is actually supported rather than attempted everywhere.
+  const sendTypingIndicator = authorityTransport
+    ? async (chatId: string): Promise<void> => { await api.request("sendChatAction", { chat_id: chatId, action: "typing" }) }
+    : undefined
   const offsetStore = options.offsetStore ?? new FileTelegramOffsetStore(
     path.join(agentRoot, "state", "senses", "telegram", "offset.json"),
   )
@@ -1772,7 +1777,13 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
       const actor = await options.admission.resolveOwner({ botId: botId!, userId: message.userId, chatId: message.chatId, sessionKey: configuredOwnerSessionKey })
       if (!actor || actor.friendId !== configuredOwnerFriendId) throw new Error("Telegram attachment owner relationship is not active")
     }
-    await onMessageBody(message)
+    // Show the household that the Butler is working rather than silently thinking.
+    // Presence is deliberately separate from delivery: a transport that cannot do
+    // it degrades to silence instead of failing, and message-delivery assertions
+    // stay about messages.
+    await (sendTypingIndicator
+      ? withTelegramTypingIndicator(() => sendTypingIndicator(message.chatId), () => onMessageBody(message))
+      : onMessageBody(message))
   })
 
   const onUnknownMessage = admissionController && options.admission ? async (message: Parameters<NonNullable<TelegramLongPollOptions["onUnknownMessage"]>>[0]): Promise<void> => {
@@ -2269,6 +2280,29 @@ export async function sendTelegramExternalEventDecision(
     await app.sendExternalEventDecision(input)
   } finally {
     await app.stop()
+  }
+}
+
+/**
+ * Telegram clears a typing indicator after roughly five seconds, so a turn that
+ * thinks for longer has to refresh it or the chat goes silent while the Butler is
+ * still working — which is what "leaving me on read" actually looked like.
+ *
+ * Indicator failures are swallowed on purpose: a missing typing bubble must never
+ * take down the reply it was decorating.
+ */
+export async function withTelegramTypingIndicator<T>(
+  send: () => Promise<unknown>,
+  run: () => Promise<T>,
+  intervalMs = 4_000,
+): Promise<T> {
+  const tick = (): void => { void Promise.resolve().then(send).catch(() => undefined) }
+  tick()
+  const timer = setInterval(tick, intervalMs)
+  try {
+    return await run()
+  } finally {
+    clearInterval(timer)
   }
 }
 

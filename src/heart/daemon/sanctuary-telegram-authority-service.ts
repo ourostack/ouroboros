@@ -246,6 +246,20 @@ export class SanctuaryTelegramAuthorityService {
         ) {
           throw new Error("Sanctuary Telegram callback body is invalid")
         }
+      } else if (requestMethod === "sendChatAction") {
+        // A typing indicator is ephemeral and carries no content, so it is admitted
+        // for chats the agent may already message — but only as "typing", and only
+        // with the two fields that action needs, so it cannot become a side channel.
+        if (!exactBody(body, ["chat_id", "action"])) {
+          throw new Error("Sanctuary Telegram chat action is invalid")
+        }
+        if (body.action !== "typing") {
+          throw new Error("Sanctuary Telegram chat action is invalid")
+        }
+        const actionChatId = String(body.chat_id)
+        if (actionChatId !== ownerChatId && !this.#gateway.isAuthorizedChat(actionChatId)) {
+          throw new Error("Sanctuary Telegram chat action target is invalid")
+        }
       } else if (requestMethod === "getFile") {
         if (!exactBody(body, ["file_id"]) || !boundedText(body.file_id, 512)) {
           throw new Error("Sanctuary Telegram file body is invalid")

@@ -980,4 +980,39 @@ describe("Sanctuary Telegram authority service", () => {
     })
     await idleServer.close()
   })
+
+  it("admits a typing chat action for an authorized chat and refuses anything else", async () => {
+    const keys = generateKeyPairSync("ed25519")
+    let nonce = 0
+    const gateway = new FileSanctuaryTelegramAuthorityGateway(root(), {
+      targetHost: "sanctuary", botId: "123456", ownerUserId: "42", ownerChatId: "42", keyId: "issuer-1",
+      publicKeyDigest: sanctuaryAuthorityPublicKeyDigest(keys.privateKey), privateKey: keys.privateKey,
+      now: () => "2026-09-20T22:30:00.000Z", nonce: () => Buffer.alloc(32, ++nonce).toString("base64url"),
+    })
+    const api = { request: vi.fn(async (method: string) => ({ method })), stop: vi.fn() }
+    const service = new SanctuaryTelegramAuthorityService({ api, gateway })
+
+    await expect(service.dispatch("telegram.request", {
+      method: "sendChatAction",
+      body: { chat_id: "42", action: "typing" },
+    })).resolves.toEqual({ method: "sendChatAction" })
+
+    // The action is ephemeral and carries no content, so only "typing" is admitted.
+    await expect(service.dispatch("telegram.request", {
+      method: "sendChatAction",
+      body: { chat_id: "42", action: "upload_photo" },
+    })).rejects.toThrow(/chat action is invalid/u)
+
+    // It must not become a channel for reaching an unauthorized chat.
+    await expect(service.dispatch("telegram.request", {
+      method: "sendChatAction",
+      body: { chat_id: "84", action: "typing" },
+    })).rejects.toThrow(/chat action target is invalid/u)
+
+    await expect(service.dispatch("telegram.request", {
+      method: "sendChatAction",
+      body: { chat_id: "42", action: "typing", text: "sneaky" },
+    })).rejects.toThrow(/chat action is invalid/u)
+  })
+
 })
