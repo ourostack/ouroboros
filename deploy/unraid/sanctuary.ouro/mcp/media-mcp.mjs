@@ -10,6 +10,7 @@
 // Protocol: JSON-RPC 2.0 over stdio, newline framed, MCP 2024-11-05.
 
 import { readFileSync } from "node:fs"
+import { pathToFileURL } from "node:url"
 
 const CRED_PATH = process.env.SANCTUARY_MEDIA_CREDENTIALS ?? "/home/ouro/AgentBundles/sanctuary.ouro/mcp/media-credentials.json"
 
@@ -425,31 +426,43 @@ async function mediaRequestStatus(a) {
     last_grab_title: grabs[0]?.sourceTitle ?? null,
     monitored: entity ? Boolean(entity.monitored) : null,
   }
-  // A season pack shows up as one queue row per episode, all sharing one
-  // downloadId. Summing rows would report a 45 GB pack as 450 GB, so size and
-  // "how many downloads" are both counted per distinct download, not per row.
+  result.download = computeDownloadState(queueRecs, Date.now())
+
+  const chain = await chainHealth()
+  result.chain = chain
+  result.diagnosis = diagnose({ shelf, result, chain, entity, kind })
+  return result
+}
+
+// The deterministic core, split out so it can be tested without a live
+// Sonarr/Radarr. `computeDownloadState` and `diagnose` are the whole reason the
+// media surface can answer "why hasn't this downloaded" without the agent
+// guessing, and D-013 (a stalled download read as progress) shipped verified
+// only in production because there was no seam to test them through.
+//
+// A season pack shows up as one queue row per episode, all sharing one
+// downloadId. Summing rows would report a 45 GB pack as 450 GB, so size and
+// "how many downloads" are counted per distinct download, not per row. A
+// torrent that has not moved a byte since it was grabbed is dead, not slow:
+// Radarr reports trackedDownloadStatus "ok" for these indefinitely, so
+// progress is measured against age rather than trusted from the row.
+export function computeDownloadState(queueRecs, nowMs) {
   const byDownload = new Map()
   for (const r of queueRecs) byDownload.set(r.downloadId ?? `row:${r.id}`, r)
   const downloads = [...byDownload.values()]
   const sizeLeft = downloads.reduce((s, r) => s + (r.sizeleft ?? 0), 0)
   const sizeTotal = downloads.reduce((s, r) => s + (r.size ?? 0), 0)
-  // A torrent that has not moved a byte since it was grabbed is not slow, it is
-  // dead: no seeders, or a release the client cannot fetch. Radarr goes on
-  // reporting trackedDownloadStatus "ok" for these indefinitely, so a queue row
-  // on its own reads as healthy and any answer built from it reassures instead
-  // of acting. Measuring progress against age is what separates the two.
-  const now = Date.now()
   const stalledItems = downloads
     .filter((r) => (r.size ?? 0) > 0 && (r.sizeleft ?? 0) >= (r.size ?? 0) && r.added
-      && (now - Date.parse(r.added)) / 3_600_000 >= STALL_AFTER_HOURS)
+      && (nowMs - Date.parse(r.added)) / 3_600_000 >= STALL_AFTER_HOURS)
     .map((r) => ({
       title: r.title ?? null,
       added_at: r.added ?? null,
-      age_hours: Math.round((now - Date.parse(r.added)) / 3_600_000),
+      age_hours: Math.round((nowMs - Date.parse(r.added)) / 3_600_000),
       size_gb: Number(((r.size ?? 0) / 1073741824).toFixed(2)),
       queue_id: r.id ?? null,
     }))
-  result.download = {
+  return {
     active_downloads: downloads.length,
     active_items: queueRecs.length,
     states: [...new Set(downloads.map((r) => r.status))],
@@ -461,15 +474,10 @@ async function mediaRequestStatus(a) {
     stalled: stalledItems.length > 0,
     stalled_items: stalledItems,
   }
-
-  const chain = await chainHealth()
-  result.chain = chain
-  result.diagnosis = diagnose({ shelf, result, chain, entity, kind })
-  return result
 }
 
 // The deterministic core. The agent must never have to work this out itself.
-function diagnose({ shelf, result, chain, entity, kind }) {
+export function diagnose({ shelf, result, chain, entity, kind }) {
   const file = result.file ?? {}
   const onShelf = kind === "series" ? (file.episodes_on_disk ?? 0) > 0 : Boolean(file.on_shelf)
   const complete = kind === "series" ? (file.episodes_on_disk ?? 0) >= (file.episodes_total ?? Infinity) : onShelf
@@ -759,22 +767,29 @@ function exitWhenIdle() {
   if (stdinClosed && inFlight === 0) process.exit(0)
 }
 
-process.stdin.setEncoding("utf8")
-process.stdin.on("data", (chunk) => {
-  buf += chunk
-  let nl
-  while ((nl = buf.indexOf("\n")) >= 0) {
-    const line = buf.slice(0, nl).trim()
-    buf = buf.slice(nl + 1)
-    if (!line) continue
-    let msg
-    try { msg = JSON.parse(line) } catch { continue }
-    inFlight += 1
-    handle(msg)
-      .catch((e) => {
-        if (msg.id !== undefined) send({ jsonrpc: "2.0", id: msg.id, error: { code: -32603, message: e.message } })
-      })
-      .finally(() => { inFlight -= 1; exitWhenIdle() })
-  }
-})
-process.stdin.on("end", () => { stdinClosed = true; exitWhenIdle() })
+// Only run the stdio server when invoked directly (node media-mcp.mjs, exactly
+// how agent.json launches it). Guarding this lets the test suite import the
+// module for computeDownloadState/diagnose without attaching to stdin or exiting
+// the test process. The launch is a plain node <abs-path>, so argv[1] is the
+// file's own path and this comparison holds.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  process.stdin.setEncoding("utf8")
+  process.stdin.on("data", (chunk) => {
+    buf += chunk
+    let nl
+    while ((nl = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, nl).trim()
+      buf = buf.slice(nl + 1)
+      if (!line) continue
+      let msg
+      try { msg = JSON.parse(line) } catch { continue }
+      inFlight += 1
+      handle(msg)
+        .catch((e) => {
+          if (msg.id !== undefined) send({ jsonrpc: "2.0", id: msg.id, error: { code: -32603, message: e.message } })
+        })
+        .finally(() => { inFlight -= 1; exitWhenIdle() })
+    }
+  })
+  process.stdin.on("end", () => { stdinClosed = true; exitWhenIdle() })
+}
