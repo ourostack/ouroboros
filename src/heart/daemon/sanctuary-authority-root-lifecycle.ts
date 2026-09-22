@@ -605,15 +605,29 @@ export class SanctuaryAuthorityRootLifecycle {
     }
   }
   #vault(operation: string, input?: unknown): unknown {
+    // The fenced container runs root with every capability dropped, but the
+    // resident credential store is owned by the resident uid (10001), so a bare
+    // cap-dropped root cannot even read it (EACCES on agent.json → surfaces as
+    // "vault owner unavailable"). CAP_DAC_OVERRIDE is restored — the single
+    // capability needed to read the resident's files, nothing broader — and the
+    // read-only bitwarden app-data is copied into a writable tmpfs inside the
+    // container before the CLI runs, because bitwarden cannot unlock a store it
+    // cannot write to. The copy stays inside the container's own tmpfs, so the
+    // fence still never writes to resident state. `operation` is one of the four
+    // fixed literals validated by the CLI, never external input.
+    const cli = "/opt/ouro/dist/heart/daemon/sanctuary-authority-root-lifecycle.js"
     return JSON.parse(this.#docker([
-      "run", "--rm", "-i", "--pull=never", "--network", "host", "--user", "0:0", "--read-only", "--cap-drop=ALL",
-      "--security-opt=no-new-privileges", "--entrypoint", "/usr/local/bin/node",
+      "run", "--rm", "-i", "--pull=never", "--network", "host", "--user", "0:0", "--read-only",
+      "--cap-drop=ALL", "--cap-add=DAC_OVERRIDE", "--security-opt=no-new-privileges", "--entrypoint", "/bin/sh",
       "--mount", `type=bind,src=${RUNTIME},dst=/home/ouro/.ouro-cli,readonly`,
+      "--mount", `type=bind,src=${RUNTIME}/bitwarden,dst=/home/ouro/.bw-src,readonly`,
       "--mount", `type=bind,src=${BUNDLE},dst=/home/ouro/AgentBundles/sanctuary.ouro,readonly`,
       "--tmpfs", "/home/ouro/.ouro-cli/bitwarden:rw,nosuid,nodev,noexec,mode=0700",
+      "--tmpfs", "/home/ouro/.config:rw,nosuid,nodev,noexec,mode=0700",
       "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,mode=0700",
       "--env", `OURO_AUTHORITY_REMOVE_INTERLOCK=${this.#request.epochId}`,
-      this.#transaction.targetImageId, "/opt/ouro/dist/heart/daemon/sanctuary-authority-root-lifecycle.js", "vault", operation,
+      this.#transaction.targetImageId, "-c",
+      `cp -r /home/ouro/.bw-src/. /home/ouro/.ouro-cli/bitwarden/ && exec /usr/local/bin/node ${cli} vault ${operation}`,
     ], input === undefined ? undefined : JSON.stringify(input)))
   }
 }
