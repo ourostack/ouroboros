@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.830",
+      "changes": [
+        "Persist authority vault writes (remove-resident-token, rollback restore-token-cursor) by binding the real bitwarden store writable in the fence, not a throwaway tmpfs copy; reads still use the copy. Fixes the install stranding after transfer-cursor."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.829",
       "changes": [
         "Sanctuary authority install: the fenced vault-read restores CAP_DAC_OVERRIDE and copies the credential store into a writable tmpfs, so the root migration can read the resident-owned vault instead of failing with a masked permission error."
