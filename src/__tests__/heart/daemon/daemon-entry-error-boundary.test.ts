@@ -71,6 +71,15 @@ vi.mock("../../../heart/daemon/socket-client", () => ({
   sendDaemonCommand: sendDaemonCommandMock,
 }))
 
+const { recordAwaitDispatchMock } = vi.hoisted(() => ({
+  recordAwaitDispatchMock: vi.fn(),
+}))
+
+vi.mock("../../../heart/awaiting/await-runtime-state", async () => {
+  const actual = await vi.importActual<typeof import("../../../heart/awaiting/await-runtime-state")>("../../../heart/awaiting/await-runtime-state")
+  return { ...actual, recordAwaitDispatch: recordAwaitDispatchMock }
+})
+
 const { daemonProcessManagerSendToAgentMock } = vi.hoisted(() => ({
   daemonProcessManagerSendToAgentMock: vi.fn(),
 }))
@@ -487,7 +496,19 @@ describe("daemon entry error boundary — per-agent habit setup isolation", () =
       expect(awaitSchedulerCtorHook).toHaveBeenCalledTimes(1)
     })
 
+    recordAwaitDispatchMock.mockClear()
     awaitOptions?.onAwaitFire("hey_export")
+
+    // The cadence is the scheduler's to advance. Without this the only writer of
+    // last_checked is the agent calling resolve_await, so a woken turn that does
+    // anything else leaves the await firing forever and recording nothing.
+    await vi.waitFor(() => {
+      expect(recordAwaitDispatchMock).toHaveBeenCalledWith(
+        expect.any(String),
+        "hey_export",
+        expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/u),
+      )
+    })
 
     expect(sendDaemonCommandMock).toHaveBeenCalledWith(
       "/tmp/ouro-await-test.sock",
@@ -536,8 +557,12 @@ describe("daemon entry error boundary — per-agent habit setup isolation", () =
       expect(awaitSchedulerCtorHook).toHaveBeenCalledTimes(1)
     })
 
+    recordAwaitDispatchMock.mockClear()
     expect(() => awaitOptions?.onAwaitFire("hey_export")).not.toThrow()
     await Promise.resolve()
+    // A failed wake is not a check: recording it would silence the await for a
+    // whole cadence over a dispatch that never reached the runtime.
+    expect(recordAwaitDispatchMock).not.toHaveBeenCalled()
     expect(sendDaemonCommandMock).toHaveBeenCalledWith(
       "/tmp/ouro-await-failed-wake.sock",
       expect.objectContaining({

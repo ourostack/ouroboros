@@ -14,6 +14,7 @@ import {
   applyAwaitRuntimeState,
   readAwaitRuntimeState,
   recordAwaitCheck,
+  recordAwaitDispatch,
   writeAwaitRuntimeState,
 } from "../../../heart/awaiting/await-runtime-state"
 
@@ -121,6 +122,37 @@ describe("await-runtime-state", () => {
       last_checked: "2026-05-10T20:10:00.000Z",
       last_observation: "second obs",
       checked_count: 2,
+    })
+  })
+
+  it("recordAwaitDispatch advances the cadence without claiming an observation", () => {
+    const bundleRoot = makeTempDir("await-rs-dispatch")
+    cleanup.push(bundleRoot)
+
+    // A dispatch with no prior state: the cadence has to start somewhere, and it
+    // is the scheduler's business, not the model's.
+    recordAwaitDispatch(bundleRoot, "hey_export", "2026-05-10T20:00:00.000Z")
+    expect(readAwaitRuntimeState(bundleRoot, "hey_export")).toEqual({
+      last_checked: "2026-05-10T20:00:00.000Z",
+      last_observation: null,
+      checked_count: 0,
+    })
+
+    // An observation recorded by the woken turn layers on top.
+    recordAwaitCheck(bundleRoot, "hey_export", "not yet", "2026-05-10T20:05:00.000Z")
+    expect(readAwaitRuntimeState(bundleRoot, "hey_export")).toEqual({
+      last_checked: "2026-05-10T20:05:00.000Z",
+      last_observation: "not yet",
+      checked_count: 1,
+    })
+
+    // A later dispatch moves the clock on and leaves that observation alone,
+    // so a turn that never calls resolve_await cannot stall the cadence.
+    recordAwaitDispatch(bundleRoot, "hey_export", "2026-05-10T20:15:00.000Z")
+    expect(readAwaitRuntimeState(bundleRoot, "hey_export")).toEqual({
+      last_checked: "2026-05-10T20:15:00.000Z",
+      last_observation: "not yet",
+      checked_count: 1,
     })
   })
 

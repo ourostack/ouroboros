@@ -75,6 +75,17 @@ export function writeAwaitRuntimeState(
   })
 }
 
+// The scheduler owns cadence, not the model. `recordAwaitCheck` is written only
+// when a woken turn calls `resolve_await` with verdict "no", so an await whose
+// turn answers in chat, errors, or simply never calls the tool leaves
+// `last_checked` null forever: it reads as "never checked" on every
+// reconciliation, re-fires, wakes the private runtime again and records
+// nothing. Recording the dispatch itself keeps the cadence honest whatever the
+// turn does; the observation from `resolve_await` still layers on top.
+export function recordAwaitDispatch(agentRoot: string, name: string, now: string): void {
+  writeAwaitRuntimeState(agentRoot, name, { last_checked: now })
+}
+
 export function recordAwaitCheck(
   agentRoot: string,
   name: string,
