@@ -901,6 +901,18 @@ describe("fixed root installation effects", () => {
     expect(await effect.readback()).toBe(effect.afterDigest)
     expect(host.exec.mock.calls.some((call) => call[1][0] === "run")).toBe(false)
   })
+  it("persists vault writes: remove-resident-token binds the real store writable, never a throwaway copy (D-021)", async () => {
+    await preparedFixture()
+    // snapshot/presence are reads (copied into a tmpfs); remove is a write whose
+    // whole point is to change the vault, so it must bind the real store writable.
+    // Copying to tmpfs here silently discards the removal and fails the readback.
+    const runArgs = host.exec.mock.calls.find((call) => call[1][0] === "run" && String((call[1] as string[]).at(-1)).endsWith("vault remove"))![1] as string[]
+    expect(runArgs).toContain(`type=bind,src=${runtime}/bitwarden,dst=/home/ouro/.ouro-cli/bitwarden`)
+    expect(runArgs).not.toContain(`type=bind,src=${runtime}/bitwarden,dst=/home/ouro/.bw-src,readonly`)
+    expect(runArgs).not.toContain("/home/ouro/.ouro-cli/bitwarden:rw,nosuid,nodev,noexec,mode=0700")
+    expect(runArgs).toContain("--cap-add=DAC_OVERRIDE")
+    expect(String(runArgs.at(-1))).toMatch(/^exec \/usr\/local\/bin\/node \S+ vault remove$/u)
+  })
   it("refuses an unrelated direct poller sharing the resident bundle without stopping it", async () => {
     const f = fixture()
     host.exec.mockImplementation((_file, args) => args[0] === "ps" ? '{"Names":"rogue"}\n' : JSON.stringify([{ Name: "/rogue", State: { Running: true }, Mounts: [{ Source: bundle }] }]))
