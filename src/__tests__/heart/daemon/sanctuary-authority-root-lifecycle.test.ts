@@ -19,6 +19,9 @@ const roots: string[] = []
 const digest = (value: string) => `sha256:${createHash("sha256").update(value).digest("hex")}`
 const rootPath = "/mnt/user/appdata/ouro-authority"
 const bundle = "/mnt/user/appdata/ouro-butler/agent/sanctuary.ouro"
+const runtime = "/mnt/user/appdata/ouro-butler/runtime/.ouro-cli"
+// #vault runs `sh -c "cp ... && exec node CLI vault <op>"`, so the operation is the last word of the final docker-run argument.
+const vaultOp = (args: readonly unknown[]): string => String(args.at(-1)).trim().split(/\s+/u).at(-1)!
 const oldToken = "123:oldTokenabcdefghijklmnopqrstuvwxyz"
 const installSteps = ["freeze-resident", "stage-authority", "verify-token-rotation", "transfer-cursor", "remove-resident-token", "start-gateway", "configure-resident", "start-resident", "verify-install"]
 const rollbackSteps = ["freeze-resident", "retire-registrations", "reconcile-executions", "stop-gateway", "end-epoch", "restore-token-cursor", "restore-resident", "verify-rollback"]
@@ -79,7 +82,9 @@ function fixture() {
     if (args[0] === "update") return ""
     if (args[0] === "start") { running = true; return "" }
     if (args[0] === "run") {
-      const operation = args.at(-1)
+      // #vault now runs `sh -c "cp ... && exec node CLI vault <op>"`, so the
+      // operation is the last word of the final command argument.
+      const operation = String(args.at(-1)).trim().split(/\s+/u).at(-1)
       if (operation === "presence") return JSON.stringify({ tokenPresent })
       if (operation === "remove") { tokenPresent = false; return JSON.stringify({ tokenAbsent: true }) }
       if (operation === "restore") { tokenPresent = true; currentToken = JSON.parse(options!.input!).token; return JSON.stringify({ restored: true }) }
@@ -473,12 +478,12 @@ describe("fixed root installation effects", () => {
     const f = await preparedFixture()
     for (const step of rollbackSteps.slice(0, 5)) await f.lifecycle.effect(`rollback:${step}`).apply()
     const original = host.exec.getMockImplementation()!
-    alterDocker((args, value) => args.at(-1) === "snapshot" ? value.replace(/"token":"[^"]*"/u, '"token":"123:wrongTokenabcdefghijklmnopqrstuvwxyz"') : value)
+    alterDocker((args, value) => vaultOp(args) === "snapshot" ? value.replace(/"token":"[^"]*"/u, '"token":"123:wrongTokenabcdefghijklmnopqrstuvwxyz"') : value)
     await expect(f.lifecycle.effect("rollback:restore-token-cursor").apply()).rejects.toThrow(/readback/u)
     host.exec.mockImplementation(original)
     await f.lifecycle.effect("rollback:restore-token-cursor").apply()
     fs.unlinkSync(f.p(`${f.epochRoot}/restored.json`))
-    alterDocker((args, value) => args.at(-1) === "snapshot" ? value.replace(/"token":"[^"]*"/u, '"token":"123:wrongTokenabcdefghijklmnopqrstuvwxyz"') : value)
+    alterDocker((args, value) => vaultOp(args) === "snapshot" ? value.replace(/"token":"[^"]*"/u, '"token":"123:wrongTokenabcdefghijklmnopqrstuvwxyz"') : value)
     await expect(f.lifecycle.effect("rollback:restore-token-cursor").apply()).rejects.toThrow(/identity/u)
   })
   it.each([...installSteps, ...rollbackSteps.map((step) => `rollback:${step}`)])("recovers the concrete %s side effect after interruption without a second mutation", async (interrupted) => {
@@ -568,7 +573,7 @@ describe("fixed root installation effects", () => {
     alterDocker((args, value) => args[0] === "inspect" ? value.replace(digest("old-image"), digest("unknown-image")) : value)
     await expect(f.lifecycle.effect("freeze-resident").apply()).rejects.toThrow(/image/u)
     host.exec.mockImplementation(original)
-    alterDocker((args, value) => args.at(-1) === "snapshot" ? value.replace('"42"', '"43"') : value)
+    alterDocker((args, value) => vaultOp(args) === "snapshot" ? value.replace('"42"', '"43"') : value)
     await expect(f.lifecycle.effect("freeze-resident").apply()).rejects.toThrow(/identity/u)
     host.exec.mockImplementation(original)
     await f.lifecycle.effect("freeze-resident").apply()
@@ -594,7 +599,7 @@ describe("fixed root installation effects", () => {
     for (const step of ["verify-install", "configure-resident", "rollback:verify-rollback"]) expect(await lifecycle.effect(step).readback()).toBe(lifecycle.effect(step).beforeDigest)
     await expect(lifecycle.effect("start-resident").apply()).rejects.toThrow(/ready/u)
     await expect(lifecycle.effect("verify-install").apply()).rejects.toThrow(/readback/u)
-    alterDocker((args, value) => args.at(-1) === "presence" ? '{"tokenPresent":"false"}' : value)
+    alterDocker((args, value) => vaultOp(args) === "presence" ? '{"tokenPresent":"false"}' : value)
     await expect(lifecycle.effect("remove-resident-token").readback()).rejects.toThrow(/presence/u)
   })
   it("rejects changed boot ownership, host primitive pins, and conflicting installed bytes", async () => {
@@ -675,7 +680,7 @@ describe("fixed root installation effects", () => {
       f.publish()
       await f.lifecycle.effect("start-gateway").apply()
       expect(host.spawn).not.toHaveBeenCalled()
-      alterDocker((args, value) => args.at(-1) === "presence" ? '{"tokenPresent":true}' : value)
+      alterDocker((args, value) => vaultOp(args) === "presence" ? '{"tokenPresent":true}' : value)
       await expect(f.lifecycle.effect("start-gateway").apply()).rejects.toThrow(/custody/u)
     })
     it("validates epoch and exact transferred cursor rather than trusting files", async () => {
@@ -877,9 +882,16 @@ describe("fixed root installation effects", () => {
     expect(await effect.readback()).toBe(effect.afterDigest)
     const calls = host.exec.mock.calls.map((call) => call[1][0])
     expect(calls.indexOf("stop")).toBeLessThan(calls.indexOf("run"))
-    const vaultArgs = host.exec.mock.calls.find((call) => call[1][0] === "run")![1]
+    const vaultArgs = host.exec.mock.calls.find((call) => call[1][0] === "run")![1] as string[]
     expect(vaultArgs).toContain(`type=bind,src=${bundle},dst=/home/ouro/AgentBundles/sanctuary.ouro,readonly`)
     expect(vaultArgs).toContain("/home/ouro/.ouro-cli/bitwarden:rw,nosuid,nodev,noexec,mode=0700")
+    // D-018: a bare cap-dropped root cannot read the resident-owned credential
+    // files. The fenced read restores exactly CAP_DAC_OVERRIDE and copies the
+    // read-only bitwarden data into a writable tmpfs before running the CLI.
+    expect(vaultArgs).toContain("--cap-drop=ALL")
+    expect(vaultArgs).toContain("--cap-add=DAC_OVERRIDE")
+    expect(vaultArgs).toContain(`type=bind,src=${runtime}/bitwarden,dst=/home/ouro/.bw-src,readonly`)
+    expect(vaultArgs.at(-1)).toMatch(/^cp -r \/home\/ouro\/\.bw-src\/\. \/home\/ouro\/\.ouro-cli\/bitwarden\/ && exec \/usr\/local\/bin\/node \S+ vault snapshot$/u)
     expect(JSON.parse(fs.readFileSync(f.p(`${rootPath}/epochs/fixture-epoch/migration.json`), "utf8"))).toMatchObject({ predecessorCursor: 87, botId: "123" })
     expect(fs.readFileSync(f.p(`${rootPath}/epochs/fixture-epoch/previous-token`), "utf8")).toBe(oldToken)
     expect(fs.readFileSync(f.p(`${bundle}/policy.json`), "utf8")).toBe("preserved")
@@ -1011,7 +1023,7 @@ describe("fixed root installation effects", () => {
     f.createRollback()
     await lifecycle.effect("rollback:restore-resident").apply()
     await lifecycle.effect("rollback:verify-rollback").apply()
-    const restore = host.exec.mock.calls.findIndex((call) => call[1].at(-1) === "restore")
+    const restore = host.exec.mock.calls.findIndex((call) => vaultOp(call[1]) === "restore")
     const reconcile = host.exec.mock.calls.findIndex((call) => call[1].includes("--retire-only"))
     expect(restore).toBeGreaterThan(reconcile)
     expect(fs.readFileSync(f.p("/boot/config/go"), "utf8")).toContain("# preserve unrelated boot state")
