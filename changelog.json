@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.828",
+      "changes": [
+        "The media MCP's deterministic core (download-state and diagnosis) is now a tested, importable seam instead of only being verifiable in production."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.827",
       "changes": [
         "Awaits advance their own cadence on dispatch, so a filed watch no longer fires forever without recording a check."
