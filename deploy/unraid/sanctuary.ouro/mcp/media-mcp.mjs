@@ -73,6 +73,10 @@ class ServiceError extends Error {
 }
 
 const seerr = (path, opts = {}) => req(SEERR.url, `/api/v1${path}`, { key: SEERR.apiKey, ...opts })
+// Long enough that an ordinary slow start is not called dead, short enough that
+// nobody waits a day for a release that was never going to arrive.
+const STALL_AFTER_HOURS = 6
+
 const sonarr = (path, opts = {}) => req(SONARR.url, `/api/v3${path}`, { key: SONARR.apiKey, ...opts })
 const radarr = (path, opts = {}) => req(RADARR.url, `/api/v3${path}`, { key: RADARR.apiKey, ...opts })
 const prowlarr = (path, opts = {}) => req(PROWLARR.url, `/api/v1${path}`, { key: PROWLARR.apiKey, ...opts })
@@ -427,14 +431,35 @@ async function mediaRequestStatus(a) {
   const byDownload = new Map()
   for (const r of queueRecs) byDownload.set(r.downloadId ?? `row:${r.id}`, r)
   const downloads = [...byDownload.values()]
+  const sizeLeft = downloads.reduce((s, r) => s + (r.sizeleft ?? 0), 0)
+  const sizeTotal = downloads.reduce((s, r) => s + (r.size ?? 0), 0)
+  // A torrent that has not moved a byte since it was grabbed is not slow, it is
+  // dead: no seeders, or a release the client cannot fetch. Radarr goes on
+  // reporting trackedDownloadStatus "ok" for these indefinitely, so a queue row
+  // on its own reads as healthy and any answer built from it reassures instead
+  // of acting. Measuring progress against age is what separates the two.
+  const now = Date.now()
+  const stalledItems = downloads
+    .filter((r) => (r.size ?? 0) > 0 && (r.sizeleft ?? 0) >= (r.size ?? 0) && r.added
+      && (now - Date.parse(r.added)) / 3_600_000 >= STALL_AFTER_HOURS)
+    .map((r) => ({
+      title: r.title ?? null,
+      added_at: r.added ?? null,
+      age_hours: Math.round((now - Date.parse(r.added)) / 3_600_000),
+      size_gb: Number(((r.size ?? 0) / 1073741824).toFixed(2)),
+      queue_id: r.id ?? null,
+    }))
   result.download = {
     active_downloads: downloads.length,
     active_items: queueRecs.length,
     states: [...new Set(downloads.map((r) => r.status))],
     tracked_states: [...new Set(downloads.map((r) => r.trackedDownloadState).filter(Boolean))],
     errors: [...new Set(downloads.map((r) => r.errorMessage).filter(Boolean))],
-    size_left_bytes: downloads.reduce((s, r) => s + (r.sizeleft ?? 0), 0),
-    size_total_bytes: downloads.reduce((s, r) => s + (r.size ?? 0), 0),
+    size_left_bytes: sizeLeft,
+    size_total_bytes: sizeTotal,
+    percent_complete: sizeTotal > 0 ? Math.round(((sizeTotal - sizeLeft) / sizeTotal) * 100) : null,
+    stalled: stalledItems.length > 0,
+    stalled_items: stalledItems,
   }
 
   const chain = await chainHealth()
@@ -452,6 +477,15 @@ function diagnose({ shelf, result, chain, entity, kind }) {
   if (complete) {
     return { stuck_stage: null, stuck_reason: null, likely_fix: null, human_action_required: false,
              summary: "On the shelf and complete. Nothing is stuck." }
+  }
+  if (result.download.stalled) {
+    const items = result.download.stalled_items
+    const oldest = Math.max(...items.map((i) => i.age_hours))
+    return { stuck_stage: "download", stuck_reason: "stalled_no_progress",
+             likely_fix: "blocklist_and_research", human_action_required: false,
+             percent_complete: result.download.percent_complete,
+             detail: items,
+             summary: `Stalled, not slow. ${items.length === 1 ? "The release" : `${items.length} releases`} ${items.length === 1 ? "has" : "have"} not downloaded a single byte in ${oldest} hours, which means no seeders rather than a quiet queue. Waiting will not fix it; blocklist the release and search again for a different one.` }
   }
   if (result.download.active_downloads > 0) {
     const left = result.download.size_left_bytes
@@ -528,9 +562,23 @@ async function mediaDiagnoseAndFix(a) {
       ? (action === "force_import_scan" ? { name: "RescanSeries", seriesId: svcId } : { name: "SeriesSearch", seriesId: svcId })
       : (action === "force_import_scan" ? { name: "RescanMovie", movieIds: [svcId] } : { name: "MoviesSearch", movieIds: [svcId] })
     commanded = kind === "series" ? await sonarr("/command", { method: "POST", body: cmd }) : await radarr("/command", { method: "POST", body: cmd })
+  } else if (action === "blocklist_and_research") {
+    // Removing with blocklist=true is what stops the same dead release being
+    // grabbed straight back. The search that follows is then free to pick a
+    // different one.
+    const stalled = before.download.stalled_items ?? []
+    if (!stalled.length) return { action, result: "nothing_to_blocklist", before, after: null, human_action_required: false,
+                                  human_action_reason: "No download has been sitting at zero long enough to call it stalled." }
+    for (const item of stalled) {
+      if (item.queue_id === null) continue
+      const client = kind === "series" ? sonarr : radarr
+      await client(`/queue/${item.queue_id}`, { method: "DELETE", query: { removeFromClient: true, blocklist: true, skipRedownload: true } })
+    }
+    const cmd = kind === "series" ? { name: "SeriesSearch", seriesId: svcId } : { name: "MoviesSearch", movieIds: [svcId] }
+    commanded = kind === "series" ? await sonarr("/command", { method: "POST", body: cmd }) : await radarr("/command", { method: "POST", body: cmd })
   } else {
     return { action, result: "unsupported_action", before, after: null, human_action_required: true,
-             human_action_reason: `Action "${action}" is not implemented. Supported: rescan, enable_monitoring, force_import_scan, report_only.` }
+             human_action_reason: `Action "${action}" is not implemented. Supported: rescan, enable_monitoring, force_import_scan, blocklist_and_research, report_only.` }
   }
 
   await new Promise((r) => setTimeout(r, 12_000))
@@ -553,6 +601,7 @@ function describeAction(action) {
     rescan: "Trigger a fresh indexer search and grab the best acceptable release.",
     enable_monitoring: "Mark it monitored, then search.",
     force_import_scan: "Re-scan the disk so an already-downloaded file gets imported.",
+    blocklist_and_research: "Blocklist the stalled release so it cannot be grabbed again, then search for a different one.",
     report_only: "Report only; change nothing.",
   }[action] ?? "Unknown action."
 }
@@ -625,7 +674,7 @@ const TOOLS = [
   },
   {
     name: "media_request_status",
-    description: "One call, every stage: request, indexer search, download, file on disk, plus acquisition-chain health and a deterministic `diagnosis` block naming what is stuck, why, and the fix. Use this for any 'is it here yet?' or 'why hasn't X downloaded?' question. Never infer the cause yourself — read diagnosis.summary.",
+    description: "One call, every stage: request, indexer search, download, file on disk, plus acquisition-chain health and a deterministic `diagnosis` block naming what is stuck, why, and the fix. Use this for any 'is it here yet?' or 'why hasn't X downloaded?' question. A queue row is not proof of progress: a release sitting at zero bytes comes back as stalled, not as downloading. Never infer the cause yourself — read diagnosis.summary.",
     inputSchema: { type: "object", properties: {
       request_id: { type: "string", description: "e.g. jellyseerr:42" },
       tmdb_id: { type: "number" },
@@ -634,10 +683,10 @@ const TOOLS = [
   },
   {
     name: "media_diagnose_and_fix",
-    description: "Act on a stuck request. Omit `action` to apply the fix that media_request_status already identified. Refuses to act (result 'rejected_fix_unsafe') when the acquisition chain itself is down, because re-searching cannot help then. Use dry_run to preview.",
+    description: "Act on a stuck request. Omit `action` to apply the fix that media_request_status already identified, including 'blocklist_and_research' for a release that has stalled at zero bytes. Refuses to act (result 'rejected_fix_unsafe') when the acquisition chain itself is down, because re-searching cannot help then. Use dry_run to preview.",
     inputSchema: { type: "object", properties: {
       request_id: { type: "string" }, tmdb_id: { type: "number" }, title: { type: "string" },
-      action: { type: "string", enum: ["rescan", "enable_monitoring", "force_import_scan", "report_only"] },
+      action: { type: "string", enum: ["rescan", "enable_monitoring", "force_import_scan", "blocklist_and_research", "report_only"] },
       dry_run: { type: "boolean" },
     } },
   },
