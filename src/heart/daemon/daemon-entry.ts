@@ -27,6 +27,7 @@ import { HabitScheduler } from "../habits/habit-scheduler"
 import { migrateHabitsFromTaskSystem } from "../habits/habit-migration"
 import { AwaitScheduler } from "../awaiting/await-scheduler"
 import { archiveAndAlertExpiredAwait } from "../awaiting/await-expiry"
+import { recordAwaitDispatch } from "../awaiting/await-runtime-state"
 import { createRealOsCronDeps, resolveOuroBinaryPath } from "./os-cron-deps"
 import { LaunchdCronManager } from "./os-cron"
 import { readContainerRuntimePolicy } from "./container-runtime"
@@ -828,7 +829,15 @@ void startDaemonAfterContainerCredentialBootstrap({
             agent,
             awaitName,
             triggerSource: "await-scheduler",
-          })).catch((error) => {
+          })).then(() => {
+            // Record the dispatch here so the cadence advances whatever the woken
+            // turn does. Without this the only writer of `last_checked` is the
+            // agent calling `resolve_await`, so a turn that does anything else
+            // leaves the await permanently "never checked" and it re-fires on
+            // every reconciliation. Recorded only on a successful wake: a failed
+            // dispatch is not a check.
+            recordAwaitDispatch(bundleRoot, awaitName, new Date().toISOString())
+          }).catch((error) => {
             emitAwaitPrivateWakeDispatchError({
               agent,
               awaitName,
