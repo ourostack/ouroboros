@@ -609,25 +609,38 @@ export class SanctuaryAuthorityRootLifecycle {
     // resident credential store is owned by the resident uid (10001), so a bare
     // cap-dropped root cannot even read it (EACCES on agent.json → surfaces as
     // "vault owner unavailable"). CAP_DAC_OVERRIDE is restored — the single
-    // capability needed to read the resident's files, nothing broader — and the
-    // read-only bitwarden app-data is copied into a writable tmpfs inside the
-    // container before the CLI runs, because bitwarden cannot unlock a store it
-    // cannot write to. The copy stays inside the container's own tmpfs, so the
-    // fence still never writes to resident state. `operation` is one of the four
-    // fixed literals validated by the CLI, never external input.
+    // capability needed to reach the resident's files, nothing broader.
+    //
+    // bitwarden cannot unlock (or sync) a store it cannot write to, so the store
+    // dir must be writable inside the fence. The two verbs split by intent:
+    //   • snapshot / presence are READS: the read-only store is copied into a
+    //     throwaway tmpfs, so the fence never mutates resident state.
+    //   • remove / restore are WRITES whose whole purpose is to change the vault
+    //     (remove-resident-token, rollback restore-token-cursor). They bind the
+    //     real ${RUNTIME}/bitwarden writable (rw over the read-only .ouro-cli),
+    //     so the edit — and bitwarden's own sync-on-unlock — persists. Copying to
+    //     tmpfs here would silently discard the write and fail the step's readback.
+    // `operation` is one of the four fixed literals validated by the CLI.
     const cli = "/opt/ouro/dist/heart/daemon/sanctuary-authority-root-lifecycle.js"
+    const persists = operation === "remove" || operation === "restore"
+    const bitwarden = persists
+      ? ["--mount", `type=bind,src=${RUNTIME}/bitwarden,dst=/home/ouro/.ouro-cli/bitwarden`]
+      : [
+          "--mount", `type=bind,src=${RUNTIME}/bitwarden,dst=/home/ouro/.bw-src,readonly`,
+          "--tmpfs", "/home/ouro/.ouro-cli/bitwarden:rw,nosuid,nodev,noexec,mode=0700",
+        ]
+    const prepare = persists ? "" : "cp -r /home/ouro/.bw-src/. /home/ouro/.ouro-cli/bitwarden/ && "
     return JSON.parse(this.#docker([
       "run", "--rm", "-i", "--pull=never", "--network", "host", "--user", "0:0", "--read-only",
       "--cap-drop=ALL", "--cap-add=DAC_OVERRIDE", "--security-opt=no-new-privileges", "--entrypoint", "/bin/sh",
       "--mount", `type=bind,src=${RUNTIME},dst=/home/ouro/.ouro-cli,readonly`,
-      "--mount", `type=bind,src=${RUNTIME}/bitwarden,dst=/home/ouro/.bw-src,readonly`,
+      ...bitwarden,
       "--mount", `type=bind,src=${BUNDLE},dst=/home/ouro/AgentBundles/sanctuary.ouro,readonly`,
-      "--tmpfs", "/home/ouro/.ouro-cli/bitwarden:rw,nosuid,nodev,noexec,mode=0700",
       "--tmpfs", "/home/ouro/.config:rw,nosuid,nodev,noexec,mode=0700",
       "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,mode=0700",
       "--env", `OURO_AUTHORITY_REMOVE_INTERLOCK=${this.#request.epochId}`,
       this.#transaction.targetImageId, "-c",
-      `cp -r /home/ouro/.bw-src/. /home/ouro/.ouro-cli/bitwarden/ && exec /usr/local/bin/node ${cli} vault ${operation}`,
+      `${prepare}exec /usr/local/bin/node ${cli} vault ${operation}`,
     ], input === undefined ? undefined : JSON.stringify(input)))
   }
 }
