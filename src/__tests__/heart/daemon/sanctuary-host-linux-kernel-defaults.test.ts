@@ -3,7 +3,7 @@ import * as path from "node:path"
 
 import { describe, expect, it, vi } from "vitest"
 
-const controls = vi.hoisted(() => ({ shortStat: false, cgroupError: false }))
+const controls = vi.hoisted(() => ({ shortStat: false, cgroupError: false, cgroupMissing: false }))
 
 vi.mock("node:child_process", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:child_process")>()
@@ -38,6 +38,9 @@ vi.mock("node:fs", async (importOriginal) => {
       }
       if (filePath === "/proc/321/cgroup" && controls.cgroupError) {
         throw Object.assign(new Error("denied"), { code: "EACCES" })
+      }
+      if (filePath === "/proc/321/cgroup" && controls.cgroupMissing) {
+        throw Object.assign(new Error("gone"), { code: "ENOENT" })
       }
       return original.readFileSync(filePath, options as never)
     },
@@ -123,5 +126,20 @@ describe("Linux supervisor kernel production defaults", () => {
       cgroupPath: "/cgroup/permit-c",
     } as never)
     controls.cgroupError = false
+
+    // A cgroup read that ENOENTs (the spawned child already exited) must be
+    // handled by defaultProcessCgroup returning null, deterministically -- not
+    // left to a filesystem race, which is what made the coverage gate flaky.
+    controls.cgroupMissing = true
+    await kernel.launch({
+      permit: { permitId: `permit-${"d".repeat(43)}` },
+      executable: "/usr/bin/id",
+      arguments: [],
+      cwd: "/",
+      environment: { PATH: "/usr/bin" },
+      timeoutMs: 1_000,
+      cgroupPath: "/cgroup/permit-d",
+    } as never)
+    controls.cgroupMissing = false
   })
 })
