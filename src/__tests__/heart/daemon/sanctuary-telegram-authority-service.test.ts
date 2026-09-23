@@ -18,6 +18,7 @@ import {
 import { authorityArtifactDigest, signAuthorityPayload, verifyAuthorityPayload } from "../../../heart/daemon/sanctuary-authority-codec"
 import { FileSanctuaryHostAuthority, type HostProposalRequestV1 } from "../../../heart/daemon/sanctuary-host-authority"
 import { FIXED_ADMISSION_ACKNOWLEDGEMENT } from "../../../senses/telegram-effect-adapter"
+import { TelegramApiError } from "../../../senses/telegram-client"
 import type { TelegramBotApi, TelegramUpdate } from "../../../senses/telegram-client"
 
 const roots: string[] = []
@@ -1013,6 +1014,64 @@ describe("Sanctuary Telegram authority service", () => {
       method: "sendChatAction",
       body: { chat_id: "42", action: "typing", text: "sneaky" },
     })).rejects.toThrow(/chat action is invalid/u)
+  })
+
+
+  describe("getUpdates session reclaim (D-030)", () => {
+    const reclaimApi = (getUpdates: () => Promise<unknown>) => {
+      const request = vi.fn(async (method: string) => (method === "getUpdates" ? getUpdates() : { method }))
+      return { request, stop: vi.fn() } as never
+    }
+
+    it("retries a 409 conflict until the previous getUpdates session is reclaimed", async () => {
+      const f = fixture()
+      let calls = 0
+      const api = reclaimApi(async () => {
+        calls += 1
+        if (calls === 1) throw new TelegramApiError("conflict", { status: 409 })
+        return []
+      })
+      const service = new SanctuaryTelegramAuthorityService({ api, gateway: f.gateway, pollReclaimDelayMs: 1 })
+      await expect(service.dispatch("telegram.poll", {})).resolves.toBeNull()
+      expect(calls).toBe(2)
+    })
+
+    it("retries a transient 5xx the same way", async () => {
+      const f = fixture()
+      let calls = 0
+      const api = reclaimApi(async () => {
+        calls += 1
+        if (calls === 1) throw new TelegramApiError("bad gateway", { status: 502 })
+        return []
+      })
+      const service = new SanctuaryTelegramAuthorityService({ api, gateway: f.gateway, pollReclaimDelayMs: 1 })
+      await expect(service.dispatch("telegram.poll", {})).resolves.toBeNull()
+      expect(calls).toBe(2)
+    })
+
+    it("does not retry a non-reclaimable Telegram error", async () => {
+      const f = fixture()
+      const api = reclaimApi(async () => { throw new TelegramApiError("bad request", { status: 400 }) })
+      const service = new SanctuaryTelegramAuthorityService({ api, gateway: f.gateway, pollReclaimDelayMs: 1 })
+      await expect(service.dispatch("telegram.poll", {})).rejects.toThrow("bad request")
+      expect(api.request).toHaveBeenCalledTimes(1)
+    })
+
+    it("does not retry a non-Telegram-API failure", async () => {
+      const f = fixture()
+      const api = reclaimApi(async () => { throw new Error("socket boom") })
+      const service = new SanctuaryTelegramAuthorityService({ api, gateway: f.gateway, pollReclaimDelayMs: 1 })
+      await expect(service.dispatch("telegram.poll", {})).rejects.toThrow("socket boom")
+      expect(api.request).toHaveBeenCalledTimes(1)
+    })
+
+    it("gives up after the bounded reclaim attempts so a persistent conflict still surfaces", async () => {
+      const f = fixture()
+      const api = reclaimApi(async () => { throw new TelegramApiError("conflict", { status: 409 }) })
+      const service = new SanctuaryTelegramAuthorityService({ api, gateway: f.gateway, pollReclaimDelayMs: 1, pollReclaimAttempts: 3 })
+      await expect(service.dispatch("telegram.poll", {})).rejects.toThrow("conflict")
+      expect(api.request).toHaveBeenCalledTimes(3)
+    })
   })
 
 })
