@@ -82,6 +82,7 @@ jobs:
             ghcr.io/ourostack/ouroboros-butler:sha-${{ github.event.workflow_run.head_sha }}
 
       - name: Verify exact immutable references
+        if: steps.release-gate.outputs.publish == 'true'
         id: exact-references
         run: |
           GATE_OUTPUT=$(scripts/container-image-release-gate.sh "$VERSION_IMAGE" "$SHA_IMAGE")
@@ -92,6 +93,7 @@ jobs:
           echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
 
       - name: Verify package visibility and architectures
+        if: steps.release-gate.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -103,6 +105,7 @@ jobs:
           printf '%s\n' "$AUTHENTICATED_MANIFEST" | grep -F "Platform:    linux/arm64"
 
       - name: Verify anonymous immutable references and authenticated attestations
+        if: steps.release-gate.outputs.publish == 'true'
         run: |
           verify_exact_attestations() {
             EXACT_IMAGE=$1
