@@ -273,6 +273,14 @@ export class SanctuaryAuthorityRootLifecycle {
    * made (still empty) cgroup before the child exists, so retry that race a few times. */
   #cgroup(): void {
     const keep = this.#p(`${CGROUP}/${SANCTUARY_CGROUP_KEEP}`)
+    if (!this.#keepSupported()) {
+      // A package from before the keep child refuses an unknown child cgroup and relies on
+      // the host keeper holding Unraid's reaper paused (a rollback to 830 hit exactly that).
+      this.#freezeUnraidReaper()
+      if (fs.existsSync(keep)) fs.rmdirSync(keep)
+      this.#directory(CGROUP)
+      return
+    }
     for (let attempt = 1; !fs.existsSync(keep); attempt += 1) {
       try {
         this.#directory(CGROUP)
@@ -282,6 +290,18 @@ export class SanctuaryAuthorityRootLifecycle {
       }
     }
     this.#directory(CGROUP)
+  }
+  /** Whether the installed package's gateway understands the keep child (0.1.0-alpha.837+). */
+  #keepSupported(): boolean {
+    const installation = this.#p(`${ROOT}/package/dist/heart/daemon/sanctuary-authority-installation.js`)
+    return fs.existsSync(installation) && fs.readFileSync(installation, "utf8").includes(SANCTUARY_CGROUP_KEEP)
+  }
+  #freezeUnraidReaper(): void {
+    const pidFile = this.#p("/run/cgroup2-unraid.pid")
+    if (!fs.existsSync(pidFile)) return
+    const pid = Number(fs.readFileSync(pidFile, "utf8").trim())
+    if (!Number.isSafeInteger(pid) || pid <= 0) return
+    try { process.kill(pid, "SIGSTOP") } catch { /* not running: nothing to hold */ }
   }
   #runtimeDirectories(): void {
     for (const directory of [this.#epochRoot(), STAGING]) this.#directory(directory)
