@@ -135,6 +135,7 @@ import type {
   HelpCliCommand,
   RuntimeConfigScope,
   A2ACliCommand,
+  A2AClientCliCommand,
 } from "./cli-types"
 import { parseOuroCommand, inferAgentNameFromRemote } from "./cli-parse"
 import { isAgentProvider, usage } from "./cli-parse"
@@ -1943,7 +1944,7 @@ export async function checkManualCloneBundles(deps: ManualCloneCheckDeps): Promi
 
 // ── toDaemonCommand ──
 
-function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | AcpServeCliCommand | McpCanaryCliCommand | McpDoctorCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | RsvpCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "bluebubbles.context-smoke" } | { kind: "bluebubbles.host" } | { kind: "bluebubbles.host.collect" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "mail.sync-cache" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
+function toDaemonCommand(command: Exclude<OuroCliCommand, { kind: "daemon.up" } | { kind: "daemon.dev" } | { kind: "daemon.logs.prune" } | { kind: "mailbox" } | { kind: "hatch.start" } | AuthCliCommand | AuthVerifyCliCommand | AuthSwitchCliCommand | ProviderCliCommand | RepairCliCommand | VaultCliCommand | DnsCliCommand | FriendCliCommand | A2ACliCommand | A2AClientCliCommand | WhoamiCliCommand | SessionCliCommand | ThoughtsCliCommand | ChangelogCliCommand | ConfigModelCliCommand | ConfigModelsCliCommand | RollbackCliCommand | VersionsCliCommand | AttentionCliCommand | PrivateDecisionsCliCommand | PrivateStatusCliCommand | WorkCardCliCommand | WorkGauntletCliCommand | WorkSentinelCliCommand | NervesReviewCliCommand | McpServeCliCommand | AcpServeCliCommand | McpCanaryCliCommand | McpDoctorCliCommand | SetupCliCommand | HookCliCommand | HabitLocalCliCommand | DeskCliCommand | MigrateToDeskCliCommand | DoctorCliCommand | RsvpCliCommand | CloneCliCommand | HelpCliCommand | { kind: "bluebubbles.replay" } | { kind: "bluebubbles.context-smoke" } | { kind: "bluebubbles.host" } | { kind: "bluebubbles.host.collect" } | { kind: "connect" } | { kind: "account.ensure" } | { kind: "mail.import-mbox" } | { kind: "mail.backfill-indexes" } | { kind: "mail.sync-cache" } | { kind: "plugin.install" } | { kind: "plugin.list" } | { kind: "plugin.remove" }>): DaemonCommand {
   if (command.kind === "habit.probe") {
     return {
       kind: "habit.probe",
@@ -7106,6 +7107,30 @@ async function executeFriendCommand(command: FriendCliCommand, store: FriendStor
   return `unlinked ${command.provider}:${command.externalId} from ${command.friendId}`
 }
 
+async function executeA2AClientCommand(command: A2AClientCliCommand, deps: OuroCliDeps): Promise<string> {
+  const { loadOrMintA2AIdentityFile } = await import("../../a2a/identity")
+  /* v8 ignore next -- production CLI keeps the client key under the home dir; tests pass an explicit file @preserve */
+  const identityFile = command.identityFile ?? path.join(os.homedir(), ".ouro-cli", "a2a", "client-identity.json")
+  const identity = await loadOrMintA2AIdentityFile({ filePath: identityFile })
+  if (command.kind === "a2a.identity") {
+    const message = command.json ? JSON.stringify({ did: identity.did, identityFile }) : `did: ${identity.did}\nidentity file: ${identityFile}`
+    deps.writeStdout(message)
+    return message
+  }
+  const { sendSealedA2AChat } = await import("../../a2a/client")
+  const reply = await sendSealedA2AChat({
+    cardUrl: command.to,
+    text: command.text,
+    ...(command.conversationId ? { conversationId: command.conversationId } : {}),
+    identity,
+    /* v8 ignore next -- production CLI uses global fetch; tests inject fetch for a hermetic peer @preserve */
+    ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+  })
+  const message = command.json ? JSON.stringify(reply) : `${reply.peerName}: ${reply.text}\n[conversation: ${reply.conversationId}]`
+  deps.writeStdout(message)
+  return message
+}
+
 async function executeA2ACommand(command: A2ACliCommand & { agent: string }, deps: OuroCliDeps): Promise<string> {
   if (command.kind === "a2a.card") {
     const { buildA2AAgentCard } = await import("../../a2a/card")
@@ -8215,6 +8240,11 @@ export async function runOuroCli(args: string[], deps: OuroCliDeps = createDefau
     const message = `rolled back to ${targetVersion} (was ${currentVersion})`
     deps.writeStdout(message)
     return message
+  }
+
+  // ── a2a client commands (this machine talks to an agent as a verified friend; no agent, no daemon) ──
+  if (command.kind === "a2a.identity" || command.kind === "a2a.message") {
+    return executeA2AClientCommand(command, deps)
   }
 
   // ── versions command (local install list + published update truth, no daemon socket needed) ──

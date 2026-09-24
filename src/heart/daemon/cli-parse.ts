@@ -165,6 +165,8 @@ export function usage(): string {
     "  ouro a2a card [--agent <name>] [--base-url <url>] [--json]",
     "  ouro a2a onboard [--agent <name>] --card-url <url> [--trust <level>] [--name <name>]",
     "  ouro a2a serve [--agent <name>] [--host <host>] [--port <port>] [--base-url <url>] [--path <path>]",
+    "  ouro a2a identity [--identity-file <path>] [--json]",
+    "  ouro a2a message --to <card-url> --text <text> [--context <id>] [--identity-file <path>] [--json]",
     "  ouro whoami [--agent <name>]",
     "  ouro session list [--agent <name>]",
     "  ouro mcp list",
@@ -1439,6 +1441,42 @@ function parseA2ACommand(args: string[]): OuroCliCommand {
       throw new Error("Usage: ouro a2a card [--agent <name>] [--base-url <url>] [--json]")
     }
     return { kind: "a2a.card", ...(agent ? { agent } : {}), ...(baseUrl ? { baseUrl } : {}), ...(json ? { json: true } : {}) }
+  }
+
+  if (sub === "identity") {
+    let identityFile: string | undefined
+    let json = false
+    for (let i = 0; i < rest.length; i += 1) {
+      if (rest[i] === "--identity-file" && rest[i + 1]) {
+        identityFile = rest[++i]
+        continue
+      }
+      if (rest[i] === "--json") {
+        json = true
+        continue
+      }
+      throw new Error("Usage: ouro a2a identity [--identity-file <path>] [--json]")
+    }
+    return { kind: "a2a.identity", ...(identityFile ? { identityFile } : {}), ...(json ? { json: true } : {}) }
+  }
+
+  if (sub === "message") {
+    const usageText = "Usage: ouro a2a message --to <card-url> --text <text> [--context <id>] [--identity-file <path>] [--json]"
+    let to: string | undefined
+    let text: string | undefined
+    let conversationId: string | undefined
+    let identityFile: string | undefined
+    let json = false
+    for (let i = 0; i < rest.length; i += 1) {
+      if (rest[i] === "--to" && rest[i + 1]) { to = rest[++i]; continue }
+      if (rest[i] === "--text" && rest[i + 1]) { text = rest[++i]; continue }
+      if (rest[i] === "--context" && rest[i + 1]) { conversationId = rest[++i]; continue }
+      if (rest[i] === "--identity-file" && rest[i + 1]) { identityFile = rest[++i]; continue }
+      if (rest[i] === "--json") { json = true; continue }
+      throw new Error(usageText)
+    }
+    if (!to || !text) throw new Error(usageText)
+    return { kind: "a2a.message", to, text, ...(conversationId ? { conversationId } : {}), ...(identityFile ? { identityFile } : {}), ...(json ? { json: true } : {}) }
   }
 
   if (sub === "onboard") {

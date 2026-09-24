@@ -4,8 +4,7 @@ import { emitNervesEvent } from "../nerves/runtime"
 import { FileFriendStore, upsertAgentPeer } from "@ouro.bot/friends"
 import type { FriendStore, FriendRecord, TrustLevel } from "@ouro.bot/friends"
 import { parseDidKey, verifyCardDidBinding } from "@ouro.bot/friends/a2a-client"
-import { endpointForCard, fetchA2AAgentCard } from "./client"
-import type { A2AAgentCard } from "./types"
+import { cardDid, endpointForCard, fetchA2AAgentCard } from "./client"
 
 export interface OnboardA2APeerOptions {
   agentName: string
@@ -28,12 +27,6 @@ function urlAgentId(cardUrl: string): string {
   const parsed = new URL(cardUrl)
   parsed.hash = ""
   return parsed.toString()
-}
-
-/** The trimmed `did:key` a card serves, or undefined when the card is did-less. */
-function cardDid(card: A2AAgentCard): string | undefined {
-  const did = card.did
-  return typeof did === "string" && did.trim() ? did.trim() : undefined
 }
 
 export async function onboardA2APeer(options: OnboardA2APeerOptions): Promise<FriendRecord> {

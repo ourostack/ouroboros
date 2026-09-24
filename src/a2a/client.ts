@@ -1,6 +1,14 @@
 import { randomUUID } from "node:crypto"
+import { parseDidKey, ready, verifyCardDidBinding, type DidKeyIdentity, type Sodium } from "@ouro.bot/friends/a2a-client"
 import { emitNervesEvent } from "../nerves/runtime"
-import type { A2AAgentCard, A2AJsonRpcRequest, A2AJsonRpcResponse, A2ATask } from "./types"
+import { openChatMessage, sealChatMessage } from "./sealed-chat"
+import type { A2AAgentCard, A2AJsonRpcRequest, A2AJsonRpcResponse, A2AMessage, A2ATask } from "./types"
+
+/** The trimmed `did:key` a card serves, or undefined when the card is did-less. */
+export function cardDid(card: A2AAgentCard): string | undefined {
+  const did = card.did
+  return typeof did === "string" && did.trim() ? did.trim() : undefined
+}
 
 export function endpointForCard(card: A2AAgentCard): string | undefined {
   const jsonRpc = card.supportedInterfaces?.find((entry) => (entry.protocolBinding ?? entry.transport)?.toUpperCase() === "JSONRPC")
@@ -205,4 +213,64 @@ export async function getA2ATask(input: {
     throw new Error(`A2A error ${rpc.error.code}: ${rpc.error.message}`)
   }
   return rpc.result as A2ATask
+}
+
+export interface SealedA2AChatReply {
+  text: string
+  /** The conversation id to pass back to continue this conversation. */
+  conversationId: string
+  taskId: string
+  peerDid: string
+  peerName: string
+}
+
+/**
+ * Talk to an A2A agent as a verified friend: seal `text` to the agent's card DID,
+ * signed by `identity`, send it, and open the sealed reply. The card must serve a
+ * did:key bound to it (the same check onboarding applies), so the reply can only be
+ * accepted from that key. Neither direction ever travels in plaintext.
+ */
+export async function sendSealedA2AChat(input: {
+  cardUrl: string
+  text: string
+  conversationId?: string
+  identity: DidKeyIdentity
+  sodium?: Sodium
+  fetchImpl?: typeof fetch
+}): Promise<SealedA2AChatReply> {
+  const fetchImpl = input.fetchImpl ?? fetch
+  const sodium = input.sodium ?? await ready()
+  const card = await fetchA2AAgentCard(input.cardUrl, fetchImpl)
+  const peerDid = cardDid(card)
+  if (!peerDid) throw new Error(`A2A card ${input.cardUrl} serves no DID; sealed chat needs one`)
+  const parsed = parseDidKey(peerDid)
+  if (!parsed || !verifyCardDidBinding({ card: { did: peerDid, url: input.cardUrl }, did: peerDid, didDoc: null })) {
+    throw new Error(`A2A card↔DID binding failed for ${peerDid}`)
+  }
+  const endpointUrl = endpointForCard(card)!
+  const conversationId = input.conversationId ?? randomUUID()
+  const sealed = sealChatMessage({
+    sodium,
+    from: input.identity,
+    recipientDid: peerDid,
+    recipientEd25519Pub: parsed.ed25519Pub,
+    text: input.text,
+    conversationId,
+  })
+  const request: A2AJsonRpcRequest = {
+    jsonrpc: "2.0",
+    id: randomUUID(),
+    method: "SendMessage",
+    params: { message: { kind: "message", role: "ROLE_USER", messageId: randomUUID(), contextId: conversationId, parts: sealed.parts } },
+  }
+  emitNervesEvent({ component: "channels", event: "channel.a2a_chat_send_start", message: "sending sealed A2A chat message", meta: { endpointUrl, peerDid } })
+  const rpc = await postJsonRpc(endpointUrl, request, fetchImpl)
+  if ("error" in rpc) throw new Error(`A2A error ${rpc.error.code}: ${rpc.error.message}`)
+  const task = rpc.result as A2ATask
+  const replyMessage = task?.status?.message as A2AMessage | undefined
+  if (!replyMessage) throw new Error("A2A chat returned no reply message")
+  const opened = await openChatMessage({ sodium, self: input.identity, message: replyMessage, senderDid: peerDid, senderEd25519Pub: parsed.ed25519Pub })
+  if (!opened.ok) throw new Error(`A2A chat reply rejected: ${opened.reason}`)
+  emitNervesEvent({ component: "channels", event: "channel.a2a_chat_send_end", message: "received sealed A2A chat reply", meta: { endpointUrl, peerDid, taskId: task.id } })
+  return { text: opened.text, conversationId, taskId: task.id, peerDid, peerName: card.name }
 }

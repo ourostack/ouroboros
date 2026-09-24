@@ -10,6 +10,7 @@ import {
 } from "@ouro.bot/friends/a2a-client"
 import {
   findFriendByDid,
+  type FriendRecord,
   type FriendStore,
   type MissionStore,
   type TrustLevel,
@@ -45,6 +46,10 @@ export type InboundShareResult =
       trust: TrustLevel
       friendsKind: string
       status: string
+      /** Present for a verified `message` kind: the authenticated chat text. */
+      message?: { text: string; conversationId?: string; issuedAt: string }
+      /** The sender's friend record, when the verified DID is a known friend. */
+      friend?: FriendRecord
     }
   | {
       /** The message was rejected; do NOT run a turn. */
@@ -157,6 +162,9 @@ export async function receiveInboundShare(
       trust,
       friendsKind: result.friendsKind,
       status: result.status,
+      ...(result.message ? { message: result.message } : {}),
+      /* v8 ignore next -- a completed receipt implies a trusted friend record: an unknown DID reads as stranger and is refused @preserve */
+      ...(record ? { friend: record } : {}),
     }
   }
 

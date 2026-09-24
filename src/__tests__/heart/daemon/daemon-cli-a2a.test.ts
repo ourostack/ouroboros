@@ -210,3 +210,62 @@ describe("ouro A2A CLI execution", () => {
     }
   })
 })
+
+describe("ouro A2A client commands (identity + sealed message)", () => {
+  it("parses identity and message commands", () => {
+    expect(parseOuroCommand(["a2a", "identity"])).toEqual({ kind: "a2a.identity" })
+    expect(parseOuroCommand(["a2a", "identity", "--identity-file", "/k.json", "--json"])).toEqual({ kind: "a2a.identity", identityFile: "/k.json", json: true })
+    expect(parseOuroCommand(["a2a", "message", "--to", "https://a/card", "--text", "hi"])).toEqual({ kind: "a2a.message", to: "https://a/card", text: "hi" })
+    expect(parseOuroCommand(["a2a", "message", "--to", "https://a/card", "--text", "hi", "--context", "c1", "--identity-file", "/k.json", "--json"]))
+      .toEqual({ kind: "a2a.message", to: "https://a/card", text: "hi", conversationId: "c1", identityFile: "/k.json", json: true })
+  })
+
+  it("rejects invalid client command shapes", () => {
+    expect(() => parseOuroCommand(["a2a", "identity", "--wat"])).toThrow(/Usage: ouro a2a identity/)
+    expect(() => parseOuroCommand(["a2a", "message", "--text", "hi"])).toThrow(/Usage: ouro a2a message/)
+    expect(() => parseOuroCommand(["a2a", "message", "--to", "https://a/card"])).toThrow(/Usage: ouro a2a message/)
+    expect(() => parseOuroCommand(["a2a", "message", "--to", "https://a/card", "--text", "hi", "--wat"])).toThrow(/Usage: ouro a2a message/)
+  })
+
+  it("prints the client identity DID, minting the key file once", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ouro-a2a-id-"))
+    try {
+      const identityFile = join(dir, "client.json")
+      const text = await runOuroCli(["a2a", "identity", "--identity-file", identityFile], createMockDeps())
+      expect(text).toMatch(/^did: did:key:z\S+\nidentity file: /)
+      const json = JSON.parse(await runOuroCli(["a2a", "identity", "--identity-file", identityFile, "--json"], createMockDeps()))
+      expect(text).toContain(json.did)
+      expect(json.identityFile).toBe(identityFile)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("chats with a trusting agent over sealed A2A", async () => {
+    const { ready, didKeyIdentityFromEd25519 } = await import("@ouro.bot/friends/a2a-client")
+    const { FileFriendStore, upsertAgentPeer } = await import("@ouro.bot/friends")
+    const { startA2AServer } = await import("../../../a2a/server")
+    const { loadOrMintA2AIdentityFile } = await import("../../../a2a/identity")
+    const sodium = await ready()
+    const dir = mkdtempSync(join(tmpdir(), "ouro-a2a-chat-"))
+    const agentRoot = join(dir, "agent.ouro")
+    const identityFile = join(dir, "client.json")
+    const kp = sodium.crypto_sign_keypair()
+    const agent = { ...didKeyIdentityFromEd25519({ sodium, ed25519Pub: kp.publicKey, ed25519Priv: kp.privateKey }), seed: "unused" }
+    const client = await loadOrMintA2AIdentityFile({ filePath: identityFile, sodium })
+    const store = new FileFriendStore(join(agentRoot, "friends"))
+    await upsertAgentPeer(store, { name: "Client", agentId: client.did, trustLevel: "friend", a2a: { did: client.did, agentId: client.did, endpointUrl: "https://client.example/a2a" } })
+    const server = await startA2AServer({ agentName: "chatty", agentRoot, port: 0, identity: agent, turnRunner: async ({ message }) => ({ response: `pong:${message}` }) })
+    try {
+      const cardUrl = new URL("/.well-known/agent-card.json", server.url).toString()
+      const text = await runOuroCli(["a2a", "message", "--to", cardUrl, "--text", "ping", "--context", "c-9", "--identity-file", identityFile], createMockDeps({ fetchImpl: fetch }))
+      expect(text).toBe("chatty: pong:ping\n[conversation: c-9]")
+      const json = JSON.parse(await runOuroCli(["a2a", "message", "--to", cardUrl, "--text", "again", "--identity-file", identityFile, "--json"], createMockDeps({ fetchImpl: fetch })))
+      expect(json.text).toBe("pong:again")
+      expect(json.peerDid).toBe(agent.did)
+    } finally {
+      await server.close()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
