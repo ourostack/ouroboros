@@ -7177,29 +7177,29 @@ async function executeA2ACommand(command: A2ACliCommand & { agent: string }, dep
   }
 
   /* v8 ignore next -- false branch is foreground serve, intentionally ignored below because it waits for signals @preserve */
-  if (command.kind === "a2a.onboard" && command.did) {
-    const { onboardA2AClientByDid } = await import("../../a2a/onboarding")
-    const record = await onboardA2AClientByDid({
-      agentName: command.agent,
-      did: command.did,
-      name: command.name!,
-      ...(command.trustLevel ? { trustLevel: command.trustLevel } : {}),
-      /* v8 ignore next -- production CLI falls back to the canonical bundle root; tests inject isolated roots @preserve */
-      ...(deps.bundlesRoot ? { bundlesRoot: deps.bundlesRoot } : {}),
-    })
-    const message = [
-      `onboarded A2A client: ${record.name}`,
-      `friend id: ${record.id}`,
-      /* v8 ignore next -- upsertAgentPeer always writes an explicit TrustLevel @preserve */
-      `trust: ${record.trustLevel ?? "unknown"}`,
-      `did: ${command.did}`,
-      `Next: ouro friend update ${record.id} --agent ${command.agent} --admission active --initiative reactive_only --profile <capability-profile-id>`,
-    ].join("\n")
-    deps.writeStdout(message)
-    return message
-  }
-
   if (command.kind === "a2a.onboard") {
+    if (command.did) {
+      const { onboardA2AClientByDid } = await import("../../a2a/onboarding")
+      const record = await onboardA2AClientByDid({
+        agentName: command.agent,
+        did: command.did,
+        name: command.name!,
+        ...(command.trustLevel ? { trustLevel: command.trustLevel } : {}),
+        /* v8 ignore next -- production CLI falls back to the canonical bundle root; tests inject isolated roots @preserve */
+        ...(deps.bundlesRoot ? { bundlesRoot: deps.bundlesRoot } : {}),
+      })
+      const message = [
+        `onboarded A2A client: ${record.name}`,
+        `friend id: ${record.id}`,
+        /* v8 ignore next -- upsertAgentPeer always writes an explicit TrustLevel @preserve */
+        `trust: ${record.trustLevel ?? "unknown"}`,
+        `did: ${command.did}`,
+        `Next: ouro friend update ${record.id} --agent ${command.agent} --admission active --initiative reactive_only --profile <capability-profile-id>`,
+      ].join("\n")
+      deps.writeStdout(message)
+      return message
+    }
+
     const { onboardA2APeer } = await import("../../a2a/onboarding")
     const record = await onboardA2APeer({
       agentName: command.agent,

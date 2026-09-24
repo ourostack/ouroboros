@@ -4,7 +4,8 @@
     {
       "version": "0.1.0-alpha.839",
       "changes": [
-        "CLI: provision A2A peers without editing files. ouro connect a2a --host/--port/--public-url stores this machine's A2A bind address and advertised URL (D-038); ouro a2a onboard --did <did:key> --name <name> onboards a card-less client such as a coding harness, keyed on its DID; ouro friend update sets --admission, --initiative and --profile as well as --trust (D-039)."
+        "CLI: provision A2A peers without editing files. ouro connect a2a --host/--port/--public-url stores this machine's A2A bind address and advertised URL (D-038); ouro a2a onboard --did <did:key> --name <name> onboards a card-less client such as a coding harness, keyed on its DID; ouro friend update sets --admission, --initiative and --profile as well as --trust (D-039).",
+        "CLI: a2a onboard keeps the card and DID paths in one command block so its coverage exemptions stay attached to the right code."
       ]
     },
     {
