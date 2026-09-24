@@ -2457,15 +2457,79 @@ describe("Telegram durable authorized long poll", () => {
     expect(onMessage).toHaveBeenCalledOnce()
   })
 
-  it("propagates a non-shutdown polling failure from the joined run lifecycle", async () => {
+  it("propagates a non-transport polling failure rather than spinning on it", async () => {
+    // A dispatch or durable-audit invariant failure is not a transport blip; it
+    // must surface (and be restarted/surfaced) rather than be retried forever.
     const poll = createTelegramLongPoll({
-      api: { request: vi.fn(async () => { throw new Error("synthetic poll failure") }), stop: vi.fn() },
+      api: { request: vi.fn(async () => { throw new Error("reserved capacity exhausted") }), stop: vi.fn() },
       expectedUserId: "10",
       expectedChatId: "10",
       offsetStore: { load: () => 0, save: vi.fn() },
       onMessage: vi.fn(),
     })
-    await expect(poll.run()).rejects.toThrow("synthetic poll failure")
+    await expect(poll.run()).rejects.toThrow("reserved capacity exhausted")
+  })
+
+  it("does not treat a non-Error thrown value as a retryable transport failure", async () => {
+    // Only Error instances (a Telegram API error, or a transient-flagged socket
+    // Error) are retried; a bare flagged object is not a transport condition.
+    const thrown = { isTransientTransportError: true }
+    const poll = createTelegramLongPoll({
+      api: { request: vi.fn(async () => { throw thrown }), stop: vi.fn() },
+      expectedUserId: "10",
+      expectedChatId: "10",
+      offsetStore: { load: () => 0, save: vi.fn() },
+      onMessage: vi.fn(),
+    })
+    await expect(poll.run()).rejects.toBe(thrown)
+  })
+
+  it("retries a transient non-API long-poll failure instead of crashing the sense", async () => {
+    vi.useFakeTimers()
+    const controller = new AbortController()
+    // The resident sense's socket transport rejects with a transient-flagged
+    // Error when the authority socket drops (e.g. the gateway restarting). It
+    // must be retried, not rethrown out of run() where it would exit the process.
+    const request = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error("frontend socket closed"), { isTransientTransportError: true }))
+      .mockImplementationOnce(async () => { controller.abort(); return [] })
+    const poll = createTelegramLongPoll({
+      api: { request, stop: vi.fn() },
+      expectedUserId: "10",
+      expectedChatId: "10",
+      offsetStore: { load: () => 0, save: vi.fn() },
+      onMessage: vi.fn(),
+    })
+    const running = poll.run(controller.signal)
+    await vi.advanceTimersByTimeAsync(1_000)
+    await expect(running).resolves.toBeUndefined()
+    expect(request).toHaveBeenCalledTimes(2)
+    vi.useRealTimers()
+  })
+
+  it("backs off exponentially across consecutive long-poll failures and resets after success", async () => {
+    vi.useFakeTimers()
+    const controller = new AbortController()
+    const request = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error("blip 1"), { isTransientTransportError: true }))
+      .mockRejectedValueOnce(Object.assign(new Error("blip 2"), { isTransientTransportError: true }))
+      .mockImplementationOnce(async () => { controller.abort(); return [] })
+    const poll = createTelegramLongPoll({
+      api: { request, stop: vi.fn() },
+      expectedUserId: "10",
+      expectedChatId: "10",
+      offsetStore: { load: () => 0, save: vi.fn() },
+      onMessage: vi.fn(),
+    })
+    const running = poll.run(controller.signal)
+    await vi.advanceTimersByTimeAsync(1_000) // first retry after the 1s base delay
+    expect(request).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(1_000) // only 1s of the 2s second backoff has elapsed
+    expect(request).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(1_000) // 2s total -> second retry fires
+    expect(request).toHaveBeenCalledTimes(3)
+    await expect(running).resolves.toBeUndefined()
+    vi.useRealTimers()
   })
 
   it("joins cleanly when an external lifecycle signal aborts an active request", async () => {

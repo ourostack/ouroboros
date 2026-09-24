@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.831",
+      "changes": [
+        "Sanctuary: the Telegram long-poll survives transient transport failures — a dropped authority socket or a Telegram API error is retried with exponential backoff instead of exiting the sense process, so a gateway restart no longer crash-loops the resident. Non-transport (dispatch/durable-audit) failures still surface."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.830",
       "changes": [
         "Persist authority vault writes (remove-resident-token, rollback restore-token-cursor) by binding the real bitwarden store writable in the fence, not a throwaway tmpfs copy; reads still use the copy. Fixes the install stranding after transfer-cursor."

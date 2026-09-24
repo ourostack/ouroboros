@@ -229,6 +229,13 @@ export interface FileTelegramUpdateInboxStoreOptions {
 const DEFAULT_TELEGRAM_INDETERMINATE_RETENTION_MS = 24 * 60 * 60 * 1_000
 const DEFAULT_TELEGRAM_MAX_INDETERMINATE_RECEIPTS = 1_000
 
+// Long-poll retry backoff. A transient failure (a Telegram 5xx, a dropped
+// authority socket in the resident, or a relayed gateway 409 during a
+// getUpdates-session reclaim) must not exit the sense process; the loop waits
+// and retries, doubling from the base up to the cap and resetting on success.
+const TELEGRAM_POLL_RETRY_BASE_MS = 1_000
+const TELEGRAM_POLL_RETRY_MAX_MS = 30_000
+
 const TELEGRAM_UPDATE_DIGEST_DOMAIN = "ouroboros.telegram.update.v1"
 const TELEGRAM_UPDATE_SEQUENCE_DOMAIN = "ouroboros.telegram.update-sequence.v1"
 const TELEGRAM_UPDATE_DIGEST = /^tgu_[A-Za-z0-9_-]{43}$/u
@@ -635,14 +642,26 @@ export interface TelegramLongPollOptions {
   settleTransport?: (update: TelegramUpdate, outcome: "completed" | "indeterminate") => Promise<void>
 }
 
+// A poll failure is retryable when it is a transient transport condition: a
+// Telegram Bot API error (network/HTTP), or an authority-socket error flagged
+// transient by the resident's socket client (a dropped or refused connection).
+// Dispatch and durable-audit invariant failures are not transport conditions;
+// they must surface rather than be spun on indefinitely.
+function isRetryablePollError(error: unknown): boolean {
+  if (error instanceof TelegramApiError) return true
+  return error instanceof Error
+    && (error as Error & { isTransientTransportError?: boolean }).isTransientTransportError === true
+}
+
 export function createTelegramLongPoll(options: TelegramLongPollOptions): TelegramLongPoll {
   let nextUpdateId = options.offsetStore.load()
   const shutdown = new AbortController()
-  const retryAfterPollError = (signal: AbortSignal): Promise<void> => new Promise((resolve, reject) => {
-    const timer = setTimeout(resolve, 1_000)
+  const retryAfterPollError = (signal: AbortSignal, attempt: number): Promise<void> => new Promise((resolve) => {
+    const delay = Math.min(TELEGRAM_POLL_RETRY_BASE_MS * 2 ** Math.max(0, attempt - 1), TELEGRAM_POLL_RETRY_MAX_MS)
+    const timer = setTimeout(resolve, delay)
     signal.addEventListener("abort", () => {
       clearTimeout(timer)
-      reject(signal.reason)
+      resolve()
     }, { once: true })
   })
 
@@ -848,20 +867,34 @@ export function createTelegramLongPoll(options: TelegramLongPollOptions): Telegr
     pollOnce,
     async run(signal?: AbortSignal) {
       const runSignal = signal ? AbortSignal.any([shutdown.signal, signal]) : shutdown.signal
+      let consecutiveFailures = 0
       while (!runSignal.aborted) {
         try {
           await pollOnce(runSignal)
+          consecutiveFailures = 0
         } catch (error) {
           if (shutdown.signal.aborted || signal?.aborted) return
-          if (!(error instanceof TelegramApiError)) throw error
+          // Only transient transport failures are retried here: a Telegram API
+          // error, or a dropped/again-failing authority socket in the resident.
+          // Exiting the process on those (as an unhandled throw would) only
+          // trades an in-process retry for a heavier container/daemon restart
+          // cycle, which is what produced the observed ~10s crash-loops. A
+          // non-transport failure (a dispatch or durable-audit invariant) still
+          // surfaces so it is not silently spun on.
+          if (!isRetryablePollError(error)) throw error
+          consecutiveFailures += 1
           emitNervesEvent({
             level: "warn",
             component: "senses",
             event: "telegram.poll_retry",
             message: "Telegram long poll request failed; retrying",
-            meta: { status: error.status, errorCode: error.errorCode },
+            meta: {
+              attempt: consecutiveFailures,
+              ...(error instanceof TelegramApiError ? { status: error.status, errorCode: error.errorCode } : {}),
+              reason: (error as Error).message,
+            },
           })
-          await retryAfterPollError(runSignal)
+          await retryAfterPollError(runSignal, consecutiveFailures)
         }
       }
     },
