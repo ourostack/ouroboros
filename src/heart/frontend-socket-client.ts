@@ -1,6 +1,17 @@
 import * as net from "node:net"
 import { emitNervesEvent } from "../nerves/runtime"
 
+// A dropped or refused frontend socket is a transient transport condition, not a
+// logic failure: the caller (e.g. the Telegram long-poll loop) should reconnect
+// and retry rather than exit. Flag such errors so that layer can classify them.
+function markTransientTransport<E extends Error>(error: E): E {
+  return Object.assign(error, { isTransientTransportError: true as const })
+}
+
+function transientTransportError(message: string): Error {
+  return markTransientTransport(new Error(message))
+}
+
 export interface FrontendProtocolClient {
   request(method: string, params: Record<string, unknown>): Promise<any>
   onEvent(listener: (event: Record<string, any>) => void): () => void
@@ -42,7 +53,7 @@ export class SocketFrontendClient implements FrontendProtocolClient {
   }
 
   close(): void {
-    this.failPending(new Error("frontend socket closed"))
+    this.failPending(transientTransportError("frontend socket closed"))
     this.socket?.destroy()
     this.socket = null
   }
@@ -54,18 +65,19 @@ export class SocketFrontendClient implements FrontendProtocolClient {
       const socket = net.createConnection(this.socketPath)
       const fail = (error: Error) => {
         this.connecting = null
-        reject(error)
+        reject(markTransientTransport(error))
       }
       socket.once("error", fail)
       socket.once("connect", () => {
         socket.removeListener("error", fail)
         socket.on("error", (error) => {
-          this.failPending(error)
-          for (const listener of this.closeListeners) listener(error)
+          const transient = markTransientTransport(error)
+          this.failPending(transient)
+          for (const listener of this.closeListeners) listener(transient)
         })
         socket.on("data", (chunk) => this.handleData(chunk.toString("utf8")))
         socket.on("close", () => {
-          const error = new Error("frontend socket closed")
+          const error = transientTransportError("frontend socket closed")
           this.failPending(error)
           for (const listener of this.closeListeners) listener(error)
           if (this.socket === socket) this.socket = null

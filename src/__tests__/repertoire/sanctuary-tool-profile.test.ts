@@ -70,7 +70,44 @@ describe("Sanctuary active tool profile", () => {
     expect(packaged.profiles["sanctuary-household"].toolNames).toContain("unraid_restart_container")
     expect(names).toEqual(expect.arrayContaining(SANCTUARY_OWNER_ADDITIONS))
     expect(names.filter((name) => ["jellyseerr_request", "sonarr_add", "radarr_add"].includes(name))).toEqual([])
-    expect(Object.keys(packaged.profiles)).toEqual(["sanctuary-owner", "sanctuary-household", "sanctuary-event"])
+    expect(Object.keys(packaged.profiles)).toEqual(["sanctuary-owner", "sanctuary-household", "sanctuary-event", "sanctuary-agent-peer"])
+  })
+
+  it("grants a trusted agent peer the owner's tools except host execution and approval-gated restarts", () => {
+    const packaged = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/tool-profiles.json", "utf8"))
+    const owner = packaged.profiles["sanctuary-owner"]
+    const peer = packaged.profiles["sanctuary-agent-peer"]
+    expect(peer.version).toBe(1)
+    expect(peer.toolNames).toEqual(owner.toolNames.filter((name: string) => name !== "sanctuary_host_execute" && name !== "unraid_restart_container"))
+    expect(peer.contextScopes).toEqual(owner.contextScopes)
+    expect(peer.effectScopes).toEqual(owner.effectScopes)
+  })
+
+  it("fails closed for a Sanctuary A2A turn without a relationship profile", () => {
+    setAgentName("sanctuary")
+    expect(getToolsForChannel(getChannelCapabilities("a2a"), undefined, undefined, new Set(["reasoning-effort"]), undefined, undefined, { agentName: "sanctuary" })).toEqual([])
+  })
+
+  it("keeps the unscoped tool set on the Butler's own local channels", () => {
+    setAgentName("sanctuary")
+    for (const channel of ["cli", "inner"] as const) {
+      const names = getToolsForChannel(getChannelCapabilities(channel), undefined, undefined, new Set(["reasoning-effort"]), undefined, undefined, { agentName: "sanctuary" }).map((tool) => tool.function.name)
+      expect(names).toContain("shell")
+    }
+  })
+
+  it("gives a verified agent peer the owner chat menu over A2A without host execution or restarts", () => {
+    setAgentName("sanctuary")
+    const packaged = JSON.parse(fs.readFileSync("deploy/unraid/sanctuary.ouro/tool-profiles.json", "utf8"))
+    const peer = packaged.profiles["sanctuary-agent-peer"]
+    const names = getToolsForChannel(getChannelCapabilities("a2a"), undefined, undefined, new Set(["reasoning-effort"]), undefined, undefined, {
+      agentName: "sanctuary",
+      relationshipAuthorization: { profileId: "sanctuary-agent-peer", advertisedToolNames: peer.toolNames },
+    }).map((tool) => tool.function.name)
+    expect(names.every((name) => peer.toolNames.includes(name))).toBe(true)
+    expect(names).toEqual(expect.arrayContaining(["shell", "read_file", "send_message", "unraid_get_system", "sanctuary_get_download_queue", "steward_policy_manage"]))
+    expect(names).not.toContain("sanctuary_host_execute")
+    expect(names).not.toContain("unraid_restart_container")
   })
 
   it("surfaces the packaged media MCP tools to the owner and withholds them from the household", () => {

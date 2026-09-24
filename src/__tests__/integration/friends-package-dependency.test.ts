@@ -60,7 +60,11 @@ describe("friend flow through the @ouro.bot/friends dependency", () => {
       readFileSync(join(process.cwd(), "node_modules", "@ouro.bot", "friends", "package.json"), "utf8"),
     ) as { version: string }
 
-    expect(packageJson.version).toBe("0.1.0-alpha.10")
+    const declared = (JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8")) as { dependencies: Record<string, string> })
+      .dependencies["@ouro.bot/friends"]
+    // The dependency is pinned exactly, and the installed package is that exact release.
+    expect(declared).toMatch(/^\d+\.\d+\.\d+(-[\w.]+)?$/)
+    expect(packageJson.version).toBe(declared)
     expect(getChannelCapabilities("telegram")).toMatchObject({
       channel: "telegram",
       senseType: "open",

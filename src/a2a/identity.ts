@@ -1,4 +1,6 @@
 import * as crypto from "node:crypto"
+import * as fs from "node:fs"
+import * as path from "node:path"
 import * as os from "node:os"
 import { didKeyIdentityFromEd25519, ready, type DidKeyIdentity, type Sodium } from "@ouro.bot/friends/a2a-client"
 import { emitNervesEvent } from "../nerves/runtime"
@@ -161,4 +163,36 @@ export async function loadSelfA2AIdentity(input: { agentName: string; sodium?: S
       await mergeMachineRuntimeCredentialConfig(input.agentName, machineId, { a2a: { identity: { ed25519Seed: seed } } })
     },
   })
+}
+
+/**
+ * A file-backed A2A identity for a client that is not an ouro agent (for example a
+ * coding harness talking to an agent over A2A). The file holds the Ed25519 seed, so
+ * it is treated like an SSH private key: created 0600 inside a 0700 directory, and
+ * REFUSED if group or other can read it.
+ */
+export async function loadOrMintA2AIdentityFile(input: { filePath: string; sodium?: Sodium }): Promise<A2AIdentity> {
+  const sodium = input.sodium ?? await ready()
+  return fs.existsSync(input.filePath) ? readA2AIdentityFile(sodium, input.filePath) : mintA2AIdentityFile(sodium, input.filePath)
+}
+
+function readA2AIdentityFile(sodium: Sodium, filePath: string): A2AIdentity {
+  const mode = fs.statSync(filePath).mode & 0o077
+  if (mode !== 0) throw new Error(`A2A identity file ${filePath} is readable by group or other; chmod 600 it`)
+  const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as { seed?: unknown }
+  if (typeof parsed.seed !== "string") throw new Error(`A2A identity file ${filePath} has no seed`)
+  return deriveIdentity(sodium, decodeSeed(parsed.seed))
+}
+
+function mintA2AIdentityFile(sodium: Sodium, filePath: string): A2AIdentity {
+  const identity = deriveIdentity(sodium, mintSeed())
+  fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 })
+  fs.writeFileSync(filePath, `${JSON.stringify({ version: 1, did: identity.did, seed: identity.seed }, null, 2)}\n`, { mode: 0o600 })
+  emitNervesEvent({
+    component: "channels",
+    event: "channel.a2a_client_identity_minted",
+    message: "minted file-backed A2A client identity",
+    meta: { did: identity.did },
+  })
+  return identity
 }

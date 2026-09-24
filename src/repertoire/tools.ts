@@ -63,6 +63,9 @@ export const SANCTUARY_MCP_PROVIDED_TOOLS: ReadonlySet<string> = new Set([
   "media_diagnose_and_fix", "media_chain_health", "media_play_or_resolve",
 ])
 
+/** Channels a Sanctuary turn can arrive on from the host itself, not from a remote party. */
+const SANCTUARY_LOCAL_CHANNELS: ReadonlySet<string> = new Set(["inner", "cli", "mcp"])
+
 export const SANCTUARY_OWNER_ADDITIONS: ReadonlySet<string> = new Set([
   "shell", "shell_status", "shell_tail", "read_file", "write_file", "edit_file", "glob", "grep",
   "web_search", "search_facts", "consult_diary", "consult_notes", "get_friend_note",
@@ -124,10 +127,20 @@ export function selectToolsForChannel(
 ): ToolSelection {
   const relationship = context?.relationshipAuthorization
   const profileId = relationship?.profileId
-  const sanctuary = (context?.agentName === "sanctuary" && (relationship !== undefined || capabilities?.channel === "telegram"))
+  // Every Sanctuary turn that reaches the agent from outside the host (Telegram, A2A,
+  // any future remote sense) is relationship-scoped: without a known capability
+  // profile it gets no tools at all. Only the Butler's own local channels (its inner
+  // loop and the host-local CLI/MCP) keep the unscoped tool set.
+  const channel = capabilities?.channel
+  const remote = channel !== undefined && !SANCTUARY_LOCAL_CHANNELS.has(channel)
+  const sanctuary = (context?.agentName === "sanctuary" && (relationship !== undefined || remote))
     || profileId?.startsWith("sanctuary-") === true
   const owner = profileId === "sanctuary-owner"
-  const knownSanctuaryProfile = relationship !== undefined && (owner || profileId === "sanctuary-household" || profileId === "sanctuary-event")
+  // A trusted peer agent acting for the owner gets the owner's chat tool menu. Host
+  // execution and approval-gated routine actions stay Telegram-owner-only: the host
+  // tool is only ever added on the Telegram channel, and the peer profile omits them.
+  const ownerLike = owner || profileId === "sanctuary-agent-peer"
+  const knownSanctuaryProfile = relationship !== undefined && (ownerLike || profileId === "sanctuary-household" || profileId === "sanctuary-event")
   const mcp = mcpManager ? mcpToolsAsDefinitions(mcpManager) : []
   const native = [...baseToolDefinitions, ...additionalDefinitions]
   assertUniqueToolSchemas([
@@ -140,8 +153,8 @@ export function selectToolsForChannel(
       ? [
         ...baseToolDefinitions.filter((definition) =>
           SANCTUARY_RELATIONSHIP_BASE_TOOLS.has(definition.tool.function.name)
-          || (owner && SANCTUARY_OWNER_ADDITIONS.has(definition.tool.function.name))),
-        ...unraidToolDefinitions, stewardPolicyToolDefinition, ...(owner ? mcp : []),
+          || (ownerLike && SANCTUARY_OWNER_ADDITIONS.has(definition.tool.function.name))),
+        ...unraidToolDefinitions, stewardPolicyToolDefinition, ...(ownerLike ? mcp : []),
       ]
       : []
   } else {

@@ -86,6 +86,8 @@ export type OuroCliCommand =
   | { kind: "friend.unlink"; agent: string; friendId: string; provider: import("@ouro.bot/friends").IdentityProvider; externalId: string }
   | { kind: "a2a.card"; agent?: string; baseUrl?: string; json?: boolean }
   | { kind: "a2a.onboard"; agent?: string; cardUrl: string; trustLevel?: TrustLevel; name?: string }
+  | { kind: "a2a.message"; to: string; text: string; conversationId?: string; identityFile?: string; json?: boolean }
+  | { kind: "a2a.identity"; identityFile?: string; json?: boolean }
   | { kind: "a2a.serve"; agent?: string; host?: string; port?: number; baseUrl?: string; path?: string }
   | { kind: "changelog"; from?: string; agent?: string }
   | { kind: "mcp.list"; agent?: string }
@@ -311,6 +313,8 @@ export interface DiscoveredCredential {
 // ── Command group type aliases (used in toDaemonCommand exclusion) ──
 export type FriendCliCommand = Extract<OuroCliCommand, { kind: "friend.list" } | { kind: "friend.show" } | { kind: "friend.create" } | { kind: "friend.update" } | { kind: "friend.link" } | { kind: "friend.unlink" }>
 export type A2ACliCommand = Extract<OuroCliCommand, { kind: "a2a.card" } | { kind: "a2a.onboard" } | { kind: "a2a.serve" }>
+/** Client-side A2A commands: this machine talks to an agent as a verified friend (no agent, no daemon). */
+export type A2AClientCliCommand = Extract<OuroCliCommand, { kind: "a2a.message" } | { kind: "a2a.identity" }>
 export type WhoamiCliCommand = Extract<OuroCliCommand, { kind: "whoami" }>
 export type SessionCliCommand = Extract<OuroCliCommand, { kind: "session.list" }>
 export type ThoughtsCliCommand = Extract<OuroCliCommand, { kind: "thoughts" }>

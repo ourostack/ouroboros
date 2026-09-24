@@ -2069,7 +2069,7 @@ describe("Twilio phone voice bridge", () => {
       expect(sessionUpdates.some((event) => event.session.instructions?.includes("Resolved voice friend: fallback-local"))).toBe(true)
 
       const friendDir = path.join(agentRoot, "friends")
-      const friendRecords = await Promise.all((await fs.readdir(friendDir)).map(async (entry) => (
+      const friendRecords = await Promise.all((await fs.readdir(friendDir)).filter((entry) => entry.endsWith(".json")).map(async (entry) => (
         JSON.parse(await fs.readFile(path.join(friendDir, entry), "utf8")) as {
           name?: string
           externalIds?: Array<{ provider?: string; externalId?: string }>
