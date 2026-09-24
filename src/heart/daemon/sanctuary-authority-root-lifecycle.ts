@@ -21,6 +21,16 @@ const STAGING = "/var/lib/ouro-authority/staging"
 const CGROUP = "/sys/fs/cgroup/ouro-authority"
 const BOOT = "/boot/config/custom/ouro-authority/start.sh"
 const BOOT_LINE = `/bin/sh ${BOOT} --boot & # ouro-authority`
+// On Unraid the host keeper owns boot instead (it runs BOOT --boot itself, D-032), and the
+// upgrade orchestrator installs exactly these lines in place of BOOT_LINE (D-045).
+const KEEPER_SUPERVISOR = "/boot/config/custom/ouro-authority/gateway-supervisor.sh"
+const KEEPER_WATCHDOG = "/boot/config/custom/ouro-authority/gateway-keeper-watchdog.sh"
+export const SANCTUARY_KEEPER_BOOT_LINES = {
+  supervisor: `setsid /bin/sh ${KEEPER_SUPERVISOR} >/dev/null 2>&1 & # ouro-authority-gateway`,
+  watchdog: `(crontab -l 2>/dev/null | grep -v gateway-keeper-watchdog; echo "*/2 * * * * /bin/sh ${KEEPER_WATCHDOG} # ouro-authority-gateway-watchdog") | crontab - # ouro-authority-gateway-watchdog`,
+} as const
+const BOOT_OWNERS = [BOOT_LINE, SANCTUARY_KEEPER_BOOT_LINES.supervisor]
+const KNOWN_BOOT_LINES = [...BOOT_OWNERS, SANCTUARY_KEEPER_BOOT_LINES.watchdog]
 const DIGEST = /^sha256:[a-f0-9]{64}$/u
 // The gateway verifies every pinned package file before it reports ready. With a cold
 // page cache on Unraid's array that takes minutes, so readiness gets a generous budget
@@ -265,7 +275,7 @@ export class SanctuaryAuthorityRootLifecycle {
     if (!fs.existsSync(this.#p(`${this.#epochRoot()}/stage.json`))) return false
     this.#record(`${this.#epochRoot()}/stage.json`, { packageDigest: this.#request.packageDigest })
     this.#verifyPackage(undefined, hostExecution)
-    if (this.#bootScript().text.split("\n").filter((line) => line === BOOT_LINE).length !== 1
+    if (this.#bootScript().text.split("\n").filter((line) => BOOT_OWNERS.includes(line)).length !== 1
       || digest(this.#private(BOOT)) !== digest(fs.readFileSync(this.#p(`${ROOT}/package/deploy/unraid/sanctuary-authority-service.sh`)))) throw new Error("Sanctuary installed boot lifecycle changed")
     return true
   }
@@ -337,9 +347,9 @@ export class SanctuaryAuthorityRootLifecycle {
     }
     this.#verifyPackage(undefined, hostExecution)
     const { text: boot, mode: bootMode } = this.#bootScript()
-    if (boot.split("\n").some((line) => line.includes("ouro-authority") && line !== BOOT_LINE)) throw new Error("Sanctuary boot ownership is ambiguous")
+    if (boot.split("\n").some((line) => line.includes("ouro-authority") && !KNOWN_BOOT_LINES.includes(line))) throw new Error("Sanctuary boot ownership is ambiguous")
     this.#write(BOOT, fs.readFileSync(this.#p(`${ROOT}/package/deploy/unraid/sanctuary-authority-service.sh`), "utf8"))
-    if (!boot.split("\n").includes(BOOT_LINE)) this.#write("/boot/config/go", `${boot}${boot.endsWith("\n") ? "" : "\n"}${BOOT_LINE}\n`, bootMode)
+    if (!boot.split("\n").some((line) => BOOT_OWNERS.includes(line))) this.#write("/boot/config/go", `${boot}${boot.endsWith("\n") ? "" : "\n"}${BOOT_LINE}\n`, bootMode)
     this.#write(`${this.#epochRoot()}/stage.json`, JSON.stringify({ packageDigest: this.#request.packageDigest }))
   }
   #epoch() {

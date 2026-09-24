@@ -3,7 +3,7 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { SanctuaryAuthorityRootLifecycle, recordSanctuaryRootLifecycleFailure, runSanctuaryAuthorityRootCli } from "../../../heart/daemon/sanctuary-authority-root-lifecycle"
+import { SANCTUARY_KEEPER_BOOT_LINES, SanctuaryAuthorityRootLifecycle, recordSanctuaryRootLifecycleFailure, runSanctuaryAuthorityRootCli } from "../../../heart/daemon/sanctuary-authority-root-lifecycle"
 import { withSessionTurnLease } from "../../../mind/session-transaction"
 import { createLogger, type LogEvent } from "../../../nerves"
 import { setRuntimeLogger } from "../../../nerves/runtime"
@@ -602,6 +602,29 @@ describe("fixed root installation effects", () => {
     alterDocker((args, value) => vaultOp(args) === "presence" ? '{"tokenPresent":"false"}' : value)
     await expect(lifecycle.effect("remove-resident-token").readback()).rejects.toThrow(/presence/u)
   })
+  it("accepts the host keeper as the boot owner and refuses two owners (D-045)", async () => {
+    const f = fixture()
+    const lifecycle = f.staged()
+    await lifecycle.effect("freeze-resident").apply()
+    const keeper = `#!/bin/sh\n${SANCTUARY_KEEPER_BOOT_LINES.supervisor}\n${SANCTUARY_KEEPER_BOOT_LINES.watchdog}\n`
+    f.write("/boot/config/go", keeper)
+    await lifecycle.effect("stage-authority").apply()
+    expect(fs.readFileSync(f.p("/boot/config/go"), "utf8")).toBe(keeper)
+    expect(await lifecycle.effect("stage-authority").readback()).toBe(lifecycle.effect("stage-authority").afterDigest)
+    f.write("/boot/config/go", `${keeper}/bin/sh /boot/config/custom/ouro-authority/start.sh --boot & # ouro-authority\n`)
+    await expect(lifecycle.effect("stage-authority").readback()).rejects.toThrow(/boot/u)
+  })
+
+  it("names the keeper boot lines exactly as the upgrade orchestrator writes them", () => {
+    const source = fs.readFileSync("deploy/unraid/sanctuary-butler-upgrade.mjs", "utf8")
+    const custom = source.match(/const AUTHORITY_CUSTOM = "([^"]+)"/u)![1]
+    const supervisor = `${custom}/gateway-supervisor.sh`
+    const watchdog = `${custom}/gateway-keeper-watchdog.sh`
+    const cron = source.match(/const WATCHDOG_CRON = `([^`]+)`/u)![1].replace("${GATEWAY_WATCHDOG}", watchdog)
+    const written = [...source.matchAll(/g \+= `([^`]+)\\n`/gu)].map((match) => match[1]!.replace("${GATEWAY_SUPERVISOR}", supervisor).replace("${WATCHDOG_CRON}", cron))
+    expect(written).toEqual([SANCTUARY_KEEPER_BOOT_LINES.supervisor, SANCTUARY_KEEPER_BOOT_LINES.watchdog])
+  })
+
   it("rejects changed boot ownership, host primitive pins, and conflicting installed bytes", async () => {
     const f = fixture()
     const lifecycle = f.staged()
