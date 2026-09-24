@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.833",
+      "changes": [
+        "Deploy: the automated Butler root-authority upgrade orchestrator (preflight/prepare/install/migrate/activate with robust auto-rollback) is committed as deploy/unraid/sanctuary-butler-upgrade.mjs. It installs host supervision that survives an Unraid reboot: the gateway is (re)started through the authority boot path (start.sh --boot), the authority socket dir Docker would create wrongly is created/repaired as 750 root:10001, a cron watchdog resurrects the supervisor, and a /boot/config/stop hook stops it all gracefully before the array stops."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.832",
       "changes": [
         "Sanctuary authority gateway: a getUpdates 409 conflict (and transient 5xx) after a gateway restart is retried internally until the previous Telegram long-poll session expires, so the tokenless resident never sees the reclaim window."
