@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.842",
+      "changes": [
+        "A2A: a verified friend's turn with the Sanctuary agent gets the same typed Sanctuary runtime the Telegram sense attaches, so the Butler's house tools work over A2A (every Unraid read had answered 'Sanctuary runtime is unavailable'). The relationship profile still decides which tools the peer may call."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.841",
       "changes": [
         "Sanctuary: the root lifecycle accepts the host keeper as the boot owner (D-045), so staging and retirement no longer refuse on a keeper-managed Unraid host; the upgrade orchestrator prunes old Butler images after a successful upgrade, keeping the live and rollback images (D-046: docker.img had reached 88%)."
