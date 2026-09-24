@@ -823,6 +823,21 @@ function pinTemplate(version) {
   ok(`DockerMan template pins ${image(version)}`)
 }
 
+// Every release pulls a ~1 GB Butler image, and Unraid's docker.img filled to 88% with
+// twenty of them (D-046). After a successful upgrade keep only the live image and the
+// authority's recorded rollback image; Docker itself refuses to remove an image in use.
+function pruneButlerImages() {
+  const activation = JSON.parse(readFileSync(`${ROOT}/activation.json`, "utf8"))
+  const keep = new Set([activation.targetImageId, activation.rollbackImageId])
+  let removed = 0
+  for (const line of docker(["images", "--no-trunc", "--format", "{{.ID}} {{.Tag}}", "ghcr.io/ourostack/ouroboros-butler"]).trim().split("\n").filter(Boolean)) {
+    const [id, tag] = line.split(" ")
+    if (keep.has(id) || !tag || tag === "<none>") continue
+    try { docker(["rmi", `ghcr.io/ourostack/ouroboros-butler:${tag}`], { stdio: ["ignore", "pipe", "pipe"] }); removed += 1 } catch { /* in use */ }
+  }
+  ok(`pruned ${removed} old Butler image(s); kept the live and rollback images`)
+}
+
 function lifecycleFailure(e) {
   const detail = [e.stderr, e.stdout].map((x) => (x ? String(x).trim() : "")).filter(Boolean).join(" | ")
   let last = ""
@@ -871,7 +886,7 @@ function upgrade(version, rehearse) {
       resumeSupervision()
       fail(`ROLLBACK FAILED: ${lifecycleFailure(e)}\nThe journal is kept; the next authority boot (or \`upgrade-rollback\`) retries it.`)
     }
-  } else pinTemplate(version)
+  } else { pinTemplate(version); pruneButlerImages() }
   resumeSupervision()
   say("preservation")
   docker(["inspect", "jellyfin", "--format", "{{.Id}}|{{.Image}}|{{.RestartCount}}|{{.State.StartedAt}}"]).trim() === jellyfinBefore ? ok("jellyfin unchanged") : fail("JELLYFIN CHANGED")
