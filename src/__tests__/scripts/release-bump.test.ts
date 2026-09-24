@@ -164,6 +164,7 @@ describe("release-bump helper", () => {
         root,
         version: "0.1.0-alpha.588",
         changes: ["real release note"],
+        replace: true,
       })
 
       const changelog = readJson(path.join(root, "changelog.json"))
@@ -172,6 +173,16 @@ describe("release-bump helper", () => {
         version: "0.1.0-alpha.588",
         changes: ["real release note"],
       })
+
+      bumpReleaseVersion({ root, version: "0.1.0-alpha.588", changes: ["follow-up fix", "real release note"] })
+      expect(readJson(path.join(root, "changelog.json")).versions[0]).toEqual({
+        version: "0.1.0-alpha.588",
+        changes: ["real release note", "follow-up fix"],
+      })
+
+      writeJson(path.join(root, "changelog.json"), { versions: [{ version: "0.1.0-alpha.588" }] })
+      bumpReleaseVersion({ root, version: "0.1.0-alpha.588", changes: ["note on an entry without changes"] })
+      expect(readJson(path.join(root, "changelog.json")).versions[0].changes).toEqual(["note on an entry without changes"])
     } finally {
       fs.rmSync(root, { recursive: true, force: true })
     }
@@ -250,6 +261,8 @@ describe("release-bump helper", () => {
       root: process.cwd(),
       version: "0.1.0-alpha.588",
       changes: ["first", "second"],
+      replace: false,
     })
+    expect(parseArgs(["--version", "0.1.0-alpha.588", "--replace", "--change", "only"]).replace).toBe(true)
   })
 })

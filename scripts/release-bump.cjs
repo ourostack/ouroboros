@@ -22,6 +22,7 @@ function parseArgs(argv) {
     root: process.cwd(),
     version: "",
     changes: [],
+    replace: false,
   }
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -38,6 +39,10 @@ function parseArgs(argv) {
       if (!next) throw new Error("--version requires a value")
       options.version = next
       index += 1
+      continue
+    }
+    if (arg === "--replace") {
+      options.replace = true
       continue
     }
     if (arg === "--change") {
@@ -78,7 +83,10 @@ function assertValidInput(input) {
   return changes
 }
 
-function updateChangelog(changelog, version, changes) {
+// Re-running the bump for the top version APPENDS its new change lines (a follow-up
+// fix commit needs its own line, and silently dropping the earlier ones was D-042).
+// --replace rewrites the entry instead, e.g. to swap out a placeholder.
+function updateChangelog(changelog, version, changes, replace = false) {
   if (!Array.isArray(changelog.versions)) {
     throw new Error("changelog.json must contain a versions array")
   }
@@ -88,11 +96,11 @@ function updateChangelog(changelog, version, changes) {
     throw new Error(`changelog entry for ${version} already exists below the top entry`)
   }
 
-  const nextEntry = { version, changes }
   if (existingIndex === 0) {
-    changelog.versions[0] = nextEntry
+    const existing = replace || !Array.isArray(changelog.versions[0].changes) ? [] : changelog.versions[0].changes
+    changelog.versions[0] = { version, changes: [...existing, ...changes.filter((change) => !existing.includes(change))] }
   } else {
-    changelog.versions.unshift(nextEntry)
+    changelog.versions.unshift({ version, changes })
   }
 }
 
@@ -149,7 +157,7 @@ function bumpReleaseVersion(input) {
   shrinkwrap.packages[""].version = version
   wrapperPackageJson.version = version
   sanctuaryBundleMeta.runtimeVersion = version
-  updateChangelog(changelog, version, changes)
+  updateChangelog(changelog, version, changes, input.replace === true)
 
   writeJson(packageJsonPath, packageJson)
   writeJson(packageLockPath, packageLock)
