@@ -12,6 +12,9 @@ import { FileA2APinStore } from "./pin-store"
 import { FileA2ASeenLedger } from "./seen-ledger"
 import { makeDidResolution } from "./did-resolution"
 import { receiveInboundShare, type InboundShareDeps } from "./inbound-share"
+import { sealChatMessage } from "./sealed-chat"
+import { createRelationshipAuthorizationEvaluator, loadRelationshipCapabilityRegistry, type RelationshipAuthorizationEvaluator } from "../repertoire/relationship-authorization"
+import type { FriendRecord } from "@ouro.bot/friends"
 import { isMissionResultDataPart, receiveInboundMissionResult } from "./mission-result-wire"
 import { delegationStoresFor } from "./delegation-stores"
 import { FileA2ATaskStore } from "./task-store"
@@ -28,6 +31,8 @@ export interface A2ATurnRunnerInput {
   peerName: string
   sessionKey: string
   message: string
+  /** For a verified friend's chat: the relationship that scopes this turn's tools. */
+  relationshipAuthorization?: RelationshipAuthorizationEvaluator
 }
 
 export interface A2ATurnRunnerOutput {
@@ -161,10 +166,24 @@ async function defaultTurnRunner(input: A2ATurnRunnerInput): Promise<A2ATurnRunn
       externalId: input.peerAgentId,
       displayName: input.peerName,
     },
+    ...(input.relationshipAuthorization ? { toolContext: { relationshipAuthorization: input.relationshipAuthorization } } : {}),
   })
   return { response: result.response }
 }
 /* v8 ignore stop */
+
+/** The relationship that scopes a verified friend's A2A chat turn, from the agent's
+ * own capability registry. No registry (or an invalid one) means no relationship,
+ * which Sanctuary's tool selection turns into "no tools" for a remote turn. */
+export function a2aChatRelationship(agentRoot: string, friend: FriendRecord, requestId: string): RelationshipAuthorizationEvaluator | undefined {
+  let registry
+  try {
+    registry = loadRelationshipCapabilityRegistry(agentRoot)
+  } catch {
+    return undefined
+  }
+  return createRelationshipAuthorizationEvaluator({ friend, registry, requestId, requestPhase: "inbound" })
+}
 
 function accessTokenHash(accessToken: string): string {
   return createHash("sha256").update(accessToken).digest("hex")
@@ -234,9 +253,16 @@ function taskA2AMetadata(task: A2ATask): Record<string, unknown> {
   return a2a as Record<string, unknown>
 }
 
+/** A friends sealed DataPart: opaque ciphertext addressed to one DID, so it is safe
+ * to expose to the task holder (a sealed chat reply travels this way). */
+function isSealedFriendsPart(part: A2AMessage["parts"][number]): boolean {
+  const data = part.data
+  return part.kind === "data" && !!data && typeof data === "object" && typeof data.sealed === "object" && data.sealed !== null && typeof data.recipientDid === "string"
+}
+
 function publicMessage(message: A2AMessage, style: A2AResponseStyle): A2AMessage {
   const parts = message.parts
-    .filter((part) => part && typeof part === "object" && typeof part.text === "string")
+    .filter((part) => part && typeof part === "object" && (typeof part.text === "string" || isSealedFriendsPart(part)))
     .map((part) => style === "legacy" ? { ...part, kind: part.kind ?? "text" } : part)
   if (style === "latest") return { ...message, kind: "message", parts }
   return {
@@ -302,20 +328,23 @@ function taskFor(input: {
   inbound: A2AMessage
   state: A2ATask["status"]["state"]
   response?: string
+  /** Replaces the plaintext response with these parts (a sealed chat reply). */
+  responseParts?: A2AMessage["parts"]
   clientTaskId?: string
   previousTask?: A2ATask
 }): A2ATask {
   const now = new Date().toISOString()
   const history = [...(input.previousTask?.history ?? []), input.inbound]
   const previousA2A = input.previousTask ? taskA2AMetadata(input.previousTask) : {}
-  const responseMessage: A2AMessage | undefined = input.response
+  const responseParts = input.responseParts ?? (input.response ? [{ text: input.response }] : undefined)
+  const responseMessage: A2AMessage | undefined = responseParts
       ? {
         kind: "message",
         role: "ROLE_AGENT",
         taskId: input.taskId,
         contextId: input.contextId,
         messageId: randomUUID(),
-        parts: [{ text: input.response }],
+        parts: responseParts,
       }
     : undefined
   if (responseMessage) history.push(responseMessage)
@@ -460,6 +489,7 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
         let verifiedPeerAgentId: string | undefined
         let verifiedPeerName: string | undefined
         let verifiedShareText: string | undefined
+        let verifiedChat: { did: string; friend?: FriendRecord } | undefined
         if (inbound && inboundShareDeps && messageHasDataPart(inbound)) {
           const bridged = await receiveInboundShare(inbound, inboundShareDeps)
           if (bridged.outcome === "rejected") {
@@ -473,7 +503,15 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
           if (bridged.outcome === "completed") {
             verifiedPeerAgentId = bridged.verifiedDid
             verifiedPeerName = bridged.verifiedDid
-            verifiedShareText = `[a2a] received ${bridged.friendsKind} (${bridged.status}) from ${bridged.verifiedDid}`
+            if (bridged.message) {
+              // Authenticated chat: the signed, sealed text IS the turn.
+              verifiedShareText = bridged.message.text
+              /* v8 ignore next -- a completed chat always has a friend record: an unknown DID reads as stranger and the message is refused @preserve */
+              verifiedPeerName = bridged.friend?.name ?? bridged.verifiedDid
+              verifiedChat = { did: bridged.verifiedDid, friend: bridged.friend }
+            } else {
+              verifiedShareText = `[a2a] received ${bridged.friendsKind} (${bridged.status}) from ${bridged.verifiedDid}`
+            }
           }
         }
 
@@ -509,14 +547,37 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
         const tokenScope = accessTokenScope(accessToken)
         const clientTaskId = continuationTask ? taskA2AMetadata(continuationTask).clientTaskId as string | undefined : inbound.taskId
         taskStore.put(taskFor({ taskId, accessToken, contextId, inbound, state: "TASK_STATE_WORKING", clientTaskId, previousTask: continuationTask ?? undefined }), tokenScope)
+        const relationshipAuthorization = verifiedChat?.friend
+          ? a2aChatRelationship(agentRoot, verifiedChat.friend, inbound.messageId ?? taskId)
+          : undefined
         const turn = await turnRunner({
           agentName: options.agentName,
           peerAgentId,
           peerName,
           sessionKey: contextId,
           message: text,
+          ...(relationshipAuthorization ? { relationshipAuthorization } : {}),
         })
-        const task = taskFor({ taskId, accessToken, contextId, inbound, state: "TASK_STATE_COMPLETED", response: turn.response, clientTaskId, previousTask: continuationTask ?? undefined })
+        let responseParts: A2AMessage["parts"] | undefined
+        if (verifiedChat) {
+          // A verified chat's reply is sealed to the sender and stored sealed, so neither
+          // the wire nor a later GetTask ever carries the plaintext.
+          const pinned = inboundShareDeps!.pinStore.get(verifiedChat.did)
+          /* v8 ignore next 4 -- receiveShare pins the verified sender before it reports a completed chat; refuse rather than reply in plaintext @preserve */
+          if (!pinned) {
+            writeJson(res, 200, errorResponse(rpc.id, -32003, "A2A chat reply cannot be sealed to the sender"))
+            return
+          }
+          responseParts = sealChatMessage({
+            sodium: inboundShareDeps!.sodium,
+            from: options.identity!,
+            recipientDid: verifiedChat.did,
+            recipientEd25519Pub: pinned.ed25519Pub,
+            text: turn.response,
+            conversationId: contextId,
+          }).parts
+        }
+        const task = taskFor({ taskId, accessToken, contextId, inbound, state: "TASK_STATE_COMPLETED", response: turn.response, responseParts, clientTaskId, previousTask: continuationTask ?? undefined })
         taskStore.put(task, tokenScope)
         writeJson(res, 200, jsonResponse(rpc.id, publicTask(task, accessToken, responseStyle, true)))
         return
