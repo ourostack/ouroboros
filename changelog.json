@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.832",
+      "changes": [
+        "Sanctuary authority gateway: a getUpdates 409 conflict (and transient 5xx) after a gateway restart is retried internally until the previous Telegram long-poll session expires, so the tokenless resident never sees the reclaim window."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.831",
       "changes": [
         "Sanctuary: the Telegram long-poll survives transient transport failures — a dropped authority socket or a Telegram API error is retried with exponential backoff instead of exiting the sense process, so a gateway restart no longer crash-loops the resident. Non-transport (dispatch/durable-audit) failures still surface."
