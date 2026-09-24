@@ -3,7 +3,7 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { verifySanctuaryAuthorityInstallation } from "../../../heart/daemon/sanctuary-authority-installation"
+import { SANCTUARY_CGROUP_KEEP, sanctuaryCgroupChildren, verifySanctuaryAuthorityInstallation } from "../../../heart/daemon/sanctuary-authority-installation"
 vi.mock("node:fs", async (original) => ({ ...await original<typeof fs>() }))
 
 const roots: string[] = []
@@ -117,5 +117,17 @@ describe("root authority installation prerequisites", () => {
       f.options.manifestDigest = hash(bytes)
       expect(() => verifySanctuaryAuthorityInstallation(f.options)).toThrow()
     }
+  })
+})
+
+describe("authority cgroup children", () => {
+  it("lists execution cgroups and ignores the keep child and control files", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "authority-cgroup-"))
+    try {
+      fs.mkdirSync(path.join(root, SANCTUARY_CGROUP_KEEP))
+      fs.mkdirSync(path.join(root, "permit-a"))
+      fs.writeFileSync(path.join(root, "cgroup.procs"), "")
+      expect(sanctuaryCgroupChildren(root)).toEqual(["permit-a"])
+    } finally { fs.rmSync(root, { recursive: true, force: true }) }
   })
 })

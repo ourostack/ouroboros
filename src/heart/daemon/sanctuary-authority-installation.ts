@@ -53,6 +53,18 @@ function readOwned(filePath: string, uid: number, gid: number, mode: number): Bu
   }
 }
 
+/**
+ * Unraid's cgroup2-unraid removes every top-level cgroup that reports `populated 0`,
+ * and the kernel refuses to remove a cgroup that has child cgroups. So the authority
+ * keeps one permanent empty child, and every reader of its cgroup ignores it (D-026).
+ */
+export const SANCTUARY_CGROUP_KEEP = "ouro-keep"
+
+/** The authority cgroup's execution children: directories other than the keep child. */
+export function sanctuaryCgroupChildren(cgroupRoot: string): string[] {
+  return fs.readdirSync(cgroupRoot).filter((name) => name !== SANCTUARY_CGROUP_KEEP && fs.lstatSync(path.join(cgroupRoot, name)).isDirectory())
+}
+
 export function verifySanctuaryAuthorityInstallation(input: Installation): { packageDigest: string; controllers: string[] } {
   const { expectedUid: uid, expectedGid: gid } = input
   for (const root of [input.packageRoot, input.stateRoot, input.stagingRoot, input.cgroupRoot]) directory(root, uid, gid, 0o700)

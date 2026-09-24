@@ -20,7 +20,7 @@ import { SocketSanctuaryTelegramAuthorityClient } from "../../../heart/daemon/sa
 
 const roots: string[] = []
 const installation = vi.hoisted(() => ({ verify: vi.fn(), epoch: vi.fn() }))
-vi.mock("../../../heart/daemon/sanctuary-authority-installation", () => ({ verifySanctuaryAuthorityInstallation: installation.verify }))
+vi.mock("../../../heart/daemon/sanctuary-authority-installation", async (original) => ({ ...await original<typeof import("../../../heart/daemon/sanctuary-authority-installation")>(), verifySanctuaryAuthorityInstallation: installation.verify }))
 vi.mock("../../../heart/daemon/sanctuary-authority-epoch", () => ({ readSanctuaryAuthorityEpoch: installation.epoch }))
 vi.mock("node:fs", async (original) => ({ ...await original<typeof fs>() }))
 

@@ -3,6 +3,7 @@ import { spawn } from "node:child_process"
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { emitNervesEvent } from "../../nerves/runtime"
+import { sanctuaryCgroupChildren } from "./sanctuary-authority-installation"
 
 import type {
   HostSupervisor,
@@ -250,9 +251,8 @@ export class DetachedSanctuaryHostSupervisor implements HostSupervisor {
         throw new Error("Sanctuary host supervisor state is unmatched")
       }
     }
-    for (const permitId of fs.readdirSync(this.#options.cgroupRoot)) {
+    for (const permitId of sanctuaryCgroupChildren(this.#options.cgroupRoot)) {
       const cgroupPath = path.join(this.#options.cgroupRoot, permitId)
-      if (!fs.lstatSync(cgroupPath).isDirectory()) continue
       if (!PERMIT_ID.test(permitId)) throw new Error("Sanctuary host cgroup entry is invalid")
       if (!known.has(permitId) && !await this.#reconcileCgroup(cgroupPath)) {
         throw new Error("Sanctuary orphan cgroup cleanup is unproven")

@@ -1327,3 +1327,31 @@ describe("root lifecycle failure detail", () => {
     expect(recordSanctuaryRootLifecycleFailure(new Error("x"), path.join(directory, "missing", "log"))).toBe("")
   })
 })
+
+describe("authority cgroup keep child (D-026)", () => {
+  const keep = "/sys/fs/cgroup/ouro-authority/ouro-keep"
+  it("creates the keep child at boot and retries when the reaper races a fresh cgroup", async () => {
+    const f = await installedStoppedGatewayFixture()
+    fs.rmSync(f.p(keep), { recursive: true, force: true })
+    const mkdir = fs.mkdirSync
+    let raced = false
+    vi.spyOn(fs, "mkdirSync").mockImplementation(((file, options) => {
+      if (!raced && String(file) === f.p(keep)) { raced = true; throw Object.assign(new Error("reaped"), { code: "ENOENT" }) }
+      return mkdir(file, options)
+    }) as typeof fs.mkdirSync)
+    await expect(f.lifecycle.boot()).resolves.toBe(true)
+    expect(raced).toBe(true)
+    expect(fs.statSync(f.p(keep)).isDirectory()).toBe(true)
+  })
+
+  it.each([["ENOENT", /reaped/u], ["EACCES", /denied/u]])("stops after repeated %s failures instead of looping", async (code, error) => {
+    const f = await installedStoppedGatewayFixture()
+    fs.rmSync(f.p(keep), { recursive: true, force: true })
+    const mkdir = fs.mkdirSync
+    vi.spyOn(fs, "mkdirSync").mockImplementation(((file, options) => {
+      if (String(file) === f.p(keep)) throw Object.assign(new Error(code === "ENOENT" ? "reaped" : "denied"), { code })
+      return mkdir(file, options)
+    }) as typeof fs.mkdirSync)
+    await expect(f.lifecycle.boot()).rejects.toThrow(error)
+  })
+})

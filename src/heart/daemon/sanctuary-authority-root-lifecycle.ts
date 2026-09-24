@@ -3,7 +3,7 @@ import { createHash, createPrivateKey } from "node:crypto"
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { FileTelegramOffsetStore } from "../../senses/telegram-client"
-import { verifySanctuaryAuthorityInstallation } from "./sanctuary-authority-installation"
+import { SANCTUARY_CGROUP_KEEP, sanctuaryCgroupChildren, verifySanctuaryAuthorityInstallation } from "./sanctuary-authority-installation"
 import { prepareSanctuaryAuthorityEpoch, readSanctuaryAuthorityEpoch, rebindSanctuaryAuthorityEpochPackage, retireSanctuaryAuthorityEpoch, releaseSanctuaryAuthorityToken } from "./sanctuary-authority-epoch"
 import { FileSanctuaryTelegramAuthorityGateway, sanctuaryTelegramAuthorityStatePath } from "./sanctuary-telegram-authority-gateway"
 import type { SanctuaryTelegramAuthorityConfig } from "./sanctuary-telegram-authority-entry"
@@ -137,7 +137,7 @@ export class SanctuaryAuthorityRootLifecycle {
         if (fs.readdirSync(this.#p(directory)).length !== 0) throw new Error("Resolve pending execution state before re-pinning")
       }
     }
-    if (fs.readdirSync(this.#p(CGROUP)).some(name => fs.lstatSync(this.#p(`${CGROUP}/${name}`)).isDirectory())) throw new Error("Resolve pending cgroups before re-pinning")
+    if (sanctuaryCgroupChildren(this.#p(CGROUP)).length !== 0) throw new Error("Resolve pending cgroups before re-pinning")
     this.#verifyPrimitive("/usr/bin/prlimit", prlimitDigest)
     this.#verifyPrimitive("/usr/bin/setsid", setsidDigest)
     const currentRequest = JSON.parse(this.#private(`${ROOT}/request.json`))
@@ -263,8 +263,23 @@ export class SanctuaryAuthorityRootLifecycle {
       || digest(this.#private(BOOT)) !== digest(fs.readFileSync(this.#p(`${ROOT}/package/deploy/unraid/sanctuary-authority-service.sh`)))) throw new Error("Sanctuary installed boot lifecycle changed")
     return true
   }
+  /** Create the authority cgroup with its keep child. The reaper can remove a freshly
+   * made (still empty) cgroup before the child exists, so retry that race a few times. */
+  #cgroup(): void {
+    const keep = this.#p(`${CGROUP}/${SANCTUARY_CGROUP_KEEP}`)
+    for (let attempt = 1; !fs.existsSync(keep); attempt += 1) {
+      try {
+        this.#directory(CGROUP)
+        fs.mkdirSync(keep, { mode: 0o700 })
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT" || attempt >= 5) throw error
+      }
+    }
+    this.#directory(CGROUP)
+  }
   #runtimeDirectories(): void {
-    for (const directory of [this.#epochRoot(), STAGING, CGROUP]) this.#directory(directory)
+    for (const directory of [this.#epochRoot(), STAGING]) this.#directory(directory)
+    this.#cgroup()
     this.#directory(SOCKET, 0o750, this.#socketGid)
     // Add only the required controllers; never replace another owner's controls.
     for (const root of ["/sys/fs/cgroup", CGROUP]) {
@@ -471,7 +486,7 @@ export class SanctuaryAuthorityRootLifecycle {
     const epoch = this.#epoch()
     if (proof.schemaVersion !== 1 || proof.keyId !== epoch.epochId || proof.publicKeyDigest !== epoch.publicKeyDigest || proof.quiescent !== true
       || !Number.isSafeInteger(proof.cursor) || proof.cursor < epoch.predecessorCursor
-      || fs.readdirSync(this.#p(CGROUP)).some((entry) => fs.lstatSync(this.#p(`${CGROUP}/${entry}`)).isDirectory())) throw new Error("Sanctuary gateway retirement cleanup is unproven")
+      || sanctuaryCgroupChildren(this.#p(CGROUP)).length !== 0) throw new Error("Sanctuary gateway retirement cleanup is unproven")
     return true
   }
   async #retireProcess(): Promise<void> {
@@ -745,6 +760,7 @@ export class SanctuaryAuthorityRootLifecycle {
 
   /** Start the gateway, then the resident, and prove both. */
   async #startUpgraded(): Promise<void> {
+    this.#runtimeDirectories()
     await this.#startGateway()
     this.#docker(["start", "ouro-butler"])
     await this.#wait(async () => this.#target().State.Running && this.#target().State.Health?.Status === "healthy" && await this.#ready(), 300_000)
