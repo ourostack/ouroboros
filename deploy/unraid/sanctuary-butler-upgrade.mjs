@@ -446,17 +446,23 @@ R=/mnt/user/appdata/ouro-authority
 GW=$R/package/dist/heart/daemon/sanctuary-telegram-authority-entry.js
 CFG=$R/active.json
 LOG=/var/log/ouro-gateway.log
+# Only an authority from 0.1.0-alpha.837 on understands the keep child; an older gateway
+# refuses to start beside an unknown cgroup (a rollback to 830 hit exactly that). So the
+# keep child exists only while the installed package supports it; otherwise it is removed
+# and the reaper stays paused, the pre-837 behaviour.
+keep_supported() { grep -q ouro-keep "$R/package/dist/heart/daemon/sanctuary-authority-installation.js" 2>/dev/null; }
 reaper_policy() {
   P=$(cat /run/cgroup2-unraid.pid 2>/dev/null) || return 0
   [ -n "$P" ] || return 0
-  if [ -d "$CG/ouro-keep" ]; then kill -CONT "$P" 2>/dev/null; return 0; fi
+  if keep_supported && [ -d "$CG/ouro-keep" ]; then kill -CONT "$P" 2>/dev/null; return 0; fi
   S=$(ps -o stat= -p "$P" 2>/dev/null | tr -d ' ')
   case "$S" in T*) : ;; *) kill -STOP "$P" 2>/dev/null ;; esac
 }
 ensure_cg() {
   [ -d "$CG" ] || { mkdir -m 700 "$CG" 2>/dev/null; chown 0:0 "$CG" 2>/dev/null
     for c in cpu memory pids; do echo "+$c" > "$CG/cgroup.subtree_control" 2>/dev/null; done; }
-  [ -d "$CG/ouro-keep" ] || mkdir -m 700 "$CG/ouro-keep" 2>/dev/null
+  if keep_supported; then [ -d "$CG/ouro-keep" ] || mkdir -m 700 "$CG/ouro-keep" 2>/dev/null
+  else [ -d "$CG/ouro-keep" ] && rmdir "$CG/ouro-keep" 2>/dev/null; fi
 }
 ensure_sock() {
   # Docker autostarts the resident before us and auto-creates its missing bind
@@ -480,10 +486,11 @@ start_gw() {
 }
 # An in-place upgrade pauses us with a flag; a stale flag (> 30 min) is ignored.
 maintenance() { [ -n "$(find /run/ouro-authority-maintenance -mmin -30 2>/dev/null)" ]; }
-ensure_cg; reaper_policy; ensure_sock
+reaper_policy; ensure_cg; ensure_sock
 last_res=0
 while true; do
   if maintenance; then sleep 15; continue; fi
+  reaper_policy
   ensure_cg
   reaper_policy
   ensure_sock

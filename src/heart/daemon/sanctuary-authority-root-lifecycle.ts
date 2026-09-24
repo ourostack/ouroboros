@@ -22,6 +22,10 @@ const CGROUP = "/sys/fs/cgroup/ouro-authority"
 const BOOT = "/boot/config/custom/ouro-authority/start.sh"
 const BOOT_LINE = `/bin/sh ${BOOT} --boot & # ouro-authority`
 const DIGEST = /^sha256:[a-f0-9]{64}$/u
+// The gateway verifies every pinned package file before it reports ready. With a cold
+// page cache on Unraid's array that takes minutes, so readiness gets a generous budget
+// (a 120 s budget failed a real rollback on 2026-09-24).
+const GATEWAY_READY_TIMEOUT_MS = 900_000
 const TEMPLATE_JOURNAL = "/boot/config/custom/ouro-butler/docker-man-template-transaction.json"
 // In-place upgrade of an installed authority: same epoch (token, issuer, cursor,
 // gateway state), new reviewed package and resident image. Every root record it
@@ -44,6 +48,8 @@ interface UpgradeJournal {
   from: UpgradeSide & { rollbackImageId: string }
   to: UpgradeSide
   completed: string[]
+  /** Set once a rollback starts: from then on only a rollback may continue this journal. */
+  rollingBack?: true
 }
 type LifecycleOptions = { prefix?: string; expectedUid?: number; expectedGid?: number; socketGroupId?: number }
 const digest = (value: string | Buffer) => `sha256:${createHash("sha256").update(value).digest("hex")}`
@@ -267,6 +273,14 @@ export class SanctuaryAuthorityRootLifecycle {
    * made (still empty) cgroup before the child exists, so retry that race a few times. */
   #cgroup(): void {
     const keep = this.#p(`${CGROUP}/${SANCTUARY_CGROUP_KEEP}`)
+    if (!this.#keepSupported()) {
+      // A package from before the keep child refuses an unknown child cgroup and relies on
+      // the host keeper holding Unraid's reaper paused (a rollback to 830 hit exactly that).
+      this.#freezeUnraidReaper()
+      if (fs.existsSync(keep)) fs.rmdirSync(keep)
+      this.#directory(CGROUP)
+      return
+    }
     for (let attempt = 1; !fs.existsSync(keep); attempt += 1) {
       try {
         this.#directory(CGROUP)
@@ -276,6 +290,18 @@ export class SanctuaryAuthorityRootLifecycle {
       }
     }
     this.#directory(CGROUP)
+  }
+  /** Whether the installed package's gateway understands the keep child (0.1.0-alpha.837+). */
+  #keepSupported(): boolean {
+    const installation = this.#p(`${ROOT}/package/dist/heart/daemon/sanctuary-authority-installation.js`)
+    return fs.existsSync(installation) && fs.readFileSync(installation, "utf8").includes(SANCTUARY_CGROUP_KEEP)
+  }
+  #freezeUnraidReaper(): void {
+    const pidFile = this.#p("/run/cgroup2-unraid.pid")
+    if (!fs.existsSync(pidFile)) return
+    const pid = Number(fs.readFileSync(pidFile, "utf8").trim())
+    if (!Number.isSafeInteger(pid) || pid <= 0) return
+    try { process.kill(pid, "SIGSTOP") } catch { /* not running: nothing to hold */ }
   }
   #runtimeDirectories(): void {
     for (const directory of [this.#epochRoot(), STAGING]) this.#directory(directory)
@@ -440,8 +466,8 @@ export class SanctuaryAuthorityRootLifecycle {
       await this.#wait(async () => {
         if (failed) throw new Error("Sanctuary gateway launch failed")
         return this.#ready()
-      })
-    } else await this.#wait(() => this.#ready())
+      }, GATEWAY_READY_TIMEOUT_MS)
+    } else await this.#wait(() => this.#ready(), GATEWAY_READY_TIMEOUT_MS)
   }
   #target(): Container {
     const target = this.#containers().find((container) => container.Name === "/ouro-butler")
@@ -585,6 +611,9 @@ export class SanctuaryAuthorityRootLifecycle {
       || (input.failAfter !== undefined && !(SANCTUARY_UPGRADE_STEPS as readonly string[]).includes(input.failAfter))) throw new Error("Sanctuary upgrade request is invalid")
     if (fs.existsSync(this.#p(TEMPLATE_JOURNAL))) throw new Error("Finish the pending installation before upgrading")
     let journal = fs.existsSync(this.#p(UPGRADE)) ? this.#upgradeJournal() : this.#beginUpgrade(input)
+    // A rollback that stopped partway has already restored some records; resuming
+    // forward from its step list would act on a predecessor that the list calls switched.
+    if (journal.rollingBack) throw new Error("A Sanctuary upgrade rollback is pending; run upgrade-rollback to finish it")
     if (journal.to.imageId !== input.targetImageId || journal.to.imageReference !== input.imageReference) throw new Error("A different Sanctuary upgrade is pending; roll it back first")
     const target = () => new SanctuaryAuthorityRootLifecycle({ targetImageId: journal.to.imageId, rollbackImageId: journal.from.imageId }, this.#options)
     const steps: Record<(typeof SANCTUARY_UPGRADE_STEPS)[number], () => void | Promise<void>> = {
@@ -615,6 +644,10 @@ export class SanctuaryAuthorityRootLifecycle {
   async rollbackUpgrade(): Promise<boolean> {
     if (!fs.existsSync(this.#p(UPGRADE))) return false
     let journal = this.#upgradeJournal()
+    if (!journal.rollingBack) {
+      journal = { ...journal, rollingBack: true }
+      this.#write(UPGRADE, JSON.stringify(journal))
+    }
     await this.#halt()
     if (journal.completed.includes("switch")) {
       // A migration interrupted before the journal recorded it may or may not be
@@ -651,6 +684,7 @@ export class SanctuaryAuthorityRootLifecycle {
     const sides = [journal?.from, journal?.to]
     if (!journal || journal.schemaVersion !== 1 || journal.epochId !== this.#request.epochId || !Array.isArray(journal.completed)
       || !journal.completed.every((step) => (SANCTUARY_UPGRADE_STEPS as readonly string[]).includes(step))
+      || (journal.rollingBack !== undefined && journal.rollingBack !== true)
       || !sides.every((side) => side && DIGEST.test(side.imageId) && DIGEST.test(side.packageDigest) && IMAGE_REFERENCE.test(side.imageReference))
       || !DIGEST.test(journal.from.rollbackImageId)) throw new Error("Sanctuary upgrade journal is invalid")
     return journal

@@ -671,7 +671,9 @@ describe("fixed root installation effects", () => {
       host.spawn.mockImplementation(() => ({ unref: vi.fn(), once: vi.fn() }))
       const pending = f.lifecycle.effect("start-gateway").apply()
       const failure = expect(pending).rejects.toThrow(/timed out/u)
-      await vi.advanceTimersByTimeAsync(120_100)
+      // Readiness has a 15-minute budget: a cold Unraid page cache makes the gateway's
+      // package verification take minutes.
+      await vi.advanceTimersByTimeAsync(900_100)
       await failure
       expect(host.exec.mock.calls.some((call) => call[1][0] === "start")).toBe(false)
     })
@@ -1071,9 +1073,13 @@ describe("in-place authority upgrade", () => {
     "dist/heart/daemon/sanctuary-telegram-authority-entry.js",
     "dist/heart/daemon/sanctuary-host-supervisor-entry.js",
     "dist/heart/daemon/sanctuary-authority-root-lifecycle.js",
+    "dist/heart/daemon/sanctuary-authority-installation.js",
     "deploy/unraid/sanctuary-host-launcher.sh",
     "deploy/unraid/sanctuary-authority-service.sh",
   ]
+  // The upgraded package understands the cgroup keep child (0.1.0-alpha.837+); the
+  // fixture's installed predecessor package does not.
+  const next = (name: string) => `next ${name} ouro-keep`
   const steps = ["stop", "switch", "resident", "migrate", "start"] as const
   const records = ["request.json", "package-manifest.json", "active.json", "activation.json", "epochs/fixture-epoch/migration.json", "epochs/fixture-epoch/stage.json", "epochs/fixture-epoch/configured.json"]
   async function upgradeFixture() {
@@ -1116,9 +1122,9 @@ describe("in-place authority upgrade", () => {
     })
     vi.spyOn(process, "kill").mockImplementation(() => { fs.rmSync(f.p("/proc/45678"), { recursive: true, force: true }); return true })
     const files = Object.fromEntries(programs.map((name) => {
-      f.write(`${rootPath}/incoming-package/${name}`, `next ${name}`)
+      f.write(`${rootPath}/incoming-package/${name}`, next(name))
       fs.chmodSync(f.p(`${rootPath}/incoming-package/${name}`), 0o700)
-      return [name, { digest: digest(`next ${name}`), mode: 0o700 }]
+      return [name, { digest: digest(next(name)), mode: 0o700 }]
     }))
     const manifest = JSON.stringify({ schemaVersion: 1, files })
     const nextRequest = { ...f.request, packageDigest: digest(manifest) }
@@ -1126,7 +1132,7 @@ describe("in-place authority upgrade", () => {
     f.write(`${rootPath}/incoming-request.json`, nextRequest)
     const snapshot = () => ({
       records: records.map((name) => fs.readFileSync(f.p(`${rootPath}/${name}`), "utf8")),
-      packages: programs.map((name) => fs.readFileSync(f.p(`${rootPath}/package/${name}`), "utf8")),
+      packages: programs.map((name) => fs.existsSync(f.p(`${rootPath}/package/${name}`)) ? fs.readFileSync(f.p(`${rootPath}/package/${name}`), "utf8") : null),
       boot: fs.readFileSync(f.p("/boot/config/custom/ouro-authority/start.sh"), "utf8"),
       epoch: readEpoch(f),
     })
@@ -1147,8 +1153,8 @@ describe("in-place authority upgrade", () => {
     expect(JSON.parse(fs.readFileSync(f.p(`${rootPath}/request.json`), "utf8"))).toEqual(f.nextRequest)
     expect(JSON.parse(fs.readFileSync(f.p(`${rootPath}/active.json`), "utf8")).packageManifestDigest).toBe(f.nextRequest.packageDigest)
     expect(readEpoch(f)).toEqual({ ...before.epoch, packageDigest: f.nextRequest.packageDigest })
-    expect(programs.map((name) => fs.readFileSync(f.p(`${rootPath}/package/${name}`), "utf8"))).toEqual(programs.map((name) => `next ${name}`))
-    expect(fs.readFileSync(f.p("/boot/config/custom/ouro-authority/start.sh"), "utf8")).toBe("next deploy/unraid/sanctuary-authority-service.sh")
+    expect(programs.map((name) => fs.readFileSync(f.p(`${rootPath}/package/${name}`), "utf8"))).toEqual(programs.map(next))
+    expect(fs.readFileSync(f.p("/boot/config/custom/ouro-authority/start.sh"), "utf8")).toBe(next("deploy/unraid/sanctuary-authority-service.sh"))
     expect(f.resident).toMatchObject({ image: digest("next-image"), reference: nextReference, running: true })
     expect(f.bundleOps).toEqual(["migrate", "commit"])
     for (const leftover of ["upgrade.json", "upgrade-previous", "package-next", "incoming-token"]) expect(fs.existsSync(f.p(`${rootPath}/${leftover}`))).toBe(false)
@@ -1178,6 +1184,26 @@ describe("in-place authority upgrade", () => {
     await expect(f.lifecycleFor().upgrade({ targetImageId: digest("next-image"), imageReference: nextReference, failAfter: "switch" })).rejects.toThrow(/switch/u)
     await f.lifecycleFor().upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })
     expect(readEpoch(f).packageDigest).toBe(f.nextRequest.packageDigest)
+  })
+
+  it("lets only a rollback continue a rollback that stopped partway", async () => {
+    const f = await upgradeFixture()
+    const before = f.snapshot()
+    await expect(f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference, failAfter: "start" })).rejects.toThrow(/start/u)
+    host.cursor.mockRejectedValueOnce(new Error("gateway not ready yet"))
+    await expect(f.lifecycleFor().rollbackUpgrade()).rejects.toThrow(/not ready/u)
+    expect(JSON.parse(fs.readFileSync(f.p(`${rootPath}/upgrade.json`), "utf8")).rollingBack).toBe(true)
+    await expect(f.lifecycleFor().upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })).rejects.toThrow(/rollback is pending/u)
+    await expect(f.lifecycleFor().rollbackUpgrade()).resolves.toBe(true)
+    expect(f.snapshot()).toEqual(before)
+  })
+
+  it("refuses a journal whose rollback marker is not the literal true", async () => {
+    const f = await upgradeFixture()
+    await expect(f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference, failAfter: "stop" })).rejects.toThrow(/stop/u)
+    const journal = JSON.parse(fs.readFileSync(f.p(`${rootPath}/upgrade.json`), "utf8"))
+    f.write(`${rootPath}/upgrade.json`, { ...journal, rollingBack: "yes" })
+    await expect(f.lifecycleFor().rollbackUpgrade()).rejects.toThrow(/journal is invalid/u)
   })
 
   it("keeps a recorded bundle migration authoritative and retries a rollback whose bundle is already back", async () => {
@@ -1213,7 +1239,65 @@ describe("in-place authority upgrade", () => {
     expect(f.resident.exists).toBe(false)
     await f.lifecycleFor().upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })
     expect(f.resident).toMatchObject({ image: digest("next-image"), running: true })
-    expect(programs.map((name) => fs.readFileSync(f.p(`${rootPath}/package/${name}`), "utf8"))).toEqual(programs.map((name) => `next ${name}`))
+    expect(programs.map((name) => fs.readFileSync(f.p(`${rootPath}/package/${name}`), "utf8"))).toEqual(programs.map(next))
+  })
+
+  describe("cgroup keep child (D-026)", () => {
+    const keep = "/sys/fs/cgroup/ouro-authority/ouro-keep"
+    async function keepAware() {
+      const f = await upgradeFixture()
+      await f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })
+      fs.rmSync(f.p("/proc/45678"), { recursive: true, force: true })
+      return f
+    }
+    it("keeps the child once the installed package understands it, retrying a reaper race at boot", async () => {
+      const f = await keepAware()
+      expect(fs.statSync(f.p(keep)).isDirectory()).toBe(true)
+      fs.rmSync(f.p(keep), { recursive: true, force: true })
+      const mkdir = fs.mkdirSync
+      let raced = false
+      vi.spyOn(fs, "mkdirSync").mockImplementation(((file, options) => {
+        if (!raced && String(file) === f.p(keep)) { raced = true; throw Object.assign(new Error("reaped"), { code: "ENOENT" }) }
+        return mkdir(file, options)
+      }) as typeof fs.mkdirSync)
+      await expect(f.lifecycleFor().boot()).resolves.toBe(true)
+      expect(raced).toBe(true)
+      expect(fs.statSync(f.p(keep)).isDirectory()).toBe(true)
+    })
+
+    it.each([["ENOENT", /reaped/u], ["EACCES", /denied/u]])("stops after repeated %s failures instead of looping", async (code, error) => {
+      const f = await keepAware()
+      fs.rmSync(f.p(keep), { recursive: true, force: true })
+      const mkdir = fs.mkdirSync
+      vi.spyOn(fs, "mkdirSync").mockImplementation(((file, options) => {
+        if (String(file) === f.p(keep)) throw Object.assign(new Error(code === "ENOENT" ? "reaped" : "denied"), { code })
+        return mkdir(file, options)
+      }) as typeof fs.mkdirSync)
+      await expect(f.lifecycleFor().boot()).rejects.toThrow(error)
+    })
+
+    it("removes the child and holds Unraid's reaper before starting a predecessor that predates it", async () => {
+      const f = await upgradeFixture()
+      await expect(f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference, failAfter: "start" })).rejects.toThrow(/start/u)
+      expect(fs.existsSync(f.p(keep))).toBe(true)
+      f.write("/run/cgroup2-unraid.pid", "4242\n")
+      await expect(f.lifecycleFor().rollbackUpgrade()).resolves.toBe(true)
+      expect(fs.existsSync(f.p(keep))).toBe(false)
+      expect(process.kill).toHaveBeenCalledWith(4242, "SIGSTOP")
+    })
+
+    it.each([[null], ["not-a-pid"], ["4343"]])("tolerates a reaper pid file of %j while holding it", async (pid) => {
+      const f = await upgradeFixture()
+      await expect(f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference, failAfter: "start" })).rejects.toThrow(/start/u)
+      if (pid !== null) f.write("/run/cgroup2-unraid.pid", pid)
+      const kill = vi.mocked(process.kill).getMockImplementation()!
+      vi.mocked(process.kill).mockImplementation(((target: number, signal?: string) => {
+        if (target === 4343) throw Object.assign(new Error("no such process"), { code: "ESRCH" })
+        return kill(target, signal)
+      }) as typeof process.kill)
+      await expect(f.lifecycleFor().rollbackUpgrade()).resolves.toBe(true)
+      expect(fs.existsSync(f.p(keep))).toBe(false)
+    })
   })
 
   it.each([
@@ -1275,7 +1359,7 @@ describe("in-place authority upgrade", () => {
     f.write("/boot/config/go", "#!/bin/sh\nsetsid /bin/sh /boot/config/custom/ouro-authority/gateway-supervisor.sh & # ouro-authority-gateway\n")
     await f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })
     expect(fs.readFileSync(f.p("/boot/config/go"), "utf8")).not.toContain("start.sh --boot")
-    expect(fs.readFileSync(f.p("/boot/config/custom/ouro-authority/start.sh"), "utf8")).toBe("next deploy/unraid/sanctuary-authority-service.sh")
+    expect(fs.readFileSync(f.p("/boot/config/custom/ouro-authority/start.sh"), "utf8")).toBe(next("deploy/unraid/sanctuary-authority-service.sh"))
   })
 
   it("dispatches upgrade and upgrade-rollback from the root CLI under a waiting deployment lease", async () => {
@@ -1325,33 +1409,5 @@ describe("root lifecycle failure detail", () => {
     expect(text).toContain(" plain failure\n")
     expect(fs.statSync(file).mode & 0o777).toBe(0o600)
     expect(recordSanctuaryRootLifecycleFailure(new Error("x"), path.join(directory, "missing", "log"))).toBe("")
-  })
-})
-
-describe("authority cgroup keep child (D-026)", () => {
-  const keep = "/sys/fs/cgroup/ouro-authority/ouro-keep"
-  it("creates the keep child at boot and retries when the reaper races a fresh cgroup", async () => {
-    const f = await installedStoppedGatewayFixture()
-    fs.rmSync(f.p(keep), { recursive: true, force: true })
-    const mkdir = fs.mkdirSync
-    let raced = false
-    vi.spyOn(fs, "mkdirSync").mockImplementation(((file, options) => {
-      if (!raced && String(file) === f.p(keep)) { raced = true; throw Object.assign(new Error("reaped"), { code: "ENOENT" }) }
-      return mkdir(file, options)
-    }) as typeof fs.mkdirSync)
-    await expect(f.lifecycle.boot()).resolves.toBe(true)
-    expect(raced).toBe(true)
-    expect(fs.statSync(f.p(keep)).isDirectory()).toBe(true)
-  })
-
-  it.each([["ENOENT", /reaped/u], ["EACCES", /denied/u]])("stops after repeated %s failures instead of looping", async (code, error) => {
-    const f = await installedStoppedGatewayFixture()
-    fs.rmSync(f.p(keep), { recursive: true, force: true })
-    const mkdir = fs.mkdirSync
-    vi.spyOn(fs, "mkdirSync").mockImplementation(((file, options) => {
-      if (String(file) === f.p(keep)) throw Object.assign(new Error(code === "ENOENT" ? "reaped" : "denied"), { code })
-      return mkdir(file, options)
-    }) as typeof fs.mkdirSync)
-    await expect(f.lifecycle.boot()).rejects.toThrow(error)
   })
 })
