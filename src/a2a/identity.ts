@@ -173,16 +173,21 @@ export async function loadSelfA2AIdentity(input: { agentName: string; sodium?: S
  */
 export async function loadOrMintA2AIdentityFile(input: { filePath: string; sodium?: Sodium }): Promise<A2AIdentity> {
   const sodium = input.sodium ?? await ready()
-  if (fs.existsSync(input.filePath)) {
-    const mode = fs.statSync(input.filePath).mode & 0o077
-    if (mode !== 0) throw new Error(`A2A identity file ${input.filePath} is readable by group or other; chmod 600 it`)
-    const parsed = JSON.parse(fs.readFileSync(input.filePath, "utf8")) as { seed?: unknown }
-    if (typeof parsed.seed !== "string") throw new Error(`A2A identity file ${input.filePath} has no seed`)
-    return deriveIdentity(sodium, decodeSeed(parsed.seed))
-  }
+  return fs.existsSync(input.filePath) ? readA2AIdentityFile(sodium, input.filePath) : mintA2AIdentityFile(sodium, input.filePath)
+}
+
+function readA2AIdentityFile(sodium: Sodium, filePath: string): A2AIdentity {
+  const mode = fs.statSync(filePath).mode & 0o077
+  if (mode !== 0) throw new Error(`A2A identity file ${filePath} is readable by group or other; chmod 600 it`)
+  const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as { seed?: unknown }
+  if (typeof parsed.seed !== "string") throw new Error(`A2A identity file ${filePath} has no seed`)
+  return deriveIdentity(sodium, decodeSeed(parsed.seed))
+}
+
+function mintA2AIdentityFile(sodium: Sodium, filePath: string): A2AIdentity {
   const identity = deriveIdentity(sodium, mintSeed())
-  fs.mkdirSync(path.dirname(input.filePath), { recursive: true, mode: 0o700 })
-  fs.writeFileSync(input.filePath, `${JSON.stringify({ version: 1, did: identity.did, seed: identity.seed }, null, 2)}\n`, { mode: 0o600 })
+  fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 })
+  fs.writeFileSync(filePath, `${JSON.stringify({ version: 1, did: identity.did, seed: identity.seed }, null, 2)}\n`, { mode: 0o600 })
   emitNervesEvent({
     component: "channels",
     event: "channel.a2a_client_identity_minted",

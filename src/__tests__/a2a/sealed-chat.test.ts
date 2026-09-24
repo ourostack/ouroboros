@@ -4,7 +4,7 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { afterEach, beforeAll, describe, expect, it } from "vitest"
-import { didKeyIdentityFromEd25519, ready, type DidKeyIdentity, type Sodium } from "@ouro.bot/friends/a2a-client"
+import { didKeyIdentityFromEd25519, keyAgreementFromDidKey, ready, sealEnvelope, wrapInDataPart, type DidKeyIdentity, type Sodium } from "@ouro.bot/friends/a2a-client"
 import { FileFriendStore, MAX_MESSAGE_TEXT_CHARS, upsertAgentPeer } from "@ouro.bot/friends"
 import { createTmpBundle, type TmpBundleHandle } from "../test-helpers/tmpdir-bundle"
 import { a2aChatRelationship, startA2AServer, type A2AServerHandle, type A2ATurnRunnerInput } from "../../a2a/server"
@@ -199,6 +199,19 @@ describe("sealChatMessage", () => {
     const sealed = sealChatMessage({ sodium, from, recipientDid: to.did, recipientEd25519Pub: to.ed25519Pub, text: "plain" })
     const opened = await openChatMessage({ sodium, self: to, message: { role: "ROLE_AGENT", parts: sealed.parts }, senderDid: from.did, senderEd25519Pub: from.ed25519Pub })
     expect(opened).toEqual({ ok: true, text: "plain", issuedAt: expect.any(String) })
+  })
+
+  it("never lets another sealed kind reach a store: a coordination envelope from the pinned sender is refused", async () => {
+    const from = mintIdentity()
+    const to = mintIdentity()
+    const sealed = sealEnvelope({
+      sodium, friendsKind: "coordination", fromIdentity: from, recipientDid: to.did,
+      envelope: { fromAgentId: from.did, missionId: "m-1", op: "claim", issuedAt: new Date().toISOString() },
+      recipientX25519Pub: keyAgreementFromDidKey({ sodium, ed25519Pub: to.ed25519Pub }),
+    })
+    const message = wrapInDataPart({ sealedEnvelope: sealed, recipientDid: to.did })
+    await expect(openChatMessage({ sodium, self: to, message: message as never, senderDid: from.did, senderEd25519Pub: from.ed25519Pub }))
+      .rejects.toThrow(/sealed chat must not touch the mission store/)
   })
 })
 

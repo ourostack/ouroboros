@@ -26,6 +26,7 @@ import {
   type Sodium,
 } from "@ouro.bot/friends/a2a-client"
 import { MAX_MESSAGE_TEXT_CHARS, prepareMessage, type FriendStore, type MissionStore } from "@ouro.bot/friends"
+import { emitNervesEvent } from "../nerves/runtime"
 import type { A2AMessage, A2AMessagePart } from "./types"
 
 /** What an agent replies when its turn produced no text; sealed like any reply. */
@@ -62,6 +63,12 @@ export function sealChatMessage(input: SealChatMessageInput): { parts: A2AMessag
     recipientX25519Pub: keyAgreementFromDidKey({ sodium: input.sodium, ed25519Pub: input.recipientEd25519Pub }),
   })
   const wrapped = wrapInDataPart({ sealedEnvelope: sealed, recipientDid: input.recipientDid })
+  emitNervesEvent({
+    component: "channels",
+    event: "channel.a2a_chat_sealed",
+    message: "sealed an A2A chat message",
+    meta: { recipientDid: input.recipientDid, chars: text.length },
+  })
   return { parts: wrapped.parts as unknown as A2AMessagePart[] }
 }
 
@@ -113,9 +120,24 @@ export async function openChatMessage(input: OpenChatMessageInput): Promise<Open
     // The opener chose this sender; the signature, not this level, is the gate.
     trustOfSource: "family",
   })
-  if (result.state === "rejected") return { ok: false, reason: result.reason }
+  if (result.state === "rejected") {
+    emitNervesEvent({
+      level: "warn",
+      component: "channels",
+      event: "channel.a2a_chat_open_rejected",
+      message: "refused a sealed A2A chat message",
+      meta: { senderDid: input.senderDid, reason: result.reason },
+    })
+    return { ok: false, reason: result.reason }
+  }
   /* v8 ignore next -- any other kind reaches a store, and these stores throw: only a message can complete here @preserve */
   if (result.friendsKind !== "message" || !result.message) return { ok: false, reason: "not_a_message" }
+  emitNervesEvent({
+    component: "channels",
+    event: "channel.a2a_chat_opened",
+    message: "opened a verified A2A chat message",
+    meta: { senderDid: input.senderDid, chars: result.message.text.length },
+  })
   return {
     ok: true,
     text: result.message.text,

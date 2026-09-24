@@ -548,7 +548,7 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
         const clientTaskId = continuationTask ? taskA2AMetadata(continuationTask).clientTaskId as string | undefined : inbound.taskId
         taskStore.put(taskFor({ taskId, accessToken, contextId, inbound, state: "TASK_STATE_WORKING", clientTaskId, previousTask: continuationTask ?? undefined }), tokenScope)
         const relationshipAuthorization = verifiedChat?.friend
-          ? a2aChatRelationship(agentRoot, verifiedChat.friend, inbound.messageId ?? taskId)
+          ? a2aChatRelationship(agentRoot, verifiedChat.friend, taskId)
           : undefined
         const turn = await turnRunner({
           agentName: options.agentName,
