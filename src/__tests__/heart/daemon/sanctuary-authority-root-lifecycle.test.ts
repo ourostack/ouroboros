@@ -3,7 +3,7 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { SanctuaryAuthorityRootLifecycle, runSanctuaryAuthorityRootCli } from "../../../heart/daemon/sanctuary-authority-root-lifecycle"
+import { SanctuaryAuthorityRootLifecycle, recordSanctuaryRootLifecycleFailure, runSanctuaryAuthorityRootCli } from "../../../heart/daemon/sanctuary-authority-root-lifecycle"
 import { withSessionTurnLease } from "../../../mind/session-transaction"
 import { createLogger, type LogEvent } from "../../../nerves"
 import { setRuntimeLogger } from "../../../nerves/runtime"
@@ -1061,5 +1061,269 @@ describe("fixed root installation effects", () => {
     expect(journal.authority.completed.map((entry: { step: string }) => entry.step)).toEqual(["freeze-resident", "stage-authority"])
     expect(journal.authority.pending.step).toBe("verify-token-rotation")
     expect(() => module.markDockerManTemplateTransactionCommitting(options)).toThrow(/authority/u)
+  })
+})
+
+describe("in-place authority upgrade", () => {
+  const currentReference = "ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.830"
+  const nextReference = "ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.835"
+  const programs = [
+    "dist/heart/daemon/sanctuary-telegram-authority-entry.js",
+    "dist/heart/daemon/sanctuary-host-supervisor-entry.js",
+    "dist/heart/daemon/sanctuary-authority-root-lifecycle.js",
+    "deploy/unraid/sanctuary-host-launcher.sh",
+    "deploy/unraid/sanctuary-authority-service.sh",
+  ]
+  const steps = ["stop", "switch", "resident", "migrate", "start"] as const
+  const records = ["request.json", "package-manifest.json", "active.json", "activation.json", "epochs/fixture-epoch/migration.json", "epochs/fixture-epoch/stage.json", "epochs/fixture-epoch/configured.json"]
+  async function upgradeFixture() {
+    const f = await installedStoppedGatewayFixture()
+    f.publish()
+    const resident = { image: digest("new-image"), reference: currentReference, running: true, exists: true, healthy: "healthy" }
+    const bundleOps: string[] = []
+    let pendingMigration = false
+    const original = host.exec.getMockImplementation()!
+    host.exec.mockImplementation((file: string, args: string[], options?: { input?: string }) => {
+      if (file === "/bin/chown") return ""
+      if (file.endsWith("/usr/local/bin/node") && String(args[0]).endsWith("migrate-sanctuary-bundle.mjs")) {
+        const operation = args[args.indexOf("--operation") + 1]!
+        bundleOps.push(operation)
+        if (operation === "migrate") pendingMigration = true
+        else if (!pendingMigration) throw new Error(`${operation} found no pending Sanctuary bundle transaction`)
+        else pendingMigration = false
+        return "{}"
+      }
+      if (file === "/usr/bin/docker") {
+        if (args[0] === "image") return `${digest("next-image")}\n`
+        if (args[0] === "rm") { resident.exists = false; return "" }
+        if (args[0] === "create") {
+          resident.exists = true
+          resident.running = false
+          resident.reference = String(args.at(-1))
+          resident.image = resident.reference === nextReference ? digest("next-image") : digest("new-image")
+          return "created\n"
+        }
+        if (args[0] === "ps") return resident.exists ? `${JSON.stringify({ Names: "ouro-butler" })}\n` : ""
+        if (args[0] === "inspect") return JSON.stringify([{
+          Name: "/ouro-butler", Image: resident.image, State: { Running: resident.running, Health: { Status: resident.healthy } },
+          Config: { User: "10001:10001", Env: [], Image: resident.reference },
+          Mounts: [{ Source: bundle, Destination: "/home/ouro/AgentBundles/sanctuary.ouro", RW: true }, { Source: "/run/ouro-authority", Destination: "/run/ouro-authority", RW: false }],
+        }])
+        if (args[0] === "stop") { resident.running = false; return "" }
+        if (args[0] === "start") { resident.running = true; return "" }
+      }
+      return original(file, args, options)
+    })
+    vi.spyOn(process, "kill").mockImplementation(() => { fs.rmSync(f.p("/proc/45678"), { recursive: true, force: true }); return true })
+    const files = Object.fromEntries(programs.map((name) => {
+      f.write(`${rootPath}/incoming-package/${name}`, `next ${name}`)
+      fs.chmodSync(f.p(`${rootPath}/incoming-package/${name}`), 0o700)
+      return [name, { digest: digest(`next ${name}`), mode: 0o700 }]
+    }))
+    const manifest = JSON.stringify({ schemaVersion: 1, files })
+    const nextRequest = { ...f.request, packageDigest: digest(manifest) }
+    f.write(`${rootPath}/incoming-package-manifest.json`, manifest)
+    f.write(`${rootPath}/incoming-request.json`, nextRequest)
+    const snapshot = () => ({
+      records: records.map((name) => fs.readFileSync(f.p(`${rootPath}/${name}`), "utf8")),
+      packages: programs.map((name) => fs.readFileSync(f.p(`${rootPath}/package/${name}`), "utf8")),
+      boot: fs.readFileSync(f.p("/boot/config/custom/ouro-authority/start.sh"), "utf8"),
+      epoch: readEpoch(f),
+    })
+    const lifecycleFor = () => new SanctuaryAuthorityRootLifecycle(JSON.parse(fs.readFileSync(f.p(`${rootPath}/activation.json`), "utf8")), f.rootOptions)
+    return { ...f, resident, bundleOps, nextRequest, manifest, snapshot, lifecycleFor, setPending: (value: boolean) => { pendingMigration = value } }
+  }
+  function readEpoch(f: { p: (name: string) => string }) {
+    const epoch = JSON.parse(fs.readFileSync(f.p(`${rootPath}/epochs/fixture-epoch/epoch.json`), "utf8"))
+    return { packageDigest: epoch.packageDigest, tokenDigest: epoch.tokenDigest, publicKeyDigest: epoch.publicKeyDigest, predecessorCursor: epoch.predecessorCursor, state: epoch.state }
+  }
+
+  it("moves the installed authority to the new package and image, keeping its epoch, token and cursor", async () => {
+    const f = await upgradeFixture()
+    const before = f.snapshot()
+    f.write(`${rootPath}/incoming-token`, "123:staleCopyabcdefghijklmnopqrstuvwxyz")
+    await f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })
+    expect(JSON.parse(fs.readFileSync(f.p(`${rootPath}/activation.json`), "utf8"))).toEqual({ targetImageId: digest("next-image"), rollbackImageId: digest("new-image"), state: "active", epochId: "fixture-epoch" })
+    expect(JSON.parse(fs.readFileSync(f.p(`${rootPath}/request.json`), "utf8"))).toEqual(f.nextRequest)
+    expect(JSON.parse(fs.readFileSync(f.p(`${rootPath}/active.json`), "utf8")).packageManifestDigest).toBe(f.nextRequest.packageDigest)
+    expect(readEpoch(f)).toEqual({ ...before.epoch, packageDigest: f.nextRequest.packageDigest })
+    expect(programs.map((name) => fs.readFileSync(f.p(`${rootPath}/package/${name}`), "utf8"))).toEqual(programs.map((name) => `next ${name}`))
+    expect(fs.readFileSync(f.p("/boot/config/custom/ouro-authority/start.sh"), "utf8")).toBe("next deploy/unraid/sanctuary-authority-service.sh")
+    expect(f.resident).toMatchObject({ image: digest("next-image"), reference: nextReference, running: true })
+    expect(f.bundleOps).toEqual(["migrate", "commit"])
+    for (const leftover of ["upgrade.json", "upgrade-previous", "package-next", "incoming-token"]) expect(fs.existsSync(f.p(`${rootPath}/${leftover}`))).toBe(false)
+    fs.rmSync(f.p("/proc/45678"), { recursive: true })
+    await expect(f.lifecycleFor().boot()).resolves.toBe(true)
+  })
+
+  it.each(steps)("rolls back exactly after the %s step and can upgrade again", async (step) => {
+    const f = await upgradeFixture()
+    const before = f.snapshot()
+    await expect(f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference, failAfter: step })).rejects.toThrow(`stopped after ${step}`)
+    await expect(f.lifecycleFor().rollbackUpgrade()).resolves.toBe(true)
+    expect(f.snapshot()).toEqual(before)
+    expect(f.resident).toMatchObject({ image: digest("new-image"), reference: currentReference, running: true })
+    for (const leftover of ["upgrade.json", "upgrade-previous", "package-next"]) expect(fs.existsSync(f.p(`${rootPath}/${leftover}`))).toBe(false)
+    await expect(f.lifecycleFor().rollbackUpgrade()).resolves.toBe(false)
+    await f.lifecycleFor().upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })
+    expect(f.resident.image).toBe(digest("next-image"))
+  })
+
+  it("rolls an interrupted upgrade back at boot and resumes one when rerun", async () => {
+    const f = await upgradeFixture()
+    const before = f.snapshot()
+    await expect(f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference, failAfter: "resident" })).rejects.toThrow(/resident/u)
+    await expect(f.lifecycleFor().boot()).resolves.toBe(true)
+    expect(f.snapshot()).toEqual(before)
+    await expect(f.lifecycleFor().upgrade({ targetImageId: digest("next-image"), imageReference: nextReference, failAfter: "switch" })).rejects.toThrow(/switch/u)
+    await f.lifecycleFor().upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })
+    expect(readEpoch(f).packageDigest).toBe(f.nextRequest.packageDigest)
+  })
+
+  it("keeps a recorded bundle migration authoritative and retries a rollback whose bundle is already back", async () => {
+    const f = await upgradeFixture()
+    await expect(f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference, failAfter: "migrate" })).rejects.toThrow(/migrate/u)
+    f.setPending(false)
+    await expect(f.lifecycleFor().rollbackUpgrade()).rejects.toThrow(/no pending/u)
+    f.setPending(true)
+    host.cursor.mockRejectedValueOnce(new Error("gateway not ready yet"))
+    await expect(f.lifecycleFor().rollbackUpgrade()).rejects.toThrow(/not ready/u)
+    await expect(f.lifecycleFor().rollbackUpgrade()).resolves.toBe(true)
+    expect(f.bundleOps.filter((operation) => operation === "finalize-rollback")).toHaveLength(3)
+  })
+
+  it("resumes a switch interrupted after the package moved and a recreation interrupted after removal", async () => {
+    const f = await upgradeFixture()
+    const rename = fs.renameSync
+    let failConfig = true
+    const failure = vi.spyOn(fs, "renameSync").mockImplementation((source, destination) => {
+      if (failConfig && String(destination) === f.p(`${rootPath}/active.json`)) { failConfig = false; throw new Error("interrupted config write") }
+      return rename(source, destination)
+    })
+    await expect(f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })).rejects.toThrow("interrupted config write")
+    failure.mockRestore()
+    expect(fs.existsSync(f.p(`${rootPath}/upgrade-previous/package`))).toBe(true)
+    const original = host.exec.getMockImplementation()!
+    let failCreate = true
+    host.exec.mockImplementation((file: string, args: string[], options?: { input?: string }) => {
+      if (failCreate && file === "/usr/bin/docker" && args[0] === "create") { failCreate = false; throw new Error("interrupted create") }
+      return original(file, args, options)
+    })
+    await expect(f.lifecycleFor().upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })).rejects.toThrow("interrupted create")
+    expect(f.resident.exists).toBe(false)
+    await f.lifecycleFor().upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })
+    expect(f.resident).toMatchObject({ image: digest("next-image"), running: true })
+    expect(programs.map((name) => fs.readFileSync(f.p(`${rootPath}/package/${name}`), "utf8"))).toEqual(programs.map((name) => `next ${name}`))
+  })
+
+  it.each([
+    ["an invalid image id", { targetImageId: "bad" }, /invalid/u],
+    ["an unreviewed image reference", { imageReference: "local/butler:dev" }, /invalid/u],
+    ["an unknown rehearsal step", { failAfter: "teleport" }, /invalid/u],
+    ["the running image", { targetImageId: digest("new-image") }, /already runs/u],
+    ["an image whose identity differs from its reference", { targetImageId: digest("other-image") }, /identity/u],
+  ])("refuses %s before changing anything", async (_label, override, error) => {
+    const f = await upgradeFixture()
+    const before = f.snapshot()
+    await expect(f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference, ...override })).rejects.toThrow(error)
+    expect(f.snapshot()).toEqual(before)
+    expect(fs.existsSync(f.p(`${rootPath}/upgrade.json`))).toBe(false)
+  })
+
+  it.each(["identity", "package", "journal", "template", "reference", "different"])("refuses an upgrade with %s ambiguity", async (fault) => {
+    const f = await upgradeFixture()
+    if (fault === "identity") f.write(`${rootPath}/incoming-request.json`, { ...f.nextRequest, botId: "124" })
+    if (fault === "package") f.write(`${rootPath}/incoming-request.json`, f.request)
+    if (fault === "journal") f.write(`${rootPath}/upgrade.json`, { schemaVersion: 1, epochId: "fixture-epoch", completed: ["teleport"] })
+    if (fault === "template") f.write("/boot/config/custom/ouro-butler/docker-man-template-transaction.json", "pending")
+    if (fault === "reference") f.resident.reference = "local/butler:dev"
+    if (fault === "different") await expect(f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference, failAfter: "stop" })).rejects.toThrow(/stop/u)
+    const reference = fault === "different" ? "ghcr.io/ourostack/ouroboros-butler:0.1.0-alpha.836" : nextReference
+    await expect(f.lifecycleFor().upgrade({ targetImageId: digest("next-image"), imageReference: reference })).rejects.toThrow(/identity|installed|journal|installation|reviewed|different/u)
+  })
+
+  it("refuses unsafe progress: a resident that will not stop, a wrong recreated image, a changed pin and a bad cursor", async () => {
+    const stuck = await upgradeFixture()
+    const original = host.exec.getMockImplementation()!
+    host.exec.mockImplementation((file: string, args: string[], options?: { input?: string }) => file === "/usr/bin/docker" && args[0] === "stop" ? "" : original(file, args, options))
+    await expect(stuck.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })).rejects.toThrow(/did not stop/u)
+
+    const wrong = await upgradeFixture()
+    const recreate = host.exec.getMockImplementation()!
+    host.exec.mockImplementation((file: string, args: string[], options?: { input?: string }) => {
+      const value = recreate(file, args, options)
+      if (file === "/usr/bin/docker" && args[0] === "create") wrong.resident.image = digest("other-image")
+      return value
+    })
+    await expect(wrong.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })).rejects.toThrow(/recreation/u)
+
+    const pin = await upgradeFixture()
+    await expect(pin.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference, failAfter: "stop" })).rejects.toThrow(/stop/u)
+    pin.write(`${rootPath}/incoming-package/${programs[0]}`, "tampered")
+    fs.chmodSync(pin.p(`${rootPath}/incoming-package/${programs[0]}`), 0o700)
+    await expect(pin.lifecycleFor().upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })).rejects.toThrow(/pin/u)
+
+    const cursor = await upgradeFixture()
+    const migration = JSON.parse(fs.readFileSync(cursor.p(`${rootPath}/epochs/fixture-epoch/migration.json`), "utf8"))
+    await expect(cursor.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference, failAfter: "stop" })).rejects.toThrow(/stop/u)
+    cursor.write(`${rootPath}/epochs/fixture-epoch/migration.json`, { ...migration, predecessorCursor: -1 })
+    await expect(cursor.lifecycleFor().upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })).rejects.toThrow(/cursor/u)
+  })
+
+  it("upgrades a host whose keeper replaced the direct boot line, leaving the go file alone", async () => {
+    const f = await upgradeFixture()
+    f.write("/boot/config/go", "#!/bin/sh\nsetsid /bin/sh /boot/config/custom/ouro-authority/gateway-supervisor.sh & # ouro-authority-gateway\n")
+    await f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })
+    expect(fs.readFileSync(f.p("/boot/config/go"), "utf8")).not.toContain("start.sh --boot")
+    expect(fs.readFileSync(f.p("/boot/config/custom/ouro-authority/start.sh"), "utf8")).toBe("next deploy/unraid/sanctuary-authority-service.sh")
+  })
+
+  it("dispatches upgrade and upgrade-rollback from the root CLI under a waiting deployment lease", async () => {
+    const f = fixture()
+    const sessions = await import("../../../mind/session-transaction")
+    const upgrade = vi.spyOn(SanctuaryAuthorityRootLifecycle.prototype, "upgrade").mockResolvedValue(undefined)
+    const rollback = vi.spyOn(SanctuaryAuthorityRootLifecycle.prototype, "rollbackUpgrade").mockResolvedValue(true)
+    vi.spyOn(sessions, "withSessionTurnLease").mockImplementation(async (_file, work) => work({} as never))
+    vi.spyOn(process, "getuid").mockReturnValue(0)
+    vi.spyOn(process, "getgid").mockReturnValue(0)
+    for (const args of [["upgrade"], ["upgrade", digest("x")], ["upgrade", digest("x"), nextReference, "--fail-after"], ["upgrade", digest("x"), nextReference, "--other", "stop"], ["upgrade-rollback", "extra"]]) await expect(runSanctuaryAuthorityRootCli(args)).rejects.toThrow(/Usage/u)
+    const exists = fs.existsSync
+    const existsMock = vi.spyOn(fs, "existsSync").mockImplementation((file) => String(file) === `${rootPath}/activation.json` ? false : exists(file))
+    await expect(runSanctuaryAuthorityRootCli(["upgrade", digest("x"), nextReference])).rejects.toThrow(/not active/u)
+    await expect(runSanctuaryAuthorityRootCli(["upgrade-rollback"])).rejects.toThrow(/not active/u)
+    existsMock.mockRestore()
+    f.write(`${rootPath}/activation.json`, f.transaction)
+    const lstat = fs.lstatSync, open = fs.openSync, read = fs.readFileSync, realpath = fs.realpathSync, fstat = fs.fstatSync
+    const mapped = (file: fs.PathLike) => String(file).startsWith(rootPath) ? f.p(String(file)) : file
+    vi.spyOn(fs, "existsSync").mockImplementation((file) => exists(mapped(file)))
+    vi.spyOn(fs, "lstatSync").mockImplementation(((file, options) => Object.assign(lstat(mapped(file), options), { uid: 0, gid: 0 })) as typeof fs.lstatSync)
+    vi.spyOn(fs, "openSync").mockImplementation((file, flags, mode) => open(mapped(file), flags, mode))
+    vi.spyOn(fs, "fstatSync").mockImplementation(((fd, options) => Object.assign(fstat(fd, options), { uid: 0, gid: 0 })) as typeof fs.fstatSync)
+    vi.spyOn(fs, "realpathSync").mockImplementation(((file, options) => String(file).startsWith(rootPath) ? file : realpath(file, options)) as typeof fs.realpathSync)
+    vi.spyOn(fs, "readFileSync").mockImplementation(((file, options) => read(typeof file === "number" ? file : mapped(file), options)) as typeof fs.readFileSync)
+    const write = vi.fn()
+    await runSanctuaryAuthorityRootCli(["upgrade", digest("x"), nextReference], write)
+    expect(upgrade).toHaveBeenLastCalledWith({ targetImageId: digest("x"), imageReference: nextReference })
+    await runSanctuaryAuthorityRootCli(["upgrade", digest("x"), nextReference, "--fail-after", "switch"], write)
+    expect(upgrade).toHaveBeenLastCalledWith({ targetImageId: digest("x"), imageReference: nextReference, failAfter: "switch" })
+    await runSanctuaryAuthorityRootCli(["upgrade-rollback"], write)
+    expect(rollback).toHaveBeenCalledOnce()
+    expect(write.mock.calls).toEqual([[`{"upgraded":"${nextReference}"}\n`], [`{"upgraded":"${nextReference}"}\n`], ['{"rolledBack":true}\n']])
+    expect(sessions.withSessionTurnLease).toHaveBeenLastCalledWith("/boot/config/custom/ouro-butler/docker-man-template-transaction.json", expect.any(Function), { timeoutMs: 600_000, confinementRoot: "/boot/config/custom/ouro-butler" })
+  })
+})
+
+describe("root lifecycle failure detail", () => {
+  it("keeps the real failure in a root-only file and only names that file", () => {
+    const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "root-failure-")))
+    roots.push(directory)
+    const file = path.join(directory, "lifecycle-failure.log")
+    expect(recordSanctuaryRootLifecycleFailure(new Error("boundary failed"), file)).toBe(` Details (root-only): ${file}`)
+    expect(recordSanctuaryRootLifecycleFailure("plain failure", file)).toBe(` Details (root-only): ${file}`)
+    const text = fs.readFileSync(file, "utf8")
+    expect(text).toContain("Error: boundary failed")
+    expect(text).toContain(" plain failure\n")
+    expect(fs.statSync(file).mode & 0o777).toBe(0o600)
+    expect(recordSanctuaryRootLifecycleFailure(new Error("x"), path.join(directory, "missing", "log"))).toBe("")
   })
 })

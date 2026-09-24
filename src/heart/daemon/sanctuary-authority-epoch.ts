@@ -196,6 +196,27 @@ export function releaseSanctuaryAuthorityToken(root: string, options: Owner & { 
   syncRoot(root)
 }
 
+/**
+ * Move a live epoch to a new reviewed package without replacing its token, issuer
+ * or cursor. An in-place upgrade (and its rollback) rebinds the package the epoch
+ * trusts; the gateway still refuses any config whose package differs from the epoch's.
+ */
+export function rebindSanctuaryAuthorityEpochPackage(root: string, options: Owner & { from: string; to: string }): Epoch {
+  if (!DIGEST.test(options.from) || !DIGEST.test(options.to)) throw new Error("Sanctuary authority package rebind is invalid")
+  const epochPath = path.join(root, "epoch.json")
+  return withImmediateSessionTurnLease(epochPath, (lease) => {
+    const transaction = readSessionTransaction(epochPath, lease)
+    const epoch = readSanctuaryAuthorityEpoch(root, options)
+    if (epoch.state !== "prepared") throw new Error("Sanctuary authority epoch is retired")
+    if (epoch.packageDigest === options.to) return epoch
+    if (epoch.packageDigest !== options.from) throw new Error("Sanctuary authority epoch package changed")
+    const rebound: Epoch = { ...epoch, packageDigest: options.to }
+    writeSessionTransaction(epochPath, rebound, { lease, expectedRevision: transaction.revision })
+    emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_authority_epoch_package_rebound", message: "Sanctuary authority epoch rebound to a reviewed package", meta: { epochId: epoch.epochId, from: options.from, to: options.to } })
+    return rebound
+  })
+}
+
 export function retireSanctuaryAuthorityEpoch(root: string, options: Owner & { quiescent: boolean; cursor: number }): Epoch {
   if (options.quiescent !== true) throw new Error("Sanctuary authority execution state is not quiescent")
   const epochPath = path.join(root, "epoch.json")

@@ -3,7 +3,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { generateKeyPairSync } from "node:crypto"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { prepareSanctuaryAuthorityEpoch, readSanctuaryAuthorityEpoch, retireSanctuaryAuthorityEpoch, releaseSanctuaryAuthorityToken } from "../../../heart/daemon/sanctuary-authority-epoch"
+import { prepareSanctuaryAuthorityEpoch, readSanctuaryAuthorityEpoch, rebindSanctuaryAuthorityEpochPackage, retireSanctuaryAuthorityEpoch, releaseSanctuaryAuthorityToken } from "../../../heart/daemon/sanctuary-authority-epoch"
 vi.mock("node:fs", async (original) => {
   const actual = await original<typeof fs>()
   return { ...actual, renameSync: vi.fn(actual.renameSync) }
@@ -224,4 +224,28 @@ describe("root-only authority token and issuer epochs", () => {
     await expect(prepareSanctuaryAuthorityEpoch(f.input, f.options)).rejects.toThrow(/orphaned/u)
     expect(fs.existsSync(path.join(f.root, "epoch.json"))).toBe(false)
   })
+
+describe("in-place package rebind", () => {
+  const next = `sha256:${"b".repeat(64)}`
+  it("moves a live epoch to a reviewed package, keeps token, issuer and cursor, and is idempotent", async () => {
+    const f = fixture()
+    const before = await prepareSanctuaryAuthorityEpoch(f.input, f.options)
+    const owner = { expectedUid: f.options.expectedUid, expectedGid: f.options.expectedGid }
+    const rebound = rebindSanctuaryAuthorityEpochPackage(f.root, { ...owner, from: f.input.packageDigest, to: next })
+    expect(rebound).toEqual({ ...before, packageDigest: next })
+    expect(readSanctuaryAuthorityEpoch(f.root, owner)).toEqual(rebound)
+    expect(rebindSanctuaryAuthorityEpochPackage(f.root, { ...owner, from: f.input.packageDigest, to: next })).toEqual(rebound)
+    expect(rebindSanctuaryAuthorityEpochPackage(f.root, { ...owner, from: next, to: f.input.packageDigest })).toEqual(before)
+  })
+  it("refuses an invalid digest, an unexpected current package, and a retired epoch", async () => {
+    const f = fixture()
+    await prepareSanctuaryAuthorityEpoch(f.input, f.options)
+    const owner = { expectedUid: f.options.expectedUid, expectedGid: f.options.expectedGid }
+    expect(() => rebindSanctuaryAuthorityEpochPackage(f.root, { ...owner, from: "bad", to: next })).toThrow(/invalid/u)
+    expect(() => rebindSanctuaryAuthorityEpochPackage(f.root, { ...owner, from: f.input.packageDigest, to: "bad" })).toThrow(/invalid/u)
+    expect(() => rebindSanctuaryAuthorityEpochPackage(f.root, { ...owner, from: `sha256:${"c".repeat(64)}`, to: next })).toThrow(/package changed/u)
+    retireSanctuaryAuthorityEpoch(f.root, { ...owner, quiescent: true, cursor: 90 })
+    expect(() => rebindSanctuaryAuthorityEpochPackage(f.root, { ...owner, from: f.input.packageDigest, to: next })).toThrow(/retired/u)
+  })
+})
 })
