@@ -12,6 +12,7 @@ import { FileA2APinStore } from "./pin-store"
 import { FileA2ASeenLedger } from "./seen-ledger"
 import { makeDidResolution } from "./did-resolution"
 import { receiveInboundShare, type InboundShareDeps } from "./inbound-share"
+import { createSanctuaryToolContext } from "../senses/sanctuary-runtime"
 import { sealChatMessage } from "./sealed-chat"
 import { createRelationshipAuthorizationEvaluator, loadRelationshipCapabilityRegistry, type RelationshipAuthorizationEvaluator } from "../repertoire/relationship-authorization"
 import type { FriendRecord } from "@ouro.bot/friends"
@@ -166,7 +167,14 @@ async function defaultTurnRunner(input: A2ATurnRunnerInput): Promise<A2ATurnRunn
       externalId: input.peerAgentId,
       displayName: input.peerName,
     },
-    ...(input.relationshipAuthorization ? { toolContext: { relationshipAuthorization: input.relationshipAuthorization } } : {}),
+    // The Butler's house tools read a typed Sanctuary runtime from the tool context; the
+    // Telegram sense attaches it, and a verified A2A friend's turn needs it too (without it
+    // every Unraid read answered "Sanctuary runtime is unavailable"). The relationship
+    // profile still decides which of those tools the peer may call.
+    toolContext: {
+      ...(input.agentName === "sanctuary" ? createSanctuaryToolContext(input.agentName) : {}),
+      ...(input.relationshipAuthorization ? { relationshipAuthorization: input.relationshipAuthorization } : {}),
+    },
   })
   return { response: result.response }
 }
