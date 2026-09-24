@@ -3,6 +3,7 @@ import * as net from "node:net"
 import * as path from "node:path"
 
 import type { TelegramBotApi, TelegramUpdate } from "../../senses/telegram-client"
+import { TelegramApiError } from "../../senses/telegram-client"
 import { FIXED_ADMISSION_ACKNOWLEDGEMENT } from "../../senses/telegram-effect-adapter"
 import { SocketFrontendClient } from "../frontend-socket-client"
 import { authorityArtifactDigest } from "./sanctuary-authority-codec"
@@ -45,8 +46,18 @@ function boundedText(value: unknown, maxLength: number): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= maxLength
 }
 
+// After a gateway restart, Telegram keeps the previous getUpdates long-poll
+// alive server-side and answers 409 Conflict to the new poller until that
+// session expires (about the previous poll's timeout). Retry through that
+// window so the tokenless resident never sees the reclaim error; a transient
+// 5xx from Telegram is retried the same way.
+const AUTHORITY_POLL_RECLAIM_ATTEMPTS = 20
+const AUTHORITY_POLL_RECLAIM_DELAY_MS = 4_000
+
 export class SanctuaryTelegramAuthorityService {
   readonly #api: Pick<TelegramBotApi, "request">
+  readonly #pollReclaimAttempts: number
+  readonly #pollReclaimDelayMs: number
   readonly #gateway: FileSanctuaryTelegramAuthorityGateway
   readonly #downloadFile: ((filePath: string) => Promise<{ body: Buffer; contentType?: string }>) | undefined
   readonly #hostAuthority: FileSanctuaryHostAuthority | undefined
@@ -70,6 +81,8 @@ export class SanctuaryTelegramAuthorityService {
       isHealthy?(): boolean
     }
     downloadFile?: (filePath: string) => Promise<{ body: Buffer; contentType?: string }>
+    pollReclaimAttempts?: number
+    pollReclaimDelayMs?: number
   }) {
     this.#api = {
       request: (method, body) => options.api.request(method, body, AbortSignal.timeout(method === "getUpdates" ? 60_000 : 15_000)),
@@ -78,10 +91,36 @@ export class SanctuaryTelegramAuthorityService {
     this.#hostAuthority = options.hostAuthority
     this.#hostExecutor = options.hostExecutor
     this.#downloadFile = options.downloadFile
+    this.#pollReclaimAttempts = options.pollReclaimAttempts ?? AUTHORITY_POLL_RECLAIM_ATTEMPTS
+    this.#pollReclaimDelayMs = options.pollReclaimDelayMs ?? AUTHORITY_POLL_RECLAIM_DELAY_MS
   }
 
   async drainHostExecutions(): Promise<void> {
     await Promise.allSettled(this.#hostExecutions.values())
+  }
+
+  async #pollUpdates(): Promise<TelegramUpdate[]> {
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        return await this.#api.request<TelegramUpdate[]>("getUpdates", {
+          offset: this.#gateway.cursor(),
+          timeout: 50,
+          allowed_updates: ["message", "callback_query"],
+        })
+      } catch (error) {
+        const status = error instanceof TelegramApiError ? error.status : null
+        const reclaimable = status === 409 || (status !== null && status >= 500)
+        if (!reclaimable || attempt >= this.#pollReclaimAttempts) throw error
+        emitNervesEvent({
+          level: "warn",
+          component: "daemon",
+          event: "daemon.sanctuary_authority_poll_reclaim",
+          message: "getUpdates conflicted while reclaiming the Telegram session; retrying",
+          meta: { status, attempt },
+        })
+        await new Promise<void>((resolve) => setTimeout(resolve, this.#pollReclaimDelayMs))
+      }
+    }
   }
 
   #hostReady(): boolean {
@@ -97,11 +136,7 @@ export class SanctuaryTelegramAuthorityService {
     }
     if (method === "telegram.poll") {
       if (!emptyParams(params)) throw new Error("Sanctuary Telegram poll params are invalid")
-      const updates = await this.#api.request<TelegramUpdate[]>("getUpdates", {
-        offset: this.#gateway.cursor(),
-        timeout: 50,
-        allowed_updates: ["message", "callback_query"],
-      })
+      const updates = await this.#pollUpdates()
       if (!Array.isArray(updates)) throw new Error("Sanctuary Telegram poll result must be an array")
       this.#gateway.capture(updates)
       const observation = this.#gateway.poll()
