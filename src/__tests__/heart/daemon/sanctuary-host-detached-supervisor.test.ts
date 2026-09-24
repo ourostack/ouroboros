@@ -149,6 +149,13 @@ describe("detached Sanctuary host supervisor", () => {
     expect(() => supervisor.verifyInstallation()).toThrow(/metadata/u)
   })
 
+  it("ignores the authority's permanent keep child when reconciling orphan cgroups", async () => {
+    const f = fixture()
+    fs.mkdirSync(path.join(f.options.cgroupRoot, "ouro-keep"))
+    const supervisor = new DetachedSanctuaryHostSupervisor({ ...f.options, killCgroup: vi.fn(), cgroupEmpty: () => false })
+    await expect(supervisor.reconcileOrphans([])).resolves.toBeUndefined()
+  })
+
   it("refuses startup when an orphan cgroup cannot be emptied", async () => {
     const f = fixture()
     fs.mkdirSync(path.join(f.options.cgroupRoot, permit.permitId))

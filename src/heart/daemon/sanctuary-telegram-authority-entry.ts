@@ -11,7 +11,7 @@ import { FileSanctuaryAuthorityLedger } from "./sanctuary-authority-ledger"
 import { authorityArtifactDigest, type SignedAuthorityPayload } from "./sanctuary-authority-codec"
 import { DetachedSanctuaryHostSupervisor } from "./sanctuary-host-detached-supervisor"
 import { SanctuaryHostPermitExecutor } from "./sanctuary-host-executor"
-import { verifySanctuaryAuthorityInstallation } from "./sanctuary-authority-installation"
+import { sanctuaryCgroupChildren, verifySanctuaryAuthorityInstallation } from "./sanctuary-authority-installation"
 import { readSanctuaryAuthorityEpoch } from "./sanctuary-authority-epoch"
 import {
   createSanctuaryTelegramAuthorityServer,
@@ -378,7 +378,7 @@ export async function startSanctuaryTelegramAuthority(options: StartOptions): Pr
         hostAuthority.retireRegistrations(ledger)
         await reconcileExecutions()
         if (hostAuthority.retireRegistrations(ledger).length !== 0
-          || fs.readdirSync(config.hostCgroupRoot).some((entry) => fs.lstatSync(path.join(config.hostCgroupRoot, entry)).isDirectory())) throw new Error("Sanctuary authority retirement cleanup is unproven")
+          || sanctuaryCgroupChildren(config.hostCgroupRoot).length !== 0) throw new Error("Sanctuary authority retirement cleanup is unproven")
         writePrivateJson(path.join(config.epochRoot, "retirement.json"), {
           schemaVersion: 1, keyId: config.keyId, publicKeyDigest: config.publicKeyDigest,
           cursor: gateway.cursor(), quiescent: true,

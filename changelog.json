@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.837",
+      "changes": [
+        "Sanctuary: the root authority keeps a permanent empty child cgroup (ouro-keep), so Unraid's cgroup2-unraid can no longer remove the authority cgroup (D-026). The host keeper now lets the reaper run and pauses it only while the keep child is missing; every reader of the authority cgroup ignores the keep child."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.836",
       "changes": [
         "release:bump appends new change lines to an existing top changelog entry instead of silently replacing them (D-042); --replace keeps the old rewrite behaviour."

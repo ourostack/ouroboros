@@ -428,12 +428,13 @@ const GATEWAY_SUPERVISOR = `${AUTHORITY_CUSTOM}/gateway-supervisor.sh`
 const GATEWAY_WATCHDOG = `${AUTHORITY_CUSTOM}/gateway-keeper-watchdog.sh`
 const UNRAID_STOP_HOOK = "/boot/config/stop"
 const GATEWAY_SUPERVISOR_SH = String.raw`#!/bin/sh
-# Ouro authority gateway keeper for Unraid (D-026 workaround).
-# The .830 root-authority gateway needs /sys/fs/cgroup/ouro-authority to persist while it
-# runs, but Unraid's cgroup2-unraid reaps empty cgroups and the gateway never populates it,
-# so the reaper deletes the cgroup and kills the gateway. A FIRM (not per-loop-racing) reaper
-# pause is required for the gateway to reach readiness. This keeper:
-#   - firmly pauses the reaper and keeps it paused,
+# Ouro authority gateway keeper for Unraid.
+# The root-authority gateway needs /sys/fs/cgroup/ouro-authority to persist, and Unraid's
+# cgroup2-unraid removes every top-level cgroup that reports populated 0. The kernel will not
+# remove a cgroup that has a child cgroup, so the authority keeps an empty ouro-keep child
+# (D-026). This keeper:
+#   - creates that keep child and lets the reaper run; it pauses the reaper only while the
+#     keep child is missing (a fresh boot, or an authority older than the keep child),
 #   - keeps the gateway process alive,
 #   - reconnects the resident (docker restart) if it is unhealthy while the gateway is ready
 #     (handles reboot ordering, where Docker autostarts the resident before the gateway).
@@ -443,15 +444,17 @@ R=/mnt/user/appdata/ouro-authority
 GW=$R/package/dist/heart/daemon/sanctuary-telegram-authority-entry.js
 CFG=$R/active.json
 LOG=/var/log/ouro-gateway.log
-pause_reaper() {
+reaper_policy() {
   P=$(cat /run/cgroup2-unraid.pid 2>/dev/null) || return 0
   [ -n "$P" ] || return 0
+  if [ -d "$CG/ouro-keep" ]; then kill -CONT "$P" 2>/dev/null; return 0; fi
   S=$(ps -o stat= -p "$P" 2>/dev/null | tr -d ' ')
   case "$S" in T*) : ;; *) kill -STOP "$P" 2>/dev/null ;; esac
 }
 ensure_cg() {
   [ -d "$CG" ] || { mkdir -m 700 "$CG" 2>/dev/null; chown 0:0 "$CG" 2>/dev/null
     for c in cpu memory pids; do echo "+$c" > "$CG/cgroup.subtree_control" 2>/dev/null; done; }
+  [ -d "$CG/ouro-keep" ] || mkdir -m 700 "$CG/ouro-keep" 2>/dev/null
 }
 ensure_sock() {
   # Docker autostarts the resident before us and auto-creates its missing bind
@@ -475,12 +478,12 @@ start_gw() {
 }
 # An in-place upgrade pauses us with a flag; a stale flag (> 30 min) is ignored.
 maintenance() { [ -n "$(find /run/ouro-authority-maintenance -mmin -30 2>/dev/null)" ]; }
-pause_reaper; ensure_cg; ensure_sock
+ensure_cg; reaper_policy; ensure_sock
 last_res=0
 while true; do
   if maintenance; then sleep 15; continue; fi
-  pause_reaper
   ensure_cg
+  reaper_policy
   ensure_sock
   [ -n "$(gw_pid)" ] || { start_gw; sleep 8; }
   rd=$(jq -rc .status "$R"/epochs/*/readiness.json 2>/dev/null)
