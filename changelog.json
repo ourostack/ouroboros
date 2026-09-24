@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.843",
+      "changes": [
+        "Butler image: drop dependency source maps, type declarations and Markdown from node_modules (about 11,800 of 28,000 files). The root authority pins and hashes every package file at each gateway start, which took minutes on Unraid's array (D-036)."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.842",
       "changes": [
         "A2A: a verified friend's turn with the Sanctuary agent gets the same typed Sanctuary runtime the Telegram sense attaches, so the Butler's house tools work over A2A (every Unraid read had answered 'Sanctuary runtime is unavailable'). The relationship profile still decides which tools the peer may call."

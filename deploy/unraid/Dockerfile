@@ -25,6 +25,10 @@ RUN npm ci --omit=dev --legacy-peer-deps --workspaces=false --no-audit --no-fund
   && rm -rf node_modules/better-sqlite3/build \
   && test -x /opt/ouro/node_modules/.bin/bw \
   && ln -s /opt/ouro/node_modules/.bin/bw /usr/local/bin/bw
+# The runtime never reads dependency source maps, type declarations or Markdown, and the
+# root authority pins and hashes every package file each time the gateway starts, which
+# took minutes on Unraid's array (D-036). Dropping them removes about 40% of the files.
+RUN find /opt/ouro/node_modules -type f \( -name '*.map' -o -name '*.d.ts' -o -name '*.d.mts' -o -name '*.d.cts' -o -name '*.md' -o -name '*.markdown' \) -delete
 COPY dist ./dist
 COPY assets ./assets
 COPY skills ./skills
