@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.839",
+      "changes": [
+        "CLI: provision A2A peers without editing files. ouro connect a2a --host/--port/--public-url stores this machine's A2A bind address and advertised URL (D-038); ouro a2a onboard --did <did:key> --name <name> onboards a card-less client such as a coding harness, keyed on its DID; ouro friend update sets --admission, --initiative and --profile as well as --trust (D-039)."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.838",
       "changes": [
         "Upgrade orchestrator: pausing host supervision first installs this version's keeper scripts and raises the shutdown flag every watchdog honours, so an older keeper can no longer restart the resident mid-upgrade (found by the first 830 to 835 rehearsal, which rolled back cleanly). A rehearsal now reports an unplanned failure as a failure instead of as the planned stop."
