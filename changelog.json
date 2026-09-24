@@ -6,7 +6,8 @@
       "changes": [
         "A2A: authenticated agent chat. A verified friend's message (friends message kind, signed and sealed) becomes the agent's turn under the sender's relationship profile, and the reply is sealed back to the sender and stored sealed, so neither direction travels or persists in plaintext over any transport.",
         "Sanctuary: remote turns are relationship-scoped. Any Sanctuary turn from outside the host (Telegram, A2A, future senses) without a known capability profile gets no tools; only the Butler's own inner, CLI, and MCP channels keep the unscoped tool set. Adds a sanctuary-agent-peer profile: the owner's chat tools minus host execution and approval-gated restarts.",
-        "CLI: ouro a2a identity mints a file-backed client key (0600, refused if group- or other-readable); ouro a2a message sends a sealed chat to an agent card and prints the verified reply."
+        "CLI: ouro a2a identity mints a file-backed client key (0600, refused if group- or other-readable); ouro a2a message sends a sealed chat to an agent card and prints the verified reply.",
+        "A2A: sealed chat is observable (sealed, opened, and refused events), and a reply sealed as any other friends kind is refused before it can reach a store."
       ]
     },
     {
