@@ -59,6 +59,8 @@ const UPGRADE_JOURNAL = `${ROOT}/upgrade.json`
 // Host supervision skips its work while this flag is fresh (< 30 min), so a crashed
 // upgrade can never leave self-heal off for longer than that.
 const MAINTENANCE = "/run/ouro-authority-maintenance"
+// The stop hook's flag: every keeper watchdog version stands down while it exists.
+const SHUTDOWN_FLAG = "/run/ouro-authority-shutdown"
 const UPGRADE_STEPS = ["stop", "switch", "resident", "migrate", "start"]
 
 const sh = (file, args, opts = {}) => execFileSync(file, args, { encoding: "utf8", maxBuffer: 64 << 20, ...opts })
@@ -782,13 +784,25 @@ function buildFinalProof(version, out) {
 
 // ---- upgrade (in place, installed authority) --------------------------------
 
+// A host still running an older keeper has a cron watchdog that ignores the maintenance
+// flag: it resurrected the paused supervisor, which restarted the resident mid-upgrade
+// (the first 830 -> 835 rehearsal). So put this version's keeper scripts in place first
+// (they honour the flag) and also raise the shutdown flag every watchdog version honours;
+// resumeSupervision clears both.
 function pauseSupervision() {
   writeFileSync(MAINTENANCE, `${new Date().toISOString()} ${process.pid}\n`)
+  writeFileSync(SHUTDOWN_FLAG, `upgrade ${process.pid}\n`)
+  for (const [path, body] of [[GATEWAY_SUPERVISOR, GATEWAY_SUPERVISOR_SH], [GATEWAY_WATCHDOG, GATEWAY_WATCHDOG_SH]]) {
+    writeFileSync(path, body)
+    sh("/bin/chown", ["0:0", path]); chmodSync(path, 0o700)
+  }
   sh("/bin/sh", ["-c", "for p in $(pgrep -f '^/bin/sh /boot/config/custom/ouro-authority/[g]ateway-supervisor' || true); do kill $p; done"])
-  ok("host supervision paused (its flag expires on its own after 30 min)")
+  if (sh("/bin/sh", ["-c", "pgrep -fc '^/bin/sh /boot/config/custom/ouro-authority/[g]ateway-supervisor' || true"]).trim() !== "0") fail("a gateway supervisor survived the pause")
+  ok("host supervision paused (keeper scripts current; flags expire on their own)")
 }
 function resumeSupervision() {
   rmSync(MAINTENANCE, { force: true })
+  rmSync(SHUTDOWN_FLAG, { force: true })
   installGatewaySupervisor()
 }
 
@@ -839,8 +853,12 @@ function upgrade(version, rehearse) {
     say("lifecycle upgrade (stop → switch → resident → migrate → start)")
     ok(sh("/usr/local/bin/node", [lifecycle, "upgrade", id, image(version), ...(rehearse ? ["--fail-after", rehearse] : [])], { stdio: ["ignore", "pipe", "pipe"] }).trim())
   } catch (e) { failure = e }
+  // Only the lifecycle's own rehearsal stop is planned; anything else is a real failure,
+  // even during a rehearsal (the first 830 -> 835 rehearsal was mislabelled "as planned").
+  const reason = failure ? lifecycleFailure(failure) : ""
+  const planned = Boolean(failure && rehearse && reason.includes(`rehearsal stopped after ${rehearse}`))
   if (failure) {
-    console.log(`\n!! ${rehearse ? "rehearsal stopped as planned" : "upgrade failed"}: ${lifecycleFailure(failure)}\n!! rolling back to the predecessor`)
+    console.log(`\n!! ${planned ? "rehearsal stopped as planned" : "upgrade FAILED"}: ${reason}\n!! rolling back to the predecessor`)
     try { ok(`rollback: ${sh("/usr/local/bin/node", [lifecycle, "upgrade-rollback"], { stdio: ["ignore", "pipe", "pipe"] }).trim()}`) }
     catch (e) {
       resumeSupervision()
@@ -853,8 +871,8 @@ function upgrade(version, rehearse) {
   sha12(POLICY) === policyBefore ? ok("steward policy unchanged") : fail("STEWARD POLICY CHANGED")
   const live = docker(["inspect", CONTAINER, "--format", "{{.Config.Image}} {{.State.Status}}/{{.State.Health.Status}}"]).trim()
   ok(`butler: ${live}`)
-  if (failure && !rehearse) fail("upgrade rolled back; the Butler is on its prior version (see above)")
-  console.log(rehearse ? "\nREHEARSAL done — the rollback restored the predecessor." : `\nUPGRADE done — ${version} live. Run verify.`)
+  if (failure && !planned) fail("upgrade rolled back; the Butler is on its prior version (see above)")
+  console.log(rehearse ? "\nREHEARSAL done — the upgrade reached the planned step and the rollback restored the predecessor." : `\nUPGRADE done — ${version} live. Run verify.`)
 }
 
 // ---- verify ---------------------------------------------------------------
