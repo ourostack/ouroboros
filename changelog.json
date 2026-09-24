@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.836",
+      "changes": [
+        "release:bump appends new change lines to an existing top changelog entry instead of silently replacing them (D-042); --replace keeps the old rewrite behaviour."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.835",
       "changes": [
         "Sanctuary: in-place upgrade of an installed root authority (D-043). The authority keeps its epoch, token, issuer and Telegram cursor; only the reviewed package, its pins and the resident image change. The new package's lifecycle runs stop, switch, resident, migrate and start from a journal, backs up every root record it rewrites, and rolls back exactly on any failure. An interrupted upgrade rolls back on the next authority boot. No token rotation.",
