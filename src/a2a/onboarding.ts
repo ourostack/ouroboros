@@ -16,7 +16,7 @@ export interface OnboardA2APeerOptions {
   fetchImpl?: typeof fetch
 }
 
-function storeFor(options: OnboardA2APeerOptions): FriendStore {
+function storeFor(options: { agentName: string; bundlesRoot?: string; store?: FriendStore }): FriendStore {
   if (options.store) return options.store
   /* v8 ignore next -- default bundle root fallback is owned by identity path tests; CLI and onboarding tests inject explicit roots @preserve */
   return new FileFriendStore(path.join(options.bundlesRoot ?? getAgentBundlesRoot(), `${options.agentName}.ouro`, "friends"))
@@ -85,6 +85,37 @@ export async function onboardA2APeer(options: OnboardA2APeerOptions): Promise<Fr
     event: "friends.a2a_peer_onboarded",
     message: "onboarded A2A peer into friend model",
     meta: { agentName: options.agentName, friendId: record.id, peerName: record.name, trustLevel: record.trustLevel, ...(did ? { did } : {}) },
+  })
+  return record
+}
+
+export interface OnboardA2AClientOptions {
+  agentName: string
+  did: string
+  name: string
+  trustLevel?: TrustLevel
+  bundlesRoot?: string
+  store?: FriendStore
+}
+
+/**
+ * Onboard a client that serves no agent card (for example a coding harness with a
+ * file-backed identity) by its did:key alone. The record is keyed on the DID, so its
+ * signed, sealed messages resolve to this friend; the key must parse, or nothing is written.
+ */
+export async function onboardA2AClientByDid(options: OnboardA2AClientOptions): Promise<FriendRecord> {
+  if (parseDidKey(options.did) === null) throw new Error(`not a valid did:key: ${options.did}`)
+  const record = await upsertAgentPeer(storeFor(options), {
+    name: options.name,
+    agentId: options.did,
+    ...(options.trustLevel ? { trustLevel: options.trustLevel } : {}),
+    a2a: { did: options.did, agentId: options.did },
+  })
+  emitNervesEvent({
+    component: "friends",
+    event: "friends.a2a_client_onboarded",
+    message: "onboarded card-less A2A client into friend model",
+    meta: { agentName: options.agentName, friendId: record.id, peerName: record.name, trustLevel: record.trustLevel, did: options.did },
   })
   return record
 }

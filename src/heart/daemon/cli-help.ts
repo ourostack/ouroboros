@@ -466,7 +466,7 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
   },
   "connect a2a": {
     description: "Enable the agent-to-agent A2A sense",
-    usage: "ouro connect a2a [--agent <name>]",
+    usage: "ouro connect a2a [--agent <name>] [--host <address>] [--port <port>] [--public-url <url>]",
     example: "ouro connect a2a --agent <agent>",
   },
   "connect telegram": {
@@ -486,7 +486,7 @@ const SUBCOMMAND_HELP: Record<string, CommandHelp> = {
   },
   "a2a onboard": {
     description: "Onboard an A2A peer into the existing friend model",
-    usage: "ouro a2a onboard [--agent <name>] --card-url <url> [--trust <level>] [--name <name>]",
+    usage: "ouro a2a onboard [--agent <name>] (--card-url <url>|--did <did:key> --name <name>) [--trust <level>] [--name <name>]",
     example: "ouro a2a onboard --agent <agent> --card-url https://peer.example/.well-known/agent-card.json --trust friend",
   },
   "a2a serve": {

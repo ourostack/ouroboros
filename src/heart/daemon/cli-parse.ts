@@ -154,7 +154,7 @@ export function usage(): string {
     "  ouro friend list [--agent <name>]",
     "  ouro friend show <id> [--agent <name>]",
     "  ouro friend create --name <name> [--trust <level>] [--agent <name>]",
-    "  ouro friend update <id> --trust <level> [--agent <name>]",
+    "  ouro friend update <id> [--trust <level>] [--admission <state>] [--initiative <policy>] [--profile <id>] [--agent <name>]",
     "  ouro thoughts [--last <n>] [--json] [--follow] [--agent <name>]",
     "  ouro private decisions [--agent <name>] [--limit <n>] [--json]",
     "  ouro private status [--agent <name>] [--json]",
@@ -163,7 +163,7 @@ export function usage(): string {
     "  ouro friend link <agent> --friend <id> --provider <p> --external-id <eid>",
     "  ouro friend unlink <agent> --friend <id> --provider <p> --external-id <eid>",
     "  ouro a2a card [--agent <name>] [--base-url <url>] [--json]",
-    "  ouro a2a onboard [--agent <name>] --card-url <url> [--trust <level>] [--name <name>]",
+    "  ouro a2a onboard [--agent <name>] (--card-url <url>|--did <did:key> --name <name>) [--trust <level>] [--name <name>]",
     "  ouro a2a serve [--agent <name>] [--host <host>] [--port <port>] [--base-url <url>] [--path <path>]",
     "  ouro a2a identity [--identity-file <path>] [--json]",
     "  ouro a2a message --to <card-url> --text <text> [--context <id>] [--identity-file <path>] [--json]",
@@ -1079,19 +1079,51 @@ function extractMailSourceFlags(args: string[], usageText: string): MailSourceFl
   }
 }
 
+// `ouro connect a2a` bind flags: where the listener binds and the URL its card advertises (D-038).
+function extractA2AConnectFlags(args: string[]): { rest: string[]; host?: string; port?: number; publicUrl?: string } {
+  const rest: string[] = []
+  const flags: { host?: string; port?: number; publicUrl?: string } = {}
+  for (let i = 0; i < args.length; i += 1) {
+    const value = args[i + 1]
+    if (args[i] === "--host" && value) { flags.host = value; i += 1; continue }
+    if (args[i] === "--public-url" && value) {
+      const url = new URL(value)
+      if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("A2A public URL must be http(s)")
+      flags.publicUrl = value.replace(/\/+$/u, "")
+      i += 1
+      continue
+    }
+    if (args[i] === "--port" && value) {
+      const port = Number(value)
+      if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("A2A port must be 1-65535")
+      flags.port = port
+      i += 1
+      continue
+    }
+    rest.push(args[i]!)
+  }
+  return { rest, ...flags }
+}
+
 function parseConnectCommand(args: string[]): OuroCliCommand {
-  const usageText = "Usage: ouro connect [providers|perplexity|embeddings|teams|bluebubbles|mail|voice|a2a|telegram|workbench] [--agent <name>] [--owner-email <email> --source <label>|--no-delegated-source] [--rotate-missing-mail-keys]"
+  const usageText = "Usage: ouro connect [providers|perplexity|embeddings|teams|bluebubbles|mail|voice|a2a|telegram|workbench] [--agent <name>] [--owner-email <email> --source <label>|--no-delegated-source] [--rotate-missing-mail-keys] [a2a: --host <address> --port <port> --public-url <url>]"
   const { agent, rest: afterAgent } = extractAgentFlag(args)
-  const mailFlags = extractMailSourceFlags(afterAgent, usageText)
+  const a2aFlags = extractA2AConnectFlags(afterAgent)
+  const mailFlags = extractMailSourceFlags(a2aFlags.rest, usageText)
   if (mailFlags.rest.length > 1) throw new Error(usageText)
   const target = normalizeConnectTarget(mailFlags.rest[0])
   if (mailFlags.hasMailSourceFlags && target !== "mail") {
     throw new Error("Mail source flags require `ouro connect mail`.")
   }
+  const hasA2AFlags = a2aFlags.host !== undefined || a2aFlags.port !== undefined || a2aFlags.publicUrl !== undefined
+  if (hasA2AFlags && target !== "a2a") throw new Error("--host, --port and --public-url require `ouro connect a2a`.")
   return {
     kind: "connect",
     ...(agent ? { agent } : {}),
     ...(target ? { target } : {}),
+    ...(a2aFlags.host !== undefined ? { a2aHost: a2aFlags.host } : {}),
+    ...(a2aFlags.port !== undefined ? { a2aPort: a2aFlags.port } : {}),
+    ...(a2aFlags.publicUrl !== undefined ? { a2aPublicUrl: a2aFlags.publicUrl } : {}),
     ...(mailFlags.ownerEmail !== undefined ? { ownerEmail: mailFlags.ownerEmail } : {}),
     ...(mailFlags.source !== undefined ? { source: mailFlags.source } : {}),
     ...(mailFlags.noDelegatedSource ? { noDelegatedSource: true } : {}),
@@ -1395,26 +1427,29 @@ function parseFriendCommand(args: string[]): OuroCliCommand {
 
   if (sub === "update") {
     const friendId = rest[0]
-    if (!friendId) throw new Error(`Usage: ouro friend update <id> --trust <level>`)
-    let trustLevel: string | undefined
-    /* v8 ignore start -- flag parsing loop: tested via CLI parsing tests @preserve */
-    for (let i = 1; i < rest.length; i++) {
-      if (rest[i] === "--trust" && rest[i + 1]) {
-        trustLevel = rest[i + 1]
-        i += 1
-      }
+    const usage = "Usage: ouro friend update <id> [--trust <stranger|acquaintance|friend|family>] [--admission <unverified|active|revoked>] [--initiative <none|reactive_only|request_follow_up_only|proactive>] [--profile <capability-profile-id>]"
+    if (!friendId) throw new Error(usage)
+    // Every relationship field an owner provisions, not just trust (D-039).
+    const choices: Record<string, { key: string; values?: readonly string[] }> = {
+      "--trust": { key: "trustLevel", values: ["stranger", "acquaintance", "friend", "family"] },
+      "--admission": { key: "admissionState", values: ["unverified", "active", "revoked"] },
+      "--initiative": { key: "initiativePolicy", values: ["none", "reactive_only", "request_follow_up_only", "proactive"] },
+      "--profile": { key: "capabilityProfileId" },
     }
-    /* v8 ignore stop */
-    const VALID_TRUST_LEVELS = new Set(["stranger", "acquaintance", "friend", "family"])
-    if (!trustLevel || !VALID_TRUST_LEVELS.has(trustLevel)) {
-      throw new Error(`Usage: ouro friend update <id> --trust <stranger|acquaintance|friend|family>`)
+    const fields: Record<string, string> = {}
+    for (let i = 1; i < rest.length; i += 2) {
+      const choice = choices[rest[i]!]
+      const value = rest[i + 1]
+      if (!choice || !value || (choice.values && !choice.values.includes(value))) throw new Error(usage)
+      fields[choice.key] = value
     }
+    if (Object.keys(fields).length === 0) throw new Error(usage)
     return {
       kind: "friend.update" as const,
       friendId,
-      trustLevel: trustLevel as TrustLevel,
+      ...fields,
       ...(agent ? { agent } : {}),
-    }
+    } as OuroCliCommand
   }
 
   if (sub === "link") return parseLinkCommand(rest, "friend.link")
@@ -1481,6 +1516,7 @@ function parseA2ACommand(args: string[]): OuroCliCommand {
 
   if (sub === "onboard") {
     let cardUrl: string | undefined
+    let did: string | undefined
     let trustLevel: TrustLevel | undefined
     let name: string | undefined
     const VALID_TRUST_LEVELS = new Set(["stranger", "acquaintance", "friend", "family"])
@@ -1489,9 +1525,13 @@ function parseA2ACommand(args: string[]): OuroCliCommand {
         cardUrl = rest[++i]
         continue
       }
+      if (rest[i] === "--did" && rest[i + 1]) {
+        did = rest[++i]
+        continue
+      }
       if (rest[i] === "--trust" && rest[i + 1]) {
         const raw = rest[++i]
-        if (!VALID_TRUST_LEVELS.has(raw)) throw new Error("Usage: ouro a2a onboard [--agent <name>] --card-url <url> [--trust <stranger|acquaintance|friend|family>] [--name <name>]")
+        if (!VALID_TRUST_LEVELS.has(raw)) throw new Error("Usage: ouro a2a onboard [--agent <name>] (--card-url <url>|--did <did:key> --name <name>) [--trust <stranger|acquaintance|friend|family>] [--name <name>]")
         trustLevel = raw as TrustLevel
         continue
       }
@@ -1499,10 +1539,11 @@ function parseA2ACommand(args: string[]): OuroCliCommand {
         name = rest[++i]
         continue
       }
-      throw new Error("Usage: ouro a2a onboard [--agent <name>] --card-url <url> [--trust <level>] [--name <name>]")
+      throw new Error("Usage: ouro a2a onboard [--agent <name>] (--card-url <url>|--did <did:key> --name <name>) [--trust <level>] [--name <name>]")
     }
-    if (!cardUrl) throw new Error("Usage: ouro a2a onboard [--agent <name>] --card-url <url> [--trust <level>] [--name <name>]")
-    return { kind: "a2a.onboard", cardUrl, ...(agent ? { agent } : {}), ...(trustLevel ? { trustLevel } : {}), ...(name ? { name } : {}) }
+    // A client that serves no card (a coding harness) is onboarded by its did:key alone.
+    if (!cardUrl === !did || (did && !name)) throw new Error("Usage: ouro a2a onboard [--agent <name>] (--card-url <url>|--did <did:key> --name <name>) [--trust <level>] [--name <name>]")
+    return { kind: "a2a.onboard", ...(cardUrl ? { cardUrl } : { did: did! }), ...(agent ? { agent } : {}), ...(trustLevel ? { trustLevel } : {}), ...(name ? { name } : {}) }
   }
 
   if (sub === "serve") {

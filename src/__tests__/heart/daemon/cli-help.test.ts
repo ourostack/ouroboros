@@ -339,7 +339,7 @@ describe("getCommandHelp()", () => {
 
   it("returns focused help for A2A subcommands", () => {
     expect(getCommandHelp("a2a card")).toContain("ouro a2a card [--agent <name>]")
-    expect(getCommandHelp("a2a onboard")).toContain("ouro a2a onboard [--agent <name>] --card-url <url>")
+    expect(getCommandHelp("a2a onboard")).toContain("ouro a2a onboard [--agent <name>] (--card-url <url>|--did <did:key> --name <name>)")
     expect(getCommandHelp("a2a serve")).toContain("ouro a2a serve [--agent <name>]")
   })
 
@@ -571,7 +571,7 @@ describe("runOuroCli help execution", () => {
     const deps = makeDeps()
 
     await expect(runOuroCli(["help", "a2a", "card"], deps)).resolves.toContain("ouro a2a card [--agent <name>]")
-    await expect(runOuroCli(["a2a", "onboard", "--help"], deps)).resolves.toContain("ouro a2a onboard [--agent <name>] --card-url <url>")
+    await expect(runOuroCli(["a2a", "onboard", "--help"], deps)).resolves.toContain("ouro a2a onboard [--agent <name>] (--card-url <url>|--did <did:key> --name <name>)")
     await expect(runOuroCli(["a2a", "serve", "--help"], deps)).resolves.toContain("ouro a2a serve [--agent <name>]")
   })
 

@@ -62,7 +62,7 @@ export type OuroCliCommand =
   | { kind: "vault.item.status"; agent?: string; item: string; compatibilityAlias?: VaultItemCompatibilityAlias }
   | { kind: "vault.item.list"; agent?: string; prefix?: string; compatibilityAlias?: VaultItemCompatibilityAlias }
   | { kind: "dns.workflow"; action: DnsWorkflowAction; agent?: string; bindingPath: string; outputPath?: string; backupPath?: string; yes?: boolean }
-  | { kind: "connect"; agent?: string; target?: ConnectTarget; ownerEmail?: string; source?: string; noDelegatedSource?: boolean; rotateMissingMailKeys?: boolean }
+  | { kind: "connect"; agent?: string; target?: ConnectTarget; ownerEmail?: string; source?: string; noDelegatedSource?: boolean; rotateMissingMailKeys?: boolean; a2aHost?: string; a2aPort?: number; a2aPublicUrl?: string }
   | { kind: "account.ensure"; agent?: string; ownerEmail?: string; source?: string; noDelegatedSource?: boolean; rotateMissingMailKeys?: boolean }
   | { kind: "mail.import-mbox"; agent?: string; filePath?: string; discover?: boolean; ownerEmail?: string; source?: string; foreground?: boolean; operationId?: string }
   | { kind: "mail.backfill-indexes"; agent?: string; foreground?: boolean; operationId?: string }
@@ -81,11 +81,11 @@ export type OuroCliCommand =
   | { kind: "friend.list"; agent?: string }
   | { kind: "friend.show"; friendId: string; agent?: string }
   | { kind: "friend.create"; name: string; trustLevel?: string; agent?: string }
-  | { kind: "friend.update"; friendId: string; trustLevel: TrustLevel; agent?: string }
+  | { kind: "friend.update"; friendId: string; trustLevel?: TrustLevel; admissionState?: "unverified" | "active" | "revoked"; initiativePolicy?: "none" | "reactive_only" | "request_follow_up_only" | "proactive"; capabilityProfileId?: string; agent?: string }
   | { kind: "friend.link"; agent: string; friendId: string; provider: import("@ouro.bot/friends").IdentityProvider; externalId: string }
   | { kind: "friend.unlink"; agent: string; friendId: string; provider: import("@ouro.bot/friends").IdentityProvider; externalId: string }
   | { kind: "a2a.card"; agent?: string; baseUrl?: string; json?: boolean }
-  | { kind: "a2a.onboard"; agent?: string; cardUrl: string; trustLevel?: TrustLevel; name?: string }
+  | { kind: "a2a.onboard"; agent?: string; cardUrl?: string; did?: string; trustLevel?: TrustLevel; name?: string }
   | { kind: "a2a.message"; to: string; text: string; conversationId?: string; identityFile?: string; json?: boolean }
   | { kind: "a2a.identity"; identityFile?: string; json?: boolean }
   | { kind: "a2a.serve"; agent?: string; host?: string; port?: number; baseUrl?: string; path?: string }

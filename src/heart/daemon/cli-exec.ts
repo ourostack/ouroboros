@@ -5986,13 +5986,22 @@ async function executeConnectVoice(agent: string, deps: OuroCliDeps): Promise<st
   return message
 }
 
-async function executeConnectA2A(agent: string, deps: OuroCliDeps): Promise<string> {
+async function executeConnectA2A(agent: string, deps: OuroCliDeps, bind: { host?: string; port?: number; publicUrl?: string } = {}): Promise<string> {
   const { defaultA2APort } = await import("../../a2a/config")
   enableAgentSense(agent, "a2a", deps)
   const syncSummary = pushAgentBundleAfterCliMutation(agent, deps)
-  const port = defaultA2APort(agent)
+  // Bind address, port and advertised URL are per machine (D-038): a tailnet IP on one
+  // host means nothing on another, so they live in this machine's runtime config.
+  const a2a = {
+    ...(bind.host !== undefined ? { host: bind.host } : {}),
+    ...(bind.port !== undefined ? { port: bind.port } : {}),
+    ...(bind.publicUrl !== undefined ? { publicUrl: bind.publicUrl } : {}),
+  }
+  if (Object.keys(a2a).length > 0) await mergeMachineRuntimeCredentialConfig(agent, currentMachineId(deps), { a2a }, providerCliNow(deps))
+  const port = bind.port ?? defaultA2APort(agent)
   const message = [
     `A2A connected for ${agent}`,
+    ...(Object.keys(a2a).length > 0 ? [`This machine's A2A listener: ${bind.host ?? "127.0.0.1"}:${port}${bind.publicUrl ? `, advertised as ${bind.publicUrl}` : ""} (applies on the next \`ouro up\`).`] : []),
     `The daemon-managed A2A sense will listen locally on port ${port} after \`ouro up\`.`,
     `Local agent card: http://127.0.0.1:${port}/.well-known/agent-card.json`,
     `Local JSON-RPC endpoint: http://127.0.0.1:${port}/a2a`,
@@ -6127,7 +6136,7 @@ async function executeConnect(
   if (command.target === "bluebubbles") return executeConnectBlueBubbles(command.agent, deps)
   if (command.target === "mail") return executeConnectMail(command.agent, deps, command)
   if (command.target === "voice") return executeConnectVoice(command.agent, deps)
-  if (command.target === "a2a") return executeConnectA2A(command.agent, deps)
+  if (command.target === "a2a") return executeConnectA2A(command.agent, deps, { host: command.a2aHost, port: command.a2aPort, publicUrl: command.a2aPublicUrl })
   if (command.target === "telegram") return executeConnectTelegram(command.agent, deps)
   if (command.target === "workbench") return executeConnectWorkbench(command.agent, deps)
 
@@ -7081,9 +7090,24 @@ async function executeFriendCommand(command: FriendCliCommand, store: FriendStor
   }
 
   if (command.kind === "friend.update") {
-    const result = await setFriendTrust(store, command.friendId, command.trustLevel)
-    if (result.status === "not_found") return `friend not found: ${command.friendId}`
-    return `updated: ${command.friendId} → trust=${command.trustLevel}`
+    if (!await store.get(command.friendId)) return `friend not found: ${command.friendId}`
+    if (command.trustLevel) await setFriendTrust(store, command.friendId, command.trustLevel)
+    const relationship = {
+      ...(command.admissionState ? { admissionState: command.admissionState } : {}),
+      ...(command.initiativePolicy ? { initiativePolicy: command.initiativePolicy } : {}),
+      ...(command.capabilityProfileId ? { capabilityProfileId: command.capabilityProfileId } : {}),
+    }
+    if (Object.keys(relationship).length > 0) {
+      const current = (await store.get(command.friendId))!
+      await store.put(command.friendId, { ...current, ...relationship, updatedAt: new Date().toISOString() })
+    }
+    const changed = [
+      command.trustLevel ? `trust=${command.trustLevel}` : "",
+      command.admissionState ? `admission=${command.admissionState}` : "",
+      command.initiativePolicy ? `initiative=${command.initiativePolicy}` : "",
+      command.capabilityProfileId ? `profile=${command.capabilityProfileId}` : "",
+    ].filter(Boolean).join(", ")
+    return `updated: ${command.friendId} → ${changed}`
   }
 
   if (command.kind === "friend.link") {
@@ -7153,11 +7177,33 @@ async function executeA2ACommand(command: A2ACliCommand & { agent: string }, dep
   }
 
   /* v8 ignore next -- false branch is foreground serve, intentionally ignored below because it waits for signals @preserve */
+  if (command.kind === "a2a.onboard" && command.did) {
+    const { onboardA2AClientByDid } = await import("../../a2a/onboarding")
+    const record = await onboardA2AClientByDid({
+      agentName: command.agent,
+      did: command.did,
+      name: command.name!,
+      ...(command.trustLevel ? { trustLevel: command.trustLevel } : {}),
+      /* v8 ignore next -- production CLI falls back to the canonical bundle root; tests inject isolated roots @preserve */
+      ...(deps.bundlesRoot ? { bundlesRoot: deps.bundlesRoot } : {}),
+    })
+    const message = [
+      `onboarded A2A client: ${record.name}`,
+      `friend id: ${record.id}`,
+      /* v8 ignore next -- upsertAgentPeer always writes an explicit TrustLevel @preserve */
+      `trust: ${record.trustLevel ?? "unknown"}`,
+      `did: ${command.did}`,
+      `Next: ouro friend update ${record.id} --agent ${command.agent} --admission active --initiative reactive_only --profile <capability-profile-id>`,
+    ].join("\n")
+    deps.writeStdout(message)
+    return message
+  }
+
   if (command.kind === "a2a.onboard") {
     const { onboardA2APeer } = await import("../../a2a/onboarding")
     const record = await onboardA2APeer({
       agentName: command.agent,
-      cardUrl: command.cardUrl,
+      cardUrl: command.cardUrl!,
       ...(command.trustLevel ? { trustLevel: command.trustLevel } : {}),
       ...(command.name ? { name: command.name } : {}),
       /* v8 ignore next -- production CLI falls back to the canonical bundle root; tests inject isolated roots @preserve */
