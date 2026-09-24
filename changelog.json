@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.840",
+      "changes": [
+        "Sanctuary upgrade rollback robustness, from the 837 rehearsal on the real host: gateway readiness gets a 15-minute budget (verifying every pinned package file with a cold Unraid page cache takes minutes, and a 120-second budget failed a real rollback after it had restored every record), and a rollback marks its journal so an upgrade can never resume forward from a half-rolled-back journal; only upgrade-rollback continues it."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.839",
       "changes": [
         "CLI: provision A2A peers without editing files. ouro connect a2a --host/--port/--public-url stores this machine's A2A bind address and advertised URL (D-038); ouro a2a onboard --did <did:key> --name <name> onboards a card-less client such as a coding harness, keyed on its DID; ouro friend update sets --admission, --initiative and --profile as well as --trust (D-039).",

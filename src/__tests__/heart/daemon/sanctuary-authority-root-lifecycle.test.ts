@@ -671,7 +671,9 @@ describe("fixed root installation effects", () => {
       host.spawn.mockImplementation(() => ({ unref: vi.fn(), once: vi.fn() }))
       const pending = f.lifecycle.effect("start-gateway").apply()
       const failure = expect(pending).rejects.toThrow(/timed out/u)
-      await vi.advanceTimersByTimeAsync(120_100)
+      // Readiness has a 15-minute budget: a cold Unraid page cache makes the gateway's
+      // package verification take minutes.
+      await vi.advanceTimersByTimeAsync(900_100)
       await failure
       expect(host.exec.mock.calls.some((call) => call[1][0] === "start")).toBe(false)
     })
@@ -1178,6 +1180,26 @@ describe("in-place authority upgrade", () => {
     await expect(f.lifecycleFor().upgrade({ targetImageId: digest("next-image"), imageReference: nextReference, failAfter: "switch" })).rejects.toThrow(/switch/u)
     await f.lifecycleFor().upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })
     expect(readEpoch(f).packageDigest).toBe(f.nextRequest.packageDigest)
+  })
+
+  it("lets only a rollback continue a rollback that stopped partway", async () => {
+    const f = await upgradeFixture()
+    const before = f.snapshot()
+    await expect(f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference, failAfter: "start" })).rejects.toThrow(/start/u)
+    host.cursor.mockRejectedValueOnce(new Error("gateway not ready yet"))
+    await expect(f.lifecycleFor().rollbackUpgrade()).rejects.toThrow(/not ready/u)
+    expect(JSON.parse(fs.readFileSync(f.p(`${rootPath}/upgrade.json`), "utf8")).rollingBack).toBe(true)
+    await expect(f.lifecycleFor().upgrade({ targetImageId: digest("next-image"), imageReference: nextReference })).rejects.toThrow(/rollback is pending/u)
+    await expect(f.lifecycleFor().rollbackUpgrade()).resolves.toBe(true)
+    expect(f.snapshot()).toEqual(before)
+  })
+
+  it("refuses a journal whose rollback marker is not the literal true", async () => {
+    const f = await upgradeFixture()
+    await expect(f.lifecycle.upgrade({ targetImageId: digest("next-image"), imageReference: nextReference, failAfter: "stop" })).rejects.toThrow(/stop/u)
+    const journal = JSON.parse(fs.readFileSync(f.p(`${rootPath}/upgrade.json`), "utf8"))
+    f.write(`${rootPath}/upgrade.json`, { ...journal, rollingBack: "yes" })
+    await expect(f.lifecycleFor().rollbackUpgrade()).rejects.toThrow(/journal is invalid/u)
   })
 
   it("keeps a recorded bundle migration authoritative and retries a rollback whose bundle is already back", async () => {
