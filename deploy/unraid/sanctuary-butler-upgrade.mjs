@@ -19,11 +19,17 @@
 //              automatic rollback on ANY failure so the Butler is never left
 //              down. Requires a freshly rotated token at incoming-token.
 //   verify     health + preservation (Jellyfin, steward policy) + readback.
+//   upgrade    in-place upgrade of an INSTALLED authority (D-043): same epoch,
+//              token and cursor; new package, pins and resident image. The new
+//              package's own lifecycle does the work and rolls back exactly on
+//              any failure. `--rehearse <step>` stops after that step and rolls
+//              back, proving the rollback on real hardware. No token rotation.
 //
-// Run `preflight` and `prepare` freely. `install` is the only destructive phase
-// and refuses without a rotated incoming-token.
+// Run `preflight` and `prepare` freely. `install` is the first-install phase and
+// refuses without a rotated incoming-token. Run `upgrade` detached so an SSH drop
+// cannot interrupt it:  setsid nohup node <this> upgrade <version> > /var/log/ouro-upgrade.log 2>&1 &
 //
-// Usage: sanctuary-butler-upgrade.mjs <preflight|prepare|install|verify> <version>
+// Usage: sanctuary-butler-upgrade.mjs <preflight|prepare|install|verify|upgrade> <version> [--rehearse <step>]
 
 import { execFileSync } from "node:child_process"
 import { createHash } from "node:crypto"
@@ -47,6 +53,13 @@ const REQUIRED_PROGRAMS = [
   "deploy/unraid/sanctuary-authority-service.sh",
 ]
 const MIN_FREE_GB = 2
+const INCOMING_MANIFEST = `${ROOT}/incoming-package-manifest.json`
+const INCOMING_REQUEST = `${ROOT}/incoming-request.json`
+const UPGRADE_JOURNAL = `${ROOT}/upgrade.json`
+// Host supervision skips its work while this flag is fresh (< 30 min), so a crashed
+// upgrade can never leave self-heal off for longer than that.
+const MAINTENANCE = "/run/ouro-authority-maintenance"
+const UPGRADE_STEPS = ["stop", "switch", "resident", "migrate", "start"]
 
 const sh = (file, args, opts = {}) => execFileSync(file, args, { encoding: "utf8", maxBuffer: 64 << 20, ...opts })
 const docker = (args, opts = {}) => sh("/usr/bin/docker", args, opts)
@@ -109,8 +122,11 @@ function preflight(version) {
   } catch { bad(`the ${CONTAINER} container is absent`) }
   if (id && runningImage && id === runningImage) bad("target and running image are identical — nothing to upgrade")
 
+  const installed = existsSync(`${ROOT}/active.json`)
+  if (installed) console.log("  note: an authority is installed, so this is an in-place upgrade (run `upgrade`, no token rotation)")
+
   say("no stale authority runtime state")
-  {
+  if (!installed) {
     const stale = ["/sys/fs/cgroup/ouro-authority", "/var/lib/ouro-authority", "/run/ouro-authority", `${ROOT}/epochs`].filter((d) => existsSync(d))
     if (stale.length && !existsSync(`${ROOT}/active.json`)) console.log(`  note: stale dirs present, install will clear them: ${stale.join(", ")}`)
     else if (!stale.length) ok("no stale authority runtime dirs")
@@ -119,7 +135,8 @@ function preflight(version) {
 
   say("no upgrade already in flight")
   existsSync(JOURNAL) ? bad(`a template transaction journal is pending at ${JOURNAL}; resolve it first`) : ok("no pending template transaction")
-  existsSync(`${ROOT}/active.json`) ? bad("an authority is already installed (active.json present)") : ok("no prior authority installed")
+  if (installed) existsSync(UPGRADE_JOURNAL) ? console.log("  note: an in-place upgrade is pending; `upgrade` resumes it") : ok("no pending in-place upgrade")
+  if (installed && existsSync(`${ROOT}/incoming-token`)) console.log("  note: a stale incoming-token copy is present; the upgrade removes it (D-044)")
 
   say("host primitives (root-owned, not group/world-writable)")
   for (const f of PRIMITIVES) {
@@ -140,7 +157,8 @@ function preflight(version) {
   } catch { bad("could not inspect the image contents") }
 
   say("D-018: the fenced vault read the install depends on")
-  if (id) {
+  if (installed) ok("not needed: the installed gateway already holds the token in root custody")
+  else if (id) {
     // Run the read fenced exactly as THIS version's install will fence it, so
     // the rehearsal is faithful: an unfixed image is tested without the fix and
     // correctly fails here rather than during a real install.
@@ -169,7 +187,7 @@ function preflight(version) {
   catch { bad("jellyfin container not inspectable") }
 
   console.log("")
-  if (RED === 0) console.log("PREFLIGHT GREEN — the upgrade can proceed. Next: prepare, rotate the token, install.")
+  if (RED === 0) console.log(installed ? "PREFLIGHT GREEN — run `upgrade` (detached)." : "PREFLIGHT GREEN — the upgrade can proceed. Next: prepare, rotate the token, install.")
   else console.log(`PREFLIGHT RED — ${RED} blocker(s) above. Nothing was changed; fix these before rotating the token.`)
   process.exit(RED === 0 ? 0 : 1)
 }
@@ -215,7 +233,41 @@ function prepare(version) {
   say(`prepare inputs for ${version}`)
   const id = imageId(version)
   if (!id) fail(`image ${image(version)} is not present; pull it first`)
+  if (existsSync(`${ROOT}/active.json`)) fail("an authority is installed; use `upgrade` (in place, no token rotation) instead of prepare/install")
   const epochId = `${version.replace(/[^A-Za-z0-9_-]/g, "-")}-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}`
+  const manifestBytes = stageIncomingPackage(version)
+  writePrivate(`${ROOT}/package-manifest.json`, manifestBytes)
+  const creds = JSON.parse(readFileSync(`/mnt/user/appdata/ouro-butler/runtime/container-credentials.json`, "utf8")).credentials[0].runtimeConfig
+  const request = {
+    schemaVersion: 1, epochId,
+    botId: String(creds.telegramBotToken).split(":")[0],
+    ownerUserId: String(creds.telegramAuthorizedUserId), ownerChatId: String(creds.telegramAuthorizedChatId),
+    ...packagePins(manifestBytes),
+  }
+  if (request.ownerUserId !== request.ownerChatId) fail("owner user and chat must match")
+  writePrivate(`${ROOT}/request.json`, Buffer.from(JSON.stringify(request)))
+  ok(`epoch ${epochId}, package ${request.packageDigest.slice(7, 19)}…`)
+
+  say("verify the prepared package against the installer's own rules")
+  verifyPackage(`${ROOT}/incoming-package`, `${ROOT}/package-manifest.json`, `${ROOT}/request.json`)
+  ok("package verifies")
+
+  console.log("\nPREPARE done. Next: rotate the bot token into ${ROOT}/incoming-token, then install.".replace("${ROOT}", ROOT))
+}
+
+// The package digest plus the host primitive pins every request carries.
+function packagePins(manifestBytes) {
+  const d = (f) => digest(readFileSync(f))
+  return {
+    packageDigest: digest(manifestBytes),
+    nodeDigest: d("/usr/local/bin/node"), prlimitDigest: d("/usr/bin/prlimit"),
+    setsidDigest: d("/usr/bin/setsid"), shellDigest: d(sh("/bin/readlink", ["-f", "/bin/sh"]).trim()),
+  }
+}
+
+// Extract the exact package from the image into incoming-package, normalised to the
+// installer's rules, and return its manifest bytes. The running Butler is untouched.
+function stageIncomingPackage(version) {
   const incoming = `${ROOT}/incoming-package`
 
   say("extract the exact package from the image")
@@ -252,27 +304,8 @@ function prepare(version) {
     }
   }
   walk("")
-  const manifestBytes = Buffer.from(JSON.stringify({ schemaVersion: 1, files }))
-  writePrivate(`${ROOT}/package-manifest.json`, manifestBytes)
-  const creds = JSON.parse(readFileSync(`/mnt/user/appdata/ouro-butler/runtime/container-credentials.json`, "utf8")).credentials[0].runtimeConfig
-  const d = (f) => digest(readFileSync(f))
-  const request = {
-    schemaVersion: 1, epochId,
-    botId: String(creds.telegramBotToken).split(":")[0],
-    ownerUserId: String(creds.telegramAuthorizedUserId), ownerChatId: String(creds.telegramAuthorizedChatId),
-    packageDigest: digest(manifestBytes),
-    nodeDigest: d("/usr/local/bin/node"), prlimitDigest: d("/usr/bin/prlimit"),
-    setsidDigest: d("/usr/bin/setsid"), shellDigest: d(sh("/bin/readlink", ["-f", "/bin/sh"]).trim()),
-  }
-  if (request.ownerUserId !== request.ownerChatId) fail("owner user and chat must match")
-  writePrivate(`${ROOT}/request.json`, Buffer.from(JSON.stringify(request)))
-  ok(`epoch ${epochId}, ${Object.keys(files).length} files pinned, package ${request.packageDigest.slice(7, 19)}…`)
-
-  say("verify the prepared package against the installer's own rules")
-  verifyPackage(incoming, `${ROOT}/package-manifest.json`, `${ROOT}/request.json`)
-  ok("package verifies")
-
-  console.log("\nPREPARE done. Next: rotate the bot token into ${ROOT}/incoming-token, then install.".replace("${ROOT}", ROOT))
+  ok(`${Object.keys(files).length} files pinned`)
+  return Buffer.from(JSON.stringify({ schemaVersion: 1, files }))
 }
 
 function writePrivate(path, bytes) { writeFileSync(path, bytes, { mode: 0o600 }); sh("/bin/chown", ["0:0", path]); chmodSync(path, 0o600) }
@@ -440,18 +473,23 @@ start_gw() {
   /bin/sh /boot/config/custom/ouro-authority/start.sh --boot >> "$LOG" 2>&1 \
     || echo "$(date) keeper: authority boot failed; will retry" >> "$LOG"
 }
+# An in-place upgrade pauses us with a flag; a stale flag (> 30 min) is ignored.
+maintenance() { [ -n "$(find /run/ouro-authority-maintenance -mmin -30 2>/dev/null)" ]; }
 pause_reaper; ensure_cg; ensure_sock
 last_res=0
 while true; do
+  if maintenance; then sleep 15; continue; fi
   pause_reaper
   ensure_cg
   ensure_sock
   [ -n "$(gw_pid)" ] || { start_gw; sleep 8; }
   rd=$(jq -rc .status "$R"/epochs/*/readiness.json 2>/dev/null)
   st=$(docker inspect ouro-butler --format '{{.State.Health.Status}}' 2>/dev/null)
+  ss=$(docker inspect ouro-butler --format '{{.State.Status}}' 2>/dev/null)
   now=$(date +%s)
-  if [ "$rd" = ready ] && [ "$st" = unhealthy ] && [ $((now - last_res)) -gt 90 ]; then
-    echo "$(date) keeper: reconnecting unhealthy resident" >> "$LOG"
+  # Unhealthy, or left stopped (an interrupted upgrade or restart): the gateway is ready, so bring it back.
+  if [ "$rd" = ready ] && { [ "$st" = unhealthy ] || [ "$ss" = exited ] || [ "$ss" = created ]; } && [ $((now - last_res)) -gt 90 ]; then
+    echo "$(date) keeper: reconnecting resident ($ss/$st)" >> "$LOG"
     docker restart ouro-butler >/dev/null 2>&1
     last_res=$now
   fi
@@ -468,6 +506,8 @@ const GATEWAY_WATCHDOG_SH = String.raw`#!/bin/sh
 set -u
 # The stop hook sets this during shutdown; never resurrect the supervisor then.
 [ -e /run/ouro-authority-shutdown ] && exit 0
+# An in-place upgrade pauses supervision; a stale flag (> 30 min) is ignored.
+[ -n "$(find /run/ouro-authority-maintenance -mmin -30 2>/dev/null)" ] && exit 0
 SUP=/boot/config/custom/ouro-authority/gateway-supervisor.sh
 LOG=/var/log/ouro-gateway.log
 if [ ! -f "$SUP" ]; then
@@ -737,6 +777,83 @@ function buildFinalProof(version, out) {
   writeFileSync(out, JSON.stringify(proof), { mode: 0o600 })
 }
 
+// ---- upgrade (in place, installed authority) --------------------------------
+
+function pauseSupervision() {
+  writeFileSync(MAINTENANCE, `${new Date().toISOString()} ${process.pid}\n`)
+  sh("/bin/sh", ["-c", "for p in $(pgrep -f '^/bin/sh /boot/config/custom/ouro-authority/[g]ateway-supervisor' || true); do kill $p; done"])
+  ok("host supervision paused (its flag expires on its own after 30 min)")
+}
+function resumeSupervision() {
+  rmSync(MAINTENANCE, { force: true })
+  installGatewaySupervisor()
+}
+
+// Keep Unraid's DockerMan template (what the UI's Apply/Update uses) on the live image.
+function pinTemplate(version) {
+  if (!existsSync(TEMPLATE)) { console.log("  note: no DockerMan template to update"); return }
+  const text = readFileSync(TEMPLATE, "utf8")
+  const next = text.replace(/<Repository>ghcr\.io\/ourostack\/ouroboros-butler:[^<]+<\/Repository>/u, `<Repository>${image(version)}</Repository>`)
+  if (!next.includes(`<Repository>${image(version)}</Repository>`)) { console.log("  WARN: DockerMan template Repository not recognised; left unchanged"); return }
+  if (next !== text) { writeFileSync(`${TEMPLATE}.prev`, text); writeFileSync(TEMPLATE, next) }
+  ok(`DockerMan template pins ${image(version)}`)
+}
+
+function lifecycleFailure(e) {
+  const detail = [e.stderr, e.stdout].map((x) => (x ? String(x).trim() : "")).filter(Boolean).join(" | ")
+  let last = ""
+  try { last = readFileSync(`${ROOT}/lifecycle-failure.log`, "utf8").trim().split("\n").filter((l) => /^\d{4}-/.test(l)).at(-1) ?? "" } catch { /* none */ }
+  return `${detail || e.message}${last ? `\n   last root failure: ${last}` : ""}`
+}
+
+function upgrade(version, rehearse) {
+  say(`in-place upgrade to ${version}${rehearse ? ` — REHEARSAL: stop after "${rehearse}", then roll back` : ""}`)
+  if (rehearse && !UPGRADE_STEPS.includes(rehearse)) fail(`--rehearse takes one of: ${UPGRADE_STEPS.join(", ")}`)
+  if (!existsSync(`${ROOT}/active.json`) || !existsSync(`${ROOT}/activation.json`)) fail("no installed authority; use prepare + install")
+  if (existsSync(JOURNAL)) fail("a template transaction is pending; resolve it first")
+  let id = imageId(version)
+  if (!id) { docker(["pull", image(version)]); id = imageId(version) }
+  if (!id) fail(`image ${image(version)} could not be pulled`)
+  ok(`image ${id.slice(0, 19)}…`)
+  if (existsSync(UPGRADE_JOURNAL)) console.log("  note: resuming the pending in-place upgrade with its staged package")
+  else {
+    const current = JSON.parse(readFileSync(`${ROOT}/request.json`, "utf8"))
+    const manifestBytes = stageIncomingPackage(version)
+    const pkgVersion = JSON.parse(readFileSync(`${ROOT}/incoming-package/deploy/unraid/sanctuary.ouro/bundle-meta.json`, "utf8")).runtimeVersion
+    if (pkgVersion !== version) fail(`staged package is ${pkgVersion}, not ${version}`)
+    writePrivate(INCOMING_MANIFEST, manifestBytes)
+    const request = { schemaVersion: 1, epochId: current.epochId, botId: current.botId, ownerUserId: current.ownerUserId, ownerChatId: current.ownerChatId, ...packagePins(manifestBytes) }
+    writePrivate(INCOMING_REQUEST, Buffer.from(JSON.stringify(request)))
+    verifyPackage(`${ROOT}/incoming-package`, INCOMING_MANIFEST, INCOMING_REQUEST)
+    ok("new package staged beside the live one and verified")
+  }
+  const lifecycle = `${ROOT}/incoming-package/dist/heart/daemon/sanctuary-authority-root-lifecycle.js`
+  const jellyfinBefore = docker(["inspect", "jellyfin", "--format", "{{.Id}}|{{.Image}}|{{.RestartCount}}|{{.State.StartedAt}}"]).trim()
+  const policyBefore = existsSync(POLICY) ? sha12(POLICY) : fail("steward policy missing")
+  pauseSupervision()
+  let failure = null
+  try {
+    say("lifecycle upgrade (stop → switch → resident → migrate → start)")
+    ok(sh("/usr/local/bin/node", [lifecycle, "upgrade", id, image(version), ...(rehearse ? ["--fail-after", rehearse] : [])], { stdio: ["ignore", "pipe", "pipe"] }).trim())
+  } catch (e) { failure = e }
+  if (failure) {
+    console.log(`\n!! ${rehearse ? "rehearsal stopped as planned" : "upgrade failed"}: ${lifecycleFailure(failure)}\n!! rolling back to the predecessor`)
+    try { ok(`rollback: ${sh("/usr/local/bin/node", [lifecycle, "upgrade-rollback"], { stdio: ["ignore", "pipe", "pipe"] }).trim()}`) }
+    catch (e) {
+      resumeSupervision()
+      fail(`ROLLBACK FAILED: ${lifecycleFailure(e)}\nThe journal is kept; the next authority boot (or \`upgrade-rollback\`) retries it.`)
+    }
+  } else pinTemplate(version)
+  resumeSupervision()
+  say("preservation")
+  docker(["inspect", "jellyfin", "--format", "{{.Id}}|{{.Image}}|{{.RestartCount}}|{{.State.StartedAt}}"]).trim() === jellyfinBefore ? ok("jellyfin unchanged") : fail("JELLYFIN CHANGED")
+  sha12(POLICY) === policyBefore ? ok("steward policy unchanged") : fail("STEWARD POLICY CHANGED")
+  const live = docker(["inspect", CONTAINER, "--format", "{{.Config.Image}} {{.State.Status}}/{{.State.Health.Status}}"]).trim()
+  ok(`butler: ${live}`)
+  if (failure && !rehearse) fail("upgrade rolled back; the Butler is on its prior version (see above)")
+  console.log(rehearse ? "\nREHEARSAL done — the rollback restored the predecessor." : `\nUPGRADE done — ${version} live. Run verify.`)
+}
+
 // ---- verify ---------------------------------------------------------------
 
 function verify() {
@@ -755,9 +872,9 @@ function fail(m) { console.error(`\nREFUSING: ${m}`); process.exit(1) }
 
 // ---- entry ----------------------------------------------------------------
 
-const [phase, version] = process.argv.slice(2)
-if (!phase || !["preflight", "prepare", "install", "verify"].includes(phase)) {
-  console.error("Usage: sanctuary-butler-upgrade.mjs <preflight|prepare|install|verify> <version>")
+const [phase, version, flag, rehearse] = process.argv.slice(2)
+if (!phase || !["preflight", "prepare", "install", "verify", "upgrade"].includes(phase) || (flag !== undefined && !(phase === "upgrade" && flag === "--rehearse" && rehearse))) {
+  console.error("Usage: sanctuary-butler-upgrade.mjs <preflight|prepare|install|verify|upgrade> <version> [--rehearse <step>]")
   process.exit(2)
 }
 if (phase !== "verify" && !/^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$/.test(version || "")) {
@@ -770,3 +887,4 @@ if (phase === "preflight") preflight(version)
 else if (phase === "prepare") prepare(version)
 else if (phase === "install") install(version)
 else if (phase === "verify") verify()
+else if (phase === "upgrade") upgrade(version, rehearse)

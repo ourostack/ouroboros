@@ -4,7 +4,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { FileTelegramOffsetStore } from "../../senses/telegram-client"
 import { verifySanctuaryAuthorityInstallation } from "./sanctuary-authority-installation"
-import { prepareSanctuaryAuthorityEpoch, readSanctuaryAuthorityEpoch, retireSanctuaryAuthorityEpoch, releaseSanctuaryAuthorityToken } from "./sanctuary-authority-epoch"
+import { prepareSanctuaryAuthorityEpoch, readSanctuaryAuthorityEpoch, rebindSanctuaryAuthorityEpochPackage, retireSanctuaryAuthorityEpoch, releaseSanctuaryAuthorityToken } from "./sanctuary-authority-epoch"
 import { FileSanctuaryTelegramAuthorityGateway, sanctuaryTelegramAuthorityStatePath } from "./sanctuary-telegram-authority-gateway"
 import type { SanctuaryTelegramAuthorityConfig } from "./sanctuary-telegram-authority-entry"
 import { openSanctuaryResidentAuthority } from "../../senses/sanctuary-authority-resident"
@@ -22,6 +22,30 @@ const CGROUP = "/sys/fs/cgroup/ouro-authority"
 const BOOT = "/boot/config/custom/ouro-authority/start.sh"
 const BOOT_LINE = `/bin/sh ${BOOT} --boot & # ouro-authority`
 const DIGEST = /^sha256:[a-f0-9]{64}$/u
+const TEMPLATE_JOURNAL = "/boot/config/custom/ouro-butler/docker-man-template-transaction.json"
+// In-place upgrade of an installed authority: same epoch (token, issuer, cursor,
+// gateway state), new reviewed package and resident image. Every root record it
+// rewrites is backed up first so an interrupted or failed upgrade rolls back exactly.
+const UPGRADE = `${ROOT}/upgrade.json`
+const PREVIOUS = `${ROOT}/upgrade-previous`
+const NEXT_PACKAGE = `${ROOT}/package-next`
+const INCOMING_REQUEST = `${ROOT}/incoming-request.json`
+const INCOMING_MANIFEST = `${ROOT}/incoming-package-manifest.json`
+const EVENTS = "/boot/config/custom/ouro-events/spool"
+const ICON = "https://raw.githubusercontent.com/ourostack/ouroboros/main/assets/ouroboros.png"
+const IMAGE_REFERENCE = /^ghcr\.io\/ourostack\/ouroboros-butler:[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/u
+export const SANCTUARY_UPGRADE_STEPS = ["stop", "switch", "resident", "migrate", "start"] as const
+const ROOT_RECORDS = [["request.json", 1024 * 1024], ["package-manifest.json", 8 * 1024 * 1024], ["active.json", 1024 * 1024], ["activation.json", 1024 * 1024]] as const
+const EPOCH_RECORDS = ["migration.json", "stage.json", "configured.json"] as const
+interface UpgradeSide { imageId: string; imageReference: string; packageDigest: string }
+interface UpgradeJournal {
+  schemaVersion: 1
+  epochId: string
+  from: UpgradeSide & { rollbackImageId: string }
+  to: UpgradeSide
+  completed: string[]
+}
+type LifecycleOptions = { prefix?: string; expectedUid?: number; expectedGid?: number; socketGroupId?: number }
 const digest = (value: string | Buffer) => `sha256:${createHash("sha256").update(value).digest("hex")}`
 interface Request {
   schemaVersion: 1
@@ -40,8 +64,18 @@ interface Container {
   Name: string
   Image: string
   State: { Running: boolean; Health?: { Status: string } }
-  Config: { User: string; Env: string[] }
+  Config: { User: string; Env: string[]; Image?: string }
   Mounts: { Source: string; Destination: string; RW: boolean }[]
+}
+
+function validateRequest(value: unknown): Request {
+  const request = value as Request
+  if (!request || typeof request !== "object" || Object.keys(request).sort().join(",") !== "botId,epochId,nodeDigest,ownerChatId,ownerUserId,packageDigest,prlimitDigest,schemaVersion,setsidDigest,shellDigest"
+    || request.schemaVersion !== 1 || !/^[A-Za-z0-9_-]{1,128}$/u.test(request.epochId)
+    || ![request.botId, request.ownerUserId, request.ownerChatId].every((id) => typeof id === "string" && /^[1-9][0-9]*$/u.test(id))
+    || request.ownerUserId !== request.ownerChatId
+    || ![request.packageDigest, request.nodeDigest, request.prlimitDigest, request.setsidDigest, request.shellDigest].every((pin) => typeof pin === "string" && DIGEST.test(pin))) throw new Error("Sanctuary root lifecycle request is invalid")
+  return request
 }
 
 // The prefix is a filesystem-fixture seam; the production CLI never accepts it.
@@ -52,7 +86,9 @@ export class SanctuaryAuthorityRootLifecycle {
   readonly #uid: number
   readonly #gid: number
   readonly #socketGid: number
-  constructor(transaction: Transaction, options: { prefix?: string; expectedUid?: number; expectedGid?: number; socketGroupId?: number } = {}) {
+  readonly #options: LifecycleOptions
+  constructor(transaction: Transaction, options: LifecycleOptions = {}) {
+    this.#options = options
     this.#prefix = options.prefix ?? ""
     this.#uid = options.expectedUid ?? 0
     this.#gid = options.expectedGid ?? 0
@@ -61,14 +97,8 @@ export class SanctuaryAuthorityRootLifecycle {
     if (!DIGEST.test(transaction.targetImageId) || !DIGEST.test(transaction.rollbackImageId) || transaction.targetImageId === transaction.rollbackImageId) throw new Error("Sanctuary root lifecycle image identity is invalid")
     this.#transaction = { targetImageId: transaction.targetImageId, rollbackImageId: transaction.rollbackImageId }
     this.#directory(ROOT)
-    const request = JSON.parse(this.#private(`${ROOT}/request.json`)) as Request
-    if (!request || Object.keys(request).sort().join(",") !== "botId,epochId,nodeDigest,ownerChatId,ownerUserId,packageDigest,prlimitDigest,schemaVersion,setsidDigest,shellDigest"
-      || request.schemaVersion !== 1 || !/^[A-Za-z0-9_-]{1,128}$/u.test(request.epochId)
-      || ![request.botId, request.ownerUserId, request.ownerChatId].every((id) => typeof id === "string" && /^[1-9][0-9]*$/u.test(id))
-      || request.ownerUserId !== request.ownerChatId
-      || ![request.packageDigest, request.nodeDigest, request.prlimitDigest, request.setsidDigest, request.shellDigest].every((pin) => typeof pin === "string" && DIGEST.test(pin))) throw new Error("Sanctuary root lifecycle request is invalid")
-    this.#request = request
-    emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_root_lifecycle_loaded", message: "Sanctuary root lifecycle identity loaded", meta: { epochId: request.epochId, targetImageId: transaction.targetImageId } })
+    this.#request = validateRequest(JSON.parse(this.#private(`${ROOT}/request.json`)))
+    emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_root_lifecycle_loaded", message: "Sanctuary root lifecycle identity loaded", meta: { epochId: this.#request.epochId, targetImageId: transaction.targetImageId } })
   }
 
   plan() {
@@ -78,6 +108,9 @@ export class SanctuaryAuthorityRootLifecycle {
 
   async boot(): Promise<boolean> {
     if (!fs.existsSync(this.#p(`${ROOT}/activation.json`))) return false
+    // An upgrade that never finished (process killed, host rebooted) is rolled back
+    // here, so the Butler comes back on its known-good version without a human.
+    if (fs.existsSync(this.#p(UPGRADE))) return this.rollbackUpgrade()
     this.#record(`${ROOT}/activation.json`, { ...this.#transaction, state: "active", epochId: this.#request.epochId })
     if (fs.existsSync(this.#p("/boot/config/custom/ouro-butler/docker-man-template-transaction.json"))) throw new Error("Sanctuary pending installation requires recovery, not boot")
     this.#assertNoForeignPoller()
@@ -200,19 +233,19 @@ export class SanctuaryAuthorityRootLifecycle {
     const stat = fs.lstatSync(directory)
     if (!stat.isDirectory() || stat.uid !== this.#uid || stat.gid !== gid || (stat.mode & 0o7777) !== mode || fs.realpathSync(directory) !== directory) throw new Error("Sanctuary root lifecycle directory is unsafe")
   }
-  #verifyPackage(packageRoot = `${ROOT}/package`, hostExecution = true): void {
+  #verifyPackage(packageRoot = `${ROOT}/package`, hostExecution = true, manifestPath = `${ROOT}/package-manifest.json`, request: Request = this.#request): void {
     verifySanctuaryAuthorityInstallation({
-      packageRoot: this.#p(packageRoot), manifestPath: this.#p(`${ROOT}/package-manifest.json`), manifestDigest: this.#request.packageDigest,
+      packageRoot: this.#p(packageRoot), manifestPath: this.#p(manifestPath), manifestDigest: request.packageDigest,
       stateRoot: this.#p(this.#epochRoot()), stagingRoot: this.#p(STAGING), socketRoot: this.#p(SOCKET), cgroupRoot: this.#p(CGROUP),
       expectedUid: this.#uid, expectedGid: this.#gid, socketGroupId: this.#socketGid, mountInfo: fs.readFileSync(this.#p("/proc/self/mountinfo"), "utf8"),
     })
-    const manifest = JSON.parse(this.#private(`${ROOT}/package-manifest.json`, 0o600, 8 * 1024 * 1024))
+    const manifest = JSON.parse(this.#private(manifestPath, 0o600, 8 * 1024 * 1024))
     for (const program of ["dist/heart/daemon/sanctuary-telegram-authority-entry.js", "dist/heart/daemon/sanctuary-authority-root-lifecycle.js", "dist/heart/daemon/sanctuary-host-supervisor-entry.js", "deploy/unraid/sanctuary-host-launcher.sh", "deploy/unraid/sanctuary-authority-service.sh"]) {
       if (!Object.hasOwn(manifest.files, program)) throw new Error("Sanctuary authority package program is absent")
     }
     for (const [file, expected] of [
-      ["/usr/local/bin/node", this.#request.nodeDigest], ["/bin/sh", this.#request.shellDigest],
-      ...(hostExecution ? [["/usr/bin/prlimit", this.#request.prlimitDigest], ["/usr/bin/setsid", this.#request.setsidDigest]] : []),
+      ["/usr/local/bin/node", request.nodeDigest], ["/bin/sh", request.shellDigest],
+      ...(hostExecution ? [["/usr/bin/prlimit", request.prlimitDigest], ["/usr/bin/setsid", request.setsidDigest]] : []),
     ]) {
       this.#verifyPrimitive(file!, expected!)
     }
@@ -526,6 +559,201 @@ export class SanctuaryAuthorityRootLifecycle {
     if (!this.#restoredToken() || this.#pid() !== null || !this.#rollback().State.Running || this.#rollback().State.Health?.Status !== "healthy") throw new Error("Sanctuary rollback readback failed")
     this.#write(`${this.#epochRoot()}/rollback.json`, JSON.stringify({ epochId: this.#request.epochId, state: "retired" }))
   }
+  /**
+   * Upgrade the installed authority in place to a reviewed package and resident image.
+   * The epoch (token, issuer, cursor, gateway state) is kept; only the package, its
+   * pins and the resident image change. Resumable from its journal; any failure is
+   * left for `rollbackUpgrade` (or the next boot) to undo exactly.
+   */
+  async upgrade(input: { targetImageId: string; imageReference: string; failAfter?: string }): Promise<void> {
+    if (!DIGEST.test(input.targetImageId) || !IMAGE_REFERENCE.test(input.imageReference)
+      || (input.failAfter !== undefined && !(SANCTUARY_UPGRADE_STEPS as readonly string[]).includes(input.failAfter))) throw new Error("Sanctuary upgrade request is invalid")
+    if (fs.existsSync(this.#p(TEMPLATE_JOURNAL))) throw new Error("Finish the pending installation before upgrading")
+    let journal = fs.existsSync(this.#p(UPGRADE)) ? this.#upgradeJournal() : this.#beginUpgrade(input)
+    if (journal.to.imageId !== input.targetImageId || journal.to.imageReference !== input.imageReference) throw new Error("A different Sanctuary upgrade is pending; roll it back first")
+    const target = () => new SanctuaryAuthorityRootLifecycle({ targetImageId: journal.to.imageId, rollbackImageId: journal.from.imageId }, this.#options)
+    const steps: Record<(typeof SANCTUARY_UPGRADE_STEPS)[number], () => void | Promise<void>> = {
+      stop: () => this.#halt(),
+      switch: async () => { await this.#halt(); this.#switchPackage(journal) },
+      resident: () => this.#recreateResident(journal.to.imageReference, journal.to.imageId),
+      migrate: () => target().#bundle(["--operation", "migrate", "--rollback-image-id", journal.from.imageId, "--target-image-id", journal.to.imageId]),
+      start: () => target().#startUpgraded(),
+    }
+    for (const step of SANCTUARY_UPGRADE_STEPS) {
+      if (!journal.completed.includes(step)) {
+        await steps[step]()
+        journal = { ...journal, completed: [...journal.completed, step] }
+        this.#write(UPGRADE, JSON.stringify(journal))
+        emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_upgrade_step", message: "Sanctuary upgrade step completed", meta: { step, to: journal.to.imageReference } })
+      }
+      if (input.failAfter === step) throw new Error(`Sanctuary upgrade rehearsal stopped after ${step}`)
+    }
+    target().#bundle(["--operation", "commit"])
+    // A copy of the live token must not linger as if it were a fresh rotation (D-044).
+    this.#remove(`${ROOT}/incoming-token`)
+    this.#remove(UPGRADE)
+    this.#removeTree(PREVIOUS)
+    emitNervesEvent({ component: "daemon", event: "daemon.sanctuary_upgraded", message: "Sanctuary authority upgraded in place", meta: { from: journal.from.imageReference, to: journal.to.imageReference } })
+  }
+
+  /** Undo a pending in-place upgrade exactly, back to the recorded predecessor. */
+  async rollbackUpgrade(): Promise<boolean> {
+    if (!fs.existsSync(this.#p(UPGRADE))) return false
+    let journal = this.#upgradeJournal()
+    await this.#halt()
+    if (journal.completed.includes("switch")) {
+      // A migration interrupted before the journal recorded it may or may not be
+      // pending; only a recorded migration must roll back. Once the bundle is back,
+      // record that so a retried rollback does not demand it again.
+      try { this.#bundle(["--operation", "finalize-rollback"]) } catch (error) {
+        if (journal.completed.includes("migrate")) throw error
+      }
+      journal = { ...journal, completed: journal.completed.filter((step) => step !== "migrate") }
+      this.#write(UPGRADE, JSON.stringify(journal))
+    }
+    if (fs.existsSync(this.#p(`${PREVIOUS}/package`))) {
+      this.#removeTree(`${ROOT}/package`)
+      fs.renameSync(this.#p(`${PREVIOUS}/package`), this.#p(`${ROOT}/package`))
+    }
+    this.#removeTree(NEXT_PACKAGE)
+    for (const [name, max] of ROOT_RECORDS) this.#write(`${ROOT}/${name}`, this.#private(`${PREVIOUS}/${name}`, 0o600, max))
+    rebindSanctuaryAuthorityEpochPackage(this.#p(this.#epochRoot()), { expectedUid: this.#uid, expectedGid: this.#gid, from: journal.to.packageDigest, to: journal.from.packageDigest })
+    for (const name of EPOCH_RECORDS) this.#write(`${this.#epochRoot()}/${name}`, this.#private(`${PREVIOUS}/epoch/${name}`))
+    const predecessor = new SanctuaryAuthorityRootLifecycle({ targetImageId: journal.from.imageId, rollbackImageId: journal.from.rollbackImageId }, this.#options)
+    predecessor.#publishBoot()
+    if (this.#containers().find((container) => container.Name === "/ouro-butler")?.Image !== journal.from.imageId) {
+      predecessor.#recreateResident(journal.from.imageReference, journal.from.imageId)
+    }
+    await predecessor.#startUpgraded()
+    this.#remove(UPGRADE)
+    this.#removeTree(PREVIOUS)
+    emitNervesEvent({ level: "warn", component: "daemon", event: "daemon.sanctuary_upgrade_rolled_back", message: "Sanctuary upgrade rolled back to its predecessor", meta: { from: journal.to.imageReference, to: journal.from.imageReference } })
+    return true
+  }
+
+  #upgradeJournal(): UpgradeJournal {
+    const journal = JSON.parse(this.#private(UPGRADE)) as UpgradeJournal
+    const sides = [journal?.from, journal?.to]
+    if (!journal || journal.schemaVersion !== 1 || journal.epochId !== this.#request.epochId || !Array.isArray(journal.completed)
+      || !journal.completed.every((step) => (SANCTUARY_UPGRADE_STEPS as readonly string[]).includes(step))
+      || !sides.every((side) => side && DIGEST.test(side.imageId) && DIGEST.test(side.packageDigest) && IMAGE_REFERENCE.test(side.imageReference))
+      || !DIGEST.test(journal.from.rollbackImageId)) throw new Error("Sanctuary upgrade journal is invalid")
+    return journal
+  }
+
+  #beginUpgrade(input: { targetImageId: string; imageReference: string }): UpgradeJournal {
+    this.#record(`${ROOT}/activation.json`, { ...this.#transaction, state: "active", epochId: this.#request.epochId })
+    const current = this.#target()
+    if (input.targetImageId === this.#transaction.targetImageId) throw new Error("Sanctuary already runs the requested image")
+    if (this.#docker(["image", "inspect", "--format", "{{.Id}}", input.imageReference]).trim() !== input.targetImageId) throw new Error("Sanctuary upgrade image identity does not match its reference")
+    const request = validateRequest(JSON.parse(this.#private(INCOMING_REQUEST)))
+    if ((["epochId", "botId", "ownerUserId", "ownerChatId"] as const).some((key) => request[key] !== this.#request[key])) throw new Error("Sanctuary upgrade would change the authority identity")
+    if (request.packageDigest === this.#request.packageDigest) throw new Error("Sanctuary upgrade package is already installed")
+    this.#verifyPackage(`${ROOT}/incoming-package`, true, INCOMING_MANIFEST, request)
+    this.#removeTree(PREVIOUS)
+    this.#directory(PREVIOUS)
+    this.#directory(`${PREVIOUS}/epoch`)
+    for (const [name, max] of ROOT_RECORDS) this.#write(`${PREVIOUS}/${name}`, this.#private(`${ROOT}/${name}`, 0o600, max))
+    for (const name of EPOCH_RECORDS) this.#write(`${PREVIOUS}/epoch/${name}`, this.#private(`${this.#epochRoot()}/${name}`))
+    const journal: UpgradeJournal = {
+      schemaVersion: 1, epochId: this.#request.epochId, completed: [],
+      from: { imageId: this.#transaction.targetImageId, imageReference: current.Config.Image!, packageDigest: this.#request.packageDigest, rollbackImageId: this.#transaction.rollbackImageId },
+      to: { imageId: input.targetImageId, imageReference: input.imageReference, packageDigest: request.packageDigest },
+    }
+    if (!IMAGE_REFERENCE.test(journal.from.imageReference)) throw new Error("Sanctuary current resident image reference is not a reviewed release")
+    this.#write(UPGRADE, JSON.stringify(journal))
+    return journal
+  }
+
+  /** Stop the resident, then the gateway, without retiring anything. */
+  async #halt(): Promise<void> {
+    this.#assertNoForeignPoller()
+    for (const container of this.#containers()) if (container.State.Running) this.#docker(["stop", "--time", "30", container.Name.slice(1)])
+    if (this.#containers().some((container) => container.State.Running)) throw new Error("Sanctuary resident did not stop")
+    const pid = this.#pid()
+    if (pid !== null) {
+      process.kill(pid, "SIGTERM")
+      await this.#wait(() => this.#pid() === null)
+    }
+    this.#remove(`${this.#epochRoot()}/readiness.json`)
+  }
+
+  #switchPackage(journal: UpgradeJournal): void {
+    const manifestText = this.#private(INCOMING_MANIFEST, 0o600, 8 * 1024 * 1024)
+    if (!fs.existsSync(this.#p(`${PREVIOUS}/package`))) {
+      this.#populate(NEXT_PACKAGE, `${ROOT}/incoming-package`, JSON.parse(manifestText))
+      fs.renameSync(this.#p(`${ROOT}/package`), this.#p(`${PREVIOUS}/package`))
+    }
+    if (!fs.existsSync(this.#p(`${ROOT}/package`))) fs.renameSync(this.#p(NEXT_PACKAGE), this.#p(`${ROOT}/package`))
+    this.#write(`${ROOT}/package-manifest.json`, manifestText)
+    this.#write(`${ROOT}/request.json`, this.#private(INCOMING_REQUEST))
+    rebindSanctuaryAuthorityEpochPackage(this.#p(this.#epochRoot()), { expectedUid: this.#uid, expectedGid: this.#gid, from: journal.from.packageDigest, to: journal.to.packageDigest })
+    const target = new SanctuaryAuthorityRootLifecycle({ targetImageId: journal.to.imageId, rollbackImageId: journal.from.imageId }, this.#options)
+    target.#rebindRecords()
+  }
+
+  /** Copy a reviewed package into a fresh private tree, pin by pin. */
+  #populate(destinationRoot: string, sourceRoot: string, manifest: { files: Record<string, { digest: string; mode: number }> }): void {
+    this.#removeTree(destinationRoot)
+    this.#directory(destinationRoot)
+    for (const [relative, pin] of Object.entries(manifest.files)) {
+      const destination = `${destinationRoot}/${relative}`
+      this.#directory(path.dirname(destination))
+      fs.copyFileSync(this.#p(`${sourceRoot}/${relative}`), this.#p(destination), fs.constants.COPYFILE_EXCL)
+      fs.chmodSync(this.#p(destination), pin.mode)
+      if (digest(fs.readFileSync(this.#p(destination))) !== pin.digest) throw new Error("Sanctuary upgrade package conflicts with its pin")
+    }
+  }
+
+  /** Point every epoch record at this lifecycle's (new) package and image, keeping the cursor. */
+  #rebindRecords(): void {
+    const migration = JSON.parse(this.#private(`${this.#epochRoot()}/migration.json`))
+    if (!Number.isSafeInteger(migration.predecessorCursor) || migration.predecessorCursor < 0) throw new Error("Sanctuary root migration cursor is invalid")
+    this.#write(`${this.#epochRoot()}/migration.json`, JSON.stringify({ ...this.plan(), ...this.#transaction, predecessorCursor: migration.predecessorCursor }))
+    this.#write(`${this.#epochRoot()}/stage.json`, JSON.stringify({ packageDigest: this.#request.packageDigest }))
+    this.#write(`${this.#epochRoot()}/configured.json`, JSON.stringify({ epochId: this.#request.epochId, targetImageId: this.#transaction.targetImageId }))
+    this.#verifyPackage()
+    this.#publishBoot()
+    this.#write(`${ROOT}/active.json`, JSON.stringify(this.#configuration()))
+    this.#write(`${ROOT}/activation.json`, JSON.stringify({ ...this.#transaction, state: "active", epochId: this.#request.epochId }))
+  }
+
+  /** Point the boot service script at the installed package. On Unraid the host keeper
+   * (not a direct go line) invokes it, so the go file is left as the operator has it. */
+  #publishBoot(): void {
+    this.#write(BOOT, fs.readFileSync(this.#p(`${ROOT}/package/deploy/unraid/sanctuary-authority-service.sh`), "utf8"))
+  }
+
+  #recreateResident(reference: string, imageId: string): void {
+    if (this.#containers().some((container) => container.Name === "/ouro-butler")) this.#docker(["rm", "-f", "ouro-butler"])
+    this.#docker(["create", "--name", "ouro-butler", "--network", "host", "--restart", "unless-stopped", "--user", "10001:10001",
+      "-l", "net.unraid.docker.managed=dockerman", "-l", `net.unraid.docker.icon=${ICON}`, "-l", "org.opencontainers.image.source=https://github.com/ourostack/ouroboros",
+      "-v", `${RUNTIME}:/home/ouro/.ouro-cli:rw`, "-v", `${BUNDLE}:/home/ouro/AgentBundles/sanctuary.ouro:rw`,
+      "-v", `${EVENTS}:/run/ouro-events:ro`, "-v", `${SOCKET}:${SOCKET}:ro`, reference])
+    const resident = this.#containers().find((container) => container.Name === "/ouro-butler")
+    if (resident?.Image !== imageId || resident.State.Running) throw new Error("Sanctuary resident recreation readback failed")
+  }
+
+  /** Run the installed package's bundle migration CLI, then return the bundle to the resident. */
+  #bundle(operation: string[]): void {
+    execFileSync(this.#p("/usr/local/bin/node"), [this.#p(`${ROOT}/package/deploy/unraid/migrate-sanctuary-bundle.mjs`),
+      "--package-root", this.#p(`${ROOT}/package/deploy/unraid/sanctuary.ouro`), "--agent-root", this.#p(BUNDLE), ...operation], {
+      encoding: "utf8", timeout: 300_000, stdio: ["ignore", "pipe", "pipe"], env: { PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" }, cwd: "/",
+    })
+    execFileSync("/bin/chown", ["-R", "10001:10001", this.#p(BUNDLE)], { stdio: "ignore" })
+  }
+
+  /** Start the gateway, then the resident, and prove both. */
+  async #startUpgraded(): Promise<void> {
+    await this.#startGateway()
+    this.#docker(["start", "ouro-butler"])
+    await this.#wait(async () => this.#target().State.Running && this.#target().State.Health?.Status === "healthy" && await this.#ready(), 300_000)
+  }
+
+  #removeTree(absolute: string): void {
+    fs.rmSync(this.#p(absolute), { recursive: true, force: true })
+  }
+
   #remove(absolute: string): void {
     if (!fs.existsSync(this.#p(absolute))) return
     this.#private(absolute)
@@ -645,6 +873,18 @@ export class SanctuaryAuthorityRootLifecycle {
   }
 }
 
+/**
+ * Keep the real failure where only root can read it (D-034). Stderr stays generic
+ * because a parse error can quote private bytes; the authority root is as private
+ * as the token it already holds.
+ */
+export function recordSanctuaryRootLifecycleFailure(error: unknown, file = `${ROOT}/lifecycle-failure.log`): string {
+  try {
+    fs.appendFileSync(file, `${new Date().toISOString()} ${error instanceof Error ? error.stack : String(error)}\n`, { mode: 0o600 })
+    return ` Details (root-only): ${file}`
+  } catch { return "" }
+}
+
 export async function runSanctuaryAuthorityRootCli(argv: string[], write = (text: string) => process.stdout.write(text)): Promise<void> {
   if (process.getuid!() !== 0 || process.getgid!() !== 0) throw new Error("Sanctuary root lifecycle requires root")
   if (argv.length === 2 && argv[0] === "vault") {
@@ -664,11 +904,14 @@ export async function runSanctuaryAuthorityRootCli(argv: string[], write = (text
     return
   }
   const repin = argv.length === 3 && argv[0] === "repin-execution"
-  if (!repin && (argv.length !== 1 || argv[0] !== "boot")) throw new Error("Usage: sanctuary-authority-root-lifecycle <boot|repin-execution <prlimit-sha256> <setsid-sha256>|vault snapshot|vault presence|vault remove|vault restore>")
-  await withSessionTurnLease("/boot/config/custom/ouro-butler/docker-man-template-transaction.json", async () => {
+  const upgrade = argv[0] === "upgrade" && (argv.length === 3 || (argv.length === 5 && argv[3] === "--fail-after"))
+  const rollback = argv.length === 1 && argv[0] === "upgrade-rollback"
+  if (!repin && !upgrade && !rollback && (argv.length !== 1 || argv[0] !== "boot")) throw new Error("Usage: sanctuary-authority-root-lifecycle <boot|repin-execution <prlimit-sha256> <setsid-sha256>|upgrade <target-image-id> <image-reference> [--fail-after <step>]|upgrade-rollback|vault snapshot|vault presence|vault remove|vault restore>")
+  // Boot never waits: the host keeper retries it. An operator upgrade waits out a boot in flight.
+  await withSessionTurnLease(TEMPLATE_JOURNAL, async () => {
     const activationPath = `${ROOT}/activation.json`
     if (!fs.existsSync(activationPath)) {
-      if (repin) throw new Error("Sanctuary authority is not active")
+      if (repin || upgrade || rollback) throw new Error("Sanctuary authority is not active")
       return
     }
     const activation = JSON.parse(fs.readFileSync(activationPath, "utf8")) as Transaction
@@ -676,13 +919,18 @@ export async function runSanctuaryAuthorityRootCli(argv: string[], write = (text
     if (repin) {
       lifecycle.repinExecution(argv[1]!, argv[2]!)
       write('{"repinned":true,"gatewayRestartRequired":true}\n')
+    } else if (upgrade) {
+      await lifecycle.upgrade({ targetImageId: argv[1]!, imageReference: argv[2]!, ...(argv[4] ? { failAfter: argv[4] } : {}) })
+      write(`${JSON.stringify({ upgraded: argv[2] })}\n`)
+    } else if (rollback) {
+      write(`${JSON.stringify({ rolledBack: await lifecycle.rollbackUpgrade() })}\n`)
     } else await lifecycle.boot()
-  }, { timeoutMs: 0, confinementRoot: "/boot/config/custom/ouro-butler" })
+  }, { timeoutMs: upgrade || rollback ? 600_000 : 0, confinementRoot: "/boot/config/custom/ouro-butler" })
 }
 
 if (process.argv[1] && fs.existsSync(process.argv[1]) && fs.realpathSync(process.argv[1]) === __filename) {
-  void runSanctuaryAuthorityRootCli(process.argv.slice(2)).catch(() => {
-    process.stderr.write("Sanctuary root lifecycle failed; inspect the root transaction and repair its failed boundary.\n")
+  void runSanctuaryAuthorityRootCli(process.argv.slice(2)).catch((error: unknown) => {
+    process.stderr.write(`Sanctuary root lifecycle failed; inspect the root transaction and repair its failed boundary.${recordSanctuaryRootLifecycleFailure(error)}\n`)
     process.exitCode = 1
   })
 }

@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.835",
+      "changes": [
+        "Sanctuary: in-place upgrade of an installed root authority (D-043). The authority keeps its epoch, token, issuer and Telegram cursor; only the reviewed package, its pins and the resident image change. The new package's lifecycle runs stop, switch, resident, migrate and start from a journal, backs up every root record it rewrites, and rolls back exactly on any failure. An interrupted upgrade rolls back on the next authority boot. No token rotation.",
+        "Upgrade orchestrator: new upgrade phase stages the package beside the live one, pauses host supervision behind a self-expiring maintenance flag, runs the lifecycle upgrade with automatic rollback, pins the DockerMan template, and resumes supervision. --rehearse <step> stops after a step and rolls back, proving the rollback on the real host. The host keeper now also restarts a resident left stopped.",
+        "Sanctuary root lifecycle failures are recorded with their real cause in a root-only log (the authority directory), and stderr names that file (D-034). A stale copy of the live token left in incoming-token is removed after an upgrade (D-044)."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.834",
       "changes": [
         "A2A: authenticated agent chat. A verified friend's message (friends message kind, signed and sealed) becomes the agent's turn under the sender's relationship profile, and the reply is sealed back to the sender and stored sealed, so neither direction travels or persists in plaintext over any transport.",
