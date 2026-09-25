@@ -62,6 +62,21 @@ describe("root authority installation prerequisites", () => {
     fs.chmodSync(directory, 0o777)
     expect(() => verifySanctuaryAuthorityInstallation(f.options)).toThrow(/directory/u)
   })
+  it("refuses a nested package directory swapped for a symlink to a real copy", () => {
+    const f = fixture()
+    const directory = path.join(f.options.packageRoot, "nested")
+    fs.mkdirSync(directory, { mode: 0o755 })
+    fs.renameSync(f.entry, path.join(directory, "gateway.js"))
+    const manifest = JSON.stringify({ schemaVersion: 1, files: { "nested/gateway.js": { digest: hash("gateway"), mode: 0o600 } } })
+    fs.writeFileSync(f.options.manifestPath, manifest)
+    f.options.manifestDigest = hash(manifest)
+    const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), "authority-elsewhere-"))
+    fs.renameSync(directory, path.join(elsewhere, "nested"))
+    fs.symlinkSync(path.join(elsewhere, "nested"), directory)
+    try {
+      expect(() => verifySanctuaryAuthorityInstallation(f.options)).toThrow(/inventory/u)
+    } finally { fs.rmSync(elsewhere, { recursive: true, force: true }) }
+  })
   it("verifies exact owned package bytes, modes, cgroup controllers and executable staging", () => {
     const f = fixture()
     expect(verifySanctuaryAuthorityInstallation(f.options)).toEqual({ packageDigest: f.options.manifestDigest, controllers: ["cpu", "memory", "pids"] })

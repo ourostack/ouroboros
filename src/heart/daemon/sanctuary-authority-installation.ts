@@ -39,8 +39,11 @@ function directory(filePath: string, uid: number, gid: number, mode: number): vo
   }
 }
 
-function readOwned(filePath: string, uid: number, gid: number, mode: number): Buffer {
-  canonical(filePath)
+/** `trustedParent`: the caller already walked every parent directory without following
+ * symlinks, so only the leaf needs guarding, and O_NOFOLLOW does that. Resolving each
+ * package file's real path cost two-thirds of every verification on Unraid (D-036). */
+function readOwned(filePath: string, uid: number, gid: number, mode: number, trustedParent = false): Buffer {
+  if (!trustedParent) canonical(filePath)
   const descriptor = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
   try {
     const stat = fs.fstatSync(descriptor)
@@ -83,7 +86,6 @@ export function verifySanctuaryAuthorityInstallation(input: Installation): { pac
       || typeof pin.digest !== "string" || !/^sha256:[a-f0-9]{64}$/u.test(pin.digest) || ![0o600, 0o644, 0o700, 0o755].includes(pin.mode as number)) {
       throw new Error("Sanctuary authority package file pin is invalid")
     }
-    if (digest(readOwned(path.join(input.packageRoot, relative), uid, gid, pin.mode as number)) !== pin.digest) throw new Error("Sanctuary authority package file digest changed")
   }
   const actual: string[] = []
   const walk = (relative: string): void => {
@@ -102,6 +104,12 @@ export function verifySanctuaryAuthorityInstallation(input: Installation): { pac
   }
   walk("")
   if (JSON.stringify(actual.sort()) !== JSON.stringify(expected)) throw new Error("Sanctuary authority package inventory changed")
+  // The walk above reached every file through real (not symlinked) directories, so a
+  // file read only needs to refuse a symlinked leaf.
+  for (const relative of expected) {
+    const pin = manifest.files[relative] as { digest: string; mode: number }
+    if (digest(readOwned(path.join(input.packageRoot, relative), uid, gid, pin.mode, true)) !== pin.digest) throw new Error("Sanctuary authority package file digest changed")
+  }
   const controllers = ["cpu", "memory", "pids"]
   const readControl = (name: string) => fs.readFileSync(path.join(input.cgroupRoot, name), "utf8").trim()
   for (const name of ["cgroup.controllers", "cgroup.subtree_control"]) {

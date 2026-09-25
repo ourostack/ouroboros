@@ -36,6 +36,7 @@ const DIGEST = /^sha256:[a-f0-9]{64}$/u
 // page cache on Unraid's array that takes minutes, so readiness gets a generous budget
 // (a 120 s budget failed a real rollback on 2026-09-24).
 const GATEWAY_READY_TIMEOUT_MS = 900_000
+const GATEWAY_LOG_MAX_BYTES = 5 * 1024 * 1024
 const TEMPLATE_JOURNAL = "/boot/config/custom/ouro-butler/docker-man-template-transaction.json"
 // In-place upgrade of an installed authority: same epoch (token, issuer, cursor,
 // gateway state), new reviewed package and resident image. Every root record it
@@ -467,9 +468,13 @@ export class SanctuaryAuthorityRootLifecycle {
     if (!this.#tokensAbsent() || !this.#rotated()) throw new Error("Sanctuary root token custody is not exclusive")
     if (this.#pid() === null) {
       this.#remove(`${this.#epochRoot()}/readiness.json`)
-      const child = spawn(this.#p("/usr/local/bin/node"), [this.#p(`${ROOT}/package/dist/heart/daemon/sanctuary-telegram-authority-entry.js`), "--config", this.#p(`${ROOT}/active.json`)], {
-        cwd: "/", env: { PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" }, detached: true, stdio: "ignore",
-      })
+      const log = this.#gatewayLog()
+      let child
+      try {
+        child = spawn(this.#p("/usr/local/bin/node"), [this.#p(`${ROOT}/package/dist/heart/daemon/sanctuary-telegram-authority-entry.js`), "--config", this.#p(`${ROOT}/active.json`)], {
+          cwd: "/", env: { PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" }, detached: true, stdio: ["ignore", log, log],
+        })
+      } finally { fs.closeSync(log) }
       child.unref()
       let failed = false
       child.once("error", () => { failed = true })
@@ -478,6 +483,16 @@ export class SanctuaryAuthorityRootLifecycle {
         return this.#ready()
       }, GATEWAY_READY_TIMEOUT_MS)
     } else await this.#wait(() => this.#ready(), GATEWAY_READY_TIMEOUT_MS)
+  }
+  /** The gateway's own output, kept root-only beside the token it guards and capped at two
+   * generations. It used to go nowhere, so a gateway that exited at startup said nothing
+   * (D-036: finding "host cgroup entry is invalid" took a hand-run gateway). */
+  #gatewayLog(): number {
+    const file = this.#p(`${ROOT}/gateway.log`)
+    if (fs.existsSync(file) && fs.statSync(file).size > GATEWAY_LOG_MAX_BYTES) fs.renameSync(file, `${file}.1`)
+    const fd = fs.openSync(file, fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW, 0o600)
+    fs.fchmodSync(fd, 0o600)
+    return fd
   }
   #target(): Container {
     const target = this.#containers().find((container) => container.Name === "/ouro-butler")
