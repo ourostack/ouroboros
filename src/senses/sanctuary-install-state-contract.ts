@@ -142,3 +142,52 @@ export function sanctuaryInstallStateRequiredToolCalls(
     },
   }
 }
+
+const VERSION_QUESTION = /\b(?:what|which)(?:'s|\s+is)?\s+(?:your\s+|the\s+)?(?:current\s+|live\s+|installed\s+|running\s+)?version\b|\bversion\s+(?:are|r)\s+(?:you|u)\b|\bwhat\s+(?:are\s+you|you're)\s+(?:on|running)\b|\bare\s+you\s+(?:on|running)\s+(?:the\s+)?(?:latest|newest|new|current)\b/iu
+const VERSION_CLAIM = /\bv?\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)?\b/gu
+
+/**
+ * A natural question about the Butler's own version must be answered from a fresh
+ * install-state read. After an upgrade the Butler once answered "Just checked the live
+ * state: 0.1.0-alpha.841" from earlier conversation while it was running 845, with no
+ * tool call at all. Unlike the explicit install-state contract, the wording stays free:
+ * only the version it states is checked against the read.
+ */
+export function sanctuaryVersionQuestionRequiredToolCalls(
+  request: string,
+  advertisedToolNames: readonly string[],
+): {
+  names: readonly string[]
+  retryMessage: string
+  requireSuccessfulResults: true
+  validateRequiredToolResult(name: string, result: string, args: Record<string, string>): boolean
+  validateTerminalAnswer(answer: string): string | undefined
+} | undefined {
+  const normalizedRequest = request.normalize("NFKC").replace(/[‘’]/gu, "'")
+  if (!advertisedToolNames.includes(TOOL_NAME) || REQUEST.test(normalizedRequest) || !VERSION_QUESTION.test(normalizedRequest)) return undefined
+  let current: InstallState | undefined
+  emitNervesEvent({
+    component: "senses",
+    event: "senses.sanctuary_version_question_required",
+    message: "a question about the running version requires a fresh install-state read",
+    meta: { requiredToolName: TOOL_NAME },
+  })
+  return {
+    names: [TOOL_NAME],
+    retryMessage: "Call sanctuary_get_install_state with empty arguments now, then state the version from that fresh result, not from earlier conversation.",
+    requireSuccessfulResults: true,
+    validateRequiredToolResult: (name, result, args) => {
+      if (name !== TOOL_NAME || Object.keys(args).length !== 0) return false
+      current = parseInstallState(result)
+      return current !== undefined
+    },
+    validateTerminalAnswer: (answer) => {
+      if (!current) return "Call sanctuary_get_install_state and state the version from that fresh result."
+      const known = new Set([current.runtimePackageVersion, current.packagedBundleVersion, ...(current.liveBundleVersion ? [current.liveBundleVersion] : [])].map((version) => version.replace(/^v/u, "")))
+      const claimed = [...answer.normalize("NFKC").matchAll(VERSION_CLAIM)].map((match) => match[0].replace(/^v/u, ""))
+      if (claimed.length === 0) return `State the running version from the fresh result: ${current.runtimePackageVersion}.`
+      const stale = claimed.filter((version) => !known.has(version))
+      return stale.length === 0 ? undefined : `The fresh install-state result says ${current.runtimePackageVersion}; do not state ${stale.join(", ")} as the current version.`
+    },
+  }
+}

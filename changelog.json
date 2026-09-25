@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.846",
+      "changes": [
+        "Sanctuary: a natural question about the Butler's version ('what version are you on?') now requires a fresh install-state read, and any version it states must match that read. After an upgrade it had answered 'Just checked the live state: 0.1.0-alpha.841' from earlier conversation while running 845, with no tool call."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.845",
       "changes": [
         "Senses: a turn that errors now tells the person so instead of going silent (naming the step limit when that is the cause). This was the mechanism behind the Butler's answer-then-greet sequence (D-004): a question hit the provider step limit (D-007), nothing was sent, and each prod became its own turn. The engine still refuses to answer without evidence; the private channel stays silent."

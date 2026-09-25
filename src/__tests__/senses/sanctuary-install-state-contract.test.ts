@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { sanctuaryInstallStateRequiredToolCalls } from "../../senses/sanctuary-install-state-contract"
+import { sanctuaryInstallStateRequiredToolCalls, sanctuaryVersionQuestionRequiredToolCalls } from "../../senses/sanctuary-install-state-contract"
 
 const request = "use sanctuary_get_install_state now. in one compact reply, tell me the runtime package version, packaged bundle version, live bundle version, parity, journal state, ready state, and repair action. don't repeat the answer."
 const currentResult = JSON.stringify({
@@ -192,5 +192,51 @@ describe("Sanctuary install-state contract", () => {
     })
 
     expect(contract.validateRequiredToolResult("sanctuary_get_install_state", result, {})).toBe(false)
+  })
+})
+
+describe("Sanctuary version question contract", () => {
+  const tools = ["sanctuary_get_install_state"]
+  it.each([
+    "quick check after tonight's fixes — what version are you on?",
+    "What version are you running?",
+    "which version is live",
+    "what's your current version",
+    "what are you on right now?",
+    "Are you on the latest?",
+    "version are you on?",
+  ])("requires a fresh install-state read for %j", (question) => {
+    expect(sanctuaryVersionQuestionRequiredToolCalls(question, tools)?.names).toEqual(["sanctuary_get_install_state"])
+  })
+
+  it("stays out of unrelated questions, explicit install-state requests and agents without the tool", () => {
+    expect(sanctuaryVersionQuestionRequiredToolCalls("How is Sanctuary?", tools)).toBeUndefined()
+    expect(sanctuaryVersionQuestionRequiredToolCalls("Call sanctuary_get_install_state and tell me the version.", tools)).toBeUndefined()
+    expect(sanctuaryVersionQuestionRequiredToolCalls("What version are you on?", ["unraid_get_system"])).toBeUndefined()
+  })
+
+  it("accepts only the freshly read version and asks for it when missing", () => {
+    const contract = sanctuaryVersionQuestionRequiredToolCalls("What version are you on?", tools)!
+    expect(contract.validateTerminalAnswer("I'm on 0.1.0-alpha.805.")).toMatch(/Call sanctuary_get_install_state/u)
+    expect(contract.validateRequiredToolResult("unraid_get_system", currentResult, {})).toBe(false)
+    expect(contract.validateRequiredToolResult("sanctuary_get_install_state", currentResult, { force: "1" })).toBe(false)
+    expect(contract.validateRequiredToolResult("sanctuary_get_install_state", "not json", {})).toBe(false)
+    expect(contract.validateRequiredToolResult("sanctuary_get_install_state", currentResult, {})).toBe(true)
+    expect(contract.validateTerminalAnswer("Just checked: 0.1.0-alpha.805, parity exact.")).toBeUndefined()
+    expect(contract.validateTerminalAnswer("Running v0.1.0-alpha.805.")).toBeUndefined()
+    expect(contract.validateTerminalAnswer("All good, parity exact.")).toMatch(/0\.1\.0-alpha\.805/u)
+    expect(contract.validateTerminalAnswer("Just checked the live state: 0.1.0-alpha.841.")).toMatch(/do not state 0\.1\.0-alpha\.841/u)
+  })
+
+  it("accepts the packaged or live version when the live bundle is absent", () => {
+    const contract = sanctuaryVersionQuestionRequiredToolCalls("what version are you on", tools)!
+    const noLive = JSON.parse(currentResult)
+    noLive.data.liveBundleVersion = null
+    noLive.data.parity = "mismatch"
+    noLive.data.mismatchCodes = ["bundle_meta_missing"]
+    noLive.data.ready = false
+    noLive.data.repair = { actor: "human-required", action: "run_verified_update_recovery" }
+    expect(contract.validateRequiredToolResult("sanctuary_get_install_state", JSON.stringify(noLive), {})).toBe(true)
+    expect(contract.validateTerminalAnswer("Runtime 0.1.0-alpha.805; live bundle missing.")).toBeUndefined()
   })
 })
