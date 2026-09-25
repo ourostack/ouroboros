@@ -73,6 +73,9 @@ describe("mail import discovery", () => {
     const skippedWorktreeDir = path.join(homeDir, "Pictures", "_worktrees", "should-not-scan")
     fs.mkdirSync(path.join(allowedWorktreeDir, ".playwright-mcp"), { recursive: true })
     fs.mkdirSync(path.join(skippedWorktreeDir, ".playwright-mcp"), { recursive: true })
+    // Hidden home directories (other than .playwright-mcp) are never scanned either.
+    const hiddenWorktreeDir = path.join(homeDir, ".cache", "_worktrees", "should-not-scan-hidden")
+    fs.mkdirSync(path.join(hiddenWorktreeDir, ".playwright-mcp"), { recursive: true })
     mockGetAgentRepoWorkspacesRoot.mockReturnValue(path.join(homeDir, "AgentBundles", "slugger.ouro", "state", "workspaces"))
 
     const dirs = defaultMailImportDiscoveryDirs({
@@ -83,6 +86,7 @@ describe("mail import discovery", () => {
 
     expect(dirs).toContain(path.join(allowedWorktreeDir, ".playwright-mcp"))
     expect(dirs).not.toContain(path.join(skippedWorktreeDir, ".playwright-mcp"))
+    expect(dirs).not.toContain(path.join(hiddenWorktreeDir, ".playwright-mcp"))
   })
 
   it("discovers a recent MBOX file inside a nested _worktrees Playwright sandbox", () => {

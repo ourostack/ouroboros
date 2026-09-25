@@ -2245,6 +2245,9 @@ describe("daemon command plane branches", () => {
       expect(router.send).not.toHaveBeenCalled()
       expect(processManager.startAgent).not.toHaveBeenCalled()
       expect(processManager.sendToAgent).not.toHaveBeenCalled()
+      // The daemon's status reads the same default root, so the queued event is visible there.
+      const status = await daemon.handleCommand({ kind: "daemon.status" } as const)
+      expect((status.data as { externalEvents?: Array<{ eventId: string }> }).externalEvents).toEqual([expect.objectContaining({ eventId: "feedback-no-wake" })])
     } finally {
       if (previousHome === undefined) {
         delete process.env.HOME
