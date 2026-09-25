@@ -52,7 +52,7 @@ export default defineConfig({
       "src/__tests__/senses/cli/*.tsx",
     ],
     maxWorkers: 1,
-    setupFiles: ["src/__tests__/nerves/global-capture.ts"],
+    setupFiles: ["src/__tests__/nerves/global-capture.ts", "src/__tests__/test-helpers/isolated-tmpdir.ts"],
     coverage: {
       provider: "v8",
       reporter: ["text", "lcov", "json-summary"],
