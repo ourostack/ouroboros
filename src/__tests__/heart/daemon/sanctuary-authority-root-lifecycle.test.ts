@@ -602,6 +602,21 @@ describe("fixed root installation effects", () => {
     alterDocker((args, value) => vaultOp(args) === "presence" ? '{"tokenPresent":"false"}' : value)
     await expect(lifecycle.effect("remove-resident-token").readback()).rejects.toThrow(/presence/u)
   })
+  it("keeps the gateway's own output in a capped root-only log instead of discarding it (D-036)", async () => {
+    const f = await preparedFixture()
+    await f.lifecycle.effect("start-gateway").apply()
+    const options = host.spawn.mock.calls.at(-1)![2] as { stdio: [string, number, number] }
+    expect(options.stdio[0]).toBe("ignore")
+    expect(options.stdio[1]).toBe(options.stdio[2])
+    const log = f.p(`${rootPath}/gateway.log`)
+    expect(fs.statSync(log).mode & 0o777).toBe(0o600)
+    fs.writeFileSync(log, "x".repeat(5 * 1024 * 1024 + 1))
+    fs.rmSync(f.p("/proc/45678"), { recursive: true })
+    await f.lifecycle.effect("start-gateway").apply()
+    expect(fs.statSync(`${log}.1`).size).toBe(5 * 1024 * 1024 + 1)
+    expect(fs.statSync(log).size).toBe(0)
+  })
+
   it("accepts the host keeper as the boot owner and refuses two owners (D-045)", async () => {
     const f = fixture()
     const lifecycle = f.staged()

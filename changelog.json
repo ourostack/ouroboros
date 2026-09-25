@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.844",
+      "changes": [
+        "Sanctuary authority start is faster and no longer blind (D-036): package verification walks the tree once without following symlinks and then reads each file with O_NOFOLLOW, instead of resolving every file's real path (on Unraid that was two-thirds of each pass: about 15 s instead of about 47 s per pass, and a gateway start runs two), and the gateway's own output now goes to a root-only, size-capped gateway.log in the authority directory instead of nowhere."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.843",
       "changes": [
         "Butler image: drop dependency source maps, type declarations and Markdown from node_modules (about 11,800 of 28,000 files). The root authority pins and hashes every package file at each gateway start, which took minutes on Unraid's array (D-036)."
