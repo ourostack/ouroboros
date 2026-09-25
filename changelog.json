@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.845",
+      "changes": [
+        "Senses: a turn that errors now tells the person so instead of going silent (naming the step limit when that is the cause). This was the mechanism behind the Butler's answer-then-greet sequence (D-004): a question hit the provider step limit (D-007), nothing was sent, and each prod became its own turn. The engine still refuses to answer without evidence; the private channel stays silent."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.844",
       "changes": [
         "Sanctuary authority start is faster and no longer blind (D-036): package verification walks the tree once without following symlinks and then reads each file with O_NOFOLLOW, instead of resolving every file's real path (on Unraid that was two-thirds of each pass: about 15 s instead of about 47 s per pass, and a gateway start runs two), and the gateway's own output now goes to a root-only, size-capped gateway.log in the authority directory instead of nowhere.",
