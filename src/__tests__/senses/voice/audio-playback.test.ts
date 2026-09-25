@@ -53,7 +53,8 @@ describe("voice call audio playback preparation", () => {
   it("rejects local audio files outside the agent bundle or temp directory", async () => {
     await expect(prepareVoiceCallAudio({
       source: "file",
-      path: path.join(os.homedir(), "outside.wav"),
+      // Outside both the bundle and the temp root (the test HOME lives under the temp root).
+      path: path.join(path.parse(os.tmpdir()).root, "ouro-outside-test", "outside.wav"),
     }, {
       agentRoot: path.join(os.tmpdir(), "agent.ouro"),
     })).rejects.toThrow("voice audio files must live under the agent bundle or temp directory")

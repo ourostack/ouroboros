@@ -10,6 +10,9 @@ import { LIFECYCLE_PAIRED_STARTS } from "../../nerves/coverage/audit-rules"
 import { __getLiveTmpBundleHandles } from "../test-helpers/tmpdir-bundle"
 
 const REPO_SLUG = "ouroboros-agent-harness"
+// The coverage runner publishes its run directory under the real temp root; tests then
+// get a private TMPDIR per file (isolated-tmpdir.ts), so capture the real one first.
+const RUNNER_TMPDIR = tmpdir()
 
 function coverageRunOwner(cwd: string = process.cwd()): string {
   const hash = createHash("sha256").update(resolve(cwd)).digest("hex").slice(0, 12)
@@ -17,7 +20,7 @@ function coverageRunOwner(cwd: string = process.cwd()): string {
 }
 
 function readActiveRunDir(): string | null {
-  const activePath = join(tmpdir(), "ouroboros-test-runs", REPO_SLUG, coverageRunOwner(), ".active-run.json")
+  const activePath = join(RUNNER_TMPDIR, "ouroboros-test-runs", REPO_SLUG, coverageRunOwner(), ".active-run.json")
   if (!existsSync(activePath)) return null
   try {
     const parsed = JSON.parse(readFileSync(activePath, "utf8")) as { run_dir?: unknown }
