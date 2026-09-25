@@ -1027,8 +1027,30 @@ describe("runSenseTurn", () => {
       deliverySink: { onDelivery: (delivery) => { delivered.push(delivery.text) } },
     })
 
-    expect(delivered).toEqual([])
+    // An errored turn now says so honestly instead of going silent (D-004/D-007); it
+    // still never leaks the discarded prose.
+    const { erroredTurnReply } = await import("../../senses/shared-turn")
+    expect(delivered).toEqual(turnOutcome === "errored" ? [erroredTurnReply(undefined)] : [])
     expect(result.response).not.toContain("Discarded intermediate prose.")
+  })
+
+  it("names the step limit when an errored turn ran out of steps, and keeps the private channel silent", async () => {
+    const { erroredTurnReply, runSenseTurn } = await import("../../senses/shared-turn")
+    expect(erroredTurnReply("provider iteration limit exhausted at response 8 before tool execution")).toMatch(/ran out of steps/u)
+    expect(erroredTurnReply("socket hang up")).toMatch(/something went wrong/u)
+    for (const channel of ["telegram", "inner"] as const) {
+      const delivered: string[] = []
+      mockHandleInboundTurn.mockImplementation(async (input: any) => {
+        input.callbacks.onError(new Error("retrying"), "transient")
+        input.callbacks.onError(new Error("provider iteration limit exhausted at response 8 before required terminal answer validation completed"), "terminal")
+        return { resolvedContext: makeResolvedContext(), gateResult: { allowed: true }, turnOutcome: "errored", sessionPath: "/tmp/session.json", messages: [] }
+      })
+      await runSenseTurn({
+        agentName: "test-agent", channel, sessionKey: "session-123", friendId: "friend-1", userMessage: "hello",
+        deliverySink: { onDelivery: (delivery) => { delivered.push(delivery.text) } },
+      })
+      expect(delivered).toEqual(channel === "inner" ? [] : [erroredTurnReply("provider iteration limit exhausted")])
+    }
   })
 
   it("delivers an intercepted command response without inventing a session coordinate", async () => {

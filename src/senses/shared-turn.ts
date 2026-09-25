@@ -460,6 +460,18 @@ export function getSenseSessionPath(agentName: string, friendId: string, channel
  * Caller provides channel, session key, friend, and message;
  * this function handles all pipeline wiring.
  */
+/**
+ * What an outward sense says when a turn errors and provider failover has nothing to say.
+ * Such turns used to end in silence: the owner saw no reply, prodded, and later got
+ * the late answer followed by a greeting to a prod (D-004); the step-limit stop was the
+ * observed cause (D-007). The engine still refuses to answer without evidence.
+ */
+export function erroredTurnReply(errorMessage: string | undefined): string {
+  return /iteration limit exhausted/u.test(errorMessage ?? "")
+    ? "I couldn't finish that one: I ran out of steps before I had an answer I could stand behind. Ask me again, or ask something narrower, and I'll take another run at it."
+    : "I couldn't finish that one: something went wrong before I had an answer. Ask me again and I'll retry."
+}
+
 export async function runSenseTurn(options: RunSenseTurnOptions): Promise<RunSenseTurnResult> {
   return withTurnExecutionLease(async () => {
     const owner = Object.freeze({ agentName: options.agentName, agentRoot: getAgentRoot(options.agentName) })
@@ -586,6 +598,7 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions, owner: McpOwn
   // once the turn completes.
   let committedResponseText = ""
   let pendingResponseText = ""
+  let terminalErrorMessage: string | undefined
   let terminalDeliveryKind: OutwardSenseDeliveryKind = "text"
   const deliveries: OutwardSenseDelivery[] = []
   const deliveryFailures: OutwardSenseDeliveryFailure[] = []
@@ -669,6 +682,7 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions, owner: McpOwn
       emitFrontendEvent({ type: "tool_completed", data: { name, summary: _summary, success } })
     },
     onError: (error: Error, severity: "transient" | "terminal") => {
+      if (severity === "terminal") terminalErrorMessage = error.message
       emitFrontendEvent({ type: "error", data: { message: error.message, severity } })
     },
     onClearText: () => {
@@ -802,7 +816,9 @@ async function runSenseTurnExclusive(options: RunSenseTurnOptions, owner: McpOwn
   )
   let finalDeliveryKind = terminalDeliveryKind as OutwardSenseDeliveryKind
   const acceptedTerminalOutcome = turnResult.turnOutcome === "settled" || turnResult.turnOutcome === "blocked"
-  const failoverText = turnResult.turnOutcome === "errored" ? turnResult.failoverMessage?.trim() : undefined
+  const failoverText = turnResult.turnOutcome === "errored"
+    ? turnResult.failoverMessage?.trim() || (channel === "inner" ? undefined : erroredTurnReply(terminalErrorMessage))
+    : undefined
   const expectsOutwardResponse = acceptedTerminalOutcome || turnResult.turnOutcome === "command" || Boolean(failoverText)
   let finalCausalCoordinate: OutwardSessionCoordinate | undefined
   if (acceptedTerminalOutcome) {
