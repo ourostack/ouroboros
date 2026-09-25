@@ -280,9 +280,14 @@ export function readSenseStatusLines(): string[] {
         ? openAIRealtimeVoiceReady
         : cascadeVoiceReady,
     a2a: true,
-    telegram: hasTextField(runtimePayload, "telegramBotToken")
-      && hasTextField(runtimePayload, "telegramAuthorizedUserId")
-      && hasTextField(runtimePayload, "telegramAuthorizedChatId"),
+    // Sanctuary's resident is deliberately tokenless: the root authority gateway holds the
+    // token, so a token in the resident's config would be the misconfiguration. Mirror the
+    // daemon's rule (sense-manager) instead of reporting a working sense as needs_config (D-047).
+    telegram: agentName === "sanctuary"
+      ? runtimeConfig.ok && machineRuntimeConfig.ok && !Object.hasOwn(runtimePayload, "telegramBotToken") && !Object.hasOwn(machinePayload, "telegramBotToken")
+      : hasTextField(runtimePayload, "telegramBotToken")
+        && hasTextField(runtimePayload, "telegramAuthorizedUserId")
+        && hasTextField(runtimePayload, "telegramAuthorizedChatId"),
     workbench: false,
   }
 

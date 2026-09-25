@@ -4,7 +4,8 @@
     {
       "version": "0.1.0-alpha.844",
       "changes": [
-        "Sanctuary authority start is faster and no longer blind (D-036): package verification walks the tree once without following symlinks and then reads each file with O_NOFOLLOW, instead of resolving every file's real path (on Unraid that was two-thirds of each pass: about 15 s instead of about 47 s per pass, and a gateway start runs two), and the gateway's own output now goes to a root-only, size-capped gateway.log in the authority directory instead of nowhere."
+        "Sanctuary authority start is faster and no longer blind (D-036): package verification walks the tree once without following symlinks and then reads each file with O_NOFOLLOW, instead of resolving every file's real path (on Unraid that was two-thirds of each pass: about 15 s instead of about 47 s per pass, and a gateway start runs two), and the gateway's own output now goes to a root-only, size-capped gateway.log in the authority directory instead of nowhere.",
+        "Sanctuary: the agent's own view of its senses reports the tokenless root-authority Telegram as ready (it said needs_config while Telegram worked), and a token found in the resident's config as needs_config, matching the daemon's rule (D-047)."
       ]
     },
     {

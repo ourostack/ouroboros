@@ -822,6 +822,28 @@ describe("buildTurnContext", () => {
     expect((await buildTurnContext(makeInput())).senseStatusLines).toContain("- Telegram: needs_config")
   })
 
+  it("reports Sanctuary's tokenless root-authority Telegram as ready, and a token in the resident as needs_config (D-047)", async () => {
+    mockGetAgentName.mockReturnValue("sanctuary")
+    mockLoadAgentConfig.mockReturnValue({ senses: { telegram: { enabled: true } } })
+    const runtime = (config: Record<string, unknown>, ok = true) => ok
+      ? { ok: true, itemPath: "vault:sanctuary:runtime/config", revision: "r", updatedAt: "2026-09-24T00:00:00.000Z", config }
+      : { ok: false, reason: "unavailable", itemPath: "vault:sanctuary:runtime/config", error: "locked" }
+    mockReadRuntimeCredentialConfig.mockReturnValue(runtime({ telegramAuthorizedUserId: "42", telegramAuthorizedChatId: "42" }))
+    mockReadMachineRuntimeCredentialConfig.mockReturnValue(runtime({}))
+    expect((await buildTurnContext(makeInput())).senseStatusLines).toContain("- Telegram: ready")
+    mockReadRuntimeCredentialConfig.mockReturnValue(runtime({ telegramBotToken: "123:leaked", telegramAuthorizedUserId: "42", telegramAuthorizedChatId: "42" }))
+    expect((await buildTurnContext(makeInput())).senseStatusLines).toContain("- Telegram: needs_config")
+    mockReadRuntimeCredentialConfig.mockReturnValue(runtime({}))
+    mockReadMachineRuntimeCredentialConfig.mockReturnValue(runtime({ telegramBotToken: "123:leaked" }))
+    expect((await buildTurnContext(makeInput())).senseStatusLines).toContain("- Telegram: needs_config")
+    mockReadMachineRuntimeCredentialConfig.mockReturnValue(runtime({}, false))
+    expect((await buildTurnContext(makeInput())).senseStatusLines).toContain("- Telegram: needs_config")
+    mockReadMachineRuntimeCredentialConfig.mockReturnValue(runtime({}))
+    mockReadRuntimeCredentialConfig.mockReturnValue(runtime({}, false))
+    expect((await buildTurnContext(makeInput())).senseStatusLines).toContain("- Telegram: needs_config")
+    mockGetAgentName.mockReturnValue("test-agent")
+  })
+
   it("uses fallback senses config when config.senses is undefined", async () => {
     mockLoadAgentConfig.mockReturnValue({})
 
