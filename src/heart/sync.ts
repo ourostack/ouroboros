@@ -94,16 +94,33 @@ function ensureGitRepo(agentRoot: string): SyncResult {
  */
 export const STALE_INDEX_LOCK_MS = 10 * 60 * 1000
 
+// Only an empty lock is removed: git writes the new index into the lock right
+// after creating it, while a live `git commit` waiting in an editor holds a
+// full, unchanging lock that can be older than the threshold. When `.git` is a
+// gitdir file (worktree), statSync fails and the lock is left alone.
 function clearStaleIndexLock(agentRoot: string): void {
   const lockPath = path.join(agentRoot, ".git", "index.lock")
   let ageMs: number
   try {
-    ageMs = Date.now() - fs.statSync(lockPath).mtimeMs
+    const stat = fs.statSync(lockPath)
+    if (stat.size !== 0) return
+    ageMs = Date.now() - stat.mtimeMs
   } catch {
     return
   }
   if (ageMs < STALE_INDEX_LOCK_MS) return
-  fs.rmSync(lockPath, { force: true })
+  try {
+    fs.rmSync(lockPath, { force: true })
+  } catch (err) {
+    emitNervesEvent({
+      level: "warn",
+      component: "heart",
+      event: "heart.sync_stale_lock_clear_failed",
+      message: "post-turn push: could not remove stale git index.lock",
+      meta: { agentRoot, lockPath, error: err instanceof Error ? err.message : String(err) },
+    })
+    return
+  }
   emitNervesEvent({
     level: "warn",
     component: "heart",

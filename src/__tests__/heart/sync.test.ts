@@ -546,11 +546,11 @@ describe("postTurnPush stale index.lock recovery", () => {
     vi.mocked(emitNervesEvent).mockReset()
   })
 
-  function makeBundleWithLock(ageMs: number): { tmpDir: string; lockPath: string } {
+  function makeBundleWithLock(ageMs: number, content = ""): { tmpDir: string; lockPath: string } {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sync-index-lock-"))
     fs.mkdirSync(path.join(tmpDir, ".git"), { recursive: true })
     const lockPath = path.join(tmpDir, ".git", "index.lock")
-    fs.writeFileSync(lockPath, "", "utf-8")
+    fs.writeFileSync(lockPath, content, "utf-8")
     const stamp = new Date(Date.now() - ageMs)
     fs.utimesSync(lockPath, stamp, stamp)
     return { tmpDir, lockPath }
@@ -578,6 +578,65 @@ describe("postTurnPush stale index.lock recovery", () => {
         meta: expect.objectContaining({ agentRoot: tmpDir }),
       }),
     )
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  it("keeps an old index.lock that has content, since a live commit may hold it", async () => {
+    const { tmpDir, lockPath } = makeBundleWithLock(60 * 60 * 1000, "DIRC")
+    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
+      const argv = args as string[]
+      if (argv[0] === "status") return Buffer.from(" M file.json\n")
+      if (argv[0] === "add") throw new Error("fatal: Unable to create 'index.lock': File exists.")
+      return Buffer.from("")
+    })
+
+    const { postTurnPush } = await import("../../heart/sync")
+    const result = postTurnPush(tmpDir, defaultConfig)
+
+    expect(result.ok).toBe(false)
+    expect(fs.existsSync(lockPath)).toBe(true)
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  it("reports, rather than throws, when a stale index.lock cannot be removed", async () => {
+    const { tmpDir, lockPath } = makeBundleWithLock(60 * 60 * 1000)
+    const rmSpy = vi.spyOn(fs, "rmSync").mockImplementationOnce(() => {
+      throw new Error("EPERM: operation not permitted")
+    })
+    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
+      const argv = args as string[]
+      if (argv[0] === "status") return Buffer.from(" M file.json\n")
+      if (argv[0] === "add") throw new Error("fatal: Unable to create 'index.lock': File exists.")
+      return Buffer.from("")
+    })
+
+    const { postTurnPush } = await import("../../heart/sync")
+    const result = postTurnPush(tmpDir, defaultConfig)
+    rmSpy.mockRestore()
+
+    expect(result.ok).toBe(false)
+    expect(fs.existsSync(lockPath)).toBe(true)
+    expect(emitNervesEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ event: "heart.sync_stale_lock_clear_failed" }),
+    )
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  it("still returns the commit failure when pending-sync cannot be written", async () => {
+    const { tmpDir } = makeBundleWithLock(5 * 1000)
+    fs.writeFileSync(path.join(tmpDir, "state"), "not a directory", "utf-8")
+    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
+      const argv = args as string[]
+      if (argv[0] === "status") return Buffer.from(" M file.json\n")
+      if (argv[0] === "add") throw new Error("fatal: Unable to create 'index.lock': File exists.")
+      return Buffer.from("")
+    })
+
+    const { postTurnPush } = await import("../../heart/sync")
+    const result = postTurnPush(tmpDir, defaultConfig)
+
+    expect(result.ok).toBe(false)
+    expect(result.error).toContain("index.lock")
     fs.rmSync(tmpDir, { recursive: true, force: true })
   })
 
