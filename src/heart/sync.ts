@@ -117,7 +117,7 @@ function clearStaleIndexLock(agentRoot: string): void {
       component: "heart",
       event: "heart.sync_stale_lock_clear_failed",
       message: "post-turn push: could not remove stale git index.lock",
-      meta: { agentRoot, lockPath, error: err instanceof Error ? err.message : String(err) },
+      meta: { agentRoot, lockPath, error: err instanceof Error ? err.message : /* v8 ignore next -- defensive non-Error catch @preserve */ String(err) },
     })
     return
   }
