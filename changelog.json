@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.847",
+      "changes": [
+        "Bundle sync: post-turn push now removes an empty git index.lock older than 10 minutes (left by a git process that died mid-write) before committing, and any other failed local commit is recorded in state/pending-sync.json so the start-of-turn packet surfaces it. One stale lock had silently blocked every bundle commit for three months while untracked files piled up; a lock that cannot be removed is reported as a warning."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.846",
       "changes": [
         "Sanctuary: a natural question about the Butler's version ('what version are you on?') now requires a fresh install-state read, and any version it states must match that read. After an upgrade it had answered 'Just checked the live state: 0.1.0-alpha.841' from earlier conversation while running 845, with no tool call."

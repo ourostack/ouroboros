@@ -87,6 +87,50 @@ function ensureGitRepo(agentRoot: string): SyncResult {
 }
 
 /**
+ * Git holds `.git/index.lock` for milliseconds to seconds, and every git call
+ * in this module has a timeout of 30s or less. A lock older than this was left
+ * behind by a git process that died mid-write; while it exists every `git add`
+ * fails, which silently stopped one bundle's sync for three months.
+ */
+export const STALE_INDEX_LOCK_MS = 10 * 60 * 1000
+
+// Only an empty lock is removed: git writes the new index into the lock right
+// after creating it, while a live `git commit` waiting in an editor holds a
+// full, unchanging lock that can be older than the threshold. When `.git` is a
+// gitdir file (worktree), statSync fails and the lock is left alone.
+function clearStaleIndexLock(agentRoot: string): void {
+  const lockPath = path.join(agentRoot, ".git", "index.lock")
+  let ageMs: number
+  try {
+    const stat = fs.statSync(lockPath)
+    if (stat.size !== 0) return
+    ageMs = Date.now() - stat.mtimeMs
+  } catch {
+    return
+  }
+  if (ageMs < STALE_INDEX_LOCK_MS) return
+  try {
+    fs.rmSync(lockPath, { force: true })
+  } catch (err) {
+    emitNervesEvent({
+      level: "warn",
+      component: "heart",
+      event: "heart.sync_stale_lock_clear_failed",
+      message: "post-turn push: could not remove stale git index.lock",
+      meta: { agentRoot, lockPath, error: err instanceof Error ? err.message : /* v8 ignore next -- defensive non-Error catch @preserve */ String(err) },
+    })
+    return
+  }
+  emitNervesEvent({
+    level: "warn",
+    component: "heart",
+    event: "heart.sync_stale_lock_cleared",
+    message: "post-turn push: removed stale git index.lock",
+    meta: { agentRoot, lockPath, ageMs },
+  })
+}
+
+/**
  * Pre-turn pull: sync the agent bundle from remote before assembling the start-of-turn packet.
  *
  * If the bundle has no git remote configured, the pull is skipped and the function
@@ -236,6 +280,8 @@ export function postTurnPush(agentRoot: string, config: SyncConfig): SyncResult 
 
   const changedCount = statusOutput.split("\n").length
 
+  clearStaleIndexLock(agentRoot)
+
   try {
     execFileSync("git", ["add", "-A"], {
       cwd: agentRoot,
@@ -341,6 +387,13 @@ export function postTurnPush(agentRoot: string, config: SyncConfig): SyncResult 
     return { ok: true }
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err)
+    // Record it so the start-of-turn packet surfaces the failure; otherwise a
+    // failing local commit is visible only in nerves logs.
+    try {
+      writePendingSync(agentRoot, error, "unknown", [])
+    } catch {
+      // Best effort: the nerves event below still records the failure.
+    }
 
     emitNervesEvent({
       component: "heart",
