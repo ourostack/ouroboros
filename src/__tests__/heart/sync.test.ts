@@ -539,3 +539,65 @@ describe("postTurnPush", () => {
     )
   })
 })
+
+describe("postTurnPush stale index.lock recovery", () => {
+  beforeEach(() => {
+    vi.mocked(childProcess.execFileSync).mockReset()
+    vi.mocked(emitNervesEvent).mockReset()
+  })
+
+  function makeBundleWithLock(ageMs: number): { tmpDir: string; lockPath: string } {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sync-index-lock-"))
+    fs.mkdirSync(path.join(tmpDir, ".git"), { recursive: true })
+    const lockPath = path.join(tmpDir, ".git", "index.lock")
+    fs.writeFileSync(lockPath, "", "utf-8")
+    const stamp = new Date(Date.now() - ageMs)
+    fs.utimesSync(lockPath, stamp, stamp)
+    return { tmpDir, lockPath }
+  }
+
+  it("removes an index.lock left behind by a dead git process and commits", async () => {
+    const { tmpDir, lockPath } = makeBundleWithLock(60 * 60 * 1000)
+    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
+      const argv = args as string[]
+      if (argv[0] === "status") return Buffer.from(" M file.json\n")
+      if (argv[0] === "add" && fs.existsSync(lockPath)) throw new Error("fatal: Unable to create 'index.lock': File exists.")
+      return Buffer.from("")
+    })
+
+    const { postTurnPush } = await import("../../heart/sync")
+    const result = postTurnPush(tmpDir, defaultConfig)
+
+    expect(result.ok).toBe(true)
+    expect(fs.existsSync(lockPath)).toBe(false)
+    expect(emitNervesEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        level: "warn",
+        component: "heart",
+        event: "heart.sync_stale_lock_cleared",
+        meta: expect.objectContaining({ agentRoot: tmpDir }),
+      }),
+    )
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  it("leaves a fresh index.lock alone and records the failure as pending sync", async () => {
+    const { tmpDir, lockPath } = makeBundleWithLock(5 * 1000)
+    vi.mocked(childProcess.execFileSync).mockImplementation((_cmd, args) => {
+      const argv = args as string[]
+      if (argv[0] === "status") return Buffer.from(" M file.json\n")
+      if (argv[0] === "add") throw new Error("fatal: Unable to create 'index.lock': File exists.")
+      return Buffer.from("")
+    })
+
+    const { postTurnPush } = await import("../../heart/sync")
+    const result = postTurnPush(tmpDir, defaultConfig)
+
+    expect(result.ok).toBe(false)
+    expect(fs.existsSync(lockPath)).toBe(true)
+    const pending = JSON.parse(fs.readFileSync(path.join(tmpDir, "state", "pending-sync.json"), "utf-8"))
+    expect(pending.classification).toBe("unknown")
+    expect(pending.error).toContain("index.lock")
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+})
