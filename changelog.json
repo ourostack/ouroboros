@@ -4,7 +4,7 @@
     {
       "version": "0.1.0-alpha.847",
       "changes": [
-        "Bundle sync: post-turn push now removes a git index.lock older than 10 minutes (left by a git process that died mid-write) before committing, and any other failed local commit is recorded in state/pending-sync.json so the start-of-turn packet surfaces it. One stale lock had silently blocked every bundle commit for three months while untracked files piled up."
+        "Bundle sync: post-turn push now removes an empty git index.lock older than 10 minutes (left by a git process that died mid-write) before committing, and any other failed local commit is recorded in state/pending-sync.json so the start-of-turn packet surfaces it. One stale lock had silently blocked every bundle commit for three months while untracked files piled up."
       ]
     },
     {
