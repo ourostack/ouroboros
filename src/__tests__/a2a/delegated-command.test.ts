@@ -160,6 +160,21 @@ describe("admitDelegatedCommand", () => {
     expect(admission).toEqual({ ok: false, reason: "not_family" })
   })
 
+  it("refuses when the friend store cannot list friends or lists none", async () => {
+    tmp = createTmpBundle({ agentName: `delegated-nolist-${Date.now()}` })
+    fs.writeFileSync(path.join(tmp.agentRoot, "tool-profiles.json"), JSON.stringify(PROFILES))
+    const registry = loadRelationshipCapabilityRegistry(tmp.agentRoot)
+    const friend = owner({ id: "peer", name: "Peer", capabilityProfileId: "sanctuary-agent-peer", delegationGrant: GRANT })
+    const options = { principalProfileId: "sanctuary-owner", notifyPrincipal: async () => undefined }
+    const base = new FileFriendStore(`${tmp.agentRoot}/friends`)
+    const noList = { get: base.get.bind(base), put: base.put.bind(base) } as unknown as FileFriendStore
+    const emptyList = { ...noList, listAll: async () => undefined } as unknown as FileFriendStore
+    for (const store of [noList, emptyList]) {
+      const admission = await admitDelegatedCommand({ friend, did: "did:key:z6MkPeer", text: "x", commandId: "c1", store, registry, options })
+      expect(admission).toEqual({ ok: false, reason: "principal_unresolved" })
+    }
+  })
+
   it("quotes a long command as a flattened excerpt", () => {
     const notice = delegatedCommandNotice({ delegateName: "Claude Code", text: `${"word ".repeat(60)}\n\nend` })
     expect(notice).toContain("…")
