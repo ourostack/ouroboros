@@ -1092,6 +1092,28 @@ export function isExternalStateQuery(toolName: string, args: Record<string, unkn
   return /\bgh\s+(pr|run|api|issue)\b/.test(cmd) || /\bnpm\s+(view|info|show)\b/.test(cmd);
 }
 
+const SETTLE_CONTENT_MISMATCH_MIN_CHARS = 40
+
+// Markdown markers and smart punctuation differ between a reply and its settle copy without changing it.
+const normalizeForSettleComparison = (text: string): string =>
+  text.replace(/[*_`>#~]/g, "").replace(/[\u2018\u2019]/g, "'").replace(/[\u201c\u201d]/g, '"').replace(/[\u2013\u2014]/g, "-").replace(/\s+/g, " ").trim().toLowerCase()
+
+/**
+ * Only `settle.answer` reaches the friend; assistant message text in the same
+ * message does not. When a model writes its real reply as message text and puts
+ * something else (often a third-person recap) in the answer, the friend gets the
+ * recap. Ask once for the reply to be resent as the answer. Short preambles and
+ * text the answer already contains (or that contains the answer) pass.
+ */
+export function settleContentMismatchError(content: unknown, answer: string): string | null {
+  if (typeof content !== "string") return null
+  const text = normalizeForSettleComparison(content)
+  if (text.length < SETTLE_CONTENT_MISMATCH_MIN_CHARS) return null
+  const reply = normalizeForSettleComparison(answer)
+  if (reply.includes(text) || text.includes(reply)) return null
+  return "only settle.answer reaches the person; the message text you wrote alongside it does not. if that text is your reply, call settle again with the complete reply, in your own voice, as answer. if it was only working notes, call settle again with the same answer."
+}
+
 export function getSettleRetryError(
   mustResolveBeforeHandoff: boolean,
   intent: SettleIntent | undefined,
@@ -1510,6 +1532,7 @@ export async function runAgent(
   let currentReasoningEffort = "medium";
   let sawSendMessageSelf = false;
   let sawPonder = false;
+  let sawSettleContentMismatch = false;
   let sawQuerySession = false;
   let sawBridgeManage = false;
   let sawExternalStateQuery = false;
@@ -2309,7 +2332,14 @@ export async function runAgent(
           // The provider finalizer has already established a top-level string
           // answer before ordinary settle handling reaches this point.
           const deliveredAnswer = answer as string
-          const retryError = privateReturnAckLeakError(deliveredAnswer, privateReturnHeldTokens)
+          // Never spend the last provider iteration on this optional retry: delivering the recap beats delivering nothing.
+          const contentMismatch = sawSettleContentMismatch || providerIterations >= MAX_PROVIDER_ITERATIONS - 1 ? null : settleContentMismatchError(msg.content, deliveredAnswer)
+          if (contentMismatch) {
+            sawSettleContentMismatch = true
+            emitNervesEvent({ level: "warn", component: "engine", event: "engine.settle_content_mismatch", message: "settle answer differs from the reply text written beside it; asking once for the reply as the answer", meta: { answerLength: deliveredAnswer.length, contentLength: (msg.content as string).length } })
+          }
+          const retryError = contentMismatch
+            ?? privateReturnAckLeakError(deliveredAnswer, privateReturnHeldTokens)
             ?? privateReturnMissingPonderError({
               latestUserRequest: latestUserMessageText(messages),
               answer: deliveredAnswer,
