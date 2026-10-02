@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.851",
+      "changes": [
+        "The Butler can fix release-numbering mismatches himself: typed Sonarr/Radarr release search, override grab, blocklist and manual import tools, scene numbering in media_episodes, and a free-text indexer search",
+        "media_blocklist_stalled treats a download unfinished after 72 hours as stuck",
+        "The engine asks once when a settle answer drops the reply written beside it, so Telegram and A2A get the full reply"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.850",
       "changes": [
         "Delegated A2A commands can now change the steward policy: the admitted owner relationship carries its request id, which the owner gate requires (the live Butler admitted a delegated command on 849 and then refused every policy write).",
