@@ -14,7 +14,7 @@ import { SANCTUARY_OWNER_ADDITIONS } from "../fixtures/sanctuary-containment"
 const SANCTUARY_MEDIA_MCP_TOOLS = [
   "media_search", "media_request", "media_request_status",
   "media_diagnose_and_fix", "media_chain_health", "media_play_or_resolve",
-  "media_search_now", "media_blocklist_stalled", "media_episodes", "media_release_search", "media_release_grab", "media_blocklist", "media_manual_import",
+  "media_search_now", "media_blocklist_stalled", "media_episodes", "media_indexer_search", "media_release_search", "media_release_grab", "media_blocklist", "media_manual_import",
 ] as const
 const withoutMediaMcp = (names: string[]) => names.filter((name) => !SANCTUARY_MEDIA_MCP_TOOLS.includes(name as typeof SANCTUARY_MEDIA_MCP_TOOLS[number]))
 
@@ -26,8 +26,8 @@ describe("Sanctuary active tool profile", () => {
     const owner = packaged.profiles["sanctuary-owner"]
     const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex")
     expect(owner.version).toBe(12)
-    expect(owner.toolNames).toHaveLength(63)
-    expect(new Set(owner.toolNames).size).toBe(63)
+    expect(owner.toolNames).toHaveLength(64)
+    expect(new Set(owner.toolNames).size).toBe(64)
     expect(owner.toolNames).toContain("sanctuary_host_execute")
     expect(owner.toolNames).toEqual(expect.arrayContaining(SANCTUARY_OWNER_ADDITIONS))
     expect(owner.toolNames).toEqual(expect.arrayContaining([...SANCTUARY_MEDIA_MCP_TOOLS]))

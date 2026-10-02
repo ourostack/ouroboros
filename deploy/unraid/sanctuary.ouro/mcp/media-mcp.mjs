@@ -936,8 +936,27 @@ export async function mediaEpisodes(a) {
     season_number: a.season_number ?? null,
     count: eps.length,
     episodes: eps.map((e) => ({ episode_id: e.id, code: sxe(e), season: e.seasonNumber, episode: e.episodeNumber, title: e.title ?? null,
-                                air_date: e.airDate ?? null, has_file: Boolean(e.hasFile), monitored: Boolean(e.monitored) })),
+                                air_date: e.airDate ?? null, has_file: Boolean(e.hasFile), monitored: Boolean(e.monitored),
+                                // Release names follow scene (often streaming) numbering; Sonarr's own mapping, when it has one.
+                                scene_code: Number.isInteger(e.sceneSeasonNumber) && Number.isInteger(e.sceneEpisodeNumber)
+                                  ? `S${String(e.sceneSeasonNumber).padStart(2, "0")}E${String(e.sceneEpisodeNumber).padStart(2, "0")}` : null })),
   }
+}
+
+// Free-text search across every Prowlarr indexer: discovery only, it grabs nothing.
+// Sonarr's own search only asks for the season/episode codes it expects; this finds
+// what exists under any name (another numbering, a "Season 2 (2020)" pack, an episode title).
+export async function mediaIndexerSearch(a) {
+  const query = typeof a.query === "string" ? a.query.trim() : ""
+  if (!query) return { result: "query_required" }
+  const raw = await prowlarr("/search", { query: { query, type: "search", limit: 100 }, timeoutMs: SEARCH_TIMEOUT_MS })
+  const limit = Math.min(Math.max(Number(a.limit) || 25, 1), 50)
+  const rows = (Array.isArray(raw) ? raw : [])
+    .map((r) => ({ indexer: r.indexer ?? null, title: r.title ?? null, size_bytes: r.size ?? null, seeders: r.seeders ?? null,
+                   age_days: r.age ?? null, protocol: r.protocol ?? null }))
+    .sort((x, y) => (y.seeders ?? -1) - (x.seeders ?? -1))
+  return { query, count: rows.length, releases: rows.slice(0, limit),
+           note: "Discovery only. To grab, run media_release_search for the item so Sonarr/Radarr caches the release, then media_release_grab with an explicit episode mapping." }
 }
 
 // The last search's compact rows, keyed by kind + guid, so a grab can check what Sonarr parsed.
@@ -1159,11 +1178,19 @@ const TOOLS = [
   },
   {
     name: "media_episodes",
-    description: "List a Sonarr series' episodes (optionally one season): episode_id, SxxEyy code, title, air date, has_file. Use it to see what the TVDB numbering calls each episode before searching for releases by hand.",
+    description: "List a Sonarr series' episodes (optionally one season): episode_id, SxxEyy code, scene_code (the numbering release names use, when Sonarr has a mapping), title, air date, has_file. Use it to see what the TVDB numbering calls each episode before searching for releases by hand.",
     inputSchema: { type: "object", properties: {
       service_id: { type: "number", description: "Sonarr series id." },
       season_number: { type: "number" },
     }, required: ["service_id"] },
+  },
+  {
+    name: "media_indexer_search",
+    description: "Free-text search across every indexer (Prowlarr), sorted by seeders. Discovery only, it grabs nothing. Use it when Sonarr/Radarr's own search finds nothing: try the scene code from media_episodes, 'Season N', the year, or an episode title, to learn whether any release exists and how it is named. Zero seeders means it cannot download right now.",
+    inputSchema: { type: "object", properties: {
+      query: { type: "string" },
+      limit: { type: "number", description: "1-50, default 25." },
+    }, required: ["query"] },
   },
   {
     name: "media_release_search",
@@ -1221,6 +1248,7 @@ const HANDLERS = {
   media_search_now: mediaSearchNow,
   media_blocklist_stalled: mediaBlocklistStalled,
   media_episodes: mediaEpisodes,
+  media_indexer_search: mediaIndexerSearch,
   media_release_search: mediaReleaseSearch,
   media_release_grab: mediaReleaseGrab,
   media_blocklist: mediaBlocklist,

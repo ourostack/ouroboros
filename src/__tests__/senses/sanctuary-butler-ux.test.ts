@@ -28,7 +28,7 @@ import { SANCTUARY_OWNER_ADDITIONS } from "../fixtures/sanctuary-containment"
 
 // Authorized on the owner profile but provided by the packaged `media` MCP
 // server, so they resolve only when a manager is attached to the turn.
-const MEDIA_MCP_TOOLS = ["media_search", "media_request", "media_request_status", "media_diagnose_and_fix", "media_chain_health", "media_play_or_resolve", "media_search_now", "media_blocklist_stalled", "media_episodes", "media_release_search", "media_release_grab", "media_blocklist", "media_manual_import"]
+const MEDIA_MCP_TOOLS = ["media_search", "media_request", "media_request_status", "media_diagnose_and_fix", "media_chain_health", "media_play_or_resolve", "media_search_now", "media_blocklist_stalled", "media_episodes", "media_indexer_search", "media_release_search", "media_release_grab", "media_blocklist", "media_manual_import"]
 const withoutMediaMcp = (names: string[]) => names.filter((name) => !MEDIA_MCP_TOOLS.includes(name))
 
 const identityTestState = vi.hoisted(() => ({ agentRoot: null as string | null }))

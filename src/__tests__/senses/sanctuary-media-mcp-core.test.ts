@@ -414,7 +414,7 @@ describe("media MCP — release numbering tools", () => {
   let blocklist: any[]
   let manual: any[]
   const json = (body: unknown) => ({ ok: true, status: 200, json: async () => body, text: async () => "" })
-  const episodes = [14472, 14473, 14474, 14475, 14476].map((id, i) => ({ id, seasonNumber: 2, episodeNumber: i + 1, title: ["Milk Bar Bake Sale", "Roy's Italian Cuisine", "Jessica Largey", "Tartine", "Late Night Burger"][i], airDate: "2019-06-07", hasFile: false, monitored: true }))
+  const episodes = [14472, 14473, 14474, 14475, 14476].map((id, i) => ({ id, seasonNumber: 2, episodeNumber: i + 1, title: ["Milk Bar Bake Sale", "Roy's Italian Cuisine", "Jessica Largey", "Tartine", "Late Night Burger"][i], airDate: "2020-09-24", hasFile: false, monitored: true, ...(i < 4 ? { sceneSeasonNumber: 4, sceneEpisodeNumber: i + 1 } : {}) }))
   const pack = { guid: "g-s3", indexerId: 5, indexer: "Idx", title: "The Chef Show Season 3 [1080p x265 10bit S85 Joy]", size: 9e9, seeders: 40, age: 100, quality: { quality: { name: "WEBDL-1080p" } },
     fullSeason: true, seasonNumber: 3, episodeNumbers: [], mappedEpisodeInfo: [], rejected: true, rejections: ["Unknown Series"], protocol: "torrent" }
   const blocked = { guid: "g-bl", indexerId: 5, title: "The Chef Show S03 1080p NF WEBRip DDP5 1 x264", seeders: 3, fullSeason: true, seasonNumber: 3, rejected: true, rejections: [{ reason: "Release is blocklisted" }],
@@ -432,6 +432,11 @@ describe("media MCP — release numbering tools", () => {
       const method = init.method ?? "GET"
       calls.push({ method, url, body: init.body ? JSON.parse(init.body) : undefined })
       if (url.includes("/api/v3/episode")) return json(episodes)
+      if (url.startsWith("http://prowlarr/api/v1/search")) return json([
+        { indexer: "1337x", title: "The Chef Show [Season 2] (2020) [WEB DL 1080p]", size: 5.9e9, seeders: 0, age: 1800, protocol: "torrent" },
+        { indexer: "Lime", title: "The Chef Show S03 1080p NF WEBRip", seeders: 3, protocol: "torrent" },
+        { title: "No seeders field" },
+      ])
       if (url.startsWith("http://sonarr/api/v3/release") && method === "GET") return json([pack, blocked, pack])
       if (url.startsWith("http://radarr/api/v3/release") && method === "GET") return json([{ guid: "m1", indexerId: 2, title: "Movie 2020", seeders: 1, rejections: [] }])
       if (url.includes("/api/v3/release") && method === "POST") return json({ approved: true, rejected: false, rejections: [], downloadId: "DL1" })
@@ -449,8 +454,20 @@ describe("media MCP — release numbering tools", () => {
   it("media_episodes lists a season with ids and codes", async () => {
     const out = await mod.mediaEpisodes({ service_id: 191, season_number: 2 })
     expect(calls[0].url).toBe("http://sonarr/api/v3/episode?seriesId=191&seasonNumber=2")
-    expect(out.episodes[0]).toEqual({ episode_id: 14472, code: "S02E01", season: 2, episode: 1, title: "Milk Bar Bake Sale", air_date: "2019-06-07", has_file: false, monitored: true })
+    expect(out.episodes[0]).toEqual({ episode_id: 14472, code: "S02E01", season: 2, episode: 1, title: "Milk Bar Bake Sale", air_date: "2020-09-24", has_file: false, monitored: true, scene_code: "S04E01" })
+    expect(out.episodes[4].scene_code).toBeNull()
     expect(out.count).toBe(5)
+  })
+
+  it("media_indexer_search finds releases under any name, sorted by seeders, and grabs nothing", async () => {
+    const out = await mod.mediaIndexerSearch({ query: "The Chef Show Season 4", limit: 2 })
+    expect(calls[0]).toMatchObject({ method: "GET", url: "http://prowlarr/api/v1/search?query=The%20Chef%20Show%20Season%204&type=search&limit=100" })
+    expect(out.count).toBe(3)
+    expect(out.releases.map((r: any) => r.seeders)).toEqual([3, 0])
+    expect(out.releases[1]).toEqual({ indexer: "1337x", title: "The Chef Show [Season 2] (2020) [WEB DL 1080p]", size_bytes: 5.9e9, seeders: 0, age_days: 1800, protocol: "torrent" })
+    expect(calls.filter((c) => c.method !== "GET")).toHaveLength(0)
+    expect((await mod.mediaIndexerSearch({ query: "  " })).result).toBe("query_required")
+    expect((await mod.mediaIndexerSearch({ query: "x", limit: 999 })).releases).toHaveLength(3)
   })
 
   it("release search returns compact rows with parse, mapping, rejections and blocklist flag", async () => {
