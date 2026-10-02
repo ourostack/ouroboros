@@ -2,6 +2,12 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.852",
+      "changes": [
+        "An orientation hold no longer blocks read-only tools from the agent's own MCP servers (readOnlyHint); the Butler's media lookups are marked read-only"
+      ]
+    },
+    {
       "version": "0.1.0-alpha.851",
       "changes": [
         "The Butler can fix release-numbering mismatches himself: typed Sonarr/Radarr release search, override grab, blocklist and manual import tools, scene numbering in media_episodes, and a free-text indexer search",
