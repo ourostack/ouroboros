@@ -2,6 +2,14 @@
   "_note": "This changelog is maintained as part of the PR/version-bump workflow. Agent-curated, not auto-generated. Agents read this file directly via read_file to understand what changed between versions.",
   "versions": [
     {
+      "version": "0.1.0-alpha.849",
+      "changes": [
+        "The Butler can start a Sonarr series or Radarr movie search now (media_search_now) and blocklist-and-research stalled queue items (media_blocklist_stalled) without a Jellyseerr request id.",
+        "Media title lookup matches partial and misspelled titles across Sonarr, Radarr and Jellyfin, and falls back to the TVDB/TMDB lookup before saying a title is not in the library.",
+        "The Butler's always-loaded psyche now says to answer from primary sources rather than memory, re-read live state, label anything unreachable as unverified, and route missing tools to Claude Code instead of asking Ari to click."
+      ]
+    },
+    {
       "version": "0.1.0-alpha.848",
       "changes": [
         "Delegated commands: an A2A message whose signed envelope carries onBehalfOf \"principal\" (ouro a2a message --delegated) runs with the owner's sanctuary-owner authority only when the sender's friend record holds an operator-set delegationGrant and the sender is active family. The server posts a notice in the owner's Telegram chat first and refuses the command if that fails (JSON-RPC -32004). steward_policy_manage accepts the admitted command and records the source as \"<owner> via <peer> (delegated)\". Host execute stays Telegram-only.",
