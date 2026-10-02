@@ -82,7 +82,7 @@ Promise.all([
           principalProfileId: "sanctuary-owner",
           notifyPrincipal: async (notice: { noticeId: string; text: string }) => {
             const { sendTelegramOwnerNotice } = await import("./telegram")
-            await sendTelegramOwnerNotice(agentName, notice)
+            await sendTelegramOwnerNotice(agentName, { ...notice, signal: AbortSignal.timeout(30_000) })
           },
         },
       } : {}),

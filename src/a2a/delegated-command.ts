@@ -42,10 +42,13 @@ export type DelegatedCommandAdmission =
 
 const NOTICE_EXCERPT_CHARS = 200
 
+/** Matches the banner only the server may put in front of an admitted command. */
+export const DELEGATED_BANNER = /^\s*\[\s*delegated command/iu
+
 export function delegatedCommandNotice(input: { delegateName: string; text: string }): string {
   const flat = input.text.replace(/\s+/gu, " ").trim()
   const excerpt = flat.length > NOTICE_EXCERPT_CHARS ? `${flat.slice(0, NOTICE_EXCERPT_CHARS)}…` : flat
-  return `Delegated command from you via ${input.delegateName}: "${excerpt}". Reply "that wasn't me" if you did not send this.`
+  return `Delegated command from you via ${input.delegateName}: "${excerpt}". If this wasn't you, say so here: it is on record, and the grant can be revoked.`
 }
 
 function hasPrincipalGrant(friend: FriendRecord): boolean {

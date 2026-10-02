@@ -113,6 +113,18 @@ describe("steward policy", () => {
     expect(bare.desiredStates["container:calibre"].source).toBe("Ari via Claude Code (delegated)")
     const audit = fs.readFileSync(path.join(agentRoot, "state", "policy", "policy-audit.ndjson"), "utf8").trim().split("\n").map((line) => JSON.parse(line))
     expect(audit.map((row) => [row.issuer, row.authorizingSessionEvent, row.authorization.sessionKey])).toEqual([["ari", "a2a-delegated:task-1", "ctx-books"], ["ari", "a2a-delegated:task-1", "ctx-books"]])
+    expect(audit.every((row) => JSON.stringify(row.delegatedVia) === JSON.stringify({ delegateFriendId: "peer", delegateDid: "did:key:z6MkPeer", noticeId: "delegated:task-1" }))).toBe(true)
+    const granted = JSON.parse(await stewardPolicyToolDefinition.handler({ action: "grant_routine_action", provenance: "stated", key: "unraid.restart:calibre-web", routineAction: "unraid.container.restart", targetsJson: '["calibre-web"]', exclusionsJson: "[]", maxCount: 1, windowMs: 1000, verificationRequired: true }, context as any) as string)
+    expect(granted.routineActionGrants["unraid.restart:calibre-web"].issuer).toBe("ari")
+    expect(readStewardPolicy(agentRoot).version).toBe(3)
+    const owner = { friendId: "ari", trustLevel: "family" as const, sessionEventId: "evt-x", authorization: { profileId: "sanctuary-owner", profileVersion: 7, requestId: "r", sessionKey: "k", receiptId: "auth" } }
+    expect(() => updateStewardPolicy(agentRoot, { expectedVersion: 3, actor: { ...owner, delegatedVia: { delegateFriendId: "", delegateDid: "d", noticeId: "n" } }, mutation: { kind: "set_desired_state", key: "container:x", value: "on", provenance: "stated", source: "s" } })).toThrow("delegation is invalid")
+    const auditPath = path.join(agentRoot, "state", "policy", "policy-audit.ndjson")
+    const lines = fs.readFileSync(auditPath, "utf8").trim().split("\n")
+    const tampered = JSON.parse(lines[0]!)
+    tampered.delegatedVia = { delegateFriendId: "peer" }
+    fs.writeFileSync(auditPath, [JSON.stringify(tampered), ...lines.slice(1)].join("\n") + "\n")
+    expect(() => readStewardPolicy(agentRoot)).toThrow()
   })
 
   it("refuses a delegated context that does not match the admitted command", () => {

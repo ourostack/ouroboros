@@ -106,7 +106,11 @@ export const stewardPolicyToolDefinition: ToolDefinition = {
       }
       const result = updateStewardPolicy(agentRoot, {
         expectedVersion: expectedVersion ?? readStewardPolicy(agentRoot).version,
-        actor: { friendId, trustLevel, sessionEventId, authorization: { profileId, requestId, sessionKey, receiptId: authorization.receiptId, profileVersion: authorization.profileVersion } },
+        actor: {
+          friendId, trustLevel, sessionEventId,
+          authorization: { profileId, requestId, sessionKey, receiptId: authorization.receiptId, profileVersion: authorization.profileVersion },
+          ...(delegated ? { delegatedVia: { delegateFriendId: delegated.delegateFriendId, delegateDid: delegated.delegateDid, noticeId: delegated.noticeId } } : {}),
+        },
         mutation,
       })
       emitNervesEvent({ component: "repertoire", event: "repertoire.steward_policy_tool_call", message: "updated steward policy", meta: { action: args.action } })

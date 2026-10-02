@@ -209,7 +209,7 @@ describe("Sanctuary pre-activation container auditor", () => {
       removalCriteria: "After a verified package-managed release is installed and is the retained rollback, remove the pinned alpha.797 source contract/constant/runbook branch and its tests; never use it for target creation.",
     })
     expect(debt.items).toContainEqual(expect.objectContaining({
-      id: "mailroom-encrypted-raw-orphans", status: "open", owner: "Mailroom", due: "2026-09-30",
+      id: "mailroom-encrypted-raw-orphans", status: "open", owner: "Mailroom", due: "2026-10-31",
     }))
   })
 

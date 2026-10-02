@@ -5,7 +5,7 @@
       "id": "mailroom-encrypted-raw-orphans",
       "status": "open",
       "owner": "Mailroom",
-      "due": "2026-09-30",
+      "due": "2026-10-31",
       "removalCriteria": "Replace the hosted encrypted-message upload/commit ordering with a transaction or equivalent lifecycle that guarantees loser cleanup, then deploy a provenance-safe orphan sweeper and verify that no unreferenced encrypted raw objects remain."
     },
     {

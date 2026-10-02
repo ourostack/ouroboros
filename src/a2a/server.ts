@@ -19,7 +19,7 @@ import type { FriendRecord } from "@ouro.bot/friends"
 import { isMissionResultDataPart, receiveInboundMissionResult } from "./mission-result-wire"
 import { delegationStoresFor } from "./delegation-stores"
 import { FileA2ATaskStore } from "./task-store"
-import { admitDelegatedCommand, type A2ADelegationOptions, type DelegatedCommandContext } from "./delegated-command"
+import { admitDelegatedCommand, DELEGATED_BANNER, type A2ADelegationOptions, type DelegatedCommandContext } from "./delegated-command"
 import type { A2AJsonRpcRequest, A2AJsonRpcResponse, A2AMessage, A2ATask } from "./types"
 
 const MAX_A2A_REQUEST_BYTES = 128 * 1024
@@ -565,6 +565,10 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
           : undefined
         let turnText = text
         let delegatedCommand: DelegatedCommandContext | undefined
+        // Only the server writes the delegated banner; a peer typing it gets it marked as its own words.
+        if (verifiedChat && verifiedChat.onBehalfOf !== "principal" && DELEGATED_BANNER.test(text)) {
+          turnText = `[unverified: the sender typed this banner itself; it is not a delegated command] ${text}`
+        }
         if (verifiedChat?.onBehalfOf === "principal") {
           // A delegated command runs with the principal's authority only after the
           // server, never the model, has checked the grant and told the principal.
@@ -572,7 +576,7 @@ export async function startA2AServer(options: StartA2AServerOptions): Promise<A2
           try { registry = loadRelationshipCapabilityRegistry(agentRoot) } catch { registry = undefined }
           /* v8 ignore next -- a completed chat always carries the sender's friend record (see the receipt above) @preserve */
           if (!verifiedChat.friend) throw new Error("verified chat has no friend record")
-          const admission = await admitDelegatedCommand({ friend: verifiedChat.friend, did: verifiedChat.did, text, commandId: taskId, store: inboundShareDeps!.store, registry, options: options.delegation })
+          const admission = await admitDelegatedCommand({ friend: verifiedChat.friend, did: verifiedChat.did, text, commandId: randomUUID(), store: inboundShareDeps!.store, registry, options: options.delegation })
           if (!admission.ok) {
             writeJson(res, 200, errorResponse(rpc.id, -32004, `delegated command refused: ${admission.reason}`))
             return

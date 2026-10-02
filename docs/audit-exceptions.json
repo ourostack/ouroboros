@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "items": [
+    {
+      "advisory": "https://github.com/advisories/GHSA-86w9-cpqp-85rv",
+      "package": "node-forge",
+      "reason": "Reached only through @bitwarden/cli 2026.6.0 (latest 2026.9.1 still pins node-forge 1.4.0), and no patched node-forge exists (<=1.4.0 affected). The advisory concerns RSA PKCS#1 v1.5 signature verification; the harness uses bw for vault reads. Re-decide when a patched node-forge or bitwarden release ships.",
+      "due": "2026-11-15"
+    }
+  ]
+}
