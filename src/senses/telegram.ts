@@ -174,6 +174,8 @@ export interface TelegramSenseApp {
   sendProactive(text: string, signal?: AbortSignal): Promise<void>
   sendExternalEventDecision(input: { source: string; eventId: string; generation: number; text: string; signal?: AbortSignal }): Promise<void>
   sendAwaitFollowUp(request: CrossChatDeliveryRequest): Promise<CrossChatDirectDeliveryResult>
+  /** Posts a Butler-authored notice to the owner's chat and records it in the owner session. */
+  sendOwnerNotice(input: { noticeId: string; text: string; signal?: AbortSignal }): Promise<void>
   stop(): Promise<void>
 }
 
@@ -2005,6 +2007,15 @@ export function createTelegramSenseApp(options: CreateTelegramSenseAppOptions): 
     async sendAwaitFollowUp(request) {
       return runWithAcceptanceAuditOwner(() => deliverAwaitFollowUp(request))
     },
+    async sendOwnerNotice(input) {
+      const noticeId = requiredText(input.noticeId, "owner notice id")
+      if (Buffer.byteLength(noticeId) > 512) throw new Error("Telegram owner notice id is invalid")
+      await runWithAcceptanceAuditOwner(async () => {
+        const effect = await deliverButlerEffect(requiredText(input.text, "owner notice"), `owner-notice:${noticeId}`, input.signal)
+        const sessionPath = getSenseSessionPath(options.agentName, configuredOwnerFriendId, "telegram", configuredOwnerSessionKey, agentRoot)
+        await recordAcceptedEffects(sessionPath, [effect])
+      })
+    },
     stop() {
       if (stopPromise) return stopPromise
       stopPromise = (async () => {
@@ -2295,6 +2306,15 @@ export async function sendTelegramExternalEventDecision(
   const app = await startTelegramSenseApp(agentName)
   try {
     await app.sendExternalEventDecision(input)
+  } finally {
+    await app.stop()
+  }
+}
+
+export async function sendTelegramOwnerNotice(agentName: string, input: { noticeId: string; text: string; signal?: AbortSignal }): Promise<void> {
+  const app = await startTelegramSenseApp(agentName)
+  try {
+    await app.sendOwnerNotice(input)
   } finally {
     await app.stop()
   }

@@ -1496,14 +1496,16 @@ function parseA2ACommand(args: string[]): OuroCliCommand {
   }
 
   if (sub === "message") {
-    const usageText = "Usage: ouro a2a message --to <card-url> --text <text> [--context <id>] [--identity-file <path>] [--json]"
+    const usageText = "Usage: ouro a2a message --to <card-url> --text <text> [--context <id>] [--delegated] [--identity-file <path>] [--json]"
     let to: string | undefined
     let text: string | undefined
     let conversationId: string | undefined
     let identityFile: string | undefined
     let json = false
+    let delegated = false
     for (let i = 0; i < rest.length; i += 1) {
       if (rest[i] === "--to" && rest[i + 1]) { to = rest[++i]; continue }
+      if (rest[i] === "--delegated") { delegated = true; continue }
       if (rest[i] === "--text" && rest[i + 1]) { text = rest[++i]; continue }
       if (rest[i] === "--context" && rest[i + 1]) { conversationId = rest[++i]; continue }
       if (rest[i] === "--identity-file" && rest[i + 1]) { identityFile = rest[++i]; continue }
@@ -1511,7 +1513,7 @@ function parseA2ACommand(args: string[]): OuroCliCommand {
       throw new Error(usageText)
     }
     if (!to || !text) throw new Error(usageText)
-    return { kind: "a2a.message", to, text, ...(conversationId ? { conversationId } : {}), ...(identityFile ? { identityFile } : {}), ...(json ? { json: true } : {}) }
+    return { kind: "a2a.message", to, text, ...(conversationId ? { conversationId } : {}), ...(delegated ? { delegated: true } : {}), ...(identityFile ? { identityFile } : {}), ...(json ? { json: true } : {}) }
   }
 
   if (sub === "onboard") {

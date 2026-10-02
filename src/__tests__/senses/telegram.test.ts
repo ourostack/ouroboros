@@ -1953,6 +1953,19 @@ describe("Telegram sense", () => {
     expect(session.events.filter((event: any) => event.content === "Books is still down. I’m looking into it.")).toHaveLength(1)
   })
 
+  it("posts one owner notice per notice id through the effect journal and owner session", async () => {
+    const f = fixture()
+    await f.app.sendOwnerNotice({ noticeId: "delegated:task-1", text: "Delegated command from you via Claude Code." })
+    await f.app.sendOwnerNotice({ noticeId: "delegated:task-1", text: "Delegated command from you via Claude Code." })
+    expect(f.api.request).toHaveBeenCalledTimes(1)
+    const effectRoot = path.join(f.agentRoot, "state", "telegram", "effects")
+    const artifact = JSON.parse(fs.readFileSync(path.join(effectRoot, fs.readdirSync(effectRoot)[0]!), "utf8"))
+    expect(artifact).toMatchObject({ idempotencyKey: "owner-notice:delegated:task-1", authorClass: "butler", parts: [{ state: "session_recorded" }] })
+    await expect(f.app.sendOwnerNotice({ noticeId: "x".repeat(513), text: "notice" })).rejects.toThrow("notice id is invalid")
+    await expect(f.app.sendOwnerNotice({ noticeId: "n", text: "  " })).rejects.toThrow("owner notice")
+    expect(f.api.request).toHaveBeenCalledTimes(1)
+  })
+
   it("does not collide owner delivery across event sources", async () => {
     const f = fixture()
     await f.app.sendExternalEventDecision({ source: "sanctuary-health", eventId: "books", generation: 1, text: "Health report" })

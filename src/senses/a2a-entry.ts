@@ -75,6 +75,17 @@ Promise.all([
     await startA2AServer({
       agentName,
       identity,
+      // The Butler accepts delegated commands from explicitly granted peers; each
+      // one is announced in the owner's Telegram chat before it runs.
+      ...(agentName === "sanctuary" ? {
+        delegation: {
+          principalProfileId: "sanctuary-owner",
+          notifyPrincipal: async (notice: { noticeId: string; text: string }) => {
+            const { sendTelegramOwnerNotice } = await import("./telegram")
+            await sendTelegramOwnerNotice(agentName, notice)
+          },
+        },
+      } : {}),
       ...(argValue("--host") ? { host: argValue("--host") } : {}),
       ...(Number.isInteger(port) ? { port } : {}),
       ...(argValue("--base-url") ? { baseUrl: argValue("--base-url") } : {}),

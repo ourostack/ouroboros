@@ -7146,6 +7146,7 @@ async function executeA2AClientCommand(command: A2AClientCliCommand, deps: OuroC
     cardUrl: command.to,
     text: command.text,
     ...(command.conversationId ? { conversationId: command.conversationId } : {}),
+    ...(command.delegated ? { onBehalfOf: "principal" as const } : {}),
     identity,
     /* v8 ignore next -- production CLI uses global fetch; tests inject fetch for a hermetic peer @preserve */
     ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),

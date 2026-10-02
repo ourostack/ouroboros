@@ -41,6 +41,8 @@ export interface SealChatMessageInput {
   recipientEd25519Pub: Uint8Array
   text: string
   conversationId?: string
+  /** Marks the text as a command relayed from the sender's principal; signed with it. */
+  onBehalfOf?: "principal"
 }
 
 /** Seal `text` from `from` to the recipient as a single friends DataPart. Returns
@@ -51,6 +53,7 @@ export function sealChatMessage(input: SealChatMessageInput): { parts: A2AMessag
     fromAgentId: input.from.did,
     text,
     ...(input.conversationId !== undefined ? { conversationId: input.conversationId } : {}),
+    ...(input.onBehalfOf ? { onBehalfOf: input.onBehalfOf } : {}),
   })
   /* v8 ignore next -- the text is normalized above and the sender DID comes from a real identity @preserve */
   if (!prepared.ok) throw new Error(`cannot prepare chat message: ${prepared.status}`)

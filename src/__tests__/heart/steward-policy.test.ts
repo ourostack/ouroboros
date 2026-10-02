@@ -102,6 +102,45 @@ describe("steward policy", () => {
     expect(readStewardPolicy(agentRoot).version).toBe(5)
   })
 
+  it("accepts an admitted delegated owner command over A2A and records the delegated source", async () => {
+    const agentRoot = root()
+    const delegatedCommand = { principalFriendId: "ari", principalName: "Ari", delegateFriendId: "peer", delegateName: "Claude Code", delegateDid: "did:key:z6MkPeer", commandId: "task-1", noticeId: "delegated:task-1" }
+    const relationshipAuthorization = { profileId: "sanctuary-owner", requestId: "task-1", authorizedContextScopes: [], advertisedToolNames: [], authorizeTool: () => ({ allowed: true as const, receiptId: "auth", profileVersion: 7 }), actor: { friendId: "ari", trustLevel: "family" as const, sessionEventId: "a2a-delegated:task-1" } }
+    const context = { signin: async () => undefined, agentRoot, currentSession: { friendId: "a2a-peer", channel: "a2a", key: "ctx-books" }, relationshipAuthorization, delegatedCommand }
+    const result = JSON.parse(await stewardPolicyToolDefinition.handler({ action: "set_desired_state", provenance: "stated", key: "container:calibre-web", value: "on", source: "Books stays on" }, context as any) as string)
+    expect(result.desiredStates["container:calibre-web"]).toMatchObject({ value: "on", provenance: "stated", source: "Ari via Claude Code (delegated): Books stays on" })
+    const bare = JSON.parse(await stewardPolicyToolDefinition.handler({ action: "set_desired_state", provenance: "stated", key: "container:calibre", value: "off" }, context as any) as string)
+    expect(bare.desiredStates["container:calibre"].source).toBe("Ari via Claude Code (delegated)")
+    const audit = fs.readFileSync(path.join(agentRoot, "state", "policy", "policy-audit.ndjson"), "utf8").trim().split("\n").map((line) => JSON.parse(line))
+    expect(audit.map((row) => [row.issuer, row.authorizingSessionEvent, row.authorization.sessionKey])).toEqual([["ari", "a2a-delegated:task-1", "ctx-books"], ["ari", "a2a-delegated:task-1", "ctx-books"]])
+  })
+
+  it("refuses a delegated context that does not match the admitted command", () => {
+    const agentRoot = root()
+    const delegatedCommand = { principalFriendId: "ari", principalName: "Ari", delegateFriendId: "peer", delegateName: "Claude Code", delegateDid: "did:key:z6MkPeer", commandId: "task-1", noticeId: "delegated:task-1" }
+    const relationshipAuthorization = { profileId: "sanctuary-owner", requestId: "task-1", authorizedContextScopes: [], advertisedToolNames: [], authorizeTool: () => ({ allowed: true as const, receiptId: "auth", profileVersion: 7 }), actor: { friendId: "ari", trustLevel: "family" as const, sessionEventId: "a2a-delegated:task-1" } }
+    const base = { signin: async () => undefined, agentRoot, currentSession: { friendId: "a2a-peer", channel: "a2a", key: "ctx-books" }, relationshipAuthorization, delegatedCommand }
+    const args = { action: "set_desired_state", provenance: "stated", key: "container:calibre-web", value: "on", source: "x" }
+    const variants = [
+      { ...base, delegatedCommand: { ...delegatedCommand, commandId: "task-2" } },
+      { ...base, delegatedCommand: { ...delegatedCommand, principalFriendId: "someone-else" } },
+      { ...base, currentSession: { ...base.currentSession, channel: "telegram" } },
+      { ...base, relationshipAuthorization: { ...relationshipAuthorization, actor: { ...relationshipAuthorization.actor, sessionEventId: "evt-telegram" } } },
+      { ...base, delegatedCommand: undefined },
+    ]
+    for (const context of variants) expect(() => stewardPolicyToolDefinition.handler(args, context as any)).toThrow("mutation requires")
+    expect(readStewardPolicy(agentRoot).version).toBe(0)
+  })
+
+  it("refuses a delegated command whose context changes while authorization is pending", async () => {
+    const agentRoot = root()
+    const delegatedCommand = { principalFriendId: "ari", principalName: "Ari", delegateFriendId: "peer", delegateName: "Claude Code", delegateDid: "did:key:z6MkPeer", commandId: "task-1", noticeId: "delegated:task-1" }
+    const context: Record<string, unknown> = { signin: async () => undefined, agentRoot, currentSession: { friendId: "a2a-peer", channel: "a2a", key: "ctx-books" }, delegatedCommand }
+    context.relationshipAuthorization = { profileId: "sanctuary-owner", requestId: "task-1", authorizedContextScopes: [], advertisedToolNames: [], actor: { friendId: "ari", trustLevel: "family" as const, sessionEventId: "a2a-delegated:task-1" },
+      authorizeTool: () => { context.delegatedCommand = { ...delegatedCommand }; return { allowed: true as const, receiptId: "auth", profileVersion: 7 } } }
+    await expect(stewardPolicyToolDefinition.handler({ action: "set_desired_state", provenance: "stated", key: "container:calibre-web", value: "on", source: "x" }, context as any)).rejects.toThrow("changed before mutation")
+  })
+
   describe("A-006 applied policy audit", () => {
     const now = "2026-09-08T00:00:00.000Z"
     const owner = {
